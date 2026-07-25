@@ -46,10 +46,7 @@
     "extraSoftPatterns": []
   },
   "productWhitelist": [
-    "dashhuang",
-    "xdanger",
-    "magiclizi",
-    "zqchris"
+    "PraiseZhu"
   ],
   "uiPaths": [
     "apps/desktop/src/renderer/",
@@ -62,9 +59,7 @@
   ],
   "archGate": {
     "whitelist": [
-      "magiclizi",
-      "xdanger",
-      "dashhuang"
+      "PraiseZhu"
     ],
     "corePaths": [
       "packages/",
@@ -91,15 +86,11 @@
       "magiclizi"
     ]
   },
-  "slackSyncBots": [
-    "dash-s-cindy"
-  ],
-  "slackSenderAliases": {
-    "Dash": "dashhuang"
-  },
+  "slackSyncBots": [],
+  "slackSenderAliases": {},
   "feishuNotify": {
-    "groupName": "Cindy",
-    "archRecipientName": "刘佳黎",
+    "groupName": "",
+    "archRecipientName": "朱赞",
     "orgMappingRepos": [
       "taptap/org",
       "xindong/org"
@@ -109,7 +100,5 @@
     "idleHours": 24,
     "repeatHours": 24
   },
-  "selfFixAuthors": [
-    "magiclizi"
-  ]
+  "selfFixAuthors": []
 }
