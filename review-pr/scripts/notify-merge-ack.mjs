@@ -112,9 +112,10 @@ try {
     process.exit(0);
   }
 
-  // 措辞固定为 SKILL.md「对外话术与人格边界」模板 E(群内公开,人格淡),不由 agent 现场改写。
-  const title = `🟢 PR #${pr} 合了 —— 感谢 @${author}。`;
-  const text = `${summary || meta.title || ''}\n${meta.url ?? ''}`;
+  // 措辞固定为 SKILL.md「对外话术与人格边界」模板 E(群内公开,人格淡,状态用文字不用
+  // 状态图标,表情按配额 0-1 个放句尾),不由 agent 现场改写。
+  const title = `PR #${pr} 合了 —— 感谢 @${author}。`;
+  const text = `${summary || meta.title || ''} 😌\n${meta.url ?? ''}`;
 
   if (dryRun) {
     print({ ok: true, pr, posted: false, reason: 'dry-run', title, text, notifyStateDir: NOTIFY_STATE_DIR, notifyModule: MERGE_ACK.notifyModule });

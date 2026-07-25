@@ -138,7 +138,7 @@ try {
     } else {
       const mention = author ? `@${author} ` : '';
       const body =
-        `${mention}#${pr} 和 \`${meta.baseRefName}\` 有冲突,卡着合不了。\n\n` +
+        `${mention}#${pr} 和 \`${meta.baseRefName}\` 有冲突,卡着合不了 🤨\n\n` +
         `在本地 merge 最新的 \`origin/${meta.baseRefName}\` 解掉冲突后 push 一下,我这边就能接着走。`;
       if (dryRun) {
         print({ ok: true, pr, mode: 'conflict', posted: false, reason: 'dry-run', author, fingerprint: meta.headRefOid, body });
@@ -191,7 +191,7 @@ try {
         : '';
       const mention = author ? `@${author} ` : '';
       const body =
-        `${mention}#${pr} 还有 ${unresolved.length} 条 conversation 没 resolve${pathHint},卡着合不了。\n\n` +
+        `${mention}#${pr} 还有 ${unresolved.length} 条 conversation 没 resolve${pathHint},卡着合不了 🤨\n\n` +
         `看过了、改过了、或者觉得不用改都行 —— 点一下 Resolve,我这边就能往下走。`;
 
       if (dryRun) {
