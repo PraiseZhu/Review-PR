@@ -1,0 +1,7 @@
+interface:
+  display_name: "Generate Update Notice"
+  short_description: "Generate release notice JSON from repository history"
+  default_prompt: "Use $generate-update-notice to prepare the next update notice from this repository's release history."
+
+policy:
+  allow_implicit_invocation: true

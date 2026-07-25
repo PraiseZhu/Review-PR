@@ -1,0 +1,103 @@
+# review-pr 自进化台账
+
+自动生成:由 `scripts/evolution-note.mjs` 从 `evolution/ledger.json` 再生成,**手改本文件会被覆盖**。
+条目按根因 fingerprint 去重;分类与落地规则见 SKILL.md 第 8 节。
+
+## 待维护者拍板(扩权类提案,永不自动落地)
+
+- `bot-threads-after-scan-block-merge` **Bot review threads created after scan block merge of approved PRs** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: open
+  - 现象:PR #449 was approved and ready to merge, but Copilot and Codex bot reviews created new unresolved threads between scan and merge. One thread (Codex DCO) was factually incorrect. Auto mode cannot resolve threads.
+  - 提案:Allow auto-resolving bot threads when: (1) thread author is a known bot, (2) the claim is verifiably false (e.g. DCO signed but bot says not), OR (3) thread is a P2/style suggestion that doesn't block. This is privilege expansion (new resolve action).
+- `product-hold-missing-payload` **product-hold.mjs 返回 missing-payload 未能自动 hold** — 出现 2 次,首见 2026-07-24,最近 2026-07-25,status: open
+  - 现象:PR #397 triggered product-gate. Ran product-hold.mjs 397 with scan result on stdin but got held=false reason=missing-payload. Script likely expects a different payload format (possibly the full non-scan context). The PR was also blocked by 14 threads, so practical impact was nil this round.
+  - 提案:Investigate product-hold.mjs expected stdin format and document it, or make the script self-fetch context when not piped
+- `skip-notice-never-wired` **notify-author-resolve.mjs 从未接线进 auto 流程,gate 跳过对作者完全静默** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: adopted,commit `bfae5f3`
+  - 现象:脚本早已存在(thread 催办+指纹去重)但 SKILL.md §6 无调用指令,所有状态目录均无 reminded.json,#304/#359 等 PR 被 skip 9-17 小时作者零感知
+  - 提案:SKILL.md §6 阶段 1 接线 thread/冲突两类 skip 的批量提醒;脚本增 --conflict 模式与 selfFixAuthors 排除
+  - 备注:维护者 2026-07-25 当场拍板同意新增评论写操作,已落地 commit bfae5f3
+- `format-gate-false-positive-audio-renderer-files` **格式门 uiPaths 对 renderer 下纯音频/逻辑文件误报** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: adopted
+  - 现象:PR #373 的 WebMicAudioEngine.ts、useVoiceInput.ts(hook)、vite-env.d.ts 等纯音频生命周期逻辑文件位于 renderer 目录,触发了 UI 证据要求;作者明确说明无视觉变化后仍被推回 3 次。类似 pattern 还包括非渲染 hook、类型声明文件等。
+  - 提案:在 pr-rules.json 的 uiExcludePaths 中增加 **/vite-env.d.ts、**/*AudioEngine*、renderer/**/use*.ts(仅 hook 文件)等排除模式,或增加「作者在 UI 变化栏明确写明不涉及时不重复推回」的逻辑。需维护者确认排除范围。
+  - 备注:维护者 2026-07-25 拍板保守落地:仅排除 .d.ts(commit bfae5f3);AudioEngine/hook 命名类未采纳;renderer 下 __tests__ 测试文件仍会误报,留作后续候选
+
+## 已自动落地(automatable-gap)
+
+- `ui-evidence-blob-links-not-detected` **context.mjs 的 UI 证据检测未识别 GitHub blob 链接到图片文件** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: landed
+  - 现象:PR #413 作者在 body 表格里用 GitHub blob URL 链接了 3 张 .webp 截图（因私有仓库无法内嵌渲染），但 bodyUiEvidenceKinds 仍为空，导致 uiEvidenceMissing=true。实际证据充分，主 agent 判断不发误导性提醒评论
+  - 提案:context.mjs 的证据检测增加对 github.com/.../blob/...\.(webp|png|jpg|jpeg|gif|svg) 格式链接的识别，识别到即视为有效 image 类证据
+- `scan-bot-thread-soft-flag-vs-premerge` **scan 把 bot 未 resolve thread 计为 softFlag 而非 blocker，与 pre-merge-check 不一致** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: open
+  - 现象:PR #402 scan 输出 unresolvedThreadCount=0 + softFlags 含 bot 评论，但 pre-merge-check 正确把同一 thread 计为 unresolved→canMerge=false。导致主 agent 无谓走了完整 review+approve 流程后才发现不能 merge。
+  - 提案:context.mjs 的 unresolvedThreadCount 应与 pre-merge-check 口径一致：bot thread 只要未 resolve 就计入 blockers（不论是否 bot），softFlags 保留用于「已 resolve 但内容可能需要人判断」的场景。或在 gate.pass=true 但 softFlags 含 unresolved bot thread 时降级为 gate.pass=false。
+- `state-dir-worktree-fragmentation` **状态目录按 cwd 哈希,worktree 轮次导致锁/指纹/去重全碎片化** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: landed,commit `a179c3b`
+  - 现象:scheduler useWorktree 每轮新建 worktree,锁/空转指纹/fix-session/催办去重按 cwd 哈希落进不同临时目录:两把锁并存互斥失效、pre-check 探测目录与会话写入目录不一致、last-scan 缓存从未命中(空转轮全额烧 token)。已修:lib.mjs 状态锚点改用 git-common-dir,主仓库与全部 worktree 共享同一状态目录
+
+## 无法自动化(by-design,只计数观察)
+
+- `ci-checks-unreadable` **无法读取 CI check 状态（token 权限 statusCheckRollup 403）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:gh pr checks 和 statusCheckRollup GraphQL 均返回 Resource not accessible by personal access token，无法判定 CI 是 pass/fail/pending。PR #397 approve 后 merge 被 branch policy 拒绝，无法确认原因。
+- `all-candidates-blocked-by-author-side` **所有候选均因冲突/未 resolve thread 被跳过** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:7 个非 draft PR 全部因为作者侧原因(conflict 或 unresolved thread)被 skip;这是设计上就该人来处理的
+- `bot-threads-race-undetected-at-scan` **Bot reviews posted between scan and pre-merge-check cause thread-unresolved block** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #451: scan classified as gate-pass (fallback=review), but 4 bot review threads were posted during review agent execution. Pre-merge-check correctly caught them. This is the expected safety-net behavior — not a gap.
+- `worktree-dep-resolution` **审查 worktree 内缺跨包依赖导致部分测试无法运行** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR#402 审查中 collabSendOutcome.test.ts 和 plugin-registry.test.ts 因 worktree 缺少 @cindy/maker-core 等跨包依赖而失败；属于 worktree 隔离环境天然局限
+- `scan-gate-bot-thread-softflag` **Scan 模式将 bot unresolved thread 归为 softFlag 而非 blocker，full context 验证时正确拦截** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #402 被 scan 归为 review(bot thread 是 softFlag)，但 full context 发现 gatePass=false（正确行为）。scan 分类是 hint，实际验证在 full context 阶段兜住。
+- `all-prs-blocked-no-action` **所有 11 个候选 PR 均因作者侧问题被 skip（冲突/未 resolve thread/已打回/hold 中）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:本轮无任何 PR 可处理到合并。10 个 skip + 1 个 skip-stale-pushback。3 个 held draft 无白名单同意。属正常等待周期，不需要进化
+- `toctou-bot-thread-post-scan` **Bot thread appeared between scan and merge — pre-merge-check correctly blocked** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #402 scanned with 0 unresolved threads, but copilot-reviewer posted a new thread before merge attempt. pre-merge-check caught it. By-design TOCTOU protection.
+- `pr-closed-during-processing` **PR 在扫描后被作者关闭，无法合并** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR#434 在 scan 时为 OPEN，审查通过后发现已被作者 close（非 merge）。属正常外部事件，不可自动化。
+- `worktree-branch-delete-fail-on-review-wt` **review worktree 占用的本地分支在 merge 后无法自动删除** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:gh pr merge --delete-branch 删不掉被 review worktree 占用的本地分支,属正常行为(worktree 结束后分支自然消失),不需要修复
+- `many-threads-unresolved-by-design` **大量 PR 被 unresolved threads 卡住属设计上需人处理** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:本轮 17 个候选中 13 个因 unresolved threads 被 skip，均属作者需自行操作的流程项
+- `bot-threads-posted-after-scan` **Bot review threads posted between scan and pre-merge-check** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #393 和 #430 在 scan 时无 blocker，但 pre-merge-check 时已有 bot 新发 thread。系统正确：scan 快照 + pre-merge-check 兜底是设计，非缺口。
+- `unresolved-threads-majority-block` **大量 PR 被未 resolve 的 review thread 阻塞** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:本轮 15 候选中 13 个因 unresolved threads 被 skip，这是设计上正确的——review 意见需要作者确认解决。
+- `skip-all-unresolved-threads` **本轮 14/18 候选因 conversation 未 resolve 被 skip** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #254(25),#291(6),#304(1),#314(4),#389(12),#396(2),#398(9),#402(6),#403(6),#409(8),#417(4),#420(2),#423(5),#429(1) 均因未 resolve thread 被跳过。需作者或 reviewer 处理。
+- `ci-status-403-no-visibility` **PAT 无法读取 GitHub App check runs 导致 CI 状态不可见** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #420 审查通过但 mergeStateStatus=BLOCKED，gh pr checks 和 check-runs API 均返回 403。commit status 为 pending+0 statuses，说明 CI 由 GitHub App 驱动而非 commit status。当前 PAT 权限无法读取 App check runs，只能跳过等 CI 自然通过后下轮合并。
+- `all-blocked-by-unresolved-threads` **本轮绝大多数 PR 被 unresolved review threads 阻断** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:18 候选中 15 个因 conversation 未 resolve 跳过,属设计上需人类处理
+- `bot-threads-block-after-scan-pass` **Bot review threads posted between scan and merge block otherwise-clean PR** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #410 passed independent review (0 P0/P1) and was approved, but pre-merge-check found 3 unresolved bot threads (copilot-pull-request-reviewer, chatgpt-codex-connector) that appeared after context.mjs scan. Resolving external reviewers threads = privilege expansion. Author must resolve; next round will merge if threads cleared.
+- `already-merged-during-scan` **PRs merged by maintainer during scan window** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #387 and #407 were merged by MagicLizi between scan start and agent launch. Review agents still confirmed code quality. Timing artifact, not a gap.
+- `all-blocked-unresolved-threads` **本轮 11/12 PR 全被未 resolve thread 卡住** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #254(25),#291(6),#304(1),#314(4),#329(7),#387(4),#389(11),#396(4),#398(18),#402(9),#403(9) — 均因 conversation 未 resolve 无法进入审查;唯一可审的 #393 因测试 P1 走 fix-handoff
+- `worktree-cleanup-orphan-cap-30` **孤儿分支清理每轮上限 30 条，大量积压需多轮清理** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:本轮 fix-worktree-cleanup 扫描到近百条孤儿分支/worktree，受 30 条/轮 API 实查上限只处理了部分，其余下轮继续。属设计上的防 API 过载保护，不需改。
+- `bot-review-race-at-merge` **Bot reviewer 在审查期间新增 thread 导致 merge 时发现未 resolve** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #393 scan 时 unresolvedThreadCount=0，审查 agent 运行期间 chatgpt-codex-connector 提交了 3 条 P1 review thread。pre-merge-check 正确捕获，走 fix-handoff。
+- `pr375-merged-during-review` **PR 在审查期间被他人合并** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #375 完成独立审查(pass)后发现已被外部合并,审查耗时约 4.5 分钟期间 head 变化并被合并。属正常并发——多人有合并权限时时序竞争不可避免
+- `bot-threads-post-scan-race` **Bot review threads appearing between scan and merge attempt block approved PRs** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #338: scan showed 0 unresolved threads (gatePass=true), review passed, self-approved, but 5 bot threads (copilot + chatgpt-codex-connector) appeared during the ~7min review window. Branch protection blocks merge with unresolved threads regardless of source. This is by-design: bots are external actors, we cannot control their timing, and the rule 'bot 也不能因是bot而自动忽略' is correct. The practical mitigation is faster processing or resolving bot threads after evaluation.
+- `bot-review-race-between-scan-and-merge` **Bot review threads appearing between scan and pre-merge-check is by-design** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR #248: scan showed 0 unresolved threads, but by merge time chatgpt-codex-connector had posted 7 P1 threads. pre-merge-check correctly caught this and prevented merge. No gap — safety net worked as intended.
+- `arch-gate-other-blockers-skip` **Arch/product gate PRs with prior blockers (CHANGES_REQUESTED/threads) deferred** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PRs #304,#359,#365,#373,#375,#379 triggered arch/product gate but also have prior review blockers; semantic assessment deferred since hold would be redundant on already-blocked PRs. When threads resolve and reviews pass, next round will reassess.
+- `no-actionable-all-blocked` **本轮 18 个候选全部被 gate/stale-pushback 阻断，无一进入审查** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:10 个 skip-stale-pushback(格式已打回等作者), 4 个 threads-unresolved, 2 个 pushback-format(新打回), 1 个 product-hold, 1 个 conflict。全部属 by-design：等作者修复格式/resolve thread/rebase 后才能审查
+- `format-gate-no-visual-change-claim` **作者声称 UI 文件改动无视觉差异时格式门仍打回** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
+  - 现象:PR#373 改了 VoiceInputOverlay.tsx 但作者说是纯 lifecycle fix 无渲染变化。格式门按路径命中打回是 by-design:作者需明确解释为何改 tsx 不产生视觉变化
+- `no-new-evolution-this-round` **本轮无新进化项：skip 全是 stale-pushback 或 gate 阻断(设计如此)** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+- `all-skip-no-actionable` **本轮所有候选均被前置门或 stale-pushback 拦住，无可审查项** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+  - 现象:15 个候选中 9 个 stale-pushback（等作者修格式）、5 个 gate 未过（thread 未 resolve / 冲突 / CHANGES_REQUESTED）、1 个新格式打回。2 个 held draft 白名单未回复。by-design：都在等人。
+- `all-skipped-no-evolution` **本轮15个候选中14个因格式打回/thread未resolve/冲突跳过** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+  - 现象:PR #371是唯一可处理候选(docs-only)。其余均为作者侧问题(未回应格式打回/未resolve thread/未处理冲突)——设计上就该等作者响应
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+- `product-gate-held-not-draft-rehold` **已 held 但未 draft 的 PR 需要 re-draft** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+  - 现象:PR #354 有 product hold issue 但 heldDraft=false，需要重新执行 product-hold 将其转 draft。这是设计预期：白名单成员可随时标回 Ready，auto 轮次需检查并重新 hold
+- `product-gate-bugfix-semantic-ok` **产品/架构 gate 对 fix 类型 PR 仍触发语义定性——设计如此** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+  - 现象:本轮 #298/#304/#341 均为 fix 类 PR，因路径/行数命中 gate 阈值触发语义定性；人工判定为 bugfix 后使用 fallback。gate 从严设计正确，不需自动放行 fix 类型
+- `product-hold-payload-stdin-newline` **product-hold.mjs payload via stdin requires single-line JSON or temp file** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
+  - 现象:heredoc with embedded newlines in JSON values causes parse error; writing to temp file works. This is by-design (JSON spec, not a script bug).
+
+## 已否决的提案(留档防止重复提出)
+
+- `bot-threads-block-review-entry` Copilot/Codex/Greptile 的未 resolve thread 让 PR 进不了首次审查 — 维护者 2026-07-25 拍板维持现状:bot thread 必须 resolve 才进审查;以 skip-notice 催办评论(skip-notice-never-wired)替代,不再重复提出

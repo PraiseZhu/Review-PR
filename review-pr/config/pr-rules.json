@@ -1,0 +1,115 @@
+{
+  "_comment": "review-pr 私有配置。titleTypes、featureSections、bugfixSections、lightTypes、redlinePaths、serverPaths、ciSensitivePaths 与 sensitiveContent 描述项目 PR 契约；productWhitelist、uiPaths、uiExcludePaths、archGate、slackSyncBots、slackSenderAliases、feishuNotify、staleAuthorReminder 与 selfFixAuthors 只服务维护者内部流程。archGate.coldUpdatePaths 是 mobile runtime fingerprint 输入路径（改到即疑似触发冷更，与技术架构变动同级走同一道门）；archGate.coldUpdateGuardMarker 是 fingerprint guard sticky comment 的定位 marker，guard 给的结论优先于路径启发式；archGate.coldUpdateApprovers 是冷更唯一的放行人名单（谁改都要确认：作者在白名单、普通 Approve、标回 Ready 都不构成豁免，只认名单内成员明确针对冷更的表态，名单内成员自己提的 PR 也要显式确认）。uiExcludePaths 为 uiPaths 内的排除前缀（多语言 locale 文件等纯文案数据不算 UI 改动）。sensitiveContent 供阶段一安全与隐私内容门：allowPaths 为跳过扫描的文件路径正则（仅用于测试夹具类已知误报），extraHardPatterns/extraSoftPatterns 为追加的正则字符串（硬命中阻断/软命中交审查 agent 定性），内置凭证与隐私模式在 context.mjs。Skill 默认读取本文件，也可通过 REVIEW_PR_RULES_FILE 指向其他项目配置。",
+  "titleTypes": [
+    "feat",
+    "fix",
+    "refactor",
+    "perf",
+    "chore",
+    "docs",
+    "test",
+    "revert",
+    "build",
+    "ci"
+  ],
+  "lightTypes": [
+    "chore",
+    "docs",
+    "test",
+    "build",
+    "ci",
+    "revert"
+  ],
+  "featureSections": [
+    "这次改了什么",
+    "怎么验证的",
+    "风险"
+  ],
+  "bugfixSections": [
+    "这次改了什么",
+    "怎么验证的",
+    "风险"
+  ],
+  "redlinePaths": [
+    "updater",
+    "localDb/schema\\.ts",
+    "drizzle/"
+  ],
+  "serverPaths": [],
+  "ciSensitivePaths": [
+    "\\.github/workflows/",
+    "\\.github/actions/"
+  ],
+  "sensitiveContent": {
+    "allowPaths": [],
+    "extraHardPatterns": [],
+    "extraSoftPatterns": []
+  },
+  "productWhitelist": [
+    "dashhuang",
+    "xdanger",
+    "magiclizi",
+    "zqchris"
+  ],
+  "uiPaths": [
+    "apps/desktop/src/renderer/",
+    "apps/mobile/",
+    "docs/design-rules/cindy-design-system.md"
+  ],
+  "uiExcludePaths": [
+    "apps/desktop/src/renderer/i18n/locales/",
+    "apps/mobile/src/i18n/locales/"
+  ],
+  "archGate": {
+    "whitelist": [
+      "magiclizi",
+      "xdanger",
+      "dashhuang"
+    ],
+    "corePaths": [
+      "packages/",
+      "cindy-protocol/",
+      "apps/desktop/src/main/",
+      "apps/desktop/src/preload/",
+      "apps/desktop/src/shared/"
+    ],
+    "coreDiffLines": 150,
+    "refactorDiffLines": 400,
+    "anyTypeDiffLines": 800,
+    "coldUpdatePaths": [
+      "apps/mobile/app.json",
+      "apps/mobile/app.config.js",
+      "apps/mobile/eas.json",
+      "apps/mobile/package.json",
+      "apps/mobile/fingerprint.config.cjs",
+      "apps/mobile/plugins/",
+      "apps/mobile/modules/",
+      "scripts/shared/client-endpoint-build-env.cjs"
+    ],
+    "coldUpdateGuardMarker": "<!-- mobile-fingerprint-guard -->",
+    "coldUpdateApprovers": [
+      "magiclizi"
+    ]
+  },
+  "slackSyncBots": [
+    "dash-s-cindy"
+  ],
+  "slackSenderAliases": {
+    "Dash": "dashhuang"
+  },
+  "feishuNotify": {
+    "groupName": "Cindy",
+    "archRecipientName": "刘佳黎",
+    "orgMappingRepos": [
+      "taptap/org",
+      "xindong/org"
+    ]
+  },
+  "staleAuthorReminder": {
+    "idleHours": 24,
+    "repeatHours": 24
+  },
+  "selfFixAuthors": [
+    "magiclizi"
+  ]
+}
