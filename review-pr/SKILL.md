@@ -301,9 +301,11 @@ node "<SKILL_ROOT>/scripts/pre-check.mjs" --repo-root "<目标仓库>"
    "没有规则"处理；`required` 里本来就没列的文件类型（目标仓库确实没有这份文档）
    视为正常，不因此记 finding；
 4. `ruleFiles.ruleMap` 配置了路径时，读取该路径（相对目标仓库根目录，指向目标
-   仓库自己的「路径→规则」映射文档），再按其内容按改动路径读取对应权威规则；
-   未配置（`null`/缺失）时跳过本步——按路径映射规则是可选机制，不是所有仓库都需要，
-   跳过不算 fail-closed 的对象。
+   仓库自己的「路径→规则」映射文档），再按其内容按改动路径读取对应权威规则。
+   **同样 fail-closed**：配置了路径但文件不存在时记 **P1**（"配置要求读取的
+   `ruleMap` 文件不存在"），与 `required`/`uiRequired` 口径一致，不静默跳过；
+   未配置（`null`/缺失）时才跳过本步——按路径映射规则是可选机制，不是所有仓库都
+   需要，"没配置"和"配置了却缺失"是两种不同状态，只有前者不算 fail-closed 的对象。
 
 `AGENTS.md`、代码、测试和规则文件是事实来源；不要把旧版 skill、记忆中的
 名单或 PR 约定当作本仓规则，也不要把本 skill 内置给 Cindy 项目用的
@@ -667,7 +669,8 @@ ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1�
   或缺少规则要求的适配／说明；UI 改动的证据（截图或 HTML 界面）与 diff 不符或声称
   的效果不存在（描述不实）、以及违反 `ruleFiles.uiRequired` 列出的设计规范同属 P1
   （证据缺失不算 P1——按 3.2 发提醒评论请作者补充）；`ruleFiles.required`／
-  `uiRequired` 列出但文件缺失同属 P1（fail-closed，见 2.1／第 4 节第 7 条）；
+  `uiRequired`／`ruleMap` 配置了路径但文件缺失同属 P1（fail-closed，见 2.1／
+  第 4 节第 7 条）；
 - **P2**：可选优化或风格偏好——不报告，不用它阻断合并。
 
 安全、凭证、用户数据、wire protocol、数据库历史 migration、system prompt、更新器、

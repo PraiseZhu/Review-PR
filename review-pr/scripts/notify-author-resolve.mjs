@@ -12,9 +12,11 @@
 //
 // 去重粒度(= 未 resolve thread 集合指纹):指纹 = 当前未 resolve thread 的 GraphQL id
 // 排序拼接。持久化在 Skill 外部状态目录的 reminded.json,每条记录为
-// `{ fingerprint, notifiedAt }`(旧版本只存裸字符串指纹,读到旧格式按"未记录时间"
-// 处理,不影响本轮判定,下次发送即升级为新格式)。
-//   - 指纹与上次记录相同 → 这批 thread 已经催过 → 静默不发(posted=false)。
+// `{ fingerprint, notifiedAt }`(旧版本只存裸字符串指纹;`storedFingerprint()` 兼容
+// 读两种格式的指纹做比较,**指纹相同就不重发**,不靠"再发一次评论"去迁移格式——
+// 旧字符串记录没有 notifiedAt,天然不参与下面说的跨通道抑制,下次指纹变化时自然
+// 写成新格式)。
+//   - 指纹与上次记录相同(新旧格式都认) → 这批 thread 已经催过 → 静默不发(posted=false)。
 //   - 指纹变了(作者新增 thread / 部分 resolve / 首次)→ 发评论 + 记新指纹与时间。
 //   - 没有任何未 resolve thread → 不发,清掉该 PR 状态(下次再卡会重新催)。
 //
@@ -82,6 +84,14 @@ function writeState(state) {
   }
 }
 
+/** 兼容旧格式(裸字符串指纹)与新格式(`{ fingerprint, notifiedAt }`)读出指纹,
+ * 不因格式升级而在指纹未变时误判"没催过"再重发一次评论。旧字符串记录没有
+ * notifiedAt,天然不参与 remind-stale-author.mjs 的跨通道抑制,不需要在这里迁移
+ * 格式——下次指纹变化时自然会写成新格式。 */
+function storedFingerprint(entry) {
+  return typeof entry === 'string' ? entry : entry?.fingerprint;
+}
+
 /** 发评论(body 走 stdin 防引号问题);成功返回 true。 */
 function postComment(slug, prKey, body) {
   const r = gh(['pr', 'comment', prKey, '--repo', slug, '--body-file', '-'], {
@@ -140,7 +150,7 @@ try {
         writeState(state);
       }
       print({ ok: true, pr, mode: 'conflict', posted: false, reason: `mergeable=${meta?.mergeable ?? 'null'}`, author });
-    } else if (state[conflictKey]?.fingerprint === meta.headRefOid) {
+    } else if (storedFingerprint(state[conflictKey]) === meta.headRefOid) {
       print({ ok: true, pr, mode: 'conflict', posted: false, reason: 'already-commented', author, fingerprint: meta.headRefOid });
     } else {
       const mention = author ? `@${author} ` : '';
@@ -189,7 +199,7 @@ try {
     const fingerprint = unresolved.map((t) => t.id).sort().join(',');
 
     // 同一批 thread 已催过 → 静默
-    if (state[prKey]?.fingerprint === fingerprint) {
+    if (storedFingerprint(state[prKey]) === fingerprint) {
       print({ ok: true, pr, posted: false, reason: 'already-commented', author, fingerprint });
     } else {
       const paths = [...new Set(unresolved.map((t) => t.path).filter(Boolean))];
