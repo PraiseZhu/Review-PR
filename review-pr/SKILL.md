@@ -117,9 +117,11 @@ description: >
 ### 播报出口
 
 给人看的消息经**配置的播报出口**发送，出口由目标仓库的 `pr-rules.json` 决定，
-不假设某一固定渠道：例如 mivo 经 `scripts/loops/bug-doctor/notify.mjs`
+不假设某一固定渠道：例如 mivo 的合并致谢（模板 E）经 `scripts/loops/bug-doctor/notify.mjs`
 （`loopPrExclusion.mergeAckNotify.notifyModule`，见 3.7）发 Slack、以 Mivo 机器人
-身份出现；也可以是宿主提供的飞书机器人私聊/群消息能力。哪个出口可用、发给谁，
+身份出现；owner 每轮汇总（模板 F）经 `scripts/loops/bug-doctor/broadcast.mjs`
+（`summaryBroadcast.command`，见 6.1，脚本 `notify-summary.mjs`）走同一条 webhook
+以同一身份出现；也可以是宿主提供的飞书机器人私聊/群消息能力。哪个出口可用、发给谁，
 以该仓库的实际配置为准，不要把任何一个具体出口硬编码成唯一选项。播报出口不可用
 或发送失败时保留拟定文案、如实在汇总中说明，不重试轰炸、不影响收尾。
 
@@ -156,7 +158,7 @@ N. `path:line` — <一句话>。
 解析出收件人身份，用配置的私聊出口发送：
 
 ```text
-你的 PR #<N> 卡了<N>天了 👀
+你的 PR #<N> 好像停了一阵子 👀
 
 <一句话说清卡在哪：上次提的 N 条还没动 / 有 N 条 conversation 没 resolve / 和主干
 冲突了> —— 不催你，就是提一下，免得它自己躺到下周~
@@ -165,11 +167,19 @@ N. `path:line` — <一句话>。
 PR：<url>
 ```
 
-纪律：必须含"不催你，就是提一下"之类自我否认施压意图的表达；必须给足
-Close/Draft 两条退路；傲娇仅限"免得它自己躺到下周"这类**拟人化调侃 PR、不调侃
-人**的表达；表情按配额 1–2 个，可用 `👀`/`🙃`/`😏`，`~` 句尾软化仅本通道允许。
+纪律：**首句不写具体停滞天数**（"卡了<N>天了"属于硬红线 2 明禁的"已经 N 天了"
+施压句式，`idleDays` 只用于 `shouldRemind` 的内部判定，不进入发出去的文案）；必须
+含"不催你，就是提一下"之类自我否认施压意图的表达；必须给足 Close/Draft 两条退路；
+傲娇仅限"免得它自己躺到下周"这类**拟人化调侃 PR、不调侃人**的表达；表情按配额
+1–2 个，可用 `👀`/`🙃`/`😏`，`~` 句尾软化仅本通道允许。
 收件人解析不到（`resolve-author-feishu.mjs` 的 `matched` 为空）时不猜测、不硬发，
 按其 `fetchErrors` 是否非空区分"名录没这人"与"名录读不到"，如实写进汇总。
+
+**与模板 C 的跨通道去重**：同一 PR 若在 `staleAuthorReminder.crossChannelSuppressHours`
+（默认 24h）窗口内已被 `notify-author-resolve.mjs` 公开评论提醒过（催 resolve 或
+冲突提醒任一模式），`remind-stale-author.mjs` 即使停滞阈值已到也输出
+`shouldRemind=false`（`reason=suppressed-recent-resolve-notice`），本通道当轮不发；
+判定与去重状态读写均在脚本内完成，主 agent 只消费布尔结果，不用自行核对是否重复。
 
 ### 模板 C：催 resolve
 
@@ -279,15 +289,27 @@ node "<SKILL_ROOT>/scripts/pre-check.mjs" --repo-root "<目标仓库>"
 
 ### 2.1 先读本仓规则
 
-在任何 GitHub 写操作前，读取：
+必读规则文件清单由 `pr-rules.json` 的 `ruleFiles` 配置（不是本文件硬编码的固定
+文件名——不同目标仓库的规则文档命名和是否存在都不一样）。在任何 GitHub 写操作前，
+读取：
 
-1. 根 `AGENTS.md`；
-2. `docs/dev-rules/development-workflow.md`；
-3. `.github/PULL_REQUEST_TEMPLATE.md`；
-4. [references/rule-map.md](references/rule-map.md)，再按改动路径读取对应权威规则。
+1. 根 `AGENTS.md`（存在即读；本 skill 的通用贡献者入口约定，不受 `ruleFiles` 门控）；
+2. `.github/PULL_REQUEST_TEMPLATE.md`（格式门用它判断 Title/Description 结构）；
+3. `ruleFiles.required` 列出的每个路径（相对目标仓库根目录）——目标仓库自己声明
+   的必读规则文件。**逐项 fail-closed**：路径在这里但文件不存在时记 **P1**
+   （"配置要求读取 `<path>` 但文件不存在"），显著写进报告，不静默跳过、不当作
+   "没有规则"处理；`required` 里本来就没列的文件类型（目标仓库确实没有这份文档）
+   视为正常，不因此记 finding；
+4. `ruleFiles.ruleMap` 配置了路径时，读取该路径（相对目标仓库根目录，指向目标
+   仓库自己的「路径→规则」映射文档），再按其内容按改动路径读取对应权威规则；
+   未配置（`null`/缺失）时跳过本步——按路径映射规则是可选机制，不是所有仓库都需要，
+   跳过不算 fail-closed 的对象。
 
 `AGENTS.md`、代码、测试和规则文件是事实来源；不要把旧版 skill、记忆中的
-名单或 PR 约定当作本仓规则。规则文件的“读取时机”和“Review 清单”是触发依据。
+名单或 PR 约定当作本仓规则，也不要把本 skill 内置给 Cindy 项目用的
+[references/rule-map.md](references/rule-map.md) 当成任意目标仓库的默认规则——那是
+本 skill 服务 Cindy 项目时的历史范例，只有目标仓库自己的 `ruleFiles.ruleMap` 显式
+配置指向它时才适用于该仓库。规则文件的"读取时机"和"Review 清单"是触发依据。
 若 PR 修改了规则文件，同时阅读 base 与 head 版本，先按 base 版本审查实现，再单独
 审查规则变更是否有明确理由和兼容影响。
 
@@ -408,8 +430,8 @@ gh pr diff <N> --patch
   「UI 证据提醒评论」），请其补充截图／录屏，或改动后界面的 HTML 页面（```html
   代码块、.html 附件或在线预览链接）。
   证据存在性在这里判（`format.bodyUiEvidenceKinds` 标明 image／html）；已附证据时，
-  内容与 diff 是否一致、界面是否符合 DESIGN.md，仍在阶段二由审查 agent 判（见第 4
-  节第 7 条）；
+  内容与 diff 是否一致、界面是否符合 `ruleFiles.uiRequired` 列出的设计规范，仍在
+  阶段二由审查 agent 判（见第 4 节第 7 条）；
 - 命中数据库、system prompt、协议、原生层、权限／安全、跨平台或远程／手机规则时，
   Description 必须有对应结论。
 
@@ -550,12 +572,22 @@ skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
 `Agent` + `isolation: "worktree"`，每个 PR 一个隔离 worktree；主工作树不切换分支。
+
+**spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
+模板首行）：隔离 worktree 里的目标仓库拷贝可能不含（或含未跟踪、指向错误目标的）
+`.claude/skills/review-pr` 软链——软链常被目标仓库的 `.gitignore` 排除，PR 分支的
+worktree 里可能压根不存在这条链路。审查 agent 不应假设工作树里能找到 skill 脚本
+或 `references/rule-map.md`，必须用主 agent 已解析出的绝对 `SKILL_ROOT`（见「Skill
+路径与目标仓库」一节的 realpath 解析）去定位所有确定性脚本与参考文档。
+
 审查 agent 必须：
 
 1. 检出 PR 的 head，确认 base、head、工作区和依赖状态；
 2. 阅读 PR body、完整 diff、评论／thread 历史和本文件的规则加载要求；
-3. 按 [references/rule-map.md](references/rule-map.md) 选择规则文件，逐条执行其中
-   Review 清单；只把新增或正在修改的代码与规则对照，不借机清理无关旧问题；
+3. 读取 2.1 已按 `ruleFiles` 配置解析出的规则文件集合（`ruleFiles.required` 的固定
+   清单 + 命中 `ruleFiles.ruleMap` 的按路径条目，未配置 `ruleMap` 则只有前者），
+   逐条执行其中 Review 清单；只把新增或正在修改的代码与规则对照，不借机清理无关
+   旧问题；
 4. 对每个修改的共享符号、IPC、状态、数据结构、协议、配置和持久化路径追踪调用方、
    读方、错误路径、回滚路径、远程／手机入口和测试，不局限于 diff 文件；
 5. 检查 PR 声称的验证命令，必要时运行与风险匹配的定向检查；不能把未运行写成通过；
@@ -578,34 +610,44 @@ skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏
      覆盖——**不记 finding、不阻断**，在报告 UI evidence 段注明缺口，由主 agent 按
      3.2 的「UI 证据提醒评论」转达作者。无法下载、渲染或查看
      时如实写入 Verification（“未能查看截图／HTML”），不得写成“已核对”；
-   - **DESIGN.md 设计规范审查**：所有 UI 改动必须符合目标仓库根部 `DESIGN.md`（Cindy
-     项目设计规范）与 `docs/design-rules/cindy-design-system.md`。先完整读取这两份
-     文件，再把 diff 中每个新增／修改的组件、颜色、字体、间距、圆角、动效、文案与
-     深浅色适配逐条对照规范；有证据时同时对照截图或渲染后的 HTML 检查视觉呈现是否符合规范。硬编码颜色值
-     绕过 design token、自造组件替代设计系统已有组件、违反规范的间距／排版、缺少
-     深浅色或多端适配等违规项记 **P1**，并在 finding 中引用规范原文位置。规范未
-     覆盖的纯审美偏好属 P2，不阻断。
+   - **设计规范审查**（`ruleFiles.uiRequired` 非空时才做；为空即目标仓库没有独立
+     设计规范文档，跳过本项，不因缺规范文件记 finding）：所有 UI 改动必须符合
+     `ruleFiles.uiRequired` 列出的每份设计规范文件（相对目标仓库根目录，如 Cindy
+     项目配置的 `DESIGN.md` 与 `docs/design-rules/cindy-design-system.md`）。先完整
+     读取全部列出的文件，再把 diff 中每个新增／修改的组件、颜色、字体、间距、圆角、
+     动效、文案与深浅色适配逐条对照规范；有证据时同时对照截图或渲染后的 HTML 检查
+     视觉呈现是否符合规范。**fail-closed**：`uiRequired` 列出的路径不存在时记 **P1**
+     （"配置要求的设计规范文件缺失"），不当作"没有规范"跳过。硬编码颜色值绕过
+     design token、自造组件替代设计系统已有组件、违反规范的间距／排版、缺少深浅色
+     或多端适配等违规项记 **P1**，并在 finding 中引用规范原文位置。规范未覆盖的纯
+     审美偏好属 P2，不阻断。
 
 将以下模板作为审查 agent 的任务上下文，并要求它只输出可定位、可复现的发现：
 
 ```text
+Skill 根目录（绝对路径，本次所有确定性脚本与 references 只从这里读取，不要依赖
+工作树里可能缺失/未跟踪的 .claude/skills/review-pr 软链）：<SKILL_ROOT>
+
 审查对象：PR #<N>，base <base>，head <sha>
-规则来源：AGENTS.md、development-workflow.md、PR 模板、按 rule-map 命中的规则文件，
-以及维护者流程中的 productGate／archGate／selfFix 结果；UI 改动另加 DESIGN.md 与
-docs/design-rules/cindy-design-system.md（强制，见第 4 节第 7 条）
+规则来源：AGENTS.md（存在即读）、PR 模板、ruleFiles.required 列出的规则文件、
+ruleFiles.ruleMap 命中的规则文件（未配置则没有这部分），以及维护者流程中的
+productGate／archGate／selfFix 结果；UI 改动另加 ruleFiles.uiRequired 列出的设计
+规范文件（未配置则没有这部分，见第 4 节第 7 条）
 重点：安全与用户数据、崩溃/数据丢失、跨平台、协议兼容、影响面、错误路径、测试和描述真实性；
 安全与隐私门软命中（context 的 security.softHits）必须逐条定性：真实凭证/个人隐私数据 = P0，
 测试桩/占位符/公开示例放行并写明依据；security.scanned=false 时先人工核对完整 diff 无泄露；
-UI 改动加：UI 证据（截图/录屏/HTML 界面）与 diff 一致性、DESIGN.md 设计规范符合性
-（证据完全缺失不记 finding，只在报告注明缺口——提醒作者补证据由主 agent 的评论完成）
+UI 改动加：UI 证据（截图/录屏/HTML 界面）与 diff 一致性、ruleFiles.uiRequired 设计规范符合性
+（证据完全缺失不记 finding，只在报告注明缺口——提醒作者补证据由主 agent 的评论完成；
+ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1，不与证据缺失混淆）
 
 输出 JSON 或等价 Markdown：
 ## Findings
 - [P0|P1] path:line — 事实证据；用户/系统影响；建议修复；验证方式
 ## Rule coverage
-- 读取的规则文件及逐项结论
+- 读取的规则文件及逐项结论；ruleFiles 配置里缺失的必读文件单独列出
 ## UI evidence（仅 UI 改动）
-- 查看过的截图/录屏/HTML 证据清单、每项对应的 diff 改动、一致性结论；DESIGN.md 逐项对照结论；无证据时写明缺口
+- 查看过的截图/录屏/HTML 证据清单、每项对应的 diff 改动、一致性结论；
+  ruleFiles.uiRequired 逐项对照结论；无证据时写明缺口
 ## Verification
 - 实际运行的命令、结果、未执行项目及原因（含未能查看的截图或未能渲染的 HTML）
 ## Overall
@@ -615,15 +657,17 @@ UI 改动加：UI 证据（截图/录屏/HTML 界面）与 diff 一致性、DESI
 主 agent 收到报告后必须逐条回到源码、测试和规则原文复核。无法复现、只属于 P2、
 与本 PR 无关或与已确认例外冲突的条目不发送给作者，但在内部汇总中注明舍弃理由。
 
-### 4.1 本仓固定严重度
+### 4.1 严重度定义
 
-以 `docs/dev-rules/development-workflow.md` 为准：
+以下是本 skill 的默认严重度定义；`ruleFiles.required`／`ruleFiles.ruleMap` 命中的
+规则文件对某类问题另有更具体的严重度规定时，以规则文件原文为准：
 
 - **P0**：不改不能合——红线、崩溃、数据丢失、跨平台失效、安全或凭证泄露；
 - **P1**：本次必须修——明显 bug、权威规范违反、影响面没有处理干净、缺少必要测试
   或缺少规则要求的适配／说明；UI 改动的证据（截图或 HTML 界面）与 diff 不符或声称
-  的效果不存在（描述不实）、以及违反 DESIGN.md／cindy-design-system.md 设计规范
-  同属 P1（证据缺失不算 P1——按 3.2 发提醒评论请作者补充）；
+  的效果不存在（描述不实）、以及违反 `ruleFiles.uiRequired` 列出的设计规范同属 P1
+  （证据缺失不算 P1——按 3.2 发提醒评论请作者补充）；`ruleFiles.required`／
+  `uiRequired` 列出但文件缺失同属 P1（fail-closed，见 2.1／第 4 节第 7 条）；
 - **P2**：可选优化或风格偏好——不报告，不用它阻断合并。
 
 安全、凭证、用户数据、wire protocol、数据库历史 migration、system prompt、更新器、
@@ -937,6 +981,17 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
 
 ## 6. Auto 批处理
 
+进入 auto 模式的第一步（扫描前），打印一行本轮 provenance——纯可观测性，不改变
+任何判定，只为事后排查"这轮到底读的是哪份配置、通知发去了哪":
+
+```text
+本轮 provenance：rules=<loadRules() 实际读到的文件绝对路径>，repo=<owner>/<repo>，
+summaryBroadcast=<summaryBroadcast.command 已配置则写解析后的绝对路径，未配置写
+"未配置">，mergeAck=<loopPrExclusion.mergeAckNotify.notifyModule 已配置则写路径，
+未配置写"未配置">，人格品牌=<对外话术模板里第一人称之外用于自称的品牌名，如
+"Mivo"；本 skill 默认无品牌名则写"无">
+```
+
 auto 模式分三阶段，目标是确定性、可重试和不互相污染：
 
 1. **扫描**：一次运行 `context.mjs --scan-all`，消费 `results` 和
@@ -960,7 +1015,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    agent 现场改写。同一批 thread／同一 head 只评一次，posted=true 的候选在 6.1
    汇总行注明「已提醒作者」。
    **停滞私聊（模板 B）**：`remind-stale-author.mjs` 只做判定不发消息（见其脚本头
-   注释），返回 `shouldRemind=true` 时先跑
+   注释），内部已按 `staleAuthorReminder.crossChannelSuppressHours` 与上一步的
+   `notify-author-resolve.mjs` 去重状态做跨通道抑制（同一 PR 近期已被模板 C 公开
+   提醒过则本轮 `shouldRemind` 直接为 `false`，不需要 agent 自己核对是否与模板 C
+   撞车）。返回 `shouldRemind=true` 时先跑
    `node "<SKILL_ROOT>/scripts/resolve-author-feishu.mjs" <PR>` 解析收件人身份，
    `matched` 非空才按模板 B 经配置的私聊出口发送；`matched` 空时不猜测收件人，
    按 `fetchErrors` 是否非空区分「名录没这人」与「名录读不到」写入汇总，不硬发。
@@ -1005,13 +1063,22 @@ JSON 结构：
 ```
 
 **auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，
-把 6.1 摘要原文经「对外话术与人格边界」「播报出口」一节所述的、目标仓库配置的出口
-推送——语气按模板 F（结构不变，允许略活）。渠道支持 markdown/卡片渲染时用之（链接
-可点击，不受 scheduler 通知转发的截断限制）；长度上限以该出口声明为准，超限时先
-压缩行内容再分段发送，不允许砍掉任何 PR 行。scheduler 转发的短通知只当作"本轮已
-结束"的提示，完整内容以推送为准。播报出口不可用或发送失败时不重试轰炸、不影响
-收尾：保留拟定文案，并在会话末尾摘要里注明"推送未送达"。交互模式不主动推送——
-用户就在会话里，推送等于让人收两份。
+把 6.1 摘要原文（渲染成人类可读 markdown 后的文本，不是 run-log 的原始 JSON）经
+```text
+node "<SKILL_ROOT>/scripts/notify-summary.mjs" --title "<6.1 摘要首行>"
+```
+（正文走 stdin，见脚本头注释）推送——`summaryBroadcast.command` 指向目标仓库自己的
+会话层播报脚本（契约：`<正文> | node <script> --title "<标题>"`，如 mivo 的
+`scripts/loops/bug-doctor/broadcast.mjs`）；未配置该键时脚本直接返回
+`posted:false, reason:'summary-broadcast-not-configured'`，回退到本节原有现状——
+会话末尾人类可读摘要靠 scheduler 通知转发，不算失败。语气按模板 F（结构不变，
+允许略活）。渠道支持 markdown/卡片渲染时用之（链接可点击，不受 scheduler 通知转发
+的截断限制）；长度上限以该出口声明为准，超限时先压缩行内容再分段发送，不允许砍掉
+任何 PR 行。scheduler 转发的短通知只当作"本轮已结束"的提示，完整内容以推送为准。
+播报不可用、未配置或发送失败（脚本返回 `posted:false`）时不重试轰炸、不影响收尾：
+保留拟定文案，并在会话末尾摘要里注明"推送未送达"（未配置则注明"本轮汇总未主动
+推送，目标仓库未配置 `summaryBroadcast`"）。交互模式不主动推送——用户就在会话里，
+推送等于让人收两份。
 
 **会话的最后一条消息必须是且只能是人类可读摘要**（同一份 6.1 摘要，也是推送未送达时
 的兜底）——scheduler 的桌面/群消息通知会

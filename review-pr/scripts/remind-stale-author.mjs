@@ -55,12 +55,39 @@ import { parseRepo, parsePR, gh, ghGraphql, print, fail, spawnScriptJson, mapPoo
 }
 
 const STATE_FILE = stateFile('remind-feishu.json');
+// notify-author-resolve.mjs 的去重状态(thread 提醒键 = PR 号,冲突提醒键 = `<PR>#conflict`,
+// 每条记录 `{ fingerprint, notifiedAt }`)——本脚本只读,用于跨通道去重,不写。
+const RESOLVE_REMINDER_FILE = stateFile('reminded.json');
 const prRules = loadRules();
 const IDLE_HOURS = Number(prRules.staleAuthorReminder?.idleHours) || 24;
 const REPEAT_HOURS = Number(prRules.staleAuthorReminder?.repeatHours) || 24;
+// 跨通道去重窗口:同一 PR 若在窗口内已被 notify-author-resolve.mjs 公开评论提醒过
+// (催 resolve 或冲突提醒任一模式),本脚本在窗口内即使停滞阈值已到也不再输出
+// shouldRemind=true——避免同一 PR 同一时间收到「模板 C 公开评论」+「模板 B 私聊」
+// 两条催办。配置缺失时回退默认 24h。
+const SUPPRESS_HOURS = Number(prRules.staleAuthorReminder?.crossChannelSuppressHours) || 24;
 // 核心贡献者豁免:命中则直接跳过停滞催办(大小写不敏感)。配置缺失(exemptAuthors 为空)
 // = 无豁免,行为与此前完全一致。
 const EXEMPT_AUTHORS = (prRules.staleAuthorReminder?.exemptAuthors ?? []).map((s) => s.toLowerCase());
+
+/** 读 notify-author-resolve.mjs 的去重状态;文件不存在/损坏都按空状态处理(不抑制)。 */
+function readResolveReminderState() {
+  try {
+    return JSON.parse(readFileSync(RESOLVE_REMINDER_FILE, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+/** 某 PR 最近一次被 notify-author-resolve.mjs 公开提醒的时间(thread/conflict 取较新的一个);
+ * 旧格式(裸字符串指纹,无 notifiedAt)按 0 处理,不参与抑制判断。 */
+function lastResolveNotifiedAt(state, prKey) {
+  const entries = [state[prKey], state[`${prKey}#conflict`]];
+  return entries.reduce((max, entry) => {
+    const t = entry && typeof entry === 'object' ? ts(entry.notifiedAt) : 0;
+    return Math.max(max, t);
+  }, 0);
+}
 
 // 一次拉全判定所需字段:作者 / 状态 / 冲突 / reviewDecision / reviews / threads / 评论 / 最新 commit
 const GQL = `
@@ -197,6 +224,20 @@ try {
   if (anchor === 0 || idleMs < IDLE_HOURS * 3600_000) {
     // 还没到停滞阈值:不清状态(同一停滞的 remindedAt 要留着算 repeat 间隔)
     done({ shouldRemind: false, reason: 'not-stale-yet', ...common });
+    process.exit(0);
+  }
+
+  // ── 跨通道抑制:本轮/近期已被 notify-author-resolve.mjs 公开提醒过 → 不再私聊 ──
+  // 不写本脚本自己的去重状态(不消耗 repeatHours 窗口),窗口过后下次仍会正常判定。
+  const resolveNotifiedAt = lastResolveNotifiedAt(readResolveReminderState(), prKey);
+  if (resolveNotifiedAt && now - resolveNotifiedAt < SUPPRESS_HOURS * 3600_000) {
+    done({
+      shouldRemind: false,
+      reason: 'suppressed-recent-resolve-notice',
+      resolveNotifiedAt: new Date(resolveNotifiedAt).toISOString(),
+      suppressUntil: new Date(resolveNotifiedAt + SUPPRESS_HOURS * 3600_000).toISOString(),
+      ...common,
+    });
     process.exit(0);
   }
 

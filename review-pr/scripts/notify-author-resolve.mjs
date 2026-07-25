@@ -11,10 +11,17 @@
 //     不会因为提前记状态而漏催。把这套逻辑放一个脚本里最稳。
 //
 // 去重粒度(= 未 resolve thread 集合指纹):指纹 = 当前未 resolve thread 的 GraphQL id
-// 排序拼接。持久化在 Skill 外部状态目录的 reminded.json。
+// 排序拼接。持久化在 Skill 外部状态目录的 reminded.json,每条记录为
+// `{ fingerprint, notifiedAt }`(旧版本只存裸字符串指纹,读到旧格式按"未记录时间"
+// 处理,不影响本轮判定,下次发送即升级为新格式)。
 //   - 指纹与上次记录相同 → 这批 thread 已经催过 → 静默不发(posted=false)。
-//   - 指纹变了(作者新增 thread / 部分 resolve / 首次)→ 发评论 + 记新指纹。
+//   - 指纹变了(作者新增 thread / 部分 resolve / 首次)→ 发评论 + 记新指纹与时间。
 //   - 没有任何未 resolve thread → 不发,清掉该 PR 状态(下次再卡会重新催)。
+//
+// notifiedAt 同时供 remind-stale-author.mjs 读取,作为「停滞私聊(模板 B)」与本脚本
+// 「催 resolve/冲突提醒(模板 C)」的跨通道去重依据(staleAuthorReminder.
+// crossChannelSuppressHours,默认 24h 内已被本脚本公开评论提醒过的 PR,不再私聊提醒),
+// 防止同一 PR 同一时间收到两条催办。
 //
 // 退出码恒 0(脚本自身异常才 1):结果全在 JSON 字段(posted / reason),不靠退出码分流,
 // 让 auto 轮转能继续跑下一候选。
@@ -133,7 +140,7 @@ try {
         writeState(state);
       }
       print({ ok: true, pr, mode: 'conflict', posted: false, reason: `mergeable=${meta?.mergeable ?? 'null'}`, author });
-    } else if (state[conflictKey] === meta.headRefOid) {
+    } else if (state[conflictKey]?.fingerprint === meta.headRefOid) {
       print({ ok: true, pr, mode: 'conflict', posted: false, reason: 'already-commented', author, fingerprint: meta.headRefOid });
     } else {
       const mention = author ? `@${author} ` : '';
@@ -145,7 +152,7 @@ try {
       } else {
         const r = postComment(slug, prKey, body);
         if (r.ok) {
-          state[conflictKey] = meta.headRefOid;
+          state[conflictKey] = { fingerprint: meta.headRefOid, notifiedAt: new Date().toISOString() };
           writeState(state);
           print({ ok: true, pr, mode: 'conflict', posted: true, author, fingerprint: meta.headRefOid });
         } else {
@@ -182,7 +189,7 @@ try {
     const fingerprint = unresolved.map((t) => t.id).sort().join(',');
 
     // 同一批 thread 已催过 → 静默
-    if (state[prKey] === fingerprint) {
+    if (state[prKey]?.fingerprint === fingerprint) {
       print({ ok: true, pr, posted: false, reason: 'already-commented', author, fingerprint });
     } else {
       const paths = [...new Set(unresolved.map((t) => t.path).filter(Boolean))];
@@ -203,7 +210,7 @@ try {
           allowFail: true,
         });
         if (r.ok) {
-          state[prKey] = fingerprint;
+          state[prKey] = { fingerprint, notifiedAt: new Date().toISOString() };
           writeState(state);
           print({ ok: true, pr, posted: true, author, fingerprint, unresolvedCount: unresolved.length });
         } else {
