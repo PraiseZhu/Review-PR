@@ -99,7 +99,8 @@ PR 合并后运行 `close-product-issue.mjs <PR>`；auto 收尾可再运行 `--s
 
 只有 `product-hold.mjs` 返回 `issueCreated=true` 才发送一次产品讨论群通知和作者私聊；
 `alreadyHeld`、重复 hold 或 release 不重新通知。交互模式展示收件人和完整文案后确认，
-auto 模式按配置直接发送；身份解析失败要如实写入汇总，不能猜收件人。
+auto 模式按配置直接发送；身份解析失败要如实写入汇总，不能猜收件人。文案措辞固定为
+SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄清"不是代码问题"）。
 
 ## 技术架构 gate
 

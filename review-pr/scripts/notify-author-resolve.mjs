@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// notify-author-resolve.mjs — auto 模式因「未 resolve thread」跳过某 PR 时,在该 PR 上
-// 发一条评论 @作者,催其去 GitHub 点 Resolve。带去重:同一批未 resolve thread 只评一次。
+// notify-author-resolve.mjs — auto 模式因「未 resolve thread」或「与 base 冲突」跳过
+// 某 PR 时,在该 PR 上发一条评论 @作者,催其去处理。带去重:同一批未 resolve thread /
+// 同一 headRefOid 只评一次。评论措辞固定为 SKILL.md「对外话术与人格边界」模板 C
+// (人格淡、不施压、给出退路),本脚本直接拼好文案发送,不留给 agent 现场编。
 //
 // 为什么单独成脚本(而非塞进 context.mjs):
 //   - context.mjs 是「只读 + 客观判定」核心,绝不发评论 / 不改外部状态;发评论是对外
@@ -136,9 +138,8 @@ try {
     } else {
       const mention = author ? `@${author} ` : '';
       const body =
-        `${mention}👋 这个 PR 目前与 \`${meta.baseRefName}\` 有合并冲突,auto-review 因此暂时跳过、没法继续审查 / 合并。\n\n` +
-        `请在本地 merge 最新的 \`origin/${meta.baseRefName}\` 解决冲突后推送;` +
-        `冲突解除后,下一轮 auto-review 会自动重新处理这个 PR。`;
+        `${mention}#${pr} 和 \`${meta.baseRefName}\` 有冲突,卡着合不了。\n\n` +
+        `在本地 merge 最新的 \`origin/${meta.baseRefName}\` 解掉冲突后 push 一下,我这边就能接着走。`;
       if (dryRun) {
         print({ ok: true, pr, mode: 'conflict', posted: false, reason: 'dry-run', author, fingerprint: meta.headRefOid, body });
       } else {
@@ -190,10 +191,8 @@ try {
         : '';
       const mention = author ? `@${author} ` : '';
       const body =
-        `${mention}👋 这个 PR 还有 ${unresolved.length} 条 review conversation 没 resolve${pathHint},` +
-        `auto-review 因此暂时跳过、没法继续审查 / 合并。\n\n` +
-        `如果你已经按评论改完或回应了,请到对应 thread 上点 **Resolve conversation**;` +
-        `全部 resolve 后,下一轮 auto-review 会自动重新审查这个 PR。`;
+        `${mention}#${pr} 还有 ${unresolved.length} 条 conversation 没 resolve${pathHint},卡着合不了。\n\n` +
+        `看过了、改过了、或者觉得不用改都行 —— 点一下 Resolve,我这边就能往下走。`;
 
       if (dryRun) {
         print({ ok: true, pr, posted: false, reason: 'dry-run', author, fingerprint, body });

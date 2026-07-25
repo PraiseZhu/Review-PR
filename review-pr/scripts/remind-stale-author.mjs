@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// remind-stale-author.mjs — 「停滞飞书催办」的确定性判定:某 PR 卡在作者侧(被打回没改 /
+// remind-stale-author.mjs — 「停滞催办私聊」的确定性判定:某 PR 卡在作者侧(被打回没改 /
 // 评审意见没 resolve / 与主干冲突)且作者已停滞 ≥ idleHours 没有任何动作时,输出
-// shouldRemind=true,提示主 agent 去飞书私聊提醒作者(飞书身份映射走 resolve-author-feishu.mjs,
-// 实际发送由主 agent 经飞书工具完成;本脚本只做判定 + 去重,不发任何消息)。
+// shouldRemind=true,提示主 agent 去私聊提醒作者(身份映射走 resolve-author-feishu.mjs,
+// 实际发送由主 agent 经配置的播报出口完成;本脚本只做判定 + 去重,不拼文案、不发任何
+// 消息)。发送时的措辞固定为 SKILL.md「对外话术与人格边界」模板 B,不由 agent 现场编。
 //
 // 为什么单独成脚本(与 notify-author-resolve.mjs 同理):
 //   - 「停滞多久 / 该不该再提醒」是纯时间与状态运算,必须代码判定,不能让 LLM 凭感觉;
@@ -23,7 +24,7 @@
 //
 // 去重状态位于外部状态目录的 remind-feishu.json：
 // { "<pr>": { remindedAt, fingerprint } }。
-//   - shouldRemind=true 输出的同时即记状态(锚定"判定"而非"发送":飞书发失败不立刻重试,
+//   - shouldRemind=true 输出的同时即记状态(锚定"判定"而非"发送":发送失败不立刻重试,
 //     repeatHours 后仍停滞会再次 shouldRemind=true,天然兜底重试);
 //   - PR 不再卡作者侧 → 清掉该 PR 状态(下次再卡重新计)。
 //

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // notify-merge-ack.mjs — review-pr 合并成功后向自定义通道发致谢播报(SKILL 3A 合并章节最后一步)
+// 播报文案固定为 SKILL.md「对外话术与人格边界」模板 E(群内公开,人格淡),本脚本直接
+// 拼好 title/text,不留给 agent 现场编。
 //
 // 背景:部分接入仓库有自己的自动修 bug loop(如 mivo-canvas 的原 bug-doctor loop),那类 PR
 // 合并后 loop 自己会播报,review-pr 不该重复发。本脚本通过 pr-rules.json 的
@@ -110,7 +112,8 @@ try {
     process.exit(0);
   }
 
-  const title = `感谢 @${author}:PR #${pr} ${meta.title ?? ''} 已合并`;
+  // 措辞固定为 SKILL.md「对外话术与人格边界」模板 E(群内公开,人格淡),不由 agent 现场改写。
+  const title = `🟢 PR #${pr} 合了 —— 感谢 @${author}。`;
   const text = `${summary || meta.title || ''}\n${meta.url ?? ''}`;
 
   if (dryRun) {
