@@ -13,7 +13,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
 import { readFileSync, existsSync, mkdirSync, unlinkSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, dirname, resolve, relative, sep } from 'node:path';
+import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
@@ -88,12 +88,58 @@ export function releaseLockOwned(token) {
   return { released: true, alreadyAbsent: false, notOwner: false };
 }
 
-/** 读取 Skill 私有规则；允许安装方用环境变量覆盖配置文件。 */
+/**
+ * 读取 review-pr 私有规则,解析顺序(先命中先用):
+ *   ① 环境变量 REVIEW_PR_RULES_FILE ——安装方显式指向别的配置文件,优先级最高;
+ *   ② 目标仓库自己的 <REPO_ROOT>/agent-use/docs/pr-rules.json ——存在即用,让接入仓库
+ *      不改 Skill 本体就能装配自己的全套规则(白名单、门控开关等),这是多仓库共用同一份
+ *      Skill 源码的关键机制;
+ *   ③ Skill 自带的 config/pr-rules.json(中性默认,不含任何具体仓库的白名单/路径)。
+ */
 export function loadRules() {
-  const rulesFile = resolve(
-    process.env.REVIEW_PR_RULES_FILE || join(SKILL_ROOT, 'config', 'pr-rules.json'),
-  );
-  return JSON.parse(readFileSync(rulesFile, 'utf8'));
+  if (process.env.REVIEW_PR_RULES_FILE) {
+    return JSON.parse(readFileSync(resolve(process.env.REVIEW_PR_RULES_FILE), 'utf8'));
+  }
+  const repoRulesFile = join(REPO_ROOT, 'agent-use', 'docs', 'pr-rules.json');
+  if (existsSync(repoRulesFile)) {
+    return JSON.parse(readFileSync(repoRulesFile, 'utf8'));
+  }
+  return JSON.parse(readFileSync(join(SKILL_ROOT, 'config', 'pr-rules.json'), 'utf8'));
+}
+
+/**
+ * 把 pr-rules.json 里配置的仓库相对路径解析成绝对路径,并做 containment 校验(校验结果
+ * 确实落在 REPO_ROOT 内),供 detectLoopExclusion 的 stateFile、notify-merge-ack.mjs 的
+ * dedupFile/stateDir/notifyModule 等消费,避免每处各写一份校验逐渐漂移。
+ *
+ * 用 `realpath` + `path.relative` 而不是 `resolved.startsWith(REPO_ROOT)`——后者是纯字符串
+ * 前缀比较,有两个绕过口子:①同级前缀目录(仓库叫 `foo`,配置写 `../foo-evil/x`,拼出来的
+ * 字符串仍以 `.../foo` 开头,`startsWith` 误判为"在仓库内");②symlink(仓库内某祖先目录
+ * 若是指向仓库外的软链接,字符串层面看着在仓库内,`realpath` 消解后其实不在)。`path.relative`
+ * 算出的相对路径以 `..` 开头,才是"确实跳出了仓库根"的准确判据。
+ *
+ * 目标路径可能还不存在(如去重指纹文件首次写入前)——从 `naive` 开始向上找最深的已存在
+ * 祖先目录做 `realpathSync`(消解该祖先链路上的 symlink),再把还不存在的尾部路径段原样
+ * 拼回去参与 containment 判断(尾部本身没有内容、不存在 symlink 风险)。
+ */
+export function resolveInRepoRoot(relPath) {
+  const repoRootReal = realpathSync(REPO_ROOT);
+  const naive = join(REPO_ROOT, relPath);
+  let existingAncestor = naive;
+  const restSegments = [];
+  while (!existsSync(existingAncestor)) {
+    const parent = dirname(existingAncestor);
+    if (parent === existingAncestor) break; // 已到文件系统根仍不存在,极端情况,交给下面 relative 判断兜底
+    restSegments.unshift(existingAncestor.slice(parent.length + 1));
+    existingAncestor = parent;
+  }
+  const ancestorReal = realpathSync(existingAncestor);
+  const resolved = restSegments.length ? join(ancestorReal, ...restSegments) : ancestorReal;
+  const rel = relative(repoRootReal, resolved);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`配置路径跳出仓库根:${relPath}(resolve 后 ${resolved})`);
+  }
+  return resolved;
 }
 
 /**
@@ -302,6 +348,62 @@ export function parseRosterLine(line) {
     ? cells.slice(loginIdx + 1).find((c) => c !== email && !/^https?:/.test(c)) ?? null
     : null;
   return email || name ? { githubLogin: login, name, email } : null;
+}
+
+// ── Loop 托管 PR 排除(与目标仓库自有的自动修 bug loop 共存;context.mjs 扫描分类、
+// notify-merge-ack.mjs 判断是否要发合并致谢共用同一份判定,防止两处判据漂移)──
+
+/**
+ * 判定该 PR 是否由目标仓库自有的自动修 bug loop 托管、以及其 T-level。
+ * 返回 null(未命中 titlePrefix,或命中但本地台账没有该 PR 号的记录——与 loop 无关 /
+ * 无法证明托管关系,按普通 PR 处理)或 { matched:true, verdict:'t1'|'t2', source }。
+ * verdict='t1' 时 review-pr 必须跳过(loop 自己合并,不审不合不催,也不重复播报合并致谢);
+ * 'skip'(=已确认托管但拿不准 T-level,defaultWhenAmbiguous)按同款处理;'t2' 时正常走 review-pr。
+ * source 标注判据来源(body-marker / state.json / default),供排查与飞书汇总措辞用。
+ * rules 来自 pr-rules.json 的 loopPrExclusion 字段,调用方自行 JSON.parse 后传入
+ * (不同脚本读取 pr-rules.json 的相对路径不同,本函数不做路径假设)。rules 为 null/未配置
+ * loopPrExclusion 时(目标仓库没有这类 loop)恒返回 null——整套机制天然关闭。
+ *
+ * ⚠️ 身份门槛(反伪造):仅标题前缀**不足以**认定 PR 由 loop 托管——任何贡献者都能在自己
+ * PR 的标题前加一句 titlePrefix 字面量,冒充 loop 托管来拿到 defaultWhenAmbiguous 的默认
+ * skip,让自己的 PR 永久漏审。必须本地台账(`rules.stateFile`,loop 自己写入、贡献者在
+ * GitHub 侧碰不到这份本机文件)里精确命中该 PR 号,才认定为真托管;命中前缀但台账查不到
+ * (文件不存在 / 读不到 / 没有该 PR 号)→ **直接返回 null,按普通 PR 处理**,不再落到
+ * defaultWhenAmbiguous。未来若 loop 加了可信 label / commit 签名等机制,可以在这里追加
+ * 作为身份门槛的替代或补充信号,但不能只靠可由 PR 作者自行填写的字段(标题 / body 文本)
+ * 单独作数。
+ */
+export function detectLoopExclusion({ title, body, pr, rules }) {
+  if (!rules?.titlePrefix || !title.startsWith(rules.titlePrefix)) return null;
+  if (!rules.stateFile) return null; // 没配台账路径 = 没有身份门槛可验,不认定托管
+
+  let cluster = null;
+  try {
+    // containment 校验(见 resolveInRepoRoot):stateFile 来自本仓自己的 pr-rules.json
+    // (非 PR 可控),风险很低,但配置写错(如误填 `../../../etc/passwd`)时该显式报错
+    // 而不是静默读到仓库外的文件——校验成本几乎为零。
+    const statePath = resolveInRepoRoot(rules.stateFile);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    // state.json 里 pr 字段的历史写法不保证是 number(曾见过字符串),统一 Number 归一化再比较。
+    cluster = Object.values(state.clusters ?? {}).find((c) => Number(c.pr) === Number(pr)) ?? null;
+  } catch {
+    cluster = null; // 台账不存在 / 读不到 / 配置跳出仓库根,身份门槛过不了
+  }
+  if (!cluster) return null; // 台账没有这个 PR 号——无法证明托管关系,按普通 PR 走全套 review-pr 流程
+
+  // 身份确认后再判 T-level:先看 body 里 loop 自己声明的独立 metadata 行(锚定整行、加 m 标志
+  // 逐行匹配,避免自然语言正文里偶然出现的"这次不建议合并"之类描述性语句被误当成 T-level 声明);
+  // 没写明再退回本地台账的 cluster.tCap(身份门槛已过,这里可信采信)。
+  for (const re of rules.t1BodyMarkers ?? []) {
+    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't1', source: 'body-marker' };
+  }
+  for (const re of rules.t2BodyMarkers ?? []) {
+    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't2', source: 'body-marker' };
+  }
+  if (cluster.tCap === 'T1') return { matched: true, verdict: 't1', source: 'state.json' };
+  if (cluster.tCap === 'T2') return { matched: true, verdict: 't2', source: 'state.json' };
+
+  return { matched: true, verdict: rules.defaultWhenAmbiguous ?? 'skip', source: 'default' };
 }
 
 // ── 产品/架构门 hold 标记(product-hold.mjs 写入 PR 评论;context.mjs 扫描分类、

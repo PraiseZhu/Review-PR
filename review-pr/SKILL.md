@@ -53,8 +53,16 @@ description: >
 `<SKILL_ROOT>/scripts/` 调用；不要假设目标仓库含有 `scripts/review-pr/`。
 
 运行脚本前把 shell cwd 切到待审查仓库根目录。scheduler precheck 还应显式传
-`--repo-root <目标仓库>`。名单、路径和阈值默认读取
-`<SKILL_ROOT>/config/pr-rules.json`；安装方可用 `REVIEW_PR_RULES_FILE` 覆盖。
+`--repo-root <目标仓库>`。名单、路径和阈值的解析顺序（先命中先用，见 `lib.mjs`
+`loadRules()`）：
+
+1. 环境变量 `REVIEW_PR_RULES_FILE` 显式指向的文件——优先级最高；
+2. 目标仓库自己的 `<REPO_ROOT>/agent-use/docs/pr-rules.json`——存在即用，接入仓库
+   不用改 Skill 本体就能装配自己的白名单、门控开关等全套规则；
+3. `<SKILL_ROOT>/config/pr-rules.json`——Skill 自带的中性默认（不含任何具体仓库的
+   白名单/路径，多数门控留空即关闭）。
+
+`REPO_ROOT` 取自 `REVIEW_PR_REPO_ROOT` 环境变量或当前工作目录。
 
 运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入系统临时目录下、按目标仓库
 绝对路径哈希隔离的子目录。`REVIEW_PR_STATE_DIR` 只用于覆盖外部状态根目录，不能指向
@@ -324,6 +332,40 @@ gh pr diff <N> --patch
 - 审查本身不受依赖限制（可以先审后合），但审查 agent 应把“依赖的代码尚未合入”
   与“代码本身有问题”区分开，不把前者写成 P0/P1。
 
+### 3.7 Loop 托管 PR 排除
+
+一些接入仓库有自己的自动修 bug loop，其托管的 PR 由 loop 自己合并、自己播报，
+review-pr 不应重复审查或合并，避免两套合并主体打架。配置在 `pr-rules.json` 的
+`loopPrExclusion`（缺省或 `null` = 整套机制关闭）：
+
+- `titlePrefix`：loop 自己开的 PR 标题固定前缀。**仅命中前缀不足以认定托管**——任何
+  贡献者都能在自己 PR 标题前加同样的字面量冒充托管，骗过 `defaultWhenAmbiguous` 的
+  默认 skip 让自己的 PR 永久漏审。`detectLoopExclusion`（`lib.mjs`）还要求
+  `stateFile` 指向的本地台账里按 PR 号精确命中该条记录，查不到就按普通 PR 处理；
+- `t1BodyMarkers`/`t2BodyMarkers`：body 里 loop 自己声明 T-level 的 metadata 行
+  （锚定整行的正则，逐行匹配），命中优先采信；都没命中退回台账的 `cluster.tCap`；
+- `defaultWhenAmbiguous`：身份已确认但读不出 T-level 时的保守默认（`skip`）；
+- T1（或拿不准）→ `context.mjs` 的 `auto.action=skip-loop-managed`，优先级最高，
+  压过产品门/架构门/格式门/前置门（但让位于安全与隐私门硬命中——凭证泄露必须打回）；
+  T2 → 正常走 review-pr，但格式门做两处豁免：标题判 type 前先剥掉 `titlePrefix`
+  （`titleForFormat`），段落存在性检查整体豁免（`wantSections=[]`，loop 的 body 遵循
+  自己的证据结构，不是本仓 PR 模板的三段式，逐字匹配注定误判缺段落）；
+- 合并后的致谢播报见 `notify-merge-ack.mjs`：判定同一份 `detectLoopExclusion`，
+  已托管的 PR 不重复播报，`mergeAckNotify.notifyModule` 未配置时播报能力整体关闭。
+
+### 3.8 审查执行环境安全
+
+`pr-rules.json` 的 `securityReviewPaths`（缺省为空 = 门关闭）列出自动化自身有
+执行/供应链能力面的路径：review-pr 自身脚本/配置、CI workflow/actions、部署的
+skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏自己，不是防外部
+攻击——auto 批处理会 checkout 到 PR 分支再跑一部分确定性脚本 / 读取
+`pr-rules.json` 配置本身，若继续让 review-pr 用可能已被这次改动改坏的自己版本去
+自动审查并合并这次改动，会形成"改坏的版本审过并合入了自己"的自我损坏闭环。命中
+即 `context.mjs` 的 `auto.action=skip-security-review`，一律转人工，不自动审也不
+自动合；优先级仅次于 3.7 的 loop 托管排除，压过产品门/架构门/格式门/前置门，同样
+让位于安全与隐私门硬命中。是否启用、纳入哪些路径由目标仓库自己按贡献者可信度
+模型配置。
+
 ## 4. 阶段二：独立代码审查
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
@@ -441,11 +483,16 @@ gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch
 ```
 
 此路径仅在审查通过（零 P0/P1）、无冲突、thread 全 resolve 时启用。auto 模式
-可执行 self-merge；不需要额外确认（selfFixAuthors 本身即维护者授权）。
+可执行 self-merge；不需要额外确认（selfFixAuthors 本身即维护者授权）。合并后同样
+跑一次上方的 `notify-merge-ack.mjs` 播报步骤。
 
 方括号中的策略必须先按仓库设置和维护者约定选择一个，不要由 skill 自行改变合并策略。
 若仓库启用 merge queue 或命令被保护规则拒绝，记录状态并结束，不反复重试或绕过保护。
-合并后重新读取 PR 状态和 base 分支健康状态，再写最终总结。
+合并后重新读取 PR 状态和 base 分支健康状态，再写最终总结；随后运行一次
+`node "<SKILL_ROOT>/scripts/notify-merge-ack.mjs" <N> --summary "<一句话改动摘要>"`
+发合并致谢播报（`loopPrExclusion.mergeAckNotify.notifyModule` 未配置时该脚本
+no-op，`posted:false`，不影响合并本身；loop 托管的 PR 有自己的播报，脚本内部已
+判定跳过，见 3.7）。
 
 ### 5.2 不通过：请求修改
 
@@ -467,15 +514,30 @@ gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch
 作者在 `selfFixAuthors` 时仍按 5.4 询问是否投递跟进会话，不提供代修合并选项
 （自有 PR 由跟进会话直接修 PR 分支更合适）。
 
-选择打回时，确认后执行：
+选择打回时，确认后执行，`event` 按 `context` 的 `auto.ownPr` 二选一——`ownPr=false`
+（打回别人的 PR）用 `REQUEST_CHANGES`；`ownPr=true`（viewer 与 PR 作者是同一个 GitHub
+账号，本流程的自动化账号打回自己开的 PR）GitHub 硬性禁止对自己的 PR 提交
+`REQUEST_CHANGES` / `APPROVE`（API 直接 422），改发 `COMMENT`（仍带完整问题清单与行级
+comment，只是事件类型不同）：
 
 ```bash
-gh pr review <N> --request-changes --body "<问题清单>"
+# ownPr=false → --request-changes；ownPr=true → --comment（GitHub 禁止对自己的 PR 提交
+# REQUEST_CHANGES/APPROVE）。行为不因 auto/交互模式而异——这是 API 硬限制，不是策略选择。
+gh pr review <N> [--request-changes|--comment] --body "<问题清单>"
 ```
 
 能稳定锚定代码行时使用 GitHub review thread；无法锚定时用顶层 review，不能伪造行号。
 auto 模式只在没有相同未解决 review、且本次确有新的 P0/P1 时提交；否则跳过写入并汇总。
 auto 模式没有代修合并——该路径仅限交互模式由用户逐次授权。
+
+**`ownPr=true` 时的特殊后果**：真正挡住合并的不是 `event` 类型，而是仓库分支保护规则
+是否配了 `required_review_thread_resolution`——只要提交的 review 里有 `comments[]`
+生成的行级 thread 处于未 resolve，`mergeStateStatus` 就会停在 `BLOCKED`，与 `event`
+是 `REQUEST_CHANGES` 还是 `COMMENT` 无关；`ownPr=false` 时 GitHub 还会额外靠
+`reviewDecision=CHANGES_REQUESTED` 挡一层，`COMMENT` 事件不产生这层阻塞。因此
+`ownPr=true` 时要把每条 `[阻断]`/`[必改]` 尽最大努力锚成行级评论；**锚不到行、只落进
+body 总述的意见，若仓库没有该项 required check，就没有任何机制挡住合并**——必须在
+1.7 报告与汇总里以「需要你」开头显著提示，提醒自己合并前手动确认已处理。
 
 ### 5.3 维护者专用分流
 
@@ -485,8 +547,16 @@ auto 模式没有代修合并——该路径仅限交互模式由用户逐次授
   投递给跟进会话自动修复；审查通过后仍可正常合并（含 5.1 的 self-merge）。
 - fork workflow 待批准执行 `approve-workflows.mjs`；PR 改过 CI 文件时 auto 跳过并在
   汇总点名维护者。
-- `gate.blockClass=structural-check` 不是作者代码问题；有 bypass 权限且满足复核条件时
-  可 admin merge，否则跳过，不把它写成 P1 打回。
+- `gate.blockClass=structural-check` 不是作者代码问题；有 bypass 权限**且**
+  `structuralBlock.requiredCheckRules` 全部命中 `pr-rules.json` 的
+  `structuralBypassAllowlist`（未配置时默认 `code_scanning`/`code_quality`）时可
+  admin merge，否则跳过，不把它写成 P1 打回。
+- `gate.blockClass=ci-unknown`（CI 状态读取失败：权限/网络/解析问题）不是
+  structural-check，绝不可 bypass、不催办——本轮跳过，下一轮重新探测。
+- 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
+  不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
+- 命中 `securityReviewPaths`（`skip-security-review`）：一律转人工，不自动审也不自动
+  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -691,8 +761,11 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    `fix-session-state.mjs sweep --open <open PR 列表>`，清理已合并／关闭 PR 的
    跟进会话绑定；随后运行 `fix-worktree-cleanup.mjs --scan` 回收这些 PR 遗留的
    跟进 worktree 与本地分支（判定与安全边界在脚本内，结果计入汇总，失败不阻塞）。
+   `skip-loop-managed`／`skip-security-review` 的候选原样跳过、不 checkout、不提醒
+   （分别详见 3.7／3.8，未配置对应键时这两类永不出现）。
    **跳过不能对作者静默**：分类完成后，把因作者侧可自解原因被 skip 的候选批量交给
-   提醒脚本（自带指纹去重与 selfFixAuthors 排除，重复调用安全、失败不阻塞）：
+   提醒脚本（自带指纹去重、selfFixAuthors 与 `staleAuthorReminder.exemptAuthors`
+   排除，重复调用安全、失败不阻塞）：
    blockers 含「conversation 未 resolve」的候选跑
    `node "<SKILL_ROOT>/scripts/notify-author-resolve.mjs" <PR...>`；
    `gate.blockClass=conflict` 的候选跑

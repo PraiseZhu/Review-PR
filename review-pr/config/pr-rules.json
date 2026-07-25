@@ -1,5 +1,5 @@
 {
-  "_comment": "review-pr 私有配置。titleTypes、featureSections、bugfixSections、lightTypes、redlinePaths、serverPaths、ciSensitivePaths 与 sensitiveContent 描述项目 PR 契约；productWhitelist、uiPaths、uiExcludePaths、archGate、slackSyncBots、slackSenderAliases、feishuNotify、staleAuthorReminder 与 selfFixAuthors 只服务维护者内部流程。archGate.coldUpdatePaths 是 mobile runtime fingerprint 输入路径（改到即疑似触发冷更，与技术架构变动同级走同一道门）；archGate.coldUpdateGuardMarker 是 fingerprint guard sticky comment 的定位 marker，guard 给的结论优先于路径启发式；archGate.coldUpdateApprovers 是冷更唯一的放行人名单（谁改都要确认：作者在白名单、普通 Approve、标回 Ready 都不构成豁免，只认名单内成员明确针对冷更的表态，名单内成员自己提的 PR 也要显式确认）。uiExcludePaths 为 uiPaths 内的排除前缀（多语言 locale 文件等纯文案数据不算 UI 改动）。sensitiveContent 供阶段一安全与隐私内容门：allowPaths 为跳过扫描的文件路径正则（仅用于测试夹具类已知误报），extraHardPatterns/extraSoftPatterns 为追加的正则字符串（硬命中阻断/软命中交审查 agent 定性），内置凭证与隐私模式在 context.mjs。Skill 默认读取本文件，也可通过 REVIEW_PR_RULES_FILE 指向其他项目配置。",
+  "_comment": "review-pr 私有配置。titleTypes、featureSections、bugfixSections、lightTypes、redlinePaths、serverPaths、ciSensitivePaths 与 sensitiveContent 描述项目 PR 契约；productWhitelist、uiPaths、uiExcludePaths、archGate、slackSyncBots、slackSenderAliases、feishuNotify、staleAuthorReminder 与 selfFixAuthors 只服务维护者内部流程。archGate.coldUpdatePaths 是 mobile runtime fingerprint 输入路径（改到即疑似触发冷更，与技术架构变动同级走同一道门）；archGate.coldUpdateGuardMarker 是 fingerprint guard sticky comment 的定位 marker，guard 给的结论优先于路径启发式；archGate.coldUpdateApprovers 是冷更唯一的放行人名单（谁改都要确认：作者在白名单、普通 Approve、标回 Ready 都不构成豁免，只认名单内成员明确针对冷更的表态，名单内成员自己提的 PR 也要显式确认）。uiExcludePaths 为 uiPaths 内的排除前缀（多语言 locale 文件等纯文案数据不算 UI 改动）。sensitiveContent 供阶段一安全与隐私内容门：allowPaths 为跳过扫描的文件路径正则（仅用于测试夹具类已知误报），extraHardPatterns/extraSoftPatterns 为追加的正则字符串（硬命中阻断/软命中交审查 agent 定性），内置凭证与隐私模式在 context.mjs。staleAuthorReminder.exemptAuthors 是停滞飞书催办的核心贡献者豁免名单（命中则 remind-stale-author.mjs / notify-author-resolve.mjs 直接跳过并清去重状态，不催办、不催 resolve；留空 = 无豁免）。structuralBypassAllowlist 是「结构性 BLOCKED」（blockClass=structural-check）自动 admin bypass 合并时，必需检查类型的白名单——即便当前账号 canBypass=always/pull_requests，命中的检查类型不在这份 allowlist 里也不自动 bypass（required_status_checks 范围太宽不放进默认值，只有 code_scanning/code_quality 这类确定性地从不产出结果的门才默认允许）；未配置该键时代码退回同一份默认值。securityReviewPaths 是需要人工审查的自动化自身敏感路径（review-pr 自身脚本/配置、CI workflow/actions、部署的 skill 定义、package.json 与常见 lockfile 等有执行/供应链能力面的文件）——命中即不自动审/不自动合，转人工过一遍；留空（默认）= 该门关闭。理由是防自动化自我损坏，不是防外部攻击，是否启用取决于目标仓库的贡献者可信度模型。loopPrExclusion 是与目标仓库自有的自动修 bug loop（如有）共存的排除规则（titlePrefix=loop 自己开的 PR 标题前缀；**仅命中前缀不足以认定托管**，必须 stateFile 指向的本地台账里按 PR 号精确命中该条记录才算，查不到就当普通 PR 处理——防贡献者伪造标题前缀骗过 default skip 永久漏审；身份确认后再用 t1BodyMarkers/t2BodyMarkers 判 T-level，均是锚定整行的 metadata 声明正则，故意不用「留人审」/「不合并」这类自然语言宽松匹配；两者都没写明退回台账 cluster.tCap；defaultWhenAmbiguous=身份已确认但读不出 T-level 时的保守默认；mergeAckNotify=review-pr 自己合并成功后发致谢播报时的配置，notifyModule 指向目标仓库自己的播报模块相对路径（该模块需导出 loadNotifyConfig/sendAlert，未配置则整套播报能力关闭），stateDir/dedupFile 是通知状态与去重指纹的落盘位置）；本键默认 null，留空 = 整套 loop 托管排除机制关闭，与之绑定的 skip-loop-managed 覆盖、格式门豁免与合并致谢播报均不生效。Skill 默认读取本文件；同时支持解析优先级 REVIEW_PR_RULES_FILE 环境变量 > 目标仓库自己的 <REPO_ROOT>/agent-use/docs/pr-rules.json（存在即用）> 本文件（详见 lib.mjs loadRules()）。",
   "titleTypes": [
     "feat",
     "fix",
@@ -98,7 +98,14 @@
   },
   "staleAuthorReminder": {
     "idleHours": 24,
-    "repeatHours": 24
+    "repeatHours": 24,
+    "exemptAuthors": []
   },
-  "selfFixAuthors": []
+  "selfFixAuthors": [],
+  "structuralBypassAllowlist": [
+    "code_scanning",
+    "code_quality"
+  ],
+  "securityReviewPaths": [],
+  "loopPrExclusion": null
 }

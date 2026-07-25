@@ -91,6 +91,17 @@ function isSelfFixAuthor(author) {
   }
 }
 
+/** 核心贡献者豁免(staleAuthorReminder.exemptAuthors,大小写不敏感):命中直接跳过 resolve
+ * 催办,thread/conflict 两种模式同样检查。配置缺失(exemptAuthors 为空)= 无豁免,行为
+ * 与此前完全一致。名单读取失败按空处理。 */
+function isExemptAuthor(author) {
+  try {
+    return (loadRules().staleAuthorReminder?.exemptAuthors ?? []).some((a) => a.toLowerCase() === (author ?? '').toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 try {
   const { owner, repo } = parseRepo();
   const pr = parsePR(process.argv[2]);
@@ -105,7 +116,13 @@ try {
     const author = meta?.author?.login ?? '';
     const conflictKey = `${prKey}#conflict`;
     const state = readState();
-    if (isSelfFixAuthor(author)) {
+    if (isExemptAuthor(author)) {
+      if (state[conflictKey] !== undefined && !dryRun) {
+        delete state[conflictKey];
+        writeState(state);
+      }
+      print({ ok: true, pr, mode: 'conflict', posted: false, reason: 'exempt-author', author });
+    } else if (isSelfFixAuthor(author)) {
       print({ ok: true, pr, mode: 'conflict', posted: false, reason: 'self-fix-author', author });
     } else if (meta?.mergeable !== 'CONFLICTING') {
       // 已不冲突(或 GitHub 还在重算 UNKNOWN)→ 不发;确认不冲突时清状态,下次再冲突会重新提醒
@@ -145,7 +162,13 @@ try {
 
   const state = readState();
 
-  if (isSelfFixAuthor(author)) {
+  if (isExemptAuthor(author)) {
+    if (state[prKey] !== undefined && !dryRun) {
+      delete state[prKey];
+      writeState(state);
+    }
+    print({ ok: true, pr, posted: false, reason: 'exempt-author', author });
+  } else if (isSelfFixAuthor(author)) {
     print({ ok: true, pr, posted: false, reason: 'self-fix-author', author });
   } else if (unresolved.length === 0) {
     // 没有未 resolve thread:无需催,清掉本 PR 状态(让下次再卡时重新催)

@@ -18,7 +18,15 @@
 - `selfFixAuthors`：自己的 PR 不走 GitHub 自审死锁和无效催办；
 - `slackSyncBots`、`slackSenderAliases`、`feishuNotify`：
   讨论 issue 和飞书通知归属、收件人与去重配置；
-- `staleAuthorReminder`：作者侧停滞提醒阈值。
+- `staleAuthorReminder`：作者侧停滞提醒阈值（`exemptAuthors` 命中直接跳过催办并清
+  去重状态，留空 = 无豁免）；
+- `structuralBypassAllowlist`：`gate.blockClass=structural-check` 自动 admin bypass
+  合并时的必需检查类型白名单（未配置时默认 `code_scanning`/`code_quality`，见
+  SKILL 5.3）；
+- `securityReviewPaths`：自动化自身敏感路径，命中转人工（留空 = 门关闭，见
+  SKILL 3.8「审查执行环境安全」）；
+- `loopPrExclusion`：与目标仓库自有的自动修 bug loop 共存的排除规则（缺省或 `null`
+  = 整套机制关闭，见 SKILL 3.7「Loop 托管 PR 排除」）。
 
 配置变化后先检查 JSON 和相关脚本，再运行 review；不要在 SKILL.md 中写死人名、
 群名、邮箱、阈值或路径。
@@ -38,6 +46,7 @@
 | 合并前复核、self-approve | `pre-merge-check.mjs`、`self-approve.mjs` |
 | resolve 催办、停滞判断、身份解析 | `notify-author-resolve.mjs`、`remind-stale-author.mjs`、`resolve-author-feishu.mjs` |
 | 合并后健康检查 | `typecheck-merged.mjs` |
+| 合并致谢播报 | `notify-merge-ack.mjs`（`loopPrExclusion.mergeAckNotify.notifyModule` 未配置时 no-op） |
 | 汇总 JSON 落盘（不进会话末尾） | `run-log.mjs` |
 | 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（写盘后自动提交推送台账到 skills 仓库 main） |
 | Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |
@@ -165,8 +174,12 @@ auto 模式按配置直接发送；身份解析失败要如实写入汇总，不
   `.github/workflows/`、`.github/actions/` 等 CI 文件才可 auto approve；
   改过 CI 文件则跳过并点名维护者手动处理。
 - `gate.blockClass=structural-check` 表示 required check 永远不返回结果，不是作者代码
-  问题。只有 `reviewDecision=APPROVED`、CI 无失败、thread 全 resolve 且当前账号具备
-  bypass 权限时才可 `gh pr merge --admin`；否则跳过并报告。
+  问题。只有 `reviewDecision=APPROVED`、CI 无失败、thread 全 resolve、当前账号具备
+  bypass 权限**且** `structuralBlock.requiredCheckRules` 全部命中
+  `structuralBypassAllowlist` 时才可 `gh pr merge --admin`；否则跳过并报告。
+- `gate.blockClass=ci-unknown` 表示 CI 状态读取失败（权限/网络/解析问题），**不是**
+  structural-check——即便当前账号对某必需检查有 bypass 权限，也不得据此自动合并
+  未知 CI 状态的 PR；跳过等下一轮重新探测。
 - `format.hitsServer=true` 时，作者必须在 PR 中声明已按项目流程通知 Lizi；缺失时即使
   代码审查通过也走 3B，要求真实回复后再 resolve。当前仓库 `serverPaths` 为空时该门
   不触发，但不要从 skill 中删除。

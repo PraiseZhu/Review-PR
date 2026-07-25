@@ -57,6 +57,9 @@ const STATE_FILE = stateFile('remind-feishu.json');
 const prRules = loadRules();
 const IDLE_HOURS = Number(prRules.staleAuthorReminder?.idleHours) || 24;
 const REPEAT_HOURS = Number(prRules.staleAuthorReminder?.repeatHours) || 24;
+// 核心贡献者豁免:命中则直接跳过停滞催办(大小写不敏感)。配置缺失(exemptAuthors 为空)
+// = 无豁免,行为与此前完全一致。
+const EXEMPT_AUTHORS = (prRules.staleAuthorReminder?.exemptAuthors ?? []).map((s) => s.toLowerCase());
 
 // 一次拉全判定所需字段:作者 / 状态 / 冲突 / reviewDecision / reviews / threads / 评论 / 最新 commit
 const GQL = `
@@ -117,6 +120,12 @@ try {
     }
     done({ shouldRemind: false, reason });
   };
+
+  // ── 豁免:核心贡献者(exemptAuthors,大小写不敏感)──
+  if (author && EXEMPT_AUTHORS.includes(author.toLowerCase())) {
+    clearAndDone('exempt-author');
+    process.exit(0);
+  }
 
   // ── 豁免:非 open / draft ──
   if (data.state !== 'OPEN') { clearAndDone('pr-not-open'); process.exit(0); }

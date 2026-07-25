@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion } from './lib.mjs';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -67,6 +67,20 @@ const ARCH_ANY_DIFF_LINES = Number(ARCH_RULES.anyTypeDiffLines) || 800;
 const ARCH_COLD_UPDATE_PATHS = ARCH_RULES.coldUpdatePaths ?? [];
 const COLD_UPDATE_GUARD_MARKER = ARCH_RULES.coldUpdateGuardMarker ?? '';
 const COLD_UPDATE_APPROVERS = (ARCH_RULES.coldUpdateApprovers ?? []).map((s) => s.toLowerCase());
+// 结构性 BLOCKED(blockClass='structural-check')可自动 --admin bypass 的必需检查类型
+// allowlist:即便当前账号 canBypass=always/pull_requests,命中的必需检查类型不在这份
+// allowlist 里也不自动 bypass(如 required_status_checks 范围太宽,可能盖住真实还没
+// 跑完/配错的检查,不能一律当"永不上报结果的门"处理)。仅 code_scanning/code_quality
+// 这类"确定性地从不产出结果"的门才默认放进 allowlist,其余需要人工评估后手动加。
+// pr-rules.json 未配置该键时用这两个默认值(与此前"canBypass 即自动 bypass"的行为基本
+// 一致);要扩大/收紧范围可显式配置 structuralBypassAllowlist 覆盖默认值。
+const STRUCTURAL_BYPASS_ALLOWLIST = new Set(prRules.structuralBypassAllowlist ?? ['code_scanning', 'code_quality']);
+// 安全审查路径:review-pr 自身脚本/配置、CI workflow/actions、部署的 skill 定义、
+// package.json 与常见 lockfile 等——这条门防的是「自动化改坏自己」,不是防外部攻击
+// (是否适用取决于目标仓库的贡献者可信度模型,由仓库自己配置决定):命中就转人工看一眼,
+// 不让 review-pr 用可能已被这次改动改坏的自己版本去审查/合并这次改动本身,详见 SKILL
+// 「审查执行环境安全」。配置缺失(securityReviewPaths 为空)= 功能关闭,不扫描不拦截。
+const SECURITY_REVIEW_RE = prRules.securityReviewPaths?.length ? new RegExp(prRules.securityReviewPaths.join('|')) : null;
 // 自动跟进修复名单:这些作者的 PR 卡在作者侧问题时不打回 / 不催办,由 skill 开跟进会话自己修
 // (owner 本人的 PR 对自动化账号是 own-pr,GitHub 禁止对自己的 PR 提 REQUEST_CHANGES / APPROVE,
 // 打回路径本来就走不通),详见 SKILL「自动跟进修复(fix-handoff)」。
@@ -79,6 +93,14 @@ const normalizeBotLogin = (login) => (login ?? '').toLowerCase().replace(/\[bot\
 const SLACK_SENDER_ALIASES = Object.fromEntries(
   Object.entries(prRules.slackSenderAliases ?? {}).map(([k, v]) => [k.toLowerCase(), (v ?? '').toLowerCase()]),
 );
+// Loop 托管 PR 排除:与目标仓库自有的自动修 bug loop(如有)共存,避免两套合并主体打架
+// (详见 SKILL「Loop 托管 PR 排除」)。titlePrefix 命中即判该 PR 由 loop 托管;
+// t1BodyMarkers/t2BodyMarkers 从 PR body 里找 loop 自己声明的 T-level(最贴近 PR 开出那一刻
+// 的一手信号,优先采信);两者都没命中 → 退回读本地台账(stateFile)按 PR 号反查
+// cluster.tCap;仍拿不到结论 → defaultWhenAmbiguous(保守默认 skip)。配置缺失(pr-rules.json
+// 未配置 loopPrExclusion)= 功能整套关闭,detectLoopExclusion 对所有 PR 恒返回 null。
+const LOOP_EXCLUSION_RULES = prRules.loopPrExclusion ?? null;
+// detectLoopExclusion 本体在 lib.mjs(与 notify-merge-ack.mjs 共用同一份判定,防两处判据漂移)。
 
 // ── 安全与隐私内容门(阶段一最先执行,见 SKILL 3.1):扫 PR 标题 / body / diff 新增行 ──
 // hard = 高置信凭证格式,命中即阻断(auto 走 pushback-security,不进审查不合并);
@@ -286,6 +308,9 @@ try {
   ]);
   const title = meta.title ?? '';
   const body = meta.body ?? '';
+  // ── Loop 托管 PR 判定(与目标仓库自有的自动修 bug loop 共存;详见 SKILL「Loop 托管 PR 排除」;
+  // LOOP_EXCLUSION_RULES 未配置时恒为 null)──
+  const loopExclusion = detectLoopExclusion({ title, body, pr, rules: LOOP_EXCLUSION_RULES });
   const files = (meta.files ?? []).map((f) => ({
     path: f.path,
     additions: f.additions ?? 0,
@@ -309,12 +334,26 @@ try {
   // 已是 APPROVED。旧逻辑用 hasChangesRequested 会把这种「已被同人 approve 覆盖」误判成
   // 「仍有未解决 CR」,从而把真正的 BLOCKED 成因(结构性必需检查门)说成 review 问题)。
   const reviewDecision = meta.reviewDecision ?? null;
-  const type = (title.match(/^(\w+)/)?.[1] ?? '').toLowerCase();
-  const titleTypeOk = TITLE_TYPE_RE.test(title);
-  const titleVague = TITLE_VAGUE_RE.test(title);
+  // loop 托管的 PR 标题固定带 loopPrExclusion.titlePrefix(如 `[bug-doctor] `),不是
+  // `<type>(<scope>): <描述>` 格式;命中该前缀时先剥掉再判 type,否则 T2 loop PR(本该走
+  // review-pr 正常审查)会被格式门误判"缺 type 前缀"打回。前缀本身来自 pr-rules.json
+  // 配置(不硬编码字面量);未命中 loopExclusion 时 titleForFormat 就是原始 title,行为不变。
+  const titleForFormat = (loopExclusion && LOOP_EXCLUSION_RULES?.titlePrefix)
+    ? title.slice(LOOP_EXCLUSION_RULES.titlePrefix.length)
+    : title;
+  const type = (titleForFormat.match(/^(\w+)/)?.[1] ?? '').toLowerCase();
+  const titleTypeOk = TITLE_TYPE_RE.test(titleForFormat);
+  const titleVague = TITLE_VAGUE_RE.test(titleForFormat);
   const isLight = LIGHT_TYPES.includes(type);
   const template = type === 'fix' ? 'bugfix' : isLight ? 'light' : 'feature';
-  const wantSections = template === 'bugfix' ? BUGFIX_SECTIONS : template === 'feature' ? FEATURE_SECTIONS : [];
+  // loop 托管的 PR(实际只有 t2 会走到这里,t1 已在 auto.action 整体跳过)body 遵循 loop
+  // 自己的证据结构,不是本仓 PR 模板——按 featureSections/bugfixSections 三段式逐字匹配
+  // 检查注定每次都判"缺段落",但这不是这些 PR 真的不合规,只是它们遵循了另一套同样有效
+  // 的既定契约,常规打回反而是误判,因此豁免段落存在性检查。豁免范围只到段落检查,标题
+  // type 检查(见上方 titleForFormat)与其余门(前置门/审查)都不受影响,仍照常走。
+  const wantSections = loopExclusion
+    ? []
+    : template === 'bugfix' ? BUGFIX_SECTIONS : template === 'feature' ? FEATURE_SECTIONS : [];
   const sections = {};
   // 段落存在性用标题锚定(^#+ 行内含关键词),不做全文 substring:本仓段落名短
   // (如「风险」),全文 includes 会被正文里"无风险/低风险"之类误命中,硬判层失去拦截力。
@@ -345,6 +384,14 @@ try {
   // CI 配置改动:决定待批 workflow 能否「自动批」(改了 CI 配置的不自动批,详见 approve-workflows.mjs)
   const ciFiles = CI_SENSITIVE_RE ? files.map((f) => f.path).filter((p) => CI_SENSITIVE_RE.test(p)) : [];
   const prTouchesCiFiles = ciFiles.length > 0;
+  // ── 安全审查门(对应 SKILL「审查执行环境安全」):命中 pr-rules.json 的 securityReviewPaths ──
+  // 目的:防自动化改坏自己,不是防外部攻击。auto 批处理会先 checkout 到 PR 分支再跑
+  // context.mjs 依赖的确定性脚本 / 读取 pr-rules.json 配置本身;如果 PR 改的正是这些脚本 /
+  // 配置(或 CI workflow/actions / 部署的 skill 定义 / package.json 与 lockfile),继续让
+  // review-pr 用可能已被这次改动改坏的版本去自动审查并合并这次改动,会形成"改坏的版本审过
+  // 并合入了自己"的自我损坏闭环——一律转人工,不自动审、不自动合(见下方 auto 覆盖)。
+  const securityReviewFiles = SECURITY_REVIEW_RE ? files.map((f) => f.path).filter((p) => SECURITY_REVIEW_RE.test(p)) : [];
+  const hitsSecurityReviewPaths = securityReviewFiles.length > 0;
 
   // UI 面路径命中(产品门与 UI 证据提醒共用;证据检查只看代码改动,排除纯 .md 文档)。
   // uiExcludePaths(多语言 locale 等纯文案数据)整体不算 UI:证据与产品门都不触发。
@@ -450,6 +497,13 @@ try {
   const viewerLogin = gqlData.viewer?.login ?? '';
   const authorLogin = meta.author?.login ?? '';
   const isSelfFixAuthor = SELF_FIX_AUTHORS.includes(authorLogin.toLowerCase());
+  // isOwnPr(= viewer 自己的 PR)与 isSelfFixAuthor(= selfFixAuthors 名单)彻底解耦——
+  // 前者是「GitHub API 层面能不能对这个 PR 提 REQUEST_CHANGES/APPROVE」的事实判定(GitHub
+  // 硬性禁止对自己的 PR 提交这两种 review event,422),后者只决定「卡在作者侧问题时是否
+  // 自动开跟进会话去修」。selfFixAuthors 当前可能为空,但只要 viewer==author 就一定会撞
+  // 422,与名单是否配置无关;3B/3A 第 0 步等一切要提交 review event 的地方都必须读 isOwnPr,
+  // 不能只查 selfFixAuthors。
+  const isOwnPr = viewerLogin !== '' && authorLogin !== '' && viewerLogin.toLowerCase() === authorLogin.toLowerCase();
 
   // 1.5.2 review threads
   const rawThreads = g.reviewThreads?.nodes ?? [];
@@ -849,6 +903,7 @@ try {
   // blockClass 把 BLOCKED 成因显式分档,供 1.7 报告 / auto 分流 / 3A bypass 决策共用。
   let blockClass = 'none';
   let structuralBlock = null; // 结构性门(永不上报的必需检查)详情:{requiredCheckRules, canBypass, rulesetIds} | null
+  let structuralAllowlisted = false; // structuralBlock.requiredCheckRules 是否全部命中 STRUCTURAL_BYPASS_ALLOWLIST
   if (meta.mergeStateStatus === 'DIRTY') {
     blockers.push('mergeStateStatus=DIRTY(有冲突)');
     blockClass = 'conflict';
@@ -873,6 +928,14 @@ try {
       // reviewDecision=APPROVED 但仍有 thread 没 resolve → BLOCKED 很可能来自 ruleset 的
       // required_review_thread_resolution。blocker 由下面 unresolvedThreads 统一押,这里只定 class。
       blockClass = 'threads-unresolved';
+    } else if (ciRuns === null) {
+      // CI 状态读不到(权限 / 网络 / 解析失败,见 lib.mjs classifyHeadChecks)——不知道 CI
+      // 到底过没过,绝不能当「无失败 / 无 pending」直接落进下面的 structural-check 分支再被
+      // auto --admin bypass 放过(某些仓库当前账号对必需检查门可能 canBypass=always,一旦
+      // 误判就是真的会自动 bypass 合并未知 CI 状态的 PR)。单列 skip,不可 bypass、不催办——
+      // 下一轮重新探测,读到了自然会分流去该去的地方。
+      blockers.push('mergeStateStatus=BLOCKED,但 CI 状态读取失败(权限/网络/解析问题,见 lib.mjs classifyHeadChecks)——CI 是否通过未知,本轮不动,下轮再看,不当结构性门处理、不可 bypass');
+      blockClass = 'ci-unknown';
     } else if (ciFailed.length > 0) {
       // 有 workflow run 真失败 → 真 blocker(该打回 / 不合)。
       blockers.push(`mergeStateStatus=BLOCKED(CI 失败:${ciFailed.join(' / ')})`);
@@ -882,17 +945,20 @@ try {
       blockers.push(`mergeStateStatus=BLOCKED(CI 还在跑:${ciPending.join(' / ')},等跑完即可)`);
       blockClass = 'ci-pending';
     } else {
-      // review 满足(APPROVED)+ 线程已 resolve + 无失败/进行中/待批的 workflow run,但仍 BLOCKED
-      // → 残留的是「永不上报结果的必需检查门」:典型 org ruleset 的 code_scanning(CodeQL)/
-      // code_quality(本仓库根本没产出对应结果),或被 job 级 if 跳过的必需 check。
-      // 这类不是作者要改 —— 要么 owner 用 admin bypass 合、要么修该门让它能上报结果。
+      // review 满足(APPROVED)+ 线程已 resolve + CI 来源明确完整(ciRuns 非 null)且无失败/
+      // 进行中/待批的 workflow run,但仍 BLOCKED → 残留的是「永不上报结果的必需检查门」:
+      // 典型 org ruleset 的 code_scanning(CodeQL)/ code_quality(本仓库根本没产出对应结果),
+      // 或被 job 级 if 跳过的必需 check。这类不是作者要改 —— 要么 owner 用 admin bypass 合、
+      // 要么修该门让它能上报结果。
       blockClass = 'structural-check';
       structuralBlock = probeBranchProtection(slug, meta.baseRefName);
+      structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
+        structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
       const ruleHint = structuralBlock?.requiredCheckRules?.length
         ? structuralBlock.requiredCheckRules.join(' / ')
         : 'code_scanning / code_quality 等';
       const bypassHint = structuralBlock?.canBypass && structuralBlock.canBypass !== 'never'
-        ? `当前账号可 bypass(${structuralBlock.canBypass})`
+        ? `当前账号可 bypass(${structuralBlock.canBypass})${structuralAllowlisted ? '' : ',但命中的必需检查类型不在 structuralBypassAllowlist 里,不自动 bypass'}`
         : 'bypass 权限未知';
       blockers.push(
         `mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——非作者可处理,需 admin bypass 合或修该门;${bypassHint})`,
@@ -981,15 +1047,21 @@ try {
       }
     } else if (blockClass === 'structural-check') {
       // 结构性 BLOCKED:review + 已跑 CI 都没问题,只卡在永不上报的必需检查门(code_scanning/code_quality 等)。
-      if (structuralBlock && (structuralBlock.canBypass === 'always' || structuralBlock.canBypass === 'pull_requests')) {
-        // 当前账号有 bypass 权限,auto 模式直接走 admin bypass 合并(安全前提:review APPROVED + 已跑 CI 无失败 + 0 未 resolve thread)
+      // 自动 bypass 需要三个条件同时成立:CI 来源完整(能走到 structural-check 分支本身已隐含
+      // ciRuns 非 null,见 blockClass 判定)+ 当前账号有 bypass 权限 + 命中的必需检查类型在
+      // structuralBypassAllowlist 里(structuralAllowlisted)——任一不满足都只能跳过通知 owner。
+      if (structuralBlock && structuralAllowlisted && (structuralBlock.canBypass === 'always' || structuralBlock.canBypass === 'pull_requests')) {
+        // 当前账号有 bypass 权限且命中类型在 allowlist 内,auto 模式直接走 admin bypass 合并
+        // (安全前提:review APPROVED + 已跑 CI 无失败 + 0 未 resolve thread + CI 来源明确)
         autoAction = 'bypass-structural-block';
-        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果),当前账号可 bypass——自动 admin bypass 合并`;
+        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果,均在 structuralBypassAllowlist 内),当前账号可 bypass——自动 admin bypass 合并`;
         autoSkip = false;
       } else {
-        // 没有 bypass 权限,只能跳过通知 owner
+        // 没有 bypass 权限 / 命中类型不在 allowlist 内,只能跳过通知 owner
         autoAction = 'skip-structural-block';
-        autoReason = `结构性 BLOCKED(非作者可处理,当前账号无 bypass 权限):${blockers.join(';')}`;
+        autoReason = structuralBlock && !structuralAllowlisted && structuralBlock.canBypass && structuralBlock.canBypass !== 'never'
+          ? `结构性 BLOCKED,当前账号本可 bypass,但命中的必需检查类型(${(structuralBlock.requiredCheckRules ?? []).join('/')})不在 structuralBypassAllowlist 里——不自动 bypass,需 owner 人工确认后手动处理`
+          : `结构性 BLOCKED(非作者可处理,当前账号无 bypass 权限):${blockers.join(';')}`;
         autoSkip = true;
       }
     } else {
@@ -1068,6 +1140,28 @@ try {
     autoSkip = false;
   }
 
+  // ── Loop 托管 PR 覆盖(优先级最高,压过产品门 / 架构门 / 格式门 / 前置门,但让位于已确定的
+  // 安全与隐私门硬命中——凭证已泄露必须打回,不因 loop 托管而沉默):判定为 loop 自管
+  // (T1 或拿不准)的 PR,review-pr 不审、不合、不催,原样交给 loop 自己收尾。
+  // LOOP_EXCLUSION_RULES 未配置时 loopExclusion 恒为 null,本覆盖天然不生效。──
+  if (!securityBlocked && loopExclusion && loopExclusion.verdict !== 't2') {
+    autoAction = 'skip-loop-managed';
+    autoReason = loopExclusion.verdict === 't1'
+      ? `自动修 bug loop 自管的机械档(T1)PR,由它自己合并,review-pr 不审不合不催(判据来源:${loopExclusion.source})`
+      : `自动修 bug loop 托管的 PR,但读不出明确 T-level(判据来源:${loopExclusion.source}),保守按自管处理,不碰`;
+    autoSkip = true;
+  }
+
+  // ── 安全审查门覆盖(优先级仅次于 loop 托管排除——loop 托管已经不审不合,本门无需重复覆盖;
+  // 压过产品门 / 架构门 / 格式门 / 前置门的一切结论,但同样让位于安全与隐私门硬命中):
+  // 命中 securityReviewPaths 一律转人工,不自动审、不自动合(详见 SKILL「审查执行环境安全」)。
+  // securityReviewPaths 未配置时 hitsSecurityReviewPaths 恒为 false,本覆盖天然不生效。──
+  if (!securityBlocked && hitsSecurityReviewPaths && autoAction !== 'skip-loop-managed') {
+    autoAction = 'skip-security-review';
+    autoReason = `命中安全审查路径(${securityReviewFiles.join(' / ')})——这类改动涉及 review-pr 自身的执行/供应链能力面,继续让 review-pr 自动审查并合并这类改动,一旦改坏了自动化本身,会形成"改坏的版本审过并合入了自己"的自我损坏闭环,一律转人工审查,不自动审也不自动合`;
+    autoSkip = true;
+  }
+
   const scanMode = process.argv.includes('--scan');
   if (scanMode) {
     // 精简输出:无 body / 历史全文(见文件头 --scan 说明)。字段增删要同步 SKILL「候选批处理」阶段 1。
@@ -1092,8 +1186,9 @@ try {
       filePaths: files.map((f) => f.path),
       totalDiffLines,
       held: holdMarker ? { ...holdMarker, heldDraft } : null,
+      loopExclusion,
       security,
-      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice },
+      format: { formatPass, formatIssues, hitsServer, hitsSecurityReviewPaths, securityReviewFiles, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice },
       gate: {
         gatePass,
         blockClass,
@@ -1110,6 +1205,7 @@ try {
         fallback: gateFallback,
         needsSelfApproval: autoAction === 'review' && selfBlockedResolvable,
         selfFix: isSelfFixAuthor,
+        ownPr: isOwnPr,
       },
       note: 'scan 精简输出,仅供 auto 批处理阶段 1 扫描分类与汇总;需要 body / 历史全文时对该 PR 单独跑不带 --scan 的全量模式(审查子 agent 在自己 worktree 里自取,别在主 session 拉全量)',
     });
@@ -1138,6 +1234,7 @@ try {
     files,
     totalDiffLines,
     held: holdMarker ? { ...holdMarker, heldDraft } : null,
+    loopExclusion,
     security,
     format: {
       type,
@@ -1151,6 +1248,8 @@ try {
       hitsUpdater,
       hitsServer,
       serverFiles,
+      hitsSecurityReviewPaths,
+      securityReviewFiles,
       uiCodeFiles,
       bodyHasUiEvidence,
       bodyUiEvidenceKinds,
@@ -1178,7 +1277,7 @@ try {
       ciFiles,
       selfBlockedResolvable,
       gatePass,
-      note: 'gatePass=false → 1.7 必须卡 gate;softFlags 里的项由 LLM 读内容定性,别无脑放行。blockClass 是 BLOCKED 成因分档:conflict / workflow-awaiting(fork 待批 CI)/ review-changes-requested(reviewDecision=CHANGES_REQUESTED,真要作者改)/ self-resolvable(仅 viewer 自己的 CR、thread 全 resolve)/ awaiting-approval(缺 approve,审查通过后提交 APPROVE 即解)/ threads-unresolved / ci-failed(workflow 真失败)/ ci-pending(还在跑)/ structural-check(review+已跑 CI 都过、仍 BLOCKED——永不上报的必需检查门 code_scanning/code_quality 等,需 admin bypass 合或修门,非作者可处理)。structuralBlock(仅 structural-check 时非空):{requiredCheckRules, canBypass, rulesetIds},canBypass=always/pull_requests 表示当前账号可 admin bypass。ciRuns(仅 BLOCKED 时查,null=未知):{failed,pending,awaiting,all}。workflowsAwaitingApproval=ciRuns.awaiting(fork 待批 workflow)。与 blockedAwaitingApproval(缺 reviewer approval)是两回事',
+      note: 'gatePass=false → 1.7 必须卡 gate;softFlags 里的项由 LLM 读内容定性,别无脑放行。blockClass 是 BLOCKED 成因分档:conflict / workflow-awaiting(fork 待批 CI)/ review-changes-requested(reviewDecision=CHANGES_REQUESTED,真要作者改)/ self-resolvable(仅 viewer 自己的 CR、thread 全 resolve)/ awaiting-approval(缺 approve,审查通过后提交 APPROVE 即解)/ threads-unresolved / ci-unknown(CI 状态读不到——权限/网络/解析失败,不当结构性门、不可 bypass,下轮再看)/ ci-failed(workflow 真失败)/ ci-pending(还在跑)/ structural-check(review+已跑 CI 都过、CI 来源明确、仍 BLOCKED——永不上报的必需检查门 code_scanning/code_quality 等,需 admin bypass 合或修门,非作者可处理)。structuralBlock(仅 structural-check 时非空):{requiredCheckRules, canBypass, rulesetIds},canBypass=always/pull_requests 表示当前账号可 admin bypass,但**是否真的自动 bypass 还要看 requiredCheckRules 是否全部命中 pr-rules.json 的 structuralBypassAllowlist**(不在 allowlist 里即便可 bypass 也不自动合,见 auto.reason)。ciRuns(仅 BLOCKED 时查,null=未知——null 时 blockClass 必为 ci-unknown,不会误落进 structural-check):{failed,pending,awaiting,all}。workflowsAwaitingApproval=ciRuns.awaiting(fork 待批 workflow)。与 blockedAwaitingApproval(缺 reviewer approval)是两回事',
     },
     auto: {
       action: autoAction,
@@ -1187,9 +1286,10 @@ try {
       fallback: gateFallback,
       needsSelfApproval: autoAction === 'review' && selfBlockedResolvable,
       selfFix: isSelfFixAuthor,
+      ownPr: isOwnPr,
       wasPushedBack,
       latestPushbackDate,
-      note: 'selfFix=true→作者在 selfFixAuthors 名单(pr-rules.json):该 PR 卡在作者侧问题(pushback-security / pushback-format / 审查不通过 / skip-gate 冲突·未 resolve·CI 失败 / skip-stale-pushback)时不打回不催办,改走 SKILL「自动跟进修复(fix-handoff)」开跟进会话自己修(own-pr 无法 REQUEST_CHANGES)。auto 模式分流(交互模式忽略本字段):isSkip=true→跳过类(扫描不 checkout,无需清理);isSkip=false→进本轮处理清单,全量处理不设固定名额、并行度由宿主 agent 上限自然限流(pushback-format 直接 3B / review 起审查子 agent 并行审 / approve-workflows 调 approve-workflows.mjs / bypass-structural-block 走 admin bypass 合并 / product-gate、arch-gate 主 agent 语义定性后 product-hold(arch 加 --kind arch)或按 fallback 继续),详见 SKILL「候选批处理」「产品 / UI 变更门」「技术架构变更门」。action ∈ {review, pushback-security, pushback-format, product-gate, arch-gate, skip-gate, skip-stale-pushback, approve-workflows, skip-workflow-ci-change, bypass-structural-block, skip-structural-block}。pushback-security=安全与隐私门硬命中(security.hardHits 非空,优先级最高、不被产品/架构门包裹)→ 3B 打回要求移除内容、清理分支历史并轮换凭证,评论只写文件/行号/类型不引用原文;product-gate=疑似产品/UI 变更且无白名单明确同意信号(确定性信号=白名单 PR Approve / 标回 ready;先语义判 productGate.discussionIssue.whitelistComments 与 productGate.prWhitelistComments(PR 评论区白名单直接回复,同等采信)是否明确同意推进,任一同意→按 fallback 继续,见 productGate 字段),fallback 存被包裹前的原走向。arch-gate=疑似较大技术架构调整且无技术白名单放行信号(消费规则同 product-gate,读 archGate 字段;产品门优先,两门不会同时出现)。触发器里的 cold-update-confirmed / cold-update-suspect 是 mobile 冷更(runtime fingerprint 变化):与技术框架变动同级但不看改动大小,也不受本门常规豁免——作者在白名单 / 普通 Approve / 标回 ready 都不算放行,只认 archGate.coldUpdate.approvers 明确针对冷更的表态(名单内成员自己提的 PR 也要显式确认),详见 archGate.coldUpdate 与其 note。approve-workflows=fork workflow 待批且未改 CI 配置→自动 approve 放行 CI(下一轮 CI 跑完再审);skip-workflow-ci-change=待批但改了 CI 配置→跳过、飞书点名让 owner 手动批;bypass-structural-block=结构性 BLOCKED + 当前账号可 bypass→auto 模式直接 gh pr merge --admin 合并(安全前提:reviewDecision=APPROVED + 已跑 CI 无失败 + 0 未 resolve thread);skip-structural-block=结构性 BLOCKED 但当前账号无 bypass 权限→跳过、飞书点名让 owner 处理。needsSelfApproval=true→该 PR 唯一阻塞是 viewer 自己挂的 CR、重审通过后合并前须先 gh pr review --approve 撤掉自己的 CR 再合(见 SKILL 3A)',
+      note: 'ownPr=true→viewer(本流程账号)与作者是同一人,GitHub 硬性禁止对自己的 PR 提交 REQUEST_CHANGES/APPROVE(422)——3B 打回改发 event=COMMENT(保留行级 thread 但不触发"变更请求"语义)。真正挡合并的不是 event 类型,而是仓库自己的分支保护规则若配了 required_review_thread_resolution:只要提交的 review 里有 comments[] 生成的 thread 处于未 resolve,mergeStateStatus 就会停在 BLOCKED,与谁提交、什么 event 无关——这正是 ownPr=true 时要把每条 [阻断]/[必改] 尽最大努力锚成行级评论的原因;锚不到行、只能落进 body 总述的意见,若仓库没有该项 required check 就没有任何机制挡住合并,必须在报告 / 汇总里以"需要你"显著提示。3A 第 0 步的 self-approve 同理对 own-PR 不适用(APPROVE 一样会 422,needsSelfApproval 场景不会与 ownPr 同时成立,因为自己没法先挂 CR)。ownPr 与 selfFix 是两个独立轴:selfFix 只决定"卡住时是否自动开跟进会话",不决定 review API 能不能调,即便 selfFixAuthors 为空、ownPr=true 时 3B 仍必须走 COMMENT 分支。selfFix=true→作者在 selfFixAuthors 名单(pr-rules.json):该 PR 卡在作者侧问题(pushback-security / pushback-format / 审查不通过 / skip-gate 冲突·未 resolve·CI 失败 / skip-stale-pushback)时 3B 仍照常提交(event 按 ownPr 选,不因 selfFix 跳过),额外改走 SKILL「自动跟进修复(fix-handoff)」开跟进会话自己修。auto 模式分流(交互模式忽略本字段):isSkip=true→跳过类(扫描不 checkout,无需清理);isSkip=false→进本轮处理清单,全量处理不设固定名额、并行度由宿主 agent 上限自然限流(pushback-format 直接 3B / review 起审查子 agent 并行审 / approve-workflows 调 approve-workflows.mjs / bypass-structural-block 走 admin bypass 合并 / product-gate、arch-gate 主 agent 语义定性后 product-hold(arch 加 --kind arch)或按 fallback 继续),详见 SKILL「候选批处理」「产品 / UI 变更门」「技术架构变更门」。action ∈ {review, pushback-security, pushback-format, product-gate, arch-gate, skip-gate, skip-stale-pushback, approve-workflows, skip-workflow-ci-change, bypass-structural-block, skip-structural-block, skip-loop-managed, skip-security-review}。pushback-security=安全与隐私门硬命中(security.hardHits 非空,优先级最高、不被产品/架构门包裹,压过 loop 托管排除与安全审查门覆盖)→ 3B 打回要求移除内容、清理分支历史并轮换凭证,评论只写文件/行号/类型不引用原文;skip-loop-managed=命中 loopPrExclusion 且判定为 loop 自管(T1 或拿不准),不审不合不催(见 SKILL「Loop 托管 PR 排除」;配置缺失时本 action 永不出现)。skip-security-review=命中 securityReviewPaths,一律转人工审查,不自动审也不自动合(见 SKILL「审查执行环境安全」;优先级仅次于 skip-loop-managed,压过其余一切结论;配置缺失时本 action 永不出现)。product-gate=疑似产品/UI 变更且无白名单明确同意信号(确定性信号=白名单 PR Approve / 标回 ready;先语义判 productGate.discussionIssue.whitelistComments 与 productGate.prWhitelistComments(PR 评论区白名单直接回复,同等采信)是否明确同意推进,任一同意→按 fallback 继续,见 productGate 字段),fallback 存被包裹前的原走向。arch-gate=疑似较大技术架构调整且无技术白名单放行信号(消费规则同 product-gate,读 archGate 字段;产品门优先,两门不会同时出现)。触发器里的 cold-update-confirmed / cold-update-suspect 是 mobile 冷更(runtime fingerprint 变化):与技术框架变动同级但不看改动大小,也不受本门常规豁免——作者在白名单 / 普通 Approve / 标回 ready 都不算放行,只认 archGate.coldUpdate.approvers 明确针对冷更的表态(名单内成员自己提的 PR 也要显式确认),详见 archGate.coldUpdate 与其 note。approve-workflows=fork workflow 待批且未改 CI 配置→自动 approve 放行 CI(下一轮 CI 跑完再审);skip-workflow-ci-change=待批但改了 CI 配置→跳过、飞书点名让 owner 手动批;bypass-structural-block=结构性 BLOCKED + 当前账号可 bypass + 命中的必需检查类型全部在 structuralBypassAllowlist 内→auto 模式直接 gh pr merge --admin 合并(安全前提:reviewDecision=APPROVED + 已跑 CI 无失败 + 0 未 resolve thread + CI 来源明确非 ci-unknown);skip-structural-block=结构性 BLOCKED 但当前账号无 bypass 权限 / 命中类型不在 allowlist 里→跳过、飞书点名让 owner 处理。needsSelfApproval=true→该 PR 唯一阻塞是 viewer 自己挂的 CR、重审通过后合并前须先 gh pr review --approve 撤掉自己的 CR 再合(见 SKILL 3A)',
     },
   });
   }

@@ -32,6 +32,10 @@ const THREADS_QUERY = `
 try {
   const { owner, repo } = parseRepo();
   const pr = parsePR(process.argv[2]);
+  const rules = loadRules();
+  // 结构性 BLOCKED 自动 admin bypass 的必需检查类型 allowlist——与 context.mjs 同一份配置键
+  // (pr-rules.json 的 structuralBypassAllowlist),防两处判据漂移。配置缺失时用这两个默认值。
+  const STRUCTURAL_BYPASS_ALLOWLIST = new Set(rules.structuralBypassAllowlist ?? ['code_scanning', 'code_quality']);
 
   const slug = `${owner}/${repo}`;
   const m = ghJson([
@@ -64,6 +68,7 @@ try {
   const blockers = [];
   let blockClass = 'none';
   let structuralBlock = null; // {requiredCheckRules, canBypass, rulesetIds} | null
+  let structuralAllowlisted = false; // structuralBlock.requiredCheckRules 是否全部命中 STRUCTURAL_BYPASS_ALLOWLIST
   let ciRuns = null;
   if (m.state !== 'OPEN') blockers.push(`PR state=${m.state}(非 OPEN)`);
   if (m.mergeable === 'CONFLICTING') blockers.push('mergeable=CONFLICTING(有冲突)');
@@ -87,7 +92,12 @@ try {
       ({ ciRuns } = classifyHeadChecks(slug, m.headRefOid));
       const ciFailed = ciRuns ? ciRuns.failed : [];
       const ciPending = ciRuns ? ciRuns.pending : [];
-      if (ciFailed.length > 0) {
+      if (ciRuns === null) {
+        // CI 状态读不到(权限/网络/解析失败)——不知道过没过,绝不能落进下面的 structural-check
+        // 分支被当作"结构性门"再走 admin bypass 合并未知 CI 状态的 PR(与 context.mjs 同口径)。
+        blockers.push('mergeStateStatus=BLOCKED,但 CI 状态读取失败(权限/网络/解析问题)——CI 是否通过未知,不当结构性门处理、不可 bypass');
+        blockClass = 'ci-unknown';
+      } else if (ciFailed.length > 0) {
         blockers.push(`mergeStateStatus=BLOCKED(CI 失败:${ciFailed.join(' / ')})`);
         blockClass = 'ci-failed';
       } else if (ciPending.length > 0) {
@@ -95,14 +105,17 @@ try {
         blockClass = 'ci-pending';
       } else {
         // 永不上报结果的必需检查门(code_scanning/code_quality 等)→ 普通 merge 过不了,
-        // 但 canBypass 时可走 admin bypass(由 3A 决定;auto 模式绝不自动 bypass)。
+        // 但 canBypass 且命中类型在 structuralBypassAllowlist 内时可走 admin bypass
+        // (由 3A 决定;auto 模式绝不自动 bypass)。
         blockClass = 'structural-check';
         structuralBlock = probeBranchProtection(slug, m.baseRefName);
+        structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
+          structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
         const ruleHint = structuralBlock?.requiredCheckRules?.length
           ? structuralBlock.requiredCheckRules.join(' / ')
           : 'code_scanning / code_quality 等';
         const bypassHint = structuralBlock?.canBypass && structuralBlock.canBypass !== 'never'
-          ? `当前账号可 bypass(${structuralBlock.canBypass})`
+          ? `当前账号可 bypass(${structuralBlock.canBypass})${structuralAllowlisted ? '' : ',但命中的必需检查类型不在 structuralBypassAllowlist 里'}`
           : 'bypass 权限未知';
         blockers.push(`mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——需 admin bypass 合或修该门;${bypassHint})`);
       }
@@ -112,16 +125,17 @@ try {
 
   const mergeableUnknown = m.mergeable === 'UNKNOWN';
   const canMerge = blockers.length === 0 && !mergeableUnknown;
-  // 普通 merge 过不了、但「结构性门 + 当前账号可 bypass」时,3A 可走 admin bypass 合(交互模式经用户确认)。
+  // 普通 merge 过不了、但「结构性门 + 当前账号可 bypass + 命中类型在 allowlist 内」时,
+  // 3A 可走 admin bypass 合(交互模式经用户确认)。
   const structuralBypassAvailable =
-    blockClass === 'structural-check' && !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
+    blockClass === 'structural-check' && structuralAllowlisted &&
+    !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
 
   // selfFixAuthors 自己的 PR:GitHub 不允许同账号 approve 自己的 PR,
   // 审查通过后使用 --admin 合并。触发条件宽松:只要不是冲突/CI 失败/thread 未 resolve
   // 就允许(mergeableUnknown 是 GitHub 异步重算的暂态,admin merge 不受影响)。
   let selfMergeAvailable = false;
   if (viewerLogin && prAuthor) {
-    const rules = loadRules();
     const selfFixAuthors = (rules.selfFixAuthors ?? []).map((a) => a.toLowerCase());
     const isSelfPr = viewerLogin.toLowerCase() === prAuthor.toLowerCase();
     const isSelfFixAuthor = selfFixAuthors.includes(prAuthor.toLowerCase());
@@ -141,6 +155,7 @@ try {
     reviewDecision: m.reviewDecision,
     blockClass,
     structuralBlock,
+    structuralAllowlisted,
     structuralBypassAvailable,
     ciRuns,
     blockedAwaitingApproval: blockClass === 'awaiting-approval',
@@ -149,7 +164,7 @@ try {
     unresolvedThreads: unresolved,
     blockers,
     canMerge: canMerge || selfMergeAvailable,
-    note: 'canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。canMerge=false 时看 blockClass:structural-check + structuralBypassAvailable=true → 交互模式可经用户确认走 admin bypass 合(gh pr merge --admin);ci-failed/ci-pending/review-changes-requested/threads-unresolved 一律别 bypass(分别是真失败/还在跑/要作者改/要 resolve)。',
+    note: 'canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。canMerge=false 时看 blockClass:structural-check + structuralBypassAvailable=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist)→ 交互模式可经用户确认走 admin bypass 合(gh pr merge --admin);ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved 一律别 bypass(分别是未知/真失败/还在跑/要作者改/要 resolve)。',
   });
   process.exit((canMerge || selfMergeAvailable) ? 0 : 2);
 } catch (e) {
