@@ -276,11 +276,17 @@ node "<SKILL_ROOT>/scripts/pre-check.mjs" --repo-root "<目标仓库>"
 建议 `timeoutMs: 60000`。precheck 的完整语义、空转指纹和 issue 心跳见
 [references/internal-gates.md](references/internal-gates.md)。
 
-脚本协议：
+脚本协议（宿主真实语义，见 `apps/desktop/src/main/scheduler-host/pre-run-hook.ts`）：
 
 - exit `0`：允许本轮创建 agent；
 - exit `2`：确定没有可处理工作，跳过本轮，不消耗 token；
-- 其他退出码或超时：阻止本轮并记录失败，下一轮再试。
+- 其他退出码 / 超时 / spawn 失败：**宿主 fail-open**——仍会创建会话（平台设计契约，
+  非本 skill 可控；宿主判"跳过"只认「明确 exit 2」，其余一律放行，理由是"fail-closed
+  会让脚本一坏任务就无声停摆"）。不要把这当成"本 skill 保证 fail-closed"——做不到
+  就不写这种承诺。hook 异常不会绕过任何 review/merge gate：会话内 `prepare.mjs`
+  会重新获取维护流程锁并复查仓库/gh/工作树状态，`context.mjs`/`pick.mjs` 会重算
+  候选而不是复用 hook 的判断，因此 precheck 失败的实际代价只是多起一轮空转会话
+  （token 成本），不会让任何本该被拦的 PR 绕过审查。
 
 会话真正开始后仍由 `prepare.mjs` 获取维护流程锁；所有退出路径都释放自己持有的锁。
 不要把 precheck 的“跳过本轮”误当成产品/UI 或架构 gate 的结论。
@@ -985,14 +991,30 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
 ## 6. Auto 批处理
 
 进入 auto 模式的第一步（扫描前），打印一行本轮 provenance——纯可观测性，不改变
-任何判定，只为事后排查"这轮到底读的是哪份配置、通知发去了哪":
+任何判定，只为事后排查"这轮到底读的是哪份配置、读了哪些权威规则、通知发去了哪"。
+**来源路径必须调用 `lib.mjs` 的 `loadRulesWithSource()` 取真实值**（返回
+`{ rules, rulesFile }`，`rulesFile` 就是三层优先级解析后实际采用的那份配置文件的
+绝对路径），不要让 agent 自己重演 `REVIEW_PR_RULES_FILE` 环境变量 / 目标仓库
+`agent-use/docs/pr-rules.json` / Skill 自带 `config/pr-rules.json` 这三层优先级去猜——
+猜错会导致 provenance 报告的来源和实际读取的配置不一致：
 
 ```text
-本轮 provenance：rules=<loadRules() 实际读到的文件绝对路径>，repo=<owner>/<repo>，
-summaryBroadcast=<summaryBroadcast.command 已配置则写解析后的绝对路径，未配置写
-"未配置">，mergeAck=<loopPrExclusion.mergeAckNotify.notifyModule 已配置则写路径，
-未配置写"未配置">，人格品牌=<对外话术模板里第一人称之外用于自称的品牌名，如
-"Mivo"；本 skill 默认无品牌名则写"无">
+本轮 provenance：rules=<loadRulesWithSource() 返回的 rulesFile 绝对路径>，
+repo=<owner>/<repo>，ruleFiles.required=<该配置 rules.ruleFiles?.required 的清单，
+为空写"未配置额外规则文件">，summaryBroadcast=<summaryBroadcast.command 已配置则写
+解析后的绝对路径，未配置写"未配置">，mergeAck=<loopPrExclusion.mergeAckNotify.
+notifyModule 已配置则写路径，未配置写"未配置">，人格品牌=<对外话术模板里第一人称
+之外用于自称的品牌名，如"Mivo"；本 skill 默认无品牌名则写"无">
+```
+
+样例（在 mivo 仓跑）：
+
+```text
+本轮 provenance：rules=/Users/praise/AI-Agent/Claude/projects/Project MivoCanvas/agent-use/docs/pr-rules.json，
+repo=xindong/mivo-canvas，ruleFiles.required=[AGENTS.md, CLAUDE.md]，
+summaryBroadcast=/Users/praise/AI-Agent/Claude/projects/Project MivoCanvas/scripts/loops/bug-doctor/broadcast.mjs，
+mergeAck=/Users/praise/AI-Agent/Claude/projects/Project MivoCanvas/scripts/loops/bug-doctor/notify.mjs，
+人格品牌=Mivo
 ```
 
 auto 模式分三阶段，目标是确定性、可重试和不互相污染：

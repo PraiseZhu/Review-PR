@@ -89,22 +89,35 @@ export function releaseLockOwned(token) {
 }
 
 /**
- * 读取 review-pr 私有规则,解析顺序(先命中先用):
+ * 读取 review-pr 私有规则 + 实际采用的配置文件绝对路径,解析顺序(先命中先用):
  *   ① 环境变量 REVIEW_PR_RULES_FILE ——安装方显式指向别的配置文件,优先级最高;
  *   ② 目标仓库自己的 <REPO_ROOT>/agent-use/docs/pr-rules.json ——存在即用,让接入仓库
  *      不改 Skill 本体就能装配自己的全套规则(白名单、门控开关等),这是多仓库共用同一份
  *      Skill 源码的关键机制;
  *   ③ Skill 自带的 config/pr-rules.json(中性默认,不含任何具体仓库的白名单/路径)。
+ *
+ * 一次 IO 同时拿到内容与来源路径,保证「解析用的是哪份、报告说的是哪份」不漂移
+ * (SKILL 6 节 auto provenance 行、context.mjs 等需要如实报告来源路径的消费方都应
+ * 用这个,不要自己重演三层优先级去猜——猜错的后果是 provenance 报告与实际读取的
+ * 配置文件不一致)。`loadRules()` 是本函数的薄包装,只取 `.rules`,保持原有签名与
+ * 返回值不变,兼容所有既有消费方。
  */
-export function loadRules() {
+export function loadRulesWithSource() {
   if (process.env.REVIEW_PR_RULES_FILE) {
-    return JSON.parse(readFileSync(resolve(process.env.REVIEW_PR_RULES_FILE), 'utf8'));
+    const rulesFile = resolve(process.env.REVIEW_PR_RULES_FILE);
+    return { rules: JSON.parse(readFileSync(rulesFile, 'utf8')), rulesFile };
   }
   const repoRulesFile = join(REPO_ROOT, 'agent-use', 'docs', 'pr-rules.json');
   if (existsSync(repoRulesFile)) {
-    return JSON.parse(readFileSync(repoRulesFile, 'utf8'));
+    return { rules: JSON.parse(readFileSync(repoRulesFile, 'utf8')), rulesFile: repoRulesFile };
   }
-  return JSON.parse(readFileSync(join(SKILL_ROOT, 'config', 'pr-rules.json'), 'utf8'));
+  const skillRulesFile = join(SKILL_ROOT, 'config', 'pr-rules.json');
+  return { rules: JSON.parse(readFileSync(skillRulesFile, 'utf8')), rulesFile: skillRulesFile };
+}
+
+/** 薄包装,见 `loadRulesWithSource()`——只取规则内容,签名与返回值与此前完全一致。 */
+export function loadRules() {
+  return loadRulesWithSource().rules;
 }
 
 /**

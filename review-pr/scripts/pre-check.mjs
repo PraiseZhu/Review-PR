@@ -7,7 +7,13 @@
 //
 // 协议(apps/desktop/src/main/scheduler-host/pre-run-hook.ts):
 //   exit 2 = 跳过本轮(不创建会话,零 token);exit 0 = 放行;
-//   其它退出码 / 超时 → 宿主 fail-closed 阻止本轮并记录失败。
+//   其它退出码 / 超时 / spawn 失败 → 宿主 **fail-open** 仍会创建会话(平台设计契约,
+//   非本 skill 可控;pre-run-hook.ts 的 executePreRunHook() 只把「明确 exit 2」判为
+//   skip,其余(含超时树杀、spawn error、任意非 0/2 退出码)一律 decision:'run',理由
+//   见其注释「fail-closed 会让脚本一坏任务就无声停摆」)。但 hook 异常不会绕过任何
+//   review/merge gate:会话内 prepare.mjs 会重新获取统一锁并复查仓库 / gh / 工作树,
+//   context.mjs / pick.mjs 会重算候选而不是复用 hook 的判断,因此本脚本挂掉最多只是
+//   多起一轮空转会话(token 成本),不会让不该合并的 PR 绕过审查被合并。
 //
 // 只在「确定没活」时 exit 2:
 //   1. review-pr 互斥锁被占(上一轮 auto 还在跑,TTL 60min 内)——对齐 skill auto
@@ -31,14 +37,18 @@
 //      用它会永久自锁。
 // 本脚本对“无法证明没活”的情况(有候选且指纹变了 / 无 state、gh 缺失 / 未登录、
 // 网络失败、lib.mjs 异常…)显式 exit 0:「查不了」≠「没活」,让会话内 prepare.mjs /
-// pick.mjs 复核并走飞书异常汇总。这是本业务脚本主动给出的“需要运行”结论，不是宿主
-// 对非零退出码的 fail-open 兜底；语法错误、文件不存在等未形成 exit 0 的故障仍会阻止任务。
+// pick.mjs 复核并走飞书异常汇总。这是本业务脚本主动给出的“需要运行”结论——与宿主
+// 对非零退出码 / 超时 / spawn 失败的 fail-open 兜底是同一个方向(都是「不确定就
+// 放行」),只是触发路径不同:本脚本能跑到就自己判断该不该 exit 0;真跑不起来(语法
+// 错误、文件不存在、spawn 失败等未形成任何正常退出的故障)时,交给宿主的 fail-open
+// 兜底继续放行,不会被当成“阻止任务”处理。
 //
 // 会话内的 pick.mjs / prepare.mjs 照旧执行(hook 输出到不了会话,且 hook 通过到会话
 // 启动之间 PR 集合可能变化);本脚本只省掉「起一个 agent 会话才发现没活」的空转成本。
 // 建议 schedule 配置显式 preRunHook.timeoutMs(如 60000)双保险——宿主协议「未配置 =
-// 不限时」,本脚本虽自带 gh 超时,宿主侧超时兜底可防任何意外挂死阻塞该轮 fire
-// (宿主超时会 fail-closed 阻止本轮并告警；脚本内部的 gh 超时会被捕获并显式 exit 0)。
+// 不限时」,本脚本虽自带 gh 超时,宿主侧超时兜底可防任何意外挂死拖着这次 fire 不放
+// (超时后宿主树杀进程、fail-open 放行创建会话，不是「阻止本轮」；本脚本内部的 gh
+// 超时则是自己捕获并显式 exit 0,两者是不同层级的兜底,不要混为一谈)。
 
 import { readFileSync } from 'node:fs';
 import { resolve, delimiter } from 'node:path';
