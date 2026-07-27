@@ -33,6 +33,7 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 2 次,首见 2026-07-24,最近 2026-07-27,status: tracked
 - `ci-checks-unreadable` **无法读取 CI check 状态（token 权限 statusCheckRollup 403）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
   - 现象:gh pr checks 和 statusCheckRollup GraphQL 均返回 Resource not accessible by personal access token，无法判定 CI 是 pass/fail/pending。PR #397 approve 后 merge 被 branch policy 拒绝，无法确认原因。
 - `all-candidates-blocked-by-author-side` **所有候选均因冲突/未 resolve thread 被跳过** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
@@ -90,7 +91,6 @@
   - 现象:15 个候选中 9 个 stale-pushback（等作者修格式）、5 个 gate 未过（thread 未 resolve / 冲突 / CHANGES_REQUESTED）、1 个新格式打回。2 个 held draft 白名单未回复。by-design：都在等人。
 - `all-skipped-no-evolution` **本轮15个候选中14个因格式打回/thread未resolve/冲突跳过** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
   - 现象:PR #371是唯一可处理候选(docs-only)。其余均为作者侧问题(未回应格式打回/未resolve thread/未处理冲突)——设计上就该等作者响应
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
 - `product-gate-held-not-draft-rehold` **已 held 但未 draft 的 PR 需要 re-draft** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
   - 现象:PR #354 有 product hold issue 但 heldDraft=false，需要重新执行 product-hold 将其转 draft。这是设计预期：白名单成员可随时标回 Ready，auto 轮次需检查并重新 hold
 - `product-gate-bugfix-semantic-ok` **产品/架构 gate 对 fix 类型 PR 仍触发语义定性——设计如此** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked

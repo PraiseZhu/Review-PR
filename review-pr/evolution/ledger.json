@@ -62,9 +62,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-24T17:36:58.861Z",
-      "lastSeen": "2026-07-24T17:36:58.861Z"
+      "lastSeen": "2026-07-27T02:02:42.228Z"
     },
     {
       "fingerprint": "all-skipped-no-evolution",
