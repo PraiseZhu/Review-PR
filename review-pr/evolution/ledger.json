@@ -533,6 +533,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-25T18:18:57.403Z",
       "lastSeen": "2026-07-25T18:18:57.403Z"
+    },
+    {
+      "fingerprint": "structural-check-not-in-bypass-allowlist",
+      "tier": "by-design",
+      "title": "required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass",
+      "detail": "PR #303 mergeStateStatus=BLOCKED,命中的必需检查类型含 required_status_checks(范围太宽,pr-rules.json 注释已说明只允许 code_scanning/code_quality 默认放行),当前配置正确跳过、不打回、不 admin merge",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-28T10:50:48.729Z",
+      "lastSeen": "2026-07-28T10:50:48.729Z"
     }
   ]
 }
