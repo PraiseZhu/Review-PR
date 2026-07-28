@@ -509,7 +509,10 @@ gh pr diff <N> --patch
    满足 5.5 条件时可走主干侧冲突代合并；交互模式下若同时还有审查 P0/P1，可由用户
    选择 5.6 代修合并一并处理；其余情况等作者处理；
 3. 所有 review conversation 都已 resolve；bot 也不能因“是 bot”而自动忽略；
-4. required checks 没有失败或仍在运行；fork workflow 等待批准时不擅自批准；
+4. head commit 上**所有已上报检查**（含非 required 的 check-run / commit status，如
+   跑在 PR 上但未升门的检查与第三方 App 审查）没有失败或仍在运行——
+   `mergeStateStatus=UNSTABLE`（GitHub 判可合并但有非 required 检查未过）同样算
+   gate 未过，脚本按 statusCheckRollup 判定；fork workflow 等待批准时不擅自批准；
 5. 旧 reviewer 的 `CHANGES_REQUESTED`、issue comment 中明确的阻断意见已有对应修复
    和证据；不要仅因 comment 被 resolve 就判定代码已改；
 6. 没有未落地的前置依赖（见 3.6）：被依赖的 PR 未合并时，本 PR 可以审查，但不进入

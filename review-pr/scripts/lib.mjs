@@ -271,6 +271,42 @@ export function classifyHeadChecks(slug, headSha) {
 }
 
 /**
+ * 分类 PR statusCheckRollup(gh pr view --json statusCheckRollup)为 failed / pending。
+ * 与 classifyHeadChecks 互补:actions/runs 只看得到 GitHub Actions 的 workflow run,
+ * 看不到第三方 App 的 check-run(Greptile 等)与 commit status;rollup 两者都含,
+ * 是「head commit 上所有已上报检查」的全集。主要消费方是 mergeStateStatus=UNSTABLE
+ * 分支——UNSTABLE = 可合并但有非 required 检查失败/未完成,GitHub 不拦、我们必须拦
+ * (典型:PG smoke 这类跑在 PR 上但未升门的检查挂了,不拦就会自动合并带病 PR)。
+ * rollup 为 null/非数组(字段没取 / 权限异常)返 null——调用方须按「未知」保守处理,
+ * 不得当「无失败」放行。CANCELLED 计入 failed:rollup 只看 head commit,头上挂着
+ * 被取消的 run 说明该检查没跑完整,方向安全(最多多跳过一轮,不会漏拦)。
+ */
+export function classifyStatusRollup(rollup) {
+  if (!Array.isArray(rollup)) return null;
+  const FAIL_RUN = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
+  const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  const failed = [];
+  const pending = [];
+  for (const c of rollup) {
+    // CheckRun(name/status/conclusion)与 StatusContext(context/state)字段形状不同,统一归一
+    const name = c?.name ?? c?.context ?? '(unnamed check)';
+    if (c?.state != null) {
+      // StatusContext:state = SUCCESS / FAILURE / ERROR / PENDING / EXPECTED
+      if (c.state === 'FAILURE' || c.state === 'ERROR') failed.push(name);
+      else if (c.state !== 'SUCCESS') pending.push(name);
+    } else if (c?.status !== 'COMPLETED') {
+      pending.push(name);
+    } else if (FAIL_RUN.has(c?.conclusion)) {
+      failed.push(name);
+    } else if (!OK_RUN.has(c?.conclusion)) {
+      // 未知 conclusion(GitHub 新增枚举等)按未完成处理,方向安全
+      pending.push(name);
+    }
+  }
+  return { failed, pending };
+}
+
+/**
  * 探测某分支的「必需检查门」+ 当前账号能否 bypass(只读,best-effort,失败返 null)。
  * 用于解释「review 都过了、CI 也没失败,但永久 BLOCKED」——多半是 org ruleset 的
  * code_scanning(CodeQL)/ code_quality / required_status_checks 这类要求结果上报、

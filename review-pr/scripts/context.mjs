@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion } from './lib.mjs';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -304,7 +304,7 @@ try {
   // ── 1.1 + 1.3 元数据 / 文件 ──
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'number,title,body,state,headRefName,headRefOid,isCrossRepository,baseRefName,author,url,mergeable,mergeStateStatus,reviewDecision,isDraft,mergedAt,labels,files',
+    '--json', 'number,title,body,state,headRefName,headRefOid,isCrossRepository,baseRefName,author,url,mergeable,mergeStateStatus,reviewDecision,isDraft,mergedAt,labels,files,statusCheckRollup',
   ]);
   const title = meta.title ?? '';
   const body = meta.body ?? '';
@@ -963,6 +963,28 @@ try {
       blockers.push(
         `mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——非作者可处理,需 admin bypass 合或修该门;${bypassHint})`,
       );
+    }
+  } else if (meta.mergeStateStatus === 'UNSTABLE') {
+    // UNSTABLE = GitHub 判「可合并,但有非 required 检查失败/未完成」。分支保护不拦它,
+    // 这里必须拦:跑在 PR 上但没升门的检查(PG smoke / bench)、第三方 App check(Greptile)
+    // 失败都会落在这个状态,漏掉就是自动合并带病 PR。用 statusCheckRollup 而不是
+    // classifyHeadChecks——actions/runs 看不到第三方 App 的 check-run,rollup 是全集。
+    const rollup = classifyStatusRollup(meta.statusCheckRollup);
+    if (rollup === null) {
+      // rollup 读不到 → 未知,与 BLOCKED 的 ci-unknown 同口径:本轮不动,下轮再看。
+      blockers.push('mergeStateStatus=UNSTABLE,但 statusCheckRollup 读取失败——哪些检查失败未知,本轮不动,下轮再看');
+      blockClass = 'ci-unknown';
+    } else if (rollup.failed.length > 0) {
+      blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查失败:${rollup.failed.join(' / ')}——GitHub 不拦但本流程拦,失败检查修绿前不合并)`);
+      blockClass = 'ci-failed';
+    } else if (rollup.pending.length > 0) {
+      blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查还在跑:${rollup.pending.join(' / ')},等跑完即可)`);
+      blockClass = 'ci-pending';
+    } else {
+      // rollup 全绿却仍 UNSTABLE:GitHub 异步重算的暂态(或 rollup 与状态位短暂不一致)。
+      // 保守处理:本轮不动,下轮状态稳定后自然分流。
+      blockers.push('mergeStateStatus=UNSTABLE 但 rollup 无失败/未完成项——状态暂态不一致,本轮不动,下轮再看');
+      blockClass = 'ci-unknown';
     }
   }
   if (unresolvedThreads.length) blockers.push(`${unresolvedThreads.length} 条 conversation 未 resolve(不分作者)`);

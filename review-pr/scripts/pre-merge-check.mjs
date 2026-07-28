@@ -13,7 +13,7 @@
 // 退出码:0 = canMerge;2 = 有 blocker;1 = 脚本自身出错。
 // 跑:node <skill-root>/scripts/pre-merge-check.mjs <PR>
 
-import { parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, probeBranchProtection, loadRules, print, fail } from './lib.mjs';
+import { parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadRules, print, fail } from './lib.mjs';
 
 const THREADS_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -40,7 +40,7 @@ try {
   const slug = `${owner}/${repo}`;
   const m = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName',
+    '--json', 'state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,statusCheckRollup',
   ]);
   // reviewDecision 作判 BLOCKED 原因的权威信号(比 some(state===CHANGES_REQUESTED) 准:它按
   // 每个 reviewer 的「最新」review 算 —— self-approve 覆盖掉自己旧的 CHANGES_REQUESTED 后会变
@@ -119,6 +119,24 @@ try {
           : 'bypass 权限未知';
         blockers.push(`mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——需 admin bypass 合或修该门;${bypassHint})`);
       }
+    }
+  } else if (m.mergeStateStatus === 'UNSTABLE') {
+    // UNSTABLE = 可合并但有非 required 检查失败/未完成。GitHub 不拦,本 gate 必须拦
+    // (与 context.mjs 同口径):PG smoke / bench / Greptile 这类没升门的检查失败都落在
+    // 这个状态。用 statusCheckRollup(全集,含第三方 App check-run),不用 actions/runs。
+    const rollup = classifyStatusRollup(m.statusCheckRollup);
+    if (rollup === null) {
+      blockers.push('mergeStateStatus=UNSTABLE,但 statusCheckRollup 读取失败——哪些检查失败未知,不合并,下轮再看');
+      blockClass = 'ci-unknown';
+    } else if (rollup.failed.length > 0) {
+      blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查失败:${rollup.failed.join(' / ')}——GitHub 不拦但本 gate 拦,修绿前不合并)`);
+      blockClass = 'ci-failed';
+    } else if (rollup.pending.length > 0) {
+      blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查还在跑:${rollup.pending.join(' / ')},等跑完即可)`);
+      blockClass = 'ci-pending';
+    } else {
+      blockers.push('mergeStateStatus=UNSTABLE 但 rollup 无失败/未完成项——状态暂态不一致,不合并,下轮再看');
+      blockClass = 'ci-unknown';
     }
   }
   if (unresolved.length) blockers.push(`${unresolved.length} 条 conversation 未 resolve`);
