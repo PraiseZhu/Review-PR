@@ -36,12 +36,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 4 次,首见 2026-07-24,最近 2026-07-28,status: tracked
+  - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,提醒已在 crossChannelSuppressHours 窗口内去重(未重发)
 - `mivo-canvas-structural-check-codescan-quality-gap` **mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED** — 出现 2 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。
 - `structural-check-not-in-bypass-allowlist` **required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:PR #303 mergeStateStatus=BLOCKED,命中的必需检查类型含 required_status_checks(范围太宽,pr-rules.json 注释已说明只允许 code_scanning/code_quality 默认放行),当前配置正确跳过、不打回、不 admin merge
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 3 次,首见 2026-07-24,最近 2026-07-28,status: tracked
-  - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,已发过提醒(dedup 生效,未重发)
 - `ci-checks-unreadable` **无法读取 CI check 状态（token 权限 statusCheckRollup 403）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
   - 现象:gh pr checks 和 statusCheckRollup GraphQL 均返回 Resource not accessible by personal access token，无法判定 CI 是 pass/fail/pending。PR #397 approve 后 merge 被 branch policy 拒绝，无法确认原因。
 - `all-candidates-blocked-by-author-side` **所有候选均因冲突/未 resolve thread 被跳过** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
