@@ -36,8 +36,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `mivo-canvas-structural-check-codescan-quality-gap` **mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
-  - 现象:本轮 4 候选中 #296(审查通过、已 self-approve)与 #303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks];因 required_status_checks 未在 structuralBypassAllowlist 内,按规则不自动 admin bypass。需 owner 决定:①给仓库接入 CodeQL workflow / code quality 工具让检查真正产出结果,或②确认这三项对本仓永久产出空结果后手动 --admin 合并个案,或③到 org 层调整 ruleset 把这三类从 mivo-canvas 的必需检查里去掉。
+- `mivo-canvas-structural-check-codescan-quality-gap` **mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED** — 出现 2 次,首见 2026-07-28,最近 2026-07-28,status: tracked
+  - 现象:本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。
 - `structural-check-not-in-bypass-allowlist` **required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:PR #303 mergeStateStatus=BLOCKED,命中的必需检查类型含 required_status_checks(范围太宽,pr-rules.json 注释已说明只允许 code_scanning/code_quality 默认放行),当前配置正确跳过、不打回、不 admin merge
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 3 次,首见 2026-07-24,最近 2026-07-28,status: tracked
