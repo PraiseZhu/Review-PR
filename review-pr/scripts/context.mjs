@@ -951,7 +951,13 @@ try {
       // 或被 job 级 if 跳过的必需 check。这类不是作者要改 —— 要么 owner 用 admin bypass 合、
       // 要么修该门让它能上报结果。
       blockClass = 'structural-check';
-      structuralBlock = probeBranchProtection(slug, meta.baseRefName);
+      // 把 head rollup 里已通过的检查名传给 probe:required_status_checks 规则若已被全绿的
+      // context 满足,就不再算「未上报的必需检查门」,否则 allowlist 判据永远差一项,
+      // code_scanning/code_quality 这类真空门的自动 bypass 被永久锁死。
+      const rollupOk = classifyStatusRollup(meta.statusCheckRollup)?.ok;
+      structuralBlock = probeBranchProtection(slug, meta.baseRefName, {
+        satisfiedContexts: rollupOk ? new Set(rollupOk) : null,
+      });
       structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
         structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
       const ruleHint = structuralBlock?.requiredCheckRules?.length

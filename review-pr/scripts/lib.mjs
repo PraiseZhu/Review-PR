@@ -287,6 +287,7 @@ export function classifyStatusRollup(rollup) {
   const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
   const failed = [];
   const pending = [];
+  const ok = []; // 已上报且通过(SUCCESS/NEUTRAL/SKIPPED)的检查名——probeBranchProtection 用它判 required_status_checks 规则是否已满足
   for (const c of rollup) {
     // CheckRun(name/status/conclusion)与 StatusContext(context/state)字段形状不同,统一归一
     const name = c?.name ?? c?.context ?? '(unnamed check)';
@@ -294,6 +295,7 @@ export function classifyStatusRollup(rollup) {
       // StatusContext:state = SUCCESS / FAILURE / ERROR / PENDING / EXPECTED
       if (c.state === 'FAILURE' || c.state === 'ERROR') failed.push(name);
       else if (c.state !== 'SUCCESS') pending.push(name);
+      else ok.push(name);
     } else if (c?.status !== 'COMPLETED') {
       pending.push(name);
     } else if (FAIL_RUN.has(c?.conclusion)) {
@@ -301,9 +303,11 @@ export function classifyStatusRollup(rollup) {
     } else if (!OK_RUN.has(c?.conclusion)) {
       // 未知 conclusion(GitHub 新增枚举等)按未完成处理,方向安全
       pending.push(name);
+    } else {
+      ok.push(name);
     }
   }
-  return { failed, pending };
+  return { failed, pending, ok };
 }
 
 /**
@@ -315,7 +319,7 @@ export function classifyStatusRollup(rollup) {
  *      + GET /repos/{slug}/rulesets/{id}(取 current_user_can_bypass)。
  * 返回 { requiredCheckRules, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch) {
+export function probeBranchProtection(slug, branch, { satisfiedContexts = null } = {}) {
   if (!branch) return null;
   const rr = gh(['api', `repos/${slug}/rules/branches/${encodeURIComponent(branch)}`], { allowFail: true });
   if (!rr.ok) return null;
@@ -323,7 +327,28 @@ export function probeBranchProtection(slug, branch) {
     const rules = JSON.parse(rr.stdout || '[]');
     if (!Array.isArray(rules)) return null;
     const CHECK_RULES = new Set(['required_status_checks', 'code_scanning', 'code_quality']);
-    const requiredCheckRules = [...new Set(rules.filter((r) => CHECK_RULES.has(r.type)).map((r) => r.type))];
+    // required_status_checks 与 code_scanning/code_quality 本质不同:后两者在 GHAS 未接线的仓
+    // 永不上报(真·结构性门,structuralBypassAllowlist 管的就是它们);前者要求的是具体 CI
+    // context,head commit 的 rollup 里全绿即为「已满足」——已满足的规则不是 blocker,必须
+    // 从 requiredCheckRules 剔除,否则 allowlist 的 every() 永远差这一项,自动 bypass 被
+    // 永久锁死(实测:ci-required-checks ruleset 上线后所有 PR 卡死在 skip-structural-block)。
+    // fail-closed:调用方没给 satisfiedContexts(rollup 读不到)、或规则里读不出 context 清单、
+    // 或有任一 context 不在已通过集合里 → 一律保留该规则(宁可不 bypass,不可误 bypass)。
+    const satisfied = satisfiedContexts instanceof Set ? satisfiedContexts : null;
+    const missingRequiredContexts = [];
+    const activeCheckRules = rules.filter((r) => {
+      if (!CHECK_RULES.has(r.type)) return false;
+      if (r.type !== 'required_status_checks' || satisfied === null) return true;
+      const wanted = (r.parameters?.required_status_checks ?? [])
+        .map((c) => c?.context)
+        .filter((c) => typeof c === 'string' && c !== '');
+      if (wanted.length === 0) return true; // 读不出要求的 context → 保守保留
+      const missing = wanted.filter((c) => !satisfied.has(c));
+      if (missing.length === 0) return false; // 全部已上报且通过 → 规则已满足,不是 blocker
+      missingRequiredContexts.push(...missing);
+      return true;
+    });
+    const requiredCheckRules = [...new Set(activeCheckRules.map((r) => r.type))];
     const rulesetIds = [...new Set(rules.map((r) => r.ruleset_id).filter((x) => typeof x === 'number'))];
     let canBypass = null; // null=未知;'never'/false=不能;'always'/'pull_requests'=能
     for (const id of rulesetIds) {
@@ -335,7 +360,7 @@ export function probeBranchProtection(slug, branch) {
         if (canBypass == null) canBypass = cb ?? null;
       } catch { /* 单条 ruleset 读失败忽略,继续看下一条 */ }
     }
-    return { requiredCheckRules, canBypass, rulesetIds };
+    return { requiredCheckRules, canBypass, rulesetIds, missingRequiredContexts };
   } catch {
     return null;
   }

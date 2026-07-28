@@ -108,7 +108,11 @@ try {
         // 但 canBypass 且命中类型在 structuralBypassAllowlist 内时可走 admin bypass
         // (由 3A 决定;auto 模式绝不自动 bypass)。
         blockClass = 'structural-check';
-        structuralBlock = probeBranchProtection(slug, m.baseRefName);
+        // 与 context.mjs 同口径:已被全绿 context 满足的 required_status_checks 规则不算结构性门
+        const rollupOk = classifyStatusRollup(m.statusCheckRollup)?.ok;
+        structuralBlock = probeBranchProtection(slug, m.baseRefName, {
+          satisfiedContexts: rollupOk ? new Set(rollupOk) : null,
+        });
         structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
           structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
         const ruleHint = structuralBlock?.requiredCheckRules?.length
