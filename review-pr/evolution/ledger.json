@@ -585,6 +585,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-28T13:25:25.316Z",
       "lastSeen": "2026-07-28T13:25:25.316Z"
+    },
+    {
+      "fingerprint": "worktree-cleanup-pr-n-branch-naming",
+      "tier": "proposal",
+      "title": "fix-worktree-cleanup 只按 PR head 分支名解析,pr-<N> 命名的托管 worktree 永不被回收",
+      "detail": "本轮 --scan 在 .claude/worktrees 下发现 2 个托管 worktree(分支 pr-301 / pr-303)与 3 个 worktree-agent-* 分支,全部因 '查不到对应 PR' 跳过;但 gh 实查 PR 301/303 均为 MERGED。原因:judge() 用 gh pr list --head <branch> 解析,只认与 PR headRefName 同名的分支(gh pr checkout 的产物),而 Claude Code 的 Agent isolation:worktree / create-pr 流程建出的分支名是 pr-<N> 或 worktree-agent-<hash>,永远匹配不上,这类 worktree 会无限累积(含 node_modules)。",
+      "proposal": "考虑在 judge() 增加一条确定性解析:分支名严格匹配 ^pr-(\\d+)$ 时,用捕获到的编号走 gh pr view <N> 判状态(仍要求非 OPEN + 30 分钟宽限 + 托管目录三重条件);worktree-agent-<hash> 无编号线索,保持不动。注意这是放宽销毁类操作的识别面,按扩权类处理,须 owner 拍板后再落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-28T19:35:14.090Z",
+      "lastSeen": "2026-07-28T19:35:14.090Z"
     }
   ]
 }
