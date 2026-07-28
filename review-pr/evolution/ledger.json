@@ -57,14 +57,14 @@
       "fingerprint": "by-design-threads-unresolved",
       "tier": "by-design",
       "title": "PR 因 unresolved thread 或冲突无法合并,等作者处理",
-      "detail": null,
+      "detail": "PR #251 命中同一模式,1 条 conversation 未 resolve,已发过提醒(dedup 生效,未重发)",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-24T17:36:58.861Z",
-      "lastSeen": "2026-07-27T02:02:42.228Z"
+      "lastSeen": "2026-07-28T10:50:44.848Z"
     },
     {
       "fingerprint": "all-skipped-no-evolution",

@@ -33,7 +33,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 2 次,首见 2026-07-24,最近 2026-07-27,status: tracked
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 3 次,首见 2026-07-24,最近 2026-07-28,status: tracked
+  - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,已发过提醒(dedup 生效,未重发)
 - `ci-checks-unreadable` **无法读取 CI check 状态（token 权限 statusCheckRollup 403）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
   - 现象:gh pr checks 和 statusCheckRollup GraphQL 均返回 Resource not accessible by personal access token，无法判定 CI 是 pass/fail/pending。PR #397 approve 后 merge 被 branch policy 拒绝，无法确认原因。
 - `all-candidates-blocked-by-author-side` **所有候选均因冲突/未 resolve thread 被跳过** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
