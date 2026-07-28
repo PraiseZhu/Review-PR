@@ -572,6 +572,19 @@
       "occurrences": 2,
       "firstSeen": "2026-07-28T12:08:56.190Z",
       "lastSeen": "2026-07-28T12:15:28.776Z"
+    },
+    {
+      "fingerprint": "node-debug-env-pollutes-script-stdout",
+      "tier": "proposal",
+      "title": "本地 shell 环境变量 NODE_DEBUG 会污染 review-pr 脚本的 JSON stdout",
+      "detail": "运行环境的 NODE_DEBUG=http,https,net,tls(疑似操作者 shell profile 全局设置,与本 skill 无关)会让 context.mjs/notify-*.mjs 等所有走 node 网络模块(gh api 走的是 fetch/GraphQL 助手)的脚本在 stdout 混入海量调试行,把本该是纯 JSON 的输出弄脏,主 agent 本轮靠手工加 env -u NODE_DEBUG 前缀绕过。若未来某次无人值守调度环境恰好继承了同一 shell 配置,会直接破坏 run-log/summary 的 JSON 解析。",
+      "proposal": "评估是否在 lib.mjs 顶部(所有脚本的唯一入口)加一行 delete process.env.NODE_DEBUG,或在 spawnScriptJson/mapPool 派生子进程时显式清空该变量;需先确认 Node 的 util.debuglog 是否在 net/http/tls 模块 import 时已经lazy读取过该值(ESM 静态 import 提升,可能来不及在业务代码执行前清掉),必要时改用 spawn 时传 env 覆盖而非进程内 delete。不确定是否所有部署环境都会复现,故先记提案不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-28T13:25:25.316Z",
+      "lastSeen": "2026-07-28T13:25:25.316Z"
     }
   ]
 }
