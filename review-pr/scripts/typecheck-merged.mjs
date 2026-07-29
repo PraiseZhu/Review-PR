@@ -21,13 +21,70 @@
 // 输出:
 //   { ok:true, mode, pass:true/false, mergeConflict:bool, errors:[] }
 
-import { git, run, print, fail } from './lib.mjs';
+import { git, run, print, fail, loadRules } from './lib.mjs';
 import process from 'node:process';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 
 const ROOT = path.resolve(process.cwd());
 const currentMode = process.argv.includes('--current');
+
+// tsc 诊断行:既要认 `file(line,col): error TSxxxx`,也要认没有文件前缀的配置类诊断
+// (如 `error TS5058: The specified path does not exist`)。只认前者会把「tsconfig
+// 路径不对」这类失败过滤成 errors:[],输出成说不出原因的 pass:false 假阴性。
+const ERROR_LINE = /(?:^|:\s)error TS\d{3,5}/;
+
+// 把 references 里的一项(可能是目录,也可能直接是 tsconfig 文件)解析成实际配置文件
+function resolveProjectPath(rel) {
+  const abs = path.join(ROOT, rel);
+  if (!existsSync(abs)) return null;
+  try {
+    if (statSync(abs).isDirectory()) {
+      const nested = path.join(rel, 'tsconfig.json');
+      return existsSync(path.join(ROOT, nested)) ? nested : null;
+    }
+  } catch {
+    return null;
+  }
+  return rel;
+}
+
+// 解析本仓要 typecheck 的 tsconfig 清单。原先硬编码 apps/desktop/tsconfig.json(Cindy
+// 仓布局):接入仓库布局不同时 tsc 报 TS5058 直接退 1,而该诊断无文件前缀又被错误提取
+// 过滤掉 → 健康检查永远 pass:false + errors:[],既拦不住真问题也说不出为什么。
+function resolveTypecheckProjects(rules) {
+  const configured = rules?.typecheckProjects ?? rules?.typecheckProject ?? null;
+  const fromConfig = (Array.isArray(configured) ? configured : configured ? [configured] : [])
+    .map(resolveProjectPath)
+    .filter(Boolean);
+  if (fromConfig.length) return { projects: fromConfig, source: 'config' };
+
+  // 零配置探测:先照顾 Cindy 仓既有布局,保持向后兼容
+  const legacy = resolveProjectPath('apps/desktop/tsconfig.json');
+  if (legacy) return { projects: [legacy], source: 'probe:apps/desktop' };
+
+  if (!existsSync(path.join(ROOT, 'tsconfig.json'))) return { projects: [], source: 'none' };
+
+  // solution 式根配置(files:[] + references):对它跑 --noEmit 编译的是零个文件,
+  // 会空转退 0 —— 那是比报错更危险的假绿。展开 references 逐个查才是真检查。
+  let refs = [];
+  try {
+    const raw = readFileSync(path.join(ROOT, 'tsconfig.json'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const parsed = JSON.parse(raw);
+    refs = Array.isArray(parsed.references)
+      ? parsed.references.map((r) => r?.path).filter((p) => typeof p === 'string')
+      : [];
+  } catch {
+    refs = [];
+  }
+
+  const refProjects = refs.map((p) => resolveProjectPath(p.replace(/^\.\//, ''))).filter(Boolean);
+  if (refProjects.length) return { projects: refProjects, source: 'probe:root-references' };
+
+  return { projects: ['tsconfig.json'], source: 'probe:root' };
+}
 
 function cleanup() {
   if (currentMode) return; // --current 不动 git,无需还原
@@ -80,35 +137,47 @@ try {
     }
   }
 
-  // 3. 跑 tsc --noEmit(10 分钟硬超时,防挂死 auto 轮)
-  const tscResult = run(tscBin, ['--noEmit', '--project', 'apps/desktop/tsconfig.json'], {
-    allowFail: true,
-    timeoutMs: 10 * 60_000,
-  });
+  // 3. 跑 tsc --noEmit(每个 project 10 分钟硬超时,防挂死 auto 轮)
+  const { projects, source: projectSource } = resolveTypecheckProjects(loadRules());
+  if (!projects.length) {
+    cleanup();
+    fail(`在 ${ROOT} 找不到可用的 tsconfig(既无 typecheckProject 配置也探测不到),无法 typecheck`);
+  }
+
+  const rawParts = [];
+  let allOk = true;
+  for (const project of projects) {
+    const r = run(tscBin, ['--noEmit', '--project', project], {
+      allowFail: true,
+      timeoutMs: 10 * 60_000,
+    });
+    if (!r.ok) allOk = false;
+    const raw = r.stdout || r.stderr || '';
+    if (raw.trim()) rawParts.push(raw);
+    // 退了非 0 却一个字都没输出时留个痕,别让它变成无从下手的 errors:[]
+    if (!r.ok && !raw.trim()) rawParts.push(`error TS0000: tsc --project ${project} 非零退出但无输出`);
+  }
 
   // 4. 还原(--current 模式为 no-op)
   cleanup();
 
   // 5. 解析结果
-  if (tscResult.ok) {
+  if (allOk) {
     print({
       ok: true,
       pr: prArg ? Number(prArg) : null,
       mode: currentMode ? 'current' : 'trial-merge',
       pass: true,
       mergeConflict: false,
+      projects,
+      projectSource,
       errors: [],
     });
   } else {
-    // 提取 tsc 错误(每行一个错误,格式: file(line,col): error TSxxxx: message)
-    const rawOutput = tscResult.stdout || tscResult.stderr || '';
-    const errorLines = rawOutput
-      .split('\n')
-      .filter((l) => l.includes(': error TS'))
-      .map((l) => l.trim())
-      .slice(0, 30); // 最多 30 条,避免输出爆炸
-
-    const totalErrors = rawOutput.split('\n').filter((l) => l.includes(': error TS')).length;
+    // 提取 tsc 错误(常见格式: file(line,col): error TSxxxx: message;配置类诊断无文件前缀)
+    const allLines = rawParts.join('\n').split('\n').filter((l) => ERROR_LINE.test(l));
+    const errorLines = allLines.map((l) => l.trim()).slice(0, 30); // 最多 30 条,避免输出爆炸
+    const totalErrors = allLines.length;
 
     print({
       ok: true,
@@ -116,6 +185,8 @@ try {
       mode: currentMode ? 'current' : 'trial-merge',
       pass: false,
       mergeConflict: false,
+      projects,
+      projectSource,
       errors: errorLines,
       totalErrors,
       note: totalErrors > 30 ? `共 ${totalErrors} 个错误,仅展示前 30 条` : undefined,
