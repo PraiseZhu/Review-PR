@@ -754,6 +754,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T17:28:45.538Z",
       "lastSeen": "2026-07-29T17:28:45.538Z"
+    },
+    {
+      "fingerprint": "nonrequired-thirdparty-ai-check-blocks-merge",
+      "tier": "proposal",
+      "title": "非 required 的第三方 AI 审查 App check FAILURE 与真正 CI 失败同归 ci-failed",
+      "detail": "本轮 PR 318:分支保护的 9 项 required check 全部 SUCCESS,唯一 FAILURE 来自非 required 的第三方 AI 审查 App(check-run)。SKILL 3.5 第 4 条规定「所有已上报检查」失败即 gate 未过,所以阻断本身是设计如此;问题在归类与汇总口径——blockClass 统一记 ci-failed,owner 从汇总看不出是「构建/测试挂了」还是「AI 审查 App 给了 FAILURE 结论」,两者的处置动作完全不同(前者改代码,后者读意见或决定是否纳入阻断集)。",
+      "proposal": "两个方向请 owner 拍板:① 仅改汇总口径(低风险):在 skip 行文里点出失败 check 是否属 required,不新增 blockClass 值,不改任何 gate 判定;② 放宽阻断集(扩权类,须显式授权):在 pr-rules.json 增加 nonBlockingCheckAllowlist,命中的非 required check 失败不计入前置门。②会放宽 gate,永不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T23:05:42.177Z",
+      "lastSeen": "2026-07-29T23:05:42.177Z"
     }
   ]
 }
