@@ -31,6 +31,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `ui-evidence-notice-no-recipient-on-own-pr` **ownPr=true 时 UI 证据提醒评论没有收件人,等于在自己 PR 上刷噪音** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `bc30805`
+  - 现象:SKILL 3.2 无条件在 uiEvidenceMissing=true 时发提醒评论,未排除 viewer=作者的情形。xindong/mivo-canvas 每日 changelog 补扫 PR(作者=本流程账号,改 public/changelog.json 命中 uiPaths 的 public/ 前缀)每天命中一次。
+  - 提案:3.2 增一句 ownPr=true 时不发本评论,证据缺口照常进报告与汇总,gate 结论不变。只减写操作,非扩权。
 - `ui-evidence-blob-links-not-detected` **context.mjs 的 UI 证据检测未识别 GitHub blob 链接到图片文件** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: landed
   - 现象:PR #413 作者在 body 表格里用 GitHub blob URL 链接了 3 张 .webp 截图（因私有仓库无法内嵌渲染），但 bodyUiEvidenceKinds 仍为空，导致 uiEvidenceMissing=true。实际证据充分，主 agent 判断不发误导性提醒评论
   - 提案:context.mjs 的证据检测增加对 github.com/.../blob/...\.(webp|png|jpg|jpeg|gif|svg) 格式链接的识别，识别到即视为有效 image 类证据

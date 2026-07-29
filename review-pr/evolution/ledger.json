@@ -598,6 +598,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-28T19:35:14.090Z",
       "lastSeen": "2026-07-28T19:35:14.090Z"
+    },
+    {
+      "fingerprint": "ui-evidence-notice-no-recipient-on-own-pr",
+      "tier": "auto",
+      "title": "ownPr=true 时 UI 证据提醒评论没有收件人,等于在自己 PR 上刷噪音",
+      "detail": "SKILL 3.2 无条件在 uiEvidenceMissing=true 时发提醒评论,未排除 viewer=作者的情形。xindong/mivo-canvas 每日 changelog 补扫 PR(作者=本流程账号,改 public/changelog.json 命中 uiPaths 的 public/ 前缀)每天命中一次。",
+      "proposal": "3.2 增一句 ownPr=true 时不发本评论,证据缺口照常进报告与汇总,gate 结论不变。只减写操作,非扩权。",
+      "status": "landed",
+      "commit": "bc30805",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T01:48:27.009Z",
+      "lastSeen": "2026-07-29T01:48:27.009Z"
     }
   ]
 }
