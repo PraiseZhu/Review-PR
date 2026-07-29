@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `own-pr-structural-block-no-approval-path` **本流程账号自有 PR 撞结构性 BLOCKED 时无任何放行路径,会永久堆积** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+  - 现象:结构门自动 admin bypass 的安全前提含 reviewDecision=APPROVED(internal-gates「作者侧与仓库侧 gate」)。当 ownPr=true(viewer=作者)时该前提永远拿不到:GitHub 禁止自批准(422),而唯一豁免 approval 的 selfMergeAvailable 路径要求作者在 selfFixAuthors 名单内。xindong/mivo-canvas 的 selfFixAuthors 首周故意留空,于是每日 chore 更新日志补扫 PR(作者=本流程账号)审查全过、CI 全绿、0 未 resolve thread,仍只能跳过,需人工合并,不合就逐日累积。
+  - 提案:扩权类,须 owner 拍板,二选一:(A) 把该账号加入 selfFixAuthors,走既有 selfMergeAvailable=true 的 --admin 自合并路径(该路径本就设计为豁免 approval);(B) 在结构门 bypass 的安全前提里,对 ownPr=true 的 PR 用「独立审查零 P0/P1 + 已跑 CI 无失败 + 0 未 resolve thread + 命中检查类型全在 structuralBypassAllowlist」替代 reviewDecision=APPROVED。两者都放宽了署名/合并边界,不自动落地。
 - `worktree-cleanup-pr-n-branch-naming` **fix-worktree-cleanup 只按 PR head 分支名解析,pr-<N> 命名的托管 worktree 永不被回收** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: open
   - 现象:本轮 --scan 在 .claude/worktrees 下发现 2 个托管 worktree(分支 pr-301 / pr-303)与 3 个 worktree-agent-* 分支,全部因 '查不到对应 PR' 跳过;但 gh 实查 PR 301/303 均为 MERGED。原因:judge() 用 gh pr list --head <branch> 解析,只认与 PR headRefName 同名的分支(gh pr checkout 的产物),而 Claude Code 的 Agent isolation:worktree / create-pr 流程建出的分支名是 pr-<N> 或 worktree-agent-<hash>,永远匹配不上,这类 worktree 会无限累积(含 node_modules)。
   - 提案:考虑在 judge() 增加一条确定性解析:分支名严格匹配 ^pr-(\d+)$ 时,用捕获到的编号走 gh pr view <N> 判状态(仍要求非 OPEN + 30 分钟宽限 + 托管目录三重条件);worktree-agent-<hash> 无编号线索,保持不动。注意这是放宽销毁类操作的识别面,按扩权类处理,须 owner 拍板后再落地。

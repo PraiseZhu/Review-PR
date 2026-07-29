@@ -611,6 +611,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T01:48:27.009Z",
       "lastSeen": "2026-07-29T01:48:27.009Z"
+    },
+    {
+      "fingerprint": "own-pr-structural-block-no-approval-path",
+      "tier": "proposal",
+      "title": "本流程账号自有 PR 撞结构性 BLOCKED 时无任何放行路径,会永久堆积",
+      "detail": "结构门自动 admin bypass 的安全前提含 reviewDecision=APPROVED(internal-gates「作者侧与仓库侧 gate」)。当 ownPr=true(viewer=作者)时该前提永远拿不到:GitHub 禁止自批准(422),而唯一豁免 approval 的 selfMergeAvailable 路径要求作者在 selfFixAuthors 名单内。xindong/mivo-canvas 的 selfFixAuthors 首周故意留空,于是每日 chore 更新日志补扫 PR(作者=本流程账号)审查全过、CI 全绿、0 未 resolve thread,仍只能跳过,需人工合并,不合就逐日累积。",
+      "proposal": "扩权类,须 owner 拍板,二选一:(A) 把该账号加入 selfFixAuthors,走既有 selfMergeAvailable=true 的 --admin 自合并路径(该路径本就设计为豁免 approval);(B) 在结构门 bypass 的安全前提里,对 ownPr=true 的 PR 用「独立审查零 P0/P1 + 已跑 CI 无失败 + 0 未 resolve thread + 命中检查类型全在 structuralBypassAllowlist」替代 reviewDecision=APPROVED。两者都放宽了署名/合并边界,不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T01:48:44.955Z",
+      "lastSeen": "2026-07-29T01:48:44.955Z"
     }
   ]
 }
