@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `structural-bypass-approved-vs-repo-without-required-approval` **结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+  - 现象:mivo-canvas 分支保护不要求 approve,reviewDecision 恒为空(历史 #295/#283/#314 全部以 reviewDecision="" 合并)。code_scanning/code_quality 两个必需检查从不上报结果,PR 恒为 structural-check BLOCKED。context.mjs 给 auto.action=bypass-structural-block(理由写「自动 admin bypass 合并」)、pre-merge-check 给 structuralBypassAvailable=true,但 SKILL 5.1 把 --admin 授权交给 internal-gates.md 177-180,后者要求 reviewDecision=APPROVED,该条在本仓无法满足 → 每个 PR 都卡在合并 gate。本轮 PR #316(审查 0 P0/P1、14 项 CI 全绿、无未 resolve thread)因此按「跳过并报告」处理,未合并。SKILL 5.3 的表述里没有 APPROVED 这一条,与 internal-gates 不一致,是两处文本的口径漂移。
+  - 提案:需 owner 拍板二选一:①(推荐)把 internal-gates 177-180 的 reviewDecision 条件改为「reviewDecision 不是 CHANGES_REQUESTED,且若仓库要求 approve 则必须为 APPROVED」——即区分「approve 是门」与「approve 不是门」两类仓库,并同步 SKILL 5.3 措辞;②保持现状,则本仓所有 PR 的最终合并动作固定转人工,应在 pr-rules.json 里显式关掉自动合并,避免每轮都产生一条「等你拍板」的噪音。属放宽 admin bypass 条件,扩权类,不自动落地。
 - `changelog-data-file-hits-uipaths` **public/changelog.json 是纯数据文件却命中 uiPaths,每日误报 UI 证据缺口** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
   - 现象:mivo 仓 uiPaths 含前缀 public/,uiExcludePaths 为空,于是每日 changelog 补扫 PR 都被判 uiEvidenceMissing=true。该文件是 Change Log 面板的数据源,改动确实会让面板多一行文案,但截图证据价值极低(渲染结构/组件/样式零改动),要求截图属噪音。
   - 提案:在目标仓 agent-use/docs/pr-rules.json 的 uiExcludePaths 增 public/changelog\\.json。注意该文件在 securityReviewPaths(^agent-use/)内,且本仓禁止直推 main,改动须走 PR + 人工审查,不能自动落地。

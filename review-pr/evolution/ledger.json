@@ -637,6 +637,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T01:49:00.683Z",
       "lastSeen": "2026-07-29T01:49:00.683Z"
+    },
+    {
+      "fingerprint": "structural-bypass-approved-vs-repo-without-required-approval",
+      "tier": "proposal",
+      "title": "结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地",
+      "detail": "mivo-canvas 分支保护不要求 approve,reviewDecision 恒为空(历史 #295/#283/#314 全部以 reviewDecision=\"\" 合并)。code_scanning/code_quality 两个必需检查从不上报结果,PR 恒为 structural-check BLOCKED。context.mjs 给 auto.action=bypass-structural-block(理由写「自动 admin bypass 合并」)、pre-merge-check 给 structuralBypassAvailable=true,但 SKILL 5.1 把 --admin 授权交给 internal-gates.md 177-180,后者要求 reviewDecision=APPROVED,该条在本仓无法满足 → 每个 PR 都卡在合并 gate。本轮 PR #316(审查 0 P0/P1、14 项 CI 全绿、无未 resolve thread)因此按「跳过并报告」处理,未合并。SKILL 5.3 的表述里没有 APPROVED 这一条,与 internal-gates 不一致,是两处文本的口径漂移。",
+      "proposal": "需 owner 拍板二选一:①(推荐)把 internal-gates 177-180 的 reviewDecision 条件改为「reviewDecision 不是 CHANGES_REQUESTED,且若仓库要求 approve 则必须为 APPROVED」——即区分「approve 是门」与「approve 不是门」两类仓库,并同步 SKILL 5.3 措辞;②保持现状,则本仓所有 PR 的最终合并动作固定转人工,应在 pr-rules.json 里显式关掉自动合并,避免每轮都产生一条「等你拍板」的噪音。属放宽 admin bypass 条件,扩权类,不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T05:11:26.017Z",
+      "lastSeen": "2026-07-29T05:11:26.017Z"
     }
   ]
 }
