@@ -689,6 +689,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T14:05:51.010Z",
       "lastSeen": "2026-07-29T14:05:51.010Z"
+    },
+    {
+      "fingerprint": "typecheck-merged-hardcoded-project-path",
+      "tier": "auto",
+      "title": "typecheck-merged 硬编码 apps/desktop/tsconfig.json,非该布局的仓库健康检查恒为假阴性",
+      "detail": "在 mivo-canvas 跑 --current 得 pass:false / errors:[] / totalErrors:0。根因两层:tsc 报 TS5058(路径不存在)退 1,而该诊断无 'file(line,col): ' 前缀被 ': error TS' 过滤掉。已改为按 pr-rules.json typecheckProject(s) → apps/desktop 探测 → 根 tsconfig 的 references 展开解析,并放宽错误提取正则。实测正向 pass:true、注入类型错误后 pass:false 且给出真实错误行。",
+      "proposal": null,
+      "status": "landed",
+      "commit": "0630de2",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T14:31:24.327Z",
+      "lastSeen": "2026-07-29T14:31:24.327Z"
     }
   ]
 }
