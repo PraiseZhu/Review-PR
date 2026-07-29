@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ui-evidence-false-positive-on-nonvisual-src-paths` **uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+  - 现象:mivo-canvas#325 命中:uiCodeFiles = src/agent/{snapshotRegion,canvasAgentVerbs}.ts 等纯函数与 Agent 动词模块(零 React、零 JSX、零 CSS、零用户可见文案),因 uiPaths 含 'src/' 前缀被判 UI 面 → uiEvidenceMissing=true。本轮因 auto.ownPr=true 抑制了提醒评论,没造成实际噪音;若作者不是本流程账号,就会收到一条要求给纯函数 PR 补截图的评论。审查 agent 独立判定为误报。
+  - 提案:目标仓 pr-rules.json 的 uiExcludePaths 增补非可视路径前缀(如 ^src/agent/、^src/model/、^src/render/ 中的纯契约资产),或把 uiPaths 从 'src/' 收窄到真正的 UI 目录(src/app/、src/canvas/、public/、index.html)。属目标仓配置、由 owner 拍板,不自动落地。
 - `stale-mergeable-after-same-round-merge` **同一轮内合并后,GitHub 的 mergeable/MERGEABLE 对余下候选是过期结论,pre-merge-check 直接采信** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
   - 现象:本轮合并 #319、#334 后,#325 的 pre-merge-check 仍报 mergeable=MERGEABLE、blockClass=structural-check(看起来可 admin bypass 合)。我手动跑 git merge-tree --write-tree origin/main <pr-head> 才发现真冲突(src/agent/canvasAgentVerbs.test.ts,与本轮落地的 #334 相撞)。GitHub 重算 mergeability 有延迟,期间 UNKNOWN 或沿用旧值;若照采信就会对一个实际冲突的 PR 走合并路径。
   - 提案:pre-merge-check 增一道本地交叉校验:当 PR 的 base 在其最后一次 CI 之后前进过(或 mergeable 为 UNKNOWN)时,跑 git merge-tree --write-tree <base> <head> 实测,冲突则把 blockClass 定成 conflict、不采信 GitHub 的 MERGEABLE。纯读操作、不新增写权限。

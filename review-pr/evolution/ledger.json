@@ -741,6 +741,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T17:10:57.360Z",
       "lastSeen": "2026-07-29T17:10:57.360Z"
+    },
+    {
+      "fingerprint": "ui-evidence-false-positive-on-nonvisual-src-paths",
+      "tier": "proposal",
+      "title": "uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报",
+      "detail": "mivo-canvas#325 命中:uiCodeFiles = src/agent/{snapshotRegion,canvasAgentVerbs}.ts 等纯函数与 Agent 动词模块(零 React、零 JSX、零 CSS、零用户可见文案),因 uiPaths 含 'src/' 前缀被判 UI 面 → uiEvidenceMissing=true。本轮因 auto.ownPr=true 抑制了提醒评论,没造成实际噪音;若作者不是本流程账号,就会收到一条要求给纯函数 PR 补截图的评论。审查 agent 独立判定为误报。",
+      "proposal": "目标仓 pr-rules.json 的 uiExcludePaths 增补非可视路径前缀(如 ^src/agent/、^src/model/、^src/render/ 中的纯契约资产),或把 uiPaths 从 'src/' 收窄到真正的 UI 目录(src/app/、src/canvas/、public/、index.html)。属目标仓配置、由 owner 拍板,不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T17:28:45.538Z",
+      "lastSeen": "2026-07-29T17:28:45.538Z"
     }
   ]
 }
