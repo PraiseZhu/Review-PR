@@ -49,6 +49,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `blocked-structural-check-ignores-thirdparty-check-runs` **BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `5178e64`
+  - 现象:classifyHeadChecks 走 actions/runs,看不到第三方 App 的 check-run 与 commit status;BLOCKED 分支落进 structural-check 前未查 statusCheckRollup 全集。实测 mivo-canvas#318:Greptile Review conclusion=failure(置信度 3/5 低于本仓要求 4/5),gate 却报「review 与已跑 CI 均无问题」并给出 bypass-structural-block。UNSTABLE 分支早已用 rollup 处理同一类问题,BLOCKED 分支漏了。
+  - 提案:BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。
 - `typecheck-merged-hardcoded-project-path` **typecheck-merged 硬编码 apps/desktop/tsconfig.json,非该布局的仓库健康检查恒为假阴性** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `0630de2`
   - 现象:在 mivo-canvas 跑 --current 得 pass:false / errors:[] / totalErrors:0。根因两层:tsc 报 TS5058(路径不存在)退 1,而该诊断无 'file(line,col): ' 前缀被 ': error TS' 过滤掉。已改为按 pr-rules.json typecheckProject(s) → apps/desktop 探测 → 根 tsconfig 的 references 展开解析,并放宽错误提取正则。实测正向 pass:true、注入类型错误后 pass:false 且给出真实错误行。
 - `ui-evidence-notice-hardcodes-design-md` **uiEvidenceNotice 硬编码 DESIGN.md,uiRequired 为空时提醒指向不存在的文件** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `c6e83d6`

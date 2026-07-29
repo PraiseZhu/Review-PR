@@ -728,6 +728,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T14:31:28.584Z",
       "lastSeen": "2026-07-29T14:31:28.584Z"
+    },
+    {
+      "fingerprint": "blocked-structural-check-ignores-thirdparty-check-runs",
+      "tier": "auto",
+      "title": "BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并",
+      "detail": "classifyHeadChecks 走 actions/runs,看不到第三方 App 的 check-run 与 commit status;BLOCKED 分支落进 structural-check 前未查 statusCheckRollup 全集。实测 mivo-canvas#318:Greptile Review conclusion=failure(置信度 3/5 低于本仓要求 4/5),gate 却报「review 与已跑 CI 均无问题」并给出 bypass-structural-block。UNSTABLE 分支早已用 rollup 处理同一类问题,BLOCKED 分支漏了。",
+      "proposal": "BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。",
+      "status": "landed",
+      "commit": "5178e64",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T17:10:57.360Z",
+      "lastSeen": "2026-07-29T17:10:57.360Z"
     }
   ]
 }
