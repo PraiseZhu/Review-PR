@@ -456,6 +456,9 @@ gh pr diff <N> --patch
 发送（与 notify-author-resolve 的一次性提醒评论同级，发送失败不阻塞流程）。提醒
 不改变任何 gate 结论，也不因作者不补证据而升级为阻断；`selfFixAuthors` 的 PR 走
 5.4 跟进会话时，把「补充 UI 证据到 description」并入跟进消息即可，不单发评论。
+`auto.ownPr=true`（viewer 与作者是同一个账号，即本流程账号自己开的 PR）时不发本
+评论——收件人就是本流程账号自己，评论没有收件人，只会在 PR 上堆无人消费的噪音；
+证据缺口照常写进报告与汇总，gate 结论不变。
 
 ### 3.3 目的与重复实现检查
 
