@@ -856,6 +856,15 @@ try {
   const hasWorkflowsAwaiting = Array.isArray(workflowsAwaitingApproval) && workflowsAwaitingApproval.length > 0;
   const ciFailed = ciRuns ? ciRuns.failed : [];
   const ciPending = ciRuns ? ciRuns.pending : [];
+  // head commit 上「所有已上报检查」的全集(含第三方 App check-run 与 commit status)。
+  // classifyHeadChecks 走 actions/runs,只看得见 GitHub Actions 的 workflow run —— 第三方
+  // App(Greptile 等)的 check-run 与 commit status 它一条都看不到。BLOCKED 细分若只信
+  // ciRuns,一个「非 required 的第三方检查真失败」的 PR 会因「已跑 CI 无失败」直接落进
+  // structural-check 分支,再被 auto --admin bypass 合并(实测 #318:Greptile Review
+  // conclusion=failure,却被判 bypass-structural-block)。rollup 是全集,BLOCKED 也必须查。
+  const headRollup = meta.mergeStateStatus === 'BLOCKED'
+    ? classifyStatusRollup(meta.statusCheckRollup)
+    : null;
 
   // ── 自解死锁判定:BLOCKED 仅因「viewer(本流程账号)自己挂的 CHANGES_REQUESTED」而起,
   // 且所有 conversation 都已 resolve。这是 auto 流程自己 3B 打回后、作者改完 resolve、
@@ -947,6 +956,20 @@ try {
       // workflow run 还在跑 → 等跑完再合(transient,auto 下轮重试,别打回作者)。
       blockers.push(`mergeStateStatus=BLOCKED(CI 还在跑:${ciPending.join(' / ')},等跑完即可)`);
       blockClass = 'ci-pending';
+    } else if (headRollup === null) {
+      // rollup 读不到(字段没取 / 权限异常)→ 第三方 App check-run 与 commit status 是否失败
+      // 未知。与上面 ciRuns===null 同口径 fail-closed:不当结构性门、不可 bypass,下轮再看。
+      blockers.push('mergeStateStatus=BLOCKED,但 statusCheckRollup 读取失败——第三方 App check-run / commit status 是否失败未知(classifyHeadChecks 只看得到 GitHub Actions),不当结构性门处理、不可 bypass,下轮再看');
+      blockClass = 'ci-unknown';
+    } else if (headRollup.failed.length > 0) {
+      // 已跑的 GitHub Actions 全绿,但 head 上仍有已上报检查失败 → 只可能来自 actions/runs
+      // 看不见的那部分(第三方 App check-run / commit status)。这是真 blocker,绝不能当成
+      // 「永不上报的结构性门」被 admin bypass 掉。
+      blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查失败:${headRollup.failed.join(' / ')}——第三方 App check-run / commit status,classifyHeadChecks 看不到;修绿前不合并)`);
+      blockClass = 'ci-failed';
+    } else if (headRollup.pending.length > 0) {
+      blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查还在跑:${headRollup.pending.join(' / ')},等跑完即可)`);
+      blockClass = 'ci-pending';
     } else {
       // review 满足(APPROVED)+ 线程已 resolve + CI 来源明确完整(ciRuns 非 null)且无失败/
       // 进行中/待批的 workflow run,但仍 BLOCKED → 残留的是「永不上报结果的必需检查门」:
@@ -957,7 +980,7 @@ try {
       // 把 head rollup 里已通过的检查名传给 probe:required_status_checks 规则若已被全绿的
       // context 满足,就不再算「未上报的必需检查门」,否则 allowlist 判据永远差一项,
       // code_scanning/code_quality 这类真空门的自动 bypass 被永久锁死。
-      const rollupOk = classifyStatusRollup(meta.statusCheckRollup)?.ok;
+      const rollupOk = headRollup?.ok;
       structuralBlock = probeBranchProtection(slug, meta.baseRefName, {
         satisfiedContexts: rollupOk ? new Set(rollupOk) : null,
       });
@@ -1308,7 +1331,7 @@ try {
       ciFiles,
       selfBlockedResolvable,
       gatePass,
-      note: 'gatePass=false → 1.7 必须卡 gate;softFlags 里的项由 LLM 读内容定性,别无脑放行。blockClass 是 BLOCKED 成因分档:conflict / workflow-awaiting(fork 待批 CI)/ review-changes-requested(reviewDecision=CHANGES_REQUESTED,真要作者改)/ self-resolvable(仅 viewer 自己的 CR、thread 全 resolve)/ awaiting-approval(缺 approve,审查通过后提交 APPROVE 即解)/ threads-unresolved / ci-unknown(CI 状态读不到——权限/网络/解析失败,不当结构性门、不可 bypass,下轮再看)/ ci-failed(workflow 真失败)/ ci-pending(还在跑)/ structural-check(review+已跑 CI 都过、CI 来源明确、仍 BLOCKED——永不上报的必需检查门 code_scanning/code_quality 等,需 admin bypass 合或修门,非作者可处理)。structuralBlock(仅 structural-check 时非空):{requiredCheckRules, canBypass, rulesetIds},canBypass=always/pull_requests 表示当前账号可 admin bypass,但**是否真的自动 bypass 还要看 requiredCheckRules 是否全部命中 pr-rules.json 的 structuralBypassAllowlist**(不在 allowlist 里即便可 bypass 也不自动合,见 auto.reason)。ciRuns(仅 BLOCKED 时查,null=未知——null 时 blockClass 必为 ci-unknown,不会误落进 structural-check):{failed,pending,awaiting,all}。workflowsAwaitingApproval=ciRuns.awaiting(fork 待批 workflow)。与 blockedAwaitingApproval(缺 reviewer approval)是两回事',
+      note: 'gatePass=false → 1.7 必须卡 gate;softFlags 里的项由 LLM 读内容定性,别无脑放行。blockClass 是 BLOCKED 成因分档:conflict / workflow-awaiting(fork 待批 CI)/ review-changes-requested(reviewDecision=CHANGES_REQUESTED,真要作者改)/ self-resolvable(仅 viewer 自己的 CR、thread 全 resolve)/ awaiting-approval(缺 approve,审查通过后提交 APPROVE 即解)/ threads-unresolved / ci-unknown(CI 状态读不到——权限/网络/解析失败,不当结构性门、不可 bypass,下轮再看)/ ci-failed(head 上有已上报检查真失败:workflow run,或 actions/runs 看不到的第三方 App check-run / commit status)/ ci-pending(还在跑)/ structural-check(review + head 上全部已上报检查(workflow run 与 rollup 全集)都过、CI 来源明确、仍 BLOCKED——永不上报的必需检查门 code_scanning/code_quality 等,需 admin bypass 合或修门,非作者可处理)。structuralBlock(仅 structural-check 时非空):{requiredCheckRules, canBypass, rulesetIds},canBypass=always/pull_requests 表示当前账号可 admin bypass,但**是否真的自动 bypass 还要看 requiredCheckRules 是否全部命中 pr-rules.json 的 structuralBypassAllowlist**(不在 allowlist 里即便可 bypass 也不自动合,见 auto.reason)。ciRuns(仅 BLOCKED 时查,null=未知——null 时 blockClass 必为 ci-unknown,不会误落进 structural-check):{failed,pending,awaiting,all}。workflowsAwaitingApproval=ciRuns.awaiting(fork 待批 workflow)。与 blockedAwaitingApproval(缺 reviewer approval)是两回事',
     },
     auto: {
       action: autoAction,
