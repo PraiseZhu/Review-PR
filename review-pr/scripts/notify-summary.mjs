@@ -97,7 +97,7 @@ try {
 
   // posted 必须真实反映"是否走通 webhook"——降级路径(落 pending-alerts.md/尽力桌面
   // 通知)不算"发出去了",不能报 posted:true(与 notify-merge-ack.mjs 同一纪律)。
-  const posted = result.channel === 'webhook';
+  const posted = result.channel === 'webhook' || result.channel === 'api'; // 'api'=Slack Web API 通道,同样算真送达
   print({
     ok: true,
     posted,

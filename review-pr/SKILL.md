@@ -728,10 +728,16 @@ gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch
 方括号中的策略必须先按仓库设置和维护者约定选择一个，不要由 skill 自行改变合并策略。
 若仓库启用 merge queue 或命令被保护规则拒绝，记录状态并结束，不反复重试或绕过保护。
 合并后重新读取 PR 状态和 base 分支健康状态，再写最终总结；随后运行一次
-`node "<SKILL_ROOT>/scripts/notify-merge-ack.mjs" <N> --summary "<一句话改动摘要>"`
+`node "<SKILL_ROOT>/scripts/notify-merge-ack.mjs" <N> --summary "<一句话改动摘要>" --details "<改动要点>"`
 发合并致谢播报（`loopPrExclusion.mergeAckNotify.notifyModule` 未配置时该脚本
 no-op，`posted:false`，不影响合并本身；loop 托管的 PR 有自己的播报，脚本内部已
-判定跳过，见 3.7）。
+判定跳过，见 3.7）。两个参数的口径：
+- `--summary`：一句话说清这个 PR 对使用者的影响（进主消息正文，跟在致谢后）；
+- `--details`：3-5 行改动要点，每行一条、`• ` 开头，面向来审阅的人写"改了什么/
+  为什么"，从你刚完成的审查结论里提炼，不写行号不贴代码，零表情。仅当播报
+  通道为 Slack Web API（notify.env 配了 `SLACK_BOT_TOKEN`+`SLACK_CHANNEL_ID`）
+  时它会作为主消息的 thread 回复发出；webhook 通道拿不到消息 ts 无法 thread，
+  此时 details 静默不发，不要把要点挪进 --summary 凑长度。
 
 ### 5.2 不通过：请求修改
 

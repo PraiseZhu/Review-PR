@@ -27,8 +27,12 @@
 // 也只用 `process.stdout.write` 直接拼 JSON,不反过来依赖 `lib.mjs` 的 `print`——否则
 // `lib.mjs` 装载失败时,catch 块想用它的 `print` 报错本身又会再抛一次,绕回同一个坑。
 //
-// 跑:node <skill-root>/scripts/notify-merge-ack.mjs <PR> [--summary "<一句话改动摘要>"] [--dry-run]
+// 跑:node <skill-root>/scripts/notify-merge-ack.mjs <PR> [--summary "<一句话改动摘要>"] [--details "<多行要点>"] [--dry-run]
 //   --summary:一句话改动摘要(3A 已经有现成的合并评论文案,直接摘一句传进来;省略则退化成只用标题)。
+//   --details:改动要点(3-5 行,每行一条,面向来审阅的人)。仅当 notifyModule 走的是能拿到
+//     消息 ts 的通道(channel:'api',Slack Web API)且导出了 sendThreadReply 时,才作为主消息的
+//     thread 回复发出——incoming webhook 拿不到 ts,物理上无法 thread,此时 details 静默不发
+//     (不拼进主消息,避免频道刷屏;threadReason 字段会说明原因)。
 //   --dry-run:只打印将发的消息与判定,不真调 sendAlert、不写去重指纹(供调试 / 自测,
 //     即使 webhook 已配置也不会真的发出去)。
 
@@ -84,6 +88,7 @@ try {
   const slug = `${owner}/${repo}`;
   const dryRun = process.argv.includes('--dry-run');
   const summary = argAfter('--summary');
+  const details = argAfter('--details');
 
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
@@ -118,7 +123,7 @@ try {
   const text = `${summary || meta.title || ''} 😌\n${meta.url ?? ''}`;
 
   if (dryRun) {
-    print({ ok: true, pr, posted: false, reason: 'dry-run', title, text, notifyStateDir: NOTIFY_STATE_DIR, notifyModule: MERGE_ACK.notifyModule });
+    print({ ok: true, pr, posted: false, reason: 'dry-run', title, text, details: details || null, notifyStateDir: NOTIFY_STATE_DIR, notifyModule: MERGE_ACK.notifyModule });
     process.exit(0);
   }
 
@@ -126,17 +131,35 @@ try {
   // 走 catch 降级,不该让整个 review-pr 播报能力在模块装载阶段直接崩掉。resolveInRepoRoot
   // 已做过 containment 校验,这里拿到的是确认落在 REPO_ROOT 内的绝对路径。
   const notifyModulePath = resolveInRepoRoot(MERGE_ACK.notifyModule);
-  const { loadNotifyConfig, sendAlert } = await import(`file://${notifyModulePath}`);
+  const { loadNotifyConfig, sendAlert, sendThreadReply } = await import(`file://${notifyModulePath}`);
   const config = loadNotifyConfig(NOTIFY_STATE_DIR);
   const result = await sendAlert({ stateDir: NOTIFY_STATE_DIR, config, title, text });
 
-  // posted 必须真实反映"是否走通 webhook"——sendAlert 在 webhook 缺失/投递失败时返回
-  // channel:'degraded'(已落 pending-alerts.md + 尽力桌面通知),这不算"发出去了",
-  // 不能报 posted:true,也不能写去重指纹(否则下次重跑会误判"已发过"而永久跳过重试)。
-  const posted = result.channel === 'webhook';
+  // posted 必须真实反映"是否真送达远端通道"——'api'(Slack Web API,能拿 ts)与
+  // 'webhook'(incoming webhook)都算送达;'degraded'(已落 pending-alerts.md + 尽力
+  // 桌面通知)不算,不能报 posted:true,也不能写去重指纹(否则下次重跑会误判"已发过"
+  // 而永久跳过重试)。
+  const posted = result.channel === 'api' || result.channel === 'webhook';
   if (posted) {
     state[String(pr)] = fingerprint;
     writeDedupState(DEDUP_FILE, state);
+  }
+
+  // ── thread 回复:改动要点跟在致谢主消息下,供人快速审阅(形态对齐 cindy 频道惯例)──
+  // 仅 'api' 通道可行(webhook 拿不到 ts);notifyModule 是老版本没导出 sendThreadReply
+  // 时同样静默跳过。thread 失败不回滚主消息去重——主致谢已送达,细节丢了不值得重发致谢。
+  let threadPosted = false;
+  let threadReason = null;
+  if (posted && details) {
+    if (result.channel === 'api' && result.ts && typeof sendThreadReply === 'function') {
+      const tr = await sendThreadReply({ config, ts: result.ts, text: details });
+      threadPosted = !!tr?.ok;
+      if (!threadPosted) threadReason = tr?.reason ?? 'unknown';
+    } else {
+      threadReason = result.channel !== 'api'
+        ? 'webhook-cannot-thread(需 SLACK_BOT_TOKEN+SLACK_CHANNEL_ID 走 api 通道)'
+        : (typeof sendThreadReply !== 'function' ? 'notify-module-has-no-sendThreadReply' : 'no-ts');
+    }
   }
 
   print({
@@ -145,6 +168,7 @@ try {
     posted,
     channel: result.channel,
     desktopNotified: result.desktopNotified,
+    ...(details ? { threadPosted, ...(threadReason ? { threadReason } : {}) } : {}),
     ...(posted ? { fingerprint } : {}),
   });
 } catch (e) {
