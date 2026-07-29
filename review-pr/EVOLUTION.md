@@ -40,6 +40,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `ui-evidence-notice-hardcodes-design-md` **uiEvidenceNotice 硬编码 DESIGN.md,uiRequired 为空时提醒指向不存在的文件** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `c6e83d6`
+  - 现象:本轮 #322(mivo-canvas)命中 UI 路径需发证据提醒,但本仓 ruleFiles.uiRequired 为空、无 DESIGN.md;生成的文案仍写「便于确认界面符合 DESIGN.md 设计规范」,主 agent 只能手工改写才能发出。
+  - 提案:context.mjs 按 prRules.ruleFiles.uiRequired 实际配置渲染该半句:配了列真实文件名,没配退化为「便于确认界面呈现符合预期」。
 - `ui-evidence-notice-no-recipient-on-own-pr` **ownPr=true 时 UI 证据提醒评论没有收件人,等于在自己 PR 上刷噪音** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `bc30805`
   - 现象:SKILL 3.2 无条件在 uiEvidenceMissing=true 时发提醒评论,未排除 viewer=作者的情形。xindong/mivo-canvas 每日 changelog 补扫 PR(作者=本流程账号,改 public/changelog.json 命中 uiPaths 的 public/ 前缀)每天命中一次。
   - 提案:3.2 增一句 ownPr=true 时不发本评论,证据缺口照常进报告与汇总,gate 结论不变。只减写操作,非扩权。

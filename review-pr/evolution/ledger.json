@@ -650,6 +650,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T05:11:26.017Z",
       "lastSeen": "2026-07-29T05:11:26.017Z"
+    },
+    {
+      "fingerprint": "ui-evidence-notice-hardcodes-design-md",
+      "tier": "auto",
+      "title": "uiEvidenceNotice 硬编码 DESIGN.md,uiRequired 为空时提醒指向不存在的文件",
+      "detail": "本轮 #322(mivo-canvas)命中 UI 路径需发证据提醒,但本仓 ruleFiles.uiRequired 为空、无 DESIGN.md;生成的文案仍写「便于确认界面符合 DESIGN.md 设计规范」,主 agent 只能手工改写才能发出。",
+      "proposal": "context.mjs 按 prRules.ruleFiles.uiRequired 实际配置渲染该半句:配了列真实文件名,没配退化为「便于确认界面呈现符合预期」。",
+      "status": "landed",
+      "commit": "c6e83d6",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T11:12:38.755Z",
+      "lastSeen": "2026-07-29T11:12:38.755Z"
     }
   ]
 }
