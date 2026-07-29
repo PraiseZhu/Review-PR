@@ -676,6 +676,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T11:12:55.631Z",
       "lastSeen": "2026-07-29T11:12:55.631Z"
+    },
+    {
+      "fingerprint": "review-agent-pr-checkout-worktree-conflict",
+      "tier": "proposal",
+      "title": "审查 agent 用 gh pr checkout 会在 PR 分支已被其他 worktree 占用时失败",
+      "detail": "PR #335 审查：主流程自己在 /private/tmp 用同名分支开了 worktree,阶段二审查 agent 在隔离 worktree 里跑 gh pr checkout 335 直接失败(cannot checkout: branch used by worktree)。agent 自行 workaround 成 git fetch + git checkout --detach <headRefOid> 才拿到码。这不是 skill 判定缺陷,只是审查 agent 模板没有预案,每次都要靠 agent 自己临场绕。",
+      "proposal": "在 SKILL.md 第 4 节的审查 agent 任务模板里,把「gh pr checkout <N>」改为优先 detached checkout：git fetch origin <headRefOid> && git checkout --detach <headRefOid>(主 agent 已从 context.meta.headRefOid 拿到确切 sha,不依赖分支名是否被占用),并说明 gh pr checkout 仅作退路。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T14:05:51.010Z",
+      "lastSeen": "2026-07-29T14:05:51.010Z"
     }
   ]
 }

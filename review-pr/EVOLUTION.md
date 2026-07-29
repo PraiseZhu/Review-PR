@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-pr-checkout-worktree-conflict` **审查 agent 用 gh pr checkout 会在 PR 分支已被其他 worktree 占用时失败** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+  - 现象:PR #335 审查：主流程自己在 /private/tmp 用同名分支开了 worktree,阶段二审查 agent 在隔离 worktree 里跑 gh pr checkout 335 直接失败(cannot checkout: branch used by worktree)。agent 自行 workaround 成 git fetch + git checkout --detach <headRefOid> 才拿到码。这不是 skill 判定缺陷,只是审查 agent 模板没有预案,每次都要靠 agent 自己临场绕。
+  - 提案:在 SKILL.md 第 4 节的审查 agent 任务模板里,把「gh pr checkout <N>」改为优先 detached checkout：git fetch origin <headRefOid> && git checkout --detach <headRefOid>(主 agent 已从 context.meta.headRefOid 拿到确切 sha,不依赖分支名是否被占用),并说明 gh pr checkout 仅作退路。
 - `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
   - 现象:mivo-canvas 首轮 5 个候选里 4 个是 owner(PraiseZhu)自己开的。GitHub 禁止同账号 approve 自己的 PR,所以 reviewDecision 恒为空;internal-gates 要求 structural-check 的 admin bypass 必须 reviewDecision=APPROVED;selfFixAuthors 留空又关掉了 selfMergeAvailable 的 admin self-merge 路径。结果 #319(CI 全绿、thread 全 resolve、唯一阻断是永不上报的 code_scanning/code_quality 门、账号 canBypass=always)也只能跳过转人工。自有 PR 的未 resolve thread(#324/#325)同理只能作者本人处理。auto 模式对该仓 owner 的 PR 实际退化为纯审查。
   - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
