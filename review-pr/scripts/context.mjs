@@ -485,8 +485,11 @@ try {
   // UI 证据缺失不进格式门(2026-07-25 维护者拍板):不打回、不阻断合并,改为非阻断提醒——
   // 主 agent 把 uiEvidenceNotice 作为普通 PR 评论发给作者,去重靠评论里的 marker(见 SKILL 3.2)。
   const uiEvidenceMissing = uiCodeFiles.length > 0 && !bodyHasUiEvidence;
+  // 文案里的"符合 <设计规范>"这半句只在 ruleFiles.uiRequired 真配了文件时才写:
+  // 没配(目标仓库没有独立设计规范文档)还硬写 DESIGN.md,等于让作者去对一份不存在的文件。
+  const uiRequiredFiles = (prRules.ruleFiles?.uiRequired ?? []).filter(Boolean);
   const uiEvidenceNotice = uiEvidenceMissing
-    ? `命中 UI 路径(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''})但 description 未附界面效果证据——建议补充改动后效果:截图/录屏,或改动后界面的 HTML 页面(\`\`\`html 代码块、.html 附件或在线预览链接),便于确认界面符合 DESIGN.md 设计规范`
+    ? `命中 UI 路径(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''})但 description 未附界面效果证据——建议补充改动后效果:截图/录屏,或改动后界面的 HTML 页面(\`\`\`html 代码块、.html 附件或在线预览链接)${uiRequiredFiles.length > 0 ? `,便于确认界面符合 ${uiRequiredFiles.join(' / ')} 设计规范` : ',便于确认界面呈现符合预期'}`
     : null;
   const formatPass = formatIssues.length === 0;
 
