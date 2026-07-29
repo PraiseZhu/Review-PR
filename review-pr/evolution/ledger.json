@@ -702,6 +702,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T14:31:24.327Z",
       "lastSeen": "2026-07-29T14:31:24.327Z"
+    },
+    {
+      "fingerprint": "stale-mergeable-after-same-round-merge",
+      "tier": "proposal",
+      "title": "同一轮内合并后,GitHub 的 mergeable/MERGEABLE 对余下候选是过期结论,pre-merge-check 直接采信",
+      "detail": "本轮合并 #319、#334 后,#325 的 pre-merge-check 仍报 mergeable=MERGEABLE、blockClass=structural-check(看起来可 admin bypass 合)。我手动跑 git merge-tree --write-tree origin/main <pr-head> 才发现真冲突(src/agent/canvasAgentVerbs.test.ts,与本轮落地的 #334 相撞)。GitHub 重算 mergeability 有延迟,期间 UNKNOWN 或沿用旧值;若照采信就会对一个实际冲突的 PR 走合并路径。",
+      "proposal": "pre-merge-check 增一道本地交叉校验:当 PR 的 base 在其最后一次 CI 之后前进过(或 mergeable 为 UNKNOWN)时,跑 git merge-tree --write-tree <base> <head> 实测,冲突则把 blockClass 定成 conflict、不采信 GitHub 的 MERGEABLE。纯读操作、不新增写权限。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-29T14:31:26.428Z",
+      "lastSeen": "2026-07-29T14:31:26.428Z"
     }
   ]
 }
