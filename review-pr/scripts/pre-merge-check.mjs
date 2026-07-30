@@ -5,7 +5,9 @@
 // (2)所有 review thread 是否都已 resolve(对应 1.6.5 通过标准第 1 条,双保险——
 // GitHub 分支保护不一定开了 require-conversation-resolution,不复核就会漏)。
 // 新增:(3)区分 BLOCKED 原因——awaiting-approval / ci-failed / ci-pending / structural-check
-// (reviewDecision + workflow run 分类 + ruleset 探测,与 context.mjs 同口径)。
+// (reviewDecision + workflow run 分类 + statusCheckRollup 全集补查 + ruleset 探测,
+// 与 context.mjs 同口径;rollup 补查对齐 5178e64——classifyHeadChecks 走 actions/runs
+// 看不到第三方 App check-run / commit status,落 structural-check 前必须查 rollup 全集)。
 //   - structural-check:review+已跑 CI 都过、仍 BLOCKED,卡在永不上报的必需检查门
 //     (code_scanning/code_quality 等)。canMerge 仍判 false(普通 merge 过不了),但带出
 //     structuralBypassAvailable / canBypass,供 3A 决定是否走 admin bypass 合(见 SKILL 3A)。
@@ -104,24 +106,41 @@ try {
         blockers.push(`mergeStateStatus=BLOCKED(CI 还在跑:${ciPending.join(' / ')},等跑完即可)`);
         blockClass = 'ci-pending';
       } else {
-        // 永不上报结果的必需检查门(code_scanning/code_quality 等)→ 普通 merge 过不了,
-        // 但 canBypass 且命中类型在 structuralBypassAllowlist 内时可走 admin bypass
-        // (由 3A 决定;auto 模式绝不自动 bypass)。
-        blockClass = 'structural-check';
-        // 与 context.mjs 同口径:已被全绿 context 满足的 required_status_checks 规则不算结构性门
-        const rollupOk = classifyStatusRollup(m.statusCheckRollup)?.ok;
-        structuralBlock = probeBranchProtection(slug, m.baseRefName, {
-          satisfiedContexts: rollupOk ? new Set(rollupOk) : null,
-        });
-        structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
-          structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
-        const ruleHint = structuralBlock?.requiredCheckRules?.length
-          ? structuralBlock.requiredCheckRules.join(' / ')
-          : 'code_scanning / code_quality 等';
-        const bypassHint = structuralBlock?.canBypass && structuralBlock.canBypass !== 'never'
-          ? `当前账号可 bypass(${structuralBlock.canBypass})${structuralAllowlisted ? '' : ',但命中的必需检查类型不在 structuralBypassAllowlist 里'}`
-          : 'bypass 权限未知';
-        blockers.push(`mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——需 admin bypass 合或修该门;${bypassHint})`);
+        // Actions 全绿 → 落 structural-check 前补查 statusCheckRollup 全集(第三方 App
+        // check-run / commit status,classifyHeadChecks 走 actions/runs 一条都看不到)。
+        // 与 context.mjs 5178e64 同口径:这道门是 scan 之后、合并之前的最后复核,恰恰要防
+        // 「scan 时第三方检查还没上报、合并前它报了 FAILURE」的窗口——不查 rollup 就会把
+        // 带着失败第三方检查的 PR 误判成结构性门再被 admin bypass 合掉(实测 #318 形状)。
+        const headRollup = classifyStatusRollup(m.statusCheckRollup);
+        if (headRollup === null) {
+          blockers.push('mergeStateStatus=BLOCKED,但 statusCheckRollup 读取失败——第三方 App check-run / commit status 是否失败未知(classifyHeadChecks 只看得到 GitHub Actions),不当结构性门处理、不可 bypass,下轮再看');
+          blockClass = 'ci-unknown';
+        } else if (headRollup.failed.length > 0) {
+          blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查失败:${headRollup.failed.join(' / ')}——第三方 App check-run / commit status,classifyHeadChecks 看不到;修绿前不合并)`);
+          blockClass = 'ci-failed';
+        } else if (headRollup.pending.length > 0) {
+          blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查还在跑:${headRollup.pending.join(' / ')},等跑完即可)`);
+          blockClass = 'ci-pending';
+        } else {
+          // 永不上报结果的必需检查门(code_scanning/code_quality 等)→ 普通 merge 过不了,
+          // 但 canBypass 且命中类型在 structuralBypassAllowlist 内时可走 admin bypass
+          // (由 3A 决定;bypass 条件见 internal-gates.md)。
+          blockClass = 'structural-check';
+          // 与 context.mjs 同口径:已被全绿 context 满足的 required_status_checks 规则不算结构性门
+          const rollupOk = headRollup.ok;
+          structuralBlock = probeBranchProtection(slug, m.baseRefName, {
+            satisfiedContexts: rollupOk ? new Set(rollupOk) : null,
+          });
+          structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
+            structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
+          const ruleHint = structuralBlock?.requiredCheckRules?.length
+            ? structuralBlock.requiredCheckRules.join(' / ')
+            : 'code_scanning / code_quality 等';
+          const bypassHint = structuralBlock?.canBypass && structuralBlock.canBypass !== 'never'
+            ? `当前账号可 bypass(${structuralBlock.canBypass})${structuralAllowlisted ? '' : ',但命中的必需检查类型不在 structuralBypassAllowlist 里'}`
+            : 'bypass 权限未知';
+          blockers.push(`mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——需 admin bypass 合或修该门;${bypassHint})`);
+        }
       }
     }
   } else if (m.mergeStateStatus === 'UNSTABLE') {
@@ -154,8 +173,9 @@ try {
     !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
 
   // selfFixAuthors 自己的 PR:GitHub 不允许同账号 approve 自己的 PR,
-  // 审查通过后使用 --admin 合并。触发条件宽松:只要不是冲突/CI 失败/thread 未 resolve
-  // 就允许(mergeableUnknown 是 GitHub 异步重算的暂态,admin merge 不受影响)。
+  // 审查通过后使用 --admin 合并。条件:非冲突、thread 全 resolve、且 head 上所有已上报
+  // 检查(rollup 全集,含第三方 App check-run)无失败/无进行中
+  // (mergeableUnknown 是 GitHub 异步重算的暂态,admin merge 不受影响)。
   let selfMergeAvailable = false;
   if (viewerLogin && prAuthor) {
     const selfFixAuthors = (rules.selfFixAuthors ?? []).map((a) => a.toLowerCase());
@@ -163,7 +183,13 @@ try {
     const isSelfFixAuthor = selfFixAuthors.includes(prAuthor.toLowerCase());
     const noHardBlockers = m.mergeable !== 'CONFLICTING' && m.mergeStateStatus !== 'DIRTY';
     const noContentBlockers = blockClass === 'awaiting-approval' || blockClass === 'none';
-    if (isSelfPr && isSelfFixAuthor && noHardBlockers && noContentBlockers && unresolved.length === 0) {
+    // awaiting-approval 是在 reviewDecision 层短路得出的,上面的 BLOCKED 细分从未查过
+    // rollup——而 self-merge 走 --admin 会一并绕过还没跑完/已失败的检查(含 actions/runs
+    // 看不见的第三方 App check-run)。这里独立补查全集,fail-closed:rollup 读不到、有
+    // 失败、或还在跑,都不 self-merge,等下一轮(与 BLOCKED/UNSTABLE 分支同口径)。
+    const selfRollup = classifyStatusRollup(m.statusCheckRollup);
+    const rollupClean = selfRollup !== null && selfRollup.failed.length === 0 && selfRollup.pending.length === 0;
+    if (isSelfPr && isSelfFixAuthor && noHardBlockers && noContentBlockers && unresolved.length === 0 && rollupClean) {
       selfMergeAvailable = true;
     }
   }
