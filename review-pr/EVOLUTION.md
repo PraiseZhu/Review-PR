@@ -87,6 +87,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
+  - 现象:PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 4 次,首见 2026-07-24,最近 2026-07-28,status: tracked
   - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,提醒已在 crossChannelSuppressHours 窗口内去重(未重发)
 - `structural-check-not-in-bypass-allowlist` **required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
