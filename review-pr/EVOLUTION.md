@@ -55,6 +55,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `premerge-check-missing-rollup-guards` **pre-merge-check 的 BLOCKED 细分与 selfMerge 路径不查 statusCheckRollup——5178e64 只修了 context.mjs,合并前最后一道门仍会漏第三方检查失败** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: landed,commit `f7c23b7`
+  - 现象:pre-merge-check.mjs 的 BLOCKED→structural-check 细分只跑 classifyHeadChecks(actions/runs),rollup 仅用于 satisfiedContexts、failed 列表从未被查;文件注释三处声称「与 context.mjs 同口径」但 5178e64 落地后已漂移。该脚本恰是防「scan 之后、合并之前状态变化」的最后复核——scan 时第三方 check-run 尚未上报、合并前报了 FAILURE 的窗口正好全漏。selfMergeAvailable 更早:blockClass=awaiting-approval 在 reviewDecision 层短路,rollup 全程没查,self PR 带失败/未跑完的第三方检查也会 --admin 合,唯一兜底是 SKILL 3.5 第 4 条的语义门(非确定性)。实测 mivo-canvas#318(Greptile Review=FAILURE)修前判 structural-check + bypassAvailable,修后判 ci-failed 并点名该 check;#342(真全绿+code_scanning 真空门)修后仍 structural-check,不误伤。
+  - 提案(已落地):BLOCKED 细分在落 structural-check 前补 rollup 三道守卫(null→ci-unknown 不可 bypass / failed→ci-failed / pending→ci-pending),与 context.mjs 5178e64 逐字同口径;selfMergeAvailable 增加「rollup 非 null 且无失败且无进行中」前提。纯收紧、只读、不放宽任何 gate。
 - `blocked-structural-check-ignores-thirdparty-check-runs` **BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `5178e64`
   - 现象:classifyHeadChecks 走 actions/runs,看不到第三方 App 的 check-run 与 commit status;BLOCKED 分支落进 structural-check 前未查 statusCheckRollup 全集。实测 mivo-canvas#318:Greptile Review conclusion=failure(置信度 3/5 低于本仓要求 4/5),gate 却报「review 与已跑 CI 均无问题」并给出 bypass-structural-block。UNSTABLE 分支早已用 rollup 处理同一类问题,BLOCKED 分支漏了。
   - 提案:BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。
