@@ -832,6 +832,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T05:12:23.924Z",
       "lastSeen": "2026-07-30T05:12:23.924Z"
+    },
+    {
+      "fingerprint": "node-debug-env-pollutes-script-json-output",
+      "tier": "proposal",
+      "title": "宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑",
+      "detail": "本轮首次 context.mjs --scan-all 的输出被数百行 'NET <pid>: ...' 淹没,JSON 无法直接解析,只能 env -u NODE_DEBUG 重跑一次完整扫描(重复消耗一轮 gh API 与时间)。噪声来自宿主继承的 NODE_DEBUG 环境变量,不是脚本缺陷,但脚本可自我防护。",
+      "proposal": "① 在 SKILL「Skill 路径与目标仓库」一节补一句:所有确定性脚本建议以 env -u NODE_DEBUG 调用,避免宿主 NODE_DEBUG 污染 JSON 输出;② 或在各脚本入口自 delete process.env.NODE_DEBUG(仅影响自身及其 spawn 的子进程,不改宿主)。两者都不新增写操作、不放宽任何 gate。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T05:12:26.231Z",
+      "lastSeen": "2026-07-30T05:12:26.231Z"
     }
   ]
 }
