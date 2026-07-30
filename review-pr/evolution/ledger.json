@@ -767,6 +767,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T23:05:42.177Z",
       "lastSeen": "2026-07-29T23:05:42.177Z"
+    },
+    {
+      "fingerprint": "security-review-path-blocks-own-gate-widening-pr",
+      "tier": "by-design",
+      "title": "扩大 e2e 门禁覆盖面的 PR 必然改 package.json,因而命中 securityReviewPaths 转人工",
+      "detail": "PR #340(把 chat-copy 加进 test:e2e:prod:subset)只改 package.json 一行 scenario 列表,被判 skip-security-review 转人工。判定正确:package\\.json$ 在 securityReviewPaths 内,而 review-pr 自己的两个 e2e required check 就跑这个 script —— 让它自动审并合入一个改动了自身验证命令的 PR,正是该门要防的自我损坏闭环。副作用是「加强门禁覆盖面」这类改动天然无法自动落地,每次都要人工放行。",
+      "proposal": "不建议自动放开(扩权类风险)。若想减少人工介入,可考虑把 e2e scenario 清单从 package.json 抽到独立数据文件(如 scripts/e2e/subset.json),让门禁改动不再触碰 package.json —— 但这是目标仓库的结构调整,不是 skill 侧改动,且需评估是否值得为此增加一层间接。",
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T01:19:38.094Z",
+      "lastSeen": "2026-07-30T01:19:38.094Z"
     }
   ]
 }
