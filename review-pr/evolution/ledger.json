@@ -897,6 +897,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T17:02:14.452Z",
       "lastSeen": "2026-07-30T17:02:14.452Z"
+    },
+    {
+      "fingerprint": "skills-repo-diverged-sync-broken",
+      "tier": "proposal",
+      "title": "skills 仓 main 与远端 diverged，Skill 自同步每轮都失败",
+      "detail": "prepare.mjs 的 skillSync pull 报 'Not possible to fast-forward'，evolution-note 的 push 报 non-fast-forward（本地落后远端）。后果：远端 skill 更新拉不下来、本地台账推不上去，每轮都静默失败（仅进摘要）。",
+      "proposal": "需维护者人工在 skills 仓（/Users/praise/AI-Agent/Claude/capabilities/source/cindy-lizi-skills）reconcile main 与 origin/main（merge 或 rebase 后再 push），恢复双向同步。Skill 侧不自动 merge/rebase——改写历史风险大于收益，保持 best-effort 报错即可。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T17:02:26.982Z",
+      "lastSeen": "2026-07-30T17:02:26.982Z"
     }
   ]
 }

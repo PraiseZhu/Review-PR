@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `skills-repo-diverged-sync-broken` **skills 仓 main 与远端 diverged，Skill 自同步每轮都失败** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
+  - 现象:prepare.mjs 的 skillSync pull 报 'Not possible to fast-forward'，evolution-note 的 push 报 non-fast-forward（本地落后远端）。后果：远端 skill 更新拉不下来、本地台账推不上去，每轮都静默失败（仅进摘要）。
+  - 提案:需维护者人工在 skills 仓（/Users/praise/AI-Agent/Claude/capabilities/source/cindy-lizi-skills）reconcile main 与 origin/main（merge 或 rebase 后再 push），恢复双向同步。Skill 侧不自动 merge/rebase——改写历史风险大于收益，保持 best-effort 报错即可。
 - `self-authored-pr-no-followup-channel` **自有 PR 卡住时既不催也不自动修，零跟进通道** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:本仓 selfFixAuthors=[]，staleAuthorReminder.exemptAuthors 含唯一作者。结果：卡未 resolve thread / CI 失败的自有 PR 既不发催办评论(exempt-author)，也不投递跟进会话(selfFix=false)，只能靠 owner 自己看汇总。本轮 5 个候选落在该盲区。
   - 提案:扩权类，需 owner 拍板：是否把该账号纳入 selfFixAuthors，让卡点自动投递跟进会话修到可合并。纳入即新增对自有 PR 分支的自动写操作，不自动落地。
