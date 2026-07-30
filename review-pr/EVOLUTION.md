@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 4 次,首见 2026-07-29,最近 2026-07-30,status: open
+  - 现象:mivo-canvas 首轮 5 个候选里 4 个是 owner(PraiseZhu)自己开的。GitHub 禁止同账号 approve 自己的 PR,所以 reviewDecision 恒为空;internal-gates 要求 structural-check 的 admin bypass 必须 reviewDecision=APPROVED;selfFixAuthors 留空又关掉了 selfMergeAvailable 的 admin self-merge 路径。结果 #319(CI 全绿、thread 全 resolve、唯一阻断是永不上报的 code_scanning/code_quality 门、账号 canBypass=always)也只能跳过转人工。自有 PR 的未 resolve thread(#324/#325)同理只能作者本人处理。auto 模式对该仓 owner 的 PR 实际退化为纯审查。
+  - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
 - `node-debug-env-pollutes-script-json-output` **宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:本轮首次 context.mjs --scan-all 的输出被数百行 'NET <pid>: ...' 淹没,JSON 无法直接解析,只能 env -u NODE_DEBUG 重跑一次完整扫描(重复消耗一轮 gh API 与时间)。噪声来自宿主继承的 NODE_DEBUG 环境变量,不是脚本缺陷,但脚本可自我防护。
   - 提案:① 在 SKILL「Skill 路径与目标仓库」一节补一句:所有确定性脚本建议以 env -u NODE_DEBUG 调用,避免宿主 NODE_DEBUG 污染 JSON 输出;② 或在各脚本入口自 delete process.env.NODE_DEBUG(仅影响自身及其 spawn 的子进程,不改宿主)。两者都不新增写操作、不放宽任何 gate。
@@ -25,9 +28,6 @@
 - `structural-bypass-approved-vs-repo-without-required-approval` **结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: open
   - 现象:mivo-canvas 分支保护不要求 approve,reviewDecision 恒为空(历史 #295/#283/#314 全部以 reviewDecision="" 合并)。code_scanning/code_quality 两个必需检查从不上报结果,PR 恒为 structural-check BLOCKED。context.mjs 给 auto.action=bypass-structural-block(理由写「自动 admin bypass 合并」)、pre-merge-check 给 structuralBypassAvailable=true,但 SKILL 5.1 把 --admin 授权交给 internal-gates.md 177-180,后者要求 reviewDecision=APPROVED,该条在本仓无法满足 → 每个 PR 都卡在合并 gate。本轮 PR #316(审查 0 P0/P1、14 项 CI 全绿、无未 resolve thread)因此按「跳过并报告」处理,未合并。SKILL 5.3 的表述里没有 APPROVED 这一条,与 internal-gates 不一致,是两处文本的口径漂移。
   - 提案:需 owner 拍板二选一:①(推荐)把 internal-gates 177-180 的 reviewDecision 条件改为「reviewDecision 不是 CHANGES_REQUESTED,且若仓库要求 approve 则必须为 APPROVED」——即区分「approve 是门」与「approve 不是门」两类仓库,并同步 SKILL 5.3 措辞;②保持现状,则本仓所有 PR 的最终合并动作固定转人工,应在 pr-rules.json 里显式关掉自动合并,避免每轮都产生一条「等你拍板」的噪音。属放宽 admin bypass 条件,扩权类,不自动落地。
-- `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 3 次,首见 2026-07-29,最近 2026-07-30,status: open
-  - 现象:mivo-canvas 首轮 5 个候选里 4 个是 owner(PraiseZhu)自己开的。GitHub 禁止同账号 approve 自己的 PR,所以 reviewDecision 恒为空;internal-gates 要求 structural-check 的 admin bypass 必须 reviewDecision=APPROVED;selfFixAuthors 留空又关掉了 selfMergeAvailable 的 admin self-merge 路径。结果 #319(CI 全绿、thread 全 resolve、唯一阻断是永不上报的 code_scanning/code_quality 门、账号 canBypass=always)也只能跳过转人工。自有 PR 的未 resolve thread(#324/#325)同理只能作者本人处理。auto 模式对该仓 owner 的 PR 实际退化为纯审查。
-  - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
 - `threads-unresolved-needs-human` **未 resolve 的 review conversation 只能由人点 Resolve,自动化不代劳** — 出现 3 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:本轮 #318(2 条)、#324(1 条)、#333(3 条)因此跳过。作者在 exemptAuthors 白名单内,催 resolve 与停滞私聊均按豁免跳过,不发通知。属署名/决策类,只计数观察,不因出现多次就放开代 resolve。
 - `structural-block-detection-omits-copilot-code-review` **structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
