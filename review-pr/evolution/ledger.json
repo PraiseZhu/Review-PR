@@ -829,9 +829,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-30T05:12:23.924Z",
-      "lastSeen": "2026-07-30T05:12:23.924Z"
+      "lastSeen": "2026-07-30T08:05:01.340Z"
     },
     {
       "fingerprint": "node-debug-env-pollutes-script-json-output",
