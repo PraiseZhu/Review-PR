@@ -884,6 +884,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T14:05:06.962Z",
       "lastSeen": "2026-07-30T14:05:06.962Z"
+    },
+    {
+      "fingerprint": "ci-workflow-change-needs-human",
+      "tier": "by-design",
+      "title": "CI workflow 改动命中 securityReviewPaths，按设计转人工审查",
+      "detail": "PR #348 改 .github/workflows/{ci,main-health,pr-hygiene}.yml 与 dependabot.yml，命中 securityReviewPaths → skip-security-review。属自动化自我损坏防护的设计意图，不是漏判，永不自动放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T17:02:14.452Z",
+      "lastSeen": "2026-07-30T17:02:14.452Z"
     }
   ]
 }
