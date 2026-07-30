@@ -582,9 +582,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-28T13:25:25.316Z",
-      "lastSeen": "2026-07-28T13:25:25.316Z"
+      "lastSeen": "2026-07-29T23:05:54.107Z"
     },
     {
       "fingerprint": "worktree-cleanup-pr-n-branch-naming",
@@ -673,9 +673,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T11:12:55.631Z",
-      "lastSeen": "2026-07-29T11:12:55.631Z"
+      "lastSeen": "2026-07-29T23:05:53.954Z"
     },
     {
       "fingerprint": "review-agent-pr-checkout-worktree-conflict",
@@ -725,9 +725,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T14:31:28.584Z",
-      "lastSeen": "2026-07-29T14:31:28.584Z"
+      "lastSeen": "2026-07-29T23:05:53.877Z"
     },
     {
       "fingerprint": "blocked-structural-check-ignores-thirdparty-check-runs",
@@ -751,9 +751,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T17:28:45.538Z",
-      "lastSeen": "2026-07-29T17:28:45.538Z"
+      "lastSeen": "2026-07-29T23:05:54.030Z"
     },
     {
       "fingerprint": "nonrequired-thirdparty-ai-check-blocks-merge",
@@ -767,6 +767,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-29T23:05:42.177Z",
       "lastSeen": "2026-07-29T23:05:42.177Z"
+    },
+    {
+      "fingerprint": "structural-block-detection-omits-copilot-code-review",
+      "tier": "proposal",
+      "title": "structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据",
+      "detail": "lib.mjs 的 CHECK_RULES 只含 required_status_checks / code_scanning / code_quality。mivo-canvas 的 trunk-guard ruleset 同时启用了 copilot_code_review(另有独立的 copilot-review-on-push ruleset),该类型不被采集进 requiredCheckRules,于是 pre-merge-check 对 PR 342 报 structuralAllowlisted=true(只看到 code_scanning/code_quality 两项,均在 allowlist 内),而实际可能还有一个未被 allowlist 覆盖的 review 门在阻塞。该 PR reviews 为空,Copilot 从未提交 review。",
+      "proposal": "两条待拍板:① 若 copilot_code_review 确实参与 mergeStateStatus 阻塞,把它纳入 lib.mjs 的 CHECK_RULES,让 requiredCheckRules 完整,从而 structuralAllowlisted 在它未进 allowlist 时正确判 false(方向是 fail-closed,更严);② 若它只是 on-push 触发器不阻塞合并,则在 CHECK_RULES 注释里写明为何刻意排除,避免后续复盘反复怀疑。本轮无法从 API 区分两种语义,故不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T02:17:37.539Z",
+      "lastSeen": "2026-07-30T02:17:37.539Z"
     }
   ]
 }
