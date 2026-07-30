@@ -858,6 +858,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T11:05:29.308Z",
       "lastSeen": "2026-07-30T11:05:29.308Z"
+    },
+    {
+      "fingerprint": "self-authored-pr-no-followup-channel",
+      "tier": "proposal",
+      "title": "自有 PR 卡住时既不催也不自动修，零跟进通道",
+      "detail": "本仓 selfFixAuthors=[]，staleAuthorReminder.exemptAuthors 含唯一作者。结果：卡未 resolve thread / CI 失败的自有 PR 既不发催办评论(exempt-author)，也不投递跟进会话(selfFix=false)，只能靠 owner 自己看汇总。本轮 5 个候选落在该盲区。",
+      "proposal": "扩权类，需 owner 拍板：是否把该账号纳入 selfFixAuthors，让卡点自动投递跟进会话修到可合并。纳入即新增对自有 PR 分支的自动写操作，不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T11:05:44.061Z",
+      "lastSeen": "2026-07-30T11:05:44.061Z"
     }
   ]
 }
