@@ -819,6 +819,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T05:12:21.556Z",
       "lastSeen": "2026-07-30T05:12:21.556Z"
+    },
+    {
+      "fingerprint": "unresolved-threads-require-human-resolve",
+      "tier": "by-design",
+      "title": "未 resolve 的 review conversation 需真人处理,本轮 3 个 PR 因此跳过",
+      "detail": "PR 324/326/331 分别有 2/1/1 条未 resolve conversation。代 resolve 他人 thread 属 8.1 扩权类,永不自动化。作者在 exemptAuthors 内故不发催 resolve 评论(notify-author-resolve 返回 exempt-author)。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T05:12:23.924Z",
+      "lastSeen": "2026-07-30T05:12:23.924Z"
     }
   ]
 }
