@@ -816,9 +816,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-30T05:12:21.556Z",
-      "lastSeen": "2026-07-30T05:12:21.556Z"
+      "lastSeen": "2026-07-30T08:04:58.508Z"
     },
     {
       "fingerprint": "unresolved-threads-require-human-resolve",
