@@ -93,6 +93,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr-body-heading-mismatch-author-side` **PR body 段落标题用词与模板不符,只能由作者改 description 解掉** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
+  - 现象:xindong/mivo-canvas PR #347: body 写 '## 改动说明',模板要求 '## 变更说明'/'## 提交前自检'/'## 备注',格式门判三段全缺并打回。修复动作在作者侧(edit description),自动化不代改他人 PR 的 description,属 by-design,只计数观察。
 - `own-pr-only-repo-blockers-need-human` **本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:本轮 8 个候选作者全部是 viewer 账号本人：3 个卡未 resolve conversation、2 个卡第三方 check 失败、3 个命中安全审查路径转人工。属署名/决策类，不自动化。
 - `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
