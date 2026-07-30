@@ -562,16 +562,16 @@
     },
     {
       "fingerprint": "mivo-canvas-structural-check-codescan-quality-gap",
-      "tier": "by-design",
+      "tier": "proposal",
       "title": "mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED",
       "detail": "本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-28T12:08:56.190Z",
-      "lastSeen": "2026-07-28T12:15:28.776Z"
+      "lastSeen": "2026-07-30T02:17:59.408Z"
     },
     {
       "fingerprint": "node-debug-env-pollutes-script-stdout",
@@ -582,9 +582,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-28T13:25:25.316Z",
-      "lastSeen": "2026-07-29T23:05:54.107Z"
+      "lastSeen": "2026-07-30T02:17:59.636Z"
     },
     {
       "fingerprint": "worktree-cleanup-pr-n-branch-naming",
@@ -634,9 +634,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T01:49:00.683Z",
-      "lastSeen": "2026-07-29T01:49:00.683Z"
+      "lastSeen": "2026-07-30T02:17:59.484Z"
     },
     {
       "fingerprint": "structural-bypass-approved-vs-repo-without-required-approval",
@@ -647,9 +647,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T05:11:26.017Z",
-      "lastSeen": "2026-07-29T05:11:26.017Z"
+      "lastSeen": "2026-07-30T02:17:59.329Z"
     },
     {
       "fingerprint": "ui-evidence-notice-hardcodes-design-md",
@@ -673,9 +673,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-29T11:12:55.631Z",
-      "lastSeen": "2026-07-29T23:05:53.954Z"
+      "lastSeen": "2026-07-30T02:17:59.253Z"
     },
     {
       "fingerprint": "review-agent-pr-checkout-worktree-conflict",
@@ -718,16 +718,16 @@
     },
     {
       "fingerprint": "threads-unresolved-needs-human",
-      "tier": "by-design",
+      "tier": "proposal",
       "title": "未 resolve 的 review conversation 只能由人点 Resolve,自动化不代劳",
       "detail": "本轮 #318(2 条)、#324(1 条)、#333(3 条)因此跳过。作者在 exemptAuthors 白名单内,催 resolve 与停滞私聊均按豁免跳过,不发通知。属署名/决策类,只计数观察,不因出现多次就放开代 resolve。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-29T14:31:28.584Z",
-      "lastSeen": "2026-07-29T23:05:53.877Z"
+      "lastSeen": "2026-07-30T02:17:59.176Z"
     },
     {
       "fingerprint": "blocked-structural-check-ignores-thirdparty-check-runs",
@@ -764,9 +764,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T23:05:42.177Z",
-      "lastSeen": "2026-07-29T23:05:42.177Z"
+      "lastSeen": "2026-07-30T02:17:59.561Z"
     },
     {
       "fingerprint": "structural-block-detection-omits-copilot-code-review",
@@ -780,6 +780,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T02:17:37.539Z",
       "lastSeen": "2026-07-30T02:17:37.539Z"
+    },
+    {
+      "fingerprint": "review-worktree-holds-branch-blocks-delete-branch",
+      "tier": "proposal",
+      "title": "审查 agent 的 worktree 占用 PR 分支,导致 gh pr merge --delete-branch 中止,远程分支残留",
+      "detail": "PR 342 合并时 --delete-branch 报 'cannot delete branch used by worktree at .claude/worktrees/agent-<id>':审查 agent 按 SKILL 第 4 节在隔离 worktree 里跑 gh pr checkout <N>,该本地分支因此被占用;gh 先删本地失败即整体中止,远程分支 chore/changelog-2026-07-29 未被删除,需人工补删。这是确定性的顺序问题,每个走「审查通过→合并」路径的 PR 都会复现,不是偶发。",
+      "proposal": "两个方向任选:① 审查 agent 的 checkout 改用 detached HEAD(gh pr checkout <N> --detach,或 git fetch origin pull/<N>/head && git checkout --detach FETCH_HEAD),不创建占用性本地分支;② 在 SKILL 5.1 合并步骤前插一步:先回收本轮该 PR 的审查 worktree(git worktree remove),再执行 gh pr merge --delete-branch。方向 ① 更彻底,不依赖调用顺序。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T05:11:47.174Z",
+      "lastSeen": "2026-07-30T05:11:47.174Z"
     }
   ]
 }
