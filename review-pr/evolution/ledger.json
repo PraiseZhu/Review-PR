@@ -910,6 +910,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T17:02:26.982Z",
       "lastSeen": "2026-07-30T17:02:26.982Z"
+    },
+    {
+      "fingerprint": "ci-workflow-pr-needs-human",
+      "tier": "by-design",
+      "title": "改 CI workflow 的 PR 命中安全审查路径,只能转人工",
+      "detail": "PR #348 只改 .github/workflows/*,命中 securityReviewPaths → skip-security-review;同时 mergeStateStatus=BLOCKED(code_scanning/code_quality 未上报)。两者都要真人处理,自动化不应放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T23:01:53.186Z",
+      "lastSeen": "2026-07-30T23:01:53.186Z"
     }
   ]
 }
