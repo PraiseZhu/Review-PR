@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `dependabot-lockfile-always-security-review` **dependabot 依赖升级 PR 必然命中 securityReviewPaths,恒转人工** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: open
+  - 现象:本轮 2 个候选(#358/#361)由 dependabot 提交,只改 package.json/package-lock.json,必然命中 securityReviewPaths → skip-security-review。该类 PR 每周多次,人工队列会持续积压。
+  - 提案:属扩权类(放宽安全边界),不自动落地。可选方向:① 保持现状,由 owner 定期人工过;② 为 dependabot 作者 + 仅 lockfile/依赖清单改动 + CI 全绿 的组合单独配一条窄豁免,但仍需 owner 拍板是否接受供应链面自动合并。
 - `skills-repo-diverged-sync-broken` **skills 仓 main 与远端 diverged，Skill 自同步每轮都失败** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:prepare.mjs 的 skillSync pull 报 'Not possible to fast-forward'，evolution-note 的 push 报 non-fast-forward（本地落后远端）。后果：远端 skill 更新拉不下来、本地台账推不上去，每轮都静默失败（仅进摘要）。
   - 提案:需维护者人工在 skills 仓（/Users/praise/AI-Agent/Claude/capabilities/source/cindy-lizi-skills）reconcile main 与 origin/main（merge 或 rebase 后再 push），恢复双向同步。Skill 侧不自动 merge/rebase——改写历史风险大于收益，保持 best-effort 报错即可。
