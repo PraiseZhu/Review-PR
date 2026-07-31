@@ -276,9 +276,21 @@ SKILL.md / config）时一律 `rebase --abort` 转人工**，返回 `reason:
 拿到这两类信号时必须显式上报，不可当普通网络抖动一笔带过（它们不会自愈，每轮都会重现）：
 - `skillSync.diverged=true`（`ahead>0 且 behind>0`）：自同步双向停摆。`pre-check.mjs` 在这种
   状态下**强制放行一轮**（同一 `本地HEAD:远端HEAD` 只强制一次，不会每轮空转烧 token），
-  就是为了让本轮把它写进 6.1 汇总并经播报出口推给 owner；
+  就是为了让本轮把它报出去；
 - `skillRepoCommitPush` 返回 `diverged-code-change-needs-human`：需人工 reconcile，
   汇总里要带上 `conflictFiles` 与 `backupRef`。
+
+这两类信号除写进 6.1 汇总外，**还要定向私聊 owner 一次**（群内播报出口只承载合并致谢，
+不放运维噪音；这条是独立的低频出口，自带按签名去重，同一故障状态只吵一次）：
+
+```text
+node "<SKILL_ROOT>/scripts/notify-sync-alert.mjs" --kind <diverged|code-conflict> \
+  --signature "<diverged 用 本地HEAD:远端HEAD;code-conflict 用 conflictFiles 拼接>" \
+  --detail "<ahead/behind、冲突文件、backupRef 等现场信息>"
+```
+
+未配置私聊目标（notify.env 的 `SLACK_OPS_ALERT_CHANNEL_ID`）时该脚本 no-op，
+`posted:false, reason:'ops-alert-channel-not-configured'`，不影响本轮任何判定。
 
 ## 1. 调度前置检查
 
