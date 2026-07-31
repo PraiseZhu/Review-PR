@@ -67,20 +67,36 @@ function extractDetails(body) {
   let start = lines.findIndex((l) => /^#{1,4}\s*(变更说明|改动说明|用户能感知到什么)/.test(l.trim()));
   let stopAtHeading = true;
   if (start < 0) {
-    if (lines.some((l) => /^#{1,4}\s/.test(l.trim()))) return ''; // 有标题但没有说明类段落,不硬凑
-    start = -1; // 纯正文:从头取首段
-    stopAtHeading = false;
+    // 段名五花八门,穷举注定漏(实测本仓还有「背景」「症状与影响」「根因」「验证」等)。
+    // 兜底取**第一个段落**的正文:那是作者自己写的开篇,对来审阅的人一样有信息量,
+    // 比因为段名不认识就发一条没有要点的空致谢好。
+    const firstHeading = lines.findIndex((l) => /^#{1,4}\s/.test(l.trim()));
+    if (firstHeading >= 0) {
+      start = firstHeading;
+    } else {
+      start = -1; // 纯正文:从头取首段
+      stopAtHeading = false;
+    }
   }
   const picked = [];
-  for (let i = start + 1; i < lines.length && picked.length < 5; i++) {
+  let inCode = false;
+  for (let i = start + 1; i < lines.length && picked.length < 4; i++) {
     const t = lines[i].trim();
+    // 代码块整段丢弃:栈回溯 / 报错原文进 thread 只是噪音,看的人要的是「改了什么」。
+    if (/^```/.test(t)) { inCode = !inCode; continue; }
+    if (inCode) continue;
     if (stopAtHeading && /^#{1,4}\s/.test(t)) break; // 下一个标题,段落结束
     if (!t) {
       if (!stopAtHeading && picked.length) break; // 纯正文模式:首段取完即止
       continue;
     }
-    if (/^[(（>]/.test(t)) continue; // 流程备注 / 引用行不进要点
-    picked.push(/^[-*•]/.test(t) ? t.replace(/^[-*]\s*/, '• ') : `• ${t}`);
+    if (/^[(（>|]/.test(t)) continue; // 流程备注 / 引用 / 表格行不进要点
+    if (/^[-=|:\s]+$/.test(t)) continue; // 分隔线、表格分隔行
+    // 列表符号只在「符号 + 空白」时才算,否则会把 **加粗** 的第一个星号当成列表符吃掉。
+    const body = /^[-*+]\s+/.test(t) ? t.replace(/^[-*+]\s+/, '') : t;
+    const clean = body.replace(/\*\*/g, '').trim(); // Slack 不认 ** 加粗,去掉避免露出符号
+    if (!clean) continue;
+    picked.push(`• ${clean.length > 140 ? `${clean.slice(0, 140)}…` : clean}`);
   }
   return picked.join('\n');
 }
