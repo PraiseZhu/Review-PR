@@ -562,16 +562,16 @@
     },
     {
       "fingerprint": "mivo-canvas-structural-check-codescan-quality-gap",
-      "tier": "by-design",
+      "tier": "proposal",
       "title": "mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED",
       "detail": "本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-28T12:08:56.190Z",
-      "lastSeen": "2026-07-28T12:15:28.776Z"
+      "lastSeen": "2026-07-30T02:17:59.408Z"
     },
     {
       "fingerprint": "node-debug-env-pollutes-script-stdout",
@@ -582,9 +582,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 3,
       "firstSeen": "2026-07-28T13:25:25.316Z",
-      "lastSeen": "2026-07-28T13:25:25.316Z"
+      "lastSeen": "2026-07-30T02:17:59.636Z"
     },
     {
       "fingerprint": "worktree-cleanup-pr-n-branch-naming",
@@ -634,9 +634,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T01:49:00.683Z",
-      "lastSeen": "2026-07-29T01:49:00.683Z"
+      "lastSeen": "2026-07-30T02:17:59.484Z"
     },
     {
       "fingerprint": "structural-bypass-approved-vs-repo-without-required-approval",
@@ -647,9 +647,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T05:11:26.017Z",
-      "lastSeen": "2026-07-29T05:11:26.017Z"
+      "lastSeen": "2026-07-30T02:17:59.329Z"
     },
     {
       "fingerprint": "ui-evidence-notice-hardcodes-design-md",
@@ -673,9 +673,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 4,
       "firstSeen": "2026-07-29T11:12:55.631Z",
-      "lastSeen": "2026-07-29T11:12:55.631Z"
+      "lastSeen": "2026-07-30T08:05:06.001Z"
     },
     {
       "fingerprint": "review-agent-pr-checkout-worktree-conflict",
@@ -718,16 +718,16 @@
     },
     {
       "fingerprint": "threads-unresolved-needs-human",
-      "tier": "by-design",
+      "tier": "proposal",
       "title": "未 resolve 的 review conversation 只能由人点 Resolve,自动化不代劳",
       "detail": "本轮 #318(2 条)、#324(1 条)、#333(3 条)因此跳过。作者在 exemptAuthors 白名单内,催 resolve 与停滞私聊均按豁免跳过,不发通知。属署名/决策类,只计数观察,不因出现多次就放开代 resolve。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 3,
       "firstSeen": "2026-07-29T14:31:28.584Z",
-      "lastSeen": "2026-07-29T14:31:28.584Z"
+      "lastSeen": "2026-07-30T02:17:59.176Z"
     },
     {
       "fingerprint": "blocked-structural-check-ignores-thirdparty-check-runs",
@@ -751,9 +751,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T17:28:45.538Z",
-      "lastSeen": "2026-07-29T17:28:45.538Z"
+      "lastSeen": "2026-07-29T23:05:54.030Z"
     },
     {
       "fingerprint": "nonrequired-thirdparty-ai-check-blocks-merge",
@@ -764,9 +764,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-29T23:05:42.177Z",
-      "lastSeen": "2026-07-29T23:05:42.177Z"
+      "lastSeen": "2026-07-30T02:17:59.561Z"
     },
     {
       "fingerprint": "security-review-path-blocks-own-gate-widening-pr",
@@ -780,6 +780,175 @@
       "occurrences": 1,
       "firstSeen": "2026-07-30T01:19:38.094Z",
       "lastSeen": "2026-07-30T01:19:38.094Z"
+    },
+    {
+      "fingerprint": "structural-block-detection-omits-copilot-code-review",
+      "tier": "proposal",
+      "title": "structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据",
+      "detail": "lib.mjs 的 CHECK_RULES 只含 required_status_checks / code_scanning / code_quality。mivo-canvas 的 trunk-guard ruleset 同时启用了 copilot_code_review(另有独立的 copilot-review-on-push ruleset),该类型不被采集进 requiredCheckRules,于是 pre-merge-check 对 PR 342 报 structuralAllowlisted=true(只看到 code_scanning/code_quality 两项,均在 allowlist 内),而实际可能还有一个未被 allowlist 覆盖的 review 门在阻塞。该 PR reviews 为空,Copilot 从未提交 review。",
+      "proposal": "两条待拍板:① 若 copilot_code_review 确实参与 mergeStateStatus 阻塞,把它纳入 lib.mjs 的 CHECK_RULES,让 requiredCheckRules 完整,从而 structuralAllowlisted 在它未进 allowlist 时正确判 false(方向是 fail-closed,更严);② 若它只是 on-push 触发器不阻塞合并,则在 CHECK_RULES 注释里写明为何刻意排除,避免后续复盘反复怀疑。本轮无法从 API 区分两种语义,故不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T02:17:37.539Z",
+      "lastSeen": "2026-07-30T02:17:37.539Z"
+    },
+    {
+      "fingerprint": "review-worktree-holds-branch-blocks-delete-branch",
+      "tier": "proposal",
+      "title": "审查 agent 的 worktree 占用 PR 分支,导致 gh pr merge --delete-branch 中止,远程分支残留",
+      "detail": "PR 342 合并时 --delete-branch 报 'cannot delete branch used by worktree at .claude/worktrees/agent-<id>':审查 agent 按 SKILL 第 4 节在隔离 worktree 里跑 gh pr checkout <N>,该本地分支因此被占用;gh 先删本地失败即整体中止,远程分支 chore/changelog-2026-07-29 未被删除,需人工补删。这是确定性的顺序问题,每个走「审查通过→合并」路径的 PR 都会复现,不是偶发。",
+      "proposal": "两个方向任选:① 审查 agent 的 checkout 改用 detached HEAD(gh pr checkout <N> --detach,或 git fetch origin pull/<N>/head && git checkout --detach FETCH_HEAD),不创建占用性本地分支;② 在 SKILL 5.1 合并步骤前插一步:先回收本轮该 PR 的审查 worktree(git worktree remove),再执行 gh pr merge --delete-branch。方向 ① 更彻底,不依赖调用顺序。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T05:11:47.174Z",
+      "lastSeen": "2026-07-30T05:11:47.174Z"
+    },
+    {
+      "fingerprint": "skip-security-review-routes-automation-selfmod-to-human",
+      "tier": "by-design",
+      "title": "改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合",
+      "detail": "PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 2,
+      "firstSeen": "2026-07-30T05:12:19.225Z",
+      "lastSeen": "2026-07-30T08:05:03.648Z"
+    },
+    {
+      "fingerprint": "author-side-conflict-blocks-merge",
+      "tier": "by-design",
+      "title": "与主干冲突(mergeStateStatus=DIRTY)属作者侧,需作者 rebase,本轮 4 个 PR 因此跳过",
+      "detail": "PR 323/325/329/339 均为 DIRTY。本仓 selfFixAuthors 为空(观察期未启用自动修),且作者 PraiseZhu 在 staleAuthorReminder.exemptAuthors 内,故不催办、不私聊。5.5 主干代合并的门槛是「其余全过、仅剩冲突」,这几个 PR 同时还有未 resolve thread,不满足门槛。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 2,
+      "firstSeen": "2026-07-30T05:12:21.556Z",
+      "lastSeen": "2026-07-30T08:04:58.508Z"
+    },
+    {
+      "fingerprint": "unresolved-threads-require-human-resolve",
+      "tier": "by-design",
+      "title": "未 resolve 的 review conversation 需真人处理,本轮 3 个 PR 因此跳过",
+      "detail": "PR 324/326/331 分别有 2/1/1 条未 resolve conversation。代 resolve 他人 thread 属 8.1 扩权类,永不自动化。作者在 exemptAuthors 内故不发催 resolve 评论(notify-author-resolve 返回 exempt-author)。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 2,
+      "firstSeen": "2026-07-30T05:12:23.924Z",
+      "lastSeen": "2026-07-30T08:05:01.340Z"
+    },
+    {
+      "fingerprint": "node-debug-env-pollutes-script-json-output",
+      "tier": "proposal",
+      "title": "宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑",
+      "detail": "本轮首次 context.mjs --scan-all 的输出被数百行 'NET <pid>: ...' 淹没,JSON 无法直接解析,只能 env -u NODE_DEBUG 重跑一次完整扫描(重复消耗一轮 gh API 与时间)。噪声来自宿主继承的 NODE_DEBUG 环境变量,不是脚本缺陷,但脚本可自我防护。",
+      "proposal": "① 在 SKILL「Skill 路径与目标仓库」一节补一句:所有确定性脚本建议以 env -u NODE_DEBUG 调用,避免宿主 NODE_DEBUG 污染 JSON 输出;② 或在各脚本入口自 delete process.env.NODE_DEBUG(仅影响自身及其 spawn 的子进程,不改宿主)。两者都不新增写操作、不放宽任何 gate。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 2,
+      "firstSeen": "2026-07-30T05:12:26.231Z",
+      "lastSeen": "2026-07-30T08:05:08.320Z"
+    },
+    {
+      "fingerprint": "own-pr-only-repo-blockers-need-human",
+      "tier": "by-design",
+      "title": "本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理",
+      "detail": "本轮 8 个候选作者全部是 viewer 账号本人：3 个卡未 resolve conversation、2 个卡第三方 check 失败、3 个命中安全审查路径转人工。属署名/决策类，不自动化。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T11:05:29.308Z",
+      "lastSeen": "2026-07-30T11:05:29.308Z"
+    },
+    {
+      "fingerprint": "self-authored-pr-no-followup-channel",
+      "tier": "proposal",
+      "title": "自有 PR 卡住时既不催也不自动修，零跟进通道",
+      "detail": "本仓 selfFixAuthors=[]，staleAuthorReminder.exemptAuthors 含唯一作者。结果：卡未 resolve thread / CI 失败的自有 PR 既不发催办评论(exempt-author)，也不投递跟进会话(selfFix=false)，只能靠 owner 自己看汇总。本轮 5 个候选落在该盲区。",
+      "proposal": "扩权类，需 owner 拍板：是否把该账号纳入 selfFixAuthors，让卡点自动投递跟进会话修到可合并。纳入即新增对自有 PR 分支的自动写操作，不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T11:05:44.061Z",
+      "lastSeen": "2026-07-30T11:05:44.061Z"
+    },
+    {
+      "fingerprint": "pr-body-heading-mismatch-author-side",
+      "tier": "by-design",
+      "title": "PR body 段落标题用词与模板不符,只能由作者改 description 解掉",
+      "detail": "xindong/mivo-canvas PR #347: body 写 '## 改动说明',模板要求 '## 变更说明'/'## 提交前自检'/'## 备注',格式门判三段全缺并打回。修复动作在作者侧(edit description),自动化不代改他人 PR 的 description,属 by-design,只计数观察。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T14:05:06.962Z",
+      "lastSeen": "2026-07-30T14:05:06.962Z"
+    },
+    {
+      "fingerprint": "ci-workflow-change-needs-human",
+      "tier": "by-design",
+      "title": "CI workflow 改动命中 securityReviewPaths，按设计转人工审查",
+      "detail": "PR #348 改 .github/workflows/{ci,main-health,pr-hygiene}.yml 与 dependabot.yml，命中 securityReviewPaths → skip-security-review。属自动化自我损坏防护的设计意图，不是漏判，永不自动放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T17:02:14.452Z",
+      "lastSeen": "2026-07-30T17:02:14.452Z"
+    },
+    {
+      "fingerprint": "skills-repo-diverged-sync-broken",
+      "tier": "proposal",
+      "title": "skills 仓 main 与远端 diverged，Skill 自同步每轮都失败",
+      "detail": "prepare.mjs 的 skillSync pull 报 'Not possible to fast-forward'，evolution-note 的 push 报 non-fast-forward（本地落后远端）。后果：远端 skill 更新拉不下来、本地台账推不上去，每轮都静默失败（仅进摘要）。",
+      "proposal": "需维护者人工在 skills 仓（/Users/praise/AI-Agent/Claude/capabilities/source/cindy-lizi-skills）reconcile main 与 origin/main（merge 或 rebase 后再 push），恢复双向同步。Skill 侧不自动 merge/rebase——改写历史风险大于收益，保持 best-effort 报错即可。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T17:02:26.982Z",
+      "lastSeen": "2026-07-30T17:02:26.982Z"
+    },
+    {
+      "fingerprint": "ci-workflow-pr-needs-human",
+      "tier": "by-design",
+      "title": "改 CI workflow 的 PR 命中安全审查路径,只能转人工",
+      "detail": "PR #348 只改 .github/workflows/*,命中 securityReviewPaths → skip-security-review;同时 mergeStateStatus=BLOCKED(code_scanning/code_quality 未上报)。两者都要真人处理,自动化不应放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-30T23:01:53.186Z",
+      "lastSeen": "2026-07-30T23:01:53.186Z"
+    },
+    {
+      "fingerprint": "security-review-paths-ci-workflow-to-human",
+      "tier": "by-design",
+      "title": "CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合",
+      "detail": "PR #348 只改 .github/workflows/*.yml 与 dependabot.yml，命中 securityReviewPaths（防自动化自我损坏）。这是设计意图，不是漏判；仅记计数观察，永不因出现多次就放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-31T02:10:09.545Z",
+      "lastSeen": "2026-07-31T02:10:09.545Z"
     }
   ]
 }
