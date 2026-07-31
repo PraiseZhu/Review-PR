@@ -11,7 +11,7 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, existsSync, mkdirSync, unlinkSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -590,9 +590,134 @@ export function skillRepoInfo({ timeoutMs = 15_000 } = {}) {
 }
 
 /**
+ * 只追加类台账文件的白名单 —— 唯一允许自动解冲突的文件。
+ *
+ * 背景(2026-07-31 实测):本机交互式轮次与 mini 定时轮次都会往 skills 仓写 evo 台账,
+ * 两个写者并发时 push 必然撞 non-fast-forward。下方 skillRepoCommitPush 早就有
+ * 「被拒 → pull --rebase → 重推」的重试,但 rebase **每次都在这两个文件上冲突**
+ * (两边各自往同一段尾部追加),于是 rebase --abort 回到分叉态;后续每轮 ff-pull 与
+ * push 双向死锁,永久不自愈——18 个 evo commit 因此积压一天多。
+ *
+ * 只对这两个文件自动收敛,理由(与 8.1「扩权类不自动落地」的边界划清):
+ *   - 语义是纯追加,合并规则确定(md 取行并集、ledger 按 fingerprint 并集),不需要语义判断;
+ *   - 被 rebase 改写的只是**本地尚未推送**的 evo commit,没有第三方持有该历史,改写无副作用;
+ *   - 任何其他文件(脚本 / SKILL.md / config)一旦冲突,一律 abort 转人工——那类冲突
+ *     是真的代码分歧,自动合并会静默丢改动,风险确实大于收益。
+ */
+const APPEND_ONLY_CONFLICT_FILES = [
+  /(^|\/)EVOLUTION\.md$/,
+  /(^|\/)evolution\/ledger\.json$/,
+];
+
+const isAppendOnlyConflictFile = (p) => APPEND_ONLY_CONFLICT_FILES.some((re) => re.test(p));
+
+/** 当前处于冲突态(unmerged)的文件列表。 */
+function conflictedPaths(cwd) {
+  const r = git(['diff', '--name-only', '--diff-filter=U'], { allowFail: true, cwd });
+  return r.ok ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/** 取冲突文件的某一 stage 内容(1=base, 2=ours/upstream, 3=theirs/被重放的提交);缺失返回 null。 */
+function conflictStage(cwd, stage, path) {
+  const r = git(['show', `:${stage}:${path}`], { allowFail: true, cwd });
+  return r.ok ? r.stdout : null;
+}
+
+/**
+ * evo 台账 JSON 的确定性合并:按 fingerprint 取并集。
+ * 同指纹:occurrences 取大、firstSeen 取早、lastSeen 取晚,其余字段以 lastSeen 更新的一侧为准
+ * (时间戳对称比较,与哪边是 ours/theirs 无关,合并结果不受 rebase 方向影响)。
+ * 解析失败返回 null(交由调用方 abort 转人工,绝不猜测)。
+ */
+export function mergeLedgerJson(oursText, theirsText) {
+  let ours;
+  let theirs;
+  try {
+    ours = JSON.parse(oursText);
+    theirs = JSON.parse(theirsText);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(ours?.entries) || !Array.isArray(theirs?.entries)) return null;
+  const CARRY = ['status', 'commit', 'note', 'detail', 'proposal', 'title', 'tier'];
+  const merged = new Map();
+  for (const e of [...ours.entries, ...theirs.entries]) {
+    const fp = e?.fingerprint;
+    if (!fp) return null; // 结构不符预期,不冒险
+    const cur = merged.get(fp);
+    if (!cur) {
+      merged.set(fp, { ...e });
+      continue;
+    }
+    cur.occurrences = Math.max(cur.occurrences || 0, e.occurrences || 0);
+    if (e.firstSeen && (!cur.firstSeen || e.firstSeen < cur.firstSeen)) cur.firstSeen = e.firstSeen;
+    if (e.lastSeen && (!cur.lastSeen || e.lastSeen > cur.lastSeen)) {
+      cur.lastSeen = e.lastSeen;
+      for (const f of CARRY) if (e[f] !== undefined && e[f] !== null) cur[f] = e[f];
+    }
+  }
+  return `${JSON.stringify({ ...ours, entries: [...merged.values()] }, null, 2)}\n`;
+}
+
+/** Markdown 台账的确定性合并:交给 git merge-file --union 做逐 hunk 行并集(不留冲突标记)。 */
+function mergeMarkdownUnion(cwd, base, ours, theirs) {
+  const dir = mkdtempSync(join(tmpdir(), 'review-pr-union-'));
+  try {
+    const f = (n, c) => {
+      const p = join(dir, n);
+      writeFileSync(p, c ?? '');
+      return p;
+    };
+    const r = git(['merge-file', '--union', '-p', f('ours', ours), f('base', base), f('theirs', theirs)], {
+      allowFail: true, cwd,
+    });
+    return r.ok ? r.stdout : null; // --union 下不应有冲突;非 0 视为异常,转人工
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 尝试把当前 rebase 的全部冲突用确定性规则解掉。
+ * 返回 { resolved:true } 或 { resolved:false, blockedBy:[非白名单或解不了的文件] }。
+ */
+function resolveAppendOnlyConflicts(cwd) {
+  const paths = conflictedPaths(cwd);
+  if (!paths.length) return { resolved: true };
+  const blockedBy = paths.filter((p) => !isAppendOnlyConflictFile(p));
+  if (blockedBy.length) return { resolved: false, blockedBy };
+
+  for (const p of paths) {
+    const base = conflictStage(cwd, 1, p);
+    const ours = conflictStage(cwd, 2, p);
+    const theirs = conflictStage(cwd, 3, p);
+    if (ours == null || theirs == null) return { resolved: false, blockedBy: [p] }; // 增删类冲突不自动处理
+    const out = p.endsWith('.json')
+      ? mergeLedgerJson(ours, theirs)
+      : mergeMarkdownUnion(cwd, base, ours, theirs);
+    if (out == null) return { resolved: false, blockedBy: [p] };
+    writeFileSync(join(cwd, p), out);
+    const add = git(['add', '--', p], { allowFail: true, cwd });
+    if (!add.ok) return { resolved: false, blockedBy: [p] };
+  }
+  return { resolved: true };
+}
+
+/** rebase 是否仍在进行中。 */
+function rebaseInProgress(cwd) {
+  const gd = git(['rev-parse', '--git-path', 'rebase-merge'], { allowFail: true, cwd }).stdout.trim();
+  const ga = git(['rev-parse', '--git-path', 'rebase-apply'], { allowFail: true, cwd }).stdout.trim();
+  const abs = (p) => (p && isAbsolute(p) ? p : join(cwd, p || ''));
+  return Boolean((gd && existsSync(abs(gd))) || (ga && existsSync(abs(ga))));
+}
+
+/**
  * 把 skills 仓库 pull 到最新(--ff-only,不产生 merge commit、diverged 时安全失败)。
  * 每轮执行前调用(pre-check / prepare 已内置)。返回:
- *   { ok, action:'pull', updated, before, after, branch, error } 或 { ok:true, skipped }。
+ *   { ok, action:'pull', updated, before, after, branch, diverged, ahead, behind, error }
+ *   或 { ok:true, skipped }。
+ * diverged=true(ahead>0 且 behind>0)是「自同步已停摆」的明确信号,调用方应显著上报而非
+ * 当作普通网络抖动——它不会自愈,每轮都会重现,直到 push 侧收敛或人工 reconcile。
  */
 export function skillRepoPull({ timeoutMs = 30_000 } = {}) {
   const info = skillRepoInfo();
@@ -603,6 +728,20 @@ export function skillRepoPull({ timeoutMs = 30_000 } = {}) {
   const before = head();
   const pull = git(['pull', '--ff-only', '--quiet'], { allowFail: true, cwd, timeoutMs });
   const after = head();
+
+  // ff-only 失败时区分「分叉」与其他原因(网络 / 认证):分叉需要人看,别的下轮自愈。
+  let ahead = null;
+  let behind = null;
+  let remoteHead = null;
+  if (!pull.ok) {
+    const c = git(['rev-list', '--left-right', '--count', `origin/${info.branch}...HEAD`], { allowFail: true, cwd });
+    if (c.ok) {
+      const [b, a] = c.stdout.trim().split(/\s+/).map(Number);
+      behind = Number.isFinite(b) ? b : null;
+      ahead = Number.isFinite(a) ? a : null;
+    }
+    remoteHead = git(['rev-parse', '--short', `origin/${info.branch}`], { allowFail: true, cwd }).stdout.trim() || null;
+  }
   return {
     ok: pull.ok,
     action: 'pull',
@@ -610,6 +749,7 @@ export function skillRepoPull({ timeoutMs = 30_000 } = {}) {
     updated: pull.ok && before !== after,
     before,
     after,
+    ...(pull.ok ? {} : { diverged: ahead > 0 && behind > 0, ahead, behind, head: after, remoteHead }),
     error: pull.ok ? null : ((pull.stderr || pull.stdout).trim().slice(0, 300) || 'git pull 失败'),
   };
 }
@@ -657,10 +797,71 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
   if (ahead === 0) return { ok: true, committed, commit, pushed: false, branch: info.branch, reason: 'nothing-to-push' };
 
   let push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-  if (!push.ok && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr)) {
+  const converge = [];
+  // 被拒(远端先动了)→ rebase 本地未推 commit 后重推。最多试 REBASE_ROUNDS 轮:每轮之间
+  // 远端可能又被另一个写者推进(本机交互式轮次 vs mini 定时轮次),重来一次即可收敛。
+  const REBASE_ROUNDS = 3;
+  for (let round = 0; round < REBASE_ROUNDS && !push.ok
+       && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr); round++) {
+    // 安全网:rebase 会改写本地未推 commit,先留一个可恢复的 ref(不占分支名空间、不会被 push)。
+    const backupRef = `refs/skill-sync/pre-rebase-${Date.now()}`;
+    git(['update-ref', backupRef, 'HEAD'], { allowFail: true, cwd });
+
     const rb = git(['pull', '--rebase', '--quiet'], { allowFail: true, cwd, timeoutMs });
-    if (rb.ok) push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-    else git(['rebase', '--abort'], { allowFail: true, cwd }); // 回到 rebase 前状态,留给下轮/人工
+    if (!rb.ok) {
+      // 冲突:只有台账类(只追加)文件才自动收敛,其余一律 abort 转人工。
+      const res = resolveAppendOnlyConflicts(cwd);
+      if (!res.resolved) {
+        git(['rebase', '--abort'], { allowFail: true, cwd });
+        return {
+          ok: false,
+          committed,
+          commit,
+          pushed: false,
+          branch: info.branch,
+          converge,
+          reason: 'diverged-code-change-needs-human',
+          conflictFiles: res.blockedBy,
+          backupRef,
+          error: `skills 仓分叉且冲突文件不是只追加台账,已 abort 保持原状,需人工 reconcile:${res.blockedBy.join(', ')}`,
+        };
+      }
+      // 逐个 commit 继续重放,每一步都可能再冲突;core.editor=true 防 --continue 打开编辑器挂死。
+      let guard = 0;
+      while (rebaseInProgress(cwd) && guard++ < 50) {
+        const cont = git(['-c', 'core.editor=true', 'rebase', '--continue'], { allowFail: true, cwd, timeoutMs: 30_000 });
+        if (cont.ok) continue;
+        const again = resolveAppendOnlyConflicts(cwd);
+        if (!again.resolved) {
+          git(['rebase', '--abort'], { allowFail: true, cwd });
+          return {
+            ok: false,
+            committed,
+            commit,
+            pushed: false,
+            branch: info.branch,
+            converge,
+            reason: 'diverged-code-change-needs-human',
+            conflictFiles: again.blockedBy,
+            backupRef,
+            error: `rebase 重放中出现非台账冲突,已 abort:${again.blockedBy.join(', ')}`,
+          };
+        }
+      }
+      if (rebaseInProgress(cwd)) { // 兜底:没在上限内收完,不留半吊子状态
+        git(['rebase', '--abort'], { allowFail: true, cwd });
+        return {
+          ok: false, committed, commit, pushed: false, branch: info.branch, converge,
+          reason: 'rebase-did-not-finish', backupRef, error: 'rebase 未在重试上限内完成,已 abort',
+        };
+      }
+      converge.push({ round: round + 1, resolvedLedgerConflict: true });
+    } else {
+      converge.push({ round: round + 1, resolvedLedgerConflict: false });
+    }
+    push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
+    // 推成功后备份 ref 已无用,清掉,避免 refs/skill-sync/* 无限堆积。
+    if (push.ok) git(['update-ref', '-d', backupRef], { allowFail: true, cwd });
   }
   return {
     ok: push.ok,
@@ -668,6 +869,7 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
     commit,
     pushed: push.ok,
     branch: info.branch,
+    ...(converge.length ? { converge } : {}),
     error: push.ok ? null : ((push.stderr || push.stdout).trim().slice(0, 300) || 'git push 失败'),
   };
 }

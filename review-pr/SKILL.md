@@ -264,6 +264,22 @@ pull / push 失败（断网、diverged、非 main 分支）不阻塞 review 流�
 `skillSync` / `sync` 异常如实写进汇总即可，不要重试到卡死。手动诊断用
 `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" <pull|push>`。
 
+**多写者并发（同一 skills 仓被多台机器 / 多个轮次写）**：同一个 skills 仓可能同时被
+定时轮次与人工交互轮次写入（各自追加 evo 台账），push 撞 `non-fast-forward` 属正常并发，
+不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**
+（`EVOLUTION.md`、`evolution/ledger.json`）用确定性规则自动解冲突（md 取行并集、ledger 按
+`fingerprint` 并集，两侧条目零丢失），最多重试 3 轮；rebase 前先把 HEAD 存进
+`refs/skill-sync/pre-rebase-<ts>` 兜底，推成功即清理。**冲突落在任何其他文件（脚本 /
+SKILL.md / config）时一律 `rebase --abort` 转人工**，返回 `reason:
+'diverged-code-change-needs-human'` 与 `conflictFiles`——那是真代码分歧，自动合并会静默丢改动。
+
+拿到这两类信号时必须显式上报，不可当普通网络抖动一笔带过（它们不会自愈，每轮都会重现）：
+- `skillSync.diverged=true`（`ahead>0 且 behind>0`）：自同步双向停摆。`pre-check.mjs` 在这种
+  状态下**强制放行一轮**（同一 `本地HEAD:远端HEAD` 只强制一次，不会每轮空转烧 token），
+  就是为了让本轮把它写进 6.1 汇总并经播报出口推给 owner；
+- `skillRepoCommitPush` 返回 `diverged-code-change-needs-human`：需人工 reconcile，
+  汇总里要带上 `conflictFiles` 与 `backupRef`。
+
 ## 1. 调度前置检查
 
 注册 Skill 自带的维护者 precheck，scheduler 命令必须使用安装后的绝对路径：

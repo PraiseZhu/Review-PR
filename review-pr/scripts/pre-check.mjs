@@ -50,7 +50,7 @@
 // (超时后宿主树杀进程、fail-open 放行创建会话，不是「阻止本轮」；本脚本内部的 gh
 // 超时则是自己捕获并显式 exit 0,两者是不同层级的兜底,不要混为一谈)。
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, delimiter } from 'node:path';
 import process from 'node:process';
 
@@ -105,8 +105,20 @@ function lockHeld(lockFile) {
 }
 
 /** 输出 skip 决策并 exit 2。 */
+// skill 仓自同步的诊断,skip / run 两条出口都要带上——分叉这类「不会自愈」的故障若只在
+// run 分支上报,恰好赶上没有 open PR 的空转轮就永远没人知道(2026-07-31 实测:分叉静默
+// 一天多才被人翻仓发现)。
+let skillSyncReport = null;
+// 分叉时强制放行一轮,让会话内流程把它写进 6.1 汇总并经播报出口推给 owner。
+// 同一分叉状态只强制一次(按 本地 HEAD:远端 HEAD 去重),避免每 3 小时空转烧 token。
+let forceRunReason = null;
+
 function skip(reason, extra = {}) {
-  process.stdout.write(JSON.stringify({ decision: 'skip', reason, ...extra }) + '\n');
+  if (forceRunReason) {
+    process.stdout.write(JSON.stringify({ decision: 'run', reason: forceRunReason, skipReason: reason, skillSync: skillSyncReport }) + '\n');
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify({ decision: 'skip', reason, ...(skillSyncReport ? { skillSync: skillSyncReport } : {}), ...extra }) + '\n');
   process.exit(2);
 }
 
@@ -122,6 +134,19 @@ try {
   // 放在 lock-held 之后——有轮次正在跑时不换它脚下的脚本。失败不拦本轮(best-effort)。
   let skillSync = null;
   try { skillSync = skillRepoPull({ timeoutMs: 30_000 }); } catch { /* 自更新异常不影响调度判定 */ }
+  skillSyncReport = skillSync;
+  // 分叉 = 自同步双向停摆,不会自愈(ff-pull 拉不动、push 非 ff 被拒)。台账类冲突已由
+  // skillRepoCommitPush 自动收敛,走到这里的基本是真代码分歧,必须让人知道。
+  if (skillSync?.diverged) {
+    const sig = `${skillSync.head ?? skillSync.after ?? '?'}:${skillSync.remoteHead ?? '?'}`;
+    const alertFile = `${SCAN_STATE_FILE}.skill-diverged`;
+    let alerted = null;
+    try { alerted = readFileSync(alertFile, 'utf8').trim(); } catch { /* 首次 */ }
+    if (alerted !== sig) {
+      try { writeFileSync(alertFile, `${sig}\n`); } catch { /* 写不了就每轮都报,宁吵不哑 */ }
+      forceRunReason = 'skill-repo-diverged';
+    }
+  }
   const { owner, repo } = parseRepo();
   const raw = JSON.parse(
     gh(
