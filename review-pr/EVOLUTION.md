@@ -96,6 +96,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
+  - 现象:PR #348 只改 .github/workflows/*.yml 与 dependabot.yml，命中 securityReviewPaths（防自动化自我损坏）。这是设计意图，不是漏判；仅记计数观察，永不因出现多次就放开。
 - `ci-workflow-pr-needs-human` **改 CI workflow 的 PR 命中安全审查路径,只能转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR #348 只改 .github/workflows/*,命中 securityReviewPaths → skip-security-review;同时 mergeStateStatus=BLOCKED(code_scanning/code_quality 未上报)。两者都要真人处理,自动化不应放开。
 - `ci-workflow-change-needs-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工审查** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
