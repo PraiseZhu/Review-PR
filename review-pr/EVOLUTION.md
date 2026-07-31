@@ -74,9 +74,6 @@
 
 ## 已自动落地(automatable-gap)
 
-- `premerge-check-missing-rollup-guards` **pre-merge-check 的 BLOCKED 细分与 selfMerge 路径不查 statusCheckRollup——5178e64 只修了 context.mjs,合并前最后一道门仍会漏第三方检查失败** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: landed,commit `f7c23b7`
-  - 现象:pre-merge-check.mjs 的 BLOCKED→structural-check 细分只跑 classifyHeadChecks(actions/runs),rollup 仅用于 satisfiedContexts、failed 列表从未被查;文件注释三处声称「与 context.mjs 同口径」但 5178e64 落地后已漂移。该脚本恰是防「scan 之后、合并之前状态变化」的最后复核——scan 时第三方 check-run 尚未上报、合并前报了 FAILURE 的窗口正好全漏。selfMergeAvailable 更早:blockClass=awaiting-approval 在 reviewDecision 层短路,rollup 全程没查,self PR 带失败/未跑完的第三方检查也会 --admin 合,唯一兜底是 SKILL 3.5 第 4 条的语义门(非确定性)。实测 mivo-canvas#318(Greptile Review=FAILURE)修前判 structural-check + bypassAvailable,修后判 ci-failed 并点名该 check;#342(真全绿+code_scanning 真空门)修后仍 structural-check,不误伤。
-  - 提案(已落地):BLOCKED 细分在落 structural-check 前补 rollup 三道守卫(null→ci-unknown 不可 bypass / failed→ci-failed / pending→ci-pending),与 context.mjs 5178e64 逐字同口径;selfMergeAvailable 增加「rollup 非 null 且无失败且无进行中」前提。纯收紧、只读、不放宽任何 gate。
 - `blocked-structural-check-ignores-thirdparty-check-runs` **BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `5178e64`
   - 现象:classifyHeadChecks 走 actions/runs,看不到第三方 App 的 check-run 与 commit status;BLOCKED 分支落进 structural-check 前未查 statusCheckRollup 全集。实测 mivo-canvas#318:Greptile Review conclusion=failure(置信度 3/5 低于本仓要求 4/5),gate 却报「review 与已跑 CI 均无问题」并给出 bypass-structural-block。UNSTABLE 分支早已用 rollup 处理同一类问题,BLOCKED 分支漏了。
   - 提案:BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。
@@ -99,11 +96,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `security-review-path-blocks-own-gate-widening-pr` **扩大 e2e 门禁覆盖面的 PR 必然改 package.json,因而命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
-  - 现象:PR #340(把 chat-copy 加进 test:e2e:prod:subset)只改 package.json 一行 scenario 列表,被判 skip-security-review 转人工。判定正确:package\.json$ 在 securityReviewPaths 内,而 review-pr 自己的两个 e2e required check 就跑这个 script —— 让它自动审并合入一个改动了自身验证命令的 PR,正是该门要防的自我损坏闭环。副作用是「加强门禁覆盖面」这类改动天然无法自动落地,每次都要人工放行。
-  - 提案:不建议自动放开(扩权类风险)。若想减少人工介入,可考虑把 e2e scenario 清单从 package.json 抽到独立数据文件(如 scripts/e2e/subset.json),让门禁改动不再触碰 package.json —— 但这是目标仓库的结构调整,不是 skill 侧改动,且需评估是否值得为此增加一层间接。
-- `threads-unresolved-needs-human` **未 resolve 的 review conversation 只能由人点 Resolve,自动化不代劳** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: tracked
-  - 现象:本轮 #318(2 条)、#324(1 条)、#333(3 条)因此跳过。作者在 exemptAuthors 白名单内,催 resolve 与停滞私聊均按豁免跳过,不发通知。属署名/决策类,只计数观察,不因出现多次就放开代 resolve。
+- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
+  - 现象:本轮 2 个候选(#351/#354)因缺 变更说明/提交前自检/备注 段落被格式门拦下;内容其实齐全,只是标题结构不符模板。属作者侧内容问题,由作者补齐,不做自动化。
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
   - 现象:PR #348 只改 .github/workflows/*.yml 与 dependabot.yml，命中 securityReviewPaths（防自动化自我损坏）。这是设计意图，不是漏判；仅记计数观察，永不因出现多次就放开。
 - `ci-workflow-pr-needs-human` **改 CI workflow 的 PR 命中安全审查路径,只能转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
@@ -120,6 +114,9 @@
   - 现象:PR 324/326/331 分别有 2/1/1 条未 resolve conversation。代 resolve 他人 thread 属 8.1 扩权类,永不自动化。作者在 exemptAuthors 内故不发催 resolve 评论(notify-author-resolve 返回 exempt-author)。
 - `author-side-conflict-blocks-merge` **与主干冲突(mergeStateStatus=DIRTY)属作者侧,需作者 rebase,本轮 4 个 PR 因此跳过** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR 323/325/329/339 均为 DIRTY。本仓 selfFixAuthors 为空(观察期未启用自动修),且作者 PraiseZhu 在 staleAuthorReminder.exemptAuthors 内,故不催办、不私聊。5.5 主干代合并的门槛是「其余全过、仅剩冲突」,这几个 PR 同时还有未 resolve thread,不满足门槛。
+- `security-review-path-blocks-own-gate-widening-pr` **扩大 e2e 门禁覆盖面的 PR 必然改 package.json,因而命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
+  - 现象:PR #340(把 chat-copy 加进 test:e2e:prod:subset)只改 package.json 一行 scenario 列表,被判 skip-security-review 转人工。判定正确:package\.json$ 在 securityReviewPaths 内,而 review-pr 自己的两个 e2e required check 就跑这个 script —— 让它自动审并合入一个改动了自身验证命令的 PR,正是该门要防的自我损坏闭环。副作用是「加强门禁覆盖面」这类改动天然无法自动落地,每次都要人工放行。
+  - 提案:不建议自动放开(扩权类风险)。若想减少人工介入,可考虑把 e2e scenario 清单从 package.json 抽到独立数据文件(如 scripts/e2e/subset.json),让门禁改动不再触碰 package.json —— 但这是目标仓库的结构调整,不是 skill 侧改动,且需评估是否值得为此增加一层间接。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 4 次,首见 2026-07-24,最近 2026-07-28,status: tracked
   - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,提醒已在 crossChannelSuppressHours 窗口内去重(未重发)
 - `structural-check-not-in-bypass-allowlist` **required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked

@@ -949,6 +949,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-31T02:10:09.545Z",
       "lastSeen": "2026-07-31T02:10:09.545Z"
+    },
+    {
+      "fingerprint": "format-gate-missing-template-sections",
+      "tier": "by-design",
+      "title": "PR description 用自定义标题、缺模板必填段落导致格式门打回",
+      "detail": "本轮 2 个候选(#351/#354)因缺 变更说明/提交前自检/备注 段落被格式门拦下;内容其实齐全,只是标题结构不符模板。属作者侧内容问题,由作者补齐,不做自动化。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-31T05:04:18.878Z",
+      "lastSeen": "2026-07-31T05:04:18.878Z"
     }
   ]
 }
