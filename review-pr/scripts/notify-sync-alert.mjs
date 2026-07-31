@@ -25,7 +25,10 @@
 // 连 lib.mjs 也走动态 import,理由见该文件头)。告警发不出去绝不能拖累 review 流程。
 //
 // 跑:node <skill-root>/scripts/notify-sync-alert.mjs --kind <diverged|code-conflict> \
-//       --signature <sig> [--detail "<补充信息,如冲突文件/backupRef>"] [--dry-run]
+//       --signature <sig> [--detail "<补充信息,如冲突文件/backupRef>"] [--dry-run] [--self-test]
+//   --dry-run:只打印判定与文案,不发送、不写去重台账;
+//   --self-test:标题前置「[自检,可忽略]」。**任何真发送的验证都必须带它**——私聊是即时
+//     推送,通知发出后事后删消息也撤不回,收件人往往只看到标题就以为线上出事了。
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -103,7 +106,10 @@ try {
   }
 
   const t = KIND_TEXT[kind] ?? KIND_TEXT.diverged;
-  const title = 'review-pr 自同步停摆,需要你处理一下。';
+  // --self-test:验证送达时必须带上。私聊是即时推送,通知一发出事后删消息也撤不回,
+  // 收件人只看得到标题——不打标记就会被当成真故障(2026-07-31 实测踩过一次)。
+  const selfTest = process.argv.includes('--self-test');
+  const title = `${selfTest ? '[自检,可忽略] ' : ''}review-pr 自同步停摆,需要你处理一下。`;
   const text = [
     t.what,
     t.why,
