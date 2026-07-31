@@ -110,6 +110,9 @@ try {
     'pr', 'list', '--repo', slug, '--state', 'merged', '--limit', '40',
     '--json', 'number,title,body,author,url,mergedAt,mergeCommit',
   ]);
+  // 机器人作者不致谢:dependabot 这类 PR 占比不低,「感谢 @app/dependabot」纯噪音,
+  // 而致谢的目的是对人表达 + 给人看改动要点。仍然记账(写去重指纹),避免每轮重新判定。
+  const isBotAuthor = (a) => Boolean(a?.is_bot) || /\[bot\]$/.test(a?.login ?? '') || /^app\//.test(a?.login ?? '');
   const cutoff = Date.now() - LOOKBACK_MS;
   const inWindow = (Array.isArray(merged) ? merged : [])
     .filter((p) => p.mergedAt && Date.parse(p.mergedAt) >= cutoff)
@@ -141,6 +144,13 @@ try {
   for (const p of inWindow) {
     const pr = p.number;
     if (state[String(pr)]) continue; // 已播报过(ack 或往轮补发),台账有账即跳过,不重谢
+    if (isBotAuthor(p.author)) {
+      // 记账后跳过:下轮不再重复判定这条(不发,但也不反复扫)。
+      state[String(pr)] = `${pr}:${p.mergeCommit?.oid ?? ''}`;
+      if (!dryRun) writeDedupState(DEDUP_FILE, state);
+      skipped.push({ pr, reason: 'bot-author-no-thanks', author: p.author?.login });
+      continue;
+    }
     const loopExclusion = detectLoopExclusion({ title: p.title ?? '', body: p.body ?? '', pr, rules: LOOP_RULES });
     if (loopExclusion) {
       skipped.push({ pr, reason: 'loop-managed-has-own-broadcast' });

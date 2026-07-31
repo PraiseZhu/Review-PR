@@ -127,7 +127,7 @@ try {
   // lib.mjs 异常时进 catch 给出显式 run 结论,而不是模块加载期炸成 exit 1。
   process.env.REVIEW_PR_REPO_ROOT = repoRoot;
   process.chdir(repoRoot);
-  const { gh, parseRepo, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, LOCK_FILE, skillRepoPull } =
+  const { gh, run, parseRepo, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, LOCK_FILE, skillRepoPull } =
     await import(new URL('./lib.mjs', import.meta.url));
   if (lockHeld(LOCK_FILE)) skip('lock-held');
   // Skill 自更新:会话创建之前 pull,新会话读到的 SKILL.md / 脚本就是最新版。
@@ -147,6 +147,17 @@ try {
       forceRunReason = 'skill-repo-diverged';
     }
   }
+  // 合并致谢补发:**必须在这里跑,不能只挂在 auto 轮内**。本脚本每次调度都执行,而 auto 轮
+  // 在「没有 open PR」时会 exit 2 跳过——可一批 PR 刚全部合完、open 清零,正是最该发致谢的
+  // 时刻(2026-07-31 实测:16:00 那轮因 open PR 归零被跳过,5 个已合并 PR 一条致谢都没发)。
+  // 把它放在跳过判定之前,与「有没有审查活」彻底解耦。
+  // best-effort:脚本自身退出码恒 0、自带台账去重,异常也不影响本轮 run/skip 判定。
+  try {
+    run('node', [new URL('./notify-merge-backfill.mjs', import.meta.url).pathname], {
+      allowFail: true, timeoutMs: 60_000,
+    });
+  } catch { /* 致谢发不出去绝不影响调度判定 */ }
+
   const { owner, repo } = parseRepo();
   const raw = JSON.parse(
     gh(
