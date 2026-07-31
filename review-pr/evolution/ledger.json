@@ -863,14 +863,14 @@
       "fingerprint": "own-pr-only-repo-blockers-need-human",
       "tier": "by-design",
       "title": "本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理",
-      "detail": "本轮 8 个候选作者全部是 viewer 账号本人：3 个卡未 resolve conversation、2 个卡第三方 check 失败、3 个命中安全审查路径转人工。属署名/决策类，不自动化。",
+      "detail": "2026-08-01 轮：唯一候选 #366 CI e2e kernel gate 失败，ownPr=true 且 selfFixAuthors 留空，无打回/跟进出口",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-30T11:05:29.308Z",
-      "lastSeen": "2026-07-30T11:05:29.308Z"
+      "lastSeen": "2026-07-31T17:02:44.055Z"
     },
     {
       "fingerprint": "self-authored-pr-no-followup-channel",

@@ -99,6 +99,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `own-pr-only-repo-blockers-need-human` **本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理** — 出现 2 次,首见 2026-07-30,最近 2026-07-31,status: tracked
+  - 现象:2026-08-01 轮：唯一候选 #366 CI e2e kernel gate 失败，ownPr=true 且 selfFixAuthors 留空，无打回/跟进出口
 - `conflict-plus-unresolved-threads` **冲突 + 未 resolve conversation 双阻塞,需作者处理** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
   - 现象:本轮 1 个候选(#352)同时有 base 冲突与 2 条未 resolve thread;冲突未孤立存在,不满足 5.5 主干代合并门槛(其余全过、仅剩冲突),按设计跳过等作者。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
@@ -111,8 +113,6 @@
   - 现象:PR #348 改 .github/workflows/{ci,main-health,pr-hygiene}.yml 与 dependabot.yml，命中 securityReviewPaths → skip-security-review。属自动化自我损坏防护的设计意图，不是漏判，永不自动放开。
 - `pr-body-heading-mismatch-author-side` **PR body 段落标题用词与模板不符,只能由作者改 description 解掉** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:xindong/mivo-canvas PR #347: body 写 '## 改动说明',模板要求 '## 变更说明'/'## 提交前自检'/'## 备注',格式门判三段全缺并打回。修复动作在作者侧(edit description),自动化不代改他人 PR 的 description,属 by-design,只计数观察。
-- `own-pr-only-repo-blockers-need-human` **本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
-  - 现象:本轮 8 个候选作者全部是 viewer 账号本人：3 个卡未 resolve conversation、2 个卡第三方 check 失败、3 个命中安全审查路径转人工。属署名/决策类，不自动化。
 - `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。
 - `unresolved-threads-require-human-resolve` **未 resolve 的 review conversation 需真人处理,本轮 3 个 PR 因此跳过** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
