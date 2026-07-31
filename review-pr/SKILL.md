@@ -1039,6 +1039,11 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    `fix-session-state.mjs sweep --open <open PR 列表>`，清理已合并／关闭 PR 的
    跟进会话绑定；随后运行 `fix-worktree-cleanup.mjs --scan` 回收这些 PR 遗留的
    跟进 worktree 与本地分支（判定与安全边界在脚本内，结果计入汇总，失败不阻塞）。
+   再运行一次 `node "<SKILL_ROOT>/scripts/notify-merge-backfill.mjs"`（无参）补发漏播的
+   合并致谢——覆盖维护者在 GitHub 网页上手动合并、agent 未经手因此 `notify-merge-ack`
+   没跑到的 PR；与 ack 共用同一份去重台账与模板 E，首轮只做基线播种不播报，单轮限量、
+   loop 托管 PR 内部已排除，失败不阻塞（结果计入 6.1 汇总，`posted` 非空时在汇总里列出
+   补谢的 PR 号）。
    `skip-loop-managed`／`skip-security-review` 的候选原样跳过、不 checkout、不提醒
    （分别详见 3.7／3.8，未配置对应键时这两类永不出现）。
    **跳过不能对作者静默**：分类完成后，把因作者侧可自解原因被 skip 的候选批量交给
