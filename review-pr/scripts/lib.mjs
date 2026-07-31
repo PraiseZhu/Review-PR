@@ -804,6 +804,14 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
   for (let round = 0; round < REBASE_ROUNDS && !push.ok
        && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr); round++) {
     // 安全网:rebase 会改写本地未推 commit,先留一个可恢复的 ref(不占分支名空间、不会被 push)。
+    // 只保留最近 5 个:转人工的失败路径会故意留下 backup ref,每轮失败一个,不设上限会无限堆积
+    // (ref 名内嵌 Date.now(),定长同宽,refname 逆序即时间逆序)。
+    const olds = git(['for-each-ref', '--format=%(refname)', '--sort=-refname', 'refs/skill-sync/'], { allowFail: true, cwd });
+    if (olds.ok) {
+      for (const ref of olds.stdout.split('\n').map((s) => s.trim()).filter(Boolean).slice(5)) {
+        git(['update-ref', '-d', ref], { allowFail: true, cwd });
+      }
+    }
     const backupRef = `refs/skill-sync/pre-rebase-${Date.now()}`;
     git(['update-ref', backupRef, 'HEAD'], { allowFail: true, cwd });
 
