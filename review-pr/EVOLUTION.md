@@ -96,6 +96,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `conflict-plus-unresolved-threads` **冲突 + 未 resolve conversation 双阻塞,需作者处理** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
+  - 现象:本轮 1 个候选(#352)同时有 base 冲突与 2 条未 resolve thread;冲突未孤立存在,不满足 5.5 主干代合并门槛(其余全过、仅剩冲突),按设计跳过等作者。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
   - 现象:本轮 2 个候选(#351/#354)因缺 变更说明/提交前自检/备注 段落被格式门拦下;内容其实齐全,只是标题结构不符模板。属作者侧内容问题,由作者补齐,不做自动化。
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked

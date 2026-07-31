@@ -962,6 +962,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-31T05:04:18.878Z",
       "lastSeen": "2026-07-31T05:04:18.878Z"
+    },
+    {
+      "fingerprint": "conflict-plus-unresolved-threads",
+      "tier": "by-design",
+      "title": "冲突 + 未 resolve conversation 双阻塞,需作者处理",
+      "detail": "本轮 1 个候选(#352)同时有 base 冲突与 2 条未 resolve thread;冲突未孤立存在,不满足 5.5 主干代合并门槛(其余全过、仅剩冲突),按设计跳过等作者。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-07-31T05:04:22.746Z",
+      "lastSeen": "2026-07-31T05:04:22.746Z"
     }
   ]
 }
