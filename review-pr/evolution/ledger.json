@@ -1040,6 +1040,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T08:04:44.657Z",
       "lastSeen": "2026-08-01T08:04:44.657Z"
+    },
+    {
+      "fingerprint": "ui-evidence-false-positive-src-lib",
+      "tier": "proposal",
+      "title": "uiPaths 含 src/lib/ 导致纯工具文件被判缺 UI 证据",
+      "detail": "PR 366 的 uiCodeFiles 只有 src/lib/canonicalHash.ts 与其测试(纯哈希工具,零视觉面),仍被判 uiEvidenceMissing=true。本轮因 ownPr=true 未发评论所以没造成噪音,但非自有 PR 命中同样路径时会向作者索要哈希工具的截图,属确定性误报。",
+      "proposal": "为 UI 证据提醒增设独立的排除前缀(不动 uiPaths 本身,避免影响产品门语义定性),把 src/lib/ 下无 .tsx/.css 的纯逻辑文件排除出 uiCodeFiles。改动会放宽一项提醒触发条件,按扩权类只提案不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T11:05:52.419Z",
+      "lastSeen": "2026-08-01T11:05:52.419Z"
     }
   ]
 }
