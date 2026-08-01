@@ -1143,14 +1143,19 @@ warning）/ `first-run`（`runs.jsonl` 不存在或为空，真的是第一次�
 `history-corrupted`（文件有内容但一行都解不出合法 `loggedAt`——审计链本身已损坏，
 这与"首轮"是完全不同的运维含义，不能都归为 `null` 让人猜）。`sinceLastRunHours`
 回答的是"距上一轮多久"，不是"调度层有没有失败轮"（调度失败在 agent 启动前就
-发生，本 skill 拿不到那层信号），但轮次间隔异常拉长本身就是缺口的可观测代理信号：
-**`sinceLastRunHours` 超过 6（稳态 cron 轮次的正常最大间隔）时，6.1 摘要模板的
-“其他”行必须补一句**「检测到上游调度缺口约 `<N>` 小时，可能有失败轮未入账，请查
-scheduler」；**`sinceLastRunReason` 为 `history-corrupted` 时，“其他”行必须另外补
-一句**「runs.jsonl 审计链损坏，历史轮次记录不可信，请人工核查」——这两句互不替代，
-同一轮可能同时触发（如：坏到一行都解不出，那本身也构不成"距上一轮 N 小时"的判断，
-但仍要点出审计链损坏这个事实）；未超过阈值、`reason=first-run` 或 `reason=ok`（无
-跳过）时不写这两句，不要把它们做成独立分组。
+发生，本 skill 拿不到那层信号），但轮次间隔异常拉长本身就是缺口的可观测代理信号。
+`sinceLastRunReason` 与 `sinceLastRunHours` 按代码实现是**三态互斥**（不要照
+模板编造一个两者同时出现的 `<N>`）：`history-corrupted` 时 `sinceLastRunHours`
+恒为 `null`（坏到一行都解不出,天然算不出"距上一轮 N 小时"这个数），
+`first-run` 时同样恒为 `null`；只有 `reason=ok` 时 `sinceLastRunHours` 才是
+真实数字。据此，“其他”行最多补一句、按以下顺序判断，二者不会同时出现：
+- `sinceLastRunReason === 'history-corrupted'` → 补**「runs.jsonl 审计链损坏，
+  历史轮次记录不可信，请人工核查」**；
+- 否则，`reason === 'ok'` 且 `sinceLastRunHours` 超过 6（稳态 cron 轮次的正常
+  最大间隔）→ 补**「检测到上游调度缺口约 `<N>` 小时，可能有失败轮未入账，
+  请查 scheduler」**（`<N>` 取实际数值，不得在 `reason` 不是 `ok` 时编造）；
+- 其余情况（`first-run`，或 `ok` 且未超过阈值）→ 都不写，不要为了凑格式硬补
+  一句。
 
 JSON 结构：
 
@@ -1251,16 +1256,19 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 - 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
-调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler；runs.jsonl 审计链损坏，
-历史轮次记录不可信，请人工核查 😤
+调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤
 ```
 
-后两句是独立的条件附加项,不是同一件事的两种说法:调度缺口这句只在
-`sinceLastRunHours` 超过 6 时附加(见上文);审计链损坏这句只在
-`sinceLastRunReason === 'history-corrupted'` 时附加——两个条件可能同时成立
-(如尾部坏行多到一行都解不出,既构成"审计链损坏"又天然拿不到"距上一轮 N 小时"
-这个数,此时只写审计链损坏那句,不编造一个 N)。均不成立时"其他"行只保留锁与
-写操作两项,不要为了凑格式硬写"无缺口"/"审计链完好"这类否定句。
+（若本轮 `sinceLastRunReason === 'history-corrupted'`，上面示例的调度缺口那句
+整体替换成「runs.jsonl 审计链损坏，历史轮次记录不可信，请人工核查」。）
+
+这两句按 `sinceLastRunReason`/`sinceLastRunHours` 三态互斥,**最多出现一句，
+不会同时出现**（见上文 6.1 开头的三态说明；`history-corrupted` 时
+`sinceLastRunHours` 恒为 `null`，构不成"距上一轮 N 小时"这个数，不要编造）：
+`reason=history-corrupted` → 只写审计链损坏那句；`reason=ok` 且
+`sinceLastRunHours` 超过 6 → 只写调度缺口那句；其余情况（`first-run`，或
+`ok` 且未超过阈值）→ 都不写，"其他"行只保留锁与写操作两项，不要为了凑格式
+硬写"无缺口"/"审计链完好"这类否定句。
 
 组名用加粗文字而非状态图标（原版 ✅🔴🛠⏸️⏭️⚠️🧬 已去掉，符合「符号与表情配额」的
 状态图标全禁规则）；整条消息按模板 F 配额最多用 1–3 个人格表情，不必每组都加，

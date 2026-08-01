@@ -11,7 +11,7 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync, lstatSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync, lstatSync, constants as fsConstants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,27 +60,35 @@ const repoStateKey = createHash('sha256')
 const LEGACY_STATE_ROOT = join(tmpdir(), 'review-pr');
 
 /**
- * 主 worktree 根目录(F1,经 R7 二审重写)。状态根不能拼当前 checkout 的
- * REPO_ROOT——REPO_ROOT 可能是某一轮审查用的 linked worktree,按它算状态根会
- * 让同一仓库的不同 worktree/轮次各自写到不同目录,锁/审计/去重照样分裂(与上面
- * stateAnchor 要解决的问题同源)。
+ * 主 worktree 根目录(F1,经 R7 二审、T2 三审两次重写)。状态根不能拼当前
+ * checkout 的 REPO_ROOT——REPO_ROOT 可能是某一轮审查用的 linked worktree,
+ * 按它算状态根会让同一仓库的不同 worktree/轮次各自写到不同目录,锁/审计/去重
+ * 照样分裂(与上面 stateAnchor 要解决的问题同源)。
  *
  * 不用 `basename(git-common-dir) === '.git'` 判断(一审的实现):这条对
  * submodule 必然失败——submodule 的 common-dir 形如
  * `<父仓库>/.git/modules/<name>`,basename 是 `<name>` 不是 `.git`,会被无条件
- * 打回系统临时目录,submodule 场景完全没有持久化。改用
- * `git worktree list --porcelain`:多条记录(真正存在 linked worktree,admin
- * 数据可靠)时取**第一条**——git 保证主 worktree 永远排第一(不管从主 worktree
- * 还是任意 linked worktree 跑这条命令,结果一致)。
+ * 打回系统临时目录。改用 `git worktree list --porcelain`:多条记录(真正存在
+ * linked worktree)时取**第一条**——git 保证主 worktree 永远排第一(不管从
+ * 主 worktree 还是任意 linked worktree 跑这条命令,结果一致);只有一条记录时
+ * 改用 `--show-toplevel`——实测(git 2.50.1)对没有任何 `worktree add` 记录
+ * 的仓库(包括 submodule),`worktree list --porcelain` 的自报路径存在已知
+ * 偏差:submodule 场景下会报成它自己的 git-dir 而不是真实工作目录。
  *
- * 只有一条记录时**不直接信任 porcelain 报的路径**,改用 `--show-toplevel`——
- * 实测(git 2.50.1)对没有任何 `worktree add` 记录的仓库(包括 submodule),
- * `worktree list --porcelain` 的自报路径存在已知偏差:submodule 场景下会
- * 报成它自己的 git-dir(`<父仓库>/.git/modules/<name>`)而不是真实工作目录
- * (`<父仓库>/<name>`),`--show-toplevel` 对这两种场景(普通仓库、submodule)
- * 都能给出正确结果,只有真的存在 linked worktree 时才需要 porcelain 的
- * "第一条永远是主 worktree" 这个保证(此时 show-toplevel 会错报成"当前所在"
- * 的 worktree,必须用 porcelain)。
+ * T2(2026-08-01 四审):上面这套"多条记录就信第一条"仍不够——submodule 自己
+ * 又被 `worktree add` 出一个 linked worktree、或 `git init
+ * --separate-git-dir` 配合 linked worktree,porcelain 的**第一条**依然会报
+ * 成 git-dir 本身(实测:即使此时确有 2 条记录)。无法只靠"记录数"区分可信/
+ * 不可信,必须对拿到的候选路径做两项独立验证,任一不过就 fail-closed(submodule
+ * 持久化能力让路给安全,不做更复杂的补救):
+ *   ① 候选路径不能等于、也不能落在 `stateAnchor`(REPO_ROOT 的 canonical
+ *      common-dir,已在上面 realpath 归一)之内——候选若是 git 元数据目录
+ *      本身或其子目录,这里会命中;
+ *   ② 对候选路径本身跑 `rev-parse --show-toplevel`,结果必须成功且正好等于
+ *      候选路径自己——git-dir 被误当候选时,这条命令要么报错("must be run in
+ *      a work tree",separate-git-dir 场景实测如此),要么通过 core.worktree
+ *      解析出一个完全不同的路径(submodule 场景实测如此),两种情况都通不过
+ *      这个自证检查。
  *
  * 裸仓库的首条记录会带一行 `bare` 标记(没有真正的工作目录)——命中即返回
  * null。命令本身失败(非 git 仓库、git 不可用)也返回 null。调用方回退系统
@@ -119,11 +127,35 @@ function resolveMainWorktreeRoot() {
     rawPath = worktreeLine ? worktreeLine.slice('worktree '.length).trim() : '';
   }
   if (!rawPath) return null;
+
+  let candidate;
   try {
-    return realpathSync(rawPath); // R1 同款 realpath 归一,消解符号链接身份分裂
+    candidate = realpathSync(rawPath); // R1 同款 realpath 归一,消解符号链接身份分裂
   } catch {
     return null;
   }
+
+  // T2 校验①:候选不能等于/落在 common-dir 内(git 元数据本身)。
+  if (stateAnchor !== REPO_ROOT) {
+    const relToCommonDir = relative(stateAnchor, candidate);
+    if (relToCommonDir === '' || (!relToCommonDir.startsWith('..') && !isAbsolute(relToCommonDir))) return null;
+  }
+
+  // T2 校验②:候选必须能自证是工作树顶层——对候选本身跑 show-toplevel,结果要
+  // 正好等于候选自己。
+  const selfCheck = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: candidate, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  if (selfCheck.status !== 0) return null;
+  let selfTop;
+  try {
+    selfTop = realpathSync((selfCheck.stdout ?? '').trim());
+  } catch {
+    return null;
+  }
+  if (selfTop !== candidate) return null;
+
+  return candidate;
 }
 
 /** 从某个可能尚不存在的路径向上找最近一个已存在的祖先目录(git 命令与 realpath 都需要真实存在的 cwd)。 */
@@ -305,20 +337,30 @@ mkdirSync(STATE_DIR, { recursive: true });
 const MIGRATION_MARKER = '.migrated-from-tmp.json';
 
 /**
- * 一次性迁移(F4,2026-08-01 一审修订;R5 二审补充目标类型冲突检测)。判据
- * 改为"marker 是否存在"而不是"新目录有没有 runs.jsonl"——旧判据在部分失败
- * 场景下会永久卡死(第一次迁移复制完 runs.jsonl 后在其他文件上失败,marker
- * 没写;下一次调用因为 runs.jsonl 已经"看起来存在"而直接跳过,永远补不齐
- * 剩下的文件)。现在:
+ * 一次性迁移(F4,2026-08-01 一审修订;R5 二审补充目标类型冲突检测;T1 四审
+ * 补充悬空 symlink 与检查-复制竞态修复)。判据改为"marker 是否存在"而不是
+ * "新目录有没有 runs.jsonl"——旧判据在部分失败场景下会永久卡死(第一次迁移
+ * 复制完 runs.jsonl 后在其他文件上失败,marker 没写;下一次调用因为 runs.jsonl
+ * 已经"看起来存在"而直接跳过,永远补不齐剩下的文件)。现在:
  *   - 触发条件只看 marker 是否存在,marker 不存在就总会重试;
  *   - 逐文件 no-clobber:目标已存在的文件跳过不覆盖——保证即使本轮已经产生了
  *     真实的新数据(如 runs.jsonl 已被新一轮 review 追加过),重试迁移也绝不会
  *     用旧 tmpdir 里更早、更小的版本覆盖回去;
- *   - R5:目标"已存在"不能只看 `existsSync`——用 `lstatSync`(不跟随 symlink)
- *     确认它是普通文件才算"已迁移完成、可以跳过";如果目标存在但是目录/
- *     symlink/其它类型,这是真实的类型冲突,只记 warning、**不写 marker**,
- *     保住下次重试的机会(一审版本会把这种冲突静默当成"已完成",冲突永远
- *     不会被发现也不会被重试消解);
+ *   - T1:判断"目标是否已存在"**不用 `existsSync` 前置**——`existsSync` 会跟随
+ *     符号链接,对**悬空 symlink**(链接目标不存在)返回 `false`,导致误判成
+ *     "目标不存在"从而继续走复制;`copyFileSync` 沿着这个悬空链接写入会把
+ *     legacy 内容写到状态根之外的任意路径(实测复现)。直接 `lstatSync`(不
+ *     跟随链接):`ENOENT` 才是"确实不存在";只要 lstat 成功,不管是普通文件、
+ *     目录、还是(悬空与否的)symlink,都当"已存在"处理,只有普通文件算
+ *     "已迁移完成、可跳过",其余(含任何 symlink)一律按类型冲突处理——
+ *     和 R5 的判定合一,不再需要先 `existsSync` 短路;
+ *   - T1:实际复制用 `COPYFILE_EXCL` 排他创建——`lstatSync` 检查和 `copyFileSync`
+ *     复制之间仍有微小窗口,任何东西(并发进程、新出现的符号链接)在这期间
+ *     抢先在目标位置落地,`EXCL` 会让复制原子性地失败(`EEXIST`)而不是沿着
+ *     新出现的东西写,不依赖"检查时看到的状态在复制时还成立"这个假设;
+ *   - 目标存在但不是普通文件(目录/symlink/其它类型),或 lstat/复制本身因
+ *     非 `ENOENT` 原因失败,都记 warning、**不写 marker**,保住下次重试的
+ *     机会(不会被静默当成"已完成");
  *   - 只有这一轮没有任何类型冲突、且把 legacy 目录里的每个文件都处理完
  *     (拷贝成功或因目标已确认是普通文件而跳过)才写 marker,且 marker 用
  *     临时文件 + rename 落盘(同文件系统下 rename 是原子操作)——marker 存在
@@ -335,25 +377,35 @@ function migrateLegacyStateIfNeeded() {
     for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
       if (!entry.isFile() || entry.name === MIGRATION_MARKER) continue;
       const dest = join(STATE_DIR, entry.name);
-      if (existsSync(dest)) {
-        let destStat;
-        try {
-          destStat = lstatSync(dest);
-        } catch (e) {
+
+      let destStat = null;
+      try {
+        destStat = lstatSync(dest); // 不跟随符号链接;悬空 symlink 在这里会正常返回(报告的是链接本身)
+      } catch (e) {
+        if (e.code !== 'ENOENT') {
           hasConflict = true;
           process.stderr.write(`[review-pr] 迁移目标 ${dest} 类型无法确认(${e.message}),按冲突处理,保留重试机会\n`);
           continue;
         }
+        // ENOENT = 确实不存在,继续往下走复制路径(destStat 保持 null)
+      }
+      if (destStat) {
         if (!destStat.isFile()) {
           hasConflict = true;
-          const kind = destStat.isDirectory() ? '目录' : destStat.isSymbolicLink() ? 'symlink' : '其它类型';
+          const kind = destStat.isDirectory() ? '目录' : destStat.isSymbolicLink() ? 'symlink(可能悬空)' : '其它类型';
           process.stderr.write(`[review-pr] 迁移目标 ${dest} 已存在但不是普通文件(${kind}),视为冲突,跳过并保留重试机会\n`);
         }
-        continue; // 无论"已完成"还是"冲突",都不覆盖已存在的目标
+        continue; // 无论"已完成"(普通文件)还是"冲突",都不覆盖已存在的目标
       }
-      copyFileSync(join(legacyDir, entry.name), dest);
+
+      try {
+        copyFileSync(join(legacyDir, entry.name), dest, fsConstants.COPYFILE_EXCL);
+      } catch (e) {
+        hasConflict = true;
+        process.stderr.write(`[review-pr] 迁移目标 ${dest} 复制时被抢先占用或失败(${e.message}),视为冲突,跳过并保留重试机会\n`);
+      }
     }
-    if (hasConflict) return; // R5:冲突未消除就不写 marker,下次调用会重新检查
+    if (hasConflict) return; // R5/T1:冲突未消除就不写 marker,下次调用会重新检查
     const tmpMarker = `${marker}.tmp-${process.pid}`;
     writeFileSync(
       tmpMarker,
