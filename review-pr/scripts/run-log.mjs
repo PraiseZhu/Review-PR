@@ -73,7 +73,15 @@ function validateShape(data) {
     }
   }
 
-  if (data.draftSkipped !== undefined && !Array.isArray(data.draftSkipped)) {
+  if (data.draftSkipped === undefined) {
+    // R6:字段整体缺失此前零告警——SKILL.md 6.1 要求"必须展开成逐 PR 记录,不能整条
+    // 省略",代码要和文档口径对齐:没有任何被跳过的 draft PR 也要显式写空数组 []，
+    // 完全不写这个字段无法区分"这轮真的没有"与"agent 忘了填"。
+    warnings.push(
+      'draftSkipped 字段整体缺失——若本轮确实没有被跳过的 draft PR 请显式写空数组 []，' +
+      '不要整条省略该字段',
+    );
+  } else if (!Array.isArray(data.draftSkipped)) {
     warnings.push(
       `draftSkipped 应为 [{pr,reason,url}] 数组,收到 ${typeof data.draftSkipped}` +
       `(${JSON.stringify(data.draftSkipped)})——落一个数字/其它形态无法追溯是哪些 PR、为什么被跳过`,
@@ -89,6 +97,18 @@ function validateShape(data) {
   });
 
   return warnings;
+}
+
+/**
+ * 判定某个 loggedAt 候选值是否合法(R8①,2026-08-01 二审)。旧版只检查
+ * `Number.isFinite(new Date(v).getTime())`——`new Date(null)`/`new Date(false)`
+ * 都会被 JS 当数字 0 处理,等价于 epoch(1970-01-01),`getTime()` 返回 0,
+ * `Number.isFinite(0)` 为真,于是一行 `{"loggedAt": null, ...}` 的坏行会被
+ * 误判成"合法的 1970 年记录",算出一个荒谬的 56 年"距上一轮"间隔而不是被
+ * 正确识别为损坏行跳过。现在先确认类型是非空字符串,再交给 `Date` 解析。
+ */
+function isValidLoggedAt(v) {
+  return typeof v === 'string' && v.trim() !== '' && Number.isFinite(new Date(v).getTime());
 }
 
 /**
@@ -114,13 +134,14 @@ function computeSinceLastRun(runsFile, loggedAt) {
   const curMs = new Date(loggedAt).getTime();
   let skippedLines = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
-    let prevMs = NaN;
+    let candidate;
     try {
-      prevMs = new Date(JSON.parse(lines[i])?.loggedAt).getTime();
+      candidate = JSON.parse(lines[i])?.loggedAt;
     } catch {
-      prevMs = NaN;
+      candidate = undefined;
     }
-    if (Number.isFinite(prevMs)) {
+    if (isValidLoggedAt(candidate)) {
+      const prevMs = new Date(candidate).getTime();
       if (!Number.isFinite(curMs)) return { hours: null, reason: 'history-corrupted', skippedLines };
       return { hours: Math.round(((curMs - prevMs) / 3_600_000) * 100) / 100, reason: 'ok', skippedLines };
     }

@@ -252,12 +252,22 @@ PR #<N> 合了 —— 感谢 @<author>。
 
 `REPO_ROOT` 取自 `REVIEW_PR_REPO_ROOT` 环境变量或当前工作目录。
 
-运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入
-`<REPO_ROOT>/history/loops/review-pr/state/<repoStateKey>`（按目标仓库哈希隔离的
-子目录，随 checkout 常驻）；仅当 REPO_ROOT 不可写时才回退系统临时目录下的同名
-子目录。`REVIEW_PR_STATE_DIR` 环境变量可显式覆盖上述根目录（优先级最高），但
-不能指向受 Git 跟踪的项目目录或 Skill 目录。首次从旧版升级时，若系统临时目录下
-已有该仓库的历史记录，会自动一次性迁移到新默认位置，不会丢失。
+运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入目标仓库**主
+worktree**（同一仓库的所有 linked worktree 与 submodule 共享同一份；不是
+当前跑审查用的 REPO_ROOT——那可能是某一轮临时的 linked worktree，按它算
+状态根会让锁/审计/去重分裂）的
+`<主 worktree>/history/loops/review-pr/state/<repoStateKey>`（按目标仓库
+哈希隔离的子目录，随该 checkout 常驻）。以下任一条件成立就回退系统临时
+目录下的同名子目录，不冒险：路径未被目标仓库 `.gitignore` 忽略、状态根落在
+Skill 自身仓库内（防自写）、裸仓库、非 git 仓库、主 worktree 推导失败
+（含 submodule 场景下的推导异常）、git 探针本身失败/超时/权限问题等无法
+判定（unknown——判不了就当不安全，不当作"没问题"放行）、或最终叶子目录的
+写探针（含删除）失败。`REVIEW_PR_STATE_DIR` 环境变量可显式覆盖上述根目录
+（优先级最高），但同样要过这一整套校验——不能指向受 Git 跟踪且未忽略的
+项目目录，也不能指向 Skill 自身仓库；校验不过直接回退系统临时目录，不会
+静默改用仓库默认。首次从旧版升级时，若系统临时目录下已有该仓库的历史
+记录，会自动一次性迁移到新默认位置（逐文件不覆盖已有数据，全部迁移完成
+才落地完成标记），不会丢失。
 
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
 按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
@@ -1122,14 +1132,25 @@ node "<SKILL_ROOT>/scripts/run-log.mjs"   # 汇总 JSON 走 stdin,脚本写入�
 ```
 
 外部状态目录默认位置见 `lib.mjs` 的 `resolvePersistentStateRoot()`（默认落进目标仓库
-自己的 `history/loops/review-pr/state/`，随 checkout 常驻；`REVIEW_PR_STATE_DIR` 仍可
-显式覆盖）。`run-log.mjs` 落盘时会自动注入 `sinceLastRunHours`——读上一行 `runs.jsonl`
-的 `loggedAt` 与本轮相减得到的小时数，首轮（文件不存在/为空）为 `null`。它回答的是
-“距上一轮多久”，不是“调度层有没有失败轮”（调度失败在 agent 启动前就发生，本
-skill 拿不到那层信号），但轮次间隔异常拉长本身就是缺口的可观测代理信号：
+主 worktree 的 `history/loops/review-pr/state/`，随该 checkout 常驻；`REVIEW_PR_STATE_DIR`
+仍可显式覆盖，见「Skill 路径与目标仓库」一节的完整校验与回退条件）。`run-log.mjs`
+落盘时会自动注入 `sinceLastRunHours` 与 `sinceLastRunReason`：**从 `runs.jsonl` 尾部
+向前扫描**，找最近一条能解出合法 `loggedAt`（非空字符串且可被 `Date` 解析；`null`/
+数字等非字符串一律不算合法，不会被误判成 epoch 1970）的行，与本轮相减得到小时数——
+不是只看最后一行，防止恰好最后一行被截断/手工改坏时把整段真实历史误判成"首轮"。
+`sinceLastRunReason` 三态：`ok`（正常算出，可能已跳过若干条坏行，跳过数计入本轮
+warning）/ `first-run`（`runs.jsonl` 不存在或为空，真的是第一次）/
+`history-corrupted`（文件有内容但一行都解不出合法 `loggedAt`——审计链本身已损坏，
+这与"首轮"是完全不同的运维含义，不能都归为 `null` 让人猜）。`sinceLastRunHours`
+回答的是"距上一轮多久"，不是"调度层有没有失败轮"（调度失败在 agent 启动前就
+发生，本 skill 拿不到那层信号），但轮次间隔异常拉长本身就是缺口的可观测代理信号：
 **`sinceLastRunHours` 超过 6（稳态 cron 轮次的正常最大间隔）时，6.1 摘要模板的
 “其他”行必须补一句**「检测到上游调度缺口约 `<N>` 小时，可能有失败轮未入账，请查
-scheduler」；未超过或为 `null`（首轮）不写这句，不要把它做成独立分组。
+scheduler」；**`sinceLastRunReason` 为 `history-corrupted` 时，“其他”行必须另外补
+一句**「runs.jsonl 审计链损坏，历史轮次记录不可信，请人工核查」——这两句互不替代，
+同一轮可能同时触发（如：坏到一行都解不出，那本身也构不成"距上一轮 N 小时"的判断，
+但仍要点出审计链损坏这个事实）；未超过阈值、`reason=first-run` 或 `reason=ok`（无
+跳过）时不写这两句，不要把它们做成独立分组。
 
 JSON 结构：
 
@@ -1230,12 +1251,16 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 - 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
-调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤
+调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler；runs.jsonl 审计链损坏，
+历史轮次记录不可信，请人工核查 😤
 ```
 
-调度缺口这句只在 `run-log.mjs` 返回的 `sinceLastRunHours` 超过 6 时才附加在“其他”行
-末尾（见上文）；未超过或为 `null` 时“其他”行只保留锁与写操作两项，不要为了凑格式
-硬写一句“无缺口”。
+后两句是独立的条件附加项,不是同一件事的两种说法:调度缺口这句只在
+`sinceLastRunHours` 超过 6 时附加(见上文);审计链损坏这句只在
+`sinceLastRunReason === 'history-corrupted'` 时附加——两个条件可能同时成立
+(如尾部坏行多到一行都解不出,既构成"审计链损坏"又天然拿不到"距上一轮 N 小时"
+这个数,此时只写审计链损坏那句,不编造一个 N)。均不成立时"其他"行只保留锁与
+写操作两项,不要为了凑格式硬写"无缺口"/"审计链完好"这类否定句。
 
 组名用加粗文字而非状态图标（原版 ✅🔴🛠⏸️⏭️⚠️🧬 已去掉，符合「符号与表情配额」的
 状态图标全禁规则）；整条消息按模板 F 配额最多用 1–3 个人格表情，不必每组都加，
