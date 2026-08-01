@@ -105,6 +105,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 3 次,首见 2026-07-30,最近 2026-08-01,status: tracked
+  - 现象:PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。
 - `stacked-pr-blocked-until-base-merges` **stacked PR 链(#387→#388→#389)整条卡在链首 CI 失败,末端即便 gate 全绿也不能合** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 #389 格式门+前置门全通过、action=review,但 base 是 #388 的 head 分支,#388 又 base 在 #387;#387 CI 失败。按 SKILL 3.6 硬依赖,末端 PR 合并只会并进上游分支而非 main,故记 depends-on-#N 跳过。根因在人:链首 CI 需作者修。
 - `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
@@ -123,8 +125,6 @@
   - 现象:PR #348 改 .github/workflows/{ci,main-health,pr-hygiene}.yml 与 dependabot.yml，命中 securityReviewPaths → skip-security-review。属自动化自我损坏防护的设计意图，不是漏判，永不自动放开。
 - `pr-body-heading-mismatch-author-side` **PR body 段落标题用词与模板不符,只能由作者改 description 解掉** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:xindong/mivo-canvas PR #347: body 写 '## 改动说明',模板要求 '## 变更说明'/'## 提交前自检'/'## 备注',格式门判三段全缺并打回。修复动作在作者侧(edit description),自动化不代改他人 PR 的 description,属 by-design,只计数观察。
-- `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
-  - 现象:PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。
 - `unresolved-threads-require-human-resolve` **未 resolve 的 review conversation 需真人处理,本轮 3 个 PR 因此跳过** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR 324/326/331 分别有 2/1/1 条未 resolve conversation。代 resolve 他人 thread 属 8.1 扩权类,永不自动化。作者在 exemptAuthors 内故不发催 resolve 评论(notify-author-resolve 返回 exempt-author)。
 - `author-side-conflict-blocks-merge` **与主干冲突(mergeStateStatus=DIRTY)属作者侧,需作者 rebase,本轮 4 个 PR 因此跳过** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked

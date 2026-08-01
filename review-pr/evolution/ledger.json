@@ -816,9 +816,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-07-30T05:12:19.225Z",
-      "lastSeen": "2026-07-30T08:05:03.648Z"
+      "lastSeen": "2026-08-01T08:04:48.399Z"
     },
     {
       "fingerprint": "author-side-conflict-blocks-merge",
