@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `feature-pr-lockfile-only-hit-blocks-review` **功能 PR 只因 diff 里带了 package-lock.json 就整体转人工,大 i18n PR 永远进不了自动审查** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 现象:本轮 #379(2369 行)/#386(4495 行)均为 kirozeng 的 i18n 功能 PR,securityReviewPaths 命中项只有 package-lock.json 一个(非 package.json、非 workflow、非 skill),但 skip-security-review 优先级压过格式门/前置门,导致这类 PR 每轮原样跳过、不审不提醒,作者对被卡原因零感知。已有条目 dependabot-lockfile-always-security-review 只覆盖 dependabot 场景,功能 PR 场景是另一类。
+  - 提案:扩权类,永不自动落地,待维护者拍板。可选方向:① 命中项仅为 lockfile(package-lock.json / pnpm-lock.yaml)且同 PR 未改 package.json / workflow / skill 时,降级为「照常审查但不自动合并」而非整体跳过;② 或保持跳过但补一条一次性 PR 评论告知作者「本 PR 因含 lockfile 走人工审查通道」,消除零感知。任一方向都放宽了现有安全边界,须 owner 明确同意。
 - `structural-bypass-missing-approved-check` **context.mjs 的 bypass-structural-block 分支未校验 reviewDecision=APPROVED，与 internal-gates.md 声明的安全前提不一致（fail-open）** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:本轮 PR #366(xindong/mivo-canvas) reviewDecision 为空字符串(仅 greptile bot 的两条 COMMENTED,无任何 approving review),context.mjs:1107 仍判 autoAction=bypass-structural-block 并在 reason 里写「自动 admin bypass 合并」。而 internal-gates.md 明确要求 structural-check 的 admin bypass 必须同时满足 reviewDecision=APPROVED + CI 无失败 + thread 全 resolve + 有 bypass 权限 + requiredCheckRules 全在 allowlist;context.mjs:1107 的条件只覆盖后两项,代码注释里也写了「安全前提:review APPROVED」但没有实际校验。本轮因独立审查发现 2 条 P1、走了打回而未触发合并,损害未发生;但同类 PR 若审查通过,auto 模式会在零 approving review 的情况下 admin merge——ownPr=true 时本流程账号还无法自批准,这个缺口不会被自我纠正。
   - 提案:在 context.mjs:1107 的 bypass 条件里补上 reviewDecision === 'APPROVED';不满足时降级为 skip-structural-block(reason 写明「结构性 BLOCKED 但无 approving review,需白名单成员 approve 后下一轮再合」)。同时在 pre-merge-check.mjs 的 structuralBypassAvailable 里同步该判据,让两处口径一致。属收紧而非放宽,但因触及合并 gate 判据,首周观察期不自动落地,留 owner 拍板。
