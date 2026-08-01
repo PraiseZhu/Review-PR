@@ -123,6 +123,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `review-receipt-no-lifecycle-cleanup` **每 PR 一个回执文件长期无生命周期清理(量级很小,暂不处理)** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
+  - 现象:P1-2 三审改为每 PR 一个 review-receipt-<pr>.json 独立文件,按 repo hash 隔离在系统临时目录下,当前无自动清理机制,closed/merged PR 的回执文件会一直留在磁盘上。量级评估:单文件数十字节,单仓库存量 PR 数量级不会达到造成实际影响的规模,四审已评估为可接受,非遗漏。
+  - 提案:后续可在现有 cleanup/sweep 流程(如 fix-worktree-cleanup.mjs 同类的定期清理脚本)里加一步:对 closed/merged 状态的 PR,或写入时间超过某个 TTL(如 30 天)的回执文件做可恢复清理(先归档/重命名,不直接硬删)。
+- `link-header-malformed-treated-as-last-page` **Link header 解析失败时被当作已到最后一页,而非报错(仅响应畸形时触发)** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
+  - 现象:parseLinkHeader 对无法解析的 Link header 返回空对象,fetchAllRestPages 据此判定 nextUrl 为空即认为已读完;GitHub 官方 API 目前始终返回标准 RFC 5988 格式的 Link header,该路径仅在响应畸形(网络中间层篡改/未来 API 变更)时才会触发,四审已评估为可接受的健壮性欠账,非遗漏。
+  - 提案:如需进一步收紧,可改为:响应头里完全没有 Link 字段才判定为最后一页;若 Link 字段存在但解析失败(格式不认得的畸形内容),改为 fail-closed 返回 null,而不是当作没有下一页。
 - `own-pr-p1-has-no-blocking-force` **自有 PR 的 P1 只能发 COMMENT,无阻断力,必须靠汇总点名人工把关** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:PR #394 作者是本流程账号自己(ownPr=true),GitHub 禁止对自有 PR 提 REQUEST_CHANGES,只能发 COMMENT;selfFixAuthors 为空(首周刻意)所以也不投跟进会话。该 P1 是描述不实类、无法锚成行级 thread,因此没有任何机制挡住误合并,只能靠 6.1 汇总的「需要你」提示。设计如此,不因重复出现而放开。
 - `security-review-paths-dominates-ci-dep-bumps` **securityReviewPaths 吞掉半数候选:dependabot CI action bump 与自有 CI/配置 PR 全转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked

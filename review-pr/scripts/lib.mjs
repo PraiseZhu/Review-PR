@@ -925,11 +925,14 @@ const APPROVE_MERGE_COMMAND = '/approve-merge';
  * `/approve-merge` 写在一段"没写完的代码示例"里仍会被判成真下达;②完全不处理 4 空格/
  * tab 缩进代码块,同样的"展示"语境测不到。
  *
- * 围栏识别做了类型 + 长度匹配(与 CommonMark 一致):反引号围栏只能被反引号闭合、波浪号
- * 围栏只能被波浪号闭合,且闭合标记长度必须 >= 开启标记长度——否则围栏内部出现一行较短的
- * 同类符号(如 4 个反引号开的围栏里混了一行 3 个反引号)会被误判成提前闭合,导致围栏
- * 内容提前"暴露"成候选命令行(这是 fail-open 风险,不只是正确性瑕疵)。不追求完整
- * CommonMark 兼容(如闭合围栏后是否只能跟空白这类边角细节不处理),够用即可。
+ * 四审修复:三审改成的逐行状态机只查了闭合标记的类型与长度,没查标记之后是否只跟
+ * 空白——审核方实测反例:```` ```not-a-close ```` 这种"反引号后紧跟非空白文字"的行
+ * 会被误判成有效闭合(CommonMark 规定闭合围栏标记后只能跟空格/tab,否则不构成闭合)。
+ * 改为与 CommonMark 一致:围栏识别做类型 + 长度 + 闭合标记后仅空白 三重匹配——反引号
+ * 围栏只能被反引号闭合、波浪号围栏只能被波浪号闭合,闭合标记长度必须 >= 开启标记长度,
+ * 且闭合标记后除空格/tab 外不能有其它字符;否则不构成闭合,围栏内容会提前"暴露"成
+ * 候选命令行(fail-open 风险,不只是正确性瑕疵)。开启标记同样限制前导缩进 0-3 空格
+ * (与 CommonMark 一致;4 空格起属缩进代码块,不是围栏,交给下面的缩进代码块分支处理)。
  */
 function stripFencedAndQuoted(body) {
   const lines = (body ?? '').split('\n');
@@ -937,9 +940,9 @@ function stripFencedAndQuoted(body) {
   let fenceChar = null; // null = 不在围栏内;否则是 '`' 或 '~'
   let fenceLen = 0;
   for (const line of lines) {
-    const m = line.match(/^\s*(`{3,}|~{3,})/);
+    const m = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
     if (m) {
-      const marker = m[1];
+      const [, marker, trailing] = m;
       const char = marker[0];
       const len = marker.length;
       if (fenceChar === null) {
@@ -947,12 +950,14 @@ function stripFencedAndQuoted(body) {
         fenceLen = len;
         continue;
       }
-      if (char === fenceChar && len >= fenceLen) {
+      const isValidClose = char === fenceChar && len >= fenceLen && /^[ \t]*$/.test(trailing);
+      if (isValidClose) {
         fenceChar = null;
         fenceLen = 0;
         continue;
       }
-      // 类型不匹配或长度不足,不构成闭合——仍是围栏内部的一行,走下面"仍在围栏内"分支跳过。
+      // 类型/长度不匹配,或闭合标记后还有非空白内容——不构成闭合,仍是围栏内部的一行,
+      // 走下面"仍在围栏内"分支跳过。
     }
     if (fenceChar !== null) continue; // 围栏内部(含未闭合到文末),整段跳过
     if (/^\s*>/.test(line)) continue; // blockquote
@@ -1050,12 +1055,15 @@ export function computeLatestPushDate({ commits, forcePushEvents }) {
 // 扫描,是紧急通道的核心 fail-open 缺口)──
 const HARD_SECRET_PATTERNS_BASE = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/],
-  // P1-3(三审修复):此前只认 AKIA(长期访问密钥),漏了 ASIA(STS 临时凭证,和长期
-  // 凭证一样能直接用来调 API,泄露危害不比 AKIA 低)。改用 AWS 官方文档 + git-secrets
-  // (awslabs/git-secrets)沿用的完整唯一前缀集合,不只补 ASIA 这一个样本:
-  // AKIA=长期访问密钥、ASIA=STS 临时访问密钥、AROA=角色、AIDA=IAM 用户、AGPA=用户组、
-  // AIPA=EC2 实例配置、ANPA=托管策略、ANVA=托管策略版本、A3T+1 位=旧版 S3 前端令牌。
-  ['aws-access-key-id', /\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b/],
+  // P1-3(三审修复)→ 四审收窄:此前只认 AKIA(长期访问密钥),漏了 ASIA(STS 临时
+  // 凭证,和长期凭证一样能直接用来调 API,泄露危害不比 AKIA 低)。三审时误把
+  // AROA/AIDA/AGPA/AIPA/ANPA/ANVA 也当成"AWS 凭证前缀"一起加了进来——审核方查证:
+  // 这几个是 IAM 资源的唯一 ID(角色/用户/用户组/实例配置/托管策略/托管策略版本),
+  // 不能用于签名调用,不是凭证,不该判 hard(误报,而且密钥类硬命中的代价是"打回+
+  // 清 git 历史+轮换凭证",误伤成本高)。真正能直接用于签名的只有 AKIA(长期）、
+  // ASIA(STS 临时)、以及旧版 A3T 前缀(S3 前端令牌)。这几个 IAM 资源 ID 若确有
+  // 审计价值可另立 soft 类型,本次判断价值有限暂不新增,只做移除。
+  ['aws-access-key-id', /\b(?:AKIA|ASIA|A3T[A-Z0-9])[0-9A-Z]{16}\b/],
   ['github-token', /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/],
   ['gitlab-token', /\bglpat-[A-Za-z0-9_-]{20,}\b/],
   ['npm-token', /\bnpm_[A-Za-z0-9]{36,}\b/],
@@ -1064,9 +1072,13 @@ const HARD_SECRET_PATTERNS_BASE = [
   // ID>-<64 位十六进制>),不会被 xox 系列命中,P1-3 补一条独立规则。
   ['slack-token', /\bxox[abprs]-[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
   ['slack-app-token', /\bxapp-\d-[A-Z0-9]+-\d+-[a-f0-9]{64}\b/],
-  // sk-api-key 此前只认连字符分隔(sk-,覆盖 OpenAI/Anthropic sk-ant-...),Stripe 的
-  // sk_live_/sk_test_ 用下划线分隔,不会被 `sk-` 命中,P1-3 放宽分隔符为 -/_ 两种。
-  ['sk-api-key', /\bsk[-_][A-Za-z0-9_-]{20,}\b/],
+  // sk-api-key 此前只认连字符分隔(sk-,覆盖 OpenAI/Anthropic sk-ant-...)。三审时
+  // 把 Stripe 的下划线形态放宽成任意 `sk[-_]...`,导致普通变量名(如
+  // sk_status_configuration_value)也被误判 hard hit——四审收窄:Stripe 只认
+  // `sk_live_`/`sk_test_` 这个具体前缀,不做通用 sk_ 分隔符放宽;原连字符分支
+  // (sk-...)不受影响,单独保留。
+  ['sk-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
+  ['stripe-api-key', /\bsk_(?:live|test)_[A-Za-z0-9_-]{20,}\b/],
   ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/],
 ];
 // 核查结论(P1-3,不只补审核方点名的两个样本,把其余条目也核一遍):github-token 的

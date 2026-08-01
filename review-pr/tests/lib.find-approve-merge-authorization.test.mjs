@@ -181,6 +181,27 @@ test('P2-1 回归:真正独占一行下达的命令(无围栏无缩进)不受状
   assert.equal(hasApproveMergeCommand('看过了\n/approve-merge\n谢谢'), true);
 });
 
+// ── P2-1 四审顺手修:闭合标记后必须只跟空白(与 CommonMark 一致)──
+// 三审的状态机只查了闭合标记的类型与长度,没查标记之后是否只跟空白,审核方实测反例:
+// ```not-a-close 这种"反引号后紧跟非空白文字"的行会被误判成有效闭合,导致原本还在
+// 围栏内部的命令提前"暴露"成候选命令行。
+
+test('P2-1 四审:```not-a-close(反引号后紧跟非空白文字)不构成闭合,围栏内命令仍不暴露(审核方实测反例)', () => {
+  // 围栏由第 1 行开启,第 3 行 ```not-a-close 因为标记后跟了非空白文字,不构成闭合,
+  // 围栏应持续到第 5 行真正的闭合标记为止,/approve-merge(第 4 行)全程都在围栏内部。
+  const body = '```\nsome code\n```not-a-close\n/approve-merge\n```';
+  assert.equal(
+    hasApproveMergeCommand(body),
+    false,
+    '```not-a-close 后紧跟非空白文字,不是有效闭合;若误判成闭合,第 4 行会被错误地暴露成候选命令',
+  );
+});
+
+test('P2-1 四审回归:闭合标记后跟空格/tab(合法闭合)仍正常构成闭合', () => {
+  const body = '```\n/approve-merge\n```  \n后面还有别的内容';
+  assert.equal(hasApproveMergeCommand(body), false, '闭合标记后只跟空白字符,是合法闭合,围栏内命令仍不暴露');
+});
+
 test('多条有效授权取最新一条(createdAt 最大)', () => {
   const r = findApproveMergeAuthorization({
     comments: [

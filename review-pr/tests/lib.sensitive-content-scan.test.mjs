@@ -66,12 +66,46 @@ test('P1-3:AWS 临时凭证 ASIA(STS,此前只认 AKIA 漏了这个)命中 hard/
   assert.equal(sink.hard[0].kind, 'aws-access-key-id');
 });
 
-test('P1-3:AWS 角色凭证前缀 AROA 同样命中(顺手补齐的官方前缀族,不止 ASIA 一个样本)', () => {
+// P2-2(四审修复):三审误把 AROA/AIDA/AGPA/AIPA/ANPA/ANVA 当成"AWS 凭证前缀"一起
+// 加了进来。审核方查证:这几个是 IAM 资源(角色/用户/用户组/实例配置/托管策略/托管
+// 策略版本)的唯一 ID,不能用于签名调用,不是凭证,判 hard 是误报——hard hit 触发
+// "打回+清 git 历史+轮换凭证",误伤代价重。真正能签名的只有 AKIA/ASIA/A3T。
+
+test('P2-2:AWS IAM 角色资源 ID(AROA)不是凭证,不应 hard hit(三审误判为凭证,四审收窄移除)', () => {
   const patterns = buildSensitivePatterns({});
   const sink = { hard: [], soft: [] };
-  scanSensitiveLine('role_key = AROAABCDEFGHIJ123456', { file: 'x.ts', line: 1 }, patterns, sink);
-  assert.equal(sink.hard.length, 1);
-  assert.equal(sink.hard[0].kind, 'aws-access-key-id');
+  scanSensitiveLine('role_id = AROAABCDEFGHIJ123456', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.filter((h) => h.kind === 'aws-access-key-id').length, 0, 'AROA 是 IAM 角色资源 ID,不能用于签名,不是凭证');
+});
+
+test('P2-2:AWS IAM 用户资源 ID(AIDA)不是凭证,不应 hard hit', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine('user_id = AIDAABCDEFGHIJ123456', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.filter((h) => h.kind === 'aws-access-key-id').length, 0);
+});
+
+test('P2-2:AWS 托管策略资源 ID(ANPA)不是凭证,不应 hard hit', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine('policy_id = ANPAABCDEFGHIJ123456', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.filter((h) => h.kind === 'aws-access-key-id').length, 0);
+});
+
+test('P2-2 回归:真正的 AWS 长期访问密钥(AKIA)与 STS 临时凭证(ASIA)仍正常 hard hit,收窄没有误伤真凭证', () => {
+  const patterns = buildSensitivePatterns({});
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine('key = AKIAIOSFODNN7EXAMPLE', { file: 'x.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.length, 1);
+    assert.equal(sink.hard[0].kind, 'aws-access-key-id');
+  }
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine('key = ASIAIOSFODNN7EXAMPLE', { file: 'x.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.length, 1);
+    assert.equal(sink.hard[0].kind, 'aws-access-key-id');
+  }
 });
 
 test('P1-3:Slack App-Level Token(xapp-,与 xox 系列格式完全不同,此前漏了)命中 hard/slack-app-token', () => {
@@ -91,12 +125,20 @@ test('P1-3 回归:Slack xox 系列(bot/user token)不受新增 xapp- 规则影�
   assert.equal(sink.hard[0].kind, 'slack-token');
 });
 
-test('P1-3:Stripe 风格下划线分隔密钥(sk_live_/sk_test_,此前 sk- 只认连字符漏了)命中 hard/sk-api-key', () => {
+test('P1-3:Stripe 风格下划线分隔密钥(sk_live_/sk_test_,此前 sk- 只认连字符漏了)命中 hard/stripe-api-key', () => {
   const patterns = buildSensitivePatterns({});
-  const sink = { hard: [], soft: [] };
-  scanSensitiveLine(`STRIPE_KEY=sk_live_${'x'.repeat(30)}`, { file: 'x.ts', line: 1 }, patterns, sink);
-  assert.equal(sink.hard.length, 1);
-  assert.equal(sink.hard[0].kind, 'sk-api-key');
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine(`STRIPE_KEY=sk_live_${'x'.repeat(30)}`, { file: 'x.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.length, 1);
+    assert.equal(sink.hard[0].kind, 'stripe-api-key');
+  }
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine(`STRIPE_KEY=sk_test_${'x'.repeat(30)}`, { file: 'x.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.length, 1);
+    assert.equal(sink.hard[0].kind, 'stripe-api-key');
+  }
 });
 
 test('P1-3 回归:连字符分隔的 sk- 密钥(如 Anthropic sk-ant-...)不受下划线放宽影响,仍正常命中', () => {
@@ -107,11 +149,22 @@ test('P1-3 回归:连字符分隔的 sk- 密钥(如 Anthropic sk-ant-...)不受�
   assert.equal(sink.hard[0].kind, 'sk-api-key');
 });
 
-test('P1-3 负例:"sk_"出现在单词内部(非边界)不应误命中,防止放宽分隔符引入误报', () => {
+test('P2-2:普通变量名 sk_status_configuration_value 不应 hard hit(三审放宽 sk_ 分隔符引入的误报,四审收窄为只认 sk_live_/sk_test_)', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine('const sk_status_configuration_value = loadConfig();', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.filter((h) => h.kind === 'stripe-api-key' || h.kind === 'sk-api-key').length, 0);
+});
+
+test('P1-3 负例:"sk_"出现在单词内部(非边界)且不含 live/test 前缀,不应误命中', () => {
   const patterns = buildSensitivePatterns({});
   const sink = { hard: [], soft: [] };
   scanSensitiveLine('const desk_summary_report_data_value = compute();', { file: 'x.ts', line: 1 }, patterns, sink);
-  assert.equal(sink.hard.filter((h) => h.kind === 'sk-api-key').length, 0, '"desk_summary..." 里的 sk_ 不在词边界上,不应被误判成密钥');
+  assert.equal(
+    sink.hard.filter((h) => h.kind === 'sk-api-key' || h.kind === 'stripe-api-key').length,
+    0,
+    '"desk_summary..." 里的 sk_ 不在词边界上,也没有 live/test 前缀,不应被误判成密钥',
+  );
 });
 
 test('命中样本已脱敏:只留前 6 字符 + 长度,不还原原文', () => {
