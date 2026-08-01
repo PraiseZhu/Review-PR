@@ -1011,14 +1011,29 @@ export function computeLatestPushDate({ commits, forcePushEvents }) {
 // 扫描,是紧急通道的核心 fail-open 缺口)──
 const HARD_SECRET_PATTERNS_BASE = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/],
-  ['aws-access-key-id', /\bAKIA[0-9A-Z]{16}\b/],
+  // P1-3(三审修复):此前只认 AKIA(长期访问密钥),漏了 ASIA(STS 临时凭证,和长期
+  // 凭证一样能直接用来调 API,泄露危害不比 AKIA 低)。改用 AWS 官方文档 + git-secrets
+  // (awslabs/git-secrets)沿用的完整唯一前缀集合,不只补 ASIA 这一个样本:
+  // AKIA=长期访问密钥、ASIA=STS 临时访问密钥、AROA=角色、AIDA=IAM 用户、AGPA=用户组、
+  // AIPA=EC2 实例配置、ANPA=托管策略、ANVA=托管策略版本、A3T+1 位=旧版 S3 前端令牌。
+  ['aws-access-key-id', /\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b/],
   ['github-token', /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/],
   ['gitlab-token', /\bglpat-[A-Za-z0-9_-]{20,}\b/],
   ['npm-token', /\bnpm_[A-Za-z0-9]{36,}\b/],
+  // slack-token 只覆盖 xox[abprs]- 这一族(user/bot/legacy 等 OAuth 令牌),Slack App-Level
+  // Token(xapp-,Socket Mode 等场景用)是完全不同的格式(xapp-<版本>-<APP ID>-<请求
+  // ID>-<64 位十六进制>),不会被 xox 系列命中,P1-3 补一条独立规则。
   ['slack-token', /\bxox[abprs]-[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
-  ['sk-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
+  ['slack-app-token', /\bxapp-\d-[A-Z0-9]+-\d+-[a-f0-9]{64}\b/],
+  // sk-api-key 此前只认连字符分隔(sk-,覆盖 OpenAI/Anthropic sk-ant-...),Stripe 的
+  // sk_live_/sk_test_ 用下划线分隔,不会被 `sk-` 命中,P1-3 放宽分隔符为 -/_ 两种。
+  ['sk-api-key', /\bsk[-_][A-Za-z0-9_-]{20,}\b/],
   ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/],
 ];
+// 核查结论(P1-3,不只补审核方点名的两个样本,把其余条目也核一遍):github-token 的
+// gh[pousr]_ 已覆盖 ghp_/gho_/ghu_/ghs_/ghr_ 全部官方前缀 + github_pat_ 细粒度令牌,
+// 无遗漏,本轮不改;private-key/gitlab-token/npm-token/google-api-key 格式单一,
+// 未发现类似"同族另一变体被漏掉"的明显缺口。
 // credential-assignment 的占位符豁免(${VAR}/test/example 等)只给软命中降噪,不影响硬命中
 const SENSITIVE_PLACEHOLDER_RE = /\$\{|\$\(|process\.env|<[^>]*>|xxx|your[-_]|placeholder|change[-_]?me|example|sample|dummy|test|fake|mock|stub|redacted|\*{3,}/i;
 const SAFE_EMAIL_RE = /@example\.(?:com|org|net)\b|@test\.|\.invalid\b|noreply|no-reply|users\.noreply\.github\.com/i;

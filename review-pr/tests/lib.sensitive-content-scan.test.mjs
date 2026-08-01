@@ -53,6 +53,67 @@ test('extraHardPatterns / extraSoftPatterns(项目自定义规则)按配置追�
   assert.equal(sink.soft[0].kind, 'custom-soft-1');
 });
 
+// ── P1-3(三审修复):补齐 AWS ASIA/其它前缀、Slack App-Level Token、Stripe 风格
+// sk_ 下划线分隔的密钥模式,均为审核方指出"内置 hard 模式漏项"。
+
+test('P1-3:AWS 临时凭证 ASIA(STS,此前只认 AKIA 漏了这个)命中 hard/aws-access-key-id', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  // ASIAIOSFODNN7EXAMPLE —— 沿用 AWS 官方文档 AKIA 示例的命名习惯改写成 ASIA 前缀,
+  // 一看即知是文档级占位符,不是真实凭证。
+  scanSensitiveLine('aws_session_token_id = ASIAIOSFODNN7EXAMPLE', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.length, 1);
+  assert.equal(sink.hard[0].kind, 'aws-access-key-id');
+});
+
+test('P1-3:AWS 角色凭证前缀 AROA 同样命中(顺手补齐的官方前缀族,不止 ASIA 一个样本)', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine('role_key = AROAABCDEFGHIJ123456', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.length, 1);
+  assert.equal(sink.hard[0].kind, 'aws-access-key-id');
+});
+
+test('P1-3:Slack App-Level Token(xapp-,与 xox 系列格式完全不同,此前漏了)命中 hard/slack-app-token', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  const fakeToken = `xapp-1-A01234567-1234567890123-${'a'.repeat(64)}`;
+  scanSensitiveLine(`SLACK_APP_TOKEN=${fakeToken}`, { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.length, 1);
+  assert.equal(sink.hard[0].kind, 'slack-app-token');
+});
+
+test('P1-3 回归:Slack xox 系列(bot/user token)不受新增 xapp- 规则影响,仍正常命中', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine(`token=xoxb-${'1'.repeat(20)}`, { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.length, 1);
+  assert.equal(sink.hard[0].kind, 'slack-token');
+});
+
+test('P1-3:Stripe 风格下划线分隔密钥(sk_live_/sk_test_,此前 sk- 只认连字符漏了)命中 hard/sk-api-key', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine(`STRIPE_KEY=sk_live_${'x'.repeat(30)}`, { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.length, 1);
+  assert.equal(sink.hard[0].kind, 'sk-api-key');
+});
+
+test('P1-3 回归:连字符分隔的 sk- 密钥(如 Anthropic sk-ant-...)不受下划线放宽影响,仍正常命中', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine(`ANTHROPIC_API_KEY=sk-ant-api03-${'x'.repeat(30)}`, { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.length, 1);
+  assert.equal(sink.hard[0].kind, 'sk-api-key');
+});
+
+test('P1-3 负例:"sk_"出现在单词内部(非边界)不应误命中,防止放宽分隔符引入误报', () => {
+  const patterns = buildSensitivePatterns({});
+  const sink = { hard: [], soft: [] };
+  scanSensitiveLine('const desk_summary_report_data_value = compute();', { file: 'x.ts', line: 1 }, patterns, sink);
+  assert.equal(sink.hard.filter((h) => h.kind === 'sk-api-key').length, 0, '"desk_summary..." 里的 sk_ 不在词边界上,不应被误判成密钥');
+});
+
 test('命中样本已脱敏:只留前 6 字符 + 长度,不还原原文', () => {
   const patterns = buildSensitivePatterns({});
   const sink = { hard: [], soft: [] };
