@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `security-review-paths-swallows-all-dependabot-npm` **securityReviewPaths 含 package.json/lock,导致所有 dependabot npm PR 永久转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 现象:本轮 15 个候选里 6 个落 skip-security-review,其中 3 个是 dependabot(github_actions 与 npm group)。npm group PR 必然改 package.json/lockfile、actions PR 必然改 .github/workflows,两类都被 securityReviewPaths 命中,结论是这两类 PR 在任何一轮都不可能被自动处理,只会每轮重复进 skip 组。
+  - 提案:扩权类,不自动落地。可选方向:① 为 app/dependabot 作者 + 仅 lockfile/版本号 diff 的组合开一条窄豁免(需先确认 dependabot 身份无法伪造);② 保持现状但在汇总里把这类 skip 合并成一行,避免每轮 6 行噪音掩盖真正需要看的候选。请 owner 拍板。
 - `ui-evidence-misfire-pure-logic-lib` **uiPaths 前缀 src/ 让纯逻辑 lib 文件误触 UI 证据缺失判定** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:本轮一个候选仅因改了 src/lib/canonicalHash.ts(+ 其单测)就被判 uiEvidenceMissing=true。该文件只导出三个纯函数、零 import、无 JSX/DOM/CSS,不可能有视觉变化;审查 agent 需额外花一段论证来说明这是前缀误命中。因该 PR 是自有 PR(ownPr=true)本轮未发提醒评论,未打扰他人,但换成他人 PR 就会发出一条无意义的补图请求。
   - 提案:由 owner 决定是否在目标仓库 pr-rules.json 的 sensitiveContent 同级补 uiExcludePaths 条目(现有机制已支持排除 locale 数据文件与 .d.ts),把 src/lib/ 下确无渲染面的纯工具模块纳入排除;属目标仓库配置口径,不改 skill 代码,不自动落地。

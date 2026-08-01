@@ -1105,6 +1105,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T14:21:27.394Z",
       "lastSeen": "2026-08-01T14:21:27.394Z"
+    },
+    {
+      "fingerprint": "security-review-paths-swallows-all-dependabot-npm",
+      "tier": "proposal",
+      "title": "securityReviewPaths 含 package.json/lock,导致所有 dependabot npm PR 永久转人工",
+      "detail": "本轮 15 个候选里 6 个落 skip-security-review,其中 3 个是 dependabot(github_actions 与 npm group)。npm group PR 必然改 package.json/lockfile、actions PR 必然改 .github/workflows,两类都被 securityReviewPaths 命中,结论是这两类 PR 在任何一轮都不可能被自动处理,只会每轮重复进 skip 组。",
+      "proposal": "扩权类,不自动落地。可选方向:① 为 app/dependabot 作者 + 仅 lockfile/版本号 diff 的组合开一条窄豁免(需先确认 dependabot 身份无法伪造);② 保持现状但在汇总里把这类 skip 合并成一行,避免每轮 6 行噪音掩盖真正需要看的候选。请 owner 拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T17:23:33.011Z",
+      "lastSeen": "2026-08-01T17:23:33.011Z"
     }
   ]
 }
