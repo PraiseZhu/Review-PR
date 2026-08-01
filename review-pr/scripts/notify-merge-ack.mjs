@@ -80,6 +80,14 @@ try {
     process.exit(0);
   }
 
+  // sender:"cloud" = 目标仓库已在 CI 侧用合并事件发致谢(秒级、不依赖本机在线),本地
+  // 必须让位,否则同一个 PR 会被谢两次(两侧去重台账互不可见)。见目标仓库的
+  // .github/workflows/merge-thanks.yml。缺省(未配)仍走本地,不影响其他仓库。
+  if (MERGE_ACK.sender === 'cloud') {
+    print({ ok: true, posted: false, reason: 'sender-is-cloud(合并致谢由目标仓库 CI 发,本地不重复)' });
+    process.exit(0);
+  }
+
   const DEDUP_FILE = resolveInRepoRoot(MERGE_ACK.dedupFile ?? 'scripts/review-pr/.merge-notified.json');
   const NOTIFY_STATE_DIR = resolveInRepoRoot(MERGE_ACK.stateDir ?? 'history/loops/state');
 

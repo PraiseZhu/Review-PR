@@ -113,6 +113,13 @@ try {
     process.exit(0);
   }
 
+  // sender:"cloud" = 致谢由目标仓库的 CI 在合并事件里发,本地补发退场(否则重复致谢:
+  // 云端不写本地台账,本地扫到同一批 merged PR 会再谢一遍)。见 notify-merge-ack.mjs 同处注释。
+  if (MERGE_ACK.sender === 'cloud') {
+    print({ ok: true, posted: [], reason: 'sender-is-cloud(合并致谢由目标仓库 CI 发,本地不补发)' });
+    process.exit(0);
+  }
+
   const DEDUP_FILE = resolveInRepoRoot(MERGE_ACK.dedupFile ?? 'scripts/review-pr/.merge-notified.json');
   const NOTIFY_STATE_DIR = resolveInRepoRoot(MERGE_ACK.stateDir ?? 'history/loops/state');
   const LOOKBACK_MS = (Number(MERGE_ACK.backfillLookbackHours) > 0 ? Number(MERGE_ACK.backfillLookbackHours) : 72) * 3600_000;
