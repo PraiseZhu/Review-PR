@@ -735,28 +735,93 @@ export function fetchHeadCheckContexts({ owner, repo, pr }) {
 }
 
 /**
+ * 解析 HTTP `Link` header(RFC 5988,GitHub REST 分页用它标 rel="next"/"last")。
+ * 纯函数,便于单测。返回 `{ next?, last?, ... }` 的 rel→url 映射,读不出结构时返回
+ * 空对象(不抛错——调用方按"没有 next"处理,即视为已到最后一页)。
+ */
+export function parseLinkHeader(headerValue) {
+  const links = {};
+  if (!headerValue) return links;
+  for (const part of headerValue.split(',')) {
+    const m = part.trim().match(/^<([^>]+)>\s*;\s*rel="([^"]+)"/);
+    if (m) links[m[2]] = m[1];
+  }
+  return links;
+}
+
+/**
+ * 单页 REST 数组端点拉取(IO,非纯函数——发 `gh api <url> -i` 网络请求,`-i` 带上响应头
+ * 才能读到 `Link`)。拆出响应头与 body,解析出 `rel="next"` 的下一页 URL(GitHub 返回的
+ * 是绝对 URL,`gh api` 可直接接受,不需要再拼 owner/repo)。任一环节失败(请求失败/找不到
+ * 头体分隔符/body 不是 JSON 数组)返回 `null`。
+ */
+function fetchRestArrayPage(url) {
+  const r = gh(['api', url, '-i'], { allowFail: true, timeoutMs: 30_000 });
+  if (!r.ok) return null;
+  const sepIdx = r.stdout.indexOf('\r\n\r\n');
+  if (sepIdx === -1) return null;
+  const headerBlock = r.stdout.slice(0, sepIdx);
+  const bodyText = r.stdout.slice(sepIdx + 4);
+  let body;
+  try {
+    body = JSON.parse(bodyText || '[]');
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(body)) return null;
+  const linkLine = headerBlock.split('\r\n').find((l) => /^link:/i.test(l));
+  const links = linkLine ? parseLinkHeader(linkLine.slice(linkLine.indexOf(':') + 1)) : {};
+  return { body, nextUrl: links.next ?? null };
+}
+
+/**
+ * 完整遍历一个 REST 数组端点的所有分页(Link header 分页;P1-1,2026-08-02 二审修复)。
+ * 此前 `fetchExpectedRequiredContexts` / `probeBranchProtection` 都只读第一页——mivo
+ * 实测 `GET /repos/{slug}/rules/branches/{branch}` 端点确实会分页(Link `page=9
+ * rel="last"`),规则落在第 2 页起就会静默丢失,与刚修的 GraphQL `contexts` 分页
+ * (P1-3 首轮)是同一类 bug,只是出现在 REST 侧、上一轮漏改。
+ *
+ * `fetchPage` 参数供单测注入(构造"规则落在第 N 页"/"中途页失败"场景,不必真的发
+ * 网络请求),默认调用真实 `gh api`。**任一页失败(`fetchPage` 返回 null)整体返回
+ * null,不返回部分结果**——部分结果如果被当作"读全了"消费,后面没读到的页面里若有
+ * 目标规则，会被误判为不存在，这正是本次要修的静默丢失。
+ */
+export function fetchAllRestPages(startUrl, { fetchPage = fetchRestArrayPage, maxPages = 50 } = {}) {
+  const all = [];
+  let url = startUrl;
+  for (let i = 0; i < maxPages; i++) {
+    const page = fetchPage(url);
+    if (!page) return null;
+    all.push(...page.body);
+    if (!page.nextUrl) return all;
+    url = page.nextUrl;
+  }
+  return null; // 超过硬上限仍未结束(真实场景不会发生)，fail-closed，不敢说读全了
+}
+
+/**
  * 读取分支保护 `required_status_checks` 规则要求的完整 context 名单(IO 函数,非纯
  * 函数——发 REST 网络请求;只读,best-effort;P1-3,2026-08-02)。用于弥补
  * `classifyRequiredChecks` 单看 `contexts` 的盲区:一条必需检查如果从未开始跑(工作流
  * 触发条件没命中、还没创建 check-run 等),就根本不会出现在 `fetchHeadCheckContexts` 的
  * 结果里——既不在 failed 也不在 pending,单看 contexts 会误判"没有已知问题"=全绿。本
  * 函数给出"这条分支到底要求哪些 context 上报"的权威名单,供调用方与实际观测到的
- * context 集合做差,缺失的一律按 pending(未上报≠绿)处理。
+ * context 集合做差,缺失的一律按 pending(未上报≠绿)处理。分页遍历见
+ * `fetchAllRestPages`(P1-1 二审修复:此前只读一页)。
  *
  * 返回 `Set<string>`(可能为空集合——这是唯一允许"没有 required_status_checks 类型规则"
- * 结论的凭证,因为端点确实读到了、只是没有这类规则)或 `null`(端点读取失败/解析失败,
- * fail-closed,调用方不得当"无要求"处理)。与 probeBranchProtection 共用同一个端点
- * (`GET /repos/{slug}/rules/branches/{branch}`),但目的不同:后者判"结构性门是否已
- * 满足"(context 满足即从 requiredCheckRules 剔除该规则,不算 blocker);本函数只给
- * "要求了哪些 context",不做满足性判断。
+ * 结论的凭证,因为端点确实读到了、只是没有这类规则)或 `null`(端点读取失败/解析失败/
+ * 任一分页失败,fail-closed,调用方不得当"无要求"处理)。与 probeBranchProtection 共用
+ * 同一个端点(`GET /repos/{slug}/rules/branches/{branch}`),但目的不同:后者判"结构性
+ * 门是否已满足"(context 满足即从 requiredCheckRules 剔除该规则,不算 blocker);本函数
+ * 只给"要求了哪些 context",不做满足性判断。第三参 `opts`(如 `{ fetchPage }`)供单测
+ * 注入,透传给 `fetchAllRestPages`。
  */
-export function fetchExpectedRequiredContexts(slug, branch) {
+export function fetchExpectedRequiredContexts(slug, branch, opts = {}) {
   if (!branch) return null;
-  const rr = gh(['api', `repos/${slug}/rules/branches/${encodeURIComponent(branch)}`], { allowFail: true });
-  if (!rr.ok) return null;
+  const rules = fetchAllRestPages(`repos/${slug}/rules/branches/${encodeURIComponent(branch)}?per_page=100`, opts);
+  if (!Array.isArray(rules)) return null;
   try {
-    const rules = JSON.parse(rr.stdout || '[]');
-    if (!Array.isArray(rules)) return null;
     const names = new Set();
     for (const r of rules) {
       if (r?.type !== 'required_status_checks') continue;
@@ -1264,17 +1329,20 @@ export function isReviewReceiptClean({ receipt, headRefOid }) {
  * 用于解释「review 都过了、CI 也没失败,但永久 BLOCKED」——多半是 org ruleset 的
  * code_scanning(CodeQL)/ code_quality / required_status_checks 这类要求结果上报、
  * 但本仓库根本没产出结果的门,owner 通常靠 admin bypass 合(current_user_can_bypass)。
- * 端点:GET /repos/{slug}/rules/branches/{branch}(列命中规则,PAT 通常可读)
- *      + GET /repos/{slug}/rulesets/{id}(取 current_user_can_bypass)。
+ * 端点:GET /repos/{slug}/rules/branches/{branch}(列命中规则,PAT 通常可读,完整分页
+ * 遍历见 `fetchAllRestPages`——P1-1 二审修复:此前只读一页,与 fetchExpectedRequiredContexts
+ * 同一个 bug,这里此前漏改)+ GET /repos/{slug}/rulesets/{id}(取 current_user_can_bypass)。
+ * 第三参 `fetchPage` 供单测注入,透传给 `fetchAllRestPages`。
  * 返回 { requiredCheckRules, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch, { satisfiedContexts = null } = {}) {
+export function probeBranchProtection(slug, branch, { satisfiedContexts = null, fetchPage } = {}) {
   if (!branch) return null;
-  const rr = gh(['api', `repos/${slug}/rules/branches/${encodeURIComponent(branch)}`], { allowFail: true });
-  if (!rr.ok) return null;
+  const rules = fetchAllRestPages(
+    `repos/${slug}/rules/branches/${encodeURIComponent(branch)}?per_page=100`,
+    fetchPage ? { fetchPage } : {},
+  );
+  if (!Array.isArray(rules)) return null;
   try {
-    const rules = JSON.parse(rr.stdout || '[]');
-    if (!Array.isArray(rules)) return null;
     const CHECK_RULES = new Set(['required_status_checks', 'code_scanning', 'code_quality']);
     // required_status_checks 与 code_scanning/code_quality 本质不同:后两者在 GHAS 未接线的仓
     // 永不上报(真·结构性门,structuralBypassAllowlist 管的就是它们);前者要求的是具体 CI
