@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `structural-bypass-approved-precondition-mismatch` **structural-check admin bypass 的 APPROVED 前提:SKILL 5.3 与 internal-gates.md 不一致** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 现象:本轮 3 个候选(作者=viewer 自己,selfFixAuthors 为空故无法自批准)的 reviewDecision 为空、blockClass=structural-check、structuralBypassAvailable=true,context.mjs 给出 auto.action=bypass-structural-block(即无任何人 approve 就自动 --admin 合并,其中两个 PR 分别为 5662 / 2378 diff 行且含核心路径)。但 internal-gates.md 明写该路径需 reviewDecision=APPROVED,SKILL 5.3 的同一条却未列该前提;context.mjs 第 1109 行注释也把 review APPROVED 写成安全前提,实际判定却没校验它。按 SKILL 第 0 节规则冲突条款本轮停在 gate 未合并。
+  - 提案:先由 owner 拍板口径:若确认 APPROVED 是硬前提,则 context.mjs 的 structural-check 分支增加 reviewDecision==='APPROVED' 校验(不满足时降级为 skip 并注明缺 approve),并把该前提补进 SKILL 5.3;若确认无需 approve,则删掉 internal-gates.md 与 context.mjs 注释里的 APPROVED 措辞。属合并门判定,不自动落地。
 - `ui-evidence-false-positive-src-lib` **uiPaths 含 src/lib/ 导致纯工具文件被判缺 UI 证据** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:PR 366 的 uiCodeFiles 只有 src/lib/canonicalHash.ts 与其测试(纯哈希工具,零视觉面),仍被判 uiEvidenceMissing=true。本轮因 ownPr=true 未发评论所以没造成噪音,但非自有 PR 命中同样路径时会向作者索要哈希工具的截图,属确定性误报。
   - 提案:为 UI 证据提醒增设独立的排除前缀(不动 uiPaths 本身,避免影响产品门语义定性),把 src/lib/ 下无 .tsx/.css 的纯逻辑文件排除出 uiCodeFiles。改动会放宽一项提醒触发条件,按扩权类只提案不自动落地。
