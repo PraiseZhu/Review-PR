@@ -1014,6 +1014,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T05:22:39.721Z",
       "lastSeen": "2026-08-01T05:22:39.721Z"
+    },
+    {
+      "fingerprint": "stacked-pr-blocked-until-base-merges",
+      "tier": "by-design",
+      "title": "stacked PR 链(#387→#388→#389)整条卡在链首 CI 失败,末端即便 gate 全绿也不能合",
+      "detail": "本轮 #389 格式门+前置门全通过、action=review,但 base 是 #388 的 head 分支,#388 又 base 在 #387;#387 CI 失败。按 SKILL 3.6 硬依赖,末端 PR 合并只会并进上游分支而非 main,故记 depends-on-#N 跳过。根因在人:链首 CI 需作者修。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T08:04:40.795Z",
+      "lastSeen": "2026-08-01T08:04:40.795Z"
     }
   ]
 }
