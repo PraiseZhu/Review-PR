@@ -102,6 +102,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
+  - 现象:本轮 6 个候选里 5 个是 skip-security-review:#372/#373(actions/checkout、setup-node 升级,命中 .github/workflows/*)、#374/#375(package.json + package-lock.json)、#379(kirozeng 的 i18n PR 顺带动了 package-lock.json)。securityReviewPaths 覆盖 package.json/lockfile/workflows 是刻意设计(防自动化改坏自己),因此 dependabot PR 在本仓永远不会被 auto 合并,只会越积越多;#379 这类正常功能 PR 也会因为顺带碰了 lockfile 被整体转人工。只记录观察计数,不因出现多次就放开。
 - `own-pr-only-repo-blockers-need-human` **本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理** — 出现 2 次,首见 2026-07-30,最近 2026-07-31,status: tracked
   - 现象:2026-08-01 轮：唯一候选 #366 CI e2e kernel gate 失败，ownPr=true 且 selfFixAuthors 留空，无打回/跟进出口
 - `conflict-plus-unresolved-threads` **冲突 + 未 resolve conversation 双阻塞,需作者处理** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
