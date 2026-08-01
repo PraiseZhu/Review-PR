@@ -56,3 +56,51 @@ test('同一 PR 重新审查后再写入回执 → 覆盖旧回执(不是累加)
   assert.equal(receipt.headRefOid, 'sha-v2');
   assert.equal(receipt.verdict, 'clean');
 });
+
+// ── P2-2(三审修复):p0p1Count 严格校验 —— 此前 isReviewReceiptClean 用
+// `(p0p1Count ?? 0) > 0` 判脏,字段缺失(undefined)与负数都会被误判成"没有 P0/P1"从
+// 而误判 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着 0 的才算干净。
+
+test('P2-2:p0p1Count 字段缺失(畸形回执)→ isReviewReceiptClean 判不干净,不是误判 clean', () => {
+  const receipt = { headRefOid: 'sha-missing', verdict: 'clean', writtenAt: '2026-08-02T00:00:00Z' };
+  assert.equal(
+    isReviewReceiptClean({ receipt, headRefOid: 'sha-missing' }),
+    false,
+    '旧写法 (undefined ?? 0) > 0 为假,会误判 clean;字段缺失必须 fail-closed 判脏',
+  );
+});
+
+test('P2-2:p0p1Count 为负数(畸形回执)→ isReviewReceiptClean 判不干净,不是误判 clean', () => {
+  const receipt = { headRefOid: 'sha-negative', verdict: 'clean', p0p1Count: -1, writtenAt: '2026-08-02T00:00:00Z' };
+  assert.equal(
+    isReviewReceiptClean({ receipt, headRefOid: 'sha-negative' }),
+    false,
+    '旧写法 (-1 ?? 0) > 0 为假,会误判 clean;负数必须 fail-closed 判脏',
+  );
+});
+
+test('P2-2:p0p1Count 为非整数(如 0.5)→ isReviewReceiptClean 判不干净', () => {
+  const receipt = { headRefOid: 'sha-float', verdict: 'clean', p0p1Count: 0.5, writtenAt: '2026-08-02T00:00:00Z' };
+  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-float' }), false);
+});
+
+test('P2-2:writeReviewReceipt 拒绝缺失 p0p1Count(写入侧自己校验,不只指望 CLI)', () => {
+  assert.throws(
+    () => writeReviewReceipt({ pr: 900008, headRefOid: 'sha-eee', verdict: 'clean' }),
+    /p0p1Count/,
+  );
+});
+
+test('P2-2:writeReviewReceipt 拒绝负数 p0p1Count', () => {
+  assert.throws(
+    () => writeReviewReceipt({ pr: 900009, headRefOid: 'sha-fff', verdict: 'dirty', p0p1Count: -1 }),
+    /p0p1Count/,
+  );
+});
+
+test('P2-2:writeReviewReceipt 拒绝非整数 p0p1Count', () => {
+  assert.throws(
+    () => writeReviewReceipt({ pr: 900010, headRefOid: 'sha-ggg', verdict: 'dirty', p0p1Count: 1.5 }),
+    /p0p1Count/,
+  );
+});

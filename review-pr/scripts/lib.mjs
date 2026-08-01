@@ -1316,10 +1316,19 @@ export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count }) {
     throw new Error(`verdict 必须是 'clean' 或 'dirty',收到:${JSON.stringify(verdict)}`);
   }
   if (!headRefOid) throw new Error('headRefOid 不能为空——回执必须绑定到具体的 head commit');
+  // P2-2 三审修复:此前 `Number(p0p1Count) || 0` 会把任何非法输入(undefined/NaN/
+  // 负数/字符串)静默吞成 0,等价于"没传就当 0 P0/P1",这正是 isReviewReceiptClean
+  // 误判的源头之一——写入侧本该拒绝的脏输入,被这里悄悄洗白成合法回执。write-review-
+  // receipt.mjs(CLI)已经校验过,但 writeReviewReceipt 是可以被直接 import 调用的公开
+  // 函数,校验不能只指望调用方,这里必须自己也守住。
+  const p0p1CountNum = Number(p0p1Count);
+  if (!Number.isInteger(p0p1CountNum) || p0p1CountNum < 0) {
+    throw new Error(`p0p1Count 必须是非负整数,收到:${JSON.stringify(p0p1Count)}`);
+  }
   const receipt = {
     headRefOid,
     verdict,
-    p0p1Count: Number(p0p1Count) || 0,
+    p0p1Count: p0p1CountNum,
     writtenAt: new Date().toISOString(),
   };
   writeJsonAtomic(reviewReceiptFile(pr), receipt);
@@ -1340,18 +1349,22 @@ export function readReviewReceipt(pr) {
 
 /**
  * 判定某条审查回执对"当前 head"是否仍然「干净且新鲜」(纯函数,便于单测;P1-5,
- * 2026-08-02)。pre-merge-check.mjs 消费它来决定 admin-trust 路由是否真的
- * `structuralBypassReady`:
+ * 2026-08-02;P2-2 三审修复:p0p1Count 校验收紧)。pre-merge-check.mjs 消费它来
+ * 决定 admin-trust 路由是否真的 `structuralBypassReady`:
  *   - 无回执 → false(从未写过,或从未针对这个 PR 写过);
  *   - `receipt.headRefOid !== headRefOid` → false(回执针对的是旧 head——审查通过之后
  *     又推了新 commit,旧回执不再覆盖新代码,必须重新审查、重新落回执);
- *   - `verdict !== 'clean'` 或 `p0p1Count > 0` → false(审查跑完了但没通过)。
+ *   - `verdict !== 'clean'` → false(审查跑完了但没通过);
+ *   - `p0p1Count` 不是「严格等于 0 的整数」→ false。此前用 `(p0p1Count ?? 0) > 0`,
+ *     字段缺失(undefined)会被 `?? 0` 洗成 0、`-1 > 0` 为假——两种本该判脏的畸形回执
+ *     都被误判成 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着"0 个
+ *     P0/P1"的回执才算干净,字段缺失/负数/非整数一律 fail-closed 判不干净。
  */
 export function isReviewReceiptClean({ receipt, headRefOid }) {
   if (!receipt) return false;
   if (receipt.headRefOid !== headRefOid) return false;
   if (receipt.verdict !== 'clean') return false;
-  if ((receipt.p0p1Count ?? 0) > 0) return false;
+  if (!Number.isInteger(receipt.p0p1Count) || receipt.p0p1Count !== 0) return false;
   return true;
 }
 
