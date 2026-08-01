@@ -1157,6 +1157,32 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T17:24:08.703Z",
       "lastSeen": "2026-08-01T17:24:08.703Z"
+    },
+    {
+      "fingerprint": "link-header-malformed-treated-as-last-page",
+      "tier": "by-design",
+      "title": "Link header 解析失败时被当作已到最后一页,而非报错(仅响应畸形时触发)",
+      "detail": "parseLinkHeader 对无法解析的 Link header 返回空对象,fetchAllRestPages 据此判定 nextUrl 为空即认为已读完;GitHub 官方 API 目前始终返回标准 RFC 5988 格式的 Link header,该路径仅在响应畸形(网络中间层篡改/未来 API 变更)时才会触发,四审已评估为可接受的健壮性欠账,非遗漏。",
+      "proposal": "如需进一步收紧,可改为:响应头里完全没有 Link 字段才判定为最后一页;若 Link 字段存在但解析失败(格式不认得的畸形内容),改为 fail-closed 返回 null,而不是当作没有下一页。",
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T17:35:27.218Z",
+      "lastSeen": "2026-08-01T17:35:27.218Z"
+    },
+    {
+      "fingerprint": "review-receipt-no-lifecycle-cleanup",
+      "tier": "by-design",
+      "title": "每 PR 一个回执文件长期无生命周期清理(量级很小,暂不处理)",
+      "detail": "P1-2 三审改为每 PR 一个 review-receipt-<pr>.json 独立文件,按 repo hash 隔离在系统临时目录下,当前无自动清理机制,closed/merged PR 的回执文件会一直留在磁盘上。量级评估:单文件数十字节,单仓库存量 PR 数量级不会达到造成实际影响的规模,四审已评估为可接受,非遗漏。",
+      "proposal": "后续可在现有 cleanup/sweep 流程(如 fix-worktree-cleanup.mjs 同类的定期清理脚本)里加一步:对 closed/merged 状态的 PR,或写入时间超过某个 TTL(如 30 天)的回执文件做可恢复清理(先归档/重命名,不直接硬删)。",
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T17:35:27.315Z",
+      "lastSeen": "2026-08-01T17:35:27.315Z"
     }
   ]
 }

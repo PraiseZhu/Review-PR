@@ -485,7 +485,10 @@ gh pr diff <N> --patch
 
 任何 PR 都不允许携带凭证、密钥或个人隐私数据——这是先于格式门的第一道审计。
 `context.mjs` 的 `security` 字段是确定性扫描结果，覆盖 PR 标题、body 与 diff 全部
-新增行（内置模式 + `config/pr-rules.json` 的 `sensitiveContent` 扩展）：
+新增行（内置模式 + `config/pr-rules.json` 的 `sensitiveContent` 扩展；判定逻辑单一
+来源在 `scripts/lib.mjs` 的 `scanPrSensitiveContent`，`pre-merge-check.mjs` 在
+授权快速合并通道合并前对当前 head 也调用同一份函数重新现场扫描，见 5.1「授权快速
+合并通道」）：
 
 - **硬命中（`security.hardHits`）**：私钥块、AWS／GitHub／GitLab／npm／Slack／Google
   凭证、`sk-` 系 API key 等高置信格式。存在任一硬命中即本门不通过：不进入代码审查、
@@ -672,6 +675,11 @@ skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏
 让位于安全与隐私门硬命中。是否启用、纳入哪些路径由目标仓库自己按贡献者可信度
 模型配置。
 
+**唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
+可以压过本门——`admins` 名单成员发出的 `/approve-merge` 本身就是「人工已过的凭证」，
+不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
+与授权通道谁都压不过它。
+
 ## 4. 阶段二：独立代码审查
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
@@ -794,13 +802,19 @@ IPC／权限边界和跨端适配命中专项规则时，专项规则的阻断�
 
 交互模式按顺序确认”提交 approve / 合并 / 评论”。auto 模式只在上述条件全部可证时
 执行；不使用强制合并、绕过 required checks 或自动批准修改过的 CI。结构性
-`BLOCKED` 只有满足 [references/internal-gates.md](references/internal-gates.md) 的全部
-安全条件才允许 `--admin`，否则跳过。
-合并使用仓库允许的默认策略，不自行改变项目策略：
+`BLOCKED` 按三层分级（`reviewDecision=APPROVED` / 作者在 `admins` 名单且本轮审查
+通过并已落回执 / 均不满足）判断能否 `--admin`，判定逻辑单一来源在
+`scripts/lib.mjs` 的 `decideStructuralBypassRoute`（结构性 blocker 探测本身用
+`classifyBlockedStatus`，approval 维度不再决定要不要探测，只决定探测完怎么归类），
+完整安全条件见 [references/internal-gates.md](references/internal-gates.md)
+「作者侧与仓库侧 gate」，否则跳过。
+合并使用仓库允许的默认策略，不自行改变项目策略。**`pre-merge-check.mjs` 返回的
+`headRefOid` 必须原样带进合并命令的 `--match-head-commit`**（判定与执行之间的
+原子护栏；本机 `gh` 已核实支持该参数）：
 
 ```bash
 gh pr review <N> --approve --body “<简短、基于事实的结论>”
-gh pr merge <N> [--squash|--merge|--rebase] --delete-branch
+gh pr merge <N> [--squash|--merge|--rebase] --delete-branch --match-head-commit <headRefOid>
 ```
 
 **selfFixAuthors 自有 PR 的 self-merge**：当 `pre-merge-check` 返回
@@ -808,12 +822,81 @@ gh pr merge <N> [--squash|--merge|--rebase] --delete-branch
 GitHub 不允许同账号 approve，直接使用 `--admin` 合并：
 
 ```bash
-gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch
+gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch --match-head-commit <headRefOid>
 ```
 
 此路径仅在审查通过（零 P0/P1）、无冲突、thread 全 resolve 时启用。auto 模式
 可执行 self-merge；不需要额外确认（selfFixAuthors 本身即维护者授权）。合并后同样
 跑一次上方的 `notify-merge-ack.mjs` 播报步骤。
+
+**admins 名单的结构性 BLOCKED 分级合并**：与上面的 selfFixAuthors self-merge 是
+两条独立路径（不共享名单，也不互相推导），专门解「机械前提满足但缺
+`reviewDecision=APPROVED`」这个口子（典型是 ownPr——GitHub 422 禁止对自己的 PR
+提交 APPROVE，`reviewDecision` 永远拿不到；也可能是没人来 approve 的普通协作
+PR）。此路由曾有一处可达性缺口：`reviewDecision=REVIEW_REQUIRED`/`null` 时若直接
+短路判「缺 approval」、从不往下探测是否存在真实的结构性 blocker，在**不要求
+approve** 的仓库里（`reviewDecision` 恒为空）会让本路由永久不可达——已修复，
+approval 维度现在只影响「最终怎么归类」，不影响「要不要探测」（见
+`classifyBlockedStatus`）。`context.mjs` 对结构性 BLOCKED 且作者在 `admins` 名单的
+PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
+`skip-structural-block`），带 `auto.structuralBypassPending=true`：
+
+1. 照常走阶段二独立审查；
+2. 审查通过（零 P0/P1）后，**先调用**
+   `node "<SKILL_ROOT>/scripts/write-review-receipt.mjs" <N> --verdict clean --p0p1-count 0 --head <headRefOid>`
+   落一条回执（`--head` 用本轮审查针对的那个 head SHA；`verdict=dirty` 用于如实
+   记录还有 P0/P1 未清空的情形，不能跳过这一步直接进第 3 步）；
+3. 调 `pre-merge-check.mjs` 复核，若返回
+   `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，用
+   `gh pr merge --admin --delete-branch --match-head-commit <headRefOid>` 合并——
+   脚本已经核验过回执的 `headRefOid` 与当前 head 一致且 `verdict=clean`（此前
+   脚本只看机械前提就判 `true`，完全不管审查是否真的跑过、跑完后结论如何，是
+   已修复的 fail-open 口子），不需要 agent 自己再确认；`structuralBypassReady=
+   false` 时（无回执 / 回执针对旧 head / `verdict≠clean`）必须回到第 1 步重新
+   审查、重新落回执，不能凭记忆认为"审过了就该行"；
+4. 审查不通过（有 P0/P1）→ 按 5.2 正常打回，`admins` 身份不豁免代码质量要求。
+
+`structuralBypassBasis='approved'`（真实 `reviewDecision=APPROVED`）时不受此限，
+任何模式下都能直接合，不必等这轮审查、也不需要回执。
+
+**授权快速合并通道**（P2-4：与上面的「admins 名单的结构性 BLOCKED 分级合并」是两条
+完全不同、互不替代的路由，触发条件不同、后果也不同，不要概括成一句——上面那条看
+的是 PR **作者**是否在 `admins` 名单，触发后仍要走完阶段二独立审查、落回执才能合；
+本条看的是有没有 `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**
+阶段二独立审查）：`admins` 名单成员在 PR 评论里发出精确独占一行的
+`/approve-merge` 命令（先剔除 fenced code block 与 blockquote，剩余每行 trim 后
+必须精确等于该字符串，不含任何行内追加说明——owner 拍板收紧，推翻此前"允许行内
+追加说明"的裁决：被审核方给出的反例证伪，行内追加说明会把「讨论这条命令」误判成
+「下达这条命令」；须晚于最后一次**真实 push**，按 GitHub 服务端记录的
+`commit.pushedDate` 与 `HeadRefForcePushedEvent.createdAt` 判定，不用可在本地
+任意伪造的 `committedDate`，之后再推新 commit 授权即作废需重发；评论若被编辑过
+——`updatedAt!==createdAt`——一律拒绝，要求重发新评论，不接受编辑旧评论），构成
+「人工已过安全与代码审查」的明确授权。这是**紧急通道**——owner 2026-08-01 拍板：
+管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」。`context.mjs` 给
+`auto.action=authorized-fast-merge` 时，**跳过阶段二独立审查**，直接复核机械
+前提后合并：
+
+```bash
+gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch --match-head-commit <headRefOid>
+```
+
+判定逻辑单一来源在 `scripts/lib.mjs` 的 `findApproveMergeAuthorization`（授权
+本身是否有效）与 `evaluateAuthorizedFastMerge`（机械前提），`pre-merge-check.mjs`
+在合并前用同一对函数重新现场检测，不信任 scan 时缓存，并对当前 head 真实重新跑
+一遍安全与隐私内容扫描（此前本脚本对"是否有泄密硬命中"恒传 `false`、完全不扫描，
+是本紧急通道最大的 fail-open 缺口，已修复）。**任何情况不可绕过**只剩三类：
+安全与隐私门硬命中（`security.hardHits`；且扫描必须真的**成功完成**——
+`security.scanned=false`，如 diff 拉取失败，一律 fail-closed 当"未证明无泄露"
+处理，绝不能当"无命中"放行，需重试）、无冲突（`mergeStateStatus` 不为 `DIRTY`，
+物理不可合）、head 上 required 检查全绿（完整性核验：与分支保护实际要求的
+context 名单做差，从未上报过的必需检查按 pending 处理，不因"没出现在已上报清单
+里"就当绿）。**不阻断但必须显著写进汇总与合并致谢**（`authorizedFastMerge.
+reportOnly` / `authorizedFastMergeInfo.reportOnly`，不能悄悄吞掉）：格式门未
+通过、未 resolve thread、非 required 第三方检查（如 Greptile）失败——授权解的是
+「要不要再审、要不要等这些收尾问题」，不是「PR 本身物理上能不能合」。产品/UI 门
+与技术架构门优先级高于本通道——命中时按 3.4 正常 hold，本通道只解决「要不要再审
+代码」，不解决「这次改动该不该推进」。合并后同样跑一次 `notify-merge-ack.mjs`
+播报步骤，`--details` 必须包含 `reportOnly` 里非空的项。
 
 方括号中的策略必须先按仓库设置和维护者约定选择一个，不要由 skill 自行改变合并策略。
 若仓库启用 merge queue 或命令被保护规则拒绝，记录状态并结束，不反复重试或绕过保护。
@@ -883,16 +966,20 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   投递给跟进会话自动修复；审查通过后仍可正常合并（含 5.1 的 self-merge）。
 - fork workflow 待批准执行 `approve-workflows.mjs`；PR 改过 CI 文件时 auto 跳过并在
   汇总点名维护者。
-- `gate.blockClass=structural-check` 不是作者代码问题；有 bypass 权限**且**
+- `gate.blockClass=structural-check` 不是作者代码问题；机械前提（bypass 权限**且**
   `structuralBlock.requiredCheckRules` 全部命中 `pr-rules.json` 的
-  `structuralBypassAllowlist`（未配置时默认 `code_scanning`/`code_quality`）时可
-  admin merge，否则跳过，不把它写成 P1 打回。
+  `structuralBypassAllowlist`，未配置时默认 `code_scanning`/`code_quality`）之外，
+  还要满足三层分级之一（`reviewDecision=APPROVED`，或作者在 `admins` 名单且本轮
+  独立审查已通过）才能 admin merge，否则跳过，不把它写成 P1 打回——详见 5.1「admins
+  名单的结构性 BLOCKED 分级合并」与
+  [references/internal-gates.md](references/internal-gates.md)。
 - `gate.blockClass=ci-unknown`（CI 状态读取失败：权限/网络/解析问题）不是
   structural-check，绝不可 bypass、不催办——本轮跳过，下一轮重新探测。
 - 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
   不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
 - 命中 `securityReviewPaths`（`skip-security-review`）：一律转人工，不自动审也不自动
-  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发。
+  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发；`admins` 名单成员发
+  `/approve-merge` 授权时例外（`authorized-fast-merge`，见 5.1「授权快速合并通道」）。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -1157,9 +1244,13 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    base 的候选做文件重叠守卫，同一文件同一时刻只允许一个 PR 在审，重叠项排队等前一个
    落地后再补入。审查 agent 在独立 worktree 并行运行；产品/UI 与架构命中项先串行执行
    hold，格式打回、workflow approval 和 release 等轻操作按候选串行落地。
-3. **落地与补位**：先消费 held draft 的 issue 同意并自动 release；通过审查的 PR 先复核
-   状态再合并，失败的 PR 请求修改，CI pending、未 resolve thread、权限问题只跳过
-   不绕过；冲突的 PR 若满足 5.5 门槛（其余全过、仅剩冲突）按 5.5 处理，否则跳过；
+3. **落地与补位**：先消费 held draft 的 issue 同意并自动 release；`auto.action=
+   authorized-fast-merge` 的候选跳过阶段二独立审查，直接按 5.1「授权快速合并通道」
+   复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
+   审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
+   通过则按 5.2 正常打回；其余通过审查的 PR 先复核状态再合并，失败的 PR 请求修改，
+   CI pending、未 resolve thread、权限问题只跳过不绕过；冲突的 PR 若满足 5.5 门槛
+   （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
    P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进

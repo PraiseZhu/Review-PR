@@ -16,6 +16,9 @@
 - `ciSensitivePaths`：workflow approval 安全门；
 - `serverPaths`：Server 发布通知 gate；
 - `selfFixAuthors`：自己的 PR 不走 GitHub 自审死锁和无效催办；
+- `admins`：结构性 BLOCKED 三层分级合并策略的信任名单（缺失/为空/配置形态非法
+  = fail-closed，经 `normalizeLoginList` 兜底），与 `selfFixAuthors` 各自独立、
+  不互相推导，见下方「作者侧与仓库侧 gate」；
 - `slackSyncBots`、`slackSenderAliases`、`feishuNotify`：
   讨论 issue 和飞书通知归属、收件人与去重配置；
 - `staleAuthorReminder`：作者侧停滞提醒阈值（`exemptAuthors` 命中直接跳过催办并清
@@ -44,6 +47,7 @@
 | 产品/架构 hold、放行、收尾 | `product-hold.mjs`、`product-release.mjs`、`close-product-issue.mjs` |
 | fork workflow 放行 | `approve-workflows.mjs` |
 | 合并前复核、self-approve | `pre-merge-check.mjs`、`self-approve.mjs` |
+| 阶段二独立审查回执（admin-trust 分级合并的凭证） | `write-review-receipt.mjs`（`--verdict clean\|dirty --p0p1-count <N> [--head <sha>]`；`--get` 查看当前回执） |
 | resolve 催办、停滞判断、身份解析 | `notify-author-resolve.mjs`、`remind-stale-author.mjs`、`resolve-author-feishu.mjs` |
 | 合并后健康检查 | `typecheck-merged.mjs` |
 | 合并致谢播报 | `notify-merge-ack.mjs`（`loopPrExclusion.mergeAckNotify.notifyModule` 未配置时 no-op） |
@@ -169,24 +173,151 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   `--scan`），不回收会随 PR 数量线性膨胀；安全判定全在脚本内。
 - `selfFixAuthors` 自己的 PR 审查通过时：GitHub 不允许同账号 approve 自己的 PR，
   `pre-merge-check.mjs` 返回 `selfMergeAvailable=true` 后直接用
-  `gh pr merge --admin --delete-branch` 合并。条件：viewer = author、author 在
-  `selfFixAuthors`、无冲突、thread 全 resolve、独立审查零 P0/P1。auto 模式可执行。
+  `gh pr merge --admin --match-head-commit <headRefOid> --delete-branch` 合并
+  （`headRefOid` 取 `pre-merge-check.mjs` 本次判定输出的那份，做判定与执行之间的
+  原子护栏——判定之后若又有人推了新 commit，`--match-head-commit` 会让 `gh` 直接
+  拒绝合并,不会把新代码在没重新判定的情况下合进去）。条件：viewer = author、
+  author 在 `selfFixAuthors`、无冲突、thread 全 resolve、独立审查零 P0/P1。
+  auto 模式可执行。
 - fork PR 有 workflow 等待批准时，不把它打回作者。只有 PR 未修改
   `.github/workflows/`、`.github/actions/` 等 CI 文件才可 auto approve；
   改过 CI 文件则跳过并点名维护者手动处理。
 - `gate.blockClass=structural-check` 表示 required check 永远不返回结果，不是作者代码
-  问题。只有 `reviewDecision=APPROVED`、CI 无失败、thread 全 resolve、当前账号具备
-  bypass 权限**且** `structuralBlock.requiredCheckRules` 全部命中
-  `structuralBypassAllowlist` 时才可 `gh pr merge --admin`；否则跳过并报告。
+  问题。判定该 blockClass 本身用 `scripts/lib.mjs` 的 `classifyBlockedStatus`（第②层
+  可达性修复，见下方）；CI 无失败、thread 全 resolve、当前账号具备 bypass 权限**且**
+  `structuralBlock.requiredCheckRules` 全部命中 `structuralBypassAllowlist` 是三条路径
+  共同的机械前提；机械前提满足后，「谁来担保没有真实 review 也能合」按三层分级（判定
+  逻辑单一来源在 `scripts/lib.mjs` 的 `decideStructuralBypassRoute`，`context.mjs` 的
+  `auto` 分流与 `pre-merge-check.mjs` 的 `structuralBypassReady` 都调用它，防两处
+  判据漂移）：
+  1. `reviewDecision=APPROVED`（真实 GitHub review，任何作者都适用，不看 `admins`）
+     → 直接 `gh pr merge --admin --match-head-commit <headRefOid>`；
+  2. 缺 `APPROVED` 但作者在 `admins` 名单（典型是 ownPr——GitHub 422 禁止对自己的 PR
+     提交 APPROVE，`reviewDecision` 永远拿不到）→ **不直接合并**，`auto.action=review`
+     进入本轮独立审查；审查通过（零 P0/P1）后，审查方必须调用
+     `write-review-receipt.mjs <PR> --verdict clean --p0p1-count 0 --head <headRefOid>`
+     落一条针对当前 head 的回执，合并阶段 `pre-merge-check.mjs` 核验回执的
+     `headRefOid` 与当前 head 一致且 `verdict=clean`（`isReviewReceiptClean`）后才
+     返回 `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，再走
+     `gh pr merge --admin --match-head-commit <headRefOid>`。「审查是否跑过 / 结论
+     是否干净」是语义判断，脚本本身判断不了代码好不好——回执就是这半判断留下的、
+     可核验的凭证；无回执 / 回执针对旧 head（审查通过后又推了新 commit）/
+     `verdict≠clean` 时 `structuralBypassReady` 恒为 `false`，必须回到独立审查
+     重新做、重新落回执，不能因为作者是 `admins` 成员就跳过审查直接合（那是下面
+     「授权快速合并通道」才有的权限，两者不可混用）；
+  3. 既无 `APPROVED` 也非 `admins` 名单 → 跳过并报告，不自动合并。`admins` 缺失/为空
+     时全部按第 3 条处理（fail-closed，`normalizeLoginList` 兜非数组/混入非字符串等
+     非法配置形态，不抛错也不当合法名单用，但会显著标记配置错误）。
+  2026-08-01 前的实现只判机械前提、完全不看 `reviewDecision`，属 fail-open：曾在
+  `reviewDecision` 为空（零 approving review）的情况下直接 `gh pr merge --admin`
+  合入，是本次修复的核心动机。
+  **第②层可达性修复（2026-08-02）**：`classifyBlockedStatus` 之前的实现里，
+  `reviewDecision='REVIEW_REQUIRED'`/`null` 时会直接短路判 `blockClass=
+  'awaiting-approval'`，从不往下探测是否存在真实的结构性 blocker（未 resolve
+  thread / CI / 永不上报的必需检查）。在**不要求 approve** 的仓库（如
+  mivo-canvas，分支保护只挂了 code_scanning/code_quality/copilot_code_review
+  三个从不上报结果的门，没有 required-approving-review 规则）里，`reviewDecision`
+  恒为 `REVIEW_REQUIRED`/`null`，短路判定的结果是这类仓库的 `blockClass` 永远到
+  不了 `'structural-check'`，上面第 2 条的 `admin-trust` 路由因此永久不可达，即便
+  作者在 `admins` 名单也没有任何合并出口。修复方式：approval 维度只影响「最终怎么
+  归类」，不再决定「要不要往下探测」——unresolved thread / CI 失败或还在跑 / 结构性
+  探测这几层，不管 `reviewDecision` 是什么都必须走一遍；只有走到最后、什么真实问题
+  都排查不出时，`reviewDecision` 才用来决定归到 `'awaiting-approval'`（真的只是缺
+  approve）还是 `'structural-check'`（存在真实的永不上报门，不管有没有 approve 都
+  要走三层分级合并路由）。新增枚举值 `'blocked-unexplained'`：走完全部已知维度都
+  查不出原因但仍 `BLOCKED` 的异常兜底，fail-closed，不可 bypass、不催办。
 - `gate.blockClass=ci-unknown` 表示 CI 状态读取失败（权限/网络/解析问题），**不是**
   structural-check——即便当前账号对某必需检查有 bypass 权限，也不得据此自动合并
   未知 CI 状态的 PR；跳过等下一轮重新探测。
+- **required 完整性核验**（`scripts/lib.mjs` 的 `fetchExpectedRequiredContexts` +
+  `classifyRequiredChecks` 第二参 `expectedRequiredNames`）：一条必需检查如果从未
+  开始跑（工作流触发条件没命中、还没创建 check-run 等），就根本不会出现在
+  `fetchHeadCheckContexts` 的结果里——既不在 failed 也不在 pending，单看这份结果
+  会误判「没有已知问题」=全绿。`fetchExpectedRequiredContexts` 读取分支保护
+  `required_status_checks` 规则要求的完整 context 名单，与实际观测到的集合做差，
+  缺失的一律按 `requiredPending` 处理（未上报≠绿）。该端点读取失败时返回 `null`，
+  调用方必须把 `requiredChecks` 整体判为 `null`（未证明全绿），不能悄悄跳过完整性
+  核验；空集合只有在端点**确实读到了、只是没有 required_status_checks 类型规则**
+  时才成立，不能把"读取失败"和"规则本来就没配"混为一谈。`fetchHeadCheckContexts`
+  本身也已改为完整分页（`pageInfo.hasNextPage`/`endCursor` 循环取全），任一页读取
+  异常都整体返回 `null`，不返回"读到一半"的部分结果——部分结果若被当作完整集合
+  消费，后面没读到的页面里若有失败检查，会被误判为不存在，这与只查前 100 条是
+  同一类风险。
+- **安全与隐私内容扫描 fail-closed 化**（`scripts/lib.mjs` 的
+  `scanPrSensitiveContent`，`context.mjs` 与 `pre-merge-check.mjs` 共用同一份判据，
+  防两处漂移）：此前 `pre-merge-check.mjs` 对「是否有泄密硬命中」恒传 `false`，
+  完全不扫描，假设上游 `context.mjs` 已经拦过一轮——但授权快速合并通道恰恰是**跳过
+  阶段二独立审查**的紧急通道，合并前必须独立复核（TOCTOU：授权评论可能在
+  `context.mjs` 的 scan 之后才发出）。`scanPrSensitiveContent` 返回
+  `{ scanned, error, hardHitCount, softHitCount, hardHits, softHits }`；
+  `scanned=false`（diff 拉取失败等）必须让调用方判「未证明无泄露」，fail-closed
+  不放行，**绝不能**当「无命中」处理，`evaluateAuthorizedFastMerge` 的
+  `security.scanned` 参数就是接这个字段。
 - `format.hitsServer=true` 时，作者必须在 PR 中声明已按项目流程通知 Lizi；缺失时即使
   代码审查通过也走 3B，要求真实回复后再 resolve。当前仓库 `serverPaths` 为空时该门
   不触发，但不要从 skill 中删除。
 - 审查 agent 发现实质重构了他人历史功能且没有与原作者对齐证据时走 3B，要求补充
   原作者沟通、必要性、阶段、测试范围和测试结果；自我重构与单一主目的的必要连带改动
   不误伤。
+- **授权快速合并通道**（`context.mjs` 的 `authorizedFastMerge` / `auto.action=
+  authorized-fast-merge`，判定逻辑单一来源在 `scripts/lib.mjs` 的
+  `findApproveMergeAuthorization`（授权本身是否有效）与
+  `evaluateAuthorizedFastMerge`（机械前提是否满足））。**P2-4：与上面第②条
+  `admin-trust`（`review-pending-admin-bypass`）是两条完全不同、互不替代的路由，
+  别概括成一句**——上面那条看的是 PR **作者**是否在 `admins` 名单，触发后仍要走完
+  阶段二独立审查、核验回执干净才能合，本条不豁免代码质量；本条看的是有没有
+  `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**阶段二独立审查，
+  是审查流程本身的例外通道，不是"换一种方式证明审查过"。具体：`admins` 名单成员
+  （GitHub login，机器人自己发的评论不算）在 PR 评论里发出精确独占一行的
+  `/approve-merge` 命令，且该评论晚于最后一次**真实 push**，构成「人工已过安全与
+  代码审查」的明确授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进
+  合并。这是
+  **紧急通道**——2026-08-01 owner 拍板：「特别要紧的 PR 要立即合，只要 CI 绿 +
+  明确授权」，管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」，因此阻断面
+  比阶段二正常审查窄得多：
+  - **命令匹配口径**（2026-08-02 owner 拍板收紧，推翻此前"允许行内追加说明"的
+    裁决——被审核方给出的实例证伪：允许行内追加说明会把"讨论这条命令"（如"我觉得
+    可以发 /approve-merge 了，但再看一眼"）误判成"下达这条命令"）：先剔除 fenced
+    code block（``` /~~~ 围栏）与 blockquote（以 `>` 开头的行）——展示/引用不算
+    下达；剩余每行 trim 后必须**精确等于** `/approve-merge`（大小写敏感，不含任何
+    行内追加说明）才算命中，判定逻辑见 `hasApproveMergeCommand`；
+  - **已编辑的评论一律拒绝**（`updatedAt!==createdAt` 视为「事后编辑过」，即使
+    编辑内容本身未变也拒绝并计入 `authorizedFastMerge.editedComments`，要求重发
+    新评论而不是编辑旧评论）——授权命令的可信前提是「发出瞬间即为最终内容」，允许
+    编辑会让人先发无害内容、事后改成命令来绕过基于 `createdAt` 的时序检查；
+  - **时效锚点改用真实 push 时间**（P2-1，`computeLatestPushDate`）：早于最后一次
+    push 视为已作废，需重发；`authorizedFastMerge.staleComments` 记录这类过期
+    候选。「最后一次 push」不用可在本地任意伪造的 `commit.committedDate`（
+    `git commit --date=...`/rebase 均可改），改用 GitHub 服务端记录、贡献者不可控
+    的两个信号取较大值：每个 commit 的 `pushedDate`（GitHub 收到该 commit 对象的
+    时间）与 `HeadRefForcePushedEvent.createdAt`（force-push 事件本身的时间戳，
+    补上"强推回退到早已存在的旧 commit、没有新 commit 对象产生新 pushedDate"这个
+    边界）；
+  - **任何情况不可绕过**只剩三类：泄密硬门（`security.hardHits`）未命中**且**扫描
+    真的**成功完成**（`security.scanned=true`；`scanned=false` 如 diff 拉取失败等
+    一律 fail-closed，不当"无命中"处理，见上方「安全与隐私内容扫描 fail-closed
+    化」）；无冲突（`mergeStateStatus` 不为 `DIRTY`，物理不可合，GitHub 层面就合
+    不了，授权解不了这个）；head 上**required** 检查（`isRequired` 由
+    `fetchHeadCheckContexts` 的 GraphQL 查询按 check 逐条标注，与
+    `classifyStatusRollup` 消费的 `--json statusCheckRollup` 不带该字段、看不出
+    required/非 required 之分）全绿——且经过完整性核验（见上方「required 完整性
+    核验」，未上报的必需检查按未全绿处理）——CI 口径是硬指标,不因授权而放宽;
+  - **不阻断，但必须显著写进报告与汇总**（`authorizedFastMerge.reportOnly` /
+    `authorizedFastMergeInfo.reportOnly`，字段：`formatIssues`、
+    `unresolvedThreadCount`、`nonRequiredFailures`；不能悄悄吞掉，`--details`
+    必须包含非空项）：格式门未通过、未 resolve thread、非 required 第三方检查
+    （如 Greptile）失败——这三类此前（2026-08-01 首版实现）曾被当作硬阻断，owner
+    拍板收窄：授权解的是「要不要再跑一轮独立审查、要不要等这些收尾问题」，紧急
+    通道的语义就是人压过流程；
+  - 产品/UI 门与技术架构门优先级高于本通道——`context.mjs` 里授权覆盖发生在产品/
+    架构门包裹**之前**，命中产品/架构门时会被后者整体覆盖，本通道只解决「要不要
+    再审代码」，不解决「这次改动该不该推进」这类更上游的产品方向判断；
+  - `pre-merge-check.mjs` 在合并前用同一套函数现场重新检测（不信任 scan 时缓存，
+    TOCTOU 保护：授权评论可能在 scan 之后才发出，也可能因为 scan 之后又推了新
+    commit 而作废，或被事后编辑），返回 `authorizedFastMergeAvailable`；该脚本
+    对当前 head 真实重新跑一遍安全扫描（不再假设上游已扫过），但不重判格式门
+    （由更上游的 `context.mjs` 判过），`authorizedFastMergeInfo.reportOnly.
+    formatIssues` 恒为空数组。
 
 ## 维护者 precheck
 
