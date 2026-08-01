@@ -11,7 +11,7 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,9 +49,68 @@ const repoStateKey = createHash('sha256')
   .update(isWin ? stateAnchor.toLowerCase() : stateAnchor)
   .digest('hex')
   .slice(0, 20);
-const stateRoot = resolve(process.env.REVIEW_PR_STATE_DIR || join(tmpdir(), 'review-pr'));
+const LEGACY_STATE_ROOT = join(tmpdir(), 'review-pr');
+
+/**
+ * 状态根目录优先级(SC2-1,2026-08-01)。此前恒为系统临时目录,mac mini 实测:
+ * scheduler 停摆超过 3 天,macOS dirhelper 的 `CLEAN_FILES_OLDER_THAN_DAYS=3`
+ * 清理策略会把 runs.jsonl / last-scan.json / fix-sessions.json 等 25 轮审计
+ * 历史整个清空。新优先级:
+ *   ① `REVIEW_PR_STATE_DIR` 环境变量——显式覆盖,最高优先级,行为不变;
+ *   ② `<REPO_ROOT>/history/loops/review-pr/state`——默认落进目标仓库自己的
+ *      工作目录,随 checkout 常驻(mivo 仓的 `history/` 已在 `.gitignore` 内,
+ *      不会把运行时状态污染进 git 历史);
+ *   ③ 系统临时目录(旧默认)——仅当 REPO_ROOT 不可写(只读文件系统 / 权限不足等,
+ *      用「实际尝试创建目录」判定,不猜测)才回退,好于直接抛错崩溃。
+ * `repoStateKey` 子目录隔离保持不变:三层优先级只决定"根在哪",同一仓库的
+ * 不同 worktree / 轮次仍共享同一个 `<根>/<repoStateKey>/`(见上方 stateAnchor
+ * 注释——这层由 git-common-dir 锚定,与本次改动无关,不受影响)。
+ */
+function resolvePersistentStateRoot() {
+  if (process.env.REVIEW_PR_STATE_DIR) return resolve(process.env.REVIEW_PR_STATE_DIR);
+  try {
+    // resolveInRepoRoot 复用既有的 containment 校验(symlink 安全 + 路径未跳出仓库根),
+    // 与 notify-merge-ack.mjs 等脚本的 `history/loops/state` 同款约定,不再重新发明一套。
+    const repoBased = resolveInRepoRoot(join('history', 'loops', 'review-pr', 'state'));
+    mkdirSync(repoBased, { recursive: true });
+    return repoBased;
+  } catch {
+    return LEGACY_STATE_ROOT;
+  }
+}
+
+const stateRoot = resolvePersistentStateRoot();
 export const STATE_DIR = join(stateRoot, repoStateKey);
 mkdirSync(STATE_DIR, { recursive: true });
+
+/**
+ * 一次性迁移(SC2-1):升级前的全部历史都在系统临时目录,升级瞬间新默认目录是
+ * 空的——不搬运的话 runs.jsonl 会看起来"从零开始",造成"历史清零"的假象
+ * (实际历史还在 tmpdir 里,直到被系统清理策略删除)。只在新目录还没有
+ * runs.jsonl、且旧 tmpdir 同 `repoStateKey` 目录确有 runs.jsonl 时触发;
+ * 迁移失败(权限 / 磁盘等)只记 stderr warning、不阻断——状态目录本身已可用,
+ * 迁移只是"找回历史"的锦上添花,不能让迁移失败连正常运行都搭进去。
+ */
+function migrateLegacyStateIfNeeded() {
+  if (stateRoot === LEGACY_STATE_ROOT) return; // 新旧根相同,无需迁移
+  const legacyDir = join(LEGACY_STATE_ROOT, repoStateKey);
+  const legacyRuns = join(legacyDir, 'runs.jsonl');
+  const newRuns = join(STATE_DIR, 'runs.jsonl');
+  if (existsSync(newRuns) || !existsSync(legacyRuns)) return;
+  try {
+    for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      copyFileSync(join(legacyDir, entry.name), join(STATE_DIR, entry.name));
+    }
+    writeFileSync(
+      join(STATE_DIR, '.migrated-from-tmp.json'),
+      JSON.stringify({ migratedAt: new Date().toISOString(), from: legacyDir, to: STATE_DIR }, null, 2),
+    );
+  } catch (e) {
+    process.stderr.write(`[review-pr] 状态目录一次性迁移失败(不阻断,新目录仍可用): ${e.message}\n`);
+  }
+}
+migrateLegacyStateIfNeeded();
 
 export function stateFile(name) {
   return join(STATE_DIR, name);

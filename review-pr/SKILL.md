@@ -252,9 +252,12 @@ PR #<N> 合了 —— 感谢 @<author>。
 
 `REPO_ROOT` 取自 `REVIEW_PR_REPO_ROOT` 环境变量或当前工作目录。
 
-运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入系统临时目录下、按目标仓库
-绝对路径哈希隔离的子目录。`REVIEW_PR_STATE_DIR` 只用于覆盖外部状态根目录，不能指向
-受 Git 跟踪的项目目录或 Skill 目录。
+运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入
+`<REPO_ROOT>/history/loops/review-pr/state/<repoStateKey>`（按目标仓库哈希隔离的
+子目录，随 checkout 常驻）；仅当 REPO_ROOT 不可写时才回退系统临时目录下的同名
+子目录。`REVIEW_PR_STATE_DIR` 环境变量可显式覆盖上述根目录（优先级最高），但
+不能指向受 Git 跟踪的项目目录或 Skill 目录。首次从旧版升级时，若系统临时目录下
+已有该仓库的历史记录，会自动一次性迁移到新默认位置，不会丢失。
 
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
 按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
@@ -1118,17 +1121,54 @@ auto 模式可以按维护者配置创建产品/架构讨论 issue、转 draft�
 node "<SKILL_ROOT>/scripts/run-log.mjs"   # 汇总 JSON 走 stdin,脚本写入外部状态目录
 ```
 
+外部状态目录默认位置见 `lib.mjs` 的 `resolvePersistentStateRoot()`（默认落进目标仓库
+自己的 `history/loops/review-pr/state/`，随 checkout 常驻；`REVIEW_PR_STATE_DIR` 仍可
+显式覆盖）。`run-log.mjs` 落盘时会自动注入 `sinceLastRunHours`——读上一行 `runs.jsonl`
+的 `loggedAt` 与本轮相减得到的小时数，首轮（文件不存在/为空）为 `null`。它回答的是
+“距上一轮多久”，不是“调度层有没有失败轮”（调度失败在 agent 启动前就发生，本
+skill 拿不到那层信号），但轮次间隔异常拉长本身就是缺口的可观测代理信号：
+**`sinceLastRunHours` 超过 6（稳态 cron 轮次的正常最大间隔）时，6.1 摘要模板的
+“其他”行必须补一句**「检测到上游调度缺口约 `<N>` 小时，可能有失败轮未入账，请查
+scheduler」；未超过或为 `null`（首轮）不写这句，不要把它做成独立分组。
+
 JSON 结构：
 
 ```json
 {
   "mode": "auto",
-  "processed": [{"pr": 123, "action": "merged", "findings": 0, "url": "https://github.com/<owner>/<repo>/pull/123"}],
+  "processed": [{"pr": 123, "action": "merged", "event": "APPROVE", "findings": 0, "url": "https://github.com/<owner>/<repo>/pull/123"}],
   "skipped": [{"pr": 124, "reason": "ci-pending", "url": "https://github.com/<owner>/<repo>/pull/124"}],
+  "draftSkipped": [{"pr": 140, "reason": "author-draft", "url": "https://github.com/<owner>/<repo>/pull/140"}],
   "failed": [],
   "lockReleased": true
 }
 ```
+
+`processed[].action` 与 `processed[].event` **口径不同、不可混用**：
+
+- `action`：本 skill 自己的业务分类（`merged` / `changes-requested` / `held` /
+  `conflict-merged`（5.5 主干代合并）/ `merge-then-fix`（5.6 代修合并）等），供
+  汇总模板“已合并/已打回/…”分组使用；
+- `event`：**实际提交给 GitHub 的 review 事件**，`processed[]` 每条**必填**，
+  取值仅 `APPROVE` / `REQUEST_CHANGES` / `COMMENT` / `none` 之一：
+  - 5.1 正常批准合并 → `APPROVE`；
+  - 5.1 `selfMergeAvailable` 的 self-merge（GitHub 禁止同账号自我 approve，
+    直接 `--admin` 合并，未提交任何 review）→ `none`；
+  - 5.2 打回：`ownPr=false` → `REQUEST_CHANGES`；`ownPr=true`（GitHub 禁止对
+    自己 PR 提交 REQUEST_CHANGES/APPROVE）→ `COMMENT`——**即使 `action` 仍写
+    `changes-requested`，`event` 必须如实写 `COMMENT`；二者不同是预期行为，
+    不是需要对齐的不一致**（2026-08-01 前的历史记录曾把两者混同，导致审计时
+    误读为“打回都是 REQUEST_CHANGES”，此处明确禁止复发）；
+  - 5.5 主干代合并、5.6 代修合并：全程不提交 `gh pr review` → `none`；
+  - 产品/架构 hold（转 draft，未提交 review）→ `none`。
+
+`draftSkipped` **必须是 `[{pr, reason, url}]` 数组，禁止写成裸数字**（历史上
+只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，
+2026-08-01 起禁止复发）；`context.mjs --scan-all` 输出的同名字段只是扫描期的
+诊断计数（普通作者自转 draft，非产品/架构门 hold），落盘前必须展开成逐 PR
+记录，缺具体原因时至少写 `"author-draft"`/`"unknown"`，不能整条省略。
+`run-log.mjs` 对以上两点只做形态校验、不做语义校验：字段缺失或形态不对时记
+stderr warning 并**照常落盘**，不会因为形态问题拒绝写入或丢数据。
 
 **auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，
 把 6.1 摘要原文（渲染成人类可读 markdown 后的文本，不是 run-log 的原始 JSON）经
@@ -1184,8 +1224,13 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
 - 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
 
-其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次> 😤
+其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
+调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤
 ```
+
+调度缺口这句只在 `run-log.mjs` 返回的 `sinceLastRunHours` 超过 6 时才附加在“其他”行
+末尾（见上文）；未超过或为 `null` 时“其他”行只保留锁与写操作两项，不要为了凑格式
+硬写一句“无缺口”。
 
 组名用加粗文字而非状态图标（原版 ✅🔴🛠⏸️⏭️⚠️🧬 已去掉，符合「符号与表情配额」的
 状态图标全禁规则）；整条消息按模板 F 配额最多用 1–3 个人格表情，不必每组都加，
