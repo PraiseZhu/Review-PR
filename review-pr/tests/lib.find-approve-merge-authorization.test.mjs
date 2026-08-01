@@ -141,6 +141,46 @@ test('P2-2:updatedAt 缺失(调用方没查询该字段)时保守按未编辑处
   assert.equal(r.edited.length, 0);
 });
 
+// ── P2-1(三审修复):fence 状态机 —— 未闭合围栏 + 缩进代码块 + 围栏类型/长度匹配 ──
+
+test('P2-1:未闭合到文末的 fenced code block(缺闭合标记)里的命令仍不算下达', () => {
+  const body = '用法说明,还没写完:\n```\n/approve-merge\n这段代码示例还没写完,忘了写闭合标记';
+  assert.equal(hasApproveMergeCommand(body), false, '此前的正则要求闭合标记才生效,未闭合到文末会漏判成真命令(fail-open)');
+});
+
+test('P2-1:4 空格缩进的 Markdown 代码块里的命令不算下达', () => {
+  const body = '示例:\n\n    /approve-merge\n\n以上是缩进代码块展示,不是我真的在发这个命令';
+  assert.equal(hasApproveMergeCommand(body), false);
+});
+
+test('P2-1:tab 缩进的 Markdown 代码块里的命令不算下达', () => {
+  const body = '示例:\n\n\t/approve-merge\n\n同上,tab 缩进也算代码块';
+  assert.equal(hasApproveMergeCommand(body), false);
+});
+
+test('P2-1 安全回归:反引号围栏内混入一行波浪号,不构成闭合(类型不匹配),围栏内命令仍不算下达', () => {
+  // 若旧实现"任意围栏符号都能互相闭合",这行 ~~~ 会被误判成闭合标记,导致后面的
+  // /approve-merge 提前"暴露"成围栏外的真命令——这是本次状态机重写要堵住的 fail-open。
+  const body = '```\nsome code\n~~~\n/approve-merge\n```';
+  assert.equal(hasApproveMergeCommand(body), false, '反引号围栏只能被反引号闭合,中途出现的 ~~~ 不构成闭合');
+});
+
+test('P2-1 安全回归:闭合标记长度不足开启标记长度,不构成闭合(与 CommonMark 一致)', () => {
+  // 用 4 个反引号开启,中途出现一行 3 个反引号(长度不足)不应闭合围栏。
+  const body = '````\nsome code\n```\n/approve-merge\n````';
+  assert.equal(hasApproveMergeCommand(body), false, '闭合标记长度必须 >= 开启标记长度,3 个不能闭合 4 个开启的围栏');
+});
+
+test('P2-1 回归:正常闭合的 fenced code block 与之前行为一致,仍判不算下达', () => {
+  const body = '```\n/approve-merge\n```';
+  assert.equal(hasApproveMergeCommand(body), false);
+});
+
+test('P2-1 回归:真正独占一行下达的命令(无围栏无缩进)不受状态机重写影响,仍判定为命令', () => {
+  assert.equal(hasApproveMergeCommand('/approve-merge'), true);
+  assert.equal(hasApproveMergeCommand('看过了\n/approve-merge\n谢谢'), true);
+});
+
 test('多条有效授权取最新一条(createdAt 最大)', () => {
   const r = findApproveMergeAuthorization({
     comments: [

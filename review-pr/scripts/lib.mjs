@@ -915,12 +915,51 @@ export function normalizeLoginList(value) {
 
 const APPROVE_MERGE_COMMAND = '/approve-merge';
 
-/** 剔除 fenced code block(```/~~~ 围栏)与 blockquote(以 `>` 开头的行)——这两类内容
- * 是"引用/展示这条命令长什么样",不是"下达这条命令"。纯函数,内部用,配合
- * hasApproveMergeCommand 一起单测。 */
+/**
+ * 剔除 fenced code block(```/~~~ 围栏,含到文末仍未闭合的情况)、blockquote(`>` 开头)、
+ * Markdown 缩进代码块(4 空格或 tab 开头)——这三类都是"展示/引用这条命令长什么样",不是
+ * "下达这条命令"。逐行状态机,纯函数,内部用,配合 hasApproveMergeCommand 一起单测。
+ *
+ * P2-1(三审修复):此前用一次性正则 ```[\s\S]*?``` /~~~[\s\S]*?~~~ 匹配"已闭合"的围栏,
+ * 有两个缺口:①未闭合到文末的围栏完全测不到,里面的内容会被当成普通文本继续扫描,
+ * `/approve-merge` 写在一段"没写完的代码示例"里仍会被判成真下达;②完全不处理 4 空格/
+ * tab 缩进代码块,同样的"展示"语境测不到。
+ *
+ * 围栏识别做了类型 + 长度匹配(与 CommonMark 一致):反引号围栏只能被反引号闭合、波浪号
+ * 围栏只能被波浪号闭合,且闭合标记长度必须 >= 开启标记长度——否则围栏内部出现一行较短的
+ * 同类符号(如 4 个反引号开的围栏里混了一行 3 个反引号)会被误判成提前闭合,导致围栏
+ * 内容提前"暴露"成候选命令行(这是 fail-open 风险,不只是正确性瑕疵)。不追求完整
+ * CommonMark 兼容(如闭合围栏后是否只能跟空白这类边角细节不处理),够用即可。
+ */
 function stripFencedAndQuoted(body) {
-  const withoutFences = (body ?? '').replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, '');
-  return withoutFences.split('\n').filter((line) => !/^\s*>/.test(line)).join('\n');
+  const lines = (body ?? '').split('\n');
+  const kept = [];
+  let fenceChar = null; // null = 不在围栏内;否则是 '`' 或 '~'
+  let fenceLen = 0;
+  for (const line of lines) {
+    const m = line.match(/^\s*(`{3,}|~{3,})/);
+    if (m) {
+      const marker = m[1];
+      const char = marker[0];
+      const len = marker.length;
+      if (fenceChar === null) {
+        fenceChar = char;
+        fenceLen = len;
+        continue;
+      }
+      if (char === fenceChar && len >= fenceLen) {
+        fenceChar = null;
+        fenceLen = 0;
+        continue;
+      }
+      // 类型不匹配或长度不足,不构成闭合——仍是围栏内部的一行,走下面"仍在围栏内"分支跳过。
+    }
+    if (fenceChar !== null) continue; // 围栏内部(含未闭合到文末),整段跳过
+    if (/^\s*>/.test(line)) continue; // blockquote
+    if (/^(?: {4}|\t)/.test(line)) continue; // Markdown 缩进代码块
+    kept.push(line);
+  }
+  return kept.join('\n');
 }
 
 /**
