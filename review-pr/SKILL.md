@@ -269,6 +269,55 @@ Skill 自身仓库内（防自写）、裸仓库、非 git 仓库、主 worktree
 记录，会自动一次性迁移到新默认位置（逐文件不覆盖已有数据，全部迁移完成
 才落地完成标记），不会丢失。
 
+**已知不支持的仓形态（评估后挂账不修）**：以下三种仓库形态在当前实现下可能绕过
+状态目录的安全校验或造成阻塞，均已实测/推导确认；owner 拍板不修——mivo 是公司
+内部可信成员仓，不设"仓库贡献者主动构造恶意文件系统结构"这类威胁模型，以下三条
+的触发前提都要求有人**主动**把这类结构塞进仓库或状态目录，属防敌不防呆：
+
+1. **父级 symlink 逃逸**：触发条件——仓库内容或人工预置使状态路径的任一中间
+   目录段，**或最终 `STATE_DIR` 叶目录本身**，成为指向仓外现存可写目录的
+   symlink（例如提交 `history -> ..`，或手工把 `.../state/<repoStateKey>`
+   换成 symlink）。后果——mkdir/写文件会跟随该符号链接，状态目录实际落在
+   仓外的任意路径，绕过针对"最终候选路径"做的校验（没有逐级校验路径每个
+   中间目录段是否为 symlink）。若目标仓库有非公司内部/不可信贡献者、或允许
+   外部 PR 直接改动仓库结构，部署时应改用 `REVIEW_PR_STATE_DIR` 显式指向
+   仓外的持久目录，不依赖仓库自身的目录结构。
+2. **run-log 沿状态目录内的 symlink/hardlink 外写、FIFO 阻塞轮次**：触发条件——
+   有人手工在状态目录（`STATE_DIR`）里把 `last-run.json`/`runs.jsonl` 换成指向
+   别处的 symlink 或 hardlink，或换成一个 FIFO（命名管道）。后果——symlink/
+   hardlink 会让 `run-log.mjs` 的写入落到状态目录之外的路径；FIFO 会让
+   `writeFileSync`/`appendFileSync` 在无读端时永久阻塞，整轮审查挂死。若担心
+   状态目录可能被非本人访问的人写入，部署时应改用 `REVIEW_PR_STATE_DIR` 指向
+   权限更严格的仓外目录。
+3. **`core.worktree` 指向另一真实仓**：触发条件——有人手工编辑目标仓库
+   canonical git common-dir 的配置，把 `core.worktree` 改指向一个完全无关的、
+   真实存在的另一个仓库工作目录（该配置文件的位置随仓库形态不同：普通仓通常是
+   `.git/config`，submodule 通常是父仓的 `.git/modules/<name>/config`，
+   separate-git-dir 则是 `<gitdir>/config`）。后果——自证校验（对候选路径跑
+   `--show-toplevel` 必须等于候选自己）在这种篡改下仍会通过（git 本身就会按
+   被改过的 config 解析出内部一致的结果），状态目录可能被引导写进那个无关
+   仓库。若怀疑本机 git config 可能被非授权修改，部署时应改用
+   `REVIEW_PR_STATE_DIR` 显式固定路径，不依赖 git 的推导结果。
+
+生产部署（mac mini，checkout `/Users/praise/mivo-ops/mivo-canvas`）已实测核实
+以上三条均不适用：无 submodule；仓库路径 realpath 后无符号链接；`.git/config`
+未被篡改；存在的唯一 linked worktree（`/private/tmp/mivo-wt-gate-reactivate`）
+已被 `resolveMainWorktreeRoot` 正确处理——状态统一锚定主 worktree，不会各写一份，
+也不会落进会被系统清理的 `/private/tmp`。
+
+**勿在开发机手动跑（Syncthing 同步冲突）**：本机开发副本
+（`~/AI-Agent/Claude/projects/Project MivoCanvas`）在 Syncthing 同步范围内
+（生产 checkout `/Users/praise/mivo-ops/mivo-canvas` 不在同步范围，只有
+`~/About Praise`、`~/AI-Agent`、`/Volumes/AKB2/Obsidian` 会被同步）。在开发机上
+直接跑本 skill，`lock.json`/`runs.jsonl` 等状态文件会落进这份同步目录：多机
+同时运行时，Syncthing 不能提供跨机原子互斥；并发修改还可能生成 sync-conflict
+副本（官方命名格式 `<filename>.sync-conflict-<date>-<time>-<modifiedBy>.<ext>`，
+即 `*.sync-conflict-*`，不是点号开头的隐藏文件），使锁状态和 `runs.jsonl`
+审计历史出现分叉。据 owner 于 2026-08-02 确认，2026-07-28 review-pr skill 仓
+已发生同类事故（未留仓内台账记录）。巡审只应在 mac mini 上跑（离开 Syncthing
+同步范围）；确需在开发机以交互模式跑，必须显式设置 `REVIEW_PR_STATE_DIR`
+指向 `/tmp` 下的临时目录覆盖默认位置。
+
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
 按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
 （`pre-check.mjs` 在会话创建前拉、`prepare.mjs` 拿到锁后兜底，均已内置，不需要手动跑）；
