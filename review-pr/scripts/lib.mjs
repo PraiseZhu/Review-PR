@@ -11,9 +11,9 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
+import { join, dirname, basename, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
@@ -25,7 +25,9 @@ const SKILL_ROOT = join(SCRIPT_DIR, '..');
  * Skill 与目标仓库解耦：
  * - 所有 git / gh 命令默认作用于调用方 cwd（scheduler 的 workingDir）。
  * - REVIEW_PR_REPO_ROOT 可显式指定目标仓库，入口脚本应在执行前 chdir 到该目录。
- * - 运行时状态放在系统临时目录并按目标仓库绝对路径隔离，不写 Skill 或项目仓库。
+ * - 运行时状态默认落进目标仓库主 worktree 的 `history/loops/review-pr/state/`
+ *   （见下方 `resolvePersistentStateRoot`），经 git-ignore/自写/可写三道校验；
+ *   任一校验不过或无法判定主 worktree 时才回退系统临时目录，不写 Skill 目录本身。
  */
 const rawRepoRoot = process.env.REVIEW_PR_REPO_ROOT || process.cwd();
 export const REPO_ROOT = resolve(rawRepoRoot);
@@ -52,62 +54,197 @@ const repoStateKey = createHash('sha256')
 const LEGACY_STATE_ROOT = join(tmpdir(), 'review-pr');
 
 /**
- * 状态根目录优先级(SC2-1,2026-08-01)。此前恒为系统临时目录,mac mini 实测:
- * scheduler 停摆超过 3 天,macOS dirhelper 的 `CLEAN_FILES_OLDER_THAN_DAYS=3`
- * 清理策略会把 runs.jsonl / last-scan.json / fix-sessions.json 等 25 轮审计
- * 历史整个清空。新优先级:
- *   ① `REVIEW_PR_STATE_DIR` 环境变量——显式覆盖,最高优先级,行为不变;
- *   ② `<REPO_ROOT>/history/loops/review-pr/state`——默认落进目标仓库自己的
- *      工作目录,随 checkout 常驻(mivo 仓的 `history/` 已在 `.gitignore` 内,
- *      不会把运行时状态污染进 git 历史);
- *   ③ 系统临时目录(旧默认)——仅当 REPO_ROOT 不可写(只读文件系统 / 权限不足等,
- *      用「实际尝试创建目录」判定,不猜测)才回退,好于直接抛错崩溃。
+ * 主 worktree 根目录(F1,2026-08-01 审核修订)。状态根不能拼当前 checkout 的
+ * REPO_ROOT——REPO_ROOT 可能是某一轮审查用的 linked worktree,按它算状态根会
+ * 让同一仓库的不同 worktree/轮次各自写到不同目录,锁/审计/去重照样分裂(与上面
+ * stateAnchor 要解决的问题同源)。复用已算好的 `stateAnchor`(git-common-dir 的
+ * 绝对路径),不重新发一次 `--git-common-dir`,避免与 repoStateKey 的锚点产生
+ * 第二份可能漂移的读数。裸仓库(没有工作树概念)或任何推导失败(非 git 仓库、
+ * git 不可用、common-dir 不是 `<root>/.git` 形态)都返回 null,调用方回退系统
+ * 临时目录。
+ */
+function resolveMainWorktreeRoot() {
+  if (stateAnchor === REPO_ROOT) return null; // resolveStateAnchor 的非 git/异常回退,没有 common-dir 可用
+  if (basename(stateAnchor) !== '.git') return null; // 裸仓库(common-dir 本身就是仓库目录)或非常规形态,不做假设
+  const bare = spawnSync('git', ['rev-parse', '--is-bare-repository'], {
+    cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  if (bare.status === 0 && (bare.stdout ?? '').trim() === 'true') return null; // 裸仓库,没有工作树可落盘
+  const mainRoot = dirname(stateAnchor);
+  return existsSync(mainRoot) ? mainRoot : null;
+}
+
+/** 从某个可能尚不存在的路径向上找最近一个已存在的祖先目录(git 命令与 realpath 都需要真实存在的 cwd)。 */
+function nearestExistingAncestor(p) {
+  let cur = p;
+  while (!existsSync(cur)) {
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return cur;
+}
+
+/** cwd 是否在某个 git 工作树内(裸仓库、非仓库目录都算"否")。 */
+function isInsideAnyGitWorkTree(cwd) {
+  const r = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  return r.status === 0 && (r.stdout ?? '').trim() === 'true';
+}
+
+/**
+ * F2①:该路径是否可以安全写入而不弄脏某个 git working tree。
+ *   - 路径不在任何 git 工作树内(压根没有 `.git` 祖先,或所在目录本身就不是
+ *     仓库)→ 没有"脏树"这个概念,视为安全;
+ *   - 在某个工作树内 → 必须被该仓库的 `.gitignore` 覆盖(`git check-ignore -q`
+ *     exit 0),否则视为不安全——宁可回退系统临时目录,绝不制造 untracked/dirty
+ *     的工作树改动;
+ *   - git 命令本身失败(未安装/权限/超时等,与上面两种确定性结果都不同)在
+ *     `isInsideAnyGitWorkTree` 里已按"不在工作树内"处理(status!=0 即返回
+ *     false),不会误判为"在工作树内但已忽略"。
+ * cwd 用路径本身最近的已存在祖先目录——路径可能尚不存在(如首次落盘前)。
+ */
+function isSafeFromDirtyWorkingTree(candidatePath) {
+  const cwd = nearestExistingAncestor(candidatePath);
+  if (!isInsideAnyGitWorkTree(cwd)) return true;
+  const r = spawnSync('git', ['check-ignore', '-q', candidatePath], { cwd, shell: isWin, timeout: 10_000 });
+  return r.status === 0;
+}
+
+/**
+ * F2②:拒绝状态根落在 Skill 自身仓库内(防自写)。Skill 常以软链接装进目标
+ * 项目,真实源码在 skills 仓库里(`skillRepoInfo()` 已按 realpath 解析回真实
+ * 仓库)——状态根若落进 skills 仓库本身,会把运行时噪音(锁文件、审计历史)
+ * 写进 skill 的源码仓库,和 review-pr 自己的自进化台账搞混。
+ */
+function isInsideSkillRepo(candidatePath) {
+  const info = skillRepoInfo();
+  if (!info) return false; // Skill 不在任何 git 仓库内,没有"自写"这个风险
+  let skillRepoReal;
+  try {
+    skillRepoReal = realpathSync(info.gitRoot);
+  } catch {
+    return false;
+  }
+  let ancestorReal;
+  try {
+    ancestorReal = realpathSync(nearestExistingAncestor(resolve(candidatePath)));
+  } catch {
+    return false;
+  }
+  const rel = relative(skillRepoReal, ancestorReal);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/** F3:写文件 + 删除的真实探针。mkdir 成功不代表可写(某些只读文件系统对已存在目录的 mkdir 直接成功,真正写文件才报错)。 */
+function writeProbeOk(dir) {
+  const probe = join(dir, `.write-probe-${process.pid}-${Date.now()}`);
+  try {
+    writeFileSync(probe, '');
+  } catch {
+    return false;
+  }
+  try {
+    unlinkSync(probe);
+  } catch { /* 探针删不掉不影响"可写"结论 */ }
+  return true;
+}
+
+/**
+ * 某候选根目录是否可以安全、可靠地作为状态根(F1-F3 三道校验合一):
+ * 不在未忽略的工作树内(F2①)、不在 Skill 自身仓库内(F2②)、且最终叶子目录
+ * `root/repoStateKey` 通过真实写探针(F3)。三者全过才返回 true。
+ */
+function isStateRootSafeAndWritable(root) {
+  if (!isSafeFromDirtyWorkingTree(root)) return false;
+  if (isInsideSkillRepo(root)) return false;
+  const dir = join(root, repoStateKey);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return false;
+  }
+  return writeProbeOk(dir);
+}
+
+/**
+ * 状态根目录优先级(SC2-1,经 2026-08-01 审核 F1/F2/F3 修订)。此前恒为系统
+ * 临时目录,mac mini 实测:scheduler 停摆超过 3 天,macOS dirhelper 的
+ * `CLEAN_FILES_OLDER_THAN_DAYS=3` 清理策略会把 runs.jsonl / last-scan.json /
+ * fix-sessions.json 等审计历史整个清空。当前优先级:
+ *   ① `REVIEW_PR_STATE_DIR` 环境变量——显式覆盖,但仍须过 F2①/F2②/F3 三道
+ *      校验(文档已声称"不能指向受 Git 跟踪的项目目录或 Skill 目录",这里是
+ *      真正执行,不再只是文档承诺);校验不过直接回退系统临时目录,不静默
+ *      改用仓库默认(用户的显式选择不该被 skill 偷偷换掉);
+ *   ② `<主 worktree>/history/loops/review-pr/state`——锚定同仓库所有 worktree
+ *      共享的主 checkout(见 `resolveMainWorktreeRoot`,不是当前 REPO_ROOT),
+ *      随该 checkout 常驻;同样须过 F2①/F2②/F3;
+ *   ③ 系统临时目录(旧默认)——裸仓库、非 git 仓库、或以上两层任一校验不过时
+ *      的最终回退,好于直接抛错崩溃。
  * `repoStateKey` 子目录隔离保持不变:三层优先级只决定"根在哪",同一仓库的
- * 不同 worktree / 轮次仍共享同一个 `<根>/<repoStateKey>/`(见上方 stateAnchor
+ * 不同 worktree/轮次仍共享同一个 `<根>/<repoStateKey>/`(见上方 stateAnchor
  * 注释——这层由 git-common-dir 锚定,与本次改动无关,不受影响)。
  */
 function resolvePersistentStateRoot() {
-  if (process.env.REVIEW_PR_STATE_DIR) return resolve(process.env.REVIEW_PR_STATE_DIR);
-  try {
-    // resolveInRepoRoot 复用既有的 containment 校验(symlink 安全 + 路径未跳出仓库根),
-    // 与 notify-merge-ack.mjs 等脚本的 `history/loops/state` 同款约定,不再重新发明一套。
-    const repoBased = resolveInRepoRoot(join('history', 'loops', 'review-pr', 'state'));
-    mkdirSync(repoBased, { recursive: true });
-    return repoBased;
-  } catch {
+  if (process.env.REVIEW_PR_STATE_DIR) {
+    const envRoot = resolve(process.env.REVIEW_PR_STATE_DIR);
+    if (isStateRootSafeAndWritable(envRoot)) return envRoot;
+    process.stderr.write(
+      `[review-pr] REVIEW_PR_STATE_DIR=${envRoot} 未通过校验(工作树未忽略该路径 / ` +
+      '落在 Skill 自身仓库内 / 写探针失败),回退系统临时目录\n',
+    );
     return LEGACY_STATE_ROOT;
   }
+  const mainRoot = resolveMainWorktreeRoot();
+  if (mainRoot) {
+    const repoBased = join(mainRoot, 'history', 'loops', 'review-pr', 'state');
+    if (isStateRootSafeAndWritable(repoBased)) return repoBased;
+  }
+  return LEGACY_STATE_ROOT;
 }
 
 const stateRoot = resolvePersistentStateRoot();
 export const STATE_DIR = join(stateRoot, repoStateKey);
 mkdirSync(STATE_DIR, { recursive: true });
 
+const MIGRATION_MARKER = '.migrated-from-tmp.json';
+
 /**
- * 一次性迁移(SC2-1):升级前的全部历史都在系统临时目录,升级瞬间新默认目录是
- * 空的——不搬运的话 runs.jsonl 会看起来"从零开始",造成"历史清零"的假象
- * (实际历史还在 tmpdir 里,直到被系统清理策略删除)。只在新目录还没有
- * runs.jsonl、且旧 tmpdir 同 `repoStateKey` 目录确有 runs.jsonl 时触发;
- * 迁移失败(权限 / 磁盘等)只记 stderr warning、不阻断——状态目录本身已可用,
- * 迁移只是"找回历史"的锦上添花,不能让迁移失败连正常运行都搭进去。
+ * 一次性迁移(F4,2026-08-01 审核修订)。判据改为"marker 是否存在"而不是
+ * "新目录有没有 runs.jsonl"——旧判据在部分失败场景下会永久卡死(第一次迁移
+ * 复制完 runs.jsonl 后在其他文件上失败,marker 没写;下一次调用因为 runs.jsonl
+ * 已经"看起来存在"而直接跳过,永远补不齐剩下的文件)。现在:
+ *   - 触发条件只看 marker 是否存在,marker 不存在就总会重试;
+ *   - 逐文件 no-clobber:目标已存在的文件跳过不覆盖——保证即使本轮已经产生了
+ *     真实的新数据(如 runs.jsonl 已被新一轮 review 追加过),重试迁移也绝不会
+ *     用旧 tmpdir 里更早、更小的版本覆盖回去;
+ *   - 只有这一轮把 legacy 目录里的每个文件都处理完(拷贝成功或因目标已存在
+ *     而跳过)才写 marker,且 marker 用临时文件 + rename 落盘(同文件系统下
+ *     rename 是原子操作)——marker 存在 ⇔ 迁移已完整跑完,不会出现"半完成但
+ *     已标记完成"的中间态,迁移失败(权限/磁盘等)只记 stderr warning、不阻断,
+ *     下次调用会自动重试补齐。
  */
 function migrateLegacyStateIfNeeded() {
   if (stateRoot === LEGACY_STATE_ROOT) return; // 新旧根相同,无需迁移
   const legacyDir = join(LEGACY_STATE_ROOT, repoStateKey);
-  const legacyRuns = join(legacyDir, 'runs.jsonl');
-  const newRuns = join(STATE_DIR, 'runs.jsonl');
-  if (existsSync(newRuns) || !existsSync(legacyRuns)) return;
+  const marker = join(STATE_DIR, MIGRATION_MARKER);
+  if (existsSync(marker) || !existsSync(legacyDir)) return;
   try {
     for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
-      if (!entry.isFile()) continue;
-      copyFileSync(join(legacyDir, entry.name), join(STATE_DIR, entry.name));
+      if (!entry.isFile() || entry.name === MIGRATION_MARKER) continue;
+      const dest = join(STATE_DIR, entry.name);
+      if (existsSync(dest)) continue; // no-clobber:目标已存在(可能是新数据)一律不覆盖
+      copyFileSync(join(legacyDir, entry.name), dest);
     }
+    const tmpMarker = `${marker}.tmp-${process.pid}`;
     writeFileSync(
-      join(STATE_DIR, '.migrated-from-tmp.json'),
+      tmpMarker,
       JSON.stringify({ migratedAt: new Date().toISOString(), from: legacyDir, to: STATE_DIR }, null, 2),
     );
+    renameSync(tmpMarker, marker); // 同文件系统 rename 是原子操作,marker 不会以"半写"状态出现
   } catch (e) {
-    process.stderr.write(`[review-pr] 状态目录一次性迁移失败(不阻断,新目录仍可用): ${e.message}\n`);
+    process.stderr.write(`[review-pr] 状态目录一次性迁移未完成(不阻断,下次调用会重试补齐): ${e.message}\n`);
   }
 }
 migrateLegacyStateIfNeeded();

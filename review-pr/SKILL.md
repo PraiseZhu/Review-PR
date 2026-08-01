@@ -1166,7 +1166,12 @@ JSON 结构：
 只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，
 2026-08-01 起禁止复发）；`context.mjs --scan-all` 输出的同名字段只是扫描期的
 诊断计数（普通作者自转 draft，非产品/架构门 hold），落盘前必须展开成逐 PR
-记录，缺具体原因时至少写 `"author-draft"`/`"unknown"`，不能整条省略。
+记录，缺具体原因时至少写 `"author-draft"`/`"unknown"`，不能整条省略。**逐 PR
+明细的确定性来源**：用 `gh pr list --repo <owner>/<repo> --state open --json
+number,isDraft,url` 这条只读命令自己查一遍当前 open 的 draft PR，逐条填进
+`draftSkipped`，禁止凭 `context.mjs` 那个计数字段反推/瞎猜 PR 号——计数只能
+证明"有多少条"，证明不了"是哪几条"（`context.mjs` 本身保持 0 改动，这是
+agent 组装汇总 JSON 时自己另外查一次）。
 `run-log.mjs` 对以上两点只做形态校验、不做语义校验：字段缺失或形态不对时记
 stderr warning 并**照常落盘**，不会因为形态问题拒绝写入或丢数据。
 
