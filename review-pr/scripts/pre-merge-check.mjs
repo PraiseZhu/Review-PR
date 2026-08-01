@@ -11,11 +11,20 @@
 //   - structural-check:review+已跑 CI 都过、仍 BLOCKED,卡在永不上报的必需检查门
 //     (code_scanning/code_quality 等)。canMerge 仍判 false(普通 merge 过不了),但带出
 //     structuralBypassAvailable / canBypass,供 3A 决定是否走 admin bypass 合(见 SKILL 3A)。
+// 新增(2026-08-01,三层分级合并策略,见 internal-gates.md「作者侧与仓库侧 gate」):
+//   - structuralBypassAvailable 现在还要求 reviewDecision=APPROVED 或作者在 admins
+//     名单(structuralBypassBasis 区分是哪一种)——此前机械前提满足就直接判 true,与
+//     reviewDecision 无关,是本次修的 fail-open 口子(PR #342/#366 曾在零 review 下被
+//     自动 admin 合入)。admin-trust 路径要求调用方已在本轮确认独立审查零 P0/P1,脚本
+//     本身不验证这一半,只守机械前提;
+//   - authorizedFastMergeAvailable:admins 名单成员发过 `/approve-merge`(晚于最后一次
+//     push)且无冲突、0 未 resolve thread、head 上 required 检查全绿时为 true,可直接
+//     gh pr merge --admin,不需要走过阶段二独立审查。
 //
-// 退出码:0 = canMerge;2 = 有 blocker;1 = 脚本自身出错。
+// 退出码:0 = canMerge(含 selfMergeAvailable / authorizedFastMergeAvailable);2 = 有 blocker;1 = 脚本自身出错。
 // 跑:node <skill-root>/scripts/pre-merge-check.mjs <PR>
 
-import { parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadRules, print, fail } from './lib.mjs';
+import { parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadRules, fetchHeadCheckContexts, classifyRequiredChecks, findApproveMergeAuthorization, decideStructuralBypassRoute, print, fail } from './lib.mjs';
 
 const THREADS_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -27,9 +36,13 @@ const THREADS_QUERY = `
           isResolved isOutdated path
           comments(first:50){ nodes{ author{ login __typename } body createdAt } }
         }}
+        comments(first:100){ nodes{ author{ login __typename } body createdAt url } }
+        commits(last:100){ nodes{ commit{ committedDate } } }
       }
     }
   }`;
+
+const isBotAuthor = (a) => a?.__typename === 'Bot' || /\[bot\]$/i.test(a?.login ?? '');
 
 try {
   const { owner, repo } = parseRepo();
@@ -38,6 +51,9 @@ try {
   // 结构性 BLOCKED 自动 admin bypass 的必需检查类型 allowlist——与 context.mjs 同一份配置键
   // (pr-rules.json 的 structuralBypassAllowlist),防两处判据漂移。配置缺失时用这两个默认值。
   const STRUCTURAL_BYPASS_ALLOWLIST = new Set(rules.structuralBypassAllowlist ?? ['code_scanning', 'code_quality']);
+  // admins 名单——与 context.mjs 同一份配置键(pr-rules.json 的 admins),防两处判据漂移。
+  // 缺失/为空 = fail-closed,下面的 authorIsAdmin 恒 false。
+  const ADMINS = new Set((rules.admins ?? []).map((a) => a.toLowerCase()));
 
   const slug = `${owner}/${repo}`;
   const m = ghJson([
@@ -66,6 +82,47 @@ try {
         lastComment: (last?.body ?? '').slice(0, 300),
       };
     });
+
+  const authorIsAdmin = ADMINS.size > 0 && ADMINS.has(prAuthor.toLowerCase());
+
+  // ── 授权快速合并通道:合并前最后复核(TOCTOU 保护,与 context.mjs 同口径重新现场检测,
+  // 不信任 scan 时缓存——授权评论可能在 scan 之后才发出,也可能因为 scan 之后又推了新
+  // commit 而作废,见 lib.mjs findApproveMergeAuthorization 与 SKILL 5.1「授权快速合并
+  // 通道」)。──
+  const rawComments = data?.data?.repository?.pullRequest?.comments?.nodes ?? [];
+  const mappedComments = rawComments.map((c) => ({
+    author: c.author?.login ?? '(unknown)',
+    isBot: isBotAuthor(c.author),
+    createdAt: c.createdAt,
+    url: c.url,
+    body: c.body ?? '',
+  }));
+  const commitDates = (data?.data?.repository?.pullRequest?.commits?.nodes ?? [])
+    .map((n) => n.commit?.committedDate)
+    .filter(Boolean);
+  const latestCommitDate = commitDates.reduce((mx, d) => (d > mx ? d : mx), '');
+  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: rules.admins, latestCommitDate });
+  // 安全与隐私门(security.hardHits)在更上游的 context.mjs 已经拦过一轮——命中的 PR 走
+  // pushback-security,auto 流程根本不会跑到这一步调用 pre-merge-check.mjs;这里不重复扫描,
+  // 只复核「机械前提」这一半(无冲突 + 0 未 resolve thread + head 上 required 检查全绿)。
+  let authorizedFastMergeAvailable = false;
+  let authorizedFastMergeInfo = null;
+  if (approveMergeAuth.authorized) {
+    const noHardBlockers = m.mergeable !== 'CONFLICTING' && m.mergeStateStatus !== 'DIRTY';
+    if (noHardBlockers && unresolved.length === 0) {
+      const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+      const required = checkNodes ? classifyRequiredChecks(checkNodes) : null;
+      if (required && required.requiredFailed.length === 0 && required.requiredPending.length === 0) {
+        authorizedFastMergeAvailable = true;
+        authorizedFastMergeInfo = {
+          admin: approveMergeAuth.authorized.author,
+          commentUrl: approveMergeAuth.authorized.url,
+          commentCreatedAt: approveMergeAuth.authorized.createdAt,
+          nonRequiredFailures: required.nonRequiredFailed,
+        };
+      }
+    }
+  }
 
   const blockers = [];
   let blockClass = 'none';
@@ -167,10 +224,19 @@ try {
   const mergeableUnknown = m.mergeable === 'UNKNOWN';
   const canMerge = blockers.length === 0 && !mergeableUnknown;
   // 普通 merge 过不了、但「结构性门 + 当前账号可 bypass + 命中类型在 allowlist 内」时,
-  // 3A 可走 admin bypass 合(交互模式经用户确认)。
-  const structuralBypassAvailable =
-    blockClass === 'structural-check' && structuralAllowlisted &&
+  // 3A 可走 admin bypass 合(交互模式经用户确认)。谁来担保"没有真实 APPROVED review 也能
+  // 合"按两条路径(与 context.mjs 的三层分级同口径,见 internal-gates.md「作者侧与仓库侧
+  // gate」):reviewDecision=APPROVED(真实 GitHub review,basis='approved')或作者在
+  // admins 名单(basis='admin-trust')。**admin-trust 路径不是机械上就能放行**——调用方
+  // (agent)必须已经在本轮独立审查里确认零 P0/P1 才能消费本字段去合并,脚本本身无法验证
+  // "审查是否跑过 / 是否干净"这个语义判断,只守机械前置的一半(与 selfMergeAvailable 同一
+  // 套"脚本守机械半、调用方守语义半"的分工,见 self-approve.mjs 文件头注释)。
+  const structuralCanBypass = blockClass === 'structural-check' && structuralAllowlisted &&
     !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
+  const { route: structuralRoute, basis: structuralBypassBasis } = decideStructuralBypassRoute({
+    structuralCanBypass, reviewDecision: m.reviewDecision, isAdminAuthor: authorIsAdmin,
+  });
+  const structuralBypassAvailable = structuralRoute === 'bypass-structural-block' || structuralRoute === 'review-pending-admin-bypass';
 
   // selfFixAuthors 自己的 PR:GitHub 不允许同账号 approve 自己的 PR,
   // 审查通过后使用 --admin 合并。条件:非冲突、thread 全 resolve、且 head 上所有已上报
@@ -205,16 +271,20 @@ try {
     structuralBlock,
     structuralAllowlisted,
     structuralBypassAvailable,
+    structuralBypassBasis,
+    authorIsAdmin,
     ciRuns,
     blockedAwaitingApproval: blockClass === 'awaiting-approval',
     selfMergeAvailable,
+    authorizedFastMergeAvailable,
+    authorizedFastMergeInfo,
     mergeableUnknown,
     unresolvedThreads: unresolved,
     blockers,
-    canMerge: canMerge || selfMergeAvailable,
-    note: 'canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。canMerge=false 时看 blockClass:structural-check + structuralBypassAvailable=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist)→ 交互模式可经用户确认走 admin bypass 合(gh pr merge --admin);ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved 一律别 bypass(分别是未知/真失败/还在跑/要作者改/要 resolve)。',
+    canMerge: canMerge || selfMergeAvailable || authorizedFastMergeAvailable,
+    note: 'canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样用 gh pr merge --admin,且可跳过阶段二独立审查(admins 名单成员发过 /approve-merge,晚于最后一次 push,无冲突、0 未 resolve thread、head 上 required 检查全绿;authorizedFastMergeInfo.nonRequiredFailures 非空时把这些非 required 失败写进合并致谢/汇总,不阻断)。canMerge=false 时看 blockClass:structural-check + structuralBypassAvailable=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(reviewDecision=APPROVED 或作者在 admins 名单))→ 可走 admin bypass 合(gh pr merge --admin)。structuralBypassBasis 说明凭什么担保:"approved"=真实 GitHub review,任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——**调用方必须先在本轮独立审查里确认零 P0/P1 才能消费这个字段**,脚本只验证机械前提(canBypass/allowlist/作者身份),不知道审查是否跑过或结论如何,交互模式仍需用户确认,auto 模式的确认责任落在"先跑完审查再调用本脚本"这个调用顺序上。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved 一律别 bypass(分别是未知/真失败/还在跑/要作者改/要 resolve)。',
   });
-  process.exit((canMerge || selfMergeAvailable) ? 0 : 2);
+  process.exit((canMerge || selfMergeAvailable || authorizedFastMergeAvailable) ? 0 : 2);
 } catch (e) {
   fail(e);
 }
