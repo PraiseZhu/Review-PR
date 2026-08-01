@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, fetchHeadCheckContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, computeLatestPushDate } from './lib.mjs';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -91,7 +91,15 @@ const SELF_FIX_AUTHORS = (prRules.selfFixAuthors ?? []).map((s) => s.toLowerCase
 // 缺 reviewDecision=APPROVED(典型 ownPr,GitHub 禁止自批准)时,允许改用「本轮独立审查
 // 实际跑完且 0 P0/P1」替代 APPROVED 再 admin bypass;③ 非名单成员一律维持原口径,必须
 // reviewDecision=APPROVED 才能 admin bypass。缺失/为空 = fail-closed,①②两条路径均不生效。
-const ADMINS = new Set((prRules.admins ?? []).map((s) => s.toLowerCase()));
+// normalizeLoginList(P2-3,2026-08-02):非数组/混入非字符串等非法配置形态不抛 TypeError,
+// 返回能用的部分 + invalid 标记——adminsConfigInvalid 非空时必须在报告里显著告警,不能
+// 悄悄吞掉「admins 配置形态不合法」这个信号。
+const { logins: ADMIN_LOGINS, invalid: adminsConfigInvalid } = normalizeLoginList(prRules.admins);
+const ADMINS = new Set(ADMIN_LOGINS);
+// 显著告警载体(P2-3):configWarnings 非空时必须在报告/汇总里点出来,不能悄悄吞掉。
+const CONFIG_WARNINGS = adminsConfigInvalid
+  ? ['pr-rules.json 的 admins 字段配置形态不合法(应为字符串数组),已按能用的部分处理(非法条目被过滤),请检查配置']
+  : [];
 // Slack 同步 bot(信任锚):只有这些账号发的讨论 issue 评论才允许按正文「发送者:」归属真实发言人,
 // 防止普通用户伪造「发送者:<白名单成员>」冒充放行。比对时去掉 GitHub App 的 [bot] 后缀。
 const SLACK_SYNC_BOTS = (prRules.slackSyncBots ?? []).map((s) => s.toLowerCase());
@@ -114,45 +122,11 @@ const LOOP_EXCLUSION_RULES = prRules.loopPrExclusion ?? null;
 // soft = 疑似凭证 / 个人隐私数据,交阶段二审查 agent 语义定性(真凭证 / 真个人数据 = P0)。
 // pr-rules.json sensitiveContent 可配 allowPaths(整文件跳过扫描,只用于测试夹具类已知误报)
 // 与 extraHardPatterns / extraSoftPatterns(项目自有格式,正则字符串)。
+// P1-1(2026-08-02):扫描逻辑(正则清单/单行扫描/diff 遍历)已挪进 lib.mjs 的
+// scanPrSensitiveContent,与 pre-merge-check.mjs 共用同一份判据——此前 pre-merge-check.mjs
+// 对"泄密硬命中"恒传 false、完全不扫描,是紧急通道 fail-open 的核心缺口,现已改为对当前
+// head 真实重扫。
 const SENSITIVE_RULES = prRules.sensitiveContent ?? {};
-const SENSITIVE_ALLOW_RE = (SENSITIVE_RULES.allowPaths ?? []).length ? new RegExp(SENSITIVE_RULES.allowPaths.join('|')) : null;
-const HARD_SECRET_PATTERNS = [
-  ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/],
-  ['aws-access-key-id', /\bAKIA[0-9A-Z]{16}\b/],
-  ['github-token', /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/],
-  ['gitlab-token', /\bglpat-[A-Za-z0-9_-]{20,}\b/],
-  ['npm-token', /\bnpm_[A-Za-z0-9]{36,}\b/],
-  ['slack-token', /\bxox[abprs]-[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
-  ['sk-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
-  ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/],
-  ...(SENSITIVE_RULES.extraHardPatterns ?? []).map((p, i) => [`custom-hard-${i + 1}`, new RegExp(p)]),
-];
-// credential-assignment 的占位符豁免(${VAR}/test/example 等)只给软命中降噪,不影响硬命中
-const SENSITIVE_PLACEHOLDER_RE = /\$\{|\$\(|process\.env|<[^>]*>|xxx|your[-_]|placeholder|change[-_]?me|example|sample|dummy|test|fake|mock|stub|redacted|\*{3,}/i;
-const SAFE_EMAIL_RE = /@example\.(?:com|org|net)\b|@test\.|\.invalid\b|noreply|no-reply|users\.noreply\.github\.com/i;
-const SOFT_SENSITIVE_PATTERNS = [
-  ['credential-assignment', /\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/i],
-  ['jwt', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/],
-  ['cn-mobile', /(?<!\d)1[3-9]\d{9}(?!\d)/],
-  ['cn-id-number', /(?<!\d)\d{17}[\dXx](?!\d)/],
-  ['email', /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/],
-  ...(SENSITIVE_RULES.extraSoftPatterns ?? []).map((p, i) => [`custom-soft-${i + 1}`, new RegExp(p)]),
-];
-// 命中样本脱敏:只留前 6 字符 + 长度。任何下游输出(打回评论/汇总/飞书)不得还原原文。
-const maskSensitive = (s) => `${s.replace(/\s+/g, ' ').slice(0, 6)}…(共 ${s.length} 字符)`;
-function scanSensitiveLine(line, location, sink) {
-  for (const [kind, re] of HARD_SECRET_PATTERNS) {
-    const m = line.match(re);
-    if (m) sink.hard.push({ ...location, kind, sample: maskSensitive(m[0]) });
-  }
-  for (const [kind, re] of SOFT_SENSITIVE_PATTERNS) {
-    const m = line.match(re);
-    if (!m) continue;
-    if (kind === 'credential-assignment' && SENSITIVE_PLACEHOLDER_RE.test(m[0])) continue;
-    if (kind === 'email' && SAFE_EMAIL_RE.test(m[0])) continue;
-    sink.soft.push({ ...location, kind, sample: maskSensitive(m[0]) });
-  }
-}
 
 // ── 以下是 review-pr skill 自身的执行细则(非 agent 约束文档内容,留在脚本里)──
 const TITLE_VAGUE_RE = /:\s*(bug|update|improve|fix issue|优化|调整|更新|misc|若干|一些)\s*$/i;
@@ -177,7 +151,10 @@ const GQL = `
           comments(first:50){ nodes{ author{ login __typename } body createdAt } }
         }}
         comments(first:100){ nodes{ author{ login __typename } body createdAt updatedAt url } }
-        timeline: commits(last:100){ nodes{ commit{ committedDate messageHeadline oid } } }
+        timeline: commits(last:100){ nodes{ commit{ committedDate pushedDate messageHeadline oid } } }
+        forcePushEvents: timelineItems(itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT], last:20){
+          nodes{ ... on HeadRefForcePushedEvent { createdAt } }
+        }
         readyEvents: timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT], last:10){
           nodes{ ... on ReadyForReviewEvent { actor{ login } createdAt } }
         }
@@ -431,50 +408,20 @@ try {
 
   // ── 3.1 安全与隐私内容门(确定性扫描;打回文案与软命中定性由 LLM 做,见 SKILL 3.1)──
   // 扫描范围:PR 标题 + body(先扫,不依赖 diff 拉取成败)+ diff 新增行(逐 hunk track 新文件行号)。
-  const secHits = { hard: [], soft: [] };
-  const scanSensitiveText = (text, file) => {
-    const lines = (text ?? '').split('\n');
-    for (let i = 0; i < lines.length; i++) scanSensitiveLine(lines[i], { file, line: i + 1 }, secHits);
-  };
-  scanSensitiveText(title, 'PR title');
-  scanSensitiveText(body, 'PR body');
-  let securityScanError = null;
-  try {
-    const diffText = gh(['pr', 'diff', String(pr), '--repo', slug], { timeoutMs: 120_000 }).stdout ?? '';
-    let curFile = null;
-    let curAllowed = false;
-    let newLine = 0;
-    for (const raw of diffText.split('\n')) {
-      if (raw.startsWith('+++ ')) {
-        curFile = raw.replace(/^\+\+\+ /, '').replace(/^b\//, '').trim();
-        curAllowed = curFile === '/dev/null' || (SENSITIVE_ALLOW_RE?.test(curFile) ?? false);
-        continue;
-      }
-      const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
-      if (hunk) { newLine = Number(hunk[1]); continue; }
-      if (raw.startsWith('+')) {
-        if (!curAllowed && curFile) scanSensitiveLine(raw.slice(1), { file: curFile, line: newLine }, secHits);
-        newLine += 1;
-      } else if (!raw.startsWith('-') && !raw.startsWith('\\')) {
-        newLine += 1;
-      }
-    }
-  } catch (e) {
-    // diff 拉不到 ≠ 干净:scanned=false 交下游「未证明无泄露」处理,不在这里硬拦(网络抖动不该打回作者)
-    securityScanError = clip(String(e?.message ?? e), 200);
-  }
-  const SECURITY_HIT_CAP = 20;
-  const securityHardKinds = [...new Set(secHits.hard.map((h) => h.kind))];
+  // 判定逻辑单一来源在 lib.mjs 的 scanPrSensitiveContent(P1-1,2026-08-02),
+  // pre-merge-check.mjs 在合并前对当前 head 重新现场扫描,不信任本次 scan 的缓存结果。
+  const scanResult = scanPrSensitiveContent({ owner, repo, pr, title, body, sensitiveRules: SENSITIVE_RULES });
   const security = {
-    scanned: securityScanError == null,
-    ...(securityScanError ? { error: securityScanError } : {}),
-    pass: securityScanError == null && secHits.hard.length === 0,
-    hardHitCount: secHits.hard.length,
-    softHitCount: secHits.soft.length,
-    hardHits: secHits.hard.slice(0, SECURITY_HIT_CAP),
-    softHits: secHits.soft.slice(0, SECURITY_HIT_CAP),
-    note: '阶段一安全与隐私内容门(SKILL 3.1):hardHits 非空 → 不进审查不合并,打回要求移除内容、清理分支历史并轮换已泄露凭证;softHits 由阶段二审查 agent 逐条定性(真实凭证/个人隐私数据=P0,测试桩/占位符放行并说明);scanned=false = diff 拉取失败、未证明干净,审查 agent 必须人工确认后才能给 pass。sample 已脱敏(前 6 字符+长度),打回评论/汇总/飞书只写文件+行号+类型,严禁引用命中原文',
+    scanned: scanResult.scanned,
+    ...(scanResult.error ? { error: scanResult.error } : {}),
+    pass: scanResult.scanned && scanResult.hardHitCount === 0,
+    hardHitCount: scanResult.hardHitCount,
+    softHitCount: scanResult.softHitCount,
+    hardHits: scanResult.hardHits,
+    softHits: scanResult.softHits,
+    note: '阶段一安全与隐私内容门(SKILL 3.1):hardHits 非空 → 不进审查不合并,打回要求移除内容、清理分支历史并轮换已泄露凭证;softHits 由阶段二审查 agent 逐条定性(真实凭证/个人隐私数据=P0,测试桩/占位符放行并说明);scanned=false = diff 拉取失败、未证明干净,审查 agent 必须人工确认后才能给 pass,授权快速合并通道(authorizedFastMerge)fail-closed 不放行。sample 已脱敏(前 6 字符+长度),打回评论/汇总/飞书只写文件+行号+类型,严禁引用命中原文',
   };
+  const securityHardKinds = [...new Set(security.hardHits.map((h) => h.kind))];
 
   // formatPass:仅硬判定层(段落实质性 / title 语言 关 3 由 LLM 判,不进此布尔)
   const formatIssues = [];
@@ -540,6 +487,7 @@ try {
     author: c.author?.login ?? '(unknown)',
     isBot: isBot(c.author),
     createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
     url: c.url,
     body: clip(c.body, 600),
   }));
@@ -548,9 +496,17 @@ try {
   const commits = (g.timeline?.nodes ?? []).map((n) => ({
     oid: (n.commit?.oid ?? '').slice(0, 8),
     date: n.commit?.committedDate,
+    pushedDate: n.commit?.pushedDate,
     headline: n.commit?.messageHeadline,
   }));
   const latestCommitDate = commits.reduce((mx, c) => (c.date > mx ? c.date : mx), '');
+  // P2-1(2026-08-02):latestCommitDate(commit.committedDate)可在本地任意伪造,不能作为
+  // /approve-merge 授权时效检查的锚点——授权专用的"最后一次真实 push"改用
+  // computeLatestPushDate(GitHub 服务端记录的 pushedDate + force-push 事件时间,详见
+  // lib.mjs 该函数注释)。latestCommitDate 保留给其它非安全关键场景(如 reviewerPushbacks
+  // 的 hasNewerCommit 展示性判断)沿用,不在本次修复范围内替换。
+  const forcePushEvents = (g.forcePushEvents?.nodes ?? []).map((n) => ({ createdAt: n.createdAt }));
+  const latestPushDate = computeLatestPushDate({ commits, forcePushEvents });
 
   // ── 产品/UI 变更门(确定性部分;「是否真属产品/UI 修改」「issue / PR 评论里白名单是否同意推进」
   // 两项语义定性留给 LLM,见 SKILL「产品 / UI 变更门」)──
@@ -865,8 +821,6 @@ try {
     : { ciRuns: null };
   const workflowsAwaitingApproval = ciRuns ? ciRuns.awaiting : null; // null=未查/查不到;[]=无;非空=待批清单
   const hasWorkflowsAwaiting = Array.isArray(workflowsAwaitingApproval) && workflowsAwaitingApproval.length > 0;
-  const ciFailed = ciRuns ? ciRuns.failed : [];
-  const ciPending = ciRuns ? ciRuns.pending : [];
   // head commit 上「所有已上报检查」的全集(含第三方 App check-run 与 commit status)。
   // classifyHeadChecks 走 actions/runs,只看得见 GitHub Actions 的 workflow run —— 第三方
   // App(Greptile 等)的 check-run 与 commit status 它一条都看不到。BLOCKED 细分若只信
@@ -922,7 +876,7 @@ try {
   // (mergeStateStatus=DIRTY)、required 检查未全绿/读取失败。格式门未过、未 resolve
   // thread、非 required 检查失败**不再阻断 eligible**,改为 reportOnly——必须显著写进
   // 报告/汇总/合并致谢,不能悄悄吞掉(见 evaluateAuthorizedFastMerge 与其 reportOnly)。
-  const approveMergeAuth = findApproveMergeAuthorization({ comments, admins: prRules.admins, latestCommitDate });
+  const approveMergeAuth = findApproveMergeAuthorization({ comments, admins: prRules.admins, latestPushDate });
   const authorizedFastMerge = {
     adminsConfigured: approveMergeAuth.adminsConfigured,
     requested: approveMergeAuth.authorized != null,
@@ -931,14 +885,21 @@ try {
     commentUrl: approveMergeAuth.authorized?.url ?? null,
     commentCreatedAt: approveMergeAuth.authorized?.createdAt ?? null,
     staleComments: approveMergeAuth.stale,
+    // P2-2(2026-08-02):被拒绝的已编辑授权评论——非空时必须在报告里显著说明"作者编辑过
+    // 授权评论,已按规则拒绝,需重发一条新评论",不能让人以为授权凭空消失。
+    editedComments: approveMergeAuth.edited,
     blockedReason: null,
     reportOnly: { formatIssues: [], unresolvedThreadCount: 0, nonRequiredFailures: [] },
   };
   if (approveMergeAuth.authorized) {
     const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
-    const requiredChecks = checkNodes ? classifyRequiredChecks(checkNodes) : null;
+    // P1-3(2026-08-02)required 完整性:expectedRequired===null(ruleset 端点读取失败)
+    // 时不能悄悄跳过完整性核验——直接把 requiredChecks 判定为 null(未证明全绿),
+    // fail-closed,与 checkNodes===null 同口径。
+    const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, meta.baseRefName) : null;
+    const requiredChecks = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
     const evaluation = evaluateAuthorizedFastMerge({
-      hasSecurityHardHit: security.hardHitCount > 0,
+      security,
       mergeStateStatus: meta.mergeStateStatus,
       unresolvedThreadCount: unresolvedThreads.length,
       formatPass,
@@ -971,77 +932,90 @@ try {
       // BLOCKED 根因已确定是 fork workflow 待批准(required check 没报告)——专属文案,不走泛化分类。
       blockers.push(WORKFLOW_AWAIT_BLOCKER);
       blockClass = 'workflow-awaiting';
+    } else if (reviewDecision === 'CHANGES_REQUESTED' && selfBlockedResolvable) {
+      // 死锁:仅 viewer 自己挂的 CR、且 thread 全 resolve。不计硬 blocker——走重审核实问题真被改了,
+      // 再由合并阶段 self-approve 解锁(见 selfBlockedResolvable 注释)。
+      blockClass = 'self-resolvable';
     } else if (reviewDecision === 'CHANGES_REQUESTED') {
-      if (selfBlockedResolvable) {
-        // 死锁:仅 viewer 自己挂的 CR、且 thread 全 resolve。不计硬 blocker——走重审核实问题真被改了,
-        // 再由合并阶段 self-approve 解锁(见 selfBlockedResolvable 注释)。
-        blockClass = 'self-resolvable';
-      } else {
-        blockers.push('mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)');
-        blockClass = 'review-changes-requested';
-      }
-    } else if (reviewDecision === 'REVIEW_REQUIRED' || reviewDecision == null) {
-      // 缺 approval(含刚 approve 完 GitHub 还在重算)→ 不视硬 blocker,审查通过后提交 APPROVE 即解除。
-      blockClass = 'awaiting-approval';
-    } else if (unresolvedThreads.length > 0) {
-      // reviewDecision=APPROVED 但仍有 thread 没 resolve → BLOCKED 很可能来自 ruleset 的
-      // required_review_thread_resolution。blocker 由下面 unresolvedThreads 统一押,这里只定 class。
-      blockClass = 'threads-unresolved';
-    } else if (ciRuns === null) {
-      // CI 状态读不到(权限 / 网络 / 解析失败,见 lib.mjs classifyHeadChecks)——不知道 CI
-      // 到底过没过,绝不能当「无失败 / 无 pending」直接落进下面的 structural-check 分支再被
-      // auto --admin bypass 放过(某些仓库当前账号对必需检查门可能 canBypass=always,一旦
-      // 误判就是真的会自动 bypass 合并未知 CI 状态的 PR)。单列 skip,不可 bypass、不催办——
-      // 下一轮重新探测,读到了自然会分流去该去的地方。
-      blockers.push('mergeStateStatus=BLOCKED,但 CI 状态读取失败(权限/网络/解析问题,见 lib.mjs classifyHeadChecks)——CI 是否通过未知,本轮不动,下轮再看,不当结构性门处理、不可 bypass');
-      blockClass = 'ci-unknown';
-    } else if (ciFailed.length > 0) {
-      // 有 workflow run 真失败 → 真 blocker(该打回 / 不合)。
-      blockers.push(`mergeStateStatus=BLOCKED(CI 失败:${ciFailed.join(' / ')})`);
-      blockClass = 'ci-failed';
-    } else if (ciPending.length > 0) {
-      // workflow run 还在跑 → 等跑完再合(transient,auto 下轮重试,别打回作者)。
-      blockers.push(`mergeStateStatus=BLOCKED(CI 还在跑:${ciPending.join(' / ')},等跑完即可)`);
-      blockClass = 'ci-pending';
-    } else if (headRollup === null) {
-      // rollup 读不到(字段没取 / 权限异常)→ 第三方 App check-run 与 commit status 是否失败
-      // 未知。与上面 ciRuns===null 同口径 fail-closed:不当结构性门、不可 bypass,下轮再看。
-      blockers.push('mergeStateStatus=BLOCKED,但 statusCheckRollup 读取失败——第三方 App check-run / commit status 是否失败未知(classifyHeadChecks 只看得到 GitHub Actions),不当结构性门处理、不可 bypass,下轮再看');
-      blockClass = 'ci-unknown';
-    } else if (headRollup.failed.length > 0) {
-      // 已跑的 GitHub Actions 全绿,但 head 上仍有已上报检查失败 → 只可能来自 actions/runs
-      // 看不见的那部分(第三方 App check-run / commit status)。这是真 blocker,绝不能当成
-      // 「永不上报的结构性门」被 admin bypass 掉。
-      blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查失败:${headRollup.failed.join(' / ')}——第三方 App check-run / commit status,classifyHeadChecks 看不到;修绿前不合并)`);
-      blockClass = 'ci-failed';
-    } else if (headRollup.pending.length > 0) {
-      blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查还在跑:${headRollup.pending.join(' / ')},等跑完即可)`);
-      blockClass = 'ci-pending';
+      blockers.push('mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)');
+      blockClass = 'review-changes-requested';
     } else {
-      // review 满足(APPROVED)+ 线程已 resolve + CI 来源明确完整(ciRuns 非 null)且无失败/
-      // 进行中/待批的 workflow run,但仍 BLOCKED → 残留的是「永不上报结果的必需检查门」:
-      // 典型 org ruleset 的 code_scanning(CodeQL)/ code_quality(本仓库根本没产出对应结果),
-      // 或被 job 级 if 跳过的必需 check。这类不是作者要改 —— 要么 owner 用 admin bypass 合、
-      // 要么修该门让它能上报结果。
-      blockClass = 'structural-check';
-      // 把 head rollup 里已通过的检查名传给 probe:required_status_checks 规则若已被全绿的
-      // context 满足,就不再算「未上报的必需检查门」,否则 allowlist 判据永远差一项,
-      // code_scanning/code_quality 这类真空门的自动 bypass 被永久锁死。
-      const rollupOk = headRollup?.ok;
-      structuralBlock = probeBranchProtection(slug, meta.baseRefName, {
-        satisfiedContexts: rollupOk ? new Set(rollupOk) : null,
+      // P1-4(2026-08-02)第②层可达性修复:approval 维度(reviewDecision 是否已 APPROVED)
+      // 不再决定"要不要往下探测 thread/CI/结构性门",只决定探测完之后怎么归类——见
+      // lib.mjs classifyBlockedStatus 的详细注释(不要求 approve 的仓库里 reviewDecision
+      // 恒为 REVIEW_REQUIRED/null,若不探测就直接判 awaiting-approval,会让"结构性门 +
+      // admin-trust"这条分级合并路由永久不可达)。
+      const classified = classifyBlockedStatus({
+        reviewDecision,
+        hasUnresolvedThreads: unresolvedThreads.length > 0,
+        ciRuns,
+        headRollup,
+        // 惰性回调:只有走到"其余维度全干净,要看是否存在结构性门"这一步才真的发 API 调用。
+        // 把 head rollup 里已通过的检查名传给 probe:required_status_checks 规则若已被全绿
+        // 的 context 满足,就不再算「未上报的必需检查门」,否则 allowlist 判据永远差一项。
+        probeStructuralBlock: () => probeBranchProtection(slug, meta.baseRefName, {
+          satisfiedContexts: headRollup?.ok ? new Set(headRollup.ok) : null,
+        }),
       });
-      structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
-        structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
-      const ruleHint = structuralBlock?.requiredCheckRules?.length
-        ? structuralBlock.requiredCheckRules.join(' / ')
-        : 'code_scanning / code_quality 等';
-      const bypassHint = structuralBlock?.canBypass && structuralBlock.canBypass !== 'never'
-        ? `当前账号可 bypass(${structuralBlock.canBypass})${structuralAllowlisted ? '' : ',但命中的必需检查类型不在 structuralBypassAllowlist 里,不自动 bypass'}`
-        : 'bypass 权限未知';
-      blockers.push(
-        `mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——非作者可处理,需 admin bypass 合或修该门;${bypassHint})`,
-      );
+      blockClass = classified.blockClass;
+      structuralBlock = classified.structuralBlock;
+      // 各 blockClass 对应的 blockers 文案(判定逻辑已挪进 classifyBlockedStatus,这里只
+      // 按返回结论拼消息;awaiting-approval 不视硬 blocker,不 push,与此前行为一致)。
+      if (blockClass === 'threads-unresolved') {
+        // blocker 由下面统一的 unresolvedThreads.length 判断追加,这里不重复 push。
+      } else if (blockClass === 'ci-unknown') {
+        if (ciRuns === null) {
+          // CI 状态读不到(权限 / 网络 / 解析失败,见 lib.mjs classifyHeadChecks)——不知道
+          // CI 到底过没过,绝不能当「无失败 / 无 pending」直接落进 structural-check 分支再被
+          // auto --admin bypass 放过。单列 skip,不可 bypass、不催办——下一轮重新探测。
+          blockers.push('mergeStateStatus=BLOCKED,但 CI 状态读取失败(权限/网络/解析问题,见 lib.mjs classifyHeadChecks)——CI 是否通过未知,本轮不动,下轮再看,不当结构性门处理、不可 bypass');
+        } else if (headRollup === null) {
+          // rollup 读不到(字段没取 / 权限异常)→ 第三方 App check-run 与 commit status
+          // 是否失败未知。与上面 ciRuns===null 同口径 fail-closed。
+          blockers.push('mergeStateStatus=BLOCKED,但 statusCheckRollup 读取失败——第三方 App check-run / commit status 是否失败未知(classifyHeadChecks 只看得到 GitHub Actions),不当结构性门处理、不可 bypass,下轮再看');
+        } else {
+          // 分支保护规则读取失败(probeBranchProtection 返回 null)——无法证明"没有结构性门"。
+          blockers.push('mergeStateStatus=BLOCKED,分支保护规则读取失败(权限/网络)——无法判断是否存在结构性门,不当 awaiting-approval 或 structural-check 处理,不可 bypass,下轮再看');
+        }
+      } else if (blockClass === 'ci-failed') {
+        if (ciRuns.failed.length > 0) {
+          // 有 workflow run 真失败 → 真 blocker(该打回 / 不合)。
+          blockers.push(`mergeStateStatus=BLOCKED(CI 失败:${ciRuns.failed.join(' / ')})`);
+        } else {
+          // 已跑的 GitHub Actions 全绿,但 head 上仍有已上报检查失败 → 只可能来自
+          // actions/runs 看不见的那部分(第三方 App check-run / commit status)。这是真
+          // blocker,绝不能当成「永不上报的结构性门」被 admin bypass 掉。
+          blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查失败:${headRollup.failed.join(' / ')}——第三方 App check-run / commit status,classifyHeadChecks 看不到;修绿前不合并)`);
+        }
+      } else if (blockClass === 'ci-pending') {
+        if (ciRuns.pending.length > 0) {
+          // workflow run 还在跑 → 等跑完再合(transient,auto 下轮重试,别打回作者)。
+          blockers.push(`mergeStateStatus=BLOCKED(CI 还在跑:${ciRuns.pending.join(' / ')},等跑完即可)`);
+        } else {
+          blockers.push(`mergeStateStatus=BLOCKED(head 上已上报检查还在跑:${headRollup.pending.join(' / ')},等跑完即可)`);
+        }
+      } else if (blockClass === 'structural-check') {
+        // review(是否 APPROVED 已由 classifyBlockedStatus 消化)+ 线程已 resolve + CI 来源
+        // 明确完整且无失败/进行中的 workflow run,但仍 BLOCKED → 残留的是「永不上报结果的
+        // 必需检查门」:典型 org ruleset 的 code_scanning(CodeQL)/ code_quality(本仓库
+        // 根本没产出对应结果),或被 job 级 if 跳过的必需 check。这类不是作者要改 —— 要么
+        // owner 用 admin bypass 合、要么修该门让它能上报结果。
+        structuralAllowlisted = !!structuralBlock?.requiredCheckRules?.length &&
+          structuralBlock.requiredCheckRules.every((r) => STRUCTURAL_BYPASS_ALLOWLIST.has(r));
+        const ruleHint = structuralBlock?.requiredCheckRules?.length
+          ? structuralBlock.requiredCheckRules.join(' / ')
+          : 'code_scanning / code_quality 等';
+        const bypassHint = structuralBlock?.canBypass && structuralBlock.canBypass !== 'never'
+          ? `当前账号可 bypass(${structuralBlock.canBypass})${structuralAllowlisted ? '' : ',但命中的必需检查类型不在 structuralBypassAllowlist 里,不自动 bypass'}`
+          : 'bypass 权限未知';
+        blockers.push(
+          `mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与已跑 CI 均无问题——非作者可处理,需 admin bypass 合或修该门;${bypassHint})`,
+        );
+      } else if (blockClass === 'blocked-unexplained') {
+        // 走完全部已知维度(review/thread/CI/rollup/结构性探测)都查不出原因,但仍
+        // BLOCKED——异常兜底,fail-closed,不可 bypass、不催办,下轮再看或人工排查。
+        blockers.push('mergeStateStatus=BLOCKED,但 review/thread/CI/结构性检查探测均无已知问题——根因未知,fail-closed 不动,下轮再看或人工排查');
+      }
     }
   } else if (meta.mergeStateStatus === 'UNSTABLE') {
     // UNSTABLE = GitHub 判「可合并,但有非 required 检查失败/未完成」。分支保护不拦它,
@@ -1077,7 +1051,7 @@ try {
     softFlags.push('mergeStateStatus=BLOCKED(缺少 reviewer approval，审查通过后可先提交 APPROVE review 再合并)');
   }
   if (botComments.length) softFlags.push(`${botComments.length} 条 bot / 工具账号评论,需读内容判断是不是要处理的问题`);
-  if (securityScanError != null) {
+  if (!security.scanned) {
     softFlags.push('敏感内容扫描不完整(security.error:diff 拉取失败)——未证明无凭证/隐私泄露,审查 agent 必须人工确认 diff 后才能给 pass');
   } else if (security.softHitCount > 0) {
     softFlags.push(`${security.softHitCount} 处疑似敏感内容软命中(security.softHits),审查 agent 需逐条定性(真实凭证/个人数据=P0)`);
@@ -1155,8 +1129,10 @@ try {
       // 与仓库侧 gate」):① reviewDecision=APPROVED(真实 GitHub review,任何作者都适用,
       // 不看 admins)→ 直接 admin bypass 合并;② 缺 APPROVED 但作者在 admins 名单(典型是
       // ownPr,GitHub 422 禁止自批准导致 APPROVED 永远拿不到)→ 不再免审直接合,改进入独立
-      // 审查,通过(0 P0/P1)后由合并阶段(pre-merge-check.mjs structuralBypassAvailable)
-      // 认「本轮审查实际跑完且干净」为 APPROVED 的等价物,同样走 admin bypass;③ 既无
+      // 审查,通过(0 P0/P1)后由合并阶段写入审查回执(见 write-review-receipt.mjs 与
+      // lib.mjs isReviewReceiptClean),pre-merge-check.mjs 的 structuralBypassReady 核验
+      // 回执 headRefOid 与当前 head 一致且 verdict=clean 才认「本轮审查实际跑完且干净」
+      // 为 APPROVED 的等价物(P1-5,2026-08-02),同样走 admin bypass;③ 既无
       // APPROVED 也非 admins 名单 → 跳过,不自动合并(这是 2026-08-01 修复的 fail-open 口子:
       // 此前不管 reviewDecision 是什么,机械前提满足就直接 bypass,PR #342/#366 曾在零 review
       // 情况下被自动 admin 合入)。
@@ -1315,6 +1291,7 @@ try {
       pr,
       scan: true,
       repo: { owner, repo },
+      configWarnings: CONFIG_WARNINGS,
       meta: {
         number: meta.number,
         title,
@@ -1362,6 +1339,7 @@ try {
     ok: true,
     pr,
     repo: { owner, repo },
+    configWarnings: CONFIG_WARNINGS,
     meta: {
       number: meta.number,
       title,
