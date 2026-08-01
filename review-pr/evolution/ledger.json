@@ -1131,6 +1131,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T17:24:01.118Z",
       "lastSeen": "2026-08-01T17:24:01.118Z"
+    },
+    {
+      "fingerprint": "ui-evidence-notice-scope-on-skipped-candidates",
+      "tier": "proposal",
+      "title": "SKILL 3.2 未说明被 skip 的候选是否要发 UI 证据提醒评论",
+      "detail": "本轮 #396/#397/#409(均 uiEvidenceMissing=true、作者非本流程账号)因 ci-pending / ci-failed / 依赖未合被 skip,scan 已算出 notice 文案,但 SKILL 3.2 把提醒写在阶段一格式门里、§6 阶段 1 又只为 skip 候选列了 notify-author-resolve 一种评论动作,两者未交待 skip 候选该不该发。本轮按保守口径未发(只对进入处理的 #395/#401 发)。",
+      "proposal": "在 SKILL 3.2 补一句边界:被 skip 的候选本轮不发 UI 证据提醒,等它进入处理轮次再发(理由:提醒无时效价值,且避免同一作者同轮收多条噪音)。属收窄不属扩权,可自动落地——本轮因首周观察期只记提案,未改 Skill。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T17:24:04.924Z",
+      "lastSeen": "2026-08-01T17:24:04.924Z"
     }
   ]
 }
