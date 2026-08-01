@@ -18,13 +18,16 @@
 //     自动 admin 合入)。admin-trust 路径要求调用方已在本轮确认独立审查零 P0/P1,脚本
 //     本身不验证这一半,只守机械前提;
 //   - authorizedFastMergeAvailable:admins 名单成员发过 `/approve-merge`(晚于最后一次
-//     push)且无冲突、0 未 resolve thread、head 上 required 检查全绿时为 true,可直接
-//     gh pr merge --admin,不需要走过阶段二独立审查。
+//     push)、无冲突、head 上 required 检查全绿时为 true,可直接 gh pr merge --admin,
+//     不需要走过阶段二独立审查——这是紧急通道,只有物理冲突与 required CI 两类不可绕过,
+//     未 resolve thread / 非 required 检查失败不阻断(owner 拍板:管理员显式授权即自担
+//     责任,机器职责从"拦"变成"留痕",authorizedFastMergeInfo.reportOnly 记录这些信号,
+//     调用方必须显著写进汇总,不能悄悄吞掉)。
 //
 // 退出码:0 = canMerge(含 selfMergeAvailable / authorizedFastMergeAvailable);2 = 有 blocker;1 = 脚本自身出错。
 // 跑:node <skill-root>/scripts/pre-merge-check.mjs <PR>
 
-import { parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadRules, fetchHeadCheckContexts, classifyRequiredChecks, findApproveMergeAuthorization, decideStructuralBypassRoute, print, fail } from './lib.mjs';
+import { parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadRules, fetchHeadCheckContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, print, fail } from './lib.mjs';
 
 const THREADS_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -103,25 +106,33 @@ try {
   const latestCommitDate = commitDates.reduce((mx, d) => (d > mx ? d : mx), '');
   const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: rules.admins, latestCommitDate });
   // 安全与隐私门(security.hardHits)在更上游的 context.mjs 已经拦过一轮——命中的 PR 走
-  // pushback-security,auto 流程根本不会跑到这一步调用 pre-merge-check.mjs;这里不重复扫描,
-  // 只复核「机械前提」这一半(无冲突 + 0 未 resolve thread + head 上 required 检查全绿)。
+  // pushback-security,auto 流程根本不会跑到这一步调用 pre-merge-check.mjs;这里不重复
+  // 扫描,hasSecurityHardHit 恒传 false。紧急通道机械前提收窄(2026-08-01 owner 拍板):
+  // 只剩物理不可合(冲突)+ required 检查全绿两类不可绕过,格式门 / 未 resolve thread /
+  // 非 required 检查失败改记 reportOnly,不阻断 available,但调用方必须把非空的
+  // reportOnly 显著写进合并致谢,不能悄悄吞掉。
   let authorizedFastMergeAvailable = false;
   let authorizedFastMergeInfo = null;
   if (approveMergeAuth.authorized) {
-    const noHardBlockers = m.mergeable !== 'CONFLICTING' && m.mergeStateStatus !== 'DIRTY';
-    if (noHardBlockers && unresolved.length === 0) {
-      const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
-      const required = checkNodes ? classifyRequiredChecks(checkNodes) : null;
-      if (required && required.requiredFailed.length === 0 && required.requiredPending.length === 0) {
-        authorizedFastMergeAvailable = true;
-        authorizedFastMergeInfo = {
-          admin: approveMergeAuth.authorized.author,
-          commentUrl: approveMergeAuth.authorized.url,
-          commentCreatedAt: approveMergeAuth.authorized.createdAt,
-          nonRequiredFailures: required.nonRequiredFailed,
-        };
-      }
-    }
+    const physicallyConflicted = m.mergeable === 'CONFLICTING' || m.mergeStateStatus === 'DIRTY';
+    const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+    const requiredChecks = checkNodes ? classifyRequiredChecks(checkNodes) : null;
+    const evaluation = evaluateAuthorizedFastMerge({
+      hasSecurityHardHit: false,
+      mergeStateStatus: physicallyConflicted ? 'DIRTY' : m.mergeStateStatus,
+      unresolvedThreadCount: unresolved.length,
+      formatPass: true, // 格式门由更上游的 context.mjs 判定,这里只复核机械前提,不重判格式
+      formatIssues: [],
+      requiredChecks,
+    });
+    authorizedFastMergeAvailable = evaluation.eligible;
+    authorizedFastMergeInfo = {
+      admin: approveMergeAuth.authorized.author,
+      commentUrl: approveMergeAuth.authorized.url,
+      commentCreatedAt: approveMergeAuth.authorized.createdAt,
+      blockedReason: evaluation.blockedReason,
+      reportOnly: evaluation.reportOnly,
+    };
   }
 
   const blockers = [];
@@ -282,7 +293,7 @@ try {
     unresolvedThreads: unresolved,
     blockers,
     canMerge: canMerge || selfMergeAvailable || authorizedFastMergeAvailable,
-    note: 'canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样用 gh pr merge --admin,且可跳过阶段二独立审查(admins 名单成员发过 /approve-merge,晚于最后一次 push,无冲突、0 未 resolve thread、head 上 required 检查全绿;authorizedFastMergeInfo.nonRequiredFailures 非空时把这些非 required 失败写进合并致谢/汇总,不阻断)。canMerge=false 时看 blockClass:structural-check + structuralBypassAvailable=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(reviewDecision=APPROVED 或作者在 admins 名单))→ 可走 admin bypass 合(gh pr merge --admin)。structuralBypassBasis 说明凭什么担保:"approved"=真实 GitHub review,任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——**调用方必须先在本轮独立审查里确认零 P0/P1 才能消费这个字段**,脚本只验证机械前提(canBypass/allowlist/作者身份),不知道审查是否跑过或结论如何,交互模式仍需用户确认,auto 模式的确认责任落在"先跑完审查再调用本脚本"这个调用顺序上。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved 一律别 bypass(分别是未知/真失败/还在跑/要作者改/要 resolve)。',
+    note: 'canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样用 gh pr merge --admin,且可跳过阶段二独立审查(admins 名单成员发过 /approve-merge,晚于最后一次 push,无冲突、head 上 required 检查全绿——这是紧急通道,只有这两类物理/CI 硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。canMerge=false 时看 blockClass:structural-check + structuralBypassAvailable=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(reviewDecision=APPROVED 或作者在 admins 名单))→ 可走 admin bypass 合(gh pr merge --admin)。structuralBypassBasis 说明凭什么担保:"approved"=真实 GitHub review,任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——**调用方必须先在本轮独立审查里确认零 P0/P1 才能消费这个字段**,脚本只验证机械前提(canBypass/allowlist/作者身份),不知道审查是否跑过或结论如何,交互模式仍需用户确认,auto 模式的确认责任落在"先跑完审查再调用本脚本"这个调用顺序上。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved 一律别 bypass(分别是未知/真失败/还在跑/要作者改/要 resolve)。',
   });
   process.exit((canMerge || selfMergeAvailable || authorizedFastMergeAvailable) ? 0 : 2);
 } catch (e) {
