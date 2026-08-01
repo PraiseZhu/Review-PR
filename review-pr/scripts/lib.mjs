@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const isWin = process.platform === 'win32';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1259,27 +1259,54 @@ export function classifyBlockedStatus({ reviewDecision, hasUnresolvedThreads, ci
   return { blockClass: 'blocked-unexplained', structuralBlock: null };
 }
 
-// ── 阶段二独立审查回执(P1-5,2026-08-02)──
+// ── 阶段二独立审查回执(P1-5,2026-08-02;P1-2 三审修复:并发安全重做存储)──
 // 结构性 BLOCKED 的 admin-trust 路由(decideStructuralBypassRoute 的
 // review-pending-admin-bypass)只是"路由结论"——它说"作者在 admins 名单、机械前提满足",
 // 不代表"这次真的审查过而且干净"。脚本本身判断不了代码好不好,那是 LLM 审查 agent 的
-// 语义判断;回执就是这半判断留下的、可核验的凭证。**只用既有 stateFile() 接口读写单个
-// json 文件,不新建状态目录结构**——本次改动不碰 STATE_DIR 的布局本身。
-const REVIEW_RECEIPT_FILE = stateFile('review-receipts.json');
+// 语义判断;回执就是这半判断留下的、可核验的凭证。**只用既有 stateFile() 接口定位文件,
+// 不新建状态目录结构、不改 STATE_DIR 布局**——只是把"单文件存全部 PR"换成"每个 PR 一个
+// 独立文件",布局本身(STATE_DIR 下平铺文件)不变。
+//
+// 此前是单文件 `review-receipts.json` 存全部 PR、"整份读→改一键→整份写回"的非原子
+// read-modify-write:auto 并行审多 PR 时,多个进程同时读到同一份旧内容、各自改自己的
+// PR 键、再各自整份写回——后写的进程会用"读的时候还没看到别的 PR 新回执"的旧快照,把
+// 别的 PR 刚写入的新回执整个覆盖丢失(不是"数据损坏",是"静默丢了别人的写")。审核方
+// 实测 40 并发只有约 12 个 PR 的回执存活,且更危险的是:PR 已有最新 dirty 回执时,另一个
+// 早于它、还在用旧快照的进程写回自己的 PR 时会把这份 dirty 一并覆盖回旧的 clean ——
+// `isReviewReceiptClean` 随后读到复活的旧 clean,`structuralBypassReady` 被误判为
+// 可合并,这是正常并行审查路径下就会踩的 fail-open,不是边界场景。
+//
+// 改法:每个 PR 一个独立文件 `review-receipt-<pr>.json`,PR 之间物理隔离,不再有"整份
+// 读改写"的共享状态,天然消除跨 PR 覆盖;单个 PR 内部的写入通过 writeJsonAtomic 走
+// "唯一临时文件 + rename"——rename 在同一文件系统内是原子操作,不会有"写到一半被读到
+// 半个文件"或"两个并发写者交错出损坏 JSON"的中间态,最后一个 rename 落地的即为最终态
+// (last-write-wins,但每次写的都是完整、自洽的一条回执,不会被"部分覆盖")。
 
-function loadReviewReceipts() {
-  if (!existsSync(REVIEW_RECEIPT_FILE)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(REVIEW_RECEIPT_FILE, 'utf8'));
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {}; // 损坏当空,下次 set 重建(与 fix-session-state.mjs 同一约定)
-  }
+/**
+ * 原子写 JSON(唯一临时文件 + renameSync)。`pid + 随机 6 字节十六进制` 保证同一进程内
+ * 多次调用、以及不同进程并发调用之间临时文件名互不冲突,避免两个写者的临时文件互相
+ * 覆盖后再各自 rename 出现竞态。
+ */
+function writeJsonAtomic(filePath, data) {
+  const tmpPath = `${filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`);
+  renameSync(tmpPath, filePath);
 }
 
 /**
- * 写入一条阶段二独立审查回执(单文件存全部 PR:`{ "<pr>": { headRefOid, verdict,
- * p0p1Count, writtenAt } }`,与 fix-session-state.mjs 的 fix-sessions.json 同一约定)。
+ * 定位某 PR 的回执文件路径。`pr` 必须是可转成非负整数的值——回执文件名直接拼进
+ * 文件系统路径,防御性拒绝非法值(如意外传入字符串路径片段),不静默拼出奇怪路径。
+ */
+function reviewReceiptFile(pr) {
+  const n = Number(pr);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`回执文件路径要求 pr 是非负整数,收到:${JSON.stringify(pr)}`);
+  }
+  return stateFile(`review-receipt-${n}.json`);
+}
+
+/**
+ * 写入一条阶段二独立审查回执(每 PR 一个独立文件,原子写入)。
  * `verdict` 只接受 `'clean'`(0 P0/P1)或 `'dirty'`——不接受自由文本,防止调用方拼错词
  * 导致 `isReviewReceiptClean` 误判。`headRefOid` 必须非空:回执必须绑定到具体的 head
  * commit,否则"回执是不是针对当前 head"这个核心校验就无从谈起。
@@ -1289,22 +1316,26 @@ export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count }) {
     throw new Error(`verdict 必须是 'clean' 或 'dirty',收到:${JSON.stringify(verdict)}`);
   }
   if (!headRefOid) throw new Error('headRefOid 不能为空——回执必须绑定到具体的 head commit');
-  const state = loadReviewReceipts();
   const receipt = {
     headRefOid,
     verdict,
     p0p1Count: Number(p0p1Count) || 0,
     writtenAt: new Date().toISOString(),
   };
-  state[String(pr)] = receipt;
-  writeFileSync(REVIEW_RECEIPT_FILE, `${JSON.stringify(state, null, 2)}\n`);
+  writeJsonAtomic(reviewReceiptFile(pr), receipt);
   return receipt;
 }
 
-/** 读取某 PR 当前的审查回执,无则返回 null。 */
+/** 读取某 PR 当前的审查回执,无则返回 null(文件不存在/损坏都按"无回执"处理,fail-closed)。 */
 export function readReviewReceipt(pr) {
-  const state = loadReviewReceipts();
-  return state[String(pr)] ?? null;
+  const file = reviewReceiptFile(pr);
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
