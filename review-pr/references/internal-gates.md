@@ -173,8 +173,12 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   `--scan`），不回收会随 PR 数量线性膨胀；安全判定全在脚本内。
 - `selfFixAuthors` 自己的 PR 审查通过时：GitHub 不允许同账号 approve 自己的 PR，
   `pre-merge-check.mjs` 返回 `selfMergeAvailable=true` 后直接用
-  `gh pr merge --admin --delete-branch` 合并。条件：viewer = author、author 在
-  `selfFixAuthors`、无冲突、thread 全 resolve、独立审查零 P0/P1。auto 模式可执行。
+  `gh pr merge --admin --match-head-commit <headRefOid> --delete-branch` 合并
+  （`headRefOid` 取 `pre-merge-check.mjs` 本次判定输出的那份，做判定与执行之间的
+  原子护栏——判定之后若又有人推了新 commit，`--match-head-commit` 会让 `gh` 直接
+  拒绝合并,不会把新代码在没重新判定的情况下合进去）。条件：viewer = author、
+  author 在 `selfFixAuthors`、无冲突、thread 全 resolve、独立审查零 P0/P1。
+  auto 模式可执行。
 - fork PR 有 workflow 等待批准时，不把它打回作者。只有 PR 未修改
   `.github/workflows/`、`.github/actions/` 等 CI 文件才可 auto approve；
   改过 CI 文件则跳过并点名维护者手动处理。
@@ -258,10 +262,16 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
 - **授权快速合并通道**（`context.mjs` 的 `authorizedFastMerge` / `auto.action=
   authorized-fast-merge`，判定逻辑单一来源在 `scripts/lib.mjs` 的
   `findApproveMergeAuthorization`（授权本身是否有效）与
-  `evaluateAuthorizedFastMerge`（机械前提是否满足））：`admins` 名单成员（GitHub
-  login，机器人自己发的评论不算）在 PR 评论里发出精确独占一行的 `/approve-merge`
-  命令，且该评论晚于最后一次**真实 push**，构成「人工已过安全与代码审查」的明确
-  授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进合并。这是
+  `evaluateAuthorizedFastMerge`（机械前提是否满足））。**P2-4：与上面第②条
+  `admin-trust`（`review-pending-admin-bypass`）是两条完全不同、互不替代的路由，
+  别概括成一句**——上面那条看的是 PR **作者**是否在 `admins` 名单，触发后仍要走完
+  阶段二独立审查、核验回执干净才能合，本条不豁免代码质量；本条看的是有没有
+  `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**阶段二独立审查，
+  是审查流程本身的例外通道，不是"换一种方式证明审查过"。具体：`admins` 名单成员
+  （GitHub login，机器人自己发的评论不算）在 PR 评论里发出精确独占一行的
+  `/approve-merge` 命令，且该评论晚于最后一次**真实 push**，构成「人工已过安全与
+  代码审查」的明确授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进
+  合并。这是
   **紧急通道**——2026-08-01 owner 拍板：「特别要紧的 PR 要立即合，只要 CI 绿 +
   明确授权」，管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」，因此阻断面
   比阶段二正常审查窄得多：
