@@ -676,6 +676,138 @@ export function classifyStatusRollup(rollup) {
 }
 
 /**
+ * 拉 head commit 上「所有已上报检查」的 isRequired 标注(只读,best-effort,失败返 null)。
+ * gh 的 `--json statusCheckRollup` 模板不带 isRequired 字段(仅 classifyStatusRollup 消费的
+ * 那份没有),必须单独发一次 GraphQL 查 `isRequired(pullRequestNumber:)`——这是 CheckRun /
+ * StatusContext 都实现的字段,用来把「required 检查全绿」与「非 required 检查失败但不阻断」
+ * 精确区分开(授权快速合并通道的 CI 口径,见 findApproveMergeAuthorization 与 SKILL 5.1)。
+ * 只在真的有候选授权评论时才调用(省 API):批量扫描几十个 PR 时,绝大多数没人发过
+ * `/approve-merge`,不值得每条都多打一次 GraphQL。
+ */
+export function fetchHeadCheckContexts({ owner, repo, pr }) {
+  const query = `
+    query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$num){
+          commits(last:1){ nodes{ commit{
+            statusCheckRollup{
+              contexts(first:100){
+                nodes{
+                  __typename
+                  ... on CheckRun { name status conclusion isRequired(pullRequestNumber:$num) }
+                  ... on StatusContext { context state isRequired(pullRequestNumber:$num) }
+                }
+              }
+            }
+          }}}
+        }
+      }
+    }`;
+  try {
+    const data = ghGraphql(query, { owner, repo, num: pr }, { timeoutMs: 30_000 })?.data;
+    const nodes = data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes;
+    return Array.isArray(nodes) ? nodes : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 fetchHeadCheckContexts 的原始节点分成 required / 非 required 两条轨,每条再分
+ * failed / pending(纯函数,便于单测)。required 检查从不上报(如 structural-check 场景
+ * 里真空的 code_scanning/code_quality)时,该检查根本不会出现在 contexts 里——既不在
+ * failed 也不在 pending,视为「没有已知问题」,与「required 检查全绿即可合」的口径一致
+ * (授权快速合并通道正是为解这类场景设计的,见 SKILL 5.1「授权快速合并通道」)。
+ * nodes 非数组(读取失败)返 null——调用方必须按「未知」处理,不得当「全绿」放行。
+ */
+export function classifyRequiredChecks(nodes) {
+  if (!Array.isArray(nodes)) return null;
+  const FAIL_RUN = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
+  const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  const requiredFailed = [];
+  const requiredPending = [];
+  const nonRequiredFailed = [];
+  const nonRequiredPending = [];
+  for (const c of nodes ?? []) {
+    const name = c?.name ?? c?.context ?? '(unnamed check)';
+    const required = c?.isRequired === true;
+    let bucket;
+    if (c?.state != null) {
+      if (c.state === 'FAILURE' || c.state === 'ERROR') bucket = 'failed';
+      else if (c.state !== 'SUCCESS') bucket = 'pending';
+      else bucket = 'ok';
+    } else if (c?.status !== 'COMPLETED') {
+      bucket = 'pending';
+    } else if (FAIL_RUN.has(c?.conclusion)) {
+      bucket = 'failed';
+    } else if (!OK_RUN.has(c?.conclusion)) {
+      bucket = 'pending';
+    } else {
+      bucket = 'ok';
+    }
+    if (bucket === 'failed') (required ? requiredFailed : nonRequiredFailed).push(name);
+    else if (bucket === 'pending') (required ? requiredPending : nonRequiredPending).push(name);
+  }
+  return { requiredFailed, requiredPending, nonRequiredFailed, nonRequiredPending };
+}
+
+/**
+ * 授权快速合并通道的确定性检测(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」)。
+ * `admins` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge` 命令(独占一行,
+ * 允许行内追加说明文字)= 人工已过安全与代码审查的明确授权,可跳过阶段二独立审查与
+ * securityReviewPaths 门直接进合并。安全边界:
+ *   - 机器人自己发的评论不算(comments 数组的 isBot 已由调用方标注);
+ *   - `admins` 缺失/为空 → adminsConfigured=false,authorized 恒为 null(fail-closed,
+ *     见 internal-gates.md「作者侧与仓库侧 gate」);
+ *   - 授权锚定评论时刻的 head:评论必须晚于 `latestCommitDate`(最后一次 push),否则
+ *     计入 `stale`——之后又推了新 commit,旧授权不再覆盖新代码,需重发。
+ * `comments` 是已映射过的评论数组(`{ author, isBot, createdAt, url, body }`,与
+ * context.mjs 的 `comments`/pre-merge-check.mjs 自己映射的同形),不要传 GraphQL 原始节点。
+ */
+export function findApproveMergeAuthorization({ comments, admins, latestCommitDate }) {
+  const adminSet = new Set((admins ?? []).map((a) => String(a).toLowerCase()));
+  const APPROVE_MERGE_RE = /^[ \t]*\/approve-merge(?:[ \t].*)?$/m;
+  if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [] };
+  const candidates = (comments ?? [])
+    .filter((c) => !c.isBot && adminSet.has((c.author ?? '').toLowerCase()))
+    .filter((c) => APPROVE_MERGE_RE.test(c.body ?? ''))
+    .map((c) => ({ author: c.author, createdAt: c.createdAt, url: c.url }));
+  const isFresh = (c) => latestCommitDate !== '' && latestCommitDate != null && c.createdAt > latestCommitDate;
+  const fresh = candidates.filter(isFresh).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const stale = candidates.filter((c) => !isFresh(c));
+  return {
+    adminsConfigured: true,
+    authorized: fresh.length ? fresh[fresh.length - 1] : null,
+    stale,
+  };
+}
+
+/**
+ * 结构性 BLOCKED(blockClass='structural-check')三层分级合并路由的纯判定(便于单测;
+ * context.mjs 的 auto 分流与 pre-merge-check.mjs 的 structuralBypassAvailable 都必须
+ * 调用本函数,防两处判据漂移 —— 这是 2026-08-01 修复的 fail-open 核心逻辑,历史上两处
+ * 各写了一份、都没校验 reviewDecision,PR #342/#366 曾在零 review 下被自动 admin 合入)。
+ *
+ * 机械前提(canBypass 且 requiredCheckRules 全部命中 structuralBypassAllowlist)由调用方
+ * 算好通过 `structuralCanBypass` 传入,本函数只处理"谁来担保没有 APPROVED 也能合"这一层:
+ *   - 机械前提不满足 → route='skip-structural-block',basis=null(不看 reviewDecision/admin);
+ *   - 机械前提满足 + reviewDecision='APPROVED' → route='bypass-structural-block',
+ *     basis='approved'(真实 GitHub review,任何作者都适用,不看 admins);
+ *   - 机械前提满足 + 缺 APPROVED + 作者在 admins 名单 → route='review-pending-admin-bypass',
+ *     basis='admin-trust'(典型 ownPr,GitHub 422 禁止自批准;不直接合并,要求本轮先跑一次
+ *     独立审查,通过后才能在合并阶段认"审查干净"为 APPROVED 的等价物,调用方负责这一半的
+ *     语义核验,本函数只给路由结论);
+ *   - 机械前提满足 + 缺 APPROVED + 非 admins 名单 → route='skip-structural-block',
+ *     basis=null(2026-08-01 前的默认行为,现在必须显式满足前两条之一才能 bypass)。
+ */
+export function decideStructuralBypassRoute({ structuralCanBypass, reviewDecision, isAdminAuthor }) {
+  if (!structuralCanBypass) return { route: 'skip-structural-block', basis: null };
+  if (reviewDecision === 'APPROVED') return { route: 'bypass-structural-block', basis: 'approved' };
+  if (isAdminAuthor) return { route: 'review-pending-admin-bypass', basis: 'admin-trust' };
+  return { route: 'skip-structural-block', basis: null };
+}
+
+/**
  * 探测某分支的「必需检查门」+ 当前账号能否 bypass(只读,best-effort,失败返 null)。
  * 用于解释「review 都过了、CI 也没失败,但永久 BLOCKED」——多半是 org ruleset 的
  * code_scanning(CodeQL)/ code_quality / required_status_checks 这类要求结果上报、
