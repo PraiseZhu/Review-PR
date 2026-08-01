@@ -1092,6 +1092,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T14:21:23.538Z",
       "lastSeen": "2026-08-01T14:21:23.538Z"
+    },
+    {
+      "fingerprint": "ui-evidence-misfire-pure-logic-lib",
+      "tier": "proposal",
+      "title": "uiPaths 前缀 src/ 让纯逻辑 lib 文件误触 UI 证据缺失判定",
+      "detail": "本轮一个候选仅因改了 src/lib/canonicalHash.ts(+ 其单测)就被判 uiEvidenceMissing=true。该文件只导出三个纯函数、零 import、无 JSX/DOM/CSS,不可能有视觉变化;审查 agent 需额外花一段论证来说明这是前缀误命中。因该 PR 是自有 PR(ownPr=true)本轮未发提醒评论,未打扰他人,但换成他人 PR 就会发出一条无意义的补图请求。",
+      "proposal": "由 owner 决定是否在目标仓库 pr-rules.json 的 sensitiveContent 同级补 uiExcludePaths 条目(现有机制已支持排除 locale 数据文件与 .d.ts),把 src/lib/ 下确无渲染面的纯工具模块纳入排除;属目标仓库配置口径,不改 skill 代码,不自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T14:21:27.394Z",
+      "lastSeen": "2026-08-01T14:21:27.394Z"
     }
   ]
 }
