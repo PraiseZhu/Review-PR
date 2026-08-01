@@ -7,6 +7,14 @@
 // 一次:列出近期 merged PR,对比 notify-merge-ack 同一份去重台账,给没播过的补发同一
 // 套模板 E 致谢。
 //
+// sender:"cloud" 时的分工(2026-08-01):云端 `.github/workflows/merge-thanks.yml` 用
+// `pull_request: closed` 触发,只对**同仓** PR 有效——fork(跨仓)PR 走这个事件时
+// GitHub 不下发仓库 secrets(这是安全设计,换成 `pull_request_target` 才能拿到,但那会
+// 让不受信代码在有 secrets 的上下文里跑,不接受),云端脚本会因缺 token 静默
+// `posted:false`。所以 sender=cloud 不能整体 no-op:只把**同仓**范围让给云端(避免两边
+// 都发),继续兜底**跨仓(fork)**PR——本仓实测近 60 个 PR 里跨仓数为 0,这条分支平时
+// 不会命中,只在真出现外部贡献者 PR 时补上这个缺口。
+//
 // 与 notify-merge-ack.mjs 共享:
 //   - 去重台账(mergeAckNotify.dedupFile,pr → "pr:mergeOid" 指纹)——两边互认,agent
 //     合并的 ack 过就不补,补发过的 ack 也不会重发;
@@ -113,12 +121,10 @@ try {
     process.exit(0);
   }
 
-  // sender:"cloud" = 致谢由目标仓库的 CI 在合并事件里发,本地补发退场(否则重复致谢:
-  // 云端不写本地台账,本地扫到同一批 merged PR 会再谢一遍)。见 notify-merge-ack.mjs 同处注释。
-  if (MERGE_ACK.sender === 'cloud') {
-    print({ ok: true, posted: [], reason: 'sender-is-cloud(合并致谢由目标仓库 CI 发,本地不补发)' });
-    process.exit(0);
-  }
+  // sender:"cloud" = 同仓 PR 的致谢由目标仓库 CI 在合并事件里发,本地对同仓 PR 让路
+  // (否则重复致谢:云端不写本地台账,本地扫到同一批 merged PR 会再谢一遍)。跨仓
+  // (fork)PR 云端拿不到 secrets 会静默不发,本地在下面按 isCrossRepository 只兜这一类。
+  const cloudSender = MERGE_ACK.sender === 'cloud';
 
   const DEDUP_FILE = resolveInRepoRoot(MERGE_ACK.dedupFile ?? 'scripts/review-pr/.merge-notified.json');
   const NOTIFY_STATE_DIR = resolveInRepoRoot(MERGE_ACK.stateDir ?? 'history/loops/state');
@@ -131,15 +137,21 @@ try {
 
   const merged = ghJson([
     'pr', 'list', '--repo', slug, '--state', 'merged', '--limit', '40',
-    '--json', 'number,title,body,author,url,mergedAt,mergeCommit',
+    '--json', 'number,title,body,author,url,mergedAt,mergeCommit,isCrossRepository',
   ]);
   // 机器人作者不致谢:dependabot 这类 PR 占比不低,「感谢 @app/dependabot」纯噪音,
   // 而致谢的目的是对人表达 + 给人看改动要点。仍然记账(写去重指纹),避免每轮重新判定。
   const isBotAuthor = (a) => Boolean(a?.is_bot) || /\[bot\]$/.test(a?.login ?? '') || /^app\//.test(a?.login ?? '');
   const cutoff = Date.now() - LOOKBACK_MS;
-  const inWindow = (Array.isArray(merged) ? merged : [])
+  let inWindow = (Array.isArray(merged) ? merged : [])
     .filter((p) => p.mergedAt && Date.parse(p.mergedAt) >= cutoff)
     .sort((a, b) => Date.parse(a.mergedAt) - Date.parse(b.mergedAt)); // 旧的先谢,顺序符合直觉
+
+  // sender=cloud:同仓 PR 让云端发,本地只兜云端拿不到 secrets 的跨仓(fork)PR
+  // (见文件头说明)。非 cloud 模式(未配置或本仓外的其他接入仓库)保持全量扫描不变。
+  if (cloudSender) {
+    inWindow = inWindow.filter((p) => p.isCrossRepository === true);
+  }
 
   const state = readDedupState(DEDUP_FILE);
 
@@ -221,7 +233,7 @@ try {
     }
   }
 
-  print({ ok: true, scanned: inWindow.length, posted, skipped });
+  print({ ok: true, scanned: inWindow.length, ...(cloudSender ? { scope: 'cross-repo-only(sender=cloud,同仓让云端发)' } : {}), posted, skipped });
 } catch (e) {
   printFallback({ ok: true, posted: [], reason: 'backfill-error', error: String(e?.message ?? e) });
 }
