@@ -111,6 +111,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-review-paths-dominates-ci-dep-bumps` **securityReviewPaths 吞掉半数候选:dependabot CI action bump 与自有 CI/配置 PR 全转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
+  - 现象:本轮 11 个候选里 5 个(3 个 dependabot 的 actions/checkout、setup-node、npm 分组 bump,2 个自有 CI workflow / pr-rules.json 改动)命中 securityReviewPaths,一律 skip-security-review 转人工。这是该门的设计意图(防自动化改坏自己后再自审自合),不是缺陷;记录用于观察人工队列积压量——若 dependabot 的 CI action bump 长期堆积,是配置口径问题(owner 决定是否给纯 SHA-pin bump 开窄豁免),不是 skill 自动化范围。
 - `dependabot-ci-deps-always-security-review` **dependabot 的 CI/依赖升级 PR 结构上永远落进 skip-security-review** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 9 个候选里 5 个是 skip-security-review(372/373/374/390/392),其中 3 个是 dependabot 的 actions bump 与 package-lock 升级。securityReviewPaths 覆盖 .github/workflows/ 与 package.json/lock,dependabot 的改动面天然只在这两类路径上,因此这类 PR 100% 转人工,自动化对它们的净收益为零(只贡献一条汇总行)。
   - 提案:不建议放宽 securityReviewPaths(那是防自我损坏的核心边界)。可选方向是 owner 固定一个每日窗口批量人工过 dependabot PR,或另设更窄的自动化通道单独处理它们——均属扩权/流程变更,只记录不落地。

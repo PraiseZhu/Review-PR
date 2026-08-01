@@ -1079,6 +1079,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T14:09:06.686Z",
       "lastSeen": "2026-08-01T14:09:06.686Z"
+    },
+    {
+      "fingerprint": "security-review-paths-dominates-ci-dep-bumps",
+      "tier": "by-design",
+      "title": "securityReviewPaths 吞掉半数候选:dependabot CI action bump 与自有 CI/配置 PR 全转人工",
+      "detail": "本轮 11 个候选里 5 个(3 个 dependabot 的 actions/checkout、setup-node、npm 分组 bump,2 个自有 CI workflow / pr-rules.json 改动)命中 securityReviewPaths,一律 skip-security-review 转人工。这是该门的设计意图(防自动化改坏自己后再自审自合),不是缺陷;记录用于观察人工队列积压量——若 dependabot 的 CI action bump 长期堆积,是配置口径问题(owner 决定是否给纯 SHA-pin bump 开窄豁免),不是 skill 自动化范围。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T14:21:23.538Z",
+      "lastSeen": "2026-08-01T14:21:23.538Z"
     }
   ]
 }
