@@ -108,6 +108,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `dependabot-ci-deps-always-security-review` **dependabot 的 CI/依赖升级 PR 结构上永远落进 skip-security-review** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
+  - 现象:本轮 9 个候选里 5 个是 skip-security-review(372/373/374/390/392),其中 3 个是 dependabot 的 actions bump 与 package-lock 升级。securityReviewPaths 覆盖 .github/workflows/ 与 package.json/lock,dependabot 的改动面天然只在这两类路径上,因此这类 PR 100% 转人工,自动化对它们的净收益为零(只贡献一条汇总行)。
+  - 提案:不建议放宽 securityReviewPaths(那是防自我损坏的核心边界)。可选方向是 owner 固定一个每日窗口批量人工过 dependabot PR,或另设更窄的自动化通道单独处理它们——均属扩权/流程变更,只记录不落地。
 - `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 3 次,首见 2026-07-30,最近 2026-08-01,status: tracked
   - 现象:PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。
 - `stacked-pr-blocked-until-base-merges` **stacked PR 链(#387→#388→#389)整条卡在链首 CI 失败,末端即便 gate 全绿也不能合** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked

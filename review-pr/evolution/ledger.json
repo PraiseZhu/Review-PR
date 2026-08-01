@@ -1053,6 +1053,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T11:05:52.419Z",
       "lastSeen": "2026-08-01T11:05:52.419Z"
+    },
+    {
+      "fingerprint": "dependabot-ci-deps-always-security-review",
+      "tier": "by-design",
+      "title": "dependabot 的 CI/依赖升级 PR 结构上永远落进 skip-security-review",
+      "detail": "本轮 9 个候选里 5 个是 skip-security-review(372/373/374/390/392),其中 3 个是 dependabot 的 actions bump 与 package-lock 升级。securityReviewPaths 覆盖 .github/workflows/ 与 package.json/lock,dependabot 的改动面天然只在这两类路径上,因此这类 PR 100% 转人工,自动化对它们的净收益为零(只贡献一条汇总行)。",
+      "proposal": "不建议放宽 securityReviewPaths(那是防自我损坏的核心边界)。可选方向是 owner 固定一个每日窗口批量人工过 dependabot PR,或另设更窄的自动化通道单独处理它们——均属扩权/流程变更,只记录不落地。",
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T11:06:07.538Z",
+      "lastSeen": "2026-08-01T11:06:07.538Z"
     }
   ]
 }
