@@ -844,21 +844,27 @@ PR）。`context.mjs` 对结构性 BLOCKED 且作者在 `admins` 名单的 PR �
 
 **授权快速合并通道**：`admins` 名单成员在 PR 评论里发出 `/approve-merge`（须晚于
 最后一次 push，之后再推新 commit 授权即作废需重发），构成「人工已过安全与代码
-审查」的明确授权。`context.mjs` 给 `auto.action=authorized-fast-merge` 时，**跳过
-阶段二独立审查**，直接复核机械前提后合并：
+审查」的明确授权。这是**紧急通道**——owner 2026-08-01 拍板：管理员显式授权即自
+担责任，机器的职责从「拦」变成「留痕」。`context.mjs` 给
+`auto.action=authorized-fast-merge` 时，**跳过阶段二独立审查**，直接复核机械
+前提后合并：
 
 ```bash
 gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch
 ```
 
-启用条件（判定逻辑单一来源在 `scripts/lib.mjs` 的
-`findApproveMergeAuthorization`，`pre-merge-check.mjs` 在合并前用同一份函数重新
-现场检测，不信任 scan 时缓存）：泄密硬门（`security.hardHits`）未命中、无冲突、
-0 未 resolve thread、格式门通过、head 上 required 检查全绿；非 required 第三方
-检查（如 Greptile）失败不阻断，但必须在 `--details` 里写清楚，不能悄悄吞掉。
-产品/UI 门与技术架构门优先级高于本通道——命中时按 3.4 正常 hold，本通道只解决
-「要不要再审代码」，不解决「这次改动该不该推进」。合并后同样跑一次
-`notify-merge-ack.mjs` 播报步骤。
+判定逻辑单一来源在 `scripts/lib.mjs` 的 `findApproveMergeAuthorization`（授权
+本身是否有效）与 `evaluateAuthorizedFastMerge`（机械前提），`pre-merge-check.mjs`
+在合并前用同一对函数重新现场检测，不信任 scan 时缓存。**任何情况不可绕过**只剩
+三类：泄密硬门（`security.hardHits`）未命中、无冲突（`mergeStateStatus` 不为
+`DIRTY`，物理不可合）、head 上 required 检查全绿。**不阻断但必须显著写进汇总与
+合并致谢**（`authorizedFastMerge.reportOnly` / `authorizedFastMergeInfo.reportOnly`，
+不能悄悄吞掉）：格式门未通过、未 resolve thread、非 required 第三方检查（如
+Greptile）失败——授权解的是「要不要再审、要不要等这些收尾问题」，不是「PR 本身
+物理上能不能合」。产品/UI 门与技术架构门优先级高于本通道——命中时按 3.4 正常
+hold，本通道只解决「要不要再审代码」，不解决「这次改动该不该推进」。合并后同样
+跑一次 `notify-merge-ack.mjs` 播报步骤，`--details` 必须包含 `reportOnly` 里非空
+的项。
 
 方括号中的策略必须先按仓库设置和维护者约定选择一个，不要由 skill 自行改变合并策略。
 若仓库启用 merge queue 或命令被保护规则拒绝，记录状态并结束，不反复重试或绕过保护。

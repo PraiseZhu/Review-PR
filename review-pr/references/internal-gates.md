@@ -201,26 +201,36 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   合入，是本次修复的核心动机。
 - **授权快速合并通道**（`context.mjs` 的 `authorizedFastMerge` / `auto.action=
   authorized-fast-merge`，判定逻辑单一来源在 `scripts/lib.mjs` 的
-  `findApproveMergeAuthorization`）：`admins` 名单成员（GitHub login，机器人自己发
-  的评论不算）在 PR 评论里发出 `/approve-merge` 命令（独占一行，允许行内追加说明
-  文字），且该评论晚于最后一次 push（早于最后一次 push 视为已作废，需重发；
-  `authorizedFastMerge.staleComments` 记录这类过期候选），构成「人工已过安全与代码
-  审查」的明确授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进合并：
-  - 泄密硬门（`security.hardHits`）任何情况不可压过，命中时不会落到这个 action；
-  - 冲突（`mergeStateStatus=DIRTY`）、未 resolve thread、格式门未通过均不豁免——授权
-    解的是「要不要再跑一轮独立审查」，不是「PR 本身机械上能不能合」；
-  - CI 口径：head commit 上**required** 检查（`isRequired` 由
-    `fetchHeadCheckContexts` 的 GraphQL 查询按 check 逐条标注，与
-    `classifyStatusRollup` 消费的 `--json statusCheckRollup` 不带该字段、看不出
-    required/非 required 之分）全绿即可合；非 required 第三方检查（如 Greptile）
-    失败不阻断，但记入 `authorizedFastMerge.nonRequiredFailures`，必须写进合并
-    致谢/汇总，不能悄悄吞掉；
+  `findApproveMergeAuthorization`（授权本身是否有效）与
+  `evaluateAuthorizedFastMerge`（机械前提是否满足））：`admins` 名单成员（GitHub
+  login，机器人自己发的评论不算）在 PR 评论里发出 `/approve-merge` 命令（独占
+  一行，允许行内追加说明文字），且该评论晚于最后一次 push（早于最后一次 push
+  视为已作废，需重发；`authorizedFastMerge.staleComments` 记录这类过期候选），
+  构成「人工已过安全与代码审查」的明确授权，可跳过**阶段二独立审查**与
+  `securityReviewPaths` 门直接进合并。这是**紧急通道**——2026-08-01 owner 拍板：
+  「特别要紧的 PR 要立即合，只要 CI 绿 + 明确授权」，管理员显式授权即自担责任，
+  机器的职责从「拦」变成「留痕」，因此阻断面比阶段二正常审查窄得多：
+  - **任何情况不可绕过**只剩三类：泄密硬门（`security.hardHits`）未命中；无冲突
+    （`mergeStateStatus` 不为 `DIRTY`，物理不可合，GitHub 层面就合不了，授权解不了
+    这个）；head 上**required** 检查（`isRequired` 由 `fetchHeadCheckContexts` 的
+    GraphQL 查询按 check 逐条标注，与 `classifyStatusRollup` 消费的
+    `--json statusCheckRollup` 不带该字段、看不出 required/非 required 之分）全绿
+    ——CI 口径是硬指标,不因授权而放宽;
+  - **不阻断，但必须显著写进报告与汇总**（`authorizedFastMerge.reportOnly` /
+    `authorizedFastMergeInfo.reportOnly`，字段：`formatIssues`、
+    `unresolvedThreadCount`、`nonRequiredFailures`；不能悄悄吞掉，`--details`
+    必须包含非空项）：格式门未通过、未 resolve thread、非 required 第三方检查
+    （如 Greptile）失败——这三类此前（2026-08-01 首版实现）曾被当作硬阻断，owner
+    拍板收窄：授权解的是「要不要再跑一轮独立审查、要不要等这些收尾问题」，紧急
+    通道的语义就是人压过流程；
   - 产品/UI 门与技术架构门优先级高于本通道——`context.mjs` 里授权覆盖发生在产品/
     架构门包裹**之前**，命中产品/架构门时会被后者整体覆盖，本通道只解决「要不要
     再审代码」，不解决「这次改动该不该推进」这类更上游的产品方向判断；
-  - `pre-merge-check.mjs` 在合并前用同一份 `findApproveMergeAuthorization` 现场
-    重新检测（不信任 scan 时缓存，TOCTOU 保护：授权评论可能在 scan 之后才发出，也
-    可能因为 scan 之后又推了新 commit 而作废），返回 `authorizedFastMergeAvailable`。
+  - `pre-merge-check.mjs` 在合并前用同一对函数现场重新检测（不信任 scan 时缓存，
+    TOCTOU 保护：授权评论可能在 scan 之后才发出，也可能因为 scan 之后又推了新
+    commit 而作废），返回 `authorizedFastMergeAvailable`；该脚本不重判格式门
+    （由更上游的 `context.mjs` 判过），`authorizedFastMergeInfo.reportOnly.
+    formatIssues` 恒为空数组。
 - `gate.blockClass=ci-unknown` 表示 CI 状态读取失败（权限/网络/解析问题），**不是**
   structural-check——即便当前账号对某必需检查有 bypass 权限，也不得据此自动合并
   未知 CI 状态的 PR；跳过等下一轮重新探测。
