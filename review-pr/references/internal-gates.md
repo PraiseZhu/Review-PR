@@ -16,6 +16,8 @@
 - `ciSensitivePaths`：workflow approval 安全门；
 - `serverPaths`：Server 发布通知 gate；
 - `selfFixAuthors`：自己的 PR 不走 GitHub 自审死锁和无效催办；
+- `admins`：结构性 BLOCKED 三层分级合并策略的信任名单（缺失/为空 = fail-closed），
+  与 `selfFixAuthors` 各自独立、不互相推导，见下方「作者侧与仓库侧 gate」；
 - `slackSyncBots`、`slackSenderAliases`、`feishuNotify`：
   讨论 issue 和飞书通知归属、收件人与去重配置；
 - `staleAuthorReminder`：作者侧停滞提醒阈值（`exemptAuthors` 命中直接跳过催办并清
@@ -175,9 +177,50 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   `.github/workflows/`、`.github/actions/` 等 CI 文件才可 auto approve；
   改过 CI 文件则跳过并点名维护者手动处理。
 - `gate.blockClass=structural-check` 表示 required check 永远不返回结果，不是作者代码
-  问题。只有 `reviewDecision=APPROVED`、CI 无失败、thread 全 resolve、当前账号具备
-  bypass 权限**且** `structuralBlock.requiredCheckRules` 全部命中
-  `structuralBypassAllowlist` 时才可 `gh pr merge --admin`；否则跳过并报告。
+  问题。CI 无失败、thread 全 resolve、当前账号具备 bypass 权限**且**
+  `structuralBlock.requiredCheckRules` 全部命中 `structuralBypassAllowlist` 是三条路径
+  共同的机械前提；机械前提满足后，「谁来担保没有真实 review 也能合」按三层分级（判定
+  逻辑单一来源在 `scripts/lib.mjs` 的 `decideStructuralBypassRoute`，`context.mjs` 的
+  `auto` 分流与 `pre-merge-check.mjs` 的 `structuralBypassAvailable` 都调用它，防两处
+  判据漂移）：
+  1. `reviewDecision=APPROVED`（真实 GitHub review，任何作者都适用，不看 `admins`）
+     → 直接 `gh pr merge --admin`；
+  2. 缺 `APPROVED` 但作者在 `admins` 名单（典型是 ownPr——GitHub 422 禁止对自己的 PR
+     提交 APPROVE，`reviewDecision` 永远拿不到）→ **不直接合并**，`auto.action=review`
+     进入本轮独立审查；审查通过（零 P0/P1）后，合并阶段认「本轮审查实际跑完且干净」
+     为 `APPROVED` 的等价物（`pre-merge-check.mjs` 返回
+     `structuralBypassAvailable=true, structuralBypassBasis='admin-trust'`），再走
+     `gh pr merge --admin`。这一步「审查是否跑过 / 结论是否干净」是语义判断，脚本
+     无法验证，只守机械前提这一半——调用方（agent）必须先在本轮独立审查里确认零
+     P0/P1，才能消费 `admin-trust` 结论去合并，不能因为作者是 `admins` 成员就跳过
+     这轮审查直接合（那是下面「授权快速合并通道」才有的权限，两者不可混用）；
+  3. 既无 `APPROVED` 也非 `admins` 名单 → 跳过并报告，不自动合并。`admins` 缺失/为空
+     时全部按第 3 条处理（fail-closed）。
+  2026-08-01 前的实现只判机械前提、完全不看 `reviewDecision`，属 fail-open：曾在
+  `reviewDecision` 为空（零 approving review）的情况下直接 `gh pr merge --admin`
+  合入，是本次修复的核心动机。
+- **授权快速合并通道**（`context.mjs` 的 `authorizedFastMerge` / `auto.action=
+  authorized-fast-merge`，判定逻辑单一来源在 `scripts/lib.mjs` 的
+  `findApproveMergeAuthorization`）：`admins` 名单成员（GitHub login，机器人自己发
+  的评论不算）在 PR 评论里发出 `/approve-merge` 命令（独占一行，允许行内追加说明
+  文字），且该评论晚于最后一次 push（早于最后一次 push 视为已作废，需重发；
+  `authorizedFastMerge.staleComments` 记录这类过期候选），构成「人工已过安全与代码
+  审查」的明确授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进合并：
+  - 泄密硬门（`security.hardHits`）任何情况不可压过，命中时不会落到这个 action；
+  - 冲突（`mergeStateStatus=DIRTY`）、未 resolve thread、格式门未通过均不豁免——授权
+    解的是「要不要再跑一轮独立审查」，不是「PR 本身机械上能不能合」；
+  - CI 口径：head commit 上**required** 检查（`isRequired` 由
+    `fetchHeadCheckContexts` 的 GraphQL 查询按 check 逐条标注，与
+    `classifyStatusRollup` 消费的 `--json statusCheckRollup` 不带该字段、看不出
+    required/非 required 之分）全绿即可合；非 required 第三方检查（如 Greptile）
+    失败不阻断，但记入 `authorizedFastMerge.nonRequiredFailures`，必须写进合并
+    致谢/汇总，不能悄悄吞掉；
+  - 产品/UI 门与技术架构门优先级高于本通道——`context.mjs` 里授权覆盖发生在产品/
+    架构门包裹**之前**，命中产品/架构门时会被后者整体覆盖，本通道只解决「要不要
+    再审代码」，不解决「这次改动该不该推进」这类更上游的产品方向判断；
+  - `pre-merge-check.mjs` 在合并前用同一份 `findApproveMergeAuthorization` 现场
+    重新检测（不信任 scan 时缓存，TOCTOU 保护：授权评论可能在 scan 之后才发出，也
+    可能因为 scan 之后又推了新 commit 而作废），返回 `authorizedFastMergeAvailable`。
 - `gate.blockClass=ci-unknown` 表示 CI 状态读取失败（权限/网络/解析问题），**不是**
   structural-check——即便当前账号对某必需检查有 bypass 权限，也不得据此自动合并
   未知 CI 状态的 PR；跳过等下一轮重新探测。
