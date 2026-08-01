@@ -58,3 +58,50 @@ test('nodes 非数组(读取失败)返回 null —— fail-closed,调用方不�
   assert.equal(classifyRequiredChecks(undefined), null);
   assert.equal(classifyRequiredChecks('not-an-array'), null);
 });
+
+// ── P1-3(2026-08-02)required 完整性:必需检查从未开始跑(不在 contexts 里)时,单看
+// contexts 会误判"没有已知问题"=全绿。expectedRequiredNames(分支保护 required_status_
+// checks 规则要求的完整 context 名单)与实际观测到的 requiredSeen 做差,缺失的按
+// pending 处理——不能因为"contexts 里没出现"就当绿。──
+
+test('P1-3 负例 1/2:空 contexts + 分支要求 11 项 required checks → 全部判 pending,不 eligible(此前的盲区:空数组看起来"没有已知问题")', () => {
+  const expected = new Set([
+    'lint + tsc + unit', 'e2e kernel gate', 'typecheck', 'build', 'unit-macos',
+    'unit-linux', 'unit-windows', 'security-scan', 'license-check', 'format-check', 'changelog-check',
+  ]);
+  const r = classifyRequiredChecks([], expected);
+  assert.equal(r.requiredFailed.length, 0, '一条都没跑,不该出现在 failed 里(failed 特指"跑过且失败")');
+  assert.equal(r.requiredPending.length, 11, '11 项要求的 required check 一条都没出现在 contexts 里,必须全部按 pending 处理');
+  assert.deepEqual(new Set(r.requiredPending), expected);
+});
+
+test('P1-3 负例 2/2:100 条正常 + 第 101 条才是 required FAILURE → 必须能在完整节点集合里正确捕获,不因数量多而漏判(验证 classifyRequiredChecks 本身没有隐藏的截断上限)', () => {
+  const nodes = [];
+  for (let i = 0; i < 100; i++) {
+    nodes.push({ __typename: 'CheckRun', name: `check-${i}`, status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: false });
+  }
+  nodes.push({ __typename: 'CheckRun', name: 'the-101st-check', status: 'COMPLETED', conclusion: 'FAILURE', isRequired: true });
+  assert.equal(nodes.length, 101);
+  const r = classifyRequiredChecks(nodes);
+  assert.deepEqual(r.requiredFailed, ['the-101st-check'], '第 101 条(超过单页 GraphQL first:100 的边界)必须被正确分类,不能静默丢失');
+});
+
+test('P1-3:required check 真的跑过且通过(在 requiredSeen 里)不会被 expectedRequiredNames 误判成 pending', () => {
+  const nodes = [{ __typename: 'CheckRun', name: 'lint + tsc + unit', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true }];
+  const r = classifyRequiredChecks(nodes, new Set(['lint + tsc + unit']));
+  assert.deepEqual(r.requiredPending, []);
+  assert.deepEqual(r.requiredFailed, []);
+});
+
+test('P1-3:required check 跑过但失败,同时也在 expectedRequiredNames 里 —— 只进 requiredFailed,不重复计入 requiredPending', () => {
+  const nodes = [{ __typename: 'CheckRun', name: 'lint + tsc + unit', status: 'COMPLETED', conclusion: 'FAILURE', isRequired: true }];
+  const r = classifyRequiredChecks(nodes, new Set(['lint + tsc + unit']));
+  assert.deepEqual(r.requiredFailed, ['lint + tsc + unit']);
+  assert.deepEqual(r.requiredPending, []);
+});
+
+test('不传 expectedRequiredNames(第二参省略)时行为与此前完全一致,不做完整性核验', () => {
+  const r = classifyRequiredChecks([]);
+  assert.deepEqual(r.requiredFailed, []);
+  assert.deepEqual(r.requiredPending, []);
+});
