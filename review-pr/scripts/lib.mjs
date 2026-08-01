@@ -783,6 +783,47 @@ export function findApproveMergeAuthorization({ comments, admins, latestCommitDa
 }
 
 /**
+ * 授权快速合并通道的机械前提判定(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」;
+ * context.mjs 与 pre-merge-check.mjs 都必须调用本函数,防两处判据漂移)。只在调用方已
+ * 确认存在有效(非 stale、admins 成员、非机器人)`/approve-merge` 授权时才调用——本函数
+ * 不重复检测授权本身,只判"授权到手后,这次机械上能不能合"。
+ *
+ * 2026-08-01 owner 拍板收窄阻断面:紧急通道的语义是"管理员显式授权即自担责任,机器的
+ * 职责从'拦'变成'留痕'"，因此只有下面四类**任何情况不可绕过**：
+ *   - 泄密硬门(hasSecurityHardHit)——授权任何情况压不过;
+ *   - 物理不可合(mergeStateStatus='DIRTY',有冲突,GitHub 层面就合不了);
+ *   - required 检查未全绿或读取失败(requiredChecks 为 null/requiredFailed/
+ *     requiredPending 非空)——CI 口径是硬指标,不因授权而放宽;
+ *   - （授权本身失效由调用方在调用前处理，本函数不管）。
+ * 格式门未过、未 resolve thread、非 required 检查失败**不再阻断**，改为 reportOnly：
+ * eligible 仍可为 true，但调用方必须把 `reportOnly` 里非空的项显著写进报告/汇总/合并
+ * 致谢，不能悄悄吞掉——这是"留痕代替拦"的落地方式。
+ */
+export function evaluateAuthorizedFastMerge({ hasSecurityHardHit, mergeStateStatus, unresolvedThreadCount, formatPass, formatIssues, requiredChecks }) {
+  const reportOnly = {
+    formatIssues: formatPass ? [] : (formatIssues ?? []),
+    unresolvedThreadCount: unresolvedThreadCount ?? 0,
+    nonRequiredFailures: requiredChecks?.nonRequiredFailed ?? [],
+  };
+  if (hasSecurityHardHit) {
+    return { eligible: false, blockedReason: '安全与隐私门硬命中(security.hardHits)——授权通道任何情况不可压过泄密硬门', reportOnly };
+  }
+  if (mergeStateStatus === 'DIRTY') {
+    return { eligible: false, blockedReason: '有冲突(mergeStateStatus=DIRTY),物理不可合,需先 rebase', reportOnly };
+  }
+  if (!requiredChecks) {
+    return { eligible: false, blockedReason: 'head commit 的必需检查 isRequired 状态读取失败——未证明 required 检查全绿,不放行(fail-closed)', reportOnly };
+  }
+  if (requiredChecks.requiredFailed.length > 0) {
+    return { eligible: false, blockedReason: `必需检查失败:${requiredChecks.requiredFailed.join(' / ')}`, reportOnly };
+  }
+  if (requiredChecks.requiredPending.length > 0) {
+    return { eligible: false, blockedReason: `必需检查还在跑:${requiredChecks.requiredPending.join(' / ')},等跑完再合`, reportOnly };
+  }
+  return { eligible: true, blockedReason: null, reportOnly };
+}
+
+/**
  * 结构性 BLOCKED(blockClass='structural-check')三层分级合并路由的纯判定(便于单测;
  * context.mjs 的 auto 分流与 pre-merge-check.mjs 的 structuralBypassAvailable 都必须
  * 调用本函数,防两处判据漂移 —— 这是 2026-08-01 修复的 fail-open 核心逻辑,历史上两处
