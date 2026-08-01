@@ -988,6 +988,19 @@
       "occurrences": 1,
       "firstSeen": "2026-07-31T05:04:26.525Z",
       "lastSeen": "2026-07-31T05:04:26.525Z"
+    },
+    {
+      "fingerprint": "structural-bypass-missing-approved-check",
+      "tier": "proposal",
+      "title": "context.mjs 的 bypass-structural-block 分支未校验 reviewDecision=APPROVED，与 internal-gates.md 声明的安全前提不一致（fail-open）",
+      "detail": "本轮 PR #366(xindong/mivo-canvas) reviewDecision 为空字符串(仅 greptile bot 的两条 COMMENTED,无任何 approving review),context.mjs:1107 仍判 autoAction=bypass-structural-block 并在 reason 里写「自动 admin bypass 合并」。而 internal-gates.md 明确要求 structural-check 的 admin bypass 必须同时满足 reviewDecision=APPROVED + CI 无失败 + thread 全 resolve + 有 bypass 权限 + requiredCheckRules 全在 allowlist;context.mjs:1107 的条件只覆盖后两项,代码注释里也写了「安全前提:review APPROVED」但没有实际校验。本轮因独立审查发现 2 条 P1、走了打回而未触发合并,损害未发生;但同类 PR 若审查通过,auto 模式会在零 approving review 的情况下 admin merge——ownPr=true 时本流程账号还无法自批准,这个缺口不会被自我纠正。",
+      "proposal": "在 context.mjs:1107 的 bypass 条件里补上 reviewDecision === 'APPROVED';不满足时降级为 skip-structural-block(reason 写明「结构性 BLOCKED 但无 approving review,需白名单成员 approve 后下一轮再合」)。同时在 pre-merge-check.mjs 的 structuralBypassAvailable 里同步该判据,让两处口径一致。属收紧而非放宽,但因触及合并 gate 判据,首周观察期不自动落地,留 owner 拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T05:22:25.352Z",
+      "lastSeen": "2026-08-01T05:22:25.352Z"
     }
   ]
 }

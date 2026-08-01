@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `structural-bypass-missing-approved-check` **context.mjs 的 bypass-structural-block 分支未校验 reviewDecision=APPROVED，与 internal-gates.md 声明的安全前提不一致（fail-open）** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 现象:本轮 PR #366(xindong/mivo-canvas) reviewDecision 为空字符串(仅 greptile bot 的两条 COMMENTED,无任何 approving review),context.mjs:1107 仍判 autoAction=bypass-structural-block 并在 reason 里写「自动 admin bypass 合并」。而 internal-gates.md 明确要求 structural-check 的 admin bypass 必须同时满足 reviewDecision=APPROVED + CI 无失败 + thread 全 resolve + 有 bypass 权限 + requiredCheckRules 全在 allowlist;context.mjs:1107 的条件只覆盖后两项,代码注释里也写了「安全前提:review APPROVED」但没有实际校验。本轮因独立审查发现 2 条 P1、走了打回而未触发合并,损害未发生;但同类 PR 若审查通过,auto 模式会在零 approving review 的情况下 admin merge——ownPr=true 时本流程账号还无法自批准,这个缺口不会被自我纠正。
+  - 提案:在 context.mjs:1107 的 bypass 条件里补上 reviewDecision === 'APPROVED';不满足时降级为 skip-structural-block(reason 写明「结构性 BLOCKED 但无 approving review,需白名单成员 approve 后下一轮再合」)。同时在 pre-merge-check.mjs 的 structuralBypassAvailable 里同步该判据,让两处口径一致。属收紧而非放宽,但因触及合并 gate 判据,首周观察期不自动落地,留 owner 拍板。
 - `dependabot-lockfile-always-security-review` **dependabot 依赖升级 PR 必然命中 securityReviewPaths,恒转人工** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: open
   - 现象:本轮 2 个候选(#358/#361)由 dependabot 提交,只改 package.json/package-lock.json,必然命中 securityReviewPaths → skip-security-review。该类 PR 每周多次,人工队列会持续积压。
   - 提案:属扩权类(放宽安全边界),不自动落地。可选方向:① 保持现状,由 owner 定期人工过;② 为 dependabot 作者 + 仅 lockfile/依赖清单改动 + CI 全绿 的组合单独配一条窄豁免,但仍需 owner 拍板是否接受供应链面自动合并。
