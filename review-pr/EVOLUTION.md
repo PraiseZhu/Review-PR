@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `bypass-structural-block-auto-vs-interactive-doc-conflict` **SKILL 与 pre-merge-check.mjs 对 bypass-structural-block 是否属 auto 可执行动作口径冲突** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 现象:SKILL 5.3 与 6.1 把 bypass-structural-block 当成 auto 模式的非 skip 落地动作(context.mjs 也返回 isSkip:false),但 pre-merge-check.mjs 的 note 明确写「交互模式可经用户确认走 admin bypass 合」。本轮 PR #394 命中该分支,两处口径不一致时只能自行取舍,是判定不确定性。
+  - 提案:文档口径统一:要么 SKILL 5.3 补一句「auto 模式在独立审查零 P0/P1 且 structuralBypassAvailable=true 时可直接 admin bypass 合」,要么 pre-merge-check 的 note 去掉「交互模式」限定。倾向前者(与 context.mjs 的 isSkip:false 一致)。归为提案而非自动落地:改的是合并授权口径,沾扩权面。
 - `security-review-paths-swallows-all-dependabot-npm` **securityReviewPaths 含 package.json/lock,导致所有 dependabot npm PR 永久转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:本轮 15 个候选里 6 个落 skip-security-review,其中 3 个是 dependabot(github_actions 与 npm group)。npm group PR 必然改 package.json/lockfile、actions PR 必然改 .github/workflows,两类都被 securityReviewPaths 命中,结论是这两类 PR 在任何一轮都不可能被自动处理,只会每轮重复进 skip 组。
   - 提案:扩权类,不自动落地。可选方向:① 为 app/dependabot 作者 + 仅 lockfile/版本号 diff 的组合开一条窄豁免(需先确认 dependabot 身份无法伪造);② 保持现状但在汇总里把这类 skip 合并成一行,避免每轮 6 行噪音掩盖真正需要看的候选。请 owner 拍板。

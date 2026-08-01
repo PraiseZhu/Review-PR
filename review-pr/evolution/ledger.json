@@ -1118,6 +1118,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T17:23:33.011Z",
       "lastSeen": "2026-08-01T17:23:33.011Z"
+    },
+    {
+      "fingerprint": "bypass-structural-block-auto-vs-interactive-doc-conflict",
+      "tier": "proposal",
+      "title": "SKILL 与 pre-merge-check.mjs 对 bypass-structural-block 是否属 auto 可执行动作口径冲突",
+      "detail": "SKILL 5.3 与 6.1 把 bypass-structural-block 当成 auto 模式的非 skip 落地动作(context.mjs 也返回 isSkip:false),但 pre-merge-check.mjs 的 note 明确写「交互模式可经用户确认走 admin bypass 合」。本轮 PR #394 命中该分支,两处口径不一致时只能自行取舍,是判定不确定性。",
+      "proposal": "文档口径统一:要么 SKILL 5.3 补一句「auto 模式在独立审查零 P0/P1 且 structuralBypassAvailable=true 时可直接 admin bypass 合」,要么 pre-merge-check 的 note 去掉「交互模式」限定。倾向前者(与 context.mjs 的 isSkip:false 一致)。归为提案而非自动落地:改的是合并授权口径,沾扩权面。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T17:24:01.118Z",
+      "lastSeen": "2026-08-01T17:24:01.118Z"
     }
   ]
 }
