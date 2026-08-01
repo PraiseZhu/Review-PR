@@ -252,9 +252,71 @@ PR #<N> 合了 —— 感谢 @<author>。
 
 `REPO_ROOT` 取自 `REVIEW_PR_REPO_ROOT` 环境变量或当前工作目录。
 
-运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入系统临时目录下、按目标仓库
-绝对路径哈希隔离的子目录。`REVIEW_PR_STATE_DIR` 只用于覆盖外部状态根目录，不能指向
-受 Git 跟踪的项目目录或 Skill 目录。
+运行时锁、空转指纹、提醒去重和 fix-session 状态默认写入目标仓库**主
+worktree**（同一仓库的所有 linked worktree 与 submodule 共享同一份；不是
+当前跑审查用的 REPO_ROOT——那可能是某一轮临时的 linked worktree，按它算
+状态根会让锁/审计/去重分裂）的
+`<主 worktree>/history/loops/review-pr/state/<repoStateKey>`（按目标仓库
+哈希隔离的子目录，随该 checkout 常驻）。以下任一条件成立就回退系统临时
+目录下的同名子目录，不冒险：路径未被目标仓库 `.gitignore` 忽略、状态根落在
+Skill 自身仓库内（防自写）、裸仓库、非 git 仓库、主 worktree 推导失败
+（含 submodule 场景下的推导异常）、git 探针本身失败/超时/权限问题等无法
+判定（unknown——判不了就当不安全，不当作"没问题"放行）、或最终叶子目录的
+写探针（含删除）失败。`REVIEW_PR_STATE_DIR` 环境变量可显式覆盖上述根目录
+（优先级最高），但同样要过这一整套校验——不能指向受 Git 跟踪且未忽略的
+项目目录，也不能指向 Skill 自身仓库；校验不过直接回退系统临时目录，不会
+静默改用仓库默认。首次从旧版升级时，若系统临时目录下已有该仓库的历史
+记录，会自动一次性迁移到新默认位置（逐文件不覆盖已有数据，全部迁移完成
+才落地完成标记），不会丢失。
+
+**已知不支持的仓形态（评估后挂账不修）**：以下三种仓库形态在当前实现下可能绕过
+状态目录的安全校验或造成阻塞，均已实测/推导确认；owner 拍板不修——mivo 是公司
+内部可信成员仓，不设"仓库贡献者主动构造恶意文件系统结构"这类威胁模型，以下三条
+的触发前提都要求有人**主动**把这类结构塞进仓库或状态目录，属防敌不防呆：
+
+1. **父级 symlink 逃逸**：触发条件——仓库内容或人工预置使状态路径的任一中间
+   目录段，**或最终 `STATE_DIR` 叶目录本身**，成为指向仓外现存可写目录的
+   symlink（例如提交 `history -> ..`，或手工把 `.../state/<repoStateKey>`
+   换成 symlink）。后果——mkdir/写文件会跟随该符号链接，状态目录实际落在
+   仓外的任意路径，绕过针对"最终候选路径"做的校验（没有逐级校验路径每个
+   中间目录段是否为 symlink）。若目标仓库有非公司内部/不可信贡献者、或允许
+   外部 PR 直接改动仓库结构，部署时应改用 `REVIEW_PR_STATE_DIR` 显式指向
+   仓外的持久目录，不依赖仓库自身的目录结构。
+2. **run-log 沿状态目录内的 symlink/hardlink 外写、FIFO 阻塞轮次**：触发条件——
+   有人手工在状态目录（`STATE_DIR`）里把 `last-run.json`/`runs.jsonl` 换成指向
+   别处的 symlink 或 hardlink，或换成一个 FIFO（命名管道）。后果——symlink/
+   hardlink 会让 `run-log.mjs` 的写入落到状态目录之外的路径；FIFO 会让
+   `writeFileSync`/`appendFileSync` 在无读端时永久阻塞，整轮审查挂死。若担心
+   状态目录可能被非本人访问的人写入，部署时应改用 `REVIEW_PR_STATE_DIR` 指向
+   权限更严格的仓外目录。
+3. **`core.worktree` 指向另一真实仓**：触发条件——有人手工编辑目标仓库
+   canonical git common-dir 的配置，把 `core.worktree` 改指向一个完全无关的、
+   真实存在的另一个仓库工作目录（该配置文件的位置随仓库形态不同：普通仓通常是
+   `.git/config`，submodule 通常是父仓的 `.git/modules/<name>/config`，
+   separate-git-dir 则是 `<gitdir>/config`）。后果——自证校验（对候选路径跑
+   `--show-toplevel` 必须等于候选自己）在这种篡改下仍会通过（git 本身就会按
+   被改过的 config 解析出内部一致的结果），状态目录可能被引导写进那个无关
+   仓库。若怀疑本机 git config 可能被非授权修改，部署时应改用
+   `REVIEW_PR_STATE_DIR` 显式固定路径，不依赖 git 的推导结果。
+
+生产部署（mac mini，checkout `/Users/praise/mivo-ops/mivo-canvas`）已实测核实
+以上三条均不适用：无 submodule；仓库路径 realpath 后无符号链接；`.git/config`
+未被篡改；存在的唯一 linked worktree（`/private/tmp/mivo-wt-gate-reactivate`）
+已被 `resolveMainWorktreeRoot` 正确处理——状态统一锚定主 worktree，不会各写一份，
+也不会落进会被系统清理的 `/private/tmp`。
+
+**勿在开发机手动跑（Syncthing 同步冲突）**：本机开发副本
+（`~/AI-Agent/Claude/projects/Project MivoCanvas`）在 Syncthing 同步范围内
+（生产 checkout `/Users/praise/mivo-ops/mivo-canvas` 不在同步范围，只有
+`~/About Praise`、`~/AI-Agent`、`/Volumes/AKB2/Obsidian` 会被同步）。在开发机上
+直接跑本 skill，`lock.json`/`runs.jsonl` 等状态文件会落进这份同步目录：多机
+同时运行时，Syncthing 不能提供跨机原子互斥；并发修改还可能生成 sync-conflict
+副本（官方命名格式 `<filename>.sync-conflict-<date>-<time>-<modifiedBy>.<ext>`，
+即 `*.sync-conflict-*`，不是点号开头的隐藏文件），使锁状态和 `runs.jsonl`
+审计历史出现分叉。据 owner 于 2026-08-02 确认，2026-07-28 review-pr skill 仓
+已发生同类事故（未留仓内台账记录）。巡审只应在 mac mini 上跑（离开 Syncthing
+同步范围）；确需在开发机以交互模式跑，必须显式设置 `REVIEW_PR_STATE_DIR`
+指向 `/tmp` 下的临时目录覆盖默认位置。
 
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
 按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
@@ -1118,17 +1180,75 @@ auto 模式可以按维护者配置创建产品/架构讨论 issue、转 draft�
 node "<SKILL_ROOT>/scripts/run-log.mjs"   # 汇总 JSON 走 stdin,脚本写入外部状态目录
 ```
 
+外部状态目录默认位置见 `lib.mjs` 的 `resolvePersistentStateRoot()`（默认落进目标仓库
+主 worktree 的 `history/loops/review-pr/state/`，随该 checkout 常驻；`REVIEW_PR_STATE_DIR`
+仍可显式覆盖，见「Skill 路径与目标仓库」一节的完整校验与回退条件）。`run-log.mjs`
+落盘时会自动注入 `sinceLastRunHours` 与 `sinceLastRunReason`：**从 `runs.jsonl` 尾部
+向前扫描**，找最近一条能解出合法 `loggedAt`（非空字符串且可被 `Date` 解析；`null`/
+数字等非字符串一律不算合法，不会被误判成 epoch 1970）的行，与本轮相减得到小时数——
+不是只看最后一行，防止恰好最后一行被截断/手工改坏时把整段真实历史误判成"首轮"。
+`sinceLastRunReason` 三态：`ok`（正常算出，可能已跳过若干条坏行，跳过数计入本轮
+warning）/ `first-run`（`runs.jsonl` 不存在或为空，真的是第一次）/
+`history-corrupted`（文件有内容但一行都解不出合法 `loggedAt`——审计链本身已损坏，
+这与"首轮"是完全不同的运维含义，不能都归为 `null` 让人猜）。`sinceLastRunHours`
+回答的是"距上一轮多久"，不是"调度层有没有失败轮"（调度失败在 agent 启动前就
+发生，本 skill 拿不到那层信号），但轮次间隔异常拉长本身就是缺口的可观测代理信号。
+`sinceLastRunReason` 与 `sinceLastRunHours` 按代码实现是**三态互斥**（不要照
+模板编造一个两者同时出现的 `<N>`）：`history-corrupted` 时 `sinceLastRunHours`
+恒为 `null`（坏到一行都解不出,天然算不出"距上一轮 N 小时"这个数），
+`first-run` 时同样恒为 `null`；只有 `reason=ok` 时 `sinceLastRunHours` 才是
+真实数字。据此，“其他”行最多补一句、按以下顺序判断，二者不会同时出现：
+- `sinceLastRunReason === 'history-corrupted'` → 补**「runs.jsonl 审计链损坏，
+  历史轮次记录不可信，请人工核查」**；
+- 否则，`reason === 'ok'` 且 `sinceLastRunHours` 超过 6（稳态 cron 轮次的正常
+  最大间隔）→ 补**「检测到上游调度缺口约 `<N>` 小时，可能有失败轮未入账，
+  请查 scheduler」**（`<N>` 取实际数值，不得在 `reason` 不是 `ok` 时编造）；
+- 其余情况（`first-run`，或 `ok` 且未超过阈值）→ 都不写，不要为了凑格式硬补
+  一句。
+
 JSON 结构：
 
 ```json
 {
   "mode": "auto",
-  "processed": [{"pr": 123, "action": "merged", "findings": 0, "url": "https://github.com/<owner>/<repo>/pull/123"}],
+  "processed": [{"pr": 123, "action": "merged", "event": "APPROVE", "findings": 0, "url": "https://github.com/<owner>/<repo>/pull/123"}],
   "skipped": [{"pr": 124, "reason": "ci-pending", "url": "https://github.com/<owner>/<repo>/pull/124"}],
+  "draftSkipped": [{"pr": 140, "reason": "author-draft", "url": "https://github.com/<owner>/<repo>/pull/140"}],
   "failed": [],
   "lockReleased": true
 }
 ```
+
+`processed[].action` 与 `processed[].event` **口径不同、不可混用**：
+
+- `action`：本 skill 自己的业务分类（`merged` / `changes-requested` / `held` /
+  `conflict-merged`（5.5 主干代合并）/ `merge-then-fix`（5.6 代修合并）等），供
+  汇总模板“已合并/已打回/…”分组使用；
+- `event`：**实际提交给 GitHub 的 review 事件**，`processed[]` 每条**必填**，
+  取值仅 `APPROVE` / `REQUEST_CHANGES` / `COMMENT` / `none` 之一：
+  - 5.1 正常批准合并 → `APPROVE`；
+  - 5.1 `selfMergeAvailable` 的 self-merge（GitHub 禁止同账号自我 approve，
+    直接 `--admin` 合并，未提交任何 review）→ `none`；
+  - 5.2 打回：`ownPr=false` → `REQUEST_CHANGES`；`ownPr=true`（GitHub 禁止对
+    自己 PR 提交 REQUEST_CHANGES/APPROVE）→ `COMMENT`——**即使 `action` 仍写
+    `changes-requested`，`event` 必须如实写 `COMMENT`；二者不同是预期行为，
+    不是需要对齐的不一致**（2026-08-01 前的历史记录曾把两者混同，导致审计时
+    误读为“打回都是 REQUEST_CHANGES”，此处明确禁止复发）；
+  - 5.5 主干代合并、5.6 代修合并：全程不提交 `gh pr review` → `none`；
+  - 产品/架构 hold（转 draft，未提交 review）→ `none`。
+
+`draftSkipped` **必须是 `[{pr, reason, url}]` 数组，禁止写成裸数字**（历史上
+只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，
+2026-08-01 起禁止复发）；`context.mjs --scan-all` 输出的同名字段只是扫描期的
+诊断计数（普通作者自转 draft，非产品/架构门 hold），落盘前必须展开成逐 PR
+记录，缺具体原因时至少写 `"author-draft"`/`"unknown"`，不能整条省略。**逐 PR
+明细的确定性来源**：用 `gh pr list --repo <owner>/<repo> --state open --json
+number,isDraft,url` 这条只读命令自己查一遍当前 open 的 draft PR，逐条填进
+`draftSkipped`，禁止凭 `context.mjs` 那个计数字段反推/瞎猜 PR 号——计数只能
+证明"有多少条"，证明不了"是哪几条"（`context.mjs` 本身保持 0 改动，这是
+agent 组装汇总 JSON 时自己另外查一次）。
+`run-log.mjs` 对以上两点只做形态校验、不做语义校验：字段缺失或形态不对时记
+stderr warning 并**照常落盘**，不会因为形态问题拒绝写入或丢数据。
 
 **auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，
 把 6.1 摘要原文（渲染成人类可读 markdown 后的文本，不是 run-log 的原始 JSON）经
@@ -1184,8 +1304,20 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
 - 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
 
-其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次> 😤
+其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
+调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤
 ```
+
+（若本轮 `sinceLastRunReason === 'history-corrupted'`，上面示例的调度缺口那句
+整体替换成「runs.jsonl 审计链损坏，历史轮次记录不可信，请人工核查」。）
+
+这两句按 `sinceLastRunReason`/`sinceLastRunHours` 三态互斥,**最多出现一句，
+不会同时出现**（见上文 6.1 开头的三态说明；`history-corrupted` 时
+`sinceLastRunHours` 恒为 `null`，构不成"距上一轮 N 小时"这个数，不要编造）：
+`reason=history-corrupted` → 只写审计链损坏那句；`reason=ok` 且
+`sinceLastRunHours` 超过 6 → 只写调度缺口那句；其余情况（`first-run`，或
+`ok` 且未超过阈值）→ 都不写，"其他"行只保留锁与写操作两项，不要为了凑格式
+硬写"无缺口"/"审计链完好"这类否定句。
 
 组名用加粗文字而非状态图标（原版 ✅🔴🛠⏸️⏭️⚠️🧬 已去掉，符合「符号与表情配额」的
 状态图标全禁规则）；整条消息按模板 F 配额最多用 1–3 个人格表情，不必每组都加，

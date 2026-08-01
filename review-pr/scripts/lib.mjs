@@ -11,7 +11,7 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync, lstatSync, constants as fsConstants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,9 @@ const SKILL_ROOT = join(SCRIPT_DIR, '..');
  * Skill 与目标仓库解耦：
  * - 所有 git / gh 命令默认作用于调用方 cwd（scheduler 的 workingDir）。
  * - REVIEW_PR_REPO_ROOT 可显式指定目标仓库，入口脚本应在执行前 chdir 到该目录。
- * - 运行时状态放在系统临时目录并按目标仓库绝对路径隔离，不写 Skill 或项目仓库。
+ * - 运行时状态默认落进目标仓库主 worktree 的 `history/loops/review-pr/state/`
+ *   （见下方 `resolvePersistentStateRoot`），经 git-ignore/自写/可写三道校验；
+ *   任一校验不过或无法判定主 worktree 时才回退系统临时目录，不写 Skill 目录本身。
  */
 const rawRepoRoot = process.env.REVIEW_PR_REPO_ROOT || process.cwd();
 export const REPO_ROOT = resolve(rawRepoRoot);
@@ -34,13 +36,19 @@ export const REPO_ROOT = resolve(rawRepoRoot);
 // 不同目录——互斥锁形同虚设(多轮并发)、pre-check 探测的锁目录与会话实际写入目录
 // 对不上、last-scan 空转缓存永不命中(2026-07-25 实锤)。用 git-common-dir(同一仓库
 // 所有 worktree 共享的主 .git)归一锚点;非 git 仓库 / git 不可用时退回 REPO_ROOT。
+// R1(2026-08-01 二审):对 common-dir 结果额外做 realpathSync 归一——macOS 的
+// /var↔/private/var(以及类似的系统级符号链接)会让"相对路径拼出的绝对路径"与
+// "git 自己吐出的绝对路径"字符串不同但指向同一个真实目录,字符串级哈希会把同一
+// 仓库判成两个不同的 repoStateKey(锁/审计/去重身份分裂)。这是本 skill 多仓库
+// 通用安装场景下会自然触发的真实风险,不是测试环境噪音。只加这一层 realpath,
+// 不改其它判定逻辑。
 function resolveStateAnchor() {
   try {
     const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
       cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
     });
     const out = r.status === 0 ? (r.stdout ?? '').trim() : '';
-    if (out) return resolve(REPO_ROOT, out); // 主仓库返回相对 ".git",worktree 返回绝对路径,一律归一成绝对
+    if (out) return realpathSync(resolve(REPO_ROOT, out)); // 主仓库返回相对 ".git",worktree 返回绝对路径,一律归一成绝对再 realpath
   } catch { /* 回退 REPO_ROOT */ }
   return REPO_ROOT;
 }
@@ -49,9 +57,366 @@ const repoStateKey = createHash('sha256')
   .update(isWin ? stateAnchor.toLowerCase() : stateAnchor)
   .digest('hex')
   .slice(0, 20);
-const stateRoot = resolve(process.env.REVIEW_PR_STATE_DIR || join(tmpdir(), 'review-pr'));
+const LEGACY_STATE_ROOT = join(tmpdir(), 'review-pr');
+
+/**
+ * 主 worktree 根目录(F1,经 R7 二审、T2 三审两次重写)。状态根不能拼当前
+ * checkout 的 REPO_ROOT——REPO_ROOT 可能是某一轮审查用的 linked worktree,
+ * 按它算状态根会让同一仓库的不同 worktree/轮次各自写到不同目录,锁/审计/去重
+ * 照样分裂(与上面 stateAnchor 要解决的问题同源)。
+ *
+ * 不用 `basename(git-common-dir) === '.git'` 判断(一审的实现):这条对
+ * submodule 必然失败——submodule 的 common-dir 形如
+ * `<父仓库>/.git/modules/<name>`,basename 是 `<name>` 不是 `.git`,会被无条件
+ * 打回系统临时目录。改用 `git worktree list --porcelain`:多条记录(真正存在
+ * linked worktree)时取**第一条**——git 保证主 worktree 永远排第一(不管从
+ * 主 worktree 还是任意 linked worktree 跑这条命令,结果一致);只有一条记录时
+ * 改用 `--show-toplevel`——实测(git 2.50.1)对没有任何 `worktree add` 记录
+ * 的仓库(包括 submodule),`worktree list --porcelain` 的自报路径存在已知
+ * 偏差:submodule 场景下会报成它自己的 git-dir 而不是真实工作目录。
+ *
+ * T2(2026-08-01 四审):上面这套"多条记录就信第一条"仍不够——submodule 自己
+ * 又被 `worktree add` 出一个 linked worktree、或 `git init
+ * --separate-git-dir` 配合 linked worktree,porcelain 的**第一条**依然会报
+ * 成 git-dir 本身(实测:即使此时确有 2 条记录)。无法只靠"记录数"区分可信/
+ * 不可信,必须对拿到的候选路径做两项独立验证,任一不过就 fail-closed(submodule
+ * 持久化能力让路给安全,不做更复杂的补救):
+ *   ① 候选路径不能等于、也不能落在 `stateAnchor`(REPO_ROOT 的 canonical
+ *      common-dir,已在上面 realpath 归一)之内——候选若是 git 元数据目录
+ *      本身或其子目录,这里会命中;
+ *   ② 对候选路径本身跑 `rev-parse --show-toplevel`,结果必须成功且正好等于
+ *      候选路径自己——git-dir 被误当候选时,这条命令要么报错("must be run in
+ *      a work tree",separate-git-dir 场景实测如此),要么通过 core.worktree
+ *      解析出一个完全不同的路径(submodule 场景实测如此),两种情况都通不过
+ *      这个自证检查。
+ *
+ * 裸仓库的首条记录会带一行 `bare` 标记(没有真正的工作目录)——命中即返回
+ * null。命令本身失败(非 git 仓库、git 不可用)也返回 null。调用方回退系统
+ * 临时目录。
+ */
+function resolveMainWorktreeRoot() {
+  const r = spawnSync('git', ['worktree', 'list', '--porcelain'], {
+    cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  if (r.status !== 0) return null;
+  const lines = (r.stdout ?? '').split('\n');
+  const blocks = [];
+  let cur = [];
+  for (const line of lines) {
+    if (line.trim() === '') {
+      if (cur.length) blocks.push(cur);
+      cur = [];
+    } else {
+      cur.push(line);
+    }
+  }
+  if (cur.length) blocks.push(cur);
+  if (!blocks.length) return null;
+
+  const firstBlock = blocks[0];
+  if (firstBlock.some((l) => l.trim() === 'bare')) return null; // 裸仓库,没有真正的工作目录
+
+  let rawPath;
+  if (blocks.length === 1) {
+    const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
+    });
+    rawPath = top.status === 0 ? (top.stdout ?? '').trim() : '';
+  } else {
+    const worktreeLine = firstBlock.find((l) => l.startsWith('worktree '));
+    rawPath = worktreeLine ? worktreeLine.slice('worktree '.length).trim() : '';
+  }
+  if (!rawPath) return null;
+
+  let candidate;
+  try {
+    candidate = realpathSync(rawPath); // R1 同款 realpath 归一,消解符号链接身份分裂
+  } catch {
+    return null;
+  }
+
+  // T2 校验①:候选不能等于/落在 common-dir 内(git 元数据本身)。
+  if (stateAnchor !== REPO_ROOT) {
+    const relToCommonDir = relative(stateAnchor, candidate);
+    if (relToCommonDir === '' || (!relToCommonDir.startsWith('..') && !isAbsolute(relToCommonDir))) return null;
+  }
+
+  // T2 校验②:候选必须能自证是工作树顶层——对候选本身跑 show-toplevel,结果要
+  // 正好等于候选自己。
+  const selfCheck = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: candidate, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  if (selfCheck.status !== 0) return null;
+  let selfTop;
+  try {
+    selfTop = realpathSync((selfCheck.stdout ?? '').trim());
+  } catch {
+    return null;
+  }
+  if (selfTop !== candidate) return null;
+
+  return candidate;
+}
+
+/** 从某个可能尚不存在的路径向上找最近一个已存在的祖先目录(git 命令与 realpath 都需要真实存在的 cwd)。 */
+function nearestExistingAncestor(p) {
+  let cur = p;
+  while (!existsSync(cur)) {
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return cur;
+}
+
+/**
+ * cwd 相对某个 git 工作树的三态判定(R3,2026-08-01 二审)。一审版本把"git 命令
+ * 本身判断不了"(spawn 失败/超时/权限问题/意外退出码)与"确认不在工作树内"
+ * 混为一谈,统一按 false(=outside)处理——等价于对"判断不了"的情况 fail-open
+ * 放行,与这套改动"宁可回退 tmpdir、绝不冒险"的总原则相反。现在明确三态:
+ *   'inside'  — 确认在工作树内(status 0, stdout 'true');
+ *   'outside' — 确认不在任何工作树内(git 明确报 "not a git repository",
+ *               或 status 0 且 stdout 'false' — 在 .git 目录内但非工作树部分);
+ *   'unknown' — 无法判定(spawn 失败/ENOENT/超时/权限问题/其它未预期的退出码
+ *               或输出)——调用方必须把 unknown 当不安全处理,不能当 outside。
+ */
+function probeGitWorkTreeState(cwd) {
+  const r = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  if (r.error) return 'unknown'; // spawn 层失败(git 不在 PATH、超时等)
+  if (r.status === 0) {
+    const out = (r.stdout ?? '').trim();
+    if (out === 'true') return 'inside';
+    if (out === 'false') return 'outside';
+    return 'unknown'; // 意外输出,不猜测
+  }
+  if (r.status === 128 && /not a git repository/i.test(r.stderr ?? '')) return 'outside';
+  return 'unknown'; // 其它退出码(权限问题等)一律归 unknown,fail-closed
+}
+
+/**
+ * F2①:该路径是否可以安全写入而不弄脏某个 git working tree(R3 二审:三态
+ * fail-closed)。
+ *   - 确认不在任何 git 工作树内('outside')→ 没有"脏树"这个概念,视为安全;
+ *   - 确认在工作树内('inside')→ 必须被该仓库的 `.gitignore` 覆盖
+ *     (`git check-ignore -q` exit 0)才安全,check-ignore 本身失败(spawn 错误 /
+ *     非 0/1 的退出码)一律按不安全处理;
+ *   - 无法判定('unknown')→ 直接按不安全处理,回退系统临时目录——判不了就不能
+ *     当作"没问题"放行。
+ * cwd 用路径本身最近的已存在祖先目录——路径可能尚不存在(如首次落盘前)。
+ */
+function isSafeFromDirtyWorkingTree(candidatePath) {
+  const cwd = nearestExistingAncestor(candidatePath);
+  const state = probeGitWorkTreeState(cwd);
+  if (state === 'unknown') return false;
+  if (state === 'outside') return true;
+  const r = spawnSync('git', ['check-ignore', '-q', candidatePath], { cwd, shell: isWin, timeout: 10_000 });
+  if (r.error) return false;
+  return r.status === 0;
+}
+
+/** 拿 cwd 所在仓库的 canonical 身份(git-common-dir 的 realpath);取不到返回 null。 */
+function canonicalRepoIdentity(cwd) {
+  const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+    cwd, encoding: 'utf8', shell: isWin, timeout: 10_000,
+  });
+  if (r.status !== 0) return null;
+  const out = (r.stdout ?? '').trim();
+  if (!out) return null;
+  try {
+    return realpathSync(resolve(cwd, out));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * F2②:拒绝状态根落在 Skill 自身仓库内(防自写,R2 二审修订)。一审版本比较
+ * 的是"worktree 的文件系统根路径"(`git rev-parse --show-toplevel` 的
+ * realpath)——Skill 仓库若存在另一个 linked worktree(如本次改动本身就跑在
+ * 这样一个 worktree 里),候选路径落在那个 worktree 下时,文件系统根路径比对
+ * 完全不同,门形同虚设。现在比较双方的 canonical 仓库身份(git-common-dir 的
+ * realpath)——同一仓库的所有 worktree 共享同一个 common-dir,不管候选路径
+ * 落在哪个 worktree 下都能正确识别为"同一个 skill 仓库"。
+ */
+function isInsideSkillRepo(candidatePath) {
+  const info = skillRepoInfo();
+  if (!info) return false; // Skill 不在任何 git 仓库内,没有"自写"这个风险
+  const skillIdentity = canonicalRepoIdentity(info.gitRoot);
+  if (!skillIdentity) return false;
+  const ancestor = nearestExistingAncestor(resolve(candidatePath));
+  const candidateIdentity = canonicalRepoIdentity(ancestor);
+  if (!candidateIdentity) return false; // 候选路径不在任何 git 仓库内,不可能是 skill 仓库
+  return candidateIdentity === skillIdentity;
+}
+
+/**
+ * F3/R4:写文件 + 删除的真实探针。mkdir 成功不代表可写(某些只读文件系统对
+ * 已存在目录的 mkdir 直接成功,真正写文件才报错);unlink 失败同样必须判定
+ * "不可用"——锁文件(`release-lock.mjs`/`cleanup.mjs`)的整个生命周期依赖
+ * unlink 成功,一个只能创建/写入但删不掉文件的目录会让锁永久卡死,不是可用
+ * 的状态根。
+ */
+function writeProbeOk(dir) {
+  const probe = join(dir, `.write-probe-${process.pid}-${Date.now()}`);
+  try {
+    writeFileSync(probe, '');
+  } catch {
+    return false;
+  }
+  try {
+    unlinkSync(probe);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 某候选根目录是否可以安全、可靠地作为状态根(F1-F3 三道校验合一):
+ * 不在未忽略的工作树内(F2①)、不在 Skill 自身仓库内(F2②)、且最终叶子目录
+ * `root/repoStateKey` 通过真实写探针(F3)。三者全过才返回 true。
+ */
+function isStateRootSafeAndWritable(root) {
+  if (!isSafeFromDirtyWorkingTree(root)) return false;
+  if (isInsideSkillRepo(root)) return false;
+  const dir = join(root, repoStateKey);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return false;
+  }
+  return writeProbeOk(dir);
+}
+
+/**
+ * 状态根目录优先级(SC2-1,经 2026-08-01 审核 F1/F2/F3 修订)。此前恒为系统
+ * 临时目录,mac mini 实测:scheduler 停摆超过 3 天,macOS dirhelper 的
+ * `CLEAN_FILES_OLDER_THAN_DAYS=3` 清理策略会把 runs.jsonl / last-scan.json /
+ * fix-sessions.json 等审计历史整个清空。当前优先级:
+ *   ① `REVIEW_PR_STATE_DIR` 环境变量——显式覆盖,但仍须过 F2①/F2②/F3 三道
+ *      校验(文档已声称"不能指向受 Git 跟踪的项目目录或 Skill 目录",这里是
+ *      真正执行,不再只是文档承诺);校验不过直接回退系统临时目录,不静默
+ *      改用仓库默认(用户的显式选择不该被 skill 偷偷换掉);
+ *   ② `<主 worktree>/history/loops/review-pr/state`——锚定同仓库所有 worktree
+ *      共享的主 checkout(见 `resolveMainWorktreeRoot`,不是当前 REPO_ROOT),
+ *      随该 checkout 常驻;同样须过 F2①/F2②/F3;
+ *   ③ 系统临时目录(旧默认)——裸仓库、非 git 仓库、或以上两层任一校验不过时
+ *      的最终回退,好于直接抛错崩溃。
+ * `repoStateKey` 子目录隔离保持不变:三层优先级只决定"根在哪",同一仓库的
+ * 不同 worktree/轮次仍共享同一个 `<根>/<repoStateKey>/`(见上方 stateAnchor
+ * 注释——这层由 git-common-dir 锚定,与本次改动无关,不受影响)。
+ */
+function resolvePersistentStateRoot() {
+  if (process.env.REVIEW_PR_STATE_DIR) {
+    const envRoot = resolve(process.env.REVIEW_PR_STATE_DIR);
+    if (isStateRootSafeAndWritable(envRoot)) return envRoot;
+    process.stderr.write(
+      `[review-pr] REVIEW_PR_STATE_DIR=${envRoot} 未通过校验(工作树状态无法判定 / ` +
+      '未被 .gitignore 忽略 / 落在 Skill 自身仓库内 / 写探针失败),回退系统临时目录\n',
+    );
+    return LEGACY_STATE_ROOT;
+  }
+  const mainRoot = resolveMainWorktreeRoot();
+  if (mainRoot) {
+    const repoBased = join(mainRoot, 'history', 'loops', 'review-pr', 'state');
+    if (isStateRootSafeAndWritable(repoBased)) return repoBased;
+    process.stderr.write(
+      `[review-pr] 默认状态根 ${repoBased} 未通过校验(工作树状态无法判定 / ` +
+      '未被 .gitignore 忽略 / 落在 Skill 自身仓库内 / 写探针失败),回退系统临时目录\n',
+    );
+  }
+  return LEGACY_STATE_ROOT;
+}
+
+const stateRoot = resolvePersistentStateRoot();
 export const STATE_DIR = join(stateRoot, repoStateKey);
 mkdirSync(STATE_DIR, { recursive: true });
+
+const MIGRATION_MARKER = '.migrated-from-tmp.json';
+
+/**
+ * 一次性迁移(F4,2026-08-01 一审修订;R5 二审补充目标类型冲突检测;T1 四审
+ * 补充悬空 symlink 与检查-复制竞态修复)。判据改为"marker 是否存在"而不是
+ * "新目录有没有 runs.jsonl"——旧判据在部分失败场景下会永久卡死(第一次迁移
+ * 复制完 runs.jsonl 后在其他文件上失败,marker 没写;下一次调用因为 runs.jsonl
+ * 已经"看起来存在"而直接跳过,永远补不齐剩下的文件)。现在:
+ *   - 触发条件只看 marker 是否存在,marker 不存在就总会重试;
+ *   - 逐文件 no-clobber:目标已存在的文件跳过不覆盖——保证即使本轮已经产生了
+ *     真实的新数据(如 runs.jsonl 已被新一轮 review 追加过),重试迁移也绝不会
+ *     用旧 tmpdir 里更早、更小的版本覆盖回去;
+ *   - T1:判断"目标是否已存在"**不用 `existsSync` 前置**——`existsSync` 会跟随
+ *     符号链接,对**悬空 symlink**(链接目标不存在)返回 `false`,导致误判成
+ *     "目标不存在"从而继续走复制;`copyFileSync` 沿着这个悬空链接写入会把
+ *     legacy 内容写到状态根之外的任意路径(实测复现)。直接 `lstatSync`(不
+ *     跟随链接):`ENOENT` 才是"确实不存在";只要 lstat 成功,不管是普通文件、
+ *     目录、还是(悬空与否的)symlink,都当"已存在"处理,只有普通文件算
+ *     "已迁移完成、可跳过",其余(含任何 symlink)一律按类型冲突处理——
+ *     和 R5 的判定合一,不再需要先 `existsSync` 短路;
+ *   - T1:实际复制用 `COPYFILE_EXCL` 排他创建——`lstatSync` 检查和 `copyFileSync`
+ *     复制之间仍有微小窗口,任何东西(并发进程、新出现的符号链接)在这期间
+ *     抢先在目标位置落地,`EXCL` 会让复制原子性地失败(`EEXIST`)而不是沿着
+ *     新出现的东西写,不依赖"检查时看到的状态在复制时还成立"这个假设;
+ *   - 目标存在但不是普通文件(目录/symlink/其它类型),或 lstat/复制本身因
+ *     非 `ENOENT` 原因失败,都记 warning、**不写 marker**,保住下次重试的
+ *     机会(不会被静默当成"已完成");
+ *   - 只有这一轮没有任何类型冲突、且把 legacy 目录里的每个文件都处理完
+ *     (拷贝成功或因目标已确认是普通文件而跳过)才写 marker,且 marker 用
+ *     临时文件 + rename 落盘(同文件系统下 rename 是原子操作)——marker 存在
+ *     ⇔ 迁移已完整跑完,不会出现"半完成但已标记完成"的中间态,迁移失败
+ *     (权限/磁盘等)只记 stderr warning、不阻断,下次调用会自动重试补齐。
+ */
+function migrateLegacyStateIfNeeded() {
+  if (stateRoot === LEGACY_STATE_ROOT) return; // 新旧根相同,无需迁移
+  const legacyDir = join(LEGACY_STATE_ROOT, repoStateKey);
+  const marker = join(STATE_DIR, MIGRATION_MARKER);
+  if (existsSync(marker) || !existsSync(legacyDir)) return;
+  try {
+    let hasConflict = false;
+    for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name === MIGRATION_MARKER) continue;
+      const dest = join(STATE_DIR, entry.name);
+
+      let destStat = null;
+      try {
+        destStat = lstatSync(dest); // 不跟随符号链接;悬空 symlink 在这里会正常返回(报告的是链接本身)
+      } catch (e) {
+        if (e.code !== 'ENOENT') {
+          hasConflict = true;
+          process.stderr.write(`[review-pr] 迁移目标 ${dest} 类型无法确认(${e.message}),按冲突处理,保留重试机会\n`);
+          continue;
+        }
+        // ENOENT = 确实不存在,继续往下走复制路径(destStat 保持 null)
+      }
+      if (destStat) {
+        if (!destStat.isFile()) {
+          hasConflict = true;
+          const kind = destStat.isDirectory() ? '目录' : destStat.isSymbolicLink() ? 'symlink(可能悬空)' : '其它类型';
+          process.stderr.write(`[review-pr] 迁移目标 ${dest} 已存在但不是普通文件(${kind}),视为冲突,跳过并保留重试机会\n`);
+        }
+        continue; // 无论"已完成"(普通文件)还是"冲突",都不覆盖已存在的目标
+      }
+
+      try {
+        copyFileSync(join(legacyDir, entry.name), dest, fsConstants.COPYFILE_EXCL);
+      } catch (e) {
+        hasConflict = true;
+        process.stderr.write(`[review-pr] 迁移目标 ${dest} 复制时被抢先占用或失败(${e.message}),视为冲突,跳过并保留重试机会\n`);
+      }
+    }
+    if (hasConflict) return; // R5/T1:冲突未消除就不写 marker,下次调用会重新检查
+    const tmpMarker = `${marker}.tmp-${process.pid}`;
+    writeFileSync(
+      tmpMarker,
+      JSON.stringify({ migratedAt: new Date().toISOString(), from: legacyDir, to: STATE_DIR }, null, 2),
+    );
+    renameSync(tmpMarker, marker); // 同文件系统 rename 是原子操作,marker 不会以"半写"状态出现
+  } catch (e) {
+    process.stderr.write(`[review-pr] 状态目录一次性迁移未完成(不阻断,下次调用会重试补齐): ${e.message}\n`);
+  }
+}
+migrateLegacyStateIfNeeded();
 
 export function stateFile(name) {
   return join(STATE_DIR, name);
