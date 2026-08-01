@@ -123,6 +123,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `own-pr-p1-has-no-blocking-force` **自有 PR 的 P1 只能发 COMMENT,无阻断力,必须靠汇总点名人工把关** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
+  - 现象:PR #394 作者是本流程账号自己(ownPr=true),GitHub 禁止对自有 PR 提 REQUEST_CHANGES,只能发 COMMENT;selfFixAuthors 为空(首周刻意)所以也不投跟进会话。该 P1 是描述不实类、无法锚成行级 thread,因此没有任何机制挡住误合并,只能靠 6.1 汇总的「需要你」提示。设计如此,不因重复出现而放开。
 - `security-review-paths-dominates-ci-dep-bumps` **securityReviewPaths 吞掉半数候选:dependabot CI action bump 与自有 CI/配置 PR 全转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 11 个候选里 5 个(3 个 dependabot 的 actions/checkout、setup-node、npm 分组 bump,2 个自有 CI workflow / pr-rules.json 改动)命中 securityReviewPaths,一律 skip-security-review 转人工。这是该门的设计意图(防自动化改坏自己后再自审自合),不是缺陷;记录用于观察人工队列积压量——若 dependabot 的 CI action bump 长期堆积,是配置口径问题(owner 决定是否给纯 SHA-pin bump 开窄豁免),不是 skill 自动化范围。
 - `dependabot-ci-deps-always-security-review` **dependabot 的 CI/依赖升级 PR 结构上永远落进 skip-security-review** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked

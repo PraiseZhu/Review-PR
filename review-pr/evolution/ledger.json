@@ -1144,6 +1144,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T17:24:04.924Z",
       "lastSeen": "2026-08-01T17:24:04.924Z"
+    },
+    {
+      "fingerprint": "own-pr-p1-has-no-blocking-force",
+      "tier": "by-design",
+      "title": "自有 PR 的 P1 只能发 COMMENT,无阻断力,必须靠汇总点名人工把关",
+      "detail": "PR #394 作者是本流程账号自己(ownPr=true),GitHub 禁止对自有 PR 提 REQUEST_CHANGES,只能发 COMMENT;selfFixAuthors 为空(首周刻意)所以也不投跟进会话。该 P1 是描述不实类、无法锚成行级 thread,因此没有任何机制挡住误合并,只能靠 6.1 汇总的「需要你」提示。设计如此,不因重复出现而放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-01T17:24:08.703Z",
+      "lastSeen": "2026-08-01T17:24:08.703Z"
     }
   ]
 }
