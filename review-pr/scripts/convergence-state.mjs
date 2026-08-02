@@ -311,10 +311,15 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
   const p0p1Count = findings.length;
   // 连续计数从"这个 head 之前那一条"续接——覆盖场景下"之前那一条"是
   // heads[existingIdx-1](不能用即将被本轮替换掉的自己);新 head 场景下就是
-  // 数组末尾那一条(若存在)。
+  // 数组末尾那一条(若存在)。真正的第一条 head(此刻 state.heads 仍为空)如果
+  // 带着 D4 的保守 seed,续接点不能是 0——0 等价于"当作全新 PR",会让老 PR 白白
+  // 再多等 seedRoundCount 轮才追上真实进度,与"保守"的意图相反;此时续接点改用
+  // seedRoundCount 本身(种子只代表"已知的历史轮次数",不预设这些历史轮次本身
+  // 是否都带新问题,所以只做续接基数,不直接当"已经连续 N 轮"处理)。
   const priorForStreak = isNewHead ? state.heads[state.heads.length - 1] : state.heads[existingIdx - 1];
+  const seedFloor = (isNewHead && state.heads.length === 0 && state.seed) ? state.seed.seedRoundCount : 0;
   let consecutiveRoundsWithNewFamilies = newFamilyCount > 0
-    ? (priorForStreak?.consecutiveRoundsWithNewFamilies ?? 0) + 1
+    ? (priorForStreak?.consecutiveRoundsWithNewFamilies ?? seedFloor) + 1
     : 0;
   if (forceCheckpoint) {
     consecutiveRoundsWithNewFamilies = Math.max(consecutiveRoundsWithNewFamilies, CONVERGENCE_CHECKPOINT_THRESHOLD);

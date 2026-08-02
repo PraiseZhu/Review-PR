@@ -249,7 +249,7 @@ test('markThresholdNotified 在 state 尚不存在(missing)时必须 throw,不�
 
 // ── seed:仅首次生效,老 PR 保守 seed 规则 ──
 
-test('D4 seed:seedRoundCount 只在首次记录时生效,后续调用忽略(不会每轮重复叠加)', () => {
+test('D4 seed:seedRoundCount 只在首次记录时生效,后续调用忽略(不会每轮重复叠加);且真的会推高首轮的连续计数,不是只记个审计字段', () => {
   const pr = 970014;
   resetPr(pr);
   const r1 = recordConvergenceRound({
@@ -257,13 +257,23 @@ test('D4 seed:seedRoundCount 只在首次记录时生效,后续调用忽略(不�
   });
   const { state: s1 } = readConvergenceState(pr);
   assert.deepEqual(s1.seed, { seedRoundCount: 3, seededAt: s1.seed.seededAt });
-  assert.equal(r1.consecutiveRoundsWithNewFamilies, 1, 'seedRoundCount 只记录在 state.seed 里供人工核查,不直接叠加进连续计数(避免与"连续"语义混淆——种子代表历史证据,不是本轮就已经连续多少轮)');
+  assert.equal(
+    r1.consecutiveRoundsWithNewFamilies, 4,
+    'D4「保守 seed」必须真的推高首轮起点(seedRoundCount+1),否则老 PR 会被当成全新 PR,要多等 seedRoundCount 轮才追上真实进度——与"保守"的意图相反',
+  );
 
   recordConvergenceRound({
     pr, headRefOid: 'sha-2', findings: [{ invariant: 'B', severity: 'P1' }], seedRoundCount: 999,
   });
   const { state: s2 } = readConvergenceState(pr);
   assert.equal(s2.seed.seedRoundCount, 3, '第二次调用传入的 seedRoundCount 必须被忽略,不能覆盖首次种下的值');
+});
+
+test('D4 seed:首轮若本身就是 0 新家族(收敛),不因为有 seed 就强行判定未收敛', () => {
+  const pr = 970018;
+  resetPr(pr);
+  const r1 = recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [], seedRoundCount: 7 });
+  assert.equal(r1.consecutiveRoundsWithNewFamilies, 0, '首轮本身干净时,不该因为 seed 存在就把连续计数抬高——seed 只影响"有新问题时从哪起跳",不能无中生有制造未收敛');
 });
 
 test('computeConservativeSeedRounds:纯函数,统计 CHANGES_REQUESTED,非数组/缺失一律 0(不编造)', () => {
