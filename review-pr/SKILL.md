@@ -786,6 +786,58 @@ ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1�
 安全、凭证、用户数据、wire protocol、数据库历史 migration、system prompt、更新器、
 IPC／权限边界和跨端适配命中专项规则时，专项规则的阻断条件优先于一般判断。
 
+### 4.2 记录本轮收敛状态（同族复发判定，机器侧）
+
+本节是「审查收敛状态」的单一权威（`scripts/convergence-state.mjs`）——与
+`write-review-receipt.mjs` 的回执是**两次独立落盘**，互不覆盖也互不替代：回执判
+「这个 head 干不干净」（last-write-wins，只留最新一条，5.1 的 admin-trust 分级
+合并消费它）；本节记「这个 PR 跨多轮 head 收敛得怎么样」（每 PR 一份持久文件，
+记录 P0/P1 按「家族」在跨 head 的出现历史）。两者都要各自维护，不能因为写了一个
+就省略另一个。
+
+**触发时机**：主 agent 完成 4 节「逐条回到源码、测试和规则原文复核」之后——即
+findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 不算，已舍弃的条目不算）
+的那一刻。这一步在阶段二独立审查**每一轮**都要做，不只是 5.1 admin-trust 路由
+才做（那是回执的专属场景）。
+
+**步骤**：
+
+1. **先查已有家族**：`node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --get`
+   拿到当前 state（`families` 里每个家族的 `invariant` 描述与历史 `occurrences`）。
+2. **判断是否复发（T1，语义判断，只能由 agent 做）**：把本轮存活的每条 P0/P1
+   finding 与 `families` 逐条比对——是否与某个既有家族违反的是同一条不变量、且
+   上一次的修法没有覆盖全部触发路径。是就记 `recurrenceOfFamily: <familyId>`；
+   不是（包括这个 PR 第一次出现这类问题）就省略该字段，脚本会自动建新家族。
+   **本脚本不做语义匹配，只核验引用的家族历史是否真实存在**——`recurrenceOfFamily`
+   指向一个不存在、或没有早于当前 head 记录的 familyId 时会直接 throw，不会静默
+   当新家族处理（防止"反正声称复发就信了"）。
+3. **落盘**：把本轮 findings 转成
+   `[{invariant, severity:"P0"|"P1", description, recurrenceOfFamily?}]` 数组，
+   经 stdin 传给
+   `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --head <headRefOid>`
+   （0 P0/P1 时传空数组 `[]`，代表本轮收敛信号）。该 PR **第一次**被记录、且经
+   `gh pr view --json reviews` 查到已有历史 `CHANGES_REQUESTED` 时，把
+   `computeConservativeSeedRounds(reviews)` 的结果通过 `--seed-existing-rounds <N>`
+   传入（D4「老 PR 首次接入的保守 seed」——只在首次生效，之后的调用会被忽略，不用
+   每轮重复传）。
+4. **返回值消费**：脚本返回 `{roundCount, p0p1Count, newFamilyCount,
+   consecutiveRoundsWithNewFamilies, recurringFamilies, checkpointRequired,
+   notifyRequired, integrityWarning}`。
+   - `recurringFamilies` 非空时，5.2 打回文案对这些条目要标注"复发"并指出
+     `priorHead`/`priorDescription`（例如："此问题在 `<priorHead 短 sha>` 已提过一次，
+     上一轮的修法未覆盖当前这条触发路径"）——按「对外话术与人格边界」的既有基调写，
+     不新造模板；
+   - `integrityWarning` 非空时（收敛状态文件本身损坏过，已隔离旧文件重建）必须在
+     内部汇总/review 正文里如实带一句（措辞同 6.1 对 `runs.jsonl` 审计链损坏的
+     处理："收敛状态文件损坏，历史轮次记录不可信，请人工核查该 PR 是否已经历多轮
+     未收敛"），不能吞掉；
+   - `checkpointRequired`/`notifyRequired` 的消费见 5.7「收敛止损」。
+
+**安全边界（不可放宽）**：复发的 finding 依然是 P0/P1、依然计入本轮
+`p0p1Count`、依然应使这一轮的 review-receipt 判 `dirty`（若走 5.1 的 admin-trust
+路由）、依然阻断合并——`recurrenceOfFamily` **只**影响 `newFamilyCount`（收敛
+趋势指标），不影响、也不能被误用来影响任何合并判定路径或 `isReviewReceiptClean`。
+
 ## 5. 阶段三：落地
 
 ### 5.1 通过：批准并合并
@@ -1176,6 +1228,46 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
 
 **汇总要求**：走本路径的 PR 在最终结论/汇总中标注"代修合并"，写明冲突文件数、
 代修问题数（P0/P1 计数）、follow-up commit 列表与验证结果，以及告知评论已发/未发。
+
+### 5.7 收敛止损（收敛检查点与红色通报，机器侧触发）
+
+本节消费 4.2 `record-convergence-round.mjs` 返回的 `checkpointRequired` /
+`notifyRequired`——本节只定义**触发条件与拦截点**（机械判断），不定义检查点本身
+要问哪六个问题、也不定义播报的人格化措辞，那两块分别是收敛检查点契约文本与「对外
+话术与人格边界」的既有职责范围，本节只负责把机器算出的信号接进正确的流程节点。
+
+**`checkpointRequired=true`（连续 `CONVERGENCE_CHECKPOINT_THRESHOLD` = 5 轮仍有
+新 P0/P1 家族，或本轮检测到收敛状态文件损坏被强制触发，见 4.2）**：
+
+- **`selfFixAuthors` 的自动跟进修复（5.4）路径**：这是硬拦截点——5.4 步骤 3
+  「投递」下一轮修复任务给跟进会话之前，必须先完成一次收敛检查点（具体问哪几项、
+  记录到哪，按收敛检查点契约执行），检查点完成前**不得**继续投递新的 fix-handoff
+  轮次，避免跟进会话在同一类问题上无限次"修了又坏"式空转；
+- **非 self-fix 的常规 PR（5.2 打回路径）**：本轮打回评论正文里必须显式带一段完整
+  的检查点请求（列出连续未收敛的家族清单，逐条附 `invariant` 与最近一次
+  `priorHead`/`priorDescription`；具体措辞按「对外话术与人格边界」现有基调写，
+  不新造模板），提醒作者/维护者在继续修之前先确认根因，而不是本 skill 自己代替
+  人工完成检查点。
+
+**`notifyRequired=true`（连续达到 `CONVERGENCE_NOTIFY_THRESHOLD` = 10 轮仍有新
+P0/P1 家族，且当前 head 尚未对该阈值通知过）**：
+
+1. 读 `pr-rules.json` 的 `summaryBroadcast.command`（4.2 起同一份配置，不新增
+   配置项、不硬编码群/收件人；未配置则该门关闭，只在内部汇总标注一句
+   "本 PR 已连续 ≥10 轮未收敛，但目标仓库未配置 summaryBroadcast，无法主动播报"）；
+2. 已配置时，把一段事实性正文（连续轮数、`recurringFamilies` 摘要、PR 链接；
+   语气仍遵循「对外话术与人格边界」现有基调，不额外新造模板编号）经
+   `<正文> | node "<SKILL_ROOT>/scripts/notify-summary.mjs" --title "<标题>"`
+   发出——复用 6.1 owner 每轮汇总已在用的同一条播报出口，不新建通道；
+3. 无论 `notify-summary.mjs` 返回 `posted` 是否为真（配置缺失/子进程失败都不
+   阻断本轮收尾），只要**已经走到"决定要发"这一步**，就调用
+   `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --mark-notified --threshold 10 --head <headRefOid>`
+   回写去重——按 PR + 阈值 + head 三元组去重（同一 head 不重复刷屏；新推的 head
+   若仍未收敛会重新触发，不是"发过一次就永久静音"）。
+
+**边界**：本节的检查点/通报都是"提醒人介入"，不是自动阻断合并的新 gate——是否
+合并仍完全由 4.1/5.1/5.2 现有判定决定；`checkpointRequired`/`notifyRequired` 为
+真本身不构成新的 P0/P1，也不写入 `p0p1Count`。
 
 ## 6. Auto 批处理
 
