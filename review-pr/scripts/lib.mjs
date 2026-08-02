@@ -1554,24 +1554,75 @@ export function parseRosterLine(line) {
 // ── Loop 托管 PR 排除(与目标仓库自有的自动修 bug loop 共存;context.mjs 扫描分类、
 // notify-merge-ack.mjs 判断是否要发合并致谢共用同一份判定,防止两处判据漂移)──
 
+// normalizeTitlePrefixes 的可信上限(SC-E1-1,2026-08-02):防止误配置(整段贴错 JSON、
+// 脚本生成的巨量前缀等)拖成分钟级停顿——20000 项唯一前缀在旧版 O(n²) 实现下实测耗时
+// 2775.7ms。取值依据:①MAX_ITEM_BYTES=128,真实 loop 前缀形如 `[bug-doctor] `/`[mivo] `
+// 不到 20 字节,128 留出 6 倍以上冗余,同时挡掉误粘贴的整行文本;②MAX_COUNT=32,一个仓库
+// 迁移期同时存在的新旧 loop 前缀通常是个位数,32 已是"十几个 loop 并存"都覆盖不到的
+// 宽松上限,真配到这个数量基本可判定为误配而非正常迁移;③MAX_TOTAL_BYTES=4096,与前两项
+// 自洽(32×128=4096),保证 20000 项级误配在归一化阶段就被判定超限。
+const TITLE_PREFIX_MAX_COUNT = 32;
+const TITLE_PREFIX_MAX_ITEM_BYTES = 128;
+const TITLE_PREFIX_MAX_TOTAL_BYTES = 4096;
+
 /**
  * 归一化 loopPrExclusion 的标题前缀配置:兼容 legacy `titlePrefix`(单值 string)与新
  * `titlePrefixes`(string[])——两者可以同时配置(如目标仓库 loop 改名后新旧前缀并存的
- * 迁移期)。数组项在前(保持声明顺序),legacy 单值去重后追加在末尾。非法形态(非数组 /
- * 非字符串 / 空字符串)静默过滤,不抛错——配置来自本仓自己的 pr-rules.json,不是攻击面,
- * 容错优先于报错。rules 为 null/未配置任一字段时返回空数组。
+ * 迁移期)。用 Set 做 O(n) 去重(SC-E1-1,2026-08-02:替掉此前 `prefixes.includes(p)` 在
+ * 循环内造成的 O(n²))。返回的 prefixes 按长度降序排列供调用方 `.find()` 命中最长前缀
+ * (SC-LONGEST-2)——不依赖数组声明顺序,也不假设"数组项在前、legacy 追加末尾"。
+ *
+ * ⚠️ 配置 titlePrefixes/titlePrefix 时,前缀字面量必须包含标题里实际存在的尾随空格——
+ * 写 `"[mivo] "` 而非 `"[mivo]"`。少了这个空格,剥离后 titleForFormat 会带一个前导空格
+ * (如 " fix: ..."),TITLE_TYPE_RE 锚定行首 `^(type)` 匹配不到,格式门仍会误判——这不是
+ * 本函数的 bug,它只按字面量精确剥离,不做 trim。
+ *
+ * 非法形态(非数组 / 非字符串 / 空字符串)按同文件 `normalizeLoginList` 的既有约定处理
+ * (SC-WARN-3,2026-08-02):过滤掉非法条目、用能过滤到的合法子集继续工作,同时返回
+ * `invalid=true`——不再是"静默过滤,不抛错"就完事;调用方(context.mjs)必须在 invalid
+ * 时经既有 CONFIG_WARNINGS 通道显著告警,不能悄悄吞掉"配置形态不合法"这个信号。
+ *
+ * 项数 / 单项长度 / 总字节任一超过上方可信上限时返回 `overLimit=true`、`prefixes=[]`——
+ * fail-safe 整体禁用 loop 托管 PR 排除机制,不是"超限的丢弃、没超限的部分继续工作"
+ * (调用方 detectLoopExclusion 据此直接返回 null,不能只吞掉超限前缀后用剩下的凑合判定,
+ * 否则误配置只会表现为"部分 loop PR 突然被当成人类 PR 审"这种难定位的诡异行为)。
+ *
+ * rules 为 null/未配置任一字段时返回 `{ prefixes: [], invalid: false, overLimit: false }`。
+ * 配置文件本身来自 REVIEW_PR_RULES_FILE 环境变量 / 目标仓库自己的
+ * `<REPO_ROOT>/agent-use/docs/pr-rules.json` / 本 Skill 默认配置三者之一(见 loadRules()
+ * 的解析优先级),不是"本仓自己的 pr-rules.json"——不同脚本读取到的可能是目标仓库自备的
+ * 那份,不能假设就是 Skill 自带默认值。
+ *
+ * 返回 { prefixes: string[], invalid: boolean, overLimit: boolean }。
  */
-function normalizeTitlePrefixes(rules) {
-  const prefixes = [];
-  if (Array.isArray(rules?.titlePrefixes)) {
-    for (const p of rules.titlePrefixes) {
-      if (typeof p === 'string' && p !== '' && !prefixes.includes(p)) prefixes.push(p);
+export function normalizeTitlePrefixes(rules) {
+  const seen = new Set();
+  let invalid = false;
+
+  const collect = (value, isArrayField) => {
+    if (value === undefined || value === null) return;
+    if (isArrayField && !Array.isArray(value)) { invalid = true; return; }
+    for (const p of (isArrayField ? value : [value])) {
+      if (typeof p !== 'string' || p === '') { invalid = true; continue; }
+      seen.add(p); // Set 天然去重,O(1) 均摊,不再是 O(n) 的 includes() 扫描
     }
+  };
+  collect(rules?.titlePrefixes, true);
+  collect(rules?.titlePrefix, false);
+
+  const prefixes = [...seen];
+  let totalBytes = 0;
+  let overLimit = prefixes.length > TITLE_PREFIX_MAX_COUNT;
+  for (const p of prefixes) {
+    const bytes = Buffer.byteLength(p, 'utf8');
+    if (bytes > TITLE_PREFIX_MAX_ITEM_BYTES) overLimit = true;
+    totalBytes += bytes;
   }
-  if (typeof rules?.titlePrefix === 'string' && rules.titlePrefix !== '' && !prefixes.includes(rules.titlePrefix)) {
-    prefixes.push(rules.titlePrefix);
-  }
-  return prefixes;
+  if (totalBytes > TITLE_PREFIX_MAX_TOTAL_BYTES) overLimit = true;
+  if (overLimit) return { prefixes: [], invalid, overLimit: true };
+
+  prefixes.sort((a, b) => b.length - a.length); // 最长前缀优先命中(SC-LONGEST-2)
+  return { prefixes, invalid, overLimit: false };
 }
 
 /**
@@ -1584,11 +1635,12 @@ function normalizeTitlePrefixes(rules) {
  * source 标注判据来源(body-marker / state.json / default),供排查与飞书汇总措辞用。
  * matchedPrefix 是实际命中的那一个前缀字面量(供调用方剥标题用,如 context.mjs 的
  * titleForFormat——不能假设是 rules.titlePrefix,配置了 titlePrefixes 数组时命中的可能
- * 是数组里的任一项)。
+ * 是数组里的任一项,且总是取归一化后按长度降序排列的最长匹配项,见 normalizeTitlePrefixes)。
  * rules 来自 pr-rules.json 的 loopPrExclusion 字段,调用方自行 JSON.parse 后传入
  * (不同脚本读取 pr-rules.json 的相对路径不同,本函数不做路径假设)。rules 为 null/未配置
- * loopPrExclusion,或 titlePrefix/titlePrefixes 均未配置(目标仓库没有这类 loop)时恒返回
- * null——整套机制天然关闭。
+ * loopPrExclusion,或 titlePrefix/titlePrefixes 均未配置(目标仓库没有这类 loop),或
+ * titlePrefix/titlePrefixes 超过 normalizeTitlePrefixes 的可信上限被 fail-safe 整体禁用
+ * (overLimit)时,均恒返回 null——整套机制天然关闭。
  *
  * ⚠️ 身份门槛(反伪造):仅标题前缀**不足以**认定 PR 由 loop 托管——任何贡献者都能在自己
  * PR 的标题前加一句 titlePrefix/titlePrefixes 字面量,冒充 loop 托管来拿到
@@ -1600,7 +1652,9 @@ function normalizeTitlePrefixes(rules) {
  * (标题 / body 文本)单独作数。
  */
 export function detectLoopExclusion({ title, body, pr, rules }) {
-  const matchedPrefix = normalizeTitlePrefixes(rules).find((p) => title.startsWith(p)) ?? null;
+  const { prefixes, overLimit } = normalizeTitlePrefixes(rules);
+  if (overLimit) return null; // fail-safe(SC-E1-1):前缀配置超可信上限,整体禁用,不部分工作
+  const matchedPrefix = prefixes.find((p) => title.startsWith(p)) ?? null;
   if (!matchedPrefix) return null;
   if (!rules.stateFile) return null; // 没配台账路径 = 没有身份门槛可验,不认定托管
 
