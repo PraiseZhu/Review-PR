@@ -686,18 +686,24 @@ gh pr diff <N> --patch
 review-pr 不应重复审查或合并，避免两套合并主体打架。配置在 `pr-rules.json` 的
 `loopPrExclusion`（缺省或 `null` = 整套机制关闭）：
 
-- `titlePrefix`：loop 自己开的 PR 标题固定前缀。**仅命中前缀不足以认定托管**——任何
-  贡献者都能在自己 PR 标题前加同样的字面量冒充托管，骗过 `defaultWhenAmbiguous` 的
-  默认 skip 让自己的 PR 永久漏审。`detectLoopExclusion`（`lib.mjs`）还要求
-  `stateFile` 指向的本地台账里按 PR 号精确命中该条记录，查不到就按普通 PR 处理；
+- `titlePrefix`（legacy 单值 string）/ `titlePrefixes`（数组 string[]，新配置推荐用
+  这个）：loop 自己开的 PR 标题固定前缀，二者可同时配置——目标仓库的 loop 改名后
+  新旧前缀并存的迁移期，两个前缀都要认，命中任一即算匹配。**仅命中前缀不足以认定
+  托管**——任何贡献者都能在自己 PR 标题前加同样的字面量冒充托管，骗过
+  `defaultWhenAmbiguous` 的默认 skip 让自己的 PR 永久漏审。`detectLoopExclusion`
+  （`lib.mjs`）还要求 `stateFile` 指向的本地台账里按 PR 号精确命中该条记录，查不到
+  就按普通 PR 处理；命中后返回的 `matchedPrefix` 是实际命中的那一个前缀字面量
+  （不能假设一定是 `titlePrefix` 的值——配置了 `titlePrefixes` 时可能命中数组里的
+  任一项）；
 - `t1BodyMarkers`/`t2BodyMarkers`：body 里 loop 自己声明 T-level 的 metadata 行
   （锚定整行的正则，逐行匹配），命中优先采信；都没命中退回台账的 `cluster.tCap`；
 - `defaultWhenAmbiguous`：身份已确认但读不出 T-level 时的保守默认（`skip`）；
 - T1（或拿不准）→ `context.mjs` 的 `auto.action=skip-loop-managed`，优先级最高，
   压过产品门/架构门/格式门/前置门（但让位于安全与隐私门硬命中——凭证泄露必须打回）；
-  T2 → 正常走 review-pr，但格式门做两处豁免：标题判 type 前先剥掉 `titlePrefix`
-  （`titleForFormat`），段落存在性检查整体豁免（`wantSections=[]`，loop 的 body 遵循
-  自己的证据结构，不是本仓 PR 模板的三段式，逐字匹配注定误判缺段落）；
+  T2 → 正常走 review-pr，但格式门做两处豁免：标题判 type 前先剥掉 `detectLoopExclusion`
+  返回的 `matchedPrefix`（`titleForFormat`），段落存在性检查整体豁免
+  （`wantSections=[]`，loop 的 body 遵循自己的证据结构，不是本仓 PR 模板的三段式，
+  逐字匹配注定误判缺段落）；
 - 合并后的致谢播报见 `notify-merge-ack.mjs`：判定同一份 `detectLoopExclusion`，
   已托管的 PR 不重复播报，`mergeAckNotify.notifyModule` 未配置时播报能力整体关闭。
 
