@@ -335,6 +335,28 @@ Skill 自身仓库内（防自写）、裸仓库、非 git 仓库、主 worktree
 同步范围）；确需在开发机以交互模式跑，必须显式设置 `REVIEW_PR_STATE_DIR`
 指向 `/tmp` 下的临时目录覆盖默认位置。
 
+**`convergence-state.mjs` 的跨进程读-改-写竞争（评估后不加锁，登记观察项）**：
+`recordConvergenceRound`（§4.2）与 `markNotified`（§5.7）是两次独立的
+read-modify-write（读整份 state → 内存改 → `writeJsonAtomic` 整份写回）。
+`writeJsonAtomic` 的 tmp+rename 只保证不产生半写损坏的 JSON，**不保证不丢
+内容**：若两次落盘之间有另一进程完成了自己的一轮读-改-写，先写完的那份会被
+后写完的旧内存快照整份覆盖。当前唯一生产调用路径由 `prepare.mjs` 的全局锁
+串行（同一单线程主 agent 在锁内依次调用 §4.2 与 §5.7），该竞争窗口不可达；
+**唯一能撞上它的是上一段所述的跨机 Syncthing 并发**——本模块的 STATE_DIR
+继承的是既有风险，不是新引入，已由 owner 用「巡审只在 mac mini 跑」+ 交互
+模式显式设 `REVIEW_PR_STATE_DIR` 的操作约定接受。真撞上时的具体后果是
+**孤儿通知标记**：`markNotified` 把「已通知」盖在一份对应轮次记录已被冲掉
+的 state 上——去重记录本身还在，但它引用的那一轮 occurrence 数据已经不存
+在了。
+
+保护性质如实声明：这是「CLI 恰好总在 `prepare.mjs` 的锁内被调用」带来的
+**过程保障**，不是函数层的机器保障——`record-convergence-round.mjs` 自身
+不做任何锁检查。若将来出现绕过 `prepare.mjs` 的新调用路径，该保障即失效。
+本轮**未单独给这个模块加锁或加 CAS 重读**：`write-review-receipt.mjs` /
+`run-log.mjs` 是同血统同模式（都依赖外部会话锁保护、函数内零锁检查），只给
+`convergence-state.mjs` 加锁会在三个同风险模块之间制造两种保护级别，比不加
+更糟——三者应在 STATE_DIR 层一起处理，不在单一模块里各自为政。
+
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
 按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
 （`pre-check.mjs` 在会话创建前拉、`prepare.mjs` 拿到锁后兜底，均已内置，不需要手动跑）；
