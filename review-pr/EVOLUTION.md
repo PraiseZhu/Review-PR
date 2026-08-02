@@ -126,6 +126,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 2 次,首见 2026-07-31,最近 2026-08-02,status: tracked
+  - 现象:本轮唯一候选 PR #419 改 .github/workflows/merge-thanks.yml，action=skip-security-review
 - `security-review-path-ci-workflow-manual` **改到 CI workflow / 自动化自身执行面的 PR 必须转人工，机器不该自审自合** — 出现 2 次,首见 2026-08-02,最近 2026-08-02,status: tracked
   - 现象:本轮唯一候选 PR #419 改 .github/workflows/merge-thanks.yml，命中 securityReviewPaths，按设计 skip-security-review
 - `skip-security-review-routes-automation-selfmod-to-human` **改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合** — 出现 4 次,首见 2026-07-30,最近 2026-08-02,status: tracked
@@ -153,8 +155,6 @@
   - 现象:本轮 1 个候选(#352)同时有 base 冲突与 2 条未 resolve thread;冲突未孤立存在,不满足 5.5 主干代合并门槛(其余全过、仅剩冲突),按设计跳过等作者。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
   - 现象:本轮 2 个候选(#351/#354)因缺 变更说明/提交前自检/备注 段落被格式门拦下;内容其实齐全,只是标题结构不符模板。属作者侧内容问题,由作者补齐,不做自动化。
-- `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
-  - 现象:PR #348 只改 .github/workflows/*.yml 与 dependabot.yml，命中 securityReviewPaths（防自动化自我损坏）。这是设计意图，不是漏判；仅记计数观察，永不因出现多次就放开。
 - `ci-workflow-pr-needs-human` **改 CI workflow 的 PR 命中安全审查路径,只能转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR #348 只改 .github/workflows/*,命中 securityReviewPaths → skip-security-review;同时 mergeStateStatus=BLOCKED(code_scanning/code_quality 未上报)。两者都要真人处理,自动化不应放开。
 - `ci-workflow-change-needs-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工审查** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked

@@ -941,14 +941,14 @@
       "fingerprint": "security-review-paths-ci-workflow-to-human",
       "tier": "by-design",
       "title": "CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合",
-      "detail": "PR #348 只改 .github/workflows/*.yml 与 dependabot.yml，命中 securityReviewPaths（防自动化自我损坏）。这是设计意图，不是漏判；仅记计数观察，永不因出现多次就放开。",
+      "detail": "本轮唯一候选 PR #419 改 .github/workflows/merge-thanks.yml，action=skip-security-review",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-31T02:10:09.545Z",
-      "lastSeen": "2026-07-31T02:10:09.545Z"
+      "lastSeen": "2026-08-02T11:02:06.039Z"
     },
     {
       "fingerprint": "format-gate-missing-template-sections",
