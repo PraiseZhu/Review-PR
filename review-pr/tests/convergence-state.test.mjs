@@ -19,10 +19,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readConvergenceState, recordConvergenceRound, hasNotified, markNotified,
-  computeConservativeSeedRounds, normalizeInvariantToSlug,
+  computeConservativeSeedRounds,
   CONVERGENCE_CHECKPOINT_THRESHOLD, CONVERGENCE_NOTIFY_THRESHOLD, CONVERGENCE_NOTIFY_REASON_ROUND,
 } from '../scripts/convergence-state.mjs';
 import { STATE_DIR, stateFile, writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../scripts/lib.mjs';
+// invariantSlug 是 rp-output 侧的只读依赖(见 convergence-state.mjs 文件头
+// 「归一化实现」说明),这里 import 它只是为了让测试断言用同一份真实算法构造
+// fixture(如"这两个字符串归一化后应该相等/不相等"),不测它自己的行为——
+// 那是 rp-output 自己的测试范围,不重复覆盖。
+import { invariantSlug } from '../scripts/lib.review-output-shape.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'scripts', 'record-convergence-round.mjs');
@@ -46,16 +51,23 @@ function slugOf(pr) {
   return slugs[0];
 }
 
-// ── normalizeInvariantToSlug:占位归一化的纯函数行为(见文件头「TEMPORARY」说明,
-// 等 rp-output 导出真实函数后整块替换,这里锁定的是当前占位算法的具体行为) ──
+// ── invariantSlug 是 rp-output 的只读依赖,不是本模块的代码——这里不重新测试它
+// 自身的实现(那是 rp-output 的测试范围),只确认 convergence-state.mjs 确实在用
+// 这份真实实现(而不是自己另写的占位版),用它的输出关系构造 fixture ──
 
-test('normalizeInvariantToSlug:转小写、去空白、截断——同一不变量换大小写/空白应归一到同一 slug', () => {
-  assert.equal(normalizeInvariantToSlug('Foo Bar Baz'), normalizeInvariantToSlug('foo  bar baz'));
-  assert.equal(normalizeInvariantToSlug('缺少空值校验  在 foo 函数'), normalizeInvariantToSlug('缺少空值校验 在 FOO 函数'));
-  assert.equal(normalizeInvariantToSlug(''), '');
-  assert.equal(normalizeInvariantToSlug(null), '');
-  assert.equal(normalizeInvariantToSlug(undefined), '');
-  assert.equal(normalizeInvariantToSlug('a'.repeat(100)).length, 60, '超长文本应截断到固定长度,不无限增长');
+test('convergence-state 确实复用 invariantSlug 的真实归一化行为(同一不变量换大小写/空白应归一到同一 slug)', () => {
+  assert.equal(invariantSlug('Foo Bar Baz'), invariantSlug('foo  bar baz'));
+  assert.equal(invariantSlug('缺少空值校验  在 foo 函数'), invariantSlug('缺少空值校验 在 FOO 函数'));
+  assert.throws(() => invariantSlug(''), TypeError, '空串应 throw(真实实现的行为,不是本模块能改的)');
+  assert.throws(() => invariantSlug('   '), TypeError, '去空白后为空同样应 throw');
+});
+
+test('输入校验:invariant 为纯空白字符串(trim 后为空)同样 throw,不能靠裸 === "" 放过', () => {
+  resetPr(970024);
+  assert.throws(
+    () => recordConvergenceRound({ pr: 970024, headRefOid: 'sha-1', findings: [{ invariant: '   ', severity: 'P1' }] }),
+    /invariant/,
+  );
 });
 
 // ── 基础:首轮建家族,missing 状态正确识别 ──
@@ -109,7 +121,7 @@ test('二级检测:完全不同的措辞,一级 slug 不会命中,必须靠显�
   resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: '未处理并发写入竞态', severity: 'P0' }] });
   const slug1 = slugOf(pr);
-  assert.notEqual(normalizeInvariantToSlug('写锁未生效导致数据竞争'), slug1, '措辞完全不同,一级归一化不应偶然撞上同一 slug(否则本测试没测到二级路径)');
+  assert.notEqual(invariantSlug('写锁未生效导致数据竞争'), slug1, '措辞完全不同,一级归一化不应偶然撞上同一 slug(否则本测试没测到二级路径)');
 
   const r2 = recordConvergenceRound({
     pr, headRefOid: 'sha-2',
@@ -177,7 +189,7 @@ test('D3:recurrenceOfSlug 只能指向早于当前 head 的历史,不能"自证"
       headRefOid: 'sha-1',
       findings: [
         { invariant: 'A', severity: 'P1' },
-        { invariant: 'B完全不同', severity: 'P1', recurrenceOfSlug: normalizeInvariantToSlug('A') },
+        { invariant: 'B完全不同', severity: 'P1', recurrenceOfSlug: invariantSlug('A') },
       ],
     }),
     /引用的历史在 state 中不存在/,

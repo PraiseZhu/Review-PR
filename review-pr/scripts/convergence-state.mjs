@@ -69,14 +69,12 @@
 // 同一个 slug。归一化函数**必须单一实现**,不能本模块自己另写一份(两份归一化只要
 // 有一个字符差异,跨轮就永久对不上,且这种 bug 不报错、只静默漏判复发)。
 //
-// 【TEMPORARY,非最终版】:归一化本应直接 import rp-output 的
-// `lib.review-output-shape.mjs`(lead 说已让对方导出公共函数)——但截至本次改动,
-// 我核对过 `conv/output-contract`@`8701046` 的 `lib.review-output-shape.mjs`
-// 全文(86 行),里面只有 `validateFindingFamily`/`validateManifestationShape` 两个
-// **形状校验**函数,没有任何 slug/归一化相关代码或导出。为了不阻塞这一轮改动,
-// `normalizeInvariantToSlug` 暂时是本文件内的占位实现(算法严格按 lead 描述:转
-// 小写、去空白、截取前 60 字符),**等 rp-output 那边导出真实函数后必须替换成
-// import,删除这个占位版本**——已在交付报告里向 lead 报告这件事,不是静默留着。
+// 归一化实现:直接 import rp-output 的 `lib.review-output-shape.mjs` 导出的
+// `invariantSlug`,不在本文件另写一份(两份归一化只要差一个字符,跨轮就永久对
+// 不上,且这种 bug 不报错、只静默漏判复发——该文件头部注释同样这么写)。该文件
+// 目前是从 `conv/output-contract`@`98503eb` 逐字节复制过来的**只读依赖**,不是
+// 本模块的代码,不应在这里被修改——它的实现、算法调整由 rp-output 侧负责,合并
+// 时以对方分支的版本为准(冲突应体现为"引用它"而不是"改它")。
 //
 // 两级检测(定案 3):
 //   一级(确定性):对本轮 finding 的 invariant 原文算 slug,命中 state 里已有的
@@ -92,6 +90,7 @@
 
 import { readFileSync, existsSync, renameSync } from 'node:fs';
 import { stateFile, writeJsonAtomic } from './lib.mjs';
+import { invariantSlug } from './lib.review-output-shape.mjs';
 
 export const CONVERGENCE_CHECKPOINT_THRESHOLD = 5;
 export const CONVERGENCE_NOTIFY_THRESHOLD = 10;
@@ -103,17 +102,6 @@ export const CONVERGENCE_NOTIFY_REASON_ROUND = 'round-nonconvergence';
 
 const SEVERITIES = new Set(['P0', 'P1']);
 const STATE_VERSION = 2; // v1→v2:跨轮 join key 从 family_id 换成 slug,顶层 families 键随之改变含义,老版本文件按 corrupted 处理(见 validateShape)。
-
-/**
- * 【TEMPORARY,见文件头注释】按 lead 描述的算法把一句话不变量原文归一化成跨轮
- * join key:转小写、折叠空白为单空格后整体去除、截取前 60 字符。非字符串/空串
- * 输入返回空字符串(调用方在更上层已经校验过 invariant 非空,这里只是防御性兜底,
- * 不额外抛错——本函数是纯归一化,不做输入校验,校验交给调用方)。
- */
-export function normalizeInvariantToSlug(invariant) {
-  if (typeof invariant !== 'string') return '';
-  return invariant.toLowerCase().replace(/\s+/g, '').slice(0, 60);
-}
 
 function isPlainObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -300,7 +288,10 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     throw new Error('findings 必须是数组(可为空数组,代表本轮 0 P0/P1)');
   }
   for (const f of findings) {
-    if (!isPlainObject(f) || typeof f.invariant !== 'string' || f.invariant === '') {
+    // 去空白后为空(纯空白字符串)同样拒绝——不能靠上层的裸 `=== ''` 判断放过,
+    // `invariantSlug` 对这类输入会 throw TypeError,那个报错点在匹配循环内部,
+    // 不如在这里统一、提前给出更清晰的报错。
+    if (!isPlainObject(f) || typeof f.invariant !== 'string' || f.invariant.trim() === '') {
       throw new Error(`finding 缺少非空的 invariant 字段: ${JSON.stringify(f)}`);
     }
     if (!SEVERITIES.has(f.severity)) {
@@ -365,7 +356,7 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
   const recordedAt = new Date().toISOString();
 
   for (const f of findings) {
-    const autoSlug = normalizeInvariantToSlug(f.invariant);
+    const autoSlug = invariantSlug(f.invariant);
     // 目标 slug:二级显式声明优先,否则用一级自动算出的 slug——两条路径最终都
     // 落到"往 state.families[targetSlug] 追加一条 occurrence"这一件事上,分支
     // 只是决定 targetSlug 是什么、以及 matchedBy 怎么记。
