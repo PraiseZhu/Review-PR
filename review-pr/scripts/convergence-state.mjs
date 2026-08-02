@@ -459,6 +459,14 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
 
   writeJsonAtomic(file, state);
 
+  // 故意不去重(与下面 notification 的去重层刻意不同——lead 2026-08-02 定案,
+  // 理由比"这是两件不同的事"更硬):给一个门做去重,等于把它变成 fail-open。
+  // `checkpointRequired` 是闸门语义——"下一个修复 commit 之前必须先产出六件套";
+  // 若给它加去重,第二轮就会读到"这个 head 已经要求过一次了"从而判定本轮可以
+  // 跳过,门被自己关掉。`notification` 是对外投递,同一 head 重复发是真的刷屏,
+  // 去重是对的——两者去重与否的差异不是随意的,是各自语义决定的。因此
+  // `checkpointRequired` 必须每轮重新算、条件仍成立就仍然拦,永不查/写任何去重
+  // 记录。
   const checkpointRequired = consecutiveRoundsWithNewFamilies >= CONVERGENCE_CHECKPOINT_THRESHOLD;
 
   // round 触发源自己的判定(见文件头注释「通知层的两层拆分」):是否达标 + 是否
