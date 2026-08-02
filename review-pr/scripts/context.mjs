@@ -26,8 +26,8 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, computeLatestPushDate } from './lib.mjs';
-import { writeFileSync } from 'node:fs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, computeLatestPushDate } from './lib.mjs';
+import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // ── PR 提交规范与维护者 gate 配置：单一真相源在 Skill config/pr-rules.json ──
@@ -96,10 +96,6 @@ const SELF_FIX_AUTHORS = (prRules.selfFixAuthors ?? []).map((s) => s.toLowerCase
 // 悄悄吞掉「admins 配置形态不合法」这个信号。
 const { logins: ADMIN_LOGINS, invalid: adminsConfigInvalid } = normalizeLoginList(prRules.admins);
 const ADMINS = new Set(ADMIN_LOGINS);
-// 显著告警载体(P2-3):configWarnings 非空时必须在报告/汇总里点出来,不能悄悄吞掉。
-const CONFIG_WARNINGS = adminsConfigInvalid
-  ? ['pr-rules.json 的 admins 字段配置形态不合法(应为字符串数组),已按能用的部分处理(非法条目被过滤),请检查配置']
-  : [];
 // Slack 同步 bot(信任锚):只有这些账号发的讨论 issue 评论才允许按正文「发送者:」归属真实发言人,
 // 防止普通用户伪造「发送者:<白名单成员>」冒充放行。比对时去掉 GitHub App 的 [bot] 后缀。
 const SLACK_SYNC_BOTS = (prRules.slackSyncBots ?? []).map((s) => s.toLowerCase());
@@ -109,13 +105,26 @@ const SLACK_SENDER_ALIASES = Object.fromEntries(
   Object.entries(prRules.slackSenderAliases ?? {}).map(([k, v]) => [k.toLowerCase(), (v ?? '').toLowerCase()]),
 );
 // Loop 托管 PR 排除:与目标仓库自有的自动修 bug loop(如有)共存,避免两套合并主体打架
-// (详见 SKILL「Loop 托管 PR 排除」)。titlePrefix 命中即判该 PR 由 loop 托管;
+// (详见 SKILL「Loop 托管 PR 排除」)。titlePrefix(legacy 单值)或 titlePrefixes(数组,
+// 支持 loop 改名后新旧前缀并存)命中即判该 PR 由 loop 托管;
 // t1BodyMarkers/t2BodyMarkers 从 PR body 里找 loop 自己声明的 T-level(最贴近 PR 开出那一刻
 // 的一手信号,优先采信);两者都没命中 → 退回读本地台账(stateFile)按 PR 号反查
 // cluster.tCap;仍拿不到结论 → defaultWhenAmbiguous(保守默认 skip)。配置缺失(pr-rules.json
 // 未配置 loopPrExclusion)= 功能整套关闭,detectLoopExclusion 对所有 PR 恒返回 null。
 const LOOP_EXCLUSION_RULES = prRules.loopPrExclusion ?? null;
 // detectLoopExclusion 本体在 lib.mjs(与 notify-merge-ack.mjs 共用同一份判定,防两处判据漂移)。
+// normalizeTitlePrefixes(SC-WARN-3/SC-E1-1,2026-08-02):与上方 ADMIN_LOGINS 同款套路——
+// loopPrExclusion.titlePrefixes/titlePrefix 配置形态非法(invalid)或超可信上限而被
+// fail-safe 整体禁用(overLimit)时都必须显著告警,不能悄悄吞掉。这里只取告警要用的两个
+// 标记;detectLoopExclusion 内部会再调一次同一份函数算实际归一化结果,两处同源不漂移。
+const { invalid: titlePrefixesConfigInvalid, overLimit: titlePrefixesOverLimit } = normalizeTitlePrefixes(LOOP_EXCLUSION_RULES);
+// 显著告警载体(P2-3 起的既有约定):configWarnings 非空时必须在报告/汇总里点出来,不能
+// 悄悄吞掉。三项互不排斥,可同时出现。
+const CONFIG_WARNINGS = [
+  ...(adminsConfigInvalid ? ['pr-rules.json 的 admins 字段配置形态不合法(应为字符串数组),已按能用的部分处理(非法条目被过滤),请检查配置'] : []),
+  ...(titlePrefixesConfigInvalid ? ['pr-rules.json 的 loopPrExclusion.titlePrefixes/titlePrefix 字段配置形态不合法(存在非字符串/空字符串条目),已按能用的部分处理(非法条目被过滤),请检查配置'] : []),
+  ...(titlePrefixesOverLimit ? ['pr-rules.json 的 loopPrExclusion.titlePrefixes/titlePrefix 前缀数量或长度超过可信上限,已整体禁用 loop 托管 PR 排除机制(fail-safe,不部分生效),请检查配置'] : []),
+];
 
 // ── 安全与隐私内容门(阶段一最先执行,见 SKILL 3.1):扫 PR 标题 / body / diff 新增行 ──
 // hard = 高置信凭证格式,命中即阻断(auto 走 pushback-security,不进审查不合并);
@@ -130,6 +139,24 @@ const SENSITIVE_RULES = prRules.sensitiveContent ?? {};
 
 // ── 以下是 review-pr skill 自身的执行细则(非 agent 约束文档内容,留在脚本里)──
 const TITLE_VAGUE_RE = /:\s*(bug|update|improve|fix issue|优化|调整|更新|misc|若干|一些)\s*$/i;
+
+/**
+ * 剥离 loop 托管前缀、算出标题格式判定用的三个派生字段(SC-WIRE-4/SC-CTXTEST-5,
+ * 2026-08-02):从下方单 PR 主流程内联三行 + 三个衍生字段抽成的纯函数,唯二目的——
+ * ① 锁住"必须用 loopExclusion.matchedPrefix 剥前缀,不能假设是 LOOP_EXCLUSION_RULES.
+ * titlePrefix 字面量"这条接线,配置了 titlePrefixes 数组时命中的可能是数组里的非首项;
+ * ② 让这条接线能被 tests/lib.detect-loop-exclusion.test.mjs 直接 import 本文件验证
+ * (此前 context.mjs 零测试覆盖,把这条接线改回 base 实现也不会有任何测试变红)。
+ * 未命中 loopExclusion(null 或 matchedPrefix 为空)时 titleForFormat 就是原始 title,
+ * 行为不变。
+ */
+export function computeTitleFacts(title, loopExclusion) {
+  const titleForFormat = loopExclusion?.matchedPrefix ? title.slice(loopExclusion.matchedPrefix.length) : title;
+  const type = (titleForFormat.match(/^(\w+)/)?.[1] ?? '').toLowerCase();
+  const titleTypeOk = TITLE_TYPE_RE.test(titleForFormat);
+  const titleVague = TITLE_VAGUE_RE.test(titleForFormat);
+  return { titleForFormat, type, titleTypeOk, titleVague };
+}
 
 // ── 前置门判定常量(复刻 SKILL.md 1.6.5)──
 // 注:check-runs / commit-status / 分支保护(branches/*/protection)端点在本项目 PAT 下常 403,
@@ -165,6 +192,28 @@ const GQL = `
 const isBot = (a) => a?.__typename === 'Bot' || /\[bot\]$/i.test(a?.login ?? '');
 const clip = (s, n) => (s ?? '').replace(/\r/g, '').slice(0, n);
 
+// IS_MAIN_MODULE(SC-CTXTEST-5,2026-08-02):本脚本设计为 CLI 直跑(node context.mjs <PR>),
+// 下方两段有副作用的主流程(--scan-all 批量驱动 / 单 PR 主流程,均会发起真实 gh 网络调用、
+// 在出错时 process.exit)此前无条件跑在模块顶层——任何脚本 `import` 本文件(哪怕只是想用
+// 上面的 computeTitleFacts 之类纯函数)都会真的触发这些副作用,这正是 context.mjs 此前
+// "零测试覆盖"的根因,不是没人想测,是想测就得先接受一次真实 gh 调用。改为只在"作为入口
+// 脚本被直接执行"时才跑,被 import 时不再发起副作用。判定用 realpathSync 归一化后比较
+// argv[1] 与本模块自身路径——不能直接用字符串 `===`,因为 Node 在构造 import.meta.url 时
+// 会解析路径里的 symlink(如 macOS /tmp → /private/tmp),而 process.argv[1] 是否解析过
+// symlink 取决于调用方传入的是绝对还是相对路径,两侧口径不一致会导致直接 CLI 调用被
+// 误判为"不是主模块"从而整个脚本什么都不做(已实测复现,严禁改回裸字符串比较)。
+// spawnScriptJson(SELF_PATH, ...)用 fileURLToPath(import.meta.url) 重新拉起自身子进程时,
+// 两者天然指向同一条 realpath,行为不变。
+const IS_MAIN_MODULE = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (IS_MAIN_MODULE) {
 // ── --scan-all 批量驱动(见文件头说明;判定本体在下方单 PR 流程,这里只做编排)──
 if (process.argv.includes('--scan-all')) {
   const SELF_PATH = fileURLToPath(import.meta.url);
@@ -318,16 +367,12 @@ try {
   // 已是 APPROVED。旧逻辑用 hasChangesRequested 会把这种「已被同人 approve 覆盖」误判成
   // 「仍有未解决 CR」,从而把真正的 BLOCKED 成因(结构性必需检查门)说成 review 问题)。
   const reviewDecision = meta.reviewDecision ?? null;
-  // loop 托管的 PR 标题固定带 loopPrExclusion.titlePrefix(如 `[bug-doctor] `),不是
-  // `<type>(<scope>): <描述>` 格式;命中该前缀时先剥掉再判 type,否则 T2 loop PR(本该走
-  // review-pr 正常审查)会被格式门误判"缺 type 前缀"打回。前缀本身来自 pr-rules.json
-  // 配置(不硬编码字面量);未命中 loopExclusion 时 titleForFormat 就是原始 title,行为不变。
-  const titleForFormat = (loopExclusion && LOOP_EXCLUSION_RULES?.titlePrefix)
-    ? title.slice(LOOP_EXCLUSION_RULES.titlePrefix.length)
-    : title;
-  const type = (titleForFormat.match(/^(\w+)/)?.[1] ?? '').toLowerCase();
-  const titleTypeOk = TITLE_TYPE_RE.test(titleForFormat);
-  const titleVague = TITLE_VAGUE_RE.test(titleForFormat);
+  // loop 托管的 PR 标题固定带 loopPrExclusion 配置的前缀(如 `[bug-doctor] `、`[mivo] `),
+  // 不是 `<type>(<scope>): <描述>` 格式;命中该前缀时先剥掉再判 type,否则 T2 loop PR(本该走
+  // review-pr 正常审查)会被格式门误判"缺 type 前缀"打回。取值逻辑抽进 computeTitleFacts
+  // (见上方定义与其 JSDoc)——锁住"必须用 matchedPrefix 剥前缀"这条接线,并让它能被测试
+  // 直接 import 本文件验证。未命中 loopExclusion 时 titleForFormat 就是原始 title,行为不变。
+  const { titleForFormat, type, titleTypeOk, titleVague } = computeTitleFacts(title, loopExclusion);
   const isLight = LIGHT_TYPES.includes(type);
   const template = type === 'fix' ? 'bugfix' : isLight ? 'light' : 'feature';
   // loop 托管的 PR(实际只有 t2 会走到这里,t1 已在 auto.action 整体跳过)body 遵循 loop
@@ -1425,3 +1470,4 @@ try {
 } catch (e) {
   fail(e);
 }
+} // ← 关闭 IS_MAIN_MODULE 守卫(见上方定义与说明)
