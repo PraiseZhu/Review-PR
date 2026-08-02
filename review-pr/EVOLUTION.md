@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-worktree-orphan-branch-no-sweeper` **审查 worktree 的清理只靠主 agent 手动执行，漏跑就永久残留孤儿分支** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: open
+  - 现象:本轮 fix-worktree-cleanup.mjs --scan 报 skipped=8，全是「查不到对应 PR，来历不明不动」，其中 7 条是 worktree-agent-* 命名——与阶段二审查 agent 的隔离 worktree 分支命名一致，高度疑似历史轮次未清理干净的残留。第 7 节只在 SKILL 文字里要求主 agent 移除本次创建的 review worktree，没有确定性脚本兜底，任一轮异常退出（锁丢失、宿主中断）就永久遗留，且这些残留每轮都出现在 skipped 噪音里。
+  - 提案:新增一个只针对 review worktree 的清理脚本（或扩展 fix-worktree-cleanup.mjs 的一个新模式）：按托管目录 + worktree-agent-* 命名 + 无对应 open PR + 无未推送 commit + 不含任何 active session cwd 四重条件回收；因涉及自动删除 git 分支与目录，有误删风险，先请 owner 拍板边界再落地，不当轮自动改。
 - `ui-evidence-notice-scope-on-skipped-candidates` **SKILL 3.2 未说明被 skip 的候选是否要发 UI 证据提醒评论** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:本轮 #396/#397/#409(均 uiEvidenceMissing=true、作者非本流程账号)因 ci-pending / ci-failed / 依赖未合被 skip,scan 已算出 notice 文案,但 SKILL 3.2 把提醒写在阶段一格式门里、§6 阶段 1 又只为 skip 候选列了 notify-author-resolve 一种评论动作,两者未交待 skip 候选该不该发。本轮按保守口径未发(只对进入处理的 #395/#401 发)。
   - 提案:在 SKILL 3.2 补一句边界:被 skip 的候选本轮不发 UI 证据提醒,等它进入处理轮次再发(理由:提醒无时效价值,且避免同一作者同轮收多条噪音)。属收窄不属扩权,可自动落地——本轮因首周观察期只记提案,未改 Skill。
