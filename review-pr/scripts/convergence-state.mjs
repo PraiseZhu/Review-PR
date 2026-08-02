@@ -37,6 +37,27 @@
 // 本轮的连续计数强制推到收敛检查点阈值,宁可多触发一次检查点,也不当作"什么都
 // 没发生过"。这条路径必须走显式告警(`integrityWarning` 非空字符串),供调用方原样
 // 转达进 review 正文,不能吞掉。
+//
+// 通知层的两层拆分(SC-C4 调查带出的要求,2026-08-02):SC-C4 结论是 review-pr
+// 不存在中间态重审放大、不需要 debounce,但顺带查出一个真缺口——非 required 的
+// 第三方 bot(如 Greptile)长期缺席时,PR 会无限期挂在 skip-gate/threads-
+// unresolved,没有"等待方缺席"的升级机制(本轮不做,留给另一次改动)。为了不让
+// 那次改动需要重构本模块的通知投递管线,通知机制在设计上就拆成两层,不允许合并:
+//   - **触发判定**(可插拔,本模块目前只实现一种):`recordConvergenceRound` 算出
+//     `consecutiveRoundsWithNewFamilies` 达到 `CONVERGENCE_NOTIFY_THRESHOLD` 时
+//     产出一条通知——这是"round/new-family"触发源专属的判断逻辑,未来的"等待方
+//     缺席 N 轮"触发源会是另一段完全独立的判断代码(很可能不在本文件、甚至不来自
+//     审查轮次),不复用这段逻辑。
+//   - **通知投递 + 去重**(`hasNotified`/`markNotified`,与触发源无关):入参与
+//     去重键都不能只认"round 触发"这一种形状——通知载荷用
+//     `{reason, prNumber, head, thresholdKey, detail}`,`detail` 是随 reason 变化
+//     的自由字段;去重键是 `reason` + `thresholdKey` + `headRefOid` 三元组
+//     (state.notifiedThresholds 按 `{[reason]:{[thresholdKey]:headRefOid[]}}`
+//     存储),`reason` 进键是为了让"缺席触发"将来落地时,不会被"round 触发"已经
+//     发过的去重记录误吞、也不会反过来污染 round 触发自己的去重状态。
+// 本轮只落地 `CONVERGENCE_NOTIFY_REASON_ROUND` 这一个 reason;新增缺席触发时只
+// 需要新写一段触发判定 + 一个新 reason 常量,调用同一套 hasNotified/markNotified,
+// 不需要改动这两个函数或 state 结构。
 
 import { readFileSync, existsSync, renameSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -44,6 +65,11 @@ import { stateFile, writeJsonAtomic } from './lib.mjs';
 
 export const CONVERGENCE_CHECKPOINT_THRESHOLD = 5;
 export const CONVERGENCE_NOTIFY_THRESHOLD = 10;
+
+/** SC-C3「新 P0/P1 family 数连续达标」这一种触发源的 reason 标识——通知投递层
+ * (hasNotified/markNotified)按 reason 分域去重,与其它触发源(如未来的"等待方
+ * 缺席")互不干扰。 */
+export const CONVERGENCE_NOTIFY_REASON_ROUND = 'round-nonconvergence';
 
 const SEVERITIES = new Set(['P0', 'P1']);
 const STATE_VERSION = 1;
@@ -90,9 +116,15 @@ function isValidFamily(fam) {
   );
 }
 
+/** `notifiedThresholds` 按 `{[reason]:{[thresholdKey]:headRefOid[]}}` 两层嵌套——
+ * reason 是触发源标识,thresholdKey 是该触发源内部的判定档位(round 触发源目前
+ * 只用 `String(CONVERGENCE_NOTIFY_THRESHOLD)` 这一档)。 */
 function isValidNotifiedThresholds(v) {
   if (!isPlainObject(v)) return false;
-  return Object.values(v).every((list) => Array.isArray(list) && list.every((h) => typeof h === 'string'));
+  return Object.values(v).every((byThreshold) => (
+    isPlainObject(byThreshold)
+    && Object.values(byThreshold).every((list) => Array.isArray(list) && list.every((h) => typeof h === 'string'))
+  ));
 }
 
 function validateShape(state) {
@@ -202,7 +234,12 @@ export function computeConservativeSeedRounds(reviews) {
  *   newFamilyCount:number, consecutiveRoundsWithNewFamilies:number,
  *   recurringFamilies:Array<{familyId:string, invariant:string, priorHead:string,
  *   priorDescription:string|null}>, checkpointRequired:boolean,
- *   notifyRequired:boolean, integrityWarning:string|null}}
+ *   notification:{reason:string, prNumber:number, head:string, thresholdKey:string,
+ *   detail:object}|null, integrityWarning:string|null}}
+ *   `notification` 非 null 时代表本轮触发源(round/new-family)判定需要发一次
+ *   升级通知且尚未对当前 head 发过——按文件头注释「通知层的两层拆分」,这是
+ *   round 触发源自己的判定结果,不代表通知已经发出;调用方发出后必须调
+ *   `markNotified` 回写去重,否则下一轮同 head 重放会再次判需要通知。
  */
 export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCount } = {}) {
   if (!headRefOid || typeof headRefOid !== 'string') {
@@ -335,9 +372,23 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
   writeJsonAtomic(file, state);
 
   const checkpointRequired = consecutiveRoundsWithNewFamilies >= CONVERGENCE_CHECKPOINT_THRESHOLD;
-  const notifiedHeads = state.notifiedThresholds[String(CONVERGENCE_NOTIFY_THRESHOLD)] ?? [];
-  const notifyRequired = consecutiveRoundsWithNewFamilies >= CONVERGENCE_NOTIFY_THRESHOLD
-    && !notifiedHeads.includes(headRefOid);
+
+  // round 触发源自己的判定(见文件头注释「通知层的两层拆分」):是否达标 + 是否
+  // 已经对这个 head 发过——两个条件都满足才产出通知载荷,否则 null(不是"不需要
+  // 通知"和"已经发过"混在一个布尔里,调用方拿到 null 不需要关心是哪种原因)。
+  const roundThresholdKey = String(CONVERGENCE_NOTIFY_THRESHOLD);
+  const alreadyNotifiedThisHead = (
+    state.notifiedThresholds[CONVERGENCE_NOTIFY_REASON_ROUND]?.[roundThresholdKey] ?? []
+  ).includes(headRefOid);
+  const notification = (consecutiveRoundsWithNewFamilies >= CONVERGENCE_NOTIFY_THRESHOLD && !alreadyNotifiedThisHead)
+    ? {
+      reason: CONVERGENCE_NOTIFY_REASON_ROUND,
+      prNumber: Number(pr),
+      head: headRefOid,
+      thresholdKey: roundThresholdKey,
+      detail: { consecutiveRoundsWithNewFamilies, recurringFamilies },
+    }
+    : null;
 
   return {
     pr: Number(pr),
@@ -348,15 +399,20 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     consecutiveRoundsWithNewFamilies,
     recurringFamilies,
     checkpointRequired,
-    notifyRequired,
+    notification,
     integrityWarning,
   };
 }
 
-/** 某 PR 在某个 head 上,某个阈值是否已经通知过(纯读,供调用方判断是否要重发)。 */
-export function hasNotifiedThreshold({ pr, threshold, headRefOid }) {
+/**
+ * 通知投递层的去重读(纯读,与触发源无关——见文件头注释「通知层的两层拆分」)。
+ * `reason` 必填:去重键是 `reason`+`thresholdKey`+`headRefOid` 三元组,不同触发源
+ * (如未来的"等待方缺席")即使 `thresholdKey` 恰好撞了同一个字符串也不会互相误吞。
+ */
+export function hasNotified({ pr, reason, thresholdKey, headRefOid }) {
+  if (!reason || typeof reason !== 'string') throw new Error('reason 不能为空');
   const { state } = readConvergenceState(pr);
-  const list = state?.notifiedThresholds?.[String(threshold)] ?? [];
+  const list = state?.notifiedThresholds?.[reason]?.[String(thresholdKey)] ?? [];
   return list.includes(headRefOid);
 }
 
@@ -364,19 +420,21 @@ export function hasNotifiedThreshold({ pr, threshold, headRefOid }) {
  * 播报发出(或已尝试发出,见 SKILL 收敛止损段的"标记时机"说明)后回写去重记录。
  * 要求 state 已处于 `ok`——正常流程里 `recordConvergenceRound` 总会先把状态修到
  * `ok`(哪怕是从损坏里重建出来的全新 ok 状态),因此调用顺序应始终是先 record
- * 再 markThresholdNotified;若此刻仍读到 missing/corrupted,说明调用顺序被打乱
- * 或状态在两次调用之间被外部破坏,直接 throw,不静默假装标记成功。
+ * 再 markNotified;若此刻仍读到 missing/corrupted,说明调用顺序被打乱或状态在
+ * 两次调用之间被外部破坏,直接 throw,不静默假装标记成功。
  */
-export function markThresholdNotified({ pr, threshold, headRefOid }) {
+export function markNotified({ pr, reason, thresholdKey, headRefOid }) {
+  if (!reason || typeof reason !== 'string') throw new Error('reason 不能为空');
   if (!headRefOid || typeof headRefOid !== 'string') throw new Error('headRefOid 不能为空');
   const { status, state, file } = readConvergenceState(pr);
   if (status !== 'ok') {
     throw new Error(
-      `markThresholdNotified 要求已存在有效的收敛状态(当前 status=${status}),应先调用 recordConvergenceRound`,
+      `markNotified 要求已存在有效的收敛状态(当前 status=${status}),应先调用 recordConvergenceRound`,
     );
   }
-  const key = String(threshold);
-  const list = state.notifiedThresholds[key] ?? (state.notifiedThresholds[key] = []);
+  const byReason = state.notifiedThresholds[reason] ?? (state.notifiedThresholds[reason] = {});
+  const key = String(thresholdKey);
+  const list = byReason[key] ?? (byReason[key] = []);
   if (!list.includes(headRefOid)) list.push(headRefOid);
   writeJsonAtomic(file, state);
   return list;

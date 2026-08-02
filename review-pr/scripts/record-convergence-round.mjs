@@ -19,16 +19,23 @@
 //     → 打印当前 state(含全部家族及其历史 occurrence)。主 agent 在起草本轮
 //       findings 前应先跑一次,判断是否有既有家族可以引用为 recurrenceOfFamily。
 //
-//   node <skill-root>/scripts/record-convergence-round.mjs <PR> --mark-notified --threshold <N> --head <sha>
+//   node <skill-root>/scripts/record-convergence-round.mjs <PR> --mark-notified --reason <reason> --threshold <key> --head <sha>
 //     → 止损播报(经 notify-summary.mjs 或等价播报出口)发出后回写去重记录,
-//       避免同一 PR、同一阈值、同一 head 被反复通知。
+//       避免同一 PR、同一触发源(reason)、同一阈值档位、同一 head 被反复通知。
+//       --reason 必填、无默认值——通知投递层与触发源解耦(见 convergence-state.mjs
+//       文件头「通知层的两层拆分」),不能靠脚本自己猜是哪个触发源发的。本模块
+//       目前只有一种触发源,round/new-family 场景传
+//       `--reason round-nonconvergence`(即 `CONVERGENCE_NOTIFY_REASON_ROUND`)。
+//       --threshold 在 round 触发源场景下就是 `CONVERGENCE_NOTIFY_THRESHOLD`
+//       (当前 10),但形式上是任意字符串档位标识,不强制是数字(为未来的其它
+//       触发源留空间)。
 //
 // 退出码:0 = 成功;1 = 参数不合法 / recurrenceOfFamily 引用核验失败 / 写入失败。
 
 import { readFileSync } from 'node:fs';
 import { parsePR, print, fail } from './lib.mjs';
 import {
-  readConvergenceState, recordConvergenceRound, markThresholdNotified,
+  readConvergenceState, recordConvergenceRound, markNotified,
 } from './convergence-state.mjs';
 
 function argAfter(flag) {
@@ -46,12 +53,14 @@ try {
   }
 
   if (process.argv.includes('--mark-notified')) {
-    const threshold = Number(argAfter('--threshold'));
-    if (!Number.isInteger(threshold) || threshold <= 0) throw new Error('--mark-notified 需要 --threshold <正整数>');
+    const reason = argAfter('--reason');
+    if (!reason) throw new Error('--mark-notified 需要 --reason <触发源标识,如 round-nonconvergence>');
+    const thresholdKey = argAfter('--threshold');
+    if (!thresholdKey) throw new Error('--mark-notified 需要 --threshold <该触发源的档位标识>');
     const headRefOid = argAfter('--head');
     if (!headRefOid) throw new Error('--mark-notified 需要 --head <sha>');
-    const notifiedHeads = markThresholdNotified({ pr, threshold, headRefOid });
-    print({ ok: true, pr, threshold, headRefOid, notifiedHeads });
+    const notifiedHeads = markNotified({ pr, reason, thresholdKey, headRefOid });
+    print({ ok: true, pr, reason, thresholdKey, headRefOid, notifiedHeads });
     process.exit(0);
   }
 

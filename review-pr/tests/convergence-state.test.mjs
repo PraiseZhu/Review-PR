@@ -19,8 +19,9 @@ import {
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readConvergenceState, recordConvergenceRound, hasNotifiedThreshold, markThresholdNotified,
+  readConvergenceState, recordConvergenceRound, hasNotified, markNotified,
   computeConservativeSeedRounds, CONVERGENCE_CHECKPOINT_THRESHOLD, CONVERGENCE_NOTIFY_THRESHOLD,
+  CONVERGENCE_NOTIFY_REASON_ROUND,
 } from '../scripts/convergence-state.mjs';
 import { STATE_DIR, stateFile, writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../scripts/lib.mjs';
 
@@ -61,7 +62,7 @@ test('首次记录(missing → ok):建一个新家族,roundCount=1,checkpoint/no
   assert.equal(r.p0p1Count, 1);
   assert.equal(r.consecutiveRoundsWithNewFamilies, 1);
   assert.equal(r.checkpointRequired, false);
-  assert.equal(r.notifyRequired, false);
+  assert.equal(r.notification, null);
   assert.equal(r.integrityWarning, null);
   assert.deepEqual(r.recurringFamilies, []);
 
@@ -194,7 +195,7 @@ test('止损阈值边界:连续 4 轮新家族 checkpointRequired 仍为 false,�
   assert.equal(r5.checkpointRequired, true, '第 5 轮起必须触发检查点');
 });
 
-test('止损阈值边界:连续 9 轮 notifyRequired 为 false,第 10 轮起为 true(反向变异同上,>=10 误写 >10 会让第二断言失败)', () => {
+test('止损阈值边界:连续 9 轮 notification 为 null,第 10 轮起为非 null(反向变异同上,>=10 误写 >10 会让第二断言失败)', () => {
   const pr = 970010;
   resetPr(pr);
   let last;
@@ -202,49 +203,84 @@ test('止损阈值边界:连续 9 轮 notifyRequired 为 false,第 10 轮起为 
     last = recordConvergenceRound({ pr, headRefOid: `sha-${i}`, findings: [{ invariant: `inv-${i}`, severity: 'P1' }] });
   }
   assert.equal(last.consecutiveRoundsWithNewFamilies, 9);
-  assert.equal(last.notifyRequired, false, '第 9 轮不该触发红色通报');
+  assert.equal(last.notification, null, '第 9 轮不该触发红色通报');
 
   const r10 = recordConvergenceRound({ pr, headRefOid: 'sha-10', findings: [{ invariant: 'inv-10', severity: 'P1' }] });
   assert.equal(r10.consecutiveRoundsWithNewFamilies, CONVERGENCE_NOTIFY_THRESHOLD);
-  assert.equal(r10.notifyRequired, true, '第 10 轮起必须触发红色通报');
+  assert.ok(r10.notification, '第 10 轮起必须触发红色通报');
+  // 通知载荷必须是「reason/prNumber/head/detail」这种不绑定单一触发源的通用形状
+  // (SC-C4 调查带出的要求:未来的"等待方缺席"触发源要能复用同一套投递+去重层,
+  // 不能让通知层的入参形状只认得 roundCount/newFamilyCount 这一种触发源)。
+  assert.equal(r10.notification.reason, CONVERGENCE_NOTIFY_REASON_ROUND);
+  assert.equal(r10.notification.prNumber, pr);
+  assert.equal(r10.notification.head, 'sha-10');
+  assert.equal(r10.notification.thresholdKey, String(CONVERGENCE_NOTIFY_THRESHOLD));
+  assert.equal(r10.notification.detail.consecutiveRoundsWithNewFamilies, CONVERGENCE_NOTIFY_THRESHOLD);
 });
 
-// ── 通知去重:按 PR+threshold+head,同 head 不重发,新 head 仍会重新触发 ──
+// ── 通知去重:按 reason+threshold+head,同 head 不重发,新 head 仍会重新触发 ──
 
-test('通知去重⑤:同 head 标记已通知后 notifyRequired 变 false;新的仍未收敛的 head 重新触发(不是永久静音)', () => {
+test('通知去重⑤:同 head 标记已通知后 notification 变 null;新的仍未收敛的 head 重新触发(不是永久静音)', () => {
   const pr = 970011;
   resetPr(pr);
   let last;
   for (let i = 1; i <= 10; i++) {
     last = recordConvergenceRound({ pr, headRefOid: `sha-${i}`, findings: [{ invariant: `inv-${i}`, severity: 'P1' }] });
   }
-  assert.equal(last.notifyRequired, true);
-  assert.equal(hasNotifiedThreshold({ pr, threshold: CONVERGENCE_NOTIFY_THRESHOLD, headRefOid: 'sha-10' }), false);
+  assert.ok(last.notification);
+  const { reason, thresholdKey } = last.notification;
+  assert.equal(hasNotified({ pr, reason, thresholdKey, headRefOid: 'sha-10' }), false);
 
-  markThresholdNotified({ pr, threshold: CONVERGENCE_NOTIFY_THRESHOLD, headRefOid: 'sha-10' });
-  assert.equal(hasNotifiedThreshold({ pr, threshold: CONVERGENCE_NOTIFY_THRESHOLD, headRefOid: 'sha-10' }), true);
+  markNotified({ pr, reason, thresholdKey, headRefOid: 'sha-10' });
+  assert.equal(hasNotified({ pr, reason, thresholdKey, headRefOid: 'sha-10' }), true);
 
   // 同 head 重跑(如 cron 重复触发审查、未推新 commit):不能重复要求通知。
   const replay = recordConvergenceRound({ pr, headRefOid: 'sha-10', findings: [{ invariant: 'inv-10', severity: 'P1' }] });
-  assert.equal(replay.notifyRequired, false, '同一 head 已通知过,重放同一 head 不应再要求通知');
+  assert.equal(replay.notification, null, '同一 head 已通知过,重放同一 head 不应再要求通知');
 
   // 新 head 仍未收敛:必须重新触发,不能因为"threshold 10 之前发过一次"就永久静音。
   const r11 = recordConvergenceRound({ pr, headRefOid: 'sha-11', findings: [{ invariant: 'inv-11', severity: 'P1' }] });
-  assert.equal(r11.notifyRequired, true, '新 head 仍持续未收敛,应重新触发红色通报,不是"发过一次就永远不再发"');
+  assert.ok(r11.notification, '新 head 仍持续未收敛,应重新触发红色通报,不是"发过一次就永远不再发"');
 });
 
-test('markThresholdNotified 幂等:同一 head 标记两次不产生重复条目', () => {
+test('通知去重:reason 进键——同一 head+threshold,不同 reason 各自独立去重,不会互相误吞(SC-C4 要求的核心)', () => {
+  const pr = 970019;
+  resetPr(pr);
+  recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [] });
+  markNotified({ pr, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' });
+
+  // 假想的另一个触发源(如未来的"等待方缺席"),同一 head、同一档位字符串"10",
+  // 但 reason 不同——不能因为 round 触发源已经标记过就被误判成"这个也发过了"。
+  assert.equal(
+    hasNotified({ pr, reason: 'reviewer-absent', thresholdKey: '10', headRefOid: 'sha-1' }),
+    false,
+    'reason 不同必须视为完全独立的去重记录,不能被 round 触发源的记录误吞',
+  );
+  assert.equal(hasNotified({ pr, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' }), true);
+});
+
+test('markNotified 幂等:同一 head 标记两次不产生重复条目', () => {
   const pr = 970012;
   resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [] });
-  markThresholdNotified({ pr, threshold: 10, headRefOid: 'sha-1' });
-  const list = markThresholdNotified({ pr, threshold: 10, headRefOid: 'sha-1' });
+  markNotified({ pr, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' });
+  const list = markNotified({ pr, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' });
   assert.deepEqual(list, ['sha-1']);
 });
 
-test('markThresholdNotified 在 state 尚不存在(missing)时必须 throw,不能静默假装标记成功', () => {
+test('markNotified 在 state 尚不存在(missing)时必须 throw,不能静默假装标记成功', () => {
   resetPr(970013);
-  assert.throws(() => markThresholdNotified({ pr: 970013, threshold: 10, headRefOid: 'sha-1' }), /应先调用 recordConvergenceRound/);
+  assert.throws(
+    () => markNotified({ pr: 970013, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' }),
+    /应先调用 recordConvergenceRound/,
+  );
+});
+
+test('hasNotified/markNotified 拒绝空 reason(通知投递层不允许在不知道触发源的情况下去重)', () => {
+  resetPr(970020);
+  recordConvergenceRound({ pr: 970020, headRefOid: 'sha-1', findings: [] });
+  assert.throws(() => hasNotified({ pr: 970020, reason: '', thresholdKey: '10', headRefOid: 'sha-1' }), /reason/);
+  assert.throws(() => markNotified({ pr: 970020, reason: '', thresholdKey: '10', headRefOid: 'sha-1' }), /reason/);
 });
 
 // ── seed:仅首次生效,老 PR 保守 seed 规则 ──
@@ -410,8 +446,10 @@ test('CLI:record → get → mark-notified 全链路', () => {
   assert.equal(got.json.status, 'ok');
   assert.equal(Object.keys(got.json.state.families).length, 1);
 
-  const marked = runCli([String(pr), '--mark-notified', '--threshold', '10', '--head', 'sha-1']);
-  assert.equal(marked.status, 0);
+  const marked = runCli([
+    String(pr), '--mark-notified', '--reason', CONVERGENCE_NOTIFY_REASON_ROUND, '--threshold', '10', '--head', 'sha-1',
+  ]);
+  assert.equal(marked.status, 0, marked.stderr);
   assert.deepEqual(marked.json.notifiedHeads, ['sha-1']);
 });
 
@@ -440,11 +478,13 @@ test('CLI:缺 --head → 退出码 1', () => {
   assert.equal(r.json.ok, false);
 });
 
-test('CLI:--mark-notified 缺 --threshold/--head → 退出码 1', () => {
+test('CLI:--mark-notified 缺 --reason/--threshold/--head → 退出码 1', () => {
   const pr = 970305;
   resetPr(pr);
-  const r1 = runCli([String(pr), '--mark-notified', '--head', 'sha-1']);
-  assert.equal(r1.status, 1);
-  const r2 = runCli([String(pr), '--mark-notified', '--threshold', '10']);
+  const r1 = runCli([String(pr), '--mark-notified', '--threshold', '10', '--head', 'sha-1']);
+  assert.equal(r1.status, 1, 'reason 必填,不能有默认值');
+  const r2 = runCli([String(pr), '--mark-notified', '--reason', CONVERGENCE_NOTIFY_REASON_ROUND, '--head', 'sha-1']);
   assert.equal(r2.status, 1);
+  const r3 = runCli([String(pr), '--mark-notified', '--reason', CONVERGENCE_NOTIFY_REASON_ROUND, '--threshold', '10']);
+  assert.equal(r3.status, 1);
 });

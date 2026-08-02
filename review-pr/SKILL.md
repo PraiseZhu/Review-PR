@@ -822,7 +822,7 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
    每轮重复传）。
 4. **返回值消费**：脚本返回 `{roundCount, p0p1Count, newFamilyCount,
    consecutiveRoundsWithNewFamilies, recurringFamilies, checkpointRequired,
-   notifyRequired, integrityWarning}`。
+   notification, integrityWarning}`。
    - `recurringFamilies` 非空时，5.2 打回文案对这些条目要标注"复发"并指出
      `priorHead`/`priorDescription`（例如："此问题在 `<priorHead 短 sha>` 已提过一次，
      上一轮的修法未覆盖当前这条触发路径"）——按「对外话术与人格边界」的既有基调写，
@@ -831,7 +831,11 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
      内部汇总/review 正文里如实带一句（措辞同 6.1 对 `runs.jsonl` 审计链损坏的
      处理："收敛状态文件损坏，历史轮次记录不可信，请人工核查该 PR 是否已经历多轮
      未收敛"），不能吞掉；
-   - `checkpointRequired`/`notifyRequired` 的消费见 5.7「收敛止损」。
+   - `checkpointRequired`（布尔）与 `notification`（`{reason, prNumber, head,
+     thresholdKey, detail}` 或 `null`）的消费见 5.7「收敛止损」。`notification`
+     非 null 只代表"round/new-family 这个触发源判定要发"，不代表已经发出——发出
+     后必须调 `--mark-notified` 回写去重（见 5.7），否则下一轮同 head 重放会
+     再次判要发。
 
 **安全边界（不可放宽）**：复发的 finding 依然是 P0/P1、依然计入本轮
 `p0p1Count`、依然应使这一轮的 review-receipt 判 `dirty`（若走 5.1 的 admin-trust
@@ -1232,12 +1236,30 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
 ### 5.7 收敛止损（收敛检查点与红色通报，机器侧触发）
 
 本节消费 4.2 `record-convergence-round.mjs` 返回的 `checkpointRequired` /
-`notifyRequired`——本节只定义**触发条件与拦截点**（机械判断），不定义检查点本身
+`notification`——本节只定义**触发条件与拦截点**（机械判断），不定义检查点本身
 要问哪六个问题、也不定义播报的人格化措辞，那两块分别是收敛检查点契约文本与「对外
 话术与人格边界」的既有职责范围，本节只负责把机器算出的信号接进正确的流程节点。
 
+**通知机制按两层拆分（SC-C4 调查带出的要求，2026-08-02）**：SC-C4 结论是
+review-pr 不存在中间态重审放大、不需要 debounce（cron ~3h 网格本身就是隐式
+debounce），但顺带查出一个真缺口——非 required 的第三方 bot（如 Greptile）长期
+缺席时，PR 会无限期挂在 `skip-gate`/`threads-unresolved`，没有"等待方缺席"的
+升级机制（本轮不做，另开处理）。为了不让那次改动需要重构本节的通知投递管线，
+通知在设计上就拆成两层，本节只落地第一层的一种触发源：
+
+- **触发判定**（可插拔，本节只实现"round/new-family"一种）：`recordConvergenceRound`
+  算出连续未收敛轮数达到 `CONVERGENCE_NOTIFY_THRESHOLD` 时产出
+  `notification = {reason: 'round-nonconvergence', prNumber, head, thresholdKey,
+  detail}`；未来的"等待方缺席 N 轮"触发源会是完全独立的判断逻辑（很可能不来自
+  审查轮次），不复用这段判断，但复用下面的投递+去重层。
+- **通知投递 + 去重**（`hasNotified`/`markNotified`，与触发源无关）：去重键是
+  `reason`+`thresholdKey`+`headRefOid` 三元组，`reason` 进键是为了让将来的
+  "缺席"触发不会被"round"触发已经发过的去重记录误吞，也不会反过来污染 round
+  触发自己的去重状态。
+
 **`checkpointRequired=true`（连续 `CONVERGENCE_CHECKPOINT_THRESHOLD` = 5 轮仍有
-新 P0/P1 家族，或本轮检测到收敛状态文件损坏被强制触发，见 4.2）**：
+新 P0/P1 家族，或本轮检测到收敛状态文件损坏被强制触发，见 4.2；此项无去重/无
+通知投递层，纯粹是每轮重新算的活门，收敛后自然消失）**：
 
 - **`selfFixAuthors` 的自动跟进修复（5.4）路径**：这是硬拦截点——5.4 步骤 3
   「投递」下一轮修复任务给跟进会话之前，必须先完成一次收敛检查点（具体问哪几项、
@@ -1249,25 +1271,27 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
   不新造模板），提醒作者/维护者在继续修之前先确认根因，而不是本 skill 自己代替
   人工完成检查点。
 
-**`notifyRequired=true`（连续达到 `CONVERGENCE_NOTIFY_THRESHOLD` = 10 轮仍有新
-P0/P1 家族，且当前 head 尚未对该阈值通知过）**：
+**`notification` 非 null（当前唯一触发源：连续达到 `CONVERGENCE_NOTIFY_THRESHOLD`
+= 10 轮仍有新 P0/P1 家族，且当前 head 尚未对 `notification.reason` +
+`notification.thresholdKey` 这一组合通知过）**：
 
 1. 读 `pr-rules.json` 的 `summaryBroadcast.command`（4.2 起同一份配置，不新增
    配置项、不硬编码群/收件人；未配置则该门关闭，只在内部汇总标注一句
    "本 PR 已连续 ≥10 轮未收敛，但目标仓库未配置 summaryBroadcast，无法主动播报"）；
-2. 已配置时，把一段事实性正文（连续轮数、`recurringFamilies` 摘要、PR 链接；
-   语气仍遵循「对外话术与人格边界」现有基调，不额外新造模板编号）经
+2. 已配置时，把一段事实性正文（`notification.detail` 里的连续轮数、
+   `recurringFamilies` 摘要、PR 链接；语气仍遵循「对外话术与人格边界」现有基调，
+   不额外新造模板编号）经
    `<正文> | node "<SKILL_ROOT>/scripts/notify-summary.mjs" --title "<标题>"`
    发出——复用 6.1 owner 每轮汇总已在用的同一条播报出口，不新建通道；
 3. 无论 `notify-summary.mjs` 返回 `posted` 是否为真（配置缺失/子进程失败都不
    阻断本轮收尾），只要**已经走到"决定要发"这一步**，就调用
-   `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --mark-notified --threshold 10 --head <headRefOid>`
-   回写去重——按 PR + 阈值 + head 三元组去重（同一 head 不重复刷屏；新推的 head
-   若仍未收敛会重新触发，不是"发过一次就永久静音"）。
+   `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --mark-notified --reason <notification.reason> --threshold <notification.thresholdKey> --head <headRefOid>`
+   回写去重——按 `reason`+`threshold`+`head` 三元组去重（同一 head 不重复刷屏；
+   新推的 head 若仍未收敛会重新触发，不是"发过一次就永久静音"）。
 
 **边界**：本节的检查点/通报都是"提醒人介入"，不是自动阻断合并的新 gate——是否
-合并仍完全由 4.1/5.1/5.2 现有判定决定；`checkpointRequired`/`notifyRequired` 为
-真本身不构成新的 P0/P1，也不写入 `p0p1Count`。
+合并仍完全由 4.1/5.1/5.2 现有判定决定；`checkpointRequired`/`notification` 非
+null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
 
 ## 6. Auto 批处理
 
