@@ -800,33 +800,48 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
 的那一刻。这一步在阶段二独立审查**每一轮**都要做，不只是 5.1 admin-trust 路由
 才做（那是回执的专属场景）。
 
+**跨轮身份 = 不变量 slug，不是本轮 family_id**：4 节审查报告里的 `family_id`
+（SC-C1「输出契约」）只在**单份报告内**唯一，审查 agent 每轮独立生成报告，不同轮
+的 `family_id` 之间没有任何对应关系，不能拿它做跨轮比对。真正的跨轮 join key 是
+`convergence-state.mjs` 对家族一句话不变量文本做确定性归一化得到的 **slug**；本轮
+的 `family_id` 只作为可选字段随 occurrence 存档，仅供回溯"这条记录对应本轮报告
+里的哪个 family"，不参与任何匹配逻辑。
+
+**两级检测**（不是纯字符串匹配——同一不变量换个说法描述，slug 未必还相等）：
+
+1. **一级（确定性，机器自动做）**：脚本对本轮 finding 的 `invariant` 原文算出
+   slug，自动与 state 里早于当前 head 的历史 slug 比对，命中即判定复发
+   （`matchedBy: 'slug'`），**不需要调用方声明**。
+2. **二级（T1 兜底，只能由 agent 做）**：一级未命中时，把 state 里该 PR 的历史
+   `invariant` 原文清单（`--get` 拿到）交给审查 agent/主 agent 做语义比对——判断
+   是否与某个历史家族本质是同一条不变量，只是这轮换了个说法。判等价就在这条
+   finding 上显式传 `recurrenceOfSlug: <历史 slug>`；本脚本只核验该 slug 在
+   state 里确有早于当前 head 的记录，**不做语义匹配**——核验不过直接 throw，不会
+   静默把无法验证的引用当新家族处理（防止"反正声称复发就信了"）。
+3. 两级都未命中 → 当新 family 处理（宁可多报一条新 family，不静默吞掉一次复发）。
+
 **步骤**：
 
 1. **先查已有家族**：`node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --get`
-   拿到当前 state（`families` 里每个家族的 `invariant` 描述与历史 `occurrences`）。
-2. **判断是否复发（T1，语义判断，只能由 agent 做）**：把本轮存活的每条 P0/P1
-   finding 与 `families` 逐条比对——是否与某个既有家族违反的是同一条不变量、且
-   上一次的修法没有覆盖全部触发路径。是就记 `recurrenceOfFamily: <familyId>`；
-   不是（包括这个 PR 第一次出现这类问题）就省略该字段，脚本会自动建新家族。
-   **本脚本不做语义匹配，只核验引用的家族历史是否真实存在**——`recurrenceOfFamily`
-   指向一个不存在、或没有早于当前 head 记录的 familyId 时会直接 throw，不会静默
-   当新家族处理（防止"反正声称复发就信了"）。
-3. **落盘**：把本轮 findings 转成
-   `[{invariant, severity:"P0"|"P1", description, recurrenceOfFamily?}]` 数组，
-   经 stdin 传给
-   `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --head <headRefOid>`
+   拿到当前 state（`families` 按 slug 分组，每个家族含 `invariant` 原文与历史
+   `occurrences`）——二级检测要用的历史清单就是这里的 `invariant` 字段集合。
+2. **落盘**：把本轮 findings 转成
+   `[{invariant, severity:"P0"|"P1", description, familyId?, recurrenceOfSlug?}]`
+   数组（`familyId` 是本轮报告里的 family_id，可选，仅供回溯；`recurrenceOfSlug`
+   只在二级检测判定复发时才传，一级由脚本自动判断，不要重复声明），经 stdin
+   传给 `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --head <headRefOid>`
    （0 P0/P1 时传空数组 `[]`，代表本轮收敛信号）。该 PR **第一次**被记录、且经
    `gh pr view --json reviews` 查到已有历史 `CHANGES_REQUESTED` 时，把
    `computeConservativeSeedRounds(reviews)` 的结果通过 `--seed-existing-rounds <N>`
    传入（D4「老 PR 首次接入的保守 seed」——只在首次生效，之后的调用会被忽略，不用
    每轮重复传）。
-4. **返回值消费**：脚本返回 `{roundCount, p0p1Count, newFamilyCount,
+3. **返回值消费**：脚本返回 `{roundCount, p0p1Count, newFamilyCount,
    consecutiveRoundsWithNewFamilies, recurringFamilies, checkpointRequired,
    notification, integrityWarning}`。
    - `recurringFamilies` 非空时，5.2 打回文案对这些条目要标注"复发"并指出
-     `priorHead`/`priorDescription`（例如："此问题在 `<priorHead 短 sha>` 已提过一次，
-     上一轮的修法未覆盖当前这条触发路径"）——按「对外话术与人格边界」的既有基调写，
-     不新造模板；
+     `priorHead`/`priorDescription`/`matchedBy`（例如："此问题在 `<priorHead 短
+     sha>` 已提过一次，上一轮的修法未覆盖当前这条触发路径"）——按「对外话术与
+     人格边界」的既有基调写，不新造模板；
    - `integrityWarning` 非空时（收敛状态文件本身损坏过，已隔离旧文件重建）必须在
      内部汇总/review 正文里如实带一句（措辞同 6.1 对 `runs.jsonl` 审计链损坏的
      处理："收敛状态文件损坏，历史轮次记录不可信，请人工核查该 PR 是否已经历多轮
@@ -839,7 +854,7 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
 
 **安全边界（不可放宽）**：复发的 finding 依然是 P0/P1、依然计入本轮
 `p0p1Count`、依然应使这一轮的 review-receipt 判 `dirty`（若走 5.1 的 admin-trust
-路由）、依然阻断合并——`recurrenceOfFamily` **只**影响 `newFamilyCount`（收敛
+路由）、依然阻断合并——`recurrenceOfSlug` **只**影响 `newFamilyCount`（收敛
 趋势指标），不影响、也不能被误用来影响任何合并判定路径或 `isReviewReceiptClean`。
 
 ## 5. 阶段三：落地

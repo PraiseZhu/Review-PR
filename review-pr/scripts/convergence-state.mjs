@@ -20,10 +20,12 @@
 //
 // D3(机器 vs 语义判断的边界):"这条 finding 和上一轮某条是不是同一个家族" 是
 // 语义判断(T1,交给审查 agent/主 agent 做),本模块**不做**语义匹配。本模块只做
-// 机械核验:调用方声称的 `recurrenceOfFamily` 指向的家族、以及该家族下早于当前
+// 机械核验:调用方声称的 `recurrenceOfSlug` 指向的 slug、以及该 slug 下早于当前
 // head 的历史 occurrence,是否真实存在于 state 里。核验不过直接 throw——不接受
 // "反正你说是复发我就信了"这种口径,也不会静默把无法验证的引用当新家族处理
-// (那等于放过一次本该报错的调用方错误)。
+// (那等于放过一次本该报错的调用方错误)。跨轮 join key 本身是 slug 不是
+// family_id,见下方「跨轮 join key」一节——这是 2026-08-02 的纠正,本节的机器/
+// 语义边界原则不变,只是被核验的引用换了字段名。
 //
 // D4(轮次口径):roundCount = 实际记录过的、按 headRefOid 去重的轮数,不是调用
 // 次数、不是 push 次数、不是 cron 轮次。同一 head 被再次调用(如同一 commit 重跑
@@ -58,9 +60,37 @@
 // 本轮只落地 `CONVERGENCE_NOTIFY_REASON_ROUND` 这一个 reason;新增缺席触发时只
 // 需要新写一段触发判定 + 一个新 reason 常量,调用同一套 hasNotified/markNotified,
 // 不需要改动这两个函数或 state 结构。
+//
+// 跨轮 join key = 不变量 slug,不是 family_id(lead 2026-08-02 纠正,rp-output 的
+// 输出契约调查发现的事实):`family_id` 只在单份审查报告内唯一,审查 agent 每轮
+// 独立生成报告,第 2 轮的 family_id 与第 1 轮的没有任何对应关系,拿它做跨轮比对
+// 必然失效。真正的跨轮身份是"由 family 的一句话不变量文本做确定性归一化"得到的
+// slug——同一不变量在不同轮次、哪怕换个说法描述,归一化后应该(在一级检测里)落到
+// 同一个 slug。归一化函数**必须单一实现**,不能本模块自己另写一份(两份归一化只要
+// 有一个字符差异,跨轮就永久对不上,且这种 bug 不报错、只静默漏判复发)。
+//
+// 【TEMPORARY,非最终版】:归一化本应直接 import rp-output 的
+// `lib.review-output-shape.mjs`(lead 说已让对方导出公共函数)——但截至本次改动,
+// 我核对过 `conv/output-contract`@`8701046` 的 `lib.review-output-shape.mjs`
+// 全文(86 行),里面只有 `validateFindingFamily`/`validateManifestationShape` 两个
+// **形状校验**函数,没有任何 slug/归一化相关代码或导出。为了不阻塞这一轮改动,
+// `normalizeInvariantToSlug` 暂时是本文件内的占位实现(算法严格按 lead 描述:转
+// 小写、去空白、截取前 60 字符),**等 rp-output 那边导出真实函数后必须替换成
+// import,删除这个占位版本**——已在交付报告里向 lead 报告这件事,不是静默留着。
+//
+// 两级检测(定案 3):
+//   一级(确定性):对本轮 finding 的 invariant 原文算 slug,命中 state 里已有的
+//     historicalSlug → 直接判定复发,机器可断言,不需要调用方声明。
+//   二级(T1 兜底):slug 未命中时,调用方(审查 agent/主 agent)可能仍判断这是同一
+//     家族换了个说法——显式传 `recurrenceOfSlug: <历史 slug>`;本模块只核验该
+//     slug 在 state 里确有早于当前 head 的记录,不做语义判断(同 D3 原则,只是
+//     join key 从 family_id 换成了 slug)。
+//   两级都未命中 → 当新 family 处理(宁可多报一条新 family,不静默吞掉复发)。
+// 每条 occurrence 记 `matchedBy: 'slug' | 'semantic' | null`(null = 该 family
+// 的第一条 occurrence,没有"匹配"这件事)供将来统计二级命中率、判断归一化要不要
+// 加强。
 
 import { readFileSync, existsSync, renameSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import { stateFile, writeJsonAtomic } from './lib.mjs';
 
 export const CONVERGENCE_CHECKPOINT_THRESHOLD = 5;
@@ -72,7 +102,18 @@ export const CONVERGENCE_NOTIFY_THRESHOLD = 10;
 export const CONVERGENCE_NOTIFY_REASON_ROUND = 'round-nonconvergence';
 
 const SEVERITIES = new Set(['P0', 'P1']);
-const STATE_VERSION = 1;
+const STATE_VERSION = 2; // v1→v2:跨轮 join key 从 family_id 换成 slug,顶层 families 键随之改变含义,老版本文件按 corrupted 处理(见 validateShape)。
+
+/**
+ * 【TEMPORARY,见文件头注释】按 lead 描述的算法把一句话不变量原文归一化成跨轮
+ * join key:转小写、折叠空白为单空格后整体去除、截取前 60 字符。非字符串/空串
+ * 输入返回空字符串(调用方在更上层已经校验过 invariant 非空,这里只是防御性兜底,
+ * 不额外抛错——本函数是纯归一化,不做输入校验,校验交给调用方)。
+ */
+export function normalizeInvariantToSlug(invariant) {
+  if (typeof invariant !== 'string') return '';
+  return invariant.toLowerCase().replace(/\s+/g, '').slice(0, 60);
+}
 
 function isPlainObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -102,8 +143,16 @@ function isValidHeadRecord(h) {
   );
 }
 
+const MATCHED_BY_VALUES = new Set(['slug', 'semantic', 'same-round', null]);
+
 function isValidOccurrence(o) {
-  return isPlainObject(o) && typeof o.headRefOid === 'string' && o.headRefOid !== '' && SEVERITIES.has(o.severity);
+  return (
+    isPlainObject(o)
+    && typeof o.headRefOid === 'string' && o.headRefOid !== ''
+    && SEVERITIES.has(o.severity)
+    && (o.familyId === null || typeof o.familyId === 'string')
+    && MATCHED_BY_VALUES.has(o.matchedBy)
+  );
 }
 
 function isValidFamily(fam) {
@@ -198,10 +247,6 @@ function quarantineCorrupted(file) {
   }
 }
 
-function newFamilyId() {
-  return `fam-${randomBytes(4).toString('hex')}`;
-}
-
 /**
  * 纯函数:统计 GitHub GraphQL `reviews.nodes` 里 `CHANGES_REQUESTED` 的数量,供
  * D4「老 PR 首次接入用保守 seed 规则」使用——调用方(CLI 或 SKILL 流程)在这个
@@ -222,20 +267,26 @@ export function computeConservativeSeedRounds(reviews) {
  *
  * @param {number} pr
  * @param {string} headRefOid 本轮审查针对的 head commit —— 必须非空。
- * @param {Array<{invariant:string, severity:'P0'|'P1', description?:string, recurrenceOfFamily?:string}>} findings
+ * @param {Array<{invariant:string, severity:'P0'|'P1', description?:string,
+ *   familyId?:string, recurrenceOfSlug?:string}>} findings
  *   本轮**存活**的 P0/P1 findings(调用方已完成 4.1 严重度分类与主 agent 复核之后
  *   的最终清单;P2 不传入,不参与收敛统计)。空数组 = 本轮 0 P0/P1(收敛信号)。
- *   `recurrenceOfFamily` 非空时代表调用方(审查 agent/主 agent 的 T1 判断)认定
- *   这条 finding 与某个既有家族同源;本函数只核验该家族在 state 里确有早于当前
- *   head 的历史记录,不做语义判断——核验不过直接 throw。
+ *   - `familyId`:该 finding 在**本轮**审查报告里的 family_id(仅供回溯该轮报告,
+ *     不跨轮、不参与任何匹配逻辑——见文件头注释「跨轮 join key」),可省略。
+ *   - `recurrenceOfSlug`:调用方(审查 agent/主 agent 的 T1 语义判断)认定这条
+ *     finding 与某个既有 slug 同源(二级检测,用于一级 slug 自动匹配未命中但
+ *     语义上仍是同一不变量换了说法的场景)。本函数只核验该 slug 在 state 里确有
+ *     早于当前 head 的历史记录,不做语义判断——核验不过直接 throw。省略时只走
+ *     一级(对 `invariant` 算出的 slug 自动比对 state 历史)。
  * @param {number} [seedRoundCount] 仅在该 PR 第一次被记录(state 从 missing 起建)
  *   时生效,忽略于后续调用(D4「保守 seed」只在起点生效一次,不应每轮重复叠加)。
  * @returns {{pr:number, headRefOid:string, roundCount:number, p0p1Count:number,
  *   newFamilyCount:number, consecutiveRoundsWithNewFamilies:number,
- *   recurringFamilies:Array<{familyId:string, invariant:string, priorHead:string,
- *   priorDescription:string|null}>, checkpointRequired:boolean,
- *   notification:{reason:string, prNumber:number, head:string, thresholdKey:string,
- *   detail:object}|null, integrityWarning:string|null}}
+ *   recurringFamilies:Array<{slug:string, familyId:string|null, invariant:string,
+ *   priorHead:string, priorDescription:string|null, matchedBy:'slug'|'semantic'}>,
+ *   checkpointRequired:boolean, notification:{reason:string, prNumber:number,
+ *   head:string, thresholdKey:string, detail:object}|null,
+ *   integrityWarning:string|null}}
  *   `notification` 非 null 时代表本轮触发源(round/new-family)判定需要发一次
  *   升级通知且尚未对当前 head 发过——按文件头注释「通知层的两层拆分」,这是
  *   round 触发源自己的判定结果,不代表通知已经发出;调用方发出后必须调
@@ -255,8 +306,11 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     if (!SEVERITIES.has(f.severity)) {
       throw new Error(`finding.severity 必须是 'P0' 或 'P1',收到: ${JSON.stringify(f?.severity)}`);
     }
-    if (f.recurrenceOfFamily !== undefined && (typeof f.recurrenceOfFamily !== 'string' || f.recurrenceOfFamily === '')) {
-      throw new Error(`recurrenceOfFamily 必须是非空字符串 familyId,收到: ${JSON.stringify(f.recurrenceOfFamily)}`);
+    if (f.familyId !== undefined && (typeof f.familyId !== 'string' || f.familyId === '')) {
+      throw new Error(`familyId 若提供必须是非空字符串,收到: ${JSON.stringify(f.familyId)}`);
+    }
+    if (f.recurrenceOfSlug !== undefined && (typeof f.recurrenceOfSlug !== 'string' || f.recurrenceOfSlug === '')) {
+      throw new Error(`recurrenceOfSlug 必须是非空字符串 slug,收到: ${JSON.stringify(f.recurrenceOfSlug)}`);
     }
   }
 
@@ -311,35 +365,78 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
   const recordedAt = new Date().toISOString();
 
   for (const f of findings) {
-    if (f.recurrenceOfFamily) {
-      const fam = state.families[f.recurrenceOfFamily];
+    const autoSlug = normalizeInvariantToSlug(f.invariant);
+    // 目标 slug:二级显式声明优先,否则用一级自动算出的 slug——两条路径最终都
+    // 落到"往 state.families[targetSlug] 追加一条 occurrence"这一件事上,分支
+    // 只是决定 targetSlug 是什么、以及 matchedBy 怎么记。
+    const targetSlug = f.recurrenceOfSlug || autoSlug;
+    const fam = state.families[targetSlug];
+    // "早于当前 head 的历史"排除当前 head 自己的 occurrence——本轮同一 head 下
+    // 若已有另一条 finding 刚创建/命中了同一个 slug,不能把它当"跨轮历史"用
+    // (那不是复发,是同一轮内两条 finding 撞了同一个 slug;见文件头注释)。
+    const priorOccurrences = fam ? fam.occurrences.filter((o) => o.headRefOid !== headRefOid) : [];
+
+    if (f.recurrenceOfSlug) {
       // D3:机器只核验"引用的历史是否真实存在",不做语义匹配——语义判断已经由
-      // 调用方(T1)做完,这里只管"你说的那段历史，在 state 里真的有吗"。此时
-      // fam.occurrences(若存在)只含早于当前 head 的记录(本轮尚未 push,且
-      // 上面已摘除了本 head 自己的旧记录),因此"存在且非空"即等价于"存在早于
-      // 当前 head 的历史 occurrence"。
-      if (!fam || fam.occurrences.length === 0) {
+      // 调用方(T1,二级检测)做完,这里只管"你说的那段历史,在 state 里真的有吗"。
+      if (priorOccurrences.length === 0) {
         throw new Error(
-          `recurrenceOfFamily=${f.recurrenceOfFamily} 引用的历史在 state 中不存在(或没有早于当前 head 的`
-          + '记录)——不能凭空声称复发,请改用新家族(省略 recurrenceOfFamily)或核对 familyId 是否正确',
+          `recurrenceOfSlug=${f.recurrenceOfSlug} 引用的历史在 state 中不存在(或没有早于当前 head 的`
+          + '记录)——不能凭空声称复发,请改用新家族(省略 recurrenceOfSlug)或核对 slug 是否正确',
         );
       }
-      const priorOccurrence = fam.occurrences[fam.occurrences.length - 1];
+      const priorOccurrence = priorOccurrences[priorOccurrences.length - 1];
+      // 显式引用的 slug 恰好等于本轮 invariant 自动算出的 slug 时,其实一级
+      // 确定性匹配本就该命中——按更简单、更可解释的一级记录,不因为调用方多此
+      // 一举传了 recurrenceOfSlug 就升级成"语义"命中(matchedBy 是给未来统计
+      // 二级命中率用的,虚报会稀释这个信号的可信度)。
+      const matchedBy = f.recurrenceOfSlug === autoSlug ? 'slug' : 'semantic';
       fam.occurrences.push({
         headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
+        familyId: f.familyId ?? null, matchedBy,
       });
       recurringFamilies.push({
-        familyId: f.recurrenceOfFamily,
+        slug: f.recurrenceOfSlug,
+        familyId: f.familyId ?? null,
         invariant: fam.invariant,
         priorHead: priorOccurrence.headRefOid,
         priorDescription: priorOccurrence.description ?? null,
+        matchedBy,
+      });
+    } else if (priorOccurrences.length > 0) {
+      // 一级(确定性):本轮 invariant 归一化后的 slug 命中了 state 里早于当前
+      // head 的历史 —— 不需要调用方声明,机器自己就能断言这是复发。
+      const priorOccurrence = priorOccurrences[priorOccurrences.length - 1];
+      fam.occurrences.push({
+        headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
+        familyId: f.familyId ?? null, matchedBy: 'slug',
+      });
+      recurringFamilies.push({
+        slug: targetSlug,
+        familyId: f.familyId ?? null,
+        invariant: fam.invariant,
+        priorHead: priorOccurrence.headRefOid,
+        priorDescription: priorOccurrence.description ?? null,
+        matchedBy: 'slug',
+      });
+    } else if (fam) {
+      // 两级都没有可验证的"跨轮"历史,但这个 slug 在**本轮**已经被另一条 finding
+      // 创建/命中过——同一轮内的 slug 撞车,不是真正的跨轮复发,也不是"新"
+      // family(这个 slug 本轮已经算过一次新家族了),两头都不计,只补一条
+      // occurrence 保持该家族记录完整。
+      fam.occurrences.push({
+        headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
+        familyId: f.familyId ?? null, matchedBy: 'same-round',
       });
     } else {
-      const familyId = newFamilyId();
-      state.families[familyId] = {
+      // 两级都未命中,且这个 slug 本轮也是第一次出现 —— 当新 family。
+      state.families[targetSlug] = {
         invariant: f.invariant,
         firstSeenHead: headRefOid,
-        occurrences: [{ headRefOid, recordedAt, severity: f.severity, description: f.description ?? null }],
+        occurrences: [{
+          headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
+          familyId: f.familyId ?? null, matchedBy: null,
+        }],
       };
       newFamilyCount += 1;
     }

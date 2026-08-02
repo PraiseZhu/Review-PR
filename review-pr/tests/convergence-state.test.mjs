@@ -1,6 +1,6 @@
 // convergence-state.test.mjs — SC-C2(同族复发判定)+ SC-C3(收敛止损)单测。
 //
-// PR 号命名空间:970001-970099 单元级(家族/复发/覆盖/连续计数/阈值),
+// PR 号命名空间:970001-970099 单元级(家族/复发/覆盖/连续计数/阈值/两级检测),
 // 970100-970199 损坏与隔离,970200-970299 与 review-receipt / runs.jsonl 的
 // 跨模块独立性回归,970300+ CLI 端到端。与其它测试文件(900000/920000/930000 段)
 // 及真实 PR 号不重叠——但**仍需**在每个测试开头调用 `resetPr()` 清掉上一次真实
@@ -8,8 +8,7 @@
 // receipt.test.mjs 的既有做法),receipt 类测试天然幂等(单对象 last-write-wins,
 // 重跑收敛到同一结果),但本文件的测试会跨多个 head 累积家族历史,不是简单覆盖
 // 就能收敛回同一状态——重跑必须先清空,否则会把上一次运行遗留的家族/occurrence
-// 也算进本次断言,得到误报(实测:未清空时全量跑 `tests/**/*.test.mjs` 两次,
-// runs.jsonl 独立性测试会因为家族数变成 2 而失败)。
+// 也算进本次断言,得到误报。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -20,8 +19,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readConvergenceState, recordConvergenceRound, hasNotified, markNotified,
-  computeConservativeSeedRounds, CONVERGENCE_CHECKPOINT_THRESHOLD, CONVERGENCE_NOTIFY_THRESHOLD,
-  CONVERGENCE_NOTIFY_REASON_ROUND,
+  computeConservativeSeedRounds, normalizeInvariantToSlug,
+  CONVERGENCE_CHECKPOINT_THRESHOLD, CONVERGENCE_NOTIFY_THRESHOLD, CONVERGENCE_NOTIFY_REASON_ROUND,
 } from '../scripts/convergence-state.mjs';
 import { STATE_DIR, stateFile, writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../scripts/lib.mjs';
 
@@ -40,12 +39,24 @@ function resetPr(pr) {
   }
 }
 
-function familyIdOf(pr) {
+function slugOf(pr) {
   const { state } = readConvergenceState(pr);
-  const ids = Object.keys(state.families);
-  assert.equal(ids.length, 1, `期望恰好一个家族,实际 ${ids.length}`);
-  return ids[0];
+  const slugs = Object.keys(state.families);
+  assert.equal(slugs.length, 1, `期望恰好一个家族,实际 ${slugs.length}`);
+  return slugs[0];
 }
+
+// ── normalizeInvariantToSlug:占位归一化的纯函数行为(见文件头「TEMPORARY」说明,
+// 等 rp-output 导出真实函数后整块替换,这里锁定的是当前占位算法的具体行为) ──
+
+test('normalizeInvariantToSlug:转小写、去空白、截断——同一不变量换大小写/空白应归一到同一 slug', () => {
+  assert.equal(normalizeInvariantToSlug('Foo Bar Baz'), normalizeInvariantToSlug('foo  bar baz'));
+  assert.equal(normalizeInvariantToSlug('缺少空值校验  在 foo 函数'), normalizeInvariantToSlug('缺少空值校验 在 FOO 函数'));
+  assert.equal(normalizeInvariantToSlug(''), '');
+  assert.equal(normalizeInvariantToSlug(null), '');
+  assert.equal(normalizeInvariantToSlug(undefined), '');
+  assert.equal(normalizeInvariantToSlug('a'.repeat(100)).length, 60, '超长文本应截断到固定长度,不无限增长');
+});
 
 // ── 基础:首轮建家族,missing 状态正确识别 ──
 
@@ -70,35 +81,66 @@ test('首次记录(missing → ok):建一个新家族,roundCount=1,checkpoint/no
   assert.equal(after.status, 'ok');
 });
 
-// ── D1/D3 核心:同族复发只减 newFamilyCount,不减 p0p1Count;机器核验引用真实存在 ──
+// ── 定案 3·一级检测(确定性):slug 自动命中,不需要调用方声明 ──
 
-test('SC-C2 核心①②:复发 finding 仍计入 p0p1Count,只从 newFamilyCount 里排除', () => {
-  resetPr(970002);
+test('一级检测:同一不变量换个大小写/空白写法,不传 recurrenceOfSlug 也能自动判定复发', () => {
+  const pr = 970002;
+  resetPr(pr);
   recordConvergenceRound({
-    pr: 970002, headRefOid: 'sha-1', findings: [{ invariant: 'X 未处理', severity: 'P0', description: 'b.js:5' }],
+    pr, headRefOid: 'sha-1', findings: [{ invariant: 'X 未处理并发写入', severity: 'P0', description: 'b.js:5' }],
   });
-  const famId = familyIdOf(970002);
 
   const r2 = recordConvergenceRound({
-    pr: 970002,
-    headRefOid: 'sha-2',
-    findings: [{ invariant: 'X 未处理', severity: 'P0', description: 'b.js:9', recurrenceOfFamily: famId }],
+    pr, headRefOid: 'sha-2',
+    findings: [{ invariant: 'x  未处理并发写入', severity: 'P0', description: 'b.js:9' }], // 大小写+空白不同,未声明 recurrenceOfSlug
   });
-  assert.equal(r2.p0p1Count, 1, '复发 finding 仍要计入本轮 p0p1Count(D1:阻断合并的口径不受影响)');
-  assert.equal(r2.newFamilyCount, 0, '复发不应贡献新家族数(收敛指标里排除)');
+  assert.equal(r2.p0p1Count, 1, 'D1:复发 finding 仍要计入本轮 p0p1Count');
+  assert.equal(r2.newFamilyCount, 0, '一级命中不应贡献新家族数');
   assert.equal(r2.recurringFamilies.length, 1);
-  assert.equal(r2.recurringFamilies[0].familyId, famId);
+  assert.equal(r2.recurringFamilies[0].matchedBy, 'slug', '未声明 recurrenceOfSlug 时,命中必须来自一级自动检测');
   assert.equal(r2.recurringFamilies[0].priorHead, 'sha-1');
   assert.equal(r2.recurringFamilies[0].priorDescription, 'b.js:5');
 });
 
-test('SC-C2 核心③(跨模块回归):convergence-state 的复发记录对 isReviewReceiptClean 零影响', () => {
+// ── 定案 3·二级检测(T1 兜底):换了完全不同的说法,靠显式 recurrenceOfSlug ──
+
+test('二级检测:完全不同的措辞,一级 slug 不会命中,必须靠显式 recurrenceOfSlug(matchedBy=semantic)', () => {
   const pr = 970003;
   resetPr(pr);
+  recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: '未处理并发写入竞态', severity: 'P0' }] });
+  const slug1 = slugOf(pr);
+  assert.notEqual(normalizeInvariantToSlug('写锁未生效导致数据竞争'), slug1, '措辞完全不同,一级归一化不应偶然撞上同一 slug(否则本测试没测到二级路径)');
+
+  const r2 = recordConvergenceRound({
+    pr, headRefOid: 'sha-2',
+    findings: [{ invariant: '写锁未生效导致数据竞争', severity: 'P0', recurrenceOfSlug: slug1 }],
+  });
+  assert.equal(r2.newFamilyCount, 0);
+  assert.equal(r2.recurringFamilies.length, 1);
+  assert.equal(r2.recurringFamilies[0].matchedBy, 'semantic', '一级不命中、靠显式引用命中的必须标 semantic,不能标 slug');
+  assert.equal(r2.recurringFamilies[0].slug, slug1);
+  assert.equal(r2.recurringFamilies[0].priorHead, 'sha-1');
+});
+
+test('二级检测:显式 recurrenceOfSlug 恰好等于一级自动算出的 slug 时,按更简单可解释的 slug 记录,不虚报 semantic', () => {
+  const pr = 970021;
+  resetPr(pr);
+  recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A 不变量', severity: 'P1' }] });
+  const slug1 = slugOf(pr);
+  const r2 = recordConvergenceRound({
+    pr, headRefOid: 'sha-2',
+    findings: [{ invariant: 'a 不变量', severity: 'P1', recurrenceOfSlug: slug1 }], // 大小写不同但归一化后等于 slug1
+  });
+  assert.equal(r2.recurringFamilies[0].matchedBy, 'slug', 'recurrenceOfSlug 与自动算出的 slug 一致时不应虚报成 semantic');
+});
+
+test('D1/D3 核心:复发 finding 仍计入 p0p1Count,只从 newFamilyCount 里排除(跨模块回归:对 isReviewReceiptClean 零影响)', () => {
+  const pr = 970004;
+  resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'Y', severity: 'P1' }] });
-  const famId = familyIdOf(pr);
+  const slug1 = slugOf(pr);
   recordConvergenceRound({
-    pr, headRefOid: 'sha-2', findings: [{ invariant: 'Y', severity: 'P1', recurrenceOfFamily: famId }],
+    pr, headRefOid: 'sha-2', findings: [{ invariant: 'Y', severity: 'P1', recurrenceOfSlug: slug1 }],
   });
 
   // 旧 head 的 clean 回执绝不能覆盖新 head(既有语义,P1-5 核心;本测试只是确认
@@ -113,39 +155,63 @@ test('SC-C2 核心③(跨模块回归):convergence-state 的复发记录对 isRe
   assert.equal(isReviewReceiptClean({ receipt: receipt2, headRefOid: 'sha-2' }), false);
 });
 
-test('D3 核心:recurrenceOfFamily 引用不存在的家族 → 机器拒绝(fail-closed,不当新家族静默通过)', () => {
-  resetPr(970004);
+test('D3 核心:recurrenceOfSlug 引用不存在的 slug → 机器拒绝(fail-closed,不当新家族静默通过)', () => {
+  resetPr(970005);
   assert.throws(
     () => recordConvergenceRound({
-      pr: 970004, headRefOid: 'sha-1', findings: [{ invariant: 'Z', severity: 'P0', recurrenceOfFamily: 'fam-doesnotexist' }],
+      pr: 970005, headRefOid: 'sha-1', findings: [{ invariant: 'Z', severity: 'P0', recurrenceOfSlug: 'slug-doesnotexist' }],
     }),
-    /recurrenceOfFamily=fam-doesnotexist 引用的历史在 state 中不存在/,
+    /recurrenceOfSlug=slug-doesnotexist 引用的历史在 state 中不存在/,
   );
   // 且这次失败的调用不应该产生任何持久化的半成品状态。
-  assert.equal(readConvergenceState(970004).status, 'missing');
+  assert.equal(readConvergenceState(970005).status, 'missing');
 });
 
-test('D3:recurrenceOfFamily 只能指向早于当前 head 的历史,不能"自证"同轮内的另一条 finding', () => {
-  resetPr(970005);
-  // 家族第一次出现就在本轮内声明 recurrenceOfFamily 指向一个刚刚(同轮同 head)才
-  // 会创建的 familyId —— 该 familyId 此刻在 state 里还不存在,必须拒绝。
+test('D3:recurrenceOfSlug 只能指向早于当前 head 的历史,不能"自证"同轮内刚创建的家族', () => {
+  resetPr(970006);
+  // 家族第一次出现就在本轮内声明 recurrenceOfSlug 指向一个刚刚(同轮同 head)才
+  // 会创建的 slug —— 该 slug 此刻在 state 里还不存在,必须拒绝。
   assert.throws(
     () => recordConvergenceRound({
-      pr: 970005,
+      pr: 970006,
       headRefOid: 'sha-1',
       findings: [
         { invariant: 'A', severity: 'P1' },
-        { invariant: 'A', severity: 'P1', recurrenceOfFamily: 'fam-not-yet-created' },
+        { invariant: 'B完全不同', severity: 'P1', recurrenceOfSlug: normalizeInvariantToSlug('A') },
       ],
     }),
     /引用的历史在 state 中不存在/,
   );
 });
 
+// ── 同一轮内两条 finding 撞同一个 slug:不是跨轮复发,也不重复计新家族 ──
+
+test('同轮 slug 撞车:两条 finding 归一化后落到同一 slug,只计一次新家族,第二条记 matchedBy=same-round,不进 recurringFamilies', () => {
+  const pr = 970022;
+  resetPr(pr);
+  const r = recordConvergenceRound({
+    pr, headRefOid: 'sha-1',
+    findings: [
+      { invariant: '全新问题A', severity: 'P1' },
+      { invariant: '全新问题a', severity: 'P1' }, // 大小写不同,归一化后同一个 slug
+    ],
+  });
+  assert.equal(r.p0p1Count, 2, '两条 finding 都要计入 p0p1Count');
+  assert.equal(r.newFamilyCount, 1, '同一 slug 本轮只算一次新家族,不是两次');
+  assert.deepEqual(r.recurringFamilies, [], '同轮撞车不是跨轮复发,不该出现在 recurringFamilies 里');
+
+  const { state } = readConvergenceState(pr);
+  const fams = Object.values(state.families);
+  assert.equal(fams.length, 1);
+  assert.equal(fams[0].occurrences.length, 2);
+  assert.equal(fams[0].occurrences[0].matchedBy, null, '该家族第一条 occurrence 无"匹配"这件事');
+  assert.equal(fams[0].occurrences[1].matchedBy, 'same-round');
+});
+
 // ── D4:roundCount 按去重 head 计,同 head 重跑覆盖而非新增轮次 ──
 
 test('D4:同一 head 重复调用 → 覆盖旧记录,roundCount 不重复递增,家族 occurrence 不重复计入', () => {
-  const pr = 970006;
+  const pr = 970007;
   resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
   const r1 = recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
@@ -159,7 +225,7 @@ test('D4:同一 head 重复调用 → 覆盖旧记录,roundCount 不重复递增
 });
 
 test('D4:覆盖同一 head 后若该家族只在这个 head 出现过,重跑不再提交该 finding 时应连家族一起摘除(不留空家族)', () => {
-  const pr = 970007;
+  const pr = 970008;
   resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [] }); // 重跑时这条 finding 被判定不成立,不再提交
@@ -170,7 +236,7 @@ test('D4:覆盖同一 head 后若该家族只在这个 head 出现过,重跑不�
 // ── 连续计数:清空重置;止损阈值边界(反向变异关注点:4 轮 false,第 5 轮才 true)──
 
 test('连续计数:出现一轮 0 新家族(收敛)后重置为 0,不是跨轮累加不清零', () => {
-  const pr = 970008;
+  const pr = 970009;
   resetPr(pr);
   const r1 = recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
   assert.equal(r1.consecutiveRoundsWithNewFamilies, 1);
@@ -181,7 +247,7 @@ test('连续计数:出现一轮 0 新家族(收敛)后重置为 0,不是跨轮�
 });
 
 test('止损阈值边界:连续 4 轮新家族 checkpointRequired 仍为 false,第 5 轮起才 true(反向变异:>=5 误写成 >5 会让本测试的第二个断言失败)', () => {
-  const pr = 970009;
+  const pr = 970010;
   resetPr(pr);
   let last;
   for (let i = 1; i <= 4; i++) {
@@ -196,7 +262,7 @@ test('止损阈值边界:连续 4 轮新家族 checkpointRequired 仍为 false,�
 });
 
 test('止损阈值边界:连续 9 轮 notification 为 null,第 10 轮起为非 null(反向变异同上,>=10 误写 >10 会让第二断言失败)', () => {
-  const pr = 970010;
+  const pr = 970011;
   resetPr(pr);
   let last;
   for (let i = 1; i <= 9; i++) {
@@ -221,7 +287,7 @@ test('止损阈值边界:连续 9 轮 notification 为 null,第 10 轮起为非 
 // ── 通知去重:按 reason+threshold+head,同 head 不重发,新 head 仍会重新触发 ──
 
 test('通知去重⑤:同 head 标记已通知后 notification 变 null;新的仍未收敛的 head 重新触发(不是永久静音)', () => {
-  const pr = 970011;
+  const pr = 970012;
   resetPr(pr);
   let last;
   for (let i = 1; i <= 10; i++) {
@@ -244,7 +310,7 @@ test('通知去重⑤:同 head 标记已通知后 notification 变 null;新的�
 });
 
 test('通知去重:reason 进键——同一 head+threshold,不同 reason 各自独立去重,不会互相误吞(SC-C4 要求的核心)', () => {
-  const pr = 970019;
+  const pr = 970013;
   resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [] });
   markNotified({ pr, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' });
@@ -260,7 +326,7 @@ test('通知去重:reason 进键——同一 head+threshold,不同 reason 各自
 });
 
 test('markNotified 幂等:同一 head 标记两次不产生重复条目', () => {
-  const pr = 970012;
+  const pr = 970014;
   resetPr(pr);
   recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [] });
   markNotified({ pr, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' });
@@ -269,24 +335,24 @@ test('markNotified 幂等:同一 head 标记两次不产生重复条目', () => 
 });
 
 test('markNotified 在 state 尚不存在(missing)时必须 throw,不能静默假装标记成功', () => {
-  resetPr(970013);
+  resetPr(970015);
   assert.throws(
-    () => markNotified({ pr: 970013, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' }),
+    () => markNotified({ pr: 970015, reason: CONVERGENCE_NOTIFY_REASON_ROUND, thresholdKey: '10', headRefOid: 'sha-1' }),
     /应先调用 recordConvergenceRound/,
   );
 });
 
 test('hasNotified/markNotified 拒绝空 reason(通知投递层不允许在不知道触发源的情况下去重)', () => {
-  resetPr(970020);
-  recordConvergenceRound({ pr: 970020, headRefOid: 'sha-1', findings: [] });
-  assert.throws(() => hasNotified({ pr: 970020, reason: '', thresholdKey: '10', headRefOid: 'sha-1' }), /reason/);
-  assert.throws(() => markNotified({ pr: 970020, reason: '', thresholdKey: '10', headRefOid: 'sha-1' }), /reason/);
+  resetPr(970016);
+  recordConvergenceRound({ pr: 970016, headRefOid: 'sha-1', findings: [] });
+  assert.throws(() => hasNotified({ pr: 970016, reason: '', thresholdKey: '10', headRefOid: 'sha-1' }), /reason/);
+  assert.throws(() => markNotified({ pr: 970016, reason: '', thresholdKey: '10', headRefOid: 'sha-1' }), /reason/);
 });
 
 // ── seed:仅首次生效,老 PR 保守 seed 规则 ──
 
 test('D4 seed:seedRoundCount 只在首次记录时生效,后续调用忽略(不会每轮重复叠加);且真的会推高首轮的连续计数,不是只记个审计字段', () => {
-  const pr = 970014;
+  const pr = 970017;
   resetPr(pr);
   const r1 = recordConvergenceRound({
     pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }], seedRoundCount: 3,
@@ -325,37 +391,48 @@ test('computeConservativeSeedRounds:纯函数,统计 CHANGES_REQUESTED,非数组
 
 // ── 输入校验 ──
 
-test('输入校验:headRefOid 为空 / findings 非数组 / severity 非法 / invariant 缺失 均 throw', () => {
-  resetPr(970015);
-  assert.throws(() => recordConvergenceRound({ pr: 970015, headRefOid: '', findings: [] }), /headRefOid/);
-  assert.throws(() => recordConvergenceRound({ pr: 970015, headRefOid: 'sha-1', findings: 'nope' }), /findings 必须是数组/);
+test('输入校验:headRefOid 为空 / findings 非数组 / severity 非法 / invariant 缺失 / familyId 非法 均 throw', () => {
+  resetPr(970019);
+  assert.throws(() => recordConvergenceRound({ pr: 970019, headRefOid: '', findings: [] }), /headRefOid/);
+  assert.throws(() => recordConvergenceRound({ pr: 970019, headRefOid: 'sha-1', findings: 'nope' }), /findings 必须是数组/);
   assert.throws(
-    () => recordConvergenceRound({ pr: 970015, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P2' }] }),
+    () => recordConvergenceRound({ pr: 970019, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P2' }] }),
     /severity/,
   );
   assert.throws(
-    () => recordConvergenceRound({ pr: 970015, headRefOid: 'sha-1', findings: [{ severity: 'P1' }] }),
+    () => recordConvergenceRound({ pr: 970019, headRefOid: 'sha-1', findings: [{ severity: 'P1' }] }),
     /invariant/,
+  );
+  assert.throws(
+    () => recordConvergenceRound({ pr: 970019, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1', familyId: '' }] }),
+    /familyId/,
   );
 });
 
 // ── 结构校验:畸形但合法 JSON 的文件必须判 corrupted,不能判 ok 或 missing ──
 
 test('结构校验:合法 JSON 但缺关键字段(如 heads 不是数组)→ corrupted,不是 ok/missing', () => {
-  const pr = 970016;
+  const pr = 970020;
   resetPr(pr);
   const file = stateFile(`convergence-${pr}.json`);
-  writeFileSync(file, JSON.stringify({ version: 1, heads: 'not-an-array', families: {}, notifiedThresholds: {}, seed: null, integrity: { status: 'ok' } }));
+  writeFileSync(file, JSON.stringify({ version: 2, heads: 'not-an-array', families: {}, notifiedThresholds: {}, seed: null, integrity: { status: 'ok' } }));
   const { status, error } = readConvergenceState(pr);
   assert.equal(status, 'corrupted');
   assert.match(error, /结构校验未通过/);
 });
 
-test('结构校验:version 字段不认识的将来格式 → corrupted(不假装能读懂未来版本)', () => {
-  const pr = 970017;
+test('结构校验:version 字段不认识的将来格式 → corrupted(不假装能读懂未来版本;同样覆盖 v1→v2 的老状态文件迁移路径)', () => {
+  const pr = 970023;
   resetPr(pr);
   const file = stateFile(`convergence-${pr}.json`);
   writeFileSync(file, JSON.stringify({ version: 99, heads: [], families: {}, notifiedThresholds: {}, seed: null, integrity: { status: 'ok' } }));
+  assert.equal(readConvergenceState(pr).status, 'corrupted');
+
+  // v1(family_id 版)文件即使字段形态凑巧齐全,version 已不匹配,必须按 corrupted
+  // 处理(隔离重建),不能被新 schema 误读成合法 ok 状态。
+  writeFileSync(file, JSON.stringify({
+    version: 1, heads: [], families: {}, notifiedThresholds: {}, seed: null, integrity: { status: 'ok' },
+  }));
   assert.equal(readConvergenceState(pr).status, 'corrupted');
 });
 
@@ -401,9 +478,9 @@ test('④ runs.jsonl 审计链损坏不影响收敛状态的权威性(两者是�
     const pr = 970201;
     resetPr(pr);
     const r1 = recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
-    const famId = familyIdOf(pr);
+    const slug1 = slugOf(pr);
     const r2 = recordConvergenceRound({
-      pr, headRefOid: 'sha-2', findings: [{ invariant: 'A', severity: 'P1', recurrenceOfFamily: famId }],
+      pr, headRefOid: 'sha-2', findings: [{ invariant: 'A', severity: 'P1', recurrenceOfSlug: slug1 }],
     });
 
     assert.equal(r1.newFamilyCount, 1);
@@ -451,6 +528,22 @@ test('CLI:record → get → mark-notified 全链路', () => {
   ]);
   assert.equal(marked.status, 0, marked.stderr);
   assert.deepEqual(marked.json.notifiedHeads, ['sha-1']);
+});
+
+test('CLI:第二轮换个说法自动一级命中复发(端到端验证 slug 归一化真的在 CLI 路径生效)', () => {
+  const pr = 970306;
+  resetPr(pr);
+  runCli(
+    [String(pr), '--head', 'sha-1'],
+    JSON.stringify([{ invariant: '缺少边界检查', severity: 'P1' }]),
+  );
+  const rec2 = runCli(
+    [String(pr), '--head', 'sha-2'],
+    JSON.stringify([{ invariant: '缺少  边界检查', severity: 'P1' }]), // 空白不同
+  );
+  assert.equal(rec2.status, 0, rec2.stderr);
+  assert.equal(rec2.json.newFamilyCount, 0);
+  assert.equal(rec2.json.recurringFamilies[0].matchedBy, 'slug');
 });
 
 test('CLI:空 findings 数组(收敛信号)合法,退出码 0', () => {
