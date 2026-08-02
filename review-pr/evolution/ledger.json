@@ -811,14 +811,14 @@
       "fingerprint": "skip-security-review-routes-automation-selfmod-to-human",
       "tier": "by-design",
       "title": "改动命中 securityReviewPaths(自动化自身执行面)一律转人工,本轮 4 个 PR 因此不自动审不自动合",
-      "detail": "PR 320/328/332 命中 package.json,PR 337 命中 .github/workflows/。这是 SKILL 3.8 的设计意图:防「改坏的版本审过并合入了自己」的自我损坏闭环。出现频次高不代表该放开——反而说明该仓日常改动确实频繁触碰自动化执行面,应保持转人工。",
+      "detail": "PR #419 改 .github/workflows/merge-thanks.yml，auto.action=skip-security-review",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": "2026-07-30T05:12:19.225Z",
-      "lastSeen": "2026-08-01T08:04:48.399Z"
+      "lastSeen": "2026-08-02T05:02:19.825Z"
     },
     {
       "fingerprint": "author-side-conflict-blocks-merge",
