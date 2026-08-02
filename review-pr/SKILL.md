@@ -833,18 +833,33 @@ severity 取成员里最高的那个——出现一条 P0 就是 P0，不因大�
 manifestations 已确认修复——该 family 不再出现在本轮 findings，或本轮 Verification
 明确核实通过——这一刻起这个 family 记为"已收敛"。
 
-**识别同 family 复发（不新增持久状态，靠已有的评论历史）**：`family_id` 只在单份
-报告内唯一、不跨轮持久，不能拿数字比对识别是否同一个。改用 PR 上已发出的 review
-评论正文做锚点：family 首次被判定 dirty 时，评论正文顶部嵌入一行机器可读注释
-`<!-- family-anchor: <不变量摘要 slug> -->`（slug 由该 family 的一句话不变量做
-确定性归一化得到——转小写、去空白、截取前若干字符，不依赖模型判断，只为方便逐轮
-比对字符串），这条评论本身就是该不变量的 anchor，不改动 PR 作者的 body。主 agent
-每轮收到审查报告后，在第 4 节第 2 步已读取的评论历史里，查找带 `family-anchor`
-marker 且 thread 已 resolve（意味着上一轮已确认修复，即达到过收敛检查点）的既有
-评论；若本轮某个新 family 的不变量描述与其语义等价，判定为"同 family 复发"——这
-一步是主 agent 的语义判断（机器不代它下结论，同第 4 节第 6 条的归族判断），判断
-不了宁可当作新 family 处理。复发时，后续评论复用/更新同一条既有评论（定位到同
-marker 的 thread 追加，或 `gh pr comment --edit-last`），不新开无关评论。
+**识别同 family 复发（事实来源是 per-PR convergence state，不是评论历史）**：
+`family_id` 只在单份报告内唯一、不跨轮持久（每轮审查 agent 独立生成，数字可能撞、
+也可能对不上同一个不变量），不能拿它做跨轮识别"这是不是同一个 family"。跨轮识别
+按下面两级判定，事实来源是该 PR 的 convergence state（存这个 PR 的历史 family
+记录，机制细节见状态维护方）：
+
+1. **一级（确定性，机器可断言）**：本轮新 family 的一句话不变量喂给
+   `invariantSlug(invariant)`（`lib.review-output-shape.mjs` 导出的跨轮 join key
+   唯一实现，见该文件头部说明）算出 slug；命中 state 里该 PR 的历史 slug，直接
+   判定为"同 family 复发"，不需要模型介入。
+2. **二级（T1 语义判断兜底，仅一级未命中时触发）**：slug 未命中不等于一定是新
+   family——可能只是这轮复述换了标点或说法，落在 slug 归一化的已知盲区里（见
+   `invariantSlug` 头部注释的"已知限制"）。此时 state 提供该 PR 的历史
+   `invariant` 原文清单，主 agent 逐条比对语义是否等价——这一步仍是审查 agent 的
+   语义判断（同第 4 节第 6 条的归族判断，机器不能代它下结论），判等价则判定复发，
+   并给出引用的历史记录（`priorHead`/`priorSlug`）；机器侧只核验主 agent 给出的
+   引用在 state 里是否真实存在，不代它下结论、也不越权做语义匹配本身。
+3. **两级都判断不了** → 当新 family 处理，宁可多报一条新 family，绝不静默吞掉
+   一次复发。
+4. state 按判定路径记录 `matched_by: 'slug' | 'semantic'`，供之后统计二级命中
+   频率，评估 slug 归一化规则是否需要加强。
+
+`<!-- family-anchor: <slug> -->` 这条机器可读注释的职责收窄为**thread 连续性
+锚点**：family 首次被判定 dirty 时嵌入评论正文顶部，供后续轮次定位同一 thread
+追加（复用/更新同一条既有评论，定位到同 marker 的 thread 追加，或
+`gh pr comment --edit-last`，不新开无关评论）+ 人类可读；它**不是**复发的检测源
+（检测源是上面两级判定），不改动 PR 作者的 body。
 
 判定复发后：作者在 `selfFixAuthors` → 按 5.4「收敛检查点后复发的升级阶梯」自主
 执行；作者不在 `selfFixAuthors`（对方是独立协作者，不能强制其选择修法）→ 按

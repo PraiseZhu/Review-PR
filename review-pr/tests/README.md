@@ -38,6 +38,12 @@ glob。单跑一个文件同理:`node --test tests/lib.decide-structural-bypass-
   family severity 是否等于成员最高。反向变异覆盖:预先列出「预测红集」(逐个改坏
   一个字段),断言红集与实际失败恰好一一对应。只验形状,不判断多条 manifestation
   是否真的同属一个不变量——那是审查 agent 的语义判断,机器不能代它下结论。
+- `lib.invariant-slug.test.mjs`——`invariantSlug`(SKILL 5.0 跨轮识别"同 family
+  复发"的一级/确定性判定用 join key,唯一实现)的确定性归一化行为:同输入同输出、
+  大小写归一、内部空白归一(含中英文混排/多空格/tab/换行)、截断边界(恰好 64 /
+  超过 64,含已知的截断碰撞)、非法输入(非字符串/空串/纯空白)必须 `throw` 而不是
+  返回空字符串。改动本函数的任一归一化步骤或把 throw 换成 fallback 都会在这里
+  立刻红。
 
 ## 判定逻辑单一来源
 
@@ -45,6 +51,7 @@ glob。单跑一个文件同理:`node --test tests/lib.decide-structural-bypass-
 `findApproveMergeAuthorization`、`decideStructuralBypassRoute`、
 `evaluateAuthorizedFastMerge`),不重新实现判定逻辑——这些函数本身就是
 `context.mjs` 与 `pre-merge-check.mjs` 共用的单一判据来源(防两处漂移),测试只
-验证这一份来源的行为。`lib.validate-finding-family.test.mjs` 是例外:它测的是
-`../scripts/lib.review-output-shape.mjs`,一个独立于 `lib.mjs` 的纯函数模块(审查
-输出契约的形状校验,不涉及 gh/git 状态,故意不并入 `lib.mjs`)。
+验证这一份来源的行为。`lib.validate-finding-family.test.mjs`/`lib.invariant-slug.test.mjs`
+是例外:它们测的是 `../scripts/lib.review-output-shape.mjs`,一个独立于 `lib.mjs`
+的纯函数模块(审查输出契约的形状校验 + 跨轮 join key 归一化,不涉及 gh/git 状态,
+故意不并入 `lib.mjs`)。
