@@ -1351,9 +1351,10 @@ export function classifyBlockedStatus({ reviewDecision, hasUnresolvedThreads, ci
 /**
  * 原子写 JSON(唯一临时文件 + renameSync)。`pid + 随机 6 字节十六进制` 保证同一进程内
  * 多次调用、以及不同进程并发调用之间临时文件名互不冲突,避免两个写者的临时文件互相
- * 覆盖后再各自 rename 出现竞态。
+ * 覆盖后再各自 rename 出现竞态。导出供其它需要同样原子写语义的状态模块复用
+ * (如 convergence-state.mjs 的 per-PR 收敛状态)——不重新发明一遍同样的 tmp+rename 逻辑。
  */
-function writeJsonAtomic(filePath, data) {
+export function writeJsonAtomic(filePath, data) {
   const tmpPath = `${filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`);
   renameSync(tmpPath, filePath);
