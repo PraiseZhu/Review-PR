@@ -837,22 +837,25 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
 的那一刻。这一步在阶段二独立审查**每一轮**都要做，不只是 5.1 admin-trust 路由
 才做（那是回执的专属场景）。
 
-**跨轮身份 = 不变量 slug，不是本轮 family_id**：4 节审查报告里的 `family_id`
-（SC-C1「输出契约」）只在**单份报告内**唯一，审查 agent 每轮独立生成报告，不同轮
-的 `family_id` 之间没有任何对应关系，不能拿它做跨轮比对。真正的跨轮 join key 是
-`convergence-state.mjs` 对家族一句话不变量文本做确定性归一化得到的 **slug**；本轮
-的 `family_id` 只作为可选字段随 occurrence 存档，仅供回溯"这条记录对应本轮报告
-里的哪个 family"，不参与任何匹配逻辑。
+**跨轮身份 = 不变量 key，不是本轮 family_id，也不是展示用的 slug**（2026-08-02
+gpt 阻断修正）：4 节审查报告里的 `family_id`（SC-C1「输出契约」）只在**单份报告
+内**唯一，审查 agent 每轮独立生成报告，不同轮的 `family_id` 之间没有任何对应
+关系，不能拿它做跨轮比对。早前改用截断到 64 字符的 `invariantSlug` 当身份用，
+gpt 实跑复现：两条仅尾部（65+ 字符）不同的 invariant 会被截断成同一个值，误判成
+同一 family 复发。现在权威身份是 `invariantKey`（对完整归一化文本算 SHA-256、
+不截断，`lib.review-output-shape.mjs` 导出），`invariantSlug` 降级为纯展示（见
+5.0）。本轮的 `family_id` 只作为可选字段随 occurrence 存档，仅供回溯"这条记录
+对应本轮报告里的哪个 family"，不参与任何匹配逻辑。
 
-**两级检测**（不是纯字符串匹配——同一不变量换个说法描述，slug 未必还相等）：
+**两级检测**（不是纯字符串匹配——同一不变量换个说法描述，key 未必还相等）：
 
 1. **一级（确定性，机器自动做）**：脚本对本轮 finding 的 `invariant` 原文算出
-   slug，自动与 state 里早于当前 head 的历史 slug 比对，命中即判定复发
-   （`matchedBy: 'slug'`），**不需要调用方声明**。
+   key，自动与 state 里早于当前 head 的历史 key 比对，命中即判定复发
+   （`matchedBy: 'key'`），**不需要调用方声明**。
 2. **二级（T1 兜底，只能由 agent 做）**：一级未命中时，把 state 里该 PR 的历史
    `invariant` 原文清单（`--get` 拿到）交给审查 agent/主 agent 做语义比对——判断
    是否与某个历史家族本质是同一条不变量，只是这轮换了个说法。判等价就在这条
-   finding 上显式传 `recurrenceOfSlug: <历史 slug>`；本脚本只核验该 slug 在
+   finding 上显式传 `recurrenceOfKey: <历史 key>`；本脚本只核验该 key 在
    state 里确有早于当前 head 的记录，**不做语义匹配**——核验不过直接 throw，不会
    静默把无法验证的引用当新家族处理（防止"反正声称复发就信了"）。
 3. 两级都未命中 → 当新 family 处理（宁可多报一条新 family，不静默吞掉一次复发）。
@@ -860,14 +863,15 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
 **步骤**：
 
 1. **先查已有家族**：`node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --get`
-   拿到当前 state（`families` 按 slug 分组，每个家族含 `invariant` 原文与历史
+   拿到当前 state（`families` 按 key 分组，每个家族含 `invariant` 原文与历史
    `occurrences`）——二级检测要用的历史清单就是这里的 `invariant` 字段集合。
 2. **落盘**：把本轮 findings 转成
-   `[{invariant, severity:"P0"|"P1", description, familyId?, recurrenceOfSlug?}]`
-   数组（`familyId` 是本轮报告里的 family_id，可选，仅供回溯；`recurrenceOfSlug`
+   `[{invariant, severity:"P0"|"P1", description, familyId?, recurrenceOfKey?}]`
+   数组（`familyId` 是本轮报告里的 family_id，可选，仅供回溯；`recurrenceOfKey`
    只在二级检测判定复发时才传，一级由脚本自动判断，不要重复声明），经 stdin
    传给 `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --head <headRefOid>`
-   （0 P0/P1 时传空数组 `[]`，代表本轮收敛信号）。该 PR **第一次**被记录、且经
+   （0 P0/P1 时传空数组 `[]`，代表本轮收敛信号；空/纯空白 stdin 会被拒绝，不能
+   靠什么都不传来表示收敛，见脚本头注释 D2）。该 PR **第一次**被记录、且经
    `gh pr view --json reviews` 查到已有历史 `CHANGES_REQUESTED` 时，把
    `computeConservativeSeedRounds(reviews)` 的结果通过 `--seed-existing-rounds <N>`
    传入（D4「老 PR 首次接入的保守 seed」——只在首次生效，之后的调用会被忽略，不用
@@ -876,22 +880,22 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
    consecutiveRoundsWithNewFamilies, recurringFamilies, checkpointRequired,
    notification, integrityWarning}`。
    - `recurringFamilies` 非空时，5.2 打回文案对这些条目要标注"复发"并指出
-     `priorHead`/`priorDescription`/`matchedBy`（例如："此问题在 `<priorHead 短
-     sha>` 已提过一次，上一轮的修法未覆盖当前这条触发路径"）——按「对外话术与
-     人格边界」的既有基调写，不新造模板；
+     `priorHead`/`priorDescription`/`matchedBy`/`recurrenceType`（`recurrenceType`
+     的措辞区分见 5.0「persistent vs reopened」——`reopened` 才能说"已收敛后
+     复发"，`persistent` 只能说"持续未修"）；
    - `integrityWarning` 非空时（收敛状态文件本身损坏过，已隔离旧文件重建）必须在
      内部汇总/review 正文里如实带一句（措辞同 6.1 对 `runs.jsonl` 审计链损坏的
      处理："收敛状态文件损坏，历史轮次记录不可信，请人工核查该 PR 是否已经历多轮
      未收敛"），不能吞掉；
    - `checkpointRequired`（布尔）与 `notification`（`{reason, prNumber, head,
      thresholdKey, detail}` 或 `null`）的消费见 5.7「收敛止损」。`notification`
-     非 null 只代表"round/new-family 这个触发源判定要发"，不代表已经发出——发出
-     后必须调 `--mark-notified` 回写去重（见 5.7），否则下一轮同 head 重放会
-     再次判要发。
+     非 null 只代表"round/new-family 这个触发源判定要发"，不代表已经发出——**确认
+     投递成功后**才能调 `--mark-notified` 回写去重（见 5.7；失败不 mark，否则一次
+     未送达 = 永久静音），否则下一轮同 head 重放会再次判要发。
 
 **安全边界（不可放宽）**：复发的 finding 依然是 P0/P1、依然计入本轮
 `p0p1Count`、依然应使这一轮的 review-receipt 判 `dirty`（若走 5.1 的 admin-trust
-路由）、依然阻断合并——`recurrenceOfSlug` **只**影响 `newFamilyCount`（收敛
+路由）、依然阻断合并——`recurrenceOfKey` **只**影响 `newFamilyCount`（收敛
 趋势指标），不影响、也不能被误用来影响任何合并判定路径或 `isReviewReceiptClean`。
 
 ## 5. 阶段三：落地
@@ -902,7 +906,9 @@ findings 已经是本轮真正要发给作者/计入判定的最终清单（P2 �
 
 **收敛检查点**：某一轮独立审查报告显示某个 family（第 4 节第 6 条）的全部
 manifestations 已确认修复——该 family 不再出现在本轮 findings，或本轮 Verification
-明确核实通过——这一刻起这个 family 记为"已收敛"。
+明确核实通过——这一刻起这个 family 记为"已收敛"。这一步只是"这一轮没再出现"的
+事实记录，不代表它以后不会复发——复发后到底算不算"真的曾经收敛过"，见下面的
+persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 
 **识别同 family 复发（事实来源是 per-PR convergence state，不是评论历史）**：
 `family_id` 只在单份报告内唯一、不跨轮持久（每轮审查 agent 独立生成，数字可能撞、
@@ -911,34 +917,65 @@ manifestations 已确认修复——该 family 不再出现在本轮 findings，
 记录，机制细节见状态维护方）：
 
 1. **一级（确定性，机器可断言）**：本轮新 family 的一句话不变量喂给
-   `invariantSlug(invariant)`（`lib.review-output-shape.mjs` 导出的跨轮 join key
-   唯一实现，见该文件头部说明）算出 slug；命中 state 里该 PR 的历史 slug，直接
-   判定为"同 family 复发"，不需要模型介入。
-2. **二级（T1 语义判断兜底，仅一级未命中时触发）**：slug 未命中不等于一定是新
-   family——可能只是这轮复述换了标点或说法，落在 slug 归一化的已知盲区里（见
-   `invariantSlug` 头部注释的"已知限制"）。此时 state 提供该 PR 的历史
+   `invariantKey(invariant)`（`lib.review-output-shape.mjs` 导出的跨轮 join key
+   **权威实现**——对完整归一化文本算 SHA-256、不截断，见该文件头部说明）算出
+   key；命中 state 里该 PR 的历史 key，直接判定为"同 family 复发"，不需要模型
+   介入。（`invariantSlug` 现在**只用于**下面 marker 的人类可读展示，不是身份
+   判定——早前误把截断到 64 字符的 `invariantSlug` 当身份用，gpt 实跑复现两条
+   仅尾部不同的 invariant 会被误判成同一 family，已纠正。）
+2. **二级（T1 语义判断兜底，仅一级未命中时触发）**：key 未命中不等于一定是新
+   family——可能只是这轮复述换了标点或说法，落在归一化的已知盲区里（见
+   `invariantKey` 头部注释的"已知限制"）。此时 state 提供该 PR 的历史
    `invariant` 原文清单，主 agent 逐条比对语义是否等价——这一步仍是审查 agent 的
    语义判断（同第 4 节第 6 条的归族判断，机器不能代它下结论），判等价则判定复发，
-   并给出引用的历史记录（`priorHead`/`priorSlug`）；机器侧只核验主 agent 给出的
+   并给出引用的历史记录（`priorHead`/`priorKey`）；机器侧只核验主 agent 给出的
    引用在 state 里是否真实存在，不代它下结论、也不越权做语义匹配本身。
 3. **两级都判断不了** → 当新 family 处理，宁可多报一条新 family，绝不静默吞掉
    一次复发。
-4. state 按判定路径记录 `matchedBy: 'slug' | 'semantic' | 'same-round' | null`（字段名
+4. state 按判定路径记录 `matchedBy: 'key' | 'semantic' | 'same-round' | null`（字段名
    随 state 内部的 camelCase 约定，见 4.2；`null` = 该家族的第一条 occurrence），供之后
-   统计二级命中频率，评估 slug 归一化规则是否需要加强。`'same-round'` 是同一轮内两条
-   finding 归一化后撞同一 slug 的情形——既不算跨轮复发也不重复计新家族，只补记
-   occurrence；它同时让 `invariantSlug` 的**已知截断碰撞**变得可见（两条真的不同的不变量
-   被截断撞成同一 slug 时会留下痕迹），而不是静默合并成一个家族。
+   统计二级命中频率，评估归一化规则是否需要加强。`'same-round'` 是同一轮内两条
+   finding 归一化后撞同一 key 的情形——既不算跨轮复发也不重复计新家族，只是同一轮
+   报告里两条表述被机械识别成同一个不变量的簿记结果，只补记 occurrence，不产生
+   `recurrenceType`。
+
+**persistent vs reopened（D3，2026-08-02 gpt 阻断修正）**：命中一级或二级只说明
+"这个 key 以前出现过"，不说明"它是不是真的消失过一次"——两者后果不同，混为一谈
+会让"持续没修好"被误说成"已收敛后复发"，错误触发只该在真复发时触发的升级路径。
+凡是命中一级/二级的 occurrence，state 都会带一个 `recurrenceType`：
+
+- **`reopened`（真复发）**：上一次 occurrence 所在的 head 与当前 head 之间，
+  存在至少一个**已经跑过独立审查、且记录在 state 里**的中间 head 不含这个
+  family——有真实证据证明它确实消失过一次。此时才可以说"上一轮已收敛"，才走
+  下面的升级路径。
+- **`persistent`（持续未修）**：找不到这样的中间 head（相邻两轮就复发，或中间
+  已审的 head 全都仍带着这个 family）——这个问题从未真的消失过，不是"收敛后又
+  复发"，只是一直没修好。**仍是 P0/P1、仍计入 p0p1Count、仍使这轮判 dirty、仍
+  阻断合并、仍不算新 family**——这些判定一条都不因为分类而改变；但打回文案/
+  升级卡片**不得**声称"已收敛"，也**不触发**下面的升级路径（它本来就没收敛过，
+  没有"再次出现"这件事，升级阶梯解决的是"为什么修好的东西又坏了"，不适用于
+  "一直没修好"）。
+- **边界（fail 方向）**：分类只看 state 里**已经记录**的审查轮次——被 cron 跳过、
+  没跑审查的 head 不提供任何证据（既不证明修好也不证明没修好），不能被当成
+  "干净的中间轮"。找不到证据时一律判 `persistent`，宁可少触发一次升级，也不能
+  谎称"已经收敛过"。
 
 `<!-- family-anchor: <slug> -->` 这条机器可读注释的职责收窄为**thread 连续性
 锚点**：family 首次被判定 dirty 时嵌入评论正文顶部，供后续轮次定位同一 thread
 追加（复用/更新同一条既有评论，定位到同 marker 的 thread 追加，或
-`gh pr comment --edit-last`，不新开无关评论）+ 人类可读；它**不是**复发的检测源
-（检测源是上面两级判定），不改动 PR 作者的 body。
+`gh pr comment --edit-last`，不新开无关评论）+ 人类可读；这里的 `slug` 是
+`invariantSlug` 算出的展示文本，**不是**复发的检测源（检测源是上面两级判定 +
+`invariantKey`），也不改动 PR 作者的 body。展示层偶尔撞出同一段文本（两个不同
+family 恰好显示同一个 slug）不影响任何判定结果的正确性。
 
-判定复发后：作者在 `selfFixAuthors` → 按 5.4「收敛检查点后复发的升级阶梯」自主
-执行；作者不在 `selfFixAuthors`（对方是独立协作者，不能强制其选择修法）→ 按
-「对外话术与人格边界」模板 A 追加"收敛检查点请求"段，是建议不是要求。
+判定复发后：
+- **`recurrenceType: 'reopened'`**：作者在 `selfFixAuthors` → 按 5.4「收敛检查点
+  后复发的升级阶梯」自主执行；作者不在 `selfFixAuthors`（对方是独立协作者，不能
+  强制其选择修法）→ 按「对外话术与人格边界」模板 A 追加"收敛检查点请求"段，是
+  建议不是要求。
+- **`recurrenceType: 'persistent'`**：不走升级阶梯，也不在文案里说"已收敛"——
+  按普通 P0/P1 打回处理即可，措辞上可以指出"这个问题从上一轮起就一直存在，
+  之前的修法没有覆盖到当前这条触发路径"（如实描述"持续未修"，不是"收敛后复发"）。
 
 ### 5.1 通过：批准并合并
 
@@ -1231,8 +1268,11 @@ PR：<url>（分支 <headRefName>，base <baseRefName>）
 失败／漏跑下轮自愈；`removedWorktrees`／`skipped`／`errors` 结果写入汇总，失败不阻塞
 流程。交互模式合并 selfFix PR 后也可用 `--pr <N>` 即时回收；拿不准先 `--dry-run` 预览。
 
-**收敛检查点后复发的升级阶梯（selfFix 专用，自主执行不必逐次上报）**：5.0 判定
-"同 family 复发"且作者在 `selfFixAuthors` 时，投递给跟进会话的当前卡点里除了照常
+**收敛检查点后复发的升级阶梯（selfFix 专用，自主执行不必逐次上报）**：仅当 5.0
+判定"同 family 复发"**且 `recurrenceType: 'reopened'`**（真的消失过一次，不是
+`'persistent'` 持续未修——见 5.0「persistent vs reopened」，D3 阻断修正：`
+persistent` 从未真的收敛过，不构成"复发"，不触发本段升级阶梯，按普通 P0/P1
+打回/投递即可）且作者在 `selfFixAuthors` 时，投递给跟进会话的当前卡点里除了照常
 列出本轮 P0/P1，额外加一句"这是同 family 复发（上一轮已确认收敛）"，并要求跟进
 会话从下面四个方向里选一个，不必等 owner 拍板：
 
@@ -1364,12 +1404,16 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
 要问哪六个问题、也不定义播报的人格化措辞，那两块分别是收敛检查点契约文本与「对外
 话术与人格边界」的既有职责范围，本节只负责把机器算出的信号接进正确的流程节点。
 
-**通知机制按两层拆分（SC-C4 调查带出的要求，2026-08-02）**：SC-C4 结论是
-review-pr 不存在中间态重审放大、不需要 debounce（cron ~3h 网格本身就是隐式
-debounce），但顺带查出一个真缺口——非 required 的第三方 bot（如 Greptile）长期
-缺席时，PR 会无限期挂在 `skip-gate`/`threads-unresolved`，没有"等待方缺席"的
-升级机制（本轮不做，另开处理）。为了不让那次改动需要重构本节的通知投递管线，
-通知在设计上就拆成两层，本节只落地第一层的一种触发源：
+**通知机制按两层拆分（SC-C4 调查带出的要求，2026-08-02；gpt 复核后收窄结论
+措辞——见下）**：SC-C4 在 **2026-07-28～08-02 这一观测窗**（31 次运行、12 个
+进入阶段二独立审查的 PR、其中 1/12 触发过重审）内**未观察到**中间态重审放大，
+暂不引入 debounce（cron ~3h 网格本身就是隐式 debounce）；这是基于当前样本量的
+暂定结论，不是"review-pr 结构上不可能出现重审放大"这种全称判断，保留作观测项，
+样本积累到能反驳这个结论时应重新评估。这次调查顺带查出一个真缺口——非 required
+的第三方 bot（如 Greptile）长期缺席时，PR 会无限期挂在
+`skip-gate`/`threads-unresolved`，没有"等待方缺席"的升级机制（本轮不做，另开
+处理）。为了不让那次改动需要重构本节的通知投递管线，通知在设计上就拆成两层，
+本节只落地第一层的一种触发源：
 
 - **触发判定**（可插拔，本节只实现"round/new-family"一种）：`recordConvergenceRound`
   算出连续未收敛轮数达到 `CONVERGENCE_NOTIFY_THRESHOLD` 时产出
@@ -1384,12 +1428,20 @@ debounce），但顺带查出一个真缺口——非 required 的第三方 bot�
 **`checkpointRequired=true`（连续 `CONVERGENCE_CHECKPOINT_THRESHOLD` = 5 轮仍有
 新 P0/P1 家族，或本轮检测到收敛状态文件损坏被强制触发，见 4.2；此项**故意**无
 去重/无通知投递层，纯粹是每轮重新算的活门，收敛后自然消失——**这不是漏做，是
-刻意的**：给一个门做去重等于把它变成 fail-open。检查点的语义是"下一个修复
-commit 之前必须先产出六件套"；若照搬 `notification` 那套按 head 去重，第二轮
-就会读到"这个 head 已经要求过一次了"从而判定本轮可以跳过，门被自己关掉。
+刻意的**，但理由不是"任何去重都必然让门 fail-open"这种全称（gpt 2026-08-02
+复核后收窄措辞：理论上一份绑定 head+本轮输入内容 hash 的 completion receipt，
+可以既避免重复提示又保持 fail-closed——下次输入没变就不用再提示，输入变了立刻
+重新提示，这样的去重不会 fail-open）。真正的理由是：`checkpointRequired` 这个
+requirement 信号**不按通知投递去重**；本模块当前**没有**实现这样的 completion
+receipt，"这一轮是否已经产出过收敛检查点六件套"没有任何机器可核验的凭证——在
+这个前提下，唯一安全的做法就是每轮重新算、条件仍成立就仍然提示，重复提示是
+**当前**依赖 T1 过程约定（agent 自己记得"这轮已经写过六件套了"）而非机器强制的
+安全网，不是"永远不能加去重"的教条。本轮**不新增** completion receipt 机制
+（确认门：删掉这个机制，`checkpointRequired` 的目标——"下一个修复 commit 前
+必须先产出六件套"——照样成立，只是没有去重，新增属于范围外的死复杂度）。
 `notification` 是对外投递，同一 head 重复发是真的刷屏，去重是对的——两者去重
-与否的差异由各自语义决定，不是随意的，改动前务必想清楚这一点，不要因为看到
-"通知去重了、检查点没去重"就顺手给检查点也补一层）**：
+与否的差异由各自语义/是否有可核验凭证决定，不是随意的，改动前务必想清楚这一
+点，不要因为看到"通知去重了、检查点没去重"就顺手给检查点也补一层）**：
 
 - **`selfFixAuthors` 的自动跟进修复（5.4）路径**：这是硬拦截点——5.4 步骤 3
   「投递」下一轮修复任务给跟进会话之前，必须先完成一次收敛检查点（具体问哪几项、
@@ -1413,11 +1465,19 @@ commit 之前必须先产出六件套"；若照搬 `notification` 那套按 head
    不额外新造模板编号）经
    `<正文> | node "<SKILL_ROOT>/scripts/notify-summary.mjs" --title "<标题>"`
    发出——复用 6.1 owner 每轮汇总已在用的同一条播报出口，不新建通道；
-3. 无论 `notify-summary.mjs` 返回 `posted` 是否为真（配置缺失/子进程失败都不
-   阻断本轮收尾），只要**已经走到"决定要发"这一步**，就调用
+3. **无论** `notify-summary.mjs` 返回 `posted` 是否为真，只要走到"决定要发"这
+   一步，都先调用
+   `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --record-attempt --reason <notification.reason> --threshold <notification.thresholdKey> --head <headRefOid>`
+   记一次尝试（运维可观测性用，不参与任何去重判定，失败也要记，这样才能查到
+   "已经试过 N 次、每次都失败"而不是"从没到过阈值"）；
+4. **只有 `posted === true`（确认投递成功）时**才调用
    `node "<SKILL_ROOT>/scripts/record-convergence-round.mjs" <N> --mark-notified --reason <notification.reason> --threshold <notification.thresholdKey> --head <headRefOid>`
-   回写去重——按 `reason`+`threshold`+`head` 三元组去重（同一 head 不重复刷屏；
-   新推的 head 若仍未收敛会重新触发，不是"发过一次就永久静音"）。
+   回写去重（D4 阻断修正：此前"只要走到决定要发这一步就 mark"，配置缺失/子
+   进程失败也会被 mark，导致这个 head 从此永久静音——**失败绝不能 mark**）——
+   按 `reason`+`threshold`+`head` 三元组去重（同一 head 不重复刷屏；新推的 head
+   若仍未收敛会重新触发，不是"发过一次就永久静音"）。失败路径不需要额外重试
+   机制：下一轮换到新 head 时 `consecutiveRoundsWithNewFamilies` 仍 `>=` 阈值，
+   会在新 head 上重新判定，自然触发下一次尝试。
 
 **边界**：本节的检查点/通报都是"提醒人介入"，不是自动阻断合并的新 gate——是否
 合并仍完全由 4.1/5.1/5.2 现有判定决定；`checkpointRequired`/`notification` 非
