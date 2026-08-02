@@ -109,7 +109,8 @@ const SLACK_SENDER_ALIASES = Object.fromEntries(
   Object.entries(prRules.slackSenderAliases ?? {}).map(([k, v]) => [k.toLowerCase(), (v ?? '').toLowerCase()]),
 );
 // Loop 托管 PR 排除:与目标仓库自有的自动修 bug loop(如有)共存,避免两套合并主体打架
-// (详见 SKILL「Loop 托管 PR 排除」)。titlePrefix 命中即判该 PR 由 loop 托管;
+// (详见 SKILL「Loop 托管 PR 排除」)。titlePrefix(legacy 单值)或 titlePrefixes(数组,
+// 支持 loop 改名后新旧前缀并存)命中即判该 PR 由 loop 托管;
 // t1BodyMarkers/t2BodyMarkers 从 PR body 里找 loop 自己声明的 T-level(最贴近 PR 开出那一刻
 // 的一手信号,优先采信);两者都没命中 → 退回读本地台账(stateFile)按 PR 号反查
 // cluster.tCap;仍拿不到结论 → defaultWhenAmbiguous(保守默认 skip)。配置缺失(pr-rules.json
@@ -318,12 +319,14 @@ try {
   // 已是 APPROVED。旧逻辑用 hasChangesRequested 会把这种「已被同人 approve 覆盖」误判成
   // 「仍有未解决 CR」,从而把真正的 BLOCKED 成因(结构性必需检查门)说成 review 问题)。
   const reviewDecision = meta.reviewDecision ?? null;
-  // loop 托管的 PR 标题固定带 loopPrExclusion.titlePrefix(如 `[bug-doctor] `),不是
-  // `<type>(<scope>): <描述>` 格式;命中该前缀时先剥掉再判 type,否则 T2 loop PR(本该走
-  // review-pr 正常审查)会被格式门误判"缺 type 前缀"打回。前缀本身来自 pr-rules.json
-  // 配置(不硬编码字面量);未命中 loopExclusion 时 titleForFormat 就是原始 title,行为不变。
-  const titleForFormat = (loopExclusion && LOOP_EXCLUSION_RULES?.titlePrefix)
-    ? title.slice(LOOP_EXCLUSION_RULES.titlePrefix.length)
+  // loop 托管的 PR 标题固定带 loopPrExclusion 配置的前缀(如 `[bug-doctor] `、`[mivo] `),
+  // 不是 `<type>(<scope>): <描述>` 格式;命中该前缀时先剥掉再判 type,否则 T2 loop PR(本该走
+  // review-pr 正常审查)会被格式门误判"缺 type 前缀"打回。用 detectLoopExclusion 返回的
+  // matchedPrefix(实际命中的那一个,支持 titlePrefixes 数组配置多个前缀并存),不能假设是
+  // LOOP_EXCLUSION_RULES.titlePrefix 字面量——配置了 titlePrefixes 时命中的可能是数组里的
+  // 任一项。未命中 loopExclusion 时 titleForFormat 就是原始 title,行为不变。
+  const titleForFormat = loopExclusion?.matchedPrefix
+    ? title.slice(loopExclusion.matchedPrefix.length)
     : title;
   const type = (titleForFormat.match(/^(\w+)/)?.[1] ?? '').toLowerCase();
   const titleTypeOk = TITLE_TYPE_RE.test(titleForFormat);

@@ -1555,27 +1555,53 @@ export function parseRosterLine(line) {
 // notify-merge-ack.mjs 判断是否要发合并致谢共用同一份判定,防止两处判据漂移)──
 
 /**
+ * 归一化 loopPrExclusion 的标题前缀配置:兼容 legacy `titlePrefix`(单值 string)与新
+ * `titlePrefixes`(string[])——两者可以同时配置(如目标仓库 loop 改名后新旧前缀并存的
+ * 迁移期)。数组项在前(保持声明顺序),legacy 单值去重后追加在末尾。非法形态(非数组 /
+ * 非字符串 / 空字符串)静默过滤,不抛错——配置来自本仓自己的 pr-rules.json,不是攻击面,
+ * 容错优先于报错。rules 为 null/未配置任一字段时返回空数组。
+ */
+function normalizeTitlePrefixes(rules) {
+  const prefixes = [];
+  if (Array.isArray(rules?.titlePrefixes)) {
+    for (const p of rules.titlePrefixes) {
+      if (typeof p === 'string' && p !== '' && !prefixes.includes(p)) prefixes.push(p);
+    }
+  }
+  if (typeof rules?.titlePrefix === 'string' && rules.titlePrefix !== '' && !prefixes.includes(rules.titlePrefix)) {
+    prefixes.push(rules.titlePrefix);
+  }
+  return prefixes;
+}
+
+/**
  * 判定该 PR 是否由目标仓库自有的自动修 bug loop 托管、以及其 T-level。
- * 返回 null(未命中 titlePrefix,或命中但本地台账没有该 PR 号的记录——与 loop 无关 /
- * 无法证明托管关系,按普通 PR 处理)或 { matched:true, verdict:'t1'|'t2', source }。
+ * 返回 null(未命中任一 titlePrefix/titlePrefixes,或命中但本地台账没有该 PR 号的
+ * 记录——与 loop 无关 / 无法证明托管关系,按普通 PR 处理)或
+ * { matched:true, verdict:'t1'|'t2', source, matchedPrefix }。
  * verdict='t1' 时 review-pr 必须跳过(loop 自己合并,不审不合不催,也不重复播报合并致谢);
  * 'skip'(=已确认托管但拿不准 T-level,defaultWhenAmbiguous)按同款处理;'t2' 时正常走 review-pr。
  * source 标注判据来源(body-marker / state.json / default),供排查与飞书汇总措辞用。
+ * matchedPrefix 是实际命中的那一个前缀字面量(供调用方剥标题用,如 context.mjs 的
+ * titleForFormat——不能假设是 rules.titlePrefix,配置了 titlePrefixes 数组时命中的可能
+ * 是数组里的任一项)。
  * rules 来自 pr-rules.json 的 loopPrExclusion 字段,调用方自行 JSON.parse 后传入
  * (不同脚本读取 pr-rules.json 的相对路径不同,本函数不做路径假设)。rules 为 null/未配置
- * loopPrExclusion 时(目标仓库没有这类 loop)恒返回 null——整套机制天然关闭。
+ * loopPrExclusion,或 titlePrefix/titlePrefixes 均未配置(目标仓库没有这类 loop)时恒返回
+ * null——整套机制天然关闭。
  *
  * ⚠️ 身份门槛(反伪造):仅标题前缀**不足以**认定 PR 由 loop 托管——任何贡献者都能在自己
- * PR 的标题前加一句 titlePrefix 字面量,冒充 loop 托管来拿到 defaultWhenAmbiguous 的默认
- * skip,让自己的 PR 永久漏审。必须本地台账(`rules.stateFile`,loop 自己写入、贡献者在
- * GitHub 侧碰不到这份本机文件)里精确命中该 PR 号,才认定为真托管;命中前缀但台账查不到
- * (文件不存在 / 读不到 / 没有该 PR 号)→ **直接返回 null,按普通 PR 处理**,不再落到
- * defaultWhenAmbiguous。未来若 loop 加了可信 label / commit 签名等机制,可以在这里追加
- * 作为身份门槛的替代或补充信号,但不能只靠可由 PR 作者自行填写的字段(标题 / body 文本)
- * 单独作数。
+ * PR 的标题前加一句 titlePrefix/titlePrefixes 字面量,冒充 loop 托管来拿到
+ * defaultWhenAmbiguous 的默认 skip,让自己的 PR 永久漏审。必须本地台账(`rules.stateFile`,
+ * loop 自己写入、贡献者在 GitHub 侧碰不到这份本机文件)里精确命中该 PR 号,才认定为真托管;
+ * 命中前缀但台账查不到(文件不存在 / 读不到 / 没有该 PR 号)→ **直接返回 null,按普通 PR
+ * 处理**,不再落到 defaultWhenAmbiguous。未来若 loop 加了可信 label / commit 签名等机制,
+ * 可以在这里追加作为身份门槛的替代或补充信号,但不能只靠可由 PR 作者自行填写的字段
+ * (标题 / body 文本)单独作数。
  */
 export function detectLoopExclusion({ title, body, pr, rules }) {
-  if (!rules?.titlePrefix || !title.startsWith(rules.titlePrefix)) return null;
+  const matchedPrefix = normalizeTitlePrefixes(rules).find((p) => title.startsWith(p)) ?? null;
+  if (!matchedPrefix) return null;
   if (!rules.stateFile) return null; // 没配台账路径 = 没有身份门槛可验,不认定托管
 
   let cluster = null;
@@ -1596,15 +1622,15 @@ export function detectLoopExclusion({ title, body, pr, rules }) {
   // 逐行匹配,避免自然语言正文里偶然出现的"这次不建议合并"之类描述性语句被误当成 T-level 声明);
   // 没写明再退回本地台账的 cluster.tCap(身份门槛已过,这里可信采信)。
   for (const re of rules.t1BodyMarkers ?? []) {
-    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't1', source: 'body-marker' };
+    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't1', source: 'body-marker', matchedPrefix };
   }
   for (const re of rules.t2BodyMarkers ?? []) {
-    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't2', source: 'body-marker' };
+    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't2', source: 'body-marker', matchedPrefix };
   }
-  if (cluster.tCap === 'T1') return { matched: true, verdict: 't1', source: 'state.json' };
-  if (cluster.tCap === 'T2') return { matched: true, verdict: 't2', source: 'state.json' };
+  if (cluster.tCap === 'T1') return { matched: true, verdict: 't1', source: 'state.json', matchedPrefix };
+  if (cluster.tCap === 'T2') return { matched: true, verdict: 't2', source: 'state.json', matchedPrefix };
 
-  return { matched: true, verdict: rules.defaultWhenAmbiguous ?? 'skip', source: 'default' };
+  return { matched: true, verdict: rules.defaultWhenAmbiguous ?? 'skip', source: 'default', matchedPrefix };
 }
 
 // ── 产品/架构门 hold 标记(product-hold.mjs 写入 PR 评论;context.mjs 扫描分类、
