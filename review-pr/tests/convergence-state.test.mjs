@@ -353,29 +353,36 @@ test('⑥ state 文件损坏:隔离旧文件(取证材料保留)+ 显式 integri
 // ── ④ runs.jsonl 损坏与本模块完全隔离(两份不同文件,互不影响)──
 
 test('④ runs.jsonl 审计链损坏不影响收敛状态的权威性(两者是完全独立的文件)', () => {
+  // 本测试会真的写坏这台机器上共享的 runs.jsonl(同 lib.review-receipt.test.mjs
+  // 对 STATE_DIR 的既有用法——不隔离到临时目录)。用 try/finally 还原,保证中途
+  // 任何断言失败都不会把这份共享审计日志永久留在损坏状态给其它测试/真实审查
+  // 用户添麻烦。
   const runsFile = stateFile('runs.jsonl');
   const before = existsSync(runsFile) ? readFileSync(runsFile, 'utf8') : null;
-  writeFileSync(runsFile, 'this is not jsonl at all\n{{{garbage\n');
+  try {
+    writeFileSync(runsFile, 'this is not jsonl at all\n{{{garbage\n');
 
-  const pr = 970201;
-  resetPr(pr);
-  const r1 = recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
-  const famId = familyIdOf(pr);
-  const r2 = recordConvergenceRound({
-    pr, headRefOid: 'sha-2', findings: [{ invariant: 'A', severity: 'P1', recurrenceOfFamily: famId }],
-  });
+    const pr = 970201;
+    resetPr(pr);
+    const r1 = recordConvergenceRound({ pr, headRefOid: 'sha-1', findings: [{ invariant: 'A', severity: 'P1' }] });
+    const famId = familyIdOf(pr);
+    const r2 = recordConvergenceRound({
+      pr, headRefOid: 'sha-2', findings: [{ invariant: 'A', severity: 'P1', recurrenceOfFamily: famId }],
+    });
 
-  assert.equal(r1.newFamilyCount, 1);
-  assert.equal(r2.newFamilyCount, 0);
-  assert.equal(r2.recurringFamilies.length, 1);
-  assert.equal(readConvergenceState(pr).status, 'ok', 'runs.jsonl 损坏绝不能让 convergence state 也被判 corrupted');
+    assert.equal(r1.newFamilyCount, 1);
+    assert.equal(r2.newFamilyCount, 0);
+    assert.equal(r2.recurringFamilies.length, 1);
+    assert.equal(readConvergenceState(pr).status, 'ok', 'runs.jsonl 损坏绝不能让 convergence state 也被判 corrupted');
 
-  // 收敛状态的写入同样不应反过来"修复"或改动 runs.jsonl 的损坏内容——两份状态
-  // 物理隔离,谁也不该覆盖谁。
-  const runsAfter = readFileSync(runsFile, 'utf8');
-  assert.equal(runsAfter, 'this is not jsonl at all\n{{{garbage\n');
-
-  if (before !== null) writeFileSync(runsFile, before); // 还原,不污染其它测试对 runs.jsonl 的假设
+    // 收敛状态的写入同样不应反过来"修复"或改动 runs.jsonl 的损坏内容——两份状态
+    // 物理隔离,谁也不该覆盖谁。
+    const runsAfter = readFileSync(runsFile, 'utf8');
+    assert.equal(runsAfter, 'this is not jsonl at all\n{{{garbage\n');
+  } finally {
+    if (before !== null) writeFileSync(runsFile, before);
+    else if (existsSync(runsFile)) unlinkSync(runsFile);
+  }
 });
 
 // ── CLI 端到端 ──
