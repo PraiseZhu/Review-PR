@@ -1183,6 +1183,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-01T17:35:27.315Z",
       "lastSeen": "2026-08-01T17:35:27.315Z"
+    },
+    {
+      "fingerprint": "security-review-path-ci-workflow-manual",
+      "tier": "by-design",
+      "title": "改到 CI workflow / 自动化自身执行面的 PR 必须转人工，机器不该自审自合",
+      "detail": "本轮 PR 419 改 .github/workflows/ 下的 workflow 与配套脚本，命中 securityReviewPaths，按 3.8 转人工。属设计意图（防自动化自我损坏闭环），不因出现多次而放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-02T02:10:56.595Z",
+      "lastSeen": "2026-08-02T02:10:56.595Z"
     }
   ]
 }

@@ -123,6 +123,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-review-path-ci-workflow-manual` **改到 CI workflow / 自动化自身执行面的 PR 必须转人工，机器不该自审自合** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: tracked
+  - 现象:本轮 PR 419 改 .github/workflows/ 下的 workflow 与配套脚本，命中 securityReviewPaths，按 3.8 转人工。属设计意图（防自动化自我损坏闭环），不因出现多次而放开。
 - `review-receipt-no-lifecycle-cleanup` **每 PR 一个回执文件长期无生命周期清理(量级很小,暂不处理)** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:P1-2 三审改为每 PR 一个 review-receipt-<pr>.json 独立文件,按 repo hash 隔离在系统临时目录下,当前无自动清理机制,closed/merged PR 的回执文件会一直留在磁盘上。量级评估:单文件数十字节,单仓库存量 PR 数量级不会达到造成实际影响的规模,四审已评估为可接受,非遗漏。
   - 提案:后续可在现有 cleanup/sweep 流程(如 fix-worktree-cleanup.mjs 同类的定期清理脚本)里加一步:对 closed/merged 状态的 PR,或写入时间超过某个 TTL(如 30 天)的回执文件做可恢复清理(先归档/重命名,不直接硬删)。
