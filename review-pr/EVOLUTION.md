@@ -126,6 +126,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 2 次,首见 2026-08-01,最近 2026-08-03,status: tracked
+  - 现象:本轮 PR #433 (bump minor-and-patch group with 9 updates) 改 package.json + package-lock.json，命中 securityReviewPaths，按设计转人工
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 2 次,首见 2026-07-31,最近 2026-08-02,status: tracked
   - 现象:本轮唯一候选 PR #419 改 .github/workflows/merge-thanks.yml，action=skip-security-review
 - `security-review-path-ci-workflow-manual` **改到 CI workflow / 自动化自身执行面的 PR 必须转人工，机器不该自审自合** — 出现 2 次,首见 2026-08-02,最近 2026-08-02,status: tracked
@@ -147,8 +149,6 @@
   - 提案:不建议放宽 securityReviewPaths(那是防自我损坏的核心边界)。可选方向是 owner 固定一个每日窗口批量人工过 dependabot PR,或另设更窄的自动化通道单独处理它们——均属扩权/流程变更,只记录不落地。
 - `stacked-pr-blocked-until-base-merges` **stacked PR 链(#387→#388→#389)整条卡在链首 CI 失败,末端即便 gate 全绿也不能合** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 #389 格式门+前置门全通过、action=review,但 base 是 #388 的 head 分支,#388 又 base 在 #387;#387 CI 失败。按 SKILL 3.6 硬依赖,末端 PR 合并只会并进上游分支而非 main,故记 depends-on-#N 跳过。根因在人:链首 CI 需作者修。
-- `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
-  - 现象:本轮 6 个候选里 5 个是 skip-security-review:#372/#373(actions/checkout、setup-node 升级,命中 .github/workflows/*)、#374/#375(package.json + package-lock.json)、#379(kirozeng 的 i18n PR 顺带动了 package-lock.json)。securityReviewPaths 覆盖 package.json/lockfile/workflows 是刻意设计(防自动化改坏自己),因此 dependabot PR 在本仓永远不会被 auto 合并,只会越积越多;#379 这类正常功能 PR 也会因为顺带碰了 lockfile 被整体转人工。只记录观察计数,不因出现多次就放开。
 - `own-pr-only-repo-blockers-need-human` **本仓 open PR 全部由本流程账号自己开，thread/CI 类阻断只能人来处理** — 出现 2 次,首见 2026-07-30,最近 2026-07-31,status: tracked
   - 现象:2026-08-01 轮：唯一候选 #366 CI e2e kernel gate 失败，ownPr=true 且 selfFixAuthors 留空，无打回/跟进出口
 - `conflict-plus-unresolved-threads` **冲突 + 未 resolve conversation 双阻塞,需作者处理** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
