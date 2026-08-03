@@ -126,8 +126,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 3 次,首见 2026-08-01,最近 2026-08-03,status: tracked
-  - 现象:本轮 PR #433(minor-and-patch group,9 项)再次因 package.json/package-lock.json 命中 skip-security-review;fallback 亦为 skip-structural-block(作者 app/dependabot 不在 admins)
+- `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 4 次,首见 2026-08-01,最近 2026-08-03,status: tracked
+  - 现象:PR #433(minor-and-patch group,9 updates)仅改 package.json/package-lock.json,两文件都在 securityReviewPaths 内,auto 直接 skip-security-review;fallback 也因作者 app/dependabot 不在 admins 而无法 admin bypass 结构性 BLOCKED。放宽属扩权类,不自动落地。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 2 次,首见 2026-07-31,最近 2026-08-03,status: tracked
   - 现象:本轮 PR #434 body 用「需求/改了什么/门禁/测试/验证」自定义标题，缺模板要求的 变更说明/提交前自检/备注 三段，格式门打回（ownPr=true 故走 COMMENT）
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 2 次,首见 2026-07-31,最近 2026-08-02,status: tracked
