@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+  - 现象:本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。
+  - 提案:在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。
 - `review-worktree-orphan-branch-no-sweeper` **审查 worktree 的清理只靠主 agent 手动执行，漏跑就永久残留孤儿分支** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: open
   - 现象:本轮 fix-worktree-cleanup.mjs --scan 报 skipped=8，全是「查不到对应 PR，来历不明不动」，其中 7 条是 worktree-agent-* 命名——与阶段二审查 agent 的隔离 worktree 分支命名一致，高度疑似历史轮次未清理干净的残留。第 7 节只在 SKILL 文字里要求主 agent 移除本次创建的 review worktree，没有确定性脚本兜底，任一轮异常退出（锁丢失、宿主中断）就永久遗留，且这些残留每轮都出现在 skipped 噪音里。
   - 提案:新增一个只针对 review worktree 的清理脚本（或扩展 fix-worktree-cleanup.mjs 的一个新模式）：按托管目录 + worktree-agent-* 命名 + 无对应 open PR + 无未推送 commit + 不含任何 active session cwd 四重条件回收；因涉及自动删除 git 分支与目录，有误删风险，先请 owner 拍板边界再落地，不当轮自动改。

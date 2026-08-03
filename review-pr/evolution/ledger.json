@@ -1235,6 +1235,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-03T14:09:17.935Z",
       "lastSeen": "2026-08-03T14:09:17.935Z"
+    },
+    {
+      "fingerprint": "ui-evidence-notice-changelog-data-file",
+      "tier": "proposal",
+      "title": "public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths",
+      "detail": "本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。",
+      "proposal": "在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-03T17:09:41.283Z",
+      "lastSeen": "2026-08-03T17:09:41.283Z"
     }
   ]
 }
