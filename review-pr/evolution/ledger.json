@@ -1006,14 +1006,14 @@
       "fingerprint": "dependabot-always-skip-security-review",
       "tier": "by-design",
       "title": "dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积",
-      "detail": "本轮 PR #433 (bump minor-and-patch group with 9 updates) 改 package.json + package-lock.json，命中 securityReviewPaths，按设计转人工",
+      "detail": "本轮 PR #433(minor-and-patch group,9 项)再次因 package.json/package-lock.json 命中 skip-security-review;fallback 亦为 skip-structural-block(作者 app/dependabot 不在 admins)",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-01T05:22:39.721Z",
-      "lastSeen": "2026-08-03T02:04:48.589Z"
+      "lastSeen": "2026-08-03T05:08:31.870Z"
     },
     {
       "fingerprint": "stacked-pr-blocked-until-base-merges",
