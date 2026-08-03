@@ -1274,6 +1274,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-03T17:18:51.360Z",
       "lastSeen": "2026-08-03T17:18:51.360Z"
+    },
+    {
+      "fingerprint": "mivo-outbound-notify-channels-all-inert",
+      "tier": "proposal",
+      "title": "mivo 仓对外通知面为零：提醒名单全豁免 + summaryBroadcast 未配置，被卡 PR 无任何外发信号",
+      "detail": "本轮 9 候选中 4 个卡在作者侧可自解原因（3 个 DIRTY 冲突、1 个 2 条 thread 未 resolve），提醒脚本 4 次调用全部返回 exempt-author：staleAuthorReminder.exemptAuthors 恰好等于本仓全部人类作者集合（3 人），而 notify-author-resolve 的 thread/conflict 两种模式与 remind-stale-author 都查同一份名单，等于三条提醒通道在本仓整体失效。同时 summaryBroadcast 未配置，每轮汇总也不主动推送。两者叠加的结果是：PR 可以长期卡着而没有任何外发信号，只有人主动去看 PR 列表才会发现。",
+      "proposal": "由 owner 定：① 若确实不想被提醒机器人打扰，现状可接受，但应知道这是有意为之而不是配置漏了；② 若希望冲突/未 resolve 这类硬卡点仍有提醒，可把 exemptAuthors 收窄为只豁免停滞催办（idle 私聊），让 conflict/resolve 两种确定性卡点仍发一次公开评论——需拆 exemptAuthors 为分通道名单，属名单改动，不自动落地；③ 配上 summaryBroadcast.command，至少让每轮汇总主动推到 owner。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-03T23:08:40.051Z",
+      "lastSeen": "2026-08-03T23:08:40.051Z"
     }
   ]
 }

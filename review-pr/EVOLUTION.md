@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `mivo-outbound-notify-channels-all-inert` **mivo 仓对外通知面为零：提醒名单全豁免 + summaryBroadcast 未配置，被卡 PR 无任何外发信号** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+  - 现象:本轮 9 候选中 4 个卡在作者侧可自解原因（3 个 DIRTY 冲突、1 个 2 条 thread 未 resolve），提醒脚本 4 次调用全部返回 exempt-author：staleAuthorReminder.exemptAuthors 恰好等于本仓全部人类作者集合（3 人），而 notify-author-resolve 的 thread/conflict 两种模式与 remind-stale-author 都查同一份名单，等于三条提醒通道在本仓整体失效。同时 summaryBroadcast 未配置，每轮汇总也不主动推送。两者叠加的结果是：PR 可以长期卡着而没有任何外发信号，只有人主动去看 PR 列表才会发现。
+  - 提案:由 owner 定：① 若确实不想被提醒机器人打扰，现状可接受，但应知道这是有意为之而不是配置漏了；② 若希望冲突/未 resolve 这类硬卡点仍有提醒，可把 exemptAuthors 收窄为只豁免停滞催办（idle 私聊），让 conflict/resolve 两种确定性卡点仍发一次公开评论——需拆 exemptAuthors 为分通道名单，属名单改动，不自动落地；③ 配上 summaryBroadcast.command，至少让每轮汇总主动推到 owner。
 - `runlog-lockreleased-always-false-ordering` **run-log 的 lockReleased 按现行顺序永远只能记 false** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:SKILL 6.1 要求「每轮结束时先把机器可读 JSON 落盘」,而 7.4 释放锁排在其后。落盘时刻锁必然仍持有,故 schema 里的 lockReleased 在正常路径下恒为 false——本轮实测即如此(落盘 lockReleased:false,随后 cleanup.mjs 返回 lockReleased:true)。该字段当前不具备审计价值,反而会让事后查 runs.jsonl 的人误以为每轮都漏放锁。
   - 提案:二选一,属设计取舍故不自动落地:① 把 run-log 落盘移到 7 收尾释放锁之后(但 6.1 现有措辞把落盘定在自进化复盘之前,需一并调整);② 保留顺序,把字段语义明确为「本轮是否已安排释放」并在 SKILL 6.1 注明,或改由 cleanup.mjs 回写该字段。另:cleanup.mjs 必传 --original <分支名>,SKILL 7.4 的示例只写了 --token,缺参数会直接 ok:false,建议补上。
