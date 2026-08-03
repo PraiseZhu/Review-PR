@@ -1053,3 +1053,21 @@ test('F3-b:换到新 head 后不再由 integrity 强制,靠 streak 自然延续,
   assert.equal(r3.newFamilyCount, 0, '前提: 本轮无新 family');
   assert.equal(r3.checkpointRequired, false, 'F3-b 反向: 无新 family 后门必须打开——修 finding 2 不得变成永久强制');
 });
+
+test('P1-顺序:重放旧 head 污染插入序后,未来相邻复发仍必须判 persistent、priorHead 指向真正最近的 head', () => {
+  const pr = 970709;
+  resetPr(pr);
+  // 复核轮的五步复现:h1(B) → h2(空,B 消失) → h3(B,正确 reopened) → 重放 h1(B) → h4(B)
+  recordConvergenceRound({ pr, headRefOid: 'ord-h1', findings: [{ invariant: 'B', severity: 'P1' }] });
+  recordConvergenceRound({ pr, headRefOid: 'ord-h2', findings: [] });
+  const r3 = recordConvergenceRound({ pr, headRefOid: 'ord-h3', findings: [{ invariant: 'B', severity: 'P1' }] });
+  assert.equal(r3.recurringFamilies[0].recurrenceType, 'reopened', '前提: h3 隔着干净的 h2,是真 reopened');
+  assert.equal(r3.recurringFamilies[0].priorHead, 'ord-h1');
+  // 重放旧 h1——replay-position 分支把 h1 的 occurrence push 到 h3 之后,插入序从此 ≠ 时间序
+  recordConvergenceRound({ pr, headRefOid: 'ord-h1', findings: [{ invariant: 'B', severity: 'P1' }] });
+  // h4 与 h3 相邻(中间无干净已审 head)→ 必须 persistent,prior 必须是 h3。
+  // 尾序 bug 下会选中数组尾的 h1 → 中间隔着干净的 h2 → 错判 reopened → 错误触发升级路径。
+  const r4 = recordConvergenceRound({ pr, headRefOid: 'ord-h4', findings: [{ invariant: 'B', severity: 'P1' }] });
+  assert.equal(r4.recurringFamilies[0].priorHead, 'ord-h3', 'prior 必须按 head 位置取最近,不信数组尾序');
+  assert.equal(r4.recurringFamilies[0].recurrenceType, 'persistent', 'h3/h4 相邻,不得因插入序污染错判 reopened');
+});

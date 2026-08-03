@@ -532,6 +532,13 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     const i = headIdxOf.get(oid);
     return i !== undefined && i < currentHeadIdx;
   };
+  // 复核轮 P1(2026-08-03): 「上一条 occurrence」必须按 **head 位置**取最近,不能取数组尾——
+  // replay-position 分支会把旧 head 的 occurrence push 到更晚 occurrence 后面,数组插入序
+  // 从此 ≠ 时间序(实测: 重放 h1 后数组变 [h3, h1],h4 再记录同族时尾序选中 h1,
+  // 相邻的 h3 被跳过 → persistent 被错判 reopened → 错误触发升级路径)。
+  // 同 head 内多条(same-round)取该 head 中最后写入的一条(同轮内先后仍是写入序,无时间歧义)。
+  const latestByHeadIdx = (occs) => occs.reduce((best, o) =>
+    (headIdxOf.get(o.headRefOid) >= headIdxOf.get(best.headRefOid) ? o : best));
   const recordedAt = new Date().toISOString();
 
   for (const f of findings) {
@@ -584,7 +591,7 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
           + '记录)——不能凭空声称复发,请改用新家族(省略 recurrenceOfKey)或核对 key 是否正确',
         );
       }
-      const priorOccurrence = priorOccurrences[priorOccurrences.length - 1];
+      const priorOccurrence = latestByHeadIdx(priorOccurrences); // 按 head 位置取最近,不信数组尾序(复核轮 P1)
       // 显式引用的 key 恰好等于本轮 invariant 自动算出的 key 时,其实一级
       // 确定性匹配本就该命中——按更简单、更可解释的一级记录,不因为调用方多此
       // 一举传了 recurrenceOfKey 就升级成"语义"命中(matchedBy 是给未来统计
@@ -611,7 +618,7 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     } else if (priorOccurrences.length > 0) {
       // 一级(确定性):本轮 invariant 归一化后的 key 命中了 state 里早于当前
       // head 的历史 —— 不需要调用方声明,机器自己就能断言这是复发。
-      const priorOccurrence = priorOccurrences[priorOccurrences.length - 1];
+      const priorOccurrence = latestByHeadIdx(priorOccurrences); // 按 head 位置取最近,不信数组尾序(复核轮 P1)
       const familyOccurrenceHeads = new Set(fam.occurrences.map((o) => o.headRefOid));
       const recurrenceType = classifyRecurrence(state, familyOccurrenceHeads, priorOccurrence.headRefOid, currentHeadIdx);
       fam.occurrences.push({
@@ -643,6 +650,9 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
       // 在这个时间位置上它是"第一次出现"——按新 family 计数,保证重放幂等
       // (原始记录该轮时它就是 newFamilyCount 的一员,重放不得把它算成 0)。
       // 不动 firstSeenHead(描述性字段,记的是首次**写入**时的 head),不建重复 families 条目。
+      // ⚠ 本 push 会让 occurrences 的插入序 ≠ head 时间序(旧 head 排到了新 head 后面)。
+      // 任何按"最近历史"消费 occurrences 的地方都必须按 headIdx 选(latestByHeadIdx),
+      // 不得依赖数组尾序——复核轮 P1 的根因正是尾序被当时间序用。
       fam.occurrences.push({
         headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
         familyId: f.familyId ?? null, matchedBy: null, recurrenceType: null,
