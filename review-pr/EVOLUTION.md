@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `mass-identical-format-pushback-across-stacked-chain` **同一 stacked 链上 N 个 PR 同因格式打回时,逐个发相同评论是噪声** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+  - 现象:本轮 23 个候选里 19 个因完全相同的原因被格式打回(Description 缺 变更说明/提交前自检/备注),其中 18 个属同一作者的两条 stacked 链(pr2/297-a1..a6、b2..b12、t1f)——这批 PR 是从旧基线整链 rebase 重建的,统一沿用了 2026-07-26 前的旧四段模板结构。SKILL 现有逻辑逐 PR 各发一条,作者一次收到 19 条正文近乎逐字相同的评论;信息量等于 1 条,噪声是 19 倍。
+  - 提案:auto 模式阶段 2 计划时,把 formatIssues 完全相同、且经 3.6 判定属同一条 stacked 链的候选归并:链顶(base=默认分支的那个)发完整打回,其余各发一条一句话指回链顶的短评论(仍各自留痕、仍各自计 P1、不放宽任何 gate)。属 automatable-gap(不新增 GitHub 写操作类型、不放宽 gate、不碰名单),但涉及通知投递管线改造,超出「最小自洽」范围,故记提案不当轮自动落地。
 - `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。
   - 提案:在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。
