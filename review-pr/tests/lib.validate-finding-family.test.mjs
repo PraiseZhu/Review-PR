@@ -148,14 +148,31 @@ const MUTATIONS = [
   },
 ];
 
-test('反向变异:预测红集里每条改坏都恰好命中预测的那条错误(红集 = 预测集)', () => {
+// 2026-08-02 对抗审 finding 5B：本测试**名字**声称「红集 = 预测集」，而上一版的**断言**
+// 是 `r.errors.some(...)`——那只证明 **预测 ⊆ 实际**，从不断言「没有额外错误」。
+// 对抗审给每个 invalid family 额外追加一条无关错误，按判据该测试必须红，实跑仍 1/1 绿。
+// 现在做的是真正的**一一对应**：红集大小必须等于预测集大小，且每条预测子串
+// 恰好消掉一条实际错误（不允许两条错误抵同一条预测，也不允许多出没预测到的错误）。
+// expectSubstr 可以是单个子串或子串数组——某条改坏确实应产生 N 条错误时，
+// 就把 N 条都写进预测，而不是把判据放宽回子集。
+test('反向变异:预测红集里每条改坏都恰好命中预测的那条错误(红集 = 预测集,一一对应)', () => {
   for (const { name, mutate, expectSubstr } of MUTATIONS) {
     const f = validFamily();
     mutate(f);
     const r = validateFindingFamily(f);
     assert.equal(r.ok, false, `[${name}] 期望 ok=false`);
-    const hit = r.errors.some((e) => e.includes(expectSubstr));
-    assert.ok(hit, `[${name}] 期望 errors 命中子串「${expectSubstr}」,实际 errors=${JSON.stringify(r.errors)}`);
+    const expected = Array.isArray(expectSubstr) ? expectSubstr : [expectSubstr];
+    assert.equal(
+      r.errors.length, expected.length,
+      `[${name}] 红集大小必须等于预测集大小(预测 ${expected.length} 条),实际 errors=${JSON.stringify(r.errors)}`,
+    );
+    const unmatched = [...r.errors];
+    for (const sub of expected) {
+      const i = unmatched.findIndex((e) => e.includes(sub));
+      assert.ok(i >= 0, `[${name}] 预测子串「${sub}」无对应错误,剩余 errors=${JSON.stringify(unmatched)}`);
+      unmatched.splice(i, 1);
+    }
+    assert.equal(unmatched.length, 0, `[${name}] 出现预测外的额外错误:${JSON.stringify(unmatched)}`);
   }
 });
 

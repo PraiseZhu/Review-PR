@@ -1,5 +1,6 @@
-// invariantSlug 单测 —— **仅供人类可读展示**的确定性归一化(如 review 评论里
-// family-anchor marker 的文本),**不是**跨轮身份判定用的 join key(2026-08-02
+// invariantSlug 单测 —— **仅供人类阅读**的确定性归一化(写在 review 评论正文里给人
+// 看的那段文本),**不是**跨轮身份判定用的 join key、也不是 thread marker 的内容
+// (2026-08-02 对抗审二次修正:marker 已改用 invariantKey,见文末漂移断言)(2026-08-02
 // gpt 阻断修正:早前误当身份用,截断碰撞导致误判复发,已纠正——权威 join key 是
 // `invariantKey`,见 lib.invariant-key.test.mjs)。纯函数,唯一实现见
 // lib.review-output-shape.mjs 文件头部说明。
@@ -14,6 +15,9 @@
 // 只是这个函数会截断这一事实的自然推论,已经被"截断边界"两条测试覆盖到。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { invariantSlug } from '../scripts/lib.review-output-shape.mjs';
 
 test('确定性:同一输入调用两次得到完全相同的 slug', () => {
@@ -68,4 +72,26 @@ test('纯空白字符串(空格/tab/换行/混合)→ throw TypeError,不是返�
   for (const bad of ['   ', '\t\t', '\n\n', ' \t\n ']) {
     assert.throws(() => invariantSlug(bad), TypeError);
   }
+});
+
+// 文档漂移断言(2026-08-02 对抗审 finding 1):thread marker 是**机器读取**用来定位
+// thread 的,所以它必须是 invariantKey(不截断);写 slug 会让两条前 64 字相同的
+// invariant 算出同一个 marker,把 family B 的更新追加进 family A 的 thread。
+// 这条缺陷上一轮之所以存活,正是因为「代码改对了、文档留着旧契约」——marker 规则
+// 只活在 SKILL.md 里(生产代码既不产出也不解析它),没有断言就会再漂一次。
+test('文档漂移:SKILL.md 的 thread marker 规范必须用 invariantKey,不得回退成 slug', () => {
+  const skillPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'SKILL.md');
+  const skill = readFileSync(skillPath, 'utf8');
+  assert.ok(
+    skill.includes('`<!-- family-anchor: <invariantKey> -->`'),
+    'SKILL.md 必须把 marker 规范写成 `<!-- family-anchor: <invariantKey> -->`',
+  );
+  assert.ok(
+    !skill.includes('family-anchor: <slug>'),
+    'SKILL.md 不得再出现 `family-anchor: <slug>`——那会把截断碰撞请回 thread 定位',
+  );
+  assert.ok(
+    /legacy 的 slug marker 一律不匹配/.test(skill),
+    'SKILL.md 必须明写 legacy slug marker 不做 fallback 匹配(兼容旧 marker 等于把碰撞请回来)',
+  );
 });

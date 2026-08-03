@@ -234,11 +234,27 @@ function isValidNotificationAttempts(v) {
   ));
 }
 
-function validateShape(state) {
+// F4(2026-08-02 对抗审 finding 4):被判 `ok` 的 state 必须①绑定请求中的 PR、②每个
+// families 键等于该 family 原文的 canonical invariantKey。旧实现两条都不查——只验
+// `Object.values(...)`,从不验 entry key 与 `invariantKey(fam.invariant)` 的关系,也不看
+// `state.pr`。于是「families 按 invariantKey 建键」这条不变量**只在写路径成立**,读路径
+// 识别不出漂移:对抗审写了一份结构合法但 pr=999999、键为 `legacy-slug-a`(原文 `A`)的
+// state,读到 `ok`;下一轮再记录 A 得 newFamilyCount:1、recurringFamilies:[],最后文件里
+// slug 键和 ik1- 键并存。不变量在写侧成立、读侧无法 fail-closed 识别 = 迟早漂回去。
+function validateShape(state, pr) {
   if (!isPlainObject(state)) return false;
   if (state.version !== STATE_VERSION) return false;
+  // 错绑 PR 的 state 一律不可信(字段错配,不是恶意场景的专用措辞)
+  if (Number(state.pr) !== Number(pr)) return false;
   if (!Array.isArray(state.heads) || !state.heads.every(isValidHeadRecord)) return false;
   if (!isPlainObject(state.families) || !Object.values(state.families).every(isValidFamily)) return false;
+  // 键必须是该 family 原文算出的 canonical key。invariantKey 抛错(原文非法)同样算不可信
+  // ——fail-closed,不把「输入坏」当成「没有这个 family」。
+  for (const [key, fam] of Object.entries(state.families)) {
+    let canonical;
+    try { canonical = invariantKey(fam.invariant); } catch { return false; }
+    if (key !== canonical) return false;
+  }
   if (!isValidNotifiedThresholds(state.notifiedThresholds)) return false;
   if (!isValidNotificationAttempts(state.notificationAttempts)) return false;
   if (state.seed !== null && !(isPlainObject(state.seed) && Number.isInteger(state.seed.seedRoundCount))) return false;
@@ -271,8 +287,8 @@ export function readConvergenceState(pr) {
   } catch (e) {
     return { status: 'corrupted', state: null, file, error: `JSON 解析失败: ${e.message}` };
   }
-  if (!validateShape(parsed)) {
-    return { status: 'corrupted', state: null, file, error: '结构校验未通过(字段缺失、类型不符或版本不识别)' };
+  if (!validateShape(parsed, pr)) {
+    return { status: 'corrupted', state: null, file, error: '结构校验未通过(字段缺失、类型不符、版本不识别、PR 错绑,或 families 键与 invariantKey(原文) 不符)' };
   }
   return { status: 'ok', state: parsed, file, error: null };
 }
@@ -414,6 +430,18 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
 
   if (status === 'ok') {
     state = loaded;
+    // F3(2026-08-02 对抗审 finding 3):上一轮检测到损坏、隔离并重建了 state,但那一轮在
+    // 后续校验里抛错、没走到 headRecord 落盘(heads 仍为空)——此时"强制检查点"这个信号
+    // 只存在于那一轮的返回值里,重试就丢了。改成从**持久化的 state** 重新推出来:
+    // integrity 标着 recovered-from-corruption 且还没有任何一轮成功完成(heads 为空)
+    // → 强制信号仍然有效。一旦有一轮成功完成,抬高后的 streak 已经进了 headRecord,
+    // 由既有机制自然延续,这里不再重复强制(否则会永久拦下去)。
+    if (state.integrity?.status === 'recovered-from-corruption' && state.heads.length === 0) {
+      forceCheckpoint = true;
+      integrityWarning = '上一轮检测到收敛状态文件损坏并已重建,但那一轮未成功完成'
+        + (state.integrity.quarantinedFile ? `(旧文件已隔离至 ${state.integrity.quarantinedFile})` : '')
+        + '——历史轮次记录仍不可信,本轮继续强制触发收敛检查点。';
+    }
   } else if (status === 'missing') {
     state = freshState(pr);
     if (Number.isInteger(seedRoundCount) && seedRoundCount > 0) {
@@ -434,6 +462,13 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
       + (quarantinedFile ? `),已隔离旧文件至 ${quarantinedFile} 并重建。` : '),隔离旧文件失败,已直接重建。')
       + '历史轮次记录不可信,本轮起强制触发收敛检查点,请人工核查该 PR 是否已经历多轮未收敛。';
     forceCheckpoint = true;
+    // F3:隔离与"恢复态落盘"必须成为一个原子步骤。旧实现隔离完就往下走,而下面的
+    // recurrence 校验仍可能抛错;一抛错 canonical 文件就不存在了,下一次调用读到
+    // `missing` = 真首轮,损坏信号和强制检查点双双丢失(对抗审实测复现)。
+    // 这里在任何可抛错的步骤**之前**先落一份带 integrity 标记的恢复态:
+    // 后续正常完成会用完整 state 覆盖它;后续抛错则至少留下"这份 state 是从损坏恢复来的、
+    // 且还没有任何一轮成功完成"这个事实,由上面 status==='ok' 分支重新推出强制信号。
+    writeJsonAtomic(file, state);
   }
 
   const existingIdx = state.heads.findIndex((h) => h.headRefOid === headRefOid);
@@ -467,6 +502,22 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     // 目标 key:二级显式声明优先,否则用一级自动算出的 key——两条路径最终都
     // 落到"往 state.families[targetKey] 追加一条 occurrence"这一件事上,分支
     // 只是决定 targetKey 是什么、以及 matchedBy 怎么记。
+    // F2(2026-08-02 对抗审 finding 2):一级确定性 key 已命中历史时,二级语义声明**不得**
+    // 覆盖它。旧实现是无条件 `f.recurrenceOfKey || autoKey`,只核验"被引用的 key 有历史",
+    // 从不核验"autoKey 是不是也已经确定性命中了另一个 family"。对抗审实测:h1 记了 A/B 两族,
+    // h2 传 {invariant:'family A', recurrenceOfKey:keyB} 被接受,occurrence 挂到 B,A 反而没有。
+    // 处置是 **fail-closed 抛错**,不是静默取 autoKey:调用方同时声称"这条是 A"和"这条是 B 的
+    // 复发",说明它自己也没判清;机器替它选一边就是在掩盖混乱(而这里的 T1 目标恰恰是让
+    // 判不清的地方显形)。autoKey 无历史时二级照常介入——那才是二级该管的场景。
+    const autoFam = state.families[autoKey];
+    const autoPriorOccurrences = autoFam ? autoFam.occurrences.filter((o) => o.headRefOid !== headRefOid) : [];
+    if (f.recurrenceOfKey && f.recurrenceOfKey !== autoKey && autoPriorOccurrences.length > 0) {
+      throw new Error(
+        `recurrenceOfKey=${f.recurrenceOfKey} 与本轮 invariant 自动算出的 key=${autoKey} 不同,`
+        + '而后者在 state 中**已有**早于当前 head 的历史——一级确定性命中优先于二级语义声明,'
+        + '二级只在一级未命中时介入。请核对:要么这条 invariant 文本写错了,要么 recurrenceOfKey 引用错了族。',
+      );
+    }
     const targetKey = f.recurrenceOfKey || autoKey;
     const fam = state.families[targetKey];
     // "早于当前 head 的历史"排除当前 head 自己的 occurrence——本轮同一 head 下
@@ -577,8 +628,12 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
 
   writeJsonAtomic(file, state);
 
-  // 故意不去重(与下面 notification 的去重层刻意不同——lead 2026-08-02 定案,
-  // 理由比"这是两件不同的事"更硬):给一个门做去重,等于把它变成 fail-open。
+  // 故意不去重(与下面 notification 的去重层刻意不同——lead 2026-08-02 定案)。
+  // F6(2026-08-02 对抗审 finding 6):上一版这里写「给一个门做去重,等于把它变成
+  // fail-open」——那是**全称句**,已被同文件头部与 SKILL.md 收窄推翻,此处漏改。
+  // 准确的说法是条件结论:**在当前没有 completion receipt 的前提下**,给这个门做去重
+  // 就等于把它变成 fail-open。绑定 head + 输入 hash 的 completion receipt 是安全反例
+  // ——那样可以既不刷屏又不放行,但本仓尚未有该机制(新增机制须先过确认门)。
   // `checkpointRequired` 是闸门语义——"下一个修复 commit 之前必须先产出六件套";
   // 若给它加去重,第二轮就会读到"这个 head 已经要求过一次了"从而判定本轮可以
   // 跳过,门被自己关掉。`notification` 是对外投递,同一 head 重复发是真的刷屏,

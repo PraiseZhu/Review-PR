@@ -31,12 +31,16 @@
 //    两条前 64 字符相同、尾部完全不同的 invariant 会被截断成同一个 slug,导致
 //    机器把两个真正不同的问题误判成同一 family 复发——而且不报错,`matchedBy`
 //    还会记成确定性命中,旧版单测甚至把这个碰撞断言成"已知可接受"(锁死了错误
-//    契约,已删除该断言)。现在 `invariantSlug` 只用于人类可读的展示场合(如
-//    review 评论里 `<!-- family-anchor: <slug> -->` marker 的可读文本),**不得**
-//    再被任何身份判定/跨轮比对逻辑消费——身份判定只认 `invariantKey`。截断导致
-//    的展示层碰撞(两个不同 family 恰好显示同一个 slug)在这个降级后的角色下是
-//    无害的:marker 只是 thread 锚点,不是检测源,展示文本重复不影响任何判定
-//    结果的正确性。
+//    契约,已删除该断言)。现在 `invariantSlug` 只用于人类可读的展示场合(评论
+//    **正文**里给人看的那段文本),**不得**再被任何身份判定/跨轮比对逻辑消费,
+//    **也不得作为任何机器匹配的依据**——身份判定与 thread 定位都只认 `invariantKey`。
+//    2026-08-02 对抗审二次修正:上一版这里写「截断导致的展示层碰撞在降级后的角色下
+//    是无害的:marker 只是 thread 锚点」——**错了**。`<!-- family-anchor: ... -->`
+//    marker 是**机器读取**用来定位 thread 的,它就是一个跨轮 join key;slug 撞了会让
+//    family B 的更新被追加进 family A 的 thread,是投递到错误位置,不是"文本重复"。
+//    同一个根因(拿截断值当跨轮身份)换了个地方活着。marker 现已改用 `invariantKey`
+//    (SKILL.md 同段已同步,并明确 legacy slug marker 一律不匹配)。
+//    slug 真正剩下的唯一用途:给人看。它没有任何机器语义。
 
 import { createHash } from 'node:crypto';
 
@@ -146,15 +150,17 @@ function normalizeInvariantOrThrow(invariant, fnName) {
 }
 
 /**
- * family 一句话不变量描述 → 确定性归一化 slug,**仅供人类可读展示**(如 review
- * 评论里 `<!-- family-anchor: <slug> -->` marker 的文本)——不是跨轮身份,身份见
- * 下方 `invariantKey`(2026-08-02 gpt 阻断修正,见文件头部说明)。
+ * family 一句话不变量描述 → 确定性归一化 slug,**仅供人类阅读**(写在 review 评论
+ * 正文里给人看的那段文本)——不是跨轮身份,身份见下方 `invariantKey`
+ * (2026-08-02 gpt 阻断修正 + 同日对抗审二次修正,见文件头部说明)。
  *
- * 截断到前 `INVARIANT_SLUG_MAX_LEN`(64)个字符。超长不变量描述截断后可能发生
- * "前 64 字符相同、后面不同"的碰撞——在**展示层**这是已知、可接受的行为(marker
- * 只是 thread 锚点,两个不同 family 显示同一段文本不影响任何判定结果);但**绝不
- * 能**把这份输出喂给任何身份判定/跨轮比对逻辑,那正是本轮修的阻断——需要身份
- * 判定时必须用 `invariantKey`,不许用本函数"顶一下"。
+ * 截断到前 `INVARIANT_SLUG_MAX_LEN`(64)个字符,所以"前 64 字符相同、后面不同"的
+ * 两条 invariant 会算出同一个 slug。**这不是一个可接受的碰撞,只是一个无所谓的碰撞
+ * ——前提是它真的没有任何机器消费者。** 判断标准很简单:凡是**机器**据以做出
+ * 「这两个是不是同一个东西」的判断(身份判定、跨轮比对、marker 匹配、thread 定位、
+ * 任何 join),都**不许**用本函数——上一版就是在这里失守的:文档把 thread marker
+ * 说成"展示层",而 marker 恰恰是机器读的,碰撞会把更新写进错误的 thread。
+ * 需要机器可比的值时一律用 `invariantKey`,不许用本函数"顶一下"。
  */
 export function invariantSlug(invariant) {
   return normalizeInvariantOrThrow(invariant, 'invariantSlug').slice(0, INVARIANT_SLUG_MAX_LEN);

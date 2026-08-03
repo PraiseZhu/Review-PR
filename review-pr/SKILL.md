@@ -988,13 +988,24 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   "干净的中间轮"。找不到证据时一律判 `persistent`，宁可少触发一次升级，也不能
   谎称"已经收敛过"。
 
-`<!-- family-anchor: <slug> -->` 这条机器可读注释的职责收窄为**thread 连续性
+`<!-- family-anchor: <invariantKey> -->` 这条机器可读注释的职责是**thread 连续性
 锚点**：family 首次被判定 dirty 时嵌入评论正文顶部，供后续轮次定位同一 thread
 追加（复用/更新同一条既有评论，定位到同 marker 的 thread 追加，或
-`gh pr comment --edit-last`，不新开无关评论）+ 人类可读；这里的 `slug` 是
-`invariantSlug` 算出的展示文本，**不是**复发的检测源（检测源是上面两级判定 +
-`invariantKey`），也不改动 PR 作者的 body。展示层偶尔撞出同一段文本（两个不同
-family 恰好显示同一个 slug）不影响任何判定结果的正确性。
+`gh pr comment --edit-last`，不新开无关评论）；它**不是**复发的检测源（检测源是
+上面两级判定），也不改动 PR 作者的 body。
+
+**marker 里必须是 `invariantKey`（`ik1-` + 完整 64 位 hex），不是 `invariantSlug`。**
+2026-08-02 对抗审阻断修正：初版 marker 里放的是 `invariantSlug` 的输出，理由是
+「slug 只是展示文本，撞了不影响判定结果」。**这个理由是错的。** marker 是**机器读取**
+用来定位 thread 的，它就是一个跨轮 join key——`invariantSlug` 截断到 64 字符，两条前 64 字
+相同的 invariant 会算出同一个 marker，于是 family B 的更新会被追加进 family A 的 thread。
+身份**判定**确实已经不吃 slug 了（那部分修对了），但 thread **投递位置**会错，
+这不是「展示文本重复」。同一个根因（拿截断值当跨轮身份）在这里换了个地方活着。
+
+**legacy 的 slug marker 一律不匹配**：不做 fallback 兼容——为了认出旧评论去匹配旧 marker，
+等于把碰撞请回来。旧 marker 匹配不上的代价是**新开一条评论**；这是有意选择：多一条评论是
+良性退化，写进错误的 thread 不是。人类可读的 slug 可以照常写在评论**正文**里，
+但不得作为机器匹配的依据。
 
 判定复发后：
 - **`recurrenceType: 'reopened'`**：作者在 `selfFixAuthors` → 按 5.4「收敛检查点

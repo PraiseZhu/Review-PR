@@ -52,11 +52,19 @@ function keyOf(pr) {
   return keys[0];
 }
 
+// F5A(2026-08-02 对抗审 finding 5A):上一版断言只匹配宽泛的 /invariant/。对抗审把生产
+// 前置校验退回裸 `=== ''`,预测本条必红,实跑**全门仍 248/248 绿**——因为下游
+// `invariantKey` 抛的 TypeError 信息里恰好也含 "invariant",顶替了被撤掉的接线守卫。
+// 断言太宽 = 测试在证明"某处抛了个提到 invariant 的错",不是"这道守卫在工作"。
+// 现在钉住守卫自己的可辨认信息(非空字符串 + 点名 invariant),撤掉守卫必红。
 test('输入校验:invariant 为纯空白字符串(trim 后为空)同样 throw,不能靠裸 === "" 放过', () => {
   resetPr(970024);
   assert.throws(
     () => recordConvergenceRound({ pr: 970024, headRefOid: 'sha-1', findings: [{ invariant: '   ', severity: 'P1' }] }),
-    /invariant/,
+    // 这是**前置守卫自己**的信息(convergence-state 的接线层)。下游 invariantKey 抛的是
+    // 「invariantKey: invariant 必须是非空字符串」——两句都含 "invariant",宽松的
+    // /invariant/ 因此分不清是谁抛的,守卫被撤掉也照样绿。这里钉死前者。
+    /finding 缺少非空的 invariant 字段/,
   );
 });
 
@@ -791,4 +799,112 @@ test('CLI:--record-attempt 缺 --reason/--threshold/--head → 退出码 1', () 
   assert.equal(r2.status, 1);
   const r3 = runCli([String(pr), '--record-attempt', '--reason', CONVERGENCE_NOTIFY_REASON_ROUND, '--threshold', '10']);
   assert.equal(r3.status, 1);
+});
+
+// ============ 2026-08-02 对抗审 finding 2/3/4 回归 ============
+
+test('F2:一级 key 已命中历史时,矛盾的二级 recurrenceOfKey 必须 fail-closed 抛错(不静默劫持到别的族)', () => {
+  const pr = 970601;
+  resetPr(pr);
+  // h1 同时记录 A / B 两族
+  recordConvergenceRound({
+    pr, headRefOid: 'f2-h1',
+    findings: [{ invariant: 'family A', severity: 'P1' }, { invariant: 'family B', severity: 'P1' }],
+  });
+  const keyB = invariantKey('family B');
+  // h2 声称「这条是 family A」同时又声称「它是 keyB 的复发」——两句话互相矛盾
+  assert.throws(
+    () => recordConvergenceRound({
+      pr, headRefOid: 'f2-h2',
+      findings: [{ invariant: 'family A', severity: 'P1', recurrenceOfKey: keyB }],
+    }),
+    /一级确定性命中优先于二级语义声明/,
+    '一级已命中 A 时不得被二级声明劫持到 B',
+  );
+  // 抛错后 state 不得被写坏:A 仍然只有 h1 那一条,没有多出 h2 的 occurrence
+  const { state } = readConvergenceState(pr);
+  const famA = state.families[invariantKey('family A')];
+  assert.deepEqual(famA.occurrences.map((o) => o.headRefOid), ['f2-h1'], 'A 的 occurrence 不应因失败调用而变化');
+});
+
+test('F2:一级 key 未命中时,二级 recurrenceOfKey 照常介入(修 finding 2 不得误伤二级本职)', () => {
+  const pr = 970602;
+  resetPr(pr);
+  recordConvergenceRound({ pr, headRefOid: 'f2b-h1', findings: [{ invariant: 'family A', severity: 'P1' }] });
+  const keyA = invariantKey('family A');
+  // 换了个说法(一级算出的 key 不命中),显式声明是 A 的复发 → 应被接受并记 semantic
+  const r = recordConvergenceRound({
+    pr, headRefOid: 'f2b-h2',
+    findings: [{ invariant: 'family A 换个说法完全不同的文本', severity: 'P1', recurrenceOfKey: keyA }],
+  });
+  assert.equal(r.newFamilyCount, 0, '二级命中不算新 family');
+  const { state } = readConvergenceState(pr);
+  const last = state.families[keyA].occurrences.at(-1);
+  assert.equal(last.matchedBy, 'semantic', '一级未命中 + 显式声明 → matchedBy=semantic');
+});
+
+test('F3:损坏隔离后即便本轮后续抛错,下一次也不得被当成真首轮(强制检查点信号不丢)', () => {
+  const pr = 970603;
+  resetPr(pr);
+  const file = stateFile(`convergence-${pr}.json`);
+  writeFileSync(file, '{ 这不是合法 JSON', 'utf8');
+  // 第一次:检测到损坏 → 隔离 + 重建,但 findings 带不存在的 recurrenceOfKey → 后续抛错
+  assert.throws(
+    () => recordConvergenceRound({
+      pr, headRefOid: 'f3-h1',
+      findings: [{ invariant: 'x', severity: 'P1', recurrenceOfKey: invariantKey('从不存在的族') }],
+    }),
+    /引用的历史在 state 中不存在/,
+  );
+  // 关键:canonical 文件必须已经存在(隔离与恢复态落盘是一个原子步骤),不是 missing
+  const after = readConvergenceState(pr);
+  assert.equal(after.status, 'ok', '抛错后 canonical 文件必须存在——否则下一次会被当成真首轮');
+  assert.equal(after.state.integrity.status, 'recovered-from-corruption', '恢复态标记必须留在文件里');
+  assert.equal(after.state.heads.length, 0, '那一轮未成功完成,不应留下 head 记录');
+});
+
+// 独立成块:上面钉的是「隔离与恢复态落盘原子化」(canonical 文件必须在),这里钉的是
+// 「恢复态未完成时强制信号仍延续」。合成一块的话,删早落盘和删延续推导会红同一个块,
+// 变异红集分辨不出是哪条判定在起作用。拆开后前者红 2 块、后者红 1 块。
+test('F3:损坏恢复态尚未成功完成时,重试仍必须强制检查点并给出告警', () => {
+  const pr = 970606;
+  resetPr(pr);
+  const file = stateFile(`convergence-${pr}.json`);
+  writeFileSync(file, '{ 这不是合法 JSON', 'utf8');
+  assert.throws(
+    () => recordConvergenceRound({
+      pr, headRefOid: 'f3b-h1',
+      findings: [{ invariant: 'x', severity: 'P1', recurrenceOfKey: invariantKey('从不存在的族') }],
+    }),
+    /引用的历史在 state 中不存在/,
+  );
+  const r = recordConvergenceRound({ pr, headRefOid: 'f3b-h2', findings: [{ invariant: 'x', severity: 'P1' }] });
+  assert.equal(r.checkpointRequired, true, '损坏后的重试仍必须强制收敛检查点');
+  assert.ok(r.integrityWarning, '损坏信号必须仍以告警形式传出,不能静默');
+  assert.match(r.integrityWarning, /未成功完成/);
+});
+
+test('F4:state.pr 与请求的 PR 不符 → corrupted,不得判 ok', () => {
+  const pr = 970604;
+  resetPr(pr);
+  recordConvergenceRound({ pr, headRefOid: 'f4-h1', findings: [{ invariant: 'x', severity: 'P1' }] });
+  const file = stateFile(`convergence-${pr}.json`);
+  const st = JSON.parse(readFileSync(file, 'utf8'));
+  st.pr = 999999; // 错绑到另一个 PR
+  writeFileSync(file, JSON.stringify(st), 'utf8');
+  assert.equal(readConvergenceState(pr).status, 'corrupted', 'PR 错绑的 state 不可信');
+});
+
+test('F4:families 键不等于 invariantKey(原文) → corrupted(读侧必须能识别写侧漂移)', () => {
+  const pr = 970605;
+  resetPr(pr);
+  recordConvergenceRound({ pr, headRefOid: 'f5-h1', findings: [{ invariant: 'A', severity: 'P1' }] });
+  const file = stateFile(`convergence-${pr}.json`);
+  const st = JSON.parse(readFileSync(file, 'utf8'));
+  const realKey = invariantKey('A');
+  st.families = { 'legacy-slug-a': st.families[realKey] }; // 旧 slug 风格的键,原文仍是 'A'
+  writeFileSync(file, JSON.stringify(st), 'utf8');
+  const after = readConvergenceState(pr);
+  assert.equal(after.status, 'corrupted', 'families 键与 invariantKey(原文) 不符必须判 corrupted');
+  assert.match(after.error, /families 键/);
 });
