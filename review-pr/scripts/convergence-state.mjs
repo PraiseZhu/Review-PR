@@ -432,13 +432,26 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     state = loaded;
     // F3(2026-08-02 对抗审 finding 3):上一轮检测到损坏、隔离并重建了 state,但那一轮在
     // 后续校验里抛错、没走到 headRecord 落盘(heads 仍为空)——此时"强制检查点"这个信号
-    // 只存在于那一轮的返回值里,重试就丢了。改成从**持久化的 state** 重新推出来:
-    // integrity 标着 recovered-from-corruption 且还没有任何一轮成功完成(heads 为空)
-    // → 强制信号仍然有效。一旦有一轮成功完成,抬高后的 streak 已经进了 headRecord,
-    // 由既有机制自然延续,这里不再重复强制(否则会永久拦下去)。
-    if (state.integrity?.status === 'recovered-from-corruption' && state.heads.length === 0) {
+    // 只存在于那一轮的返回值里,重试就丢了。改成从**持久化的 state** 重新推出来。
+    //
+    // F3-b(2026-08-03 终审 finding 2): 上一版的条件是 `heads.length === 0`,漏了
+    // **同一 head 原样重放**这一格: 损坏后第一次成功记录使 heads=1、streak 被抬到阈值;
+    // 紧接着对同一 head 重跑(D4 覆盖路径),`priorForStreak = heads[existingIdx-1]` 在
+    // existingIdx===0 时是 undefined,streak 重算回 1,而 heads 非空又让这里不再 force
+    // → checkpointRequired 从 true 翻成 false。没有新 head、没有输入变化、也没有任何检查点
+    // 完成回执,门却被一次重放关掉——这正是 F6 讲的「给门做去重就等于 fail-open」同一族。
+    //
+    // 改成认「损坏是在哪个 head 上检测到的」: 那个 head 上的任何一次记录(含重放)都仍强制。
+    // 为什么不永久强制: 换到**新** head 时本条不再 force,但抬高后的 streak 已进上一条
+    // headRecord、由既有 streak 机制自然延续;等到某一轮真的没有新 family,streak 归零,
+    // 门自然打开。既堵住重放解除,也不会永久拦。
+    const forcedHead = state.integrity?.detectedAtHead ?? null;
+    if (state.integrity?.status === 'recovered-from-corruption'
+        && (state.heads.length === 0 || forcedHead === headRefOid)) {
       forceCheckpoint = true;
-      integrityWarning = '上一轮检测到收敛状态文件损坏并已重建,但那一轮未成功完成'
+      integrityWarning = (state.heads.length === 0
+        ? '上一轮检测到收敛状态文件损坏并已重建,但那一轮未成功完成'
+        : '本 head 上曾检测到收敛状态文件损坏并已重建,重放不解除该信号')
         + (state.integrity.quarantinedFile ? `(旧文件已隔离至 ${state.integrity.quarantinedFile})` : '')
         + '——历史轮次记录仍不可信,本轮继续强制触发收敛检查点。';
     }
@@ -456,6 +469,9 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
       quarantinedFile,
       quarantinedAt: new Date().toISOString(),
       detail: error,
+      // F3-b: 记下损坏是在哪个 head 上检测到的——该 head 上的任何一次记录(含原样重放)
+      // 都必须仍然强制检查点,不能被重放解除(当前没有 completion receipt,见文件头 F6 段)。
+      detectedAtHead: headRefOid,
     };
     integrityWarning = '收敛状态文件损坏('
       + error
@@ -509,13 +525,24 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     // 处置是 **fail-closed 抛错**,不是静默取 autoKey:调用方同时声称"这条是 A"和"这条是 B 的
     // 复发",说明它自己也没判清;机器替它选一边就是在掩盖混乱(而这里的 T1 目标恰恰是让
     // 判不清的地方显形)。autoKey 无历史时二级照常介入——那才是二级该管的场景。
+    // F2-b(2026-08-03 终审 finding 1): 判据不能只看**跨 head**的历史。上一版用
+    // `.filter(o => o.headRefOid !== headRefOid)` 排除了当前 head,于是同一次调用里
+    // 「第一条 finding 刚把 A 建起来、第二条 finding 仍是 A 但声称是 keyB 的复发」这一格
+    // 漏掉了: A 此刻只有当前 head 的 occurrence,过滤后为 0,guard 不响,第二条被劫持到 B。
+    // 终审实测落盘: A 只收第一条, B 收到第二条且 matchedBy='semantic'。
+    // 正确的不变量是「autoKey 已经确定性归组」——**不区分它是这一轮建的还是上几轮建的**。
+    // 注意 D4 的同 head 覆盖路径已在进入本循环**之前**摘除了当前 head 名下的旧 occurrence,
+    // 所以这里看到的当前 head occurrence 只可能来自**本次调用更早的那几条 finding**,
+    // 正是要拦的那一格;若摘除后 family 余 0 条,guard 不响、二级照常介入(那是它该管的)。
     const autoFam = state.families[autoKey];
-    const autoPriorOccurrences = autoFam ? autoFam.occurrences.filter((o) => o.headRefOid !== headRefOid) : [];
-    if (f.recurrenceOfKey && f.recurrenceOfKey !== autoKey && autoPriorOccurrences.length > 0) {
+    const autoOccurrences = autoFam ? autoFam.occurrences : [];
+    if (f.recurrenceOfKey && f.recurrenceOfKey !== autoKey && autoOccurrences.length > 0) {
+      const sameRound = autoOccurrences.every((o) => o.headRefOid === headRefOid);
       throw new Error(
         `recurrenceOfKey=${f.recurrenceOfKey} 与本轮 invariant 自动算出的 key=${autoKey} 不同,`
-        + '而后者在 state 中**已有**早于当前 head 的历史——一级确定性命中优先于二级语义声明,'
-        + '二级只在一级未命中时介入。请核对:要么这条 invariant 文本写错了,要么 recurrenceOfKey 引用错了族。',
+        + `而后者在 state 中**已有**${sameRound ? '本轮(同一 head)刚建立的记录' : '早于当前 head 的历史'}`
+        + '——一级确定性命中优先于二级语义声明,二级只在一级未命中时介入。'
+        + '请核对:要么这条 invariant 文本写错了,要么 recurrenceOfKey 引用错了族。',
       );
     }
     const targetKey = f.recurrenceOfKey || autoKey;
