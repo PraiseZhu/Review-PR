@@ -7,9 +7,14 @@
 //
 // 互斥锁:防止多个 review-pr 实例(scheduler 定时 + 手动)同时跑。
 // 锁文件位于 Skill 外部、按目标仓库隔离的状态目录，内容为 JSON `{startedAt, token}`;
+// 状态目录锚点按 git-common-dir 归一(见 lib.mjs `resolveStateAnchor`)——同一仓库的
+// 主 worktree 与全部 linked worktree 共享同一份状态目录、同一把锁文件,不是各留一份。
 // 获取用 flag:'wx'
-// 原子独占创建,同一 checkout 内两个实例同毫秒启动也只有一个能拿到。
-// 注意锁是 per-checkout 的:另一个 checkout / worktree / 机器上的实例看不到这把锁。
+// 原子独占创建,同一状态目录内两个实例同毫秒启动也只有一个能拿到。
+// 锁按"仓库"归一,不是按"checkout"归一:同一仓库的另一个 checkout / worktree 上的
+// 实例看到的是同一把锁,会被正常互斥挡住,不会重复拿锁。真正看不到这把锁、需要靠
+// 操作约定(而非这把锁本身)避免并发的,只有另一台机器上的实例——见 SKILL.md 里
+// 关于开发机 Syncthing 跨机并发的记录段落。
 // stale 判定:**纯 TTL**——超过 60 分钟未释放判 stale,强制清除后重新获取。
 // 不做 PID 存活判定:本脚本自身秒退,写自己的 PID 进锁文件毫无意义(下一轮
 // `kill(pid, 0)` 永远 ESRCH → 永远判 stale → 锁形同虚设,2026-07 实锤);
