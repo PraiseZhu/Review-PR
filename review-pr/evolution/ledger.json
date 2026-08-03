@@ -1209,6 +1209,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-02T02:11:00.589Z",
       "lastSeen": "2026-08-02T02:11:00.589Z"
+    },
+    {
+      "fingerprint": "security-review-paths-turn-human",
+      "tier": "by-design",
+      "title": "命中 securityReviewPaths 的 PR 一律转人工,不进自动审查",
+      "detail": "本轮两个候选(#437 改 .claude/skills + workflow;#440 dependabot 改 package.json/lock)都命中 3.8 审查执行环境安全门,按设计转人工;两者同时还处于 CI pending。属设计上就该人来的类别,只记计数观察,不放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-03T11:02:28.630Z",
+      "lastSeen": "2026-08-03T11:02:28.630Z"
     }
   ]
 }

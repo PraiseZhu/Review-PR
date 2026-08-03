@@ -126,6 +126,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-review-paths-turn-human` **命中 securityReviewPaths 的 PR 一律转人工,不进自动审查** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
+  - 现象:本轮两个候选(#437 改 .claude/skills + workflow;#440 dependabot 改 package.json/lock)都命中 3.8 审查执行环境安全门,按设计转人工;两者同时还处于 CI pending。属设计上就该人来的类别,只记计数观察,不放开。
 - `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 4 次,首见 2026-08-01,最近 2026-08-03,status: tracked
   - 现象:PR #433(minor-and-patch group,9 updates)仅改 package.json/package-lock.json,两文件都在 securityReviewPaths 内,auto 直接 skip-security-review;fallback 也因作者 app/dependabot 不在 admins 而无法 admin bypass 结构性 BLOCKED。放宽属扩权类,不自动落地。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 2 次,首见 2026-07-31,最近 2026-08-03,status: tracked
