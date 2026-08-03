@@ -147,9 +147,14 @@ const SEVERITIES = new Set(['P0', 'P1']);
 // v1→v2:跨轮 join key 从 family_id 换成 invariantSlug(截断展示归一化),顶层
 // families 键随之改变含义。v2→v3(2026-08-02,gpt 阻断修正):join key 从截断
 // slug 换成不截断的 invariantKey(完整 hash),消除截断碰撞误判复发;occurrence
-// 新增 recurrenceType 字段(D3)。历次版本不符的文件都按既有 corrupted 处理(隔离
-// 重建,见 validateShape),无生产数据,不写迁移代码。
-const STATE_VERSION = 3;
+// 新增 recurrenceType 字段(D3)。v3→v4(2026-08-03,终审 P1):integrity 在
+// recovered-from-corruption 态下新增**必填** detectedAtHead——该字段控制「损坏检测所在
+// head 的重放不解除强制检查点」,没有它的旧 v3 state 读成 ok 会静默退回被修掉的
+// 重放解除 bug(终审用真实父版本 b857c9e 的 state 跨 commit 复现)。控制 fail-closed
+// 信号的持久化字段变更必须升版,让旧形状走 corrupted 隔离重建(方向是多触发一次
+// 检查点,不是丢信号)。历次版本不符的文件都按既有 corrupted 处理(隔离重建,见
+// validateShape),无生产数据,不写迁移代码。
+const STATE_VERSION = 4;
 
 function isPlainObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -259,6 +264,11 @@ function validateShape(state, pr) {
   if (!isValidNotificationAttempts(state.notificationAttempts)) return false;
   if (state.seed !== null && !(isPlainObject(state.seed) && Number.isInteger(state.seed.seedRoundCount))) return false;
   if (!isPlainObject(state.integrity) || typeof state.integrity.status !== 'string') return false;
+  // 终审 P1(2026-08-03): recovered 态必须带非空 detectedAtHead——它是「重放不解除强制」的
+  // 判定依据,缺失(旧版写出/手工漂移)时读成 ok 会让 forcedHead 恒 null、门被重放关掉。
+  // 缺失 → corrupted(隔离重建、强制检查点),fail 向多拦一次,不向丢信号。
+  if (state.integrity.status === 'recovered-from-corruption'
+      && !(typeof state.integrity.detectedAtHead === 'string' && state.integrity.detectedAtHead.length > 0)) return false;
   return true;
 }
 
@@ -511,6 +521,17 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
 
   const recurringFamilies = [];
   let newFamilyCount = 0;
+  // 终审 P1(2026-08-03,时间方向): 重放**非末尾** head 时,「历史」只能是位置早于它的
+  // head 上的 occurrence——旧实现只排除当前 head 自己(`!== headRefOid`),h3 的 occurrence
+  // 会被当成 h2 的"历史",让完全相同的重放把 newFamilyCount 从 1 算成 0、streak 归零、
+  // checkpoint 翻 false(force-push 回旧 OID / 手工重放非 tip head 均可达)。
+  // 判据: 重放必须幂等——相同输入不改变 newFamilyCount/streak/checkpoint。
+  // 不在 heads 里的 head(从未成功记录)不提供任何证据,同样不算历史(与 D3 fail 方向一致)。
+  const headIdxOf = new Map(state.heads.map((h, i) => [h.headRefOid, i]));
+  const isEarlierHead = (oid) => {
+    const i = headIdxOf.get(oid);
+    return i !== undefined && i < currentHeadIdx;
+  };
   const recordedAt = new Date().toISOString();
 
   for (const f of findings) {
@@ -535,7 +556,9 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     // 所以这里看到的当前 head occurrence 只可能来自**本次调用更早的那几条 finding**,
     // 正是要拦的那一格;若摘除后 family 余 0 条,guard 不响、二级照常介入(那是它该管的)。
     const autoFam = state.families[autoKey];
-    const autoOccurrences = autoFam ? autoFam.occurrences : [];
+    // 同轮(本次调用更早的 finding)∪ 时间上更早的 head——**不含更晚的 head**:
+    // 重放 h2 时,只存在于 h3 的 family 在 h2 的时间点尚未"确定性归组",guard 不该按它拦。
+    const autoOccurrences = autoFam ? autoFam.occurrences.filter((o) => o.headRefOid === headRefOid || isEarlierHead(o.headRefOid)) : [];
     if (f.recurrenceOfKey && f.recurrenceOfKey !== autoKey && autoOccurrences.length > 0) {
       const sameRound = autoOccurrences.every((o) => o.headRefOid === headRefOid);
       throw new Error(
@@ -547,10 +570,10 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
     }
     const targetKey = f.recurrenceOfKey || autoKey;
     const fam = state.families[targetKey];
-    // "早于当前 head 的历史"排除当前 head 自己的 occurrence——本轮同一 head 下
-    // 若已有另一条 finding 刚创建/命中了同一个 key,不能把它当"跨轮历史"用
-    // (那不是复发,是同一轮内两条 finding 撞了同一个 key;见文件头注释)。
-    const priorOccurrences = fam ? fam.occurrences.filter((o) => o.headRefOid !== headRefOid) : [];
+    // "早于当前 head 的历史" = **位置早于 currentHeadIdx 的 head** 上的 occurrence。
+    // 既排除当前 head 自己(同轮撞 key 不是跨轮复发),也排除**更晚**的 head
+    // (重放非末尾 head 时,后来的 occurrence 不是它的历史——时间方向,终审 P1)。
+    const priorOccurrences = fam ? fam.occurrences.filter((o) => isEarlierHead(o.headRefOid)) : [];
 
     if (f.recurrenceOfKey) {
       // D3:机器只核验"引用的历史是否真实存在",不做语义匹配——语义判断已经由
@@ -604,7 +627,7 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
         matchedBy: 'key',
         recurrenceType,
       });
-    } else if (fam) {
+    } else if (fam && fam.occurrences.some((o) => o.headRefOid === headRefOid)) {
       // 两级都没有可验证的"跨轮"历史,但这个 key 在**本轮**已经被另一条 finding
       // 创建/命中过——同一轮内的 key 撞车,不是真正的跨轮复发,也不是"新"
       // family(这个 key 本轮已经算过一次新家族了),两头都不计,只补一条
@@ -615,6 +638,16 @@ export function recordConvergenceRound({ pr, headRefOid, findings, seedRoundCoun
         headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
         familyId: f.familyId ?? null, matchedBy: 'same-round', recurrenceType: null,
       });
+    } else if (fam) {
+      // family 存在但 occurrence 全在**更晚**的 head 上(重放非末尾 head 的场景,终审 P1):
+      // 在这个时间位置上它是"第一次出现"——按新 family 计数,保证重放幂等
+      // (原始记录该轮时它就是 newFamilyCount 的一员,重放不得把它算成 0)。
+      // 不动 firstSeenHead(描述性字段,记的是首次**写入**时的 head),不建重复 families 条目。
+      fam.occurrences.push({
+        headRefOid, recordedAt, severity: f.severity, description: f.description ?? null,
+        familyId: f.familyId ?? null, matchedBy: null, recurrenceType: null,
+      });
+      newFamilyCount += 1;
     } else {
       // 两级都未命中,且这个 key 本轮也是第一次出现 —— 当新 family。
       state.families[targetKey] = {

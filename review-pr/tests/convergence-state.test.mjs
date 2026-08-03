@@ -953,22 +953,86 @@ test('F2-b:同一轮内两条相同 key 且都不传 recurrenceOfKey → 仍是�
   assert.equal(occ[1].matchedBy, 'same-round', '第二条应记 same-round，不是 semantic 也不是报错');
 });
 
-test('F3-b:损坏检测所在 head 的原样重放不得解除强制检查点(重放 ≠ 新证据)', () => {
+// 2026-08-03 终审 P1(测试判据所有权): 原本 producer(字段落盘)与 consumer(重放行为)合在
+// 一个 test 里,M-F3b1 与 M-F3b2 红同一个块——我上一轮判"行为等价",被终审驳回,**它对**:
+// 两个变异下**持久化的 state 内容不同**(一个有 detectedAtHead 一个没有),而 F4 已把读侧
+// 变成契约,state 内容就是可观测行为。且单块 fail-fast 下 M-F3b2 红在字段断言、根本没执行到
+// replay 断言——红的是"test 名",不是同一判据。拆开: producer 只验字段落盘;consumer 用
+// **手写 state**(不经 producer)验重放行为。两个变异从此红不同的块。
+test('F3-b(producer):损坏恢复必须把 detectedAtHead 落进 integrity', () => {
   const pr = 970703;
   resetPr(pr);
   const file = stateFile(`convergence-${pr}.json`);
   writeFileSync(file, '{ 坏 JSON', 'utf8');
-  // 第一次：损坏 → 隔离重建 → 成功记录（heads 变成 1，streak 被抬到阈值）
   const r1 = recordConvergenceRound({ pr, headRefOid: 'f3b2-h1', findings: [{ invariant: 'x', severity: 'P1' }] });
   assert.equal(r1.checkpointRequired, true, '前提: 损坏后首次成功记录必须强制检查点');
   const { state: s1 } = readConvergenceState(pr);
   assert.equal(s1.heads.length, 1, '前提: 已有一条 head 记录');
   assert.equal(s1.integrity.detectedAtHead, 'f3b2-h1', 'integrity 必须记下损坏检测所在的 head');
-  // 同一 head 原样重放：没有新 head、没有输入变化、没有任何检查点完成回执
-  const r2 = recordConvergenceRound({ pr, headRefOid: 'f3b2-h1', findings: [{ invariant: 'x', severity: 'P1' }] });
+});
+
+/** 手写一份合法 v4 recovered state(不经 producer 路径),供 consumer 侧测试独立取证。 */
+function writeRecoveredState(pr, { head, invariant, detectedAtHead = head, streak = CONVERGENCE_CHECKPOINT_THRESHOLD }) {
+  const key = invariantKey(invariant);
+  const now = new Date().toISOString();
+  const state = {
+    version: 4, pr: Number(pr), createdAt: now, seed: null,
+    heads: [{ headRefOid: head, recordedAt: now, p0p1Count: 1, newFamilyCount: 1, consecutiveRoundsWithNewFamilies: streak }],
+    families: { [key]: { invariant, firstSeenHead: head, occurrences: [{ headRefOid: head, recordedAt: now, severity: 'P1', description: null, familyId: null, matchedBy: null, recurrenceType: null }] } },
+    notifiedThresholds: {}, notificationAttempts: {},
+    integrity: { status: 'recovered-from-corruption', quarantinedFile: null, quarantinedAt: now, detail: 'test', detectedAtHead },
+  };
+  writeFileSync(stateFile(`convergence-${pr}.json`), JSON.stringify(state), 'utf8');
+  return state;
+}
+
+test('F3-b(consumer):损坏检测所在 head 的原样重放不得解除强制检查点(手写 state,不依赖 producer)', () => {
+  const pr = 970705;
+  resetPr(pr);
+  writeRecoveredState(pr, { head: 'f3b2c-h1', invariant: 'x' });
+  assert.equal(readConvergenceState(pr).status, 'ok', '前提: 手写 state 必须过读侧校验');
+  const r2 = recordConvergenceRound({ pr, headRefOid: 'f3b2c-h1', findings: [{ invariant: 'x', severity: 'P1' }] });
   assert.equal(r2.checkpointRequired, true, 'F3-b 核心: 重放不得把 checkpointRequired 从 true 翻成 false');
   assert.ok(r2.integrityWarning, '重放仍须带出损坏信号');
   assert.match(r2.integrityWarning, /重放不解除/);
+});
+
+test('P1-版本门:完整合法的 v3 state(含 detectedAtHead)必须判 corrupted——版本升 4 后旧形状不得读成 ok', () => {
+  const pr = 970706;
+  resetPr(pr);
+  const st = writeRecoveredState(pr, { head: 'v3-h1', invariant: 'x' });
+  st.version = 3;
+  writeFileSync(stateFile(`convergence-${pr}.json`), JSON.stringify(st), 'utf8');
+  assert.equal(readConvergenceState(pr).status, 'corrupted', '父版本(b857c9e 一代)的 v3 state 必须走隔离重建,不得静默退回重放解除 bug');
+});
+
+test('P1-字段门:v4 recovered state 缺 detectedAtHead 必须判 corrupted(漂移/手删也不得读成 ok)', () => {
+  const pr = 970707;
+  resetPr(pr);
+  const st = writeRecoveredState(pr, { head: 'v4-h1', invariant: 'x' });
+  delete st.integrity.detectedAtHead;
+  writeFileSync(stateFile(`convergence-${pr}.json`), JSON.stringify(st), 'utf8');
+  assert.equal(readConvergenceState(pr).status, 'corrupted', 'recovered 态缺 detectedAtHead = 强制信号的依据缺失,必须 fail 向隔离重建');
+});
+
+test('P1-时间方向:重放非末尾 head 必须幂等——后来 head 的 occurrence 不是它的历史', () => {
+  const pr = 970708;
+  resetPr(pr);
+  const file = stateFile(`convergence-${pr}.json`);
+  writeFileSync(file, '{ 坏 JSON', 'utf8');
+  // 终审的四步复现:损坏→h1(A)→h2(B)→h3(B 复发+C 新)→重放 h2(B)
+  recordConvergenceRound({ pr, headRefOid: 'td-h1', findings: [{ invariant: 'A', severity: 'P1' }] });
+  const r2 = recordConvergenceRound({ pr, headRefOid: 'td-h2', findings: [{ invariant: 'B', severity: 'P1' }] });
+  assert.equal(r2.newFamilyCount, 1, '前提: h2 首记 B 是新 family');
+  const streakAtH2 = r2.consecutiveRoundsWithNewFamilies;
+  assert.equal(r2.checkpointRequired, true, '前提: h2 时门是开的(强制中)');
+  const r3 = recordConvergenceRound({ pr, headRefOid: 'td-h3', findings: [{ invariant: 'B', severity: 'P1' }, { invariant: 'C', severity: 'P1' }] });
+  assert.equal(r3.newFamilyCount, 1, '前提: h3 只有 C 是新的(B 是一级复发)');
+  // 重放 h2,输入与原始完全相同
+  const rr = recordConvergenceRound({ pr, headRefOid: 'td-h2', findings: [{ invariant: 'B', severity: 'P1' }] });
+  assert.equal(rr.newFamilyCount, 1, '幂等: 重放不得把 newFamilyCount 从 1 算成 0(h3 的 B 不是 h2 的历史)');
+  assert.equal(rr.consecutiveRoundsWithNewFamilies, streakAtH2, '幂等: streak 与原始记录一致');
+  assert.equal(rr.checkpointRequired, true, '幂等: 完全相同的重放不得把门从 true 翻成 false');
 });
 
 test('F3-b:换到新 head 后不再由 integrity 强制,靠 streak 自然延续,且最终能打开(不永久拦)', () => {
