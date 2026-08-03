@@ -1261,6 +1261,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-03T17:17:48.960Z",
       "lastSeen": "2026-08-03T17:17:48.960Z"
+    },
+    {
+      "fingerprint": "runlog-lockreleased-always-false-ordering",
+      "tier": "proposal",
+      "title": "run-log 的 lockReleased 按现行顺序永远只能记 false",
+      "detail": "SKILL 6.1 要求「每轮结束时先把机器可读 JSON 落盘」,而 7.4 释放锁排在其后。落盘时刻锁必然仍持有,故 schema 里的 lockReleased 在正常路径下恒为 false——本轮实测即如此(落盘 lockReleased:false,随后 cleanup.mjs 返回 lockReleased:true)。该字段当前不具备审计价值,反而会让事后查 runs.jsonl 的人误以为每轮都漏放锁。",
+      "proposal": "二选一,属设计取舍故不自动落地:① 把 run-log 落盘移到 7 收尾释放锁之后(但 6.1 现有措辞把落盘定在自进化复盘之前,需一并调整);② 保留顺序,把字段语义明确为「本轮是否已安排释放」并在 SKILL 6.1 注明,或改由 cleanup.mjs 回写该字段。另:cleanup.mjs 必传 --original <分支名>,SKILL 7.4 的示例只写了 --token,缺参数会直接 ok:false,建议补上。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-03T17:18:51.360Z",
+      "lastSeen": "2026-08-03T17:18:51.360Z"
     }
   ]
 }

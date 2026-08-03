@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `runlog-lockreleased-always-false-ordering` **run-log 的 lockReleased 按现行顺序永远只能记 false** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+  - 现象:SKILL 6.1 要求「每轮结束时先把机器可读 JSON 落盘」,而 7.4 释放锁排在其后。落盘时刻锁必然仍持有,故 schema 里的 lockReleased 在正常路径下恒为 false——本轮实测即如此(落盘 lockReleased:false,随后 cleanup.mjs 返回 lockReleased:true)。该字段当前不具备审计价值,反而会让事后查 runs.jsonl 的人误以为每轮都漏放锁。
+  - 提案:二选一,属设计取舍故不自动落地:① 把 run-log 落盘移到 7 收尾释放锁之后(但 6.1 现有措辞把落盘定在自进化复盘之前,需一并调整);② 保留顺序,把字段语义明确为「本轮是否已安排释放」并在 SKILL 6.1 注明,或改由 cleanup.mjs 回写该字段。另:cleanup.mjs 必传 --original <分支名>,SKILL 7.4 的示例只写了 --token,缺参数会直接 ok:false,建议补上。
 - `mass-identical-format-pushback-across-stacked-chain` **同一 stacked 链上 N 个 PR 同因格式打回时,逐个发相同评论是噪声** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:本轮 23 个候选里 19 个因完全相同的原因被格式打回(Description 缺 变更说明/提交前自检/备注),其中 18 个属同一作者的两条 stacked 链(pr2/297-a1..a6、b2..b12、t1f)——这批 PR 是从旧基线整链 rebase 重建的,统一沿用了 2026-07-26 前的旧四段模板结构。SKILL 现有逻辑逐 PR 各发一条,作者一次收到 19 条正文近乎逐字相同的评论;信息量等于 1 条,噪声是 19 倍。
   - 提案:auto 模式阶段 2 计划时,把 formatIssues 完全相同、且经 3.6 判定属同一条 stacked 链的候选归并:链顶(base=默认分支的那个)发完整打回,其余各发一条一句话指回链顶的短评论(仍各自留痕、仍各自计 P1、不放宽任何 gate)。属 automatable-gap(不新增 GitHub 写操作类型、不放宽 gate、不碰名单),但涉及通知投递管线改造,超出「最小自洽」范围,故记提案不当轮自动落地。
