@@ -126,6 +126,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 2 次,首见 2026-07-31,最近 2026-08-03,status: tracked
+  - 现象:本轮 PR #434 body 用「需求/改了什么/门禁/测试/验证」自定义标题，缺模板要求的 变更说明/提交前自检/备注 三段，格式门打回（ownPr=true 故走 COMMENT）
 - `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 2 次,首见 2026-08-01,最近 2026-08-03,status: tracked
   - 现象:本轮 PR #433 (bump minor-and-patch group with 9 updates) 改 package.json + package-lock.json，命中 securityReviewPaths，按设计转人工
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 2 次,首见 2026-07-31,最近 2026-08-02,status: tracked
@@ -153,8 +155,6 @@
   - 现象:2026-08-01 轮：唯一候选 #366 CI e2e kernel gate 失败，ownPr=true 且 selfFixAuthors 留空，无打回/跟进出口
 - `conflict-plus-unresolved-threads` **冲突 + 未 resolve conversation 双阻塞,需作者处理** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
   - 现象:本轮 1 个候选(#352)同时有 base 冲突与 2 条未 resolve thread;冲突未孤立存在,不满足 5.5 主干代合并门槛(其余全过、仅剩冲突),按设计跳过等作者。
-- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
-  - 现象:本轮 2 个候选(#351/#354)因缺 变更说明/提交前自检/备注 段落被格式门拦下;内容其实齐全,只是标题结构不符模板。属作者侧内容问题,由作者补齐,不做自动化。
 - `ci-workflow-pr-needs-human` **改 CI workflow 的 PR 命中安全审查路径,只能转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR #348 只改 .github/workflows/*,命中 securityReviewPaths → skip-security-review;同时 mergeStateStatus=BLOCKED(code_scanning/code_quality 未上报)。两者都要真人处理,自动化不应放开。
 - `ci-workflow-change-needs-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工审查** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
