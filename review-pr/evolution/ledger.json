@@ -1222,6 +1222,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-03T11:02:28.630Z",
       "lastSeen": "2026-08-03T11:02:28.630Z"
+    },
+    {
+      "fingerprint": "dependabot-deps-hits-security-review-path",
+      "tier": "by-design",
+      "title": "dependabot 的依赖升级 PR 必然命中 securityReviewPaths(package.json/package-lock.json)，每轮都转人工",
+      "detail": "PR #440 (app/dependabot, 10 个依赖升级, 4394 行) auto.action=skip-security-review；fallback 也是 skip-structural-block(作者不在 admins)。这是 3.8 设计意图：自动化不自动审自己的供应链面。放开需扩权，永不自动落地；仅记计数观察频率。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-03T14:09:17.935Z",
+      "lastSeen": "2026-08-03T14:09:17.935Z"
     }
   ]
 }

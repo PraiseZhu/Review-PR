@@ -126,6 +126,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `dependabot-deps-hits-security-review-path` **dependabot 的依赖升级 PR 必然命中 securityReviewPaths(package.json/package-lock.json)，每轮都转人工** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
+  - 现象:PR #440 (app/dependabot, 10 个依赖升级, 4394 行) auto.action=skip-security-review；fallback 也是 skip-structural-block(作者不在 admins)。这是 3.8 设计意图：自动化不自动审自己的供应链面。放开需扩权，永不自动落地；仅记计数观察频率。
 - `security-review-paths-turn-human` **命中 securityReviewPaths 的 PR 一律转人工,不进自动审查** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
   - 现象:本轮两个候选(#437 改 .claude/skills + workflow;#440 dependabot 改 package.json/lock)都命中 3.8 审查执行环境安全门,按设计转人工;两者同时还处于 CI pending。属设计上就该人来的类别,只记计数观察,不放开。
 - `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 4 次,首见 2026-08-01,最近 2026-08-03,status: tracked
