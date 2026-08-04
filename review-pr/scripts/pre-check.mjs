@@ -110,7 +110,7 @@ function lockHeld(lockFile) {
 // 一天多才被人翻仓发现)。
 let skillSyncReport = null;
 // 分叉时强制放行一轮,让会话内流程把它写进 6.1 汇总并经播报出口推给 owner。
-// 同一分叉状态只强制一次(按 本地 HEAD:远端 HEAD 去重),避免每 3 小时空转烧 token。
+// 同一分叉状态只强制一次(按 本地 HEAD:远端 HEAD 去重),避免每轮(1h 网格)空转烧 token。
 let forceRunReason = null;
 
 function skip(reason, extra = {}) {

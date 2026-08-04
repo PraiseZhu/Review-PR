@@ -37,7 +37,8 @@
 //   --dry-run:只打印判定与将发内容,不发送、不写台账(含不做基线播种)。
 //
 // 可选配置(mergeAckNotify 下,均有默认值,不配即用默认):
-//   backfillLookbackHours:扫描窗口,默认 72(覆盖 mini 巡审 3h 周期的几十倍冗余);
+//   backfillLookbackHours:扫描窗口,默认 72(巡审已是 1h 全天网格,72h 相当于 72 轮的
+//     冗余,数值无需随频率调整);
 //   backfillMaxPerRun:单轮补发上限,默认 5(防手动批量合并时刷屏,超出的下轮继续)。
 
 import { readFileSync, writeFileSync } from 'node:fs';

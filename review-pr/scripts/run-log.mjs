@@ -191,7 +191,7 @@ try {
     runsFile,
     warnings,
     note: '汇总 JSON 已落盘;会话最终消息只发人类可读摘要,不要再输出这份 JSON。' +
-      'sinceLastRunHours 超过 6 时,6.1 摘要的“其他”行需补一句调度缺口提示(见 SKILL.md 6.1)。',
+      'sinceLastRunHours 超过 2 时,6.1 摘要的“其他”行需补一句调度缺口提示(见 SKILL.md 6.1)。',
   });
 } catch (e) {
   fail(e);
