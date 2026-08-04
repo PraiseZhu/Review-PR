@@ -83,14 +83,14 @@
       "fingerprint": "all-skip-no-actionable",
       "tier": "by-design",
       "title": "本轮所有候选均被前置门或 stale-pushback 拦住，无可审查项",
-      "detail": "15 个候选中 9 个 stale-pushback（等作者修格式）、5 个 gate 未过（thread 未 resolve / 冲突 / CHANGES_REQUESTED）、1 个新格式打回。2 个 held draft 白名单未回复。by-design：都在等人。",
+      "detail": "PR #445 skip-stale-pushback(已打回2次无新commit+冲突)、#470/#483 ownPr threads-unresolved、#484 dependabot 命中 securityReviewPaths。均属设计上等人处理。ownpr-unresolved-thread-deadlock 提案仍 open",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-07-24T23:05:04.283Z",
-      "lastSeen": "2026-07-24T23:05:04.283Z"
+      "lastSeen": "2026-08-04T14:03:29.122Z"
     },
     {
       "fingerprint": "no-new-evolution-this-round",

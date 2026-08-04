@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `all-skip-no-actionable` **本轮所有候选均被前置门或 stale-pushback 拦住，无可审查项** — 出现 2 次,首见 2026-07-24,最近 2026-08-04,status: tracked
+  - 现象:PR #445 skip-stale-pushback(已打回2次无新commit+冲突)、#470/#483 ownPr threads-unresolved、#484 dependabot 命中 securityReviewPaths。均属设计上等人处理。ownpr-unresolved-thread-deadlock 提案仍 open
 - `review-found-p1-author-fixes` **独立审查发现 P1，需作者修正后重审——流程按预期工作** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR 470 审出 changelog 内容失真(docs-only PR 被写成交付了界面变更，且该变更前一天已发布过)。已打回并落 dirty 回执，admins 分级合并前提因此不成立，未合。
 - `security-review-paths-manual-by-design` **命中 securityReviewPaths 一律转人工，是防自我损坏闭环的设计意图** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
@@ -263,8 +265,6 @@
 - `format-gate-no-visual-change-claim` **作者声称 UI 文件改动无视觉差异时格式门仍打回** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
   - 现象:PR#373 改了 VoiceInputOverlay.tsx 但作者说是纯 lifecycle fix 无渲染变化。格式门按路径命中打回是 by-design:作者需明确解释为何改 tsx 不产生视觉变化
 - `no-new-evolution-this-round` **本轮无新进化项：skip 全是 stale-pushback 或 gate 阻断(设计如此)** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
-- `all-skip-no-actionable` **本轮所有候选均被前置门或 stale-pushback 拦住，无可审查项** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
-  - 现象:15 个候选中 9 个 stale-pushback（等作者修格式）、5 个 gate 未过（thread 未 resolve / 冲突 / CHANGES_REQUESTED）、1 个新格式打回。2 个 held draft 白名单未回复。by-design：都在等人。
 - `all-skipped-no-evolution` **本轮15个候选中14个因格式打回/thread未resolve/冲突跳过** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
   - 现象:PR #371是唯一可处理候选(docs-only)。其余均为作者侧问题(未回应格式打回/未resolve thread/未处理冲突)——设计上就该等作者响应
 - `product-gate-held-not-draft-rehold` **已 held 但未 draft 的 PR 需要 re-draft** — 出现 1 次,首见 2026-07-24,最近 2026-07-24,status: tracked
