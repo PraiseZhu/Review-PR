@@ -18,8 +18,9 @@
 //
 // 用法:
 //   node merge-pr.mjs <PR> --strategy squash|merge|rebase --match-head <40hex> \
-//     --basis approved|admin-trust|authorized-fast-merge|self-merge|conflict-merged|merge-then-fix \
+//     --basis approved|admin-trust|authorized-fast-merge|self-merge \
 //     [--admin] [--delete-branch] [--mode auto|interactive] [--dry-run]
+//   (admin-trust / authorized-fast-merge / self-merge 三条 admin 路径必须显式带 --admin)
 //   node merge-pr.mjs --reconcile          # 只读核对孤儿 intent,补 result
 //
 // 退出码:0=成功(或 dry-run / reconcile 完成);2=拒绝执行(参数缺失/审计不可用/merge 失败);1=脚本自身错误。
@@ -73,6 +74,10 @@ try {
         state = ghJson(['pr', 'view', String(o.pr), '--repo', o.slug ?? slug, '--json', 'state,mergedAt']);
       } catch { /* 查不到就留着下轮再试,不编造 */ }
       if (state === null) continue;
+      // 复审修订(2026-08-04):只认三种已知 PR state——命令"成功"但返回空对象/未知 state
+      // (API 形状漂移等)时若照写 result 会把 ok:false 永久封口这条 orphan,以后再也不会
+      // 重试核对。未知一律保持 orphan,留待下轮。
+      if (!['OPEN', 'MERGED', 'CLOSED'].includes(state.state)) continue;
       const rec = {
         phase: 'result', opId: o.opId, pr: o.pr, ts: new Date().toISOString(),
         ok: state.state === 'MERGED', prState: state.state, mergedAt: state.mergedAt ?? null,
@@ -91,10 +96,16 @@ try {
   const matchHead = (argOf('--match-head') ?? '').toLowerCase();
   const basis = argOf('--basis');
   const dryRun = argvHas('--dry-run');
-  const BASES = new Set(['approved', 'admin-trust', 'authorized-fast-merge', 'self-merge', 'conflict-merged', 'merge-then-fix']);
+  // 复审修订(2026-08-04):basis 只保留四条共识合并路径——5.5(冲突处理)/5.6(先合后修)
+  // 是本地 merge+push,根本不经 gh pr merge,给它们留 basis 只会让审计出现不可达的假枚举。
+  const BASES = new Set(['approved', 'admin-trust', 'authorized-fast-merge', 'self-merge']);
+  // 三条 admin 路径的语义就是 admin bypass,不带 --admin 的调用要么必然失败、要么审计
+  // basis 与真实命令不一致——一律拒绝,保证审计如实(approved 两可:普通合/结构性 bypass)。
+  const ADMIN_BASES = new Set(['admin-trust', 'authorized-fast-merge', 'self-merge']);
   if (!['squash', 'merge', 'rebase'].includes(strategy ?? '')) refuse('缺 --strategy squash|merge|rebase');
   if (!/^[0-9a-f]{40}$/.test(matchHead)) refuse('缺 --match-head <完整 40 位 head SHA>(判定与执行之间的原子护栏,必填)');
   if (!BASES.has(basis ?? '')) refuse(`缺 --basis(${[...BASES].join('|')})——审计必须记录凭什么合`);
+  if (ADMIN_BASES.has(basis) && !argvHas('--admin')) refuse(`--basis ${basis} 是 admin bypass 路径,必须显式带 --admin(审计 basis 与真实命令必须一致)`);
 
   const args = ['pr', 'merge', String(pr), '--repo', slug, `--${strategy}`, '--match-head-commit', matchHead];
   if (argvHas('--admin')) args.push('--admin');
@@ -106,7 +117,11 @@ try {
   }
 
   const opId = randomUUID();
-  const viewer = (() => { try { return ghJson(['api', 'user', '--jq', '{login}']).login ?? ''; } catch { return ''; } })();
+  // 复审修订(2026-08-04):viewer 查不到就拒绝执行——审计的"谁在合"字段不允许为空
+  // (#469 的教训正是合并者身份事后无从考证),身份不明时宁可不合,fail-closed。
+  let viewer = '';
+  try { viewer = ghJson(['api', 'user', '--jq', '{login}']).login ?? ''; } catch { /* fallthrough */ }
+  if (!viewer) refuse('无法确认当前 gh 账号身份(gh api user 失败)——审计身份字段不允许为空,拒绝执行合并');
   // intent 先落盘:写不进去就拒绝合并——审计不可用时宁可不合(fail-closed)。
   try {
     appendRecord({ phase: 'intent', opId, pr, slug, ts: new Date().toISOString(), strategy, matchHead, basis, viewer, mode: argOf('--mode') ?? 'unknown', argv: args });

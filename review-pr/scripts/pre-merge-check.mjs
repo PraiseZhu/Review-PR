@@ -12,18 +12,20 @@
 //     structuralBypassReady / canBypass,供 3A 决定是否走 admin bypass 合(见 SKILL 3A)。
 // 新增(2026-08-01,三层分级合并策略,见 internal-gates.md「作者侧与仓库侧 gate」;
 // 2026-08-02 追加 P1-1/P1-2/P1-3/P1-4/P1-5/P2-1/P2-2/P2-3 复审修复):
-//   - structuralBypassReady(2026-08-02 由 structuralBypassAvailable 改名):要求
-//     reviewDecision=APPROVED(basis='approved',立即可合)或作者在 admins 名单**且**
-//     已有一条针对当前 head 的「审查回执」(basis='admin-trust',见
-//     write-review-receipt.mjs / lib.mjs isReviewReceiptClean——脚本不验证代码好不好,
+//   - structuralBypassReady(2026-08-02 由 structuralBypassAvailable 改名;2026-08-04
+//     SC-B 复审修订):要求 approved shortcut 成立(reviewDecision=APPROVED 聚合裁决 ∧
+//     approve 绑定当前 head ∧ own-account 配置约束通过,basis='approved',立即可合)或
+//     作者在 admins 名单**且**已有一条针对当前 head 的「审查回执」(basis='admin-trust',
+//     见 write-review-receipt.mjs / lib.mjs isReviewReceiptClean——脚本不验证代码好不好,
 //     回执就是这半语义判断的凭证,回执 headRefOid 与当前 head 不一致或 verdict 不是
 //     clean 都不算)——此前只看机械前提、完全不校验 reviewDecision/回执,是 PR #342/#366
 //     曾在零 review 下被自动 admin 合入的 fail-open 口子;
-//   - authorizedFastMergeAvailable:admins 名单成员发过 `/approve-merge`(晚于最后一次
-//     **真实 push**,P2-1 改用 commit.pushedDate + HeadRefForcePushedEvent,不用可伪造的
-//     committedDate;且该评论未被编辑过,P2-2)、无冲突、head 上 required 检查全绿(P1-3
-//     完整性核验:与分支保护要求的 context 名单做差,未上报的必需检查按 pending 处理,
-//     不因"contexts 里没出现"就当全绿)时为 true,可直接 gh pr merge --admin,不需要走过
+//   - authorizedFastMergeAvailable:admins 名单成员发过 `/approve-merge <当前 head 完整
+//     40 位 SHA>`(SC-A 2026-08-04:授权按 head SHA 绑定,SHA≠当前 head 即失效;不再按
+//     时间先后判,pushedDate 数据源已废;且该评论未被编辑过,P2-2)、无冲突、head 上
+//     required 检查全绿(P1-3 完整性核验:与分支保护要求的 context 名单做差,未上报的
+//     必需检查按 pending 处理,不因"contexts 里没出现"就当全绿)时为 true,经唯一出口
+//     merge-pr.mjs(--basis authorized-fast-merge --admin)合并,不需要走过
 //     阶段二独立审查——这是紧急通道,只有物理冲突与 required CI 两类不可绕过,未 resolve
 //     thread / 非 required 检查失败不阻断(owner 拍板:管理员显式授权即自担责任,机器职责
 //     从"拦"变成"留痕",authorizedFastMergeInfo.reportOnly 记录这些信号,调用方必须显著
@@ -138,11 +140,15 @@ try {
   // SC-A(2026-08-04):授权改 head SHA 绑定,不再算 latestPushDate(pushedDate 数据源已废,
   // 见 lib.mjs parseApproveMergeShaCommands 注释)。
   const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: rules.admins, headRefOid: m.headRefOid });
-  // SC-B(2026-08-04 #469 复盘):ApprovalBasis 单一真相源——approve 必须绑定当前 head 才算数,
-  // own-account(与巡审同账号)的 approve 受 mergeAuthorization 配置约束。reviewDecision 仍用于
-  // CHANGES_REQUESTED 打回语义,但不再作为 approved shortcut 的依据。
-  const reviewNodes = data?.data?.repository?.pullRequest?.latestReviews?.nodes ?? [];
-  const reviewsComplete = data?.data?.repository?.pullRequest?.latestReviews?.pageInfo?.hasPreviousPage !== true;
+  // SC-B(2026-08-04 #469 复盘 + 复审修订):ApprovalBasis 单一真相源——approve 必须绑定当前
+  // head 才算数,own-account(与巡审同账号)的 approve 受 mergeAuthorization 配置约束。
+  // reviewDecision(GitHub 聚合裁决)是 approved shortcut 的必要但不充分合取条件——两个视角
+  // 都过才 granted(见 lib.mjs resolveApprovedShortcut 注释)。
+  const latestReviewsConn = data?.data?.repository?.pullRequest?.latestReviews ?? null;
+  const reviewNodes = latestReviewsConn?.nodes ?? [];
+  // 复审修订(2026-08-04):connection 整体缺失(查询形状变了/服务端异常)时不得谎报
+  // "分页完整"——`?.hasPreviousPage !== true` 对 undefined 恒真。connection 存在才谈完整性。
+  const reviewsComplete = latestReviewsConn != null && latestReviewsConn.pageInfo?.hasPreviousPage !== true;
   const approvalBasis = evaluateApprovalBasis({
     reviews: reviewNodes.map((n) => ({
       author: n.author?.login ?? '',
@@ -158,6 +164,7 @@ try {
   const ownAckRequired = rules.mergeAuthorization?.ownAccountApprovalRequiresAck === true;
   const approvedShortcut = resolveApprovedShortcut({
     approvalBasis, ownAckRequired, headBoundAuthorized: !!approveMergeAuth.authorized,
+    reviewDecision: m.reviewDecision, // 复审修订:GitHub 聚合裁决是必要合取条件(见 lib 注释)
   });
   // 紧急通道机械前提收窄(2026-08-01 owner 拍板):只剩泄密硬门 / 物理不可合(冲突)/
   // required 检查全绿三类不可绕过,格式门 / 未 resolve thread / 非 required 检查失败改记
@@ -361,7 +368,7 @@ try {
     mergeable: m.mergeable,
     mergeStateStatus: m.mergeStateStatus,
     reviewDecision: m.reviewDecision,
-    approvalBasis: { basis: approvalBasis.basis, independentApprovers: approvalBasis.independentApprovers, ownAccountCurrentHead: approvalBasis.ownAccountCurrentHead, staleApprovers: approvalBasis.staleApprovers, reasons: approvalBasis.reasons, ownAckRequired },
+    approvalBasis: { basis: approvalBasis.basis, independentApprovers: approvalBasis.independentApprovers, ownAccountCurrentHead: approvalBasis.ownAccountCurrentHead, staleApprovers: approvalBasis.staleApprovers, reasons: approvalBasis.reasons, dataComplete: approvalBasis.dataComplete, ownAckRequired },
     approvedShortcut,
     legacyBareApproveComments: approveMergeAuth.legacyBare,
     blockClass,
@@ -381,7 +388,7 @@ try {
     unresolvedThreads: unresolved,
     blockers,
     canMerge: canMerge || selfMergeAvailable || authorizedFastMergeAvailable,
-    note: 'headRefOid 是本次判定针对的 head——所有合并一律经唯一出口 scripts/merge-pr.mjs 执行(它强制 --match-head 并写 intent/result 审计,见 SC-C),不得绕开该出口。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 node <SKILL_ROOT>/scripts/merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis self-merge --admin --delete-branch(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样经 merge-pr.mjs(--basis authorized-fast-merge --admin),且可跳过阶段二独立审查(admins 名单成员发过 /approve-merge,晚于最后一次真实 push,评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(reviewDecision=APPROVED 或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(merge-pr.mjs --basis approved|admin-trust --admin)。structuralBypassBasis 说明凭什么担保:"approved"=真实 GitHub review,任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
+    note: 'headRefOid 是本次判定针对的 head——所有合并一律经唯一出口 scripts/merge-pr.mjs 执行(它强制 --match-head 并写 intent/result 审计,见 SC-C),不得绕开该出口。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 node <SKILL_ROOT>/scripts/merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis self-merge --admin --delete-branch(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样经 merge-pr.mjs(--basis authorized-fast-merge --admin),且可跳过阶段二独立审查(admins 名单成员发过 `/approve-merge <当前 headRefOid 完整 40 位 SHA>`——授权按 head SHA 绑定,SHA 不等于当前 head 即失效,不再按时间先后判;评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(approvedShortcut.granted=true(= reviewDecision=APPROVED 聚合裁决 ∧ approve 绑定当前 head ∧ own-account 配置约束通过,见 approvalBasis/approvedShortcut 字段)或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(merge-pr.mjs --basis approved|admin-trust --admin)。structuralBypassBasis 说明凭什么担保:"approved"=approved shortcut 成立(聚合裁决+head 绑定双视角都过),任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
   });
   process.exit((canMerge || selfMergeAvailable || authorizedFastMergeAvailable) ? 0 : 2);
 } catch (e) {

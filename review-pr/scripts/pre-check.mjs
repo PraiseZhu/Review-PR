@@ -134,6 +134,10 @@ try {
   // lib.mjs 异常时进 catch 给出显式 run 结论,而不是模块加载期炸成 exit 1。
   process.env.REVIEW_PR_REPO_ROOT = repoRoot;
   process.chdir(repoRoot);
+  // 复审修订(2026-08-04):probe-only 必须在 **import lib.mjs 之前**声明只读——lib 模块
+  // 加载期有写探针/mkdir/legacy 迁移三类副作用,"业务层跳过写"挡不住 import 层
+  // (REVIEW_PR_LIB_READONLY 的语义见 lib.mjs resolvePersistentStateRoot 注释)。
+  if (PROBE_ONLY) process.env.REVIEW_PR_LIB_READONLY = '1';
   const { gh, run, parseRepo, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, LOCK_FILE, skillRepoPull } =
     await import(new URL('./lib.mjs', import.meta.url));
   if (lockHeld(LOCK_FILE)) skip('lock-held');
@@ -219,6 +223,11 @@ try {
   process.exit(0);
 } catch (e) {
   // 业务策略:无法证明没活时显式请求运行，让会话内流程复核并汇总异常。
-  console.error(`[pre-check] fallback-run: ${e && e.message ? e.message : e}`);
+  // 复审修订(2026-08-04):故障出口同样输出 decision JSON——probe-only 的契约是"总能拿到
+  // 带 probeOnly:true 的 decision 结论",只写 stderr 会让手动验证者在最需要结论的故障
+  // 场景反而拿不到承诺的输出。
+  const msg = e && e.message ? e.message : String(e);
+  console.error(`[pre-check] fallback-run: ${msg}`);
+  process.stdout.write(JSON.stringify({ decision: 'run', reason: 'fallback-run', error: msg.slice(0, 300), ...(PROBE_ONLY ? { probeOnly: true } : {}) }) + '\n');
   process.exit(0);
 }

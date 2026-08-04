@@ -308,7 +308,34 @@ function isStateRootSafeAndWritable(root) {
  * 不同 worktree/轮次仍共享同一个 `<根>/<repoStateKey>/`(见上方 stateAnchor
  * 注释——这层由 git-common-dir 锚定,与本次改动无关,不受影响)。
  */
+// 只读模式(REVIEW_PR_LIB_READONLY=1,SC-D 2026-08-04 复审修订):pre-check --probe-only
+// 在 import 本模块**之前**置此环境变量。此前模块加载期就有三类写副作用——写探针
+// (writeProbeOk)、mkdirSync(STATE_DIR)、legacy 迁移(migrateLegacyStateIfNeeded)——
+// "probe-only 零本地状态写"的承诺在 import 层就已破产。只读模式下:
+//   - 状态根解析不做写探针/mkdir,只做两条只读安全谓词(工作树/skill 仓);
+//   - 不建目录、不迁移;STATE_DIR 只用于**读**(锁文件/scan state),目录不存在时读
+//     自然失败 → 调用方按"查不了≠没活"fail-open,方向与 pre-check 既有契约一致;
+//   - 解析结果可能与写模式不同(写模式下写探针失败会回退 LEGACY),后果同样只是
+//     probe 读不到锁/state → 多放行一轮,不会漏写任何生产状态。
+const LIB_READONLY = process.env.REVIEW_PR_LIB_READONLY === '1';
+
+function isStateRootUsableReadOnly(root) {
+  return isSafeFromDirtyWorkingTree(root) && !isInsideSkillRepo(root);
+}
+
 function resolvePersistentStateRoot() {
+  if (LIB_READONLY) {
+    if (process.env.REVIEW_PR_STATE_DIR) {
+      const envRoot = resolve(process.env.REVIEW_PR_STATE_DIR);
+      return isStateRootUsableReadOnly(envRoot) ? envRoot : LEGACY_STATE_ROOT;
+    }
+    const mainRoot = resolveMainWorktreeRoot();
+    if (mainRoot) {
+      const repoBased = join(mainRoot, 'history', 'loops', 'review-pr', 'state');
+      if (isStateRootUsableReadOnly(repoBased)) return repoBased;
+    }
+    return LEGACY_STATE_ROOT;
+  }
   if (process.env.REVIEW_PR_STATE_DIR) {
     const envRoot = resolve(process.env.REVIEW_PR_STATE_DIR);
     if (isStateRootSafeAndWritable(envRoot)) return envRoot;
@@ -332,7 +359,7 @@ function resolvePersistentStateRoot() {
 
 const stateRoot = resolvePersistentStateRoot();
 export const STATE_DIR = join(stateRoot, repoStateKey);
-mkdirSync(STATE_DIR, { recursive: true });
+if (!LIB_READONLY) mkdirSync(STATE_DIR, { recursive: true });
 
 const MIGRATION_MARKER = '.migrated-from-tmp.json';
 
@@ -416,7 +443,7 @@ function migrateLegacyStateIfNeeded() {
     process.stderr.write(`[review-pr] 状态目录一次性迁移未完成(不阻断,下次调用会重试补齐): ${e.message}\n`);
   }
 }
-migrateLegacyStateIfNeeded();
+if (!LIB_READONLY) migrateLegacyStateIfNeeded();
 
 export function stateFile(name) {
   return join(STATE_DIR, name);
@@ -1281,13 +1308,32 @@ export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, review
   const viewer = (viewerLogin ?? '').toLowerCase();
   if (!viewer) reasons.push('viewerLogin 缺失——current-head approval 一律按 own-account 保守处理');
   const OPINIONATED = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
-  const latestByReviewer = new Map();
+  const byReviewer = new Map();
   for (const r of reviews ?? []) {
     if (!r || r.isBot || !OPINIONATED.has(r.state)) continue;
     const login = (r.author ?? '').toLowerCase();
     if (!login) continue;
-    const prev = latestByReviewer.get(login);
-    if (!prev || (r.submittedAt ?? '') > (prev.submittedAt ?? '')) latestByReviewer.set(login, r);
+    if (!byReviewer.has(login)) byReviewer.set(login, []);
+    byReviewer.get(login).push(r);
+  }
+  // 复审修订(2026-08-04):同一 reviewer 多条 opinionated review 的"取最新"必须有可信的
+  // 全序——submittedAt 缺失、或时间并列且 state 不一致时,排序是歧义的;此前严格 `>` 会
+  // 静默保留先出现的那条(GraphQL 返回顺序不构成语义承诺),可能把已被覆盖的 APPROVED
+  // 当有效。歧义一律 fail-closed:该 reviewer 不贡献任何 approval,记 reason。
+  const latestByReviewer = new Map();
+  for (const [login, list] of byReviewer) {
+    if (list.length === 1) { latestByReviewer.set(login, list[0]); continue; }
+    if (list.some((r) => !r.submittedAt)) {
+      reasons.push(`reviewer ${login} 存在缺 submittedAt 的多条 review,时序歧义,fail-closed 不计入`);
+      continue;
+    }
+    const maxAt = list.reduce((mx, r) => (r.submittedAt > mx ? r.submittedAt : mx), '');
+    const atMax = list.filter((r) => r.submittedAt === maxAt);
+    if (new Set(atMax.map((r) => r.state)).size > 1) {
+      reasons.push(`reviewer ${login} 最新时间并列且 state 冲突(${atMax.map((r) => r.state).join('/')}),fail-closed 不计入`);
+      continue;
+    }
+    latestByReviewer.set(login, atMax[0]);
   }
   const independentApprovers = [];
   const staleApprovers = [];
@@ -1310,6 +1356,17 @@ export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, review
 /**
  * approved shortcut 的最终裁决(SC3.2):consume evaluateApprovalBasis + 配置键 + head 绑定
  * 授权,输出「能否把 approve 当作 basis='approved' 直接合」的布尔与理由。
+ *
+ * 复审修订(2026-08-04):`reviewDecision === 'APPROVED'` 是**必要但不充分**的合取条件。
+ * reviewDecision 是 GitHub 对 PR 整体 code-review 状态的聚合裁决(审批数量、Code Owner、
+ * dismiss 规则都算在内)——单条 current-head approval 替代不了它:若仓库要求 2 个 approval
+ * 或 Code Owner、目前只有 1 条 current-head APPROVED,聚合态仍是 REVIEW_REQUIRED,此时
+ * granted 会让调用方用 --admin 绕过尚未满足的 review 规则(复审抓出的假放行)。反过来
+ * reviewDecision 单独也不充分——#469 正是 reviewDecision=APPROVED 但 approve 绑定旧 head。
+ * 两个条件必须同时成立:聚合态 APPROVED(GitHub 的规则视角)∧ basis 判定通过(head 绑定
+ * + own-account 视角)。注意副作用方向:不要求 approve 的仓库 reviewDecision 恒为 null,
+ * 此处恒不 granted → 落 admin-trust 路由(要求独立审查回执),fail-closed,符合预期。
+ *
  *   - basis='independent'(存在非巡审账号的 current-head APPROVED)→ granted,任何配置下都行;
  *   - basis='own-account':配置 mergeAuthorization.ownAccountApprovalRequiresAck 未开启 →
  *     granted(现状兼容);开启 → 必须另有 head 绑定 /approve-merge(headBoundAuthorized)
@@ -1317,7 +1374,10 @@ export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, review
  *     认账号,分不清同账号下是真人还是自动化会话,同账号一律收紧是意图不是误杀);
  *   - basis='stale'/'none' → 恒不 granted(head 绑定失败/无 approve,走别的路由)。
  */
-export function resolveApprovedShortcut({ approvalBasis, ownAckRequired, headBoundAuthorized }) {
+export function resolveApprovedShortcut({ approvalBasis, ownAckRequired, headBoundAuthorized, reviewDecision }) {
+  if (reviewDecision !== 'APPROVED') {
+    return { granted: false, reason: `github-review-decision-not-approved(reviewDecision=${reviewDecision ?? 'null'}——GitHub 聚合裁决未达 APPROVED,单条 review 不能替代审批数/Code Owner 等规则)` };
+  }
   const b = approvalBasis?.basis ?? 'none';
   if (b === 'independent') return { granted: true, reason: 'independent-current-head-approval' };
   if (b === 'own-account') {
@@ -1877,7 +1937,11 @@ export function renderIssueUrl(body, issueUrl) {
 export function skillRepoInfo({ timeoutMs = 15_000 } = {}) {
   let real;
   try {
-    real = realpathSync(SKILL_ROOT);
+    // REVIEW_PR_SKILL_ROOT_OVERRIDE:测试专用缝(SC-D 复审修订)——让 skillRepoPull 在
+    // 测试里指向 fixture 仓库,使"probe-only 不 pull / 正常轮会 pull"成为可实测的行为
+    // (此前测试环境里 pull 天然 no-op,守卫删了测试照样绿)。生产不设置;误设的后果
+    // 只是 best-effort 自更新指错地方,不触及任何 review/merge 判定。
+    real = realpathSync(process.env.REVIEW_PR_SKILL_ROOT_OVERRIDE || SKILL_ROOT);
   } catch {
     return null;
   }

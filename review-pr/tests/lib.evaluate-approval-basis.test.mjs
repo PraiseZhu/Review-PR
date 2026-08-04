@@ -38,9 +38,34 @@ test('#469 形态:viewer 的 APPROVED 绑定旧 head → stale,不构成任何 s
   const b = evalBasis([r('PraiseZhu', 'APPROVED', '2026-08-04T10:28:00Z', OLD)]);
   assert.equal(b.basis, 'stale');
   assert.deepEqual(b.staleApprovers, ['praisezhu']);
-  const sc = resolveApprovedShortcut({ approvalBasis: b, ownAckRequired: false, headBoundAuthorized: false });
+  const sc = resolveApprovedShortcut({ approvalBasis: b, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
   assert.equal(sc.granted, false);
   assert.match(sc.reason, /stale/);
+});
+
+// ── 复审修订(2026-08-04):同 reviewer 多条 review 的时序歧义 fail-closed ──
+
+test('同 reviewer 两条 review 时间并列且 state 冲突(APPROVED vs CHANGES_REQUESTED)→ 歧义,不计入', () => {
+  const b = evalBasis([
+    r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
+    r('kirozeng', 'CHANGES_REQUESTED', '2026-08-04T10:00:00Z', HEAD),
+  ]);
+  assert.equal(b.basis, 'none');
+  assert.ok(b.reasons.some((s) => /并列且 state 冲突/.test(s)));
+});
+
+test('同 reviewer 多条 review 中有缺 submittedAt 的 → 时序歧义,不计入(旧实现按出现顺序静默保留)', () => {
+  const b = evalBasis([
+    r('kirozeng', 'APPROVED', null, HEAD),
+    r('kirozeng', 'CHANGES_REQUESTED', '2026-08-04T11:00:00Z', HEAD),
+  ]);
+  assert.equal(b.basis, 'none');
+  assert.ok(b.reasons.some((s) => /缺 submittedAt/.test(s)));
+});
+
+test('单条 review 缺 submittedAt → 无排序问题,照常计入', () => {
+  const b = evalBasis([r('kirozeng', 'APPROVED', null, HEAD)]);
+  assert.equal(b.basis, 'independent');
 });
 
 test('review 的 commitOid 缺失 → 按 stale 处理(fail-closed,不猜"可能是当前的")', () => {
@@ -90,25 +115,34 @@ test('bot 的 review 不进任何 basis;COMMENTED 不算 opinionated', () => {
 
 // ── resolveApprovedShortcut ──
 
-test('shortcut: independent → 恒 granted(配置无关)', () => {
+test('shortcut: independent(+聚合裁决 APPROVED)→ granted(配置无关)', () => {
   const basis = evalBasis([r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD)]);
   for (const ownAckRequired of [false, true]) {
-    assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired, headBoundAuthorized: false }).granted, true);
+    assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired, headBoundAuthorized: false, reviewDecision: 'APPROVED' }).granted, true);
+  }
+});
+
+test('复审修订:reviewDecision 是必要合取条件——REVIEW_REQUIRED/null 时即使 independent@head 也不 granted(防 --admin 绕过审批数/Code Owner 规则)', () => {
+  const basis = evalBasis([r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD)]);
+  for (const decision of ['REVIEW_REQUIRED', null, undefined, 'CHANGES_REQUESTED']) {
+    const sc = resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: false, headBoundAuthorized: true, reviewDecision: decision });
+    assert.equal(sc.granted, false, `reviewDecision=${decision} 必须拒绝`);
+    assert.match(sc.reason, /github-review-decision-not-approved/);
   }
 });
 
 test('shortcut: own-account + 配置关 → granted(现状兼容);配置开 → 需 head 绑定授权', () => {
   const basis = evalBasis([r('PraiseZhu', 'APPROVED', '2026-08-04T10:00:00Z', HEAD)]);
-  assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: false, headBoundAuthorized: false }).granted, true);
-  const denied = resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: true, headBoundAuthorized: false });
+  assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' }).granted, true);
+  const denied = resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: true, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
   assert.equal(denied.granted, false);
   assert.match(denied.reason, /own-account-approval-needs-explicit-auth/);
-  assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: true, headBoundAuthorized: true }).granted, true);
+  assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: true, headBoundAuthorized: true, reviewDecision: 'APPROVED' }).granted, true);
 });
 
-test('shortcut: none/stale → 恒不 granted', () => {
+test('shortcut: none/stale → 恒不 granted(聚合裁决 APPROVED 也救不回——两个条件是合取)', () => {
   for (const reviews of [[], [r('PraiseZhu', 'APPROVED', '2026-08-04T10:00:00Z', OLD)]]) {
     const basis = evalBasis(reviews);
-    assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: false, headBoundAuthorized: true }).granted, false);
+    assert.equal(resolveApprovedShortcut({ approvalBasis: basis, ownAckRequired: false, headBoundAuthorized: true, reviewDecision: 'APPROVED' }).granted, false);
   }
 });

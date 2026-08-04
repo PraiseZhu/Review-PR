@@ -96,10 +96,17 @@ test('端到端(P1-1):scanPrSensitiveContent 对真实 PR 标题/body/diff 完�
   assert.ok(Array.isArray(result.softHits));
 });
 
-test('端到端:findApproveMergeAuthorization 对真实 comments 形状(空评论列表)不抛错,fail-closed 返回 null', () => {
+test('端到端:findApproveMergeAuthorization 对真实 comments 形状不抛错;SC-A 签名(headRefOid 绑定)下裸命令不授权', () => {
   // 不打真实 GraphQL(评论内容与本次修复无关,且不应对活跃仓库做额外只读调用),只验证
-  // 函数签名与真实 PR 数据形状(rawComments 为空数组是完全合法的真实情形)兼容。
-  const r = findApproveMergeAuthorization({ comments: [], admins: ['PraiseZhu'], latestPushDate: '2026-08-01T00:00:00Z' });
+  // 函数签名与真实 PR 数据形状兼容。复审修订:旧用例传已删除的 latestPushDate 且用空评论,
+  // 授权路径根本不可达=假绿;改为带一条真实形状的裸 /approve-merge 评论,断言 SC-A 语义
+  // (裸格式不授权、进 legacyBare)真的被执行到。
+  const HEAD = '3ae9ecdb745dc5827e36962c1630f037f4a986cc';
+  const bare = { author: 'PraiseZhu', isBot: false, createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z', url: 'c', body: '/approve-merge' };
+  const r = findApproveMergeAuthorization({ comments: [bare], admins: ['PraiseZhu'], headRefOid: HEAD });
   assert.equal(r.authorized, null);
   assert.equal(r.adminsConfigured, true);
+  assert.equal(r.legacyBare.length, 1, '裸 /approve-merge 必须显式进入 legacyBare 报告,而不是静默消失');
+  const bound = findApproveMergeAuthorization({ comments: [{ ...bare, body: `/approve-merge ${HEAD}` }], admins: ['PraiseZhu'], headRefOid: HEAD });
+  assert.ok(bound.authorized, 'head 绑定格式在同样输入形状下应授权——证明上面的拒绝是格式判定而非路径不可达');
 });

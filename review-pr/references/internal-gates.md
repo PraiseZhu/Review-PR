@@ -172,9 +172,10 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   跟进 worktree 与本地分支由 `fix-worktree-cleanup.mjs` 回收（每轮 sweep 后
   `--scan`），不回收会随 PR 数量线性膨胀；安全判定全在脚本内。
 - `selfFixAuthors` 自己的 PR 审查通过时：GitHub 不允许同账号 approve 自己的 PR，
-  `pre-merge-check.mjs` 返回 `selfMergeAvailable=true` 后直接用
-  `gh pr merge --admin --match-head-commit <headRefOid> --delete-branch` 合并
-  （`headRefOid` 取 `pre-merge-check.mjs` 本次判定输出的那份，做判定与执行之间的
+  `pre-merge-check.mjs` 返回 `selfMergeAvailable=true` 后经唯一合并出口执行
+  `node "<SKILL_ROOT>/scripts/merge-pr.mjs" <PR> --strategy <s> --match-head <headRefOid>
+  --basis self-merge --admin --delete-branch`（SC-C：所有合并一律经该出口，不得直接
+  `gh pr merge`，见 SKILL 5.8；`headRefOid` 取 `pre-merge-check.mjs` 本次判定输出的那份，做判定与执行之间的
   原子护栏——判定之后若又有人推了新 commit，`--match-head-commit` 会让 `gh` 直接
   拒绝合并,不会把新代码在没重新判定的情况下合进去）。条件：viewer = author、
   author 在 `selfFixAuthors`、无冲突、thread 全 resolve、独立审查零 P0/P1。
@@ -190,16 +191,18 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   逻辑单一来源在 `scripts/lib.mjs` 的 `decideStructuralBypassRoute`，`context.mjs` 的
   `auto` 分流与 `pre-merge-check.mjs` 的 `structuralBypassReady` 都调用它，防两处
   判据漂移）：
-  1. `reviewDecision=APPROVED`（真实 GitHub review，任何作者都适用，不看 `admins`）
-     → 直接 `gh pr merge --admin --match-head-commit <headRefOid>`；
+  1. approved shortcut 成立（2026-08-04 SC-B：`reviewDecision=APPROVED` 聚合裁决 ∧
+     approve 绑定当前 head ∧ own-account 配置约束通过，由 `evaluateApprovalBasis` +
+     `resolveApprovedShortcut` 机器判定，任何作者都适用，不看 `admins`）
+     → 经唯一出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis approved --admin`；
   2. 缺 `APPROVED` 但作者在 `admins` 名单（典型是 ownPr——GitHub 422 禁止对自己的 PR
      提交 APPROVE，`reviewDecision` 永远拿不到）→ **不直接合并**，`auto.action=review`
      进入本轮独立审查；审查通过（零 P0/P1）后，审查方必须调用
      `write-review-receipt.mjs <PR> --verdict clean --p0p1-count 0 --head <headRefOid>`
      落一条针对当前 head 的回执，合并阶段 `pre-merge-check.mjs` 核验回执的
      `headRefOid` 与当前 head 一致且 `verdict=clean`（`isReviewReceiptClean`）后才
-     返回 `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，再走
-     `gh pr merge --admin --match-head-commit <headRefOid>`。「审查是否跑过 / 结论
+     返回 `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，再经唯一
+     出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis admin-trust --admin`。「审查是否跑过 / 结论
      是否干净」是语义判断，脚本本身判断不了代码好不好——回执就是这半判断留下的、
      可核验的凭证；无回执 / 回执针对旧 head（审查通过后又推了新 commit）/
      `verdict≠clean` 时 `structuralBypassReady` 恒为 `false`，必须回到独立审查
@@ -269,9 +272,12 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**阶段二独立审查，
   是审查流程本身的例外通道，不是"换一种方式证明审查过"。具体：`admins` 名单成员
   （GitHub login，机器人自己发的评论不算）在 PR 评论里发出精确独占一行的
-  `/approve-merge` 命令，且该评论晚于最后一次**真实 push**，构成「人工已过安全与
+  `/approve-merge <当前 headRefOid 完整 40 位 SHA>` 命令（SC-A 2026-08-04：授权按
+  head SHA 绑定，SHA 精确等于当前 head 才有效，push/force-push 换 head 即天然作废、
+  需对新 head 重发），构成「人工已过安全与
   代码审查」的明确授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进
-  合并。这是
+  合并（合并本身仍经唯一出口 `merge-pr.mjs --basis authorized-fast-merge --admin`，
+  见 SKILL 5.8）。这是
   **紧急通道**——2026-08-01 owner 拍板：「特别要紧的 PR 要立即合，只要 CI 绿 +
   明确授权」，管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」，因此阻断面
   比阶段二正常审查窄得多：
@@ -279,20 +285,24 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
     裁决——被审核方给出的实例证伪：允许行内追加说明会把"讨论这条命令"（如"我觉得
     可以发 /approve-merge 了，但再看一眼"）误判成"下达这条命令"）：先剔除 fenced
     code block（``` /~~~ 围栏）与 blockquote（以 `>` 开头的行）——展示/引用不算
-    下达；剩余每行 trim 后必须**精确等于** `/approve-merge`（大小写敏感，不含任何
-    行内追加说明）才算命中，判定逻辑见 `hasApproveMergeCommand`；
+    下达；剩余每行 trim 后必须**精确匹配** `/approve-merge <40 位十六进制 SHA>`
+    （大小写敏感的命令词 + 恰一个空格 + 完整 SHA，不含任何行内追加说明）才算命中，
+    判定逻辑见 `parseApproveMergeShaCommands` / `findApproveMergeAuthorization`；
+    旧裸格式 `/approve-merge`（不带 SHA）不再构成授权，计入
+    `authorizedFastMerge.legacyBareComments`（context 输出）供提醒发令者按新格式
+    重发——不静默丢弃；
   - **已编辑的评论一律拒绝**（`updatedAt!==createdAt` 视为「事后编辑过」，即使
     编辑内容本身未变也拒绝并计入 `authorizedFastMerge.editedComments`，要求重发
     新评论而不是编辑旧评论）——授权命令的可信前提是「发出瞬间即为最终内容」，允许
-    编辑会让人先发无害内容、事后改成命令来绕过基于 `createdAt` 的时序检查；
-  - **时效锚点改用真实 push 时间**（P2-1，`computeLatestPushDate`）：早于最后一次
-    push 视为已作废，需重发；`authorizedFastMerge.staleComments` 记录这类过期
-    候选。「最后一次 push」不用可在本地任意伪造的 `commit.committedDate`（
-    `git commit --date=...`/rebase 均可改），改用 GitHub 服务端记录、贡献者不可控
-    的两个信号取较大值：每个 commit 的 `pushedDate`（GitHub 收到该 commit 对象的
-    时间）与 `HeadRefForcePushedEvent.createdAt`（force-push 事件本身的时间戳，
-    补上"强推回退到早已存在的旧 commit、没有新 commit 对象产生新 pushedDate"这个
-    边界）；
+    编辑会让人先发无害内容、事后改成命令来绕过时序/绑定检查；
+  - **时效判定退役，改为 head SHA 绑定**（SC-A 2026-08-04，替代 2026-08-02 的
+    `computeLatestPushDate` 方案）：命令 SHA 精确等于当前 `headRefOid` 才有效，
+    不等即计入 `authorizedFastMerge.staleComments`（需对新 head 重发）。原因：
+    旧时效锚点依赖的 `Commit.pushedDate` 已被 GitHub 标记废弃——#469 实测 12 个
+    commit 全部返回 null，普通 PR（无 force-push 事件）上 `latestPushDate` 恒为
+    空,时效判定在生产上事实失效;SHA 绑定同时天然免疫「授权后又推新代码」（换
+    head 即作废）与本地时间伪造（SHA 不可伪造指向），语义更强且不依赖任何已废弃
+    数据源；
   - **任何情况不可绕过**只剩三类：泄密硬门（`security.hardHits`）未命中**且**扫描
     真的**成功完成**（`security.scanned=true`；`scanned=false` 如 diff 拉取失败等
     一律 fail-closed，不当"无命中"处理，见上方「安全与隐私内容扫描 fail-closed
@@ -337,7 +347,13 @@ node "<SKILL_ROOT>/scripts/pre-check.mjs" --repo-root "<目标仓库>"
    且 state 未超过 6 小时 → exit `2`；
 5. 无法证明“没有活”（gh 不可用、网络失败、state 缺失或损坏）→ exit `0`，让会话
    内流程复核并汇总异常；
-6. 脚本错误或宿主超时按 scheduler 协议阻止本轮，不释放别人的锁。
+6. 脚本错误或宿主超时：宿主按 scheduler 协议 **fail-open** 仍创建会话（只认「明确
+   exit 2」为跳过，见 SKILL §1），不释放别人的锁。
 
 这个 precheck 不重复产品/架构语义判断，避免 hook 与 `context.mjs` 双份逻辑漂移；
 6 小时心跳保证停滞提醒和 issue sweep 不会被空转指纹饿死。
+
+**手动验证调度 / 改频后确认判定，必须加 `--probe-only`**（SC-D 2026-08-04）：真只读
+模式——不 pull skill 仓、不 spawn 合并致谢补发、import 层零本地状态写（连状态目录都
+不创建），只输出带 `probeOnly:true` 的 decision JSON。生产 scheduler **不要**注册此
+flag（生产轮次需要那些副作用各自的职责）。

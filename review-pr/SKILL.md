@@ -420,6 +420,21 @@ node "<SKILL_ROOT>/scripts/pre-check.mjs" --repo-root "<目标仓库>"
 会话真正开始后仍由 `prepare.mjs` 获取维护流程锁；所有退出路径都释放自己持有的锁。
 不要把 precheck 的“跳过本轮”误当成产品/UI 或架构 gate 的结论。
 
+**手动验证调度 / 改频后确认判定，必须用 `--probe-only`**（SC-D，2026-08-04 #469
+复盘）：
+
+```text
+node "<SKILL_ROOT>/scripts/pre-check.mjs" --repo-root "<目标仓库>" --probe-only
+```
+
+生产命令（上方不带 flag 的那条）自带三类副作用——skill 仓自更新 pull、合并致谢
+补发（对外发消息）、本地状态写入；"手动跑一轮看看判定"若直接用生产命令，就是在
+计划外重演这些副作用（#469 当天 mini 上的验证操作正是同类问题）。`--probe-only`
+为真只读：不 pull、不 spawn 补发、import 层零本地写（连状态目录都不创建），只输出
+带 `probeOnly:true` 的 decision JSON；故障时同样输出 decision JSON（`reason:
+"fallback-run"`），不会只剩 stderr。该模式仅供人工验证，**不要**注册进 scheduler
+（生产轮次需要那些副作用各自的职责）。
+
 ## 2. 准备与输入解析
 
 ### 2.1 先读本仓规则
@@ -721,7 +736,7 @@ skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏
 模型配置。
 
 **唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
-可以压过本门——`admins` 名单成员发出的 `/approve-merge` 本身就是「人工已过的凭证」，
+可以压过本门——`admins` 名单成员发出的 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
 不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
 与授权通道谁都压不过它。
 
@@ -1030,8 +1045,9 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 
 交互模式按顺序确认”提交 approve / 合并 / 评论”。auto 模式只在上述条件全部可证时
 执行；不使用强制合并、绕过 required checks 或自动批准修改过的 CI。结构性
-`BLOCKED` 按三层分级（`reviewDecision=APPROVED` / 作者在 `admins` 名单且本轮审查
-通过并已落回执 / 均不满足）判断能否 `--admin`，判定逻辑单一来源在
+`BLOCKED` 按三层分级（approved shortcut 成立（`reviewDecision=APPROVED` 聚合裁决
+∧ approve 绑定当前 head ∧ own-account 配置约束通过，见下方 'approved' 成立条件）/
+作者在 `admins` 名单且本轮审查通过并已落回执 / 均不满足）判断能否 `--admin`，判定逻辑单一来源在
 `scripts/lib.mjs` 的 `decideStructuralBypassRoute`（结构性 blocker 探测本身用
 `classifyBlockedStatus`，approval 维度不再决定要不要探测，只决定探测完怎么归类），
 完整安全条件见 [references/internal-gates.md](references/internal-gates.md)
@@ -1077,8 +1093,13 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
    落一条回执（`--head` 用本轮审查针对的那个 head SHA；`verdict=dirty` 用于如实
    记录还有 P0/P1 未清空的情形，不能跳过这一步直接进第 3 步）；
 3. 调 `pre-merge-check.mjs` 复核，若返回
-   `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，用
-   `merge-pr.mjs <N> --strategy <s> --match-head <headRefOid> --basis admin-trust --admin --delete-branch` 合并——
+   `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，执行：
+
+   ```bash
+   node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
+     --match-head <headRefOid> --basis admin-trust --admin --delete-branch --mode <auto|interactive>
+   ```
+
    脚本已经核验过回执的 `headRefOid` 与当前 head 一致且 `verdict=clean`（此前
    脚本只看机械前提就判 `true`，完全不管审查是否真的跑过、跑完后结论如何，是
    已修复的 fail-open 口子），不需要 agent 自己再确认；`structuralBypassReady=
@@ -1090,6 +1111,11 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
 回执——但 **'approved' 的成立条件自 2026-08-04（#469 复盘）起是条件式,不再等于
 `reviewDecision=APPROVED`**,由 `evaluateApprovalBasis` + `resolveApprovedShortcut`
 （lib.mjs,context.mjs 与 pre-merge-check.mjs 共用,禁止各写判据）机器判定:
+- `reviewDecision === 'APPROVED'`（GitHub 聚合裁决）是**必要但不充分**的合取条件
+  （2026-08-04 复审修订）——它把审批数量、Code Owner、dismiss 规则都算在内,单条
+  current-head approve 替代不了它(仓库要求 2 个 approval 时 1 条 approve 的聚合态
+  仍是 REVIEW_REQUIRED,此时放行等于用 --admin 绕过未满足的 review 规则);反过来它
+  单独也不充分——#469 正是 `reviewDecision=APPROVED` 但 approve 绑定旧 head;
 - approve 必须**绑定当前 head**（`review.commit.oid === headRefOid`;approve 之后
   又 push/force-push 的旧 approve 一律 stale,不作数——fail-closed,commit 缺失/
   分页不完整同拒）;
@@ -1211,7 +1237,8 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
 - `gate.blockClass=structural-check` 不是作者代码问题；机械前提（bypass 权限**且**
   `structuralBlock.requiredCheckRules` 全部命中 `pr-rules.json` 的
   `structuralBypassAllowlist`，未配置时默认 `code_scanning`/`code_quality`）之外，
-  还要满足三层分级之一（`reviewDecision=APPROVED`，或作者在 `admins` 名单且本轮
+  还要满足三层分级之一（approved shortcut 成立（`reviewDecision=APPROVED` 聚合裁决
+  ∧ approve 绑定当前 head，见 5.1），或作者在 `admins` 名单且本轮
   独立审查已通过）才能 admin merge，否则跳过，不把它写成 P1 打回——详见 5.1「admins
   名单的结构性 BLOCKED 分级合并」与
   [references/internal-gates.md](references/internal-gates.md)。
@@ -1545,9 +1572,15 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
   authorized-fast-merge / self-merge——命令块均已改为该出口）,不得直接执行 `gh pr merge`。
   它强制 `--match-head`（判定与执行之间的原子护栏）,并做两相审计:执行前 append
   `intent` 到状态目录 `merges.jsonl`（写失败即拒绝合并——审计不可用时宁可不合）,
-  执行后 append `result`（共用 opId）;merge 成功后崩溃留下的孤儿 intent 由
-  `merge-pr.mjs --reconcile` 只读核对 PR 实际状态补齐（auto 模式每轮扫描后顺手跑一次,
-  幂等、失败不阻塞）。`--dry-run` 打印 would 并零执行、零审计写,供演练。
+  执行后 append `result`（共用 opId;身份查不到时拒绝执行——审计"谁在合"不允许为空,
+  #469 教训）;merge 成功后崩溃留下的孤儿 intent 由
+  `merge-pr.mjs --reconcile` 只读核对 PR 实际状态补齐（只认 `OPEN|MERGED|CLOSED`
+  三种已知 state,未知形状保持孤儿留待下轮,不封口;auto 模式每轮扫描后跑一次,命令
+  落点见 §6 阶段 1,幂等、失败不阻塞）。`--dry-run` 打印 would 并零执行、零审计写,
+  供演练。`--basis` 只收 5.1 四条路径（approved/admin-trust/authorized-fast-merge/
+  self-merge,后三条 admin 路径必须显式带 `--admin`,保证审计 basis 与真实命令一致）;
+  5.5 冲突代合并/5.6 先合后修是本地 merge+push 到 PR 分支后走正常合并判定,不经也
+  不需要额外 basis。
 - **诚实边界**:以上只约束"经脚本出口"的合并;agent 在 shell 里绕开出口直接敲 raw
   `gh pr merge` 不在机器承诺内——tests 的静态 inventory（static-merge-inventory.test.mjs）
   保证 skill 自己的脚本里除该出口外零合并形态,但约束任意 agent 行为靠过程纪律,
@@ -1603,6 +1636,12 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    「有没有审查活」解耦，见 `notify-merge-backfill.mjs` 与「Skill 自同步」一节。）
    `skip-loop-managed`／`skip-security-review` 的候选原样跳过、不 checkout、不提醒
    （分别详见 3.7／3.8，未配置对应键时这两类永不出现）。
+   扫描完成后跑一次合并审计对账（只读核对孤儿 intent、补齐 result，见 5.8）：
+
+   ```bash
+   node "<SKILL_ROOT>/scripts/merge-pr.mjs" --reconcile
+   ```
+
    **跳过不能对作者静默**：分类完成后，把因作者侧可自解原因被 skip 的候选批量交给
    提醒脚本（自带指纹去重、selfFixAuthors 与 `staleAuthorReminder.exemptAuthors`
    排除，重复调用安全、失败不阻塞）：

@@ -3,7 +3,7 @@
 // $FAKE_GH_LOG(JSONL,含 argv 与是否写操作)。缺 fixture 的调用直接 exit 1 并在
 // stderr 报"未 mock 的调用"——漏 mock 必须响亮失败,不许静默兜底(那会把断言变成真空)。
 // fixture 目录由 $FAKE_GH_FIXTURE_DIR 指定,文件名见下方各分支。
-import { readFileSync, appendFileSync, existsSync } from 'node:fs';
+import { readFileSync, appendFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const FIX = process.env.FAKE_GH_FIXTURE_DIR;
@@ -28,7 +28,26 @@ const out = (name) => {
 
 if (args[0] === 'pr' && args[1] === 'view') out('pr-view.json');
 if (args[0] === 'pr' && args[1] === 'diff') out('pr-diff.txt');
-if (args[0] === 'pr' && args[1] === 'merge') out('pr-merge.txt'); // merge-pr 测试用;fixture 缺失即报错
+if (args[0] === 'pr' && args[1] === 'merge') {
+  // FAKE_GH_AUDIT_SNAPSHOT(复审修订):merge 被执行的**这一时刻**,把状态目录里的
+  // merges.jsonl 内容快照到指定文件——测试用它锁死"intent 必须先于不可逆 merge 落盘"
+  // 的顺序(只看最终文件顺序锁不住:intent 挪到 merge 之后照样能拼出同样的终态)。
+  const snap = process.env.FAKE_GH_AUDIT_SNAPSHOT;
+  if (snap) {
+    const root = process.env.REVIEW_PR_STATE_DIR;
+    let content = '';
+    const walk = (d) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name === 'merges.jsonl') content += readFileSync(p, 'utf8');
+      }
+    };
+    try { if (root) walk(root); } catch { /* 目录不存在=快照为空 */ }
+    writeFileSync(snap, content);
+  }
+  out('pr-merge.txt'); // merge-pr 测试用;fixture 缺失即报错
+}
 if (args[0] === 'pr' && args[1] === 'list') out('pr-list.json');
 if (args[0] === 'api' && args[1] === 'graphql') {
   const stdin = readFileSync(0, 'utf8');

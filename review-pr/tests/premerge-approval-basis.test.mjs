@@ -27,7 +27,7 @@ const FAKE_GH_DIR = join(__dirname, 'fixtures', 'fake-gh');
 const HEAD = '3ae9ecdb745dc5827e36962c1630f037f4a986cc'; // #469 合并时的真实 head
 const OLD_APPROVE_COMMIT = 'a32ae3ba81810d9934e1332fe426b5693f067ca1'; // APPROVED 绑定的旧 head
 
-function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu' }) {
+function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true }) {
   const work = mkdtempSync(join(tmpdir(), 'premerge-469-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -45,7 +45,7 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
   }));
   writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({
     title: 'feat(canvas): 局部重绘交互升级', body: '正文', state: 'OPEN',
-    mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'APPROVED',
+    mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision,
     headRefOid: HEAD, baseRefName: 'main',
     statusCheckRollup: [
       { __typename: 'CheckRun', name: 'lint + tsc + unit + logging', status: 'COMPLETED', conclusion: 'SUCCESS' },
@@ -63,14 +63,16 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
           body: approveMergeComment,
           createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
         }] : [] },
-        latestReviews: {
-          pageInfo: { hasPreviousPage: false },
-          nodes: [{
-            author: { login: approver, __typename: 'User' },
-            state: 'APPROVED', submittedAt: '2026-08-04T10:28:35Z',
-            commit: { oid: approveCommit },
-          }],
-        },
+        ...(includeLatestReviews ? {
+          latestReviews: {
+            pageInfo: { hasPreviousPage: false },
+            nodes: [{
+              author: { login: approver, __typename: 'User' },
+              state: 'APPROVED', submittedAt: '2026-08-04T10:28:35Z',
+              commit: { oid: approveCommit },
+            }],
+          },
+        } : {}),
       } },
     },
   }));
@@ -153,4 +155,31 @@ test('E · 独立 approve(非 viewer)@head + 配置开 → 不受 own-account �
   assert.equal(out.approvalBasis.basis, 'independent');
   assert.equal(out.approvedShortcut.granted, true);
   assert.equal(out.structuralBypassReady, true);
+});
+
+test('F · 复审反例:independent approve@head 但 reviewDecision=REVIEW_REQUIRED(如仓库要求 2 个 approval/Code Owner 未满足)→ shortcut 拒,ready=false', () => {
+  const { r, out } = runCheck({ approveCommit: HEAD, approver: 'kirozeng', reviewDecision: 'REVIEW_REQUIRED' });
+  assert.equal(out.approvalBasis.basis, 'independent', 'basis 判定本身不变——被拒的是聚合裁决合取');
+  assert.equal(out.approvedShortcut.granted, false);
+  assert.match(out.approvedShortcut.reason, /github-review-decision-not-approved/);
+  assert.equal(out.structuralBypassReady, false, '聚合裁决未 APPROVED 时绝不 admin bypass——单条 review 不能替代审批数/Code Owner 规则');
+  assert.equal(r.status, 2);
+});
+
+test('H · 复审反例:latestReviews connection 整体缺失(查询形状漂移)→ 不得谎报分页完整,basis=none fail-closed', () => {
+  const { out } = runCheck({ approveCommit: HEAD, includeLatestReviews: false });
+  assert.equal(out.approvalBasis.basis, 'none');
+  assert.equal(out.approvalBasis.dataComplete, false, 'connection 缺失必须按数据不完整处理——`?.hasPreviousPage !== true` 对 undefined 恒真是被复审抓出的谎报');
+  assert.equal(out.approvedShortcut.granted, false);
+  assert.equal(out.structuralBypassReady, false);
+});
+
+test('G · SC-A 迁移报告:裸 /approve-merge(旧格式)不授权,且必须显式进入 legacyBareApproveComments', () => {
+  const { out } = runCheck({
+    approveCommit: HEAD, ownAckRequired: true,
+    approveMergeComment: '/approve-merge',
+  });
+  assert.equal(out.approvedShortcut.granted, false, '裸格式不构成 head 绑定授权');
+  assert.equal(out.structuralBypassReady, false);
+  assert.equal(out.legacyBareApproveComments.length, 1, '裸命令必须被显式报告(提醒重发 head 绑定格式),不能静默消失');
 });
