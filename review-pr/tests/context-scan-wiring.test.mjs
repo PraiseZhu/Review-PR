@@ -116,4 +116,8 @@ test('context --scan 接线:裸 /approve-merge 进 legacyBareComments;skip-struc
   assert.equal(out.auto.action, 'skip-structural-block');
   assert.match(out.auto.reason, /approved shortcut 不成立/);
   assert.match(out.auto.reason, /stale/, '#469 形态下补救指引必须指向"approve 绑定旧 head",不是"缺 APPROVED"');
+  // ③ 机器 note 同口径(第 4 轮复审 P2):structuralBypassPending 的说明不得把原因唯一写成
+  //    "缺 APPROVED"——stale/own-account 待授权时 reviewDecision 可能已是 APPROVED。
+  assert.match(out.note, /approved shortcut 不成立/);
+  assert.doesNotMatch(out.note, /名单但缺 APPROVED/, 'note 不得沿用"缺 APPROVED"作唯一原因口径');
 });

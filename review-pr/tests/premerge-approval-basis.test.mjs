@@ -167,19 +167,21 @@ test('F · 复审反例:independent approve@head 但 reviewDecision=REVIEW_REQUI
 });
 
 test('H · 复审反例:latestOpinionatedReviews connection 整体缺失(查询形状漂移)→ 不得谎报分页完整,basis=none fail-closed', () => {
-  const { out } = runCheck({ approveCommit: HEAD, includeLatestReviews: false });
+  const { r, out } = runCheck({ approveCommit: HEAD, includeLatestReviews: false });
   assert.equal(out.approvalBasis.basis, 'none');
   assert.equal(out.approvalBasis.dataComplete, false, 'connection 缺失必须按数据不完整处理(完整性是正向断言 hasNextPage===false,不是否定式)');
   assert.equal(out.approvedShortcut.granted, false);
   assert.equal(out.structuralBypassReady, false);
+  assert.equal(r.status, 2, '退出契约同样要锁:不可合必须 exit 2');
 });
 
 test('H2 · 第 3 轮复审反例:connection 存在但 pageInfo 缺失 → 同样判不完整(上一版否定式判定在此 fail-open 得到 granted=true)', () => {
-  const { out } = runCheck({ approveCommit: HEAD, approver: 'kirozeng', includePageInfo: false });
+  const { r, out } = runCheck({ approveCommit: HEAD, approver: 'kirozeng', includePageInfo: false });
   assert.equal(out.approvalBasis.basis, 'none');
   assert.equal(out.approvalBasis.dataComplete, false);
   assert.equal(out.approvedShortcut.granted, false);
   assert.equal(out.structuralBypassReady, false);
+  assert.equal(r.status, 2, '退出契约同样要锁:不可合必须 exit 2');
 });
 
 test('G · SC-A 迁移报告:裸 /approve-merge(旧格式)不授权,且必须显式进入 legacyBareApproveComments', () => {

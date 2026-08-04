@@ -123,6 +123,10 @@ test('--probe-only 故障出口:异常时同样输出带 probeOnly:true 的 deci
 
 test('对照组(不带 --probe-only):同一 fixture 下 pull 推进 HEAD、backfill 发起 gh 调用、legacy 被迁移——证明 probe 组守住的三条路径真实可达', () => {
   const f = setup();
+  // 第 4 轮复审 P2:故意让父环境残留 readonly 标记——生产代码在非 probe 模式必须显式清除
+  // (delete process.env.REVIEW_PR_LIB_READONLY),否则本组的 pull/backfill/迁移断言全会
+  // 因误入只读初始化而失败。删掉那行 delete,本测试即红。
+  f.env.REVIEW_PR_LIB_READONLY = '1';
   const r = spawnSync('node', [SCRIPT, '--repo-root', f.repo], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const out = JSON.parse(r.stdout.trim().split('\n').pop());
