@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `stale-pushback-waiting-author` **格式门打回后作者未提交新 commit,stale pushback 去重跳过** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:PR #489 feat(canvas) 局部重绘二期:格式门未过(Description 缺三段),上次已打回,head 未变,auto 判 skip-stale-pushback——等作者按打回意见补 Description 后自然重入,by-design
 - `skip-security-review-path` **dependabot deps bump 命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR #484 chore(deps) 改 package.json/package-lock.json,命中 securityReviewPaths,auto 判定 skip-security-review 转人工——供应链面改动由人来把关,by-design
 - `skip-security-review-dependabot-bump` **dependabot 依赖升级 PR 命中 securityReviewPaths 转人工（预期行为，非漏判）** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked

@@ -1430,6 +1430,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T20:02:34.871Z",
       "lastSeen": "2026-08-04T20:02:34.871Z"
+    },
+    {
+      "fingerprint": "stale-pushback-waiting-author",
+      "tier": "by-design",
+      "title": "格式门打回后作者未提交新 commit,stale pushback 去重跳过",
+      "detail": "PR #489 feat(canvas) 局部重绘二期:格式门未过(Description 缺三段),上次已打回,head 未变,auto 判 skip-stale-pushback——等作者按打回意见补 Description 后自然重入,by-design",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T20:02:49.374Z",
+      "lastSeen": "2026-08-04T20:02:49.374Z"
     }
   ]
 }
