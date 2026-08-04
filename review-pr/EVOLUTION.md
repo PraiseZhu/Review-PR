@@ -144,6 +144,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-review-paths-manual-by-design` **命中 securityReviewPaths 一律转人工，是防自我损坏闭环的设计意图** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:PR 466 改 scripts/loops/bug-doctor/* 12 个文件。让 review-pr 用可能已被这次改动改坏的自己去审并合这次改动，会形成「改坏的版本审过并合入了自己」。转人工正确，不因重复出现放宽。
 - `stacked-pr-waits-base-merge` **stacked PR 的 base 是另一个 open PR 的 head，必须等 base 先落地** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR 465 base=pr2/297-t1f 即 PR 464 的 head。SKILL 3.6 硬依赖：base 未合并前不合本 PR，合并后 GitHub 自动 retarget 再等 CI 重跑。属设计上的顺序约束。
 - `author-conflict-needs-human-rebase` **与 base 冲突需作者本人 merge/解冲突，非自动化可代劳(语义冲突)** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked

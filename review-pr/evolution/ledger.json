@@ -1339,6 +1339,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T02:22:22.175Z",
       "lastSeen": "2026-08-04T02:22:22.175Z"
+    },
+    {
+      "fingerprint": "security-review-paths-manual-by-design",
+      "tier": "by-design",
+      "title": "命中 securityReviewPaths 一律转人工，是防自我损坏闭环的设计意图",
+      "detail": "PR 466 改 scripts/loops/bug-doctor/* 12 个文件。让 review-pr 用可能已被这次改动改坏的自己去审并合这次改动，会形成「改坏的版本审过并合入了自己」。转人工正确，不因重复出现放宽。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T02:22:26.126Z",
+      "lastSeen": "2026-08-04T02:22:26.126Z"
     }
   ]
 }
