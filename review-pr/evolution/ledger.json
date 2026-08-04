@@ -1396,14 +1396,14 @@
       "fingerprint": "ownpr-comment-pushback-stale-dedup",
       "tier": "proposal",
       "title": "ownPr 的 COMMENT 事件打回不被 hasStalePushback 识别,stale 去重指纹漏掉",
-      "detail": "PR #464 本轮 scan 分类为 pushback-format(isSkip=false),但该 PR 是 ownPr,GitHub 422 禁止自打 REQUEST_CHANGES,4 条格式打回全是 COMMENT 事件(最后一条 05:30 明确指向当前 head 2ffcca2),作者此后无新 commit——按 SKILL 3.2 stale 去重本应 skip。context.mjs 的 pushbackDates 只收集 CHANGES_REQUESTED review + issue-comment 形式 reviewerPushbacks,COMMENT 事件的 review body 两个来源都抓不到,导致 ownPr 打回后每轮都会被重新归类为 pushback-format,靠主 agent 手工查 review 历史才跳过。建议:把 state=COMMENTED 且 body 命中 pushback 模式的 review 也计入 pushbackDates(或对 ownPr 降级处理),否则依赖主 agent 每轮人工核对该去重不成立。",
+      "detail": "PR #464 本轮 scan 分类为 pushback-format(isSkip=false),但该 PR 是 ownPr,GitHub 422 禁止自打 REQUEST_CHANGES,4 条格式打回全是 COMMENT 事件(最后一条 05:30 明确指向当前 head 2ffcca2),作者此后无新 commit——按 SKILL 3.2 stale 去重本应 skip。context.mjs 的 pushbackDates 只收集 CHANGES_REQUESTED review + issue-comment 形式 reviewerPushbacks,COMMENT 事件的 review body 两个来源都抓不到,导致 ownPr 打回后每轮都会被重新归类为 pushback-format,靠主 agent 手工查 review 历史才跳过。建议:把 state=COMMENTED 且 body 命中 pushback 模式的 review 也计入 pushbackDates(或对 ownPr 降级处理)。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-04T08:35:19.813Z",
-      "lastSeen": "2026-08-04T08:35:19.813Z"
+      "lastSeen": "2026-08-04T08:35:29.088Z"
     }
   ]
 }
