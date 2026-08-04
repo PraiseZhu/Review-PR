@@ -144,6 +144,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `author-conflict-needs-human-rebase` **与 base 冲突需作者本人 merge/解冲突，非自动化可代劳(语义冲突)** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:本轮 PR 445 / 464 / 469 均 mergeStateStatus=DIRTY。当前账号无向他人 PR 分支推送权限，SKILL 5.5 的主干代合并门槛是「其余全过、仅剩冲突」，这三个都还叠着格式门或审查未过，不满足。
 - `dependabot-deps-hits-security-review-path` **dependabot 的依赖升级 PR 必然命中 securityReviewPaths(package.json/package-lock.json)，每轮都转人工** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
   - 现象:PR #440 (app/dependabot, 10 个依赖升级, 4394 行) auto.action=skip-security-review；fallback 也是 skip-structural-block(作者不在 admins)。这是 3.8 设计意图：自动化不自动审自己的供应链面。放开需扩权，永不自动落地；仅记计数观察频率。
 - `security-review-paths-turn-human` **命中 securityReviewPaths 的 PR 一律转人工,不进自动审查** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked

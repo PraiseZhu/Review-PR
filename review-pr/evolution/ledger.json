@@ -1313,6 +1313,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T02:21:45.066Z",
       "lastSeen": "2026-08-04T02:21:45.066Z"
+    },
+    {
+      "fingerprint": "author-conflict-needs-human-rebase",
+      "tier": "by-design",
+      "title": "与 base 冲突需作者本人 merge/解冲突，非自动化可代劳(语义冲突)",
+      "detail": "本轮 PR 445 / 464 / 469 均 mergeStateStatus=DIRTY。当前账号无向他人 PR 分支推送权限，SKILL 5.5 的主干代合并门槛是「其余全过、仅剩冲突」，这三个都还叠着格式门或审查未过，不满足。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T02:22:18.239Z",
+      "lastSeen": "2026-08-04T02:22:18.239Z"
     }
   ]
 }
