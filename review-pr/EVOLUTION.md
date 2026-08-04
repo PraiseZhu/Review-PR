@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-security-review-path` **dependabot deps bump 命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:PR #484 chore(deps) 改 package.json/package-lock.json,命中 securityReviewPaths,auto 判定 skip-security-review 转人工——供应链面改动由人来把关,by-design
 - `skip-security-review-dependabot-bump` **dependabot 依赖升级 PR 命中 securityReviewPaths 转人工（预期行为，非漏判）** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR #484 为 app/dependabot 自动开的依赖升级，改动仅 package.json/package-lock.json（4404 行），命中 securityReviewPaths 的 package.json/lockfile 项 → auto.action=skip-security-review，一律转人工不自动审不自动合。无 /approve-merge 授权、无 admins 作者身份。属配置设计的预期行为，非流程缺口。
 - `all-skip-no-actionable` **本轮所有候选均被前置门或 stale-pushback 拦住，无可审查项** — 出现 2 次,首见 2026-07-24,最近 2026-08-04,status: tracked

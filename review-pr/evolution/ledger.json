@@ -1417,6 +1417,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T18:02:08.688Z",
       "lastSeen": "2026-08-04T18:02:08.688Z"
+    },
+    {
+      "fingerprint": "skip-security-review-path",
+      "tier": "by-design",
+      "title": "dependabot deps bump 命中 securityReviewPaths 转人工",
+      "detail": "PR #484 chore(deps) 改 package.json/package-lock.json,命中 securityReviewPaths,auto 判定 skip-security-review 转人工——供应链面改动由人来把关,by-design",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T20:02:34.871Z",
+      "lastSeen": "2026-08-04T20:02:34.871Z"
     }
   ]
 }
