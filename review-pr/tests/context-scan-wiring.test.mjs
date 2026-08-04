@@ -121,3 +121,11 @@ test('context --scan 接线:裸 /approve-merge 进 legacyBareComments;skip-struc
   assert.match(out.note, /approved shortcut 不成立/);
   assert.doesNotMatch(out.note, /名单但缺 APPROVED/, 'note 不得沿用"缺 APPROVED"作唯一原因口径');
 });
+
+test('静态词条锁(第 5 轮复审):context.mjs 源码内禁止"既无 APPROVED 也非 admins"旧口径——full note 与注释同样覆盖', () => {
+  // full 模式的机器 note 没有 fake-gh fixture 覆盖(gh 调用面太宽);这里验的是固定说明
+  // 词条,静态断言正合适:#469 形态下 reviewDecision 可以已是 APPROVED(stale approve),
+  // "既无 APPROVED"是谎报,补救指向必须走 approvedShortcut.reason。
+  const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
+  assert.ok(!src.includes('既无 APPROVED'), 'context.mjs 残留"既无 APPROVED"旧口径(应写"approved shortcut 不成立且作者不在 admins 名单")');
+});
