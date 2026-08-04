@@ -1404,6 +1404,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-04T08:35:19.813Z",
       "lastSeen": "2026-08-04T08:35:29.088Z"
+    },
+    {
+      "fingerprint": "skip-security-review-dependabot-bump",
+      "tier": "by-design",
+      "title": "dependabot 依赖升级 PR 命中 securityReviewPaths 转人工（预期行为，非漏判）",
+      "detail": "PR #484 为 app/dependabot 自动开的依赖升级，改动仅 package.json/package-lock.json（4404 行），命中 securityReviewPaths 的 package.json/lockfile 项 → auto.action=skip-security-review，一律转人工不自动审不自动合。无 /approve-merge 授权、无 admins 作者身份。属配置设计的预期行为，非流程缺口。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T18:02:08.688Z",
+      "lastSeen": "2026-08-04T18:02:08.688Z"
     }
   ]
 }

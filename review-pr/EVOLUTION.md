@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-security-review-dependabot-bump` **dependabot 依赖升级 PR 命中 securityReviewPaths 转人工（预期行为，非漏判）** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:PR #484 为 app/dependabot 自动开的依赖升级，改动仅 package.json/package-lock.json（4404 行），命中 securityReviewPaths 的 package.json/lockfile 项 → auto.action=skip-security-review，一律转人工不自动审不自动合。无 /approve-merge 授权、无 admins 作者身份。属配置设计的预期行为，非流程缺口。
 - `all-skip-no-actionable` **本轮所有候选均被前置门或 stale-pushback 拦住，无可审查项** — 出现 2 次,首见 2026-07-24,最近 2026-08-04,status: tracked
   - 现象:PR #445 skip-stale-pushback(已打回2次无新commit+冲突)、#470/#483 ownPr threads-unresolved、#484 dependabot 命中 securityReviewPaths。均属设计上等人处理。ownpr-unresolved-thread-deadlock 提案仍 open
 - `review-found-p1-author-fixes` **独立审查发现 P1，需作者修正后重审——流程按预期工作** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
