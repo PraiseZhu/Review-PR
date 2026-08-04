@@ -112,13 +112,20 @@ let skillSyncReport = null;
 // 分叉时强制放行一轮,让会话内流程把它写进 6.1 汇总并经播报出口推给 owner。
 // 同一分叉状态只强制一次(按 本地 HEAD:远端 HEAD 去重),避免每轮(1h 网格)空转烧 token。
 let forceRunReason = null;
+// --probe-only(SC-D,2026-08-04 #469 复盘):真只读探测模式,给"验证调度/改频"场景用。
+// 为什么需要:本脚本自称 precheck,实际有三类副作用——skillRepoPull(改 skill 仓工作区)、
+// notify-merge-backfill(可能对外发合并致谢)、.skill-diverged 状态写入。#469 当天,mini 上
+// 按验收清单"手动触发一轮验证"的操作正是撞上了这些副作用的同类问题(计划外实例做了
+// 不可逆写操作)。--probe-only 下:跳过 skill pull、跳过 backfill、跳过一切本地状态写,
+// 只跑候选/指纹判定并输出 decision JSON(附 probeOnly:true 标记)。
+const PROBE_ONLY = process.argv.includes('--probe-only');
 
 function skip(reason, extra = {}) {
   if (forceRunReason) {
     process.stdout.write(JSON.stringify({ decision: 'run', reason: forceRunReason, skipReason: reason, skillSync: skillSyncReport }) + '\n');
     process.exit(0);
   }
-  process.stdout.write(JSON.stringify({ decision: 'skip', reason, ...(skillSyncReport ? { skillSync: skillSyncReport } : {}), ...extra }) + '\n');
+  process.stdout.write(JSON.stringify({ decision: 'skip', reason, ...(skillSyncReport ? { skillSync: skillSyncReport } : {}), ...(process.argv.includes('--probe-only') ? { probeOnly: true } : {}), ...extra }) + '\n');
   process.exit(2);
 }
 
@@ -133,7 +140,9 @@ try {
   // Skill 自更新:会话创建之前 pull,新会话读到的 SKILL.md / 脚本就是最新版。
   // 放在 lock-held 之后——有轮次正在跑时不换它脚下的脚本。失败不拦本轮(best-effort)。
   let skillSync = null;
-  try { skillSync = skillRepoPull({ timeoutMs: 30_000 }); } catch { /* 自更新异常不影响调度判定 */ }
+  if (!PROBE_ONLY) {
+    try { skillSync = skillRepoPull({ timeoutMs: 30_000 }); } catch { /* 自更新异常不影响调度判定 */ }
+  }
   skillSyncReport = skillSync;
   // 分叉 = 自同步双向停摆,不会自愈(ff-pull 拉不动、push 非 ff 被拒)。台账类冲突已由
   // skillRepoCommitPush 自动收敛,走到这里的基本是真代码分歧,必须让人知道。
@@ -152,11 +161,13 @@ try {
   // 时刻(2026-07-31 实测:16:00 那轮因 open PR 归零被跳过,5 个已合并 PR 一条致谢都没发)。
   // 把它放在跳过判定之前,与「有没有审查活」彻底解耦。
   // best-effort:脚本自身退出码恒 0、自带台账去重,异常也不影响本轮 run/skip 判定。
-  try {
-    run('node', [new URL('./notify-merge-backfill.mjs', import.meta.url).pathname], {
-      allowFail: true, timeoutMs: 60_000,
-    });
-  } catch { /* 致谢发不出去绝不影响调度判定 */ }
+  if (!PROBE_ONLY) {
+    try {
+      run('node', [new URL('./notify-merge-backfill.mjs', import.meta.url).pathname], {
+        allowFail: true, timeoutMs: 60_000,
+      });
+    } catch { /* 致谢发不出去绝不影响调度判定 */ }
+  }
 
   const { owner, repo } = parseRepo();
   const raw = JSON.parse(
@@ -204,7 +215,7 @@ try {
     /* 指纹判据不可用 → 无法证明没活，显式放行 */
   }
 
-  process.stdout.write(JSON.stringify({ decision: 'run', candidateCount, skillSync }) + '\n');
+  process.stdout.write(JSON.stringify({ decision: 'run', candidateCount, skillSync, ...(PROBE_ONLY ? { probeOnly: true } : {}) }) + '\n');
   process.exit(0);
 } catch (e) {
   // 业务策略:无法证明没活时显式请求运行，让会话内流程复核并汇总异常。

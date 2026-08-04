@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+// 通用 fake gh(测试用):按 argv/stdin 形态分发 fixture 响应,记录每次调用到
+// $FAKE_GH_LOG(JSONL,含 argv 与是否写操作)。缺 fixture 的调用直接 exit 1 并在
+// stderr 报"未 mock 的调用"——漏 mock 必须响亮失败,不许静默兜底(那会把断言变成真空)。
+// fixture 目录由 $FAKE_GH_FIXTURE_DIR 指定,文件名见下方各分支。
+import { readFileSync, appendFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+const FIX = process.env.FAKE_GH_FIXTURE_DIR;
+const LOG = process.env.FAKE_GH_LOG;
+const args = process.argv.slice(2);
+const WRITE_SUBCOMMANDS = [
+  ['pr', 'merge'], ['pr', 'review'], ['pr', 'comment'], ['pr', 'edit'], ['pr', 'close'], ['pr', 'ready'],
+  ['issue', 'create'], ['issue', 'comment'], ['api', '-X'],
+];
+const isWrite = WRITE_SUBCOMMANDS.some(([a, b]) => args[0] === a && (b === '-X' ? args.includes('-X') : args[1] === b));
+if (LOG) appendFileSync(LOG, `${JSON.stringify({ args, isWrite })}\n`);
+
+const out = (name) => {
+  const p = join(FIX ?? '', name);
+  if (!FIX || !existsSync(p)) {
+    console.error(`[fake-gh] 未 mock 的调用(缺 fixture ${name}): gh ${args.join(' ')}`);
+    process.exit(1);
+  }
+  process.stdout.write(readFileSync(p, 'utf8'));
+  process.exit(0);
+};
+
+if (args[0] === 'pr' && args[1] === 'view') out('pr-view.json');
+if (args[0] === 'pr' && args[1] === 'diff') out('pr-diff.txt');
+if (args[0] === 'pr' && args[1] === 'merge') out('pr-merge.txt'); // merge-pr 测试用;fixture 缺失即报错
+if (args[0] === 'pr' && args[1] === 'list') out('pr-list.json');
+if (args[0] === 'api' && args[1] === 'graphql') {
+  const stdin = readFileSync(0, 'utf8');
+  if (stdin.includes('reviewThreads')) out('graphql-threads.json');
+  if (stdin.includes('statusCheckRollup')) out('graphql-rollup.json');
+  console.error(`[fake-gh] 未识别的 graphql 查询: ${stdin.slice(0, 120)}`);
+  process.exit(1);
+}
+if (args[0] === 'api' && args[1] === 'user') out('api-user.json');
+if (args[0] === 'api' && /\/actions\/runs/.test(args[1] ?? '')) out('actions-runs.json');
+if (args[0] === 'api' && /\/rules\/branches\//.test(args[1] ?? '')) out('rules-branches.raw');
+if (args[0] === 'api' && /\/rulesets\//.test(args[1] ?? '')) out('ruleset.json');
+if (args[0] === 'api' && /\/issues\//.test(args[1] ?? '')) out('issue.json');
+
+console.error(`[fake-gh] 未 mock 的调用: gh ${args.join(' ')}`);
+process.exit(1);

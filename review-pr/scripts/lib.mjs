@@ -982,73 +982,78 @@ export function hasApproveMergeCommand(body) {
 }
 
 /**
- * 授权快速合并通道的确定性检测(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」)。
- * `admins` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge` 命令(判定口径见
- * `hasApproveMergeCommand`)= 人工已过安全与代码审查的明确授权,可跳过阶段二独立审查
- * 与 securityReviewPaths 门直接进合并。安全边界:
- *   - 机器人自己发的评论不算(comments 数组的 isBot 已由调用方标注);
- *   - `admins` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为 null
- *     (fail-closed,见 internal-gates.md「作者侧与仓库侧 gate」;经 normalizeLoginList
- *     兜底,配置形态错误也不抛 TypeError);
- *   - 已编辑的评论不算(P2-2,2026-08-02):`updatedAt !== createdAt` 视为「事后编辑
- *     过」,一律拒绝并计入 `edited`,要求作者重发一条新评论——授权命令的可信前提是
- *     "发出瞬间即为最终内容",允许编辑会让人先发无害内容、事后改成命令来绕过基于
- *     createdAt 的时序检查。`updatedAt` 缺失(调用方没查询该字段)时保守按"未编辑"
- *     处理,两处调用点(context.mjs / pre-merge-check.mjs)均已在 GraphQL 里带上该字段;
- *   - 授权锚定评论时刻的 head:评论必须晚于 `latestPushDate`(最后一次**真实 push**到
- *     该分支的时间,由调用方按 P2-1 口径算好传入——不用可伪造的 commit.committedDate,
- *     必须用 `computeLatestPushDate` 算出的 commit.pushedDate 与
- *     HeadRefForcePushedEvent.createdAt 的较大值),否则计入 `stale`——之后又推了新
- *     commit,旧授权不再覆盖新代码,需重发。
- * `comments` 是已映射过的评论数组(`{ author, isBot, createdAt, updatedAt, url, body }`,
- * 与 context.mjs 的 `comments`/pre-merge-check.mjs 自己映射的同形),不要传 GraphQL 原始
- * 节点。
+ * head 绑定授权命令的解析(SC-A,2026-08-04):`/approve-merge <完整 40 位 head SHA>`,
+ * 独占一行(同 stripFencedAndQuoted 剔除展示语境)。返回命中的 sha(小写)数组。
+ *
+ * 为什么改 head 绑定、废除 pushedDate 时效判定:旧判定依赖 `Commit.pushedDate` +
+ * `HeadRefForcePushedEvent.createdAt` 的"授权须晚于最后真实 push"。实测(2026-08-04,
+ * mivo-canvas #469)`Commit.pushedDate` 已被 GitHub schema 标为不再支持、12 个 commit
+ * 全部返回 null——无 force-push 的普通 PR 上 latestPushDate 恒为空串,isFresh 恒 false,
+ * 全部授权被误判 stale;反之有旧 force-push 后再普通 push,旧 force 时间可能早于授权,
+ * 造成"之后又推了代码的旧授权"被误判 fresh。SHA 绑定不依赖任何时间戳:授权只对点名的
+ * 那个 head 生效,push 换 head 即天然作废,重发须带新 SHA。
+ * 旧裸格式 `/approve-merge`(不带 SHA)不再构成授权(breaking change,owner 2026-08-04
+ * 知情拍板),由调用方经 `legacyBare` 报告提醒重发。
  */
-export function findApproveMergeAuthorization({ comments, admins, latestPushDate }) {
-  const { logins: adminLogins } = normalizeLoginList(admins);
-  const adminSet = new Set(adminLogins);
-  if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [], edited: [] };
-  const eligible = (comments ?? []).filter((c) => !c.isBot && adminSet.has((c.author ?? '').toLowerCase()));
-  const commandHits = eligible.filter((c) => hasApproveMergeCommand(c.body ?? ''));
-  const isEdited = (c) => c.updatedAt != null && c.createdAt != null && c.updatedAt !== c.createdAt;
-  const edited = commandHits
-    .filter(isEdited)
-    .map((c) => ({ author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, url: c.url }));
-  const candidates = commandHits
-    .filter((c) => !isEdited(c))
-    .map((c) => ({ author: c.author, createdAt: c.createdAt, url: c.url }));
-  const isFresh = (c) => latestPushDate !== '' && latestPushDate != null && c.createdAt > latestPushDate;
-  const fresh = candidates.filter(isFresh).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const stale = candidates.filter((c) => !isFresh(c));
-  return {
-    adminsConfigured: true,
-    authorized: fresh.length ? fresh[fresh.length - 1] : null,
-    stale,
-    edited,
-  };
+export function parseApproveMergeShaCommands(body) {
+  return stripFencedAndQuoted(body)
+    .split('\n')
+    .map((line) => line.trim().match(/^\/approve-merge ([0-9a-fA-F]{40})$/))
+    .filter(Boolean)
+    .map((m) => m[1].toLowerCase());
 }
 
 /**
- * 计算「最后一次真实 push 到该分支」的时间(P2-1,2026-08-02;纯函数,便于单测)。
- * `commit.committedDate` 是 commit 对象自带的作者/提交日期字段,本地 `git commit
- * --date=...` 或 rebase 时可任意伪造——伪造成更早的日期就能让本该失效的旧
- * `/approve-merge` 授权评论看起来仍"晚于最后一次 push",绕过 P1-6/decision-2 的时效
- * 检查。改用两个 GitHub 服务端记录、贡献者不可控的信号取较大值:
- *   - 每个 commit 的 `pushedDate`(GraphQL `Commit.pushedDate`,GitHub 收到该 commit
- *     对象的时间,新 commit 上传即天然打上这个戳);
- *   - `HeadRefForcePushedEvent.createdAt`(force-push 事件本身的时间戳)——补上"强推
- *     回退到一个早就存在、pushedDate 很旧的 commit"这个边界:此时没有新 commit 对象
- *     产生新的 pushedDate,唯一能证明"分支刚刚变过"的信号就是这条时间线事件。
- * 返回空字符串表示两类信号都拿不到(极端情况,调用方应按"无法确定何时最后 push"
- * fail-closed 处理,不能默认放行——`findApproveMergeAuthorization` 的 `isFresh` 在
- * `latestPushDate===''` 时已恒判 stale,天然满足这一点)。
+ * 授权快速合并通道的确定性检测(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」)。
+ * `admins` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge <完整 head SHA>`
+ * (判定口径见 `parseApproveMergeShaCommands`)= 人工已过安全与代码审查的明确授权。
+ * 安全边界:
+ *   - 机器人自己发的评论不算(comments 数组的 isBot 已由调用方标注);
+ *   - `admins` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为 null(fail-closed);
+ *   - 已编辑的评论不算(`updatedAt !== createdAt` → `edited`,要求重发);
+ *   - **授权绑定 head SHA**(SC-A,2026-08-04):命令里的 SHA 必须精确等于当前 `headRefOid`
+ *     才有效;不等(之后又推了新 commit / force-push 换了 head)计入 `stale`,需对新 head
+ *     重发。headRefOid 缺失/非法 → 全部判 stale(fail-closed)。不再使用 pushedDate 时效
+ *     判定(该数据源已实测失效,见 parseApproveMergeShaCommands 注释);
+ *   - 旧裸格式 `/approve-merge` 计入 `legacyBare`,不构成授权,调用方应提醒重发。
+ * `comments` 是已映射过的评论数组(`{ author, isBot, createdAt, updatedAt, url, body }`)。
  */
-export function computeLatestPushDate({ commits, forcePushEvents }) {
-  const pushedDates = (commits ?? []).map((c) => c?.pushedDate).filter(Boolean);
-  const forcePushDates = (forcePushEvents ?? []).map((e) => e?.createdAt).filter(Boolean);
-  const all = [...pushedDates, ...forcePushDates];
-  return all.length ? all.reduce((mx, d) => (d > mx ? d : mx), '') : '';
+export function findApproveMergeAuthorization({ comments, admins, headRefOid }) {
+  const { logins: adminLogins } = normalizeLoginList(admins);
+  const adminSet = new Set(adminLogins);
+  if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [], edited: [], legacyBare: [] };
+  const eligible = (comments ?? []).filter((c) => !c.isBot && adminSet.has((c.author ?? '').toLowerCase()));
+  const isEdited = (c) => c.updatedAt != null && c.createdAt != null && c.updatedAt !== c.createdAt;
+  // 旧裸格式:仍识别但不授权,单独报告让发令者重发带 SHA 的新格式(不静默吞掉人的意图)。
+  const legacyBare = eligible
+    .filter((c) => hasApproveMergeCommand(c.body ?? '') && parseApproveMergeShaCommands(c.body ?? '').length === 0)
+    .map((c) => ({ author: c.author, createdAt: c.createdAt, url: c.url }));
+  const commandHits = eligible
+    .map((c) => ({ c, shas: parseApproveMergeShaCommands(c.body ?? '') }))
+    .filter(({ shas }) => shas.length > 0);
+  const edited = commandHits
+    .filter(({ c }) => isEdited(c))
+    .map(({ c }) => ({ author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, url: c.url }));
+  const head = (headRefOid ?? '').toLowerCase();
+  // headRefOid 缺失 → fail-closed:没有"当前 head"可比对,任何授权都判 stale,绝不放行。
+  const candidates = commandHits
+    .filter(({ c }) => !isEdited(c))
+    .map(({ c, shas }) => ({ author: c.author, createdAt: c.createdAt, url: c.url, shas }));
+  const isFresh = (cand) => head.length === 40 && cand.shas.includes(head);
+  const fresh = candidates.filter(isFresh).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const stale = candidates.filter((cand) => !isFresh(cand)).map(({ author, createdAt, url }) => ({ author, createdAt, url }));
+  return {
+    adminsConfigured: true,
+    authorized: fresh.length ? { author: fresh[fresh.length - 1].author, createdAt: fresh[fresh.length - 1].createdAt, url: fresh[fresh.length - 1].url } : null,
+    stale,
+    edited,
+    legacyBare,
+  };
 }
+
+// computeLatestPushDate 已删除(SC-A,2026-08-04):其唯一消费场景是 /approve-merge 的
+// pushedDate 时效判定,该数据源已实测失效(Commit.pushedDate 被 GitHub 废弃、实测恒 null),
+// 授权判定改为 head SHA 绑定(见 findApproveMergeAuthorization)。
 
 // ── 安全与隐私内容扫描(P1-1,2026-08-02;context.mjs 与 pre-merge-check.mjs 共用同一份
 // 判据,防两处漂移——此前 pre-merge-check.mjs 对"是否有泄密硬命中"恒传 false、完全不
@@ -1235,6 +1240,96 @@ export function evaluateAuthorizedFastMerge({ security, mergeStateStatus, unreso
 }
 
 /**
+ * ApprovalBasis 单一真相源(SC-B,2026-08-04 #469 复盘):把「这个 PR 的 APPROVED 到底
+ * 算不算数」收成一个纯函数,context.mjs 与 pre-merge-check.mjs 共用,禁止各写一份。
+ *
+ * 为什么不能直接用 reviewDecision==='APPROVED':#469 实测,交互会话(与巡审同一 GitHub
+ * 账号)approve 后 force-push 换了 head,分支保护 dismiss_stale_reviews=false 下旧 approve
+ * 依然把 reviewDecision 顶成 APPROVED,自动化按 5.1 直接合——四个角色(打回/修改/批准/
+ * 合并)同账号,零制衡。本函数把两件事拆出来机器判:①approve 绑定的是不是当前 head;
+ * ②current-head 的 approve 是不是只来自巡审账号自己(own-account)。
+ *
+ * 输入:
+ *   - reviews: [{ author, isBot, state, submittedAt, commitOid }](已映射,非 GraphQL 原始节点)
+ *   - headRefOid: 当前 head SHA
+ *   - viewerLogin: 当前 gh 账号(巡审自动化账号)
+ *   - reviewsComplete: 分页是否完整(GraphQL pageInfo 判定;false → fail-closed)
+ * 输出:
+ *   { basis: 'independent'|'own-account'|'stale'|'none',
+ *     independentApprovers, ownAccountCurrentHead, staleApprovers, reasons, dataComplete }
+ *
+ * 判定(fail 方向逐条写死):
+ *   - 每个 reviewer(login 小写)取 submittedAt 最新的一条 opinionated review
+ *     (APPROVED/CHANGES_REQUESTED/DISMISSED);只有最新为 APPROVED 才算 active approval。
+ *   - active approval 的 commitOid === headRefOid → current-head;缺 commitOid 或不等 → stale
+ *     (fail-closed:缺失不猜"可能是当前的")。
+ *   - viewerLogin 缺失 → 无法区分 own-account,所有 current-head approval 保守按 own-account
+ *     处理(fail-closed 方向:宁可多要一道授权,不冒认 independent)。
+ *   - reviewsComplete=false / headRefOid 缺失 → basis='none' + reason(数据不完整不承认任何
+ *     approval basis)。
+ *   - bot 的 review 不计入任何 basis。
+ */
+export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, reviewsComplete }) {
+  const reasons = [];
+  const head = (headRefOid ?? '').toLowerCase();
+  if (reviewsComplete === false) {
+    return { basis: 'none', independentApprovers: [], ownAccountCurrentHead: false, staleApprovers: [], reasons: ['reviews-pagination-incomplete(fail-closed,不承认任何 approval)'], dataComplete: false };
+  }
+  if (head.length !== 40) {
+    return { basis: 'none', independentApprovers: [], ownAccountCurrentHead: false, staleApprovers: [], reasons: ['headRefOid 缺失/非法(fail-closed)'], dataComplete: false };
+  }
+  const viewer = (viewerLogin ?? '').toLowerCase();
+  if (!viewer) reasons.push('viewerLogin 缺失——current-head approval 一律按 own-account 保守处理');
+  const OPINIONATED = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
+  const latestByReviewer = new Map();
+  for (const r of reviews ?? []) {
+    if (!r || r.isBot || !OPINIONATED.has(r.state)) continue;
+    const login = (r.author ?? '').toLowerCase();
+    if (!login) continue;
+    const prev = latestByReviewer.get(login);
+    if (!prev || (r.submittedAt ?? '') > (prev.submittedAt ?? '')) latestByReviewer.set(login, r);
+  }
+  const independentApprovers = [];
+  const staleApprovers = [];
+  let ownAccountCurrentHead = false;
+  for (const [login, r] of latestByReviewer) {
+    if (r.state !== 'APPROVED') continue;
+    const atHead = (r.commitOid ?? '').toLowerCase() === head;
+    if (!atHead) { staleApprovers.push(login); continue; }
+    if (!viewer || login === viewer) ownAccountCurrentHead = true;
+    else independentApprovers.push(login);
+  }
+  const basis = independentApprovers.length > 0 ? 'independent'
+    : ownAccountCurrentHead ? 'own-account'
+    : staleApprovers.length > 0 ? 'stale'
+    : 'none';
+  if (basis === 'stale') reasons.push(`APPROVED 存在但均非当前 head(${staleApprovers.join(',')})——approve 之后代码又变过,不作合并依据`);
+  return { basis, independentApprovers, ownAccountCurrentHead, staleApprovers, reasons, dataComplete: true };
+}
+
+/**
+ * approved shortcut 的最终裁决(SC3.2):consume evaluateApprovalBasis + 配置键 + head 绑定
+ * 授权,输出「能否把 approve 当作 basis='approved' 直接合」的布尔与理由。
+ *   - basis='independent'(存在非巡审账号的 current-head APPROVED)→ granted,任何配置下都行;
+ *   - basis='own-account':配置 mergeAuthorization.ownAccountApprovalRequiresAck 未开启 →
+ *     granted(现状兼容);开启 → 必须另有 head 绑定 /approve-merge(headBoundAuthorized)
+ *     才 granted,否则 reason='own-account-approval-needs-explicit-auth'(命名如实:机器只
+ *     认账号,分不清同账号下是真人还是自动化会话,同账号一律收紧是意图不是误杀);
+ *   - basis='stale'/'none' → 恒不 granted(head 绑定失败/无 approve,走别的路由)。
+ */
+export function resolveApprovedShortcut({ approvalBasis, ownAckRequired, headBoundAuthorized }) {
+  const b = approvalBasis?.basis ?? 'none';
+  if (b === 'independent') return { granted: true, reason: 'independent-current-head-approval' };
+  if (b === 'own-account') {
+    if (!ownAckRequired) return { granted: true, reason: 'own-account-approval(mergeAuthorization.ownAccountApprovalRequiresAck 未开启,按现状放行)' };
+    if (headBoundAuthorized) return { granted: true, reason: 'own-account-approval + head 绑定 /approve-merge 显式授权' };
+    return { granted: false, reason: 'own-account-approval-needs-explicit-auth(同账号 approve 不构成无条件合并资格,需 owner 对当前 head 发 /approve-merge <sha>)' };
+  }
+  if (b === 'stale') return { granted: false, reason: 'stale-approval(approve 非当前 head)' };
+  return { granted: false, reason: `no-approval-basis(${(approvalBasis?.reasons ?? []).join(';') || '无 APPROVED'})` };
+}
+
+/**
  * 结构性 BLOCKED(blockClass='structural-check')三层分级合并路由的纯判定(便于单测;
  * context.mjs 的 auto 分流与 pre-merge-check.mjs 的 structuralBypassAvailable 都必须
  * 调用本函数,防两处判据漂移 —— 这是 2026-08-01 修复的 fail-open 核心逻辑,历史上两处
@@ -1243,8 +1338,10 @@ export function evaluateAuthorizedFastMerge({ security, mergeStateStatus, unreso
  * 机械前提(canBypass 且 requiredCheckRules 全部命中 structuralBypassAllowlist)由调用方
  * 算好通过 `structuralCanBypass` 传入,本函数只处理"谁来担保没有 APPROVED 也能合"这一层:
  *   - 机械前提不满足 → route='skip-structural-block',basis=null(不看 reviewDecision/admin);
- *   - 机械前提满足 + reviewDecision='APPROVED' → route='bypass-structural-block',
- *     basis='approved'(真实 GitHub review,任何作者都适用,不看 admins);
+ *   - 机械前提满足 + approvedShortcut=true → route='bypass-structural-block',basis='approved'。
+ *     approvedShortcut 是调用方用 evaluateApprovalBasis + resolveApprovedShortcut 算出的布尔
+ *     (2026-08-04 #469 复盘:不再直接消费 reviewDecision——它分不清 approve 绑定的是哪个
+ *     head、也分不清 approve 是不是巡审账号自己给的);
  *   - 机械前提满足 + 缺 APPROVED + 作者在 admins 名单 → route='review-pending-admin-bypass',
  *     basis='admin-trust'(典型 ownPr,GitHub 422 禁止自批准;不直接合并,要求本轮先跑一次
  *     独立审查,通过后才能在合并阶段认"审查干净"为 APPROVED 的等价物,调用方负责这一半的
@@ -1252,9 +1349,9 @@ export function evaluateAuthorizedFastMerge({ security, mergeStateStatus, unreso
  *   - 机械前提满足 + 缺 APPROVED + 非 admins 名单 → route='skip-structural-block',
  *     basis=null(2026-08-01 前的默认行为,现在必须显式满足前两条之一才能 bypass)。
  */
-export function decideStructuralBypassRoute({ structuralCanBypass, reviewDecision, isAdminAuthor }) {
+export function decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut, isAdminAuthor }) {
   if (!structuralCanBypass) return { route: 'skip-structural-block', basis: null };
-  if (reviewDecision === 'APPROVED') return { route: 'bypass-structural-block', basis: 'approved' };
+  if (approvedShortcut === true) return { route: 'bypass-structural-block', basis: 'approved' };
   if (isAdminAuthor) return { route: 'review-pending-admin-bypass', basis: 'admin-trust' };
   return { route: 'skip-structural-block', basis: null };
 }

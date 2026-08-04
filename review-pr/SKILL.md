@@ -1042,7 +1042,8 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 
 ```bash
 gh pr review <N> --approve --body “<简短、基于事实的结论>”
-gh pr merge <N> [--squash|--merge|--rebase] --delete-branch --match-head-commit <headRefOid>
+node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
+  --match-head <headRefOid> --basis approved --delete-branch --mode <auto|interactive>
 ```
 
 **selfFixAuthors 自有 PR 的 self-merge**：当 `pre-merge-check` 返回
@@ -1050,7 +1051,8 @@ gh pr merge <N> [--squash|--merge|--rebase] --delete-branch --match-head-commit 
 GitHub 不允许同账号 approve，直接使用 `--admin` 合并：
 
 ```bash
-gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch --match-head-commit <headRefOid>
+node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
+  --match-head <headRefOid> --basis self-merge --admin --delete-branch --mode <auto|interactive>
 ```
 
 此路径仅在审查通过（零 P0/P1）、无冲突、thread 全 resolve 时启用。auto 模式
@@ -1076,7 +1078,7 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
    记录还有 P0/P1 未清空的情形，不能跳过这一步直接进第 3 步）；
 3. 调 `pre-merge-check.mjs` 复核，若返回
    `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，用
-   `gh pr merge --admin --delete-branch --match-head-commit <headRefOid>` 合并——
+   `merge-pr.mjs <N> --strategy <s> --match-head <headRefOid> --basis admin-trust --admin --delete-branch` 合并——
    脚本已经核验过回执的 `headRefOid` 与当前 head 一致且 `verdict=clean`（此前
    脚本只看机械前提就判 `true`，完全不管审查是否真的跑过、跑完后结论如何，是
    已修复的 fail-open 口子），不需要 agent 自己再确认；`structuralBypassReady=
@@ -1084,28 +1086,40 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
    审查、重新落回执，不能凭记忆认为"审过了就该行"；
 4. 审查不通过（有 P0/P1）→ 按 5.2 正常打回，`admins` 身份不豁免代码质量要求。
 
-`structuralBypassBasis='approved'`（真实 `reviewDecision=APPROVED`）时不受此限，
-任何模式下都能直接合，不必等这轮审查、也不需要回执。
+`structuralBypassBasis='approved'` 时不受此限，可直接合、不必等这轮审查、也不需要
+回执——但 **'approved' 的成立条件自 2026-08-04（#469 复盘）起是条件式,不再等于
+`reviewDecision=APPROVED`**,由 `evaluateApprovalBasis` + `resolveApprovedShortcut`
+（lib.mjs,context.mjs 与 pre-merge-check.mjs 共用,禁止各写判据）机器判定:
+- approve 必须**绑定当前 head**（`review.commit.oid === headRefOid`;approve 之后
+  又 push/force-push 的旧 approve 一律 stale,不作数——fail-closed,commit 缺失/
+  分页不完整同拒）;
+- current-head approve 若**只来自巡审账号自己**（own-account,机器只认账号,分不清
+  同账号下是真人还是自动化会话——同账号一律收紧是意图不是误杀）,且目标仓库配置
+  `mergeAuthorization.ownAccountApprovalRequiresAck: true`,则还需 admins 成员对当前
+  head 发 `/approve-merge <head SHA>` 才成立;配置未开时保持现状放行;
+- 存在**非巡审账号**的 current-head approve（independent）→ 任何配置下都成立。
 
 **授权快速合并通道**（P2-4：与上面的「admins 名单的结构性 BLOCKED 分级合并」是两条
 完全不同、互不替代的路由，触发条件不同、后果也不同，不要概括成一句——上面那条看
 的是 PR **作者**是否在 `admins` 名单，触发后仍要走完阶段二独立审查、落回执才能合；
 本条看的是有没有 `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**
 阶段二独立审查）：`admins` 名单成员在 PR 评论里发出精确独占一行的
-`/approve-merge` 命令（先剔除 fenced code block 与 blockquote，剩余每行 trim 后
-必须精确等于该字符串，不含任何行内追加说明——owner 拍板收紧，推翻此前"允许行内
-追加说明"的裁决：被审核方给出的反例证伪，行内追加说明会把「讨论这条命令」误判成
-「下达这条命令」；须晚于最后一次**真实 push**，按 GitHub 服务端记录的
-`commit.pushedDate` 与 `HeadRefForcePushedEvent.createdAt` 判定，不用可在本地
-任意伪造的 `committedDate`，之后再推新 commit 授权即作废需重发；评论若被编辑过
-——`updatedAt!==createdAt`——一律拒绝，要求重发新评论，不接受编辑旧评论），构成
-「人工已过安全与代码审查」的明确授权。这是**紧急通道**——owner 2026-08-01 拍板：
+`/approve-merge <完整 40 位 head SHA>` 命令（先剔除 fenced code block 与 blockquote，
+剩余每行 trim 后必须精确匹配该格式，不含任何行内追加说明——「独占一行」语义沿用
+owner 2026-08-02 的收紧裁决；**授权绑定 head SHA，SC-A 2026-08-04**：命令里的 SHA
+必须精确等于当前 `headRefOid` 才有效，push/force-push 换 head 即天然作废、需对新
+head 重发。旧的「须晚于最后一次真实 push」时效判定已废除——它依赖的
+`Commit.pushedDate` 被 GitHub 标记废弃、#469 实测 12 个 commit 全 null，普通 PR 上
+会把全部授权误判 stale。旧裸格式 `/approve-merge`（不带 SHA）不再构成授权，脚本记
+`legacyBare` 供提醒重发；评论若被编辑过——`updatedAt!==createdAt`——一律拒绝，
+要求重发新评论，不接受编辑旧评论），构成「人工已过安全与代码审查」的明确授权。这是**紧急通道**——owner 2026-08-01 拍板：
 管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」。`context.mjs` 给
 `auto.action=authorized-fast-merge` 时，**跳过阶段二独立审查**，直接复核机械
 前提后合并：
 
 ```bash
-gh pr merge <N> [--squash|--merge|--rebase] --admin --delete-branch --match-head-commit <headRefOid>
+node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
+  --match-head <headRefOid> --basis authorized-fast-merge --admin --delete-branch --mode <auto|interactive>
 ```
 
 判定逻辑单一来源在 `scripts/lib.mjs` 的 `findApproveMergeAuthorization`（授权
@@ -1524,6 +1538,26 @@ receipt，"这一轮是否已经产出过收敛检查点六件套"没有任何�
 **边界**：本节的检查点/通报都是"提醒人介入"，不是自动阻断合并的新 gate——是否
 合并仍完全由 4.1/5.1/5.2 现有判定决定；`checkpointRequired`/`notification` 非
 null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
+
+### 5.8 合并出口与审计（SC-C,2026-08-04 #469 复盘）
+
+- **所有合并一律经 `scripts/merge-pr.mjs`**（5.1 的四条路径——approved / admin-trust /
+  authorized-fast-merge / self-merge——命令块均已改为该出口）,不得直接执行 `gh pr merge`。
+  它强制 `--match-head`（判定与执行之间的原子护栏）,并做两相审计:执行前 append
+  `intent` 到状态目录 `merges.jsonl`（写失败即拒绝合并——审计不可用时宁可不合）,
+  执行后 append `result`（共用 opId）;merge 成功后崩溃留下的孤儿 intent 由
+  `merge-pr.mjs --reconcile` 只读核对 PR 实际状态补齐（auto 模式每轮扫描后顺手跑一次,
+  幂等、失败不阻塞）。`--dry-run` 打印 would 并零执行、零审计写,供演练。
+- **诚实边界**:以上只约束"经脚本出口"的合并;agent 在 shell 里绕开出口直接敲 raw
+  `gh pr merge` 不在机器承诺内——tests 的静态 inventory（static-merge-inventory.test.mjs）
+  保证 skill 自己的脚本里除该出口外零合并形态,但约束任意 agent 行为靠过程纪律,
+  不冒称机器强制。
+- **stale-approval 的职责分工**（与 5.1 的 approved 条件式配套）:GitHub 分支保护的
+  `dismiss_stale_reviews`（服务端,覆盖所有人,新 commit 即作废旧 approve）是第一道;
+  `evaluateApprovalBasis` 的 head 绑定判定（skill 层,该设置被关/其他接入仓未开启时
+  仍然拒 stale approve）是兜底。两者有意重叠（纵深防御）,代码只产出一条归一化
+  reason,不双报。事故背景一行:2026-08-04 mivo-canvas #469,同账号 approve 后
+  force-push,旧 approve 经 reviewDecision=APPROVED 被自动化当无条件绿灯合入。
 
 ## 6. Auto 批处理
 

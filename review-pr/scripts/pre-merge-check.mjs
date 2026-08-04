@@ -41,7 +41,7 @@ import {
   parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection,
   loadRules, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks,
   findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute,
-  classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, computeLatestPushDate,
+  classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut,
   readReviewReceipt, isReviewReceiptClean, print, fail,
 } from './lib.mjs';
 
@@ -56,9 +56,9 @@ const THREADS_QUERY = `
           comments(first:50){ nodes{ author{ login __typename } body createdAt } }
         }}
         comments(first:100){ nodes{ author{ login __typename } body createdAt updatedAt url } }
-        commits(last:100){ nodes{ commit{ committedDate pushedDate } } }
-        forcePushEvents: timelineItems(itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT], last:20){
-          nodes{ ... on HeadRefForcePushedEvent { createdAt } }
+        latestReviews: reviews(last:100){
+          pageInfo{ hasPreviousPage }
+          nodes{ author{ login __typename } state submittedAt commit{ oid } }
         }
       }
     }
@@ -135,16 +135,30 @@ try {
     url: c.url,
     body: c.body ?? '',
   }));
-  // P2-1(2026-08-02):latestPushDate 改用 GitHub 服务端记录、不可伪造的
-  // commit.pushedDate + HeadRefForcePushedEvent.createdAt,不用可在本地任意伪造的
-  // commit.committedDate(见 lib.mjs computeLatestPushDate 注释)。
-  const commits = (data?.data?.repository?.pullRequest?.commits?.nodes ?? []).map((n) => ({
-    pushedDate: n.commit?.pushedDate,
-  }));
-  const forcePushEvents = (data?.data?.repository?.pullRequest?.forcePushEvents?.nodes ?? [])
-    .map((n) => ({ createdAt: n.createdAt }));
-  const latestPushDate = computeLatestPushDate({ commits, forcePushEvents });
-  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: rules.admins, latestPushDate });
+  // SC-A(2026-08-04):授权改 head SHA 绑定,不再算 latestPushDate(pushedDate 数据源已废,
+  // 见 lib.mjs parseApproveMergeShaCommands 注释)。
+  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: rules.admins, headRefOid: m.headRefOid });
+  // SC-B(2026-08-04 #469 复盘):ApprovalBasis 单一真相源——approve 必须绑定当前 head 才算数,
+  // own-account(与巡审同账号)的 approve 受 mergeAuthorization 配置约束。reviewDecision 仍用于
+  // CHANGES_REQUESTED 打回语义,但不再作为 approved shortcut 的依据。
+  const reviewNodes = data?.data?.repository?.pullRequest?.latestReviews?.nodes ?? [];
+  const reviewsComplete = data?.data?.repository?.pullRequest?.latestReviews?.pageInfo?.hasPreviousPage !== true;
+  const approvalBasis = evaluateApprovalBasis({
+    reviews: reviewNodes.map((n) => ({
+      author: n.author?.login ?? '',
+      isBot: isBotAuthor(n.author),
+      state: n.state,
+      submittedAt: n.submittedAt,
+      commitOid: n.commit?.oid ?? null,
+    })),
+    headRefOid: m.headRefOid,
+    viewerLogin,
+    reviewsComplete,
+  });
+  const ownAckRequired = rules.mergeAuthorization?.ownAccountApprovalRequiresAck === true;
+  const approvedShortcut = resolveApprovedShortcut({
+    approvalBasis, ownAckRequired, headBoundAuthorized: !!approveMergeAuth.authorized,
+  });
   // 紧急通道机械前提收窄(2026-08-01 owner 拍板):只剩泄密硬门 / 物理不可合(冲突)/
   // required 检查全绿三类不可绕过,格式门 / 未 resolve thread / 非 required 检查失败改记
   // reportOnly,不阻断 available,但调用方必须把非空的 reportOnly 显著写进合并致谢,
@@ -292,7 +306,7 @@ try {
   const structuralCanBypass = blockClass === 'structural-check' && structuralAllowlisted &&
     !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
   const { route: structuralRoute, basis: structuralBypassBasis } = decideStructuralBypassRoute({
-    structuralCanBypass, reviewDecision: m.reviewDecision, isAdminAuthor: authorIsAdmin,
+    structuralCanBypass, approvedShortcut: approvedShortcut.granted, isAdminAuthor: authorIsAdmin,
   });
   const reviewReceipt = structuralRoute === 'review-pending-admin-bypass' ? readReviewReceipt(pr) : null;
   const receiptClean = structuralRoute === 'review-pending-admin-bypass' &&
@@ -347,6 +361,9 @@ try {
     mergeable: m.mergeable,
     mergeStateStatus: m.mergeStateStatus,
     reviewDecision: m.reviewDecision,
+    approvalBasis: { basis: approvalBasis.basis, independentApprovers: approvalBasis.independentApprovers, ownAccountCurrentHead: approvalBasis.ownAccountCurrentHead, staleApprovers: approvalBasis.staleApprovers, reasons: approvalBasis.reasons, ownAckRequired },
+    approvedShortcut,
+    legacyBareApproveComments: approveMergeAuth.legacyBare,
     blockClass,
     structuralBlock,
     structuralAllowlisted,
@@ -364,7 +381,7 @@ try {
     unresolvedThreads: unresolved,
     blockers,
     canMerge: canMerge || selfMergeAvailable || authorizedFastMergeAvailable,
-    note: 'headRefOid 是本次判定针对的 head——所有自动 merge / admin merge 命令必须带 --match-head-commit <headRefOid>。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 gh pr merge --admin --match-head-commit <headRefOid>(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样用 gh pr merge --admin --match-head-commit <headRefOid>,且可跳过阶段二独立审查(admins 名单成员发过 /approve-merge,晚于最后一次真实 push,评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(reviewDecision=APPROVED 或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(gh pr merge --admin --match-head-commit <headRefOid>)。structuralBypassBasis 说明凭什么担保:"approved"=真实 GitHub review,任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
+    note: 'headRefOid 是本次判定针对的 head——所有合并一律经唯一出口 scripts/merge-pr.mjs 执行(它强制 --match-head 并写 intent/result 审计,见 SC-C),不得绕开该出口。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 node <SKILL_ROOT>/scripts/merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis self-merge --admin --delete-branch(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样经 merge-pr.mjs(--basis authorized-fast-merge --admin),且可跳过阶段二独立审查(admins 名单成员发过 /approve-merge,晚于最后一次真实 push,评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(reviewDecision=APPROVED 或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(merge-pr.mjs --basis approved|admin-trust --admin)。structuralBypassBasis 说明凭什么担保:"approved"=真实 GitHub review,任何模式下都能直接合;"admin-trust"=作者在 admins 名单但缺 APPROVED——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
   });
   process.exit((canMerge || selfMergeAvailable || authorizedFastMergeAvailable) ? 0 : 2);
 } catch (e) {
