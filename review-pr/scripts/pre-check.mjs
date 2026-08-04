@@ -138,6 +138,7 @@ try {
   // 加载期有写探针/mkdir/legacy 迁移三类副作用,"业务层跳过写"挡不住 import 层
   // (REVIEW_PR_LIB_READONLY 的语义见 lib.mjs resolvePersistentStateRoot 注释)。
   if (PROBE_ONLY) process.env.REVIEW_PR_LIB_READONLY = '1';
+  else delete process.env.REVIEW_PR_LIB_READONLY; // 防父环境残留把生产轮误拖进只读初始化
   const { gh, run, parseRepo, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, LOCK_FILE, skillRepoPull } =
     await import(new URL('./lib.mjs', import.meta.url));
   if (lockHeld(LOCK_FILE)) skip('lock-held');

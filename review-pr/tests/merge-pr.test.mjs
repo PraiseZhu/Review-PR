@@ -191,14 +191,24 @@ test('⑦ reconcile:PR state 未知/响应空对象 → 保持 orphan 不封口(
   assert.equal(r1.status, 0, r1.stdout + r1.stderr);
   let audit = readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   assert.equal(audit.filter((a) => a.opId === 'op-unknown' && a.phase === 'result').length, 0, '未知 state 不得写 result 封口,必须留待下轮');
-  // 换成已知 state=CLOSED → 正常补 ok:false
-  writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({ state: 'CLOSED', mergedAt: null }));
+  // 换成已知 state=OPEN → 正常补 ok:false(merge 没发生,留痕后不再当孤儿)
+  writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({ state: 'OPEN', mergedAt: null }));
   const r2 = spawnSync('node', [SCRIPT, '--reconcile'], { cwd: repo, env, encoding: 'utf8' });
   assert.equal(r2.status, 0, r2.stdout + r2.stderr);
   audit = readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const rec = audit.filter((a) => a.opId === 'op-unknown' && a.phase === 'result');
   assert.equal(rec.length, 1);
   assert.equal(rec[0].ok, false);
-  assert.equal(rec[0].prState, 'CLOSED');
+  assert.equal(rec[0].prState, 'OPEN');
   assert.equal(rec[0].reconciled, true);
+  // 再补一条 CLOSED 孤儿:三态白名单的另一枝也要有独立断言(复审 P2:标题承诺过就必须锁)
+  writeFileSync(auditPath, readFileSync(auditPath, 'utf8') + orphan('op-closed') + '\n');
+  writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({ state: 'CLOSED', mergedAt: null }));
+  const r3 = spawnSync('node', [SCRIPT, '--reconcile'], { cwd: repo, env, encoding: 'utf8' });
+  assert.equal(r3.status, 0, r3.stdout + r3.stderr);
+  audit = readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const recClosed = audit.filter((a) => a.opId === 'op-closed' && a.phase === 'result');
+  assert.equal(recClosed.length, 1);
+  assert.equal(recClosed[0].ok, false);
+  assert.equal(recClosed[0].prState, 'CLOSED');
 });

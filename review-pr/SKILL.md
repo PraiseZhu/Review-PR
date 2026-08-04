@@ -1053,8 +1053,8 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 完整安全条件见 [references/internal-gates.md](references/internal-gates.md)
 「作者侧与仓库侧 gate」，否则跳过。
 合并使用仓库允许的默认策略，不自行改变项目策略。**`pre-merge-check.mjs` 返回的
-`headRefOid` 必须原样带进合并命令的 `--match-head-commit`**（判定与执行之间的
-原子护栏；本机 `gh` 已核实支持该参数）：
+`headRefOid` 必须原样带进 `merge-pr.mjs` 的 `--match-head`**（判定与执行之间的
+原子护栏；wrapper 内部转成 `gh` 的 `--match-head-commit` 执行）：
 
 ```bash
 gh pr review <N> --approve --body “<简短、基于事实的结论>”
@@ -1238,8 +1238,9 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   `structuralBlock.requiredCheckRules` 全部命中 `pr-rules.json` 的
   `structuralBypassAllowlist`，未配置时默认 `code_scanning`/`code_quality`）之外，
   还要满足三层分级之一（approved shortcut 成立（`reviewDecision=APPROVED` 聚合裁决
-  ∧ approve 绑定当前 head，见 5.1），或作者在 `admins` 名单且本轮
-  独立审查已通过）才能 admin merge，否则跳过，不把它写成 P1 打回——详见 5.1「admins
+  ∧ approve 绑定当前 head ∧ own-account 配置约束通过，见 5.1），或作者在 `admins`
+  名单且已有针对**当前 head** 的 `verdict=clean` 审查回执（本轮独立审查通过后由
+  `write-review-receipt.mjs` 落盘））才能 admin merge，否则跳过，不把它写成 P1 打回——详见 5.1「admins
   名单的结构性 BLOCKED 分级合并」与
   [references/internal-gates.md](references/internal-gates.md)。
 - `gate.blockClass=ci-unknown`（CI 状态读取失败：权限/网络/解析问题）不是
@@ -1248,7 +1249,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
 - 命中 `securityReviewPaths`（`skip-security-review`）：一律转人工，不自动审也不自动
   合（详见「审查执行环境安全」）；未配置该键时此分支永不触发；`admins` 名单成员发
-  `/approve-merge` 授权时例外（`authorized-fast-merge`，见 5.1「授权快速合并通道」）。
+  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，见 5.1「授权快速合并通道」）。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -1578,9 +1579,13 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
   三种已知 state,未知形状保持孤儿留待下轮,不封口;auto 模式每轮扫描后跑一次,命令
   落点见 §6 阶段 1,幂等、失败不阻塞）。`--dry-run` 打印 would 并零执行、零审计写,
   供演练。`--basis` 只收 5.1 四条路径（approved/admin-trust/authorized-fast-merge/
-  self-merge,后三条 admin 路径必须显式带 `--admin`,保证审计 basis 与真实命令一致）;
-  5.5 冲突代合并/5.6 先合后修是本地 merge+push 到 PR 分支后走正常合并判定,不经也
-  不需要额外 basis。
+  self-merge,后三条 admin 路径必须显式带 `--admin`,保证审计 basis 与真实命令一致）。
+  5.5 冲突代合并/5.6 先合后修是本节审计边界外的**显式例外**:它们从不 push PR 分支,
+  而是在隔离 worktree 把 PR 分支 merge 进默认分支并 push **默认分支**,GitHub 随即
+  自动把 PR 标记为 merged——全程不执行 `gh pr merge`,因此不经本出口、也没有对应
+  basis;其留痕走 5.5/5.6 自己的评论与汇总要求(run-log 的 outcome 词表里的
+  `conflict-merged`/`merge-then-fix` 是轮次结果口径,与本出口的 basis 枚举是两个
+  不同口径,不可混用)。
 - **诚实边界**:以上只约束"经脚本出口"的合并;agent 在 shell 里绕开出口直接敲 raw
   `gh pr merge` 不在机器承诺内——tests 的静态 inventory（static-merge-inventory.test.mjs）
   保证 skill 自己的脚本里除该出口外零合并形态,但约束任意 agent 行为靠过程纪律,

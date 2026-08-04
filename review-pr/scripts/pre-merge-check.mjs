@@ -58,9 +58,9 @@ const THREADS_QUERY = `
           comments(first:50){ nodes{ author{ login __typename } body createdAt } }
         }}
         comments(first:100){ nodes{ author{ login __typename } body createdAt updatedAt url } }
-        latestReviews: reviews(last:100){
-          pageInfo{ hasPreviousPage }
-          nodes{ author{ login __typename } state submittedAt commit{ oid } }
+        latestOpinionatedReviews(first:100){
+          pageInfo{ hasNextPage }
+          nodes{ author{ login __typename } state commit{ oid } }
         }
       }
     }
@@ -144,17 +144,18 @@ try {
   // head 才算数,own-account(与巡审同账号)的 approve 受 mergeAuthorization 配置约束。
   // reviewDecision(GitHub 聚合裁决)是 approved shortcut 的必要但不充分合取条件——两个视角
   // 都过才 granted(见 lib.mjs resolveApprovedShortcut 注释)。
-  const latestReviewsConn = data?.data?.repository?.pullRequest?.latestReviews ?? null;
+  const latestReviewsConn = data?.data?.repository?.pullRequest?.latestOpinionatedReviews ?? null;
   const reviewNodes = latestReviewsConn?.nodes ?? [];
-  // 复审修订(2026-08-04):connection 整体缺失(查询形状变了/服务端异常)时不得谎报
-  // "分页完整"——`?.hasPreviousPage !== true` 对 undefined 恒真。connection 存在才谈完整性。
-  const reviewsComplete = latestReviewsConn != null && latestReviewsConn.pageInfo?.hasPreviousPage !== true;
+  // 第 3 轮复审修订(2026-08-05):改用原生 latestOpinionatedReviews(服务端保证每 reviewer
+  // 恰一条最新 opinionated review,不再自算);完整性判定必须是**正向断言**
+  // `pageInfo.hasNextPage === false`——上一版 `pageInfo?.hasPreviousPage !== true` 在
+  // connection 存在但 pageInfo 缺失时仍谎报完整(复审实测 fail-open)。
+  const reviewsComplete = latestReviewsConn?.pageInfo?.hasNextPage === false;
   const approvalBasis = evaluateApprovalBasis({
     reviews: reviewNodes.map((n) => ({
       author: n.author?.login ?? '',
       isBot: isBotAuthor(n.author),
       state: n.state,
-      submittedAt: n.submittedAt,
       commitOid: n.commit?.oid ?? null,
     })),
     headRefOid: m.headRefOid,

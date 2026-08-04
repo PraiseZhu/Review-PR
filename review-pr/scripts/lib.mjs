@@ -1276,25 +1276,31 @@ export function evaluateAuthorizedFastMerge({ security, mergeStateStatus, unreso
  * 合并)同账号,零制衡。本函数把两件事拆出来机器判:①approve 绑定的是不是当前 head;
  * ②current-head 的 approve 是不是只来自巡审账号自己(own-account)。
  *
- * 输入:
- *   - reviews: [{ author, isBot, state, submittedAt, commitOid }](已映射,非 GraphQL 原始节点)
+ * 输入(第 3 轮复审修订,2026-08-05):
+ *   - reviews: GitHub 原生 `latestOpinionatedReviews` 的已映射节点
+ *     [{ author, isBot, state, commitOid }]——服务端已保证"每 reviewer 恰一条最新
+ *     opinionated review",本函数不再自算 latest-per-reviewer(上一版手工按 submittedAt
+ *     排序,时间并列同 state 不同 commitOid 时结果由返回顺序决定,复审实测可翻转 granted,
+ *     属假放行;DISMISSED 的语义也由服务端处理——被 dismiss 的 approve 不再出现为
+ *     APPROVED);
  *   - headRefOid: 当前 head SHA
  *   - viewerLogin: 当前 gh 账号(巡审自动化账号)
- *   - reviewsComplete: 分页是否完整(GraphQL pageInfo 判定;false → fail-closed)
+ *   - reviewsComplete: connection 存在且 pageInfo.hasNextPage === false 才为 true
+ *     (调用方判;connection/pageInfo 任一缺失都必须传 false → fail-closed)
  * 输出:
  *   { basis: 'independent'|'own-account'|'stale'|'none',
  *     independentApprovers, ownAccountCurrentHead, staleApprovers, reasons, dataComplete }
  *
  * 判定(fail 方向逐条写死):
- *   - 每个 reviewer(login 小写)取 submittedAt 最新的一条 opinionated review
- *     (APPROVED/CHANGES_REQUESTED/DISMISSED);只有最新为 APPROVED 才算 active approval。
- *   - active approval 的 commitOid === headRefOid → current-head;缺 commitOid 或不等 → stale
+ *   - 只有 state==='APPROVED' 的节点构成 approval;
+ *   - approval 的 commitOid === headRefOid → current-head;缺 commitOid 或不等 → stale
  *     (fail-closed:缺失不猜"可能是当前的")。
  *   - viewerLogin 缺失 → 无法区分 own-account,所有 current-head approval 保守按 own-account
  *     处理(fail-closed 方向:宁可多要一道授权,不冒认 independent)。
  *   - reviewsComplete=false / headRefOid 缺失 → basis='none' + reason(数据不完整不承认任何
  *     approval basis)。
- *   - bot 的 review 不计入任何 basis。
+ *   - bot 的 review 不计入任何 basis;同一 login 出现多条不一致记录(违反原生字段契约)
+ *     → 该 reviewer 整体不计入,不排序不猜。
  */
 export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, reviewsComplete }) {
   const reasons = [];
@@ -1307,33 +1313,26 @@ export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, review
   }
   const viewer = (viewerLogin ?? '').toLowerCase();
   if (!viewer) reasons.push('viewerLogin 缺失——current-head approval 一律按 own-account 保守处理');
-  const OPINIONATED = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
-  const byReviewer = new Map();
-  for (const r of reviews ?? []) {
-    if (!r || r.isBot || !OPINIONATED.has(r.state)) continue;
-    const login = (r.author ?? '').toLowerCase();
-    if (!login) continue;
-    if (!byReviewer.has(login)) byReviewer.set(login, []);
-    byReviewer.get(login).push(r);
-  }
-  // 复审修订(2026-08-04):同一 reviewer 多条 opinionated review 的"取最新"必须有可信的
-  // 全序——submittedAt 缺失、或时间并列且 state 不一致时,排序是歧义的;此前严格 `>` 会
-  // 静默保留先出现的那条(GraphQL 返回顺序不构成语义承诺),可能把已被覆盖的 APPROVED
-  // 当有效。歧义一律 fail-closed:该 reviewer 不贡献任何 approval,记 reason。
+  // 第 3 轮复审修订(2026-08-05):输入改为 GitHub 原生 latestOpinionatedReviews——服务端
+  // 保证"每个 reviewer 恰一条最新 opinionated review",本函数**不再自算** latest-per-reviewer
+  // (上一版手工按 submittedAt 排序,时间并列同 state 不同 commitOid 时结果由 GraphQL 返回
+  // 顺序决定,是复审实测翻转出的假放行)。这里只保留:bot 过滤、login 缺失跳过、以及一条
+  // 防数据异常的 fail-closed 守卫——同一 login 出现多条且 state/commitOid 不一致(原生字段
+  // 契约下不该发生)时,该 reviewer 整体不计入,不做任何排序猜测。
   const latestByReviewer = new Map();
-  for (const [login, list] of byReviewer) {
-    if (list.length === 1) { latestByReviewer.set(login, list[0]); continue; }
-    if (list.some((r) => !r.submittedAt)) {
-      reasons.push(`reviewer ${login} 存在缺 submittedAt 的多条 review,时序歧义,fail-closed 不计入`);
+  const conflicted = new Set();
+  for (const r of reviews ?? []) {
+    if (!r || r.isBot) continue;
+    const login = (r.author ?? '').toLowerCase();
+    if (!login || conflicted.has(login)) continue;
+    const prev = latestByReviewer.get(login);
+    if (prev && (prev.state !== r.state || (prev.commitOid ?? '') !== (r.commitOid ?? ''))) {
+      latestByReviewer.delete(login);
+      conflicted.add(login);
+      reasons.push(`reviewer ${login} 在 latestOpinionatedReviews 里出现多条不一致记录(数据异常),fail-closed 不计入`);
       continue;
     }
-    const maxAt = list.reduce((mx, r) => (r.submittedAt > mx ? r.submittedAt : mx), '');
-    const atMax = list.filter((r) => r.submittedAt === maxAt);
-    if (new Set(atMax.map((r) => r.state)).size > 1) {
-      reasons.push(`reviewer ${login} 最新时间并列且 state 冲突(${atMax.map((r) => r.state).join('/')}),fail-closed 不计入`);
-      continue;
-    }
-    latestByReviewer.set(login, atMax[0]);
+    latestByReviewer.set(login, r);
   }
   const independentApprovers = [];
   const staleApprovers = [];

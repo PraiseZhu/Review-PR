@@ -27,7 +27,7 @@ const FAKE_GH_DIR = join(__dirname, 'fixtures', 'fake-gh');
 const HEAD = '3ae9ecdb745dc5827e36962c1630f037f4a986cc'; // #469 合并时的真实 head
 const OLD_APPROVE_COMMIT = 'a32ae3ba81810d9934e1332fe426b5693f067ca1'; // APPROVED 绑定的旧 head
 
-function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true }) {
+function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true }) {
   const work = mkdtempSync(join(tmpdir(), 'premerge-469-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -64,11 +64,11 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
           createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
         }] : [] },
         ...(includeLatestReviews ? {
-          latestReviews: {
-            pageInfo: { hasPreviousPage: false },
+          latestOpinionatedReviews: {
+            ...(includePageInfo ? { pageInfo: { hasNextPage: false } } : {}),
             nodes: [{
               author: { login: approver, __typename: 'User' },
-              state: 'APPROVED', submittedAt: '2026-08-04T10:28:35Z',
+              state: 'APPROVED',
               commit: { oid: approveCommit },
             }],
           },
@@ -166,10 +166,18 @@ test('F · 复审反例:independent approve@head 但 reviewDecision=REVIEW_REQUI
   assert.equal(r.status, 2);
 });
 
-test('H · 复审反例:latestReviews connection 整体缺失(查询形状漂移)→ 不得谎报分页完整,basis=none fail-closed', () => {
+test('H · 复审反例:latestOpinionatedReviews connection 整体缺失(查询形状漂移)→ 不得谎报分页完整,basis=none fail-closed', () => {
   const { out } = runCheck({ approveCommit: HEAD, includeLatestReviews: false });
   assert.equal(out.approvalBasis.basis, 'none');
-  assert.equal(out.approvalBasis.dataComplete, false, 'connection 缺失必须按数据不完整处理——`?.hasPreviousPage !== true` 对 undefined 恒真是被复审抓出的谎报');
+  assert.equal(out.approvalBasis.dataComplete, false, 'connection 缺失必须按数据不完整处理(完整性是正向断言 hasNextPage===false,不是否定式)');
+  assert.equal(out.approvedShortcut.granted, false);
+  assert.equal(out.structuralBypassReady, false);
+});
+
+test('H2 · 第 3 轮复审反例:connection 存在但 pageInfo 缺失 → 同样判不完整(上一版否定式判定在此 fail-open 得到 granted=true)', () => {
+  const { out } = runCheck({ approveCommit: HEAD, approver: 'kirozeng', includePageInfo: false });
+  assert.equal(out.approvalBasis.basis, 'none');
+  assert.equal(out.approvalBasis.dataComplete, false);
   assert.equal(out.approvedShortcut.granted, false);
   assert.equal(out.structuralBypassReady, false);
 });

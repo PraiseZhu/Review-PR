@@ -1,7 +1,9 @@
 // evaluateApprovalBasis + resolveApprovedShortcut 的矩阵测试(SC-B / SC3.2 / SC-E,
-// 2026-08-04 #469 复盘)。覆盖:viewer-only@head / 非 viewer@head / 并存 / stale viewer /
-// review commit 缺失 / 分页截断 / viewer 缺失 / bot 排除 / DISMISSED 覆盖 —— 全部 unknown
-// 走 fail-closed(不承认 approval,宁可多要一道授权)。
+// 2026-08-04 #469 复盘;2026-08-05 第 3 轮复审改造:输入为原生 latestOpinionatedReviews,
+// 不再自算 latest-per-reviewer)。覆盖:viewer-only@head / 非 viewer@head / 并存 /
+// stale viewer / review commit 缺失 / 分页截断 / viewer 缺失 / bot 排除 / 同 login 数据
+// 异常(含顺序不变性)/ reviewDecision 合取 —— 全部 unknown 走 fail-closed(不承认
+// approval,宁可多要一道授权)。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateApprovalBasis, resolveApprovedShortcut } from '../scripts/lib.mjs';
@@ -43,27 +45,45 @@ test('#469 形态:viewer 的 APPROVED 绑定旧 head → stale,不构成任何 s
   assert.match(sc.reason, /stale/);
 });
 
-// ── 复审修订(2026-08-04):同 reviewer 多条 review 的时序歧义 fail-closed ──
+// ── 第 3 轮复审修订(2026-08-05):输入改为原生 latestOpinionatedReviews,不再自算
+// latest-per-reviewer;同 login 多条不一致记录(违反原生字段契约)是数据异常,fail-closed
+// 且**与返回顺序无关**——上一版手工 tie-break 被复审实测"只交换数组顺序,granted 在
+// true/false 间翻转",这里显式锁顺序不变性。──
 
-test('同 reviewer 两条 review 时间并列且 state 冲突(APPROVED vs CHANGES_REQUESTED)→ 歧义,不计入', () => {
-  const b = evalBasis([
+test('同 login 多条不一致记录(state 冲突)→ 数据异常不计入,且与顺序无关', () => {
+  const pair = [
     r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
     r('kirozeng', 'CHANGES_REQUESTED', '2026-08-04T10:00:00Z', HEAD),
-  ]);
-  assert.equal(b.basis, 'none');
-  assert.ok(b.reasons.some((s) => /并列且 state 冲突/.test(s)));
+  ];
+  for (const list of [pair, [...pair].reverse()]) {
+    const b = evalBasis(list);
+    assert.equal(b.basis, 'none');
+    assert.ok(b.reasons.some((s) => /多条不一致记录/.test(s)));
+  }
 });
 
-test('同 reviewer 多条 review 中有缺 submittedAt 的 → 时序歧义,不计入(旧实现按出现顺序静默保留)', () => {
+test('复审反例:同 login、同为 APPROVED、一条 current-head 一条旧 head → 不计入,正反序结果一致(不再由返回顺序决定 granted)', () => {
+  const pair = [
+    r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
+    r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', OLD),
+  ];
+  for (const list of [pair, [...pair].reverse()]) {
+    const b = evalBasis(list);
+    assert.equal(b.basis, 'none', '同 login commitOid 冲突必须 fail-closed,不得取任一条');
+    const sc = resolveApprovedShortcut({ approvalBasis: b, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
+    assert.equal(sc.granted, false);
+  }
+});
+
+test('同 login 多条**完全一致**的重复记录 → 幂等,照常计入(不误伤)', () => {
   const b = evalBasis([
-    r('kirozeng', 'APPROVED', null, HEAD),
-    r('kirozeng', 'CHANGES_REQUESTED', '2026-08-04T11:00:00Z', HEAD),
+    r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
+    r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
   ]);
-  assert.equal(b.basis, 'none');
-  assert.ok(b.reasons.some((s) => /缺 submittedAt/.test(s)));
+  assert.equal(b.basis, 'independent');
 });
 
-test('单条 review 缺 submittedAt → 无排序问题,照常计入', () => {
+test('单条 review 缺 submittedAt → 与判定无关(原生字段语义下不再消费时间),照常计入', () => {
   const b = evalBasis([r('kirozeng', 'APPROVED', null, HEAD)]);
   assert.equal(b.basis, 'independent');
 });
@@ -89,7 +109,7 @@ test('viewerLogin 缺失 → current-head approval 保守按 own-account(不冒�
   assert.equal(b.basis, 'own-account');
 });
 
-test('同一 reviewer 的最新意见覆盖旧意见:先 APPROVED 后 CHANGES_REQUESTED → 不算 approval', () => {
+test('同 login 同时出现 APPROVED 与 CHANGES_REQUESTED(意见覆盖由服务端 latestOpinionatedReviews 处理,本地看到即数据异常)→ 不算 approval', () => {
   const b = evalBasis([
     r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
     r('kirozeng', 'CHANGES_REQUESTED', '2026-08-04T11:00:00Z', HEAD),
@@ -97,7 +117,7 @@ test('同一 reviewer 的最新意见覆盖旧意见:先 APPROVED 后 CHANGES_RE
   assert.equal(b.basis, 'none');
 });
 
-test('DISMISSED 覆盖旧 APPROVED → 不算 approval(与 GitHub reviewDecision 语义一致)', () => {
+test('同 login 同时出现 APPROVED 与 DISMISSED(dismiss 语义由服务端处理,本地看到即数据异常)→ 不算 approval', () => {
   const b = evalBasis([
     r('kirozeng', 'APPROVED', '2026-08-04T10:00:00Z', HEAD),
     r('kirozeng', 'DISMISSED', '2026-08-04T11:00:00Z', HEAD),
