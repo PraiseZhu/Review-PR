@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `dependabot-security-path-permanent-skip` **dependabot PR 必然命中 securityReviewPaths(package.json/lock)，每轮永久 skip 且无停滞升级机制** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+  - 现象:PR 440 (app/dependabot) 每轮判 skip-security-review。这不是偶发——依赖升级 PR 的定义就是改 package.json / package-lock.json，而这两个路径在 securityReviewPaths 里，所以该类 PR 100% 永不会被自动审、也永不会被催办(dependabot 不是人，模板 B/C 都不适用)，只能靠 owner 每轮从汇总里自己看见。与 SKILL 5.7 已登记的「非 required 第三方 bot 长期缺席无升级」是同一类缺口。
+  - 提案:给 skip 类结论加「同一 PR 同一 skip 原因连续 N 轮」计数(可复用 convergence-state 的落盘模式)，达阈值时在汇总里从普通 skip 行升格为显著提示，或经 summaryBroadcast 定向提醒一次。只改可观测性与汇总呈现，不放宽 securityReviewPaths 本身。
 - `review-agent-worktree-branch-leak` **审查 agent 的隔离 worktree 每轮留下 worktree-agent-* 孤儿分支，本 skill 自己的清理脚本按规则不动它们** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:目标仓库累积 8 个 worktree-agent-<agentId> 分支，其中 7 个已无对应 worktree。fix-worktree-cleanup.mjs 对它们判「查不到对应 PR,来历不明不动」——该保守规则对人工分支是对的，但这类分支恰恰是本 skill 每轮派发审查 agent 时宿主自动建的，命名可确定性识别，属自产垃圾。按每轮 1 个的速率线性增长。
   - 提案:在 fix-worktree-cleanup.mjs 增一条独立回收规则：分支名匹配 ^worktree-agent-[0-9a-f]+$ 且当前 git worktree list 里无任何 worktree 指向它、且分支 tip 已包含在默认分支或为空占位 → 回收。与既有「查不到对应 PR 不动」规则并列，不改后者语义。涉及分支删除行为，须 owner 拍板后落地。
