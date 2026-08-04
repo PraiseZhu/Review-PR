@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `stale-scan-head-before-write` **scan-all 的 head 可能在写操作前就过期,流程里没有确定性的复核步骤** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+  - 现象:本轮 6 个候选里 2 个(464/465)的 head 在 --scan-all 落盘后 ~8 分钟内被新 push 顶掉;464 从 conflict 变成 MERGEABLE、465 从 skip-gate 变成 CLEAN。SKILL 3.5 门 1 要求 head 变化就重新拉元数据,但阶段三只在合并前有 pre-merge-check 复核,打回/评论类写操作没有对应的确定性复核步骤,靠主 agent 自觉比对。本轮是手工比对才发现,否则会对着过期 head 发打回(内容还会引用已经不存在的冲突)。
+  - 提案:阶段三在任何 GitHub 写操作(review/comment/issue)前,对该候选跑一次轻量 head 复核(可复用 context.mjs --scan 单 PR 或新增 --verify-head),head 变化即把该候选退回阶段一重新分类。放置位置需 owner 定:它与 3.5 门 1、以及合并侧已有的 pre-merge-check 有职责重叠,合并成一处还是各写一处需要拍板,故不自动落地。
 - `dependabot-security-path-permanent-skip` **dependabot PR 必然命中 securityReviewPaths(package.json/lock)，每轮永久 skip 且无停滞升级机制** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:PR 440 (app/dependabot) 每轮判 skip-security-review。这不是偶发——依赖升级 PR 的定义就是改 package.json / package-lock.json，而这两个路径在 securityReviewPaths 里，所以该类 PR 100% 永不会被自动审、也永不会被催办(dependabot 不是人，模板 B/C 都不适用)，只能靠 owner 每轮从汇总里自己看见。与 SKILL 5.7 已登记的「非 required 第三方 bot 长期缺席无升级」是同一类缺口。
   - 提案:给 skip 类结论加「同一 PR 同一 skip 原因连续 N 轮」计数(可复用 convergence-state 的落盘模式)，达阈值时在汇总里从普通 skip 行升格为显著提示，或经 summaryBroadcast 定向提醒一次。只改可观测性与汇总呈现，不放宽 securityReviewPaths 本身。
