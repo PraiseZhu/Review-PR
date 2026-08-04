@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-worktree-branch-leak` **审查 agent 的隔离 worktree 每轮留下 worktree-agent-* 孤儿分支，本 skill 自己的清理脚本按规则不动它们** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+  - 现象:目标仓库累积 8 个 worktree-agent-<agentId> 分支，其中 7 个已无对应 worktree。fix-worktree-cleanup.mjs 对它们判「查不到对应 PR,来历不明不动」——该保守规则对人工分支是对的，但这类分支恰恰是本 skill 每轮派发审查 agent 时宿主自动建的，命名可确定性识别，属自产垃圾。按每轮 1 个的速率线性增长。
+  - 提案:在 fix-worktree-cleanup.mjs 增一条独立回收规则：分支名匹配 ^worktree-agent-[0-9a-f]+$ 且当前 git worktree list 里无任何 worktree 指向它、且分支 tip 已包含在默认分支或为空占位 → 回收。与既有「查不到对应 PR 不动」规则并列，不改后者语义。涉及分支删除行为，须 owner 拍板后落地。
 - `mivo-outbound-notify-channels-all-inert` **mivo 仓对外通知面为零：提醒名单全豁免 + summaryBroadcast 未配置，被卡 PR 无任何外发信号** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:本轮 9 候选中 4 个卡在作者侧可自解原因（3 个 DIRTY 冲突、1 个 2 条 thread 未 resolve），提醒脚本 4 次调用全部返回 exempt-author：staleAuthorReminder.exemptAuthors 恰好等于本仓全部人类作者集合（3 人），而 notify-author-resolve 的 thread/conflict 两种模式与 remind-stale-author 都查同一份名单，等于三条提醒通道在本仓整体失效。同时 summaryBroadcast 未配置，每轮汇总也不主动推送。两者叠加的结果是：PR 可以长期卡着而没有任何外发信号，只有人主动去看 PR 列表才会发现。
   - 提案:由 owner 定：① 若确实不想被提醒机器人打扰，现状可接受，但应知道这是有意为之而不是配置漏了；② 若希望冲突/未 resolve 这类硬卡点仍有提醒，可把 exemptAuthors 收窄为只豁免停滞催办（idle 私聊），让 conflict/resolve 两种确定性卡点仍发一次公开评论——需拆 exemptAuthors 为分通道名单，属名单改动，不自动落地；③ 配上 summaryBroadcast.command，至少让每轮汇总主动推到 owner。

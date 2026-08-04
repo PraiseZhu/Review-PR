@@ -1287,6 +1287,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-03T23:08:40.051Z",
       "lastSeen": "2026-08-03T23:08:40.051Z"
+    },
+    {
+      "fingerprint": "review-agent-worktree-branch-leak",
+      "tier": "proposal",
+      "title": "审查 agent 的隔离 worktree 每轮留下 worktree-agent-* 孤儿分支，本 skill 自己的清理脚本按规则不动它们",
+      "detail": "目标仓库累积 8 个 worktree-agent-<agentId> 分支，其中 7 个已无对应 worktree。fix-worktree-cleanup.mjs 对它们判「查不到对应 PR,来历不明不动」——该保守规则对人工分支是对的，但这类分支恰恰是本 skill 每轮派发审查 agent 时宿主自动建的，命名可确定性识别，属自产垃圾。按每轮 1 个的速率线性增长。",
+      "proposal": "在 fix-worktree-cleanup.mjs 增一条独立回收规则：分支名匹配 ^worktree-agent-[0-9a-f]+$ 且当前 git worktree list 里无任何 worktree 指向它、且分支 tip 已包含在默认分支或为空占位 → 回收。与既有「查不到对应 PR 不动」规则并列，不改后者语义。涉及分支删除行为，须 owner 拍板后落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T02:21:26.226Z",
+      "lastSeen": "2026-08-04T02:21:26.226Z"
     }
   ]
 }
