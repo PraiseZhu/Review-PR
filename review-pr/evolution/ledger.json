@@ -1352,6 +1352,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T02:22:26.126Z",
       "lastSeen": "2026-08-04T02:22:26.126Z"
+    },
+    {
+      "fingerprint": "review-found-p1-author-fixes",
+      "tier": "by-design",
+      "title": "独立审查发现 P1，需作者修正后重审——流程按预期工作",
+      "detail": "PR 470 审出 changelog 内容失真(docs-only PR 被写成交付了界面变更，且该变更前一天已发布过)。已打回并落 dirty 回执，admins 分级合并前提因此不成立，未合。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T02:22:30.100Z",
+      "lastSeen": "2026-08-04T02:22:30.100Z"
     }
   ]
 }

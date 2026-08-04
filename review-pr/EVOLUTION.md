@@ -144,6 +144,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `review-found-p1-author-fixes` **独立审查发现 P1，需作者修正后重审——流程按预期工作** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:PR 470 审出 changelog 内容失真(docs-only PR 被写成交付了界面变更，且该变更前一天已发布过)。已打回并落 dirty 回执，admins 分级合并前提因此不成立，未合。
 - `security-review-paths-manual-by-design` **命中 securityReviewPaths 一律转人工，是防自我损坏闭环的设计意图** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR 466 改 scripts/loops/bug-doctor/* 12 个文件。让 review-pr 用可能已被这次改动改坏的自己去审并合这次改动，会形成「改坏的版本审过并合入了自己」。转人工正确，不因重复出现放宽。
 - `stacked-pr-waits-base-merge` **stacked PR 的 base 是另一个 open PR 的 head，必须等 base 先落地** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
