@@ -144,6 +144,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `stacked-pr-waits-base-merge` **stacked PR 的 base 是另一个 open PR 的 head，必须等 base 先落地** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
+  - 现象:PR 465 base=pr2/297-t1f 即 PR 464 的 head。SKILL 3.6 硬依赖：base 未合并前不合本 PR，合并后 GitHub 自动 retarget 再等 CI 重跑。属设计上的顺序约束。
 - `author-conflict-needs-human-rebase` **与 base 冲突需作者本人 merge/解冲突，非自动化可代劳(语义冲突)** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:本轮 PR 445 / 464 / 469 均 mergeStateStatus=DIRTY。当前账号无向他人 PR 分支推送权限，SKILL 5.5 的主干代合并门槛是「其余全过、仅剩冲突」，这三个都还叠着格式门或审查未过，不满足。
 - `dependabot-deps-hits-security-review-path` **dependabot 的依赖升级 PR 必然命中 securityReviewPaths(package.json/package-lock.json)，每轮都转人工** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked

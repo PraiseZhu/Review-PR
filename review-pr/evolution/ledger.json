@@ -1326,6 +1326,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T02:22:18.239Z",
       "lastSeen": "2026-08-04T02:22:18.239Z"
+    },
+    {
+      "fingerprint": "stacked-pr-waits-base-merge",
+      "tier": "by-design",
+      "title": "stacked PR 的 base 是另一个 open PR 的 head，必须等 base 先落地",
+      "detail": "PR 465 base=pr2/297-t1f 即 PR 464 的 head。SKILL 3.6 硬依赖：base 未合并前不合本 PR，合并后 GitHub 自动 retarget 再等 CI 重跑。属设计上的顺序约束。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-04T02:22:22.175Z",
+      "lastSeen": "2026-08-04T02:22:22.175Z"
     }
   ]
 }
