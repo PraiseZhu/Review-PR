@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ownpr-comment-pushback-stale-dedup` **ownPr 的 COMMENT 事件打回不被 hasStalePushback 识别,stale 去重指纹漏掉** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+  - 现象:PR #464 本轮 scan 分类为 pushback-format(isSkip=false),但该 PR 是 ownPr,GitHub 422 禁止自打 REQUEST_CHANGES,4 条格式打回全是 COMMENT 事件(最后一条 05:30 明确指向当前 head 2ffcca2),作者此后无新 commit——按 SKILL 3.2 stale 去重本应 skip。context.mjs 的 pushbackDates 只收集 CHANGES_REQUESTED review + issue-comment 形式 reviewerPushbacks,COMMENT 事件的 review body 两个来源都抓不到,导致 ownPr 打回后每轮都会被重新归类为 pushback-format,靠主 agent 手工查 review 历史才跳过。建议:把 state=COMMENTED 且 body 命中 pushback 模式的 review 也计入 pushbackDates(或对 ownPr 降级处理),否则依赖主 agent 每轮人工核对该去重不成立。
 - `ownpr-unresolved-thread-deadlock` **本流程账号自己的 PR 挂着未 resolve thread 时,没有任何人会去 resolve,永久卡住** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:465(2 条)/470(1 条)都是 ownPr=true 且作者在 staleAuthorReminder.exemptAuthors 里,notify-author-resolve 直接 exempt-author 跳过,selfFixAuthors 为空所以也不投递跟进会话。结果这两条会每轮被判 skip-gate 并原样留到下一轮,收件人是本流程账号自己,无人消费。
   - 提案:两条路任选:① 把该账号加进 selfFixAuthors,让 5.4 跟进会话去 resolve/修;② 给 ownPr + 未 resolve thread 这一组合单独一条汇总提示,让 owner 每轮显式看到"这几条要你手动点 Resolve"。①改名单属扩权类,②只改汇总文案。两条都不自动落地,等 owner 选。
