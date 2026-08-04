@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ownpr-unresolved-thread-deadlock` **本流程账号自己的 PR 挂着未 resolve thread 时,没有任何人会去 resolve,永久卡住** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+  - 现象:465(2 条)/470(1 条)都是 ownPr=true 且作者在 staleAuthorReminder.exemptAuthors 里,notify-author-resolve 直接 exempt-author 跳过,selfFixAuthors 为空所以也不投递跟进会话。结果这两条会每轮被判 skip-gate 并原样留到下一轮,收件人是本流程账号自己,无人消费。
+  - 提案:两条路任选:① 把该账号加进 selfFixAuthors,让 5.4 跟进会话去 resolve/修;② 给 ownPr + 未 resolve thread 这一组合单独一条汇总提示,让 owner 每轮显式看到"这几条要你手动点 Resolve"。①改名单属扩权类,②只改汇总文案。两条都不自动落地,等 owner 选。
 - `stale-scan-head-before-write` **scan-all 的 head 可能在写操作前就过期,流程里没有确定性的复核步骤** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:本轮 6 个候选里 2 个(464/465)的 head 在 --scan-all 落盘后 ~8 分钟内被新 push 顶掉;464 从 conflict 变成 MERGEABLE、465 从 skip-gate 变成 CLEAN。SKILL 3.5 门 1 要求 head 变化就重新拉元数据,但阶段三只在合并前有 pre-merge-check 复核,打回/评论类写操作没有对应的确定性复核步骤,靠主 agent 自觉比对。本轮是手工比对才发现,否则会对着过期 head 发打回(内容还会引用已经不存在的冲突)。
   - 提案:阶段三在任何 GitHub 写操作(review/comment/issue)前,对该候选跑一次轻量 head 复核(可复用 context.mjs --scan 单 PR 或新增 --verify-head),head 变化即把该候选退回阶段一重新分类。放置位置需 owner 定:它与 3.5 门 1、以及合并侧已有的 pre-merge-check 有职责重叠,合并成一处还是各写一处需要拍板,故不自动落地。
