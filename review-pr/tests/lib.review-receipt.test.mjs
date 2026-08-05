@@ -7,6 +7,9 @@
 // 每个测试用不同的 PR 号(9000 起报)避免互相污染,且不需要清理(临时目录本就是 ephemeral)。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// 必须排在 ../scripts/lib.mjs **之前**(私有 STATE_DIR;见该 helper 的时序说明):固定 PR
+// 号 + 共享持久目录在并发全量跑里会互相覆盖(第 4 轮核验 R0)。
+import './helpers.isolated-state-dir.mjs';
 import { writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../scripts/lib.mjs';
 
 // SC-R1b(2026-08-05):clean 回执必须携带五项绑定,isReviewReceiptClean 必须同时匹配

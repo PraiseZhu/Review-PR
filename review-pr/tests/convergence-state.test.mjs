@@ -5,11 +5,13 @@
 // 跨模块独立性回归,970300+ CLI 端到端,970400+ D3(persistent/reopened),
 // 970500+ D4(通知失败不 mark + attempt 记账)。与其它测试文件(900000/920000/
 // 930000 段)及真实 PR 号不重叠——但**仍需**在每个测试开头调用 `resetPr()` 清掉
-// 上一次真实运行遗留的状态文件:STATE_DIR 是这台机器上持久的真实目录(同
-// lib.review-receipt.test.mjs 的既有做法),receipt 类测试天然幂等(单对象
+// 上一次运行遗留的状态文件:receipt 类测试天然幂等(单对象
 // last-write-wins,重跑收敛到同一结果),但本文件的测试会跨多个 head 累积家族
 // 历史,不是简单覆盖就能收敛回同一状态——重跑必须先清空,否则会把上一次运行
 // 遗留的家族/occurrence 也算进本次断言,得到误报。
+//
+// STATE_DIR 走 helpers.isolated-state-dir(第 4 轮核验 R0):此前用这台机器上共享的持久
+// 目录,两份并发的默认全量跑会互删同名状态文件(实测 431/432)。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -18,6 +20,9 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 必须排在下面两条 ../scripts/ 导入**之前**:它给本进程一个私有 STATE_DIR(lib.mjs 在模块
+// 加载期就把 STATE_DIR 定死,之后改 env 无效)。static-source-hygiene 有守卫钉死这个顺序。
+import './helpers.isolated-state-dir.mjs';
 import {
   readConvergenceState, recordConvergenceRound, hasNotified, markNotified, recordNotificationAttempt,
   computeConservativeSeedRounds,

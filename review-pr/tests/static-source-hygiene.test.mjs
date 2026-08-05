@@ -23,6 +23,12 @@ const tracked = () => {
 const isCheckedText = (p) => !p.startsWith('vendor/')
   && /\.(mjs|js|cjs|ts|tsx|json|md|ya?ml)$/i.test(p);
 
+/** 剥掉块注释与行注释(`https://` 里的 `//` 不当行注释)。静态守卫必须扫**代码**,
+ *  否则"删掉实现只留注释"就能骗过守卫(第 4 轮核验点名)。 */
+const stripComments = (text) => text
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
 test('R0 卫生:tracked 文本文件不得含真 NUL 字节(否则 git 判 binary,丢 diff/review 能力)', () => {
   const files = tracked();
   if (files === null) return; // 非 git 环境(打包分发)跳过
@@ -69,10 +75,34 @@ test('R0 可移植性:任何**创建 git 提交**的测试文件都必须显式�
       || /spawnSync\(\s*'git'[\s\S]{0,200}?'commit'/.test(text)
       || /'commit',\s*'-q'/.test(text);
     // 只认真正的**关闭形态**:`-c commit.gpgsign=false` 或 `git config commit.gpgsign false`。
-    // 光提到 commit.gpgsign(注释里说明为什么要关)不算 —— 否则删掉实现只留注释就骗过守卫。
-    const hasSeam = text.includes('commit.gpgsign=false')
-      || /'commit\.gpgsign',\s*'false'/.test(text);
+    // 第 4 轮核验:上一版直接扫原始文本,于是注释里提一句 `commit.gpgsign=false` 就能骗过
+    // 守卫——与本注释自己的声明矛盾。先剥掉注释再匹配。
+    const code = stripComments(text);
+    const hasSeam = code.includes('commit.gpgsign=false')
+      || /'commit\.gpgsign',\s*'false'/.test(code);
     if (createsCommits && !hasSeam) bad.push(f);
   }
   assert.deepEqual(bad, [], `这些会建提交的测试文件没显式禁签名:${bad.join(', ')}`);
+});
+
+test('R0 隔离:在本进程内写持久状态的测试文件必须先 import 私有 STATE_DIR helper', () => {
+  // 第 4 轮核验 R0:两份默认全量测试并发跑时,共享真实 STATE_DIR + 固定 PR 号会让彼此的
+  // resetPr() 互删状态(实测 431/432)。helper 给每个测试进程一个私有目录,但它**必须**排在
+  // lib.mjs / convergence-state.mjs 的静态导入之前(STATE_DIR 在模块加载期即定死)。
+  const dir = join(ROOT, 'tests');
+  const HELPER = './helpers.isolated-state-dir.mjs';
+  const WRITERS = /\b(writeReviewReceipt|recordConvergenceRound|markNotified|recordNotificationAttempt)\b/;
+  const bad = [];
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.test.mjs'))) {
+    const lines = readFileSync(join(dir, f), 'utf8').split('\n');
+    // 只看**静态导入清单里真的带写函数**的文件(仅在注释/子进程 env 里提到不算)
+    const stateImports = [...lines.join('\n').matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\.\/scripts\/(?:lib|convergence-state)\.mjs'/g)];
+    if (!stateImports.some((m) => WRITERS.test(m[1]))) continue;
+    // 多行 import 的 `from` 行永远晚于语句起点,所以拿 `from` 行当锚点是安全的下界
+    const libLine = lines.findIndex((l) => /from '\.\.\/scripts\/(?:lib|convergence-state)\.mjs'/.test(l));
+    const helperLine = lines.findIndex((l) => l.includes(HELPER));
+    if (helperLine < 0) bad.push(`${f}(未 import ${HELPER})`);
+    else if (helperLine > libLine) bad.push(`${f}(helper 在第 ${helperLine + 1} 行,晚于 scripts 导入的第 ${libLine + 1} 行——env 改晚了没用)`);
+  }
+  assert.deepEqual(bad, [], bad.join('; '));
 });
