@@ -222,8 +222,10 @@ test('R7 幂等 upsert:重复登记不增条、不降级(active→pending / land
 });
 
 test('R7 第 2 轮核验:mergeHazardPair 方向无关——显式 promotionTarget:null 不得把 landed 的 target 冲掉', () => {
-  const landed = FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE }, activationStatus: 'active', activatedAt: '2026-08-05T00:00:00.000Z' });
-  const pending = FULL({ promotionStatus: 'pending', promotionTarget: null, activationStatus: 'pending-fix-merge' });
+  // 两侧刻意在**非状态**字段上也不一致(evidence/registeredAt)——否则 `{...a,...b}` 这种
+  // 方向相关的实现在"其余字段完全相同"的夹具下测不出来(实测:变异不咬合)。
+  const landed = FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE }, activationStatus: 'active', activatedAt: '2026-08-05T00:00:00.000Z', evidence: 'A 侧依据', registeredAt: '2026-08-01T00:00:00.000Z' });
+  const pending = FULL({ promotionStatus: 'pending', promotionTarget: null, activationStatus: 'pending-fix-merge', evidence: 'B 侧依据', registeredAt: '2026-08-02T00:00:00.000Z' });
   const ab = mergeHazardPair(landed, pending);
   const ba = mergeHazardPair(pending, landed);
   assert.deepEqual(ab, ba, '两个方向必须得到完全相同的结果(实测:旧实现一方 null 一方 target)');
@@ -232,6 +234,23 @@ test('R7 第 2 轮核验:mergeHazardPair 方向无关——显式 promotionTarge
   assert.equal(ab.activationStatus, 'active');
   assert.equal(ab.activatedAt, '2026-08-05T00:00:00.000Z', 'activation 的附属时间戳同样取自赢家');
   assert.equal(validateHazardShape(ab).ok, true, '合并结果必须仍是合法 hazard');
+
+  // 状态与附属元数据必须**同源**:两侧的 promotionTarget 都非空但语义不同(landed 的规则目标
+  // vs recorded-only 的理由)时,只按字段各自挑会挑出"landed 却带 recorded-only 理由"的畸形。
+  const recordedOnly = FULL({ promotionStatus: 'recorded-only', promotionTarget: { kind: 'recorded-only', reason: '只记录不晋升' } });
+  const mixed = mergeHazardPair(landed, recordedOnly);
+  assert.deepEqual(mixed, mergeHazardPair(recordedOnly, landed));
+  assert.equal(mixed.promotionStatus, 'landed');
+  assert.deepEqual(mixed.promotionTarget, { kind: 'rule', ruleId: REAL_RULE }, 'landed 的 target 必须取自 landed 那一侧');
+  assert.equal(validateHazardShape(mixed).ok, true, 'landed + recorded-only 理由 是畸形,必须被同源覆盖挡住');
+
+  // activatedAt 同理:活的那一侧没有时间戳时,不得从**pending 侧**捡一个来充数
+  const staleStamp = FULL({ activationStatus: 'pending-fix-merge', activatedAt: '2026-07-01T00:00:00.000Z' });
+  const activeNoStamp = FULL({ activationStatus: 'active' });
+  const m2 = mergeHazardPair(staleStamp, activeNoStamp);
+  assert.deepEqual(m2, mergeHazardPair(activeNoStamp, staleStamp));
+  assert.equal(m2.activationStatus, 'active');
+  assert.equal(m2.activatedAt, null, 'active 侧没有 activatedAt 时必须是 null,不能拿 pending 侧的时间戳');
 });
 
 test('R7 激活核验:fix PR 未合并 / merged head 与登记 fixHead 不符 → 拒激活', () => {

@@ -51,3 +51,13 @@ test('两侧都没有 escapedHazards 段时不凭空造字段(兼容旧台账)',
   const merged = JSON.parse(mergeLedgerJson(JSON.stringify({ version: 1, entries: [] }), JSON.stringify({ version: 1, entries: [] })));
   assert.equal('escapedHazards' in merged, false);
 });
+
+test('第 2 轮核验:合并结果必须再过一遍完整 schema——两侧各自"看起来能用"也可能合出畸形条目', () => {
+  // 一侧是合法条目,另一侧同 id 但 fixHead 是垃圾且**字典序更靠前**(大写 < 小写)。
+  // 按字段各自挑会挑到垃圾值 → 合出的条目 fixHead 非法。此时必须整体返 null 转人工,
+  // 不允许把半坏的 ledger 写回去。
+  const good = doc([HZ()]);
+  const junk = doc([HZ({ fixHead: 'ZZZZ' })]);
+  assert.equal(mergeLedgerJson(good, junk), null);
+  assert.equal(mergeLedgerJson(junk, good), null, '两个方向一致');
+});

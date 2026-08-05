@@ -157,7 +157,15 @@ export const PROM_RANK = { pending: 0, 'recorded-only': 1, landed: 2 };
  * 反向又得到 landed+target。状态与它的附属元数据必须**原子地**取自同一个赢家。
  */
 export function mergeHazardPair(a, b) {
-  const rankWin = (rank, field) => ((rank[b?.[field]] ?? -1) > (rank[a?.[field]] ?? -1) ? b : a);
+  // 平局(两侧同状态)必须**显式**按对称规则解——直接"平局取 a"会让附属元数据方向相关
+  // (实测:两侧都 active、只有一侧带 activatedAt 时,ab 与 ba 的 activatedAt 不同)。
+  const rankWin = (rank, field) => {
+    const ra = rank[a?.[field]] ?? -1;
+    const rb = rank[b?.[field]] ?? -1;
+    if (rb > ra) return { win: b, tie: false };
+    if (ra > rb) return { win: a, tie: false };
+    return { win: a, tie: true };
+  };
   const actWin = rankWin(ACT_RANK, 'activationStatus');
   const promWin = rankWin(PROM_RANK, 'promotionStatus');
   // 非状态字段:先取非空,再按字典序定序(保证对称);两侧一致时无差别
@@ -171,10 +179,11 @@ export function mergeHazardPair(a, b) {
   };
   const out = {};
   for (const k of new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])) out[k] = scalar(k);
-  out.activationStatus = actWin.activationStatus;
-  out.activatedAt = actWin.activatedAt ?? null;
-  out.promotionStatus = promWin.promotionStatus;
-  out.promotionTarget = promWin.promotionTarget ?? null;
+  // 状态取赢家;它的附属元数据**同源**取自同一个赢家(平局时回落到对称的 scalar 规则)
+  out.activationStatus = actWin.win.activationStatus;
+  out.activatedAt = actWin.tie ? (scalar('activatedAt') ?? null) : (actWin.win.activatedAt ?? null);
+  out.promotionStatus = promWin.win.promotionStatus;
+  out.promotionTarget = promWin.tie ? (scalar('promotionTarget') ?? null) : (promWin.win.promotionTarget ?? null);
   return out;
 }
 

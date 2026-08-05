@@ -131,3 +131,38 @@ test('R8 --expected-paths:PR files 元数据与 patch 文件集不一致 → com
   const good = runJson([BUILD, '469', '--base', f.base1, '--head', f.head, '--out-task', t, '--out-prompt', `${t}.md`, '--pr-body-file', f.bodyFile, '--expected-paths', 'c.mjs'], f);
   assert.equal(good.json.snapshotComplete, true, JSON.stringify(good.json).slice(0, 300));
 });
+
+test('R8 隔离 baseRefOid 这一维:base 分支前进到**不在 head 祖先链上**的提交(mergeBase 与 diff 都不变)时仍换身份', () => {
+  // c0 ──► head(feature 分支,只加 c.mjs)
+  //   └──► c2(main 上的无关提交)
+  // 此时 mergeBase(c0, head) === mergeBase(c2, head) === c0,diff 完全一样;
+  // **只有 baseRefOid 不同**。上一条用例里 base 前进会连带 mergeBase 变化,盖住了这一维
+  // (实测:把 baseRefOid 从 hash 里删掉,那条用例照样绿)。
+  const work = mkdtempSync(join(tmpdir(), 'drift-base-'));
+  const repo = join(work, 'repo');
+  mkdirSync(repo);
+  git(['init', '-q', '-b', 'main'], repo);
+  writeFileSync(join(repo, 'a.mjs'), 'export const a = 1;\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'c0'], repo);
+  const c0 = git(['rev-parse', 'HEAD'], repo);
+  git(['checkout', '-q', '-b', 'feature'], repo);
+  writeFileSync(join(repo, 'c.mjs'), 'export const c = 1;\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'feature'], repo);
+  const head = git(['rev-parse', 'HEAD'], repo);
+  git(['checkout', '-q', 'main'], repo);
+  writeFileSync(join(repo, 'unrelated.mjs'), 'export const u = 1;\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'unrelated on main'], repo);
+  const c2 = git(['rev-parse', 'HEAD'], repo);
+
+  const s0 = buildDiffSnapshot({ repoRoot: repo, baseRefOid: c0, headOid: head });
+  const s1 = buildDiffSnapshot({ repoRoot: repo, baseRefOid: c2, headOid: head });
+  assert.equal(s0.complete, true, s0.reason);
+  assert.equal(s1.complete, true, s1.reason);
+  assert.equal(s0.mergeBaseOid, s1.mergeBaseOid, '前提:mergeBase 必须一样');
+  assert.equal(s0.diffDigest, s1.diffDigest, '前提:diff 必须一样');
+  assert.notEqual(s0.baseRefOid, s1.baseRefOid, '前提:只有 baseRefOid 不同');
+  assert.notEqual(s0.snapshotHash, s1.snapshotHash, 'base 分支移动即换身份——旧证据不得继续算当前有效');
+});
