@@ -12,6 +12,7 @@ import { matchPath, mergeProfiles, buildSegments, classifyRequiredNegativeEviden
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
+const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
 const LEDGER_SRC = join(__dirname, '..', 'evolution', 'ledger.json');
 
 const git = (args, cwd) => {
@@ -70,6 +71,7 @@ function run(f, extra = [], { env = {} } = {}) {
   let json = null;
   try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(json, `应输出 JSON:status=${r.status}\n${r.stdout.slice(0, 500)}\n${r.stderr.slice(0, 500)}`);
+  f.lastTaskFile = taskFile; // 供后续投递用例引用同一份 task
   return { r, json, task: JSON.parse(readFileSync(taskFile, 'utf8')), prompt: readFileSync(promptFile, 'utf8') };
 }
 
@@ -163,20 +165,66 @@ test('R6 分类器:等待/断言/守卫 → required;纯注释、文档文件、
 
 // ── 构建器接线(断到产物文本)──
 
-test('R3/R4 接线:必答 check IDs、segments、required 负向 key 真出现在 prompt 与 task 里', () => {
+test('R3/R4 接线:必答 check IDs、segments 出现在 prompt;必答/负向明细只留计数与承诺(第 4 轮核验)', () => {
   const f = setup();
   const { json, task, prompt } = run(f);
   assert.equal(json.snapshotComplete, true);
-  assert.ok(task.requiredProfileAnswers.length > 0);
+  assert.ok(task.requiredProfileAnswerCount > 0);
+  assert.equal(task.requiredProfileAnswers, undefined, 'task 不得携带必答项明细(fileId 是 file coverage key)');
+  assert.match(task.profileAnswersCommitment ?? '', /^pc1-/);
   for (const c of BUILTIN_PROFILES[0].mandatoryChecks) {
-    assert.ok(prompt.includes(c.id), `prompt 必须含 check id ${c.id}`);
-    assert.ok(task.requiredProfileAnswers.some((r) => r.checkId === c.id));
+    assert.ok(prompt.includes(c.id), `prompt 必须含 check id ${c.id}(check 语义仍要给,给的是 ask,不是 fileId)`);
   }
   assert.ok(prompt.includes(task.snapshotHash), 'prompt 必须携带 snapshotHash');
   assert.ok(task.segments.length >= 1);
   for (const seg of task.segments) assert.ok(prompt.includes(seg.segmentId), `prompt 必须含 ${seg.segmentId}`);
-  assert.ok(task.requiredNegativeEvidenceKeys.length > 0, 'e2e 新增等待/断言 → 必须产 required 负向 key');
-  for (const k of task.requiredNegativeEvidenceKeys) assert.ok(prompt.includes(k.hunkId), 'prompt 必须逐条列 required 负向 key');
+  assert.ok(task.requiredNegativeEvidenceKeyCount > 0, 'e2e 新增等待/断言 → 必须产 required 负向 key');
+  assert.equal(task.requiredNegativeEvidenceKeys, undefined, 'task 不得携带负向 key 明细(fileId/hunkId 就是 coverage hunk key)');
+  assert.match(task.negativeEvidenceCommitment ?? '', /^nec1-/);
+  assert.ok(!/h1-[0-9a-f]{16}/.test(prompt), 'prompt 不得出现任何 hunkId');
+  assert.ok(!/f1-[0-9a-f]{16}/.test(prompt), 'prompt 不得出现任何 fileId');
+});
+
+test('R4 第 4 轮核验 BLOCKER:key/必答/负向明细与 patch 内容只从投递出口出;后段明细对前段不可见', () => {
+  // sizeBudget=1 → 每个 coverage key 一段;两个 e2e 文件 → 至少 2 段
+  const f = setup({
+    rules: { reviewSegments: { sizeBudget: 1 } },
+    headFiles: {
+      'scripts/e2e/a.mjs': E2E,
+      'scripts/e2e/b.mjs': "export async function w2(page) {\n  await page.waitForFunction(() => document.title !== '');\n}\n",
+    },
+  });
+  const { task, prompt } = run(f);
+  assert.ok(task.segments.length >= 2, `需要至少 2 段:${task.segments.length}`);
+  const taskText = JSON.stringify(task);
+  const deliver = (order) => {
+    const r = spawnSync('node', [DELIVER, '469', '--task', f.lastTaskFile, '--base', f.base, '--head', f.head, '--order', String(order)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const seg1 = deliver(1);
+  const seg2 = deliver(2);
+  // 第二段的真实 fileId 与 hunkId **分别**搜索(核验席点名:只搜拼接串 `hunk:f:h` 是形状假绿)
+  const k2 = seg2.assignedCoverageKeys[0];
+  for (const [label, text] of [['task.json', taskText], ['prompt.md', prompt], ['第一段投递输出', JSON.stringify(seg1)]]) {
+    assert.ok(!text.includes(k2.fileId), `${label} 不得含第二段的 fileId(${k2.fileId})`);
+    if (k2.hunkId) assert.ok(!text.includes(k2.hunkId), `${label} 不得含第二段的 hunkId(${k2.hunkId})`);
+  }
+  // 投递必须带**可审查内容**:path + patch 文本(不是 opaque key)
+  for (const seg of [seg1, seg2]) {
+    const c = seg.segmentContent[0];
+    assert.ok(c.path, '每个 key 必须带 path');
+    if (c.kind === 'hunk') {
+      assert.match(c.patch, /^@@ /, 'hunk key 必须带 immutable patch 文本');
+      assert.ok(seg.payload.includes('```diff'), 'payload 正文必须内嵌 patch 内容');
+      assert.ok(seg.payload.includes(c.path), 'payload 正文必须带 path');
+    }
+  }
+  // 本段的 required 负向证据明细也随段给出(task/prompt 已不含)
+  const negAll = [...(seg1.negativeRequirements ?? []), ...(seg2.negativeRequirements ?? [])];
+  assert.equal(negAll.length, task.requiredNegativeEvidenceKeyCount, '负向 key 明细必须恰好经投递出口给全');
+  const profAll = [...(seg1.profileRequirements ?? []), ...(seg2.profileRequirements ?? [])];
+  assert.equal(profAll.length, task.requiredProfileAnswerCount, '必答项明细必须恰好经投递出口给全');
 });
 
 test('R3 fail-closed 接线:目标仓 riskProfiles 非法 → task.profileConfigIncomplete=true 且内置项照常注入', () => {

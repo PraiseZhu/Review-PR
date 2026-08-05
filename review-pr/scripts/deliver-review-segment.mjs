@@ -61,6 +61,34 @@ try {
   }
   saveDeliveries(file, { snapshotHash: snapshot.snapshotHash, deliveries: r.deliveries });
   const seg = r.segment;
+  // ── 本段的**可审查内容**(第 4 轮核验 BLOCKER:此前 payload 只有 opaque key,先读完整
+  // diff 则分段不收窄上下文,不读则 key 根本没法审——分段等于没实现)。每个 hunk key 带
+  // path + 行区间 + immutable patch 文本;file key 带 changeType/contentKind/modes。──
+  const fileById = new Map(snapshot.files.map((f) => [f.fileId, f]));
+  const segmentContent = seg.assignedCoverageKeys.map((k) => {
+    const f = fileById.get(k.fileId);
+    const path = f ? (f.newPath ?? f.oldPath) : null;
+    if (k.kind === 'hunk') {
+      const h = f?.hunks.find((x) => x.hunkId === k.hunkId);
+      return {
+        key: coverageKeyStr(k), kind: 'hunk', fileId: k.fileId, hunkId: k.hunkId, path,
+        changeType: f?.changeType ?? null,
+        oldRanges: h?.oldRanges ?? null, newRanges: h?.newRanges ?? null,
+        patch: h?.patchText ?? '',
+      };
+    }
+    return {
+      key: coverageKeyStr(k), kind: 'file', fileId: k.fileId, path,
+      changeType: f?.changeType ?? null, contentKind: f?.contentKind ?? null,
+      oldMode: f?.oldMode ?? null, newMode: f?.newMode ?? null,
+    };
+  });
+  // 本段涉及的 profile 必答项与 required 负向证据(第 4 轮核验:这两组的 fileId/hunkId
+  // 已从 task/prompt 撤出,唯一出口在这里,跟着它们所属的 key 分段给)。
+  const segFileIds = new Set(seg.assignedCoverageKeys.map((k) => k.fileId));
+  const segHunkKeys = new Set(seg.assignedCoverageKeys.filter((k) => k.kind === 'hunk').map((k) => `${k.fileId}:${k.hunkId}`));
+  const profileRequirements = auth.requiredProfileAnswers.filter((x) => segFileIds.has(x.fileId));
+  const negativeRequirements = auth.requiredNegativeEvidenceKeys.filter((x) => segHunkKeys.has(`${x.fileId}:${x.hunkId}`));
   const payload = [
     `## 覆盖分段 ${seg.segmentId}(投递序号 ${seg.order} / 共 ${segments.length} 段)`,
     '',
@@ -68,12 +96,25 @@ try {
     `\`{segmentId:"${seg.segmentId}", receivedOrder:${seg.order}, coverageKeys:[...本段全部 key...]}\`。`,
     '只能认领本段的 key(跨段冒领/段内重复一律判 invalid)。',
     '',
-    ...seg.assignedCoverageKeys.map((k) => `- ${coverageKeyStr(k)}`),
+    ...segmentContent.flatMap((c) => (c.kind === 'hunk'
+      ? [`### ${c.key}`, `${c.path}(${c.changeType})`, '', '```diff', c.patch.trimEnd(), '```', '']
+      : [`### ${c.key}`, `${c.path}(${c.changeType},${c.contentKind},mode ${c.oldMode ?? '-'}→${c.newMode ?? '-'})`, ''])),
+    ...(profileRequirements.length > 0 ? [
+      '### 本段 profile 必答项(在 `profileAnswers[]` 里逐条作答)',
+      ...profileRequirements.map((x) => `- \`${x.profileId}\` / \`${x.checkId}\` @ ${x.path}(fileId \`${x.fileId}\`):${x.ask}`),
+      '',
+    ] : []),
+    ...(negativeRequirements.length > 0 ? [
+      '### 本段 required 负向证据(只能 executed 满足)',
+      ...negativeRequirements.map((x) => `- ${x.path} hunk \`${x.hunkId}\`(fileId \`${x.fileId}\`):${x.reason}`),
+      '',
+    ] : []),
   ].join('\n');
   print({
     ok: true, pr, segmentId: seg.segmentId, order: seg.order, replayed: r.replayed === true,
-    // 结构化 key 明细:这是编排方唯一合法的取 key 通道(task.json 里已不含明细)
+    // 结构化明细:这是编排方唯一合法的取 key/必答项/负向 key 通道(task.json 里已不含明细)
     assignedCoverageKeys: seg.assignedCoverageKeys,
+    segmentContent, profileRequirements, negativeRequirements,
     totalSegments: segments.length, deliveredOrders: r.deliveries.map((d) => d.order),
     remaining: segments.length - r.deliveries.length,
     snapshotHash: snapshot.snapshotHash, payload,

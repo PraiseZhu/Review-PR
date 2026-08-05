@@ -181,27 +181,45 @@ export const coverageKeyStr = (k) => (k?.kind === 'hunk' ? `hunk:${k.fileId}:${k
 export const profileAnswerKeyStr = (r) => `${r?.profileId} ${r?.fileId} ${r?.checkId}`;
 export const negativeKeyStr = (k) => `${k?.fileId}:${k?.hunkId ?? ''}`;
 
+/** profile 必答项集合的内容承诺(第 4 轮核验:task 不再携带 fileId 明细)。 */
+export function profileAnswersCommitment(reqs) {
+  const canon = [...(reqs ?? [])].map(profileAnswerKeyStr).sort().join('\n');
+  return `pc1-${createHash('sha256').update(canon).digest('hex').slice(0, 20)}`;
+}
+
+/** required 负向证据 key 集合的内容承诺(第 4 轮核验:task/prompt 逐项打印 fileId/hunkId
+ *  本身就是 coverage hunk key 泄露——自己拼回执就能绕过投递出口)。 */
+export function negativeEvidenceCommitment(keys) {
+  const canon = [...(keys ?? [])].map(negativeKeyStr).sort().join('\n');
+  return `nec1-${createHash('sha256').update(canon).digest('hex').slice(0, 20)}`;
+}
+
 /** 重算值 vs task 声明值:逐组精确比较,返回差异说明数组(空 = 一致)。 */
 export function diffRequirements(authoritative, task) {
   const errs = [];
-  const cmp = (name, mine, theirs, ser) => {
-    if (!Array.isArray(theirs)) { errs.push(`task.${name} 缺失或非数组`); return; }
-    const a = new Set(mine.map(ser));
-    const b = new Set(theirs.map(ser));
-    if (a.size !== b.size || [...a].some((x) => !b.has(x))) {
-      errs.push(`task.${name} 与当前 snapshot 重算值不一致(重算 ${a.size} 项,task 声明 ${b.size} 项)——task 过期或被改过,不得据它对账`);
-    }
-  };
-  // coverage 明细**不在** task 里(见 coverageCommitment 注释),改比内容承诺 + 计数
+  // 明细一律**不在** task 里(第 3/4 轮核验:coverage key、必答项 fileId、负向 key 的
+  // fileId/hunkId 全是回执素材,写进 task/prompt 等于把投递出口废掉),改比内容承诺 + 计数
   if (task?.coverageKeys !== undefined) errs.push('task 不得携带 coverageKeys 明细(key 只能经投递出口取得)');
+  if (task?.requiredProfileAnswers !== undefined) errs.push('task 不得携带 requiredProfileAnswers 明细(fileId 只能随分段投递给出)');
+  if (task?.requiredNegativeEvidenceKeys !== undefined) errs.push('task 不得携带 requiredNegativeEvidenceKeys 明细(fileId/hunkId 就是 coverage hunk key)');
   if (coverageCommitment(authoritative.coverageKeys) !== task?.coverageCommitment) {
     errs.push(`task.coverageCommitment 与重算值不符(重算 ${coverageCommitment(authoritative.coverageKeys)},task ${task?.coverageCommitment})`);
   }
   if (authoritative.coverageKeys.length !== task?.coverageKeyCount) {
     errs.push(`task.coverageKeyCount 与重算值不符(重算 ${authoritative.coverageKeys.length},task ${task?.coverageKeyCount})`);
   }
-  cmp('requiredProfileAnswers', authoritative.requiredProfileAnswers, task?.requiredProfileAnswers, profileAnswerKeyStr);
-  cmp('requiredNegativeEvidenceKeys', authoritative.requiredNegativeEvidenceKeys, task?.requiredNegativeEvidenceKeys, negativeKeyStr);
+  if (profileAnswersCommitment(authoritative.requiredProfileAnswers) !== task?.profileAnswersCommitment) {
+    errs.push('task.profileAnswersCommitment 与重算值不符——task 过期或被改过,不得据它对账');
+  }
+  if (authoritative.requiredProfileAnswers.length !== task?.requiredProfileAnswerCount) {
+    errs.push(`task.requiredProfileAnswerCount 与重算值不符(重算 ${authoritative.requiredProfileAnswers.length},task ${task?.requiredProfileAnswerCount})`);
+  }
+  if (negativeEvidenceCommitment(authoritative.requiredNegativeEvidenceKeys) !== task?.negativeEvidenceCommitment) {
+    errs.push('task.negativeEvidenceCommitment 与重算值不符——task 过期或被改过,不得据它对账');
+  }
+  if (authoritative.requiredNegativeEvidenceKeys.length !== task?.requiredNegativeEvidenceKeyCount) {
+    errs.push(`task.requiredNegativeEvidenceKeyCount 与重算值不符(重算 ${authoritative.requiredNegativeEvidenceKeys.length},task ${task?.requiredNegativeEvidenceKeyCount})`);
+  }
   if (!Array.isArray(task?.segments)) errs.push('task.segments 缺失或非数组');
   else {
     if (task.segments.some((x) => x?.assignedCoverageKeys !== undefined)) {

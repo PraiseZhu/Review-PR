@@ -16,7 +16,9 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import process from 'node:process';
 import { print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, ghJson } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
-import { computeReviewRequirements, coverageCommitment } from './lib.review-requirements.mjs';
+import {
+  computeReviewRequirements, coverageCommitment, profileAnswersCommitment, negativeEvidenceCommitment,
+} from './lib.review-requirements.mjs';
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { loadKnownHazards, hazardsForPaths, resolveEscapeSources } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
@@ -84,8 +86,13 @@ try {
       segmentId: seg.segmentId, order: seg.order, keyCount: seg.assignedCoverageKeys.length,
       commitment: coverageCommitment(seg.assignedCoverageKeys), sizeBudget: seg.sizeBudget,
     })),
-    requiredProfileAnswers,
-    requiredNegativeEvidenceKeys,
+    // 必答项与负向 key 的明细同样不进 task(第 4 轮核验 BLOCKER:requiredNegativeEvidenceKeys
+    // 的 {fileId,hunkId} 本身就是 coverage hunk key;必答项的 fileId 是 file key)。
+    // 明细随对应分段由投递出口给出;这里只留计数 + 内容承诺供 consumer 对账。
+    requiredProfileAnswerCount: requiredProfileAnswers.length,
+    profileAnswersCommitment: profileAnswersCommitment(requiredProfileAnswers),
+    requiredNegativeEvidenceKeyCount: requiredNegativeEvidenceKeys.length,
+    negativeEvidenceCommitment: negativeEvidenceCommitment(requiredNegativeEvidenceKeys),
     knownHazards: relevantHazards,
     // repo 解析不出时 hazardsForPaths 会 fail-closed 返空——那等于静默跳过全部 known
     // hazard,必须显式标不完整(第 3 轮核验)。
@@ -121,27 +128,29 @@ try {
   }
   if (requiredProfileAnswers.length > 0) {
     L.push('## 风险 profile 必答项(逐 文件×检查 作答,缺一项判 invalid)', '');
+    // 第 4 轮核验:fileId 明细不进 prompt(fileId 是 file coverage key 的全部内容)。
+    // 这里只给 check 的语义(profileId/checkId/ask)与总数;哪些文件要答、其 fileId 是
+    // 什么,随对应分段由投递出口给出。
     const byProfile = new Map();
     for (const r of requiredProfileAnswers) {
       if (!byProfile.has(r.profileId)) byProfile.set(r.profileId, new Map());
       const m = byProfile.get(r.profileId);
-      if (!m.has(r.checkId)) m.set(r.checkId, { ask: r.ask, files: [] });
-      m.get(r.checkId).files.push(`${r.path} (fileId ${r.fileId})`);
+      if (!m.has(r.checkId)) m.set(r.checkId, r.ask);
     }
     for (const [profileId, checks] of byProfile) {
       L.push(`### profile \`${profileId}\``, '');
-      for (const [checkId, v] of checks) {
-        L.push(`- \`${checkId}\`:${v.ask}`);
-        for (const f of v.files) L.push(`  - ${f}`);
-      }
+      for (const [checkId, ask] of checks) L.push(`- \`${checkId}\`:${ask}`);
       L.push('');
     }
+    L.push(`本轮共 ${requiredProfileAnswers.length} 条 (profile × 文件 × 检查) 必答——具体文件与 fileId **随对应分段投递给出**。`);
     L.push('每条在 `profileAnswers[]` 里给 `{profileId, fileId, checkId, answer}`:`checked-clean`(带 hunkId)/ `finding`(带本地引用 `{family_id, manifestationIndex}`)/ `not-applicable`(带 reasonCode + explanation)。', '');
   }
   if (requiredNegativeEvidenceKeys.length > 0) {
     L.push('## 负向证据必答(required — 只能用 executed 满足,N/A 不接受)', '');
-    for (const k of requiredNegativeEvidenceKeys) L.push(`- ${k.path} hunk \`${k.hunkId}\`(fileId ${k.fileId}):${k.reason}`);
-    L.push('', '在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`,并在 `verificationRuns[]` 里登记对应 run。也就是:**把它弄坏一次,证明它真的会红**。', '');
+    // 第 4 轮核验 BLOCKER:此前这里逐项打印 {path, hunkId, fileId}——fileId/hunkId 正是
+    // coverage hunk key,拿它就能伪造 segmentReceipts 绕过投递出口。只留计数。
+    L.push(`本轮共 ${requiredNegativeEvidenceKeys.length} 处改动触及等待原语/断言/守卫——具体位置(path/fileId/hunkId/原因)**随对应分段投递给出**。`);
+    L.push('', '对每处在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`,并在 `verificationRuns[]` 里登记对应 run。也就是:**把它弄坏一次,证明它真的会红**。', '');
   }
   if (escapeCandidates.length > 0) {
     L.push('## 逃逸判定(escapeAssessment — 必须逐条作答,缺/多/未知一律 invalid)', '');

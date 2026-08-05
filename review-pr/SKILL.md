@@ -792,7 +792,10 @@ worktree 里可能压根不存在这条链路。审查 agent 不应假设工作�
 审查 agent 必须：
 
 1. 检出 PR 的 head，确认 base、head、工作区和依赖状态；
-2. 阅读 PR body、完整 diff、评论／thread 历史和本文件的规则加载要求；
+2. 阅读 PR body、评论／thread 历史和本文件的规则加载要求；diff 内容按分段协议获取——
+   单段（常见小 PR）一次拿全即等价于完整 diff;多段模式**不先吞完整 diff**，每段的
+   patch 内容随该段投递给出（见下方「分段必须真投递」，这正是大 diff 分段多查问题的
+   前提——先读全量再分段等于没分）；
 3. 读取 2.1 已按 `ruleFiles` 配置解析出的规则文件集合（`ruleFiles.required` 的固定
    清单 + 命中 `ruleFiles.ruleMap` 的按路径条目，未配置 `ruleMap` 则只有前者），
    逐条执行其中 Review 清单；只把新增或正在修改的代码与规则对照，不借机清理无关
@@ -878,18 +881,27 @@ node "<SKILL_ROOT>/scripts/build-review-task.mjs" <N> --base <baseRefOid> --head
 `escapeSourceIncomplete=true` → 本轮 `invalid`(不得据"无候选"放行)。离线/测试可用
 `--pr-body-file` / `--related-issues-file` 作 seam。
 
-`prompt.md` 里已经写好本轮的：风险 profile 必答项（逐 文件×检查）、未决 findings
-（必须逐条 disposition）、known hazards（本仓历史逃逸模式）、覆盖分片 segments 的**清单与
-投递序号**、required 负向证据 key。
+`prompt.md` 里已经写好本轮的：风险 profile 必答项的 **check 语义与总数**（哪些文件要答、
+其 fileId 是什么随分段投递给出）、未决 findings（必须逐条 disposition）、known hazards
+（本仓历史逃逸模式）、覆盖分片 segments 的**清单与投递序号**、required 负向证据的**总数**。
 
-**分段必须真投递**（SC-R4）：`prompt.md` **与 `task.json` 都不含**各段的 coverage key 明细
-（task 只给每段的 `keyCount` 与内容承诺 `commitment`）——唯一取得途径是
-按序调用投递出口，把它打印的 `payload` 投给**同一个**审查会话，每段收回执后再投下一段：
+**分段必须真投递**（SC-R4）：`prompt.md` **与 `task.json` 都不含**各段的 coverage key /
+必答项 fileId / 负向 key 明细（task 只留计数与内容承诺 `coverageCommitment` /
+`profileAnswersCommitment` / `negativeEvidenceCommitment`，segments 只有每段 `keyCount` +
+`commitment`）——回执素材的唯一取得途径是按序调用投递出口，把它打印的 `payload` 投给
+**同一个**审查会话，每段收回执后再投下一段：
 
 ```bash
 node "<SKILL_ROOT>/scripts/deliver-review-segment.mjs" <N> --task <task.json> \
   --base <baseRefOid> --head <headRefOid> --order <1..segments.length>
 ```
+
+每段 payload 投递的是**可审查内容**，不是 opaque key（第 4 轮核验 BLOCKER）：每个 hunk key
+带 path、base/head 行区间与 immutable patch 文本（```diff 块内嵌在 payload 正文里）;
+file key 带 changeType/contentKind/modes;本段涉及的 profile 必答项（含 fileId）与
+required 负向证据（含 fileId/hunkId/原因）也随段给出。因此**多段模式下审查会话不需要、
+也不应该先读完整 diff**——第一段之前只送全局规则与元数据（prompt.md），每段的实际代码
+内容由投递出口按序给;单段小 PR（常见情形）则照旧一次拿全。
 
 出口只接受**下一个**序号（乱序/跳段直接拒且不留记录），并把投递事实记进 STATE_DIR 的投递
 台账;分片由投递出口按 snapshot + rules **权威重算**（task 的承诺只用来核对是否过期）。
@@ -897,8 +909,9 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 一律 `invalid`。宿主投不完就按 blocked 上报,不要一次性硬审。
 每段回执形如 `{segmentId, receivedOrder, snapshotHash, coverageKeys:[...]}`，只能认领本段
 分配到的 key;**下一段的 key 在上一段完成前不可见**。
-（诚实边界：台账证明**投递动作按序真实发生过**，不能证明模型是分段读的——编排方仍可先
-把 N 段全投完再一次性喂给模型。机器守住的是"没投递过就不能声称覆盖"。）
+（诚实边界：台账证明**投递动作按序真实发生过、回执素材只能按序取得**，不能证明模型是
+分段读的——编排方仍可先把 N 段全投完再一次性喂给模型。机器守住的是"没投递过就不能声称
+覆盖"。）
 
 审查 agent 按它作答，输出形如：
 

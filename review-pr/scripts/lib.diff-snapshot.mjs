@@ -81,7 +81,13 @@ function parsePatchFiles(rawPatch) {
         else if (line.startsWith('\\')) { /* \ No newline at end of file */ }
         else { cursor += 1; } // 上下文行
       }
-      hunks.push({ index: idx, header: mm[0], oldRanges: [oldStart, oldLines], newRanges: [newStart, newLines], addedNewLines });
+      hunks.push({
+        index: idx, header: mm[0], oldRanges: [oldStart, oldLines], newRanges: [newStart, newLines], addedNewLines,
+        // SC-R4 第 4 轮核验:分段投递必须投**可审查的内容**——每段 payload 要带该 hunk 的
+        // immutable patch 文本(否则 opaque key 根本没法审对应代码)。文本切自 rawPatch,
+        // 不参与 fileId/hunkId/snapshotHash 计算(它们只依赖 diffDigest 与 header)。
+        patchText: `${mm[0]}\n${seg.slice(entry.bodyStart, bodyEnd).replace(/^\n/, '')}`,
+      });
       idx += 1;
     });
     // 路径:优先 +++ b/<path>(删除文件为 /dev/null,则取 --- a/<path>)
@@ -146,6 +152,7 @@ export function buildDiffSnapshot({ repoRoot, baseRefOid, headOid, fetchMissing 
       oldRanges: h.oldRanges,
       newRanges: h.newRanges,
       addedNewLines: h.addedNewLines ?? [],
+      patchText: h.patchText ?? '',
     }));
     files.push({
       fileId,

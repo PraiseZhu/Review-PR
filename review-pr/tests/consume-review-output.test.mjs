@@ -90,7 +90,11 @@ function deliverAll(f, tf, { upTo = null, pr = '469' } = {}) {
     const r = spawnSync('node', [DELIVER, pr, '--task', tf, '--base', f.base, '--head', f.head, '--order', String(i)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
     assert.equal(r.status, 0, `第 ${i} 段投递应成功:${r.stdout}${r.stderr}`);
     const j = JSON.parse(r.stdout);
-    got.push({ segmentId: j.segmentId, order: j.order, coverageKeys: j.assignedCoverageKeys });
+    got.push({
+      segmentId: j.segmentId, order: j.order, coverageKeys: j.assignedCoverageKeys,
+      // 第 4 轮核验:必答项与负向 key 的明细已从 task 撤出,唯一出口是投递输出
+      profileRequirements: j.profileRequirements ?? [], negativeRequirements: j.negativeRequirements ?? [],
+    });
   }
   DELIVERED.set(tf, got);
   return got;
@@ -108,8 +112,13 @@ function preflightFile(f) {
 /** 按 task 自动补齐"合规答卷",让各用例只关心自己那一维。 */
 function compliant(tf, over = {}) {
   const task = JSON.parse(readFileSync(tf, 'utf8'));
+  const delivered = deliveredOf(tf);
   const runs = [];
-  const negatives = (task.requiredNegativeEvidenceKeys ?? []).map((k, i) => {
+  // 第 4 轮核验:task 不再含 requiredNegativeEvidenceKeys / requiredProfileAnswers 明细,
+  // 答卷素材只能来自投递输出——测试与生产走同一条路
+  const negKeys = delivered.flatMap((seg) => seg.negativeRequirements ?? []);
+  const profileReqs = delivered.flatMap((seg) => seg.profileRequirements ?? []);
+  const negatives = negKeys.map((k, i) => {
     const runId = `r${i + 1}`;
     const command = `node --test ${k.path}`;
     runs.push({ runId, command, exitCode: 1, outputAnchor: 'expected failure' });
@@ -119,7 +128,6 @@ function compliant(tf, over = {}) {
       outputAnchor: 'expected failure', verificationRunId: runId,
     };
   });
-  const delivered = deliveredOf(tf);
   const hunkOf = (fileId) => {
     for (const seg of delivered) {
       for (const k of seg.coverageKeys) if (k.kind === 'hunk' && k.fileId === fileId) return k.hunkId;
@@ -130,7 +138,7 @@ function compliant(tf, over = {}) {
     // 答卷必须绑定它所审的 snapshot(顶层 + 每段回执),第 3 轮核验 BLOCKER
     snapshotHash: task.snapshotHash,
     segmentReceipts: delivered.map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, snapshotHash: task.snapshotHash, coverageKeys: seg.coverageKeys })),
-    profileAnswers: (task.requiredProfileAnswers ?? []).map((r) => ({
+    profileAnswers: profileReqs.map((r) => ({
       profileId: r.profileId, fileId: r.fileId, checkId: r.checkId, answer: 'checked-clean', hunkId: hunkOf(r.fileId),
     })),
     verificationRuns: runs,
@@ -353,9 +361,11 @@ test('⑬ 必答对账:checked-clean 引用编造 hunkId 不计作答 → invali
   const tf = taskFile(f);
   deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  assert.ok(task.requiredProfileAnswers.length > 0, 'e2e 路径必须产生必答项');
+  assert.ok(task.requiredProfileAnswerCount > 0, 'e2e 路径必须产生必答项');
+  const profileReqs = deliveredOf(tf).flatMap((seg) => seg.profileRequirements ?? []);
+  assert.equal(profileReqs.length, task.requiredProfileAnswerCount, '必答项明细只在投递输出里');
   const bad = compliant(tf, {
-    profileAnswers: task.requiredProfileAnswers.map((r) => ({
+    profileAnswers: profileReqs.map((r) => ({
       profileId: r.profileId, fileId: r.fileId, checkId: r.checkId, answer: 'checked-clean', hunkId: 'h1-fabricated',
     })),
   });
@@ -374,10 +384,12 @@ test('⑭ R6:required 负向证据只能由 executed 满足;N/A 与 run 声明�
   const tf = taskFile(f);
   deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  assert.ok(task.requiredNegativeEvidenceKeys.length > 0, '等待原语改动必须产 required 负向 key');
+  assert.ok(task.requiredNegativeEvidenceKeyCount > 0, '等待原语改动必须产 required 负向 key');
+  const negKeys = deliveredOf(tf).flatMap((seg) => seg.negativeRequirements ?? []);
+  assert.equal(negKeys.length, task.requiredNegativeEvidenceKeyCount, '明细只在投递输出里,且总数与 task 计数一致');
   const pf = preflightFile(f);
   assert.equal(run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean');
-  const k = task.requiredNegativeEvidenceKeys[0];
+  const k = negKeys[0];
   const na = compliant(tf, {
     verificationRuns: [],
     negativeEvidence: [{ fileId: k.fileId, hunkId: k.hunkId, kind: 'not-applicable', reasonCode: 'doc-only', explanation: '只是注释' }],
@@ -485,7 +497,9 @@ test('⑰ R1a 第 2 轮核验 BLOCKER:task 不是权威——保留真 snapshotH
   const pf = preflightFile(f);
   const good = JSON.parse(readFileSync(tf, 'utf8'));
   assert.equal(good.coverageKeys, undefined, 'task 不得携带 coverage key 明细(只能经投递出口取)');
-  assert.ok(good.coverageKeyCount > 0 && good.requiredProfileAnswers.length > 0 && good.requiredNegativeEvidenceKeys.length > 0, '前提:三组集合都非空');
+  assert.ok(good.coverageKeyCount > 0 && good.requiredProfileAnswerCount > 0 && good.requiredNegativeEvidenceKeyCount > 0, '前提:三组集合都非空');
+  assert.equal(good.requiredProfileAnswers, undefined, 'task 不得携带必答项明细(fileId 随分段投递)');
+  assert.equal(good.requiredNegativeEvidenceKeys, undefined, 'task 不得携带负向 key 明细(fileId/hunkId 就是 coverage hunk key)');
   const answer = compliant(tf); // 按真 task 作答(合规)
   assert.equal(run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean', '对照:未篡改时 clean');
 
@@ -493,12 +507,13 @@ test('⑰ R1a 第 2 轮核验 BLOCKER:task 不是权威——保留真 snapshotH
   const tampered = join(f.work, 'task-tampered.json');
   writeFileSync(tampered, JSON.stringify({
     ...good, coverageKeyCount: 0, coverageCommitment: 'cc1-forged', segments: [],
-    requiredProfileAnswers: [], requiredNegativeEvidenceKeys: [],
+    requiredProfileAnswerCount: 0, profileAnswersCommitment: 'pc1-forged',
+    requiredNegativeEvidenceKeyCount: 0, negativeEvidenceCommitment: 'nec1-forged',
   }));
   const r = run(f, OUT({ snapshotHash: good.snapshotHash }), ['--mode', 'auto', '--task', tampered, '--preflight', pf]);
   assert.equal(r.json.verdict, 'invalid', r.json.reasons?.join(';'));
   const joined = r.json.reasons.join(';');
-  for (const k of ['coverageCommitment', 'coverageKeyCount', 'requiredProfileAnswers', 'requiredNegativeEvidenceKeys', 'segments']) {
+  for (const k of ['coverageCommitment', 'coverageKeyCount', 'profileAnswersCommitment', 'negativeEvidenceCommitment', 'segments']) {
     assert.match(joined, new RegExp(k), `必须逐组报出与重算值不一致:缺 ${k}`);
   }
   // 反过来:task 里若**塞回** key 明细,同样判非法(那条通道必须关死)
