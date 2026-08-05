@@ -1469,6 +1469,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-05T05:05:46.285Z",
       "lastSeen": "2026-08-05T05:05:46.285Z"
+    },
+    {
+      "fingerprint": "auto-review-race-author-merged-during-review",
+      "tier": "by-design",
+      "title": "auto 独立审查进行期间作者自行合并 PR——pre-merge-check state 检查兜底，无流程缺口",
+      "detail": "#489(2026-08-05):隔离 worktree 独立审查约 6 分钟期间,作者 aj0928 自行合并该 PR(merge c46518db,head 与审查目标一致)。审查结论 pass 与实际合并一致,pre-merge-check 在落地前重查 state=MERGED 正确拦截重复合并。属真人决策类竞态,由真人作者在审查窗口内手动落地;记录计数供统计该竞态频率。其余候选(#497)审查打回、#484 命中 securityReviewPaths 转人工,均无 skill 流程缺口。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-05T06:15:28.514Z",
+      "lastSeen": "2026-08-05T06:15:28.514Z"
     }
   ]
 }

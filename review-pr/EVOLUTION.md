@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `auto-review-race-author-merged-during-review` **auto 独立审查进行期间作者自行合并 PR——pre-merge-check state 检查兜底，无流程缺口** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
+  - 现象:#489(2026-08-05):隔离 worktree 独立审查约 6 分钟期间,作者 aj0928 自行合并该 PR(merge c46518db,head 与审查目标一致)。审查结论 pass 与实际合并一致,pre-merge-check 在落地前重查 state=MERGED 正确拦截重复合并。属真人决策类竞态,由真人作者在审查窗口内手动落地;记录计数供统计该竞态频率。其余候选(#497)审查打回、#484 命中 securityReviewPaths 转人工,均无 skill 流程缺口。
 - `conflict-p1-skip` **冲突 + 未收敛 P1 的 PR 本轮跳过** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
   - 现象:PR #489: DIRTY 冲突 + 上一轮 P1 未在 head 上收敛,作者 aj0928 在 exemptAuthors 且 selfFixAuthors 空,按 SKILL 5.5 门槛(审查需 0 P0/P1)不满足,skip 等作者修
 - `deps-security-review-skip` **依赖类 PR(deps bump)命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
