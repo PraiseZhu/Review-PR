@@ -898,6 +898,7 @@ node "<SKILL_ROOT>/scripts/deliver-review-segment.mjs" <N> --task <task.json> \
 ```jsonc
 {
   "schemaVersion": "rro-1",
+  "snapshotHash": "<当前 snapshotHash;必需且必须等于任务里那一个——答卷绑定它所审的快照>",
   "findingFamilies": [ { "family_id": "f1", "invariant": "<一句话不变量>", "severity": "P0|P1",
     "manifestations": [ { "path": "", "line": 1, "evidence": "", "impact": "", "fix": "", "verification": "", "severity": "P1" } ],
     "fixGuidance": "修复必须覆盖该不变量的全部路径，包括本报告未点名处" } ],
@@ -906,7 +907,7 @@ node "<SKILL_ROOT>/scripts/deliver-review-segment.mjs" <N> --task <task.json> \
   "profileAnswers":    [ { "profileId": "test-infra", "fileId": "", "checkId": "",
     "answer": "checked-clean|finding|not-applicable", "hunkId": "", "findingRef": { "family_id": "f1", "manifestationIndex": 0 },
     "reasonCode": "", "explanation": "" } ],
-  "segmentReceipts":   [ { "segmentId": "seg-01", "receivedOrder": 1,
+  "segmentReceipts":   [ { "segmentId": "seg-01", "receivedOrder": 1, "snapshotHash": "<同上>",
     "coverageKeys": [ { "kind": "hunk", "fileId": "", "hunkId": "" } ] } ],
   "findingDispositions": [ { "findingId": "<task 注入的 id>", "disposition": "resolved|invalidated",
     "evidence": { "kind": "diff-anchor", "snapshotHash": "<当前 snapshotHash>", "fileId": "", "hunkId": "", "note": "" },
@@ -926,7 +927,10 @@ node "<SKILL_ROOT>/scripts/deliver-review-segment.mjs" <N> --task <task.json> \
 - `accepted-risk` **不在你的输出里**——它只走交互确认通道（auto 模式无此出口）；
 - required `verificationGap` 非空、必答缺项、覆盖对账不符、注入的 open 未 disposition、
   preflight 未完成、profile 配置非法，任一即 `invalid`；
-- required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受。
+- required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受；
+- 顶层与每段回执的 `snapshotHash` 都必需且必须等于当前——**旧答卷不得跨 snapshot 重放**。
+  这条挡的是「base 前进但 diff 与 coverage key 逐字节相同」时把上一轮答卷原样再交一次：
+  重算 task/preflight 验的是「任务与快照」，证明不了「这份答卷属于这个快照」。
 
 > **R6 诚实边界（机器承诺到哪为止）**：机器校验的是**对象绑定**（证据挂在哪个
 > fileId/hunkId）、**快照新鲜度**（snapshotHash 是否当前）、**引用存在性与声明一致性**

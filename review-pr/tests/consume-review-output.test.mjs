@@ -115,7 +115,9 @@ function compliant(tf, over = {}) {
     return null;
   };
   return OUT({
-    segmentReceipts: (task.segments ?? []).map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, coverageKeys: seg.assignedCoverageKeys })),
+    // 答卷必须绑定它所审的 snapshot(顶层 + 每段回执),第 3 轮核验 BLOCKER
+    snapshotHash: task.snapshotHash,
+    segmentReceipts: (task.segments ?? []).map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, snapshotHash: task.snapshotHash, coverageKeys: seg.assignedCoverageKeys })),
     profileAnswers: (task.requiredProfileAnswers ?? []).map((r) => ({
       profileId: r.profileId, fileId: r.fileId, checkId: r.checkId, answer: 'checked-clean', hunkId: hunkOf(r.fileId),
     })),
@@ -312,12 +314,12 @@ test('⑫ 覆盖对账:漏段/段内集合不符/段内重复/投递序号不符
   const f = setup();
   const tf = taskFile(f);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  const full = task.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, coverageKeys: s.assignedCoverageKeys }));
+  const full = task.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.assignedCoverageKeys }));
   assert.equal(round(f, { segmentReceipts: full }, { tf }).json.verdict, 'clean');
   for (const receipts of [
     [],
-    [{ segmentId: full[0].segmentId, receivedOrder: full[0].receivedOrder, coverageKeys: [] }],
-    [{ segmentId: full[0].segmentId, receivedOrder: full[0].receivedOrder, coverageKeys: [...full[0].coverageKeys, ...full[0].coverageKeys] }],
+    [{ ...full[0], coverageKeys: [] }],
+    [{ ...full[0], coverageKeys: [...full[0].coverageKeys, ...full[0].coverageKeys] }],
     full.map((s) => ({ ...s, receivedOrder: s.receivedOrder + 1 })), // 顺序不符(乱序/未按序投递)
   ]) {
     const bad = round(f, { segmentReceipts: receipts }, { tf });
@@ -532,4 +534,43 @@ test('⑲ R4 第 2 轮核验 BLOCKER:分段必须真投递——零投递/缺段
   // 回执声称一个没投递过的 order → invalid
   const forged = compliant(tf, { segmentReceipts: [{ segmentId: 'seg-99', receivedOrder: 9, coverageKeys: [] }] });
   assert.equal(run(f, forged, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'invalid');
+});
+
+test('⑳ R1a 第 3 轮核验 BLOCKER:非法 --mode / 坏 preflight / 坏 confirm / wrong-type 字段,一律撤销旧 clean 且记 retry', () => {
+  const f = setup();
+  const ok = round(f);
+  assert.equal(ok.json.verdict, 'clean');
+  const good = compliant(ok.taskPath);
+  const base = ['--task', ok.taskPath, '--preflight', ok.preflightPath];
+
+  const cases = [
+    ['非法 --mode', () => run(f, good, ['--mode', 'bogus', ...base])],
+    ['坏 preflight JSON', () => {
+      const bad = join(f.work, `pf-broken-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(bad, '{broken');
+      return run(f, good, ['--mode', 'auto', '--task', ok.taskPath, '--preflight', bad]);
+    }],
+    ['坏 confirm JSON', () => {
+      const bad = join(f.work, `cf-broken-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(bad, '{broken');
+      return run(f, good, ['--mode', 'interactive', ...base, '--confirm', bad]);
+    }],
+    ['confirm 不是数组', () => {
+      const bad = join(f.work, `cf-obj-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(bad, '{"a":1}');
+      return run(f, good, ['--mode', 'interactive', ...base, '--confirm', bad]);
+    }],
+    ['segmentReceipts 是对象(wrong-type)', () => run(f, { ...good, segmentReceipts: {} }, ['--mode', 'auto', ...base])],
+    ['profileAnswers 是字符串(wrong-type)', () => run(f, { ...good, profileAnswers: 'nope' }, ['--mode', 'auto', ...base])],
+  ];
+  for (const [label, exec] of cases) {
+    // 先把回执恢复成 clean,确保每个用例都是"旧 clean 存在"的起点
+    assert.equal(round(f).json.verdict, 'clean', `${label}:前置恢复 clean 失败`);
+    assert.equal(readReceipt(f).verdict, 'clean');
+    const r = exec();
+    assert.ok(['invalid', 'blocked'].includes(r.json.verdict), `${label}:应判 invalid,得到 ${r.json.verdict}`);
+    assert.notEqual(r.r.status, 0, `${label}:不得以 0 退出`);
+    assert.equal(readReceipt(f).verdict, 'dirty', `${label}:必须撤销同 snapshot 的旧 clean`);
+    assert.ok(r.json.attempts >= 1, `${label}:必须记 retry(否则可以无限次试)`);
+  }
 });

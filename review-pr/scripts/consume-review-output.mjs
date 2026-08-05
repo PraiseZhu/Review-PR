@@ -37,6 +37,10 @@ import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint } from '.
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const setEq = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
+/** 只在 shape 校验通过时才把数组字段交给下游;否则一律当空数组。
+ *  第 3 轮核验:schema 已判 invalid 后仍把 wrong-type 字段(如 `segmentReceipts:{}`)送进
+ *  `.map` 会抛到最外层 catch,于是"invalid"这一轮既不写 non-clean 也不记 retry。 */
+const arr = (ok, v) => (ok && Array.isArray(v) ? v : []);
 
 /** retry 记账(同 snapshot 维度;snapshot 漂移即重置)。 */
 function bumpAttempts(pr, snapshotHash, invalid) {
@@ -49,10 +53,14 @@ function bumpAttempts(pr, snapshotHash, invalid) {
   return attempts;
 }
 
+// 模块级 finalize:让最外层 catch 也能撤销旧 clean(第 3 轮核验 BLOCKER——非法 --mode、
+// malformed preflight/confirm、wrong-type 字段引发的抛错此前一路落到 fail(),既不写
+// non-clean 也不记 retry,已有的同 snapshot clean 被完整保留)。
+let FINALIZE = null;
+
 try {
   const pr = parsePR(process.argv[2]);
   const mode = argOf('--mode');
-  if (mode !== 'auto' && mode !== 'interactive') fail(new Error('缺 --mode auto|interactive'));
   const baseRefOid = (argOf('--base') ?? '').toLowerCase();
   const headRefOid = (argOf('--head') ?? '').toLowerCase();
 
@@ -75,13 +83,15 @@ try {
       },
     });
     print({
-      ok: false, pr, mode, verdict, reasons, blocked: attempts.count >= 3, attempts: attempts.count,
+      ok: false, pr, mode: mode ?? null, verdict, reasons, blocked: attempts.count >= 3, attempts: attempts.count,
       snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
       note: '已写 non-clean 回执覆盖撤销同 snapshot 的旧 clean(输入级失败不得沿用上次的清白)',
     });
     process.exit(2);
   };
+  FINALIZE = bail;
 
+  if (mode !== 'auto' && mode !== 'interactive') bail('invalid', ['缺 --mode auto|interactive']);
   const outputFile = argOf('--output');
   if (!outputFile || !existsSync(outputFile)) bail('invalid', ['缺 --output <rro-1.json>']);
   if (snapshotThrew) bail('invalid', [`DiffSnapshot 构建失败:${snapshotThrew}(fail-closed)`]);
@@ -123,7 +133,7 @@ try {
   let shape;
   try {
     output = JSON.parse(rawOutput);
-    shape = validateReviewOutput(output, { injectedOpenIds });
+    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash });
   } catch (e) {
     shape = { ok: false, errors: [`输出不是合法 JSON:${e.message}`] };
     output = {};
@@ -131,7 +141,10 @@ try {
 
   // ── preflight 结果(SC-R2 产物;缺文件 = 本轮没跑 preflight → fail-closed)──
   const preflightFile = argOf('--preflight');
-  const preflight = preflightFile && existsSync(preflightFile) ? readJson(preflightFile) : null;
+  let preflight = null;
+  if (preflightFile && existsSync(preflightFile)) {
+    try { preflight = readJson(preflightFile); } catch (e) { bail('invalid', [`preflight 文件不可读:${e.message}(fail-closed)`]); }
+  }
   const preflightIncomplete = !preflight || preflight.complete !== true || preflight.snapshotHash !== snapshot.snapshotHash;
 
   // ── 外部对账 flags(一律拿**重算值**做基准)──
@@ -150,15 +163,15 @@ try {
   const delivery = loadDeliveries(deliveryPathFor(STATE_DIR, pr));
   const deliveryReasons = reconcileDeliveries({
     loaded: delivery, snapshotHash: snapshot.snapshotHash,
-    segments: auth.segments, receipts: output.segmentReceipts ?? [],
+    segments: auth.segments, receipts: arr(shape.ok, output.segmentReceipts),
   });
   if (deliveryReasons.length > 0) flags.segmentsNotDelivered = true;
 
   // 覆盖对账(SC-R4):逐 segment 精确集合相等 + 并集 === 全集
   {
-    const claimedBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, new Set((s.coverageKeys ?? []).map(coverageKeyStr))]));
-    const orderBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, s.receivedOrder]));
-    let okAll = (output.segmentReceipts ?? []).length === auth.segments.length;
+    const claimedBySeg = new Map((arr(shape.ok, output.segmentReceipts)).map((s) => [s.segmentId, new Set((s.coverageKeys ?? []).map(coverageKeyStr))]));
+    const orderBySeg = new Map((arr(shape.ok, output.segmentReceipts)).map((s) => [s.segmentId, s.receivedOrder]));
+    let okAll = (arr(shape.ok, output.segmentReceipts)).length === auth.segments.length;
     const union = new Set();
     for (const seg of auth.segments) {
       const want = new Set(seg.assignedCoverageKeys.map(coverageKeyStr));
@@ -174,7 +187,7 @@ try {
   {
     const want = new Set(auth.requiredProfileAnswers.map(profileAnswerKeyStr));
     const got = new Set();
-    for (const a of output.profileAnswers ?? []) {
+    for (const a of arr(shape.ok, output.profileAnswers)) {
       if (a?.answer === 'checked-clean') {
         const set = validHunkByFile.get(a.fileId);
         if (!set || !set.has(a.hunkId)) { flags.staleProfileAnchor = true; continue; }
@@ -186,9 +199,9 @@ try {
   // required 负向证据对账(SC-R6):required key 只能由 executed 条目满足(N/A 不算)
   {
     const want = new Set(auth.requiredNegativeEvidenceKeys.map(negativeKeyStr));
-    const runById = new Map((output.verificationRuns ?? []).map((r) => [r?.runId, r]));
+    const runById = new Map((arr(shape.ok, output.verificationRuns)).map((r) => [r?.runId, r]));
     const got = new Set();
-    for (const n of output.negativeEvidence ?? []) {
+    for (const n of arr(shape.ok, output.negativeEvidence)) {
       if (n?.kind !== 'executed' || n.snapshotHash !== snapshot.snapshotHash) continue;
       const run = runById.get(n.verificationRunId);
       if (!run || run.command !== n.command || (run.outputAnchor ?? run.outputDigest) !== n.outputAnchor) {
@@ -206,7 +219,7 @@ try {
   if (shape.ok) {
     const want = new Set(candidates.map((c) => c.candidateId));
     const answered = new Map();
-    for (const a of output.escapeAssessment ?? []) {
+    for (const a of arr(shape.ok, output.escapeAssessment)) {
       if (!want.has(a.candidateId) || answered.has(a.candidateId)) { flags.escapeAssessmentMismatch = true; continue; }
       answered.set(a.candidateId, a);
     }
@@ -228,13 +241,18 @@ try {
   }
   const confirmFile = argOf('--confirm');
   if (confirmFile && existsSync(confirmFile)) {
-    for (const c of readJson(confirmFile)) {
+    let confirmations = null;
+    try {
+      confirmations = readJson(confirmFile);
+      if (!Array.isArray(confirmations)) throw new Error('confirm 文件须是数组');
+    } catch (e) { bail('invalid', [`confirm 文件不可用:${e.message}(fail-closed)`]); }
+    for (const c of confirmations) {
       const r = applyInteractiveConfirmation({ entries, confirmation: { ...c, snapshotHash: snapshot.snapshotHash }, mode });
       if (r.error) ledgerErrors.push(r.error);
       else entries = r.entries;
     }
   }
-  const dispositioned = new Set((output.findingDispositions ?? []).map((d) => d.findingId));
+  const dispositioned = new Set((arr(shape.ok, output.findingDispositions)).map((d) => d.findingId));
   if (shape.ok && injectedOpenIds.some((id) => !dispositioned.has(id) && entries.find((e) => e.findingId === id && isEffectiveOpen(e, snapshot.snapshotHash)))) {
     flags.missingDispositions = true;
   }
@@ -335,5 +353,13 @@ try {
   });
   process.exit(verdict === 'clean' ? 0 : 2);
 } catch (e) {
+  // 兜底:未预期异常同样不得让同 snapshot 的旧 clean 留着(第 3 轮核验 BLOCKER)。
+  // FINALIZE 在 pr/snapshot 已知之后才被装上;装不上说明连 PR 号都没解析出来,那时不存在
+  // "沿用上次清白"的风险(回执按 PR 号定位),照原样 fail 即可。
+  if (FINALIZE) {
+    try {
+      FINALIZE('invalid', [`未预期异常:${String(e?.message ?? e).slice(0, 300)}(已撤销同 snapshot 旧 clean,fail-closed)`]);
+    } catch { /* FINALIZE 自身失败 → 落到下面的 fail */ }
+  }
   fail(e);
 }

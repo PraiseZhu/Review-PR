@@ -45,10 +45,21 @@ export const NA_REASON_CODES = ['doc-only', 'comment-only', 'generated-file', 'p
  * @param {object} ctx { injectedOpenIds: string[] } build-review-task 注入的历史 effective-open findingId 清单
  * @returns {{ ok: boolean, errors: string[] }}
  */
-export function validateReviewOutput(output, { injectedOpenIds = [] } = {}) {
+export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null } = {}) {
   const errors = [];
   if (output === null || typeof output !== 'object' || Array.isArray(output)) {
     return { ok: false, errors: ['输出不是 JSON 对象'] };
+  }
+  // 顶层 snapshotHash **必需且必须等于当前**(第 3 轮核验 BLOCKER):此前答卷本身不绑
+  // snapshot,于是"base 前进但 diff 与 coverage key 完全相同"时,把旧答卷原样重放就能
+  // 再拿一次 clean(实测 exit=0)。consumer 侧重算 task/preflight 挡不住这条——那验的是
+  // "任务与快照",不是"这份答卷属于这个快照"。
+  if (snapshotHash != null) {
+    if (!isStr(output.snapshotHash)) {
+      errors.push('顶层缺 snapshotHash(答卷必须绑定它所审的那个 snapshot)');
+    } else if (output.snapshotHash !== snapshotHash) {
+      errors.push(`顶层 snapshotHash 不是当前 snapshot(答卷=${output.snapshotHash},当前=${snapshotHash})——旧答卷不得跨 snapshot 重放`);
+    }
   }
   if (output.schemaVersion !== REVIEW_OUTPUT_SCHEMA_VERSION) {
     errors.push(`schemaVersion 缺失或不受支持(需 ${REVIEW_OUTPUT_SCHEMA_VERSION},got ${JSON.stringify(output.schemaVersion)})`);
@@ -180,6 +191,11 @@ export function validateReviewOutput(output, { injectedOpenIds = [] } = {}) {
       // 顺序投递协议(SC-R4):必须自报投递序号(与 task.segments[].order 对账)
       if (!isInt(r.receivedOrder) || r.receivedOrder < 1) {
         errors.push(`segmentReceipts[${i}] 缺 receivedOrder(投递序号,正整数)——分段审查必须自报本段是第几次投递`);
+      }
+      // 每段回执也绑 snapshot(第 3 轮核验:整份答卷重放之外,还要挡"混用不同 snapshot 的
+      // 分段回执"这种拼装)
+      if (snapshotHash != null && r.snapshotHash !== snapshotHash) {
+        errors.push(`segmentReceipts[${i}] 的 snapshotHash 不是当前 snapshot(${r.snapshotHash ?? '缺'})`);
       }
       if (segIds.has(r.segmentId)) errors.push(`segmentReceipts[${i}] segmentId 重复:${r.segmentId}`);
       segIds.add(r.segmentId);

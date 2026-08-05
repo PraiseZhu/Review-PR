@@ -101,9 +101,10 @@ test('R8 行为级:同一 snapshot 漂移时,preflight / builder / consumer / �
     assert.equal(d.status, 0, d.stdout + d.stderr);
   }
   const answer = {
-    schemaVersion: 'rro-1', findingFamilies: [], verificationGaps: [], verificationRuns: [],
+    schemaVersion: 'rro-1', snapshotHash: task0.snapshotHash,
+    findingFamilies: [], verificationGaps: [], verificationRuns: [],
     profileAnswers: [], findingDispositions: [], negativeEvidence: [], escapeAssessment: [],
-    segmentReceipts: task0.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, coverageKeys: s.assignedCoverageKeys })),
+    segmentReceipts: task0.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task0.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
     modelVerdictNote: '',
   };
   const outFile = join(f.work, 'out.json');
@@ -168,4 +169,84 @@ test('R8 隔离 baseRefOid 这一维:base 分支前进到**不在 head 祖先链
   assert.equal(s0.diffDigest, s1.diffDigest, '前提:diff 必须一样');
   assert.notEqual(s0.baseRefOid, s1.baseRefOid, '前提:只有 baseRefOid 不同');
   assert.notEqual(s0.snapshotHash, s1.snapshotHash, 'base 分支移动即换身份——旧证据不得继续算当前有效');
+});
+
+test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与 coverage key 完全相同也不行)', () => {
+  // 场景刻意构造成"最难拦"的一种:base 移到不在 head 祖先链上的提交 → mergeBase 与 diff
+  // 完全不变、coverage key 逐字节相同,只有 snapshotHash 变了。此时重建 task/preflight/
+  // delivery 之后把**旧答卷**原样重放,若答卷本身不绑 snapshot 就会再拿一次 clean(实测)。
+  const work = mkdtempSync(join(tmpdir(), 'replay-'));
+  const repo = join(work, 'repo');
+  mkdirSync(repo);
+  git(['init', '-q', '-b', 'main'], repo);
+  git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
+  writeFileSync(join(repo, 'a.mjs'), 'export const a = 1;\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'c0'], repo);
+  const c0 = git(['rev-parse', 'HEAD'], repo);
+  git(['checkout', '-q', '-b', 'feature'], repo);
+  writeFileSync(join(repo, 'c.mjs'), 'export const c = 1;\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'feature'], repo);
+  const head = git(['rev-parse', 'HEAD'], repo);
+  git(['checkout', '-q', 'main'], repo);
+  writeFileSync(join(repo, 'unrelated.mjs'), 'export const u = 1;\n');
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', 'unrelated'], repo);
+  const c2 = git(['rev-parse', 'HEAD'], repo);
+
+  const stateDir = join(work, 'state');
+  mkdirSync(stateDir);
+  const rulesFile = join(work, 'pr-rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ admins: [] }));
+  const bodyFile = join(work, 'body.md');
+  writeFileSync(bodyFile, '普通改动。\n');
+  const f = { work, repo, base0: c0, base1: c2, head, stateDir, bodyFile,
+    env: { ...process.env, REVIEW_PR_REPO_ROOT: repo, REVIEW_PR_STATE_DIR: stateDir, REVIEW_PR_RULES_FILE: rulesFile } };
+
+  const s0 = buildDiffSnapshot({ repoRoot: repo, baseRefOid: c0, headOid: head });
+  const s1 = buildDiffSnapshot({ repoRoot: repo, baseRefOid: c2, headOid: head });
+  assert.equal(s0.diffDigest, s1.diffDigest, '前提:diff 完全相同');
+  assert.notEqual(s0.snapshotHash, s1.snapshotHash, '前提:snapshot 身份不同');
+
+  const cycle = (baseOid, tag) => {
+    const t = join(work, `t-${tag}.json`);
+    const pf = join(work, `pf-${tag}.json`);
+    runJson([BUILD, '469', '--base', baseOid, '--head', head, '--out-task', t, '--out-prompt', `${t}.md`, '--pr-body-file', bodyFile], f);
+    runJson([PREFLIGHT, '--base', baseOid, '--head', head, '--out', pf], f);
+    const task = JSON.parse(readFileSync(t, 'utf8'));
+    for (let i = 1; i <= task.segments.length; i += 1) {
+      const d = spawnSync('node', [DELIVER, '469', '--task', t, '--base', baseOid, '--head', head, '--order', String(i)], { cwd: repo, env: f.env, encoding: 'utf8' });
+      assert.equal(d.status, 0, d.stdout + d.stderr);
+    }
+    return { t, pf, task };
+  };
+  const answerFor = (task) => ({
+    schemaVersion: 'rro-1', snapshotHash: task.snapshotHash,
+    findingFamilies: [], verificationGaps: [], verificationRuns: [],
+    profileAnswers: [], findingDispositions: [], negativeEvidence: [], escapeAssessment: [],
+    segmentReceipts: task.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
+    modelVerdictNote: '',
+  });
+
+  // ① 在 base0 上正常拿一次 clean
+  const a = cycle(c0, 'a');
+  const oldAnswer = answerFor(a.task);
+  const oldFile = join(work, 'old-out.json');
+  writeFileSync(oldFile, JSON.stringify(oldAnswer));
+  const first = runJson([CONSUME, '469', '--output', oldFile, '--base', c0, '--head', head, '--task', a.t, '--preflight', a.pf, '--mode', 'auto'], f);
+  assert.equal(first.json.verdict, 'clean', first.json.reasons?.join(';'));
+
+  // ② base 移动后:task/preflight/delivery 全部重建(所以那三样都"新"),但答卷是旧的
+  const b = cycle(c2, 'b');
+  assert.deepEqual(a.task.coverageKeys ?? null, b.task.coverageKeys ?? null, '前提:两轮的 coverage 声明一致');
+  const replay = runJson([CONSUME, '469', '--output', oldFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto'], f);
+  assert.equal(replay.json.verdict, 'invalid', `旧答卷跨 snapshot 重放必须被拒:${JSON.stringify(replay.json).slice(0, 400)}`);
+  assert.match(replay.json.reasons.join(';'), /snapshotHash/);
+
+  // ③ 对照:换成绑定新 snapshot 的答卷 → clean(证明不是"一律拒")
+  const newFile = join(work, 'new-out.json');
+  writeFileSync(newFile, JSON.stringify(answerFor(b.task)));
+  const fresh = runJson([CONSUME, '469', '--output', newFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto'], f);
+  assert.equal(fresh.json.verdict, 'clean', fresh.json.reasons?.join(';'));
 });
