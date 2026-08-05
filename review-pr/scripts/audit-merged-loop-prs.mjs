@@ -23,7 +23,7 @@
 // 下轮重试);revert PR 创建成功才记 revertPr。两者独立幂等,互不阻塞。
 //
 // 用法: node scripts/audit-merged-loop-prs.mjs [--dry-run] [--now <iso>]
-//         [--input-merged <json>] [--receipt-dir-probe]
+//         [--input-merged <json>]
 //   --dry-run       只判定与打印,不发告警、不开 revert PR、不写游标/台账;
 //   --input-merged  测试口:JSON 文件 [{number,title,body,headRefOid,mergeCommitOid,mergedAt}]
 //                   绕过 gh 查询(与 reconcile-merged 的 --input-prs 同款测试缝);

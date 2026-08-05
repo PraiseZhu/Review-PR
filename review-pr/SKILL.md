@@ -750,7 +750,9 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
 - `t1BodyMarkers`/`t2BodyMarkers`：body 里 loop 自己声明 T-level 的 metadata 行
   （锚定整行的正则，逐行匹配），命中优先采信；都没命中退回台账的 `cluster.tCap`；
 - `defaultWhenAmbiguous`：身份已确认但读不出 T-level 时的保守默认（`skip`）；
-- `forceVerdict`（缴械配套，owner 2026-08-04 决策 mergeAuthority=review-pr-only）：
+- `forceVerdict`（**缴械配套**——「缴械」指 owner 2026-08-04 决策 `mergeAuthority=review-pr-only`：
+  剥除目标仓库自身 loop 的自动合并权，合并权整体移交 review-pr 巡审；本节 A2/A4/A5 均是这条
+  决策在 skill 侧的配套落地）：
   配置后身份确认即**强制 t2 进全套审查**，优先于 `t1BodyMarkers`/`t2BodyMarkers` 与
   `cluster.tCap`——loop 侧数据（body 标记/台账 tCap）漂移回 T1 也不能再造成跳审。
   唯一有意义的取值是 `"t2"`；任何非空值都收敛为 t2（fail-safe 朝「进审」方向,
@@ -767,10 +769,12 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
   `authorizedFastMergeAvailable`（`blockedReason=loop-managed-pr-fast-merge-forbidden`）
   ——loop 的 PR-write token 能发评论，不封则一句 `/approve-merge <sha>` 就能骗巡审代合。
   3.8 末尾「authorized-fast-merge 可压过安全审查门」的例外对 loop PR 因此不存在；
-- 合并后的致谢播报见 `notify-merge-ack.mjs`/`notify-merge-backfill.mjs`：判定同一份
-  `detectLoopExclusion`，**只跳「仍自管」的 PR（verdict=t1/skip）**——t2/force-review
-  的 loop PR 由 review-pr 合并，致谢也由本侧播报（A4；缴械后一刀切会把全部 t2 致谢吞掉）。
-  `mergeAckNotify.notifyModule` 未配置时播报能力整体关闭；
+- 合并后的致谢播报（A4，缴械配套）：`notify-merge-ack.mjs` 挂在 review-pr **自己执行合并**
+  的流程末尾；`notify-merge-backfill.mjs` 每轮 auto 补扫一次近期 merged PR，补发维护者在
+  GitHub 网页手动合并、agent 无从感知因而漏播的致谢（两者共享同一份去重台账，互认已播）。
+  两者判定同一份 `detectLoopExclusion`，**只跳「仍自管」的 PR（verdict=t1/skip）**——
+  t2/force-review 的 loop PR 由 review-pr 合并，致谢也由本侧播报（缴械后一刀切会把全部
+  t2 致谢吞掉）。`mergeAckNotify.notifyModule` 未配置时播报能力整体关闭；
 - **事后审计闸**（A5，缴械配套）：`scripts/audit-merged-loop-prs.mjs` 每轮扫上轮游标
   以来 merged 的 loop 托管 PR，核 head-bound clean 审查回执（receipt 层三条：存在 /
   headRefOid 逐字相等 / verdict=clean，不重建 stage2 hash——保证等级如实声明在脚本头）。
