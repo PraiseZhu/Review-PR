@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `owner-merged-review-target-mid-review` **审查期间目标 PR 被 owner 手工合并** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
+  - 现象:PR #500 在独立审查运行期间被 owner(PraiseZhu)手动合并(merged_by=PraiseZhu,2026-08-05T11:02Z,merge commit 69d05b9)。本流程未调用 merge-pr.mjs(merges.jsonl 无 #500 记录);pre-merge-check 在合并阶段正确捕获 state=MERGED,流程 fail-safe 收尾,审查结论(0 P0/P1)与合并方向一致,无漏判。观察:owner 活跃时会直接合并自有 PR、不等自动审查;该路径按 by-design 记录频率,不因出现多次自动放开任何门。
 - `auto-review-race-author-merged-during-review` **auto 独立审查进行期间作者自行合并 PR——pre-merge-check state 检查兜底，无流程缺口** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
   - 现象:#489(2026-08-05):隔离 worktree 独立审查约 6 分钟期间,作者 aj0928 自行合并该 PR(merge c46518db,head 与审查目标一致)。审查结论 pass 与实际合并一致,pre-merge-check 在落地前重查 state=MERGED 正确拦截重复合并。属真人决策类竞态,由真人作者在审查窗口内手动落地;记录计数供统计该竞态频率。其余候选(#497)审查打回、#484 命中 securityReviewPaths 转人工,均无 skill 流程缺口。
 - `conflict-p1-skip` **冲突 + 未收敛 P1 的 PR 本轮跳过** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
