@@ -16,6 +16,7 @@ import { print, fail, parsePR, REPO_ROOT, STATE_DIR, loadRules } from './lib.mjs
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { deliveryPathFor, loadDeliveries, saveDeliveries, appendDelivery } from './lib.review-delivery.mjs';
 import { computeReviewRequirements, coverageKeyStr, coverageCommitment } from './lib.review-requirements.mjs';
+import { validatePrescanConfig, readPrescanArtifact } from './lib.prescan.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
@@ -102,6 +103,45 @@ try {
   const segHunkKeys = new Set(seg.assignedCoverageKeys.filter((k) => k.kind === 'hunk').map((k) => `${k.fileId}:${k.hunkId}`));
   const profileRequirements = auth.requiredProfileAnswers.filter((x) => fileOwnerOrder.get(x.fileId) === seg.order);
   const negativeRequirements = auth.requiredNegativeEvidenceKeys.filter((x) => segHunkKeys.has(`${x.fileId}:${x.hunkId}`));
+
+  // SC-4.2: 本段涉及的 prescan observations——**现场按 snapshot/file/line 重算归属**,
+  // 不信 artifact 自报的段归属(artifact 里没有段信息,本就无从自报)。
+  //
+  // hunk 级归属(第 1 轮盲审 P1-3 修复):observation 只带 file/line,没有 fileId/hunkId,
+  // 此前只按 path 过滤——单文件多 hunk 跨段时,第 2 段的 observation 若与第 1 段同 path
+  // 会被误投给第 1 段(串段)。改为:该 observation 的 line 必须落在**本段实际分配到的
+  // 该文件 hunk** 的 addedNewLines 内才算属于本段;跨段共享同一文件时,不同段各自只认
+  // 自己 hunk 范围内的行号。
+  const prescanCfg = validatePrescanConfig(loadRules().prescan);
+  let prescanObservations = [];
+  if (prescanCfg.enabled && prescanCfg.valid) {
+    const prescanArtifact = readPrescanArtifact(STATE_DIR, pr);
+    if (prescanArtifact && prescanArtifact.snapshotHash === snapshot.snapshotHash && prescanArtifact.status === 'complete') {
+      // 本段每个文件允许的行号集合(file-kind key 允许该文件全部 hunk 的行;hunk-kind key
+      // 只允许该 hunkId 自己的 addedNewLines)
+      const allowedLinesByPath = new Map(); // path → Set<line>
+      for (const c of segmentContent) {
+        if (!c.path) continue;
+        if (!allowedLinesByPath.has(c.path)) allowedLinesByPath.set(c.path, new Set());
+        const set = allowedLinesByPath.get(c.path);
+        if (c.kind === 'hunk') {
+          const f = fileById.get(c.fileId);
+          const h = f?.hunks.find((x) => x.hunkId === c.hunkId);
+          for (const ln of h?.addedNewLines ?? []) set.add(ln);
+        } else {
+          // file-kind key:该文件本就整体归本段(无 hunk 概念,如 binary/mode-only),
+          // 允许该文件全部已知行(极端场景下 observation 落在此类文件上)。
+          const f = fileById.get(c.fileId);
+          for (const h of f?.hunks ?? []) for (const ln of h.addedNewLines ?? []) set.add(ln);
+        }
+      }
+      prescanObservations = (prescanArtifact.observations ?? []).filter((o) => {
+        const set = allowedLinesByPath.get(o.file);
+        return set && set.has(o.line);
+      });
+    }
+  }
+
   const payload = [
     `## 覆盖分段 ${seg.segmentId}(投递序号 ${seg.order} / 共 ${segments.length} 段)`,
     '',
@@ -122,12 +162,17 @@ try {
       ...negativeRequirements.map((x) => `- ${x.path} hunk \`${x.hunkId}\`(fileId \`${x.fileId}\`):${x.reason}`),
       '',
     ] : []),
+    ...(prescanObservations.length > 0 ? [
+      '### 本段预扫观察(advisory,需逐条 disposition)',
+      ...prescanObservations.map((o) => `- \`${o.observationId}\` ${o.file}:${o.line} [${o.category}]:${o.note}`),
+      '',
+    ] : []),
   ].join('\n');
   print({
     ok: true, pr, segmentId: seg.segmentId, order: seg.order, replayed: r.replayed === true,
     // 结构化明细:这是编排方唯一合法的取 key/必答项/负向 key 通道(task.json 里已不含明细)
     assignedCoverageKeys: seg.assignedCoverageKeys,
-    segmentContent, profileRequirements, negativeRequirements,
+    segmentContent, profileRequirements, negativeRequirements, prescanObservations,
     totalSegments: segments.length, deliveredOrders: r.deliveries.map((d) => d.order),
     remaining: segments.length - r.deliveries.length,
     snapshotHash: snapshot.snapshotHash, payload,

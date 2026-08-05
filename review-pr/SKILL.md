@@ -572,6 +572,58 @@ node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <hea
 `riskProfiles` 增量合并（目标仓可加不可删）；目标仓配置有非法项时内置照跑（继续多抓
 问题）但本轮判 `invalid`（声明过的高危检查不允许被悄悄摘掉）。
 
+### 3.0.3 预扫标注（R1，advisory，2026-08-05 final SC v2，默认关闭）
+
+阶段二独立审查**之前**可选的一层轻量机器辅助观察，用于捕捉"陈旧注释""漏改引用"
+"术语残留""测试 import 缺失""文档声明与实现不符""明显笔误"六类确定性 preflight
+（3.0.1）覆盖不到、但又不需要正式审查那样深的语义理解的问题。**默认
+`prescan.enabled:false`**（`pr-rules.json`），关闭时 task/prompt 与基线逐字节一致，
+不产出任何 artifact。
+
+**架构要点（与 submit-pr 的 Phase 1.5 自清洗预扫不是同一种机制）**：本 skill 审的是
+外部贡献者的 PR，lead 不能替作者改代码，所以预扫产物不是"自己修掉"，而是"标注给
+正式审查席处置"——机制上更接近数据，不是修复动作。执行侧本身不是脚本外拨的 HTTP
+调用：巡审会话本身已由 mini schedule 预设跑在特定模型上（如
+`deepseek/deepseek-v4-flash`），预扫是**会话内的一个步骤**，不需要、也不接受
+`apiKeyEnv`/`model`/`endpoint` 这类网络调用配置——`prescan` 配置只有 `enabled` 一个键。
+
+流程（`enabled:true` 时）：
+
+```bash
+node "<SKILL_ROOT>/scripts/prepare-prescan-segment.mjs" <N> --base <baseRefOid> --head <headRefOid> --order <1..N>
+```
+
+先过安全门（敏感内容命中/扫描失败 → 拒绝输出任何 patch，零内容外发），再按与阶段二
+同一 `buildSegments` 分段算法给出该段的 path/行区间/immutable patch。巡审会话对
+该段内容产出严格 JSON（六类白名单闭集，禁 verdict/severity/修复建议，无可疑项返回
+`[]`），交：
+
+```bash
+node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --order <1..N> --segment-id <segId> \
+  --base <baseRefOid> --head <headRefOid> --observations <observations.json>
+```
+
+严格校验（JSON 外任何文字/未知字段/未知 category/跨段文件引用/line 不在新增行/note
+空或超长一律整段拒绝，不"尽力解析部分内容"）；`observationId` 由机器派生，不接受
+模型自报。全部段记录完成后：
+
+```bash
+node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <baseRefOid> --head <headRefOid>
+```
+
+产出 `complete` artifact（三 hash 绑定：inputHash/policyHash/artifactHash），供
+`build-review-task.mjs` 读取填入 `task.prescan`（只留承诺字段与总数，不含明细）、
+`deliver-review-segment.mjs` 按段附带该段 observations 给阶段二审查会话。**正式
+审查 agent 必须对每条已投递的观察给出 `prescanAssessments[]` 里的
+`{observationId, disposition:"finding"|"dismissed", findingRef?, basis}`**——
+`finding` 需引用真实 `findingFamilies` 条目，`dismissed` 需非空依据；观察本身**不
+直接驱动 dirty**，只有确认后的正式 finding 才计入裁决。
+
+**T1 边界（如实声明）**：机器保证的是观察从生成到消费全程未被篡改、按段隔离投递、
+正式审查席逐条给出处置——**不能**验证观察内容本身的语义正确性（"这条注释是不是真的
+陈旧"仍是审查 agent 的判断）。`enabled:false`、或本轮状态为 `skipped`/`failed`，
+**不降低**任何既有机器保证（preflight/覆盖对账/负向证据/逃逸闭环照常运行）。
+
 ### 3.1 安全与隐私内容门（本阶段最先执行）
 
 任何 PR 都不允许携带凭证、密钥或个人隐私数据——这是先于格式门的第一道审计。

@@ -22,6 +22,7 @@ import {
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { loadKnownHazards, hazardsForPaths, resolveEscapeSources, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
+import { validatePrescanConfig, readPrescanArtifact } from './lib.prescan.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
@@ -111,6 +112,27 @@ try {
     relatedIssueCount: issueTexts.length,
   };
 
+  // SC-R1/R8: prescan 配置门——enabled:false/缺失时 task 不含 prescan 字段(关闭态兼容,
+  // 输出与基线逐字节一致)。enabled:true 且配置合法时,读取 pre-scan.mjs 已产出的 artifact
+  // (若已运行)并填入 task.prescan 承诺字段。artifact 缺失或 snapshot 漂移时不填
+  // (consumer 侧 SC-R8 会判 taskInvalid:enabled 但 task 缺 prescan → invalid)。
+  const prescanCfg = validatePrescanConfig(rules?.prescan);
+  if (prescanCfg.enabled && prescanCfg.valid) {
+    const prescanArtifact = readPrescanArtifact(STATE_DIR, pr);
+    if (prescanArtifact && prescanArtifact.snapshotHash === snapshot.snapshotHash) {
+      task.prescan = {
+        schemaVersion: prescanArtifact.schemaVersion,
+        status: prescanArtifact.status,
+        snapshotHash: prescanArtifact.snapshotHash,
+        inputHash: prescanArtifact.inputHash,
+        policyHash: prescanArtifact.policyHash,
+        artifactHash: prescanArtifact.artifactHash,
+        observationCount: prescanArtifact.observationCount,
+        reasonCode: prescanArtifact.reasonCode,
+      };
+    }
+  }
+
   // ── prompt 正文:必答项 / open findings / hazards / 分片 全部落进文本 ──
   const L = [];
   L.push(`# 阶段二独立审查任务 — PR #${pr}`, '');
@@ -155,6 +177,17 @@ try {
     // coverage hunk key,拿它就能伪造 segmentReceipts 绕过投递出口。只留计数。
     L.push(`本轮共 ${requiredNegativeEvidenceKeys.length} 处改动触及等待原语/断言/守卫——具体位置(path/fileId/hunkId/原因)**随对应分段投递给出**。`);
     L.push('', '对每处在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`,并在 `verificationRuns[]` 里登记对应 run。也就是:**把它弄坏一次,证明它真的会红**。', '');
+  }
+  // SC-4.1: prescan 状态声明——只给状态+总数,不含 observation 明细(明细随对应分段
+  // 由 deliver-review-segment.mjs 给出,与必答项/负向证据同一纪律)。
+  if (task.prescan) {
+    L.push('## 预扫标注(advisory,不构成 finding)', '');
+    if (task.prescan.status === 'complete' && task.prescan.observationCount > 0) {
+      L.push(`本轮预扫状态 \`${task.prescan.status}\`,共 ${task.prescan.observationCount} 条 advisory 观察——具体内容**随对应分段投递给出**。`, '');
+      L.push('每条已投递的观察必须在 `prescanAssessments[]` 里给 `{observationId, disposition, findingRef?, basis}`:`finding`(带本地引用 `{family_id, manifestationIndex}`,该观察确认为真实问题并已计入上方 findingFamilies)或 `dismissed`(带 basis,核实后判定非真实问题)。预扫观察本身**不直接构成** finding,也不驱动 dirty——只有你确认后的正式 finding 才计。', '');
+    } else {
+      L.push(`本轮预扫状态 \`${task.prescan.status}\`${task.prescan.reasonCode ? `(${task.prescan.reasonCode})` : ''}——无观察,不要求 disposition。`, '');
+    }
   }
   if (escapeCandidates.length > 0) {
     L.push('## 逃逸判定(escapeAssessment — 必须逐条作答,缺/多/未知一律 invalid)', '');

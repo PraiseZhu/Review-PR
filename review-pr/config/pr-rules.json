@@ -117,5 +117,8 @@
   "summaryBroadcast": {
     "command": null
   },
-  "loopPrExclusion": null
+  "loopPrExclusion": null,
+  "prescan": {
+    "enabled": false
+  }
 }

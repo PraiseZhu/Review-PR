@@ -33,6 +33,7 @@ import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAns
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
 import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
+import { validatePrescanConfig, readTrustedPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -179,13 +180,63 @@ try {
 
   const injectedOpenIds = Array.isArray(task.injectedOpenIds) ? task.injectedOpenIds : [];
 
+  // ── SC-6.1: prescan 独立重验——consumer 不信 task.prescan 的声明,重读 artifact 并
+  // 重算 policyHash/artifactHash/observationId 全集,与 task.prescan 逐项比对。任一不符
+  // 即 taskInvalid(与 escapeCandidates/knownHazards 同一纪律:task 只是审查方看到的
+  // 副本,权威来自现场重算)。ready 但 disabled 时 expectedPrescanObservationIds 为空数组。
+  //
+  // 第 1 轮盲审修复:
+  //   P1-1(enabled 但 task/artifact 双缺时静默放行)——原实现只在"task 声明但 artifact
+  //     缺"或"artifact 存在但 task 缺"两个分支报错,task 与 artifact **都缺失**(prescan
+  //     从未真正跑过预扫准备流程,只是配置里 enabled)时两个分支都不触发,taskInvalid 不增,
+  //     等价于放行。改为:enabled 时先统一判"authArtifact 是否存在且可信",再分流。
+  //   P1-2(artifactHash 未重算,只信 artifact 自带字段)——`readPrescanArtifact` 只是
+  //     JSON.parse,从不校验文件内容与其自带的 artifactHash 是否一致;攻击者篡改
+  //     observations 数组的同时不改 artifactHash 字段即可绕过。改为调用
+  //     readTrustedPrescanArtifact(与 pre-merge-check.mjs 共用同一重算校验实现,第 2 轮
+  //     盲审发现两处各自实现会漂移——premerge 那份当时漏了重算,统一成一份消灭该风险)。
+  const prescanCfg = validatePrescanConfig(rules?.prescan);
+  let expectedPrescanObservationIds = [];
+  if (prescanCfg.enabled && prescanCfg.valid) {
+    const trusted = readTrustedPrescanArtifact(STATE_DIR, pr);
+    const authPolicyHash = computePolicyHash({ limits: PRESCAN_LIMITS });
+    const authArtifact = trusted.ok ? trusted.artifact : null;
+    if (!trusted.ok && trusted.reason === 'tampered') {
+      taskErrors.push('prescan artifact 内容与其自带 artifactHash 不符(重算后不一致)——artifact 已损坏或被篡改,fail-closed');
+    }
+    if (task.prescan) {
+      // P1-1: enabled 且 task 声明了 prescan,artifact 必须真实存在且可信——不存在或
+      // 篡改校验已失败(authArtifact===null)都归入"缺失"这一分支,不再区分。
+      if (!authArtifact) {
+        taskErrors.push('prescan enabled 且 task 声明了 prescan,但 artifact 缺失或不可信(SC-6.1:enabled 但 artifact 不存在/被篡改,fail-closed)');
+      } else if (authArtifact.snapshotHash !== snapshot.snapshotHash) {
+        taskErrors.push(`prescan artifact 绑定的 snapshotHash 与当前不一致(artifact=${authArtifact.snapshotHash},当前=${snapshot.snapshotHash})`);
+      } else if (authArtifact.artifactHash !== task.prescan.artifactHash) {
+        taskErrors.push(`task.prescan.artifactHash 与现场重读的 artifact 不符(task=${task.prescan.artifactHash},现场=${authArtifact.artifactHash})——artifact 被篡改或 task 过期`);
+      } else if (authArtifact.policyHash !== authPolicyHash) {
+        taskErrors.push(`prescan artifact 绑定的 policyHash 与当前代码层策略不符(artifact=${authArtifact.policyHash},当前=${authPolicyHash})——category/上限已变,旧 artifact 失效`);
+      } else if (authArtifact.status === 'complete') {
+        expectedPrescanObservationIds = (authArtifact.observations ?? []).map((o) => o.observationId);
+      }
+      // status !== 'complete'(skipped/failed)时 expectedPrescanObservationIds 保持空数组
+      // ——SC-5.2:非 complete 状态不要求 assessment。
+    } else {
+      // P1-1: task 没声明 prescan 字段。此前只在"artifact 存在且 complete 且有观察"时
+      // 才报错,等价于"task/artifact 都缺失"时被静默放行(prescan 从未真正准备过,却
+      // enabled=true——多半是配置打开了但没人跑 prepare/record 流程)。enabled 时缺
+      // task.prescan **本身就是** taskInvalid,与 artifact 状态无关——task 应该总是
+      // 在 build-review-task 阶段尝试填充该字段(即使填不上也该有 status 记录原因)。
+      taskErrors.push('prescan enabled 但 task 缺 prescan 字段(SC-6.1:enabled 时 task 必须声明 prescan 状态,不存在"从未准备过"的静默放行路径)');
+    }
+  }
+
   // ── 输出解析 + 契约校验 ──
   const rawOutput = readFileSync(outputFile, 'utf8');
   let output = null;
   let shape;
   try {
     output = JSON.parse(rawOutput);
-    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash });
+    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash, expectedPrescanObservationIds });
   } catch (e) {
     shape = { ok: false, errors: [`输出不是合法 JSON:${e.message}`] };
     output = {};
@@ -388,6 +439,9 @@ try {
     // R7 第 4 轮核验:clean 的新鲜度也绑逃逸数据源与 canonical hazard 的**全内容**
     // (premerge 现场重算比对——clean 之后 PR body/关联 issue/canonical 变了,旧 clean 即 stale)
     escapeSourceHash: authEscapeSourceHash, knownHazardsHash: authKnownHazardsHash,
+    // SC-6.2: enabled 时 clean 回执额外绑 prescanHash(artifactHash);disabled 时不带
+    // 该字段——isReviewReceiptClean 的三态期望值(null=disabled)据此判定。
+    ...(prescanCfg.enabled && prescanCfg.valid && task.prescan?.artifactHash ? { prescanHash: task.prescan.artifactHash } : {}),
   };
   if (verdict === 'clean') {
     writeReviewReceipt({ pr, headRefOid, verdict: 'clean', p0p1Count: 0, bindings });

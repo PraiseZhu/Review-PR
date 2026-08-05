@@ -126,7 +126,7 @@ test('R8 行为级:同一 snapshot 漂移时,preflight / builder / consumer / �
   };
   const chk = (over) => isReviewReceiptClean({
     receipt, headRefOid: f.head, snapshotHash: s0.snapshotHash, ledgerHash: 'lh1-x',
-    escapeSourceHash: 'esh1-x', knownHazardsHash: 'khh1-x', ...over,
+    escapeSourceHash: 'esh1-x', knownHazardsHash: 'khh1-x', expectedPrescanHash: null, ...over,
   });
   assert.equal(chk({}), true);
   assert.equal(chk({ snapshotHash: s1.snapshotHash }), false,

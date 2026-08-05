@@ -48,6 +48,7 @@ import {
 } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
+import { validatePrescanConfig, readTrustedPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
 import { resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 
@@ -380,6 +381,28 @@ try {
   const expectedKnownHazardsHash = premergeHazards.incomplete !== true
     ? knownHazardsHash(premergeRelevant)
     : null;
+  // ── SC-6.3: prescan 独立重验——现场读配置+读 artifact+重算 policyHash+核对 snapshot,
+  // 派生 expectedPrescanHash 的三态之一:disabled→null;enabled 且 artifact 完整可信→
+  // artifactHash 字符串;enabled 但 artifact 缺失/损坏/policy 漂移/snapshot 漂移→
+  // 一个绝不匹配任何 receipt 的哨兵值(fail-closed,而不是 undefined——undefined 在
+  // isReviewReceiptClean 里语义是"调用方未升级",这里必须显式声明"已检查但不可信")。
+  //
+  // 第 2 轮盲审 P1(delta):此前只读 premergeArtifact.artifactHash **自带**字段当期望值,
+  // 从未重算——与 consume-review-output.mjs 的 P1-2 是同一个洞的另一半:consumer clean
+  // 之后若 artifact 文件内容被篡改但保留旧 artifactHash 字段,premerge 仍会让它匹配旧
+  // clean receipt 的 prescanHash,通过 stage2Clean。改为调用 readTrustedPrescanArtifact
+  // (与 consumer 共用同一重算校验实现,不再各自维护一份可能漂移的逻辑)。
+  const premergePrescanCfg = validatePrescanConfig(loadRules().prescan);
+  let expectedPrescanHash = null;
+  if (premergePrescanCfg.enabled && premergePrescanCfg.valid) {
+    const trusted = readTrustedPrescanArtifact(STATE_DIR, pr);
+    const premergePolicyHash = computePolicyHash({ limits: PRESCAN_LIMITS });
+    if (trusted.ok && trusted.artifact.snapshotHash === secSnapshot.snapshotHash && trusted.artifact.policyHash === premergePolicyHash) {
+      expectedPrescanHash = trusted.artifact.artifactHash;
+    } else {
+      expectedPrescanHash = 'prescan-stale-or-missing'; // 哨兵值:artifact 缺失/漂移/篡改,fail-closed
+    }
+  }
   const receiptGate = {
     hasReceipt: reviewReceipt != null,
     receiptVerdict: reviewReceipt?.verdict ?? null,
@@ -397,6 +420,7 @@ try {
         receipt: reviewReceipt, headRefOid: m.headRefOid,
         snapshotHash: secSnapshot.snapshotHash, ledgerHash: ledgerAny.ledgerHash,
         escapeSourceHash: expectedEscapeSourceHash, knownHazardsHash: expectedKnownHazardsHash,
+        expectedPrescanHash,
       }),
     reasons: [],
   };
