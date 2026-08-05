@@ -38,7 +38,7 @@ const git = (args, cwd) => {
   return r.stdout.trim();
 };
 
-function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, headFileContent = CLEAN_FILE, omitBaseRefOid = false }) {
+function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, headFileContent = CLEAN_FILE, omitBaseRefOid = false, filesMeta }) {
   const work = mkdtempSync(join(tmpdir(), 'premerge-469-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -70,7 +70,8 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
     mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision,
     headRefOid: HEAD, baseRefName: 'main',
     ...(omitBaseRefOid ? {} : { baseRefOid: BASE }),
-    files: [{ path: 'a.txt' }],
+    // filesMeta:undefined = 正常清单;null = 整个 files 字段缺失;其它 = 原样写入(含非法形状)
+    ...(filesMeta === undefined ? { files: [{ path: 'a.txt' }] } : (filesMeta === null ? {} : { files: filesMeta })),
     statusCheckRollup: [
       { __typename: 'CheckRun', name: 'lint + tsc + unit + logging', status: 'COMPLETED', conclusion: 'SUCCESS' },
       { __typename: 'CheckRun', name: 'e2e kernel gate (new)', status: 'COMPLETED', conclusion: 'SUCCESS' },
@@ -258,4 +259,20 @@ test('B2 · 对照组:快照完整且无命中时,structural bypass 照常 ready
   assert.equal(out.securityGate.snapshotComplete, true);
   assert.equal(out.structuralBypassReady, true);
   assert.deepEqual(prDiffCalls, []);
+});
+
+test('F3 · 第 4 轮核验 BLOCKER:PR files 元数据缺失/非数组 → 快照判不完整,所有路由终拒且零 pr diff', () => {
+  // 上一版把 m.files 缺失折成 expectedPaths:null——而 null 在 DiffSnapshot API 里表示
+  // "不要互检",于是元数据整体不可用时快照反而 complete=true,互检被静默跳过。
+  for (const [label, filesMeta] of [['files 字段整体缺失', null], ['files 非数组', 'not-an-array'], ['files 条目缺 path', [{ nope: 1 }]]]) {
+    const { out, prDiffCalls } = runCheck({ approveCommit: CURRENT, filesMeta });
+    assert.equal(out.securityGate.snapshotComplete, false, `${label}:快照必须判不完整`);
+    assert.equal(out.securityGate.pass, false, label);
+    assert.match(out.securityGate.reasons.join(';'), /元数据|不完整/, label);
+    assert.equal(out.canMerge, false, label);
+    assert.equal(out.selfMergeAvailable, false, label);
+    assert.equal(out.structuralBypassReady, false, label);
+    assert.equal(out.authorizedFastMergeAvailable, false, label);
+    assert.deepEqual(prDiffCalls, [], `${label}:禁 gh pr diff 退路`);
+  }
 });

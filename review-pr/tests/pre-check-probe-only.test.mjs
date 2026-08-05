@@ -149,3 +149,41 @@ test('对照组(不带 --probe-only):同一 fixture 下 pull 推进 HEAD、backf
   assert.equal(readFileSync(join(f.stateRoot, f.key, 'runs.jsonl'), 'utf8'), '{"legacy":true}\n', '正常轮应执行一次性 legacy 迁移');
   assert.ok(readdirSync(join(f.stateRoot, f.key)).includes('.migrated-from-tmp.json'));
 });
+
+test('R7 第 4 轮核验 BLOCKER:open PR=0(no-candidates skip)时 pending hazard 重放仍必须跑', () => {
+  // 真实事故窗口:fix merge 后 activation/push 失败,随后 open PR 归零——重放若只挂在
+  // decision:'run' 出口,这个窗口里每轮 exit 2,inbox 永远饿死。
+  const f = setup();
+  writeFileSync(join(f.env.FAKE_GH_FIXTURE_DIR, 'pr-list.json'), '[]'); // 一个 open PR 都没有
+  // 放一条合法 pending 进 inbox(fake gh 查不到 origin PR → 核验不过 → 必须留在 inbox)
+  const stateSub = join(f.stateRoot, f.key);
+  mkdirSync(stateSub, { recursive: true });
+  const inboxItem = {
+    hazardId: 'hz2-prod', fingerprint: 'hzf2-prod', repo: 'xindong/mivo-canvas',
+    originPr: 400, originHead: 'b'.repeat(40), fixPr: 469, fixHead: 'c'.repeat(40),
+    pattern: 'p', evidence: '依据', paths: ['a/**'],
+    activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
+  };
+  writeFileSync(join(stateSub, 'escaped-hazards-inbox.json'), JSON.stringify({ version: 1, items: [inboxItem] }));
+  const r = spawnSync('node', [SCRIPT, '--repo-root', f.repo], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(r.status, 2, `no-candidates 应 skip(exit 2):${r.stdout}${r.stderr}`);
+  const out = JSON.parse(r.stdout.trim().split('\n').pop());
+  assert.equal(out.decision, 'skip');
+  assert.equal(out.reason, 'no-candidates');
+  assert.ok(out.hazardReplay, `skip 出口也必须带 hazardReplay(重放先于持久 skip):${r.stdout}`);
+  assert.equal(out.hazardReplay.pendingCount, 1, '合法 pending 必须真的被处理过(核验不过 → 留 inbox 计入 pendingCount)');
+  const box = JSON.parse(readFileSync(join(stateSub, 'escaped-hazards-inbox.json'), 'utf8'));
+  assert.equal(box.items.length, 1, '核验没过的条目必须留在 inbox 下轮重放');
+  assert.ok(box.items[0].lastActivationCheck, '必须记下这轮为什么没激活(证明重放真跑过,不是输出里编了个字段)');
+});
+
+test('R7 第 4 轮核验:--probe-only + open PR=0 → 仍零副作用(不跑重放,inbox 原样)', () => {
+  const f = setup();
+  writeFileSync(join(f.env.FAKE_GH_FIXTURE_DIR, 'pr-list.json'), '[]');
+  const r = spawnSync('node', [SCRIPT, '--repo-root', f.repo, '--probe-only'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  const out = JSON.parse(r.stdout.trim().split('\n').pop());
+  assert.equal(out.decision, 'skip');
+  assert.equal(out.hazardReplay, undefined, 'probe-only 不得触发重放(它会写 canonical / push)');
+  assert.equal(existsSync(f.stateRoot), false, 'probe-only 不得创建状态根');
+});

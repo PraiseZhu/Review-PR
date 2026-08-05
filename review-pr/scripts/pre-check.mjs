@@ -123,13 +123,15 @@ let forceRunReason = null;
 // 不可逆写操作)。--probe-only 下:跳过 skill pull、跳过 backfill、跳过一切本地状态写,
 // 只跑候选/指纹判定并输出 decision JSON(附 probeOnly:true 标记)。
 const PROBE_ONLY = process.argv.includes('--probe-only');
+// 轮次开始的 pending hazard 重放结果(第 4 轮核验:重放先于持久 skip,skip 输出也要带上)
+let hazardReplay = null;
 
 function skip(reason, extra = {}) {
   if (forceRunReason) {
     process.stdout.write(JSON.stringify({ decision: 'run', reason: forceRunReason, skipReason: reason, skillSync: skillSyncReport }) + '\n');
     process.exit(0);
   }
-  process.stdout.write(JSON.stringify({ decision: 'skip', reason, ...(skillSyncReport ? { skillSync: skillSyncReport } : {}), ...(process.argv.includes('--probe-only') ? { probeOnly: true } : {}), ...extra }) + '\n');
+  process.stdout.write(JSON.stringify({ decision: 'skip', reason, ...(skillSyncReport ? { skillSync: skillSyncReport } : {}), ...(hazardReplay ? { hazardReplay } : {}), ...(process.argv.includes('--probe-only') ? { probeOnly: true } : {}), ...extra }) + '\n');
   process.exit(2);
 }
 
@@ -178,6 +180,24 @@ try {
     } catch { /* 致谢发不出去绝不影响调度判定 */ }
   }
 
+  // SC-R7 第 4 轮核验 BLOCKER:pending hazard 重放必须在 no-candidates /
+  // unchanged-since-last-scan 两个**持久 skip 之前**跑——真实事故窗口恰是"fix merge 后
+  // activation/push 失败,随后 open PR 归零":此前重放挂在 decision:'run' 出口上,这个
+  // 窗口里每轮都 exit 2,inbox 永远没有生产重放时机(饿死)。lock-held 仍在其前(有轮次
+  // 正跑时不并发动 canonical);幂等、失败留 inbox,不改变本脚本的 decision。
+  // probe-only 零副作用契约不变:只在非 probe-only 跑。
+  if (!PROBE_ONLY) {
+    try {
+      const r = spawnSync(process.execPath, [resolve(SCRIPTS_DIR, 'record-escaped-finding.mjs'), '--activate'], { encoding: 'utf8', timeout: 120_000 });
+      if (r.error) throw r.error;
+      if (!r.stdout || !r.stdout.trim()) throw new Error(`无输出(status=${r.status})`);
+      const j = JSON.parse(r.stdout);
+      hazardReplay = { activated: j.activated ?? [], pendingCount: (j.pending ?? []).length };
+    } catch (e) {
+      hazardReplay = { error: String(e.message ?? e).slice(0, 200), note: '条目留在 inbox,下轮再重放' };
+    }
+  }
+
   const { owner, repo } = parseRepo();
   const raw = JSON.parse(
     gh(
@@ -224,22 +244,6 @@ try {
     /* 指纹判据不可用 → 无法证明没活，显式放行 */
   }
 
-  // SC-R7 第 3 轮核验:pending hazard 的激活此前**只**由合并出口触发——若那次现场核验或
-  // push 失败、之后又没有新的合并,inbox 就再没有自动重放的时机。轮次开始(decision=run)
-  // 是天然的重放点:幂等、失败仍留 inbox,且不改变本脚本的 decision。
-  // probe-only 必须零副作用(那是它的契约,有专门用例钉死),所以只在非 probe-only 跑。
-  let hazardReplay = null;
-  if (!PROBE_ONLY) {
-    try {
-      const r = spawnSync(process.execPath, [resolve(SCRIPTS_DIR, 'record-escaped-finding.mjs'), '--activate'], { encoding: 'utf8', timeout: 120_000 });
-      if (r.error) throw r.error;
-      if (!r.stdout || !r.stdout.trim()) throw new Error(`无输出(status=${r.status})`);
-      const j = JSON.parse(r.stdout);
-      hazardReplay = { activated: j.activated ?? [], pendingCount: (j.pending ?? []).length };
-    } catch (e) {
-      hazardReplay = { error: String(e.message ?? e).slice(0, 200), note: '条目留在 inbox,下轮再重放' };
-    }
-  }
   process.stdout.write(JSON.stringify({ decision: 'run', candidateCount, skillSync, ...(hazardReplay ? { hazardReplay } : {}), ...(PROBE_ONLY ? { probeOnly: true } : {}) }) + '\n');
   process.exit(0);
 } catch (e) {

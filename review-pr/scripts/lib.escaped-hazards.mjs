@@ -73,7 +73,12 @@ export function validatePromotionTarget(t) {
   if (t?.kind === 'profile') {
     const p = BUILTIN_PROFILES.find((x) => x.id === t.profileId);
     if (!p) return `promotionTarget.profileId ${t.profileId} 不在 profile 注册表里`;
-    if (t.checkId && !p.mandatoryChecks.some((c) => c.id === t.checkId)) {
+    // 第 4 轮核验:checkId **必填**——只指向整个 profile 不能证明具体必答项已落地
+    // ("landed" 的语义是"这个逃逸模式已被某条具体检查接管",不是"大方向归某个 profile 管")。
+    if (typeof t.checkId !== 'string' || !t.checkId.trim()) {
+      return `promotionTarget(profile ${t.profileId})缺 checkId——landed 必须指到具体必答项`;
+    }
+    if (!p.mandatoryChecks.some((c) => c.id === t.checkId)) {
       return `promotionTarget.checkId ${t.checkId} 不在 profile ${t.profileId} 的必答项里`;
     }
     return null;

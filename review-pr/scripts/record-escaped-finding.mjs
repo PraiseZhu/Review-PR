@@ -51,10 +51,13 @@ function resolvePromotionTarget({ promotion, ruleId, profileId, checkId, reason 
   if (profileId) {
     const p = BUILTIN_PROFILES.find((x) => x.id === profileId);
     if (!p) return { ok: false, error: `--promote-profile ${profileId} 不存在,不能标 landed` };
-    if (checkId && !p.mandatoryChecks.some((c) => c.id === checkId)) {
+    // 第 4 轮核验:--promote-check 必填(与 schema 同步)——只指向整个 profile 不能证明
+    // 具体必答项已落地。
+    if (!checkId) return { ok: false, error: `--promote-profile 必须搭配 --promote-check <checkId>(landed 必须指到具体必答项)` };
+    if (!p.mandatoryChecks.some((c) => c.id === checkId)) {
       return { ok: false, error: `--promote-check ${checkId} 不在 profile ${profileId} 的必答项里,不能标 landed` };
     }
-    return { ok: true, target: { kind: 'profile', profileId, checkId: checkId ?? null } };
+    return { ok: true, target: { kind: 'profile', profileId, checkId } };
   }
   return { ok: false, error: 'landed 必须指定 --promote-rule 或 --promote-profile(且目标须实际存在)' };
 }

@@ -93,6 +93,9 @@ test('R7 schema fail-closed:缺任一必填字段判不完整;grandfathered 只�
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: 'v1' } })).ok, true, '历史版本合法(不要求等于注册表当前版本,否则每次 bump 都作废 canonical)');
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'profile', profileId: 'test-infra', checkId: 'nope' } })).ok, false, '不存在的 checkId 不得算 landed');
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'profile', profileId: 'test-infra', checkId: 'could-be-always-green' } })).ok, true);
+  // 第 4 轮核验:profile promotion 的 checkId 必填——只指向整个 profile 不能证明具体必答项已落地
+  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'profile', profileId: 'test-infra' } })).ok, false, '缺 checkId 不得算 landed');
+  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'profile', profileId: 'test-infra', checkId: null } })).ok, false, 'checkId=null 不得算 landed');
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'recorded-only' })).ok, false, 'recorded-only 必须带理由');
 });
 
@@ -298,6 +301,10 @@ test('R7 landed 目标存在性:CLI 拒绝指向不存在的 rule/profile/check;
   assert.match(bad.stdout + bad.stderr, /不存在/);
   const badCheck = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-profile', 'test-infra', '--promote-check', 'nope'], { cwd: dir, env, encoding: 'utf8' });
   assert.notEqual(badCheck.status, 0);
+  // 第 4 轮核验:--promote-profile 不带 --promote-check 同样拒(CLI 与 schema 同步)
+  const noCheck = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-profile', 'test-infra'], { cwd: dir, env, encoding: 'utf8' });
+  assert.notEqual(noCheck.status, 0, 'landed 只指向整个 profile 不能证明具体必答项已落地');
+  assert.match(noCheck.stdout + noCheck.stderr, /promote-check/);
   const recordedNoReason = spawnSync('node', [CLI, ...base, '--promotion', 'recorded-only'], { cwd: dir, env, encoding: 'utf8' });
   assert.notEqual(recordedNoReason.status, 0, 'recorded-only 必须带理由');
   const ok = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-rule', REAL_RULE], { cwd: dir, env, encoding: 'utf8' });

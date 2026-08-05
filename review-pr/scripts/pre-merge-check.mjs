@@ -123,16 +123,23 @@ try {
   // 安全扫描结果早已是历史快照)。scanned=false(diff 拉取失败等)必须 fail-closed 当
   // "未证明无泄露"处理,绝不能当"无命中"放行——这是本次修复的核心边界。──
   // SC-R8 同源:先构建 DiffSnapshot(immutable git objects),把它的 rawPatch 交给安全扫描,
-  // 与 preflight / 覆盖 manifest / 负向证据锚点消费同一份快照;快照不可用时退回
-  // `gh pr diff`(scanned 语义不变,但不参与 snapshotHash 绑定——如实声明)。
-  const secSnapshot = buildDiffSnapshot({
-    repoRoot: REPO_ROOT,
-    baseRefOid: (m.baseRefOid ?? '').toLowerCase(),
-    headOid: (m.headRefOid ?? '').toLowerCase(),
-    // SC-R8 复审:元数据/patch 互检必须在**生产**可达——PR files 清单与 patch 文件集
-    // 不一致(截断/漏项)时 complete=false,一路 fail-closed 到终拒。
-    expectedPaths: Array.isArray(m.files) ? m.files.map((x) => x.path) : null,
-  });
+  // 与 preflight / 覆盖 manifest / 负向证据锚点消费同一份快照。合并阶段**没有** gh diff
+  // 退路——快照不完整就 fail-closed 到终拒(第 3 轮核验 BLOCKER,见 securityGate)。
+  //
+  // 第 4 轮核验 BLOCKER:`m.files` 缺失/非数组此前被折成 expectedPaths:null——而 null 在
+  // DiffSnapshot API 里表示"调用方不要求互检",于是**元数据整体不可用**时快照反而
+  // complete=true,互检被静默跳过。元数据不可用必须直接判 incomplete,不是免检。
+  const filesMetaOk = Array.isArray(m.files) && m.files.every((x) => x && typeof x.path === 'string' && x.path.length > 0);
+  const secSnapshot = filesMetaOk
+    ? buildDiffSnapshot({
+      repoRoot: REPO_ROOT,
+      baseRefOid: (m.baseRefOid ?? '').toLowerCase(),
+      headOid: (m.headRefOid ?? '').toLowerCase(),
+      // SC-R8 复审:元数据/patch 互检必须在**生产**可达——PR files 清单与 patch 文件集
+      // 不一致(截断/漏项)时 complete=false,一路 fail-closed 到终拒。
+      expectedPaths: m.files.map((x) => x.path),
+    })
+    : { complete: false, reason: 'PR files 元数据缺失或形状非法(无法做元数据/patch 互检)', rawPatch: '', files: [], snapshotHash: null };
   // 第 3 轮核验 BLOCKER:snapshot 不完整时此前传 null → 触发 `gh pr diff` 退路,securityGate
   // 只看退路的 scanned/hit,不要求 snapshot 完整。于是普通/self 虽被 stage2 拦住,
   // structural approved / authorized-fast 仍能在**不完整快照**上 ready。合并阶段禁退路:
