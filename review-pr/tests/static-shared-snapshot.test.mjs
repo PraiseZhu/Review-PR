@@ -44,3 +44,38 @@ test('pre-merge-check 的安全扫描接线:必须传 snapshotPatch(同源)', ()
   const src = readFileSync(join(SCRIPTS, 'pre-merge-check.mjs'), 'utf8');
   assert.match(src, /scanPrSensitiveContent\(\{[\s\S]{0,400}snapshotPatch:/, 'pre-merge-check 必须把 snapshot 的 rawPatch 交给安全扫描');
 });
+
+test('SC-R1b 静态 inventory:scripts/ 内除 consume-review-output.mjs 外零 clean 回执写入形态', () => {
+  // 诚实边界:只约束 skill 自己的脚本;agent 手写状态文件不在机器承诺内(SKILL 已声明)。
+  // lib.mjs 是 writeReviewReceipt 的定义处(它自己校验五项绑定),不算调用方。
+  const ALLOWED_CLEAN = new Set(['consume-review-output.mjs', 'lib.mjs']);
+  const offenders = [];
+  for (const e of readdirSync(SCRIPTS, { withFileTypes: true })) {
+    if (!e.isFile() || !e.name.endsWith('.mjs') || ALLOWED_CLEAN.has(e.name)) continue;
+    const src = readFileSync(join(SCRIPTS, e.name), 'utf8');
+    for (const [i, line] of src.split('\n').entries()) {
+      const t = line.trim();
+      if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) continue;
+      // 形态①:writeReviewReceipt(... verdict: 'clean' ...) 同行;形态②:--verdict clean 命令串
+      if (/writeReviewReceipt\(/.test(line) && /'clean'/.test(line)) offenders.push(`${e.name}:${i + 1}`);
+      if (/--verdict\s+clean/.test(line) && !/禁|拒|不再接受|不得/.test(line)) offenders.push(`${e.name}:${i + 1}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `除 consumer 外不得写 clean 回执:\n${offenders.join('\n')}`);
+});
+
+test('SC-R1b:pre-merge 的 stage2 门必须无条件计算并被 canMerge/selfMerge 消费', () => {
+  const src = readFileSync(join(SCRIPTS, 'pre-merge-check.mjs'), 'utf8');
+  assert.match(src, /const receiptGate = \{/, 'receiptGate 必须无条件构建');
+  assert.match(src, /const canMerge = canMergeMechanical && receiptGate\.stage2Clean;/, '普通合并必须叠加 stage2 门');
+  assert.match(src, /viewerLogin && prAuthor && receiptGate\.stage2Clean/, 'self-merge 必须叠加 stage2 门');
+});
+
+test('SC-R8:生产调用必须传 expectedPaths(元数据/patch 互检在生产可达)', () => {
+  const pm = readFileSync(join(SCRIPTS, 'pre-merge-check.mjs'), 'utf8');
+  assert.match(pm, /expectedPaths: Array\.isArray\(m\.files\)/, 'pre-merge 必须用 PR files 元数据做互检');
+  assert.match(pm, /'--json', '[^']*files[^']*'/, 'pr view 必须查 files');
+  for (const f of ['build-review-task.mjs', 'review-preflight.mjs']) {
+    assert.match(readFileSync(join(SCRIPTS, f), 'utf8'), /--expected-paths/, `${f} 必须支持 --expected-paths`);
+  }
+});

@@ -48,7 +48,11 @@ try {
   const outTask = argOf('--out-task');
   const outPrompt = argOf('--out-prompt');
 
-  const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid });
+  // SC-R8 复审:PR files 元数据与 patch 集互检在生产可达——调用方可传 --expected-paths
+  // (逗号分隔,来自 `gh pr view --json files`);不一致/截断即 complete=false,fail-closed。
+  const expectedPathsArg = argOf('--expected-paths');
+  const expectedPaths = expectedPathsArg ? expectedPathsArg.split(',').map((x) => x.trim()).filter(Boolean) : null;
+  const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid, expectedPaths });
   const rules = loadRules();
   const { profiles, warnings, configIncomplete } = mergeProfiles(rules.riskProfiles);
 

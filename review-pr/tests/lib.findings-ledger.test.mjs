@@ -80,12 +80,22 @@ test('preflight 项:人工/模型 resolved 拒;同规则同版本新 snapshot �
   assert.equal(r1.entries[0].findingId, id);
   const manual = applyReviewOutput({ entries: r1.entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: 'x' }] }), seat: 'auto', snapshot: SNAP2 });
   assert.ok(manual.errors.some((e) => /不接受人工\/模型 resolved/.test(e)));
+  const RULES = [{ ruleId: hit.ruleId, ruleVersion: 'v1' }];
+  // 第 1 轮核验 BLOCKER:没有"本轮跑过该规则"的正证据时,零命中**不得**核销
+  const noProof = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [] });
+  assert.equal(noProof.entries.find((e) => e.findingId === id).status, 'open', '缺 executedRules 正证据 → 保持 open(旧实现在这里直接 resolved)');
   // 版本变:不自动核销
-  const vchg = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [{ ...hit, path: 'other.mjs', ruleVersion: 'v2' }] });
+  const vchg = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [], executedRules: [{ ruleId: hit.ruleId, ruleVersion: 'v2' }] });
   assert.equal(vchg.entries.find((e) => e.findingId === id).status, 'open', '规则版本变化不冒充代码已修');
-  // 同版本重跑不命中:自动核销
-  const clean = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [{ ...hit, path: 'other.mjs' }] });
-  assert.equal(clean.entries.find((e) => e.findingId === id).status, 'resolved');
+  // 规则被停用(executedRules 里没有它)→ 保持 open
+  const disabled = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [], executedRules: [{ ruleId: 'other-rule', ruleVersion: 'v1' }] });
+  assert.equal(disabled.entries.find((e) => e.findingId === id).status, 'open', '规则被停用/删除 → 保持 open');
+  // 同版本跑过且不命中:自动核销,证据结构化
+  const clean = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [], executedRules: RULES });
+  const closed = clean.entries.find((e) => e.findingId === id);
+  assert.equal(closed.status, 'resolved');
+  assert.equal(closed.evidence.kind, 'preflight-rerun');
+  assert.equal(closed.evidence.snapshotHash, SNAP2.snapshotHash);
 });
 
 test('load/save:文件缺失=空账;损坏 → ok:false(fail-closed);ledgerHash 与写入顺序无关', () => {
@@ -101,4 +111,43 @@ test('load/save:文件缺失=空账;损坏 → ok:false(fail-closed);ledgerHash 
   assert.equal(computeLedgerHash([b, a]), h1, '序无关');
   writeFileSync(file, '{broken');
   assert.equal(loadLedger(file).ok, false);
+});
+
+// ── 第 1 轮完成度核验补强 ──
+
+test('R5 复审:resolved 项再次被命中必须 reopen(否则本轮 dirty、账却关着,下轮空报即 clean)', () => {
+  const first = applyReviewOutput({ entries: [], output: OUT({ findingFamilies: [FAM()] }), seat: 'auto', snapshot: SNAP1 });
+  const id = first.entries[0].findingId;
+  const EV = { kind: 'diff-anchor', snapshotHash: SNAP2.snapshotHash, fileId: 'F1', hunkId: 'H1' };
+  const closed = applyReviewOutput({ entries: first.entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: EV }] }), seat: 'auto', snapshot: SNAP2 });
+  assert.equal(closed.entries[0].status, 'resolved');
+  // 第三轮:同一 finding 又被报出来 → 必须 reopen
+  const SNAP3 = { snapshotHash: 'snap1-ccc' };
+  const again = applyReviewOutput({ entries: closed.entries, output: OUT({ findingFamilies: [FAM()] }), seat: 'auto', snapshot: SNAP3 });
+  assert.equal(again.entries[0].status, 'open', '重现即重开');
+  assert.equal(again.entries[0].evidence, undefined, '旧 resolved 证据必须清掉');
+  assert.equal(summarize(again.entries, SNAP3.snapshotHash).effectiveOpenCount, 1);
+});
+
+test('R5 复审:本轮重报的项不得在同一轮 resolved/invalidated(先修再核销)', () => {
+  const first = applyReviewOutput({ entries: [], output: OUT({ findingFamilies: [FAM()] }), seat: 'auto', snapshot: SNAP1 });
+  const id = first.entries[0].findingId;
+  const EV = { kind: 'diff-anchor', snapshotHash: SNAP2.snapshotHash, fileId: 'F1', hunkId: 'H1' };
+  const sameRound = applyReviewOutput({
+    entries: first.entries, snapshot: SNAP2, seat: 'auto',
+    output: OUT({ findingFamilies: [FAM()], findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: EV }] }),
+  });
+  assert.ok(sameRound.errors.some((e) => /不得在同一轮/.test(e)));
+  assert.equal(sameRound.entries[0].status, 'open');
+});
+
+test('R5 复审:preflight 项重现同样 reopen', () => {
+  const hit = { ruleId: 'playwright-waitforfunction-async-predicate', ruleVersion: 'v1', path: 'e2e/a.mjs', line: 5 };
+  const r1 = applyReviewOutput({ entries: [], output: OUT(), seat: 'auto', snapshot: SNAP1, preflightHits: [hit] });
+  const id = r1.entries[0].findingId;
+  const closed = applyReviewOutput({ entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2, preflightHits: [], executedRules: [{ ruleId: hit.ruleId, ruleVersion: 'v1' }] });
+  assert.equal(closed.entries.find((e) => e.findingId === id).status, 'resolved');
+  const SNAP3 = { snapshotHash: 'snap1-ddd' };
+  const again = applyReviewOutput({ entries: closed.entries, output: OUT(), seat: 'auto', snapshot: SNAP3, preflightHits: [hit], executedRules: [{ ruleId: hit.ruleId, ruleVersion: 'v1' }] });
+  assert.equal(again.entries.find((e) => e.findingId === id).status, 'open');
 });

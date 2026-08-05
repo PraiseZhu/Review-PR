@@ -47,7 +47,8 @@
 | 产品/架构 hold、放行、收尾 | `product-hold.mjs`、`product-release.mjs`、`close-product-issue.mjs` |
 | fork workflow 放行 | `approve-workflows.mjs` |
 | 合并前复核、self-approve | `pre-merge-check.mjs`、`self-approve.mjs` |
-| 阶段二独立审查回执（admin-trust 分级合并的凭证） | `write-review-receipt.mjs`（`--verdict clean\|dirty --p0p1-count <N> [--head <sha>]`；`--get` 查看当前回执） |
+| 阶段二审查输出裁决 + 回执（唯一 clean 写者） | `consume-review-output.mjs`（SC-R1b） |
+| 阶段二回执的 dirty 记录 / 查看 | `write-review-receipt.mjs`（`--verdict dirty --p0p1-count <N> [--head <sha>]`；`--get` 查看；**public CLI 禁 `--verdict clean`**） |
 | resolve 催办、停滞判断、身份解析 | `notify-author-resolve.mjs`、`remind-stale-author.mjs`、`resolve-author-feishu.mjs` |
 | 合并后健康检查 | `typecheck-merged.mjs` |
 | 合并致谢播报 | `notify-merge-ack.mjs`（`loopPrExclusion.mergeAckNotify.notifyModule` 未配置时 no-op） |
@@ -197,10 +198,11 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
      → 经唯一出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis approved --admin`；
   2. 缺 `APPROVED` 但作者在 `admins` 名单（典型是 ownPr——GitHub 422 禁止对自己的 PR
      提交 APPROVE，`reviewDecision` 永远拿不到）→ **不直接合并**，`auto.action=review`
-     进入本轮独立审查；审查通过（零 P0/P1）后，审查方必须调用
-     `write-review-receipt.mjs <PR> --verdict clean --p0p1-count 0 --head <headRefOid>`
-     落一条针对当前 head 的回执，合并阶段 `pre-merge-check.mjs` 核验回执的
-     `headRefOid` 与当前 head 一致且 `verdict=clean`（`isReviewReceiptClean`）后才
+     进入本轮独立审查；审查输出必须交给
+     `consume-review-output.mjs`（唯一 clean 写者，SC-R1b）裁决并落回执，
+     合并阶段 `pre-merge-check.mjs` 核验回执的
+     `headRefOid`/`snapshotHash`/`ledgerHash` 与当前重建值一致、`verdict=clean`、且台账
+     `effective-open=0 ∧ accepted-risk=0`（`isReviewReceiptClean` + receiptGate）后才
      返回 `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，再经唯一
      出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis admin-trust --admin`。「审查是否跑过 / 结论
      是否干净」是语义判断，脚本本身判断不了代码好不好——回执就是这半判断留下的、

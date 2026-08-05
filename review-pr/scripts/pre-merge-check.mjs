@@ -89,7 +89,7 @@ try {
   const slug = `${owner}/${repo}`;
   const m = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'title,body,state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,statusCheckRollup',
+    '--json', 'title,body,state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,files,statusCheckRollup',
   ]);
   // reviewDecision 作判 BLOCKED 原因的权威信号(比 some(state===CHANGES_REQUESTED) 准:它按
   // 每个 reviewer 的「最新」review 算 —— self-approve 覆盖掉自己旧的 CHANGES_REQUESTED 后会变
@@ -129,6 +129,9 @@ try {
     repoRoot: REPO_ROOT,
     baseRefOid: (m.baseRefOid ?? '').toLowerCase(),
     headOid: (m.headRefOid ?? '').toLowerCase(),
+    // SC-R8 复审:元数据/patch 互检必须在**生产**可达——PR files 清单与 patch 文件集
+    // 不一致(截断/漏项)时 complete=false,一路 fail-closed 到终拒。
+    expectedPaths: Array.isArray(m.files) ? m.files.map((x) => x.path) : null,
   });
   const securityScan = scanPrSensitiveContent({
     owner, repo, pr, title: m.title ?? '', body: m.body ?? '', sensitiveRules: rules.sensitiveContent ?? {},
@@ -313,8 +316,39 @@ try {
   }
   if (unresolved.length) blockers.push(`${unresolved.length} 条 conversation 未 resolve`);
 
+  // SC-R1b 第 1 轮核验 BLOCKER:此前 receipt/ledger 门只在 structural admin-trust 路由上跑,
+  // 普通 canMerge 与 selfMerge 完全不读 receipt/ledger——于是"没有 consumer clean / 输出
+  // invalid / ledger 有未决项"时,这两条路照样放行(NON_GOALS 只排除 authorized-fast-merge
+  // 与 approved shortcut,不排 normal/self-merge)。现在把它算成**无条件的统一门**,所有
+  // 依赖阶段二审查的合并路由都消费它。
+  const reviewReceipt = readReviewReceipt(pr);
+  const ledgerAny = loadLedger(ledgerPathFor(STATE_DIR, pr));
+  const openAny = ledgerAny.ok ? summarize(ledgerAny.entries, secSnapshot.snapshotHash) : null;
+  const receiptGate = {
+    hasReceipt: reviewReceipt != null,
+    receiptVerdict: reviewReceipt?.verdict ?? null,
+    snapshotComplete: secSnapshot.complete,
+    snapshotHash: secSnapshot.snapshotHash,
+    ledgerReadable: ledgerAny.ok,
+    effectiveOpenCount: openAny?.effectiveOpenCount ?? null,
+    acceptedRiskCount: openAny?.acceptedRiskCount ?? null,
+    // 阶段二凭证是否有效:回执 clean 且绑定当前 snapshot/ledger,且台账双零
+    stage2Clean: secSnapshot.complete && ledgerAny.ok
+      && openAny.effectiveOpenCount === 0 && openAny.acceptedRiskCount === 0
+      && isReviewReceiptClean({ receipt: reviewReceipt, headRefOid: m.headRefOid, snapshotHash: secSnapshot.snapshotHash, ledgerHash: ledgerAny.ledgerHash }),
+    reasons: [],
+  };
+  if (!secSnapshot.complete) receiptGate.reasons.push(`DiffSnapshot 不完整:${secSnapshot.reason}`);
+  if (!ledgerAny.ok) receiptGate.reasons.push(`findings 台账不可读:${ledgerAny.error}`);
+  if (openAny && openAny.effectiveOpenCount > 0) receiptGate.reasons.push(`台账仍有 ${openAny.effectiveOpenCount} 条 effective-open`);
+  if (openAny && openAny.acceptedRiskCount > 0) receiptGate.reasons.push(`台账有 ${openAny.acceptedRiskCount} 条 accepted-risk(恒非 clean)`);
+  if (reviewReceipt == null) receiptGate.reasons.push('无阶段二审查回执(须先经 consume-review-output.mjs 裁决)');
+  else if (reviewReceipt.verdict !== 'clean') receiptGate.reasons.push(`回执 verdict=${reviewReceipt.verdict}(非 clean)`);
+  else if (!receiptGate.stage2Clean) receiptGate.reasons.push('回执绑定的 snapshotHash/ledgerHash 与当前重建值不一致(stale)');
+  const receiptClean = receiptGate.stage2Clean;
+
   const mergeableUnknown = m.mergeable === 'UNKNOWN';
-  const canMerge = blockers.length === 0 && !mergeableUnknown;
+  const canMergeMechanical = blockers.length === 0 && !mergeableUnknown;
   // 普通 merge 过不了、但「结构性门 + 当前账号可 bypass + 命中类型在 allowlist 内」时,
   // 3A 可走 admin bypass 合(交互模式经用户确认)。谁来担保"没有真实 APPROVED review 也能
   // 合"按两条路径(与 context.mjs 的三层分级同口径,见 internal-gates.md「作者侧与仓库侧
@@ -323,33 +357,18 @@ try {
   // admins 名单**且**已有一条针对当前 head 的清白审查回执(basis='admin-trust',P1-5,
   // 2026-08-02——此前只看机械前提就直接判 true,与 reviewDecision/回执无关,是本次修的
   // fail-open 口子)。
+  // 普通合并路径也必须有有效的阶段二凭证(第 1 轮核验 BLOCKER)。
+  const canMerge = canMergeMechanical && receiptGate.stage2Clean;
   const structuralCanBypass = blockClass === 'structural-check' && structuralAllowlisted &&
     !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
   const { route: structuralRoute, basis: structuralBypassBasis } = decideStructuralBypassRoute({
     structuralCanBypass, approvedShortcut: approvedShortcut.granted, isAdminAuthor: authorIsAdmin,
   });
-  const reviewReceipt = structuralRoute === 'review-pending-admin-bypass' ? readReviewReceipt(pr) : null;
   // SC-R1b/R5(2026-08-05):admin-trust 的 clean 回执不再只看 head——pre-merge 独立
   // ①重建当前 complete DiffSnapshot(immutable objects;base 前进 head 不变也会变身份)
   // ②重读 findings ledger(effective-open 与 accepted-risk 必须双零)③核验回执绑定的
   // snapshotHash/ledgerHash 与当前一致。任一漂移/不完整/损坏 → 不 ready(fail-closed)。
   // 只在"存在待核验的 clean 回执"时才做重建(避免无回执场景白付 git 成本)。
-  let receiptClean = false;
-  let receiptGate = null;
-  if (structuralRoute === 'review-pending-admin-bypass' && reviewReceipt?.verdict === 'clean') {
-    const snap = secSnapshot; // 同一份快照(SC-R8 同源:安全扫描与回执门用同一 snapshotHash)
-    const ledger = loadLedger(ledgerPathFor(STATE_DIR, pr));
-    const open = ledger.ok ? summarize(ledger.entries, snap.snapshotHash) : null;
-    receiptGate = {
-      snapshotComplete: snap.complete,
-      ledgerReadable: ledger.ok,
-      effectiveOpenCount: open?.effectiveOpenCount ?? null,
-      acceptedRiskCount: open?.acceptedRiskCount ?? null,
-    };
-    receiptClean = snap.complete && ledger.ok &&
-      open.effectiveOpenCount === 0 && open.acceptedRiskCount === 0 &&
-      isReviewReceiptClean({ receipt: reviewReceipt, headRefOid: m.headRefOid, snapshotHash: snap.snapshotHash, ledgerHash: ledger.ledgerHash });
-  }
   // 字段改名(P1-5,2026-08-02):structuralBypassAvailable → structuralBypassReady——
   // "ready" 强调"这次真的可以合了",不是"机械前提凑够了"。basis='approved' 立即 ready
   // (真实 GitHub review 就是审计凭证,不需要额外核验);basis='admin-trust' 必须回执
@@ -365,7 +384,7 @@ try {
   // 检查(rollup 全集,含第三方 App check-run)无失败/无进行中
   // (mergeableUnknown 是 GitHub 异步重算的暂态,admin merge 不受影响)。
   let selfMergeAvailable = false;
-  if (viewerLogin && prAuthor) {
+  if (viewerLogin && prAuthor && receiptGate.stage2Clean) { // stage2 凭证同样必需
     const selfFixAuthors = (rules.selfFixAuthors ?? []).map((a) => a.toLowerCase());
     const isSelfPr = viewerLogin.toLowerCase() === prAuthor.toLowerCase();
     const isSelfFixAuthor = selfFixAuthors.includes(prAuthor.toLowerCase());
@@ -421,6 +440,7 @@ try {
     unresolvedThreads: unresolved,
     blockers,
     canMerge: canMerge || selfMergeAvailable || authorizedFastMergeAvailable,
+    canMergeMechanical,
     note: 'headRefOid 是本次判定针对的 head——所有合并一律经唯一出口 scripts/merge-pr.mjs 执行(它强制 --match-head 并写 intent/result 审计,见 SC-C),不得绕开该出口。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 node <SKILL_ROOT>/scripts/merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis self-merge --admin --delete-branch(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样经 merge-pr.mjs(--basis authorized-fast-merge --admin),且可跳过阶段二独立审查(admins 名单成员发过 `/approve-merge <当前 headRefOid 完整 40 位 SHA>`——授权按 head SHA 绑定,SHA 不等于当前 head 即失效,不再按时间先后判;评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(approvedShortcut.granted=true(= reviewDecision=APPROVED 聚合裁决 ∧ approve 绑定当前 head ∧ own-account 配置约束通过,见 approvalBasis/approvedShortcut 字段)或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(merge-pr.mjs --basis approved|admin-trust --admin)。structuralBypassBasis 说明凭什么担保:"approved"=approved shortcut 成立(聚合裁决+head 绑定双视角都过),任何模式下都能直接合;"admin-trust"=作者在 admins 名单但 approved shortcut 不成立(原因见 approvedShortcut.reason,不一定是缺 APPROVED)——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
   });
   process.exit((canMerge || selfMergeAvailable || authorizedFastMergeAvailable) ? 0 : 2);

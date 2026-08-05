@@ -48,11 +48,28 @@ try {
     process.exit(2);
   }
 
-  // ── task 文件(build-review-task 产物):注入的 open IDs / 覆盖 keys / 必答 / required 负向 keys ──
+  // ── task 文件(build-review-task 产物)**必需**(SC-R1a 复审 BLOCKER:可省略时
+  // coverage/必答/required 负向证据全部跳过且能 clean——等于所有对账形同虚设)。
+  // 它还必须绑定当前 snapshot:task 是上一步按某个 snapshot 构建的,head/base 变了就作废。
   const taskFile = argOf('--task');
-  const task = taskFile ? readJson(taskFile) : null;
-  const injectedOpenIds = task?.injectedOpenIds
-    ?? ledger.entries.filter((e) => isEffectiveOpen(e, snapshot.snapshotHash)).map((e) => e.findingId);
+  if (!taskFile || !existsSync(taskFile)) {
+    print({ ok: false, pr, verdict: 'invalid', reasons: ['缺 --task <task.json>(build-review-task 产物)——没有它就无法对账覆盖/必答/负向证据,fail-closed'] });
+    process.exit(2);
+  }
+  let task = null;
+  const taskErrors = [];
+  try { task = readJson(taskFile); } catch (e) { taskErrors.push(`task 文件不可读:${e.message}`); }
+  if (task) {
+    if (task.schemaVersion !== REVIEW_OUTPUT_SCHEMA_VERSION) taskErrors.push(`task.schemaVersion 不符(需 ${REVIEW_OUTPUT_SCHEMA_VERSION})`);
+    if (task.snapshotComplete !== true) taskErrors.push('task.snapshotComplete!==true(构建时快照就不完整)');
+    if (task.snapshotHash !== snapshot.snapshotHash) taskErrors.push(`task.snapshotHash 与当前 snapshot 不一致(task=${task.snapshotHash},当前=${snapshot.snapshotHash})——head/base 变过,需重建 task`);
+    if (task.ledgerReadable !== true) taskErrors.push('task.ledgerReadable!==true');
+    for (const k of ['injectedOpenIds', 'coverageKeys', 'segments', 'requiredProfileAnswers', 'requiredNegativeEvidenceKeys']) {
+      if (!Array.isArray(task[k])) taskErrors.push(`task.${k} 缺失或非数组`);
+    }
+    if (task.hazardsIncomplete === true) taskErrors.push('task.hazardsIncomplete=true(known hazards 加载失败,不得据"无 hazard"放行)');
+  }
+  const injectedOpenIds = Array.isArray(task?.injectedOpenIds) ? task.injectedOpenIds : [];
 
   // ── 输出解析 + 契约校验 ──
   const rawOutput = readFileSync(outputFile, 'utf8');
@@ -73,13 +90,18 @@ try {
 
   // ── 外部对账 flags ──
   const flags = { preflightIncomplete };
+  if (taskErrors.length > 0) flags.taskInvalid = true;
   if (!snapshot.complete) flags.snapshotMismatch = true;
   if (task?.snapshotHash && task.snapshotHash !== snapshot.snapshotHash) flags.snapshotMismatch = true;
   if (task?.profileConfigIncomplete === true) flags.profileConfigIncomplete = true;
   // 覆盖对账(SC-R4):逐 segment 精确集合相等 + 并集 === 全集;coverage key 序列化为
   // "hunk:<fileId>:<hunkId>" / "file:<fileId>"
-  if (task?.segments) {
-    const keyStr = (k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`);
+  const keyStr = (k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`);
+  // 当前 snapshot 的合法 hunk 集(SC-R3 复审:checked-clean 只验 hunkId 非空 → stale/
+  // 编造的 hunkId 也能满足必答;这里给出权威可引用集合)
+  const validHunkByFile = new Map();
+  for (const f of snapshot.files ?? []) validHunkByFile.set(f.fileId, new Set((f.hunks ?? []).map((h) => h.hunkId)));
+  if (Array.isArray(task?.segments)) {
     const claimedBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, new Set((s.coverageKeys ?? []).map(keyStr))]));
     let okAll = (output.segmentReceipts ?? []).length === task.segments.length;
     const union = new Set();
@@ -93,17 +115,36 @@ try {
     if (!okAll || !setEq(union, all)) flags.coverageMismatch = true;
   }
   // 必答对账(SC-R3):required (profileId,fileId,checkId) 全集必须被合法作答覆盖
-  if (task?.requiredProfileAnswers) {
+  if (Array.isArray(task?.requiredProfileAnswers)) {
     const want = new Set(task.requiredProfileAnswers.map((r) => `${r.profileId} ${r.fileId} ${r.checkId}`));
-    const got = new Set((output.profileAnswers ?? []).map((a) => `${a.profileId} ${a.fileId} ${a.checkId}`));
+    // 只有**合法**作答才计入补足:checked-clean 引用的 hunkId 必须属于当前 snapshot 的同一
+    // file(stale/编造的 hunkId 不算);finding 引用已在 schema 层验真。
+    const got = new Set();
+    for (const a of output.profileAnswers ?? []) {
+      if (a?.answer === 'checked-clean') {
+        const set = validHunkByFile.get(a.fileId);
+        if (!set || !set.has(a.hunkId)) { flags.staleProfileAnchor = true; continue; }
+      }
+      got.add(`${a.profileId} ${a.fileId} ${a.checkId}`);
+    }
     if (![...want].every((k) => got.has(k))) flags.missingProfileAnswers = true;
   }
   // required 负向证据对账(SC-R6):required key 只能由 executed 条目满足(N/A 不算)
-  if (task?.requiredNegativeEvidenceKeys) {
+  if (Array.isArray(task?.requiredNegativeEvidenceKeys)) {
     const want = new Set(task.requiredNegativeEvidenceKeys.map((k) => `${k.fileId}:${k.hunkId}`));
-    const got = new Set((output.negativeEvidence ?? [])
-      .filter((n) => n.kind === 'executed' && n.snapshotHash === snapshot.snapshotHash)
-      .map((n) => `${n.fileId}:${n.hunkId}`));
+    const runById = new Map((output.verificationRuns ?? []).map((r) => [r?.runId, r]));
+    const got = new Set();
+    for (const n of output.negativeEvidence ?? []) {
+      if (n?.kind !== 'executed' || n.snapshotHash !== snapshot.snapshotHash) continue;
+      // 声明一致性(SC-R6 复审):引用的 run 必须存在,且它的 command 与本条一致、
+      // outputAnchor 与本条一致——"引了个不相干的 run"不是 T1 上限,是可机器判的不一致。
+      const run = runById.get(n.verificationRunId);
+      if (!run || run.command !== n.command || (run.outputAnchor ?? run.outputDigest) !== n.outputAnchor) {
+        flags.negativeEvidenceInconsistent = true;
+        continue;
+      }
+      got.add(`${n.fileId}:${n.hunkId}`);
+    }
     if (![...want].every((k) => got.has(k))) flags.requiredNegativeKeysMissing = true;
   }
 
@@ -114,6 +155,8 @@ try {
     const applied = applyReviewOutput({
       entries, output, seat: mode, snapshot,
       preflightHits: preflightIncomplete ? [] : (preflight.hits ?? []),
+      // 只有 preflight 完成时才交 executedRules(SC-R5:核销必须有正证据)
+      executedRules: preflightIncomplete ? [] : (preflight.executedRules ?? []),
     });
     entries = applied.entries;
     ledgerErrors = applied.errors;
@@ -133,7 +176,7 @@ try {
     flags.missingDispositions = true;
   }
 
-  const shapeAll = { ok: shape.ok && ledgerErrors.length === 0, errors: [...shape.errors, ...ledgerErrors] };
+  const shapeAll = { ok: shape.ok && ledgerErrors.length === 0 && taskErrors.length === 0, errors: [...shape.errors, ...ledgerErrors, ...taskErrors] };
   const ledgerResult = summarize(entries, snapshot.snapshotHash);
   const { verdict, reasons } = deriveVerdict({ shape: shapeAll, output, ledgerResult, flags });
 
@@ -164,7 +207,7 @@ try {
     writeReviewReceipt({ pr, headRefOid, verdict: 'clean', p0p1Count: 0, bindings });
   } else {
     // dirty/invalid:写 non-clean 回执,覆盖撤销同 snapshot 旧 clean(last-write-wins)
-    writeReviewReceipt({ pr, headRefOid, verdict: 'dirty', p0p1Count: (output.findingFamilies ?? []).length, bindings: { ...bindings, reason: verdict } });
+    writeReviewReceipt({ pr, headRefOid, verdict: 'dirty', p0p1Count: Array.isArray(output.findingFamilies) ? output.findingFamilies.length : 0, bindings: { ...bindings, reason: verdict } });
   }
 
   print({

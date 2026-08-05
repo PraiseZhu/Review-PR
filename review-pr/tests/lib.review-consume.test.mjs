@@ -14,13 +14,13 @@ const base = (over = {}) => ({
   schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
   findingFamilies: [], verificationGaps: [], verificationRuns: [],
   profileAnswers: [], findingDispositions: [], negativeEvidence: [], escapeAssessment: [],
-  modelVerdictNote: 'x', ...over,
+  segmentReceipts: [], modelVerdictNote: 'x', ...over,
 });
 const ok = (o, ctx) => validateReviewOutput(o, ctx);
 
 test('合法空输出(零 finding)通过;各字段缺失逐一报错', () => {
   assert.equal(ok(base()).ok, true);
-  for (const key of ['findingFamilies', 'verificationGaps', 'verificationRuns', 'profileAnswers', 'findingDispositions', 'negativeEvidence', 'escapeAssessment']) {
+  for (const key of ['findingFamilies', 'verificationGaps', 'verificationRuns', 'profileAnswers', 'findingDispositions', 'negativeEvidence', 'escapeAssessment', 'segmentReceipts']) {
     const o = base(); delete o[key];
     const r = ok(o);
     assert.equal(r.ok, false);
@@ -67,7 +67,8 @@ test('findingDispositions:模型不得产出 accepted-risk(只走交互通道)',
 });
 
 test('findingDispositions:只认注入的 open ID;resolved 需证据;invalidated 需依据;重复拒', () => {
-  const d = (over) => ({ findingId: 'fid-a', disposition: 'resolved', evidence: 'diff 锚点', ...over });
+  const EV = { kind: 'diff-anchor', snapshotHash: 'snap1-t', fileId: 'F1', hunkId: 'H1' };
+  const d = (over) => ({ findingId: 'fid-a', disposition: 'resolved', evidence: EV, ...over });
   assert.equal(ok(base({ findingDispositions: [d()] }), { injectedOpenIds: ['fid-a'] }).ok, true);
   assert.equal(ok(base({ findingDispositions: [d()] }), { injectedOpenIds: [] }).ok, false, '未注入的 ID 不可 disposition');
   assert.equal(ok(base({ findingDispositions: [d({ evidence: undefined })] }), { injectedOpenIds: ['fid-a'] }).ok, false);
@@ -85,6 +86,7 @@ test('negativeEvidence:executed 全字段+observedSignal 闭集+runId 引用存�
   assert.equal(ok(base({ verificationRuns: [RUN()], negativeEvidence: [e({ observedSignal: 'passed' })] })).ok, false);
   assert.equal(ok(base({ negativeEvidence: [{ fileId: 'F1', kind: 'not-applicable' }] })).ok, false);
   assert.equal(ok(base({ negativeEvidence: [{ fileId: 'F1', kind: 'not-applicable', reasonCode: 'doc-only', explanation: '纯注释' }] })).ok, true);
+  assert.equal(ok(base({ negativeEvidence: [{ fileId: 'F1', kind: 'not-applicable', reasonCode: '随便写的理由码', explanation: 'x' }] })).ok, false, 'reasonCode 必须在闭集内');
 });
 
 // ── deriveVerdict ──
@@ -129,4 +131,51 @@ test('verdict:ledger 结果缺失/非法 → invalid(fail-closed,不许绕过 di
 test('verdict:模型自报不采信——modelVerdictNote 写 APPROVED 不影响 dirty', () => {
   const r = dv({ output: base({ findingFamilies: [FAM()], modelVerdictNote: 'APPROVED' }) });
   assert.equal(r.verdict, 'dirty');
+});
+
+// ── 第 1 轮完成度核验补强 ──
+
+test('R1a 复审:resolved evidence 必须结构化并绑 snapshot;自由文本/缺字段/悬空 run 一律拒', () => {
+  const ctx = { injectedOpenIds: ['fid-a'] };
+  const mk = (evidence) => base({ findingDispositions: [{ findingId: 'fid-a', disposition: 'resolved', evidence }] });
+  assert.equal(ok(mk('x'), ctx).ok, false, '自由文本不再接受');
+  assert.equal(ok(mk({ kind: 'other', snapshotHash: 's' }), ctx).ok, false);
+  assert.equal(ok(mk({ kind: 'diff-anchor', fileId: 'F1', hunkId: 'H1' }), ctx).ok, false, '缺 snapshotHash');
+  assert.equal(ok(mk({ kind: 'diff-anchor', snapshotHash: 's', fileId: 'F1' }), ctx).ok, false, '缺 hunkId');
+  assert.equal(ok(mk({ kind: 'diff-anchor', snapshotHash: 's', fileId: 'F1', hunkId: 'H1' }), ctx).ok, true);
+  assert.equal(ok(mk({ kind: 'verification-run', snapshotHash: 's', verificationRunId: 'nope' }), ctx).ok, false, 'run 悬空');
+  const withRun = base({
+    verificationRuns: [RUN()],
+    findingDispositions: [{ findingId: 'fid-a', disposition: 'resolved', evidence: { kind: 'verification-run', snapshotHash: 's', verificationRunId: 'r1' } }],
+  });
+  assert.equal(ok(withRun, ctx).ok, true);
+});
+
+test('R1a 复审:segmentReceipts 进 schema——段内重复 key / 重复 segmentId / 非法 kind 一律拒', () => {
+  const K = (h) => ({ kind: 'hunk', fileId: 'F1', hunkId: h });
+  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [K('H1')] }] })).ok, true);
+  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [K('H1'), K('H1')] }] })).ok, false, '段内重复不构成覆盖');
+  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [] }, { segmentId: 's1', coverageKeys: [] }] })).ok, false, 'segmentId 重复');
+  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [{ kind: 'blob', fileId: 'F1' }] }] })).ok, false);
+  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [{ kind: 'hunk', fileId: 'F1' }] }] })).ok, false, 'hunk key 缺 hunkId');
+});
+
+test('R1a 复审:negativeEvidence 可选 findingRef 验真', () => {
+  const n = { fileId: 'F1', kind: 'not-applicable', reasonCode: 'doc-only', explanation: 'x', findingRef: { family_id: 'f1', manifestationIndex: 0 } };
+  assert.equal(ok(base({ negativeEvidence: [n] })).ok, false, '无对应 finding 时拒');
+  assert.equal(ok(base({ findingFamilies: [FAM()], negativeEvidence: [n] })).ok, true);
+});
+
+test('R1a 复审:新增 invalid flags 全部生效', () => {
+  for (const flag of ['taskInvalid', 'staleProfileAnchor', 'negativeEvidenceInconsistent', 'classifierIncomplete', 'escapeAssessmentMismatch', 'hazardRegisterFailed']) {
+    assert.equal(dv({ flags: { [flag]: true } }).verdict, 'invalid', flag);
+  }
+});
+
+test('R1a 复审:findingFamilies 为对象(非数组)时 deriveVerdict 不抛,判 invalid', () => {
+  const bad = base({ findingFamilies: { f1: {} } });
+  const shape = validateReviewOutput(bad, {});
+  assert.equal(shape.ok, false);
+  const r = deriveVerdict({ shape, output: bad, ledgerResult: LG(), flags: {} });
+  assert.equal(r.verdict, 'invalid');
 });

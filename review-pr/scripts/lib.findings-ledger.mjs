@@ -100,42 +100,59 @@ export function summarize(entries, currentSnapshotHash) {
  *   snapshot       当前 DiffSnapshot(complete=true)
  *   preflightHits  [{ruleId, ruleVersion, path, line, invariant?}] 本轮 preflight 命中(经 consumer 入账)
  */
-export function applyReviewOutput({ entries, output, seat, snapshot, preflightHits = [] }) {
+export function applyReviewOutput({ entries, output, seat, snapshot, preflightHits = [], executedRules = [] }) {
   const errors = [];
   const now = new Date().toISOString();
   const cur = snapshot.snapshotHash;
   const byId = new Map(entries.map((e) => [e.findingId, e]));
+  const reReported = new Set(); // 本轮**当前 occurrence**:必须 reopen,且不得同轮 resolved/invalidated
 
-  // ① 本轮新 finding 入账(families → manifestations,机器派生 id;已存在则保持,不降级)
+  /** 本轮再次被命中的既有条目必须 reopen(第 1 轮核验 BLOCKER:原实现"已存在就跳过",
+   *  resolved 的项再次出现时不会重开 → 本轮 dirty、ledger 却是关的,下一轮空报即 clean)。 */
+  const reopenOrCreate = (findingId, fresh) => {
+    reReported.add(findingId);
+    const prev = byId.get(findingId);
+    if (!prev) { byId.set(findingId, fresh); return; }
+    if (prev.status === 'open') { byId.set(findingId, { ...prev, lastSeenSnapshotHash: cur, lastSeenTs: now }); return; }
+    byId.set(findingId, {
+      ...prev, status: 'open', reopenedAtSnapshotHash: cur, reopenedTs: now,
+      reopenReason: `本轮在 ${cur} 再次命中(上一状态 ${prev.status})——重现即重开`,
+      // 关闭态字段清掉,避免"看起来还有 resolved 证据"
+      resolvedAtSnapshotHash: undefined, evidence: undefined, interactiveConfirmed: undefined,
+      acceptedAtSnapshotHash: undefined,
+    });
+  };
+
+  // ① 本轮新 finding 入账(families → manifestations,机器派生 id);再次命中 → reopen
   for (const fam of output.findingFamilies ?? []) {
     const key = invariantKey(fam.invariant);
     fam.manifestations.forEach((m, mi) => {
       const findingId = deriveFindingId({ invariant: fam.invariant, path: m.path, line: m.line });
-      if (!byId.has(findingId)) {
-        byId.set(findingId, {
-          findingId, invariantKey: key, path: m.path, line: m.line, severity: m.severity,
-          seat, originSnapshotHash: cur, status: 'open', ts: now,
-          localRef: { family_id: fam.family_id, manifestationIndex: mi },
-        });
-      }
+      reopenOrCreate(findingId, {
+        findingId, invariantKey: key, path: m.path, line: m.line, severity: m.severity,
+        seat, originSnapshotHash: cur, status: 'open', ts: now,
+        localRef: { family_id: fam.family_id, manifestationIndex: mi },
+      });
     });
   }
 
-  // ② preflight 命中入账(确定性规则,来源标 rule)
+  // ② preflight 命中入账(确定性规则,来源标 rule);再次命中 → reopen
   for (const h of preflightHits) {
     const findingId = derivePreflightFindingId(h);
-    if (!byId.has(findingId)) {
-      byId.set(findingId, {
-        findingId, rule: { ruleId: h.ruleId, ruleVersion: h.ruleVersion }, path: h.path, line: h.line,
-        severity: h.severity ?? 'P1', seat: 'preflight', originSnapshotHash: cur, status: 'open', ts: now,
-      });
-    }
+    reopenOrCreate(findingId, {
+      findingId, rule: { ruleId: h.ruleId, ruleVersion: h.ruleVersion }, path: h.path, line: h.line,
+      severity: h.severity ?? 'P1', seat: 'preflight', originSnapshotHash: cur, status: 'open', ts: now,
+    });
   }
 
   // ③ disposition 应用与验真(只对已存在条目;validateReviewOutput 已保证只引用注入 ID)
   for (const d of output.findingDispositions ?? []) {
     const e = byId.get(d.findingId);
     if (!e) { errors.push(`disposition 引用不存在的台账条目 ${d.findingId}`); continue; }
+    if (reReported.has(d.findingId)) {
+      errors.push(`${d.findingId} 本轮被重新报告(当前 occurrence 存在),不得在同一轮 ${d.disposition}——先修再核销`);
+      continue;
+    }
     if (d.disposition === 'resolved') {
       if (e.originSnapshotHash === cur) {
         errors.push(`${d.findingId} 在 origin snapshot 上自称 resolved(同 snapshot 禁自证已修——代码没变,问题不会自己消失)`);
@@ -154,14 +171,23 @@ export function applyReviewOutput({ entries, output, seat, snapshot, preflightHi
 
   // ④ preflight 自动核销:同 ruleId+ruleVersion 在当前 snapshot 重跑不命中 → resolved;
   //    版本变了保持 open(规则实现变更不冒充代码已修)
+  // 第 1 轮核验 BLOCKER:原实现只看"本轮 hits 里没有它"就核销——零 hits 时 versionNow 为空,
+  // 反而直接 resolved(实测:旧 v1 open + preflightHits=[] → status=resolved)。核销必须有
+  // **正证据**:preflight 明确报告"该 ruleId 以同一 ruleVersion 在**当前 snapshot** 跑过"
+  // (executedRules 由 review-preflight 产出并经 consumer 传入);规则被停用/删除/改版一律
+  // 保持 open。
   const hitNow = new Set(preflightHits.map((h) => derivePreflightFindingId(h)));
-  const versionNow = new Map(preflightHits.map((h) => [h.ruleId, h.ruleVersion]));
+  const executedVersion = new Map((executedRules ?? []).map((r) => [r.ruleId, r.ruleVersion]));
   for (const [id, e] of byId) {
     if (!e.rule || e.status !== 'open' || hitNow.has(id)) continue;
-    const curVersion = versionNow.get(e.rule.ruleId);
-    // 本轮该规则跑过(preflightRan 由调用方保证:incomplete 时根本不会走到这里)且版本一致才自动核销
-    if (curVersion !== undefined && curVersion !== e.rule.ruleVersion) continue;
-    byId.set(id, { ...e, status: 'resolved', resolvedAtSnapshotHash: cur, evidence: `preflight 同规则(${e.rule.ruleId}@${e.rule.ruleVersion})在新 snapshot 重跑不命中`, resolvedBySeat: 'preflight', resolvedTs: now });
+    const ran = executedVersion.get(e.rule.ruleId);
+    if (ran === undefined) continue;                 // 本轮没跑过这条规则 → 不能据"没命中"核销
+    if (ran !== e.rule.ruleVersion) continue;        // 规则改版 → 不冒充"代码已修"
+    byId.set(id, {
+      ...e, status: 'resolved', resolvedAtSnapshotHash: cur,
+      evidence: { kind: 'preflight-rerun', snapshotHash: cur, ruleId: e.rule.ruleId, ruleVersion: e.rule.ruleVersion },
+      resolvedBySeat: 'preflight', resolvedTs: now,
+    });
   }
 
   const next = [...byId.values()];

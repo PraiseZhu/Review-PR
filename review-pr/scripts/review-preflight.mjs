@@ -36,7 +36,11 @@ try {
     process.exit(payload.complete ? 0 : 2);
   };
 
-  const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid });
+  // SC-R8 复审:PR files 元数据与 patch 集互检在生产可达——调用方可传 --expected-paths
+  // (逗号分隔,来自 `gh pr view --json files`);不一致/截断即 complete=false,fail-closed。
+  const expectedPathsArg = argOf('--expected-paths');
+  const expectedPaths = expectedPathsArg ? expectedPathsArg.split(',').map((x) => x.trim()).filter(Boolean) : null;
+  const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid, expectedPaths });
   if (!snapshot.complete) {
     emit({ complete: false, reason: `DiffSnapshot 不完整:${snapshot.reason}`, snapshotHash: null, hits: [], reportOnly: [] });
   }
@@ -83,7 +87,7 @@ try {
     emit({
       complete: false, reason: `${unparsable.length} 个文件无法解析(不产出"无命中"结论)`,
       unparsable, snapshotHash: snapshot.snapshotHash, hits, reportOnly,
-      parserVersion: parser.version, ruleSetHash: ruleSetHash(),
+      parserVersion: parser.version, ruleSetHash: ruleSetHash(), executedRules: [],
     });
   }
 
@@ -92,6 +96,9 @@ try {
     snapshotHash: snapshot.snapshotHash,
     parserVersion: parser.version, parserPath: parser.resolvedPath, ruleSetHash: ruleSetHash(),
     activeRuleIds: activeRules.map((r) => r.ruleId),
+    // SC-R5 复审:核销需要**正证据**——"这条规则以这个版本在本 snapshot 真跑过"。
+    // 只有出现在这里的 (ruleId, ruleVersion) 才允许据"本轮没命中"自动核销旧 finding。
+    executedRules: activeRules.map((r) => ({ ruleId: r.ruleId, ruleVersion: r.ruleVersion })),
     scannedFileCount: scanned.length,
     hits, reportOnly,
     note: 'hits = 落在本次新增/修改行上的确定性命中(机器打回,经 consume-review-output 入台账并驱动 dirty);reportOnly = 既存命中(PR 之前就有,不打回作者,但要写进汇总);complete=false 时消费方必须按 R1 invalid 处理,不得据"无命中"放行。',

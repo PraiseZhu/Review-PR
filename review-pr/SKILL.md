@@ -1163,10 +1163,17 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
 `skip-structural-block`），带 `auto.structuralBypassPending=true`：
 
 1. 照常走阶段二独立审查；
-2. 审查通过（零 P0/P1）后，**先调用**
-   `node "<SKILL_ROOT>/scripts/write-review-receipt.mjs" <N> --verdict clean --p0p1-count 0 --head <headRefOid>`
-   落一条回执（`--head` 用本轮审查针对的那个 head SHA；`verdict=dirty` 用于如实
-   记录还有 P0/P1 未清空的情形，不能跳过这一步直接进第 3 步）；
+2. 审查输出交给**唯一消费出口**裁决并落回执（SC-R1b：`write-review-receipt.mjs` 的
+   public CLI 已**禁止** `--verdict clean`，clean 只能由 consumer 依据机器 verdict 写）：
+
+   ```bash
+   node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output <rro-1.json> \
+     --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
+     --task <task.json> --preflight <preflight.json>
+   ```
+
+   退出码 0 = `clean`（已写带五项绑定的 clean 回执）；2 = `dirty`/`invalid`/`blocked`
+   （已写 non-clean 回执，覆盖撤销同 snapshot 的旧 clean）。不能跳过这一步直接进第 3 步；
 3. 调 `pre-merge-check.mjs` 复核，若返回
    `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，执行：
 
