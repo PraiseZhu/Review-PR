@@ -2,13 +2,18 @@
 // (A1 force-review 的行为级测试在 lib.detect-loop-exclusion.test.mjs 尾部)。
 //
 // 分层如实声明:
-// - A5 的 judgeMergedLoopPr / loadAuditState 是**行为级**单测(纯函数 + 子进程整脚本);
-// - A2/A3/A4 落在 pre-merge-check.mjs / notify-merge-*.mjs 的主流程里,行为级复现需要
-//   mock 整条 gh 链,本文件用**源码接线断言**钉住(与「timeout 常量必须真的传进 spawnSync」
+// - A5 的 judgeMergedLoopPr / loadAuditState、A2 的 decideAuthorizedFastMerge 是**行为级**
+//   单测(纯函数,零网络依赖,直接构造输入断言输出值);
+// - A3/A4 落在 pre-merge-check.mjs / notify-merge-*.mjs 的主流程里,行为级复现需要 mock
+//   整条 gh 链,本文件用**源码接线断言**钉住(与「timeout 常量必须真的传进 spawnSync」
 //   同款纪律:单元层锁不住接线,接线断言防的是"常量在而不传等于无界"这类静默退化)。
 //   接线断言的已知局限:锁得住"分支被删/条件被改写",锁不住"分支还在但逻辑等价地绕过"
 //   ——后者靠 mivo 侧 force-review 数据面(t1BodyMarkers 清空 + defaultWhenAmbiguous=t2)
 //   与本仓 A1 行为测试双保险。
+// - A2(2026-08-05,seat②adversarial 复审 REQUIRES_CHANGES):此前只用源码字符串/分支
+//   存在性断言钉判定,测不出"判定条件被改成语义恒假"这类语义性拆除(复审实测:把
+//   pre-merge-check.mjs 里 A2 判定条件改成恒假,14/14 仍全绿)。判定逻辑已抽成 lib.mjs
+//   的纯函数 decideAuthorizedFastMerge,现直接构造输入断言输出值,不再只锁字面量。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
@@ -17,29 +22,59 @@ import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { LIB_PATH } from './helpers.mjs';
+import { decideAuthorizedFastMerge } from '../scripts/lib.mjs';
 
 const SCRIPTS = dirname(LIB_PATH);
 const src = (f) => readFileSync(join(SCRIPTS, f), 'utf8');
 const AUDIT_URL = pathToFileURL(join(SCRIPTS, 'audit-merged-loop-prs.mjs')).href;
 
-// ── A2:loop PR 封死 authorized-fast-merge ──
+// ── A2:loop PR 封死 authorized-fast-merge(decideAuthorizedFastMerge 行为级) ──
 
-test('A2 接线:pre-merge-check 在 fast-merge 判定前调用 detectLoopExclusion,loop 命中即封死', () => {
-  const s = src('pre-merge-check.mjs');
-  // 三条一起钉:import 了 detectLoopExclusion / 命中分支存在且拿不到 available / 封死理由字面量
-  assert.match(s, /detectLoopExclusion[\s\S]{0,400}from '\.\/lib\.mjs'/, 'import 接线被删');
-  assert.match(s, /approveMergeAuth\.authorized && loopExclusionForGate/, 'loop 封死分支被删');
-  assert.match(s, /loop-managed-pr-fast-merge-forbidden/, '封死理由字面量被改');
-  // 封死分支里绝不能出现 authorizedFastMergeAvailable = true
-  const branch = s.slice(s.indexOf('approveMergeAuth.authorized && loopExclusionForGate'), s.indexOf('} else if (approveMergeAuth.authorized)'));
-  assert.ok(!branch.includes('authorizedFastMergeAvailable = true'), '封死分支内不得置 available=true');
+const AUTHORIZED = { author: 'own-account-admin', url: 'https://github.com/x/y/pull/1#issuecomment-1', createdAt: '2026-08-05T00:00:00Z' };
+// "其余条件均满足快速合并"的裁决:authorizedFastMergeAvailable=true 且 blockedReason=null
+// ——用来证明"哪怕不看 loop 就已经该放行",A2 仍必须把它压成 false,不是靠别的原因凑巧为 false。
+const FULLY_ELIGIBLE = { authorizedFastMergeAvailable: true, blockedReason: null, reportOnly: { formatIssues: [], unresolvedThreadCount: 0, nonRequiredFailures: [] } };
+const LOOP_HIT = { matched: true, verdict: 't2', source: 'state.json', matchedPrefix: '[mivo] ' };
+
+test('A2 行为:loop 托管 PR + 已授权 + 其余条件均满足快速合并 → authorizedFastMergeAvailable 仍必须是 false', () => {
+  let evalCalls = 0;
+  const r = decideAuthorizedFastMerge({
+    approveMergeAuth: { authorized: AUTHORIZED },
+    loopExclusionForGate: LOOP_HIT,
+    computeEligibility: () => { evalCalls += 1; return FULLY_ELIGIBLE; },
+  });
+  assert.equal(r.authorizedFastMergeAvailable, false, 'A2 必须无条件封死,不能被"其余条件均满足"盖过');
+  assert.match(r.authorizedFastMergeInfo.blockedReason, /loop-managed-pr-fast-merge-forbidden/);
+  assert.equal(evalCalls, 0, 'loop 命中时不该发起 computeEligibility(既有行为:不为 loop PR 多打一轮网络请求)');
 });
 
-test('A2 顺序:loop 封死分支必须先于普通 fast-merge 分支(else-if 链顺序即优先级)', () => {
+test('A2 对照:非 loop PR + 已授权 + 同样"其余条件均满足" → authorizedFastMergeAvailable 为 true(证明上一条的 false 确实来自 A2,不是别的原因)', () => {
+  let evalCalls = 0;
+  const r = decideAuthorizedFastMerge({
+    approveMergeAuth: { authorized: AUTHORIZED },
+    loopExclusionForGate: null,
+    computeEligibility: () => { evalCalls += 1; return FULLY_ELIGIBLE; },
+  });
+  assert.equal(r.authorizedFastMergeAvailable, true);
+  assert.equal(r.authorizedFastMergeInfo.blockedReason, null);
+  assert.equal(evalCalls, 1, '非 loop 分支必须真的评估机械前提');
+});
+
+test('A2 边界:loop 托管 PR 但无授权评论 → 走"无授权"短路(与非 loop 无授权同一形状,不判 loop 理由)', () => {
+  const r = decideAuthorizedFastMerge({
+    approveMergeAuth: { authorized: null },
+    loopExclusionForGate: LOOP_HIT,
+    computeEligibility: () => { throw new Error('不该被调用——无授权评论时应短路,压根不看 loop'); },
+  });
+  assert.equal(r.authorizedFastMergeAvailable, false);
+  assert.equal(r.authorizedFastMergeInfo, null);
+});
+
+test('A2 接线:pre-merge-check.mjs 把判定委派给 lib.mjs 的 decideAuthorizedFastMerge(不是自己重写一份可能漂移的逻辑)', () => {
   const s = src('pre-merge-check.mjs');
-  const guard = s.indexOf('approveMergeAuth.authorized && loopExclusionForGate');
-  const normal = s.indexOf('} else if (approveMergeAuth.authorized)');
-  assert.ok(guard > 0 && normal > guard, 'loop 分支必须在普通分支之前(顺序反了 = loop PR 先进普通通道)');
+  assert.match(s, /decideAuthorizedFastMerge[\s\S]{0,400}from '\.\/lib\.mjs'/, 'import 接线被删');
+  assert.match(s, /decideAuthorizedFastMerge\(\{/, '判定调用被删——疑似又在本文件里重新手写了一份 A2 逻辑');
+  assert.match(s, /loopExclusionForGate,/, 'loopExclusionForGate 未被传给判定函数');
 });
 
 // ── A3:self-merge 硬门绑 isDraft=false ──
