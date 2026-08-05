@@ -39,16 +39,18 @@ try {
   const rules = loadRules();
   const cfg = validatePrescanConfig(rules?.prescan);
 
-  // SC-1.1: disabled(配置缺失或 enabled:false)→ 不产出 artifact
-  if (!cfg.enabled) {
-    emit({ ok: true, status: 'disabled', pr, note: 'prescan 配置未启用——不产出 artifact;task/prompt 不含 prescan 字段(SC-1.1 关闭态兼容)' });
-  }
-
-  // SC-1.1: 配置形态非法 → failed/config-invalid(fail-closed:不静默当 disabled)
+  // SC-1.1: 配置形态非法 → failed/config-invalid(fail-closed:不静默当 disabled)。
+  // 必须先判 valid——validatePrescanConfig 对非法配置返回 enabled:false,若先判
+  // !cfg.enabled 会把 config-invalid 错误地吞成 disabled(真实 bug,由测试抓到)。
   if (!cfg.valid) {
     const artifact = buildArtifact({ status: 'failed', snapshotHash: null, reasonCode: 'config-invalid', observations: [] });
     writePrescanArtifact(STATE_DIR, pr, artifact);
     emit({ ok: false, status: 'failed', pr, reasonCode: 'config-invalid', error: cfg.error, artifactHash: artifact.artifactHash });
+  }
+
+  // SC-1.1: disabled(配置缺失或 enabled:false)→ 不产出 artifact
+  if (!cfg.enabled) {
+    emit({ ok: true, status: 'disabled', pr, note: 'prescan 配置未启用——不产出 artifact;task/prompt 不含 prescan 字段(SC-1.1 关闭态兼容)' });
   }
 
   const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid });

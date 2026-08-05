@@ -109,15 +109,15 @@ export function computeArtifactHash(artifact) {
   return `pa1-${createHash('sha256').update(canon).digest('hex').slice(0, 20)}`;
 }
 
-/** SC-3.1: 校验单条 observation schema。返回 {ok, error}。
+/** SC-3.1: 校验单条**原始**observation schema(会话产出的原始 JSON,不含 observationId
+ *  ——那是机器派生字段,不接受模型自报;见 deriveObservationId)。返回 {ok, error}。
  *  file/line 校验范围收窄到调用方传入的 allowedFiles(当前段允许的文件集),不是全量
  *  snapshot——分段协议下,某段的 observation 不得引用其他段的文件(SC-2.1/4.2)。 */
 export function validateObservation(obs, allowedFiles) {
   if (!obs || typeof obs !== 'object') return { ok: false, error: 'observation 非对象' };
-  const allowedKeys = new Set(['observationId', 'file', 'line', 'category', 'note']);
+  const allowedKeys = new Set(['file', 'line', 'category', 'note']);
   const extra = Object.keys(obs).filter((k) => !allowedKeys.has(k));
-  if (extra.length > 0) return { ok: false, error: `observation 含未知字段:${extra.join(',')}(禁 verdict/severity/fix 等定性字段)` };
-  if (typeof obs.observationId !== 'string' || !obs.observationId) return { ok: false, error: 'observationId 缺失或非字符串' };
+  if (extra.length > 0) return { ok: false, error: `observation 含未知字段:${extra.join(',')}(禁 verdict/severity/fix/observationId 等——observationId 由机器派生,不接受模型自报)` };
   if (typeof obs.file !== 'string' || !obs.file) return { ok: false, error: 'file 缺失或非字符串' };
   if (!Number.isInteger(obs.line) || obs.line < 1) return { ok: false, error: 'line 必须是正整数' };
   if (typeof obs.category !== 'string' || !PRESCAN_CATEGORIES.includes(obs.category)) {
