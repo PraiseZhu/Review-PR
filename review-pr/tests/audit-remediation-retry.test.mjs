@@ -16,7 +16,7 @@
 // 跑:node --test review-pr/tests/audit-remediation-retry.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isMergedLoopEntryResolved, decideCursorAfterRemediation } from '../scripts/audit-merged-loop-prs.mjs';
+import { isMergedLoopEntryResolved, decideCursorAfterRemediation, isOpsAlertDelivered } from '../scripts/audit-merged-loop-prs.mjs';
 
 const CURSOR = '2026-08-01T00:00:00.000Z';
 const NOW = '2026-08-05T12:00:00.000Z';
@@ -107,4 +107,22 @@ test('未解决 entry 的 mergedAt 缺失 → fail-closed:游标原地不动(不
   const bad = entry({ mergedAt: null, revert: { created: false, reason: 'revert-failed' }, alert: { posted: false, reason: 'alert-failed: y' } });
   const next = decideCursorAfterRemediation({ results: [bad], audited: {}, cursor: CURSOR, now: NOW });
   assert.equal(next, CURSOR);
+});
+
+// ---- isOpsAlertDelivered(F-A5-OPS-ALERT-CONTRACT-DRIFT,seat②codex-adversarial R3 finding)----
+// 此前 sendOpsAlert 误用 channel==='slack' 判送达(该枚举值从不出现,真实枚举是
+// api/webhook/degraded),api 真送达被判失败→alerted 不落账→游标被卡+下轮重复告警。
+
+test('api 通道送达 → 算真送达(此前被误判失败,正是 finding 复现场景)', () => {
+  assert.equal(isOpsAlertDelivered('api'), true);
+});
+
+test('webhook 通道 → 算送达(与 notify-sync-alert.mjs 判据同款;生产上已摘 webhook,保留为形状一致+枚举 fail-safe)', () => {
+  assert.equal(isOpsAlertDelivered('webhook'), true);
+});
+
+test("degraded 降级路径/legacy 'slack' 字面量/undefined → 均不算送达(不写 alerted,留给下轮重试)", () => {
+  assert.equal(isOpsAlertDelivered('degraded'), false);
+  assert.equal(isOpsAlertDelivered('slack'), false, "'slack' 是修复前的错误字面量,真实枚举里不存在,必须不算送达");
+  assert.equal(isOpsAlertDelivered(undefined), false);
 });
