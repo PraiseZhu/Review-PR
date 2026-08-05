@@ -227,7 +227,7 @@ test('R2 第 2 轮核验补齐:剥语法壳 / 三元 / async IIFE 全部命中,�
 });
 
 test('R2:规则版本随检测面变化 bump(SC-R5 的核销依赖 ruleVersion,不 bump 会冒充"代码已修")', () => {
-  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v4', '检测面扩了必须 bump');
+  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v5', '检测面扩了必须 bump');
 });
 
 test('R2 第 3 轮核验补齐:谓词根节点剥壳 + 逻辑/空值合并/逗号/element-access', () => {
@@ -248,4 +248,39 @@ test('R2 第 3 轮核验补齐:谓词根节点剥壳 + 逻辑/空值合并/逗�
   assert.equal(hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => ready && document.readyState === "complete"); }'), 0, '两侧都是同步 → 不报');
   assert.equal(hit('export async function w(page: any, x: any){ await page.waitForFunction(() => x["then"]()); }'), 0, 'element-access 的 then,链基不是 Promise → 不报');
   assert.equal(hit('export async function w(page: any, model: any){ await page.waitForFunction(() => model["evaluate"]()); }'), 0, 'element-access 的 evaluate,receiver 不在白名单 → 不报');
+});
+
+test('R2 第 4 轮核验补齐:receiver/new target 剥壳 + 同步 literal IIFE + function-like 边界 + && 短路语义', () => {
+  const { ts } = loadVendoredTypescript();
+  const hit = (text, path = 'a.ts') => {
+    const r = scanSource(ts, { path, text });
+    assert.equal(r.ok, true, r.error);
+    return r.hits.length;
+  };
+  // ── 第 4 轮核验实测漏判(修前均为 0)──
+  assert.equal(hit('export async function w(page: any){ await (page).waitForFunction(async () => true); }'), 1, 'receiver 被括号包住');
+  assert.equal(hit('export async function w(page: any){ await (page.waitForFunction)(async () => true); }'), 1, 'callee 整体被括号包住');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => (() => Promise.resolve(true))()); }'), 1, '同步 literal IIFE 明确返回 Promise');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => new (Promise)((r: any) => r(true))); }'), 1, 'new target 被括号包住');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => (function(){ return Promise.resolve(1); })()); }'), 1, '同步 function 表达式 IIFE 返回 Promise');
+  // ── 第 4 轮核验实测**假红**(修前均为 1)──
+  assert.equal(
+    hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => Promise.resolve() && ready); }'),
+    0,
+    'Promise 恒 truthy → && 的值恒为 ready,谓词真在等 ready,不是假等待',
+  );
+  assert.equal(
+    hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => { const o = { async m(){ return fetch("/x"); } }; void o; return ready; }); }'),
+    0,
+    '对象方法的 return 属于内层函数,不是谓词自己的返回值',
+  );
+  assert.equal(
+    hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => { const o = { get v(){ return Promise.resolve(1); } }; void o; return ready; }); }'),
+    0,
+    'getter 的 return 同样属于内层函数',
+  );
+  // ── 收窄面不得放过真问题(对照组)──
+  assert.equal(hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => ready && Promise.resolve(true)); }'), 1, '&& 右操作数是 Promise → 仍必须报');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => Promise.resolve(1) || false); }'), 1, '|| 左操作数确定是 Promise → 值就是它,必须报');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => { function inner(){ return Promise.resolve(1); } return inner; }); }'), 0, '返回的是函数本身,不是 Promise');
 });

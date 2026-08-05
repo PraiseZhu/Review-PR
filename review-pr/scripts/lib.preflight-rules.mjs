@@ -52,7 +52,12 @@ export const BUILTIN_RULES = [
     // v4(2026-08-05 第 3 轮核验):**谓词根节点**也剥壳(`waitForFunction((async()=>true))`
     //     此前整条判定被跳过);补 &&/||/?? 任一操作数、逗号表达式右操作数、
     //     以及 `Promise["resolve"]()` 这类 element-access 成员调用
-    ruleVersion: 'v4',
+    // v5(2026-08-05 第 4 轮核验):receiver / new target 同样剥壳(`(page).waitForFunction`、
+    //     `new (Promise)(...)`);同步 literal IIFE 复用函数体返回分析
+    //     (`() => (() => Promise.resolve(1))()`);return 遍历在**任意** function-like
+    //     (含对象方法/getter)处停止下潜;`&&` 按 JS 短路语义只看右操作数
+    //     (`Promise.resolve() && ready` 恒返回 ready,不是假等待——上一版假红)
+    ruleVersion: 'v5',
     severity: 'P1',
     invariant: 'waitForFunction 的谓词不得是 async/返回 Promise——Promise 恒 truthy,会 1ms 假通过而根本没在等待',
     title: 'waitForFunction 收到 async/Promise 谓词(假等待)',
@@ -131,8 +136,16 @@ function unwrapExpression(ts, e) {
   }
 }
 
-const isAsyncFunctionLike = (ts, n) => (ts.isArrowFunction(n) || ts.isFunctionExpression(n))
-  && (n.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+/** return 遍历的下潜边界:任何 function-like(含对象字面量方法 / getter / 构造器)与 class。
+ *  第 4 轮核验点名的假红:谓词体里写 `const o = { async m() { return fetch(x) } }; return true;`
+ *  时旧边界(只列 function/arrow/class)会把内层方法的 return 当成谓词自己的返回值。 */
+function isReturnBoundary(ts, n) {
+  if (typeof ts.isFunctionLike === 'function' && ts.isFunctionLike(n)) return true;
+  return ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n)
+    || ts.isMethodDeclaration?.(n) === true || ts.isGetAccessor?.(n) === true
+    || ts.isSetAccessor?.(n) === true || ts.isConstructorDeclaration?.(n) === true
+    || ts.isClassDeclaration(n) || ts.isClassExpression(n);
+}
 
 /** receiver 末段标识名(`a.b.page` → `page`;`page` → `page`);其它形态返回 null。 */
 function receiverName(ts, expr) {
@@ -152,25 +165,34 @@ function isPromiseishExpression(ts, raw) {
   const e = unwrapExpression(ts, raw);
   if (!e) return false;
   if (ts.isAwaitExpression(e)) return true;
-  if (ts.isNewExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === 'Promise') return true;
+  // new target 也剥壳:`new (Promise)(...)`、`new global.Promise(...)`(第 4 轮核验点名)
+  if (ts.isNewExpression(e) && receiverName(ts, e.expression) === 'Promise') return true;
   // 三元:任一分支是 Promise 就够——谓词返回值可能是 Promise,恒 truthy 的风险已成立
   if (ts.isConditionalExpression(e)) {
     return isPromiseishExpression(ts, e.whenTrue) || isPromiseishExpression(ts, e.whenFalse);
   }
-  // 逻辑/空值合并:任一操作数可能成为返回值(`ready && Promise.resolve(x)` 的返回值
-  // 在 ready 为真时就是 Promise);逗号表达式取右操作数(第 3 轮核验点名的四种形态)
+  // 逻辑/空值合并:按 **JS 短路返回语义**判,不是"任一操作数有 Promise 形状就报"
+  // (第 4 轮核验点名的假红:`() => Promise.resolve() && ready` 里 Promise 恒 truthy,
+  //  `&&` 的值恒为 ready,谓词实际在等 ready,不是假等待)。
   if (ts.isBinaryExpression(e)) {
     const op = e.operatorToken.kind;
-    if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken
-      || op === ts.SyntaxKind.QuestionQuestionToken) {
+    // `A && B`:A 确定是 Promise → 恒 truthy → 值恒为 B;A 不确定 → 值是 falsy 的 A
+    // (falsy 值不可能是 Promise)或 B。两种情况风险都只来自 B。
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) return isPromiseishExpression(ts, e.right);
+    // `A || B` / `A ?? B`:A 确定是 Promise → 非 falsy/非 null → 值就是 A(风险成立);
+    // 否则值可能是 B。任一侧确定是 Promise 即报。
+    if (op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken) {
       return isPromiseishExpression(ts, e.left) || isPromiseishExpression(ts, e.right);
     }
     if (op === ts.SyntaxKind.CommaToken) return isPromiseishExpression(ts, e.right);
   }
   if (ts.isCallExpression(e)) {
     const callee = unwrapExpression(ts, e.expression);
-    // async IIFE:`(async () => ...)()` —— 调用一个 async 字面量函数
-    if (isAsyncFunctionLike(ts, callee)) return true;
+    // IIFE:`(async () => ...)()` 与**同步** literal IIFE `(() => Promise.resolve(1))()`
+    // 都按函数体返回分析判(后者是第 4 轮核验点名的漏判:明确返回 Promise 却判 0)
+    if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+      return functionLikeReturnsPromise(ts, callee) !== null;
+    }
     // 成员调用:`.x()` 与 `["x"]()` 同义(`Promise["resolve"](1)` 也是 Promise)
     const memberName = ts.isPropertyAccessExpression(callee)
       ? callee.name.text
@@ -190,30 +212,26 @@ function isPromiseishExpression(ts, raw) {
   return false;
 }
 
-/** 谓词表达式是否 async / 显式返回 Promise(literal 函数体内的 return 也算)。 */
-function isAsyncOrPromisePredicate(ts, raw) {
-  // 第 3 轮核验:剥壳此前只作用在**返回表达式**上,谓词根节点本身被括号/断言包住时
-  // (`waitForFunction((async () => true))`)整个判定被跳过。先剥谓词根节点。
-  const node = unwrapExpression(ts, raw);
+/**
+ * 字面量函数(箭头 / 函数表达式)是否 async 或**语法上确定返回 Promise**。
+ * 与 isPromiseishExpression 互相递归:literal IIFE 的判定就是"对被调用的那个字面量函数
+ * 做同一套返回分析"。
+ */
+function functionLikeReturnsPromise(ts, node) {
   if (!node) return null;
-  if (!(ts.isArrowFunction(node) || ts.isFunctionExpression(node))) {
-    // 标识符谓词(`waitForFunction(myPredicate)`):无法在词法层判定 → 不报(承诺面之外)
-    return null;
-  }
-  const isAsync = (node.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
-  if (isAsync) return 'async-function-predicate';
+  if ((node.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return 'async-function-predicate';
   // 简明箭头体:`() => new Promise(...)` / `() => Promise.resolve(x)` / `() => page.evaluate(...)`
   if (ts.isArrowFunction(node) && node.body && !ts.isBlock(node.body)) {
     return isPromiseishExpression(ts, node.body) ? 'returns-promise-predicate' : null;
   }
-  // 有 block 体的 literal 函数(箭头或 function 表达式):遍历自身作用域内的 return
-  // (第 1 轮核验漏判:`() => { return new Promise(...) }` / `function(){ return Promise.resolve() }`
-  //  此前完全不查)。**不下潜嵌套函数**——那些 return 属于内层函数,不是本谓词的返回值。
+  // 有 block 体的 literal 函数:遍历自身作用域内的 return(第 1 轮核验漏判:
+  // `() => { return new Promise(...) }` 此前完全不查)。**不下潜任何嵌套 function-like**
+  // ——那些 return 属于内层函数,不是本函数的返回值(第 4 轮核验:对象方法/getter 也算)。
   if (!node.body || !ts.isBlock(node.body)) return null;
   let found = false;
   const walk = (n) => {
     if (found) return;
-    if (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)) return;
+    if (isReturnBoundary(ts, n)) return;
     if (ts.isReturnStatement(n) && isPromiseishExpression(ts, n.expression)) { found = true; return; }
     ts.forEachChild(n, walk);
   };
@@ -221,10 +239,24 @@ function isAsyncOrPromisePredicate(ts, raw) {
   return found ? 'returns-promise-predicate' : null;
 }
 
-/** receiver 是否 lexical 的 page/frame。 */
+/** 谓词表达式是否 async / 显式返回 Promise(literal 函数体内的 return 也算)。 */
+function isAsyncOrPromisePredicate(ts, raw) {
+  // 第 3 轮核验:剥壳此前只作用在**返回表达式**上,谓词根节点本身被括号/断言包住时
+  // (`waitForFunction((async () => true))`)整个判定被跳过。先剥谓词根节点。
+  const node = unwrapExpression(ts, raw);
+  if (!node) return null;
+  // 标识符谓词(`waitForFunction(myPredicate)`):无法在词法层判定 → 不报(承诺面之外)
+  if (!(ts.isArrowFunction(node) || ts.isFunctionExpression(node))) return null;
+  return functionLikeReturnsPromise(ts, node);
+}
+
+/** receiver 是否 lexical 的 page/frame。第 4 轮核验:`(page).waitForFunction(...)` 里
+ *  receiver 是 ParenthesizedExpression,不剥壳则整条判定被跳过。 */
 function isPageOrFrameReceiver(ts, expr) {
-  if (ts.isIdentifier(expr)) return /^(page|frame)$/.test(expr.text);
-  if (ts.isPropertyAccessExpression(expr)) return /^(page|frame)$/.test(expr.name.text);
+  const e = unwrapExpression(ts, expr);
+  if (!e) return false;
+  if (ts.isIdentifier(e)) return /^(page|frame)$/.test(e.text);
+  if (ts.isPropertyAccessExpression(e)) return /^(page|frame)$/.test(e.name.text);
   return false;
 }
 
@@ -244,9 +276,11 @@ export function scanSource(ts, { path, text }) {
   const rule = BUILTIN_RULES[0];
   const hits = [];
   const visit = (node) => {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === 'waitForFunction'
-      && isPageOrFrameReceiver(ts, node.expression.expression)) {
+    // callee 也剥壳:`(page.waitForFunction)(...)` 同样是同一个调用(第 4 轮核验)
+    const calleeP = ts.isCallExpression(node) ? unwrapExpression(ts, node.expression) : null;
+    if (calleeP && ts.isPropertyAccessExpression(calleeP)
+      && calleeP.name.text === 'waitForFunction'
+      && isPageOrFrameReceiver(ts, calleeP.expression)) {
       const why = isAsyncOrPromisePredicate(ts, node.arguments[0]);
       if (why) {
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
@@ -291,12 +325,32 @@ export function ruleSetHash() {
  * 裸 `equal(...)` 也是断言(核验席实测漏判)。
  */
 const ASSERT_MODULES = /^(node:)?assert(\/strict)?$/;
-const ASSERT_MEMBER_RE = /^(equal|strictEqual|notEqual|notStrictEqual|deepEqual|deepStrictEqual|notDeepEqual|notDeepStrictEqual|ok|match|doesNotMatch|throws|rejects|doesNotThrow|fail|ifError)$/;
 const WAIT_MEMBER_RE = /^(waitForFunction|waitForSelector|waitForTimeout|waitForEvent|waitForResponse|waitForLoadState|waitForNavigation|waitFor)$/;
-const EXPECT_RE = /^(expect|assert)$/;
+// 断言链的**根**只认这几个名字(外加 assert 模块的 named/default import 名)。第 4 轮核验
+// 删掉了"任意 receiver 只凭方法名(equal/match/...)就算断言"的兜底——它把 `"abc".match(/a/)`
+// 判成断言,普通字符串/业务对象调用因此假红。
+const ASSERT_ROOT_RE = /^(expect|assert|chai)$/;
 const GUARD_MEMBER_RE = /^(exit)$/;
 const GUARD_NAME_RE = /^(throwIf|invariant|assertInvariant|guard[A-Z]\w*|\w+Guard)$/;
 const EXIT_CODE_RE = /^(exitCode|exit_code|returncode|statusCode)$/;
+
+/** 调用链上出现过的标识名(由内到外),末位是链根。
+ *  `expect(a).not.toEqual(b)` 的 callee.expression → ['not', 'expect'];
+ *  `t.assert.equal(...)` → ['assert', 't'];`"abc".match` 的 receiver → []。 */
+function chainNames(ts, node) {
+  const names = [];
+  let n = node;
+  for (;;) {
+    if (!n) break;
+    if (ts.isCallExpression(n)) { n = n.expression; continue; }
+    if (ts.isPropertyAccessExpression(n)) { names.push(n.name.text); n = n.expression; continue; }
+    if (ts.isElementAccessExpression(n)) { n = n.expression; continue; }
+    if (ts.isParenthesizedExpression(n) || ts.isNonNullExpression?.(n) === true) { n = n.expression; continue; }
+    break;
+  }
+  if (n && ts.isIdentifier(n)) names.push(n.text);
+  return names;
+}
 
 /**
  * 扫一个文件,返回判定器调用的行范围。
@@ -328,19 +382,34 @@ export function oracleCallRanges(ts, { path, text }) {
     const e = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
     ranges.push({ kind: kindName, startLine: s, endLine: e });
   };
+  const isAssertName = (x) => ASSERT_ROOT_RE.test(x) || assertNames.has(x);
+  // 已被外层断言链记过范围的内层调用:`expect(a).toEqual(b)` 记**最外层**(整条 matcher
+  // 的行范围),内层 `expect(a)` 不再单独记短范围——上一版只记内层,多行 matcher 的远端
+  // 参数行改动因此与断言范围不相交,required 凭空为 0(第 4 轮核验 BLOCKER)。
+  const suppressed = new Set();
+  const markCalleeChain = (node) => {
+    let n = node.expression;
+    for (;;) {
+      if (!n) return;
+      if (ts.isCallExpression(n)) { suppressed.add(n); n = n.expression; continue; }
+      if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)
+        || ts.isParenthesizedExpression(n) || ts.isNonNullExpression?.(n) === true) { n = n.expression; continue; }
+      return;
+    }
+  };
   const visit = (node) => {
-    if (ts.isCallExpression(node)) {
-      const callee = node.expression;
+    if (ts.isCallExpression(node) && !suppressed.has(node)) {
+      const callee = unwrapExpression(ts, node.expression);
       if (ts.isIdentifier(callee)) {
-        if (EXPECT_RE.test(callee.text) || assertNames.has(callee.text)) push('assert', node);
+        if (isAssertName(callee.text)) push('assert', node);
         else if (GUARD_NAME_RE.test(callee.text)) push('guard', node);
       } else if (ts.isPropertyAccessExpression(callee)) {
         const prop = callee.name.text;
-        const recv = ts.isIdentifier(callee.expression) ? callee.expression.text : null;
+        const names = chainNames(ts, callee.expression);
+        const root = names.length > 0 ? names[names.length - 1] : null;
         if (WAIT_MEMBER_RE.test(prop)) push('wait', node);
-        else if (ASSERT_MEMBER_RE.test(prop) && (recv === null || assertNames.has(recv) || /^(assert|expect|chai)$/.test(recv))) push('assert', node);
-        else if (ASSERT_MEMBER_RE.test(prop)) push('assert', node); // `x.toEqual(...)` 之类链式期望
-        else if (recv === 'process' && GUARD_MEMBER_RE.test(prop)) push('guard', node);
+        else if (names.some(isAssertName)) { push('assert', node); markCalleeChain(node); }
+        else if (root === 'process' && GUARD_MEMBER_RE.test(prop)) push('guard', node);
         else if (GUARD_NAME_RE.test(prop)) push('guard', node);
       }
     }

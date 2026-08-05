@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { buildDiffSnapshot } from '../scripts/lib.diff-snapshot.mjs';
 import { computeReviewRequirements, logicalWindow } from '../scripts/lib.review-requirements.mjs';
-import { classifyRequiredNegativeEvidence } from '../scripts/lib.review-profiles.mjs';
+import { classifyRequiredNegativeEvidence, oldSpansOf } from '../scripts/lib.review-profiles.mjs';
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
@@ -232,4 +232,114 @@ test('R6 第 3 轮核验 fail-closed:parser 不可用时,支持的扩展名一�
     else process.env.REVIEW_PR_VENDOR_TS_DIR = prev;
   }
   assert.equal(snapshot.complete, true);
+});
+
+// ── 第 4 轮核验:base 侧交集此前恒 false(oldRanges 是扁平 tuple,被当 spans[] 遍历)──
+
+test('R6 第 4 轮核验 BLOCKER:普通 modified 文件只删一条 assert,base AST 命中 → 必须要求负向证据', () => {
+  const before = `import assert from 'node:assert/strict';
+export function check(a) {
+  assert.equal(a, 1);
+  assert.equal(a + 1, 2);
+  return a;
+}
+`;
+  const after = `import assert from 'node:assert/strict';
+export function check(a) {
+  assert.equal(a, 1);
+  return a;
+}
+`;
+  const { required } = requiredFor({ 'tests/del.test.mjs': before }, { 'tests/del.test.mjs': after });
+  assert.ok(required.length > 0,
+    '修前实测 required=[]:hitsSpan 把扁平 tuple [oldStart,oldLines] 当 spans[] 遍历,from/count 全 undefined → 恒 false');
+  assert.match(required[0].reason, /删除/, '原因必须点明"删掉了判定器",不是泛泛的"触及"');
+});
+
+test('R6 第 4 轮核验:普通业务文件只删一条守卫(exitCode 消费)→ 必须要求负向证据', () => {
+  const before = `export function run(r) {
+  if (r.exitCode !== 0) throw new Error('bad');
+  return r;
+}
+`;
+  const after = `export function run(r) {
+  return r;
+}
+`;
+  const { required } = requiredFor({ 'src/run.mjs': before }, { 'src/run.mjs': after });
+  assert.ok(required.some((k) => k.path === 'src/run.mjs'),
+    '修前实测 required=[](base 交集恒 false,普通路径又要求 guardish,于是整条被跳过)');
+});
+
+test('R6 第 4 轮核验:纯新增 hunk 不得被报成"删掉了守卫"(base 区间相交 ≠ 有删除)', () => {
+  const before = `export function run(r) {
+  if (r.exitCode !== 0) throw new Error('bad');
+  return r;
+}
+`;
+  // 紧贴守卫下一行插入一行:hunk 的 base 上下文区间会与守卫的 base AST 范围相交,
+  // 但这个 hunk 一行都没删。不加"真的删了代码行"这道闸,就会报出一条谎称删除的 required。
+  const after = `export function run(r) {
+  if (r.exitCode !== 0) throw new Error('bad');
+  const extra = 1;
+  void extra;
+  return r;
+}
+`;
+  const { required } = requiredFor({ 'src/add.mjs': before }, { 'src/add.mjs': after });
+  assert.deepEqual(required.filter((k) => /删除/.test(k.reason)), [],
+    '没有任何删除行的 hunk 不得产出"删掉了判定器"的 required');
+});
+
+test('R6 第 4 轮核验:oldSpansOf 规范化两种形态(扁平 tuple / span 数组)', () => {
+  assert.deepEqual(oldSpansOf({ oldRanges: [10, 5] }), [{ from: 10, count: 5 }], 'DiffSnapshot 实际给的就是扁平 tuple');
+  assert.deepEqual(oldSpansOf({ oldRanges: [12] }), [{ from: 12, count: 1 }], '省略行数视为 1 行');
+  assert.deepEqual(oldSpansOf({ oldRanges: [{ start: 3, count: 2 }] }), [{ from: 3, count: 2 }]);
+  assert.deepEqual(oldSpansOf({ oldRanges: [] }), []);
+  assert.deepEqual(oldSpansOf({}), []);
+});
+
+// ── 第 4 轮核验:matcher 链只记了内层 expect 的短范围,外层 matcher 完全不识别 ──
+
+test('R6 第 4 轮核验 BLOCKER:多行 expect(...).toEqual({...}) 只改远端参数行 → 必须要求负向证据', () => {
+  const before = `import { expect } from 'vitest';
+export function check(actual) {
+  expect(actual).toEqual({
+    a: 1,
+    b: 2,
+    c: 3,
+  });
+}
+`;
+  const after = before.replace('c: 3', 'c: 4');
+  const { required } = requiredFor({ 'tests/matcher.test.mjs': before }, { 'tests/matcher.test.mjs': after });
+  assert.ok(required.length > 0,
+    '修前实测 required=[]:只记了内层 `expect(actual)` 的一行范围,外层 toEqual 不在断言语料里');
+});
+
+test('R6 第 4 轮核验:删掉"任意 receiver 只凭方法名算断言"的兜底 —— 普通字符串/业务对象不再假红', () => {
+  const { required } = requiredFor(
+    { 'src/util.mjs': 'export const f = (s) => s.match(/a/) !== null;\n' },
+    { 'src/util.mjs': 'export const f = (s) => s.match(/b/) !== null;\n' },
+  );
+  assert.deepEqual(required, [],
+    '修前实测 required=1:`"abc".match(/a/)` 被当断言(ASSERT_MEMBER_RE 的名字兜底)');
+});
+
+test('R6 第 4 轮核验对照组:收窄不得放过真断言 —— t.assert.equal / chai 链 / 裸 expect 仍要求证据', () => {
+  const cases = [
+    ['tests/t1.test.mjs',
+      'export const t = (t2) => t2.assert.equal(1, 1);\n',
+      'export const t = (t2) => t2.assert.equal(1, 2);\n'],
+    ['tests/t2.test.mjs',
+      "import chai from 'chai';\nexport const t = () => chai.expect(1).to.equal(1);\n",
+      "import chai from 'chai';\nexport const t = () => chai.expect(1).to.equal(2);\n"],
+    ['tests/t3.test.mjs',
+      "import { expect } from 'vitest';\nexport const t = () => expect(1).toBe(1);\n",
+      "import { expect } from 'vitest';\nexport const t = () => expect(1).toBe(2);\n"],
+  ];
+  for (const [path, before, after] of cases) {
+    const { required } = requiredFor({ [path]: before }, { [path]: after });
+    assert.ok(required.some((k) => k.path === path), `${path} 是真断言,必须仍要求负向证据`);
+  }
 });

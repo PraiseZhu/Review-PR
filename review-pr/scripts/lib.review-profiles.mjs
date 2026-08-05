@@ -152,6 +152,25 @@ const touchesOracle = (t) => WAIT_RE.test(t) || ASSERT_RE.test(t) || GUARD_RE.te
 const touchesGuardish = (t) => GUARD_RE.test(t) || ASSERT_RE.test(t);
 
 /**
+ * hunk 的 base 侧行区间。DiffSnapshot 给的是**扁平 tuple** `[oldStart, oldLines]`,不是
+ * span 数组——上一版按 `spans[]` 遍历,取出的元素是 number,`sp.start/sp.from/sp[0]` 全是
+ * undefined,`from + count` 成 NaN,交集判定恒 false(第 4 轮核验 BLOCKER 实测:普通
+ * modified 文件删掉一条 `assert.equal` 时 base AST 明明命中,required 仍为空)。
+ * 兼容两种形态,统一成 `{from, count}[]`。
+ */
+export function oldSpansOf(h) {
+  const r = h?.oldRanges;
+  if (!Array.isArray(r) || r.length === 0) return [];
+  if (typeof r[0] === 'number') return [{ from: r[0], count: typeof r[1] === 'number' ? r[1] : 1 }];
+  return r
+    .map((sp) => ({
+      from: sp?.start ?? sp?.from ?? (Array.isArray(sp) ? sp[0] : undefined),
+      count: sp?.count ?? sp?.lines ?? (Array.isArray(sp) ? sp[1] : undefined) ?? 1,
+    }))
+    .filter((sp) => typeof sp.from === 'number');
+}
+
+/**
  * required 负向证据 key 分类器(SC-R6)。
  * @param {object} p
  *   profiles / files                            当前 profile 集与 snapshot 文件
@@ -180,11 +199,12 @@ export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTex
     // 不可用(yaml / 不支持的扩展名)时才回落到锚定文本匹配。
     const ast = astRangesByFile?.[path] ?? null;
     const hitsRange = (ranges, lines) => (ranges ?? []).some((r) => (lines ?? []).some((ln) => ln >= r.startLine && ln <= r.endLine));
-    const hitsSpan = (ranges, spans) => (ranges ?? []).some((r) => (spans ?? []).some((sp) => {
-      const from = sp.start ?? sp.from ?? sp[0];
-      const count = sp.count ?? sp.lines ?? sp[1] ?? 1;
-      return r.startLine <= (from + count) && r.endLine >= from;
-    }));
+    // base 侧交集:hunk 的 base 区间(见 oldSpansOf)与 base AST 判定器范围相交。
+    // 方向上偏向多要:区间含 3 行上下文,可能带进邻近语句——漏要证据的代价是恒绿测试过审。
+    const hitsOldSpans = (ranges, h) => {
+      const spans = oldSpansOf(h);
+      return (ranges ?? []).some((r) => spans.some((sp) => r.startLine <= (sp.from + sp.count) && r.endLine >= sp.from));
+    };
     for (const h of f.hunks) {
       const addedTexts = (added[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
       const removedTexts = (removed[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
@@ -199,15 +219,16 @@ export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTex
       let guardish;
       if (ast) {
         const addedLines = h.addedNewLines ?? [];
+        // base 侧只在这个 hunk **真的删了代码行**时才判(纯新增 hunk 的 base 区间长度为 0,
+        // 拿它跟 base AST 求交会把"什么都没删"报成"删了断言")
+        const hasRemoval = removedTexts.length > 0;
         addedHit = hitsRange(ast.head, addedLines);
-        removedHit = deleted ? (ast.base ?? []).length > 0 : hitsSpan(ast.base, h.oldRanges);
+        removedHit = deleted ? (ast.base ?? []).length > 0 : (hasRemoval && hitsOldSpans(ast.base, h));
         const guardKinds = (rs, pred) => (rs ?? []).some((r) => r.kind !== 'wait' && pred(r));
+        const baseGuardHit = () => (ast.base ?? []).some((r) => r.kind !== 'wait'
+          && oldSpansOf(h).some((sp) => r.startLine <= (sp.from + sp.count) && r.endLine >= sp.from));
         guardish = guardKinds(ast.head, (r) => addedLines.some((ln) => ln >= r.startLine && ln <= r.endLine))
-          || (deleted ? (ast.base ?? []).some((r) => r.kind !== 'wait') : guardKinds(ast.base, (r) => (h.oldRanges ?? []).some((sp) => {
-            const from = sp.start ?? sp.from ?? sp[0];
-            const count = sp.count ?? sp.lines ?? sp[1] ?? 1;
-            return r.startLine <= (from + count) && r.endLine >= from;
-          })));
+          || (deleted ? (ast.base ?? []).some((r) => r.kind !== 'wait') : (hasRemoval && baseGuardHit()));
       } else {
         addedHit = touchesOracle(windowText);
         removedHit = touchesOracle(removedText);
