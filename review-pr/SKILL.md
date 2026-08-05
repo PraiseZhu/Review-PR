@@ -1238,7 +1238,10 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
      --task <task.json> --preflight <preflight.json>
    ```
 
-   退出码 0 = `clean`（已写带五项绑定的 clean 回执）；2 = `dirty`/`invalid`/`blocked`
+   退出码 0 = `clean`（已写带七项绑定的 clean 回执：{source, schemaVersion, outputHash,
+   snapshotHash, ledgerHash, escapeSourceHash, knownHazardsHash}——后两项是逃逸数据源与
+   命中路径 known hazards 的**全内容**哈希，clean 之后 PR body/关联 issue/canonical 变化
+   都会让 pre-merge 的现场重算对不上而打 stale）；2 = `dirty`/`invalid`/`blocked`
    （已写 non-clean 回执，覆盖撤销同 snapshot 的旧 clean）。不能跳过这一步直接进第 3 步；
 3. 调 `pre-merge-check.mjs` 复核，若返回
    `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，执行：
