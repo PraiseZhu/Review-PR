@@ -27,6 +27,16 @@
 // mergeOid,视为新事件再审一次)。告警**只在真送达**远端通道时才记 alerted(降级路径不算,
 // 下轮重试);revert PR 创建成功才记 revertPr。两者独立幂等,互不阻塞。
 //
+// 游标推进边界(F-A5-REMEDIATION-RETRY-LOSS 修复):上面这条「下轮重试」承诺曾经是失实
+// 声明——main() 无论本轮 remediation 是否成功都无条件把游标推到 now,窗口左边界一旦前移,
+// 未解决的 PR 因 mergedAt 早于新游标被窗口过滤器永久排除,再也没有"下一轮"。
+// decideCursorAfterRemediation 把这条不变量抽成可单测的纯函数:存在未解决 entry 时,
+// 游标停在这些 entry 里最早的 mergedAt,保证它们仍落在下一轮窗口内。「未解决」的判据见
+// isMergedLoopEntryResolved,特别处理了一种不该阻塞游标的情形——alertCapabilityOff(仓库
+// 压根没配 mergeAckNotify.notifyModule/ops 频道,是仓库级的长期配置状态,不是这次没送达;
+// 重试到天荒地老都会是同一个 reason,一旦当作"需要重试"就会让游标永久卡死、窗口越滚越大,
+// 最终撞 fetchAllMergedPrs 翻页硬上限连累后续全部合并都审不到)。
+//
 // 用法: node scripts/audit-merged-loop-prs.mjs [--dry-run] [--now <iso>]
 //         [--input-merged <json>]
 //   --dry-run       只判定与打印,不发告警、不开 revert PR、不写游标/台账;
@@ -45,6 +55,13 @@ import {
 } from './lib.mjs';
 
 const AUDIT_STATE_FILE = 'audit-merged-loop.json';
+
+// sendOpsAlert 返回的两种「能力关闭」reason(仓库级长期配置状态,不是「这次没送达」)——
+// 单列常量供 sendOpsAlert 自身与 isMergedLoopEntryResolved 共用同一份字面量,防止两处
+// 各写一份逐渐漂移(其中一处改了 reason 文案,另一处没跟着改,判定悄悄失效)。
+const ALERT_REASON_MODULE_NOT_CONFIGURED = 'notify-module-not-configured';
+const ALERT_REASON_CHANNEL_NOT_CONFIGURED = 'ops-alert-channel-not-configured';
+const ALERT_CAPABILITY_OFF_REASONS = new Set([ALERT_REASON_MODULE_NOT_CONFIGURED, ALERT_REASON_CHANNEL_NOT_CONFIGURED]);
 
 function argAfter(flag) {
   const i = process.argv.indexOf(flag);
@@ -144,6 +161,46 @@ export function judgeMergedLoopPr({ receipt, headRefOid }) {
 }
 
 /**
+ * 纯函数(可单测):判定 main() 本轮产出的单条 entry 是否已到 remediation 终态——即游标
+ * 可以安全越过它的 mergedAt。刻意与 main() 循环开头「已审跳过」同一套判据保持一致
+ * (audited[key].alerted || audited[key].verdictOk),再叠加一种 cursor-only 的特例:
+ * alertCapabilityOff——仓库没配 mergeAckNotify.notifyModule/ops 频道是仓库级长期配置,
+ * 不是"这次没送达",重试到天荒地老都会是同一个 reason;此时只要 revert PR 已创建成功,
+ * 就算"在这个仓库的配置下已经做到能做的极限",允许游标越过(但不为这条 entry 补写
+ * audited[key].alerted——那个字段的语义仍严格是"真送达",本函数不改写它,只影响游标)。
+ * 真正「配置了但这次没送达」(alert-failed 异常 / sendAlert 降级到非 slack 通道,此时
+ * entry.alert 没有 reason 字段)与 revert 创建失败一样,判定为未解决,游标停在原地等重试。
+ * @returns {boolean}
+ */
+export function isMergedLoopEntryResolved({ entry, audited }) {
+  if (entry.skipped === 'already-audited') return true;
+  if (entry.ok) return true;
+  const persisted = audited?.[entry.key];
+  if (persisted?.alerted || persisted?.verdictOk) return true;
+  const revertResolved = persisted?.revertPr != null;
+  const alertCapabilityOff = ALERT_CAPABILITY_OFF_REASONS.has(entry.alert?.reason);
+  return revertResolved && alertCapabilityOff;
+}
+
+/**
+ * 纯函数(可单测):综合本轮全部 results 的 remediation 终态,计算下一轮该用的游标
+ * (F-A5-REMEDIATION-RETRY-LOSS 修复)。不变量:游标只能推进到「窗口内已完全解决」的
+ * 边界——存在未解决 entry 时,停在这些 entry 里最早的 mergedAt(下一轮 [新cursor, 新now]
+ * 窗口会重新纳入它,给它一次被重新核验/重试的机会);全部已解决(含本轮压根没见到任何
+ * entry 的空窗口)才推进到 now。
+ * mergedAt 缺失(理论上不会发生——is:merged 搜索结果必有 mergedAt,`--input-merged`
+ * 测试口若手工构造出缺失值)时 fail-closed:原地不动,不假设"缺失=可以放行"。
+ * @returns {string} 下一轮该用的 cursor(ISO 时间字符串)
+ */
+export function decideCursorAfterRemediation({ results, audited, cursor, now }) {
+  const unresolved = results.filter((entry) => !isMergedLoopEntryResolved({ entry, audited }));
+  if (unresolved.length === 0) return now;
+  const times = unresolved.map((entry) => entry.mergedAt);
+  if (times.some((t) => !t)) return cursor;
+  return times.reduce((min, t) => (t < min ? t : min));
+}
+
+/**
  * 自动开 revert PR:GitHub 原生 revertPullRequest mutation——零本地 git 操作(不建
  * worktree、不 push 分支),GitHub 服务端生成 revert 分支与 PR。revert PR 开 ready
  * (非 draft):它的存在意义就是立即进巡审审合。冲突无法自动 revert 时 GitHub 会报错,
@@ -184,11 +241,11 @@ async function sendOpsAlert({ title, text }) {
   try {
     const prRules = loadRules();
     const mergeAck = prRules.loopPrExclusion?.mergeAckNotify ?? {};
-    if (!mergeAck.notifyModule) return { posted: false, reason: 'notify-module-not-configured' };
+    if (!mergeAck.notifyModule) return { posted: false, reason: ALERT_REASON_MODULE_NOT_CONFIGURED };
     const mod = await import(pathToFileURL(resolveInRepoRoot(mergeAck.notifyModule)).href);
     const config = mod.loadNotifyConfig(mergeAck.stateDir ? resolveInRepoRoot(mergeAck.stateDir) : undefined);
     const opsChannel = config?.SLACK_OPS_ALERT_CHANNEL_ID;
-    if (!opsChannel) return { posted: false, reason: 'ops-alert-channel-not-configured' };
+    if (!opsChannel) return { posted: false, reason: ALERT_REASON_CHANNEL_NOT_CONFIGURED };
     const res = await mod.sendAlert({ config: { ...config, SLACK_CHANNEL_ID: opsChannel }, title, text });
     return { posted: res?.channel === 'slack', channel: res?.channel ?? null };
   } catch (e) {
@@ -287,8 +344,12 @@ async function main() {
     results.push(entry);
   }
 
-  if (!DRY_RUN) await saveAuditState(STATE_DIR, { ...state, cursor: now });
-  print({ ok: true, dryRun: DRY_RUN, windowFrom: state.cursor, windowTo: now, audited: results, alertsSent });
+  const nextCursor = decideCursorAfterRemediation({ results, audited: state.audited, cursor: state.cursor, now });
+  if (!DRY_RUN) await saveAuditState(STATE_DIR, { ...state, cursor: nextCursor });
+  print({
+    ok: true, dryRun: DRY_RUN, windowFrom: state.cursor, windowTo: now, nextCursor,
+    cursorHeldBack: nextCursor !== now, audited: results, alertsSent,
+  });
   return 0;
 }
 
