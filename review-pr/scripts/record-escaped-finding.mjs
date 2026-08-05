@@ -29,7 +29,7 @@ import { BUILTIN_RULES } from './lib.preflight-rules.mjs';
 import { BUILTIN_PROFILES } from './lib.review-profiles.mjs';
 import {
   EVOLUTION_LEDGER, deriveHazardId, deriveHazardFingerprint, loadKnownHazards, upsertHazard,
-  loadInbox, saveInbox, verifyActivation, validateHazardShape, activateInboxItems, PROMOTION,
+  loadInbox, saveInbox, verifyActivation, validateHazardShape, activateInboxItems, PROMOTION, remoteHazardPresent,
 } from './lib.escaped-hazards.mjs';
 
 const has = (f) => process.argv.includes(f);
@@ -128,13 +128,9 @@ try {
       }),
       // push 已成功但进程在 ack 前崩溃时,重放会拿到 nothing-to-push —— 此时读**远端**
       // canonical 确认该 hazard 已 active 才安全 ack(否则条目永远卡在 inbox)。
-      remoteVerify: (hazard) => readRemoteSkillFile('evolution/ledger.json', (text) => {
-        const doc = JSON.parse(text);
-        const list = Array.isArray(doc.escapedHazards) ? doc.escapedHazards : [];
-        // **完全等价**才算已落地:同 id + active 只能说明"有过一条",不能说明本次要写的
-        // paths/evidence/promotion 也已在远端(第 3 轮核验点名的误 ack 面)。
-        return list.some((h) => JSON.stringify(h) === JSON.stringify(hazard));
-      }),
+      // 判定逻辑在 lib 里唯一实现(remoteHazardPresent),便于单测:**完全等价**才算已落地,
+      // 同 id + active 只能说明"有过一条"(第 3 轮核验点名的误 ack 面)。
+      remoteVerify: (hazard) => readRemoteSkillFile('evolution/ledger.json', (text) => remoteHazardPresent(text, hazard)),
     });
     saveInbox(STATE_DIR, kept);
     print({

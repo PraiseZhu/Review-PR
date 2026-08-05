@@ -2088,7 +2088,9 @@ export function mergeLedgerJson(oursText, theirsText) {
     if (!h?.hazardId) return null; // 结构不符预期,不冒险
     const key = `${h.repo ?? '(no-repo)'}|${h.hazardId}`;
     const cur = hazards.get(key);
-    hazards.set(key, cur ? mergeHazardPair(cur, h) : { ...h });
+    try {
+      hazards.set(key, cur ? mergeHazardPair(cur, h) : { ...h });
+    } catch { return null; } // 身份不一致等异常 → 整体 abort 转人工,不写半坏的 ledger
   }
   for (const h of hazards.values()) {
     const v = validateHazardShape(h);

@@ -586,6 +586,12 @@ test('⑳ R1a 第 3 轮核验 BLOCKER:非法 --mode / 坏 preflight / 坏 confir
     ['segmentReceipts 是对象(wrong-type)', () => run(f, { ...good, segmentReceipts: {} }, ['--mode', 'auto', ...base])],
     ['profileAnswers 是字符串(wrong-type)', () => run(f, { ...good, profileAnswers: 'nope' }, ['--mode', 'auto', ...base])],
   ];
+  // 追加:目标仓 pr-rules.json 坏掉(生产可达)→ loadRules 抛 → 必须由最外层兜底撤销旧 clean
+  cases.push(['目标仓 pr-rules.json 坏掉', () => {
+    const brokenRules = join(f.work, `rules-broken-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(brokenRules, '{broken');
+    return run(f, good, ['--mode', 'auto', ...base], { env: { REVIEW_PR_RULES_FILE: brokenRules } });
+  }]);
   for (const [label, exec] of cases) {
     // 先把回执恢复成 clean,确保每个用例都是"旧 clean 存在"的起点
     assert.equal(round(f).json.verdict, 'clean', `${label}:前置恢复 clean 失败`);
@@ -595,6 +601,14 @@ test('⑳ R1a 第 3 轮核验 BLOCKER:非法 --mode / 坏 preflight / 坏 confir
     assert.notEqual(r.r.status, 0, `${label}:不得以 0 退出`);
     assert.equal(readReceipt(f).verdict, 'dirty', `${label}:必须撤销同 snapshot 的旧 clean`);
     assert.ok(r.json.attempts >= 1, `${label}:必须记 retry(否则可以无限次试)`);
+    if (label.includes('wrong-type')) {
+      // 形状错必须走 schema 层给出**可定位**的原因,而不是掉进兜底 catch 报"未预期异常"
+      assert.match(r.json.reasons.join(';'), /缺失或非数组|形状非法/, `${label}:应给 schema 级原因`);
+      assert.doesNotMatch(r.json.reasons.join(';'), /未预期异常/, `${label}:不该掉进兜底 catch`);
+    }
+    if (label.includes('pr-rules.json 坏掉')) {
+      assert.match(r.json.reasons.join(';'), /未预期异常/, '这条正是兜底 catch 的可达路径');
+    }
   }
 });
 

@@ -561,8 +561,10 @@ node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <hea
 
 ### 3.0.2 风险 profile 与审查任务构建（SC-R3/R4/R6/R7）
 
-`build-review-task.mjs` 是阶段二任务的**唯一**构建器（见第 4 节；逃逸候选需要 PR 正文时
-传 `--pr-body-file <file>`，元数据互检需要文件清单时传 `--expected-paths <逗号分隔>`）。它按路径命中把
+`build-review-task.mjs` 是阶段二任务的**唯一**构建器（见第 4 节；逃逸候选的数据源默认由它
+**自己现场取**（`gh pr view --json body,closingIssuesReferences`），`--pr-body-file` /
+`--related-issues-file` 只是离线/测试 seam；元数据互检需要文件清单时传
+`--expected-paths <逗号分隔>`）。它按路径命中把
 `test-infra`（tests/**、scripts/e2e/**、*guard*、playwright/vitest 配置）与 `ci-workflow`
 （.github/**）两套**必答清单**注入任务，逐 `文件×检查` 作答——这一层解决的正是"审查
 从没被要求怀疑测试本身"：`could-be-always-green` 那条要求审查者说出"这个测试在什么

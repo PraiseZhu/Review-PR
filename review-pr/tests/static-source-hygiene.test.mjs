@@ -6,7 +6,7 @@
 //      而不是去改上游文件——所以这里正向断言那条规则在位。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,4 +54,25 @@ test('R0 卫生:.gitattributes 把 vendor/** 标为 -text -whitespace(vendored �
   assert.ok(line, '缺 vendor/ 规则行');
   assert.match(line, /-text/);
   assert.match(line, /-whitespace/);
+});
+
+test('R0 可移植性:任何**创建 git 提交**的测试文件都必须显式禁签名', () => {
+  // 核验席环境里全局 commit.gpgsign=true,并发跑 temp-git 用例会撞 gpg「Cannot allocate
+  // memory」而随机红(实跑 409/414)。本机 gpg 可用所以复现不到 —— 那正是必须用**静态守卫**
+  // 而不是靠"我这儿是绿的"的原因:新加建仓 helper 时漏掉这条,只有别人的机器会红。
+  // 只针对**建提交**的文件(init / remote add / ls-files 不签名,不在此列)。
+  const dir = join(ROOT, 'tests');
+  const bad = [];
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.mjs'))) {
+    const text = readFileSync(join(dir, f), 'utf8');
+    const createsCommits = /\bgit\(\s*\[\s*'commit'/.test(text)
+      || /spawnSync\(\s*'git'[\s\S]{0,200}?'commit'/.test(text)
+      || /'commit',\s*'-q'/.test(text);
+    // 只认真正的**关闭形态**:`-c commit.gpgsign=false` 或 `git config commit.gpgsign false`。
+    // 光提到 commit.gpgsign(注释里说明为什么要关)不算 —— 否则删掉实现只留注释就骗过守卫。
+    const hasSeam = text.includes('commit.gpgsign=false')
+      || /'commit\.gpgsign',\s*'false'/.test(text);
+    if (createsCommits && !hasSeam) bad.push(f);
+  }
+  assert.deepEqual(bad, [], `这些会建提交的测试文件没显式禁签名:${bad.join(', ')}`);
 });

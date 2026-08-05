@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   deriveHazardId, deriveHazardFingerprint, loadKnownHazards, hazardsForPaths, upsertHazard,
   verifyActivation, loadInbox, saveInbox, validateHazardShape, activateInboxItems,
-  mergeHazardPair, GRANDFATHERED_IDS,
+  mergeHazardPair, GRANDFATHERED_IDS, remoteHazardPresent,
 } from '../scripts/lib.escaped-hazards.mjs';
 import { BUILTIN_RULES } from '../scripts/lib.preflight-rules.mjs';
 
@@ -445,4 +445,15 @@ test('R7 第 3 轮核验:nothing-to-push 的远端核验必须**内容等价**(�
     remoteVerify: (hazard) => ({ ok: true, present: JSON.stringify(hazard) === JSON.stringify(hazard) }),
   });
   assert.deepEqual(same.activated, [item.hazardId]);
+});
+
+test('R7 第 3 轮核验:remoteHazardPresent 要求**完全等价**(同 id+active 但内容旧 → false)', () => {
+  const h = FULL({ paths: ['a/**', 'new/**'], activationStatus: 'active' });
+  const same = JSON.stringify({ escapedHazards: [h] });
+  const staleContent = JSON.stringify({ escapedHazards: [{ ...h, paths: ['a/**'] }] });
+  const otherId = JSON.stringify({ escapedHazards: [FULL({ fixPr: 99, activationStatus: 'active' })] });
+  assert.equal(remoteHazardPresent(same, h), true);
+  assert.equal(remoteHazardPresent(staleContent, h), false, '同 id + active 但 paths 是旧的 → 不算已落地');
+  assert.equal(remoteHazardPresent(otherId, h), false);
+  assert.equal(remoteHazardPresent('{"escapedHazards":[]}', h), false);
 });

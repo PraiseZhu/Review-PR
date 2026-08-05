@@ -178,6 +178,11 @@ export function sameHazardIdentity(a, b) {
 }
 
 export function mergeHazardPair(a, b) {
+  // 身份字段必须一致才谈得上"同一事件的两份记录"(第 3 轮核验:调用方按 hazardId 配对,
+  // 伪造 id 已被 schema 拦,这里再兜一层——不一致就抛,由调用方转人工)。
+  if (!sameHazardIdentity(a, b)) {
+    throw new Error('mergeHazardPair:两侧身份字段不一致,不是同一事件,拒绝合并');
+  }
   // 平局(两侧同状态)必须**显式**按对称规则解——直接"平局取 a"会让附属元数据方向相关
   // (实测:两侧都 active、只有一侧带 activatedAt 时,ab 与 ba 的 activatedAt 不同)。
   const rankWin = (rank, field) => {
@@ -438,4 +443,15 @@ export function resolveEscapeSources({ pr, repoSlug, bodyFile = null, issuesFile
   }
   const candidates = prBody === null ? [] : extractEscapeCandidates({ body: prBody, issueTexts });
   return { prBody, issueTexts, errors, kind: (bodyFile || issuesFile) ? 'file-seam' : 'gh-live', candidates };
+}
+
+/**
+ * 远端 canonical 里是否已存在**与本地待写条目完全等价**的 hazard(SC-R7 第 3 轮核验)。
+ * 只比 id+active 会误 ack:远端那条可能 paths/evidence/promotion 都是旧的。
+ * @param {string} text  远端 evolution/ledger.json 的原文
+ */
+export function remoteHazardPresent(text, hazard) {
+  const doc = JSON.parse(text);
+  const list = Array.isArray(doc.escapedHazards) ? doc.escapedHazards : [];
+  return list.some((h) => JSON.stringify(h) === JSON.stringify(hazard));
 }

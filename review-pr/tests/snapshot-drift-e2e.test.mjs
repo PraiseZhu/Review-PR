@@ -248,6 +248,15 @@ test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与
   assert.equal(replay.json.verdict, 'invalid', `旧答卷跨 snapshot 重放必须被拒:${JSON.stringify(replay.json).slice(0, 400)}`);
   assert.match(replay.json.reasons.join(';'), /snapshotHash/);
 
+  // ②b 隔离**顶层** snapshotHash 这一维:段回执都绑新 snapshot,只把顶层留成旧值
+  //     (否则 per-receipt 检查会先红,顶层那道门测不出来)
+  const onlyTopStale = { ...answerFor(b), snapshotHash: a.task.snapshotHash };
+  const topFile = join(work, 'top-stale.json');
+  writeFileSync(topFile, JSON.stringify(onlyTopStale));
+  const topStale = runJson([CONSUME, '469', '--output', topFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto', '--pr-body-file', bodyFile], f);
+  assert.equal(topStale.json.verdict, 'invalid', '顶层 snapshotHash 单独 stale 也必须被拒');
+  assert.match(topStale.json.reasons.join(';'), /顶层 snapshotHash/);
+
   // ③ 对照:换成绑定新 snapshot 的答卷 → clean(证明不是"一律拒")
   const newFile = join(work, 'new-out.json');
   writeFileSync(newFile, JSON.stringify(answerFor(b)));
