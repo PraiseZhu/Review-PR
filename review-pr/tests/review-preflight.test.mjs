@@ -5,11 +5,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadVendoredTypescript, scanSource, scriptKindFor } from '../scripts/lib.preflight-rules.mjs';
+import { loadVendoredTypescript, scanSource, scriptKindFor, BUILTIN_RULES } from '../scripts/lib.preflight-rules.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
@@ -153,20 +153,27 @@ test('R2 fail-closed:语法错文件 → complete=false(不产出"无命中")', 
 });
 
 test('R2 fail-closed:parser 缺失 → complete=false,禁 regex 降级', () => {
+  // 用测试专用 seam 指向空目录,**不动仓库里真实的 vendor 文件**——移走真文件会在并行
+  // 跑测试时让其它用例随机读不到 parser(实测踩到,1/8 概率随机红)。
   const r = repo({ baseFiles: { 'a.md': 'x\n' }, headFiles: { 'scripts/e2e/a.mjs': BAD } });
-  const entry = join(VENDOR, 'typescript.js');
-  const stash = join(VENDOR, 'typescript.js.stashed-for-test');
-  assert.ok(existsSync(entry));
-  renameSync(entry, stash);
-  try {
-    const { res, json } = run(r);
-    assert.equal(json.complete, false);
-    assert.match(json.reason, /parser 不可用/);
-    assert.deepEqual(json.hits, [], 'parser 缺失时绝不给出命中/无命中结论');
-    assert.equal(res.status, 2);
-  } finally {
-    renameSync(stash, entry);
-  }
+  assert.ok(existsSync(join(VENDOR, 'typescript.js')), '真实 vendor 必须始终在位');
+  const emptyVendor = mkdtempSync(join(tmpdir(), 'no-vendor-'));
+  const { res, json } = run(r, { REVIEW_PR_VENDOR_TS_DIR: emptyVendor });
+  assert.equal(json.complete, false);
+  assert.match(json.reason, /parser 不可用/);
+  assert.deepEqual(json.hits, [], 'parser 缺失时绝不给出命中/无命中结论');
+  assert.equal(res.status, 2);
+});
+
+test('R2 fail-closed:vendor 体量与 PROVENANCE 不符(被换过)→ complete=false', () => {
+  const r = repo({ baseFiles: { 'a.md': 'x\n' }, headFiles: { 'scripts/e2e/a.mjs': BAD } });
+  const fake = mkdtempSync(join(tmpdir(), 'bad-vendor-'));
+  const prov = JSON.parse(readFileSync(join(VENDOR, 'PROVENANCE.json'), 'utf8'));
+  writeFileSync(join(fake, 'PROVENANCE.json'), JSON.stringify(prov));
+  writeFileSync(join(fake, 'typescript.js'), 'module.exports = { version: "9.9.9" };\n'); // 体量不符
+  const { json } = run(r, { REVIEW_PR_VENDOR_TS_DIR: fake });
+  assert.equal(json.complete, false);
+  assert.match(json.reason, /体量与 PROVENANCE 不符/);
 });
 
 test('R2 fail-closed:base/head oid 非法 → complete=false', () => {
@@ -174,4 +181,27 @@ test('R2 fail-closed:base/head oid 非法 → complete=false', () => {
   const { json } = run({ ...r, base: 'a'.repeat(40) });
   assert.equal(json.complete, false);
   assert.match(json.reason, /DiffSnapshot 不完整/);
+});
+
+test('R2 复审补齐:显式返回 Promise 的 literal 形态全部命中(new Promise / block 体 return / function 表达式)', () => {
+  const { ts } = loadVendoredTypescript();
+  const hit = (text) => {
+    const r = scanSource(ts, { path: 'a.mjs', text });
+    assert.equal(r.ok, true, r.error);
+    return r.hits.length;
+  };
+  // 第 1 轮核验实测漏判的三种(修前均为 0)
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => new Promise(r=>r(1))); }'), 1, '() => new Promise(...)');
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => { return Promise.resolve(1); }); }'), 1, 'block 体 return Promise.resolve');
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(function(){ return new Promise(r=>r(1)); }); }'), 1, 'function 表达式 return new Promise');
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => page.evaluate(() => 1)); }'), 1, '简明体 page.evaluate');
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => 1 .toString().then(x=>x)); }'), 1, 'thenable 链');
+  // 零误报:同步谓词、内层函数里的 Promise(不是本谓词的返回值)、标识符谓词
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => document.readyState === "complete"); }'), 0);
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => { const f = () => Promise.resolve(1); return !!f; }); }'), 0, '嵌套内层函数的 return 不属于本谓词');
+  assert.equal(hit('export async function w(page, p){ await page.waitForFunction(p); }'), 0, '标识符谓词在承诺面之外');
+});
+
+test('R2:规则版本随检测面变化 bump(SC-R5 的核销依赖 ruleVersion,不 bump 会冒充"代码已修")', () => {
+  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v2', '检测面扩了必须 bump');
 });

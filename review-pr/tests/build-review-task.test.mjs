@@ -111,26 +111,42 @@ test('R4 分片:两类 coverage key 都恰一个 owner,并集 === 全集', () =>
   assert.equal(buildSegments({ coverageKeys: [] }).length, 1, '零 key 也给一个空段(便于统一对账)');
 });
 
-test('R6 分类器:触及等待/断言的 hunk → required;纯注释 hunk → 不产 required(不靠 N/A 豁免)', () => {
+test('R6 分类器:等待/断言/守卫 → required;纯注释、文档文件、业务代码里的纯等待 → 不产', () => {
   const { profiles } = mergeProfiles();
-  const files = [{
-    fileId: 'F1', newPath: 'scripts/e2e/a.mjs', changeType: 'modified', contentKind: 'text',
-    hunks: [{ hunkId: 'H1', addedNewLines: [2] }, { hunkId: 'H2', addedNewLines: [9] }],
-  }];
-  const req = classifyRequiredNegativeEvidence({
-    profiles, files,
-    // H2 故意用**注释掉的断言**:去掉注释过滤就会把它误判成 required(现实场景:
-    // 有人把旧断言注释掉了,不该因此要求负向证据)——这样反向变异才咬得住。
-    addedLineTextByFile: { 'scripts/e2e/a.mjs': { H1: ['  await page.waitForFunction(() => x);'], H2: ['  // expect(old).toBe(1) 旧断言已注释'] } },
-  });
-  assert.equal(req.length, 1, `纯注释 hunk 不得产 required:${JSON.stringify(req)}`);
-  assert.equal(req[0].hunkId, 'H1');
-  // 非 test-infra 路径不产 required
-  const other = classifyRequiredNegativeEvidence({
-    profiles, files: [{ ...files[0], newPath: 'src/app.ts' }],
-    addedLineTextByFile: { 'src/app.ts': { H1: ['expect(1).toBe(1);'] } },
-  });
-  assert.deepEqual(other, []);
+  const mk = (path, hunks) => [{ fileId: 'F1', newPath: path, changeType: 'modified', contentKind: 'text', hunks }];
+  const call = (files, added, removed = {}, incompleteFiles = []) =>
+    classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile: added, removedLineTextByFile: removed, incompleteFiles });
+
+  // test-infra:等待原语 → required;注释掉的断言 → 不产(变异去掉注释过滤即误判)
+  const r1 = call(
+    mk('scripts/e2e/a.mjs', [{ hunkId: 'H1', addedNewLines: [2] }, { hunkId: 'H2', addedNewLines: [9] }]),
+    { 'scripts/e2e/a.mjs': { H1: ['  await page.waitForFunction(() => x);'], H2: ['  // expect(old).toBe(1) 旧断言已注释'] } },
+  );
+  assert.equal(r1.required.length, 1, `纯注释 hunk 不得产 required:${JSON.stringify(r1.required)}`);
+  assert.equal(r1.required[0].hunkId, 'H1');
+  assert.equal(r1.incomplete, false);
+
+  // 普通业务代码:纯等待不产;守卫/断言改动 → required(第 1 轮核验:guard call 也要证据)
+  assert.deepEqual(call(mk('src/app.ts', [{ hunkId: 'H1' }]), { 'src/app.ts': { H1: ['  await page.waitForSelector("#x");'] } }).required, []);
+  assert.equal(call(mk('src/app.ts', [{ hunkId: 'H1' }]), { 'src/app.ts': { H1: ['  invariant(x != null, "x required");'] } }).required.length, 1);
+  assert.equal(call(mk('src/guard.ts', [{ hunkId: 'H1' }]), { 'src/guard.ts': { H1: ['  assertInvariant(ok);'] } }).required.length, 1);
+
+  // 文档类文件:说明文字里出现 expect( 也不产
+  assert.deepEqual(call(mk('docs/readme.md', [{ hunkId: 'H1' }]), { 'docs/readme.md': { H1: ['写法示例:expect(x).toBe(1)'] } }).required, []);
+
+  // **删除**断言/等待同样 required(把守门人拿掉不能免检)
+  const del = call(
+    mk('scripts/e2e/a.mjs', [{ hunkId: 'H1' }]),
+    { 'scripts/e2e/a.mjs': { H1: ['  const x = 1;'] } },
+    { 'scripts/e2e/a.mjs': { H1: ['  expect(x).toBe(1);'] } },
+  );
+  assert.equal(del.required.length, 1);
+  assert.match(del.required[0].reason, /删除/);
+
+  // 取文本失败 → incomplete(不得静默产空集合)
+  const inc = call(mk('scripts/e2e/a.mjs', [{ hunkId: 'H1' }]), {}, {}, ['scripts/e2e/a.mjs']);
+  assert.equal(inc.incomplete, true);
+  assert.deepEqual(inc.incompleteFiles, ['scripts/e2e/a.mjs']);
 });
 
 // ── 构建器接线(断到产物文本)──

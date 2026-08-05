@@ -151,13 +151,15 @@ test('R1a 复审:resolved evidence 必须结构化并绑 snapshot;自由文本/�
   assert.equal(ok(withRun, ctx).ok, true);
 });
 
-test('R1a 复审:segmentReceipts 进 schema——段内重复 key / 重复 segmentId / 非法 kind 一律拒', () => {
+test('R1a 复审:segmentReceipts 进 schema——缺 receivedOrder / 段内重复 key / 重复 segmentId / 非法 kind 一律拒', () => {
   const K = (h) => ({ kind: 'hunk', fileId: 'F1', hunkId: h });
-  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [K('H1')] }] })).ok, true);
-  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [K('H1'), K('H1')] }] })).ok, false, '段内重复不构成覆盖');
-  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [] }, { segmentId: 's1', coverageKeys: [] }] })).ok, false, 'segmentId 重复');
-  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [{ kind: 'blob', fileId: 'F1' }] }] })).ok, false);
-  assert.equal(ok(base({ segmentReceipts: [{ segmentId: 's1', coverageKeys: [{ kind: 'hunk', fileId: 'F1' }] }] })).ok, false, 'hunk key 缺 hunkId');
+  const seg = (over) => ({ segmentId: 's1', receivedOrder: 1, coverageKeys: [K('H1')], ...over });
+  assert.equal(ok(base({ segmentReceipts: [seg()] })).ok, true);
+  assert.equal(ok(base({ segmentReceipts: [seg({ receivedOrder: undefined })] })).ok, false, '缺 receivedOrder(投递序号)');
+  assert.equal(ok(base({ segmentReceipts: [seg({ coverageKeys: [K('H1'), K('H1')] })] })).ok, false, '段内重复不构成覆盖');
+  assert.equal(ok(base({ segmentReceipts: [seg({ coverageKeys: [] }), seg({ coverageKeys: [], receivedOrder: 2 })] })).ok, false, 'segmentId 重复');
+  assert.equal(ok(base({ segmentReceipts: [seg({ coverageKeys: [{ kind: 'blob', fileId: 'F1' }] })] })).ok, false);
+  assert.equal(ok(base({ segmentReceipts: [seg({ coverageKeys: [{ kind: 'hunk', fileId: 'F1' }] })] })).ok, false, 'hunk key 缺 hunkId');
 });
 
 test('R1a 复审:negativeEvidence 可选 findingRef 验真', () => {
@@ -167,7 +169,7 @@ test('R1a 复审:negativeEvidence 可选 findingRef 验真', () => {
 });
 
 test('R1a 复审:新增 invalid flags 全部生效', () => {
-  for (const flag of ['taskInvalid', 'staleProfileAnchor', 'negativeEvidenceInconsistent', 'classifierIncomplete', 'escapeAssessmentMismatch', 'hazardRegisterFailed']) {
+  for (const flag of ['taskInvalid', 'segmentOrderMismatch', 'staleProfileAnchor', 'negativeEvidenceInconsistent', 'classifierIncomplete', 'escapeAssessmentMismatch', 'hazardRegisterFailed']) {
     assert.equal(dv({ flags: { [flag]: true } }).verdict, 'invalid', flag);
   }
 });

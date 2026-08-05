@@ -25,19 +25,41 @@ import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const keyStr = (k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`);
 
-/** 取每个 hunk 的新增行文本(R6 分类器输入)。 */
-function addedLineTextsFor(snapshot) {
-  const out = {};
+/**
+ * 取每个 hunk 的新增行与删除行文本(R6 分类器输入)。删除行直接从 patch 里取(`-` 行),
+ * 不需要再读 base blob。
+ * 第 1 轮核验:取文本失败**不得静默 continue**(那会让 required 集合凭空变空 → 该给的
+ * 负向证据不再被要求),而要记进 incompleteFiles → classifierIncomplete → R1 invalid。
+ */
+function lineTextsFor(snapshot) {
+  const added = {};
+  const removed = {};
+  const incompleteFiles = [];
+  // 从整份 patch 里按文件段落切出每个 hunk 的 `-` 行
+  const segments = (snapshot.rawPatch ?? '').split(/^diff --git /m).slice(1);
+  const removedByPath = new Map();
+  for (const seg of segments) {
+    const plus = seg.match(/^\+\+\+ (?:b\/(.*)|\/dev\/null)$/m);
+    const key = plus?.[1] ?? null;
+    if (!key) continue;
+    const hunkBodies = seg.split(/^@@ .*$/m).slice(1);
+    removedByPath.set(key, hunkBodies.map((body) => body.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'))));
+  }
   for (const f of snapshot.files) {
     const path = f.newPath;
     if (!path || f.contentKind !== 'text' || f.changeType === 'deleted') continue;
     const show = spawnSync('git', ['show', `${snapshot.headOid}:${path}`], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-    if (show.status !== 0) continue;
+    if (show.status !== 0) { incompleteFiles.push(path); continue; }
     const lines = show.stdout.split('\n');
-    out[path] = {};
-    for (const h of f.hunks) out[path][h.hunkId] = (h.addedNewLines ?? []).map((ln) => lines[ln - 1] ?? '');
+    added[path] = {};
+    removed[path] = {};
+    const removedHunks = removedByPath.get(path) ?? [];
+    f.hunks.forEach((h, i) => {
+      added[path][h.hunkId] = (h.addedNewLines ?? []).map((ln) => lines[ln - 1] ?? '');
+      removed[path][h.hunkId] = (removedHunks[i] ?? []).map((l) => l.slice(1));
+    });
   }
-  return out;
+  return { added, removed, incompleteFiles };
 }
 
 try {
@@ -60,9 +82,16 @@ try {
   const coverageKeys = snapshot.complete ? coverageKeysOf(snapshot) : [];
   const segments = buildSegments({ coverageKeys, sizeBudget: Number(rules.reviewSegments?.sizeBudget) || 60 });
   const requiredProfileAnswers = requiredProfileAnswersFor(profiles, files);
-  const requiredNegativeEvidenceKeys = snapshot.complete
-    ? classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile: addedLineTextsFor(snapshot) })
-    : [];
+  const lineTexts = snapshot.complete ? lineTextsFor(snapshot) : { added: {}, removed: {}, incompleteFiles: [] };
+  const classified = snapshot.complete
+    ? classifyRequiredNegativeEvidence({
+      profiles, files,
+      addedLineTextByFile: lineTexts.added,
+      removedLineTextByFile: lineTexts.removed,
+      incompleteFiles: lineTexts.incompleteFiles,
+    })
+    : { required: [], incomplete: false, incompleteFiles: [] };
+  const requiredNegativeEvidenceKeys = classified.required;
 
   const ledger = loadLedger(ledgerPathFor(STATE_DIR, pr));
   const injectedOpen = ledger.ok
@@ -89,6 +118,8 @@ try {
     requiredNegativeEvidenceKeys,
     knownHazards: relevantHazards,
     hazardsIncomplete: hazards.incomplete === true,
+    classifierIncomplete: classified.incomplete,
+    classifierIncompleteFiles: classified.incompleteFiles,
   };
 
   // ── prompt 正文:必答项 / open findings / hazards / 分片 全部落进文本 ──
@@ -137,10 +168,10 @@ try {
   L.push('## 覆盖回执(逐段精确集合,缺/重/跨段一律 invalid)', '');
   L.push(`本次改动共 ${coverageKeys.length} 个 coverage key,分 ${segments.length} 段顺序审查(同一会话内分段,不增席位):`, '');
   for (const seg of segments) {
-    L.push(`- \`${seg.segmentId}\`:${seg.assignedCoverageKeys.length} 个 key`);
+    L.push(`- \`${seg.segmentId}\`(投递序号 ${seg.order}):${seg.assignedCoverageKeys.length} 个 key`);
     for (const k of seg.assignedCoverageKeys) L.push(`  - ${keyStr(k)}`);
   }
-  L.push('', '每段结束在 `segmentReceipts[]` 追加 `{segmentId, coverageKeys:[...]}`——只能认领本段分配到的 key。', '');
+  L.push('', '编排方按 `order` **在同一审查会话内逐段投递**(不增席位);每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`——`receivedOrder` 必须等于该段的投递序号,且只能认领本段分配到的 key。缺段/乱序/跨段冒领/段内重复一律判 invalid;宿主无法继续投递时按 blocked 上报,不要一次性硬审。', '');
   if (!snapshot.complete) L.push(`> ⚠ DiffSnapshot 不完整(${snapshot.reason})——本轮无论如何都会判 invalid,请上报而不是硬审。`, '');
   if (configIncomplete) L.push(`> ⚠ 目标仓 riskProfiles 配置有非法项(${warnings.join(';')})——内置与合法项照常审,但本轮会判 invalid。`, '');
 

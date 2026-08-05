@@ -29,7 +29,12 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const VENDOR_DIR = resolve(HERE, '..', 'vendor', 'typescript');
+// REVIEW_PR_VENDOR_TS_DIR:**测试专用 seam**。"parser 缺失 → fail-closed"这条路径必须能被
+// 测试触发,但绝不能靠移走仓库里真实的 vendor 文件——那会在并行跑测试时让其它用例随机
+// 读不到 parser(实测踩到:一次全量跑里 1/8 概率随机红)。生产不设此变量。
+const VENDOR_DIR = process.env.REVIEW_PR_VENDOR_TS_DIR
+  ? resolve(process.env.REVIEW_PR_VENDOR_TS_DIR)
+  : resolve(HERE, '..', 'vendor', 'typescript');
 const VENDOR_ENTRY = join(VENDOR_DIR, 'typescript.js');
 const PROVENANCE = join(VENDOR_DIR, 'PROVENANCE.json');
 
@@ -37,7 +42,7 @@ const PROVENANCE = join(VENDOR_DIR, 'PROVENANCE.json');
 export const BUILTIN_RULES = [
   {
     ruleId: 'playwright-waitforfunction-async-predicate',
-    ruleVersion: 'v1',
+    ruleVersion: 'v2', // v2(2026-08-05):补齐显式返回 Promise 的 literal 形态(new Promise / Promise.x / block 体 return)
     severity: 'P1',
     invariant: 'waitForFunction 的谓词不得是 async/返回 Promise——Promise 恒 truthy,会 1ms 假通过而根本没在等待',
     title: 'waitForFunction 收到 async/Promise 谓词(假等待)',
@@ -95,27 +100,51 @@ export function scriptKindFor(ts, path) {
   return key ? ts.ScriptKind[key] : null;
 }
 
-/** 谓词表达式是否 async / 显式返回 Promise。 */
+/** 表达式本身是否"显然是 Promise":new Promise(...) / Promise.xxx(...) / page.evaluate(...) / await。 */
+function isPromiseishExpression(ts, e) {
+  if (!e) return false;
+  if (ts.isAwaitExpression(e)) return true;
+  if (ts.isParenthesizedExpression(e)) return isPromiseishExpression(ts, e.expression);
+  if (ts.isNewExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === 'Promise') return true;
+  if (ts.isCallExpression(e)) {
+    const callee = e.expression;
+    if (ts.isPropertyAccessExpression(callee)) {
+      const obj = callee.expression;
+      const prop = callee.name.text;
+      if (ts.isIdentifier(obj) && obj.text === 'Promise') return true;              // Promise.resolve/all/race...
+      if (prop === 'evaluate' || prop === 'evaluateHandle') return true;            // page.evaluate 恒返 Promise
+      if (prop === 'then' || prop === 'catch' || prop === 'finally') return true;   // 链式 thenable
+    }
+  }
+  return false;
+}
+
+/** 谓词表达式是否 async / 显式返回 Promise(literal 函数体内的 return 也算)。 */
 function isAsyncOrPromisePredicate(ts, node) {
   if (!node) return null;
-  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-    const isAsync = (node.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
-    if (isAsync) return 'async-function-predicate';
-    // 简明箭头体直接是 Promise 表达式:`() => page.evaluate(...)` / `() => Promise.resolve(x)`
-    if (ts.isArrowFunction(node) && node.body && !ts.isBlock(node.body)) {
-      const b = node.body;
-      if (ts.isCallExpression(b) && ts.isPropertyAccessExpression(b.expression)) {
-        const obj = b.expression.expression;
-        const prop = b.expression.name.text;
-        if (ts.isIdentifier(obj) && obj.text === 'Promise') return 'returns-promise-predicate';
-        if (prop === 'evaluate' || prop === 'evaluateHandle') return 'returns-promise-predicate';
-      }
-      if (ts.isAwaitExpression(b)) return 'async-function-predicate';
-    }
+  if (!(ts.isArrowFunction(node) || ts.isFunctionExpression(node))) {
+    // 标识符谓词(`waitForFunction(myPredicate)`):无法在词法层判定 → 不报(承诺面之外)
     return null;
   }
-  // 标识符谓词(`waitForFunction(myPredicate)`):无法在词法层判定 → 不报(承诺面之外)
-  return null;
+  const isAsync = (node.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+  if (isAsync) return 'async-function-predicate';
+  // 简明箭头体:`() => new Promise(...)` / `() => Promise.resolve(x)` / `() => page.evaluate(...)`
+  if (ts.isArrowFunction(node) && node.body && !ts.isBlock(node.body)) {
+    return isPromiseishExpression(ts, node.body) ? 'returns-promise-predicate' : null;
+  }
+  // 有 block 体的 literal 函数(箭头或 function 表达式):遍历自身作用域内的 return
+  // (第 1 轮核验漏判:`() => { return new Promise(...) }` / `function(){ return Promise.resolve() }`
+  //  此前完全不查)。**不下潜嵌套函数**——那些 return 属于内层函数,不是本谓词的返回值。
+  if (!node.body || !ts.isBlock(node.body)) return null;
+  let found = false;
+  const walk = (n) => {
+    if (found) return;
+    if (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)) return;
+    if (ts.isReturnStatement(n) && isPromiseishExpression(ts, n.expression)) { found = true; return; }
+    ts.forEachChild(n, walk);
+  };
+  ts.forEachChild(node.body, walk);
+  return found ? 'returns-promise-predicate' : null;
 }
 
 /** receiver 是否 lexical 的 page/frame。 */

@@ -95,7 +95,7 @@ function compliant(tf, over = {}) {
     return null;
   };
   return OUT({
-    segmentReceipts: (task.segments ?? []).map((seg) => ({ segmentId: seg.segmentId, coverageKeys: seg.assignedCoverageKeys })),
+    segmentReceipts: (task.segments ?? []).map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, coverageKeys: seg.assignedCoverageKeys })),
     profileAnswers: (task.requiredProfileAnswers ?? []).map((r) => ({
       profileId: r.profileId, fileId: r.fileId, checkId: r.checkId, answer: 'checked-clean', hunkId: hunkOf(r.fileId),
     })),
@@ -284,16 +284,17 @@ test('⑪ 台账损坏 → blocked,不写回执(fail-closed)', () => {
   assert.equal(r.r.status, 2);
 });
 
-test('⑫ 覆盖对账:漏段/段内集合不符/段内重复 一律 invalid;精确相等 → clean', () => {
+test('⑫ 覆盖对账:漏段/段内集合不符/段内重复/投递序号不符 一律 invalid;精确相等 → clean', () => {
   const f = setup();
   const tf = taskFile(f);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  const full = task.segments.map((s) => ({ segmentId: s.segmentId, coverageKeys: s.assignedCoverageKeys }));
+  const full = task.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, coverageKeys: s.assignedCoverageKeys }));
   assert.equal(round(f, { segmentReceipts: full }, { tf }).json.verdict, 'clean');
   for (const receipts of [
     [],
-    [{ segmentId: full[0].segmentId, coverageKeys: [] }],
-    [{ segmentId: full[0].segmentId, coverageKeys: [...full[0].coverageKeys, ...full[0].coverageKeys] }],
+    [{ segmentId: full[0].segmentId, receivedOrder: full[0].receivedOrder, coverageKeys: [] }],
+    [{ segmentId: full[0].segmentId, receivedOrder: full[0].receivedOrder, coverageKeys: [...full[0].coverageKeys, ...full[0].coverageKeys] }],
+    full.map((s) => ({ ...s, receivedOrder: s.receivedOrder + 1 })), // 顺序不符(乱序/未按序投递)
   ]) {
     const bad = round(f, { segmentReceipts: receipts }, { tf });
     assert.equal(bad.json.verdict, 'invalid', JSON.stringify(receipts).slice(0, 120));

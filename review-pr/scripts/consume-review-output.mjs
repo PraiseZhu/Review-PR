@@ -94,6 +94,7 @@ try {
   if (!snapshot.complete) flags.snapshotMismatch = true;
   if (task?.snapshotHash && task.snapshotHash !== snapshot.snapshotHash) flags.snapshotMismatch = true;
   if (task?.profileConfigIncomplete === true) flags.profileConfigIncomplete = true;
+  if (task?.classifierIncomplete === true) flags.classifierIncomplete = true;
   // 覆盖对账(SC-R4):逐 segment 精确集合相等 + 并集 === 全集;coverage key 序列化为
   // "hunk:<fileId>:<hunkId>" / "file:<fileId>"
   const keyStr = (k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`);
@@ -104,11 +105,15 @@ try {
   if (Array.isArray(task?.segments)) {
     const claimedBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, new Set((s.coverageKeys ?? []).map(keyStr))]));
     let okAll = (output.segmentReceipts ?? []).length === task.segments.length;
+    const orderBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, s.receivedOrder]));
     const union = new Set();
     for (const seg of task.segments) {
       const want = new Set(seg.assignedCoverageKeys.map(keyStr));
       const got = claimedBySeg.get(seg.segmentId);
       if (!got || !setEq(want, got)) { okAll = false; break; }
+      // 顺序投递协议(SC-R4):回执必须自报与 task 一致的投递序号——缺段/乱序/未投递却
+      // 声称覆盖都在这里被拒(单纯"最终集合相等"区分不出是否真的分段审过)。
+      if (seg.order !== undefined && orderBySeg.get(seg.segmentId) !== seg.order) { okAll = false; flags.segmentOrderMismatch = true; break; }
       for (const k of got) { if (union.has(k)) { okAll = false; break; } union.add(k); }
     }
     const all = new Set((task.coverageKeys ?? []).map(keyStr));

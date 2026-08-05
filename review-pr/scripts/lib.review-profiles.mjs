@@ -127,26 +127,57 @@ export function requiredProfileAnswersFor(profiles, snapshotFiles) {
  * 触及"等待原语 / 断言 / 守卫调用"的 (fileId,hunkId) 恒为 required(只能由 executed
  * 满足,不接受 N/A);纯注释/文档 hunk 直接不产 required key(不靠 N/A 豁免)。
  * 判定按 hunk 的新增行文本做锚定匹配——确定性、可单测。 */
-const WAIT_ASSERT_RE = /\b(waitForFunction|waitForSelector|waitForTimeout|waitFor|waitForEvent|waitForResponse|waitForLoadState|expect|assert|assertEquals|should|toBe|toEqual|toHaveLength|toThrow|process\.exit|exitCode)\b/;
-const COMMENT_ONLY_RE = /^\s*(\/\/|\/\*|\*|#|$)/;
+// 分类对象(第 1 轮核验修订):不只 test-infra 路径——**普通代码里的守卫调用**同样需要
+// 负向证据(guard/invariant/assert 类函数被改动时,"它还会不会拦"必须证明)。判定语料
+// 由三组构成,均按锚定文本匹配、可单测:
+//   ① 等待原语(Playwright/vitest 等)  ② 断言/期望  ③ 守卫与退出码消费
+const WAIT_RE = /\b(waitForFunction|waitForSelector|waitForTimeout|waitForEvent|waitForResponse|waitForLoadState|waitForNavigation|waitFor)\s*\(/;
+const ASSERT_RE = /\b(expect|assert|assertEquals|assertThrows|toBe|toEqual|toHaveLength|toThrow|toMatch|shouldEqual)\s*\(/;
+const GUARD_RE = /\b(process\.exit|exitCode|throwIf|invariant|assertInvariant|guard[A-Z]\w*|\w*Guard)\s*\(/;
+// **删除**断言/等待也必须给证据(删掉一条断言就是把守门人拿掉——不能因为"新增行里没有
+// 断言"而免检);删除行文本由调用方在 removedLineTextByFile 里给出。
+const COMMENT_ONLY_RE = /^\s*[+-]?\s*(\/\/|\/\*|\*|#|$)/;
 
-export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile }) {
+const touchesOracle = (t) => WAIT_RE.test(t) || ASSERT_RE.test(t) || GUARD_RE.test(t);
+
+/**
+ * required 负向证据 key 分类器(SC-R6)。
+ * @param {object} p
+ *   profiles / files                            当前 profile 集与 snapshot 文件
+ *   addedLineTextByFile  { [path]: { [hunkId]: string[] } }  新增行文本
+ *   removedLineTextByFile 同形状,删除行文本(可选;缺省视为无删除)
+ *   incompleteFiles      取文本失败的路径集合(调用方给);非空 → { incomplete: true }
+ * @returns {{ required: object[], incomplete: boolean, incompleteFiles: string[] }}
+ */
+export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile, removedLineTextByFile = {}, incompleteFiles = [] }) {
   const required = [];
   for (const f of files) {
     const path = f.newPath ?? f.oldPath;
     if (!path || f.changeType === 'deleted' || f.contentKind !== 'text') continue;
-    if (!profilesForPath(profiles, path).some((p) => p.id === 'test-infra')) continue;
-    const linesByHunk = addedLineTextByFile?.[path] ?? {};
+    // 文档类文件不产 required(说明文字里出现 `expect(` 不该要求负向证据)
+    if (/\.(md|mdx|txt|rst|json|ya?ml)$/i.test(path)) continue;
+    const isTestInfra = profilesForPath(profiles, path).some((p) => p.id === 'test-infra');
+    const added = addedLineTextByFile?.[path] ?? {};
+    const removed = removedLineTextByFile?.[path] ?? {};
     for (const h of f.hunks) {
-      const texts = linesByHunk[h.hunkId] ?? [];
-      const meaningful = texts.filter((t) => !COMMENT_ONLY_RE.test(t));
-      if (meaningful.length === 0) continue; // 纯注释/空白 hunk:不产 required key
-      if (meaningful.some((t) => WAIT_ASSERT_RE.test(t))) {
-        required.push({ fileId: f.fileId, hunkId: h.hunkId, path, reason: 'hunk 触及等待原语/断言/守卫调用——必须给负向证据(executed)' });
-      }
+      const addedTexts = (added[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
+      const removedTexts = (removed[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
+      const addedHit = addedTexts.some(touchesOracle);
+      const removedHit = removedTexts.some(touchesOracle);
+      if (!addedHit && !removedHit) continue;
+      // test-infra 路径:等待/断言/守卫任一即 required;普通代码:只有**守卫/断言**改动
+      // (等待原语在业务代码里常见且不构成判定器)才 required。
+      const guardish = [...addedTexts, ...removedTexts].some((t) => GUARD_RE.test(t) || ASSERT_RE.test(t));
+      if (!isTestInfra && !guardish) continue;
+      required.push({
+        fileId: f.fileId, hunkId: h.hunkId, path,
+        reason: removedHit && !addedHit
+          ? 'hunk 删除了等待/断言/守卫调用——必须证明剩下的判定仍会在坏情况下变红(executed)'
+          : 'hunk 触及等待原语/断言/守卫调用——必须给负向证据(executed)',
+      });
     }
   }
-  return required;
+  return { required, incomplete: incompleteFiles.length > 0, incompleteFiles };
 }
 
 /** ── SC-R4:coverage keys 分片(单席顺序分片,两类 key 都恰一个 owner)── */
@@ -156,11 +187,16 @@ export function buildSegments({ coverageKeys, sizeBudget = 60 }) {
   for (let i = 0; i < coverageKeys.length; i += budget) {
     segments.push({
       segmentId: `seg-${String(segments.length + 1).padStart(2, '0')}`,
+      // 顺序投递协议(SC-R4 第 1 轮核验):order 是**确定性**的投递序号,编排必须按它向
+      // 同一审查会话逐段投递;回执里 receivedOrder 必须与之相等,缺段/乱序/未投递却声称
+      // 覆盖都会被 consumer 判 invalid(此前只有"最终回执集合",无法区分"真的分段审过"
+      // 与"一次性塞给模型再补一份形状正确的回执")。
+      order: segments.length + 1,
       assignedCoverageKeys: coverageKeys.slice(i, i + budget),
       sizeBudget: budget,
     });
   }
-  if (segments.length === 0) segments.push({ segmentId: 'seg-01', assignedCoverageKeys: [], sizeBudget: budget });
+  if (segments.length === 0) segments.push({ segmentId: 'seg-01', order: 1, assignedCoverageKeys: [], sizeBudget: budget });
   return segments;
 }
 
