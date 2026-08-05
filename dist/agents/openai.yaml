@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review PR"
+  short_description: "Review GitHub PRs against repository rules"
+  default_prompt: "Use $review-pr to review an open GitHub pull request against this repository's rules."
+
+policy:
+  allow_implicit_invocation: true

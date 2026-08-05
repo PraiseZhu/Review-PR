@@ -9,7 +9,7 @@ description: >
   架构 gate、讨论 issue、self-fix、workflow approval、结构性 BLOCKED、Server 通知和
   经配置播报出口的通知流程（对外话术遵循统一人格模板）；使用独立审查 agent、前置
   gate、GitHub review/merge 和 scheduler pre-run
-  check。每轮结束做自进化复盘（EVOLUTION.md 台账，扩权类永不自动落地）；汇总 JSON
+  check。汇总 JSON
   只落盘，发给人的渠道一律人类可读摘要。
 ---
 
@@ -360,15 +360,15 @@ read-modify-write（读整份 state → 内存改 → `writeJsonAtomic` 整份�
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
 按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
 （`pre-check.mjs` 在会话创建前拉、`prepare.mjs` 拿到锁后兜底，均已内置，不需要手动跑）；
-自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。同步是 best-effort：
+（dist 分发版：写回上游的能力已剥离，本节仅拉取侧生效。）同步是 best-effort：
 pull / push 失败（断网、diverged、非 main 分支）不阻塞 review 流程，把输出里的
 `skillSync` / `sync` 异常如实写进汇总即可，不要重试到卡死。手动诊断用
 `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" <pull|push>`。
 
 **多写者并发（同一 skills 仓被多台机器 / 多个轮次写）**：同一个 skills 仓可能同时被
 定时轮次与人工交互轮次写入（各自追加 evo 台账），push 撞 `non-fast-forward` 属正常并发，
-不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**
-（`EVOLUTION.md`、`evolution/ledger.json`）用确定性规则自动解冲突（md 取行并集、ledger 按
+不是故障。（dist 分发版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**
+（台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按
 `fingerprint` 并集，两侧条目零丢失），最多重试 3 轮；rebase 前先把 HEAD 存进
 `refs/skill-sync/pre-rebase-<ts>` 兜底，推成功即清理。**冲突落在任何其他文件（脚本 /
 SKILL.md / config）时一律 `rebase --abort` 转人工**，返回 `reason:
@@ -1884,7 +1884,7 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
      不依赖任何手工命令。激活时现场核验 fix PR 已 MERGED **且 merged head === 登记的
      fixHead**、origin PR 也确实已合并且 head 与登记的 `originHead` 一致、且 hazard 绑定的
      repo === 当前仓；
-  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；
+  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除；dist 分发版无回推：回读校验通过即 ack）；
      任一失败保留 inbox 下轮重放（幂等 upsert，重复不增条、不降级）。若 push 报
      `nothing-to-push`（上一轮已推成功但进程崩在 ack 之前），必须读**远端** canonical
      确认该 hazard 已 active 才安全 ack；
@@ -2070,7 +2070,7 @@ agent 组装汇总 JSON 时自己另外查一次）。
 `run-log.mjs` 对以上两点只做形态校验、不做语义校验：字段缺失或形态不对时记
 stderr warning 并**照常落盘**，不会因为形态问题拒绝写入或丢数据。
 
-**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，
+**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘后，
 把 6.1 摘要原文（渲染成人类可读 markdown 后的文本，不是 run-log 的原始 JSON）经
 ```text
 node "<SKILL_ROOT>/scripts/notify-summary.mjs" --title "<6.1 摘要首行>"
@@ -2120,9 +2120,7 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 **异常** <n>
 - [#129](<PR_URL>) — 名录读不到，未能私聊作者
 
-**自进化** <n>
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
-- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
 调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤
@@ -2169,74 +2167,6 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
    `release-lock.mjs --token <token>`；带 token 时脚本会拒绝释放归属不匹配的锁
    （`notOwner=true`），锁未获取时不调用释放；
 5. 汇总 PR、规则命中、P0/P1 数量、实际验证、外部写操作、未完成事项和风险；
-   汇总发出前先按第 8 节做自进化复盘（进化结果要并入 6.1 摘要的「自进化」组）。
 
 不把审查报告、GitHub token、用户数据或临时快照落入仓库。发现已有残留 worktree 或锁
 无法确认归属时不要强删，报告给用户处理。
-
-<!-- dist:strip:start self-evolution -->
-## 8. 自进化复盘（self-evolution）
-
-每轮在 run-log 落盘之后、发送最终摘要之前，对本轮**没走到合并**的每个候选做一次根因
-复盘，把可沉淀的经验记入 Skill 自己的进化台账。目标：同一类漏判或流程缺口不第二次
-靠人发现。复盘只影响未来轮次，**不回头改本轮已做出的任何 gate 判定或 GitHub 动作**。
-
-### 8.1 根因三分类
-
-- **by-design（设计上就该人来）**：真人署名或决策类——他人 reviewer 的未 resolve
-  thread、分支保护要求的真人 approve、语义冲突取舍、产品/架构拍板、权限不足。
-  只记台账计数观察，**永不因「出现多次」就自动放开**。
-- **automatable-gap（可自动化的遗漏）**：不新增任何 GitHub 写操作、不放宽任何 gate 的
-  确定性改进——skip 原因归类缺口、去重指纹漏洞、状态文件修复、汇总/催办文案、脚本
-  bug、文档自相矛盾。允许按 8.3 规则当轮自动落地。
-- **privilege-expansion（扩权类）**：任何会新增或放宽署名操作与安全边界的想法——
-  代 resolve 他人 thread、扩大自动 approve 范围、放宽 admin bypass 条件、改动白名单/
-  selfFixAuthors/权限 allowlist、放松 gate 阈值。**永不自动落地**，只写提案等维护者
-  拍板。拿不准算哪类时，一律按扩权类处理。
-
-### 8.2 台账
-
-台账是 Skill 知识的一部分，随 Skill 仓库走（不是运行时状态，不放外部状态目录）：
-`<SKILL_ROOT>/evolution/ledger.json` 为事实源，`<SKILL_ROOT>/EVOLUTION.md` 由脚本
-再生成（手改会被覆盖）。只经脚本读写，按根因 fingerprint 去重：
-
-```text
-node "<SKILL_ROOT>/scripts/evolution-note.mjs" add \
-  --fingerprint <root-cause-slug> --tier <by-design|proposal|auto> \
-  --title "<一句话根因>" [--detail "<现象与证据>"] [--proposal "<具体改法>"] [--commit <sha>]
-```
-
-返回 `isNew=false`（同指纹已存在）时脚本只自增计数——不要重复分析，也不在摘要里
-重复报告。台账正文不写 token、凭证、内部绝对路径或敏感命中原文，PR 只写号码。
-被维护者否决过的提案（status=rejected）留档，不再重复提出。
-
-每次 `add` / `set-status` 写盘后脚本自动把 `evolution/ledger.json` 与 `EVOLUTION.md`
-提交并推送 skills 仓库 main（只 add 这两个文件，不裹挟其他改动；结果在输出 `sync`
-字段）。`sync.ok=false`（断网、diverged、非 main 分支）不影响台账本身，写进摘要
-「自进化」组即可，不重试到卡死；`--no-sync` 仅本地调试用。
-
-### 8.3 automatable-gap 的自动落地规则
-
-全部满足才允许当轮直接修改 Skill 自身：
-
-1. 改动不属于 8.1 的扩权类（拿不准 = 扩权，降级为 `--tier proposal`）；
-2. 改动最小且自洽：只改对应的 SKILL.md 段落、脚本或 config 键，不顺手重构；
-3. 改脚本后必须过 `node --check`，脚本带 `--dry-run` 的再跑一次 dry-run 自测；
-   任一失败即恢复原文件、降级为提案；
-4. `SKILL_ROOT` 是 git 仓库且工作区干净时，把这次进化单独提交一个 commit
-   （message 前缀 `evo:`，正文带 fingerprint），并把 sha 记入台账；不是 git 仓库或
-   工作区脏时照常落地，但摘要里写明「未纳入版本控制，需人工同步回 skills 仓库」；
-5. 每轮最多自动落地 1 项（防抖）；其余记 `--tier proposal` 留到维护者或下轮处理；
-6. 落地 commit 之后运行
-   `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" push --message "evo: <fingerprint>"`
-   把进化推送到 skills 仓库 main（台账部分随后的 `evolution-note.mjs` 会自动推，这一步
-   保证代码/文档 commit 也上去）。推送失败不回滚落地，如实写进摘要。
-
-### 8.4 汇总与交互
-
-- auto 模式：进化结果并入 6.1 摘要的「自进化」组——已落地的写一句话加 commit
-  短 sha；扩权提案点名维护者看 EVOLUTION.md；本轮没有新条目（全是 isNew=false）时
-  整组省略。
-- 交互模式：复盘发现进化项时直接告诉用户，由用户当场决定改不改；不在交互模式
-  静默修改 Skill。
-<!-- dist:strip:end self-evolution -->

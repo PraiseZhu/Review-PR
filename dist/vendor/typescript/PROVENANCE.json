@@ -1,0 +1,11 @@
+{
+  "package": "typescript",
+  "version": "6.0.3",
+  "file": "typescript.js",
+  "sha256": "569177652966bd528c319171c7dd22860dbf72bde116cbc4f644f1d02bb12e39",
+  "bytes": 9144216,
+  "source": "npm typescript@6.0.3 lib/typescript.js",
+  "vendoredAt": "2026-08-05",
+  "license": "Apache-2.0 (LICENSE.txt)",
+  "why": "SC-R2:skill 生产环境无 npm install,preflight 的 AST 解析必须自带 parser;禁 node_modules fallback、禁 regex 降级(缺 parser 走 incomplete→invalid)"
+}
