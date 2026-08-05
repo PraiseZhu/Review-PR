@@ -393,15 +393,24 @@ export const t = () => a.deepEqual(1, 2);
 });
 
 test('R6 第 5 轮核验 BLOCKER:expect(actual)["toEqual"]({...}) 只改远端参数行 → 仍必须要求证据(ElementAccess matcher)', () => {
+  // 与第 4 轮"多行 chai 深链"用例同一个坑:文件太短时,hunk 的 base/head 行区间会靠
+  // git 默认 3 行上下文覆盖**整个文件**,任何范围(哪怕只是内层 expect(actual) 的 1 行
+  // 短范围)都会被这个过宽的 hunk 区间"意外"覆盖,测不出 ElementAccess 分类缺失——必须
+  // 把改动行推到离调用头 >3 行处,让 hunk 区间不再天然覆盖调用头。
   const before = `import { expect } from 'vitest';
 export function check(actual) {
   expect(actual)['toEqual']({
     a: 1,
     b: 2,
+    c: 3,
+    d: 4,
+    e: 5,
+    f: 6,
+    g: 7,
   });
 }
 `;
-  const after = before.replace('b: 2', 'b: 3');
+  const after = before.replace('g: 7', 'g: 8');
   const { required } = requiredFor({ 'tests/elem.test.mjs': before }, { 'tests/elem.test.mjs': after });
   assert.ok(required.length > 0,
     '修前实测 required=[]:外层 ElementAccess 调用不落入任何分类分支,也不 markCalleeChain,只剩内层 expect(actual) 的短范围');
