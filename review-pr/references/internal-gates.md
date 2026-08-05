@@ -329,6 +329,26 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
     （由更上游的 `context.mjs` 判过），`authorizedFastMergeInfo.reportOnly.
     formatIssues` 恒为空数组。
 
+## 审查能力层(SC-R1..R8,2026-08-05)
+
+审查链路上机器强制的部分,与 T1(语义判断)边界:
+
+| 环节 | 脚本 | 机器保证 | 不保证(T1) |
+|---|---|---|---|
+| 确定性 preflight | `review-preflight.mjs` | 已知硬模式零漏报;归因只算新增行;parser 缺失/语法错 → incomplete → invalid | 新型问题、alias 间接持有的对象 |
+| 任务构建 | `build-review-task.mjs`(唯一) | 必答项/未决 findingId/hazard/分片真实注入正文 | 审查者是否真读懂 |
+| 输出契约 | `lib.review-consume.mjs` | 单一 JSON、闭集、同轮引用可解析 | 结论对不对 |
+| 裁决与回执 | `consume-review-output.mjs`(唯一 clean 写者) | verdict 由内容推导;clean 三条件;非法输出撤销同 snapshot 旧 clean;3 次非法 → blocked | — |
+| 未决核销 | `lib.findings-ledger.mjs` | 逐条 disposition;同 snapshot 禁自证已修;preflight 项只由规则重跑核销 | disposition 的理由是否成立 |
+| 覆盖回执 | `lib.review-profiles.mjs` + consumer | 每个 coverage key 恰一个 segment owner;逐段精确集合相等 | "声称读过"≠"读懂了" |
+| 负向证据 | R6 分类器 + consumer | required key 只能由 executed 满足;对象/快照/run 引用一致 | **不验证命令真的执行过**——无执行 wrapper,一致伪报是 T1 上限 |
+| 逃逸闭环 | `record-escaped-finding.mjs` | 双状态机不可跳步;激活核验 fixHead;promote 目标存在性 | "这次算不算逃逸" |
+
+`snapshotHash = hash(baseRefOid, mergeBaseOid, headOid, diffDigest)` 是全链路的新鲜度
+锚点(SC-R8):base 前进而 head 不变时旧证据/旧回执一律 stale。patch 出自 immutable git
+objects,不吃可变工作树;安全扫描、preflight、覆盖 manifest、负向证据锚点共用同一份快照
+(静态 inventory 钉死"snapshot builder 之外零 PR diff 抓取")。
+
 ## 维护者 precheck
 
 目标仓库 scheduler 应注册安装后的 Skill 绝对路径：

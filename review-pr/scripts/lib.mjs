@@ -1173,7 +1173,12 @@ export function scanSensitiveLine(line, location, patterns, sink) {
  * **不能**当"无命中"处理——`evaluateAuthorizedFastMerge` 的 `security.scanned` 参数
  * 就是接这个字段,这是 P1-1 修复的核心边界。
  */
-export function scanPrSensitiveContent({ owner, repo, pr, title, body, sensitiveRules }) {
+// SC-R8(2026-08-05):`snapshotPatch` 是"四方同源"的接入点——调用方若已构建 DiffSnapshot
+// (immutable git objects 出的 patch),就把 `snapshot.rawPatch` 传进来,安全扫描与
+// preflight/覆盖 manifest/负向证据锚点消费**同一份**快照,不再各自 `gh pr diff` 造出多份
+// 跨 head 的快照。未传时保留原有 `gh pr diff` 路径(兼容既有调用方与"拿不到 base oid"的
+// 场景),但那条路径不参与 snapshotHash 绑定——如实声明,不冒称已全面同源。
+export function scanPrSensitiveContent({ owner, repo, pr, title, body, sensitiveRules, snapshotPatch = null }) {
   const patterns = buildSensitivePatterns(sensitiveRules);
   const sink = { hard: [], soft: [] };
   const scanText = (text, file) => {
@@ -1184,7 +1189,9 @@ export function scanPrSensitiveContent({ owner, repo, pr, title, body, sensitive
   scanText(body, 'PR body');
   let error = null;
   try {
-    const diffText = gh(['pr', 'diff', String(pr), '--repo', `${owner}/${repo}`], { timeoutMs: 120_000 }).stdout ?? '';
+    const diffText = typeof snapshotPatch === 'string'
+      ? snapshotPatch
+      : (gh(['pr', 'diff', String(pr), '--repo', `${owner}/${repo}`], { timeoutMs: 120_000 }).stdout ?? '');
     let curFile = null;
     let curAllowed = false;
     let newLine = 0;

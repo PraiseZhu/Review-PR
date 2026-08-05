@@ -535,6 +535,38 @@ gh pr diff <N> --patch
 同时取得所有分页的 issue comments、review comments/threads 和 commits，按时间从新到
 旧阅读。不要只看 diff：历史讨论里可能已有设计决定、已解决问题或仍未解决的承诺。
 
+### 3.0.1 确定性 preflight（SC-R2，阶段二之前必跑）
+
+已知的**机器可判定** bug 模式不再押给 LLM 概率判断——命中即机器打回，不经审查 agent：
+
+```bash
+node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <headOid> --out <preflight.json>
+```
+
+- 首发规则：Playwright `page/frame.waitForFunction` 收到 async / 返回 Promise 的谓词
+  （#469 的 19 处假等待就是这一类：Promise 恒 truthy，1ms 假通过，CI 全绿但什么都没等）。
+  **承诺面**：只认 lexical `page`/`frame` 接收者；alias、解构、容器传参持有的对象不在
+  机器承诺内（那类靠 3.0.2 的 profile 必答兜）。`locator.waitFor` 与 `vi.waitFor(async)`
+  是合法用法，有零误报 fixture 钉死，不会误报。
+- **归因**：只有落在本次**真正新增/修改的行**上的命中才阻断；既存命中记 `reportOnly`
+  （写进汇总，不打回作者——不拿 PR 之前的旧账算在作者头上）。
+- **fail-closed**：parser 缺失/版本不符、语法错文件、DiffSnapshot 不完整 →
+  `complete:false`，本轮 `consume-review-output` 判 `invalid`。**禁 regex 降级**：
+  解析不了绝不当成"没命中"。parser 是 `vendor/typescript`（钉版本 + PROVENANCE.json
+  记 sha256/来源，无 node_modules fallback）。
+- 目标仓可用 `reviewPreflight.disabledRuleIds` 声明式停用某规则——只接受**声明式参数**，
+  永不执行来自 PR head 的规则代码。
+
+### 3.0.2 风险 profile 与审查任务构建（SC-R3/R4/R6/R7）
+
+`build-review-task.mjs` 是阶段二任务的**唯一**构建器（见第 4 节）。它按路径命中把
+`test-infra`（tests/**、scripts/e2e/**、*guard*、playwright/vitest 配置）与 `ci-workflow`
+（.github/**）两套**必答清单**注入任务，逐 `文件×检查` 作答——这一层解决的正是"审查
+从没被要求怀疑测试本身"：`could-be-always-green` 那条要求审查者说出"这个测试在什么
+条件下会红"，说不出就是恒绿嫌疑。内置 profile 在**代码层 always-on**，与目标仓
+`riskProfiles` 增量合并（目标仓可加不可删）；目标仓配置有非法项时内置照跑（继续多抓
+问题）但本轮判 `invalid`（声明过的高危检查不允许被悄悄摘掉）。
+
 ### 3.1 安全与隐私内容门（本阶段最先执行）
 
 任何 PR 都不允许携带凭证、密钥或个人隐私数据——这是先于格式门的第一道审计。
@@ -826,22 +858,65 @@ UI 改动加：UI 证据（截图/录屏/HTML 界面）与 diff 一致性、rule
 （证据完全缺失不记 finding，只在报告注明缺口——提醒作者补证据由主 agent 的评论完成；
 ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1，不与证据缺失混淆）
 
-输出 JSON 或等价 Markdown：
-## Findings
-- family <family_id>（<不变量一句话>）[P0|P1，family 内取成员最高]
-  - `path:line` — 事实证据；用户/系统影响；建议修复；验证方式
-  - `path:line` — ...（同一不变量的其它表现；只有一条也要保留这层结构）
-  修复必须覆盖该不变量的全部路径，包括本报告未点名处
-## Rule coverage
-- 读取的规则文件及逐项结论；ruleFiles 配置里缺失的必读文件单独列出
-## UI evidence（仅 UI 改动）
-- 查看过的截图/录屏/HTML 证据清单、每项对应的 diff 改动、一致性结论；
-  ruleFiles.uiRequired 逐项对照结论；无证据时写明缺口
-## Verification
-- 实际运行的命令、结果、未执行项目及原因（含未能查看的截图或未能渲染的 HTML）
-## Overall
-- pass / changes-requested；若 pass，明确“没有 P0/P1”
+输出**单一 JSON**（SC-R1a，2026-08-05 起唯一契约，`schemaVersion: "rro-1"`；
+**废除"JSON 或等价 Markdown"双轨**——机器只消费 JSON，你自报的结论不被采信）：
+
+任务正文由**唯一构建器**产出，不要自己拼：
+
+```bash
+node "<SKILL_ROOT>/scripts/build-review-task.mjs" <N> --base <baseRefOid> --head <headRefOid> \
+  --out-task <task.json> --out-prompt <prompt.md>
 ```
+
+`prompt.md` 里已经写好本轮的：风险 profile 必答项（逐 文件×检查）、未决 findings
+（必须逐条 disposition）、known hazards（本仓历史逃逸模式）、覆盖分片 segments、
+required 负向证据 key。审查 agent 按它作答，输出形如：
+
+```jsonc
+{
+  "schemaVersion": "rro-1",
+  "findingFamilies": [ { "family_id": "f1", "invariant": "<一句话不变量>", "severity": "P0|P1",
+    "manifestations": [ { "path": "", "line": 1, "evidence": "", "impact": "", "fix": "", "verification": "", "severity": "P1" } ],
+    "fixGuidance": "修复必须覆盖该不变量的全部路径，包括本报告未点名处" } ],
+  "verificationGaps": [ { "description": "", "required": false } ],
+  "verificationRuns":  [ { "runId": "r1", "command": "", "exitCode": 0, "outputAnchor": "" } ],
+  "profileAnswers":    [ { "profileId": "test-infra", "fileId": "", "checkId": "",
+    "answer": "checked-clean|finding|not-applicable", "hunkId": "", "findingRef": { "family_id": "f1", "manifestationIndex": 0 },
+    "reasonCode": "", "explanation": "" } ],
+  "segmentReceipts":   [ { "segmentId": "seg-01", "coverageKeys": [ { "kind": "hunk", "fileId": "", "hunkId": "" } ] } ],
+  "findingDispositions": [ { "findingId": "<task 注入的 id>", "disposition": "resolved|invalidated", "evidence": "", "basis": "" } ],
+  "negativeEvidence":  [ { "fileId": "", "hunkId": "", "kind": "executed", "snapshotHash": "",
+    "command": "", "negativeOracle": "", "observedSignal": "expected-failure-observed", "outputAnchor": "", "verificationRunId": "r1" } ],
+  "escapeAssessment":  [ { "candidateId": "", "verdict": "yes|no", "basis": "" } ],
+  "modelVerdictNote": "仅供人读；机器不消费"
+}
+```
+
+契约要点（违反即 `invalid`，本轮审查视为未完成，不得 approve/不得 clean）：
+
+- P2 不进 `findingFamilies`（沿既有 severity 契约，只收 P0/P1）；
+- 同轮交叉引用用**本地引用** `{family_id, manifestationIndex}`；`findingId` 由机器派生，
+  只有 task 注入的**历史未决项**才用 findingId；
+- `accepted-risk` **不在你的输出里**——它只走交互确认通道（auto 模式无此出口）；
+- required `verificationGap` 非空、必答缺项、覆盖对账不符、注入的 open 未 disposition、
+  preflight 未完成、profile 配置非法，任一即 `invalid`；
+- required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受。
+
+输出交给唯一消费出口裁决（它算 verdict、写回执、动台账；**clean 回执只能由它写**）：
+
+```bash
+node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output <rro-1.json> \
+  --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
+  --task <task.json> --preflight <preflight.json>
+```
+
+verdict 由机器推导，优先级 `invalid > dirty > clean`：`clean` 需同时满足**当前 P0/P1=0
+∧ effective-open=0 ∧ accepted-risk=0**；`dirty` = 有 P0/P1，或 disposition 应用后仍有
+未决项，或存在 accepted-risk。同一 snapshot 连续 3 次 `invalid` → `blocked`（初次+2 次
+修复重试）。
+
+Rule coverage / UI evidence / Verification 三段仍要写，放进对应 JSON 字段与
+`modelVerdictNote`（给人读的部分）——不再接受纯 Markdown 报告作为机器输入。
 
 主 agent 收到报告后必须逐条回到源码、测试和规则原文复核。无法复现、只属于 P2、
 与本 PR 无关或与已确认例外冲突的条目不发送给作者，但在内部汇总中注明舍弃理由。
@@ -1596,6 +1671,30 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
   仍然拒 stale approve）是兜底。两者有意重叠（纵深防御）,代码只产出一条归一化
   reason,不双报。事故背景一行:2026-08-04 mivo-canvas #469,同账号 approve 后
   force-push,旧 approve 经 reviewDecision=APPROVED 被自动化当无条件绿灯合入。
+
+### 5.9 open-findings 核销门与逃逸学习闭环（SC-R5/R7，2026-08-05）
+
+- **台账**：任何席位（auto / 交互 / preflight 命中）提出的 finding 都由
+  `consume-review-output.mjs`（**单一写者**）落 per-PR 台账。`findingId` 机器派生
+  （`invariantKey|path|line`），跨轮身份只认 `invariantKey`，不用单轮 `family_id`。
+- **核销门**：下一轮的任务里会注入全部 `effective-open` 的 findingId，审查必须逐条给
+  `resolved`（带**新 snapshot** 的证据锚点——同 snapshot 自称已修一律拒：代码没变，
+  问题不会自己消失）或 `invalidated`（带判误报依据）。未逐条处置 → `invalid`。
+  这堵的是 #469 的洞:**本地席位拒过的问题，换个席位开审就等于清零重来**。
+- **effective-open 谓词**：`open` ∪ 未经交互确认的 `invalidated`（模型单方"误报"主张
+  不关门）∪ snapshot 已漂移的 `accepted-risk`。`preflight` 命中只能由**同 ruleId+
+  ruleVersion 在新 snapshot 重跑不命中**自动核销——规则实现变了不冒充"代码已修"。
+- **pre-merge 独立复核**：合并阶段重建当前 complete snapshot + 重读台账，要求
+  `effective-open=0 ∧ accepted-risk=0` 且回执绑定的 `snapshotHash`/`ledgerHash` 全匹配。
+  这挡住"先拿到 clean、之后又新增 open"和两步之间的崩溃窗口。台账损坏 fail-closed。
+- **逃逸学习闭环**：合并后被后续 PR 证伪的 false negative（#469→#483 就是原型）必须登记：
+  `record-escaped-finding.mjs --register`（写可重放 inbox，`pending-fix-merge`）→ 修复 PR
+  合并后 `--activate`（现场核验 fix PR 已 MERGED **且 merged head === 登记的 fixHead**）
+  → 写进 canonical `evolution/ledger.json`（`active`）→ 后续命中同 paths 的 PR，任务正文
+  里就会带上这条 hazard。`promotionStatus` 要求明确选择：`landed`（已晋升为确定性规则/
+  profile 必答，且目标真实存在可解析）/ `recorded-only`（必填理由）/ `pending`。
+  **诚实边界**："这次算不算逃逸"是语义判断（T1）；机器保证的是登记入口存在、双状态机
+  不可跳步、prompt 真实注入、promote 目标存在性可验。
 
 ## 6. Auto 批处理
 

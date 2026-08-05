@@ -122,8 +122,17 @@ try {
   // 复核泄密硬门(TOCTOU:授权评论可能在 context.mjs scan 之后才发出,那时 scan 阶段的
   // 安全扫描结果早已是历史快照)。scanned=false(diff 拉取失败等)必须 fail-closed 当
   // "未证明无泄露"处理,绝不能当"无命中"放行——这是本次修复的核心边界。──
+  // SC-R8 同源:先构建 DiffSnapshot(immutable git objects),把它的 rawPatch 交给安全扫描,
+  // 与 preflight / 覆盖 manifest / 负向证据锚点消费同一份快照;快照不可用时退回
+  // `gh pr diff`(scanned 语义不变,但不参与 snapshotHash 绑定——如实声明)。
+  const secSnapshot = buildDiffSnapshot({
+    repoRoot: REPO_ROOT,
+    baseRefOid: (m.baseRefOid ?? '').toLowerCase(),
+    headOid: (m.headRefOid ?? '').toLowerCase(),
+  });
   const securityScan = scanPrSensitiveContent({
     owner, repo, pr, title: m.title ?? '', body: m.body ?? '', sensitiveRules: rules.sensitiveContent ?? {},
+    snapshotPatch: secSnapshot.complete ? secSnapshot.rawPatch : null,
   });
 
   // ── 授权快速合并通道:合并前最后复核(TOCTOU 保护,与 context.mjs 同口径重新现场检测,
@@ -328,7 +337,7 @@ try {
   let receiptClean = false;
   let receiptGate = null;
   if (structuralRoute === 'review-pending-admin-bypass' && reviewReceipt?.verdict === 'clean') {
-    const snap = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid: (m.baseRefOid ?? '').toLowerCase(), headOid: (m.headRefOid ?? '').toLowerCase() });
+    const snap = secSnapshot; // 同一份快照(SC-R8 同源:安全扫描与回执门用同一 snapshotHash)
     const ledger = loadLedger(ledgerPathFor(STATE_DIR, pr));
     const open = ledger.ok ? summarize(ledger.entries, snap.snapshotHash) : null;
     receiptGate = {
