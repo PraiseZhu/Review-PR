@@ -1496,5 +1496,32 @@
       "firstSeen": "2026-08-05T11:15:43.182Z",
       "lastSeen": "2026-08-05T11:15:43.182Z"
     }
+  ],
+  "escapedHazards": [
+    {
+      "hazardId": "hz1-a21e1d89daf5701d",
+      "originPr": 469,
+      "originHead": "3ae9ecdb745dc5827e36962c1630f037f4a986cc",
+      "fixPr": 483,
+      "fixHead": null,
+      "pattern": "Playwright waitForFunction 收到 async/返回 Promise 的谓词——Promise 恒 truthy,1ms 假通过,测试全绿但根本没等待",
+      "paths": [
+        "scripts/e2e/**",
+        "tests/**",
+        "e2e/**",
+        "**/*.test.*",
+        "**/*.spec.*"
+      ],
+      "evidence": "#469 合并后由 #483 的 AST 守卫一次抓出 19 处;deepseek 单席审查曾给 APPROVED",
+      "activationStatus": "active",
+      "promotionStatus": "landed",
+      "promotionTarget": {
+        "kind": "rule",
+        "ruleId": "playwright-waitforfunction-async-predicate",
+        "ruleVersion": "v1"
+      },
+      "seededAt": "2026-08-05",
+      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过(tests/review-preflight.test.mjs),故直接标 landed;fixHead 为 null——该修复早于本机制上线,不适用激活核验(如实标注,不伪造 SHA)"
+    }
   ]
 }
