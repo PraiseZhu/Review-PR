@@ -15,6 +15,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRE_SCAN = join(__dirname, '..', 'scripts', 'pre-scan.mjs');
 const PREPARE = join(__dirname, '..', 'scripts', 'prepare-prescan-segment.mjs');
 const RECORD = join(__dirname, '..', 'scripts', 'record-prescan-segment.mjs');
+const BUILD_TASK = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
+const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
@@ -282,4 +284,90 @@ test('SC-3.2: deriveObservationId 绑定 segmentId(同内容不同段 → 不同
   const id1 = deriveObservationId('snap1-x', 'seg-01', 'a.mjs', 1, '陈旧注释', 'note');
   const id2 = deriveObservationId('snap1-x', 'seg-02', 'a.mjs', 1, '陈旧注释', 'note');
   assert.notEqual(id1, id2, '不同 segmentId 应派生出不同 observationId');
+});
+
+// ── SC-4: 按段投递 prescan observations(集成 build-review-task + deliver-review-segment) ──
+
+function buildTask(f) {
+  const taskFile = join(f.work, 'task.json');
+  const promptFile = join(f.work, 'prompt.md');
+  const bodyFile = join(f.work, 'body.md');
+  writeFileSync(bodyFile, '普通改动,无历史 PR 引用。');
+  const r = spawnSync('node', [BUILD_TASK, '469', '--base', f.base, '--head', f.head,
+    '--out-task', taskFile, '--out-prompt', promptFile, '--pr-body-file', bodyFile],
+    { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
+  return { taskFile, promptFile, task: JSON.parse(readFileSync(taskFile, 'utf8')), prompt: readFileSync(promptFile, 'utf8') };
+}
+
+function deliverSegment(f, taskFile, order) {
+  const r = spawnSync('node', [DELIVER, '469', '--task', taskFile, '--base', f.base, '--head', f.head, '--order', String(order)],
+    { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  let json = null;
+  try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  return { r, json };
+}
+
+test('SC-4.1: task.prescan 只含承诺字段(无 observations 明细),prompt 只声明状态+总数', () => {
+  const f = setup({ rules: { prescan: { enabled: true } } });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  assert.equal(p1.ok, true);
+  const path = p1.files[0].path;
+  const line = p1.files[0].hunks[0].addedNewLines[0];
+  const obsFile = join(f.work, 'obs.json');
+  writeFileSync(obsFile, JSON.stringify([{ file: path, line, category: PRESCAN_CATEGORIES[0], note: '旧注释未更新' }]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', obsFile], f);
+  const fin = run(RECORD, ['--finalize'], f);
+  assert.equal(fin.json.ok, true);
+
+  const { task, prompt } = buildTask(f);
+  assert.ok(task.prescan, 'task 应含 prescan 承诺字段');
+  assert.equal(task.prescan.status, 'complete');
+  assert.equal(task.prescan.observationCount, 1);
+  assert.equal('observations' in task.prescan, false, 'task.prescan 不得含 observations 明细(SC-4.1/4.3)');
+  assert.ok(prompt.includes('预扫标注'), 'prompt 应声明预扫状态');
+  assert.ok(prompt.includes('共 1 条'), 'prompt 应声明观察总数');
+  assert.ok(!prompt.includes('旧注释未更新'), 'prompt 不得含 observation 明细内容(SC-4.1)');
+});
+
+test('SC-4.2: deliver-review-segment 按段现场重算附带 prescan observations,跨段不泄露', () => {
+  const f = setup({
+    rules: { prescan: { enabled: true }, reviewSegments: { sizeBudget: 1 } },
+    headFiles: { 'src/a.mjs': '// 旧注释:仍说这里返回 null\nexport function a() { return 1; }\n', 'src/b.mjs': 'export function b() { return 2; }\n' },
+  });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  assert.equal(p1.ok, true);
+  const path1 = p1.files[0].path;
+  const line1 = p1.files[0].hunks[0].addedNewLines[0];
+  const obsFile1 = join(f.work, 'obs1.json');
+  writeFileSync(obsFile1, JSON.stringify([{ file: path1, line: line1, category: PRESCAN_CATEGORIES[0], note: '第 1 段的观察' }]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', obsFile1], f);
+
+  const { json: p2 } = run(PREPARE, ['--order', '2'], f);
+  if (!p2.ok) return; // 只有一段(sizeBudget 未生效)时跳过
+  const obsFile2 = join(f.work, 'obs2.json');
+  writeFileSync(obsFile2, JSON.stringify([]));
+  run(RECORD, ['--order', '2', '--segment-id', p2.segmentId, '--observations', obsFile2], f);
+  const fin = run(RECORD, ['--finalize'], f);
+  assert.equal(fin.json.ok, true);
+  assert.equal(fin.json.observationCount, 1);
+
+  const { taskFile } = buildTask(f);
+  const { json: d1 } = deliverSegment(f, taskFile, 1);
+  assert.equal(d1.ok, true);
+  assert.equal(d1.prescanObservations.length, 1, '第 1 段投递应附带该段的 1 条观察');
+  assert.equal(d1.prescanObservations[0].note, '第 1 段的观察');
+  assert.ok(d1.payload.includes('第 1 段的观察'), 'payload 文本应含本段观察内容');
+
+  const { json: d2 } = deliverSegment(f, taskFile, 2);
+  assert.equal(d2.ok, true);
+  assert.equal(d2.prescanObservations.length, 0, '第 2 段不应看到属于第 1 段文件的观察(跨段隔离)');
+});
+
+test('SC-4.2: prescan disabled 时 deliver-review-segment 不附带 prescanObservations', () => {
+  const f = setup({ rules: {} });
+  const { taskFile } = buildTask(f);
+  const { json: d1 } = deliverSegment(f, taskFile, 1);
+  assert.equal(d1.ok, true);
+  assert.deepEqual(d1.prescanObservations, [], 'disabled 时 prescanObservations 应为空数组');
 });
