@@ -18,6 +18,11 @@
 // 首跑语义:无游标时只立游标、不回溯——缴械前的历史 loop PR 由 loop 自己合并,本就没有
 // 回执,回溯只会制造成片误告警。审计只对「缴械之后」的合并有意义。
 //
+// 窗口取全保证(F-A5-PAGINATION-CURSOR-LOSS 二审修复):游标推进的前提是本轮已通过
+// fetchAllMergedPrs 的 GraphQL 翻页确认取到窗口 [cursor, now] 内的全部 merged PR
+// 全集(hasNextPage=false)。翻页未确认取全(超过硬上限)→ 游标原地不动 + 输出
+// windowPossiblyTruncated:true,不静默漏审(见 decideCursorAfterFetch)。
+//
 // 幂等:audited 台账按 `<pr>:<mergeOid>` 记账(同一 PR 被 revert 后重新合并会有新
 // mergeOid,视为新事件再审一次)。告警**只在真送达**远端通道时才记 alerted(降级路径不算,
 // 下轮重试);revert PR 创建成功才记 revertPr。两者独立幂等,互不阻塞。
@@ -62,6 +67,66 @@ function saveAuditState(stateDir, st) {
   const tmp = `${p}.tmp-${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(st, null, 2)}\n`);
   renameSync(tmp, p); // 原子落盘(与 reconcile sidecar 同款)
+}
+
+// GraphQL search 按 cursor 翻页取「merged >= sinceDate」的全部 PR——修复原漏洞:旧实现固定
+// `gh pr list --search ... --limit 100` 单页硬顶,超出 100 条的部分既不核验也不告警、游标却
+// 照常前移到 now,永久漏审(seat②codex-adversarial R1 finding F-A5-PAGINATION-CURSOR-LOSS)。
+// GraphQL 的 pageInfo.hasNextPage 是确定性信号(不同于 REST 「返回数量==limit 就可能被截断」
+// 的启发式),翻到 hasNextPage=false 才算真正「取全」。
+const MERGED_PR_SEARCH_QUERY = `
+  query($q: String!, $after: String) {
+    search(query: $q, type: ISSUE, first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        ... on PullRequest {
+          number
+          title
+          body
+          headRefOid
+          mergeCommit { oid }
+          mergedAt
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * 拉取仓库内「merged >= sinceDate」的全部 merged PR,翻到 hasNextPage=false 才返回。
+ * fetchPage(after) 供单测注入(签名同 lib.mjs 的 fetchAllRestPages 惯例),缺省走真实
+ * ghGraphql。超过 maxPages 仍未翻完 → fail-closed 返回 null(与 fetchAllRestPages 同款
+ * 约定:null = 未确认取全,调用方不得据此推进游标)。
+ */
+export function fetchAllMergedPrs({ slug, sinceDate, fetchPage, maxPages = 20 }) {
+  const doFetch = fetchPage ?? ((after) => {
+    const vars = { q: `repo:${slug} is:pr is:merged merged:>=${sinceDate}` };
+    if (after) vars.after = after;
+    const res = ghGraphql(MERGED_PR_SEARCH_QUERY, vars);
+    return res?.data?.search ?? null;
+  });
+  const all = [];
+  let after;
+  for (let i = 0; i < maxPages; i++) {
+    const page = doFetch(after);
+    if (!page) return null;
+    for (const node of page.nodes ?? []) { if (node) all.push(node); }
+    if (!page.pageInfo?.hasNextPage) return all;
+    after = page.pageInfo.endCursor;
+    if (!after) return null; // hasNextPage 为真却给不出 endCursor,数据不自洽,fail-closed
+  }
+  return null; // 超过硬上限仍未翻完(真实场景不会发生),fail-closed,不敢说读全了
+}
+
+/**
+ * 纯函数:本轮窗口能否安全推进游标(可单测)。pages===null(未确认取全)时游标原地不动,
+ * 否则推进到 now——把「游标推进的前提是已确认取全」这条不变量从 main() 的控制流里
+ * 抽出来,避免裁决逻辑散落在 if 分支里不可单测。
+ * @returns {{cursor:string, windowPossiblyTruncated:boolean}}
+ */
+export function decideCursorAfterFetch({ pages, cursor, now }) {
+  if (pages === null) return { cursor, windowPossiblyTruncated: true };
+  return { cursor: now, windowPossiblyTruncated: false };
 }
 
 /**
@@ -153,12 +218,20 @@ async function main() {
     merged = JSON.parse(readFileSync(inputFile, 'utf8'));
   } else {
     const { slug } = parseRepo();
-    const list = ghJson([
-      'pr', 'list', '--repo', slug, '--state', 'merged', '--limit', '100',
-      '--search', `merged:>=${state.cursor.slice(0, 10)}`,
-      '--json', 'number,title,body,headRefOid,mergeCommit,mergedAt',
-    ]) ?? [];
-    merged = list.map((p) => ({
+    const pages = fetchAllMergedPrs({ slug, sinceDate: state.cursor.slice(0, 10) });
+    const { windowPossiblyTruncated } = decideCursorAfterFetch({ pages, cursor: state.cursor, now });
+    if (windowPossiblyTruncated) {
+      // fail-closed:未确认取全窗口内的全部 merged PR,游标原地不动(不落盘,维持 state.cursor
+      // 不变),本轮不做任何核验/告警/revert 判定。下一轮会重新覆盖整个 [cursor, now'] 窗口——
+      // 幂等台账按 <pr>:<mergeOid> 记账,重覆盖不会对已处理过的 PR 重复告警。
+      print({
+        ok: true, dryRun: DRY_RUN, windowFrom: state.cursor, windowTo: now,
+        audited: [], alertsSent: 0, windowPossiblyTruncated: true,
+        note: 'GraphQL 翻页超过硬上限仍未确认取全窗口内的全部 merged PR,本轮不推进游标',
+      });
+      return 0;
+    }
+    merged = pages.map((p) => ({
       number: p.number, title: p.title ?? '', body: p.body ?? '',
       headRefOid: p.headRefOid ?? null, mergeCommitOid: p.mergeCommit?.oid ?? null, mergedAt: p.mergedAt ?? null,
     }));
