@@ -10,8 +10,60 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadVendoredTypescript } from '../scripts/lib.preflight-rules.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// 第 5 轮核验 BLOCKER:两道静态门此前都是纯 regex/字符串扫描,都被实测绕过——
+//   ① stripComments 的 `[^:]` 保护(防止把 URL 里的 `//` 当注释)反而放过了
+//      "label + 行注释"这种合法 JS(`signed:// commit.gpgsign=false`,`signed:` 是
+//      标签,后面的 `//` 是真注释,但因紧跟 `:` 被误判成"URL 里的 //"不剥,残留文本
+//      骗过守卫);
+//   ② helper-import 检查只做 `line.includes(HELPER)`,把真实 import 注释掉
+//      (`// import './helpers.isolated-state-dir.mjs';`)后仍判"已 import"。
+// 两处都改用 vendored TypeScript 的 scanner/AST——字符串、模板、正则里的内容天然不会被
+// 误判成注释(scanner 理解语法),而"是不是真的 import 语句"只有解析出 ImportDeclaration
+// 节点才算,注释掉的文本根本不会出现在 AST 里。
+const { ok: TS_OK, ts: TS, error: TS_ERROR } = loadVendoredTypescript();
+
+/** 用 scanner 逐 token 扫描,把注释 token 替换成等长空白(保留换行,不挪动行号);
+ *  字符串/模板/正则字面量由 scanner 按语法整体消费,内部的 `//`/`/* ` 不会被当注释。 */
+function stripCommentsAst(text) {
+  if (!TS_OK) throw new Error(`vendored typescript 加载失败,静态守卫无法运行(fail-closed):${TS_ERROR}`);
+  const scanner = TS.createScanner(TS.ScriptTarget.Latest, false);
+  scanner.setText(text);
+  let out = '';
+  let pos = 0;
+  let tok = scanner.scan();
+  while (tok !== TS.SyntaxKind.EndOfFileToken) {
+    if (tok === TS.SyntaxKind.SingleLineCommentTrivia || tok === TS.SyntaxKind.MultiLineCommentTrivia) {
+      const start = scanner.getTokenPos();
+      const end = scanner.getTextPos();
+      out += text.slice(pos, start);
+      out += text.slice(start, end).replace(/[^\n]/g, ' ');
+      pos = end;
+    }
+    tok = scanner.scan();
+  }
+  out += text.slice(pos);
+  return out;
+}
+
+/** 解析文件的顶层 `import ... from '<specifier>'` 语句(真实 AST 节点,注释掉的文本
+ *  不会出现在这里)。返回 `{ specifier, names, line }[]`,`names` 是具名导入的标识名。 */
+function parseImports(text) {
+  if (!TS_OK) throw new Error(`vendored typescript 加载失败,静态守卫无法运行(fail-closed):${TS_ERROR}`);
+  const sf = TS.createSourceFile('hygiene-check.mjs', text, TS.ScriptTarget.Latest, true, TS.ScriptKind.JS);
+  const out = [];
+  for (const stmt of sf.statements) {
+    if (!TS.isImportDeclaration(stmt) || !TS.isStringLiteralLike(stmt.moduleSpecifier)) continue;
+    const nb = stmt.importClause?.namedBindings;
+    const names = nb && TS.isNamedImports(nb) ? nb.elements.map((el) => el.name.text) : [];
+    const line = sf.getLineAndCharacterOfPosition(stmt.getStart(sf)).line + 1;
+    out.push({ specifier: stmt.moduleSpecifier.text, names, line });
+  }
+  return out;
+}
 
 const tracked = () => {
   const r = spawnSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -22,12 +74,6 @@ const tracked = () => {
 // vendor/ 是上游 verbatim 字节,按 .gitattributes 豁免;二进制资产也不参与文本检查
 const isCheckedText = (p) => !p.startsWith('vendor/')
   && /\.(mjs|js|cjs|ts|tsx|json|md|ya?ml)$/i.test(p);
-
-/** 剥掉块注释与行注释(`https://` 里的 `//` 不当行注释)。静态守卫必须扫**代码**,
- *  否则"删掉实现只留注释"就能骗过守卫(第 4 轮核验点名)。 */
-const stripComments = (text) => text
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
 test('R0 卫生:tracked 文本文件不得含真 NUL 字节(否则 git 判 binary,丢 diff/review 能力)', () => {
   const files = tracked();
@@ -75,9 +121,10 @@ test('R0 可移植性:任何**创建 git 提交**的测试文件都必须显式�
       || /spawnSync\(\s*'git'[\s\S]{0,200}?'commit'/.test(text)
       || /'commit',\s*'-q'/.test(text);
     // 只认真正的**关闭形态**:`-c commit.gpgsign=false` 或 `git config commit.gpgsign false`。
-    // 第 4 轮核验:上一版直接扫原始文本,于是注释里提一句 `commit.gpgsign=false` 就能骗过
-    // 守卫——与本注释自己的声明矛盾。先剥掉注释再匹配。
-    const code = stripComments(text);
+    // 第 5 轮核验 BLOCKER:regex 版 stripComments 的 `[^:]` 保护被"label + 行注释"绕过
+    // (`signed:// commit.gpgsign=false` 是合法 JS,`:` 后的 `//` 仍是真注释,但规则误判成
+    // "URL 里的 //" 不剥,残留文本骗过守卫)。改用 AST scanner 剥注释,语法层面消歧。
+    const code = stripCommentsAst(text);
     const hasSeam = code.includes('commit.gpgsign=false')
       || /'commit\.gpgsign',\s*'false'/.test(code);
     if (createsCommits && !hasSeam) bad.push(f);
@@ -89,20 +136,26 @@ test('R0 隔离:在本进程内写持久状态的测试文件必须先 import �
   // 第 4 轮核验 R0:两份默认全量测试并发跑时,共享真实 STATE_DIR + 固定 PR 号会让彼此的
   // resetPr() 互删状态(实测 431/432)。helper 给每个测试进程一个私有目录,但它**必须**排在
   // lib.mjs / convergence-state.mjs 的静态导入之前(STATE_DIR 在模块加载期即定死)。
+  //
+  // 第 5 轮核验 BLOCKER:上一版用 `line.includes(HELPER)` 裸文本匹配,把真实 import 整行
+  // 注释掉(`// import './helpers.isolated-state-dir.mjs';`)后仍判"已 import"。改用真实
+  // AST:解析出 ImportDeclaration 节点,注释掉的文本根本不出现在语句列表里。
   const dir = join(ROOT, 'tests');
-  const HELPER = './helpers.isolated-state-dir.mjs';
-  const WRITERS = /\b(writeReviewReceipt|recordConvergenceRound|markNotified|recordNotificationAttempt)\b/;
+  const HELPER_SPEC = './helpers.isolated-state-dir.mjs';
+  const WRITERS = /^(writeReviewReceipt|recordConvergenceRound|markNotified|recordNotificationAttempt)$/;
   const bad = [];
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.test.mjs'))) {
-    const lines = readFileSync(join(dir, f), 'utf8').split('\n');
-    // 只看**静态导入清单里真的带写函数**的文件(仅在注释/子进程 env 里提到不算)
-    const stateImports = [...lines.join('\n').matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\.\/scripts\/(?:lib|convergence-state)\.mjs'/g)];
-    if (!stateImports.some((m) => WRITERS.test(m[1]))) continue;
-    // 多行 import 的 `from` 行永远晚于语句起点,所以拿 `from` 行当锚点是安全的下界
-    const libLine = lines.findIndex((l) => /from '\.\.\/scripts\/(?:lib|convergence-state)\.mjs'/.test(l));
-    const helperLine = lines.findIndex((l) => l.includes(HELPER));
-    if (helperLine < 0) bad.push(`${f}(未 import ${HELPER})`);
-    else if (helperLine > libLine) bad.push(`${f}(helper 在第 ${helperLine + 1} 行,晚于 scripts 导入的第 ${libLine + 1} 行——env 改晚了没用)`);
+    const text = readFileSync(join(dir, f), 'utf8');
+    const imports = parseImports(text);
+    // 只看**真实 AST 导入清单里真的带写函数**的语句(注释/子进程 env 里提到不算)
+    const stateImport = imports.find((i) => /^\.\.\/scripts\/(?:lib|convergence-state)\.mjs$/.test(i.specifier)
+      && i.names.some((n) => WRITERS.test(n)));
+    if (!stateImport) continue;
+    const helperImport = imports.find((i) => i.specifier === HELPER_SPEC);
+    if (!helperImport) bad.push(`${f}(未 import ${HELPER_SPEC})`);
+    else if (helperImport.line > stateImport.line) {
+      bad.push(`${f}(helper 在第 ${helperImport.line} 行,晚于 scripts 导入的第 ${stateImport.line} 行——env 改晚了没用)`);
+    }
   }
   assert.deepEqual(bad, [], bad.join('; '));
 });

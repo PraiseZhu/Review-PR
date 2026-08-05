@@ -42,7 +42,18 @@ function resolvePromotionTarget({ promotion, ruleId, profileId, checkId, reason 
     return reason ? { ok: true, target: { kind: 'recorded-only', reason } } : { ok: false, error: 'recorded-only 必须带 --reason' };
   }
   if (promotion === 'pending') return { ok: true, target: null };
-  // landed:逐项核验目标存在
+  // landed:逐项核验目标存在。
+  // 第 5 轮核验 BLOCKER:此前 `if (ruleId) { ...; return ... }` 在分支选择前不做任何互斥
+  // 校验——同时给 `--promote-rule <合法规则> --promote-profile test-infra`(不带
+  // --promote-check)时,ruleId 分支直接命中并 return,profileId 被静默忽略,exit 0
+  // 成功登记。两个目标类型互斥,且 profile 目标缺 checkId 必须在**选分支之前**拒绝,
+  // 不能指望"进了 profile 分支才检查"——因为可能永远进不了那个分支。
+  if (ruleId && profileId) {
+    return { ok: false, error: '--promote-rule 与 --promote-profile 不能同时指定(landed 目标只能是其一,不得静默忽略另一个)' };
+  }
+  if (profileId && !checkId) {
+    return { ok: false, error: '--promote-profile 必须搭配 --promote-check <checkId>(landed 必须指到具体必答项)' };
+  }
   if (ruleId) {
     const r = BUILTIN_RULES.find((x) => x.ruleId === ruleId);
     if (!r) return { ok: false, error: `--promote-rule ${ruleId} 在规则注册表里不存在,不能标 landed` };
@@ -51,9 +62,6 @@ function resolvePromotionTarget({ promotion, ruleId, profileId, checkId, reason 
   if (profileId) {
     const p = BUILTIN_PROFILES.find((x) => x.id === profileId);
     if (!p) return { ok: false, error: `--promote-profile ${profileId} 不存在,不能标 landed` };
-    // 第 4 轮核验:--promote-check 必填(与 schema 同步)——只指向整个 profile 不能证明
-    // 具体必答项已落地。
-    if (!checkId) return { ok: false, error: `--promote-profile 必须搭配 --promote-check <checkId>(landed 必须指到具体必答项)` };
     if (!p.mandatoryChecks.some((c) => c.id === checkId)) {
       return { ok: false, error: `--promote-check ${checkId} 不在 profile ${profileId} 的必答项里,不能标 landed` };
     }

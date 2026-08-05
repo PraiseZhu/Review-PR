@@ -30,13 +30,17 @@ const E2E = `export async function w(page) {
 }
 `;
 
-function setup({ rules = {}, headFiles } = {}) {
+function setup({ rules = {}, headFiles, baseFiles } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'brt-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
   git(['init', '-q', '-b', 'main'], repo);
   git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
   writeFileSync(join(repo, 'README.md'), '# x\n');
+  for (const [p, c] of Object.entries(baseFiles ?? {})) {
+    mkdirSync(dirname(join(repo, p)), { recursive: true });
+    writeFileSync(join(repo, p), c);
+  }
   git(['add', '-A'], repo);
   git(['commit', '-q', '-m', 'base'], repo);
   const base = git(['rev-parse', 'HEAD'], repo);
@@ -292,4 +296,47 @@ test('R7 第 2 轮核验 BLOCKER:逃逸候选数据源必需且绑定——取�
   assert.equal(withIssue.task.relatedIssueCount, 1);
   assert.equal(withIssue.task.escapeCandidates.length, 1, '关联 issue 里的引用也必须进候选');
   assert.equal(withIssue.task.escapeCandidates[0].kind, 'issue-reference');
+});
+
+test('R4 第 5 轮核验 BLOCKER:单文件多 hunk 跨段时,profile 必答项只能有一个 owner 段(不得重复投递)', () => {
+  // 单个 e2e 文件里放两处 waitForFunction,且两处改动隔开 > 3 行上下文,使 git diff
+  // 产出**两个独立 hunk**(同一 fileId,两个不同 hunkId);sizeBudget=1 强制切成 ≥2 段——
+  // 若必答项按"本段是否含该 fileId 的任意 key"过滤,会在两段里各投一遍。
+  const pad = (n) => Array.from({ length: n }, (_, i) => `const pad${i} = ${i};`).join('\n');
+  const before = `export async function w1(page) {
+  // TODO w1
+}
+
+${pad(8)}
+
+export async function w2(page) {
+  // TODO w2
+}
+`;
+  const after = before
+    .replace('  // TODO w1', "  await page.waitForFunction(() => document.readyState === 'complete');")
+    .replace('  // TODO w2', "  await page.waitForFunction(() => document.title !== '');");
+  const f = setup({
+    rules: { reviewSegments: { sizeBudget: 1 } },
+    baseFiles: { 'scripts/e2e/multi.mjs': before },
+    headFiles: { 'scripts/e2e/multi.mjs': after },
+  });
+  const { task } = run(f);
+  assert.ok(task.segments.length >= 2, `需要至少 2 段才能复现跨段:${task.segments.length}`);
+  assert.ok(task.requiredProfileAnswerCount > 0, '前提:e2e 文件必须产生必答项');
+  const delivered = [];
+  for (let i = 1; i <= task.segments.length; i += 1) {
+    const r = spawnSync('node', [DELIVER, '469', '--task', f.lastTaskFile, '--base', f.base, '--head', f.head, '--order', String(i)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    delivered.push(JSON.parse(r.stdout));
+  }
+  const allProfileReqs = delivered.flatMap((d) => d.profileRequirements ?? []);
+  assert.equal(allProfileReqs.length, task.requiredProfileAnswerCount,
+    `必答项总投递数(${allProfileReqs.length})必须恰好等于 task 声明的计数(${task.requiredProfileAnswerCount})——不得因同文件跨段而重复投递`);
+  const seen = new Set();
+  for (const r of allProfileReqs) {
+    const key = `${r.profileId}:${r.fileId}:${r.checkId}`;
+    assert.ok(!seen.has(key), `必答项 ${key} 被投递了多次`);
+    seen.add(key);
+  }
 });

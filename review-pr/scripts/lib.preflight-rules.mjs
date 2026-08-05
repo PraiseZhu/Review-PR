@@ -370,6 +370,10 @@ export function oracleCallRanges(ts, { path, text }) {
       && ASSERT_MODULES.test(node.moduleSpecifier.text)) {
       const nb = node.importClause?.namedBindings;
       if (nb && ts.isNamedImports(nb)) for (const el of nb.elements) assertNames.add(el.name.text);
+      // 第 5 轮核验:namespace import(`import * as a from 'node:assert/strict'`)漏收——
+      // `a` 就是整个 assert 模块本身,`a.deepEqual(...)` 必须能命中,与 default import
+      // 走同一个集合(default import 名同样即"整个模块",两者语义相同)。
+      if (nb && ts.isNamespaceImport?.(nb)) assertNames.add(nb.name.text);
       if (node.importClause?.name) assertNames.add(node.importClause.name.text); // default import
     }
     ts.forEachChild(node, collectImports);
@@ -397,20 +401,35 @@ export function oracleCallRanges(ts, { path, text }) {
       return;
     }
   };
+  // 成员名 + 被访问的基础表达式,PropertyAccess(`.toEqual`)与 ElementAccess(字符串字面量
+  // 下标 `['toEqual']`)统一处理(第 5 轮核验 BLOCKER:上一版只认 PropertyAccessExpression,
+  // `expect(actual)['toEqual']({...})` 的外层调用完全不落入任何分支——既不分类,也不
+  // markCalleeChain 抑制内层——于是只剩内层 `expect(actual)` 的短范围,多行 matcher 的
+  // 远端参数行改动与断言范围不相交,required 仍可能凭空为 0)。
+  const memberOf = (n) => {
+    if (ts.isPropertyAccessExpression(n)) return { name: n.name.text, base: n.expression };
+    if (ts.isElementAccessExpression(n) && n.argumentExpression && ts.isStringLiteralLike(n.argumentExpression)) {
+      return { name: n.argumentExpression.text, base: n.expression };
+    }
+    return null;
+  };
   const visit = (node) => {
     if (ts.isCallExpression(node) && !suppressed.has(node)) {
       const callee = unwrapExpression(ts, node.expression);
       if (ts.isIdentifier(callee)) {
         if (isAssertName(callee.text)) push('assert', node);
         else if (GUARD_NAME_RE.test(callee.text)) push('guard', node);
-      } else if (ts.isPropertyAccessExpression(callee)) {
-        const prop = callee.name.text;
-        const names = chainNames(ts, callee.expression);
-        const root = names.length > 0 ? names[names.length - 1] : null;
-        if (WAIT_MEMBER_RE.test(prop)) push('wait', node);
-        else if (names.some(isAssertName)) { push('assert', node); markCalleeChain(node); }
-        else if (root === 'process' && GUARD_MEMBER_RE.test(prop)) push('guard', node);
-        else if (GUARD_NAME_RE.test(prop)) push('guard', node);
+      } else {
+        const mem = memberOf(callee);
+        if (mem) {
+          const { name: prop, base } = mem;
+          const names = chainNames(ts, base);
+          const root = names.length > 0 ? names[names.length - 1] : null;
+          if (WAIT_MEMBER_RE.test(prop)) push('wait', node);
+          else if (names.some(isAssertName)) { push('assert', node); markCalleeChain(node); }
+          else if (root === 'process' && GUARD_MEMBER_RE.test(prop)) push('guard', node);
+          else if (GUARD_NAME_RE.test(prop)) push('guard', node);
+        }
       }
     }
     // 退出码/返回码的**消费**(`r.exitCode !== 0`、`if (r.status)`):按属性访问所在语句算 guard

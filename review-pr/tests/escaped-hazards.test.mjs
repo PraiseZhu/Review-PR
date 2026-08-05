@@ -305,6 +305,13 @@ test('R7 landed 目标存在性:CLI 拒绝指向不存在的 rule/profile/check;
   const noCheck = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-profile', 'test-infra'], { cwd: dir, env, encoding: 'utf8' });
   assert.notEqual(noCheck.status, 0, 'landed 只指向整个 profile 不能证明具体必答项已落地');
   assert.match(noCheck.stdout + noCheck.stderr, /promote-check/);
+  // 第 5 轮核验 BLOCKER:--promote-rule 与 --promote-profile 同时给出(profile 缺 --promote-check)
+  // 此前 ruleId 分支先命中直接 return,profileId 被静默忽略,exit 0 成功登记。
+  const both = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-rule', REAL_RULE, '--promote-profile', 'test-infra'], { cwd: dir, env, encoding: 'utf8' });
+  assert.notEqual(both.status, 0, '同时给两种目标类型必须拒绝,不能静默忽略其一');
+  assert.match(both.stdout + both.stderr, /不能同时指定|互斥/);
+  const bothWithCheck = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-rule', REAL_RULE, '--promote-profile', 'test-infra', '--promote-check', 'could-be-always-green'], { cwd: dir, env, encoding: 'utf8' });
+  assert.notEqual(bothWithCheck.status, 0, '即使 profile 目标带了合法 checkId,两种目标类型同时出现仍必须拒绝');
   const recordedNoReason = spawnSync('node', [CLI, ...base, '--promotion', 'recorded-only'], { cwd: dir, env, encoding: 'utf8' });
   assert.notEqual(recordedNoReason.status, 0, 'recorded-only 必须带理由');
   const ok = spawnSync('node', [CLI, ...base, '--promotion', 'landed', '--promote-rule', REAL_RULE], { cwd: dir, env, encoding: 'utf8' });

@@ -85,9 +85,22 @@ try {
   });
   // 本段涉及的 profile 必答项与 required 负向证据(第 4 轮核验:这两组的 fileId/hunkId
   // 已从 task/prompt 撤出,唯一出口在这里,跟着它们所属的 key 分段给)。
-  const segFileIds = new Set(seg.assignedCoverageKeys.map((k) => k.fileId));
+  //
+  // 第 5 轮核验 BLOCKER:profile 必答项按 **fileId** 归属(不像负向证据按 hunkId),而单个
+  // 文件的多个 hunk 可能被切进不同段——若直接按"本段是否含该 fileId 的任意 key"过滤,
+  // 同一条必答项会在该文件涉及的**每一段**里都重复投递一次(实测:单文件双 hunk、
+  // sizeBudget=1 时两段各投 7 条、重复 7 条)。改为给每个 fileId 指定**唯一 owner
+  // segment**——按全量 segments 的顺序,取该 fileId 第一次出现的段 order,只在那一段
+  // 投递该文件的必答项。这一步用**全量** segments(不是本段的 assignedCoverageKeys)
+  // 计算,保证与调用顺序无关、任何一段单独投递都能算出同一个 owner。
+  const fileOwnerOrder = new Map();
+  for (const s of segments) {
+    for (const k of s.assignedCoverageKeys) {
+      if (!fileOwnerOrder.has(k.fileId)) fileOwnerOrder.set(k.fileId, s.order);
+    }
+  }
   const segHunkKeys = new Set(seg.assignedCoverageKeys.filter((k) => k.kind === 'hunk').map((k) => `${k.fileId}:${k.hunkId}`));
-  const profileRequirements = auth.requiredProfileAnswers.filter((x) => segFileIds.has(x.fileId));
+  const profileRequirements = auth.requiredProfileAnswers.filter((x) => fileOwnerOrder.get(x.fileId) === seg.order);
   const negativeRequirements = auth.requiredNegativeEvidenceKeys.filter((x) => segHunkKeys.has(`${x.fileId}:${x.hunkId}`));
   const payload = [
     `## 覆盖分段 ${seg.segmentId}(投递序号 ${seg.order} / 共 ${segments.length} 段)`,

@@ -380,3 +380,29 @@ test('R4 第 4 轮核验:内容承诺绑定**内容**而非数量——同数量
   assert.notEqual(profileAnswersCommitment(profA), profileAnswersCommitment(profB));
   assert.equal(profileAnswersCommitment(profA), profileAnswersCommitment([...profA]));
 });
+
+test('R6 第 5 轮核验 BLOCKER:namespace import(import * as a from node:assert/strict)之后 a.deepEqual(...) 也是断言', () => {
+  const before = `import * as a from 'node:assert/strict';
+export const t = () => a.deepEqual(1, 1);
+`;
+  const after = `import * as a from 'node:assert/strict';
+export const t = () => a.deepEqual(1, 2);
+`;
+  const { required } = requiredFor({ 'tests/ns.test.mjs': before }, { 'tests/ns.test.mjs': after });
+  assert.ok(required.length > 0, '修前实测 required=[](namespace import 别名不在断言根名单里)');
+});
+
+test('R6 第 5 轮核验 BLOCKER:expect(actual)["toEqual"]({...}) 只改远端参数行 → 仍必须要求证据(ElementAccess matcher)', () => {
+  const before = `import { expect } from 'vitest';
+export function check(actual) {
+  expect(actual)['toEqual']({
+    a: 1,
+    b: 2,
+  });
+}
+`;
+  const after = before.replace('b: 2', 'b: 3');
+  const { required } = requiredFor({ 'tests/elem.test.mjs': before }, { 'tests/elem.test.mjs': after });
+  assert.ok(required.length > 0,
+    '修前实测 required=[]:外层 ElementAccess 调用不落入任何分类分支,也不 markCalleeChain,只剩内层 expect(actual) 的短范围');
+});
