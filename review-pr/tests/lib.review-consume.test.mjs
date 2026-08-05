@@ -61,6 +61,11 @@ test('profileAnswers:闭集/重复/checked-clean 缺 hunkId/finding 本地引用
   assert.ok(ok(base({ profileAnswers: dup })).errors.some((e) => e.includes('重复作答')));
 });
 
+test('findingDispositions:模型不得产出 accepted-risk(只走交互通道)', () => {
+  const r = ok(base({ findingDispositions: [{ findingId: 'fid-a', disposition: 'accepted-risk' }] }), { injectedOpenIds: ['fid-a'] });
+  assert.equal(r.ok, false);
+});
+
 test('findingDispositions:只认注入的 open ID;resolved 需证据;invalidated 需依据;重复拒', () => {
   const d = (over) => ({ findingId: 'fid-a', disposition: 'resolved', evidence: 'diff 锚点', ...over });
   assert.equal(ok(base({ findingDispositions: [d()] }), { injectedOpenIds: ['fid-a'] }).ok, true);
