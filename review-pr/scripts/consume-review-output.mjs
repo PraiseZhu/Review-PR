@@ -2,75 +2,120 @@
 // consume-review-output.mjs — 审查输出的唯一消费与裁决出口(SC-R1b,2026-08-05 SC v4)。
 //
 // 职责链:读取审查 agent 的 rro-1 JSON → 重建 DiffSnapshot(SC-R8,immutable objects)
-// → 校验契约(SC-R1a)→ 应用并验真 disposition 到 findings ledger(SC-R5,单一写者)
-// → 外部对账(task 文件给的覆盖 keys / 必答 / required 负向证据 keys / snapshotHash)
-// → 机器派生 verdict → 写回执:
+// → **从 snapshot 权威重算**覆盖/分片/必答/required 负向证据(SC-R1a 第 2 轮核验:task
+// 文件是可编辑的普通 JSON,不能当权威;重算值与 task 声明值不符即 taskInvalid)
+// → 校验契约(SC-R1a)→ 核对分段投递台账(SC-R4)→ 应用并验真 disposition 到 findings
+// ledger(SC-R5,单一写者)→ 机器派生 verdict → 写回执:
 //   - clean:唯一入口在这里(write-review-receipt CLI 已禁 clean),回执带五项绑定
 //     {source, schemaVersion, outputHash, snapshotHash, ledgerHash};
 //   - dirty / invalid:写 non-clean 回执**覆盖撤销**同 snapshot 旧 clean(last-write-wins);
 //   - invalid 不落任何 ledger 变更(输出不可信),只记 retry 计数;同 snapshot 连续
 //     3 次非法 → blocked(初次+2 次修复重试,SC 共识裁决)。
 //
+// **所有**输入级失败(缺 --output / 缺或坏 --task / snapshot 建不起来 / ledger 不可读)
+// 都走统一 bail:写 non-clean 回执(撤销同 snapshot 旧 clean)+ 记 retry,再退出 2。
+// 第 2 轮核验 BLOCKER:此前这些路径是提前 return,旧 clean 回执被完整保留,pre-merge
+// 后续照样接受——"缺 task 就当没跑过"变成了"缺 task 就沿用上次的清白"。
+//
 // 用法:
 //   node consume-review-output.mjs <PR> --output <rro-1.json> --mode auto|interactive \
-//     --base <baseRefOid> --head <headRefOid> [--task <task.json>] [--preflight <pf.json>] \
+//     --base <baseRefOid> --head <headRefOid> --task <task.json> [--preflight <pf.json>] \
 //     [--confirm <confirm.json>]
+//   (--task 必需:没有它就无法对账覆盖/必答/负向证据)
 // 退出码:0 = verdict clean;2 = dirty/invalid/blocked(JSON 里带原因);1 = 脚本自身错误。
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import process from 'node:process';
-import { parsePR, print, fail, REPO_ROOT, STATE_DIR, writeReviewReceipt, stateFile, writeJsonAtomic } from './lib.mjs';
+import { parsePR, print, fail, REPO_ROOT, STATE_DIR, loadRules, writeReviewReceipt, stateFile, writeJsonAtomic, ghJson } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { validateReviewOutput, deriveVerdict, REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
+import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAnswerKeyStr, negativeKeyStr } from './lib.review-requirements.mjs';
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
+import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
 import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint } from './lib.escaped-hazards.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const setEq = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 
+/** retry 记账(同 snapshot 维度;snapshot 漂移即重置)。 */
+function bumpAttempts(pr, snapshotHash, invalid) {
+  const attemptsFile = stateFile(`review-attempts-${pr}.json`);
+  let attempts = { snapshotHash, count: 0 };
+  try { const a = JSON.parse(readFileSync(attemptsFile, 'utf8')); if (a.snapshotHash === snapshotHash) attempts = a; } catch { /* 首次 */ }
+  if (invalid) attempts.count += 1; else attempts.count = 0;
+  attempts.snapshotHash = snapshotHash;
+  writeJsonAtomic(attemptsFile, attempts);
+  return attempts;
+}
+
 try {
   const pr = parsePR(process.argv[2]);
   const mode = argOf('--mode');
   if (mode !== 'auto' && mode !== 'interactive') fail(new Error('缺 --mode auto|interactive'));
-  const outputFile = argOf('--output');
   const baseRefOid = (argOf('--base') ?? '').toLowerCase();
   const headRefOid = (argOf('--head') ?? '').toLowerCase();
-  if (!outputFile || !existsSync(outputFile)) fail(new Error('缺 --output <rro-1.json>'));
 
-  // ── DiffSnapshot 重建(fail-closed:不完整时本轮只能 invalid,绝不放行)──
-  const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid: headRefOid });
+  // ── DiffSnapshot 重建(建不起来也要落 non-clean 回执:撤销旧 clean 是本脚本的义务)──
+  let snapshot = { complete: false, snapshotHash: null, reason: '未构建', files: [], rawPatch: '' };
+  let snapshotThrew = null;
+  try {
+    snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid: headRefOid });
+  } catch (e) { snapshotThrew = String(e.message ?? e); }
 
-  // ── ledger 加载(损坏 → blocked,连回执都不写:ledgerHash 算不出,fail-closed)──
+  /** 统一 bail:任何输入级失败都在这里落 non-clean 回执 + 记 retry,再退出 2。 */
+  const bail = (verdict, reasons) => {
+    const snapshotHash = snapshot.snapshotHash ?? 'snapshot-incomplete';
+    const attempts = bumpAttempts(pr, snapshotHash, true);
+    writeReviewReceipt({
+      pr, headRefOid, verdict: 'dirty', p0p1Count: 0,
+      bindings: {
+        source: 'consume-review-output', schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
+        outputHash: null, snapshotHash, ledgerHash: null, reason: verdict,
+      },
+    });
+    print({
+      ok: false, pr, mode, verdict, reasons, blocked: attempts.count >= 3, attempts: attempts.count,
+      snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
+      note: '已写 non-clean 回执覆盖撤销同 snapshot 的旧 clean(输入级失败不得沿用上次的清白)',
+    });
+    process.exit(2);
+  };
+
+  const outputFile = argOf('--output');
+  if (!outputFile || !existsSync(outputFile)) bail('invalid', ['缺 --output <rro-1.json>']);
+  if (snapshotThrew) bail('invalid', [`DiffSnapshot 构建失败:${snapshotThrew}(fail-closed)`]);
+
+  // ── ledger 加载(损坏 → blocked;仍然写 non-clean 回执)──
   const ledgerFile = ledgerPathFor(STATE_DIR, pr);
   const ledger = loadLedger(ledgerFile);
-  if (!ledger.ok) {
-    print({ ok: false, pr, verdict: 'blocked', reasons: [`findings ledger 不可读:${ledger.error}(fail-closed,人工修复后重试)`] });
-    process.exit(2);
-  }
+  if (!ledger.ok) bail('blocked', [`findings ledger 不可读:${ledger.error}(fail-closed,人工修复后重试)`]);
 
-  // ── task 文件(build-review-task 产物)**必需**(SC-R1a 复审 BLOCKER:可省略时
-  // coverage/必答/required 负向证据全部跳过且能 clean——等于所有对账形同虚设)。
-  // 它还必须绑定当前 snapshot:task 是上一步按某个 snapshot 构建的,head/base 变了就作废。
+  // ── task 文件**必需**;且只作"审查方看到的副本",权威集合由本脚本重算 ──
   const taskFile = argOf('--task');
   if (!taskFile || !existsSync(taskFile)) {
-    print({ ok: false, pr, verdict: 'invalid', reasons: ['缺 --task <task.json>(build-review-task 产物)——没有它就无法对账覆盖/必答/负向证据,fail-closed'] });
-    process.exit(2);
+    bail('invalid', ['缺 --task <task.json>(build-review-task 产物)——没有它就无法对账覆盖/必答/负向证据,fail-closed']);
   }
   let task = null;
+  try { task = readJson(taskFile); } catch (e) { bail('invalid', [`task 文件不可读:${e.message}`]); }
+
+  // ── 权威重算(SC-R1a 第 2 轮核验 BLOCKER)──
+  const rules = loadRules();
+  const auth = computeReviewRequirements({ repoRoot: REPO_ROOT, snapshot, rules });
+
   const taskErrors = [];
-  try { task = readJson(taskFile); } catch (e) { taskErrors.push(`task 文件不可读:${e.message}`); }
-  if (task) {
-    if (task.schemaVersion !== REVIEW_OUTPUT_SCHEMA_VERSION) taskErrors.push(`task.schemaVersion 不符(需 ${REVIEW_OUTPUT_SCHEMA_VERSION})`);
-    if (task.snapshotComplete !== true) taskErrors.push('task.snapshotComplete!==true(构建时快照就不完整)');
-    if (task.snapshotHash !== snapshot.snapshotHash) taskErrors.push(`task.snapshotHash 与当前 snapshot 不一致(task=${task.snapshotHash},当前=${snapshot.snapshotHash})——head/base 变过,需重建 task`);
-    if (task.ledgerReadable !== true) taskErrors.push('task.ledgerReadable!==true');
-    for (const k of ['injectedOpenIds', 'coverageKeys', 'segments', 'requiredProfileAnswers', 'requiredNegativeEvidenceKeys']) {
-      if (!Array.isArray(task[k])) taskErrors.push(`task.${k} 缺失或非数组`);
-    }
-    if (task.hazardsIncomplete === true) taskErrors.push('task.hazardsIncomplete=true(known hazards 加载失败,不得据"无 hazard"放行)');
-  }
-  const injectedOpenIds = Array.isArray(task?.injectedOpenIds) ? task.injectedOpenIds : [];
+  if (task.schemaVersion !== REVIEW_OUTPUT_SCHEMA_VERSION) taskErrors.push(`task.schemaVersion 不符(需 ${REVIEW_OUTPUT_SCHEMA_VERSION})`);
+  if (task.snapshotComplete !== true) taskErrors.push('task.snapshotComplete!==true(构建时快照就不完整)');
+  if (task.snapshotHash !== snapshot.snapshotHash) taskErrors.push(`task.snapshotHash 与当前 snapshot 不一致(task=${task.snapshotHash},当前=${snapshot.snapshotHash})——head/base 变过,需重建 task`);
+  if (task.ledgerReadable !== true) taskErrors.push('task.ledgerReadable!==true');
+  if (task.hazardsIncomplete === true) taskErrors.push('task.hazardsIncomplete=true(known hazards 加载失败,不得据"无 hazard"放行)');
+  if (task.escapeSourceIncomplete === true) taskErrors.push(`task.escapeSourceIncomplete=true(逃逸候选数据源缺失:${(task.escapeSourceErrors ?? []).join(';')})`);
+  if (!Array.isArray(task.injectedOpenIds)) taskErrors.push('task.injectedOpenIds 缺失或非数组');
+  if (!Array.isArray(task.escapeCandidates)) taskErrors.push('task.escapeCandidates 缺失或非数组');
+  // 重算 vs 声明:清空/篡改 task 的四组集合再也换不来 clean
+  taskErrors.push(...diffRequirements(auth, task));
+
+  const injectedOpenIds = Array.isArray(task.injectedOpenIds) ? task.injectedOpenIds : [];
 
   // ── 输出解析 + 契约校验 ──
   const rawOutput = readFileSync(outputFile, 'utf8');
@@ -84,82 +129,81 @@ try {
     output = {};
   }
 
-  // ── preflight 结果(SC-R2 产物;缺文件 = 本轮没跑 preflight → 按不完整处理,fail-closed)──
+  // ── preflight 结果(SC-R2 产物;缺文件 = 本轮没跑 preflight → fail-closed)──
   const preflightFile = argOf('--preflight');
   const preflight = preflightFile && existsSync(preflightFile) ? readJson(preflightFile) : null;
   const preflightIncomplete = !preflight || preflight.complete !== true || preflight.snapshotHash !== snapshot.snapshotHash;
 
-  // ── 外部对账 flags ──
+  // ── 外部对账 flags(一律拿**重算值**做基准)──
   const flags = { preflightIncomplete };
   if (taskErrors.length > 0) flags.taskInvalid = true;
   if (!snapshot.complete) flags.snapshotMismatch = true;
-  if (task?.snapshotHash && task.snapshotHash !== snapshot.snapshotHash) flags.snapshotMismatch = true;
-  if (task?.profileConfigIncomplete === true) flags.profileConfigIncomplete = true;
-  if (task?.classifierIncomplete === true) flags.classifierIncomplete = true;
-  // 覆盖对账(SC-R4):逐 segment 精确集合相等 + 并集 === 全集;coverage key 序列化为
-  // "hunk:<fileId>:<hunkId>" / "file:<fileId>"
-  const keyStr = (k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`);
-  // 当前 snapshot 的合法 hunk 集(SC-R3 复审:checked-clean 只验 hunkId 非空 → stale/
-  // 编造的 hunkId 也能满足必答;这里给出权威可引用集合)
+  if (task.snapshotHash && task.snapshotHash !== snapshot.snapshotHash) flags.snapshotMismatch = true;
+  if (auth.configIncomplete) flags.profileConfigIncomplete = true;
+  if (auth.classifier.incomplete) flags.classifierIncomplete = true;
+
+  // 当前 snapshot 的合法 hunk 集(checked-clean 锚点必须真存在)
   const validHunkByFile = new Map();
   for (const f of snapshot.files ?? []) validHunkByFile.set(f.fileId, new Set((f.hunks ?? []).map((h) => h.hunkId)));
-  if (Array.isArray(task?.segments)) {
-    const claimedBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, new Set((s.coverageKeys ?? []).map(keyStr))]));
-    let okAll = (output.segmentReceipts ?? []).length === task.segments.length;
+
+  // 分段投递台账核对(SC-R4 第 2 轮核验 BLOCKER:此前唯一"顺序"凭据是模型自报)
+  const delivery = loadDeliveries(deliveryPathFor(STATE_DIR, pr));
+  const deliveryReasons = reconcileDeliveries({
+    loaded: delivery, snapshotHash: snapshot.snapshotHash,
+    segments: auth.segments, receipts: output.segmentReceipts ?? [],
+  });
+  if (deliveryReasons.length > 0) flags.segmentsNotDelivered = true;
+
+  // 覆盖对账(SC-R4):逐 segment 精确集合相等 + 并集 === 全集
+  {
+    const claimedBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, new Set((s.coverageKeys ?? []).map(coverageKeyStr))]));
     const orderBySeg = new Map((output.segmentReceipts ?? []).map((s) => [s.segmentId, s.receivedOrder]));
+    let okAll = (output.segmentReceipts ?? []).length === auth.segments.length;
     const union = new Set();
-    for (const seg of task.segments) {
-      const want = new Set(seg.assignedCoverageKeys.map(keyStr));
+    for (const seg of auth.segments) {
+      const want = new Set(seg.assignedCoverageKeys.map(coverageKeyStr));
       const got = claimedBySeg.get(seg.segmentId);
       if (!got || !setEq(want, got)) { okAll = false; break; }
-      // 顺序投递协议(SC-R4):回执必须自报与 task 一致的投递序号——缺段/乱序/未投递却
-      // 声称覆盖都在这里被拒(单纯"最终集合相等"区分不出是否真的分段审过)。
-      if (seg.order !== undefined && orderBySeg.get(seg.segmentId) !== seg.order) { okAll = false; flags.segmentOrderMismatch = true; break; }
+      if (orderBySeg.get(seg.segmentId) !== seg.order) { okAll = false; flags.segmentOrderMismatch = true; break; }
       for (const k of got) { if (union.has(k)) { okAll = false; break; } union.add(k); }
     }
-    const all = new Set((task.coverageKeys ?? []).map(keyStr));
+    const all = new Set(auth.coverageKeys.map(coverageKeyStr));
     if (!okAll || !setEq(union, all)) flags.coverageMismatch = true;
   }
-  // 必答对账(SC-R3):required (profileId,fileId,checkId) 全集必须被合法作答覆盖
-  if (Array.isArray(task?.requiredProfileAnswers)) {
-    const want = new Set(task.requiredProfileAnswers.map((r) => `${r.profileId} ${r.fileId} ${r.checkId}`));
-    // 只有**合法**作答才计入补足:checked-clean 引用的 hunkId 必须属于当前 snapshot 的同一
-    // file(stale/编造的 hunkId 不算);finding 引用已在 schema 层验真。
+  // 必答对账(SC-R3):required 全集必须被**合法**作答覆盖
+  {
+    const want = new Set(auth.requiredProfileAnswers.map(profileAnswerKeyStr));
     const got = new Set();
     for (const a of output.profileAnswers ?? []) {
       if (a?.answer === 'checked-clean') {
         const set = validHunkByFile.get(a.fileId);
         if (!set || !set.has(a.hunkId)) { flags.staleProfileAnchor = true; continue; }
       }
-      got.add(`${a.profileId} ${a.fileId} ${a.checkId}`);
+      got.add(profileAnswerKeyStr(a));
     }
     if (![...want].every((k) => got.has(k))) flags.missingProfileAnswers = true;
   }
   // required 负向证据对账(SC-R6):required key 只能由 executed 条目满足(N/A 不算)
-  if (Array.isArray(task?.requiredNegativeEvidenceKeys)) {
-    const want = new Set(task.requiredNegativeEvidenceKeys.map((k) => `${k.fileId}:${k.hunkId}`));
+  {
+    const want = new Set(auth.requiredNegativeEvidenceKeys.map(negativeKeyStr));
     const runById = new Map((output.verificationRuns ?? []).map((r) => [r?.runId, r]));
     const got = new Set();
     for (const n of output.negativeEvidence ?? []) {
       if (n?.kind !== 'executed' || n.snapshotHash !== snapshot.snapshotHash) continue;
-      // 声明一致性(SC-R6 复审):引用的 run 必须存在,且它的 command 与本条一致、
-      // outputAnchor 与本条一致——"引了个不相干的 run"不是 T1 上限,是可机器判的不一致。
       const run = runById.get(n.verificationRunId);
       if (!run || run.command !== n.command || (run.outputAnchor ?? run.outputDigest) !== n.outputAnchor) {
         flags.negativeEvidenceInconsistent = true;
         continue;
       }
-      got.add(`${n.fileId}:${n.hunkId}`);
+      got.add(negativeKeyStr(n));
     }
     if (![...want].every((k) => got.has(k))) flags.requiredNegativeKeysMissing = true;
   }
 
-  // ── R7 生产触发链(核验 BLOCKER):escapeAssessment 必须逐条覆盖 task 注入的候选集;
-  // yes 项**确定性**写 pending inbox(写失败 → hazardRegisterFailed → invalid,不放行)。
-  const candidates = Array.isArray(task?.escapeCandidates) ? task.escapeCandidates : [];
-  let ledgerErrors = [];
-  const registeredHazards = [];
-  if (shape.ok && candidates.length > 0) {
+  // ── R7 逃逸判定对账(登记本身推迟到 provisional verdict 之后,见下)──
+  const candidates = Array.isArray(task.escapeCandidates) ? task.escapeCandidates : [];
+  const answeredYes = [];
+  if (shape.ok) {
     const want = new Set(candidates.map((c) => c.candidateId));
     const answered = new Map();
     for (const a of output.escapeAssessment ?? []) {
@@ -167,54 +211,21 @@ try {
       answered.set(a.candidateId, a);
     }
     if (answered.size !== want.size) flags.escapeAssessmentMismatch = true;
-    if (!flags.escapeAssessmentMismatch) {
-      const yes = [...answered.values()].filter((a) => a.verdict === 'yes');
-      if (yes.length > 0) {
-        try {
-          const inbox = loadInbox(STATE_DIR);
-          if (!inbox.ok) throw new Error(`inbox 不可读:${inbox.error}`);
-          const items = [...inbox.items];
-          for (const a of yes) {
-            const cand = candidates.find((c) => c.candidateId === a.candidateId);
-            const paths = [...new Set((snapshot.files ?? []).map((f) => f.newPath ?? f.oldPath).filter(Boolean))];
-            const base = {
-              repo: task.repo ?? null, originPr: cand.referencedPr, originHead: null,
-              fixPr: pr, fixHead: headRefOid, pattern: a.basis, paths,
-              evidence: `本轮审查判定:${a.basis}`,
-              activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
-              registeredAt: new Date().toISOString(), registeredBy: 'consume-review-output',
-            };
-            const hazardId = deriveHazardId(base);
-            const item = { ...base, hazardId, fingerprint: deriveHazardFingerprint(base) };
-            const idx = items.findIndex((x) => x.hazardId === hazardId);
-            if (idx >= 0) items[idx] = { ...items[idx], ...item }; else items.push(item);
-            registeredHazards.push(hazardId);
-          }
-          saveInbox(STATE_DIR, items);
-        } catch (e) {
-          flags.hazardRegisterFailed = true;
-          ledgerErrors.push(`逃逸候选登记失败:${e.message}(登记不可用时不得放行)`);
-        }
-      }
-    }
-  } else if (shape.ok && (output.escapeAssessment ?? []).length > 0) {
-    // 没有候选却给了答卷:形状层已允许,这里判不一致(防"自造候选骗过对账")
-    flags.escapeAssessmentMismatch = true;
+    if (!flags.escapeAssessmentMismatch) answeredYes.push(...[...answered.values()].filter((a) => a.verdict === 'yes'));
   }
 
   // ── ledger 应用(shape ok 才应用;disposition 验真失败 = 整轮 invalid)──
   let entries = ledger.entries;
+  let ledgerErrors = [];
   if (shape.ok) {
     const applied = applyReviewOutput({
       entries, output, seat: mode, snapshot,
       preflightHits: preflightIncomplete ? [] : (preflight.hits ?? []),
-      // 只有 preflight 完成时才交 executedRules(SC-R5:核销必须有正证据)
       executedRules: preflightIncomplete ? [] : (preflight.executedRules ?? []),
     });
     entries = applied.entries;
     ledgerErrors = applied.errors;
   }
-  // 交互确认(accepted-risk / confirm-invalidated;auto 模式在函数内被拒)
   const confirmFile = argOf('--confirm');
   if (confirmFile && existsSync(confirmFile)) {
     for (const c of readJson(confirmFile)) {
@@ -223,28 +234,76 @@ try {
       else entries = r.entries;
     }
   }
-  // 注入 open 是否逐条 disposition(SC-R5 门)
   const dispositioned = new Set((output.findingDispositions ?? []).map((d) => d.findingId));
   if (shape.ok && injectedOpenIds.some((id) => !dispositioned.has(id) && entries.find((e) => e.findingId === id && isEffectiveOpen(e, snapshot.snapshotHash)))) {
     flags.missingDispositions = true;
   }
 
-  const shapeAll = { ok: shape.ok && ledgerErrors.length === 0 && taskErrors.length === 0, errors: [...shape.errors, ...ledgerErrors, ...taskErrors] };
   const ledgerResult = summarize(entries, snapshot.snapshotHash);
-  const { verdict, reasons } = deriveVerdict({ shape: shapeAll, output, ledgerResult, flags });
+  // 注意:deliveryReasons **不进** shapeAll——shape 不 ok 时 deriveVerdict 会提前返回,
+  // 那样其余 flag 标签(preflight 未完成之类)就看不见了。投递缺口只经 flag 表达,细节
+  // 单独打印。
+  const mkVerdict = () => {
+    const shapeAll = {
+      ok: shape.ok && ledgerErrors.length === 0 && taskErrors.length === 0,
+      errors: [...shape.errors, ...ledgerErrors, ...taskErrors],
+    };
+    return deriveVerdict({ shape: shapeAll, output, ledgerResult, flags });
+  };
 
-  // ── retry 记账(同 snapshot 维度;snapshot 漂移即重置——共识:初次+2 重试,3 次即 blocked)──
-  const attemptsFile = stateFile(`review-attempts-${pr}.json`);
-  let attempts = { snapshotHash: snapshot.snapshotHash, count: 0 };
-  try { const a = JSON.parse(readFileSync(attemptsFile, 'utf8')); if (a.snapshotHash === snapshot.snapshotHash) attempts = a; } catch { /* 首次 */ }
-  let blocked = false;
-  if (verdict === 'invalid') {
-    attempts.count += 1;
-    writeJsonAtomic(attemptsFile, attempts);
-    if (attempts.count >= 3) blocked = true;
-  } else {
-    writeJsonAtomic(attemptsFile, { snapshotHash: snapshot.snapshotHash, count: 0 });
+  // ── 逃逸登记:**必须晚于** provisional verdict(第 2 轮核验:此前在 flags/verdict 成型前
+  // 就写 pending inbox,coverage/required/task 任一 invalid 时仍留下 durable state)。
+  // originHead 也必须现场取到完整 40 位 SHA——此前硬编码 null,verifyActivation 的 origin
+  // OID 门只在 non-null 时比对,于是被完全旁路。
+  const provisional = mkVerdict();
+  const registeredHazards = [];
+  if (provisional.verdict !== 'invalid' && answeredYes.length > 0) {
+    try {
+      const inbox = loadInbox(STATE_DIR);
+      if (!inbox.ok) throw new Error(`inbox 不可读:${inbox.error}`);
+      const items = [...inbox.items];
+      const paths = [...new Set((snapshot.files ?? []).map((f) => f.newPath ?? f.oldPath).filter(Boolean))];
+      const repoSlug = task.repo ?? null;
+      if (!repoSlug) throw new Error('task.repo 缺失(hazard 必须绑定仓库)');
+      for (const a of answeredYes) {
+        const cand = candidates.find((c) => c.candidateId === a.candidateId);
+        let originHead = null;
+        // REVIEW_PR_ORIGIN_HEAD_MAP:**测试专用 seam**(同 REVIEW_PR_VENDOR_TS_DIR 的定位),
+        // JSON `{"<prNumber>":"<40hex>"}`。生产不设此变量,一律现场 gh 取。
+        const seam = process.env.REVIEW_PR_ORIGIN_HEAD_MAP;
+        if (seam) {
+          try { originHead = String(JSON.parse(seam)[String(cand.referencedPr)] ?? '').toLowerCase(); } catch { originHead = ''; }
+        } else {
+          try {
+            const v = ghJson(['pr', 'view', String(cand.referencedPr), '--repo', repoSlug, '--json', 'headRefOid']);
+            originHead = (v.headRefOid ?? '').toLowerCase();
+          } catch (e) { throw new Error(`取 origin PR #${cand.referencedPr} 的 head 失败:${String(e.message ?? e).slice(0, 160)}`); }
+        }
+        if (!/^[0-9a-f]{40}$/.test(originHead)) throw new Error(`origin PR #${cand.referencedPr} 的 head 不是完整 40 位 SHA(${originHead || '空'})——激活核验的 origin OID 门不能留空`);
+        const base = {
+          repo: repoSlug, originPr: cand.referencedPr, originHead,
+          fixPr: pr, fixHead: headRefOid, pattern: a.basis, paths,
+          evidence: `本轮审查判定:${a.basis}`,
+          activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
+          registeredAt: new Date().toISOString(), registeredBy: 'consume-review-output',
+        };
+        const hazardId = deriveHazardId(base);
+        const item = { ...base, hazardId, fingerprint: deriveHazardFingerprint(base) };
+        const idx = items.findIndex((x) => x.hazardId === hazardId);
+        if (idx >= 0) items[idx] = { ...items[idx], ...item }; else items.push(item);
+        registeredHazards.push(hazardId);
+      }
+      saveInbox(STATE_DIR, items);
+    } catch (e) {
+      flags.hazardRegisterFailed = true;
+      ledgerErrors.push(`逃逸候选登记失败:${e.message}(登记不可用时不得放行)`);
+      registeredHazards.length = 0;
+    }
   }
+
+  const { verdict, reasons } = mkVerdict();
+  const attempts = bumpAttempts(pr, snapshot.snapshotHash ?? 'snapshot-incomplete', verdict === 'invalid');
+  const blocked = verdict === 'invalid' && attempts.count >= 3;
 
   // ── 落盘与回执 ──
   const outputHash = `oh1-${createHash('sha256').update(rawOutput, 'utf8').digest('hex')}`;
@@ -259,15 +318,20 @@ try {
   if (verdict === 'clean') {
     writeReviewReceipt({ pr, headRefOid, verdict: 'clean', p0p1Count: 0, bindings });
   } else {
-    // dirty/invalid:写 non-clean 回执,覆盖撤销同 snapshot 旧 clean(last-write-wins)
     writeReviewReceipt({ pr, headRefOid, verdict: 'dirty', p0p1Count: Array.isArray(output.findingFamilies) ? output.findingFamilies.length : 0, bindings: { ...bindings, reason: verdict } });
   }
 
   print({
-    ok: true, pr, mode, verdict, reasons, blocked,
+    ok: true, pr, mode, verdict, reasons, blocked, deliveryReasons,
     attempts: attempts.count, snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
     ledgerHash, effectiveOpenCount: ledgerResult.effectiveOpenCount, acceptedRiskCount: ledgerResult.acceptedRiskCount,
     injectedOpenIds, registeredHazards,
+    authoritative: {
+      coverageKeyCount: auth.coverageKeys.length, segmentCount: auth.segments.length,
+      requiredProfileAnswerCount: auth.requiredProfileAnswers.length,
+      requiredNegativeEvidenceKeyCount: auth.requiredNegativeEvidenceKeys.length,
+      deliveredSegments: delivery.deliveries.length,
+    },
   });
   process.exit(verdict === 'clean' ? 0 : 2);
 } catch (e) {

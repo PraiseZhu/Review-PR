@@ -15,6 +15,7 @@ const CONSUME = join(__dirname, '..', 'scripts', 'consume-review-output.mjs');
 const RECEIPT_CLI = join(__dirname, '..', 'scripts', 'write-review-receipt.mjs');
 const BUILD = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
 const PREFLIGHT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
+const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
@@ -58,12 +59,28 @@ const FAM = (sev = 'P1') => ({
   fixGuidance: 'g',
 });
 
-/** 真实 build-review-task 产 task(SC-R1a:--task 现在必需)。 */
-function taskFile(f) {
+/** 真实 build-review-task 产 task(SC-R1a:--task 现在必需)。
+ *  `--pr-body-file` 是 R7 数据源的离线 seam:不传的话构建器会现场 `gh pr view`(生产行为),
+ *  单测不该依赖网络。默认给一份"无逃逸引用"的 body。 */
+function taskFile(f, { body = '普通改动,无历史 PR 引用。' } = {}) {
   const tf = join(f.work, `task-${Math.random().toString(36).slice(2)}.json`);
-  const r = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', `${tf}.md`], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  const bodyFile = `${tf}.body.md`;
+  writeFileSync(bodyFile, body);
+  const r = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', `${tf}.md`, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
   return tf;
+}
+
+/** SC-R4:逐段真投递(consumer 以投递台账为顺序基准,没投递过不予采信)。 */
+function deliverAll(f, tf, { upTo = null, pr = '469' } = {}) {
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  const segs = task.segments ?? [];
+  const limit = upTo ?? segs.length;
+  for (let i = 1; i <= limit; i += 1) {
+    const r = spawnSync('node', [DELIVER, pr, '--task', tf, '--base', f.base, '--head', f.head, '--order', String(i)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+    assert.equal(r.status, 0, `第 ${i} 段投递应成功:${r.stdout}${r.stderr}`);
+  }
+  return segs.length;
 }
 
 /** 真实 review-preflight 产 preflight。 */
@@ -105,11 +122,11 @@ function compliant(tf, over = {}) {
   });
 }
 
-function run(f, output, extra = []) {
+function run(f, output, extra = [], { pr = '469', env = {} } = {}) {
   const outFile = join(f.work, `out-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(outFile, typeof output === 'string' ? output : JSON.stringify(output));
-  const args = [CONSUME, '469', '--output', outFile, '--base', f.base, '--head', f.head, ...extra];
-  const r = spawnSync('node', args, { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  const args = [CONSUME, pr, '--output', outFile, '--base', f.base, '--head', f.head, ...extra];
+  const r = spawnSync('node', args, { cwd: f.repo, env: { ...f.env, ...env }, encoding: 'utf8' });
   let json = null;
   try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(json, `应输出 JSON: status=${r.status}\n${r.stdout.slice(0, 700)}\n${r.stderr.slice(0, 700)}`);
@@ -117,9 +134,10 @@ function run(f, output, extra = []) {
 }
 
 /** 常规一轮:真 task + 真 preflight + 合规答卷(over 覆盖被测维度)。 */
-function round(f, over = {}, { mode = 'auto', confirm = null, tf = null, pf = null } = {}) {
+function round(f, over = {}, { mode = 'auto', confirm = null, tf = null, pf = null, deliver = true } = {}) {
   const t = tf ?? taskFile(f);
   const p = pf ?? preflightFile(f);
+  if (deliver) deliverAll(f, t);
   const extra = ['--mode', mode, '--preflight', p, '--task', t];
   if (confirm) extra.push('--confirm', confirm);
   return { ...run(f, compliant(t, over), extra), taskPath: t, preflightPath: p };
@@ -148,6 +166,7 @@ test('① 合规一轮 → clean,回执带五项绑定;缺 --task → invalid(fa
 test('② 无 preflight → invalid;preflight 绑定别的 snapshot 也拒', () => {
   const f = setup();
   const tf = taskFile(f);
+  deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const noPf = run(f, compliant(tf), ['--mode', 'auto', '--task', tf]);
   assert.equal(noPf.json.verdict, 'invalid');
   assert.match(noPf.json.reasons.join(';'), /preflight/);
@@ -179,6 +198,7 @@ test('④ findings → dirty 且撤销同 snapshot 旧 clean;模型 note 写 APP
 test('⑤ retry:同 snapshot 连续 3 次非法 → blocked;非法轮不动 ledger', () => {
   const f = setup();
   const tf = taskFile(f);
+  deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const pf = preflightFile(f);
   let last;
   for (let i = 1; i <= 3; i += 1) last = run(f, '{broken json', ['--mode', 'auto', '--task', tf, '--preflight', pf]);
@@ -198,7 +218,8 @@ test('⑥ 核销门:席位 A 留 open → 席位 B 零 disposition → invalid;�
   assert.match(b.json.reasons.join(';'), /disposition/);
   const id = b.json.injectedOpenIds[0];
   assert.ok(id);
-  const ev = { kind: 'diff-anchor', snapshotHash: b.json.snapshotHash, fileId: 'F1', hunkId: 'H1' };
+  const anchor = JSON.parse(readFileSync(b.taskPath, 'utf8')).coverageKeys.find((k) => k.kind === 'hunk');
+  const ev = { kind: 'diff-anchor', snapshotHash: b.json.snapshotHash, fileId: anchor.fileId, hunkId: anchor.hunkId };
   const c = round(f, { findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ev }] });
   assert.equal(c.json.verdict, 'invalid');
   assert.match(c.json.reasons.join(';'), /禁自证/);
@@ -309,6 +330,7 @@ test('⑬ 必答对账:checked-clean 引用编造 hunkId 不计作答 → invali
   git(['commit', '-q', '-m', 'add e2e'], f.repo);
   f.head = git(['rev-parse', 'HEAD'], f.repo);
   const tf = taskFile(f);
+  deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const task = JSON.parse(readFileSync(tf, 'utf8'));
   assert.ok(task.requiredProfileAnswers.length > 0, 'e2e 路径必须产生必答项');
   const bad = compliant(tf, {
@@ -329,6 +351,7 @@ test('⑭ R6:required 负向证据只能由 executed 满足;N/A 与 run 声明�
   git(['commit', '-q', '-m', 'add wait'], f.repo);
   f.head = git(['rev-parse', 'HEAD'], f.repo);
   const tf = taskFile(f);
+  deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const task = JSON.parse(readFileSync(tf, 'utf8'));
   assert.ok(task.requiredNegativeEvidenceKeys.length > 0, '等待原语改动必须产 required 负向 key');
   const pf = preflightFile(f);
@@ -365,6 +388,7 @@ test('⑮ preflight 命中 → 机器入账并 dirty(不经 LLM,审查输出零 
   assert.equal(pfJson.complete, true, JSON.stringify(pfJson).slice(0, 300));
   assert.equal(pfJson.hits.length, 1, 'preflight 应命中假等待');
   const tf = taskFile(f);
+  deliverAll(f, tf); // SC-R4:直接调 run 的用例也必须真投递
   const r = run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pfPath]);
   assert.equal(r.json.verdict, 'dirty', '确定性命中直接机器打回');
   assert.equal(r.json.effectiveOpenCount, 1);
@@ -376,7 +400,7 @@ test('⑯ R7 生产触发链:候选进 prompt → escapeAssessment 必须逐条�
   writeFileSync(bodyFile, '本 PR 修复 #469 逃过审查的假等待问题;另外顺手依赖 #500 的改动。\n');
   const tf = join(f.work, 'task-esc.json');
   const pmt = join(f.work, 'prompt-esc.md');
-  const b = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', pmt, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  const b = spawnSync('node', [BUILD, '483', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', pmt, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(b.status, 0, b.stdout + b.stderr);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
   const prompt = readFileSync(pmt, 'utf8');
@@ -385,21 +409,32 @@ test('⑯ R7 生产触发链:候选进 prompt → escapeAssessment 必须逐条�
   assert.ok(prompt.includes('## 逃逸判定'), 'prompt 必须有逃逸判定段');
   assert.ok(prompt.includes(task.escapeCandidates[0].candidateId));
   const pf = preflightFile(f);
+  deliverAll(f, tf, { pr: '483' }); // SC-R4:直接调 run 的用例也必须真投递
   const cid = task.escapeCandidates[0].candidateId;
+  const ORIGIN_HEAD = 'a'.repeat(40);
+  // REVIEW_PR_ORIGIN_HEAD_MAP 是测试 seam(生产现场 gh 取),让本用例离线可复跑
+  const seam = { REVIEW_PR_ORIGIN_HEAD_MAP: JSON.stringify({ 469: ORIGIN_HEAD }) };
+  const P = { pr: '483', env: seam };
 
   // 缺答 → invalid
-  const miss = run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  const miss = run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf], P);
   assert.equal(miss.json.verdict, 'invalid');
   assert.match(miss.json.reasons.join(';'), /escapeAssessment/);
   // 答未知候选 → invalid
-  const unknown = run(f, compliant(tf, { escapeAssessment: [{ candidateId: 'esc-bogus-1', verdict: 'no', basis: 'x' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  const unknown = run(f, compliant(tf, { escapeAssessment: [{ candidateId: 'esc-bogus-1', verdict: 'no', basis: 'x' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf], P);
   assert.equal(unknown.json.verdict, 'invalid');
   // 答 no → clean 且不登记
-  const no = run(f, compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'no', basis: '只是引用,不是修它的漏审' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  const no = run(f, compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'no', basis: '只是引用,不是修它的漏审' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf], P);
   assert.equal(no.json.verdict, 'clean', no.json.reasons?.join(';'));
   assert.deepEqual(no.json.registeredHazards, []);
   // 答 yes → clean 且**确定性登记**到 pending inbox
-  const yes = run(f, compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'yes', basis: '本 PR 修的正是 #469 漏审的假等待模式' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  const YES = compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'yes', basis: '本 PR 修的正是 #469 漏审的假等待模式' }] });
+  // originHead 拿不到完整 40 位 SHA 时必须登记失败 → invalid(此前硬编码 null,origin OID 门被旁路)
+  const badOrigin = run(f, YES, ['--mode', 'auto', '--task', tf, '--preflight', pf], { pr: '483', env: { REVIEW_PR_ORIGIN_HEAD_MAP: JSON.stringify({ 469: 'not-a-sha' }) } });
+  assert.equal(badOrigin.json.verdict, 'invalid');
+  assert.match(badOrigin.json.reasons.join(';'), /登记/);
+  assert.deepEqual(badOrigin.json.registeredHazards, []);
+  const yes = run(f, YES, ['--mode', 'auto', '--task', tf, '--preflight', pf], P);
   assert.equal(yes.json.verdict, 'clean', yes.json.reasons?.join(';'));
   assert.equal(yes.json.registeredHazards.length, 1, 'yes 必须落 pending inbox(生产会调用,不是"recorder 可手调")');
   const inboxFiles = readdirSync(f.stateDir, { recursive: true }).filter((p) => String(p).includes('escaped-hazards-inbox'));
@@ -408,8 +443,90 @@ test('⑯ R7 生产触发链:候选进 prompt → escapeAssessment 必须逐条�
   assert.equal(inbox.items.length, 1);
   assert.equal(inbox.items[0].activationStatus, 'pending-fix-merge', '未合并前只能是 pending');
   assert.equal(inbox.items[0].originPr, 469);
-  assert.equal(inbox.items[0].fixPr, 469); // 本测试的 PR 号
+  assert.equal(inbox.items[0].fixPr, 483, 'E2E 必须是 origin #469 → fix #483(同号自证证明不了 origin/fix 现场核验)');
+  assert.equal(inbox.items[0].originHead, ORIGIN_HEAD, 'originHead 必须是现场取到的完整 40 位 SHA');
   assert.equal(inbox.items[0].fixHead, f.head);
   assert.ok(inbox.items[0].repo, 'hazard 必须绑定 repo');
   assert.ok(inbox.items[0].fingerprint);
+});
+
+test('⑰ R1a 第 2 轮核验 BLOCKER:task 不是权威——保留真 snapshotHash 但清空四组集合 → invalid', () => {
+  const f = setup();
+  // 造一个"必然有 required 必答 + required 负向证据"的改动,让被清空的集合非空
+  mkdirSync(join(f.repo, 'scripts', 'e2e'), { recursive: true });
+  writeFileSync(join(f.repo, 'scripts', 'e2e', 'wait.mjs'), 'export const w = async (page) => { await page.waitForFunction(() => document.readyState === "complete"); };\n');
+  git(['add', '.'], f.repo);
+  git(['commit', '-q', '-m', 'add e2e'], f.repo);
+  f.head = git(['rev-parse', 'HEAD'], f.repo);
+  const tf = taskFile(f);
+  deliverAll(f, tf);
+  const pf = preflightFile(f);
+  const good = JSON.parse(readFileSync(tf, 'utf8'));
+  assert.ok(good.coverageKeys.length > 0 && good.requiredProfileAnswers.length > 0 && good.requiredNegativeEvidenceKeys.length > 0, '前提:三组集合都非空');
+  const answer = compliant(tf); // 按真 task 作答(合规)
+  assert.equal(run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean', '对照:未篡改时 clean');
+
+  // 篡改:snapshotHash 照真值留着,只把四组集合清空(核验席实测此前仍 exit 0 + clean)
+  const tampered = join(f.work, 'task-tampered.json');
+  writeFileSync(tampered, JSON.stringify({
+    ...good, coverageKeys: [], segments: [], requiredProfileAnswers: [], requiredNegativeEvidenceKeys: [],
+  }));
+  const r = run(f, OUT(), ['--mode', 'auto', '--task', tampered, '--preflight', pf]);
+  assert.equal(r.json.verdict, 'invalid', r.json.reasons?.join(';'));
+  const joined = r.json.reasons.join(';');
+  for (const k of ['coverageKeys', 'requiredProfileAnswers', 'requiredNegativeEvidenceKeys', 'segments']) {
+    assert.match(joined, new RegExp(k), `必须逐组报出与重算值不一致:缺 ${k}`);
+  }
+  // 单独篡改 profileSetHash 也要被抓
+  const psh = join(f.work, 'task-psh.json');
+  writeFileSync(psh, JSON.stringify({ ...good, profileSetHash: 'ps1-forged' }));
+  assert.match(run(f, answer, ['--mode', 'auto', '--task', psh, '--preflight', pf]).json.reasons.join(';'), /profileSetHash/);
+});
+
+test('⑱ R1a 第 2 轮核验 BLOCKER:已有同 snapshot clean 时,缺/坏 task 必须把回执改成 non-clean(不得沿用清白)', () => {
+  const f = setup();
+  const ok = round(f);
+  assert.equal(ok.json.verdict, 'clean');
+  assert.equal(readReceipt(f).verdict, 'clean');
+  // 缺 --task
+  const noTask = run(f, compliant(ok.taskPath), ['--mode', 'auto', '--preflight', ok.preflightPath]);
+  assert.equal(noTask.json.verdict, 'invalid');
+  assert.equal(readReceipt(f).verdict, 'dirty', '缺 task 这一轮必须撤销旧 clean');
+  assert.equal(noTask.json.attempts, 1, '输入级失败也要记 retry(否则可以无限次试)');
+  // 坏 task(不可解析)
+  round(f); // 先恢复 clean
+  assert.equal(readReceipt(f).verdict, 'clean');
+  const broken = join(f.work, 'task-broken.json');
+  writeFileSync(broken, '{not json');
+  const badTask = run(f, compliant(ok.taskPath), ['--mode', 'auto', '--task', broken, '--preflight', ok.preflightPath]);
+  assert.equal(badTask.json.verdict, 'invalid');
+  assert.equal(readReceipt(f).verdict, 'dirty', '坏 task 同样必须撤销旧 clean');
+});
+
+test('⑲ R4 第 2 轮核验 BLOCKER:分段必须真投递——零投递/缺段/乱序都不得 clean', () => {
+  const f = setup();
+  const tf = taskFile(f);
+  const pf = preflightFile(f);
+  const answer = compliant(tf);
+  // 零投递:回执形状再正确也不采信
+  const none = run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(none.json.verdict, 'invalid');
+  assert.match(none.json.deliveryReasons.join(';'), /没有任何分段投递记录/);
+  assert.match(none.json.reasons.join(';'), /投递/);
+  // 乱序投递被投递出口直接拒(不留记录)
+  const segCount = JSON.parse(readFileSync(tf, 'utf8')).segments.length;
+  const outOfOrder = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', String(segCount + 1)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(outOfOrder.status, 2);
+  assert.match(JSON.parse(outOfOrder.stdout).refused, /不在本轮分片里|顺序投递/);
+  // 正常逐段投递 → clean;payload 里才有 key 清单(prompt.md 不再包含)
+  const first = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const fj = JSON.parse(first.stdout);
+  assert.match(fj.payload, /覆盖分段/);
+  assert.ok(fj.payload.includes('hunk:') || fj.payload.includes('file:'), 'payload 必须给出本段 key 清单');
+  assert.ok(!readFileSync(`${tf}.md`, 'utf8').includes('hunk:'), 'prompt.md 不得包含 key 清单(否则不投递也能补形状正确的回执)');
+  assert.equal(run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean', '投齐后应 clean');
+  // 回执声称一个没投递过的 order → invalid
+  const forged = compliant(tf, { segmentReceipts: [{ segmentId: 'seg-99', receivedOrder: 9, coverageKeys: [] }] });
+  assert.equal(run(f, forged, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'invalid');
 });

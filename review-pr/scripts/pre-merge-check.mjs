@@ -137,6 +137,21 @@ try {
     owner, repo, pr, title: m.title ?? '', body: m.body ?? '', sensitiveRules: rules.sensitiveContent ?? {},
     snapshotPatch: secSnapshot.complete ? secSnapshot.rawPatch : null,
   });
+  // ── 泄密硬门:**全局前置**,所有 merge 路由共用(第 2 轮核验 BLOCKER)──
+  // 此前 securityScan 只被 authorized-fast-merge 一条路消费(evaluateAuthorizedFastMerge),
+  // 普通 canMerge / selfMerge / structural admin-bypass 的终判只叠 mechanical + stage2——
+  // 于是"scan 拉不到 diff(未证明无泄露)"或"硬命中 >0"时,这三条路照样放行。SKILL 的
+  // note 早写了"任何通道都不可压过",但那只是散文,不是机器约束。现在按共识("P0/安全
+  // 不可豁免")把它变成与 receiptGate 并列的无条件门,逐路由显式合取。
+  const securityGate = {
+    scanned: securityScan.scanned === true,
+    hardHitCount: securityScan.hardHitCount ?? null,
+    ...(securityScan.error ? { error: securityScan.error } : {}),
+    pass: securityScan.scanned === true && (securityScan.hardHitCount ?? 1) === 0,
+    reasons: [],
+  };
+  if (securityScan.scanned !== true) securityGate.reasons.push(`敏感内容扫描未完成(${securityScan.error ?? 'scanned=false'})——未证明无泄露,fail-closed`);
+  else if ((securityScan.hardHitCount ?? 1) > 0) securityGate.reasons.push(`敏感内容硬命中 ${securityScan.hardHitCount} 处——任何通道都不可压过`);
 
   // ── 授权快速合并通道:合并前最后复核(TOCTOU 保护,与 context.mjs 同口径重新现场检测,
   // 不信任 scan 时缓存——授权评论可能在 scan 之后才发出,也可能因为 scan 之后又推了新
@@ -202,7 +217,9 @@ try {
       formatIssues: [],
       requiredChecks,
     });
-    authorizedFastMergeAvailable = evaluation.eligible;
+    // evaluateAuthorizedFastMerge 内部本就查 security,这里再显式合取一次全局门——四条
+    // 路由的泄密前提写在同一处、同一表达式,防将来某条路又漏掉。
+    authorizedFastMergeAvailable = evaluation.eligible && securityGate.pass;
     authorizedFastMergeInfo = {
       admin: approveMergeAuth.authorized.author,
       commentUrl: approveMergeAuth.authorized.url,
@@ -347,6 +364,8 @@ try {
   else if (!receiptGate.stage2Clean) receiptGate.reasons.push('回执绑定的 snapshotHash/ledgerHash 与当前重建值不一致(stale)');
   const receiptClean = receiptGate.stage2Clean;
 
+  if (!securityGate.pass) blockers.push(...securityGate.reasons);
+
   const mergeableUnknown = m.mergeable === 'UNKNOWN';
   const canMergeMechanical = blockers.length === 0 && !mergeableUnknown;
   // 普通 merge 过不了、但「结构性门 + 当前账号可 bypass + 命中类型在 allowlist 内」时,
@@ -375,16 +394,18 @@ try {
   // headRefOid 与当前 head 一致且 verdict=clean 才 ready——无回执 / 回执针对旧 head /
   // 回执 verdict≠clean 都不算,调用方(agent)必须先跑完独立审查、调用
   // write-review-receipt.mjs 落一条回执,再来读这个字段。
-  const structuralBypassReady =
+  // 泄密硬门对 structural admin-bypass 同样无条件(securityGate 只进 blockers 拦不住这条路
+  // ——它走的是 blockClass 分级,不看 blockers.length)。
+  const structuralBypassReady = securityGate.pass && (
     structuralRoute === 'bypass-structural-block' ||
-    (structuralRoute === 'review-pending-admin-bypass' && receiptClean);
+    (structuralRoute === 'review-pending-admin-bypass' && receiptClean));
 
   // selfFixAuthors 自己的 PR:GitHub 不允许同账号 approve 自己的 PR,
   // 审查通过后使用 --admin 合并。条件:非冲突、thread 全 resolve、且 head 上所有已上报
   // 检查(rollup 全集,含第三方 App check-run)无失败/无进行中
   // (mergeableUnknown 是 GitHub 异步重算的暂态,admin merge 不受影响)。
   let selfMergeAvailable = false;
-  if (viewerLogin && prAuthor && receiptGate.stage2Clean) { // stage2 凭证同样必需
+  if (viewerLogin && prAuthor && receiptGate.stage2Clean && securityGate.pass) { // stage2 凭证 + 泄密硬门同样必需
     const selfFixAuthors = (rules.selfFixAuthors ?? []).map((a) => a.toLowerCase());
     const isSelfPr = viewerLogin.toLowerCase() === prAuthor.toLowerCase();
     const isSelfFixAuthor = selfFixAuthors.includes(prAuthor.toLowerCase());
@@ -428,6 +449,7 @@ try {
     structuralBypassReady,
     structuralBypassBasis,
     receiptGate,
+    securityGate,
     authorIsAdmin,
     reviewReceipt,
     ciRuns,

@@ -132,13 +132,24 @@ export function requiredProfileAnswersFor(profiles, snapshotFiles) {
 // 由三组构成,均按锚定文本匹配、可单测:
 //   ① 等待原语(Playwright/vitest 等)  ② 断言/期望  ③ 守卫与退出码消费
 const WAIT_RE = /\b(waitForFunction|waitForSelector|waitForTimeout|waitForEvent|waitForResponse|waitForLoadState|waitForNavigation|waitFor)\s*\(/;
-const ASSERT_RE = /\b(expect|assert|assertEquals|assertThrows|toBe|toEqual|toHaveLength|toThrow|toMatch|shouldEqual)\s*\(/;
-const GUARD_RE = /\b(process\.exit|exitCode|throwIf|invariant|assertInvariant|guard[A-Z]\w*|\w*Guard)\s*\(/;
+// 第 2 轮核验:本仓自己大量用 node:test 的 `assert.equal/deepEqual/...`,旧语料完全漏掉
+// (`assert` 后面跟的是 `.`,不是 `(`)。断言面按"断言家族 + 方法调用"匹配。
+const ASSERT_RE = /(\bassert\s*[.(]|\bexpect\s*\(|\b(?:assertEquals|assertThrows|deepEqual|deepStrictEqual|strictEqual|notStrictEqual|notDeepEqual|toBe|toEqual|toHaveLength|toThrow|toMatch|toContain|shouldEqual|rejects|throws)\s*\()/;
+// 守卫面 = 显式退出/退出码消费/不变量守卫/CI 失败守卫。**不要求后接 `(`**——核验席点名的
+// `result.exitCode !== 0` 与 workflow 的 `continue-on-error` 都没有括号。
+const GUARD_RE = /(\bprocess\.exit\b|\bexit(?:Code|_code)\b|\breturncode\b|\bthrowIf\b|\binvariant\b|\bassertInvariant\b|\bguard[A-Z]\w*\s*\(|\w+Guard\s*\(|\bexit\s+[1-9]\b|\|\|\s*exit\b|\bcontinue-on-error\b|\bif:\s*(?:failure|success|cancelled)\s*\(|\bset\s+-e\b)/;
 // **删除**断言/等待也必须给证据(删掉一条断言就是把守门人拿掉——不能因为"新增行里没有
 // 断言"而免检);删除行文本由调用方在 removedLineTextByFile 里给出。
 const COMMENT_ONLY_RE = /^\s*[+-]?\s*(\/\/|\/\*|\*|#|$)/;
+// 纯文档:说明文字里出现 `expect(` 不该要求负向证据。**json/yaml 不在此列**——
+// `.github/workflows/*.yml` 是可执行的 CI 判定器,把它当文档排除等于给 CI 守卫免检
+// (核验席点名:删掉 workflow 里的失败守卫时 required=[])。
+const DOC_RE = /\.(md|mdx|txt|rst)$/i;
+// 数据类配置(非 CI):不产 required。命中任一 profile 的 yaml/json 仍照常判。
+const DATA_RE = /\.(json|ya?ml)$/i;
 
 const touchesOracle = (t) => WAIT_RE.test(t) || ASSERT_RE.test(t) || GUARD_RE.test(t);
+const touchesGuardish = (t) => GUARD_RE.test(t) || ASSERT_RE.test(t);
 
 /**
  * required 负向证据 key 分类器(SC-R6)。
@@ -149,31 +160,45 @@ const touchesOracle = (t) => WAIT_RE.test(t) || ASSERT_RE.test(t) || GUARD_RE.te
  *   incompleteFiles      取文本失败的路径集合(调用方给);非空 → { incomplete: true }
  * @returns {{ required: object[], incomplete: boolean, incompleteFiles: string[] }}
  */
-export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile, removedLineTextByFile = {}, incompleteFiles = [] }) {
+export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile, removedLineTextByFile = {}, windowTextByFile = {}, incompleteFiles = [] }) {
   const required = [];
   for (const f of files) {
     const path = f.newPath ?? f.oldPath;
-    if (!path || f.changeType === 'deleted' || f.contentKind !== 'text') continue;
-    // 文档类文件不产 required(说明文字里出现 `expect(` 不该要求负向证据)
-    if (/\.(md|mdx|txt|rst|json|ya?ml)$/i.test(path)) continue;
-    const isTestInfra = profilesForPath(profiles, path).some((p) => p.id === 'test-infra');
+    if (!path || f.contentKind !== 'text') continue;
+    if (DOC_RE.test(path)) continue;
+    const matched = profilesForPath(profiles, path);
+    // 数据类 json/yaml:只有命中 profile(如 .github/workflows/**)才判——普通 settings
+    // 数据文件不产 required。
+    if (DATA_RE.test(path) && matched.length === 0) continue;
+    const isTestInfra = matched.some((p) => p.id === 'test-infra');
+    const isCi = matched.some((p) => p.id === 'ci-workflow');
     const added = addedLineTextByFile?.[path] ?? {};
     const removed = removedLineTextByFile?.[path] ?? {};
+    const windows = windowTextByFile?.[path] ?? {};
+    const deleted = f.changeType === 'deleted';
     for (const h of f.hunks) {
       const addedTexts = (added[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
       const removedTexts = (removed[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
-      const addedHit = addedTexts.some(touchesOracle);
-      const removedHit = removedTexts.some(touchesOracle);
+      if (addedTexts.length === 0 && removedTexts.length === 0) continue; // 纯注释/空白 hunk
+      // 判定语料 = 新增行所在的**逻辑语句窗口** ∪ 删除行文本。窗口是第 2 轮核验的修法:
+      // 多行断言只改了参数那一行时,单行匹配看不到 `assert.equal(`,required 会凭空为空。
+      // 方向上**有意偏向多要**(窗口可能带进邻近语句)——漏要证据的代价是恒绿测试再次过审。
+      const windowText = windows[h.hunkId] ?? addedTexts.join('\n');
+      const removedText = removedTexts.join('\n');
+      const addedHit = touchesOracle(windowText);
+      const removedHit = touchesOracle(removedText);
       if (!addedHit && !removedHit) continue;
-      // test-infra 路径:等待/断言/守卫任一即 required;普通代码:只有**守卫/断言**改动
+      // test-infra / CI 路径:等待/断言/守卫任一即 required;普通代码:只有**守卫/断言**改动
       // (等待原语在业务代码里常见且不构成判定器)才 required。
-      const guardish = [...addedTexts, ...removedTexts].some((t) => GUARD_RE.test(t) || ASSERT_RE.test(t));
-      if (!isTestInfra && !guardish) continue;
+      const guardish = touchesGuardish(windowText) || touchesGuardish(removedText);
+      if (!isTestInfra && !isCi && !guardish) continue;
       required.push({
         fileId: f.fileId, hunkId: h.hunkId, path,
-        reason: removedHit && !addedHit
-          ? 'hunk 删除了等待/断言/守卫调用——必须证明剩下的判定仍会在坏情况下变红(executed)'
-          : 'hunk 触及等待原语/断言/守卫调用——必须给负向证据(executed)',
+        reason: deleted
+          ? '文件被整体删除,其中的等待/断言/守卫一并消失——必须证明剩下的判定仍会在坏情况下变红(executed)'
+          : (removedHit && !addedHit
+            ? 'hunk 删除了等待/断言/守卫调用——必须证明剩下的判定仍会在坏情况下变红(executed)'
+            : 'hunk 触及等待原语/断言/守卫调用——必须给负向证据(executed)'),
       });
     }
   }

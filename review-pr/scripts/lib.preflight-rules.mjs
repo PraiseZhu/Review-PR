@@ -21,7 +21,11 @@
 //     的末段属性名)上的 `.waitForFunction(...)`;通过 alias(`const p = page`)、解构、
 //     容器传参等间接持有的对象**不在承诺内**——那类要靠 LLM 层(R3 profile 必答)兜;
 //   - `locator.waitFor` 不收谓词、`vi.waitFor(async ...)` 是合法用法,均**不**报——
-//     泛化成"任何 .waitFor" 会产生假红(复审裁决,已在 fixture 钉死零误报)。
+//     泛化成"任何 .waitFor" 会产生假红(复审裁决,已在 fixture 钉死零误报);
+//   - 谓词返回值只按**语法确定性**判 Promise:async 修饰、await、`new Promise`、`Promise.x()`、
+//     async IIFE、三元任一分支、以及"链基已是 Promise"的 `.then/.catch/.finally`。
+//     **不按方法名猜**:`.evaluate` 只对异步持有者白名单 receiver 认(同步 `model.evaluate()`
+//     不报),`x.then()` 里的 x 若不是 Promise 也不报——第 2 轮核验点名的两处假红。
 import { createRequire } from 'node:module';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve, extname } from 'node:path';
@@ -42,7 +46,10 @@ const PROVENANCE = join(VENDOR_DIR, 'PROVENANCE.json');
 export const BUILTIN_RULES = [
   {
     ruleId: 'playwright-waitforfunction-async-predicate',
-    ruleVersion: 'v2', // v2(2026-08-05):补齐显式返回 Promise 的 literal 形态(new Promise / Promise.x / block 体 return)
+    // v2:补齐显式返回 Promise 的 literal 形态(new Promise / Promise.x / block 体 return)
+    // v3(2026-08-05 第 2 轮核验):剥语法壳(as/satisfies/<T>/非空断言)、认三元与 async IIFE;
+    //     同时**收窄**假红面——`.evaluate` 只对异步持有者白名单认,`.then` 只对已是 Promise 的链基认
+    ruleVersion: 'v3',
     severity: 'P1',
     invariant: 'waitForFunction 的谓词不得是 async/返回 Promise——Promise 恒 truthy,会 1ms 假通过而根本没在等待',
     title: 'waitForFunction 收到 async/Promise 谓词(假等待)',
@@ -100,20 +107,67 @@ export function scriptKindFor(ts, path) {
   return key ? ts.ScriptKind[key] : null;
 }
 
-/** 表达式本身是否"显然是 Promise":new Promise(...) / Promise.xxx(...) / page.evaluate(...) / await。 */
-function isPromiseishExpression(ts, e) {
+/** Playwright/Puppeteer 风格的**异步 API 持有者**白名单(receiver 末段标识名)。
+ *  只对这份名单上的 receiver 认 `.evaluate/.evaluateHandle` 恒返 Promise——第 2 轮核验
+ *  点名的假红正是"任何方法名叫 evaluate 就算 Promise"(同步 `model.evaluate()` 被误报)。
+ *  名单外的同名调用不在承诺内(交 R3 profile 必答兜),宁少报不假红。 */
+const ASYNC_HOLDER_RE = /^(page|frame|locator|elementHandle|handle|context|browser|browserContext|worker|iframe)$/;
+
+/** 剥掉不改变运行时值的语法外壳:括号 / as / satisfies / <T> 断言 / 非空断言。
+ *  第 2 轮核验实测漏判的四种形态全部源于此处没剥壳(`Promise.resolve(x) as Promise<T>`)。 */
+function unwrapExpression(ts, e) {
+  let n = e;
+  for (;;) {
+    if (!n) return n;
+    if (ts.isParenthesizedExpression(n)) { n = n.expression; continue; }
+    if (ts.isAsExpression?.(n)) { n = n.expression; continue; }
+    if (ts.isSatisfiesExpression?.(n)) { n = n.expression; continue; }
+    if (ts.isTypeAssertionExpression?.(n) || ts.isTypeAssertion?.(n)) { n = n.expression; continue; }
+    if (ts.isNonNullExpression?.(n)) { n = n.expression; continue; }
+    return n;
+  }
+}
+
+const isAsyncFunctionLike = (ts, n) => (ts.isArrowFunction(n) || ts.isFunctionExpression(n))
+  && (n.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+
+/** receiver 末段标识名(`a.b.page` → `page`;`page` → `page`);其它形态返回 null。 */
+function receiverName(ts, expr) {
+  const e = unwrapExpression(ts, expr);
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e)) return e.name.text;
+  return null;
+}
+
+/**
+ * 表达式本身是否**语法上确定**返回 Promise。只认可判定的形态,不按方法名猜:
+ *   await x / new Promise(...) / Promise.xxx(...) / (async () => ...)() /
+ *   <白名单 receiver>.evaluate(...) / <本身是 Promise 的表达式>.then|catch|finally(...) /
+ *   三元的任一分支满足。
+ */
+function isPromiseishExpression(ts, raw) {
+  const e = unwrapExpression(ts, raw);
   if (!e) return false;
   if (ts.isAwaitExpression(e)) return true;
-  if (ts.isParenthesizedExpression(e)) return isPromiseishExpression(ts, e.expression);
   if (ts.isNewExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === 'Promise') return true;
+  // 三元:任一分支是 Promise 就够——谓词返回值可能是 Promise,恒 truthy 的风险已成立
+  if (ts.isConditionalExpression(e)) {
+    return isPromiseishExpression(ts, e.whenTrue) || isPromiseishExpression(ts, e.whenFalse);
+  }
   if (ts.isCallExpression(e)) {
-    const callee = e.expression;
+    const callee = unwrapExpression(ts, e.expression);
+    // async IIFE:`(async () => ...)()` —— 调用一个 async 字面量函数
+    if (isAsyncFunctionLike(ts, callee)) return true;
     if (ts.isPropertyAccessExpression(callee)) {
-      const obj = callee.expression;
       const prop = callee.name.text;
-      if (ts.isIdentifier(obj) && obj.text === 'Promise') return true;              // Promise.resolve/all/race...
-      if (prop === 'evaluate' || prop === 'evaluateHandle') return true;            // page.evaluate 恒返 Promise
-      if (prop === 'then' || prop === 'catch' || prop === 'finally') return true;   // 链式 thenable
+      if (receiverName(ts, callee.expression) === 'Promise') return true;      // Promise.resolve/all/race...
+      if ((prop === 'evaluate' || prop === 'evaluateHandle')
+        && ASYNC_HOLDER_RE.test(receiverName(ts, callee.expression) ?? '')) return true;
+      // thenable 链:只有**链基本身已是 Promise** 时才算(`x.then()` 里的 x 可能是任意
+      // 有 then 方法的同步对象——按名字猜会假红)
+      if (prop === 'then' || prop === 'catch' || prop === 'finally') {
+        return isPromiseishExpression(ts, callee.expression);
+      }
     }
   }
   return false;

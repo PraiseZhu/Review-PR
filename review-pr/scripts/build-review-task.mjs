@@ -13,54 +13,15 @@
 // 退出码:0 = 构建完成(注意 task.snapshotComplete/profileConfigIncomplete 仍可能为真,
 // 它们会让本轮 consume 判 invalid);1 = 脚本自身错误。
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import process from 'node:process';
-import { print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo } from './lib.mjs';
-import { buildDiffSnapshot, coverageKeysOf } from './lib.diff-snapshot.mjs';
-import { mergeProfiles, requiredProfileAnswersFor, classifyRequiredNegativeEvidence, buildSegments, profileSetHash } from './lib.review-profiles.mjs';
+import { print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, ghJson } from './lib.mjs';
+import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
+import { computeReviewRequirements, coverageKeyStr as keyStr } from './lib.review-requirements.mjs';
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { loadKnownHazards, hazardsForPaths, extractEscapeCandidates } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
-const keyStr = (k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`);
-
-/**
- * 取每个 hunk 的新增行与删除行文本(R6 分类器输入)。删除行直接从 patch 里取(`-` 行),
- * 不需要再读 base blob。
- * 第 1 轮核验:取文本失败**不得静默 continue**(那会让 required 集合凭空变空 → 该给的
- * 负向证据不再被要求),而要记进 incompleteFiles → classifierIncomplete → R1 invalid。
- */
-function lineTextsFor(snapshot) {
-  const added = {};
-  const removed = {};
-  const incompleteFiles = [];
-  // 从整份 patch 里按文件段落切出每个 hunk 的 `-` 行
-  const segments = (snapshot.rawPatch ?? '').split(/^diff --git /m).slice(1);
-  const removedByPath = new Map();
-  for (const seg of segments) {
-    const plus = seg.match(/^\+\+\+ (?:b\/(.*)|\/dev\/null)$/m);
-    const key = plus?.[1] ?? null;
-    if (!key) continue;
-    const hunkBodies = seg.split(/^@@ .*$/m).slice(1);
-    removedByPath.set(key, hunkBodies.map((body) => body.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'))));
-  }
-  for (const f of snapshot.files) {
-    const path = f.newPath;
-    if (!path || f.contentKind !== 'text' || f.changeType === 'deleted') continue;
-    const show = spawnSync('git', ['show', `${snapshot.headOid}:${path}`], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-    if (show.status !== 0) { incompleteFiles.push(path); continue; }
-    const lines = show.stdout.split('\n');
-    added[path] = {};
-    removed[path] = {};
-    const removedHunks = removedByPath.get(path) ?? [];
-    f.hunks.forEach((h, i) => {
-      added[path][h.hunkId] = (h.addedNewLines ?? []).map((ln) => lines[ln - 1] ?? '');
-      removed[path][h.hunkId] = (removedHunks[i] ?? []).map((l) => l.slice(1));
-    });
-  }
-  return { added, removed, incompleteFiles };
-}
 
 try {
   const pr = Number(process.argv[2]);
@@ -76,22 +37,12 @@ try {
   const expectedPaths = expectedPathsArg ? expectedPathsArg.split(',').map((x) => x.trim()).filter(Boolean) : null;
   const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid, expectedPaths });
   const rules = loadRules();
-  const { profiles, warnings, configIncomplete } = mergeProfiles(rules.riskProfiles);
-
+  // 权威推导唯一实现(SC-R1a 第 2 轮核验):consumer 用同一函数重算并与本 task 逐组比对,
+  // task 文件不再是 coverage / 必答 / required 的可信来源。
+  const req = computeReviewRequirements({ repoRoot: REPO_ROOT, snapshot, rules });
+  const { profiles, warnings, configIncomplete, coverageKeys, segments, requiredProfileAnswers, requiredNegativeEvidenceKeys } = req;
   const files = snapshot.complete ? snapshot.files : [];
-  const coverageKeys = snapshot.complete ? coverageKeysOf(snapshot) : [];
-  const segments = buildSegments({ coverageKeys, sizeBudget: Number(rules.reviewSegments?.sizeBudget) || 60 });
-  const requiredProfileAnswers = requiredProfileAnswersFor(profiles, files);
-  const lineTexts = snapshot.complete ? lineTextsFor(snapshot) : { added: {}, removed: {}, incompleteFiles: [] };
-  const classified = snapshot.complete
-    ? classifyRequiredNegativeEvidence({
-      profiles, files,
-      addedLineTextByFile: lineTexts.added,
-      removedLineTextByFile: lineTexts.removed,
-      incompleteFiles: lineTexts.incompleteFiles,
-    })
-    : { required: [], incomplete: false, incompleteFiles: [] };
-  const requiredNegativeEvidenceKeys = classified.required;
+  const classified = req.classifier;
 
   const ledger = loadLedger(ledgerPathFor(STATE_DIR, pr));
   const injectedOpen = ledger.ok
@@ -101,18 +52,43 @@ try {
   const changedPaths = files.map((f) => f.newPath ?? f.oldPath).filter(Boolean);
   const repoSlug = (() => { try { const { owner, repo } = parseRepo(); return `${owner}/${repo}`; } catch { return null; } })();
   const relevantHazards = hazardsForPaths(hazards, changedPaths, repoSlug);
-  // SC-R7 生产触发链(核验 BLOCKER):候选集由构建器**确定性**产出并逐条进 prompt;
-  // consumer 按 escapeAssessment 精确对账,yes 项确定性写 pending inbox。
+  // SC-R7 生产触发链(第 2 轮核验 BLOCKER):此前 `--pr-body-file` 是**可选**参数,生产
+  // SKILL 命令又没传 → 候选集恒空,consumer 也允许空 → 真实链条永远不产生逃逸候选。
+  // 现在数据源**必需且绑定**:默认由本脚本自己现场取(PR body + 关联 issue),取不到即
+  // escapeSourceIncomplete → consumer 判 taskInvalid;文件参数只作离线/测试 seam。
   const prBodyArg = argOf('--pr-body-file');
-  const prBody = prBodyArg && existsSync(prBodyArg) ? readFileSync(prBodyArg, 'utf8') : '';
-  const escapeCandidates = extractEscapeCandidates({ body: prBody });
+  const issuesArg = argOf('--related-issues-file');
+  let prBody = null;
+  let issueTexts = [];
+  const escapeSourceErrors = [];
+  if (prBodyArg || issuesArg) {
+    if (!prBodyArg || !existsSync(prBodyArg)) escapeSourceErrors.push('--pr-body-file 指向的文件不存在');
+    else prBody = readFileSync(prBodyArg, 'utf8');
+    if (issuesArg) {
+      try {
+        const parsed = JSON.parse(readFileSync(issuesArg, 'utf8'));
+        if (!Array.isArray(parsed)) throw new Error('需 JSON 字符串数组');
+        issueTexts = parsed.map((x) => String(x));
+      } catch (e) { escapeSourceErrors.push(`--related-issues-file 不可用:${e.message}`); }
+    }
+  } else {
+    try {
+      const v = ghJson(['pr', 'view', String(pr), '--repo', repoSlug ?? '', '--json', 'body,closingIssuesReferences']);
+      prBody = v.body ?? '';
+      issueTexts = (Array.isArray(v.closingIssuesReferences) ? v.closingIssuesReferences : [])
+        .map((n) => [n?.title, n?.body].filter(Boolean).join('\n'));
+    } catch (e) {
+      escapeSourceErrors.push(`现场取 PR body / 关联 issue 失败:${String(e.message ?? e).slice(0, 200)}——逃逸候选数据源缺失,不得据"无候选"放行`);
+    }
+  }
+  const escapeCandidates = prBody === null ? [] : extractEscapeCandidates({ body: prBody, issueTexts });
 
   const task = {
     schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
     pr,
     snapshotHash: snapshot.snapshotHash,
     snapshotComplete: snapshot.complete,
-    profileSetHash: profileSetHash(profiles),
+    profileSetHash: req.profileSetHash,
     profileConfigIncomplete: configIncomplete,
     profileWarnings: warnings,
     ledgerReadable: ledger.ok,
@@ -128,6 +104,10 @@ try {
     classifierIncompleteFiles: classified.incompleteFiles,
     repo: repoSlug,
     escapeCandidates,
+    escapeSourceIncomplete: escapeSourceErrors.length > 0,
+    escapeSourceErrors,
+    escapeSourceKind: (prBodyArg || issuesArg) ? 'file-seam' : 'gh-live',
+    relatedIssueCount: issueTexts.length,
   };
 
   // ── prompt 正文:必答项 / open findings / hazards / 分片 全部落进文本 ──
@@ -181,12 +161,26 @@ try {
     L.push('', '对每条在 `escapeAssessment[]` 里给 `{candidateId, verdict:"yes"|"no", basis}`——`yes` 表示"本 PR 确实在修一个此前已合并 PR 逃过审查的问题",机器会据此登记逃逸模式(下次同路径 PR 的任务里就会带上它);`no` 也要给依据。', '');
   }
   L.push('## 覆盖回执(逐段精确集合,缺/重/跨段一律 invalid)', '');
-  L.push(`本次改动共 ${coverageKeys.length} 个 coverage key,分 ${segments.length} 段顺序审查(同一会话内分段,不增席位):`, '');
+  L.push(`本次改动共 ${coverageKeys.length} 个 coverage key,分 ${segments.length} 段**顺序投递**(同一会话内分段,不增席位):`, '');
   for (const seg of segments) {
-    L.push(`- \`${seg.segmentId}\`(投递序号 ${seg.order}):${seg.assignedCoverageKeys.length} 个 key`);
-    for (const k of seg.assignedCoverageKeys) L.push(`  - ${keyStr(k)}`);
+    L.push(`- \`${seg.segmentId}\`(投递序号 ${seg.order}):${seg.assignedCoverageKeys.length} 个 key(清单随该段投递给出)`);
   }
-  L.push('', '编排方按 `order` **在同一审查会话内逐段投递**(不增席位);每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`——`receivedOrder` 必须等于该段的投递序号,且只能认领本段分配到的 key。缺段/乱序/跨段冒领/段内重复一律判 invalid;宿主无法继续投递时按 blocked 上报,不要一次性硬审。', '');
+  // 第 2 轮核验 BLOCKER:key 清单**不再写进本文件**——否则"一次性硬审 + 补一份形状正确的
+  // 分段回执"与"真的分段审过"在机器层无法区分。清单只能经投递出口取得,投递台账因此成为
+  // 顺序性的机器凭据(诚实边界见 lib.review-delivery.mjs)。
+  L.push('', [
+    '编排方必须按 `order` 逐段调用投递出口,把它打印的 payload 投给**同一个**审查会话:',
+    '',
+    '```',
+    `node <SKILL_ROOT>/scripts/deliver-review-segment.mjs ${pr} --task <task.json> \\`,
+    `  --base ${baseRefOid || '<baseOid>'} --head ${headOid || '<headOid>'} --order <1..${segments.length}>`,
+    '```',
+    '',
+    '投递出口只接受**下一个**序号(乱序/跳段直接拒且不留记录),并把投递事实记进台账;',
+    'consumer 以台账为基准核对回执——没投递过就声称覆盖、或宿主没投完,一律判 invalid。',
+    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`,',
+    '`receivedOrder` 必须等于该段投递序号,且只能认领本段分配到的 key。',
+  ].join('\n'), '');
   if (!snapshot.complete) L.push(`> ⚠ DiffSnapshot 不完整(${snapshot.reason})——本轮无论如何都会判 invalid,请上报而不是硬审。`, '');
   if (configIncomplete) L.push(`> ⚠ 目标仓 riskProfiles 配置有非法项(${warnings.join(';')})——内置与合法项照常审,但本轮会判 invalid。`, '');
 

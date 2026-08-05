@@ -154,6 +154,36 @@ export function applyReviewOutput({ entries, output, seat, snapshot, preflightHi
       continue;
     }
     if (d.disposition === 'resolved') {
+      // 第 2 轮核验 BLOCKER:evidence 此前只验**形状**(结构化 union + 字段非空),不验它
+      // 指向的对象是否真存在——实测拿 `{snapshotHash:'snap-stale', fileId:'F-fabricated',
+      // hunkId:'H-fabricated'}` 就能把 finding 关掉且 effectiveOpen 归零。证据必须绑定到
+      // 它所声称验证的那个对象:snapshot 必须是当前的,锚点必须在当前 snapshot 里存在,
+      // run 必须是本轮登记的 run。
+      const ev = d.evidence ?? {};
+      if (ev.snapshotHash !== cur) {
+        errors.push(`${d.findingId} 的 resolved 证据绑定的 snapshotHash(${ev.snapshotHash ?? '缺'})不是当前 snapshot(${cur})——stale 证据不关账`);
+        continue;
+      }
+      if (ev.kind === 'diff-anchor') {
+        const f = (snapshot.files ?? []).find((x) => x.fileId === ev.fileId);
+        if (!f) {
+          errors.push(`${d.findingId} 的 diff-anchor 指向不存在的 fileId ${ev.fileId}(不在当前 snapshot 的改动文件里)`);
+          continue;
+        }
+        if (!(f.hunks ?? []).some((h) => h.hunkId === ev.hunkId)) {
+          errors.push(`${d.findingId} 的 diff-anchor 指向不存在的 hunkId ${ev.hunkId}(不在 ${f.newPath ?? f.oldPath} 的 hunk 里)`);
+          continue;
+        }
+      } else if (ev.kind === 'verification-run') {
+        const runs = output.verificationRuns ?? [];
+        if (!runs.some((r) => r?.runId === ev.verificationRunId)) {
+          errors.push(`${d.findingId} 的 verification-run 引用了本轮未登记的 runId ${ev.verificationRunId}`);
+          continue;
+        }
+      } else {
+        errors.push(`${d.findingId} 的 resolved 证据 kind 非法(${ev.kind ?? '缺'})`);
+        continue;
+      }
       if (e.originSnapshotHash === cur) {
         errors.push(`${d.findingId} 在 origin snapshot 上自称 resolved(同 snapshot 禁自证已修——代码没变,问题不会自己消失)`);
         continue;
@@ -180,6 +210,11 @@ export function applyReviewOutput({ entries, output, seat, snapshot, preflightHi
   const executedVersion = new Map((executedRules ?? []).map((r) => [r.ruleId, r.ruleVersion]));
   for (const [id, e] of byId) {
     if (!e.rule || e.status !== 'open' || hitNow.has(id)) continue;
+    // 第 2 轮核验 BLOCKER:同一 origin snapshot 仍可自动核销——喂一份"同规则同版本跑过、
+    // hits=[]"的 preflight,代码一个字没变的 finding 就被判 resolved、effectiveOpen 归零。
+    // 代码没变问题不会自己消失:核销必须发生在**新** snapshot 上(与 ③ 的人工 resolved
+    // 同口径)。
+    if (e.originSnapshotHash === cur) continue;
     const ran = executedVersion.get(e.rule.ruleId);
     if (ran === undefined) continue;                 // 本轮没跑过这条规则 → 不能据"没命中"核销
     if (ran !== e.rule.ruleVersion) continue;        // 规则改版 → 不冒充"代码已修"

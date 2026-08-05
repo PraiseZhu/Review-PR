@@ -10,8 +10,11 @@ import {
   isEffectiveOpen, summarize, applyReviewOutput, applyInteractiveConfirmation, ledgerPathFor,
 } from '../scripts/lib.findings-ledger.mjs';
 
-const SNAP1 = { snapshotHash: 'snap1-aaa' };
-const SNAP2 = { snapshotHash: 'snap1-bbb' };
+const FILES = [{ fileId: 'F1', newPath: 'e2e/a.mjs', hunks: [{ hunkId: 'H1' }] }];
+const SNAP1 = { snapshotHash: 'snap1-aaa', files: FILES };
+const SNAP2 = { snapshotHash: 'snap1-bbb', files: FILES };
+// resolved 证据必须绑定当前 snapshot 的**真实**对象(第 2 轮核验 BLOCKER:此前只验形状)
+const ANCHOR = (snap) => ({ kind: 'diff-anchor', snapshotHash: snap.snapshotHash, fileId: 'F1', hunkId: 'H1', note: 'x' });
 const FAM = () => ({
   family_id: 'f1', invariant: '等待谓词必须真的等待', severity: 'P1',
   manifestations: [{ path: 'e2e/a.mjs', line: 10, evidence: 'e', impact: 'i', fix: 'f', verification: 'v', severity: 'P1' }],
@@ -39,9 +42,9 @@ test('新 finding 入账 open;effective-open/accepted-risk 汇总;同轮重复�
 test('resolved freshness:同 origin snapshot 自称 resolved → errors(整轮按 invalid 处理);新 snapshot + 证据 → 关闭', () => {
   const { entries } = applyReviewOutput({ entries: [], output: OUT({ findingFamilies: [FAM()] }), seat: 'auto', snapshot: SNAP1 });
   const id = entries[0].findingId;
-  const same = applyReviewOutput({ entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: 'x' }] }), seat: 'auto', snapshot: SNAP1 });
+  const same = applyReviewOutput({ entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ANCHOR(SNAP1) }] }), seat: 'auto', snapshot: SNAP1 });
   assert.ok(same.errors.some((e) => /同 snapshot 禁自证已修/.test(e)));
-  const fresh = applyReviewOutput({ entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: 'diff 锚点' }] }), seat: 'auto', snapshot: SNAP2 });
+  const fresh = applyReviewOutput({ entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ANCHOR(SNAP2) }] }), seat: 'auto', snapshot: SNAP2 });
   assert.equal(fresh.errors.length, 0);
   assert.equal(fresh.entries[0].status, 'resolved');
   assert.deepEqual(summarize(fresh.entries, SNAP2.snapshotHash), { effectiveOpenCount: 0, acceptedRiskCount: 0 });
@@ -78,7 +81,7 @@ test('preflight 项:人工/模型 resolved 拒;同规则同版本新 snapshot �
   const r1 = applyReviewOutput({ entries: [], output: OUT(), seat: 'auto', snapshot: SNAP1, preflightHits: [hit] });
   const id = derivePreflightFindingId(hit);
   assert.equal(r1.entries[0].findingId, id);
-  const manual = applyReviewOutput({ entries: r1.entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: 'x' }] }), seat: 'auto', snapshot: SNAP2 });
+  const manual = applyReviewOutput({ entries: r1.entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ANCHOR(SNAP2) }] }), seat: 'auto', snapshot: SNAP2 });
   assert.ok(manual.errors.some((e) => /不接受人工\/模型 resolved/.test(e)));
   const RULES = [{ ruleId: hit.ruleId, ruleVersion: 'v1' }];
   // 第 1 轮核验 BLOCKER:没有"本轮跑过该规则"的正证据时,零命中**不得**核销
@@ -96,6 +99,56 @@ test('preflight 项:人工/模型 resolved 拒;同规则同版本新 snapshot �
   assert.equal(closed.status, 'resolved');
   assert.equal(closed.evidence.kind, 'preflight-rerun');
   assert.equal(closed.evidence.snapshotHash, SNAP2.snapshotHash);
+});
+
+test('R1a 第 2 轮核验 BLOCKER:resolved 证据必须绑定真实对象(stale snapshot / 编造锚点 / 悬空 run 一律 errors)', () => {
+  const { entries } = applyReviewOutput({ entries: [], output: OUT({ findingFamilies: [FAM()] }), seat: 'auto', snapshot: SNAP1 });
+  const id = entries[0].findingId;
+  const at = (evidence, extra = {}) => applyReviewOutput({
+    entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence }], ...extra }),
+    seat: 'auto', snapshot: SNAP2,
+  });
+  // ① stale snapshotHash(实测:修前 errors 为空、finding 变 resolved、effectiveOpen=0)
+  const stale = at({ kind: 'diff-anchor', snapshotHash: 'snap-stale', fileId: 'F1', hunkId: 'H1' });
+  assert.ok(stale.errors.some((e) => /不是当前 snapshot/.test(e)), stale.errors.join(';'));
+  assert.equal(stale.entries.find((e) => e.findingId === id).status, 'open');
+  // ② 编造的 fileId
+  const badFile = at({ kind: 'diff-anchor', snapshotHash: SNAP2.snapshotHash, fileId: 'F-fabricated', hunkId: 'H1' });
+  assert.ok(badFile.errors.some((e) => /不存在的 fileId/.test(e)), badFile.errors.join(';'));
+  // ③ 编造的 hunkId
+  const badHunk = at({ kind: 'diff-anchor', snapshotHash: SNAP2.snapshotHash, fileId: 'F1', hunkId: 'H-fabricated' });
+  assert.ok(badHunk.errors.some((e) => /不存在的 hunkId/.test(e)), badHunk.errors.join(';'));
+  // ④ 悬空的 verification-run
+  const badRun = at({ kind: 'verification-run', snapshotHash: SNAP2.snapshotHash, verificationRunId: 'run-nope' }, { verificationRuns: [{ runId: 'run-real' }] });
+  assert.ok(badRun.errors.some((e) => /未登记的 runId/.test(e)), badRun.errors.join(';'));
+  // 对照:真实锚点通过(证明这不是"一律拒")
+  const ok = at(ANCHOR(SNAP2));
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.entries.find((e) => e.findingId === id).status, 'resolved');
+  // 对照:真实 run 通过
+  const okRun = at({ kind: 'verification-run', snapshotHash: SNAP2.snapshotHash, verificationRunId: 'run-real' }, { verificationRuns: [{ runId: 'run-real' }] });
+  assert.deepEqual(okRun.errors, []);
+});
+
+test('R5 第 2 轮核验 BLOCKER:同一 origin snapshot 上零命中**不得**自动核销(代码没变问题不会消失)', () => {
+  const hit = { ruleId: 'playwright-async-predicate', ruleVersion: 'v1', path: 'e2e/a.mjs', line: 5 };
+  const r1 = applyReviewOutput({ entries: [], output: OUT(), seat: 'auto', snapshot: SNAP1, preflightHits: [hit] });
+  const id = derivePreflightFindingId(hit);
+  assert.equal(r1.entries[0].originSnapshotHash, SNAP1.snapshotHash);
+  // 同 snapshot + 同规则同版本"跑过" + hits=[] —— 修前实测 status 变 resolved、effectiveOpen 归零
+  const same = applyReviewOutput({
+    entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP1,
+    preflightHits: [], executedRules: [{ ruleId: hit.ruleId, ruleVersion: 'v1' }],
+  });
+  const e = same.entries.find((x) => x.findingId === id);
+  assert.equal(e.status, 'open', '同 origin snapshot 不得自动核销');
+  assert.equal(summarize(same.entries, SNAP1.snapshotHash).effectiveOpenCount, 1, 'effective-open 必须仍为 1');
+  // 对照:换到新 snapshot 才允许核销(证明这条守卫不是"永不核销")
+  const next = applyReviewOutput({
+    entries: r1.entries, output: OUT(), seat: 'auto', snapshot: SNAP2,
+    preflightHits: [], executedRules: [{ ruleId: hit.ruleId, ruleVersion: 'v1' }],
+  });
+  assert.equal(next.entries.find((x) => x.findingId === id).status, 'resolved');
 });
 
 test('load/save:文件缺失=空账;损坏 → ok:false(fail-closed);ledgerHash 与写入顺序无关', () => {
@@ -119,7 +172,7 @@ test('R5 复审:resolved 项再次被命中必须 reopen(否则本轮 dirty、�
   const first = applyReviewOutput({ entries: [], output: OUT({ findingFamilies: [FAM()] }), seat: 'auto', snapshot: SNAP1 });
   const id = first.entries[0].findingId;
   const EV = { kind: 'diff-anchor', snapshotHash: SNAP2.snapshotHash, fileId: 'F1', hunkId: 'H1' };
-  const closed = applyReviewOutput({ entries: first.entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: EV }] }), seat: 'auto', snapshot: SNAP2 });
+  const closed = applyReviewOutput({ entries: first.entries, output: OUT({ findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ANCHOR(SNAP2) }] }), seat: 'auto', snapshot: SNAP2 });
   assert.equal(closed.entries[0].status, 'resolved');
   // 第三轮:同一 finding 又被报出来 → 必须 reopen
   const SNAP3 = { snapshotHash: 'snap1-ccc' };
@@ -135,7 +188,7 @@ test('R5 复审:本轮重报的项不得在同一轮 resolved/invalidated(先修
   const EV = { kind: 'diff-anchor', snapshotHash: SNAP2.snapshotHash, fileId: 'F1', hunkId: 'H1' };
   const sameRound = applyReviewOutput({
     entries: first.entries, snapshot: SNAP2, seat: 'auto',
-    output: OUT({ findingFamilies: [FAM()], findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: EV }] }),
+    output: OUT({ findingFamilies: [FAM()], findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ANCHOR(SNAP2) }] }),
   });
   assert.ok(sameRound.errors.some((e) => /不得在同一轮/.test(e)));
   assert.equal(sameRound.entries[0].status, 'open');

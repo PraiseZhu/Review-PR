@@ -195,13 +195,34 @@ test('R2 复审补齐:显式返回 Promise 的 literal 形态全部命中(new Pr
   assert.equal(hit('export async function w(page){ await page.waitForFunction(() => { return Promise.resolve(1); }); }'), 1, 'block 体 return Promise.resolve');
   assert.equal(hit('export async function w(page){ await page.waitForFunction(function(){ return new Promise(r=>r(1)); }); }'), 1, 'function 表达式 return new Promise');
   assert.equal(hit('export async function w(page){ await page.waitForFunction(() => page.evaluate(() => 1)); }'), 1, '简明体 page.evaluate');
-  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => 1 .toString().then(x=>x)); }'), 1, 'thenable 链');
+  assert.equal(hit('export async function w(page){ await page.waitForFunction(() => Promise.resolve(1).then(x=>x)); }'), 1, 'thenable 链(链基已是 Promise)');
   // 零误报:同步谓词、内层函数里的 Promise(不是本谓词的返回值)、标识符谓词
   assert.equal(hit('export async function w(page){ await page.waitForFunction(() => document.readyState === "complete"); }'), 0);
   assert.equal(hit('export async function w(page){ await page.waitForFunction(() => { const f = () => Promise.resolve(1); return !!f; }); }'), 0, '嵌套内层函数的 return 不属于本谓词');
   assert.equal(hit('export async function w(page, p){ await page.waitForFunction(p); }'), 0, '标识符谓词在承诺面之外');
 });
 
+test('R2 第 2 轮核验补齐:剥语法壳 / 三元 / async IIFE 全部命中,且不再按方法名猜(零假红)', () => {
+  const { ts } = loadVendoredTypescript();
+  const hit = (text, path = 'a.ts') => {
+    const r = scanSource(ts, { path, text });
+    assert.equal(r.ok, true, r.error);
+    return r.hits.length;
+  };
+  // 第 2 轮核验实测漏判的四种(修前均为 0)
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => Promise.resolve(true) as Promise<boolean>); }'), 1, 'as 断言外壳');
+  assert.equal(hit('export async function w(page: any, cond: boolean){ await page.waitForFunction(() => cond ? Promise.resolve(true) : false); }'), 1, '三元任一分支是 Promise');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => (async () => true)()); }'), 1, 'async IIFE');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => { return Promise.resolve(true) as Promise<boolean>; }); }'), 1, 'block 体 return + as 断言');
+  // satisfies / 非空断言 同属剥壳面
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => Promise.resolve(true)!); }'), 1, '非空断言外壳');
+  // 第 2 轮核验实测**假红**的两种(修前均为 1):按方法名猜 Promise
+  assert.equal(hit('export async function w(page: any, model: any){ await page.waitForFunction(() => model.evaluate()); }'), 0, '同步 model.evaluate() 不是 Promise——不得按方法名假红');
+  assert.equal(hit('export async function w(page: any, x: any){ await page.waitForFunction(() => x.then()); }'), 0, '任意 x.then() 链基不是 Promise——不得假红');
+  // 白名单 receiver 仍要报(收窄不等于放过真问题)
+  assert.equal(hit('export async function w(page: any, frame: any){ await page.waitForFunction(() => frame.evaluate(() => 1)); }'), 1, 'frame.evaluate 在异步持有者白名单内');
+});
+
 test('R2:规则版本随检测面变化 bump(SC-R5 的核销依赖 ruleVersion,不 bump 会冒充"代码已修")', () => {
-  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v2', '检测面扩了必须 bump');
+  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v3', '检测面扩了必须 bump');
 });

@@ -51,10 +51,19 @@ function setup({ rules = {}, headFiles } = {}) {
   return { work, repo, base, head, stateDir, env };
 }
 
-function run(f, extra = []) {
+function run(f, extra = [], { env = {} } = {}) {
   const taskFile = join(f.work, `task-${Math.random().toString(36).slice(2)}.json`);
   const promptFile = join(f.work, `prompt-${Math.random().toString(36).slice(2)}.md`);
-  const r = spawnSync('node', [SCRIPT, '469', '--base', f.base, '--head', f.head, '--out-task', taskFile, '--out-prompt', promptFile, ...extra], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  // R7 数据源默认走离线 seam:不给 --pr-body-file 时构建器会现场 `gh pr view`(生产行为),
+  // 单测不该依赖网络。想测"数据源缺失 → escapeSourceIncomplete"的用例自己屏蔽 gh。
+  const withSource = extra.includes('--pr-body-file') || extra.includes('--no-source-seam')
+    ? extra.filter((x) => x !== '--no-source-seam')
+    : (() => {
+      const bf = join(f.work, `body-${Math.random().toString(36).slice(2)}.md`);
+      writeFileSync(bf, '普通改动,无历史 PR 引用。');
+      return [...extra, '--pr-body-file', bf];
+    })();
+  const r = spawnSync('node', [SCRIPT, '469', '--base', f.base, '--head', f.head, '--out-task', taskFile, '--out-prompt', promptFile, ...withSource], { cwd: f.repo, env: { ...f.env, ...env }, encoding: 'utf8' });
   let json = null;
   try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(json, `应输出 JSON:status=${r.status}\n${r.stdout.slice(0, 500)}\n${r.stderr.slice(0, 500)}`);
@@ -201,4 +210,35 @@ test('R7 接线:active hazard 命中路径 → hazard 文本进 prompt;pending �
   const { prompt } = run(f);
   assert.ok(!prompt.includes('## 已知逃逸风险') || prompt.includes('hz1-'), 'hazard 段出现时必须带 hazardId');
   assert.ok(readFileSync(LEDGER_SRC, 'utf8').length > 0);
+});
+
+test('R7 第 2 轮核验 BLOCKER:逃逸候选数据源必需且绑定——取不到即 escapeSourceIncomplete(不得据"无候选"放行)', () => {
+  const f = setup();
+  // 屏蔽 gh:PATH 只留一个必失败的 shim,复现"现场取 PR body 失败"
+  const shim = join(f.work, 'shim');
+  mkdirSync(shim, { recursive: true });
+  writeFileSync(join(shim, 'gh'), '#!/bin/sh\necho "gh unavailable" >&2\nexit 1\n');
+  spawnSync('chmod', ['+x', join(shim, 'gh')]);
+  // PATH 只保留 shim + node/git 所需目录(全 shim 会连 node 都找不到)
+  const nodeDir = dirname(process.execPath);
+  const blind = run(f, ['--no-source-seam'], { env: { PATH: [shim, nodeDir, '/usr/bin', '/bin'].join(':') } });
+  assert.equal(blind.task.escapeSourceIncomplete, true, '数据源取不到必须显式标不完整');
+  assert.equal(blind.task.escapeCandidates.length, 0);
+  assert.match(blind.task.escapeSourceErrors.join(';'), /PR body/);
+  // 对照:给了 body 文件 → 完整,且候选被确定性抽出
+  const bf = join(f.work, 'body-real.md');
+  writeFileSync(bf, '本 PR 修复 #469 逃过审查的假等待问题。\n');
+  const ok = run(f, ['--pr-body-file', bf]);
+  assert.equal(ok.task.escapeSourceIncomplete, false);
+  assert.equal(ok.task.escapeCandidates.length, 1);
+  assert.equal(ok.task.escapeSourceKind, 'file-seam');
+  // 关联 issue 文本同样进候选(body 里没有引用,只有 issue 里有)
+  const bf2 = join(f.work, 'body-plain.md');
+  writeFileSync(bf2, '常规改动。\n');
+  const isf = join(f.work, 'issues.json');
+  writeFileSync(isf, JSON.stringify(['标题\n这条 issue 说的是 #470 漏审的问题']));
+  const withIssue = run(f, ['--pr-body-file', bf2, '--related-issues-file', isf]);
+  assert.equal(withIssue.task.relatedIssueCount, 1);
+  assert.equal(withIssue.task.escapeCandidates.length, 1, '关联 issue 里的引用也必须进候选');
+  assert.equal(withIssue.task.escapeCandidates[0].kind, 'issue-reference');
 });
