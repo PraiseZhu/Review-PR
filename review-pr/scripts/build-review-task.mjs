@@ -20,7 +20,7 @@ import {
   computeReviewRequirements, coverageCommitment, profileAnswersCommitment, negativeEvidenceCommitment,
 } from './lib.review-requirements.mjs';
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
-import { loadKnownHazards, hazardsForPaths, resolveEscapeSources } from './lib.escaped-hazards.mjs';
+import { loadKnownHazards, hazardsForPaths, resolveEscapeSources, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
@@ -101,6 +101,10 @@ try {
     classifierIncompleteFiles: classified.incompleteFiles,
     repo: repoSlug,
     escapeCandidates,
+    // SC-R7 第 4 轮核验:candidate/hazard 不只比 ID——全内容哈希,consumer 与 premerge
+    // 都现场重算比对(同 id 内容漂移、clean 后 body/canonical 变化都要可检)。
+    escapeSourceHash: escapeSourceHash({ prBody: src.prBody, issueTexts, candidates: escapeCandidates }),
+    knownHazardsHash: knownHazardsHash(relevantHazards),
     escapeSourceIncomplete: escapeSourceErrors.length > 0,
     escapeSourceErrors,
     escapeSourceKind: src.kind,

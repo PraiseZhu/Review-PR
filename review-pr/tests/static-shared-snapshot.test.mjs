@@ -78,7 +78,11 @@ test('SC-R1b:pre-merge 的 stage2 门必须无条件计算并被 canMerge/selfMe
 
 test('SC-R8:生产调用必须传 expectedPaths(元数据/patch 互检在生产可达)', () => {
   const pm = readFileSync(join(SCRIPTS, 'pre-merge-check.mjs'), 'utf8');
-  assert.match(pm, /expectedPaths: Array\.isArray\(m\.files\)/, 'pre-merge 必须用 PR files 元数据做互检');
+  // 第 4 轮核验:m.files 缺失/非数组不再折成 expectedPaths:null(那是"不要互检"),
+  // 而是 filesMetaOk 门直接判 incomplete;互检路径必传真实清单。
+  assert.match(pm, /const filesMetaOk = Array\.isArray\(m\.files\)/, 'pre-merge 必须先验 files 元数据形状');
+  assert.match(pm, /expectedPaths: m\.files\.map/, 'pre-merge 必须用 PR files 元数据做互检');
+  assert.match(pm, /PR files 元数据缺失或形状非法/, '元数据不可用必须显式判 incomplete,不是免检');
   assert.match(pm, /'--json', '[^']*files[^']*'/, 'pr view 必须查 files');
   for (const f of ['build-review-task.mjs', 'review-preflight.mjs']) {
     assert.match(readFileSync(join(SCRIPTS, f), 'utf8'), /--expected-paths/, `${f} 必须支持 --expected-paths`);

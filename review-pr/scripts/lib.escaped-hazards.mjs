@@ -422,6 +422,40 @@ export function activateInboxItems({ items, probe, upsert, readback, sync, remot
  * 默认现场取(生产);`--pr-body-file` / `--related-issues-file` 只作离线/测试 seam。
  * @returns {{ prBody: string|null, issueTexts: string[], errors: string[], kind: string, candidates: object[] }}
  */
+/** key 排序的确定性 stringify(hazard/candidate 都是 plain object/array/标量)。 */
+function canonicalJson(v) {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
+/**
+ * 逃逸候选数据源的**全内容**承诺(SC-R7 第 4 轮核验 BLOCKER)。
+ * 此前 consumer 只比 candidateId 集合——同一引用保持 id 不变、把 excerpt 从"修假等待"
+ * 改成"修权限绕过",旧 task/答卷照样过;consumer clean 之后 body/关联 issue 再变,
+ * premerge 也不重算。哈希覆盖完整 body、关联 issue 全文与候选全字段,任一漂移即变。
+ */
+export function escapeSourceHash({ prBody, issueTexts, candidates }) {
+  const canon = canonicalJson({
+    body: prBody ?? null,
+    issues: [...(issueTexts ?? [])],
+    candidates: [...(candidates ?? [])].map((c) => canonicalJson(c)).sort(),
+  });
+  return `esh1-${createHash('sha256').update(canon).digest('hex').slice(0, 20)}`;
+}
+
+/** 命中路径的 known hazards 的**全条目**承诺(同上:同 hazardId 下 pattern/evidence/
+ *  promotion 内容漂移必须可检)。按 hazardId 排序,逐条全字段。 */
+export function knownHazardsHash(relevantHazards) {
+  const canon = [...(relevantHazards ?? [])]
+    .map((h) => canonicalJson(h))
+    .sort()
+    .join('\n');
+  return `khh1-${createHash('sha256').update(canon).digest('hex').slice(0, 20)}`;
+}
+
 export function resolveEscapeSources({ pr, repoSlug, bodyFile = null, issuesFile = null, ghJson, readFileSync: rf, existsSync: ex }) {
   const errors = [];
   let prBody = null;

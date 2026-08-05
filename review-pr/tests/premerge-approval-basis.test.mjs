@@ -19,6 +19,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodS
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildDiffSnapshot } from '../scripts/lib.diff-snapshot.mjs';
+import { computeLedgerHash } from '../scripts/lib.findings-ledger.mjs';
+import { escapeSourceHash, knownHazardsHash, loadKnownHazards, hazardsForPaths } from '../scripts/lib.escaped-hazards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'pre-merge-check.mjs');
@@ -275,4 +278,48 @@ test('F3 · 第 4 轮核验 BLOCKER:PR files 元数据缺失/非数组 → 快�
     assert.equal(out.authorizedFastMergeAvailable, false, label);
     assert.deepEqual(prDiffCalls, [], `${label}:禁 gh pr diff 退路`);
   }
+});
+
+test('F4 · R7 第 4 轮核验 BLOCKER:clean 之后逃逸数据源/canonical hazard 内容变化 → premerge 现场重算把回执打 stale', () => {
+  const f = setup({ approveCommit: CURRENT });
+  // 本地重算 premerge 将会算出的四项期望值(与生产同一批函数)
+  const snap = buildDiffSnapshot({ repoRoot: f.repo, baseRefOid: f.base, headOid: f.head, expectedPaths: ['a.txt'] });
+  assert.equal(snap.complete, true, snap.reason);
+  const ledgerHash = computeLedgerHash([]);
+  const eshLive = escapeSourceHash({ prBody: '正文', issueTexts: [], candidates: [] }); // fixture 的 pr-view body
+  const khhLive = knownHazardsHash(hazardsForPaths(loadKnownHazards(), ['a.txt'], 'xindong/mivo-canvas'));
+  const writeReceipt = (bindings) => {
+    const code = `import { writeReviewReceipt } from ${JSON.stringify(new URL('../scripts/lib.mjs', import.meta.url).href)};
+writeReviewReceipt(JSON.parse(process.env.RECEIPT_JSON));`;
+    const r = spawnSync('node', ['--input-type=module', '-e', code], {
+      cwd: f.repo,
+      env: { ...f.env, RECEIPT_JSON: JSON.stringify({ pr: 469, headRefOid: f.head, verdict: 'clean', p0p1Count: 0, bindings }) },
+      encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const check = () => {
+    const r = spawnSync('node', [SCRIPT, '469'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+    const out = JSON.parse(r.stdout);
+    return out;
+  };
+  const BIND = {
+    source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-x',
+    snapshotHash: snap.snapshotHash, ledgerHash, escapeSourceHash: eshLive, knownHazardsHash: khhLive,
+  };
+  // 对照组:七项绑定全部匹配 → stage2Clean=true(证明下面两个失败不是"一律拒")
+  writeReceipt(BIND);
+  const ok = check();
+  assert.equal(ok.receiptGate.escapeSourceHash, eshLive, 'premerge 必须现场重算逃逸数据源哈希(不是抄回执)');
+  assert.equal(ok.receiptGate.knownHazardsHash, khhLive, 'premerge 必须现场重算 canonical hazard 哈希');
+  assert.equal(ok.receiptGate.stage2Clean, true, `对照组应 stage2Clean:${ok.receiptGate.reasons.join(';')}`);
+  // clean 之后 body/关联 issue 变了(回执绑的是当时的数据源)→ stale
+  writeReceipt({ ...BIND, escapeSourceHash: escapeSourceHash({ prBody: '当时的另一份 body', issueTexts: [], candidates: [] }) });
+  const drift1 = check();
+  assert.equal(drift1.receiptGate.stage2Clean, false, 'body 内容漂移必须打 stale');
+  assert.match(drift1.receiptGate.reasons.join(';'), /escapeSourceHash|stale|不一致/);
+  // clean 之后 canonical 新增/改了命中路径的 hazard → stale
+  writeReceipt({ ...BIND, knownHazardsHash: 'khh1-before-canonical-change' });
+  const drift2 = check();
+  assert.equal(drift2.receiptGate.stage2Clean, false, 'canonical hazard 内容漂移必须打 stale');
 });

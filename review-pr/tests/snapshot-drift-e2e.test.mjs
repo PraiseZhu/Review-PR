@@ -122,9 +122,14 @@ test('R8 行为级:同一 snapshot 漂移时,preflight / builder / consumer / �
     verdict: 'clean', headRefOid: f.head, p0p1Count: 0,
     source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-x',
     snapshotHash: s0.snapshotHash, ledgerHash: 'lh1-x',
+    escapeSourceHash: 'esh1-x', knownHazardsHash: 'khh1-x', // R7 第 4 轮:clean 绑定扩到 7 项
   };
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: f.head, snapshotHash: s0.snapshotHash, ledgerHash: 'lh1-x' }), true);
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: f.head, snapshotHash: s1.snapshotHash, ledgerHash: 'lh1-x' }), false,
+  const chk = (over) => isReviewReceiptClean({
+    receipt, headRefOid: f.head, snapshotHash: s0.snapshotHash, ledgerHash: 'lh1-x',
+    escapeSourceHash: 'esh1-x', knownHazardsHash: 'khh1-x', ...over,
+  });
+  assert.equal(chk({}), true);
+  assert.equal(chk({ snapshotHash: s1.snapshotHash }), false,
     'head 相同但 snapshot 身份变了 → 回执作废(旧实现只比 head,base 前进照样算清白)');
 });
 

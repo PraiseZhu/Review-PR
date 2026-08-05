@@ -1555,7 +1555,9 @@ export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count, binding
   // clean。缺任一绑定的 clean 写入在这里(可被 import 的公开函数)也拒绝,不能只指望
   // CLI 层校验。dirty 不强制绑定(撤销/打回场景可能算不出 outputHash)。
   if (verdict === 'clean') {
-    for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash']) {
+    // R7 第 4 轮核验:+escapeSourceHash/knownHazardsHash——clean 还要绑逃逸数据源与
+    // canonical hazard 的全内容(premerge 现场重算比对)。
+    for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash', 'escapeSourceHash', 'knownHazardsHash']) {
       if (typeof bindings?.[k] !== 'string' || !bindings[k]) {
         throw new Error(`clean 回执缺绑定字段 ${k}——clean 只能由 consume-review-output.mjs 依据机器 verdict 写入(SC-R1b)`);
       }
@@ -1606,11 +1608,15 @@ export function readReviewReceipt(pr) {
  *     都被误判成 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着"0 个
  *     P0/P1"的回执才算干净,字段缺失/负数/非整数一律 fail-closed 判不干净。
  */
-export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledgerHash }) {
+export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledgerHash, escapeSourceHash, knownHazardsHash }) {
   if (!receipt) return false;
   if (receipt.headRefOid !== headRefOid) return false;
   if (receipt.verdict !== 'clean') return false;
   if (!Number.isInteger(receipt.p0p1Count) || receipt.p0p1Count !== 0) return false;
+  // R7 第 4 轮核验:clean 后 PR body/关联 issue/canonical hazard 内容变化必须打 stale。
+  // 期望值缺失(undefined)一律判不 clean(fail-closed),与下方 snapshot/ledger 同口径。
+  if (typeof escapeSourceHash !== 'string' || !escapeSourceHash || receipt.escapeSourceHash !== escapeSourceHash) return false;
+  if (typeof knownHazardsHash !== 'string' || !knownHazardsHash || receipt.knownHazardsHash !== knownHazardsHash) return false;
   // SC-R1b/R5(2026-08-05):clean 的新鲜度不再只看 head——必须同时匹配当前重建的
   // snapshotHash(base 前进 head 不变时旧 clean 即 stale)与当前 ledgerHash("先 clean
   // 后新增 open"会改变 ledgerHash,旧 clean 失效)。调用方不提供这两个期望值(undefined)

@@ -15,8 +15,8 @@ import { writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../
 // SC-R1b(2026-08-05):clean 回执必须携带五项绑定,isReviewReceiptClean 必须同时匹配
 // 当前 snapshotHash/ledgerHash。本文件用固定的测试绑定;"不带绑定的旧签名调用必须
 // fail-closed"有专门用例。
-const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t' };
-const cleanOk = (receipt, headRefOid) => isReviewReceiptClean({ receipt, headRefOid, snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash });
+const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t', escapeSourceHash: 'esh1-t', knownHazardsHash: 'khh1-t' };
+const cleanOk = (receipt, headRefOid) => isReviewReceiptClean({ receipt, headRefOid, snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash, escapeSourceHash: B.escapeSourceHash, knownHazardsHash: B.knownHazardsHash });
 
 test('无回执 → isReviewReceiptClean 恒 false', () => {
   assert.equal(isReviewReceiptClean({ receipt: null, headRefOid: 'abc123' }), false);
@@ -30,8 +30,14 @@ test('写入 clean 回执后,针对同一 head 读出 → isReviewReceiptClean=t
   assert.equal(receipt.verdict, 'clean');
   assert.equal(cleanOk(receipt, 'sha-aaa'), true);
   // SC-R1b:snapshot/ledger 漂移或期望值缺失 → 不 clean(fail-closed)
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: 'snap1-other', ledgerHash: B.ledgerHash }), false, 'snapshot 漂移(如 base 前进 head 不变)必须失效');
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: B.snapshotHash, ledgerHash: 'lh1-other' }), false, 'ledger 变化(如 clean 后新增 open)必须失效');
+  const w = (over) => isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash, escapeSourceHash: B.escapeSourceHash, knownHazardsHash: B.knownHazardsHash, ...over });
+  assert.equal(w({ snapshotHash: 'snap1-other' }), false, 'snapshot 漂移(如 base 前进 head 不变)必须失效');
+  assert.equal(w({ ledgerHash: 'lh1-other' }), false, 'ledger 变化(如 clean 后新增 open)必须失效');
+  // R7 第 4 轮核验:clean 后 PR body/issue/canonical hazard 内容变化 → stale;期望值缺失 → fail-closed
+  assert.equal(w({ escapeSourceHash: 'esh1-other' }), false, '逃逸数据源内容漂移必须失效');
+  assert.equal(w({ knownHazardsHash: 'khh1-other' }), false, 'canonical hazard 内容漂移必须失效');
+  assert.equal(w({ escapeSourceHash: undefined }), false, '数据源取不到(期望值缺失)必须 fail-closed');
+  assert.equal(w({ knownHazardsHash: null }), false, 'canonical 不可读(期望值缺失)必须 fail-closed');
   assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa' }), false, '不带期望 hash 的旧签名调用必须 fail-closed');
 });
 
@@ -121,7 +127,7 @@ test('P2-2:writeReviewReceipt 拒绝非整数 p0p1Count', () => {
 // ── SC-R1b 新契约 ──
 
 test('SC-R1b:clean 回执缺任一绑定字段 → writeReviewReceipt 拒绝(consumer 事实上唯一 clean writer)', () => {
-  for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash']) {
+  for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash', 'escapeSourceHash', 'knownHazardsHash']) {
     const bad = { ...B }; delete bad[k];
     assert.throws(
       () => writeReviewReceipt({ pr: 900011, headRefOid: 'sha-b', verdict: 'clean', p0p1Count: 0, bindings: bad }),

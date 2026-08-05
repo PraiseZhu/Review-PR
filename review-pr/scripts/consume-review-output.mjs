@@ -32,7 +32,7 @@ import { validateReviewOutput, deriveVerdict, REVIEW_OUTPUT_SCHEMA_VERSION } fro
 import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAnswerKeyStr, negativeKeyStr } from './lib.review-requirements.mjs';
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
-import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths } from './lib.escaped-hazards.mjs';
+import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -154,6 +154,27 @@ try {
   }
   if (authHazardIds.size !== taskHazardIds.size || [...authHazardIds].some((x) => !taskHazardIds.has(x))) {
     taskErrors.push(`task.knownHazards 与现场重算不一致(现场 ${authHazardIds.size} 条,task ${taskHazardIds.size} 条)`);
+  }
+  // ── R7 第 4 轮核验 BLOCKER:不只比 ID,**全内容**哈希 ──
+  // 同 candidateId 下 excerpt 从"修假等待"改成"修权限绕过"、同 hazardId 下 pattern/
+  // evidence/promotion 内容漂移——ID 集合比对全部盲视。全内容哈希现场重算,写进 clean
+  // 回执绑定,premerge 再重算一次(clean 之后 body/issue/canonical 变化都会把回执打 stale)。
+  const authEscapeSourceHash = escapeSourceHash({ prBody: authSrc.prBody, issueTexts: authSrc.issueTexts, candidates: authSrc.candidates });
+  const authKnownHazardsHash = knownHazardsHash(authRelevant);
+  if (task.escapeSourceHash !== authEscapeSourceHash) {
+    taskErrors.push(`task.escapeSourceHash 与现场重算不符(task=${task.escapeSourceHash},现场=${authEscapeSourceHash})——body/关联 issue/候选内容漂移或被改`);
+  }
+  if (task.knownHazardsHash !== authKnownHazardsHash) {
+    taskErrors.push(`task.knownHazardsHash 与现场重算不符(task=${task.knownHazardsHash},现场=${authKnownHazardsHash})——canonical hazard 内容漂移或被改`);
+  }
+  // task 里的**数组本体**同样全内容对账(hash 字段没动、只改数组条目内容的篡改在上面两条
+  // 检不出——数组是审查方实际读到的东西,不能与权威内容漂移)
+  if (knownHazardsHash(Array.isArray(task.knownHazards) ? task.knownHazards : []) !== authKnownHazardsHash) {
+    taskErrors.push('task.knownHazards 条目内容与现场重算不一致(同 hazardId 内容漂移也不放行)');
+  }
+  const candContent = (list) => knownHazardsHash(list); // 同一 canonical 序列化,复用即可
+  if (candContent(Array.isArray(task.escapeCandidates) ? task.escapeCandidates : []) !== candContent(authSrc.candidates)) {
+    taskErrors.push('task.escapeCandidates 条目内容与现场重算不一致(同 candidateId 的 excerpt/kind 漂移也不放行)');
   }
 
   const injectedOpenIds = Array.isArray(task.injectedOpenIds) ? task.injectedOpenIds : [];
@@ -364,6 +385,9 @@ try {
   const bindings = {
     source: 'consume-review-output', schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
     outputHash, snapshotHash: snapshot.snapshotHash ?? 'snapshot-incomplete', ledgerHash,
+    // R7 第 4 轮核验:clean 的新鲜度也绑逃逸数据源与 canonical hazard 的**全内容**
+    // (premerge 现场重算比对——clean 之后 PR body/关联 issue/canonical 变了,旧 clean 即 stale)
+    escapeSourceHash: authEscapeSourceHash, knownHazardsHash: authKnownHazardsHash,
   };
   if (verdict === 'clean') {
     writeReviewReceipt({ pr, headRefOid, verdict: 'clean', p0p1Count: 0, bindings });

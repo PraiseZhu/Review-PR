@@ -723,3 +723,65 @@ test('㉒ R7 第 3 轮核验 BLOCKER:candidates / repo / known hazards 也必须
   BODY_OF.set(badHz, BODY_OF.get(tf));
   assert.match(run(f, compliant(tf), ['--mode', 'auto', '--task', badHz, '--preflight', pf]).json.reasons.join(';'), /hazardsIncomplete/);
 });
+
+test('㉓ R7 第 4 轮核验 BLOCKER:candidateId 不变但 excerpt 内容漂移 → 旧 task/答卷判 invalid', () => {
+  const f = setup();
+  // 两份 body:引用同一个 PR(#101)→ candidateId 完全相同(esc-body-reference-101),
+  // 但陈述内容不同。只比 ID 集合时两者不可区分(核验席点名的盲区)。
+  const bodyA = '本 PR 修复 #101 逃过审查的假等待问题。';
+  const bodyB = '本 PR 修复 #101 逃过审查的权限绕过问题。';
+  const tf = taskFile(f, { body: bodyA });
+  deliverAll(f, tf);
+  const pf = preflightFile(f);
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  assert.equal(task.escapeCandidates.length, 1, '前提:bodyA 产生一条候选');
+  assert.match(task.escapeSourceHash ?? '', /^esh1-/, 'task 必须带逃逸数据源全内容哈希');
+  const answer = compliant(tf, {
+    escapeAssessment: [{ candidateId: task.escapeCandidates[0].candidateId, verdict: 'no', basis: '并非逃逸' }],
+  });
+  // 对照:consumer 用同一份 bodyA 重算 → clean
+  assert.equal(run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean');
+  // 漂移:consumer 现场取到的是 bodyB(同 candidateId,内容不同)→ 必须 invalid
+  const bodyBFile = join(f.work, 'bodyB.md');
+  writeFileSync(bodyBFile, bodyB);
+  BODY_OF.set(tf, bodyBFile); // run() 会把这个 seam 传给 consumer
+  const r = run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(r.json.verdict, 'invalid', 'ID 相同但内容漂移不得放行');
+  assert.match(r.json.reasons.join(';'), /escapeSourceHash/);
+});
+
+test('㉔ R7 第 4 轮核验:known hazard 同 ID 内容漂移 → task 对账 invalid', () => {
+  const f = setup();
+  // 让改动命中 canonical 种子 hazard 的路径(scripts/e2e/**)
+  mkdirSync(join(f.repo, 'scripts', 'e2e'), { recursive: true });
+  writeFileSync(join(f.repo, 'scripts/e2e/hit.mjs'), 'export const x = 1;\n');
+  git(['add', '-A'], f.repo);
+  git(['commit', '-q', '-m', 'hit hazard path'], f.repo);
+  f.head = git(['rev-parse', 'HEAD'], f.repo);
+  const tf = taskFile(f);
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  if (task.knownHazards.length === 0) {
+    // canonical 种子未命中此路径时本用例的前提不成立——直接构造哈希对账断言
+    assert.match(task.knownHazardsHash ?? '', /^khh1-/);
+    return;
+  }
+  assert.match(task.knownHazardsHash ?? '', /^khh1-/);
+  deliverAll(f, tf);
+  const pf = preflightFile(f);
+  // 篡改 task 里的 hazard 内容但保住 hazardId(旧实现只比 ID 集合 → 检不出)
+  const tampered = join(f.work, 'task-hz-tampered.json');
+  const t2 = { ...task, knownHazards: task.knownHazards.map((h) => ({ ...h, pattern: '完全不同的模式描述' })) };
+  writeFileSync(tampered, JSON.stringify(t2));
+  BODY_OF.set(tampered, BODY_OF.get(tf));
+  const r = run(f, compliant(tf), ['--mode', 'auto', '--task', tampered, '--preflight', pf]);
+  assert.equal(r.json.verdict, 'invalid');
+  // 注:task.knownHazardsHash 是构建时算的,篡改 knownHazards 数组不影响它——真正拦住
+  // 的是"现场重算 canonical 哈希 vs task 声明哈希"完全一致这条(若有人连 hash 一起改,
+  // 现场重算也会对不上)。这里断言篡改 hash 的形态:
+  const tampered2 = join(f.work, 'task-hzh-tampered.json');
+  writeFileSync(tampered2, JSON.stringify({ ...task, knownHazardsHash: 'khh1-forged' }));
+  BODY_OF.set(tampered2, BODY_OF.get(tf));
+  const r2 = run(f, compliant(tf), ['--mode', 'auto', '--task', tampered2, '--preflight', pf]);
+  assert.equal(r2.json.verdict, 'invalid');
+  assert.match(r2.json.reasons.join(';'), /knownHazardsHash/);
+});

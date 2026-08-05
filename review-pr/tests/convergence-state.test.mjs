@@ -161,7 +161,7 @@ test('D1/D3 核心:复发 finding 仍计入 p0p1Count,只从 newFamilyCount 里�
 
   // 旧 head 的 clean 回执绝不能覆盖新 head(既有语义,P1-5 核心;本测试只是确认
   // convergence-state 的记录不会绕开或弱化这条判定)。
-  const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t' }; // SC-R1b clean 必带绑定
+  const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t', escapeSourceHash: 'esh1-t', knownHazardsHash: 'khh1-t' }; // SC-R1b clean 必带绑定
   writeReviewReceipt({ pr, headRefOid: 'sha-1', verdict: 'clean', p0p1Count: 0, bindings: B });
   const receipt = readReviewReceipt(pr);
   assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-2' }), false, '旧 head 回执不能因为 convergence-state 记了复发就被追认成对新 head 也 clean');

@@ -48,6 +48,10 @@ import {
 } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
+import { resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
+import { readFileSync, existsSync } from 'node:fs';
+
+const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
 const THREADS_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -354,6 +358,28 @@ try {
   const reviewReceipt = readReviewReceipt(pr);
   const ledgerAny = loadLedger(ledgerPathFor(STATE_DIR, pr));
   const openAny = ledgerAny.ok ? summarize(ledgerAny.entries, secSnapshot.snapshotHash) : null;
+  // ── R7 第 4 轮核验 BLOCKER:consumer clean 之后,PR body/关联 issue 仍可在 head 不变
+  // 时新增/改逃逸候选,canonical 也可新增命中路径的 hazard——premerge 必须**现场重算**
+  // 这两个可变来源的全内容哈希与回执比对,任一漂移都把 clean 打 stale。数据源取不到 /
+  // canonical 不可读 → 期望值置 null → isReviewReceiptClean fail-closed 判不 clean。
+  // 离线/测试 seam 与 builder/consumer 同一对参数(--pr-body-file / --related-issues-file)。
+  const premergeSrc = resolveEscapeSources({
+    pr, repoSlug: slug,
+    bodyFile: argOf('--pr-body-file'), issuesFile: argOf('--related-issues-file'),
+    ghJson, readFileSync, existsSync,
+  });
+  const premergeHazards = loadKnownHazards();
+  const premergeRelevant = hazardsForPaths(
+    premergeHazards,
+    (secSnapshot.files ?? []).map((f) => f.newPath ?? f.oldPath).filter(Boolean),
+    slug,
+  );
+  const expectedEscapeSourceHash = premergeSrc.errors.length === 0
+    ? escapeSourceHash({ prBody: premergeSrc.prBody, issueTexts: premergeSrc.issueTexts, candidates: premergeSrc.candidates })
+    : null;
+  const expectedKnownHazardsHash = premergeHazards.incomplete !== true
+    ? knownHazardsHash(premergeRelevant)
+    : null;
   const receiptGate = {
     hasReceipt: reviewReceipt != null,
     receiptVerdict: reviewReceipt?.verdict ?? null,
@@ -362,19 +388,27 @@ try {
     ledgerReadable: ledgerAny.ok,
     effectiveOpenCount: openAny?.effectiveOpenCount ?? null,
     acceptedRiskCount: openAny?.acceptedRiskCount ?? null,
-    // 阶段二凭证是否有效:回执 clean 且绑定当前 snapshot/ledger,且台账双零
+    escapeSourceHash: expectedEscapeSourceHash,
+    knownHazardsHash: expectedKnownHazardsHash,
+    // 阶段二凭证是否有效:回执 clean 且绑定当前 snapshot/ledger/逃逸数据源/known hazards,且台账双零
     stage2Clean: secSnapshot.complete && ledgerAny.ok
       && openAny.effectiveOpenCount === 0 && openAny.acceptedRiskCount === 0
-      && isReviewReceiptClean({ receipt: reviewReceipt, headRefOid: m.headRefOid, snapshotHash: secSnapshot.snapshotHash, ledgerHash: ledgerAny.ledgerHash }),
+      && isReviewReceiptClean({
+        receipt: reviewReceipt, headRefOid: m.headRefOid,
+        snapshotHash: secSnapshot.snapshotHash, ledgerHash: ledgerAny.ledgerHash,
+        escapeSourceHash: expectedEscapeSourceHash, knownHazardsHash: expectedKnownHazardsHash,
+      }),
     reasons: [],
   };
   if (!secSnapshot.complete) receiptGate.reasons.push(`DiffSnapshot 不完整:${secSnapshot.reason}`);
   if (!ledgerAny.ok) receiptGate.reasons.push(`findings 台账不可读:${ledgerAny.error}`);
   if (openAny && openAny.effectiveOpenCount > 0) receiptGate.reasons.push(`台账仍有 ${openAny.effectiveOpenCount} 条 effective-open`);
   if (openAny && openAny.acceptedRiskCount > 0) receiptGate.reasons.push(`台账有 ${openAny.acceptedRiskCount} 条 accepted-risk(恒非 clean)`);
+  if (premergeSrc.errors.length > 0) receiptGate.reasons.push(`逃逸候选数据源现场重算失败(${premergeSrc.errors.join(';')})——无法证明 clean 仍新鲜,fail-closed`);
+  if (premergeHazards.incomplete === true) receiptGate.reasons.push('canonical hazards 不可读——无法证明 clean 仍新鲜,fail-closed');
   if (reviewReceipt == null) receiptGate.reasons.push('无阶段二审查回执(须先经 consume-review-output.mjs 裁决)');
   else if (reviewReceipt.verdict !== 'clean') receiptGate.reasons.push(`回执 verdict=${reviewReceipt.verdict}(非 clean)`);
-  else if (!receiptGate.stage2Clean) receiptGate.reasons.push('回执绑定的 snapshotHash/ledgerHash 与当前重建值不一致(stale)');
+  else if (!receiptGate.stage2Clean) receiptGate.reasons.push('回执绑定的 snapshotHash/ledgerHash/escapeSourceHash/knownHazardsHash 与当前重建值不一致(stale)');
   const receiptClean = receiptGate.stage2Clean;
 
   if (!securityGate.pass) blockers.push(...securityGate.reasons);
