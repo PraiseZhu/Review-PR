@@ -105,17 +105,40 @@ try {
   const negativeRequirements = auth.requiredNegativeEvidenceKeys.filter((x) => segHunkKeys.has(`${x.fileId}:${x.hunkId}`));
 
   // SC-4.2: 本段涉及的 prescan observations——**现场按 snapshot/file/line 重算归属**,
-  // 不信 artifact 自报的段归属(artifact 里没有段信息,本就无从自报;这里的"不信"体现在
-  // 用本段实际的文件路径集去筛选,而不是假设 observation 顺序与段顺序对应)。
-  // 只在 enabled 且 artifact.snapshotHash 匹配当前 snapshot 时才附带——否则不附带
-  // observations(consumer 侧的 SC-8 用 task.prescan 判断是否该有 assessment)。
+  // 不信 artifact 自报的段归属(artifact 里没有段信息,本就无从自报)。
+  //
+  // hunk 级归属(第 1 轮盲审 P1-3 修复):observation 只带 file/line,没有 fileId/hunkId,
+  // 此前只按 path 过滤——单文件多 hunk 跨段时,第 2 段的 observation 若与第 1 段同 path
+  // 会被误投给第 1 段(串段)。改为:该 observation 的 line 必须落在**本段实际分配到的
+  // 该文件 hunk** 的 addedNewLines 内才算属于本段;跨段共享同一文件时,不同段各自只认
+  // 自己 hunk 范围内的行号。
   const prescanCfg = validatePrescanConfig(loadRules().prescan);
   let prescanObservations = [];
   if (prescanCfg.enabled && prescanCfg.valid) {
     const prescanArtifact = readPrescanArtifact(STATE_DIR, pr);
     if (prescanArtifact && prescanArtifact.snapshotHash === snapshot.snapshotHash && prescanArtifact.status === 'complete') {
-      const segPaths = new Set(segmentContent.map((c) => c.path).filter(Boolean));
-      prescanObservations = (prescanArtifact.observations ?? []).filter((o) => segPaths.has(o.file));
+      // 本段每个文件允许的行号集合(file-kind key 允许该文件全部 hunk 的行;hunk-kind key
+      // 只允许该 hunkId 自己的 addedNewLines)
+      const allowedLinesByPath = new Map(); // path → Set<line>
+      for (const c of segmentContent) {
+        if (!c.path) continue;
+        if (!allowedLinesByPath.has(c.path)) allowedLinesByPath.set(c.path, new Set());
+        const set = allowedLinesByPath.get(c.path);
+        if (c.kind === 'hunk') {
+          const f = fileById.get(c.fileId);
+          const h = f?.hunks.find((x) => x.hunkId === c.hunkId);
+          for (const ln of h?.addedNewLines ?? []) set.add(ln);
+        } else {
+          // file-kind key:该文件本就整体归本段(无 hunk 概念,如 binary/mode-only),
+          // 允许该文件全部已知行(极端场景下 observation 落在此类文件上)。
+          const f = fileById.get(c.fileId);
+          for (const h of f?.hunks ?? []) for (const ln of h.addedNewLines ?? []) set.add(ln);
+        }
+      }
+      prescanObservations = (prescanArtifact.observations ?? []).filter((o) => {
+        const set = allowedLinesByPath.get(o.file);
+        return set && set.has(o.line);
+      });
     }
   }
 

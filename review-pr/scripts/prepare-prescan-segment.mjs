@@ -93,19 +93,37 @@ try {
   saveDeliveries(deliveryFile, { snapshotHash: snapshot.snapshotHash, deliveries: appended.deliveries });
 
   // SC-2.1: 输出该段可预扫内容——只含本段文件的 path/行区间/immutable patch/允许扫描
-  // 的新增行,不含后续段任何信息(后段文件甚至不在 fileById 映射里)
+  // 的新增行,不含后续段任何信息(后段文件甚至不在 fileById 映射里)。
+  //
+  // hunk 级隔离(第 1 轮盲审 P1-3 修复):单文件多 hunk 跨段时,此前按 fileId 取整文件
+  // 全部 hunks 会把后段的 hunk 内容一并泄露给前段——sizeBudget 小到把同一文件的两个
+  // hunk 切进不同段时(实测复现),两段都能看到全部 hunk。改为按本段 assignedCoverageKeys
+  // 里**该文件在本段被分配到的具体 hunkId 集合**过滤;file-kind key(整文件覆盖,如
+  // binary/无 hunk)仍取该文件全部 hunks(它本就是一个不可再分的覆盖单元)。
   const fileById = new Map(snapshot.files.map((f) => [f.fileId, f]));
-  const segFileIds = new Set(seg.assignedCoverageKeys.map((k) => k.fileId));
-  const allowedFiles = [...segFileIds].map((fid) => fileById.get(fid)).filter(Boolean);
-  const filesPayload = allowedFiles.map((f) => ({
-    path: f.newPath ?? f.oldPath,
-    changeType: f.changeType,
-    contentKind: f.contentKind,
-    hunks: (f.hunks ?? []).map((h) => ({
-      oldRanges: h.oldRanges, newRanges: h.newRanges, addedNewLines: h.addedNewLines,
-      patchText: h.patchText,
-    })),
-  }));
+  const hunkIdsByFile = new Map(); // fileId → Set<hunkId>(本段分配到的),或 'ALL'(file-kind key)
+  for (const k of seg.assignedCoverageKeys) {
+    if (k.kind === 'file') { hunkIdsByFile.set(k.fileId, 'ALL'); continue; }
+    if (!hunkIdsByFile.has(k.fileId)) hunkIdsByFile.set(k.fileId, new Set());
+    const existing = hunkIdsByFile.get(k.fileId);
+    if (existing !== 'ALL') existing.add(k.hunkId);
+  }
+  const filesPayload = [...hunkIdsByFile.entries()].map(([fid, allowedHunkIds]) => {
+    const f = fileById.get(fid);
+    if (!f) return null;
+    const hunks = allowedHunkIds === 'ALL'
+      ? (f.hunks ?? [])
+      : (f.hunks ?? []).filter((h) => allowedHunkIds.has(h.hunkId));
+    return {
+      path: f.newPath ?? f.oldPath,
+      changeType: f.changeType,
+      contentKind: f.contentKind,
+      hunks: hunks.map((h) => ({
+        oldRanges: h.oldRanges, newRanges: h.newRanges, addedNewLines: h.addedNewLines,
+        patchText: h.patchText,
+      })),
+    };
+  }).filter(Boolean);
 
   print({
     ok: true, pr, segmentId: seg.segmentId, order: seg.order, totalSegments: segments.length,

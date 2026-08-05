@@ -140,9 +140,26 @@ try {
     process.exit(2);
   }
 
+  // hunk 级隔离(第 1 轮盲审 P1-3 修复,同 prepare-prescan-segment.mjs):按本段
+  // assignedCoverageKeys 里该文件被分配到的具体 hunkId 集合构造校验用的文件对象,
+  // 不是整文件全部 hunks——否则单文件多 hunk 跨段时,本段的行号校验会接受属于
+  // 其他段 hunk 的行号。
   const fileById = new Map(snapshot.files.map((f) => [f.fileId, f]));
-  const segFileIds = new Set(seg.assignedCoverageKeys.map((k) => k.fileId));
-  const allowedFiles = [...segFileIds].map((fid) => fileById.get(fid)).filter(Boolean);
+  const hunkIdsByFile = new Map(); // fileId → Set<hunkId>,或 'ALL'(file-kind key)
+  for (const k of seg.assignedCoverageKeys) {
+    if (k.kind === 'file') { hunkIdsByFile.set(k.fileId, 'ALL'); continue; }
+    if (!hunkIdsByFile.has(k.fileId)) hunkIdsByFile.set(k.fileId, new Set());
+    const existing = hunkIdsByFile.get(k.fileId);
+    if (existing !== 'ALL') existing.add(k.hunkId);
+  }
+  const allowedFiles = [...hunkIdsByFile.entries()].map(([fid, allowedHunkIds]) => {
+    const f = fileById.get(fid);
+    if (!f) return null;
+    const hunks = allowedHunkIds === 'ALL'
+      ? (f.hunks ?? [])
+      : (f.hunks ?? []).filter((h) => allowedHunkIds.has(h.hunkId));
+    return { ...f, hunks };
+  }).filter(Boolean);
 
   // SC-3.3: 每文件/全局上限校验(先于逐条 schema 校验之外单独判断,超限即整段拒绝)
   if (parsed.length > PRESCAN_LIMITS.maxObservationsGlobal) {

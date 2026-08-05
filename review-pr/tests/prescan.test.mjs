@@ -583,3 +583,72 @@ function deliverAllSegments(f, tf) {
 function segmentReceiptsFor(delivered, snapshotHash) {
   return delivered.map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, snapshotHash, coverageKeys: seg.assignedCoverageKeys }));
 }
+
+// ── 第 1 轮盲审修复的反向变异(2026-08-05):P1-1/P1-2/P1-3 三条 fail-open 复现 + 修复验证 ──
+
+test('第1轮盲审 P1-1 修复:enabled=true 但从未跑过 prepare/record(task/artifact 双缺)→ invalid,不得 clean', () => {
+  const f = setup({ rules: { prescan: { enabled: true } } });
+  // 故意不调用 PREPARE/RECORD——task.prescan 与 artifact 都不存在,模拟"配置打开了但
+  // 没人真的跑预扫流程"的场景(P1-1 复现路径:build-review-task 时 artifact 不存在,
+  // task 不含 prescan 字段;之前两个分支都不触发,静默放行)。
+  const { taskFile, bodyFile, task } = buildTaskWithBody(f);
+  assert.equal('prescan' in task, false, '预扫从未跑过时 task 确实不含 prescan 字段(前置条件)');
+  const delivered = deliverAllSegments(f, taskFile);
+  const output = BASE_OUTPUT(task.snapshotHash, { segmentReceipts: segmentReceiptsFor(delivered, task.snapshotHash) });
+  const { json } = consume(f, { taskFile, output, bodyFile });
+  assert.equal(json.verdict, 'invalid', 'enabled 但预扫从未真正跑过(task/artifact 双缺)必须 invalid,不得静默 clean(P1-1)');
+});
+
+test('第1轮盲审 P1-2 修复:artifact 内容被篡改但保留旧 artifactHash → consumer 现场重算揪出,invalid', () => {
+  const f = setup({ rules: { prescan: { enabled: true } } });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  const path = p1.files[0].path;
+  const line = p1.files[0].hunks[0].addedNewLines[0];
+  const obsFile = join(f.work, 'obs-p12.json');
+  writeFileSync(obsFile, JSON.stringify([{ file: path, line, category: PRESCAN_CATEGORIES[0], note: '真实观察' }]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', obsFile], f);
+  run(RECORD, ['--finalize'], f);
+
+  const { taskFile, bodyFile, task } = buildTaskWithBody(f);
+  // 篡改现场 artifact 文件本体:清空 observations/observationCount,但**保留旧 artifactHash**
+  // (P1-2 复现路径:此前 consumer 只比对 artifactHash 字段是否等于 task 里记的值,从不
+  // 重算——篡改内容同时保留旧哈希字段就能骗过比对)。
+  const artifactPath = findStateFile(f, 'prescan-artifact-469.json');
+  const artifact = JSON.parse(readFileSync(artifactPath, 'utf8'));
+  const tamperedArtifactHash = artifact.artifactHash; // 故意保留旧值
+  artifact.observations = [];
+  artifact.observationCount = 0;
+  artifact.artifactHash = tamperedArtifactHash;
+  writeFileSync(artifactPath, JSON.stringify(artifact, null, 2));
+
+  const delivered = deliverAllSegments(f, taskFile);
+  const output = BASE_OUTPUT(task.snapshotHash, { segmentReceipts: segmentReceiptsFor(delivered, task.snapshotHash) });
+  const { json } = consume(f, { taskFile, output, bodyFile });
+  assert.equal(json.verdict, 'invalid', 'artifact 内容篡改但保留旧 artifactHash 必须被现场重算的 computeArtifactHash 揪出(P1-2)');
+});
+
+test('第1轮盲审 P1-3 修复:单文件多 hunk 跨段——第 1 段拿不到第 2 段 hunk 的内容(hunk 级隔离)', () => {
+  // 构造单文件两个远距离 hunk,sizeBudget=1 强制切进不同段
+  const f = setup({
+    rules: { prescan: { enabled: true }, reviewSegments: { sizeBudget: 1 } },
+    headFiles: {
+      'src/a.mjs': Array.from({ length: 40 }, (_, i) => (i === 0 ? '// 旧注释 A\nexport function a() { return 1; }' : (i === 39 ? '// 旧注释 B\nexport function z() { return 2; }' : `// 占位行 ${i}`))).join('\n') + '\n',
+    },
+    baseFiles: {
+      'src/a.mjs': Array.from({ length: 40 }, (_, i) => (i === 0 ? 'export function a() { return 0; }' : (i === 39 ? 'export function z() { return 0; }' : `// 占位行 ${i}`))).join('\n') + '\n',
+    },
+  });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  assert.equal(p1.ok, true);
+  const { json: p2 } = run(PREPARE, ['--order', '2'], f);
+  if (!p2.ok) return; // 若两处改动被 diff 算法合并成一个 hunk(取决于上下文行数),跳过本用例
+  // 断言:第 1 段返回的该文件 hunks 数组里,不应包含只属于第 2 段的 hunk(用 newRanges 起始行区分)
+  const seg1File = p1.files.find((f2) => f2.path === 'src/a.mjs');
+  const seg2File = p2.files.find((f2) => f2.path === 'src/a.mjs');
+  assert.ok(seg1File, '第 1 段应包含该文件');
+  if (!seg2File) return; // 第 2 段可能是另一个文件,本用例只关心单文件多 hunk 场景
+  const seg1Starts = new Set(seg1File.hunks.map((h) => h.newRanges[0]));
+  const seg2Starts = new Set(seg2File.hunks.map((h) => h.newRanges[0]));
+  const overlap = [...seg1Starts].filter((s) => seg2Starts.has(s));
+  assert.equal(overlap.length, 0, `第 1 段与第 2 段不应共享同一个 hunk(hunk 级隔离,P1-3)——重叠 newRanges 起点:${JSON.stringify(overlap)}`);
+});
