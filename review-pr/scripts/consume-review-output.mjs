@@ -22,7 +22,8 @@ import process from 'node:process';
 import { parsePR, print, fail, REPO_ROOT, STATE_DIR, writeReviewReceipt, stateFile, writeJsonAtomic } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { validateReviewOutput, deriveVerdict, REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
-import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, computeLedgerHash, isEffectiveOpen } from './lib.findings-ledger.mjs';
+import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
+import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint } from './lib.escaped-hazards.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -153,9 +154,56 @@ try {
     if (![...want].every((k) => got.has(k))) flags.requiredNegativeKeysMissing = true;
   }
 
+  // ── R7 生产触发链(核验 BLOCKER):escapeAssessment 必须逐条覆盖 task 注入的候选集;
+  // yes 项**确定性**写 pending inbox(写失败 → hazardRegisterFailed → invalid,不放行)。
+  const candidates = Array.isArray(task?.escapeCandidates) ? task.escapeCandidates : [];
+  let ledgerErrors = [];
+  const registeredHazards = [];
+  if (shape.ok && candidates.length > 0) {
+    const want = new Set(candidates.map((c) => c.candidateId));
+    const answered = new Map();
+    for (const a of output.escapeAssessment ?? []) {
+      if (!want.has(a.candidateId) || answered.has(a.candidateId)) { flags.escapeAssessmentMismatch = true; continue; }
+      answered.set(a.candidateId, a);
+    }
+    if (answered.size !== want.size) flags.escapeAssessmentMismatch = true;
+    if (!flags.escapeAssessmentMismatch) {
+      const yes = [...answered.values()].filter((a) => a.verdict === 'yes');
+      if (yes.length > 0) {
+        try {
+          const inbox = loadInbox(STATE_DIR);
+          if (!inbox.ok) throw new Error(`inbox 不可读:${inbox.error}`);
+          const items = [...inbox.items];
+          for (const a of yes) {
+            const cand = candidates.find((c) => c.candidateId === a.candidateId);
+            const paths = [...new Set((snapshot.files ?? []).map((f) => f.newPath ?? f.oldPath).filter(Boolean))];
+            const base = {
+              repo: task.repo ?? null, originPr: cand.referencedPr, originHead: null,
+              fixPr: pr, fixHead: headRefOid, pattern: a.basis, paths,
+              evidence: `本轮审查判定:${a.basis}`,
+              activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
+              registeredAt: new Date().toISOString(), registeredBy: 'consume-review-output',
+            };
+            const hazardId = deriveHazardId(base);
+            const item = { ...base, hazardId, fingerprint: deriveHazardFingerprint(base) };
+            const idx = items.findIndex((x) => x.hazardId === hazardId);
+            if (idx >= 0) items[idx] = { ...items[idx], ...item }; else items.push(item);
+            registeredHazards.push(hazardId);
+          }
+          saveInbox(STATE_DIR, items);
+        } catch (e) {
+          flags.hazardRegisterFailed = true;
+          ledgerErrors.push(`逃逸候选登记失败:${e.message}(登记不可用时不得放行)`);
+        }
+      }
+    }
+  } else if (shape.ok && (output.escapeAssessment ?? []).length > 0) {
+    // 没有候选却给了答卷:形状层已允许,这里判不一致(防"自造候选骗过对账")
+    flags.escapeAssessmentMismatch = true;
+  }
+
   // ── ledger 应用(shape ok 才应用;disposition 验真失败 = 整轮 invalid)──
   let entries = ledger.entries;
-  let ledgerErrors = [];
   if (shape.ok) {
     const applied = applyReviewOutput({
       entries, output, seat: mode, snapshot,
@@ -219,7 +267,7 @@ try {
     ok: true, pr, mode, verdict, reasons, blocked,
     attempts: attempts.count, snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
     ledgerHash, effectiveOpenCount: ledgerResult.effectiveOpenCount, acceptedRiskCount: ledgerResult.acceptedRiskCount,
-    injectedOpenIds,
+    injectedOpenIds, registeredHazards,
   });
   process.exit(verdict === 'clean' ? 0 : 2);
 } catch (e) {

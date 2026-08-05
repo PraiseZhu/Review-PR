@@ -2051,7 +2051,28 @@ export function mergeLedgerJson(oursText, theirsText) {
       for (const f of CARRY) if (e[f] !== undefined && e[f] !== null) cur[f] = e[f];
     }
   }
-  return `${JSON.stringify({ ...ours, entries: [...merged.values()] }, null, 2)}\n`;
+  // SC-R7(2026-08-05 核验):escapedHazards 段也必须合并——此前只合 entries,rebase 时
+  // 会把远端或本地新登记的 hazard 整段丢掉。按 (repo, hazardId) 取并集,**不增条、不降级**
+  // (active 不回退 pending-fix-merge;landed 不回退 pending),与 upsertHazard 同口径。
+  const ACT_RANK = { 'pending-fix-merge': 0, active: 1 };
+  const PROM_RANK = { pending: 0, 'recorded-only': 1, landed: 2 };
+  const hazards = new Map();
+  for (const h of [...(Array.isArray(ours?.escapedHazards) ? ours.escapedHazards : []),
+    ...(Array.isArray(theirs?.escapedHazards) ? theirs.escapedHazards : [])]) {
+    if (!h?.hazardId) return null; // 结构不符预期,不冒险
+    const key = `${h.repo ?? '(no-repo)'}|${h.hazardId}`;
+    const cur = hazards.get(key);
+    if (!cur) { hazards.set(key, { ...h }); continue; }
+    const next = { ...cur, ...h };
+    next.activationStatus = (ACT_RANK[h.activationStatus] ?? -1) >= (ACT_RANK[cur.activationStatus] ?? -1) ? h.activationStatus : cur.activationStatus;
+    next.promotionStatus = (PROM_RANK[h.promotionStatus] ?? -1) >= (PROM_RANK[cur.promotionStatus] ?? -1) ? h.promotionStatus : cur.promotionStatus;
+    hazards.set(key, next);
+  }
+  const out = { ...ours, entries: [...merged.values()] };
+  if (hazards.size > 0 || ours?.escapedHazards !== undefined || theirs?.escapedHazards !== undefined) {
+    out.escapedHazards = [...hazards.values()];
+  }
+  return `${JSON.stringify(out, null, 2)}\n`;
 }
 
 /** Markdown 台账的确定性合并:交给 git merge-file --union 做逐 hunk 行并集(不留冲突标记)。 */

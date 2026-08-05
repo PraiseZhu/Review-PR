@@ -559,7 +559,8 @@ node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <hea
 
 ### 3.0.2 风险 profile 与审查任务构建（SC-R3/R4/R6/R7）
 
-`build-review-task.mjs` 是阶段二任务的**唯一**构建器（见第 4 节）。它按路径命中把
+`build-review-task.mjs` 是阶段二任务的**唯一**构建器（见第 4 节；逃逸候选需要 PR 正文时
+传 `--pr-body-file <file>`，元数据互检需要文件清单时传 `--expected-paths <逗号分隔>`）。它按路径命中把
 `test-infra`（tests/**、scripts/e2e/**、*guard*、playwright/vitest 配置）与 `ci-workflow`
 （.github/**）两套**必答清单**注入任务，逐 `文件×检查` 作答——这一层解决的正是"审查
 从没被要求怀疑测试本身"：`could-be-always-green` 那条要求审查者说出"这个测试在什么
@@ -901,6 +902,14 @@ required 负向证据 key。审查 agent 按它作答，输出形如：
 - required `verificationGap` 非空、必答缺项、覆盖对账不符、注入的 open 未 disposition、
   preflight 未完成、profile 配置非法，任一即 `invalid`；
 - required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受。
+
+> **R6 诚实边界（机器承诺到哪为止）**：机器校验的是**对象绑定**（证据挂在哪个
+> fileId/hunkId）、**快照新鲜度**（snapshotHash 是否当前）、**引用存在性与声明一致性**
+> （verificationRunId 必须指向 `verificationRuns[]` 里存在的 run，且该 run 的
+> command/outputAnchor 与本条一致）。机器**不能**验证命令真的被执行过、也不能验证它与
+> 被改代码语义相关——没有受控执行 wrapper 时，前后一致的伪报（编一个 run 记录再引用它）
+> 是 T1 上限。这里的价值在于把"我看过了"变成"我把它弄坏过并留下可核对的锚点"，不是把它
+> 变成机器证明。
 
 输出交给唯一消费出口裁决（它算 verdict、写回执、动台账；**clean 回执只能由它写**）：
 
@@ -1694,14 +1703,25 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
 - **pre-merge 独立复核**：合并阶段重建当前 complete snapshot + 重读台账，要求
   `effective-open=0 ∧ accepted-risk=0` 且回执绑定的 `snapshotHash`/`ledgerHash` 全匹配。
   这挡住"先拿到 clean、之后又新增 open"和两步之间的崩溃窗口。台账损坏 fail-closed。
-- **逃逸学习闭环**：合并后被后续 PR 证伪的 false negative（#469→#483 就是原型）必须登记：
-  `record-escaped-finding.mjs --register`（写可重放 inbox，`pending-fix-merge`）→ 修复 PR
-  合并后 `--activate`（现场核验 fix PR 已 MERGED **且 merged head === 登记的 fixHead**）
-  → 写进 canonical `evolution/ledger.json`（`active`）→ 后续命中同 paths 的 PR，任务正文
-  里就会带上这条 hazard。`promotionStatus` 要求明确选择：`landed`（已晋升为确定性规则/
-  profile 必答，且目标真实存在可解析）/ `recorded-only`（必填理由）/ `pending`。
-  **诚实边界**："这次算不算逃逸"是语义判断（T1）；机器保证的是登记入口存在、双状态机
-  不可跳步、prompt 真实注入、promote 目标存在性可验。
+- **逃逸学习闭环（机器触发，非过程约定）**：合并后被后续 PR 证伪的 false negative
+  （#469→#483 就是原型）走这条链，每一段都有机器动作：
+  1. `build-review-task.mjs` 从 PR body（`--pr-body-file`）确定性抽出**逃逸候选**
+     （引用了哪些 PR + 修复语义信号；有意偏向多收，宁可多问一句），逐条写进任务正文；
+  2. 审查输出的 `escapeAssessment[]` 必须**逐条覆盖**候选集（缺/多/未知/重复 → `invalid`）；
+  3. `consume-review-output.mjs` 对 `verdict:"yes"` 的候选**确定性写 pending inbox**
+     （`pending-fix-merge`）；登记失败 → `invalid`，不放行；
+  4. 修复 PR 合并后 `record-escaped-finding.mjs --activate`：现场核验 fix PR 已 MERGED
+     **且 merged head === 登记的 fixHead**、origin PR 也确实已合并且 head 一致；
+  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；
+     任一失败保留 inbox 下轮重放（幂等 upsert，重复不增条、不降级）；
+  6. 之后命中同 `repo` + 同 paths 的 PR，任务正文里就会带上这条 hazard。
+
+  `promotionStatus` 必须明确选择：`landed`（已晋升为确定性规则/profile 必答，且目标真实
+  存在可解析）/ `recorded-only`（必填理由）/ `pending`。canonical 条目按完整 schema 校验
+  （缺 repo/fingerprint/paths/fixHead 等一律判不完整 → `invalid`；只有显式
+  `grandfathered:true` 的历史条目——如 #483 早于本机制上线——允许缺 fixHead）。
+  **诚实边界**："这次算不算逃逸"仍是语义判断（T1）；机器保证的是候选集确定性产出、必答
+  对账、yes 项必登记、双状态机不可跳步、激活现场核验、ack 晚于 push、prompt 真实注入。
 
 ## 6. Auto 批处理
 

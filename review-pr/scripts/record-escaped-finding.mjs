@@ -19,12 +19,12 @@
 //   node record-escaped-finding.mjs --list
 // 退出码:0 成功;2 有条目未能激活(如 fix PR 还没合);1 脚本自身错误。
 import process from 'node:process';
-import { print, fail, STATE_DIR, ghJson, parseRepo } from './lib.mjs';
+import { print, fail, STATE_DIR, ghJson, parseRepo, skillRepoCommitPush } from './lib.mjs';
 import { BUILTIN_RULES } from './lib.preflight-rules.mjs';
 import { BUILTIN_PROFILES } from './lib.review-profiles.mjs';
 import {
-  EVOLUTION_LEDGER, deriveHazardId, loadKnownHazards, upsertHazard,
-  loadInbox, saveInbox, verifyActivation, PROMOTION,
+  EVOLUTION_LEDGER, deriveHazardId, deriveHazardFingerprint, loadKnownHazards, upsertHazard,
+  loadInbox, saveInbox, verifyActivation, validateHazardShape, activateInboxItems, PROMOTION,
 } from './lib.escaped-hazards.mjs';
 
 const has = (f) => process.argv.includes(f);
@@ -74,13 +74,20 @@ try {
     const t = resolvePromotionTarget({ promotion, ruleId: argOf('--promote-rule'), profileId: argOf('--promote-profile'), checkId: argOf('--promote-check'), reason: argOf('--reason') });
     if (!t.ok) fail(new Error(t.error));
 
-    const hazardId = deriveHazardId({ originPr, pattern, paths });
+    const { owner, repo } = (() => { try { return parseRepo(); } catch { return { owner: null, repo: null }; } })();
+    const repoSlug = owner && repo ? `${owner}/${repo}` : null;
+    if (!repoSlug) fail(new Error('无法解析目标仓库(hazard 必须绑定 repo,防跨仓误用)'));
+    const seed = { repo: repoSlug, originPr, fixPr, pattern, paths };
     const item = {
-      hazardId, originPr, originHead: (argOf('--origin-head') ?? null), fixPr, fixHead,
+      hazardId: deriveHazardId(seed), fingerprint: deriveHazardFingerprint(seed),
+      repo: repoSlug, originPr, originHead: (argOf('--origin-head') ?? null), fixPr, fixHead,
       pattern, paths, evidence: argOf('--evidence') ?? null,
       activationStatus: 'pending-fix-merge', promotionStatus: promotion,
       promotionTarget: t.target, registeredAt: new Date().toISOString(),
     };
+    const hazardId = item.hazardId;
+    const shape = validateHazardShape({ ...item, activationStatus: 'active' }); // 校验字段完整性
+    if (!shape.ok) fail(new Error(`hazard 字段不完整:${shape.errors.join(';')}`));
     const inbox = loadInbox(STATE_DIR);
     if (!inbox.ok) fail(new Error(`inbox 不可读:${inbox.error}(fail-closed)`));
     const items = inbox.items.filter((x) => x.hazardId !== hazardId);
@@ -100,24 +107,20 @@ try {
         return { state: v.state, headRefOid: v.headRefOid, mergeCommitOid: v.mergeCommit?.oid ?? null };
       } catch { return null; }
     };
-    const activated = [];
-    const kept = [];
-    for (const item of inbox.items) {
-      const v = verifyActivation({ item, probe });
-      if (!v.ok) { kept.push({ ...item, lastActivationCheck: v.reason }); continue; }
-      // canonical upsert 成功后才 ack(从 inbox 移除)
-      const { hazard } = upsertHazard(EVOLUTION_LEDGER, { ...item, activationStatus: 'active', activatedAt: new Date().toISOString() });
-      const verify = loadKnownHazards();
-      if (verify.incomplete || !verify.hazards.some((h) => h.hazardId === item.hazardId && h.activationStatus === 'active')) {
-        kept.push({ ...item, lastActivationCheck: 'canonical 回读校验失败,保留重放' });
-        continue;
-      }
-      activated.push(hazard.hazardId);
-    }
+    const { activated, kept } = activateInboxItems({
+      items: inbox.items,
+      probe,
+      upsert: (item) => upsertHazard(EVOLUTION_LEDGER, item),
+      readback: () => loadKnownHazards(),
+      sync: (hazard) => skillRepoCommitPush({
+        paths: ['evolution/ledger.json'],
+        message: `evo: activate escaped hazard ${hazard.hazardId} (origin #${hazard.originPr} → fix #${hazard.fixPr})`,
+      }),
+    });
     saveInbox(STATE_DIR, kept);
     print({
       ok: kept.length === 0, action: 'activate', activated, pending: kept.map((k) => ({ hazardId: k.hazardId, reason: k.lastActivationCheck })),
-      note: '已激活的条目写进 canonical evolution/ledger.json(需随 skill 仓提交/推送才对其它机器生效);未激活的留在 inbox 下轮重放。',
+      note: 'ack(从 inbox 移除)严格晚于 canonical upsert + 回读校验 + commit&push 成功;三者任一失败都保留 inbox 下轮重放(幂等 upsert,重复不增条、不降级)。',
     });
     process.exit(kept.length === 0 ? 0 : 2);
   }

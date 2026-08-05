@@ -15,11 +15,11 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
-import { print, fail, REPO_ROOT, STATE_DIR, loadRules } from './lib.mjs';
+import { print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo } from './lib.mjs';
 import { buildDiffSnapshot, coverageKeysOf } from './lib.diff-snapshot.mjs';
 import { mergeProfiles, requiredProfileAnswersFor, classifyRequiredNegativeEvidence, buildSegments, profileSetHash } from './lib.review-profiles.mjs';
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
-import { loadKnownHazards, hazardsForPaths } from './lib.escaped-hazards.mjs';
+import { loadKnownHazards, hazardsForPaths, extractEscapeCandidates } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
@@ -99,7 +99,13 @@ try {
     : [];
   const hazards = loadKnownHazards();
   const changedPaths = files.map((f) => f.newPath ?? f.oldPath).filter(Boolean);
-  const relevantHazards = hazardsForPaths(hazards, changedPaths);
+  const repoSlug = (() => { try { const { owner, repo } = parseRepo(); return `${owner}/${repo}`; } catch { return null; } })();
+  const relevantHazards = hazardsForPaths(hazards, changedPaths, repoSlug);
+  // SC-R7 生产触发链(核验 BLOCKER):候选集由构建器**确定性**产出并逐条进 prompt;
+  // consumer 按 escapeAssessment 精确对账,yes 项确定性写 pending inbox。
+  const prBodyArg = argOf('--pr-body-file');
+  const prBody = prBodyArg && existsSync(prBodyArg) ? readFileSync(prBodyArg, 'utf8') : '';
+  const escapeCandidates = extractEscapeCandidates({ body: prBody });
 
   const task = {
     schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
@@ -120,6 +126,8 @@ try {
     hazardsIncomplete: hazards.incomplete === true,
     classifierIncomplete: classified.incomplete,
     classifierIncompleteFiles: classified.incompleteFiles,
+    repo: repoSlug,
+    escapeCandidates,
   };
 
   // ── prompt 正文:必答项 / open findings / hazards / 分片 全部落进文本 ──
@@ -165,6 +173,13 @@ try {
     for (const k of requiredNegativeEvidenceKeys) L.push(`- ${k.path} hunk \`${k.hunkId}\`(fileId ${k.fileId}):${k.reason}`);
     L.push('', '在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`,并在 `verificationRuns[]` 里登记对应 run。也就是:**把它弄坏一次,证明它真的会红**。', '');
   }
+  if (escapeCandidates.length > 0) {
+    L.push('## 逃逸判定(escapeAssessment — 必须逐条作答,缺/多/未知一律 invalid)', '');
+    for (const c of escapeCandidates) {
+      L.push(`- \`${c.candidateId}\`(引用 PR #${c.referencedPr},来源 ${c.kind}):${c.excerpt}`);
+    }
+    L.push('', '对每条在 `escapeAssessment[]` 里给 `{candidateId, verdict:"yes"|"no", basis}`——`yes` 表示"本 PR 确实在修一个此前已合并 PR 逃过审查的问题",机器会据此登记逃逸模式(下次同路径 PR 的任务里就会带上它);`no` 也要给依据。', '');
+  }
   L.push('## 覆盖回执(逐段精确集合,缺/重/跨段一律 invalid)', '');
   L.push(`本次改动共 ${coverageKeys.length} 个 coverage key,分 ${segments.length} 段顺序审查(同一会话内分段,不增席位):`, '');
   for (const seg of segments) {
@@ -186,6 +201,7 @@ try {
     requiredProfileAnswerCount: requiredProfileAnswers.length,
     requiredNegativeEvidenceKeyCount: requiredNegativeEvidenceKeys.length,
     knownHazardCount: relevantHazards.length,
+    escapeCandidateCount: escapeCandidates.length,
     taskFile: outTask, promptFile: outPrompt,
     ...(outPrompt ? {} : { prompt }),
   });

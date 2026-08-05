@@ -369,3 +369,47 @@ test('⑮ preflight 命中 → 机器入账并 dirty(不经 LLM,审查输出零 
   assert.equal(r.json.verdict, 'dirty', '确定性命中直接机器打回');
   assert.equal(r.json.effectiveOpenCount, 1);
 });
+
+test('⑯ R7 生产触发链:候选进 prompt → escapeAssessment 必须逐条作答 → yes 项确定性写 pending inbox', () => {
+  const f = setup();
+  const bodyFile = join(f.work, 'body.md');
+  writeFileSync(bodyFile, '本 PR 修复 #469 逃过审查的假等待问题;另外顺手依赖 #500 的改动。\n');
+  const tf = join(f.work, 'task-esc.json');
+  const pmt = join(f.work, 'prompt-esc.md');
+  const b = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', pmt, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(b.status, 0, b.stdout + b.stderr);
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  const prompt = readFileSync(pmt, 'utf8');
+  assert.equal(task.escapeCandidates.length, 1, `只有带修复语义的引用才是候选:${JSON.stringify(task.escapeCandidates)}`);
+  assert.equal(task.escapeCandidates[0].referencedPr, 469);
+  assert.ok(prompt.includes('## 逃逸判定'), 'prompt 必须有逃逸判定段');
+  assert.ok(prompt.includes(task.escapeCandidates[0].candidateId));
+  const pf = preflightFile(f);
+  const cid = task.escapeCandidates[0].candidateId;
+
+  // 缺答 → invalid
+  const miss = run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(miss.json.verdict, 'invalid');
+  assert.match(miss.json.reasons.join(';'), /escapeAssessment/);
+  // 答未知候选 → invalid
+  const unknown = run(f, compliant(tf, { escapeAssessment: [{ candidateId: 'esc-bogus-1', verdict: 'no', basis: 'x' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(unknown.json.verdict, 'invalid');
+  // 答 no → clean 且不登记
+  const no = run(f, compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'no', basis: '只是引用,不是修它的漏审' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(no.json.verdict, 'clean', no.json.reasons?.join(';'));
+  assert.deepEqual(no.json.registeredHazards, []);
+  // 答 yes → clean 且**确定性登记**到 pending inbox
+  const yes = run(f, compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'yes', basis: '本 PR 修的正是 #469 漏审的假等待模式' }] }), ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(yes.json.verdict, 'clean', yes.json.reasons?.join(';'));
+  assert.equal(yes.json.registeredHazards.length, 1, 'yes 必须落 pending inbox(生产会调用,不是"recorder 可手调")');
+  const inboxFiles = readdirSync(f.stateDir, { recursive: true }).filter((p) => String(p).includes('escaped-hazards-inbox'));
+  assert.equal(inboxFiles.length, 1, `应写出 inbox,got ${readdirSync(f.stateDir, { recursive: true })}`);
+  const inbox = JSON.parse(readFileSync(join(f.stateDir, String(inboxFiles[0])), 'utf8'));
+  assert.equal(inbox.items.length, 1);
+  assert.equal(inbox.items[0].activationStatus, 'pending-fix-merge', '未合并前只能是 pending');
+  assert.equal(inbox.items[0].originPr, 469);
+  assert.equal(inbox.items[0].fixPr, 469); // 本测试的 PR 号
+  assert.equal(inbox.items[0].fixHead, f.head);
+  assert.ok(inbox.items[0].repo, 'hazard 必须绑定 repo');
+  assert.ok(inbox.items[0].fingerprint);
+});

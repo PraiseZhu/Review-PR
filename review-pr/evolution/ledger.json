@@ -1499,11 +1499,14 @@
   ],
   "escapedHazards": [
     {
-      "hazardId": "hz1-a21e1d89daf5701d",
+      "hazardId": "hz1-5dcf0671fb98aa47",
+      "fingerprint": "hzf1-1c5fbee666edcca2",
+      "repo": "xindong/mivo-canvas",
       "originPr": 469,
       "originHead": "3ae9ecdb745dc5827e36962c1630f037f4a986cc",
       "fixPr": 483,
       "fixHead": null,
+      "grandfathered": true,
       "pattern": "Playwright waitForFunction 收到 async/返回 Promise 的谓词——Promise 恒 truthy,1ms 假通过,测试全绿但根本没等待",
       "paths": [
         "scripts/e2e/**",
@@ -1518,10 +1521,10 @@
       "promotionTarget": {
         "kind": "rule",
         "ruleId": "playwright-waitforfunction-async-predicate",
-        "ruleVersion": "v1"
+        "ruleVersion": "v2"
       },
       "seededAt": "2026-08-05",
-      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过(tests/review-preflight.test.mjs),故直接标 landed;fixHead 为 null——该修复早于本机制上线,不适用激活核验(如实标注,不伪造 SHA)"
+      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。fixHead=null 且 grandfathered=true——该修复(#483)早于本机制上线,没有可核验的登记 fixHead;grandfather 规则由 validateHazardShape 显式承认,新条目一律必填 fixHead(否则激活核验形同虚设)"
     }
   ]
 }
