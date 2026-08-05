@@ -163,6 +163,35 @@ test('A5 行为:窗口内 merged loop PR 无回执 → 判漏网;非 loop PR 不
   assert.deepEqual(st.audited, {});
 });
 
+test('A5 窗口两端都裁:mergedAt 晚于 now 的合并不进本轮(右边界;实测发现只裁左端的缺口)', () => {
+  const repoRoot = seedAuditRepo();
+  runAudit(repoRoot, ['--now', '2026-08-05T10:00:00Z']); // 立游标
+  const mergedFile = join(repoRoot, 'merged.json');
+  writeFileSync(mergedFile, JSON.stringify([
+    { number: 701, title: '[mivo] in-window', body: '', headRefOid: 'c'.repeat(40), mergeCommitOid: 'd'.repeat(40), mergedAt: '2026-08-05T11:00:00Z' },
+    { number: 702, title: '[mivo] after-now', body: '', headRefOid: 'a'.repeat(40), mergeCommitOid: 'b'.repeat(40), mergedAt: '2026-08-05T15:00:00Z' },
+  ]));
+  const r = runAudit(repoRoot, ['--dry-run', '--now', '2026-08-05T12:00:00Z', '--input-merged', mergedFile]);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out.audited.map((a) => a.pr), [701], '只有窗口内的 701 该被审到(702 晚于 now)');
+});
+
+test('A5 漏跑=延迟不是永久漏审:游标只在真跑时推进,下次跑把跨过的窗口一并审到', () => {
+  const repoRoot = seedAuditRepo();
+  runAudit(repoRoot, ['--now', '2026-08-05T10:00:00Z']);
+  const mergedFile = join(repoRoot, 'merged.json');
+  writeFileSync(mergedFile, JSON.stringify([
+    { number: 701, title: '[mivo] a', body: '', headRefOid: 'c'.repeat(40), mergeCommitOid: 'd'.repeat(40), mergedAt: '2026-08-05T11:00:00Z' },
+    { number: 702, title: '[mivo] b', body: '', headRefOid: 'a'.repeat(40), mergeCommitOid: 'b'.repeat(40), mergedAt: '2026-08-05T15:00:00Z' },
+  ]));
+  // 模拟"某轮漏跑":dry-run 不落盘 → 游标停在 10:00
+  const skipped = JSON.parse(runAudit(repoRoot, ['--dry-run', '--now', '2026-08-05T12:00:00Z', '--input-merged', mergedFile]).stdout);
+  assert.equal(skipped.windowFrom, '2026-08-05T10:00:00Z');
+  // 下一次真跑:窗口 10:00→16:00,两个合并都该被审到(SKILL.md 该声称的实测支撑)
+  const later = JSON.parse(runAudit(repoRoot, ['--dry-run', '--now', '2026-08-05T16:00:00Z', '--input-merged', mergedFile]).stdout);
+  assert.deepEqual(later.audited.map((a) => a.pr).sort(), [701, 702]);
+});
+
 test('A5 幂等:已 alerted 的 <pr>:<mergeOid> 下轮 skipped=already-audited,不重复告警', () => {
   const repoRoot = seedAuditRepo();
   runAudit(repoRoot, ['--now', '2026-08-05T10:00:00Z']);

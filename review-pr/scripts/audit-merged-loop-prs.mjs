@@ -167,7 +167,11 @@ async function main() {
   const results = [];
   let alertsSent = 0;
   for (const p of merged) {
-    if (p.mergedAt && p.mergedAt < state.cursor) continue; // 搜索按天粒度,精确边界在这里裁
+    // 窗口 [cursor, now] 两端都裁:左边界因 gh 搜索只到天粒度必须在这里精确裁;右边界在
+    // 生产不可达(now 是当前时刻,GitHub 不会给出未来的 mergedAt),但窗口语义要完整——
+    // 只裁一端会让 `--now` 回溯审计把窗口之后的合并也吞进来,且使「跨过的窗口一并审到」
+    // 这个说法失准(实测发现,2026-08-05)。
+    if (p.mergedAt && (p.mergedAt < state.cursor || p.mergedAt > now)) continue;
     const loop = detectLoopExclusion({ title: p.title, body: p.body, pr: p.number, rules: LOOP_RULES });
     if (!loop) continue; // 非 loop 托管 PR:普通 PR 的合并纪律由既有 receipt/audit 通道管,不在本闸范围
     const key = `${p.number}:${p.mergeCommitOid ?? 'unknown-oid'}`;

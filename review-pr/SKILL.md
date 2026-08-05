@@ -780,6 +780,13 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
   **接线**：auto 模式每轮在 `prepare.mjs` 拿到锁后、批处理开始前跑一次
   `node "<SKILL_ROOT>/scripts/audit-merged-loop-prs.mjs"`，输出进当轮汇总;
   `loopPrExclusion` 未配置时天然 no-op。
+  **保证等级如实声明**：这是**过程保证**，不是机器保证——本 skill 全仓只有一处确定性
+  spawn（`pre-check.mjs` → `record-escaped-finding.mjs`），其余脚本一律由 agent 按本文
+  逐条执行，本闸同此惯例。因此「漏网合并最迟一轮内被发现」的前提是**agent 真的跑了这一
+  步**；某轮漏跑则该轮不产生任何告警，且因游标只在真跑时推进，下一次跑会把跨过的窗口
+  一并审到（漏跑=延迟，不是永久漏审——这是刻意选的失败方向）。想要机器级必跑需把它挂进
+  scheduler hook，但 `pre-check.mjs` 的契约是「轻量、快、exit 2 表示无活可做」，塞进 gh
+  查询与可能的 revert PR 创建会破坏该契约，故未做；如需升级应另立独立 hook。
 
 ### 3.8 审查执行环境安全
 
