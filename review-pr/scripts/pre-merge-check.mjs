@@ -44,7 +44,7 @@ import {
   loadRules, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks,
   findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute,
   classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut,
-  readReviewReceipt, isReviewReceiptClean, print, fail, REPO_ROOT, STATE_DIR,
+  readReviewReceipt, isReviewReceiptClean, detectLoopExclusion, print, fail, REPO_ROOT, STATE_DIR,
 } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
@@ -93,7 +93,7 @@ try {
   const slug = `${owner}/${repo}`;
   const m = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'title,body,state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,files,statusCheckRollup',
+    '--json', 'title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,files,statusCheckRollup',
   ]);
   // reviewDecision 作判 BLOCKED 原因的权威信号(比 some(state===CHANGES_REQUESTED) 准:它按
   // 每个 reviewer 的「最新」review 算 —— self-approve 覆盖掉自己旧的 CHANGES_REQUESTED 后会变
@@ -219,7 +219,23 @@ try {
   // 不能悄悄吞掉。
   let authorizedFastMergeAvailable = false;
   let authorizedFastMergeInfo = null;
-  if (approveMergeAuth.authorized) {
+  // A2(缴械配套,owner 2026-08-04):loop 托管 PR **无条件**封死授权快速合并通道——
+  // loop 的 PR-write token 能发评论,不封则一句 `/approve-merge <sha>` 就能骗巡审替它
+  // 代合,整套「review-pr 是唯一合并闸」被一条评论绕穿。身份判定用与 context.mjs 同一份
+  // detectLoopExclusion(标题前缀 + 本地台账双门槛,PR 作者伪造不了台账);命中即封,
+  // 不区分 t1/t2——t2 走正常审查回执路径合并,紧急通道对 loop 一律不存在。
+  const loopExclusionForGate = detectLoopExclusion({
+    title: m.title ?? '', body: m.body ?? '', pr, rules: rules.loopPrExclusion ?? null,
+  });
+  if (approveMergeAuth.authorized && loopExclusionForGate) {
+    authorizedFastMergeInfo = {
+      admin: approveMergeAuth.authorized.author,
+      commentUrl: approveMergeAuth.authorized.url,
+      commentCreatedAt: approveMergeAuth.authorized.createdAt,
+      blockedReason: 'loop-managed-pr-fast-merge-forbidden(loop 托管 PR 不设紧急通道,一律走完整审查)',
+      reportOnly: [],
+    };
+  } else if (approveMergeAuth.authorized) {
     const physicallyConflicted = m.mergeable === 'CONFLICTING' || m.mergeStateStatus === 'DIRTY';
     const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
     // P1-3(2026-08-02)required 完整性:expectedRequired===null(ruleset 端点读取失败)
@@ -464,7 +480,10 @@ try {
     // 失败、或还在跑,都不 self-merge,等下一轮(与 BLOCKED/UNSTABLE 分支同口径)。
     const selfRollup = classifyStatusRollup(m.statusCheckRollup);
     const rollupClean = selfRollup !== null && selfRollup.failed.length === 0 && selfRollup.pending.length === 0;
-    if (isSelfPr && isSelfFixAuthor && noHardBlockers && noContentBlockers && unresolved.length === 0 && rollupClean) {
+    // A3(缴械配套):isDraft 必须显式为 false——draft = 作者尚未同意进入合并流程
+    // (CLAUDE.md draft 纪律:mark ready 才是同意机器合并)。用 === false 而非 !isDraft:
+    // 字段读不到(undefined)时同样不放行,fail-closed。
+    if (isSelfPr && isSelfFixAuthor && m.isDraft === false && noHardBlockers && noContentBlockers && unresolved.length === 0 && rollupClean) {
       selfMergeAvailable = true;
     }
   }
@@ -501,6 +520,8 @@ try {
     reviewReceipt,
     ciRuns,
     blockedAwaitingApproval: blockClass === 'awaiting-approval',
+    isDraft: m.isDraft ?? null,
+    loopExclusion: loopExclusionForGate,
     selfMergeAvailable,
     authorizedFastMergeAvailable,
     authorizedFastMergeInfo,

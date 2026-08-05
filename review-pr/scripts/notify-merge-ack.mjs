@@ -108,9 +108,11 @@ try {
     process.exit(0);
   }
 
-  // ── loop 托管的 PR 有自己的播报,review-pr 不重复发 ──
+  // ── 播报路由(A4,缴械配套):只跳「仍自管」的 loop PR(verdict=t1/skip,合并与播报都
+  // 归 loop 自己);t2 / force-review 的 loop PR 由 review-pr 合并,合并致谢也归本脚本发——
+  // 缴械后 mivo loop PR 全是 t2,旧的一刀切会把它们的致谢全部吞掉(合了却无人知晓)。──
   const loopExclusion = detectLoopExclusion({ title: meta.title ?? '', body: meta.body ?? '', pr, rules: LOOP_RULES });
-  if (loopExclusion) {
+  if (loopExclusion && loopExclusion.verdict !== 't2') {
     print({ ok: true, pr, posted: false, reason: 'loop-managed-has-own-broadcast', loopExclusion });
     process.exit(0);
   }

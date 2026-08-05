@@ -1865,6 +1865,16 @@ export function detectLoopExclusion({ title, body, pr, rules }) {
   }
   if (!cluster) return null; // 台账没有这个 PR 号——无法证明托管关系,按普通 PR 走全套 review-pr 流程
 
+  // force-review 强制路由(缴械配套,owner 2026-08-04 决策 mergeAuthority=review-pr-only):
+  // 配置了 forceVerdict 时,身份确认后**不再看** body marker 与 cluster.tCap,一律按 t2 进
+  // 全套审查——loop 侧数据(body 标记/台账 tCap)漂移回 T1 也不能再造成跳审。唯一有意义的
+  // 取值是 't2';为防拼写漂移静默失效(t1/skip 都意味着无人审),任何非空值都收敛为 't2',
+  // 绝不产生比 t2 更宽松的结果(fail-safe 朝「进审」方向),coerced 时 source 单独标注供告警。
+  if (rules.forceVerdict != null && rules.forceVerdict !== '') {
+    const coerced = rules.forceVerdict !== 't2';
+    return { matched: true, verdict: 't2', source: coerced ? 'force-config-coerced' : 'force-config', matchedPrefix };
+  }
+
   // 身份确认后再判 T-level:先看 body 里 loop 自己声明的独立 metadata 行(锚定整行、加 m 标志
   // 逐行匹配,避免自然语言正文里偶然出现的"这次不建议合并"之类描述性语句被误当成 T-level 声明);
   // 没写明再退回本地台账的 cluster.tCap(身份门槛已过,这里可信采信)。
