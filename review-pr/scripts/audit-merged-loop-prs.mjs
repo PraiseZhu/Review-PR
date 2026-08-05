@@ -235,6 +235,18 @@ async function openRevertPr({ slug, prNumber, reason }) {
   }
 }
 
+/**
+ * 纯函数(可单测):sendAlert 结果是否算「真送达远端通道」(F-A5-OPS-ALERT-CONTRACT-DRIFT
+ * 修复)。此前误写成 channel==='slack'——通知模块的真实通道枚举是 api/webhook/degraded,
+ * 'slack' 从不出现,导致 api 送达被判失败:alerted 不落账、游标被卡、下轮重复告警。
+ * 判据与 notify-sync-alert.mjs 的送达判定完全同款(api 或 webhook 算送达;degraded
+ * 降级路径不算,留给下轮重试)。sendOpsAlert 已摘掉 webhook(见下),所以生产上实际只会
+ * 以 api 送达,保留 webhook 分支是为与参照实现形状一致、且对枚举变化 fail-safe。
+ */
+export function isOpsAlertDelivered(channel) {
+  return channel === 'api' || channel === 'webhook';
+}
+
 async function sendOpsAlert({ title, text }) {
   // 与 notify-sync-alert.mjs 完全同款的定向私聊出口:复用 mergeAckNotify.notifyModule +
   // notify.env 的 SLACK_OPS_ALERT_CHANNEL_ID;未配置 = 能力关闭(posted:false),照常返回。
@@ -246,8 +258,13 @@ async function sendOpsAlert({ title, text }) {
     const config = mod.loadNotifyConfig(mergeAck.stateDir ? resolveInRepoRoot(mergeAck.stateDir) : undefined);
     const opsChannel = config?.SLACK_OPS_ALERT_CHANNEL_ID;
     if (!opsChannel) return { posted: false, reason: ALERT_REASON_CHANNEL_NOT_CONFIGURED };
-    const res = await mod.sendAlert({ config: { ...config, SLACK_CHANNEL_ID: opsChannel }, title, text });
-    return { posted: res?.channel === 'slack', channel: res?.channel ?? null };
+    // 私聊目标就地替换 SLACK_CHANNEL_ID,**同时摘掉 webhook**(与 notify-sync-alert.mjs
+    // 同款理由):sendAlert 在 api 通道不可用时会降级走 incoming webhook,而 webhook 的
+    // 目标频道固定是合并致谢群——T0 运维告警一旦从那儿漏出去,既发错了地方又会因 posted
+    // 判定重复告警。摘掉后最坏降级到 pending-alerts + 桌面通知(channel:'degraded',
+    // 不写 alerted,下轮重试),绝不发错地方。
+    const res = await mod.sendAlert({ config: { ...config, SLACK_WEBHOOK_URL: '', SLACK_CHANNEL_ID: opsChannel }, title, text });
+    return { posted: isOpsAlertDelivered(res?.channel), channel: res?.channel ?? null };
   } catch (e) {
     return { posted: false, reason: `alert-failed: ${e.message}` };
   }

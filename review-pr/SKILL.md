@@ -833,6 +833,16 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
   核不过 → 定向 T0 告警（复用 `SLACK_OPS_ALERT_CHANNEL_ID` 私聊出口）+ 经 GitHub 原生
   `revertPullRequest` mutation 自动开 ready 的 revert PR（仍走巡审审合，本闸只开不合）。
   幂等台账按 `<pr>:<mergeOid>` 记账；首跑只立游标不回溯（缴械前的历史合并本就无回执）。
+  **游标推进边界**：游标不是每轮无条件推到 now——只有当窗口内每条 loop 合并都已到
+  remediation 终态（clean 回执通过 / revert PR 已创建且告警真送达）才推进；存在未解决
+  的（revert 创建失败或告警配置了却没送达），游标停在这些 PR 里最早的 mergedAt，让
+  下一轮窗口重新纳入重试（`decideCursorAfterRemediation`）。唯一豁免：**告警能力关闭**
+  （`mergeAckNotify.notifyModule` / ops 频道未配置，仓库级长期状态而非"这次失败"）且
+  revert 已创建 → 允许游标越过，否则未配置告警的仓库游标会永久卡死；该豁免不写
+  `alerted`（那个字段语义严格是"真送达"），所以这类 entry 若因别的 PR 卡住游标而被
+  重扫，会无害地重算一遍（能力关闭是本地短路，不产生网络调用，revert 幂等不重开）——
+  这是已知冗余，刻意换取判据简单。告警送达判定与 `notify-sync-alert.mjs` 同款
+  （api/webhook 算送达，degraded 降级不算），发送时摘掉 webhook 防 T0 告警漏进致谢群。
   **接线**：auto 模式每轮在 `prepare.mjs` 拿到锁后、批处理开始前跑一次
   `node "<SKILL_ROOT>/scripts/audit-merged-loop-prs.mjs"`，输出进当轮汇总;
   `loopPrExclusion` 未配置时天然 no-op。
