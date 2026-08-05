@@ -119,8 +119,6 @@
   },
   "loopPrExclusion": null,
   "prescan": {
-    "enabled": false,
-    "model": null,
-    "apiKeyEnv": null
+    "enabled": false
   }
 }
