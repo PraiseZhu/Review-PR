@@ -19,6 +19,7 @@ import { join, dirname, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { deriveHazardId, deriveHazardFingerprint } from '../scripts/lib.escaped-hazards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'pre-check.mjs');
@@ -155,16 +156,24 @@ test('R7 第 4 轮核验 BLOCKER:open PR=0(no-candidates skip)时 pending hazard
   // decision:'run' 出口,这个窗口里每轮 exit 2,inbox 永远饿死。
   const f = setup();
   writeFileSync(join(f.env.FAKE_GH_FIXTURE_DIR, 'pr-list.json'), '[]'); // 一个 open PR 都没有
-  // 放一条合法 pending 进 inbox(fake gh 查不到 origin PR → 核验不过 → 必须留在 inbox)
-  const stateSub = join(f.stateRoot, f.key);
-  mkdirSync(stateSub, { recursive: true });
+  // 第 5/6 轮核验 BLOCKER:此前条目用编造串 'hz2-prod'——不等于 deriveHazardId(seed) 的
+  // 复算值,validateHazardShape 在 verifyActivation **之前**就把它判"inbox 条目不合法",
+  // probe 根本没跑;lastActivationCheck 只证明坏条目被摸到,证不了合法 pending 被重放。
+  // (第 5 轮修过一次但被变异脚本的 git checkout 洗掉、未进 commit——第 6 轮核验席用
+  // `git diff 483a066..HEAD 为空`抓实。本次重落并在下方加了"reason 不得来自 shape 校验"
+  // 的断言,这条断言在伪造 id 的旧写法下必红,防止同一手滑第三次发生。)
+  const seed = { repo: 'xindong/mivo-canvas', originPr: 400, originHead: 'b'.repeat(40), fixPr: 469, fixHead: 'c'.repeat(40) };
   const inboxItem = {
-    hazardId: 'hz2-prod', fingerprint: 'hzf2-prod', repo: 'xindong/mivo-canvas',
-    originPr: 400, originHead: 'b'.repeat(40), fixPr: 469, fixHead: 'c'.repeat(40),
+    hazardId: deriveHazardId(seed), fingerprint: deriveHazardFingerprint(seed), repo: seed.repo,
+    originPr: seed.originPr, originHead: seed.originHead, fixPr: seed.fixPr, fixHead: seed.fixHead,
     pattern: 'p', evidence: '依据', paths: ['a/**'],
     activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
   };
+  const stateSub = join(f.stateRoot, f.key);
+  mkdirSync(stateSub, { recursive: true });
   writeFileSync(join(stateSub, 'escaped-hazards-inbox.json'), JSON.stringify({ version: 1, items: [inboxItem] }));
+  // fixPr(469)的 pr view 探测返回 OPEN(未合并)→ verifyActivation 在**探测阶段**拒绝
+  writeFileSync(join(f.env.FAKE_GH_FIXTURE_DIR, 'pr-view.json'), JSON.stringify({ state: 'OPEN', headRefOid: seed.fixHead }));
   const r = spawnSync('node', [SCRIPT, '--repo-root', f.repo], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 2, `no-candidates 应 skip(exit 2):${r.stdout}${r.stderr}`);
   const out = JSON.parse(r.stdout.trim().split('\n').pop());
@@ -174,7 +183,14 @@ test('R7 第 4 轮核验 BLOCKER:open PR=0(no-candidates skip)时 pending hazard
   assert.equal(out.hazardReplay.pendingCount, 1, '合法 pending 必须真的被处理过(核验不过 → 留 inbox 计入 pendingCount)');
   const box = JSON.parse(readFileSync(join(stateSub, 'escaped-hazards-inbox.json'), 'utf8'));
   assert.equal(box.items.length, 1, '核验没过的条目必须留在 inbox 下轮重放');
-  assert.ok(box.items[0].lastActivationCheck, '必须记下这轮为什么没激活(证明重放真跑过,不是输出里编了个字段)');
+  assert.ok(box.items[0].lastActivationCheck, '必须记下这轮为什么没激活');
+  // reason 必须来自 verifyActivation 的**探测**结论,不是 validateHazardShape 的"不合法"
+  assert.doesNotMatch(box.items[0].lastActivationCheck, /不合法/, 'reason 不得来自 shape 校验——必须证明真的走到了 probe 探测');
+  assert.match(box.items[0].lastActivationCheck, /未合并|state=OPEN/, `reason 应来自探测结论:${box.items[0].lastActivationCheck}`);
+  // 并直接断言生产 probe 真的对 fixPr 发起了 gh pr view 调用(不靠字段内容侧面推断)
+  const calls = ghCalls(f.log);
+  assert.ok(calls.some((c) => c.args[0] === 'pr' && c.args[1] === 'view' && c.args.includes('469')),
+    `重放必须真的对 fixPr(469)发起过 pr view 探测,got: ${JSON.stringify(calls.map((c) => c.args))}`);
 });
 
 test('R7 第 4 轮核验:--probe-only + open PR=0 → 仍零副作用(不跑重放,inbox 原样)', () => {
