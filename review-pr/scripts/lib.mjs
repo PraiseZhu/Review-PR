@@ -1277,6 +1277,57 @@ export function evaluateAuthorizedFastMerge({ security, mergeStateStatus, unreso
 }
 
 /**
+ * A2(缴械配套,owner 2026-08-04):loop 托管 PR **无条件**封死授权快速合并通道——
+ * loop 的 PR-write token 能发评论,不封则一句 `/approve-merge <sha>` 就能骗巡审替它
+ * 代合,整套「review-pr 是唯一合并闸」被一条评论绕穿。从 pre-merge-check.mjs 主流程抽出
+ * 为纯函数(2026-08-05,seat②adversarial 复审:原判定内嵌在大函数里,现有测试只能靠源码
+ * 字符串/分支存在性断言,测不出"条件被改成语义恒假"这类判定被拆掉的情形),不改变既有行为。
+ *
+ * 只把「loop 命中就无条件覆盖为 false,不看其余任何条件」这个决策本身收成纯函数——
+ * "其余条件是否满足"(evaluateAuthorizedFastMerge + securityGate.pass 的合取)仍由调用方
+ * 通过 computeEligibility 回调提供,本函数不重算、也不改这部分的既有表达式。
+ * computeEligibility 是回调而非直接传值:非 loop 分支才需要发起 fetchHeadCheckContexts
+ * 等网络调用,loop 分支必须保持"完全不发起这些请求"的既有行为——直接传值会强迫调用方
+ * 在进这个函数之前就把网络请求都发出去。
+ *
+ * 输入:
+ *   - approveMergeAuth: findApproveMergeAuthorization 的返回值(取其 .authorized)
+ *   - loopExclusionForGate: detectLoopExclusion 的返回值(loop 命中即 truthy)
+ *   - computeEligibility: () => { authorizedFastMergeAvailable, blockedReason, reportOnly }
+ *     (调用方算好的"若不看 loop,是否该放行");仅在"有授权评论且非 loop"时才会被调用
+ * 输出: { authorizedFastMergeAvailable, authorizedFastMergeInfo }
+ */
+export function decideAuthorizedFastMerge({ approveMergeAuth, loopExclusionForGate, computeEligibility }) {
+  const authorized = approveMergeAuth?.authorized ?? null;
+  if (!authorized) {
+    return { authorizedFastMergeAvailable: false, authorizedFastMergeInfo: null };
+  }
+  if (loopExclusionForGate) {
+    return {
+      authorizedFastMergeAvailable: false,
+      authorizedFastMergeInfo: {
+        admin: authorized.author,
+        commentUrl: authorized.url,
+        commentCreatedAt: authorized.createdAt,
+        blockedReason: 'loop-managed-pr-fast-merge-forbidden(loop 托管 PR 不设紧急通道,一律走完整审查)',
+        reportOnly: [],
+      },
+    };
+  }
+  const { authorizedFastMergeAvailable, blockedReason, reportOnly } = computeEligibility();
+  return {
+    authorizedFastMergeAvailable,
+    authorizedFastMergeInfo: {
+      admin: authorized.author,
+      commentUrl: authorized.url,
+      commentCreatedAt: authorized.createdAt,
+      blockedReason,
+      reportOnly,
+    },
+  };
+}
+
+/**
  * ApprovalBasis 单一真相源(SC-B,2026-08-04 #469 复盘):把「这个 PR 的 APPROVED 到底
  * 算不算数」收成一个纯函数,context.mjs 与 pre-merge-check.mjs 共用,禁止各写一份。
  *
@@ -1874,6 +1925,16 @@ export function detectLoopExclusion({ title, body, pr, rules }) {
     cluster = null; // 台账不存在 / 读不到 / 配置跳出仓库根,身份门槛过不了
   }
   if (!cluster) return null; // 台账没有这个 PR 号——无法证明托管关系,按普通 PR 走全套 review-pr 流程
+
+  // force-review 强制路由(缴械配套,owner 2026-08-04 决策 mergeAuthority=review-pr-only):
+  // 配置了 forceVerdict 时,身份确认后**不再看** body marker 与 cluster.tCap,一律按 t2 进
+  // 全套审查——loop 侧数据(body 标记/台账 tCap)漂移回 T1 也不能再造成跳审。唯一有意义的
+  // 取值是 't2';为防拼写漂移静默失效(t1/skip 都意味着无人审),任何非空值都收敛为 't2',
+  // 绝不产生比 t2 更宽松的结果(fail-safe 朝「进审」方向),coerced 时 source 单独标注供告警。
+  if (rules.forceVerdict != null && rules.forceVerdict !== '') {
+    const coerced = rules.forceVerdict !== 't2';
+    return { matched: true, verdict: 't2', source: coerced ? 'force-config-coerced' : 'force-config', matchedPrefix };
+  }
 
   // 身份确认后再判 T-level:先看 body 里 loop 自己声明的独立 metadata 行(锚定整行、加 m 标志
   // 逐行匹配,避免自然语言正文里偶然出现的"这次不建议合并"之类描述性语句被误当成 T-level 声明);

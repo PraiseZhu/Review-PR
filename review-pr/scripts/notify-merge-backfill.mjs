@@ -187,8 +187,10 @@ try {
       skipped.push({ pr, reason: 'bot-author-no-thanks', author: p.author?.login });
       continue;
     }
+    // A4(缴械配套):与 notify-merge-ack.mjs 同口径——只跳「仍自管」(t1/skip);
+    // t2 的 loop PR 由 review-pr 合并,补发致谢同样归本脚本。
     const loopExclusion = detectLoopExclusion({ title: p.title ?? '', body: p.body ?? '', pr, rules: LOOP_RULES });
-    if (loopExclusion) {
+    if (loopExclusion && loopExclusion.verdict !== 't2') {
       skipped.push({ pr, reason: 'loop-managed-has-own-broadcast' });
       continue;
     }

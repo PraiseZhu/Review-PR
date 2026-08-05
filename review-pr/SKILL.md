@@ -802,14 +802,47 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
 - `t1BodyMarkers`/`t2BodyMarkers`：body 里 loop 自己声明 T-level 的 metadata 行
   （锚定整行的正则，逐行匹配），命中优先采信；都没命中退回台账的 `cluster.tCap`；
 - `defaultWhenAmbiguous`：身份已确认但读不出 T-level 时的保守默认（`skip`）；
+- `forceVerdict`（**缴械配套**——「缴械」指 owner 2026-08-04 决策 `mergeAuthority=review-pr-only`：
+  剥除目标仓库自身 loop 的自动合并权，合并权整体移交 review-pr 巡审；本节 A2/A4/A5 均是这条
+  决策在 skill 侧的配套落地）：
+  配置后身份确认即**强制 t2 进全套审查**，优先于 `t1BodyMarkers`/`t2BodyMarkers` 与
+  `cluster.tCap`——loop 侧数据（body 标记/台账 tCap）漂移回 T1 也不能再造成跳审。
+  唯一有意义的取值是 `"t2"`；任何非空值都收敛为 t2（fail-safe 朝「进审」方向,
+  `source=force-config-coerced` 供识别拼写漂移），身份门槛（stateFile 台账命中）
+  **不被 force 绕过**——台账查不到仍按普通 PR 走全套审查。目标仓库缴械后应配置本键；
 - T1（或拿不准）→ `context.mjs` 的 `auto.action=skip-loop-managed`，优先级最高，
   压过产品门/架构门/格式门/前置门（但让位于安全与隐私门硬命中——凭证泄露必须打回）；
   T2 → 正常走 review-pr，但格式门做两处豁免：标题判 type 前先剥掉 `detectLoopExclusion`
   返回的 `matchedPrefix`（`titleForFormat`），段落存在性检查整体豁免
   （`wantSections=[]`，loop 的 body 遵循自己的证据结构，不是本仓 PR 模板的三段式，
   逐字匹配注定误判缺段落）；
-- 合并后的致谢播报见 `notify-merge-ack.mjs`：判定同一份 `detectLoopExclusion`，
-  已托管的 PR 不重复播报，`mergeAckNotify.notifyModule` 未配置时播报能力整体关闭。
+- **loop 托管 PR 一律无缘授权快速合并通道**（A2，缴械配套）：`pre-merge-check.mjs`
+  在 fast-merge 判定前用同一份 `detectLoopExclusion` 判身份，命中（不分 t1/t2）即封死
+  `authorizedFastMergeAvailable`（`blockedReason=loop-managed-pr-fast-merge-forbidden`）
+  ——loop 的 PR-write token 能发评论，不封则一句 `/approve-merge <sha>` 就能骗巡审代合。
+  3.8 末尾「authorized-fast-merge 可压过安全审查门」的例外对 loop PR 因此不存在；
+- 合并后的致谢播报（A4，缴械配套）：`notify-merge-ack.mjs` 挂在 review-pr **自己执行合并**
+  的流程末尾；`notify-merge-backfill.mjs` 每轮 auto 补扫一次近期 merged PR，补发维护者在
+  GitHub 网页手动合并、agent 无从感知因而漏播的致谢（两者共享同一份去重台账，互认已播）。
+  两者判定同一份 `detectLoopExclusion`，**只跳「仍自管」的 PR（verdict=t1/skip）**——
+  t2/force-review 的 loop PR 由 review-pr 合并，致谢也由本侧播报（缴械后一刀切会把全部
+  t2 致谢吞掉）。`mergeAckNotify.notifyModule` 未配置时播报能力整体关闭；
+- **事后审计闸**（A5，缴械配套）：`scripts/audit-merged-loop-prs.mjs` 每轮扫上轮游标
+  以来 merged 的 loop 托管 PR，核 head-bound clean 审查回执（receipt 层三条：存在 /
+  headRefOid 逐字相等 / verdict=clean，不重建 stage2 hash——保证等级如实声明在脚本头）。
+  核不过 → 定向 T0 告警（复用 `SLACK_OPS_ALERT_CHANNEL_ID` 私聊出口）+ 经 GitHub 原生
+  `revertPullRequest` mutation 自动开 ready 的 revert PR（仍走巡审审合，本闸只开不合）。
+  幂等台账按 `<pr>:<mergeOid>` 记账；首跑只立游标不回溯（缴械前的历史合并本就无回执）。
+  **接线**：auto 模式每轮在 `prepare.mjs` 拿到锁后、批处理开始前跑一次
+  `node "<SKILL_ROOT>/scripts/audit-merged-loop-prs.mjs"`，输出进当轮汇总;
+  `loopPrExclusion` 未配置时天然 no-op。
+  **保证等级如实声明**：这是**过程保证**，不是机器保证——本 skill 全仓只有一处确定性
+  spawn（`pre-check.mjs` → `record-escaped-finding.mjs`），其余脚本一律由 agent 按本文
+  逐条执行，本闸同此惯例。因此「漏网合并最迟一轮内被发现」的前提是**agent 真的跑了这一
+  步**；某轮漏跑则该轮不产生任何告警，且因游标只在真跑时推进，下一次跑会把跨过的窗口
+  一并审到（漏跑=延迟，不是永久漏审——这是刻意选的失败方向）。想要机器级必跑需把它挂进
+  scheduler hook，但 `pre-check.mjs` 的契约是「轻量、快、exit 2 表示无活可做」，塞进 gh
+  查询与可能的 revert PR 创建会破坏该契约，故未做；如需升级应另立独立 hook。
 
 ### 3.8 审查执行环境安全
 
@@ -1256,8 +1289,12 @@ node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
 ```
 
 **selfFixAuthors 自有 PR 的 self-merge**：当 `pre-merge-check` 返回
-`selfMergeAvailable=true` 时（viewer = PR author 且 author 在 `selfFixAuthors`），
-GitHub 不允许同账号 approve，直接使用 `--admin` 合并：
+`selfMergeAvailable=true` 时（viewer = PR author 且 author 在 `selfFixAuthors`，
+**且 PR 的 `isDraft` 字段严格等于 `false`**——这是硬门槛，draft 状态的自修复
+PR 拿不到 `selfMergeAvailable=true`，必须先 mark ready 才可能被判定为可合；
+判定用 `m.isDraft === false` 而非 `!m.isDraft`，字段读不到（`undefined`）时
+同样不放行，fail-closed），GitHub 不允许同账号 approve，直接使用 `--admin`
+合并：
 
 ```bash
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
@@ -1350,6 +1387,11 @@ head 重发。旧的「须晚于最后一次真实 push」时效判定已废除�
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
   --match-head <headRefOid> --basis authorized-fast-merge --admin --delete-branch --mode <auto|interactive>
 ```
+
+若候选是 t2 loop 托管 PR（见 3.7「Loop 托管 PR 排除」），**本通道不适用**——
+`pre-merge-check.mjs` 会直接返回 `authorizedFastMergeAvailable=false`
+（`blockedReason=loop-managed-pr-fast-merge-forbidden`），必须改走正常审查
+路径，不能靠一句 `/approve-merge <sha>` 绕过。
 
 判定逻辑单一来源在 `scripts/lib.mjs` 的 `findApproveMergeAuthorization`（授权
 本身是否有效）与 `evaluateAuthorizedFastMerge`（机械前提），`pre-merge-check.mjs`

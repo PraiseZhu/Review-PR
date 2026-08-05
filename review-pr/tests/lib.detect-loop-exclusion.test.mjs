@@ -435,3 +435,63 @@ test('context.mjs computeTitleFacts:未命中 loopExclusion(null)时 titleForFor
   assert.equal(result.type, 'fix');
   assert.equal(result.titleTypeOk, true);
 });
+
+// ── A1 force-review 强制路由(缴械配套,owner 2026-08-04)──
+// 配置 forceVerdict 后:身份确认 → 一律 t2 进审,优先于 body marker 与 cluster.tCap;
+// 身份门槛不被 force 绕过(台账未命中仍 null)。六场景第 6 条(带 /approve-merge 的
+// loop PR 仍不许 fast-merge)在 tests/pkg-a.review-gates.test.mjs 的 A2 段覆盖。
+
+function forceRules(repoRoot, extra = {}) {
+  return { titlePrefixes: ['[mivo] '], stateFile: 'history/loops/state.json', forceVerdict: 't2',
+    t1BodyMarkers: ['^T-level: T1$'], t2BodyMarkers: ['^T-level: T2$'], defaultWhenAmbiguous: 'skip', ...extra };
+}
+
+test('A1-1 force + body T2 marker + state T1 → t2,source=force-config(不再读 marker/tCap)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 601, tCap: 'T1' } } });
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: 'T-level: T2', pr: 601, rules: forceRules(repoRoot) });
+  assert.deepEqual({ verdict: r.verdict, source: r.source }, { verdict: 't2', source: 'force-config' });
+});
+
+test('A1-2 force + body 无 marker + state T1 → t2(tCap=T1 不再造成跳审)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 602, tCap: 'T1' } } });
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: '', pr: 602, rules: forceRules(repoRoot) });
+  assert.equal(r.verdict, 't2');
+});
+
+test('A1-3 force + body T1 marker → 仍 t2(loop 侧数据漂移回 T1 也压不过 force)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 603, tCap: 'T1' } } });
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: 'T-level: T1', pr: 603, rules: forceRules(repoRoot) });
+  assert.equal(r.verdict, 't2');
+});
+
+test('A1-4 force + state tCap 未知值 → t2(不落 defaultWhenAmbiguous=skip)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 604, tCap: 'T9' } } });
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: '', pr: 604, rules: forceRules(repoRoot) });
+  assert.equal(r.verdict, 't2');
+});
+
+test('A1-5 force 不绕身份门槛:台账未命中 PR → null(按普通 PR 走全套审查)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 999, tCap: 'T2' } } });
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: '', pr: 605, rules: forceRules(repoRoot) });
+  assert.equal(r, null);
+});
+
+test('A1-6 forceVerdict 拼写漂移(非 t2 值)→ 收敛为 t2 且 source 标 coerced(绝不产生更宽松结果)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 606, tCap: 'T1' } } });
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: '', pr: 606, rules: forceRules(repoRoot, { forceVerdict: 'T2' }) });
+  assert.deepEqual({ verdict: r.verdict, source: r.source }, { verdict: 't2', source: 'force-config-coerced' });
+});
+
+test('A1-7 未配置 forceVerdict → 原有语义原样(state T1 → t1,回归保护)', () => {
+  const repoRoot = freshTempDir();
+  writeStateFile(repoRoot, 'history/loops/state.json', { clusters: { c: { pr: 607, tCap: 'T1' } } });
+  const rules = forceRules(repoRoot); delete rules.forceVerdict;
+  const r = callDetectLoopExclusion(repoRoot, { title: '[mivo] x', body: '', pr: 607, rules });
+  assert.deepEqual({ verdict: r.verdict, source: r.source }, { verdict: 't1', source: 'state.json' });
+});

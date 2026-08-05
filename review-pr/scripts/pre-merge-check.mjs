@@ -42,9 +42,9 @@
 import {
   parseRepo, parsePR, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection,
   loadRules, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks,
-  findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute,
+  findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideAuthorizedFastMerge, decideStructuralBypassRoute,
   classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut,
-  readReviewReceipt, isReviewReceiptClean, print, fail, REPO_ROOT, STATE_DIR,
+  readReviewReceipt, isReviewReceiptClean, detectLoopExclusion, print, fail, REPO_ROOT, STATE_DIR,
 } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
@@ -94,7 +94,7 @@ try {
   const slug = `${owner}/${repo}`;
   const m = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'title,body,state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,files,statusCheckRollup',
+    '--json', 'title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,files,statusCheckRollup',
   ]);
   // reviewDecision 作判 BLOCKED 原因的权威信号(比 some(state===CHANGES_REQUESTED) 准:它按
   // 每个 reviewer 的「最新」review 算 —— self-approve 覆盖掉自己旧的 CHANGES_REQUESTED 后会变
@@ -218,34 +218,45 @@ try {
   // required 检查全绿三类不可绕过,格式门 / 未 resolve thread / 非 required 检查失败改记
   // reportOnly,不阻断 available,但调用方必须把非空的 reportOnly 显著写进合并致谢,
   // 不能悄悄吞掉。
-  let authorizedFastMergeAvailable = false;
-  let authorizedFastMergeInfo = null;
-  if (approveMergeAuth.authorized) {
-    const physicallyConflicted = m.mergeable === 'CONFLICTING' || m.mergeStateStatus === 'DIRTY';
-    const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
-    // P1-3(2026-08-02)required 完整性:expectedRequired===null(ruleset 端点读取失败)
-    // 时不能悄悄跳过完整性核验,直接判 requiredChecks=null(未证明全绿),fail-closed。
-    const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, m.baseRefName) : null;
-    const requiredChecks = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
-    const evaluation = evaluateAuthorizedFastMerge({
-      security: securityScan,
-      mergeStateStatus: physicallyConflicted ? 'DIRTY' : m.mergeStateStatus,
-      unresolvedThreadCount: unresolved.length,
-      formatPass: true, // 格式门由更上游的 context.mjs 判定,这里只复核机械前提,不重判格式
-      formatIssues: [],
-      requiredChecks,
-    });
-    // evaluateAuthorizedFastMerge 内部本就查 security,这里再显式合取一次全局门——四条
-    // 路由的泄密前提写在同一处、同一表达式,防将来某条路又漏掉。
-    authorizedFastMergeAvailable = evaluation.eligible && securityGate.pass;
-    authorizedFastMergeInfo = {
-      admin: approveMergeAuth.authorized.author,
-      commentUrl: approveMergeAuth.authorized.url,
-      commentCreatedAt: approveMergeAuth.authorized.createdAt,
-      blockedReason: evaluation.blockedReason,
-      reportOnly: evaluation.reportOnly,
-    };
-  }
+  // A2(缴械配套,owner 2026-08-04):loop 托管 PR **无条件**封死授权快速合并通道——
+  // loop 的 PR-write token 能发评论,不封则一句 `/approve-merge <sha>` 就能骗巡审替它
+  // 代合,整套「review-pr 是唯一合并闸」被一条评论绕穿。身份判定用与 context.mjs 同一份
+  // detectLoopExclusion(标题前缀 + 本地台账双门槛,PR 作者伪造不了台账);命中即封,
+  // 不区分 t1/t2——t2 走正常审查回执路径合并,紧急通道对 loop 一律不存在。
+  // 判定本身(loop 命中即封 / 否则按机械前提裁决)已抽成 lib.mjs 的纯函数
+  // decideAuthorizedFastMerge(2026-08-05,seat②adversarial 复审:抽出后才能用真实构造的
+  // 输入直接断言输出值,不再只能靠源码字符串/分支存在性锁字面量)。
+  const loopExclusionForGate = detectLoopExclusion({
+    title: m.title ?? '', body: m.body ?? '', pr, rules: rules.loopPrExclusion ?? null,
+  });
+  const { authorizedFastMergeAvailable, authorizedFastMergeInfo } = decideAuthorizedFastMerge({
+    approveMergeAuth,
+    loopExclusionForGate,
+    // 只有"有授权评论且非 loop"时才发起网络调用(与既有行为一致,loop PR 不多打一轮 API)。
+    computeEligibility: () => {
+      const physicallyConflicted = m.mergeable === 'CONFLICTING' || m.mergeStateStatus === 'DIRTY';
+      const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+      // P1-3(2026-08-02)required 完整性:expectedRequired===null(ruleset 端点读取失败)
+      // 时不能悄悄跳过完整性核验,直接判 requiredChecks=null(未证明全绿),fail-closed。
+      const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, m.baseRefName) : null;
+      const requiredChecks = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
+      const evaluation = evaluateAuthorizedFastMerge({
+        security: securityScan,
+        mergeStateStatus: physicallyConflicted ? 'DIRTY' : m.mergeStateStatus,
+        unresolvedThreadCount: unresolved.length,
+        formatPass: true, // 格式门由更上游的 context.mjs 判定,这里只复核机械前提,不重判格式
+        formatIssues: [],
+        requiredChecks,
+      });
+      // evaluateAuthorizedFastMerge 内部本就查 security,这里再显式合取一次全局门——四条
+      // 路由的泄密前提写在同一处、同一表达式,防将来某条路又漏掉。
+      return {
+        authorizedFastMergeAvailable: evaluation.eligible && securityGate.pass,
+        blockedReason: evaluation.blockedReason,
+        reportOnly: evaluation.reportOnly,
+      };
+    },
+  });
   // P2-2(2026-08-02):被拒绝的已编辑授权评论——非空时必须在报告里显著说明,不能让人以为
   // 授权凭空消失。
   const editedAuthComments = approveMergeAuth.edited;
@@ -488,7 +499,10 @@ try {
     // 失败、或还在跑,都不 self-merge,等下一轮(与 BLOCKED/UNSTABLE 分支同口径)。
     const selfRollup = classifyStatusRollup(m.statusCheckRollup);
     const rollupClean = selfRollup !== null && selfRollup.failed.length === 0 && selfRollup.pending.length === 0;
-    if (isSelfPr && isSelfFixAuthor && noHardBlockers && noContentBlockers && unresolved.length === 0 && rollupClean) {
+    // A3(缴械配套):isDraft 必须显式为 false——draft = 作者尚未同意进入合并流程
+    // (CLAUDE.md draft 纪律:mark ready 才是同意机器合并)。用 === false 而非 !isDraft:
+    // 字段读不到(undefined)时同样不放行,fail-closed。
+    if (isSelfPr && isSelfFixAuthor && m.isDraft === false && noHardBlockers && noContentBlockers && unresolved.length === 0 && rollupClean) {
       selfMergeAvailable = true;
     }
   }
@@ -525,6 +539,8 @@ try {
     reviewReceipt,
     ciRuns,
     blockedAwaitingApproval: blockClass === 'awaiting-approval',
+    isDraft: m.isDraft ?? null,
+    loopExclusion: loopExclusionForGate,
     selfMergeAvailable,
     authorizedFastMergeAvailable,
     authorizedFastMergeInfo,
