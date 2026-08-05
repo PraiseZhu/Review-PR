@@ -131,7 +131,9 @@ try {
       remoteVerify: (hazard) => readRemoteSkillFile('evolution/ledger.json', (text) => {
         const doc = JSON.parse(text);
         const list = Array.isArray(doc.escapedHazards) ? doc.escapedHazards : [];
-        return list.some((h) => h.hazardId === hazard.hazardId && h.activationStatus === 'active');
+        // **完全等价**才算已落地:同 id + active 只能说明"有过一条",不能说明本次要写的
+        // paths/evidence/promotion 也已在远端(第 3 轮核验点名的误 ack 面)。
+        return list.some((h) => JSON.stringify(h) === JSON.stringify(hazard));
       }),
     });
     saveInbox(STATE_DIR, kept);

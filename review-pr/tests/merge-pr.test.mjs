@@ -239,3 +239,30 @@ test('⑧ R7 生产触发链(第 2 轮核验):合并成功后必须真的调用 
   assert.equal(box.items.length, 1, '核验没过的条目必须留在 inbox 下轮重放');
   assert.ok(box.items[0].lastActivationCheck, '必须记下这轮为什么没激活(证明激活逻辑真跑过了)');
 });
+
+test('⑨ R7 第 3 轮核验:PATH 里的 node 不可用时激活仍要跑(用 process.execPath,不是裸 "node")', () => {
+  const { work, repo, stateDir, env } = setup();
+  // PATH 最前面放一个 node shim:除了 fake gh 自己(它的 shebang 就是 node)之外,一律
+  // 拒绝服务——于是"被测脚本用裸 `node` 起子进程"这条路会 127 失败,用 process.execPath
+  // 的实现不受影响。等价于 mini 的非交互 PATH 里没有真 node 的生产场景。
+  const shim = join(work, 'shim');
+  mkdirSync(shim, { recursive: true });
+  writeFileSync(join(shim, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */fake-gh/gh) exec ' + process.execPath + ' "$@" ;;',
+    '  *) echo "bare node is blocked in this test" >&2; exit 127 ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  chmodSync(join(shim, 'node'), 0o755);
+  const noNodeEnv = { ...env, PATH: `${shim}:${env.PATH}` };
+  // 外层用 process.execPath 起(否则连被测脚本都起不来);被测进程的 PATH 里没有 node
+  const r = spawnSync(process.execPath, [SCRIPT, '469', '--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin', '--mode', 'auto'], { cwd: repo, env: noNodeEnv, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.ok(out.hazardActivation, 'PATH 无 node 时也必须拿到激活结果');
+  assert.equal(out.hazardActivation.error, undefined, `激活不应报错:${JSON.stringify(out.hazardActivation)}`);
+  assert.equal(out.hazardActivation.action, 'activate');
+  assert.ok(existsSync(stateDir));
+});

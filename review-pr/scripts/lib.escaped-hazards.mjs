@@ -63,8 +63,10 @@ export function validatePromotionTarget(t) {
   if (t?.kind === 'rule') {
     const r = BUILTIN_RULES.find((x) => x.ruleId === t.ruleId);
     if (!r) return `promotionTarget.ruleId ${t.ruleId} 不在规则注册表里`;
-    if (t.ruleVersion && t.ruleVersion !== r.ruleVersion) {
-      return `promotionTarget.ruleVersion ${t.ruleVersion} 与注册表当前版本 ${r.ruleVersion} 不符`;
+    // ruleVersion 记的是**历史事实**(当年由哪个版本接管),不要求等于注册表当前版本——
+    // 要求等值会让每次规则 bump 都把 canonical 里的历史条目判成非法。只校验格式合法。
+    if (!/^v\d+$/.test(String(t.ruleVersion ?? ''))) {
+      return `promotionTarget.ruleVersion 形态非法(${t.ruleVersion ?? '缺'});应形如 v3`;
     }
     return null;
   }
@@ -95,6 +97,11 @@ export function validateHazardShape(h) {
   if (!ACTIVATION.includes(h?.activationStatus)) errs.push(`activationStatus 非法(${ACTIVATION.join('|')})`);
   if (!PROMOTION.includes(h?.promotionStatus)) errs.push(`promotionStatus 非法(${PROMOTION.join('|')})`);
   if (h?.promotionStatus === 'landed') {
+    // 第 3 轮核验:rule 目标的 ruleVersion **必填**——不记版本时,规则实现改了也说不清
+    // 这条 hazard 到底被哪个版本的规则接管了(SC-R5 的核销判定就依赖 ruleVersion)。
+    if (h?.promotionTarget?.kind === 'rule' && !str(h?.promotionTarget?.ruleVersion)) {
+      errs.push('landed 的 rule 目标必须记 ruleVersion(记的是当年接管它的版本,格式须形如 v3)');
+    }
     const bad = validatePromotionTarget(h?.promotionTarget);
     if (bad) errs.push(bad);
   }
@@ -108,6 +115,14 @@ export function validateHazardShape(h) {
   if (!grandfathered) {
     if (!sha(h?.fixHead)) errs.push('缺 fixHead(完整 40 位 SHA;激活时要精确核验)');
     if (!sha(h?.originHead)) errs.push('缺 originHead(完整 40 位 SHA;origin OID 门不能留空)');
+  }
+  // 第 3 轮核验:id/fingerprint 此前**只验非空字符串**,伪造任意串都能过。它们是从身份
+  // 字段确定性派生的,必须逐条复算等值——否则"稳定事件身份"这条性质只存在于生成端。
+  if (errs.length === 0) {
+    const expectId = deriveHazardId(h);
+    const expectFp = deriveHazardFingerprint(h);
+    if (h.hazardId !== expectId) errs.push(`hazardId 与身份字段复算不符(应为 ${expectId})——不接受伪造 id`);
+    if (h.fingerprint !== expectFp) errs.push(`fingerprint 与身份字段复算不符(应为 ${expectFp})`);
   }
   return { ok: errs.length === 0, errors: errs };
 }
@@ -156,6 +171,12 @@ export const PROM_RANK = { pending: 0, 'recorded-only': 1, landed: 2 };
  * `promotionTarget:null` 时,`{...cur, ...h}` 会让状态升级到 landed 却把 target 覆盖成 null,
  * 反向又得到 landed+target。状态与它的附属元数据必须**原子地**取自同一个赢家。
  */
+/** 身份字段(参与 hazardId 派生的那几个)必须完全一致才允许合并。 */
+const IDENTITY_FIELDS = ['repo', 'originPr', 'fixPr', 'originHead', 'fixHead'];
+export function sameHazardIdentity(a, b) {
+  return IDENTITY_FIELDS.every((k) => String(a?.[k] ?? '').toLowerCase() === String(b?.[k] ?? '').toLowerCase());
+}
+
 export function mergeHazardPair(a, b) {
   // 平局(两侧同状态)必须**显式**按对称规则解——直接"平局取 a"会让附属元数据方向相关
   // (实测:两侧都 active、只有一侧带 activatedAt 时,ab 与 ba 的 activatedAt 不同)。
@@ -179,6 +200,10 @@ export function mergeHazardPair(a, b) {
   };
   const out = {};
   for (const k of new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])) out[k] = scalar(k);
+  // paths 取**并集**(第 3 轮核验:同一事件两侧记的命中路径不同时,取一侧会缩小未来匹配面
+  // ——那等于悄悄让部分路径不再被注入 prompt)。排序保证对称。
+  const paths = [...new Set([...(Array.isArray(a?.paths) ? a.paths : []), ...(Array.isArray(b?.paths) ? b.paths : [])])].sort();
+  if (paths.length > 0) out.paths = paths;
   // 状态取赢家;它的附属元数据**同源**取自同一个赢家(平局时回落到对称的 scalar 规则)
   out.activationStatus = actWin.win.activationStatus;
   out.activatedAt = actWin.tie ? (scalar('activatedAt') ?? null) : (actWin.win.activatedAt ?? null);
@@ -187,17 +212,36 @@ export function mergeHazardPair(a, b) {
   return out;
 }
 
-/** 幂等 upsert(稳定 hazardId;atomic temp+rename)。返回 { changed, hazard }。 */
+/**
+ * 幂等 upsert(稳定 hazardId;atomic temp+rename)。返回 { changed, hazard }。
+ * 第 3 轮核验:**写前全量校验**——existing 段形状、incoming、以及合并结果三者任一不合法
+ * 都直接抛错且**零 canonical 变更**(此前 existing 非数组会被当 [] 覆写掉;坏 incoming 会
+ * 先落成 active 坏条目,再由 loadKnownHazards 判 incomplete——canonical 已被污染)。
+ */
 export function upsertHazard(file, hazard) {
   const doc = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  if (doc.escapedHazards !== undefined && !Array.isArray(doc.escapedHazards)) {
+    throw new Error('canonical 的 escapedHazards 段形状非法(非数组)——拒绝覆写,转人工');
+  }
   const list = Array.isArray(doc.escapedHazards) ? doc.escapedHazards : [];
+  for (const h of list) {
+    const v = validateHazardShape(h);
+    if (!v.ok) throw new Error(`canonical 已有条目不合法(${h?.hazardId ?? '无 id'}):${v.errors.join(';')}——拒绝在坏台账上追加`);
+  }
+  const inc = validateHazardShape(hazard);
+  if (!inc.ok) throw new Error(`待写入的 hazard 不合法:${inc.errors.join(';')}——零 canonical 变更`);
   const idx = list.findIndex((h) => h.hazardId === hazard.hazardId);
   let changed = true;
   if (idx >= 0) {
     const prev = list[idx];
+    if (!sameHazardIdentity(prev, hazard)) {
+      throw new Error(`同 hazardId 但身份字段不一致(${hazard.hazardId})——拒绝合并,转人工`);
+    }
     // 幂等:同内容重复登记不增条、不降级(active 不回退 pending-fix-merge;landed 不回退
     // pending),且状态与其附属元数据原子取自赢家(见 mergeHazardPair)。
     const merged = mergeHazardPair(prev, hazard);
+    const mv = validateHazardShape(merged);
+    if (!mv.ok) throw new Error(`合并结果不合法:${mv.errors.join(';')}——零 canonical 变更`);
     changed = JSON.stringify(merged) !== JSON.stringify(prev);
     list[idx] = merged;
   } else {
@@ -323,9 +367,18 @@ export function activateInboxItems({ items, probe, upsert, readback, sync, remot
   const activated = [];
   const kept = [];
   for (const item of items ?? []) {
+    // 写前先验形状(第 3 轮核验:坏 inbox 条目此前会先被 upsert 成 active 坏条目才失败)
+    const shape = validateHazardShape({ ...item, activationStatus: 'active' });
+    if (!shape.ok) { kept.push({ ...item, lastActivationCheck: `inbox 条目不合法:${shape.errors.join(';')}(零 canonical 变更)` }); continue; }
     const v = verifyActivation({ item, probe, currentRepo });
     if (!v.ok) { kept.push({ ...item, lastActivationCheck: v.reason }); continue; }
-    const { hazard } = upsert({ ...item, activationStatus: 'active', activatedAt: new Date().toISOString() });
+    let hazard;
+    try {
+      ({ hazard } = upsert({ ...item, activationStatus: 'active', activatedAt: new Date().toISOString() }));
+    } catch (e) {
+      kept.push({ ...item, lastActivationCheck: `canonical 写入被拒:${String(e.message ?? e).slice(0, 200)}` });
+      continue;
+    }
     const verify = readback();
     if (verify.incomplete || !verify.hazards.some((h) => h.hazardId === item.hazardId && h.activationStatus === 'active')) {
       kept.push({ ...item, lastActivationCheck: 'canonical 回读校验失败,保留重放' });
@@ -333,7 +386,9 @@ export function activateInboxItems({ items, probe, upsert, readback, sync, remot
     }
     const s = sync(hazard);
     if (s?.ok === true && s.pushed !== true && s.reason === 'nothing-to-push') {
-      // 无可推 = 本地 HEAD 已等于远端。只有远端确实带着这条 active hazard 才允许 ack。
+      // 无可推 = 本地 HEAD 已等于远端。只有远端确实带着**完全等价**的这条 hazard 才允许
+      // ack(第 3 轮核验:只比 id+active 时,远端那条可能 paths/evidence/promotion 都是旧的,
+      // 于是把还没真正落地的新内容从 inbox 删掉)。
       const rv = remoteVerify ? remoteVerify(hazard) : { ok: false, present: false };
       if (rv?.ok === true && rv.present === true) { activated.push(hazard.hazardId); continue; }
       kept.push({ ...item, lastActivationCheck: `sync 报 nothing-to-push,但远端核验未确认该 hazard(${rv?.error ?? 'present=false'}),保留 inbox 重放` });

@@ -45,6 +45,7 @@ export function initRepo(dir, { gitignore } = {}) {
   mkdirSync(dir, { recursive: true });
   git(['init', '-q', '-b', 'main'], { cwd: dir });
   git(['config', 'user.email', 'test@example.com'], { cwd: dir });
+  git(['config', 'commit.gpgsign', 'false'], { cwd: dir }); // 继承全局签名会让并发 temp-git 用例随机红
   git(['config', 'user.name', 'review-pr-test'], { cwd: dir });
   if (gitignore !== undefined) writeFileSync(join(dir, '.gitignore'), gitignore);
   writeFileSync(join(dir, 'f.txt'), 'x');

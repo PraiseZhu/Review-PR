@@ -25,7 +25,10 @@ const SCRIPT = join(__dirname, '..', 'scripts', 'pre-check.mjs');
 const FAKE_GH_DIR = join(__dirname, 'fixtures', 'fake-gh');
 
 const git = (args, cwd) => {
-  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
+    // 显式禁签名:继承全局 commit.gpgsign 时,并发跑 temp-git 用例会撞 gpg
+    // 「Cannot allocate memory」而随机红(核验席实测 409/414)。测试仓不需要签名。
+    '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
   assert.equal(r.status, 0, `git ${args.join(' ')} 失败: ${r.stderr}`);
   return r.stdout.trim();
 };
@@ -93,6 +96,8 @@ test('--probe-only:状态根不被创建、skill 仓不 pull、backfill 不发�
   const out = JSON.parse(r.stdout.trim().split('\n').pop());
   assert.equal(out.decision, 'run');
   assert.equal(out.probeOnly, true);
+  // SC-R7 第 3 轮核验:轮次开始的 hazard 重放属"有副作用",probe-only 必须不跑
+  assert.equal(out.hazardReplay, undefined, 'probe-only 不得触发 hazard 激活重放(它会写 canonical / push)');
   assert.equal(out.candidateCount, 1);
   // ① 状态根目录根本不存在——锁死 import 层的 mkdir/写探针/迁移(比"逐字节一致"更强:
   //    写后删的探针在最终态摘要里不可见,"目录未被创建"则连这一类也排除)
@@ -132,6 +137,9 @@ test('对照组(不带 --probe-only):同一 fixture 下 pull 推进 HEAD、backf
   const out = JSON.parse(r.stdout.trim().split('\n').pop());
   assert.equal(out.decision, 'run');
   assert.equal(out.probeOnly, undefined);
+  // SC-R7 第 3 轮核验:正常轮次开始必须**真的**跑一次 pending 重放——此前激活只挂在合并
+  // 出口上,那一次失败后若没有新合并,inbox 就再也没有自动重放的时机。
+  assert.ok(out.hazardReplay, `正常轮必须带 hazardReplay:${JSON.stringify(out)}`);
   // pull 真的发生:clone HEAD 追平 origin
   assert.equal(git(['rev-parse', 'HEAD'], f.skillClone), f.srcHead, '正常轮应 ff-pull skill 仓——否则 probe 组的"不 pull"断言是真空');
   // backfill 真的发起(fake gh 记录到 merged 扫描调用)

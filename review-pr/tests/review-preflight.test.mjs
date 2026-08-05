@@ -16,7 +16,10 @@ const SCRIPT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
 const VENDOR = join(__dirname, '..', 'vendor', 'typescript');
 
 const git = (args, cwd) => {
-  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
+    // 显式禁签名:继承全局 commit.gpgsign 时,并发跑 temp-git 用例会撞 gpg
+    // 「Cannot allocate memory」而随机红(核验席实测 409/414)。测试仓不需要签名。
+    '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
   assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
   return r.stdout.trim();
 };
@@ -224,5 +227,25 @@ test('R2 第 2 轮核验补齐:剥语法壳 / 三元 / async IIFE 全部命中,�
 });
 
 test('R2:规则版本随检测面变化 bump(SC-R5 的核销依赖 ruleVersion,不 bump 会冒充"代码已修")', () => {
-  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v3', '检测面扩了必须 bump');
+  assert.equal(BUILTIN_RULES[0].ruleVersion, 'v4', '检测面扩了必须 bump');
+});
+
+test('R2 第 3 轮核验补齐:谓词根节点剥壳 + 逻辑/空值合并/逗号/element-access', () => {
+  const { ts } = loadVendoredTypescript();
+  const hit = (text, path = 'a.ts') => {
+    const r = scanSource(ts, { path, text });
+    assert.equal(r.ok, true, r.error);
+    return r.hits.length;
+  };
+  // 第 3 轮核验实测漏判(修前均为 0):谓词根节点被括号包住 → 整条判定被跳过
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction((async () => true)); }'), 1, '括号包住的 async 箭头谓词');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction((function(){ return Promise.resolve(true); })); }'), 1, '括号包住的 function 表达式谓词');
+  assert.equal(hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => ready && Promise.resolve(true)); }'), 1, '&& 的右操作数是 Promise');
+  assert.equal(hit('export async function w(page: any, v: any){ await page.waitForFunction(() => v ?? Promise.resolve(true)); }'), 1, '?? 的右操作数是 Promise');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => (0, Promise.resolve(true))); }'), 1, '逗号表达式取右操作数');
+  assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => Promise["resolve"](true)); }'), 1, 'element-access 成员调用');
+  // 零误报对照(收窄面不能被上面这些递归重新放宽)
+  assert.equal(hit('export async function w(page: any, ready: boolean){ await page.waitForFunction(() => ready && document.readyState === "complete"); }'), 0, '两侧都是同步 → 不报');
+  assert.equal(hit('export async function w(page: any, x: any){ await page.waitForFunction(() => x["then"]()); }'), 0, 'element-access 的 then,链基不是 Promise → 不报');
+  assert.equal(hit('export async function w(page: any, model: any){ await page.waitForFunction(() => model["evaluate"]()); }'), 0, 'element-access 的 evaluate,receiver 不在白名单 → 不报');
 });

@@ -51,8 +51,12 @@
 // 超时则是自己捕获并显式 exit 0,两者是不同层级的兜底,不要混为一谈)。
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve, delimiter } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { resolve, delimiter, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+
+const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 
 const repoRootIndex = process.argv.indexOf('--repo-root');
 const repoRootArg = repoRootIndex >= 0 ? process.argv[repoRootIndex + 1] : '';
@@ -220,7 +224,23 @@ try {
     /* 指纹判据不可用 → 无法证明没活，显式放行 */
   }
 
-  process.stdout.write(JSON.stringify({ decision: 'run', candidateCount, skillSync, ...(PROBE_ONLY ? { probeOnly: true } : {}) }) + '\n');
+  // SC-R7 第 3 轮核验:pending hazard 的激活此前**只**由合并出口触发——若那次现场核验或
+  // push 失败、之后又没有新的合并,inbox 就再没有自动重放的时机。轮次开始(decision=run)
+  // 是天然的重放点:幂等、失败仍留 inbox,且不改变本脚本的 decision。
+  // probe-only 必须零副作用(那是它的契约,有专门用例钉死),所以只在非 probe-only 跑。
+  let hazardReplay = null;
+  if (!PROBE_ONLY) {
+    try {
+      const r = spawnSync(process.execPath, [resolve(SCRIPTS_DIR, 'record-escaped-finding.mjs'), '--activate'], { encoding: 'utf8', timeout: 120_000 });
+      if (r.error) throw r.error;
+      if (!r.stdout || !r.stdout.trim()) throw new Error(`无输出(status=${r.status})`);
+      const j = JSON.parse(r.stdout);
+      hazardReplay = { activated: j.activated ?? [], pendingCount: (j.pending ?? []).length };
+    } catch (e) {
+      hazardReplay = { error: String(e.message ?? e).slice(0, 200), note: '条目留在 inbox,下轮再重放' };
+    }
+  }
+  process.stdout.write(JSON.stringify({ decision: 'run', candidateCount, skillSync, ...(hazardReplay ? { hazardReplay } : {}), ...(PROBE_ONLY ? { probeOnly: true } : {}) }) + '\n');
   process.exit(0);
 } catch (e) {
   // 业务策略:无法证明没活时显式请求运行，让会话内流程复核并汇总异常。

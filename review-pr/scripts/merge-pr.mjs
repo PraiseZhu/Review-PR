@@ -151,7 +151,11 @@ try {
   // best-effort 调用不会丢事实;它也不改变本次合并结果(合并已既成),只把结果带出去。
   let hazardActivation = null;
   try {
-    const r = spawnSync('node', [join(dirname(fileURLToPath(import.meta.url)), 'record-escaped-finding.mjs'), '--activate'], { encoding: 'utf8', timeout: 120_000 });
+    // process.execPath 而不是裸 'node':mini 的非交互 PATH 里没有 node,裸名字会 ENOENT
+    // 而静默丢掉激活(第 3 轮核验点名)。error/status/stdout 三者都要查。
+    const r = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'record-escaped-finding.mjs'), '--activate'], { encoding: 'utf8', timeout: 120_000 });
+    if (r.error) throw r.error;
+    if (!r.stdout || !r.stdout.trim()) throw new Error(`激活子进程无输出(status=${r.status}, stderr=${(r.stderr ?? '').slice(0, 160)})`);
     hazardActivation = JSON.parse(r.stdout);
   } catch (e) {
     hazardActivation = { ok: false, error: `激活调用失败:${String(e.message ?? e).slice(0, 200)}(条目留在 inbox 下轮重放)` };

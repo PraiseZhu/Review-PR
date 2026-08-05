@@ -99,7 +99,9 @@ try {
     requiredProfileAnswers,
     requiredNegativeEvidenceKeys,
     knownHazards: relevantHazards,
-    hazardsIncomplete: hazards.incomplete === true,
+    // repo 解析不出时 hazardsForPaths 会 fail-closed 返空——那等于静默跳过全部 known
+    // hazard,必须显式标不完整(第 3 轮核验)。
+    hazardsIncomplete: hazards.incomplete === true || repoSlug === null,
     classifierIncomplete: classified.incomplete,
     classifierIncompleteFiles: classified.incompleteFiles,
     repo: repoSlug,

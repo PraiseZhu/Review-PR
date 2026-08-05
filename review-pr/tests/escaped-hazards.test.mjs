@@ -13,25 +13,34 @@ import {
   verifyActivation, loadInbox, saveInbox, validateHazardShape, activateInboxItems,
   mergeHazardPair, GRANDFATHERED_IDS,
 } from '../scripts/lib.escaped-hazards.mjs';
+import { BUILTIN_RULES } from '../scripts/lib.preflight-rules.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BUILD = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
 const CLI = join(__dirname, '..', 'scripts', 'record-escaped-finding.mjs');
 const REAL_RULE = 'playwright-waitforfunction-async-predicate';
+const RULE_VERSION = BUILTIN_RULES.find((r) => r.ruleId === REAL_RULE).ruleVersion;
 
 const git = (args, cwd) => {
-  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
+    // 显式禁签名:继承全局 commit.gpgsign 时,并发跑 temp-git 用例会撞 gpg
+    // 「Cannot allocate memory」而随机红(核验席实测 409/414)。测试仓不需要签名。
+    '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
   assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
   return r.stdout.trim();
 };
 
-/** 完整合法 hazard 夹具(第 2 轮核验后:originHead/evidence 必填,landed 目标须真实存在)。 */
-const FULL = (over = {}) => ({
-  hazardId: 'hz2-a', repo: 'o/r', fingerprint: 'hzf2-a', originPr: 1, fixPr: 2,
-  fixHead: 'a'.repeat(40), originHead: 'b'.repeat(40),
-  pattern: 'p', evidence: '判定依据', paths: ['a/**'],
-  activationStatus: 'active', promotionStatus: 'pending', ...over,
-});
+/** 完整合法 hazard 夹具。第 3 轮核验后 id/fingerprint 必须与身份字段**复算等值**,
+ *  所以夹具不能再手写 id —— 由 derive 函数产出(想造"伪造 id"的反例就显式覆盖)。 */
+const FULL = (over = {}) => {
+  const base = {
+    repo: 'o/r', originPr: 1, fixPr: 2,
+    fixHead: 'a'.repeat(40), originHead: 'b'.repeat(40),
+    pattern: 'p', evidence: '判定依据', paths: ['a/**'],
+    activationStatus: 'active', promotionStatus: 'pending', ...over,
+  };
+  return { ...base, hazardId: deriveHazardId(base), fingerprint: deriveHazardFingerprint(base), ...over };
+};
 
 test('R7 种子:#469→#483 假等待 hazard 已在 canonical ledger,两侧 head 都可核验(grandfather 豁免已取消)', () => {
   const loaded = loadKnownHazards();
@@ -78,8 +87,10 @@ test('R7 schema fail-closed:缺任一必填字段判不完整;grandfathered 只�
   // landed 目标存在性:注册表里没有的 ruleId/profileId/checkId 一律拒
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed' })).ok, false, 'landed 缺 target');
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: 'no-such-rule' } })).ok, false, '不存在的 ruleId 不得算 landed');
-  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE } })).ok, true);
-  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: 'v0' } })).ok, false, '版本不符不得算 landed');
+  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: RULE_VERSION } })).ok, true);
+  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE } })).ok, false, 'rule 目标必须记 ruleVersion');
+  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: 'nope' } })).ok, false, 'ruleVersion 形态非法不得算 landed');
+  assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: 'v1' } })).ok, true, '历史版本合法(不要求等于注册表当前版本,否则每次 bump 都作废 canonical)');
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'profile', profileId: 'test-infra', checkId: 'nope' } })).ok, false, '不存在的 checkId 不得算 landed');
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'profile', profileId: 'test-infra', checkId: 'could-be-always-green' } })).ok, true);
   assert.equal(validateHazardShape(FULL({ promotionStatus: 'recorded-only' })).ok, false, 'recorded-only 必须带理由');
@@ -87,10 +98,10 @@ test('R7 schema fail-closed:缺任一必填字段判不完整;grandfathered 只�
 
 test('R7 复审:loadKnownHazards 对 schema 不完整的条目判 incomplete(不是只验 id+双状态)', () => {
   const tmp = join(mkdtempSync(join(tmpdir(), 'hz-schema-')), 'ledger.json');
-  upsertHazard(tmp, FULL({ hazardId: 'hz2-s', fingerprint: 'hzf2-s' }));
+  upsertHazard(tmp, FULL({ fixPr: 21 }));
   assert.equal(loadKnownHazards(tmp).incomplete, false);
   for (const k of ['repo', 'fingerprint', 'paths', 'fixHead', 'originHead', 'pattern', 'evidence']) {
-    const bad = FULL({ hazardId: 'hz2-s', fingerprint: 'hzf2-s' }); delete bad[k];
+    const bad = FULL({ fixPr: 21 }); delete bad[k];
     writeFileSync(tmp, JSON.stringify({ escapedHazards: [bad] }, null, 2));
     const loaded = loadKnownHazards(tmp);
     assert.equal(loaded.incomplete, true, `缺 ${k} 时 loadKnownHazards 必须判 incomplete`);
@@ -110,7 +121,7 @@ test('R7 复审:激活核验——origin PR 未合并即拒(即使 originHead �
 
 test('R7 repo 绑定:别的仓不吃本仓 hazard;repo 解析不出时**返空**(不得退化成不过滤)', () => {
   const tmp = join(mkdtempSync(join(tmpdir(), 'hz-repo-')), 'ledger.json');
-  upsertHazard(tmp, FULL({ hazardId: 'hz2-r', fingerprint: 'hzf2-r' }));
+  upsertHazard(tmp, FULL({ fixPr: 22 }));
   const loaded = loadKnownHazards(tmp);
   assert.equal(hazardsForPaths(loaded, ['a/x.ts'], 'o/r').length, 1);
   assert.equal(hazardsForPaths(loaded, ['a/x.ts'], 'other/repo').length, 0, '别的仓不得吃到');
@@ -199,10 +210,10 @@ test('R7 端到端注入:改动命中 hazard paths → hazardId 与模式文本�
 
 test('R7 hazardsForPaths:仅 active 进 prompt;pending-fix-merge 不进;损坏 → incomplete 且不伪装成空', () => {
   const tmpLedger = join(mkdtempSync(join(tmpdir(), 'hz-')), 'ledger.json');
-  upsertHazard(tmpLedger, FULL({ hazardId: 'hz2-x', fingerprint: 'hzf2-x' }));
+  upsertHazard(tmpLedger, FULL({ fixPr: 23 }));
   assert.equal(hazardsForPaths(loadKnownHazards(tmpLedger), ['a/b.ts'], 'o/r').length, 1);
   assert.equal(hazardsForPaths(loadKnownHazards(tmpLedger), ['c/b.ts'], 'o/r').length, 0);
-  upsertHazard(tmpLedger, FULL({ hazardId: 'hz2-y', fingerprint: 'hzf2-y', activationStatus: 'pending-fix-merge' }));
+  upsertHazard(tmpLedger, FULL({ fixPr: 24, activationStatus: 'pending-fix-merge' }));
   assert.equal(hazardsForPaths(loadKnownHazards(tmpLedger), ['a/b.ts'], 'o/r').length, 1, 'pending 的不进 prompt');
   writeFileSync(tmpLedger, '{broken');
   const bad = loadKnownHazards(tmpLedger);
@@ -212,25 +223,25 @@ test('R7 hazardsForPaths:仅 active 进 prompt;pending-fix-merge 不进;损坏 �
 
 test('R7 幂等 upsert:重复登记不增条、不降级(active→pending / landed→pending 都不回退)', () => {
   const tmpLedger = join(mkdtempSync(join(tmpdir(), 'hz-')), 'ledger.json');
-  const h = FULL({ hazardId: 'hz2-z', fingerprint: 'hzf2-z', promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE } });
+  const h = FULL({ fixPr: 25, promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: RULE_VERSION } });
   upsertHazard(tmpLedger, h);
   const again = upsertHazard(tmpLedger, { ...h, activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null });
   assert.equal(again.hazard.activationStatus, 'active');
   assert.equal(again.hazard.promotionStatus, 'landed');
-  assert.deepEqual(again.hazard.promotionTarget, { kind: 'rule', ruleId: REAL_RULE }, '状态升级时其附属 target 必须同源保留');
+  assert.deepEqual(again.hazard.promotionTarget, { kind: 'rule', ruleId: REAL_RULE, ruleVersion: RULE_VERSION }, '状态升级时其附属 target 必须同源保留');
   assert.equal(loadKnownHazards(tmpLedger).hazards.length, 1, '不增条');
 });
 
 test('R7 第 2 轮核验:mergeHazardPair 方向无关——显式 promotionTarget:null 不得把 landed 的 target 冲掉', () => {
   // 两侧刻意在**非状态**字段上也不一致(evidence/registeredAt)——否则 `{...a,...b}` 这种
   // 方向相关的实现在"其余字段完全相同"的夹具下测不出来(实测:变异不咬合)。
-  const landed = FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE }, activationStatus: 'active', activatedAt: '2026-08-05T00:00:00.000Z', evidence: 'A 侧依据', registeredAt: '2026-08-01T00:00:00.000Z' });
+  const landed = FULL({ promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: REAL_RULE, ruleVersion: RULE_VERSION }, activationStatus: 'active', activatedAt: '2026-08-05T00:00:00.000Z', evidence: 'A 侧依据', registeredAt: '2026-08-01T00:00:00.000Z' });
   const pending = FULL({ promotionStatus: 'pending', promotionTarget: null, activationStatus: 'pending-fix-merge', evidence: 'B 侧依据', registeredAt: '2026-08-02T00:00:00.000Z' });
   const ab = mergeHazardPair(landed, pending);
   const ba = mergeHazardPair(pending, landed);
   assert.deepEqual(ab, ba, '两个方向必须得到完全相同的结果(实测:旧实现一方 null 一方 target)');
   assert.equal(ab.promotionStatus, 'landed');
-  assert.deepEqual(ab.promotionTarget, { kind: 'rule', ruleId: REAL_RULE });
+  assert.deepEqual(ab.promotionTarget, { kind: 'rule', ruleId: REAL_RULE, ruleVersion: RULE_VERSION });
   assert.equal(ab.activationStatus, 'active');
   assert.equal(ab.activatedAt, '2026-08-05T00:00:00.000Z', 'activation 的附属时间戳同样取自赢家');
   assert.equal(validateHazardShape(ab).ok, true, '合并结果必须仍是合法 hazard');
@@ -241,7 +252,7 @@ test('R7 第 2 轮核验:mergeHazardPair 方向无关——显式 promotionTarge
   const mixed = mergeHazardPair(landed, recordedOnly);
   assert.deepEqual(mixed, mergeHazardPair(recordedOnly, landed));
   assert.equal(mixed.promotionStatus, 'landed');
-  assert.deepEqual(mixed.promotionTarget, { kind: 'rule', ruleId: REAL_RULE }, 'landed 的 target 必须取自 landed 那一侧');
+  assert.deepEqual(mixed.promotionTarget, { kind: 'rule', ruleId: REAL_RULE, ruleVersion: RULE_VERSION }, 'landed 的 target 必须取自 landed 那一侧');
   assert.equal(validateHazardShape(mixed).ok, true, 'landed + recorded-only 理由 是畸形,必须被同源覆盖挡住');
 
   // activatedAt 同理:活的那一侧没有时间戳时,不得从**pending 侧**捡一个来充数
@@ -308,12 +319,12 @@ test('R7 复审:CLI 无法解析仓库时拒绝登记(hazard 必须绑定 repo)'
 });
 
 test('R7 复审:ack 严格晚于 push——push 失败/skipped 的条目留在 inbox 重放,不算激活', () => {
-  const item = FULL({ hazardId: 'hz2-ack', fingerprint: 'hzf2-ack', activationStatus: 'pending-fix-merge' });
+  const item = FULL({ activationStatus: 'pending-fix-merge' });
   const probe = (pr) => (pr === 2
     ? { state: 'MERGED', headRefOid: 'a'.repeat(40) }
     : { state: 'MERGED', headRefOid: 'b'.repeat(40) });
   const upsert = (x) => ({ hazard: { ...x } });
-  const readback = () => ({ incomplete: false, hazards: [{ hazardId: 'hz2-ack', activationStatus: 'active' }] });
+  const readback = () => ({ incomplete: false, hazards: [{ hazardId: item.hazardId, activationStatus: 'active' }] });
 
   for (const bad of [{ ok: false, pushed: false, error: 'non-fast-forward' }, { ok: true, pushed: false, skipped: 'not-on-main' }, null]) {
     const r = activateInboxItems({ items: [item], probe, upsert, readback, sync: () => bad });
@@ -322,7 +333,7 @@ test('R7 复审:ack 严格晚于 push——push 失败/skipped 的条目留在 i
     assert.match(r.kept[0].lastActivationCheck, /push 未成功/);
   }
   const ok = activateInboxItems({ items: [item], probe, upsert, readback, sync: () => ({ ok: true, pushed: true }) });
-  assert.deepEqual(ok.activated, ['hz2-ack']);
+  assert.deepEqual(ok.activated, [item.hazardId]);
   assert.deepEqual(ok.kept, []);
   const badRead = activateInboxItems({ items: [item], probe, upsert, readback: () => ({ incomplete: true, hazards: [] }), sync: () => ({ ok: true, pushed: true }) });
   assert.deepEqual(badRead.activated, []);
@@ -337,16 +348,16 @@ test('R7 复审:ack 严格晚于 push——push 失败/skipped 的条目留在 i
 });
 
 test('R7 第 2 轮核验:push 成功后崩在 ack 前——重放拿到 nothing-to-push,须凭**远端核验**安全 ack', () => {
-  const item = FULL({ hazardId: 'hz2-crash', fingerprint: 'hzf2-crash', activationStatus: 'pending-fix-merge' });
+  const item = FULL({ activationStatus: 'pending-fix-merge', pattern: 'crash-case' });
   const probe = (pr) => (pr === 2
     ? { state: 'MERGED', headRefOid: 'a'.repeat(40) }
     : { state: 'MERGED', headRefOid: 'b'.repeat(40) });
   const upsert = (x) => ({ hazard: { ...x } });
-  const readback = () => ({ incomplete: false, hazards: [{ hazardId: 'hz2-crash', activationStatus: 'active' }] });
+  const readback = () => ({ incomplete: false, hazards: [{ hazardId: item.hazardId, activationStatus: 'active' }] });
   const nothing = () => ({ ok: true, pushed: false, reason: 'nothing-to-push' });
   // 远端确认已含该 active hazard → 安全 ack(旧逻辑在这里永远保留 inbox)
   const acked = activateInboxItems({ items: [item], probe, upsert, readback, sync: nothing, remoteVerify: () => ({ ok: true, present: true }) });
-  assert.deepEqual(acked.activated, ['hz2-crash']);
+  assert.deepEqual(acked.activated, [item.hazardId]);
   // 远端没有 / 读不到 → 仍保留重放(不得据 nothing-to-push 就当推过了)
   for (const rv of [{ ok: true, present: false }, { ok: false, error: '远端读不到' }, null]) {
     const kept = activateInboxItems({ items: [item], probe, upsert, readback, sync: nothing, remoteVerify: () => rv });
@@ -356,4 +367,82 @@ test('R7 第 2 轮核验:push 成功后崩在 ack 前——重放拿到 nothing-
   // 未注入 remoteVerify → 保守保留
   const noVerifier = activateInboxItems({ items: [item], probe, upsert, readback, sync: nothing });
   assert.deepEqual(noVerifier.activated, []);
+});
+
+test('R7 第 3 轮核验:id/fingerprint 必须与身份字段复算等值(伪造串不再能过 schema)', () => {
+  const good = FULL();
+  assert.equal(validateHazardShape(good).ok, true);
+  const forgedId = validateHazardShape({ ...good, hazardId: 'hz2-forged' });
+  assert.equal(forgedId.ok, false, '伪造 hazardId 必须被拒');
+  assert.match(forgedId.errors.join(';'), /复算不符/);
+  assert.equal(validateHazardShape({ ...good, fingerprint: 'hzf2-forged' }).ok, false, '伪造 fingerprint 必须被拒');
+  // 身份字段被改但 id 没跟着改 → 同样是不一致
+  assert.equal(validateHazardShape({ ...good, fixPr: 999 }).ok, false, '改身份字段而不重算 id → 拒');
+});
+
+test('R7 第 3 轮核验:坏输入零 canonical 变更(existing 非数组 / incoming 不合法 / 身份冲突)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hz-nomut-'));
+  const file = join(dir, 'ledger.json');
+  // ① existing 段非数组:拒绝覆写(此前当 [] 直接盖掉)
+  writeFileSync(file, JSON.stringify({ escapedHazards: { oops: 1 } }));
+  const before = readFileSync(file, 'utf8');
+  assert.throws(() => upsertHazard(file, FULL()), /形状非法/);
+  assert.equal(readFileSync(file, 'utf8'), before, 'canonical 必须一个字节都没变');
+  // ② incoming 不合法(缺 evidence):零变更
+  writeFileSync(file, JSON.stringify({ escapedHazards: [] }));
+  const empty = readFileSync(file, 'utf8');
+  const bad = FULL(); delete bad.evidence;
+  assert.throws(() => upsertHazard(file, bad), /不合法/);
+  assert.equal(readFileSync(file, 'utf8'), empty, 'canonical 必须一个字节都没变');
+  // ③ 同 id 但身份字段不一致:拒绝合并
+  upsertHazard(file, FULL());
+  const withOne = readFileSync(file, 'utf8');
+  assert.throws(() => upsertHazard(file, { ...FULL(), originPr: 77 }), /身份字段不一致|复算不符/);
+  assert.equal(readFileSync(file, 'utf8'), withOne);
+});
+
+test('R7 第 3 轮核验:mergeHazardPair 的 paths 取并集(取一侧会缩小未来匹配面)', () => {
+  const a = FULL({ paths: ['a/**', 'c/**'] });
+  const b = FULL({ paths: ['b/**', 'a/**'] });
+  const m = mergeHazardPair(a, b);
+  assert.deepEqual(m.paths, ['a/**', 'b/**', 'c/**']);
+  assert.deepEqual(m, mergeHazardPair(b, a), '并集天然对称');
+});
+
+test('R7 第 3 轮核验:激活前先验 inbox 条目形状 → 零 upsert 调用(此前先写成 active 坏条目再失败)', () => {
+  const bad = FULL({ activationStatus: 'pending-fix-merge' });
+  delete bad.evidence;
+  let upserted = 0;
+  const r = activateInboxItems({
+    items: [bad],
+    probe: () => ({ state: 'MERGED', headRefOid: 'a'.repeat(40) }),
+    upsert: (x) => { upserted += 1; return { hazard: x }; },
+    readback: () => ({ incomplete: false, hazards: [] }),
+    sync: () => ({ ok: true, pushed: true }),
+  });
+  assert.deepEqual(r.activated, []);
+  assert.equal(upserted, 0, '坏条目不得触达 canonical');
+  assert.match(r.kept[0].lastActivationCheck, /不合法/);
+});
+
+test('R7 第 3 轮核验:nothing-to-push 的远端核验必须**内容等价**(同 id+active 但内容旧 → 不 ack)', () => {
+  const item = FULL({ activationStatus: 'pending-fix-merge', paths: ['a/**', 'new/**'] });
+  const probe = (pr) => (pr === 2
+    ? { state: 'MERGED', headRefOid: 'a'.repeat(40) }
+    : { state: 'MERGED', headRefOid: 'b'.repeat(40) });
+  const upsert = (x) => ({ hazard: { ...x } });
+  const readback = () => ({ incomplete: false, hazards: [{ hazardId: item.hazardId, activationStatus: 'active' }] });
+  const nothing = () => ({ ok: true, pushed: false, reason: 'nothing-to-push' });
+  // 远端那条只是"同 id + active",paths 还是旧的 → present 判 false → 保留重放
+  const stale = activateInboxItems({
+    items: [item], probe, upsert, readback, sync: nothing,
+    remoteVerify: (hazard) => ({ ok: true, present: JSON.stringify({ ...hazard, paths: ['a/**'] }) === JSON.stringify(hazard) }),
+  });
+  assert.deepEqual(stale.activated, [], '内容不等价时不得 ack');
+  // 完全等价 → ack
+  const same = activateInboxItems({
+    items: [item], probe, upsert, readback, sync: nothing,
+    remoteVerify: (hazard) => ({ ok: true, present: JSON.stringify(hazard) === JSON.stringify(hazard) }),
+  });
+  assert.deepEqual(same.activated, [item.hazardId]);
 });

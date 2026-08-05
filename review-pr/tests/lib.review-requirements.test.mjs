@@ -11,7 +11,10 @@ import { buildDiffSnapshot } from '../scripts/lib.diff-snapshot.mjs';
 import { computeReviewRequirements, logicalWindow } from '../scripts/lib.review-requirements.mjs';
 
 const git = (args, cwd) => {
-  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+  const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
+    // 显式禁签名:继承全局 commit.gpgsign 时,并发跑 temp-git 用例会撞 gpg
+    // 「Cannot allocate memory」而随机红(核验席实测 409/414)。测试仓不需要签名。
+    '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
   assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
   return r.stdout.trim();
 };

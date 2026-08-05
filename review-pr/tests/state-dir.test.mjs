@@ -163,6 +163,7 @@ test('state-dir: T2 separate-git-dir 仓库配合 linked worktree,porcelain 首�
   mkdirSync(proj, { recursive: true });
   git(['init', '-q', '-b', 'main', `--separate-git-dir=${gitDir}`], { cwd: proj });
   git(['config', 'user.email', 'test@example.com'], { cwd: proj });
+  git(['config', 'commit.gpgsign', 'false'], { cwd: proj }); // 继承全局签名会让并发 temp-git 用例随机红
   git(['config', 'user.name', 'review-pr-test'], { cwd: proj });
   writeFileSync(join(proj, '.gitignore'), 'history/\n');
   writeFileSync(join(proj, 'f.txt'), 'x');

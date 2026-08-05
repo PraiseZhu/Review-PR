@@ -1520,7 +1520,8 @@
       "promotionTarget": {
         "kind": "rule",
         "ruleId": "playwright-waitforfunction-async-predicate",
-        "ruleVersion": "v3"
+        "ruleVersion": "v3",
+        "note": "记的是\"当年由哪个版本接管\"(历史事实);规则此后 bump 到 v4 不影响本条"
       },
       "seededAt": "2026-08-05",
       "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。2026-08-05 第 2 轮核验后补齐 fixHead(#483 已合并,head=68f2dd64…),grandfathered 豁免随之删除——现在**没有任何**免 head 核验的通道;hazardId 改绑稳定事件身份(repo+origin/fix PR+两侧 head),自由文本 pattern 只作 evidence。"

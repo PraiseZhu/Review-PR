@@ -49,7 +49,10 @@ export const BUILTIN_RULES = [
     // v2:补齐显式返回 Promise 的 literal 形态(new Promise / Promise.x / block 体 return)
     // v3(2026-08-05 第 2 轮核验):剥语法壳(as/satisfies/<T>/非空断言)、认三元与 async IIFE;
     //     同时**收窄**假红面——`.evaluate` 只对异步持有者白名单认,`.then` 只对已是 Promise 的链基认
-    ruleVersion: 'v3',
+    // v4(2026-08-05 第 3 轮核验):**谓词根节点**也剥壳(`waitForFunction((async()=>true))`
+    //     此前整条判定被跳过);补 &&/||/?? 任一操作数、逗号表达式右操作数、
+    //     以及 `Promise["resolve"]()` 这类 element-access 成员调用
+    ruleVersion: 'v4',
     severity: 'P1',
     invariant: 'waitForFunction 的谓词不得是 async/返回 Promise——Promise 恒 truthy,会 1ms 假通过而根本没在等待',
     title: 'waitForFunction 收到 async/Promise 谓词(假等待)',
@@ -154,18 +157,32 @@ function isPromiseishExpression(ts, raw) {
   if (ts.isConditionalExpression(e)) {
     return isPromiseishExpression(ts, e.whenTrue) || isPromiseishExpression(ts, e.whenFalse);
   }
+  // 逻辑/空值合并:任一操作数可能成为返回值(`ready && Promise.resolve(x)` 的返回值
+  // 在 ready 为真时就是 Promise);逗号表达式取右操作数(第 3 轮核验点名的四种形态)
+  if (ts.isBinaryExpression(e)) {
+    const op = e.operatorToken.kind;
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken
+      || op === ts.SyntaxKind.QuestionQuestionToken) {
+      return isPromiseishExpression(ts, e.left) || isPromiseishExpression(ts, e.right);
+    }
+    if (op === ts.SyntaxKind.CommaToken) return isPromiseishExpression(ts, e.right);
+  }
   if (ts.isCallExpression(e)) {
     const callee = unwrapExpression(ts, e.expression);
     // async IIFE:`(async () => ...)()` —— 调用一个 async 字面量函数
     if (isAsyncFunctionLike(ts, callee)) return true;
-    if (ts.isPropertyAccessExpression(callee)) {
-      const prop = callee.name.text;
+    // 成员调用:`.x()` 与 `["x"]()` 同义(`Promise["resolve"](1)` 也是 Promise)
+    const memberName = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : (ts.isElementAccessExpression(callee) && callee.argumentExpression
+        && ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression.text : null);
+    if (memberName !== null) {
       if (receiverName(ts, callee.expression) === 'Promise') return true;      // Promise.resolve/all/race...
-      if ((prop === 'evaluate' || prop === 'evaluateHandle')
+      if ((memberName === 'evaluate' || memberName === 'evaluateHandle')
         && ASYNC_HOLDER_RE.test(receiverName(ts, callee.expression) ?? '')) return true;
       // thenable 链:只有**链基本身已是 Promise** 时才算(`x.then()` 里的 x 可能是任意
       // 有 then 方法的同步对象——按名字猜会假红)
-      if (prop === 'then' || prop === 'catch' || prop === 'finally') {
+      if (memberName === 'then' || memberName === 'catch' || memberName === 'finally') {
         return isPromiseishExpression(ts, callee.expression);
       }
     }
@@ -174,7 +191,10 @@ function isPromiseishExpression(ts, raw) {
 }
 
 /** 谓词表达式是否 async / 显式返回 Promise(literal 函数体内的 return 也算)。 */
-function isAsyncOrPromisePredicate(ts, node) {
+function isAsyncOrPromisePredicate(ts, raw) {
+  // 第 3 轮核验:剥壳此前只作用在**返回表达式**上,谓词根节点本身被括号/断言包住时
+  // (`waitForFunction((async () => true))`)整个判定被跳过。先剥谓词根节点。
+  const node = unwrapExpression(ts, raw);
   if (!node) return null;
   if (!(ts.isArrowFunction(node) || ts.isFunctionExpression(node))) {
     // 标识符谓词(`waitForFunction(myPredicate)`):无法在词法层判定 → 不报(承诺面之外)
