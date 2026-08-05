@@ -343,3 +343,25 @@ test('R6 第 4 轮核验对照组:收窄不得放过真断言 —— t.assert.eq
     assert.ok(required.some((k) => k.path === path), `${path} 是真断言,必须仍要求负向证据`);
   }
 });
+
+test('R6 第 4 轮核验:多行 chai 深链(chai.expect(x).to.deep.equal({...}))只改远端参数行 → 仍必须要求证据', () => {
+  // 链首名是 `deep`(不是 expect/assert/chai);内层 `chai.expect(actual)` 只盖住链头那一行。
+  // 改动行要推到离链头 >3 行处——hunk 的 ±3 行上下文会让 base 区间擦到链头,把"只识别
+  // 内层调用"的退化掩护成偶然命中(第一版对照用例正是这样没咬合的)。
+  const before = `import chai from 'chai';
+export function check(actual) {
+  chai.expect(actual).to.deep.equal({
+    a: 1,
+    b: 2,
+    c: 3,
+    d: 4,
+    e: 5,
+    f: 6,
+    g: 7,
+  });
+}
+`;
+  const after = before.replace('g: 7', 'g: 8');
+  const { required } = requiredFor({ 'tests/chai-deep.test.mjs': before }, { 'tests/chai-deep.test.mjs': after });
+  assert.ok(required.length > 0, '沿整条链找根(而非只看链首名)才盖得住远端参数行');
+});
