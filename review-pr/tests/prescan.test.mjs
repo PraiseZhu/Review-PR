@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,8 @@ const PREPARE = join(__dirname, '..', 'scripts', 'prepare-prescan-segment.mjs');
 const RECORD = join(__dirname, '..', 'scripts', 'record-prescan-segment.mjs');
 const BUILD_TASK = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
 const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
+const CONSUME = join(__dirname, '..', 'scripts', 'consume-review-output.mjs');
+const PREFLIGHT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
@@ -427,3 +429,157 @@ test('SC-6.2: isReviewReceiptClean 三态期望值——undefined fail-closed,nu
   assert.equal(isReviewReceiptClean({ receipt: receiptWithPrescan, ...baseArgs, expectedPrescanHash: 'pa1-different' }), false, 'prescanHash 不符应拒绝');
   assert.equal(isReviewReceiptClean({ receipt: receiptWithPrescan, ...baseArgs, expectedPrescanHash: null }), false, 'receipt 偷带旧 prescanHash 但期望 disabled 应拒绝');
 });
+
+// ── SC-6.1/8: consume-review-output.mjs 端到端(prescan enabled 全链路) ──
+
+function buildTaskWithBody(f, body = '普通改动,无历史 PR 引用。') {
+  const taskFile = join(f.work, `task-${Math.random().toString(36).slice(2)}.json`);
+  const promptFile = `${taskFile}.md`;
+  const bodyFile = `${taskFile}.body.md`;
+  writeFileSync(bodyFile, body);
+  const r = spawnSync('node', [BUILD_TASK, '469', '--base', f.base, '--head', f.head,
+    '--out-task', taskFile, '--out-prompt', promptFile, '--pr-body-file', bodyFile],
+    { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
+  return { taskFile, bodyFile, task: JSON.parse(readFileSync(taskFile, 'utf8')) };
+}
+
+/** 真实 review-preflight 产 preflight(SC-R2 前置——consume 要求 preflight complete)。 */
+function preflightFile(f) {
+  const pf = join(f.work, `pf-${Math.random().toString(36).slice(2)}.json`);
+  const r = spawnSync('node', [PREFLIGHT, '--base', f.base, '--head', f.head, '--out', pf], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, `preflight 应 complete:${r.stdout}${r.stderr}`);
+  return pf;
+}
+
+function consume(f, { taskFile, output, bodyFile }) {
+  const outFile = join(f.work, `output-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(outFile, JSON.stringify(output));
+  const pf = preflightFile(f);
+  const args = [CONSUME, '469', '--output', outFile, '--mode', 'auto',
+    '--base', f.base, '--head', f.head, '--task', taskFile, '--preflight', pf];
+  if (bodyFile) args.push('--pr-body-file', bodyFile);
+  const r = spawnSync('node', args, { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  let json = null;
+  try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  return { r, json };
+}
+
+const BASE_OUTPUT = (snapshotHash, over = {}) => ({
+  schemaVersion: 'rro-1', snapshotHash,
+  findingFamilies: [], verificationGaps: [], verificationRuns: [],
+  profileAnswers: [], findingDispositions: [], negativeEvidence: [], escapeAssessment: [],
+  segmentReceipts: [], modelVerdictNote: '', ...over,
+});
+
+test('SC-6.1/8: enabled 全链路——complete artifact → 投递 → assessment 全 dismissed → clean 且 receipt 带 prescanHash', () => {
+  const f = setup({ rules: { prescan: { enabled: true } } });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  assert.equal(p1.ok, true);
+  const path = p1.files[0].path;
+  const line = p1.files[0].hunks[0].addedNewLines[0];
+  const obsFile = join(f.work, 'obs-e2e.json');
+  writeFileSync(obsFile, JSON.stringify([{ file: path, line, category: PRESCAN_CATEGORIES[0], note: '旧注释未更新' }]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', obsFile], f);
+  const fin = run(RECORD, ['--finalize'], f);
+  assert.equal(fin.json.ok, true);
+
+  const { taskFile, bodyFile, task } = buildTaskWithBody(f);
+  assert.ok(task.prescan);
+  // 从 artifact 文件直接读取来构造正确的 assessment(consumer 现场重算的期望集合来自
+  // artifact,不是自报)。
+  const artifactPath = findStateFile(f, 'prescan-artifact-469.json');
+  assert.ok(artifactPath, 'artifact 应已落盘');
+  const artifact = JSON.parse(readFileSync(artifactPath, 'utf8'));
+  assert.equal(artifact.observations.length, 1);
+  const obsId = artifact.observations[0].observationId;
+
+  const delivered1 = deliverAllSegments(f, taskFile);
+  const output = BASE_OUTPUT(task.snapshotHash, {
+    segmentReceipts: segmentReceiptsFor(delivered1, task.snapshotHash),
+    prescanAssessments: [{ observationId: obsId, disposition: 'dismissed', basis: '核实后确认注释仍准确' }],
+  });
+  const { json } = consume(f, { taskFile, output, bodyFile });
+  assert.equal(json.verdict, 'clean', `应 clean:${JSON.stringify(json.reasons)}`);
+
+  const receiptPath = findStateFile(f, 'review-receipt-469.json');
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  assert.equal(receipt.prescanHash, artifact.artifactHash, 'clean 回执应绑定 prescanHash=artifactHash');
+});
+
+test('SC-8: 缺 prescanAssessments 时(有已投递观察)consumer 判 invalid', () => {
+  const f = setup({ rules: { prescan: { enabled: true } } });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  const path = p1.files[0].path;
+  const line = p1.files[0].hunks[0].addedNewLines[0];
+  const obsFile = join(f.work, 'obs-missing-assess.json');
+  writeFileSync(obsFile, JSON.stringify([{ file: path, line, category: PRESCAN_CATEGORIES[0], note: '旧注释未更新' }]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', obsFile], f);
+  run(RECORD, ['--finalize'], f);
+
+  const { taskFile, bodyFile, task } = buildTaskWithBody(f);
+  const delivered2 = deliverAllSegments(f, taskFile);
+  const output = BASE_OUTPUT(task.snapshotHash, { segmentReceipts: segmentReceiptsFor(delivered2, task.snapshotHash), prescanAssessments: [] });
+  const { json } = consume(f, { taskFile, output, bodyFile });
+  assert.equal(json.verdict, 'invalid', 'assessment 集合与已投递观察不符应 invalid');
+});
+
+test('SC-8: prescan disabled 时 consumer 不要求 prescanAssessments,照常可 clean', () => {
+  const f = setup({ rules: {} });
+  const { taskFile, bodyFile, task } = buildTaskWithBody(f);
+  const delivered3 = deliverAllSegments(f, taskFile);
+  const output = BASE_OUTPUT(task.snapshotHash, { segmentReceipts: segmentReceiptsFor(delivered3, task.snapshotHash) });
+  const { json } = consume(f, { taskFile, output, bodyFile });
+  assert.equal(json.verdict, 'clean', `disabled 时应正常 clean:${JSON.stringify(json.reasons)}`);
+  const receiptPath = findStateFile(f, 'review-receipt-469.json');
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  assert.equal('prescanHash' in receipt, false, 'disabled 时 receipt 不应带 prescanHash');
+});
+
+test('SC-8: task.prescan.artifactHash 被篡改(与现场 artifact 不符)→ taskInvalid', () => {
+  const f = setup({ rules: { prescan: { enabled: true } } });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  const path = p1.files[0].path;
+  const line = p1.files[0].hunks[0].addedNewLines[0];
+  const obsFile = join(f.work, 'obs-tamper.json');
+  writeFileSync(obsFile, JSON.stringify([{ file: path, line, category: PRESCAN_CATEGORIES[0], note: '旧注释未更新' }]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', obsFile], f);
+  run(RECORD, ['--finalize'], f);
+
+  const { taskFile, bodyFile, task } = buildTaskWithBody(f);
+  // 篡改 task.prescan.artifactHash
+  task.prescan.artifactHash = 'pa1-tampered';
+  writeFileSync(taskFile, JSON.stringify(task));
+  const delivered4 = deliverAllSegments(f, taskFile);
+  const output = BASE_OUTPUT(task.snapshotHash, { segmentReceipts: segmentReceiptsFor(delivered4, task.snapshotHash) });
+  const { json } = consume(f, { taskFile, output, bodyFile });
+  assert.equal(json.verdict, 'invalid', '篡改 task.prescan.artifactHash 应被 consumer 现场重算揪出');
+});
+
+/** STATE_DIR 是 join(f.stateDir, repoStateKey) 的哈希子目录(见 lib.mjs resolvePersistentStateRoot),
+ *  不是 f.stateDir 本身——既有测试(consume-review-output.test.mjs)用 readdirSync recursive
+ *  查找,这里同一模式。 */
+function findStateFile(f, nameIncludes) {
+  const all = readdirSync(f.stateDir, { recursive: true });
+  const match = all.find((p) => String(p).includes(nameIncludes));
+  if (!match) return null;
+  return join(f.stateDir, match);
+}
+
+function deliverAllSegments(f, tf) {
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  const segs = task.segments ?? [];
+  const delivered = [];
+  for (let i = 1; i <= segs.length; i += 1) {
+    const r = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', String(i)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+    assert.equal(r.status, 0, `deliver order=${i} 应成功:${r.stdout}${r.stderr}`);
+    delivered.push(JSON.parse(r.stdout));
+  }
+  return delivered;
+}
+
+/** 按投递结果构造合规的 segmentReceipts(覆盖对账要求逐段精确集合;本测试文件里的
+ *  用例都没有 profile 必答/负向证据,只需覆盖回执)。 */
+function segmentReceiptsFor(delivered, snapshotHash) {
+  return delivered.map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, snapshotHash, coverageKeys: seg.assignedCoverageKeys }));
+}
