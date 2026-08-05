@@ -343,13 +343,23 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
 | 裁决与回执 | `consume-review-output.mjs`(唯一 clean 写者) | verdict 由内容推导;clean 三条件;非法输出撤销同 snapshot 旧 clean;3 次非法 → blocked | — |
 | 未决核销 | `lib.findings-ledger.mjs` | 逐条 disposition;同 snapshot 禁自证已修;preflight 项只由规则重跑核销 | disposition 的理由是否成立 |
 | 覆盖回执 | `lib.review-profiles.mjs` + consumer | 每个 coverage key 恰一个 segment owner;逐段精确集合相等 | "声称读过"≠"读懂了" |
-| 负向证据 | R6 分类器 + consumer | required key 只能由 executed 满足;对象/快照/run 引用一致 | **不验证命令真的执行过**——无执行 wrapper,一致伪报是 T1 上限 |
-| 逃逸闭环 | `record-escaped-finding.mjs` | 双状态机不可跳步;激活核验 fixHead;promote 目标存在性 | "这次算不算逃逸" |
+| 分段投递 | `deliver-review-segment.mjs` + 投递台账 | key 清单只能经投递出口取得;出口只接受下一序号;consumer 以台账为顺序基准,零投递/缺段/冒领即 invalid | **不能证明模型是分段读的**——编排方仍可先调 N 次再一次性喂;机器守住的是"没投递过不能声称覆盖" |
+| 负向证据 | R6 分类器 + consumer | required key 只能由 executed 满足;对象/快照/run 引用一致;判定语料按**语句窗口**而非单行(多行断言/整文件删除/CI 守卫删除都算) | **不验证命令真的执行过**——无执行 wrapper,一致伪报是 T1 上限;分类器方向上**偏多要**(窗口可能带进邻近语句) |
+| 权威推导 | `lib.review-requirements.mjs`(唯一) | coverage/分片/必答/required 由 consumer 从 immutable objects **重算**并与 task 逐组比对;task 文件不是可信来源 | — |
+| 泄密硬门 | `pre-merge-check.mjs` 的 `securityGate` | 全局前置:scan 未完成或硬命中 >0 时四条 merge 路由(普通/self/structural admin-bypass/authorized-fast)逐一显式拒 | 扫描模式本身的覆盖面 |
+| 逃逸闭环 | `record-escaped-finding.mjs` + `merge-pr.mjs`(生产触发) | 双状态机不可跳步;激活核验 fixHead **与** originHead **与**同仓;promote 目标须在注册表内存在;hazardId 绑稳定事件身份(自由文本只作 evidence);ack 严格晚于 push,`nothing-to-push` 须凭远端核验;合并成功即触发激活 | "这次算不算逃逸" |
 
 `snapshotHash = hash(baseRefOid, mergeBaseOid, headOid, diffDigest)` 是全链路的新鲜度
 锚点(SC-R8):base 前进而 head 不变时旧证据/旧回执一律 stale。patch 出自 immutable git
-objects,不吃可变工作树;安全扫描、preflight、覆盖 manifest、负向证据锚点共用同一份快照
-(静态 inventory 钉死"snapshot builder 之外零 PR diff 抓取")。
+objects,不吃可变工作树。
+
+**同源的确切范围(第 2 轮核验修订,不冒称"全流程")**:阶段二的 preflight / 任务构建 /
+覆盖 manifest / 负向证据锚点,以及 `pre-merge-check` 的安全扫描,共用**同一份**由
+`buildDiffSnapshot` 出的快照并绑定 snapshotHash。**阶段一 `context.mjs` 的安全扫描不在
+此范围内**——它在拿到 base oid 之前就要跑,走的是 `gh pr diff` 退路,`scanned` 语义不变
+但**不参与 snapshotHash 绑定**。静态 inventory 钉死"snapshot builder 之外零 PR diff 抓取
+形态"指的是 scripts 层不再各自抓 diff,不等于阶段一那次扫描也有快照身份;行为级验收见
+`tests/snapshot-drift-e2e.test.mjs`(base 前进 head 不变时四方全部反应)。
 
 ## 维护者 precheck
 

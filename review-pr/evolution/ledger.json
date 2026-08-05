@@ -1499,14 +1499,13 @@
   ],
   "escapedHazards": [
     {
-      "hazardId": "hz1-5dcf0671fb98aa47",
-      "fingerprint": "hzf1-1c5fbee666edcca2",
+      "hazardId": "hz2-d74b619f7a2e8d3f",
+      "fingerprint": "hzf2-d74b619f7a2e8d3f",
       "repo": "xindong/mivo-canvas",
       "originPr": 469,
       "originHead": "3ae9ecdb745dc5827e36962c1630f037f4a986cc",
       "fixPr": 483,
-      "fixHead": null,
-      "grandfathered": true,
+      "fixHead": "68f2dd6428636abee74c63572c485440df54bfa4",
       "pattern": "Playwright waitForFunction 收到 async/返回 Promise 的谓词——Promise 恒 truthy,1ms 假通过,测试全绿但根本没等待",
       "paths": [
         "scripts/e2e/**",
@@ -1521,10 +1520,10 @@
       "promotionTarget": {
         "kind": "rule",
         "ruleId": "playwright-waitforfunction-async-predicate",
-        "ruleVersion": "v2"
+        "ruleVersion": "v3"
       },
       "seededAt": "2026-08-05",
-      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。fixHead=null 且 grandfathered=true——该修复(#483)早于本机制上线,没有可核验的登记 fixHead;grandfather 规则由 validateHazardShape 显式承认,新条目一律必填 fixHead(否则激活核验形同虚设)"
+      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。2026-08-05 第 2 轮核验后补齐 fixHead(#483 已合并,head=68f2dd64…),grandfathered 豁免随之删除——现在**没有任何**免 head 核验的通道;hazardId 改绑稳定事件身份(repo+origin/fix PR+两侧 head),自由文本 pattern 只作 evidence。"
     }
   ]
 }

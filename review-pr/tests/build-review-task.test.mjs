@@ -208,7 +208,7 @@ test('R7 接线:active hazard 命中路径 → hazard 文本进 prompt;pending �
   // 的形状直接验证 hazardsForPaths + 构建器读取:此处只断言"当前 ledger 无 active hazard
   // 时 prompt 不含 hazard 段",active 情形由 lib.escaped-hazards 单测覆盖。
   const { prompt } = run(f);
-  assert.ok(!prompt.includes('## 已知逃逸风险') || prompt.includes('hz1-'), 'hazard 段出现时必须带 hazardId');
+  assert.ok(!prompt.includes('## 已知逃逸风险') || prompt.includes('hz2-'), 'hazard 段出现时必须带 hazardId');
   assert.ok(readFileSync(LEDGER_SRC, 'utf8').length > 0);
 });
 

@@ -7,19 +7,24 @@
 //      "识别是不是逃逸"是语义判断(T1),但"识别为 yes 之后必须登记"是机器行为。
 //   2. `--activate`:核验 fix PR 已 MERGED **且 merged head === 登记的 fixHead**,才把条目
 //      upsert 进 canonical `evolution/ledger.json`(activationStatus=active)。
-//      **ack 严格晚于 canonical upsert 成功**;失败保留 inbox 重放(幂等 upsert,重复不
-//      增条、不降级)。push 由既有 skillRepoCommitPush 流程负责,本脚本只保证落盘顺序。
+//      **ack 严格晚于 canonical upsert + 回读 + commit&push 成功**(push 就在本脚本里,经
+//      skillRepoCommitPush 注入);失败保留 inbox 重放(幂等 upsert,重复不增条、不降级)。
+//      push 报 `nothing-to-push`(上轮已推成功但崩在 ack 之前)时,必须读**远端** canonical
+//      确认该 hazard 已 active 才安全 ack。
+//   生产触发点是**合并出口** merge-pr.mjs:合并成功后自动调 `--activate`,不依赖手工命令。
 //
 // 用法:
-//   node record-escaped-finding.mjs --register --origin-pr N --fix-pr M --fix-head <sha> \
-//     --pattern "<一句话模式>" --paths "a/**,b/**" --promotion pending|landed|recorded-only \
+//   node record-escaped-finding.mjs --register --origin-pr N --fix-pr M \
+//     --fix-head <40hex> --origin-head <40hex> \
+//     --pattern "<一句话模式>" --evidence "<判定依据>" --paths "a/**,b/**" \
+//     --promotion pending|landed|recorded-only \
 //     [--promote-rule <ruleId>] [--promote-profile <profileId>] [--promote-check <checkId>] \
 //     [--reason "<recorded-only 必填理由>"] [--evidence "<证据锚点>"]
 //   node record-escaped-finding.mjs --activate            # 处理 inbox 里全部 pending
 //   node record-escaped-finding.mjs --list
 // 退出码:0 成功;2 有条目未能激活(如 fix PR 还没合);1 脚本自身错误。
 import process from 'node:process';
-import { print, fail, STATE_DIR, ghJson, parseRepo, skillRepoCommitPush } from './lib.mjs';
+import { print, fail, STATE_DIR, ghJson, parseRepo, skillRepoCommitPush, readRemoteSkillFile } from './lib.mjs';
 import { BUILTIN_RULES } from './lib.preflight-rules.mjs';
 import { BUILTIN_PROFILES } from './lib.review-profiles.mjs';
 import {
@@ -77,10 +82,14 @@ try {
     const { owner, repo } = (() => { try { return parseRepo(); } catch { return { owner: null, repo: null }; } })();
     const repoSlug = owner && repo ? `${owner}/${repo}` : null;
     if (!repoSlug) fail(new Error('无法解析目标仓库(hazard 必须绑定 repo,防跨仓误用)'));
-    const seed = { repo: repoSlug, originPr, fixPr, pattern, paths };
+    const originHead = (argOf('--origin-head') ?? '').toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(originHead)) fail(new Error('缺 --origin-head <完整 40 位 SHA>(origin OID 门不能留空)'));
+    // hazardId 只绑稳定事件身份(repo + 两个 PR 号 + 两侧 head);pattern/paths 是 evidence,
+    // 换措辞不得生成新 ID(第 2 轮核验:幂等被自由文本破坏)。
+    const seed = { repo: repoSlug, originPr, fixPr, originHead, fixHead };
     const item = {
       hazardId: deriveHazardId(seed), fingerprint: deriveHazardFingerprint(seed),
-      repo: repoSlug, originPr, originHead: (argOf('--origin-head') ?? null), fixPr, fixHead,
+      repo: repoSlug, originPr, originHead, fixPr, fixHead,
       pattern, paths, evidence: argOf('--evidence') ?? null,
       activationStatus: 'pending-fix-merge', promotionStatus: promotion,
       promotionTarget: t.target, registeredAt: new Date().toISOString(),
@@ -110,11 +119,19 @@ try {
     const { activated, kept } = activateInboxItems({
       items: inbox.items,
       probe,
+      currentRepo: `${owner}/${repo}`,
       upsert: (item) => upsertHazard(EVOLUTION_LEDGER, item),
       readback: () => loadKnownHazards(),
       sync: (hazard) => skillRepoCommitPush({
         paths: ['evolution/ledger.json'],
         message: `evo: activate escaped hazard ${hazard.hazardId} (origin #${hazard.originPr} → fix #${hazard.fixPr})`,
+      }),
+      // push 已成功但进程在 ack 前崩溃时,重放会拿到 nothing-to-push —— 此时读**远端**
+      // canonical 确认该 hazard 已 active 才安全 ack(否则条目永远卡在 inbox)。
+      remoteVerify: (hazard) => readRemoteSkillFile('evolution/ledger.json', (text) => {
+        const doc = JSON.parse(text);
+        const list = Array.isArray(doc.escapedHazards) ? doc.escapedHazards : [];
+        return list.some((h) => h.hazardId === hazard.hazardId && h.activationStatus === 'active');
       }),
     });
     saveInbox(STATE_DIR, kept);

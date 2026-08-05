@@ -16,6 +16,9 @@ import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
+// escapedHazards 段的合并与 schema 复验只有一份实现(lib.escaped-hazards 不反向依赖本文件,
+// 无循环:它只引 lib.review-profiles / lib.preflight-rules)。
+import { mergeHazardPair, validateHazardShape } from './lib.escaped-hazards.mjs';
 
 const isWin = process.platform === 'win32';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1985,6 +1988,27 @@ export function skillRepoInfo({ timeoutMs = 15_000 } = {}) {
 }
 
 /**
+ * 读**远端**(origin/<defaultBranch>)上的 skill 仓文件并交给 predicate 判定。
+ * 用途:push 成功但进程在 ack 前崩溃时,重放拿到 `nothing-to-push`,必须凭远端内容确认
+ * 事实已落地才安全 ack(SC-R7 第 2 轮核验)。fail-closed:读不到即 { ok:false }。
+ * @returns {{ ok: boolean, present?: boolean, error?: string }}
+ */
+export function readRemoteSkillFile(relPath, predicate, { timeoutMs = 20_000 } = {}) {
+  const info = skillRepoInfo();
+  if (!info) return { ok: false, error: 'not-a-git-repo' };
+  const spec = info.skillRelPath === '.' ? relPath : `${info.skillRelPath}/${relPath}`;
+  const fetched = git(['fetch', 'origin', info.defaultBranch, '--quiet'], { allowFail: true, cwd: info.gitRoot, timeoutMs });
+  if (!fetched.ok) return { ok: false, error: `fetch 失败:${(fetched.stderr || '').trim().slice(0, 200)}` };
+  const show = git(['show', `origin/${info.defaultBranch}:${spec}`], { allowFail: true, cwd: info.gitRoot, timeoutMs });
+  if (!show.ok) return { ok: false, error: `远端读不到 ${spec}` };
+  try {
+    return { ok: true, present: predicate(show.stdout) === true };
+  } catch (e) {
+    return { ok: false, error: `远端内容解析失败:${String(e.message ?? e).slice(0, 160)}` };
+  }
+}
+
+/**
  * 只追加类台账文件的白名单 —— 唯一允许自动解冲突的文件。
  *
  * 背景(2026-07-31 实测):本机交互式轮次与 mini 定时轮次都会往 skills 仓写 evo 台账,
@@ -2054,19 +2078,21 @@ export function mergeLedgerJson(oursText, theirsText) {
   // SC-R7(2026-08-05 核验):escapedHazards 段也必须合并——此前只合 entries,rebase 时
   // 会把远端或本地新登记的 hazard 整段丢掉。按 (repo, hazardId) 取并集,**不增条、不降级**
   // (active 不回退 pending-fix-merge;landed 不回退 pending),与 upsertHazard 同口径。
-  const ACT_RANK = { 'pending-fix-merge': 0, active: 1 };
-  const PROM_RANK = { pending: 0, 'recorded-only': 1, landed: 2 };
+  // 第 2 轮核验:合并必须**方向无关**且状态与其附属元数据原子同源——一方 landed+target、
+  // 另一方 pending+显式 promotionTarget:null 时,旧实现一个方向得 landed+null、反向得
+  // landed+target(状态升级却被低态 payload 覆盖)。逻辑收敛到 mergeHazardPair 唯一实现,
+  // 合完再走完整 schema 复验:形状不合就返回 null(交人工处理,不写出半坏的 ledger)。
   const hazards = new Map();
   for (const h of [...(Array.isArray(ours?.escapedHazards) ? ours.escapedHazards : []),
     ...(Array.isArray(theirs?.escapedHazards) ? theirs.escapedHazards : [])]) {
     if (!h?.hazardId) return null; // 结构不符预期,不冒险
     const key = `${h.repo ?? '(no-repo)'}|${h.hazardId}`;
     const cur = hazards.get(key);
-    if (!cur) { hazards.set(key, { ...h }); continue; }
-    const next = { ...cur, ...h };
-    next.activationStatus = (ACT_RANK[h.activationStatus] ?? -1) >= (ACT_RANK[cur.activationStatus] ?? -1) ? h.activationStatus : cur.activationStatus;
-    next.promotionStatus = (PROM_RANK[h.promotionStatus] ?? -1) >= (PROM_RANK[cur.promotionStatus] ?? -1) ? h.promotionStatus : cur.promotionStatus;
-    hazards.set(key, next);
+    hazards.set(key, cur ? mergeHazardPair(cur, h) : { ...h });
+  }
+  for (const h of hazards.values()) {
+    const v = validateHazardShape(h);
+    if (!v.ok) return null;
   }
   const out = { ...ours, entries: [...merged.values()] };
   if (hazards.size > 0 || ours?.escapedHazards !== undefined || theirs?.escapedHazards !== undefined) {

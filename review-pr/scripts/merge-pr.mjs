@@ -25,8 +25,10 @@
 //
 // 退出码:0=成功(或 dry-run / reconcile 完成);2=拒绝执行(参数缺失/审计不可用/merge 失败);1=脚本自身错误。
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { gh, ghJson, parseRepo, parsePR, STATE_DIR, print } from './lib.mjs';
 
 /** 拒绝执行(exit 2,与 pre-merge-check 的"有 blocker"退出码同义):输出 { ok:false, error }。 */
@@ -143,7 +145,18 @@ try {
     console.error(`[merge-pr] 警告:result 写入失败(${e.message}),留待 --reconcile 补齐`);
   }
   if (!ok) refuse(`gh pr merge 失败:${error}`);
-  print({ ok: true, opId, pr, strategy, matchHead, basis, auditFile: mergesPath });
+  // ── SC-R7 生产触发链(第 2 轮核验:pending→activation 此前只有 SKILL 里的手工命令,
+  // 仓内零 production caller)。合并成功**就是** hazard 激活的触发事实:本 PR 若是某条
+  // pending hazard 的 fix PR,此刻它的 fixHead 才可核验。幂等 + 失败留 inbox 重放,所以
+  // best-effort 调用不会丢事实;它也不改变本次合并结果(合并已既成),只把结果带出去。
+  let hazardActivation = null;
+  try {
+    const r = spawnSync('node', [join(dirname(fileURLToPath(import.meta.url)), 'record-escaped-finding.mjs'), '--activate'], { encoding: 'utf8', timeout: 120_000 });
+    hazardActivation = JSON.parse(r.stdout);
+  } catch (e) {
+    hazardActivation = { ok: false, error: `激活调用失败:${String(e.message ?? e).slice(0, 200)}(条目留在 inbox 下轮重放)` };
+  }
+  print({ ok: true, opId, pr, strategy, matchHead, basis, auditFile: mergesPath, hazardActivation });
 } catch (e) {
   process.stdout.write(JSON.stringify({ ok: false, error: `merge-pr 脚本错误:${e.message}` }, null, 2) + '\n');
   process.exit(1);

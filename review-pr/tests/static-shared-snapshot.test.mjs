@@ -68,7 +68,12 @@ test('SC-R1b:pre-merge 的 stage2 门必须无条件计算并被 canMerge/selfMe
   const src = readFileSync(join(SCRIPTS, 'pre-merge-check.mjs'), 'utf8');
   assert.match(src, /const receiptGate = \{/, 'receiptGate 必须无条件构建');
   assert.match(src, /const canMerge = canMergeMechanical && receiptGate\.stage2Clean;/, '普通合并必须叠加 stage2 门');
-  assert.match(src, /viewerLogin && prAuthor && receiptGate\.stage2Clean/, 'self-merge 必须叠加 stage2 门');
+  assert.match(src, /viewerLogin && prAuthor && receiptGate\.stage2Clean && securityGate\.pass/, 'self-merge 必须叠加 stage2 门与泄密硬门');
+  // SC-R1b 第 2 轮核验:泄密硬门必须是**全局前置**,三条路由逐一显式合取
+  assert.match(src, /const securityGate = \{/, '必须有全局 securityGate');
+  assert.match(src, /if \(!securityGate\.pass\) blockers\.push/, 'securityGate 必须进 blockers(普通 canMerge 由此拦)');
+  assert.match(src, /const structuralBypassReady = securityGate\.pass &&/, 'structural admin-bypass 必须显式合取泄密门');
+  assert.match(src, /evaluation\.eligible && securityGate\.pass/, 'authorized-fast-merge 也显式合取一次(四条路写在同一处)');
 });
 
 test('SC-R8:生产调用必须传 expectedPaths(元数据/patch 互检在生产可达)', () => {

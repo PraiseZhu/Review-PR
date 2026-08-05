@@ -540,7 +540,9 @@ gh pr diff <N> --patch
 已知的**机器可判定** bug 模式不再押给 LLM 概率判断——命中即机器打回，不经审查 agent：
 
 ```bash
-node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <headOid> --out <preflight.json>
+node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <headOid> \
+  --out <preflight.json> \
+  --expected-paths "$(gh pr view <N> --json files --jq '[.files[].path]|join(",")')"
 ```
 
 - 首发规则：Playwright `page/frame.waitForFunction` 收到 async / 返回 Promise 的谓词
@@ -866,12 +868,32 @@ ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1�
 
 ```bash
 node "<SKILL_ROOT>/scripts/build-review-task.mjs" <N> --base <baseRefOid> --head <headRefOid> \
-  --out-task <task.json> --out-prompt <prompt.md>
+  --out-task <task.json> --out-prompt <prompt.md> \
+  --expected-paths "$(gh pr view <N> --json files --jq '[.files[].path]|join(",")')"
 ```
 
+逃逸候选的数据源(PR body + 关联 issue)由构建器**自己现场取**,不需要传参;取不到即
+`escapeSourceIncomplete=true` → 本轮 `invalid`(不得据"无候选"放行)。离线/测试可用
+`--pr-body-file` / `--related-issues-file` 作 seam。
+
 `prompt.md` 里已经写好本轮的：风险 profile 必答项（逐 文件×检查）、未决 findings
-（必须逐条 disposition）、known hazards（本仓历史逃逸模式）、覆盖分片 segments、
-required 负向证据 key。审查 agent 按它作答，输出形如：
+（必须逐条 disposition）、known hazards（本仓历史逃逸模式）、覆盖分片 segments 的**清单与
+投递序号**、required 负向证据 key。
+
+**分段必须真投递**（SC-R4）：`prompt.md` **不含**各段的 coverage key 明细——唯一取得途径是
+按序调用投递出口，把它打印的 `payload` 投给**同一个**审查会话，每段收回执后再投下一段：
+
+```bash
+node "<SKILL_ROOT>/scripts/deliver-review-segment.mjs" <N> --task <task.json> \
+  --base <baseRefOid> --head <headRefOid> --order <1..segments.length>
+```
+
+出口只接受**下一个**序号（乱序/跳段直接拒且不留记录），并把投递事实记进 STATE_DIR 的投递
+台账;consumer 以台账为顺序基准核对回执——零投递、缺段、或声称一个没投递过的 `receivedOrder`
+一律 `invalid`。宿主投不完就按 blocked 上报,不要一次性硬审。
+（诚实边界：台账证明**投递动作按序真实发生过**，不能证明模型是分段读的。）
+
+审查 agent 按它作答，输出形如：
 
 ```jsonc
 {
@@ -884,8 +906,11 @@ required 负向证据 key。审查 agent 按它作答，输出形如：
   "profileAnswers":    [ { "profileId": "test-infra", "fileId": "", "checkId": "",
     "answer": "checked-clean|finding|not-applicable", "hunkId": "", "findingRef": { "family_id": "f1", "manifestationIndex": 0 },
     "reasonCode": "", "explanation": "" } ],
-  "segmentReceipts":   [ { "segmentId": "seg-01", "coverageKeys": [ { "kind": "hunk", "fileId": "", "hunkId": "" } ] } ],
-  "findingDispositions": [ { "findingId": "<task 注入的 id>", "disposition": "resolved|invalidated", "evidence": "", "basis": "" } ],
+  "segmentReceipts":   [ { "segmentId": "seg-01", "receivedOrder": 1,
+    "coverageKeys": [ { "kind": "hunk", "fileId": "", "hunkId": "" } ] } ],
+  "findingDispositions": [ { "findingId": "<task 注入的 id>", "disposition": "resolved|invalidated",
+    "evidence": { "kind": "diff-anchor", "snapshotHash": "<当前 snapshotHash>", "fileId": "", "hunkId": "", "note": "" },
+    "basis": "<invalidated 时写判误报依据>" } ],
   "negativeEvidence":  [ { "fileId": "", "hunkId": "", "kind": "executed", "snapshotHash": "",
     "command": "", "negativeOracle": "", "observedSignal": "expected-failure-observed", "outputAnchor": "", "verificationRunId": "r1" } ],
   "escapeAssessment":  [ { "candidateId": "", "verdict": "yes|no", "basis": "" } ],
@@ -918,6 +943,12 @@ node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output <rro-1.json> 
   --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
   --task <task.json> --preflight <preflight.json>
 ```
+
+`--task` **必需**(没有它无法对账覆盖/必答/负向证据)。task 只是"审查方看到的副本",
+consumer 会用同一份权威推导从 immutable git objects **重算** coverage/分片/必答/required
+负向证据并逐组比对——改过或过期的 task 一律 `invalid`。**任何**输入级失败(缺 `--output`、
+缺或坏 `--task`、snapshot 建不起来、台账不可读)都会写一条 non-clean 回执**撤销**同 snapshot
+的旧 clean 并记 retry:不存在"这一轮没跑成就沿用上次清白"的通道。
 
 verdict 由机器推导，优先级 `invalid > dirty > clean`：`clean` 需同时满足**当前 P0/P1=0
 ∧ effective-open=0 ∧ accepted-risk=0**；`dirty` = 有 P0/P1，或 disposition 应用后仍有
@@ -1705,21 +1736,33 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
   这挡住"先拿到 clean、之后又新增 open"和两步之间的崩溃窗口。台账损坏 fail-closed。
 - **逃逸学习闭环（机器触发，非过程约定）**：合并后被后续 PR 证伪的 false negative
   （#469→#483 就是原型）走这条链，每一段都有机器动作：
-  1. `build-review-task.mjs` 从 PR body（`--pr-body-file`）确定性抽出**逃逸候选**
-     （引用了哪些 PR + 修复语义信号；有意偏向多收，宁可多问一句），逐条写进任务正文；
+  1. `build-review-task.mjs` 从 PR body **与关联 issue**（默认自己现场 `gh pr view
+     --json body,closingIssuesReferences` 取；离线用 `--pr-body-file` /
+     `--related-issues-file` seam）确定性抽出**逃逸候选**（引用了哪些 PR + 修复语义信号；
+     有意偏向多收，宁可多问一句），逐条写进任务正文。**数据源必需且绑定**：取不到即
+     `escapeSourceIncomplete` → 本轮 `invalid`，不得据"无候选"放行；
   2. 审查输出的 `escapeAssessment[]` 必须**逐条覆盖**候选集（缺/多/未知/重复 → `invalid`）；
   3. `consume-review-output.mjs` 对 `verdict:"yes"` 的候选**确定性写 pending inbox**
-     （`pending-fix-merge`）；登记失败 → `invalid`，不放行；
-  4. 修复 PR 合并后 `record-escaped-finding.mjs --activate`：现场核验 fix PR 已 MERGED
-     **且 merged head === 登记的 fixHead**、origin PR 也确实已合并且 head 一致；
+     （`pending-fix-merge`），`originHead` 现场取完整 40 位 SHA（拿不到即登记失败）；
+     登记发生在 provisional verdict **非 invalid 之后**——本轮若因覆盖/必答/task 不合法
+     而 invalid，不留任何 durable state；登记失败 → `invalid`，不放行；
+  4. **生产触发点 = 合并出口**：`merge-pr.mjs` 合并成功后自动调
+     `record-escaped-finding.mjs --activate`（输出带在 `hazardActivation` 字段里），
+     不依赖任何手工命令。激活时现场核验 fix PR 已 MERGED **且 merged head === 登记的
+     fixHead**、origin PR 也确实已合并且 head 与登记的 `originHead` 一致、且 hazard 绑定的
+     repo === 当前仓；
   5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；
-     任一失败保留 inbox 下轮重放（幂等 upsert，重复不增条、不降级）；
+     任一失败保留 inbox 下轮重放（幂等 upsert，重复不增条、不降级）。若 push 报
+     `nothing-to-push`（上一轮已推成功但进程崩在 ack 之前），必须读**远端** canonical
+     确认该 hazard 已 active 才安全 ack；
   6. 之后命中同 `repo` + 同 paths 的 PR，任务正文里就会带上这条 hazard。
 
-  `promotionStatus` 必须明确选择：`landed`（已晋升为确定性规则/profile 必答，且目标真实
-  存在可解析）/ `recorded-only`（必填理由）/ `pending`。canonical 条目按完整 schema 校验
-  （缺 repo/fingerprint/paths/fixHead 等一律判不完整 → `invalid`；只有显式
-  `grandfathered:true` 的历史条目——如 #483 早于本机制上线——允许缺 fixHead）。
+  `promotionStatus` 必须明确选择：`landed`（已晋升为确定性规则/profile 必答，且目标**在
+  注册表里真实存在**、版本可解析）/ `recorded-only`（必填理由）/ `pending`。canonical 条目
+  按完整 schema 校验（缺 repo/fingerprint/paths/fixHead/originHead/evidence 一律判不完整
+  → `invalid`）。`grandfathered` 白名单**当前为空**——不存在免 head 核验的通道；要加必须
+  往代码里那个显式 id 集合写死。`hazardId` 只绑**稳定事件身份**（repo + origin/fix PR 号 +
+  两侧 head OID），自由文本 pattern 只作 evidence，换个措辞不会生成新条目。
   **诚实边界**："这次算不算逃逸"仍是语义判断（T1）；机器保证的是候选集确定性产出、必答
   对账、yes 项必登记、双状态机不可跳步、激活现场核验、ack 晚于 push、prompt 真实注入。
 

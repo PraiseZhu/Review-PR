@@ -21,7 +21,8 @@ import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from '
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { matchPath } from './lib.review-profiles.mjs';
+import { matchPath, BUILTIN_PROFILES } from './lib.review-profiles.mjs';
+import { BUILTIN_RULES } from './lib.preflight-rules.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const EVOLUTION_LEDGER = resolve(HERE, '..', 'evolution', 'ledger.json');
@@ -29,37 +30,85 @@ export const EVOLUTION_LEDGER = resolve(HERE, '..', 'evolution', 'ledger.json');
 export const ACTIVATION = ['pending-fix-merge', 'active'];
 export const PROMOTION = ['pending', 'landed', 'recorded-only'];
 
-/** hazardId 绑定 repo(核验:别的仓同路径不该吃到本仓 hazard,id 也不该跨仓碰撞)。 */
-export function deriveHazardId({ repo, originPr, pattern, paths }) {
-  const canon = `${repo ?? '(no-repo)'}|${originPr}|${(pattern ?? '').trim().toLowerCase().replace(/\s+/g, '')}|${[...(paths ?? [])].sort().join(',')}`;
-  return `hz1-${createHash('sha256').update(canon).digest('hex').slice(0, 16)}`;
+/** grandfather 白名单——**当前为空**。
+ *  第 2 轮核验点名"任意条目写上 grandfathered:true 就能绕开 fixHead 必填"。原本唯一需要
+ *  豁免的是 #469 种子(当时没记 fixHead);#483 早已合并、head 可现场取,已补进 ledger,
+ *  于是豁免整体取消:**没有任何**免 head 核验的通道。将来若真要加,必须往这个显式集合里
+ *  写死那一条 hazardId(泛化的 `grandfathered:true` 一律被 validateHazardShape 拒)。 */
+export const GRANDFATHERED_IDS = new Set();
+
+/**
+ * hazardId = **稳定事件身份**(第 2 轮核验:此前把 reviewer 自由文本 pattern 与 paths 一起
+ * 揉进 id,同一事件换个措辞就生成新 ID,幂等被破坏)。身份只由不可争议的事实构成:
+ * 仓库 + origin/fix PR 号 + 两侧 head OID。pattern / paths 只作 evidence 字段。
+ */
+export function deriveHazardId({ repo, originPr, fixPr, originHead, fixHead }) {
+  const canon = [
+    repo ?? '(no-repo)', originPr, fixPr,
+    (originHead ?? '(no-origin-head)').toLowerCase(),
+    (fixHead ?? '(no-fix-head)').toLowerCase(),
+  ].join('|');
+  return `hz2-${createHash('sha256').update(canon).digest('hex').slice(0, 16)}`;
 }
 
-/** hazard 指纹:内容级去重锚点(与 hazardId 同源但独立字段,供 ledger 合并/审计引用)。 */
-export function deriveHazardFingerprint({ repo, originPr, fixPr, pattern }) {
-  return `hzf1-${createHash('sha256').update(`${repo ?? ''}|${originPr}|${fixPr}|${(pattern ?? '').trim().toLowerCase().replace(/\s+/g, '')}`).digest('hex').slice(0, 16)}`;
+/** hazard 指纹:与 hazardId 同一稳定身份的独立字段(供 ledger 合并/审计交叉引用)。 */
+export function deriveHazardFingerprint({ repo, originPr, fixPr, originHead, fixHead }) {
+  const canon = [repo ?? '', originPr, fixPr, (originHead ?? '').toLowerCase(), (fixHead ?? '').toLowerCase()].join('|');
+  return `hzf2-${createHash('sha256').update(canon).digest('hex').slice(0, 16)}`;
+}
+
+/** landed 的 promotionTarget 必须指向**真实存在**的注册表项(第 2 轮核验:此前只验 kind
+ *  字段形状,写个不存在的 ruleId 也算 landed)。 */
+export function validatePromotionTarget(t) {
+  if (t?.kind === 'rule') {
+    const r = BUILTIN_RULES.find((x) => x.ruleId === t.ruleId);
+    if (!r) return `promotionTarget.ruleId ${t.ruleId} 不在规则注册表里`;
+    if (t.ruleVersion && t.ruleVersion !== r.ruleVersion) {
+      return `promotionTarget.ruleVersion ${t.ruleVersion} 与注册表当前版本 ${r.ruleVersion} 不符`;
+    }
+    return null;
+  }
+  if (t?.kind === 'profile') {
+    const p = BUILTIN_PROFILES.find((x) => x.id === t.profileId);
+    if (!p) return `promotionTarget.profileId ${t.profileId} 不在 profile 注册表里`;
+    if (t.checkId && !p.mandatoryChecks.some((c) => c.id === t.checkId)) {
+      return `promotionTarget.checkId ${t.checkId} 不在 profile ${t.profileId} 的必答项里`;
+    }
+    return null;
+  }
+  return 'landed 必须有可解析的 promotionTarget(rule|profile)';
 }
 
 /** 完整 schema 校验(核验:此前只验 id + 双状态,缺 paths/origin/fix/target 也当完整)。 */
 export function validateHazardShape(h) {
   const errs = [];
   const str = (v) => typeof v === 'string' && v.trim().length > 0;
+  const sha = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v.toLowerCase());
   if (!str(h?.hazardId)) errs.push('缺 hazardId');
   if (!str(h?.repo)) errs.push('缺 repo(hazard 必须绑定仓库,防跨仓误用)');
   if (!Number.isInteger(h?.originPr)) errs.push('缺 originPr');
   if (!Number.isInteger(h?.fixPr)) errs.push('缺 fixPr');
   if (!str(h?.pattern)) errs.push('缺 pattern');
+  if (!str(h?.evidence)) errs.push('缺 evidence(判定依据必须留痕,不能只有 pattern 一句)');
   if (!str(h?.fingerprint)) errs.push('缺 fingerprint');
   if (!Array.isArray(h?.paths) || h.paths.length === 0 || h.paths.some((p) => !str(p))) errs.push('paths 缺失或非法');
   if (!ACTIVATION.includes(h?.activationStatus)) errs.push(`activationStatus 非法(${ACTIVATION.join('|')})`);
   if (!PROMOTION.includes(h?.promotionStatus)) errs.push(`promotionStatus 非法(${PROMOTION.join('|')})`);
-  if (h?.promotionStatus === 'landed' && !(h?.promotionTarget?.kind === 'rule' || h?.promotionTarget?.kind === 'profile')) {
-    errs.push('landed 必须有可解析的 promotionTarget(rule|profile)');
+  if (h?.promotionStatus === 'landed') {
+    const bad = validatePromotionTarget(h?.promotionTarget);
+    if (bad) errs.push(bad);
   }
   if (h?.promotionStatus === 'recorded-only' && !str(h?.promotionTarget?.reason)) errs.push('recorded-only 必须带理由');
-  // #469 种子的 grandfather 规则:该修复早于本机制上线,没有可核验的 fixHead。只允许显式
-  // 标记 grandfathered:true 的条目缺 fixHead,其它一律必填(否则激活核验形同虚设)。
-  if (!str(h?.fixHead) && h?.grandfathered !== true) errs.push('缺 fixHead(除显式 grandfathered:true 的历史条目外必填)');
+  // grandfather 只对**显式白名单里的种子 identity** 生效(第 2 轮核验:此前任意条目自称
+  // grandfathered 就能免 fixHead)。白名单外一律要求两侧完整 40 位 head OID。
+  const grandfathered = h?.grandfathered === true && GRANDFATHERED_IDS.has(h?.hazardId);
+  if (h?.grandfathered === true && !grandfathered) {
+    errs.push(`grandfathered:true 只允许白名单内的种子条目(${h?.hazardId} 不在其中)`);
+  }
+  if (!grandfathered) {
+    if (!sha(h?.fixHead)) errs.push('缺 fixHead(完整 40 位 SHA;激活时要精确核验)');
+    if (!sha(h?.originHead)) errs.push('缺 originHead(完整 40 位 SHA;origin OID 门不能留空)');
+  }
   return { ok: errs.length === 0, errors: errs };
 }
 
@@ -86,14 +135,47 @@ export function loadKnownHazards(file = EVOLUTION_LEDGER) {
   return { incomplete: false, hazards };
 }
 
-/** 只有 active 的 hazard 才进 prompt;paths matcher 与本次 changed files 求交。 */
-export function hazardsForPaths(loaded, changedPaths, repo = null) {
+/** 只有 active 的 hazard 才进 prompt;paths matcher 与本次 changed files 求交。
+ *  repo **必须**能解析:解析失败(null)时返回空集并置 incomplete —— 第 2 轮核验点名
+ *  "repo 解析失败可变 null 并禁用过滤",那等于跨仓漏用 + 无声降级。只读展示(--list)
+ *  显式传 allowNoRepo:true。 */
+export function hazardsForPaths(loaded, changedPaths, repo = null, { allowNoRepo = false } = {}) {
   if (loaded.incomplete) return [];
+  if (repo == null && !allowNoRepo) return [];
   return loaded.hazards.filter((h) => h.activationStatus === 'active'
-    // repo 绑定(核验):别的仓同路径不该吃到本仓 hazard。repo 传 null 时不过滤(仅供
-    // 无仓上下文的只读展示,如 --list)。
     && (repo == null || h.repo === repo)
     && (h.paths ?? []).some((pat) => changedPaths.some((p) => matchPath(pat, p))));
+}
+
+export const ACT_RANK = { 'pending-fix-merge': 0, active: 1 };
+export const PROM_RANK = { pending: 0, 'recorded-only': 1, landed: 2 };
+
+/**
+ * 合并同一 hazardId 的两份记录。**方向无关**(mergeHazardPair(a,b) 与 (b,a) 结果全等)
+ * —— 第 2 轮核验实测的反例:一方 landed+promotionTarget、另一方 pending+显式
+ * `promotionTarget:null` 时,`{...cur, ...h}` 会让状态升级到 landed 却把 target 覆盖成 null,
+ * 反向又得到 landed+target。状态与它的附属元数据必须**原子地**取自同一个赢家。
+ */
+export function mergeHazardPair(a, b) {
+  const rankWin = (rank, field) => ((rank[b?.[field]] ?? -1) > (rank[a?.[field]] ?? -1) ? b : a);
+  const actWin = rankWin(ACT_RANK, 'activationStatus');
+  const promWin = rankWin(PROM_RANK, 'promotionStatus');
+  // 非状态字段:先取非空,再按字典序定序(保证对称);两侧一致时无差别
+  const scalar = (field) => {
+    const x = a?.[field];
+    const y = b?.[field];
+    if (x === undefined || x === null || x === '') return y ?? null;
+    if (y === undefined || y === null || y === '') return x;
+    if (JSON.stringify(x) === JSON.stringify(y)) return x;
+    return JSON.stringify(x) < JSON.stringify(y) ? x : y;
+  };
+  const out = {};
+  for (const k of new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])) out[k] = scalar(k);
+  out.activationStatus = actWin.activationStatus;
+  out.activatedAt = actWin.activatedAt ?? null;
+  out.promotionStatus = promWin.promotionStatus;
+  out.promotionTarget = promWin.promotionTarget ?? null;
+  return out;
 }
 
 /** 幂等 upsert(稳定 hazardId;atomic temp+rename)。返回 { changed, hazard }。 */
@@ -104,12 +186,9 @@ export function upsertHazard(file, hazard) {
   let changed = true;
   if (idx >= 0) {
     const prev = list[idx];
-    // 幂等:同内容重复登记不增条、不降级(active 不回退 pending-fix-merge;landed 不回退 pending)
-    const merged = {
-      ...prev, ...hazard,
-      activationStatus: prev.activationStatus === 'active' ? 'active' : hazard.activationStatus,
-      promotionStatus: prev.promotionStatus === 'landed' ? 'landed' : hazard.promotionStatus,
-    };
+    // 幂等:同内容重复登记不增条、不降级(active 不回退 pending-fix-merge;landed 不回退
+    // pending),且状态与其附属元数据原子取自赢家(见 mergeHazardPair)。
+    const merged = mergeHazardPair(prev, hazard);
     changed = JSON.stringify(merged) !== JSON.stringify(prev);
     list[idx] = merged;
   } else {
@@ -151,7 +230,15 @@ export function saveInbox(stateDir, items) {
  * 必须重判(不得直接 landed/active)。
  * @param probe (pr) => { state, mergeCommitOid?, headRefOid? } 由调用方注入(便于测试)
  */
-export function verifyActivation({ item, probe }) {
+export function verifyActivation({ item, probe, currentRepo = null }) {
+  // 激活必须发生在**本仓**(第 2 轮核验:repo 不校验时,别的仓的 inbox 条目会被写进
+  // canonical 并对本仓生效)。
+  if (currentRepo != null && item.repo !== currentRepo) {
+    return { ok: false, reason: `hazard 绑定的 repo(${item.repo})不是当前仓(${currentRepo})——不得跨仓激活` };
+  }
+  if (!/^[0-9a-f]{40}$/.test(String(item.originHead ?? '').toLowerCase())) {
+    return { ok: false, reason: 'originHead 不是完整 40 位 SHA——origin OID 门不能留空(否则"逃逸前提"无从核验)' };
+  }
   const info = probe(item.fixPr);
   if (!info || info.state !== 'MERGED') return { ok: false, reason: `fix PR #${item.fixPr} 未合并(state=${info?.state ?? '未知'})` };
   const merged = (info.headRefOid ?? '').toLowerCase();
@@ -164,8 +251,8 @@ export function verifyActivation({ item, probe }) {
   if (!origin || origin.state !== 'MERGED') {
     return { ok: false, reason: `origin PR #${item.originPr} 不是已合并状态(state=${origin?.state ?? '未知'})——逃逸前提不成立` };
   }
-  if (item.originHead && (origin.headRefOid ?? '').toLowerCase() !== item.originHead.toLowerCase()) {
-    return { ok: false, reason: `origin PR #${item.originPr} 的 head 与登记的 originHead 不一致` };
+  if ((origin.headRefOid ?? '').toLowerCase() !== item.originHead.toLowerCase()) {
+    return { ok: false, reason: `origin PR #${item.originPr} 的 head(${origin.headRefOid ?? '未知'})与登记的 originHead(${item.originHead})不一致` };
   }
   return { ok: true };
 }
@@ -213,17 +300,21 @@ export function extractEscapeCandidates({ body = '', issueTexts = [] } = {}) {
  *   ③ commit&push 成功(sync.ok && sync.pushed === true)
  * 任一失败 → 该条留在 kept(下轮重放),不进 activated。幂等由 upsert 保证。
  *
- * @param {object} p { items, probe, upsert, readback, sync }
- *   upsert(item)   → 写 canonical,返回 { hazard }
- *   readback()     → 读 canonical,返回 { incomplete, hazards }
- *   sync(hazard)   → 提交并推送,返回 { ok, pushed, error?, skipped? }
+ * @param {object} p { items, probe, upsert, readback, sync, remoteVerify, currentRepo }
+ *   upsert(item)          → 写 canonical,返回 { hazard }
+ *   readback()            → 读 canonical,返回 { incomplete, hazards }
+ *   sync(hazard)          → 提交并推送,返回 { ok, pushed, error?, skipped?, reason? }
+ *   remoteVerify(hazard)  → 读 remote 上的 canonical,返回 { ok, present } —— 只在 sync 报
+ *                           `nothing-to-push` 时用到(第 2 轮核验:push 成功后进程在 ack 前
+ *                           崩溃,重放会拿到 pushed=false + nothing-to-push,旧逻辑永远保留
+ *                           inbox。此时必须核验远端确实已含**完全一致**的 hazard 再安全 ack)
  * @returns {{ activated: string[], kept: object[] }}
  */
-export function activateInboxItems({ items, probe, upsert, readback, sync }) {
+export function activateInboxItems({ items, probe, upsert, readback, sync, remoteVerify = null, currentRepo = null }) {
   const activated = [];
   const kept = [];
   for (const item of items ?? []) {
-    const v = verifyActivation({ item, probe });
+    const v = verifyActivation({ item, probe, currentRepo });
     if (!v.ok) { kept.push({ ...item, lastActivationCheck: v.reason }); continue; }
     const { hazard } = upsert({ ...item, activationStatus: 'active', activatedAt: new Date().toISOString() });
     const verify = readback();
@@ -232,8 +323,15 @@ export function activateInboxItems({ items, probe, upsert, readback, sync }) {
       continue;
     }
     const s = sync(hazard);
+    if (s?.ok === true && s.pushed !== true && s.reason === 'nothing-to-push') {
+      // 无可推 = 本地 HEAD 已等于远端。只有远端确实带着这条 active hazard 才允许 ack。
+      const rv = remoteVerify ? remoteVerify(hazard) : { ok: false, present: false };
+      if (rv?.ok === true && rv.present === true) { activated.push(hazard.hazardId); continue; }
+      kept.push({ ...item, lastActivationCheck: `sync 报 nothing-to-push,但远端核验未确认该 hazard(${rv?.error ?? 'present=false'}),保留 inbox 重放` });
+      continue;
+    }
     if (!s?.ok || s.pushed !== true) {
-      kept.push({ ...item, lastActivationCheck: `canonical 已写但 push 未成功(${s?.error ?? s?.skipped ?? 'pushed=false'}),保留 inbox 重放` });
+      kept.push({ ...item, lastActivationCheck: `canonical 已写但 push 未成功(${s?.error ?? s?.skipped ?? s?.reason ?? 'pushed=false'}),保留 inbox 重放` });
       continue;
     }
     activated.push(hazard.hazardId);

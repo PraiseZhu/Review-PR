@@ -9,7 +9,7 @@
 // 过的方式——测试只是把那套手工重放固化下来。
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, cpSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, cpSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -86,6 +86,11 @@ export function resolveStateDir(repoRoot, env = {}) {
 export function copyLibInto(destRepoDir) {
   const dest = join(destRepoDir, 'review-pr', 'scripts', 'lib.mjs');
   mkdirSync(dirname(dest), { recursive: true });
+  // lib.mjs 有同目录 lib.*.mjs 依赖(如 lib.escaped-hazards 的合并/schema 唯一实现),
+  // 只拷 lib.mjs 会让 import 在 fixture 里解析失败——整层 lib.* 一起拷。
+  for (const f of readdirSync(dirname(LIB_PATH))) {
+    if (/^lib\..*\.mjs$/.test(f)) cpSync(join(dirname(LIB_PATH), f), join(dirname(dest), f));
+  }
   cpSync(LIB_PATH, dest);
   return dest;
 }

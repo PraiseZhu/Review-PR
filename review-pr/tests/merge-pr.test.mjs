@@ -212,3 +212,30 @@ test('⑦ reconcile:PR state 未知/响应空对象 → 保持 orphan 不封口(
   assert.equal(recClosed[0].ok, false);
   assert.equal(recClosed[0].prState, 'CLOSED');
 });
+
+test('⑧ R7 生产触发链(第 2 轮核验):合并成功后必须真的调用 hazard 激活——pending 条目被处理且核验没过时留在 inbox', () => {
+  const { repo, stateDir, env } = setup();
+  // pending hazard 夹具(fix PR = 469,与本次合并同号);第一次合并后才知道 repoStateKey 子目录名
+  const inboxItem = {
+    hazardId: 'hz2-prod', fingerprint: 'hzf2-prod', repo: 'xindong/mivo-canvas',
+    originPr: 400, originHead: 'b'.repeat(40), fixPr: 469, fixHead: HEAD,
+    pattern: 'p', evidence: '依据', paths: ['a/**'],
+    activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
+  };
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.ok(out.hazardActivation, '合并出口必须带出 hazard 激活结果(证明生产触发链真的接线了,不是只有 SKILL 里的手工命令)');
+  assert.equal(typeof out.hazardActivation.action ?? 'activate', 'string');
+  // 真放一条 pending 再合一次:激活会跑,但 fake gh 查不到 origin PR → 核验不过 → 留 inbox
+  const stateSub = readDirOnly(stateDir);
+  writeFileSync(join(stateDir, stateSub, 'escaped-hazards-inbox.json'), JSON.stringify({ version: 1, items: [inboxItem] }));
+  const r2 = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  assert.equal(r2.status, 0, r2.stdout + r2.stderr);
+  const out2 = JSON.parse(r2.stdout);
+  assert.equal(out2.hazardActivation.action, 'activate');
+  assert.deepEqual(out2.hazardActivation.activated, [], 'fake gh 查不到 PR 状态 → 不得激活');
+  const box = JSON.parse(readFileSync(join(stateDir, stateSub, 'escaped-hazards-inbox.json'), 'utf8'));
+  assert.equal(box.items.length, 1, '核验没过的条目必须留在 inbox 下轮重放');
+  assert.ok(box.items[0].lastActivationCheck, '必须记下这轮为什么没激活(证明激活逻辑真跑过了)');
+});

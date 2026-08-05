@@ -4,21 +4,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeLedgerJson } from '../scripts/lib.mjs';
 
+// 合并后会走完整 schema 复验(第 2 轮核验),夹具必须是**合法** hazard
 const HZ = (over) => ({
-  hazardId: 'hz1-a', repo: 'o/r', fingerprint: 'hzf1-a', originPr: 1, fixPr: 2, fixHead: 'a'.repeat(40),
+  hazardId: 'hz2-a', repo: 'o/r', fingerprint: 'hzf2-a', originPr: 1, fixPr: 2,
+  fixHead: 'a'.repeat(40), originHead: 'b'.repeat(40), evidence: '依据',
   pattern: 'p', paths: ['a/**'], activationStatus: 'pending-fix-merge', promotionStatus: 'pending', ...over,
 });
 const doc = (hazards, entries = []) => JSON.stringify({ version: 1, entries, escapedHazards: hazards });
 
 test('两侧各自新登记的 hazard 取并集(rebase 不丢条)', () => {
-  const ours = doc([HZ({ hazardId: 'hz1-a' })]);
-  const theirs = doc([HZ({ hazardId: 'hz1-b' })]);
+  const ours = doc([HZ({ hazardId: 'hz2-a' })]);
+  const theirs = doc([HZ({ hazardId: 'hz2-b' })]);
   const merged = JSON.parse(mergeLedgerJson(ours, theirs));
-  assert.deepEqual(merged.escapedHazards.map((h) => h.hazardId).sort(), ['hz1-a', 'hz1-b']);
+  assert.deepEqual(merged.escapedHazards.map((h) => h.hazardId).sort(), ['hz2-a', 'hz2-b']);
 });
 
 test('同 (repo, hazardId):不增条,且状态取更高档(active/landed 不被回退)', () => {
-  const active = doc([HZ({ activationStatus: 'active', promotionStatus: 'landed', promotionTarget: { kind: 'rule', ruleId: 'x' } })]);
+  const TARGET = { kind: 'rule', ruleId: 'playwright-waitforfunction-async-predicate' };
+  const active = doc([HZ({ activationStatus: 'active', promotionStatus: 'landed', promotionTarget: TARGET })]);
   const stale = doc([HZ({ activationStatus: 'pending-fix-merge', promotionStatus: 'pending' })]);
   for (const [a, b] of [[active, stale], [stale, active]]) {
     const merged = JSON.parse(mergeLedgerJson(a, b));
@@ -26,6 +29,13 @@ test('同 (repo, hazardId):不增条,且状态取更高档(active/landed 不被�
     assert.equal(merged.escapedHazards[0].activationStatus, 'active', '不降级(方向无关)');
     assert.equal(merged.escapedHazards[0].promotionStatus, 'landed');
   }
+  // 第 2 轮核验的确切反例:一方 landed+target,另一方 pending 且**显式** promotionTarget:null
+  // → 旧实现一个方向得 landed+null(状态升级却把 target 冲掉),反向得 landed+target。
+  const explicitNull = doc([HZ({ activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null })]);
+  const ab = JSON.parse(mergeLedgerJson(active, explicitNull));
+  const ba = JSON.parse(mergeLedgerJson(explicitNull, active));
+  assert.deepEqual(ab.escapedHazards, ba.escapedHazards, '两个方向必须完全一致');
+  assert.deepEqual(ab.escapedHazards[0].promotionTarget, TARGET, 'landed 的 target 不得被显式 null 冲掉');
 });
 
 test('不同 repo 的同 hazardId 不合并成一条(repo 是身份的一部分)', () => {

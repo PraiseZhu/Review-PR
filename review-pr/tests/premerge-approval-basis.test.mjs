@@ -27,7 +27,7 @@ const FAKE_GH_DIR = join(__dirname, 'fixtures', 'fake-gh');
 const HEAD = '3ae9ecdb745dc5827e36962c1630f037f4a986cc'; // #469 合并时的真实 head
 const OLD_APPROVE_COMMIT = 'a32ae3ba81810d9934e1332fe426b5693f067ca1'; // APPROVED 绑定的旧 head
 
-function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true }) {
+function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, diffText = null, omitDiffFixture = false }) {
   const work = mkdtempSync(join(tmpdir(), 'premerge-469-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -76,7 +76,11 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
       } },
     },
   }));
-  writeFileSync(join(fixtures, 'pr-diff.txt'), 'diff --git a/a.txt b/a.txt\n+++ b/a.txt\n+hello\n');
+  // omitDiffFixture:让 fake gh 的 `pr diff` 失败 → scanPrSensitiveContent 的 scanned=false
+  // (未证明无泄露);diffText:注入硬命中,验"泄密硬门对所有路由无条件"。
+  if (!omitDiffFixture) {
+    writeFileSync(join(fixtures, 'pr-diff.txt'), diffText ?? 'diff --git a/a.txt b/a.txt\n+++ b/a.txt\n+hello\n');
+  }
   writeFileSync(join(fixtures, 'actions-runs.json'), JSON.stringify({ workflow_runs: [] }));
   writeFileSync(join(fixtures, 'rules-branches.raw'),
     'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n' +
@@ -192,4 +196,29 @@ test('G · SC-A 迁移报告:裸 /approve-merge(旧格式)不授权,且必须显
   assert.equal(out.approvedShortcut.granted, false, '裸格式不构成 head 绑定授权');
   assert.equal(out.structuralBypassReady, false);
   assert.equal(out.legacyBareApproveComments.length, 1, '裸命令必须被显式报告(提醒重发 head 绑定格式),不能静默消失');
+});
+
+// ── SC-R1b 第 2 轮核验 BLOCKER:泄密硬门此前只被 authorized-fast-merge 一条路消费;
+// 普通 canMerge / selfMerge / structural admin-bypass 的终判只叠 mechanical + stage2。
+// 场景 B 是"一切正常 → ready=true"的对照组,在它之上只改 diff/扫描可用性。
+test('F · 泄密硬命中:所有 merge 路由无条件拦(与 B 只差 diff 内容)', () => {
+  const secret = 'diff --git a/a.txt b/a.txt\n+++ b/a.txt\n+-----BEGIN RSA PRIVATE KEY-----\n';
+  const { r, out } = runCheck({ approveCommit: HEAD, diffText: secret });
+  assert.equal(out.security.hardHitCount > 0, true, '前提:扫描必须真命中');
+  assert.equal(out.securityGate.pass, false);
+  assert.equal(out.canMerge, false, '普通合并不得放行');
+  assert.equal(out.selfMergeAvailable, false);
+  assert.equal(out.structuralBypassReady, false, 'structural admin-bypass 同样不得放行');
+  assert.match(out.blockers.join(';'), /硬命中/);
+  assert.equal(r.status, 2);
+});
+
+test('F2 · 扫描未完成(scanned=false)同样 fail-closed——"未证明无泄露"不等于"无泄露"', () => {
+  const { r, out } = runCheck({ approveCommit: HEAD, omitDiffFixture: true });
+  assert.equal(out.security.scanned, false, '前提:扫描确实没跑成');
+  assert.equal(out.securityGate.pass, false);
+  assert.equal(out.canMerge, false);
+  assert.equal(out.structuralBypassReady, false);
+  assert.match(out.blockers.join(';'), /未证明无泄露/);
+  assert.equal(r.status, 2);
 });
