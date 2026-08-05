@@ -78,7 +78,8 @@ function applyMarkerStrip(text, name, file) {
   const end = isMd ? `<!-- dist:strip:end ${name} -->` : `// dist:strip:end ${name}`;
   const s = text.indexOf(start), e = text.indexOf(end);
   if (s === -1 || e === -1 || e < s) throw new Error(`markerStrip ${name} 在 ${file} 中缺失/错序(fail-loud)`);
-  return text.slice(0, s) + text.slice(e + end.length + (text[e + end.length] === '\n' ? 1 : 0));
+  const out = text.slice(0, s) + text.slice(e + end.length + (text[e + end.length] === '\n' ? 1 : 0));
+  return out.replace(/\n{2,}$/, '\n'); // strip 到 EOF 时不留悬空空行(git diff --check 卫生)
 }
 
 function applyStub(text, name, replacement, file) {
@@ -186,19 +187,28 @@ export function buildDist({ sourceDir, manifestPath, outDir }) {
   return distManifest;
 }
 
-// 四项 freshness 比对(共识 v2.3/v2.4):任何一项不符 = 过期
+// freshness 比对(共识 v2.3/v2.4 + 审 D-F1 修正):**一切锚定当场重建的产物**——
+// 先真重建到临时目录(重建本身跑 forbidden/absent),再比 ①记录 manifest 四字段 vs 重建
+// manifest ②仓内 dist 实际树 hash vs 重建产物树 hash。伪造/手补 dist_manifest 只能让
+// ①里的 product_tree_hash 与②同时露馅(记录值锚的是重建,不是 dist 自身重算)。
 export function checkDist({ sourceDir, manifestPath, distDir }) {
   const problems = [];
   const mf = join(distDir, 'dist_manifest.json');
   if (!existsSync(mf)) return { fresh: false, problems: ['dist_manifest.json 不存在'] };
   const rec = JSON.parse(readFileSync(mf, 'utf8'));
-  if (rec.builder_version !== BUILDER_VERSION) problems.push(`builder_version 不符: ${rec.builder_version} ≠ ${BUILDER_VERSION}`);
-  const cfg = sha256(readFileSync(manifestPath));
-  if (rec.strip_config_hash !== cfg) problems.push('strip_config_hash 不符(manifest 变了未重建)');
-  const src = sourceInputTreeHash(sourceDir);
-  if (rec.source_input_tree_hash !== src) problems.push('source_input_tree_hash 不符(源树变了未重建)');
-  const prod = productTreeHash(distDir);
-  if (rec.product_tree_hash !== prod) problems.push('product_tree_hash 不符(dist 内容被手改/损坏)');
+  const tmp = mkdtempSync(join(tmpdir(), 'dist-rebuild-'));
+  try {
+    const expect = buildDist({ sourceDir, manifestPath, outDir: tmp });
+    for (const k of ['builder_version', 'source_input_tree_hash', 'strip_config_hash', 'product_tree_hash']) {
+      if (rec[k] !== expect[k]) problems.push(`${k} 不符(记录 ${String(rec[k]).slice(0, 12)} ≠ 重建 ${String(expect[k]).slice(0, 12)})`);
+    }
+    const actual = productTreeHash(distDir);
+    if (actual !== expect.product_tree_hash) {
+      problems.push(`product_tree_hash(实际) 不符: 仓内 dist 树 ${actual.slice(0, 12)} ≠ 重建产物 ${expect.product_tree_hash.slice(0, 12)}(手改 dist/伪造 manifest 均在此露馅,审 D-F1)`);
+    }
+  } catch (e) {
+    problems.push(`重建失败(fail-closed): ${e.message}`);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
   return { fresh: problems.length === 0, problems };
 }
 
@@ -217,16 +227,12 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const manifestPath = resolve(opt('manifest') ?? join(HERE, 'dist.manifest.json'));
   const distDir = resolve(opt('out') ?? join(HERE, '..', '..', 'dist'));
   if (argv.includes('--check')) {
-    const tmp = mkdtempSync(join(tmpdir(), 'dist-check-'));
-    try {
-      buildDist({ sourceDir, manifestPath, outDir: tmp }); // 先证明当前源能构建成功(含 forbidden-scan)
-      const res = checkDist({ sourceDir, manifestPath, distDir });
-      if (!res.fresh) {
-        process.stderr.write(`[build-dist --check] dist 过期:\n${res.problems.join('\n')}\n重建: node scripts/build-dist.mjs\n`);
-        process.exit(1);
-      }
-      process.stdout.write('[build-dist --check] fresh\n');
-    } finally { rmSync(tmp, { recursive: true, force: true }); }
+    const res = checkDist({ sourceDir, manifestPath, distDir }); // 内部即真重建+双向比对(审 D-F1)
+    if (!res.fresh) {
+      process.stderr.write(`[build-dist --check] dist 过期:\n${res.problems.join('\n')}\n重建: node scripts/build-dist.mjs\n`);
+      process.exit(1);
+    }
+    process.stdout.write('[build-dist --check] fresh\n');
   } else if (argv.includes('--tag')) {
     const repoDir = resolve(sourceDir, '..');
     const res = checkDist({ sourceDir, manifestPath, distDir });

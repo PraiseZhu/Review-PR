@@ -367,7 +367,7 @@ pull / push 失败（断网、diverged、非 main 分支）不阻塞 review 流�
 
 **多写者并发（同一 skills 仓被多台机器 / 多个轮次写）**：同一个 skills 仓可能同时被
 定时轮次与人工交互轮次写入（各自追加 evo 台账），push 撞 `non-fast-forward` 属正常并发，
-不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**
+不是故障。（dist 分发版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**
 （台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按
 `fingerprint` 并集，两侧条目零丢失），最多重试 3 轮；rebase 前先把 HEAD 存进
 `refs/skill-sync/pre-rebase-<ts>` 兜底，推成功即清理。**冲突落在任何其他文件（脚本 /
@@ -1884,7 +1884,7 @@ null 本身不构成新的 P0/P1，也不写入 `p0p1Count`。
      不依赖任何手工命令。激活时现场核验 fix PR 已 MERGED **且 merged head === 登记的
      fixHead**、origin PR 也确实已合并且 head 与登记的 `originHead` 一致、且 hazard 绑定的
      repo === 当前仓；
-  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；
+  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除；dist 分发版无回推：回读校验通过即 ack）；
      任一失败保留 inbox 下轮重放（幂等 upsert，重复不增条、不降级）。若 push 报
      `nothing-to-push`（上一轮已推成功但进程崩在 ack 之前），必须读**远端** canonical
      确认该 hazard 已 active 才安全 ack；
@@ -2170,4 +2170,3 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 
 不把审查报告、GitHub token、用户数据或临时快照落入仓库。发现已有残留 worktree 或锁
 无法确认归属时不要强删，报告给用户处理。
-

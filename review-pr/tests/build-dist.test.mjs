@@ -114,7 +114,45 @@ test('[SC-15‴] 三态:fresh 绿 / 改源不重建红 / 改 manifest 不重建�
     res = checkDist({ sourceDir: src, manifestPath, distDir: dist });
     assert.equal(res.fresh, false);
     assert.match(res.problems.join(';'), /product_tree_hash/);
+    // 审 D-F1 复现已死:手改 dist + 伪造 dist_manifest.product_tree_hash 为实际树 hash → 仍红
+    // (记录值锚定的是重建产物,不是 dist 自身重算;实际树 vs 重建产物比对同时露馅)
+    const forged = JSON.parse(readFileSync(join(dist, 'dist_manifest.json'), 'utf8'));
+    forged.product_tree_hash = productTreeHash(dist);
+    writeFileSync(join(dist, 'dist_manifest.json'), JSON.stringify(forged, null, 2) + '\n');
+    res = checkDist({ sourceDir: src, manifestPath, distDir: dist });
+    assert.equal(res.fresh, false, '伪造 manifest 补 hash 不得洗白手改的 dist');
+    assert.match(res.problems.join(';'), /product_tree_hash/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('[D-F2] dist 激活 ack:sync 返回 dist-readonly 时回读通过即 ack,不永久重放;主仓语义 kept 不变', async () => {
+  const HEADS = { 9: 'b'.repeat(40), 8: 'c'.repeat(40) };
+  const item = {
+    repo: 'o/r', title: 't', paths: ['x.mjs'], evidence: 'e', severity: 'major', pattern: 'p',
+    promotionStatus: 'recorded-only', promotionTarget: { reason: 'r' },
+    sourceEvent: { kind: 'fix-pr-merged', fixPr: 9, findingId: 'f1' },
+    fixPr: 9, fixHead: HEADS[9], originPr: 8, originHead: HEADS[8],
+    recordedAt: '2026-08-06T00:00:00Z', activationStatus: 'pending-verification',
+    // id/fingerprint 由身份字段复算得出(validateHazardShape 拒伪造 id)
+    hazardId: 'hz2-5fe1bdf54d5dae61', fingerprint: 'hzf2-5fe1bdf54d5dae61'
+  };
+  const deps = () => ({
+    items: [item],
+    probe: (pr) => ({ state: 'MERGED', headRefOid: HEADS[pr] }),
+    upsert: (h) => ({ hazard: h }),
+    readback: () => ({ incomplete: false, hazards: [{ hazardId: item.hazardId, activationStatus: 'active' }] }),
+    sync: () => ({ ok: true, committed: false, pushed: false, skipped: 'dist-readonly' }),
+    currentRepo: 'o/r'
+  });
+  // dist 版:回读通过 + dist-readonly → ack(审 D-F2)
+  const ehDist = await import(join(REPO_DIST, 'scripts', 'lib.escaped-hazards.mjs'));
+  const rDist = ehDist.activateInboxItems(deps());
+  assert.deepEqual(rDist.activated, [item.hazardId], `dist 必须 ack,实际 kept: ${rDist.kept[0]?.lastActivationCheck ?? ''}`);
+  // 主仓版:同输入必须 kept 重放(dist-readonly 分支在主仓不可达,push 语义不放宽)
+  const ehSrc = await import(new URL('../scripts/lib.escaped-hazards.mjs', import.meta.url));
+  const rSrc = ehSrc.activateInboxItems(deps());
+  assert.deepEqual(rSrc.activated, []);
+  assert.match(rSrc.kept[0].lastActivationCheck, /push 未成功/);
 });
 
 test('[SC-25] 提交 dist(含 dist_manifest) 后重跑 check 仍绿(无 HEAD 自引用/不追尾)', () => {

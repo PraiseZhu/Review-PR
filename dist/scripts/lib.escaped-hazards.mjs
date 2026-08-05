@@ -404,6 +404,11 @@ export function activateInboxItems({ items, probe, upsert, readback, sync, remot
       kept.push({ ...item, lastActivationCheck: `sync 报 nothing-to-push,但远端核验未确认该 hazard(${rv?.error ?? 'present=false'}),保留 inbox 重放` });
       continue;
     }
+    if (s?.ok === true && s.skipped === 'dist-readonly') {
+      // dist 分发版:回推能力已剥离,本地 canonical 落盘+上方回读校验通过即视为激活完成并 ack
+      // ——否则 inbox 永久重放(审 D-F2)。主仓不会出现该 skipped 值,此分支在主仓恒不可达。
+      activated.push(hazard.hazardId); continue;
+    }
     if (!s?.ok || s.pushed !== true) {
       kept.push({ ...item, lastActivationCheck: `canonical 已写但 push 未成功(${s?.error ?? s?.skipped ?? s?.reason ?? 'pushed=false'}),保留 inbox 重放` });
       continue;

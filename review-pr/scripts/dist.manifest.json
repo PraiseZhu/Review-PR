@@ -40,7 +40,11 @@
     { "file": "scripts/sync-skill-repo.mjs", "find": "//                        台账(ledger/EVOLUTION.md)的提交推送由 evolution-note.mjs", "replace": "" },
     { "file": "scripts/sync-skill-repo.mjs", "find": "//                        每次写入后自动完成,一般不需要手动跑本命令的 push。", "replace": "" },
     { "file": "references/internal-gates.md", "find": "| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（写盘后自动提交推送台账到 skills 仓库 main） |", "replace": "" },
-    { "file": "references/internal-gates.md", "find": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |", "replace": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；dist 分发版 `push` 已禁用恒返回 skipped） |" }
+    { "file": "references/internal-gates.md", "find": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |", "replace": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；dist 分发版 `push` 已禁用恒返回 skipped） |" },
+    { "file": "scripts/lib.escaped-hazards.mjs", "find": "    if (!s?.ok || s.pushed !== true) {", "replace": "    if (s?.ok === true && s.skipped === 'dist-readonly') {\n      // dist 分发版:回推能力已剥离,本地 canonical 落盘+上方回读校验通过即视为激活完成并 ack\n      // ——否则 inbox 永久重放(审 D-F2)。主仓不会出现该 skipped 值,此分支在主仓恒不可达。\n      activated.push(hazard.hazardId); continue;\n    }\n    if (!s?.ok || s.pushed !== true) {" },
+    { "file": "SKILL.md", "find": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；", "replace": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除；dist 分发版无回推：回读校验通过即 ack）；" },
+    { "file": "SKILL.md", "find": "不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**", "replace": "不是故障。（dist 分发版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**" },
+    { "file": "references/internal-gates.md", "find": "`nothing-to-push` 须凭远端核验;", "replace": "`nothing-to-push` 须凭远端核验(dist 分发版无回推:回读校验通过即 ack);" }
   ],
   "neutralize": {
     "file": "config/pr-rules.json",
