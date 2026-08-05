@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `conflict-p1-skip` **冲突 + 未收敛 P1 的 PR 本轮跳过** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
+  - 现象:PR #489: DIRTY 冲突 + 上一轮 P1 未在 head 上收敛,作者 aj0928 在 exemptAuthors 且 selfFixAuthors 空,按 SKILL 5.5 门槛(审查需 0 P0/P1)不满足,skip 等作者修
 - `deps-security-review-skip` **依赖类 PR(deps bump)命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
   - 现象:PR #484: package.json/lockfile 属自动化自身敏感路径,配置决定不自动审不自动合,与 3.8 预期一致
 - `stale-pushback-waiting-author` **格式门打回后作者未提交新 commit,stale pushback 去重跳过** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked

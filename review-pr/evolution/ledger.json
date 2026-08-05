@@ -1456,6 +1456,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-05T05:05:38.157Z",
       "lastSeen": "2026-08-05T05:05:38.157Z"
+    },
+    {
+      "fingerprint": "conflict-p1-skip",
+      "tier": "by-design",
+      "title": "冲突 + 未收敛 P1 的 PR 本轮跳过",
+      "detail": "PR #489: DIRTY 冲突 + 上一轮 P1 未在 head 上收敛,作者 aj0928 在 exemptAuthors 且 selfFixAuthors 空,按 SKILL 5.5 门槛(审查需 0 P0/P1)不满足,skip 等作者修",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-05T05:05:46.285Z",
+      "lastSeen": "2026-08-05T05:05:46.285Z"
     }
   ]
 }
