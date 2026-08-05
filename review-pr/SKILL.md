@@ -1237,8 +1237,12 @@ node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
 ```
 
 **selfFixAuthors 自有 PR 的 self-merge**：当 `pre-merge-check` 返回
-`selfMergeAvailable=true` 时（viewer = PR author 且 author 在 `selfFixAuthors`），
-GitHub 不允许同账号 approve，直接使用 `--admin` 合并：
+`selfMergeAvailable=true` 时（viewer = PR author 且 author 在 `selfFixAuthors`，
+**且 PR 的 `isDraft` 字段严格等于 `false`**——这是硬门槛，draft 状态的自修复
+PR 拿不到 `selfMergeAvailable=true`，必须先 mark ready 才可能被判定为可合；
+判定用 `m.isDraft === false` 而非 `!m.isDraft`，字段读不到（`undefined`）时
+同样不放行，fail-closed），GitHub 不允许同账号 approve，直接使用 `--admin`
+合并：
 
 ```bash
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
@@ -1331,6 +1335,11 @@ head 重发。旧的「须晚于最后一次真实 push」时效判定已废除�
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
   --match-head <headRefOid> --basis authorized-fast-merge --admin --delete-branch --mode <auto|interactive>
 ```
+
+若候选是 t2 loop 托管 PR（见 3.7「Loop 托管 PR 排除」），**本通道不适用**——
+`pre-merge-check.mjs` 会直接返回 `authorizedFastMergeAvailable=false`
+（`blockedReason=loop-managed-pr-fast-merge-forbidden`），必须改走正常审查
+路径，不能靠一句 `/approve-merge <sha>` 绕过。
 
 判定逻辑单一来源在 `scripts/lib.mjs` 的 `findApproveMergeAuthorization`（授权
 本身是否有效）与 `evaluateAuthorizedFastMerge`（机械前提），`pre-merge-check.mjs`
