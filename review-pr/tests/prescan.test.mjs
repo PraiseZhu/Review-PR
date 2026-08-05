@@ -652,3 +652,97 @@ test('第1轮盲审 P1-3 修复:单文件多 hunk 跨段——第 1 段拿不到
   const overlap = [...seg1Starts].filter((s) => seg2Starts.has(s));
   assert.equal(overlap.length, 0, `第 1 段与第 2 段不应共享同一个 hunk(hunk 级隔离,P1-3)——重叠 newRanges 起点:${JSON.stringify(overlap)}`);
 });
+
+// ── 第2轮盲审(delta):premerge 侧 P1-2 补丁 + record/deliver 覆盖缺口补测 ──
+
+test('第2轮盲审(delta):readTrustedPrescanArtifact 篡改内容但保留旧 artifactHash → ok:false/tampered', async () => {
+  const { readTrustedPrescanArtifact, buildArtifact, writePrescanArtifact } = await import('../scripts/lib.prescan.mjs');
+  const f = setup({ rules: {} });
+  const artifact = buildArtifact({ status: 'complete', snapshotHash: 'snap1-x', inputHash: 'psi1-x', policyHash: 'psp1-x', observations: [{ observationId: 'po1-a', file: 'a.mjs', line: 1, category: PRESCAN_CATEGORIES[0], note: '真实观察' }] });
+  writePrescanArtifact(f.stateDir, 900001, artifact);
+  const trusted1 = readTrustedPrescanArtifact(f.stateDir, 900001);
+  assert.equal(trusted1.ok, true, '未篡改时应可信');
+
+  // 篡改:清空 observations,保留旧 artifactHash
+  const artifactPath = join(f.stateDir, 'prescan-artifact-900001.json');
+  const raw = JSON.parse(readFileSync(artifactPath, 'utf8'));
+  const oldHash = raw.artifactHash;
+  raw.observations = [];
+  raw.observationCount = 0;
+  raw.artifactHash = oldHash;
+  writeFileSync(artifactPath, JSON.stringify(raw, null, 2));
+
+  const trusted2 = readTrustedPrescanArtifact(f.stateDir, 900001);
+  assert.equal(trusted2.ok, false, '篡改后保留旧 hash 应被 readTrustedPrescanArtifact 识别为不可信(第2轮盲审 premerge 半边)');
+  assert.equal(trusted2.reason, 'tampered');
+});
+
+test('第2轮盲审(delta):pre-merge-check.mjs 与 consume-review-output.mjs 共用 readTrustedPrescanArtifact(消灭双份实现漂移)', () => {
+  const SR = join(__dirname, '..', 'scripts');
+  const premergeSrc = readFileSync(join(SR, 'pre-merge-check.mjs'), 'utf8');
+  const consumeSrc = readFileSync(join(SR, 'consume-review-output.mjs'), 'utf8');
+  assert.ok(premergeSrc.includes('readTrustedPrescanArtifact'), 'pre-merge-check.mjs 应使用统一的可信读取函数,不得自己重复实现重算逻辑');
+  assert.ok(consumeSrc.includes('readTrustedPrescanArtifact'), 'consume-review-output.mjs 应使用统一的可信读取函数');
+});
+
+test('第2轮盲审(delta):record 拒绝引用本段未分配到的 hunk 的行号(即便该行属于同文件的其他 hunk)', () => {
+  const f = setup({
+    rules: { prescan: { enabled: true }, reviewSegments: { sizeBudget: 1 } },
+    headFiles: {
+      'src/a.mjs': Array.from({ length: 40 }, (_, i) => (i === 0 ? '// 旧注释 A\nexport function a() { return 1; }' : (i === 39 ? '// 旧注释 B\nexport function z() { return 2; }' : `// 占位行 ${i}`))).join('\n') + '\n',
+    },
+    baseFiles: {
+      'src/a.mjs': Array.from({ length: 40 }, (_, i) => (i === 0 ? 'export function a() { return 0; }' : (i === 39 ? 'export function z() { return 0; }' : `// 占位行 ${i}`))).join('\n') + '\n',
+    },
+  });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  const { json: p2 } = run(PREPARE, ['--order', '2'], f);
+  if (!p2.ok) return; // 未真正跨段(diff 合并成一个 hunk)时跳过
+  const seg1Lines = new Set(p1.files.find((x) => x.path === 'src/a.mjs')?.hunks.flatMap((h) => h.addedNewLines) ?? []);
+  const seg2File = p2.files.find((x) => x.path === 'src/a.mjs');
+  if (!seg2File) return; // 第 2 段是另一文件,不构成本用例场景
+  const seg2OnlyLine = seg2File.hunks.flatMap((h) => h.addedNewLines).find((ln) => !seg1Lines.has(ln));
+  if (seg2OnlyLine === undefined) return;
+  // 第 1 段的 record 引用只属于第 2 段 hunk 的行号——必须拒绝
+  const badFile = join(f.work, 'cross-hunk.json');
+  writeFileSync(badFile, JSON.stringify([{ file: 'src/a.mjs', line: seg2OnlyLine, category: PRESCAN_CATEGORIES[0], note: 'x' }]));
+  const { json: rec } = run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', badFile], f);
+  assert.equal(rec.ok, false, '第 1 段 record 不应接受只属于第 2 段 hunk 的行号(即便同文件)');
+  assert.equal(rec.reasonCode, 'schema-invalid');
+});
+
+test('第2轮盲审(delta):deliver 不把属于第2段 hunk 的 observation 误投给同 path 的第1段', () => {
+  const f = setup({
+    rules: { prescan: { enabled: true }, reviewSegments: { sizeBudget: 1 } },
+    headFiles: {
+      'src/a.mjs': Array.from({ length: 40 }, (_, i) => (i === 0 ? '// 旧注释 A\nexport function a() { return 1; }' : (i === 39 ? '// 旧注释 B\nexport function z() { return 2; }' : `// 占位行 ${i}`))).join('\n') + '\n',
+    },
+    baseFiles: {
+      'src/a.mjs': Array.from({ length: 40 }, (_, i) => (i === 0 ? 'export function a() { return 0; }' : (i === 39 ? 'export function z() { return 0; }' : `// 占位行 ${i}`))).join('\n') + '\n',
+    },
+  });
+  const { json: p1 } = run(PREPARE, ['--order', '1'], f);
+  const path1Obs = join(f.work, 'seg1-obs.json');
+  writeFileSync(path1Obs, JSON.stringify([]));
+  run(RECORD, ['--order', '1', '--segment-id', p1.segmentId, '--observations', path1Obs], f);
+  const { json: p2 } = run(PREPARE, ['--order', '2'], f);
+  if (!p2.ok) return;
+  const seg2File = p2.files.find((x) => x.path === 'src/a.mjs');
+  if (!seg2File) return; // 不同 path,不构成本用例场景(串 path 场景需同 path)
+  const seg2Line = seg2File.hunks[0]?.addedNewLines[0];
+  if (seg2Line === undefined) return;
+  const path2Obs = join(f.work, 'seg2-obs.json');
+  writeFileSync(path2Obs, JSON.stringify([{ file: 'src/a.mjs', line: seg2Line, category: PRESCAN_CATEGORIES[0], note: '第2段观察' }]));
+  run(RECORD, ['--order', '2', '--segment-id', p2.segmentId, '--observations', path2Obs], f);
+  run(RECORD, ['--finalize'], f);
+
+  const { taskFile } = buildTaskWithBody(f);
+  const { json: d1 } = deliverAllSegments2(f, taskFile, 1);
+  assert.equal(d1.prescanObservations.length, 0, '第 1 段不应看到只属于第 2 段(同 path 不同 hunk)的观察——deliver 按行号归属,不按 path 归属');
+});
+
+function deliverAllSegments2(f, tf, order) {
+  const r = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', String(order)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, `deliver order=${order} 应成功:${r.stdout}${r.stderr}`);
+  return { json: JSON.parse(r.stdout) };
+}

@@ -167,6 +167,18 @@ export function readPrescanArtifact(stateDir, pr) {
   }
 }
 
+/** 第 2 轮盲审(GPT delta):consumer 与 premerge 都要"读 artifact + 重算 artifactHash
+ *  自洽性校验"这同一步骨架,此前各自写了一份、premerge 那份漏了重算(P1-2 的另一半)。
+ *  抽成纯函数统一两处消费,避免同一逻辑再次分叉出不同步的两份实现。返回:
+ *  {ok:true, artifact} 内容自洽(重算 artifactHash 与文件自带字段一致);
+ *  {ok:false, reason} 不可信(缺失/损坏/重算不符)——调用方应视为"artifact 不存在"。 */
+export function readTrustedPrescanArtifact(stateDir, pr) {
+  const raw = readPrescanArtifact(stateDir, pr);
+  if (!raw) return { ok: false, reason: 'missing' };
+  if (computeArtifactHash(raw) !== raw.artifactHash) return { ok: false, reason: 'tampered' };
+  return { ok: true, artifact: raw };
+}
+
 /** SC-3.4: 构建完整 artifact 对象(含 hash 绑定)。`executor` 可选,仅供人读。 */
 export function buildArtifact({ status, snapshotHash, inputHash, policyHash, observations, reasonCode, executor }) {
   const artifact = {

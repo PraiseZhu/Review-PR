@@ -33,7 +33,7 @@ import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAns
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
 import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
-import { validatePrescanConfig, readPrescanArtifact, computePolicyHash, computeArtifactHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
+import { validatePrescanConfig, readTrustedPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -192,19 +192,16 @@ try {
   //     等价于放行。改为:enabled 时先统一判"authArtifact 是否存在且可信",再分流。
   //   P1-2(artifactHash 未重算,只信 artifact 自带字段)——`readPrescanArtifact` 只是
   //     JSON.parse,从不校验文件内容与其自带的 artifactHash 是否一致;攻击者篡改
-  //     observations 数组的同时不改 artifactHash 字段即可绕过。改为读到 authArtifact 后
-  //     立即用 computeArtifactHash 重算并与文件内自带的字段比对,不符即视为损坏/篡改,
-  //     等同于"artifact 不可信"(fail-closed,不降级为"部分可信")。
+  //     observations 数组的同时不改 artifactHash 字段即可绕过。改为调用
+  //     readTrustedPrescanArtifact(与 pre-merge-check.mjs 共用同一重算校验实现,第 2 轮
+  //     盲审发现两处各自实现会漂移——premerge 那份当时漏了重算,统一成一份消灭该风险)。
   const prescanCfg = validatePrescanConfig(rules?.prescan);
   let expectedPrescanObservationIds = [];
   if (prescanCfg.enabled && prescanCfg.valid) {
-    const rawArtifact = readPrescanArtifact(STATE_DIR, pr);
+    const trusted = readTrustedPrescanArtifact(STATE_DIR, pr);
     const authPolicyHash = computePolicyHash({ limits: PRESCAN_LIMITS });
-    // P1-2: artifact 内容自洽性——重算 artifactHash,与文件内自带字段不符即视为不可信
-    const authArtifact = (rawArtifact && computeArtifactHash(rawArtifact) === rawArtifact.artifactHash)
-      ? rawArtifact
-      : null;
-    if (rawArtifact && authArtifact === null) {
+    const authArtifact = trusted.ok ? trusted.artifact : null;
+    if (!trusted.ok && trusted.reason === 'tampered') {
       taskErrors.push('prescan artifact 内容与其自带 artifactHash 不符(重算后不一致)——artifact 已损坏或被篡改,fail-closed');
     }
     if (task.prescan) {
