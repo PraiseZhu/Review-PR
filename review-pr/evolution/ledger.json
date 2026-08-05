@@ -1443,6 +1443,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-04T20:02:49.374Z",
       "lastSeen": "2026-08-04T20:02:49.374Z"
+    },
+    {
+      "fingerprint": "deps-security-review-skip",
+      "tier": "by-design",
+      "title": "依赖类 PR(deps bump)命中 securityReviewPaths 转人工",
+      "detail": "PR #484: package.json/lockfile 属自动化自身敏感路径,配置决定不自动审不自动合,与 3.8 预期一致",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-05T05:05:38.157Z",
+      "lastSeen": "2026-08-05T05:05:38.157Z"
     }
   ]
 }

@@ -152,6 +152,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `deps-security-review-skip` **依赖类 PR(deps bump)命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
+  - 现象:PR #484: package.json/lockfile 属自动化自身敏感路径,配置决定不自动审不自动合,与 3.8 预期一致
 - `stale-pushback-waiting-author` **格式门打回后作者未提交新 commit,stale pushback 去重跳过** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR #489 feat(canvas) 局部重绘二期:格式门未过(Description 缺三段),上次已打回,head 未变,auto 判 skip-stale-pushback——等作者按打回意见补 Description 后自然重入,by-design
 - `skip-security-review-path` **dependabot deps bump 命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
