@@ -1608,7 +1608,7 @@ export function readReviewReceipt(pr) {
  *     都被误判成 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着"0 个
  *     P0/P1"的回执才算干净,字段缺失/负数/非整数一律 fail-closed 判不干净。
  */
-export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledgerHash, escapeSourceHash, knownHazardsHash }) {
+export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledgerHash, escapeSourceHash, knownHazardsHash, expectedPrescanHash }) {
   if (!receipt) return false;
   if (receipt.headRefOid !== headRefOid) return false;
   if (receipt.verdict !== 'clean') return false;
@@ -1624,6 +1624,16 @@ export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledger
   // (无绑定字段)同样在此失效,forward-only。
   if (typeof snapshotHash !== 'string' || !snapshotHash || receipt.snapshotHash !== snapshotHash) return false;
   if (typeof ledgerHash !== 'string' || !ledgerHash || receipt.ledgerHash !== ledgerHash) return false;
+  // SC-6.2(final SC v2):prescan 条件性绑定,三态期望值——
+  //   undefined:调用方未声明 prescan 状态(旧调用点未升级)→ fail-closed;
+  //   null:明确声明 prescan disabled → 要求 receipt 不携带 prescanHash(不得偷带旧值);
+  //   string:明确声明 prescan enabled → 要求 receipt.prescanHash 严格相等。
+  if (expectedPrescanHash === undefined) return false;
+  if (expectedPrescanHash === null) {
+    if (receipt.prescanHash !== undefined) return false;
+  } else {
+    if (typeof expectedPrescanHash !== 'string' || !expectedPrescanHash || receipt.prescanHash !== expectedPrescanHash) return false;
+  }
   return true;
 }
 

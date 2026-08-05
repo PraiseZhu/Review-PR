@@ -33,6 +33,7 @@ import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAns
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
 import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
+import { validatePrescanConfig, readPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -179,13 +180,43 @@ try {
 
   const injectedOpenIds = Array.isArray(task.injectedOpenIds) ? task.injectedOpenIds : [];
 
+  // ── SC-6.1: prescan 独立重验——consumer 不信 task.prescan 的声明,重读 artifact 并
+  // 重算 policyHash/observationId 全集,与 task.prescan 逐项比对。任一不符即 taskInvalid
+  // (与 escapeCandidates/knownHazards 同一纪律:task 只是审查方看到的副本,权威来自
+  // 现场重算)。ready 但 disabled 时 expectedPrescanObservationIds 为空数组。
+  const prescanCfg = validatePrescanConfig(rules?.prescan);
+  let expectedPrescanObservationIds = [];
+  if (prescanCfg.enabled && prescanCfg.valid) {
+    const authArtifact = readPrescanArtifact(STATE_DIR, pr);
+    const authPolicyHash = computePolicyHash({ limits: PRESCAN_LIMITS });
+    if (task.prescan) {
+      if (!authArtifact) {
+        taskErrors.push('prescan enabled 且 task 声明了 prescan,但 artifact 缺失(SC-6.1:enabled 但 artifact 不存在,fail-closed)');
+      } else if (authArtifact.snapshotHash !== snapshot.snapshotHash) {
+        taskErrors.push(`prescan artifact 绑定的 snapshotHash 与当前不一致(artifact=${authArtifact.snapshotHash},当前=${snapshot.snapshotHash})`);
+      } else if (authArtifact.artifactHash !== task.prescan.artifactHash) {
+        taskErrors.push(`task.prescan.artifactHash 与现场重读的 artifact 不符(task=${task.prescan.artifactHash},现场=${authArtifact.artifactHash})——artifact 被篡改或 task 过期`);
+      } else if (authArtifact.policyHash !== authPolicyHash) {
+        taskErrors.push(`prescan artifact 绑定的 policyHash 与当前代码层策略不符(artifact=${authArtifact.policyHash},当前=${authPolicyHash})——category/上限已变,旧 artifact 失效`);
+      } else if (authArtifact.status === 'complete') {
+        expectedPrescanObservationIds = (authArtifact.observations ?? []).map((o) => o.observationId);
+      }
+      // status !== 'complete'(skipped/failed)时 expectedPrescanObservationIds 保持空数组
+      // ——SC-5.2:非 complete 状态不要求 assessment。
+    } else if (authArtifact && authArtifact.snapshotHash === snapshot.snapshotHash && authArtifact.status === 'complete' && authArtifact.observationCount > 0) {
+      // enabled 且现场确实存在针对当前 snapshot 的 complete artifact,但 task 没声明
+      // prescan——build-review-task 应该已经填了,缺失说明 task 过期或被篡改。
+      taskErrors.push('prescan enabled 且当前 snapshot 有 complete artifact,但 task 缺 prescan 字段(SC-6.1:enabled 但 task 缺 prescan → invalid)');
+    }
+  }
+
   // ── 输出解析 + 契约校验 ──
   const rawOutput = readFileSync(outputFile, 'utf8');
   let output = null;
   let shape;
   try {
     output = JSON.parse(rawOutput);
-    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash });
+    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash, expectedPrescanObservationIds });
   } catch (e) {
     shape = { ok: false, errors: [`输出不是合法 JSON:${e.message}`] };
     output = {};
@@ -388,6 +419,9 @@ try {
     // R7 第 4 轮核验:clean 的新鲜度也绑逃逸数据源与 canonical hazard 的**全内容**
     // (premerge 现场重算比对——clean 之后 PR body/关联 issue/canonical 变了,旧 clean 即 stale)
     escapeSourceHash: authEscapeSourceHash, knownHazardsHash: authKnownHazardsHash,
+    // SC-6.2: enabled 时 clean 回执额外绑 prescanHash(artifactHash);disabled 时不带
+    // 该字段——isReviewReceiptClean 的三态期望值(null=disabled)据此判定。
+    ...(prescanCfg.enabled && prescanCfg.valid && task.prescan?.artifactHash ? { prescanHash: task.prescan.artifactHash } : {}),
   };
   if (verdict === 'clean') {
     writeReviewReceipt({ pr, headRefOid, verdict: 'clean', p0p1Count: 0, bindings });

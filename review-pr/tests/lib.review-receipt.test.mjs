@@ -16,10 +16,12 @@ import { writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../
 // 当前 snapshotHash/ledgerHash。本文件用固定的测试绑定;"不带绑定的旧签名调用必须
 // fail-closed"有专门用例。
 const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t', escapeSourceHash: 'esh1-t', knownHazardsHash: 'khh1-t' };
-const cleanOk = (receipt, headRefOid) => isReviewReceiptClean({ receipt, headRefOid, snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash, escapeSourceHash: B.escapeSourceHash, knownHazardsHash: B.knownHazardsHash });
+// expectedPrescanHash:null = 本文件测试场景不涉及 prescan(声明为 disabled),
+// 与 receipt 不带 prescanHash 一致。SC-6.2 三态期望值语义见 lib.mjs isReviewReceiptClean。
+const cleanOk = (receipt, headRefOid) => isReviewReceiptClean({ receipt, headRefOid, snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash, escapeSourceHash: B.escapeSourceHash, knownHazardsHash: B.knownHazardsHash, expectedPrescanHash: null });
 
 test('无回执 → isReviewReceiptClean 恒 false', () => {
-  assert.equal(isReviewReceiptClean({ receipt: null, headRefOid: 'abc123' }), false);
+  assert.equal(isReviewReceiptClean({ receipt: null, headRefOid: 'abc123', expectedPrescanHash: null }), false);
   assert.equal(readReviewReceipt(900001), null);
 });
 
@@ -30,7 +32,7 @@ test('写入 clean 回执后,针对同一 head 读出 → isReviewReceiptClean=t
   assert.equal(receipt.verdict, 'clean');
   assert.equal(cleanOk(receipt, 'sha-aaa'), true);
   // SC-R1b:snapshot/ledger 漂移或期望值缺失 → 不 clean(fail-closed)
-  const w = (over) => isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash, escapeSourceHash: B.escapeSourceHash, knownHazardsHash: B.knownHazardsHash, ...over });
+  const w = (over) => isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash, escapeSourceHash: B.escapeSourceHash, knownHazardsHash: B.knownHazardsHash, expectedPrescanHash: null, ...over });
   assert.equal(w({ snapshotHash: 'snap1-other' }), false, 'snapshot 漂移(如 base 前进 head 不变)必须失效');
   assert.equal(w({ ledgerHash: 'lh1-other' }), false, 'ledger 变化(如 clean 后新增 open)必须失效');
   // R7 第 4 轮核验:clean 后 PR body/issue/canonical hazard 内容变化 → stale;期望值缺失 → fail-closed
@@ -38,6 +40,10 @@ test('写入 clean 回执后,针对同一 head 读出 → isReviewReceiptClean=t
   assert.equal(w({ knownHazardsHash: 'khh1-other' }), false, 'canonical hazard 内容漂移必须失效');
   assert.equal(w({ escapeSourceHash: undefined }), false, '数据源取不到(期望值缺失)必须 fail-closed');
   assert.equal(w({ knownHazardsHash: null }), false, 'canonical 不可读(期望值缺失)必须 fail-closed');
+  // SC-6.2: expectedPrescanHash 缺失(undefined)→ fail-closed;声明 enabled 但 receipt
+  // 没有对应 prescanHash → 不 clean。
+  assert.equal(w({ expectedPrescanHash: undefined }), false, 'expectedPrescanHash 缺失(undefined)必须 fail-closed');
+  assert.equal(w({ expectedPrescanHash: 'psp1-something' }), false, 'receipt 无 prescanHash 但期望 enabled(非空字符串)时不得 clean');
   assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa' }), false, '不带期望 hash 的旧签名调用必须 fail-closed');
 });
 

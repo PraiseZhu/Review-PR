@@ -371,3 +371,59 @@ test('SC-4.2: prescan disabled 时 deliver-review-segment 不附带 prescanObser
   assert.equal(d1.ok, true);
   assert.deepEqual(d1.prescanObservations, [], 'disabled 时 prescanObservations 应为空数组');
 });
+
+// ── SC-5/6: 正式 reviewer 强制 disposition + consumer/receipt 三层绑定(集成) ──
+
+test('SC-5.1: consumer 侧 validateReviewOutput 要求已投递的 prescan observation 恰一条 assessment', async () => {
+  const { validateReviewOutput } = await import('../scripts/lib.review-consume.mjs');
+  const shape1 = validateReviewOutput(
+    { schemaVersion: 'rro-1', findingFamilies: [], verificationGaps: [], verificationRuns: [], profileAnswers: [], findingDispositions: [], segmentReceipts: [], negativeEvidence: [], escapeAssessment: [] },
+    { expectedPrescanObservationIds: ['po1-abc'] },
+  );
+  assert.equal(shape1.ok, false, '缺 prescanAssessments 时应 invalid');
+  assert.ok(shape1.errors.some((e) => e.includes('po1-abc') || e.includes('prescanAssessments')));
+
+  const shape2 = validateReviewOutput(
+    {
+      schemaVersion: 'rro-1', findingFamilies: [], verificationGaps: [], verificationRuns: [], profileAnswers: [], findingDispositions: [], segmentReceipts: [], negativeEvidence: [], escapeAssessment: [],
+      prescanAssessments: [{ observationId: 'po1-abc', disposition: 'dismissed', basis: '核实后确认非真实问题' }],
+    },
+    { expectedPrescanObservationIds: ['po1-abc'] },
+  );
+  assert.equal(shape2.ok, true, '一一对应的 dismissed assessment 应通过');
+});
+
+test('SC-5.1: dismissed 缺 basis 应 invalid', async () => {
+  const { validateReviewOutput } = await import('../scripts/lib.review-consume.mjs');
+  const shape = validateReviewOutput(
+    {
+      schemaVersion: 'rro-1', findingFamilies: [], verificationGaps: [], verificationRuns: [], profileAnswers: [], findingDispositions: [], segmentReceipts: [], negativeEvidence: [], escapeAssessment: [],
+      prescanAssessments: [{ observationId: 'po1-abc', disposition: 'dismissed' }],
+    },
+    { expectedPrescanObservationIds: ['po1-abc'] },
+  );
+  assert.equal(shape.ok, false);
+  assert.ok(shape.errors.some((e) => e.includes('basis')));
+});
+
+test('SC-5.2: expectedPrescanObservationIds 为空数组时不要求 prescanAssessments', async () => {
+  const { validateReviewOutput } = await import('../scripts/lib.review-consume.mjs');
+  const shape = validateReviewOutput(
+    { schemaVersion: 'rro-1', findingFamilies: [], verificationGaps: [], verificationRuns: [], profileAnswers: [], findingDispositions: [], segmentReceipts: [], negativeEvidence: [], escapeAssessment: [] },
+    { expectedPrescanObservationIds: [] },
+  );
+  assert.equal(shape.ok, true, 'disabled/skipped/failed/complete-empty(空 observation 集)不要求 assessment');
+});
+
+test('SC-6.2: isReviewReceiptClean 三态期望值——undefined fail-closed,null 要求无 prescanHash,string 严格相等', async () => {
+  const { isReviewReceiptClean } = await import('../scripts/lib.mjs');
+  const baseArgs = { headRefOid: 'sha-x', snapshotHash: 'snap1-x', ledgerHash: 'lh1-x', escapeSourceHash: 'esh1-x', knownHazardsHash: 'khh1-x' };
+  const receiptNoprescan = { headRefOid: 'sha-x', verdict: 'clean', p0p1Count: 0, snapshotHash: 'snap1-x', ledgerHash: 'lh1-x', escapeSourceHash: 'esh1-x', knownHazardsHash: 'khh1-x' };
+  assert.equal(isReviewReceiptClean({ receipt: receiptNoprescan, ...baseArgs, expectedPrescanHash: undefined }), false, 'undefined 必须 fail-closed');
+  assert.equal(isReviewReceiptClean({ receipt: receiptNoprescan, ...baseArgs, expectedPrescanHash: null }), true, 'null(disabled)且 receipt 无 prescanHash 应 clean');
+  assert.equal(isReviewReceiptClean({ receipt: receiptNoprescan, ...baseArgs, expectedPrescanHash: 'psp1-y' }), false, '期望 enabled 但 receipt 无 prescanHash 不得 clean');
+  const receiptWithPrescan = { ...receiptNoprescan, prescanHash: 'pa1-abc' };
+  assert.equal(isReviewReceiptClean({ receipt: receiptWithPrescan, ...baseArgs, expectedPrescanHash: 'pa1-abc' }), true, 'prescanHash 严格相等应 clean');
+  assert.equal(isReviewReceiptClean({ receipt: receiptWithPrescan, ...baseArgs, expectedPrescanHash: 'pa1-different' }), false, 'prescanHash 不符应拒绝');
+  assert.equal(isReviewReceiptClean({ receipt: receiptWithPrescan, ...baseArgs, expectedPrescanHash: null }), false, 'receipt 偷带旧 prescanHash 但期望 disabled 应拒绝');
+});

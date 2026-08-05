@@ -43,9 +43,12 @@ export const NA_REASON_CODES = ['doc-only', 'comment-only', 'generated-file', 'p
  *
  * @param {object} output 解析后的 JSON 对象
  * @param {object} ctx { injectedOpenIds: string[] } build-review-task 注入的历史 effective-open findingId 清单
+ * @param {string[]} ctx.expectedPrescanObservationIds SC-5.1:consumer 现场重算的、
+ *   本轮**已投递**的 prescan observationId 全集(未 enabled 或无 observation 时为空数组)。
+ *   每一个都要求恰好一条 prescanAssessments 条目——多退少补都判非法。
  * @returns {{ ok: boolean, errors: string[] }}
  */
-export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null } = {}) {
+export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null, expectedPrescanObservationIds = [] } = {}) {
   const errors = [];
   if (output === null || typeof output !== 'object' || Array.isArray(output)) {
     return { ok: false, errors: ['输出不是 JSON 对象'] };
@@ -257,6 +260,38 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
         errors.push(`escapeAssessment[${i}] 形状非法(需 {candidateId, verdict∈yes|no, basis})`);
       }
     });
+  }
+
+  // ── prescanAssessments(SC-5.1):每个已投递的 prescan observation 恰好一条 assessment。
+  // observation 本身不直接驱动 dirty——只有 disposition=finding 引用的真实 finding
+  // family 才计;dismissed 必须有非空 basis。expectedPrescanObservationIds 为空数组
+  // (disabled/skipped/failed/complete-empty)时不要求任何 assessment(SC-5.2)。 ──
+  const assessments = output.prescanAssessments;
+  if (expectedPrescanObservationIds.length > 0 || assessments !== undefined) {
+    if (!Array.isArray(assessments)) {
+      errors.push('prescanAssessments 缺失或非数组(本轮有已投递的预扫观察,必须逐条 disposition)');
+    } else {
+      const expected = new Set(expectedPrescanObservationIds);
+      const seen = new Set();
+      assessments.forEach((a, i) => {
+        if (!a || typeof a !== 'object' || !isStr(a.observationId) || !['finding', 'dismissed'].includes(a.disposition)) {
+          errors.push(`prescanAssessments[${i}] 形状非法(需 {observationId, disposition∈finding|dismissed})`);
+          return;
+        }
+        if (!expected.has(a.observationId)) errors.push(`prescanAssessments[${i}].observationId 未在本轮已投递的预扫观察清单里(${a.observationId})`);
+        if (seen.has(a.observationId)) errors.push(`prescanAssessments[${i}] 对 ${a.observationId} 重复 disposition`);
+        seen.add(a.observationId);
+        if (a.disposition === 'finding' && !familyRefOk(a.findingRef)) {
+          errors.push(`prescanAssessments[${i}] finding 的本地引用 {family_id, manifestationIndex} 无对应 finding 条目`);
+        }
+        if (a.disposition === 'dismissed' && !isStr(a.basis)) {
+          errors.push(`prescanAssessments[${i}] dismissed 必须带非空 basis(核实后判定非真实问题的依据)`);
+        }
+      });
+      for (const id of expectedPrescanObservationIds) {
+        if (!seen.has(id)) errors.push(`预扫观察 ${id} 缺 disposition(本轮已投递的观察必须逐条作答)`);
+      }
+    }
   }
 
   return { ok: errors.length === 0, errors };
