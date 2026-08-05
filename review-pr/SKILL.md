@@ -880,7 +880,8 @@ node "<SKILL_ROOT>/scripts/build-review-task.mjs" <N> --base <baseRefOid> --head
 （必须逐条 disposition）、known hazards（本仓历史逃逸模式）、覆盖分片 segments 的**清单与
 投递序号**、required 负向证据 key。
 
-**分段必须真投递**（SC-R4）：`prompt.md` **不含**各段的 coverage key 明细——唯一取得途径是
+**分段必须真投递**（SC-R4）：`prompt.md` **与 `task.json` 都不含**各段的 coverage key 明细
+（task 只给每段的 `keyCount` 与内容承诺 `commitment`）——唯一取得途径是
 按序调用投递出口，把它打印的 `payload` 投给**同一个**审查会话，每段收回执后再投下一段：
 
 ```bash
@@ -889,9 +890,13 @@ node "<SKILL_ROOT>/scripts/deliver-review-segment.mjs" <N> --task <task.json> \
 ```
 
 出口只接受**下一个**序号（乱序/跳段直接拒且不留记录），并把投递事实记进 STATE_DIR 的投递
-台账;consumer 以台账为顺序基准核对回执——零投递、缺段、或声称一个没投递过的 `receivedOrder`
+台账;分片由投递出口按 snapshot + rules **权威重算**（task 的承诺只用来核对是否过期）。
+consumer 以台账为顺序基准核对回执——零投递、缺段、或声称一个没投递过的 `receivedOrder`
 一律 `invalid`。宿主投不完就按 blocked 上报,不要一次性硬审。
-（诚实边界：台账证明**投递动作按序真实发生过**，不能证明模型是分段读的。）
+每段回执形如 `{segmentId, receivedOrder, snapshotHash, coverageKeys:[...]}`，只能认领本段
+分配到的 key;**下一段的 key 在上一段完成前不可见**。
+（诚实边界：台账证明**投递动作按序真实发生过**，不能证明模型是分段读的——编排方仍可先
+把 N 段全投完再一次性喂给模型。机器守住的是"没投递过就不能声称覆盖"。）
 
 审查 agent 按它作答，输出形如：
 

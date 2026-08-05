@@ -12,6 +12,7 @@
 //
 // 供给方:build-review-task(构建 prompt)与 consume-review-output(裁决对账)。
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { coverageKeysOf } from './lib.diff-snapshot.mjs';
 import {
   mergeProfiles, requiredProfileAnswersFor, classifyRequiredNegativeEvidence,
@@ -143,6 +144,14 @@ export function computeReviewRequirements({ repoRoot, snapshot, rules }) {
   };
 }
 
+/** coverage key 集合的内容承诺(顺序无关)。task 只公开它,不公开 key 本身——
+ *  第 3 轮核验:prompt 里藏了 key,但 task.json 仍含全量 coverageKeys 与
+ *  segments[].assignedCoverageKeys,自己跑一遍 builder 读文件就完全绕过投递出口。 */
+export function coverageCommitment(keys) {
+  const canon = [...(keys ?? [])].map(coverageKeyStr).sort().join('\n');
+  return `cc1-${createHash('sha256').update(canon).digest('hex').slice(0, 20)}`;
+}
+
 /** 规范序列化:用于把重算集合与 task 声明集合做**顺序无关**的精确比较。 */
 export const coverageKeyStr = (k) => (k?.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k?.fileId}`);
 export const profileAnswerKeyStr = (r) => `${r?.profileId} ${r?.fileId} ${r?.checkId}`;
@@ -159,15 +168,25 @@ export function diffRequirements(authoritative, task) {
       errs.push(`task.${name} 与当前 snapshot 重算值不一致(重算 ${a.size} 项,task 声明 ${b.size} 项)——task 过期或被改过,不得据它对账`);
     }
   };
-  cmp('coverageKeys', authoritative.coverageKeys, task?.coverageKeys, coverageKeyStr);
+  // coverage 明细**不在** task 里(见 coverageCommitment 注释),改比内容承诺 + 计数
+  if (task?.coverageKeys !== undefined) errs.push('task 不得携带 coverageKeys 明细(key 只能经投递出口取得)');
+  if (coverageCommitment(authoritative.coverageKeys) !== task?.coverageCommitment) {
+    errs.push(`task.coverageCommitment 与重算值不符(重算 ${coverageCommitment(authoritative.coverageKeys)},task ${task?.coverageCommitment})`);
+  }
+  if (authoritative.coverageKeys.length !== task?.coverageKeyCount) {
+    errs.push(`task.coverageKeyCount 与重算值不符(重算 ${authoritative.coverageKeys.length},task ${task?.coverageKeyCount})`);
+  }
   cmp('requiredProfileAnswers', authoritative.requiredProfileAnswers, task?.requiredProfileAnswers, profileAnswerKeyStr);
   cmp('requiredNegativeEvidenceKeys', authoritative.requiredNegativeEvidenceKeys, task?.requiredNegativeEvidenceKeys, negativeKeyStr);
   if (!Array.isArray(task?.segments)) errs.push('task.segments 缺失或非数组');
   else {
-    const mine = authoritative.segments.map((s) => `${s.segmentId}#${s.order}#${s.assignedCoverageKeys.map(coverageKeyStr).join(',')}`);
-    const theirs = task.segments.map((s) => `${s?.segmentId}#${s?.order}#${(s?.assignedCoverageKeys ?? []).map(coverageKeyStr).join(',')}`);
+    if (task.segments.some((x) => x?.assignedCoverageKeys !== undefined)) {
+      errs.push('task.segments 不得携带 assignedCoverageKeys(下一段的 key 必须在上一段完成前不可见)');
+    }
+    const mine = authoritative.segments.map((s) => `${s.segmentId}#${s.order}#${s.assignedCoverageKeys.length}#${coverageCommitment(s.assignedCoverageKeys)}`);
+    const theirs = task.segments.map((s) => `${s?.segmentId}#${s?.order}#${s?.keyCount}#${s?.commitment}`);
     if (mine.length !== theirs.length || mine.some((x, i) => x !== theirs[i])) {
-      errs.push('task.segments 与重算分片不一致(段数/序号/分配集合任一不符)');
+      errs.push('task.segments 与重算分片不一致(段数/序号/计数/内容承诺任一不符)');
     }
   }
   if (authoritative.profileSetHash !== task?.profileSetHash) {

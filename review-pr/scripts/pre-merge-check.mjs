@@ -133,9 +133,13 @@ try {
     // 不一致(截断/漏项)时 complete=false,一路 fail-closed 到终拒。
     expectedPaths: Array.isArray(m.files) ? m.files.map((x) => x.path) : null,
   });
+  // 第 3 轮核验 BLOCKER:snapshot 不完整时此前传 null → 触发 `gh pr diff` 退路,securityGate
+  // 只看退路的 scanned/hit,不要求 snapshot 完整。于是普通/self 虽被 stage2 拦住,
+  // structural approved / authorized-fast 仍能在**不完整快照**上 ready。合并阶段禁退路:
+  // 传空串保证不发起 gh pr diff,并把 secSnapshot.complete 合进 securityGate。
   const securityScan = scanPrSensitiveContent({
     owner, repo, pr, title: m.title ?? '', body: m.body ?? '', sensitiveRules: rules.sensitiveContent ?? {},
-    snapshotPatch: secSnapshot.complete ? secSnapshot.rawPatch : null,
+    snapshotPatch: secSnapshot.complete ? secSnapshot.rawPatch : '',
   });
   // ── 泄密硬门:**全局前置**,所有 merge 路由共用(第 2 轮核验 BLOCKER)──
   // 此前 securityScan 只被 authorized-fast-merge 一条路消费(evaluateAuthorizedFastMerge),
@@ -145,11 +149,13 @@ try {
   // 不可豁免")把它变成与 receiptGate 并列的无条件门,逐路由显式合取。
   const securityGate = {
     scanned: securityScan.scanned === true,
+    snapshotComplete: secSnapshot.complete,
     hardHitCount: securityScan.hardHitCount ?? null,
     ...(securityScan.error ? { error: securityScan.error } : {}),
-    pass: securityScan.scanned === true && (securityScan.hardHitCount ?? 1) === 0,
+    pass: securityScan.scanned === true && (securityScan.hardHitCount ?? 1) === 0 && secSnapshot.complete === true,
     reasons: [],
   };
+  if (!secSnapshot.complete) securityGate.reasons.push(`合并阶段的 DiffSnapshot 不完整(${secSnapshot.reason})——扫描无法绑定快照,禁 gh diff 退路,fail-closed`);
   if (securityScan.scanned !== true) securityGate.reasons.push(`敏感内容扫描未完成(${securityScan.error ?? 'scanned=false'})——未证明无泄露,fail-closed`);
   else if ((securityScan.hardHitCount ?? 1) > 0) securityGate.reasons.push(`敏感内容硬命中 ${securityScan.hardHitCount} 处——任何通道都不可压过`);
 

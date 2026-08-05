@@ -16,7 +16,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import process from 'node:process';
 import { print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, ghJson } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
-import { computeReviewRequirements, coverageKeyStr as keyStr } from './lib.review-requirements.mjs';
+import { computeReviewRequirements, coverageCommitment } from './lib.review-requirements.mjs';
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { loadKnownHazards, hazardsForPaths, extractEscapeCandidates } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
@@ -94,8 +94,14 @@ try {
     ledgerReadable: ledger.ok,
     ledgerHash: ledger.ok ? ledger.ledgerHash : null,
     injectedOpenIds: injectedOpen.map((e) => e.findingId),
-    coverageKeys,
-    segments,
+    // coverage key 明细**不进 task**(第 3 轮核验:prompt 藏了 key 但 task.json 还在,
+    // 自己跑一遍 builder 读文件就绕过投递出口)。只给计数与内容承诺,明细由投递出口按序给。
+    coverageKeyCount: coverageKeys.length,
+    coverageCommitment: coverageCommitment(coverageKeys),
+    segments: segments.map((seg) => ({
+      segmentId: seg.segmentId, order: seg.order, keyCount: seg.assignedCoverageKeys.length,
+      commitment: coverageCommitment(seg.assignedCoverageKeys), sizeBudget: seg.sizeBudget,
+    })),
     requiredProfileAnswers,
     requiredNegativeEvidenceKeys,
     knownHazards: relevantHazards,

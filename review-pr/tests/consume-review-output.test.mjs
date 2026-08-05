@@ -74,17 +74,26 @@ function taskFile(f, { body = '普通改动,无历史 PR 引用。' } = {}) {
   return tf;
 }
 
+/** 投递结果缓存:task 文件路径 → 各段的 {segmentId, order, coverageKeys}。
+ *  第 3 轮核验后 task.json 不再含 key 明细,**只能**从投递出口取——测试也走同一条路。 */
+const DELIVERED = new Map();
+
 /** SC-R4:逐段真投递(consumer 以投递台账为顺序基准,没投递过不予采信)。 */
 function deliverAll(f, tf, { upTo = null, pr = '469' } = {}) {
   const task = JSON.parse(readFileSync(tf, 'utf8'));
   const segs = task.segments ?? [];
   const limit = upTo ?? segs.length;
+  const got = [];
   for (let i = 1; i <= limit; i += 1) {
     const r = spawnSync('node', [DELIVER, pr, '--task', tf, '--base', f.base, '--head', f.head, '--order', String(i)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
     assert.equal(r.status, 0, `第 ${i} 段投递应成功:${r.stdout}${r.stderr}`);
+    const j = JSON.parse(r.stdout);
+    got.push({ segmentId: j.segmentId, order: j.order, coverageKeys: j.assignedCoverageKeys });
   }
-  return segs.length;
+  DELIVERED.set(tf, got);
+  return got;
 }
+const deliveredOf = (tf) => DELIVERED.get(tf) ?? [];
 
 /** 真实 review-preflight 产 preflight。 */
 function preflightFile(f) {
@@ -108,16 +117,17 @@ function compliant(tf, over = {}) {
       outputAnchor: 'expected failure', verificationRunId: runId,
     };
   });
+  const delivered = deliveredOf(tf);
   const hunkOf = (fileId) => {
-    for (const seg of task.segments ?? []) {
-      for (const k of seg.assignedCoverageKeys) if (k.kind === 'hunk' && k.fileId === fileId) return k.hunkId;
+    for (const seg of delivered) {
+      for (const k of seg.coverageKeys) if (k.kind === 'hunk' && k.fileId === fileId) return k.hunkId;
     }
     return null;
   };
   return OUT({
     // 答卷必须绑定它所审的 snapshot(顶层 + 每段回执),第 3 轮核验 BLOCKER
     snapshotHash: task.snapshotHash,
-    segmentReceipts: (task.segments ?? []).map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, snapshotHash: task.snapshotHash, coverageKeys: seg.assignedCoverageKeys })),
+    segmentReceipts: delivered.map((seg) => ({ segmentId: seg.segmentId, receivedOrder: seg.order, snapshotHash: task.snapshotHash, coverageKeys: seg.coverageKeys })),
     profileAnswers: (task.requiredProfileAnswers ?? []).map((r) => ({
       profileId: r.profileId, fileId: r.fileId, checkId: r.checkId, answer: 'checked-clean', hunkId: hunkOf(r.fileId),
     })),
@@ -223,7 +233,7 @@ test('⑥ 核销门:席位 A 留 open → 席位 B 零 disposition → invalid;�
   assert.match(b.json.reasons.join(';'), /disposition/);
   const id = b.json.injectedOpenIds[0];
   assert.ok(id);
-  const anchor = JSON.parse(readFileSync(b.taskPath, 'utf8')).coverageKeys.find((k) => k.kind === 'hunk');
+  const anchor = deliveredOf(b.taskPath).flatMap((x) => x.coverageKeys).find((k) => k.kind === 'hunk');
   const ev = { kind: 'diff-anchor', snapshotHash: b.json.snapshotHash, fileId: anchor.fileId, hunkId: anchor.hunkId };
   const c = round(f, { findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ev }] });
   assert.equal(c.json.verdict, 'invalid');
@@ -242,7 +252,7 @@ test('⑦ head 推进后 resolved+结构化证据 → clean;open 继承跨 snaps
   assert.equal(round(f).json.verdict, 'invalid', 'open 必须继承到新 snapshot');
   const tf = taskFile(f);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  const anchor = task.coverageKeys.find((k) => k.kind === 'hunk');
+  const anchor = deliverAll(f, tf).flatMap((x) => x.coverageKeys).find((k) => k.kind === 'hunk');
   const ev = { kind: 'diff-anchor', snapshotHash: task.snapshotHash, fileId: anchor.fileId, hunkId: anchor.hunkId };
   const done = round(f, { findingDispositions: [{ findingId: id, disposition: 'resolved', evidence: ev }] }, { tf });
   assert.equal(done.json.verdict, 'clean', done.json.reasons?.join(';'));
@@ -258,7 +268,7 @@ test('⑧ 复审反例:同一轮既重报又想 resolved → 拒(先修再核销
   f.head = git(['rev-parse', 'HEAD'], f.repo);
   const tf = taskFile(f);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  const anchor = task.coverageKeys.find((k) => k.kind === 'hunk');
+  const anchor = deliverAll(f, tf).flatMap((x) => x.coverageKeys).find((k) => k.kind === 'hunk');
   const ev = { kind: 'diff-anchor', snapshotHash: task.snapshotHash, fileId: anchor.fileId, hunkId: anchor.hunkId };
   const both = round(f, {
     findingFamilies: [FAM()],
@@ -314,7 +324,8 @@ test('⑫ 覆盖对账:漏段/段内集合不符/段内重复/投递序号不符
   const f = setup();
   const tf = taskFile(f);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
-  const full = task.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.assignedCoverageKeys }));
+  deliverAll(f, tf);
+  const full = deliveredOf(tf).map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.coverageKeys }));
   assert.equal(round(f, { segmentReceipts: full }, { tf }).json.verdict, 'clean');
   for (const receipts of [
     [],
@@ -467,21 +478,27 @@ test('⑰ R1a 第 2 轮核验 BLOCKER:task 不是权威——保留真 snapshotH
   deliverAll(f, tf);
   const pf = preflightFile(f);
   const good = JSON.parse(readFileSync(tf, 'utf8'));
-  assert.ok(good.coverageKeys.length > 0 && good.requiredProfileAnswers.length > 0 && good.requiredNegativeEvidenceKeys.length > 0, '前提:三组集合都非空');
+  assert.equal(good.coverageKeys, undefined, 'task 不得携带 coverage key 明细(只能经投递出口取)');
+  assert.ok(good.coverageKeyCount > 0 && good.requiredProfileAnswers.length > 0 && good.requiredNegativeEvidenceKeys.length > 0, '前提:三组集合都非空');
   const answer = compliant(tf); // 按真 task 作答(合规)
   assert.equal(run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean', '对照:未篡改时 clean');
 
   // 篡改:snapshotHash 照真值留着,只把四组集合清空(核验席实测此前仍 exit 0 + clean)
   const tampered = join(f.work, 'task-tampered.json');
   writeFileSync(tampered, JSON.stringify({
-    ...good, coverageKeys: [], segments: [], requiredProfileAnswers: [], requiredNegativeEvidenceKeys: [],
+    ...good, coverageKeyCount: 0, coverageCommitment: 'cc1-forged', segments: [],
+    requiredProfileAnswers: [], requiredNegativeEvidenceKeys: [],
   }));
-  const r = run(f, OUT(), ['--mode', 'auto', '--task', tampered, '--preflight', pf]);
+  const r = run(f, OUT({ snapshotHash: good.snapshotHash }), ['--mode', 'auto', '--task', tampered, '--preflight', pf]);
   assert.equal(r.json.verdict, 'invalid', r.json.reasons?.join(';'));
   const joined = r.json.reasons.join(';');
-  for (const k of ['coverageKeys', 'requiredProfileAnswers', 'requiredNegativeEvidenceKeys', 'segments']) {
+  for (const k of ['coverageCommitment', 'coverageKeyCount', 'requiredProfileAnswers', 'requiredNegativeEvidenceKeys', 'segments']) {
     assert.match(joined, new RegExp(k), `必须逐组报出与重算值不一致:缺 ${k}`);
   }
+  // 反过来:task 里若**塞回** key 明细,同样判非法(那条通道必须关死)
+  const leaked = join(f.work, 'task-leaked.json');
+  writeFileSync(leaked, JSON.stringify({ ...good, coverageKeys: [{ kind: 'file', fileId: 'F1' }] }));
+  assert.match(run(f, answer, ['--mode', 'auto', '--task', leaked, '--preflight', pf]).json.reasons.join(';'), /不得携带 coverageKeys/);
   // 单独篡改 profileSetHash 也要被抓
   const psh = join(f.work, 'task-psh.json');
   writeFileSync(psh, JSON.stringify({ ...good, profileSetHash: 'ps1-forged' }));
@@ -512,25 +529,25 @@ test('⑲ R4 第 2 轮核验 BLOCKER:分段必须真投递——零投递/缺段
   const f = setup();
   const tf = taskFile(f);
   const pf = preflightFile(f);
-  const answer = compliant(tf);
-  // 零投递:回执形状再正确也不采信
-  const none = run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  // 零投递:回执形状再正确也不采信。先用另一份"预演"投递拿到 key 形状,再清掉台账。
+  const segCountPlan = JSON.parse(readFileSync(tf, 'utf8')).segments.length;
+  const answerNoDelivery = compliant(tf); // DELIVERED 尚为空 → receipts 为空数组
+  const none = run(f, answerNoDelivery, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
   assert.equal(none.json.verdict, 'invalid');
   assert.match(none.json.deliveryReasons.join(';'), /没有任何分段投递记录/);
   assert.match(none.json.reasons.join(';'), /投递/);
   // 乱序投递被投递出口直接拒(不留记录)
-  const segCount = JSON.parse(readFileSync(tf, 'utf8')).segments.length;
+  const segCount = segCountPlan;
   const outOfOrder = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', String(segCount + 1)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(outOfOrder.status, 2);
   assert.match(JSON.parse(outOfOrder.stdout).refused, /不在本轮分片里|顺序投递/);
   // 正常逐段投递 → clean;payload 里才有 key 清单(prompt.md 不再包含)
-  const first = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
-  assert.equal(first.status, 0, first.stdout + first.stderr);
-  const fj = JSON.parse(first.stdout);
-  assert.match(fj.payload, /覆盖分段/);
-  assert.ok(fj.payload.includes('hunk:') || fj.payload.includes('file:'), 'payload 必须给出本段 key 清单');
+  const delivered = deliverAll(f, tf);
+  const fj = delivered[0];
+  assert.ok(fj.coverageKeys.length > 0, 'payload 必须给出本段 key 清单');
   assert.ok(!readFileSync(`${tf}.md`, 'utf8').includes('hunk:'), 'prompt.md 不得包含 key 清单(否则不投递也能补形状正确的回执)');
-  assert.equal(run(f, answer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean', '投齐后应 clean');
+  assert.equal(readFileSync(tf, 'utf8').includes('assignedCoverageKeys'), false, 'task.json 也不得包含 key 明细(自己跑 builder 读文件同样绕不过投递)');
+  assert.equal(run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean', '投齐后应 clean');
   // 回执声称一个没投递过的 order → invalid
   const forged = compliant(tf, { segmentReceipts: [{ segmentId: 'seg-99', receivedOrder: 9, coverageKeys: [] }] });
   assert.equal(run(f, forged, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'invalid');
@@ -573,4 +590,60 @@ test('⑳ R1a 第 3 轮核验 BLOCKER:非法 --mode / 坏 preflight / 坏 confir
     assert.equal(readReceipt(f).verdict, 'dirty', `${label}:必须撤销同 snapshot 的旧 clean`);
     assert.ok(r.json.attempts >= 1, `${label}:必须记 retry(否则可以无限次试)`);
   }
+});
+
+test('㉑ R4 第 3 轮核验 BLOCKER:真多段——下一段的 key 在上一段完成前不可见;缺段不得 clean', () => {
+  const f = setup();
+  // 让分片真的 >1 段:sizeBudget=1 + 两个改动文件
+  const baseRules = JSON.parse(readFileSync(f.rulesFile, 'utf8'));
+  writeFileSync(f.rulesFile, JSON.stringify({ ...baseRules, reviewSegments: { sizeBudget: 1 } }));
+  writeFileSync(join(f.repo, 'src-b.mjs'), 'export const b = 1;\n');
+  git(['add', '-A'], f.repo);
+  git(['commit', '-q', '-m', 'two files'], f.repo);
+  f.head = git(['rev-parse', 'HEAD'], f.repo);
+
+  const tf = taskFile(f);
+  const pf = preflightFile(f);
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  assert.ok(task.segments.length >= 2, `前提:必须真的拆成多段,got ${task.segments.length}`);
+  assert.equal(task.coverageKeys, undefined);
+  assert.ok(task.segments.every((s) => s.assignedCoverageKeys === undefined && s.commitment && s.keyCount >= 1),
+    'task 只给每段的计数与内容承诺,不给 key');
+
+  // 只投第 1 段:第 2 段的 key 在任何**已公开产物**里都查不到
+  const one = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(one.status, 0, one.stdout + one.stderr);
+  const seg1 = JSON.parse(one.stdout);
+  assert.equal(seg1.remaining, task.segments.length - 1, '必须报出还剩几段(段间继续状态)');
+  assert.equal(seg1.assignedCoverageKeys.length, 1);
+  // 跳段:第 3 段(或超出)一律拒;第 2 段之前不得先投第 3 段
+  const skip = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', String(task.segments.length + 1)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(skip.status, 2);
+
+  // 只带第 1 段回执 → 缺段,不得 clean
+  const partial = OUT({
+    snapshotHash: task.snapshotHash,
+    segmentReceipts: [{ segmentId: seg1.segmentId, receivedOrder: seg1.order, snapshotHash: task.snapshotHash, coverageKeys: seg1.assignedCoverageKeys }],
+  });
+  const missing = run(f, partial, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(missing.json.verdict, 'invalid');
+  assert.match(missing.json.deliveryReasons.join(';'), /未投递/);
+
+  // 投完剩余段 → clean;并确认第 2 段的 key 只出现在它自己的投递输出里
+  const two = spawnSync('node', [DELIVER, '469', '--task', tf, '--base', f.base, '--head', f.head, '--order', '2'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(two.status, 0, two.stdout + two.stderr);
+  const seg2 = JSON.parse(two.stdout);
+  const seg2Key = seg2.assignedCoverageKeys.map((k) => (k.kind === 'hunk' ? `hunk:${k.fileId}:${k.hunkId}` : `file:${k.fileId}`))[0];
+  assert.ok(seg2Key);
+  assert.equal(readFileSync(tf, 'utf8').includes(seg2Key), false, 'task.json 里查不到第 2 段的 key');
+  assert.equal(readFileSync(`${tf}.md`, 'utf8').includes(seg2Key), false, 'prompt.md 里查不到第 2 段的 key');
+  assert.equal(one.stdout.includes(seg2Key), false, '第 1 段的投递输出里也查不到第 2 段的 key');
+
+  const all = OUT({
+    snapshotHash: task.snapshotHash,
+    segmentReceipts: [seg1, seg2].map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
+  });
+  const done = run(f, all, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(done.json.verdict, 'clean', done.json.reasons?.join(';'));
+  assert.equal(done.json.authoritative.deliveredSegments, task.segments.length);
 });

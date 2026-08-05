@@ -96,15 +96,17 @@ test('R8 行为级:同一 snapshot 漂移时,preflight / builder / consumer / �
 
   // ③ consumer:拿 base0 的 task + base0 的 preflight,在 base1 上消费 → invalid
   const task0 = JSON.parse(readFileSync(t0, 'utf8'));
+  const delivered0 = [];
   for (let i = 1; i <= task0.segments.length; i += 1) {
     const d = spawnSync('node', [DELIVER, '469', '--task', t0, '--base', f.base0, '--head', f.head, '--order', String(i)], { cwd: f.repo, env: f.env, encoding: 'utf8' });
     assert.equal(d.status, 0, d.stdout + d.stderr);
+    delivered0.push(JSON.parse(d.stdout));
   }
   const answer = {
     schemaVersion: 'rro-1', snapshotHash: task0.snapshotHash,
     findingFamilies: [], verificationGaps: [], verificationRuns: [],
     profileAnswers: [], findingDispositions: [], negativeEvidence: [], escapeAssessment: [],
-    segmentReceipts: task0.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task0.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
+    segmentReceipts: delivered0.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task0.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
     modelVerdictNote: '',
   };
   const outFile = join(f.work, 'out.json');
@@ -215,23 +217,25 @@ test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与
     runJson([BUILD, '469', '--base', baseOid, '--head', head, '--out-task', t, '--out-prompt', `${t}.md`, '--pr-body-file', bodyFile], f);
     runJson([PREFLIGHT, '--base', baseOid, '--head', head, '--out', pf], f);
     const task = JSON.parse(readFileSync(t, 'utf8'));
+    const delivered = [];
     for (let i = 1; i <= task.segments.length; i += 1) {
       const d = spawnSync('node', [DELIVER, '469', '--task', t, '--base', baseOid, '--head', head, '--order', String(i)], { cwd: repo, env: f.env, encoding: 'utf8' });
       assert.equal(d.status, 0, d.stdout + d.stderr);
+      delivered.push(JSON.parse(d.stdout));
     }
-    return { t, pf, task };
+    return { t, pf, task, delivered };
   };
-  const answerFor = (task) => ({
+  const answerFor = ({ task, delivered }) => ({
     schemaVersion: 'rro-1', snapshotHash: task.snapshotHash,
     findingFamilies: [], verificationGaps: [], verificationRuns: [],
     profileAnswers: [], findingDispositions: [], negativeEvidence: [], escapeAssessment: [],
-    segmentReceipts: task.segments.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
+    segmentReceipts: delivered.map((s) => ({ segmentId: s.segmentId, receivedOrder: s.order, snapshotHash: task.snapshotHash, coverageKeys: s.assignedCoverageKeys })),
     modelVerdictNote: '',
   });
 
   // ① 在 base0 上正常拿一次 clean
   const a = cycle(c0, 'a');
-  const oldAnswer = answerFor(a.task);
+  const oldAnswer = answerFor(a);
   const oldFile = join(work, 'old-out.json');
   writeFileSync(oldFile, JSON.stringify(oldAnswer));
   const first = runJson([CONSUME, '469', '--output', oldFile, '--base', c0, '--head', head, '--task', a.t, '--preflight', a.pf, '--mode', 'auto'], f);
@@ -239,14 +243,14 @@ test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与
 
   // ② base 移动后:task/preflight/delivery 全部重建(所以那三样都"新"),但答卷是旧的
   const b = cycle(c2, 'b');
-  assert.deepEqual(a.task.coverageKeys ?? null, b.task.coverageKeys ?? null, '前提:两轮的 coverage 声明一致');
+  assert.equal(a.task.coverageCommitment, b.task.coverageCommitment, '前提:两轮的 coverage 内容承诺一致(逐字节相同的 diff)');
   const replay = runJson([CONSUME, '469', '--output', oldFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto'], f);
   assert.equal(replay.json.verdict, 'invalid', `旧答卷跨 snapshot 重放必须被拒:${JSON.stringify(replay.json).slice(0, 400)}`);
   assert.match(replay.json.reasons.join(';'), /snapshotHash/);
 
   // ③ 对照:换成绑定新 snapshot 的答卷 → clean(证明不是"一律拒")
   const newFile = join(work, 'new-out.json');
-  writeFileSync(newFile, JSON.stringify(answerFor(b.task)));
+  writeFileSync(newFile, JSON.stringify(answerFor(b)));
   const fresh = runJson([CONSUME, '469', '--output', newFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto'], f);
   assert.equal(fresh.json.verdict, 'clean', fresh.json.reasons?.join(';'));
 });
