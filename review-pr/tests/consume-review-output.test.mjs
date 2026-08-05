@@ -520,6 +520,13 @@ test('⑰ R1a 第 2 轮核验 BLOCKER:task 不是权威——保留真 snapshotH
   const leaked = join(f.work, 'task-leaked.json');
   writeFileSync(leaked, JSON.stringify({ ...good, coverageKeys: [{ kind: 'file', fileId: 'F1' }] }));
   assert.match(run(f, answer, ['--mode', 'auto', '--task', leaked, '--preflight', pf]).json.reasons.join(';'), /不得携带 coverageKeys/);
+  // 第 4 轮核验:另两组明细塞回 task 同样必须被拒(fileId/hunkId 就是回执素材)
+  const leakedNeg = join(f.work, 'task-leaked-neg.json');
+  writeFileSync(leakedNeg, JSON.stringify({ ...good, requiredNegativeEvidenceKeys: [] }));
+  assert.match(run(f, answer, ['--mode', 'auto', '--task', leakedNeg, '--preflight', pf]).json.reasons.join(';'), /不得携带 requiredNegativeEvidenceKeys/);
+  const leakedProf = join(f.work, 'task-leaked-prof.json');
+  writeFileSync(leakedProf, JSON.stringify({ ...good, requiredProfileAnswers: [] }));
+  assert.match(run(f, answer, ['--mode', 'auto', '--task', leakedProf, '--preflight', pf]).json.reasons.join(';'), /不得携带 requiredProfileAnswers/);
   // 单独篡改 profileSetHash 也要被抓
   const psh = join(f.work, 'task-psh.json');
   writeFileSync(psh, JSON.stringify({ ...good, profileSetHash: 'ps1-forged' }));

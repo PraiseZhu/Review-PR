@@ -8,7 +8,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { buildDiffSnapshot } from '../scripts/lib.diff-snapshot.mjs';
-import { computeReviewRequirements, logicalWindow } from '../scripts/lib.review-requirements.mjs';
+import {
+  computeReviewRequirements, logicalWindow,
+  negativeEvidenceCommitment, profileAnswersCommitment,
+} from '../scripts/lib.review-requirements.mjs';
 import { classifyRequiredNegativeEvidence, oldSpansOf } from '../scripts/lib.review-profiles.mjs';
 
 const git = (args, cwd) => {
@@ -364,4 +367,16 @@ export function check(actual) {
   const after = before.replace('g: 7', 'g: 8');
   const { required } = requiredFor({ 'tests/chai-deep.test.mjs': before }, { 'tests/chai-deep.test.mjs': after });
   assert.ok(required.length > 0, '沿整条链找根(而非只看链首名)才盖得住远端参数行');
+});
+
+test('R4 第 4 轮核验:内容承诺绑定**内容**而非数量——同数量不同集合必须给不同承诺;顺序无关', () => {
+  const negA = [{ fileId: 'f1-a', hunkId: 'h1-a' }, { fileId: 'f1-b', hunkId: 'h1-b' }];
+  const negB = [{ fileId: 'f1-a', hunkId: 'h1-a' }, { fileId: 'f1-c', hunkId: 'h1-c' }];
+  assert.notEqual(negativeEvidenceCommitment(negA), negativeEvidenceCommitment(negB),
+    '同数量不同内容必须不同承诺——只看长度的承诺挡不住"换一批 key 冒充"');
+  assert.equal(negativeEvidenceCommitment(negA), negativeEvidenceCommitment([...negA].reverse()), '顺序无关');
+  const profA = [{ profileId: 'p', fileId: 'f1-a', checkId: 'c1' }];
+  const profB = [{ profileId: 'p', fileId: 'f1-z', checkId: 'c1' }];
+  assert.notEqual(profileAnswersCommitment(profA), profileAnswersCommitment(profB));
+  assert.equal(profileAnswersCommitment(profA), profileAnswersCommitment([...profA]));
 });
