@@ -668,14 +668,14 @@
       "fingerprint": "own-pr-has-no-merge-path-when-selffix-empty",
       "tier": "proposal",
       "title": "自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)",
-      "detail": "mivo-canvas 首轮 5 个候选里 4 个是 owner(PraiseZhu)自己开的。GitHub 禁止同账号 approve 自己的 PR,所以 reviewDecision 恒为空;internal-gates 要求 structural-check 的 admin bypass 必须 reviewDecision=APPROVED;selfFixAuthors 留空又关掉了 selfMergeAvailable 的 admin self-merge 路径。结果 #319(CI 全绿、thread 全 resolve、唯一阻断是永不上报的 code_scanning/code_quality 门、账号 canBypass=always)也只能跳过转人工。自有 PR 的未 resolve thread(#324/#325)同理只能作者本人处理。auto 模式对该仓 owner 的 PR 实际退化为纯审查。",
+      "detail": "2026-08-05 再观测:#519/#520/#521 为 PraiseZhu 自有 PR、CLEAN(无结构性 BLOCKED)、approvalBasis=none,admin-trust 路由只在 structural-check 时才可达,selfFixAuthors 留空故 selfMerge 也不可用——本轮按 depends-on-#518 跳过;#518 打回后若列车重推,这些 CLEAN 自有 PR 即使取消依赖也没有自动合并出口,与既有 open 提案同根因",
       "proposal": "两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 4,
+      "occurrences": 5,
       "firstSeen": "2026-07-29T11:12:55.631Z",
-      "lastSeen": "2026-07-30T08:05:06.001Z"
+      "lastSeen": "2026-08-05T12:23:47.938Z"
     },
     {
       "fingerprint": "review-agent-pr-checkout-worktree-conflict",

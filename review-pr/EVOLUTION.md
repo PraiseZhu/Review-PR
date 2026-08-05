@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 5 次,首见 2026-07-29,最近 2026-08-05,status: open
+  - 现象:2026-08-05 再观测:#519/#520/#521 为 PraiseZhu 自有 PR、CLEAN(无结构性 BLOCKED)、approvalBasis=none,admin-trust 路由只在 structural-check 时才可达,selfFixAuthors 留空故 selfMerge 也不可用——本轮按 depends-on-#518 跳过;#518 打回后若列车重推,这些 CLEAN 自有 PR 即使取消依赖也没有自动合并出口,与既有 open 提案同根因
+  - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
 - `ownpr-comment-pushback-stale-dedup` **ownPr 的 COMMENT 事件打回不被 hasStalePushback 识别,stale 去重指纹漏掉** — 出现 2 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:PR #464 本轮 scan 分类为 pushback-format(isSkip=false),但该 PR 是 ownPr,GitHub 422 禁止自打 REQUEST_CHANGES,4 条格式打回全是 COMMENT 事件(最后一条 05:30 明确指向当前 head 2ffcca2),作者此后无新 commit——按 SKILL 3.2 stale 去重本应 skip。context.mjs 的 pushbackDates 只收集 CHANGES_REQUESTED review + issue-comment 形式 reviewerPushbacks,COMMENT 事件的 review body 两个来源都抓不到,导致 ownPr 打回后每轮都会被重新归类为 pushback-format,靠主 agent 手工查 review 历史才跳过。建议:把 state=COMMENTED 且 body 命中 pushback 模式的 review 也计入 pushbackDates(或对 ownPr 降级处理)。
 - `ownpr-unresolved-thread-deadlock` **本流程账号自己的 PR 挂着未 resolve thread 时,没有任何人会去 resolve,永久卡住** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
@@ -70,9 +73,6 @@
 - `node-debug-env-pollutes-script-json-output` **宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:本轮首次 context.mjs --scan-all 的输出被数百行 'NET <pid>: ...' 淹没,JSON 无法直接解析,只能 env -u NODE_DEBUG 重跑一次完整扫描(重复消耗一轮 gh API 与时间)。噪声来自宿主继承的 NODE_DEBUG 环境变量,不是脚本缺陷,但脚本可自我防护。
   - 提案:① 在 SKILL「Skill 路径与目标仓库」一节补一句:所有确定性脚本建议以 env -u NODE_DEBUG 调用,避免宿主 NODE_DEBUG 污染 JSON 输出;② 或在各脚本入口自 delete process.env.NODE_DEBUG(仅影响自身及其 spawn 的子进程,不改宿主)。两者都不新增写操作、不放宽任何 gate。
-- `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 4 次,首见 2026-07-29,最近 2026-07-30,status: open
-  - 现象:mivo-canvas 首轮 5 个候选里 4 个是 owner(PraiseZhu)自己开的。GitHub 禁止同账号 approve 自己的 PR,所以 reviewDecision 恒为空;internal-gates 要求 structural-check 的 admin bypass 必须 reviewDecision=APPROVED;selfFixAuthors 留空又关掉了 selfMergeAvailable 的 admin self-merge 路径。结果 #319(CI 全绿、thread 全 resolve、唯一阻断是永不上报的 code_scanning/code_quality 门、账号 canBypass=always)也只能跳过转人工。自有 PR 的未 resolve thread(#324/#325)同理只能作者本人处理。auto 模式对该仓 owner 的 PR 实际退化为纯审查。
-  - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
 - `review-worktree-holds-branch-blocks-delete-branch` **审查 agent 的 worktree 占用 PR 分支,导致 gh pr merge --delete-branch 中止,远程分支残留** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:PR 342 合并时 --delete-branch 报 'cannot delete branch used by worktree at .claude/worktrees/agent-<id>':审查 agent 按 SKILL 第 4 节在隔离 worktree 里跑 gh pr checkout <N>,该本地分支因此被占用;gh 先删本地失败即整体中止,远程分支 chore/changelog-2026-07-29 未被删除,需人工补删。这是确定性的顺序问题,每个走「审查通过→合并」路径的 PR 都会复现,不是偶发。
   - 提案:两个方向任选:① 审查 agent 的 checkout 改用 detached HEAD(gh pr checkout <N> --detach,或 git fetch origin pull/<N>/head && git checkout --detach FETCH_HEAD),不创建占用性本地分支;② 在 SKILL 5.1 合并步骤前插一步:先回收本轮该 PR 的审查 worktree(git worktree remove),再执行 gh pr merge --delete-branch。方向 ① 更彻底,不依赖调用顺序。
