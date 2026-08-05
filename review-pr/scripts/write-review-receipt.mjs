@@ -39,8 +39,14 @@ try {
   }
 
   const verdict = argAfter('--verdict');
-  if (verdict !== 'clean' && verdict !== 'dirty') {
-    throw new Error('--verdict 必须是 clean 或 dirty');
+  // SC-R1b(2026-08-05 复审共识):public CLI **彻底禁止** clean——"收到两个 hash 参数就放"
+  // 守不住(hash 存在≠hash 已验证)。clean 只能由 consume-review-output.mjs 依据机器
+  // verdict 经内部 writer 落盘;本 CLI 只保留 dirty(打回/如实记录还有 P0/P1)与 --get。
+  if (verdict === 'clean') {
+    throw new Error('本 CLI 不再接受 --verdict clean(SC-R1b):clean 回执只能由 consume-review-output.mjs 依据机器派生 verdict 写入,人工/agent 直写 clean 的通道已收口');
+  }
+  if (verdict !== 'dirty') {
+    throw new Error('--verdict 必须是 dirty(clean 已收口到 consume-review-output.mjs)');
   }
   const p0p1CountArg = argAfter('--p0p1-count');
   if (p0p1CountArg === '') throw new Error('缺 --p0p1-count <N>');

@@ -44,8 +44,10 @@ import {
   loadRules, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks,
   findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute,
   classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut,
-  readReviewReceipt, isReviewReceiptClean, print, fail,
+  readReviewReceipt, isReviewReceiptClean, print, fail, REPO_ROOT, STATE_DIR,
 } from './lib.mjs';
+import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
+import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
 
 const THREADS_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -87,7 +89,7 @@ try {
   const slug = `${owner}/${repo}`;
   const m = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'title,body,state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,statusCheckRollup',
+    '--json', 'title,body,state,mergeable,mergeStateStatus,reviewDecision,headRefOid,baseRefName,baseRefOid,statusCheckRollup',
   ]);
   // reviewDecision 作判 BLOCKED 原因的权威信号(比 some(state===CHANGES_REQUESTED) 准:它按
   // 每个 reviewer 的「最新」review 算 —— self-approve 覆盖掉自己旧的 CHANGES_REQUESTED 后会变
@@ -318,8 +320,27 @@ try {
     structuralCanBypass, approvedShortcut: approvedShortcut.granted, isAdminAuthor: authorIsAdmin,
   });
   const reviewReceipt = structuralRoute === 'review-pending-admin-bypass' ? readReviewReceipt(pr) : null;
-  const receiptClean = structuralRoute === 'review-pending-admin-bypass' &&
-    isReviewReceiptClean({ receipt: reviewReceipt, headRefOid: m.headRefOid });
+  // SC-R1b/R5(2026-08-05):admin-trust 的 clean 回执不再只看 head——pre-merge 独立
+  // ①重建当前 complete DiffSnapshot(immutable objects;base 前进 head 不变也会变身份)
+  // ②重读 findings ledger(effective-open 与 accepted-risk 必须双零)③核验回执绑定的
+  // snapshotHash/ledgerHash 与当前一致。任一漂移/不完整/损坏 → 不 ready(fail-closed)。
+  // 只在"存在待核验的 clean 回执"时才做重建(避免无回执场景白付 git 成本)。
+  let receiptClean = false;
+  let receiptGate = null;
+  if (structuralRoute === 'review-pending-admin-bypass' && reviewReceipt?.verdict === 'clean') {
+    const snap = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid: (m.baseRefOid ?? '').toLowerCase(), headOid: (m.headRefOid ?? '').toLowerCase() });
+    const ledger = loadLedger(ledgerPathFor(STATE_DIR, pr));
+    const open = ledger.ok ? summarize(ledger.entries, snap.snapshotHash) : null;
+    receiptGate = {
+      snapshotComplete: snap.complete,
+      ledgerReadable: ledger.ok,
+      effectiveOpenCount: open?.effectiveOpenCount ?? null,
+      acceptedRiskCount: open?.acceptedRiskCount ?? null,
+    };
+    receiptClean = snap.complete && ledger.ok &&
+      open.effectiveOpenCount === 0 && open.acceptedRiskCount === 0 &&
+      isReviewReceiptClean({ receipt: reviewReceipt, headRefOid: m.headRefOid, snapshotHash: snap.snapshotHash, ledgerHash: ledger.ledgerHash });
+  }
   // 字段改名(P1-5,2026-08-02):structuralBypassAvailable → structuralBypassReady——
   // "ready" 强调"这次真的可以合了",不是"机械前提凑够了"。basis='approved' 立即 ready
   // (真实 GitHub review 就是审计凭证,不需要额外核验);basis='admin-trust' 必须回执
@@ -378,6 +399,7 @@ try {
     structuralAllowlisted,
     structuralBypassReady,
     structuralBypassBasis,
+    receiptGate,
     authorIsAdmin,
     reviewReceipt,
     ciRuns,

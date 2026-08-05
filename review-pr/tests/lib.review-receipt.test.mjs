@@ -9,36 +9,46 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeReviewReceipt, readReviewReceipt, isReviewReceiptClean } from '../scripts/lib.mjs';
 
+// SC-R1b(2026-08-05):clean 回执必须携带五项绑定,isReviewReceiptClean 必须同时匹配
+// 当前 snapshotHash/ledgerHash。本文件用固定的测试绑定;"不带绑定的旧签名调用必须
+// fail-closed"有专门用例。
+const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t' };
+const cleanOk = (receipt, headRefOid) => isReviewReceiptClean({ receipt, headRefOid, snapshotHash: B.snapshotHash, ledgerHash: B.ledgerHash });
+
 test('无回执 → isReviewReceiptClean 恒 false', () => {
   assert.equal(isReviewReceiptClean({ receipt: null, headRefOid: 'abc123' }), false);
   assert.equal(readReviewReceipt(900001), null);
 });
 
 test('写入 clean 回执后,针对同一 head 读出 → isReviewReceiptClean=true', () => {
-  writeReviewReceipt({ pr: 900002, headRefOid: 'sha-aaa', verdict: 'clean', p0p1Count: 0 });
+  writeReviewReceipt({ pr: 900002, headRefOid: 'sha-aaa', verdict: 'clean', p0p1Count: 0, bindings: B });
   const receipt = readReviewReceipt(900002);
   assert.equal(receipt.headRefOid, 'sha-aaa');
   assert.equal(receipt.verdict, 'clean');
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa' }), true);
+  assert.equal(cleanOk(receipt, 'sha-aaa'), true);
+  // SC-R1b:snapshot/ledger 漂移或期望值缺失 → 不 clean(fail-closed)
+  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: 'snap1-other', ledgerHash: B.ledgerHash }), false, 'snapshot 漂移(如 base 前进 head 不变)必须失效');
+  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa', snapshotHash: B.snapshotHash, ledgerHash: 'lh1-other' }), false, 'ledger 变化(如 clean 后新增 open)必须失效');
+  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-aaa' }), false, '不带期望 hash 的旧签名调用必须 fail-closed');
 });
 
 test('P1-5 核心:回执 headRefOid 与当前 head 不一致(审查通过后又推了新 commit)→ false,必须重新审查', () => {
-  writeReviewReceipt({ pr: 900003, headRefOid: 'sha-old', verdict: 'clean', p0p1Count: 0 });
+  writeReviewReceipt({ pr: 900003, headRefOid: 'sha-old', verdict: 'clean', p0p1Count: 0, bindings: B });
   const receipt = readReviewReceipt(900003);
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-new' }), false, '旧 head 的回执不能覆盖新 commit,fail-closed');
+  assert.equal(cleanOk(receipt, 'sha-new'), false, '旧 head 的回执不能覆盖新 commit,fail-closed');
 });
 
 test('回执 verdict=dirty(审查跑完但没通过)→ isReviewReceiptClean=false', () => {
   writeReviewReceipt({ pr: 900004, headRefOid: 'sha-bbb', verdict: 'dirty', p0p1Count: 2 });
   const receipt = readReviewReceipt(900004);
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-bbb' }), false);
+  assert.equal(cleanOk(receipt, 'sha-bbb'), false);
 });
 
 test('回执 p0p1Count>0 即使 verdict 字段被(错误地)写成 clean,也判 false(双重防呆)', () => {
   // 正常流程 writeReviewReceipt 会拒绝 verdict=clean+p0p1Count>0 的组合(见下一测试),
   // 这里直接构造对象验证 isReviewReceiptClean 自身的防呆,不依赖写入侧校验。
-  const receipt = { headRefOid: 'sha-ccc', verdict: 'clean', p0p1Count: 3, writtenAt: '2026-08-02T00:00:00Z' };
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-ccc' }), false);
+  const receipt = { headRefOid: 'sha-ccc', verdict: 'clean', p0p1Count: 3, writtenAt: '2026-08-02T00:00:00Z', ...B };
+  assert.equal(cleanOk(receipt, 'sha-ccc'), false);
 });
 
 test('writeReviewReceipt 拒绝非法 verdict', () => {
@@ -46,12 +56,12 @@ test('writeReviewReceipt 拒绝非法 verdict', () => {
 });
 
 test('writeReviewReceipt 拒绝空 headRefOid', () => {
-  assert.throws(() => writeReviewReceipt({ pr: 900006, headRefOid: '', verdict: 'clean', p0p1Count: 0 }), /headRefOid/);
+  assert.throws(() => writeReviewReceipt({ pr: 900006, headRefOid: '', verdict: 'clean', p0p1Count: 0, bindings: B }), /headRefOid/);
 });
 
 test('同一 PR 重新审查后再写入回执 → 覆盖旧回执(不是累加),读出的是最新一条', () => {
   writeReviewReceipt({ pr: 900007, headRefOid: 'sha-v1', verdict: 'dirty', p0p1Count: 1 });
-  writeReviewReceipt({ pr: 900007, headRefOid: 'sha-v2', verdict: 'clean', p0p1Count: 0 });
+  writeReviewReceipt({ pr: 900007, headRefOid: 'sha-v2', verdict: 'clean', p0p1Count: 0, bindings: B });
   const receipt = readReviewReceipt(900007);
   assert.equal(receipt.headRefOid, 'sha-v2');
   assert.equal(receipt.verdict, 'clean');
@@ -62,31 +72,31 @@ test('同一 PR 重新审查后再写入回执 → 覆盖旧回执(不是累加)
 // 而误判 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着 0 的才算干净。
 
 test('P2-2:p0p1Count 字段缺失(畸形回执)→ isReviewReceiptClean 判不干净,不是误判 clean', () => {
-  const receipt = { headRefOid: 'sha-missing', verdict: 'clean', writtenAt: '2026-08-02T00:00:00Z' };
+  const receipt = { headRefOid: 'sha-missing', verdict: 'clean', writtenAt: '2026-08-02T00:00:00Z', ...B };
   assert.equal(
-    isReviewReceiptClean({ receipt, headRefOid: 'sha-missing' }),
+    cleanOk(receipt, 'sha-missing'),
     false,
     '旧写法 (undefined ?? 0) > 0 为假,会误判 clean;字段缺失必须 fail-closed 判脏',
   );
 });
 
 test('P2-2:p0p1Count 为负数(畸形回执)→ isReviewReceiptClean 判不干净,不是误判 clean', () => {
-  const receipt = { headRefOid: 'sha-negative', verdict: 'clean', p0p1Count: -1, writtenAt: '2026-08-02T00:00:00Z' };
+  const receipt = { headRefOid: 'sha-negative', verdict: 'clean', p0p1Count: -1, writtenAt: '2026-08-02T00:00:00Z', ...B };
   assert.equal(
-    isReviewReceiptClean({ receipt, headRefOid: 'sha-negative' }),
+    cleanOk(receipt, 'sha-negative'),
     false,
     '旧写法 (-1 ?? 0) > 0 为假,会误判 clean;负数必须 fail-closed 判脏',
   );
 });
 
 test('P2-2:p0p1Count 为非整数(如 0.5)→ isReviewReceiptClean 判不干净', () => {
-  const receipt = { headRefOid: 'sha-float', verdict: 'clean', p0p1Count: 0.5, writtenAt: '2026-08-02T00:00:00Z' };
-  assert.equal(isReviewReceiptClean({ receipt, headRefOid: 'sha-float' }), false);
+  const receipt = { headRefOid: 'sha-float', verdict: 'clean', p0p1Count: 0.5, writtenAt: '2026-08-02T00:00:00Z', ...B };
+  assert.equal(cleanOk(receipt, 'sha-float'), false);
 });
 
 test('P2-2:writeReviewReceipt 拒绝缺失 p0p1Count(写入侧自己校验,不只指望 CLI)', () => {
   assert.throws(
-    () => writeReviewReceipt({ pr: 900008, headRefOid: 'sha-eee', verdict: 'clean' }),
+    () => writeReviewReceipt({ pr: 900008, headRefOid: 'sha-eee', verdict: 'clean', bindings: B }),
     /p0p1Count/,
   );
 });
@@ -103,4 +113,22 @@ test('P2-2:writeReviewReceipt 拒绝非整数 p0p1Count', () => {
     () => writeReviewReceipt({ pr: 900010, headRefOid: 'sha-ggg', verdict: 'dirty', p0p1Count: 1.5 }),
     /p0p1Count/,
   );
+});
+
+// ── SC-R1b 新契约 ──
+
+test('SC-R1b:clean 回执缺任一绑定字段 → writeReviewReceipt 拒绝(consumer 事实上唯一 clean writer)', () => {
+  for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash']) {
+    const bad = { ...B }; delete bad[k];
+    assert.throws(
+      () => writeReviewReceipt({ pr: 900011, headRefOid: 'sha-b', verdict: 'clean', p0p1Count: 0, bindings: bad }),
+      new RegExp(k),
+    );
+  }
+  assert.throws(() => writeReviewReceipt({ pr: 900011, headRefOid: 'sha-b', verdict: 'clean', p0p1Count: 0 }), /绑定/);
+});
+
+test('SC-R1b:dirty 不强制绑定(撤销/打回场景),照常可写', () => {
+  const r = writeReviewReceipt({ pr: 900012, headRefOid: 'sha-d', verdict: 'dirty', p0p1Count: 1 });
+  assert.equal(r.verdict, 'dirty');
 });

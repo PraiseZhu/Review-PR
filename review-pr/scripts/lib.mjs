@@ -1534,11 +1534,23 @@ function reviewReceiptFile(pr) {
  * 导致 `isReviewReceiptClean` 误判。`headRefOid` 必须非空:回执必须绑定到具体的 head
  * commit,否则"回执是不是针对当前 head"这个核心校验就无从谈起。
  */
-export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count }) {
+export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count, bindings = null }) {
   if (verdict !== 'clean' && verdict !== 'dirty') {
     throw new Error(`verdict 必须是 'clean' 或 'dirty',收到:${JSON.stringify(verdict)}`);
   }
   if (!headRefOid) throw new Error('headRefOid 不能为空——回执必须绑定到具体的 head commit');
+  // SC-R1b(2026-08-05):clean 回执必须携带五项绑定 {source, schemaVersion, outputHash,
+  // snapshotHash, ledgerHash}——consume-review-output.mjs 是唯一能算出这五项的调用方,
+  // 因此它事实上是唯一 clean writer;public CLI(write-review-receipt.mjs)已直接禁
+  // clean。缺任一绑定的 clean 写入在这里(可被 import 的公开函数)也拒绝,不能只指望
+  // CLI 层校验。dirty 不强制绑定(撤销/打回场景可能算不出 outputHash)。
+  if (verdict === 'clean') {
+    for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash']) {
+      if (typeof bindings?.[k] !== 'string' || !bindings[k]) {
+        throw new Error(`clean 回执缺绑定字段 ${k}——clean 只能由 consume-review-output.mjs 依据机器 verdict 写入(SC-R1b)`);
+      }
+    }
+  }
   // P2-2 三审修复:此前 `Number(p0p1Count) || 0` 会把任何非法输入(undefined/NaN/
   // 负数/字符串)静默吞成 0,等价于"没传就当 0 P0/P1",这正是 isReviewReceiptClean
   // 误判的源头之一——写入侧本该拒绝的脏输入,被这里悄悄洗白成合法回执。write-review-
@@ -1553,6 +1565,7 @@ export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count }) {
     verdict,
     p0p1Count: p0p1CountNum,
     writtenAt: new Date().toISOString(),
+    ...(bindings ? { ...bindings } : {}),
   };
   writeJsonAtomic(reviewReceiptFile(pr), receipt);
   return receipt;
@@ -1583,11 +1596,18 @@ export function readReviewReceipt(pr) {
  *     都被误判成 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着"0 个
  *     P0/P1"的回执才算干净,字段缺失/负数/非整数一律 fail-closed 判不干净。
  */
-export function isReviewReceiptClean({ receipt, headRefOid }) {
+export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledgerHash }) {
   if (!receipt) return false;
   if (receipt.headRefOid !== headRefOid) return false;
   if (receipt.verdict !== 'clean') return false;
   if (!Number.isInteger(receipt.p0p1Count) || receipt.p0p1Count !== 0) return false;
+  // SC-R1b/R5(2026-08-05):clean 的新鲜度不再只看 head——必须同时匹配当前重建的
+  // snapshotHash(base 前进 head 不变时旧 clean 即 stale)与当前 ledgerHash("先 clean
+  // 后新增 open"会改变 ledgerHash,旧 clean 失效)。调用方不提供这两个期望值(undefined)
+  // 时一律判不 clean(fail-closed),不存在"旧签名照常放行"的兼容通道;历史旧格式回执
+  // (无绑定字段)同样在此失效,forward-only。
+  if (typeof snapshotHash !== 'string' || !snapshotHash || receipt.snapshotHash !== snapshotHash) return false;
+  if (typeof ledgerHash !== 'string' || !ledgerHash || receipt.ledgerHash !== ledgerHash) return false;
   return true;
 }
 

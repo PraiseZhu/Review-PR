@@ -47,7 +47,9 @@ function spawnNode(code, env) {
 function spawnWrite(stateDir, { pr, headRefOid, verdict, p0p1Count }) {
   const code = `
     import { writeReviewReceipt } from ${JSON.stringify(LIB_PATH)};
-    writeReviewReceipt({ pr: ${pr}, headRefOid: ${JSON.stringify(headRefOid)}, verdict: ${JSON.stringify(verdict)}, p0p1Count: ${p0p1Count} });
+    // SC-R1b:clean 必带五项绑定(本测试只关心并发写不丢,绑定用固定测试值;dirty 也带,无害)
+    const B = { source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-t', snapshotHash: 'snap1-t', ledgerHash: 'lh1-t' };
+    writeReviewReceipt({ pr: ${pr}, headRefOid: ${JSON.stringify(headRefOid)}, verdict: ${JSON.stringify(verdict)}, p0p1Count: ${p0p1Count}, bindings: B });
   `;
   return spawnNode(code, { REVIEW_PR_STATE_DIR: stateDir });
 }
