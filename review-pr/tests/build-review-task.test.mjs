@@ -119,9 +119,11 @@ test('R6 分类器:触及等待/断言的 hunk → required;纯注释 hunk → �
   }];
   const req = classifyRequiredNegativeEvidence({
     profiles, files,
-    addedLineTextByFile: { 'scripts/e2e/a.mjs': { H1: ['  await page.waitForFunction(() => x);'], H2: ['  // 只是注释'] } },
+    // H2 故意用**注释掉的断言**:去掉注释过滤就会把它误判成 required(现实场景:
+    // 有人把旧断言注释掉了,不该因此要求负向证据)——这样反向变异才咬得住。
+    addedLineTextByFile: { 'scripts/e2e/a.mjs': { H1: ['  await page.waitForFunction(() => x);'], H2: ['  // expect(old).toBe(1) 旧断言已注释'] } },
   });
-  assert.equal(req.length, 1);
+  assert.equal(req.length, 1, `纯注释 hunk 不得产 required:${JSON.stringify(req)}`);
   assert.equal(req[0].hunkId, 'H1');
   // 非 test-infra 路径不产 required
   const other = classifyRequiredNegativeEvidence({

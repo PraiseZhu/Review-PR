@@ -205,3 +205,63 @@ test('⑨ 台账损坏 → blocked,不写回执(fail-closed)', () => {
   assert.equal(r.json.verdict, 'blocked');
   assert.equal(r.r.status, 2);
 });
+
+test('⑩ R6:required 负向证据 key 只能由 executed 满足——合法 reasonCode 的 N/A 也终拒;executed 齐全 → 过', () => {
+  const f = setup();
+  const pf = preflightFile(f);
+  const probe = run(f, OUT(), ['--mode', 'auto', '--preflight', pf]);
+  const snapHash = probe.json.snapshotHash;
+  // 造一份 task:声明一个 required 负向 key(fileId/hunkId 取任意稳定值,consumer 只做集合对账)
+  const taskFile = join(f.work, 'task.json');
+  const req = [{ fileId: 'F1', hunkId: 'H1' }];
+  writeFileSync(taskFile, JSON.stringify({ snapshotHash: snapHash, requiredNegativeEvidenceKeys: req, injectedOpenIds: [] }));
+  const na = run(f, OUT({
+    negativeEvidence: [{ fileId: 'F1', hunkId: 'H1', kind: 'not-applicable', reasonCode: 'doc-only', explanation: '只是注释' }],
+  }), ['--mode', 'auto', '--preflight', pf, '--task', taskFile]);
+  assert.equal(na.json.verdict, 'invalid');
+  assert.match(na.json.reasons.join(';'), /negative-evidence/);
+  const exec = run(f, OUT({
+    verificationRuns: [{ runId: 'r1', command: 'node --test x', exitCode: 1, outputAnchor: '1 failed' }],
+    negativeEvidence: [{
+      fileId: 'F1', hunkId: 'H1', kind: 'executed', snapshotHash: snapHash, command: 'node --test x',
+      negativeOracle: '把断言反转应红', observedSignal: 'expected-failure-observed', outputAnchor: '1 failed', verificationRunId: 'r1',
+    }],
+  }), ['--mode', 'auto', '--preflight', pf, '--task', taskFile]);
+  assert.equal(exec.json.verdict, 'clean', exec.json.reasons?.join(';'));
+  // 旧 snapshot 的 executed 不算
+  const stale = run(f, OUT({
+    verificationRuns: [{ runId: 'r1', command: 'c', exitCode: 1, outputAnchor: 'a' }],
+    negativeEvidence: [{
+      fileId: 'F1', hunkId: 'H1', kind: 'executed', snapshotHash: 'snap1-older', command: 'c',
+      negativeOracle: 'o', observedSignal: 'expected-failure-observed', outputAnchor: 'a', verificationRunId: 'r1',
+    }],
+  }), ['--mode', 'auto', '--preflight', pf, '--task', taskFile]);
+  assert.equal(stale.json.verdict, 'invalid');
+});
+
+test('⑪ R4:覆盖对账——段内集合不符/跨段冒领/漏段 一律 invalid;精确相等 → 过', () => {
+  const f = setup();
+  const pf = preflightFile(f);
+  const snapHash = run(f, OUT(), ['--mode', 'auto', '--preflight', pf]).json.snapshotHash;
+  const K = (h) => ({ kind: 'hunk', fileId: 'F1', hunkId: h });
+  const taskFile = join(f.work, 'task-cov.json');
+  writeFileSync(taskFile, JSON.stringify({
+    snapshotHash: snapHash, injectedOpenIds: [],
+    coverageKeys: [K('H1'), K('H2')],
+    segments: [
+      { segmentId: 'seg-01', assignedCoverageKeys: [K('H1')] },
+      { segmentId: 'seg-02', assignedCoverageKeys: [K('H2')] },
+    ],
+  }));
+  const okRun = run(f, OUT({ segmentReceipts: [{ segmentId: 'seg-01', coverageKeys: [K('H1')] }, { segmentId: 'seg-02', coverageKeys: [K('H2')] }] }), ['--mode', 'auto', '--preflight', pf, '--task', taskFile]);
+  assert.equal(okRun.json.verdict, 'clean', okRun.json.reasons?.join(';'));
+  for (const receipts of [
+    [{ segmentId: 'seg-01', coverageKeys: [K('H1')] }],                                        // 漏一段
+    [{ segmentId: 'seg-01', coverageKeys: [K('H1'), K('H2')] }, { segmentId: 'seg-02', coverageKeys: [K('H2')] }], // 跨段冒领
+    [{ segmentId: 'seg-01', coverageKeys: [K('H1')] }, { segmentId: 'seg-02', coverageKeys: [K('H1')] }],          // 重复凑数
+  ]) {
+    const bad = run(f, OUT({ segmentReceipts: receipts }), ['--mode', 'auto', '--preflight', pf, '--task', taskFile]);
+    assert.equal(bad.json.verdict, 'invalid', JSON.stringify(receipts));
+    assert.match(bad.json.reasons.join(';'), /覆盖对账/);
+  }
+});
