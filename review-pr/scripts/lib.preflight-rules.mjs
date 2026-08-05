@@ -282,3 +282,72 @@ export function hitTouchesNewLines(hit, addedLineSets) {
 export function ruleSetHash() {
   return `rs1-${createHash('sha256').update(JSON.stringify(BUILTIN_RULES)).digest('hex').slice(0, 16)}`;
 }
+
+/** ── SC-R6 第 3 轮核验:判定器调用的 AST 行范围 ──
+ * 固定行窗口(12 行)在真实代码上仍会漏:17 行的 `assert.deepEqual(...)` 只改第 15 行时
+ * 看不到调用头。改为按**调用节点**的真实行范围与 hunk 求交。
+ *
+ * 断言家族的识别包含 named import:`import { equal } from 'node:assert/strict'` 之后
+ * 裸 `equal(...)` 也是断言(核验席实测漏判)。
+ */
+const ASSERT_MODULES = /^(node:)?assert(\/strict)?$/;
+const ASSERT_MEMBER_RE = /^(equal|strictEqual|notEqual|notStrictEqual|deepEqual|deepStrictEqual|notDeepEqual|notDeepStrictEqual|ok|match|doesNotMatch|throws|rejects|doesNotThrow|fail|ifError)$/;
+const WAIT_MEMBER_RE = /^(waitForFunction|waitForSelector|waitForTimeout|waitForEvent|waitForResponse|waitForLoadState|waitForNavigation|waitFor)$/;
+const EXPECT_RE = /^(expect|assert)$/;
+const GUARD_MEMBER_RE = /^(exit)$/;
+const GUARD_NAME_RE = /^(throwIf|invariant|assertInvariant|guard[A-Z]\w*|\w+Guard)$/;
+const EXIT_CODE_RE = /^(exitCode|exit_code|returncode|statusCode)$/;
+
+/**
+ * 扫一个文件,返回判定器调用的行范围。
+ * @returns {{ ok: boolean, ranges?: {kind:'wait'|'assert'|'guard', startLine:number, endLine:number}[], error?: string }}
+ */
+export function oracleCallRanges(ts, { path, text }) {
+  const kind = scriptKindFor(ts, path);
+  if (kind == null) return { ok: true, ranges: [], skipped: 'unsupported-extension' };
+  const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, kind);
+  if ((sf.parseDiagnostics ?? []).length > 0) {
+    return { ok: false, ranges: [], error: `解析诊断 ${sf.parseDiagnostics.length} 条` };
+  }
+  // ① 收集从 assert 模块 named-import 进来的标识名
+  const assertNames = new Set();
+  const collectImports = (node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)
+      && ASSERT_MODULES.test(node.moduleSpecifier.text)) {
+      const nb = node.importClause?.namedBindings;
+      if (nb && ts.isNamedImports(nb)) for (const el of nb.elements) assertNames.add(el.name.text);
+      if (node.importClause?.name) assertNames.add(node.importClause.name.text); // default import
+    }
+    ts.forEachChild(node, collectImports);
+  };
+  collectImports(sf);
+
+  const ranges = [];
+  const push = (kindName, node) => {
+    const s = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    const e = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+    ranges.push({ kind: kindName, startLine: s, endLine: e });
+  };
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isIdentifier(callee)) {
+        if (EXPECT_RE.test(callee.text) || assertNames.has(callee.text)) push('assert', node);
+        else if (GUARD_NAME_RE.test(callee.text)) push('guard', node);
+      } else if (ts.isPropertyAccessExpression(callee)) {
+        const prop = callee.name.text;
+        const recv = ts.isIdentifier(callee.expression) ? callee.expression.text : null;
+        if (WAIT_MEMBER_RE.test(prop)) push('wait', node);
+        else if (ASSERT_MEMBER_RE.test(prop) && (recv === null || assertNames.has(recv) || /^(assert|expect|chai)$/.test(recv))) push('assert', node);
+        else if (ASSERT_MEMBER_RE.test(prop)) push('assert', node); // `x.toEqual(...)` 之类链式期望
+        else if (recv === 'process' && GUARD_MEMBER_RE.test(prop)) push('guard', node);
+        else if (GUARD_NAME_RE.test(prop)) push('guard', node);
+      }
+    }
+    // 退出码/返回码的**消费**(`r.exitCode !== 0`、`if (r.status)`):按属性访问所在语句算 guard
+    if (ts.isPropertyAccessExpression(node) && EXIT_CODE_RE.test(node.name.text)) push('guard', node);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return { ok: true, ranges };
+}

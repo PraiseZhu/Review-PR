@@ -26,13 +26,13 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import process from 'node:process';
-import { parsePR, print, fail, REPO_ROOT, STATE_DIR, loadRules, writeReviewReceipt, stateFile, writeJsonAtomic, ghJson } from './lib.mjs';
+import { parsePR, print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, writeReviewReceipt, stateFile, writeJsonAtomic, ghJson } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { validateReviewOutput, deriveVerdict, REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAnswerKeyStr, negativeKeyStr } from './lib.review-requirements.mjs';
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
-import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint } from './lib.escaped-hazards.mjs';
+import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths } from './lib.escaped-hazards.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -125,6 +125,37 @@ try {
   // 重算 vs 声明:清空/篡改 task 的四组集合再也换不来 clean
   taskErrors.push(...diffRequirements(auth, task));
 
+  // ── R7 第 3 轮核验 BLOCKER:candidates / repo / known hazards 也必须**独立重算** ──
+  // 此前 consumer 只重算 coverage/profile/negative,于是保留真 snapshotHash、把
+  // escapeCandidates 清空 + escapeSourceIncomplete:false,再给一份空 escapeAssessment,
+  // 就能 exit 0 + clean 且零 pending(核验席实测)。
+  const authRepo = (() => { try { const { owner, repo } = parseRepo(); return `${owner}/${repo}`; } catch { return null; } })();
+  if (task.repo !== authRepo) taskErrors.push(`task.repo 与现场解析不符(task=${task.repo},现场=${authRepo})`);
+  const authSrc = resolveEscapeSources({
+    pr, repoSlug: authRepo,
+    bodyFile: argOf('--pr-body-file'), issuesFile: argOf('--related-issues-file'),
+    ghJson, readFileSync, existsSync,
+  });
+  if ((authSrc.errors.length > 0) !== (task.escapeSourceIncomplete === true)) {
+    taskErrors.push(`task.escapeSourceIncomplete 与现场重算不符(现场 errors=${authSrc.errors.length})`);
+  }
+  if (authSrc.errors.length > 0) taskErrors.push(`逃逸候选数据源现场重算失败:${authSrc.errors.join(';')}`);
+  const authCandIds = new Set(authSrc.candidates.map((c) => c.candidateId));
+  const taskCandIds = new Set((Array.isArray(task.escapeCandidates) ? task.escapeCandidates : []).map((c) => c?.candidateId));
+  if (authCandIds.size !== taskCandIds.size || [...authCandIds].some((x) => !taskCandIds.has(x))) {
+    taskErrors.push(`task.escapeCandidates 与现场重算不一致(现场 ${authCandIds.size} 条,task ${taskCandIds.size} 条)——被改过或过期`);
+  }
+  const authHazards = loadKnownHazards();
+  const authRelevant = hazardsForPaths(authHazards, (snapshot.files ?? []).map((f) => f.newPath ?? f.oldPath).filter(Boolean), authRepo);
+  const authHazardIds = new Set(authRelevant.map((h) => h.hazardId));
+  const taskHazardIds = new Set((Array.isArray(task.knownHazards) ? task.knownHazards : []).map((h) => h?.hazardId));
+  if ((authHazards.incomplete === true || authRepo === null) !== (task.hazardsIncomplete === true)) {
+    taskErrors.push('task.hazardsIncomplete 与现场重算不符');
+  }
+  if (authHazardIds.size !== taskHazardIds.size || [...authHazardIds].some((x) => !taskHazardIds.has(x))) {
+    taskErrors.push(`task.knownHazards 与现场重算不一致(现场 ${authHazardIds.size} 条,task ${taskHazardIds.size} 条)`);
+  }
+
   const injectedOpenIds = Array.isArray(task.injectedOpenIds) ? task.injectedOpenIds : [];
 
   // ── 输出解析 + 契约校验 ──
@@ -214,7 +245,8 @@ try {
   }
 
   // ── R7 逃逸判定对账(登记本身推迟到 provisional verdict 之后,见下)──
-  const candidates = Array.isArray(task.escapeCandidates) ? task.escapeCandidates : [];
+  // 对账基准用**现场重算**的候选(task 的副本已在上面比过一致性)
+  const candidates = authSrc.candidates;
   const answeredYes = [];
   if (shape.ok) {
     const want = new Set(candidates.map((c) => c.candidateId));

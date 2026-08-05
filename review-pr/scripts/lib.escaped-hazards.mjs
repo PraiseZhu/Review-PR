@@ -402,3 +402,40 @@ export function activateInboxItems({ items, probe, upsert, readback, sync, remot
   }
   return { activated, kept };
 }
+
+/**
+ * 逃逸候选数据源的**唯一取法**(SC-R7 第 3 轮核验:consumer 此前不重算 candidates,
+ * 于是保留真 snapshotHash、把 `escapeCandidates` 清空 + `escapeSourceIncomplete:false`,
+ * output 给空 escapeAssessment,就能 exit 0 + clean 且零 pending —— builder 与 consumer
+ * 必须走同一条推导)。
+ *
+ * 默认现场取(生产);`--pr-body-file` / `--related-issues-file` 只作离线/测试 seam。
+ * @returns {{ prBody: string|null, issueTexts: string[], errors: string[], kind: string, candidates: object[] }}
+ */
+export function resolveEscapeSources({ pr, repoSlug, bodyFile = null, issuesFile = null, ghJson, readFileSync: rf, existsSync: ex }) {
+  const errors = [];
+  let prBody = null;
+  let issueTexts = [];
+  if (bodyFile || issuesFile) {
+    if (!bodyFile || !ex(bodyFile)) errors.push('--pr-body-file 指向的文件不存在');
+    else prBody = rf(bodyFile, 'utf8');
+    if (issuesFile) {
+      try {
+        const parsed = JSON.parse(rf(issuesFile, 'utf8'));
+        if (!Array.isArray(parsed)) throw new Error('需 JSON 字符串数组');
+        issueTexts = parsed.map((x) => String(x));
+      } catch (e) { errors.push(`--related-issues-file 不可用:${e.message}`); }
+    }
+  } else {
+    try {
+      const v = ghJson(['pr', 'view', String(pr), '--repo', repoSlug ?? '', '--json', 'body,closingIssuesReferences']);
+      prBody = v.body ?? '';
+      issueTexts = (Array.isArray(v.closingIssuesReferences) ? v.closingIssuesReferences : [])
+        .map((n) => [n?.title, n?.body].filter(Boolean).join('\n'));
+    } catch (e) {
+      errors.push(`现场取 PR body / 关联 issue 失败:${String(e.message ?? e).slice(0, 200)}——逃逸候选数据源缺失,不得据"无候选"放行`);
+    }
+  }
+  const candidates = prBody === null ? [] : extractEscapeCandidates({ body: prBody, issueTexts });
+  return { prBody, issueTexts, errors, kind: (bodyFile || issuesFile) ? 'file-seam' : 'gh-live', candidates };
+}

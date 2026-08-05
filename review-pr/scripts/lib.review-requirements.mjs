@@ -14,6 +14,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { coverageKeysOf } from './lib.diff-snapshot.mjs';
+import { loadVendoredTypescript, oracleCallRanges, scriptKindFor } from './lib.preflight-rules.mjs';
 import {
   mergeProfiles, requiredProfileAnswersFor, classifyRequiredNegativeEvidence,
   buildSegments, profileSetHash,
@@ -81,11 +82,28 @@ export function lineTextsFor(snapshot, { repoRoot }) {
   const added = {};
   const removed = {};
   const windows = {};
+  const astRanges = {}; // { [path]: { head: ranges[], base: ranges[] } }
   const incompleteFiles = [];
   const removedByPath = removedLinesByPath(snapshot.rawPatch);
-  const blob = (oid, path) => {
+  const blobText = (oid, path) => {
     const r = spawnSync('git', ['show', `${oid}:${path}`], { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-    return r.status === 0 ? r.stdout.split('\n') : null;
+    return r.status === 0 ? r.stdout : null;
+  };
+  const blob = (oid, path) => {
+    const t = blobText(oid, path);
+    return t === null ? null : t.split('\n');
+  };
+  // SC-R6 第 3 轮核验:判定器识别改用**AST 调用节点行范围**与 hunk 求交(固定行窗口在真实
+  // 多行调用上仍会漏)。parser 不可用 / 支持的扩展名解析失败 → 该文件进 incompleteFiles
+  // (fail-closed:不许"解析不了就当没有判定器")。
+  const parser = loadVendoredTypescript();
+  const rangesFor = (oid, path) => {
+    if (!parser.ok) return { supported: true, failed: true, ranges: [] };
+    if (scriptKindFor(parser.ts, path) == null) return { supported: false, failed: false, ranges: [] };
+    const text = blobText(oid, path);
+    if (text === null) return { supported: true, failed: true, ranges: [] };
+    const r = oracleCallRanges(parser.ts, { path, text });
+    return { supported: true, failed: !r.ok, ranges: r.ranges ?? [] };
   };
   for (const f of snapshot.files) {
     if (f.contentKind !== 'text') continue;
@@ -97,6 +115,11 @@ export function lineTextsFor(snapshot, { repoRoot }) {
     if (!deleted && lines === null) { incompleteFiles.push(path); continue; }
     const removedHunks = removedByPath.get(path);
     if (deleted && !removedHunks) { incompleteFiles.push(path); continue; } // 删除文本映射失败 → fail-closed
+    // AST 范围:head 侧用于新增行,base 侧用于被删除的行
+    const headR = deleted ? { supported: false, failed: false, ranges: [] } : rangesFor(snapshot.headOid, path);
+    const baseR = (f.changeType === 'added') ? { supported: false, failed: false, ranges: [] } : rangesFor(snapshot.mergeBaseOid, f.oldPath ?? path);
+    if ((headR.supported && headR.failed) || (baseR.supported && baseR.failed)) { incompleteFiles.push(path); continue; }
+    if (headR.supported || baseR.supported) astRanges[path] = { head: headR.ranges, base: baseR.ranges };
     added[path] = {};
     removed[path] = {};
     windows[path] = {};
@@ -109,7 +132,7 @@ export function lineTextsFor(snapshot, { repoRoot }) {
         : (removedHunks?.[i] ?? []).join('\n'); // 删除类:窗口就是被删掉的那段文本
     });
   }
-  return { added, removed, windows, incompleteFiles };
+  return { added, removed, windows, astRanges, incompleteFiles };
 }
 
 /**
@@ -125,13 +148,14 @@ export function computeReviewRequirements({ repoRoot, snapshot, rules }) {
   const requiredProfileAnswers = requiredProfileAnswersFor(profiles, files);
   const texts = snapshot.complete
     ? lineTextsFor(snapshot, { repoRoot })
-    : { added: {}, removed: {}, windows: {}, incompleteFiles: [] };
+    : { added: {}, removed: {}, windows: {}, astRanges: {}, incompleteFiles: [] };
   const classified = snapshot.complete
     ? classifyRequiredNegativeEvidence({
       profiles, files,
       addedLineTextByFile: texts.added,
       removedLineTextByFile: texts.removed,
       windowTextByFile: texts.windows,
+      astRangesByFile: texts.astRanges,
       incompleteFiles: texts.incompleteFiles,
     })
     : { required: [], incomplete: false, incompleteFiles: [] };

@@ -955,7 +955,9 @@ node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output <rro-1.json> 
 
 `--task` **必需**(没有它无法对账覆盖/必答/负向证据)。task 只是"审查方看到的副本",
 consumer 会用同一份权威推导从 immutable git objects **重算** coverage/分片/必答/required
-负向证据并逐组比对——改过或过期的 task 一律 `invalid`。**任何**输入级失败(缺 `--output`、
+负向证据并逐组比对——改过或过期的 task 一律 `invalid`。**逃逸候选、目标仓 slug、命中的
+known hazards 同样由 consumer 现场重算**(默认现场 `gh pr view`;离线用与构建器同一份
+`--pr-body-file` / `--related-issues-file` seam):否则把 task 里的候选清空就能换来 clean。**任何**输入级失败(缺 `--output`、
 缺或坏 `--task`、snapshot 建不起来、台账不可读)都会写一条 non-clean 回执**撤销**同 snapshot
 的旧 clean 并记 retry:不存在"这一轮没跑成就沿用上次清白"的通道。
 

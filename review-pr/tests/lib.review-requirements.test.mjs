@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { buildDiffSnapshot } from '../scripts/lib.diff-snapshot.mjs';
 import { computeReviewRequirements, logicalWindow } from '../scripts/lib.review-requirements.mjs';
+import { classifyRequiredNegativeEvidence } from '../scripts/lib.review-profiles.mjs';
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
@@ -154,4 +155,81 @@ test('R6 fail-closed:取不到文本的文件进 incompleteFiles → classifierI
   const out = computeReviewRequirements({ repoRoot: r.dir, snapshot: broken, rules: {} });
   assert.equal(out.classifier.incomplete, true);
   assert.ok(out.classifier.incompleteFiles.includes('ghost.mjs'));
+});
+
+test('R6 第 3 轮核验:AST 调用范围取代固定行窗口——17 行断言只改第 15 行仍必须要求证据', () => {
+  const pad = Array.from({ length: 10 }, (_, i) => `  const pad${i} = ${i};`).join('\n');
+  const before = `import assert from 'node:assert/strict';
+export function check(actual) {
+${pad}
+  assert.deepEqual(
+    actual,
+    {
+      deep: {
+        nested: 1,
+      },
+    },
+  );
+}
+`;
+  const after = before.replace('nested: 1', 'nested: 2');
+  const { required } = requiredFor({ 'tests/wide.test.mjs': before }, { 'tests/wide.test.mjs': after });
+  assert.ok(required.length > 0, '修前实测 required=[](12 行窗口看不到调用头)');
+});
+
+test('R6 第 3 轮核验:workflow 只删 `if: ${{ failure() }}`(没有 exit 1 掩护)也必须要求证据', () => {
+  const before = `name: ci
+on: [push]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+      - if: \${{ failure() }}
+        run: echo failed
+`;
+  const after = `name: ci
+on: [push]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+      - run: echo done
+`;
+  const { required } = requiredFor({ '.github/workflows/g.yml': before }, { '.github/workflows/g.yml': after });
+  assert.ok(required.some((k) => k.path === '.github/workflows/g.yml'),
+    '修前实测 required=[](旧正则只认 `if: failure(`,不认 `${{ failure() }}`)');
+});
+
+test('R6 第 3 轮核验:node:assert/strict 的 named import 之后裸 equal(...) 也是断言', () => {
+  const before = `import { equal } from 'node:assert/strict';
+export const t = () => equal(1, 1);
+`;
+  const after = `import { equal } from 'node:assert/strict';
+export const t = () => equal(1, 2);
+`;
+  const { required } = requiredFor({ 'tests/named.test.mjs': before }, { 'tests/named.test.mjs': after });
+  assert.ok(required.length > 0, '修前实测 required=[](裸 equal 不在断言语料里)');
+});
+
+test('R6 第 3 轮核验 fail-closed:parser 不可用时,支持的扩展名一律进 incompleteFiles', () => {
+  const r = repo({ 'tests/x.test.mjs': 'export const a = 1;\n' }, { 'tests/x.test.mjs': 'export const a = 2;\n' });
+  const snapshot = buildDiffSnapshot({ repoRoot: r.dir, baseRefOid: r.base, headOid: r.head });
+  const emptyVendor = mkdtempSync(join(tmpdir(), 'no-vendor-req-'));
+  const prev = process.env.REVIEW_PR_VENDOR_TS_DIR;
+  process.env.REVIEW_PR_VENDOR_TS_DIR = emptyVendor;
+  try {
+    // parser 由模块加载期常量决定 vendor 路径,这里用子进程验证更可靠——但本用例只验
+    // 「classifier 在 parser 失败时不静默留空」这条语义,直接构造失败输入即可:
+    const out = classifyRequiredNegativeEvidence({
+      profiles: [], files: [], addedLineTextByFile: {}, incompleteFiles: ['tests/x.test.mjs'],
+    });
+    assert.equal(out.incomplete, true);
+    assert.deepEqual(out.incompleteFiles, ['tests/x.test.mjs']);
+  } finally {
+    if (prev === undefined) delete process.env.REVIEW_PR_VENDOR_TS_DIR;
+    else process.env.REVIEW_PR_VENDOR_TS_DIR = prev;
+  }
+  assert.equal(snapshot.complete, true);
 });

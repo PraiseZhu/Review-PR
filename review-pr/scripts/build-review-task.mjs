@@ -18,7 +18,7 @@ import { print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, ghJson } from 
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { computeReviewRequirements, coverageCommitment } from './lib.review-requirements.mjs';
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
-import { loadKnownHazards, hazardsForPaths, extractEscapeCandidates } from './lib.escaped-hazards.mjs';
+import { loadKnownHazards, hazardsForPaths, resolveEscapeSources } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
@@ -58,30 +58,12 @@ try {
   // escapeSourceIncomplete → consumer 判 taskInvalid;文件参数只作离线/测试 seam。
   const prBodyArg = argOf('--pr-body-file');
   const issuesArg = argOf('--related-issues-file');
-  let prBody = null;
-  let issueTexts = [];
-  const escapeSourceErrors = [];
-  if (prBodyArg || issuesArg) {
-    if (!prBodyArg || !existsSync(prBodyArg)) escapeSourceErrors.push('--pr-body-file 指向的文件不存在');
-    else prBody = readFileSync(prBodyArg, 'utf8');
-    if (issuesArg) {
-      try {
-        const parsed = JSON.parse(readFileSync(issuesArg, 'utf8'));
-        if (!Array.isArray(parsed)) throw new Error('需 JSON 字符串数组');
-        issueTexts = parsed.map((x) => String(x));
-      } catch (e) { escapeSourceErrors.push(`--related-issues-file 不可用:${e.message}`); }
-    }
-  } else {
-    try {
-      const v = ghJson(['pr', 'view', String(pr), '--repo', repoSlug ?? '', '--json', 'body,closingIssuesReferences']);
-      prBody = v.body ?? '';
-      issueTexts = (Array.isArray(v.closingIssuesReferences) ? v.closingIssuesReferences : [])
-        .map((n) => [n?.title, n?.body].filter(Boolean).join('\n'));
-    } catch (e) {
-      escapeSourceErrors.push(`现场取 PR body / 关联 issue 失败:${String(e.message ?? e).slice(0, 200)}——逃逸候选数据源缺失,不得据"无候选"放行`);
-    }
-  }
-  const escapeCandidates = prBody === null ? [] : extractEscapeCandidates({ body: prBody, issueTexts });
+  const src = resolveEscapeSources({
+    pr, repoSlug, bodyFile: prBodyArg, issuesFile: issuesArg, ghJson, readFileSync, existsSync,
+  });
+  const escapeSourceErrors = src.errors;
+  const issueTexts = src.issueTexts;
+  const escapeCandidates = src.candidates;
 
   const task = {
     schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
@@ -114,7 +96,7 @@ try {
     escapeCandidates,
     escapeSourceIncomplete: escapeSourceErrors.length > 0,
     escapeSourceErrors,
-    escapeSourceKind: (prBodyArg || issuesArg) ? 'file-seam' : 'gh-live',
+    escapeSourceKind: src.kind,
     relatedIssueCount: issueTexts.length,
   };
 

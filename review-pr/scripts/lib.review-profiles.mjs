@@ -137,7 +137,7 @@ const WAIT_RE = /\b(waitForFunction|waitForSelector|waitForTimeout|waitForEvent|
 const ASSERT_RE = /(\bassert\s*[.(]|\bexpect\s*\(|\b(?:assertEquals|assertThrows|deepEqual|deepStrictEqual|strictEqual|notStrictEqual|notDeepEqual|toBe|toEqual|toHaveLength|toThrow|toMatch|toContain|shouldEqual|rejects|throws)\s*\()/;
 // 守卫面 = 显式退出/退出码消费/不变量守卫/CI 失败守卫。**不要求后接 `(`**——核验席点名的
 // `result.exitCode !== 0` 与 workflow 的 `continue-on-error` 都没有括号。
-const GUARD_RE = /(\bprocess\.exit\b|\bexit(?:Code|_code)\b|\breturncode\b|\bthrowIf\b|\binvariant\b|\bassertInvariant\b|\bguard[A-Z]\w*\s*\(|\w+Guard\s*\(|\bexit\s+[1-9]\b|\|\|\s*exit\b|\bcontinue-on-error\b|\bif:\s*(?:failure|success|cancelled)\s*\(|\bset\s+-e\b)/;
+const GUARD_RE = /(\bprocess\.exit\b|\bexit(?:Code|_code)\b|\breturncode\b|\bthrowIf\b|\binvariant\b|\bassertInvariant\b|\bguard[A-Z]\w*\s*\(|\w+Guard\s*\(|\bexit\s+[1-9]\b|\|\|\s*exit\b|\bcontinue-on-error\b|\bif:\s*(?:\$\{\{\s*)?(?:failure|success|cancelled)\s*\(|\bset\s+-e\b)/;
 // **删除**断言/等待也必须给证据(删掉一条断言就是把守门人拿掉——不能因为"新增行里没有
 // 断言"而免检);删除行文本由调用方在 removedLineTextByFile 里给出。
 const COMMENT_ONLY_RE = /^\s*[+-]?\s*(\/\/|\/\*|\*|#|$)/;
@@ -160,7 +160,7 @@ const touchesGuardish = (t) => GUARD_RE.test(t) || ASSERT_RE.test(t);
  *   incompleteFiles      取文本失败的路径集合(调用方给);非空 → { incomplete: true }
  * @returns {{ required: object[], incomplete: boolean, incompleteFiles: string[] }}
  */
-export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile, removedLineTextByFile = {}, windowTextByFile = {}, incompleteFiles = [] }) {
+export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTextByFile, removedLineTextByFile = {}, windowTextByFile = {}, astRangesByFile = {}, incompleteFiles = [] }) {
   const required = [];
   for (const f of files) {
     const path = f.newPath ?? f.oldPath;
@@ -176,6 +176,15 @@ export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTex
     const removed = removedLineTextByFile?.[path] ?? {};
     const windows = windowTextByFile?.[path] ?? {};
     const deleted = f.changeType === 'deleted';
+    // AST 范围可用时以它为准(第 3 轮核验:固定行窗口在真实多行调用上仍会漏);
+    // 不可用(yaml / 不支持的扩展名)时才回落到锚定文本匹配。
+    const ast = astRangesByFile?.[path] ?? null;
+    const hitsRange = (ranges, lines) => (ranges ?? []).some((r) => (lines ?? []).some((ln) => ln >= r.startLine && ln <= r.endLine));
+    const hitsSpan = (ranges, spans) => (ranges ?? []).some((r) => (spans ?? []).some((sp) => {
+      const from = sp.start ?? sp.from ?? sp[0];
+      const count = sp.count ?? sp.lines ?? sp[1] ?? 1;
+      return r.startLine <= (from + count) && r.endLine >= from;
+    }));
     for (const h of f.hunks) {
       const addedTexts = (added[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
       const removedTexts = (removed[h.hunkId] ?? []).filter((t) => !COMMENT_ONLY_RE.test(t));
@@ -185,12 +194,28 @@ export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTex
       // 方向上**有意偏向多要**(窗口可能带进邻近语句)——漏要证据的代价是恒绿测试再次过审。
       const windowText = windows[h.hunkId] ?? addedTexts.join('\n');
       const removedText = removedTexts.join('\n');
-      const addedHit = touchesOracle(windowText);
-      const removedHit = touchesOracle(removedText);
+      let addedHit;
+      let removedHit;
+      let guardish;
+      if (ast) {
+        const addedLines = h.addedNewLines ?? [];
+        addedHit = hitsRange(ast.head, addedLines);
+        removedHit = deleted ? (ast.base ?? []).length > 0 : hitsSpan(ast.base, h.oldRanges);
+        const guardKinds = (rs, pred) => (rs ?? []).some((r) => r.kind !== 'wait' && pred(r));
+        guardish = guardKinds(ast.head, (r) => addedLines.some((ln) => ln >= r.startLine && ln <= r.endLine))
+          || (deleted ? (ast.base ?? []).some((r) => r.kind !== 'wait') : guardKinds(ast.base, (r) => (h.oldRanges ?? []).some((sp) => {
+            const from = sp.start ?? sp.from ?? sp[0];
+            const count = sp.count ?? sp.lines ?? sp[1] ?? 1;
+            return r.startLine <= (from + count) && r.endLine >= from;
+          })));
+      } else {
+        addedHit = touchesOracle(windowText);
+        removedHit = touchesOracle(removedText);
+        guardish = touchesGuardish(windowText) || touchesGuardish(removedText);
+      }
       if (!addedHit && !removedHit) continue;
       // test-infra / CI 路径:等待/断言/守卫任一即 required;普通代码:只有**守卫/断言**改动
       // (等待原语在业务代码里常见且不构成判定器)才 required。
-      const guardish = touchesGuardish(windowText) || touchesGuardish(removedText);
       if (!isTestInfra && !isCi && !guardish) continue;
       required.push({
         fileId: f.fileId, hunkId: h.hunkId, path,

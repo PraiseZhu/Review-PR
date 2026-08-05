@@ -65,10 +65,12 @@ const FAM = (sev = 'P1') => ({
 /** 真实 build-review-task 产 task(SC-R1a:--task 现在必需)。
  *  `--pr-body-file` 是 R7 数据源的离线 seam:不传的话构建器会现场 `gh pr view`(生产行为),
  *  单测不该依赖网络。默认给一份"无逃逸引用"的 body。 */
+const BODY_OF = new Map(); // task 路径 → 它构建时用的 body seam(consumer 必须用同一份重算)
 function taskFile(f, { body = '普通改动,无历史 PR 引用。' } = {}) {
   const tf = join(f.work, `task-${Math.random().toString(36).slice(2)}.json`);
   const bodyFile = `${tf}.body.md`;
   writeFileSync(bodyFile, body);
+  BODY_OF.set(tf, bodyFile);
   const r = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', `${tf}.md`, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
   return tf;
@@ -140,7 +142,10 @@ function compliant(tf, over = {}) {
 function run(f, output, extra = [], { pr = '469', env = {} } = {}) {
   const outFile = join(f.work, `out-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(outFile, typeof output === 'string' ? output : JSON.stringify(output));
-  const args = [CONSUME, pr, '--output', outFile, '--base', f.base, '--head', f.head, ...extra];
+  // consumer 也要**独立重算**逃逸候选(R7 第 3 轮核验),离线测试必须喂同一份 body seam
+  const ti = extra.indexOf('--task');
+  const bodySeam = ti >= 0 && BODY_OF.has(extra[ti + 1]) ? ['--pr-body-file', BODY_OF.get(extra[ti + 1])] : [];
+  const args = [CONSUME, pr, '--output', outFile, '--base', f.base, '--head', f.head, ...extra, ...bodySeam];
   const r = spawnSync('node', args, { cwd: f.repo, env: { ...f.env, ...env }, encoding: 'utf8' });
   let json = null;
   try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
@@ -416,6 +421,7 @@ test('⑯ R7 生产触发链:候选进 prompt → escapeAssessment 必须逐条�
   writeFileSync(bodyFile, '本 PR 修复 #469 逃过审查的假等待问题;另外顺手依赖 #500 的改动。\n');
   const tf = join(f.work, 'task-esc.json');
   const pmt = join(f.work, 'prompt-esc.md');
+  BODY_OF.set(tf, bodyFile); // consumer 侧重算要用同一份 body seam
   const b = spawnSync('node', [BUILD, '483', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', pmt, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(b.status, 0, b.stdout + b.stderr);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
@@ -646,4 +652,38 @@ test('㉑ R4 第 3 轮核验 BLOCKER:真多段——下一段的 key 在上一�
   const done = run(f, all, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
   assert.equal(done.json.verdict, 'clean', done.json.reasons?.join(';'));
   assert.equal(done.json.authoritative.deliveredSegments, task.segments.length);
+});
+
+test('㉒ R7 第 3 轮核验 BLOCKER:candidates / repo / known hazards 也必须独立重算——清空 task 的候选换不来 clean', () => {
+  const f = setup();
+  const body = '本 PR 修复 #469 逃过审查的假等待问题。\n';
+  const tf = taskFile(f, { body });
+  deliverAll(f, tf);
+  const pf = preflightFile(f);
+  const task = JSON.parse(readFileSync(tf, 'utf8'));
+  assert.equal(task.escapeCandidates.length, 1, '前提:body 里带修复语义引用 → 1 条候选');
+  const cid = task.escapeCandidates[0].candidateId;
+
+  // 对照:逐条作答 no → clean
+  const okAnswer = compliant(tf, { escapeAssessment: [{ candidateId: cid, verdict: 'no', basis: '只是引用' }] });
+  assert.equal(run(f, okAnswer, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'clean');
+
+  // 篡改:保留真 snapshotHash 与其余字段,只把候选清空 + 声明数据源完整,答卷给空 escapeAssessment
+  const tampered = join(f.work, 'task-no-cand.json');
+  writeFileSync(tampered, JSON.stringify({ ...task, escapeCandidates: [], escapeSourceIncomplete: false }));
+  BODY_OF.set(tampered, BODY_OF.get(tf));
+  const r = run(f, compliant(tf), ['--mode', 'auto', '--task', tampered, '--preflight', pf]);
+  assert.equal(r.json.verdict, 'invalid', `修前实测 exit 0 + clean + 零 pending:${JSON.stringify(r.json).slice(0, 300)}`);
+  assert.match(r.json.reasons.join(';'), /escapeCandidates 与现场重算不一致/);
+  assert.deepEqual(r.json.registeredHazards, []);
+
+  // 篡改 repo / hazardsIncomplete 同样被抓
+  const badRepo = join(f.work, 'task-bad-repo.json');
+  writeFileSync(badRepo, JSON.stringify({ ...task, repo: 'someone/else' }));
+  BODY_OF.set(badRepo, BODY_OF.get(tf));
+  assert.match(run(f, compliant(tf), ['--mode', 'auto', '--task', badRepo, '--preflight', pf]).json.reasons.join(';'), /task\.repo 与现场解析不符/);
+  const badHz = join(f.work, 'task-bad-hz.json');
+  writeFileSync(badHz, JSON.stringify({ ...task, hazardsIncomplete: true }));
+  BODY_OF.set(badHz, BODY_OF.get(tf));
+  assert.match(run(f, compliant(tf), ['--mode', 'auto', '--task', badHz, '--preflight', pf]).json.reasons.join(';'), /hazardsIncomplete/);
 });

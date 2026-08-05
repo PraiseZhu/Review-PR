@@ -111,9 +111,9 @@ test('R8 行为级:同一 snapshot 漂移时,preflight / builder / consumer / �
   };
   const outFile = join(f.work, 'out.json');
   writeFileSync(outFile, JSON.stringify(answer));
-  const okRun = runJson([CONSUME, '469', '--output', outFile, '--base', f.base0, '--head', f.head, '--task', t0, '--preflight', pf0, '--mode', 'auto'], f);
+  const okRun = runJson([CONSUME, '469', '--output', outFile, '--base', f.base0, '--head', f.head, '--task', t0, '--preflight', pf0, '--mode', 'auto', '--pr-body-file', f.bodyFile], f);
   assert.equal(okRun.json.verdict, 'clean', `对照组必须 clean:${okRun.json.reasons?.join(';')}`);
-  const drift = runJson([CONSUME, '469', '--output', outFile, '--base', f.base1, '--head', f.head, '--task', t0, '--preflight', pf0, '--mode', 'auto'], f);
+  const drift = runJson([CONSUME, '469', '--output', outFile, '--base', f.base1, '--head', f.head, '--task', t0, '--preflight', pf0, '--mode', 'auto', '--pr-body-file', f.bodyFile], f);
   assert.equal(drift.json.verdict, 'invalid', 'base 漂移后旧 task/preflight 不得再采信');
   assert.match(drift.json.reasons.join(';'), /snapshot/);
 
@@ -238,19 +238,19 @@ test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与
   const oldAnswer = answerFor(a);
   const oldFile = join(work, 'old-out.json');
   writeFileSync(oldFile, JSON.stringify(oldAnswer));
-  const first = runJson([CONSUME, '469', '--output', oldFile, '--base', c0, '--head', head, '--task', a.t, '--preflight', a.pf, '--mode', 'auto'], f);
+  const first = runJson([CONSUME, '469', '--output', oldFile, '--base', c0, '--head', head, '--task', a.t, '--preflight', a.pf, '--mode', 'auto', '--pr-body-file', f.bodyFile], f);
   assert.equal(first.json.verdict, 'clean', first.json.reasons?.join(';'));
 
   // ② base 移动后:task/preflight/delivery 全部重建(所以那三样都"新"),但答卷是旧的
   const b = cycle(c2, 'b');
   assert.equal(a.task.coverageCommitment, b.task.coverageCommitment, '前提:两轮的 coverage 内容承诺一致(逐字节相同的 diff)');
-  const replay = runJson([CONSUME, '469', '--output', oldFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto'], f);
+  const replay = runJson([CONSUME, '469', '--output', oldFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto', '--pr-body-file', f.bodyFile], f);
   assert.equal(replay.json.verdict, 'invalid', `旧答卷跨 snapshot 重放必须被拒:${JSON.stringify(replay.json).slice(0, 400)}`);
   assert.match(replay.json.reasons.join(';'), /snapshotHash/);
 
   // ③ 对照:换成绑定新 snapshot 的答卷 → clean(证明不是"一律拒")
   const newFile = join(work, 'new-out.json');
   writeFileSync(newFile, JSON.stringify(answerFor(b)));
-  const fresh = runJson([CONSUME, '469', '--output', newFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto'], f);
+  const fresh = runJson([CONSUME, '469', '--output', newFile, '--base', c2, '--head', head, '--task', b.t, '--preflight', b.pf, '--mode', 'auto', '--pr-body-file', f.bodyFile], f);
   assert.equal(fresh.json.verdict, 'clean', fresh.json.reasons?.join(';'));
 });
