@@ -22,6 +22,7 @@ import {
 import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { loadKnownHazards, hazardsForPaths, resolveEscapeSources, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
+import { validatePrescanConfig, readPrescanArtifact } from './lib.prescan.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
@@ -110,6 +111,26 @@ try {
     escapeSourceKind: src.kind,
     relatedIssueCount: issueTexts.length,
   };
+
+  // SC-R1/R8: prescan 配置门——enabled:false/缺失时 task 不含 prescan 字段(关闭态兼容,
+  // 输出与基线逐字节一致)。enabled:true 且配置合法时,读取 pre-scan.mjs 已产出的 artifact
+  // (若已运行)并填入 task.prescan 承诺字段。artifact 缺失或 snapshot 漂移时不填
+  // (consumer 侧 SC-R8 会判 taskInvalid:enabled 但 task 缺 prescan → invalid)。
+  const prescanCfg = validatePrescanConfig(rules?.prescan);
+  if (prescanCfg.enabled && prescanCfg.valid) {
+    const prescanArtifact = readPrescanArtifact(STATE_DIR, pr);
+    if (prescanArtifact && prescanArtifact.snapshotHash === snapshot.snapshotHash) {
+      task.prescan = {
+        schemaVersion: prescanArtifact.schemaVersion,
+        status: prescanArtifact.status,
+        snapshotHash: prescanArtifact.snapshotHash,
+        inputHash: prescanArtifact.inputHash,
+        policyHash: prescanArtifact.policyHash,
+        artifactHash: prescanArtifact.artifactHash,
+        observationCount: prescanArtifact.observationCount,
+      };
+    }
+  }
 
   // ── prompt 正文:必答项 / open findings / hazards / 分片 全部落进文本 ──
   const L = [];

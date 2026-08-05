@@ -340,3 +340,52 @@ export async function w2(page) {
     seen.add(key);
   }
 });
+
+// ── SC-R1: prescan 关闭态兼容(2026-08-05 final SC) ──
+// enabled:false 或缺失 prescan 配置时,task.json 与 prompt.md 必须与基线逐字节一致——
+// 不因加了 prescan 配置门而改变旧流程。这是整个 R1 改动的唯一安全网。
+
+test('SC-R1: prescan 缺失时 task 不含 prescan 字段(disabled 中性默认)', () => {
+  const f = setup({ rules: {} });  // rules 不含 prescan → validatePrescanConfig(null) → disabled
+  const { task } = run(f);
+  assert.equal('prescan' in task, false, 'prescan 配置缺失时 task 不应含 prescan 字段(SC-R1 关闭态兼容)');
+});
+
+test('SC-R1: prescan.enabled=false 时 task 不含 prescan 字段(显式关闭)', () => {
+  const f = setup({ rules: { prescan: { enabled: false } } });
+  const { task } = run(f);
+  assert.equal('prescan' in task, false, 'prescan.enabled=false 时 task 不应含 prescan 字段');
+});
+
+test('SC-R1: prescan 缺失 vs enabled=false 的 task/prompt 逐字节一致(关闭态等价)', () => {
+  // 同一个 fixture(同 base/head),改 rules 文件后双跑,cmp 输出逐字节一致
+  const f = setup({ rules: {} });
+  // 第一次:rules 不含 prescan
+  const a = run(f);
+  const aTaskText = readFileSync(f.lastTaskFile, 'utf8');
+  const aPromptText = a.prompt;
+  assert.equal('prescan' in a.task, false);
+  // 改 rules 文件:加 prescan.enabled=false
+  writeFileSync(f.env.REVIEW_PR_RULES_FILE, JSON.stringify({ admins: [], prescan: { enabled: false } }));
+  // 第二次:rules 含 prescan.enabled=false
+  const b = run(f);
+  const bTaskText = readFileSync(f.lastTaskFile, 'utf8');
+  const bPromptText = b.prompt;
+  assert.equal('prescan' in b.task, false);
+  // task.json 逐字节一致
+  assert.equal(aTaskText, bTaskText, 'task.json 在 prescan 缺失 vs enabled=false 时必须逐字节一致(SC-R1)');
+  // prompt.md 逐字节一致
+  assert.equal(aPromptText, bPromptText, 'prompt.md 在 prescan 缺失 vs enabled=false 时必须逐字节一致(SC-R1)');
+});
+
+test('SC-R1: prescan 双跑确定性(task/prompt 无时间字段,输出稳定)', () => {
+  const f = setup({ rules: {} });
+  const a = run(f);
+  const aTaskText = readFileSync(f.lastTaskFile, 'utf8');
+  const aPromptText = a.prompt;
+  const b = run(f);
+  const bTaskText = readFileSync(f.lastTaskFile, 'utf8');
+  const bPromptText = b.prompt;
+  assert.equal(aTaskText, bTaskText, 'task.json 双跑逐字节一致(build-review-task 无时间字段)');
+  assert.equal(aPromptText, bPromptText, 'prompt.md 双跑逐字节一致');
+});
