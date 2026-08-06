@@ -1495,6 +1495,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-05T11:15:43.182Z",
       "lastSeen": "2026-08-05T11:15:43.182Z"
+    },
+    {
+      "fingerprint": "review-base-ref-oid-source-unclear",
+      "tier": "proposal",
+      "title": "preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip",
+      "detail": "本轮 #527/#539 误用 origin/main tip(59d712d5)作为 --base,而 SKILL 约定 baseRefOid 是 gh pr view 返回的分叉点(527=0c95823/539=3686b32b),导致整条审查链 snapshot 漂移、pre-merge-check fail-closed 拦截后返工重建。SKILL.md 三处命令模板用 <baseRefOid> 占位符但未定义来源。现象:回执 snapshotHash 与 pre-merge-check 重建不一致(stale)。",
+      "proposal": "在 SKILL.md 3.0.1/4 节命令块后补一句来源说明:--base 取 gh pr view <N> --json baseRefOid(PR 分叉点),不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-06T05:33:22.877Z",
+      "lastSeen": "2026-08-06T05:33:22.877Z"
     }
   ],
   "escapedHazards": [
