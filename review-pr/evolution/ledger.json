@@ -1521,6 +1521,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-06T07:34:14.341Z",
       "lastSeen": "2026-08-06T07:34:14.341Z"
+    },
+    {
+      "fingerprint": "ui-evidence-test-files-false-positive",
+      "tier": "proposal",
+      "title": "UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发",
+      "detail": "#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。",
+      "proposal": "context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-06T15:04:27.825Z",
+      "lastSeen": "2026-08-06T15:04:27.825Z"
     }
   ],
   "escapedHazards": [
