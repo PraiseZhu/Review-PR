@@ -1534,6 +1534,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-06T15:04:27.825Z",
       "lastSeen": "2026-08-06T15:04:27.825Z"
+    },
+    {
+      "fingerprint": "changelog-generated-data-semantic-conflict",
+      "tier": "by-design",
+      "title": "changelog.json 生成数据分叉使\"其余全过仅剩冲突\"的 PR 代合并仍判语义冲突",
+      "detail": "PR #544(test 类,审查 0 P0/P1 干净,格式/gate/thread/CI 全过,唯一阻断是与 main 的 changelog.json 冲突)尝试 5.5 主干代合并,展开 merge 后发现冲突非机械:两侧 changelog 快照是不同轮次 auto-changelog LLM 改写产物,HEAD 侧独有 2 条、PR head 侧独有 4 条、1 条同源文案改写不同,取任一侧都丢真实发布条目。生成数据(public/changelog.json 由 scripts/changelog/auto-changelog.mjs 批量生成)在作者提交时被重扫,与 main 已合入的旧快照分叉时,冲突性质从\"机械\"退化为\"语义\"。已中止代合并(merge worktree 零改动清理),按 5.5 语义冲突不擅自取舍发冲突提醒给作者。此观察扩展 author-conflict-needs-human-rebase:原条目只覆盖叠其他 gate 的冲突,本条目说明即使其余全过,生成数据冲突也非机械。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-06T20:22:34.881Z",
+      "lastSeen": "2026-08-06T20:22:34.881Z"
     }
   ],
   "escapedHazards": [
