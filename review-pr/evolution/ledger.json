@@ -1525,6 +1525,26 @@
       },
       "seededAt": "2026-08-05",
       "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。2026-08-05 第 2 轮核验后补齐 fixHead(#483 已合并,head=68f2dd64…),grandfathered 豁免随之删除——现在**没有任何**免 head 核验的通道;hazardId 改绑稳定事件身份(repo+origin/fix PR+两侧 head),自由文本 pattern 只作 evidence。"
+    },
+    {
+      "repo": "xindong/mivo-canvas",
+      "originPr": 524,
+      "originHead": "19c562caf5e5bf3ae8ef232f495406b78bec1e2c",
+      "fixPr": 539,
+      "fixHead": "a13881b50d93ba8fc4672b3f5366f5b1961fe066",
+      "pattern": "PR #539 的 PR body 明确「修复 #524 回归」,并给出生产证据:回归引入 commit 0af499a(PR #524「virtualize/lod 默认开启」),该 commit 把 virtualizedPanEnabled() 默认翻为 true,freeze-pan 路径下拖拽把真实视口命令式写进 viewportRef.current 且要等 120ms virtualizeCommitTimer 才提交 React state;zoomTo 读 React state 里的陈旧 current 算锚点,与 shell dataset(applyViewportImperatively 从 viewportRef 写)不一致,导致 zoom-tool e2e 断言确定性地偏(nightly-e2e run 31041345767 红灯:expected 393.12 +/- 2, got 498.96)。该回归在 #524 审查/合并时未被发现,事后才由 nightly-e2e 暴露,本 PR 正是修这个逃过审查的问题——判定 yes。",
+      "paths": [
+        "src/canvas/useViewport.ts"
+      ],
+      "evidence": "本轮审查判定:PR #539 的 PR body 明确「修复 #524 回归」,并给出生产证据:回归引入 commit 0af499a(PR #524「virtualize/lod 默认开启」),该 commit 把 virtualizedPanEnabled() 默认翻为 true,freeze-pan 路径下拖拽把真实视口命令式写进 viewportRef.current 且要等 120ms virtualizeCommitTimer 才提交 React state;zoomTo 读 React state 里的陈旧 current 算锚点,与 shell dataset(applyViewportImperatively 从 viewportRef 写)不一致,导致 zoom-tool e2e 断言确定性地偏(nightly-e2e run 31041345767 红灯:expected 393.12 +/- 2, got 498.96)。该回归在 #524 审查/合并时未被发现,事后才由 nightly-e2e 暴露,本 PR 正是修这个逃过审查的问题——判定 yes。",
+      "activationStatus": "active",
+      "promotionStatus": "pending",
+      "promotionTarget": null,
+      "registeredAt": "2026-08-06T05:27:52.187Z",
+      "registeredBy": "consume-review-output",
+      "hazardId": "hz2-2fff982f411fdfa5",
+      "fingerprint": "hzf2-2fff982f411fdfa5",
+      "activatedAt": "2026-08-06T05:31:30.666Z"
     }
   ]
 }
