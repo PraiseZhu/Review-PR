@@ -155,6 +155,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-skip-conflict-threads-exempt` **skip-gate(冲突+threads)且作者在 staleAuthorReminder.exemptAuthors 时不催办——本轮 #497 因此跳过无提醒** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
+  - 现象:观察: #497 有冲突+5 条未 resolve thread,gate.skip-gate;作者 kirozeng 在 exemptAuthors,按配置不催 resolve/不催办。设计上正确(核心贡献者豁免),无需自动化改动。
 - `owner-merged-review-target-mid-review` **审查期间目标 PR 被 owner 手工合并** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked
   - 现象:PR #500 在独立审查运行期间被 owner(PraiseZhu)手动合并(merged_by=PraiseZhu,2026-08-05T11:02Z,merge commit 69d05b9)。本流程未调用 merge-pr.mjs(merges.jsonl 无 #500 记录);pre-merge-check 在合并阶段正确捕获 state=MERGED,流程 fail-safe 收尾,审查结论(0 P0/P1)与合并方向一致,无漏判。观察:owner 活跃时会直接合并自有 PR、不等自动审查;该路径按 by-design 记录频率,不因出现多次自动放开任何门。
 - `auto-review-race-author-merged-during-review` **auto 独立审查进行期间作者自行合并 PR——pre-merge-check state 检查兜底，无流程缺口** — 出现 1 次,首见 2026-08-05,最近 2026-08-05,status: tracked

@@ -1508,6 +1508,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-06T05:33:22.877Z",
       "lastSeen": "2026-08-06T05:33:22.877Z"
+    },
+    {
+      "fingerprint": "by-design-skip-conflict-threads-exempt",
+      "tier": "by-design",
+      "title": "skip-gate(冲突+threads)且作者在 staleAuthorReminder.exemptAuthors 时不催办——本轮 #497 因此跳过无提醒",
+      "detail": "观察: #497 有冲突+5 条未 resolve thread,gate.skip-gate;作者 kirozeng 在 exemptAuthors,按配置不催 resolve/不催办。设计上正确(核心贡献者豁免),无需自动化改动。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-06T07:34:14.341Z",
+      "lastSeen": "2026-08-06T07:34:14.341Z"
     }
   ],
   "escapedHazards": [
