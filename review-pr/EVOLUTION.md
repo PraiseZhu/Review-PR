@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `rro1-empty-array-contract-omitted` **rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
+  - 现象:2026-08-07 auto 轮 #565 审查 agent 首份 rro-1 遗漏这两个可空字段,consume-review-output 判 invalid(缺字段),人工补空数组后重跑才 clean——消费端对缺字段 fail-closed,契约在 SKILL 已有但 prompt 未显式枚举必在字段
+  - 提案:build-review-task.mjs 生成的 prompt 模板显式列出'以下字段即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence'——减少同类无效轮次与重试
 - `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
   - 现象:#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。
   - 提案:context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。

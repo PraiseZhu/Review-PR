@@ -1547,6 +1547,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-06T20:22:34.881Z",
       "lastSeen": "2026-08-06T20:22:34.881Z"
+    },
+    {
+      "fingerprint": "rro1-empty-array-contract-omitted",
+      "tier": "proposal",
+      "title": "rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在",
+      "detail": "2026-08-07 auto 轮 #565 审查 agent 首份 rro-1 遗漏这两个可空字段,consume-review-output 判 invalid(缺字段),人工补空数组后重跑才 clean——消费端对缺字段 fail-closed,契约在 SKILL 已有但 prompt 未显式枚举必在字段",
+      "proposal": "build-review-task.mjs 生成的 prompt 模板显式列出'以下字段即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence'——减少同类无效轮次与重试",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-07T02:07:47.263Z",
+      "lastSeen": "2026-08-07T02:07:47.263Z"
     }
   ],
   "escapedHazards": [
