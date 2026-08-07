@@ -141,6 +141,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
+  - 现象:PR #544 的 6 条历史 finding origin 为旧 snapshot(snap1-11612b/snap1-045a03),当前 head 7f0e6af 已修复(新增哨兵+可红验证)。审查 agent 判 invalidated→auto 模式无交互确认出口→effective-open 永久卡死。SKILL 5.2 的 prompt 只说resolved
+  - 提案:build-review-task.mjs 的 prompt 做两处改进:① 对 originSnapshotHash !== 当前 snapshot 的条目,注明 origin 是旧 snapshot;② 追加 guidance「已修复(跨 snapshot)→resolved,误报(同 snapshot/无新证据)→invalidated」。auto 模式下注释问 interactivelyConfirmed 的语义:invalidated 不进 count 条件但 auto 无出口,指引模型在有可红证据时优先选 resolved
 - `review-output-shape-examples-in-prompt` **审查输出与 rro-1 契约的字段级格式偏差导致整轮 invalid** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `5815bd8`
   - 现象:PR #544 审查 agent 输出 5 类格式偏差(familyId/family_id、answer 对象/字符串、coverageKeys 字符串/对象、status/disposition、negativeEvidence command 与引用 run 不一致),主 agent 手工规范化 3 次后才可消费;build-review-task.mjs 的 prompt 只含文字契约、无字段级形状示例,已追加形状参考段
   - 提案:prompt 增加字段级形状参考(含'command/outputAnchor 必须与引用 run 逐字一致'一致性约束),减少格式往返
