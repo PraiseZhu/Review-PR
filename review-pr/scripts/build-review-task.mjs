@@ -168,6 +168,7 @@ try {
       L.push(`- \`${e.findingId}\` [${e.status}] ${e.path}:${e.line} — ${e.invariantKey ? '(invariantKey ' + e.invariantKey.slice(0, 22) + '…)' : ''} ${e.rule ? '规则 ' + e.rule.ruleId : ''}`);
     }
     L.push('', '在 `findingDispositions[]` 里对上面每个 findingId 给 `resolved`(带当前 snapshot 的证据锚点)或 `invalidated`(带判误报依据)。`accepted-risk` 不走你的输出,只走交互确认。', '');
+    L.push('', '处置选择指引:条目 origin 快照早于当前 snapshot 时,先查当前 head 是否已有修复证据(新增/改动代码、负向实测变红等)——**已修复给 `resolved`**,带当前 snapshot 的证据锚点;`invalidated`(误报主张)只用于"该指控在当前 snapshot 上不成立且无修复动作"的情形。`invalidated` 在 auto 模式没有交互确认出口,不会关门,历史条目每轮都会重新注入——不要把"已修复"误判成"误报"。', '');
   }
   if (requiredProfileAnswers.length > 0) {
     L.push('## 风险 profile 必答项(逐 文件×检查 作答,缺一项判 invalid)', '');
