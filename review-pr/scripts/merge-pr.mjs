@@ -145,13 +145,22 @@ try {
   // 任何 basis 都要求 precheck 的 headRefOid 精确等于 --match-head(判定与执行同一 head);
   // 复核失败/不可用一律 fail-closed 拒绝合并,不新增 --skip-precheck / --force-review-bypass
   // 之类旁路参数(SC-5:调用方不能只传 --basis 绕过阶段二回执)。
+  //
+  // 退出码语义(2026-08-08 复审修复):pre-merge-check 的 exit 0 只表示「普通合并
+  // (canMerge/selfMerge/authorized-fast)可用」;结构性 BLOCKED(blockClass=structural-check)
+  // 下即便 structuralBypassReady=true,canMerge 仍 false → 恒 exit 2——structural
+  // approved/admin-trust 两条 bypass 路径的生产契约就是 status=2 + 输出里
+  // structuralBypassReady=true。因此 status 0 **与** 2 都允许进入 JSON 解析,由下方
+  // basisGranted 按 basis 精确裁决;status 1(脚本自身错误)/信号终止/输出不可解析仍
+  // fail-closed 拒绝。不要把 structuralBypassReady 并入 pre-merge 顶层 canMerge/exit 0
+  // ——那会让其他调用方把「有某 basis 资格」误读成普通合并资格。
   const precheckScript = join(dirname(fileURLToPath(import.meta.url)), 'pre-merge-check.mjs');
   const precheck = spawnSync(process.execPath, [precheckScript, String(pr)], { encoding: 'utf8', timeout: 180_000 });
   if (precheck.error) {
     refuse(`合并前 basis 现场复核无法执行(${precheck.error.message})——fail-closed,不合并,下轮重试`);
   }
-  if (precheck.status !== 0) {
-    refuse(`合并前 basis 现场复核未通过(exit ${precheck.status})——fail-closed,不合并,下轮重试;precheck 输出:${(precheck.stdout || precheck.stderr || '').slice(0, 400)}`);
+  if (precheck.status !== 0 && precheck.status !== 2) {
+    refuse(`合并前 basis 现场复核脚本自身失败(exit ${precheck.status})——fail-closed,不合并,下轮重试;precheck 输出:${(precheck.stdout || precheck.stderr || '').slice(0, 400)}`);
   }
   let precheckOut = null;
   try { precheckOut = JSON.parse(precheck.stdout); } catch { /* fallthrough */ }
