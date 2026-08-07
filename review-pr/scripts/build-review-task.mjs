@@ -138,6 +138,23 @@ try {
   L.push(`# 阶段二独立审查任务 — PR #${pr}`, '');
   L.push(`snapshotHash: \`${snapshot.snapshotHash ?? '(不完整)'}\` — 输出里的所有 snapshotHash 字段必须原样用它。`, '');
   L.push(`输出契约:单一 JSON,\`schemaVersion: "${REVIEW_OUTPUT_SCHEMA_VERSION}"\`。机器只消费 JSON,你自报的 verdict 不被采信(verdict 由内容推导)。`, '');
+  // 字段级形状参考(2026-08-07 轮次实跑:审查输出与 rro-1 契约的格式偏差导致整轮 invalid,
+  // 主 agent 被迫手工规范化后才可消费——把 5 类已发生的偏差直接写进 prompt,降低格式往返):
+  L.push('## 字段级形状(照此形状输出,逐字段精确,勿自创字段名)', '');
+  L.push([
+    '- `findingFamilies[]` 元素:字段名是 `family_id`(不是 familyId)+ `invariant` + `severity`("P0"|"P1")+ `manifestations[]` + `fixGuidance`;',
+    '  每条 manifestation 必须是 `{path, line, severity, evidence, impact, fix, verification}`——`severity` 在 family 与每条 manifestation 都要显式给出。',
+    '- `profileAnswers[]` 元素:`{profileId, fileId, checkId, answer, hunkId?, findingRef?, reasonCode?, explanation?}`——`answer` 是字符串闭集 `"checked-clean"|"finding"|"not-applicable"`(不是对象):',
+    '  checked-clean 在顶层带 `hunkId`;finding 在顶层带 `findingRef: {family_id, manifestationIndex}`(引用上方 findingFamilies 的真实条目);not-applicable 在顶层带 `reasonCode` + `explanation`。',
+    '- `segmentReceipts[].coverageKeys[]` 元素:对象 `{kind:"hunk", fileId, hunkId}`(不是 "fileId:hunkId" 字符串);',
+    '  `receivedOrder` 必须等于投递序号,`snapshotHash` 必须等于顶层 snapshotHash。',
+    '- `findingDispositions[]` 元素:`{findingId, disposition, basis}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status),`basis` 非空。',
+    '- `negativeEvidence[]` 元素:`{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`——',
+    '  **`command` 与 `outputAnchor` 必须与 `verificationRuns[]` 里被引用 run 的对应字段逐字一致**(机器会做一致性校验,不一致判 invalid);`verificationRunId` 必须引用真实登记的 runId。',
+    '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor}`——每条实验真实执行并登记。',
+    '- `escapeAssessment[]` / `verificationGaps[]`:`{candidateId, verdict:"yes"|"no", basis}` / `{description, required:false}`。',
+  ].join('\n'), '');
+  L.push('> 输出前逐字段自检一遍上述形状;格式偏差会导致整轮判 invalid,机器不会"尽力解析"。', '');
   if (relevantHazards.length > 0) {
     L.push('## 已知逃逸风险(known hazards — 本仓历史上真的逃过审查、事后被证伪的模式)', '');
     for (const h of relevantHazards) {
