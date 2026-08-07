@@ -281,3 +281,22 @@ test('L1b · 对照组:requireAutomatedReviewForAutoMerge 未配置 + 作者在 
   assert.equal(out.approvedShortcut.granted, true, '未配置强制审查 → shortcut 照常成立');
   assert.equal(out.auto.action, 'bypass-structural-block', '未配置时保持现状路由');
 });
+
+// ── C1 容器级接线(审 C1,2026-08-08):mergeAuthorization 非 plain object ──
+// REVIEW_PR_RULES_FILE 指向 mergeAuthorization:"oops" 的配置,context --scan 必须
+// 结构化输出 configWarnings(容器 warning 进报告),业务侧 fail-closed
+// (breakGlass=[] → 紧急通道关闭),绝不脚本异常 exit1 + stack trace(旧实现
+// `'require...' in "oops"` 在 context.mjs 模块加载期抛 TypeError 直接崩)。
+test('C1 接线:mergeAuthorization:"oops" → context --scan 不崩,configWarnings 点名容器 object + 业务 fail-closed(旧代码 exit1 红)', () => {
+  const { repo, env } = setup({ mergeAuth: 'oops' });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为结构化 JSON(不得脚本异常/stack trace),got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  assert.ok(Array.isArray(out.configWarnings), 'configWarnings 必须结构化输出进报告');
+  assert.ok(out.configWarnings.some((w) => /mergeAuthorization 配置形态不合法/.test(w) && /object/.test(w)),
+    `容器 warning 必须进 configWarnings: ${JSON.stringify(out.configWarnings)}`);
+  // 业务 fail-closed:容器非法 → require 按 true、breakGlass=[] → 人工命令不路由紧急通道
+  assert.equal(out.authorizedFastMerge.requested, false, 'breakGlass=[] → 紧急通道关闭(fail-closed,不回退 admins)');
+  assert.notEqual(out.auto.action, 'authorized-fast-merge', '不得路由到 authorized-fast-merge');
+});

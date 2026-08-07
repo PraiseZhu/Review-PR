@@ -32,6 +32,16 @@
 // 反向变异:把 resolver 改回旧写法 `mergeAuth.requireAutomatedReviewForAutoMerge === true`
 // (malformed 当 false),A2 矩阵全部红;把配置 shape 改回顶层,A1 packaged-config 用例
 // (断言无回退 warning)当场红。
+//
+// C1 容器级校验(审 C1,2026-08-08):`mergeAuthorization` 整体必须是 plain object。
+// 旧实现 `rules?.mergeAuthorization ?? {}` 后直接 `'require...' in mergeAuth`——
+// string/number/boolean 会让 `in` 抛 TypeError 把 context/pre-merge 脚本整个打崩
+// (exit1 + stack trace);数组虽不抛,却被静默当成合法对象消费字段、breakGlass 静默
+// 回退 admins 扩大发令名单(fail-open)。修复:缺失/null 兼容空对象(行为不变);
+// 非 plain object = 容器级 malformed,整体 fail-closed(require=true、breakGlass=[]、
+// 不回退 admins)+ 显著容器 warning。反向变异:删掉容器校验(恢复 `?? {}` 直读),
+// C1 容器矩阵全部红(string/number/boolean 抛 TypeError,数组 require=false+回退
+// admins)——不靠其它断言。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -227,4 +237,68 @@ test('A2 反向变异声明:旧实现 `=== true` 下 "true"/null/1 全变 false 
   });
   assert.deepEqual(both.breakGlassApprovers, ['praisezhu']);
   assert.equal(both.requireAutomatedReviewForAutoMerge, true);
+});
+
+// ── C1:mergeAuthorization 容器形态矩阵(审 C1,2026-08-08)──
+// 容器级校验:缺失/null 兼容空对象(旧仓形态不变);string/number/boolean/array/
+// function 等非 plain object = 容器级 malformed——不抛、整体 fail-closed(require=
+// true、breakGlass=[] 且不回退 admins)+ 显著容器 warning;plain object 保持
+// A1/A2 字段规则。
+
+test('C1 容器缺失/null 兼容:与空对象同语义,不产出容器 warning,兼容回退照旧', () => {
+  const cases = [
+    ['无 mergeAuthorization 键', { admins: ['PraiseZhu'] }],
+    ['mergeAuthorization 为 null', { admins: ['PraiseZhu'], mergeAuthorization: null }],
+    ['mergeAuthorization 空对象', { admins: ['PraiseZhu'], mergeAuthorization: {} }],
+  ];
+  for (const [label, rules] of cases) {
+    const r = resolveMergeAuthorizationPolicy(rules);
+    assert.equal(r.requireAutomatedReviewForAutoMerge, false, `${label}:缺失/null 兼容 require=false`);
+    assert.deepEqual(r.breakGlassApprovers, ['praisezhu'], `${label}:缺失 → 兼容回退 admins(旧仓行为不变)`);
+    assert.ok(!r.warnings.some((w) => w.includes('mergeAuthorization 配置形态不合法')),
+      `${label}:不得产出容器 malformed warning(缺失/null 是正常兼容默认)`);
+    assert.ok(r.warnings.some((w) => /breakGlassApprovers 未配置.*回退到 admins/.test(w)), `${label}:回退必须显式告警`);
+  }
+});
+
+test('C1 非 plain object 容器矩阵:string/number/boolean/array/function → 不抛、require=true、breakGlass=[],容器 warning 点名 object', () => {
+  const malformed = [
+    ['字符串 "oops"', 'oops'],
+    ['数字 123', 123],
+    ['布尔 true', true],
+    ['布尔 false', false],
+    ['数组 []', []],
+    ['数组塞字段名(不许当对象)', ['requireAutomatedReviewForAutoMerge']],
+    ['函数', () => {}],
+  ];
+  for (const [label, value] of malformed) {
+    let r = null;
+    assert.doesNotThrow(() => {
+      r = resolveMergeAuthorizationPolicy({ admins: ['PraiseZhu'], mergeAuthorization: value });
+    }, `${label}:容器非法不得抛 TypeError(旧实现 'in' 运算符直接崩)`);
+    assert.equal(r.requireAutomatedReviewForAutoMerge, true, `${label}:容器级 malformed 必须 fail-closed 按 true(宁严勿松)`);
+    assert.deepEqual(r.breakGlassApprovers, [], `${label}:breakGlass 必须 []——不回退 admins(PraiseZhu 在名单),不得扩大 /approve-merge 发令名单`);
+    assert.ok(r.warnings.some((w) => /mergeAuthorization 配置形态不合法/.test(w) && /object/.test(w)),
+      `${label}:必须产出容器 warning 且点名容器必须 object`);
+  }
+});
+
+test('C1 容器非法 → 仅容器级 warning,不再产出字段级告警(整体 fail-closed,不消费畸形容器内字段)', () => {
+  const r = resolveMergeAuthorizationPolicy({ admins: ['PraiseZhu'], mergeAuthorization: 'oops' });
+  assert.equal(r.warnings.length, 1, `只允许容器级 warning,不得再叠加 breakGlass 回退/字段级告警: ${JSON.stringify(r.warnings)}`);
+});
+
+test('C1 plain object 保持 A1/A2 字段规则(对照):容器合法时字段级语义原样生效', () => {
+  const explicit = resolveMergeAuthorizationPolicy({ admins: ['PraiseZhu'], mergeAuthorization: { breakGlassApprovers: [] } });
+  assert.deepEqual(explicit.breakGlassApprovers, [], '显式 [] 生效(不回退 admins)');
+  assert.deepEqual(explicit.warnings, [], '显式 [] → 零 warning');
+  const missing = resolveMergeAuthorizationPolicy({ admins: ['PraiseZhu'], mergeAuthorization: {} });
+  assert.deepEqual(missing.breakGlassApprovers, ['praisezhu'], '容器内字段缺失仍走兼容回退');
+  assert.equal(missing.warnings.length, 1, '仅回退 warning');
+  const typed = resolveMergeAuthorizationPolicy({
+    mergeAuthorization: { requireAutomatedReviewForAutoMerge: true, breakGlassApprovers: ['PraiseZhu'] },
+  });
+  assert.equal(typed.requireAutomatedReviewForAutoMerge, true, '容器合法 → require 显式 true 生效');
+  assert.deepEqual(typed.breakGlassApprovers, ['praisezhu']);
+  assert.deepEqual(typed.warnings, []);
 });

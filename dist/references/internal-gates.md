@@ -25,7 +25,10 @@
   `ownAccountApprovalRequiresAck` / `breakGlassApprovers` /
   `requireAutomatedReviewForAutoMerge`），解析见 `scripts/lib.mjs` 的
   `resolveMergeAuthorizationPolicy`；目标仓库必须用同一嵌套形态配置，放顶层不会生效
-  （会退回兼容默认并告警）；
+  （会退回兼容默认并告警）；**本容器整体必须是 object**——string/number/boolean/
+  array 等非 plain object = 容器级 malformed，不抛错、整体 fail-closed
+  （`requireAutomatedReviewForAutoMerge` 按 true、`breakGlassApprovers` 按 [] 且
+  不回退 admins 扩大发令名单）并显著告警点名容器必须 object，绝不静默当合法配置；
 - `mergeAuthorization.breakGlassApprovers`：`/approve-merge` 授权快速合并通道的放行
   人名单（GitHub login；字段缺省/未配置 = 兼容期回退到 `admins` 名单作为发令名单并
   输出 warning；显式留空 [] = fail-closed，无人可下达 `/approve-merge`；与 `admins`

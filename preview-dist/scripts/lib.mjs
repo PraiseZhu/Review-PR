@@ -970,12 +970,31 @@ export function normalizeLoginList(value) {
  *     并输出 warning 显著告警(审 A2,2026-08-08:此前 `'true'` 这类字符串会静默变
  *     false 且无任何 warning,结构性 approved 可免阶段二回执直接合——fail-open)。
  *
+ * 容器级规则(审 C1,2026-08-08):`mergeAuthorization` 整体必须是 **plain object**。
+ *   - 缺失 / null → 正常兼容默认,视为空对象(旧仓形态,行为不变:require=false;
+ *     breakGlass 走回退 admins + warning)。
+ *   - string/number/boolean/array/function 等非 plain object = **容器级 malformed**:
+ *     此前 `'requireAutomatedReviewForAutoMerge' in <string>` 会抛 TypeError 把
+ *     context/pre-merge 脚本整个打崩(exit1 + stack trace);数组虽不抛,却被静默
+ *     当成合法对象消费字段、breakGlass 静默回退 admins 扩大发令名单(fail-open)。
+ *     修复:必须不抛;整体 fail-closed,不消费畸形容器内任何字段——require 强制
+ *     true(宁严勿松)、breakGlassApprovers 置 [] 且**不回退 admins**(回退会扩大
+ *     /approve-merge 发令名单)、显著 warning 点名容器必须 object。
+ *
  * 返回 `{ requireAutomatedReviewForAutoMerge: boolean, breakGlassApprovers: string[],
  *         warnings: string[] }`。
  */
 export function resolveMergeAuthorizationPolicy(rules) {
-  const mergeAuth = rules?.mergeAuthorization ?? {};
   const warnings = [];
+  const rawMergeAuth = rules?.mergeAuthorization;
+  const isPlainObject = rawMergeAuth != null && typeof rawMergeAuth === 'object' && !Array.isArray(rawMergeAuth);
+  if (!isPlainObject && rawMergeAuth != null) {
+    // 容器级 malformed(整体 fail-closed):不读容器内任何字段,不给 breakGlass 回退
+    // admins 的机会。缺失/null 不在这里——那是正常兼容默认,继续走下方字段规则。
+    warnings.push(`mergeAuthorization 配置形态不合法(应为 object,实际为 ${Array.isArray(rawMergeAuth) ? 'array' : typeof rawMergeAuth})——容器级 fail-closed:requireAutomatedReviewForAutoMerge 按 true(强制自动化审查)、breakGlassApprovers 按 [] (不回退 admins 扩大权限),请检查配置`);
+    return { requireAutomatedReviewForAutoMerge: true, breakGlassApprovers: [], warnings };
+  }
+  const mergeAuth = isPlainObject ? rawMergeAuth : {};
   // 存在性按 `in` 判(键真在对象里才算「存在」),缺失走兼容 false 不告警;
   // 存在但非 boolean → fail-closed 按 true(宁严勿松)+ 显著告警,禁止静默当 false。
   let requireAutomatedReviewForAutoMerge = false;
