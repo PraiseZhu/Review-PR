@@ -25,7 +25,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   findApproveMergeAuthorization, evaluateApprovalBasis, resolveApprovedShortcut,
-  decideAuthorizedFastMerge, evaluateAuthorizedFastMerge,
+  decideAuthorizedFastMerge, evaluateAuthorizedFastMerge, decideStructuralBypassRoute,
 } from '../scripts/lib.mjs';
 
 const HEAD = 'c'.repeat(40);
@@ -105,22 +105,26 @@ test('SC-2 resolveApprovedShortcut 矩阵:head 绑定 ∧ 聚合裁决 ∧ own-a
   assert.match(r.reason, /无 APPROVED/);
 });
 
-test('SC-2 requireAutomatedReviewForAutoMerge=true:三条件全过 granted 也为 false(旧代码无此分支,预期红)', () => {
-  // 新语义:自动化合并必须先跑独立审查并落 current-head clean receipt,approved
-  // shortcut 不再单独放行。旧实现忽略该配置键 → granted=true → 本断言红。
-  const g = (over = {}) => ({
-    approvalBasis: { basis: 'independent' }, ownAckRequired: false, headBoundAuthorized: false,
-    reviewDecision: 'APPROVED', requireAutomatedReviewForAutoMerge: true, ...over,
-  });
-  let r = resolveApprovedShortcut(g());
-  assert.equal(r.granted, false, '强制自动审查开启时,independent@head + APPROVED 也不得直接放行');
-  assert.match(r.reason, /automated-review|独立审查|review-receipt/i, '拒绝理由必须指向强制自动审查,不是别的');
-  // own-account + head 绑定授权同样不豁免——人工授权只开紧急通道,不豁免正常路径的强制审查
-  r = resolveApprovedShortcut(g({ approvalBasis: { basis: 'own-account' }, ownAckRequired: true, headBoundAuthorized: true }));
-  assert.equal(r.granted, false);
-  // 对照组:配置未开启(undefined)→ 现状兼容,三条件全过即 granted
-  r = resolveApprovedShortcut({ approvalBasis: { basis: 'independent' }, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
-  assert.equal(r.granted, true, '未配置时保持现状(既有仓库不受伤)');
+test('SC-2(修订,裁决 3)requireAutomatedReviewForAutoMerge 不改 approvedShortcut 的 GitHub 事实——约束落在路由层', () => {
+  // 裁决 3:approvedShortcut 只是 GitHub approval 事实(聚合裁决 ∧ head 绑定 ∧ own-account
+  // 约束),强制自动化审查开启时**仍如实为 true**;约束的是结构性 approved 的路由与合并
+  // 资格——路由转 review-pending-approved-bypass(auto.action=review),合并资格由
+  // current-head clean 回执收口(structuralBypassReady,见 pre-merge-check.mjs 与 K1)。
+  const fact = resolveApprovedShortcut({ approvalBasis: { basis: 'independent' }, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
+  assert.equal(fact.granted, true, 'independent@head + APPROVED 的 shortcut 是 GitHub approval 事实,不随强制策略翻转');
+  // own-account + head 绑定授权同为事实层成立(配置 ownAckRequired 关闭时)
+  const factOwn = resolveApprovedShortcut({ approvalBasis: { basis: 'own-account' }, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
+  assert.equal(factOwn.granted, true);
+  // 路由层:强制策略开启 + shortcut 成立 → review-pending-approved-bypass(basis 仍是
+  // approved,先独立审查、凭当前 head clean 回执才能合)
+  let route = decideStructuralBypassRoute({ structuralCanBypass: true, approvedShortcut: true, isAdminAuthor: false, requireAutomatedReviewForAutoMerge: true });
+  assert.equal(route.route, 'review-pending-approved-bypass', '强制策略下 approved shortcut 不再直接 bypass');
+  assert.equal(route.basis, 'approved');
+  // 对照组:策略未开启 → 现状路由 bypass-structural-block(既有仓库不受伤)
+  route = decideStructuralBypassRoute({ structuralCanBypass: true, approvedShortcut: true, isAdminAuthor: false });
+  assert.equal(route.route, 'bypass-structural-block');
+  // 合并资格层收口(不在此重复实现):pre-merge-check.mjs 的 structuralBypassReady 对
+  // review-pending-approved-bypass 同样要求 receiptClean——见 premerge-approval-basis K1。
 });
 
 // ── SC-3:break-glass 唯一合法形态表(breakGlassApprovers 独立于 admins)──
@@ -162,12 +166,16 @@ test('SC-3 名单解耦:admins 含成员但 breakGlassApprovers 不含 → 不�
   assert.ok(glassOnly.authorized, 'breakGlass 名单含 PraiseZhu 即授权,admins 空不影响');
 });
 
-test('SC-3 breakGlassApprovers 未配置 → 恒不授权(fail-closed;自动化时代人工紧急通道必须显式配置,旧代码红)', () => {
+test('SC-3 兼容期两组(裁决 1):breakGlassApprovers 缺失 → 回退 admins;显式 [] → 关闭紧急通道', () => {
   const comment = { author: 'PraiseZhu', isBot: false, body: `/approve-merge ${HEAD}`, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' };
-  for (const bg of [undefined, null, []]) {
+  // 缺失(undefined/null)→ 兼容回退 admins:作者在 admins 即构成授权
+  for (const bg of [undefined, null]) {
     const r = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], breakGlassApprovers: bg, headRefOid: HEAD });
-    assert.equal(r.authorized, null, `breakGlassApprovers=${JSON.stringify(bg)} 未配置必须不授权`);
+    assert.ok(r.authorized, `breakGlassApprovers=${JSON.stringify(bg)} 缺失必须回退 admins(作者在 admins → 授权)`);
   }
+  // 显式 [] → 紧急通道关闭,任何命令都不授权(fail-closed)
+  const r = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], breakGlassApprovers: [], headRefOid: HEAD });
+  assert.equal(r.authorized, null, 'breakGlassApprovers=[] 显式空名单必须关闭紧急通道');
 });
 
 test('SC-3 headRefOid 缺失/非法 → break-glass 全灭(fail-closed,没有"当前 head"可比对绝不放行)', () => {

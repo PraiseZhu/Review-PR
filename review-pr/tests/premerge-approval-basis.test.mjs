@@ -368,17 +368,18 @@ test('I2 · 被编辑过的授权评论 → 拒绝且 editedAuthComments 显式�
 });
 
 test('I3 · Mivo 强制策略(requireAutomatedReviewForAutoMerge=true)+ loop 托管 + APPROVED@head + 无回执 → 一切自动化合并均不 ready(旧代码红)', () => {
-  // 新语义:配置强制自动审查后,即便 GitHub APPROVED + current head + head 绑定授权,
-  // 没有 current-head clean 回执,approved shortcut 不 granted、structuralBypassReady
-  // 不成立——自动化合并必须审查后落回执。旧代码(只按 approvedShortcut 判 ready)→ true。
+  // 新语义(裁决 3):配置强制自动审查后,即便 GitHub APPROVED + current head + head 绑定
+  // 授权,没有 current-head clean 回执,structuralBypassReady 不成立——自动化合并必须
+  // 审查后落回执。approvedShortcut 仍是 GitHub approval 事实(granted=true 如实,裁决 3:
+  // 删掉要求 granted=false 的错误断言),约束落在路由(review-pending-approved-bypass)与
+  // 合并资格(回执门)。旧代码(只按 approvedShortcut 判 ready)→ true。
   const { out } = runCheck({
     approveCommit: CURRENT, ownAckRequired: true,
     approveMergeComment: '/approve-merge {CURRENT}', loopManaged: true, requireAutomatedReview: true,
     breakGlassApprovers: ['PraiseZhu'],
   });
   assert.equal(out.loopExclusion.matched, true, '前提:loop 身份必须被认定');
-  assert.equal(out.approvedShortcut.granted, false, '强制自动审查开启时,head 绑定授权不豁免正常路径');
-  assert.match(out.approvedShortcut.reason, /automated-review|独立审查|review-receipt/i, '拒绝理由必须指向强制自动审查');
+  assert.equal(out.approvedShortcut.granted, true, 'shortcut 是 GitHub approval 事实,强制策略不翻转它(裁决 3)');
   assert.equal(out.authorizedFastMergeAvailable, false, 'loop 托管 PR 无条件封死紧急通道');
   assert.match(out.authorizedFastMergeInfo.blockedReason, /loop-managed-pr-fast-merge-forbidden/);
   assert.equal(out.structuralBypassReady, false, '无 current-head clean 回执时 structural bypass 不得 ready(旧代码在此 true → 红)');
@@ -410,16 +411,15 @@ test('J · 四 basis 反向变异对(全链路):同一 fixture 只改一个维�
 
 // ── automated-review-gate wave0 delta(2026-08-08):Mivo 强制策略 + breakGlass 独立 + 三条路径回执对照 ──
 
-test('K1 · requireAutomatedReviewForAutoMerge=true:approved(independent@head)+ 无回执 → shortcut 拒且 bypass 不 ready(旧代码红);落回执后 ready', () => {
+test('K1 · requireAutomatedReviewForAutoMerge=true:approved(independent@head)+ 无回执 → bypass 不 ready(旧代码红);落回执后 ready', () => {
   const f = setup({ approveCommit: CURRENT, approver: 'kirozeng', requireAutomatedReview: true });
   const run = () => JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f.repo, env: f.env, encoding: 'utf8' }).stdout);
   const before = run();
-  assert.equal(before.approvedShortcut.granted, false, '强制审查开启时 independent@head + APPROVED 也不 granted(旧代码 true → 红)');
-  assert.match(before.approvedShortcut.reason, /automated-review|独立审查|review-receipt/i);
+  assert.equal(before.approvedShortcut.granted, true, 'shortcut 是 GitHub approval 事实,强制策略不翻转它(裁决 3)');
   assert.equal(before.structuralBypassReady, false, '无 current-head clean 回执 → 不 ready(旧代码 true → 红)');
   assert.equal(before.receiptGate.stage2Clean, false, '普通合并路径同样无回执不可合');
-  // 落 current-head clean 回执后:自动化路径转 ready(强制审查是常开语义——
-  // approvedShortcut 恒不 granted,放行与否只看回执,见 K1 头部注释)
+  // 落 current-head clean 回执后:自动化路径转 ready(强制审查下放行与否只看回执,
+  // structuralRoute=review-pending-approved-bypass 要求 receiptClean)
   writeReceiptFor(f, liveBindings(f));
   const after = run();
   assert.equal(after.structuralBypassReady, true, '回执落定后 structural bypass ready(唯一凭证)');
@@ -475,12 +475,20 @@ test('K3 · breakGlass 名单独立接线:admins 含成员但 breakGlassApprover
   out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f2.repo, env: f2.env, encoding: 'utf8' }).stdout);
   assert.equal(out.authorizedFastMergeAvailable, true, 'breakGlass 含发令者 + 机械前提过 → 可用');
   assert.ok(out.authorizedFastMergeInfo, '有效授权 → 通道信息非空');
-  // 未配置 breakGlassApprovers → 恒不可用(旧代码 admins 生效 → true → 红)
+  // 兼容期两组(裁决 1):缺失 breakGlassApprovers → 回退 admins(本 fixture admins 含
+  // PraiseZhu)→ 通道可用 + 回退 warning;显式 [] → 关闭紧急通道。
   const f3 = setup({
     approveCommit: CURRENT, ownAckRequired: true,
     approveMergeComment: '/approve-merge {CURRENT}',
   });
   out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f3.repo, env: f3.env, encoding: 'utf8' }).stdout);
-  assert.equal(out.authorizedFastMergeAvailable, false, '未配置 breakGlass → 紧急通道关闭(fail-closed,旧代码红)');
+  assert.equal(out.authorizedFastMergeAvailable, true, '缺失 breakGlassApprovers → 兼容回退 admins,名单成员人工命令仍可用(裁决 1)');
+  assert.match((out.configWarnings ?? []).join(';'), /breakGlassApprovers 未配置.*回退到 admins/, '兼容回退必须产出显式 warning');
+  const f4 = setup({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}', breakGlassApprovers: [],
+  });
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f4.repo, env: f4.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.authorizedFastMergeAvailable, false, 'breakGlassApprovers=[] 显式空名单 → 紧急通道关闭(fail-closed)');
   assert.equal(out.authorizedFastMergeInfo, null);
 });

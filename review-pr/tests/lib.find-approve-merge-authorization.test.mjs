@@ -58,16 +58,21 @@ test('headRefOid 缺失/非法 → 全部判 stale(fail-closed,没有"当前 hea
   }
 });
 
-test('非名单 / bot 的命令不算;breakGlassApprovers 未配置 → 恒不授权(fail-closed)', () => {
+test('非名单 / bot 的命令不算;breakGlassApprovers 缺失 → 回退 admins,显式 [] → 关闭(兼容期两组)', () => {
   const r1 = findApproveMergeAuthorization({ comments: [c('outsider', `/approve-merge ${HEAD}`)], admins: UNRELATED_ADMINS, breakGlassApprovers: BREAK_GLASS, headRefOid: HEAD });
   assert.equal(r1.authorized, null);
   const r2 = findApproveMergeAuthorization({ comments: [c('PraiseZhu', `/approve-merge ${HEAD}`, { isBot: true })], admins: UNRELATED_ADMINS, breakGlassApprovers: BREAK_GLASS, headRefOid: HEAD });
   assert.equal(r2.authorized, null);
-  // 未配置 breakGlassApprovers(undefined/空)→ 紧急通道关闭,任何命令都不授权
-  for (const bg of [undefined, null, []]) {
-    const r3 = findApproveMergeAuthorization({ comments: [c('PraiseZhu', `/approve-merge ${HEAD}`)], admins: UNRELATED_ADMINS, breakGlassApprovers: bg, headRefOid: HEAD });
-    assert.equal(r3.authorized, null, `breakGlassApprovers=${JSON.stringify(bg)} 未配置必须不授权`);
+  // 兼容期(裁决 1)两组语义:
+  //   缺失(undefined/null)→ 回退 admins 名单(与 resolveMergeAuthorizationPolicy 同口径),
+  //   作者在 admins 即构成授权——不是"恒不授权";
+  for (const bg of [undefined, null]) {
+    const r3 = findApproveMergeAuthorization({ comments: [c('PraiseZhu', `/approve-merge ${HEAD}`)], admins: ['PraiseZhu'], breakGlassApprovers: bg, headRefOid: HEAD });
+    assert.ok(r3.authorized, `breakGlassApprovers=${JSON.stringify(bg)} 缺失必须回退 admins(作者在 admins → 授权)`);
   }
+  //   显式 [] → 紧急通道关闭,任何命令都不授权(fail-closed)
+  const r4 = findApproveMergeAuthorization({ comments: [c('PraiseZhu', `/approve-merge ${HEAD}`)], admins: ['PraiseZhu'], breakGlassApprovers: [], headRefOid: HEAD });
+  assert.equal(r4.authorized, null, 'breakGlassApprovers=[] 显式空名单必须关闭紧急通道');
 });
 
 test('admins 含成员但 breakGlassApprovers 不含 → 不授权(名单解耦的核心语义,旧实现红)', () => {

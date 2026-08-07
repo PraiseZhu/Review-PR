@@ -195,7 +195,7 @@ try {
   // 见 lib.mjs parseApproveMergeShaCommands 注释)。
   // SC-1(2026-08-08):发令名单改用 mergePolicy.breakGlassApprovers(未配置时兼容回退到
   // admins 并已产出 warning)——人工 break-glass 与 admin-trust 不再共用同一份名单。
-  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: breakGlassApprovers, headRefOid: m.headRefOid });
+  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, breakGlassApprovers, headRefOid: m.headRefOid });
   // SC-B(2026-08-04 #469 复盘 + 复审修订):ApprovalBasis 单一真相源——approve 必须绑定当前
   // head 才算数,own-account(与巡审同账号)的 approve 受 mergeAuthorization 配置约束。
   // reviewDecision(GitHub 聚合裁决)是 approved shortcut 的必要但不充分合取条件——两个视角

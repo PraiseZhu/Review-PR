@@ -931,7 +931,7 @@ try {
   // 报告/汇总/合并致谢,不能悄悄吞掉(见 evaluateAuthorizedFastMerge 与其 reportOnly)。
   // SC-1(2026-08-08):发令名单改用 mergePolicy.breakGlassApprovers(未配置时兼容回退到
   // admins 并已写进 CONFIG_WARNINGS)——人工 break-glass 与 admin-trust 不再共用名单。
-  const approveMergeAuth = findApproveMergeAuthorization({ comments, admins: breakGlassApprovers, headRefOid: meta.headRefOid });
+  const approveMergeAuth = findApproveMergeAuthorization({ comments, breakGlassApprovers, headRefOid: meta.headRefOid });
   // SC-B(2026-08-04 #469 复盘):ApprovalBasis 单一真相源(与 pre-merge-check.mjs 同一对
   // lib 纯函数,禁止各写判据)。
   const latestReviewsConn = g.latestOpinionatedReviews ?? null;

@@ -1079,11 +1079,13 @@ export function parseApproveMergeShaCommands(body) {
 
 /**
  * 授权快速合并通道的确定性检测(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」)。
- * `admins` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge <完整 head SHA>`
- * (判定口径见 `parseApproveMergeShaCommands`)= 人工已过安全与代码审查的明确授权。
+ * `breakGlassApprovers` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge <完整
+ * head SHA>`(判定口径见 `parseApproveMergeShaCommands`)= 人工已过安全与代码审查的明确
+ * 授权。
  * 安全边界:
  *   - 机器人自己发的评论不算(comments 数组的 isBot 已由调用方标注);
- *   - `admins` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为 null(fail-closed);
+ *   - `breakGlassApprovers` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为
+ *     null(fail-closed);
  *   - 已编辑的评论不算(`updatedAt !== createdAt` → `edited`,要求重发);
  *   - **授权绑定 head SHA**(SC-A,2026-08-04):命令里的 SHA 必须精确等于当前 `headRefOid`
  *     才有效;不等(之后又推了新 commit / force-push 换了 head)计入 `stale`,需对新 head
@@ -1091,9 +1093,18 @@ export function parseApproveMergeShaCommands(body) {
  *     判定(该数据源已实测失效,见 parseApproveMergeShaCommands 注释);
  *   - 旧裸格式 `/approve-merge` 计入 `legacyBare`,不构成授权,调用方应提醒重发。
  * `comments` 是已映射过的评论数组(`{ author, isBot, createdAt, updatedAt, url, body }`)。
+ *
+ * SC-1(2026-08-08):授权名单与 `admins`(admin-trust 信任名单)解耦——`breakGlassApprovers`
+ * 是紧急通道的唯一授权名单,context.mjs / pre-merge-check.mjs 只传策略解析出的
+ * `resolveMergeAuthorizationPolicy().breakGlassApprovers`。兼容期(裁决):`breakGlassApprovers`
+ * 未提供(null/undefined)时回退到 `admins` 参数(与策略层"字段缺失回退 admins"同口径),
+ * 显式 `[]` 才是"关闭紧急通道"。`adminsConfigured` 字段名保留(表示"授权名单已配置且非空")。
  */
-export function findApproveMergeAuthorization({ comments, admins, headRefOid }) {
-  const { logins: adminLogins } = normalizeLoginList(admins);
+export function findApproveMergeAuthorization({ comments, breakGlassApprovers, admins, headRefOid }) {
+  // 兼容期回退:未显式传入授权名单 → 沿用 admins(旧调用点/旧测试不因改名受伤;
+  // 与 resolveMergeAuthorizationPolicy 的缺失回退语义一致)。
+  const effectiveList = breakGlassApprovers == null ? (admins ?? []) : breakGlassApprovers;
+  const { logins: adminLogins } = normalizeLoginList(effectiveList);
   const adminSet = new Set(adminLogins);
   if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [], edited: [], legacyBare: [] };
   const eligible = (comments ?? []).filter((c) => !c.isBot && adminSet.has((c.author ?? '').toLowerCase()));

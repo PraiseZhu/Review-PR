@@ -191,8 +191,10 @@ test('SC-3 路由反向:旧 SHA(非当前 head)→ stale 提示进输出,不路�
   assert.notEqual(out.auto.action, 'authorized-fast-merge');
 });
 
-test('SC-3 路由反向:未配置 breakGlassApprovers → 恒不路由(紧急通道关闭,fail-closed;旧代码红)', () => {
-  // 旧代码:admins=['PraiseZhu'] 即授权名单 → requested=true。新语义:未配置 breakGlass → 关闭
+test('SC-3 路由兼容期两组(裁决 1):breakGlassApprovers 缺失 → 回退 admins 可用+warning;显式 [] → 关闭', () => {
+  // 缺失回退:mergeAuth 未配置 → resolveMergeAuthorizationPolicy 回退到 admins(含
+  // PraiseZhu)作为 /approve-merge 发令名单并产出 warning——名单成员人工 + 当前 head 的
+  // 命令仍构成授权(兼容期语义,不再"未配置恒不授权")
   const { repo, env } = setup({ commentNodes: [{
     author: { login: 'PraiseZhu', __typename: 'User' },
     body: `/approve-merge ${HEAD}`,
@@ -202,9 +204,21 @@ test('SC-3 路由反向:未配置 breakGlassApprovers → 恒不路由(紧急通
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(out, `输出应为 JSON,got status=${r.status}`);
-  assert.equal(out.authorizedFastMerge.requested, false, '未配置 breakGlass → 人工命令也不授权');
-  assert.equal(out.authorizedFastMerge.eligible, false);
-  assert.notEqual(out.auto.action, 'authorized-fast-merge');
+  assert.equal(out.authorizedFastMerge.requested, true, '缺失 breakGlassApprovers → 回退 admins,名单成员人工命令仍授权(兼容期)');
+  assert.match((out.configWarnings ?? []).join(';'), /breakGlassApprovers 未配置.*回退到 admins/, '兼容回退必须产出显式 warning(裁决 1),不能静默');
+  // 显式 [] → 紧急通道关闭:任何人工命令都不路由
+  const { repo: repo2, env: env2 } = setup({ commentNodes: [{
+    author: { login: 'PraiseZhu', __typename: 'User' },
+    body: `/approve-merge ${HEAD}`,
+    createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
+  }], mergeAuth: { breakGlassApprovers: [] } });
+  const r2 = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo2, env: env2, encoding: 'utf8' });
+  let out2 = null;
+  try { out2 = JSON.parse(r2.stdout); } catch { /* fallthrough */ }
+  assert.ok(out2, `输出应为 JSON,got status=${r2.status}`);
+  assert.equal(out2.authorizedFastMerge.requested, false, '显式 [] → 关闭紧急通道,人工命令不授权');
+  assert.equal(out2.authorizedFastMerge.eligible, false);
+  assert.notEqual(out2.auto.action, 'authorized-fast-merge');
 });
 
 test('SC-3 路由反向:breakGlassApprovers 不含发令者(admins 含)→ 不路由(名单解耦,旧代码红)', () => {
@@ -226,8 +240,10 @@ test('SC-3 路由反向:breakGlassApprovers 不含发令者(admins 含)→ 不�
 // ── Mivo 强制策略(requireAutomatedReviewForAutoMerge)路由:GitHub APPROVED 不能直接 bypass ──
 
 test('L1 · Mivo 强制策略:requireAutomatedReviewForAutoMerge=true + 作者在 admins + APPROVED@head + CI 绿 + 无回执/无人工命令 → action=review(旧代码红)', () => {
-  // 新语义:配置强制自动审查后,即便 GitHub APPROVED + 绑定当前 head + 作者在 admins,
-  // 没有 current-head clean 回执也绝不直接 bypass——必须先路由 review(独立审查)。
+  // 新语义(裁决 3):配置强制自动审查后,即便 GitHub APPROVED + 绑定当前 head + 作者在
+  // admins,没有 current-head clean 回执也绝不直接 bypass——必须先路由 review(独立审查)。
+  // approvedShortcut 仍是 GitHub approval 事实(granted=true 如实),约束落在路由层:
+  // 结构性 BLOCKED 下 route=review-pending-approved-bypass → auto.action=review。
   // 旧代码:approvedShortcut 成立 → route=bypass-structural-block → action=bypass-structural-block → 红
   const { repo, env } = setup({
     commentNodes: [],
@@ -241,8 +257,7 @@ test('L1 · Mivo 强制策略:requireAutomatedReviewForAutoMerge=true + 作者�
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
   assert.equal(out.approvalBasis.basis, 'independent', '前提:approve 绑定当前 head');
-  assert.equal(out.approvedShortcut.granted, false, '强制自动审查开启时 approved shortcut 不成立(旧代码 true → 红)');
-  assert.match(out.approvedShortcut.reason, /automated-review|独立审查|review-receipt/i);
+  assert.equal(out.approvedShortcut.granted, true, 'shortcut 是 GitHub approval 事实,强制策略不翻转它(裁决 3)');
   assert.equal(out.auto.action, 'review', 'GitHub APPROVED 也不能直接 bypass,必须路由 review(旧代码 bypass-structural-block → 红)');
   assert.equal(out.auto.isSkip, false);
 });

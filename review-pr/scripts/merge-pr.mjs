@@ -186,7 +186,10 @@ try {
     }
   })();
   if (!basisGranted) {
-    refuse(`basis=${basis} 未获得合并前现场复核的资格(读 precheck 输出:standardMergeAvailable=${precheckOut.standardMergeAvailable},structuralBypassReady=${precheckOut.structuralBypassReady},structuralBypassBasis=${precheckOut.structuralBypassBasis},selfMergeAvailable=${precheckOut.selfMergeAvailable},authorizedFastMergeAvailable=${precheckOut.authorizedFastMergeAvailable})——拒绝合并`);
+    const hint = basis === 'authorized-fast-merge'
+      ? ';authorized-fast-merge 只认 breakGlassApprovers 名单成员人工发出的 /approve-merge <当前 head 完整 40 位 SHA> 现场授权评论(break-glass)——无有效授权评论即拒绝'
+      : '';
+    refuse(`basis=${basis} 未获得合并前现场复核的资格(读 precheck 输出:standardMergeAvailable=${precheckOut.standardMergeAvailable},structuralBypassReady=${precheckOut.structuralBypassReady},structuralBypassBasis=${precheckOut.structuralBypassBasis},selfMergeAvailable=${precheckOut.selfMergeAvailable},authorizedFastMergeAvailable=${precheckOut.authorizedFastMergeAvailable})${hint}——拒绝合并`);
   }
   // SC-1(2026-08-08)审计增强:break-glass 合并把授权评论 URL / 发令者从 precheck 结果
   // 带进 intent 记录,事后可确认人工触发来源(自动轮询无法制造该字段)。
