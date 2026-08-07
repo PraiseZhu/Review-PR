@@ -7,9 +7,6 @@
 //     实际 packaged config load 后 resolve 返回 require=false,breakGlass 回退 admins,
 //     显式 [] 关闭失效——配置写了等于没写,还带着回退 warning。修复:两个键移入
 //     `mergeAuthorization` 对象(与 Mivo 一致),保留中性默认 false/[]。
-//     本文件的 A1 用例直接读**实际落盘的 packaged config**(loadRules() 走真实解析链,
-//     JSON.parse 直接读 config/ + dist/ + preview-dist/ 三份文件),不是手工拼的对象——
-//     未来任何一份 shape 回漂,测试当场红。
 //   A2(malformed require flag 静默 fail-open):`requireAutomatedReviewForAutoMerge:
 //     'true'` 这类非 boolean 值此前被 `=== true` 静默变 false 且无 warning,结构性
 //     approved 可免 current-head clean 回执直接合。修复:键缺失 = 兼容 false;
@@ -17,21 +14,53 @@
 //     null 按「显式写了但写错」算 malformed 而非缺失)= fail-closed 按 true 处理
 //     (从安全方向强制审查)+ 显著 warning。
 //
+// 环境隔离纪律(复验失败后补强,2026-08-08):本文件**不在测试进程内直接调用
+// `loadRules()`**——它读 REVIEW_PR_RULES_FILE env > 进程 CWD 的
+// <REPO_ROOT>/agent-use/docs/pr-rules.json > skill 默认 config 三层优先级,测试进程
+// CWD 不同(如 lead 的 Mivo 主仓)会读到完全不同的配置实例甚至 TypeError。
+// 改为:
+//   ① packaged config 集成断言绑定 `parse(CONFIG)`——JSON.parse 直接读本 skill 实际
+//      落盘的 config/pr-rules.json,不依赖进程 CWD/env;
+//   ② loadRules 的真实优先级行为用**隔离子进程**验证:显式设置 cwd/REVIEW_PR_REPO_ROOT
+//      到不含目标仓 config 的临时目录、显式清除 REVIEW_PR_RULES_FILE,再断言
+//      loadRulesWithSource() 读到的文件路径精确等于 CONFIG(确定性,不猜);
+//   ③ 目标仓形态(Mivo 现状:mergeAuthorization 只有 ownAccountApprovalRequiresAck,
+//      无 breakGlassApprovers)用临时仓库根 + 子进程回归,证明 loadRules 优先级与
+//      resolver 在该形态下的设计行为(缺失 → 回退 admins + warning)双双有测试覆盖。
+// 同一命令从任意 CWD 运行结果一致。
+//
 // 反向变异:把 resolver 改回旧写法 `mergeAuth.requireAutomatedReviewForAutoMerge === true`
 // (malformed 当 false),A2 矩阵全部红;把配置 shape 改回顶层,A1 packaged-config 用例
 // (断言无回退 warning)当场红。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolveMergeAuthorizationPolicy, loadRules } from '../scripts/lib.mjs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveMergeAuthorizationPolicy } from '../scripts/lib.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG = join(__dirname, '..', 'config', 'pr-rules.json');
 const DIST_CONFIG = join(__dirname, '..', '..', 'dist', 'config', 'pr-rules.json');
 const PREVIEW_CONFIG = join(__dirname, '..', '..', 'preview-dist', 'config', 'pr-rules.json');
+const LIB = join(__dirname, '..', 'scripts', 'lib.mjs');
 const parse = (p) => JSON.parse(readFileSync(p, 'utf8'));
+
+// 在隔离子进程里跑 loadRulesWithSource():cwd/repoRoot 显式给定、REVIEW_PR_RULES_FILE
+// 显式清除——测试进程自身的 CWD/env 完全不影响结果。
+function runLoadRulesIn(cwd, repoRoot) {
+  const script = [
+    `import { loadRulesWithSource } from ${JSON.stringify(pathToFileURL(LIB).href)};`,
+    'const { rules, rulesFile } = loadRulesWithSource();',
+    'console.log(JSON.stringify({ rulesFile, hasMergeAuth: rules && typeof rules.mergeAuthorization === "object" && rules.mergeAuthorization !== null }));',
+  ].join('\n');
+  const env = { ...process.env };
+  delete env.REVIEW_PR_RULES_FILE;
+  env.REVIEW_PR_REPO_ROOT = repoRoot;
+  return spawnSync(process.execPath, ['--input-type=module', '--eval', script], { cwd, env, encoding: 'utf8' });
+}
 
 // ── A1:packaged config 必须是嵌套 mergeAuthorization 形态,resolver 结果中性且无回退 ──
 
@@ -45,14 +74,43 @@ test('A1 源配置 shape:breakGlassApprovers/requireAutomatedReviewForAutoMerge 
   assert.equal('requireAutomatedReviewForAutoMerge' in cfg, false, '顶层不得残留 requireAutomatedReviewForAutoMerge(旧漂移 shape)');
 });
 
-test('A1 实际 packaged config 喂 resolver(loadRules 真实解析链):require=false、breakGlass=[],无回退 warning', () => {
-  const rules = loadRules(); // 走 REVIEW_PR_RULES_FILE > 目标仓 > skill 默认 的真实解析优先级
+test('A1 实际 packaged config(JSON.parse 源文件绑定)喂 resolver:require=false、breakGlass=[],无回退 warning', () => {
+  // 直接 parse(CONFIG) 绑定本 skill 实际落盘配置——不调用 loadRules(),不依赖进程
+  // CWD/env(测试进程 CWD 不同会读到别的配置实例,复验失败根因)。
+  const rules = parse(CONFIG);
   assert.equal(rules.mergeAuthorization.breakGlassApprovers.length, 0);
   assert.equal(rules.mergeAuthorization.requireAutomatedReviewForAutoMerge, false);
   const { requireAutomatedReviewForAutoMerge, breakGlassApprovers, warnings } = resolveMergeAuthorizationPolicy(rules);
   assert.equal(requireAutomatedReviewForAutoMerge, false, '中性默认必须 false');
   assert.deepEqual(breakGlassApprovers, [], '显式 [] 必须生效(不再是未配置回退)');
   assert.deepEqual(warnings, [], '显式 [] 已配置 → 不得产出 breakGlass 回退 warning(旧漂移 shape 会回退 admins 并告警)');
+});
+
+test('A1 loadRules 默认优先级(隔离子进程):无目标仓 config + 清除 REVIEW_PR_RULES_FILE → 读 skill 默认 config 路径', () => {
+  const work = mkdtempSync(join(tmpdir(), 'review-pr-loadrules-isolated-'));
+  const r = runLoadRulesIn(work, work);
+  assert.equal(r.status, 0, `子进程失败: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.rulesFile, resolve(CONFIG), '隔离 cwd 无 agent-use/docs/pr-rules.json 时必须落到 skill 默认 config 路径');
+  assert.equal(out.hasMergeAuth, true, '默认 config 必须带 mergeAuthorization 对象');
+});
+
+test('A1 目标仓形态回归(隔离子进程,模拟 Mivo cwd):REPO_ROOT 有 agent-use/docs/pr-rules.json → loadRules 读目标仓配置,缺失 breakGlass 回退+warning 是设计行为', () => {
+  const work = mkdtempSync(join(tmpdir(), 'review-pr-loadrules-target-'));
+  const repo = join(work, 'repo');
+  mkdirSync(join(repo, 'agent-use', 'docs'), { recursive: true });
+  // Mivo 现状形态:mergeAuthorization 只有 ownAccountApprovalRequiresAck,无 breakGlassApprovers
+  const targetRules = { admins: ['PraiseZhu'], mergeAuthorization: { ownAccountApprovalRequiresAck: true } };
+  writeFileSync(join(repo, 'agent-use', 'docs', 'pr-rules.json'), JSON.stringify(targetRules));
+  const r = runLoadRulesIn(work, repo);
+  assert.equal(r.status, 0, `子进程失败: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.rulesFile, resolve(join(repo, 'agent-use', 'docs', 'pr-rules.json')), '目标仓 config 存在时必须读它(优先级 ②)');
+  // 该形态喂 resolver:require 缺失 → false;breakGlass 缺失 → 回退 admins + warning(设计行为,不是漂移)
+  const policy = resolveMergeAuthorizationPolicy(parse(join(repo, 'agent-use', 'docs', 'pr-rules.json')));
+  assert.equal(policy.requireAutomatedReviewForAutoMerge, false);
+  assert.deepEqual(policy.breakGlassApprovers, ['praisezhu'], '缺失 → 兼容回退 admins');
+  assert.ok(policy.warnings.some((w) => /breakGlassApprovers 未配置.*回退到 admins/.test(w)), '回退必须显式告警');
 });
 
 test('A1 重建产物 dist/preview-dist 与源配置同 shape:嵌套形态 + resolver 结果一致(防 dist 再漂移)', () => {
