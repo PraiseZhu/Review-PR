@@ -379,6 +379,7 @@ try {
   // OID 门只在 non-null 时比对,于是被完全旁路。
   const provisional = mkVerdict();
   const registeredHazards = [];
+  const skippedHazards = [];
   if (provisional.verdict !== 'invalid' && answeredYes.length > 0) {
     try {
       const inbox = loadInbox(STATE_DIR);
@@ -399,7 +400,17 @@ try {
           try {
             const v = ghJson(['pr', 'view', String(cand.referencedPr), '--repo', repoSlug, '--json', 'headRefOid']);
             originHead = (v.headRefOid ?? '').toLowerCase();
-          } catch (e) { throw new Error(`取 origin PR #${cand.referencedPr} 的 head 失败:${String(e.message ?? e).slice(0, 160)}`); }
+          } catch (e) {
+            // 候选抽取(extractEscapeCandidates)对 issue 编号同样"多收"——body 里
+            // "修复 #424"若 #424 是 issue,审查方判 yes 后这里 gh pr view 必然失败。
+            // issue 无 head、也不构成"前 PR 逃过审查"的逃逸模式,跳过该候选而不是判
+            // 整轮 invalid(否则 body 引用 issue 的 PR 永久无法合并,3 次后 blocked)。
+            // 只有编号既不是 PR 也不是 issue(真异常)时才维持 fail-closed throw。
+            let isIssue = false;
+            try { ghJson(['issue', 'view', String(cand.referencedPr), '--repo', repoSlug, '--json', 'number']); isIssue = true; } catch { isIssue = false; }
+            if (isIssue) { skippedHazards.push({ candidateId: a.candidateId, referencedNumber: cand.referencedPr, reason: 'referenced-number-is-issue-not-pr' }); continue; }
+            throw new Error(`取 origin PR #${cand.referencedPr} 的 head 失败:${String(e.message ?? e).slice(0, 160)}`);
+          }
         }
         if (!/^[0-9a-f]{40}$/.test(originHead)) throw new Error(`origin PR #${cand.referencedPr} 的 head 不是完整 40 位 SHA(${originHead || '空'})——激活核验的 origin OID 门不能留空`);
         const base = {
@@ -453,7 +464,7 @@ try {
     ok: true, pr, mode, verdict, reasons, blocked, deliveryReasons,
     attempts: attempts.count, snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
     ledgerHash, effectiveOpenCount: ledgerResult.effectiveOpenCount, acceptedRiskCount: ledgerResult.acceptedRiskCount,
-    injectedOpenIds, registeredHazards,
+    injectedOpenIds, registeredHazards, skippedHazards,
     authoritative: {
       coverageKeyCount: auth.coverageKeys.length, segmentCount: auth.segments.length,
       requiredProfileAnswerCount: auth.requiredProfileAnswers.length,

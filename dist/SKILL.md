@@ -131,6 +131,7 @@ JSON、禁止贴 `run-log` 落盘路径；打回评论、内部汇总与各类�
 （`[#123](https://github.com/<owner>/<repo>/pull/123)`），纯文本通道退化为
 `#123 https://github.com/<owner>/<repo>/pull/123`。
 
+<!-- dist:strip:start preview-tpl-abc -->
 ### 模板 A：PR 打回评论
 
 5.2「不通过：请求修改」的 `REQUEST_CHANGES`/`COMMENT` 正文按此结构，P0/P1 按第 4
@@ -213,6 +214,7 @@ PR 评论正文按此结构（不分 thread 模式与 `--conflict` 模式，只�
 换成"和 `<base>` 有冲突，卡着合不了 🤨"，收尾换成具体操作（merge 最新
 `origin/<base>` 后 push）；表情按配额 0–1 个，首选 `🤨`/`😌`。
 
+<!-- dist:strip:end preview-tpl-abc -->
 ### 模板 D：产品/架构门告知（人格关闭）
 
 3.4 命中产品/UI 或架构 gate、运行 `product-hold.mjs` 时的 `commentBody`
@@ -232,6 +234,7 @@ Mivo 拦了一下 PR #<N>，不是代码问题。
 纪律：**第一句必须先澄清"不是代码问题"**；全条无傲娇、**0 个表情**（人格与表情
 双关闭）；必须写明放行方式（讨论 issue 回复 / Approve / 标回 Ready 任一皆可）。
 
+<!-- dist:strip:start preview-tpl-ef -->
 ### 模板 E：合并致谢播报（群内公开）
 
 `notify-merge-ack.mjs` 走通播报出口时的 `title`/`text`：
@@ -252,6 +255,7 @@ PR #<N> 合了 —— 感谢 @<author>。
 "禁流程行话、按对照表翻人话、禁原始 JSON、禁贴 run-log 落盘路径、PR 号渲染成
 可点击链接"等纪律全部保留，不因语气放开而放松。
 
+<!-- dist:strip:end preview-tpl-ef -->
 ## Skill 路径与目标仓库
 
 把当前 `SKILL.md` 所在目录解析为绝对路径 `SKILL_ROOT`。所有确定性脚本只从
@@ -1268,6 +1272,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   之前的修法没有覆盖到当前这条触发路径"（如实描述"持续未修"，不是"收敛后复发"）。
 
 ### 5.1 通过：批准并合并
+<!-- dist:strip:start preview-5.1 -->
 
 只有同时满足以下条件才进入 3A：
 
@@ -1435,7 +1440,9 @@ no-op，`posted:false`，不影响合并本身；loop 托管的 PR 有自己的�
   时它会作为主消息的 thread 回复发出；webhook 通道拿不到消息 ts 无法 thread，
   此时 details 静默不发，不要把要点挪进 --summary 凑长度。
 
+<!-- dist:strip:end preview-5.1 -->
 ### 5.2 不通过：请求修改
+<!-- dist:strip:start preview-5.2 -->
 
 存在任一 P0/P1 时，按「对外话术与人格边界」模板 A 起草简洁、可执行的 review
 （人格淡，傲娇最多一处半句，结尾必须消除"要去求人重审"的心理负担）：
@@ -1481,6 +1488,7 @@ auto 模式没有代修合并——该路径仅限交互模式由用户逐次授
 body 总述的意见，若仓库没有该项 required check，就没有任何机制挡住合并**——必须在
 1.7 报告与汇总里以「需要你」开头显著提示，提醒自己合并前手动确认已处理。
 
+<!-- dist:strip:end preview-5.2 -->
 ### 5.3 维护者专用分流
 
 - `format.hitsServer=true` 且没有作者已通知 Lizi 的证据：无论代码审查是否通过，都走
@@ -1510,6 +1518,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   不重复写入或猜测成功。
 
 ### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并
+<!-- dist:strip:start preview-5.4 -->
 
 下方「投递消息模板」发给的是**跟进会话本身**（一个执行任务的 agent），是工作
 指令，不是对人的消息，不套「对外话术与人格边界」的人格模板；跟进会话完成后若
@@ -1635,7 +1644,9 @@ persistent` 从未真的收敛过，不构成"复发"，不触发本段升级阶
 新的卡点内容，指纹按现有规则（`headRefOid` 变化）天然会触发重投，不需要单独为
 "是否复发"加一层状态。
 
+<!-- dist:strip:end preview-5.4 -->
 ### 5.5 冲突代合并（主干侧解决，不推作者分支）
+<!-- dist:strip:start preview-5.5 -->
 
 当前账号没有向他人 PR 分支推送的权限，因此**永远不向 PR head 分支推代码、不
 rebase、不 force-push**。冲突的代处理只有一条路：在主干侧做一次"带冲突解决的
@@ -1675,7 +1686,9 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
 **汇总要求**：走本路径落地的 PR 在汇总中标注"主干代合并"，写明冲突文件与验证
 结果；abort 的写明"语义冲突，转作者/跟进会话"。
 
+<!-- dist:strip:end preview-5.5 -->
 ### 5.6 代修合并（merge-then-fix，仅交互模式）
+<!-- dist:strip:start preview-5.6 -->
 
 帮别人合并时审查发现 P0/P1、或还叠着冲突，而维护者不想再和作者往返——可以选择
 "先合并、后修复"：先按 5.5 的主干侧合并把 PR 落进默认分支（冲突只在 merge commit
@@ -1733,6 +1746,7 @@ base 的冲突），用户在 5.2 的分叉里明确选择"代修合并"。
 **汇总要求**：走本路径的 PR 在最终结论/汇总中标注"代修合并"，写明冲突文件数、
 代修问题数（P0/P1 计数）、follow-up commit 列表与验证结果，以及告知评论已发/未发。
 
+<!-- dist:strip:end preview-5.6 -->
 ### 5.7 收敛止损（收敛检查点与红色通报，机器侧触发）
 
 本节消费 4.2 `record-convergence-round.mjs` 返回的 `checkpointRequired` /

@@ -1380,7 +1380,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    `heldDraftResults`，按创建时间排序；格式失败、普通 gate 未过或权限不足的候选记为
    skip，不 checkout；`security.hardHits` 非空的候选按 `pushback-security` 优先打回
    （不 checkout、不进审查）。记录每个候选的 base、head SHA、文件路径和原因，并用候选间的
-   `baseRefName`／head 分支交叉比对标出 stacked 依赖（见 3.6）。（preview 版：5.4 fix-handoff 与 worktree 回收已剥离——`fix-session-state.mjs`/`fix-worktree-cleanup.mjs` 不在产物中，本段跳过。）
+   `baseRefName`／head 分支交叉比对标出 stacked 依赖（见 3.6）。（preview 版：5.4 fix-handoff 与 worktree 回收已剥离，相关脚本不在产物中，本段跳过。）
    （漏播的合并致谢由 `pre-check.mjs` 负责补发，**不在本阶段跑**：本轮次在「没有 open PR」
    时压根不会创建，而一批 PR 刚全部合完、open 清零正是最该发致谢的时刻，因此该动作必须与
    「有没有审查活」解耦，（preview 版：合并致谢播报已剥离——`notify-merge-backfill.mjs` 不在产物中，本节不适用。）
@@ -1403,8 +1403,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
-   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进
-   会话，循环跟进直到合并（本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
+   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）（preview 版：5.4 fix-handoff 已剥离——这类卡点不打回不投递，在汇总标注「需维护者跟进」）；重叠排队的
    候选在冲突项落地后补入处理。任何单 PR 异常都写入汇总并继续其他候选。每个候选处理
    完（无论落地、跳过还是异常）运行一次 `refresh-lock.mjs --token <token>` 心跳续期；
    `lost=true` 时立即终止本轮剩余候选的所有写操作。
@@ -1571,7 +1570,7 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 
 1. 只移除本次创建的 review worktree 和临时分支；不触碰用户已有 worktree 或 active
    session 的 cwd。`.cindy-worktrees` 等托管目录下唯一的例外是
-   `fix-worktree-cleanup.mjs` 按「对应 PR 已合并／关闭」实查后的回收（见 5.4），
+   （preview 版：`fix-worktree-cleanup.mjs` 已剥离，托管 worktree 回收由维护者在主仓执行；见 5.4）
    除此之外一律不碰；
 2. 回到 `originalBranch`，确认 `git status --short`，不自动修复用户已有脏改动；
 3. 合并成功且用户明确要求同步时，才对默认分支执行 fast-forward-only 更新；
