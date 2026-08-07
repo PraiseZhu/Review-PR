@@ -11,6 +11,11 @@
 //      merge 成功但进程在写 result 前崩溃 → 留下孤儿 intent,下轮 --reconcile 只读核
 //      PR 实际状态补齐 result(reconciled:true),不会丢"合并发生过"这个事实。
 //   2. **强制 --match-head-commit**:--match-head 是必填参数,不带就拒绝执行。
+//   3. **basis 现场复核(SC-5,2026-08-08)**:非 dry-run / 非 reconcile 的真实合并前,自跑
+//      pre-merge-check.mjs 按 basis 精确核对现场资格(approved / admin-trust / self-merge
+//      都要求 current-head clean 阶段二回执相关的资格;authorized-fast-merge 由现场 GitHub
+//      评论复核 break-glass),且 precheck 的 headRefOid 必须等于 --match-head——调用方不能
+//      只传 --basis 绕过阶段二回执;复核失败一律 fail-closed 拒绝合并(无旁路参数)。
 //
 // 诚实边界(SC4.3):本脚本只能约束"经它执行"的合并;agent 绕开它直接敲 raw
 // `gh pr merge` 不在机器承诺内——那一层靠 SKILL.md 的过程纪律 + tests 的静态
@@ -124,9 +129,84 @@ try {
   let viewer = '';
   try { viewer = ghJson(['api', 'user', '--jq', '{login}']).login ?? ''; } catch { /* fallthrough */ }
   if (!viewer) refuse('无法确认当前 gh 账号身份(gh api user 失败)——审计身份字段不允许为空,拒绝执行合并');
+
+  // ── SC-5(2026-08-08):basis-aware pre-merge gate 现场复核 ──
+  // 唯一合并出口不信任调用方口头声称的 basis——真实合并前自跑 pre-merge-check.mjs 现场
+  // 复核(TOCTOU:判定与执行之间 head / 回执 / 授权评论可能已变)。四种 basis 的现场资格:
+  //   approved              → standardMergeAvailable,或 structuralBypassReady 且
+  //                           structuralBypassBasis==='approved'(强制自动化审查策略
+  //                           requireAutomatedReviewForAutoMerge 下该路径已含 current-head
+  //                           clean 阶段二回执门,见 pre-merge-check.mjs);
+  //   admin-trust           → structuralBypassReady 且 structuralBypassBasis==='admin-trust'
+  //                           (本身已要求 current-head clean 回执);
+  //   self-merge            → selfMergeAvailable;
+  //   authorized-fast-merge → authorizedFastMergeAvailable(人工 /approve-merge break-glass,
+  //                           由现场 GitHub 评论复核证明;唯一免阶段二例外)。
+  // 任何 basis 都要求 precheck 的 headRefOid 精确等于 --match-head(判定与执行同一 head);
+  // 复核失败/不可用一律 fail-closed 拒绝合并,不新增 --skip-precheck / --force-review-bypass
+  // 之类旁路参数(SC-5:调用方不能只传 --basis 绕过阶段二回执)。
+  //
+  // 退出码语义(2026-08-08 复审修复):pre-merge-check 的 exit 0 只表示「普通合并
+  // (canMerge/selfMerge/authorized-fast)可用」;结构性 BLOCKED(blockClass=structural-check)
+  // 下即便 structuralBypassReady=true,canMerge 仍 false → 恒 exit 2——structural
+  // approved/admin-trust 两条 bypass 路径的生产契约就是 status=2 + 输出里
+  // structuralBypassReady=true。因此 status 0 **与** 2 都允许进入 JSON 解析,由下方
+  // basisGranted 按 basis 精确裁决;status 1(脚本自身错误)/信号终止/输出不可解析仍
+  // fail-closed 拒绝。不要把 structuralBypassReady 并入 pre-merge 顶层 canMerge/exit 0
+  // ——那会让其他调用方把「有某 basis 资格」误读成普通合并资格。
+  const precheckScript = join(dirname(fileURLToPath(import.meta.url)), 'pre-merge-check.mjs');
+  const precheck = spawnSync(process.execPath, [precheckScript, String(pr)], { encoding: 'utf8', timeout: 180_000 });
+  if (precheck.error) {
+    refuse(`合并前 basis 现场复核无法执行(${precheck.error.message})——fail-closed,不合并,下轮重试`);
+  }
+  if (precheck.status !== 0 && precheck.status !== 2) {
+    refuse(`合并前 basis 现场复核脚本自身失败(exit ${precheck.status})——fail-closed,不合并,下轮重试;precheck 输出:${(precheck.stdout || precheck.stderr || '').slice(0, 400)}`);
+  }
+  let precheckOut = null;
+  try { precheckOut = JSON.parse(precheck.stdout); } catch { /* fallthrough */ }
+  if (!precheckOut || typeof precheckOut !== 'object') {
+    refuse('合并前 basis 现场复核输出不可解析——fail-closed,不合并');
+  }
+  if ((precheckOut.headRefOid ?? '').toLowerCase() !== matchHead) {
+    refuse(`合并前 basis 现场复核针对的 head(${precheckOut.headRefOid ?? '(空)'})与 --match-head(${matchHead})不一致——拒绝合并,需对当前 head 重新复核`);
+  }
+  const basisGranted = (() => {
+    switch (basis) {
+      case 'approved':
+        return precheckOut.standardMergeAvailable === true ||
+          (precheckOut.structuralBypassReady === true && precheckOut.structuralBypassBasis === 'approved');
+      case 'admin-trust':
+        return precheckOut.structuralBypassReady === true && precheckOut.structuralBypassBasis === 'admin-trust';
+      case 'self-merge':
+        return precheckOut.selfMergeAvailable === true;
+      case 'authorized-fast-merge':
+        return precheckOut.authorizedFastMergeAvailable === true;
+      default:
+        return false;
+    }
+  })();
+  if (!basisGranted) {
+    refuse(`basis=${basis} 未获得合并前现场复核的资格(读 precheck 输出:standardMergeAvailable=${precheckOut.standardMergeAvailable},structuralBypassReady=${precheckOut.structuralBypassReady},structuralBypassBasis=${precheckOut.structuralBypassBasis},selfMergeAvailable=${precheckOut.selfMergeAvailable},authorizedFastMergeAvailable=${precheckOut.authorizedFastMergeAvailable})——拒绝合并`);
+  }
+  // SC-1(2026-08-08)审计增强:break-glass 合并把授权评论 URL / 发令者从 precheck 结果
+  // 带进 intent 记录,事后可确认人工触发来源(自动轮询无法制造该字段)。
+  const breakGlass = basis === 'authorized-fast-merge' && precheckOut.authorizedFastMergeInfo
+    ? {
+      authorizer: precheckOut.authorizedFastMergeInfo.admin ?? null,
+      authorizationUrl: precheckOut.authorizedFastMergeInfo.commentUrl ?? null,
+      commentCreatedAt: precheckOut.authorizedFastMergeInfo.commentCreatedAt ?? null,
+    }
+    : null;
   // intent 先落盘:写不进去就拒绝合并——审计不可用时宁可不合(fail-closed)。
+  // SC-5(2026-08-08):intent 额外记录 basis 已通过现场复核(basisVerified),break-glass
+  // 再带授权评论 URL / 发令者(breakGlass,见上方现场复核段)——审计可回溯"凭什么合"。
   try {
-    appendRecord({ phase: 'intent', opId, pr, slug, ts: new Date().toISOString(), strategy, matchHead, basis, viewer, mode: argOf('--mode') ?? 'unknown', argv: args });
+    appendRecord({
+      phase: 'intent', opId, pr, slug, ts: new Date().toISOString(), strategy, matchHead, basis, viewer,
+      mode: argOf('--mode') ?? 'unknown', argv: args,
+      basisVerified: true,
+      ...(breakGlass ? { breakGlass } : {}),
+    });
   } catch (e) {
     refuse(`审计 intent 写入失败(${e.message})——拒绝执行合并:审计不可用时不合`);
   }
