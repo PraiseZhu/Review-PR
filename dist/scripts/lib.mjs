@@ -962,14 +962,32 @@ export function normalizeLoginList(value) {
  *     warning(旧仓 /approve-merge 行为不变;Mivo 显式配置后不再走回退)。
  *   - 已配置但形态非法(非数组 / 混入非字符串 / 空字符串)→ normalizeLoginList
  *     fail-closed 处理能用的部分,并输出 warning 显著告警(不抛错、不静默当空名单)。
+ *   - `requireAutomatedReviewForAutoMerge` **键缺失**(mergeAuthorization 对象里没有
+ *     这个键,或整个 mergeAuthorization 缺失)→ 兼容 false(旧仓行为不变,不告警);
+ *     **键存在但值非 boolean**(null/string/number/object/undefined 等显式 malformed,
+ *     null 按「显式写了但写错」算 malformed 而非缺失,因为键在配置里就占了一个位置)
+ *     → fail-closed 按 true 处理(从安全方向强制自动化审查,绝不静默放宽成 false)
+ *     并输出 warning 显著告警(审 A2,2026-08-08:此前 `'true'` 这类字符串会静默变
+ *     false 且无任何 warning,结构性 approved 可免阶段二回执直接合——fail-open)。
  *
  * 返回 `{ requireAutomatedReviewForAutoMerge: boolean, breakGlassApprovers: string[],
  *         warnings: string[] }`。
  */
 export function resolveMergeAuthorizationPolicy(rules) {
   const mergeAuth = rules?.mergeAuthorization ?? {};
-  const requireAutomatedReviewForAutoMerge = mergeAuth.requireAutomatedReviewForAutoMerge === true;
   const warnings = [];
+  // 存在性按 `in` 判(键真在对象里才算「存在」),缺失走兼容 false 不告警;
+  // 存在但非 boolean → fail-closed 按 true(宁严勿松)+ 显著告警,禁止静默当 false。
+  let requireAutomatedReviewForAutoMerge = false;
+  if ('requireAutomatedReviewForAutoMerge' in mergeAuth) {
+    const raw = mergeAuth.requireAutomatedReviewForAutoMerge;
+    if (typeof raw !== 'boolean') {
+      requireAutomatedReviewForAutoMerge = true;
+      warnings.push('mergeAuthorization.requireAutomatedReviewForAutoMerge 配置形态不合法(应为 boolean,null/string/number/object 均不接受)——fail-closed 按 true 处理(强制自动化审查开启),请改为显式 true/false');
+    } else {
+      requireAutomatedReviewForAutoMerge = raw;
+    }
+  }
   let breakGlassApprovers = [];
   if (mergeAuth.breakGlassApprovers == null) {
     // 兼容期回退:未配置 → 沿用 admins 名单作为 /approve-merge 发令名单,显式告警

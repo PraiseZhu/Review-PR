@@ -34,7 +34,7 @@ const DEFAULT_COMMENT_NODES = [{
   body: '/approve-merge', // 旧裸格式:不授权,必须进 legacyBareComments
   createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
 }];
-function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928' } = {}) {
+function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928' } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'context-scan-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -48,6 +48,10 @@ function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAu
   // context.mjs 模块加载期就消费 titleTypes 等完整契约键——基于 skill 默认配置叠加本测试
   // 需要的键,而不是手写残缺 rules。
   const baseRules = JSON.parse(readFileSync(join(__dirname, '..', 'config', 'pr-rules.json'), 'utf8'));
+  // stripMergeAuthorization=true 模拟「目标仓自己的 pr-rules.json 完全没配 mergeAuthorization」
+  // (旧仓形态)——skill 默认配置自 2026-08-08 起已显式配了 mergeAuthorization.breakGlassApprovers=[],
+  // 不剥掉这个键,「缺失回退」场景就永远测不到(显式 [] 与缺失是两种语义,裁决 1 两组都要覆盖)。
+  if (stripMergeAuthorization) delete baseRules.mergeAuthorization;
   writeFileSync(rulesFile, JSON.stringify({
     ...baseRules,
     admins: ['PraiseZhu', ...adminsExtra], // 作者 aj0928 不在名单 → 结构性 BLOCKED 落 skip-structural-block 分支
@@ -192,14 +196,15 @@ test('SC-3 路由反向:旧 SHA(非当前 head)→ stale 提示进输出,不路�
 });
 
 test('SC-3 路由兼容期两组(裁决 1):breakGlassApprovers 缺失 → 回退 admins 可用+warning;显式 [] → 关闭', () => {
-  // 缺失回退:mergeAuth 未配置 → resolveMergeAuthorizationPolicy 回退到 admins(含
-  // PraiseZhu)作为 /approve-merge 发令名单并产出 warning——名单成员人工 + 当前 head 的
-  // 命令仍构成授权(兼容期语义,不再"未配置恒不授权")
+  // 缺失回退:目标仓 pr-rules.json 完全没配 mergeAuthorization(stripMergeAuthorization)
+  // → resolveMergeAuthorizationPolicy 回退到 admins(含 PraiseZhu)作为 /approve-merge
+  // 发令名单并产出 warning——名单成员人工 + 当前 head 的命令仍构成授权(兼容期语义,
+  // 不再"未配置恒不授权")
   const { repo, env } = setup({ commentNodes: [{
     author: { login: 'PraiseZhu', __typename: 'User' },
     body: `/approve-merge ${HEAD}`,
     createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
-  }] });
+  }], stripMergeAuthorization: true });
   const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
