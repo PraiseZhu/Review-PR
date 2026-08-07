@@ -266,3 +266,45 @@ test('⑨ R7 第 3 轮核验:PATH 里的 node 不可用时激活仍要跑(用 pr
   assert.equal(out.hazardActivation.action, 'activate');
   assert.ok(existsSync(stateDir));
 });
+
+// ── automated-review-gate wave0 追加(2026-08-08):SC-2 原子护栏的「直接调用」契约 ──
+
+test('⑩ break-glass 直接调用:--basis authorized-fast-merge --admin → 审计 basis/matchHead 如实', () => {
+  const { repo, stateDir, log, env } = setup();
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'auto']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const audit = readAudit(stateDir);
+  assert.equal(audit[0].basis, 'authorized-fast-merge', '审计必须记录 break-glass 通道的 basis');
+  assert.equal(audit[0].matchHead, HEAD);
+  assert.equal(audit[1].ok, true);
+  const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.ok(merges[0].args.includes('--admin'), 'break-glass 是 admin bypass 路径,必须带 --admin');
+  assert.ok(merges[0].args.includes(HEAD));
+});
+
+test('⑪ 执行侧护栏如实:传入的 --match-head 原样进 gh 命令与审计(判定 head 与执行 head 的原子护栏是"如实传递",不是校验通过)', () => {
+  // 若调用方在判定后 head 已换(传旧 SHA),GitHub 的 --match-head-commit 会拒绝合并——
+  // 本 wrapper 的职责是把这个 head 原样送进命令与审计,不偷偷改成别的值。
+  const OTHER = 'a'.repeat(40);
+  const { repo, stateDir, log, env } = setup();
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', OTHER, '--basis', 'approved']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const audit = readAudit(stateDir);
+  assert.equal(audit[0].matchHead, OTHER);
+  const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.ok(merges[0].args.includes('--match-head-commit'));
+  assert.ok(merges[0].args.includes(OTHER), '执行侧必须带调用方传入的 head,不得替换');
+});
+
+test('⑫ 直接调用契约:--delete-branch 进 gh 命令且写进审计 argv', () => {
+  const { repo, stateDir, log, env } = setup();
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--delete-branch']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.ok(merges[0].args.includes('--delete-branch'));
+  const audit = readAudit(stateDir);
+  assert.ok(JSON.stringify(audit[0].argv).includes('--delete-branch'), '审计 argv 必须反映真实命令');
+});

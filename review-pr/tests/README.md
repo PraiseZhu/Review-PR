@@ -60,3 +60,28 @@ glob。单跑一个文件同理:`node --test tests/lib.decide-structural-bypass-
 是例外:它们测的是 `../scripts/lib.review-output-shape.mjs`,一个独立于 `lib.mjs`
 的纯函数模块(审查输出契约的形状校验 + 跨轮 join key 归一化,不涉及 gh/git 状态,
 故意不并入 `lib.mjs`)。
+
+## automated-review-gate wave0(2026-08-08):合并授权策略测试
+
+本波把「自动审查闸」的策略锁成测试:正常自动合并均需 current-head clean receipt,
+人工 break-glass 是唯一例外。契约与文件映射:
+
+| 契约 | 锁定文件 |
+|------|---------|
+| SC-1:approval 必须绑定当前 head(四 basis 中只有 independent / own-account@head 作数,stale/none 一律不作数) | `lib.merge-authorization-policy.test.mjs` + `premerge-approval-basis.test.mjs` |
+| SC-2:approved shortcut = 聚合裁决 ∧ head 绑定 ∧ own-account 配置约束三条件合取;判定 head 与执行 head 的原子护栏(merge-pr 强制 --match-head 且 gh 命令带 --match-head-commit) | `lib.merge-authorization-policy.test.mjs` + `merge-pr.test.mjs` |
+| SC-3:break-glass 唯一合法形态 = admins 成员人工 + 未编辑 + 独占一行 + 当前 head SHA;bot/非 admin/edited/stale/裸格式/head 缺失一律不授权 | `lib.merge-authorization-policy.test.mjs` + `lib.find-approve-merge-authorization.test.mjs` + `premerge-approval-basis.test.mjs` + `context-scan-wiring.test.mjs` |
+| SC-4:break-glass 机械前提(泄密扫描未完成/硬命中、物理冲突、required 检查未全绿或读取失败)不可绕过;硬阻断时 reportOnly 不吞信号 | `lib.merge-authorization-policy.test.mjs` + `lib.evaluate-authorized-fast-merge.test.mjs` |
+| SC-5:loop 托管 PR 无条件封死 break-glass;「唯一例外」不豁免事后审计 | `lib.merge-authorization-policy.test.mjs` + `pkg-a.review-gates.test.mjs` + `premerge-approval-basis.test.mjs` |
+| SC-6:自动化不得生成授权评论(字面量只允许在解析/消费文件;投递脚本零字面量;canary 保证 detector 可观测) | `static-break-glass-origin.test.mjs` |
+
+- `lib.merge-authorization-policy.test.mjs`(新)——合并授权策略矩阵:四 basis 分类、
+  shortcut 三条件合取、break-glass 唯一形态表、机械前提预测红集。策略层组合断言,
+  不重复各单测文件的逐函数矩阵。
+- `static-break-glass-origin.test.mjs`(新)——自动化不得生成授权评论的静态纪律
+  (与 `static-merge-inventory.test.mjs` 同款):`/approve-merge` 字面量只允许出现在
+  `lib.mjs`/`context.mjs`/`pre-merge-check.mjs` 三个解析/消费文件,且这些文件不得含
+  评论投递调用点;任何评论投递脚本的非注释代码行零字面量。SC-6d 是 detector 的
+  canary(植入违规必须被抓住、纯注释提及不得误伤),防"现在碰巧没违规"的侥幸。
+- 反向变异纪律(SC-1..SC-5 各文件):表驱动「预测红集」——每个输入维度逐一变异,
+  断言翻转恰红在目标字段/理由上,不是靠别的维度碰巧红。

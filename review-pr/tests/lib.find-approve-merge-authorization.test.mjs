@@ -80,3 +80,43 @@ test('多条有效授权取最新一条', () => {
   });
   assert.equal(r.authorized.url, 'late');
 });
+
+// ── automated-review-gate wave0 追加(SC-3 边界,2026-08-08):以上矩阵的缺口补齐 ──
+
+test('多 SHA 行:一条评论里命中当前 head 的那一行即授权(按行解析,不整体作废)', () => {
+  const r = findApproveMergeAuthorization({
+    comments: [c('PraiseZhu', `/approve-merge ${OLD}\n/approve-merge ${HEAD}`)],
+    admins: ADMINS, headRefOid: HEAD,
+  });
+  assert.ok(r.authorized);
+  assert.equal(r.authorized.author, 'PraiseZhu');
+});
+
+test('admins 名单与评论作者大小写不敏感(normalizeLoginList 归一化接线)', () => {
+  const r = findApproveMergeAuthorization({
+    comments: [c('praisezhu', `/approve-merge ${HEAD}`)],
+    admins: ['PraiseZhu', 'KIROZENG'], headRefOid: HEAD,
+  });
+  assert.ok(r.authorized, '作者小写 + 名单大写必须命中');
+  assert.equal(r.authorized.author, 'praisezhu');
+});
+
+test('跨时点语义:授权后 push 换 head,同一评论再查即失效(不是"历史授权永久有效")', () => {
+  const comment = c('PraiseZhu', `/approve-merge ${HEAD}`);
+  const atOldHead = findApproveMergeAuthorization({ comments: [comment], admins: ADMINS, headRefOid: HEAD });
+  assert.ok(atOldHead.authorized, '授权时 head 匹配 → authorized');
+  const NEW_HEAD = 'f'.repeat(40);
+  const afterPush = findApproveMergeAuthorization({ comments: [comment], admins: ADMINS, headRefOid: NEW_HEAD });
+  assert.equal(afterPush.authorized, null, 'push 换 head 后同一评论必须失效');
+  assert.equal(afterPush.stale.length, 1);
+});
+
+test('同账号多格式混合评论:裸格式与带 SHA 行并存时,带 SHA 且命中当前 head 的行构成授权', () => {
+  // legacyBare 判定按"整条评论是否只有裸命令"算——混合评论里出现了带 SHA 行,就不是纯裸格式
+  const r = findApproveMergeAuthorization({
+    comments: [c('PraiseZhu', `/approve-merge\n/approve-merge ${HEAD}`)],
+    admins: ADMINS, headRefOid: HEAD,
+  });
+  assert.ok(r.authorized, '混合评论里命中的 SHA 行必须构成授权');
+  assert.equal(r.legacyBare.length, 0, '带 SHA 行存在时不算裸格式(hasApproveMergeCommand 与 parse 判定分叉)');
+});

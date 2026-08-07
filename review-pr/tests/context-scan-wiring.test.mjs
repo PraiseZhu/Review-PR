@@ -27,7 +27,14 @@ const BODY = [
   '### 风险', '改动集中在扫描分类,失败模式是多扫一轮,无数据破坏面。',
 ].join('\n');
 
-function setup() {
+// wave0 追加(2026-08-08):授权路由接线测试的评论节点旋钮——默认保持旧裸格式场景
+// (作者 PraiseZhu 在 admins 名单),传 commentNodes 可换任何评论形态。
+const DEFAULT_COMMENT_NODES = [{
+  author: { login: 'PraiseZhu', __typename: 'User' },
+  body: '/approve-merge', // 旧裸格式:不授权,必须进 legacyBareComments
+  createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
+}];
+function setup({ commentNodes = DEFAULT_COMMENT_NODES } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'context-scan-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -63,11 +70,7 @@ function setup() {
       repository: { pullRequest: {
         author: { login: 'aj0928' },
         reviewThreads: { nodes: [] },
-        comments: { nodes: [{
-          author: { login: 'PraiseZhu', __typename: 'User' },
-          body: '/approve-merge', // 旧裸格式:不授权,必须进 legacyBareComments
-          createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
-        }] },
+        comments: { nodes: commentNodes },
         timeline: { nodes: [{ commit: { committedDate: '2026-08-04T10:00:00Z', messageHeadline: 'x', oid: HEAD } }] },
         readyEvents: { nodes: [] },
         latestOpinionatedReviews: {
@@ -128,4 +131,56 @@ test('静态词条锁(第 5 轮复审):context.mjs 源码内禁止"既无 APPROV
   // "既无 APPROVED"是谎报,补救指向必须走 approvedShortcut.reason。
   const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
   assert.ok(!src.includes('既无 APPROVED'), 'context.mjs 残留"既无 APPROVED"旧口径(应写"approved shortcut 不成立且作者不在 admins 名单")');
+});
+
+// ── automated-review-gate wave0 追加(2026-08-08):SC-3 授权路由接线 ──
+// 意图:人工 break-glass 是唯一例外——只有「admins 成员人工 + 未编辑 + 独占一行 +
+// 当前 head SHA」会被 context 路由到 authorized-fast-merge;bot 评论与旧 SHA 一律不得。
+
+test('SC-3 路由:admin 人工 + 当前 head SHA → requested=true,auto.action=authorized-fast-merge', () => {
+  const { repo, env } = setup({ commentNodes: [{
+    author: { login: 'PraiseZhu', __typename: 'User' },
+    body: `/approve-merge ${HEAD}`,
+    createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
+  }] });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  assert.equal(out.authorizedFastMerge.requested, true, '有效授权必须被识别为 requested');
+  assert.equal(out.authorizedFastMerge.eligible, true, `机械前提应满足(required 空集+扫描干净):${JSON.stringify(out.authorizedFastMerge)}`);
+  assert.equal(out.authorizedFastMerge.staleComments.length, 0);
+  assert.equal(out.auto.action, 'authorized-fast-merge', 'auto 分流必须路由到紧急通道');
+  assert.equal(out.auto.isSkip, false);
+});
+
+test('SC-3 路由反向:bot 评论发 /approve-merge <当前 head> → 不路由(自动化不能授权)', () => {
+  const { repo, env } = setup({ commentNodes: [{
+    author: { login: 'PraiseZhu', __typename: 'Bot' },
+    body: `/approve-merge ${HEAD}`,
+    createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
+  }] });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  assert.equal(out.authorizedFastMerge.requested, false, 'bot 评论不得成为授权来源');
+  assert.equal(out.authorizedFastMerge.eligible, false);
+  assert.notEqual(out.auto.action, 'authorized-fast-merge');
+  assert.equal(out.authorizedFastMerge.admin, null);
+});
+
+test('SC-3 路由反向:旧 SHA(非当前 head)→ stale 提示进输出,不路由', () => {
+  const { repo, env } = setup({ commentNodes: [{
+    author: { login: 'PraiseZhu', __typename: 'User' },
+    body: `/approve-merge ${OLD}`,
+    createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
+  }] });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  assert.equal(out.authorizedFastMerge.requested, false, '旧 SHA 不构成授权');
+  assert.equal(out.authorizedFastMerge.staleComments.length, 1, '旧 SHA 授权必须显式进 stale 提示(提醒对新 head 重发)');
+  assert.notEqual(out.auto.action, 'authorized-fast-merge');
 });

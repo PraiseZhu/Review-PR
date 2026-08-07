@@ -165,3 +165,50 @@ test('优先级:扫描未完成与泄密硬命中同时出现时(理论上不该
   assert.equal(r.eligible, false);
   assert.match(r.blockedReason, /扫描未成功完成|重试/);
 });
+
+// ── automated-review-gate wave0 追加(SC-4 边界,2026-08-08)──
+
+test('security 缺失/空对象 → fail-closed(未证明无泄露,不当"无命中"处理)', () => {
+  for (const security of [undefined, null, {}]) {
+    const r = evaluateAuthorizedFastMerge({
+      security, mergeStateStatus: 'CLEAN',
+      unresolvedThreadCount: 0, formatPass: true, formatIssues: [], requiredChecks: GREEN_REQUIRED,
+    });
+    assert.equal(r.eligible, false, `security=${JSON.stringify(security)} 必须 fail-closed`);
+    assert.match(r.blockedReason, /扫描未成功完成|重试/);
+  }
+});
+
+test('硬阻断分支 reportOnly 不吞信号(fail-visible:扫描失败/CI 失败时格式与 thread 信号仍显著带出)', () => {
+  const r = evaluateAuthorizedFastMerge({
+    security: { scanned: false, hardHitCount: 0 },
+    mergeStateStatus: 'BLOCKED',
+    unresolvedThreadCount: 2, formatPass: false, formatIssues: ['Title 缺合规 type 前缀'],
+    requiredChecks: GREEN_REQUIRED,
+  });
+  assert.equal(r.eligible, false);
+  assert.deepEqual(r.reportOnly.formatIssues, ['Title 缺合规 type 前缀']);
+  assert.equal(r.reportOnly.unresolvedThreadCount, 2);
+});
+
+test('预测红集(反向变异):全绿基线逐维度变异,每个变异恰好红在目标 blockedReason', () => {
+  const base = {
+    security: SCAN_CLEAN, mergeStateStatus: 'CLEAN',
+    unresolvedThreadCount: 0, formatPass: true, formatIssues: [], requiredChecks: GREEN_REQUIRED,
+  };
+  const ok = evaluateAuthorizedFastMerge(base);
+  assert.equal(ok.eligible, true, '前提:全绿基线必须 eligible=true');
+  const reds = [
+    ['scanned 变 false', { ...base, security: { scanned: false, hardHitCount: 0 } }, /扫描未成功完成|重试/],
+    ['hardHitCount 变 1', { ...base, security: { scanned: true, hardHitCount: 1 } }, /security\.hardHits/],
+    ['mergeStateStatus 变 DIRTY', { ...base, mergeStateStatus: 'DIRTY' }, /DIRTY/],
+    ['requiredFailed 加 lint', { ...base, requiredChecks: { ...GREEN_REQUIRED, requiredFailed: ['lint'] } }, /必需检查失败/],
+    ['requiredPending 加 e2e', { ...base, requiredChecks: { ...GREEN_REQUIRED, requiredPending: ['e2e'] } }, /还在跑/],
+    ['requiredChecks 变 null', { ...base, requiredChecks: null }, /读取失败/],
+  ];
+  for (const [label, input, re] of reds) {
+    const r = evaluateAuthorizedFastMerge(input);
+    assert.equal(r.eligible, false, `${label}:必须 eligible=false`);
+    assert.match(r.blockedReason, re, `${label}:blockedReason 必须锚定该维度`);
+  }
+});

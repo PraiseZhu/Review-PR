@@ -41,7 +41,7 @@ const git = (args, cwd) => {
   return r.stdout.trim();
 };
 
-function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, headFileContent = CLEAN_FILE, omitBaseRefOid = false, filesMeta }) {
+function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, headFileContent = CLEAN_FILE, omitBaseRefOid = false, filesMeta, approveCommentIsBot = false, approveCommentEdited = false, loopManaged = false }) {
   const work = mkdtempSync(join(tmpdir(), 'premerge-469-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -67,9 +67,11 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
     admins: ['PraiseZhu', 'kirozeng', 'aj0928'],
     structuralBypassAllowlist: ['code_scanning', 'code_quality'],
     ...(ownAckRequired ? { mergeAuthorization: { ownAccountApprovalRequiresAck: true } } : {}),
+    // wave0 追加(2026-08-08):loop 托管 PR 场景需要 loopPrExclusion 配置 + 台账
+    ...(loopManaged ? { loopPrExclusion: { titlePrefixes: ['[mivo] '], stateFile: 'history/loops/state.json', forceVerdict: 't2' } } : {}),
   }));
   writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({
-    title: 'feat(canvas): 局部重绘交互升级', body: '正文', state: 'OPEN',
+    title: loopManaged ? '[mivo] fix: 局部重绘交互升级' : 'feat(canvas): 局部重绘交互升级', body: '正文', state: 'OPEN',
     mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision,
     headRefOid: HEAD, baseRefName: 'main',
     ...(omitBaseRefOid ? {} : { baseRefOid: BASE }),
@@ -80,6 +82,13 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
       { __typename: 'CheckRun', name: 'e2e kernel gate (new)', status: 'COMPLETED', conclusion: 'SUCCESS' },
     ],
   }));
+  // wave0 追加:loop 台账(身份门槛,detectLoopExclusion 需要 cluster.pr === 469 才认定托管)
+  if (loopManaged) {
+    mkdirSync(join(repo, 'history', 'loops'), { recursive: true });
+    writeFileSync(join(repo, 'history', 'loops', 'state.json'), JSON.stringify({
+      clusters: { c1: { pr: 469 } },
+    }));
+  }
   writeFileSync(join(fixtures, 'graphql-threads.json'), JSON.stringify({
     data: {
       viewer: { login: 'PraiseZhu' },
@@ -87,9 +96,9 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
         author: { login: 'aj0928' },
         reviewThreads: { nodes: [] },
         comments: { nodes: approveComment ? [{
-          author: { login: 'PraiseZhu', __typename: 'User' },
+          author: { login: 'PraiseZhu', __typename: approveCommentIsBot ? 'Bot' : 'User' },
           body: approveComment,
-          createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
+          createdAt: '2026-08-04T11:00:00Z', updatedAt: approveCommentEdited ? '2026-08-04T12:00:00Z' : '2026-08-04T11:00:00Z', url: 'c1',
         }] : [] },
         ...(includeLatestReviews ? {
           latestOpinionatedReviews: {
@@ -322,4 +331,67 @@ writeReviewReceipt(JSON.parse(process.env.RECEIPT_JSON));`;
   writeReceipt({ ...BIND, knownHazardsHash: 'khh1-before-canonical-change' });
   const drift2 = check();
   assert.equal(drift2.receiptGate.stage2Clean, false, 'canonical hazard 内容漂移必须打 stale');
+});
+
+// ── automated-review-gate wave0 追加(2026-08-08):SC-3/SC-5 在合并闸的接线 + 四 basis 反向变异对 ──
+
+test('I · 自动化不得授权(bot 评论发 /approve-merge <当前 head>)→ requested=false,fast-merge 不可用', () => {
+  const { out } = runCheck({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}', approveCommentIsBot: true,
+  });
+  assert.equal(out.approvedShortcut.granted, false, 'bot 评论不构成 head 绑定授权');
+  assert.equal(out.authorizedFastMergeAvailable, false, 'bot 评论不得打开紧急通道');
+  assert.equal(out.structuralBypassReady, false);
+});
+
+test('I2 · 被编辑过的授权评论 → 拒绝且 editedAuthComments 显式输出(不能让人以为授权凭空消失)', () => {
+  const { out } = runCheck({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}', approveCommentEdited: true,
+  });
+  assert.equal(out.approvedShortcut.granted, false, 'edited 评论不得构成授权');
+  assert.equal(out.authorizedFastMergeAvailable, false);
+  assert.equal(out.editedAuthComments.length, 1, '被拒绝的已编辑授权评论必须显著报告');
+});
+
+test('I3 · loop 托管 PR:即便 admins 成员发了 head 绑定 /approve-merge → 紧急通道仍封死(A2 接线到合并闸)', () => {
+  const { out } = runCheck({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}', loopManaged: true,
+  });
+  assert.equal(out.loopExclusion.matched, true, '前提:loop 身份必须被认定');
+  assert.equal(out.approvedShortcut.granted, true, '前提:授权本身有效(head 绑定)');
+  assert.equal(out.authorizedFastMergeAvailable, false, 'loop 托管 PR 无条件封死紧急通道');
+  assert.match(out.authorizedFastMergeInfo.blockedReason, /loop-managed-pr-fast-merge-forbidden/);
+  // A2 封的是**紧急通道**(跳过审查直接合);loop PR 仍可走正常审查路径合——本场景
+  // approved shortcut 成立(真实 APPROVED review 绑定当前 head + own-account 显式授权),
+  // structuralBypassReady=true 走的是 basis='approved'(有 GitHub review 作凭证),
+  // 不是 admin-trust 免回执捷径。锁点:紧急通道对 loop 不存在,正常路径不受 A2 影响。
+  assert.equal(out.structuralBypassBasis, 'approved', 'loop PR 走正常审查路径时 basis 必须是 approved(review 凭证),不是 admin-trust');
+  assert.equal(out.structuralBypassReady, true, '有真实 APPROVED review + head 绑定授权时正常路径照常可合(A2 不误伤正常路径)');
+});
+
+test('J · 四 basis 反向变异对(全链路):同一 fixture 只改一个维度,basis/shortcut 恰好翻转', () => {
+  // J1:stale→own-account(approveOid 从旧 head 变当前 head)
+  const stale = runCheck({ approveCommit: OLD_APPROVE_COMMIT });
+  assert.equal(stale.out.approvalBasis.basis, 'stale');
+  const fresh = runCheck({ approveCommit: CURRENT });
+  assert.equal(fresh.out.approvalBasis.basis, 'own-account', '只改 approve 绑定 head → basis 必须翻转');
+  // J2:own-account→independent(approver 从 viewer 变独立 reviewer)
+  const own = runCheck({ approveCommit: CURRENT });
+  assert.equal(own.out.approvalBasis.basis, 'own-account');
+  const indep = runCheck({ approveCommit: CURRENT, approver: 'kirozeng' });
+  assert.equal(indep.out.approvalBasis.basis, 'independent', '只改 approver → basis 必须翻转');
+  // J3:shortcut granted→denied(reviewDecision 从 APPROVED 变 REVIEW_REQUIRED,approve 仍是 independent@head)
+  const appr = runCheck({ approveCommit: CURRENT, approver: 'kirozeng' });
+  assert.equal(appr.out.approvedShortcut.granted, true);
+  const denied = runCheck({ approveCommit: CURRENT, approver: 'kirozeng', reviewDecision: 'REVIEW_REQUIRED' });
+  assert.equal(denied.out.approvedShortcut.granted, false, '只改聚合裁决 → shortcut 必须翻转');
+  assert.match(denied.out.approvedShortcut.reason, /github-review-decision-not-approved/);
+  // J4:own-account + 配置开:无授权→有 head 绑定授权(granted 翻转,出路唯一)
+  const noAck = runCheck({ approveCommit: CURRENT, ownAckRequired: true });
+  assert.equal(noAck.out.approvedShortcut.granted, false);
+  const ack = runCheck({ approveCommit: CURRENT, ownAckRequired: true, approveMergeComment: '/approve-merge {CURRENT}' });
+  assert.equal(ack.out.approvedShortcut.granted, true, 'head 绑定 /approve-merge 是 own-account 收紧的唯一出路');
 });

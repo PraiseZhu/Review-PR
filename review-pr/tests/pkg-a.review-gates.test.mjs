@@ -249,3 +249,34 @@ test('A5 接线:revert 走 GitHub 原生 revertPullRequest mutation 且开 ready
   assert.match(s, /revertPullRequest\(input:\s*\{\s*pullRequestId:.*draft:\s*false/s, 'revert PR 必须 ready——draft 不进巡审,闸就断了');
   assert.match(s, /仍走 review-pr 巡审审查合并/, 'revert PR body 必须写明处置路径');
 });
+
+// ── automated-review-gate wave0 追加(2026-08-08):「唯一例外不豁免事后审计」──
+// break-glass(/approve-merge)跳过阶段二回执是设计内的例外,但 loop 托管 PR 事后审计
+// (A5)仍必须把它当漏网告警——紧急通道不写回执,审计闸用 no-receipt 兜住这条例外。
+
+test('A5 唯一例外不豁免:loop PR 经 break-glass 合入(无阶段二回执)→ 审计仍判 no-receipt 漏网', async () => {
+  const { judgeMergedLoopPr } = await import(AUDIT_URL);
+  const H = 'a'.repeat(40);
+  // break-glass 合并 = 有 /approve-merge 授权但无 stage2 审查回执;审计侧看不到授权,只看到无回执
+  const r = judgeMergedLoopPr({ receipt: null, headRefOid: H });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /no-receipt/, 'break-glass 合入的 loop PR 无回执必须判漏网,不得因"紧急通道"豁免');
+});
+
+test('A5 反向变异:唯一能让 ok=true 的形态 = 当前 head + verdict=clean 回执(其余全漏)', async () => {
+  const { judgeMergedLoopPr } = await import(AUDIT_URL);
+  const H = 'a'.repeat(40);
+  const others = [
+    ['无回执', null, /no-receipt/],
+    ['回执无 head 绑定', { headRefOid: null, verdict: 'clean' }, /head|stale/i],
+    ['回执绑定旧 head', { headRefOid: 'b'.repeat(40), verdict: 'clean' }, /stale-receipt/],
+    ['回执非 clean', { headRefOid: H, verdict: 'dirty' }, /verdict|clean/i],
+  ];
+  for (const [label, receipt, re] of others) {
+    const r = judgeMergedLoopPr({ receipt, headRefOid: H });
+    assert.equal(r.ok, false, `${label}:必须判漏网`);
+    assert.match(r.reason, re, `${label}:原因必须锚定该维度`);
+  }
+  const ok = judgeMergedLoopPr({ receipt: { headRefOid: H, verdict: 'clean' }, headRefOid: H });
+  assert.equal(ok.ok, true, '当前 head + clean 回执是唯一放行形态');
+});
