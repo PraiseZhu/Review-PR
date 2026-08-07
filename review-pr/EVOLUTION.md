@@ -141,6 +141,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `escape-hazard-register-issue-ref-deadlock` **escape 候选登记对 issue 引用 fail-closed 死锁** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `8c8e23168fd487473bc8dc48294efcc20d0e4bda`
+  - 现象:body 引用 issue 编号(修复 #424 且 #424 是 issue)时,escapeAssessment=yes 后 gh pr view 取 head 失败→整轮 invalid→3 次 blocked 永久不可合。修复:取 head 失败先查 issue,是 issue 则跳过登记记 skippedHazards,仅真异常维持 fail-closed。实测回归:verdict 回 dirty 非 invalid。
 - `blocked-structural-check-ignores-thirdparty-check-runs` **BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `5178e64`
   - 现象:classifyHeadChecks 走 actions/runs,看不到第三方 App 的 check-run 与 commit status;BLOCKED 分支落进 structural-check 前未查 statusCheckRollup 全集。实测 mivo-canvas#318:Greptile Review conclusion=failure(置信度 3/5 低于本仓要求 4/5),gate 却报「review 与已跑 CI 均无问题」并给出 bypass-structural-block。UNSTABLE 分支早已用 rollup 处理同一类问题,BLOCKED 分支漏了。
   - 提案:BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。

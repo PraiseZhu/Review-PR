@@ -1573,6 +1573,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-07T03:12:11.135Z",
       "lastSeen": "2026-08-07T03:12:11.135Z"
+    },
+    {
+      "fingerprint": "escape-hazard-register-issue-ref-deadlock",
+      "tier": "auto",
+      "title": "escape 候选登记对 issue 引用 fail-closed 死锁",
+      "detail": "body 引用 issue 编号(修复 #424 且 #424 是 issue)时,escapeAssessment=yes 后 gh pr view 取 head 失败→整轮 invalid→3 次 blocked 永久不可合。修复:取 head 失败先查 issue,是 issue 则跳过登记记 skippedHazards,仅真异常维持 fail-closed。实测回归:verdict 回 dirty 非 invalid。",
+      "proposal": null,
+      "status": "landed",
+      "commit": "8c8e23168fd487473bc8dc48294efcc20d0e4bda",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-07T06:22:15.374Z",
+      "lastSeen": "2026-08-07T06:22:15.374Z"
     }
   ],
   "escapedHazards": [
