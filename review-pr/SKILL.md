@@ -872,7 +872,7 @@ skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏
 模型配置。
 
 **唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
-可以压过本门——`admins` 名单成员发出的 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
+可以压过本门——`breakGlassApprovers` 名单成员发出的 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
 不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
 与授权通道谁都压不过它。
 
@@ -1376,15 +1376,18 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
   分页不完整同拒）;
 - current-head approve 若**只来自巡审账号自己**（own-account,机器只认账号,分不清
   同账号下是真人还是自动化会话——同账号一律收紧是意图不是误杀）,且目标仓库配置
-  `mergeAuthorization.ownAccountApprovalRequiresAck: true`,则还需 admins 成员对当前
+  `mergeAuthorization.ownAccountApprovalRequiresAck: true`,则还需 `breakGlassApprovers` 成员对当前
   head 发 `/approve-merge <head SHA>` 才成立;配置未开时保持现状放行;
 - 存在**非巡审账号**的 current-head approve（independent）→ 任何配置下都成立。
 
-**授权快速合并通道**（P2-4：与上面的「admins 名单的结构性 BLOCKED 分级合并」是两条
-完全不同、互不替代的路由，触发条件不同、后果也不同，不要概括成一句——上面那条看
-的是 PR **作者**是否在 `admins` 名单，触发后仍要走完阶段二独立审查、落回执才能合；
-本条看的是有没有 `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**
-阶段二独立审查）：`admins` 名单成员在 PR 评论里发出精确独占一行的
+**授权快速合并通道**（契约：正常自动合并必经阶段二自动化审查，目标仓库可配
+`requireAutomatedReviewForAutoMerge: true` 把该前提从意图变成强制门；人工
+`/approve-merge` break-glass 是**唯一**免阶段二独立审查的例外。P2-4：与上面的
+「admins 名单的结构性 BLOCKED 分级合并」是两条完全不同、互不替代的路由，触发条件
+不同、后果也不同，不要概括成一句——上面那条看的是 PR **作者**是否在 `admins` 名单
+（admin-trust），触发后仍要走完阶段二独立审查、落回执才能合；本条看的是有没有
+`breakGlassApprovers` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**
+阶段二独立审查）：`breakGlassApprovers` 名单成员在 PR 评论里发出精确独占一行的
 `/approve-merge <完整 40 位 head SHA>` 命令（先剔除 fenced code block 与 blockquote，
 剩余每行 trim 后必须精确匹配该格式，不含任何行内追加说明——「独占一行」语义沿用
 owner 2026-08-02 的收紧裁决；**授权绑定 head SHA，SC-A 2026-08-04**：命令里的 SHA
@@ -1511,7 +1514,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
 - 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
   不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
 - 命中 `securityReviewPaths`（`skip-security-review`）：一律转人工，不自动审也不自动
-  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发；`admins` 名单成员发
+  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发；`breakGlassApprovers` 名单成员发
   `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，见 5.1「授权快速合并通道」）。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
