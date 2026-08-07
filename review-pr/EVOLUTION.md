@@ -141,6 +141,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `review-output-shape-examples-in-prompt` **审查输出与 rro-1 契约的字段级格式偏差导致整轮 invalid** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `5815bd8`
+  - 现象:PR #544 审查 agent 输出 5 类格式偏差(familyId/family_id、answer 对象/字符串、coverageKeys 字符串/对象、status/disposition、negativeEvidence command 与引用 run 不一致),主 agent 手工规范化 3 次后才可消费;build-review-task.mjs 的 prompt 只含文字契约、无字段级形状示例,已追加形状参考段
+  - 提案:prompt 增加字段级形状参考(含'command/outputAnchor 必须与引用 run 逐字一致'一致性约束),减少格式往返
 - `escape-hazard-register-issue-ref-deadlock` **escape 候选登记对 issue 引用 fail-closed 死锁** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `8c8e23168fd487473bc8dc48294efcc20d0e4bda`
   - 现象:body 引用 issue 编号(修复 #424 且 #424 是 issue)时,escapeAssessment=yes 后 gh pr view 取 head 失败→整轮 invalid→3 次 blocked 永久不可合。修复:取 head 失败先查 issue,是 issue 则跳过登记记 skippedHazards,仅真异常维持 fail-closed。实测回归:verdict 回 dirty 非 invalid。
 - `blocked-structural-check-ignores-thirdparty-check-runs` **BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `5178e64`

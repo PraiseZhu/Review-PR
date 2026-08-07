@@ -1586,6 +1586,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-07T06:22:15.374Z",
       "lastSeen": "2026-08-07T06:22:15.374Z"
+    },
+    {
+      "fingerprint": "review-output-shape-examples-in-prompt",
+      "tier": "auto",
+      "title": "审查输出与 rro-1 契约的字段级格式偏差导致整轮 invalid",
+      "detail": "PR #544 审查 agent 输出 5 类格式偏差(familyId/family_id、answer 对象/字符串、coverageKeys 字符串/对象、status/disposition、negativeEvidence command 与引用 run 不一致),主 agent 手工规范化 3 次后才可消费;build-review-task.mjs 的 prompt 只含文字契约、无字段级形状示例,已追加形状参考段",
+      "proposal": "prompt 增加字段级形状参考(含'command/outputAnchor 必须与引用 run 逐字一致'一致性约束),减少格式往返",
+      "status": "landed",
+      "commit": "5815bd8",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-07T10:22:05.313Z",
+      "lastSeen": "2026-08-07T10:22:05.313Z"
     }
   ],
   "escapedHazards": [
