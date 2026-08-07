@@ -121,7 +121,7 @@
     {
       "file": "SKILL.md",
       "find": "扫描后按 5.4 运行\n   `fix-session-state.mjs sweep --open <open PR 列表>`，清理已合并／关闭 PR 的\n   跟进会话绑定；随后运行 `fix-worktree-cleanup.mjs --scan` 回收这些 PR 遗留的\n   跟进 worktree 与本地分支（判定与安全边界在脚本内，结果计入汇总，失败不阻塞）。",
-      "replace": "（preview 版：5.4 fix-handoff 与 worktree 回收已剥离——`fix-session-state.mjs`/`fix-worktree-cleanup.mjs` 不在产物中，本段跳过。）"
+      "replace": "（preview 版：5.4 fix-handoff 与 worktree 回收已剥离，相关脚本不在产物中，本段跳过。）"
     },
     {
       "file": "SKILL.md",
@@ -222,6 +222,16 @@
       "file": "SKILL.md",
       "find": "- `selfFixAuthors` 的作者侧问题不提交对自己无效的 `REQUEST_CHANGES`，按 5.4\n  投递给跟进会话自动修复；审查通过后仍可正常合并（含 5.1 的 self-merge）。",
       "replace": "- `selfFixAuthors` 的作者侧问题（preview 版：5.4 fix-handoff 与 5.1 合并已剥离，这类卡点在内部审查输出中标注「需维护者跟进」，不投递、不打回）；"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进\n   会话，循环跟进直到合并（本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的",
+      "replace": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）（preview 版：5.4 fix-handoff 已剥离——这类卡点不打回不投递，在汇总标注「需维护者跟进」）；重叠排队的"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "   `fix-worktree-cleanup.mjs` 按「对应 PR 已合并／关闭」实查后的回收（见 5.4），",
+      "replace": "   （preview 版：`fix-worktree-cleanup.mjs` 已剥离，托管 worktree 回收由维护者在主仓执行；见 5.4）"
     }
   ],
   "replaceFiles": [
