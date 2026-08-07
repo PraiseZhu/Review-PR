@@ -943,6 +943,50 @@ export function normalizeLoginList(value) {
   return { logins, invalid };
 }
 
+/**
+ * 合并授权策略的单一解析函数(SC-1,2026-08-08):把 `mergeAuthorization` 配置里的两个
+ * 新键解析成统一形状,context.mjs 与 pre-merge-check.mjs 共用,防两处判据漂移。
+ *
+ * 配置 Schema(pr-rules.json 的 mergeAuthorization 对象):
+ *   - `requireAutomatedReviewForAutoMerge`(boolean,默认缺失=false):强制自动化审查
+ *     策略开关。开启后,除人工 break-glass(/approve-merge)外,每一种自动合并 basis
+ *     (ordinary / self-merge / structural approved / admin-trust)都必须绑定当前 head
+ *     的 clean 阶段二回执——仅绿 CI 或 GitHub APPROVED 都不能单独放行(SC-2)。
+ *   - `breakGlassApprovers`(string[]):人工 `/approve-merge <SHA>` 发令名单——只决定
+ *     谁能发这条命令跳过阶段二独立审查,与 PR 作者是否在 `admins`(admin-trust 信任
+ *     名单)无关。**拆分自 `admins`**(SC-1):授权快速合并通道不再与 admin-trust 共用
+ *     同一份名单;`admins` 保留作结构性 BLOCKED 的 admin-trust 路由。
+ *
+ * 兼容期规则(未配置新字段的消费仓行为不被静默改变):
+ *   - 未配置 `breakGlassApprovers`(null/undefined)→ 明确回退到 `admins` 名单并输出
+ *     warning(旧仓 /approve-merge 行为不变;Mivo 显式配置后不再走回退)。
+ *   - 已配置但形态非法(非数组 / 混入非字符串 / 空字符串)→ normalizeLoginList
+ *     fail-closed 处理能用的部分,并输出 warning 显著告警(不抛错、不静默当空名单)。
+ *
+ * 返回 `{ requireAutomatedReviewForAutoMerge: boolean, breakGlassApprovers: string[],
+ *         warnings: string[] }`。
+ */
+export function resolveMergeAuthorizationPolicy(rules) {
+  const mergeAuth = rules?.mergeAuthorization ?? {};
+  const requireAutomatedReviewForAutoMerge = mergeAuth.requireAutomatedReviewForAutoMerge === true;
+  const warnings = [];
+  let breakGlassApprovers = [];
+  if (mergeAuth.breakGlassApprovers == null) {
+    // 兼容期回退:未配置 → 沿用 admins 名单作为 /approve-merge 发令名单,显式告警
+    // (SC-1 拆分后仍建议目标仓显式配置,否则发令名单与 admin-trust 名单继续混同)。
+    const { logins } = normalizeLoginList(rules?.admins);
+    breakGlassApprovers = logins;
+    warnings.push('mergeAuthorization.breakGlassApprovers 未配置——兼容期回退到 admins 名单作为 /approve-merge 发令名单(SC-1:建议显式配置拆分,否则发令名单与 admin-trust 名单混同)');
+  } else {
+    const { logins, invalid } = normalizeLoginList(mergeAuth.breakGlassApprovers);
+    breakGlassApprovers = logins;
+    if (invalid) {
+      warnings.push('mergeAuthorization.breakGlassApprovers 配置形态不合法(应为字符串数组,非法条目被过滤)——已按能用的部分处理,请检查配置');
+    }
+  }
+  return { requireAutomatedReviewForAutoMerge, breakGlassApprovers, warnings };
+}
+
 const APPROVE_MERGE_COMMAND = '/approve-merge';
 
 /**
@@ -1461,17 +1505,27 @@ export function resolveApprovedShortcut({ approvalBasis, ownAckRequired, headBou
  *   - 机械前提满足 + approvedShortcut=true → route='bypass-structural-block',basis='approved'。
  *     approvedShortcut 是调用方用 evaluateApprovalBasis + resolveApprovedShortcut 算出的布尔
  *     (2026-08-04 #469 复盘:不再直接消费 reviewDecision——它分不清 approve 绑定的是哪个
- *     head、也分不清 approve 是不是巡审账号自己给的);
+ *     head、也分不清 approve 是不是巡审账号自己给的)。SC-2(2026-08-08):强制自动化审查
+ *     策略开启时(requireAutomatedReviewForAutoMerge=true)此分支改返回
+ *     route='review-pending-approved-bypass'(basis 仍是 'approved')——GitHub APPROVED
+ *     即便绑定当前 head 也不替代自动化审查,先进独立审查,凭当前 head clean 回执才能合
+ *     (pre-merge-check.mjs 的 structuralBypassReady 对这条路同样要求 receiptClean);
  *   - 机械前提满足 + 缺 APPROVED + 作者在 admins 名单 → route='review-pending-admin-bypass',
  *     basis='admin-trust'(典型 ownPr,GitHub 422 禁止自批准;不直接合并,要求本轮先跑一次
  *     独立审查,通过后才能在合并阶段认"审查干净"为 APPROVED 的等价物,调用方负责这一半的
  *     语义核验,本函数只给路由结论);
  *   - 机械前提满足 + 缺 APPROVED + 非 admins 名单 → route='skip-structural-block',
  *     basis=null(2026-08-01 前的默认行为,现在必须显式满足前两条之一才能 bypass)。
+ *
+ * `requireAutomatedReviewForAutoMerge` 缺省 false(=策略关闭,行为与拆分前一致),保证
+ * 未启用强制策略的消费仓与既有单测不受影响。
  */
-export function decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut, isAdminAuthor }) {
+export function decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut, isAdminAuthor, requireAutomatedReviewForAutoMerge = false }) {
   if (!structuralCanBypass) return { route: 'skip-structural-block', basis: null };
-  if (approvedShortcut === true) return { route: 'bypass-structural-block', basis: 'approved' };
+  if (approvedShortcut === true) {
+    if (requireAutomatedReviewForAutoMerge) return { route: 'review-pending-approved-bypass', basis: 'approved' };
+    return { route: 'bypass-structural-block', basis: 'approved' };
+  }
   if (isAdminAuthor) return { route: 'review-pending-admin-bypass', basis: 'admin-trust' };
   return { route: 'skip-structural-block', basis: null };
 }

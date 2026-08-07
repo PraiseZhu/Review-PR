@@ -44,7 +44,7 @@ import {
   loadRules, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks,
   findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideAuthorizedFastMerge, decideStructuralBypassRoute,
   classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut,
-  readReviewReceipt, isReviewReceiptClean, detectLoopExclusion, print, fail, REPO_ROOT, STATE_DIR,
+  resolveMergeAuthorizationPolicy, readReviewReceipt, isReviewReceiptClean, detectLoopExclusion, print, fail, REPO_ROOT, STATE_DIR,
 } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
@@ -90,6 +90,13 @@ try {
   const configWarnings = adminsConfigInvalid
     ? ['pr-rules.json 的 admins 字段配置形态不合法(应为字符串数组),已按能用的部分处理(非法条目被过滤),请检查配置']
     : [];
+  // SC-1(2026-08-08):合并授权策略单一解析——`breakGlassApprovers`(人工 /approve-merge
+  // 发令名单)从 `admins`(admin-trust 信任名单)拆分;`requireAutomatedReviewForAutoMerge`
+  // 开启时,approved/admin-trust/self/ordinary 四条正常路径都要求当前 head 的 clean 阶段二
+  // 回执。缺失新字段走明确兼容回退(breakGlassApprovers 未配置 → 沿用 admins)并产出 warning。
+  const mergePolicy = resolveMergeAuthorizationPolicy(rules);
+  const { requireAutomatedReviewForAutoMerge, breakGlassApprovers } = mergePolicy;
+  configWarnings.push(...mergePolicy.warnings);
 
   const slug = `${owner}/${repo}`;
   const m = ghJson([
@@ -186,7 +193,9 @@ try {
   }));
   // SC-A(2026-08-04):授权改 head SHA 绑定,不再算 latestPushDate(pushedDate 数据源已废,
   // 见 lib.mjs parseApproveMergeShaCommands 注释)。
-  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: rules.admins, headRefOid: m.headRefOid });
+  // SC-1(2026-08-08):发令名单改用 mergePolicy.breakGlassApprovers(未配置时兼容回退到
+  // admins 并已产出 warning)——人工 break-glass 与 admin-trust 不再共用同一份名单。
+  const approveMergeAuth = findApproveMergeAuthorization({ comments: mappedComments, admins: breakGlassApprovers, headRefOid: m.headRefOid });
   // SC-B(2026-08-04 #469 复盘 + 复审修订):ApprovalBasis 单一真相源——approve 必须绑定当前
   // head 才算数,own-account(与巡审同账号)的 approve 受 mergeAuthorization 配置约束。
   // reviewDecision(GitHub 聚合裁决)是 approved shortcut 的必要但不充分合取条件——两个视角
@@ -459,11 +468,17 @@ try {
   // 2026-08-02——此前只看机械前提就直接判 true,与 reviewDecision/回执无关,是本次修的
   // fail-open 口子)。
   // 普通合并路径也必须有有效的阶段二凭证(第 1 轮核验 BLOCKER)。
+  // SC-5(2026-08-08):`standardMergeAvailable` 是普通合并的 basis 专属资格
+  // (机械前提 + 当前 head clean 阶段二回执),与 self-merge / authorized-fast-merge 正交;
+  // 顶层聚合 `canMerge` 只供兼容展示,merge-pr.mjs 按 basis 读专属字段,不依赖模糊聚合值。
+  // (canMerge 表达式保持原样——static-shared-snapshot 静态守卫 pin 这一行的 stage2 合取)
   const canMerge = canMergeMechanical && receiptGate.stage2Clean;
+  const standardMergeAvailable = canMerge;
   const structuralCanBypass = blockClass === 'structural-check' && structuralAllowlisted &&
     !!structuralBlock?.canBypass && structuralBlock.canBypass !== 'never';
   const { route: structuralRoute, basis: structuralBypassBasis } = decideStructuralBypassRoute({
     structuralCanBypass, approvedShortcut: approvedShortcut.granted, isAdminAuthor: authorIsAdmin,
+    requireAutomatedReviewForAutoMerge,
   });
   // SC-R1b/R5(2026-08-05):admin-trust 的 clean 回执不再只看 head——pre-merge 独立
   // ①重建当前 complete DiffSnapshot(immutable objects;base 前进 head 不变也会变身份)
@@ -478,9 +493,14 @@ try {
   // write-review-receipt.mjs 落一条回执,再来读这个字段。
   // 泄密硬门对 structural admin-bypass 同样无条件(securityGate 只进 blockers 拦不住这条路
   // ——它走的是 blockClass 分级,不看 blockers.length)。
+  // SC-2(2026-08-08):强制自动化审查策略开启时,approved shortcut 的路由是
+  // 'review-pending-approved-bypass'(decideStructuralBypassRoute 在
+  // requireAutomatedReviewForAutoMerge=true 时给出)——这条路的 basis 虽是 'approved',
+  // 同样要求当前 head 的 clean 阶段二回执(receiptClean),GitHub APPROVED 不再单独放行。
   const structuralBypassReady = securityGate.pass && (
-    structuralRoute === 'bypass-structural-block' ||
-    (structuralRoute === 'review-pending-admin-bypass' && receiptClean));
+    (structuralRoute === 'bypass-structural-block' && !requireAutomatedReviewForAutoMerge) ||
+    (structuralRoute === 'review-pending-admin-bypass' && receiptClean) ||
+    (structuralRoute === 'review-pending-approved-bypass' && receiptClean));
 
   // selfFixAuthors 自己的 PR:GitHub 不允许同账号 approve 自己的 PR,
   // 审查通过后使用 --admin 合并。条件:非冲突、thread 全 resolve、且 head 上所有已上报
@@ -533,6 +553,17 @@ try {
     structuralAllowlisted,
     structuralBypassReady,
     structuralBypassBasis,
+    // SC-1(2026-08-08):admin-trust 与 break-glass 名单显式区分——`adminTrustAuthors`
+    // 是结构性 BLOCKED 的 admin-trust 信任名单(admins);`breakGlassApprovers` 是人工
+    // /approve-merge 发令名单(mergeAuthorization.breakGlassApprovers,未配置时兼容回退
+    // 到 admins 并已写进 configWarnings);`requireAutomatedReviewForAutoMerge` 为强制
+    // 自动化审查策略开关(Mivo 显式开启后,四条正常合并路径都必须 current-head clean 回执)。
+    mergePolicy: {
+      requireAutomatedReviewForAutoMerge,
+      adminTrustAuthors: ADMIN_LOGINS,
+      breakGlassApprovers,
+    },
+    standardMergeAvailable,
     receiptGate,
     securityGate,
     authorIsAdmin,
@@ -550,7 +581,7 @@ try {
     blockers,
     canMerge: canMerge || selfMergeAvailable || authorizedFastMergeAvailable,
     canMergeMechanical,
-    note: 'headRefOid 是本次判定针对的 head——所有合并一律经唯一出口 scripts/merge-pr.mjs 执行(它强制 --match-head 并写 intent/result 审计,见 SC-C),不得绕开该出口。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。canMerge=true 才走普通 merge。selfMergeAvailable=true 时用 node <SKILL_ROOT>/scripts/merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis self-merge --admin --delete-branch(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样经 merge-pr.mjs(--basis authorized-fast-merge --admin),且可跳过阶段二独立审查(admins 名单成员发过 `/approve-merge <当前 headRefOid 完整 40 位 SHA>`——授权按 head SHA 绑定,SHA 不等于当前 head 即失效,不再按时间先后判;评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(approvedShortcut.granted=true(= reviewDecision=APPROVED 聚合裁决 ∧ approve 绑定当前 head ∧ own-account 配置约束通过,见 approvalBasis/approvedShortcut 字段)或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(merge-pr.mjs --basis approved|admin-trust --admin)。structuralBypassBasis 说明凭什么担保:"approved"=approved shortcut 成立(聚合裁决+head 绑定双视角都过),任何模式下都能直接合;"admin-trust"=作者在 admins 名单但 approved shortcut 不成立(原因见 approvedShortcut.reason,不一定是缺 APPROVED)——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
+    note: 'headRefOid 是本次判定针对的 head——所有合并一律经唯一出口 scripts/merge-pr.mjs 执行(它强制 --match-head 并在真实合并前按 basis 现场复核,见 SC-C/SC-5),不得绕开该出口。security.scanned=false(diff 拉取失败等)→ 未证明无泄露,fail-closed,不放行,需重试;security.hardHitCount>0 → 任何通道都不可压过。standardMergeAvailable=true(机械前提 + 当前 head clean 阶段二回执)才走普通 merge。selfMergeAvailable=true 时用 node <SKILL_ROOT>/scripts/merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis self-merge --admin --delete-branch(selfFixAuthors 的自有 PR,审查通过但 GitHub 不允许自批准)。authorizedFastMergeAvailable=true 时同样经 merge-pr.mjs(--basis authorized-fast-merge --admin),且可跳过阶段二独立审查——人工 break-glass 是唯一免阶段二例外(mergePolicy.breakGlassApprovers 名单成员发过 `/approve-merge <当前 headRefOid 完整 40 位 SHA>`,SC-1 已从 admins 拆分;未显式配置时兼容回退到 admins 并写进 configWarnings——授权按 head SHA 绑定,SHA 不等于当前 head 即失效,不再按时间先后判;评论未被编辑过,无冲突、head 上 required 检查全绿——这是紧急通道,只有泄密硬门/物理冲突/required CI 三类硬指标不可绕过;未 resolve thread / 非 required 检查失败不阻断,authorizedFastMergeInfo.reportOnly 里非空的项必须写进合并致谢/汇总,不能悄悄吞掉;formatIssues 恒为空数组,格式门由 context.mjs 在更上游判过,本脚本不重判)。editedAuthComments 非空 → 有人编辑了本该是 /approve-merge 授权的评论,已按规则拒绝,需在报告里说明并要求重发新评论。canMerge=false 时看 blockClass:structural-check + structuralBypassReady=true(要求 canBypass=always/pull_requests **且** requiredCheckRules 全部命中 pr-rules.json 的 structuralBypassAllowlist **且**(approvedShortcut.granted=true(= reviewDecision=APPROVED 聚合裁决 ∧ approve 绑定当前 head ∧ own-account 配置约束通过,见 approvalBasis/approvedShortcut 字段)或(作者在 admins 名单 **且** reviewReceipt 针对当前 headRefOid 且 verdict=clean)))→ 可走 admin bypass 合(merge-pr.mjs --basis approved|admin-trust --admin)。SC-2(2026-08-08):mergePolicy.requireAutomatedReviewForAutoMerge=true(Mivo 强制策略)时,approved shortcut 不再直接 bypass——structuralRoute 为 review-pending-approved-bypass,basis 仍是 "approved" 但必须凭当前 head clean 阶段二回执(同 admin-trust 口径),四种正常 basis(ordinary/self/approved/admin-trust)无一可仅靠绿 CI 或 GitHub APPROVED 放行。structuralBypassBasis 说明凭什么担保:"approved"=approved shortcut 成立(聚合裁决+head 绑定双视角都过;强制策略下还须 clean 回执);"admin-trust"=作者在 admins 名单但 approved shortcut 不成立(原因见 approvedShortcut.reason,不一定是缺 APPROVED)——structuralBypassReady 已经核验过回执,为 true 时才能合,为 false 时(reviewReceipt=null 或 headRefOid 不匹配或 verdict≠clean)必须先跑完独立审查、调用 write-review-receipt.mjs 落回执再重跑本脚本,交互模式仍需用户确认。ci-unknown(CI 状态读不到,权限/网络/解析问题)/ci-failed/ci-pending/review-changes-requested/threads-unresolved/blocked-unexplained 一律别 bypass。',
   });
   process.exit((canMerge || selfMergeAvailable || authorizedFastMergeAvailable) ? 0 : 2);
 } catch (e) {
