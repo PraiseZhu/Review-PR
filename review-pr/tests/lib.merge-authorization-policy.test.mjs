@@ -1,21 +1,26 @@
-// lib.merge-authorization-policy.test.mjs — 合并授权策略矩阵(SC-1..SC-4 策略层,
+// lib.merge-authorization-policy.test.mjs — 合并授权策略矩阵(SC-1..SC-5 策略层,
 // automated-review-gate wave0,2026-08-08)。
 //
-// 本文件不重复既有单测的逐函数矩阵(那些在 lib.find-approve-merge-authorization /
-// lib.evaluate-authorized-fast-merge / lib.decide-structural-bypass-route / pkg-a
-// 各文件),而是把「自动审查闸」的政策锁成表:正常自动合并均需 current-head clean
-// receipt,人工 break-glass 是唯一例外。
-//   SC-1:approval 必须绑定当前 head——四 basis 中只有 independent / own-account@head
-//         构成合并依据,stale / none 一律不作数;
-//   SC-2:approved shortcut 是「GitHub 聚合裁决 ∧ head 绑定 ∧ own-account 配置约束」
-//         的三条件合取,任一不满足即不 granted;
-//   SC-3:break-glass 唯一合法形态 = admins 成员人工 + 未编辑 + 独占一行 + 当前 head
-//         SHA;其余一切形态(bot / 非 admin / edited / stale / 裸格式 / 行内追加 /
-//         fence 展示 / head 缺失)都不构成授权;
-//   SC-4:break-glass 的机械前提(泄密扫描未完成/硬命中、物理冲突、required 检查
-//         未全绿或读取失败)任何情况不可绕过,且硬阻断时 reportOnly 信号不得被吞。
-// 反向变异纪律(与 lib.validate-finding-family.test.mjs 同款):表驱动「预测红集」——
-// 每个输入维度逐一变异,断言翻转恰红在目标字段/理由上,不是靠别的维度碰巧红。
+// 意图:正常自动合并均需 current-head clean receipt,人工 break-glass 唯一例外。
+// 本文件把策略锁成表,且按新配置语义写**红测试**——以下断言在旧代码上预期红,
+// core wave 实现新语义后转绿:
+//   SC-1:approval basis 四分类(independent/own-account/stale/none)——这是
+//         **approval basis 的分类**,不是"merge basis"(merge basis 只有
+//         approved/admin-trust/authorized-fast-merge/self-merge 四条,见
+//         merge-pr.mjs);只有 independent / own-account@head 构成合并依据;
+//   SC-2:approved shortcut = 聚合裁决 ∧ head 绑定 ∧ own-account 配置约束三条件
+//         合取;新配置 `mergeAuthorization.requireAutomatedReviewForAutoMerge=true`
+//         时,即使三条件全过 granted 也为 false——自动化合并必须先跑独立审查并落
+//         current-head clean receipt(旧代码无此分支 → 红);
+//   SC-3:break-glass 唯一合法形态 = breakGlassApprovers 名单成员人工 + 未编辑 +
+//         独占一行 + 当前 head SHA;`admins` 与紧急通道授权解耦(admins 含名单成员
+//         但 breakGlass 不含 → 不授权;breakGlass 含即便 admins 空 → 授权;
+//         breakGlass 未配置 → 恒不授权)——旧代码 admins 即授权名单 → 红;
+//   SC-4:break-glass 机械前提(泄密扫描未完成/硬命中、物理冲突、required 检查
+//         未全绿或读取失败)任何情况不可绕过,硬阻断时 reportOnly 不吞信号;
+//   SC-5:loop 托管 PR 无条件封死 break-glass。
+// 反向变异纪律:表驱动「预测红集」——每个输入维度逐一变异,断言翻转恰红在目标
+// 字段/理由上,不是靠别的维度碰巧红。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -27,9 +32,9 @@ const HEAD = 'c'.repeat(40);
 const OLD = 'd'.repeat(40);
 const rev = (author, state, commitOid, over = {}) => ({ author, isBot: false, state, commitOid, ...over });
 
-// ── SC-1:四 basis 矩阵(只有 current-head approval 构成合并依据)──
+// ── SC-1:approval basis 四分类(只有 current-head approval 构成合并依据)──
 
-test('SC-1 四 basis 矩阵:evaluateApprovalBasis 对 independent/own-account/stale/none 的确定性分类', () => {
+test('SC-1 approval basis 四分类矩阵:evaluateApprovalBasis 对 independent/own-account/stale/none 的确定性分类', () => {
   let r = evaluateApprovalBasis({
     reviews: [rev('kirozeng', 'APPROVED', HEAD)], headRefOid: HEAD, viewerLogin: 'PraiseZhu', reviewsComplete: true,
   });
@@ -69,7 +74,7 @@ test('SC-1 数据完整性:reviewsComplete=false(connection 缺失/分页未到�
   assert.equal(r.basis, 'none', '不完整数据 fail-closed,不当 independent 处理');
 });
 
-// ── SC-2:approved shortcut 三条件合取 ──
+// ── SC-2:approved shortcut 三条件合取 + requireAutomatedReviewForAutoMerge 强制审查 ──
 
 test('SC-2 resolveApprovedShortcut 矩阵:head 绑定 ∧ 聚合裁决 ∧ own-account 约束', () => {
   const g = (over = {}) => ({ approvalBasis: { basis: 'independent' }, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED', ...over });
@@ -100,9 +105,27 @@ test('SC-2 resolveApprovedShortcut 矩阵:head 绑定 ∧ 聚合裁决 ∧ own-a
   assert.match(r.reason, /无 APPROVED/);
 });
 
-// ── SC-3:break-glass 唯一合法形态表 ──
+test('SC-2 requireAutomatedReviewForAutoMerge=true:三条件全过 granted 也为 false(旧代码无此分支,预期红)', () => {
+  // 新语义:自动化合并必须先跑独立审查并落 current-head clean receipt,approved
+  // shortcut 不再单独放行。旧实现忽略该配置键 → granted=true → 本断言红。
+  const g = (over = {}) => ({
+    approvalBasis: { basis: 'independent' }, ownAckRequired: false, headBoundAuthorized: false,
+    reviewDecision: 'APPROVED', requireAutomatedReviewForAutoMerge: true, ...over,
+  });
+  let r = resolveApprovedShortcut(g());
+  assert.equal(r.granted, false, '强制自动审查开启时,independent@head + APPROVED 也不得直接放行');
+  assert.match(r.reason, /automated-review|独立审查|review-receipt/i, '拒绝理由必须指向强制自动审查,不是别的');
+  // own-account + head 绑定授权同样不豁免——人工授权只开紧急通道,不豁免正常路径的强制审查
+  r = resolveApprovedShortcut(g({ approvalBasis: { basis: 'own-account' }, ownAckRequired: true, headBoundAuthorized: true }));
+  assert.equal(r.granted, false);
+  // 对照组:配置未开启(undefined)→ 现状兼容,三条件全过即 granted
+  r = resolveApprovedShortcut({ approvalBasis: { basis: 'independent' }, ownAckRequired: false, headBoundAuthorized: false, reviewDecision: 'APPROVED' });
+  assert.equal(r.granted, true, '未配置时保持现状(既有仓库不受伤)');
+});
 
-test('SC-3 break-glass 唯一形态表:人工+未编辑+独占一行+admin+当前 head,任一维度变异即不授权', () => {
+// ── SC-3:break-glass 唯一合法形态表(breakGlassApprovers 独立于 admins)──
+
+test('SC-3 break-glass 唯一形态表:breakGlass 成员人工+未编辑+独占一行+当前 head,任一维度变异即不授权', () => {
   const c = (author, body, over = {}) => ({
     author, isBot: false, body, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u', ...over,
   });
@@ -110,7 +133,7 @@ test('SC-3 break-glass 唯一形态表:人工+未编辑+独占一行+admin+当�
   const cases = [
     ['唯一合法形态(对照)', c('PraiseZhu', GOOD), true],
     ['bot 评论(自动化不能授权)', c('PraiseZhu', GOOD, { isBot: true }), false],
-    ['非 admins 成员', c('outsider', GOOD), false],
+    ['非 breakGlass 名单成员', c('outsider', GOOD), false],
     ['被编辑过(updatedAt≠createdAt)', c('PraiseZhu', GOOD, { updatedAt: '2026-08-08T01:00:00Z' }), false],
     ['旧 SHA(stale,head 已换)', c('PraiseZhu', `/approve-merge ${OLD}`), false],
     ['裸格式(legacyBare)', c('PraiseZhu', '/approve-merge'), false],
@@ -119,15 +142,38 @@ test('SC-3 break-glass 唯一形态表:人工+未编辑+独占一行+admin+当�
     ['blockquote 展示', c('PraiseZhu', `> ${GOOD}`), false],
   ];
   for (const [label, comment, expectAuth] of cases) {
-    const r = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], headRefOid: HEAD });
+    const r = findApproveMergeAuthorization({ comments: [comment], admins: ['unrelated'], breakGlassApprovers: ['PraiseZhu'], headRefOid: HEAD });
     assert.equal(r.authorized != null, expectAuth, `${label}:authorized 应为 ${expectAuth},got ${JSON.stringify(r)}`);
+  }
+});
+
+test('SC-3 名单解耦:admins 含成员但 breakGlassApprovers 不含 → 不授权;反向才授权(旧代码红)', () => {
+  // 旧实现:admins 含 PraiseZhu → authorized。新语义:admins 与紧急通道解耦 → 必须 null
+  const adminsOnly = findApproveMergeAuthorization({
+    comments: [{ author: 'PraiseZhu', isBot: false, body: `/approve-merge ${HEAD}`, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' }],
+    admins: ['PraiseZhu', 'kirozeng'], breakGlassApprovers: ['kirozeng'], headRefOid: HEAD,
+  });
+  assert.equal(adminsOnly.authorized, null, 'admins 含 PraiseZhu 但 breakGlass 不含 → 不得授权');
+  // 反向:breakGlass 含 PraiseZhu,admins 不含 → 授权(旧实现 admins 不含 → null → 红)
+  const glassOnly = findApproveMergeAuthorization({
+    comments: [{ author: 'PraiseZhu', isBot: false, body: `/approve-merge ${HEAD}`, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' }],
+    admins: [], breakGlassApprovers: ['PraiseZhu'], headRefOid: HEAD,
+  });
+  assert.ok(glassOnly.authorized, 'breakGlass 名单含 PraiseZhu 即授权,admins 空不影响');
+});
+
+test('SC-3 breakGlassApprovers 未配置 → 恒不授权(fail-closed;自动化时代人工紧急通道必须显式配置,旧代码红)', () => {
+  const comment = { author: 'PraiseZhu', isBot: false, body: `/approve-merge ${HEAD}`, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' };
+  for (const bg of [undefined, null, []]) {
+    const r = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], breakGlassApprovers: bg, headRefOid: HEAD });
+    assert.equal(r.authorized, null, `breakGlassApprovers=${JSON.stringify(bg)} 未配置必须不授权`);
   }
 });
 
 test('SC-3 headRefOid 缺失/非法 → break-glass 全灭(fail-closed,没有"当前 head"可比对绝不放行)', () => {
   const c = (body) => ({ author: 'PraiseZhu', isBot: false, body, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' });
   for (const head of ['', null, undefined, 'deadbeef']) {
-    const r = findApproveMergeAuthorization({ comments: [c(`/approve-merge ${HEAD}`)], admins: ['PraiseZhu'], headRefOid: head });
+    const r = findApproveMergeAuthorization({ comments: [c(`/approve-merge ${HEAD}`)], admins: ['unrelated'], breakGlassApprovers: ['PraiseZhu'], headRefOid: head });
     assert.equal(r.authorized, null, `head=${head}`);
     assert.equal(r.stale.length, 1, `head=${head}:无 head 可比对时授权评论应计入 stale 待重发`);
   }
@@ -135,19 +181,12 @@ test('SC-3 headRefOid 缺失/非法 → break-glass 全灭(fail-closed,没有"�
 
 test('SC-3 跨时点语义:授权后 push 换 head,同一评论再查即失效(不是"历史授权永久有效")', () => {
   const comment = { author: 'PraiseZhu', isBot: false, body: `/approve-merge ${HEAD}`, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' };
-  const atOldHead = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], headRefOid: HEAD });
+  const atOldHead = findApproveMergeAuthorization({ comments: [comment], admins: ['unrelated'], breakGlassApprovers: ['PraiseZhu'], headRefOid: HEAD });
   assert.ok(atOldHead.authorized, '授权时 head 匹配 → authorized');
   const NEW_HEAD = 'f'.repeat(40);
-  const afterPush = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], headRefOid: NEW_HEAD });
+  const afterPush = findApproveMergeAuthorization({ comments: [comment], admins: ['unrelated'], breakGlassApprovers: ['PraiseZhu'], headRefOid: NEW_HEAD });
   assert.equal(afterPush.authorized, null, 'push 换 head 后同一评论必须失效');
   assert.equal(afterPush.stale.length, 1);
-});
-
-test('SC-3 多 SHA 行:一条评论里命中当前 head 的行即授权(解析按行,不整体作废)', () => {
-  const comment = { author: 'PraiseZhu', isBot: false, body: `/approve-merge ${OLD}\n/approve-merge ${HEAD}`, createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'u' };
-  const r = findApproveMergeAuthorization({ comments: [comment], admins: ['PraiseZhu'], headRefOid: HEAD });
-  assert.ok(r.authorized);
-  assert.equal(r.authorized.author, 'PraiseZhu');
 });
 
 // ── SC-5(策略层):loop 托管 PR 无条件封死 break-glass ──

@@ -8,9 +8,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,7 @@ const SCRIPT = join(__dirname, '..', 'scripts', 'merge-pr.mjs');
 const FAKE_GH_DIR = join(__dirname, 'fixtures', 'fake-gh');
 const HEAD = 'e'.repeat(40);
 
-function setup({ mergeOk = true } = {}) {
+function setup({ mergeOk = true, receiptHead = null, issueComments = null } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'merge-pr-test-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -29,7 +30,19 @@ function setup({ mergeOk = true } = {}) {
   const fixtures = join(work, 'fixtures');
   mkdirSync(fixtures);
   writeFileSync(join(fixtures, 'api-user.json'), JSON.stringify({ login: 'PraiseZhu' }));
+  const rulesFile = join(work, 'pr-rules.json');
+  writeFileSync(rulesFile, JSON.stringify({
+    admins: ['PraiseZhu'],
+    structuralBypassAllowlist: ['code_scanning', 'code_quality'],
+    mergeAuthorization: { breakGlassApprovers: ['PraiseZhu'] },
+  }));
   if (mergeOk) writeFileSync(join(fixtures, 'pr-merge.txt'), '✓ merged\n');
+  // wave0 delta(2026-08-08):执行侧现场复核需要 PR 状态(拿 headRefOid)+ PR 评论
+  // (break-glass 场景)。REST issue comments 走 fake gh 的 /issues/ 路由(issue.json)。
+  writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({ state: 'OPEN', headRefOid: HEAD }));
+  if (issueComments !== null) {
+    writeFileSync(join(fixtures, 'issue.json'), JSON.stringify(issueComments));
+  }
   const log = join(work, 'gh-calls.jsonl');
   chmodSync(join(FAKE_GH_DIR, 'gh'), 0o755);
   const env = {
@@ -39,7 +52,20 @@ function setup({ mergeOk = true } = {}) {
     FAKE_GH_LOG: log,
     REVIEW_PR_REPO_ROOT: repo,
     REVIEW_PR_STATE_DIR: stateDir,
+    REVIEW_PR_RULES_FILE: rulesFile,
   };
+  // wave0 delta:current-head clean 回执(receiptHead 非 null 时写简化回执——
+  // 执行侧复核按 head 绑定 + verdict=clean + p0p1Count=0 判定,不要求七项绑定,
+  // 那是 pre-merge-check 的深度校验;这里锁的是"没跑过 precheck 就不能合"的执行侧护栏)。
+  if (receiptHead !== null) {
+    // STATE_DIR = <stateRoot>/<repoStateKey>;repoStateKey = sha256(stateAnchor)[:20],
+    // stateAnchor = realpath(git-common-dir) = repo/.git(与 lib.mjs 同款计算)
+    const key = createHash('sha256').update(realpathSync(join(repo, '.git'))).digest('hex').slice(0, 20);
+    const sub = join(stateDir, key);
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'review-receipt-469.json'),
+      JSON.stringify({ headRefOid: receiptHead, verdict: 'clean', p0p1Count: 0, writtenAt: '2026-08-08T00:00:00Z' }));
+  }
   return { work, repo, stateDir, fixtures, log, env };
 }
 
@@ -53,9 +79,11 @@ const readAudit = (stateDir) => {
 import { readdirSync } from 'node:fs';
 function readDirOnly(d) { const es = readdirSync(d); assert.equal(es.length, 1, `state root 应恰一个 repoStateKey 子目录,got ${es}`); return es[0]; }
 const ghCalls = (log) => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+/** break-glass 有效评论(人工 + 当前 head SHA)。 */
+const GLASS_COMMENT = { id: 1, user: { login: 'PraiseZhu' }, body: `/approve-merge ${HEAD}`, created_at: '2026-08-08T00:00:00Z', updated_at: '2026-08-08T00:00:00Z', html_url: 'c1' };
 
 test('① 成功路径:intent → merge(含 --match-head-commit)→ result,opId 一致', () => {
-  const { repo, stateDir, log, env } = setup();
+  const { repo, stateDir, log, env } = setup({ receiptHead: HEAD });
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin', '--mode', 'auto']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const audit = readAudit(stateDir);
@@ -73,7 +101,7 @@ test('① 成功路径:intent → merge(含 --match-head-commit)→ result,opId 
 });
 
 test('② merge 失败:result.ok=false + exit 2(intent/result 仍成对留痕)', () => {
-  const { repo, stateDir, env } = setup({ mergeOk: false }); // 缺 pr-merge.txt fixture → fake gh exit 1
+  const { repo, stateDir, env } = setup({ mergeOk: false, receiptHead: HEAD }); // 缺 pr-merge.txt fixture → fake gh exit 1
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'admin-trust', '--admin']);
   assert.equal(r.status, 2, r.stdout);
   const audit = readAudit(stateDir);
@@ -82,7 +110,7 @@ test('② merge 失败:result.ok=false + exit 2(intent/result 仍成对留痕)',
 });
 
 test('②b 顺序锁(复审修订):merge 被执行的那一刻,intent 必须已在审计文件里且 result 尚未写入——只看终态锁不住这条时序', () => {
-  const { work, repo, stateDir, env } = setup();
+  const { work, repo, stateDir, env } = setup({ receiptHead: HEAD });
   const snap = join(work, 'audit-at-merge.jsonl');
   const r = runMerge({ ...env, FAKE_GH_AUDIT_SNAPSHOT: snap }, repo,
     ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved']);
@@ -94,7 +122,7 @@ test('②b 顺序锁(复审修订):merge 被执行的那一刻,intent 必须已�
 });
 
 test('②c intent 写入失败 → 拒绝执行合并(exit 2)且零 gh 写调用(审计不可用时不合)', () => {
-  const { repo, stateDir, log, env } = setup();
+  const { repo, stateDir, log, env } = setup({ receiptHead: HEAD });
   // 先跑一次 dry-run 之外的方式拿到真实 STATE_DIR?不需要——把整个状态根做成只读,
   // lib 写探针失败会回退系统临时目录…那就锁不住了。改为:预创建 repoStateKey 目录下的
   // merges.jsonl 为**目录**,appendFileSync 必然 EISDIR 失败,且不影响 lib 的写探针。
@@ -110,7 +138,7 @@ test('②c intent 写入失败 → 拒绝执行合并(exit 2)且零 gh 写调用
 });
 
 test('③ 崩溃窗口:孤儿 intent 由 --reconcile 按 PR 实际状态补 result(reconciled 标记)', () => {
-  const { repo, stateDir, fixtures, env } = setup();
+  const { repo, stateDir, fixtures, env } = setup({ receiptHead: HEAD });
   // 手工造一条孤儿 intent(模拟 merge 成功后进程崩溃)
   const sub = join(stateDir, 'k');
   mkdirSync(sub, { recursive: true });
@@ -136,7 +164,7 @@ function appendOrphan(p) {
 }
 
 test('④ --dry-run:零 gh 写调用、零审计记录,输出 wouldRun', () => {
-  const { repo, stateDir, log, env } = setup();
+  const { repo, stateDir, log, env } = setup({ receiptHead: HEAD });
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--dry-run']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /dry-run/);
@@ -160,7 +188,7 @@ test('⑤ 缺必填参数 → 拒绝执行(exit 2)且零 gh 调用;不认短 SHA
     ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'authorized-fast-merge'],
     ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'self-merge'],
   ]) {
-    const { repo, log, env } = setup();
+    const { repo, log, env } = setup({ receiptHead: HEAD });
     const r = runMerge(env, repo, extra);
     assert.equal(r.status, 2, `${extra.join(' ')} → ${r.stdout}`);
     assert.equal(ghCalls(log).length, 0, '拒绝执行前不得有任何 gh 调用');
@@ -168,7 +196,7 @@ test('⑤ 缺必填参数 → 拒绝执行(exit 2)且零 gh 调用;不认短 SHA
 });
 
 test('⑥ viewer 身份查不到 → 拒绝执行(审计"谁在合"不允许为空,#469 教训)且零写调用、零审计', () => {
-  const { repo, stateDir, log, env, fixtures } = setup();
+  const { repo, stateDir, log, env, fixtures } = setup({ receiptHead: HEAD });
   rmSync(join(fixtures, 'api-user.json')); // gh api user → fake gh exit 1
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved']);
   assert.equal(r.status, 2, r.stdout);
@@ -178,7 +206,7 @@ test('⑥ viewer 身份查不到 → 拒绝执行(审计"谁在合"不允许为�
 });
 
 test('⑦ reconcile:PR state 未知/响应空对象 → 保持 orphan 不封口(下轮重试);OPEN/CLOSED 正常补 ok:false', () => {
-  const { repo, stateDir, fixtures, env } = setup();
+  const { repo, stateDir, fixtures, env } = setup({ receiptHead: HEAD });
   const r0 = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved']);
   assert.equal(r0.status, 0, r0.stdout + r0.stderr);
   const keyDir = join(stateDir, readdirSync(stateDir).find((d) => existsSync(join(stateDir, d, 'merges.jsonl'))));
@@ -214,7 +242,7 @@ test('⑦ reconcile:PR state 未知/响应空对象 → 保持 orphan 不封口(
 });
 
 test('⑧ R7 生产触发链(第 2 轮核验):合并成功后必须真的调用 hazard 激活——pending 条目被处理且核验没过时留在 inbox', () => {
-  const { repo, stateDir, env } = setup();
+  const { repo, stateDir, env } = setup({ receiptHead: HEAD });
   // pending hazard 夹具(fix PR = 469,与本次合并同号);第一次合并后才知道 repoStateKey 子目录名
   const inboxItem = {
     hazardId: 'hz2-prod', fingerprint: 'hzf2-prod', repo: 'xindong/mivo-canvas',
@@ -241,7 +269,7 @@ test('⑧ R7 生产触发链(第 2 轮核验):合并成功后必须真的调用 
 });
 
 test('⑨ R7 第 3 轮核验:PATH 里的 node 不可用时激活仍要跑(用 process.execPath,不是裸 "node")', () => {
-  const { work, repo, stateDir, env } = setup();
+  const { work, repo, stateDir, env } = setup({ receiptHead: HEAD });
   // PATH 最前面放一个 node shim:除了 fake gh 自己(它的 shebang 就是 node)之外,一律
   // 拒绝服务——于是"被测脚本用裸 `node` 起子进程"这条路会 127 失败,用 process.execPath
   // 的实现不受影响。等价于 mini 的非交互 PATH 里没有真 node 的生产场景。
@@ -267,10 +295,72 @@ test('⑨ R7 第 3 轮核验:PATH 里的 node 不可用时激活仍要跑(用 pr
   assert.ok(existsSync(stateDir));
 });
 
-// ── automated-review-gate wave0 追加(2026-08-08):SC-2 原子护栏的「直接调用」契约 ──
+// ── automated-review-gate wave0 delta(2026-08-08):执行侧现场复核 basis ──
+// 新语义:merge-pr.mjs(唯一合并出口)执行前必须自行现场复核 basis 凭证——
+// approved/admin-trust/self-merge 三条正常自动合路径要求 current-head clean 回执;
+// authorized-fast-merge 是唯一无回执可放的人工例外,但必须现场验证 break-glass 授权
+// (breakGlassApprovers 成员的人工 /approve-merge <当前 head>)。旧实现完全不复核,
+// 以下「无凭证 → 拒绝」用例全部预期红。
 
-test('⑩ break-glass 直接调用:--basis authorized-fast-merge --admin → 审计 basis/matchHead 如实', () => {
+test('⑩ 现场复核:--basis approved 无回执 → 拒绝执行(exit 2)且零 gh 写调用(旧代码红)', () => {
+  const { repo, stateDir, log, env } = setup(); // 无 receiptHead
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stdout, /回执|现场复核|precheck|review-receipt/i, '拒绝原因必须指向执行侧复核');
+  const writes = ghCalls(log).filter((c) => c.isWrite);
+  assert.equal(writes.length, 0, '复核不过不得执行任何 gh 写操作');
+  assert.equal(readdirSync(stateDir).filter((d) => existsSync(join(stateDir, d, 'merges.jsonl'))).length, 0, '复核不过连 intent 都不写');
+});
+
+test('⑩b 现场复核:--basis admin-trust 无回执 → 拒绝执行且零 gh 写调用(旧代码红)', () => {
   const { repo, stateDir, log, env } = setup();
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'admin-trust', '--admin']);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  const writes = ghCalls(log).filter((c) => c.isWrite);
+  assert.equal(writes.length, 0, 'admin-trust 无回执不得执行');
+});
+
+test('⑩c 现场复核:--basis self-merge 无回执 → 拒绝执行且零 gh 写调用(旧代码红)', () => {
+  const { repo, stateDir, log, env } = setup();
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'self-merge', '--admin']);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  const writes = ghCalls(log).filter((c) => c.isWrite);
+  assert.equal(writes.length, 0, 'self-merge 无回执不得执行');
+});
+
+test('⑪ 现场复核:--basis approved + current-head clean 回执 → 放行(三条正常路径的唯一凭证)', () => {
+  const { repo, stateDir, log, env } = setup({ receiptHead: HEAD });
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const audit = readAudit(stateDir);
+  assert.equal(audit.length, 2);
+  assert.equal(audit[0].basis, 'approved');
+  assert.equal(audit[1].ok, true);
+  const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.ok(merges[0].args.includes(HEAD), '执行侧必须带调用方传入的 head,不得替换');
+});
+
+test('⑪b 现场复核:回执绑定旧 head(≠ 当前 headRefOid)→ 拒绝执行(旧代码红)', () => {
+  const OLD_HEAD = 'a'.repeat(40);
+  const { repo, stateDir, log, env } = setup({ receiptHead: OLD_HEAD });
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--admin']);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  const writes = ghCalls(log).filter((c) => c.isWrite);
+  assert.equal(writes.length, 0, '回执绑定旧 head → 不得执行(判定 head 与回执 head 必须一致)');
+});
+
+test('⑫ 现场复核:--basis authorized-fast-merge + 无 break-glass 授权评论 → 拒绝执行(旧代码红)', () => {
+  const { repo, stateDir, log, env } = setup({ issueComments: [] }); // PR 无任何评论
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'auto']);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stdout, /授权|approve-merge|break-glass/i, '拒绝原因必须指向 break-glass 复核');
+  const writes = ghCalls(log).filter((c) => c.isWrite);
+  assert.equal(writes.length, 0, '无有效授权不得执行合并');
+});
+
+test('⑫b 现场复核:--basis authorized-fast-merge + 有效 break-glass 评论(人工+当前 head)→ 放行,审计 basis 如实', () => {
+  const { repo, stateDir, log, env } = setup({ issueComments: [GLASS_COMMENT] });
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'auto']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const audit = readAudit(stateDir);
@@ -280,26 +370,10 @@ test('⑩ break-glass 直接调用:--basis authorized-fast-merge --admin → 审
   const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
   assert.equal(merges.length, 1);
   assert.ok(merges[0].args.includes('--admin'), 'break-glass 是 admin bypass 路径,必须带 --admin');
-  assert.ok(merges[0].args.includes(HEAD));
 });
 
-test('⑪ 执行侧护栏如实:传入的 --match-head 原样进 gh 命令与审计(判定 head 与执行 head 的原子护栏是"如实传递",不是校验通过)', () => {
-  // 若调用方在判定后 head 已换(传旧 SHA),GitHub 的 --match-head-commit 会拒绝合并——
-  // 本 wrapper 的职责是把这个 head 原样送进命令与审计,不偷偷改成别的值。
-  const OTHER = 'a'.repeat(40);
-  const { repo, stateDir, log, env } = setup();
-  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', OTHER, '--basis', 'approved']);
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  const audit = readAudit(stateDir);
-  assert.equal(audit[0].matchHead, OTHER);
-  const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
-  assert.equal(merges.length, 1);
-  assert.ok(merges[0].args.includes('--match-head-commit'));
-  assert.ok(merges[0].args.includes(OTHER), '执行侧必须带调用方传入的 head,不得替换');
-});
-
-test('⑫ 直接调用契约:--delete-branch 进 gh 命令且写进审计 argv', () => {
-  const { repo, stateDir, log, env } = setup();
+test('⑫c 直接调用契约:--delete-branch 进 gh 命令且写进审计 argv(有回执时)', () => {
+  const { repo, stateDir, log, env } = setup({ receiptHead: HEAD });
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', HEAD, '--basis', 'approved', '--delete-branch']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const merges = ghCalls(log).filter((call) => call.args[0] === 'pr' && call.args[1] === 'merge');

@@ -41,7 +41,7 @@ const git = (args, cwd) => {
   return r.stdout.trim();
 };
 
-function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, headFileContent = CLEAN_FILE, omitBaseRefOid = false, filesMeta, approveCommentIsBot = false, approveCommentEdited = false, loopManaged = false }) {
+function setup({ approveCommit, ownAckRequired = false, approveMergeComment = null, approver = 'PraiseZhu', reviewDecision = 'APPROVED', includeLatestReviews = true, includePageInfo = true, headFileContent = CLEAN_FILE, omitBaseRefOid = false, filesMeta, approveCommentIsBot = false, approveCommentEdited = false, loopManaged = false, breakGlassApprovers, requireAutomatedReview = false, authorLogin = 'aj0928', selfFixAuthor = false, mergeStateStatus }) {
   const work = mkdtempSync(join(tmpdir(), 'premerge-469-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -63,16 +63,25 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
   const fixtures = join(work, 'fixtures');
   mkdirSync(fixtures);
   const rulesFile = join(work, 'pr-rules.json');
+  // wave0 delta(2026-08-08):mergeAuthorization 块可组合(ownAckRequired /
+  // breakGlassApprovers / requireAutomatedReview),selfFixAuthors 供 self-merge 场景
+  const mergeAuth = {
+    ...(ownAckRequired ? { ownAccountApprovalRequiresAck: true } : {}),
+    ...(breakGlassApprovers !== undefined ? { breakGlassApprovers } : {}),
+    ...(requireAutomatedReview ? { requireAutomatedReviewForAutoMerge: true } : {}),
+  };
   writeFileSync(rulesFile, JSON.stringify({
     admins: ['PraiseZhu', 'kirozeng', 'aj0928'],
     structuralBypassAllowlist: ['code_scanning', 'code_quality'],
-    ...(ownAckRequired ? { mergeAuthorization: { ownAccountApprovalRequiresAck: true } } : {}),
+    ...(Object.keys(mergeAuth).length ? { mergeAuthorization: mergeAuth } : {}),
+    ...(selfFixAuthor ? { selfFixAuthors: [authorLogin] } : {}),
     // wave0 追加(2026-08-08):loop 托管 PR 场景需要 loopPrExclusion 配置 + 台账
     ...(loopManaged ? { loopPrExclusion: { titlePrefixes: ['[mivo] '], stateFile: 'history/loops/state.json', forceVerdict: 't2' } } : {}),
   }));
   writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({
     title: loopManaged ? '[mivo] fix: 局部重绘交互升级' : 'feat(canvas): 局部重绘交互升级', body: '正文', state: 'OPEN',
-    mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision,
+    mergeable: 'MERGEABLE', mergeStateStatus: mergeStateStatus ?? 'BLOCKED', reviewDecision,
+    isDraft: false,
     headRefOid: HEAD, baseRefName: 'main',
     ...(omitBaseRefOid ? {} : { baseRefOid: BASE }),
     // filesMeta:undefined = 正常清单;null = 整个 files 字段缺失;其它 = 原样写入(含非法形状)
@@ -93,7 +102,7 @@ function setup({ approveCommit, ownAckRequired = false, approveMergeComment = nu
     data: {
       viewer: { login: 'PraiseZhu' },
       repository: { pullRequest: {
-        author: { login: 'aj0928' },
+        author: { login: authorLogin },
         reviewThreads: { nodes: [] },
         comments: { nodes: approveComment ? [{
           author: { login: 'PraiseZhu', __typename: approveCommentIsBot ? 'Bot' : 'User' },
@@ -150,6 +159,31 @@ function runCheck(cfg) {
   return { r, out, head, base, prDiffCalls };
 }
 
+/** 落一条真实 current-head clean 回执(与 F4 同款:真实 lib 计算全部绑定值,不手编)。 */
+function writeReceiptFor(f, bindings) {
+  const code = `import { writeReviewReceipt } from ${JSON.stringify(new URL('../scripts/lib.mjs', import.meta.url).href)};
+writeReviewReceipt(JSON.parse(process.env.RECEIPT_JSON));`;
+  const r = spawnSync('node', ['--input-type=module', '-e', code], {
+    cwd: f.repo,
+    env: { ...f.env, RECEIPT_JSON: JSON.stringify({ pr: 469, headRefOid: f.head, verdict: 'clean', p0p1Count: 0, bindings }) },
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, r.stderr);
+}
+
+/** 现场重算与生产同一批绑定值(与 F4 同款)。 */
+function liveBindings(f) {
+  const snap = buildDiffSnapshot({ repoRoot: f.repo, baseRefOid: f.base, headOid: f.head, expectedPaths: ['a.txt'] });
+  assert.equal(snap.complete, true, snap.reason);
+  return {
+    source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-x',
+    snapshotHash: snap.snapshotHash,
+    ledgerHash: computeLedgerHash([]),
+    escapeSourceHash: escapeSourceHash({ prBody: '正文', issueTexts: [], candidates: [] }),
+    knownHazardsHash: knownHazardsHash(hazardsForPaths(loadKnownHazards(), ['a.txt'], 'xindong/mivo-canvas')),
+  };
+}
+
 test('A · #469 原样重放:stale approve 不再构成 approved shortcut,ready=false(旧实现在此 fail-open)', () => {
   const { r, out } = runCheck({ approveCommit: OLD_APPROVE_COMMIT });
   assert.equal(out.approvalBasis.basis, 'stale');
@@ -178,7 +212,7 @@ test('C · SC3.2:配置开 ownAccountApprovalRequiresAck → own-account@head �
 test('D · SC3.2 出路:head 绑定 /approve-merge <当前head> → 配置开也放行', () => {
   const { out } = runCheck({
     approveCommit: CURRENT, ownAckRequired: true,
-    approveMergeComment: '/approve-merge {CURRENT}',
+    approveMergeComment: '/approve-merge {CURRENT}', breakGlassApprovers: ['PraiseZhu'],
   });
   assert.equal(out.approvedShortcut.granted, true);
   assert.equal(out.structuralBypassReady, true);
@@ -187,7 +221,7 @@ test('D · SC3.2 出路:head 绑定 /approve-merge <当前head> → 配置开也
 test('D2 · 旧 SHA 的 /approve-merge 不解锁(head 绑定语义贯穿授权通道)', () => {
   const { out } = runCheck({
     approveCommit: CURRENT, ownAckRequired: true,
-    approveMergeComment: `/approve-merge ${OLD_APPROVE_COMMIT}`,
+    approveMergeComment: `/approve-merge ${OLD_APPROVE_COMMIT}`, breakGlassApprovers: ['PraiseZhu'],
   });
   assert.equal(out.approvedShortcut.granted, false);
 });
@@ -229,7 +263,7 @@ test('H2 · 第 3 轮复审反例:connection 存在但 pageInfo 缺失 → 同�
 test('G · SC-A 迁移报告:裸 /approve-merge(旧格式)不授权,且必须显式进入 legacyBareApproveComments', () => {
   const { out } = runCheck({
     approveCommit: CURRENT, ownAckRequired: true,
-    approveMergeComment: '/approve-merge',
+    approveMergeComment: '/approve-merge', breakGlassApprovers: ['PraiseZhu'],
   });
   assert.equal(out.approvedShortcut.granted, false, '裸格式不构成 head 绑定授权');
   assert.equal(out.structuralBypassReady, false);
@@ -291,44 +325,21 @@ test('F3 · 第 4 轮核验 BLOCKER:PR files 元数据缺失/非数组 → 快�
 
 test('F4 · R7 第 4 轮核验 BLOCKER:clean 之后逃逸数据源/canonical hazard 内容变化 → premerge 现场重算把回执打 stale', () => {
   const f = setup({ approveCommit: CURRENT });
-  // 本地重算 premerge 将会算出的四项期望值(与生产同一批函数)
-  const snap = buildDiffSnapshot({ repoRoot: f.repo, baseRefOid: f.base, headOid: f.head, expectedPaths: ['a.txt'] });
-  assert.equal(snap.complete, true, snap.reason);
-  const ledgerHash = computeLedgerHash([]);
-  const eshLive = escapeSourceHash({ prBody: '正文', issueTexts: [], candidates: [] }); // fixture 的 pr-view body
-  const khhLive = knownHazardsHash(hazardsForPaths(loadKnownHazards(), ['a.txt'], 'xindong/mivo-canvas'));
-  const writeReceipt = (bindings) => {
-    const code = `import { writeReviewReceipt } from ${JSON.stringify(new URL('../scripts/lib.mjs', import.meta.url).href)};
-writeReviewReceipt(JSON.parse(process.env.RECEIPT_JSON));`;
-    const r = spawnSync('node', ['--input-type=module', '-e', code], {
-      cwd: f.repo,
-      env: { ...f.env, RECEIPT_JSON: JSON.stringify({ pr: 469, headRefOid: f.head, verdict: 'clean', p0p1Count: 0, bindings }) },
-      encoding: 'utf8',
-    });
-    assert.equal(r.status, 0, r.stderr);
-  };
-  const check = () => {
-    const r = spawnSync('node', [SCRIPT, '469'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
-    const out = JSON.parse(r.stdout);
-    return out;
-  };
-  const BIND = {
-    source: 'consume-review-output', schemaVersion: 'rro-1', outputHash: 'oh1-x',
-    snapshotHash: snap.snapshotHash, ledgerHash, escapeSourceHash: eshLive, knownHazardsHash: khhLive,
-  };
+  const BIND = liveBindings(f);
+  const check = () => JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f.repo, env: f.env, encoding: 'utf8' }).stdout);
   // 对照组:七项绑定全部匹配 → stage2Clean=true(证明下面两个失败不是"一律拒")
-  writeReceipt(BIND);
+  writeReceiptFor(f, BIND);
   const ok = check();
-  assert.equal(ok.receiptGate.escapeSourceHash, eshLive, 'premerge 必须现场重算逃逸数据源哈希(不是抄回执)');
-  assert.equal(ok.receiptGate.knownHazardsHash, khhLive, 'premerge 必须现场重算 canonical hazard 哈希');
+  assert.equal(ok.receiptGate.escapeSourceHash, BIND.escapeSourceHash, 'premerge 必须现场重算逃逸数据源哈希(不是抄回执)');
+  assert.equal(ok.receiptGate.knownHazardsHash, BIND.knownHazardsHash, 'premerge 必须现场重算 canonical hazard 哈希');
   assert.equal(ok.receiptGate.stage2Clean, true, `对照组应 stage2Clean:${ok.receiptGate.reasons.join(';')}`);
   // clean 之后 body/关联 issue 变了(回执绑的是当时的数据源)→ stale
-  writeReceipt({ ...BIND, escapeSourceHash: escapeSourceHash({ prBody: '当时的另一份 body', issueTexts: [], candidates: [] }) });
+  writeReceiptFor(f, { ...BIND, escapeSourceHash: escapeSourceHash({ prBody: '当时的另一份 body', issueTexts: [], candidates: [] }) });
   const drift1 = check();
   assert.equal(drift1.receiptGate.stage2Clean, false, 'body 内容漂移必须打 stale');
   assert.match(drift1.receiptGate.reasons.join(';'), /escapeSourceHash|stale|不一致/);
   // clean 之后 canonical 新增/改了命中路径的 hazard → stale
-  writeReceipt({ ...BIND, knownHazardsHash: 'khh1-before-canonical-change' });
+  writeReceiptFor(f, { ...BIND, knownHazardsHash: 'khh1-before-canonical-change' });
   const drift2 = check();
   assert.equal(drift2.receiptGate.stage2Clean, false, 'canonical hazard 内容漂移必须打 stale');
 });
@@ -349,27 +360,28 @@ test('I2 · 被编辑过的授权评论 → 拒绝且 editedAuthComments 显式�
   const { out } = runCheck({
     approveCommit: CURRENT, ownAckRequired: true,
     approveMergeComment: '/approve-merge {CURRENT}', approveCommentEdited: true,
+    breakGlassApprovers: ['PraiseZhu'],
   });
   assert.equal(out.approvedShortcut.granted, false, 'edited 评论不得构成授权');
   assert.equal(out.authorizedFastMergeAvailable, false);
   assert.equal(out.editedAuthComments.length, 1, '被拒绝的已编辑授权评论必须显著报告');
 });
 
-test('I3 · loop 托管 PR:即便 admins 成员发了 head 绑定 /approve-merge → 紧急通道仍封死(A2 接线到合并闸)', () => {
+test('I3 · Mivo 强制策略(requireAutomatedReviewForAutoMerge=true)+ loop 托管 + APPROVED@head + 无回执 → 一切自动化合并均不 ready(旧代码红)', () => {
+  // 新语义:配置强制自动审查后,即便 GitHub APPROVED + current head + head 绑定授权,
+  // 没有 current-head clean 回执,approved shortcut 不 granted、structuralBypassReady
+  // 不成立——自动化合并必须审查后落回执。旧代码(只按 approvedShortcut 判 ready)→ true。
   const { out } = runCheck({
     approveCommit: CURRENT, ownAckRequired: true,
-    approveMergeComment: '/approve-merge {CURRENT}', loopManaged: true,
+    approveMergeComment: '/approve-merge {CURRENT}', loopManaged: true, requireAutomatedReview: true,
+    breakGlassApprovers: ['PraiseZhu'],
   });
   assert.equal(out.loopExclusion.matched, true, '前提:loop 身份必须被认定');
-  assert.equal(out.approvedShortcut.granted, true, '前提:授权本身有效(head 绑定)');
+  assert.equal(out.approvedShortcut.granted, false, '强制自动审查开启时,head 绑定授权不豁免正常路径');
+  assert.match(out.approvedShortcut.reason, /automated-review|独立审查|review-receipt/i, '拒绝理由必须指向强制自动审查');
   assert.equal(out.authorizedFastMergeAvailable, false, 'loop 托管 PR 无条件封死紧急通道');
   assert.match(out.authorizedFastMergeInfo.blockedReason, /loop-managed-pr-fast-merge-forbidden/);
-  // A2 封的是**紧急通道**(跳过审查直接合);loop PR 仍可走正常审查路径合——本场景
-  // approved shortcut 成立(真实 APPROVED review 绑定当前 head + own-account 显式授权),
-  // structuralBypassReady=true 走的是 basis='approved'(有 GitHub review 作凭证),
-  // 不是 admin-trust 免回执捷径。锁点:紧急通道对 loop 不存在,正常路径不受 A2 影响。
-  assert.equal(out.structuralBypassBasis, 'approved', 'loop PR 走正常审查路径时 basis 必须是 approved(review 凭证),不是 admin-trust');
-  assert.equal(out.structuralBypassReady, true, '有真实 APPROVED review + head 绑定授权时正常路径照常可合(A2 不误伤正常路径)');
+  assert.equal(out.structuralBypassReady, false, '无 current-head clean 回执时 structural bypass 不得 ready(旧代码在此 true → 红)');
 });
 
 test('J · 四 basis 反向变异对(全链路):同一 fixture 只改一个维度,basis/shortcut 恰好翻转', () => {
@@ -392,6 +404,83 @@ test('J · 四 basis 反向变异对(全链路):同一 fixture 只改一个维�
   // J4:own-account + 配置开:无授权→有 head 绑定授权(granted 翻转,出路唯一)
   const noAck = runCheck({ approveCommit: CURRENT, ownAckRequired: true });
   assert.equal(noAck.out.approvedShortcut.granted, false);
-  const ack = runCheck({ approveCommit: CURRENT, ownAckRequired: true, approveMergeComment: '/approve-merge {CURRENT}' });
+  const ack = runCheck({ approveCommit: CURRENT, ownAckRequired: true, approveMergeComment: '/approve-merge {CURRENT}', breakGlassApprovers: ['PraiseZhu'] });
   assert.equal(ack.out.approvedShortcut.granted, true, 'head 绑定 /approve-merge 是 own-account 收紧的唯一出路');
+});
+
+// ── automated-review-gate wave0 delta(2026-08-08):Mivo 强制策略 + breakGlass 独立 + 三条路径回执对照 ──
+
+test('K1 · requireAutomatedReviewForAutoMerge=true:approved(independent@head)+ 无回执 → shortcut 拒且 bypass 不 ready(旧代码红);落回执后 ready', () => {
+  const f = setup({ approveCommit: CURRENT, approver: 'kirozeng', requireAutomatedReview: true });
+  const run = () => JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f.repo, env: f.env, encoding: 'utf8' }).stdout);
+  const before = run();
+  assert.equal(before.approvedShortcut.granted, false, '强制审查开启时 independent@head + APPROVED 也不 granted(旧代码 true → 红)');
+  assert.match(before.approvedShortcut.reason, /automated-review|独立审查|review-receipt/i);
+  assert.equal(before.structuralBypassReady, false, '无 current-head clean 回执 → 不 ready(旧代码 true → 红)');
+  assert.equal(before.receiptGate.stage2Clean, false, '普通合并路径同样无回执不可合');
+  // 落 current-head clean 回执后:自动化路径转 ready(强制审查是常开语义——
+  // approvedShortcut 恒不 granted,放行与否只看回执,见 K1 头部注释)
+  writeReceiptFor(f, liveBindings(f));
+  const after = run();
+  assert.equal(after.structuralBypassReady, true, '回执落定后 structural bypass ready(唯一凭证)');
+  assert.equal(after.receiptGate.stage2Clean, true, '普通合并路径同样随回执转 ready');
+  assert.equal(after.structuralBypassReady, true, '回执落定后 structural bypass ready 是唯一凭证(结构性 BLOCKED 场景)');
+});
+
+test('K1b · 对照组:requireAutomatedReviewForAutoMerge 未配置 → 现状兼容(approved@head 直接 ready,不需要回执)', () => {
+  const { out } = runCheck({ approveCommit: CURRENT, approver: 'kirozeng' });
+  assert.equal(out.approvedShortcut.granted, true);
+  assert.equal(out.structuralBypassReady, true, '未配置强制审查时保持现状(既有仓库不受伤)');
+});
+
+test('K2 · 三条正常自动合路径回执对照:ordinary approved / admin-trust / self-merge 均无回执拒、current-head clean 回执放', () => {
+  // ordinary approved(普通合并):receiptGate.stage2Clean 是 canMerge 的硬前置
+  const f1 = setup({ approveCommit: CURRENT, approver: 'kirozeng' });
+  let out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f1.repo, env: f1.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.receiptGate.stage2Clean, false, 'ordinary:无回执 → stage2 不 clean');
+  writeReceiptFor(f1, liveBindings(f1));
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f1.repo, env: f1.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.receiptGate.stage2Clean, true, 'ordinary:current-head clean 回执 → stage2 clean');
+  // admin-trust(structural 分级,作者在 admins 但 shortcut 不成立):回执是 ready 唯一凭证
+  const f2 = setup({ approveCommit: OLD_APPROVE_COMMIT });
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f2.repo, env: f2.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.structuralBypassBasis, 'admin-trust');
+  assert.equal(out.structuralBypassReady, false, 'admin-trust:无回执 → 不 ready');
+  writeReceiptFor(f2, liveBindings(f2));
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f2.repo, env: f2.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.structuralBypassReady, true, 'admin-trust:current-head clean 回执 → ready');
+  // self-merge(selfFixAuthors 自有 PR,viewer===作者):stage2 凭证是硬前置
+  const f3 = setup({ approveCommit: CURRENT, authorLogin: 'PraiseZhu', selfFixAuthor: true, mergeStateStatus: 'CLEAN' });
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f3.repo, env: f3.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.selfMergeAvailable, false, 'self-merge:无回执 → 不可 self-merge');
+  writeReceiptFor(f3, liveBindings(f3));
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f3.repo, env: f3.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.selfMergeAvailable, true, 'self-merge:current-head clean 回执 → 可 self-merge');
+});
+
+test('K3 · breakGlass 名单独立接线:admins 含成员但 breakGlassApprovers 不含 → 紧急通道不可用(旧代码红);反向可用', () => {
+  // admins 含 PraiseZhu(发令者)+ breakGlassApprovers 只含 kirozeng → 新语义不授权
+  const f1 = setup({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}', breakGlassApprovers: ['kirozeng'],
+  });
+  let out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f1.repo, env: f1.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.authorizedFastMergeAvailable, false, 'breakGlass 不含发令者 → 不可用(旧代码 admins 含 → true → 红)');
+  assert.equal(out.authorizedFastMergeInfo, null, '无有效授权 → 无通道信息');
+  // 反向:breakGlassApprovers 含 PraiseZhu → 可用(新旧实现都绿——本用例是行为对照)
+  const f2 = setup({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}', breakGlassApprovers: ['PraiseZhu'],
+  });
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f2.repo, env: f2.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.authorizedFastMergeAvailable, true, 'breakGlass 含发令者 + 机械前提过 → 可用');
+  assert.ok(out.authorizedFastMergeInfo, '有效授权 → 通道信息非空');
+  // 未配置 breakGlassApprovers → 恒不可用(旧代码 admins 生效 → true → 红)
+  const f3 = setup({
+    approveCommit: CURRENT, ownAckRequired: true,
+    approveMergeComment: '/approve-merge {CURRENT}',
+  });
+  out = JSON.parse(spawnSync('node', [SCRIPT, '469'], { cwd: f3.repo, env: f3.env, encoding: 'utf8' }).stdout);
+  assert.equal(out.authorizedFastMergeAvailable, false, '未配置 breakGlass → 紧急通道关闭(fail-closed,旧代码红)');
+  assert.equal(out.authorizedFastMergeInfo, null);
 });
