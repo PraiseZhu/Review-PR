@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `escape-candidate-issue-ref-blocks-merge` **逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
+  - 现象:PR #544 body Closes #424,#424 是 issue 不是 PR(gh pr view 424 失败: Could not resolve to a PullRequest)。extractEscapeCandidates 有意多收(含 issue 号引用),但 consumer 登记 pending-fix-merge 时对 verdict=yes 的候选现场取 gh pr view <referencedPr> --json headRefOid,issue 引用拿不到 head → hazardRegisterFailed → invalid。审查 agent 判 yes 语义成立(#424 描述的隐式环境依赖确由更早合并 PR #401 引入),但登记产物 originPr=424 本身不成立。同 head 重放候选集不变、判定不变 → 永久 blocked。本次未走 seam(REVIEW_PR_ORIGIN_HEAD_MAP 为测试专用)、未改答卷,按 fail-closed 处置,PR 本轮不合并。修法候选(均涉 gate 行为或新增 gh 查询,按扩权类待拍板):a) 登记层对 non-PR 引用跳过登记并记 unresolved 进汇总;b) 候选提取时区分 issue/PR(需 gh api 探测);c) prompt 明示候选可能引用 issue,判 yes 须绑定真实 origin PR。
 - `rro1-empty-array-contract-omitted` **rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
   - 现象:2026-08-07 auto 轮 #565 审查 agent 首份 rro-1 遗漏这两个可空字段,consume-review-output 判 invalid(缺字段),人工补空数组后重跑才 clean——消费端对缺字段 fail-closed,契约在 SKILL 已有但 prompt 未显式枚举必在字段
   - 提案:build-review-task.mjs 生成的 prompt 模板显式列出'以下字段即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence'——减少同类无效轮次与重试
