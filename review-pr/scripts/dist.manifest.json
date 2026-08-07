@@ -7,10 +7,14 @@
     "scripts/build-dist.mjs",
     "scripts/dist.manifest.json",
     "scripts/dist/",
-    "tests/"
+    "tests/",
+    "scripts/preview-dist.manifest.json"
   ],
   "markerStrips": [
-    { "file": "SKILL.md", "name": "self-evolution" }
+    {
+      "file": "SKILL.md",
+      "name": "self-evolution"
+    }
   ],
   "stubs": [
     {
@@ -25,42 +29,162 @@
     }
   ],
   "replacements": [
-    { "file": "SKILL.md", "find": "  check。每轮结束做自进化复盘（EVOLUTION.md 台账，扩权类永不自动落地）；汇总 JSON", "replace": "  check。汇总 JSON" },
-    { "file": "SKILL.md", "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。同步是 best-effort：", "replace": "（dist 分发版：写回上游的能力已剥离，本节仅拉取侧生效。）同步是 best-effort：" },
-    { "file": "SKILL.md", "find": "（`EVOLUTION.md`、`evolution/ledger.json`）用确定性规则自动解冲突（md 取行并集、ledger 按", "replace": "（台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按" },
-    { "file": "SKILL.md", "find": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，", "replace": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘后，" },
-    { "file": "SKILL.md", "find": "**自进化** <n>", "replace": "" },
-    { "file": "SKILL.md", "find": "- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）", "replace": "" },
-    { "file": "SKILL.md", "find": "   汇总发出前先按第 8 节做自进化复盘（进化结果要并入 6.1 摘要的「自进化」组）。", "replace": "" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "// 「执行前自动到最新、自进化后自动回推」,维护者不必手动同步。", "replace": "// 「执行前自动到最新」,使用者不必手动同步。(dist 分发版:回推能力已剥离)" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "//   push [--message \"…\"] 提交 skill 目录下所有未提交改动并推送。用于自进化落地", "replace": "//   push [--message \"…\"] dist 分发版已禁用:一律返回 skipped,不向上游写任何内容。" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "//                        (SKILL 8.3)之后:agent 已手工 commit 的推上去,漏 commit 的", "replace": "" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "//                        兜底提交(缺省 message `evo: sync skill state`)再推。", "replace": "" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "//                        只在 skills 仓库当前分支 == 默认分支(main)时才 push;", "replace": "" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "//                        台账(ledger/EVOLUTION.md)的提交推送由 evolution-note.mjs", "replace": "" },
-    { "file": "scripts/sync-skill-repo.mjs", "find": "//                        每次写入后自动完成,一般不需要手动跑本命令的 push。", "replace": "" },
-    { "file": "references/internal-gates.md", "find": "| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（写盘后自动提交推送台账到 skills 仓库 main） |", "replace": "" },
-    { "file": "references/internal-gates.md", "find": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |", "replace": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；dist 分发版 `push` 已禁用恒返回 skipped） |" },
-    { "file": "scripts/lib.escaped-hazards.mjs", "find": "    if (!s?.ok || s.pushed !== true) {", "replace": "    if (s?.ok === true && s.skipped === 'dist-readonly') {\n      // dist 分发版:回推能力已剥离,本地 canonical 落盘+上方回读校验通过即视为激活完成并 ack\n      // ——否则 inbox 永久重放(审 D-F2)。主仓不会出现该 skipped 值,此分支在主仓恒不可达。\n      activated.push(hazard.hazardId); continue;\n    }\n    if (!s?.ok || s.pushed !== true) {" },
-    { "file": "SKILL.md", "find": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；", "replace": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除；dist 分发版无回推：回读校验通过即 ack）；" },
-    { "file": "SKILL.md", "find": "不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**", "replace": "不是故障。（dist 分发版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**" },
-    { "file": "references/internal-gates.md", "find": "`nothing-to-push` 须凭远端核验;", "replace": "`nothing-to-push` 须凭远端核验(dist 分发版无回推:回读校验通过即 ack);" }
+    {
+      "file": "SKILL.md",
+      "find": "  check。每轮结束做自进化复盘（EVOLUTION.md 台账，扩权类永不自动落地）；汇总 JSON",
+      "replace": "  check。汇总 JSON"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。同步是 best-effort：",
+      "replace": "（dist 分发版：写回上游的能力已剥离，本节仅拉取侧生效。）同步是 best-effort："
+    },
+    {
+      "file": "SKILL.md",
+      "find": "（`EVOLUTION.md`、`evolution/ledger.json`）用确定性规则自动解冲突（md 取行并集、ledger 按",
+      "replace": "（台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，",
+      "replace": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘后，"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "**自进化** <n>",
+      "replace": ""
+    },
+    {
+      "file": "SKILL.md",
+      "find": "- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）",
+      "replace": ""
+    },
+    {
+      "file": "SKILL.md",
+      "find": "   汇总发出前先按第 8 节做自进化复盘（进化结果要并入 6.1 摘要的「自进化」组）。",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "// 「执行前自动到最新、自进化后自动回推」,维护者不必手动同步。",
+      "replace": "// 「执行前自动到最新」,使用者不必手动同步。(dist 分发版:回推能力已剥离)"
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//   push [--message \"…\"] 提交 skill 目录下所有未提交改动并推送。用于自进化落地",
+      "replace": "//   push [--message \"…\"] dist 分发版已禁用:一律返回 skipped,不向上游写任何内容。"
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        (SKILL 8.3)之后:agent 已手工 commit 的推上去,漏 commit 的",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        兜底提交(缺省 message `evo: sync skill state`)再推。",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        只在 skills 仓库当前分支 == 默认分支(main)时才 push;",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        台账(ledger/EVOLUTION.md)的提交推送由 evolution-note.mjs",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        每次写入后自动完成,一般不需要手动跑本命令的 push。",
+      "replace": ""
+    },
+    {
+      "file": "references/internal-gates.md",
+      "find": "| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（写盘后自动提交推送台账到 skills 仓库 main） |",
+      "replace": ""
+    },
+    {
+      "file": "references/internal-gates.md",
+      "find": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |",
+      "replace": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；dist 分发版 `push` 已禁用恒返回 skipped） |"
+    },
+    {
+      "file": "scripts/lib.escaped-hazards.mjs",
+      "find": "    if (!s?.ok || s.pushed !== true) {",
+      "replace": "    if (s?.ok === true && s.skipped === 'dist-readonly') {\n      // dist 分发版:回推能力已剥离,本地 canonical 落盘+上方回读校验通过即视为激活完成并 ack\n      // ——否则 inbox 永久重放(审 D-F2)。主仓不会出现该 skipped 值,此分支在主仓恒不可达。\n      activated.push(hazard.hazardId); continue;\n    }\n    if (!s?.ok || s.pushed !== true) {"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；",
+      "replace": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除；dist 分发版无回推：回读校验通过即 ack）；"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**",
+      "replace": "不是故障。（dist 分发版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**"
+    },
+    {
+      "file": "references/internal-gates.md",
+      "find": "`nothing-to-push` 须凭远端核验;",
+      "replace": "`nothing-to-push` 须凭远端核验(dist 分发版无回推:回读校验通过即 ack);"
+    }
   ],
   "neutralize": {
     "file": "config/pr-rules.json",
-    "emptyArrays": ["productWhitelist", "archGate.whitelist", "archGate.coldUpdateApprovers", "feishuNotify.orgMappingRepos", "staleAuthorReminder.exemptAuthors"],
-    "emptyStrings": ["feishuNotify.groupName", "feishuNotify.archRecipientName"]
+    "emptyArrays": [
+      "productWhitelist",
+      "archGate.whitelist",
+      "archGate.coldUpdateApprovers",
+      "feishuNotify.orgMappingRepos",
+      "staleAuthorReminder.exemptAuthors"
+    ],
+    "emptyStrings": [
+      "feishuNotify.groupName",
+      "feishuNotify.archRecipientName"
+    ]
   },
   "replaceFiles": [
-    { "src": "scripts/dist/README.dist.md", "dest": "README.md" }
+    {
+      "src": "scripts/dist/README.dist.md",
+      "dest": "README.md"
+    }
   ],
   "forbidden": [
-    { "token": "PraiseZhu", "allow": [] },
-    { "token": "朱赞", "allow": [] },
-    { "token": "magiclizi", "allow": [] },
-    { "token": "evolution-note", "allow": [] },
-    { "token": "自进化", "allow": [ { "file": "scripts/lib.escaped-hazards.mjs", "reason": "历史缺口编号注释,指涉主仓机制沿革,非活动入口" } ] },
-    { "token": "EVOLUTION.md", "allow": [ { "file": "scripts/lib.mjs", "reason": "pull-rebase 只追加冲突解法的文件名单,机制保留、文件本体已删" } ] }
+    {
+      "token": "PraiseZhu",
+      "allow": []
+    },
+    {
+      "token": "朱赞",
+      "allow": []
+    },
+    {
+      "token": "magiclizi",
+      "allow": []
+    },
+    {
+      "token": "evolution-note",
+      "allow": []
+    },
+    {
+      "token": "自进化",
+      "allow": [
+        {
+          "file": "scripts/lib.escaped-hazards.mjs",
+          "reason": "历史缺口编号注释,指涉主仓机制沿革,非活动入口"
+        }
+      ]
+    },
+    {
+      "token": "EVOLUTION.md",
+      "allow": [
+        {
+          "file": "scripts/lib.mjs",
+          "reason": "pull-rebase 只追加冲突解法的文件名单,机制保留、文件本体已删"
+        }
+      ]
+    }
   ],
   "absent": [
     "EVOLUTION.md",
@@ -69,6 +193,7 @@
     "scripts/build-dist.mjs",
     "scripts/dist.manifest.json",
     "scripts/dist",
-    "tests"
+    "tests",
+    "scripts/preview-dist.manifest.json"
   ]
 }

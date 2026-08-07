@@ -1,0 +1,273 @@
+{
+  "_comment": "preview-dist 构建清单(第二受限 profile,供 submit-pr 三审第③席 push 前预审)。整树转换真相源:exclude=不复制(剥离 A 类合并/批准/修代码 5 脚本 + B 类普通通知/催办 8 脚本);markerStrips=按 dist:strip 标记剥离 SKILL.md 5.1/5.2/5.4/5.5/5.6 与模板 A/B/C/E/F;stubs=替换 lib.mjs skillRepoCommitPush 为只读;replacements=自进化回推收口与剥离脚本引用标注(find 未命中即 fail-loud);neutralize=无(账本数据保留,config/pr-rules.json 不做中性化);replaceFiles=注入 preview 专属 README;absent=文件级删除断言。",
+  "exclude": [
+    "scripts/merge-pr.mjs",
+    "scripts/self-approve.mjs",
+    "scripts/approve-workflows.mjs",
+    "scripts/fix-session-state.mjs",
+    "scripts/fix-worktree-cleanup.mjs",
+    "scripts/notify-author-resolve.mjs",
+    "scripts/notify-merge-ack.mjs",
+    "scripts/notify-merge-backfill.mjs",
+    "scripts/notify-summary.mjs",
+    "scripts/notify-sync-alert.mjs",
+    "scripts/remind-stale-author.mjs",
+    "scripts/resolve-author-feishu.mjs",
+    "scripts/audit-merged-loop-prs.mjs",
+    "scripts/build-dist.mjs",
+    "scripts/dist.manifest.json",
+    "scripts/preview-dist.manifest.json",
+    "scripts/dist/",
+    "tests/"
+  ],
+  "markerStrips": [
+    {
+      "file": "SKILL.md",
+      "name": "preview-5.1"
+    },
+    {
+      "file": "SKILL.md",
+      "name": "preview-5.2"
+    },
+    {
+      "file": "SKILL.md",
+      "name": "preview-5.4"
+    },
+    {
+      "file": "SKILL.md",
+      "name": "preview-5.5"
+    },
+    {
+      "file": "SKILL.md",
+      "name": "preview-5.6"
+    },
+    {
+      "file": "SKILL.md",
+      "name": "preview-tpl-abc"
+    },
+    {
+      "file": "SKILL.md",
+      "name": "preview-tpl-ef"
+    }
+  ],
+  "stubs": [
+    {
+      "file": "scripts/lib.mjs",
+      "name": "skillRepoCommitPush",
+      "replacement": [
+        "/** preview 分发版:写回主仓的能力已剥离;返回既有 skipped 形状,消费方按未提交处理。 */",
+        "export function skillRepoCommitPush() {",
+        "  return { ok: true, committed: false, pushed: false, skipped: 'dist-readonly' };",
+        "}"
+      ]
+    }
+  ],
+  "replacements": [
+    {
+      "file": "SKILL.md",
+      "find": "### 5.1 通过：批准并合并",
+      "replace": "### 5.1 通过：批准并合并（preview 版）\n\n> preview 版：本节能力已剥离（批准/合并/合并致谢不在 preview 产物中），审查通过时输出内部结论即止，不做任何合并落地动作。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "### 5.2 不通过：请求修改",
+      "replace": "### 5.2 不通过：请求修改（preview 版）\n\n> preview 版：本节能力已剥离（REQUEST_CHANGES/COMMENT 打回评论与模板 A 不在 preview 产物中），输出内部结论即止。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并",
+      "replace": "### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并（preview 版）\n\n> preview 版：本节能力已剥离（fix-handoff 跟进会话投递不在 preview 产物中），输出内部结论即止。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "### 5.5 冲突代合并（主干侧解决，不推作者分支）",
+      "replace": "### 5.5 冲突代合并（主干侧解决，不推作者分支）（preview 版）\n\n> preview 版：本节能力已剥离（主干侧代合并不在 preview 产物中），输出内部结论即止。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "### 5.6 代修合并（merge-then-fix，仅交互模式）",
+      "replace": "### 5.6 代修合并（merge-then-fix，仅交互模式）（preview 版）\n\n> preview 版：本节能力已剥离（代修合并不在 preview 产物中），输出内部结论即止。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。同步是 best-effort：",
+      "replace": "（preview 版：自进化台账仅本地落盘，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort："
+    },
+    {
+      "file": "SKILL.md",
+      "find": "（`EVOLUTION.md`、`evolution/ledger.json`）用确定性规则自动解冲突（md 取行并集、ledger 按",
+      "replace": "（台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**",
+      "replace": "不是故障。（preview 版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "这两类信号除写进 6.1 汇总外，**还要定向私聊 owner 一次**（群内播报出口只承载合并致谢，\n不放运维噪音；这条是独立的低频出口，自带按签名去重，同一故障状态只吵一次）：\n\n```text\nnode \"<SKILL_ROOT>/scripts/notify-sync-alert.mjs\" --kind <diverged|code-conflict> \\\n  --signature \"<diverged 用 本地HEAD:远端HEAD;code-conflict 用 conflictFiles 拼接>\" \\\n  --detail \"<ahead/behind、冲突文件、backupRef 等现场信息>\"\n```\n\n未配置私聊目标（notify.env 的 `SLACK_OPS_ALERT_CHANNEL_ID`）时该脚本 no-op，\n`posted:false, reason:'ops-alert-channel-not-configured'`，不影响本轮任何判定。",
+      "replace": "这两类信号写进 6.1 汇总（preview 版：定向 ops 告警私聊已剥离，`notify-sync-alert.mjs` 不在 preview 产物中），不发起额外通知。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "- fork workflow 待批准执行 `approve-workflows.mjs`；PR 改过 CI 文件时 auto 跳过并在",
+      "replace": "- fork workflow 批准（preview 版：`approve-workflows.mjs` 已剥离，workflow approval 放行交由维护者在主仓执行）；PR 改过 CI 文件时 auto 跳过并在"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "2. 已配置时，把一段事实性正文（`notification.detail` 里的连续轮数、\n   `recurringFamilies` 摘要、PR 链接；语气仍遵循「对外话术与人格边界」现有基调，\n   不额外新造模板编号）经\n   `<正文> | node \"<SKILL_ROOT>/scripts/notify-summary.mjs\" --title \"<标题>\"`\n   发出——复用 6.1 owner 每轮汇总已在用的同一条播报出口，不新建通道；\n3. **无论** `notify-summary.mjs` 返回 `posted` 是否为真，只要走到\"决定要发\"这\n   一步，都先调用\n   `node \"<SKILL_ROOT>/scripts/record-convergence-round.mjs\" <N> --record-attempt --reason <notification.reason> --threshold <notification.thresholdKey> --head <headRefOid>`\n   记一次尝试（运维可观测性用，不参与任何去重判定，失败也要记，这样才能查到\n   \"已经试过 N 次、每次都失败\"而不是\"从没到过阈值\"）；\n4. **只有 `posted === true`（确认投递成功）时**才调用\n   `node \"<SKILL_ROOT>/scripts/record-convergence-round.mjs\" <N> --mark-notified --reason <notification.reason> --threshold <notification.thresholdKey> --head <headRefOid>`\n   回写去重（D4 阻断修正：此前\"只要走到决定要发这一步就 mark\"，配置缺失/子\n   进程失败也会被 mark，导致这个 head 从此永久静音——**失败绝不能 mark**）——\n   按 `reason`+`threshold`+`head` 三元组去重（同一 head 不重复刷屏；新推的 head\n   若仍未收敛会重新触发，不是\"发过一次就永久静音\"）。失败路径不需要额外重试\n   机制：下一轮换到新 head 时 `consecutiveRoundsWithNewFamilies` 仍 `>=` 阈值，\n   会在新 head 上重新判定，自然触发下一次尝试。",
+      "replace": "2. **preview 版：对外播报出口已剥离**（`notify-summary.mjs` 不在产物中）：本触发不主动发消息——把 `notification`（连续轮数、`recurringFamilies` 摘要、PR 链接）写进 6.1 汇总的「收敛警告」组，由 owner 本机查阅；`--record-attempt`/`--mark-notified` 去重回写随播报一并剥离，不再调用。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "扫描后按 5.4 运行\n   `fix-session-state.mjs sweep --open <open PR 列表>`，清理已合并／关闭 PR 的\n   跟进会话绑定；随后运行 `fix-worktree-cleanup.mjs --scan` 回收这些 PR 遗留的\n   跟进 worktree 与本地分支（判定与安全边界在脚本内，结果计入汇总，失败不阻塞）。",
+      "replace": "（preview 版：5.4 fix-handoff 与 worktree 回收已剥离，相关脚本不在产物中，本段跳过。）"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "**跳过不能对作者静默**：分类完成后，把因作者侧可自解原因被 skip 的候选批量交给\n   提醒脚本（自带指纹去重、selfFixAuthors 与 `staleAuthorReminder.exemptAuthors`\n   排除，重复调用安全、失败不阻塞）：\n   blockers 含「conversation 未 resolve」的候选跑\n   `node \"<SKILL_ROOT>/scripts/notify-author-resolve.mjs\" <PR...>`；\n   `gate.blockClass=conflict` 的候选跑\n   `node \"<SKILL_ROOT>/scripts/notify-author-resolve.mjs\" <PR...> --conflict`。\n   该脚本自己拼评论正文并发送，措辞固定为「对外话术与人格边界」模板 C，不由\n   agent 现场改写。同一批 thread／同一 head 只评一次，posted=true 的候选在 6.1\n   汇总行注明「已提醒作者」。\n   **停滞私聊（模板 B）**：`remind-stale-author.mjs` 只做判定不发消息（见其脚本头\n   注释），内部已按 `staleAuthorReminder.crossChannelSuppressHours` 与上一步的\n   `notify-author-resolve.mjs` 去重状态做跨通道抑制（同一 PR 近期已被模板 C 公开\n   提醒过则本轮 `shouldRemind` 直接为 `false`，不需要 agent 自己核对是否与模板 C\n   撞车）。返回 `shouldRemind=true` 时先跑\n   `node \"<SKILL_ROOT>/scripts/resolve-author-feishu.mjs\" <PR>` 解析收件人身份，\n   `matched` 非空才按模板 B 经配置的私聊出口发送；`matched` 空时不猜测收件人，\n   按 `fetchErrors` 是否非空区分「名录没这人」与「名录读不到」写入汇总，不硬发。",
+      "replace": "**跳过对被剥离的通知能力保持静默**（preview 版：作者催办/停滞私聊通道已剥离——`notify-author-resolve.mjs`/`remind-stale-author.mjs`/`resolve-author-feishu.mjs` 均不在产物中）：被 skip 的候选只在 6.1 汇总的 skip 行注明原因，不主动向作者发任何消息。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "扫描完成后跑一次合并审计对账（只读核对孤儿 intent、补齐 result，见 5.8）：\n\n   ```bash\n   node \"<SKILL_ROOT>/scripts/merge-pr.mjs\" --reconcile\n   ```",
+      "replace": "（preview 版：合并出口与审计已剥离——`merge-pr.mjs` 不在产物中，合并审计对账跳过。）"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "见 `notify-merge-backfill.mjs` 与「Skill 自同步」一节。）",
+      "replace": "（preview 版：合并致谢播报已剥离——`notify-merge-backfill.mjs` 不在产物中，本节不适用。）"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，\n把 6.1 摘要原文（渲染成人类可读 markdown 后的文本，不是 run-log 的原始 JSON）经\n```text\nnode \"<SKILL_ROOT>/scripts/notify-summary.mjs\" --title \"<6.1 摘要首行>\"\n```\n（正文走 stdin，见脚本头注释）推送——`summaryBroadcast.command` 指向目标仓库自己的\n会话层播报脚本（契约：`<正文> | node <script> --title \"<标题>\"`，如 mivo 的\n`scripts/loops/bug-doctor/broadcast.mjs`）；未配置该键时脚本直接返回\n`posted:false, reason:'summary-broadcast-not-configured'`，回退到本节原有现状——\n会话末尾人类可读摘要靠 scheduler 通知转发，不算失败。语气按模板 F（结构不变，\n允许略活）。渠道支持 markdown/卡片渲染时用之（链接可点击，不受 scheduler 通知转发\n的截断限制）；长度上限以该出口声明为准，超限时先压缩行内容再分段发送，不允许砍掉\n任何 PR 行。scheduler 转发的短通知只当作\"本轮已结束\"的提示，完整内容以推送为准。",
+      "replace": "**preview 版：完整摘要落盘供 owner 本机查阅**：run-log 落盘、自进化复盘完成后，把 6.1 摘要原文（渲染成人类可读 markdown 后的文本，不是 run-log 的原始 JSON）写入 run-log 目录的 `summary.md`——对外推送通道已剥离（`notify-summary.mjs` 不在产物中），不再经播报出口外发；scheduler 转发的短通知只当作「本轮已结束」的提示。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "每次 `add` / `set-status` 写盘后脚本自动把 `evolution/ledger.json` 与 `EVOLUTION.md`\n提交并推送 skills 仓库 main（只 add 这两个文件，不裹挟其他改动；结果在输出 `sync`\n字段）。`sync.ok=false`（断网、diverged、非 main 分支）不影响台账本身，写进摘要\n「自进化」组即可，不重试到卡死；`--no-sync` 仅本地调试用。",
+      "replace": "每次 `add` / `set-status` 写盘后脚本**只把台账本地落盘**（preview 版：自动提交推送已剥离，`skillRepoCommitPush` 为只读 stub 恒返回 `skipped: 'dist-readonly'`——纯落盘不回推）。`--no-sync` 仅本地调试用。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "6. 落地 commit 之后运行\n   `node \"<SKILL_ROOT>/scripts/sync-skill-repo.mjs\" push --message \"evo: <fingerprint>\"`\n   把进化推送到 skills 仓库 main（台账部分随后的 `evolution-note.mjs` 会自动推，这一步\n   保证代码/文档 commit 也上去）。推送失败不回滚落地，如实写进摘要。",
+      "replace": "6. **preview 版不回推**：落地记录与提案留在台账（`evolution/ledger.json` + `EVOLUTION.md`），由维护者在主仓落地——`sync-skill-repo.mjs` push 与 `evolution-note.mjs` 自动回推在 preview 版均为只读 stub（恒返回 `skipped: 'dist-readonly'`），不做任何向上游的提交/推送。"
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "// 「执行前自动到最新、自进化后自动回推」,维护者不必手动同步。",
+      "replace": "// 「执行前自动到最新」,使用者不必手动同步。(preview 版:回推能力已剥离)"
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//   push [--message \"…\"] 提交 skill 目录下所有未提交改动并推送。用于自进化落地",
+      "replace": "//   push [--message \"…\"] preview 版已禁用:一律返回 skipped,不向上游写任何内容。"
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        (SKILL 8.3)之后:agent 已手工 commit 的推上去,漏 commit 的",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        兜底提交(缺省 message `evo: sync skill state`)再推。",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        只在 skills 仓库当前分支 == 默认分支(main)时才 push;",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        台账(ledger/EVOLUTION.md)的提交推送由 evolution-note.mjs",
+      "replace": ""
+    },
+    {
+      "file": "scripts/sync-skill-repo.mjs",
+      "find": "//                        每次写入后自动完成,一般不需要手动跑本命令的 push。",
+      "replace": ""
+    },
+    {
+      "file": "scripts/evolution-note.mjs",
+      "find": "// 自动回推:add / set-status 每次写盘后自动把 ledger.json + EVOLUTION.md 提交并推送\n// skills 仓库(main 分支;实现见 lib.mjs skillRepoCommitPush,只 add 台账两个文件,\n// 不裹挟其他改动)。同步 best-effort:失败不影响台账写入,结果在输出 sync 字段里,\n// 主 agent 把失败写进汇总即可。--no-sync 跳过(本地调试用)。",
+      "replace": "// preview 版:台账仅本地落盘(skillRepoCommitPush 为只读 stub,写盘后不提交不推送,\n// 恒返回 skipped:'dist-readonly'——纯落盘,由维护者在主仓落地)。\n// 主仓版:add / set-status 每次写盘后自动把 ledger.json + EVOLUTION.md 提交并推送。"
+    },
+    {
+      "file": "references/internal-gates.md",
+      "find": "| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（写盘后自动提交推送台账到 skills 仓库 main） |",
+      "replace": "| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（preview 版：写盘后仅本地落盘不回推；主仓版写盘后自动提交推送台账到 skills 仓库 main） |"
+    },
+    {
+      "file": "references/internal-gates.md",
+      "find": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |",
+      "replace": "| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；preview 版 `push` 已禁用恒返回 skipped） |"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "  `auto.action=pushback-security` 提交一次 REQUEST_CHANGES（stale 打回去重规则与\n  格式门相同），`selfFixAuthors` 的 PR 改走 5.4 投递跟进会话。",
+      "replace": "  `auto.action=pushback-security` 输出打回结论（preview 版：REQUEST_CHANGES 评论与 5.4 fix-handoff 已剥离，结论写内部审查输出，由 owner 在正式流程落地）。"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "- 交互模式先展示缺项，再询问是否提交 `REQUEST_CHANGES`；",
+      "replace": "- 交互模式先展示缺项（preview 版：不提交 `REQUEST_CHANGES` 评论，打回结论写内部审查输出）；"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "- auto 模式只提交一次结构化打回，确认已有同类 review 且作者没有新 commit 时跳过；",
+      "replace": "- auto 模式只输出一次结构化打回结论（preview 版：评论动作已剥离）；"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "- `selfFixAuthors` 的作者侧问题不提交对自己无效的 `REQUEST_CHANGES`，按 5.4\n  投递给跟进会话自动修复；审查通过后仍可正常合并（含 5.1 的 self-merge）。",
+      "replace": "- `selfFixAuthors` 的作者侧问题（preview 版：5.4 fix-handoff 与 5.1 合并已剥离，这类卡点在内部审查输出中标注「需维护者跟进」，不投递、不打回）；"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进\n   会话，循环跟进直到合并（本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的",
+      "replace": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）（preview 版：5.4 fix-handoff 已剥离——这类卡点不打回不投递，在汇总标注「需维护者跟进」）；重叠排队的"
+    },
+    {
+      "file": "SKILL.md",
+      "find": "   `fix-worktree-cleanup.mjs` 按「对应 PR 已合并／关闭」实查后的回收（见 5.4），",
+      "replace": "   （preview 版：`fix-worktree-cleanup.mjs` 已剥离，托管 worktree 回收由维护者在主仓执行；见 5.4）"
+    }
+  ],
+  "replaceFiles": [
+    {
+      "src": "scripts/dist/README.preview.md",
+      "dest": "README.md"
+    }
+  ],
+  "forbidden": [
+    {
+      "token": "dist:strip:start preview-",
+      "allow": []
+    },
+    {
+      "token": "dist:strip:end preview-",
+      "allow": []
+    }
+  ],
+  "absent": [
+    "scripts/merge-pr.mjs",
+    "scripts/self-approve.mjs",
+    "scripts/approve-workflows.mjs",
+    "scripts/fix-session-state.mjs",
+    "scripts/fix-worktree-cleanup.mjs",
+    "scripts/notify-author-resolve.mjs",
+    "scripts/notify-merge-ack.mjs",
+    "scripts/notify-merge-backfill.mjs",
+    "scripts/notify-summary.mjs",
+    "scripts/notify-sync-alert.mjs",
+    "scripts/remind-stale-author.mjs",
+    "scripts/resolve-author-feishu.mjs",
+    "scripts/audit-merged-loop-prs.mjs",
+    "scripts/build-dist.mjs",
+    "scripts/dist.manifest.json",
+    "scripts/preview-dist.manifest.json",
+    "scripts/dist/",
+    "tests/"
+  ]
+}
