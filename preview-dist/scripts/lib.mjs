@@ -943,6 +943,87 @@ export function normalizeLoginList(value) {
   return { logins, invalid };
 }
 
+/**
+ * 合并授权策略的单一解析函数(SC-1,2026-08-08):把 `mergeAuthorization` 配置里的两个
+ * 新键解析成统一形状,context.mjs 与 pre-merge-check.mjs 共用,防两处判据漂移。
+ *
+ * 配置 Schema(pr-rules.json 的 mergeAuthorization 对象):
+ *   - `requireAutomatedReviewForAutoMerge`(boolean,默认缺失=false):强制自动化审查
+ *     策略开关。开启后,除人工 break-glass(/approve-merge)外,每一种自动合并 basis
+ *     (ordinary / self-merge / structural approved / admin-trust)都必须绑定当前 head
+ *     的 clean 阶段二回执——仅绿 CI 或 GitHub APPROVED 都不能单独放行(SC-2)。
+ *   - `breakGlassApprovers`(string[]):人工 `/approve-merge <SHA>` 发令名单——只决定
+ *     谁能发这条命令跳过阶段二独立审查,与 PR 作者是否在 `admins`(admin-trust 信任
+ *     名单)无关。**拆分自 `admins`**(SC-1):授权快速合并通道不再与 admin-trust 共用
+ *     同一份名单;`admins` 保留作结构性 BLOCKED 的 admin-trust 路由。
+ *
+ * 兼容期规则(未配置新字段的消费仓行为不被静默改变):
+ *   - 未配置 `breakGlassApprovers`(null/undefined)→ 明确回退到 `admins` 名单并输出
+ *     warning(旧仓 /approve-merge 行为不变;Mivo 显式配置后不再走回退)。
+ *   - 已配置但形态非法(非数组 / 混入非字符串 / 空字符串)→ normalizeLoginList
+ *     fail-closed 处理能用的部分,并输出 warning 显著告警(不抛错、不静默当空名单)。
+ *   - `requireAutomatedReviewForAutoMerge` **键缺失**(mergeAuthorization 对象里没有
+ *     这个键,或整个 mergeAuthorization 缺失)→ 兼容 false(旧仓行为不变,不告警);
+ *     **键存在但值非 boolean**(null/string/number/object/undefined 等显式 malformed,
+ *     null 按「显式写了但写错」算 malformed 而非缺失,因为键在配置里就占了一个位置)
+ *     → fail-closed 按 true 处理(从安全方向强制自动化审查,绝不静默放宽成 false)
+ *     并输出 warning 显著告警(审 A2,2026-08-08:此前 `'true'` 这类字符串会静默变
+ *     false 且无任何 warning,结构性 approved 可免阶段二回执直接合——fail-open)。
+ *
+ * 容器级规则(审 C1,2026-08-08):`mergeAuthorization` 整体必须是 **plain object**。
+ *   - 缺失 / null → 正常兼容默认,视为空对象(旧仓形态,行为不变:require=false;
+ *     breakGlass 走回退 admins + warning)。
+ *   - string/number/boolean/array/function 等非 plain object = **容器级 malformed**:
+ *     此前 `'requireAutomatedReviewForAutoMerge' in <string>` 会抛 TypeError 把
+ *     context/pre-merge 脚本整个打崩(exit1 + stack trace);数组虽不抛,却被静默
+ *     当成合法对象消费字段、breakGlass 静默回退 admins 扩大发令名单(fail-open)。
+ *     修复:必须不抛;整体 fail-closed,不消费畸形容器内任何字段——require 强制
+ *     true(宁严勿松)、breakGlassApprovers 置 [] 且**不回退 admins**(回退会扩大
+ *     /approve-merge 发令名单)、显著 warning 点名容器必须 object。
+ *
+ * 返回 `{ requireAutomatedReviewForAutoMerge: boolean, breakGlassApprovers: string[],
+ *         warnings: string[] }`。
+ */
+export function resolveMergeAuthorizationPolicy(rules) {
+  const warnings = [];
+  const rawMergeAuth = rules?.mergeAuthorization;
+  const isPlainObject = rawMergeAuth != null && typeof rawMergeAuth === 'object' && !Array.isArray(rawMergeAuth);
+  if (!isPlainObject && rawMergeAuth != null) {
+    // 容器级 malformed(整体 fail-closed):不读容器内任何字段,不给 breakGlass 回退
+    // admins 的机会。缺失/null 不在这里——那是正常兼容默认,继续走下方字段规则。
+    warnings.push(`mergeAuthorization 配置形态不合法(应为 object,实际为 ${Array.isArray(rawMergeAuth) ? 'array' : typeof rawMergeAuth})——容器级 fail-closed:requireAutomatedReviewForAutoMerge 按 true(强制自动化审查)、breakGlassApprovers 按 [] (不回退 admins 扩大权限),请检查配置`);
+    return { requireAutomatedReviewForAutoMerge: true, breakGlassApprovers: [], warnings };
+  }
+  const mergeAuth = isPlainObject ? rawMergeAuth : {};
+  // 存在性按 `in` 判(键真在对象里才算「存在」),缺失走兼容 false 不告警;
+  // 存在但非 boolean → fail-closed 按 true(宁严勿松)+ 显著告警,禁止静默当 false。
+  let requireAutomatedReviewForAutoMerge = false;
+  if ('requireAutomatedReviewForAutoMerge' in mergeAuth) {
+    const raw = mergeAuth.requireAutomatedReviewForAutoMerge;
+    if (typeof raw !== 'boolean') {
+      requireAutomatedReviewForAutoMerge = true;
+      warnings.push('mergeAuthorization.requireAutomatedReviewForAutoMerge 配置形态不合法(应为 boolean,null/string/number/object 均不接受)——fail-closed 按 true 处理(强制自动化审查开启),请改为显式 true/false');
+    } else {
+      requireAutomatedReviewForAutoMerge = raw;
+    }
+  }
+  let breakGlassApprovers = [];
+  if (mergeAuth.breakGlassApprovers == null) {
+    // 兼容期回退:未配置 → 沿用 admins 名单作为 /approve-merge 发令名单,显式告警
+    // (SC-1 拆分后仍建议目标仓显式配置,否则发令名单与 admin-trust 名单继续混同)。
+    const { logins } = normalizeLoginList(rules?.admins);
+    breakGlassApprovers = logins;
+    warnings.push('mergeAuthorization.breakGlassApprovers 未配置——兼容期回退到 admins 名单作为 /approve-merge 发令名单(SC-1:建议显式配置拆分,否则发令名单与 admin-trust 名单混同)');
+  } else {
+    const { logins, invalid } = normalizeLoginList(mergeAuth.breakGlassApprovers);
+    breakGlassApprovers = logins;
+    if (invalid) {
+      warnings.push('mergeAuthorization.breakGlassApprovers 配置形态不合法(应为字符串数组,非法条目被过滤)——已按能用的部分处理,请检查配置');
+    }
+  }
+  return { requireAutomatedReviewForAutoMerge, breakGlassApprovers, warnings };
+}
+
 const APPROVE_MERGE_COMMAND = '/approve-merge';
 
 /**
@@ -1035,11 +1116,13 @@ export function parseApproveMergeShaCommands(body) {
 
 /**
  * 授权快速合并通道的确定性检测(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」)。
- * `admins` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge <完整 head SHA>`
- * (判定口径见 `parseApproveMergeShaCommands`)= 人工已过安全与代码审查的明确授权。
+ * `breakGlassApprovers` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge <完整
+ * head SHA>`(判定口径见 `parseApproveMergeShaCommands`)= 人工已过安全与代码审查的明确
+ * 授权。
  * 安全边界:
  *   - 机器人自己发的评论不算(comments 数组的 isBot 已由调用方标注);
- *   - `admins` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为 null(fail-closed);
+ *   - `breakGlassApprovers` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为
+ *     null(fail-closed);
  *   - 已编辑的评论不算(`updatedAt !== createdAt` → `edited`,要求重发);
  *   - **授权绑定 head SHA**(SC-A,2026-08-04):命令里的 SHA 必须精确等于当前 `headRefOid`
  *     才有效;不等(之后又推了新 commit / force-push 换了 head)计入 `stale`,需对新 head
@@ -1047,9 +1130,18 @@ export function parseApproveMergeShaCommands(body) {
  *     判定(该数据源已实测失效,见 parseApproveMergeShaCommands 注释);
  *   - 旧裸格式 `/approve-merge` 计入 `legacyBare`,不构成授权,调用方应提醒重发。
  * `comments` 是已映射过的评论数组(`{ author, isBot, createdAt, updatedAt, url, body }`)。
+ *
+ * SC-1(2026-08-08):授权名单与 `admins`(admin-trust 信任名单)解耦——`breakGlassApprovers`
+ * 是紧急通道的唯一授权名单,context.mjs / pre-merge-check.mjs 只传策略解析出的
+ * `resolveMergeAuthorizationPolicy().breakGlassApprovers`。兼容期(裁决):`breakGlassApprovers`
+ * 未提供(null/undefined)时回退到 `admins` 参数(与策略层"字段缺失回退 admins"同口径),
+ * 显式 `[]` 才是"关闭紧急通道"。`adminsConfigured` 字段名保留(表示"授权名单已配置且非空")。
  */
-export function findApproveMergeAuthorization({ comments, admins, headRefOid }) {
-  const { logins: adminLogins } = normalizeLoginList(admins);
+export function findApproveMergeAuthorization({ comments, breakGlassApprovers, admins, headRefOid }) {
+  // 兼容期回退:未显式传入授权名单 → 沿用 admins(旧调用点/旧测试不因改名受伤;
+  // 与 resolveMergeAuthorizationPolicy 的缺失回退语义一致)。
+  const effectiveList = breakGlassApprovers == null ? (admins ?? []) : breakGlassApprovers;
+  const { logins: adminLogins } = normalizeLoginList(effectiveList);
   const adminSet = new Set(adminLogins);
   if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [], edited: [], legacyBare: [] };
   const eligible = (comments ?? []).filter((c) => !c.isBot && adminSet.has((c.author ?? '').toLowerCase()));
@@ -1461,17 +1553,27 @@ export function resolveApprovedShortcut({ approvalBasis, ownAckRequired, headBou
  *   - 机械前提满足 + approvedShortcut=true → route='bypass-structural-block',basis='approved'。
  *     approvedShortcut 是调用方用 evaluateApprovalBasis + resolveApprovedShortcut 算出的布尔
  *     (2026-08-04 #469 复盘:不再直接消费 reviewDecision——它分不清 approve 绑定的是哪个
- *     head、也分不清 approve 是不是巡审账号自己给的);
+ *     head、也分不清 approve 是不是巡审账号自己给的)。SC-2(2026-08-08):强制自动化审查
+ *     策略开启时(requireAutomatedReviewForAutoMerge=true)此分支改返回
+ *     route='review-pending-approved-bypass'(basis 仍是 'approved')——GitHub APPROVED
+ *     即便绑定当前 head 也不替代自动化审查,先进独立审查,凭当前 head clean 回执才能合
+ *     (pre-merge-check.mjs 的 structuralBypassReady 对这条路同样要求 receiptClean);
  *   - 机械前提满足 + 缺 APPROVED + 作者在 admins 名单 → route='review-pending-admin-bypass',
  *     basis='admin-trust'(典型 ownPr,GitHub 422 禁止自批准;不直接合并,要求本轮先跑一次
  *     独立审查,通过后才能在合并阶段认"审查干净"为 APPROVED 的等价物,调用方负责这一半的
  *     语义核验,本函数只给路由结论);
  *   - 机械前提满足 + 缺 APPROVED + 非 admins 名单 → route='skip-structural-block',
  *     basis=null(2026-08-01 前的默认行为,现在必须显式满足前两条之一才能 bypass)。
+ *
+ * `requireAutomatedReviewForAutoMerge` 缺省 false(=策略关闭,行为与拆分前一致),保证
+ * 未启用强制策略的消费仓与既有单测不受影响。
  */
-export function decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut, isAdminAuthor }) {
+export function decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut, isAdminAuthor, requireAutomatedReviewForAutoMerge = false }) {
   if (!structuralCanBypass) return { route: 'skip-structural-block', basis: null };
-  if (approvedShortcut === true) return { route: 'bypass-structural-block', basis: 'approved' };
+  if (approvedShortcut === true) {
+    if (requireAutomatedReviewForAutoMerge) return { route: 'review-pending-approved-bypass', basis: 'approved' };
+    return { route: 'bypass-structural-block', basis: 'approved' };
+  }
   if (isAdminAuthor) return { route: 'review-pending-admin-bypass', basis: 'admin-trust' };
   return { route: 'skip-structural-block', basis: null };
 }

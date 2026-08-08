@@ -38,3 +38,29 @@ test('admin 且已有真实 APPROVED(如被其他人 approve 过)→ 优先走 a
   const r = decideStructuralBypassRoute({ structuralCanBypass: true, approvedShortcut: true, isAdminAuthor: true });
   assert.deepEqual(r, { route: 'bypass-structural-block', basis: 'approved' });
 });
+
+// ── automated-review-gate wave0 追加(SC-1 策略层,2026-08-08):四象限路由表 + 反向变异 ──
+
+test('SC-1 四象限路由表:structuralCanBypass × approvedShortcut × isAdminAuthor 的确定性路由', () => {
+  // [structuralCanBypass, approvedShortcut, isAdminAuthor, 期望 route, 期望 basis]
+  const cases = [
+    [true, true, false, 'bypass-structural-block', 'approved'],  // 独立 approve@head → 直接 bypass
+    [true, true, true, 'bypass-structural-block', 'approved'],   // admin + 真实 approve → approved 优先
+    [true, false, true, 'review-pending-admin-bypass', 'admin-trust'], // admin 缺 APPROVED → 进独立审查(回执)
+    [true, false, false, 'skip-structural-block', null],         // 非 admin 缺 APPROVED → 跳过(#342/#366 型)
+    [false, true, false, 'skip-structural-block', null],         // 机械前提不满足,approve 也救不了
+    [false, false, true, 'skip-structural-block', null],         // 机械前提不满足,admin 身份不豁免
+  ];
+  for (const [canBypass, approved, isAdmin, route, basis] of cases) {
+    const r = decideStructuralBypassRoute({ structuralCanBypass: canBypass, approvedShortcut: approved, isAdminAuthor: isAdmin });
+    assert.equal(r.route, route, `canBypass=${canBypass} approved=${approved} admin=${isAdmin} → route`);
+    assert.equal(r.basis, basis, `canBypass=${canBypass} approved=${approved} admin=${isAdmin} → basis`);
+  }
+});
+
+test('反向变异:approvedShortcut true→false(同一输入只改这一维)恰好红在 route/basis 断言', () => {
+  const rTrue = decideStructuralBypassRoute({ structuralCanBypass: true, approvedShortcut: true, isAdminAuthor: false });
+  assert.deepEqual(rTrue, { route: 'bypass-structural-block', basis: 'approved' });
+  const rFalse = decideStructuralBypassRoute({ structuralCanBypass: true, approvedShortcut: false, isAdminAuthor: false });
+  assert.deepEqual(rFalse, { route: 'skip-structural-block', basis: null });
+});

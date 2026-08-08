@@ -16,9 +16,33 @@
 - `ciSensitivePaths`：workflow approval 安全门；
 - `serverPaths`：Server 发布通知 gate；
 - `selfFixAuthors`：自己的 PR 不走 GitHub 自审死锁和无效催办；
-- `admins`：结构性 BLOCKED 三层分级合并策略的信任名单（缺失/为空/配置形态非法
-  = fail-closed，经 `normalizeLoginList` 兜底），与 `selfFixAuthors` 各自独立、
-  不互相推导，见下方「作者侧与仓库侧 gate」；
+- `admins`：结构性 BLOCKED 三层分级合并策略的 **admin-trust 作者名单**（缺失/为空/
+  配置形态非法 = fail-closed，经 `normalizeLoginList` 兜底），与 `selfFixAuthors`/
+  `mergeAuthorization.breakGlassApprovers` 各自独立、不互相推导；**admins 只描述
+  「作者在名单」这条 admin-trust 路径，不承担 `/approve-merge` 放行职责**（那是
+  `mergeAuthorization.breakGlassApprovers` 的），见下方「作者侧与仓库侧 gate」；
+- `mergeAuthorization` 对象：合并授权策略相关键统一收纳在这里（
+  `ownAccountApprovalRequiresAck` / `breakGlassApprovers` /
+  `requireAutomatedReviewForAutoMerge`），解析见 `scripts/lib.mjs` 的
+  `resolveMergeAuthorizationPolicy`；目标仓库必须用同一嵌套形态配置，放顶层不会生效
+  （会退回兼容默认并告警）；**本容器整体必须是 object**——string/number/boolean/
+  array 等非 plain object = 容器级 malformed，不抛错、整体 fail-closed
+  （`requireAutomatedReviewForAutoMerge` 按 true、`breakGlassApprovers` 按 [] 且
+  不回退 admins 扩大发令名单）并显著告警点名容器必须 object，绝不静默当合法配置；
+- `mergeAuthorization.breakGlassApprovers`：`/approve-merge` 授权快速合并通道的放行
+  人名单（GitHub login；字段缺省/未配置 = 兼容期回退到 `admins` 名单作为发令名单并
+  输出 warning；显式留空 [] = fail-closed，无人可下达 `/approve-merge`；与 `admins`
+  各自独立、不互相推导）。它是**唯一**免阶段二独立审查的例外——正常自动合并必经
+  阶段二自动化审查（目标仓库可配 `mergeAuthorization.requireAutomatedReviewForAutoMerge`
+  强制该前提），只有名单成员在 PR 评论发出精确独占一行的
+  `/approve-merge <当前 head 完整 40 位 SHA>` 才能跳过，见下方「授权快速合并通道」；
+- `mergeAuthorization.requireAutomatedReviewForAutoMerge`：中性默认 `false` = 行为
+  不变（键缺失 = false 兼容；键存在但值非 boolean——null/string/number/object 等
+  显式 malformed——fail-closed 按 true 处理并显著告警，绝不静默放宽）；置 `true` 时
+  正常自动合并（approved shortcut / admin-trust 等免人工路径）必须以阶段二自动化
+  审查实际跑完且 clean 为前提，`reviewDecision=APPROVED` 不再单独构成无条件放行；
+  唯一不受本键约束的是 `mergeAuthorization.breakGlassApprovers` 经 `/approve-merge`
+  下达的 authorized-fast-merge；
 - `slackSyncBots`、`slackSenderAliases`、`feishuNotify`：
   讨论 issue 和飞书通知归属、收件人与去重配置；
 - `staleAuthorReminder`：作者侧停滞提醒阈值（`exemptAuthors` 命中直接跳过催办并清
@@ -269,11 +293,17 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   `findApproveMergeAuthorization`（授权本身是否有效）与
   `evaluateAuthorizedFastMerge`（机械前提是否满足））。**P2-4：与上面第②条
   `admin-trust`（`review-pending-admin-bypass`）是两条完全不同、互不替代的路由，
-  别概括成一句**——上面那条看的是 PR **作者**是否在 `admins` 名单，触发后仍要走完
-  阶段二独立审查、核验回执干净才能合，本条不豁免代码质量；本条看的是有没有
-  `admins` 名单的**评论者**在这条 PR 下发出授权命令，触发后**跳过**阶段二独立审查，
-  是审查流程本身的例外通道，不是"换一种方式证明审查过"。具体：`admins` 名单成员
-  （GitHub login，机器人自己发的评论不算）在 PR 评论里发出精确独占一行的
+  别概括成一句**——上面那条看的是 PR **作者**是否在 `admins` 名单（admin-trust），
+  触发后仍要走完阶段二独立审查、核验回执干净才能合，本条不豁免代码质量；本条看的是
+  有没有 `mergeAuthorization.breakGlassApprovers` 名单的**评论者**在这条 PR 下发出
+  授权命令，触发后
+  **跳过**阶段二独立审查，是审查流程本身的例外通道，不是"换一种方式证明审查过"——
+  正常自动合并必经阶段二自动化审查（目标仓库可配
+  `mergeAuthorization.requireAutomatedReviewForAutoMerge` 强制该前提，键缺失 =
+  false 兼容；键存在但值非 boolean = fail-closed 按 true 处理并显著告警），人工
+  `/approve-merge` break-glass 是**唯一**免阶段二独立审查的
+  例外。具体：`mergeAuthorization.breakGlassApprovers` 名单成员（GitHub login，机器人
+  自己发的评论不算）在 PR 评论里发出精确独占一行的
   `/approve-merge <当前 headRefOid 完整 40 位 SHA>` 命令（SC-A 2026-08-04：授权按
   head SHA 绑定，SHA 精确等于当前 head 才有效，push/force-push 换 head 即天然作废、
   需对新 head 重发），构成「人工已过安全与
