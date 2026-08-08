@@ -171,8 +171,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 1 次,首见 2026-08-08,最近 2026-08-08,status: tracked
-  - 现象:PR #580(test(bench), 作者 kirozeng, 2026-08-08)改动含 package.json,命中 pr-rules.json 的 securityReviewPaths,auto 分流为 skip-security-review,本轮原样跳过不审不合。行为符合设计(防自动化改坏自己),仅计数观察,不放开
+- `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
+  - 现象:本轮 #580(bench 内存基准)含 package.json 改动,命中安全审查路径转人工,设计行为
 - `changelog-generated-data-semantic-conflict` **changelog.json 生成数据分叉使"其余全过仅剩冲突"的 PR 代合并仍判语义冲突** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
   - 现象:PR #544(test 类,审查 0 P0/P1 干净,格式/gate/thread/CI 全过,唯一阻断是与 main 的 changelog.json 冲突)尝试 5.5 主干代合并,展开 merge 后发现冲突非机械:两侧 changelog 快照是不同轮次 auto-changelog LLM 改写产物,HEAD 侧独有 2 条、PR head 侧独有 4 条、1 条同源文案改写不同,取任一侧都丢真实发布条目。生成数据(public/changelog.json 由 scripts/changelog/auto-changelog.mjs 批量生成)在作者提交时被重扫,与 main 已合入的旧快照分叉时,冲突性质从"机械"退化为"语义"。已中止代合并(merge worktree 零改动清理),按 5.5 语义冲突不擅自取舍发冲突提醒给作者。此观察扩展 author-conflict-needs-human-rebase:原条目只覆盖叠其他 gate 的冲突,本条目说明即使其余全过,生成数据冲突也非机械。
 - `by-design-skip-conflict-threads-exempt` **skip-gate(冲突+threads)且作者在 staleAuthorReminder.exemptAuthors 时不催办——本轮 #497 因此跳过无提醒** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked

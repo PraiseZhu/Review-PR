@@ -1617,14 +1617,14 @@
       "fingerprint": "skip-security-review-package-json-pr",
       "tier": "by-design",
       "title": "package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）",
-      "detail": "PR #580(test(bench), 作者 kirozeng, 2026-08-08)改动含 package.json,命中 pr-rules.json 的 securityReviewPaths,auto 分流为 skip-security-review,本轮原样跳过不审不合。行为符合设计(防自动化改坏自己),仅计数观察,不放开",
+      "detail": "本轮 #580(bench 内存基准)含 package.json 改动,命中安全审查路径转人工,设计行为",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-08T05:02:00.282Z",
-      "lastSeen": "2026-08-08T05:02:00.282Z"
+      "lastSeen": "2026-08-08T07:04:03.358Z"
     }
   ],
   "escapedHazards": [
