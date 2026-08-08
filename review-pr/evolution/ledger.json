@@ -1638,6 +1638,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-08T10:17:01.005Z",
       "lastSeen": "2026-08-08T10:17:01.005Z"
+    },
+    {
+      "fingerprint": "skip-security-review-package-json",
+      "tier": "by-design",
+      "title": "PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)",
+      "detail": "PR #580(bench 内存基准)改动含 package.json,命中 securityReviewPaths,auto.action=skip-security-review,不自动审不合。属 3.8 设计意图:防改坏自动化自身的自我损坏闭环。计数观察,评估是否长期存在 package.json 高频入 PR 导致转人工过多。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-08T11:01:51.973Z",
+      "lastSeen": "2026-08-08T11:01:51.973Z"
     }
   ],
   "escapedHazards": [
