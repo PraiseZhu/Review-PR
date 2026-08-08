@@ -171,6 +171,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
+  - 现象:本轮 #585(资产 GC)1 条 conversation 未 resolve 被 skip,已发模板 C 提醒评论
 - `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
   - 现象:本轮 #580(bench 内存基准)含 package.json 改动,命中安全审查路径转人工,设计行为
 - `changelog-generated-data-semantic-conflict` **changelog.json 生成数据分叉使"其余全过仅剩冲突"的 PR 代合并仍判语义冲突** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
@@ -247,8 +249,6 @@
 - `security-review-path-blocks-own-gate-widening-pr` **扩大 e2e 门禁覆盖面的 PR 必然改 package.json,因而命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR #340(把 chat-copy 加进 test:e2e:prod:subset)只改 package.json 一行 scenario 列表,被判 skip-security-review 转人工。判定正确:package\.json$ 在 securityReviewPaths 内,而 review-pr 自己的两个 e2e required check 就跑这个 script —— 让它自动审并合入一个改动了自身验证命令的 PR,正是该门要防的自我损坏闭环。副作用是「加强门禁覆盖面」这类改动天然无法自动落地,每次都要人工放行。
   - 提案:不建议自动放开(扩权类风险)。若想减少人工介入,可考虑把 e2e scenario 清单从 package.json 抽到独立数据文件(如 scripts/e2e/subset.json),让门禁改动不再触碰 package.json —— 但这是目标仓库的结构调整,不是 skill 侧改动,且需评估是否值得为此增加一层间接。
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 4 次,首见 2026-07-24,最近 2026-07-28,status: tracked
-  - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,提醒已在 crossChannelSuppressHours 窗口内去重(未重发)
 - `structural-check-not-in-bypass-allowlist` **required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:PR #303 mergeStateStatus=BLOCKED,命中的必需检查类型含 required_status_checks(范围太宽,pr-rules.json 注释已说明只允许 code_scanning/code_quality 默认放行),当前配置正确跳过、不打回、不 admin merge
 - `ci-checks-unreadable` **无法读取 CI check 状态（token 权限 statusCheckRollup 403）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
