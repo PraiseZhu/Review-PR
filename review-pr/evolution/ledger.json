@@ -1625,6 +1625,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-08T05:02:00.282Z",
       "lastSeen": "2026-08-08T07:04:03.358Z"
+    },
+    {
+      "fingerprint": "rro1-disposition-evidence-shape-missing-in-prompt",
+      "tier": "auto",
+      "title": "prompt 契约漏 findingDispositions resolved 的 evidence 结构化形状,首轮必 invalid",
+      "detail": "2026-08-08 实跑:#585 审查输出 findingDispositions 只给自由文本 basis,consumer(lib.review-consume.mjs)要求 resolved 必须带结构化 evidence(kind diff-anchor|verification-run),shape 校验失败连带所有数组字段置空,回执也被误判无。已修 build-review-task.mjs 的 prompt 模板补上 evidence 形状说明。",
+      "proposal": null,
+      "status": "landed",
+      "commit": "9d9055d",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-08T10:17:01.005Z",
+      "lastSeen": "2026-08-08T10:17:01.005Z"
     }
   ],
   "escapedHazards": [

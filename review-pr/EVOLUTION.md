@@ -141,6 +141,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `rro1-disposition-evidence-shape-missing-in-prompt` **prompt 契约漏 findingDispositions resolved 的 evidence 结构化形状,首轮必 invalid** — 出现 1 次,首见 2026-08-08,最近 2026-08-08,status: landed,commit `9d9055d`
+  - 现象:2026-08-08 实跑:#585 审查输出 findingDispositions 只给自由文本 basis,consumer(lib.review-consume.mjs)要求 resolved 必须带结构化 evidence(kind diff-anchor|verification-run),shape 校验失败连带所有数组字段置空,回执也被误判无。已修 build-review-task.mjs 的 prompt 模板补上 evidence 形状说明。
 - `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 2 次,首见 2026-08-07,最近 2026-08-07,status: open
   - 现象:PR #544 的 6 条历史 finding origin 为旧 snapshot,当前 head 7f0e6af 已修复(新增哨兵+可红验证)。审查 agent 判 invalidated→auto 模式无交互确认出口→effective-open 永久卡死、PR 无法合并。根因:prompt 只说'resolved 或 invalidated'但未区分跨 snapshot 已修复(应 resolved)vs 同 snapshot 误报(应 invalidated),agent 看到历史状态 [invalidated] 就沿用。本轮靠主 agent 二次指引修正处置才通关
   - 提案:build-review-task.mjs 的未决 findings 段落追加指引:对 originSnapshotHash 早于当前 snapshot 的条目,若当前 head 已有修复证据(新增代码/负向实测变红)→ 给 resolved;invalidated 只用于'该指控在当前 snapshot 上不成立且无修复动作'的误报,auto 模式下 invalidated 无交互确认出口、每轮都会重新注入
