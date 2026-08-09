@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// 可变 fake gh(resolve-threads 测试专用):支持 reviewThreads 查询 + reply/resolve 两个
+// mutation,状态存 $FAKE_GH_RESOLVE_STATE(JSON 文件)跨子进程保持——双并发用例靠它
+// 模拟「第二实例看到第一实例已 resolve」。每次调用追加一行到 $FAKE_GH_LOG。
+// 状态文件结构:
+//   { "threads": [ { "id": "PRRT_1", "isResolved": false, "path": "src/foo.ts",
+//                    "comments": [ { "body": "bot 意见 ..." } ] } ] }
+// mutation 后按 GitHub 语义更新:reply 追加 comment、resolve 置 isResolved=true。
+import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
+
+const STATE = process.env.FAKE_GH_RESOLVE_STATE;
+const LOG = process.env.FAKE_GH_LOG;
+const args = process.argv.slice(2);
+const stdin = readFileSync(0, 'utf8');
+
+if (LOG) appendFileSync(LOG, `${JSON.stringify({ args, stdin: stdin.slice(0, 120) })}\n`);
+if (!STATE || !existsSync(STATE)) {
+  console.error('[fake-gh-resolve] 缺 FAKE_GH_RESOLVE_STATE 状态文件');
+  process.exit(1);
+}
+const state = JSON.parse(readFileSync(STATE, 'utf8'));
+const save = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
+
+const out = (obj) => { process.stdout.write(JSON.stringify(obj)); process.exit(0); };
+
+if (args[0] === 'api' && args[1] === 'graphql') {
+  if (stdin.includes('reviewThreads')) {
+    // 查询:返回当前状态;id 参数解析(变量行 owner/repo/num)
+    out({ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } });
+  }
+  if (stdin.includes('addPullRequestReviewThreadReply')) {
+    const tid = stdin.match(/pullRequestReviewThreadId:\s*\$tid/);
+    const body = stdin.match(/body:\s*\$body/);
+    // 变量在 -f 参数里(每行一个,形如 tid=PRRT_1 / body=xxx)
+    const vars = {};
+    for (const a of args) {
+      const m = a.match(/^(tid|body)=([\s\S]*)$/);
+      if (m) vars[m[1]] = m[2];
+    }
+    const t = state.threads.find((x) => x.id === vars.tid);
+    if (!t) { console.error('[fake-gh-resolve] mutation 目标 thread 不存在'); process.exit(1); }
+    t.comments.nodes.push({ body: vars.body ?? '(body)' });
+    save();
+    out({ data: { addPullRequestReviewThreadReply: { comment: { id: `c_${t.id}` } } } });
+  }
+  if (stdin.includes('resolveReviewThread')) {
+    const vars = {};
+    for (const a of args) {
+      const m = a.match(/^tid=(.*)$/);
+      if (m) vars.tid = m[1];
+    }
+    const t = state.threads.find((x) => x.id === vars.tid);
+    if (!t) { console.error('[fake-gh-resolve] mutation 目标 thread 不存在'); process.exit(1); }
+    t.isResolved = true;
+    save();
+    out({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+  }
+  console.error(`[fake-gh-resolve] 未识别的 graphql: ${stdin.slice(0, 120)}`);
+  process.exit(1);
+}
+
+console.error(`[fake-gh-resolve] 未 mock 的调用: gh ${args.join(' ')}`);
+process.exit(1);
