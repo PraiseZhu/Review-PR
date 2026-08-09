@@ -364,6 +364,37 @@ const runScript = (work, env, payload, pr = 123) => {
   rmSync(s.lockDir, { recursive: true, force: true });
 }
 
+// D2(必加,#12 复审席在 5d75be4 已提交状态实测复现):首条评论作者 = 白名单 bot
+// (greptile-apps),第二条评论作者 = 白名单外 bot(copilot-pull-request-reviewer),
+// 两条评论的 token 都支撑 diff 新增行(payload 合法含 justification)。
+// 若执行层只扫 comments[0],会判定白名单通过 → 完成 reply+resolve,非白名单 bot 的
+// 介入被完全无视,白名单边界形同虚设(该失效在 5d75be4 上全套测试仍全绿)。
+// 必须 0 reply / 0 resolve,reason 点明是哪个非白名单作者触发的拒绝。
+{
+  const s = setup({
+    threads: [{
+      id: 'PRRT_D2', isResolved: false, path: 'src/d2.ts',
+      comments: [
+        { body: '这里调用了 `handleSubmit` 但缺少防抖,应改用 `debounce` 包裹。', author: 'greptile-apps', id: 'c_d2_1' },
+        { body: '`handleSubmit` 还需防抖,`debounce` 未生效。', author: 'copilot-pull-request-reviewer', id: 'c_d2_2' },
+      ],
+    }],
+  });
+  const { r, out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_D2', reply: '已处理,代为 resolve', justification: '已给 onSubmit 加防抖包裹' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  check('D2 非白名单 bot 后续:退出码 0', r.status === 0, `status=${r.status} stderr=${r.stderr.slice(0, 200)}`);
+  check('D2 非白名单 bot 后续:done=false 且 reason 指明白名单拒绝', out?.results?.[0]?.done === false && out?.results?.[0]?.reason?.startsWith('non-whitelisted-comment-present'), JSON.stringify(out?.results));
+  check('D2 非白名单 bot 后续:reason 点明非白名单作者', out?.results?.[0]?.author === 'copilot-pull-request-reviewer', JSON.stringify(out?.results));
+  const st = s.readState();
+  check('D2 非白名单 bot 后续:状态未被改', st.threads[0].isResolved === false);
+  const calls = s.readLog();
+  check('D2 非白名单 bot 后续:0 reply / 0 resolve', !calls.some((l) => l.includes('addPullRequestReviewThreadReply') || l.includes('resolveReviewThread')), JSON.stringify(calls));
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
 // 未传 allowedBots(或传空数组)→ 执行层整体 fail-closed,即使作者其实在白名单同名
 {
   const s = setup({ threads: [{ id: 'PRRT_7', isResolved: false, path: 'src/g.ts', comments: ['bot 意见'] }] });
