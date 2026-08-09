@@ -1,0 +1,7 @@
+{
+  "_comment": "本仓的 agent-use 配置。当前仅为 pr-autopilot 的 size-gate 提供仓库特有排除项。",
+  "sizeGate": {
+    "_comment": "消费方=pr-autopilot scripts/size-gate.mjs（从 merge-base 树读本字段，故本文件合入 main 后才对后续 PR 生效）。excludePaths 只加仓库特有项：preview-dist/ 与 dist/ 是同一份 build-dist.mjs 生成、随源重建的构建产物镜像，dist/ 已在 size-gate 内置排除列表，本项使 preview-dist/ 与其对齐——不占人工审查预算，与 mivo 仓 sizeGate 已确立的「生成产物不占预算」原则一致。不调 budgetLines/warnRatio，保持默认 800/0.75。",
+    "excludePaths": ["^preview-dist/"]
+  }
+}
