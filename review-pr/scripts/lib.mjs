@@ -2379,6 +2379,105 @@ export function classifyGateHits({ paths = [], securityReviewPaths = [], ruleFil
   return { security, rules, ruleMapHits, archCore };
 }
 
+// ── thread 代 resolve 的修复证据判定(assessThreadEvidence)──
+// resolve-threads.mjs 只执行调用方给定的 payload;「意见是否已被处理」的语义判定在编排层
+// (SKILL「thread 清理」),本函数把判定核心做成可单测的纯函数,sc-thr 的语义绑定红线
+// (GPT 质询 ch-thr-evidence 采纳)在这里落地:
+//   - 白名单 bot(threadTriage.extraBots,登录名单)且 thread 的 claim 与修复 diff 的
+//     新增行**针对性对应**(body 里可提取的 token 被修复新增行处理)才算证据;
+//   - 「同文件被后续 commit 触碰」/ isOutdated 只是必要线索,不是充分条件
+//     (与上游 ff37d26 降级一致)——只有线索 → fail-closed 不动;
+//   - 真人 thread 永不自动 resolve;未配置白名单 → 整体禁用;拿不准一律不动。
+
+/** token 停用词(中英混排的审查意见里,这些词不构成针对性 claim)。 */
+const THREAD_TOKEN_STOPWORDS = new Set([
+  'the', 'and', 'this', 'that', 'with', 'from', 'have', 'has', 'for', 'not', 'are',
+  'was', 'were', 'will', 'would', 'should', 'could', 'your', 'our', 'their', 'been',
+  'being', 'when', 'what', 'which', 'there', 'here', 'use', 'using', 'used', 'after',
+  'before', 'into', 'over', 'than', 'then', 'them', 'they', 'only', 'also', 'just',
+  'still', 'even', 'about', 'because', 'error', 'issue', 'line', 'file', 'code',
+  'fix', 'fixed', 'please', 'need', 'needs', 'make', 'sure', 'may', 'might', 'must',
+  'add', 'added', 'remove', 'removed', 'change', 'changed', 'check', 'checked',
+]);
+
+/**
+ * 从 thread 评论文本提取「针对性 token」,按特异度优先级排序:
+ * 反引号段 > 双引号段 > 单引号段 > 标识符(驼峰/下划线/点路径)。
+ * 长度 ≥ 3、剔除停用词与纯数字;去重保序。
+ * @returns {string[]}
+ */
+export function extractThreadTokens(body) {
+  const tokens = [];
+  const seen = new Set();
+  const push = (t) => {
+    const s = String(t ?? '').trim();
+    if (s.length < 3) return;
+    if (/^\d+$/.test(s)) return;
+    if (THREAD_TOKEN_STOPWORDS.has(s.toLowerCase())) return;
+    if (seen.has(s)) return;
+    seen.add(s);
+    tokens.push(s);
+  };
+  for (const m of String(body ?? '').matchAll(/`([^`]+)`/g)) push(m[1]);
+  for (const m of String(body ?? '').matchAll(/"([^"]+)"/g)) push(m[1]);
+  for (const m of String(body ?? '').matchAll(/'([^']+)'/g)) push(m[1]);
+  for (const m of String(body ?? '').matchAll(/\b[A-Za-z_][A-Za-z0-9_.]{2,}\b/g)) push(m[0]);
+  return tokens;
+}
+
+/**
+ * 判「这条 thread 是否可以代 resolve」(白名单 bot + 语义绑定证据)。
+ * @param {{thread?:{path?:string, body?:string, isOutdated?:boolean, author?:string},
+ *   authorType?:'bot'|'human', allowedBots?:string[], diff?:Array<{path:string, additions:string[]}>}} o
+ *   diff = 当前 head 相对 base 的变更(按文件分组的新增行);调用方(编排层)从
+ *   context.mjs 的 diff 数据 / git diff 派生。
+ * @returns {{canResolve:boolean, reason:string, evidence?:string, matchedToken?:string,
+ *   matchedLine?:string, pathTouched?:boolean, isOutdated?:boolean}}
+ *   canResolve=true 仅当 evidence='semantic-bound';其余一律 false(不动,留人工)。
+ */
+export function assessThreadEvidence({ thread = {}, authorType = 'human', allowedBots = [], diff = [] } = {}) {
+  const path = String(thread?.path ?? '');
+  const body = String(thread?.body ?? '');
+  const isOutdated = thread?.isOutdated === true;
+  if (authorType !== 'bot') {
+    return { canResolve: false, reason: 'human-thread-never-auto' };
+  }
+  const botList = (allowedBots ?? []).map((s) => String(s).toLowerCase()).filter(Boolean);
+  if (!botList.length) {
+    return { canResolve: false, reason: 'triage-disabled(未配置 threadTriage.extraBots)' };
+  }
+  const threadAuthor = String(thread?.author ?? '').toLowerCase();
+  if (threadAuthor && !botList.includes(threadAuthor)) {
+    return { canResolve: false, reason: 'bot-not-in-whitelist', author: thread?.author };
+  }
+  const tokens = extractThreadTokens(body);
+  const fileDiff = (diff ?? []).find((d) => d.path === path);
+  const changedPaths = (diff ?? []).map((d) => d.path);
+  const pathTouched = changedPaths.includes(path);
+  // 语义绑定:claim token 必须出现在修复 diff 的**新增行**里(针对性处理)。
+  // token 提取不到(拿不准)或没命中 → fail-closed 不动。
+  let matched = null;
+  for (const tok of tokens) {
+    for (const line of fileDiff?.additions ?? []) {
+      if (line.includes(tok)) {
+        matched = { token: tok, line: line.slice(0, 200) };
+        break;
+      }
+    }
+    if (matched) break;
+  }
+  if (matched) {
+    return {
+      canResolve: true, evidence: 'semantic-bound',
+      matchedToken: matched.token, matchedLine: matched.line,
+      pathTouched, isOutdated,
+    };
+  }
+  if (pathTouched) return { canResolve: false, reason: 'path-touched-only(同文件被触碰≠问题已处理)', pathTouched, isOutdated };
+  if (isOutdated) return { canResolve: false, reason: 'outdated-only(isOutdated 只是线索,不单独构成证据)', pathTouched, isOutdated };
+  return { canResolve: false, reason: 'no-evidence(拿不准,留人工)', pathTouched, isOutdated };
+}
+
 // ── Skill 仓库自同步(pull / commit+push)──
 // Skill 常以软链接安装进目标项目;这里一律先 realpath 解析回真实 skills 仓库再做 git 操作。
 // 所有函数 best-effort、绝不抛:同步失败只如实报告,不阻塞 review 流程本身。

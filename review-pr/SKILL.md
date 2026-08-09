@@ -924,6 +924,52 @@ T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这�
 路径映射）命中明细随 `signoff.triggers.ruleMapHits` 带出，供编排辅助定性，不单独
 构成触发。保证等级同 3.8：T1（防疏忽/漂移），不冒充 T2。
 
+### 3.10 thread 清理（triage）：代 resolve 已处理的 bot 意见
+
+分支保护开了 `Require conversation resolution` 时，thread 不 resolve 就 GitHub 层面
+合不了；而 bot（greptile 等）从不回来点 resolve，作者修完也常忘点——「threads
+unresolved 连续多轮整轮空转、停滞十几天」的 PR 就是这个原因（#251 型）。auto 模式
+在扫描后、合并判定前执行本清理；交互模式先把可代 resolve 清单（路径 + 判定依据 +
+拟回复）展示给用户、确认后执行。
+
+**判据（语义绑定，判定核心在 lib.mjs `assessThreadEvidence`，
+resolve-threads.test.mjs 覆盖）**，对 `context.history.reviewThreads` 里未 resolve
+的 thread 逐条：
+
+1. **真人 thread 永不自动 resolve**；只认白名单 bot——`pr-rules.json` 的
+   `threadTriage.extraBots` 登录名单（首配 `greptile-apps`；未配置 = 整套机制关闭，
+   一条都不动）；
+2. **修复证据 = thread 的 claim 与当前 head 修复 diff 的针对性对应**：从 thread
+   评论文本提取针对性 token（反引号/引号段、标识符，`extractThreadTokens`），该
+   token 出现在修复 diff 的新增行里（`evidence=semantic-bound`）才算证据；
+3. **「同文件被后续 commit 触碰」/ `isOutdated` 只是必要线索，不是充分条件**——
+   只有线索 → fail-closed 不动（与上游 ff37d26 降级口径一致；行改了 ≠ 问题解决，
+   必须读到 claim 被针对性处理）；
+4. **拿不准一律不动**（token 提取不到 / 匹配不到 / 读不到当前 head diff），留人工；
+5. 翻案保护由脚本兜底：带 triage 标记回复却再次未 resolve 的 thread
+   （`reopened-after-triage`）**永久留人工**——有人 unresolve 过 = 人工翻案，不重判、
+   不拉锯，别把它当故障重试。
+
+**执行**：把可代 resolve 的清单逐条生成 reply payload（回复必须引用修复 commit 与
+位置，供人复核；文案不声称机器已验证修复正确性——本动作是 T1 防遗漏收口），调：
+
+```bash
+node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file - <<'JSON'
+{ "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>),代为 resolve;有异议可 reopen" } ] }
+JSON
+```
+
+（脚本只执行调用方给定的 payload，不自选 thread——**不接编排则 #251 型停滞仍会
+skip**，这正是本节的接线职责。）
+
+**回流与汇总**：消费脚本输出的 `results[]`——`done=true`（含 `already-resolved`）
+计入已 resolve；`done=false`（`thread-not-found` / `reopened-after-triage` / reply
+或 resolve 失败）**必须逐条显式进轮次汇总**，不得静默；resolved 后对涉及该 PR 的
+合并判定**重算 threads 阻断**（重新拉 `mergeStateStatus`，或按「未 resolve thread
+计数归零」处理），不凭清理前的旧计数判定。每条代 resolve 都带回复通知原 reviewer，
+对方可一键 unresolve。**幂等**：脚本对已 resolve / 已回复过的 thread 不重复动作
+（双并发下每 thread 至多一次 reply+resolve，靠脚本内查当前状态兑 TOCTOU 窗口）。
+
 ## 4. 阶段二：独立代码审查
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
@@ -2036,6 +2082,13 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    node "<SKILL_ROOT>/scripts/merge-pr.mjs" --reconcile
    ```
 
+   **thread 清理（triage）**：对 `context` 输出中 `gate.unresolvedThreads` 非空的
+   候选，按 3.10 的判据逐条评估（白名单 bot `threadTriage.extraBots` + 语义绑定
+   证据 `assessThreadEvidence`），生成 reply payload 后调
+   `node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file -`；
+   `done=false` 的条目逐条进汇总；resolved 后重算该 PR 的 threads 阻断再进后续分流
+   （未做清理、不重算就按未 resolve 处理）。未配置 `threadTriage.extraBots` 时本步
+   整体跳过（机制关闭，一条都不动）。
    **跳过不能对作者静默**：分类完成后，把因作者侧可自解原因被 skip 的候选批量交给
    提醒脚本（自带指纹去重、selfFixAuthors 与 `staleAuthorReminder.exemptAuthors`
    排除，重复调用安全、失败不阻塞）：
@@ -2084,7 +2137,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
    审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
    通过则按 5.2 正常打回；其余通过审查的 PR 先复核状态再合并，失败的 PR 请求修改，
-   CI pending、未 resolve thread、权限问题只跳过不绕过；冲突的 PR 若满足 5.5 门槛
+   CI pending、未 resolve thread、权限问题只跳过不绕过——未 resolve thread 的
+   阻断判定用 **thread 清理（3.10）回流后**的计数：扫描阶段已代 resolve 的不再阻断，
+   清理后仍 unresolved 的照旧阻断（合并判定前重新拉 `mergeStateStatus`，不凭清理前
+   的旧计数）；冲突的 PR 若满足 5.5 门槛
    （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
@@ -2165,6 +2221,13 @@ JSON 结构：
   - 5.5 主干代合并、5.6 代修合并：全程不提交 `gh pr review` → `none`；
   - 产品/架构/安全/规则门 hold（signoff-hold，未提交 review）→ `none`。
 
+`threadTriage`（可选，见 3.10）：本轮的 thread 代 resolve 结果，**每条必须显式**——
+`[{pr, threadId, path, outcome}]`，`outcome` ∈ `resolved`（done=true 含
+already-resolved）/ `reopened-after-triage` / `thread-not-found` / `reply-failed` /
+`resolve-failed` / `skipped-no-evidence`；`reply-failed`/`resolve-failed`/`thread-not-found`
+（= resolver 失败或目标缺失）不得静默，落盘时逐条展开；未配置 `threadTriage.extraBots`
+时整字段可省略。
+
 `draftSkipped` **必须是 `[{pr, reason, url}]` 数组，禁止写成裸数字**（历史上
 只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，
 2026-08-01 起禁止复发）；`context.mjs --scan-all` 输出的同名字段只是扫描期的
@@ -2230,7 +2293,9 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 
 **自进化** <n>
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
-- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
+- 已落地（2026-08-09，见 3.10）：白名单 bot（`threadTriage.extraBots`）且修复证据
+  语义绑定（`assessThreadEvidence`）的 thread 代 resolve；真人 thread / 无证据 /
+  翻案三类永不动，翻案永久留人工。
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
 调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤

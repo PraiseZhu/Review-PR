@@ -9,7 +9,8 @@
     "scripts/dist/",
     "tests/",
     "scripts/preview-dist.manifest.json",
-    "scripts/signoff-policy.test.mjs"
+    "scripts/signoff-policy.test.mjs",
+    "scripts/resolve-threads.test.mjs"
   ],
   "markerStrips": [
     {
@@ -57,7 +58,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）",
+      "find": "- 已落地（2026-08-09，见 3.10）：白名单 bot（`threadTriage.extraBots`）且修复证据\n  语义绑定（`assessThreadEvidence`）的 thread 代 resolve；真人 thread / 无证据 /\n  翻案三类永不动，翻案永久留人工。",
       "replace": ""
     },
     {
