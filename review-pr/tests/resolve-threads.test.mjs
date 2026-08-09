@@ -553,6 +553,109 @@ test('年龄门:陈旧己方 marker(≥ 反对窗口)+ 同 headSha + 白名单�
   assert.equal(s.readState().threads[0].isResolved, true);
 });
 
+// ── env 校验:REVIEW_PR_MIN_MARKER_AGE_MS 不许成为隐蔽的安全旋钮(R4)──
+// `Number(env || default)` 会让 -1 悄悄关掉年龄门、'0' 直接生效 0ms、NaN 靠巧合保守
+// (同 #11 SIGNOFF_HOLD_GH_TIMEOUT_MS 未校验模式)。规则:解析失败 / 负值 / 低于下限
+// (1 分钟 = "人来得及看见"的最小可感知窗口)→ 一律回落默认 600000ms,并双通道警告
+// (stderr + JSON warnings 字段)。每种输入形态断言「实际生效的窗口」+「该窗口下的
+// resolve 行为」——只断言常量值可能常量对了行为不对:
+//   - 45s 新鲜 marker:生效窗口 600000 时必须 replied-only;若 -1/0/30000 这类错误值
+//     生效(45s ≥ 错误值)会放行 resolve → 行为断言转红;
+//   - 30min 陈旧 marker:回落默认后必须仍能 resolved(证明门没被卡死/没被永久关闭)。
+const freshMarkerAt = (threadId, ageMs) => ({
+  id: threadId, isResolved: false, path: `src/${threadId.toLowerCase()}.ts`,
+  comments: [
+    'bot 意见',
+    { body: marker(123, threadId, 'abc1234'), author: SELF_LOGIN, id: `m_${threadId}`, createdAt: new Date(Date.now() - ageMs).toISOString() },
+  ],
+});
+
+const envFallbackCases = [['负值', '-1'], ['零', '0'], ['非数字', 'abc'], ['低于下限的正值', '30000']];
+for (const [label, raw] of envFallbackCases) {
+  test(`env 校验:REVIEW_PR_MIN_MARKER_AGE_MS=${JSON.stringify(raw)}(${label}) → 回落默认 600000 + 双通道警告,resolve 行为=默认窗口`, (t) => {
+    const s = setup({ threads: [freshMarkerAt('PRRT_ENV_FRESH', 45 * 1000), freshMarkerAt('PRRT_ENV_STALE', 30 * 60 * 1000)] });
+    clean(t, s);
+    const env = { ...s.env, REVIEW_PR_MIN_MARKER_AGE_MS: raw };
+    const { r, out } = runScript(s.work, env, {
+      threads: [
+        { id: 'PRRT_ENV_FRESH', reply: '已处理', justification: 'j' },
+        { id: 'PRRT_ENV_STALE', reply: '已处理', justification: 'j' },
+      ],
+      allowedBots: ['greptile-apps'], headSha: 'abc1234',
+    });
+    assert.equal(r.status, 0, `status=${r.status} stderr=${r.stderr.slice(0, 300)}`);
+    const fresh = out.results.find((x) => x.id === 'PRRT_ENV_FRESH');
+    const stale = out.results.find((x) => x.id === 'PRRT_ENV_STALE');
+    assert.equal(fresh.outcome, 'replied-only', `${label}不得放行 45s 新鲜 marker(实际生效的窗口必须仍是默认 600000): ${JSON.stringify(fresh)}`);
+    assert.equal(fresh.resolved, false, `${label}不得悄悄关掉年龄门`);
+    assert.equal(stale.outcome, 'resolved', `回落默认后 30min 陈旧 marker 必须仍能 resolve(门没被卡死): ${JSON.stringify(stale)}`);
+    assert.ok(r.stderr.includes('回落默认'), `stderr 必须带回落警告: ${r.stderr.slice(0, 300)}`);
+    assert.ok(out.warnings?.length > 0 && out.warnings.some((w) => w.includes('回落默认')), `JSON warnings 必须带回落警告: ${JSON.stringify(out.warnings)}`);
+  });
+}
+
+test('env 校验:REVIEW_PR_MIN_MARKER_AGE_MS=120000(正常值)→ 生效 120s:180s marker resolve / 45s marker 不 resolve,无警告', (t) => {
+  const s = setup({ threads: [freshMarkerAt('PRRT_ENV120_OLD', 180 * 1000), freshMarkerAt('PRRT_ENV120_FRESH', 45 * 1000)] });
+  clean(t, s);
+  const env = { ...s.env, REVIEW_PR_MIN_MARKER_AGE_MS: '120000' };
+  const { r, out } = runScript(s.work, env, {
+    threads: [
+      { id: 'PRRT_ENV120_OLD', reply: '已处理', justification: 'j' },
+      { id: 'PRRT_ENV120_FRESH', reply: '已处理', justification: 'j' },
+    ],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  assert.equal(r.status, 0, `status=${r.status} stderr=${r.stderr.slice(0, 300)}`);
+  const oldM = out.results.find((x) => x.id === 'PRRT_ENV120_OLD');
+  const fresh = out.results.find((x) => x.id === 'PRRT_ENV120_FRESH');
+  assert.equal(oldM.outcome, 'resolved', `180s ≥ 生效窗口 120s 必须 resolve(证明生效值真是 120000 而非回落默认 600000): ${JSON.stringify(oldM)}`);
+  assert.equal(fresh.outcome, 'replied-only', `45s < 120s 不得 resolve: ${JSON.stringify(fresh)}`);
+  assert.ok(!r.stderr.includes('回落默认'), `合法值不得触发回落警告: ${r.stderr.slice(0, 300)}`);
+  assert.equal(out.warnings, undefined, '合法值 JSON 无 warnings 字段');
+});
+
+test('env 校验:REVIEW_PR_DISABLE_MARKER_AGE_GATE=1 → 年龄门显式关闭,30s marker 直接 resolve,stderr 大声警告;无 createdAt 仍保守', (t) => {
+  const s = setup({
+    threads: [
+      freshMarkerAt('PRRT_ENV_GATE_30S', 30 * 1000),
+      {
+        id: 'PRRT_ENV_GATE_NOCA', isResolved: false, path: 'src/prrt_env_gate_noca.ts',
+        comments: ['bot 意见', { body: marker(123, 'PRRT_ENV_GATE_NOCA', 'abc1234'), author: SELF_LOGIN, id: 'm_noca' }], // 无 createdAt
+      },
+    ],
+  });
+  clean(t, s);
+  const env = { ...s.env, REVIEW_PR_DISABLE_MARKER_AGE_GATE: '1' };
+  const { r, out } = runScript(s.work, env, {
+    threads: [
+      { id: 'PRRT_ENV_GATE_30S', reply: '已处理', justification: 'j' },
+      { id: 'PRRT_ENV_GATE_NOCA', reply: '已处理', justification: 'j' },
+    ],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  assert.equal(r.status, 0, `status=${r.status} stderr=${r.stderr.slice(0, 300)}`);
+  const g30 = out.results.find((x) => x.id === 'PRRT_ENV_GATE_30S');
+  const gNoca = out.results.find((x) => x.id === 'PRRT_ENV_GATE_NOCA');
+  assert.equal(g30.outcome, 'resolved', `门关闭后 30s 新鲜 marker 必须 resolve(年龄条件豁免): ${JSON.stringify(g30)}`);
+  assert.equal(gNoca.outcome, 'replied-only', '门关闭不豁免"无 createdAt 保守不 resolve"');
+  assert.ok(gNoca.reason.includes('无 createdAt'), gNoca.reason);
+  assert.ok(r.stderr.includes('年龄门已关闭'), `stderr 必须大声说明年龄门已关闭: ${r.stderr.slice(0, 300)}`);
+  assert.ok(out.warnings?.length > 0 && out.warnings.some((w) => w.includes('年龄门已关闭')), `JSON warnings 必须含门关闭声明: ${JSON.stringify(out.warnings)}`);
+});
+
+test('env 校验:未设置 env → 无警告输出,默认窗口行为不变', (t) => {
+  const s = setup({ threads: [freshMarkerAt('PRRT_ENV_DFLT', 45 * 1000)] });
+  clean(t, s);
+  const { r, out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_ENV_DFLT', reply: '已处理', justification: 'j' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  assert.equal(r.status, 0, `status=${r.status} stderr=${r.stderr.slice(0, 300)}`);
+  assert.equal(out.results[0].outcome, 'replied-only', '默认窗口下 45s marker 不 resolve');
+  assert.ok(!r.stderr.includes('[resolve-threads] 警告'), `默认路径不得有警告: ${r.stderr.slice(0, 300)}`);
+  assert.equal(out.warnings, undefined, 'JSON 无 warnings 字段');
+});
+
 // ── D4 takeover 残留自愈 ──
 test('D4 takeover 残留自愈:预置陈旧 .takeover(超 TTL)+ 陈旧主锁 → 仍能拿锁完成首轮', (t) => {
   const s = setup({ threads: [{ id: 'PRRT_TO', isResolved: false, path: 'src/to.ts', comments: ['bot 意见'] }] });
