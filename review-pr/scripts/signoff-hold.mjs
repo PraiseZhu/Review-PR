@@ -90,44 +90,53 @@ const KIND_TOPICS = {
 const LOCK_POLL_MS = 100;
 const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000);
 
-// round5 R5-1(blocker 修复,推翻 round4 的上界声称):round4 声称「临界区最坏 11 次
-// gh 调用 × 15s = 165s < 300s 租约」,复审席实测否掉——对账是 O(重复数) 不是常数 3:
-// 10 个唯一 hold URL 实测 27 次调用(9 view + 9 close + 9 comment),27×15s=405s 已超
-// LOCK_STALE_MS。失效链:持锁进程在临界区内跑对账超过 LOCK_STALE_MS → 它仍活着但已
-// 满足 isLockStale 的时间条件 → 另一实例接管 → 两个实例对同一 PR 做重复的不可逆
-// GitHub 写入(正是 D2 要消灭的双写,只是从「没有上界」变成「上界算错」)。
-// 本轮修复:上界由代码强制,不再写死常数声称。
-//   1) 临界区调用预算(ghB):每次 gh 调用消耗 1 个预算,预算耗尽后不再发出调用,
-//      剩余工作主动放弃并 fail-visible(budgetExhausted 进 errors/legacyErrors 报出,
-//      下一轮重试自愈)——这是「临界区内允许的 gh 调用数」的显式上界;
-//   2) 对账每轮最多处理 MAX_RECONCILE_DUPS 个重复,超出部分报在 reconciliation.
-//      unprocessed(数量 + URL),下一轮继续——对账这个 O(n) 项被结构性钳住。
-// 预算取值推导(推导值,未逐秒实测;实际调用数由 tests「D2 对账上界」对 10 个重复
-// 实测绑定):固定部分最坏 8 次调用(pr view / issue view / issue create / pr comment /
-// label create / label POST / legacy label DELETE / renotice,均为数据无关的固定调用
-// 点;实测单轮完整流程固定调用 5~6 次,见「D2 对账上界」用例),对账 3×3=9 次 →
-// 预算 17 次;17 × 15s = 255s < 300s,余量 45s。legacy 标签多于 1 个等超预算场景:
-// 后续调用 budgetExhausted fail-visible,下一轮重试——宁可少做,不可超过租约。
-// SIGNOFF_HOLD_GH_TIMEOUT_MS 供测试用短值验证超时机制(生产默认 15s)。
-export const GH_CALL_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS || 15000);
+// round6 R6-1(blocker)+R6-2(major):租约不等式由构造成立,不再靠人去核算术声称。
+// R4 声称「11 次 × 15s < 300s」、R5 声称「固定部分 8 次(实际 15)」都被复审实测否掉;
+// 本轮的修法不是再加一个范围校验,而是把三个量耦合起来,让「预算 × 单次超时 < 租约」
+// 在任意 env 取值下都恒成立:
+//   ① 先定不可延后调用数 ESSENTIAL_CALLS = 6:pr view / issue view / issue create /
+//      status comment / label create / label POST 各最多 1 次(调用点注释见 main)。
+//      这些少了任何一次,本轮 hold 就名不副实(门声称挂了、实际没挂)——所以它们的
+//      额度与可延后工作物理隔离(独立预算池 ghE),任何循环都吃不到;
+//   ② 钳住单次超时:T = min(env 值, floor(0.9 × LOCK_STALE_MS / ESSENTIAL_CALLS))
+//      —— 必要路径本身(ESSENTIAL_CALLS × T)一定装得进租约,env 再大也推不翻;
+//   ③ 派生预算:CRITICAL_SECTION_MAX_CALLS = floor(0.9 × LOCK_STALE_MS / T) 由 T 派生,
+//      floor 只会往下取整,所以 预算 × T ≤ 0.9 × 租约 < 租约 在任意 T 下恒成立;
+//      0.9 留 10% 余量给进程调度 / 时钟偏差。T ≤ 0 的怪值钳到 1ms(预算相应放大,
+//      但不等式仍由 ③ 构造成立)。
+//   ④ T 被钳住时输出显式警告(见 main() 临界区开头),让运行者看得见生效值。
+// R6-2:可延后工作(reconcile 循环 / legacy 标签清理 / renotice 回帖)共享
+//   DEFERRABLE_BUDGET = 总预算 - ESSENTIAL_CALLS 的池(ghD),与必要调用互不挤占;
+//   池耗尽时 budgetExhausted fail-visible(报 reconciliation.unprocessed /
+//   legacyErrors),下一轮补做,合法工作不再被例行丢弃。
+//   ⚠ 执行顺序上 reconcile 循环排在 issue create 之前——若共享同一池,循环吃光预算
+//   会让真正的 hold(issue create)发不出去,比什么都不做更糟(门声称挂了、实际没挂);
+//   双池在结构上杜绝此路径,不依赖「恰好排在后面」。
+// R6-5(运行时局限,显式声明):ghT 的超时走 spawnSync 的 timeout 参数,它是 SIGTERM 式
+//   超时——需要子进程真的退出才返回,所以严格实时上界还依赖 gh 不忽略 TERM(gh 正常
+//   不忽略,但这不是硬实时保证,不能声称「严格 ≤ T」)。
 // 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
 export const LOCK_STALE_MS = 5 * 60 * 1000;
-// round5 R5-1:临界区 gh 调用预算 = 固定部分 + 对账(每重复最坏 3 次:view+close+comment)。
-// 推导值(见上注释):FIXED_CRITICAL_CALLS 为数据无关调用点枚举口径,未逐秒实测;
-// MAX_RECONCILE_DUPS 按 17×15s<300s 且留 45s 余量选取。行为上界由 ghB 强制、由测试
-// 对实际调用数实测绑定,两者都非写死常数声称。
-export const FIXED_CRITICAL_CALLS = 8;
+export const ESSENTIAL_CALLS = 6;
+const RAW_GH_CALL_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS || 15000);
+const CLAMP_CAP_MS = Math.floor(0.9 * LOCK_STALE_MS / ESSENTIAL_CALLS);
+export const GH_CALL_TIMEOUT_MS = Math.min(Math.max(RAW_GH_CALL_TIMEOUT_MS, 1), CLAMP_CAP_MS);
+export const GH_CALL_TIMEOUT_CLAMPED = RAW_GH_CALL_TIMEOUT_MS > CLAMP_CAP_MS;
+export const CRITICAL_SECTION_MAX_CALLS = Math.floor(0.9 * LOCK_STALE_MS / GH_CALL_TIMEOUT_MS);
+export const DEFERRABLE_BUDGET = Math.max(0, CRITICAL_SECTION_MAX_CALLS - ESSENTIAL_CALLS);
 export const MAX_RECONCILE_DUPS = 3;
-export const CRITICAL_SECTION_MAX_CALLS = FIXED_CRITICAL_CALLS + 3 * MAX_RECONCILE_DUPS;
 // 临界区 gh 调用的统一超时包装:所有临界区网络调用必须走 ghT,否则可能超出租约。
+// R6-5:超时是 SIGTERM 式(见上),不是硬实时保证。
 const ghT = (args, opts = {}) => gh(args, { timeoutMs: GH_CALL_TIMEOUT_MS, ...opts });
-// round5 R5-1:预算包装——main() 里临界区所有 gh 调用走 ghB,调用数超过
-// CRITICAL_SECTION_MAX_CALLS 后不再发出,立即返回 budgetExhausted 失败(调用方按
-// 「未完成,下一轮重试」处理,报进输出,fail-visible,不静默)。
-function makeBudgetedGh(inner) {
+// round6 R6-1/R6-2:双预算池。ghE = 不可延后(essential,池 = ESSENTIAL_CALLS),
+// ghD = 可延后(deferrable,池 = DEFERRABLE_BUDGET)。两池互不挤占:可延后循环无论
+// 吃掉多少 ghD 额度,ghE 的额度纹丝不动 → 真正的 hold 永远发得出去。
+// budgetExhausted:调用数超过池上限后不再发出,立即返回失败(调用方按「未完成,下一轮
+// 重试」处理,报进输出,fail-visible,不静默)。
+function makeBudgetedGh(inner, pool) {
   let calls = 0;
   return (args, opts = {}) => {
-    if (calls >= CRITICAL_SECTION_MAX_CALLS) {
+    if (calls >= pool) {
       return {
         ok: false, budgetExhausted: true, stdout: '', status: 1,
         stderr: 'critical-section-budget-exhausted:本轮临界区 gh 调用预算已用完,剩余动作未执行,下一轮重试',
@@ -137,7 +146,8 @@ function makeBudgetedGh(inner) {
     return inner(args, opts);
   };
 }
-const ghB = makeBudgetedGh(ghT);
+const ghE = makeBudgetedGh(ghT, ESSENTIAL_CALLS);
+const ghD = makeBudgetedGh(ghT, DEFERRABLE_BUDGET);
 
 function lockPathFor(owner, repo, pr) {
   const dir = process.env.SIGNOFF_HOLD_LOCK_DIR || stateFile('signoff-hold-locks');
@@ -393,9 +403,13 @@ export function performStatusComment({ pr, slug, kind, issueUrl, commentBody, gh
   return { commented: false, commentError: (r.stderr || '').trim().slice(0, 300) };
 }
 
-export function performLabelSync({ owner, repo, pr, label, current = [], dryRun = false, ghFn = gh }) {
+export function performLabelSync({ owner, repo, pr, label, current = [], dryRun = false, ghFn = gh, legacyGhFn = null }) {
+  // round6 R6-2:signoff 标签本身(label create + label POST)是不可延后调用,走 ghFn
+  // (main 传 ghE);legacy 标签清理是循环、可延后,走 legacyGhFn(main 传 ghD)——两个
+  // 预算池互不挤占,标签挂不上不会被 legacy 循环饿死。默认 legacyGhFn=ghFn 保持既有
+  // 调用形态(测试直接传 fake)。
   const result = syncSignoffLabel({ owner, repo, pr, want: true, label, current, ghFn, dryRun });
-  const legacy = removeLegacyGateLabels({ owner, repo, pr, current, ghFn, dryRun });
+  const legacy = removeLegacyGateLabels({ owner, repo, pr, current, ghFn: legacyGhFn ?? ghFn, dryRun });
   if (legacy.legacyRemoved.length) result.legacyRemoved = legacy.legacyRemoved;
   // round2 D5:legacy 清理失败与「本轮 signoff 标签是否挂上」是两件事,不 merge 进
   // result.errors/warning——否则 labelsOk(= !labels.warning)会被旧标签 403 之类的清理
@@ -422,11 +436,18 @@ export function performLabelSync({ owner, repo, pr, label, current = [], dryRun 
 // 只对可解析为本仓 issue 的 URL 动作;state 查询失败 / close 失败 → 记 errors
 // (下一轮重试),不误关。dry-run 不调用(调用方保证)。
 // round5 R5-1(blocker):对账是 O(重复数) 不是常数——每重复最坏 3 次 gh 调用
-// (view + close + comment)。每轮最多处理 maxDups 个重复(上界由代码结构性强制,
-// 循环根本不会处理更多),超出部分进 unprocessed(数量 + URL)报出,下一轮继续
-// (自愈),而不是把整个临界区跑穿 LOCK_STALE_MS 租约(双实例重复不可逆写入)。
-// ghFn 返回 budgetExhausted(临界区调用预算耗尽,见 main() 的 ghB)时同样进
+// (view + close + comment)。每轮最多处理 maxDups 个重复(上界由代码结构性强制),
+// 超出部分进 unprocessed(数量 + URL)报出,下一轮继续,而不是把整个临界区跑穿
+// LOCK_STALE_MS 租约(双实例重复不可逆写入)。
+// ghFn 返回 budgetExhausted(临界区调用预算耗尽,见 main() 的 ghE/ghD)时同样进
 // unprocessed——那是「预算内没做完」,不是「GitHub 查询失败」,不得混进 errors。
+// round6 R6-3(major):「下一轮自愈」原来每轮取 entries.slice(1, 1+maxDups) 同一段——
+// 已关闭的重复每轮重复消耗额度、后面的永远轮不到(复审实测连续四轮 open 集合不变,
+// 且每轮把额度花在已关闭的重复上做零价值工作)。现在只对「当前仍 OPEN」的重复做
+// 关闭动作:一次 `issue list --state open` 拿 open 集合(1 次调用),CLOSED 的重复不再
+// 消耗任何 close/comment 额度(连 view 都不消耗)、也不进 unprocessed(它们不需要任何
+// 后续动作);多轮收敛靠 open 集合本身推进,不引入本地持久状态(#13 同理由:tmp 易失
+// + 换机器就失效)。
 export function reconcileDuplicateHoldIssues({ slug, urls = [], ghFn = gh, maxDups = MAX_RECONCILE_DUPS }) {
   const entries = [...new Set((urls ?? []).filter(Boolean))]
     .map((url) => ({ url, number: issueNumberFromUrl(slug, url) }))
@@ -437,40 +458,47 @@ export function reconcileDuplicateHoldIssues({ slug, urls = [], ghFn = gh, maxDu
   const closed = [];
   const errors = [];
   const unprocessed = [];
-  for (const dup of entries.slice(1 + maxDups)) {
+  const ls = ghFn(['issue', 'list', '--repo', slug, '--state', 'open', '--json', 'number'], { allowFail: true });
+  if (ls.budgetExhausted) {
+    // 预算内没做完:一个都没关,全部交下轮(可延后工作,不影响必要路径)
+    for (const dup of entries.slice(1)) unprocessed.push({ number: dup.number, url: dup.url });
+    return { keptUrl: kept.url, closed, errors, unprocessed };
+  }
+  if (!ls.ok) {
+    errors.push(`duplicate-open-state-query-failed: ${(ls.stderr || ls.stdout || '').trim().slice(0, 200)}`);
+    return { keptUrl: kept.url, closed, errors, unprocessed };
+  }
+  let openNumbers = null;
+  try {
+    openNumbers = new Set((JSON.parse(ls.stdout || '[]') ?? []).map((i) => Number(i?.number)).filter((n) => Number.isFinite(n)));
+  } catch { /* 非 JSON → openNumbers 保持 null,走查询失败分支 */ }
+  if (openNumbers == null) {
+    errors.push('duplicate-open-state-query-failed: issue list 输出无法解析,本轮未关闭任何重复(下轮重试)');
+    return { keptUrl: kept.url, closed, errors, unprocessed };
+  }
+  const openDups = entries.slice(1).filter((d) => openNumbers.has(d.number));
+  const toClose = openDups.slice(0, maxDups);
+  for (const dup of openDups.slice(maxDups)) {
     unprocessed.push({ number: dup.number, url: dup.url });
   }
-  for (const dup of entries.slice(1, 1 + maxDups)) {
-    const st = ghFn(['issue', 'view', String(dup.number), '--repo', slug, '--json', 'state'], { allowFail: true });
-    if (st.budgetExhausted) {
+  for (const dup of toClose) {
+    const c = ghFn(['issue', 'close', String(dup.number), '--repo', slug], { allowFail: true });
+    if (c.budgetExhausted) {
       unprocessed.push({ number: dup.number, url: dup.url });
       continue;
     }
-    let state = null;
-    try { state = String(JSON.parse(st.stdout || '{}').state ?? '').toUpperCase(); } catch { /* 非 JSON */ }
-    if (state !== 'OPEN' && state !== 'CLOSED') {
-      errors.push(`duplicate-issue-${dup.number}: state 查询失败,未关闭`);
+    if (!c.ok) {
+      errors.push(`close-failed-${dup.number}: ${(c.stderr || c.stdout || '').trim().slice(0, 200)}`);
       continue;
     }
-    if (state === 'OPEN') {
-      const c = ghFn(['issue', 'close', String(dup.number), '--repo', slug], { allowFail: true });
-      if (c.budgetExhausted) {
-        unprocessed.push({ number: dup.number, url: dup.url });
-        continue;
-      }
-      if (!c.ok) {
-        errors.push(`close-failed-${dup.number}: ${(c.stderr || c.stdout || '').trim().slice(0, 200)}`);
-        continue;
-      }
-      const cm = ghFn(['issue', 'comment', String(dup.number), '--repo', slug, '--body',
-        `此 issue 是重复创建的讨论(本 PR 已有更早的讨论 issue #${kept.number}),已自动关闭。讨论请移步 #${kept.number}。`],
-      { allowFail: true });
-      if (cm.budgetExhausted) {
-        unprocessed.push({ number: dup.number, url: dup.url });
-        continue;
-      }
-      if (!cm.ok) errors.push(`comment-failed-${dup.number}`);
+    const cm = ghFn(['issue', 'comment', String(dup.number), '--repo', slug, '--body',
+      `此 issue 是重复创建的讨论(本 PR 已有更早的讨论 issue #${kept.number}),已自动关闭。讨论请移步 #${kept.number}。`],
+    { allowFail: true });
+    if (cm.budgetExhausted) {
+      unprocessed.push({ number: dup.number, url: dup.url });
+      continue;
     }
+    if (!cm.ok) errors.push(`comment-failed-${dup.number}`);
     closed.push({ number: dup.number, url: dup.url });
   }
   return { keptUrl: kept.url, closed, errors, unprocessed };
@@ -566,11 +594,20 @@ try {
     });
   } else
   try {
-  // round5 R5-1:临界区内所有 gh 调用走 ghB(ghT + 调用预算,见模块顶部)——带
-  // GH_CALL_TIMEOUT_MS 超时,且调用数超过 CRITICAL_SECTION_MAX_CALLS 后不再发出
-  // (budgetExhausted fail-visible,下一轮重试);总耗时 = 调用数 × 单次超时,由代码
-  // 强制不超过租约,不再是写死的常数声称。ghJson 不支持超时选项,这里显式解析。
-  const meta = JSON.parse(ghB([
+  // round6 R6-1:钳位警告——env 超了钳位上限时运行者必须看得见生效值(走既有 stderr
+  // 输出通道;生效常量 GH_CALL_TIMEOUT_MS / CRITICAL_SECTION_MAX_CALLS 由模块顶部
+  // 公式派生,不等式由构造成立,不依赖人去核)。
+  if (GH_CALL_TIMEOUT_CLAMPED) {
+    process.stderr.write(`[signoff-hold] SIGNOFF_HOLD_GH_TIMEOUT_MS=${RAW_GH_CALL_TIMEOUT_MS} 超过钳位上限 ${CLAMP_CAP_MS}ms,已钳为 ${GH_CALL_TIMEOUT_MS}ms(保证必要路径装得进 ${LOCK_STALE_MS}ms 租约;可延后工作预算相应收窄,超出的下轮补做)。\n`);
+  }
+  // round6 R6-1/R6-2:临界区调用分两个预算池(见模块顶部 ghE/ghD):
+  //   - 不可延后(ghE):pr view / issue view / issue create / status comment /
+  //     label create / label POST —— 池 = ESSENTIAL_CALLS,任何可延后循环都吃不到;
+  //   - 可延后(ghD):reconcile 循环 / legacy 标签清理 / renotice 回帖 —— 共享
+  //     DEFERRABLE_BUDGET,池耗尽 budgetExhausted fail-visible,下一轮补做。
+  // 带 GH_CALL_TIMEOUT_MS 超时;总耗时 = 总调用数 × 单次超时 ≤ 预算 × T < 租约,
+  // 由构造保证,不再是写死的常数声称。ghJson 不支持超时选项,这里显式解析。
+  const meta = JSON.parse(ghE([
     'pr', 'view', String(pr), '--repo', slug,
     '--json', 'number,state,mergedAt,author,url,comments,labels,headRefOid',
   ]).stdout || 'null');
@@ -579,7 +616,7 @@ try {
   const headSha = String(meta.headRefOid ?? '').toLowerCase();
   // 挂维护者确认标签;顺手摘掉旧主标签与旧门类子标签(迁移遗留)——委托给 performLabelSync
   // (与 computeHeld 共用同一份判定事实,SC-3 测试直接覆盖该导出函数)
-  const syncLabels = () => performLabelSync({ owner, repo, pr, label: SIGNOFF_LABEL, current: currentLabels, dryRun, ghFn: ghB });
+  const syncLabels = () => performLabelSync({ owner, repo, pr, label: SIGNOFF_LABEL, current: currentLabels, dryRun, ghFn: ghE, legacyGhFn: ghD });
   // 标签失败不静默:顶到输出最外层(labelWarning),SKILL 要求最终报告里照抄。
   // 少了标签 → GitHub 后台与待确认面板都筛不到该 PR,门的判定不受影响。
   // round2 D5:legacyWarning(旧门类标签清理失败)单独顶成 legacyLabelWarning,不与
@@ -606,8 +643,10 @@ try {
   // 最早(number 最小)的,关闭其余并留说明;万一锁被绕过仍发生双写,下一轮开始即自愈,
   // 不会永久留两个 issue @ 作者两次。dry-run 不写外部状态,跳过对账。
   // round5 R5-1:对账每轮最多处理 MAX_RECONCILE_DUPS 个重复(超出进 unprocessed 报出,
-  // 下一轮继续),ghFn 走 ghB(预算强制)——O(重复数) 的上界由代码保证。
-  const reconcile = dryRun ? null : reconcileDuplicateHoldIssues({ slug, urls: markerUrls, ghFn: ghB });
+  // 下一轮继续);round6 R6-3:只对仍 OPEN 的重复动作(issue list 拿 open 集合),已关闭的
+  // 不再消耗额度,多轮真收敛。round6 R6-2:ghFn 走 ghD(可延后池)——循环排在 issue
+  // create 之前也吃不到 ghE 的额度,真正的 hold 永远发得出去。
+  const reconcile = dryRun ? null : reconcileDuplicateHoldIssues({ slug, urls: markerUrls, ghFn: ghD });
   const priorIssueUrl = reconcile ? reconcile.keptUrl : (markerUrls.pop() ?? null);
   // ── 旧讨论 issue 复用/新开判定(decideIssueReuse,见 lib.mjs;signoff-policy.test.mjs 覆盖)──
   // 旧 issue 可能已被 close-product-issue.mjs --no-longer-required 收尾关闭,之后 gate
@@ -621,7 +660,7 @@ try {
     if (priorNum == null) {
       priorIssueStateError = 'issue-url-unparsable';
     } else {
-      const r = ghB(['issue', 'view', String(priorNum), '--repo', slug, '--json', 'state'], { allowFail: true });
+      const r = ghE(['issue', 'view', String(priorNum), '--repo', slug, '--json', 'state'], { allowFail: true });
       if (r.ok) {
         try {
           const s = String(JSON.parse(r.stdout || '{}').state ?? '').toUpperCase();
@@ -688,7 +727,9 @@ try {
       };
     }
     if (dryRun) return { renoticed: false, wouldRenotice: true };
-    const r = ghB(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
+    // round6 R6-2:renotice 回帖是可延后动作(下一轮凭「无 head 标记」自动补发,
+    // 语义无损),走 ghD 可延后池——回帖失败不连坐标签、也不改变门的判定。
+    const r = ghD(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
       input: `${renoticeBody()}\n\n${SIGNOFF_RENOTICE_MARKER_PREFIX} head=${headSha} -->`,
       allowFail: true,
     });
@@ -735,7 +776,7 @@ try {
       let issueCreated = false;
       let issueError = null;
       if (needIssue) {
-        const r = performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn: ghB });
+        const r = performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn: ghE });
         if (r.issueCreated) {
           issueUrl = r.issueUrl;
           issueCreated = true;
@@ -749,7 +790,7 @@ try {
       let commented = false;
       let commentError = null;
       if (issueCreated && issueUrl) {
-        const r = performStatusComment({ pr, slug, kind, issueUrl, commentBody, ghFn: ghB });
+        const r = performStatusComment({ pr, slug, kind, issueUrl, commentBody, ghFn: ghE });
         commented = r.commented;
         commentError = r.commentError;
       }

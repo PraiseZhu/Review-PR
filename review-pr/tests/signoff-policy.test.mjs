@@ -28,7 +28,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync, spawn } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,6 +43,7 @@ import {
   acquireHoldLock, releaseHoldLock, reconcileDuplicateHoldIssues,
   tryTakeoverStaleLock, GH_CALL_TIMEOUT_MS, LOCK_STALE_MS,
   parseStartedAtMs, isLockStale, MAX_RECONCILE_DUPS, CRITICAL_SECTION_MAX_CALLS,
+  ESSENTIAL_CALLS, DEFERRABLE_BUDGET, GH_CALL_TIMEOUT_CLAMPED,
 } from '../scripts/signoff-hold.mjs';
 
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -508,6 +509,17 @@ if (args[0] === 'issue' && args[1] === 'create') {
   s.issues[s.issueSeq] = { state: 'OPEN' };
   save(s);
   process.stdout.write('https://github.com/acme/app/issues/' + s.issueSeq + '\\n');
+  process.exit(0);
+}
+if (args[0] === 'issue' && args[1] === 'list') {
+  // round6 R6-3:reconcile 一次拿 open 集合(不再逐个 view)。
+  const s = load();
+  const stIdx = args.indexOf('--state');
+  const state = (stIdx >= 0 ? args[stIdx + 1] : 'all').toUpperCase();
+  const out = Object.entries(s.issues)
+    .filter(([, v]) => state === 'ALL' || (v && String(v.state).toUpperCase() === state))
+    .map(([num]) => ({ number: Number(num) }));
+  process.stdout.write(JSON.stringify(out));
   process.exit(0);
 }
 if (args[0] === 'issue' && args[1] === 'view') {
@@ -1003,9 +1015,9 @@ test('signoff: D2 临界区租约不等式——上界 × 单次超时 < LOCK_ST
     `最坏总耗时 ${CRITICAL_SECTION_MAX_CALLS * GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${LOCK_STALE_MS}ms`);
 });
 
-test('signoff: D2 对账上界——导出函数层:喂 10 个重复,实际调用 ≤ 3×K,剩余进 unprocessed', () => {
+test('signoff: D2 对账上界——导出函数层:喂 10 个重复,实际调用 = 1+2×K,剩余进 unprocessed', () => {
   const gh = makeFakeGh([
-    { match: (a) => a[0] === 'issue' && a[1] === 'view', result: { ok: true, stdout: '{"state":"OPEN"}', stderr: '', status: 0 } },
+    { match: (a) => a[0] === 'issue' && a[1] === 'list', result: { ok: true, stdout: JSON.stringify(Array.from({ length: 10 }, (_, i) => ({ number: i + 1 }))), stderr: '', status: 0 } },
     { match: isIssueClose, result: { ok: true, stdout: '', stderr: '', status: 0 } },
     { match: isIssueComment, result: { ok: true, stdout: '', stderr: '', status: 0 } },
   ]);
@@ -1015,10 +1027,10 @@ test('signoff: D2 对账上界——导出函数层:喂 10 个重复,实际调�
   assert.equal(r.closed.length, MAX_RECONCILE_DUPS, `每轮最多关闭 ${MAX_RECONCILE_DUPS} 个重复`);
   assert.equal(r.unprocessed.length, 9 - MAX_RECONCILE_DUPS, '其余重复必须进 unprocessed(数量)');
   assert.ok(r.unprocessed.every((u) => typeof u.url === 'string' && u.url.includes('/issues/')), 'unprocessed 必须带 URL');
-  // 断言绑实际调用数:全处理会是 27 次(复审席实测),上界下必须 ≤ 3×K
-  assert.equal(gh.calls.length, 3 * MAX_RECONCILE_DUPS,
-    `实际调用数 = 3×K(实测 ${gh.calls.length} 次;全处理 27 次会超租约)`);
-  assert.ok(gh.calls.length <= 3 * MAX_RECONCILE_DUPS, '实际调用必须 ≤ 3×MAX_RECONCILE_DUPS');
+  // 断言绑实际调用数:round6 R6-3 后 = 1 次 issue list + 2×K(close+comment),不再逐个 view
+  assert.equal(gh.calls.length, 1 + 2 * MAX_RECONCILE_DUPS,
+    `实际调用数 = 1 + 2×K(实测 ${gh.calls.length} 次;旧实现 3×K=9 次/轮,已关闭重复零消耗)`);
+  assert.ok(gh.calls.length <= 1 + 2 * MAX_RECONCILE_DUPS, '实际调用必须 ≤ 1 + 2×MAX_RECONCILE_DUPS');
 });
 
 test('signoff: D2 对账上界——主流程接线:10 个重复,实际调用 ≤ 上界,未处理项报出', () => {
@@ -1114,7 +1126,7 @@ const isIssueComment = (a) => a[0] === 'issue' && a[1] === 'comment';
 
 test('signoff: D2 对账——多份 hold issue 保留最早(number 最小),关闭其余并留说明', () => {
   const gh = makeFakeGh([
-    { match: (a) => a[0] === 'issue' && a[1] === 'view', result: { ok: true, stdout: '{"state":"OPEN"}', stderr: '', status: 0 } },
+    { match: (a) => a[0] === 'issue' && a[1] === 'list', result: { ok: true, stdout: JSON.stringify([{ number: 3 }, { number: 5 }]), stderr: '', status: 0 } },
     { match: isIssueClose, result: { ok: true, stdout: '', stderr: '', status: 0 } },
     { match: isIssueComment, result: { ok: true, stdout: '', stderr: '', status: 0 } },
   ]);
@@ -1152,9 +1164,9 @@ test('signoff: D2 对账——单份 / 无 / 跨仓库 URL 都不动作(零 gh �
   assert.equal(gh.calls.length, 0, '全程零 gh 调用');
 });
 
-test('signoff: D2 对账——state 查询失败 → errors 点名,不误关', () => {
+test('signoff: D2 对账——open 集合查询失败 → errors 点名,不误关', () => {
   const gh = makeFakeGh([
-    { match: (a) => a[0] === 'issue' && a[1] === 'view', result: { ok: false, stdout: '', stderr: '403', status: 1 } },
+    { match: (a) => a[0] === 'issue' && a[1] === 'list', result: { ok: false, stdout: '', stderr: '403', status: 1 } },
   ]);
   const r = reconcileDuplicateHoldIssues({
     slug: 'acme/app',
@@ -1163,7 +1175,8 @@ test('signoff: D2 对账——state 查询失败 → errors 点名,不误关', (
   });
   assert.equal(r.keptUrl, 'https://github.com/acme/app/issues/3', '仍保留最早');
   assert.equal(r.closed.length, 0, '查询失败不误关');
-  assert.ok(r.errors.length > 0 && r.errors[0].includes('duplicate-issue-7'), `错误点名失败的 issue,实际:${JSON.stringify(r.errors)}`);
+  assert.ok(r.errors.length > 0 && r.errors[0].includes('duplicate-open-state-query-failed'),
+    `错误点名 open 集合查询失败,实际:${JSON.stringify(r.errors)}`);
 });
 
 // ── round4 D3(blocker):原子 claim 绑定 main()——真并发双子进程 e2e ──
@@ -1279,6 +1292,196 @@ test('signoff: D2 对账主流程接线——双写残留自愈,保留最早 iss
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     assert.equal(state.issues['1'].state, 'OPEN', '#1 保持 OPEN');
     assert.equal(state.issues['2'].state, 'CLOSED', '#2 已关闭');
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// round6 R6-1 / R6-2 / R6-3(三处结构问题 + 三项反向变异探针)
+// ══════════════════════════════════════════════════════════════════════════
+// R6-1:租约不等式由构造成立(模块顶部公式:T 钳位 + 预算派生)。常量在模块加载时
+// 求值,所以按 env 动态 reload 模块本体(带 query 破缓存),断言**生效后的派生量**
+// 而不是常量算术。反向变异 = 去掉钳位(退回 Number(env||15000)),T=300000 的
+// expectedT 断言必须转红(AssertionError,非崩溃)。
+const HOLD_MODULE_URL = pathToFileURL(join(SCRIPTS_DIR, 'signoff-hold.mjs')).href;
+test('signoff: R6-1 租约耦合——T 钳位与派生预算,断言生效后的派生量(unset/1000/300000)', async () => {
+  const clampCap = Math.floor(0.9 * LOCK_STALE_MS / ESSENTIAL_CALLS);
+  const cases = [
+    { env: undefined, expectedT: 15000, expectClamped: false },
+    { env: '1000', expectedT: 1000, expectClamped: false },
+    { env: '300000', expectedT: clampCap, expectClamped: true },
+  ];
+  const prev = process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
+  let seq = 0;
+  try {
+    for (const c of cases) {
+      if (c.env === undefined) delete process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
+      else process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = c.env;
+      const m = await import(`${HOLD_MODULE_URL}?r6-1&n=${seq++}`);
+      assert.equal(m.GH_CALL_TIMEOUT_MS, c.expectedT, `T(${c.env ?? 'unset'}) 生效值(钳位后)`);
+      assert.equal(m.GH_CALL_TIMEOUT_CLAMPED, c.expectClamped, `clamped 标志(${c.env ?? 'unset'})`);
+      // 断言生效后的派生量(不是常量算术):派生预算 × 钳后 T < 租约
+      assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < m.LOCK_STALE_MS,
+        `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${m.LOCK_STALE_MS}ms`);
+      assert.ok(Number.isInteger(m.CRITICAL_SECTION_MAX_CALLS) && m.CRITICAL_SECTION_MAX_CALLS >= m.ESSENTIAL_CALLS,
+        `派生预算 ${m.CRITICAL_SECTION_MAX_CALLS} 必须 ≥ ESSENTIAL_CALLS ${m.ESSENTIAL_CALLS}(必要路径装得进租约)`);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
+    else process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = prev;
+  }
+});
+
+// R6-2 饿死防护(主流程级实测):可延后工作(10 个重复对账 + 9 个 legacy 标签)在
+// T=300000(被钳)下池被收窄到 0——reconcile 循环排在 issue create **之前**,若共享
+// 同一池会吃光预算让真正的 hold 发不出去;双池后 ghE 额度纹丝不动,essential 调用
+// 必须全部发出且成功,可延后部分报出未处理项。
+test('signoff: R6-2 预算分层——可延后吃光额度不影响必要路径(issue create 仍发出,饿死不可达)', () => {
+  const shimDir = makeStatefulShimDir();
+  const repoDir = makeTempRepoDir();
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-starve-lock-'));
+  const statePath = join(shimDir, 'state.json');
+  const logPath = join(shimDir, 's.log');
+  const MARKER = '<!-- review-pr:product-gate';
+  // kept #1 已 CLOSED(复用判定 → 需要新开 issue),#2..#10 全 OPEN(对账可延后工作),
+  // labels 挂满 9 个 legacy(legacy 清理也是可延后工作)
+  const LEGACY_NAMES = ['awaiting-maintainer-discussion', 'needs-maintainer-approval', 'need-whitelist',
+    'need-whitelist:product', 'need-whitelist:arch', 'need-whitelist:security',
+    'need-whitelist:cold', 'need-whitelist:coldupdate', 'need-whitelist:rules'];
+  const PRE = {
+    issueSeq: 10,
+    issues: { 1: { state: 'CLOSED' }, ...Object.fromEntries(Array.from({ length: 9 }, (_, i) => [i + 2, { state: 'OPEN' }])) },
+    comments: Array.from({ length: 10 }, (_, i) => ({ pr: 42, body: `${MARKER} issue=https://github.com/acme/app/issues/${i + 1} -->` })),
+    labels: LEGACY_NAMES.map((name) => ({ pr: 42, name })),
+    headOid: 'deadbeef',
+  };
+  writeFileSync(statePath, JSON.stringify(PRE));
+  const payloadPath = join(repoDir, 'payload.json');
+  writeFileSync(payloadPath, JSON.stringify({ issueTitle: 'T', issueBody: 'B', commentBody: 'C' }));
+  try {
+    const r = runSignoff({
+      scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),
+      args: ['42', '--payload-file', payloadPath],
+      repoDir, shimDir, logPath, statePath,
+      extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir, SIGNOFF_HOLD_GH_TIMEOUT_MS: '300000' },
+    });
+    assert.equal(r.status, 0, `stderr=${r.stderr}`);
+    // 钳位警告必须输出(运行者看得见生效值)
+    assert.ok(r.stderr.includes('已钳为'), `被钳时 stderr 必须有钳位警告,实际:${r.stderr.slice(0, 200)}`);
+    // 不可延后的调用全部发出且成功:真正的 hold 挂上了
+    assert.equal(r.parsed?.issueCreated, true, `issue create 必须发出(可延后循环排在它前面也吃不到 ghE 额度),stdout=${r.stdout}`);
+    assert.equal(r.parsed?.commented, true, 'status comment 必须发出');
+    assert.equal(r.parsed?.held, true, `三件套全成功 → held=true,实际 heldBlockedBy=${JSON.stringify(r.parsed?.heldBlockedBy)}`);
+    // 可延后部分报出未处理项:对账 9 个全 unprocessed,legacy 清理全 legacyErrors
+    assert.equal(r.parsed?.reconciliation?.unprocessed.length, 9, `对账未处理项必须报出,实际:${JSON.stringify(r.parsed?.reconciliation)}`);
+    assert.equal(r.parsed?.reconciliation?.closed.length, 0, '池收窄时本轮一个重复都不关(全交下轮)');
+    assert.ok(r.parsed?.labels?.legacyWarning, `legacy 清理预算耗尽必须报 legacyWarning,实际:${JSON.stringify(r.parsed?.labels)}`);
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});
+
+// R6-3 多轮收敛(导出函数层):10 个重复(9 个 dup),cap=3 → 恰好 3 轮收敛到 0;
+// 每轮剩余 open 严格递减;已关闭的重复第 2/3 轮零 close/comment 消耗。
+// 反向变异 = 退回固定切片(不看 state)时「严格递减」断言必须转红。
+test('signoff: R6-3 多轮收敛——10 个重复连续跑到 0,每轮剩余严格递减,已关的不再消耗', () => {
+  const state = new Map(Array.from({ length: 10 }, (_, i) => [i + 1, 'OPEN']));
+  const calls = [];
+  const ghFn = (args) => {
+    calls.push(args);
+    if (args[0] === 'issue' && args[1] === 'list') {
+      const open = [...state.entries()].filter(([, s]) => s === 'OPEN').map(([n]) => ({ number: n }));
+      return { ok: true, stdout: JSON.stringify(open), stderr: '', status: 0 };
+    }
+    if (args[0] === 'issue' && args[1] === 'close') { state.set(Number(args[2]), 'CLOSED'); return { ok: true, stdout: '', stderr: '', status: 0 }; }
+    if (args[0] === 'issue' && args[1] === 'comment') return { ok: true, stdout: '', stderr: '', status: 0 };
+    throw new Error('unexpected gh call: ' + args.join(' '));
+  };
+  const urls = Array.from({ length: 10 }, (_, i) => `https://github.com/acme/app/issues/${i + 1}`);
+  const rounds = [];
+  let prevOpen = 9;
+  for (let round = 1; round <= 5; round++) {
+    const r = reconcileDuplicateHoldIssues({ slug: 'acme/app', urls, ghFn });
+    const remaining = [...state.entries()].filter(([n, s]) => s === 'OPEN' && n > 1).length;
+    rounds.push({
+      round,
+      closed: r.closed.map((c) => c.number),
+      unprocessed: r.unprocessed.map((u) => u.number),
+      remaining_open: remaining,
+    });
+    assert.ok(remaining < prevOpen, `第 ${round} 轮剩余 open 重复 ${remaining} 必须严格递减(上轮 ${prevOpen})——固定切片会每轮取同一段,永远不前进`);
+    prevOpen = remaining;
+    if (remaining === 0) break;
+  }
+  assert.equal(prevOpen, 0, '连续多轮后剩余 open 重复必须为 0');
+  assert.equal(rounds.length, 3, `cap=${MAX_RECONCILE_DUPS},9 个 open 重复 → 恰好 3 轮收敛,实际 ${rounds.length} 轮`);
+  assert.deepEqual(rounds[0].closed, [2, 3, 4], '第 1 轮关最小的 3 个 open 重复');
+  assert.deepEqual(rounds[1].closed, [5, 6, 7], '第 2 轮跳过已关闭的 #2-#4,关下一批');
+  assert.deepEqual(rounds[2].closed, [8, 9, 10], '第 3 轮收敛');
+  assert.deepEqual(rounds[0].unprocessed, [5, 6, 7, 8, 9, 10], '第 1 轮未处理项报出');
+  assert.deepEqual(rounds[1].unprocessed, [8, 9, 10], '第 2 轮未处理项报出');
+  // 已关闭的重复不再消耗额度:总计恰好 9 次 close(kept #1 不关、每重复只关一次)
+  const closeCalls = calls.filter((a) => a[0] === 'issue' && a[1] === 'close');
+  assert.equal(closeCalls.length, 9, `已关闭的重复不得再次消耗 close,实际 ${closeCalls.length} 次`);
+});
+
+// R6-3 主流程级多轮收敛:同一 stateful shim 状态连跑 3 轮真实子进程,每轮输出
+// closed/unprocessed/剩余 open,断言严格递减且最终 0(「下一轮会 Y」类时序声称必须
+// 跑多轮——单轮绿是这类声称的典型假象)。
+test('signoff: R6-3 主流程多轮收敛——10 个重复 3 轮跑完,每轮 closed/unprocessed/剩余 open 实测', () => {
+  const shimDir = makeStatefulShimDir();
+  const repoDir = makeTempRepoDir();
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-converge-lock-'));
+  const statePath = join(shimDir, 'state.json');
+  const MARKER = '<!-- review-pr:product-gate';
+  const N = 10;
+  const PRE = {
+    issueSeq: N,
+    issues: Object.fromEntries(Array.from({ length: N }, (_, i) => [i + 1, { state: 'OPEN' }])),
+    comments: Array.from({ length: N }, (_, i) => ({ pr: 42, body: `${MARKER} issue=https://github.com/acme/app/issues/${i + 1} -->` })),
+    labels: [],
+    headOid: 'deadbeef',
+  };
+  writeFileSync(statePath, JSON.stringify(PRE));
+  const seen = [];
+  try {
+    for (let round = 1; round <= 4; round++) {
+      const r = runSignoff({
+        scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),
+        args: ['42'],
+        repoDir, shimDir, logPath: join(shimDir, `conv-${round}.log`), statePath,
+        extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir },
+      });
+      assert.equal(r.status, 0, `第 ${round} 轮 stderr=${r.stderr}`);
+      const recon = r.parsed?.reconciliation ?? {};
+      const state = JSON.parse(readFileSync(statePath, 'utf8'));
+      const remaining = Object.entries(state.issues ?? {}).filter(([n, v]) => v.state === 'OPEN' && Number(n) > 1).length;
+      seen.push({
+        round,
+        closed: (recon.closed ?? []).map((c) => c.number),
+        unprocessed: (recon.unprocessed ?? []).map((u) => u.number),
+        remaining_open: remaining,
+      });
+      if (remaining === 0) break;
+    }
+    assert.ok(seen.length >= 2 && seen.length <= 3,
+      `cap=${MAX_RECONCILE_DUPS} 时 9 个 open 重复应 3 轮收敛,实际 ${seen.length} 轮:${JSON.stringify(seen)}`);
+    for (let i = 1; i < seen.length; i++) {
+      assert.ok(seen[i].remaining_open < seen[i - 1].remaining_open,
+        `第 ${seen[i].round} 轮剩余 ${seen[i].remaining_open} 必须 < 上轮 ${seen[i - 1].remaining_open}(固定切片永不前进)`);
+    }
+    assert.equal(seen[seen.length - 1].remaining_open, 0, `最终收敛到 0,实际轮次:${JSON.stringify(seen)}`);
+    // 已关闭的重复不再消耗 close/comment:第 2 轮的调用日志里不得出现 #2-#4 的 close
+    const round2Calls = existsSync(join(shimDir, 'conv-2.log'))
+      ? readFileSync(join(shimDir, 'conv-2.log'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+    const round2Closed = round2Calls.filter((a) => a[0] === 'issue' && a[1] === 'close').map((a) => Number(a[2]));
+    assert.ok(!round2Closed.some((n) => n <= 4), `第 2 轮不得再关已关闭的 #2-#4,实际:${JSON.stringify(round2Closed)}`);
   } finally {
     rmSync(shimDir, { recursive: true, force: true });
     rmSync(repoDir, { recursive: true, force: true });
