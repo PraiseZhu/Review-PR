@@ -38,7 +38,7 @@ import {
 } from '../scripts/lib.mjs';
 import {
   performIssueCreate, performStatusComment, performLabelSync, computeHeld,
-  acquireHoldLock, releaseHoldLock, reconcileDuplicateHoldIssues,
+  reconcileDuplicateHoldIssues,
   GH_CALL_TIMEOUT_MS, MAX_RECONCILE_DUPS, CRITICAL_SECTION_MAX_CALLS,
   ESSENTIAL_CALLS, DEFERRABLE_BUDGET, GH_CALL_TIMEOUT_CLAMPED,
 } from '../scripts/signoff-hold.mjs';
@@ -436,8 +436,10 @@ test('signoff: D4 合法 import 路径完全静默(不输出任何东西)', () =
   const importDir = mkdtempSync(join(tmpdir(), 'signoff-import-silent-'));
   try {
     for (const f of LOCAL_DEPS) cpSync(join(SCRIPTS_DIR, f), join(importDir, f));
+    // R8 收口:锁原语已迁 lib.mjs,本模块不再 re-export——fixture 改 import 本模块
+    // 自有导出 computeHeld(纯函数,守卫静默语义不变:import 本模块即触发守卫判定)。
     writeFileSync(join(importDir, 'importer.mjs'),
-      "import { acquireHoldLock } from './signoff-hold.mjs';\nconsole.log(typeof acquireHoldLock);\n");
+      "import { computeHeld } from './signoff-hold.mjs';\nconsole.log(typeof computeHeld);\n");
     const r = spawnSync(process.execPath, [join(importDir, 'importer.mjs')], {
       cwd: importDir, encoding: 'utf8', timeout: 15000,
     });
@@ -897,8 +899,10 @@ test('signoff: R6-1 租约耦合——T 钳位/回落默认与派生预算,断�
       assert.equal(m.GH_CALL_TIMEOUT_CLAMPED, c.expectClamped, `clamped 标志(${c.env ?? 'unset'})`);
       assert.equal(m.GH_CALL_TIMEOUT_STATE, c.state, `state(${c.env ?? 'unset'}) 三态可分辨(none/clamped/fallback)`);
       // 断言生效后的派生量(不是常量算术):派生预算 × 钳后 T < 租约
-      assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < m.LOCK_STALE_MS,
-        `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${m.LOCK_STALE_MS}ms`);
+      // R8 收口:LOCK_STALE_MS 不再由 signoff-hold.mjs 导出(re-export 已删),用
+      // 静态 import(与 A 测试同源 lib.mjs);派生量本身仍是动态 reload 实例的。
+      assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < LOCK_STALE_MS,
+        `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${LOCK_STALE_MS}ms`);
       assert.ok(Number.isInteger(m.CRITICAL_SECTION_MAX_CALLS) && m.CRITICAL_SECTION_MAX_CALLS >= m.ESSENTIAL_CALLS,
         `派生预算 ${m.CRITICAL_SECTION_MAX_CALLS} 必须 ≥ ESSENTIAL_CALLS ${m.ESSENTIAL_CALLS}(必要路径装得进租约)`);
       if (c.state === 'fallback') {
@@ -949,9 +953,9 @@ test('signoff: R7-1 非数值 env——回落默认 15000,派生量全有限,三
         `派生预算(${label}) 必须为有限正整数,实际 ${m.CRITICAL_SECTION_MAX_CALLS}`);
       assert.ok(Number.isInteger(m.DEFERRABLE_BUDGET) && m.DEFERRABLE_BUDGET > 0,
         `可延后池(${label}) 必须为有限正整数,实际 ${m.DEFERRABLE_BUDGET}`);
-      // ③ 租约不等式仍成立(预算 × T < 租约)
-      assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < m.LOCK_STALE_MS,
-        `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${m.LOCK_STALE_MS}ms`);
+      // ③ 租约不等式仍成立(预算 × T < 租约);LOCK_STALE_MS 用静态 import(R8 收口)
+      assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < LOCK_STALE_MS,
+        `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${LOCK_STALE_MS}ms`);
       // ④ 三态与警告:state 按形态断言;clamped 布尔不说谎;fallback 必须带回落
       //    文案;none(空串/未设)必须静默——反向断言无 warnings
       assert.equal(m.GH_CALL_TIMEOUT_STATE, c.state, `state(${label}) 必须为 ${c.state}`);

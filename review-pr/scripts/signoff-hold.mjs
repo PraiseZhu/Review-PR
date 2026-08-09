@@ -56,11 +56,10 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseRepo, parsePR, gh, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, stateFile } from './lib.mjs';
-// R8 拆节:锁原语本体已迁 lib.mjs,re-export 保持本模块原导出面(D4 测试 fixture
-// 从本模块 import 锁符号,守卫静默语义要求 import 目标仍是本模块;纯转发,行为等价)。
-// 注意:re-export 不建立模块内绑定,预算计算要用的 LOCK_STALE_MS 需显式 import。
-import { acquireHoldLock, releaseHoldLock, tryTakeoverStaleLock, parseStartedAtMs, isLockStale, LOCK_STALE_MS } from './lib.mjs';
-export { acquireHoldLock, releaseHoldLock, tryTakeoverStaleLock, parseStartedAtMs, isLockStale, LOCK_STALE_MS } from './lib.mjs';
+// R8 拆节:锁原语本体已迁 lib.mjs,本模块只保留真依赖的显式 import(acquireHoldLock /
+// releaseHoldLock 供 main/finally 使用;LOCK_STALE_MS 供预算计算)——不为测试
+// re-export 生产导出面(D4 守卫测试 fixture 改 import 本模块自有符号,见测试)。
+import { acquireHoldLock, releaseHoldLock, LOCK_STALE_MS } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
