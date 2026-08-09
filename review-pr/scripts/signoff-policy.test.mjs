@@ -17,6 +17,9 @@ import {
   issueNumberFromUrl, decideIssueReuse, shouldCloseDiscussionIssue,
   classifyGateHits, parseSignoffReleases, parseSignoffRenotices,
 } from './lib.mjs';
+import {
+  performIssueCreate, performStatusComment, performLabelSync, computeHeld,
+} from './signoff-hold.mjs';
 
 let failed = 0;
 function check(name, cond, detail = '') {
@@ -167,6 +170,97 @@ const RENOTICED = parseSignoffRenotices([
 ]);
 check('回帖去重:head 归一', RENOTICED.has('abc123') && RENOTICED.has('def456'));
 check('回帖去重:同一 head 只回一次', RENOTICED.size === 2);
+
+// ── ⑦ signoff-hold 生产动作(SC-3:真加载 signoff-hold.mjs 本体;SC-2:三件套 held 判据)──
+// fake ghFn:记录每次调用的 args/opts,按 args 内容分发预设响应,不打真实 gh。
+function makeFakeGh(handlers) {
+  const calls = [];
+  const ghFn = (args, opts) => {
+    calls.push({ args, opts });
+    for (const h of handlers) {
+      if (h.match(args)) return h.result;
+    }
+    return { ok: true, stdout: '', stderr: '', status: 0 };
+  };
+  ghFn.calls = calls;
+  return ghFn;
+}
+const isIssueCreate = (a) => a[0] === 'issue' && a[1] === 'create';
+const isPrComment = (a) => a[0] === 'pr' && a[1] === 'comment';
+const isLabelCreate = (a) => a[0] === 'label' && a[1] === 'create';
+const isLabelPost = (a) => a[0] === 'api' && a.includes('-X') && a.includes('POST') && a.some((s) => /\/labels$/.test(s));
+
+// -- performIssueCreate --
+{
+  const ghOk = makeFakeGh([{ match: isIssueCreate, result: { ok: true, stdout: 'https://github.com/acme/app/issues/99\n', stderr: '', status: 0 } }]);
+  const r = performIssueCreate({ pr: 42, slug: 'acme/app', kind: 'product', author: 'alice', issueTitle: 'T', issueBody: 'B', ghFn: ghOk });
+  check('performIssueCreate 成功:issueCreated', r.issueCreated === true);
+  eq('performIssueCreate 成功:issueUrl', r.issueUrl, 'https://github.com/acme/app/issues/99');
+  check('performIssueCreate 成功:issueError 为 null', r.issueError === null);
+  check('performIssueCreate 确实调用了 gh issue create', ghOk.calls.some((c) => isIssueCreate(c.args)));
+
+  const ghFail = makeFakeGh([{ match: isIssueCreate, result: { ok: false, stdout: '', stderr: 'boom-create-failed', status: 1 } }]);
+  const rf = performIssueCreate({ pr: 42, slug: 'acme/app', kind: 'product', author: 'alice', issueTitle: 'T', issueBody: 'B', ghFn: ghFail });
+  check('performIssueCreate 失败:issueCreated=false', rf.issueCreated === false);
+  check('performIssueCreate 失败:issueUrl=null', rf.issueUrl === null);
+  check('performIssueCreate 失败:issueError 带原因', rf.issueError.includes('boom-create-failed'));
+}
+
+// -- performStatusComment --
+{
+  const ghOk = makeFakeGh([{ match: isPrComment, result: { ok: true, stdout: '', stderr: '', status: 0 } }]);
+  const r = performStatusComment({ pr: 42, slug: 'acme/app', kind: 'product', issueUrl: 'https://github.com/acme/app/issues/99', commentBody: '请看讨论', ghFn: ghOk });
+  check('performStatusComment 成功:commented', r.commented === true);
+  check('performStatusComment 成功:commentError 为 null', r.commentError === null);
+  check('performStatusComment 确实调用了 gh pr comment', ghOk.calls.some((c) => isPrComment(c.args)));
+
+  const ghFail = makeFakeGh([{ match: isPrComment, result: { ok: false, stdout: '', stderr: 'boom-comment-failed', status: 1 } }]);
+  const rf = performStatusComment({ pr: 42, slug: 'acme/app', kind: 'product', issueUrl: 'https://github.com/acme/app/issues/99', commentBody: '请看讨论', ghFn: ghFail });
+  check('performStatusComment 失败:commented=false', rf.commented === false);
+  check('performStatusComment 失败:commentError 带原因', rf.commentError.includes('boom-comment-failed'));
+}
+
+// -- performLabelSync(SC-2 核心 fixture:issue+评论成功,标签 POST 失败)--
+{
+  const ghAllOk = makeFakeGh([
+    { match: isLabelCreate, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+    { match: isLabelPost, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+  ]);
+  const rOk = performLabelSync({ owner: 'acme', repo: 'app', pr: 42, label: 'needs-discussion', current: [], ghFn: ghAllOk });
+  check('performLabelSync 成功:changed', rOk.changed === true);
+  check('performLabelSync 成功:无 errors', (rOk.errors ?? []).length === 0);
+  check('performLabelSync 成功:无 warning', !rOk.warning);
+
+  const ghPostFail = makeFakeGh([
+    { match: isLabelCreate, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+    { match: isLabelPost, result: { ok: false, stdout: '', stderr: 'label POST 失败:权限不足', status: 1 } },
+  ]);
+  const rFail = performLabelSync({ owner: 'acme', repo: 'app', pr: 42, label: 'needs-discussion', current: [], ghFn: ghPostFail });
+  check('performLabelSync 标签 POST 失败:changed=false', rFail.changed === false);
+  check('performLabelSync 标签 POST 失败:errors 非空(明确失败字段,不是只挂 warning)', (rFail.errors ?? []).length > 0);
+  check('performLabelSync 标签 POST 失败:warning 也设置(可读提示)', !!rFail.warning);
+}
+
+// -- computeHeld(SC-2:三件套全成功才 held;任一失败必须点名 heldBlockedBy,不是只挂侧信道)--
+{
+  const allGood = computeHeld({ issueCreated: true, priorIssueUrl: null, needIssue: true, commented: true, alreadyHeld: false, labelsOk: true });
+  check('computeHeld 三件套全成功 → held=true', allGood.held === true);
+  eq('computeHeld 三件套全成功 → heldBlockedBy 为空', allGood.heldBlockedBy, []);
+
+  // 核心 SC-2 fixture:issue 建成 + 评论发出,但标签 POST 失败 → held 必须 false,且点名 'labels'
+  const labelFail = computeHeld({ issueCreated: true, priorIssueUrl: null, needIssue: true, commented: true, alreadyHeld: false, labelsOk: false });
+  check('computeHeld 标签失败:held=false(不再是「失败不连坐」)', labelFail.held === false);
+  check('computeHeld 标签失败:heldBlockedBy 点名 labels', labelFail.heldBlockedBy.includes('labels'));
+  check('computeHeld 标签失败:heldBlockedBy 不误报 issue/comment', !labelFail.heldBlockedBy.includes('issue') && !labelFail.heldBlockedBy.includes('comment'));
+
+  const issueAndCommentFail = computeHeld({ issueCreated: false, priorIssueUrl: null, needIssue: true, commented: false, alreadyHeld: false, labelsOk: true });
+  check('computeHeld issue+评论都失败:held=false', issueAndCommentFail.held === false);
+  check('computeHeld issue+评论都失败:heldBlockedBy 点名 issue', issueAndCommentFail.heldBlockedBy.includes('issue'));
+  check('computeHeld issue+评论都失败:heldBlockedBy 点名 comment', issueAndCommentFail.heldBlockedBy.includes('comment'));
+
+  const reuseCase = computeHeld({ issueCreated: false, priorIssueUrl: 'https://github.com/acme/app/issues/7', needIssue: false, commented: false, alreadyHeld: true, labelsOk: true });
+  check('computeHeld 复用旧 issue(未新建/未新评论但曾 hold 过)→ held=true', reuseCase.held === true);
+}
 
 if (failed > 0) {
   console.error(`\n${failed} 个用例失败`);

@@ -39,8 +39,9 @@
 //   { "issueTitle": "…", "issueBody": "…", "commentBody": "…{{ISSUE_URL}}…" }
 //   JSON
 
-import { readFileSync } from 'node:fs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse } from './lib.mjs';
+import { readFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync, writeSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, stateFile } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -58,6 +59,121 @@ const KIND_TOPICS = {
   pluginBase: '插件基座改动(影响全部已装插件)',
 };
 
+// ── 幂等原子 claim(SC-1) ──
+// 旧实现是 check-then-act:读标记评论判「是否已 hold 过」和写 issue/评论之间没有互斥,
+// 两个并发实例(如同一 PR 被两条流水线同时触发)会各自认为「没 hold 过」,各建一份 issue、
+// 各发一条评论。这里用 fs.openSync(path,'wx') 排他创建当锁——它是文件系统级原子操作,
+// 不存在「检查时不存在、创建时已被抢先」的窗口。锁覆盖从读 PR 元数据到写完 issue/评论/
+// 标签的整段 check-then-act,谁抢到锁谁独占执行,另一个实例原地等待(轮询)或超时退让,
+// 不会出现"两边都判定为需要新建"的竞态。
+const LOCK_STALE_MS = 5 * 60 * 1000; // 正常一轮执行远快于 5 分钟,超过视为异常残留(进程被杀掉过)
+const LOCK_POLL_MS = 100;
+const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000);
+
+function lockPathFor(owner, repo, pr) {
+  const dir = process.env.SIGNOFF_HOLD_LOCK_DIR || stateFile('signoff-hold-locks');
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${owner}__${repo}__${pr}.lock`);
+}
+
+// 同步阻塞等待,不依赖 subprocess/sleep 二进制;Node 主线程允许 Atomics.wait(仅浏览器
+// 主线程禁止),这里跑在 CLI 脚本里,合法且不引入额外依赖。
+function sleepSync(ms) {
+  const sab = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(sab), 0, 0, ms);
+}
+
+export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS } = {}) {
+  const path = lockPathFor(owner, repo, pr);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx'); // 原子排他创建:已存在则抛 EEXIST,不存在才会创建成功
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      return { path, acquired: true };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        const st = statSync(path);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          unlinkSync(path); // 陈旧锁(持有者已死):抢占清除,立即重试而不是白等到超时
+          continue;
+        }
+      } catch { /* 锁在检测瞬间被持有者自己释放,走下面的超时判断/轮询重试 */ }
+      if (Date.now() >= deadline) return { path, acquired: false, timeout: true };
+      sleepSync(LOCK_POLL_MS);
+    }
+  }
+}
+
+export function releaseHoldLock(lockInfo) {
+  if (!lockInfo?.acquired) return;
+  try { unlinkSync(lockInfo.path); } catch { /* 已被陈旧锁抢占清理过,无需重复删 */ }
+}
+
+// ── 三个生产动作抽成可单测的导出函数(SC-3):均接受可注入的 ghFn(默认真实 gh),
+// 测试用 fake ghFn 记调用次数/参数,不需要真的打 GitHub API。──
+export function performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn = gh }) {
+  const topic = KIND_TOPICS[kind];
+  const footer = `\n\n---\n关联 PR:#${pr}(作者 @${author});本 issue 由 review-pr 流程自动创建,用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
+  const r = ghFn(['issue', 'create', '--repo', slug, '--title', issueTitle, '--body-file', '-'], {
+    input: issueBody + footer,
+    allowFail: true,
+  });
+  const created = (r.stdout || '').trim().split('\n').pop()?.trim() ?? '';
+  if (r.ok && /^https:\/\//.test(created)) {
+    return { issueUrl: created, issueCreated: true, issueError: null };
+  }
+  return { issueUrl: null, issueCreated: false, issueError: (r.stderr || r.stdout || '').trim().slice(0, 300) };
+}
+
+export function performStatusComment({ pr, slug, kind, issueUrl, commentBody, ghFn = gh }) {
+  const rendered = commentBody.includes('{{ISSUE_URL}}')
+    ? renderIssueUrl(commentBody, issueUrl)
+    : `${commentBody}\n\n讨论 issue:<${issueUrl}>`;
+  const r = ghFn(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
+    input: `${rendered}\n\n${marker(issueUrl, kind)}`,
+    allowFail: true,
+  });
+  if (r.ok) return { commented: true, commentError: null };
+  return { commented: false, commentError: (r.stderr || '').trim().slice(0, 300) };
+}
+
+export function performLabelSync({ owner, repo, pr, label, current = [], dryRun = false, ghFn = gh }) {
+  const result = syncSignoffLabel({ owner, repo, pr, want: true, label, current, ghFn, dryRun });
+  const legacy = removeLegacyGateLabels({ owner, repo, pr, current, ghFn, dryRun });
+  if (legacy.legacyRemoved.length) result.legacyRemoved = legacy.legacyRemoved;
+  if (legacy.errors.length) result.errors = [...(result.errors ?? []), ...legacy.errors];
+  if (result.errors.length && !result.warning) {
+    result.warning = `维护者确认标签同步没完成:${result.errors[0]}`;
+  }
+  return result;
+}
+
+// ── held 判据(SC-2):issue/评论/标签三件套全成功才算真正拦住 ──
+// issueOk / commentOk 要分「本轮需要新开一轮讨论(needIssue)」与「复用既有 open issue」
+// 两种情况:复用时旧 issue+旧评论已经把作者引到当前有效讨论,不需要本轮重新创建/重新发
+// 评论才算数;需要新开时(从未 hold 过,或旧 issue 已 CLOSED)必须本轮真正成功,不能拿
+// "曾经 hold 过"这个陈旧事实顶替——否则旧 issue 被关闭后 gate 重新触发,held 会被误判
+// 为 true,把作者晒在一个已关闭的讨论里却显示"已经拦住"。
+export function computeHeld({ issueCreated, priorIssueUrl, needIssue, commented, alreadyHeld, labelsOk }) {
+  const issueOk = issueCreated || (!needIssue && priorIssueUrl != null);
+  const commentOk = commented || (!needIssue && alreadyHeld);
+  const held = issueOk && commentOk && labelsOk;
+  const heldBlockedBy = held ? [] : [
+    ...(!issueOk ? ['issue'] : []),
+    ...(!commentOk ? ['comment'] : []),
+    ...(!labelsOk ? ['labels'] : []),
+  ];
+  return { held, heldBlockedBy };
+}
+
+// 只在直接被跑为 CLI 时执行主流程;被 import(如 signoff-policy.test.mjs 覆盖上面
+// 导出的纯函数/生产动作)时不触发任何真实 gh/git 调用,否则测试进程会在 import 阶段
+// 就被 parsePR/parseRepo 的失败路径(fail() → process.exit(1))直接杀掉。
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
 try {
   const { owner, repo } = parseRepo();
   const pr = parsePR(process.argv[2]);
@@ -80,6 +196,14 @@ try {
   const commentBody = (payload?.commentBody ?? '').trim();
   const payloadComplete = issueTitle !== '' && issueBody !== '' && commentBody !== '';
 
+  // 原子 claim(SC-1):check-then-act 全程持有本 PR 的专属文件锁,消除双实例各建
+  // 一份 issue/各发一条评论的 TOCTOU 竞态。锁拿不到(另一实例持锁超时)本轮直接放弃,
+  // 不做任何写操作,交下一轮重试——总比两边各写一份强。
+  const lock = acquireHoldLock(owner, repo, pr);
+  if (!lock.acquired) {
+    print({ ok: true, pr, held: false, reason: 'lock-timeout' });
+  } else
+  try {
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
     '--json', 'number,state,mergedAt,author,url,comments,labels,headRefOid',
@@ -87,17 +211,9 @@ try {
   const author = meta.author?.login ?? '';
   const currentLabels = (meta.labels ?? []).map((l) => l.name);
   const headSha = String(meta.headRefOid ?? '').toLowerCase();
-  // 挂维护者确认标签;顺手摘掉旧主标签与旧门类子标签(迁移遗留)
-  const syncLabels = () => {
-    const result = syncSignoffLabel({ owner, repo, pr, want: true, label: SIGNOFF_LABEL, current: currentLabels, ghFn: gh, dryRun });
-    const legacy = removeLegacyGateLabels({ owner, repo, pr, current: currentLabels, ghFn: gh, dryRun });
-    if (legacy.legacyRemoved.length) result.legacyRemoved = legacy.legacyRemoved;
-    if (legacy.errors.length) result.errors = [...(result.errors ?? []), ...legacy.errors];
-    if (result.errors.length && !result.warning) {
-      result.warning = `维护者确认标签同步没完成:${result.errors[0]}`;
-    }
-    return result;
-  };
+  // 挂维护者确认标签;顺手摘掉旧主标签与旧门类子标签(迁移遗留)——委托给 performLabelSync
+  // (与 computeHeld 共用同一份判定事实,SC-3 测试直接覆盖该导出函数)
+  const syncLabels = () => performLabelSync({ owner, repo, pr, label: SIGNOFF_LABEL, current: currentLabels, dryRun, ghFn: gh });
   // 标签失败不静默:顶到输出最外层(labelWarning),SKILL 要求最终报告里照抄。
   // 少了标签 → GitHub 后台与待确认面板都筛不到该 PR,门的判定不受影响。
   const withLabelWarning = (out) => (out.labels?.warning ? { ...out, labelWarning: out.labels.warning } : out);
@@ -230,52 +346,47 @@ try {
         labels: syncLabels(),
       });
     } else {
-      // 1) 开讨论 issue(没有可复用 issue 时;失败则本轮不发评论,下轮自动重试)
+      // 1) 开讨论 issue(没有可复用 issue 时;失败则本轮不发评论,下轮自动重试)——委托给
+      // performIssueCreate(SC-3 测试直接覆盖该导出函数)
       let issueUrl = reuse.reuseUrl;
       let issueCreated = false;
       let issueError = null;
       if (needIssue) {
-        // footer 由代码追加,保证 issue 一定回链到 PR / 点名作者;保留「由 review-pr 流程
-        // 自动创建」签名(close-product-issue.mjs 的定向关闭与 sweep 兜底依赖它)。
-        const topic = KIND_TOPICS[kind];
-        const footer = `\n\n---\n关联 PR:#${pr}(作者 @${author});本 issue 由 review-pr 流程自动创建,用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
-        const r = gh(['issue', 'create', '--repo', slug, '--title', issueTitle, '--body-file', '-'], {
-          input: issueBody + footer,
-          allowFail: true,
-        });
-        const created = (r.stdout || '').trim().split('\n').pop()?.trim() ?? '';
-        if (r.ok && /^https:\/\//.test(created)) {
-          issueUrl = created;
+        const r = performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn: gh });
+        if (r.issueCreated) {
+          issueUrl = r.issueUrl;
           issueCreated = true;
         } else {
-          issueError = (r.stderr || r.stdout || '').trim().slice(0, 300);
+          issueError = r.issueError;
         }
       }
 
-      // 2) 发评论(带隐藏标记;仅在本轮新开了 issue 时——评论的核心就是给 issue 链接)
+      // 2) 发评论(带隐藏标记;仅在本轮新开了 issue 时——评论的核心就是给 issue 链接)——
+      // 委托给 performStatusComment(SC-3 测试直接覆盖该导出函数)
       let commented = false;
       let commentError = null;
       if (issueCreated && issueUrl) {
-        const rendered = commentBody.includes('{{ISSUE_URL}}')
-          ? renderIssueUrl(commentBody, issueUrl)
-          : `${commentBody}\n\n讨论 issue:<${issueUrl}>`;
-        const r = gh(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
-          input: `${rendered}\n\n${marker(issueUrl, kind)}`,
-          allowFail: true,
-        });
-        if (r.ok) commented = true;
-        else commentError = (r.stderr || '').trim().slice(0, 300);
+        const r = performStatusComment({ pr, slug, kind, issueUrl, commentBody, ghFn: gh });
+        commented = r.commented;
+        commentError = r.commentError;
       }
 
-      // 3) 维护者确认标签(issue / 评论失败不连坐:GitHub 后台的可筛性独立生效)
+      // 3) 维护者确认标签(与 issue/评论共同构成 held 判据,见下——三件套全成功才算 held,
+      // 不再是「失败不连坐」:标签 POST 失败时 held 必须为 false,并在 heldBlockedBy 里点名)
       const labels = syncLabels();
 
       // 4) 状态回帖(只在「早就 hold 过、这轮门重新亮起来」时;本轮首次 hold 已经有 2) 的评论)
       const renotice = doRenotice();
 
-      const held = priorIssueUrl != null || commented;
+      // held 判据(SC-2):issue 建成(或有效复用)&& 评论发出 && 标签同步成功,三件套全成功
+      // 才算 held——委托给 computeHeld(纯函数,SC-3 测试直接覆盖)。任一项失败时
+      // heldBlockedBy 点名具体失败项,不再只挂 labelWarning 一个侧信道。
+      const { held, heldBlockedBy } = computeHeld({
+        issueCreated, priorIssueUrl, needIssue, commented, alreadyHeld,
+        labelsOk: !labels.warning,
+      });
       printOut({
-        ok: true, pr, author, kind, held, ...priorIssueInfo,
+        ok: true, pr, author, kind, held, ...(held ? {} : { heldBlockedBy }), ...priorIssueInfo,
         issueUrl, issueCreated, issueError,
         commented, alreadyHeld, commentError,
         labels,
@@ -284,6 +395,10 @@ try {
       });
     }
   }
+  } finally {
+    releaseHoldLock(lock);
+  }
 } catch (e) {
   fail(e);
+}
 }
