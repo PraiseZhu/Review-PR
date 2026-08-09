@@ -183,7 +183,7 @@ const GQL = `
     repository(owner:$owner,name:$repo){
       pullRequest(number:$num){
         reviewThreads(first:100){ nodes{
-          isResolved isOutdated path
+          id isResolved isOutdated path
           comments(first:50){ nodes{ author{ login __typename } body createdAt } }
         }}
         comments(first:100){ nodes{ author{ login __typename } body createdAt updatedAt url } }
@@ -537,13 +537,16 @@ try {
   const reviewThreads = rawThreads.map((t) => {
     const cs = t.comments?.nodes ?? [];
     return {
+      id: t.id ?? null,
       isResolved: t.isResolved,
       isOutdated: t.isOutdated,
       path: t.path,
       author: cs[0]?.author?.login ?? '(unknown)',
       isBot: isBot(cs[0]?.author),
       count: cs.length,
-      lastComment: clip(cs[cs.length - 1]?.body, 300),
+      // SC-2(2026-08-09):claim 文本(#13 resolve-threads.mjs 的证据绑定消费方)不许截断——
+      // 300 字截断会把长评论的关键论据切掉,导致语义证据匹配漏判/误判。全文原样透出。
+      lastComment: (cs[cs.length - 1]?.body ?? '').replace(/\r/g, ''),
     };
   });
 
@@ -1402,11 +1405,17 @@ try {
   // authorizedFastMerge.eligible=true 时也不覆盖(授权通道可以压过这两门,因为授权本身
   // 就是"人工已过的凭证",见 SKILL 5.1「授权快速合并通道」)。
   // 放行信号:admins 名单成员在当前 head 之后提交的 APPROVED(与 SC 的 release 判定口径
-  // 一致——只认 admins,不认普通白名单;只认当前 head 之后,旧代码上的 Approve 不作数)。──
-  const adminsApprovedCurrentHead = prReviews.some(
-    (r) => r.state === 'APPROVED'
-      && ADMIN_LOGINS.includes((r.author?.login ?? '').toLowerCase())
-      && r.submittedAt != null && r.submittedAt >= latestCommitDate,
+  // 一致——只认 admins,不认普通白名单;只认当前 head 之后,旧代码上的 Approve 不作数)。
+  // SC-3(2026-08-09 修订):判据从「submittedAt 时间戳 >= latestCommitDate」改绑「commit
+  // oid === 当前 head」——时间戳口径的反例:维护者在旧 commit 上 Approve,之后作者又推了
+  // 一个新 commit,若新 commit 的 committedDate 早于 review 的 submittedAt(时钟偏移/批量
+  // rebase 场景），时间戳比较会误判为"已放行"，但那次 Approve 实际绑定的是旧代码。改用
+  // reviewNodesForBasis(latestOpinionatedReviews,已带 commit.oid,approvalBasis 判定同源)
+  // 的 commit.oid 精确比对 meta.headRefOid,与 SC 的 release 判据同一真相源,消除双头。──
+  const adminsApprovedCurrentHead = reviewNodesForBasis.some(
+    (n) => n.state === 'APPROVED'
+      && ADMIN_LOGINS.includes((n.author?.login ?? '').toLowerCase())
+      && n.commit?.oid === meta.headRefOid,
   );
   if (!securityBlocked && hitsSecurityReviewPaths && !adminsApprovedCurrentHead
     && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
@@ -1420,6 +1429,45 @@ try {
     autoReason = `命中审查规则文档(${rulesHitFiles.join(' / ')})——规则文档是后续所有审查的判据来源,改它等于改审查标准本身,需要 admins 确认。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
     autoSkip = false;
   }
+
+  // ── SC-1(2026-08-09):三门 hold 的真实可执行调用点 ──
+  // 此前 security-gate/rules-gate/arch-gate 只在这里"算出结论"就停,唯一完整的调用形式
+  // 在 SKILL.md 是一段 Markdown 示例,命中候选照样失联(见 dispatch)。这里补一次
+  // signoff-hold.mjs 的 --dry-run 探测调用(脚本调脚本,child_process 真 spawn,不写任何
+  // 外部状态)——用于让"命中 → 是否真的会触发 hold 动作"这件事可观测(holdInvocation),
+  // 不替代主 agent 按 SKILL 3.4 生成 payload 后的正式 hold(那次仍需要 issueTitle /
+  // issueBody / commentBody,本调用没有文案、且 --dry-run 不落地任何外部状态)。
+  const HOLD_KIND_BY_ACTION = { 'security-gate': 'security', 'rules-gate': 'rules', 'arch-gate': 'arch' };
+  const SIGNOFF_HOLD_PATH = fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url));
+  const holdKind = HOLD_KIND_BY_ACTION[autoAction] ?? null;
+  const holdInvocation = holdKind
+    ? await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run'])
+    : null;
+
+  // ── SC-4(2026-08-09):signoff 判据消除双头 ──
+  // scan 模式与全量模式此前各自独立构造一份 signoff 对象,字段与推导逻辑逐字重复
+  // (唯一差异是全量模式多一个 note)。改为在分支前算一次共享核心,两处引用同一个值,
+  // 不留两份独立实现。判定事实唯一 owner 仍是 adminsApprovedCurrentHead 本字段
+  // (与 lib.mjs classifyGateHits 同源);hold 动作唯一 owner 仍是 signoff-hold.mjs——
+  // 本字段新增的 holdInvocation 只是"调用点是否真被执行"的探测记录,不是第二个判定来源。
+  const signoffCore = {
+    label: (prRules.signoffGate?.label ?? SIGNOFF_LABEL_DEFAULT).trim() || SIGNOFF_LABEL_DEFAULT,
+    triggers: {
+      security: securityReviewFiles,
+      rules: rulesHitFiles,
+      ruleMapHits: gatePathHits.ruleMapHits,
+      arch: archTriggers,
+    },
+    adminsApprovedCurrentHead,
+    suggestedHolds: [
+      ...(hitsSecurityReviewPaths && !adminsApprovedCurrentHead ? ['security'] : []),
+      ...(hitsRuleFiles && !adminsApprovedCurrentHead ? ['rules'] : []),
+      ...(needsArchCheck ? ['arch'] : []),
+    ],
+    holdInvocation: holdKind
+      ? { kind: holdKind, dryRun: true, invoked: true, ...holdInvocation }
+      : { kind: null, dryRun: false, invoked: false, reason: 'auto.action 未命中三门(security-gate/rules-gate/arch-gate)' },
+  };
 
   const scanMode = process.argv.includes('--scan');
   if (scanMode) {
@@ -1449,21 +1497,7 @@ try {
       loopExclusion,
       security,
       format: { formatPass, formatIssues, hitsServer, hitsSecurityReviewPaths, securityReviewFiles, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice },
-      signoff: {
-        label: (prRules.signoffGate?.label ?? SIGNOFF_LABEL_DEFAULT).trim() || SIGNOFF_LABEL_DEFAULT,
-        triggers: {
-          security: securityReviewFiles,
-          rules: rulesHitFiles,
-          ruleMapHits: gatePathHits.ruleMapHits,
-          arch: archTriggers,
-        },
-        adminsApprovedCurrentHead,
-        suggestedHolds: [
-          ...(hitsSecurityReviewPaths && !adminsApprovedCurrentHead ? ['security'] : []),
-          ...(hitsRuleFiles && !adminsApprovedCurrentHead ? ['rules'] : []),
-          ...(needsArchCheck ? ['arch'] : []),
-        ],
-      },
+      signoff: signoffCore,
       gate: {
         gatePass,
         blockClass,
@@ -1552,20 +1586,8 @@ try {
     productGate,
     archGate,
     signoff: {
-      label: (prRules.signoffGate?.label ?? SIGNOFF_LABEL_DEFAULT).trim() || SIGNOFF_LABEL_DEFAULT,
-      triggers: {
-        security: securityReviewFiles,
-        rules: rulesHitFiles,
-        ruleMapHits: gatePathHits.ruleMapHits,
-        arch: archTriggers,
-      },
-      adminsApprovedCurrentHead,
-      suggestedHolds: [
-        ...(hitsSecurityReviewPaths && !adminsApprovedCurrentHead ? ['security'] : []),
-        ...(hitsRuleFiles && !adminsApprovedCurrentHead ? ['rules'] : []),
-        ...(needsArchCheck ? ['arch'] : []),
-      ],
-      note: '三门命中事实(securityReviewPaths / ruleFiles.required / archGate 触发器),供 auto 编排消费——命中 → 调 signoff-hold.mjs --kind <门> --payload-file(挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,不转 draft)。判定事实唯一 owner=本字段与 signoff-policy.test.mjs 锚定的 lib.mjs classifyGateHits;hold 动作唯一 owner=signoff-hold.mjs(脚本做幂等与去重)。suggestedHolds 只列「需要 hold 动作」的门:admins 名单成员已在当前 head 之后 Approve(adminsApprovedCurrentHead=true)时 security/rules 不列入;arch 的放行口径见 archGate.note(白名单/冷更把关人)。product 门走 productGate.needsProductCheck(既有)。',
+      ...signoffCore,
+      note: '三门命中事实(securityReviewPaths / ruleFiles.required / archGate 触发器),供 auto 编排消费——命中 → 调 signoff-hold.mjs --kind <门> --payload-file(挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,不转 draft)。判定事实唯一 owner=本字段与 signoff-policy.test.mjs 锚定的 lib.mjs classifyGateHits;hold 动作唯一 owner=signoff-hold.mjs(脚本做幂等与去重)。suggestedHolds 只列「需要 hold 动作」的门:admins 名单成员已在当前 head 之后 Approve(adminsApprovedCurrentHead=true)时 security/rules 不列入;arch 的放行口径见 archGate.note(白名单/冷更把关人)。product 门走 productGate.needsProductCheck(既有)。holdInvocation 是本次 scan 期间对 signoff-hold.mjs 的 --dry-run 探测调用(kind 命中三门之一时真 spawn 子进程,读 gh pr view 但不写任何外部状态),用于证明调用点可执行、不是文档示例;不替代主 agent 按 SKILL 3.4 生成 payload 后的正式 hold(那次带 issueTitle/issueBody/commentBody,真正落地 issue/标签/评论)。',
     },
     authorizedFastMerge,
     // SC-1(2026-08-08):admin-trust 与 break-glass 名单显式区分;强制策略开关一并带出。
