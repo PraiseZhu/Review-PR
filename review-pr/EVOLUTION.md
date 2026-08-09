@@ -194,8 +194,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 3 次,首见 2026-08-08,最近 2026-08-08,status: tracked
-  - 现象:PR #580 改动含 package.json,命中 securityReviewPaths,auto.action=skip-security-review,不审不合不提醒。属既有设计意图(防改坏自动化自身的自我损坏闭环),非流程缺口;按 by-design 只记计数,不因出现多次而自动放开
+- `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 4 次,首见 2026-08-08,最近 2026-08-09,status: tracked
+  - 现象:PR #580 改动含 package.json,命中安全审查路径,auto.action=skip-security-review。设计上就该人来,防'改坏的版本审过并合入了自己'的自我损坏闭环
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
   - 现象:本轮 #585(资产 GC)1 条 conversation 未 resolve 被 skip,已发模板 C 提醒评论
 - `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
