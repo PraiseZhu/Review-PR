@@ -1643,14 +1643,14 @@
       "fingerprint": "skip-security-review-package-json",
       "tier": "by-design",
       "title": "PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)",
-      "detail": "PR #580 改动含 package.json,命中安全审查路径,auto.action=skip-security-review。设计上就该人来,防'改坏的版本审过并合入了自己'的自我损坏闭环",
+      "detail": "auto 轮 #580 唯一候选命中 SKILL 3.8 安全审查路径(package.json 在 securityReviewPaths),auto.action=skip-security-review,原样跳过不审不合不提醒。属设计上就该人来的人工审查,计数观察,不自动放开。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 4,
+      "occurrences": 5,
       "firstSeen": "2026-08-08T11:01:51.973Z",
-      "lastSeen": "2026-08-09T10:01:39.428Z"
+      "lastSeen": "2026-08-09T11:01:54.186Z"
     },
     {
       "fingerprint": "rro1-disposition-non-injected-empty-case",
