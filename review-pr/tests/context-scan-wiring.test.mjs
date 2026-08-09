@@ -686,6 +686,6 @@ test('R5 默认值不变量:SCAN_CHILD_TIMEOUT_MS ≥ 2×HOLD_PROBE_TIMEOUT_MS +
   assert.ok(Number.isFinite(SCAN_CHILD_TIMEOUT_MS) && SCAN_CHILD_TIMEOUT_MS > 0, '外层默认必须为正');
   assert.ok(
     SCAN_CHILD_TIMEOUT_MS >= 2 * HOLD_PROBE_TIMEOUT_MS + 30_000,
-    `外层必须 > 内层最坏(2×探测)+ 余量。外层=${SCAN_CHILD_TIMEOUT_MS},2×探测=${2 * HOLD_PROBE_TIMEOUT_MS},需外层≥${2 * HOLD_PROBE_TIMEOUT_MS + 30_000}。变异:探测 20k→100k(需 230k>180k)或外层<70k 均转红`,
+    `外层必须 ≥ 内层最坏(2×探测)+ 30s 余量(余量供子进程其余工作;本不变量不声称子进程永不超时,只声称探测不是超时的原因)。外层=${SCAN_CHILD_TIMEOUT_MS},2×探测=${2 * HOLD_PROBE_TIMEOUT_MS},需外层≥${2 * HOLD_PROBE_TIMEOUT_MS + 30_000}。变异:探测 20k→100k(需 230k>180k)或外层<70k 均转红`,
   );
 });

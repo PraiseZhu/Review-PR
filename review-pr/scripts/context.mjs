@@ -30,10 +30,10 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classify
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-// ── 嵌套超时配对(R5,2026-08-10):「外层 > 内层」必须显式成对,不能靠两个静默默认值 ──
+// ── 嵌套超时配对(R5,2026-08-10):「外层 ≥ 内层」必须显式成对,不能靠两个静默默认值 ──
 // 探测 spawnScriptJson 的 timeoutMs(lib.mjs 默认 180s 对本用途过大)。一次 --dry-run
 // 存在性探测(内部就一个 gh pr view)在健康环境 <1s,默认值在这里本就不合适——失败重试
-// 一次(见 F3),单候选最坏 2×HOLD_PROBE。外层(scan-all 自身子进程)必须 > 内层最坏,
+// 一次(见 F3),单候选最坏 2×HOLD_PROBE。外层(scan-all 自身子进程)必须 ≥ 内层最坏,
 // 否则父进程会在子进程输出升级前 kill 它(F3 的升级在批量路径不可达)。两端均可 env 覆盖:
 // 超时值是正当运维可调项,env 同时是行为测试把小值注入的手段。
 export const HOLD_PROBE_TIMEOUT_MS = resolveTimeoutMs(
@@ -1551,11 +1551,14 @@ try {
   //     security-gate/rules-gate/arch-gate 不同,按契约路由不会把它们混为一谈),绝不回落
   //     到静默放行;
   //   - 失败原因同时写进 CONFIG_WARNINGS(scan/全量两处 print() 都带出),供排查。
-  // 成本(round4 补,推导链可核):下方两处 spawnScriptJson 调用均未显式传 timeoutMs →
-  // 各自取默认 180_000ms(lib.mjs spawnScriptJson `{ timeoutMs = 180_000 } = {}`)→
-  // 单候选最坏 2×180s = 360s。--scan-all 下探测按候选发生,mapPool(candidates, 4, …)
-  // 并发(非串行),整轮最坏 ≈ ⌈H/4⌉×360s,H=本轮命中三门候选数;单候选 360s 是单候选
-  // 上界,不是整轮上界。编排排期计入该延迟,勿在短超时下当实时检查。
+  // 成本(round4 补,推导链可核;round5 起事实更新,沿革见段末):下方两处 spawnScriptJson
+  // 调用显式传 timeoutMs: HOLD_PROBE_TIMEOUT_MS(默认 20s,env REVIEW_PR_HOLD_PROBE_TIMEOUT_MS
+  // 可调)→ 单候选最坏 2×20s = 40s(失败重试一次,见 F3)。--scan-all 下探测按候选发生,
+  // mapPool(candidates, 4, …) 并发(非串行),整轮按 SKILL.md 成本段口径 ≈ N×单 PR 扫描 +
+  // heldDraft 批次 + ⌈H/4⌉×40s,H=本轮命中三门候选数;单候选 40s 是单候选上界,不是整轮上界。
+  // 沿革:round4 时这两处未显式传、各自取默认 180_000ms(lib.mjs spawnScriptJson
+  // `{ timeoutMs = 180_000 } = {}`),单候选最坏 2×180s = 360s;round5 改为显式 20s。
+  // 编排排期计入该延迟,勿在短超时下当实时检查。
   // D3(2026-08-09,PR #12 round2,全局规则 12「失败可见」):spawnScriptJson 对「模块不存在 /
   // 输出非 JSON / 子进程 fail() 退出 1」三种探测失败一律折叠成 { ok:false, error }。
   let holdInvocation = null;
