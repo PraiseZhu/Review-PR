@@ -30,6 +30,22 @@ const FAKE_GH = join(__dirname, 'fixtures', 'fake-gh-resolve', 'gh');
 const SELF_LOGIN = 'review-pr-bot';
 const marker = (pr, thread, sha, state = 'replied') =>
   `<!-- review-pr:thread-triage pr=${pr} thread=${thread} sha=${sha} state=${state} -->`;
+// 陈旧 marker 评论(年龄 ≥ 反对窗口):预置己方 marker 且需 resolve 的测试用。
+// ageMs 默认 30 分钟,远超 MIN_MARKER_AGE_MS(10 分钟)。
+const staleComment = (body, ageMs = 30 * 60 * 1000) => ({ body, createdAt: new Date(Date.now() - ageMs).toISOString() });
+// 连跑两轮的测试(首轮真实 reply 落 marker=新鲜,第二轮需 resolve)→ 模拟时间流逝:
+// 把 state 里该 thread 的 marker 评论 createdAt 改成陈旧。这不是测试后门开关——正是
+// lead 要求的行为:「崩溃后过了一段时间的下一轮巡审」。
+const ageAllMarkers = (stateFile, threadId, ageMs = 30 * 60 * 1000) => {
+  const st = JSON.parse(readFileSync(stateFile, 'utf8'));
+  for (const th of st.threads) {
+    if (th.id !== threadId) continue;
+    for (const c of th.comments.nodes) {
+      if (c.body.includes('review-pr:thread-triage')) c.createdAt = new Date(Date.now() - ageMs).toISOString();
+    }
+  }
+  writeFileSync(stateFile, JSON.stringify(st));
+};
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
@@ -57,7 +73,8 @@ function setup({ threads, pr = 123, selfLogin = SELF_LOGIN } = {}) {
           const body = isObj ? b.body : b;
           const author = (isObj ? b.author : undefined) ?? t.author ?? 'greptile-apps';
           const id = (isObj && b.id) ? b.id : `seed_${t.id}_${i}`;
-          return { body, author: { login: author }, id };
+          const createdAt = isObj ? b.createdAt : undefined;
+          return { body, author: { login: author }, id, ...(createdAt ? { createdAt } : {}) };
         }),
       },
     })),
@@ -125,7 +142,7 @@ test('二轮(己方 state=replied marker + 同 headSha):resolved,不重复回复
       id: 'PRRT_2', isResolved: false, path: 'src/a.ts',
       comments: [
         'bot 意见',
-        { body: marker(123, 'PRRT_2', 'abc1234'), author: SELF_LOGIN, id: 'own_marker_1' },
+        { ...staleComment(marker(123, 'PRRT_2', 'abc1234')), author: SELF_LOGIN, id: 'own_marker_1' },
       ],
     }],
   });
@@ -321,6 +338,8 @@ test('resolve mutation 失败 → skipped-resolve-failed;下一轮重试成功,�
   const payload = { threads: [{ id: 'PRRT_RF', reply: '已处理', justification: 'j' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' };
   const r1 = runScript(s.work, s.env, payload);
   assert.equal(r1.out.results[0].outcome, 'replied-only', '首轮只回复');
+  // 模拟时间流逝:marker 变陈旧,下一轮才进入 resolve 判定
+  ageAllMarkers(s.stateFile, 'PRRT_RF');
   const envFail = { ...s.env, FAKE_GH_RESOLVE_FAIL_FOR: 'PRRT_RF' };
   const r2 = runScript(s.work, envFail, payload);
   const res2 = r2.out.results[0];
@@ -379,7 +398,7 @@ test('--dry-run:wouldReply / wouldResolve 预演,零动作', (t) => {
   assert.equal(s1.countCalls('addPullRequestReviewThreadReply'), 0);
   assert.equal(s1.countCalls('resolveReviewThread'), 0);
   const s2 = setup({
-    threads: [{ id: 'PRRT_DR2', isResolved: false, path: 'src/d2.ts', comments: ['bot', { body: marker(123, 'PRRT_DR2', 'abc1234'), author: SELF_LOGIN }] }],
+    threads: [{ id: 'PRRT_DR2', isResolved: false, path: 'src/d2.ts', comments: ['bot', { ...staleComment(marker(123, 'PRRT_DR2', 'abc1234')), author: SELF_LOGIN }] }],
   });
   const o2 = runScript(s2.work, s2.env, { threads: [{ id: 'PRRT_DR2', reply: 'x', justification: 'j' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' }, 123, ['--dry-run']);
   assert.equal(o2.out.results[0].wouldResolve, true, '己方 marker + 同 sha → wouldResolve=true');
@@ -415,7 +434,7 @@ test('分页:单 thread 第 52 条评论是己方 marker(超第一页)→ 二轮
   const manyComments = [];
   for (let i = 0; i < 50; i += 1) manyComments.push({ body: `占位评论 ${i}`, author: 'greptile-apps' });
   manyComments.push({ body: '第 51 条', author: 'greptile-apps', id: 'c51' });
-  manyComments.push({ body: marker(123, 'PRRT_page', 'abc1234'), author: SELF_LOGIN, id: 'marker_c52' });
+  manyComments.push({ ...staleComment(marker(123, 'PRRT_page', 'abc1234')), author: SELF_LOGIN, id: 'marker_c52' });
   const s = setup({ threads: [{ id: 'PRRT_page', isResolved: false, path: 'src/h.ts', comments: manyComments }] });
   clean(t, s);
   const { out } = runScript(s.work, s.env, {
@@ -463,6 +482,8 @@ test('D3 跨运行:换机器(全新 lockDir)+ 清空本地 → 二轮 resolve �
   });
   assert.equal(r1.out.results[0].outcome, 'replied-only', JSON.stringify(r1.out.results));
   assert.equal(r1.out.results[0].resolved, false);
+  // 换机器 = 下一轮巡审(距首轮 reply 已过反对窗口):marker 时间戳改陈旧
+  ageAllMarkers(sA.stateFile, 'PRRT_XRUN');
   // 机器 B:全新 lockDir(= 换机器 / 无状态 CI runner 全新 tmp),本地无任何上一轮遗留;
   // fixture 状态文件不变(= GitHub 侧状态跨机器可见)。
   const lockDirB = mkdtempSync(join(tmpdir(), 'resolve-threads-xrun-locks-'));
@@ -477,6 +498,59 @@ test('D3 跨运行:换机器(全新 lockDir)+ 清空本地 → 二轮 resolve �
   assert.equal(res2.replied, false, '不重复回复');
   assert.equal(sA.readState().threads[0].isResolved, true);
   clean(t, sA);
+});
+
+// ── 年龄门(人工反对窗口,lead 必加两条断言)──
+// 新鲜 marker(年龄 < MIN_MARKER_AGE_MS)+ 同 headSha + 白名单通过 → 必须 replied-only,
+// resolveReviewThread 调用数 = 0。直接锁住并发塌窗(双实例重叠时窗口不得塌成 0)。
+test('年龄门:新鲜己方 marker(< 反对窗口)+ 同 headSha + 白名单通过 → replied-only,0 次 resolve', (t) => {
+  const s = setup({
+    threads: [{
+      id: 'PRRT_FRESH', isResolved: false, path: 'src/fresh.ts',
+      comments: [
+        'bot 意见',
+        // 新鲜 marker:createdAt = 30 秒前(< 10 分钟窗口)
+        { body: marker(123, 'PRRT_FRESH', 'abc1234'), author: SELF_LOGIN, id: 'fresh_marker', createdAt: new Date(Date.now() - 30 * 1000).toISOString() },
+      ],
+    }],
+  });
+  clean(t, s);
+  const { r, out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_FRESH', reply: '已处理,有异议可 reopen', justification: 'j' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  assert.equal(r.status, 0, `status=${r.status} stderr=${r.stderr.slice(0, 200)}`);
+  const res = out.results[0];
+  assert.equal(res.outcome, 'replied-only', JSON.stringify(res));
+  assert.equal(res.resolved, false, '新鲜 marker 不得 resolve');
+  assert.equal(res.replied, false, '不重复回复(已回复过,只是窗口未过)');
+  assert.ok(res.markerAgeMs !== undefined && res.markerAgeMs < 10 * 60 * 1000, `带 markerAgeMs 实值: ${res.markerAgeMs}`);
+  assert.ok(res.reason.startsWith('replied-only'), res.reason);
+  assert.equal(s.countCalls('resolveReviewThread'), 0, 'resolveReviewThread 调用数必须为 0');
+  assert.equal(s.readState().threads[0].isResolved, false);
+});
+
+// 陈旧 marker(年龄 ≥ MIN_MARKER_AGE_MS)→ 仍能 resolved(证明年龄条件没堵死正常路径)。
+test('年龄门:陈旧己方 marker(≥ 反对窗口)+ 同 headSha + 白名单通过 → resolved', (t) => {
+  const s = setup({
+    threads: [{
+      id: 'PRRT_STALE', isResolved: false, path: 'src/stale.ts',
+      comments: [
+        'bot 意见',
+        { ...staleComment(marker(123, 'PRRT_STALE', 'abc1234')), author: SELF_LOGIN, id: 'stale_marker' },
+      ],
+    }],
+  });
+  clean(t, s);
+  const { out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_STALE', reply: '已处理,有异议可 reopen', justification: 'j' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  const res = out.results[0];
+  assert.equal(res.outcome, 'resolved', JSON.stringify(res));
+  assert.equal(res.done, true);
+  assert.equal(res.replied, false);
+  assert.equal(s.readState().threads[0].isResolved, true);
 });
 
 // ── D4 takeover 残留自愈 ──
@@ -559,7 +633,9 @@ test('P1-b 崩溃恢复:reply 成功、resolve 前崩溃 → 下一轮 resolved,
   const st1 = s.readState();
   assert.equal(st1.threads[0].isResolved, false);
   assert.ok(st1.threads[0].comments.nodes.some((c) => c.body.includes('state=replied') && c.author.login === SELF_LOGIN), 'marker 文本已落(崩溃点之后)');
-  // 第 2 轮:同 headSha 重跑 → 机器可核实条件成立,从 marker 文本恢复推进 → resolved
+  // 第 2 轮:同 headSha 重跑 → 机器可核实条件成立(含 marker 年龄 ≥ 反对窗口)。
+  // 模拟"崩溃后过了一段时间的下一轮巡审":marker 时间戳改陈旧(不是测试后门,是行为本身)。
+  ageAllMarkers(s.stateFile, 'PRRT_CRASH');
   const r2 = runScript(s.work, s.env, payload);
   const res2 = r2.out.results[0];
   assert.equal(res2.outcome, 'resolved', `崩溃后下一轮必须继续推进,不得原地返回: ${JSON.stringify(res2)}`);
@@ -584,22 +660,28 @@ function spawnAsync(scriptArgs, opts, input) {
   });
 }
 
-test('真双进程并发:同一 thread 恰好 1 次用户回复 + 1 次 resolve(文件锁兑双发)', async (t) => {
+test('真双进程并发:reply 恰好 1 次,年龄门挡同轮 resolve(窗口不塌 0);陈旧后下一轮 resolve', async (t) => {
   const s = setup({ threads: [{ id: 'PRRT_CONC', isResolved: false, path: 'src/conc.ts', comments: ['真实 bot 意见,缺少防抖'] }] });
   clean(t, s);
-  const payload = JSON.stringify({
+  const payload = {
     threads: [{ id: 'PRRT_CONC', reply: '已处理,有异议可 reopen', justification: 'j' }],
     allowedBots: ['greptile-apps'], headSha: 'abc1234',
-  });
+  };
   const [r1, r2] = await Promise.all([
-    spawnAsync([SCRIPT, '123', '--payload-file', '-'], s, payload),
-    spawnAsync([SCRIPT, '123', '--payload-file', '-'], s, payload),
+    spawnAsync([SCRIPT, '123', '--payload-file', '-'], s, JSON.stringify(payload)),
+    spawnAsync([SCRIPT, '123', '--payload-file', '-'], s, JSON.stringify(payload)),
   ]);
   assert.equal(r1.code, 0, `stderr1=${r1.stderr.slice(0, 200)}`);
   assert.equal(r2.code, 0, `stderr2=${r2.stderr.slice(0, 200)}`);
-  const st = s.readState();
-  assert.equal(st.threads[0].isResolved, true, 'thread 最终必须被 resolve');
-  // 胜者走首轮发用户回复;败者拿锁后重查看到己方 marker → 走二轮 resolve(不重复回复)
+  // 胜者走首轮发用户回复;败者拿锁后重查看到**新鲜**己方 marker(age < 反对窗口)→
+  // 不 resolve(replied-only)——并发重叠不再导致人工反对窗口塌成 0。
   assert.equal(s.countRepliesWith('已处理,有异议可 reopen'), 1, '用户回复恰好 1 次');
+  assert.equal(s.countCalls('resolveReviewThread'), 0, '窗口内 resolve 调用数必须为 0');
+  assert.equal(s.readState().threads[0].isResolved, false, '窗口内不得被自动 resolve');
+  // 时间流逝后下一轮巡审 → 机器可核实条件成立,resolve 恰好 1 次
+  ageAllMarkers(s.stateFile, 'PRRT_CONC');
+  const r3 = runScript(s.work, s.env, payload);
+  assert.equal(r3.out.results[0].outcome, 'resolved', JSON.stringify(r3.out.results));
+  assert.equal(s.readState().threads[0].isResolved, true);
   assert.equal(s.countCalls('resolveReviewThread'), 1, 'resolve 恰好 1 次');
 });

@@ -107,7 +107,14 @@ if (stdin.includes('addPullRequestReviewThreadReply')) {
   const t = state.threads.find((x) => x.id === vars.tid);
   if (!t) fail('mutation 目标 thread 不存在(reply)');
   const nextId = `c_${t.id}_${(t.comments.nodes?.length ?? 0)}`;
-  t.comments.nodes.push({ body: vars.body ?? '(body)', author: { login: process.env.FAKE_GH_SELF_LOGIN || 'review-pr-bot' }, id: nextId });
+  t.comments.nodes.push({
+    body: vars.body ?? '(body)',
+    author: { login: process.env.FAKE_GH_SELF_LOGIN || 'review-pr-bot' },
+    id: nextId,
+    // createdAt:reply 分支写入的新评论必须有时间戳,否则 resolve-threads 的 marker
+    // 年龄判定(反对窗口)读不到 createdAt 会保守判 null 不 resolve。
+    createdAt: new Date().toISOString(),
+  });
   saveState(state);
   out({ data: { addPullRequestReviewThreadReply: { comment: { id: nextId } } } });
 }
