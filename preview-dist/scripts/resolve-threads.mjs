@@ -1,46 +1,19 @@
 #!/usr/bin/env node
 // resolve-threads.mjs — thread 代 triage 的执行端(对应 SKILL「thread 清理」)
 //
-// 背景:分支保护开了 Require conversation resolution,thread 不 resolve 就 GitHub 层面
-// 合不了;而 bot(greptile 等)从不回来点 resolve,作者修完也常忘点 —— 台账里十几轮
-// 整轮空转都是这个原因。
-//
-// 设计(2026-08-09 三轮收敛,回复优先):「意见是否已被处理」是 LLM 语义活,字符串分析
-// 证明不了——diff 里新增两行普通埋点 + 一句 justification 即可绕过任何 token 共现判据
-// (PR #13 R2 blocker 实测成立),故执行层不再声称能独立验证「问题被修好」。本脚本只做
-// 两类事,并区分三种终态:
-//   1. **reply(无条件)**:白名单 bot thread 且 thread 内无白名单外参与者时,按调用方
-//      payload 发回复。回复可纠正,是反停滞(#251 型)的全部价值;
-//   2. **resolve(默认不执行)**:只在**机器可核实**条件下才做:
-//      a. 线程已是 resolved(幂等,already-resolved);
-//      b. **上一轮己方已回复过同一 headSha**:thread 里有 viewer 身份作者的本脚本
-//         marker(state=replied,sha 与本次 payload headSha 一致),且白名单复核仍通过
-//         (回复后无真人异议)→ resolve;成功后再追加 state=resolved marker(审计 +
-//         后续 reopen 时区分「我们 resolve 后被翻案」与「从未 resolve 过」);
-//      c. 己方 marker state=resolved 但线程又变 unresolved → 人工翻案(reopened-after-
-//         triage),永久留人工,不与人拉锯。
-//    其余情况一律只回复不关闭。
-//   三种终态在结果 JSON 显式区分:`replied-only` / `resolved` / `skipped-<reason>`。
-//
-// marker 可信度 = **评论作者身份**(GraphQL `viewer { login }` 比对),不是文本形状:
-//   - 只有 viewer 作者评论里的 marker 才算「己方 triage」;pr/thread/sha 都是公开信息,
-//     文本形状谁都能复制,身份不能;
-//   - 白名单复核按作者身份豁免:**只豁免 viewer 自己的评论**;非白名单作者发的 marker
-//     形状评论照扫,仍然触发 non-whitelisted-comment-present(R2 验收门:marker 形状
-//     评论不得豁免作者校验)。
-//
-// 状态全部在 GitHub 侧(评论 + 线程 resolve 状态),**无本地回执**:tmp 清理 / 换机器 /
-// 无状态 CI runner 都不影响下一轮判定。
-//
-// 并发至多一次:每 thread id 一把独占文件锁(wx 原子创建 + TTL 过期两阶段抢占 +
-// takeover 60s TTL 自愈 + wx 成功后复核内容,同 #11 signoff-hold.mjs round3 口径)。
-// 拿到锁后在临界区内重查一次活态(闭合"批量查询→加锁"之间的 TOCTOU 窗口),避免双进程
-// 各发一次 reply/resolve。
-//
-// 移植自 lizi 上游 resolve-threads.mjs(2026-08-09);三轮收敛后,编排层侧的
-// `assessThreadEvidence`(token 共现 + justification 判据)已删除——生产零调用 + 可被
-// 两行普通埋点绕过(见 PR #13 R3 交卷)。编排层只负责逐 thread 给 reply + justification
-// (契约字段),执行层负责上面两类机械校验。
+// 背景:Require conversation resolution 下 bot 从不点 resolve、作者修完常忘点 → thread
+// 卡死合并(#251 型停滞)。「意见是否已被处理」是 LLM 语义活,字符串分析证明不了——两行
+// 普通埋点 + 一句 justification 即可绕过任何 token 共现判据(R2 blocker 实测;原
+// assessThreadEvidence 已删,见 SKILL 3.10 启用前提)。本脚本只做两类事、三终态:
+//   - reply(无条件,可纠正,反停滞全部价值):白名单 bot thread 且无白名单外参与者;
+//   - resolve(默认不执行,机器可核实才做):线程已 resolved / 己方(state=replied)
+//     marker + 同 headSha + 白名单复核通过 / 己方 state=resolved marker 后又 reopen
+//     (人工翻案,永久留人工);
+//   - 终态:`replied-only` / `resolved` / `skipped-<reason>`。
+// marker 可信度 = 评论作者身份(viewer login 比对),非文本形状(pr/thread/sha 公开可复制);
+// 白名单复核只豁免 viewer 自己的评论。状态全在 GitHub 侧,无本地回执。
+// 并发至多一次:每 thread 一把独占文件锁(TTL 两阶段抢占 + takeover 60s TTL 自愈 + wx
+// 复核,同 #11 signoff-hold round3),锁内重查活态兑 TOCTOU。
 //
 // 退出码恒 0(脚本自身异常才 1):结果全在 JSON 字段。
 //
@@ -188,22 +161,12 @@ function ownMarkersFrom(comments, pr, threadId, viewerLogin) {
   return own;
 }
 
-// ── SC-2:并发至多一次 —— 每 thread 一把独占文件锁(wx 原子创建)。此前版本(round-1)
-// 只有裸 EEXIST 忙等,持锁进程若中途崩溃(未走到 finally 的 releaseThreadLock),锁文件
-// 永久留存,该 thread id 从此被永久锁死——没有任何自愈路径。改为 TTL + 两阶段抢占,
-// 与 prepare.mjs 的 acquireLock() 同一套依据(仓级锁的设计说明见该文件头注):**不做
-// PID 存活判定**——本脚本秒级完工,写自己的 PID 进锁文件毫无意义(下一轮 kill(pid,0)
-// 永远 ESRCH,永远判 stale,锁形同虚设);判 stale 只能靠时间戳。TTL 定得比该锁真实
-// 临界区(一次 reply+resolve 的网络往返)大两个量级,避免把"正常慢"误判成"崩溃"。
-// 两阶段抢占:抢主锁前先抢 `<lock>.takeover` 位,抢到后复核主锁仍 stale 才真正接管,
-// 防止两个"同时判定 stale"的进程抢占竞态(prepare.mjs 同款自我复核)。
-// takeover 自愈(#11 signoff-hold.mjs round3 D3/D4 同口径):takeover 文件写 JSON
-// `{startedAt, token}`,60s TTL——SIGKILL 下 finally 不执行,残留的 takeover 文件
-// 未超 TTL 视为"另一实例正在接管"放弃本轮(交外层轮询重试),超 TTL 的残留清理后重试;
-// wx 成功后复核文件内容(自己写的 token),防另一实例基于更早的 stale 读把我们刚建的
-// 接管锁误删重建。
-// 锁目录默认落 tmpdir 固定子目录,测试可用 REVIEW_PR_RESOLVE_LOCK_DIR 隔离,避免跨
-// 测试串锁。
+// ── SC-2:并发至多一次 —— 每 thread 一把独占文件锁(wx 原子创建 + TTL 两阶段抢占,
+// 与 prepare.mjs acquireLock 同套依据:**不做 PID 存活判定**,判 stale 只靠时间戳)。
+// takeover 自愈(同 #11 signoff-hold round3 D3/D4):takeover 文件写 JSON {startedAt,
+// token} + 60s TTL——残留未超 TTL 视为"另一实例正在接管"放弃本轮,超 TTL 清理后重试;
+// wx 成功后复核内容防双持有。锁目录默认 tmpdir 固定子目录,测试用
+// REVIEW_PR_RESOLVE_LOCK_DIR 隔离。
 const THREAD_LOCK_TTL_MS = Number(process.env.REVIEW_PR_RESOLVE_LOCK_TTL_MS || 5 * 60 * 1000);
 const THREAD_TAKEOVER_TTL_MS = 60 * 1000;
 
