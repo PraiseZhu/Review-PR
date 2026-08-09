@@ -2117,8 +2117,9 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    ```
 
    **thread 清理（triage）**：对 `context` 输出中 `gate.unresolvedThreads` 非空的
-   候选，按 3.10 的判据逐条评估（白名单 bot `threadTriage.extraBots` + 语义绑定
-   证据 `assessThreadEvidence`），生成 reply payload 后调
+   候选，按 3.10 的判据逐条评估（白名单 bot `threadTriage.extraBots` + token 共现
+   证据 `assessThreadEvidence`——共现只是必要不充分条件，充分性来自编排层逐 thread
+   显式 `justification`，见 3.10 第 2/3 条），生成 reply payload 后调
    `node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file -`；
    `done=false` 的条目逐条进汇总；resolved 后重算该 PR 的 threads 阻断再进后续分流
    （未做清理、不重算就按未 resolve 处理）。未配置 `threadTriage.extraBots` 时本步
@@ -2340,8 +2341,9 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 **自进化** <n>
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
 - 已落地（2026-08-09，见 3.10）：白名单 bot（`threadTriage.extraBots`）且修复证据
-  语义绑定（`assessThreadEvidence`）的 thread 代 resolve；真人 thread / 无证据 /
-  翻案三类永不动，翻案永久留人工。
+  token 共现（`assessThreadEvidence`，必要不充分、充分性靠编排层逐 thread 显式
+  `justification`）的 thread 代 resolve；真人 thread / 无证据 / 翻案三类永不动，
+  翻案永久留人工。
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
 调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤
