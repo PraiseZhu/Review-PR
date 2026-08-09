@@ -5,13 +5,18 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `task-base-must-be-merge-base` **阶段二任务构建的 base 必须用 merge-base(或 gh baseRefOid),不能用最新 main tip** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open
+  - 现象:本轮 #599 首次审查误传了 git rev-parse origin/main 的最新 tip 作为 base(#598 合并后 main 前移),base..head 线性差异把 main 侧已合入的 waitForFunction 修复误判成 PR 回退,产出 3 条伪 finding、多跑一轮重审。gh pr view 返回的 baseRefOid 与 merge-base 一致;base 分支在其生命周期内前进过(合并了其它 PR)时,用最新 tip 会引入 base 侧伪差异。审查 agent 已在 verificationGap 自查出 merge-base 口径但仍在 findingFamilies 报了 base 侧差异,两个口径内部不一致。
+  - 提案:SKILL 3.0.1/build-review-task 文档明确:--base 必须传 merge-base(或 gh pr view 的 baseRefOid),并在任务 prompt 中提醒审查 agent:base..head 差异中非 merge-base 净贡献的部分不得报 finding
 - `preflight-timeout-arg-position-rule` **waitForFunction timeout 写第二个位置参数被静默忽略——现有 preflight 只查 async 谓词,查不到 timeout 参数位置** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598:stamp-overlap.mjs:181 新增 waitForFunction(pred, {timeout:5000}),Playwright 签名 waitForFunction(pageFunction[, arg, options]),第二位置是 arg,超时退化为默认 30s。建议 review-preflight 增加确定性规则:检测 waitForFunction 第二位置参数是对象字面量且含 timeout 键 → 机器打回。需配零误报 fixture,列入预扫描规则开发。
-- `escape-candidate-issue-ref-blocks-merge` **逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
+- `escape-candidate-issue-ref-blocks-merge` **逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `8c8e23168fd487473bc8dc48294efcc20d0e4bda`
   - 现象:PR #544 body Closes #424,#424 是 issue 不是 PR(gh pr view 424 失败: Could not resolve to a PullRequest)。extractEscapeCandidates 有意多收(含 issue 号引用),但 consumer 登记 pending-fix-merge 时对 verdict=yes 的候选现场取 gh pr view <referencedPr> --json headRefOid,issue 引用拿不到 head → hazardRegisterFailed → invalid。审查 agent 判 yes 语义成立(#424 描述的隐式环境依赖确由更早合并 PR #401 引入),但登记产物 originPr=424 本身不成立。同 head 重放候选集不变、判定不变 → 永久 blocked。本次未走 seam(REVIEW_PR_ORIGIN_HEAD_MAP 为测试专用)、未改答卷,按 fail-closed 处置,PR 本轮不合并。修法候选(均涉 gate 行为或新增 gh 查询,按扩权类待拍板):a) 登记层对 non-PR 引用跳过登记并记 unresolved 进汇总;b) 候选提取时区分 issue/PR(需 gh api 探测);c) prompt 明示候选可能引用 issue,判 yes 须绑定真实 origin PR。
-- `rro1-empty-array-contract-omitted` **rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
+  - 备注:[decided:2026-08-09] 已由 commit 8c8e23168fd487473bc8dc48294efcc20d0e4bda 覆盖(consume-review-output.mjs 取 head 失败时先查 issue,issue 则跳过登记记 skippedHazards)
+- `rro1-empty-array-contract-omitted` **rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `5815bd8e60e30431db0d42e9e701d664e8a38ee0`
   - 现象:2026-08-07 auto 轮 #565 审查 agent 首份 rro-1 遗漏这两个可空字段,consume-review-output 判 invalid(缺字段),人工补空数组后重跑才 clean——消费端对缺字段 fail-closed,契约在 SKILL 已有但 prompt 未显式枚举必在字段
   - 提案:build-review-task.mjs 生成的 prompt 模板显式列出'以下字段即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence'——减少同类无效轮次与重试
+  - 备注:[decided:2026-08-09] 已由 commit 5815bd8e60e30431db0d42e9e701d664e8a38ee0(形状示例)+ 本次显式空数组指令(build-review-task.mjs 字段级形状段追加「即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence」)共同覆盖
 - `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
   - 现象:#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。
   - 提案:context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。
@@ -145,35 +150,45 @@
 
 - `rro1-disposition-non-injected-empty-case` **prompt 契约补明确:未注入未决项时 findingDispositions 必须为 [](bot thread 不属于注入项)** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598 首轮:审查 agent 把 Greptile P2 bot thread 当注入项写 resolved disposition,injectedOpen 为空判 invalid,手工规范化后消费。已在 build-review-task.mjs 字段形状处补空集规则。
+  - 备注:[decided:2026-08-09] 落地 commit 15ca5d6(git show AuthorDate 核实)
 - `rro1-disposition-evidence-shape-missing-in-prompt` **prompt 契约漏 findingDispositions resolved 的 evidence 结构化形状,首轮必 invalid** — 出现 1 次,首见 2026-08-08,最近 2026-08-08,status: landed,commit `9d9055d`
   - 现象:2026-08-08 实跑:#585 审查输出 findingDispositions 只给自由文本 basis,consumer(lib.review-consume.mjs)要求 resolved 必须带结构化 evidence(kind diff-anchor|verification-run),shape 校验失败连带所有数组字段置空,回执也被误判无。已修 build-review-task.mjs 的 prompt 模板补上 evidence 形状说明。
+  - 备注:[decided:2026-08-08] 落地 commit 9d9055d(git show AuthorDate 核实)
 - `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 2 次,首见 2026-08-07,最近 2026-08-07,status: open
   - 现象:PR #544 的 6 条历史 finding origin 为旧 snapshot,当前 head 7f0e6af 已修复(新增哨兵+可红验证)。审查 agent 判 invalidated→auto 模式无交互确认出口→effective-open 永久卡死、PR 无法合并。根因:prompt 只说'resolved 或 invalidated'但未区分跨 snapshot 已修复(应 resolved)vs 同 snapshot 误报(应 invalidated),agent 看到历史状态 [invalidated] 就沿用。本轮靠主 agent 二次指引修正处置才通关
   - 提案:build-review-task.mjs 的未决 findings 段落追加指引:对 originSnapshotHash 早于当前 snapshot 的条目,若当前 head 已有修复证据(新增代码/负向实测变红)→ 给 resolved;invalidated 只用于'该指控在当前 snapshot 上不成立且无修复动作'的误报,auto 模式下 invalidated 无交互确认出口、每轮都会重新注入
 - `review-output-shape-examples-in-prompt` **审查输出与 rro-1 契约的字段级格式偏差导致整轮 invalid** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `5815bd8`
   - 现象:PR #544 审查 agent 输出 5 类格式偏差(familyId/family_id、answer 对象/字符串、coverageKeys 字符串/对象、status/disposition、negativeEvidence command 与引用 run 不一致),主 agent 手工规范化 3 次后才可消费;build-review-task.mjs 的 prompt 只含文字契约、无字段级形状示例,已追加形状参考段
   - 提案:prompt 增加字段级形状参考(含'command/outputAnchor 必须与引用 run 逐字一致'一致性约束),减少格式往返
+  - 备注:[decided:2026-08-07] 落地 commit 5815bd8e60e30431db0d42e9e701d664e8a38ee0(git show AuthorDate 核实)
 - `escape-hazard-register-issue-ref-deadlock` **escape 候选登记对 issue 引用 fail-closed 死锁** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `8c8e23168fd487473bc8dc48294efcc20d0e4bda`
   - 现象:body 引用 issue 编号(修复 #424 且 #424 是 issue)时,escapeAssessment=yes 后 gh pr view 取 head 失败→整轮 invalid→3 次 blocked 永久不可合。修复:取 head 失败先查 issue,是 issue 则跳过登记记 skippedHazards,仅真异常维持 fail-closed。实测回归:verdict 回 dirty 非 invalid。
+  - 备注:[decided:2026-08-07] 落地 commit 8c8e23168fd487473bc8dc48294efcc20d0e4bda(git show AuthorDate 核实)
 - `blocked-structural-check-ignores-thirdparty-check-runs` **BLOCKED→structural-check 分类只信 actions/runs,漏掉第三方 App check-run 失败,会被 auto admin bypass 合并** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `5178e64`
   - 现象:classifyHeadChecks 走 actions/runs,看不到第三方 App 的 check-run 与 commit status;BLOCKED 分支落进 structural-check 前未查 statusCheckRollup 全集。实测 mivo-canvas#318:Greptile Review conclusion=failure(置信度 3/5 低于本仓要求 4/5),gate 却报「review 与已跑 CI 均无问题」并给出 bypass-structural-block。UNSTABLE 分支早已用 rollup 处理同一类问题,BLOCKED 分支漏了。
   - 提案:BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。
+  - 备注:[decided:2026-07-30] 落地 commit 5178e64(git show AuthorDate 核实)
 - `typecheck-merged-hardcoded-project-path` **typecheck-merged 硬编码 apps/desktop/tsconfig.json,非该布局的仓库健康检查恒为假阴性** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `0630de2`
   - 现象:在 mivo-canvas 跑 --current 得 pass:false / errors:[] / totalErrors:0。根因两层:tsc 报 TS5058(路径不存在)退 1,而该诊断无 'file(line,col): ' 前缀被 ': error TS' 过滤掉。已改为按 pr-rules.json typecheckProject(s) → apps/desktop 探测 → 根 tsconfig 的 references 展开解析,并放宽错误提取正则。实测正向 pass:true、注入类型错误后 pass:false 且给出真实错误行。
+  - 备注:[decided:2026-08-09] 落地 commit 0630de2 在本仓不可解析(git show 无此对象),锚点日期按结案日标注
 - `ui-evidence-notice-hardcodes-design-md` **uiEvidenceNotice 硬编码 DESIGN.md,uiRequired 为空时提醒指向不存在的文件** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `c6e83d6`
   - 现象:本轮 #322(mivo-canvas)命中 UI 路径需发证据提醒,但本仓 ruleFiles.uiRequired 为空、无 DESIGN.md;生成的文案仍写「便于确认界面符合 DESIGN.md 设计规范」,主 agent 只能手工改写才能发出。
   - 提案:context.mjs 按 prRules.ruleFiles.uiRequired 实际配置渲染该半句:配了列真实文件名,没配退化为「便于确认界面呈现符合预期」。
+  - 备注:[decided:2026-07-29] 落地 commit c6e83d6(git show AuthorDate 核实)
 - `ui-evidence-notice-no-recipient-on-own-pr` **ownPr=true 时 UI 证据提醒评论没有收件人,等于在自己 PR 上刷噪音** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed,commit `bc30805`
   - 现象:SKILL 3.2 无条件在 uiEvidenceMissing=true 时发提醒评论,未排除 viewer=作者的情形。xindong/mivo-canvas 每日 changelog 补扫 PR(作者=本流程账号,改 public/changelog.json 命中 uiPaths 的 public/ 前缀)每天命中一次。
   - 提案:3.2 增一句 ownPr=true 时不发本评论,证据缺口照常进报告与汇总,gate 结论不变。只减写操作,非扩权。
+  - 备注:[decided:2026-07-29] 落地 commit bc30805(git show AuthorDate 核实)
 - `ui-evidence-blob-links-not-detected` **context.mjs 的 UI 证据检测未识别 GitHub blob 链接到图片文件** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: landed
   - 现象:PR #413 作者在 body 表格里用 GitHub blob URL 链接了 3 张 .webp 截图（因私有仓库无法内嵌渲染），但 bodyUiEvidenceKinds 仍为空，导致 uiEvidenceMissing=true。实际证据充分，主 agent 判断不发误导性提醒评论
   - 提案:context.mjs 的证据检测增加对 github.com/.../blob/...\.(webp|png|jpg|jpeg|gif|svg) 格式链接的识别，识别到即视为有效 image 类证据
+  - 备注:[decided:2026-08-09] 代码在 context.mjs:452 已实现(UI_IMAGE_EVIDENCE_RE 含 blob 图片模式 github.com/<owner>/<repo>/blob/<path>.<img 扩展名>),但未检索到独立落地 commit(该行随 2026-07-26 import 快照 8fbdf88 整文件进入本仓)
 - `scan-bot-thread-soft-flag-vs-premerge` **scan 把 bot 未 resolve thread 计为 softFlag 而非 blocker，与 pre-merge-check 不一致** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: open
   - 现象:PR #402 scan 输出 unresolvedThreadCount=0 + softFlags 含 bot 评论，但 pre-merge-check 正确把同一 thread 计为 unresolved→canMerge=false。导致主 agent 无谓走了完整 review+approve 流程后才发现不能 merge。
   - 提案:context.mjs 的 unresolvedThreadCount 应与 pre-merge-check 口径一致：bot thread 只要未 resolve 就计入 blockers（不论是否 bot），softFlags 保留用于「已 resolve 但内容可能需要人判断」的场景。或在 gate.pass=true 但 softFlags 含 unresolved bot thread 时降级为 gate.pass=false。
 - `state-dir-worktree-fragmentation` **状态目录按 cwd 哈希,worktree 轮次导致锁/指纹/去重全碎片化** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: landed,commit `a179c3b`
   - 现象:scheduler useWorktree 每轮新建 worktree,锁/空转指纹/fix-session/催办去重按 cwd 哈希落进不同临时目录:两把锁并存互斥失效、pre-check 探测目录与会话写入目录不一致、last-scan 缓存从未命中(空转轮全额烧 token)。已修:lib.mjs 状态锚点改用 git-common-dir,主仓库与全部 worktree 共享同一状态目录
+  - 备注:[decided:2026-07-25] 落地 commit a179c3b(git show AuthorDate 核实)
 
 ## 无法自动化(by-design,只计数观察)
 
