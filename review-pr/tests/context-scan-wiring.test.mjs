@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, copyFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -430,6 +430,41 @@ test('F3 接线:signoff-hold.mjs 子进程非零退出 → 探测(重试后)失�
   assert.equal(out.signoff.holdInvocation.invoked, false);
   assert.match(out.auto.reason, /signoff-hold.mjs 的 --dry-run 探测重试后仍失败/, 'reason 必须如实写重试后仍失败');
   assert.match((out.configWarnings ?? []).join(';'), /signoff-hold-unavailable/, '升级事实必须写进 configWarnings');
+});
+
+// ── F3 反向锁(2026-08-09,round4):探测失败必须重试一次 ──
+// 复审实测:删掉第一个 spawn(第二处成为唯一调用)或删掉第二个 retry spawn,上述 20 个
+// 接线测试仍 20/20 全绿——「失败重试一次」没有任何断言锁住(现有断言只锁"至少发生一次
+// 子进程副作用",锁不住"两次尝试",也锁不住"重试成功不该升级")。本用例用假 signoff-hold.mjs
+// 的状态机补上:第 1 次调用失败(瞬时噪声形态)、第 2 次成功,同时把每次子进程启动追加进
+// PROBE_LOG(env 经 spawnScriptJson 原样继承,同 FAKE_GH_LOG 机制)。
+//   删掉 retry spawn → 只有第 1 次调用 → 失败 → 升级 → action 断言红 + 计数 1 红;
+//   删掉第一个 spawn → 剩下的调用成为"第 1 次"→ 失败 → 升级 → 两条断言同时红。
+test('F3 反向锁:探测失败必须重试恰好一次且重试成功不升级(删第一个或第二个 spawn 均转红)', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] }); // 命中 security-gate
+  const work = mkdtempSync(join(tmpdir(), 'ctx-f3-retry-'));
+  const dir = copyScriptsTo(work);
+  const probeLog = join(work, 'probe.log');
+  writeFileSync(join(dir, 'signoff-hold.mjs'), [
+    '#!/usr/bin/env node',
+    "import { appendFileSync, existsSync, readFileSync } from 'node:fs';",
+    "const log = process.env.PROBE_LOG;",
+    "if (!log) { process.stderr.write('missing PROBE_LOG\\n'); process.exit(2); }",
+    "appendFileSync(log, 'invoked\\n');",
+    "const n = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\\n').filter(Boolean).length : 1;",
+    "if (n === 1) { process.stderr.write('transient boom\\n'); process.exit(1); }", // 第 1 次调用:失败
+    "process.stdout.write(JSON.stringify({ ok: true, pr: Number(process.argv[2]) }));", // 第 2 次调用:成功
+  ].join('\n'));
+  const r = spawnSync('node', [join(dir, 'context.mjs'), '469', '--scan'],
+    { cwd: repo, env: { ...env, PROBE_LOG: probeLog }, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 500)}\nstderr=${r.stderr.slice(0, 500)}`);
+  const invocations = existsSync(probeLog) ? readFileSync(probeLog, 'utf8').trim().split('\n').filter(Boolean).length : 0;
+  assert.equal(invocations, 2, '探测失败必须重试恰好一次(共 2 次子进程尝试)——删掉重试 spawn 后只剩 1 次,本断言转红');
+  assert.equal(out.auto.action, 'security-gate', '第 2 次尝试成功 → 瞬时失败不得升级为 signoff-hold-unavailable——删掉第一个 spawn 后,唯一调用变成第 1 次调用 → 失败 → 升级 → 本断言转红');
+  assert.equal(out.signoff.holdInvocation.ok, true, '重试成功后 holdInvocation 必须如实取到成功结果,不是第一次失败的结果');
+  assert.equal(out.signoff.holdInvocation.invoked, true, '重试成功 → invoked 如实 true');
 });
 
 // ── SC-3(2026-08-09):admins 放行判据绑 commit oid,不受 submittedAt 时序影响 ──

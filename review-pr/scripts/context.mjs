@@ -548,8 +548,9 @@ try {
     //   - commentsTotal:GraphQL 连接返回的 totalCount(真实总条数);读不到时为 null;
     //   - participantsTruncated:totalCount 不可读(无法证明完备,保守按截断处理)或
     //     fetched < total 时为 true。true 时 participants **不构成**「无非白名单参与者」
-    //     的判断依据,该 thread 一律交执行层按自己的 live 分页查询判定(SKILL「三门 hold
-    //     接线」同段)。
+    //     的判断依据——这是**对编排层 agent 的约定,不是机器约束**(本输出唯一消费方是
+    //     编排层 agent,仓内无脚本级强制);权威判定方是执行层(#13 的执行端,独立分页取
+    //     全),本标志只用于让编排层在截断时不做完备性断言(SKILL「三门 hold 接线」同段)。
     const commentsFetched = cs.length;
     const commentsTotal = t.comments?.totalCount ?? null;
     const participantsTruncated = commentsTotal == null || commentsFetched < commentsTotal;
@@ -1512,12 +1513,16 @@ try {
   const HOLD_KIND_BY_ACTION = { 'security-gate': 'security', 'rules-gate': 'rules', 'arch-gate': 'arch' };
   const SIGNOFF_HOLD_PATH = fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url));
   const holdKind = HOLD_KIND_BY_ACTION[autoAction] ?? null;
-  // F3(2026-08-09,round3):探测失败必须有强制消费方。此前失败只追加 configWarnings——没有
-  // 任何下游强制读它,正式 hold 仍照 auto.action / suggestedHolds 继续 = 「连 hold 机制
-  // 能不能调用都验证不了却继续放行」的 fail-open,必须在本 PR(接线 PR)关闭。改为:
+  // F3(2026-08-09,round3;round4 措辞更正):探测失败升级 auto.action=signoff-hold-unavailable。
+  // round3 曾称「探测失败有强制消费方」——round4 更正:本输出的唯一消费者是编排层 agent,
+  // 仓内没有脚本级 dispatcher 能强制执行,「强制消费方」是假声称;如实表述为「升级为人工
+  // 介入类值,编排层 agent 必须读取并升级为人工介入」(机器级强制属架构变更,另立独立 PR)。
+  // 此前失败只追加 configWarnings——没有下游强制读它,正式 hold 仍照 auto.action /
+  // suggestedHolds 继续 = 「连 hold 机制能不能调用都验证不了却继续放行」的 fail-open,
+  // 必须在本 PR(接线 PR)关闭。行为(round3 起不变):
   //   - 失败重试一次(瞬时网络 / 限流噪声);
-  //   - 重试耗尽仍失败 → **升级 auto.action 为 signoff-hold-unavailable**(人工介入类值,
-  //     编排侧不存在把它当 security-gate/rules-gate/arch-gate 静默继续的分支),绝不回落
+  //   - 重试耗尽仍失败 → 升级 auto.action=signoff-hold-unavailable(人工介入类值,取值与
+  //     security-gate/rules-gate/arch-gate 不同,按契约路由不会把它们混为一谈),绝不回落
   //     到静默放行;
   //   - 失败原因同时写进 CONFIG_WARNINGS(scan/全量两处 print() 都带出),供排查。
   // D3(2026-08-09,PR #12 round2,全局规则 12「失败可见」):spawnScriptJson 对「模块不存在 /
