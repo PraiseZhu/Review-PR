@@ -963,6 +963,16 @@ token 共现判据（PR #13 R2 blocker 实测成立），原 `assessThreadEviden
    靠的是「回复与关闭之间存在一段人可以介入反对的时间」。若双实例重叠（定时巡审 +
    手动运行）时窗口塌成 0，两阶段就退化成单轮自动 resolve——故 marker 必须在窗口期
    之后才允许 resolve；窗口期内重新运行只 `replied-only`，不重复回复。
+
+   **年龄门 env 校验（R4）**：`MIN_MARKER_AGE_MS` 可用环境变量
+   `REVIEW_PR_MIN_MARKER_AGE_MS` 覆盖（ms 单位），但执行层会显式校验——解析失败 /
+   负值 / 低于下限 60000ms（1 分钟 = "人来得及看见"的最小可感知窗口，更小在语义上
+   退化成"无窗口"，几乎必然是单位/量级配置错误）一律回落默认 10 分钟，并在 stderr
+   与输出 JSON 的 `warnings` 字段双通道警告。**禁止用"把年龄设成奇怪数字"关闭年龄
+   门**（`-1`/`0` 曾可悄悄关掉守着不可逆动作的这道门）——要关闭只能显式设
+   `REVIEW_PR_DISABLE_MARKER_AGE_GATE=1`（仅用于运维一次性批量清理积压 thread），
+   执行层会大声输出"年龄门已关闭，本轮 resolve 不保留人工反对窗口"。门关闭只豁免
+   年龄条件；marker 缺 `createdAt` 的保守不 resolve 不豁免。
 3. **marker 可信度 = 评论作者身份**（执行层 GraphQL `viewer { login }` 比对），pr
    号 / thread id / sha 都是公开信息，文本形状可被任何有评论权限的账号复制，身份
    不可伪造。**状态全部在 GitHub 侧（评论 + 线程 resolve 状态），无本地回执**——

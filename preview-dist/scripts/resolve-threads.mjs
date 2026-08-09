@@ -175,7 +175,39 @@ const THREAD_TAKEOVER_TTL_MS = 60 * 1000;
 // 若双实例重叠(定时巡审 + 手动运行)时窗口塌成 0,两阶段就退化成单轮 auto-resolve
 // (D1 明确否决的东西)。阈值取巡审间隔量级(默认 10 分钟)。
 // 年龄从评论 createdAt(GitHub 侧字段,跨机器可信,与 D3 无本地状态一致)推导。
-const MIN_MARKER_AGE_MS = Number(process.env.REVIEW_PR_MIN_MARKER_AGE_MS || 10 * 60 * 1000);
+//
+// env 覆盖必须显式校验(R4,同 #11 SIGNOFF_HOLD_GH_TIMEOUT_MS 模式):安全不变量不能
+// 悬在一个未校验的 env 旋钮上——`Number(env || default)` 会让 `-1` 悄悄关掉年龄门、
+// `0` 语义两可。规则:
+//   - 解析失败 / 负值 / 低于下限 → 一律回落默认,stderr + JSON warnings 双通道警告;
+//   - 下限 1 分钟:它保护的是人工反对窗口,下限应当是"人来得及看见"的量级——1 分钟
+//     是可感知的最短人工介入窗口;更小(如 30s/0/-1)在语义上退化成"无窗口",几乎
+//     必然是单位/量级配置错误(把 600000 误写成 600),不应当被当作合法配置放行;
+//   - 要关闭年龄门只能显式设 REVIEW_PR_DISABLE_MARKER_AGE_GATE=1(仅运维一次性批量
+//     清理积压 thread 用),不许用"把年龄设成奇怪数字"这种隐蔽方式;门关闭只豁免
+//     年龄条件,"无 createdAt 保守不 resolve"照旧生效。
+const MIN_MARKER_AGE_MS_DEFAULT = 10 * 60 * 1000;
+const MIN_MARKER_AGE_MS_FLOOR = 60 * 1000;
+const warnings = [];
+function resolveMinMarkerAgeMs() {
+  if (process.env.REVIEW_PR_DISABLE_MARKER_AGE_GATE === '1') {
+    const w = '[resolve-threads] 警告:REVIEW_PR_DISABLE_MARKER_AGE_GATE=1 —— 年龄门已关闭,本轮 resolve 不保留人工反对窗口(仅限显式的一次性批量清理)';
+    warnings.push(w);
+    process.stderr.write(`${w}\n`);
+    return null; // null = 年龄门关闭(无 createdAt 的保守判定不受影响)
+  }
+  const raw = process.env.REVIEW_PR_MIN_MARKER_AGE_MS;
+  if (raw === undefined || raw === '') return MIN_MARKER_AGE_MS_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < MIN_MARKER_AGE_MS_FLOOR) {
+    const w = `[resolve-threads] 警告:REVIEW_PR_MIN_MARKER_AGE_MS=${JSON.stringify(raw)} 非法(须为 ≥${MIN_MARKER_AGE_MS_FLOOR}ms 的数字;设 0/负值/非数字无法关闭年龄门),已回落默认 ${MIN_MARKER_AGE_MS_DEFAULT}ms`;
+    warnings.push(w);
+    process.stderr.write(`${w}\n`);
+    return MIN_MARKER_AGE_MS_DEFAULT;
+  }
+  return n;
+}
+const MIN_MARKER_AGE_MS = resolveMinMarkerAgeMs();
 function markerAgeMs(comment) {
   if (!comment?.createdAt) return null; // 读不到时间(旧缓存/形状变化)→ 不满足,不 resolve
   const t = Date.parse(comment.createdAt);
@@ -374,7 +406,8 @@ try {
       const wouldResolve = pre.length > 0
         && !pre.some((m) => m.marker.state === 'resolved')
         && pre[pre.length - 1].marker.sha === headSha
-        && preAge !== null && preAge >= MIN_MARKER_AGE_MS;
+        && preAge !== null
+        && (MIN_MARKER_AGE_MS === null || preAge >= MIN_MARKER_AGE_MS);
       results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: true, wouldResolve, ...(preAge === null ? {} : { markerAgeMs: preAge }) });
       continue;
     }
@@ -457,13 +490,17 @@ try {
           continue;
         }
         const lastAge = markerAgeMs(last.comment);
-        if (lastAge === null || lastAge < MIN_MARKER_AGE_MS) {
+        if (lastAge === null || (MIN_MARKER_AGE_MS !== null && lastAge < MIN_MARKER_AGE_MS)) {
           // 人工反对窗口未过(或读不到 marker 时间戳,保守不 resolve)。不重复回复,只
           // 等下一轮重查;窗口内有人 resolve 掉(手动)→ 下一轮看到 already-resolved。
+          // 门显式关闭(REVIEW_PR_DISABLE_MARKER_AGE_GATE=1)时跳过年龄比较,但
+          // lastAge === null(无 createdAt)的保守判定不豁免。
           results.push({
             id: w.id, path: t.path, outcome: 'replied-only', done: false, replied: false,
             resolved: false, markerAgeMs: lastAge,
-            reason: `replied-only(己方 marker 年龄 ${lastAge === null ? '未知(无 createdAt)' : `${Math.floor(lastAge / 1000)}s`} < 人工反对窗口 ${Math.floor(MIN_MARKER_AGE_MS / 1000)}s,不 resolve——窗口期内保留人工介入机会;下一轮自动重查)`,
+            reason: lastAge === null
+              ? 'replied-only(己方 marker 无 createdAt,缺时间戳保守不 resolve——下一轮自动重查)'
+              : `replied-only(己方 marker 年龄 ${Math.floor(lastAge / 1000)}s < 人工反对窗口 ${Math.floor(MIN_MARKER_AGE_MS / 1000)}s,不 resolve——窗口期内保留人工介入机会;下一轮自动重查)`,
           });
           continue;
         }
@@ -519,6 +556,7 @@ try {
     skippedCount: results.filter((r) => r.outcome === 'skipped').length,
     results,
     ...(rejected.length ? { rejected } : {}),
+    ...(warnings.length ? { warnings } : {}),
     note: '回复优先设计:reply 按调用方 payload 无条件发(白名单 bot thread 且无非白名单参与者);resolve 默认不执行,只在机器可核实条件满足时执行——线程已 resolved / 上一轮己方已 reply 同一 headSha 且白名单复核通过 / 己方 state=resolved marker 后又 reopen(人工翻案,永久留人工)。marker 可信度按评论作者身份(GraphQL viewer)判定,文本形状谁都能复制;状态全部在 GitHub 侧,无本地回执。三种终态:replied-only / resolved / skipped-<reason>。',
   });
 } catch (e) {
