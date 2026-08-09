@@ -34,7 +34,7 @@ const DEFAULT_COMMENT_NODES = [{
   body: '/approve-merge', // 旧裸格式:不授权,必须进 legacyBareComments
   createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
 }];
-function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928' } = {}) {
+function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928', securityReviewPaths = [] } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'context-scan-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -56,7 +56,8 @@ function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAu
     ...baseRules,
     admins: ['PraiseZhu', ...adminsExtra], // 作者 aj0928 不在名单 → 结构性 BLOCKED 落 skip-structural-block 分支
     structuralBypassAllowlist: ['code_scanning', 'code_quality'],
-    securityReviewPaths: [], // 关掉,避免误命中干扰本测试的结构性分支
+    // 默认关掉,避免误命中干扰结构性分支测试;SC-1 用例显式传入以命中 security-gate。
+    securityReviewPaths,
     ...(mergeAuth ? { mergeAuthorization: mergeAuth } : {}),
   }));
   writeFileSync(join(fixtures, 'pr-view.json'), JSON.stringify({
@@ -299,4 +300,85 @@ test('C1 接线:mergeAuthorization:"oops" → context --scan 不崩,configWarnin
   // 业务 fail-closed:容器非法 → require 按 true、breakGlass=[] → 人工命令不路由紧急通道
   assert.equal(out.authorizedFastMerge.requested, false, 'breakGlass=[] → 紧急通道关闭(fail-closed,不回退 admins)');
   assert.notEqual(out.auto.action, 'authorized-fast-merge', '不得路由到 authorized-fast-merge');
+});
+
+// ── SC-1(2026-08-09):三门 hold 的真实可执行调用点 ──
+// 意图:security-gate/rules-gate/arch-gate 此前只在 context.mjs 里"算出结论"就停,唯一
+// 完整的调用形式停留在 SKILL.md 的 Markdown 示例——命中候选照样失联。本轮改为命中三门
+// 之一时,context.mjs 真的 spawn 一次 signoff-hold.mjs --dry-run(脚本调脚本,不是注释/
+// 文档示例)。以下用例锁住"真被调用"这件事本身可观测,不是靠读源码断言。
+
+test('SC-1 接线:命中 securityReviewPaths → signoff-hold.mjs --dry-run 真被 spawn(脚本调脚本,非注释/文档示例)', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  assert.equal(out.auto.action, 'security-gate', '命中 securityReviewPaths 且未放行 → 必须路由 security-gate');
+  assert.ok(out.signoff?.holdInvocation, 'holdInvocation 字段必须存在');
+  assert.equal(out.signoff.holdInvocation.kind, 'security', 'hold 调用的 kind 必须与命中门一致');
+  assert.equal(out.signoff.holdInvocation.invoked, true, '命中三门之一时必须真的 spawn signoff-hold.mjs,不是空转');
+  assert.equal(out.signoff.holdInvocation.dryRun, true);
+  // 以下字段只有真的 spawn 了 signoff-hold.mjs 子进程、子进程真的跑完 --dry-run 分支才会
+  // 出现——伪造/跳过调用点拿不到这些值,这是"真被调用"而非"声称被调用"的直接证据。
+  assert.equal(out.signoff.holdInvocation.ok, true, 'signoff-hold.mjs 子进程必须真正执行并返回 ok:true');
+  assert.equal(out.signoff.holdInvocation.pr, 469, '子进程读到的 PR 号必须与调用参数一致,证明真的解析了 CLI 参数而非硬编码/mock');
+  assert.equal(out.signoff.holdInvocation.author, 'aj0928', '子进程必须真的读取了 fixture 里的 pr-view.json(author 字段),不是空转返回固定值');
+});
+
+test('SC-1 反向:未命中三门(auto.action 落 skip-structural-block)→ holdInvocation.invoked=false,不空转 spawn', () => {
+  const { repo, env } = setup(); // 默认场景不配置 securityReviewPaths,走 skip-structural-block
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  assert.equal(out.auto.action, 'skip-structural-block');
+  assert.equal(out.signoff.holdInvocation.invoked, false, '未命中三门时不应发起 hold 调用');
+  assert.equal(out.signoff.holdInvocation.kind, null);
+});
+
+// ── SC-3(2026-08-09):admins 放行判据绑 commit oid,不受 submittedAt 时序影响 ──
+// 反例场景(dispatch 原文):head=3ae9ec…,review 绑定的 commit=a32ae3…(旧 head),即便
+// review 的 submittedAt 晚于 latestCommitDate,只要 commit.oid 不等于当前 headRefOid,
+// 就不构成放行——时间戳口径下"更晚提交的 Approve"曾被误判为已放行,新判据不认时间戳。
+// 结构性补充:latestOpinionatedReviews 的 GraphQL 查询本就没有取 submittedAt 字段(见
+// context.mjs GQL 模板),时序误判在查询层就已不可能重现,不只是判定逻辑层面的修复。
+
+test('SC-3 反例:admins 在旧 commit(非当前 head)Approve → adminsApprovedCurrentHead=false(旧口径会误判为已放行)', () => {
+  // 默认 setup():reviewAuthor='PraiseZhu'(admins 名单成员),approveOid=OLD(绑定旧 head)
+  const { repo, env } = setup();
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  assert.equal(out.signoff.adminsApprovedCurrentHead, false, 'Approve 绑定旧 commit(非当前 head)不构成放行,即便时间戳更晚');
+});
+
+test('SC-3 正例:admins 在当前 head 上 Approve → adminsApprovedCurrentHead=true', () => {
+  const { repo, env } = setup({ approveOid: HEAD, reviewAuthor: 'PraiseZhu' });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  assert.equal(out.signoff.adminsApprovedCurrentHead, true, 'admins 名单成员在当前 head 上 APPROVED → 必须放行');
+});
+
+// ── SC-4(2026-08-09):signoff 判据消除双头 ──
+// scan 模式与全量模式此前各自独立构造一份 signoff 对象(triggers/suggestedHolds 逐字重复),
+// 本轮改为共用同一个 signoffCore。以下静态锁住"只有一份推导逻辑",防止之后有人在某一个
+// 模式里改了判据、另一个模式漏改,形成隐蔽双头。
+
+test('SC-4 静态锁:signoff 判据只有一份共享核心(signoffCore),scan/全量两模式共用,不留双头实现', () => {
+  const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
+  const suggestedHoldsCount = (src.match(/suggestedHolds:/g) ?? []).length;
+  assert.equal(suggestedHoldsCount, 1, 'suggestedHolds 推导逻辑只能出现一次(signoffCore 内),否则就是判据双头');
+  assert.match(src, /signoff:\s*signoffCore,/, 'scan 模式必须直接引用共享的 signoffCore');
+  assert.match(src, /\.\.\.signoffCore,/, '全量模式必须展开共享的 signoffCore(加 note),不得重新构造独立字段');
+});
+
+// ── SC-2(2026-08-09):thread id 补字段 + claim 文本不截断 ──
+test('SC-2 静态锁:GraphQL reviewThreads 查询必须取 id 字段;lastComment 不得截断(#13 证据绑定消费方依赖全文)', () => {
+  const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
+  assert.match(src, /reviewThreads\([\s\S]{0,80}?nodes\{\s*id\s+isResolved/, 'reviewThreads GraphQL 查询必须显式取 id 字段(#13 resolve-threads.mjs 靠 thread id 定位评论线程)');
+  assert.doesNotMatch(src, /lastComment:\s*clip\(/, 'lastComment 不得再走 clip(截断)——300 字截断会把长评论的关键论据切掉');
 });
