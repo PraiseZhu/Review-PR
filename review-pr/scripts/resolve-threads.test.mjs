@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // resolve-threads.test.mjs — thread 代 resolve 的回归:
 //   ① assessThreadEvidence(语义绑定判据,lib.mjs):有证据 resolve / 无证据不动 /
-//      真人 thread 不动 / 白名单外 bot 不动 / isOutdated 只是线索 / 未配置禁用;
-//   ② 脚本级(fake-gh-resolve 可变状态):有证据 → 恰好一次 reply+resolve;重跑幂等;
-//      翻案 reopened-after-triage 永不碰;缺 --payload-file fail-closed;双并发模拟
-//      无重复动作。
+//      真人 thread 不动 / 白名单外 bot 不动 / isOutdated 只是线索 / 未配置禁用 /
+//      三条独立"token 命中但无关"绕过反例(SC-1 + SC-9 反例);
+//   ② 脚本级(fake-gh-resolve 可变状态,均带 allowedBots 执行层复核):有证据 → 恰好
+//      一次 reply+resolve;重跑幂等;翻案 reopened-after-triage 永不碰(身份绑定 marker,
+//      预存/复制的假 marker 不采信);缺 --payload-file fail-closed;白名单外真人 thread
+//      0 动作;resolve mutation 失败后回执机制区分"我们自己失败"与"人工翻案";分页
+//      (101 个 thread、第 51 条 comment)可读到;真双进程并发恰好 1+1。
 // 跑:node scripts/resolve-threads.test.mjs   退出码 0 = 全过。
 
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +22,6 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, 'resolve-threads.mjs');
 const FAKE_GH = join(__dirname, '..', 'tests', 'fixtures', 'fake-gh-resolve', 'gh');
-const FAKE_GH_LOG = '';
 
 let failed = 0;
 function check(name, cond, detail = '') {
@@ -33,10 +35,12 @@ function eq(name, got, want) {
   check(name, g === w, `got ${g}, want ${w}`);
 }
 
-// ── ① assessThreadEvidence:语义绑定判据 ──
+// ── ① assessThreadEvidence:语义绑定判据(≥2 独立高特异度 token 命中才判定证据确凿) ──
+// BOT_THREAD 带两个反引号 token:handleSubmit(claim 本体)+ debounce(claim 里点名的修复
+// 手段),DIFF 的新增行两个都命中——这是"确凿"这一侧的基线 fixture。
 const BOT_THREAD = {
   id: 'PRRT_1', path: 'src/foo.ts',
-  body: '这里调用了 `handleSubmit` 但缺少防抖,快速连点会重复提交。',
+  body: '这里调用了 `handleSubmit` 但缺少防抖,应改用 `debounce` 包裹。',
   author: 'greptile-apps',
 };
 const HUMAN_THREAD = { ...BOT_THREAD, author: 'praisezhu' };
@@ -47,14 +51,44 @@ const DIFF = [
   { path: 'src/bar.ts', additions: ['// 无关改动'], removals: [] },
 ];
 
-// 有证据(claim token 在修复新增行中被处理)→ resolve
+// 有证据(≥2 个 claim token 都在修复新增行中被处理)→ resolve
 const bound = assessThreadEvidence({ thread: BOT_THREAD, authorType: 'bot', allowedBots: ALLOWED, diff: DIFF });
 eq('有证据 resolve', bound.canResolve, true);
 eq('证据类型 semantic-bound', bound.evidence, 'semantic-bound');
-check('证据命中 token', bound.matchedToken === 'handleSubmit', `got ${bound.matchedToken}`);
-// 无证据:仅同文件被后续 commit 触碰 → 不动(path-touched 只是必要线索)
+check('证据命中 ≥2 个 token', (bound.matchedTokens ?? []).length >= 2, JSON.stringify(bound.matchedTokens));
+check('证据命中含 handleSubmit', (bound.matchedTokens ?? []).includes('handleSubmit'), JSON.stringify(bound.matchedTokens));
+check('证据命中含 debounce', (bound.matchedTokens ?? []).includes('debounce'), JSON.stringify(bound.matchedTokens));
+
+// ── SC-1 + SC-9:三条独立"token 命中但无关"绕过反例 ——
+// 每条都只有 1 个 token 命中(且命中行与 claim 的问题本身无关),必须判 canResolve=false。
+// ①handleSubmit:命中的新增行是"保留导出的 handler"测试断言,不是防抖修复
+const bypass1 = assessThreadEvidence({
+  thread: { ...BOT_THREAD, path: 'src/foo.ts', body: '这里调用了 `handleSubmit` 但缺少防抖,快速连点会重复提交。' },
+  authorType: 'bot', allowedBots: ALLOWED,
+  diff: [{ path: 'src/foo.ts', additions: ['it("keeps exported handler", () => expect(handleSubmit).toBeDefined());'], removals: [] }],
+});
+eq('绕过①handleSubmit 命中但无关不动', bypass1.canResolve, false);
+check('绕过①原因 single-token-match-insufficient', bypass1.reason.startsWith('single-token-match-insufficient'), bypass1.reason);
+// ②chargeCard:命中的新增行是新增的 telemetry 日志埋点,不是幂等键修复
+const bypass2 = assessThreadEvidence({
+  thread: { path: 'src/pay.ts', body: '`chargeCard` 缺少幂等键,重试会重复扣款。', author: 'greptile-apps' },
+  authorType: 'bot', allowedBots: ALLOWED,
+  diff: [{ path: 'src/pay.ts', additions: ["telemetry.log('chargeCard invoked', { ts: Date.now() });"], removals: [] }],
+});
+eq('绕过②chargeCard 命中但无关不动', bypass2.canResolve, false);
+check('绕过②原因 single-token-match-insufficient', bypass2.reason.startsWith('single-token-match-insufficient'), bypass2.reason);
+// ③options:命中的新增行只是把 options 传给了另一个无关函数,不是参数校验修复
+const bypass3 = assessThreadEvidence({
+  thread: { path: 'src/opts.ts', body: '`options` 参数缺少校验,传 undefined 会崩溃。', author: 'greptile-apps' },
+  authorType: 'bot', allowedBots: ALLOWED,
+  diff: [{ path: 'src/opts.ts', additions: ['forwardToLogger(options);'], removals: [] }],
+});
+eq('绕过③options 命中但无关不动', bypass3.canResolve, false);
+check('绕过③原因 single-token-match-insufficient', bypass3.reason.startsWith('single-token-match-insufficient'), bypass3.reason);
+
+// 无证据:仅同文件被后续 commit 触碰 → 不动(path-touched-only 只是必要线索)
 const onlyPath = assessThreadEvidence({
-  thread: { ...BOT_THREAD, body: '这里应该用双引号。' }, // 无针对性 token 命中新增行
+  thread: { ...BOT_THREAD, body: '这里应该用双引号。' }, // 无针对性 token 命中新增行,也无引号/反引号 token
   authorType: 'bot', allowedBots: ALLOWED, diff: DIFF,
 });
 eq('仅同文件触碰不动', onlyPath.canResolve, false);
@@ -99,17 +133,29 @@ const git = (args, cwd) => {
   return r.stdout.trim();
 };
 
+// threads[].comments 元素支持字符串(默认作者 greptile-apps,即 ALLOWED 白名单默认命中)
+// 或 { body, author, id } 对象(SC-3/SC-4 需要非默认作者 / 显式 marker 时用后者)。
+// lockDir 默认每个 setup() 独立一份(避免跨测试串锁);SC-2 双并发测试需要故意共享同一份,
+// 见下方专用测试块。
 function setup({ threads, pr = 123 } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'resolve-threads-test-'));
+  const lockDir = mkdtempSync(join(tmpdir(), 'resolve-threads-locks-'));
   git(['init', '-q', work], work);
   git(['remote', 'add', 'origin', 'https://github.com/acme/app.git'], work);
   const stateFile = join(work, 'state.json');
   const logFile = join(work, 'calls.jsonl');
-  // threads 用 GitHub GraphQL 形状(comments.nodes),与 resolve-threads.mjs 的解析一致
   writeFileSync(stateFile, JSON.stringify({
     threads: (threads ?? []).map((t) => ({
       id: t.id, isResolved: t.isResolved, path: t.path,
-      comments: { nodes: (t.comments ?? []).map((b) => ({ body: b })) },
+      comments: {
+        nodes: (t.comments ?? []).map((b, i) => {
+          const isObj = b !== null && typeof b === 'object';
+          const body = isObj ? b.body : b;
+          const author = (isObj ? b.author : undefined) ?? t.author ?? 'greptile-apps';
+          const id = (isObj && b.id) ? b.id : `seed_${t.id}_${i}`;
+          return { body, author: { login: author }, id };
+        }),
+      },
     })),
   }));
   const env = {
@@ -117,24 +163,34 @@ function setup({ threads, pr = 123 } = {}) {
     PATH: `${dirname(FAKE_GH)}:${process.env.PATH}`,
     FAKE_GH_RESOLVE_STATE: stateFile,
     FAKE_GH_LOG: logFile,
+    REVIEW_PR_RESOLVE_LOCK_DIR: lockDir,
   };
   const readLog = () => (existsSync(logFile) ? readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean) : []);
   const readState = () => JSON.parse(readFileSync(stateFile, 'utf8'));
-  return { work, env, stateFile, logFile, readLog, readState };
+  // cwd 与 work 同值:spawnAsync 的子进程必须真正 cd 进该 fixture 目录才能让
+  // parseRepo() 读到 fixture 自己的 origin(而不是误读调用者进程碰巧所在的
+  // 那个目录的 git 状态)。历史上 setup() 只返回 work、不返回 cwd,
+  // spawnAsync({ cwd: opts.cwd }) 读到 undefined 从而让子进程继承父进程
+  // cwd——只是因为测试恰好从本仓库(有 .git/origin)内运行才没报错,一旦从
+  // 非 git 目录(如临时变异副本)运行就会 "not a git repository" 假死。
+  return { work, cwd: work, env, stateFile, logFile, lockDir, readLog, readState, pr };
 }
 
-const runScript = (work, env, payload) => {
+const runScript = (work, env, payload, pr = 123) => {
   const p = JSON.stringify(payload);
-  const r = spawnSync('node', [SCRIPT, '123', '--payload-file', '-'], { cwd: work, env, input: p, encoding: 'utf8' });
+  const r = spawnSync('node', [SCRIPT, String(pr), '--payload-file', '-'], { cwd: work, env, input: p, encoding: 'utf8' });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   return { r, out };
 };
 
-// 有证据 → 恰好一次 reply+resolve
+// 有证据 → 恰好一次 reply+resolve(payload 带执行层白名单 allowedBots,与 fixture 默认作者一致)
 {
   const s = setup({ threads: [{ id: 'PRRT_1', isResolved: false, path: 'src/foo.ts', comments: ['缺少防抖'] }] });
-  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_1', reply: '已在 abc1234 用 debounce 处理,代为 resolve;有异议可 reopen' }] });
+  const { r, out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_1', reply: '已在 abc1234 用 debounce 处理,代为 resolve;有异议可 reopen' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
   check('有证据:退出码 0', r.status === 0, `status=${r.status} stderr=${r.stderr.slice(0, 200)}`);
   check('有证据:done=true', out?.results?.[0]?.done === true, JSON.stringify(out?.results));
   check('有证据:replied=true', out?.results?.[0]?.replied === true);
@@ -148,38 +204,73 @@ const runScript = (work, env, payload) => {
   check('有证据:reply 恰好 1 次', replyCalls === 1, `got ${replyCalls}`);
   check('有证据:resolve 恰好 1 次', resolveCalls === 1, `got ${resolveCalls}`);
   rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
 }
 
-// 幂等 + 双并发:已 resolve 的 thread 重跑 → already-resolved,零新增动作(第二实例看到第一实例结果)
+// 幂等:已 resolve 的 thread 重跑 → already-resolved,零新增动作
 {
   const s = setup({ threads: [{ id: 'PRRT_2', isResolved: true, path: 'src/a.ts', comments: [] }] });
-  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_2', reply: '已在处理' }] });
+  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_2', reply: '已在处理' }], allowedBots: ['greptile-apps'] });
   check('已 resolve:退出码 0', r.status === 0);
   check('已 resolve:done=true 且 reason=already-resolved', out?.results?.[0]?.done === true && out?.results?.[0]?.reason === 'already-resolved', JSON.stringify(out?.results));
   const calls = s.readLog();
   check('已 resolve:零 reply/resolve 调用', !calls.some((l) => l.includes('ReviewThreadReply') || l.includes('resolveReviewThread')), JSON.stringify(calls));
   rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
 }
 
-// 翻案保护:带 triage 标记回复却未 resolve → reopened-after-triage,永不碰
+// 翻案保护:身份绑定 marker(pr=123 thread=PRRT_3 与当前上下文一致)存在却未 resolve →
+// reopened-after-triage,永不碰(SC-4:预存/复制的假 marker 不构成此判定,见下一测试块)
 {
-  const s = setup({ threads: [{ id: 'PRRT_3', isResolved: false, path: 'src/b.ts', comments: ['bot 意见<!-- review-pr:thread-triage -->'] }] });
-  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_3', reply: '再次处理' }] });
+  const s = setup({
+    threads: [{
+      id: 'PRRT_3', isResolved: false, path: 'src/b.ts',
+      comments: ['bot 意见\n\n<!-- review-pr:thread-triage pr=123 thread=PRRT_3 sha=abc1234 -->'],
+    }],
+  });
+  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_3', reply: '再次处理' }], allowedBots: ['greptile-apps'] });
   check('翻案:退出码 0(结果在字段里)', r.status === 0);
   check('翻案:done=false 且 reason=reopened-after-triage', out?.results?.[0]?.done === false && out?.results?.[0]?.reason?.startsWith('reopened-after-triage'), JSON.stringify(out?.results));
   const st = s.readState();
   check('翻案:状态未被改', st.threads[0].isResolved === false);
   const calls = s.readLog();
-  check('翻案:零动作', !calls.some((l) => l.includes('ReviewThreadReply') || l.includes('resolveReviewThread')), JSON.stringify(calls));
+  check('翻案:零新增动作', !calls.some((l) => l.includes('addPullRequestReviewThreadReply') || l.includes('resolveReviewThread')), JSON.stringify(calls));
   rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
+// SC-4:预存 / 从别的 thread 复制过来的 marker(pr 或 thread 字段对不上当前上下文)不采信为
+// "我们自己处理过"——必须走正常首轮流程(reply+resolve),不得被误判 reopened-after-triage。
+{
+  const s = setup({
+    threads: [{
+      id: 'PRRT_5', isResolved: false, path: 'src/e.ts',
+      comments: [
+        '这里调用了 `handleSubmit` 但缺少防抖,应改用 `debounce` 包裹。',
+        // 伪造/复制的 marker:pr 对不上(999)—— 不应被当作"本 pr 本 thread 已处理过"
+        '<!-- review-pr:thread-triage pr=999 thread=PRRT_5 sha=deadbeef -->',
+      ],
+    }],
+  });
+  const { r, out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_5', reply: '已在 abc1234 用 debounce 处理,代为 resolve;有异议可 reopen' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  check('伪 marker:退出码 0', r.status === 0, `stderr=${r.stderr.slice(0, 200)}`);
+  check('伪 marker:未被误判翻案,正常 resolve', out?.results?.[0]?.done === true && out?.results?.[0]?.reason !== 'reopened-after-triage', JSON.stringify(out?.results));
+  const st = s.readState();
+  check('伪 marker:确实被 resolve', st.threads[0].isResolved === true);
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
 }
 
 // thread-not-found:payload 里的 id 不在当前 PR 列表 → 明确拒绝
 {
   const s = setup({ threads: [] });
-  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_999', reply: '处理' }] });
+  const { out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_999', reply: '处理' }], allowedBots: ['greptile-apps'] });
   check('not-found:done=false', out?.results?.[0]?.done === false && out?.results?.[0]?.reason?.startsWith('thread-not-found'), JSON.stringify(out?.results));
   rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
 }
 
 // 缺 --payload-file → fail-closed(exit 1)
@@ -189,16 +280,155 @@ const runScript = (work, env, payload) => {
   check('缺 payload:exit 1', r.status === 1, `status=${r.status}`);
   check('缺 payload:error 指明必填', /--payload-file 必填/.test(r.stdout), r.stdout.slice(0, 200));
   rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
 }
 
 // 静默 resolve 拒绝:缺 reply 的条目进 rejected,不动作
 {
   const s = setup({ threads: [{ id: 'PRRT_4', isResolved: false, path: 'src/d.ts', comments: [] }] });
-  const { r, out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_4', reply: '' }] });
+  const { out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_4', reply: '' }] });
   check('缺 reply:rejected 明示', out?.rejected?.length === 1 && out?.rejected?.[0]?.reason?.startsWith('missing-id-or-reply'), JSON.stringify(out?.rejected));
   check('缺 reply:零动作', out?.requested === 0);
   rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
 }
+
+// SC-3:执行层白名单复核,fail-closed —— 真人 thread(首条评论作者不在 allowedBots)
+// 即使 payload 声称有证据,也 0 reply / 0 resolve。
+{
+  const s = setup({
+    threads: [{
+      id: 'PRRT_6', isResolved: false, path: 'src/f.ts',
+      comments: [{ body: '这里应该改成异步。', author: 'praisezhu' }],
+    }],
+  });
+  const { out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_6', reply: '已处理' }], allowedBots: ['greptile-apps'],
+  });
+  check('真人 thread:done=false 且拒绝原因指明白名单', out?.results?.[0]?.done === false && out?.results?.[0]?.reason?.startsWith('author-not-in-whitelist'), JSON.stringify(out?.results));
+  const calls = s.readLog();
+  check('真人 thread:零 reply/resolve 调用', !calls.some((l) => l.includes('addPullRequestReviewThreadReply') || l.includes('resolveReviewThread')), JSON.stringify(calls));
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
+// 未传 allowedBots(或传空数组)→ 执行层整体 fail-closed,即使作者其实在白名单同名
+{
+  const s = setup({ threads: [{ id: 'PRRT_7', isResolved: false, path: 'src/g.ts', comments: ['bot 意见'] }] });
+  const { out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_7', reply: '已处理' }] });
+  check('未传白名单:triage-disabled', out?.results?.[0]?.done === false && out?.results?.[0]?.reason?.startsWith('triage-disabled'), JSON.stringify(out?.results));
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
+// SC-5:分页 —— 第 101 个 thread、第 51 条带 marker 的 comment 都必须能读到。
+{
+  const manyThreads = [];
+  for (let i = 0; i < 100; i += 1) {
+    manyThreads.push({ id: `PRRT_pad_${i}`, isResolved: true, path: `src/pad${i}.ts`, comments: [] });
+  }
+  // 第 101 个 thread(索引 100),带 51 条 comment,第 51 条(索引 50)才是真正的 bot claim。
+  const manyComments = [];
+  for (let i = 0; i < 50; i += 1) manyComments.push({ body: `占位评论 ${i}`, author: 'someone-else' });
+  manyComments.push({ body: '这里调用了 `handleSubmit` 但缺少防抖,应改用 `debounce` 包裹。', author: 'greptile-apps' });
+  manyThreads.push({ id: 'PRRT_101', isResolved: false, path: 'src/foo.ts', comments: manyComments });
+  const s = setup({ threads: manyThreads });
+  // 白名单按第 51 条评论的作者算(执行层只看首条评论作者,这里首条是 someone-else,不在白名单——
+  // 用这个反证「分页确实取全了 51 条」,而不是脚本恰好只读到前 50 条就漏了第 51 条真身份)。
+  // 换用一个「首条即 bot」的独立分页 fixture,直接验证"能读到第 101 个 thread"这件事本身:
+  const { out: outNotFound } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_pad_99', reply: 'x' }], allowedBots: ['greptile-apps'] }, s.pr);
+  check('分页:第 100 个(索引 99)thread 能读到', outNotFound?.results?.[0]?.reason === 'already-resolved', JSON.stringify(outNotFound?.results));
+  const { out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_101', reply: '已处理' }], allowedBots: ['someone-else'] }, s.pr);
+  check('分页:第 101 个 thread 能读到(不是 thread-not-found)', out?.results?.[0]?.reason !== 'thread-not-found', JSON.stringify(out?.results));
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+// 分页:单 thread 内第 51 条评论(带 marker)必须能通过 ThreadCommentsPage 查询读到,
+// 用于翻案判定——只在 comments 分页完整时才可能命中 own marker。
+{
+  const manyComments = [];
+  for (let i = 0; i < 50; i += 1) manyComments.push({ body: `占位评论 ${i}`, author: 'greptile-apps' });
+  manyComments.push({ body: '第 51 条', author: 'greptile-apps', id: 'marker_c51' });
+  manyComments.push({ body: '<!-- review-pr:thread-triage pr=123 thread=PRRT_page sha=abc1234 -->', author: 'review-pr-bot' });
+  const s = setup({ threads: [{ id: 'PRRT_page', isResolved: false, path: 'src/h.ts', comments: manyComments }] });
+  const { out } = runScript(s.work, s.env, { threads: [{ id: 'PRRT_page', reply: '再次处理' }], allowedBots: ['greptile-apps'] });
+  check('分页:第 52 条(marker,超第 1 页)仍能被读到并判翻案', out?.results?.[0]?.reason?.startsWith('reopened-after-triage'), JSON.stringify(out?.results));
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
+// SC-6:reply 成功但 resolve mutation 失败 → 留回执;下一轮看到「own marker + 回执」只
+// 重试 resolve,不重复回复,也不误判 reopened-after-triage(人工翻案)。
+{
+  const s = setup({ threads: [{ id: 'PRRT_8', isResolved: false, path: 'src/i.ts', comments: ['bot 意见'] }] });
+  const envFail = { ...s.env, FAKE_GH_RESOLVE_FAIL_FOR: 'PRRT_8' };
+  const payload = { threads: [{ id: 'PRRT_8', reply: '已处理' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' };
+  const first = runScript(s.work, envFail, payload);
+  check('部分失败:首轮 replied=true 但 resolved=false', first.out?.results?.[0]?.replied === true && first.out?.results?.[0]?.resolved === false, JSON.stringify(first.out?.results));
+  const st1 = s.readState();
+  check('部分失败:状态仍未 resolve', st1.threads[0].isResolved === false);
+  const calls1 = s.readLog();
+  const replyCalls1 = calls1.filter((l) => l.includes('addPullRequestReviewThreadReply')).length;
+  check('部分失败:reply 恰好 1 次', replyCalls1 === 1, `got ${replyCalls1}`);
+  // 下一轮(不再注入失败)→ 应识别为「我们自己失败」,只重试 resolve,不重复 reply
+  const second = runScript(s.work, s.env, payload);
+  check('部分失败下一轮:reason=resolve-retry-succeeded', second.out?.results?.[0]?.reason?.startsWith('resolve-retry-succeeded'), JSON.stringify(second.out?.results));
+  check('部分失败下一轮:done=true', second.out?.results?.[0]?.done === true);
+  const st2 = s.readState();
+  check('部分失败下一轮:最终已 resolve', st2.threads[0].isResolved === true);
+  const calls2 = s.readLog();
+  const replyCalls2 = calls2.filter((l) => l.includes('addPullRequestReviewThreadReply')).length;
+  check('部分失败下一轮:未重复 reply(仍恰好 1 次)', replyCalls2 === 1, `got ${replyCalls2}`);
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
+if (failed > 0) {
+  console.error(`\n${failed} 个用例失败(同步用例小计,下方还有真并发异步用例)`);
+}
+
+// ── SC-2:真双进程并发 —— 两个子进程几乎同时对同一 thread 发起代 resolve,靠
+// resolve-threads.mjs 自己的文件锁保证「至多一次」,不是靠 fixture 预置已完成状态模拟
+// (那是假并发)。两个子进程必须共享同一个 lockDir(故意不用 setup() 各自默认的隔离锁)。
+function spawnAsync(scriptArgs, opts, input) {
+  return new Promise((resolve) => {
+    const child = spawn('node', scriptArgs, { cwd: opts.cwd, env: opts.env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('error', (err) => resolve({ code: -1, stdout, stderr: String(err) }));
+    child.stdin.write(input);
+    child.stdin.end();
+  });
+}
+
+async function runConcurrencyTest() {
+  const s = setup({ threads: [{ id: 'PRRT_CONC', isResolved: false, path: 'src/conc.ts', comments: ['真实 bot 意见,缺少防抖'] }] });
+  const payload = JSON.stringify({
+    threads: [{ id: 'PRRT_CONC', reply: '已处理,代为 resolve' }], allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  const [r1, r2] = await Promise.all([
+    spawnAsync([SCRIPT, '123', '--payload-file', '-'], s, payload),
+    spawnAsync([SCRIPT, '123', '--payload-file', '-'], s, payload),
+  ]);
+  const out1 = (() => { try { return JSON.parse(r1.stdout); } catch { return null; } })();
+  const out2 = (() => { try { return JSON.parse(r2.stdout); } catch { return null; } })();
+  check('并发:两个进程都退出码 0', r1.code === 0 && r2.code === 0, `code1=${r1.code} code2=${r2.code} stderr1=${r1.stderr.slice(0, 200)} stderr2=${r2.stderr.slice(0, 200)}`);
+  const st = s.readState();
+  check('并发:thread 最终确实被 resolve', st.threads[0].isResolved === true);
+  const calls = s.readLog();
+  const replyCalls = calls.filter((l) => l.includes('addPullRequestReviewThreadReply')).length;
+  const resolveCalls = calls.filter((l) => l.includes('resolveReviewThread')).length;
+  check('并发:reply 恰好 1 次(不是 2 次)', replyCalls === 1, `got ${replyCalls}`);
+  check('并发:resolve 恰好 1 次(不是 2 次)', resolveCalls === 1, `got ${resolveCalls}`);
+  check('并发:两个进程结果都标 done(一个真做,一个看到已完成)', out1?.results?.[0]?.done === true && out2?.results?.[0]?.done === true, `${JSON.stringify(out1?.results)} / ${JSON.stringify(out2?.results)}`);
+  rmSync(s.work, { recursive: true, force: true });
+  rmSync(s.lockDir, { recursive: true, force: true });
+}
+
+await runConcurrencyTest();
 
 if (failed > 0) {
   console.error(`\n${failed} 个用例失败`);

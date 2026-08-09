@@ -20,6 +20,13 @@ import { createHash, randomBytes } from 'node:crypto';
 // 无循环:它只引 lib.review-profiles / lib.preflight-rules)。
 import { mergeHazardPair, validateHazardShape } from './lib.escaped-hazards.mjs';
 
+// NODE_DEBUG 污染防御(复发×5):宿主 shell 可能带 NODE_DEBUG=http,https,net,tls,
+// util.debuglog 在 Node 启动早期即捕获该值,进程内 delete 已无法关闭(实测),但
+// spawn 子进程继承的是 process.env——此处删除后,本文件所有 spawnSync/spawn 的
+// 子进程(gh/git/node 脚本)环境均不含 NODE_DEBUG,纯 JSON stdout 不被调试行污染。
+// 只影响本进程及其子进程,不改宿主环境。
+delete process.env.NODE_DEBUG;
+
 const isWin = process.platform === 'win32';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = join(SCRIPT_DIR, '..');
@@ -2395,7 +2402,9 @@ const THREAD_TOKEN_STOPWORDS = new Set([
 
 /**
  * 从 thread 评论文本提取「针对性 token」,按特异度优先级排序:
- * 反引号段 > 双引号段 > 单引号段 > 标识符(驼峰/下划线/点路径)。
+ * 反引号段 > 双引号段 > 单引号段。**不含裸标识符正则**(2026-08-09 三审后砍掉——
+ * 裸标识符对普通英文单词/常见变量名几乎不设特异度门槛,子串命中即可造出"证据",
+ * 是 sc-thr-evidence 绕过的根因之一;只认经人手主动加引号/反引号强调过的片段)。
  * 长度 ≥ 3、剔除停用词与纯数字;去重保序。
  * @returns {string[]}
  */
@@ -2414,9 +2423,14 @@ export function extractThreadTokens(body) {
   for (const m of String(body ?? '').matchAll(/`([^`]+)`/g)) push(m[1]);
   for (const m of String(body ?? '').matchAll(/"([^"]+)"/g)) push(m[1]);
   for (const m of String(body ?? '').matchAll(/'([^']+)'/g)) push(m[1]);
-  for (const m of String(body ?? '').matchAll(/\b[A-Za-z_][A-Za-z0-9_.]{2,}\b/g)) push(m[0]);
   return tokens;
 }
+
+/** 判定证据确凿所需的最少独立高特异度 token 命中数(2026-08-09 三审后由 1 改为 2)。
+ * 单 token 子串命中太容易被"提到同一个函数/变量名但完全无关"的新增行(如另一处
+ * 测试断言、日志埋点)碰撞满足,不构成"针对性对应";要求 ≥2 个各自独立的强调
+ * 片段都能在同一份修复新增行里找到落点,才降低到可接受的假阳性率。 */
+const MIN_EVIDENCE_TOKEN_MATCHES = 2;
 
 /**
  * 判「这条 thread 是否可以代 resolve」(白名单 bot + 语义绑定证据)。
@@ -2447,22 +2461,33 @@ export function assessThreadEvidence({ thread = {}, authorType = 'human', allowe
   const fileDiff = (diff ?? []).find((d) => d.path === path);
   const changedPaths = (diff ?? []).map((d) => d.path);
   const pathTouched = changedPaths.includes(path);
-  // 语义绑定:claim token 必须出现在修复 diff 的**新增行**里(针对性处理)。
-  // token 提取不到(拿不准)或没命中 → fail-closed 不动。
-  let matched = null;
+  // 语义绑定(2026-08-09 三审后重做):claim 里每个高特异度 token(反引号/引号段)
+  // 各自独立在修复 diff 的**新增行**里找落点,要求 ≥MIN_EVIDENCE_TOKEN_MATCHES 个
+  // *不同* token 都命中,才判定"针对性对应"——单 token 子串命中太容易被无关行
+  // (如另一处测试断言、日志埋点恰好提到同一个函数名)碰撞满足,不构成证据。
+  // token 提取不到、或命中数不足 → fail-closed 不动。
+  const matchedTokens = [];
   for (const tok of tokens) {
     for (const line of fileDiff?.additions ?? []) {
       if (line.includes(tok)) {
-        matched = { token: tok, line: line.slice(0, 200) };
-        break;
+        matchedTokens.push({ token: tok, line: line.slice(0, 200) });
+        break; // 同一 token 只记一次命中,不重复计数
       }
     }
-    if (matched) break;
   }
-  if (matched) {
+  if (matchedTokens.length >= MIN_EVIDENCE_TOKEN_MATCHES) {
     return {
       canResolve: true, evidence: 'semantic-bound',
-      matchedToken: matched.token, matchedLine: matched.line,
+      matchedTokens: matchedTokens.map((m) => m.token),
+      matchedToken: matchedTokens[0].token, matchedLine: matchedTokens[0].line,
+      pathTouched, isOutdated,
+    };
+  }
+  if (matchedTokens.length > 0) {
+    return {
+      canResolve: false,
+      reason: `single-token-match-insufficient(仅命中 ${matchedTokens.length} 个独立 token「${matchedTokens.map((m) => m.token).join('、')}」,要求 ≥${MIN_EVIDENCE_TOKEN_MATCHES} 个才判定证据确凿——单 token 子串命中可能只是无关行碰巧提到同一个名字)`,
+      matchedToken: matchedTokens[0].token, matchedLine: matchedTokens[0].line,
       pathTouched, isOutdated,
     };
   }
@@ -2837,7 +2862,12 @@ export function spawnScriptJson(scriptPath, args, { timeoutMs = 180_000 } = {}) 
     let out = '';
     let err = '';
     let settled = false;
-    const child = spawn(process.execPath, [scriptPath, ...args], { windowsHide: true });
+    const child = spawn(process.execPath, [scriptPath, ...args], {
+      windowsHide: true,
+      // 显式快照 env(顶部已 delete NODE_DEBUG):即使未来有人恢复 process.env,
+      // 批量 spawn 的子脚本环境也保证剥离,纯 JSON stdout 不被调试行污染
+      env: { ...process.env },
+    });
     const settle = (v) => {
       if (settled) return;
       settled = true;

@@ -1161,13 +1161,24 @@ try {
   // 优先级与 skill 流程一致:格式门(1.2)在前置门(1.6.5)之前——formatPass=false 时
   // 根本不评估 gate(1.2.5 直接走 3B)。
   // 「stale 打回」= 该 PR 之前被打回过、且作者在最近一次打回后没提新 commit → 再打回没意义,
-  // 跳过等作者动。打回时间取两类来源的最晚值:
+  // 跳过等作者动。打回时间取三类来源的最晚值:
   //   ① CHANGES_REQUESTED review 的 submittedAt(新机制:3B 用 REQUEST_CHANGES,含纯格式门
   //      打回那种 only-body review —— 它不进 issue comments 也不产生 reviewThread,只有这里能抓到);
-  //   ② 旧 issue-comment 形式打回 reviewerPushbacks 的 createdAt(历史遗留)。
+  //   ② 旧 issue-comment 形式打回 reviewerPushbacks 的 createdAt(历史遗留);
+  //   ③ ownPr 补充(2026-08-09,#464 复盘):GitHub 422 禁止对自家 PR 提交 REQUEST_CHANGES,
+  //      ownPr 下 3B 格式打回退化为 COMMENT(COMMENTED)形态的 review 提交(见 run-log.mjs
+  //      EVENT_VALUES:COMMENT 是合法提交形态)——这类 COMMENT 就是打回,必须计入 pushbackDates,
+  //      否则 hasStalePushback 识别不到,已 stale 的 PR 每轮重复打回。只计 viewer(自动化账号)
+  //      自己的 COMMENTED 且仅 ownPr;非 ownPr 或他人 COMMENTED 不代表打回意图,不在此计
+  //      (其打回信号走 CHANGES_REQUESTED / reviewerPushbacks 两条既有通道)。
   const pushbackDates = [
     ...prReviews.filter((r) => r.state === 'CHANGES_REQUESTED').map((r) => r.submittedAt),
     ...reviewerPushbacks.map((p) => p.createdAt),
+    ...(isOwnPr
+      ? prReviews
+          .filter((r) => r.state === 'COMMENTED' && (r.author?.login ?? '') === viewerLogin)
+          .map((r) => r.submittedAt)
+      : []),
   ].filter(Boolean);
   const latestPushbackDate = pushbackDates.sort().pop() ?? '';
   const wasPushedBack = latestPushbackDate !== '';

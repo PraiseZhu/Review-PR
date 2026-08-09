@@ -939,13 +939,19 @@ resolve-threads.test.mjs 覆盖）**，对 `context.history.reviewThreads` 里�
 1. **真人 thread 永不自动 resolve**；只认白名单 bot——`pr-rules.json` 的
    `threadTriage.extraBots` 登录名单（首配 `greptile-apps`；未配置 = 整套机制关闭，
    一条都不动）；
-2. **修复证据 = thread 的 claim 与当前 head 修复 diff 的针对性对应**：从 thread
-   评论文本提取针对性 token（反引号/引号段、标识符，`extractThreadTokens`），该
-   token 出现在修复 diff 的新增行里（`evidence=semantic-bound`）才算证据；
+2. **修复证据 = 字符串共现启发式匹配，不是语义理解**（如实降级：这不是「针对性
+   对应」，只是文本层面的共现统计）：从 thread 评论文本按反引号/双引号/单引号提取
+   高特异度 token（`extractThreadTokens`，剔除纯数字与停用词，不再识别裸标识符），
+   要求 **≥2 个独立 token 同时出现在修复 diff 的新增行里**才算证据
+   （`MIN_EVIDENCE_TOKEN_MATCHES=2`，`evidence=semantic-bound`）——单 token 命中
+   判定为证据不足（`single-token-match-insufficient`）：一个高频 token 完全可能
+   出现在与该 claim 无关的新增行里（例如测试文件里同名的无关引用），共现计数不能
+   证明「diff 确实回应了这条 claim」，只能作为弱信号排除明显不相关的情况；
 3. **「同文件被后续 commit 触碰」/ `isOutdated` 只是必要线索，不是充分条件**——
    只有线索 → fail-closed 不动（与上游 ff37d26 降级口径一致；行改了 ≠ 问题解决，
-   必须读到 claim 被针对性处理）；
-4. **拿不准一律不动**（token 提取不到 / 匹配不到 / 读不到当前 head diff），留人工；
+   必须读到 ≥2 个独立 token 的共现证据）；
+4. **拿不准一律不动**（token 提取不到 / 命中数不足 2 个 / 读不到当前 head diff），
+   留人工；
 5. 翻案保护由脚本兜底：带 triage 标记回复却再次未 resolve 的 thread
    （`reopened-after-triage`）**永久留人工**——有人 unresolve 过 = 人工翻案，不重判、
    不拉锯，别把它当故障重试。
@@ -955,12 +961,17 @@ resolve-threads.test.mjs 覆盖）**，对 `context.history.reviewThreads` 里�
 
 ```bash
 node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file - <<'JSON'
-{ "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>),代为 resolve;有异议可 reopen" } ] }
+{
+  "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>),代为 resolve;有异议可 reopen" } ],
+  "allowedBots": ["<pr-rules.json threadTriage.extraBots 登录名单>"],
+  "headSha": "<sha>"
+}
 JSON
 ```
 
 （脚本只执行调用方给定的 payload，不自选 thread——**不接编排则 #251 型停滞仍会
-skip**，这正是本节的接线职责。）
+skip**，这正是本节的接线职责。`allowedBots` 缺失或为空时脚本执行层 fail-closed，
+一条都不动，即使 payload 里给了 thread id 也不例外。）
 
 **回流与汇总**：消费脚本输出的 `results[]`——`done=true`（含 `already-resolved`）
 计入已 resolve；`done=false`（`thread-not-found` / `reopened-after-triage` / reply
