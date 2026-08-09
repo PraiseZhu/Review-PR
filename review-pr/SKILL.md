@@ -549,6 +549,9 @@ node "<SKILL_ROOT>/scripts/review-preflight.mjs" --base <baseRefOid> --head <hea
   --expected-paths "$(gh pr view <N> --json files --jq '[.files[].path]|join(",")')"
 ```
 
+`--base` 取 `gh pr view <N> --json baseRefOid` 的返回值——baseRefOid(PR 分叉点),不是 base 分支当前 tip;
+误用 `origin/main`(当前 tip)会让 snapshot 漂移,preflight 与 task 重建都应锚在分叉点上。
+
 - 首发规则：Playwright `page/frame.waitForFunction` 收到 async / 返回 Promise 的谓词
   （#469 的 19 处假等待就是这一类：Promise 恒 truthy，1ms 假通过，CI 全绿但什么都没等）。
   **承诺面**：只认 lexical `page`/`frame` 接收者；alias、解构、容器传参持有的对象不在
@@ -698,7 +701,9 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
 5.4 跟进会话时，把「补充 UI 证据到 description」并入跟进消息即可，不单发评论。
 `auto.ownPr=true`（viewer 与作者是同一个账号，即本流程账号自己开的 PR）时不发本
 评论——收件人就是本流程账号自己，评论没有收件人，只会在 PR 上堆无人消费的噪音；
-证据缺口照常写进报告与汇总，gate 结论不变。
+证据缺口照常写进报告与汇总，gate 结论不变。**被 skip 的候选本轮不发 UI 证据提醒**——
+等它进入处理轮次再发（提醒无时效价值，避免同一作者同轮收多条噪音；skip 语义见
+6.1 扫描阶段）。
 
 ### 3.3 目的与重复实现检查
 
@@ -976,6 +981,9 @@ node "<SKILL_ROOT>/scripts/build-review-task.mjs" <N> --base <baseRefOid> --head
   --out-task <task.json> --out-prompt <prompt.md> \
   --expected-paths "$(gh pr view <N> --json files --jq '[.files[].path]|join(",")')"
 ```
+
+`--base` 取 `gh pr view <N> --json baseRefOid` 的返回值——baseRefOid(PR 分叉点),不是 base 分支当前 tip
+(与 3.0.1 同一来源纪律;误用 `origin/main` 会造成 snapshot 漂移)。
 
 逃逸候选的数据源(PR body + 关联 issue)由构建器**自己现场取**,不需要传参;取不到即
 `escapeSourceIncomplete=true` → 本轮 `invalid`(不得据"无候选"放行)。离线/测试可用
