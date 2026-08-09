@@ -2075,14 +2075,18 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （issueError / commentError / labelWarning）必须逐项进轮次汇总，不得静默降级为
    「只打了标签」。格式打回、workflow approval 和 release 等轻操作按候选串行落地。
 
-   **`signoff.holdInvocation`（探测字段，不是正式 hold）**：`context.mjs` 在算出
-   `auto.action` 落 security-gate / rules-gate / arch-gate 之一时，会自动对
-   `signoff-hold.mjs --kind <门> --dry-run` 发起一次真实子进程调用（无 payload、
-   `--dry-run` 不落地任何 issue / 标签 / 评论），把结果原样写进
-   `signoff.holdInvocation`（`kind` / `invoked` / `dryRun` / `ok` / `pr` /
-   `author` 等字段）。它的作用只是让「命中三门 → 调用点确实可执行」这件事在
-   `context --scan` 输出里可观测，证明三门不是只在这里"算出结论"就停——**不替代**
-   上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
+   **`signoff.holdInvocation`（探测字段，不是正式 hold，也不是"可执行"的证明）**：
+   `context.mjs` 在算出 `auto.action` 落 security-gate / rules-gate / arch-gate
+   之一时，会自动对 `signoff-hold.mjs --kind <门> --dry-run` 发起一次真实子进程
+   调用尝试（无 payload、`--dry-run` 不落地任何 issue / 标签 / 评论），把结果原样
+   写进 `signoff.holdInvocation`（`kind` / `invoked` / `dryRun` / `ok` / `pr` /
+   `author` 等字段）。**`invoked=true` 只代表这次探测尝试本身返回了
+   `{ok:true,...}`**——它不能证明"调用点确实可执行"：探测有三种已知失败形态
+   （模块不存在 / 输出非 JSON / 子进程 `fail()` 非零退出），三种都会让
+   `invoked=false`，同时失败原因会写进顶层 `configWarnings`（这才是排查"调用点是否
+   真的可执行"该看的地方，不要只看 `holdInvocation.invoked`）。它的作用仅是让
+   "命中三门 → 是否发起过一次探测尝试"这件事在 `context --scan` 输出里可观测——
+   **不替代**上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
    `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发
    评论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /
    `signoff.suggestedHolds`，不读 `holdInvocation`。

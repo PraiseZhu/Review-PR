@@ -80,7 +80,11 @@ const STRUCTURAL_BYPASS_ALLOWLIST = new Set(prRules.structuralBypassAllowlist ??
 // (是否适用取决于目标仓库的贡献者可信度模型,由仓库自己配置决定):命中就转人工看一眼,
 // 不让 review-pr 用可能已被这次改动改坏的自己版本去审查/合并这次改动本身,详见 SKILL
 // 「审查执行环境安全」。配置缺失(securityReviewPaths 为空)= 功能关闭,不扫描不拦截。
-const SECURITY_REVIEW_RE = prRules.securityReviewPaths?.length ? new RegExp(prRules.securityReviewPaths.join('|')) : null;
+// D2(2026-08-09,PR #12 round2):此前本文件在这里自建一份 SECURITY_REVIEW_RE 正则独立判定
+// security 命中,与下方 classifyGateHits(lib.mjs,signoff-policy.test.mjs 共用同一份)的
+// security 分支各算各的——两处判据字面等价但物理上是两份实现,一旦其中一处改动(如加过滤/
+// 改大小写口径)忘了同步另一处就会悄悄漂移。已删除本地正则,security 命中判定唯一走下方
+// classifyGateHits({ securityReviewPaths, ... }).security,不留第二份实现。
 // 自动跟进修复名单:这些作者的 PR 卡在作者侧问题时不打回 / 不催办,由 skill 开跟进会话自己修
 // (owner 本人的 PR 对自动化账号是 own-pr,GitHub 禁止对自己的 PR 提 REQUEST_CHANGES / APPROVE,
 // 打回路径本来就走不通),详见 SKILL「自动跟进修复(fix-handoff)」。
@@ -429,17 +433,18 @@ try {
   // 配置(或 CI workflow/actions / 部署的 skill 定义 / package.json 与 lockfile),继续让
   // review-pr 用可能已被这次改动改坏的版本去自动审查并合并这次改动,会形成"改坏的版本审过
   // 并合入了自己"的自我损坏闭环——一律转人工,不自动审、不自动合(见下方 auto 覆盖)。
-  const securityReviewFiles = SECURITY_REVIEW_RE ? files.map((f) => f.path).filter((p) => SECURITY_REVIEW_RE.test(p)) : [];
-  const hitsSecurityReviewPaths = securityReviewFiles.length > 0;
-
   // ── 规则文档门(rules):改动 ruleFiles.required 列出的审查规则文档 → 维护者确认门 hold ──
-  // 触发判定与 signoff-policy.test.mjs 共用 lib.mjs 的 classifyGateHits(单一来源,防漂移);
-  // ruleMap(规则文档 → 管辖路径映射)命中明细单独带出,供编排按目标仓库配置语义辅助定性,
-  // 不构成 rules 门本身的触发(触发只看 required 清单)。
+  // security 与 rules 触发判定与 signoff-policy.test.mjs 共用 lib.mjs 的 classifyGateHits
+  // (单一来源,防漂移;D2 修订前 security 曾各算各的,见上方注释);ruleMap(规则文档 → 管辖
+  // 路径映射)命中明细单独带出,供编排按目标仓库配置语义辅助定性,不构成 rules 门本身的
+  // 触发(触发只看 required 清单)。
   const gatePathHits = classifyGateHits({
     paths: files.map((f) => f.path),
+    securityReviewPaths: prRules.securityReviewPaths ?? [],
     ruleFiles: prRules.ruleFiles ?? null,
   });
+  const securityReviewFiles = gatePathHits.security;
+  const hitsSecurityReviewPaths = securityReviewFiles.length > 0;
   const rulesHitFiles = gatePathHits.rules;
   const hitsRuleFiles = rulesHitFiles.length > 0;
 
@@ -544,8 +549,22 @@ try {
       author: cs[0]?.author?.login ?? '(unknown)',
       isBot: isBot(cs[0]?.author),
       count: cs.length,
+      // D7(2026-08-09,round2,为 #13 补数据契约):#13 的根因之一是导出形状只给了
+      // comments[0] 的 author,claim 文本却拿 lastComment(线程最后一条评论——往往是人肉
+      // 异议回复,不是机器人最初的断言)顶替,结果把一个真实人类的反对意见当成"待验证的
+      // claim"自动 resolve 掉。这里补两个字段,不改 lastComment 的既有语义(它依然是"最后
+      // 一条评论原文",仍可能被其它用途消费,只是**绝不能被当 claim 用**):
+      //   - claim:开线程那条评论(cs[0])的原文,才是应该被验证/回应的"断言"来源;
+      //     同样遵循 SC-2 不截断(截断会把长断言的关键论据切掉,导致语义匹配漏判/误判)。
+      //   - participants:线程内全部评论作者 + isBot 标记,供下游按自己的机器人白名单
+      //     判断"这条线程是否有非白名单机器人的真人参与"——本文件不掌握下游的白名单口径,
+      //     给全量参与者比给一个单一 flag 更不会漏信息。
+      claim: (cs[0]?.body ?? '').replace(/\r/g, ''),
+      participants: cs.map((c) => ({ author: c.author?.login ?? '(unknown)', isBot: isBot(c.author) })),
       // SC-2(2026-08-09):claim 文本(#13 resolve-threads.mjs 的证据绑定消费方)不许截断——
       // 300 字截断会把长评论的关键论据切掉,导致语义证据匹配漏判/误判。全文原样透出。
+      // D7 更正:本字段是"线程最后一条评论原文",不是 claim 本身,下游判定证据时应改读
+      // 上面新增的 claim 字段(cs[0] 的原文),lastComment 只作辅助上下文用途保留。
       lastComment: (cs[cs.length - 1]?.body ?? '').replace(/\r/g, ''),
     };
   });
@@ -1404,19 +1423,52 @@ try {
   // securityReviewPaths / ruleFiles.required 未配置时对应 hits 恒为 false,覆盖天然不生效。
   // authorizedFastMerge.eligible=true 时也不覆盖(授权通道可以压过这两门,因为授权本身
   // 就是"人工已过的凭证",见 SKILL 5.1「授权快速合并通道」)。
-  // 放行信号:admins 名单成员在当前 head 之后提交的 APPROVED(与 SC 的 release 判定口径
-  // 一致——只认 admins,不认普通白名单;只认当前 head 之后,旧代码上的 Approve 不作数)。
+  // 放行信号:admins 名单成员在当前 head 之后提交的 GitHub APPROVED(只认 admins,不认
+  // 普通白名单;只认当前 head 之后,旧代码上的 Approve 不作数)。
   // SC-3(2026-08-09 修订):判据从「submittedAt 时间戳 >= latestCommitDate」改绑「commit
   // oid === 当前 head」——时间戳口径的反例:维护者在旧 commit 上 Approve,之后作者又推了
   // 一个新 commit,若新 commit 的 committedDate 早于 review 的 submittedAt(时钟偏移/批量
   // rebase 场景），时间戳比较会误判为"已放行"，但那次 Approve 实际绑定的是旧代码。改用
-  // reviewNodesForBasis(latestOpinionatedReviews,已带 commit.oid,approvalBasis 判定同源)
-  // 的 commit.oid 精确比对 meta.headRefOid,与 SC 的 release 判据同一真相源,消除双头。──
-  const adminsApprovedCurrentHead = reviewNodesForBasis.some(
-    (n) => n.state === 'APPROVED'
-      && ADMIN_LOGINS.includes((n.author?.login ?? '').toLowerCase())
-      && n.commit?.oid === meta.headRefOid,
+  // reviewNodesForBasis(latestOpinionatedReviews,已带 commit.oid,与 approvalBasis 判定
+  // 同源)的 commit.oid 精确比对 meta.headRefOid。
+  // D5①(2026-08-09,round2 更正):此前这里写"与 SC(signoff-release.mjs)的 release 判据
+  // 同一真相源,消除双头"——读过 signoff-release.mjs 后确认这是假的:该脚本内部完全没有
+  // APPROVED/oid/submittedAt 任何判定逻辑,它的放行判据是隐藏标记评论(`parseLastHoldMarker`
+  // / `parseSignoffReleases` 解析的 HTML 注释标记),靠 --gates/--by 显式传参写入,和这里的
+  // GitHub Approve + commit.oid 比对是两套完全独立的机制、不存在共享真相源。两者能并存不
+  // 冲突,是因为 signoff-hold/signoff-release 那套标记流转只在被 hold 过的 PR 上生效
+  // (reason=not-held-by-flow 时直接不介入),而本字段的 adminsApprovedCurrentHead 判定
+  // 每轮都会算,两者管的是同一个"放行"结果的不同输入来源,不是同一个真相源的两次读取。──
+  // D6(2026-08-09,round2):oid 判据的 3 个未解释假阴性(过度拦截)缺口:
+  // ① commit 为 null 时到底是"没识别到 commit"还是"oid 真的不匹配",此前不区分,报出来的
+  //    adminsApprovedCurrentHead=false 让人以为"确定没人放行",实际可能只是数据缺口;
+  // ② latestOpinionatedReviews(first:100)有分页上限,>100 个曾发表意见的审查者时第 2 页
+  //    的 admin Approve 会被本判据静默漏看——reviewsCompleteForBasis 已经算好但此前只喂给
+  //    了 evaluateApprovalBasis/approvalBasis 那一路,这里补上同一份诊断消费;
+  // ③ 与 findApproveMergeAuthorization/parseApproveMergeShaCommands(lib.mjs)同源的
+  //    .toLowerCase() 规范化此前缺失,大小写不一致的 oid 会被误判为不匹配。
+  const adminApprovedReviews = reviewNodesForBasis.filter(
+    (n) => n.state === 'APPROVED' && ADMIN_LOGINS.includes((n.author?.login ?? '').toLowerCase()),
   );
+  const headRefOidLower = (meta.headRefOid ?? '').toLowerCase();
+  const adminsApprovedCurrentHead = headRefOidLower.length > 0 && adminApprovedReviews.some(
+    (n) => (n.commit?.oid ?? '').toLowerCase() === headRefOidLower,
+  );
+  const adminApprovalsMissingCommit = adminApprovedReviews.filter((n) => !n.commit?.oid);
+  if (adminApprovalsMissingCommit.length > 0 && !adminsApprovedCurrentHead) {
+    CONFIG_WARNINGS.push(
+      `${adminApprovalsMissingCommit.length} 条 admin Approve 缺少 commit.oid(GraphQL 未返回该字段)——`
+      + '无法判定是否绑定当前 head,adminsApprovedCurrentHead=false 不代表"确定没人在当前 head 之后 '
+      + 'Approve",可能只是这几条数据判不出来,建议人工核实',
+    );
+  }
+  if (!adminsApprovedCurrentHead && !reviewsCompleteForBasis) {
+    CONFIG_WARNINGS.push(
+      'latestOpinionatedReviews 分页未取全(reviewsCompleteForBasis=false)——安全/规则确认门的 '
+      + 'adminsApprovedCurrentHead 判定可能因为翻页边界漏看了 admin 的 Approve,不代表确定未放行,'
+      + '触发 hold 前建议先确认该 PR 的审查者数量是否超过单页上限(100)',
+    );
+  }
   if (!securityBlocked && hitsSecurityReviewPaths && !adminsApprovedCurrentHead
     && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
     autoAction = 'security-gate';
@@ -1443,6 +1495,16 @@ try {
   const holdInvocation = holdKind
     ? await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run'])
     : null;
+  // D3(2026-08-09,PR #12 round2,全局规则 12「失败可见」):spawnScriptJson 对「模块不存在 /
+  // 输出非 JSON / 子进程 fail() 退出 1」三种探测失败一律折叠成 { ok:false, error }且此前无
+  // 任何下游消费——signoff-hold.mjs 的调用点实际不可执行时,没有任何字段会变化,主 agent
+  // 读不到任何信号。命中三门之一但探测没有成功 → 写进 CONFIG_WARNINGS(已有的下游消费:
+  // scan/全量两处 print() 的 configWarnings 字段),让「call site 探测失败」变成可观测事实。
+  if (holdKind && holdInvocation?.ok !== true) {
+    CONFIG_WARNINGS.push(
+      `signoff-hold.mjs 的 --dry-run 探测调用未成功(kind=${holdKind}):${holdInvocation?.error ?? '未知原因(spawnScriptJson 返回非 {ok:true,...} 形态)'}——三门 hold 的调用点当前不可证明可执行,主 agent 按 SKILL 3.4 正式生成 payload 发起 hold 前应先排查 signoff-hold.mjs 本身是否存在/依赖完整/gh 鉴权可用,不要假定 holdInvocation 已经证明过`,
+    );
+  }
 
   // ── SC-4(2026-08-09):signoff 判据消除双头 ──
   // scan 模式与全量模式此前各自独立构造一份 signoff 对象,字段与推导逻辑逐字重复
@@ -1464,8 +1526,14 @@ try {
       ...(hitsRuleFiles && !adminsApprovedCurrentHead ? ['rules'] : []),
       ...(needsArchCheck ? ['arch'] : []),
     ],
+    // D4(2026-08-09,PR #12 round2):此前 invoked:true 是硬编码,即便 spawnScriptJson 因
+    // 「模块不存在/输出非 JSON/子进程 fail() 退出 1」而返回 {ok:false,...},invoked 仍然读
+    // true——"调用点是否真被执行"这个字段本身在撒谎。改为如实反映 holdInvocation.ok;
+    // 同时把 kind/dryRun/invoked 这三个"自描述字段"放在展开式**之后**,防止子进程返回值里
+    // 出现同名字段(如 signoff-hold.mjs --dry-run 输出自带的 dryRun:true)时被静默覆盖——
+    // 自描述字段的语义由本文件定义,子进程输出只应补充信息,不应反过来篡改它们。
     holdInvocation: holdKind
-      ? { kind: holdKind, dryRun: true, invoked: true, ...holdInvocation }
+      ? { ...holdInvocation, kind: holdKind, dryRun: true, invoked: holdInvocation?.ok === true }
       : { kind: null, dryRun: false, invoked: false, reason: 'auto.action 未命中三门(security-gate/rules-gate/arch-gate)' },
   };
 
@@ -1587,7 +1655,7 @@ try {
     archGate,
     signoff: {
       ...signoffCore,
-      note: '三门命中事实(securityReviewPaths / ruleFiles.required / archGate 触发器),供 auto 编排消费——命中 → 调 signoff-hold.mjs --kind <门> --payload-file(挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,不转 draft)。判定事实唯一 owner=本字段与 signoff-policy.test.mjs 锚定的 lib.mjs classifyGateHits;hold 动作唯一 owner=signoff-hold.mjs(脚本做幂等与去重)。suggestedHolds 只列「需要 hold 动作」的门:admins 名单成员已在当前 head 之后 Approve(adminsApprovedCurrentHead=true)时 security/rules 不列入;arch 的放行口径见 archGate.note(白名单/冷更把关人)。product 门走 productGate.needsProductCheck(既有)。holdInvocation 是本次 scan 期间对 signoff-hold.mjs 的 --dry-run 探测调用(kind 命中三门之一时真 spawn 子进程,读 gh pr view 但不写任何外部状态),用于证明调用点可执行、不是文档示例;不替代主 agent 按 SKILL 3.4 生成 payload 后的正式 hold(那次带 issueTitle/issueBody/commentBody,真正落地 issue/标签/评论)。',
+      note: '三门命中事实(securityReviewPaths / ruleFiles.required / archGate 触发器),供 auto 编排消费——命中 → 调 signoff-hold.mjs --kind <门> --payload-file(挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,不转 draft)。判定事实唯一 owner=本字段与 signoff-policy.test.mjs 锚定的 lib.mjs classifyGateHits;hold 动作唯一 owner=signoff-hold.mjs(脚本做幂等与去重)。suggestedHolds 只列「需要 hold 动作」的门:admins 名单成员已在当前 head 之后 Approve(adminsApprovedCurrentHead=true)时 security/rules 不列入;arch 的放行口径见 archGate.note(白名单/冷更把关人)。product 门走 productGate.needsProductCheck(既有)。holdInvocation 是本次 scan 期间对 signoff-hold.mjs 的一次 --dry-run 探测尝试(kind 命中三门之一时真 spawn 子进程,读 gh pr view 但不写任何外部状态)的**记录**,不是"调用点可执行"的证明——invoked=true 只代表这次探测本身返回了 {ok:true,...}(D4 修订:此前 invoked 是硬编码 true,即便模块不存在/输出非 JSON/子进程非零退出都照样读 true,现已改为如实取 holdInvocation.ok);invoked=false 或探测失败时,失败原因会同时写进顶层 configWarnings(D3),那才是排查"调用点是否真的可执行"该看的地方。本字段不替代主 agent 按 SKILL 3.4 生成 payload 后的正式 hold(那次带 issueTitle/issueBody/commentBody,真正落地 issue/标签/评论)。',
     },
     authorizedFastMerge,
     // SC-1(2026-08-08):admin-trust 与 break-glass 名单显式区分;强制策略开关一并带出。

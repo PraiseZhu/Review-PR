@@ -34,7 +34,7 @@ const DEFAULT_COMMENT_NODES = [{
   body: '/approve-merge', // 旧裸格式:不授权,必须进 legacyBareComments
   createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
 }];
-function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928', securityReviewPaths = [] } = {}) {
+function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928', securityReviewPaths = [], reviewThreadNodes = [] } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'context-scan-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -75,7 +75,7 @@ function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAu
       viewer: { login: 'PraiseZhu' },
       repository: { pullRequest: {
         author: { login: authorLogin },
-        reviewThreads: { nodes: [] },
+        reviewThreads: { nodes: reviewThreadNodes },
         comments: { nodes: commentNodes },
         timeline: { nodes: [{ commit: { committedDate: '2026-08-04T10:00:00Z', messageHeadline: 'x', oid: HEAD } }] },
         readyEvents: { nodes: [] },
@@ -324,6 +324,15 @@ test('SC-1 接线:命中 securityReviewPaths → signoff-hold.mjs --dry-run 真�
   assert.equal(out.signoff.holdInvocation.ok, true, 'signoff-hold.mjs 子进程必须真正执行并返回 ok:true');
   assert.equal(out.signoff.holdInvocation.pr, 469, '子进程读到的 PR 号必须与调用参数一致,证明真的解析了 CLI 参数而非硬编码/mock');
   assert.equal(out.signoff.holdInvocation.author, 'aj0928', '子进程必须真的读取了 fixture 里的 pr-view.json(author 字段),不是空转返回固定值');
+  // 第二轮复审 m3:把 spawnScriptJson(SIGNOFF_HOLD_PATH, ...) 换成字面量
+  // `{ ok: true, pr, author: authorLogin }`(context.mjs 本来就攥着 pr/author,伪造这两个
+  // 字段不需要子进程真的跑)仍能骗过以上断言。以下三个字段只有 signoff-hold.mjs 真的执行了
+  // 内部业务分支(decideIssueReuse/payloadComplete 判定、doRenotice()、
+  // syncSignoffLabel(dryRun:true))才会出现,字面量伪造拿不到——是"真被调用"而非"声称被
+  // 调用"的第二层证据:
+  assert.equal(out.signoff.holdInvocation.missingPayload, true, '子进程必须真的算出 decideIssueReuse({priorIssueUrl:null}).needNewIssue=true 且未传 --payload-file 时 payloadComplete=false;字面量 bypass 没有这个字段');
+  assert.equal(out.signoff.holdInvocation.renoticeSkipped, 'never-held', '子进程必须真的跑完 doRenotice() 的 priorIssueUrl==null 分支判定;字面量 bypass 没有这个字段');
+  assert.equal(out.signoff.holdInvocation.labels?.dryRun, true, '子进程必须真的调用 syncSignoffLabel({want:true, current:[]})(fixture 无标签 → want!==has → dry-run 分支);字面量 bypass 没有这个字段');
 });
 
 test('SC-1 反向:未命中三门(auto.action 落 skip-structural-block)→ holdInvocation.invoked=false,不空转 spawn', () => {
@@ -363,22 +372,84 @@ test('SC-3 正例:admins 在当前 head 上 Approve → adminsApprovedCurrentHea
   assert.equal(out.signoff.adminsApprovedCurrentHead, true, 'admins 名单成员在当前 head 上 APPROVED → 必须放行');
 });
 
+// D6③(2026-08-09,round2 补测):GitHub 返回的 commit oid 大小写不保证与本地 git 输出一致,
+// 判据必须做大小写规范化。以上两个用例的 HEAD/OLD 常量本身全小写,不构成大小写不一致场景——
+// 去掉 .toLowerCase() 规范化后上面两个用例仍然全绿,测不出回归。本用例把 review 绑定的
+// commit.oid 换成 HEAD 的大写形式,只有真的做了规范化比较才会判定为同一个 commit。
+test('SC-3 大小写:review 绑定的 commit.oid 与 headRefOid 大小写不同(同一 commit)→ 仍须规范化后判定为放行', () => {
+  const { repo, env } = setup({ approveOid: HEAD.toUpperCase(), reviewAuthor: 'PraiseZhu' });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  assert.equal(out.signoff.adminsApprovedCurrentHead, true, 'commit.oid 大小写不同但指向同一 commit → 去掉大小写规范化就会误判为未放行');
+});
+
 // ── SC-4(2026-08-09):signoff 判据消除双头 ──
 // scan 模式与全量模式此前各自独立构造一份 signoff 对象(triggers/suggestedHolds 逐字重复),
 // 本轮改为共用同一个 signoffCore。以下静态锁住"只有一份推导逻辑",防止之后有人在某一个
 // 模式里改了判据、另一个模式漏改,形成隐蔽双头。
 
-test('SC-4 静态锁:signoff 判据只有一份共享核心(signoffCore),scan/全量两模式共用,不留双头实现', () => {
-  const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
-  const suggestedHoldsCount = (src.match(/suggestedHolds:/g) ?? []).length;
-  assert.equal(suggestedHoldsCount, 1, 'suggestedHolds 推导逻辑只能出现一次(signoffCore 内),否则就是判据双头');
-  assert.match(src, /signoff:\s*signoffCore,/, 'scan 模式必须直接引用共享的 signoffCore');
-  assert.match(src, /\.\.\.signoffCore,/, '全量模式必须展开共享的 signoffCore(加 note),不得重新构造独立字段');
+// 第二轮复审 m7b:在全量模式的展开处多写一个 `suggestedHolds :`(冒号前加空格)——字面量
+// `suggestedHolds:` 计数仍是 1(regex 没匹配到带空格的这处),`signoff: signoffCore,` /
+// `...signoffCore,` 的引用检查也照样通过,但 scan 与全量两个模式实际输出的 suggestedHolds
+// 值会不一致(双头判据的真实症状)。静态读源码字符串测不出"两个模式的实际产出是否一致",
+// 改为真的跑两遍、深比较两次的真实输出值。
+test('SC-4 行为锁:signoffCore 是唯一推导来源 —— scan 模式与全量模式实际输出的 suggestedHolds 必须完全一致', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] }); // 命中 security → suggestedHolds 非空,才有区分力
+  const rScan = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  const rFull = spawnSync('node', [SCRIPT, '469'], { cwd: repo, env, encoding: 'utf8' });
+  let outScan = null, outFull = null;
+  try { outScan = JSON.parse(rScan.stdout); } catch { /* fallthrough */ }
+  try { outFull = JSON.parse(rFull.stdout); } catch { /* fallthrough */ }
+  assert.ok(outScan, `scan 模式输出应为 JSON,got status=${rScan.status}\nstdout=${rScan.stdout.slice(0, 800)}`);
+  assert.ok(outFull, `全量模式输出应为 JSON,got status=${rFull.status}\nstdout=${rFull.stdout.slice(0, 800)}`);
+  assert.ok(outScan.signoff.suggestedHolds.length > 0, '本用例命中 security-gate,suggestedHolds 必须非空才有区分力');
+  assert.deepEqual(outFull.signoff.suggestedHolds, outScan.signoff.suggestedHolds, '两个模式的 suggestedHolds 必须来自同一份 signoffCore,实际值不能不一致——不一致就是判据双头的直接证据');
 });
 
-// ── SC-2(2026-08-09):thread id 补字段 + claim 文本不截断 ──
-test('SC-2 静态锁:GraphQL reviewThreads 查询必须取 id 字段;lastComment 不得截断(#13 证据绑定消费方依赖全文)', () => {
-  const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
-  assert.match(src, /reviewThreads\([\s\S]{0,80}?nodes\{\s*id\s+isResolved/, 'reviewThreads GraphQL 查询必须显式取 id 字段(#13 resolve-threads.mjs 靠 thread id 定位评论线程)');
-  assert.doesNotMatch(src, /lastComment:\s*clip\(/, 'lastComment 不得再走 clip(截断)——300 字截断会把长评论的关键论据切掉');
+// ── SC-2(2026-08-09,round2 改为行为锁):thread id 补字段 + claim/participants 数据契约 + lastComment 不截断 ──
+// 第二轮复审 m5/m6:静态读源码字符串锁不住实际输出——
+//   - m5:删掉导出里 `id: t.id ?? null` 这行映射,GraphQL 查询串本身没变,静态锁照样过,
+//     但输出里再也没有 id 字段;
+//   - m6:把 `.replace(/\r/g,'')` 换成 `.replace(/\r/g,'').slice(0,300)`,字面量 `clip(`
+//     没出现,静态锁照样过,但输出被重新截断。
+// 改为跑真实全量模式(history/reviewThreads 只在全量模式输出,--scan 不含)、断言输出的
+// 实际字段值。同时验证 D7 新增的 claim/participants 字段确实被下游接收到——claim 必须取
+// 线程首条评论(机器人的断言),不能被 lastComment(线程最后一条,#13 场景里常是人类异议
+// 回复)顶替,这是 #13 blocker 的数据契约根因修复。
+const REVIEW_THREAD_ID = 'PRRT_test_0001';
+const REVIEW_THREAD_TAIL_MARKER = 'TAIL-MARKER-9f3c';
+const REVIEW_THREAD_LAST_COMMENT = `${'X'.repeat(320)}${REVIEW_THREAD_TAIL_MARKER}`; // 336 字,超过 300 字截断阈值
+const REVIEW_THREAD_NODES = [{
+  id: REVIEW_THREAD_ID, isResolved: false, isOutdated: false, path: 'src/foo.ts',
+  comments: { nodes: [
+    // cs[0]:机器人开线程的断言——claim 必须取这条
+    { author: { login: 'coderabbitai', __typename: 'Bot' }, body: '这里疑似有空指针风险,建议加判空处理。', createdAt: '2026-08-04T09:00:00Z' },
+    // cs[last]:人类的异议回复——lastComment 取这条,但绝不能被当成 claim
+    { author: { login: 'PraiseZhu', __typename: 'User' }, body: REVIEW_THREAD_LAST_COMMENT, createdAt: '2026-08-04T10:00:00Z' },
+  ] },
+}];
+
+test('SC-2 行为锁:reviewThreads 真实输出 id、claim(首条评论)、participants(全部作者+isBot)、lastComment(末条评论,超 300 字不截断)', () => {
+  const { repo, env } = setup({ reviewThreadNodes: REVIEW_THREAD_NODES });
+  const r = spawnSync('node', [SCRIPT, '469'], { cwd: repo, env, encoding: 'utf8' }); // 全量模式:history.reviewThreads 只在这里输出,--scan 不含
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  assert.equal(out.history.reviewThreads.length, 1);
+  const thread = out.history.reviewThreads[0];
+  // m5:id 必须是 GraphQL 返回的真实线程 id(fixture 值),不是"查询串里提到 id"这种静态巧合
+  assert.equal(thread.id, REVIEW_THREAD_ID, 'reviewThreads[0].id 必须等于 GraphQL 返回的真实线程 id,不能只是查询串里出现过 id 字面量');
+  // m6:lastComment 必须原样保留 320 字之后的尾标记,重新截断到 300 会把它切掉
+  assert.equal(thread.lastComment.length, REVIEW_THREAD_LAST_COMMENT.length, 'lastComment 长度必须与原文一致(仅去 \\r,不截断)');
+  assert.ok(thread.lastComment.endsWith(REVIEW_THREAD_TAIL_MARKER), `lastComment 必须原样透出超过 300 字的内容,尾标记不能被截断丢失。got tail=${thread.lastComment.slice(-40)}`);
+  // D7:claim 取线程首条评论(机器人断言),不是 lastComment(人类异议回复)——两者必须是不同值
+  assert.equal(thread.claim, '这里疑似有空指针风险,建议加判空处理。', 'claim 必须取线程首条评论原文,不能被 lastComment(线程最后一条)顶替');
+  assert.notEqual(thread.claim, thread.lastComment, 'claim 与 lastComment 必须是两个不同字段/不同来源,不能退化成同一个值');
+  // D7:participants 暴露全部评论作者 + isBot,供下游按自己的白名单口径判断"是否有非白名单机器人的真人参与"
+  assert.deepEqual(thread.participants, [
+    { author: 'coderabbitai', isBot: true },
+    { author: 'PraiseZhu', isBot: false },
+  ], 'participants 必须包含线程内全部评论的 author+isBot,顺序与 GraphQL 返回一致');
 });

@@ -2348,8 +2348,10 @@ export function removeLegacyGateLabels({ owner, repo, pr, current = [], ghFn, dr
  * 本函数输出的事实 + context.mjs 的语义定性字段)。arch 门完整判定(白名单 / diff 行数
  * 阈值 / 冷更 guard)留在 context.mjs,本函数只算 archGate.corePaths 的路径层命中。
  * 路径匹配语义与 mivo 既有消费方一致:
- *   - security:securityReviewPaths 为正则片段数组,join('|') 后整体 test(与 context.mjs
- *     SECURITY_REVIEW_RE 同一口径);空数组 = 门关闭,恒不命中;
+ *   - security:securityReviewPaths 为正则片段数组,join('|') 后整体 test;空数组/全部
+ *     为空字符串 = 门关闭,恒不命中(D2,2026-08-09:context.mjs 不再自行维护一份
+ *     SECURITY_REVIEW_RE 正则,security 门的路径匹配唯一实现收敛到本函数,context.mjs 直接
+ *     消费 classifyGateHits({...}).security,不留第二份判定逻辑);
  *   - rules:ruleFiles.required 为规则文档清单,`/` 结尾按前缀匹配、否则整路径相等
  *     (同 matchColdUpdatePaths 语义,防近邻文件误伤);ruleMap(规则文档 → 管辖路径映射,
  *     value 数组同样按该语义匹配)命中明细单独输出,供编排按目标仓库配置语义消费;
@@ -2361,8 +2363,14 @@ export function removeLegacyGateLabels({ owner, repo, pr, current = [], ghFn, dr
  */
 export function classifyGateHits({ paths = [], securityReviewPaths = [], ruleFiles = null, archCorePaths = [] } = {}) {
   const list = paths ?? [];
-  const security = (securityReviewPaths ?? []).length
-    ? list.filter((p) => new RegExp((securityReviewPaths ?? []).join('|')).test(p))
+  // D8(2026-08-09,PR #12 round2):securityReviewPaths 若混入空字符串条目,join('|') 会拼出
+  // 形如 "a||b" 的正则——中间的空分支在任意位置恒真,导致这条正则对**所有路径**都命中,
+  // 安全门失去选择性、变成对每个 PR 都触发 hold(配置一个空字符串就能让整条门失效为"逢 PR
+  // 必拦")。与 required/ruleMap 等其它字段一致,先 .filter 掉非字符串/空字符串条目再判空、
+  // 再 join,防一个坏配置值污染整条正则。
+  const validSecurityPaths = (securityReviewPaths ?? []).filter((p) => typeof p === 'string' && p.length > 0);
+  const security = validSecurityPaths.length
+    ? list.filter((p) => new RegExp(validSecurityPaths.join('|')).test(p))
     : [];
   const required = (ruleFiles?.required ?? []).filter(Boolean);
   const matchOne = (p, pats) => (pats ?? []).some((pat) => (pat.endsWith('/') ? p.startsWith(pat) : p === pat));
