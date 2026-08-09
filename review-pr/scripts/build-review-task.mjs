@@ -153,6 +153,7 @@ try {
     '  **`command` 与 `outputAnchor` 必须与 `verificationRuns[]` 里被引用 run 的对应字段逐字一致**(机器会做一致性校验,不一致判 invalid);`verificationRunId` 必须引用真实登记的 runId。',
     '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor}`——每条实验真实执行并登记。',
     '- `escapeAssessment[]` / `verificationGaps[]`:`{candidateId, verdict:"yes"|"no", basis}` / `{description, required:false}`。',
+    '  **以下字段即使为空也必须作为数组包含:`verificationGaps`, `findingDispositions`, `profileAnswers`, `negativeEvidence`**(缺字段或传非数组,机器各自硬报错判 invalid)。',
   ].join('\n'), '');
   L.push('> 输出前逐字段自检一遍上述形状;格式偏差会导致整轮判 invalid,机器不会"尽力解析"。', '');
   if (relevantHazards.length > 0) {
