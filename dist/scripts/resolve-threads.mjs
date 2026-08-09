@@ -7,8 +7,8 @@
 // assessThreadEvidence 已删,见 SKILL 3.10 启用前提)。本脚本只做两类事、三终态:
 //   - reply(无条件,可纠正,反停滞全部价值):白名单 bot thread 且无白名单外参与者;
 //   - resolve(默认不执行,机器可核实才做):线程已 resolved / 己方(state=replied)
-//     marker + 同 headSha + 白名单复核通过 / 己方 state=resolved marker 后又 reopen
-//     (人工翻案,永久留人工);
+//     marker + 同 headSha + **marker 年龄 ≥ 反对窗口**(MIN_MARKER_AGE_MS) + 白名单
+//     复核通过 / 己方 state=resolved marker 后又 reopen(人工翻案,永久留人工);
 //   - 终态:`replied-only` / `resolved` / `skipped-<reason>`。
 // marker 可信度 = 评论作者身份(viewer login 比对),非文本形状(pr/thread/sha 公开可复制);
 // 白名单复核只豁免 viewer 自己的评论。状态全在 GitHub 侧,无本地回执。
@@ -68,7 +68,7 @@ const THREADS_PAGE_QUERY = `
             id isResolved path
             comments(first:50){
               pageInfo{ hasNextPage endCursor }
-              nodes{ body author{ login } id }
+              nodes{ body author{ login } id createdAt }
             }
           }
         }
@@ -82,7 +82,7 @@ const THREAD_COMMENTS_PAGE_QUERY = `
       ... on PullRequestReviewThread{
         comments(first:50, after:$after){
           pageInfo{ hasNextPage endCursor }
-          nodes{ body author{ login } id }
+          nodes{ body author{ login } id createdAt }
         }
       }
     }
@@ -96,7 +96,7 @@ const THREAD_RECHECK_QUERY = `
     node(id:$tid){
       ... on PullRequestReviewThread{
         id isResolved
-        comments(first:50){ nodes{ body author{ login } id } }
+        comments(first:50){ nodes{ body author{ login } id createdAt } }
       }
     }
   }`;
@@ -169,6 +169,18 @@ function ownMarkersFrom(comments, pr, threadId, viewerLogin) {
 // REVIEW_PR_RESOLVE_LOCK_DIR 隔离。
 const THREAD_LOCK_TTL_MS = Number(process.env.REVIEW_PR_RESOLVE_LOCK_TTL_MS || 5 * 60 * 1000);
 const THREAD_TAKEOVER_TTL_MS = 60 * 1000;
+// ── 人工反对窗口(D1 两阶段协议的核心价值)──
+// resolve 的机器可核实条件之一:己方 reply marker 必须**至少存在 MIN_MARKER_AGE_MS**
+// 才能 resolve——这段窗口让真人在「我们回复」与「自动关闭」之间有时间介入反对。
+// 若双实例重叠(定时巡审 + 手动运行)时窗口塌成 0,两阶段就退化成单轮 auto-resolve
+// (D1 明确否决的东西)。阈值取巡审间隔量级(默认 10 分钟)。
+// 年龄从评论 createdAt(GitHub 侧字段,跨机器可信,与 D3 无本地状态一致)推导。
+const MIN_MARKER_AGE_MS = Number(process.env.REVIEW_PR_MIN_MARKER_AGE_MS || 10 * 60 * 1000);
+function markerAgeMs(comment) {
+  if (!comment?.createdAt) return null; // 读不到时间(旧缓存/形状变化)→ 不满足,不 resolve
+  const t = Date.parse(comment.createdAt);
+  return Number.isFinite(t) ? Math.max(0, Date.now() - t) : null;
+}
 
 function lockDir() {
   const d = process.env.REVIEW_PR_RESOLVE_LOCK_DIR || join(tmpdir(), 'review-pr-resolve-threads-locks');
@@ -358,10 +370,12 @@ try {
     if (dryRun) {
       // dry-run 不拿锁、不重查;resolve 预演按批量评论里的己方 marker 判定。
       const pre = ownMarkersFrom(comments, pr, w.id, viewerLogin);
+      const preAge = pre.length ? markerAgeMs(pre[pre.length - 1].comment) : null;
       const wouldResolve = pre.length > 0
         && !pre.some((m) => m.marker.state === 'resolved')
-        && pre[pre.length - 1].marker.sha === headSha;
-      results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: true, wouldResolve });
+        && pre[pre.length - 1].marker.sha === headSha
+        && preAge !== null && preAge >= MIN_MARKER_AGE_MS;
+      results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: true, wouldResolve, ...(preAge === null ? {} : { markerAgeMs: preAge }) });
       continue;
     }
     // SC-2:并发至多一次。拿不到锁 = 另一进程正在处理同一 thread,本进程不动。
@@ -424,10 +438,11 @@ try {
         return { replied, replyError };
       };
       if (ownMarkers.length > 0) {
-        // 上一轮己方已 reply(state=replied marker)。sha 与本次 headSha 一致 → 机器可
-        // 核实条件成立(己方回复过 + 白名单复核通过 → 无真人异议):resolve,不重复回复。
-        // sha 不一致 → 上一轮 triage 针对的是旧 head,按新 head 重新走首轮(只回复),
-        // 由编排层按当前 head 重新生成 reply。
+        // 上一轮己方已 reply(state=replied marker)。机器可核实条件(全部满足才 resolve,
+        // 不重复回复):
+        //   a. sha 与本次 headSha 一致——不一致说明上一轮 triage 针对旧 head,按新 head
+        //      重新走首轮(只回复),由编排层按当前 head 重新生成 reply;
+        //   b. 己方 marker 年龄 ≥ MIN_MARKER_AGE_MS(人工反对窗口,见常量注释)。
         const last = ownMarkers[ownMarkers.length - 1];
         if (last.marker.sha !== headSha) {
           const { replied, replyError } = await doReply();
@@ -438,6 +453,17 @@ try {
             reason: replied
               ? 'replied-only(head 已移动,上一轮 triage 失效,按当前 head 重新回复;resolve 待下一轮同 headSha 机器可核实)'
               : 'skipped-reply-failed(回复发送失败,下一轮可重试)',
+          });
+          continue;
+        }
+        const lastAge = markerAgeMs(last.comment);
+        if (lastAge === null || lastAge < MIN_MARKER_AGE_MS) {
+          // 人工反对窗口未过(或读不到 marker 时间戳,保守不 resolve)。不重复回复,只
+          // 等下一轮重查;窗口内有人 resolve 掉(手动)→ 下一轮看到 already-resolved。
+          results.push({
+            id: w.id, path: t.path, outcome: 'replied-only', done: false, replied: false,
+            resolved: false, markerAgeMs: lastAge,
+            reason: `replied-only(己方 marker 年龄 ${lastAge === null ? '未知(无 createdAt)' : `${Math.floor(lastAge / 1000)}s`} < 人工反对窗口 ${Math.floor(MIN_MARKER_AGE_MS / 1000)}s,不 resolve——窗口期内保留人工介入机会;下一轮自动重查)`,
           });
           continue;
         }

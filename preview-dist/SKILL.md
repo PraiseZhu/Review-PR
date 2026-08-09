@@ -835,11 +835,17 @@ token 共现判据（PR #13 R2 blocker 实测成立），原 `assessThreadEviden
    不可逆的对外 resolve 动作不构成充分条件）：
    - 线程已是 resolved（幂等，`already-resolved`）；
    - **上一轮己方已 reply 同一 headSha**：thread 评论里有 viewer 身份作者的本脚本
-     marker（`state=replied`、`sha` 与本次 `headSha` 一致），且白名单复核仍通过
-     （回复后无真人异议）→ resolve，成功后再追加 `state=resolved` marker；
+     marker（`state=replied`、`sha` 与本次 `headSha` 一致）、**marker 年龄 ≥ 人工
+     反对窗口**（`MIN_MARKER_AGE_MS`，默认 10 分钟，从评论 `createdAt`——GitHub 侧
+     字段——推导，不引入本地时间状态），且白名单复核仍通过（回复后无真人异议）→
+     resolve，成功后再追加 `state=resolved` marker；
    - 己方 marker `state=resolved` 但线程又变 unresolved → 人工翻案
      （`skipped-reopened-after-triage`），**永久留人工**，不与人拉锯。
    其余情况一律只回复不关闭；
+   **年龄门保护的是人工反对窗口，不是防抖动**：D1 之所以允许 auto-resolve 存在，
+   靠的是「回复与关闭之间存在一段人可以介入反对的时间」。若双实例重叠（定时巡审 +
+   手动运行）时窗口塌成 0，两阶段就退化成单轮自动 resolve——故 marker 必须在窗口期
+   之后才允许 resolve；窗口期内重新运行只 `replied-only`，不重复回复。
 3. **marker 可信度 = 评论作者身份**（执行层 GraphQL `viewer { login }` 比对），pr
    号 / thread id / sha 都是公开信息，文本形状可被任何有评论权限的账号复制，身份
    不可伪造。**状态全部在 GitHub 侧（评论 + 线程 resolve 状态），无本地回执**——
