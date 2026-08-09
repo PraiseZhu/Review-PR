@@ -32,15 +32,30 @@
 //   --labels-only:只确保维护者确认标签挂上(并摘掉旧门类子标签),不开 issue、不发首次
 //     hold 评论。用于标签状态重同步。**状态回帖照发**(见上)。
 //   --no-renotice:关掉状态回帖(只给测试/特殊场景用)。
-//   --dry-run:只探测(是否已拦截过 / 将做什么),不写任何外部状态
+//   --dry-run:只探测(是否已拦截过 / 将做什么),不写任何外部状态——**也不获取排他锁**
+//     (round2 修复:此前 dry-run 会真的写锁文件,和本行文档自称的"不写外部状态"矛盾,
+//     还会跟真实执行抢锁造成饥饿)。
 //
 // 正确调用(`-` 走 stdin):
 //   node .../signoff-hold.mjs 123 --kind security --payload-file - <<'JSON'
 //   { "issueTitle": "…", "issueBody": "…", "commentBody": "…{{ISSUE_URL}}…" }
 //   JSON
+//
+// 排他锁相关环境变量(见下方"幂等原子 claim"段):
+//   SIGNOFF_HOLD_LOCK_DIR:锁文件目录,默认 stateFile('signoff-hold-locks')(按本地
+//     git-common-dir 哈希隔离,见 lib.mjs repoStateKey)。
+//   SIGNOFF_HOLD_LOCK_TIMEOUT_MS:抢锁轮询的超时上限,默认 15000。
+// 锁超时(拿不到锁)时的输出:reason='lock-timeout' + needsIntervention:true +
+//   holderPid/holderStartedAt(能读到时)——round2 前是完全静默的 {held:false},现在
+//   显式标注"需要人工介入",不再悄悄交给下一轮空转。
+// 其它 round2 新增输出字段:heldBlockedBy(held=false 时点名 issue/comment/labels 里
+//   具体是哪项没成)、legacyLabelWarning(旧门类标签清理失败,与本轮 signoff 标签是否
+//   挂上——labelWarning——是两件独立的事,不互相连坐)。
 
-import { readFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync, writeSync } from 'node:fs';
+import { readFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync, writeSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, stateFile } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
@@ -61,12 +76,18 @@ const KIND_TOPICS = {
 
 // ── 幂等原子 claim(SC-1) ──
 // 旧实现是 check-then-act:读标记评论判「是否已 hold 过」和写 issue/评论之间没有互斥,
-// 两个并发实例(如同一 PR 被两条流水线同时触发)会各自认为「没 hold 过」,各建一份 issue、
-// 各发一条评论。这里用 fs.openSync(path,'wx') 排他创建当锁——它是文件系统级原子操作,
-// 不存在「检查时不存在、创建时已被抢先」的窗口。锁覆盖从读 PR 元数据到写完 issue/评论/
-// 标签的整段 check-then-act,谁抢到锁谁独占执行,另一个实例原地等待(轮询)或超时退让,
-// 不会出现"两边都判定为需要新建"的竞态。
-const LOCK_STALE_MS = 5 * 60 * 1000; // 正常一轮执行远快于 5 分钟,超过视为异常残留(进程被杀掉过)
+// 同一份本地 checkout 下的两个并发实例(如同一 worktree 被同一台机器上的两条流水线
+// 同时触发)会各自认为「没 hold 过」,各建一份 issue、各发一条评论。这里用
+// fs.openSync(path,'wx') 排他创建当锁——它是文件系统级原子操作,不存在「检查时不存在、
+// 创建时已被抢先」的窗口。锁覆盖从读 PR 元数据到写完 issue/评论/标签的整段
+// check-then-act,谁抢到锁谁独占执行,另一个实例原地等待(轮询)或超时退让,不会出现
+// "两边都判定为需要新建"的竞态。
+// 覆盖边界(round2 收窄声明,勿再扩大):锁目录锚定在本地 git-common-dir 的 realpath
+// 哈希(见 lib.mjs repoStateKey)——同一份本地 clone 下的所有 worktree 共享同一把锁,
+// 但不同 clone(不同机器 / 不同 CI runner 各自 checkout 一份)拿到的是不同锁目录,
+// 互斥在这种场景下不生效。真正的跨机器互斥需要挪到 GitHub 一侧(如基于
+// If-Match/conditional write 的原子标记),留作后续独立 PR,这里先如实收窄声明范围。
+const LOCK_STALE_MS = 5 * 60 * 1000; // 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
 const LOCK_POLL_MS = 100;
 const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000);
 
@@ -83,33 +104,120 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(sab), 0, 0, ms);
 }
 
+function readLockInfo(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed && typeof parsed.pid === 'number' && typeof parsed.token === 'string') return parsed;
+  } catch { /* 内容损坏,或 round1 遗留的纯 pid 字符串格式 → 交给调用方走 mtime 兜底 */ }
+  return null;
+}
+
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true; // 收到信号本身就说明进程还在(不管是否同用户可签)
+  } catch (e) {
+    return e.code !== 'ESRCH'; // ESRCH=进程已死→陈旧;EPERM 等一律保守当"还活着"
+  }
+}
+
+function tryTakeoverStaleLock(path, takeoverPath, writeOwn) {
+  // 两阶段抢占(镜像 prepare.mjs 的 takeover 机制,round2 D2 修复):先原子创建 sibling
+  // .takeover 文件当"抢占锁",拿到后在其保护下复核主锁确实还陈旧、再 unlink+recreate;
+  // 避免两个并发实例同时判定陈旧、同时抢占导致互相删对方刚写的新锁。finally 保证
+  // takeover 文件总会被清理,不留残留。
+  try {
+    const tfd = openSync(takeoverPath, 'wx');
+    writeSync(tfd, String(process.pid));
+    closeSync(tfd);
+  } catch {
+    return false; // 另一实例正在抢占,本轮放弃,交给外层轮询重试
+  }
+  try {
+    const recheck = readLockInfo(path);
+    if (recheck && isPidAlive(recheck.pid)) return false; // 被别的实例刷新成活锁,不抢
+    try { unlinkSync(path); } catch { /* 已被抢占清理过 */ }
+    try {
+      const fd = openSync(path, 'wx');
+      writeOwn(fd);
+      closeSync(fd);
+      return true;
+    } catch {
+      return false; // 极端竞态下重建失败,交外层轮询重试而不是崩溃
+    }
+  } finally {
+    try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
+  }
+}
+
 export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS } = {}) {
   const path = lockPathFor(owner, repo, pr);
+  const takeoverPath = `${path}.takeover`;
   const deadline = Date.now() + timeoutMs;
+  const token = randomUUID();
+  const writeOwn = (fd) => writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: Date.now(), token }));
   for (;;) {
     try {
       const fd = openSync(path, 'wx'); // 原子排他创建:已存在则抛 EEXIST,不存在才会创建成功
-      writeSync(fd, String(process.pid));
+      writeOwn(fd);
       closeSync(fd);
-      return { path, acquired: true };
+      return { path, acquired: true, token };
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      try {
-        const st = statSync(path);
-        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          unlinkSync(path); // 陈旧锁(持有者已死):抢占清除,立即重试而不是白等到超时
-          continue;
-        }
-      } catch { /* 锁在检测瞬间被持有者自己释放,走下面的超时判断/轮询重试 */ }
-      if (Date.now() >= deadline) return { path, acquired: false, timeout: true };
+      // 判陈旧(round2 D2,替换旧版纯 mtime 判定):优先看持有者 pid 是否还活着——一次性
+      // 判定,不是心跳续期。ESRCH(进程已死)才判定陈旧、允许抢占;EPERM/其余一律保守
+      // 当"还活着"。只有锁内容损坏或是历史遗留的纯 pid 字符串格式(读不出 token)时,
+      // 才退回 mtime 超时兜底,这条兜底路径预期随存量锁文件自然淘汰。
+      const info = readLockInfo(path);
+      let stale = false;
+      if (info) {
+        stale = !isPidAlive(info.pid);
+      } else {
+        try {
+          const st = statSync(path);
+          stale = Date.now() - st.mtimeMs > LOCK_STALE_MS;
+        } catch { /* 锁在检测瞬间被持有者自己释放,走下面超时判断/轮询重试 */ }
+      }
+      if (stale && tryTakeoverStaleLock(path, takeoverPath, writeOwn)) {
+        return { path, acquired: true, token };
+      }
+      if (Date.now() >= deadline) {
+        // 超时且锁还在被(可能仍然活着的)另一实例占用:不再是旧版的静默
+        // {acquired:false, timeout:true} —— 显式标注 needsIntervention,把持锁方 pid/
+        // 起始时间带出去,让调用方决定要不要报警/人工介入,而不是悄悄交给下一轮空转。
+        const holder = readLockInfo(path) ?? {};
+        return {
+          path, acquired: false, timeout: true, needsIntervention: true,
+          holderPid: holder.pid ?? null, holderStartedAt: holder.startedAt ?? null,
+        };
+      }
       sleepSync(LOCK_POLL_MS);
     }
   }
 }
 
 export function releaseHoldLock(lockInfo) {
-  if (!lockInfo?.acquired) return;
-  try { unlinkSync(lockInfo.path); } catch { /* 已被陈旧锁抢占清理过,无需重复删 */ }
+  if (!lockInfo?.acquired) return { released: false, alreadyAbsent: false, notOwner: false };
+  // round2 D3:释放前核对 token,不再无条件按路径 unlink——旧版的 bug 是 acquire 写进 pid
+  // 却从来不读回来比对,release 时见路径存在就删。误删的后果是双实例同跑,比漏删严重
+  // 得多(同 main lock 的 releaseLockOwned 教训,见 lib.mjs releaseLockOwned)。
+  let raw;
+  try {
+    raw = readFileSync(lockInfo.path, 'utf8');
+  } catch {
+    return { released: false, alreadyAbsent: true, notOwner: false };
+  }
+  let info = null;
+  try { info = JSON.parse(raw); } catch { /* legacy 纯 pid 字符串格式,无法核对 token */ }
+  if (!info || info.token !== lockInfo.token) {
+    return { released: false, alreadyAbsent: false, notOwner: true };
+  }
+  try {
+    unlinkSync(lockInfo.path);
+    return { released: true, alreadyAbsent: false, notOwner: false };
+  } catch {
+    return { released: false, alreadyAbsent: true, notOwner: false };
+  }
 }
 
 // ── 三个生产动作抽成可单测的导出函数(SC-3):均接受可注入的 ghFn(默认真实 gh),
@@ -144,9 +252,13 @@ export function performLabelSync({ owner, repo, pr, label, current = [], dryRun 
   const result = syncSignoffLabel({ owner, repo, pr, want: true, label, current, ghFn, dryRun });
   const legacy = removeLegacyGateLabels({ owner, repo, pr, current, ghFn, dryRun });
   if (legacy.legacyRemoved.length) result.legacyRemoved = legacy.legacyRemoved;
-  if (legacy.errors.length) result.errors = [...(result.errors ?? []), ...legacy.errors];
-  if (result.errors.length && !result.warning) {
-    result.warning = `维护者确认标签同步没完成:${result.errors[0]}`;
+  // round2 D5:legacy 清理失败与「本轮 signoff 标签是否挂上」是两件事,不 merge 进
+  // result.errors/warning——否则 labelsOk(= !labels.warning)会被旧标签 403 之类的清理
+  // 失败拖累,误判为"本轮标签没挂上"从而 held 被判 false,即便 signoff 标签其实已经
+  // 成功挂上。清理失败单独走 legacyErrors/legacyWarning,不参与 held 判定。
+  if (legacy.errors.length) {
+    result.legacyErrors = legacy.errors;
+    result.legacyWarning = `旧门类标签清理没完成:${legacy.errors[0]}`;
   }
   return result;
 }
@@ -172,7 +284,25 @@ export function computeHeld({ issueCreated, priorIssueUrl, needIssue, commented,
 // 只在直接被跑为 CLI 时执行主流程;被 import(如 signoff-policy.test.mjs 覆盖上面
 // 导出的纯函数/生产动作)时不触发任何真实 gh/git 调用,否则测试进程会在 import 阶段
 // 就被 parsePR/parseRepo 的失败路径(fail() → process.exit(1))直接杀掉。
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+// round2 D1:判定用 realpathSync 归一化后比较 argv[1] 与本模块自身路径,而不是裸字符串
+// `===`——原写法在三种情况下会误判为"不是主模块"从而整个脚本什么都不做(fail-open,
+// 门形同虚设):① 经 symlink 调用(本 skill 的调用惯例本就是 `node "<SKILL_ROOT>/..."`,
+// 而 ~/.claude/skills 与 ~/.claude/skills/review-pr 都是 symlink);② 路径含空格;
+// ③ 路径含中文字符——import.meta.url 会对空格/非 ASCII 字符做百分号编码,而
+// process.argv[1] 是调用方传入的原始字面路径,两侧编码口径不一致,裸字符串比较必错。
+// 模式抄自 context.mjs 的 IS_MAIN_MODULE(该文件同样的判定,已验证过三类场景)——
+// realpathSync 只作用于 argv[1] 侧,不作用于 import.meta.url 侧:Node 在构造
+// import.meta.url 时本就会解析 symlink,两边都 realpath 反而会把"是否经 symlink 调用"
+// 这个信号抹掉;fileURLToPath 负责把 import.meta.url 的百分号编码解回原始字符,
+// 消除空格/中文的编码不对称。禁止改回裸字符串比较。
+const isMainModule = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
 if (isMainModule) {
 try {
   const { owner, repo } = parseRepo();
@@ -199,9 +329,19 @@ try {
   // 原子 claim(SC-1):check-then-act 全程持有本 PR 的专属文件锁,消除双实例各建
   // 一份 issue/各发一条评论的 TOCTOU 竞态。锁拿不到(另一实例持锁超时)本轮直接放弃,
   // 不做任何写操作,交下一轮重试——总比两边各写一份强。
-  const lock = acquireHoldLock(owner, repo, pr);
-  if (!lock.acquired) {
-    print({ ok: true, pr, held: false, reason: 'lock-timeout' });
+  // round2 bug#8:dry-run 不获取锁——本行文档自称"不写任何外部状态",而获取锁本身就是
+  // 写锁文件,且会跟真实执行抢锁造成饥饿;dry-run 只读,天然不需要互斥。
+  const lock = dryRun ? null : acquireHoldLock(owner, repo, pr);
+  if (lock && !lock.acquired) {
+    // round2 D2:锁超时不再是完全静默的 {held:false, reason:'lock-timeout'} ——显式标注
+    // needsIntervention,把持锁方 pid/起始时间带出去(能读到时),这是"需要人工介入排查"
+    // 的信号,不是"下一轮再试就好"的常规状态。
+    process.stderr.write(`[signoff-hold] 锁超时未拿到,疑似有持有者卡死或长时间占用(pid=${lock.holderPid ?? '未知'})——需要人工介入排查,而不是静默交给下一轮重试。\n`);
+    print({
+      ok: true, pr, held: false, reason: 'lock-timeout', needsIntervention: true,
+      ...(lock.holderPid != null ? { holderPid: lock.holderPid } : {}),
+      ...(lock.holderStartedAt != null ? { holderStartedAt: lock.holderStartedAt } : {}),
+    });
   } else
   try {
   const meta = ghJson([
@@ -216,7 +356,12 @@ try {
   const syncLabels = () => performLabelSync({ owner, repo, pr, label: SIGNOFF_LABEL, current: currentLabels, dryRun, ghFn: gh });
   // 标签失败不静默:顶到输出最外层(labelWarning),SKILL 要求最终报告里照抄。
   // 少了标签 → GitHub 后台与待确认面板都筛不到该 PR,门的判定不受影响。
-  const withLabelWarning = (out) => (out.labels?.warning ? { ...out, labelWarning: out.labels.warning } : out);
+  // round2 D5:legacyWarning(旧门类标签清理失败)单独顶成 legacyLabelWarning,不与
+  // labelWarning 混在一起——两者是否成功是独立的事,legacy 清理失败不该连坐 held 判定。
+  const withLabelWarning = (out) => {
+    const withMain = out.labels?.warning ? { ...out, labelWarning: out.labels.warning } : out;
+    return out.labels?.legacyWarning ? { ...withMain, legacyLabelWarning: out.labels.legacyWarning } : withMain;
+  };
   const printOut = (out) => print(withLabelWarning(out));
 
   // 找既有标记评论,读出当时开的 issue 链接。取「最后一条带 issue= 的标记」为准。
@@ -396,7 +541,14 @@ try {
     }
   }
   } finally {
-    releaseHoldLock(lock);
+    if (lock) {
+      const rel = releaseHoldLock(lock);
+      if (rel.notOwner) {
+        // round2 D3:token 不匹配 = 本实例的锁已被判定陈旧后由另一实例抢占重建,当前实例
+        // 不再是持有者——跳过 unlink,避免误删新持有者的锁(误删的后果是双实例同跑)。
+        process.stderr.write('[signoff-hold] 释放锁时发现 token 不匹配(锁已被判定陈旧后被其他实例抢占重建)——本实例不是当前持有者,已跳过 unlink,避免误删新持有者的锁。\n');
+      }
+    }
   }
 } catch (e) {
   fail(e);

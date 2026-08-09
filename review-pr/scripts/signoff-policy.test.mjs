@@ -13,13 +13,25 @@
 // 跑:node scripts/signoff-policy.test.mjs   退出码 0 = 全过。
 
 import {
+  mkdtempSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, cpSync,
+  readFileSync, rmSync, existsSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+import {
   isUiTestPath, UI_TEST_PATH_RE,
   issueNumberFromUrl, decideIssueReuse, shouldCloseDiscussionIssue,
   classifyGateHits, parseSignoffReleases, parseSignoffRenotices,
 } from './lib.mjs';
 import {
   performIssueCreate, performStatusComment, performLabelSync, computeHeld,
+  acquireHoldLock, releaseHoldLock,
 } from './signoff-hold.mjs';
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 let failed = 0;
 function check(name, cond, detail = '') {
@@ -203,7 +215,7 @@ const isLabelPost = (a) => a[0] === 'api' && a.includes('-X') && a.includes('POS
   const rf = performIssueCreate({ pr: 42, slug: 'acme/app', kind: 'product', author: 'alice', issueTitle: 'T', issueBody: 'B', ghFn: ghFail });
   check('performIssueCreate 失败:issueCreated=false', rf.issueCreated === false);
   check('performIssueCreate 失败:issueUrl=null', rf.issueUrl === null);
-  check('performIssueCreate 失败:issueError 带原因', rf.issueError.includes('boom-create-failed'));
+  check('performIssueCreate 失败:issueError 带原因', (rf.issueError ?? '').includes('boom-create-failed'));
 }
 
 // -- performStatusComment --
@@ -260,6 +272,262 @@ const isLabelPost = (a) => a[0] === 'api' && a.includes('-X') && a.includes('POS
 
   const reuseCase = computeHeld({ issueCreated: false, priorIssueUrl: 'https://github.com/acme/app/issues/7', needIssue: false, commented: false, alreadyHeld: true, labelsOk: true });
   check('computeHeld 复用旧 issue(未新建/未新评论但曾 hold 过)→ held=true', reuseCase.held === true);
+}
+
+// -- acquireHoldLock / releaseHoldLock(D2/D3:一次性 pid 存活判定 + token 归属校验,
+//    不是心跳续期、不是无条件按路径 unlink)--
+{
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-lock-test-'));
+  const prevLockDir = process.env.SIGNOFF_HOLD_LOCK_DIR;
+  process.env.SIGNOFF_HOLD_LOCK_DIR = lockDir;
+  try {
+    const l1 = acquireHoldLock('acme', 'app', 42);
+    check('acquireHoldLock 首次获取成功', l1.acquired === true);
+    check('acquireHoldLock 首次获取带 token', typeof l1.token === 'string' && l1.token.length > 0);
+
+    // mutation①探测:同一把锁已被占用时,第二次获取(短 timeoutMs)必须超时失败,
+    // 不能"总是拿到"——否则两个并发实例会同时认为自己持锁。
+    const l2 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 300 });
+    check('acquireHoldLock 锁被占用时第二次获取超时(非总是成功)', l2.acquired === false && l2.timeout === true);
+    check('acquireHoldLock 超时结果标注 needsIntervention(非静默 held:false)', l2.needsIntervention === true);
+
+    // mutation④探测:releaseHoldLock 必须校验 token 归属,伪造/错配的 token 不能删掉
+    // 别人持有的锁(镜像 lib.mjs releaseLockOwned 的教训)。
+    const forged = { ...l1, token: 'not-the-real-token' };
+    const relForged = releaseHoldLock(forged);
+    check('releaseHoldLock token 不匹配 → notOwner=true', relForged.notOwner === true);
+    check('releaseHoldLock token 不匹配 → released=false', relForged.released === false);
+    check('releaseHoldLock token 不匹配 → 锁文件未被删除', existsSync(l1.path));
+
+    const rel = releaseHoldLock(l1);
+    check('releaseHoldLock 用真实 token 释放成功', rel.released === true);
+    check('releaseHoldLock 释放后锁文件已删除', !existsSync(l1.path));
+
+    const l3 = acquireHoldLock('acme', 'app', 42);
+    check('acquireHoldLock 释放后可重新获取(锁未被误判永久占用)', l3.acquired === true);
+    releaseHoldLock(l3);
+
+    const relAbsent = releaseHoldLock(l3);
+    check('releaseHoldLock 对已释放的锁重复释放 → alreadyAbsent=true', relAbsent.alreadyAbsent === true);
+  } finally {
+    if (prevLockDir === undefined) delete process.env.SIGNOFF_HOLD_LOCK_DIR;
+    else process.env.SIGNOFF_HOLD_LOCK_DIR = prevLockDir;
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+// -- 真实子进程入口守卫(D1/mutation②:isMainModule 必须用 realpathSync 归一化比较,
+//    不是 import.meta.url 与 argv[1] 的裸字符串比较)——
+//    symlink / 带空格路径 / 中文路径三种变体下,脚本都必须真正跑到主流程并调用 gh,
+//    而不是静默 fail-open(退出码 0、零 gh 调用、空输出)。--
+{
+  // signoff-hold.mjs 的完整本地依赖闭包(递归解析 `from '...'`,便于带空格/中文路径场景
+  // 复制到新目录时不缺文件而 ERR_MODULE_NOT_FOUND):
+  //   signoff-hold.mjs -> lib.mjs -> lib.escaped-hazards.mjs -> lib.review-profiles.mjs,
+  //   lib.preflight-rules.mjs
+  const LOCAL_DEPS = [
+    'signoff-hold.mjs', 'lib.mjs', 'lib.escaped-hazards.mjs',
+    'lib.review-profiles.mjs', 'lib.preflight-rules.mjs',
+  ];
+  const FAKE_GH_SRC = `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + '\\n');
+if (args[0] === 'pr' && args[1] === 'view') {
+  process.stdout.write(JSON.stringify({
+    number: Number(args[2]), state: 'OPEN', mergedAt: null,
+    author: { login: 'tester' }, url: 'https://github.com/acme/app/pull/' + args[2],
+    comments: [], labels: [], headRefOid: 'deadbeef',
+  }));
+  process.exit(0);
+}
+process.stderr.write('unexpected gh call: ' + args.join(' '));
+process.exit(1);
+`;
+
+  function makeFakeGhShimDir() {
+    const dir = mkdtempSync(join(tmpdir(), 'fake-gh-bin-'));
+    const ghPath = join(dir, 'gh');
+    writeFileSync(ghPath, FAKE_GH_SRC);
+    chmodSync(ghPath, 0o755);
+    return dir;
+  }
+
+  function makeTempRepoDir() {
+    const dir = mkdtempSync(join(tmpdir(), 'signoff-hold-repo-'));
+    spawnSync('git', ['init', '-q'], { cwd: dir });
+    spawnSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/app.git'], { cwd: dir });
+    mkdirSync(join(dir, 'agent-use', 'docs'), { recursive: true });
+    writeFileSync(join(dir, 'agent-use', 'docs', 'pr-rules.json'), '{}');
+    return dir;
+  }
+
+  // 以真实子进程跑 `node <scriptPath> 42 --dry-run`,断言:退出码 0、stdout 是合法 JSON
+  // 且 ok:true、fake gh 确实被调用了至少一次 `pr view`(证明主流程真正执行,而不是
+  // isMainModule 判假后静默 exit 0)。
+  function runEntryGuardVariant(scriptPath) {
+    const shimDir = makeFakeGhShimDir();
+    const repoDir = makeTempRepoDir();
+    const logPath = join(shimDir, 'gh-calls.log');
+    writeFileSync(logPath, '');
+    try {
+      const r = spawnSync('node', [scriptPath, '42', '--dry-run'], {
+        cwd: repoDir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, FAKE_GH_LOG: logPath },
+        timeout: 15000,
+      });
+      const calls = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      let parsed = null;
+      try { parsed = JSON.parse(r.stdout); } catch { /* 非 JSON,parsed 保持 null 交调用方判失败 */ }
+      return { status: r.status, stderr: r.stderr, calls, parsed };
+    } finally {
+      rmSync(shimDir, { recursive: true, force: true });
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  }
+
+  // 变体 1:直接调用(基线)
+  {
+    const r = runEntryGuardVariant(join(SCRIPT_DIR, 'signoff-hold.mjs'));
+    check('入口守卫-直接调用:退出码 0', r.status === 0, `stderr=${r.stderr}`);
+    check('入口守卫-直接调用:确实调用了 gh pr view', r.calls.some((c) => c[0] === 'pr' && c[1] === 'view'));
+    check('入口守卫-直接调用:stdout 是合法 JSON 且 ok=true', r.parsed?.ok === true);
+  }
+
+  // 变体 2:symlink 调用(realpathSync 必须能穿透符号链接归一化,不需要复制依赖闭包,
+  // lib.mjs 相对导入按 symlink 解析后的真实位置生效)
+  {
+    const linkDir = mkdtempSync(join(tmpdir(), 'signoff-hold-symlink-'));
+    const linkPath = join(linkDir, 'signoff-hold-link.mjs');
+    symlinkSync(join(SCRIPT_DIR, 'signoff-hold.mjs'), linkPath);
+    try {
+      const r = runEntryGuardVariant(linkPath);
+      check('入口守卫-symlink 调用:退出码 0(非 fail-open)', r.status === 0, `stderr=${r.stderr}`);
+      check('入口守卫-symlink 调用:确实调用了 gh pr view', r.calls.some((c) => c[0] === 'pr' && c[1] === 'view'));
+      check('入口守卫-symlink 调用:stdout 是合法 JSON 且 ok=true', r.parsed?.ok === true);
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true });
+    }
+  }
+
+  // 变体 3:带空格路径调用(import.meta.url 会 percent-encode 空格,裸字符串比较必然
+  // 失配;realpathSync+fileURLToPath 归一化后必须仍然相等)
+  {
+    const spaceDir = mkdtempSync(join(tmpdir(), 'signoff hold space '));
+    for (const f of LOCAL_DEPS) cpSync(join(SCRIPT_DIR, f), join(spaceDir, f));
+    try {
+      const r = runEntryGuardVariant(join(spaceDir, 'signoff-hold.mjs'));
+      check('入口守卫-带空格路径:退出码 0(非 fail-open)', r.status === 0, `stderr=${r.stderr}`);
+      check('入口守卫-带空格路径:确实调用了 gh pr view', r.calls.some((c) => c[0] === 'pr' && c[1] === 'view'));
+      check('入口守卫-带空格路径:stdout 是合法 JSON 且 ok=true', r.parsed?.ok === true);
+    } finally {
+      rmSync(spaceDir, { recursive: true, force: true });
+    }
+  }
+
+  // 变体 4:中文路径调用(同上,percent-encoding 对多字节字符同样失配)
+  {
+    const cjkDir = mkdtempSync(join(tmpdir(), 'signoff-hold-cjk-'));
+    const cjkTarget = join(cjkDir, '签收保持中文目录');
+    mkdirSync(cjkTarget, { recursive: true });
+    for (const f of LOCAL_DEPS) cpSync(join(SCRIPT_DIR, f), join(cjkTarget, f));
+    try {
+      const r = runEntryGuardVariant(join(cjkTarget, 'signoff-hold.mjs'));
+      check('入口守卫-中文路径:退出码 0(非 fail-open)', r.status === 0, `stderr=${r.stderr}`);
+      check('入口守卫-中文路径:确实调用了 gh pr view', r.calls.some((c) => c[0] === 'pr' && c[1] === 'view'));
+      check('入口守卫-中文路径:stdout 是合法 JSON 且 ok=true', r.parsed?.ok === true);
+    } finally {
+      rmSync(cjkDir, { recursive: true, force: true });
+    }
+  }
+
+  // mutation③探测:main() 里 `labelsOk: !labels.warning` 不能被写死成 true——标签同步
+  // 真实失败时 labelsOk 必须为 false、held 必须为 false、heldBlockedBy 必须点名 'labels'。
+  // 已读 lib.mjs 源码确认:syncSignoffLabel/removeLegacyGateLabels 在 --dry-run 下会
+  // 短路直接返回,永不设置 warning——所以这条判定只能在**非 dry-run** 的真实主流程里
+  // 触发,ダミー gh 让 pr view / issue create / pr comment / label create 全部放行,
+  // 只让「label add」的 `gh api -X POST .../labels` 调用失败,产出 labels.warning。
+  {
+    const FAKE_GH_SRC_LABEL_FAIL = `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + '\\n');
+if (args[0] === 'pr' && args[1] === 'view') {
+  process.stdout.write(JSON.stringify({
+    number: Number(args[2]), state: 'OPEN', mergedAt: null,
+    author: { login: 'tester' }, url: 'https://github.com/acme/app/pull/' + args[2],
+    comments: [], labels: [], headRefOid: 'deadbeef',
+  }));
+  process.exit(0);
+}
+if (args[0] === 'issue' && args[1] === 'create') {
+  process.stdout.write('https://github.com/acme/app/issues/99\\n');
+  process.exit(0);
+}
+if (args[0] === 'pr' && args[1] === 'comment') {
+  process.exit(0);
+}
+if (args[0] === 'label' && args[1] === 'create') {
+  process.exit(0);
+}
+if (args[0] === 'api' && args.includes('-X') && args[args.indexOf('-X') + 1] === 'POST'
+    && args.some((a) => /\\/labels$/.test(a))) {
+  process.stderr.write('HTTP 403: mock label-add failure (mutation3 discriminator)');
+  process.exit(1);
+}
+process.stderr.write('unexpected gh call: ' + args.join(' '));
+process.exit(1);
+`;
+
+    function makeLabelFailShimDir() {
+      const dir = mkdtempSync(join(tmpdir(), 'fake-gh-labelfail-'));
+      const ghPath = join(dir, 'gh');
+      writeFileSync(ghPath, FAKE_GH_SRC_LABEL_FAIL);
+      chmodSync(ghPath, 0o755);
+      return dir;
+    }
+
+    const shimDir = makeLabelFailShimDir();
+    const repoDir = makeTempRepoDir();
+    const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-lock-labelfail-'));
+    const logPath = join(shimDir, 'gh-calls.log');
+    writeFileSync(logPath, '');
+    const payloadPath = join(repoDir, 'payload.json');
+    writeFileSync(payloadPath, JSON.stringify({
+      issueTitle: '讨论:mutation③ 判别测试专用 issue',
+      issueBody: '本 issue 由 signoff-policy.test.mjs 的 labelsOk 判别测试自动创建。',
+      commentBody: '本 PR 待维护者确认,详情见关联 issue。',
+    }));
+    try {
+      const r = spawnSync('node', [join(SCRIPT_DIR, 'signoff-hold.mjs'), '42', '--payload-file', payloadPath], {
+        cwd: repoDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${shimDir}:${process.env.PATH}`,
+          FAKE_GH_LOG: logPath,
+          SIGNOFF_HOLD_LOCK_DIR: lockDir,
+        },
+        timeout: 15000,
+      });
+      let parsed = null;
+      try { parsed = JSON.parse(r.stdout); } catch { /* 非 JSON,parsed 保持 null 交下面断言判失败 */ }
+      const calls = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const labelAddCalled = calls.some((c) => c[0] === 'api' && c.includes('-X')
+        && c[c.indexOf('-X') + 1] === 'POST' && c.some((a) => /\/labels$/.test(a)));
+      check('labelsOk 判别:退出码 0(结果走 JSON,不是非 0 退出)', r.status === 0, `stderr=${r.stderr}`);
+      check('labelsOk 判别:确实调用了 label add(api POST .../labels),标签失败不是没发生调用', labelAddCalled, JSON.stringify(calls));
+      check('labelsOk 判别:labels.warning 为真(标签同步真的失败了)', Boolean(parsed?.labels?.warning), `stdout=${r.stdout}`);
+      check('labelsOk 判别:held 必须为 false(非写死 true——mutation③ 探针)', parsed?.held === false, `stdout=${r.stdout}`);
+      check('labelsOk 判别:heldBlockedBy 点名 labels',
+        Array.isArray(parsed?.heldBlockedBy) && parsed.heldBlockedBy.includes('labels'), `stdout=${r.stdout}`);
+    } finally {
+      rmSync(shimDir, { recursive: true, force: true });
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(lockDir, { recursive: true, force: true });
+    }
+  }
 }
 
 if (failed > 0) {
