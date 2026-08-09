@@ -18,7 +18,8 @@
     "scripts/dist.manifest.json",
     "scripts/preview-dist.manifest.json",
     "scripts/dist/",
-    "tests/"
+    "tests/",
+    "tests/signoff-policy.test.mjs"
   ],
   "markerStrips": [
     {
