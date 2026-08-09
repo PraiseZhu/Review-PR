@@ -34,7 +34,7 @@ const DEFAULT_COMMENT_NODES = [{
   body: '/approve-merge', // 旧裸格式:不授权,必须进 legacyBareComments
   createdAt: '2026-08-04T11:00:00Z', updatedAt: '2026-08-04T11:00:00Z', url: 'c1',
 }];
-function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928', securityReviewPaths = [], reviewThreadNodes = [] } = {}) {
+function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAuth = null, stripMergeAuthorization = false, approveOid = OLD, reviewAuthor = 'PraiseZhu', authorLogin = 'aj0928', securityReviewPaths = [], reviewThreadNodes = [], prListNodes = [] } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'context-scan-'));
   const repo = join(work, 'repo');
   mkdirSync(repo);
@@ -98,6 +98,11 @@ function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAu
       nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
     } } } }] } } } },
   }));
+  // R5(2026-08-10):--scan-all 候选来自 `gh pr list`(context.mjs),默认空列表 = 既有
+  // 21 条用例零影响(fixture 不写就不存在);嵌套超时测试传入候选以驱动真实 --scan-all。
+  if (prListNodes.length > 0) {
+    writeFileSync(join(fixtures, 'pr-list.json'), JSON.stringify(prListNodes));
+  }
   chmodSync(join(FAKE_GH_DIR, 'gh'), 0o755);
   // F1(2026-08-09,round3):fake gh 每次调用都追加一行到 $FAKE_GH_LOG(JSONL,含 argv)。
   // context.mjs 与 signoff-hold.mjs 子进程都继承该 env,日志里因此同时有父进程与子进程的
@@ -604,4 +609,83 @@ test('SC-2 截断标志:评论超过 first:50 → participantsTruncated=true,par
   assert.equal(thread.participantsTruncated, true, '50 < 51 → 必须显式标截断,不许静默声称 participants 完备');
   assert.equal(thread.participants.length, 50, 'participants 只覆盖前 50 条评论');
   assert.equal(thread.participants[49].author, 'bot-49', 'participants 内容 = 前 50 条评论的作者');
+});
+
+// ── R5(2026-08-10):嵌套超时双锁 + 默认值不变量 ──
+// 复审席对照实验证实:共享默认 180s 下,假 signoff-hold sleep 1300ms 时子 --scan 确实进入
+// 探测(holdProbeEntered=true),但父层先收到自己的超时错误——F3 的升级在 --scan-all 批量
+// 路径对病理场景不可达。R5 修法:探测 spawn 显式传小超时(HOLD_PROBE_TIMEOUT_MS 默认 20s,
+// env REVIEW_PR_HOLD_PROBE_TIMEOUT_MS 可调),外层 spawn 显式传 SCAN_CHILD_TIMEOUT_MS
+// (默认 180s,env REVIEW_PR_SCAN_CHILD_TIMEOUT_MS 可调),「外层 > 内层」成为代码里可见、
+// 测试可验的配对。以下两条行为锁都走**真实 --scan-all** 生产路径(1 个候选 → mapPool
+// Math.min(4,1)=1 并发退化,时长由单候选决定),不复制 setup 骨架(复制品会与 setup()
+// 各自演化,种下「测试环境 ≠ 生产 fixture」的第六个实例)。
+const SCAN_ALL_CANDIDATE = [{
+  number: 469, title: 'fix: 扫描分类判定越界修复', author: 'aj0928',
+  createdAt: '2026-08-04T10:00:00Z', isDraft: false, url: 'https://github.com/xindong/mivo-canvas/pull/469',
+}];
+// 挂起的假 signoff-hold:进入后永不退出——专门测「外层 kill 时子进程是否已输出升级」。
+// 不 exit 1(R4-3 已覆盖 exit1);sleep 无穷大让探测超时/外层超时都由超时机制决定。
+const HANGING_HOLD_SCRIPT = [
+  '#!/usr/bin/env node',
+  'process.stdout.write("holdProbeEntered\\n");', // 进探测即打标记(复审席对照实验同款)
+  'setInterval(() => {}, 1 << 30);', // 永不退出
+].join('\n');
+
+test('R5 正向锁:探测挂起 → 探测小超时(200ms)让子 --scan 在 2s 外层内输出 signoff-hold-unavailable(删探测 timeoutMs 即红)', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'], prListNodes: SCAN_ALL_CANDIDATE }); // 命中 security-gate + 1 候选
+  const work = mkdtempSync(join(tmpdir(), 'ctx-r5-fwd-'));
+  const dir = copyScriptsTo(work);
+  writeFileSync(join(dir, 'signoff-hold.mjs'), HANGING_HOLD_SCRIPT);
+  // env 压低两端:探测 200ms(两次共 400ms),外层 2000ms(> 400ms → 升级来得及送达)
+  const env2 = { ...env, REVIEW_PR_HOLD_PROBE_TIMEOUT_MS: '200', REVIEW_PR_SCAN_CHILD_TIMEOUT_MS: '2000' };
+  const r = spawnSync('node', [join(dir, 'context.mjs'), '--scan-all'], { cwd: repo, env: env2, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  const cand = out.results?.find?.((x) => x.pr === 469);
+  assert.ok(cand, `results 应含 469 候选,got ${JSON.stringify(out.results)}`);
+  assert.equal(cand.ok, true, '探测重试耗尽 → 子进程应正常完成并输出升级(不是外层超时/泛化失败)');
+  assert.equal(cand.auto?.action, 'signoff-hold-unavailable', '探测 2×200ms 超时耗尽 → 子 --scan 必须输出升级值');
+  // 变异:删掉探测 spawn 的 timeoutMs → 探测回默认 180s → 升级需 360s > 外层 2000ms
+  // → 子进程被外层 kill → cand.ok=false 泛化失败 → 本断言红。
+});
+
+test('R5 反向锁:外层超时(100ms)先于探测 → 候选为超时失败且错误串含配置值 100(删外层 timeoutMs 即红)', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'], prListNodes: SCAN_ALL_CANDIDATE });
+  const work = mkdtempSync(join(tmpdir(), 'ctx-r5-rev-'));
+  const dir = copyScriptsTo(work);
+  writeFileSync(join(dir, 'signoff-hold.mjs'), HANGING_HOLD_SCRIPT);
+  // 外层 100ms ≪ 探测 2×200ms=400ms → 外层必先 kill,子进程来不及输出升级
+  const env2 = { ...env, REVIEW_PR_HOLD_PROBE_TIMEOUT_MS: '200', REVIEW_PR_SCAN_CHILD_TIMEOUT_MS: '100' };
+  const r = spawnSync('node', [join(dir, 'context.mjs'), '--scan-all'], { cwd: repo, env: env2, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  const cand = out.results?.find?.((x) => x.pr === 469);
+  assert.ok(cand, `results 应含 469 候选,got ${JSON.stringify(out.results)}`);
+  assert.equal(cand.ok, false, '外层 100ms 先 kill → 候选必须为失败(升级来不及送达)');
+  assert.match(cand.error, /子进程超时\(100ms\)/, '错误串必须出现配置的外层超时值 100——证明用的确实是 env 配的值,不是别处碰巧超时');
+  // 变异:删掉外层 spawn 的 timeoutMs → 外层回默认 180s > 探测 400ms → 升级送达
+  // → cand.ok=true → 本断言红;或错误串变 180000 → match 红。
+});
+
+// 默认值不变量:行为测试用小值跑,锁不住出厂默认值本身——「外层 > 内层」是出厂配置的
+// 硬性要求,单独一条算术断言锁它(不设 env,直接 import 默认常量)。
+// 边界(如实声明,不过度声称):余量 30s 只保证「探测单独不足以导致外层 kill」——
+// 它**不声称子进程永不超时**:子进程还有 graphql(60s 显式超时)、diff 拉取等,叠加照样
+// 能超外层,那是既有事实,也是外层超时失败不升级为 signoff-hold-unavailable(D 否决)的依据。
+test('R5 默认值不变量:SCAN_CHILD_TIMEOUT_MS ≥ 2×HOLD_PROBE_TIMEOUT_MS + 30s(探测不是外层超时的原因)', async () => {
+  // context.mjs 模块加载期就消费 prRules(loadRules 三级回退:env → 仓根 agent-use/docs
+  // → skill config)。裸 import 时 REPO_ROOT 推导可能读到缺 titleTypes 的仓根副本
+  // (cwd 敏感存量缺陷,已结案不修),必须显式指向权威 config 才有确定的默认值可断言。
+  process.env.REVIEW_PR_RULES_FILE = join(__dirname, '..', 'config', 'pr-rules.json');
+  const mod = await import('../scripts/context.mjs');
+  const { HOLD_PROBE_TIMEOUT_MS, SCAN_CHILD_TIMEOUT_MS } = mod;
+  assert.ok(Number.isFinite(HOLD_PROBE_TIMEOUT_MS) && HOLD_PROBE_TIMEOUT_MS > 0, '探测默认必须为正');
+  assert.ok(Number.isFinite(SCAN_CHILD_TIMEOUT_MS) && SCAN_CHILD_TIMEOUT_MS > 0, '外层默认必须为正');
+  assert.ok(
+    SCAN_CHILD_TIMEOUT_MS >= 2 * HOLD_PROBE_TIMEOUT_MS + 30_000,
+    `外层必须 > 内层最坏(2×探测)+ 余量。外层=${SCAN_CHILD_TIMEOUT_MS},2×探测=${2 * HOLD_PROBE_TIMEOUT_MS},需外层≥${2 * HOLD_PROBE_TIMEOUT_MS + 30_000}。变异:探测 20k→100k(需 230k>180k)或外层<70k 均转红`,
+  );
 });

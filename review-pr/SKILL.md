@@ -2101,16 +2101,25 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    必须升级为人工介入**——不得按原 hold 流程继续，记人工介入、报 owner 排查调用
    点（signoff-hold.mjs 是否存在 / 依赖是否完整 / gh 鉴权是否可用），排查后重跑
    本轮；跳过这条 = 在 hold 机制不可证明可执行时继续放行，正是本段要消灭的
-   fail-open。**成本（如实记录，推导链可核，此前未写进任何文档）**：探测经
+   fail-open。**成本与配对（R5，2026-08-10 修正，推导链可核）**：探测经
    `lib.mjs` 的 `spawnScriptJson` 发起，两处调用（首次探测与失败后的重试，
-   `context.mjs`）**均未显式传 `timeoutMs`** → 各自取默认 `180000ms`
-   （`lib.mjs:2876` `{ timeoutMs = 180_000 } = {}`）→ 每个命中候选顺序两次探测，
-   单候选最坏 **2×180s = 360s**。**单候选 360s 是单候选上界，不是整轮上界**：
-   `--scan-all` 下探测按候选发生（`context.mjs` 用 `mapPool(candidates, 4, …)`
-   并发拉起自身子进程，`mapPool` 的 `concurrency=1` 才是严格串行，此处为 4 并发、
-   候选不足 4 时按实际候选数），整轮最坏 ≈ **⌈H/4⌉ × 360s**，其中 H = 本轮命中
-   security / rules / arch 三门的候选数（未命中三门不探测，`holdKind` 为 null）。
-   编排排期时把这个最坏延迟计入，勿在短超时下把探测当实时检查。它
+   `context.mjs`）**显式传 `timeoutMs: HOLD_PROBE_TIMEOUT_MS`**（默认 `20s`，
+   env `REVIEW_PR_HOLD_PROBE_TIMEOUT_MS` 可调）——**修前**这两处未显式传、
+   各自取默认 `180000ms`（`lib.mjs:2876`），单候选最坏 `2×180s=360s`，且
+   `--scan-all` 外层（默认 `180s`）会先于子进程输出升级 kill 它——**F3 的升级
+   在批量路径对病理场景不可达，且整个候选的扫描输出一并丢失**（复审席对照实验
+   实证：假 hold 进探测后 sleep，父层只收到自己的超时错误）。**修后**探测
+   `2×20s=40s ≪ 外层 180s`，升级重新可达、子进程 40s 内完成并输出。**外层
+   `SCAN_CHILD_TIMEOUT_MS`（默认 `180s`，env `REVIEW_PR_SCAN_CHILD_TIMEOUT_MS`
+   可调）与探测是显式配对的**：`外层 > 2×探测 + 30s` 由测试锁定（默认值不变量），
+   「外层 > 内层」不再是两个静默默认值的巧合。**整轮成本（不要只计 H）**：
+   `--scan-all` 为**每个** open 候选（共 N）拉一个子进程做基础扫描，另有 heldDraft
+   独立批次，命中三门的候选（H 个）再叠加探测——整轮最坏 ≈ N × 单 PR 扫描 +
+   heldDraft 批次 + ⌈H/4⌉ × 40s（4 并发，`mapPool`）。**边界（如实声明）**：外层
+   超时不升级为 `signoff-hold-unavailable`——子进程还有 graphql（60s 显式超时）、
+   diff 拉取等，叠加也能超外层，「可区分是超时」≠「可区分为什么超时」，父进程
+   无法知道 kill 时卡在探测还是别处（D 否决，理由见 `context.mjs` 外层 spawn
+   上方注释）；探测不可用会走 F3 自身升级。编排排期计入这些延迟。它
    **不替代**上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
    `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发评
    论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /

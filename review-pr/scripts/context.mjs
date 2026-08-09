@@ -30,6 +30,25 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classify
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+// ── 嵌套超时配对(R5,2026-08-10):「外层 > 内层」必须显式成对,不能靠两个静默默认值 ──
+// 探测 spawnScriptJson 的 timeoutMs(lib.mjs 默认 180s 对本用途过大)。一次 --dry-run
+// 存在性探测(内部就一个 gh pr view)在健康环境 <1s,默认值在这里本就不合适——失败重试
+// 一次(见 F3),单候选最坏 2×HOLD_PROBE。外层(scan-all 自身子进程)必须 > 内层最坏,
+// 否则父进程会在子进程输出升级前 kill 它(F3 的升级在批量路径不可达)。两端均可 env 覆盖:
+// 超时值是正当运维可调项,env 同时是行为测试把小值注入的手段。
+export const HOLD_PROBE_TIMEOUT_MS = resolveTimeoutMs(
+  process.env.REVIEW_PR_HOLD_PROBE_TIMEOUT_MS,
+  20_000, // 探测默认 20s:健康 <1s,20s 已是宽限;失败重试两次共最坏 40s
+);
+export const SCAN_CHILD_TIMEOUT_MS = resolveTimeoutMs(
+  process.env.REVIEW_PR_SCAN_CHILD_TIMEOUT_MS,
+  180_000, // 外层默认保持 180s:与 lib.mjs spawnScriptJson 默认一致,scan-all 批量行为零回归
+);
+export function resolveTimeoutMs(envValue, fallback) {
+  const n = Number(envValue);
+  return Number.isFinite(n) && n > 0 ? n : fallback; // 非法/缺省 → 默认,勿用 0/负数(会立即 kill)
+}
+
 // ── PR 提交规范与维护者 gate 配置：单一真相源在 Skill config/pr-rules.json ──
 // featureSections / bugfixSections 需与 .github/PULL_REQUEST_TEMPLATE.md 的必填段落
 // 一致；公开仓库可用自己的轻量 CI 校验模板，不读取本私有配置。
@@ -273,15 +292,22 @@ if (process.argv.includes('--scan-all')) {
       }
     }
 
-    // 只读扫描,4 并发安全;单条失败折叠成 ok:false 条目,不炸整批
+    // 只读扫描,4 并发安全;单条失败折叠成 ok:false 条目,不炸整批。
+    // R5(2026-08-10)显式传 timeoutMs:外层(SCAN_CHILD)必须 > 内层探测最坏
+    // (2×HOLD_PROBE),否则父进程会在子进程输出 signoff-hold-unavailable 前 kill 它。
+    // D 否决理由(勿把这里改成 signoff-hold-unavailable):本处超时失败**不升级**——
+    // 「可区分是超时」≠「可区分为什么超时」:子进程含 graphql(60s 显式超时)、diff 拉取
+    // 等多慢调用,叠加也能超外层,父进程无法知道 kill 时卡在探测还是卡在别处;探测
+    // (≤2×20s=40s)反证后,父超时更可能是非探测原因,升级 = 把可观测失败换成错误归因
+    // (探测不可用时自会走 F3 升级,无需此处兜底)。
     const results = await mapPool(candidates, 4, async (c) => {
-      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan']);
+      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan'], { timeoutMs: SCAN_CHILD_TIMEOUT_MS });
       return r && r.ok ? r : { ok: false, pr: c.number, error: r?.error ?? '未知失败' };
     });
     // 被 hold 的 draft 同样跑单 PR --scan(输出带 held 字段与 discussionIssue 白名单留言原料);
     // 预筛失败兜底进来的普通 draft 扫完 held=null,主 agent 直接忽略即可
     const heldDraftResults = (await mapPool(heldDraftCandidates, 4, async (c) => {
-      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan']);
+      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan'], { timeoutMs: SCAN_CHILD_TIMEOUT_MS });
       return r && r.ok ? r : { ok: false, pr: c.number, error: r?.error ?? '未知失败' };
     })).filter((r) => !r.ok || r.held != null);
 
@@ -1534,9 +1560,9 @@ try {
   // 输出非 JSON / 子进程 fail() 退出 1」三种探测失败一律折叠成 { ok:false, error }。
   let holdInvocation = null;
   if (holdKind) {
-    holdInvocation = await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run']);
+    holdInvocation = await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run'], { timeoutMs: HOLD_PROBE_TIMEOUT_MS });
     if (holdInvocation?.ok !== true) {
-      holdInvocation = await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run']);
+      holdInvocation = await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run'], { timeoutMs: HOLD_PROBE_TIMEOUT_MS });
     }
     if (holdInvocation?.ok !== true) {
       const probeError = holdInvocation?.error ?? '未知原因(spawnScriptJson 返回非 {ok:true,...} 形态)';
