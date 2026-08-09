@@ -152,7 +152,7 @@
       "proposal": null,
       "status": "landed",
       "commit": "a179c3b",
-      "note": null,
+      "note": "[decided:2026-07-25] 落地 commit a179c3b(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-07-25T01:22:36.001Z",
       "lastSeen": "2026-07-25T01:22:36.001Z"
@@ -607,7 +607,7 @@
       "proposal": "3.2 增一句 ownPr=true 时不发本评论,证据缺口照常进报告与汇总,gate 结论不变。只减写操作,非扩权。",
       "status": "landed",
       "commit": "bc30805",
-      "note": null,
+      "note": "[decided:2026-07-29] 落地 commit bc30805(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-07-29T01:48:27.009Z",
       "lastSeen": "2026-07-29T01:48:27.009Z"
@@ -659,7 +659,7 @@
       "proposal": "context.mjs 按 prRules.ruleFiles.uiRequired 实际配置渲染该半句:配了列真实文件名,没配退化为「便于确认界面呈现符合预期」。",
       "status": "landed",
       "commit": "c6e83d6",
-      "note": null,
+      "note": "[decided:2026-07-29] 落地 commit c6e83d6(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-07-29T11:12:38.755Z",
       "lastSeen": "2026-07-29T11:12:38.755Z"
@@ -698,7 +698,7 @@
       "proposal": null,
       "status": "landed",
       "commit": "0630de2",
-      "note": null,
+      "note": "[decided:2026-08-09] 落地 commit 0630de2 在本仓不可解析(git show 无此对象),锚点日期按结案日标注",
       "occurrences": 1,
       "firstSeen": "2026-07-29T14:31:24.327Z",
       "lastSeen": "2026-07-29T14:31:24.327Z"
@@ -737,7 +737,7 @@
       "proposal": "BLOCKED 分支在落进 structural-check 前补查 classifyStatusRollup:null→ci-unknown(fail-closed 不可 bypass);failed 非空→ci-failed;pending 非空→ci-pending。纯收紧方向,不新增写操作、不放宽 gate。",
       "status": "landed",
       "commit": "5178e64",
-      "note": null,
+      "note": "[decided:2026-07-30] 落地 commit 5178e64(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-07-29T17:10:57.360Z",
       "lastSeen": "2026-07-29T17:10:57.360Z"
@@ -1582,7 +1582,7 @@
       "proposal": null,
       "status": "landed",
       "commit": "8c8e23168fd487473bc8dc48294efcc20d0e4bda",
-      "note": null,
+      "note": "[decided:2026-08-07] 落地 commit 8c8e23168fd487473bc8dc48294efcc20d0e4bda(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-08-07T06:22:15.374Z",
       "lastSeen": "2026-08-07T06:22:15.374Z"
@@ -1595,7 +1595,7 @@
       "proposal": "prompt 增加字段级形状参考(含'command/outputAnchor 必须与引用 run 逐字一致'一致性约束),减少格式往返",
       "status": "landed",
       "commit": "5815bd8",
-      "note": null,
+      "note": "[decided:2026-08-07] 落地 commit 5815bd8e60e30431db0d42e9e701d664e8a38ee0(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-08-07T10:22:05.313Z",
       "lastSeen": "2026-08-07T10:22:05.313Z"
@@ -1634,7 +1634,7 @@
       "proposal": null,
       "status": "landed",
       "commit": "9d9055d",
-      "note": null,
+      "note": "[decided:2026-08-08] 落地 commit 9d9055d(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-08-08T10:17:01.005Z",
       "lastSeen": "2026-08-08T10:17:01.005Z"
@@ -1660,7 +1660,7 @@
       "proposal": null,
       "status": "landed",
       "commit": "15ca5d6",
-      "note": null,
+      "note": "[decided:2026-08-09] 落地 commit 15ca5d6(git show AuthorDate 核实)",
       "occurrences": 1,
       "firstSeen": "2026-08-09T06:39:52.760Z",
       "lastSeen": "2026-08-09T06:39:52.760Z"
