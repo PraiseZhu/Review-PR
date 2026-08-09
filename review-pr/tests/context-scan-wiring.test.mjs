@@ -141,6 +141,49 @@ test('context --scan 接线:裸 /approve-merge 进 legacyBareComments;skip-struc
   assert.doesNotMatch(out.note, /名单但缺 APPROVED/, 'note 不得沿用"缺 APPROVED"作唯一原因口径');
 });
 
+// ── SC-2 生产形状锁定(2026-08-10 重新落地)──
+// 这条测试锁的是 context.mjs reviewThreads 导出契约的「负形状」,是 #13「删除
+// assessThreadEvidence 而非接线」决策在生产(生产者)侧唯一的机器保障。那个决策的
+// 判据:旧函数消费 body/authorType,而生产契约刻意不提供这两个字段——缺映射 = fail-closed
+// 假阴性,补映射 = 两行普通埋点即 canResolve:true 的 fail-open 假阳性(已实测),故删除
+// 而非补映射。若未来有人往 return 对象加 body/authorType,或把 lastComment 截断,
+// 本测试必红——「契约里没有这两个字段」这一事实本身必须有个报警器,否则删除决策会在
+// 无感知下被悄悄推翻。
+// 历史:本测试最初是 #13 执行席的草稿(用 --scan 模式,而 --scan 精简输出按设计不含
+// reviewThreads 全文,断言会红在错误位置,从未跑过);4e6a889 因编排误判被误删一次;
+// 本版自 4daede9 修订捞回:改用 full 模式(node context.mjs <PR> 不带 --scan),
+// 断言与映射真实输出对齐。isResolved:true 避免影响 unresolvedThreads 门计数。
+const PROD_SHAPE_THREAD_NODES = [
+  { id: 'PRRT_prod', isResolved: true, isOutdated: false, path: 'src/foo.ts',
+    comments: { nodes: [
+      { body: '这里调用了 `handleSubmit` 但缺少防抖。', author: { login: 'greptile-apps', __typename: 'Bot' }, id: 'c_prod_1' },
+      { body: '补充:请用 `debounce` 包裹,连点会重复提交。'.repeat(40), author: { login: 'greptile-apps', __typename: 'Bot' }, id: 'c_prod_2' },
+    ] } },
+];
+
+test('SC-2 生产形状锁定:reviewThreads 导出含 id/isResolved/isOutdated/path/author/isBot/count/lastComment,无 body/authorType,lastComment 全文透出', () => {
+  // reviewThreads 全文只在 full 模式输出(--scan 精简模式按设计不含,见 context.mjs 头注)
+  const { repo, env } = setup({ reviewThreadNodes: PROD_SHAPE_THREAD_NODES });
+  const r = spawnSync('node', [SCRIPT, '469'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
+  const th = out.history?.reviewThreads?.[0];
+  assert.ok(th, `reviewThreads[0] 应存在(fixture 注入生产形状节点): ${JSON.stringify(out.history?.reviewThreads)}`);
+  // 生产契约字段(PR #13 R3 对照实验:旧 assessThreadEvidence 消费的 body/authorType 不在其中)
+  assert.equal(th.id, 'PRRT_prod');
+  assert.equal(th.isResolved, true);
+  assert.equal(th.isOutdated, false);
+  assert.equal(th.path, 'src/foo.ts');
+  assert.equal(th.author, 'greptile-apps');
+  assert.equal(th.isBot, true, 'Bot __typename 必须被识别');
+  assert.equal(th.count, 2);
+  // lastComment = 最后一条评论全文,不截断(SC-2:claim 文本不许截断)
+  assert.equal(th.lastComment, '补充:请用 `debounce` 包裹,连点会重复提交。'.repeat(40));
+  assert.equal('body' in th, false, '生产契约不得出现 body 字段(消费侧理想形状,曾造成假阴性)');
+  assert.equal('authorType' in th, false, '生产契约不得出现 authorType 字段(消费侧理想形状)');
+});
+
 // F4(2026-08-09,round3):上一轮的「静态词条锁」(断言源码不含"既无 APPROVED"字面量)已删除
 // ——换等价措辞(如"没有任何 APPROVED 审查且作者不在 admins")或拼接文本即可绿,锁的是文档
 // 措辞不是审批行为。审批行为本身已由本文件其余用例以行为断言覆盖:auto.reason 必须携带
