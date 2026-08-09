@@ -938,9 +938,9 @@ unresolved 连续多轮整轮空转、停滞十几天」的 PR 就是这个原�
 
 1. **真人 thread 永不自动 resolve**；只认白名单 bot——`pr-rules.json` 的
    `threadTriage.extraBots` 登录名单（首配 `greptile-apps`；未配置 = 整套机制关闭，
-   一条都不动）。白名单校验不止查 thread 首条评论：**同一 thread 里任何一条评论
-   的作者若不在白名单内**（真人参与讨论），该 thread 永不自动 resolve，即使首条
-   评论来自白名单 bot；
+   一条都不动）。白名单校验不止查 thread 位置首条评论（`cs[0]`，选择器不依赖
+   `isBot` 识别）：**同一 thread 里任何一条评论的作者若不在白名单内**（真人参与
+   讨论），该 thread 永不自动 resolve，即使位置首条评论来自白名单 bot；
 2. **字符串共现只是必要不充分条件，不是语义理解**（如实降级：这不是「针对性
    对应」，只是文本层面的共现统计）：从 thread 评论文本按反引号/双引号/单引号提取
    高特异度 token（`extractThreadTokens`，剔除纯数字与停用词，不再识别裸标识符），
