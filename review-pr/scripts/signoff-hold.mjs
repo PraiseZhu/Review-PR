@@ -121,33 +121,84 @@ function isPidAlive(pid) {
   }
 }
 
-function tryTakeoverStaleLock(path, takeoverPath, writeOwn) {
+// round3 D2(blocker 修复):陈旧判据 = 「进程死了」或「持有超过 LOCK_STALE_MS」任一成立。
+// round2 只看 pid,而 readLockInfo 对合法 JSON 恒返回非 null → mtime 兜底分支永远走不到;
+// 叠加 isPidAlive 在 EPERM(跨用户杀不动)与 PID 复用(死进程 pid 被新进程复用)下都判
+// "活着" → 锁永久不可回收、门永久失效,相对 round1 纯 mtime(5 分钟自愈)是能力回退。
+// 加回时间上限后,EPERM/PID 复用最坏只把回收延迟到 LOCK_STALE_MS 之后,不会永久死锁。
+// startedAt 缺失/非法(旧格式 JSON)时该子句恒 false,退化为仅 pid 判定,行为同 round2。
+function isLockStale(info) {
+  if (!info) return true;
+  if (!isPidAlive(info.pid)) return true;
+  return Date.now() - Date.parse(info.startedAt) > LOCK_STALE_MS;
+}
+
+// 接管锁正常只持有毫秒级,60s 足够覆盖进程死在中间的自愈(对齐 prepare.mjs 的
+// TAKEOVER_TTL_MS)。
+const TAKEOVER_TTL_MS = 60 * 1000;
+
+// round3 D3:takeover 文件读回;round2 写入的是裸 pid 字符串,连日后加 TTL 都无从计算,
+// 这里统一为 JSON {startedAt, token}。解析失败/旧裸 pid 格式 → 返回 null,视为可清理
+// 的陈旧残留(不视为"别人正在接管")。
+function readTakeoverInfo(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed && typeof parsed.token === 'string') return parsed;
+  } catch { /* 残留旧格式 / 内容损坏 → 交给调用方当陈旧残留处理 */ }
+  return null;
+}
+
+function tryTakeoverStaleLock(path, takeoverPath, token, writeOwn) {
   // 两阶段抢占(镜像 prepare.mjs 的 takeover 机制,round2 D2 修复):先原子创建 sibling
   // .takeover 文件当"抢占锁",拿到后在其保护下复核主锁确实还陈旧、再 unlink+recreate;
-  // 避免两个并发实例同时判定陈旧、同时抢占导致互相删对方刚写的新锁。finally 保证
-  // takeover 文件总会被清理,不留残留。
-  try {
-    const tfd = openSync(takeoverPath, 'wx');
-    writeSync(tfd, String(process.pid));
-    closeSync(tfd);
-  } catch {
-    return false; // 另一实例正在抢占,本轮放弃,交给外层轮询重试
-  }
-  try {
-    const recheck = readLockInfo(path);
-    if (recheck && isPidAlive(recheck.pid)) return false; // 被别的实例刷新成活锁,不抢
-    try { unlinkSync(path); } catch { /* 已被抢占清理过 */ }
+  // 避免两个并发实例同时判定陈旧、同时抢占导致互相删对方刚写的新锁。
+  // round3 D3:takeover 文件带 {startedAt, token} 元数据——SIGKILL 下 finally 不执行,
+  // 残留文件必须能自愈:未超 TAKEOVER_TTL_MS 视为"另一实例正在接管"放弃本轮(交外层
+  // 轮询重试),超 TTL 的残留(含 round2 裸 pid 格式)清理后重试一轮。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const takeoverPayload = JSON.stringify({ startedAt: new Date().toISOString(), token });
     try {
-      const fd = openSync(path, 'wx');
-      writeOwn(fd);
-      closeSync(fd);
-      return true;
-    } catch {
-      return false; // 极端竞态下重建失败,交外层轮询重试而不是崩溃
+      const tfd = openSync(takeoverPath, 'wx');
+      try {
+        writeSync(tfd, takeoverPayload);
+      } finally {
+        closeSync(tfd);
+      }
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const info = readTakeoverInfo(takeoverPath);
+      const startedAt = info?.startedAt == null ? NaN : Date.parse(info.startedAt);
+      if (Number.isFinite(startedAt) && Date.now() - startedAt < TAKEOVER_TTL_MS) {
+        return false; // 另一实例正在接管,本轮放弃,交给外层轮询重试
+      }
+      // 残留(进程死在中间 / round2 裸 pid 格式)→ 清理后重试;清理失败(极端竞态)也放弃
+      try { unlinkSync(takeoverPath); } catch { return false; }
+      continue;
     }
-  } finally {
-    try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
+    try {
+      // round3 D4(wx 成功后复核内容):上面「stale 残留 → unlink → create」不是原子抢占,
+      // 另一实例可能基于更早的 stale 读把我们刚建的接管锁误删重建(与主锁当年踩过的
+      // unlink+create 竞态同款,prepare.mjs 同款复核)。内容不是自己的就退出竞争,
+      // 避免两个实例同时自认持有接管锁 → 双持有主锁。
+      const own = readTakeoverInfo(takeoverPath);
+      if (!own || own.token !== token) return false;
+      // 持有接管锁后复核主锁:可能已被别的实例接管重建(变新),那就不是我们的了
+      const recheck = readLockInfo(path);
+      if (recheck && !isLockStale(recheck)) return false; // 被别的实例刷新成活锁,不抢
+      try { unlinkSync(path); } catch { /* 已被抢占清理过 */ }
+      try {
+        const fd = openSync(path, 'wx');
+        writeOwn(fd);
+        closeSync(fd);
+        return true;
+      } catch {
+        return false; // 极端竞态下重建失败,交外层轮询重试而不是崩溃
+      }
+    } finally {
+      try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
+    }
   }
+  return false;
 }
 
 export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS } = {}) {
@@ -164,21 +215,21 @@ export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS }
       return { path, acquired: true, token };
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      // 判陈旧(round2 D2,替换旧版纯 mtime 判定):优先看持有者 pid 是否还活着——一次性
-      // 判定,不是心跳续期。ESRCH(进程已死)才判定陈旧、允许抢占;EPERM/其余一律保守
-      // 当"还活着"。只有锁内容损坏或是历史遗留的纯 pid 字符串格式(读不出 token)时,
-      // 才退回 mtime 超时兜底,这条兜底路径预期随存量锁文件自然淘汰。
+      // 判陈旧(round3 D2,替换 round2 纯 pid 判定):「持有者进程死了」或「持有超过
+      // LOCK_STALE_MS」任一成立即陈旧(见 isLockStale)。一次性判定,不是心跳续期。
+      // 锁内容损坏/round1 遗留纯 pid 字符串格式(读不出 pid+token)时,退回 mtime 超时
+      // 兜底,这条兜底路径预期随存量锁文件自然淘汰。
       const info = readLockInfo(path);
       let stale = false;
       if (info) {
-        stale = !isPidAlive(info.pid);
+        stale = isLockStale(info);
       } else {
         try {
           const st = statSync(path);
           stale = Date.now() - st.mtimeMs > LOCK_STALE_MS;
         } catch { /* 锁在检测瞬间被持有者自己释放,走下面超时判断/轮询重试 */ }
       }
-      if (stale && tryTakeoverStaleLock(path, takeoverPath, writeOwn)) {
+      if (stale && tryTakeoverStaleLock(path, takeoverPath, token, writeOwn)) {
         return { path, acquired: true, token };
       }
       if (Date.now() >= deadline) {
@@ -215,8 +266,13 @@ export function releaseHoldLock(lockInfo) {
   try {
     unlinkSync(lockInfo.path);
     return { released: true, alreadyAbsent: false, notOwner: false };
-  } catch {
-    return { released: false, alreadyAbsent: true, notOwner: false };
+  } catch (e) {
+    // round3 #6:unlink 失败 ≠ 锁不存在。ENOENT 才是真「已缺席」;EACCES/EBUSY/EROFS 等
+    // 是删除失败,报 alreadyAbsent:true 是事实错误且静默(调用方会以为锁已经没了,
+    // 而它其实还在)。非 ENOENT 写 stderr + 显式 unlinkError,不让调用方误读。
+    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
+    process.stderr.write(`[signoff-hold] 释放锁失败(unlink ${lockInfo.path}):${e.code ?? e.message}\n`);
+    return { released: false, alreadyAbsent: false, notOwner: false, unlinkError: e.code ?? String(e.message) };
   }
 }
 
@@ -290,11 +346,10 @@ export function computeHeld({ issueCreated, priorIssueUrl, needIssue, commented,
 // 而 ~/.claude/skills 与 ~/.claude/skills/review-pr 都是 symlink);② 路径含空格;
 // ③ 路径含中文字符——import.meta.url 会对空格/非 ASCII 字符做百分号编码,而
 // process.argv[1] 是调用方传入的原始字面路径,两侧编码口径不一致,裸字符串比较必错。
-// 模式抄自 context.mjs 的 IS_MAIN_MODULE(该文件同样的判定,已验证过三类场景)——
-// realpathSync 只作用于 argv[1] 侧,不作用于 import.meta.url 侧:Node 在构造
-// import.meta.url 时本就会解析 symlink,两边都 realpath 反而会把"是否经 symlink 调用"
-// 这个信号抹掉;fileURLToPath 负责把 import.meta.url 的百分号编码解回原始字符,
-// 消除空格/中文的编码不对称。禁止改回裸字符串比较。
+// 模式抄自 context.mjs 的 IS_MAIN_MODULE(该文件同样的判定,已验证过三类场景)。
+// realpath 只作用在 argv[1] 一侧:Node 在构造 import.meta.url 时本就会解析 symlink,
+// 字面值已经是解析后的真实路径;fileURLToPath 把百分号编码解回原始字符,消除
+// 空格/中文的编码不对称。
 const isMainModule = (() => {
   if (!process.argv[1]) return false;
   try {
@@ -303,6 +358,18 @@ const isMainModule = (() => {
     return false;
   }
 })();
+if (!isMainModule && process.argv[1]) {
+  // round3 #7:守卫失败不能静默 fail-open——复审实测 `node --preserve-symlinks-main`
+  // 下 exit=0、零 gh 调用、stdout 空,门形同虚设。被 import(测试)时 argv[1] 是测试
+  // 运行器路径,两侧 realpath 不一致,不报警;只有 argv[1] 与本模块解析到同一真实
+  // 文件、字面比较却失配(链接/编码形态差异)时,才说明确实被当作脚本调用而守卫
+  // 误判,写一行 stderr 让失败可见。
+  try {
+    if (realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+      process.stderr.write(`[signoff-hold] 警告:入口守卫判定失败但 argv[1] 与本模块指向同一文件(argv[1]=${process.argv[1]})——脚本将不执行任何动作(fail-open),请改用直接路径调用。\n`);
+    }
+  } catch { /* 任一侧 realpath 失败则无从判断,不报警 */ }
+}
 if (isMainModule) {
 try {
   const { owner, repo } = parseRepo();
