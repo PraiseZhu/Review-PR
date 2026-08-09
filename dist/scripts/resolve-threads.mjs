@@ -1,42 +1,46 @@
 #!/usr/bin/env node
-// resolve-threads.mjs — thread 代 resolve(triage 的执行端,对应 SKILL「thread 清理」)
+// resolve-threads.mjs — thread 代 triage 的执行端(对应 SKILL「thread 清理」)
 //
 // 背景:分支保护开了 Require conversation resolution,thread 不 resolve 就 GitHub 层面
 // 合不了;而 bot(greptile 等)从不回来点 resolve,作者修完也常忘点 —— 台账里十几轮
-// 整轮空转都是这个原因。判「意见是否已被处理」是语义活,由调用方(编排层按 SKILL
-// 「thread 清理」+ lib.mjs assessThreadEvidence 的语义绑定判据)做;本脚本执行
-// 确定性动作(**回复 + resolve**),并在执行层自带独立安全边界(不依赖调用方已经
-// 过滤干净,defense-in-depth):
-//   - 每次代 resolve 都带一条回复(写明验证依据的 commit)——原 reviewer 收到 GitHub
-//     通知,不同意一键 unresolve,下一轮流程看到 thread 又开了就重新阻断。不允许静默
-//     resolve;
-//   - 只操作当前 PR 上真实存在且未 resolve 的 thread(id 必须能在 PR 的 thread 列表
-//     里找到),列表经**分页**取全(reviewThreads / 每 thread 的 comments 均分页);
-//   - **执行层白名单复核**:live 查询取到 thread 内全部评论(不止首条)的作者,任何
-//     一条不在调用方传入的 allowedBots 里 一律拒绝,fail-closed(即使调用方判断有误,
-//     这里再挡一次;真人在白名单 bot 首条之后追加的异议同样被扫到);
-//   - 幂等:已 resolve 的跳过;回复带**身份绑定** marker(编入 pr 号 + 当前 thread
-//     id,不是裸子串)——预存 / 从别的 thread 复制过来的 marker 文本,pr/thread 对
-//     不上就不采信,不会被误判"已处理过";
-//   - 翻案保护区分**可重试**与**永久**(D6):marker 正文是普通 thread 回复,pr 号与
-//     thread id 都是公开信息,任何有评论权限的账号都能定向伪造,故 marker 只在同时
-//     满足身份绑定与本地持久回执时采信为「己方已 triage」——仅有 marker 而无回执 →
-//     marker-not-trustworthy(来源不可信),进可重试路径,不做永久翻案判定;marker +
-//     回执且非我们自己失败 → reopened-after-triage(有人 unresolve 过 = 人工翻案),
-//     永久留人工,不与人拉锯。**例外**:回执显示上一轮是我们自己 resolve mutation
-//     失败(reply 成功但 resolve 报错)而不是人工翻案 —— 只重试 resolve,不重复回复;
-//   - **并发至多一次**:每个 thread id 一把独占文件锁(`wx` 原子创建 + TTL 过期两阶段
-//     抢占,无 PID 存活判定,理由同 prepare.mjs 的 acquireLock()),拿到锁后在临界区
-//     内重查一次活态(闭合"批量查询→加锁"之间的 TOCTOU 窗口),避免双进程各发一次
-//     reply+resolve;
-//   - **白名单复核扫描 thread 内全部评论**(不止首条)——真人在 bot 首条评论之后追加
-//     的反对意见,同样会被扫到并 fail-closed 拒绝,不会因为只看首条被漏判。
+// 整轮空转都是这个原因。
 //
-// 移植自 lizi 上游 resolve-threads.mjs(2026-08-09);mivo 侧语义判定(白名单 bot +
-// token 共现 + 编排层显式 justification,见 lib.mjs assessThreadEvidence,2026-08-09
-// 二轮对抗复审后降级,不再声称"语义绑定")在编排层落实,本脚本不自选 thread、只执行
-// 调用方给的 --payload-file,但对"谁能被代 resolve"仍有自己的独立执行层校验(见上,
-// 含对 justification 字段存在性的独立复核)。
+// 设计(2026-08-09 三轮收敛,回复优先):「意见是否已被处理」是 LLM 语义活,字符串分析
+// 证明不了——diff 里新增两行普通埋点 + 一句 justification 即可绕过任何 token 共现判据
+// (PR #13 R2 blocker 实测成立),故执行层不再声称能独立验证「问题被修好」。本脚本只做
+// 两类事,并区分三种终态:
+//   1. **reply(无条件)**:白名单 bot thread 且 thread 内无白名单外参与者时,按调用方
+//      payload 发回复。回复可纠正,是反停滞(#251 型)的全部价值;
+//   2. **resolve(默认不执行)**:只在**机器可核实**条件下才做:
+//      a. 线程已是 resolved(幂等,already-resolved);
+//      b. **上一轮己方已回复过同一 headSha**:thread 里有 viewer 身份作者的本脚本
+//         marker(state=replied,sha 与本次 payload headSha 一致),且白名单复核仍通过
+//         (回复后无真人异议)→ resolve;成功后再追加 state=resolved marker(审计 +
+//         后续 reopen 时区分「我们 resolve 后被翻案」与「从未 resolve 过」);
+//      c. 己方 marker state=resolved 但线程又变 unresolved → 人工翻案(reopened-after-
+//         triage),永久留人工,不与人拉锯。
+//    其余情况一律只回复不关闭。
+//   三种终态在结果 JSON 显式区分:`replied-only` / `resolved` / `skipped-<reason>`。
+//
+// marker 可信度 = **评论作者身份**(GraphQL `viewer { login }` 比对),不是文本形状:
+//   - 只有 viewer 作者评论里的 marker 才算「己方 triage」;pr/thread/sha 都是公开信息,
+//     文本形状谁都能复制,身份不能;
+//   - 白名单复核按作者身份豁免:**只豁免 viewer 自己的评论**;非白名单作者发的 marker
+//     形状评论照扫,仍然触发 non-whitelisted-comment-present(R2 验收门:marker 形状
+//     评论不得豁免作者校验)。
+//
+// 状态全部在 GitHub 侧(评论 + 线程 resolve 状态),**无本地回执**:tmp 清理 / 换机器 /
+// 无状态 CI runner 都不影响下一轮判定。
+//
+// 并发至多一次:每 thread id 一把独占文件锁(wx 原子创建 + TTL 过期两阶段抢占 +
+// takeover 60s TTL 自愈 + wx 成功后复核内容,同 #11 signoff-hold.mjs round3 口径)。
+// 拿到锁后在临界区内重查一次活态(闭合"批量查询→加锁"之间的 TOCTOU 窗口),避免双进程
+// 各发一次 reply/resolve。
+//
+// 移植自 lizi 上游 resolve-threads.mjs(2026-08-09);三轮收敛后,编排层侧的
+// `assessThreadEvidence`(token 共现 + justification 判据)已删除——生产零调用 + 可被
+// 两行普通埋点绕过(见 PR #13 R3 交卷)。编排层只负责逐 thread 给 reply + justification
+// (契约字段),执行层负责上面两类机械校验。
 //
 // 退出码恒 0(脚本自身异常才 1):结果全在 JSON 字段。
 //
@@ -45,16 +49,17 @@
 //   {
 //     "threads": [ {
 //       "id": "PRRT_xxx",
-//       "reply": "已在 abc1234 处理,代为 resolve;有异议可 reopen",
-//       "justification": "为什么这段 diff 回应了这条 claim(必填,执行层独立复核)"
+//       "reply": "已在 abc1234 处理;有异议可 reopen",
+//       "justification": "编排层对「为什么这段 diff 回应了这条 claim」的说明(契约字段,
+//                        非 resolve 判据——resolve 只看机器可核实条件,见上)"
 //     } ],
 //     "allowedBots": ["greptile-apps"],   // 执行层白名单复核,必填,空则整体 fail-closed
-//     "headSha": "abc1234"                // 写入 marker 供审计,非必填
+//     "headSha": "abc1234"                // 写入 marker 并参与 resolve 条件判定,非必填
 //   }
 //
 // 测试隔离用环境变量:
-//   REVIEW_PR_RESOLVE_LOCK_DIR  锁文件 / 本地回执文件目录(默认 tmpdir 下固定子目录;
-//                               并发测试必须各自传独立目录,否则会跨测试串锁)
+//   REVIEW_PR_RESOLVE_LOCK_DIR  锁文件目录(默认 tmpdir 下固定子目录;并发测试必须各自
+//                               传独立目录,否则会跨测试串锁)
 
 import {
   readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync,
@@ -63,11 +68,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
-  parseRepo, parsePR, ghGraphql, print, fail, stateFile, writeJsonAtomic,
+  parseRepo, parsePR, ghGraphql, print, fail,
 } from './lib.mjs';
 
 const TRIAGE_MARKER_PREFIX = '<!-- review-pr:thread-triage';
 const MAX_PAGES = 50;
+
+const VIEWER_QUERY = `query ViewerLogin { viewer { login } }`;
 
 const RESOLVE_MUTATION = `
   mutation($tid:ID!){ resolveReviewThread(input:{threadId:$tid}){ thread{ isResolved } } }`;
@@ -155,23 +162,30 @@ function fetchAllThreads(owner, repo, pr) {
   return nodes;
 }
 
-// ── SC-4:身份绑定 marker —— 编入 pr 号 + 当前 thread id,校验时两者都要对得上当前
-// 上下文才采信。预存 / 从别的 thread 复制过来的评论文本即使含 marker 字样,parseMarker
-// 解出的 pr/thread 对不上,不会被采信为"我们自己代 resolve 过"。
-function buildMarker(pr, threadId, headSha) {
-  return `${TRIAGE_MARKER_PREFIX} pr=${pr} thread=${threadId} sha=${headSha ?? 'unknown'} -->`;
+// ── marker:pr/thread 绑定 + sha + state(2026-08-09 三轮收敛后加 state)──
+// state=replied:上一轮己方已回复,resolve 待机器可核实条件(同 headSha 重跑);
+// state=resolved:己方已 resolve 成功(此后 reopen = 人工翻案,永久留人工)。
+// 可信度靠**作者身份**(viewer),不靠文本:pr/thread/sha 都是公开信息,任何有评论权限
+// 的账号都能定向复制文本,但没人能以 viewer 身份发评论。
+function buildMarker(pr, threadId, headSha, state = 'replied') {
+  return `${TRIAGE_MARKER_PREFIX} pr=${pr} thread=${threadId} sha=${headSha ?? 'unknown'} state=${state} -->`;
 }
+// state 缺省 'replied':兼容旧四字段 marker(2026-08-09 前无 state)。
 function parseMarker(body) {
-  const m = /<!--\s*review-pr:thread-triage\s+pr=(\S+)\s+thread=(\S+)\s+sha=(\S+)\s*-->/.exec(String(body ?? ''));
+  const m = /<!--\s*review-pr:thread-triage\s+pr=(\S+)\s+thread=(\S+)\s+sha=(\S+)(?:\s+state=(\S+))?\s*-->/.exec(String(body ?? ''));
   if (!m) return null;
-  return { pr: m[1], thread: m[2], sha: m[3] };
+  return { pr: m[1], thread: m[2], sha: m[3], state: m[4] ?? 'replied' };
 }
-function findOwnMarkerComment(comments, pr, threadId) {
+// 己方 marker 收集:只认 viewer 身份作者写的、且 pr/thread 与当前上下文一致的 marker。
+// 攻击者无法以 viewer 身份发评论,身份绑定不可伪造;pr/thread 对不上(预存/复制)不算。
+function ownMarkersFrom(comments, pr, threadId, viewerLogin) {
+  const own = [];
   for (const c of comments ?? []) {
+    if (String(c?.author?.login ?? '').toLowerCase() !== viewerLogin.toLowerCase()) continue;
     const parsed = parseMarker(c.body);
-    if (parsed && parsed.pr === String(pr) && parsed.thread === threadId) return { comment: c, marker: parsed };
+    if (parsed && parsed.pr === String(pr) && parsed.thread === threadId) own.push({ comment: c, marker: parsed });
   }
-  return null;
+  return own;
 }
 
 // ── SC-2:并发至多一次 —— 每 thread 一把独占文件锁(wx 原子创建)。此前版本(round-1)
@@ -183,10 +197,15 @@ function findOwnMarkerComment(comments, pr, threadId) {
 // 临界区(一次 reply+resolve 的网络往返)大两个量级,避免把"正常慢"误判成"崩溃"。
 // 两阶段抢占:抢主锁前先抢 `<lock>.takeover` 位,抢到后复核主锁仍 stale 才真正接管,
 // 防止两个"同时判定 stale"的进程抢占竞态(prepare.mjs 同款自我复核)。
+// takeover 自愈(#11 signoff-hold.mjs round3 D3/D4 同口径):takeover 文件写 JSON
+// `{startedAt, token}`,60s TTL——SIGKILL 下 finally 不执行,残留的 takeover 文件
+// 未超 TTL 视为"另一实例正在接管"放弃本轮(交外层轮询重试),超 TTL 的残留清理后重试;
+// wx 成功后复核文件内容(自己写的 token),防另一实例基于更早的 stale 读把我们刚建的
+// 接管锁误删重建。
 // 锁目录默认落 tmpdir 固定子目录,测试可用 REVIEW_PR_RESOLVE_LOCK_DIR 隔离,避免跨
 // 测试串锁。
 const THREAD_LOCK_TTL_MS = Number(process.env.REVIEW_PR_RESOLVE_LOCK_TTL_MS || 5 * 60 * 1000);
-const THREAD_TAKEOVER_TTL_MS = 15 * 1000;
+const THREAD_TAKEOVER_TTL_MS = 60 * 1000;
 
 function lockDir() {
   const d = process.env.REVIEW_PR_RESOLVE_LOCK_DIR || join(tmpdir(), 'review-pr-resolve-threads-locks');
@@ -225,6 +244,44 @@ function isLockStale(raw) {
   const startedAt = parseLockStartedAt(raw);
   return startedAt === null || (Date.now() - startedAt) > THREAD_LOCK_TTL_MS;
 }
+// takeover 文件读回:JSON {startedAt, token};解析失败/旧裸格式 → null,视为可清理残留。
+function readTakeoverInfo(p) {
+  try {
+    const parsed = JSON.parse(readFileSync(p, 'utf8'));
+    if (parsed && typeof parsed.token === 'string') return parsed;
+  } catch { /* 残留旧格式 / 内容损坏 → 交给调用方当陈旧残留处理 */ }
+  return null;
+}
+function tryTakeoverStaleLock(p, takeoverPath, token) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const payload = JSON.stringify({ startedAt: new Date().toISOString(), token });
+    if (tryCreateLockFile(takeoverPath, payload)) {
+      try {
+        // wx 成功后复核内容:防另一实例基于更早的 stale 读把我们刚建的接管锁误删重建
+        // (与 prepare.mjs / signoff-hold.mjs 同款复核)——内容不是自己的就退出竞争,
+        // 避免两个实例同时自认持有接管锁 → 双持有主锁。
+        const own = readTakeoverInfo(takeoverPath);
+        if (!own || own.token !== token) return false;
+        // 持有接管锁后复核主锁:可能已被别的实例接管重建(变新),那就不是我们的了。
+        const recheck = readLockRaw(p);
+        if (!isLockStale(recheck)) return false;
+        try { unlinkSync(p); } catch { /* 已被抢占清理过 */ }
+        return tryCreateLockFile(p, JSON.stringify({ token, startedAt: Date.now() }));
+      } finally {
+        try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
+      }
+    }
+    // EEXIST:读 takeover 文件,未超 TTL → 另一实例正在接管,放弃本轮(交外层轮询重试);
+    // 超 TTL 的残留(含旧裸格式)→ 清理后重试一轮。
+    const info = readTakeoverInfo(takeoverPath);
+    const startedAt = info?.startedAt == null ? NaN : Date.parse(info.startedAt);
+    if (Number.isFinite(startedAt) && Date.now() - startedAt < THREAD_TAKEOVER_TTL_MS) {
+      return false;
+    }
+    try { unlinkSync(takeoverPath); } catch { return false; }
+  }
+  return false;
+}
 async function acquireThreadLock(pr, threadId, { retries = 40, spinMs = 250 } = {}) {
   const p = lockPathFor(pr, threadId);
   const takeoverPath = `${p}.takeover`;
@@ -232,24 +289,8 @@ async function acquireThreadLock(pr, threadId, { retries = 40, spinMs = 250 } = 
   for (let i = 0; i <= retries; i += 1) {
     const content = JSON.stringify({ token, startedAt: Date.now() });
     if (tryCreateLockFile(p, content)) return { path: p, token };
-    const raw = readLockRaw(p);
-    if (isLockStale(raw)) {
-      // 两阶段抢占:先抢 takeover 位,抢到才有资格接管主锁;抢不到说明另一个进程
-      // 正在做同一件事,让它去做,本轮不重复抢。
-      if (tryCreateLockFile(takeoverPath, content)) {
-        try {
-          const raw2 = readLockRaw(p);
-          if (isLockStale(raw2)) {
-            try { unlinkSync(p); } catch { /* best-effort:可能已被别的进程删了 */ }
-            if (tryCreateLockFile(p, content)) return { path: p, token };
-          }
-        } finally {
-          try { unlinkSync(takeoverPath); } catch { /* best-effort */ }
-        }
-      } else {
-        await sleep(Math.min(spinMs, THREAD_TAKEOVER_TTL_MS));
-        continue;
-      }
+    if (isLockStale(readLockRaw(p)) && tryTakeoverStaleLock(p, takeoverPath, token)) {
+      return { path: p, token };
     }
     await sleep(spinMs);
   }
@@ -265,30 +306,6 @@ function releaseThreadLock(lock) {
   } catch { /* best-effort 释放,失败不影响主流程(锁文件留着,TTL 过期后会被下个进程两阶段抢占接管) */ }
 }
 
-// ── SC-6:reply 成功但 resolve 失败 ≠ 人工翻案 —— 留一张"未决回执",下一轮看到
-// 「own marker 存在 + 回执显示我们自己失败」时只重试 resolve,不算翻案。
-// 存储改为 lib.mjs 的 stateFile()/writeJsonAtomic()(与 review-receipt-<pr>.json 同一
-// 套持久状态根,同一套原子写),不再用 tmpdir 下的锁目录——锁是"进程级互斥"语义,
-// 天然该短命;回执是"跨轮次判断依据",落在 tmpdir 在无状态 CI runner(每次全新
-// tmpdir)上会导致下一轮找不到回执,把"我们自己 resolve mutation 失败"误判成
-// "人工翻案"并永久锁死,这正是回执要防的场景本身。
-function threadReceiptFile(pr, threadId) {
-  return stateFile(`resolve-thread-receipt-${pr}__${safeIdPart(threadId)}.json`);
-}
-function writeReceipt(pr, threadId, data) {
-  try { writeJsonAtomic(threadReceiptFile(pr, threadId), data); } catch { /* best-effort */ }
-}
-function readReceipt(pr, threadId) {
-  try {
-    const p = threadReceiptFile(pr, threadId);
-    if (!existsSync(p)) return null;
-    return JSON.parse(readFileSync(p, 'utf8'));
-  } catch { return null; }
-}
-function clearReceipt(pr, threadId) {
-  try { const p = threadReceiptFile(pr, threadId); if (existsSync(p)) unlinkSync(p); } catch { /* best-effort */ }
-}
-
 try {
   const { owner, repo } = parseRepo();
   const pr = parsePR(process.argv[2]);
@@ -297,9 +314,9 @@ try {
   const payloadSrc = pfIdx >= 0 ? process.argv[pfIdx + 1] : null;
   if (!payloadSrc) fail('--payload-file 必填(threads[].id + reply + justification)');
   const payload = JSON.parse(readFileSync(payloadSrc === '-' ? 0 : payloadSrc, 'utf8'));
-  // D1 执行层复核(编排层之外的第二道防线):thread 必填 id + reply + justification,
-  // 缺任一 → rejected,不静默进入执行流程(编排层在 lib.mjs assessThreadEvidence 已要求
-  // justification,这里独立再查一遍,不单纯信任调用方过滤过)。
+  // 契约复核(机械):thread 必填 id + reply + justification,缺任一 → rejected,不静默
+  // 进入执行流程。justification 是编排层契约字段(审计用),**不是 resolve 判据**——
+  // resolve 只看机器可核实条件(见下)。
   const wanted = (payload?.threads ?? []).filter(
     (t) => t?.id && (t?.reply ?? '').trim() !== '' && (t?.justification ?? '').trim() !== '',
   );
@@ -307,74 +324,87 @@ try {
     (t) => !t?.id || (t?.reply ?? '').trim() === '' || (t?.justification ?? '').trim() === '',
   ).map((t) => ({
     id: t?.id ?? null,
-    reason: 'missing-id-or-reply-or-justification(不允许静默 resolve:thread id / reply / justification 三者必填,缺失一律拒绝)',
+    reason: 'missing-id-or-reply-or-justification(thread id / reply / justification 三者必填,缺失一律拒绝)',
   }));
   const allowedBotsRaw = payload?.allowedBots ?? [];
   if (!Array.isArray(allowedBotsRaw)) fail(`allowedBots 必须是数组,收到:${JSON.stringify(allowedBotsRaw)}(fail-closed 拒绝,不静默 TypeError)`);
   const allowedBots = allowedBotsRaw.map((s) => String(s).toLowerCase()).filter(Boolean);
   const headSha = String(payload?.headSha ?? process.env.REVIEW_PR_HEAD_SHA ?? 'unknown');
 
+  // D3:marker 可信度的唯一依据 = 评论作者是否就是当前执行身份。viewer 查询失败 →
+  // fail-closed(拿不到身份就没法区分「我们发的 marker」与「伪造的 marker」)。
+  const viewerData = ghGraphql(VIEWER_QUERY);
+  const viewerLogin = String(viewerData?.data?.viewer?.login ?? '').trim();
+  if (!viewerLogin) fail('无法获取 viewer login(GraphQL viewer 查询失败)——marker 作者身份判定依赖它,fail-closed');
+
   const liveNodes = fetchAllThreads(owner, repo, pr);
   const live = new Map(liveNodes.map((t) => [t.id, t]));
+
+  // 白名单复核(按作者身份豁免,不是按文本形状):只豁免 viewer 自己的评论(本脚本上一轮
+  // 的 marker 回复 / state=resolved 追加 marker);非白名单作者的评论一律拒绝,marker
+  // 形状也不例外——文本谁都能复制,身份不能。
+  const isOwn = (c) => String(c?.author?.login ?? '').toLowerCase() === viewerLogin.toLowerCase();
+  const findNonWhitelisted = (comments) => {
+    const reviewerComments = comments.filter((c) => !isOwn(c));
+    const offender = reviewerComments.find((c) => {
+      const a = String(c?.author?.login ?? '').toLowerCase();
+      return !a || !allowedBots.includes(a);
+    });
+    return { reviewerComments, offender };
+  };
 
   const results = [];
   for (const w of wanted) {
     const t = live.get(w.id);
     if (!t) {
-      results.push({ id: w.id, done: false, reason: 'thread-not-found(id 不在当前 PR 的 thread 列表里)' });
+      results.push({ id: w.id, outcome: 'skipped', done: false, replied: false, resolved: false, reason: 'skipped-thread-not-found(thread id 不在当前 PR 的 thread 列表里)' });
       continue;
     }
     if (t.isResolved) {
-      results.push({ id: w.id, path: t.path, done: true, reason: 'already-resolved' });
+      results.push({ id: w.id, path: t.path, outcome: 'resolved', done: true, replied: false, resolved: true, reason: 'already-resolved(线程已是 resolved,无需动作)' });
       continue;
     }
-    // SC-3/D2:执行层白名单复核(defense-in-depth,不依赖调用方已经过滤干净)——
-    // 扫描 thread 内**全部**评论的作者(不止首条)。只看 comments[0] 会漏判:真人在
-    // bot 首条评论之后追加反对意见时,首条仍是白名单 bot,若不扫后续评论就会被误判
-    // 可代 resolve,把真人的异议当空气。任何一条非白名单作者出现就 fail-closed 拒绝。
+    // SC-3:执行层白名单复核(defense-in-depth,不依赖调用方已经过滤干净)——扫描 thread
+    // 内**全部**评论的作者(不止首条)。只看 comments[0] 会漏判:真人在 bot 首条评论之后
+    // 追加反对意见时,首条仍是白名单 bot,若不扫后续评论就会被误判可代处理,把真人的
+    // 异议当空气。任何一条非白名单作者出现就 fail-closed 拒绝。
     const comments = t.comments?.nodes ?? [];
     if (!allowedBots.length) {
-      results.push({ id: w.id, path: t.path, done: false, reason: 'triage-disabled(未传 allowedBots,执行端 fail-closed 拒绝)' });
+      results.push({ id: w.id, path: t.path, outcome: 'skipped', done: false, replied: false, resolved: false, reason: 'skipped-triage-disabled(未传 allowedBots,执行端 fail-closed 拒绝)' });
       continue;
     }
     if (comments.length === 0) {
-      results.push({ id: w.id, path: t.path, done: false, reason: 'author-not-in-whitelist(thread 无评论,拒绝代 resolve)', author: null });
+      results.push({ id: w.id, path: t.path, outcome: 'skipped', done: false, replied: false, resolved: false, reason: 'skipped-author-not-in-whitelist(thread 无评论,拒绝代处理)', author: null });
       continue;
     }
-    // 排除本脚本自己写过的身份绑定 marker 回复再扫作者——那是执行层留下的审计痕迹,
-    // 作者是触发 resolve 的自动化身份本身(fake-gh-resolve 里是 review-pr-bot,真实环境
-    // 是执行 token 的身份),几乎必然不在 allowedBots(白名单列的是 reviewer bot,如
-    // greptile-apps)里;若不排除,任何重试轮次(上一轮已留过 marker)都会被自己的
-    // 回复误判"非白名单评论"而永久拒绝重试。排除后若一条非 marker 评论都不剩,说明
-    // 这是"我们已经处理过、还没轮到重查 marker"的合法中间态,交给下面的锁+marker 逻辑
-    // 判断(reopened-after-triage / 我们自己失败重试),这里不提前拒绝。
-    const reviewerComments = comments.filter((c) => !parseMarker(c?.body));
-    const nonWhitelisted = reviewerComments.find((c) => {
-      const a = String(c?.author?.login ?? '').toLowerCase();
-      return !a || !allowedBots.includes(a);
-    });
-    if (nonWhitelisted) {
-      // 命中的是首条(触发 review 的)评论本身 → 沿用 SC-3 原命名 author-not-in-whitelist;
-      // 命中的是首条之后追加的评论(D2 新增的扫描范围)→ non-whitelisted-comment-present,
-      // 区分"审核发起者本身不在白名单"与"真人在白名单 bot 之后追加了异议"两种场景。
-      const isFirstComment = nonWhitelisted === reviewerComments[0];
+    const { reviewerComments, offender } = findNonWhitelisted(comments);
+    if (offender) {
+      // 命中的是首条(触发 review 的)评论本身 → author-not-in-whitelist;命中的是首条
+      // 之后追加的评论 → non-whitelisted-comment-present,区分"审核发起者本身不在
+      // 白名单"与"真人在白名单 bot 之后追加了异议"两种场景。
+      const isFirstComment = offender === reviewerComments[0];
       results.push({
-        id: w.id, path: t.path, done: false,
+        id: w.id, path: t.path, outcome: 'skipped', done: false, replied: false, resolved: false,
         reason: isFirstComment
-          ? 'author-not-in-whitelist(执行端复核:首条评论作者不在白名单,拒绝代 resolve)'
-          : 'non-whitelisted-comment-present(执行端复核:thread 内存在非白名单作者的评论,拒绝代 resolve)',
-        author: nonWhitelisted?.author?.login ?? null,
+          ? 'skipped-author-not-in-whitelist(执行端复核:评论作者不在白名单,拒绝代处理)'
+          : 'skipped-non-whitelisted-comment-present(执行端复核:thread 内存在非白名单作者的评论,拒绝代处理)',
+        author: offender?.author?.login ?? null,
       });
       continue;
     }
     if (dryRun) {
-      results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: true, wouldResolve: true });
+      // dry-run 不拿锁、不重查;resolve 预演按批量评论里的己方 marker 判定。
+      const pre = ownMarkersFrom(comments, pr, w.id, viewerLogin);
+      const wouldResolve = pre.length > 0
+        && !pre.some((m) => m.marker.state === 'resolved')
+        && pre[pre.length - 1].marker.sha === headSha;
+      results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: true, wouldResolve });
       continue;
     }
     // SC-2:并发至多一次。拿不到锁 = 另一进程正在处理同一 thread,本进程不动。
     const lock = await acquireThreadLock(pr, w.id);
     if (!lock) {
-      results.push({ id: w.id, path: t.path, done: false, reason: 'lock-busy(另一进程正在处理同一 thread,本次不动)' });
+      results.push({ id: w.id, path: t.path, outcome: 'skipped', done: false, replied: false, resolved: false, reason: 'skipped-lock-busy(另一进程正在处理同一 thread,本次不动)' });
       continue;
     }
     try {
@@ -382,12 +412,12 @@ try {
       const rc = ghGraphql(THREAD_RECHECK_QUERY, { tid: w.id });
       const freshNode = rc?.data?.node;
       if (freshNode?.isResolved === true) {
-        results.push({ id: w.id, path: t.path, done: true, reason: 'already-resolved(锁内重查发现已被并发处理)' });
+        results.push({ id: w.id, path: t.path, outcome: 'resolved', done: true, replied: false, resolved: true, reason: 'already-resolved(锁内重查发现已被并发处理)' });
         continue;
       }
       // marker 检测必须用「批量分页取全的 comments」兜底,不能只信 freshNode 的
-      // 前 50 条——否则第 50 条之后的历史 marker 会被判「未翻案」而误当新 thread
-      // 走一遍正常 reply+resolve(SC-5 实测暴露:52 条评论里第 52 条才是 marker)。
+      // 前 50 条——否则第 50 条之后的历史 marker 会被误判「无己方 marker」而走首轮
+      // 重复回复(SC-5 实测暴露:52 条评论里第 52 条才是 marker)。
       // 合并去重(按 id):批量分页结果为主,recheck 的新鲜评论补充"锁窗口内新增"的部分。
       const seenIds = new Set();
       const mergedComments = [];
@@ -399,44 +429,53 @@ try {
         if (c?.id) { if (seenIds.has(c.id)) continue; seenIds.add(c.id); }
         mergedComments.push(c);
       }
-      // D2:锁内重查一次白名单——TOCTOU 窗口内可能刚好新增了一条真人反对评论,
-      // 批量查询阶段的白名单复核看不到它,必须在临界区内用合并后的全量评论再扫一次。
-      // 同样要排除本脚本自己的身份绑定 marker 回复,否则重试轮次(上一轮已留过
-      // marker)会把自己的回执误判成"非白名单评论"而永久拒绝。
-      const mergedNonWhitelisted = mergedComments.filter((c) => !parseMarker(c?.body)).find((c) => {
-        const a = String(c?.author?.login ?? '').toLowerCase();
-        return !a || !allowedBots.includes(a);
-      });
-      if (mergedNonWhitelisted) {
+      // 锁内重查一次白名单——TOCTOU 窗口内可能刚好新增了一条真人反对评论,批量查询
+      // 阶段的白名单复核看不到它,必须在临界区内用合并后的全量评论再扫一次。同样只
+      // 豁免 viewer 自己的评论。
+      const mergedScan = findNonWhitelisted(mergedComments);
+      if (mergedScan.offender) {
         results.push({
-          id: w.id, path: t.path, done: false,
-          reason: 'non-whitelisted-comment-present(锁内重查:合并后的评论列表出现非白名单作者,拒绝代 resolve)',
-          author: mergedNonWhitelisted?.author?.login ?? null,
+          id: w.id, path: t.path, outcome: 'skipped', done: false, replied: false, resolved: false,
+          reason: 'skipped-non-whitelisted-comment-present(锁内重查:合并后的评论列表出现非白名单作者,拒绝代处理)',
+          author: mergedScan.offender?.author?.login ?? null,
         });
         continue;
       }
-      const own = findOwnMarkerComment(mergedComments, pr, w.id);
-      const receipt = readReceipt(pr, w.id);
-      if (own) {
-        // D6:marker 正文就是一条普通 thread 回复,pr 号与 thread id 都是公开信息,任何
-        // 有该 PR 评论权限的账号都能定向伪造(后果:该 thread 被永久判「已 triage 后
-        // 人工翻案」而永久拒 triage)。因此 marker 只在**同时**满足身份绑定(pr/thread
-        // 对上)与本地持久回执时,才被采信为「己方已 triage」:
-        //   - 仅有 marker 而无本地回执 → 来源不可信,不得判永久 reopened,进可重试路径
-        //     (本轮不动,输出明确标出 marker 来源不可信,下一轮仍可重试);
-        //   - marker + 回执 → 采信为己方 triage,再区分人工翻案(留人工)vs 我们自己
-        //     上一轮 resolve mutation 失败(重试)。
-        if (!receipt) {
-          results.push({
-            id: w.id, path: t.path, done: false,
-            reason: 'marker-not-trustworthy(marker 来源不可信:命中 marker 但无本地持久回执佐证,可能是伪造/复制,不做 reopened 判定,进入可重试路径)',
-          });
-          continue;
+      // 己方 marker 判定(机器可核实条件)。只认 viewer 身份作者、pr/thread 对得上的
+      // marker;state=resolved 的 marker 说明我们 resolve 成功过。
+      const ownMarkers = ownMarkersFrom(mergedComments, pr, w.id, viewerLogin);
+      if (ownMarkers.some((m) => m.marker.state === 'resolved')) {
+        // 我们已 resolve 过、thread 又被 reopen → 人工翻案,永久留人工,不与人拉锯。
+        results.push({ id: w.id, path: t.path, outcome: 'skipped', done: false, replied: false, resolved: false, reason: 'skipped-reopened-after-triage(己方已 resolve 过(state=resolved marker)又被 reopen = 人工翻案,永久留人工)' });
+        continue;
+      }
+      const doReply = async () => {
+        let replied = false;
+        let replyError = null;
+        try {
+          ghGraphql(REPLY_MUTATION, { tid: w.id, body: `${w.reply.trim()}\n\n${buildMarker(pr, w.id, headSha, 'replied')}` });
+          replied = true;
+        } catch (e) {
+          replyError = String(e?.message ?? e).slice(0, 200);
         }
-        const isOwnPendingFailure = receipt?.resolveOutcome === 'error'
-          && receipt?.markerCommentId && receipt.markerCommentId === own.comment?.id;
-        if (!isOwnPendingFailure) {
-          results.push({ id: w.id, path: t.path, done: false, reason: 'reopened-after-triage(已代 resolve 过又被 unresolve,人工翻案,永久留人工)' });
+        return { replied, replyError };
+      };
+      if (ownMarkers.length > 0) {
+        // 上一轮己方已 reply(state=replied marker)。sha 与本次 headSha 一致 → 机器可
+        // 核实条件成立(己方回复过 + 白名单复核通过 → 无真人异议):resolve,不重复回复。
+        // sha 不一致 → 上一轮 triage 针对的是旧 head,按新 head 重新走首轮(只回复),
+        // 由编排层按当前 head 重新生成 reply。
+        const last = ownMarkers[ownMarkers.length - 1];
+        if (last.marker.sha !== headSha) {
+          const { replied, replyError } = await doReply();
+          results.push({
+            id: w.id, path: t.path, outcome: replied ? 'replied-only' : 'skipped',
+            done: false, replied, resolved: false,
+            ...(replyError ? { replyError } : {}),
+            reason: replied
+              ? 'replied-only(head 已移动,上一轮 triage 失效,按当前 head 重新回复;resolve 待下一轮同 headSha 机器可核实)'
+              : 'skipped-reply-failed(回复发送失败,下一轮可重试)',
+          });
           continue;
         }
         let resolved = false;
@@ -444,49 +483,37 @@ try {
         try {
           const r = ghGraphql(RESOLVE_MUTATION, { tid: w.id });
           resolved = r?.data?.resolveReviewThread?.thread?.isResolved === true;
-          if (resolved) clearReceipt(pr, w.id);
         } catch (e) {
           resolveError = String(e?.message ?? e).slice(0, 200);
-          writeReceipt(pr, w.id, { resolveOutcome: 'error', markerCommentId: own.comment?.id, at: Date.now() });
+        }
+        if (resolved) {
+          // 追加 state=resolved marker:审计 + 后续 reopen 时区分「我们 resolve 后被
+          // 翻案」(永久留人工)与「从未 resolve 过」(可重试)。
+          try {
+            ghGraphql(REPLY_MUTATION, { tid: w.id, body: buildMarker(pr, w.id, headSha, 'resolved') });
+          } catch { /* best-effort:线程已 resolve,下轮看到 already-resolved;reopen 场景缺
+             state=resolved 标记的代价只是多 resolve 一次,不致命 */ }
         }
         results.push({
-          id: w.id, path: t.path, done: resolved, replied: true, resolved,
+          id: w.id, path: t.path, outcome: resolved ? 'resolved' : 'skipped',
+          done: resolved, replied: false, resolved,
           ...(resolveError ? { resolveError } : {}),
           reason: resolved
-            ? 'resolve-retry-succeeded(此前 reply 成功但 resolve 失败,本轮重试 resolve 成功,非人工翻案)'
-            : 'resolve-retry-still-failing(此前 reply 成功但 resolve 失败,本轮重试仍未成功,非人工翻案,留待下一轮重试)',
+            ? 'resolved-own-triage(上一轮己方已 reply 同一 headSha(己方 marker 可验证)且白名单复核通过,本轮 resolve)'
+            : 'skipped-resolve-failed(resolve mutation 失败,marker 仍是 replied 态,下一轮自动重试 resolve,不重复回复)',
         });
         continue;
       }
-      // 无 own marker → 正常首轮:回复(必带,不允许静默 resolve)+ resolve。
-      let replied = false;
-      let replyError = null;
-      let markerCommentId = null;
-      try {
-        const rr = ghGraphql(REPLY_MUTATION, { tid: w.id, body: `${w.reply.trim()}\n\n${buildMarker(pr, w.id, headSha)}` });
-        replied = true;
-        markerCommentId = rr?.data?.addPullRequestReviewThreadReply?.comment?.id ?? null;
-      } catch (e) {
-        replyError = String(e?.message ?? e).slice(0, 200);
-      }
-      let resolved = false;
-      let resolveError = null;
-      if (replied) {
-        try {
-          const r = ghGraphql(RESOLVE_MUTATION, { tid: w.id });
-          resolved = r?.data?.resolveReviewThread?.thread?.isResolved === true;
-          if (resolved) clearReceipt(pr, w.id);
-        } catch (e) {
-          resolveError = String(e?.message ?? e).slice(0, 200);
-          // SC-6:留回执 —— 下一轮看到「own marker 存在 + 这张回执」就知道这是我们
-          // 自己 resolve 失败,不是人工翻案,只重试 resolve。
-          writeReceipt(pr, w.id, { resolveOutcome: 'error', markerCommentId, at: Date.now() });
-        }
-      }
+      // 无己方 marker → 首轮:只回复不关闭(reply 可纠正,是反停滞的全部价值;resolve
+      // 需机器可核实条件——本线程尚无己方历史 triage,下一轮同 headSha 重跑将 resolve)。
+      const { replied, replyError } = await doReply();
       results.push({
-        id: w.id, path: t.path, done: resolved,
-        replied, ...(replyError ? { replyError } : {}),
-        resolved, ...(resolveError ? { resolveError } : {}),
+        id: w.id, path: t.path, outcome: replied ? 'replied-only' : 'skipped',
+        done: false, replied, resolved: false,
+        ...(replyError ? { replyError } : {}),
+        reason: replied
+          ? 'replied-only(默认只回复不关闭:resolve 需机器可核实条件——本线程无己方历史 triage marker,下一轮同 headSha 重跑将由脚本自动 resolve)'
+          : 'skipped-reply-failed(回复发送失败,下一轮可重试)',
       });
     } finally {
       releaseThreadLock(lock);
@@ -496,11 +523,14 @@ try {
   print({
     ok: true,
     pr,
+    viewer: viewerLogin,
     requested: wanted.length,
     resolvedCount: results.filter((r) => r.done).length,
+    repliedOnlyCount: results.filter((r) => r.outcome === 'replied-only').length,
+    skippedCount: results.filter((r) => r.outcome === 'skipped').length,
     results,
     ...(rejected.length ? { rejected } : {}),
-    note: '每条代 resolve 都带回复通知原 reviewer,对方可一键 unresolve。翻案保护分两类:reopened-after-triage(身份绑定 marker + 本地回执同时存在且非我们自己失败 = 人工翻案)本脚本永久拒绝再碰,留人工;marker-not-trustworthy(仅有 marker 无回执,来源不可信——可能是伪造/复制)不进永久判定,可重试。除非本地回执显示上一轮是我们自己 resolve mutation 失败,那种情况只重试 resolve。判「意见是否已处理」是调用方(编排层)的语义责任:只传「白名单 bot + token 共现 + 非空 justification(assessThreadEvidence)确凿」的;本脚本执行层再做一次白名单复核 + justification 存在性复核 + 身份绑定 marker + 并发锁,defense-in-depth,不单纯信任调用方。',
+    note: '回复优先设计:reply 按调用方 payload 无条件发(白名单 bot thread 且无非白名单参与者);resolve 默认不执行,只在机器可核实条件满足时执行——线程已 resolved / 上一轮己方已 reply 同一 headSha 且白名单复核通过 / 己方 state=resolved marker 后又 reopen(人工翻案,永久留人工)。marker 可信度按评论作者身份(GraphQL viewer)判定,文本形状谁都能复制;状态全部在 GitHub 侧,无本地回执。三种终态:replied-only / resolved / skipped-<reason>。',
   });
 } catch (e) {
   fail(e);
