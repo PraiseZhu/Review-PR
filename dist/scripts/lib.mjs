@@ -2381,11 +2381,17 @@ export function classifyGateHits({ paths = [], securityReviewPaths = [], ruleFil
 
 // ── thread 代 resolve 的修复证据判定(assessThreadEvidence)──
 // resolve-threads.mjs 只执行调用方给定的 payload;「意见是否已被处理」的语义判定在编排层
-// (SKILL「thread 清理」),本函数把判定核心做成可单测的纯函数,sc-thr 的语义绑定红线
-// (GPT 质询 ch-thr-evidence 采纳)在这里落地:
-//   - 白名单 bot(threadTriage.extraBots,登录名单)且 thread 的 claim 与修复 diff 的
-//     新增行**针对性对应**(body 里可提取的 token 被修复新增行处理)才算证据;
-//   - 「同文件被后续 commit 触碰」/ isOutdated 只是必要线索,不是充分条件
+// (SKILL「thread 清理」),本函数把判定核心做成可单测的纯函数。
+// 2026-08-09 二轮对抗复审后降级(D1,不许再声称"语义绑定"):
+//   - token 共现(claim 里的高特异度 token 出现在修复新增行里)只是**必要不充分条件**——
+//     它只能证明"新增行提到了同一个名字",不能证明"新增行真的解决了 claim 描述的问题";
+//     `evidence` 字段已改名 `token-cooccurrence`(原 `semantic-bound` 名不副实,已停用);
+//   - 充分条件来自编排层的显式逐 thread 判断:调用方必须传入非空 `justification`
+//     (编排层对"这条 diff 为什么回应了这条 claim"的针对性说明),co-occurrence 通过
+//     但缺 justification 一律 `canResolve:false`(reason=justification-required),
+//     不得只凭 token 命中就自动放行——这是本函数与 resolve-threads.mjs 执行层的双重
+//     防线之一(defense-in-depth,执行层还会独立复核 justification 是否存在);
+//   - 「同文件被后续 commit 触碰」/ isOutdated 同样只是必要线索,不是充分条件
 //     (与上游 ff37d26 降级一致)——只有线索 → fail-closed 不动;
 //   - 真人 thread 永不自动 resolve;未配置白名单 → 整体禁用;拿不准一律不动。
 
@@ -2433,16 +2439,21 @@ export function extractThreadTokens(body) {
 const MIN_EVIDENCE_TOKEN_MATCHES = 2;
 
 /**
- * 判「这条 thread 是否可以代 resolve」(白名单 bot + 语义绑定证据)。
+ * 判「这条 thread 是否可以代 resolve」(白名单 bot + token 共现 + 编排层 justification)。
  * @param {{thread?:{path?:string, body?:string, isOutdated?:boolean, author?:string},
- *   authorType?:'bot'|'human', allowedBots?:string[], diff?:Array<{path:string, additions:string[]}>}} o
+ *   authorType?:'bot'|'human', allowedBots?:string[], diff?:Array<{path:string, additions:string[]}>,
+ *   justification?:string}} o
  *   diff = 当前 head 相对 base 的变更(按文件分组的新增行);调用方(编排层)从
- *   context.mjs 的 diff 数据 / git diff 派生。
+ *   context.mjs 的 diff 数据 / git diff 派生。justification = 编排层对"这条 diff 为何
+ *   回应了这条 claim"的显式针对性说明(必要不充分条件通过后的**充分条件**,缺失一律拒绝)。
  * @returns {{canResolve:boolean, reason:string, evidence?:string, matchedToken?:string,
- *   matchedLine?:string, pathTouched?:boolean, isOutdated?:boolean}}
- *   canResolve=true 仅当 evidence='semantic-bound';其余一律 false(不动,留人工)。
+ *   matchedLine?:string, pathTouched?:boolean, isOutdated?:boolean, justification?:string}}
+ *   canResolve=true 仅当 evidence='token-cooccurrence' 且 justification 非空;其余一律
+ *   false(不动,留人工)。
  */
-export function assessThreadEvidence({ thread = {}, authorType = 'human', allowedBots = [], diff = [] } = {}) {
+export function assessThreadEvidence({
+  thread = {}, authorType = 'human', allowedBots = [], diff = [], justification = '',
+} = {}) {
   const path = String(thread?.path ?? '');
   const body = String(thread?.body ?? '');
   const isOutdated = thread?.isOutdated === true;
@@ -2454,16 +2465,16 @@ export function assessThreadEvidence({ thread = {}, authorType = 'human', allowe
     return { canResolve: false, reason: 'triage-disabled(未配置 threadTriage.extraBots)' };
   }
   const threadAuthor = String(thread?.author ?? '').toLowerCase();
-  if (threadAuthor && !botList.includes(threadAuthor)) {
-    return { canResolve: false, reason: 'bot-not-in-whitelist', author: thread?.author };
+  if (!threadAuthor || !botList.includes(threadAuthor)) {
+    return { canResolve: false, reason: 'bot-not-in-whitelist', author: thread?.author ?? null };
   }
   const tokens = extractThreadTokens(body);
   const fileDiff = (diff ?? []).find((d) => d.path === path);
   const changedPaths = (diff ?? []).map((d) => d.path);
   const pathTouched = changedPaths.includes(path);
-  // 语义绑定(2026-08-09 三审后重做):claim 里每个高特异度 token(反引号/引号段)
+  // token 共现(必要不充分条件,D1):claim 里每个高特异度 token(反引号/引号段)
   // 各自独立在修复 diff 的**新增行**里找落点,要求 ≥MIN_EVIDENCE_TOKEN_MATCHES 个
-  // *不同* token 都命中,才判定"针对性对应"——单 token 子串命中太容易被无关行
+  // *不同* token 都命中,才算这一层通过——单 token 子串命中太容易被无关行
   // (如另一处测试断言、日志埋点恰好提到同一个函数名)碰撞满足,不构成证据。
   // token 提取不到、或命中数不足 → fail-closed 不动。
   const matchedTokens = [];
@@ -2476,10 +2487,21 @@ export function assessThreadEvidence({ thread = {}, authorType = 'human', allowe
     }
   }
   if (matchedTokens.length >= MIN_EVIDENCE_TOKEN_MATCHES) {
+    const hasJustification = String(justification ?? '').trim().length > 0;
+    if (!hasJustification) {
+      return {
+        canResolve: false,
+        reason: `justification-required(token 共现只命中 ${matchedTokens.length} 个独立 token,只是必要不充分条件——不代表已核实新增行确实解决了 claim 描述的问题;必须由编排层给出非空 justification 才可能判定证据确凿)`,
+        matchedTokens: matchedTokens.map((m) => m.token),
+        matchedToken: matchedTokens[0].token, matchedLine: matchedTokens[0].line,
+        pathTouched, isOutdated,
+      };
+    }
     return {
-      canResolve: true, evidence: 'semantic-bound',
+      canResolve: true, evidence: 'token-cooccurrence',
       matchedTokens: matchedTokens.map((m) => m.token),
       matchedToken: matchedTokens[0].token, matchedLine: matchedTokens[0].line,
+      justification: String(justification).trim(),
       pathTouched, isOutdated,
     };
   }

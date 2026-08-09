@@ -932,37 +932,57 @@ unresolved 连续多轮整轮空转、停滞十几天」的 PR 就是这个原�
 在扫描后、合并判定前执行本清理；交互模式先把可代 resolve 清单（路径 + 判定依据 +
 拟回复）展示给用户、确认后执行。
 
-**判据（语义绑定，判定核心在 lib.mjs `assessThreadEvidence`，
-resolve-threads.test.mjs 覆盖）**，对 `context.history.reviewThreads` 里未 resolve
-的 thread 逐条：
+**判据（字符串共现启发式 + 编排层显式 justification，判定核心在 lib.mjs
+`assessThreadEvidence`，resolve-threads.test.mjs 覆盖）**，对
+`context.history.reviewThreads` 里未 resolve 的 thread 逐条：
 
 1. **真人 thread 永不自动 resolve**；只认白名单 bot——`pr-rules.json` 的
    `threadTriage.extraBots` 登录名单（首配 `greptile-apps`；未配置 = 整套机制关闭，
-   一条都不动）；
-2. **修复证据 = 字符串共现启发式匹配，不是语义理解**（如实降级：这不是「针对性
+   一条都不动）。白名单校验不止查 thread 首条评论：**同一 thread 里任何一条评论
+   的作者若不在白名单内**（真人参与讨论），该 thread 永不自动 resolve，即使首条
+   评论来自白名单 bot；
+2. **字符串共现只是必要不充分条件，不是语义理解**（如实降级：这不是「针对性
    对应」，只是文本层面的共现统计）：从 thread 评论文本按反引号/双引号/单引号提取
    高特异度 token（`extractThreadTokens`，剔除纯数字与停用词，不再识别裸标识符），
-   要求 **≥2 个独立 token 同时出现在修复 diff 的新增行里**才算证据
-   （`MIN_EVIDENCE_TOKEN_MATCHES=2`，`evidence=semantic-bound`）——单 token 命中
-   判定为证据不足（`single-token-match-insufficient`）：一个高频 token 完全可能
-   出现在与该 claim 无关的新增行里（例如测试文件里同名的无关引用），共现计数不能
-   证明「diff 确实回应了这条 claim」，只能作为弱信号排除明显不相关的情况；
-3. **「同文件被后续 commit 触碰」/ `isOutdated` 只是必要线索，不是充分条件**——
+   要求 **≥2 个独立 token 同时出现在修复 diff 的新增行里**才算这一层通过
+   （`MIN_EVIDENCE_TOKEN_MATCHES=2`，`evidence=token-cooccurrence`，2026-08-09
+   二轮对抗复审后由 `semantic-bound` 改名）——单 token 命中判定为证据不足
+   （`single-token-match-insufficient`）：一个高频 token 完全可能出现在与该 claim
+   无关的新增行里（例如测试文件里同名的无关引用），共现计数不能证明「diff 确实
+   回应了这条 claim」，只能作为弱信号排除明显不相关的情况；
+3. **字符串共现通过后仍不充分，充分条件来自编排层显式 justification**：调用方
+   （编排层）必须为每条 thread 传入非空 `justification`——针对「这条 diff 为什么
+   回应了这条 claim」的一句话说明；共现达标但 `justification` 缺失/空串一律
+   `canResolve:false`（`reason=justification-required`），不得只凭 token 命中就
+   自动放行。执行层（`resolve-threads.mjs`）对 `justification` 字段存在性做独立
+   复核，不单纯信任编排层已经检查过（defense-in-depth）；
+4. **「同文件被后续 commit 触碰」/ `isOutdated` 只是必要线索，不是充分条件**——
    只有线索 → fail-closed 不动（与上游 ff37d26 降级口径一致；行改了 ≠ 问题解决，
-   必须读到 ≥2 个独立 token 的共现证据）；
-4. **拿不准一律不动**（token 提取不到 / 命中数不足 2 个 / 读不到当前 head diff），
-   留人工；
-5. 翻案保护由脚本兜底：带 triage 标记回复却再次未 resolve 的 thread
-   （`reopened-after-triage`）**永久留人工**——有人 unresolve 过 = 人工翻案，不重判、
-   不拉锯，别把它当故障重试。
+   必须读到 ≥2 个独立 token 的共现证据 + 非空 justification）；
+5. **拿不准一律不动**（token 提取不到 / 命中数不足 2 个 / 缺 justification / 读不到
+   当前 head diff），留人工；
+6. 翻案保护由脚本兜底，且区分「可重试」与「永久」两类：带身份绑定 marker 但**没有
+   本地持久回执**佐证的 thread，判定为 `marker-not-trustworthy`（marker 来源不可信
+   ——可能是伪造/复制的评论，也可能是真回执但存储丢失），**进入可重试路径**，不当
+   永久翻案处理；只有当 marker + 本地持久回执**同时存在**且指向同一次 resolve
+   （`reopened-after-triage`）才判定为人工翻案，**永久留人工**——有人 unresolve
+   过 = 人工翻案，不重判、不拉锯，别把它当故障重试。
+
+> **启用前提（D7，未满足前不得配置 `threadTriage`）**：本机制默认关闭
+> （`pr-rules.json` 不含 `threadTriage` key）。二轮对抗复审给出的 5 blocker
+> （必要不充分证据判据、并发至多一次、bot 白名单覆盖全部评论、marker 身份绑定
+> 区分可重试/永久、分页）全部关闭验证通过之前，禁止新增该 config key 启用本机制；
+> 启用只能由后续独立评审确认全部验收条件后进行，不得借本节文档改动顺带打开。
 
 **执行**：把可代 resolve 的清单逐条生成 reply payload（回复必须引用修复 commit 与
-位置，供人复核；文案不声称机器已验证修复正确性——本动作是 T1 防遗漏收口），调：
+位置，供人复核；文案不声称机器已验证修复正确性——本动作是 T1 防遗漏收口），并为
+每条附上 `justification`（编排层对「为什么这条 diff 回应了这条 claim」的判断，非空
+才可能被判定证据确凿），调：
 
 ```bash
 node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file - <<'JSON'
 {
-  "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>),代为 resolve;有异议可 reopen" } ],
+  "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>),代为 resolve;有异议可 reopen", "justification": "<为什么这段 diff 回应了这条 claim 的判断依据>" } ],
   "allowedBots": ["<pr-rules.json threadTriage.extraBots 登录名单>"],
   "headSha": "<sha>"
 }
@@ -970,16 +990,19 @@ JSON
 ```
 
 （脚本只执行调用方给定的 payload，不自选 thread——**不接编排则 #251 型停滞仍会
-skip**，这正是本节的接线职责。`allowedBots` 缺失或为空时脚本执行层 fail-closed，
-一条都不动，即使 payload 里给了 thread id 也不例外。）
+skip**，这正是本节的接线职责。`allowedBots` 缺失或为空、或某条 thread 缺
+`justification` 时脚本执行层 fail-closed，一条都不动，即使 payload 里给了 thread id
+也不例外。）
 
 **回流与汇总**：消费脚本输出的 `results[]`——`done=true`（含 `already-resolved`）
-计入已 resolve；`done=false`（`thread-not-found` / `reopened-after-triage` / reply
-或 resolve 失败）**必须逐条显式进轮次汇总**，不得静默；resolved 后对涉及该 PR 的
-合并判定**重算 threads 阻断**（重新拉 `mergeStateStatus`，或按「未 resolve thread
-计数归零」处理），不凭清理前的旧计数判定。每条代 resolve 都带回复通知原 reviewer，
-对方可一键 unresolve。**幂等**：脚本对已 resolve / 已回复过的 thread 不重复动作
-（双并发下每 thread 至多一次 reply+resolve，靠脚本内查当前状态兑 TOCTOU 窗口）。
+计入已 resolve；`done=false` 需分两类逐条显式进轮次汇总，不得静默混为一谈：
+**可重试**（`thread-not-found` / `marker-not-trustworthy` / reply 或 resolve 失败 /
+`justification-required`）下一轮可再次尝试；**永久**（`reopened-after-triage`）
+不再重试，永久留人工。resolved 后对涉及该 PR 的合并判定**重算 threads 阻断**
+（重新拉 `mergeStateStatus`，或按「未 resolve thread 计数归零」处理），不凭清理前
+的旧计数判定。每条代 resolve 都带回复通知原 reviewer，对方可一键 unresolve。
+**幂等**：脚本对已 resolve / 已回复过的 thread 不重复动作（双并发下每 thread 至多
+一次 reply+resolve，靠脚本内查当前状态 + 持久锁兑 TOCTOU 窗口）。
 
 ## 4. 阶段二：独立代码审查
 
