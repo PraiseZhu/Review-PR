@@ -102,9 +102,13 @@ const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000
 //      —— 必要路径本身(ESSENTIAL_CALLS × T)一定装得进租约,env 再大也推不翻;
 //   ③ 派生预算:CRITICAL_SECTION_MAX_CALLS = floor(0.9 × LOCK_STALE_MS / T) 由 T 派生,
 //      floor 只会往下取整,所以 预算 × T ≤ 0.9 × 租约 < 租约 在任意 T 下恒成立;
-//      0.9 留 10% 余量给进程调度 / 时钟偏差。T ≤ 0 的怪值钳到 1ms(预算相应放大,
-//      但不等式仍由 ③ 构造成立)。
-//   ④ T 被钳住时输出显式警告(见 main() 临界区开头),让运行者看得见生效值。
+//      0.9 留 10% 余量给进程调度 / 时钟偏差。
+//   ④ T 被钳住或回落默认时输出显式警告(stderr + JSON warnings 双通道),让运行者
+//      看得见生效值。
+// R7-1(修正 R6 遗留):T ≤ 0 / 非数值(如 SIGNOFF_HOLD_GH_TIMEOUT_MS=abc)不再钳到
+//   1ms——`Number(env)` 解析出 NaN 后 Math.max/Math.min 会把 NaN 一路带进派生预算,
+//   spawnSync timeout 收到 NaN 直接崩溃(exit=1)。现在非有限数(NaN/±Infinity)/ ≤0
+//   一律回落默认 15000(口径抄 resolve-threads.mjs 的 resolveMinMarkerAgeMs,见下)。
 // R6-2:可延后工作(reconcile 循环 / legacy 标签清理 / renotice 回帖)共享
 //   DEFERRABLE_BUDGET = 总预算 - ESSENTIAL_CALLS 的池(ghD),与必要调用互不挤占;
 //   池耗尽时 budgetExhausted fail-visible(报 reconciliation.unprocessed /
@@ -118,10 +122,38 @@ const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000
 // 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
 export const LOCK_STALE_MS = 5 * 60 * 1000;
 export const ESSENTIAL_CALLS = 6;
-const RAW_GH_CALL_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS || 15000);
+// R7-1 env 校验:安全不变量不能悬在一个未校验的 env 旋钮上。口径抄 resolve-threads.mjs
+// 的 resolveMinMarkerAgeMs——显式校验(解析失败 / 非有限 / ≤0 一律回落默认)+ 双通道
+// 警告(stderr 文本 + JSON 输出顶层 warnings 数组)。三态由 GH_CALL_TIMEOUT_STATE 表达
+// (none / clamped / fallback),GH_CALL_TIMEOUT_CLAMPED 布尔只认钳位、不再在 NaN 时报
+// false 说谎。T 恒为 ≥1 的整数(spawnSync timeout 只收 unsigned integer,小数/NaN 会
+// 越界崩溃),派生预算随 T 有限,不等式仍由 ③ 构造成立。
+const GH_CALL_TIMEOUT_DEFAULT_MS = 15000;
 const CLAMP_CAP_MS = Math.floor(0.9 * LOCK_STALE_MS / ESSENTIAL_CALLS);
-export const GH_CALL_TIMEOUT_MS = Math.min(Math.max(RAW_GH_CALL_TIMEOUT_MS, 1), CLAMP_CAP_MS);
-export const GH_CALL_TIMEOUT_CLAMPED = RAW_GH_CALL_TIMEOUT_MS > CLAMP_CAP_MS;
+export const GH_TIMEOUT_WARNINGS = [];
+function resolveGhCallTimeoutMs() {
+  const raw = process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
+  if (raw === undefined) return { ms: GH_CALL_TIMEOUT_DEFAULT_MS, state: 'none' };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    const w = `[signoff-hold] 警告:SIGNOFF_HOLD_GH_TIMEOUT_MS=${JSON.stringify(raw)} 非法(须为正数字;非数值/0/负值会让派生预算失真),已回落默认 ${GH_CALL_TIMEOUT_DEFAULT_MS}ms`;
+    GH_TIMEOUT_WARNINGS.push(w);
+    process.stderr.write(`${w}\n`);
+    return { ms: GH_CALL_TIMEOUT_DEFAULT_MS, state: 'fallback' };
+  }
+  const ms = Math.max(1, Math.floor(n));
+  if (ms > CLAMP_CAP_MS) {
+    const w = `[signoff-hold] SIGNOFF_HOLD_GH_TIMEOUT_MS=${n} 超过钳位上限 ${CLAMP_CAP_MS}ms,已钳为 ${CLAMP_CAP_MS}ms(保证必要路径装得进 ${LOCK_STALE_MS}ms 租约;可延后工作预算相应收窄,超出的下轮补做)。`;
+    GH_TIMEOUT_WARNINGS.push(w);
+    process.stderr.write(`${w}\n`);
+    return { ms: CLAMP_CAP_MS, state: 'clamped' };
+  }
+  return { ms, state: 'none' };
+}
+const resolvedGhCallTimeoutMs = resolveGhCallTimeoutMs();
+export const GH_CALL_TIMEOUT_MS = resolvedGhCallTimeoutMs.ms;
+export const GH_CALL_TIMEOUT_STATE = resolvedGhCallTimeoutMs.state;
+export const GH_CALL_TIMEOUT_CLAMPED = resolvedGhCallTimeoutMs.state === 'clamped';
 export const CRITICAL_SECTION_MAX_CALLS = Math.floor(0.9 * LOCK_STALE_MS / GH_CALL_TIMEOUT_MS);
 export const DEFERRABLE_BUDGET = Math.max(0, CRITICAL_SECTION_MAX_CALLS - ESSENTIAL_CALLS);
 export const MAX_RECONCILE_DUPS = 3;
@@ -591,15 +623,10 @@ try {
       ok: true, pr, held: false, reason: 'lock-timeout', needsIntervention: true,
       ...(lock.holderPid != null ? { holderPid: lock.holderPid } : {}),
       ...(lock.holderStartedAt != null ? { holderStartedAt: lock.holderStartedAt } : {}),
+      ...(GH_TIMEOUT_WARNINGS.length ? { warnings: GH_TIMEOUT_WARNINGS } : {}),
     });
   } else
   try {
-  // round6 R6-1:钳位警告——env 超了钳位上限时运行者必须看得见生效值(走既有 stderr
-  // 输出通道;生效常量 GH_CALL_TIMEOUT_MS / CRITICAL_SECTION_MAX_CALLS 由模块顶部
-  // 公式派生,不等式由构造成立,不依赖人去核)。
-  if (GH_CALL_TIMEOUT_CLAMPED) {
-    process.stderr.write(`[signoff-hold] SIGNOFF_HOLD_GH_TIMEOUT_MS=${RAW_GH_CALL_TIMEOUT_MS} 超过钳位上限 ${CLAMP_CAP_MS}ms,已钳为 ${GH_CALL_TIMEOUT_MS}ms(保证必要路径装得进 ${LOCK_STALE_MS}ms 租约;可延后工作预算相应收窄,超出的下轮补做)。\n`);
-  }
   // round6 R6-1/R6-2:临界区调用分两个预算池(见模块顶部 ghE/ghD):
   //   - 不可延后(ghE):pr view / issue view / issue create / status comment /
   //     label create / label POST —— 池 = ESSENTIAL_CALLS,任何可延后循环都吃不到;
@@ -630,7 +657,10 @@ try {
     // 必须顶到输出——「主动放弃剩余工作」的可见性,调用方据此知道对账没做完。
     const withRecon = reconcile && (reconcile.closed.length || reconcile.errors.length || reconcile.unprocessed.length)
       ? { ...out, reconciliation: reconcile } : out;
-    return print(withLabelWarning(withRecon));
+    // round7 R7-1:env 校验警告(回落默认 / 钳位)进 JSON 顶层 warnings——stderr 是
+    // 给人看的,JSON 是给自动化消费方看的,双通道缺一不可(口径同 resolve-threads)。
+    const withWarnings = GH_TIMEOUT_WARNINGS.length ? { ...withLabelWarning(withRecon), warnings: GH_TIMEOUT_WARNINGS } : withLabelWarning(withRecon);
+    return print(withWarnings);
   };
 
   // 找既有标记评论,读出当时开的 issue 链接。取「最后一条带 issue= 的标记」为准。
@@ -741,7 +771,10 @@ try {
 
   // 已合并 / 已关闭的 PR 不碰
   if (meta.state !== 'OPEN' || meta.mergedAt) {
-    print({ ok: true, pr, author, held: false, reason: 'pr-not-open', state: meta.state });
+    print({
+      ok: true, pr, author, held: false, reason: 'pr-not-open', state: meta.state,
+      ...(GH_TIMEOUT_WARNINGS.length ? { warnings: GH_TIMEOUT_WARNINGS } : {}),
+    });
   } else if (labelsOnly) {
     // 标签先挂回去,再回帖:回帖里说的「在等维护者确认」要和 GitHub 上的标签状态一致。
     // 旧 issue 已关闭 → needsFreshHold=true:labels-only 建不了 issue,调用方带 payload

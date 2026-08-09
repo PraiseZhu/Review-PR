@@ -1306,13 +1306,24 @@ test('signoff: D2 对账主流程接线——双写残留自愈,保留最早 iss
 // 求值,所以按 env 动态 reload 模块本体(带 query 破缓存),断言**生效后的派生量**
 // 而不是常量算术。反向变异 = 去掉钳位(退回 Number(env||15000)),T=300000 的
 // expectedT 断言必须转红(AssertionError,非崩溃)。
+// R7-1 扩充:补上复审实测过的 8 个数值形态(1000/7000/44999/45001/1/0/-1/1e12);
+// 0/-1 在 R7-1 后不再是「钳到 1ms」而是「回落默认 15000」(非数值/≤0 一律回落,
+// 预算回到 18 次量级,不因单次超时形同虚设而放大);每形态同时断言
+// GH_CALL_TIMEOUT_STATE 三态(none/clamped/fallback),钳位与回落可分辨。
 const HOLD_MODULE_URL = pathToFileURL(join(SCRIPTS_DIR, 'signoff-hold.mjs')).href;
-test('signoff: R6-1 租约耦合——T 钳位与派生预算,断言生效后的派生量(unset/1000/300000)', async () => {
+test('signoff: R6-1 租约耦合——T 钳位/回落默认与派生预算,断言生效后的派生量(unset+8 数值形态+300000)', async () => {
   const clampCap = Math.floor(0.9 * LOCK_STALE_MS / ESSENTIAL_CALLS);
   const cases = [
-    { env: undefined, expectedT: 15000, expectClamped: false },
-    { env: '1000', expectedT: 1000, expectClamped: false },
-    { env: '300000', expectedT: clampCap, expectClamped: true },
+    { env: undefined, expectedT: 15000, expectClamped: false, state: 'none' },
+    { env: '1000', expectedT: 1000, expectClamped: false, state: 'none' },
+    { env: '7000', expectedT: 7000, expectClamped: false, state: 'none' },
+    { env: '44999', expectedT: 44999, expectClamped: false, state: 'none' },
+    { env: '45001', expectedT: clampCap, expectClamped: true, state: 'clamped' },
+    { env: '1', expectedT: 1, expectClamped: false, state: 'none' },
+    { env: '0', expectedT: 15000, expectClamped: false, state: 'fallback' },
+    { env: '-1', expectedT: 15000, expectClamped: false, state: 'fallback' },
+    { env: '1e12', expectedT: clampCap, expectClamped: true, state: 'clamped' },
+    { env: '300000', expectedT: clampCap, expectClamped: true, state: 'clamped' },
   ];
   const prev = process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
   let seq = 0;
@@ -1321,17 +1332,89 @@ test('signoff: R6-1 租约耦合——T 钳位与派生预算,断言生效后的
       if (c.env === undefined) delete process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
       else process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = c.env;
       const m = await import(`${HOLD_MODULE_URL}?r6-1&n=${seq++}`);
-      assert.equal(m.GH_CALL_TIMEOUT_MS, c.expectedT, `T(${c.env ?? 'unset'}) 生效值(钳位后)`);
+      assert.equal(m.GH_CALL_TIMEOUT_MS, c.expectedT, `T(${c.env ?? 'unset'}) 生效值(钳位/回落后)`);
       assert.equal(m.GH_CALL_TIMEOUT_CLAMPED, c.expectClamped, `clamped 标志(${c.env ?? 'unset'})`);
+      assert.equal(m.GH_CALL_TIMEOUT_STATE, c.state, `state(${c.env ?? 'unset'}) 三态可分辨(none/clamped/fallback)`);
       // 断言生效后的派生量(不是常量算术):派生预算 × 钳后 T < 租约
       assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < m.LOCK_STALE_MS,
         `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${m.LOCK_STALE_MS}ms`);
       assert.ok(Number.isInteger(m.CRITICAL_SECTION_MAX_CALLS) && m.CRITICAL_SECTION_MAX_CALLS >= m.ESSENTIAL_CALLS,
         `派生预算 ${m.CRITICAL_SECTION_MAX_CALLS} 必须 ≥ ESSENTIAL_CALLS ${m.ESSENTIAL_CALLS}(必要路径装得进租约)`);
+      if (c.state === 'fallback') {
+        assert.ok(m.GH_TIMEOUT_WARNINGS.some((w) => w.includes('回落默认')),
+          `回落形态(${c.env}) warnings 必须带回落文案,实际:${JSON.stringify(m.GH_TIMEOUT_WARNINGS)}`);
+      }
     }
   } finally {
     if (prev === undefined) delete process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
     else process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = prev;
+  }
+});
+
+// ── round7 R7-1(major):非数值 env 让整套派生量变成 NaN(修复)──
+// 反例:SIGNOFF_HOLD_GH_TIMEOUT_MS=abc → Number('abc')=NaN → Math.max(NaN,1)=NaN →
+// Math.min(NaN,CLAMP_CAP_MS)=NaN → spawnSync timeout 收到 NaN 越界崩溃(exit=1,
+// stdout {"ok":false,"error":"The value of \"timeout\" is out of range..."}),且
+// GH_CALL_TIMEOUT_CLAMPED 在 NaN 时报 false 说谎。
+// 修法抄 resolve-threads.mjs 的 resolveMinMarkerAgeMs:显式 Number.isFinite 校验,
+// 非有限数(NaN/±Infinity)/ ≤0 一律回落默认 15000(不是钳到 1ms)+ 双通道警告
+// (stderr 文本 + JSON 顶层 warnings);GH_CALL_TIMEOUT_STATE 三态让「钳位」与
+// 「回落」可分辨。反向变异 = 去掉 Number.isFinite 校验 → 下列 finite 断言转红。
+const R7_INVALID_FORMS = ['abc', 'Infinity', '-Infinity', '', ' '];
+test('signoff: R7-1 非数值 env——回落默认 15000,派生量全有限,三态可分辨(abc/Infinity/-Infinity/空串/纯空格)', async () => {
+  const prev = process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
+  let seq = 0;
+  try {
+    for (const raw of R7_INVALID_FORMS) {
+      process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = raw;
+      const m = await import(`${HOLD_MODULE_URL}?r7-1&n=${seq++}`);
+      const label = JSON.stringify(raw);
+      // ① 生效 T 是有限正整数(旧实现这里会是 NaN)
+      assert.ok(Number.isInteger(m.GH_CALL_TIMEOUT_MS) && m.GH_CALL_TIMEOUT_MS > 0,
+        `T(${label}) 必须为有限正整数,实际 ${m.GH_CALL_TIMEOUT_MS}`);
+      assert.equal(m.GH_CALL_TIMEOUT_MS, 15000, `T(${label}) 回落默认 15000(不是钳到 1ms)`);
+      // ② 派生预算/可延后池都是有限整数(旧实现全 NaN)
+      assert.ok(Number.isInteger(m.CRITICAL_SECTION_MAX_CALLS) && m.CRITICAL_SECTION_MAX_CALLS > 0,
+        `派生预算(${label}) 必须为有限正整数,实际 ${m.CRITICAL_SECTION_MAX_CALLS}`);
+      assert.ok(Number.isInteger(m.DEFERRABLE_BUDGET) && m.DEFERRABLE_BUDGET > 0,
+        `可延后池(${label}) 必须为有限正整数,实际 ${m.DEFERRABLE_BUDGET}`);
+      // ③ 租约不等式仍成立(预算 × T < 租约)
+      assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < m.LOCK_STALE_MS,
+        `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${m.LOCK_STALE_MS}ms`);
+      // ④ 警告正确且「回落 vs 钳位」可分辨:state=fallback、clamped 布尔不说谎、
+      //    warnings 数组带回落文案
+      assert.equal(m.GH_CALL_TIMEOUT_STATE, 'fallback', `state(${label}) 必须为 fallback(区分于 clamped)`);
+      assert.equal(m.GH_CALL_TIMEOUT_CLAMPED, false, `clamped(${label}) 必须为 false——回落不是钳位,布尔不得说谎`);
+      assert.ok(m.GH_TIMEOUT_WARNINGS.some((w) => w.includes('回落默认')),
+        `warnings(${label}) 必须带回落文案,实际:${JSON.stringify(m.GH_TIMEOUT_WARNINGS)}`);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
+    else process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = prev;
+  }
+});
+
+test('signoff: R7-1 主流程——非数值 env 不再崩溃,回落默认 + 双通道警告(stderr + JSON warnings)', () => {
+  const shimDir = makeStatefulShimDir();
+  const repoDir = makeTempRepoDir();
+  const statePath = join(shimDir, 'state.json');
+  writeFileSync(statePath, '{}');
+  try {
+    const r = runSignoff({
+      scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),
+      args: ['42', '--dry-run'],
+      repoDir, shimDir, logPath: join(shimDir, 'gh-calls.log'), statePath,
+      extraEnv: { SIGNOFF_HOLD_GH_TIMEOUT_MS: 'abc' },
+    });
+    // 旧实现:exit=1 + {"ok":false,"error":"The value of \"timeout\" is out of range..."}
+    assert.equal(r.status, 0, `非数值 env 必须不再崩溃(旧实现 spawnSync timeout=NaN 越界),stderr=${r.stderr}`);
+    assert.equal(r.parsed?.ok, true, `stdout 必须 ok=true(回落默认后正常执行),stdout=${r.stdout}`);
+    assert.ok(r.stderr.includes('回落默认'), `stderr 必须带回落警告,实际:${r.stderr.slice(0, 300)}`);
+    assert.ok(r.parsed?.warnings?.length > 0 && r.parsed.warnings.some((w) => w.includes('回落默认')),
+      `JSON 顶层 warnings 必须带回落警告,实际:${JSON.stringify(r.parsed?.warnings)}`);
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
   }
 });
 

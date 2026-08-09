@@ -12,18 +12,33 @@
 
 ---
 
-## 一、round6 新增三条（本轮,seam 锚基于本轮 tip 代码,已实测）
+## 一、round7 新增一条（本轮,seam 锚基于本轮 tip 代码,已实测）
+
+### M-R7-1 去 isFinite 校验（非数值 env 让派生量变 NaN 的原始缺陷回归）
+
+| 项 | 内容 |
+|---|---|
+| 目标文件 | `scripts/signoff-hold.mjs`（resolveGhCallTimeoutMs,常量区） |
+| seam 锚 | `if (!Number.isFinite(n) \|\| n <= 0) { ... return { ms: GH_CALL_TIMEOUT_DEFAULT_MS, state: 'fallback' }; }` |
+| 变异内容 | 去掉 `!Number.isFinite(n) \|\|`,退回 `if (n <= 0) {`——`Number('abc')=NaN` 不再走回落,NaN 经 `Math.max(1, Math.floor(NaN))` 带进 `GH_CALL_TIMEOUT_MS`/派生预算 |
+| 预期红集 | `signoff: R7-1 非数值 env——回落默认 15000,派生量全有限,三态可分辨(abc/Infinity/-Infinity/空串/纯空格)` 与 `signoff: R7-1 主流程——非数值 env 不再崩溃,回落默认 + 双通道警告(stderr + JSON warnings)`（T/预算 finite 断言与 state=fallback 断言转红;数值形态的 0/-1 回落不受影响,R6-1 保持全绿） |
+| 复现命令 | 变异后 `node --test tests/signoff-policy.test.mjs`,断言输出 `T("abc") 必须为有限正整数,实际 NaN` |
+| 本轮实测 | 恰红 2 条,全部 `AssertionError: T("abc") 必须为有限正整数,实际 NaN`,其余 56 条全绿,无崩溃 |
+
+---
+
+## 二、round6 新增三条（seam 锚基于 R6 tip 代码;R7-1 重构后 M-R6-1 锚点已更新,其余两条锚点未变,三条均已在 R7 tip 复验仍红）
 
 ### M-R6-1 去钳位（租约不等式失效）
 
 | 项 | 内容 |
 |---|---|
-| 目标文件 | `scripts/signoff-hold.mjs`（常量区） |
-| seam 锚 | `export const GH_CALL_TIMEOUT_MS = Math.min(Math.max(RAW_GH_CALL_TIMEOUT_MS, 1), CLAMP_CAP_MS);` |
-| 变异内容 | 去掉 `Math.min(..., CLAMP_CAP_MS)` 钳位,退回 `const GH_CALL_TIMEOUT_MS = Math.max(RAW_GH_CALL_TIMEOUT_MS, 1);`（即 R5 的 `Number(env \|\| 15000)` 无上限形态） |
-| 预期红集 | `signoff: R6-1 租约耦合——T 钳位与派生预算,断言生效后的派生量(unset/1000/300000)` |
+| 目标文件 | `scripts/signoff-hold.mjs`（resolveGhCallTimeoutMs,常量区） |
+| seam 锚 | `if (ms > CLAMP_CAP_MS) { ... return { ms: CLAMP_CAP_MS, state: 'clamped' }; }`（R7-1 重构后锚点;R6 原锚为 `export const GH_CALL_TIMEOUT_MS = Math.min(Math.max(RAW_GH_CALL_TIMEOUT_MS, 1), CLAMP_CAP_MS);`） |
+| 变异内容 | 钳位分支直接返回未钳值:`return { ms: CLAMP_CAP_MS, state: 'clamped' };` → `return { ms, state: 'none' };`（即 R5 的 `Number(env \|\| 15000)` 无上限形态;警告分支保留,与原 R6 变异语义一致） |
+| 预期红集 | `signoff: R6-1 租约耦合——T 钳位/回落默认与派生预算,断言生效后的派生量(unset+8 数值形态+300000)`（300000/45001/1e12 的 expectedT 与 state 断言转红） |
 | 复现命令 | 变异后 `node --test tests/signoff-policy.test.mjs`,断言输出 `300000 !== 45000`（T(300000) 不再被钳） |
-| 本轮实测 | 恰红 1 条,`AssertionError: T(300000) 生效值(钳位后) 300000 !== 45000`,其余 55 条全绿 |
+| 本轮实测 | R6 实测恰红 1 条（`AssertionError: T(300000) 生效值(钳位后) 300000 !== 45000`,其余 55 条全绿）;R7-1 重构后复验:恰红 1 条（同 R6-1 测试,58 条中 57 绿）,AssertionError |
 
 ### M-R6-2 去预留（可延后循环吃光预算饿死真正 hold）
 
@@ -49,7 +64,7 @@
 
 ---
 
-## 二、round5（MUTA/MUTC 与 M01-M08 系）
+## 三、round5（MUTA/MUTC 与 M01-M08 系）
 
 R5 轮次的变异是**对测试断言的变异**（隔离性/必要性判据）,由 R5 commit 声称如下,但
 seam 锚未随 R5 落盘（这正是 R6-4 要终结的现状,以下如实标注可核范围）：
@@ -67,7 +82,7 @@ seam 锚未随 R5 落盘（这正是 R6-4 要终结的现状,以下如实标注�
 
 ---
 
-## 三、round3 / round4（15 条 = R3 七条 + R4 八条）
+## 四、round3 / round4（15 条 = R3 七条 + R4 八条）
 
 R4 commit（45a1150）声称「变异验证 15/15 转红（七条 R3 反向变异 + 八条本轮）,全部断言
 失败零崩溃」。以下为**可从测试文件锚点与 commit 声称重建**的条目；未列出者属对话内
@@ -100,7 +115,7 @@ R4 commit（45a1150）声称「变异验证 15/15 转红（七条 R3 反向变�
 
 ---
 
-## 四、黑洞清单（对话内变异,无 seam 锚——如实声明）
+## 五、黑洞清单（对话内变异,无 seam 锚——如实声明）
 
 R3 七条 + R4 八条 = 15 条的**精确划分**、以及 R5 的 M01/M03/M07/MUTA/MUTC 的 seam 与
 红集明细,只存在于各轮执行席对话,本仓无任何落盘。以上「可锚定部分」按测试文件探针
