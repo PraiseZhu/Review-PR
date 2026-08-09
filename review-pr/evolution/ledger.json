@@ -1554,9 +1554,9 @@
       "title": "rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在",
       "detail": "2026-08-07 auto 轮 #565 审查 agent 首份 rro-1 遗漏这两个可空字段,consume-review-output 判 invalid(缺字段),人工补空数组后重跑才 clean——消费端对缺字段 fail-closed,契约在 SKILL 已有但 prompt 未显式枚举必在字段",
       "proposal": "build-review-task.mjs 生成的 prompt 模板显式列出'以下字段即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence'——减少同类无效轮次与重试",
-      "status": "open",
-      "commit": null,
-      "note": null,
+      "status": "landed",
+      "commit": "5815bd8e60e30431db0d42e9e701d664e8a38ee0",
+      "note": "[decided:2026-08-09] 已由 commit 5815bd8e60e30431db0d42e9e701d664e8a38ee0(形状示例)+ 本次显式空数组指令(build-review-task.mjs 字段级形状段追加「即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence」)共同覆盖",
       "occurrences": 1,
       "firstSeen": "2026-08-07T02:07:47.263Z",
       "lastSeen": "2026-08-07T02:07:47.263Z"
