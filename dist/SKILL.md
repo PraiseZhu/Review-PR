@@ -972,6 +972,16 @@ token 共现判据（PR #13 R2 blocker 实测成立），原 `assessThreadEviden
 > 判据可被普通埋点绕过、并发至多一次、bot 白名单覆盖全部评论、marker 身份绑定、
 > 回执跨运行持久性）全部关闭验证通过之前，禁止新增该 config key 启用本机制；
 > 启用只能由后续独立评审确认全部验收条件后进行，不得借本节文档改动顺带打开。
+>
+> **自动 resolve 目前不提供**。要在将来启用，以下两项都必须先满足（缺一不可）：
+> 1) 一个能**机器核验「缺陷确实被修复」**的判据。已尝试并被实测否决的方案：
+>    token 子串命中、≥2 独立 token 共现、共现（必要）+ 编排层 justification
+>    （充分）。否决理由：两行普通埋点（如 `telemetry.increment("X")` /
+>    `trace.debug("Y")`）即可让未修复的意见判定为可 resolve（PR #13 R2 blocker
+>    实测）；且执行层不接收 diff，无法独立复核。
+> 2) 生产者→判据的形状适配（context 导出 `lastComment`/`isBot`，判据消费
+>    `body`/`authorType`），并配一条**从真实 context 输出出发**的端到端契约测试。
+> 当前两项均不满足。仅提供 auto-reply（可纠正），不提供 auto-resolve。
 
 **执行**：把可处理清单逐条生成 reply payload（回复必须引用修复 commit 与位置，供人
 复核；文案不声称机器已验证修复正确性——本动作是 T1 防遗漏收口）。每条附上
