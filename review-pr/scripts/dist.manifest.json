@@ -10,7 +10,7 @@
     "tests/",
     "scripts/preview-dist.manifest.json",
     "scripts/signoff-policy.test.mjs",
-    "scripts/resolve-threads.test.mjs"
+    "tests/resolve-threads.test.mjs"
   ],
   "markerStrips": [
     {
@@ -58,7 +58,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "- 已落地（2026-08-09，见 3.10）：白名单 bot（`threadTriage.extraBots`）且修复证据\n  语义绑定（`assessThreadEvidence`）的 thread 代 resolve；真人 thread / 无证据 /\n  翻案三类永不动，翻案永久留人工。",
+      "find": "- 已落地（2026-08-09，见 3.10）：白名单 bot thread 代 reply / 条件 resolve——reply\n  无条件（反停滞），resolve 只在机器可核实条件下执行（己方 marker + 同 headSha +\n  白名单复核），marker 按 viewer 作者身份绑定、状态在 GitHub 侧无本地回执；原\n  `assessThreadEvidence` 字符串共现判据已删除（可被两行普通埋点绕过，实测成立）。",
       "replace": ""
     },
     {

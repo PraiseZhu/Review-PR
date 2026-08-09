@@ -20,7 +20,7 @@
     "scripts/dist/",
     "tests/",
     "scripts/signoff-policy.test.mjs",
-    "scripts/resolve-threads.test.mjs"
+    "tests/resolve-threads.test.mjs"
   ],
   "markerStrips": [
     {

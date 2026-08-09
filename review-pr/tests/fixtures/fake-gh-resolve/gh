@@ -56,6 +56,13 @@ if (args[0] !== 'api' || args[1] !== 'graphql') fail(`未 mock 的调用: gh ${a
 
 const vars = parseVars(args);
 
+// ViewerLogin:resolve-threads.mjs 靠 viewer 身份判定 marker 可信度(评论作者身份,
+// 不是文本形状)。回复 mutation 以 FAKE_GH_SELF_LOGIN 身份写评论,这里必须返回同一
+// 身份,否则脚本会把自己的 marker 误判成"非白名单评论"。
+if (stdin.includes('ViewerLogin')) {
+  out({ data: { viewer: { login: process.env.FAKE_GH_SELF_LOGIN || 'review-pr-bot' } } });
+}
+
 if (stdin.includes('ReviewThreadsPage')) {
   const state = loadState();
   const page = paginate(state.threads, 100, vars.after);
