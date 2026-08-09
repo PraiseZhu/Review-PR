@@ -148,7 +148,7 @@ try {
     '  checked-clean 在顶层带 `hunkId`;finding 在顶层带 `findingRef: {family_id, manifestationIndex}`(引用上方 findingFamilies 的真实条目);not-applicable 在顶层带 `reasonCode` + `explanation`。',
     '- `segmentReceipts[].coverageKeys[]` 元素:对象 `{kind:"hunk", fileId, hunkId}`(不是 "fileId:hunkId" 字符串);',
     '  `receivedOrder` 必须等于投递序号,`snapshotHash` 必须等于顶层 snapshotHash。',
-    '- `findingDispositions[]` 元素:`{findingId, disposition, basis}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status),`basis` 非空。',
+    '- `findingDispositions[]` 元素:`{findingId, disposition, evidence?, basis?}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status)。`resolved` 必须带结构化 `evidence`(自由文本不算),二选一:`{kind:"diff-anchor", snapshotHash, fileId, hunkId, note}`(锚当前 diff 的具体改动)或 `{kind:"verification-run", snapshotHash, verificationRunId, note}`(`verificationRunId` 必须存在于 `verificationRuns[]`);`invalidated` 必须带非空 `basis`(判误报依据)。**本轮未注入任何未决项(没有"未决 findings"段)时,本数组必须为 `[]`**——GitHub 上的第三方 bot thread(如 Greptile)不属于注入项,不要给它们写 disposition。',
     '- `negativeEvidence[]` 元素:`{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`——',
     '  **`command` 与 `outputAnchor` 必须与 `verificationRuns[]` 里被引用 run 的对应字段逐字一致**(机器会做一致性校验,不一致判 invalid);`verificationRunId` 必须引用真实登记的 runId。',
     '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor}`——每条实验真实执行并登记。',

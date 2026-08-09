@@ -133,22 +133,24 @@ JSON、禁止贴 `run-log` 落盘路径；打回评论、内部汇总与各类�
 
 ### 模板 D：产品/架构门告知（人格关闭）
 
-3.4 命中产品/UI 或架构 gate、运行 `product-hold.mjs` 时的 `commentBody`
-（`issueTitle`/`issueBody` 同一人格基调）：
+3.4 命中产品/UI 或架构 gate、运行 `signoff-hold.mjs --kind product|arch` 时的
+`commentBody`（`issueTitle`/`issueBody` 同一人格基调；security/rules 两门同模板，
+只换触发点描述）：
 
 ```text
 Mivo 拦了一下 PR #<N>，不是代码问题。
 
-这次动到了<产品行为/架构核心>（<具体触发点>），按流程得先和 <把关人> 对齐方向
-再往下写。
-已经开了讨论 issue：<链接>，PR 先转成 Draft 挂着。
+这次动到了<产品行为/架构核心/安全面/审查规则文档>（<具体触发点>），按流程得先
+和 <把关人> 对齐方向再往下写。
+已经开了讨论 issue：<链接>，PR 挂上了等待确认标签（awaiting-discussion）。
 
-对齐完在 issue 里回一句（或直接 Approve / 标回 Ready），我会自动把它放回 Ready
-继续审。
+对齐完在 issue 里回一句（或直接 Approve），我会自动摘标签继续审。
 ```
 
 纪律：**第一句必须先澄清"不是代码问题"**；全条无傲娇、**0 个表情**（人格与表情
-双关闭）；必须写明放行方式（讨论 issue 回复 / Approve / 标回 Ready 任一皆可）。
+双关闭）；必须写明放行方式（讨论 issue 回复 / Approve 任一皆可）；保证等级如实
+声明——「流程在等确认」是 T1（防疏忽），文案不出现「已拦截/已验证安全」这类
+T2 语气。
 
 ## Skill 路径与目标仓库
 
@@ -598,7 +600,10 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
 
 ### 3.4 产品/UI 与技术架构 gate
 
-本仓库维护者必须先消费 `context` 的 `productGate` 与 `archGate`，再进入普通代码审查：
+本仓库维护者必须先消费 `context` 的 `productGate`、`archGate` 与 `signoff` 字段，
+再进入普通代码审查（`signoff.triggers` 是 security/rules 两门 + arch 触发器的统一
+命中事实，`signoff.suggestedHolds` 是编排要执行的 hold 建议，消费规则见 3.8/3.9
+与本节下方「payload 合同」）：
 
 - 产品/UI gate：按 [references/internal-gates.md](references/internal-gates.md) 判定
   `exempt`、`needsProductCheck`、白名单同意（讨论 issue 留言与 PR 评论区直接回复
@@ -611,15 +616,30 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
   表态，名单内成员自己提的 PR 也要显式确认（口径与两种 trigger 的处置见
   [references/internal-gates.md](references/internal-gates.md)「mobile 冷更（runtime
   fingerprint）触发器」）；
-- 真正命中产品/UI 时运行 `product-hold.mjs`，真正命中架构调整时运行
-  `product-hold.mjs --kind arch`；两者都要创建 issue、评论并转 draft，动作必须幂等；
-  `issueTitle`/`issueBody`/`commentBody` 按「对外话术与人格边界」模板 D 撰写
-  （人格关闭，第一句先澄清"不是代码问题"）；
+- 真正命中产品/UI 时运行 `signoff-hold.mjs --kind product`，真正命中架构调整时运行
+  `signoff-hold.mjs --kind arch`（与 security/rules 两门共用同一套统一 hold 机制，
+  product-hold.mjs / product-release.mjs 旧文件保留为兼容入口，新编排一律走
+  signoff-hold / signoff-release）；hold 动作 = 开讨论 issue + 发状态评论（带隐藏
+  标记）+ 挂 `awaiting-discussion` 标签，**不再转 draft**（2026-08-09 起标签制取代
+  draft 制：draft 带来的 hold↔ready 死循环与 PAT 权限问题随之消失，真正挡合并的是
+  流程内部判定，标签只是 GitHub 后台的可筛性入口）；动作必须幂等（重复 hold 复用
+  既有讨论 issue，`decideIssueReuse` 语义，见 signoff-policy.test.mjs）；
+- **payload 合同（写死，缺失即拒绝主动作）**：`issueTitle`/`issueBody`/`commentBody`
+  三字段全部非空，生成来源 = 门类模板（模板 D）+ PR 上下文（PR 号、作者、触发路径、
+  把关人），由主 agent 按「对外话术与人格边界」撰写（人格关闭，第一句先澄清"不是
+  代码问题"），经 `--payload-file`（推荐 `-` 走 stdin）传给 signoff-hold；脚本返回
+  `reason=missing-payload` 时**不得计为 held**（`held=false`），必须在轮次汇总里
+  如实记录「缺 payload 未 hold」，补 payload 重试，不能当「已拦截」收尾；
+- **hold 成功判据 = 三件套全成功**：标签 + 状态评论 + 讨论 issue 三样都成功才算
+  held；`issueCreated=false` / `commented=false` / `labels.changed=false` 任一失败
+  必须显式进轮次汇总（脚本输出逐字段可查），不得静默降级为「只打了标签」；
 - auto 模式 issue 新建成功后按配置发送一次讨论通知；交互模式在 issue、评论和通知
   发出前逐项确认；
-- 已被 hold 的 draft 由 `heldDraftResults` 消费，白名单明确同意（在讨论 issue 或
-  PR 评论区任一处回复均可）后运行 `product-release.mjs` 自动恢复 Ready，不能把
-  “标回 Ready”留给作者；
+- 放行判定（release）：**admins 名单成员对当前 head 之后的 GitHub Approve**
+  （`signoff.adminsApprovedCurrentHead=true`）；白名单在讨论 issue 或 PR 评论区任一处
+  明确同意（产品/架构门口径）后运行 `signoff-release.mjs --labels-only` 摘标签，
+  不能把摘标签留给作者；存量被旧 draft 制 hold 成 draft 的 PR，在门判定为不拦 /
+  已放行时用 `gh pr ready` 一次性迁移恢复（幂等，已 ready 即跳过）；
 - PR 合并后运行 `close-product-issue.mjs`，避免讨论 issue 悬挂。
 
 产品/UI gate 和架构 gate 的详细名单、阈值、Slack 归属、通知去重与异常处理见
@@ -741,24 +761,92 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
   scheduler hook，但 `pre-check.mjs` 的契约是「轻量、快、exit 2 表示无活可做」，塞进 gh
   查询与可能的 revert PR 创建会破坏该契约，故未做；如需升级应另立独立 hook。
 
-### 3.8 审查执行环境安全
+### 3.8 审查执行环境安全（security 确认门）
 
 `pr-rules.json` 的 `securityReviewPaths`（缺省为空 = 门关闭）列出自动化自身有
 执行/供应链能力面的路径：review-pr 自身脚本/配置、CI workflow/actions、部署的
 skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏自己，不是防外部
 攻击——auto 批处理会 checkout 到 PR 分支再跑一部分确定性脚本 / 读取
 `pr-rules.json` 配置本身，若继续让 review-pr 用可能已被这次改动改坏的自己版本去
-自动审查并合并这次改动，会形成"改坏的版本审过并合入了自己"的自我损坏闭环。命中
-即 `context.mjs` 的 `auto.action=skip-security-review`，一律转人工，不自动审也不
-自动合；优先级仅次于 3.7 的 loop 托管排除，压过产品门/架构门/格式门/前置门，同样
-让位于安全与隐私门硬命中。是否启用、纳入哪些路径由目标仓库自己按贡献者可信度
-模型配置。
+自动审查并合并这次改动，会形成"改坏的版本审过并合入了自己"的自我损坏闭环。
+
+命中即 `context.mjs` 的 `auto.action=security-gate`（`signoff.triggers.security`
+非空），按维护者确认门（signoff）执行 hold——**不再静默 skip**（三门空转 = 命中
+无动作，正是 2026-08-09 要接通的缺陷）：挂 `awaiting-discussion` 标签 + 开讨论
+issue + 发状态评论，等 admins 名单成员（`admins`）对当前 head 之后显式 Approve
+放行（`signoff.adminsApprovedCurrentHead=true` 时本门不拦）。放行前不自动审、不
+自动合；放行后按 `auto.fallback` 继续原走向。优先级仅次于 3.7 的 loop 托管排除，
+压过产品门/架构门/格式门/前置门，同样让位于安全与隐私门硬命中。是否启用、纳入
+哪些路径由目标仓库自己按贡献者可信度模型配置。**保证等级如实声明**：本门是
+T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这个大概率疏忽变成显式等待；
+不冒充 T2（防恶意伪造），恶意者总能改掉配置本身，那不属于本门能力面。
 
 **唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
 可以压过本门——`mergeAuthorization.breakGlassApprovers` 名单成员发出的
 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
 不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
 与授权通道谁都压不过它。
+
+### 3.9 审查规则文档门（rules 确认门）
+
+`pr-rules.json` 的 `ruleFiles.required`（缺省为空 = 门关闭）列出审查规则文档
+（AGENTS.md、CLAUDE.md、docs/dev-rules/ 等）——规则文档是后续所有审查的判据来源，
+改它等于改审查标准本身，需要 admins 确认。
+
+命中即 `context.mjs` 的 `auto.action=rules-gate`（`signoff.triggers.rules` 非空），
+按维护者确认门（signoff）执行 hold（`signoff-hold.mjs --kind rules`），口径与 3.8
+完全一致：挂标签 + 开讨论 issue + 状态评论，admins 对当前 head 之后 Approve 即放行
+（放行前不自动审、不自动合，放行后按 `auto.fallback` 继续）。优先级低于 security
+门（命中 securityReviewPaths 时不走本门），不覆盖已包裹的 product-gate / arch-gate；
+`ruleFiles.required` 未配置时本门永不出现。`ruleFiles.ruleMap`（规则文档 → 管辖
+路径映射）命中明细随 `signoff.triggers.ruleMapHits` 带出，供编排辅助定性，不单独
+构成触发。保证等级同 3.8：T1（防疏忽/漂移），不冒充 T2。
+
+### 3.10 thread 清理（triage）：代 resolve 已处理的 bot 意见
+
+分支保护开了 `Require conversation resolution` 时，thread 不 resolve 就 GitHub 层面
+合不了；而 bot（greptile 等）从不回来点 resolve，作者修完也常忘点——「threads
+unresolved 连续多轮整轮空转、停滞十几天」的 PR 就是这个原因（#251 型）。auto 模式
+在扫描后、合并判定前执行本清理；交互模式先把可代 resolve 清单（路径 + 判定依据 +
+拟回复）展示给用户、确认后执行。
+
+**判据（语义绑定，判定核心在 lib.mjs `assessThreadEvidence`，
+resolve-threads.test.mjs 覆盖）**，对 `context.history.reviewThreads` 里未 resolve
+的 thread 逐条：
+
+1. **真人 thread 永不自动 resolve**；只认白名单 bot——`pr-rules.json` 的
+   `threadTriage.extraBots` 登录名单（首配 `greptile-apps`；未配置 = 整套机制关闭，
+   一条都不动）；
+2. **修复证据 = thread 的 claim 与当前 head 修复 diff 的针对性对应**：从 thread
+   评论文本提取针对性 token（反引号/引号段、标识符，`extractThreadTokens`），该
+   token 出现在修复 diff 的新增行里（`evidence=semantic-bound`）才算证据；
+3. **「同文件被后续 commit 触碰」/ `isOutdated` 只是必要线索，不是充分条件**——
+   只有线索 → fail-closed 不动（与上游 ff37d26 降级口径一致；行改了 ≠ 问题解决，
+   必须读到 claim 被针对性处理）；
+4. **拿不准一律不动**（token 提取不到 / 匹配不到 / 读不到当前 head diff），留人工；
+5. 翻案保护由脚本兜底：带 triage 标记回复却再次未 resolve 的 thread
+   （`reopened-after-triage`）**永久留人工**——有人 unresolve 过 = 人工翻案，不重判、
+   不拉锯，别把它当故障重试。
+
+**执行**：把可代 resolve 的清单逐条生成 reply payload（回复必须引用修复 commit 与
+位置，供人复核；文案不声称机器已验证修复正确性——本动作是 T1 防遗漏收口），调：
+
+```bash
+node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file - <<'JSON'
+{ "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>),代为 resolve;有异议可 reopen" } ] }
+JSON
+```
+
+（脚本只执行调用方给定的 payload，不自选 thread——**不接编排则 #251 型停滞仍会
+skip**，这正是本节的接线职责。）
+
+**回流与汇总**：消费脚本输出的 `results[]`——`done=true`（含 `already-resolved`）
+计入已 resolve；`done=false`（`thread-not-found` / `reopened-after-triage` / reply
+或 resolve 失败）**必须逐条显式进轮次汇总**，不得静默；resolved 后对涉及该 PR 的
+合并判定**重算 threads 阻断**（重新拉 `mergeStateStatus`，或按「未 resolve thread
+计数归零」处理），不凭清理前的旧计数判定。每条代 resolve 都带回复通知原 reviewer，
+对方可一键 unresolve。**幂等**：脚本对已 resolve / 已回复过的 thread 不重复动作
+（双并发下每 thread 至多一次 reply+resolve，靠脚本内查当前状态兑 TOCTOU 窗口）。
 
 ## 4. 阶段二：独立代码审查
 
@@ -1181,10 +1269,13 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   structural-check，绝不可 bypass、不催办——本轮跳过，下一轮重新探测。
 - 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
   不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
-- 命中 `securityReviewPaths`（`skip-security-review`）：一律转人工，不自动审也不自动
-  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发；`mergeAuthorization.breakGlassApprovers`
-  名单成员发 `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外
-  （`authorized-fast-merge`，见 5.1「授权快速合并通道」）。
+- 命中 `securityReviewPaths`（`security-gate`）或 `ruleFiles.required`（`rules-gate`）：
+  按维护者确认门（signoff）hold——挂 `awaiting-discussion` 标签 + 开讨论 issue +
+  状态评论，admins 对当前 head 之后 Approve 即放行，放行前不自动审、不自动合、放行
+  后按 `auto.fallback` 继续（详见「审查执行环境安全」「审查规则文档门」）；未配置
+  对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
+  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，
+  见 5.1「授权快速合并通道」）。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -1386,22 +1477,55 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （漏播的合并致谢由 `pre-check.mjs` 负责补发，**不在本阶段跑**：本轮次在「没有 open PR」
    时压根不会创建，而一批 PR 刚全部合完、open 清零正是最该发致谢的时刻，因此该动作必须与
    「有没有审查活」解耦，（preview 版：合并致谢播报已剥离——`notify-merge-backfill.mjs` 不在产物中，本节不适用。）
-   `skip-loop-managed`／`skip-security-review` 的候选原样跳过、不 checkout、不提醒
-   （分别详见 3.7／3.8，未配置对应键时这两类永不出现）。
+   `skip-loop-managed` 的候选原样跳过、不 checkout、不提醒（详见 3.7，未配置对应键
+   时永不出现）；`security-gate`／`rules-gate` 的候选**不跳过**——进处理清单，按下方
+   「三门 hold 接线」调 `signoff-hold.mjs`（详见 3.8／3.9，未配置对应键时这两类永不
+   出现；命中但 admins 已对当前 head 之后 Approve 时不 hold，直接按 `auto.fallback`
+   继续）。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold（见 3.4）。
    （preview 版：合并出口与审计已剥离——`merge-pr.mjs` 不在产物中，合并审计对账跳过。）
 
+   **thread 清理（triage）**：对 `context` 输出中 `gate.unresolvedThreads` 非空的
+   候选，按 3.10 的判据逐条评估（白名单 bot `threadTriage.extraBots` + 语义绑定
+   证据 `assessThreadEvidence`），生成 reply payload 后调
+   `node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file -`；
+   `done=false` 的条目逐条进汇总；resolved 后重算该 PR 的 threads 阻断再进后续分流
+   （未做清理、不重算就按未 resolve 处理）。未配置 `threadTriage.extraBots` 时本步
+   整体跳过（机制关闭，一条都不动）。
    **跳过对被剥离的通知能力保持静默**（preview 版：作者催办/停滞私聊通道已剥离——`notify-author-resolve.mjs`/`remind-stale-author.mjs`/`resolve-author-feishu.mjs` 均不在产物中）：被 skip 的候选只在 6.1 汇总的 skip 行注明原因，不主动向作者发任何消息。
 2. **计划**：选入全部可处理候选，不设固定数量上限（宿主的并行 agent 上限自然限流，
    超出的排队等待即可）；落地顺序先按 3.6 的依赖关系、再按 `createdAt` 升序；对会改变
    base 的候选做文件重叠守卫，同一文件同一时刻只允许一个 PR 在审，重叠项排队等前一个
-   落地后再补入。审查 agent 在独立 worktree 并行运行；产品/UI 与架构命中项先串行执行
-   hold，格式打回、workflow approval 和 release 等轻操作按候选串行落地。
-3. **落地与补位**：先消费 held draft 的 issue 同意并自动 release；`auto.action=
+   落地后再补入。审查 agent 在独立 worktree 并行运行；**三门 hold 接线（串行执行，
+   每个候选最多一次）**：对 `auto.action` 为 product-gate / arch-gate / security-gate /
+   rules-gate 的候选（或 `signoff.suggestedHolds` 非空时），按
+   `signoff.suggestedHolds` 的优先级（security > rules > arch > product 之外的实际
+   action 顺序）取命中门，主 agent 按 3.4 的 payload 合同生成三字段文案，调：
+
+   ```bash
+   node "<SKILL_ROOT>/scripts/signoff-hold.mjs" <PR> --kind <product|arch|security|rules> --payload-file - <<'JSON'
+   { "issueTitle": "...", "issueBody": "...", "commentBody": "...{{ISSUE_URL}}..." }
+   JSON
+   ```
+
+   **三件套判据**：`held=true` 且 `issueCreated=true` 且 `commented=true` 且
+   `labels.changed=true`（或 `alreadyHeld=true` 复用）才算 hold 成功；`reason=
+   missing-payload` 不得计为 held，如实进轮次汇总并补 payload 重试；任一字段失败
+   （issueError / commentError / labelWarning）必须逐项进轮次汇总，不得静默降级为
+   「只打了标签」。格式打回、workflow approval 和 release 等轻操作按候选串行落地。
+3. **落地与补位**：先消费 held 的放行信号并自动 release——`signoff.
+   adminsApprovedCurrentHead=true`（admins 对当前 head 之后 Approve）或产品/架构门
+   白名单在讨论 issue / PR 评论区明确同意时，运行
+   `node "<SKILL_ROOT>/scripts/signoff-release.mjs" <PR> --labels-only` 摘标签
+   （幂等，标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
+   一次性迁移恢复）；`auto.action=
    authorized-fast-merge` 的候选跳过阶段二独立审查，直接按 5.1「授权快速合并通道」
    复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
    审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
    通过则按 5.2 正常打回；其余通过审查的 PR 先复核状态再合并，失败的 PR 请求修改，
-   CI pending、未 resolve thread、权限问题只跳过不绕过；冲突的 PR 若满足 5.5 门槛
+   CI pending、未 resolve thread、权限问题只跳过不绕过——未 resolve thread 的
+   阻断判定用 **thread 清理（3.10）回流后**的计数：扫描阶段已代 resolve 的不再阻断，
+   清理后仍 unresolved 的照旧阻断（合并判定前重新拉 `mergeStateStatus`，不凭清理前
+   的旧计数）；冲突的 PR 若满足 5.5 门槛
    （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
@@ -1410,9 +1534,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    完（无论落地、跳过还是异常）运行一次 `refresh-lock.mjs --token <token>` 心跳续期；
    `lost=true` 时立即终止本轮剩余候选的所有写操作。
 
-auto 模式可以按维护者配置创建产品/架构讨论 issue、转 draft、自动 release 和发送一次
-定向通知；3B 的作者催办仍按旧流程的去重和停滞规则执行。auto 自己不修改 PR 代码，
-修复动作只发生在 5.4 的跟进会话里。
+auto 模式可以按维护者配置创建产品/架构/安全/规则门的讨论 issue、挂
+`awaiting-discussion` 标签（不再转 draft）、admins Approve 后自动 release（摘标签）
+和发送一次定向通知；3B 的作者催办仍按旧流程的去重和停滞规则执行。auto 自己不修改
+PR 代码，修复动作只发生在 5.4 的跟进会话里。
 
 ### 6.1 汇总输出格式
 
@@ -1478,7 +1603,14 @@ JSON 结构：
     不是需要对齐的不一致**（2026-08-01 前的历史记录曾把两者混同，导致审计时
     误读为“打回都是 REQUEST_CHANGES”，此处明确禁止复发）；
   - 5.5 主干代合并、5.6 代修合并：全程不提交 `gh pr review` → `none`；
-  - 产品/架构 hold（转 draft，未提交 review）→ `none`。
+  - 产品/架构/安全/规则门 hold（signoff-hold，未提交 review）→ `none`。
+
+`threadTriage`（可选，见 3.10）：本轮的 thread 代 resolve 结果，**每条必须显式**——
+`[{pr, threadId, path, outcome}]`，`outcome` ∈ `resolved`（done=true 含
+already-resolved）/ `reopened-after-triage` / `thread-not-found` / `reply-failed` /
+`resolve-failed` / `skipped-no-evidence`；`reply-failed`/`resolve-failed`/`thread-not-found`
+（= resolver 失败或目标缺失）不得静默，落盘时逐条展开；未配置 `threadTriage.extraBots`
+时整字段可省略。
 
 `draftSkipped` **必须是 `[{pr, reason, url}]` 数组，禁止写成裸数字**（历史上
 只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，
@@ -1533,7 +1665,9 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 
 **自进化** <n>
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
-- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
+- 已落地（2026-08-09，见 3.10）：白名单 bot（`threadTriage.extraBots`）且修复证据
+  语义绑定（`assessThreadEvidence`）的 thread 代 resolve；真人 thread / 无证据 /
+  翻案三类永不动，翻案永久留人工。
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
 调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤

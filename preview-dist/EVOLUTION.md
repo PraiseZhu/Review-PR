@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `preflight-timeout-arg-position-rule` **waitForFunction timeout 写第二个位置参数被静默忽略——现有 preflight 只查 async 谓词,查不到 timeout 参数位置** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open,commit `15ca5d6`
+  - 现象:2026-08-09 mivo-canvas #598:stamp-overlap.mjs:181 新增 waitForFunction(pred, {timeout:5000}),Playwright 签名 waitForFunction(pageFunction[, arg, options]),第二位置是 arg,超时退化为默认 30s。建议 review-preflight 增加确定性规则:检测 waitForFunction 第二位置参数是对象字面量且含 timeout 键 → 机器打回。需配零误报 fixture,列入预扫描规则开发。
 - `escape-candidate-issue-ref-blocks-merge` **逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
   - 现象:PR #544 body Closes #424,#424 是 issue 不是 PR(gh pr view 424 失败: Could not resolve to a PullRequest)。extractEscapeCandidates 有意多收(含 issue 号引用),但 consumer 登记 pending-fix-merge 时对 verdict=yes 的候选现场取 gh pr view <referencedPr> --json headRefOid,issue 引用拿不到 head → hazardRegisterFailed → invalid。审查 agent 判 yes 语义成立(#424 描述的隐式环境依赖确由更早合并 PR #401 引入),但登记产物 originPr=424 本身不成立。同 head 重放候选集不变、判定不变 → 永久 blocked。本次未走 seam(REVIEW_PR_ORIGIN_HEAD_MAP 为测试专用)、未改答卷,按 fail-closed 处置,PR 本轮不合并。修法候选(均涉 gate 行为或新增 gh 查询,按扩权类待拍板):a) 登记层对 non-PR 引用跳过登记并记 unresolved 进汇总;b) 候选提取时区分 issue/PR(需 gh api 探测);c) prompt 明示候选可能引用 issue,判 yes 须绑定真实 origin PR。
 - `rro1-empty-array-contract-omitted` **rro-1 输出契约:verificationGaps/findingDispositions 即使为空也必须作为数组存在** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: open
@@ -141,6 +143,10 @@
 
 ## 已自动落地(automatable-gap)
 
+- `rro1-disposition-non-injected-empty-case` **prompt 契约补明确:未注入未决项时 findingDispositions 必须为 [](bot thread 不属于注入项)** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
+  - 现象:2026-08-09 mivo-canvas #598 首轮:审查 agent 把 Greptile P2 bot thread 当注入项写 resolved disposition,injectedOpen 为空判 invalid,手工规范化后消费。已在 build-review-task.mjs 字段形状处补空集规则。
+- `rro1-disposition-evidence-shape-missing-in-prompt` **prompt 契约漏 findingDispositions resolved 的 evidence 结构化形状,首轮必 invalid** — 出现 1 次,首见 2026-08-08,最近 2026-08-08,status: landed,commit `9d9055d`
+  - 现象:2026-08-08 实跑:#585 审查输出 findingDispositions 只给自由文本 basis,consumer(lib.review-consume.mjs)要求 resolved 必须带结构化 evidence(kind diff-anchor|verification-run),shape 校验失败连带所有数组字段置空,回执也被误判无。已修 build-review-task.mjs 的 prompt 模板补上 evidence 形状说明。
 - `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 2 次,首见 2026-08-07,最近 2026-08-07,status: open
   - 现象:PR #544 的 6 条历史 finding origin 为旧 snapshot,当前 head 7f0e6af 已修复(新增哨兵+可红验证)。审查 agent 判 invalidated→auto 模式无交互确认出口→effective-open 永久卡死、PR 无法合并。根因:prompt 只说'resolved 或 invalidated'但未区分跨 snapshot 已修复(应 resolved)vs 同 snapshot 误报(应 invalidated),agent 看到历史状态 [invalidated] 就沿用。本轮靠主 agent 二次指引修正处置才通关
   - 提案:build-review-task.mjs 的未决 findings 段落追加指引:对 originSnapshotHash 早于当前 snapshot 的条目,若当前 head 已有修复证据(新增代码/负向实测变红)→ 给 resolved;invalidated 只用于'该指控在当前 snapshot 上不成立且无修复动作'的误报,auto 模式下 invalidated 无交互确认出口、每轮都会重新注入
@@ -171,6 +177,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 3 次,首见 2026-08-08,最近 2026-08-08,status: tracked
+  - 现象:PR #580 改动含 package.json,命中 securityReviewPaths,auto.action=skip-security-review,不审不合不提醒。属既有设计意图(防改坏自动化自身的自我损坏闭环),非流程缺口;按 by-design 只记计数,不因出现多次而自动放开
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
+  - 现象:本轮 #585(资产 GC)1 条 conversation 未 resolve 被 skip,已发模板 C 提醒评论
+- `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
+  - 现象:本轮 #580(bench 内存基准)含 package.json 改动,命中安全审查路径转人工,设计行为
 - `changelog-generated-data-semantic-conflict` **changelog.json 生成数据分叉使"其余全过仅剩冲突"的 PR 代合并仍判语义冲突** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
   - 现象:PR #544(test 类,审查 0 P0/P1 干净,格式/gate/thread/CI 全过,唯一阻断是与 main 的 changelog.json 冲突)尝试 5.5 主干代合并,展开 merge 后发现冲突非机械:两侧 changelog 快照是不同轮次 auto-changelog LLM 改写产物,HEAD 侧独有 2 条、PR head 侧独有 4 条、1 条同源文案改写不同,取任一侧都丢真实发布条目。生成数据(public/changelog.json 由 scripts/changelog/auto-changelog.mjs 批量生成)在作者提交时被重扫,与 main 已合入的旧快照分叉时,冲突性质从"机械"退化为"语义"。已中止代合并(merge worktree 零改动清理),按 5.5 语义冲突不擅自取舍发冲突提醒给作者。此观察扩展 author-conflict-needs-human-rebase:原条目只覆盖叠其他 gate 的冲突,本条目说明即使其余全过,生成数据冲突也非机械。
 - `by-design-skip-conflict-threads-exempt` **skip-gate(冲突+threads)且作者在 staleAuthorReminder.exemptAuthors 时不催办——本轮 #497 因此跳过无提醒** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
@@ -245,8 +257,6 @@
 - `security-review-path-blocks-own-gate-widening-pr` **扩大 e2e 门禁覆盖面的 PR 必然改 package.json,因而命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR #340(把 chat-copy 加进 test:e2e:prod:subset)只改 package.json 一行 scenario 列表,被判 skip-security-review 转人工。判定正确:package\.json$ 在 securityReviewPaths 内,而 review-pr 自己的两个 e2e required check 就跑这个 script —— 让它自动审并合入一个改动了自身验证命令的 PR,正是该门要防的自我损坏闭环。副作用是「加强门禁覆盖面」这类改动天然无法自动落地,每次都要人工放行。
   - 提案:不建议自动放开(扩权类风险)。若想减少人工介入,可考虑把 e2e scenario 清单从 package.json 抽到独立数据文件(如 scripts/e2e/subset.json),让门禁改动不再触碰 package.json —— 但这是目标仓库的结构调整,不是 skill 侧改动,且需评估是否值得为此增加一层间接。
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 4 次,首见 2026-07-24,最近 2026-07-28,status: tracked
-  - 现象:PR #251 命中同一模式,1 条 conversation 未 resolve,提醒已在 crossChannelSuppressHours 窗口内去重(未重发)
 - `structural-check-not-in-bypass-allowlist` **required_status_checks 未上报结果不在 structuralBypassAllowlist,按设计跳过不 admin bypass** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:PR #303 mergeStateStatus=BLOCKED,命中的必需检查类型含 required_status_checks(范围太宽,pr-rules.json 注释已说明只允许 code_scanning/code_quality 默认放行),当前配置正确跳过、不打回、不 admin merge
 - `ci-checks-unreadable` **无法读取 CI check 状态（token 权限 statusCheckRollup 403）** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
