@@ -1567,9 +1567,9 @@
       "title": "逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked",
       "detail": "PR #544 body Closes #424,#424 是 issue 不是 PR(gh pr view 424 失败: Could not resolve to a PullRequest)。extractEscapeCandidates 有意多收(含 issue 号引用),但 consumer 登记 pending-fix-merge 时对 verdict=yes 的候选现场取 gh pr view <referencedPr> --json headRefOid,issue 引用拿不到 head → hazardRegisterFailed → invalid。审查 agent 判 yes 语义成立(#424 描述的隐式环境依赖确由更早合并 PR #401 引入),但登记产物 originPr=424 本身不成立。同 head 重放候选集不变、判定不变 → 永久 blocked。本次未走 seam(REVIEW_PR_ORIGIN_HEAD_MAP 为测试专用)、未改答卷,按 fail-closed 处置,PR 本轮不合并。修法候选(均涉 gate 行为或新增 gh 查询,按扩权类待拍板):a) 登记层对 non-PR 引用跳过登记并记 unresolved 进汇总;b) 候选提取时区分 issue/PR(需 gh api 探测);c) prompt 明示候选可能引用 issue,判 yes 须绑定真实 origin PR。",
       "proposal": null,
-      "status": "open",
-      "commit": null,
-      "note": null,
+      "status": "landed",
+      "commit": "8c8e23168fd487473bc8dc48294efcc20d0e4bda",
+      "note": "[decided:2026-08-09] 已由 commit 8c8e23168fd487473bc8dc48294efcc20d0e4bda 覆盖(consume-review-output.mjs 取 head 失败时先查 issue,issue 则跳过登记记 skippedHazards)",
       "occurrences": 1,
       "firstSeen": "2026-08-07T03:12:11.135Z",
       "lastSeen": "2026-08-07T03:12:11.135Z"
