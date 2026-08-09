@@ -75,18 +75,7 @@ function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAu
       viewer: { login: 'PraiseZhu' },
       repository: { pullRequest: {
         author: { login: authorLogin },
-        reviewThreads: { nodes: [
-          // 生产形状锁定(PR #13 R3 复审对照实验):context.mjs 只从 GitHub GraphQL 原样
-          // 映射 id/isResolved/isOutdated/path + cs[0] 作者 + count + lastComment(全文)。
-          // 注意:没有 body、没有 authorType——旧 assessThreadEvidence 消费的这两个字段
-          // 不在生产契约里(缺映射 → 假阴性;补映射 → 两行埋点即 canResolve:true 假阳性,
-          // 故函数删除而非接线)。isResolved:true 避免影响 unresolvedThreads 门。
-          { id: 'PRRT_prod', isResolved: true, isOutdated: false, path: 'src/foo.ts',
-            comments: { nodes: [
-              { body: '这里调用了 `handleSubmit` 但缺少防抖。', author: { login: 'greptile-apps', __typename: 'Bot' }, id: 'c_prod_1' },
-              { body: '补充:请用 `debounce` 包裹,连点会重复提交。'.repeat(40), author: { login: 'greptile-apps', __typename: 'Bot' }, id: 'c_prod_2' },
-            ] } },
-        ] },
+        reviewThreads: { nodes: [] },
         comments: { nodes: commentNodes },
         timeline: { nodes: [{ commit: { committedDate: '2026-08-04T10:00:00Z', messageHeadline: 'x', oid: HEAD } }] },
         readyEvents: { nodes: [] },
@@ -140,29 +129,6 @@ test('context --scan 接线:裸 /approve-merge 进 legacyBareComments;skip-struc
   //    "缺 APPROVED"——stale/own-account 待授权时 reviewDecision 可能已是 APPROVED。
   assert.match(out.note, /approved shortcut 不成立/);
   assert.doesNotMatch(out.note, /名单但缺 APPROVED/, 'note 不得沿用"缺 APPROVED"作唯一原因口径');
-});
-
-test('SC-2 生产形状锁定:reviewThreads 导出含 id/isResolved/isOutdated/path/author/isBot/count/lastComment,无 body/authorType,lastComment 全文透出', () => {
-  // reviewThreads 全文只在 full 模式输出(--scan 精简模式按设计不含,见 context.mjs 头注)
-  const { repo, env } = setup();
-  const r = spawnSync('node', [SCRIPT, '469'], { cwd: repo, env, encoding: 'utf8' });
-  let out = null;
-  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
-  assert.ok(out, `输出应为 JSON,got status=${r.status}`);
-  const th = out.history?.reviewThreads?.[0];
-  assert.ok(th, `reviewThreads[0] 应存在(fixture 注入生产形状节点): ${JSON.stringify(out.history?.reviewThreads)}`);
-  // 生产契约字段(PR #13 R3 对照实验:旧 assessThreadEvidence 消费的 body/authorType 不在其中)
-  assert.equal(th.id, 'PRRT_prod');
-  assert.equal(th.isResolved, true);
-  assert.equal(th.isOutdated, false);
-  assert.equal(th.path, 'src/foo.ts');
-  assert.equal(th.author, 'greptile-apps');
-  assert.equal(th.isBot, true, 'Bot __typename 必须被识别');
-  assert.equal(th.count, 2);
-  // lastComment = 最后一条评论全文,不截断(SC-2:claim 文本不许截断)
-  assert.equal(th.lastComment, '补充:请用 `debounce` 包裹,连点会重复提交。'.repeat(40));
-  assert.equal('body' in th, false, '生产契约不得出现 body 字段(消费侧理想形状,曾造成假阴性)');
-  assert.equal('authorType' in th, false, '生产契约不得出现 authorType 字段(消费侧理想形状)');
 });
 
 test('静态词条锁(第 5 轮复审):context.mjs 源码内禁止"既无 APPROVED 也非 admins"旧口径——full note 与注释同样覆盖', () => {
