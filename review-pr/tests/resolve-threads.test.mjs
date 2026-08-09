@@ -499,6 +499,28 @@ test('D4 takeover 残留自愈:预置陈旧 .takeover(超 TTL)+ 陈旧主锁 →
   assert.equal(s.countCalls('resolveReviewThread'), 0);
 });
 
+// ── P1-a 复审探针复刻:lead 的探针用 startedAt:0 预置 primary+takeover 两个锁,
+// 旧版(常量存在但从不判龄)在 10.7s 后返回 lock-busy 且 stale takeover 仍在、bot thread
+// 永久不被处理。当前实现必须读取/判龄/清理 takeover:同一输入应能回收并完成首轮。
+test('D4 P1-a 探针复刻:startedAt:0 的 primary+takeover 双残留 → 判龄清理后完成首轮(replied-only,非 lock-busy)', (t) => {
+  const s = setup({ threads: [{ id: 'PRRT_P1A', isResolved: false, path: 'src/p1a.ts', comments: ['bot 意见'] }] });
+  clean(t, s);
+  const lockPath = join(s.lockDir, '123__PRRT_P1A.lock');
+  const takeoverPath = `${lockPath}.takeover`;
+  // 逐字复刻 lead 探针输入:startedAt:0(epoch 1970,远超任何 TTL)
+  writeFileSync(lockPath, JSON.stringify({ token: 'dead', startedAt: 0 }), { flag: 'w' });
+  writeFileSync(takeoverPath, JSON.stringify({ token: 'dead', startedAt: '1970-01-01T00:00:00.000Z' }), { flag: 'w' });
+  const { out } = runScript(s.work, s.env, {
+    threads: [{ id: 'PRRT_P1A', reply: '已处理', justification: 'j' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  });
+  const res = out.results[0];
+  assert.equal(res.outcome, 'replied-only', `超 TTL 双残留必须被回收并完成处理: ${JSON.stringify(res)}`);
+  assert.ok(!res.reason.startsWith('skipped-lock-busy'), res.reason);
+  assert.equal(s.countCalls('addPullRequestReviewThreadReply'), 1, '首轮回复发出');
+  assert.equal(s.countCalls('resolveReviewThread'), 0);
+});
+
 test('D4 takeover 未过期(另一实例正在接管)→ 放弃本轮,不抢锁(skipped-lock-busy)', (t) => {
   const s = setup({ threads: [{ id: 'PRRT_TO2', isResolved: false, path: 'src/to2.ts', comments: ['bot 意见'] }] });
   clean(t, s);
@@ -515,6 +537,36 @@ test('D4 takeover 未过期(另一实例正在接管)→ 放弃本轮,不抢锁(
   assert.equal(res.outcome, 'skipped', JSON.stringify(res));
   assert.ok(res.reason.startsWith('skipped-lock-busy'), res.reason);
   assert.equal(s.countCalls('addPullRequestReviewThreadReply'), 0);
+});
+
+// ── P1-b 显式验收:reply 成功、resolve 前崩溃 → 下一轮必须从 marker 文本恢复推进 ──
+// 旧版(带回执时代)缺陷:reply 成功 → 写回执之前崩溃 → 留下"有效 marker + 无回执" →
+// marker-not-trustworthy 每轮原地返回,永不前进("可重试"被实现成字符串不是行为)。
+// D3 删回执后该状态不存在;此处显式构造"reply 成功、resolve 未发生"的崩溃落盘状态,
+// 证明下一轮从 marker 文本读出待处理状态并真的推进(不重复回复、不原地返回)。
+test('P1-b 崩溃恢复:reply 成功、resolve 前崩溃 → 下一轮 resolved,全程用户回复恰好 1 次', (t) => {
+  const s = setup({ threads: [{ id: 'PRRT_CRASH', isResolved: false, path: 'src/crash.ts', comments: ['bot 意见'] }] });
+  clean(t, s);
+  const payload = {
+    threads: [{ id: 'PRRT_CRASH', reply: '已处理,有异议可 reopen', justification: 'j' }],
+    allowedBots: ['greptile-apps'], headSha: 'abc1234',
+  };
+  // 第 1 轮:reply 成功(状态里留下 viewer 作者、state=replied 的 marker),resolve 未发生
+  // (= 进程在 reply 与 resolve 之间崩溃的落盘形态)。
+  const r1 = runScript(s.work, s.env, payload);
+  assert.equal(r1.out.results[0].outcome, 'replied-only', JSON.stringify(r1.out.results));
+  assert.equal(r1.out.results[0].resolved, false);
+  const st1 = s.readState();
+  assert.equal(st1.threads[0].isResolved, false);
+  assert.ok(st1.threads[0].comments.nodes.some((c) => c.body.includes('state=replied') && c.author.login === SELF_LOGIN), 'marker 文本已落(崩溃点之后)');
+  // 第 2 轮:同 headSha 重跑 → 机器可核实条件成立,从 marker 文本恢复推进 → resolved
+  const r2 = runScript(s.work, s.env, payload);
+  const res2 = r2.out.results[0];
+  assert.equal(res2.outcome, 'resolved', `崩溃后下一轮必须继续推进,不得原地返回: ${JSON.stringify(res2)}`);
+  assert.equal(res2.replied, false, '不重复回复');
+  assert.ok(res2.reason.startsWith('resolved-own-triage'), res2.reason);
+  assert.equal(s.readState().threads[0].isResolved, true);
+  assert.equal(s.countRepliesWith('已处理,有异议可 reopen'), 1, '全程用户回复恰好 1 次(无死循环)');
 });
 
 // ── 并发:至多一次 ──
