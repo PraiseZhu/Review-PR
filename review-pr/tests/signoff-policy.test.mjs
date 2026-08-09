@@ -29,7 +29,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -40,7 +40,8 @@ import {
 } from '../scripts/lib.mjs';
 import {
   performIssueCreate, performStatusComment, performLabelSync, computeHeld,
-  acquireHoldLock, releaseHoldLock,
+  acquireHoldLock, releaseHoldLock, reconcileDuplicateHoldIssues,
+  tryTakeoverStaleLock, GH_CALL_TIMEOUT_MS, LOCK_STALE_MS,
 } from '../scripts/signoff-hold.mjs';
 
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -487,6 +488,20 @@ if (args[0] === 'pr' && args[1] === 'view') {
   process.exit(0);
 }
 if (args[0] === 'issue' && args[1] === 'create') {
+  // round4 D3:竞态屏障(仅 FAKE_GH_RACE_BARRIER 设置时)——两个并发进程都到 create 点
+  // 后一起放行,用于真并发 e2e:无锁(mutation 删掉 acquireHoldLock 接线)时双方都到达
+  // → 必然双写(测试转红);有锁时第二个进程根本到不了 create(锁互斥),第一个进程
+  // 等满短超时(1200ms)放行,只增加少量测试时长。
+  if (process.env.FAKE_GH_RACE_BARRIER) {
+    appendFileSync(process.env.FAKE_GH_RACE_BARRIER + '/arrivals', process.pid + '\\n');
+    const deadline = Date.now() + 1200;
+    while (true) {
+      const arrivals = readFileSync(process.env.FAKE_GH_RACE_BARRIER + '/arrivals', 'utf8')
+        .trim().split('\\n').filter(Boolean).length;
+      if (arrivals >= 2 || Date.now() > deadline) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
   const s = load();
   s.issueSeq += 1;
   s.issues[s.issueSeq] = { state: 'OPEN' };
@@ -499,6 +514,21 @@ if (args[0] === 'issue' && args[1] === 'view') {
   const num = Number(args[2]);
   const st = s.issues[num] ? s.issues[num].state : (process.env.FAKE_GH_ISSUE_STATE || 'OPEN');
   process.stdout.write(JSON.stringify({ state: st }));
+  process.exit(0);
+}
+if (args[0] === 'issue' && args[1] === 'close') {
+  const s = load();
+  const num = Number(args[2]);
+  if (s.issues[num]) s.issues[num].state = 'CLOSED';
+  save(s);
+  process.exit(0);
+}
+if (args[0] === 'issue' && args[1] === 'comment') {
+  const s = load();
+  const bodyIdx = args.indexOf('--body');
+  const body = bodyIdx >= 0 ? args[bodyIdx + 1] : readFileSync(0, 'utf8');
+  s.comments.push({ pr: Number(args[2]), body });
+  save(s);
   process.exit(0);
 }
 if (args[0] === 'pr' && args[1] === 'comment') {
@@ -645,10 +675,10 @@ test('signoff: 入口守卫-中文路径(percent-encode 归一)', () => {
   }
 });
 
-test('signoff: #7 入口守卫失败(--preserve-symlinks-main)必须写 stderr,不再静默 fail-open', () => {
-  // 复审实测:该场景 exit=0、零 gh 调用、stdout 空——守卫误判成"非主模块",门形同虚设。
-  // --preserve-symlinks-main 下 import.meta.url 保留 symlink 路径,与 realpath 后的
-  // argv[1] 失配;修复后必须至少有一行 stderr 让失败可见。
+test('signoff: D4 入口守卫误判(--preserve-symlinks-main)必须 stdout JSON 错误 + 非零退出,不再静默 fail-open', () => {
+  // round3 实测:该场景 exit=0、零 gh 调用、stdout 空——自动化消费方按脚本自声明的
+  // 「stdout 输出 JSON」契约,会把空 stdout 当成「成功但无结果」,hold 动作从未执行
+  // 却没人知道。round4 修复:守卫误判 → stdout 输出 {ok:false, error:...} + 退出码 1。
   const plDir = mkdtempSync(join(tmpdir(), 'signoff-hold-preserve-symlinks-'));
   const shimDir = makeStatefulShimDir();
   const repoDir = makeTempRepoDir();
@@ -665,12 +695,36 @@ test('signoff: #7 入口守卫失败(--preserve-symlinks-main)必须写 stderr,�
       env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, FAKE_GH_LOG: logPath, FAKE_GH_STATE: statePath },
       timeout: 15000,
     });
-    assert.equal(r.status, 0, `stderr=${r.stderr}`);
-    assert.ok((r.stderr ?? '').includes('入口守卫判定失败'), `stderr 必须写明守卫失败,实际:${JSON.stringify(r.stderr)}`);
+    assert.notEqual(r.status, 0, `守卫误判必须非零退出,实际 status=${r.status} stderr=${r.stderr}`);
+    let parsed = null;
+    try { parsed = JSON.parse(r.stdout); } catch { /* 非 JSON */ }
+    assert.ok(parsed && parsed.ok === false, `stdout 必须是 {ok:false} JSON,实际:${JSON.stringify(r.stdout)}`);
+    assert.equal(parsed.error, 'entry-guard-misclassified', `error 字段点明误判,实际:${JSON.stringify(r.stdout)}`);
+    const ghCalls = existsSync(logPath) ? readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean) : [];
+    assert.equal(ghCalls.length, 0, '守卫误判时不得发起任何 gh 调用(没有静默执行半套流程)');
   } finally {
     rmSync(plDir, { recursive: true, force: true });
     rmSync(shimDir, { recursive: true, force: true });
     rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('signoff: D4 合法 import 路径完全静默(不输出任何东西)', () => {
+  // 被 import(如测试运行器 / 调用方脚本)时 argv[1] 是别的文件,守卫分支不报警、
+  // 无输出——这是正常形态,输出任何东西都会污染消费方的 stdout 契约。
+  const importDir = mkdtempSync(join(tmpdir(), 'signoff-import-silent-'));
+  try {
+    for (const f of LOCAL_DEPS) cpSync(join(SCRIPTS_DIR, f), join(importDir, f));
+    writeFileSync(join(importDir, 'importer.mjs'),
+      "import { acquireHoldLock } from './signoff-hold.mjs';\nconsole.log(typeof acquireHoldLock);\n");
+    const r = spawnSync(process.execPath, [join(importDir, 'importer.mjs')], {
+      cwd: importDir, encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(r.status, 0, `stderr=${r.stderr}`);
+    assert.equal((r.stdout ?? '').trim(), 'function',
+      `import 路径必须静默加载成功(无守卫噪音/无主流程输出),实际 stdout=${JSON.stringify(r.stdout)}`);
+  } finally {
+    rmSync(importDir, { recursive: true, force: true });
   }
 });
 
@@ -779,6 +833,340 @@ test('signoff: D6 幂等 claim——三次运行只建一份 issue、重入复�
     const state3 = JSON.parse(readFileSync(statePath, 'utf8'));
     assert.equal(state3.comments.length, 2, '三次运行总共只有首发 + 一次回帖两条评论');
     assert.equal(Object.keys(state3.issues ?? {}).length, 1, '三次运行总共只建一份 issue');
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// round4 修复(PR #11 第四轮):D1 startedAt 类型对齐 / D2 有界临界区与对账 /
+// D3 原子 claim 绑定 main / D4 入口守卫 JSON 契约 / D5 读失败不伪装缺席 /
+// D6 编程错误重抛
+// ══════════════════════════════════════════════════════════════════════
+
+// ── round4 D1(blocker):startedAt 类型对齐——数字/缺失/非法/未来四类形态 ──
+test('signoff: D1 写入格式为 ISO 8601 字符串(不再写数字)', () => withLockDir((lockDir) => {
+  const l = acquireHoldLock('acme', 'app', 42);
+  const raw = JSON.parse(readFileSync(l.path, 'utf8'));
+  assert.equal(typeof raw.startedAt, 'string', 'startedAt 必须是字符串(ISO 8601)');
+  assert.ok(!Number.isNaN(Date.parse(raw.startedAt)), 'startedAt 必须可解析');
+  assert.ok(Math.abs(Date.now() - Date.parse(raw.startedAt)) < 60_000, 'startedAt 是当前时间');
+  releaseHoldLock(l);
+}));
+
+test('signoff: D1 数字时间戳(旧格式残留)——活 pid + 超 LOCK_STALE_MS 必须回收,不再永不陈旧', () => withLockDir((lockDir) => {
+  const path = lockPath(lockDir);
+  writeFileSync(path, JSON.stringify({
+    pid: process.pid,                       // 活 pid:唯一能判陈旧的是时间子句
+    startedAt: Date.now() - 10 * 60 * 1000, // 数字毫秒时间戳(round3 写入格式)
+    token: 'old',
+  }));
+  const l = acquireHoldLock('acme', 'app', 42, { timeoutMs: 1500 });
+  assert.equal(l.acquired, true, '数字时间戳 + 活 pid + 超时 → 必须判陈旧回收(D1 核心 bug 场景:Date.parse 数字返回 NaN)');
+  releaseHoldLock(l);
+}));
+
+test('signoff: D1 数字时间戳新鲜(未超时)——fail-closed 不回收', () => withLockDir((lockDir) => {
+  const path = lockPath(lockDir);
+  writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: Date.now(), token: 'old' }));
+  const l = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
+  assert.equal(l.acquired, false, '数字时间戳新鲜 → 不回收(fail-closed)');
+  assert.equal(l.timeout, true, '标注超时');
+}));
+
+test('signoff: D1 startedAt 缺失——死 pid 回收,活 pid fail-closed 不抢', () => withLockDir((lockDir) => {
+  const path = lockPath(lockDir);
+  // 缺失 + 死 pid → pid 子句判定陈旧 → 回收(不落到"永不陈旧")
+  writeFileSync(path, JSON.stringify({ pid: deadPid(), token: 'old' }));
+  const l1 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 1500 });
+  assert.equal(l1.acquired, true, '缺失 + 死 pid → 必须回收(pid 兜底,不得永不陈旧)');
+  releaseHoldLock(l1);
+  // 缺失 + 活 pid → 无法凭时间判定年龄 → fail-closed 不凭时间抢占活进程
+  writeFileSync(path, JSON.stringify({ pid: process.pid, token: 'old' }));
+  const l2 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
+  assert.equal(l2.acquired, false, '缺失 + 活 pid → fail-closed 不回收');
+}));
+
+test('signoff: D1 startedAt 非法字符串——死 pid 回收,活 pid fail-closed 不抢', () => withLockDir((lockDir) => {
+  const path = lockPath(lockDir);
+  writeFileSync(path, JSON.stringify({ pid: deadPid(), startedAt: 'not-a-date', token: 'old' }));
+  const l1 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 1500 });
+  assert.equal(l1.acquired, true, '非法字符串 + 死 pid → 必须回收');
+  releaseHoldLock(l1);
+  writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: 'not-a-date', token: 'old' }));
+  const l2 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
+  assert.equal(l2.acquired, false, '非法字符串 + 活 pid → fail-closed 不回收');
+}));
+
+test('signoff: D1 startedAt 未来时间戳——活 pid fail-closed 不回收,死 pid 仍回收', () => withLockDir((lockDir) => {
+  const path = lockPath(lockDir);
+  writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() + 3600_000).toISOString(), token: 'old' }));
+  const l1 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
+  assert.equal(l1.acquired, false, '未来时间戳 + 活 pid → fail-closed 不回收(时钟偏移保护)');
+  // 未来 + 死 pid → pid 子句照常回收
+  writeFileSync(path, JSON.stringify({ pid: deadPid(), startedAt: new Date(Date.now() + 3600_000).toISOString(), token: 'old' }));
+  const l2 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 1500 });
+  assert.equal(l2.acquired, true, '未来时间戳 + 死 pid → 仍回收(pid 兜底)');
+  releaseHoldLock(l2);
+}));
+
+// ── round4 D5(blocker):releaseHoldLock 读失败不得映射成 alreadyAbsent ──
+test('signoff: D5 releaseHoldLock 读失败(chmod 000)→ readError + 非 alreadyAbsent + 文件仍在', () => withLockDir((lockDir) => {
+  const l = acquireHoldLock('acme', 'app', 42);
+  assert.equal(l.acquired, true);
+  chmodSync(l.path, 0o000); // 锁文件不可读 → readFileSync 必 EACCES(≠ 文件不存在)
+  try {
+    const r = releaseHoldLock(l);
+    assert.equal(r.released, false, '读取失败不得报 released');
+    assert.equal(r.alreadyAbsent, false, 'EACCES 不是「已缺席」——锁文件还在,不能当它没了');
+    assert.equal(r.notOwner, false, '不是 token 不匹配');
+    assert.ok(r.readError, `必须带 readError,实际:${JSON.stringify(r)}`);
+    assert.ok(existsSync(l.path), '锁文件必须仍然存在');
+  } finally {
+    chmodSync(l.path, 0o644); // 恢复可读,保证临时目录可清理
+  }
+}));
+
+// ── round4 D6(blocker):takeover 重建块宽 catch 重抛编程错误 ──
+test('signoff: D6 takeover 重建块编程错误(ReferenceError)必须重抛,不留 0 字节锁', () => withLockDir((lockDir) => {
+  const path = lockPath(lockDir);
+  const takeoverPath = `${path}.takeover`;
+  writeFileSync(path, JSON.stringify({ pid: deadPid(), startedAt: new Date().toISOString(), token: 'old' })); // stale 主锁
+  const boom = () => { throw new ReferenceError('injected-programming-error'); };
+  assert.throws(
+    () => tryTakeoverStaleLock(path, takeoverPath, 'my-token', boom),
+    ReferenceError,
+    '编程错误必须重新抛出,不得静默降级成"抢占失败"',
+  );
+  assert.ok(!existsSync(path), '0 字节主锁残留必须被清理(不留半成品锁)');
+  assert.ok(!existsSync(takeoverPath), 'takeover 残留必须被 finally 清理');
+}));
+
+// ── round4 D2(blocker):有界临界区——数学上界 + 挂住 gh 实测 ──
+test('signoff: D2 临界区数学上界——最坏 11 次 gh 调用 × 单次超时 < LOCK_STALE_MS', () => {
+  // 临界区调用清单:pr view / issue view / issue create / pr comment / label create /
+  // label POST / legacy label DELETE / renotice 评论 = 8 次基础,对账最多处理 1 个
+  // 重复 issue(view + close + comment) = +3 → 最坏 11 次。活持有者不可能超出租约,
+  // 抢占只发生在真死或真挂死超时之后。
+  const WORST_CASE_CALLS = 11;
+  assert.ok(GH_CALL_TIMEOUT_MS * WORST_CASE_CALLS < LOCK_STALE_MS,
+    `最坏总耗时 ${GH_CALL_TIMEOUT_MS * WORST_CASE_CALLS}ms 必须 < 租约 ${LOCK_STALE_MS}ms`);
+});
+
+// 挂住 fake gh:pr view 卡死 10s(模拟无超时的 gh 调用),其余调用照常快速返回。
+const HANGING_GH_SRC = `#!/usr/bin/env node
+// round4 D2:挂住 fake gh——pr view 卡死 10s,其余快速返回。
+const args = process.argv.slice(2);
+if (args[0] === 'pr' && args[1] === 'view') {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000);
+}
+process.exit(0);
+`;
+
+test('signoff: D2 挂住的 gh 调用被超时杀掉——临界区不可能无限挂住', () => {
+  const hangDir = mkdtempSync(join(tmpdir(), 'fake-gh-hang-'));
+  const repoDir = makeTempRepoDir();
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-hanglock-'));
+  const logPath = join(hangDir, 'gh-calls.log');
+  writeFileSync(logPath, '');
+  const ghPath = join(hangDir, 'gh');
+  writeFileSync(ghPath, HANGING_GH_SRC);
+  chmodSync(ghPath, 0o755);
+  const payloadPath = join(repoDir, 'payload.json');
+  writeFileSync(payloadPath, JSON.stringify({ issueTitle: 'T', issueBody: 'B', commentBody: 'C' }));
+  try {
+    const t0 = Date.now();
+    const r = runSignoff({
+      scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),
+      args: ['42', '--payload-file', payloadPath],
+      repoDir, shimDir: hangDir, logPath, statePath: join(hangDir, 'state.json'),
+      extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir, SIGNOFF_HOLD_GH_TIMEOUT_MS: '500' },
+      timeout: 15000,
+    });
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 5000, `挂住调用必须被超时杀掉(实测 ${elapsed}ms),不允许卡满 10s`);
+    assert.notEqual(r.status, 0, `pr view 挂住超时 → fail-closed 非零退出,status=${r.status}`);
+    assert.ok((r.stdout ?? '').includes('"ok": false'), `stdout 输出 JSON 错误,实际:${JSON.stringify(r.stdout)}`);
+  } finally {
+    rmSync(hangDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});
+
+// ── round4 D2:GitHub 侧对账(双写自愈)──
+const isIssueClose = (a) => a[0] === 'issue' && a[1] === 'close';
+const isIssueComment = (a) => a[0] === 'issue' && a[1] === 'comment';
+
+test('signoff: D2 对账——多份 hold issue 保留最早(number 最小),关闭其余并留说明', () => {
+  const gh = makeFakeGh([
+    { match: (a) => a[0] === 'issue' && a[1] === 'view', result: { ok: true, stdout: '{"state":"OPEN"}', stderr: '', status: 0 } },
+    { match: isIssueClose, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+    { match: isIssueComment, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+  ]);
+  const r = reconcileDuplicateHoldIssues({
+    slug: 'acme/app',
+    urls: ['https://github.com/acme/app/issues/5', 'https://github.com/acme/app/issues/3', 'https://github.com/acme/app/issues/5'],
+    ghFn: gh,
+  });
+  assert.equal(r.keptUrl, 'https://github.com/acme/app/issues/3', '保留 number 最小(最早创建)的 issue');
+  assert.deepEqual(r.closed.map((c) => c.number), [5], '关闭其余(去重后只有 #5)');
+  assert.deepEqual(r.errors, [], '无错误');
+  const closes = gh.calls.filter((c) => isIssueClose(c.args));
+  assert.equal(closes.length, 1, '恰好关一份重复 issue');
+  assert.ok(closes[0].args.includes('5'), '关闭的是 #5');
+  const comments = gh.calls.filter((c) => isIssueComment(c.args));
+  assert.equal(comments.length, 1, '留一条说明');
+  assert.ok(comments[0].args.some((a) => a.includes('#3')), '说明指向保留的 #3');
+});
+
+test('signoff: D2 对账——单份 / 无 / 跨仓库 URL 都不动作(零 gh 调用)', () => {
+  const gh = makeFakeGh([]);
+  const r1 = reconcileDuplicateHoldIssues({ slug: 'acme/app', urls: ['https://github.com/acme/app/issues/3'], ghFn: gh });
+  assert.equal(r1.keptUrl, 'https://github.com/acme/app/issues/3', '单份保留');
+  assert.equal(r1.closed.length, 0, '单份不动作');
+  const r2 = reconcileDuplicateHoldIssues({ slug: 'acme/app', urls: [], ghFn: gh });
+  assert.equal(r2.keptUrl, null, '无 issue → keptUrl null');
+  assert.equal(r2.closed.length, 0);
+  const r3 = reconcileDuplicateHoldIssues({
+    slug: 'acme/app',
+    urls: ['https://github.com/other/repo/issues/9', 'https://github.com/acme/app/issues/2'],
+    ghFn: gh,
+  });
+  assert.equal(r3.keptUrl, 'https://github.com/acme/app/issues/2', '跨仓库 URL 不参与对账');
+  assert.equal(r3.closed.length, 0, '跨仓库 URL 不得动作');
+  assert.equal(gh.calls.length, 0, '全程零 gh 调用');
+});
+
+test('signoff: D2 对账——state 查询失败 → errors 点名,不误关', () => {
+  const gh = makeFakeGh([
+    { match: (a) => a[0] === 'issue' && a[1] === 'view', result: { ok: false, stdout: '', stderr: '403', status: 1 } },
+  ]);
+  const r = reconcileDuplicateHoldIssues({
+    slug: 'acme/app',
+    urls: ['https://github.com/acme/app/issues/3', 'https://github.com/acme/app/issues/7'],
+    ghFn: gh,
+  });
+  assert.equal(r.keptUrl, 'https://github.com/acme/app/issues/3', '仍保留最早');
+  assert.equal(r.closed.length, 0, '查询失败不误关');
+  assert.ok(r.errors.length > 0 && r.errors[0].includes('duplicate-issue-7'), `错误点名失败的 issue,实际:${JSON.stringify(r.errors)}`);
+});
+
+// ── round4 D3(blocker):原子 claim 绑定 main()——真并发双子进程 e2e ──
+// 两个真实子进程**同时**对同一 PR 跑完整模式,共享锁目录与 fake gh 状态。有锁时
+// 恰好 1 个 issue + 1 条评论;竞态屏障(FAKE_GH_RACE_BARRIER,见 stateful shim)在
+// mutation(删掉 main() 的 acquireHoldLock 接线)下让两个进程都到 create 点 →
+// 必然双写 → 测试转红。
+function runSignoffAsync({ scriptPath, args, repoDir, shimDir, logPath, statePath, extraEnv = {}, timeout = 30000 }) {
+  return new Promise((resolve) => {
+    const r = spawn('node', [scriptPath, ...args], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, FAKE_GH_LOG: logPath, FAKE_GH_STATE: statePath, ...extraEnv },
+      timeout,
+    });
+    let stdout = '';
+    let stderr = '';
+    r.stdout.on('data', (d) => { stdout += d; });
+    r.stderr.on('data', (d) => { stderr += d; });
+    r.on('close', (code, signal) => {
+      let parsed = null;
+      try { parsed = JSON.parse(stdout); } catch { /* 非 JSON */ }
+      const calls = existsSync(logPath)
+        ? readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+        : [];
+      resolve({ status: code, signal, stdout, stderr, calls, parsed });
+    });
+  });
+}
+
+test('signoff: D3 真并发双子进程——恰好 1 issue + 1 评论(锁串行化)', async () => {
+  const shimDir = makeStatefulShimDir();
+  const repoDir = makeTempRepoDir();
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-concurrent-lock-'));
+  const barrierDir = mkdtempSync(join(tmpdir(), 'signoff-hold-barrier-'));
+  const statePath = join(shimDir, 'state.json');
+  writeFileSync(statePath, '{}');
+  const payloadPath = join(repoDir, 'payload.json');
+  writeFileSync(payloadPath, JSON.stringify({
+    issueTitle: '讨论:真并发 e2e 专用 issue',
+    issueBody: '本 issue 由 signoff-policy.test.mjs 的真并发测试自动创建。',
+    commentBody: '本 PR 待维护者确认,详情见关联 issue。',
+  }));
+  const scriptPath = join(SCRIPTS_DIR, 'signoff-hold.mjs');
+  try {
+    const [p1, p2] = await Promise.all([
+      runSignoffAsync({
+        scriptPath, args: ['42', '--payload-file', payloadPath], repoDir, shimDir,
+        logPath: join(shimDir, 'c1.log'), statePath,
+        extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir, FAKE_GH_RACE_BARRIER: barrierDir },
+      }),
+      runSignoffAsync({
+        scriptPath, args: ['42', '--payload-file', payloadPath], repoDir, shimDir,
+        logPath: join(shimDir, 'c2.log'), statePath,
+        extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir, FAKE_GH_RACE_BARRIER: barrierDir },
+      }),
+    ]);
+    assert.equal(p1.status, 0, `p1 stderr=${p1.stderr}`);
+    assert.equal(p2.status, 0, `p2 stderr=${p2.stderr}`);
+    assert.equal(p1.parsed?.ok, true, `p1 stdout=${p1.stdout}`);
+    assert.equal(p2.parsed?.ok, true, `p2 stdout=${p2.stdout}`);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.equal(Object.keys(state.issues ?? {}).length, 1, `两个并发进程总共只建一份 issue,实际:${JSON.stringify(state.issues)}`);
+    assert.equal((state.comments ?? []).length, 1, `两个并发进程总共只发一条评论,实际:${state.comments.length}`);
+    const allCreates = [...p1.calls, ...p2.calls].filter((c) => c[0] === 'issue' && c[1] === 'create');
+    assert.equal(allCreates.length, 1, `issue create 调用合计 1 次,实际 ${allCreates.length}`);
+    // 锁串行化的直接证据:一个进程新建,另一个进程拿锁后看到已 hold → 复用
+    assert.ok(p1.parsed?.issueCreated === true || p2.parsed?.issueCreated === true, '至少一个进程新建');
+    assert.ok(p1.parsed?.issueCreated === false || p2.parsed?.issueCreated === false, '至少一个进程复用(串行化生效)');
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(lockDir, { recursive: true, force: true });
+    rmSync(barrierDir, { recursive: true, force: true });
+  }
+});
+
+// ── round4 D2:对账在主流程的接线(删掉 main() 的 reconcile 调用必须转红)──
+// 预置两份不同 hold issue 的标记评论 + 两个 OPEN issue → 跑完整模式 → 必须出现
+// reconciliation 字段、关闭 #2 保留 #1,且后续复用路径指向保留的 #1。
+test('signoff: D2 对账主流程接线——双写残留自愈,保留最早 issue', () => {
+  const shimDir = makeStatefulShimDir();
+  const repoDir = makeTempRepoDir();
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-reconcile-lock-'));
+  const statePath = join(shimDir, 'state.json');
+  const MARKER = '<!-- review-pr:product-gate';
+  const PRE = {
+    issueSeq: 2,
+    issues: { 1: { state: 'OPEN' }, 2: { state: 'OPEN' } },
+    comments: [
+      { pr: 42, body: `${MARKER} issue=https://github.com/acme/app/issues/1 -->` },
+      { pr: 42, body: `${MARKER} issue=https://github.com/acme/app/issues/2 -->` },
+    ],
+    labels: [],
+    headOid: 'deadbeef',
+  };
+  writeFileSync(statePath, JSON.stringify(PRE));
+  const logPath = join(shimDir, 'r.log');
+  try {
+    const r = runSignoff({
+      scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),
+      args: ['42'],
+      repoDir, shimDir, logPath, statePath,
+      extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir },
+    });
+    assert.equal(r.status, 0, `stderr=${r.stderr}`);
+    assert.equal(r.parsed?.ok, true, `stdout=${r.stdout}`);
+    assert.ok(r.parsed?.reconciliation, `输出必须带 reconciliation 字段,实际:${r.stdout}`);
+    assert.equal(r.parsed.reconciliation.keptUrl, 'https://github.com/acme/app/issues/1', '保留最早 issue #1');
+    assert.deepEqual(r.parsed.reconciliation.closed.map((c) => c.number), [2], '关闭重复 issue #2');
+    assert.equal(r.parsed.issueUrl, 'https://github.com/acme/app/issues/1', '复用路径指向保留的 #1,不再把作者引到已关闭的 #2');
+    assert.equal(r.parsed.issueCreated, false, '对账后不新开 issue');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.equal(state.issues['1'].state, 'OPEN', '#1 保持 OPEN');
+    assert.equal(state.issues['2'].state, 'CLOSED', '#2 已关闭');
   } finally {
     rmSync(shimDir, { recursive: true, force: true });
     rmSync(repoDir, { recursive: true, force: true });

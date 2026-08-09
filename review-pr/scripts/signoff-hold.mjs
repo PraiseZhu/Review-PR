@@ -56,7 +56,7 @@ import { readFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync, wri
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, stateFile } from './lib.mjs';
+import { parseRepo, parsePR, gh, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, stateFile } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -87,9 +87,21 @@ const KIND_TOPICS = {
 // 但不同 clone(不同机器 / 不同 CI runner 各自 checkout 一份)拿到的是不同锁目录,
 // 互斥在这种场景下不生效。真正的跨机器互斥需要挪到 GitHub 一侧(如基于
 // If-Match/conditional write 的原子标记),留作后续独立 PR,这里先如实收窄声明范围。
-const LOCK_STALE_MS = 5 * 60 * 1000; // 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
 const LOCK_POLL_MS = 100;
 const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000);
+
+// round4 D2(blocker 修复):有界临界区 —— 临界区内每次 gh 调用都带超时,使整段
+// check-then-act(pr view / issue view / issue create / pr comment / label create /
+// label POST / legacy DELETE / renotice 评论 / 对账 ≤3 次 = 最坏 11 次)的总耗时
+// 11 × GH_CALL_TIMEOUT_MS = 165s 严格小于 LOCK_STALE_MS(300s)。活持有者不可能超过
+// 租约,抢占只会发生在真死或真挂死(gh 调用被超时杀掉)之后——否则修好 D1 的时间
+// 判据后,持有者卡在无超时 gh 调用里会被误判陈旧,两个持有者各完成一次不可逆动作。
+// SIGNOFF_HOLD_GH_TIMEOUT_MS 供测试用短值验证超时机制(生产默认 15s)。
+export const GH_CALL_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS || 15000);
+// 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
+export const LOCK_STALE_MS = 5 * 60 * 1000;
+// 临界区 gh 调用的统一超时包装:所有临界区网络调用必须走 ghT,否则可能超出租约。
+const ghT = (args, opts = {}) => gh(args, { timeoutMs: GH_CALL_TIMEOUT_MS, ...opts });
 
 function lockPathFor(owner, repo, pr) {
   const dir = process.env.SIGNOFF_HOLD_LOCK_DIR || stateFile('signoff-hold-locks');
@@ -127,10 +139,28 @@ function isPidAlive(pid) {
 // "活着" → 锁永久不可回收、门永久失效,相对 round1 纯 mtime(5 分钟自愈)是能力回退。
 // 加回时间上限后,EPERM/PID 复用最坏只把回收延迟到 LOCK_STALE_MS 之后,不会永久死锁。
 // startedAt 缺失/非法(旧格式 JSON)时该子句恒 false,退化为仅 pid 判定,行为同 round2。
+// round4 D1(blocker 修复):写入方统一 ISO 8601(round3 写数字时间戳,而 Date.parse 对
+// 数字返回 NaN → 该模块自己写出的锁,自己永远判不出陈旧);判据对两种形态都容错,
+// 防止旧格式数字锁文件残留时又踩坑:
+//   - 数字毫秒时间戳(旧格式残留):正确解析,超 LOCK_STALE_MS 即判陈旧可回收;
+//   - 缺失 / 非法字符串:无法凭时间判定年龄 → 退化为仅 pid 判定(fail-closed:
+//     不凭时间抢占活进程;pid 已死则照常回收,不会"永不陈旧");
+//   - 未来时间戳(时钟偏移/写入错误):年龄为负,同样 fail-closed 不回收,等 pid 判定。
+function parseStartedAtMs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  if (typeof value === 'string') {
+    const t = Date.parse(value);
+    return Number.isNaN(t) ? NaN : t;
+  }
+  return NaN;
+}
+
 function isLockStale(info) {
   if (!info) return true;
   if (!isPidAlive(info.pid)) return true;
-  return Date.now() - Date.parse(info.startedAt) > LOCK_STALE_MS;
+  const startedAt = parseStartedAtMs(info.startedAt);
+  if (!Number.isFinite(startedAt)) return false; // 缺失/非法 → 仅 pid 判定(fail-closed)
+  return Date.now() - startedAt > LOCK_STALE_MS;
 }
 
 // 接管锁正常只持有毫秒级,60s 足够覆盖进程死在中间的自愈(对齐 prepare.mjs 的
@@ -148,7 +178,7 @@ function readTakeoverInfo(path) {
   return null;
 }
 
-function tryTakeoverStaleLock(path, takeoverPath, token, writeOwn) {
+export function tryTakeoverStaleLock(path, takeoverPath, token, writeOwn) {
   // 两阶段抢占(镜像 prepare.mjs 的 takeover 机制,round2 D2 修复):先原子创建 sibling
   // .takeover 文件当"抢占锁",拿到后在其保护下复核主锁确实还陈旧、再 unlink+recreate;
   // 避免两个并发实例同时判定陈旧、同时抢占导致互相删对方刚写的新锁。
@@ -186,13 +216,26 @@ function tryTakeoverStaleLock(path, takeoverPath, token, writeOwn) {
       const recheck = readLockInfo(path);
       if (recheck && !isLockStale(recheck)) return false; // 被别的实例刷新成活锁,不抢
       try { unlinkSync(path); } catch { /* 已被抢占清理过 */ }
+      // round4 D6(blocker 修复):宽 catch 不能吞编程错误——round3 自己踩过
+      // ReferenceError 被 catch 吞掉的坑,同类模式不许再留。wx 成功 = 文件是**我们**
+      // 创建的,writeOwn 失败时 close + unlink 清掉 0 字节残留(否则后续轮询读到
+      // 新 mtime 的空锁一路走到超时);ReferenceError/TypeError 是编程错误,重新抛出,
+      // 不得静默降级成"抢占失败";其余带 errno 的 IO 错误(EEXIST 竞态等)才按
+      // 预期失败处理,交外层轮询重试。
+      let fd = null;
       try {
-        const fd = openSync(path, 'wx');
+        fd = openSync(path, 'wx');
         writeOwn(fd);
         closeSync(fd);
+        fd = null;
         return true;
-      } catch {
-        return false; // 极端竞态下重建失败,交外层轮询重试而不是崩溃
+      } catch (e) {
+        if (fd != null) {
+          try { closeSync(fd); } catch { /* fd 已不可用 */ }
+          try { unlinkSync(path); } catch { /* 已被抢先清理 */ }
+        }
+        if (e instanceof ReferenceError || e instanceof TypeError) throw e;
+        return false; // 极端竞态/IO 错误下重建失败,交外层轮询重试而不是崩溃
       }
     } finally {
       try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
@@ -206,7 +249,10 @@ export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS }
   const takeoverPath = `${path}.takeover`;
   const deadline = Date.now() + timeoutMs;
   const token = randomUUID();
-  const writeOwn = (fd) => writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: Date.now(), token }));
+  // round4 D1:写入 ISO 8601 字符串(与同仓 prepare.mjs 的 new Date().toISOString() 一致),
+  // 不再写数字时间戳——round3 写数字导致 Date.parse 判据恒 NaN、自己写出的锁永远判不出
+  // 陈旧。判据侧对数字/ISO 两种形态都容错,旧格式数字残留锁不会踩坑。
+  const writeOwn = (fd) => writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), token }));
   for (;;) {
     try {
       const fd = openSync(path, 'wx'); // 原子排他创建:已存在则抛 EEXIST,不存在才会创建成功
@@ -255,8 +301,13 @@ export function releaseHoldLock(lockInfo) {
   let raw;
   try {
     raw = readFileSync(lockInfo.path, 'utf8');
-  } catch {
-    return { released: false, alreadyAbsent: true, notOwner: false };
+  } catch (e) {
+    // round4 D5(blocker 修复):**读**失败与 unlink 失败同规则——只有 ENOENT 才是真
+    // 「已缺席」;EACCES 等其它 errno 是读取失败,报 alreadyAbsent:true 是事实错误且
+    // 静默(锁文件还在,调用方却以为没了)。非 ENOENT 写 stderr + 显式 readError。
+    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
+    process.stderr.write(`[signoff-hold] 读取锁失败(${lockInfo.path}):${e.code ?? e.message}\n`);
+    return { released: false, alreadyAbsent: false, notOwner: false, readError: e.code ?? String(e.message) };
   }
   let info = null;
   try { info = JSON.parse(raw); } catch { /* legacy 纯 pid 字符串格式,无法核对 token */ }
@@ -325,6 +376,46 @@ export function performLabelSync({ owner, repo, pr, label, current = [], dryRun 
 // 评论才算数;需要新开时(从未 hold 过,或旧 issue 已 CLOSED)必须本轮真正成功,不能拿
 // "曾经 hold 过"这个陈旧事实顶替——否则旧 issue 被关闭后 gate 重新触发,held 会被误判
 // 为 true,把作者晒在一个已关闭的讨论里却显示"已经拦住"。
+// round4 D2:GitHub 侧对账 —— 万一仍发生双写(锁被绕过/抢占窗口),PR 上会留下多份
+// hold issue,每份都会在重入时把作者引到不同的讨论里。对账规则:保留 number 最小
+// (= 最早创建)的 issue,关闭其余 OPEN 的并留一条说明,把它引到保留的讨论。
+// 不可逆动作的正确性不该只依赖本地文件锁 —— 锁是优化,这里才是保证;
+// 每轮开始时执行,双写后下一轮自愈,而不是永久留两个 issue @ 作者两次。
+// 只对可解析为本仓 issue 的 URL 动作;state 查询失败 / close 失败 → 记 errors
+// (下一轮重试),不误关。dry-run 不调用(调用方保证)。
+export function reconcileDuplicateHoldIssues({ slug, urls = [], ghFn = gh }) {
+  const entries = [...new Set((urls ?? []).filter(Boolean))]
+    .map((url) => ({ url, number: issueNumberFromUrl(slug, url) }))
+    .filter((e) => e.number != null);
+  if (entries.length <= 1) return { keptUrl: entries[0]?.url ?? null, closed: [], errors: [] };
+  entries.sort((a, b) => a.number - b.number);
+  const kept = entries[0];
+  const closed = [];
+  const errors = [];
+  for (const dup of entries.slice(1)) {
+    const st = ghFn(['issue', 'view', String(dup.number), '--repo', slug, '--json', 'state'], { allowFail: true });
+    let state = null;
+    try { state = String(JSON.parse(st.stdout || '{}').state ?? '').toUpperCase(); } catch { /* 非 JSON */ }
+    if (state !== 'OPEN' && state !== 'CLOSED') {
+      errors.push(`duplicate-issue-${dup.number}: state 查询失败,未关闭`);
+      continue;
+    }
+    if (state === 'OPEN') {
+      const c = ghFn(['issue', 'close', String(dup.number), '--repo', slug], { allowFail: true });
+      if (!c.ok) {
+        errors.push(`close-failed-${dup.number}: ${(c.stderr || c.stdout || '').trim().slice(0, 200)}`);
+        continue;
+      }
+      const cm = ghFn(['issue', 'comment', String(dup.number), '--repo', slug, '--body',
+        `此 issue 是重复创建的讨论(本 PR 已有更早的讨论 issue #${kept.number}),已自动关闭。讨论请移步 #${kept.number}。`],
+      { allowFail: true });
+      if (!cm.ok) errors.push(`comment-failed-${dup.number}`);
+    }
+    closed.push({ number: dup.number, url: dup.url });
+  }
+  return { keptUrl: kept.url, closed, errors };
+}
+
 export function computeHeld({ issueCreated, priorIssueUrl, needIssue, commented, alreadyHeld, labelsOk }) {
   const issueOk = issueCreated || (!needIssue && priorIssueUrl != null);
   const commentOk = commented || (!needIssue && alreadyHeld);
@@ -359,14 +450,18 @@ const isMainModule = (() => {
   }
 })();
 if (!isMainModule && process.argv[1]) {
-  // round3 #7:守卫失败不能静默 fail-open——复审实测 `node --preserve-symlinks-main`
-  // 下 exit=0、零 gh 调用、stdout 空,门形同虚设。被 import(测试)时 argv[1] 是测试
-  // 运行器路径,两侧 realpath 不一致,不报警;只有 argv[1] 与本模块解析到同一真实
-  // 文件、字面比较却失配(链接/编码形态差异)时,才说明确实被当作脚本调用而守卫
-  // 误判,写一行 stderr 让失败可见。
+  // round4 D4(blocker 修复):守卫误判必须 stdout 输出 JSON 错误 + 非零退出码,不能只写
+  // stderr——round3 实测 `node --preserve-symlinks-main` 下 exit=0、零 gh 调用、stdout
+  // 空,自动化消费方(按本脚本自声明的「stdout 输出 JSON」契约)会把空 stdout 当成
+  // 「成功但无结果」,hold 动作从未执行却没人知道。区分两种情形:
+  //   - 合法 import(argv[1] 是别的文件,如测试运行器):两侧 realpath 不一致,保持
+  //     完全静默,这是正常形态;
+  //   - 守卫误判(argv[1] 存在且与本模块解析到同一真实文件、字面比较却失配,链接/
+  //     编码形态差异):stdout 输出 {ok:false, error} + process.exit(1),让失败可见。
   try {
     if (realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
-      process.stderr.write(`[signoff-hold] 警告:入口守卫判定失败但 argv[1] 与本模块指向同一文件(argv[1]=${process.argv[1]})——脚本将不执行任何动作(fail-open),请改用直接路径调用。\n`);
+      print({ ok: false, error: 'entry-guard-misclassified', message: `入口守卫判定失败但 argv[1] 与本模块指向同一文件(argv[1]=${process.argv[1]})——脚本将不执行任何动作,请改用直接路径调用(避免 --preserve-symlinks-main / symlink 形态)。` });
+      process.exit(1);
     }
   } catch { /* 任一侧 realpath 失败则无从判断,不报警 */ }
 }
@@ -411,16 +506,18 @@ try {
     });
   } else
   try {
-  const meta = ghJson([
+  // round4 D2:临界区内所有 gh 调用走 ghT(带 GH_CALL_TIMEOUT_MS),总耗时严格小于
+  // LOCK_STALE_MS;ghJson 不支持超时选项,这里显式解析。
+  const meta = JSON.parse(ghT([
     'pr', 'view', String(pr), '--repo', slug,
     '--json', 'number,state,mergedAt,author,url,comments,labels,headRefOid',
-  ]);
+  ]).stdout || 'null');
   const author = meta.author?.login ?? '';
   const currentLabels = (meta.labels ?? []).map((l) => l.name);
   const headSha = String(meta.headRefOid ?? '').toLowerCase();
   // 挂维护者确认标签;顺手摘掉旧主标签与旧门类子标签(迁移遗留)——委托给 performLabelSync
   // (与 computeHeld 共用同一份判定事实,SC-3 测试直接覆盖该导出函数)
-  const syncLabels = () => performLabelSync({ owner, repo, pr, label: SIGNOFF_LABEL, current: currentLabels, dryRun, ghFn: gh });
+  const syncLabels = () => performLabelSync({ owner, repo, pr, label: SIGNOFF_LABEL, current: currentLabels, dryRun, ghFn: ghT });
   // 标签失败不静默:顶到输出最外层(labelWarning),SKILL 要求最终报告里照抄。
   // 少了标签 → GitHub 后台与待确认面板都筛不到该 PR,门的判定不受影响。
   // round2 D5:legacyWarning(旧门类标签清理失败)单独顶成 legacyLabelWarning,不与
@@ -429,15 +526,23 @@ try {
     const withMain = out.labels?.warning ? { ...out, labelWarning: out.labels.warning } : out;
     return out.labels?.legacyWarning ? { ...withMain, legacyLabelWarning: out.labels.legacyWarning } : withMain;
   };
-  const printOut = (out) => print(withLabelWarning(out));
+  const printOut = (out) => {
+    const withRecon = reconcile && (reconcile.closed.length || reconcile.errors.length)
+      ? { ...out, reconciliation: reconcile } : out;
+    return print(withLabelWarning(withRecon));
+  };
 
   // 找既有标记评论,读出当时开的 issue 链接。取「最后一条带 issue= 的标记」为准。
   const markerComments = (meta.comments ?? []).filter((c) => (c.body ?? '').includes(MARKER_PREFIX));
   const alreadyHeld = markerComments.length > 0;
-  const priorIssueUrl = markerComments
+  const markerUrls = markerComments
     .map((c) => c.body.match(/issue=(\S+?)\s*-->/)?.[1] ?? null)
-    .filter(Boolean)
-    .pop() ?? null;
+    .filter(Boolean);
+  // round4 D2:GitHub 侧对账(双写自愈)——标记评论里出现多个不同 hold issue 时,保留
+  // 最早(number 最小)的,关闭其余并留说明;万一锁被绕过仍发生双写,下一轮开始即自愈,
+  // 不会永久留两个 issue @ 作者两次。dry-run 不写外部状态,跳过对账。
+  const reconcile = dryRun ? null : reconcileDuplicateHoldIssues({ slug, urls: markerUrls, ghFn: ghT });
+  const priorIssueUrl = reconcile ? reconcile.keptUrl : (markerUrls.pop() ?? null);
   // ── 旧讨论 issue 复用/新开判定(decideIssueReuse,见 lib.mjs;signoff-policy.test.mjs 覆盖)──
   // 旧 issue 可能已被 close-product-issue.mjs --no-longer-required 收尾关闭,之后 gate
   // 再亮起来时不能把作者引到一个已关闭的讨论里 —— 视同没开过,凭 payload 新开当前讨论
@@ -450,7 +555,7 @@ try {
     if (priorNum == null) {
       priorIssueStateError = 'issue-url-unparsable';
     } else {
-      const r = gh(['issue', 'view', String(priorNum), '--repo', slug, '--json', 'state'], { allowFail: true });
+      const r = ghT(['issue', 'view', String(priorNum), '--repo', slug, '--json', 'state'], { allowFail: true });
       if (r.ok) {
         try {
           const s = String(JSON.parse(r.stdout || '{}').state ?? '').toUpperCase();
@@ -517,7 +622,7 @@ try {
       };
     }
     if (dryRun) return { renoticed: false, wouldRenotice: true };
-    const r = gh(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
+    const r = ghT(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
       input: `${renoticeBody()}\n\n${SIGNOFF_RENOTICE_MARKER_PREFIX} head=${headSha} -->`,
       allowFail: true,
     });
@@ -564,7 +669,7 @@ try {
       let issueCreated = false;
       let issueError = null;
       if (needIssue) {
-        const r = performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn: gh });
+        const r = performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn: ghT });
         if (r.issueCreated) {
           issueUrl = r.issueUrl;
           issueCreated = true;
@@ -578,7 +683,7 @@ try {
       let commented = false;
       let commentError = null;
       if (issueCreated && issueUrl) {
-        const r = performStatusComment({ pr, slug, kind, issueUrl, commentBody, ghFn: gh });
+        const r = performStatusComment({ pr, slug, kind, issueUrl, commentBody, ghFn: ghT });
         commented = r.commented;
         commentError = r.commentError;
       }
