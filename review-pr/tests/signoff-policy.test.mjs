@@ -42,6 +42,7 @@ import {
   performIssueCreate, performStatusComment, performLabelSync, computeHeld,
   acquireHoldLock, releaseHoldLock, reconcileDuplicateHoldIssues,
   tryTakeoverStaleLock, GH_CALL_TIMEOUT_MS, LOCK_STALE_MS,
+  parseStartedAtMs, isLockStale, MAX_RECONCILE_DUPS, CRITICAL_SECTION_MAX_CALLS,
 } from '../scripts/signoff-hold.mjs';
 
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -847,6 +848,14 @@ test('signoff: D6 幂等 claim——三次运行只建一份 issue、重入复�
 // ══════════════════════════════════════════════════════════════════════
 
 // ── round4 D1(blocker):startedAt 类型对齐——数字/缺失/非法/未来四类形态 ──
+// round5 R5-3(复审 finding):四种异常形态里只有 ISO 一条走生产写入路径,其余三条都是
+// writeFileSync 手搓对象,没有「生产写入形状 → 读取判定」的端到端证据。本轮补:
+//   1) 端到端断言:acquireHoldLock 真实写锁 → 读回 → parseStartedAtMs / isLockStale
+//      在同一份真实形状上行为正确;
+//   2) missing 形态改由生产写入派生(写锁后删 startedAt 字段,其余字段与生产一致);
+//   3) numeric / invalid / future 三条必须手搓的理由写进注释——生产写入器恒写
+//      new Date().toISOString() 当前时间,产不出这些形状(它们分别对应历史遗留格式 /
+//      外部损坏 / 时钟偏移),手搓是唯一办法,不是偷懒。
 test('signoff: D1 写入格式为 ISO 8601 字符串(不再写数字)', () => withLockDir((lockDir) => {
   const l = acquireHoldLock('acme', 'app', 42);
   const raw = JSON.parse(readFileSync(l.path, 'utf8'));
@@ -856,8 +865,29 @@ test('signoff: D1 写入格式为 ISO 8601 字符串(不再写数字)', () => wi
   releaseHoldLock(l);
 }));
 
+// round5 R5-3:生产写入 → 读取判定的端到端闭环。同一份 acquireHoldLock 真实产出的
+// 锁文件,喂给生产同款 parseStartedAtMs / isLockStale——不再只喂手搓对象。
+test('signoff: D1 端到端——生产写入锁文件读回,parseStartedAtMs 解析正确、isLockStale 行为正确', () => withLockDir((lockDir) => {
+  const l = acquireHoldLock('acme', 'app', 42);
+  assert.equal(l.acquired, true);
+  const raw = JSON.parse(readFileSync(l.path, 'utf8'));
+  // 生产写入的真实形状:pid + ISO startedAt + token
+  const startedAt = parseStartedAtMs(raw.startedAt);
+  assert.ok(Number.isFinite(startedAt), `生产写入的 startedAt 必须能解析,实际:${JSON.stringify(raw.startedAt)}`);
+  assert.ok(Math.abs(Date.now() - startedAt) < 60_000, '解析出的是当前时间');
+  // 新鲜锁 + 活 pid → 不陈旧
+  assert.equal(isLockStale(raw), false, '真实新锁不得判陈旧');
+  // 同一真实形状仅把年龄改旧 → 时间子句必须判陈旧(与生产一致的时间判据)
+  const aged = { ...raw, startedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString() };
+  assert.equal(isLockStale(aged), true, '同形状 + 超时年龄 → 判陈旧');
+  releaseHoldLock(l);
+}));
+
 test('signoff: D1 数字时间戳(旧格式残留)——活 pid + 超 LOCK_STALE_MS 必须回收,不再永不陈旧', () => withLockDir((lockDir) => {
   const path = lockPath(lockDir);
+  // 手搓理由(R5-3):数字毫秒是 round3 的生产写入格式,round4 改 ISO 后当前写入器
+  // (new Date().toISOString())不再产出数字形状——此 fixture 模拟历史遗留锁文件残留,
+  // 只能手搓,不能由生产路径产出。
   writeFileSync(path, JSON.stringify({
     pid: process.pid,                       // 活 pid:唯一能判陈旧的是时间子句
     startedAt: Date.now() - 10 * 60 * 1000, // 数字毫秒时间戳(round3 写入格式)
@@ -870,6 +900,7 @@ test('signoff: D1 数字时间戳(旧格式残留)——活 pid + 超 LOCK_STALE
 
 test('signoff: D1 数字时间戳新鲜(未超时)——fail-closed 不回收', () => withLockDir((lockDir) => {
   const path = lockPath(lockDir);
+  // 手搓理由同上:数字形状是 round3 历史格式残留,当前写入器产不出,只能手搓。
   writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: Date.now(), token: 'old' }));
   const l = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
   assert.equal(l.acquired, false, '数字时间戳新鲜 → 不回收(fail-closed)');
@@ -878,19 +909,31 @@ test('signoff: D1 数字时间戳新鲜(未超时)——fail-closed 不回收', 
 
 test('signoff: D1 startedAt 缺失——死 pid 回收,活 pid fail-closed 不抢', () => withLockDir((lockDir) => {
   const path = lockPath(lockDir);
+  // round5 R5-3:missing 形状从生产写入派生——acquireHoldLock 真实写锁后删 startedAt
+  // 字段(生产写入器恒写 startedAt,「缺失」只可能来自旧格式残留/外部删字段;删字段使
+  // 形状 = 生产写入 - 一个字段,其余字段与生产逐字节一致,不再整只手搓)。
+  const prod = acquireHoldLock('acme', 'app', 42);
+  const base = JSON.parse(readFileSync(path, 'utf8'));
+  releaseHoldLock(prod);
   // 缺失 + 死 pid → pid 子句判定陈旧 → 回收(不落到"永不陈旧")
-  writeFileSync(path, JSON.stringify({ pid: deadPid(), token: 'old' }));
+  const deadShape = { ...base, pid: deadPid() };
+  delete deadShape.startedAt;
+  writeFileSync(path, JSON.stringify(deadShape));
   const l1 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 1500 });
   assert.equal(l1.acquired, true, '缺失 + 死 pid → 必须回收(pid 兜底,不得永不陈旧)');
   releaseHoldLock(l1);
   // 缺失 + 活 pid → 无法凭时间判定年龄 → fail-closed 不凭时间抢占活进程
-  writeFileSync(path, JSON.stringify({ pid: process.pid, token: 'old' }));
+  const aliveShape = { ...base };
+  delete aliveShape.startedAt;
+  writeFileSync(path, JSON.stringify(aliveShape));
   const l2 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
   assert.equal(l2.acquired, false, '缺失 + 活 pid → fail-closed 不回收');
 }));
 
 test('signoff: D1 startedAt 非法字符串——死 pid 回收,活 pid fail-closed 不抢', () => withLockDir((lockDir) => {
   const path = lockPath(lockDir);
+  // 手搓理由(R5-3):写入器恒写 ISO 8601(或旧版数字),'not-a-date' 是内容损坏/外部
+  // 篡改的结果,生产路径产不出该形状,只能手搓。
   writeFileSync(path, JSON.stringify({ pid: deadPid(), startedAt: 'not-a-date', token: 'old' }));
   const l1 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 1500 });
   assert.equal(l1.acquired, true, '非法字符串 + 死 pid → 必须回收');
@@ -902,6 +945,8 @@ test('signoff: D1 startedAt 非法字符串——死 pid 回收,活 pid fail-clo
 
 test('signoff: D1 startedAt 未来时间戳——活 pid fail-closed 不回收,死 pid 仍回收', () => withLockDir((lockDir) => {
   const path = lockPath(lockDir);
+  // 手搓理由(R5-3):写入器恒写当前时间(时钟单调前进),未来时间戳只能是时钟偏移/
+  // 手动篡改,生产路径产不出,只能手搓。
   writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() + 3600_000).toISOString(), token: 'old' }));
   const l1 = acquireHoldLock('acme', 'app', 42, { timeoutMs: 500 });
   assert.equal(l1.acquired, false, '未来时间戳 + 活 pid → fail-closed 不回收(时钟偏移保护)');
@@ -944,15 +989,82 @@ test('signoff: D6 takeover 重建块编程错误(ReferenceError)必须重抛,不
   assert.ok(!existsSync(takeoverPath), 'takeover 残留必须被 finally 清理');
 }));
 
-// ── round4 D2(blocker):有界临界区——数学上界 + 挂住 gh 实测 ──
-test('signoff: D2 临界区数学上界——最坏 11 次 gh 调用 × 单次超时 < LOCK_STALE_MS', () => {
-  // 临界区调用清单:pr view / issue view / issue create / pr comment / label create /
-  // label POST / legacy label DELETE / renotice 评论 = 8 次基础,对账最多处理 1 个
-  // 重复 issue(view + close + comment) = +3 → 最坏 11 次。活持有者不可能超出租约,
-  // 抢占只发生在真死或真挂死超时之后。
-  const WORST_CASE_CALLS = 11;
-  assert.ok(GH_CALL_TIMEOUT_MS * WORST_CASE_CALLS < LOCK_STALE_MS,
-    `最坏总耗时 ${GH_CALL_TIMEOUT_MS * WORST_CASE_CALLS}ms 必须 < 租约 ${LOCK_STALE_MS}ms`);
+// ── round5 R5-1(blocker):有界临界区——上界由代码强制,断言绑实际调用数 ──
+// round4 的「最坏 11 次 = 165s < 300s」被复审席实测否掉:对账是 O(重复数),10 个唯一
+// hold URL 实测 27 次调用(9 view + 9 close + 9 comment),27×15s=405s 已超租约。
+// 本轮:对账每轮最多 MAX_RECONCILE_DUPS 个重复(结构性上界,超出进 unprocessed 报出),
+// 临界区总调用数由 ghB 预算强制(超过 CRITICAL_SECTION_MAX_CALLS 不再发出,剩余工作
+// 放弃并 fail-visible)。下面第一条只保留租约不等式守恒;真正验收是「对账上界」用例
+// 对 10 个重复的**实测调用数**断言(对账数量变化时它会转红,round4 的算术测试不会)。
+test('signoff: D2 临界区租约不等式——上界 × 单次超时 < LOCK_STALE_MS(常量守恒)', () => {
+  // 推导值:CRITICAL_SECTION_MAX_CALLS = 固定部分 8 + 对账 3×3(见 signoff-hold.mjs
+  // 模块注释,固定部分为数据无关调用点枚举口径)。实际调用数由「D2 对账上界」实测绑定。
+  assert.ok(CRITICAL_SECTION_MAX_CALLS * GH_CALL_TIMEOUT_MS < LOCK_STALE_MS,
+    `最坏总耗时 ${CRITICAL_SECTION_MAX_CALLS * GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${LOCK_STALE_MS}ms`);
+});
+
+test('signoff: D2 对账上界——导出函数层:喂 10 个重复,实际调用 ≤ 3×K,剩余进 unprocessed', () => {
+  const gh = makeFakeGh([
+    { match: (a) => a[0] === 'issue' && a[1] === 'view', result: { ok: true, stdout: '{"state":"OPEN"}', stderr: '', status: 0 } },
+    { match: isIssueClose, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+    { match: isIssueComment, result: { ok: true, stdout: '', stderr: '', status: 0 } },
+  ]);
+  const urls = Array.from({ length: 10 }, (_, i) => `https://github.com/acme/app/issues/${i + 1}`);
+  const r = reconcileDuplicateHoldIssues({ slug: 'acme/app', urls, ghFn: gh });
+  // 10 个唯一 URL → 9 个重复;每轮最多处理 MAX_RECONCILE_DUPS 个
+  assert.equal(r.closed.length, MAX_RECONCILE_DUPS, `每轮最多关闭 ${MAX_RECONCILE_DUPS} 个重复`);
+  assert.equal(r.unprocessed.length, 9 - MAX_RECONCILE_DUPS, '其余重复必须进 unprocessed(数量)');
+  assert.ok(r.unprocessed.every((u) => typeof u.url === 'string' && u.url.includes('/issues/')), 'unprocessed 必须带 URL');
+  // 断言绑实际调用数:全处理会是 27 次(复审席实测),上界下必须 ≤ 3×K
+  assert.equal(gh.calls.length, 3 * MAX_RECONCILE_DUPS,
+    `实际调用数 = 3×K(实测 ${gh.calls.length} 次;全处理 27 次会超租约)`);
+  assert.ok(gh.calls.length <= 3 * MAX_RECONCILE_DUPS, '实际调用必须 ≤ 3×MAX_RECONCILE_DUPS');
+});
+
+test('signoff: D2 对账上界——主流程接线:10 个重复,实际调用 ≤ 上界,未处理项报出', () => {
+  const shimDir = makeStatefulShimDir();
+  const repoDir = makeTempRepoDir();
+  const lockDir = mkdtempSync(join(tmpdir(), 'signoff-hold-bound-lock-'));
+  const statePath = join(shimDir, 'state.json');
+  const MARKER = '<!-- review-pr:product-gate';
+  const N = 10;
+  const PRE = {
+    issueSeq: N,
+    issues: Object.fromEntries(Array.from({ length: N }, (_, i) => [i + 1, { state: 'OPEN' }])),
+    comments: Array.from({ length: N }, (_, i) => ({ pr: 42, body: `${MARKER} issue=https://github.com/acme/app/issues/${i + 1} -->` })),
+    labels: [],
+    headOid: 'deadbeef',
+  };
+  writeFileSync(statePath, JSON.stringify(PRE));
+  const logPath = join(shimDir, 'b.log');
+  try {
+    const r = runSignoff({
+      scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),
+      args: ['42'],
+      repoDir, shimDir, logPath, statePath,
+      extraEnv: { SIGNOFF_HOLD_LOCK_DIR: lockDir },
+    });
+    assert.equal(r.status, 0, `stderr=${r.stderr}`);
+    const recon = r.parsed?.reconciliation;
+    assert.ok(recon, `输出必须带 reconciliation(含 unprocessed) stdout=${r.stdout}`);
+    // 10 个唯一 → 9 个重复:处理 K 个,剩余 9-K 个进 unprocessed(数量 + URL 可见)
+    assert.equal(recon.closed.length, MAX_RECONCILE_DUPS, `只处理前 ${MAX_RECONCILE_DUPS} 个重复`);
+    assert.equal(recon.unprocessed.length, 9 - MAX_RECONCILE_DUPS, '剩余重复必须报出(数量)');
+    assert.ok(recon.unprocessed.every((u) => u.url.startsWith('https://github.com/acme/app/issues/')),
+      `unprocessed 必须带未处理 URL,实际:${JSON.stringify(recon.unprocessed)}`);
+    assert.ok(r.stdout.includes('"unprocessed"'), '「主动放弃剩余工作」必须可见:输出含 unprocessed 字段');
+    // 断言绑实际调用数:去掉上界时 10 个重复 = 27 次对账 + 固定部分 ≈32 次 > 上界;
+    // 上界约束下实测调用必须 ≤ CRITICAL_SECTION_MAX_CALLS(反向变异时本断言转红)
+    assert.ok(r.calls.length <= CRITICAL_SECTION_MAX_CALLS,
+      `实际 gh 调用 ${r.calls.length} 次必须 ≤ 上界 ${CRITICAL_SECTION_MAX_CALLS}(无上界时 10 个重复实测 32 次)`);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    const closedCount = Object.values(state.issues ?? {}).filter((i) => i.state === 'CLOSED').length;
+    assert.equal(closedCount, MAX_RECONCILE_DUPS, `恰好关闭前 ${MAX_RECONCILE_DUPS} 个重复`);
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(lockDir, { recursive: true, force: true });
+  }
 });
 
 // 挂住 fake gh:pr view 卡死 10s(模拟无超时的 gh 调用),其余调用照常快速返回。
