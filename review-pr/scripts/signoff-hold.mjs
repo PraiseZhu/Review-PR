@@ -133,7 +133,10 @@ const CLAMP_CAP_MS = Math.floor(0.9 * LOCK_STALE_MS / ESSENTIAL_CALLS);
 export const GH_TIMEOUT_WARNINGS = [];
 function resolveGhCallTimeoutMs() {
   const raw = process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
-  if (raw === undefined) return { ms: GH_CALL_TIMEOUT_DEFAULT_MS, state: 'none' };
+  // 空串等同未设(静默):CI 模板展开 FOO=${UNDEFINED_VAR} / 容器编排 / .env 产出的
+  // 空串是「事实上没设」,不是配置错误——对它出警告是给没做错事的运维制造噪音,
+  // 噪音会把真警告淹没。纯空格 ' ' 仍是 fallback+警告(那是打错,有信息量)。
+  if (raw === undefined || raw === '') return { ms: GH_CALL_TIMEOUT_DEFAULT_MS, state: 'none' };
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     const w = `[signoff-hold] 警告:SIGNOFF_HOLD_GH_TIMEOUT_MS=${JSON.stringify(raw)} 非法(须为正数字;非数值/0/负值会让派生预算失真),已回落默认 ${GH_CALL_TIMEOUT_DEFAULT_MS}ms`;

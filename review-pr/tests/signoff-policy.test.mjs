@@ -1360,19 +1360,29 @@ test('signoff: R6-1 租约耦合——T 钳位/回落默认与派生预算,断�
 // 非有限数(NaN/±Infinity)/ ≤0 一律回落默认 15000(不是钳到 1ms)+ 双通道警告
 // (stderr 文本 + JSON 顶层 warnings);GH_CALL_TIMEOUT_STATE 三态让「钳位」与
 // 「回落」可分辨。反向变异 = 去掉 Number.isFinite 校验 → 下列 finite 断言转红。
-const R7_INVALID_FORMS = ['abc', 'Infinity', '-Infinity', '', ' '];
-test('signoff: R7-1 非数值 env——回落默认 15000,派生量全有限,三态可分辨(abc/Infinity/-Infinity/空串/纯空格)', async () => {
+// R7-1 收口裁定(lead 2026-08-10):空串 '' 等同未设——CI 模板展开/容器编排/.env
+// 产出的空串是「事实上没设」,出警告是给没做错事的运维制造噪音;纯空格 ' ' 是
+// 打错,保持 fallback+警告。所以 '' 断言 state=none 且 **必无 warnings**(反向
+// 断言静默,不是删断言——将来有人把 '' 改回警告会被这里抓住)。
+const R7_FORMS = [
+  { raw: 'abc', state: 'fallback' },
+  { raw: 'Infinity', state: 'fallback' },
+  { raw: '-Infinity', state: 'fallback' },
+  { raw: ' ', state: 'fallback' },
+  { raw: '', state: 'none' }, // 空串等同未设:静默
+];
+test('signoff: R7-1 非数值 env——回落默认 15000,派生量全有限,三态可分辨(abc/Infinity/-Infinity/纯空格警告/空串静默)', async () => {
   const prev = process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
   let seq = 0;
   try {
-    for (const raw of R7_INVALID_FORMS) {
-      process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = raw;
+    for (const c of R7_FORMS) {
+      process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS = c.raw;
       const m = await import(`${HOLD_MODULE_URL}?r7-1&n=${seq++}`);
-      const label = JSON.stringify(raw);
+      const label = JSON.stringify(c.raw);
       // ① 生效 T 是有限正整数(旧实现这里会是 NaN)
       assert.ok(Number.isInteger(m.GH_CALL_TIMEOUT_MS) && m.GH_CALL_TIMEOUT_MS > 0,
         `T(${label}) 必须为有限正整数,实际 ${m.GH_CALL_TIMEOUT_MS}`);
-      assert.equal(m.GH_CALL_TIMEOUT_MS, 15000, `T(${label}) 回落默认 15000(不是钳到 1ms)`);
+      assert.equal(m.GH_CALL_TIMEOUT_MS, 15000, `T(${label}) 生效默认 15000(不是钳到 1ms)`);
       // ② 派生预算/可延后池都是有限整数(旧实现全 NaN)
       assert.ok(Number.isInteger(m.CRITICAL_SECTION_MAX_CALLS) && m.CRITICAL_SECTION_MAX_CALLS > 0,
         `派生预算(${label}) 必须为有限正整数,实际 ${m.CRITICAL_SECTION_MAX_CALLS}`);
@@ -1381,12 +1391,17 @@ test('signoff: R7-1 非数值 env——回落默认 15000,派生量全有限,三
       // ③ 租约不等式仍成立(预算 × T < 租约)
       assert.ok(m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS < m.LOCK_STALE_MS,
         `预算(${m.CRITICAL_SECTION_MAX_CALLS}) × T(${m.GH_CALL_TIMEOUT_MS}) = ${m.CRITICAL_SECTION_MAX_CALLS * m.GH_CALL_TIMEOUT_MS}ms 必须 < 租约 ${m.LOCK_STALE_MS}ms`);
-      // ④ 警告正确且「回落 vs 钳位」可分辨:state=fallback、clamped 布尔不说谎、
-      //    warnings 数组带回落文案
-      assert.equal(m.GH_CALL_TIMEOUT_STATE, 'fallback', `state(${label}) 必须为 fallback(区分于 clamped)`);
-      assert.equal(m.GH_CALL_TIMEOUT_CLAMPED, false, `clamped(${label}) 必须为 false——回落不是钳位,布尔不得说谎`);
-      assert.ok(m.GH_TIMEOUT_WARNINGS.some((w) => w.includes('回落默认')),
-        `warnings(${label}) 必须带回落文案,实际:${JSON.stringify(m.GH_TIMEOUT_WARNINGS)}`);
+      // ④ 三态与警告:state 按形态断言;clamped 布尔不说谎;fallback 必须带回落
+      //    文案;none(空串/未设)必须静默——反向断言无 warnings
+      assert.equal(m.GH_CALL_TIMEOUT_STATE, c.state, `state(${label}) 必须为 ${c.state}`);
+      assert.equal(m.GH_CALL_TIMEOUT_CLAMPED, false, `clamped(${label}) 必须为 false——回落/默认不是钳位,布尔不得说谎`);
+      if (c.state === 'fallback') {
+        assert.ok(m.GH_TIMEOUT_WARNINGS.some((w) => w.includes('回落默认')),
+          `warnings(${label}) 必须带回落文案,实际:${JSON.stringify(m.GH_TIMEOUT_WARNINGS)}`);
+      } else {
+        assert.equal(m.GH_TIMEOUT_WARNINGS.length, 0,
+          `warnings(${label}) 必须为空(空串等同未设,静默默认),实际:${JSON.stringify(m.GH_TIMEOUT_WARNINGS)}`);
+      }
     }
   } finally {
     if (prev === undefined) delete process.env.SIGNOFF_HOLD_GH_TIMEOUT_MS;
