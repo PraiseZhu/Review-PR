@@ -1708,14 +1708,14 @@
       "fingerprint": "security-review-path-package-json-batch-skip",
       "tier": "by-design",
       "title": "候选整批因 package.json 命中 securityReviewPaths 转人工",
-      "detail": "2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。若频繁发生可评估是否把 package.json 从 securityReviewPaths 收敛(仅维护者拍板)",
+      "detail": "2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)再次因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-09T18:01:55.216Z",
-      "lastSeen": "2026-08-09T18:01:55.216Z"
+      "lastSeen": "2026-08-09T22:02:18.703Z"
     }
   ],
   "escapedHazards": [

@@ -194,8 +194,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: tracked
-  - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。若频繁发生可评估是否把 package.json 从 securityReviewPaths 收敛(仅维护者拍板)
+- `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 2 次,首见 2026-08-09,最近 2026-08-09,status: tracked
+  - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)再次因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。
 - `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 5 次,首见 2026-08-08,最近 2026-08-09,status: tracked
   - 现象:auto 轮 #580 唯一候选命中 SKILL 3.8 安全审查路径(package.json 在 securityReviewPaths),auto.action=skip-security-review,原样跳过不审不合不提醒。属设计上就该人来的人工审查,计数观察,不自动放开。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
