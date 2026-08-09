@@ -141,6 +141,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `rro1-disposition-non-injected-empty-case` **prompt 契约补明确:未注入未决项时 findingDispositions 必须为 [](bot thread 不属于注入项)** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
+  - 现象:2026-08-09 mivo-canvas #598 首轮:审查 agent 把 Greptile P2 bot thread 当注入项写 resolved disposition,injectedOpen 为空判 invalid,手工规范化后消费。已在 build-review-task.mjs 字段形状处补空集规则。
 - `rro1-disposition-evidence-shape-missing-in-prompt` **prompt 契约漏 findingDispositions resolved 的 evidence 结构化形状,首轮必 invalid** — 出现 1 次,首见 2026-08-08,最近 2026-08-08,status: landed,commit `9d9055d`
   - 现象:2026-08-08 实跑:#585 审查输出 findingDispositions 只给自由文本 basis,consumer(lib.review-consume.mjs)要求 resolved 必须带结构化 evidence(kind diff-anchor|verification-run),shape 校验失败连带所有数组字段置空,回执也被误判无。已修 build-review-task.mjs 的 prompt 模板补上 evidence 形状说明。
 - `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 2 次,首见 2026-08-07,最近 2026-08-07,status: open
