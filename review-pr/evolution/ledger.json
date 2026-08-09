@@ -1690,6 +1690,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-09T07:52:25.485Z",
       "lastSeen": "2026-08-09T07:52:25.485Z"
+    },
+    {
+      "fingerprint": "escape-assessment-empty-contract-unstated",
+      "tier": "auto",
+      "title": "逃逸候选集为空时 escapeAssessment 字段语义未声明,审查 agent 误填 known hazards 确认",
+      "detail": "PR #599 实测:escapeCandidates=[] 时 prompt 无「逃逸判定」段,审查 agent 把 2 条 hz2-* known hazards 确认写进 escapeAssessment,consumer 判 invalid(缺/未知)。修复:候选为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote。",
+      "proposal": null,
+      "status": "landed",
+      "commit": "7528c1c",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-09T09:24:11.293Z",
+      "lastSeen": "2026-08-09T09:24:11.293Z"
     }
   ],
   "escapedHazards": [

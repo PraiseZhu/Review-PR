@@ -148,6 +148,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `escape-assessment-empty-contract-unstated` **逃逸候选集为空时 escapeAssessment 字段语义未声明,审查 agent 误填 known hazards 确认** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `7528c1c`
+  - 现象:PR #599 实测:escapeCandidates=[] 时 prompt 无「逃逸判定」段,审查 agent 把 2 条 hz2-* known hazards 确认写进 escapeAssessment,consumer 判 invalid(缺/未知)。修复:候选为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote。
 - `rro1-disposition-non-injected-empty-case` **prompt 契约补明确:未注入未决项时 findingDispositions 必须为 [](bot thread 不属于注入项)** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598 首轮:审查 agent 把 Greptile P2 bot thread 当注入项写 resolved disposition,injectedOpen 为空判 invalid,手工规范化后消费。已在 build-review-task.mjs 字段形状处补空集规则。
   - 备注:[decided:2026-08-09] 落地 commit 15ca5d6(git show AuthorDate 核实)
