@@ -20,6 +20,13 @@ import { createHash, randomBytes } from 'node:crypto';
 // 无循环:它只引 lib.review-profiles / lib.preflight-rules)。
 import { mergeHazardPair, validateHazardShape } from './lib.escaped-hazards.mjs';
 
+// NODE_DEBUG 污染防御(复发×5):宿主 shell 可能带 NODE_DEBUG=http,https,net,tls,
+// util.debuglog 在 Node 启动早期即捕获该值,进程内 delete 已无法关闭(实测),但
+// spawn 子进程继承的是 process.env——此处删除后,本文件所有 spawnSync/spawn 的
+// 子进程(gh/git/node 脚本)环境均不含 NODE_DEBUG,纯 JSON stdout 不被调试行污染。
+// 只影响本进程及其子进程,不改宿主环境。
+delete process.env.NODE_DEBUG;
+
 const isWin = process.platform === 'win32';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = join(SCRIPT_DIR, '..');
@@ -2624,7 +2631,12 @@ export function spawnScriptJson(scriptPath, args, { timeoutMs = 180_000 } = {}) 
     let out = '';
     let err = '';
     let settled = false;
-    const child = spawn(process.execPath, [scriptPath, ...args], { windowsHide: true });
+    const child = spawn(process.execPath, [scriptPath, ...args], {
+      windowsHide: true,
+      // 显式快照 env(顶部已 delete NODE_DEBUG):即使未来有人恢复 process.env,
+      // 批量 spawn 的子脚本环境也保证剥离,纯 JSON stdout 不被调试行污染
+      env: { ...process.env },
+    });
     const settle = (v) => {
       if (settled) return;
       settled = true;
