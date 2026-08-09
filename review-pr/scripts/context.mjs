@@ -293,7 +293,7 @@ if (process.argv.includes('--scan-all')) {
     }
 
     // 只读扫描,4 并发安全;单条失败折叠成 ok:false 条目,不炸整批。
-    // R5(2026-08-10)显式传 timeoutMs:外层(SCAN_CHILD)必须 > 内层探测最坏
+    // R5(2026-08-10)显式传 timeoutMs:外层(SCAN_CHILD)必须 ≥ 内层探测最坏
     // (2×HOLD_PROBE),否则父进程会在子进程输出 signoff-hold-unavailable 前 kill 它。
     // D 否决理由(勿把这里改成 signoff-hold-unavailable):本处超时失败**不升级**——
     // 「可区分是超时」≠「可区分为什么超时」:子进程含 graphql(60s 显式超时)、diff 拉取

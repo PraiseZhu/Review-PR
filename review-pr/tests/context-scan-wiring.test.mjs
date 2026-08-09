@@ -616,7 +616,7 @@ test('SC-2 截断标志:评论超过 first:50 → participantsTruncated=true,par
 // 探测(holdProbeEntered=true),但父层先收到自己的超时错误——F3 的升级在 --scan-all 批量
 // 路径对病理场景不可达。R5 修法:探测 spawn 显式传小超时(HOLD_PROBE_TIMEOUT_MS 默认 20s,
 // env REVIEW_PR_HOLD_PROBE_TIMEOUT_MS 可调),外层 spawn 显式传 SCAN_CHILD_TIMEOUT_MS
-// (默认 180s,env REVIEW_PR_SCAN_CHILD_TIMEOUT_MS 可调),「外层 > 内层」成为代码里可见、
+// (默认 180s,env REVIEW_PR_SCAN_CHILD_TIMEOUT_MS 可调),「外层 ≥ 内层」成为代码里可见、
 // 测试可验的配对。以下两条行为锁都走**真实 --scan-all** 生产路径(1 个候选 → mapPool
 // Math.min(4,1)=1 并发退化,时长由单候选决定),不复制 setup 骨架(复制品会与 setup()
 // 各自演化,种下「测试环境 ≠ 生产 fixture」的第六个实例)。
@@ -670,7 +670,7 @@ test('R5 反向锁:外层超时(100ms)先于探测 → 候选为超时失败且�
   // → cand.ok=true → 本断言红;或错误串变 180000 → match 红。
 });
 
-// 默认值不变量:行为测试用小值跑,锁不住出厂默认值本身——「外层 > 内层」是出厂配置的
+// 默认值不变量:行为测试用小值跑,锁不住出厂默认值本身——「外层 ≥ 内层」是出厂配置的
 // 硬性要求,单独一条算术断言锁它(不设 env,直接 import 默认常量)。
 // 边界(如实声明,不过度声称):余量 30s 只保证「探测单独不足以导致外层 kill」——
 // 它**不声称子进程永不超时**:子进程还有 graphql(60s 显式超时)、diff 拉取等,叠加照样
