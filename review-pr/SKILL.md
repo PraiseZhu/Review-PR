@@ -2101,10 +2101,16 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    必须升级为人工介入**——不得按原 hold 流程继续，记人工介入、报 owner 排查调用
    点（signoff-hold.mjs 是否存在 / 依赖是否完整 / gh 鉴权是否可用），排查后重跑
    本轮；跳过这条 = 在 hold 机制不可证明可执行时继续放行，正是本段要消灭的
-   fail-open。**成本（如实记录，此前未写进任何文档）**：探测经 `lib.mjs` 的
-   `spawnScriptJson`（默认 timeout `180000ms`，`lib.mjs:2876`）发起，每个命中候选
-   顺序两次探测，最坏 **360s/候选**；`--scan-all` 4 并发下最坏约每四个命中候选
-   360s——编排排期时把这个最坏延迟计入，勿在短超时下把探测当实时检查。它
+   fail-open。**成本（如实记录，推导链可核，此前未写进任何文档）**：探测经
+   `lib.mjs` 的 `spawnScriptJson` 发起，两处调用（首次探测与失败后的重试，
+   `context.mjs`）**均未显式传 `timeoutMs`** → 各自取默认 `180000ms`
+   （`lib.mjs:2876` `{ timeoutMs = 180_000 } = {}`）→ 每个命中候选顺序两次探测，
+   单候选最坏 **2×180s = 360s**。**单候选 360s 是单候选上界，不是整轮上界**：
+   `--scan-all` 下探测按候选发生（`context.mjs` 用 `mapPool(candidates, 4, …)`
+   并发拉起自身子进程，`mapPool` 的 `concurrency=1` 才是严格串行，此处为 4 并发、
+   候选不足 4 时按实际候选数），整轮最坏 ≈ **⌈H/4⌉ × 360s**，其中 H = 本轮命中
+   security / rules / arch 三门的候选数（未命中三门不探测，`holdKind` 为 null）。
+   编排排期时把这个最坏延迟计入，勿在短超时下把探测当实时检查。它
    **不替代**上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
    `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发评
    论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /

@@ -1525,6 +1525,11 @@ try {
   //     security-gate/rules-gate/arch-gate 不同,按契约路由不会把它们混为一谈),绝不回落
   //     到静默放行;
   //   - 失败原因同时写进 CONFIG_WARNINGS(scan/全量两处 print() 都带出),供排查。
+  // 成本(round4 补,推导链可核):下方两处 spawnScriptJson 调用均未显式传 timeoutMs →
+  // 各自取默认 180_000ms(lib.mjs spawnScriptJson `{ timeoutMs = 180_000 } = {}`)→
+  // 单候选最坏 2×180s = 360s。--scan-all 下探测按候选发生,mapPool(candidates, 4, …)
+  // 并发(非串行),整轮最坏 ≈ ⌈H/4⌉×360s,H=本轮命中三门候选数;单候选 360s 是单候选
+  // 上界,不是整轮上界。编排排期计入该延迟,勿在短超时下当实时检查。
   // D3(2026-08-09,PR #12 round2,全局规则 12「失败可见」):spawnScriptJson 对「模块不存在 /
   // 输出非 JSON / 子进程 fail() 退出 1」三种探测失败一律折叠成 { ok:false, error }。
   let holdInvocation = null;
