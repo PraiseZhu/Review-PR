@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,15 +99,20 @@ function setup({ commentNodes = DEFAULT_COMMENT_NODES, adminsExtra = [], mergeAu
     } } } }] } } } },
   }));
   chmodSync(join(FAKE_GH_DIR, 'gh'), 0o755);
+  // F1(2026-08-09,round3):fake gh 每次调用都追加一行到 $FAKE_GH_LOG(JSONL,含 argv)。
+  // context.mjs 与 signoff-hold.mjs 子进程都继承该 env,日志里因此同时有父进程与子进程的
+  // gh 调用——「真的 spawn 了子进程」的判别手段见 SC-1 用例。
+  const ghLog = join(work, 'fake-gh.log');
   const env = {
     ...process.env,
     PATH: `${FAKE_GH_DIR}:${process.env.PATH}`,
     FAKE_GH_FIXTURE_DIR: fixtures,
+    FAKE_GH_LOG: ghLog,
     REVIEW_PR_REPO_ROOT: repo,
     REVIEW_PR_STATE_DIR: stateDir,
     REVIEW_PR_RULES_FILE: rulesFile,
   };
-  return { repo, env };
+  return { repo, env, ghLog };
 }
 
 test('context --scan 接线:裸 /approve-merge 进 legacyBareComments;skip-structural-block 的 auto.reason 如实携带 stale 原因', () => {
@@ -131,13 +136,11 @@ test('context --scan 接线:裸 /approve-merge 进 legacyBareComments;skip-struc
   assert.doesNotMatch(out.note, /名单但缺 APPROVED/, 'note 不得沿用"缺 APPROVED"作唯一原因口径');
 });
 
-test('静态词条锁(第 5 轮复审):context.mjs 源码内禁止"既无 APPROVED 也非 admins"旧口径——full note 与注释同样覆盖', () => {
-  // full 模式的机器 note 没有 fake-gh fixture 覆盖(gh 调用面太宽);这里验的是固定说明
-  // 词条,静态断言正合适:#469 形态下 reviewDecision 可以已是 APPROVED(stale approve),
-  // "既无 APPROVED"是谎报,补救指向必须走 approvedShortcut.reason。
-  const src = readFileSync(join(__dirname, '..', 'scripts', 'context.mjs'), 'utf8');
-  assert.ok(!src.includes('既无 APPROVED'), 'context.mjs 残留"既无 APPROVED"旧口径(应写"approved shortcut 不成立且作者不在 admins 名单")');
-});
+// F4(2026-08-09,round3):上一轮的「静态词条锁」(断言源码不含"既无 APPROVED"字面量)已删除
+// ——换等价措辞(如"没有任何 APPROVED 审查且作者不在 admins")或拼接文本即可绿,锁的是文档
+// 措辞不是审批行为。审批行为本身已由本文件其余用例以行为断言覆盖:auto.reason 必须携带
+// approvedShortcut.reason(L1 用例)、note 不得沿用"缺 APPROVED"作唯一原因口径(第一个用例),
+// 以及 SC-3 反例/正例对 approve 绑定 commit oid 的实际判定。
 
 // ── automated-review-gate wave0 追加(2026-08-08):SC-3 授权路由接线 ──
 // 意图:人工 break-glass 是唯一例外——只有「admins 成员人工 + 未编辑 + 独占一行 +
@@ -309,7 +312,7 @@ test('C1 接线:mergeAuthorization:"oops" → context --scan 不崩,configWarnin
 // 文档示例)。以下用例锁住"真被调用"这件事本身可观测,不是靠读源码断言。
 
 test('SC-1 接线:命中 securityReviewPaths → signoff-hold.mjs --dry-run 真被 spawn(脚本调脚本,非注释/文档示例)', () => {
-  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
+  const { repo, env, ghLog } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
   const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
@@ -324,15 +327,32 @@ test('SC-1 接线:命中 securityReviewPaths → signoff-hold.mjs --dry-run 真�
   assert.equal(out.signoff.holdInvocation.ok, true, 'signoff-hold.mjs 子进程必须真正执行并返回 ok:true');
   assert.equal(out.signoff.holdInvocation.pr, 469, '子进程读到的 PR 号必须与调用参数一致,证明真的解析了 CLI 参数而非硬编码/mock');
   assert.equal(out.signoff.holdInvocation.author, 'aj0928', '子进程必须真的读取了 fixture 里的 pr-view.json(author 字段),不是空转返回固定值');
-  // 第二轮复审 m3:把 spawnScriptJson(SIGNOFF_HOLD_PATH, ...) 换成字面量
-  // `{ ok: true, pr, author: authorLogin }`(context.mjs 本来就攥着 pr/author,伪造这两个
-  // 字段不需要子进程真的跑)仍能骗过以上断言。以下三个字段只有 signoff-hold.mjs 真的执行了
-  // 内部业务分支(decideIssueReuse/payloadComplete 判定、doRenotice()、
-  // syncSignoffLabel(dryRun:true))才会出现,字面量伪造拿不到——是"真被调用"而非"声称被
-  // 调用"的第二层证据:
+  // 第二轮复审 m3 复盘:把 spawnScriptJson(SIGNOFF_HOLD_PATH, ...) 换成携带全部被断言
+  // 字段的完整字面量仍能骗过以上所有字段断言(pr/author/missingPayload/renoticeSkipped/
+  // labels.dryRun 都是"父进程在 fixture 已知时也能算出的值")——「真的 spawn 了子进程」
+  // 这件事此前没有被任何断言锁住。以下字段是第二层弱证据(子进程真的执行了内部业务分支
+  // 才会出现),保留:
   assert.equal(out.signoff.holdInvocation.missingPayload, true, '子进程必须真的算出 decideIssueReuse({priorIssueUrl:null}).needNewIssue=true 且未传 --payload-file 时 payloadComplete=false;字面量 bypass 没有这个字段');
   assert.equal(out.signoff.holdInvocation.renoticeSkipped, 'never-held', '子进程必须真的跑完 doRenotice() 的 priorIssueUrl==null 分支判定;字面量 bypass 没有这个字段');
   assert.equal(out.signoff.holdInvocation.labels?.dryRun, true, '子进程必须真的调用 syncSignoffLabel({want:true, current:[]})(fixture 无标签 → want!==has → dry-run 分支);字面量 bypass 没有这个字段');
+  // F1(2026-08-09,round3):真正锁住「真的 spawn 了子进程」的是**外部副作用**断言——
+  // fake gh 把每次调用记进 $FAKE_GH_LOG(JSONL,见 setup)。signoff-hold.mjs 子进程在
+  // --dry-run 探测路径上唯一的 gh 调用是 `gh pr view`,且它的 --json 字段清单
+  // (number,state,mergedAt,author,url,comments,labels,headRefOid)与父进程 context.mjs
+  // 的 pr view 调用(--json 大清单 / --json reviews)不同——日志里出现该签名 = 只有真的
+  // spawn 了子进程才会产生这条记录。
+  // 判据边界(如实声明):本断言锁的是「一次移除 spawn 的重构会让测试转红」——把调用换成
+  // 完整字面量 / 内联计算(典型重构形态)会红;而「伪造 gh 日志」需要 context.mjs 自己去
+  // 追加日志文件,那已经不是重构而是刻意造假,超出本判据的能力承诺。
+  const logLines = readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+  const childView = logLines.find((e) => e.args[0] === 'pr' && e.args[1] === 'view'
+    && e.args.includes('--json')
+    && e.args[e.args.indexOf('--json') + 1] === 'number,state,mergedAt,author,url,comments,labels,headRefOid');
+  assert.ok(childView,
+    `FAKE_GH_LOG 必须包含 signoff-hold.mjs 子进程的 gh pr view 调用(--json 含 comments,父进程 context.mjs 从不经 pr view 取 comments)。实际调用:\n${
+      logLines.map((l) => JSON.stringify(l.args)).join('\n')}`);
 });
 
 test('SC-1 反向:未命中三门(auto.action 落 skip-structural-block)→ holdInvocation.invoked=false,不空转 spawn', () => {
@@ -344,6 +364,72 @@ test('SC-1 反向:未命中三门(auto.action 落 skip-structural-block)→ hold
   assert.equal(out.auto.action, 'skip-structural-block');
   assert.equal(out.signoff.holdInvocation.invoked, false, '未命中三门时不应发起 hold 调用');
   assert.equal(out.signoff.holdInvocation.kind, null);
+});
+
+// ── F3(2026-08-09,round3):探测失败必须改变已消费的路由字段 ──
+// 此前失败只追加 configWarnings,没有任何强制消费方读它、也不阻断、也不重试,正式 hold 仍
+// 照 auto.action / suggestedHolds 继续——「连 hold 机制能不能调用都验证不了却继续放行」
+// 是 fail-open,且 #12 本身就是接线 PR,这条必须在本 PR 关闭。改后行为:失败重试一次,重试
+// 耗尽仍失败 → auto.action 升级为 signoff-hold-unavailable(人工介入类值,编排侧不存在把它
+// 当 security-gate/rules-gate/arch-gate 静默继续的分支)。signoff-hold.mjs 的探测路径相对
+// context.mjs 解析(new URL('./signoff-hold.mjs', import.meta.url)),要构造「模块不存在 /
+// 输出非 JSON / 非零退出」三种失败形态,测试在临时目录重建一份最小脚本集(缺什么造什么),
+// 不碰真实工作树。依赖链:context.mjs → lib.mjs → lib.escaped-hazards.mjs →
+// lib.review-profiles.mjs + lib.preflight-rules.mjs(后两者只 import node 内置模块)。
+const SCRIPTS_DIR = join(__dirname, '..', 'scripts');
+function copyScriptsTo(work) {
+  const dir = join(work, 'scripts');
+  mkdirSync(dir);
+  for (const f of ['context.mjs', 'lib.mjs', 'lib.escaped-hazards.mjs', 'lib.review-profiles.mjs', 'lib.preflight-rules.mjs']) {
+    copyFileSync(join(SCRIPTS_DIR, f), join(dir, f));
+  }
+  return dir;
+}
+
+test('F3 接线:signoff-hold.mjs 模块不存在 → 探测(重试后)失败升级 auto.action=signoff-hold-unavailable(变异:移除联动即红)', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] }); // 命中 security-gate
+  const work = mkdtempSync(join(tmpdir(), 'ctx-f3-missing-'));
+  const dir = copyScriptsTo(work); // 故意不复制 signoff-hold.mjs = 模块不存在(ENOENT)
+  const r = spawnSync('node', [join(dir, 'context.mjs'), '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 500)}\nstderr=${r.stderr.slice(0, 500)}`);
+  assert.equal(out.auto.action, 'signoff-hold-unavailable', 'hold 脚本缺失 → 路由必须升级为人工介入值,不得继续按 security-gate 静默路由');
+  assert.equal(out.auto.isSkip, false, '升级不是跳过:必须显式停在人工介入');
+  assert.equal(out.signoff.holdInvocation.invoked, false, '探测未成功 → invoked 必须如实 false');
+  assert.equal(out.signoff.holdInvocation.ok, false);
+  assert.equal(out.signoff.holdInvocation.kind, 'security', 'kind 仍是命中的门,方便排查');
+  assert.match((out.configWarnings ?? []).join(';'), /signoff-hold-unavailable/, '升级事实必须写进 configWarnings(供排查)');
+});
+
+test('F3 接线:signoff-hold.mjs 输出非 JSON → 探测(重试后)失败升级 auto.action=signoff-hold-unavailable', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
+  const work = mkdtempSync(join(tmpdir(), 'ctx-f3-nonjson-'));
+  const dir = copyScriptsTo(work);
+  writeFileSync(join(dir, 'signoff-hold.mjs'), '#!/usr/bin/env node\nprocess.stdout.write("not-json-garbage\\n");\n');
+  const r = spawnSync('node', [join(dir, 'context.mjs'), '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 500)}\nstderr=${r.stderr.slice(0, 500)}`);
+  assert.equal(out.auto.action, 'signoff-hold-unavailable', '子进程输出非 JSON → 不得继续按 security-gate 静默路由');
+  assert.equal(out.signoff.holdInvocation.invoked, false);
+  assert.match(out.auto.reason, /signoff-hold.mjs 的 --dry-run 探测重试后仍失败/, 'reason 必须如实写重试后仍失败');
+  assert.match((out.configWarnings ?? []).join(';'), /signoff-hold-unavailable/, '升级事实必须写进 configWarnings');
+});
+
+test('F3 接线:signoff-hold.mjs 子进程非零退出 → 探测(重试后)失败升级 auto.action=signoff-hold-unavailable', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
+  const work = mkdtempSync(join(tmpdir(), 'ctx-f3-exit1-'));
+  const dir = copyScriptsTo(work);
+  writeFileSync(join(dir, 'signoff-hold.mjs'), '#!/usr/bin/env node\nprocess.stderr.write("boom\\n");\nprocess.exit(1);\n');
+  const r = spawnSync('node', [join(dir, 'context.mjs'), '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 500)}\nstderr=${r.stderr.slice(0, 500)}`);
+  assert.equal(out.auto.action, 'signoff-hold-unavailable', '子进程非零退出 → 不得继续按 security-gate 静默路由');
+  assert.equal(out.signoff.holdInvocation.invoked, false);
+  assert.match(out.auto.reason, /signoff-hold.mjs 的 --dry-run 探测重试后仍失败/, 'reason 必须如实写重试后仍失败');
+  assert.match((out.configWarnings ?? []).join(';'), /signoff-hold-unavailable/, '升级事实必须写进 configWarnings');
 });
 
 // ── SC-3(2026-08-09):admins 放行判据绑 commit oid,不受 submittedAt 时序影响 ──
@@ -416,15 +502,19 @@ test('SC-4 行为锁:signoffCore 是唯一推导来源 —— scan 模式与全�
 //     没出现,静态锁照样过,但输出被重新截断。
 // 改为跑真实全量模式(history/reviewThreads 只在全量模式输出,--scan 不含)、断言输出的
 // 实际字段值。同时验证 D7 新增的 claim/participants 字段确实被下游接收到——claim 必须取
-// 线程首条评论(机器人的断言),不能被 lastComment(线程最后一条,#13 场景里常是人类异议
-// 回复)顶替,这是 #13 blocker 的数据契约根因修复。
+// 线程**位置首条**评论(cs[0],F5 措辞更正:不是"bot 首条评论",选择器自身不识别 bot;
+// 安全性由 human-thread 闸与 participants 闸共同保证),不能被 lastComment(线程最后一
+// 条,#13 场景里常是人类异议回复)顶替,这是 #13 blocker 的数据契约根因修复。
+// F2(2026-08-09,round3):GraphQL comments(first:50) 无分页——participants 只覆盖前 50
+// 条评论。导出对象带显式截断标志(commentsFetched/commentsTotal/participantsTruncated),
+// 截断时该字段不构成"无非白名单参与者"的完备判断依据(契约见 SKILL「三门 hold 接线」段)。
 const REVIEW_THREAD_ID = 'PRRT_test_0001';
 const REVIEW_THREAD_TAIL_MARKER = 'TAIL-MARKER-9f3c';
 const REVIEW_THREAD_LAST_COMMENT = `${'X'.repeat(320)}${REVIEW_THREAD_TAIL_MARKER}`; // 336 字,超过 300 字截断阈值
 const REVIEW_THREAD_NODES = [{
   id: REVIEW_THREAD_ID, isResolved: false, isOutdated: false, path: 'src/foo.ts',
-  comments: { nodes: [
-    // cs[0]:机器人开线程的断言——claim 必须取这条
+  comments: { totalCount: 2, nodes: [
+    // cs[0]:位置首条评论——claim 必须取这条
     { author: { login: 'coderabbitai', __typename: 'Bot' }, body: '这里疑似有空指针风险,建议加判空处理。', createdAt: '2026-08-04T09:00:00Z' },
     // cs[last]:人类的异议回复——lastComment 取这条,但绝不能被当成 claim
     { author: { login: 'PraiseZhu', __typename: 'User' }, body: REVIEW_THREAD_LAST_COMMENT, createdAt: '2026-08-04T10:00:00Z' },
@@ -444,12 +534,39 @@ test('SC-2 行为锁:reviewThreads 真实输出 id、claim(首条评论)、parti
   // m6:lastComment 必须原样保留 320 字之后的尾标记,重新截断到 300 会把它切掉
   assert.equal(thread.lastComment.length, REVIEW_THREAD_LAST_COMMENT.length, 'lastComment 长度必须与原文一致(仅去 \\r,不截断)');
   assert.ok(thread.lastComment.endsWith(REVIEW_THREAD_TAIL_MARKER), `lastComment 必须原样透出超过 300 字的内容,尾标记不能被截断丢失。got tail=${thread.lastComment.slice(-40)}`);
-  // D7:claim 取线程首条评论(机器人断言),不是 lastComment(人类异议回复)——两者必须是不同值
+  // D7:claim 取线程位置首条评论(cs[0]),不是 lastComment(人类异议回复)——两者必须是不同值
   assert.equal(thread.claim, '这里疑似有空指针风险,建议加判空处理。', 'claim 必须取线程首条评论原文,不能被 lastComment(线程最后一条)顶替');
   assert.notEqual(thread.claim, thread.lastComment, 'claim 与 lastComment 必须是两个不同字段/不同来源,不能退化成同一个值');
-  // D7:participants 暴露全部评论作者 + isBot,供下游按自己的白名单口径判断"是否有非白名单机器人的真人参与"
+  // D7:participants 暴露评论作者 + isBot(覆盖范围 = 前 50 条评论,见 participantsTruncated),
+  // 供下游按自己的白名单口径判断"是否有非白名单机器人的真人参与"
   assert.deepEqual(thread.participants, [
     { author: 'coderabbitai', isBot: true },
     { author: 'PraiseZhu', isBot: false },
-  ], 'participants 必须包含线程内全部评论的 author+isBot,顺序与 GraphQL 返回一致');
+  ], 'participants 必须包含线程内评论的 author+isBot(前 50 条),顺序与 GraphQL 返回一致');
+  // F2:未截断(2 条 = totalCount 2)必须显式标 participantsTruncated=false,并透出数量
+  assert.equal(thread.commentsFetched, 2, 'commentsFetched 必须等于实际取到的条数');
+  assert.equal(thread.commentsTotal, 2, 'commentsTotal 必须透出 GraphQL totalCount');
+  assert.equal(thread.participantsTruncated, false, 'fetched === total → 已知完备,必须显式 false');
+});
+
+test('SC-2 截断标志:评论超过 first:50 → participantsTruncated=true,participants 只含前 50 条(变异:去掉标志计算即红)', () => {
+  // 第 51 条评论的作者不在 participants 里(第 1-50 条都是白名单 bot、第 51 条是真人时,
+  // 静默的 participants 会漏掉它)——截断必须显式可观测,不许静默声称完备。
+  const nodes50 = Array.from({ length: 50 }, (_, i) => ({
+    author: { login: `bot-${i}`, __typename: 'Bot' }, body: `comment-${i}`, createdAt: '2026-08-04T09:00:00Z',
+  }));
+  const { repo, env } = setup({ reviewThreadNodes: [{
+    id: 'PRRT_trunc_0001', isResolved: false, isOutdated: false, path: 'src/foo.ts',
+    comments: { totalCount: 51, nodes: nodes50 }, // GraphQL 只返回 first:50,真实总条数 51
+  }] });
+  const r = spawnSync('node', [SCRIPT, '469'], { cwd: repo, env, encoding: 'utf8' }); // 全量模式
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 800)}\nstderr=${r.stderr.slice(0, 800)}`);
+  const thread = out.history.reviewThreads[0];
+  assert.equal(thread.commentsFetched, 50, '映射只取到 GraphQL 返回的前 50 条');
+  assert.equal(thread.commentsTotal, 51, 'totalCount 必须透出连接的真实总条数');
+  assert.equal(thread.participantsTruncated, true, '50 < 51 → 必须显式标截断,不许静默声称 participants 完备');
+  assert.equal(thread.participants.length, 50, 'participants 只覆盖前 50 条评论');
+  assert.equal(thread.participants[49].author, 'bot-49', 'participants 内容 = 前 50 条评论的作者');
 });

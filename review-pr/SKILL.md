@@ -2029,7 +2029,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    时永不出现）；`security-gate`／`rules-gate` 的候选**不跳过**——进处理清单，按下方
    「三门 hold 接线」调 `signoff-hold.mjs`（详见 3.8／3.9，未配置对应键时这两类永不
    出现；命中但 admins 已对当前 head 之后 Approve 时不 hold，直接按 `auto.fallback`
-   继续）。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold（见 3.4）。
+   继续）；`auto.action=signoff-hold-unavailable`（F3，2026-08-09）的候选**不按原
+   路由继续**——记人工介入、报 owner 排查 signoff-hold.mjs 调用点（见下方探测字段
+   段），排查后重跑本轮。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold
+   （见 3.4）。
    扫描完成后跑一次合并审计对账（只读核对孤儿 intent、补齐 result，见 5.8）：
 
    ```bash
@@ -2083,13 +2086,30 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    `author` 等字段）。**`invoked=true` 只代表这次探测尝试本身返回了
    `{ok:true,...}`**——它不能证明"调用点确实可执行"：探测有三种已知失败形态
    （模块不存在 / 输出非 JSON / 子进程 `fail()` 非零退出），三种都会让
-   `invoked=false`，同时失败原因会写进顶层 `configWarnings`（这才是排查"调用点是否
-   真的可执行"该看的地方，不要只看 `holdInvocation.invoked`）。它的作用仅是让
-   "命中三门 → 是否发起过一次探测尝试"这件事在 `context --scan` 输出里可观测——
-   **不替代**上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
-   `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发
-   评论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /
-   `signoff.suggestedHolds`，不读 `holdInvocation`。
+   `invoked=false`。**探测失败有强制消费方（F3，2026-08-09）**：失败会重试一次
+   （瞬时网络 / 限流噪声），重试耗尽仍失败 → `context.mjs` 把 `auto.action`
+   **升级为 `signoff-hold-unavailable`**（人工介入类值，编排侧不存在把它当
+   security-gate / rules-gate / arch-gate 静默继续的分支），同时失败原因写进顶层
+   `configWarnings`——"连 hold 机制能不能调用都验证不了却继续放行"正是本批要消灭的
+   fail-open。**编排遇到 `auto.action=signoff-hold-unavailable` 的候选：不得按原
+   hold 流程继续，记人工介入、报 owner 排查调用点（signoff-hold.mjs 是否存在 /
+   依赖是否完整 / gh 鉴权是否可用），排查后重跑本轮**。它**不替代**上面这一步主
+   agent 按 3.4 payload 合同发起的正式 hold（那次带真实 `issueTitle` /
+   `issueBody` / `commentBody`，才会真正创建 issue、打标签、发评论）。主 agent
+   判断是否需要发起正式 hold，仍按 `auto.action` / `signoff.suggestedHolds`
+   （`signoff-hold-unavailable` 除外，见上），不读 `holdInvocation`。
+
+   **`history.reviewThreads[].participants` 的数据边界（F2，2026-08-09）**：
+   `context.mjs` 经 GraphQL `comments(first:50)` 取线程评论，**没有分页**——第 51
+   条起的评论不进 `claim` / `participants` / `lastComment`。导出对象带显式截断
+   标志：`commentsFetched`（实际取到条数）/ `commentsTotal`（GraphQL `totalCount`，
+   读不到为 `null`）/ `participantsTruncated`（`totalCount` 不可读——无法证明完备，
+   保守按截断处理——或 `fetched < total` 时为 `true`）。**`participantsTruncated=
+   true` 时，`participants` 不构成"无非白名单参与者"的判断依据**：该 thread 一律
+   交执行层按自己的 live 分页查询判定（执行层是权威闸门，自己分页取全），编排侧
+   不得据 `participants` 下结论或直接不提出。`claim` 取线程**位置首条**评论
+   （`cs[0]`）原文——不是"bot 首条评论"：选择器自身不识别 bot，安全性由
+   human-thread 闸与 participants 闸共同保证，不依赖 claim 选择器自身识别 bot。
 3. **落地与补位**：先消费 held 的放行信号并自动 release——`signoff.
    adminsApprovedCurrentHead=true`（admins 对当前 head 之后 Approve）或产品/架构门
    白名单在讨论 issue / PR 评论区明确同意时，运行
