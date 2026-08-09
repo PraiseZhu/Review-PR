@@ -1045,6 +1045,10 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 - 同轮交叉引用用**本地引用** `{family_id, manifestationIndex}`；`findingId` 由机器派生，
   只有 task 注入的**历史未决项**才用 findingId；
 - `accepted-risk` **不在你的输出里**——它只走交互确认通道（auto 模式无此出口）；
+- **跨 snapshot 判别**：对 originSnapshotHash 早于当前 snapshot 的注入未决项，先查当前 head
+  是否已有修复证据（新增代码/负向实测变红）——**已修复给 `resolved`**；`invalidated` 只用于
+  「该指控在当前 snapshot 上不成立且无修复动作」的误报，不得把「已修复」当「误报」
+  （`invalidated` 在 auto 模式无确认出口，历史条目每轮重新注入）；
 - required `verificationGap` 非空、必答缺项、覆盖对账不符、注入的 open 未 disposition、
   preflight 未完成、profile 配置非法，任一即 `invalid`；
 - required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受；
