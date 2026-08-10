@@ -2153,7 +2153,10 @@ export function renderIssueUrl(body, issueUrl) {
 // signoffGate.label 可覆盖(与上游 signoff-hold.mjs 只读这一个嵌套键的契约一致)。
 
 /** hold 标记前缀沿用 PRODUCT_GATE_MARKER_PREFIX(存量被 hold 的 PR 评论里就是它)。 */
-/** 通过标记前缀(signoff-release.mjs 写入):记录哪些触发类别曾被维护者确认;当前 head 是否有效另判。 */
+// 通过标记前缀:本 PR(#11 拆节后)只提供 marker 的**解析**(parseSignoffReleases,
+// context.mjs 消费);**写入** marker 的脚本(signoff-release.mjs)零测试,已从本批
+// 移出、另立 PR 并带测试。当前写入方式是维护者按 SKILL.md 手工发评论——本常量
+// 保留为解析契约,不因写入脚本缺位而成为孤儿。
 export const SIGNOFF_RELEASE_MARKER_PREFIX = '<!-- review-pr:signoff-release';
 /** 状态回帖标记前缀(signoff-hold.mjs 写入):按 head sha 去重,同一版代码只回帖一次。 */
 export const SIGNOFF_RENOTICE_MARKER_PREFIX = '<!-- review-pr:signoff-renotice';
