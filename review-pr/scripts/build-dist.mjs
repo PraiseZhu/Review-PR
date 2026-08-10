@@ -52,10 +52,26 @@ function listSourceFiles(sourceDir) {
   return walkFiles(sourceDir);
 }
 
-export function sourceInputTreeHash(sourceDir) {
+// freshnessIgnore:既不进产物、也不影响构建过程的文件(如自进化台账),从新鲜度 hash
+// 中排除——否则自动 append 台账会让两个产物门无条件红(2026-08-10 修复,长期系统性红)。
+// 它必须是 exclude 的真子集:exclude 还含「不进产物但决定产物长什么样」的构建输入
+// (build-dist.mjs / 两个 manifest),那些绝不能进 freshnessIgnore(门会瞎)。
+export function sourceInputTreeHash(sourceDir, manifest = null) {
+  const ignored = manifest?.freshnessIgnore ?? [];
+  if (ignored.length && manifest) {
+    const excl = manifest.exclude ?? [];
+    for (const e of ignored) {
+      if (!excl.some((x) => x === e)) {
+        throw new Error(`freshnessIgnore 条目 ${e} 不在 exclude 中(freshnessIgnore 必须是 exclude 真子集)`);
+      }
+    }
+  }
+  const isIgnored = (rel) => ignored.some((x) => rel === x || rel.startsWith(x.endsWith('/') ? x : `${x}/`));
   const h = createHash('sha256');
   for (const p of listSourceFiles(sourceDir)) {
-    h.update(relative(sourceDir, p)); h.update('\0');
+    const rel = relative(sourceDir, p);
+    if (isIgnored(rel)) continue;
+    h.update(rel); h.update('\0');
     h.update(sha256(readFileSync(p))); h.update('\n');
   }
   return h.digest('hex');
@@ -179,7 +195,7 @@ export function buildDist({ sourceDir, manifestPath, outDir }) {
 
   const distManifest = {
     builder_version: BUILDER_VERSION,
-    source_input_tree_hash: sourceInputTreeHash(sourceDir),
+    source_input_tree_hash: sourceInputTreeHash(sourceDir, m),
     strip_config_hash: sha256(manifestText),
     product_tree_hash: productTreeHash(outDir)
   };

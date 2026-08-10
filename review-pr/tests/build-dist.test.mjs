@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { buildDist, checkDist, assertTagAvailable, productTreeHash } from '../scripts/build-dist.mjs';
+import { buildDist, checkDist, assertTagAvailable, productTreeHash, sourceInputTreeHash } from '../scripts/build-dist.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, '..');
@@ -203,4 +203,12 @@ test('[D-2026-08-10] manifest exclude 每条目在源树中必须存在(防失�
     missing.length, 0,
     `manifest exclude 引用不存在的路径(产物门只校验产物一致性,校验不到此错误):\n${missing.join('\n')}`,
   );
+});
+
+// [D-2026-08-10] freshnessIgnore 缺省行为 fail-safe:manifest 无该字段时等于「不忽略任何文件」。
+test('[D-2026-08-10] freshnessIgnore 缺省=不忽略任何文件(fail-safe)', () => {
+  // 用当前源,不带 manifest → 与带空 freshnessIgnore 的 manifest 结果一致
+  const hNoManifest = sourceInputTreeHash(SRC);
+  const hEmptyIgnore = sourceInputTreeHash(SRC, { exclude: [], freshnessIgnore: [] });
+  assert.equal(hNoManifest, hEmptyIgnore, '缺省(无 manifest)必须等于空 freshnessIgnore');
 });
