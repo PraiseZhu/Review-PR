@@ -1699,7 +1699,7 @@
       "proposal": null,
       "status": "landed",
       "commit": "7528c1c",
-      "note": null,
+      "note": "[decided:2026-08-09] 落地 commit 7528c1c(AuthorDate 核实):逃逸候选集为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote,consumer 不再判 invalid",
       "occurrences": 1,
       "firstSeen": "2026-08-09T09:24:11.293Z",
       "lastSeen": "2026-08-09T09:24:11.293Z"
