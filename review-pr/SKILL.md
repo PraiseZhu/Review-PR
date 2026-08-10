@@ -633,6 +633,27 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
 陈旧"仍是审查 agent 的判断）。`enabled:false`、或本轮状态为 `skipped`/`failed`，
 **不降低**任何既有机器保证（preflight/覆盖对账/负向证据/逃逸闭环照常运行）。
 
+### 3.0.4 测试跑法（维护者本地验证，2026-08-10 定稿）
+
+全量测试的标准跑法（在 `review-pr/` 目录下）：
+
+```text
+node --test tests/*.test.mjs
+```
+
+- 覆盖 `tests/` 下**全部** `*.test.mjs`，包括自断言形态的脚本
+  （如 `tests/signoff-policy-script.test.mjs`——它不是 node:test 声明，靠模块顶层
+  自断言 + `process.exit(1)` 报失败；`node --test` 加载它计 1 条文件级条目，
+  断言失败会使该文件转红）。
+- `tests/` 目录之外**不得**存在任何 `*.test.mjs`——否则它不会被上面的 glob 覆盖，
+  成为标准跑法之外的裸奔测试（2026-08-10 事故：`scripts/signoff-policy.test.mjs`
+  曾坐在 glob 之外，四个策略函数(isUiTestPath / decideIssueReuse /
+  shouldCloseDiscussionIssue / classifyGateHits)的唯一测试从全量里漏掉，七轮审查
+  与四份终审均未发现）。`tests/test-file-location-guard.test.mjs` 机器强制此约束，
+  任何 `tests/` 之外的 `*.test.mjs` 都使全量转红。
+- 两个产物门单独跑：`node --test tests/build-dist.test.mjs` 与
+  `node --test tests/preview-dist.test.mjs`（产物重建后必须全绿）。
+
 ### 3.1 安全与隐私内容门（本阶段最先执行）
 
 任何 PR 都不允许携带凭证、密钥或个人隐私数据——这是先于格式门的第一道审计。
@@ -745,7 +766,7 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
   标记）+ 挂 `awaiting-discussion` 标签，**不再转 draft**（2026-08-09 起标签制取代
   draft 制：draft 带来的 hold↔ready 死循环与 PAT 权限问题随之消失，真正挡合并的是
   流程内部判定，标签只是 GitHub 后台的可筛性入口）；动作必须幂等（重复 hold 复用
-  既有讨论 issue，`decideIssueReuse` 语义，见 signoff-policy.test.mjs）；
+  既有讨论 issue，`decideIssueReuse` 语义，见 tests/signoff-policy-script.test.mjs）；
 - **payload 合同（写死，缺失即拒绝主动作）**：`issueTitle`/`issueBody`/`commentBody`
   三字段全部非空，生成来源 = 门类模板（模板 D）+ PR 上下文（PR 号、作者、触发路径、
   把关人），由主 agent 按「对外话术与人格边界」撰写（人格关闭，第一句先澄清"不是
