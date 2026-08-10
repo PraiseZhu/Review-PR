@@ -2136,7 +2136,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    时永不出现）；`security-gate`／`rules-gate` 的候选**不跳过**——进处理清单，按下方
    「三门 hold 接线」调 `signoff-hold.mjs`（详见 3.8／3.9，未配置对应键时这两类永不
    出现；命中但 admins 已对当前 head 之后 Approve 时不 hold，直接按 `auto.fallback`
-   继续）。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold（见 3.4）。
+   继续）；`auto.action=signoff-hold-unavailable`（F3，2026-08-09）的候选**不按原
+   路由继续**——记人工介入、报 owner 排查 signoff-hold.mjs 调用点（见下方探测字段
+   段），排查后重跑本轮。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold
+   （见 3.4）。
    扫描完成后跑一次合并审计对账（只读核对孤儿 intent、补齐 result，见 5.8）：
 
    ```bash
@@ -2190,17 +2193,71 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （issueError / commentError / labelWarning）必须逐项进轮次汇总，不得静默降级为
    「只打了标签」。格式打回、workflow approval 和 release 等轻操作按候选串行落地。
 
-   **`signoff.holdInvocation`（探测字段，不是正式 hold）**：`context.mjs` 在算出
-   `auto.action` 落 security-gate / rules-gate / arch-gate 之一时，会自动对
-   `signoff-hold.mjs --kind <门> --dry-run` 发起一次真实子进程调用（无 payload、
-   `--dry-run` 不落地任何 issue / 标签 / 评论），把结果原样写进
-   `signoff.holdInvocation`（`kind` / `invoked` / `dryRun` / `ok` / `pr` /
-   `author` 等字段）。它的作用只是让「命中三门 → 调用点确实可执行」这件事在
-   `context --scan` 输出里可观测，证明三门不是只在这里"算出结论"就停——**不替代**
-   上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
-   `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发
-   评论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /
-   `signoff.suggestedHolds`，不读 `holdInvocation`。
+   **`signoff.holdInvocation`（探测字段，不是正式 hold，也不是"可执行"的证明）**：
+   `context.mjs` 在算出 `auto.action` 落 security-gate / rules-gate / arch-gate
+   之一时，会自动对 `signoff-hold.mjs --kind <门> --dry-run` 发起一次真实子进程
+   调用尝试（无 payload、`--dry-run` 不落地任何 issue / 标签 / 评论），把结果原样
+   写进 `signoff.holdInvocation`（`kind` / `invoked` / `dryRun` / `ok` / `pr` /
+   `author` 等字段）。**`invoked=true` 只代表这次探测尝试本身返回了
+   `{ok:true,...}`**——它不能证明"调用点确实可执行"：探测有三种已知失败形态
+   （模块不存在 / 输出非 JSON / 子进程 `fail()` 非零退出），三种都会让
+   `invoked=false`。**`auto.action=signoff-hold-unavailable` 是给编排层 agent 的
+   信号，不是脚本级强制（F3，2026-08-09；round4 措辞更正）**：失败会重试一次
+   （瞬时网络 / 限流噪声），重试耗尽仍失败 → `context.mjs` 把 `auto.action`
+   **升级为 `signoff-hold-unavailable`**（人工介入类值——取值与 security-gate /
+   rules-gate / arch-gate 不同，按契约路由不会把它们混为一谈），同时失败原因写进
+   顶层 `configWarnings`——"连 hold 机制能不能调用都验证不了却继续放行"正是本批
+   要消灭的 fail-open。**如实声明：仓内没有任何机器机制能在编排 agent 疏漏时阻止
+   流程继续**——`context.mjs` 输出的唯一消费者就是编排层 agent（它读
+   `auto.action` 决定路由），仓内不存在、也未设计一个读该输出并强制执行的脚本级
+   dispatcher；要求"生产 .mjs 消费方"等于要求一次架构变更（机器级强制已记为后续
+   独立 PR，不在本 PR 范围）。因此以下是对编排层 agent 的**明确要求，不是对既有
+   机器保障的描述**：**编排遇到 `auto.action=signoff-hold-unavailable` 的候选，
+   必须升级为人工介入**——不得按原 hold 流程继续，记人工介入、报 owner 排查调用
+   点（signoff-hold.mjs 是否存在 / 依赖是否完整 / gh 鉴权是否可用），排查后重跑
+   本轮；跳过这条 = 在 hold 机制不可证明可执行时继续放行，正是本段要消灭的
+   fail-open。**成本与配对（R5，2026-08-10 修正，推导链可核）**：探测经
+   `lib.mjs` 的 `spawnScriptJson` 发起，两处调用（首次探测与失败后的重试，
+   `context.mjs`）**显式传 `timeoutMs: HOLD_PROBE_TIMEOUT_MS`**（默认 `20s`，
+   env `REVIEW_PR_HOLD_PROBE_TIMEOUT_MS` 可调）——**修前**这两处未显式传、
+   各自取默认 `180000ms`（`lib.mjs:2876`），单候选最坏 `2×180s=360s`，且
+   `--scan-all` 外层（默认 `180s`）会先于子进程输出升级 kill 它——**F3 的升级
+   在批量路径对病理场景不可达，且整个候选的扫描输出一并丢失**（复审席对照实验
+   实证：假 hold 进探测后 sleep，父层只收到自己的超时错误）。**修后**探测
+   `2×20s=40s ≪ 外层 180s`，升级重新可达、子进程 40s 内完成并输出。**外层
+   `SCAN_CHILD_TIMEOUT_MS`（默认 `180s`，env `REVIEW_PR_SCAN_CHILD_TIMEOUT_MS`
+   可调）与探测是显式配对的**：`外层 ≥ 2×探测 + 30s` 由测试锁定（默认值不变量），
+   那 30s 余量专门留给子进程探测之外的工作（graphql 60s 显式超时、diff 拉取等）；
+   「外层 ≥ 内层」不再是两个静默默认值的巧合。**整轮成本（不要只计 H）**：
+   `--scan-all` 为**每个** open 候选（共 N）拉一个子进程做基础扫描，另有 heldDraft
+   独立批次，命中三门的候选（H 个）再叠加探测——整轮最坏 ≈ N × 单 PR 扫描 +
+   heldDraft 批次 + ⌈H/4⌉ × 40s（4 并发，`mapPool`）。**边界（如实声明）**：外层
+   超时不升级为 `signoff-hold-unavailable`——子进程还有 graphql（60s 显式超时）、
+   diff 拉取等，叠加也能超外层，**本不变量不保证子进程永不超时，只保证探测不是
+   外层超时的原因**；「可区分是超时」≠「可区分为什么超时」，父进程
+   无法知道 kill 时卡在探测还是别处（D 否决，理由见 `context.mjs` 外层 spawn
+   上方注释）；探测不可用会走 F3 自身升级。编排排期计入这些延迟。它
+   **不替代**上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
+   `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发评
+   论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /
+   `signoff.suggestedHolds`（`signoff-hold-unavailable` 除外，见上），不读
+   `holdInvocation`。
+
+   **`history.reviewThreads[].participants` 的数据边界（F2，2026-08-09；round4
+   措辞更正）**：`context.mjs` 经 GraphQL `comments(first:50)` 取线程评论，
+   **没有分页**——第 51 条起的评论不进 `claim` / `participants` / `lastComment`。
+   导出对象带显式截断标志：`commentsFetched`（实际取到条数）/ `commentsTotal`
+   （GraphQL `totalCount`，读不到为 `null`）/ `participantsTruncated`
+   （`totalCount` 不可读——无法证明完备，保守按截断处理——或 `fetched < total` 时
+   为 `true`）。**如实声明："flag=true 时不得据 `participants` 判无非白名单参与
+   者"是对编排层 agent 的约定，不是机器约束**——本输出与标志的唯一消费方是编排
+   层 agent，仓内没有脚本级机制强制执行该约定。**权威判定方是执行层（#13 的执行
+   端）**：它自己的 live 分页查询取全量评论、独立判定白名单参与者，`participants`
+   截断与否不影响它的判定（执行端独立分页是 defense-in-depth 设计，不是缺陷）。
+   本标志只用于让编排层在截断时**不做完备性断言**：不据 `participants` 下
+   "无非白名单参与者"的结论，也不把该 thread 静默跳过。`claim` 取线程**位置首条**评
+   论（`cs[0]`）原文——不是"bot 首条评论"：选择器自身不识别 bot，安全性由
+   human-thread 闸与 participants 闸共同保证，不依赖 claim 选择器自身识别 bot。
 3. **落地与补位**：先消费 held 的放行信号并自动 release——`signoff.
    adminsApprovedCurrentHead=true`（admins 对当前 head 之后 Approve）或产品/架构门
    白名单在讨论 issue / PR 评论区明确同意时，运行

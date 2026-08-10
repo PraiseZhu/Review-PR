@@ -11,11 +11,11 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync, lstatSync, constants as fsConstants } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync, lstatSync, openSync, closeSync, writeSync, statSync, constants as fsConstants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 // escapedHazards 段的合并与 schema 复验只有一份实现(lib.escaped-hazards 不反向依赖本文件,
 // 无循环:它只引 lib.review-profiles / lib.preflight-rules)。
 import { mergeHazardPair, validateHazardShape } from './lib.escaped-hazards.mjs';
@@ -2348,8 +2348,10 @@ export function removeLegacyGateLabels({ owner, repo, pr, current = [], ghFn, dr
  * 本函数输出的事实 + context.mjs 的语义定性字段)。arch 门完整判定(白名单 / diff 行数
  * 阈值 / 冷更 guard)留在 context.mjs,本函数只算 archGate.corePaths 的路径层命中。
  * 路径匹配语义与 mivo 既有消费方一致:
- *   - security:securityReviewPaths 为正则片段数组,join('|') 后整体 test(与 context.mjs
- *     SECURITY_REVIEW_RE 同一口径);空数组 = 门关闭,恒不命中;
+ *   - security:securityReviewPaths 为正则片段数组,join('|') 后整体 test;空数组/全部
+ *     为空字符串 = 门关闭,恒不命中(D2,2026-08-09:context.mjs 不再自行维护一份
+ *     SECURITY_REVIEW_RE 正则,security 门的路径匹配唯一实现收敛到本函数,context.mjs 直接
+ *     消费 classifyGateHits({...}).security,不留第二份判定逻辑);
  *   - rules:ruleFiles.required 为规则文档清单,`/` 结尾按前缀匹配、否则整路径相等
  *     (同 matchColdUpdatePaths 语义,防近邻文件误伤);ruleMap(规则文档 → 管辖路径映射,
  *     value 数组同样按该语义匹配)命中明细单独输出,供编排按目标仓库配置语义消费;
@@ -2361,8 +2363,14 @@ export function removeLegacyGateLabels({ owner, repo, pr, current = [], ghFn, dr
  */
 export function classifyGateHits({ paths = [], securityReviewPaths = [], ruleFiles = null, archCorePaths = [] } = {}) {
   const list = paths ?? [];
-  const security = (securityReviewPaths ?? []).length
-    ? list.filter((p) => new RegExp((securityReviewPaths ?? []).join('|')).test(p))
+  // D8(2026-08-09,PR #12 round2):securityReviewPaths 若混入空字符串条目,join('|') 会拼出
+  // 形如 "a||b" 的正则——中间的空分支在任意位置恒真,导致这条正则对**所有路径**都命中,
+  // 安全门失去选择性、变成对每个 PR 都触发 hold(配置一个空字符串就能让整条门失效为"逢 PR
+  // 必拦")。与 required/ruleMap 等其它字段一致,先 .filter 掉非字符串/空字符串条目再判空、
+  // 再 join,防一个坏配置值污染整条正则。
+  const validSecurityPaths = (securityReviewPaths ?? []).filter((p) => typeof p === 'string' && p.length > 0);
+  const security = validSecurityPaths.length
+    ? list.filter((p) => new RegExp(validSecurityPaths.join('|')).test(p))
     : [];
   const required = (ruleFiles?.required ?? []).filter(Boolean);
   const matchOne = (p, pats) => (pats ?? []).some((pat) => (pat.endsWith('/') ? p.startsWith(pat) : p === pat));
@@ -2787,4 +2795,254 @@ export async function mapPool(items, concurrency, fn) {
   });
   await Promise.all(workers);
   return results;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// signoff-hold 锁原语(R8 拆节自 signoff-hold.mjs 整体迁入,逻辑零改动;
+// stderr 前缀保持 [signoff-hold] 不变,勿改——测试与调用方按原前缀消费)
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── 幂等原子 claim(SC-1) ──
+// 旧实现是 check-then-act:读标记评论判「是否已 hold 过」和写 issue/评论之间没有互斥,
+// 同一份本地 checkout 下的两个并发实例(如同一 worktree 被同一台机器上的两条流水线
+// 同时触发)会各自认为「没 hold 过」,各建一份 issue、各发一条评论。这里用
+// fs.openSync(path,'wx') 排他创建当锁——它是文件系统级原子操作,不存在「检查时不存在、
+// 创建时已被抢先」的窗口。锁覆盖从读 PR 元数据到写完 issue/评论/标签的整段
+// check-then-act,谁抢到锁谁独占执行,另一个实例原地等待(轮询)或超时退让,不会出现
+// "两边都判定为需要新建"的竞态。
+// 覆盖边界(round2 收窄声明,勿再扩大):锁目录锚定在本地 git-common-dir 的 realpath
+// 哈希(见 lib.mjs repoStateKey)——同一份本地 clone 下的所有 worktree 共享同一把锁,
+// 但不同 clone(不同机器 / 不同 CI runner 各自 checkout 一份)拿到的是不同锁目录,
+// 互斥在这种场景下不生效。真正的跨机器互斥需要挪到 GitHub 一侧(如基于
+// If-Match/conditional write 的原子标记),留作后续独立 PR,这里先如实收窄声明范围。
+const LOCK_POLL_MS = 100;
+const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000);
+
+// 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
+export const LOCK_STALE_MS = 5 * 60 * 1000;
+
+function lockPathFor(owner, repo, pr) {
+  const dir = process.env.SIGNOFF_HOLD_LOCK_DIR || stateFile('signoff-hold-locks');
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${owner}__${repo}__${pr}.lock`);
+}
+
+// 同步阻塞等待,不依赖 subprocess/sleep 二进制;Node 主线程允许 Atomics.wait(仅浏览器
+// 主线程禁止),这里跑在 CLI 脚本里,合法且不引入额外依赖。
+function sleepSync(ms) {
+  const sab = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(sab), 0, 0, ms);
+}
+
+function readLockInfo(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed && typeof parsed.pid === 'number' && typeof parsed.token === 'string') return parsed;
+  } catch { /* 内容损坏,或 round1 遗留的纯 pid 字符串格式 → 交给调用方走 mtime 兜底 */ }
+  return null;
+}
+
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true; // 收到信号本身就说明进程还在(不管是否同用户可签)
+  } catch (e) {
+    return e.code !== 'ESRCH'; // ESRCH=进程已死→陈旧;EPERM 等一律保守当"还活着"
+  }
+}
+
+// round3 D2(blocker 修复):陈旧判据 = 「进程死了」或「持有超过 LOCK_STALE_MS」任一成立。
+// round2 只看 pid,而 readLockInfo 对合法 JSON 恒返回非 null → mtime 兜底分支永远走不到;
+// 叠加 isPidAlive 在 EPERM(跨用户杀不动)与 PID 复用(死进程 pid 被新进程复用)下都判
+// "活着" → 锁永久不可回收、门永久失效,相对 round1 纯 mtime(5 分钟自愈)是能力回退。
+// 加回时间上限后,EPERM/PID 复用最坏只把回收延迟到 LOCK_STALE_MS 之后,不会永久死锁。
+// startedAt 缺失/非法(旧格式 JSON)时该子句恒 false,退化为仅 pid 判定,行为同 round2。
+// round4 D1(blocker 修复):写入方统一 ISO 8601(round3 写数字时间戳,而 Date.parse 对
+// 数字返回 NaN → 该模块自己写出的锁,自己永远判不出陈旧);判据对两种形态都容错,
+// 防止旧格式数字锁文件残留时又踩坑:
+//   - 数字毫秒时间戳(旧格式残留):正确解析,超 LOCK_STALE_MS 即判陈旧可回收;
+//   - 缺失 / 非法字符串:无法凭时间判定年龄 → 退化为仅 pid 判定(fail-closed:
+//     不凭时间抢占活进程;pid 已死则照常回收,不会"永不陈旧");
+//   - 未来时间戳(时钟偏移/写入错误):年龄为负,同样 fail-closed 不回收,等 pid 判定。
+// round5 R5-3:导出供测试做「生产写入 → 读取判定」端到端断言(acquireHoldLock 真实
+// 写锁后读回,用同一份 parseStartedAtMs / isLockStale 验证真实形状,不再只喂手搓对象)。
+export function parseStartedAtMs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  if (typeof value === 'string') {
+    const t = Date.parse(value);
+    return Number.isNaN(t) ? NaN : t;
+  }
+  return NaN;
+}
+
+export function isLockStale(info) {
+  if (!info) return true;
+  if (!isPidAlive(info.pid)) return true;
+  const startedAt = parseStartedAtMs(info.startedAt);
+  if (!Number.isFinite(startedAt)) return false; // 缺失/非法 → 仅 pid 判定(fail-closed)
+  return Date.now() - startedAt > LOCK_STALE_MS;
+}
+
+// 接管锁正常只持有毫秒级,60s 足够覆盖进程死在中间的自愈(对齐 prepare.mjs 的
+// TAKEOVER_TTL_MS)。
+const TAKEOVER_TTL_MS = 60 * 1000;
+
+// round3 D3:takeover 文件读回;round2 写入的是裸 pid 字符串,连日后加 TTL 都无从计算,
+// 这里统一为 JSON {startedAt, token}。解析失败/旧裸 pid 格式 → 返回 null,视为可清理
+// 的陈旧残留(不视为"别人正在接管")。
+function readTakeoverInfo(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed && typeof parsed.token === 'string') return parsed;
+  } catch { /* 残留旧格式 / 内容损坏 → 交给调用方当陈旧残留处理 */ }
+  return null;
+}
+
+export function tryTakeoverStaleLock(path, takeoverPath, token, writeOwn) {
+  // 两阶段抢占(镜像 prepare.mjs 的 takeover 机制,round2 D2 修复):先原子创建 sibling
+  // .takeover 文件当"抢占锁",拿到后在其保护下复核主锁确实还陈旧、再 unlink+recreate;
+  // 避免两个并发实例同时判定陈旧、同时抢占导致互相删对方刚写的新锁。
+  // round3 D3:takeover 文件带 {startedAt, token} 元数据——SIGKILL 下 finally 不执行,
+  // 残留文件必须能自愈:未超 TAKEOVER_TTL_MS 视为"另一实例正在接管"放弃本轮(交外层
+  // 轮询重试),超 TTL 的残留(含 round2 裸 pid 格式)清理后重试一轮。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const takeoverPayload = JSON.stringify({ startedAt: new Date().toISOString(), token });
+    try {
+      const tfd = openSync(takeoverPath, 'wx');
+      try {
+        writeSync(tfd, takeoverPayload);
+      } finally {
+        closeSync(tfd);
+      }
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const info = readTakeoverInfo(takeoverPath);
+      const startedAt = info?.startedAt == null ? NaN : Date.parse(info.startedAt);
+      if (Number.isFinite(startedAt) && Date.now() - startedAt < TAKEOVER_TTL_MS) {
+        return false; // 另一实例正在接管,本轮放弃,交给外层轮询重试
+      }
+      // 残留(进程死在中间 / round2 裸 pid 格式)→ 清理后重试;清理失败(极端竞态)也放弃
+      try { unlinkSync(takeoverPath); } catch { return false; }
+      continue;
+    }
+    try {
+      // round3 D4(wx 成功后复核内容):上面「stale 残留 → unlink → create」不是原子抢占,
+      // 另一实例可能基于更早的 stale 读把我们刚建的接管锁误删重建(与主锁当年踩过的
+      // unlink+create 竞态同款,prepare.mjs 同款复核)。内容不是自己的就退出竞争,
+      // 避免两个实例同时自认持有接管锁 → 双持有主锁。
+      const own = readTakeoverInfo(takeoverPath);
+      if (!own || own.token !== token) return false;
+      // 持有接管锁后复核主锁:可能已被别的实例接管重建(变新),那就不是我们的了
+      const recheck = readLockInfo(path);
+      if (recheck && !isLockStale(recheck)) return false; // 被别的实例刷新成活锁,不抢
+      try { unlinkSync(path); } catch { /* 已被抢占清理过 */ }
+      // round4 D6(blocker 修复):宽 catch 不能吞编程错误——round3 自己踩过
+      // ReferenceError 被 catch 吞掉的坑,同类模式不许再留。wx 成功 = 文件是**我们**
+      // 创建的,writeOwn 失败时 close + unlink 清掉 0 字节残留(否则后续轮询读到
+      // 新 mtime 的空锁一路走到超时);ReferenceError/TypeError 是编程错误,重新抛出,
+      // 不得静默降级成"抢占失败";其余带 errno 的 IO 错误(EEXIST 竞态等)才按
+      // 预期失败处理,交外层轮询重试。
+      let fd = null;
+      try {
+        fd = openSync(path, 'wx');
+        writeOwn(fd);
+        closeSync(fd);
+        fd = null;
+        return true;
+      } catch (e) {
+        if (fd != null) {
+          try { closeSync(fd); } catch { /* fd 已不可用 */ }
+          try { unlinkSync(path); } catch { /* 已被抢先清理 */ }
+        }
+        if (e instanceof ReferenceError || e instanceof TypeError) throw e;
+        return false; // 极端竞态/IO 错误下重建失败,交外层轮询重试而不是崩溃
+      }
+    } finally {
+      try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
+    }
+  }
+  return false;
+}
+
+export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS } = {}) {
+  const path = lockPathFor(owner, repo, pr);
+  const takeoverPath = `${path}.takeover`;
+  const deadline = Date.now() + timeoutMs;
+  const token = randomUUID();
+  // round4 D1:写入 ISO 8601 字符串(与同仓 prepare.mjs 的 new Date().toISOString() 一致),
+  // 不再写数字时间戳——round3 写数字导致 Date.parse 判据恒 NaN、自己写出的锁永远判不出
+  // 陈旧。判据侧对数字/ISO 两种形态都容错,旧格式数字残留锁不会踩坑。
+  const writeOwn = (fd) => writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), token }));
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx'); // 原子排他创建:已存在则抛 EEXIST,不存在才会创建成功
+      writeOwn(fd);
+      closeSync(fd);
+      return { path, acquired: true, token };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // 判陈旧(round3 D2,替换 round2 纯 pid 判定):「持有者进程死了」或「持有超过
+      // LOCK_STALE_MS」任一成立即陈旧(见 isLockStale)。一次性判定,不是心跳续期。
+      // 锁内容损坏/round1 遗留纯 pid 字符串格式(读不出 pid+token)时,退回 mtime 超时
+      // 兜底,这条兜底路径预期随存量锁文件自然淘汰。
+      const info = readLockInfo(path);
+      let stale = false;
+      if (info) {
+        stale = isLockStale(info);
+      } else {
+        try {
+          const st = statSync(path);
+          stale = Date.now() - st.mtimeMs > LOCK_STALE_MS;
+        } catch { /* 锁在检测瞬间被持有者自己释放,走下面超时判断/轮询重试 */ }
+      }
+      if (stale && tryTakeoverStaleLock(path, takeoverPath, token, writeOwn)) {
+        return { path, acquired: true, token };
+      }
+      if (Date.now() >= deadline) {
+        // 超时且锁还在被(可能仍然活着的)另一实例占用:不再是旧版的静默
+        // {acquired:false, timeout:true} —— 显式标注 needsIntervention,把持锁方 pid/
+        // 起始时间带出去,让调用方决定要不要报警/人工介入,而不是悄悄交给下一轮空转。
+        const holder = readLockInfo(path) ?? {};
+        return {
+          path, acquired: false, timeout: true, needsIntervention: true,
+          holderPid: holder.pid ?? null, holderStartedAt: holder.startedAt ?? null,
+        };
+      }
+      sleepSync(LOCK_POLL_MS);
+    }
+  }
+}
+
+export function releaseHoldLock(lockInfo) {
+  if (!lockInfo?.acquired) return { released: false, alreadyAbsent: false, notOwner: false };
+  // round2 D3:释放前核对 token,不再无条件按路径 unlink——旧版的 bug 是 acquire 写进 pid
+  // 却从来不读回来比对,release 时见路径存在就删。误删的后果是双实例同跑,比漏删严重
+  // 得多(同 main lock 的 releaseLockOwned 教训,见 lib.mjs releaseLockOwned)。
+  let raw;
+  try {
+    raw = readFileSync(lockInfo.path, 'utf8');
+  } catch (e) {
+    // round4 D5(blocker 修复):**读**失败与 unlink 失败同规则——只有 ENOENT 才是真
+    // 「已缺席」;EACCES 等其它 errno 是读取失败,报 alreadyAbsent:true 是事实错误且
+    // 静默(锁文件还在,调用方却以为没了)。非 ENOENT 写 stderr + 显式 readError。
+    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
+    process.stderr.write(`[signoff-hold] 读取锁失败(${lockInfo.path}):${e.code ?? e.message}\n`);
+    return { released: false, alreadyAbsent: false, notOwner: false, readError: e.code ?? String(e.message) };
+  }
+  let info = null;
+  try { info = JSON.parse(raw); } catch { /* legacy 纯 pid 字符串格式,无法核对 token */ }
+  if (!info || info.token !== lockInfo.token) {
+    return { released: false, alreadyAbsent: false, notOwner: true };
+  }
+  try {
+    unlinkSync(lockInfo.path);
+    return { released: true, alreadyAbsent: false, notOwner: false };
+  } catch (e) {
+    // round3 #6:unlink 失败 ≠ 锁不存在。ENOENT 才是真「已缺席」;EACCES/EBUSY/EROFS 等
+    // 是删除失败,报 alreadyAbsent:true 是事实错误且静默(调用方会以为锁已经没了,
+    // 而它其实还在)。非 ENOENT 写 stderr + 显式 unlinkError,不让调用方误读。
+    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
+    process.stderr.write(`[signoff-hold] 释放锁失败(unlink ${lockInfo.path}):${e.code ?? e.message}\n`);
+    return { released: false, alreadyAbsent: false, notOwner: false, unlinkError: e.code ?? String(e.message) };
+  }
 }

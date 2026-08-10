@@ -161,7 +161,7 @@ try {
     for (const h of relevantHazards) {
       L.push(`- \`${h.hazardId}\`:${h.pattern}(源自 PR #${h.originPr},由 #${h.fixPr} 证伪;命中路径 ${h.paths.join(' / ')})`);
     }
-    L.push('', '这些模式在本次改动涉及的路径上出现过;逐条确认本 PR 是否重现。', '');
+    L.push('', '这些模式在本次改动涉及的路径上出现过;逐条确认本 PR 是否重现——确认结论写进 `modelVerdictNote`(供人读),**不要**填进 `escapeAssessment[]`(该字段只覆盖逃逸候选集,见下方逃逸判定段)。', '');
   }
   if (injectedOpen.length > 0) {
     L.push('## 未决 findings(必须逐条 disposition,否则本轮判 invalid)', '');
@@ -214,6 +214,8 @@ try {
       L.push(`- \`${c.candidateId}\`(引用 PR #${c.referencedPr},来源 ${c.kind}):${c.excerpt}`);
     }
     L.push('', '对每条在 `escapeAssessment[]` 里给 `{candidateId, verdict:"yes"|"no", basis}`——`yes` 表示"本 PR 确实在修一个此前已合并 PR 逃过审查的问题",机器会据此登记逃逸模式(下次同路径 PR 的任务里就会带上它);`no` 也要给依据。', '');
+  } else {
+    L.push('本轮无逃逸候选(task.escapeCandidates 为空)——`escapeAssessment` 必须为空数组 `[]`;known hazards 的逐条确认不填这里,写进 `modelVerdictNote`。', '');
   }
   L.push('## 覆盖回执(逐段精确集合,缺/重/跨段一律 invalid)', '');
   L.push(`本次改动共 ${coverageKeys.length} 个 coverage key,分 ${segments.length} 段**顺序投递**(同一会话内分段,不增席位):`, '');
