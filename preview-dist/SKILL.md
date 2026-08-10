@@ -624,7 +624,7 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
 - 真正命中产品/UI 时运行 `signoff-hold.mjs --kind product`，真正命中架构调整时运行
   `signoff-hold.mjs --kind arch`（与 security/rules 两门共用同一套统一 hold 机制，
   product-hold.mjs / product-release.mjs 旧文件保留为兼容入口，新编排一律走
-  signoff-hold / signoff-release）；hold 动作 = 开讨论 issue + 发状态评论（带隐藏
+  signoff-hold（signoff-release 写入/摘标签脚本尚未合入，当前由维护者按本 SKILL 手工操作））；hold 动作 = 开讨论 issue + 发状态评论（带隐藏
   标记）+ 挂 `awaiting-discussion` 标签，**不再转 draft**（2026-08-09 起标签制取代
   draft 制：draft 带来的 hold↔ready 死循环与 PAT 权限问题随之消失，真正挡合并的是
   流程内部判定，标签只是 GitHub 后台的可筛性入口）；动作必须幂等（重复 hold 复用
@@ -642,7 +642,7 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
   发出前逐项确认；
 - 放行判定（release）：**admins 名单成员对当前 head 之后的 GitHub Approve**
   （`signoff.adminsApprovedCurrentHead=true`）；白名单在讨论 issue 或 PR 评论区任一处
-  明确同意（产品/架构门口径）后运行 `signoff-release.mjs --labels-only` 摘标签，
+  明确同意（产品/架构门口径）后由维护者按本 SKILL 手工摘标签（signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试），
   不能把摘标签留给作者；存量被旧 draft 制 hold 成 draft 的 PR，在门判定为不拦 /
   已放行时用 `gh pr ready` 一次性迁移恢复（幂等，已 ready 即跳过）；
 - PR 合并后运行 `close-product-issue.mjs`，避免讨论 issue 悬挂。
@@ -1657,9 +1657,9 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    human-thread 闸与 participants 闸共同保证，不依赖 claim 选择器自身识别 bot。
 3. **落地与补位**：先消费 held 的放行信号并自动 release——`signoff.
    adminsApprovedCurrentHead=true`（admins 对当前 head 之后 Approve）或产品/架构门
-   白名单在讨论 issue / PR 评论区明确同意时，运行
-   `node "<SKILL_ROOT>/scripts/signoff-release.mjs" <PR> --labels-only` 摘标签
-   （幂等，标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
+   白名单在讨论 issue / PR 评论区明确同意时，由维护者按本 SKILL 手工摘标签
+   （signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试；幂等，
+   标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
    一次性迁移恢复）；`auto.action=
    authorized-fast-merge` 的候选跳过阶段二独立审查，直接按 5.1「授权快速合并通道」
    复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
