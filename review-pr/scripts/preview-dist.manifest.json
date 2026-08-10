@@ -271,5 +271,6 @@
     "scripts/preview-dist.manifest.json",
     "scripts/dist/",
     "tests/"
-  ]
+  ],
+  "freshnessIgnore": []
 }

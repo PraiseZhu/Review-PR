@@ -197,5 +197,10 @@
     "scripts/dist",
     "tests",
     "scripts/preview-dist.manifest.json"
+  ],
+  "freshnessIgnore": [
+    "EVOLUTION.md",
+    "evolution/",
+    "scripts/evolution-note.mjs"
   ]
 }

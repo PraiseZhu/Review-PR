@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+  - 现象:auto 轮 #610 实测:扫描拿 head=5e0cc6c0 构建任务,审查 agent 执行期间作者 push d803f98f(修复了审查即将发现的 P1)。旧 snapshot 的 dirty 回执对新 head 不适用,主 agent 靠审查输出 fixGuidance 透露才察觉漂移,手动重建任务重审后 clean 合并。机器兜底链条(pre-merge receiptGate head 绑定 + merge-pr --match-head 原子护栏)工作正常,但 SKILL 3.5/4 无'消费回执前 gh pr view 核对 headRefOid 是否仍等于审查 snapshot'的显式检查点——漏核对会基于旧快照向作者发打回,违反 5.2 '不重复历史上已解决且已验证的意见'纪律,浪费一轮往返。
+  - 提案:SKILL.md 第 4 节 consumer 调用前加一句:主 agent 收到审查输出后先 gh pr view --json headRefOid 核对,与任务 snapshot 不一致则对新 head 重建 task/preflight 重审(旧快照回执保留作历史),一致才喂 consume-review-output。
+- `security-hardhit-fakekey-test-stub` **测试文件中的 FAKEKEY 测试桩(sk-FAKEKEY-*/xoxb-FAKEKEY-*)命中敏感内容硬门,12 处全量打回/投递跟进会话** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+  - 现象:PR #600 的 12 处硬命中全部位于 cindyplugin/src/__tests__/debugLogRedact.test.ts,内容为 sk-FAKEKEY-*/xoxb-FAKEKEY-* 测试桩(已人工核实非真实凭证),但硬命中门 fail-closed,无 allowPaths 豁免,整 PR 被打回走 fix-handoff。测试脱敏逻辑必须用假凭证形态的输入,属结构性误报。
+  - 提案:维护者评估:①把 cindyplugin/src/__tests__/ 加入 sensitiveContent.allowPaths(按 3.1 的既有误报治理通道);或②hard pattern 增加 FAKEKEY 字面量识别(排除 sk-FAKEKEY/xoxb-FAKEKEY 形态);或③维持现状(测试桩继续走打回+跟进会话流程,成本是每轮一次投递)。
 - `task-base-must-be-merge-base` **阶段二任务构建的 base 必须用 merge-base(或 gh baseRefOid),不能用最新 main tip** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open
   - 现象:本轮 #599 首次审查误传了 git rev-parse origin/main 的最新 tip 作为 base(#598 合并后 main 前移),base..head 线性差异把 main 侧已合入的 waitForFunction 修复误判成 PR 回退,产出 3 条伪 finding、多跑一轮重审。gh pr view 返回的 baseRefOid 与 merge-base 一致;base 分支在其生命周期内前进过(合并了其它 PR)时,用最新 tip 会引入 base 侧伪差异。审查 agent 已在 verificationGap 自查出 merge-base 口径但仍在 findingFamilies 报了 base 侧差异,两个口径内部不一致。
   - 提案:SKILL 3.0.1/build-review-task 文档明确:--base 必须传 merge-base(或 gh pr view 的 baseRefOid),并在任务 prompt 中提醒审查 agent:base..head 差异中非 merge-base 净贡献的部分不得报 finding
@@ -150,6 +156,7 @@
 
 - `escape-assessment-empty-contract-unstated` **逃逸候选集为空时 escapeAssessment 字段语义未声明,审查 agent 误填 known hazards 确认** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `7528c1c`
   - 现象:PR #599 实测:escapeCandidates=[] 时 prompt 无「逃逸判定」段,审查 agent 把 2 条 hz2-* known hazards 确认写进 escapeAssessment,consumer 判 invalid(缺/未知)。修复:候选为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote。
+  - 备注:[decided:2026-08-09] 落地 commit 7528c1c(AuthorDate 核实):逃逸候选集为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote,consumer 不再判 invalid
 - `rro1-disposition-non-injected-empty-case` **prompt 契约补明确:未注入未决项时 findingDispositions 必须为 [](bot thread 不属于注入项)** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598 首轮:审查 agent 把 Greptile P2 bot thread 当注入项写 resolved disposition,injectedOpen 为空判 invalid,手工规范化后消费。已在 build-review-task.mjs 字段形状处补空集规则。
   - 备注:[decided:2026-08-09] 落地 commit 15ca5d6(git show AuthorDate 核实)
@@ -194,8 +201,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: tracked
-  - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。若频繁发生可评估是否把 package.json 从 securityReviewPaths 收敛(仅维护者拍板)
+- `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
+  - 现象:本轮 #580/#603 均因改动含 package.json 触发 skip-security-review(3.8 供应链能力面防护,防自动化改坏自己);#605 同轮走完整自动化审查+admin-trust 合并,流程正常无缺口
+- `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 2 次,首见 2026-08-09,最近 2026-08-09,status: tracked
+  - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)再次因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。
 - `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 5 次,首见 2026-08-08,最近 2026-08-09,status: tracked
   - 现象:auto 轮 #580 唯一候选命中 SKILL 3.8 安全审查路径(package.json 在 securityReviewPaths),auto.action=skip-security-review,原样跳过不审不合不提醒。属设计上就该人来的人工审查,计数观察,不自动放开。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
