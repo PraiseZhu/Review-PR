@@ -217,22 +217,24 @@ PR 评论正文按此结构（不分 thread 模式与 `--conflict` 模式，只�
 <!-- dist:strip:end preview-tpl-abc -->
 ### 模板 D：产品/架构门告知（人格关闭）
 
-3.4 命中产品/UI 或架构 gate、运行 `product-hold.mjs` 时的 `commentBody`
-（`issueTitle`/`issueBody` 同一人格基调）：
+3.4 命中产品/UI 或架构 gate、运行 `signoff-hold.mjs --kind product|arch` 时的
+`commentBody`（`issueTitle`/`issueBody` 同一人格基调；security/rules 两门同模板，
+只换触发点描述）：
 
 ```text
 Mivo 拦了一下 PR #<N>，不是代码问题。
 
-这次动到了<产品行为/架构核心>（<具体触发点>），按流程得先和 <把关人> 对齐方向
-再往下写。
-已经开了讨论 issue：<链接>，PR 先转成 Draft 挂着。
+这次动到了<产品行为/架构核心/安全面/审查规则文档>（<具体触发点>），按流程得先
+和 <把关人> 对齐方向再往下写。
+已经开了讨论 issue：<链接>，PR 挂上了等待确认标签（awaiting-discussion）。
 
-对齐完在 issue 里回一句（或直接 Approve / 标回 Ready），我会自动把它放回 Ready
-继续审。
+对齐完在 issue 里回一句（或直接 Approve），我会自动摘标签继续审。
 ```
 
 纪律：**第一句必须先澄清"不是代码问题"**；全条无傲娇、**0 个表情**（人格与表情
-双关闭）；必须写明放行方式（讨论 issue 回复 / Approve / 标回 Ready 任一皆可）。
+双关闭）；必须写明放行方式（讨论 issue 回复 / Approve 任一皆可）；保证等级如实
+声明——「流程在等确认」是 T1（防疏忽），文案不出现「已拦截/已验证安全」这类
+T2 语气。
 
 <!-- dist:strip:start preview-tpl-ef -->
 ### 模板 E：合并致谢播报（群内公开）
@@ -631,6 +633,27 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
 陈旧"仍是审查 agent 的判断）。`enabled:false`、或本轮状态为 `skipped`/`failed`，
 **不降低**任何既有机器保证（preflight/覆盖对账/负向证据/逃逸闭环照常运行）。
 
+### 3.0.4 测试跑法（维护者本地验证，2026-08-10 定稿）
+
+全量测试的标准跑法（在 `review-pr/` 目录下）：
+
+```text
+node --test tests/*.test.mjs
+```
+
+- 覆盖 `tests/` 下**全部** `*.test.mjs`，包括自断言形态的脚本
+  （如 `tests/signoff-policy-script.test.mjs`——它不是 node:test 声明，靠模块顶层
+  自断言 + `process.exit(1)` 报失败；`node --test` 加载它计 1 条文件级条目，
+  断言失败会使该文件转红）。
+- `tests/` 目录之外**不得**存在任何 `*.test.mjs`——否则它不会被上面的 glob 覆盖，
+  成为标准跑法之外的裸奔测试（2026-08-10 事故：`scripts/signoff-policy.test.mjs`
+  曾坐在 glob 之外，四个策略函数(isUiTestPath / decideIssueReuse /
+  shouldCloseDiscussionIssue / classifyGateHits)的唯一测试从全量里漏掉，七轮审查
+  与四份终审均未发现）。`tests/test-file-location-guard.test.mjs` 机器强制此约束，
+  任何 `tests/` 之外的 `*.test.mjs` 都使全量转红。
+- 两个产物门单独跑：`node --test tests/build-dist.test.mjs` 与
+  `node --test tests/preview-dist.test.mjs`（产物重建后必须全绿）。
+
 ### 3.1 安全与隐私内容门（本阶段最先执行）
 
 任何 PR 都不允许携带凭证、密钥或个人隐私数据——这是先于格式门的第一道审计。
@@ -720,7 +743,10 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
 
 ### 3.4 产品/UI 与技术架构 gate
 
-本仓库维护者必须先消费 `context` 的 `productGate` 与 `archGate`，再进入普通代码审查：
+本仓库维护者必须先消费 `context` 的 `productGate`、`archGate` 与 `signoff` 字段，
+再进入普通代码审查（`signoff.triggers` 是 security/rules 两门 + arch 触发器的统一
+命中事实，`signoff.suggestedHolds` 是编排要执行的 hold 建议，消费规则见 3.8/3.9
+与本节下方「payload 合同」）：
 
 - 产品/UI gate：按 [references/internal-gates.md](references/internal-gates.md) 判定
   `exempt`、`needsProductCheck`、白名单同意（讨论 issue 留言与 PR 评论区直接回复
@@ -733,15 +759,30 @@ node "<SKILL_ROOT>/scripts/record-prescan-segment.mjs" <N> --finalize --base <ba
   表态，名单内成员自己提的 PR 也要显式确认（口径与两种 trigger 的处置见
   [references/internal-gates.md](references/internal-gates.md)「mobile 冷更（runtime
   fingerprint）触发器」）；
-- 真正命中产品/UI 时运行 `product-hold.mjs`，真正命中架构调整时运行
-  `product-hold.mjs --kind arch`；两者都要创建 issue、评论并转 draft，动作必须幂等；
-  `issueTitle`/`issueBody`/`commentBody` 按「对外话术与人格边界」模板 D 撰写
-  （人格关闭，第一句先澄清"不是代码问题"）；
+- 真正命中产品/UI 时运行 `signoff-hold.mjs --kind product`，真正命中架构调整时运行
+  `signoff-hold.mjs --kind arch`（与 security/rules 两门共用同一套统一 hold 机制，
+  product-hold.mjs / product-release.mjs 旧文件保留为兼容入口，新编排一律走
+  signoff-hold（signoff-release 写入/摘标签脚本尚未合入，当前由维护者按本 SKILL 手工操作））；hold 动作 = 开讨论 issue + 发状态评论（带隐藏
+  标记）+ 挂 `awaiting-discussion` 标签，**不再转 draft**（2026-08-09 起标签制取代
+  draft 制：draft 带来的 hold↔ready 死循环与 PAT 权限问题随之消失，真正挡合并的是
+  流程内部判定，标签只是 GitHub 后台的可筛性入口）；动作必须幂等（重复 hold 复用
+  既有讨论 issue，`decideIssueReuse` 语义，见 tests/signoff-policy-script.test.mjs）；
+- **payload 合同（写死，缺失即拒绝主动作）**：`issueTitle`/`issueBody`/`commentBody`
+  三字段全部非空，生成来源 = 门类模板（模板 D）+ PR 上下文（PR 号、作者、触发路径、
+  把关人），由主 agent 按「对外话术与人格边界」撰写（人格关闭，第一句先澄清"不是
+  代码问题"），经 `--payload-file`（推荐 `-` 走 stdin）传给 signoff-hold；脚本返回
+  `reason=missing-payload` 时**不得计为 held**（`held=false`），必须在轮次汇总里
+  如实记录「缺 payload 未 hold」，补 payload 重试，不能当「已拦截」收尾；
+- **hold 成功判据 = 三件套全成功**：标签 + 状态评论 + 讨论 issue 三样都成功才算
+  held；`issueCreated=false` / `commented=false` / `labels.changed=false` 任一失败
+  必须显式进轮次汇总（脚本输出逐字段可查），不得静默降级为「只打了标签」；
 - auto 模式 issue 新建成功后按配置发送一次讨论通知；交互模式在 issue、评论和通知
   发出前逐项确认；
-- 已被 hold 的 draft 由 `heldDraftResults` 消费，白名单明确同意（在讨论 issue 或
-  PR 评论区任一处回复均可）后运行 `product-release.mjs` 自动恢复 Ready，不能把
-  “标回 Ready”留给作者；
+- 放行判定（release）：**admins 名单成员对当前 head 之后的 GitHub Approve**
+  （`signoff.adminsApprovedCurrentHead=true`）；白名单在讨论 issue 或 PR 评论区任一处
+  明确同意（产品/架构门口径）后由维护者按本 SKILL 手工摘标签（signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试），
+  不能把摘标签留给作者；存量被旧 draft 制 hold 成 draft 的 PR，在门判定为不拦 /
+  已放行时用 `gh pr ready` 一次性迁移恢复（幂等，已 ready 即跳过）；
 - PR 合并后运行 `close-product-issue.mjs`，避免讨论 issue 悬挂。
 
 产品/UI gate 和架构 gate 的详细名单、阈值、Slack 归属、通知去重与异常处理见
@@ -863,24 +904,46 @@ review-pr 不应重复审查或合并，避免两套合并主体打架。配置�
   scheduler hook，但 `pre-check.mjs` 的契约是「轻量、快、exit 2 表示无活可做」，塞进 gh
   查询与可能的 revert PR 创建会破坏该契约，故未做；如需升级应另立独立 hook。
 
-### 3.8 审查执行环境安全
+### 3.8 审查执行环境安全（security 确认门）
 
 `pr-rules.json` 的 `securityReviewPaths`（缺省为空 = 门关闭）列出自动化自身有
 执行/供应链能力面的路径：review-pr 自身脚本/配置、CI workflow/actions、部署的
 skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏自己，不是防外部
 攻击——auto 批处理会 checkout 到 PR 分支再跑一部分确定性脚本 / 读取
 `pr-rules.json` 配置本身，若继续让 review-pr 用可能已被这次改动改坏的自己版本去
-自动审查并合并这次改动，会形成"改坏的版本审过并合入了自己"的自我损坏闭环。命中
-即 `context.mjs` 的 `auto.action=skip-security-review`，一律转人工，不自动审也不
-自动合；优先级仅次于 3.7 的 loop 托管排除，压过产品门/架构门/格式门/前置门，同样
-让位于安全与隐私门硬命中。是否启用、纳入哪些路径由目标仓库自己按贡献者可信度
-模型配置。
+自动审查并合并这次改动，会形成"改坏的版本审过并合入了自己"的自我损坏闭环。
+
+命中即 `context.mjs` 的 `auto.action=security-gate`（`signoff.triggers.security`
+非空），按维护者确认门（signoff）执行 hold——**不再静默 skip**（三门空转 = 命中
+无动作，正是 2026-08-09 要接通的缺陷）：挂 `awaiting-discussion` 标签 + 开讨论
+issue + 发状态评论，等 admins 名单成员（`admins`）对当前 head 之后显式 Approve
+放行（`signoff.adminsApprovedCurrentHead=true` 时本门不拦）。放行前不自动审、不
+自动合；放行后按 `auto.fallback` 继续原走向。优先级仅次于 3.7 的 loop 托管排除，
+压过产品门/架构门/格式门/前置门，同样让位于安全与隐私门硬命中。是否启用、纳入
+哪些路径由目标仓库自己按贡献者可信度模型配置。**保证等级如实声明**：本门是
+T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这个大概率疏忽变成显式等待；
+不冒充 T2（防恶意伪造），恶意者总能改掉配置本身，那不属于本门能力面。
 
 **唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
 可以压过本门——`mergeAuthorization.breakGlassApprovers` 名单成员发出的
 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
 不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
 与授权通道谁都压不过它。
+
+### 3.9 审查规则文档门（rules 确认门）
+
+`pr-rules.json` 的 `ruleFiles.required`（缺省为空 = 门关闭）列出审查规则文档
+（AGENTS.md、CLAUDE.md、docs/dev-rules/ 等）——规则文档是后续所有审查的判据来源，
+改它等于改审查标准本身，需要 admins 确认。
+
+命中即 `context.mjs` 的 `auto.action=rules-gate`（`signoff.triggers.rules` 非空），
+按维护者确认门（signoff）执行 hold（`signoff-hold.mjs --kind rules`），口径与 3.8
+完全一致：挂标签 + 开讨论 issue + 状态评论，admins 对当前 head 之后 Approve 即放行
+（放行前不自动审、不自动合，放行后按 `auto.fallback` 继续）。优先级低于 security
+门（命中 securityReviewPaths 时不走本门），不覆盖已包裹的 product-gate / arch-gate；
+`ruleFiles.required` 未配置时本门永不出现。`ruleFiles.ruleMap`（规则文档 → 管辖
+路径映射）命中明细随 `signoff.triggers.ruleMapHits` 带出，供编排辅助定性，不单独
+构成触发。保证等级同 3.8：T1（防疏忽/漂移），不冒充 T2。
 
 ## 4. 阶段二：独立代码审查
 
@@ -1534,10 +1597,13 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   structural-check，绝不可 bypass、不催办——本轮跳过，下一轮重新探测。
 - 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
   不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
-- 命中 `securityReviewPaths`（`skip-security-review`）：一律转人工，不自动审也不自动
-  合（详见「审查执行环境安全」）；未配置该键时此分支永不触发；`mergeAuthorization.breakGlassApprovers`
-  名单成员发 `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外
-  （`authorized-fast-merge`，见 5.1「授权快速合并通道」）。
+- 命中 `securityReviewPaths`（`security-gate`）或 `ruleFiles.required`（`rules-gate`）：
+  按维护者确认门（signoff）hold——挂 `awaiting-discussion` 标签 + 开讨论 issue +
+  状态评论，admins 对当前 head 之后 Approve 即放行，放行前不自动审、不自动合、放行
+  后按 `auto.fallback` 继续（详见「审查执行环境安全」「审查规则文档门」）；未配置
+  对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
+  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，
+  见 5.1「授权快速合并通道」）。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -1980,8 +2046,14 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （漏播的合并致谢由 `pre-check.mjs` 负责补发，**不在本阶段跑**：本轮次在「没有 open PR」
    时压根不会创建，而一批 PR 刚全部合完、open 清零正是最该发致谢的时刻，因此该动作必须与
    「有没有审查活」解耦，见 `notify-merge-backfill.mjs` 与「Skill 自同步」一节。）
-   `skip-loop-managed`／`skip-security-review` 的候选原样跳过、不 checkout、不提醒
-   （分别详见 3.7／3.8，未配置对应键时这两类永不出现）。
+   `skip-loop-managed` 的候选原样跳过、不 checkout、不提醒（详见 3.7，未配置对应键
+   时永不出现）；`security-gate`／`rules-gate` 的候选**不跳过**——进处理清单，按下方
+   「三门 hold 接线」调 `signoff-hold.mjs`（详见 3.8／3.9，未配置对应键时这两类永不
+   出现；命中但 admins 已对当前 head 之后 Approve 时不 hold，直接按 `auto.fallback`
+   继续）；`auto.action=signoff-hold-unavailable`（F3，2026-08-09）的候选**不按原
+   路由继续**——记人工介入、报 owner 排查 signoff-hold.mjs 调用点（见下方探测字段
+   段），排查后重跑本轮。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold
+   （见 3.4）。
    扫描完成后跑一次合并审计对账（只读核对孤儿 intent、补齐 result，见 5.8）：
 
    ```bash
@@ -2009,9 +2081,95 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
 2. **计划**：选入全部可处理候选，不设固定数量上限（宿主的并行 agent 上限自然限流，
    超出的排队等待即可）；落地顺序先按 3.6 的依赖关系、再按 `createdAt` 升序；对会改变
    base 的候选做文件重叠守卫，同一文件同一时刻只允许一个 PR 在审，重叠项排队等前一个
-   落地后再补入。审查 agent 在独立 worktree 并行运行；产品/UI 与架构命中项先串行执行
-   hold，格式打回、workflow approval 和 release 等轻操作按候选串行落地。
-3. **落地与补位**：先消费 held draft 的 issue 同意并自动 release；`auto.action=
+   落地后再补入。审查 agent 在独立 worktree 并行运行；**三门 hold 接线（串行执行，
+   每个候选最多一次）**：对 `auto.action` 为 product-gate / arch-gate / security-gate /
+   rules-gate 的候选（或 `signoff.suggestedHolds` 非空时），按
+   `signoff.suggestedHolds` 的优先级（security > rules > arch > product 之外的实际
+   action 顺序）取命中门，主 agent 按 3.4 的 payload 合同生成三字段文案，调：
+
+   ```bash
+   node "<SKILL_ROOT>/scripts/signoff-hold.mjs" <PR> --kind <product|arch|security|rules> --payload-file - <<'JSON'
+   { "issueTitle": "...", "issueBody": "...", "commentBody": "...{{ISSUE_URL}}..." }
+   JSON
+   ```
+
+   **三件套判据**：`held=true` 且 `issueCreated=true` 且 `commented=true` 且
+   `labels.changed=true`（或 `alreadyHeld=true` 复用）才算 hold 成功；`reason=
+   missing-payload` 不得计为 held，如实进轮次汇总并补 payload 重试；任一字段失败
+   （issueError / commentError / labelWarning）必须逐项进轮次汇总，不得静默降级为
+   「只打了标签」。格式打回、workflow approval 和 release 等轻操作按候选串行落地。
+
+   **`signoff.holdInvocation`（探测字段，不是正式 hold，也不是"可执行"的证明）**：
+   `context.mjs` 在算出 `auto.action` 落 security-gate / rules-gate / arch-gate
+   之一时，会自动对 `signoff-hold.mjs --kind <门> --dry-run` 发起一次真实子进程
+   调用尝试（无 payload、`--dry-run` 不落地任何 issue / 标签 / 评论），把结果原样
+   写进 `signoff.holdInvocation`（`kind` / `invoked` / `dryRun` / `ok` / `pr` /
+   `author` 等字段）。**`invoked=true` 只代表这次探测尝试本身返回了
+   `{ok:true,...}`**——它不能证明"调用点确实可执行"：探测有三种已知失败形态
+   （模块不存在 / 输出非 JSON / 子进程 `fail()` 非零退出），三种都会让
+   `invoked=false`。**`auto.action=signoff-hold-unavailable` 是给编排层 agent 的
+   信号，不是脚本级强制（F3，2026-08-09；round4 措辞更正）**：失败会重试一次
+   （瞬时网络 / 限流噪声），重试耗尽仍失败 → `context.mjs` 把 `auto.action`
+   **升级为 `signoff-hold-unavailable`**（人工介入类值——取值与 security-gate /
+   rules-gate / arch-gate 不同，按契约路由不会把它们混为一谈），同时失败原因写进
+   顶层 `configWarnings`——"连 hold 机制能不能调用都验证不了却继续放行"正是本批
+   要消灭的 fail-open。**如实声明：仓内没有任何机器机制能在编排 agent 疏漏时阻止
+   流程继续**——`context.mjs` 输出的唯一消费者就是编排层 agent（它读
+   `auto.action` 决定路由），仓内不存在、也未设计一个读该输出并强制执行的脚本级
+   dispatcher；要求"生产 .mjs 消费方"等于要求一次架构变更（机器级强制已记为后续
+   独立 PR，不在本 PR 范围）。因此以下是对编排层 agent 的**明确要求，不是对既有
+   机器保障的描述**：**编排遇到 `auto.action=signoff-hold-unavailable` 的候选，
+   必须升级为人工介入**——不得按原 hold 流程继续，记人工介入、报 owner 排查调用
+   点（signoff-hold.mjs 是否存在 / 依赖是否完整 / gh 鉴权是否可用），排查后重跑
+   本轮；跳过这条 = 在 hold 机制不可证明可执行时继续放行，正是本段要消灭的
+   fail-open。**成本与配对（R5，2026-08-10 修正，推导链可核）**：探测经
+   `lib.mjs` 的 `spawnScriptJson` 发起，两处调用（首次探测与失败后的重试，
+   `context.mjs`）**显式传 `timeoutMs: HOLD_PROBE_TIMEOUT_MS`**（默认 `20s`，
+   env `REVIEW_PR_HOLD_PROBE_TIMEOUT_MS` 可调）——**修前**这两处未显式传、
+   各自取默认 `180000ms`（`lib.mjs:2876`），单候选最坏 `2×180s=360s`，且
+   `--scan-all` 外层（默认 `180s`）会先于子进程输出升级 kill 它——**F3 的升级
+   在批量路径对病理场景不可达，且整个候选的扫描输出一并丢失**（复审席对照实验
+   实证：假 hold 进探测后 sleep，父层只收到自己的超时错误）。**修后**探测
+   `2×20s=40s ≪ 外层 180s`，升级重新可达、子进程 40s 内完成并输出。**外层
+   `SCAN_CHILD_TIMEOUT_MS`（默认 `180s`，env `REVIEW_PR_SCAN_CHILD_TIMEOUT_MS`
+   可调）与探测是显式配对的**：`外层 ≥ 2×探测 + 30s` 由测试锁定（默认值不变量），
+   那 30s 余量专门留给子进程探测之外的工作（graphql 60s 显式超时、diff 拉取等）；
+   「外层 ≥ 内层」不再是两个静默默认值的巧合。**整轮成本（不要只计 H）**：
+   `--scan-all` 为**每个** open 候选（共 N）拉一个子进程做基础扫描，另有 heldDraft
+   独立批次，命中三门的候选（H 个）再叠加探测——整轮最坏 ≈ N × 单 PR 扫描 +
+   heldDraft 批次 + ⌈H/4⌉ × 40s（4 并发，`mapPool`）。**边界（如实声明）**：外层
+   超时不升级为 `signoff-hold-unavailable`——子进程还有 graphql（60s 显式超时）、
+   diff 拉取等，叠加也能超外层，**本不变量不保证子进程永不超时，只保证探测不是
+   外层超时的原因**；「可区分是超时」≠「可区分为什么超时」，父进程
+   无法知道 kill 时卡在探测还是别处（D 否决，理由见 `context.mjs` 外层 spawn
+   上方注释）；探测不可用会走 F3 自身升级。编排排期计入这些延迟。它
+   **不替代**上面这一步主 agent 按 3.4 payload 合同发起的正式 hold（那次带真实
+   `issueTitle` / `issueBody` / `commentBody`，才会真正创建 issue、打标签、发评
+   论）。主 agent 判断是否需要发起正式 hold，仍按 `auto.action` /
+   `signoff.suggestedHolds`（`signoff-hold-unavailable` 除外，见上），不读
+   `holdInvocation`。
+
+   **`history.reviewThreads[].participants` 的数据边界（F2，2026-08-09；round4
+   措辞更正）**：`context.mjs` 经 GraphQL `comments(first:50)` 取线程评论，
+   **没有分页**——第 51 条起的评论不进 `claim` / `participants` / `lastComment`。
+   导出对象带显式截断标志：`commentsFetched`（实际取到条数）/ `commentsTotal`
+   （GraphQL `totalCount`，读不到为 `null`）/ `participantsTruncated`
+   （`totalCount` 不可读——无法证明完备，保守按截断处理——或 `fetched < total` 时
+   为 `true`）。**如实声明："flag=true 时不得据 `participants` 判无非白名单参与
+   者"是对编排层 agent 的约定，不是机器约束**——本输出与标志的唯一消费方是编排
+   层 agent，仓内没有脚本级机制强制执行该约定。**权威判定方是执行层（#13 的执行
+   端）**：它自己的 live 分页查询取全量评论、独立判定白名单参与者，`participants`
+   截断与否不影响它的判定（执行端独立分页是 defense-in-depth 设计，不是缺陷）。
+   本标志只用于让编排层在截断时**不做完备性断言**：不据 `participants` 下
+   "无非白名单参与者"的结论，也不把该 thread 静默跳过。`claim` 取线程**位置首条**评
+   论（`cs[0]`）原文——不是"bot 首条评论"：选择器自身不识别 bot，安全性由
+   human-thread 闸与 participants 闸共同保证，不依赖 claim 选择器自身识别 bot。
+3. **落地与补位**：先消费 held 的放行信号并自动 release——`signoff.
+   adminsApprovedCurrentHead=true`（admins 对当前 head 之后 Approve）或产品/架构门
+   白名单在讨论 issue / PR 评论区明确同意时，由维护者按本 SKILL 手工摘标签
+   （signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试；幂等，
+   标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
+   一次性迁移恢复）；`auto.action=
    authorized-fast-merge` 的候选跳过阶段二独立审查，直接按 5.1「授权快速合并通道」
    复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
    审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
@@ -2026,9 +2184,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    完（无论落地、跳过还是异常）运行一次 `refresh-lock.mjs --token <token>` 心跳续期；
    `lost=true` 时立即终止本轮剩余候选的所有写操作。
 
-auto 模式可以按维护者配置创建产品/架构讨论 issue、转 draft、自动 release 和发送一次
-定向通知；3B 的作者催办仍按旧流程的去重和停滞规则执行。auto 自己不修改 PR 代码，
-修复动作只发生在 5.4 的跟进会话里。
+auto 模式可以按维护者配置创建产品/架构/安全/规则门的讨论 issue、挂
+`awaiting-discussion` 标签（不再转 draft）、admins Approve 后自动 release（摘标签）
+和发送一次定向通知；3B 的作者催办仍按旧流程的去重和停滞规则执行。auto 自己不修改
+PR 代码，修复动作只发生在 5.4 的跟进会话里。
 
 ### 6.1 汇总输出格式
 
@@ -2094,7 +2253,7 @@ JSON 结构：
     不是需要对齐的不一致**（2026-08-01 前的历史记录曾把两者混同，导致审计时
     误读为“打回都是 REQUEST_CHANGES”，此处明确禁止复发）；
   - 5.5 主干代合并、5.6 代修合并：全程不提交 `gh pr review` → `none`；
-  - 产品/架构 hold（转 draft，未提交 review）→ `none`。
+  - 产品/架构/安全/规则门 hold（signoff-hold，未提交 review）→ `none`。
 
 `draftSkipped` **必须是 `[{pr, reason, url}]` 数组，禁止写成裸数字**（历史上
 只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，

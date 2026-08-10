@@ -26,9 +26,28 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT } from './lib.mjs';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+
+// ── 嵌套超时配对(R5,2026-08-10):「外层 ≥ 内层」必须显式成对,不能靠两个静默默认值 ──
+// 探测 spawnScriptJson 的 timeoutMs(lib.mjs 默认 180s 对本用途过大)。一次 --dry-run
+// 存在性探测(内部就一个 gh pr view)在健康环境 <1s,默认值在这里本就不合适——失败重试
+// 一次(见 F3),单候选最坏 2×HOLD_PROBE。外层(scan-all 自身子进程)必须 ≥ 内层最坏,
+// 否则父进程会在子进程输出升级前 kill 它(F3 的升级在批量路径不可达)。两端均可 env 覆盖:
+// 超时值是正当运维可调项,env 同时是行为测试把小值注入的手段。
+export const HOLD_PROBE_TIMEOUT_MS = resolveTimeoutMs(
+  process.env.REVIEW_PR_HOLD_PROBE_TIMEOUT_MS,
+  20_000, // 探测默认 20s:健康 <1s,20s 已是宽限;失败重试两次共最坏 40s
+);
+export const SCAN_CHILD_TIMEOUT_MS = resolveTimeoutMs(
+  process.env.REVIEW_PR_SCAN_CHILD_TIMEOUT_MS,
+  180_000, // 外层默认保持 180s:与 lib.mjs spawnScriptJson 默认一致,scan-all 批量行为零回归
+);
+export function resolveTimeoutMs(envValue, fallback) {
+  const n = Number(envValue);
+  return Number.isFinite(n) && n > 0 ? n : fallback; // 非法/缺省 → 默认,勿用 0/负数(会立即 kill)
+}
 
 // ── PR 提交规范与维护者 gate 配置：单一真相源在 Skill config/pr-rules.json ──
 // featureSections / bugfixSections 需与 .github/PULL_REQUEST_TEMPLATE.md 的必填段落
@@ -80,7 +99,11 @@ const STRUCTURAL_BYPASS_ALLOWLIST = new Set(prRules.structuralBypassAllowlist ??
 // (是否适用取决于目标仓库的贡献者可信度模型,由仓库自己配置决定):命中就转人工看一眼,
 // 不让 review-pr 用可能已被这次改动改坏的自己版本去审查/合并这次改动本身,详见 SKILL
 // 「审查执行环境安全」。配置缺失(securityReviewPaths 为空)= 功能关闭,不扫描不拦截。
-const SECURITY_REVIEW_RE = prRules.securityReviewPaths?.length ? new RegExp(prRules.securityReviewPaths.join('|')) : null;
+// D2(2026-08-09,PR #12 round2):此前本文件在这里自建一份 SECURITY_REVIEW_RE 正则独立判定
+// security 命中,与下方 classifyGateHits(lib.mjs,signoff-policy.test.mjs 共用同一份)的
+// security 分支各算各的——两处判据字面等价但物理上是两份实现,一旦其中一处改动(如加过滤/
+// 改大小写口径)忘了同步另一处就会悄悄漂移。已删除本地正则,security 命中判定唯一走下方
+// classifyGateHits({ securityReviewPaths, ... }).security,不留第二份实现。
 // 自动跟进修复名单:这些作者的 PR 卡在作者侧问题时不打回 / 不催办,由 skill 开跟进会话自己修
 // (owner 本人的 PR 对自动化账号是 own-pr,GitHub 禁止对自己的 PR 提 REQUEST_CHANGES / APPROVE,
 // 打回路径本来就走不通),详见 SKILL「自动跟进修复(fix-handoff)」。
@@ -183,8 +206,8 @@ const GQL = `
     repository(owner:$owner,name:$repo){
       pullRequest(number:$num){
         reviewThreads(first:100){ nodes{
-          isResolved isOutdated path
-          comments(first:50){ nodes{ author{ login __typename } body createdAt } }
+          id isResolved isOutdated path
+          comments(first:50){ totalCount nodes{ author{ login __typename } body createdAt } }
         }}
         comments(first:100){ nodes{ author{ login __typename } body createdAt updatedAt url } }
         timeline: commits(last:100){ nodes{ commit{ committedDate messageHeadline oid } } }
@@ -269,15 +292,22 @@ if (process.argv.includes('--scan-all')) {
       }
     }
 
-    // 只读扫描,4 并发安全;单条失败折叠成 ok:false 条目,不炸整批
+    // 只读扫描,4 并发安全;单条失败折叠成 ok:false 条目,不炸整批。
+    // R5(2026-08-10)显式传 timeoutMs:外层(SCAN_CHILD)必须 ≥ 内层探测最坏
+    // (2×HOLD_PROBE),否则父进程会在子进程输出 signoff-hold-unavailable 前 kill 它。
+    // D 否决理由(勿把这里改成 signoff-hold-unavailable):本处超时失败**不升级**——
+    // 「可区分是超时」≠「可区分为什么超时」:子进程含 graphql(60s 显式超时)、diff 拉取
+    // 等多慢调用,叠加也能超外层,父进程无法知道 kill 时卡在探测还是卡在别处;探测
+    // (≤2×20s=40s)反证后,父超时更可能是非探测原因,升级 = 把可观测失败换成错误归因
+    // (探测不可用时自会走 F3 升级,无需此处兜底)。
     const results = await mapPool(candidates, 4, async (c) => {
-      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan']);
+      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan'], { timeoutMs: SCAN_CHILD_TIMEOUT_MS });
       return r && r.ok ? r : { ok: false, pr: c.number, error: r?.error ?? '未知失败' };
     });
     // 被 hold 的 draft 同样跑单 PR --scan(输出带 held 字段与 discussionIssue 白名单留言原料);
     // 预筛失败兜底进来的普通 draft 扫完 held=null,主 agent 直接忽略即可
     const heldDraftResults = (await mapPool(heldDraftCandidates, 4, async (c) => {
-      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan']);
+      const r = await spawnScriptJson(SELF_PATH, [String(c.number), '--scan'], { timeoutMs: SCAN_CHILD_TIMEOUT_MS });
       return r && r.ok ? r : { ok: false, pr: c.number, error: r?.error ?? '未知失败' };
     })).filter((r) => !r.ok || r.held != null);
 
@@ -429,8 +459,20 @@ try {
   // 配置(或 CI workflow/actions / 部署的 skill 定义 / package.json 与 lockfile),继续让
   // review-pr 用可能已被这次改动改坏的版本去自动审查并合并这次改动,会形成"改坏的版本审过
   // 并合入了自己"的自我损坏闭环——一律转人工,不自动审、不自动合(见下方 auto 覆盖)。
-  const securityReviewFiles = SECURITY_REVIEW_RE ? files.map((f) => f.path).filter((p) => SECURITY_REVIEW_RE.test(p)) : [];
+  // ── 规则文档门(rules):改动 ruleFiles.required 列出的审查规则文档 → 维护者确认门 hold ──
+  // security 与 rules 触发判定与 signoff-policy.test.mjs 共用 lib.mjs 的 classifyGateHits
+  // (单一来源,防漂移;D2 修订前 security 曾各算各的,见上方注释);ruleMap(规则文档 → 管辖
+  // 路径映射)命中明细单独带出,供编排按目标仓库配置语义辅助定性,不构成 rules 门本身的
+  // 触发(触发只看 required 清单)。
+  const gatePathHits = classifyGateHits({
+    paths: files.map((f) => f.path),
+    securityReviewPaths: prRules.securityReviewPaths ?? [],
+    ruleFiles: prRules.ruleFiles ?? null,
+  });
+  const securityReviewFiles = gatePathHits.security;
   const hitsSecurityReviewPaths = securityReviewFiles.length > 0;
+  const rulesHitFiles = gatePathHits.rules;
+  const hitsRuleFiles = rulesHitFiles.length > 0;
 
   // UI 面路径命中(产品门与 UI 证据提醒共用;证据检查只看代码改动,排除纯 .md 文档)。
   // uiExcludePaths(多语言 locale 等纯文案数据)整体不算 UI:证据与产品门都不触发。
@@ -525,14 +567,52 @@ try {
   const rawThreads = g.reviewThreads?.nodes ?? [];
   const reviewThreads = rawThreads.map((t) => {
     const cs = t.comments?.nodes ?? [];
+    // F2(2026-08-09,round3):GraphQL comments(first:50) 无分页,第 51 条起的评论不进本
+    // 映射(claim/participants/lastComment 都只覆盖前 50 条)。截断必须显式可观测,不许
+    // 静默声称完备:
+    //   - commentsFetched:本映射实际拿到的评论条数;
+    //   - commentsTotal:GraphQL 连接返回的 totalCount(真实总条数);读不到时为 null;
+    //   - participantsTruncated:totalCount 不可读(无法证明完备,保守按截断处理)或
+    //     fetched < total 时为 true。true 时 participants **不构成**「无非白名单参与者」
+    //     的判断依据——这是**对编排层 agent 的约定,不是机器约束**(本输出唯一消费方是
+    //     编排层 agent,仓内无脚本级强制);权威判定方是执行层(#13 的执行端,独立分页取
+    //     全),本标志只用于让编排层在截断时不做完备性断言(SKILL「三门 hold 接线」同段)。
+    const commentsFetched = cs.length;
+    const commentsTotal = t.comments?.totalCount ?? null;
+    const participantsTruncated = commentsTotal == null || commentsFetched < commentsTotal;
     return {
+      id: t.id ?? null,
       isResolved: t.isResolved,
       isOutdated: t.isOutdated,
       path: t.path,
       author: cs[0]?.author?.login ?? '(unknown)',
       isBot: isBot(cs[0]?.author),
       count: cs.length,
-      lastComment: clip(cs[cs.length - 1]?.body, 300),
+      // D7(2026-08-09,round2,为 #13 补数据契约):#13 的根因之一是导出形状只给了
+      // comments[0] 的 author,claim 文本却拿 lastComment(线程最后一条评论——往往是人肉
+      // 异议回复,不是开线程者的断言)顶替,结果把一个真实人类的反对意见当成"待验证的
+      // claim"自动 resolve 掉。这里补两个字段,不改 lastComment 的既有语义(它依然是"最后
+      // 一条评论原文",仍可能被其它用途消费,只是**绝不能被当 claim 用**):
+      //   - claim:线程**位置首条**评论(cs[0])的原文,才是应该被验证/回应的"断言"来源;
+      //     同样遵循 SC-2 不截断(截断会把长断言的关键论据切掉,导致语义匹配漏判/误判)。
+      //     F5(2026-08-09,round3)措辞更正:cs[0] 是"位置首条"评论,不是"bot 首条
+      //     评论"——选择器自身不识别 bot;安全性由 human-thread 闸与 participants 闸
+      //     共同保证(bot 开 thread 时 cs[0] 就是 bot 的断言;真人开 thread 被 human-thread
+      //     闸拦掉,走不到证据判据),不依赖 claim 选择器自身识别 bot。
+      //   - participants:线程内全部评论作者 + isBot 标记,供下游按自己的机器人白名单
+      //     判断"这条线程是否有非白名单机器人的真人参与"——本文件不掌握下游的白名单口径,
+      //     给全量参与者比给一个单一 flag 更不会漏信息;覆盖范围 = 前 50 条评论,截断
+      //     情形见上方 participantsTruncated。
+      claim: (cs[0]?.body ?? '').replace(/\r/g, ''),
+      participants: cs.map((c) => ({ author: c.author?.login ?? '(unknown)', isBot: isBot(c.author) })),
+      commentsFetched,
+      commentsTotal,
+      participantsTruncated,
+      // SC-2(2026-08-09):claim 文本(#13 resolve-threads.mjs 的证据绑定消费方)不许截断——
+      // 300 字截断会把长评论的关键论据切掉,导致语义证据匹配漏判/误判。全文原样透出。
+      // D7 更正:本字段是"线程最后一条评论原文",不是 claim 本身,下游判定证据时应改读
+      // 上面新增的 claim 字段(cs[0] 的原文),lastComment 只作辅助上下文用途保留。
+      lastComment: (cs[cs.length - 1]?.body ?? '').replace(/\r/g, ''),
     };
   });
 
@@ -1380,17 +1460,154 @@ try {
     autoSkip = true;
   }
 
-  // ── 安全审查门覆盖(优先级仅次于 loop 托管排除——loop 托管已经不审不合,本门无需重复覆盖;
-  // 压过产品门 / 架构门 / 格式门 / 前置门的一切结论,但同样让位于安全与隐私门硬命中):
-  // 命中 securityReviewPaths 一律转人工,不自动审、不自动合(详见 SKILL「审查执行环境安全」)。
-  // securityReviewPaths 未配置时 hitsSecurityReviewPaths 恒为 false,本覆盖天然不生效。
-  // authorizedFastMerge.eligible=true 时也不覆盖(decision:授权通道可以压过 securityReviewPaths,
-  // 因为授权本身就是"人工已过的凭证",见 SKILL 5.1「授权快速合并通道」)。──
-  if (!securityBlocked && hitsSecurityReviewPaths && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
-    autoAction = 'skip-security-review';
-    autoReason = `命中安全审查路径(${securityReviewFiles.join(' / ')})——这类改动涉及 review-pr 自身的执行/供应链能力面,继续让 review-pr 自动审查并合并这类改动,一旦改坏了自动化本身,会形成"改坏的版本审过并合入了自己"的自我损坏闭环,一律转人工审查,不自动审也不自动合`;
-    autoSkip = true;
+  // ── 维护者确认门:security / rules 两门覆盖(优先级:loop 托管排除 > security > rules;
+  // 压过产品门 / 架构门 / 格式门 / 前置门的一切结论,但同样让位于安全与隐私门硬命中)。
+  // 命中 securityReviewPaths / ruleFiles.required → 挂 awaiting-discussion 标签 + 开讨论
+  // issue + 状态评论(signoff-hold.mjs --kind security/rules),等 admins 名单成员对当前
+  // head 之后显式 Approve 放行(adminsApprovedCurrentHead)——放行前不自动审、不自动合;
+  // 放行后按 auto.fallback 继续原走向。旧「命中即静默 skip(纯记录)」路径已废除:
+  // 「三门空转(命中无动作)」正是本次要接通的缺陷,命中必须有可观测 hold 动作。
+  // securityReviewPaths / ruleFiles.required 未配置时对应 hits 恒为 false,覆盖天然不生效。
+  // authorizedFastMerge.eligible=true 时也不覆盖(授权通道可以压过这两门,因为授权本身
+  // 就是"人工已过的凭证",见 SKILL 5.1「授权快速合并通道」)。
+  // 放行信号:admins 名单成员在当前 head 之后提交的 GitHub APPROVED(只认 admins,不认
+  // 普通白名单;只认当前 head 之后,旧代码上的 Approve 不作数)。
+  // SC-3(2026-08-09 修订):判据从「submittedAt 时间戳 >= latestCommitDate」改绑「commit
+  // oid === 当前 head」——时间戳口径的反例:维护者在旧 commit 上 Approve,之后作者又推了
+  // 一个新 commit,若新 commit 的 committedDate 早于 review 的 submittedAt(时钟偏移/批量
+  // rebase 场景），时间戳比较会误判为"已放行"，但那次 Approve 实际绑定的是旧代码。改用
+  // reviewNodesForBasis(latestOpinionatedReviews,已带 commit.oid,与 approvalBasis 判定
+  // 同源)的 commit.oid 精确比对 meta.headRefOid。
+  // D5①(2026-08-09,round2 更正):此前这里写"与 SC(signoff-release.mjs)的 release 判据
+  // 同一真相源,消除双头"——读过 signoff-release.mjs 后确认这是假的:该脚本内部完全没有
+  // APPROVED/oid/submittedAt 任何判定逻辑,它的放行判据是隐藏标记评论(`parseLastHoldMarker`
+  // / `parseSignoffReleases` 解析的 HTML 注释标记),靠 --gates/--by 显式传参写入,和这里的
+  // GitHub Approve + commit.oid 比对是两套完全独立的机制、不存在共享真相源。两者能并存不
+  // 冲突,是因为 signoff-hold/signoff-release 那套标记流转只在被 hold 过的 PR 上生效
+  // (reason=not-held-by-flow 时直接不介入),而本字段的 adminsApprovedCurrentHead 判定
+  // 每轮都会算,两者管的是同一个"放行"结果的不同输入来源,不是同一个真相源的两次读取。──
+  // D6(2026-08-09,round2):oid 判据的 3 个未解释假阴性(过度拦截)缺口:
+  // ① commit 为 null 时到底是"没识别到 commit"还是"oid 真的不匹配",此前不区分,报出来的
+  //    adminsApprovedCurrentHead=false 让人以为"确定没人放行",实际可能只是数据缺口;
+  // ② latestOpinionatedReviews(first:100)有分页上限,>100 个曾发表意见的审查者时第 2 页
+  //    的 admin Approve 会被本判据静默漏看——reviewsCompleteForBasis 已经算好但此前只喂给
+  //    了 evaluateApprovalBasis/approvalBasis 那一路,这里补上同一份诊断消费;
+  // ③ 与 findApproveMergeAuthorization/parseApproveMergeShaCommands(lib.mjs)同源的
+  //    .toLowerCase() 规范化此前缺失,大小写不一致的 oid 会被误判为不匹配。
+  const adminApprovedReviews = reviewNodesForBasis.filter(
+    (n) => n.state === 'APPROVED' && ADMIN_LOGINS.includes((n.author?.login ?? '').toLowerCase()),
+  );
+  const headRefOidLower = (meta.headRefOid ?? '').toLowerCase();
+  const adminsApprovedCurrentHead = headRefOidLower.length > 0 && adminApprovedReviews.some(
+    (n) => (n.commit?.oid ?? '').toLowerCase() === headRefOidLower,
+  );
+  const adminApprovalsMissingCommit = adminApprovedReviews.filter((n) => !n.commit?.oid);
+  if (adminApprovalsMissingCommit.length > 0 && !adminsApprovedCurrentHead) {
+    CONFIG_WARNINGS.push(
+      `${adminApprovalsMissingCommit.length} 条 admin Approve 缺少 commit.oid(GraphQL 未返回该字段)——`
+      + '无法判定是否绑定当前 head,adminsApprovedCurrentHead=false 不代表"确定没人在当前 head 之后 '
+      + 'Approve",可能只是这几条数据判不出来,建议人工核实',
+    );
   }
+  if (!adminsApprovedCurrentHead && !reviewsCompleteForBasis) {
+    CONFIG_WARNINGS.push(
+      'latestOpinionatedReviews 分页未取全(reviewsCompleteForBasis=false)——安全/规则确认门的 '
+      + 'adminsApprovedCurrentHead 判定可能因为翻页边界漏看了 admin 的 Approve,不代表确定未放行,'
+      + '触发 hold 前建议先确认该 PR 的审查者数量是否超过单页上限(100)',
+    );
+  }
+  if (!securityBlocked && hitsSecurityReviewPaths && !adminsApprovedCurrentHead
+    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
+    autoAction = 'security-gate';
+    autoReason = `命中安全审查路径(${securityReviewFiles.join(' / ')})——这类改动涉及 review-pr 自身的执行/供应链能力面,继续让 review-pr 自动审查并合并这类改动,一旦改坏了自动化本身,会形成"改坏的版本审过并合入了自己"的自我损坏闭环。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
+    autoSkip = false;
+  } else if (!securityBlocked && !hitsSecurityReviewPaths && hitsRuleFiles && !adminsApprovedCurrentHead
+    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge'
+    && autoAction !== 'product-gate' && autoAction !== 'arch-gate') {
+    autoAction = 'rules-gate';
+    autoReason = `命中审查规则文档(${rulesHitFiles.join(' / ')})——规则文档是后续所有审查的判据来源,改它等于改审查标准本身,需要 admins 确认。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
+    autoSkip = false;
+  }
+
+  // ── SC-1(2026-08-09):三门 hold 的真实可执行调用点 ──
+  // 此前 security-gate/rules-gate/arch-gate 只在这里"算出结论"就停,唯一完整的调用形式
+  // 在 SKILL.md 是一段 Markdown 示例,命中候选照样失联(见 dispatch)。这里补一次
+  // signoff-hold.mjs 的 --dry-run 探测调用(脚本调脚本,child_process 真 spawn,不写任何
+  // 外部状态)——用于让"命中 → 是否真的会触发 hold 动作"这件事可观测(holdInvocation),
+  // 不替代主 agent 按 SKILL 3.4 生成 payload 后的正式 hold(那次仍需要 issueTitle /
+  // issueBody / commentBody,本调用没有文案、且 --dry-run 不落地任何外部状态)。
+  const HOLD_KIND_BY_ACTION = { 'security-gate': 'security', 'rules-gate': 'rules', 'arch-gate': 'arch' };
+  const SIGNOFF_HOLD_PATH = fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url));
+  const holdKind = HOLD_KIND_BY_ACTION[autoAction] ?? null;
+  // F3(2026-08-09,round3;round4 措辞更正):探测失败升级 auto.action=signoff-hold-unavailable。
+  // round3 曾称「探测失败有强制消费方」——round4 更正:本输出的唯一消费者是编排层 agent,
+  // 仓内没有脚本级 dispatcher 能强制执行,「强制消费方」是假声称;如实表述为「升级为人工
+  // 介入类值,编排层 agent 必须读取并升级为人工介入」(机器级强制属架构变更,另立独立 PR)。
+  // 此前失败只追加 configWarnings——没有下游强制读它,正式 hold 仍照 auto.action /
+  // suggestedHolds 继续 = 「连 hold 机制能不能调用都验证不了却继续放行」的 fail-open,
+  // 必须在本 PR(接线 PR)关闭。行为(round3 起不变):
+  //   - 失败重试一次(瞬时网络 / 限流噪声);
+  //   - 重试耗尽仍失败 → 升级 auto.action=signoff-hold-unavailable(人工介入类值,取值与
+  //     security-gate/rules-gate/arch-gate 不同,按契约路由不会把它们混为一谈),绝不回落
+  //     到静默放行;
+  //   - 失败原因同时写进 CONFIG_WARNINGS(scan/全量两处 print() 都带出),供排查。
+  // 成本(round4 补,推导链可核;round5 起事实更新,沿革见段末):下方两处 spawnScriptJson
+  // 调用显式传 timeoutMs: HOLD_PROBE_TIMEOUT_MS(默认 20s,env REVIEW_PR_HOLD_PROBE_TIMEOUT_MS
+  // 可调)→ 单候选最坏 2×20s = 40s(失败重试一次,见 F3)。--scan-all 下探测按候选发生,
+  // mapPool(candidates, 4, …) 并发(非串行),整轮按 SKILL.md 成本段口径 ≈ N×单 PR 扫描 +
+  // heldDraft 批次 + ⌈H/4⌉×40s,H=本轮命中三门候选数;单候选 40s 是单候选上界,不是整轮上界。
+  // 沿革:round4 时这两处未显式传、各自取默认 180_000ms(lib.mjs spawnScriptJson
+  // `{ timeoutMs = 180_000 } = {}`),单候选最坏 2×180s = 360s;round5 改为显式 20s。
+  // 编排排期计入该延迟,勿在短超时下当实时检查。
+  // D3(2026-08-09,PR #12 round2,全局规则 12「失败可见」):spawnScriptJson 对「模块不存在 /
+  // 输出非 JSON / 子进程 fail() 退出 1」三种探测失败一律折叠成 { ok:false, error }。
+  let holdInvocation = null;
+  if (holdKind) {
+    holdInvocation = await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run'], { timeoutMs: HOLD_PROBE_TIMEOUT_MS });
+    if (holdInvocation?.ok !== true) {
+      holdInvocation = await spawnScriptJson(SIGNOFF_HOLD_PATH, [String(pr), '--kind', holdKind, '--dry-run'], { timeoutMs: HOLD_PROBE_TIMEOUT_MS });
+    }
+    if (holdInvocation?.ok !== true) {
+      const probeError = holdInvocation?.error ?? '未知原因(spawnScriptJson 返回非 {ok:true,...} 形态)';
+      CONFIG_WARNINGS.push(
+        `signoff-hold.mjs 的 --dry-run 探测调用重试后仍未成功(kind=${holdKind}):${probeError}——三门 hold 的调用点当前不可证明可执行,已把 auto.action 升级为 signoff-hold-unavailable(人工介入),编排不得按原路由静默继续`,
+      );
+      autoAction = 'signoff-hold-unavailable';
+      autoReason = `命中 ${holdKind} 门但 signoff-hold.mjs 的 --dry-run 探测重试后仍失败(${probeError})——hold 机制调用点不可证明可执行,不能静默按原走向继续,需人工介入排查(signoff-hold.mjs 是否存在 / 依赖是否完整 / gh 鉴权是否可用)后重跑`;
+      autoSkip = false;
+    }
+  }
+
+  // ── SC-4(2026-08-09):signoff 判据消除双头 ──
+  // scan 模式与全量模式此前各自独立构造一份 signoff 对象,字段与推导逻辑逐字重复
+  // (唯一差异是全量模式多一个 note)。改为在分支前算一次共享核心,两处引用同一个值,
+  // 不留两份独立实现。判定事实唯一 owner 仍是 adminsApprovedCurrentHead 本字段
+  // (与 lib.mjs classifyGateHits 同源);hold 动作唯一 owner 仍是 signoff-hold.mjs——
+  // 本字段新增的 holdInvocation 只是"调用点是否真被执行"的探测记录,不是第二个判定来源。
+  const signoffCore = {
+    label: (prRules.signoffGate?.label ?? SIGNOFF_LABEL_DEFAULT).trim() || SIGNOFF_LABEL_DEFAULT,
+    triggers: {
+      security: securityReviewFiles,
+      rules: rulesHitFiles,
+      ruleMapHits: gatePathHits.ruleMapHits,
+      arch: archTriggers,
+    },
+    adminsApprovedCurrentHead,
+    suggestedHolds: [
+      ...(hitsSecurityReviewPaths && !adminsApprovedCurrentHead ? ['security'] : []),
+      ...(hitsRuleFiles && !adminsApprovedCurrentHead ? ['rules'] : []),
+      ...(needsArchCheck ? ['arch'] : []),
+    ],
+    // D4(2026-08-09,PR #12 round2):此前 invoked:true 是硬编码,即便 spawnScriptJson 因
+    // 「模块不存在/输出非 JSON/子进程 fail() 退出 1」而返回 {ok:false,...},invoked 仍然读
+    // true——"调用点是否真被执行"这个字段本身在撒谎。改为如实反映 holdInvocation.ok;
+    // 同时把 kind/dryRun/invoked 这三个"自描述字段"放在展开式**之后**,防止子进程返回值里
+    // 出现同名字段(如 signoff-hold.mjs --dry-run 输出自带的 dryRun:true)时被静默覆盖——
+    // 自描述字段的语义由本文件定义,子进程输出只应补充信息,不应反过来篡改它们。
+    holdInvocation: holdKind
+      ? { ...holdInvocation, kind: holdKind, dryRun: true, invoked: holdInvocation?.ok === true }
+      : { kind: null, dryRun: false, invoked: false, reason: 'auto.action 未命中三门(security-gate/rules-gate/arch-gate)' },
+  };
 
   const scanMode = process.argv.includes('--scan');
   if (scanMode) {
@@ -1420,6 +1637,7 @@ try {
       loopExclusion,
       security,
       format: { formatPass, formatIssues, hitsServer, hitsSecurityReviewPaths, securityReviewFiles, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice },
+      signoff: signoffCore,
       gate: {
         gatePass,
         blockClass,
@@ -1451,7 +1669,7 @@ try {
         isAdmin: isAdminAuthor,
         structuralBypassPending: autoAction === 'review' && blockClass === 'structural-check' && (isAdminAuthor || structuralBypassRoute === 'review-pending-approved-bypass'),
       },
-      note: 'scan 精简输出,仅供 auto 批处理阶段 1 扫描分类与汇总;需要 body / 历史全文时对该 PR 单独跑不带 --scan 的全量模式(审查子 agent 在自己 worktree 里自取,别在主 session 拉全量)。structuralBypassPending=true→本轮 action=review 是因为结构性 BLOCKED + 要么作者在 admins 名单但 approved shortcut 不成立(见 approvedShortcut.reason:聚合裁决未达 APPROVED / approve 未绑定当前 head / own-account 待授权——原因不唯一,补救按 reason 指向,别一律当"缺 APPROVED"),要么强制自动化审查策略开启(mergePolicy.requireAutomatedReviewForAutoMerge=true)下 approved shortcut 成立也先审查(SC-2:GitHub APPROVED 不替代自动化审查)——审查通过(0 P0/P1)后由回执支撑合并阶段走 admin bypass,不是普通审查流程,见 SKILL 5.1/5.3。authorizedFastMerge.eligible=true 时 action 已是 authorized-fast-merge,可直接进合并跳过审查——但 reportOnly(formatIssues/unresolvedThreadCount/nonRequiredFailures)非空时必须在汇总里显著提示,不阻断不代表可以吞掉;eligible=false 但 requested=true 时看 blockedReason(还差什么条件,只剩泄密硬门/冲突/required 检查三类)或 staleComments(授权命令的 SHA 不等于当前 head/当前 head 不可判——push/force-push 换 head 即作废,需对当前 head 重发)。',
+      note: 'scan 精简输出,仅供 auto 批处理阶段 1 扫描分类与汇总;需要 body / 历史全文时对该 PR 单独跑不带 --scan 的全量模式(审查子 agent 在自己 worktree 里自取,别在主 session 拉全量)。structuralBypassPending=true→本轮 action=review 是因为结构性 BLOCKED + 要么作者在 admins 名单但 approved shortcut 不成立(见 approvedShortcut.reason:聚合裁决未达 APPROVED / approve 未绑定当前 head / own-account 待授权——原因不唯一,补救按 reason 指向,别一律当"缺 APPROVED"),要么强制自动化审查策略开启(mergePolicy.requireAutomatedReviewForAutoMerge=true)下 approved shortcut 成立也先审查(SC-2:GitHub APPROVED 不替代自动化审查)——审查通过(0 P0/P1)后由回执支撑合并阶段走 admin bypass,不是普通审查流程,见 SKILL 5.1/5.3。authorizedFastMerge.eligible=true 时 action 已是 authorized-fast-merge,可直接进合并跳过审查——但 reportOnly(formatIssues/unresolvedThreadCount/nonRequiredFailures)非空时必须在汇总里显著提示,不阻断不代表可以吞掉;eligible=false 但 requested=true 时看 blockedReason(还差什么条件,只剩泄密硬门/冲突/required 检查三类)或 staleComments(授权命令的 SHA 不等于当前 head/当前 head 不可判——push/force-push 换 head 即作废,需对当前 head 重发)。signoff-hold-unavailable=命中 security/rules/arch 门但 signoff-hold.mjs 探测(失败重试一次后)仍不可执行(F3)→ 人工介入,不得按原路由静默继续,原因见 signoff.holdInvocation 与 configWarnings。',
     });
   } else {
   print({
@@ -1507,6 +1725,10 @@ try {
     history: { comments, reviewThreads, commits, latestCommitDate },
     productGate,
     archGate,
+    signoff: {
+      ...signoffCore,
+      note: '三门命中事实(securityReviewPaths / ruleFiles.required / archGate 触发器),供 auto 编排消费——命中 → 调 signoff-hold.mjs --kind <门> --payload-file(挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,不转 draft)。判定事实唯一 owner=本字段与 signoff-policy.test.mjs 锚定的 lib.mjs classifyGateHits;hold 动作唯一 owner=signoff-hold.mjs(脚本做幂等与去重)。suggestedHolds 只列「需要 hold 动作」的门:admins 名单成员已在当前 head 之后 Approve(adminsApprovedCurrentHead=true)时 security/rules 不列入;arch 的放行口径见 archGate.note(白名单/冷更把关人)。product 门走 productGate.needsProductCheck(既有)。holdInvocation 是本次 scan 期间对 signoff-hold.mjs 的一次 --dry-run 探测尝试(kind 命中三门之一时真 spawn 子进程,读 gh pr view 但不写任何外部状态)的**记录**,不是"调用点可执行"的证明——invoked=true 只代表这次探测本身返回了 {ok:true,...}(D4 修订:此前 invoked 是硬编码 true,即便模块不存在/输出非 JSON/子进程非零退出都照样读 true,现已改为如实取 holdInvocation.ok);invoked=false 或探测失败时,失败原因会同时写进顶层 configWarnings(D3),那才是排查"调用点是否真的可执行"该看的地方。本字段不替代主 agent 按 SKILL 3.4 生成 payload 后的正式 hold(那次带 issueTitle/issueBody/commentBody,真正落地 issue/标签/评论)。',
+    },
     authorizedFastMerge,
     // SC-1(2026-08-08):admin-trust 与 break-glass 名单显式区分;强制策略开关一并带出。
     mergePolicy: {
@@ -1545,7 +1767,7 @@ try {
       structuralBypassPending: autoAction === 'review' && blockClass === 'structural-check' && (isAdminAuthor || structuralBypassRoute === 'review-pending-approved-bypass'),
       wasPushedBack,
       latestPushbackDate,
-      note: 'structuralBypassPending=true→本轮 action=review 是因为结构性 BLOCKED(gate.blockClass=structural-check)+ (作者在 admins 名单但 approved shortcut 不成立(见 approvedShortcut.reason:聚合裁决未达 APPROVED / approve 未绑定当前 head / own-account 待授权;常见 ownPr,GitHub 422 禁止自批准)或强制自动化审查策略开启(mergePolicy.requireAutomatedReviewForAutoMerge=true)时 approved shortcut 成立也先审查,SC-2:GitHub APPROVED 不替代自动化审查)——这轮独立审查是"能否 admin bypass 合并"的实质替代凭证,通过(0 P0/P1)才能在合并阶段(pre-merge-check.mjs)走 admin bypass,不要求 APPROVED;不通过就是真的要修,不能因为作者是 admin 就放宽审查标准。authorizedFastMerge(见同名顶层字段)与本字段是两条独立路径:前者靠 breakGlassApprovers 名单成员发 /approve-merge(SC-1 拆分;未配置时兼容回退 admins)跳过本轮审查直接合,后者仍要审查、只是审查通过后不需要 APPROVED。ownPr=true→viewer(本流程账号)与作者是同一人,GitHub 硬性禁止对自己的 PR 提交 REQUEST_CHANGES/APPROVE(422)——3B 打回改发 event=COMMENT(保留行级 thread 但不触发"变更请求"语义)。真正挡合并的不是 event 类型,而是仓库自己的分支保护规则若配了 required_review_thread_resolution:只要提交的 review 里有 comments[] 生成的 thread 处于未 resolve,mergeStateStatus 就会停在 BLOCKED,与谁提交、什么 event 无关——这正是 ownPr=true 时要把每条 [阻断]/[必改] 尽最大努力锚成行级评论的原因;锚不到行、只能落进 body 总述的意见,若仓库没有该项 required check 就没有任何机制挡住合并,必须在报告 / 汇总里以"需要你"显著提示。3A 第 0 步的 self-approve 同理对 own-PR 不适用(APPROVE 一样会 422,needsSelfApproval 场景不会与 ownPr 同时成立,因为自己没法先挂 CR)。ownPr 与 selfFix 是两个独立轴:selfFix 只决定"卡住时是否自动开跟进会话",不决定 review API 能不能调,即便 selfFixAuthors 为空、ownPr=true 时 3B 仍必须走 COMMENT 分支。selfFix=true→作者在 selfFixAuthors 名单(pr-rules.json):该 PR 卡在作者侧问题(pushback-security / pushback-format / 审查不通过 / skip-gate 冲突·未 resolve·CI 失败 / skip-stale-pushback)时 3B 仍照常提交(event 按 ownPr 选,不因 selfFix 跳过),额外改走 SKILL「自动跟进修复(fix-handoff)」开跟进会话自己修。auto 模式分流(交互模式忽略本字段):isSkip=true→跳过类(扫描不 checkout,无需清理);isSkip=false→进本轮处理清单,全量处理不设固定名额、并行度由宿主 agent 上限自然限流(pushback-format 直接 3B / review 起审查子 agent 并行审 / approve-workflows 调 approve-workflows.mjs / bypass-structural-block 走 admin bypass 合并 / product-gate、arch-gate 主 agent 语义定性后 product-hold(arch 加 --kind arch)或按 fallback 继续),详见 SKILL「候选批处理」「产品 / UI 变更门」「技术架构变更门」。action ∈ {review, pushback-security, pushback-format, product-gate, arch-gate, skip-gate, skip-stale-pushback, approve-workflows, skip-workflow-ci-change, bypass-structural-block, skip-structural-block, skip-loop-managed, skip-security-review, authorized-fast-merge}。pushback-security=安全与隐私门硬命中(security.hardHits 非空,优先级最高、不被产品/架构门包裹,压过 loop 托管排除与安全审查门覆盖)→ 3B 打回要求移除内容、清理分支历史并轮换凭证,评论只写文件/行号/类型不引用原文;skip-loop-managed=命中 loopPrExclusion 且判定为 loop 自管(T1 或拿不准),不审不合不催(见 SKILL「Loop 托管 PR 排除」;配置缺失时本 action 永不出现)。skip-security-review=命中 securityReviewPaths,一律转人工审查,不自动审也不自动合(见 SKILL「审查执行环境安全」;优先级仅次于 skip-loop-managed,压过其余一切结论;配置缺失时本 action 永不出现)。product-gate=疑似产品/UI 变更且无白名单明确同意信号(确定性信号=白名单 PR Approve / 标回 ready;先语义判 productGate.discussionIssue.whitelistComments 与 productGate.prWhitelistComments(PR 评论区白名单直接回复,同等采信)是否明确同意推进,任一同意→按 fallback 继续,见 productGate 字段),fallback 存被包裹前的原走向。arch-gate=疑似较大技术架构调整且无技术白名单放行信号(消费规则同 product-gate,读 archGate 字段;产品门优先,两门不会同时出现)。触发器里的 cold-update-confirmed / cold-update-suspect 是 mobile 冷更(runtime fingerprint 变化):与技术框架变动同级但不看改动大小,也不受本门常规豁免——作者在白名单 / 普通 Approve / 标回 ready 都不算放行,只认 archGate.coldUpdate.approvers 明确针对冷更的表态(名单内成员自己提的 PR 也要显式确认),详见 archGate.coldUpdate 与其 note。approve-workflows=fork workflow 待批且未改 CI 配置→自动 approve 放行 CI(下一轮 CI 跑完再审);skip-workflow-ci-change=待批但改了 CI 配置→跳过、飞书点名让 owner 手动批;bypass-structural-block=结构性 BLOCKED + 当前账号可 bypass + 命中的必需检查类型全部在 structuralBypassAllowlist 内 + **approved shortcut 成立(reviewDecision=APPROVED 聚合裁决 ∧ approve 绑定当前 head ∧ own-account 配置约束通过,见 approvalBasis/approvedShortcut 字段)**→auto 模式经 merge-pr.mjs(--basis approved --admin)合并(安全前提:approved shortcut 成立 + 已跑 CI 无失败 + 0 未 resolve thread + CI 来源明确非 ci-unknown;2026-08-01 起 APPROVED 是硬性前提,不因作者是谁而减免,修复此前"机械前提满足就直接 bypass、reviewDecision 是什么都不看"的 fail-open;SC-2 2026-08-08:mergePolicy.requireAutomatedReviewForAutoMerge=true 时本 action 不出现——approved shortcut 成立也先 review,凭 current-head clean 回执在合并阶段走 basis=approved)。同样命中结构性 BLOCKED 但 approved shortcut 不成立时(原因见 approvedShortcut.reason)看作者是否在 admins 名单:在→action=review 且 auto.structuralBypassPending=true(进独立审查,通过后合并阶段改认"本轮审查通过"为 APPROVED 的替代凭证,见 auto.structuralBypassPending 的 note 与 pre-merge-check.mjs);不在→skip-structural-block,飞书点名让 owner 人工 Approve 或把作者加入 admins。skip-structural-block=结构性 BLOCKED 但机械前提不满足(无 bypass 权限 / 命中类型不在 allowlist 里),或机械前提满足但 approved shortcut 不成立(原因见 approvedShortcut.reason,不一定是缺 APPROVED——#469 形态就是聚合已 APPROVED 但 approve 绑定旧 head)且作者不在 admins 名单→跳过、飞书点名让 owner 处理。authorized-fast-merge=顶层 authorizedFastMerge.eligible=true(mergePolicy.breakGlassApprovers 名单成员——SC-1 拆分,未配置时兼容回退 admins——发 /approve-merge <当前 head 完整 40 位 SHA>——head 绑定,SHA 不等于当前 head 即失效;无泄密硬命中、无冲突、head 上 required 检查全绿)→跳过阶段二独立审查与 securityReviewPaths 直接进合并;这是紧急通道,格式门未过 / 未 resolve thread / 非 required 检查失败(如 Greptile)**不阻断** eligible,改记入 authorizedFastMerge.reportOnly(formatIssues/unresolvedThreadCount/nonRequiredFailures)——必须在汇总与合并致谢里显著提示,不能悄悄吞掉(机器职责从"拦"变成"留痕",owner 显式授权即自担责任);泄密硬门(security.hardHits)、mergeStateStatus=DIRTY、required 检查未全绿三者任何情况不可压过。产品/架构门优先级高于本通道,命中时不会落到这个 action。needsSelfApproval=true→该 PR 唯一阻塞是 viewer 自己挂的 CR、重审通过后合并前须先 gh pr review --approve 撤掉自己的 CR 再合(见 SKILL 3A)',
+      note: 'structuralBypassPending=true→本轮 action=review 是因为结构性 BLOCKED(gate.blockClass=structural-check)+ (作者在 admins 名单但 approved shortcut 不成立(见 approvedShortcut.reason:聚合裁决未达 APPROVED / approve 未绑定当前 head / own-account 待授权;常见 ownPr,GitHub 422 禁止自批准)或强制自动化审查策略开启(mergePolicy.requireAutomatedReviewForAutoMerge=true)时 approved shortcut 成立也先审查,SC-2:GitHub APPROVED 不替代自动化审查)——这轮独立审查是"能否 admin bypass 合并"的实质替代凭证,通过(0 P0/P1)才能在合并阶段(pre-merge-check.mjs)走 admin bypass,不要求 APPROVED;不通过就是真的要修,不能因为作者是 admin 就放宽审查标准。authorizedFastMerge(见同名顶层字段)与本字段是两条独立路径:前者靠 breakGlassApprovers 名单成员发 /approve-merge(SC-1 拆分;未配置时兼容回退 admins)跳过本轮审查直接合,后者仍要审查、只是审查通过后不需要 APPROVED。ownPr=true→viewer(本流程账号)与作者是同一人,GitHub 硬性禁止对自己的 PR 提交 REQUEST_CHANGES/APPROVE(422)——3B 打回改发 event=COMMENT(保留行级 thread 但不触发"变更请求"语义)。真正挡合并的不是 event 类型,而是仓库自己的分支保护规则若配了 required_review_thread_resolution:只要提交的 review 里有 comments[] 生成的 thread 处于未 resolve,mergeStateStatus 就会停在 BLOCKED,与谁提交、什么 event 无关——这正是 ownPr=true 时要把每条 [阻断]/[必改] 尽最大努力锚成行级评论的原因;锚不到行、只能落进 body 总述的意见,若仓库没有该项 required check 就没有任何机制挡住合并,必须在报告 / 汇总里以"需要你"显著提示。3A 第 0 步的 self-approve 同理对 own-PR 不适用(APPROVE 一样会 422,needsSelfApproval 场景不会与 ownPr 同时成立,因为自己没法先挂 CR)。ownPr 与 selfFix 是两个独立轴:selfFix 只决定"卡住时是否自动开跟进会话",不决定 review API 能不能调,即便 selfFixAuthors 为空、ownPr=true 时 3B 仍必须走 COMMENT 分支。selfFix=true→作者在 selfFixAuthors 名单(pr-rules.json):该 PR 卡在作者侧问题(pushback-security / pushback-format / 审查不通过 / skip-gate 冲突·未 resolve·CI 失败 / skip-stale-pushback)时 3B 仍照常提交(event 按 ownPr 选,不因 selfFix 跳过),额外改走 SKILL「自动跟进修复(fix-handoff)」开跟进会话自己修。auto 模式分流(交互模式忽略本字段):isSkip=true→跳过类(扫描不 checkout,无需清理);isSkip=false→进本轮处理清单,全量处理不设固定名额、并行度由宿主 agent 上限自然限流(pushback-format 直接 3B / review 起审查子 agent 并行审 / approve-workflows 调 approve-workflows.mjs / bypass-structural-block 走 admin bypass 合并 / product-gate、arch-gate、security-gate、rules-gate 主 agent 按 signoff 门编排(见 signoff 字段与 SKILL 3.4/3.8/3.9:调 signoff-hold.mjs --kind 对应门 --payload-file)或按 fallback 继续),详见 SKILL「候选批处理」「产品 / UI 变更门」「技术架构变更门」「审查执行环境安全」「审查规则文档门」。action ∈ {review, pushback-security, pushback-format, product-gate, arch-gate, security-gate, rules-gate, signoff-hold-unavailable, skip-gate, skip-stale-pushback, approve-workflows, skip-workflow-ci-change, bypass-structural-block, skip-structural-block, skip-loop-managed, authorized-fast-merge}。pushback-security=安全与隐私门硬命中(security.hardHits 非空,优先级最高、不被产品/架构门包裹,压过 loop 托管排除与 security/rules 两门覆盖)→ 3B 打回要求移除内容、清理分支历史并轮换凭证,评论只写文件/行号/类型不引用原文;skip-loop-managed=命中 loopPrExclusion 且判定为 loop 自管(T1 或拿不准),不审不合不催(见 SKILL「Loop 托管 PR 排除」;配置缺失时本 action 永不出现)。security-gate=命中 securityReviewPaths 且 admins 未在当前 head 之后 Approve → 维护者确认门(signoff)hold:挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论(signoff-hold --kind security),放行前不自动审、不自动合;admins 在当前 head 之后 Approve(adminsApprovedCurrentHead=true)即放行,按 fallback 继续(优先级仅次于 skip-loop-managed,压过产品/架构门;配置缺失时本 action 永不出现)。rules-gate=命中 ruleFiles.required 且 admins 未在当前 head 之后 Approve → 同 signoff hold(--kind rules),口径与 security-gate 一致(优先级低于 security-gate,不覆盖已包裹的 product-gate / arch-gate;配置缺失时本 action 永不出现)。signoff-hold-unavailable=命中 security/rules/arch 门但 signoff-hold.mjs 的 --dry-run 探测(失败重试一次后)仍不可执行(F3,2026-08-09)——hold 机制调用点无法验证,不得静默继续原走向,记人工介入排查调用点(signoff-hold.mjs 是否存在/依赖完整/gh 鉴权)后重跑,原因见 signoff.holdInvocation 与 configWarnings。product-gate=疑似产品/UI 变更且无白名单明确同意信号(确定性信号=白名单 PR Approve / 标回 ready;先语义判 productGate.discussionIssue.whitelistComments 与 productGate.prWhitelistComments(PR 评论区白名单直接回复,同等采信)是否明确同意推进,任一同意→按 fallback 继续,见 productGate 字段),fallback 存被包裹前的原走向。arch-gate=疑似较大技术架构调整且无技术白名单放行信号(消费规则同 product-gate,读 archGate 字段;产品门优先,两门不会同时出现)。触发器里的 cold-update-confirmed / cold-update-suspect 是 mobile 冷更(runtime fingerprint 变化):与技术框架变动同级但不看改动大小,也不受本门常规豁免——作者在白名单 / 普通 Approve / 标回 ready 都不算放行,只认 archGate.coldUpdate.approvers 明确针对冷更的表态(名单内成员自己提的 PR 也要显式确认),详见 archGate.coldUpdate 与其 note。approve-workflows=fork workflow 待批且未改 CI 配置→自动 approve 放行 CI(下一轮 CI 跑完再审);skip-workflow-ci-change=待批但改了 CI 配置→跳过、飞书点名让 owner 手动批;bypass-structural-block=结构性 BLOCKED + 当前账号可 bypass + 命中的必需检查类型全部在 structuralBypassAllowlist 内 + **approved shortcut 成立(reviewDecision=APPROVED 聚合裁决 ∧ approve 绑定当前 head ∧ own-account 配置约束通过,见 approvalBasis/approvedShortcut 字段)**→auto 模式经 merge-pr.mjs(--basis approved --admin)合并(安全前提:approved shortcut 成立 + 已跑 CI 无失败 + 0 未 resolve thread + CI 来源明确非 ci-unknown;2026-08-01 起 APPROVED 是硬性前提,不因作者是谁而减免,修复此前"机械前提满足就直接 bypass、reviewDecision 是什么都不看"的 fail-open;SC-2 2026-08-08:mergePolicy.requireAutomatedReviewForAutoMerge=true 时本 action 不出现——approved shortcut 成立也先 review,凭 current-head clean 回执在合并阶段走 basis=approved)。同样命中结构性 BLOCKED 但 approved shortcut 不成立时(原因见 approvedShortcut.reason)看作者是否在 admins 名单:在→action=review 且 auto.structuralBypassPending=true(进独立审查,通过后合并阶段改认"本轮审查通过"为 APPROVED 的替代凭证,见 auto.structuralBypassPending 的 note 与 pre-merge-check.mjs);不在→skip-structural-block,飞书点名让 owner 人工 Approve 或把作者加入 admins。skip-structural-block=结构性 BLOCKED 但机械前提不满足(无 bypass 权限 / 命中类型不在 allowlist 里),或机械前提满足但 approved shortcut 不成立(原因见 approvedShortcut.reason,不一定是缺 APPROVED——#469 形态就是聚合已 APPROVED 但 approve 绑定旧 head)且作者不在 admins 名单→跳过、飞书点名让 owner 处理。authorized-fast-merge=顶层 authorizedFastMerge.eligible=true(mergePolicy.breakGlassApprovers 名单成员——SC-1 拆分,未配置时兼容回退 admins——发 /approve-merge <当前 head 完整 40 位 SHA>——head 绑定,SHA 不等于当前 head 即失效;无泄密硬命中、无冲突、head 上 required 检查全绿)→跳过阶段二独立审查与 securityReviewPaths 直接进合并;这是紧急通道,格式门未过 / 未 resolve thread / 非 required 检查失败(如 Greptile)**不阻断** eligible,改记入 authorizedFastMerge.reportOnly(formatIssues/unresolvedThreadCount/nonRequiredFailures)——必须在汇总与合并致谢里显著提示,不能悄悄吞掉(机器职责从"拦"变成"留痕",owner 显式授权即自担责任);泄密硬门(security.hardHits)、mergeStateStatus=DIRTY、required 检查未全绿三者任何情况不可压过。产品/架构门优先级高于本通道,命中时不会落到这个 action。needsSelfApproval=true→该 PR 唯一阻塞是 viewer 自己挂的 CR、重审通过后合并前须先 gh pr review --approve 撤掉自己的 CR 再合(见 SKILL 3A)',
     },
   });
   }

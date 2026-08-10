@@ -9,7 +9,7 @@
     "scripts/dist/",
     "tests/",
     "scripts/preview-dist.manifest.json",
-    "tests/signoff-policy.test.mjs"
+    "tests/signoff-policy-script.test.mjs"
   ],
   "markerStrips": [
     {
