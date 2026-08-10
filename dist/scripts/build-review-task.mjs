@@ -148,11 +148,12 @@ try {
     '  checked-clean 在顶层带 `hunkId`;finding 在顶层带 `findingRef: {family_id, manifestationIndex}`(引用上方 findingFamilies 的真实条目);not-applicable 在顶层带 `reasonCode` + `explanation`。',
     '- `segmentReceipts[].coverageKeys[]` 元素:对象 `{kind:"hunk", fileId, hunkId}`(不是 "fileId:hunkId" 字符串);',
     '  `receivedOrder` 必须等于投递序号,`snapshotHash` 必须等于顶层 snapshotHash。',
-    '- `findingDispositions[]` 元素:`{findingId, disposition, basis}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status),`basis` 非空。',
+    '- `findingDispositions[]` 元素:`{findingId, disposition, evidence?, basis?}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status)。`resolved` 必须带结构化 `evidence`(自由文本不算),二选一:`{kind:"diff-anchor", snapshotHash, fileId, hunkId, note}`(锚当前 diff 的具体改动)或 `{kind:"verification-run", snapshotHash, verificationRunId, note}`(`verificationRunId` 必须存在于 `verificationRuns[]`);`invalidated` 必须带非空 `basis`(判误报依据)。**本轮未注入任何未决项(没有"未决 findings"段)时,本数组必须为 `[]`**——GitHub 上的第三方 bot thread(如 Greptile)不属于注入项,不要给它们写 disposition。',
     '- `negativeEvidence[]` 元素:`{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`——',
     '  **`command` 与 `outputAnchor` 必须与 `verificationRuns[]` 里被引用 run 的对应字段逐字一致**(机器会做一致性校验,不一致判 invalid);`verificationRunId` 必须引用真实登记的 runId。',
     '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor}`——每条实验真实执行并登记。',
     '- `escapeAssessment[]` / `verificationGaps[]`:`{candidateId, verdict:"yes"|"no", basis}` / `{description, required:false}`。',
+    '  **以下字段即使为空也必须作为数组包含:`verificationGaps`, `findingDispositions`, `profileAnswers`, `negativeEvidence`**(缺字段或传非数组,机器各自硬报错判 invalid)。',
   ].join('\n'), '');
   L.push('> 输出前逐字段自检一遍上述形状;格式偏差会导致整轮判 invalid,机器不会"尽力解析"。', '');
   if (relevantHazards.length > 0) {
@@ -160,7 +161,7 @@ try {
     for (const h of relevantHazards) {
       L.push(`- \`${h.hazardId}\`:${h.pattern}(源自 PR #${h.originPr},由 #${h.fixPr} 证伪;命中路径 ${h.paths.join(' / ')})`);
     }
-    L.push('', '这些模式在本次改动涉及的路径上出现过;逐条确认本 PR 是否重现。', '');
+    L.push('', '这些模式在本次改动涉及的路径上出现过;逐条确认本 PR 是否重现——确认结论写进 `modelVerdictNote`(供人读),**不要**填进 `escapeAssessment[]`(该字段只覆盖逃逸候选集,见下方逃逸判定段)。', '');
   }
   if (injectedOpen.length > 0) {
     L.push('## 未决 findings(必须逐条 disposition,否则本轮判 invalid)', '');
@@ -168,7 +169,7 @@ try {
       L.push(`- \`${e.findingId}\` [${e.status}] ${e.path}:${e.line} — ${e.invariantKey ? '(invariantKey ' + e.invariantKey.slice(0, 22) + '…)' : ''} ${e.rule ? '规则 ' + e.rule.ruleId : ''}`);
     }
     L.push('', '在 `findingDispositions[]` 里对上面每个 findingId 给 `resolved`(带当前 snapshot 的证据锚点)或 `invalidated`(带判误报依据)。`accepted-risk` 不走你的输出,只走交互确认。', '');
-    L.push('', '处置选择指引:条目 origin 快照早于当前 snapshot 时,先查当前 head 是否已有修复证据(新增/改动代码、负向实测变红等)——**已修复给 `resolved`**,带当前 snapshot 的证据锚点;`invalidated`(误报主张)只用于"该指控在当前 snapshot 上不成立且无修复动作"的情形。`invalidated` 在 auto 模式没有交互确认出口,不会关门,历史条目每轮都会重新注入——不要把"已修复"误判成"误报"。', '');
+    L.push('', '处置选择指引:对 originSnapshotHash 早于当前 snapshot 的**跨 snapshot 历史条目**,先查当前 head 是否已有修复证据(新增/改动代码、负向实测变红等)——**已修复给 `resolved`**,带当前 snapshot 的证据锚点;invalidated 只用于「该指控在当前 snapshot 上不成立且无修复动作」的误报主张。`invalidated` 在 auto 模式没有交互确认出口,不会关门,历史条目每轮都会重新注入——不要把"已修复"误判成"误报"。', '');
   }
   if (requiredProfileAnswers.length > 0) {
     L.push('## 风险 profile 必答项(逐 文件×检查 作答,缺一项判 invalid)', '');
@@ -213,6 +214,8 @@ try {
       L.push(`- \`${c.candidateId}\`(引用 PR #${c.referencedPr},来源 ${c.kind}):${c.excerpt}`);
     }
     L.push('', '对每条在 `escapeAssessment[]` 里给 `{candidateId, verdict:"yes"|"no", basis}`——`yes` 表示"本 PR 确实在修一个此前已合并 PR 逃过审查的问题",机器会据此登记逃逸模式(下次同路径 PR 的任务里就会带上它);`no` 也要给依据。', '');
+  } else {
+    L.push('本轮无逃逸候选(task.escapeCandidates 为空)——`escapeAssessment` 必须为空数组 `[]`;known hazards 的逐条确认不填这里,写进 `modelVerdictNote`。', '');
   }
   L.push('## 覆盖回执(逐段精确集合,缺/重/跨段一律 invalid)', '');
   L.push(`本次改动共 ${coverageKeys.length} 个 coverage key,分 ${segments.length} 段**顺序投递**(同一会话内分段,不增席位):`, '');
