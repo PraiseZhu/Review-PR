@@ -16,7 +16,7 @@ import {
   isUiTestPath, UI_TEST_PATH_RE,
   issueNumberFromUrl, decideIssueReuse, shouldCloseDiscussionIssue,
   classifyGateHits, parseSignoffReleases, parseSignoffRenotices,
-} from './lib.mjs';
+} from '../scripts/lib.mjs';
 
 let failed = 0;
 function check(name, cond, detail = '') {
