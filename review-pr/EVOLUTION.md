@@ -203,6 +203,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
+  - 现象:本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过
 - `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:本轮 #580/#603 均因改动含 package.json 触发 skip-security-review(3.8 供应链能力面防护,防自动化改坏自己);#605 同轮走完整自动化审查+admin-trust 合并,流程正常无缺口
 - `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 2 次,首见 2026-08-09,最近 2026-08-09,status: tracked
