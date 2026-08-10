@@ -238,3 +238,33 @@ test('[sc-preview-rebuild] evolution-note 写盘后联动重建 preview-dist(门
     assert.ok(ledger2.entries.some((e) => e.fingerprint === 'preview-rebuild-fp-02'), '重建失败后台账条目应仍在');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// [D-2026-08-10] sc-preview-rebuild:机器级自重建防护(不依赖 manifest exclude 配置巧合)
+// 背景:preview 副本跳过重建的保障是「exclude 里没有 build-dist.mjs」——纯配置依赖。
+// 一旦 exclude 漏掉构建器(实测:整树被清空、刚写的台账一并丢失、重建 ENOENT),
+// 副本自身的 evolution-note 会重建到 outDir === 自身根目录,先把运行中的树 rm 掉。
+// 防护:outDir 与 SKILL_ROOT 位置重合时一律 skipped:'self-rebuild'。
+// 变异(去掉该守卫)时本测试必须红。
+test('[sc-preview-rebuild] 副本位于 preview-dist 时联动重建自我跳过(树不被清空)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'preview-selfrebuild-'));
+  try {
+    mkdirSync(join(root, 'state'), { recursive: true });
+    const copy = join(root, 'preview-dist'); // 副本目录名 = 产物目录名(exclude 失效场景)
+    cpSync(SRC, copy, {
+      recursive: true,
+      filter: (p) => !p.split(sep).includes('.git') && basename(p) !== 'history',
+    });
+    const out = execFileSync(process.execPath,
+      [join(copy, 'scripts', 'evolution-note.mjs'), 'add',
+        '--fingerprint', 'preview-selfrebuild-fp', '--tier', 'by-design',
+        '--title', '自重建防护冒烟', '--no-sync'],
+      { encoding: 'utf8', env: { ...process.env, REVIEW_PR_STATE_DIR: join(root, 'state') } });
+    const r = JSON.parse(out);
+    assert.equal(r.ok, true);
+    assert.equal(r.rebuild.skipped, 'self-rebuild', `应跳过自重建: ${JSON.stringify(r.rebuild)}`);
+    assert.equal(existsSync(join(copy, 'scripts', 'build-dist.mjs')), true, '副本树必须保持完整(未被重建 rm 掉)');
+    assert.equal(existsSync(join(copy, 'SKILL.md')), true, 'SKILL.md 必须仍在(整树未被清空)');
+    const ledger = JSON.parse(readFileSync(join(copy, 'evolution', 'ledger.json'), 'utf8'));
+    assert.ok(ledger.entries.some((e) => e.fingerprint === 'preview-selfrebuild-fp'), '台账条目应保留在副本内');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

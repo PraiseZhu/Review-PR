@@ -28,7 +28,9 @@
 // 含台账副本,台账一变产物即真过期——见 preview-dist.manifest.json freshnessIgnore
 // 为空)。重建走 build-dist.mjs 子进程,结果在输出 rebuild 字段;失败不回滚台账,
 // 以 ok:false 显式报出(台账优先、产物滞后可见)。preview 分发版(构建器已剥离,
-// 产物内不存在 build-dist.mjs)自动跳过,不报错。
+// 产物内不存在 build-dist.mjs)自动跳过,不报错;另有一道机器级兜底:本脚本自身
+// 位于名为 preview-dist 的目录内时(outDir 与 SKILL_ROOT 重合)一律跳过,不依赖
+// manifest exclude 配置巧合——否则重建会先把运行中的整棵树 rm 掉。
 //
 // 纪律:台账正文不写 token、凭证、内部绝对路径或敏感命中原文;PR 只写号码。
 // 退出码:0 = 成功;1 = 参数/IO 错误。
@@ -86,6 +88,10 @@ function syncLedger(message) {
  * 失败不回滚台账写入:返回 ok:false + error,由主 agent 显式报出(台账优先、
  * 产物滞后可见)。preview 分发版产物内不含 build-dist.mjs(exclude 声明),
  * 这里按「构建器不存在」跳过——preview 是只读快照,不自我重建。
+ *
+ * 机器级兜底(实测过、不依赖 exclude 配置):exclude 一旦漏掉 build-dist.mjs,
+ * 从 preview 副本运行本脚本时 outDir 会与 SKILL_ROOT 重合,重建先 rm 掉运行中
+ * 的整棵树(含刚写的台账)——位置重合即跳过,防的是配置巧合失效后的自毁。
  */
 function rebuildPreviewDist() {
   const builder = join(SKILL_ROOT, 'scripts', 'build-dist.mjs');
@@ -93,8 +99,10 @@ function rebuildPreviewDist() {
   const manifest = join(SKILL_ROOT, 'scripts', 'preview-dist.manifest.json');
   if (!existsSync(manifest)) return { skipped: 'no-preview-manifest' };
   const outDir = resolve(SKILL_ROOT, '..', 'preview-dist');
+  if (resolve(outDir) === SKILL_ROOT) return { skipped: 'self-rebuild' };
   try {
-    const stdout = execFileSync(process.execPath, [builder, '--manifest', manifest, '--out', outDir], { encoding: 'utf8' });
+    const stdout = execFileSync(process.execPath, [builder, '--manifest', manifest, '--out', outDir],
+      { encoding: 'utf8', timeout: 60_000 }); // 对齐 lib.mjs 子进程超时约定,防构建器挂死卡住台账流程
     return { ok: true, outDir, stdout: stdout.trim().slice(0, 200) };
   } catch (e) {
     return { ok: false, outDir, error: String(e?.message || e).slice(0, 300) };
