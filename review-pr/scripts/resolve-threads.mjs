@@ -415,7 +415,12 @@ try {
         && pre[pre.length - 1].marker.sha === headSha
         && preAge !== null
         && (MIN_MARKER_AGE_MS === null || preAge >= MIN_MARKER_AGE_MS);
-      results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: true, wouldResolve, ...(preAge === null ? {} : { markerAgeMs: preAge }) });
+      // 预演与实执路径同语义(与上方翻案保护同款纪律):实执 reply 只发生在两种情形——
+      // 无己方 marker(首轮)或 headSha 已变(重新首轮);同 headSha 时实执 0 reply(要么
+      // 等人工反对窗口 replied-only,要么 resolve)。wouldReply 不得无条件 true,否则
+      // dry-run 输出与真实执行 reply 数不一致。
+      const wouldReply = pre.length === 0 || pre[pre.length - 1].marker.sha !== headSha;
+      results.push({ id: w.id, path: t.path, dryRun: true, wouldReply, wouldResolve, ...(preAge === null ? {} : { markerAgeMs: preAge }) });
       continue;
     }
     // SC-2:并发至多一次。拿不到锁 = 另一进程正在处理同一 thread,本进程不动。
