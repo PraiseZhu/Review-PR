@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+  - 现象:auto 轮 #610 实测:扫描拿 head=5e0cc6c0 构建任务,审查 agent 执行期间作者 push d803f98f(修复了审查即将发现的 P1)。旧 snapshot 的 dirty 回执对新 head 不适用,主 agent 靠审查输出 fixGuidance 透露才察觉漂移,手动重建任务重审后 clean 合并。机器兜底链条(pre-merge receiptGate head 绑定 + merge-pr --match-head 原子护栏)工作正常,但 SKILL 3.5/4 无'消费回执前 gh pr view 核对 headRefOid 是否仍等于审查 snapshot'的显式检查点——漏核对会基于旧快照向作者发打回,违反 5.2 '不重复历史上已解决且已验证的意见'纪律,浪费一轮往返。
+  - 提案:SKILL.md 第 4 节 consumer 调用前加一句:主 agent 收到审查输出后先 gh pr view --json headRefOid 核对,与任务 snapshot 不一致则对新 head 重建 task/preflight 重审(旧快照回执保留作历史),一致才喂 consume-review-output。
 - `security-hardhit-fakekey-test-stub` **测试文件中的 FAKEKEY 测试桩(sk-FAKEKEY-*/xoxb-FAKEKEY-*)命中敏感内容硬门,12 处全量打回/投递跟进会话** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
   - 现象:PR #600 的 12 处硬命中全部位于 cindyplugin/src/__tests__/debugLogRedact.test.ts,内容为 sk-FAKEKEY-*/xoxb-FAKEKEY-* 测试桩(已人工核实非真实凭证),但硬命中门 fail-closed,无 allowPaths 豁免,整 PR 被打回走 fix-handoff。测试脱敏逻辑必须用假凭证形态的输入,属结构性误报。
   - 提案:维护者评估:①把 cindyplugin/src/__tests__/ 加入 sensitiveContent.allowPaths(按 3.1 的既有误报治理通道);或②hard pattern 增加 FAKEKEY 字面量识别(排除 sk-FAKEKEY/xoxb-FAKEKEY 形态);或③维持现状(测试桩继续走打回+跟进会话流程,成本是每轮一次投递)。
