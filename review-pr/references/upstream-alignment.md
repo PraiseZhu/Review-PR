@@ -28,11 +28,11 @@
 
 ## 1. `5467af8` — 维护者 Approve 持久放行
 
-**上游做了什么**:`review-pr/scripts/lib.mjs` 的 `evaluateMaintainerReview` 新增 `historicalApproval` 分支——不再要求 Approve 晚于当前 head,只要维护者 Approve 过一次,后续作者新 push 不再重新亮确认门(`released = currentApproval ?? historicalApproval ?? marker`)。上游注释自述:「Approve 一旦发生即持久有效……最终审查会对照 PR 描述、讨论结果与 diff 范围复核,夹带私货或未落实讨论要求的仍会拦下」。同提交改 `security-patterns.test.mjs`(25 行增量)。
+**上游做了什么**:`review-pr/scripts/lib.mjs` 的 `evaluateMaintainerReview` 新增 `historicalApproval` 分支——不再要求 Approve 晚于当前 head,只要维护者 Approve 过一次,后续作者新 push 不再重新亮确认门(`released = currentApproval ?? historicalApproval ?? marker`)。上游 commit 说明自述:「维护者 Approve 即持久有效,不限当前 head」;把关移到最终审查——commit 安全网逐项列明「diff 超出 PR 声称目的 / 夹带私货 / 讨论结果未落实 → P1」,即「对照描述+讨论结果逐项复核,有问题照样拦」。同提交改 `security-patterns.test.mjs`(25 行增量)。
 
 **本仓现状**:放行判定是「admins 名单成员对**当前 head 之后**的 GitHub Approve」(SKILL.md「放行判定(release)」节;context.mjs 的 `adminsApprovedCurrentHead` 判定)——即本仓正是上游 `5467af8` 改**之前**的语义:作者新 push 后旧的 Approve 失效,需重新 Approve。
 
-**两席审查核定事实(本结论的最重要依据)**:上游的持久化是 **PR 全局持久,不是门类粒度**。`evaluateMaintainerReview` 的 `historicalApproval` 返回值不带 kind,而 `evalSignoffKind` 对六个门类(product/arch/security/coldUpdate/rules/pluginBase,见 `fc622f5` 的 `VALID_KINDS`)传同一组全局 reviews → **旧的 security Approve 会连带放行之后新出现的 rules 门**(GPT 审查席已用纯函数实测复现)。上游 173 条测试中没有「新门类仍拦」的反例用例。
+**两席审查核定事实(本结论的最重要依据)**:上游的持久化是 **PR 全局持久,不是门类粒度**。`evaluateMaintainerReview` 的 `historicalApproval` 返回值不带 kind,而 `evalSignoffKind` 对六个门类(product/arch/security/coldUpdate/rules/pluginBase,见 `fc622f5` 的 `VALID_KINDS`)传同一组全局 reviews → **旧的 security Approve 会连带放行之后新出现的 rules 门**(GPT 审查席已用纯函数实测复现)。上游测试套件(security-patterns.test.mjs 等,逐条 check/eq 断言数百条)中没有「新门类仍拦」的反例用例——5467af8 新增的持久放行用例只断言「全局持久放行成立」方向。
 
 **结论:合并(改良)**。持久放行语义值得移植(本仓现在要求 Approve 晚于当前 head,维护者确认后作者一 push 门就重亮,反复消耗人工);但**必须收窄为门类粒度**:持久判据按 kind 记账,一个 kind 的旧放行不得放行其他 kind。本仓 `parseSignoffReleases`(lib.mjs)已经按 kind 维护 `Map<kind, {by, at, via}>`——门类粒度的落点天然存在,禁止复刻上游「historicalApproval 不带 kind + 六门类共享全局 reviews」的全局持久形态。
 
@@ -40,7 +40,7 @@
 
 ## 2. `da33085` — signoff-release 标记同样持久
 
-**上游做了什么**:`5467af8` 之后 5 分钟的补丁,同一函数 `evaluateMaintainerReview`:把「marker 只对它之后的当前 head 有效(`markerIsCurrent`)」改为 `historicalMarker`——signoff-release 标记与 Approve 同等持久,作者新 push 不再让标记失效(`released = currentApproval ?? historicalApproval ?? historicalMarker ?? markerRelease`)。上游注释:「Approve 与 signoff-release 标记一旦发生即持久有效」。同提交只改 lib.mjs 与 security-patterns.test.mjs(2 行)。
+**上游做了什么**:`5467af8` 之后 5 分钟的补丁,同一函数 `evaluateMaintainerReview`:把「marker 只对它之后的当前 head 有效(`markerIsCurrent`)」改为 `historicalMarker`——signoff-release 标记与 Approve 同等持久,作者新 push 不再让标记失效(`released = currentApproval ?? historicalApproval ?? historicalMarker ?? markerRelease`)。上游 commit 说明:「signoff-release 标记也持久有效,同 Approve 不限当前 head……release-marker 同 Approve 一样,一旦写入即持久有效」。同提交只改 lib.mjs 与 security-patterns.test.mjs(2 行)。
 
 **本仓现状**:`parseSignoffReleases` 注释明确「标记只对它之后的当前 head 有效,作者新 push 后要重新确认」——同样处于上游改前语义。本仓 signoff-release **写入**脚本未合入(见「分歧 2」),当前解析契约已按 kind 粒度存在。
 
@@ -50,13 +50,13 @@
 
 ## 3. `fc622f5` — Approve 放行时自动关闭讨论 issue
 
-**上游做了什么**:lib.mjs 新增 `issueNumberFromUrl`(从 issue URL 解析编号,只校验属于同仓库)+ `closeDiscussIssue`(先发说明评论、再 close,失败各自上报不连坐);`signoff-release.mjs` 新增 `--close-issue` 开关——**仅 Approve 放行时**关讨论 issue(Request Changes 不关:「讨论暂停不是结束」),关失败不连坐标签/判定。上游注释:「维护者确认已通过,讨论结束」。上游未加任何测试。
+**上游做了什么**:lib.mjs 新增 `issueNumberFromUrl`(从 issue URL 解析编号,只校验属于同仓库)+ `closeDiscussIssue`(先发说明评论、再 close,失败各自上报不连坐);`signoff-release.mjs` 新增 `--close-issue` 开关——**仅 Approve 放行时**关讨论 issue(Request Changes 不关:「讨论暂停不是结束」),关失败不连坐标签/判定。上游注释(usage 头):「--close-issue:摘标同时关闭当初 signoff-hold 开的讨论 issue(仅在 Approve 放行时使用;Request Changes 不关——讨论暂停不是结束)」。上游未加任何测试。
 
 **两席审查核定事实**:上游 `parseLastHoldMarker` 只校验 issue URL 属于同仓,**不校验 marker 评论作者 / issue 创建者** → **任意可评论者贴一个指向同仓其它 issue 的伪 marker,Approve 路径就会关错 issue**(实测伪 marker 被接受)。上游 `fc622f5` 未加任何测试。
 
 **本仓现状**:close-issue 基础已在本仓:`issueNumberFromUrl`(lib.mjs,与上游同名函数同语义)、`decideIssueReuse`(issue 复用判定)、`shouldCloseDiscussionIssue`(收尾判定)、`close-product-issue.mjs`(产品门:PR 合并后自动关讨论 issue,marker 前缀 `<!-- review-pr:product-gate`)。本仓的 close-issue 动作绑定在「PR 合并后」,上游的绑定在「Approve 放行时」——语义不同但动作同源。`parseLastHoldMarker`(lib.mjs)同样只解析 `issue=` URL、不验作者。
 
-**结论:合并(改良)**。close-issue 能力承接上游意图(讨论结束自动收尾,不悬空),但本仓落地**必须补 marker 作者校验**:关 issue 前校验 hold marker 评论作者是否为流程/维护者身份,伪 marker 一律不执行 close(与「审查期间不验作者会关错 issue」的核定事实对应)。接线位置:随分歧 2 的 signoff-release 写入脚本另立 PR 一并落地,复用本仓已有的 `issueNumberFromUrl` / `shouldCloseDiscussionIssue` / `close-product-issue.mjs` 基础设施,不另起一套。
+**结论:合并(改良)**。close-issue 能力承接上游意图(讨论结束自动收尾,不悬空),但本仓落地**必须补 marker 作者校验**:关 issue 前校验 hold marker 评论作者是否为 admins 名单成员(流程/维护者身份),伪 marker 一律不执行 close(与「放行路径不验作者会关错 issue」的核定事实对应)。接线位置:随分歧 2 的 signoff-release 写入脚本另立 PR 一并落地——决策层已随 lz-port-persist 先行(复用 `issueNumberFromUrl` 做同仓校验;新增 `decideCloseOnRelease` 放行时关闭决策、marker 评论作者须为 admins 名单成员,与 `performIssueClose` 执行函数,刻意瘦身为只 close、不发说明评论),close 执行接线仍待该另立 PR。
 
 ---
 
@@ -123,8 +123,8 @@
 
 ## 落地要点汇总(七项 + 两分歧)
 
-1. 持久放行按 **门类粒度** 落地:`parseSignoffReleases` 的 kind Map 作为记账载体,旧放行只放行它声明的 gates(对应 `5467af8` / `da33085`);
-2. close-issue 补 **marker 作者校验**,复用本仓 `issueNumberFromUrl` / `shouldCloseDiscussionIssue` / `close-product-issue.mjs`(对应 `fc622f5`);
+1. 持久放行按 **门类粒度** 落地:放行标记解析 + 作者校验后按 kind 记账(`parseSignoffReleaseMarkers` / `collectConfirmedSignoffKinds`,随 lz-port-persist 落地;`parseSignoffReleases` 的 kind Map 是既有解析契约,记账语义由其演进而来),旧放行只放行它声明的 gates(对应 `5467af8` / `da33085`);
+2. close-issue 决策层补 **marker 作者校验**(评论作者 ∈ admins 名单成员,复用 `issueNumberFromUrl`),执行接线随 signoff-release.mjs 另立 PR(对应 `fc622f5`);
 3. stale-rebase 按 `7820392` 终态移植:behind_by>0 前置 + merge-base committer date ≥ 阈值 + compare fail-open,必带测试、修正「距上次 rebase」近似措辞(对应 `6af6834`→`7820392` 链);
 4. 年龄门与翻案保护并存(本仓均已有);
 5. signoff-release.mjs 本体本批不移植,另立 PR 并带测试;close-issue 能力并入该 PR。
