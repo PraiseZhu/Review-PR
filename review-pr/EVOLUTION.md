@@ -148,6 +148,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `escape-assessment-empty-contract-unstated` **逃逸候选集为空时 escapeAssessment 字段语义未声明,审查 agent 误填 known hazards 确认** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `7528c1c`
+  - 现象:PR #599 实测:escapeCandidates=[] 时 prompt 无「逃逸判定」段,审查 agent 把 2 条 hz2-* known hazards 确认写进 escapeAssessment,consumer 判 invalid(缺/未知)。修复:候选为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote。
 - `rro1-disposition-non-injected-empty-case` **prompt 契约补明确:未注入未决项时 findingDispositions 必须为 [](bot thread 不属于注入项)** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598 首轮:审查 agent 把 Greptile P2 bot thread 当注入项写 resolved disposition,injectedOpen 为空判 invalid,手工规范化后消费。已在 build-review-task.mjs 字段形状处补空集规则。
   - 备注:[decided:2026-08-09] 落地 commit 15ca5d6(git show AuthorDate 核实)
@@ -192,8 +194,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 3 次,首见 2026-08-08,最近 2026-08-08,status: tracked
-  - 现象:PR #580 改动含 package.json,命中 securityReviewPaths,auto.action=skip-security-review,不审不合不提醒。属既有设计意图(防改坏自动化自身的自我损坏闭环),非流程缺口;按 by-design 只记计数,不因出现多次而自动放开
+- `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: tracked
+  - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。若频繁发生可评估是否把 package.json 从 securityReviewPaths 收敛(仅维护者拍板)
+- `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 5 次,首见 2026-08-08,最近 2026-08-09,status: tracked
+  - 现象:auto 轮 #580 唯一候选命中 SKILL 3.8 安全审查路径(package.json 在 securityReviewPaths),auto.action=skip-security-review,原样跳过不审不合不提醒。属设计上就该人来的人工审查,计数观察,不自动放开。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
   - 现象:本轮 #585(资产 GC)1 条 conversation 未 resolve 被 skip,已发模板 C 提醒评论
 - `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
