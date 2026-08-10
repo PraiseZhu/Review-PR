@@ -36,6 +36,7 @@ import assert from 'node:assert/strict';
 import {
   LOCK_STALE_MS,
   parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease,
+  decideSignoffGateAction,
   parseHoldMarkerWithAuthor, decideCloseOnRelease, performIssueClose,
 } from '../scripts/lib.mjs';
 import {
@@ -1322,4 +1323,92 @@ test('signoff: SC2 parseHoldMarkerWithAuthor 带作者解析 + 跨仓 URL 拒绝
   });
   assert.equal(d.reason, 'url-unparsable', '跨仓 URL 拒绝关闭');
   assert.equal(d.shouldClose, false);
+});
+
+// ── 复审修复(2026-08-10 round1):生产形状 / 混合命中接线 / fail-closed 硬化 ──
+
+test('signoff: SC1 生产形状——GraphQL 评论节点(author 为 {login} 对象)作者提取为 login', () => {
+  // 生产输入是 GraphQL 节点:author 是 { login, __typename } 对象,不是字符串。
+  // String({login}) 得 "[object Object]" —— 若拿它当作者比对,所有 marker 全被拒,
+  // SC1 持久放行/SC2 关 issue 在生产中永不生效(测试此前只喂生产不产生的字符串形状)。
+  const markers = parseSignoffReleaseMarkers([
+    { body: '<!-- review-pr:signoff-release gates=security by=dashhuang -->', author: { login: 'dashhuang', __typename: 'User' } },
+    '<!-- review-pr:signoff-release gates=rules -->',
+  ]);
+  assert.equal(markers[0].author, 'dashhuang', '对象输入取 author.login');
+  assert.equal(markers[1].author, null, '字符串输入作者仍为 null');
+  const { confirmedKinds } = collectConfirmedSignoffKinds({ markers, trustedLogins: ['dashhuang'] });
+  assert.deepEqual(confirmedKinds, ['security'], '生产形状下可信 marker 正常确认');
+  // 对象缺 login(幽灵用户/取不到身份)→ 作者未知 → 拒,不 fail-open
+  const ghost = parseSignoffReleaseMarkers([{ body: '<!-- review-pr:signoff-release gates=security -->', author: {} }]);
+  assert.equal(ghost[0].author, null, 'author 对象无 login → null');
+  const g = collectConfirmedSignoffKinds({ markers: ghost, trustedLogins: ['dashhuang'] });
+  assert.deepEqual(g.confirmedKinds, [], '无 login 的 marker 不计入');
+});
+
+test('signoff: SC2 生产形状——hold marker 评论节点(author 为 {login} 对象)可关闭', () => {
+  const markers = parseHoldMarkerWithAuthor([
+    { body: '<!-- review-pr:product-gate issue=https://github.com/acme/app/issues/7 -->', author: { login: 'dashhuang', __typename: 'User' } },
+  ]);
+  assert.equal(markers[0].author, 'dashhuang', '对象输入取 author.login');
+  const d = decideCloseOnRelease({ markers, issueState: 'OPEN', trustedLogins: ['dashhuang'], slug: 'acme/app' });
+  assert.equal(d.shouldClose, true, '生产形状下可信 hold marker 判关闭');
+});
+
+test('signoff: SC1 接线反例(机器层漏放)——security 已确认 + rules 新触发 + 两路径同时命中 → 仍必须 rules-gate', () => {
+  // context.mjs 的 if/else 接线由 decideSignoffGateAction 承担(2026-08-10 复审实测:
+  // 旧接线 rules 分支带 !hitsSecurityReviewPaths 互斥守卫,混合命中时 rules 分支
+  // 整体不可达 → autoAction 漏放 rules-gate,仅剩 agent 侧 suggestedHolds 兜底)。
+  const r = decideSignoffGateAction({
+    securityBlocked: false, hitsSecurityReviewPaths: true, hitsRuleFiles: true,
+    unconfirmedKinds: ['rules'], autoAction: 'review',
+  });
+  assert.equal(r.action, 'rules-gate', 'security 已确认只放行 security;rules 新触发必须机器层拦');
+  assert.equal(r.holdKind, 'rules');
+  // 两门都未确认 → security 优先(if/else 顺序)
+  const both = decideSignoffGateAction({
+    securityBlocked: false, hitsSecurityReviewPaths: true, hitsRuleFiles: true,
+    unconfirmedKinds: ['security', 'rules'], autoAction: 'review',
+  });
+  assert.equal(both.action, 'security-gate');
+  // 全确认 → 无 gate 触发(放行由 evaluateSignoffRelease.released 表达)
+  const none = decideSignoffGateAction({
+    securityBlocked: false, hitsSecurityReviewPaths: true, hitsRuleFiles: true,
+    unconfirmedKinds: [], autoAction: 'review',
+  });
+  assert.equal(none.action, 'review');
+  // autoAction 已落更高优先级门 → 保持原值不覆盖
+  const skip = decideSignoffGateAction({
+    securityBlocked: false, hitsSecurityReviewPaths: true, hitsRuleFiles: false,
+    unconfirmedKinds: ['security'], autoAction: 'skip-loop-managed',
+  });
+  assert.equal(skip.action, 'skip-loop-managed');
+  const prod = decideSignoffGateAction({
+    securityBlocked: false, hitsSecurityReviewPaths: false, hitsRuleFiles: true,
+    unconfirmedKinds: ['rules'], autoAction: 'product-gate',
+  });
+  assert.equal(prod.action, 'product-gate', 'rules 分支不覆盖已包裹的 product-gate');
+  // securityBlocked(硬命中)→ 两门都不触发
+  const hard = decideSignoffGateAction({
+    securityBlocked: true, hitsSecurityReviewPaths: true, hitsRuleFiles: true,
+    unconfirmedKinds: ['security'], autoAction: 'pushback-security',
+  });
+  assert.equal(hard.action, 'pushback-security');
+});
+
+test('signoff: SC2 fail-closed 硬化——slug 缺失拒绝关闭(不跳过同仓校验);issueState 大小写不敏感', () => {
+  // slug 缺失时旧实现回退到裸 issueNumber,跨仓 URL 的 marker 会判「应关」→ 执行层
+  // 会去关(自己 repo 的)issue #1,fail-open。改为 slug 缺失 = 无法验证归属 → 拒。
+  const crossRepo = { author: 'dashhuang', kind: 'product', issueUrl: 'https://github.com/evil/repo/issues/1', issueNumber: 1 };
+  const d = decideCloseOnRelease({ markers: [crossRepo], issueState: 'OPEN', trustedLogins: ['dashhuang'], slug: '' });
+  assert.equal(d.shouldClose, false, 'slug 缺失(无法验同仓)→ 拒绝关闭');
+  assert.equal(d.reason, 'url-unparsable');
+  // gh issue view --json state 返回小写 open/closed;小写输入此前被误判 url-unparsable
+  const sameRepo = { author: 'dashhuang', kind: 'product', issueUrl: 'https://github.com/acme/app/issues/1', issueNumber: 1 };
+  const lower = decideCloseOnRelease({ markers: [sameRepo], issueState: 'open', trustedLogins: ['dashhuang'], slug: 'acme/app' });
+  assert.equal(lower.shouldClose, true, 'state 小写也能识别为 OPEN');
+  assert.equal(lower.reason, 'close');
+  const closedLower = decideCloseOnRelease({ markers: [sameRepo], issueState: 'closed', trustedLogins: ['dashhuang'], slug: 'acme/app' });
+  assert.equal(closedLower.shouldClose, false, 'state 小写 closed → 幂等不关');
+  assert.equal(closedLower.reason, 'already-closed');
 });
