@@ -26,9 +26,10 @@
 - `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
   - 现象:#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。
   - 提案:context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。
-- `review-base-ref-oid-source-unclear` **preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
+- `review-base-ref-oid-source-unclear` **preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: landed
   - 现象:本轮 #527/#539 误用 origin/main tip(59d712d5)作为 --base,而 SKILL 约定 baseRefOid 是 gh pr view 返回的分叉点(527=0c95823/539=3686b32b),导致整条审查链 snapshot 漂移、pre-merge-check fail-closed 拦截后返工重建。SKILL.md 三处命令模板用 <baseRefOid> 占位符但未定义来源。现象:回执 snapshotHash 与 pre-merge-check 重建不一致(stale)。
   - 提案:在 SKILL.md 3.0.1/4 节命令块后补一句来源说明:--base 取 gh pr view <N> --json baseRefOid(PR 分叉点),不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
+  - 备注:[decided:2026-08-10] 落地 commit 0381757c(2026-08-09 AuthorDate 核实):SKILL.md 3.0.1 节与第 4 节命令块后各补一句 --base 取 gh pr view <N> --json baseRefOid(PR 分叉点),明确不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
 - `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 5 次,首见 2026-07-29,最近 2026-08-05,status: open
   - 现象:2026-08-05 再观测:#519/#520/#521 为 PraiseZhu 自有 PR、CLEAN(无结构性 BLOCKED)、approvalBasis=none,admin-trust 路由只在 structural-check 时才可达,selfFixAuthors 留空故 selfMerge 也不可用——本轮按 depends-on-#518 跳过;#518 打回后若列车重推,这些 CLEAN 自有 PR 即使取消依赖也没有自动合并出口,与既有 open 提案同根因
   - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
