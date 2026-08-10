@@ -190,3 +190,17 @@ test('[SC-23] tag 不可覆盖:已存在(本地或远端)一律拒绝', () => {
     assert.doesNotThrow(() => assertTagAvailable(d, 'review-pr-dist-v2026.01.01.2'));
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+// [D-2026-08-10] manifest 自身正确性门:exclude 每个条目在源树中必须存在。
+// 背景:exclude 引用失效路径(如已被搬走/删除的测试文件)时,checkDist 只校验
+// 「产物与 manifest 一致」,不校验「manifest 引用的路径存在」——manifest 自身错误
+// 不红(fail-silent)。本断言把「exclude 条目必须可解析到真实路径」变成机器强制。
+// 注意:exclude 是字面路径 + 目录前缀匹配(非 glob),故「必须存在」成立。
+test('[D-2026-08-10] manifest exclude 每条目在源树中必须存在(防失效路径)', () => {
+  const m = JSON.parse(readFileSync(MANIFEST, 'utf8'));
+  const missing = (m.exclude ?? []).filter((e) => !existsSync(join(SRC, e)));
+  assert.equal(
+    missing.length, 0,
+    `manifest exclude 引用不存在的路径(产物门只校验产物一致性,校验不到此错误):\n${missing.join('\n')}`,
+  );
+});

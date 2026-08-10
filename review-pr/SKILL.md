@@ -945,6 +945,113 @@ T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这�
 路径映射）命中明细随 `signoff.triggers.ruleMapHits` 带出，供编排辅助定性，不单独
 构成触发。保证等级同 3.8：T1（防疏忽/漂移），不冒充 T2。
 
+### 3.10 thread 清理（triage）：代 reply / 条件 resolve 白名单 bot 意见
+
+分支保护开了 `Require conversation resolution` 时，thread 不 resolve 就 GitHub 层面
+合不了；而 bot（greptile 等）从不回来点 resolve，作者修完也常忘点——「threads
+unresolved 连续多轮整轮空转、停滞十几天」的 PR 就是这个原因（#251 型）。auto 模式
+在扫描后、合并判定前执行本清理；交互模式先把可处理清单（路径 + 拟回复）展示给
+用户、确认后执行。
+
+**设计（2026-08-09 三轮收敛，回复优先）**：「意见是否已被处理」是 LLM 语义活，
+字符串分析证明不了——diff 里新增两行普通埋点 + 一句 justification 即可绕过任何
+token 共现判据（PR #13 R2 blocker 实测成立），原 `assessThreadEvidence` 判据（及其
+`extractThreadTokens` 词表）已删除。因此本机制的价值在**回复**（把对话推进下去，
+可纠正），不在**关闭**。对 `context.history.reviewThreads` 里未 resolve 的 thread
+逐条：
+
+1. **reply 无条件**：白名单 bot thread 且 thread 内无白名单外参与者时，按调用方
+   payload 发回复（回复引用修复 commit 与位置，供人复核；文案不声称机器已验证修复
+   正确性——本动作是 T1 防遗漏收口）。只认白名单 bot——`pr-rules.json` 的
+   `threadTriage.extraBots` 登录名单（首配 `greptile-apps`；未配置 = 整套机制关闭，
+   一条都不动）。白名单校验不止查位置首条评论：**同一 thread 里任何一条评论的作者
+   若不在白名单内**（真人参与讨论），该 thread 永不处理；**唯一豁免是本脚本自己
+   （viewer 身份）的评论**——marker 形状的评论若作者不是 viewer，照常参与白名单
+   校验（文本谁都能复制，身份不能）；
+2. **resolve 默认不执行**，只在**机器可核实**条件下才做（由 `resolve-threads.mjs`
+   执行层判定，不依赖调用方 payload 里 `justification` 的内容——非空字符串对
+   不可逆的对外 resolve 动作不构成充分条件）：
+   - 线程已是 resolved（幂等，`already-resolved`）；
+   - **上一轮己方已 reply 同一 headSha**：thread 评论里有 viewer 身份作者的本脚本
+     marker（`state=replied`、`sha` 与本次 `headSha` 一致）、**marker 年龄 ≥ 人工
+     反对窗口**（`MIN_MARKER_AGE_MS`，默认 10 分钟，从评论 `createdAt`——GitHub 侧
+     字段——推导，不引入本地时间状态），且白名单复核仍通过（回复后无真人异议）→
+     resolve，成功后再追加 `state=resolved` marker；
+   - 己方 marker `state=resolved` 但线程又变 unresolved → 人工翻案
+     （`skipped-reopened-after-triage`），**永久留人工**，不与人拉锯。
+   其余情况一律只回复不关闭；
+   **年龄门保护的是人工反对窗口，不是防抖动**：D1 之所以允许 auto-resolve 存在，
+   靠的是「回复与关闭之间存在一段人可以介入反对的时间」。若双实例重叠（定时巡审 +
+   手动运行）时窗口塌成 0，两阶段就退化成单轮自动 resolve——故 marker 必须在窗口期
+   之后才允许 resolve；窗口期内重新运行只 `replied-only`，不重复回复。
+
+   **年龄门 env 校验（R4）**：`MIN_MARKER_AGE_MS` 可用环境变量
+   `REVIEW_PR_MIN_MARKER_AGE_MS` 覆盖（ms 单位），但执行层会显式校验——解析失败 /
+   负值 / 低于下限 60000ms（1 分钟 = "人来得及看见"的最小可感知窗口，更小在语义上
+   退化成"无窗口"，几乎必然是单位/量级配置错误）一律回落默认 10 分钟，并在 stderr
+   与输出 JSON 的 `warnings` 字段双通道警告。**禁止用"把年龄设成奇怪数字"关闭年龄
+   门**（`-1`/`0` 曾可悄悄关掉守着不可逆动作的这道门）——要关闭只能显式设
+   `REVIEW_PR_DISABLE_MARKER_AGE_GATE=1`（仅用于运维一次性批量清理积压 thread），
+   执行层会大声输出"年龄门已关闭，本轮 resolve 不保留人工反对窗口"。门关闭只豁免
+   年龄条件；marker 缺 `createdAt` 的保守不 resolve 不豁免。
+3. **marker 可信度 = 评论作者身份**（执行层 GraphQL `viewer { login }` 比对），pr
+   号 / thread id / sha 都是公开信息，文本形状可被任何有评论权限的账号复制，身份
+   不可伪造。**状态全部在 GitHub 侧（评论 + 线程 resolve 状态），无本地回执**——
+   tmp 清理 / 换机器 / 无状态 CI runner 都不影响下一轮判定；
+4. **三种终态必须可区分**：`replied-only`（已回复未关闭）/ `resolved` /
+   `skipped-<reason>`（拒绝原因，如 `skipped-non-whitelisted-comment-present` /
+   `skipped-reopened-after-triage` / `skipped-resolve-failed` / `skipped-reply-failed` /
+   `skipped-thread-not-found` / `skipped-lock-busy`）。resolve 失败不重发回复（reply
+   上一轮已发），下一轮同 headSha 自动重试 resolve。
+
+> **启用前提（D7，未满足前不得配置 `threadTriage`）**：本机制默认关闭
+> （`pr-rules.json` 不含 `threadTriage` key）。三轮对抗复审给出的 blocker（字符串
+> 判据可被普通埋点绕过、并发至多一次、bot 白名单覆盖全部评论、marker 身份绑定、
+> 回执跨运行持久性）全部关闭验证通过之前，禁止新增该 config key 启用本机制；
+> 启用只能由后续独立评审确认全部验收条件后进行，不得借本节文档改动顺带打开。
+>
+> **自动 resolve 目前不提供**。要在将来启用，以下两项都必须先满足（缺一不可）：
+> 1) 一个能**机器核验「缺陷确实被修复」**的判据。已尝试并被实测否决的方案：
+>    token 子串命中、≥2 独立 token 共现、共现（必要）+ 编排层 justification
+>    （充分）。否决理由：两行普通埋点（如 `telemetry.increment("X")` /
+>    `trace.debug("Y")`）即可让未修复的意见判定为可 resolve（PR #13 R2 blocker
+>    实测）；且执行层不接收 diff，无法独立复核。
+> 2) 生产者→判据的形状适配（context 导出 `lastComment`/`isBot`，判据消费
+>    `body`/`authorType`），并配一条**从真实 context 输出出发**的端到端契约测试。
+> 当前两项均不满足。仅提供 auto-reply（可纠正），不提供 auto-resolve。
+
+**执行**：把可处理清单逐条生成 reply payload（回复必须引用修复 commit 与位置，供人
+复核；文案不声称机器已验证修复正确性——本动作是 T1 防遗漏收口）。每条附上
+`justification`（编排层对「为什么这段 diff 回应了这条 claim」的说明——**契约字段，
+非 resolve 判据**：resolve 由执行层按上面的机器可核实条件决定），调：
+
+```bash
+node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file - <<'JSON'
+{
+  "threads": [ { "id": "<history.reviewThreads[].id>", "reply": "已在 <sha> 处理(<修复位置>);有异议可 reopen", "justification": "<为什么这段 diff 回应了这条 claim 的说明>" } ],
+  "allowedBots": ["<pr-rules.json threadTriage.extraBots 登录名单>"],
+  "headSha": "<sha>"
+}
+JSON
+```
+
+（脚本只执行调用方给定的 payload，不自选 thread——**不接编排则 #251 型停滞仍会
+skip**，这正是本节的接线职责。`allowedBots` 缺失或为空、或某条 thread 缺
+`justification` 时脚本执行层 fail-closed，一条都不动，即使 payload 里给了 thread id
+也不例外。）
+
+**回流与汇总**：消费脚本输出的 `results[]`——`outcome: resolved`（含
+`already-resolved`）计入已 resolve；`replied-only` 计入已回复（下一轮同 headSha
+重跑时脚本将自动 resolve，若期间有真人异议则白名单复核会拦住）；`skipped-<reason>`
+逐条显式进轮次汇总，不得静默混为一谈：**可重试**（`skipped-thread-not-found` /
+`skipped-reply-failed` / `skipped-resolve-failed` / `skipped-lock-busy`）下一轮可再次
+尝试；**永久**（`skipped-reopened-after-triage`）不再重试，永久留人工。resolved 后
+对涉及该 PR 的合并判定**重算 threads 阻断**（重新拉 `mergeStateStatus`，或按「未
+resolve thread 计数归零」处理），不凭清理前的旧计数判定。回复会通知原 reviewer，
+对方可一键 unresolve（unresolve 后按 `skipped-reopened-after-triage` 永久留人工）。
+**幂等**：脚本对已 resolve / 已回复过的 thread 不重复动作（双并发下每 thread 至多
+一次 reply + 条件 resolve，靠脚本内查当前状态 + 持久锁兑 TOCTOU 窗口）。
+
 ## 4. 阶段二：独立代码审查
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
@@ -2060,6 +2167,14 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    node "<SKILL_ROOT>/scripts/merge-pr.mjs" --reconcile
    ```
 
+   **thread 清理（triage）**：对 `context` 输出中 `gate.unresolvedThreads` 非空的
+   候选，按 3.10 逐条生成 reply payload（白名单 bot `threadTriage.extraBots` +
+   编排层逐 thread 非空 `justification`，见 3.10 第 1/4 条；resolve 由执行层按机器
+   可核实条件决定——己方 marker + 同 headSha + 白名单复核，编排层不代判），调
+   `node "<SKILL_ROOT>/scripts/resolve-threads.mjs" <PR> --payload-file -`；
+   `done=false` 的条目逐条进汇总；resolved 后重算该 PR 的 threads 阻断再进后续分流
+   （未做清理、不重算就按未 resolve 处理）。未配置 `threadTriage.extraBots` 时本步
+   整体跳过（机制关闭，一条都不动）。
    **跳过不能对作者静默**：分类完成后，把因作者侧可自解原因被 skip 的候选批量交给
    提醒脚本（自带指纹去重、selfFixAuthors 与 `staleAuthorReminder.exemptAuthors`
    排除，重复调用安全、失败不阻塞）：
@@ -2174,7 +2289,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
    审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
    通过则按 5.2 正常打回；其余通过审查的 PR 先复核状态再合并，失败的 PR 请求修改，
-   CI pending、未 resolve thread、权限问题只跳过不绕过；冲突的 PR 若满足 5.5 门槛
+   CI pending、未 resolve thread、权限问题只跳过不绕过——未 resolve thread 的
+   阻断判定用 **thread 清理（3.10）回流后**的计数：扫描阶段已代 resolve 的不再阻断，
+   清理后仍 unresolved 的照旧阻断（合并判定前重新拉 `mergeStateStatus`，不凭清理前
+   的旧计数）；冲突的 PR 若满足 5.5 门槛
    （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
@@ -2255,6 +2373,13 @@ JSON 结构：
   - 5.5 主干代合并、5.6 代修合并：全程不提交 `gh pr review` → `none`；
   - 产品/架构/安全/规则门 hold（signoff-hold，未提交 review）→ `none`。
 
+`threadTriage`（可选，见 3.10）：本轮的 thread 代处理结果，**每条必须显式**——
+`[{pr, threadId, path, outcome}]`，`outcome` ∈ `replied-only` / `resolved`（含
+`already-resolved`）/ `skipped-<reason>`（如 `skipped-non-whitelisted-comment-present` /
+`skipped-reopened-after-triage` / `skipped-reply-failed` / `skipped-resolve-failed` /
+`skipped-thread-not-found` / `skipped-lock-busy`）；`skipped-*`（= resolver 拒绝或
+失败）不得静默，落盘时逐条展开；未配置 `threadTriage.extraBots` 时整字段可省略。
+
 `draftSkipped` **必须是 `[{pr, reason, url}]` 数组，禁止写成裸数字**（历史上
 只落过一个汇总数字如 `21`，事后既定位不到具体是哪些 PR、也说不清原因，
 2026-08-01 起禁止复发）；`context.mjs --scan-all` 输出的同名字段只是扫描期的
@@ -2320,7 +2445,10 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 
 **自进化** <n>
 - 已落地：skip 原因归类漏了 merge queue 状态 — commit abc1234
-- 待拍板：允许代 resolve outdated 的 bot thread（扩权类，见 EVOLUTION.md）
+- 已落地（2026-08-09，见 3.10）：白名单 bot thread 代 reply / 条件 resolve——reply
+  无条件（反停滞），resolve 只在机器可核实条件下执行（己方 marker + 同 headSha +
+  白名单复核），marker 按 viewer 作者身份绑定、状态在 GitHub 侧无本地回执；原
+  `assessThreadEvidence` 字符串共现判据已删除（可被两行普通埋点绕过，实测成立）。
 
 其他：锁已释放；本轮外部写操作：<approve/merge/comment/issue 各几次>；检测到上游
 调度缺口约 <N> 小时，可能有失败轮未入账，请查 scheduler 😤

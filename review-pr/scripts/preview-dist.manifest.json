@@ -19,7 +19,8 @@
     "scripts/preview-dist.manifest.json",
     "scripts/dist/",
     "tests/",
-    "tests/signoff-policy-script.test.mjs"
+    "tests/signoff-policy-script.test.mjs",
+    "tests/resolve-threads.test.mjs"
   ],
   "markerStrips": [
     {

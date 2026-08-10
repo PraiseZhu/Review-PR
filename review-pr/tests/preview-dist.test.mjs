@@ -174,3 +174,14 @@ test('[SC-7⑤ 反向变异] manifest 去掉任一 exclude 项 → 构建产物 
     rmSync(outDir, { recursive: true, force: true });
   }
 });
+
+// [D-2026-08-10] manifest 自身正确性门:exclude 每个条目在源树中必须存在(防失效路径)。
+// 与 build-dist.test.mjs 同理由:exclude 引用失效路径时 checkDist 校验不到(fail-silent)。
+test('[D-2026-08-10] preview manifest exclude 每条目在源树中必须存在', () => {
+  const m = JSON.parse(readFileSync(MANIFEST, 'utf8'));
+  const missing = (m.exclude ?? []).filter((e) => !existsSync(join(SRC, e)));
+  assert.equal(
+    missing.length, 0,
+    `preview manifest exclude 引用不存在的路径:\n${missing.join('\n')}`,
+  );
+});
