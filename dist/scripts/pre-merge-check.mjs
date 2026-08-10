@@ -44,7 +44,7 @@ import {
   loadRules, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks,
   findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideAuthorizedFastMerge, decideStructuralBypassRoute,
   classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut,
-  resolveMergeAuthorizationPolicy, readReviewReceipt, isReviewReceiptClean, detectLoopExclusion, print, fail, REPO_ROOT, STATE_DIR,
+  resolveMergeAuthorizationPolicy, readReviewReceipt, isReviewReceiptClean, detectLoopExclusion, print, fail, git, REPO_ROOT, STATE_DIR,
 } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadLedger, ledgerPathFor, summarize } from './lib.findings-ledger.mjs';
@@ -457,7 +457,34 @@ try {
 
   if (!securityGate.pass) blockers.push(...securityGate.reasons);
 
-  const mergeableUnknown = m.mergeable === 'UNKNOWN';
+  // ── SC-merge-tree(2026-08-09,evo):不采信过期 MERGEABLE——GitHub 重算 mergeability 有
+  // 延迟(#325 在 #319/#334 合并后仍报 MERGEABLE,手动 git merge-tree 实测才发现真冲突)。
+  // 触发条件二选一:base 前进过(本地 refs/remotes/origin/<baseRefName> 即最近一次 fetch 的
+  // 远端 tip,与 gh pr view 元数据 baseRefOid 不一致 → base 在本地同步后前进过,GitHub 的
+  // mergeable 可能是基于旧 base 算的;本地无该 ref 时无从对比,不触发)或
+  // mergeable=UNKNOWN。命中即跑 `git merge-tree --write-tree <baseRefOid> <headRefOid>`
+  // 本地实测——baseRefOid 取 PR 元数据(PR 分叉点,不是 base 分支当前 tip 的本地猜测)。
+  // 纯读操作,不新增任何写权限。fail-closed:实测失败(对象缺失/超时/解析失败)按
+  // UNKNOWN 处理,不得静默采信 GitHub 的 MERGEABLE——UNKNOWN 会让 canMergeMechanical=false,
+  // 同样不合并。实测无冲突(退出码 0)不追加 blocker:过期 MERGEABLE 只会误拦不会误放。──
+  const localBaseTip = git(['rev-parse', '--verify', `refs/remotes/origin/${m.baseRefName}`], { allowFail: true });
+  const baseMovedAhead = localBaseTip.ok && localBaseTip.stdout.trim() !== String(m.baseRefOid ?? '');
+  let mergeTreeUnproven = false;
+  if (m.mergeable === 'UNKNOWN' || baseMovedAhead) {
+    const mt = git(['merge-tree', '--write-tree', m.baseRefOid, m.headRefOid], { allowFail: true, timeoutMs: 30_000 });
+    if (!mt.ok && mt.status === 1) {
+      // git merge-tree --write-tree 退出码 1 = 存在冲突(0=无冲突,其他=错误)。
+      blockers.push(`merge-tree --write-tree 本地实测冲突(base ${String(m.baseRefOid ?? '').slice(0, 7)} × head ${String(m.headRefOid ?? '').slice(0, 7)})——不采信 GitHub mergeable=${m.mergeable}(可能过期)`);
+      blockClass = 'conflict';
+    } else if (!mt.ok) {
+      // 退出码非 0/1(对象缺失、超时、git 版本过老等)→ 无法证明无冲突,fail-closed 按
+      // UNKNOWN 处理,不得静默采信 GitHub 的 MERGEABLE。
+      mergeTreeUnproven = true;
+      blockers.push(`merge-tree --write-tree 本地实测失败(退出码 ${mt.status}:${(mt.stderr || '').trim().slice(0, 120)})——mergeable=${m.mergeable} 不可信,fail-closed 按 UNKNOWN 处理`);
+    }
+  }
+
+  const mergeableUnknown = m.mergeable === 'UNKNOWN' || mergeTreeUnproven;
   const canMergeMechanical = blockers.length === 0 && !mergeableUnknown;
   // 普通 merge 过不了、但「结构性门 + 当前账号可 bypass + 命中类型在 allowlist 内」时,
   // 3A 可走 admin bypass 合(交互模式经用户确认)。谁来担保"没有真实 APPROVED review 也能
