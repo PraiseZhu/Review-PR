@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -1540,14 +1540,22 @@ try {
     headApproved: adminsApprovedCurrentHead,
   });
 
-  if (!securityBlocked && hitsSecurityReviewPaths && signoffRelease.unconfirmedKinds.includes('security')
-    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
+  // gate 触发判定抽到 lib.mjs(decideSignoffGateAction,可单测):优先级由 if/else
+  // 顺序表达(security > rules),rules 分支不再用 !hitsSecurityReviewPaths 互斥——
+  // 门类粒度确认后,security 已确认 + rules 新触发 + 两路径同时命中时,互斥守卫会让
+  // rules 分支整体不可达,机器层漏放 rules-gate(2026-08-10 复审实测反例)。
+  const gateAction = decideSignoffGateAction({
+    securityBlocked,
+    hitsSecurityReviewPaths,
+    hitsRuleFiles,
+    unconfirmedKinds: signoffRelease.unconfirmedKinds,
+    autoAction,
+  });
+  if (gateAction.action === 'security-gate') {
     autoAction = 'security-gate';
     autoReason = `命中安全审查路径(${securityReviewFiles.join(' / ')})——这类改动涉及 review-pr 自身的执行/供应链能力面,继续让 review-pr 自动审查并合并这类改动,一旦改坏了自动化本身,会形成"改坏的版本审过并合入了自己"的自我损坏闭环。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
     autoSkip = false;
-  } else if (!securityBlocked && !hitsSecurityReviewPaths && hitsRuleFiles && signoffRelease.unconfirmedKinds.includes('rules')
-    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge'
-    && autoAction !== 'product-gate' && autoAction !== 'arch-gate') {
+  } else if (gateAction.action === 'rules-gate') {
     autoAction = 'rules-gate';
     autoReason = `命中审查规则文档(${rulesHitFiles.join(' / ')})——规则文档是后续所有审查的判据来源,改它等于改审查标准本身,需要 admins 确认。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
     autoSkip = false;

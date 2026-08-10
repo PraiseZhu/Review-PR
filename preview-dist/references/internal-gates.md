@@ -121,8 +121,25 @@ auto 每轮消费 `heldDraftResults`：
 - 未同意 → 保持 draft，不重复评论、不催作者；
 - issue 读取失败 → 汇总异常，不放行、不重复 hold。
 
-PR 合并后运行 `close-product-issue.mjs <PR>`；auto 收尾可再运行 `--sweep`，关闭网页
-手动合并留下的悬挂 issue。
+**持久放行**：跨 commit 持久的载体是**放行标记**（signoff-release marker 评论，白名单
+明确同意后由维护者按本 SKILL 发出，评论作者须为 admins 名单成员）——被标记确认过的
+**门类**跨 commit 持久放行，作者再 push 不重新亮门；**未确认过的新门类首次触发仍拦**
+（确认只放行它当时覆盖的门类，不连带放行之后新出现的门类，如旧的 security 确认不会
+放行新出现的 rules 门）。这是本仓对上游（PR 全局持久）的刻意收窄，不是与上游对齐。
+**Approve 不跨 commit 持久**：admin Approve 绑定当前 head oid（adminsApprovedCurrentHead），
+只一次性确认当前 head 上已触发的门类；作者再 push 后若该门类没有放行标记，门重新亮。
+当前接线到本机制的触发门类为 security / rules；product / arch 走 signoff-hold 既有流程，
+coldUpdate / pluginBase 为上游口径，本仓无对应接线。
+
+**放行时关闭讨论 issue（决策已落地，执行接线随 signoff-release.mjs 另立 PR）**：放行
+生效时的关闭**决策**已随 scan 输出（closeOnRelease）落地——只认 hold marker 的评论
+作者 ∈ admins 名单成员（本机制 viewer 账号在 admins 名单内，故机制自建 marker 可通过
+校验；marker 文本形状可被任何有评论权限的账号复制，身份不可伪造）；close 的**执行动作**
+（关 issue 与失败原因进轮次汇总）随 signoff-release 写入脚本另立 PR 接线，接线前自动
+关闭未生效。
+
+PR 合并后仍可运行 `close-product-issue.mjs <PR>` 兜底；auto 收尾可再运行 `--sweep`，
+关闭网页手动合并留下的悬挂 issue。
 
 ### 通知
 

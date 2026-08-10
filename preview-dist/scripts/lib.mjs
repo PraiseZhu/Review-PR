@@ -2261,15 +2261,30 @@ export function parseSignoffReleases(comments) {
 //     resolve-threads.mjs 独立持有,不因 PR 级放行成立而被改变或绕过(正交由测试证明)。
 
 /**
+ * 从评论对象提取可校验作者(GitHub 侧身份)。生产输入是 GraphQL 节点
+ * (author 为 { login, __typename } 对象),测试/映射输入可能是 author 字符串;
+ * 两种形状都收:对象取 author.login,字符串直接用。取不到 → null(不可信,
+ * 调用方按 null 处理 = 拒,不 fail-open)。String({...}) 会得到 "[object Object]",
+ * 绝不能拿它当登录名比对。
+ * @param {any} c 评论(字符串或对象)
+ * @returns {string|null}
+ */
+function commentAuthor(c) {
+  if (typeof c === 'string' || c?.author == null) return null;
+  return typeof c.author === 'string' ? c.author : (c.author.login ?? null);
+}
+
+/**
  * 解析放行标记并带出评论作者(作者校验的数据原料)。与 parseSignoffReleases 同一正则,
- * 仅多取作者:对象输入取 author,字符串输入作者为 null(不可信,调用方按 null 处理)。
+ * 仅多取作者:对象输入取 author.login(author 为对象时)或 author(author 已是字符串),
+ * 字符串输入作者为 null(不可信,调用方按 null 处理)。
  * @returns {Array<{kind:string, by:string|null, author:string|null}>}
  */
 export function parseSignoffReleaseMarkers(comments) {
   const out = [];
   for (const c of comments ?? []) {
     const body = (typeof c === 'string' ? c : c?.body) ?? '';
-    const author = (typeof c === 'string' || c?.author == null) ? null : String(c.author);
+    const author = commentAuthor(c);
     for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
       for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
         out.push({ kind, by: m[2] ?? null, author });
@@ -2327,15 +2342,47 @@ export function evaluateSignoffRelease({ currentKinds = [], confirmedKinds = [],
 }
 
 /**
+ * 维护者确认门的机器层 gate 触发判定(security-gate / rules-gate 二选一,优先级
+ * security > rules)。context.mjs 的 auto.action 接线用,抽成纯函数是为了让「哪条
+ * 分支会触发」可单测。
+ * 反例(2026-08-10 复审实测):门类粒度确认引入后,两条分支的触发条件各自独立
+ * (unconfirmedKinds 按门类点名)。若 rules 分支仍用 `!hitsSecurityReviewPaths` 互斥
+ * 守卫——security 已确认、rules 新触发、两路径同时命中时,security 分支因已确认不
+ * 触发,rules 分支因守卫不可达 → 机器层 autoAction 漏放 rules-gate(仅剩 agent 侧
+ * suggestedHolds 兜底)。优先级改由 if/else 顺序表达,守卫只保留「autoAction 已落
+ * 更高优先级门」的保护(与原接线一致):
+ *   - 两门都未确认 → security-gate(顺序优先);
+ *   - 仅 rules 未确认(security 已确认)→ rules-gate;
+ *   - 任一未确认门且 autoAction 已落 skip-loop-managed / authorized-fast-merge
+ *     (security)或 product-gate / arch-gate(rules)→ 保持原值,不覆盖。
+ * @param {{securityBlocked?: boolean, hitsSecurityReviewPaths?: boolean,
+ *   hitsRuleFiles?: boolean, unconfirmedKinds?: string[], autoAction?: string}} o
+ * @returns {{action:string, holdKind:'security'|'rules'|null}}
+ */
+export function decideSignoffGateAction({ securityBlocked = false, hitsSecurityReviewPaths = false, hitsRuleFiles = false, unconfirmedKinds = [], autoAction = 'review' } = {}) {
+  if (securityBlocked) return { action: autoAction, holdKind: null };
+  if (hitsSecurityReviewPaths && unconfirmedKinds.includes('security')
+    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
+    return { action: 'security-gate', holdKind: 'security' };
+  }
+  if (hitsRuleFiles && unconfirmedKinds.includes('rules')
+    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge'
+    && autoAction !== 'product-gate' && autoAction !== 'arch-gate') {
+    return { action: 'rules-gate', holdKind: 'rules' };
+  }
+  return { action: autoAction, holdKind: null };
+}
+
+/**
  * 解析 hold 标记并带出评论作者(close-on-release 的校验原料)。正则与 parseLastHoldMarker
- * 同一份(前缀 + issue= 提取 + kind=arch 判定),仅多取作者。
+ * 同一份(前缀 + issue= 提取 + kind=arch 判定),仅多取作者(author 提取形状见 commentAuthor)。
  * @returns {Array<{kind:string, issueUrl:string, issueNumber:number|null, author:string|null}>}
  */
 export function parseHoldMarkerWithAuthor(comments) {
   const out = [];
   for (const c of comments ?? []) {
     const body = (typeof c === 'string' ? c : c?.body) ?? '';
-    const author = (typeof c === 'string' || c?.author == null) ? null : String(c.author);
+    const author = commentAuthor(c);
     for (const m of body.matchAll(/<!--\s*review-pr:product-gate\b([^>]*?)issue=(\S+?)\s*-->/g)) {
       const num = m[2].match(/\/issues\/(\d+)/)?.[1] ?? null;
       out.push({ kind: /\bkind=arch\b/.test(m[1]) ? 'arch' : 'product', issueUrl: m[2], issueNumber: num ? Number(num) : null, author });
@@ -2350,7 +2397,7 @@ export function parseHoldMarkerWithAuthor(comments) {
  * 关错 issue。本决策:
  *   - marker 评论作者必须 ∈ trustedLogins(白名单/机制账号),否则拒绝关闭(伪 marker 被拒);
  *   - issue 已 CLOSED → 幂等,不再关;
- *   - URL 解析失败(跨仓 / 无编号)→ 拒绝关闭;
+ *   - URL 解析失败(跨仓 / 无编号)→ 拒绝关闭;slug 缺失(无法验证归属)同样拒绝;
  *   - 决策只回答「该不该关」,不执行 close 动作;close 失败不连坐放行由调用方保证
  *     (放行判定 evaluateSignoffRelease 与 close 决策无数据依赖,测试证明)。
  * @param {{markers?: Array<{issueUrl?:string|null, issueNumber?:number|null,
@@ -2369,15 +2416,21 @@ export function decideCloseOnRelease({ markers = [], issueState = null, trustedL
   if (!markerTrusted) {
     return { shouldClose: false, reason: 'marker-author-rejected', issueNumber: last.issueNumber ?? null, markerAuthor: last.author ?? null, markerTrusted };
   }
-  // 同仓校验:跨仓库 / 解析失败的 URL 一律拒绝关闭(与 signoff-hold 关 issue 口径一致)
-  const issueNumber = slug && last.issueUrl ? issueNumberFromUrl(slug, last.issueUrl) : last.issueNumber ?? null;
+  // 同仓校验:slug 缺失(无法验证归属)或跨仓库 / 解析失败的 URL 一律拒绝关闭
+  // (与 signoff-hold 关 issue 口径一致)。slug 空串不再回退到裸 issueNumber——
+  // 那会跳过同仓校验,让跨仓 URL 的 marker 判「应关」。
+  const issueNumber = slug
+    ? (last.issueUrl ? issueNumberFromUrl(slug, last.issueUrl) : last.issueNumber ?? null)
+    : null;
   if (issueNumber == null) {
     return { shouldClose: false, reason: 'url-unparsable', issueNumber: null, markerAuthor: last.author ?? null, markerTrusted };
   }
-  if (issueState === 'CLOSED') {
+  // gh issue view --json state 返回小写 open/closed,统一大写再判(未知/缺失=空串)。
+  const state = String(issueState ?? '').toUpperCase();
+  if (state === 'CLOSED') {
     return { shouldClose: false, reason: 'already-closed', issueNumber, markerAuthor: last.author ?? null, markerTrusted };
   }
-  if (issueState === 'OPEN' || issueState == null) {
+  if (state === 'OPEN' || state === '') {
     // state 未知(查询失败)→ 仍尝试关闭:close 本身幂等,失败了 fail-visible 留给下一轮;
     // 这不同于「已确认 CLOSED」——后者确定不需要动作,前者是"没查到但值得试"。
     return { shouldClose: true, reason: 'close', issueNumber, markerAuthor: last.author ?? null, markerTrusted };
