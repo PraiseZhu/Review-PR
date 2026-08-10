@@ -2141,15 +2141,15 @@ export function renderIssueUrl(body, issueUrl) {
 }
 
 // ── 维护者确认门(signoff)统一标签/标记制 ──
-// signoff-hold.mjs / signoff-release.mjs 写入 PR 评论;context.mjs 扫描分类、
+// signoff-hold.mjs 写入 PR 评论(signoff-release 写入脚本尚未合入,见下注);context.mjs 扫描分类、
 // signoff-policy.test.mjs 覆盖。2026-08-09 起由旧 draft 制(product-hold 转 draft /
 // product-release 标回 ready)升级为标签制:hold=开讨论 issue + 状态评论 + 挂
 // awaiting-discussion 标签(不转 draft);release=admins 名单成员在当前 head 之后的
-// GitHub Approve,摘标签由 signoff-release --labels-only 同步。标签只是 GitHub 后台的
+// GitHub Approve,摘标签由维护者按本 SKILL 手工操作(signoff-release --labels-only 尚未合入)。标签只是 GitHub 后台的
 // 可筛性入口,真正挡合并的是流程内部判定;摘标签不构成通过。
 //
-// 与上游(lizi)同源的解析/判定函数全部收在这里,防止 signoff-hold / signoff-release /
-// context.mjs 三处正则漂移;缺省标签名走 SIGNOFF_LABEL_DEFAULT,pr-rules.json 的
+// 与上游(lizi)同源的解析/判定函数全部收在这里,防止 signoff-hold / context.mjs 正则漂移
+// (signoff-release 写入脚本尚未合入,合入后同收于此);缺省标签名走 SIGNOFF_LABEL_DEFAULT,pr-rules.json 的
 // signoffGate.label 可覆盖(与上游 signoff-hold.mjs 只读这一个嵌套键的契约一致)。
 
 /** hold 标记前缀沿用 PRODUCT_GATE_MARKER_PREFIX(存量被 hold 的 PR 评论里就是它)。 */
@@ -2228,7 +2228,7 @@ export function shouldCloseDiscussionIssue({ held = null, triggerCount = 0 } = {
 }
 
 /**
- * 解析维护者确认门的通过标记(signoff-release.mjs 写入,形如
+ * 解析维护者确认门的通过标记(写入脚本尚未合入,当前由维护者按 SKILL.md 手工发评论,形如
  * `<!-- review-pr:signoff-release gates=security,rules by=dashhuang -->`)。
  * 通过状态按触发类别取最后一次标记;标记只对它之后的当前 head 有效,作者新 push 后要
  * 重新确认。
@@ -2303,7 +2303,7 @@ export function syncSignoffLabel({ owner, repo, pr, want, label = SIGNOFF_LABEL_
   if (dryRun) return { changed: true, dryRun: true, added: want ? [label] : [], removed: want ? [] : [label], errors: [] };
   const errors = [];
   const firstLine = (r) => ((r.stderr || r.stdout || '').trim().split('\n')[0] ?? '').slice(0, 200);
-  // 标签失败必须一眼可见:调用方(signoff-hold / signoff-release)把它顶到输出顶层,
+  // 标签失败必须一眼可见:调用方(signoff-hold)把它顶到输出顶层,
   // SKILL 要求最终报告里照抄。少了标签 = GitHub 后台与待确认面板都筛不到该 PR。
   const withWarning = (result) => (result.errors.length
     ? { ...result, warning: `维护者确认标签${want ? '没挂上' : '没摘掉'}:${result.errors[0]}` }
