@@ -675,13 +675,14 @@ const HANGING_HOLD_SCRIPT = [
   'setInterval(() => {}, 1 << 30);', // 永不退出
 ].join('\n');
 
-test('R5 正向锁:探测挂起 → 探测小超时(200ms)让子 --scan 在 2s 外层内输出 signoff-hold-unavailable(删探测 timeoutMs 即红)', () => {
+test('R5 正向锁:探测挂起 → 探测小超时(200ms)让子 --scan 在 8s 外层内输出 signoff-hold-unavailable(删探测 timeoutMs 即红)', () => {
   const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'], prListNodes: SCAN_ALL_CANDIDATE }); // 命中 security-gate + 1 候选
   const work = mkdtempSync(join(tmpdir(), 'ctx-r5-fwd-'));
   const dir = copyScriptsTo(work);
   writeFileSync(join(dir, 'signoff-hold.mjs'), HANGING_HOLD_SCRIPT);
-  // env 压低两端:探测 200ms(两次共 400ms),外层 2000ms(> 400ms → 升级来得及送达)
-  const env2 = { ...env, REVIEW_PR_HOLD_PROBE_TIMEOUT_MS: '200', REVIEW_PR_SCAN_CHILD_TIMEOUT_MS: '2000' };
+  // env 压低两端:探测 200ms(两次共 400ms),外层 8000ms(> 400ms → 升级来得及送达;余量 20×,
+  // 全量并发下子进程启动开销不再吃掉余量 —— 2026-08-10 从 2000ms 上调,修全量并发下的间歇假红)
+  const env2 = { ...env, REVIEW_PR_HOLD_PROBE_TIMEOUT_MS: '200', REVIEW_PR_SCAN_CHILD_TIMEOUT_MS: '8000' };
   const r = spawnSync('node', [join(dir, 'context.mjs'), '--scan-all'], { cwd: repo, env: env2, encoding: 'utf8' });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
@@ -690,7 +691,7 @@ test('R5 正向锁:探测挂起 → 探测小超时(200ms)让子 --scan 在 2s �
   assert.ok(cand, `results 应含 469 候选,got ${JSON.stringify(out.results)}`);
   assert.equal(cand.ok, true, '探测重试耗尽 → 子进程应正常完成并输出升级(不是外层超时/泛化失败)');
   assert.equal(cand.auto?.action, 'signoff-hold-unavailable', '探测 2×200ms 超时耗尽 → 子 --scan 必须输出升级值');
-  // 变异:删掉探测 spawn 的 timeoutMs → 探测回默认 180s → 升级需 360s > 外层 2000ms
+  // 变异:删掉探测 spawn 的 timeoutMs → 探测回默认 180s → 升级需 360s > 外层 8000ms
   // → 子进程被外层 kill → cand.ok=false 泛化失败 → 本断言红。
 });
 
