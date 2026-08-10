@@ -1729,6 +1729,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-10T00:07:25.679Z",
       "lastSeen": "2026-08-10T00:07:25.679Z"
+    },
+    {
+      "fingerprint": "security-hardhit-fakekey-test-stub",
+      "tier": "proposal",
+      "title": "测试文件中的 FAKEKEY 测试桩(sk-FAKEKEY-*/xoxb-FAKEKEY-*)命中敏感内容硬门,12 处全量打回/投递跟进会话",
+      "detail": "PR #600 的 12 处硬命中全部位于 cindyplugin/src/__tests__/debugLogRedact.test.ts,内容为 sk-FAKEKEY-*/xoxb-FAKEKEY-* 测试桩(已人工核实非真实凭证),但硬命中门 fail-closed,无 allowPaths 豁免,整 PR 被打回走 fix-handoff。测试脱敏逻辑必须用假凭证形态的输入,属结构性误报。",
+      "proposal": "维护者评估:①把 cindyplugin/src/__tests__/ 加入 sensitiveContent.allowPaths(按 3.1 的既有误报治理通道);或②hard pattern 增加 FAKEKEY 字面量识别(排除 sk-FAKEKEY/xoxb-FAKEKEY 形态);或③维持现状(测试桩继续走打回+跟进会话流程,成本是每轮一次投递)。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-10T08:17:42.550Z",
+      "lastSeen": "2026-08-10T08:17:42.550Z"
     }
   ],
   "escapedHazards": [
