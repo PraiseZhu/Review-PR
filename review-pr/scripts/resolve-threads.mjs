@@ -402,6 +402,13 @@ try {
     if (dryRun) {
       // dry-run 不拿锁、不重查;resolve 预演按批量评论里的己方 marker 判定。
       const pre = ownMarkersFrom(comments, pr, w.id, viewerLogin);
+      // 翻案保护预演与执行路径同语义(上游 reopened 保护先于 dry-run):己方曾 resolve
+      // 成功(state=resolved marker)却又未 resolve = 人工翻案,永久留人工——预演同样
+      // 不预演回复(wouldReply=false),避免 dry-run 输出与真实执行 0 reply 不一致。
+      if (pre.some((m) => m.marker.state === 'resolved')) {
+        results.push({ id: w.id, path: t.path, dryRun: true, wouldReply: false, wouldResolve: false, reason: 'skipped-reopened-after-triage(dry-run 预演:己方已 resolve 过(state=resolved marker)又被 reopen = 人工翻案,永久留人工)' });
+        continue;
+      }
       const preAge = pre.length ? markerAgeMs(pre[pre.length - 1].comment) : null;
       const wouldResolve = pre.length > 0
         && !pre.some((m) => m.marker.state === 'resolved')
