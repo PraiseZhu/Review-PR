@@ -35,6 +35,8 @@ import assert from 'node:assert/strict';
 
 import {
   LOCK_STALE_MS,
+  parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease,
+  parseHoldMarkerWithAuthor, decideCloseOnRelease, performIssueClose,
 } from '../scripts/lib.mjs';
 import {
   performIssueCreate, performStatusComment, performLabelSync, computeHeld,
@@ -1150,4 +1152,174 @@ test('signoff: R6-3 主流程多轮收敛——10 个重复 3 轮跑完,每轮 c
     rmSync(repoDir, { recursive: true, force: true });
     rmSync(lockDir, { recursive: true, force: true });
   }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ⑧ 持久放行改良(2026-08-10,lz-port-persist):SC1 门类粒度 + SC2 放行关 issue
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── SC1:evaluateSignoffRelease 门类粒度持久放行 ──
+
+test('signoff: SC1 反例(上游洞)——旧 Approve 仅确认 security,新 commit 首次触发 rules 门仍拦', () => {
+  // 上游 evaluateMaintainerReview:historicalApproval 不带 kind,任意旧 Approve 放行所有门;
+  // 本仓改良:放行快照记录 confirmedKinds,新触发的门类不在集合内 → 仍拦。
+  const r = evaluateSignoffRelease({
+    currentKinds: ['security', 'rules'], // 新 commit 同时触发 security(已确认)+ rules(新)
+    confirmedKinds: ['security'],        // 旧 Approve 当时只确认过 security
+    headApproved: false,                 // 新 head 上无新 Approve
+  });
+  assert.equal(r.released, false, 'rules 不在 confirmedKinds → 必须仍拦');
+  assert.deepEqual(r.unconfirmedKinds, ['rules'], '点名未确认门类:rules');
+  assert.equal(r.basis, 'unconfirmed-kinds');
+});
+
+test('signoff: SC1 跨 commit 持久——已确认门类在新 head 继续放行', () => {
+  const r = evaluateSignoffRelease({
+    currentKinds: ['security'],
+    confirmedKinds: ['security'],
+    headApproved: false,
+  });
+  assert.equal(r.released, true, '已确认门类跨 commit 持久放行,不要求对新 head 重新 Approve');
+  assert.equal(r.basis, 'confirmed-kinds-cover');
+  assert.deepEqual(r.unconfirmedKinds, [], '无未确认门类');
+});
+
+test('signoff: SC1 当前 head admin Approve 确认全部当前触发门类(既有语义保留)', () => {
+  const r = evaluateSignoffRelease({
+    currentKinds: ['security', 'rules'],
+    confirmedKinds: [],
+    headApproved: true, // admin Approve 绑定当前 head oid
+  });
+  assert.equal(r.released, true, 'Approve 当前 head = 确认当前 head 全部已触发门类');
+  assert.deepEqual(r.confirmedKinds, ['rules', 'security'], 'confirmedKinds 并入全部当前触发门类');
+  assert.equal(r.basis, 'approve-current-head');
+});
+
+test('signoff: SC1 无触发门类 → 天然放行(no-gate-triggered),confirmedKinds 保持输入', () => {
+  const r = evaluateSignoffRelease({ currentKinds: [], confirmedKinds: ['security'], headApproved: false });
+  assert.equal(r.released, true);
+  assert.equal(r.basis, 'no-gate-triggered');
+  assert.deepEqual(r.unconfirmedKinds, []);
+});
+
+test('signoff: SC1 放行标记作者校验不得削弱——非可信作者 marker 被拒且不计入 confirmedKinds', () => {
+  // 放行标记的文本形状谁都能复制;评论作者(GitHub 侧可验证身份)才是信源。
+  const { confirmedKinds, rejected } = collectConfirmedSignoffKinds({
+    markers: [
+      { kind: 'security', author: 'dashhuang', by: 'dashhuang' },  // admins 名单成员
+      { kind: 'rules', author: 'stranger', by: 'dashhuang' },       // 伪 marker:作者不在名单,by 自称 admin
+      { kind: 'arch', author: null },                               // 作者未知(字符串输入形态)
+    ],
+    trustedLogins: ['dashhuang', 'Admin2'],
+  });
+  assert.deepEqual(confirmedKinds, ['security'], '只有可信作者的 marker 计入 confirmedKinds');
+  assert.equal(rejected.length, 2, '非可信/未知作者全部进 rejected,不吞');
+  assert.ok(rejected.some((m) => m.kind === 'rules' && m.author === 'stranger'), '伪 marker 显式点名');
+});
+
+test('signoff: SC1 parseSignoffReleaseMarkers 带作者解析(对象取 author,字符串为 null)', () => {
+  const markers = parseSignoffReleaseMarkers([
+    { body: '<!-- review-pr:signoff-release gates=security,rules by=dashhuang -->', author: 'dashhuang' },
+    '<!-- review-pr:signoff-release gates=arch -->',
+  ]);
+  assert.equal(markers.length, 3, '两条评论共 3 个门类条目');
+  assert.ok(markers.every((m) => m.kind === 'security' || m.kind === 'rules' || m.kind === 'arch'));
+  assert.equal(markers.find((m) => m.kind === 'security').author, 'dashhuang', '对象输入带作者');
+  assert.equal(markers.find((m) => m.kind === 'arch').author, null, '字符串输入作者为 null(不可信)');
+  assert.equal(parseSignoffReleaseMarkers([]).length, 0, '空输入不炸');
+});
+
+test('signoff: SC1 两级门正交——PR 级持久放行不消费 marker 年龄,thread 年龄门独立判定不受影响', () => {
+  // ① PR 级判定结构上无时间戳输入:evaluateSignoffRelease 的签名只有 currentKinds /
+  //    confirmedKinds / headApproved,喂任意 marker createdAt 结果都一致 —— 没有可被
+  //    thread 年龄门(或任何时间窗)影响的输入面,也就不可能"绕过"或"改变"它。
+  const young = evaluateSignoffRelease({ currentKinds: ['security'], confirmedKinds: ['security'], headApproved: false });
+  const old = evaluateSignoffRelease({ currentKinds: ['security'], confirmedKinds: ['security'], headApproved: false });
+  assert.deepEqual(young, old, 'PR 级判定与 marker 年龄无关');
+  // ② 解析层也不取年龄:parseSignoffReleaseMarkers 输出不含任何时间戳字段。
+  const markers = parseSignoffReleaseMarkers([
+    { body: '<!-- review-pr:signoff-release gates=security by=dashhuang -->', author: 'dashhuang', createdAt: new Date().toISOString() },
+  ]);
+  assert.deepEqual(Object.keys(markers[0]).sort(), ['author', 'by', 'kind'], '解析层只带 kind/by/author,无 createdAt');
+  // ③ thread 级年龄门(MIN_MARKER_AGE_MS,10min 人工反对窗口)由 resolve-threads.mjs 独立
+  //    持有:本 PR 未改动该文件,其年龄门判定原样存在(静态断言,防「改 resolve-threads
+  //    绕过年龄门」的静默回归);行为级回归由 resolve-threads.test.mjs 全量测试承担。
+  const src = readFileSync(join(SCRIPTS_DIR, 'resolve-threads.mjs'), 'utf8');
+  assert.ok(src.includes('MIN_MARKER_AGE_MS'), 'resolve-threads.mjs 的年龄门常量仍存在');
+  assert.ok(src.includes('markerAgeMs'), 'resolve-threads.mjs 的年龄计算函数仍存在');
+});
+
+// ── SC2:放行时关闭讨论 issue(补上游来源校验)──
+
+test('signoff: SC2 四路径矩阵——关成功 / 已关(幂等) / 关失败(不连坐) / 伪 marker 被拒', () => {
+  const TRUSTED = ['dashhuang', 'review-pr-bot'];
+  const trustedMarker = { author: 'dashhuang', kind: 'product', issueUrl: 'https://github.com/acme/app/issues/7', issueNumber: 7 };
+  // ① 关成功:可信 marker 作者 + issue OPEN → shouldClose + performIssueClose 成功
+  const d1 = decideCloseOnRelease({ markers: [trustedMarker], issueState: 'OPEN', trustedLogins: TRUSTED, slug: 'acme/app' });
+  assert.equal(d1.shouldClose, true, '可信作者 + OPEN → 判定关闭');
+  assert.equal(d1.reason, 'close');
+  const okCalls = [];
+  const okGh = (args, opts) => { okCalls.push(args); return { ok: true, stdout: '', stderr: '' }; };
+  const c1 = performIssueClose({ slug: 'acme/app', issueNumber: 7, ghFn: okGh });
+  assert.equal(c1.closed, true, 'close 成功 → closed=true(单一真相字段)');
+  assert.equal(c1.closeError, null);
+  assert.deepEqual(okCalls[0].slice(0, 2), ['issue', 'close'], '动作只发 issue close,不投递评论(SC-6a 静态门:lib.mjs 含授权命令字面量,不得含评论投递形态)');
+  // ② 已关(幂等):issue 已 CLOSED → 不再判定关闭
+  const d2 = decideCloseOnRelease({ markers: [trustedMarker], issueState: 'CLOSED', trustedLogins: TRUSTED, slug: 'acme/app' });
+  assert.equal(d2.shouldClose, false, '已关 → 幂等,不再关');
+  assert.equal(d2.reason, 'already-closed');
+  // ③ 关失败(不连坐、错误可见):close 调用失败 → closed=false + closeError 可见,放行判定独立
+  const failGh = () => ({ ok: false, stdout: '', stderr: 'HTTP 403: close forbidden' });
+  const c3 = performIssueClose({ slug: 'acme/app', issueNumber: 7, ghFn: failGh });
+  assert.equal(c3.closed, false, 'close 失败 → closed=false');
+  assert.match(c3.closeError, /403/, `closeError 可见:${c3.closeError}`);
+  const releaseEval = evaluateSignoffRelease({ currentKinds: ['security'], confirmedKinds: ['security'], headApproved: false });
+  assert.equal(releaseEval.released, true, 'close 失败不连坐放行:放行判定无数据依赖 close 结果');
+  // ④ 伪 marker 被拒:marker 作者不在可信名单 → 拒绝关闭(上游洞:任意可评论者贴伪 marker
+  //    就能让放行路径关错 issue)
+  const d4 = decideCloseOnRelease({
+    markers: [{ ...trustedMarker, author: 'stranger' }], issueState: 'OPEN', trustedLogins: TRUSTED, slug: 'acme/app',
+  });
+  assert.equal(d4.shouldClose, false, '伪 marker 作者被拒');
+  assert.equal(d4.reason, 'marker-author-rejected');
+  assert.equal(d4.markerTrusted, false);
+  // 边界:作者未知(字符串形态 marker)同样被拒;无 marker 不炸
+  const d5 = decideCloseOnRelease({ markers: [{ kind: 'product', issueUrl: 'https://github.com/acme/app/issues/7', author: null }], issueState: 'OPEN', trustedLogins: TRUSTED, slug: 'acme/app' });
+  assert.equal(d5.reason, 'marker-author-rejected', '作者未知 = 不可信');
+  const d6 = decideCloseOnRelease({ markers: [], issueState: 'OPEN', trustedLogins: TRUSTED, slug: 'acme/app' });
+  assert.equal(d6.reason, 'no-marker');
+  assert.equal(d6.shouldClose, false);
+});
+
+test('signoff: SC2 输出字段自洽——performIssueClose 单一 closed 真相字段,不复制上游 issueClosed 矛盾', () => {
+  // 上游 tryCloseIssue 先写 issueClosed:false、helper 真结果字段叫 closed,成功时两者矛盾;
+  // 本仓输出只有一个 closed 真相字段 + closeError。
+  const okCalls = [];
+  const okGh = (args, opts) => { okCalls.push(args); return { ok: true, stdout: '', stderr: '' }; };
+  const r = performIssueClose({ slug: 'acme/app', issueNumber: 7, ghFn: okGh });
+  assert.deepEqual(Object.keys(r).sort(), ['closeError', 'closed'], '字段集合固定,无 issueClosed/commentPosted 之类别名');
+  assert.equal(r.closed, true, '成功 → closed=true(与真实状态一致,不出现 false/true 矛盾)');
+  assert.equal(okCalls.length, 1, '动作只 close 一次,无多余调用');
+  const dry = performIssueClose({ slug: 'acme/app', issueNumber: 7, ghFn: okGh, dryRun: true });
+  assert.equal(dry.dryRun, true, 'dry-run 不调用 gh');
+  assert.equal(okCalls.length, 1, 'dry-run 后仍只有 1 次调用(真实路径那次)');
+});
+
+test('signoff: SC2 parseHoldMarkerWithAuthor 带作者解析 + 跨仓 URL 拒绝关闭', () => {
+  const markers = parseHoldMarkerWithAuthor([
+    { body: '<!-- review-pr:product-gate kind=arch issue=https://github.com/acme/app/issues/9 -->', author: 'dashhuang' },
+    '<!-- review-pr:product-gate issue=https://github.com/evil/repo/issues/1 -->',
+  ]);
+  assert.equal(markers.length, 2);
+  assert.equal(markers[0].kind, 'arch');
+  assert.equal(markers[0].issueNumber, 9);
+  assert.equal(markers[0].author, 'dashhuang');
+  assert.equal(markers[1].author, null, '字符串输入作者为 null');
+  // 跨仓 URL:即使作者可信也拒绝关闭(issueNumberFromUrl 同仓校验)
+  const d = decideCloseOnRelease({
+    markers: [{ author: 'dashhuang', kind: 'product', issueUrl: 'https://github.com/evil/repo/issues/1' }],
+    issueState: 'OPEN', trustedLogins: ['dashhuang'], slug: 'acme/app',
+  });
+  assert.equal(d.reason, 'url-unparsable', '跨仓 URL 拒绝关闭');
+  assert.equal(d.shouldClose, false);
 });

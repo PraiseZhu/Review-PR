@@ -137,6 +137,11 @@ try {
   const L = [];
   L.push(`# 阶段二独立审查任务 — PR #${pr}`, '');
   L.push(`snapshotHash: \`${snapshot.snapshotHash ?? '(不完整)'}\` — 输出里的所有 snapshotHash 字段必须原样用它。`, '');
+  // base 口径(2026-08-09 #599 实跑:base 误传 main tip,把 base 侧已合入的修复误判成 PR 回退,
+  // 产出 3 条伪 finding 多跑一轮;审查 agent 当时已在 verificationGap 自查出 merge-base 口径,
+  // 却仍在 findingFamilies 报了 base 侧差异——两个口径内部不一致,故把约束写进 prompt 抬头):
+  L.push(`base: \`${baseRefOid || '(未给)'}\` — 这是本 PR 的分叉点(PR 元数据 baseRefOid / merge-base),不是 base 分支当前 tip。`, '');
+  L.push('**只审本 PR 在该分叉点之上的净贡献**:base 分支在本 PR 生命周期内可能已前进(合入了其它 PR),那些变化不属于本 PR。`base..head` 差异中非本 PR 净贡献的部分**不得报 finding**——尤其不要把 base 侧已合入的修复当成本 PR 的回退。拿不准某处改动是否属本 PR 净贡献时,记进 `verificationGaps[]`,不要报成 finding。', '');
   L.push(`输出契约:单一 JSON,\`schemaVersion: "${REVIEW_OUTPUT_SCHEMA_VERSION}"\`。机器只消费 JSON,你自报的 verdict 不被采信(verdict 由内容推导)。`, '');
   // 字段级形状参考(2026-08-07 轮次实跑:审查输出与 rro-1 契约的格式偏差导致整轮 invalid,
   // 主 agent 被迫手工规范化后才可消费——把 5 类已发生的偏差直接写进 prompt,降低格式往返):

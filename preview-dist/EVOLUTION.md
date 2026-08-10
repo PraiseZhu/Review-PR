@@ -11,9 +11,10 @@
 - `security-hardhit-fakekey-test-stub` **测试文件中的 FAKEKEY 测试桩(sk-FAKEKEY-*/xoxb-FAKEKEY-*)命中敏感内容硬门,12 处全量打回/投递跟进会话** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
   - 现象:PR #600 的 12 处硬命中全部位于 cindyplugin/src/__tests__/debugLogRedact.test.ts,内容为 sk-FAKEKEY-*/xoxb-FAKEKEY-* 测试桩(已人工核实非真实凭证),但硬命中门 fail-closed,无 allowPaths 豁免,整 PR 被打回走 fix-handoff。测试脱敏逻辑必须用假凭证形态的输入,属结构性误报。
   - 提案:维护者评估:①把 cindyplugin/src/__tests__/ 加入 sensitiveContent.allowPaths(按 3.1 的既有误报治理通道);或②hard pattern 增加 FAKEKEY 字面量识别(排除 sk-FAKEKEY/xoxb-FAKEKEY 形态);或③维持现状(测试桩继续走打回+跟进会话流程,成本是每轮一次投递)。
-- `task-base-must-be-merge-base` **阶段二任务构建的 base 必须用 merge-base(或 gh baseRefOid),不能用最新 main tip** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open
+- `task-base-must-be-merge-base` **阶段二任务构建的 base 必须用 merge-base(或 gh baseRefOid),不能用最新 main tip** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed
   - 现象:本轮 #599 首次审查误传了 git rev-parse origin/main 的最新 tip 作为 base(#598 合并后 main 前移),base..head 线性差异把 main 侧已合入的 waitForFunction 修复误判成 PR 回退,产出 3 条伪 finding、多跑一轮重审。gh pr view 返回的 baseRefOid 与 merge-base 一致;base 分支在其生命周期内前进过(合并了其它 PR)时,用最新 tip 会引入 base 侧伪差异。审查 agent 已在 verificationGap 自查出 merge-base 口径但仍在 findingFamilies 报了 base 侧差异,两个口径内部不一致。
   - 提案:SKILL 3.0.1/build-review-task 文档明确:--base 必须传 merge-base(或 gh pr view 的 baseRefOid),并在任务 prompt 中提醒审查 agent:base..head 差异中非 merge-base 净贡献的部分不得报 finding
+  - 备注:[decided:2026-08-10] 两半均已落地:①文档半由 commit 0381757c(2026-08-09)在 SKILL.md 3.0.1/4 节明确 --base 取 baseRefOid/merge-base;②prompt 半由 commit 1087130(2026-08-10)在 build-review-task.mjs prompt 抬头补 base 分叉点口径——显式声明只审本 PR 净贡献、base..head 中非净贡献部分不得报 finding、归属拿不准时记 verificationGaps。#599 的 3 条伪 finding 根因(审查 agent 侧无口径约束)已闭合
 - `preflight-timeout-arg-position-rule` **waitForFunction timeout 写第二个位置参数被静默忽略——现有 preflight 只查 async 谓词,查不到 timeout 参数位置** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598:stamp-overlap.mjs:181 新增 waitForFunction(pred, {timeout:5000}),Playwright 签名 waitForFunction(pageFunction[, arg, options]),第二位置是 arg,超时退化为默认 30s。建议 review-preflight 增加确定性规则:检测 waitForFunction 第二位置参数是对象字面量且含 timeout 键 → 机器打回。需配零误报 fixture,列入预扫描规则开发。
 - `escape-candidate-issue-ref-blocks-merge` **逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `8c8e23168fd487473bc8dc48294efcc20d0e4bda`
@@ -26,9 +27,10 @@
 - `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
   - 现象:#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。
   - 提案:context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。
-- `review-base-ref-oid-source-unclear` **preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
+- `review-base-ref-oid-source-unclear` **preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: landed
   - 现象:本轮 #527/#539 误用 origin/main tip(59d712d5)作为 --base,而 SKILL 约定 baseRefOid 是 gh pr view 返回的分叉点(527=0c95823/539=3686b32b),导致整条审查链 snapshot 漂移、pre-merge-check fail-closed 拦截后返工重建。SKILL.md 三处命令模板用 <baseRefOid> 占位符但未定义来源。现象:回执 snapshotHash 与 pre-merge-check 重建不一致(stale)。
   - 提案:在 SKILL.md 3.0.1/4 节命令块后补一句来源说明:--base 取 gh pr view <N> --json baseRefOid(PR 分叉点),不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
+  - 备注:[decided:2026-08-10] 落地 commit 0381757c(2026-08-09 AuthorDate 核实):SKILL.md 3.0.1 节与第 4 节命令块后各补一句 --base 取 gh pr view <N> --json baseRefOid(PR 分叉点),明确不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
 - `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 5 次,首见 2026-07-29,最近 2026-08-05,status: open
   - 现象:2026-08-05 再观测:#519/#520/#521 为 PraiseZhu 自有 PR、CLEAN(无结构性 BLOCKED)、approvalBasis=none,admin-trust 路由只在 structural-check 时才可达,selfFixAuthors 留空故 selfMerge 也不可用——本轮按 depends-on-#518 跳过;#518 打回后若列车重推,这些 CLEAN 自有 PR 即使取消依赖也没有自动合并出口,与既有 open 提案同根因
   - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
@@ -201,6 +203,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
+  - 现象:本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过
 - `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:本轮 #580/#603 均因改动含 package.json 触发 skip-security-review(3.8 供应链能力面防护,防自动化改坏自己);#605 同轮走完整自动化审查+admin-trust 合并,流程正常无缺口
 - `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 2 次,首见 2026-08-09,最近 2026-08-09,status: tracked
