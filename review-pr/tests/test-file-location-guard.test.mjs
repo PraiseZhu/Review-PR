@@ -36,13 +36,16 @@ function collectTestFiles(dir, out = []) {
 }
 
 // 按仓根相对路径判定豁免。豁免区 = 构建产物镜像(dist/ 与 preview-dist/,仓根与
-// review-pr/ 下均可能出现)+ review-pr/tests/(标准跑法覆盖区)。node_modules 已在
-// collectTestFiles 遍历时跳过。
+// review-pr/ 下均可能出现)+ review-pr/tests/ 的直接子文件(标准跑法
+// `node --test "tests/*.test.mjs"` 是 shell glob,不递归子目录,故 tests/ 下的
+// 嵌套目录不受保护,不得豁免)。node_modules 已在 collectTestFiles 遍历时跳过。
 function isExempt(rel) {
   if (rel[0] === 'dist' || rel[0] === 'preview-dist') return true;
   return (
     rel[0] === 'review-pr' &&
-    (rel[1] === 'dist' || rel[1] === 'preview-dist' || rel[1] === 'tests')
+    (rel[1] === 'dist' ||
+      rel[1] === 'preview-dist' ||
+      (rel[1] === 'tests' && rel.length === 3))
   );
 }
 
