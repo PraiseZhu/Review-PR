@@ -28,7 +28,7 @@
 
 ## 1. `5467af8` — 维护者 Approve 持久放行
 
-**上游做了什么**:`review-pr/scripts/lib.mjs` 的 `evaluateMaintainerReview` 新增 `historicalApproval` 分支——不再要求 Approve 晚于当前 head,只要维护者 Approve 过一次,后续作者新 push 不再重新亮确认门(`released = currentApproval ?? historicalApproval ?? marker`)。上游 commit 说明自述:「维护者 Approve 即持久有效,不限当前 head」;把关移到最终审查——commit 安全网逐项列明「diff 超出 PR 声称目的 / 夹带私货 / 讨论结果未落实 → P1」,即「对照描述+讨论结果逐项复核,有问题照样拦」。同提交改 `security-patterns.test.mjs`(25 行增量)。
+**上游做了什么**:`review-pr/scripts/lib.mjs` 的 `evaluateMaintainerReview` 新增 `historicalApproval` 分支——不再要求 Approve 晚于当前 head,只要维护者 Approve 过一次,后续作者新 push 不再重新亮确认门(`released = currentApproval ?? historicalApproval ?? marker`)。上游 commit 说明自述:「维护者 Approve 即持久有效,不限当前 head」;把关移到最终审查——commit 安全网(审查阶段新增第 7 步「最终复核」)逐项列明:「PR 描述吻合度:diff 超出 PR 声称目的 → P1」「夹带私货:无关功能/配置/依赖 → P1」「讨论结果落实:issue 中维护者的修改要求是否真的改了 → P1」,即「对照描述+讨论结果逐项复核,有问题照样拦」。同提交改 `security-patterns.test.mjs`(25 行增量)。
 
 **本仓现状**:放行判定是「admins 名单成员对**当前 head 之后**的 GitHub Approve」(SKILL.md「放行判定(release)」节;context.mjs 的 `adminsApprovedCurrentHead` 判定)——即本仓正是上游 `5467af8` 改**之前**的语义:作者新 push 后旧的 Approve 失效,需重新 Approve。
 
