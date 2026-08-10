@@ -121,8 +121,18 @@ auto 每轮消费 `heldDraftResults`：
 - 未同意 → 保持 draft，不重复评论、不催作者；
 - issue 读取失败 → 汇总异常，不放行、不重复 hold。
 
-PR 合并后运行 `close-product-issue.mjs <PR>`；auto 收尾可再运行 `--sweep`，关闭网页
-手动合并留下的悬挂 issue。
+**持久放行**：维护者确认（Approve / 白名单明确同意）过的**门类**（product / arch /
+security / rules / coldUpdate / pluginBase）跨 commit 持久放行——作者再 push 不重新
+亮门；**未确认过的新门类首次触发仍拦**（确认只放行它当时覆盖的门类，不连带放行之后
+新出现的门类，如旧的 security 确认不会放行新出现的 rules 门）。这是本仓对上游（PR
+全局持久）的刻意收窄，不是与上游对齐。
+
+**放行时自动关闭讨论 issue**：放行生效时自动关闭**本机制自建**的讨论 issue——只认
+hold marker 的评论作者身份（本机制 viewer 账号；marker 文本形状可被任何有评论权限的
+账号复制，身份不可伪造）；关闭失败不连坐放行（放行照常生效），失败原因显式进轮次汇总。
+
+PR 合并后仍可运行 `close-product-issue.mjs <PR>` 兜底；auto 收尾可再运行 `--sweep`，
+关闭网页手动合并留下的悬挂 issue。
 
 ### 通知
 

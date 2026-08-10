@@ -778,12 +778,22 @@ node --test tests/*.test.mjs
   必须显式进轮次汇总（脚本输出逐字段可查），不得静默降级为「只打了标签」；
 - auto 模式 issue 新建成功后按配置发送一次讨论通知；交互模式在 issue、评论和通知
   发出前逐项确认；
-- 放行判定（release）：**admins 名单成员对当前 head 之后的 GitHub Approve**
+- 放行判定（release）：**admins 名单成员的 GitHub Approve**
   （`signoff.adminsApprovedCurrentHead=true`）；白名单在讨论 issue 或 PR 评论区任一处
   明确同意（产品/架构门口径）后由维护者按本 SKILL 手工摘标签（signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试），
   不能把摘标签留给作者；存量被旧 draft 制 hold 成 draft 的 PR，在门判定为不拦 /
   已放行时用 `gh pr ready` 一次性迁移恢复（幂等，已 ready 即跳过）；
-- PR 合并后运行 `close-product-issue.mjs`，避免讨论 issue 悬挂。
+- **持久放行**：维护者确认（Approve / 白名单明确同意）过的**门类**（product / arch /
+  security / rules / coldUpdate / pluginBase）跨 commit 持久放行——作者再 push 不
+  重新亮门；**未确认过的新门类首次触发仍拦**（确认只放行它当时覆盖的门类，不连带
+  放行之后新出现的门类，如旧的 security 确认不会放行新出现的 rules 门）。这是本仓对
+  上游（PR 全局持久）的刻意收窄，不是与上游对齐；
+- **放行时自动关闭讨论 issue**：放行生效时自动关闭**本机制自建**的讨论 issue——只认
+  hold marker 的评论作者身份（本机制 viewer 账号；marker 文本形状可被任何有评论权限
+  的账号复制，身份不可伪造）；关闭失败不连坐放行（放行照常生效），失败原因显式进
+  轮次汇总；
+- 合并后仍可运行 `close-product-issue.mjs` 兜底（`--sweep` 覆盖网页手动合并遗留），
+  避免讨论 issue 悬挂。
 
 产品/UI gate 和架构 gate 的详细名单、阈值、Slack 归属、通知去重与异常处理见
 [references/internal-gates.md](references/internal-gates.md)。Bugfix、已有功能补充和
@@ -916,8 +926,9 @@ skill 定义、package.json 与常见 lockfile 等。目的是防自动化改坏
 命中即 `context.mjs` 的 `auto.action=security-gate`（`signoff.triggers.security`
 非空），按维护者确认门（signoff）执行 hold——**不再静默 skip**（三门空转 = 命中
 无动作，正是 2026-08-09 要接通的缺陷）：挂 `awaiting-discussion` 标签 + 开讨论
-issue + 发状态评论，等 admins 名单成员（`admins`）对当前 head 之后显式 Approve
-放行（`signoff.adminsApprovedCurrentHead=true` 时本门不拦）。放行前不自动审、不
+issue + 发状态评论，等 admins 名单成员（`admins`）显式 Approve 放行
+（`signoff.adminsApprovedCurrentHead=true` 时本门不拦）。放行按门类持久：security
+门被确认后作者再 push 不重新亮门，未确认过的新门类首次触发仍拦（见 3.4）。放行前不自动审、不
 自动合；放行后按 `auto.fallback` 继续原走向。优先级仅次于 3.7 的 loop 托管排除，
 压过产品门/架构门/格式门/前置门，同样让位于安全与隐私门硬命中。是否启用、纳入
 哪些路径由目标仓库自己按贡献者可信度模型配置。**保证等级如实声明**：本门是
@@ -938,8 +949,9 @@ T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这�
 
 命中即 `context.mjs` 的 `auto.action=rules-gate`（`signoff.triggers.rules` 非空），
 按维护者确认门（signoff）执行 hold（`signoff-hold.mjs --kind rules`），口径与 3.8
-完全一致：挂标签 + 开讨论 issue + 状态评论，admins 对当前 head 之后 Approve 即放行
-（放行前不自动审、不自动合，放行后按 `auto.fallback` 继续）。优先级低于 security
+完全一致：挂标签 + 开讨论 issue + 状态评论，admins Approve 即放行（放行按门类持久，
+作者再 push 不重新亮门，见 3.4；放行前不自动审、不自动合，放行后按 `auto.fallback`
+继续）。优先级低于 security
 门（命中 securityReviewPaths 时不走本门），不覆盖已包裹的 product-gate / arch-gate；
 `ruleFiles.required` 未配置时本门永不出现。`ruleFiles.ruleMap`（规则文档 → 管辖
 路径映射）命中明细随 `signoff.triggers.ruleMapHits` 带出，供编排辅助定性，不单独
@@ -1706,7 +1718,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   不催，交给该 loop 自己收尾（详见「Loop 托管 PR 排除」）；未配置该键时此分支永不触发。
 - 命中 `securityReviewPaths`（`security-gate`）或 `ruleFiles.required`（`rules-gate`）：
   按维护者确认门（signoff）hold——挂 `awaiting-discussion` 标签 + 开讨论 issue +
-  状态评论，admins 对当前 head 之后 Approve 即放行，放行前不自动审、不自动合、放行
+  状态评论，admins Approve 即放行（门类持久，见 3.4），放行前不自动审、不自动合、放行
   后按 `auto.fallback` 继续（详见「审查执行环境安全」「审查规则文档门」）；未配置
   对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
   `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，
@@ -2156,7 +2168,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    `skip-loop-managed` 的候选原样跳过、不 checkout、不提醒（详见 3.7，未配置对应键
    时永不出现）；`security-gate`／`rules-gate` 的候选**不跳过**——进处理清单，按下方
    「三门 hold 接线」调 `signoff-hold.mjs`（详见 3.8／3.9，未配置对应键时这两类永不
-   出现；命中但 admins 已对当前 head 之后 Approve 时不 hold，直接按 `auto.fallback`
+   出现；命中但该门类已被维护者确认（持久放行，见 3.4）时不 hold，直接按 `auto.fallback`
    继续）；`auto.action=signoff-hold-unavailable`（F3，2026-08-09）的候选**不按原
    路由继续**——记人工介入、报 owner 排查 signoff-hold.mjs 调用点（见下方探测字段
    段），排查后重跑本轮。`product-gate`／`arch-gate` 语义定性后同样走 signoff-hold
@@ -2280,7 +2292,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    论（`cs[0]`）原文——不是"bot 首条评论"：选择器自身不识别 bot，安全性由
    human-thread 闸与 participants 闸共同保证，不依赖 claim 选择器自身识别 bot。
 3. **落地与补位**：先消费 held 的放行信号并自动 release——`signoff.
-   adminsApprovedCurrentHead=true`（admins 对当前 head 之后 Approve）或产品/架构门
+   adminsApprovedCurrentHead=true`（admins Approve，按门类持久放行，见 3.4）或产品/架构门
    白名单在讨论 issue / PR 评论区明确同意时，由维护者按本 SKILL 手工摘标签
    （signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试；幂等，
    标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
