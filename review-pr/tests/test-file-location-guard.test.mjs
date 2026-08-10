@@ -7,7 +7,10 @@
 // 本守卫让这类缺陷不可能复发:任何 tests/ 之外的 *.test.mjs 都使全量转红。
 //
 // 路径从 import.meta.url 解析(不用 process.cwd()——本仓有 cwd 敏感存量缺陷,
-// 从仓根跑会有 computeTitleFacts 失败),扫描全仓排除 dist/ preview-dist/ node_modules。
+// 从仓根跑会有 computeTitleFacts 失败)。扫描根为仓根(2026-08-10 上移:此前只扫
+// review-pr/,agent-use/、generate-update-notice/ 等仓根目录罩不到),排除构建产物
+// 镜像(dist/、preview-dist/,仓根与 review-pr/ 下均可能)、review-pr/tests/(标准
+// 跑法 node --test tests/*.test.mjs 覆盖区)与 node_modules。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +19,7 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // review-pr/tests/
-const REPO_ROOT = join(HERE, '..'); // review-pr/
+const REPO_ROOT = join(HERE, '..', '..'); // 仓根
 
 function collectTestFiles(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -32,14 +35,20 @@ function collectTestFiles(dir, out = []) {
   return out;
 }
 
+// 按仓根相对路径判定豁免。豁免区 = 构建产物镜像(dist/ 与 preview-dist/,仓根与
+// review-pr/ 下均可能出现)+ review-pr/tests/(标准跑法覆盖区)。node_modules 已在
+// collectTestFiles 遍历时跳过。
+function isExempt(rel) {
+  if (rel[0] === 'dist' || rel[0] === 'preview-dist') return true;
+  return (
+    rel[0] === 'review-pr' &&
+    (rel[1] === 'dist' || rel[1] === 'preview-dist' || rel[1] === 'tests')
+  );
+}
+
 test('tests/ 之外不存在 *.test.mjs(守卫全仓扫描)', () => {
   const all = collectTestFiles(REPO_ROOT);
-  const violations = all.filter((p) => {
-    const rel = relative(REPO_ROOT, p).split(sep);
-    // 排除 dist/ 与 preview-dist/(构建产物镜像,不参与测试加载)
-    // 与 tests/ 自身(标准跑法 node --test tests/*.test.mjs 覆盖的正是这里)
-    return !(rel[0] === 'dist' || rel[0] === 'preview-dist' || rel[0] === 'tests');
-  });
+  const violations = all.filter((p) => !isExempt(relative(REPO_ROOT, p).split(sep)));
   assert.equal(
     violations.length,
     0,
