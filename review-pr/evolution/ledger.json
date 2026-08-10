@@ -1716,6 +1716,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-09T18:01:55.216Z",
       "lastSeen": "2026-08-09T22:02:18.703Z"
+    },
+    {
+      "fingerprint": "skip-security-review-package-json-human",
+      "tier": "by-design",
+      "title": "候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合",
+      "detail": "本轮 #580/#603 均因改动含 package.json 触发 skip-security-review(3.8 供应链能力面防护,防自动化改坏自己);#605 同轮走完整自动化审查+admin-trust 合并,流程正常无缺口",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-10T00:07:25.679Z",
+      "lastSeen": "2026-08-10T00:07:25.679Z"
     }
   ],
   "escapedHazards": [
