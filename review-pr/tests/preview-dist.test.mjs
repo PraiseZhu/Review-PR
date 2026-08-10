@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, cpSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { buildDist, checkDist, productTreeHash } from '../scripts/build-dist.mjs';
@@ -184,4 +184,57 @@ test('[D-2026-08-10] preview manifest exclude 每条目在源树中必须存在'
     missing.length, 0,
     `preview manifest exclude 引用不存在的路径:\n${missing.join('\n')}`,
   );
+});
+
+// [D-2026-08-10] sc-preview-rebuild:evolution-note 台账写入成功后联动重建 preview-dist
+// 背景:preview 产物含台账副本(freshnessIgnore 为空),台账一变产物即真过期(长期假性红)。
+// 台账唯一写入口写盘成功后必须联动重建,preview 门才保持绿。
+// 隔离树自包含:tmp 里拷主仓(排除 .git/history),跑 evolution-note add --no-sync,
+// 断言 ①联动产物生成 ②与含新台账的源 fresh ③幂等(台账未变重复重建逐字节一致)
+// ④重建失败不回滚台账写入、以显式 warning 报出。变异(去掉联动)时本测试必须红。
+test('[sc-preview-rebuild] evolution-note 写盘后联动重建 preview-dist(门保持绿)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'preview-rebuild-'));
+  try {
+    mkdirSync(join(root, 'state'), { recursive: true });
+    const srcCopy = join(root, 'review-pr');
+    cpSync(SRC, srcCopy, {
+      recursive: true,
+      filter: (p) => !p.split(sep).includes('.git') && basename(p) !== 'history',
+    });
+    // ① 台账写入 → 联动重建
+    const out = execFileSync(process.execPath,
+      [join(srcCopy, 'scripts', 'evolution-note.mjs'), 'add',
+        '--fingerprint', 'preview-rebuild-fp-01', '--tier', 'by-design',
+        '--title', '联动重建冒烟', '--no-sync'],
+      { encoding: 'utf8', env: { ...process.env, REVIEW_PR_STATE_DIR: join(root, 'state') } });
+    const r = JSON.parse(out);
+    assert.equal(r.ok, true);
+    assert.equal(r.rebuild.ok, true, `联动重建应成功: ${JSON.stringify(r.rebuild)}`);
+    const ledger = JSON.parse(readFileSync(join(srcCopy, 'evolution', 'ledger.json'), 'utf8'));
+    assert.ok(ledger.entries.some((e) => e.fingerprint === 'preview-rebuild-fp-01'), '台账应本地落盘');
+    // ② 联动产物与含新台账的源 fresh(preview 门保持绿的核心)
+    const distDir = join(root, 'preview-dist');
+    assert.equal(existsSync(join(distDir, 'dist_manifest.json')), true, '联动产物应生成');
+    const res = checkDist({ sourceDir: srcCopy, manifestPath: join(srcCopy, 'scripts', 'preview-dist.manifest.json'), distDir });
+    assert.equal(res.fresh, true, `联动产物应 fresh: ${res.problems.join('\n')}`);
+    // ③ 幂等:台账未变时重复重建 → 产物逐字节一致
+    const hash1 = productTreeHash(distDir);
+    execFileSync(process.execPath,
+      [join(srcCopy, 'scripts', 'build-dist.mjs'), '--manifest', join(srcCopy, 'scripts', 'preview-dist.manifest.json'), '--out', distDir],
+      { encoding: 'utf8' });
+    assert.equal(productTreeHash(distDir), hash1, '台账未变时重复重建应逐字节一致');
+    // ④ 重建失败不回滚台账写入、显式 warning 报出:弄坏 manifest 后写第二条
+    writeFileSync(join(srcCopy, 'scripts', 'preview-dist.manifest.json'), '{ broken json');
+    const out2 = execFileSync(process.execPath,
+      [join(srcCopy, 'scripts', 'evolution-note.mjs'), 'add',
+        '--fingerprint', 'preview-rebuild-fp-02', '--tier', 'by-design',
+        '--title', '失败不回滚冒烟', '--no-sync'],
+      { encoding: 'utf8', env: { ...process.env, REVIEW_PR_STATE_DIR: join(root, 'state') } });
+    const r2 = JSON.parse(out2);
+    assert.equal(r2.ok, true, '台账写入应仍成功(重建失败不回滚)');
+    assert.equal(r2.rebuild.ok, false, '重建失败应显式报出');
+    assert.ok(r2.rebuild.error, `重建失败应有 error 信息: ${JSON.stringify(r2.rebuild)}`);
+    const ledger2 = JSON.parse(readFileSync(join(srcCopy, 'evolution', 'ledger.json'), 'utf8'));
+    assert.ok(ledger2.entries.some((e) => e.fingerprint === 'preview-rebuild-fp-02'), '重建失败后台账条目应仍在');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
