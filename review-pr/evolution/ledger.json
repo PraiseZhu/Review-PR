@@ -1788,9 +1788,9 @@
       "title": "审查 agent spawn 漏传 isolation:worktree,主工作树被切到 PR head",
       "detail": "本轮 PR #623 审查:Agent 调用未显式传 isolation:'worktree',审查 agent 在主工作树执行 gh pr checkout 造成 detached HEAD。工作树干净无残留,已 checkout main 恢复,无实际影响。SKILL 已有'优先使用 Agent + isolation worktree'要求,缺口在编排执行层:spawn 后无机器检查点验证主工作树分支未变。改进:主 agent spawn 审查 agent 后立即验证 git branch --show-current 仍为原分支,不符即恢复并记录。",
       "proposal": null,
-      "status": "open",
+      "status": "landed",
       "commit": null,
-      "note": null,
+      "note": "SKILL.md 4 节加 spawn 后自检主工作树分支检查点;commit c38e7cb 已推送 skills 仓 main",
       "occurrences": 1,
       "firstSeen": "2026-08-11T16:16:00.286Z",
       "lastSeen": "2026-08-11T16:16:00.286Z"
