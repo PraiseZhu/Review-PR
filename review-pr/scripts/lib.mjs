@@ -2248,6 +2248,217 @@ export function parseSignoffReleases(comments) {
   return released;
 }
 
+// ── 持久放行改良(2026-08-10,lz-port-persist)──
+// 上游 evaluateMaintainerReview 的 historicalApproval 不带 kind,而 evalSignoffKind 对六个
+// 门类传同一组全局 reviews → 旧的 security Approve 会连带放行之后新出现的 rules 门(纯函数
+// 实测复现,上游 173 条测试无一覆盖)。本仓改良:放行快照记录**已确认门类集合**
+// (confirmedKinds),新触发的门类不在集合内 → 仍拦。同时保持两条既有硬约束:
+//   - 放行标记的作者身份校验不得削弱:marker 评论作者必须 ∈ 信任名单(admins),文本形状
+//     谁都能复制,评论作者(GitHub 侧可验证身份)才是信源;marker 的 by= 字段是自称,只作
+//     记录不作信源;
+//   - PR 级持久放行与 thread 级年龄门(MIN_MARKER_AGE_MS,resolve-threads.mjs,10min 人工
+//     反对窗口)两级正交:本函数族不消费任何时间戳/年龄输入,thread 年龄门判定由
+//     resolve-threads.mjs 独立持有,不因 PR 级放行成立而被改变或绕过(正交由测试证明)。
+
+/**
+ * 从评论对象提取可校验作者(GitHub 侧身份)。生产输入是 GraphQL 节点
+ * (author 为 { login, __typename } 对象),测试/映射输入可能是 author 字符串;
+ * 两种形状都收:对象取 author.login,字符串直接用。取不到 → null(不可信,
+ * 调用方按 null 处理 = 拒,不 fail-open)。String({...}) 会得到 "[object Object]",
+ * 绝不能拿它当登录名比对。
+ * @param {any} c 评论(字符串或对象)
+ * @returns {string|null}
+ */
+function commentAuthor(c) {
+  if (typeof c === 'string' || c?.author == null) return null;
+  return typeof c.author === 'string' ? c.author : (c.author.login ?? null);
+}
+
+/**
+ * 解析放行标记并带出评论作者(作者校验的数据原料)。与 parseSignoffReleases 同一正则,
+ * 仅多取作者:对象输入取 author.login(author 为对象时)或 author(author 已是字符串),
+ * 字符串输入作者为 null(不可信,调用方按 null 处理)。
+ * @returns {Array<{kind:string, by:string|null, author:string|null}>}
+ */
+export function parseSignoffReleaseMarkers(comments) {
+  const out = [];
+  for (const c of comments ?? []) {
+    const body = (typeof c === 'string' ? c : c?.body) ?? '';
+    const author = commentAuthor(c);
+    for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
+      for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
+        out.push({ kind, by: m[2] ?? null, author });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 作者校验后收集「已确认门类集合」(放行快照)。只认评论作者 ∈ trustedLogins 的 marker;
+ * 非可信作者(或作者未知)的 marker 一律进 rejected 且不计入 —— 伪 marker 不能制造放行。
+ * by= 字段只作记录,不作信源。
+ * @param {{markers?: Array<{kind:string, author:string|null, by?:string|null}>,
+ *   trustedLogins?: string[]}} o
+ * @returns {{confirmedKinds:string[], rejected:Array<{kind:string, author:string|null}>}}
+ */
+export function collectConfirmedSignoffKinds({ markers = [], trustedLogins = [] } = {}) {
+  const trusted = new Set((trustedLogins ?? []).map((s) => String(s).toLowerCase()));
+  const confirmedKinds = [];
+  const rejected = [];
+  for (const m of markers ?? []) {
+    const login = m?.author == null ? null : String(m.author).toLowerCase();
+    if (login !== null && trusted.has(login)) {
+      if (!confirmedKinds.includes(m.kind)) confirmedKinds.push(m.kind);
+    } else {
+      rejected.push({ kind: m.kind, author: m?.author ?? null });
+    }
+  }
+  return { confirmedKinds: [...confirmedKinds].sort(), rejected };
+}
+
+/**
+ * 维护者确认门放行判定(跨 commit 持久 + 门类粒度)。当前 head 触发的每个门类 kind:
+ *   - kind ∈ confirmedKinds(历史放行快照)→ 放行,不要求对该 head 重新 Approve;
+ *   - kind ∉ confirmedKinds 且当前 head 无 admin Approve → 拦(点名 unconfirmedKinds);
+ *   - headApproved=true(admin Approve 绑定当前 head oid)→ 当前 head 上全部已触发门类
+ *     一次性确认(既有语义保留:Approve 当前 head 即放行当前触发门类)。
+ * @param {{currentKinds?: string[], confirmedKinds?: string[], headApproved?: boolean}} o
+ * @returns {{released:boolean, confirmedKinds:string[], unconfirmedKinds:string[],
+ *   basis:string}}
+ */
+export function evaluateSignoffRelease({ currentKinds = [], confirmedKinds = [], headApproved = false } = {}) {
+  const current = [...new Set((currentKinds ?? []).filter(Boolean))];
+  const confirmed = new Set((confirmedKinds ?? []).filter(Boolean));
+  if (headApproved) {
+    for (const k of current) confirmed.add(k);
+  }
+  const unconfirmed = current.filter((k) => !confirmed.has(k)).sort();
+  const basis = current.length === 0
+    ? 'no-gate-triggered'
+    : (headApproved ? 'approve-current-head'
+      : (unconfirmed.length === 0 ? 'confirmed-kinds-cover' : 'unconfirmed-kinds'));
+  return { released: unconfirmed.length === 0, confirmedKinds: [...confirmed].sort(), unconfirmedKinds: unconfirmed, basis };
+}
+
+/**
+ * 维护者确认门的机器层 gate 触发判定(security-gate / rules-gate 二选一,优先级
+ * security > rules)。context.mjs 的 auto.action 接线用,抽成纯函数是为了让「哪条
+ * 分支会触发」可单测。
+ * 反例(2026-08-10 复审实测):门类粒度确认引入后,两条分支的触发条件各自独立
+ * (unconfirmedKinds 按门类点名)。若 rules 分支仍用 `!hitsSecurityReviewPaths` 互斥
+ * 守卫——security 已确认、rules 新触发、两路径同时命中时,security 分支因已确认不
+ * 触发,rules 分支因守卫不可达 → 机器层 autoAction 漏放 rules-gate(仅剩 agent 侧
+ * suggestedHolds 兜底)。优先级改由 if/else 顺序表达,守卫只保留「autoAction 已落
+ * 更高优先级门」的保护(与原接线一致):
+ *   - 两门都未确认 → security-gate(顺序优先);
+ *   - 仅 rules 未确认(security 已确认)→ rules-gate;
+ *   - 任一未确认门且 autoAction 已落 skip-loop-managed / authorized-fast-merge
+ *     (security)或 product-gate / arch-gate(rules)→ 保持原值,不覆盖。
+ * @param {{securityBlocked?: boolean, hitsSecurityReviewPaths?: boolean,
+ *   hitsRuleFiles?: boolean, unconfirmedKinds?: string[], autoAction?: string}} o
+ * @returns {{action:string, holdKind:'security'|'rules'|null}}
+ */
+export function decideSignoffGateAction({ securityBlocked = false, hitsSecurityReviewPaths = false, hitsRuleFiles = false, unconfirmedKinds = [], autoAction = 'review' } = {}) {
+  if (securityBlocked) return { action: autoAction, holdKind: null };
+  if (hitsSecurityReviewPaths && unconfirmedKinds.includes('security')
+    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
+    return { action: 'security-gate', holdKind: 'security' };
+  }
+  if (hitsRuleFiles && unconfirmedKinds.includes('rules')
+    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge'
+    && autoAction !== 'product-gate' && autoAction !== 'arch-gate') {
+    return { action: 'rules-gate', holdKind: 'rules' };
+  }
+  return { action: autoAction, holdKind: null };
+}
+
+/**
+ * 解析 hold 标记并带出评论作者(close-on-release 的校验原料)。正则与 parseLastHoldMarker
+ * 同一份(前缀 + issue= 提取 + kind=arch 判定),仅多取作者(author 提取形状见 commentAuthor)。
+ * @returns {Array<{kind:string, issueUrl:string, issueNumber:number|null, author:string|null}>}
+ */
+export function parseHoldMarkerWithAuthor(comments) {
+  const out = [];
+  for (const c of comments ?? []) {
+    const body = (typeof c === 'string' ? c : c?.body) ?? '';
+    const author = commentAuthor(c);
+    for (const m of body.matchAll(/<!--\s*review-pr:product-gate\b([^>]*?)issue=(\S+?)\s*-->/g)) {
+      const num = m[2].match(/\/issues\/(\d+)/)?.[1] ?? null;
+      out.push({ kind: /\bkind=arch\b/.test(m[1]) ? 'arch' : 'product', issueUrl: m[2], issueNumber: num ? Number(num) : null, author });
+    }
+  }
+  return out;
+}
+
+/**
+ * 放行时关闭讨论 issue 的决策(补上游缺失的来源校验,2026-08-10)。上游 parseLastHoldMarker
+ * 只校验 issue URL 属于同仓,不验 marker 评论作者 → 任意可评论者贴伪 marker 就能让放行路径
+ * 关错 issue。本决策:
+ *   - marker 评论作者必须 ∈ trustedLogins(白名单/机制账号),否则拒绝关闭(伪 marker 被拒);
+ *   - issue 已 CLOSED → 幂等,不再关;
+ *   - URL 解析失败(跨仓 / 无编号)→ 拒绝关闭;slug 缺失(无法验证归属)同样拒绝;
+ *   - 决策只回答「该不该关」,不执行 close 动作;close 失败不连坐放行由调用方保证
+ *     (放行判定 evaluateSignoffRelease 与 close 决策无数据依赖,测试证明)。
+ * @param {{markers?: Array<{issueUrl?:string|null, issueNumber?:number|null,
+ *   author?:string|null}>, issueState?: 'OPEN'|'CLOSED'|null,
+ *   trustedLogins?: string[], slug?: string}} o
+ * @returns {{shouldClose:boolean, reason:string, issueNumber:number|null,
+ *   markerAuthor:string|null, markerTrusted:boolean}}
+ *   reason ∈ {close, already-closed, marker-author-rejected, url-unparsable, no-marker}
+ */
+export function decideCloseOnRelease({ markers = [], issueState = null, trustedLogins = [], slug = '' } = {}) {
+  const last = [...(markers ?? [])].pop() ?? null;
+  if (!last) return { shouldClose: false, reason: 'no-marker', issueNumber: null, markerAuthor: null, markerTrusted: false };
+  const trusted = new Set((trustedLogins ?? []).map((s) => String(s).toLowerCase()));
+  const author = last.author == null ? null : String(last.author).toLowerCase();
+  const markerTrusted = author !== null && trusted.has(author);
+  if (!markerTrusted) {
+    return { shouldClose: false, reason: 'marker-author-rejected', issueNumber: last.issueNumber ?? null, markerAuthor: last.author ?? null, markerTrusted };
+  }
+  // 同仓校验:slug 缺失(无法验证归属)或跨仓库 / 解析失败的 URL 一律拒绝关闭
+  // (与 signoff-hold 关 issue 口径一致)。slug 空串不再回退到裸 issueNumber——
+  // 那会跳过同仓校验,让跨仓 URL 的 marker 判「应关」。
+  const issueNumber = slug
+    ? (last.issueUrl ? issueNumberFromUrl(slug, last.issueUrl) : last.issueNumber ?? null)
+    : null;
+  if (issueNumber == null) {
+    return { shouldClose: false, reason: 'url-unparsable', issueNumber: null, markerAuthor: last.author ?? null, markerTrusted };
+  }
+  // gh issue view --json state 返回小写 open/closed,统一大写再判(未知/缺失=空串)。
+  const state = String(issueState ?? '').toUpperCase();
+  if (state === 'CLOSED') {
+    return { shouldClose: false, reason: 'already-closed', issueNumber, markerAuthor: last.author ?? null, markerTrusted };
+  }
+  if (state === 'OPEN' || state === '') {
+    // state 未知(查询失败)→ 仍尝试关闭:close 本身幂等,失败了 fail-visible 留给下一轮;
+    // 这不同于「已确认 CLOSED」——后者确定不需要动作,前者是"没查到但值得试"。
+    return { shouldClose: true, reason: 'close', issueNumber, markerAuthor: last.author ?? null, markerTrusted };
+  }
+  return { shouldClose: false, reason: 'url-unparsable', issueNumber: null, markerAuthor: last.author ?? null, markerTrusted };
+}
+
+/**
+ * 执行讨论 issue 关闭(只 close,不发说明评论——说明评论由 close-product-issue.mjs 在合并
+ * 后关闭路径承担;本函数定位是旁路动作,越轻越好)。输出字段自洽:真结果字段**只有**
+ * closed(上游 tryCloseIssue 先写 issueClosed:false、helper 真结果字段叫 closed,成功时
+ * 两字段矛盾 —— 不复刻)。失败 closeError 可见,不吞。
+ * 注意:本函数是「动作」,只能落在不含 /approve-merge 字面量的文件里(SC-6a 静态门:
+ * 能生成授权命令文本的文件不得含评论投递调用点;lib.mjs 含该字面量,所以本函数
+ * 只用 `issue close` 形态、不投递任何评论 body)。
+ * @param {{slug:string, issueNumber:number, ghFn?:Function, dryRun?:boolean}} o
+ * @returns {{closed:boolean, closeError:string|null, dryRun?:boolean}}
+ */
+export function performIssueClose({ slug, issueNumber, ghFn, dryRun = false }) {
+  if (dryRun) return { closed: false, closeError: null, dryRun: true };
+  const fn = ghFn ?? gh;
+  const r = fn(['issue', 'close', String(issueNumber), '--repo', slug], { allowFail: true });
+  return {
+    closed: r.ok,
+    closeError: r.ok ? null : (r.stderr || r.stdout || '').trim().slice(0, 300),
+  };
+}
+
 /**
  * 解析状态回帖标记(signoff-hold.mjs 写入,形如 `<!-- review-pr:signoff-renotice head=<sha> -->`)。
  * 回帖是给**作者**的:门从「放行 / 等作者改」翻回「等维护者确认」时告诉他球已经不在他手里。
