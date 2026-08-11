@@ -402,9 +402,63 @@ test('--dry-run:wouldReply / wouldResolve 预演,零动作', (t) => {
   });
   const o2 = runScript(s2.work, s2.env, { threads: [{ id: 'PRRT_DR2', reply: 'x', justification: 'j' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' }, 123, ['--dry-run']);
   assert.equal(o2.out.results[0].wouldResolve, true, '己方 marker + 同 sha → wouldResolve=true');
+  assert.equal(o2.out.results[0].wouldReply, false, '同 headSha 己方 marker 实执 0 reply(resolve 或等窗口),预演不得误报会回复');
   assert.equal(s2.countCalls('resolveReviewThread'), 0);
+  // 年龄门预演一致性:同 headSha 的新鲜 marker(反对窗口内)实执是 replied-only(0 reply /
+  // 0 resolve)——预演同样 must 报 wouldReply=false + wouldResolve=false,不得把"等窗口"
+  // 预演成"会回复"。
+  const s4 = setup({
+    threads: [{
+      id: 'PRRT_DR4', isResolved: false, path: 'src/d4.ts',
+      comments: [
+        'bot 意见',
+        { body: marker(123, 'PRRT_DR4', 'abc1234'), author: SELF_LOGIN, id: 'm1', createdAt: new Date(Date.now() - 30 * 1000).toISOString() },
+      ],
+    }],
+  });
+  const o4 = runScript(s4.work, s4.env, { threads: [{ id: 'PRRT_DR4', reply: 'x', justification: 'j' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' }, 123, ['--dry-run']);
+  assert.equal(o4.out.results[0].dryRun, true);
+  assert.equal(o4.out.results[0].wouldReply, false, '窗口内同 sha 己方 marker → wouldReply=false(实执 replied-only 不回复)');
+  assert.equal(o4.out.results[0].wouldResolve, false, '窗口内同 sha 己方 marker → wouldResolve=false');
+  assert.ok(o4.out.results[0].markerAgeMs !== undefined && o4.out.results[0].markerAgeMs < 10 * 60 * 1000, '带 markerAgeMs 实值');
+  assert.equal(s4.countCalls('addPullRequestReviewThreadReply'), 0);
+  assert.equal(s4.countCalls('resolveReviewThread'), 0);
+  // 同 sha 陈旧 marker(≥ 窗口)实执是 resolve(0 reply)——预演 wouldReply 也必须是 false。
+  const s5 = setup({
+    threads: [{
+      id: 'PRRT_DR5', isResolved: false, path: 'src/d5.ts',
+      comments: ['bot 意见', { ...staleComment(marker(123, 'PRRT_DR5', 'abc1234')), author: SELF_LOGIN }],
+    }],
+  });
+  const o5 = runScript(s5.work, s5.env, { threads: [{ id: 'PRRT_DR5', reply: 'x', justification: 'j' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' }, 123, ['--dry-run']);
+  assert.equal(o5.out.results[0].wouldResolve, true, '陈旧 marker + 同 sha → wouldResolve=true');
+  assert.equal(o5.out.results[0].wouldReply, false, '同 sha 陈旧 marker 实执是 resolve(0 reply),预演不得报会回复');
+  assert.equal(s5.countCalls('resolveReviewThread'), 0);
+  // 翻案保护预演:己方 state=resolved marker + 线程未 resolve → dry-run 同样不预演回复
+  // (wouldReply=false)——预演输出必须与真实执行路径(0 reply / 0 resolve)一致,不得把
+  // 已翻案的线程预演成"会回复"(上游 reopened 保护先于 dry-run,本仓执行路径同语义)。
+  const s3 = setup({
+    threads: [{
+      id: 'PRRT_DR3', isResolved: false, path: 'src/d3.ts',
+      comments: [
+        'bot 意见',
+        { body: marker(123, 'PRRT_DR3', 'abc1234'), author: SELF_LOGIN, id: 'm1' },
+        { body: marker(123, 'PRRT_DR3', 'abc1234', 'resolved'), author: SELF_LOGIN, id: 'm2' },
+      ],
+    }],
+  });
+  const o3 = runScript(s3.work, s3.env, { threads: [{ id: 'PRRT_DR3', reply: 'x', justification: 'j' }], allowedBots: ['greptile-apps'], headSha: 'abc1234' }, 123, ['--dry-run']);
+  assert.equal(o3.out.results[0].dryRun, true);
+  assert.equal(o3.out.results[0].wouldReply, false, '翻案线程 dry-run 不得预演回复');
+  assert.equal(o3.out.results[0].wouldResolve, false, '翻案线程 dry-run 不得预演 resolve');
+  assert.ok(o3.out.results[0].reason.startsWith('skipped-reopened-after-triage'), o3.out.results[0].reason);
+  assert.equal(s3.countCalls('addPullRequestReviewThreadReply'), 0);
+  assert.equal(s3.countCalls('resolveReviewThread'), 0);
   clean(t, s1);
   clean(t, s2);
+  clean(t, s3);
+  clean(t, s4);
+  clean(t, s5);
 });
 
 // ── 分页 ──

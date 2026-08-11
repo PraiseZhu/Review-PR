@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -1516,14 +1516,46 @@ try {
       + '触发 hold 前建议先确认该 PR 的审查者数量是否超过单页上限(100)',
     );
   }
-  if (!securityBlocked && hitsSecurityReviewPaths && !adminsApprovedCurrentHead
-    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
+
+  // ── 持久放行改良(2026-08-10,lz-port-persist):跨 commit 持久 + 门类粒度 ──
+  // 上游 evaluateMaintainerReview 的 historicalApproval 不带 kind → 旧的 security Approve
+  // 会连带放行之后新出现的 rules 门(纯函数实测反例)。本仓:放行快照记录**已确认门类集合**
+  // (confirmedKinds),新触发的门类不在集合内 → 仍拦。
+  //   - confirmedKinds 来源 = 放行标记评论(parseSignoffReleaseMarkers)经**作者校验**
+  //     (评论作者 ∈ admins 名单;by= 字段是自称,不作信源)——作者校验不随移植削弱;
+  //   - headApproved = adminsApprovedCurrentHead(既有 oid 绑定判定,不变):Approve 当前
+  //     head 一次性确认当前 head 上全部已触发门类;
+  //   - 两级门正交:本判定不消费任何时间戳/年龄输入,thread 级年龄门(MIN_MARKER_AGE_MS,
+  //     resolve-threads.mjs 的 10min 人工反对窗口)由该脚本独立持有,不因 PR 级放行成立
+  //     而被改变或绕过(测试证明:同一输入不同 marker 年龄,PR 级判定结果不变;resolve
+  //     年龄门测试全量回归仍绿)。
+  const releaseMarkers = parseSignoffReleaseMarkers(rawComments);
+  const confirmedSignoffKinds = collectConfirmedSignoffKinds({ markers: releaseMarkers, trustedLogins: ADMIN_LOGINS });
+  const signoffRelease = evaluateSignoffRelease({
+    currentKinds: [
+      ...(hitsSecurityReviewPaths ? ['security'] : []),
+      ...(hitsRuleFiles ? ['rules'] : []),
+    ],
+    confirmedKinds: confirmedSignoffKinds.confirmedKinds,
+    headApproved: adminsApprovedCurrentHead,
+  });
+
+  // gate 触发判定抽到 lib.mjs(decideSignoffGateAction,可单测):优先级由 if/else
+  // 顺序表达(security > rules),rules 分支不再用 !hitsSecurityReviewPaths 互斥——
+  // 门类粒度确认后,security 已确认 + rules 新触发 + 两路径同时命中时,互斥守卫会让
+  // rules 分支整体不可达,机器层漏放 rules-gate(2026-08-10 复审实测反例)。
+  const gateAction = decideSignoffGateAction({
+    securityBlocked,
+    hitsSecurityReviewPaths,
+    hitsRuleFiles,
+    unconfirmedKinds: signoffRelease.unconfirmedKinds,
+    autoAction,
+  });
+  if (gateAction.action === 'security-gate') {
     autoAction = 'security-gate';
     autoReason = `命中安全审查路径(${securityReviewFiles.join(' / ')})——这类改动涉及 review-pr 自身的执行/供应链能力面,继续让 review-pr 自动审查并合并这类改动,一旦改坏了自动化本身,会形成"改坏的版本审过并合入了自己"的自我损坏闭环。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
     autoSkip = false;
-  } else if (!securityBlocked && !hitsSecurityReviewPaths && hitsRuleFiles && !adminsApprovedCurrentHead
-    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge'
-    && autoAction !== 'product-gate' && autoAction !== 'arch-gate') {
+  } else if (gateAction.action === 'rules-gate') {
     autoAction = 'rules-gate';
     autoReason = `命中审查规则文档(${rulesHitFiles.join(' / ')})——规则文档是后续所有审查的判据来源,改它等于改审查标准本身,需要 admins 确认。按维护者确认门(signoff)挂 awaiting-discussion 标签 + 开讨论 issue + 状态评论,等 admins 名单成员对当前 head 之后显式 Approve 放行(放行前不自动审、不自动合;放行后按 auto.fallback 继续)`;
     autoSkip = false;
@@ -1593,9 +1625,44 @@ try {
       arch: archTriggers,
     },
     adminsApprovedCurrentHead,
+    // ── 持久放行(门类粒度,2026-08-10)──
+    // released = 当前 head 触发门类 ⊆ 已确认门类集合(confirmedKinds)。跨 commit 持久:
+    // 已确认门类在新 head 继续放行;新触发的门类(不在 confirmedKinds)仍拦,必须重新确认。
+    // confirmedKinds 来自放行标记评论的作者校验后收集(collectConfirmedSignoffKinds);
+    // 拒绝的伪 marker 单独列出,不吞。basis 说明放行依据:approve-current-head(admin
+    // Approve 绑定当前 head oid,确认全部当前触发门类)/ confirmed-kinds-cover(历史确认
+    // 集合覆盖) / unconfirmed-kinds(有门类未确认,拦) / no-gate-triggered(无触发门类)。
+    released: signoffRelease.released,
+    releaseBasis: signoffRelease.basis,
+    confirmedKinds: signoffRelease.confirmedKinds,
+    unconfirmedKinds: signoffRelease.unconfirmedKinds,
+    rejectedReleaseMarkers: confirmedSignoffKinds.rejected,
+    // ── 放行时关闭讨论 issue 的决策(SC2,2026-08-10,补上游来源校验)──
+    // 只在 PR 级放行成立(released=true)且存在 hold marker 时才有意义;决策本身不影响
+    // released(关失败不连坐放行,fail-visible 由决策 reason 带出)。close 动作由编排层按
+    // 决策执行(close 是 mutation,context 扫描器不直接发);执行层失败时 closed=false +
+    // closeError 可见,且不回头改 released(两级独立,测试证明)。issue state 只在该路径
+    // 现查一次(幂等判定原料),查询失败 → issueState=null → 决策层按「未知」判应关,
+    // 执行层 close 幂等兜底(已关的 issue 再 close 是 no-op,不产生新副作用)。
+    closeOnRelease: signoffRelease.released
+      ? (() => {
+          const holdMarkers = parseHoldMarkerWithAuthor(rawComments);
+          if (!holdMarkers.length) return { shouldClose: false, reason: 'no-marker', issueNumber: null, markerAuthor: null, markerTrusted: false };
+          let issueState = null;
+          const targetNum = [...holdMarkers].pop().issueNumber;
+          if (targetNum != null) {
+            try {
+              const st = ghJson(['issue', 'view', String(targetNum), '--repo', slug, '--json', 'state']);
+              issueState = String(st?.state ?? '').toUpperCase() === 'OPEN' ? 'OPEN'
+                : String(st?.state ?? '').toUpperCase() === 'CLOSED' ? 'CLOSED' : null;
+            } catch { issueState = null; }
+          }
+          return decideCloseOnRelease({ markers: holdMarkers, issueState, trustedLogins: ADMIN_LOGINS, slug });
+        })()
+      : null,
     suggestedHolds: [
-      ...(hitsSecurityReviewPaths && !adminsApprovedCurrentHead ? ['security'] : []),
-      ...(hitsRuleFiles && !adminsApprovedCurrentHead ? ['rules'] : []),
+      ...(signoffRelease.unconfirmedKinds.includes('security') ? ['security'] : []),
+      ...(signoffRelease.unconfirmedKinds.includes('rules') ? ['rules'] : []),
       ...(needsArchCheck ? ['arch'] : []),
     ],
     // D4(2026-08-09,PR #12 round2):此前 invoked:true 是硬编码,即便 spawnScriptJson 因
