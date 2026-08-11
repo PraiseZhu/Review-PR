@@ -158,6 +158,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `review-agent-spawn-no-worktree-isolation` **审查 agent spawn 漏传 isolation:worktree,主工作树被切到 PR head** — 出现 1 次,首见 2026-08-11,最近 2026-08-11,status: open
+  - 现象:本轮 PR #623 审查:Agent 调用未显式传 isolation:'worktree',审查 agent 在主工作树执行 gh pr checkout 造成 detached HEAD。工作树干净无残留,已 checkout main 恢复,无实际影响。SKILL 已有'优先使用 Agent + isolation worktree'要求,缺口在编排执行层:spawn 后无机器检查点验证主工作树分支未变。改进:主 agent spawn 审查 agent 后立即验证 git branch --show-current 仍为原分支,不符即恢复并记录。
 - `escape-assessment-empty-contract-unstated` **逃逸候选集为空时 escapeAssessment 字段语义未声明,审查 agent 误填 known hazards 确认** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `7528c1c`
   - 现象:PR #599 实测:escapeCandidates=[] 时 prompt 无「逃逸判定」段,审查 agent 把 2 条 hz2-* known hazards 确认写进 escapeAssessment,consumer 判 invalid(缺/未知)。修复:候选为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote。
   - 备注:[decided:2026-08-09] 落地 commit 7528c1c(AuthorDate 核实):逃逸候选集为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote,consumer 不再判 invalid
