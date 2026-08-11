@@ -1768,6 +1768,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-10T14:03:16.388Z",
       "lastSeen": "2026-08-10T14:03:16.388Z"
+    },
+    {
+      "fingerprint": "auto-merge-admin-trust-strutural-block",
+      "tier": "proposal",
+      "title": "结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行",
+      "detail": "PR #617 走 admin-trust 路由合并:pre-merge-check 确认 structuralBypassReady,回执 verdict=clean,作者在 admins 名单。已连续多轮正确运行,可以考虑在 EVOLUTION.md 中登记为成熟路径。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-10T19:13:03.587Z",
+      "lastSeen": "2026-08-10T19:13:03.587Z"
     }
   ],
   "escapedHazards": [
