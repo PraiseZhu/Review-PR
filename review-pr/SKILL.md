@@ -1076,6 +1076,10 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
 `Agent` + `isolation: "worktree"`，每个 PR 一个隔离 worktree；主工作树不切换分支。
+**spawn 返回后立即自检一次 `git branch --show-current` 仍为主工作树原分支**——
+若被切到 PR head（审查 agent 在主工作树执行了 `gh pr checkout`），`git checkout`
+原分支恢复并如实记入汇总（2026-08-11 #623 实测发生过：spawn 漏传
+`isolation` 时审查 agent 会在主工作树 checkout PR head，工作树干净则无残留）。
 
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
 模板首行）：隔离 worktree 里的目标仓库拷贝可能不含（或含未跟踪、指向错误目标的）
