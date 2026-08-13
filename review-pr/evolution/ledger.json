@@ -1820,6 +1820,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-13T20:05:31.627Z",
       "lastSeen": "2026-08-13T20:05:31.627Z"
+    },
+    {
+      "fingerprint": "security-gate-holds-existing-discussion",
+      "tier": "by-design",
+      "title": "Security gate 命中时已有讨论 issue 则静默跳过，无需额外动作",
+      "detail": "PR #47, #48 均命中 security-gate（改了 CI workflow 文件），但 signoff 已持有讨论 issue（alreadyHeld=true），admins 尚未批准放行。本轮正确跳过，无需额外 action。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-13T23:01:45.093Z",
+      "lastSeen": "2026-08-13T23:01:45.093Z"
     }
   ],
   "escapedHazards": [
