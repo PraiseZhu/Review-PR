@@ -208,6 +208,7 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `auto-first-run-2026-08-13` **首轮 auto 运行: 3 候选, 2 安全门 hold, 1 self-fix 投递** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
 - `security-gate-normal-hold` **security-gate 正常拦截安全审查路径 PR** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
   - 现象:PR #43 命中 package-lock.json/package.json(securityReviewPaths),auto.action=security-gate,成功执行 signoff-hold(issue #44 + 评论 + 标签),by-design 无需自动化改进
 - `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked

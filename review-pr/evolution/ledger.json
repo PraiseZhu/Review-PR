@@ -1807,6 +1807,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-13T19:01:48.322Z",
       "lastSeen": "2026-08-13T19:01:48.322Z"
+    },
+    {
+      "fingerprint": "auto-first-run-2026-08-13",
+      "tier": "by-design",
+      "title": "首轮 auto 运行: 3 候选, 2 安全门 hold, 1 self-fix 投递",
+      "detail": null,
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-13T20:05:31.627Z",
+      "lastSeen": "2026-08-13T20:05:31.627Z"
     }
   ],
   "escapedHazards": [
