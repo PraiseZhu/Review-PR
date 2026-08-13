@@ -208,6 +208,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-normal-hold` **security-gate 正常拦截安全审查路径 PR** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
+  - 现象:PR #43 命中 package-lock.json/package.json(securityReviewPaths),auto.action=security-gate,成功执行 signoff-hold(issue #44 + 评论 + 标签),by-design 无需自动化改进
 - `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过
 - `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
