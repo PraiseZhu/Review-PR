@@ -1833,6 +1833,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-13T23:01:45.093Z",
       "lastSeen": "2026-08-13T23:01:45.093Z"
+    },
+    {
+      "fingerprint": "security-gate-already-held-no-action",
+      "tier": "by-design",
+      "title": "security gate 已 hold 的 PR 本轮无需动作",
+      "detail": "auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-14T03:02:10.314Z",
+      "lastSeen": "2026-08-14T03:02:10.314Z"
     }
   ],
   "escapedHazards": [
