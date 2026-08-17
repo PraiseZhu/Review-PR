@@ -1843,9 +1843,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-14T03:02:10.314Z",
-      "lastSeen": "2026-08-14T03:02:10.314Z"
+      "lastSeen": "2026-08-17T17:05:04.005Z"
     },
     {
       "fingerprint": "skillsync-preview-dist-dirty",

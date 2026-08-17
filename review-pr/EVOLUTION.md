@@ -248,6 +248,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 2 次,首见 2026-08-14,最近 2026-08-17,status: tracked
+  - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
 - `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap
 - `no-merge-candidates-signoff-holds-only` **本轮两候选均停在维护者确认门,无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
@@ -258,8 +260,6 @@
   - 现象:2026-08-17 auto 轮:#143 命中 security(package.json/package-lock)+rules(AGENTS.md/CLAUDE.md) 双门,复用既有 issue #144 幂等 hold,等 admins 在 issue 留言或 Approve 当前 head a2ff8252
 - `round-skipped-candidates-none` **本轮无未合并候选需要复盘(141 已合并,143 by-design hold)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR #143 的 security+rules 门 hold 属维护者确认流程(by-design),admins Approve 放行后自动继续;PR #141 全流程走通无流程缺口。
-- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 1 次,首见 2026-08-14,最近 2026-08-14,status: tracked
-  - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
 - `security-gate-holds-existing-discussion` **Security gate 命中时已有讨论 issue 则静默跳过，无需额外动作** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
   - 现象:PR #47, #48 均命中 security-gate（改了 CI workflow 文件），但 signoff 已持有讨论 issue（alreadyHeld=true），admins 尚未批准放行。本轮正确跳过，无需额外 action。
 - `auto-first-run-2026-08-13` **首轮 auto 运行: 3 候选, 2 安全门 hold, 1 self-fix 投递** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
