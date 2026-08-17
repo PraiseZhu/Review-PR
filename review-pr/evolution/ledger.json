@@ -1924,6 +1924,32 @@
       "occurrences": 1,
       "firstSeen": "2026-08-17T13:11:01.116Z",
       "lastSeen": "2026-08-17T13:11:01.116Z"
+    },
+    {
+      "fingerprint": "no-merge-candidates-signoff-holds-only",
+      "tier": "by-design",
+      "title": "本轮两候选均停在维护者确认门,无合并动作",
+      "detail": "PR145 命中 security 门(package.json)+冲突,issue#146 等确认;PR147 命中 security+rules 双门(.github/workflows/pr-hygiene.yml + AGENTS.md),已按 3.4/3.9 hold 到 issue#148。均为 by-design:等 admins 显式确认或作者解决冲突,不应自动化。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-17T14:04:47.844Z",
+      "lastSeen": "2026-08-17T14:04:47.844Z"
+    },
+    {
+      "fingerprint": "auto-round-both-held-no-new-gap",
+      "tier": "by-design",
+      "title": "两候选均处 signoff hold 等待 admins 确认,本轮无合并动作",
+      "detail": "145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-17T15:12:02.532Z",
+      "lastSeen": "2026-08-17T15:12:02.532Z"
     }
   ],
   "escapedHazards": [

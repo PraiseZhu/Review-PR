@@ -248,6 +248,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap
+- `no-merge-candidates-signoff-holds-only` **本轮两候选均停在维护者确认门,无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR145 命中 security 门(package.json)+冲突,issue#146 等确认;PR147 命中 security+rules 双门(.github/workflows/pr-hygiene.yml + AGENTS.md),已按 3.4/3.9 hold 到 issue#148。均为 by-design:等 admins 显式确认或作者解决冲突,不应自动化。
 - `round-2026-08-17-t13-both-bydesign` **2 候选未合并均 by-design：143 格式打回待作者改 body，145 security 门待 admins 确认** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:扫描后 #145 作者推新 head(408a222e→0f1d2eca)解决 threads 但引入冲突；notify-author-resolve 线程模式正确返回 no-unresolved-threads 未误发，--conflict 模式按新 head 发出；hold 与格式打回均对 head 漂移安全（放行绑定 adminsApprove 当前 head，格式问题绑定 body）。无流程缺口。
 - `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 2 次,首见 2026-08-10,最近 2026-08-17,status: tracked
