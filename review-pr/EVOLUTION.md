@@ -194,6 +194,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `stale-pushback-dedup-head-unchanged` **打回去重规则正确覆盖 head 未变场景,无需进化** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: rejected
+  - 现象:本轮实测:auto.action=review(needsSelfApproval),审查发现既有 CHANGES_REQUESTED 与本轮 finding 内容一致且作者零新 commit,按 5.2 去重规则跳过重复提交——机制按设计工作,仅登记观察
+  - 备注:机制按设计工作(去重规则命中即跳过),非流程缺口,不落 SKILL.md
 - `review-agent-spawn-no-worktree-isolation` **审查 agent spawn 漏传 isolation:worktree,主工作树被切到 PR head** — 出现 1 次,首见 2026-08-11,最近 2026-08-11,status: landed
   - 现象:本轮 PR #623 审查:Agent 调用未显式传 isolation:'worktree',审查 agent 在主工作树执行 gh pr checkout 造成 detached HEAD。工作树干净无残留,已 checkout main 恢复,无实际影响。SKILL 已有'优先使用 Agent + isolation worktree'要求,缺口在编排执行层:spawn 后无机器检查点验证主工作树分支未变。改进:主 agent spawn 审查 agent 后立即验证 git branch --show-current 仍为原分支,不符即恢复并记录。
   - 备注:SKILL.md 4 节加 spawn 后自检主工作树分支检查点;commit c38e7cb 已推送 skills 仓 main
@@ -245,6 +248,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `round-skipped-candidates-none` **本轮无未合并候选需要复盘(141 已合并,143 by-design hold)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR #143 的 security+rules 门 hold 属维护者确认流程(by-design),admins Approve 放行后自动继续;PR #141 全流程走通无流程缺口。
 - `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 1 次,首见 2026-08-14,最近 2026-08-14,status: tracked
   - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
 - `security-gate-holds-existing-discussion` **Security gate 命中时已有讨论 issue 则静默跳过，无需额外动作** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
