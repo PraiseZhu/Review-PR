@@ -248,6 +248,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `round-2026-08-17-t13-both-bydesign` **2 候选未合并均 by-design：143 格式打回待作者改 body，145 security 门待 admins 确认** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:扫描后 #145 作者推新 head(408a222e→0f1d2eca)解决 threads 但引入冲突；notify-author-resolve 线程模式正确返回 no-unresolved-threads 未误发，--conflict 模式按新 head 发出；hold 与格式打回均对 head 漂移安全（放行绑定 adminsApprove 当前 head，格式问题绑定 body）。无流程缺口。
 - `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 2 次,首见 2026-08-10,最近 2026-08-17,status: tracked
   - 现象:2026-08-17 auto 轮:#143 命中 security(package.json/package-lock)+rules(AGENTS.md/CLAUDE.md) 双门,复用既有 issue #144 幂等 hold,等 admins 在 issue 留言或 Approve 当前 head a2ff8252
 - `round-skipped-candidates-none` **本轮无未合并候选需要复盘(141 已合并,143 by-design hold)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked

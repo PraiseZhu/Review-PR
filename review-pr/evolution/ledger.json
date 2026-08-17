@@ -1911,6 +1911,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-17T10:23:08.665Z",
       "lastSeen": "2026-08-17T10:23:08.665Z"
+    },
+    {
+      "fingerprint": "round-2026-08-17-t13-both-bydesign",
+      "tier": "by-design",
+      "title": "2 候选未合并均 by-design：143 格式打回待作者改 body，145 security 门待 admins 确认",
+      "detail": "扫描后 #145 作者推新 head(408a222e→0f1d2eca)解决 threads 但引入冲突；notify-author-resolve 线程模式正确返回 no-unresolved-threads 未误发，--conflict 模式按新 head 发出；hold 与格式打回均对 head 漂移安全（放行绑定 adminsApprove 当前 head，格式问题绑定 body）。无流程缺口。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-17T13:11:01.116Z",
+      "lastSeen": "2026-08-17T13:11:01.116Z"
     }
   ],
   "escapedHazards": [
