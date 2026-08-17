@@ -1950,6 +1950,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-17T15:12:02.532Z",
       "lastSeen": "2026-08-17T15:12:02.532Z"
+    },
+    {
+      "fingerprint": "github-graphql-503-intermittent-20260818",
+      "tier": "proposal",
+      "title": "GitHub GraphQL 503 间歇故障导致 scan/探测失败,auto 轮重试成本高且可能误升级 signoff-hold-unavailable",
+      "detail": "本轮 gh graphql 通道间歇 503(REST 正常):--scan-all 部分候选失败、#147 hold 探测两次失败被 F3 升级为 signoff-hold-unavailable(人工介入类),但人工跑同款 dry-run 立即成功(invoked=true ok=true alreadyHeld=true),证明是网络瞬态而非调用点损坏。agent 侧靠多轮 sleep+重试兜住,累计耗时 ~20 分钟。可考虑:spawnScriptJson 对 503 加有限指数退避重试,或 F3 探测失败时区分网络类错误与模块缺失类错误。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-17T18:43:29.475Z",
+      "lastSeen": "2026-08-17T18:43:29.475Z"
     }
   ],
   "escapedHazards": [

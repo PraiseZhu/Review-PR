@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `github-graphql-503-intermittent-20260818` **GitHub GraphQL 503 间歇故障导致 scan/探测失败,auto 轮重试成本高且可能误升级 signoff-hold-unavailable** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 现象:本轮 gh graphql 通道间歇 503(REST 正常):--scan-all 部分候选失败、#147 hold 探测两次失败被 F3 升级为 signoff-hold-unavailable(人工介入类),但人工跑同款 dry-run 立即成功(invoked=true ok=true alreadyHeld=true),证明是网络瞬态而非调用点损坏。agent 侧靠多轮 sleep+重试兜住,累计耗时 ~20 分钟。可考虑:spawnScriptJson 对 503 加有限指数退避重试,或 F3 探测失败时区分网络类错误与模块缺失类错误。
 - `merged-mid-review-head-races-clean-receipt` **审查期间 owner 网页合并 PR，clean 回执落盘晚于合并，审计链缺合并者视角** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
   - 现象:PR #139（mivo-canvas-plugin，2026-08-17）：阶段二独立审查进行中（约 06:19 开始），owner 于 06:44 经 GitHub 网页 squash 合并（mergedBy=PraiseZhu，squash 单亲 commit）；审查 agent 06:48 完成后 consume-review-output 判 clean、回执正常落盘，pre-merge-check 才发现 state=MERGED。本轮无害（审查结论 clean 与合并一致），但同类竞态下若审查判 dirty，则问题已进 main、只剩事后发现一条路。proposal：context.mjs scan 后、consume-review-output 前无锚点检查 head 变化；可在 consume-review-output 对已 MERGED 的 PR 落回执时附 mergedAfterReviewStart 标记，或 pre-merge 阶段对 merged PR 出 counterfactual 警示行进汇总。属流程可观测性改进，非扩权。
   - 提案:consume-review-output.mjs 写回执前查 PR state，非 OPEN 时在回执附 state-at-write 字段并要求汇总显式提示『合并先于审查完成』
