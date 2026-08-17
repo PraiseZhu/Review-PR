@@ -250,6 +250,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 6 次,首见 2026-07-24,最近 2026-08-17,status: tracked
+  - 现象:本轮 #145(DIRTY 冲突)/#147(2 条 thread 未 resolve)均处于 signoff hold(security 门),且作者侧卡点提醒评论已发过(指纹去重 already-commented),无新进化项
 - `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 2 次,首见 2026-08-14,最近 2026-08-17,status: tracked
   - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
 - `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
@@ -273,8 +275,6 @@
   - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)再次因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。
 - `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 5 次,首见 2026-08-08,最近 2026-08-09,status: tracked
   - 现象:auto 轮 #580 唯一候选命中 SKILL 3.8 安全审查路径(package.json 在 securityReviewPaths),auto.action=skip-security-review,原样跳过不审不合不提醒。属设计上就该人来的人工审查,计数观察,不自动放开。
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
-  - 现象:本轮 #585(资产 GC)1 条 conversation 未 resolve 被 skip,已发模板 C 提醒评论
 - `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
   - 现象:本轮 #580(bench 内存基准)含 package.json 改动,命中安全审查路径转人工,设计行为
 - `changelog-generated-data-semantic-conflict` **changelog.json 生成数据分叉使"其余全过仅剩冲突"的 PR 代合并仍判语义冲突** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
