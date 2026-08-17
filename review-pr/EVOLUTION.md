@@ -98,15 +98,17 @@
 - `self-authored-pr-no-followup-channel` **自有 PR 卡住时既不催也不自动修，零跟进通道** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:本仓 selfFixAuthors=[]，staleAuthorReminder.exemptAuthors 含唯一作者。结果：卡未 resolve thread / CI 失败的自有 PR 既不发催办评论(exempt-author)，也不投递跟进会话(selfFix=false)，只能靠 owner 自己看汇总。本轮 5 个候选落在该盲区。
   - 提案:扩权类，需 owner 拍板：是否把该账号纳入 selfFixAuthors，让卡点自动投递跟进会话修到可合并。纳入即新增对自有 PR 分支的自动写操作，不自动落地。
-- `node-debug-env-pollutes-script-json-output` **宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: open
+- `node-debug-env-pollutes-script-json-output` **宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: landed
   - 现象:本轮首次 context.mjs --scan-all 的输出被数百行 'NET <pid>: ...' 淹没,JSON 无法直接解析,只能 env -u NODE_DEBUG 重跑一次完整扫描(重复消耗一轮 gh API 与时间)。噪声来自宿主继承的 NODE_DEBUG 环境变量,不是脚本缺陷,但脚本可自我防护。
   - 提案:① 在 SKILL「Skill 路径与目标仓库」一节补一句:所有确定性脚本建议以 env -u NODE_DEBUG 调用,避免宿主 NODE_DEBUG 污染 JSON 输出;② 或在各脚本入口自 delete process.env.NODE_DEBUG(仅影响自身及其 spawn 的子进程,不改宿主)。两者都不新增写操作、不放宽任何 gate。
+  - 备注:[decided:2026-08-09] 落地 commit ac6464f(已核实合入 main 与 origin/main); 与 node-debug-env-pollutes-script-stdout 同义,复发归零验证通过
 - `review-worktree-holds-branch-blocks-delete-branch` **审查 agent 的 worktree 占用 PR 分支,导致 gh pr merge --delete-branch 中止,远程分支残留** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:PR 342 合并时 --delete-branch 报 'cannot delete branch used by worktree at .claude/worktrees/agent-<id>':审查 agent 按 SKILL 第 4 节在隔离 worktree 里跑 gh pr checkout <N>,该本地分支因此被占用;gh 先删本地失败即整体中止,远程分支 chore/changelog-2026-07-29 未被删除,需人工补删。这是确定性的顺序问题,每个走「审查通过→合并」路径的 PR 都会复现,不是偶发。
   - 提案:两个方向任选:① 审查 agent 的 checkout 改用 detached HEAD(gh pr checkout <N> --detach,或 git fetch origin pull/<N>/head && git checkout --detach FETCH_HEAD),不创建占用性本地分支;② 在 SKILL 5.1 合并步骤前插一步:先回收本轮该 PR 的审查 worktree(git worktree remove),再执行 gh pr merge --delete-branch。方向 ① 更彻底,不依赖调用顺序。
-- `node-debug-env-pollutes-script-stdout` **本地 shell 环境变量 NODE_DEBUG 会污染 review-pr 脚本的 JSON stdout** — 出现 3 次,首见 2026-07-28,最近 2026-07-30,status: open
+- `node-debug-env-pollutes-script-stdout` **本地 shell 环境变量 NODE_DEBUG 会污染 review-pr 脚本的 JSON stdout** — 出现 3 次,首见 2026-07-28,最近 2026-07-30,status: landed
   - 现象:运行环境的 NODE_DEBUG=http,https,net,tls(疑似操作者 shell profile 全局设置,与本 skill 无关)会让 context.mjs/notify-*.mjs 等所有走 node 网络模块(gh api 走的是 fetch/GraphQL 助手)的脚本在 stdout 混入海量调试行,把本该是纯 JSON 的输出弄脏,主 agent 本轮靠手工加 env -u NODE_DEBUG 前缀绕过。若未来某次无人值守调度环境恰好继承了同一 shell 配置,会直接破坏 run-log/summary 的 JSON 解析。
   - 提案:评估是否在 lib.mjs 顶部(所有脚本的唯一入口)加一行 delete process.env.NODE_DEBUG,或在 spawnScriptJson/mapPool 派生子进程时显式清空该变量;需先确认 Node 的 util.debuglog 是否在 net/http/tls 模块 import 时已经lazy读取过该值(ESM 静态 import 提升,可能来不及在业务代码执行前清掉),必要时改用 spawn 时传 env 覆盖而非进程内 delete。不确定是否所有部署环境都会复现,故先记提案不自动落地。
+  - 备注:[decided:2026-08-09] 落地 commit ac6464f(已核实合入 main 与 origin/main); lastSeen 2026-07-30 早于修复日,复发归零验证通过
 - `nonrequired-thirdparty-ai-check-blocks-merge` **非 required 的第三方 AI 审查 App check FAILURE 与真正 CI 失败同归 ci-failed** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: open
   - 现象:本轮 PR 318:分支保护的 9 项 required check 全部 SUCCESS,唯一 FAILURE 来自非 required 的第三方 AI 审查 App(check-run)。SKILL 3.5 第 4 条规定「所有已上报检查」失败即 gate 未过,所以阻断本身是设计如此;问题在归类与汇总口径——blockClass 统一记 ci-failed,owner 从汇总看不出是「构建/测试挂了」还是「AI 审查 App 给了 FAILURE 结论」,两者的处置动作完全不同(前者改代码,后者读意见或决定是否纳入阻断集)。
   - 提案:两个方向请 owner 拍板:① 仅改汇总口径(低风险):在 skip 行文里点出失败 check 是否属 required,不新增 blockClass 值,不改任何 gate 判定;② 放宽阻断集(扩权类,须显式授权):在 pr-rules.json 增加 nonBlockingCheckAllowlist,命中的非 required check 失败不计入前置门。②会放宽 gate,永不自动落地。
@@ -126,9 +128,10 @@
 - `ui-evidence-false-positive-on-nonvisual-src-paths` **uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报** — 出现 2 次,首见 2026-07-29,最近 2026-07-29,status: open
   - 现象:mivo-canvas#325 命中:uiCodeFiles = src/agent/{snapshotRegion,canvasAgentVerbs}.ts 等纯函数与 Agent 动词模块(零 React、零 JSX、零 CSS、零用户可见文案),因 uiPaths 含 'src/' 前缀被判 UI 面 → uiEvidenceMissing=true。本轮因 auto.ownPr=true 抑制了提醒评论,没造成实际噪音;若作者不是本流程账号,就会收到一条要求给纯函数 PR 补截图的评论。审查 agent 独立判定为误报。
   - 提案:目标仓 pr-rules.json 的 uiExcludePaths 增补非可视路径前缀(如 ^src/agent/、^src/model/、^src/render/ 中的纯契约资产),或把 uiPaths 从 'src/' 收窄到真正的 UI 目录(src/app/、src/canvas/、public/、index.html)。属目标仓配置、由 owner 拍板,不自动落地。
-- `stale-mergeable-after-same-round-merge` **同一轮内合并后,GitHub 的 mergeable/MERGEABLE 对余下候选是过期结论,pre-merge-check 直接采信** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+- `stale-mergeable-after-same-round-merge` **同一轮内合并后,GitHub 的 mergeable/MERGEABLE 对余下候选是过期结论,pre-merge-check 直接采信** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed
   - 现象:本轮合并 #319、#334 后,#325 的 pre-merge-check 仍报 mergeable=MERGEABLE、blockClass=structural-check(看起来可 admin bypass 合)。我手动跑 git merge-tree --write-tree origin/main <pr-head> 才发现真冲突(src/agent/canvasAgentVerbs.test.ts,与本轮落地的 #334 相撞)。GitHub 重算 mergeability 有延迟,期间 UNKNOWN 或沿用旧值;若照采信就会对一个实际冲突的 PR 走合并路径。
   - 提案:pre-merge-check 增一道本地交叉校验:当 PR 的 base 在其最后一次 CI 之后前进过(或 mergeable 为 UNKNOWN)时,跑 git merge-tree --write-tree <base> <head> 实测,冲突则把 blockClass 定成 conflict、不采信 GitHub 的 MERGEABLE。纯读操作、不新增写权限。
+  - 备注:[decided:2026-08-09] 落地 commit 096c290(已核实合入 main); pre-merge-check 在 base 前进/UNKNOWN 时 merge-tree --write-tree 实测冲突
 - `review-agent-pr-checkout-worktree-conflict` **审查 agent 用 gh pr checkout 会在 PR 分支已被其他 worktree 占用时失败** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
   - 现象:PR #335 审查：主流程自己在 /private/tmp 用同名分支开了 worktree,阶段二审查 agent 在隔离 worktree 里跑 gh pr checkout 335 直接失败(cannot checkout: branch used by worktree)。agent 自行 workaround 成 git fetch + git checkout --detach <headRefOid> 才拿到码。这不是 skill 判定缺陷,只是审查 agent 模板没有预案,每次都要靠 agent 自己临场绕。
   - 提案:在 SKILL.md 第 4 节的审查 agent 任务模板里,把「gh pr checkout <N>」改为优先 detached checkout：git fetch origin <headRefOid> && git checkout --detach <headRefOid>(主 agent 已从 context.meta.headRefOid 拿到确切 sha,不依赖分支名是否被占用),并说明 gh pr checkout 仅作退路。
@@ -170,9 +173,10 @@
 - `rro1-disposition-evidence-shape-missing-in-prompt` **prompt 契约漏 findingDispositions resolved 的 evidence 结构化形状,首轮必 invalid** — 出现 1 次,首见 2026-08-08,最近 2026-08-08,status: landed,commit `9d9055d`
   - 现象:2026-08-08 实跑:#585 审查输出 findingDispositions 只给自由文本 basis,consumer(lib.review-consume.mjs)要求 resolved 必须带结构化 evidence(kind diff-anchor|verification-run),shape 校验失败连带所有数组字段置空,回执也被误判无。已修 build-review-task.mjs 的 prompt 模板补上 evidence 形状说明。
   - 备注:[decided:2026-08-08] 落地 commit 9d9055d(git show AuthorDate 核实)
-- `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 2 次,首见 2026-08-07,最近 2026-08-07,status: open
+- `auto-mode-disposition-cross-snapshot` **auto 模式审查 agent 对跨 snapshot 历史条目判 invalidated 导致死锁** — 出现 2 次,首见 2026-08-07,最近 2026-08-07,status: landed
   - 现象:PR #544 的 6 条历史 finding origin 为旧 snapshot,当前 head 7f0e6af 已修复(新增哨兵+可红验证)。审查 agent 判 invalidated→auto 模式无交互确认出口→effective-open 永久卡死、PR 无法合并。根因:prompt 只说'resolved 或 invalidated'但未区分跨 snapshot 已修复(应 resolved)vs 同 snapshot 误报(应 invalidated),agent 看到历史状态 [invalidated] 就沿用。本轮靠主 agent 二次指引修正处置才通关
   - 提案:build-review-task.mjs 的未决 findings 段落追加指引:对 originSnapshotHash 早于当前 snapshot 的条目,若当前 head 已有修复证据(新增代码/负向实测变红)→ 给 resolved;invalidated 只用于'该指控在当前 snapshot 上不成立且无修复动作'的误报,auto 模式下 invalidated 无交互确认出口、每轮都会重新注入
+  - 备注:[decided:2026-08-17] 落地 build-review-task.mjs:177 跨 snapshot 处置指引(已核实在 main):已修复给 resolved,invalidated 只用于当前 snapshot 上不成立且无修复动作;auto 模式 invalidated 无交互出口
 - `review-output-shape-examples-in-prompt` **审查输出与 rro-1 契约的字段级格式偏差导致整轮 invalid** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `5815bd8`
   - 现象:PR #544 审查 agent 输出 5 类格式偏差(familyId/family_id、answer 对象/字符串、coverageKeys 字符串/对象、status/disposition、negativeEvidence command 与引用 run 不一致),主 agent 手工规范化 3 次后才可消费;build-review-task.mjs 的 prompt 只含文字契约、无字段级形状示例,已追加形状参考段
   - 提案:prompt 增加字段级形状参考(含'command/outputAnchor 必须与引用 run 逐字一致'一致性约束),减少格式往返
