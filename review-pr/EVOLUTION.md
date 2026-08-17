@@ -250,6 +250,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `round-2026-08-18-no-new-blockers` **两候选均已在 security/rules 门 hold 等维护者确认,本轮无新增根因** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR145(冲突+security门)+PR147(threads+security/rules门)均为存量 hold 状态,admins 未 Approve 当前 head;提醒评论均 already-commented 去重跳过,停滞判定均 not-stale-yet。无漏判、无流程缺口。
 - `held-security-gate-waiting-maintainer` **两候选均停在被 hold 等维护者确认(security/rules 门)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR#145 命中 package.json securityReviewPaths,PR#147 命中 workflows+AGENTS.md;均为设计上需人确认,非流程缺口;催办去重与停滞判定本轮验证正常
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 6 次,首见 2026-07-24,最近 2026-08-17,status: tracked
