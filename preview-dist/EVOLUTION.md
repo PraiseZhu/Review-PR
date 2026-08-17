@@ -27,9 +27,10 @@
   - 现象:2026-08-07 auto 轮 #565 审查 agent 首份 rro-1 遗漏这两个可空字段,consume-review-output 判 invalid(缺字段),人工补空数组后重跑才 clean——消费端对缺字段 fail-closed,契约在 SKILL 已有但 prompt 未显式枚举必在字段
   - 提案:build-review-task.mjs 生成的 prompt 模板显式列出'以下字段即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence'——减少同类无效轮次与重试
   - 备注:[decided:2026-08-09] 已由 commit 5815bd8e60e30431db0d42e9e701d664e8a38ee0(形状示例)+ 本次显式空数组指令(build-review-task.mjs 字段级形状段追加「即使为空也必须作为数组包含:verificationGaps, findingDispositions, profileAnswers, negativeEvidence」)共同覆盖
-- `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: open
+- `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
   - 现象:#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。
   - 提案:context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
 - `review-base-ref-oid-source-unclear` **preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: landed
   - 现象:本轮 #527/#539 误用 origin/main tip(59d712d5)作为 --base,而 SKILL 约定 baseRefOid 是 gh pr view 返回的分叉点(527=0c95823/539=3686b32b),导致整条审查链 snapshot 漂移、pre-merge-check fail-closed 拦截后返工重建。SKILL.md 三处命令模板用 <baseRefOid> 占位符但未定义来源。现象:回执 snapshotHash 与 pre-merge-check 重建不一致(stale)。
   - 提案:在 SKILL.md 3.0.1/4 节命令块后补一句来源说明:--base 取 gh pr view <N> --json baseRefOid(PR 分叉点),不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
@@ -64,9 +65,10 @@
 - `mass-identical-format-pushback-across-stacked-chain` **同一 stacked 链上 N 个 PR 同因格式打回时,逐个发相同评论是噪声** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:本轮 23 个候选里 19 个因完全相同的原因被格式打回(Description 缺 变更说明/提交前自检/备注),其中 18 个属同一作者的两条 stacked 链(pr2/297-a1..a6、b2..b12、t1f)——这批 PR 是从旧基线整链 rebase 重建的,统一沿用了 2026-07-26 前的旧四段模板结构。SKILL 现有逻辑逐 PR 各发一条,作者一次收到 19 条正文近乎逐字相同的评论;信息量等于 1 条,噪声是 19 倍。
   - 提案:auto 模式阶段 2 计划时,把 formatIssues 完全相同、且经 3.6 判定属同一条 stacked 链的候选归并:链顶(base=默认分支的那个)发完整打回,其余各发一条一句话指回链顶的短评论(仍各自留痕、仍各自计 P1、不放宽任何 gate)。属 automatable-gap(不新增 GitHub 写操作类型、不放宽 gate、不碰名单),但涉及通知投递管线改造,超出「最小自洽」范围,故记提案不当轮自动落地。
-- `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+- `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
   - 现象:本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。
   - 提案:在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
 - `review-worktree-orphan-branch-no-sweeper` **审查 worktree 的清理只靠主 agent 手动执行，漏跑就永久残留孤儿分支** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: tracked
   - 现象:本轮 fix-worktree-cleanup.mjs --scan 报 skipped=8，全是「查不到对应 PR，来历不明不动」，其中 7 条是 worktree-agent-* 命名——与阶段二审查 agent 的隔离 worktree 分支命名一致，高度疑似历史轮次未清理干净的残留。第 7 节只在 SKILL 文字里要求主 agent 移除本次创建的 review worktree，没有确定性脚本兜底，任一轮异常退出（锁丢失、宿主中断）就永久遗留，且这些残留每轮都出现在 skipped 噪音里。
   - 提案:新增一个只针对 review worktree 的清理脚本（或扩展 fix-worktree-cleanup.mjs 的一个新模式）：按托管目录 + worktree-agent-* 命名 + 无对应 open PR + 无未推送 commit + 不含任何 active session cwd 四重条件回收；因涉及自动删除 git 分支与目录，有误删风险，先请 owner 拍板边界再落地，不当轮自动改。
@@ -82,16 +84,18 @@
   - 现象:本轮 15 个候选里 6 个落 skip-security-review,其中 3 个是 dependabot(github_actions 与 npm group)。npm group PR 必然改 package.json/lockfile、actions PR 必然改 .github/workflows,两类都被 securityReviewPaths 命中,结论是这两类 PR 在任何一轮都不可能被自动处理,只会每轮重复进 skip 组。
   - 提案:扩权类,不自动落地。可选方向:① 为 app/dependabot 作者 + 仅 lockfile/版本号 diff 的组合开一条窄豁免(需先确认 dependabot 身份无法伪造);② 保持现状但在汇总里把这类 skip 合并成一行,避免每轮 6 行噪音掩盖真正需要看的候选。请 owner 拍板。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `ui-evidence-misfire-pure-logic-lib` **uiPaths 前缀 src/ 让纯逻辑 lib 文件误触 UI 证据缺失判定** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+- `ui-evidence-misfire-pure-logic-lib` **uiPaths 前缀 src/ 让纯逻辑 lib 文件误触 UI 证据缺失判定** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮一个候选仅因改了 src/lib/canonicalHash.ts(+ 其单测)就被判 uiEvidenceMissing=true。该文件只导出三个纯函数、零 import、无 JSX/DOM/CSS,不可能有视觉变化;审查 agent 需额外花一段论证来说明这是前缀误命中。因该 PR 是自有 PR(ownPr=true)本轮未发提醒评论,未打扰他人,但换成他人 PR 就会发出一条无意义的补图请求。
   - 提案:由 owner 决定是否在目标仓库 pr-rules.json 的 sensitiveContent 同级补 uiExcludePaths 条目(现有机制已支持排除 locale 数据文件与 .d.ts),把 src/lib/ 下确无渲染面的纯工具模块纳入排除;属目标仓库配置口径,不改 skill 代码,不自动落地。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
 - `structural-bypass-approved-precondition-mismatch` **structural-check admin bypass 的 APPROVED 前提:SKILL 5.3 与 internal-gates.md 不一致** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 3 个候选(作者=viewer 自己,selfFixAuthors 为空故无法自批准)的 reviewDecision 为空、blockClass=structural-check、structuralBypassAvailable=true,context.mjs 给出 auto.action=bypass-structural-block(即无任何人 approve 就自动 --admin 合并,其中两个 PR 分别为 5662 / 2378 diff 行且含核心路径)。但 internal-gates.md 明写该路径需 reviewDecision=APPROVED,SKILL 5.3 的同一条却未列该前提;context.mjs 第 1109 行注释也把 review APPROVED 写成安全前提,实际判定却没校验它。按 SKILL 第 0 节规则冲突条款本轮停在 gate 未合并。
   - 提案:先由 owner 拍板口径:若确认 APPROVED 是硬前提,则 context.mjs 的 structural-check 分支增加 reviewDecision==='APPROVED' 校验(不满足时降级为 skip 并注明缺 approve),并把该前提补进 SKILL 5.3;若确认无需 approve,则删掉 internal-gates.md 与 context.mjs 注释里的 APPROVED 措辞。属合并门判定,不自动落地。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `ui-evidence-false-positive-src-lib` **uiPaths 含 src/lib/ 导致纯工具文件被判缺 UI 证据** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+- `ui-evidence-false-positive-src-lib` **uiPaths 含 src/lib/ 导致纯工具文件被判缺 UI 证据** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:PR 366 的 uiCodeFiles 只有 src/lib/canonicalHash.ts 与其测试(纯哈希工具,零视觉面),仍被判 uiEvidenceMissing=true。本轮因 ownPr=true 未发评论所以没造成噪音,但非自有 PR 命中同样路径时会向作者索要哈希工具的截图,属确定性误报。
   - 提案:为 UI 证据提醒增设独立的排除前缀(不动 uiPaths 本身,避免影响产品门语义定性),把 src/lib/ 下无 .tsx/.css 的纯逻辑文件排除出 uiCodeFiles。改动会放宽一项提醒触发条件,按扩权类只提案不自动落地。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
 - `feature-pr-lockfile-only-hit-blocks-review` **功能 PR 只因 diff 里带了 package-lock.json 就整体转人工,大 i18n PR 永远进不了自动审查** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 #379(2369 行)/#386(4495 行)均为 kirozeng 的 i18n 功能 PR,securityReviewPaths 命中项只有 package-lock.json 一个(非 package.json、非 workflow、非 skill),但 skip-security-review 优先级压过格式门/前置门,导致这类 PR 每轮原样跳过、不审不提醒,作者对被卡原因零感知。已有条目 dependabot-lockfile-always-security-review 只覆盖 dependabot 场景,功能 PR 场景是另一类。
   - 提案:扩权类,永不自动落地,待维护者拍板。可选方向:① 命中项仅为 lockfile(package-lock.json / pnpm-lock.yaml)且同 PR 未改 package.json / workflow / skill 时,降级为「照常审查但不自动合并」而非整体跳过;② 或保持跳过但补一条一次性 PR 评论告知作者「本 PR 因含 lockfile 走人工审查通道」,消除零感知。任一方向都放宽了现有安全边界,须 owner 明确同意。
@@ -126,9 +130,10 @@
 - `nonrequired-thirdparty-ai-check-blocks-merge` **非 required 的第三方 AI 审查 App check FAILURE 与真正 CI 失败同归 ci-failed** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: open
   - 现象:本轮 PR 318:分支保护的 9 项 required check 全部 SUCCESS,唯一 FAILURE 来自非 required 的第三方 AI 审查 App(check-run)。SKILL 3.5 第 4 条规定「所有已上报检查」失败即 gate 未过,所以阻断本身是设计如此;问题在归类与汇总口径——blockClass 统一记 ci-failed,owner 从汇总看不出是「构建/测试挂了」还是「AI 审查 App 给了 FAILURE 结论」,两者的处置动作完全不同(前者改代码,后者读意见或决定是否纳入阻断集)。
   - 提案:两个方向请 owner 拍板:① 仅改汇总口径(低风险):在 skip 行文里点出失败 check 是否属 required,不新增 blockClass 值,不改任何 gate 判定;② 放宽阻断集(扩权类,须显式授权):在 pr-rules.json 增加 nonBlockingCheckAllowlist,命中的非 required check 失败不计入前置门。②会放宽 gate,永不自动落地。
-- `changelog-data-file-hits-uipaths` **public/changelog.json 是纯数据文件却命中 uiPaths,每日误报 UI 证据缺口** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: open
+- `changelog-data-file-hits-uipaths` **public/changelog.json 是纯数据文件却命中 uiPaths,每日误报 UI 证据缺口** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:mivo 仓 uiPaths 含前缀 public/,uiExcludePaths 为空,于是每日 changelog 补扫 PR 都被判 uiEvidenceMissing=true。该文件是 Change Log 面板的数据源,改动确实会让面板多一行文案,但截图证据价值极低(渲染结构/组件/样式零改动),要求截图属噪音。
   - 提案:在目标仓 agent-use/docs/pr-rules.json 的 uiExcludePaths 增 public/changelog\\.json。注意该文件在 securityReviewPaths(^agent-use/)内,且本仓禁止直推 main,改动须走 PR + 人工审查,不能自动落地。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
 - `mivo-canvas-structural-check-codescan-quality-gap` **mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED** — 出现 3 次,首见 2026-07-28,最近 2026-07-30,status: tracked
   - 现象:本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。
 - `structural-bypass-approved-vs-repo-without-required-approval` **结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: tracked
@@ -140,9 +145,10 @@
 - `structural-block-detection-omits-copilot-code-review` **structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:lib.mjs 的 CHECK_RULES 只含 required_status_checks / code_scanning / code_quality。mivo-canvas 的 trunk-guard ruleset 同时启用了 copilot_code_review(另有独立的 copilot-review-on-push ruleset),该类型不被采集进 requiredCheckRules,于是 pre-merge-check 对 PR 342 报 structuralAllowlisted=true(只看到 code_scanning/code_quality 两项,均在 allowlist 内),而实际可能还有一个未被 allowlist 覆盖的 review 门在阻塞。该 PR reviews 为空,Copilot 从未提交 review。
   - 提案:两条待拍板:① 若 copilot_code_review 确实参与 mergeStateStatus 阻塞,把它纳入 lib.mjs 的 CHECK_RULES,让 requiredCheckRules 完整,从而 structuralAllowlisted 在它未进 allowlist 时正确判 false(方向是 fail-closed,更严);② 若它只是 on-push 触发器不阻塞合并,则在 CHECK_RULES 注释里写明为何刻意排除,避免后续复盘反复怀疑。本轮无法从 API 区分两种语义,故不自动落地。
-- `ui-evidence-false-positive-on-nonvisual-src-paths` **uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报** — 出现 2 次,首见 2026-07-29,最近 2026-07-29,status: open
+- `ui-evidence-false-positive-on-nonvisual-src-paths` **uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报** — 出现 2 次,首见 2026-07-29,最近 2026-07-29,status: tracked
   - 现象:mivo-canvas#325 命中:uiCodeFiles = src/agent/{snapshotRegion,canvasAgentVerbs}.ts 等纯函数与 Agent 动词模块(零 React、零 JSX、零 CSS、零用户可见文案),因 uiPaths 含 'src/' 前缀被判 UI 面 → uiEvidenceMissing=true。本轮因 auto.ownPr=true 抑制了提醒评论,没造成实际噪音;若作者不是本流程账号,就会收到一条要求给纯函数 PR 补截图的评论。审查 agent 独立判定为误报。
   - 提案:目标仓 pr-rules.json 的 uiExcludePaths 增补非可视路径前缀(如 ^src/agent/、^src/model/、^src/render/ 中的纯契约资产),或把 uiPaths 从 'src/' 收窄到真正的 UI 目录(src/app/、src/canvas/、public/、index.html)。属目标仓配置、由 owner 拍板,不自动落地。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
 - `stale-mergeable-after-same-round-merge` **同一轮内合并后,GitHub 的 mergeable/MERGEABLE 对余下候选是过期结论,pre-merge-check 直接采信** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed
   - 现象:本轮合并 #319、#334 后,#325 的 pre-merge-check 仍报 mergeable=MERGEABLE、blockClass=structural-check(看起来可 admin bypass 合)。我手动跑 git merge-tree --write-tree origin/main <pr-head> 才发现真冲突(src/agent/canvasAgentVerbs.test.ts,与本轮落地的 #334 相撞)。GitHub 重算 mergeability 有延迟,期间 UNKNOWN 或沿用旧值;若照采信就会对一个实际冲突的 PR 走合并路径。
   - 提案:pre-merge-check 增一道本地交叉校验:当 PR 的 base 在其最后一次 CI 之后前进过(或 mergeable 为 UNKNOWN)时,跑 git merge-tree --write-tree <base> <head> 实测,冲突则把 blockClass 定成 conflict、不采信 GitHub 的 MERGEABLE。纯读操作、不新增写权限。
@@ -181,6 +187,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `review-agent-spawn-no-worktree-isolation` **审查 agent spawn 漏传 isolation:worktree,主工作树被切到 PR head** — 出现 1 次,首见 2026-08-11,最近 2026-08-11,status: landed
+  - 现象:本轮 PR #623 审查:Agent 调用未显式传 isolation:'worktree',审查 agent 在主工作树执行 gh pr checkout 造成 detached HEAD。工作树干净无残留,已 checkout main 恢复,无实际影响。SKILL 已有'优先使用 Agent + isolation worktree'要求,缺口在编排执行层:spawn 后无机器检查点验证主工作树分支未变。改进:主 agent spawn 审查 agent 后立即验证 git branch --show-current 仍为原分支,不符即恢复并记录。
+  - 备注:SKILL.md 4 节加 spawn 后自检主工作树分支检查点;commit c38e7cb 已推送 skills 仓 main
 - `escape-assessment-empty-contract-unstated` **逃逸候选集为空时 escapeAssessment 字段语义未声明,审查 agent 误填 known hazards 确认** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `7528c1c`
   - 现象:PR #599 实测:escapeCandidates=[] 时 prompt 无「逃逸判定」段,审查 agent 把 2 条 hz2-* known hazards 确认写进 escapeAssessment,consumer 判 invalid(缺/未知)。修复:候选为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote。
   - 备注:[decided:2026-08-09] 落地 commit 7528c1c(AuthorDate 核实):逃逸候选集为空时 prompt 显式声明 escapeAssessment 必须为 [],known hazards 确认写 modelVerdictNote,consumer 不再判 invalid
@@ -229,6 +238,13 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 1 次,首见 2026-08-14,最近 2026-08-14,status: tracked
+  - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
+- `security-gate-holds-existing-discussion` **Security gate 命中时已有讨论 issue 则静默跳过，无需额外动作** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
+  - 现象:PR #47, #48 均命中 security-gate（改了 CI workflow 文件），但 signoff 已持有讨论 issue（alreadyHeld=true），admins 尚未批准放行。本轮正确跳过，无需额外 action。
+- `auto-first-run-2026-08-13` **首轮 auto 运行: 3 候选, 2 安全门 hold, 1 self-fix 投递** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
+- `security-gate-normal-hold` **security-gate 正常拦截安全审查路径 PR** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
+  - 现象:PR #43 命中 package-lock.json/package.json(securityReviewPaths),auto.action=security-gate,成功执行 signoff-hold(issue #44 + 评论 + 标签),by-design 无需自动化改进
 - `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过
 - `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
