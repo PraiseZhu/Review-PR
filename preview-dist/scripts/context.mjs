@@ -488,7 +488,11 @@ try {
   // 不可能产生视觉变化,不触发 UI 证据提醒(2026-07-25 维护者拍板;产品门 touchesUi 不受影响)。
   const uiCodeFiles = uiFiles.filter((p) => {
     const lower = p.toLowerCase();
-    return !lower.endsWith('.md') && !lower.endsWith('.d.ts');
+    if (lower.endsWith('.md') || lower.endsWith('.d.ts')) return false;
+    // 测试与夹具不会产生用户可见界面,不触发 UI 证据提醒(产品门 touchesUi 仍按 uiFiles 计)。
+    if (/(?:^|\/)(?:__tests__|__mocks__|testdata|test-fixtures)\//.test(lower)) return false;
+    if (/\.(?:test|spec)\.[^/]+$/.test(lower)) return false;
+    return true;
   });
   // UI 证据(图片类):markdown 图片 / <img|video> 标签 / GitHub 附件与 user-images 直链(截图或录屏都算)。
   const UI_IMAGE_EVIDENCE_RE = /!\[[^\]]*\]\([^)\s]+\)|<(?:img|video)\b[^>]*src\s*=|https?:\/\/(?:user-images\.githubusercontent\.com|github\.com\/user-attachments\/assets)\/\S+|https?:\/\/github\.com\/[^/]+\/[^/]+\/blob\/[^)\s]+\.(?:webp|png|jpe?g|gif|svg|avif)\b/i;
