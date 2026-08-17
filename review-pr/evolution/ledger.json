@@ -1760,14 +1760,14 @@
       "fingerprint": "security-gate-hold-waiting-admins",
       "tier": "by-design",
       "title": "securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)",
-      "detail": "本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过",
+      "detail": "2026-08-17 auto 轮:#143 命中 security(package.json/package-lock)+rules(AGENTS.md/CLAUDE.md) 双门,复用既有 issue #144 幂等 hold,等 admins 在 issue 留言或 Approve 当前 head a2ff8252",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-10T14:03:16.388Z",
-      "lastSeen": "2026-08-10T14:03:16.388Z"
+      "lastSeen": "2026-08-17T11:05:51.757Z"
     },
     {
       "fingerprint": "auto-merge-admin-trust-strutural-block",

@@ -248,6 +248,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 2 次,首见 2026-08-10,最近 2026-08-17,status: tracked
+  - 现象:2026-08-17 auto 轮:#143 命中 security(package.json/package-lock)+rules(AGENTS.md/CLAUDE.md) 双门,复用既有 issue #144 幂等 hold,等 admins 在 issue 留言或 Approve 当前 head a2ff8252
 - `round-skipped-candidates-none` **本轮无未合并候选需要复盘(141 已合并,143 by-design hold)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR #143 的 security+rules 门 hold 属维护者确认流程(by-design),admins Approve 放行后自动继续;PR #141 全流程走通无流程缺口。
 - `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 1 次,首见 2026-08-14,最近 2026-08-14,status: tracked
@@ -257,8 +259,6 @@
 - `auto-first-run-2026-08-13` **首轮 auto 运行: 3 候选, 2 安全门 hold, 1 self-fix 投递** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
 - `security-gate-normal-hold` **security-gate 正常拦截安全审查路径 PR** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
   - 现象:PR #43 命中 package-lock.json/package.json(securityReviewPaths),auto.action=security-gate,成功执行 signoff-hold(issue #44 + 评论 + 标签),by-design 无需自动化改进
-- `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
-  - 现象:本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过
 - `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:本轮 #580/#603 均因改动含 package.json 触发 skip-security-review(3.8 供应链能力面防护,防自动化改坏自己);#605 同轮走完整自动化审查+admin-trust 合并,流程正常无缺口
 - `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 2 次,首见 2026-08-09,最近 2026-08-09,status: tracked
