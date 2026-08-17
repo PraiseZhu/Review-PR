@@ -2802,15 +2802,168 @@ function rebaseInProgress(cwd) {
   return Boolean((gd && existsSync(abs(gd))) || (ga && existsSync(abs(ga))));
 }
 
+/** porcelain 脏路径(含未跟踪)。只用于告警/诊断,不参与合并决策。 */
+function listDirtyFiles(cwd) {
+  const r = git(['status', '--porcelain', '-uall'], { allowFail: true, cwd });
+  if (!r.ok || !r.stdout.trim()) return [];
+  return r.stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean);
+}
+
+function unmergedPaths(cwd) {
+  const r = git(['diff', '--name-only', '--diff-filter=U'], { allowFail: true, cwd });
+  return r.ok ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/** rebase/autostash 结束后工作树必须可继续用,否则不得宣称收敛、不得 push。 */
+function rebaseSettled(cwd) {
+  if (rebaseInProgress(cwd)) return { ok: false, reason: 'rebase-still-in-progress' };
+  const blocked = unmergedPaths(cwd);
+  if (blocked.length) return { ok: false, reason: 'unmerged-after-rebase', conflictFiles: blocked };
+  return { ok: true };
+}
+
+function currentHead(cwd) {
+  return git(['rev-parse', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
+}
+
+function restoreBackupHead(cwd, backupRef) {
+  if (!backupRef) return;
+  const now = currentHead(cwd);
+  const old = git(['rev-parse', backupRef], { allowFail: true, cwd }).stdout.trim();
+  // HEAD 没动过(rebase 根本没开始 / autostash 已自行 pop 回来)时硬 reset 会抹掉用户脏树。
+  if (!now || !old || now === old) return;
+  git(['reset', '--hard', backupRef], { allowFail: true, cwd });
+}
+
+function aheadBehind(cwd, branch) {
+  const c = git(['rev-list', '--left-right', '--count', `origin/${branch}...HEAD`], { allowFail: true, cwd });
+  if (!c.ok) return { ahead: null, behind: null };
+  const [b, a] = c.stdout.trim().split(/\s+/).map(Number);
+  return {
+    behind: Number.isFinite(b) ? b : null,
+    ahead: Number.isFinite(a) ? a : null,
+  };
+}
+
+function trimSkillSyncRefs(cwd) {
+  const olds = git(['for-each-ref', '--format=%(refname)', '--sort=-refname', 'refs/skill-sync/'], { allowFail: true, cwd });
+  if (!olds.ok) return;
+  for (const ref of olds.stdout.split('\n').map((s) => s.trim()).filter(Boolean).slice(5)) {
+    git(['update-ref', '-d', ref], { allowFail: true, cwd });
+  }
+}
+
 /**
- * 把 skills 仓库 pull 到最新(--ff-only,不产生 merge commit、diverged 时安全失败)。
- * 每轮执行前调用(pre-check / prepare 已内置)。返回:
- *   { ok, action:'pull', updated, before, after, branch, diverged, ahead, behind, error }
- *   或 { ok:true, skipped }。
- * diverged=true(ahead>0 且 behind>0)是「自同步已停摆」的明确信号,调用方应显著上报而非
- * 当作普通网络抖动——它不会自愈,每轮都会重现,直到 push 侧收敛或人工 reconcile。
+ * 把本地未推提交 rebase 到 origin/<当前分支>。
+ * 脏工作区靠 --autostash,不因 preview-dist 残留挡住 rebase。
+ * 只有台账白名单冲突自动解;其它文件 abort 保持原状。
  */
-export function skillRepoPull({ timeoutMs = 30_000 } = {}) {
+function rebaseOntoOrigin({ cwd, timeoutMs = 60_000 } = {}) {
+  const dirtyFiles = listDirtyFiles(cwd);
+  trimSkillSyncRefs(cwd);
+  const backupRef = `refs/skill-sync/pre-rebase-${Date.now()}`;
+  git(['update-ref', backupRef, 'HEAD'], { allowFail: true, cwd });
+
+  const rb = git(['pull', '--rebase', '--autostash', '--quiet'], { allowFail: true, cwd, timeoutMs });
+  const fail = (reason, extra = {}) => {
+    if (rebaseInProgress(cwd)) git(['rebase', '--abort'], { allowFail: true, cwd });
+    else restoreBackupHead(cwd, backupRef);
+    return {
+      ok: false,
+      reason,
+      backupRef,
+      dirtyFiles,
+      error: extra.error || ((rb.stderr || rb.stdout).trim().slice(0, 300) || 'git pull --rebase 失败'),
+      ...extra,
+    };
+  };
+
+  if (rb.ok) {
+    const settled = rebaseSettled(cwd);
+    if (!settled.ok) {
+      return fail(settled.reason || 'rebase-not-settled', {
+        conflictFiles: settled.conflictFiles,
+        error: settled.conflictFiles?.length
+          ? `rebase/autostash 结束后仍有未合并路径,已回退:${settled.conflictFiles.join(', ')}`
+          : 'rebase 命令成功但工作树未结算,已回退',
+      });
+    }
+    return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: false };
+  }
+
+  if (!rebaseInProgress(cwd)) {
+    return fail('rebase-did-not-start', {
+      error: (rb.stderr || rb.stdout).trim().slice(0, 300) || 'git pull --rebase 失败且未进入 rebase',
+    });
+  }
+
+  const res = resolveAppendOnlyConflicts(cwd);
+  if (!res.resolved) {
+    return fail('diverged-code-change-needs-human', {
+      conflictFiles: res.blockedBy,
+      error: `skills 仓分叉且冲突文件不是只追加台账,已 abort 保持原状,需人工 reconcile:${res.blockedBy.join(', ')}`,
+    });
+  }
+  let guard = 0;
+  while (rebaseInProgress(cwd) && guard++ < 50) {
+    const cont = git(['-c', 'core.editor=true', 'rebase', '--continue'], { allowFail: true, cwd, timeoutMs: 30_000 });
+    if (cont.ok) continue;
+    const again = resolveAppendOnlyConflicts(cwd);
+    if (!again.resolved) {
+      return fail('diverged-code-change-needs-human', {
+        conflictFiles: again.blockedBy,
+        error: `rebase 重放中出现非台账冲突,已 abort:${again.blockedBy.join(', ')}`,
+      });
+    }
+  }
+  if (rebaseInProgress(cwd)) {
+    return fail('rebase-did-not-finish', { error: 'rebase 未在重试上限内完成,已 abort' });
+  }
+  const settled = rebaseSettled(cwd);
+  if (!settled.ok) {
+    return fail(settled.reason || 'rebase-not-settled', {
+      conflictFiles: settled.conflictFiles,
+      error: settled.conflictFiles?.length
+        ? `rebase 结束后仍有未合并路径,已回退:${settled.conflictFiles.join(', ')}`
+        : 'rebase 结束后工作树未结算,已回退',
+    });
+  }
+  return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: true };
+}
+
+// evo 提交禁止裹进源码:只拦 skill 根下的 SKILL.md 与 scripts/*.mjs。
+// preview-dist/ 与 dist/ 是重建产物,不在这条规则里(由 autostash 处理脏树)。
+function isEvoBlockedRel(rel) {
+  if (!rel) return false;
+  if (rel.startsWith('preview-dist/') || rel.startsWith('dist/')) return false;
+  return /(?:^|\/)(?:SKILL\.md|scripts\/[^/]+\.mjs)$/.test(rel);
+}
+
+function unstageEvoCodeFiles(cwd, skillRelPath, spec) {
+  const nameArgs = spec?.length ? ['diff', '--cached', '--name-only', '--', ...spec] : ['diff', '--cached', '--name-only'];
+  const staged = git(nameArgs, { allowFail: true, cwd }).stdout.trim();
+  if (!staged) return [];
+  const dropped = [];
+  for (const p of staged.split('\n').map((s) => s.trim()).filter(Boolean)) {
+    if (skillRelPath !== '.' && p !== skillRelPath && !p.startsWith(`${skillRelPath}/`)) continue;
+    const rel = (skillRelPath === '.' || p === skillRelPath) ? p : p.slice(skillRelPath.length + 1);
+    if (!isEvoBlockedRel(rel)) continue;
+    const u = git(['restore', '--staged', '--', p], { allowFail: true, cwd });
+    if (u.ok) dropped.push(p);
+  }
+  return dropped;
+}
+
+/**
+ * 把 skills 仓库 pull 到最新。
+ * 先 --ff-only;若已分叉(ahead>0 且 behind>0)再走与 push 相同的台账 rebase
+ * (--autostash)+默认分支回推。仍失败才标 diverged。
+ * 返回:
+ *   { ok, action:'pull', updated, before, after, branch, diverged, ahead, behind,
+ *     dirtyFiles, conflictFiles, error }
+ *   或 { ok:true, skipped }。
+ */
+export function skillRepoPull({ timeoutMs = 30_000, pushAfterConverge = true } = {}) {
   const info = skillRepoInfo();
   if (!info) return { ok: true, action: 'pull', skipped: 'not-a-git-repo' };
   if (!info.branch || info.branch === 'HEAD') return { ok: true, action: 'pull', skipped: 'detached-head' };
@@ -2818,30 +2971,79 @@ export function skillRepoPull({ timeoutMs = 30_000 } = {}) {
   const head = () => git(['rev-parse', '--short', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
   const before = head();
   const pull = git(['pull', '--ff-only', '--quiet'], { allowFail: true, cwd, timeoutMs });
-  const after = head();
-
-  // ff-only 失败时区分「分叉」与其他原因(网络 / 认证):分叉需要人看,别的下轮自愈。
-  let ahead = null;
-  let behind = null;
-  let remoteHead = null;
-  if (!pull.ok) {
-    const c = git(['rev-list', '--left-right', '--count', `origin/${info.branch}...HEAD`], { allowFail: true, cwd });
-    if (c.ok) {
-      const [b, a] = c.stdout.trim().split(/\s+/).map(Number);
-      behind = Number.isFinite(b) ? b : null;
-      ahead = Number.isFinite(a) ? a : null;
-    }
-    remoteHead = git(['rev-parse', '--short', `origin/${info.branch}`], { allowFail: true, cwd }).stdout.trim() || null;
+  if (pull.ok) {
+    const after = head();
+    return {
+      ok: true,
+      action: 'pull',
+      branch: info.branch,
+      updated: before !== after,
+      before,
+      after,
+      error: null,
+    };
   }
-  return {
-    ok: pull.ok,
+
+  const { ahead, behind } = aheadBehind(cwd, info.branch);
+  const remoteHead = git(['rev-parse', '--short', `origin/${info.branch}`], { allowFail: true, cwd }).stdout.trim() || null;
+  const dirtyFiles = listDirtyFiles(cwd);
+  const failPull = (extra = {}) => ({
+    ok: false,
     action: 'pull',
     branch: info.branch,
-    updated: pull.ok && before !== after,
+    updated: false,
+    before,
+    after: head(),
+    diverged: ahead > 0 && behind > 0,
+    ahead,
+    behind,
+    head: head(),
+    remoteHead,
+    dirtyFiles,
+    error: extra.error || ((pull.stderr || pull.stdout).trim().slice(0, 300) || 'git pull 失败'),
+    ...extra,
+  });
+
+  if (!(ahead > 0 && behind > 0)) return failPull();
+
+  const conv = rebaseOntoOrigin({ cwd, timeoutMs });
+  if (!conv.ok) {
+    return failPull({
+      reason: conv.reason,
+      conflictFiles: conv.conflictFiles,
+      backupRef: conv.backupRef,
+      error: conv.error,
+    });
+  }
+
+  let pushed = false;
+  let pushError = null;
+  // preview-dist / dist 是只读产物,realpath 仍落在同一 git 仓里——禁止从那里回推。
+  const readonlyDistCopy = /^(preview-dist|dist)$/.test(info.skillRelPath);
+  if (pushAfterConverge && info.branch === info.defaultBranch && !readonlyDistCopy) {
+    const pushResult = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
+    pushed = pushResult.ok;
+    if (!pushResult.ok) {
+      pushError = (pushResult.stderr || pushResult.stdout).trim().slice(0, 300) || 'git push 失败';
+    }
+  }
+  const after = head();
+  const counts = aheadBehind(cwd, info.branch);
+  return {
+    ok: true,
+    action: 'pull',
+    branch: info.branch,
+    updated: before !== after,
     before,
     after,
-    ...(pull.ok ? {} : { diverged: ahead > 0 && behind > 0, ahead, behind, head: after, remoteHead }),
-    error: pull.ok ? null : ((pull.stderr || pull.stdout).trim().slice(0, 300) || 'git pull 失败'),
+    converged: true,
+    pushed,
+    dirtyFiles: conv.dirtyFiles,
+    backupRef: conv.backupRef,
+    converge: [{ round: 1, resolvedLedgerConflict: conv.resolvedLedgerConflict }],
+    ...(pushError ? { pushError } : {}),
+    ...(counts.ahead > 0 && counts.behind > 0 ? { diverged: true, ...counts, remoteHead } : {}),
+    error: null,
   };
 }
 
@@ -2864,11 +3066,13 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
   const spec = paths?.length ? paths.map(joinSpec) : [info.skillRelPath];
 
   git(['add', '-A', '--', ...spec], { allowFail: true, cwd, timeoutMs: 15_000 });
-  const staged = git(['diff', '--cached', '--name-only'], { allowFail: true, cwd }).stdout.trim();
+  const droppedEvoCode = /^evo:/.test(message || '') ? unstageEvoCodeFiles(cwd, info.skillRelPath, spec) : [];
+  const staged = git(['diff', '--cached', '--name-only', '--', ...spec], { allowFail: true, cwd }).stdout.trim();
+  const stagedFiles = staged ? staged.split('\n').map((s) => s.trim()).filter(Boolean) : [];
   let committed = false;
   let commit = null;
-  if (staged) {
-    const c = git(['commit', '--quiet', '-F', '-'], {
+  if (stagedFiles.length) {
+    const c = git(['commit', '--quiet', '-F', '-', '--', ...stagedFiles], {
       input: message || 'evo: sync skill state', allowFail: true, cwd, timeoutMs: 15_000,
     });
     if (!c.ok) {
@@ -2895,73 +3099,25 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
   const REBASE_ROUNDS = 3;
   for (let round = 0; round < REBASE_ROUNDS && !push.ok
        && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr); round++) {
-    // 安全网:rebase 会改写本地未推 commit,先留一个可恢复的 ref(不占分支名空间、不会被 push)。
-    // 只保留最近 5 个:转人工的失败路径会故意留下 backup ref,每轮失败一个,不设上限会无限堆积
-    // (ref 名内嵌 Date.now(),定长同宽,refname 逆序即时间逆序)。
-    const olds = git(['for-each-ref', '--format=%(refname)', '--sort=-refname', 'refs/skill-sync/'], { allowFail: true, cwd });
-    if (olds.ok) {
-      for (const ref of olds.stdout.split('\n').map((s) => s.trim()).filter(Boolean).slice(5)) {
-        git(['update-ref', '-d', ref], { allowFail: true, cwd });
-      }
+    const conv = rebaseOntoOrigin({ cwd, timeoutMs });
+    if (!conv.ok) {
+      return {
+        ok: false,
+        committed,
+        commit,
+        pushed: false,
+        branch: info.branch,
+        converge,
+        reason: conv.reason,
+        conflictFiles: conv.conflictFiles,
+        backupRef: conv.backupRef,
+        dirtyFiles: conv.dirtyFiles,
+        error: conv.error,
+      };
     }
-    const backupRef = `refs/skill-sync/pre-rebase-${Date.now()}`;
-    git(['update-ref', backupRef, 'HEAD'], { allowFail: true, cwd });
-
-    const rb = git(['pull', '--rebase', '--quiet'], { allowFail: true, cwd, timeoutMs });
-    if (!rb.ok) {
-      // 冲突:只有台账类(只追加)文件才自动收敛,其余一律 abort 转人工。
-      const res = resolveAppendOnlyConflicts(cwd);
-      if (!res.resolved) {
-        git(['rebase', '--abort'], { allowFail: true, cwd });
-        return {
-          ok: false,
-          committed,
-          commit,
-          pushed: false,
-          branch: info.branch,
-          converge,
-          reason: 'diverged-code-change-needs-human',
-          conflictFiles: res.blockedBy,
-          backupRef,
-          error: `skills 仓分叉且冲突文件不是只追加台账,已 abort 保持原状,需人工 reconcile:${res.blockedBy.join(', ')}`,
-        };
-      }
-      // 逐个 commit 继续重放,每一步都可能再冲突;core.editor=true 防 --continue 打开编辑器挂死。
-      let guard = 0;
-      while (rebaseInProgress(cwd) && guard++ < 50) {
-        const cont = git(['-c', 'core.editor=true', 'rebase', '--continue'], { allowFail: true, cwd, timeoutMs: 30_000 });
-        if (cont.ok) continue;
-        const again = resolveAppendOnlyConflicts(cwd);
-        if (!again.resolved) {
-          git(['rebase', '--abort'], { allowFail: true, cwd });
-          return {
-            ok: false,
-            committed,
-            commit,
-            pushed: false,
-            branch: info.branch,
-            converge,
-            reason: 'diverged-code-change-needs-human',
-            conflictFiles: again.blockedBy,
-            backupRef,
-            error: `rebase 重放中出现非台账冲突,已 abort:${again.blockedBy.join(', ')}`,
-          };
-        }
-      }
-      if (rebaseInProgress(cwd)) { // 兜底:没在上限内收完,不留半吊子状态
-        git(['rebase', '--abort'], { allowFail: true, cwd });
-        return {
-          ok: false, committed, commit, pushed: false, branch: info.branch, converge,
-          reason: 'rebase-did-not-finish', backupRef, error: 'rebase 未在重试上限内完成,已 abort',
-        };
-      }
-      converge.push({ round: round + 1, resolvedLedgerConflict: true });
-    } else {
-      converge.push({ round: round + 1, resolvedLedgerConflict: false });
-    }
+    converge.push({ round: round + 1, resolvedLedgerConflict: conv.resolvedLedgerConflict });
     push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-    // 推成功后备份 ref 已无用,清掉,避免 refs/skill-sync/* 无限堆积。
-    if (push.ok) git(['update-ref', '-d', backupRef], { allowFail: true, cwd });
+    if (push.ok) git(['update-ref', '-d', conv.backupRef], { allowFail: true, cwd });
   }
   return {
     ok: push.ok,
@@ -2969,6 +3125,7 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
     commit,
     pushed: push.ok,
     branch: info.branch,
+    ...(droppedEvoCode.length ? { droppedEvoCode } : {}),
     ...(converge.length ? { converge } : {}),
     error: push.ok ? null : ((push.stderr || push.stdout).trim().slice(0, 300) || 'git push 失败'),
   };
