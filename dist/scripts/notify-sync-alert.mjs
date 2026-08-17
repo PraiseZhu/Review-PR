@@ -60,7 +60,7 @@ function writeState(file, state) {
 const KIND_TEXT = {
   diverged: {
     what: 'skills 仓与远端分叉,自同步双向停摆(ff-pull 拉不动、push 非 ff 被拒)。',
-    why: '台账类冲突本应自动收敛,走到这一步说明冲突在脚本 / SKILL.md 这类需要人判断的文件上。',
+    why: 'pull 侧已尝试台账 rebase;仍停摆时看 detail 里的 dirtyFiles / conflictFiles,不要默认当成脚本冲突。',
   },
   'code-conflict': {
     what: 'skills 仓 rebase 收敛时撞上非台账文件冲突,已 abort 保持原状,自动同步无法继续。',

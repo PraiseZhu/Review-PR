@@ -155,8 +155,8 @@ try {
     try { skillSync = skillRepoPull({ timeoutMs: 30_000 }); } catch { /* 自更新异常不影响调度判定 */ }
   }
   skillSyncReport = skillSync;
-  // 分叉 = 自同步双向停摆,不会自愈(ff-pull 拉不动、push 非 ff 被拒)。台账类冲突已由
-  // skillRepoCommitPush 自动收敛,走到这里的基本是真代码分歧,必须让人知道。
+  // 分叉 = skillRepoPull 先 ff、再台账 rebase 后仍停摆。脏工作区已 autostash;
+  // 走到这里通常是非台账冲突或 rebase 失败,必须让人知道。
   if (skillSync?.diverged) {
     const sig = `${skillSync.head ?? skillSync.after ?? '?'}:${skillSync.remoteHead ?? '?'}`;
     const alertFile = `${SCAN_STATE_FILE}.skill-diverged`;

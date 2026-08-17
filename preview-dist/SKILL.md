@@ -258,9 +258,11 @@ read-modify-write（读整份 state → 内存改 → `writeJsonAtomic` 整份�
 更糟——三者应在 STATE_DIR 层一起处理，不在单一模块里各自为政。
 
 **Skill 自同步**：Skill 常以软链接安装进目标项目，真实源码在 skills 仓库里，脚本一律
-按 realpath 解析回真实仓库操作。每轮执行前自动 `git pull --ff-only` 更新 skills 仓库
+按 realpath 解析回真实仓库操作。每轮执行前先 `git pull --ff-only`；若已分叉则走与
+push 相同的台账 rebase（`--autostash`，不因 `preview-dist` 脏树卡住）并在默认分支回推
 （`pre-check.mjs` 在会话创建前拉、`prepare.mjs` 拿到锁后兜底，均已内置，不需要手动跑）；
 （preview 版：自进化台账仅本地落盘，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort：
+`SKILL.md` / `scripts/*.mjs`。同步是 best-effort：
 pull / push 失败（断网、diverged、非 main 分支）不阻塞 review 流程，把输出里的
 `skillSync` / `sync` 异常如实写进汇总即可，不要重试到卡死。手动诊断用
 `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" <pull|push>`。
@@ -268,6 +270,7 @@ pull / push 失败（断网、diverged、非 main 分支）不阻塞 review 流�
 **多写者并发（同一 skills 仓被多台机器 / 多个轮次写）**：同一个 skills 仓可能同时被
 定时轮次与人工交互轮次写入（各自追加 evo 台账），push 撞 `non-fast-forward` 属正常并发，
 不是故障。（preview 版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**
+`pull --rebase --autostash` 后重推，并对**只追加类台账文件**
 （台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按
 `fingerprint` 并集，两侧条目零丢失），最多重试 3 轮；rebase 前先把 HEAD 存进
 `refs/skill-sync/pre-rebase-<ts>` 兜底，推成功即清理。**冲突落在任何其他文件（脚本 /
@@ -275,9 +278,10 @@ SKILL.md / config）时一律 `rebase --abort` 转人工**，返回 `reason:
 'diverged-code-change-needs-human'` 与 `conflictFiles`——那是真代码分歧，自动合并会静默丢改动。
 
 拿到这两类信号时必须显式上报，不可当普通网络抖动一笔带过（它们不会自愈，每轮都会重现）：
-- `skillSync.diverged=true`（`ahead>0 且 behind>0`）：自同步双向停摆。`pre-check.mjs` 在这种
-  状态下**强制放行一轮**（同一 `本地HEAD:远端HEAD` 只强制一次，不会每轮空转烧 token），
-  就是为了让本轮把它报出去；
+- `skillSync.diverged=true`（`ahead>0 且 behind>0`）：ff + 台账 rebase 后仍停摆。
+  `pre-check.mjs` 在这种状态下**强制放行一轮**（同一 `本地HEAD:远端HEAD` 只强制一次，
+  不会每轮空转烧 token），就是为了让本轮把它报出去；汇总必须带 `dirtyFiles` /
+  `conflictFiles`，不要默认写成「冲突在脚本 / SKILL.md」；
 - `skillRepoCommitPush` 返回 `diverged-code-change-needs-human`：需人工 reconcile，
   汇总里要带上 `conflictFiles` 与 `backupRef`。
 
@@ -959,6 +963,10 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
 `Agent` + `isolation: "worktree"`，每个 PR 一个隔离 worktree；主工作树不切换分支。
+**spawn 返回后立即自检一次 `git branch --show-current` 仍为主工作树原分支**——
+若被切到 PR head（审查 agent 在主工作树执行了 `gh pr checkout`），`git checkout`
+原分支恢复并如实记入汇总（2026-08-11 #623 实测发生过：spawn 漏传
+`isolation` 时审查 agent 会在主工作树 checkout PR head，工作树干净则无残留）。
 
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
 模板首行）：隔离 worktree 里的目标仓库拷贝可能不含（或含未跟踪、指向错误目标的）

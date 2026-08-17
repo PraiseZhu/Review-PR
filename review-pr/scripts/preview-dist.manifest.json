@@ -92,7 +92,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。同步是 best-effort：",
+      "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。`evo:` 提交不会裹进",
       "replace": "（preview 版：自进化台账仅本地落盘，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort："
     },
     {
@@ -102,7 +102,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "不是故障。`skillRepoCommitPush` 会自动 `pull --rebase` 后重推，并对**只追加类台账文件**",
+      "find": "不是故障。`skillRepoCommitPush` 与分叉后的 `skillRepoPull` 共用同一套 rebase：自动",
       "replace": "不是故障。（preview 版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**"
     },
     {
