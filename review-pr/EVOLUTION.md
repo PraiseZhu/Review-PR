@@ -30,7 +30,7 @@
 - `ui-evidence-test-files-false-positive` **UI 证据提醒把纯测试/自动生成 changelog 当 UI 改动误触发** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked
   - 现象:#544 本轮只改 src/i18n/__tests__/localePreference.test.ts(测试)与 public/changelog.json(自动生成),命中 uiPaths(src//public/)触发 uiEvidenceMissing 提醒评论,已发出。两者都不产生视觉变化,提醒属噪音。context.mjs 的 uiCodeFiles 默认排除只覆盖 locale 纯文案/.md/.d.ts,不含测试文件与生成文件。
   - 提案:context.mjs 计算 uiCodeFiles 时默认排除测试文件(*.test.ts、__tests__/ 目录)与已知自动生成文件(public/changelog.json),或引导目标仓在 uiExcludePaths 配出仓库特有排除;属检测行为改动,先记提案不自动落地,待维护者拍板。
-  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: 新仓 draft PR xindong/mivo-canvas-plugin#134(uiExcludePaths+=public/changelog.json)。老仓 mivo-canvas#665 已关(迁仓)。升格条件: #134 合并后改 landed。
 - `review-base-ref-oid-source-unclear` **preflight/build-task 的 --base 应取 PR 元数据 baseRefOid(分叉点),非当前 main tip** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: landed
   - 现象:本轮 #527/#539 误用 origin/main tip(59d712d5)作为 --base,而 SKILL 约定 baseRefOid 是 gh pr view 返回的分叉点(527=0c95823/539=3686b32b),导致整条审查链 snapshot 漂移、pre-merge-check fail-closed 拦截后返工重建。SKILL.md 三处命令模板用 <baseRefOid> 占位符但未定义来源。现象:回执 snapshotHash 与 pre-merge-check 重建不一致(stale)。
   - 提案:在 SKILL.md 3.0.1/4 节命令块后补一句来源说明:--base 取 gh pr view <N> --json baseRefOid(PR 分叉点),不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
@@ -68,7 +68,7 @@
 - `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
   - 现象:本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。
   - 提案:在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。
-  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: 新仓 draft PR xindong/mivo-canvas-plugin#134(uiExcludePaths+=public/changelog.json)。老仓 mivo-canvas#665 已关(迁仓)。升格条件: #134 合并后改 landed。
 - `review-worktree-orphan-branch-no-sweeper` **审查 worktree 的清理只靠主 agent 手动执行，漏跑就永久残留孤儿分支** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: tracked
   - 现象:本轮 fix-worktree-cleanup.mjs --scan 报 skipped=8，全是「查不到对应 PR，来历不明不动」，其中 7 条是 worktree-agent-* 命名——与阶段二审查 agent 的隔离 worktree 分支命名一致，高度疑似历史轮次未清理干净的残留。第 7 节只在 SKILL 文字里要求主 agent 移除本次创建的 review worktree，没有确定性脚本兜底，任一轮异常退出（锁丢失、宿主中断）就永久遗留，且这些残留每轮都出现在 skipped 噪音里。
   - 提案:新增一个只针对 review worktree 的清理脚本（或扩展 fix-worktree-cleanup.mjs 的一个新模式）：按托管目录 + worktree-agent-* 命名 + 无对应 open PR + 无未推送 commit + 不含任何 active session cwd 四重条件回收；因涉及自动删除 git 分支与目录，有误删风险，先请 owner 拍板边界再落地，不当轮自动改。
@@ -87,7 +87,7 @@
 - `ui-evidence-misfire-pure-logic-lib` **uiPaths 前缀 src/ 让纯逻辑 lib 文件误触 UI 证据缺失判定** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮一个候选仅因改了 src/lib/canonicalHash.ts(+ 其单测)就被判 uiEvidenceMissing=true。该文件只导出三个纯函数、零 import、无 JSX/DOM/CSS,不可能有视觉变化;审查 agent 需额外花一段论证来说明这是前缀误命中。因该 PR 是自有 PR(ownPr=true)本轮未发提醒评论,未打扰他人,但换成他人 PR 就会发出一条无意义的补图请求。
   - 提案:由 owner 决定是否在目标仓库 pr-rules.json 的 sensitiveContent 同级补 uiExcludePaths 条目(现有机制已支持排除 locale 数据文件与 .d.ts),把 src/lib/ 下确无渲染面的纯工具模块纳入排除;属目标仓库配置口径,不改 skill 代码,不自动落地。
-  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: 新仓 draft PR xindong/mivo-canvas-plugin#134(uiExcludePaths+=public/changelog.json)。老仓 mivo-canvas#665 已关(迁仓)。升格条件: #134 合并后改 landed。
 - `structural-bypass-approved-precondition-mismatch` **structural-check admin bypass 的 APPROVED 前提:SKILL 5.3 与 internal-gates.md 不一致** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 3 个候选(作者=viewer 自己,selfFixAuthors 为空故无法自批准)的 reviewDecision 为空、blockClass=structural-check、structuralBypassAvailable=true,context.mjs 给出 auto.action=bypass-structural-block(即无任何人 approve 就自动 --admin 合并,其中两个 PR 分别为 5662 / 2378 diff 行且含核心路径)。但 internal-gates.md 明写该路径需 reviewDecision=APPROVED,SKILL 5.3 的同一条却未列该前提;context.mjs 第 1109 行注释也把 review APPROVED 写成安全前提,实际判定却没校验它。按 SKILL 第 0 节规则冲突条款本轮停在 gate 未合并。
   - 提案:先由 owner 拍板口径:若确认 APPROVED 是硬前提,则 context.mjs 的 structural-check 分支增加 reviewDecision==='APPROVED' 校验(不满足时降级为 skip 并注明缺 approve),并把该前提补进 SKILL 5.3;若确认无需 approve,则删掉 internal-gates.md 与 context.mjs 注释里的 APPROVED 措辞。属合并门判定,不自动落地。
@@ -95,7 +95,7 @@
 - `ui-evidence-false-positive-src-lib` **uiPaths 含 src/lib/ 导致纯工具文件被判缺 UI 证据** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:PR 366 的 uiCodeFiles 只有 src/lib/canonicalHash.ts 与其测试(纯哈希工具,零视觉面),仍被判 uiEvidenceMissing=true。本轮因 ownPr=true 未发评论所以没造成噪音,但非自有 PR 命中同样路径时会向作者索要哈希工具的截图,属确定性误报。
   - 提案:为 UI 证据提醒增设独立的排除前缀(不动 uiPaths 本身,避免影响产品门语义定性),把 src/lib/ 下无 .tsx/.css 的纯逻辑文件排除出 uiCodeFiles。改动会放宽一项提醒触发条件,按扩权类只提案不自动落地。
-  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: 新仓 draft PR xindong/mivo-canvas-plugin#134(uiExcludePaths+=public/changelog.json)。老仓 mivo-canvas#665 已关(迁仓)。升格条件: #134 合并后改 landed。
 - `feature-pr-lockfile-only-hit-blocks-review` **功能 PR 只因 diff 里带了 package-lock.json 就整体转人工,大 i18n PR 永远进不了自动审查** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 #379(2369 行)/#386(4495 行)均为 kirozeng 的 i18n 功能 PR,securityReviewPaths 命中项只有 package-lock.json 一个(非 package.json、非 workflow、非 skill),但 skip-security-review 优先级压过格式门/前置门,导致这类 PR 每轮原样跳过、不审不提醒,作者对被卡原因零感知。已有条目 dependabot-lockfile-always-security-review 只覆盖 dependabot 场景,功能 PR 场景是另一类。
   - 提案:扩权类,永不自动落地,待维护者拍板。可选方向:① 命中项仅为 lockfile(package-lock.json / pnpm-lock.yaml)且同 PR 未改 package.json / workflow / skill 时,降级为「照常审查但不自动合并」而非整体跳过;② 或保持跳过但补一条一次性 PR 评论告知作者「本 PR 因含 lockfile 走人工审查通道」,消除零感知。任一方向都放宽了现有安全边界,须 owner 明确同意。
@@ -133,7 +133,7 @@
 - `changelog-data-file-hits-uipaths` **public/changelog.json 是纯数据文件却命中 uiPaths,每日误报 UI 证据缺口** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:mivo 仓 uiPaths 含前缀 public/,uiExcludePaths 为空,于是每日 changelog 补扫 PR 都被判 uiEvidenceMissing=true。该文件是 Change Log 面板的数据源,改动确实会让面板多一行文案,但截图证据价值极低(渲染结构/组件/样式零改动),要求截图属噪音。
   - 提案:在目标仓 agent-use/docs/pr-rules.json 的 uiExcludePaths 增 public/changelog\\.json。注意该文件在 securityReviewPaths(^agent-use/)内,且本仓禁止直推 main,改动须走 PR + 人工审查,不能自动落地。
-  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: 新仓 draft PR xindong/mivo-canvas-plugin#134(uiExcludePaths+=public/changelog.json)。老仓 mivo-canvas#665 已关(迁仓)。升格条件: #134 合并后改 landed。
 - `mivo-canvas-structural-check-codescan-quality-gap` **mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED** — 出现 3 次,首见 2026-07-28,最近 2026-07-30,status: tracked
   - 现象:本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。
 - `structural-bypass-approved-vs-repo-without-required-approval` **结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: tracked
@@ -148,7 +148,7 @@
 - `ui-evidence-false-positive-on-nonvisual-src-paths` **uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报** — 出现 2 次,首见 2026-07-29,最近 2026-07-29,status: tracked
   - 现象:mivo-canvas#325 命中:uiCodeFiles = src/agent/{snapshotRegion,canvasAgentVerbs}.ts 等纯函数与 Agent 动词模块(零 React、零 JSX、零 CSS、零用户可见文案),因 uiPaths 含 'src/' 前缀被判 UI 面 → uiEvidenceMissing=true。本轮因 auto.ownPr=true 抑制了提醒评论,没造成实际噪音;若作者不是本流程账号,就会收到一条要求给纯函数 PR 补截图的评论。审查 agent 独立判定为误报。
   - 提案:目标仓 pr-rules.json 的 uiExcludePaths 增补非可视路径前缀(如 ^src/agent/、^src/model/、^src/render/ 中的纯契约资产),或把 uiPaths 从 'src/' 收窄到真正的 UI 目录(src/app/、src/canvas/、public/、index.html)。属目标仓配置、由 owner 拍板,不自动落地。
-  - 备注:[decided:2026-08-17] implemented-awaiting-merge: MivoCanvas draft PR #665 已开(uiExcludePaths+=public/changelog.json)。升格条件: #665 合并后改 landed;同 fingerprint 在合并前再复发不重复提案。
+  - 备注:[decided:2026-08-17] implemented-awaiting-merge: 新仓 draft PR xindong/mivo-canvas-plugin#134(uiExcludePaths+=public/changelog.json)。老仓 mivo-canvas#665 已关(迁仓)。升格条件: #134 合并后改 landed。
 - `stale-mergeable-after-same-round-merge` **同一轮内合并后,GitHub 的 mergeable/MERGEABLE 对余下候选是过期结论,pre-merge-check 直接采信** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: landed
   - 现象:本轮合并 #319、#334 后,#325 的 pre-merge-check 仍报 mergeable=MERGEABLE、blockClass=structural-check(看起来可 admin bypass 合)。我手动跑 git merge-tree --write-tree origin/main <pr-head> 才发现真冲突(src/agent/canvasAgentVerbs.test.ts,与本轮落地的 #334 相撞)。GitHub 重算 mergeability 有延迟,期间 UNKNOWN 或沿用旧值;若照采信就会对一个实际冲突的 PR 走合并路径。
   - 提案:pre-merge-check 增一道本地交叉校验:当 PR 的 base 在其最后一次 CI 之后前进过(或 mergeable 为 UNKNOWN)时,跑 git merge-tree --write-tree <base> <head> 实测,冲突则把 blockClass 定成 conflict、不采信 GitHub 的 MERGEABLE。纯读操作、不新增写权限。
