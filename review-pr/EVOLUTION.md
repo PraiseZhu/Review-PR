@@ -6,6 +6,8 @@
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
 - `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
+- `scan-race-new-pr-window` **scan-all 落盘时间点与 GitHub PR 创建存在竞态,本轮新开 PR(#136 比 scanState 早 4 秒)要靠 agent 自查补入** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 现象:本轮 PR #136 createdAt=2026-03:03:54Z,scanState.savedAt=03:03:50.630Z——context.mjs --scan-all 的候选拉取发生在 #136 创建之前,候选数 1 不含 #136。靠主 agent 会话中途 gh pr list 自查发现并补扫。若 agent 不自查,该 PR 要等下一轮 cron 才进分类。proposal:扫描后用 createdAt 下界(如 scan 启动时刻)再查一次 gh pr list,把窗口内新开 PR 显式补入本轮处理;或在 SKILL 6 阶段 1 写明'扫描完成后 agent 须再跑一次 gh pr list 对照 candidates 数'。
 - `skillsync-preview-dist-dirty` **skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
   - 现象:prepare.mjs 的 skillSync pull 报 'local changes would be overwritten'：preview-dist/{EVOLUTION.md,dist_manifest.json,evolution/ledger.json} 有未提交本地改动，远端 behind=7 拉不进。自动化不应代为 commit/stash 用户改动（安全边界），需人工到 skill 仓处理这 3 个文件后自同步恢复。不处理则每轮重现，巡审可能持续用旧版 skill 规则审新 PR。
 - `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
