@@ -1872,6 +1872,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-17T03:16:50.141Z",
       "lastSeen": "2026-08-17T03:16:50.141Z"
+    },
+    {
+      "fingerprint": "merged-mid-review-head-races-clean-receipt",
+      "tier": "proposal",
+      "title": "审查期间 owner 网页合并 PR，clean 回执落盘晚于合并，审计链缺合并者视角",
+      "detail": "PR #139（mivo-canvas-plugin，2026-08-17）：阶段二独立审查进行中（约 06:19 开始），owner 于 06:44 经 GitHub 网页 squash 合并（mergedBy=PraiseZhu，squash 单亲 commit）；审查 agent 06:48 完成后 consume-review-output 判 clean、回执正常落盘，pre-merge-check 才发现 state=MERGED。本轮无害（审查结论 clean 与合并一致），但同类竞态下若审查判 dirty，则问题已进 main、只剩事后发现一条路。proposal：context.mjs scan 后、consume-review-output 前无锚点检查 head 变化；可在 consume-review-output 对已 MERGED 的 PR 落回执时附 mergedAfterReviewStart 标记，或 pre-merge 阶段对 merged PR 出 counterfactual 警示行进汇总。属流程可观测性改进，非扩权。",
+      "proposal": "consume-review-output.mjs 写回执前查 PR state，非 OPEN 时在回执附 state-at-write 字段并要求汇总显式提示『合并先于审查完成』",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-17T06:54:54.144Z",
+      "lastSeen": "2026-08-17T06:54:54.144Z"
     }
   ],
   "escapedHazards": [
