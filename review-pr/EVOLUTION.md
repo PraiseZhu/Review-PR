@@ -5,8 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+- `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:PR #617 走 admin-trust 路由合并:pre-merge-check 确认 structuralBypassReady,回执 verdict=clean,作者在 admins 名单。已连续多轮正确运行,可以考虑在 EVOLUTION.md 中登记为成熟路径。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
   - 现象:auto 轮 #610 实测:扫描拿 head=5e0cc6c0 构建任务,审查 agent 执行期间作者 push d803f98f(修复了审查即将发现的 P1)。旧 snapshot 的 dirty 回执对新 head 不适用,主 agent 靠审查输出 fixGuidance 透露才察觉漂移,手动重建任务重审后 clean 合并。机器兜底链条(pre-merge receiptGate head 绑定 + merge-pr --match-head 原子护栏)工作正常,但 SKILL 3.5/4 无'消费回执前 gh pr view 核对 headRefOid 是否仍等于审查 snapshot'的显式检查点——漏核对会基于旧快照向作者发打回,违反 5.2 '不重复历史上已解决且已验证的意见'纪律,浪费一轮往返。
   - 提案:SKILL.md 第 4 节 consumer 调用前加一句:主 agent 收到审查输出后先 gh pr view --json headRefOid 核对,与任务 snapshot 不一致则对新 head 重建 task/preflight 重审(旧快照回执保留作历史),一致才喂 consume-review-output。
@@ -33,23 +34,27 @@
   - 现象:本轮 #527/#539 误用 origin/main tip(59d712d5)作为 --base,而 SKILL 约定 baseRefOid 是 gh pr view 返回的分叉点(527=0c95823/539=3686b32b),导致整条审查链 snapshot 漂移、pre-merge-check fail-closed 拦截后返工重建。SKILL.md 三处命令模板用 <baseRefOid> 占位符但未定义来源。现象:回执 snapshotHash 与 pre-merge-check 重建不一致(stale)。
   - 提案:在 SKILL.md 3.0.1/4 节命令块后补一句来源说明:--base 取 gh pr view <N> --json baseRefOid(PR 分叉点),不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
   - 备注:[decided:2026-08-10] 落地 commit 0381757c(2026-08-09 AuthorDate 核实):SKILL.md 3.0.1 节与第 4 节命令块后各补一句 --base 取 gh pr view <N> --json baseRefOid(PR 分叉点),明确不是 base 分支当前 tip,避免执行者用 origin/main 造成 snapshot 漂移
-- `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 5 次,首见 2026-07-29,最近 2026-08-05,status: open
+- `own-pr-has-no-merge-path-when-selffix-empty` **自有 PR 在 auto 模式下无任何合并路径(selfFixAuthors 空 + 不能自批准)** — 出现 5 次,首见 2026-07-29,最近 2026-08-05,status: tracked
   - 现象:2026-08-05 再观测:#519/#520/#521 为 PraiseZhu 自有 PR、CLEAN(无结构性 BLOCKED)、approvalBasis=none,admin-trust 路由只在 structural-check 时才可达,selfFixAuthors 留空故 selfMerge 也不可用——本轮按 depends-on-#518 跳过;#518 打回后若列车重推,这些 CLEAN 自有 PR 即使取消依赖也没有自动合并出口,与既有 open 提案同根因
   - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `ownpr-comment-pushback-stale-dedup` **ownPr 的 COMMENT 事件打回不被 hasStalePushback 识别,stale 去重指纹漏掉** — 出现 2 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:PR #464 本轮 scan 分类为 pushback-format(isSkip=false),但该 PR 是 ownPr,GitHub 422 禁止自打 REQUEST_CHANGES,4 条格式打回全是 COMMENT 事件(最后一条 05:30 明确指向当前 head 2ffcca2),作者此后无新 commit——按 SKILL 3.2 stale 去重本应 skip。context.mjs 的 pushbackDates 只收集 CHANGES_REQUESTED review + issue-comment 形式 reviewerPushbacks,COMMENT 事件的 review body 两个来源都抓不到,导致 ownPr 打回后每轮都会被重新归类为 pushback-format,靠主 agent 手工查 review 历史才跳过。建议:把 state=COMMENTED 且 body 命中 pushback 模式的 review 也计入 pushbackDates(或对 ownPr 降级处理)。
-- `ownpr-unresolved-thread-deadlock` **本流程账号自己的 PR 挂着未 resolve thread 时,没有任何人会去 resolve,永久卡住** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+- `ownpr-unresolved-thread-deadlock` **本流程账号自己的 PR 挂着未 resolve thread 时,没有任何人会去 resolve,永久卡住** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:465(2 条)/470(1 条)都是 ownPr=true 且作者在 staleAuthorReminder.exemptAuthors 里,notify-author-resolve 直接 exempt-author 跳过,selfFixAuthors 为空所以也不投递跟进会话。结果这两条会每轮被判 skip-gate 并原样留到下一轮,收件人是本流程账号自己,无人消费。
   - 提案:两条路任选:① 把该账号加进 selfFixAuthors,让 5.4 跟进会话去 resolve/修;② 给 ownPr + 未 resolve thread 这一组合单独一条汇总提示,让 owner 每轮显式看到"这几条要你手动点 Resolve"。①改名单属扩权类,②只改汇总文案。两条都不自动落地,等 owner 选。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `stale-scan-head-before-write` **scan-all 的 head 可能在写操作前就过期,流程里没有确定性的复核步骤** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
   - 现象:本轮 6 个候选里 2 个(464/465)的 head 在 --scan-all 落盘后 ~8 分钟内被新 push 顶掉;464 从 conflict 变成 MERGEABLE、465 从 skip-gate 变成 CLEAN。SKILL 3.5 门 1 要求 head 变化就重新拉元数据,但阶段三只在合并前有 pre-merge-check 复核,打回/评论类写操作没有对应的确定性复核步骤,靠主 agent 自觉比对。本轮是手工比对才发现,否则会对着过期 head 发打回(内容还会引用已经不存在的冲突)。
   - 提案:阶段三在任何 GitHub 写操作(review/comment/issue)前,对该候选跑一次轻量 head 复核(可复用 context.mjs --scan 单 PR 或新增 --verify-head),head 变化即把该候选退回阶段一重新分类。放置位置需 owner 定:它与 3.5 门 1、以及合并侧已有的 pre-merge-check 有职责重叠,合并成一处还是各写一处需要拍板,故不自动落地。
-- `dependabot-security-path-permanent-skip` **dependabot PR 必然命中 securityReviewPaths(package.json/lock)，每轮永久 skip 且无停滞升级机制** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+- `dependabot-security-path-permanent-skip` **dependabot PR 必然命中 securityReviewPaths(package.json/lock)，每轮永久 skip 且无停滞升级机制** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR 440 (app/dependabot) 每轮判 skip-security-review。这不是偶发——依赖升级 PR 的定义就是改 package.json / package-lock.json，而这两个路径在 securityReviewPaths 里，所以该类 PR 100% 永不会被自动审、也永不会被催办(dependabot 不是人，模板 B/C 都不适用)，只能靠 owner 每轮从汇总里自己看见。与 SKILL 5.7 已登记的「非 required 第三方 bot 长期缺席无升级」是同一类缺口。
   - 提案:给 skip 类结论加「同一 PR 同一 skip 原因连续 N 轮」计数(可复用 convergence-state 的落盘模式)，达阈值时在汇总里从普通 skip 行升格为显著提示，或经 summaryBroadcast 定向提醒一次。只改可观测性与汇总呈现，不放宽 securityReviewPaths 本身。
-- `review-agent-worktree-branch-leak` **审查 agent 的隔离 worktree 每轮留下 worktree-agent-* 孤儿分支，本 skill 自己的清理脚本按规则不动它们** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `review-agent-worktree-branch-leak` **审查 agent 的隔离 worktree 每轮留下 worktree-agent-* 孤儿分支，本 skill 自己的清理脚本按规则不动它们** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:目标仓库累积 8 个 worktree-agent-<agentId> 分支，其中 7 个已无对应 worktree。fix-worktree-cleanup.mjs 对它们判「查不到对应 PR,来历不明不动」——该保守规则对人工分支是对的，但这类分支恰恰是本 skill 每轮派发审查 agent 时宿主自动建的，命名可确定性识别，属自产垃圾。按每轮 1 个的速率线性增长。
   - 提案:在 fix-worktree-cleanup.mjs 增一条独立回收规则：分支名匹配 ^worktree-agent-[0-9a-f]+$ 且当前 git worktree list 里无任何 worktree 指向它、且分支 tip 已包含在默认分支或为空占位 → 回收。与既有「查不到对应 PR 不动」规则并列，不改后者语义。涉及分支删除行为，须 owner 拍板后落地。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `mivo-outbound-notify-channels-all-inert` **mivo 仓对外通知面为零：提醒名单全豁免 + summaryBroadcast 未配置，被卡 PR 无任何外发信号** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:本轮 9 候选中 4 个卡在作者侧可自解原因（3 个 DIRTY 冲突、1 个 2 条 thread 未 resolve），提醒脚本 4 次调用全部返回 exempt-author：staleAuthorReminder.exemptAuthors 恰好等于本仓全部人类作者集合（3 人），而 notify-author-resolve 的 thread/conflict 两种模式与 remind-stale-author 都查同一份名单，等于三条提醒通道在本仓整体失效。同时 summaryBroadcast 未配置，每轮汇总也不主动推送。两者叠加的结果是：PR 可以长期卡着而没有任何外发信号，只有人主动去看 PR 列表才会发现。
   - 提案:由 owner 定：① 若确实不想被提醒机器人打扰，现状可接受，但应知道这是有意为之而不是配置漏了；② 若希望冲突/未 resolve 这类硬卡点仍有提醒，可把 exemptAuthors 收窄为只豁免停滞催办（idle 私聊），让 conflict/resolve 两种确定性卡点仍发一次公开评论——需拆 exemptAuthors 为分通道名单，属名单改动，不自动落地；③ 配上 summaryBroadcast.command，至少让每轮汇总主动推到 owner。
@@ -62,49 +67,58 @@
 - `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
   - 现象:本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。
   - 提案:在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。
-- `review-worktree-orphan-branch-no-sweeper` **审查 worktree 的清理只靠主 agent 手动执行，漏跑就永久残留孤儿分支** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: open
+- `review-worktree-orphan-branch-no-sweeper` **审查 worktree 的清理只靠主 agent 手动执行，漏跑就永久残留孤儿分支** — 出现 1 次,首见 2026-08-02,最近 2026-08-02,status: tracked
   - 现象:本轮 fix-worktree-cleanup.mjs --scan 报 skipped=8，全是「查不到对应 PR，来历不明不动」，其中 7 条是 worktree-agent-* 命名——与阶段二审查 agent 的隔离 worktree 分支命名一致，高度疑似历史轮次未清理干净的残留。第 7 节只在 SKILL 文字里要求主 agent 移除本次创建的 review worktree，没有确定性脚本兜底，任一轮异常退出（锁丢失、宿主中断）就永久遗留，且这些残留每轮都出现在 skipped 噪音里。
   - 提案:新增一个只针对 review worktree 的清理脚本（或扩展 fix-worktree-cleanup.mjs 的一个新模式）：按托管目录 + worktree-agent-* 命名 + 无对应 open PR + 无未推送 commit + 不含任何 active session cwd 四重条件回收；因涉及自动删除 git 分支与目录，有误删风险，先请 owner 拍板边界再落地，不当轮自动改。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `ui-evidence-notice-scope-on-skipped-candidates` **SKILL 3.2 未说明被 skip 的候选是否要发 UI 证据提醒评论** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:本轮 #396/#397/#409(均 uiEvidenceMissing=true、作者非本流程账号)因 ci-pending / ci-failed / 依赖未合被 skip,scan 已算出 notice 文案,但 SKILL 3.2 把提醒写在阶段一格式门里、§6 阶段 1 又只为 skip 候选列了 notify-author-resolve 一种评论动作,两者未交待 skip 候选该不该发。本轮按保守口径未发(只对进入处理的 #395/#401 发)。
   - 提案:在 SKILL 3.2 补一句边界:被 skip 的候选本轮不发 UI 证据提醒,等它进入处理轮次再发(理由:提醒无时效价值,且避免同一作者同轮收多条噪音)。属收窄不属扩权,可自动落地——本轮因首周观察期只记提案,未改 Skill。
-- `bypass-structural-block-auto-vs-interactive-doc-conflict` **SKILL 与 pre-merge-check.mjs 对 bypass-structural-block 是否属 auto 可执行动作口径冲突** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+- `bypass-structural-block-auto-vs-interactive-doc-conflict` **SKILL 与 pre-merge-check.mjs 对 bypass-structural-block 是否属 auto 可执行动作口径冲突** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:SKILL 5.3 与 6.1 把 bypass-structural-block 当成 auto 模式的非 skip 落地动作(context.mjs 也返回 isSkip:false),但 pre-merge-check.mjs 的 note 明确写「交互模式可经用户确认走 admin bypass 合」。本轮 PR #394 命中该分支,两处口径不一致时只能自行取舍,是判定不确定性。
   - 提案:文档口径统一:要么 SKILL 5.3 补一句「auto 模式在独立审查零 P0/P1 且 structuralBypassAvailable=true 时可直接 admin bypass 合」,要么 pre-merge-check 的 note 去掉「交互模式」限定。倾向前者(与 context.mjs 的 isSkip:false 一致)。归为提案而非自动落地:改的是合并授权口径,沾扩权面。
-- `security-review-paths-swallows-all-dependabot-npm` **securityReviewPaths 含 package.json/lock,导致所有 dependabot npm PR 永久转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `security-review-paths-swallows-all-dependabot-npm` **securityReviewPaths 含 package.json/lock,导致所有 dependabot npm PR 永久转人工** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 15 个候选里 6 个落 skip-security-review,其中 3 个是 dependabot(github_actions 与 npm group)。npm group PR 必然改 package.json/lockfile、actions PR 必然改 .github/workflows,两类都被 securityReviewPaths 命中,结论是这两类 PR 在任何一轮都不可能被自动处理,只会每轮重复进 skip 组。
   - 提案:扩权类,不自动落地。可选方向:① 为 app/dependabot 作者 + 仅 lockfile/版本号 diff 的组合开一条窄豁免(需先确认 dependabot 身份无法伪造);② 保持现状但在汇总里把这类 skip 合并成一行,避免每轮 6 行噪音掩盖真正需要看的候选。请 owner 拍板。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `ui-evidence-misfire-pure-logic-lib` **uiPaths 前缀 src/ 让纯逻辑 lib 文件误触 UI 证据缺失判定** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:本轮一个候选仅因改了 src/lib/canonicalHash.ts(+ 其单测)就被判 uiEvidenceMissing=true。该文件只导出三个纯函数、零 import、无 JSX/DOM/CSS,不可能有视觉变化;审查 agent 需额外花一段论证来说明这是前缀误命中。因该 PR 是自有 PR(ownPr=true)本轮未发提醒评论,未打扰他人,但换成他人 PR 就会发出一条无意义的补图请求。
   - 提案:由 owner 决定是否在目标仓库 pr-rules.json 的 sensitiveContent 同级补 uiExcludePaths 条目(现有机制已支持排除 locale 数据文件与 .d.ts),把 src/lib/ 下确无渲染面的纯工具模块纳入排除;属目标仓库配置口径,不改 skill 代码,不自动落地。
-- `structural-bypass-approved-precondition-mismatch` **structural-check admin bypass 的 APPROVED 前提:SKILL 5.3 与 internal-gates.md 不一致** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+- `structural-bypass-approved-precondition-mismatch` **structural-check admin bypass 的 APPROVED 前提:SKILL 5.3 与 internal-gates.md 不一致** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 3 个候选(作者=viewer 自己,selfFixAuthors 为空故无法自批准)的 reviewDecision 为空、blockClass=structural-check、structuralBypassAvailable=true,context.mjs 给出 auto.action=bypass-structural-block(即无任何人 approve 就自动 --admin 合并,其中两个 PR 分别为 5662 / 2378 diff 行且含核心路径)。但 internal-gates.md 明写该路径需 reviewDecision=APPROVED,SKILL 5.3 的同一条却未列该前提;context.mjs 第 1109 行注释也把 review APPROVED 写成安全前提,实际判定却没校验它。按 SKILL 第 0 节规则冲突条款本轮停在 gate 未合并。
   - 提案:先由 owner 拍板口径:若确认 APPROVED 是硬前提,则 context.mjs 的 structural-check 分支增加 reviewDecision==='APPROVED' 校验(不满足时降级为 skip 并注明缺 approve),并把该前提补进 SKILL 5.3;若确认无需 approve,则删掉 internal-gates.md 与 context.mjs 注释里的 APPROVED 措辞。属合并门判定,不自动落地。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `ui-evidence-false-positive-src-lib` **uiPaths 含 src/lib/ 导致纯工具文件被判缺 UI 证据** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
   - 现象:PR 366 的 uiCodeFiles 只有 src/lib/canonicalHash.ts 与其测试(纯哈希工具,零视觉面),仍被判 uiEvidenceMissing=true。本轮因 ownPr=true 未发评论所以没造成噪音,但非自有 PR 命中同样路径时会向作者索要哈希工具的截图,属确定性误报。
   - 提案:为 UI 证据提醒增设独立的排除前缀(不动 uiPaths 本身,避免影响产品门语义定性),把 src/lib/ 下无 .tsx/.css 的纯逻辑文件排除出 uiCodeFiles。改动会放宽一项提醒触发条件,按扩权类只提案不自动落地。
-- `feature-pr-lockfile-only-hit-blocks-review` **功能 PR 只因 diff 里带了 package-lock.json 就整体转人工,大 i18n PR 永远进不了自动审查** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+- `feature-pr-lockfile-only-hit-blocks-review` **功能 PR 只因 diff 里带了 package-lock.json 就整体转人工,大 i18n PR 永远进不了自动审查** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 #379(2369 行)/#386(4495 行)均为 kirozeng 的 i18n 功能 PR,securityReviewPaths 命中项只有 package-lock.json 一个(非 package.json、非 workflow、非 skill),但 skip-security-review 优先级压过格式门/前置门,导致这类 PR 每轮原样跳过、不审不提醒,作者对被卡原因零感知。已有条目 dependabot-lockfile-always-security-review 只覆盖 dependabot 场景,功能 PR 场景是另一类。
   - 提案:扩权类,永不自动落地,待维护者拍板。可选方向:① 命中项仅为 lockfile(package-lock.json / pnpm-lock.yaml)且同 PR 未改 package.json / workflow / skill 时,降级为「照常审查但不自动合并」而非整体跳过;② 或保持跳过但补一条一次性 PR 评论告知作者「本 PR 因含 lockfile 走人工审查通道」,消除零感知。任一方向都放宽了现有安全边界,须 owner 明确同意。
-- `structural-bypass-missing-approved-check` **context.mjs 的 bypass-structural-block 分支未校验 reviewDecision=APPROVED，与 internal-gates.md 声明的安全前提不一致（fail-open）** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `structural-bypass-missing-approved-check` **context.mjs 的 bypass-structural-block 分支未校验 reviewDecision=APPROVED，与 internal-gates.md 声明的安全前提不一致（fail-open）** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:本轮 PR #366(xindong/mivo-canvas) reviewDecision 为空字符串(仅 greptile bot 的两条 COMMENTED,无任何 approving review),context.mjs:1107 仍判 autoAction=bypass-structural-block 并在 reason 里写「自动 admin bypass 合并」。而 internal-gates.md 明确要求 structural-check 的 admin bypass 必须同时满足 reviewDecision=APPROVED + CI 无失败 + thread 全 resolve + 有 bypass 权限 + requiredCheckRules 全在 allowlist;context.mjs:1107 的条件只覆盖后两项,代码注释里也写了「安全前提:review APPROVED」但没有实际校验。本轮因独立审查发现 2 条 P1、走了打回而未触发合并,损害未发生;但同类 PR 若审查通过,auto 模式会在零 approving review 的情况下 admin merge——ownPr=true 时本流程账号还无法自批准,这个缺口不会被自我纠正。
   - 提案:在 context.mjs:1107 的 bypass 条件里补上 reviewDecision === 'APPROVED';不满足时降级为 skip-structural-block(reason 写明「结构性 BLOCKED 但无 approving review,需白名单成员 approve 后下一轮再合」)。同时在 pre-merge-check.mjs 的 structuralBypassAvailable 里同步该判据,让两处口径一致。属收紧而非放宽,但因触及合并 gate 判据,首周观察期不自动落地,留 owner 拍板。
-- `dependabot-lockfile-always-security-review` **dependabot 依赖升级 PR 必然命中 securityReviewPaths,恒转人工** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `dependabot-lockfile-always-security-review` **dependabot 依赖升级 PR 必然命中 securityReviewPaths,恒转人工** — 出现 1 次,首见 2026-07-31,最近 2026-07-31,status: tracked
   - 现象:本轮 2 个候选(#358/#361)由 dependabot 提交,只改 package.json/package-lock.json,必然命中 securityReviewPaths → skip-security-review。该类 PR 每周多次,人工队列会持续积压。
   - 提案:属扩权类(放宽安全边界),不自动落地。可选方向:① 保持现状,由 owner 定期人工过;② 为 dependabot 作者 + 仅 lockfile/依赖清单改动 + CI 全绿 的组合单独配一条窄豁免,但仍需 owner 拍板是否接受供应链面自动合并。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `skills-repo-diverged-sync-broken` **skills 仓 main 与远端 diverged，Skill 自同步每轮都失败** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
   - 现象:prepare.mjs 的 skillSync pull 报 'Not possible to fast-forward'，evolution-note 的 push 报 non-fast-forward（本地落后远端）。后果：远端 skill 更新拉不下来、本地台账推不上去，每轮都静默失败（仅进摘要）。
   - 提案:需维护者人工在 skills 仓（/Users/praise/AI-Agent/Claude/capabilities/source/cindy-lizi-skills）reconcile main 与 origin/main（merge 或 rebase 后再 push），恢复双向同步。Skill 侧不自动 merge/rebase——改写历史风险大于收益，保持 best-effort 报错即可。
-- `self-authored-pr-no-followup-channel` **自有 PR 卡住时既不催也不自动修，零跟进通道** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
+- `self-authored-pr-no-followup-channel` **自有 PR 卡住时既不催也不自动修，零跟进通道** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:本仓 selfFixAuthors=[]，staleAuthorReminder.exemptAuthors 含唯一作者。结果：卡未 resolve thread / CI 失败的自有 PR 既不发催办评论(exempt-author)，也不投递跟进会话(selfFix=false)，只能靠 owner 自己看汇总。本轮 5 个候选落在该盲区。
   - 提案:扩权类，需 owner 拍板：是否把该账号纳入 selfFixAuthors，让卡点自动投递跟进会话修到可合并。纳入即新增对自有 PR 分支的自动写操作，不自动落地。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `node-debug-env-pollutes-script-json-output` **宿主环境的 NODE_DEBUG=net 会把大量 NET 日志混进脚本输出,首次 scan-all 因此不可解析、被迫重跑** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: landed
   - 现象:本轮首次 context.mjs --scan-all 的输出被数百行 'NET <pid>: ...' 淹没,JSON 无法直接解析,只能 env -u NODE_DEBUG 重跑一次完整扫描(重复消耗一轮 gh API 与时间)。噪声来自宿主继承的 NODE_DEBUG 环境变量,不是脚本缺陷,但脚本可自我防护。
   - 提案:① 在 SKILL「Skill 路径与目标仓库」一节补一句:所有确定性脚本建议以 env -u NODE_DEBUG 调用,避免宿主 NODE_DEBUG 污染 JSON 输出;② 或在各脚本入口自 delete process.env.NODE_DEBUG(仅影响自身及其 spawn 的子进程,不改宿主)。两者都不新增写操作、不放宽任何 gate。
   - 备注:[decided:2026-08-09] 落地 commit ac6464f(已核实合入 main 与 origin/main); 与 node-debug-env-pollutes-script-stdout 同义,复发归零验证通过
-- `review-worktree-holds-branch-blocks-delete-branch` **审查 agent 的 worktree 占用 PR 分支,导致 gh pr merge --delete-branch 中止,远程分支残留** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
+- `review-worktree-holds-branch-blocks-delete-branch` **审查 agent 的 worktree 占用 PR 分支,导致 gh pr merge --delete-branch 中止,远程分支残留** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR 342 合并时 --delete-branch 报 'cannot delete branch used by worktree at .claude/worktrees/agent-<id>':审查 agent 按 SKILL 第 4 节在隔离 worktree 里跑 gh pr checkout <N>,该本地分支因此被占用;gh 先删本地失败即整体中止,远程分支 chore/changelog-2026-07-29 未被删除,需人工补删。这是确定性的顺序问题,每个走「审查通过→合并」路径的 PR 都会复现,不是偶发。
   - 提案:两个方向任选:① 审查 agent 的 checkout 改用 detached HEAD(gh pr checkout <N> --detach,或 git fetch origin pull/<N>/head && git checkout --detach FETCH_HEAD),不创建占用性本地分支;② 在 SKILL 5.1 合并步骤前插一步:先回收本轮该 PR 的审查 worktree(git worktree remove),再执行 gh pr merge --delete-branch。方向 ① 更彻底,不依赖调用顺序。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `node-debug-env-pollutes-script-stdout` **本地 shell 环境变量 NODE_DEBUG 会污染 review-pr 脚本的 JSON stdout** — 出现 3 次,首见 2026-07-28,最近 2026-07-30,status: landed
   - 现象:运行环境的 NODE_DEBUG=http,https,net,tls(疑似操作者 shell profile 全局设置,与本 skill 无关)会让 context.mjs/notify-*.mjs 等所有走 node 网络模块(gh api 走的是 fetch/GraphQL 助手)的脚本在 stdout 混入海量调试行,把本该是纯 JSON 的输出弄脏,主 agent 本轮靠手工加 env -u NODE_DEBUG 前缀绕过。若未来某次无人值守调度环境恰好继承了同一 shell 配置,会直接破坏 run-log/summary 的 JSON 解析。
   - 提案:评估是否在 lib.mjs 顶部(所有脚本的唯一入口)加一行 delete process.env.NODE_DEBUG,或在 spawnScriptJson/mapPool 派生子进程时显式清空该变量;需先确认 Node 的 util.debuglog 是否在 net/http/tls 模块 import 时已经lazy读取过该值(ESM 静态 import 提升,可能来不及在业务代码执行前清掉),必要时改用 spawn 时传 env 覆盖而非进程内 delete。不确定是否所有部署环境都会复现,故先记提案不自动落地。
@@ -117,9 +131,10 @@
   - 提案:在目标仓 agent-use/docs/pr-rules.json 的 uiExcludePaths 增 public/changelog\\.json。注意该文件在 securityReviewPaths(^agent-use/)内,且本仓禁止直推 main,改动须走 PR + 人工审查,不能自动落地。
 - `mivo-canvas-structural-check-codescan-quality-gap` **mivo-canvas 仓库缺 CodeQL/code-quality 工具接线,org ruleset 的 code_scanning/code_quality/required_status_checks 三项永不上报,导致 review 通过的 PR 仍卡在结构性 BLOCKED** — 出现 3 次,首见 2026-07-28,最近 2026-07-30,status: tracked
   - 现象:本轮(2026-07-28)候选 #296/#301/#303 均命中 blockClass=structural-check,requiredCheckRules=[code_scanning,code_quality,required_status_checks],required_status_checks 不在 allowlist 内不自动 bypass。#296 审查已通过(PraiseZhu APPROVE)仍卡在此门。连续多轮同一根因,建议 owner 尽快裁定处置方案。
-- `structural-bypass-approved-vs-repo-without-required-approval` **结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: open
+- `structural-bypass-approved-vs-repo-without-required-approval` **结构性 BLOCKED 的 admin bypass 条件含 reviewDecision=APPROVED，在不要求 approve 的仓库里永不可达，导致 context.mjs 判的 bypass-structural-block 实际无法落地** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:mivo-canvas 分支保护不要求 approve,reviewDecision 恒为空(历史 #295/#283/#314 全部以 reviewDecision="" 合并)。code_scanning/code_quality 两个必需检查从不上报结果,PR 恒为 structural-check BLOCKED。context.mjs 给 auto.action=bypass-structural-block(理由写「自动 admin bypass 合并」)、pre-merge-check 给 structuralBypassAvailable=true,但 SKILL 5.1 把 --admin 授权交给 internal-gates.md 177-180,后者要求 reviewDecision=APPROVED,该条在本仓无法满足 → 每个 PR 都卡在合并 gate。本轮 PR #316(审查 0 P0/P1、14 项 CI 全绿、无未 resolve thread)因此按「跳过并报告」处理,未合并。SKILL 5.3 的表述里没有 APPROVED 这一条,与 internal-gates 不一致,是两处文本的口径漂移。
   - 提案:需 owner 拍板二选一:①(推荐)把 internal-gates 177-180 的 reviewDecision 条件改为「reviewDecision 不是 CHANGES_REQUESTED,且若仓库要求 approve 则必须为 APPROVED」——即区分「approve 是门」与「approve 不是门」两类仓库,并同步 SKILL 5.3 措辞;②保持现状,则本仓所有 PR 的最终合并动作固定转人工,应在 pr-rules.json 里显式关掉自动合并,避免每轮都产生一条「等你拍板」的噪音。属放宽 admin bypass 条件,扩权类,不自动落地。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `threads-unresolved-needs-human` **未 resolve 的 review conversation 只能由人点 Resolve,自动化不代劳** — 出现 3 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:本轮 #318(2 条)、#324(1 条)、#333(3 条)因此跳过。作者在 exemptAuthors 白名单内,催 resolve 与停滞私聊均按豁免跳过,不发通知。属署名/决策类,只计数观察,不因出现多次就放开代 resolve。
 - `structural-block-detection-omits-copilot-code-review` **structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
@@ -132,24 +147,29 @@
   - 现象:本轮合并 #319、#334 后,#325 的 pre-merge-check 仍报 mergeable=MERGEABLE、blockClass=structural-check(看起来可 admin bypass 合)。我手动跑 git merge-tree --write-tree origin/main <pr-head> 才发现真冲突(src/agent/canvasAgentVerbs.test.ts,与本轮落地的 #334 相撞)。GitHub 重算 mergeability 有延迟,期间 UNKNOWN 或沿用旧值;若照采信就会对一个实际冲突的 PR 走合并路径。
   - 提案:pre-merge-check 增一道本地交叉校验:当 PR 的 base 在其最后一次 CI 之后前进过(或 mergeable 为 UNKNOWN)时,跑 git merge-tree --write-tree <base> <head> 实测,冲突则把 blockClass 定成 conflict、不采信 GitHub 的 MERGEABLE。纯读操作、不新增写权限。
   - 备注:[decided:2026-08-09] 落地 commit 096c290(已核实合入 main); pre-merge-check 在 base 前进/UNKNOWN 时 merge-tree --write-tree 实测冲突
-- `review-agent-pr-checkout-worktree-conflict` **审查 agent 用 gh pr checkout 会在 PR 分支已被其他 worktree 占用时失败** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+- `review-agent-pr-checkout-worktree-conflict` **审查 agent 用 gh pr checkout 会在 PR 分支已被其他 worktree 占用时失败** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: tracked
   - 现象:PR #335 审查：主流程自己在 /private/tmp 用同名分支开了 worktree,阶段二审查 agent 在隔离 worktree 里跑 gh pr checkout 335 直接失败(cannot checkout: branch used by worktree)。agent 自行 workaround 成 git fetch + git checkout --detach <headRefOid> 才拿到码。这不是 skill 判定缺陷,只是审查 agent 模板没有预案,每次都要靠 agent 自己临场绕。
   - 提案:在 SKILL.md 第 4 节的审查 agent 任务模板里,把「gh pr checkout <N>」改为优先 detached checkout：git fetch origin <headRefOid> && git checkout --detach <headRefOid>(主 agent 已从 context.meta.headRefOid 拿到确切 sha,不依赖分支名是否被占用),并说明 gh pr checkout 仅作退路。
-- `own-pr-structural-block-no-approval-path` **本流程账号自有 PR 撞结构性 BLOCKED 时无任何放行路径,会永久堆积** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `own-pr-structural-block-no-approval-path` **本流程账号自有 PR 撞结构性 BLOCKED 时无任何放行路径,会永久堆积** — 出现 1 次,首见 2026-07-29,最近 2026-07-29,status: tracked
   - 现象:结构门自动 admin bypass 的安全前提含 reviewDecision=APPROVED(internal-gates「作者侧与仓库侧 gate」)。当 ownPr=true(viewer=作者)时该前提永远拿不到:GitHub 禁止自批准(422),而唯一豁免 approval 的 selfMergeAvailable 路径要求作者在 selfFixAuthors 名单内。xindong/mivo-canvas 的 selfFixAuthors 首周故意留空,于是每日 chore 更新日志补扫 PR(作者=本流程账号)审查全过、CI 全绿、0 未 resolve thread,仍只能跳过,需人工合并,不合就逐日累积。
   - 提案:扩权类,须 owner 拍板,二选一:(A) 把该账号加入 selfFixAuthors,走既有 selfMergeAvailable=true 的 --admin 自合并路径(该路径本就设计为豁免 approval);(B) 在结构门 bypass 的安全前提里,对 ownPr=true 的 PR 用「独立审查零 P0/P1 + 已跑 CI 无失败 + 0 未 resolve thread + 命中检查类型全在 structuralBypassAllowlist」替代 reviewDecision=APPROVED。两者都放宽了署名/合并边界,不自动落地。
-- `worktree-cleanup-pr-n-branch-naming` **fix-worktree-cleanup 只按 PR head 分支名解析,pr-<N> 命名的托管 worktree 永不被回收** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `worktree-cleanup-pr-n-branch-naming` **fix-worktree-cleanup 只按 PR head 分支名解析,pr-<N> 命名的托管 worktree 永不被回收** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:本轮 --scan 在 .claude/worktrees 下发现 2 个托管 worktree(分支 pr-301 / pr-303)与 3 个 worktree-agent-* 分支,全部因 '查不到对应 PR' 跳过;但 gh 实查 PR 301/303 均为 MERGED。原因:judge() 用 gh pr list --head <branch> 解析,只认与 PR headRefName 同名的分支(gh pr checkout 的产物),而 Claude Code 的 Agent isolation:worktree / create-pr 流程建出的分支名是 pr-<N> 或 worktree-agent-<hash>,永远匹配不上,这类 worktree 会无限累积(含 node_modules)。
   - 提案:考虑在 judge() 增加一条确定性解析:分支名严格匹配 ^pr-(\d+)$ 时,用捕获到的编号走 gh pr view <N> 判状态(仍要求非 OPEN + 30 分钟宽限 + 托管目录三重条件);worktree-agent-<hash> 无编号线索,保持不动。注意这是放宽销毁类操作的识别面,按扩权类处理,须 owner 拍板后再落地。
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `stale-dm-requires-human-confirm` **模板B停滞私聊在 auto 模式无法自动发送:lark-cli messages-send 的安全约束要求逐条人工确认收件人/内容/身份** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: open
   - 现象:PR #251(zhongxingtian-ai)remind-stale-author.mjs 判定 shouldRemind=true,resolve-author-feishu.mjs 已匹配到收件人(钟行天),但发送私聊唯一可用通道是 lark-cli im +messages-send,其技能文档明确写「Do not send messages without explicit user approval」,与 auto 模式设计的自动私聊(模板B)假设冲突。本轮已跳过发送,只记录判定结果,未私聊。
   - 提案:方案A:为 auto 模式配置一条不要求逐条确认的专用发送通道(如受限 webhook/机器人群公告代替私聊);方案B:模板B在 --auto 下永久降级为仅记录判定+汇总点名,私聊仅在交互模式下由用户确认发送;需 owner 拍板选哪种,不由 skill 自行决定放宽发送工具的安全约束
-- `bot-threads-after-scan-block-merge` **Bot review threads created after scan block merge of approved PRs** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: open
+- `bot-threads-after-scan-block-merge` **Bot review threads created after scan block merge of approved PRs** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
   - 现象:PR #449 was approved and ready to merge, but Copilot and Codex bot reviews created new unresolved threads between scan and merge. One thread (Codex DCO) was factually incorrect. Auto mode cannot resolve threads.
   - 提案:Allow auto-resolving bot threads when: (1) thread author is a known bot, (2) the claim is verifiably false (e.g. DCO signed but bot says not), OR (3) thread is a P2/style suggestion that doesn't block. This is privilege expansion (new resolve action).
-- `product-hold-missing-payload` **product-hold.mjs 返回 missing-payload 未能自动 hold** — 出现 2 次,首见 2026-07-24,最近 2026-07-25,status: open
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
+- `product-hold-missing-payload` **product-hold.mjs 返回 missing-payload 未能自动 hold** — 出现 2 次,首见 2026-07-24,最近 2026-07-25,status: tracked
   - 现象:PR #397 triggered product-gate. Ran product-hold.mjs 397 with scan result on stdin but got held=false reason=missing-payload. Script likely expects a different payload format (possibly the full non-scan context). The PR was also blocked by 14 threads, so practical impact was nil this round.
   - 提案:Investigate product-hold.mjs expected stdin format and document it, or make the script self-fetch context when not piped
+  - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `skip-notice-never-wired` **notify-author-resolve.mjs 从未接线进 auto 流程,gate 跳过对作者完全静默** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: adopted,commit `bfae5f3`
   - 现象:脚本早已存在(thread 催办+指纹去重)但 SKILL.md §6 无调用指令,所有状态目录均无 reminded.json,#304/#359 等 PR 被 skip 9-17 小时作者零感知
   - 提案:SKILL.md §6 阶段 1 接线 thread/冲突两类 skip 的批量提醒;脚本增 --conflict 模式与 selfFixAuthors 排除
