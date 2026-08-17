@@ -2822,8 +2822,16 @@ function rebaseSettled(cwd) {
   return { ok: true };
 }
 
+function currentHead(cwd) {
+  return git(['rev-parse', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
+}
+
 function restoreBackupHead(cwd, backupRef) {
   if (!backupRef) return;
+  const now = currentHead(cwd);
+  const old = git(['rev-parse', backupRef], { allowFail: true, cwd }).stdout.trim();
+  // HEAD 没动过(rebase 根本没开始 / autostash 已自行 pop 回来)时硬 reset 会抹掉用户脏树。
+  if (!now || !old || now === old) return;
   git(['reset', '--hard', backupRef], { allowFail: true, cwd });
 }
 

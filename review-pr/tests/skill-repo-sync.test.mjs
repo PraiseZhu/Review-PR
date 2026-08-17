@@ -185,6 +185,23 @@ test('rebase 成功但 SKILL.md 仍 UU 时不得标收敛、不得 push', async 
   assert.equal(unmerged, '', `失败后不得留下 UU:${unmerged}`);
 });
 
+test('pre-rebase hook 拒绝时不得 hard-reset 抹掉用户脏文件', async () => {
+  const { local } = setupDiverged({ dirtyPreview: false });
+  writeFileSync(join(local, 'SKILL.md'), 'USER DIRTY\n');
+  const hookDir = join(local, '.git', 'hooks');
+  mkdirSync(hookDir, { recursive: true });
+  writeFileSync(join(hookDir, 'pre-rebase'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const beforeHead = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: local, encoding: 'utf8' }).stdout.trim();
+  const lib = await loadLib(local);
+  const r = lib.skillRepoPull({ timeoutMs: 30_000, pushAfterConverge: true });
+  assert.equal(r.ok, false, JSON.stringify(r));
+  assert.equal(r.reason, 'rebase-did-not-start', JSON.stringify(r));
+  assert.notEqual(r.pushed, true);
+  const afterHead = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: local, encoding: 'utf8' }).stdout.trim();
+  assert.equal(afterHead, beforeHead);
+  assert.equal(readFileSync(join(local, 'SKILL.md'), 'utf8'), 'USER DIRTY\n');
+});
+
 test('evo 卸脚本不得动兄弟 skill 已暂存的 SKILL.md', async () => {
   const work = freshTempDir('skill-sibling-');
   const origin = join(work, 'origin.git');
