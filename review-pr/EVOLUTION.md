@@ -6,6 +6,9 @@
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
 - `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
+- `skillsync-preview-dist-dirty` **skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 现象:prepare.mjs 的 skillSync pull 报 'local changes would be overwritten'：preview-dist/{EVOLUTION.md,dist_manifest.json,evolution/ledger.json} 有未提交本地改动，远端 behind=7 拉不进。自动化不应代为 commit/stash 用户改动（安全边界），需人工到 skill 仓处理这 3 个文件后自同步恢复。不处理则每轮重现，巡审可能持续用旧版 skill 规则审新 PR。
+- `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
   - 现象:PR #617 走 admin-trust 路由合并:pre-merge-check 确认 structuralBypassReady,回执 verdict=clean,作者在 admins 名单。已连续多轮正确运行,可以考虑在 EVOLUTION.md 中登记为成熟路径。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open

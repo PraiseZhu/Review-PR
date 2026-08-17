@@ -1846,6 +1846,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-14T03:02:10.314Z",
       "lastSeen": "2026-08-14T03:02:10.314Z"
+    },
+    {
+      "fingerprint": "skillsync-preview-dist-dirty",
+      "tier": "proposal",
+      "title": "skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来",
+      "detail": "prepare.mjs 的 skillSync pull 报 'local changes would be overwritten'：preview-dist/{EVOLUTION.md,dist_manifest.json,evolution/ledger.json} 有未提交本地改动，远端 behind=7 拉不进。自动化不应代为 commit/stash 用户改动（安全边界），需人工到 skill 仓处理这 3 个文件后自同步恢复。不处理则每轮重现，巡审可能持续用旧版 skill 规则审新 PR。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-17T02:42:14.719Z",
+      "lastSeen": "2026-08-17T02:42:14.719Z"
     }
   ],
   "escapedHazards": [
