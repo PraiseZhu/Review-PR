@@ -2809,6 +2809,24 @@ function listDirtyFiles(cwd) {
   return r.stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean);
 }
 
+function unmergedPaths(cwd) {
+  const r = git(['diff', '--name-only', '--diff-filter=U'], { allowFail: true, cwd });
+  return r.ok ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/** rebase/autostash 结束后工作树必须可继续用,否则不得宣称收敛、不得 push。 */
+function rebaseSettled(cwd) {
+  if (rebaseInProgress(cwd)) return { ok: false, reason: 'rebase-still-in-progress' };
+  const blocked = unmergedPaths(cwd);
+  if (blocked.length) return { ok: false, reason: 'unmerged-after-rebase', conflictFiles: blocked };
+  return { ok: true };
+}
+
+function restoreBackupHead(cwd, backupRef) {
+  if (!backupRef) return;
+  git(['reset', '--hard', backupRef], { allowFail: true, cwd });
+}
+
 function aheadBehind(cwd, branch) {
   const c = git(['rev-list', '--left-right', '--count', `origin/${branch}...HEAD`], { allowFail: true, cwd });
   if (!c.ok) return { ahead: null, behind: null };
@@ -2839,10 +2857,9 @@ function rebaseOntoOrigin({ cwd, timeoutMs = 60_000 } = {}) {
   git(['update-ref', backupRef, 'HEAD'], { allowFail: true, cwd });
 
   const rb = git(['pull', '--rebase', '--autostash', '--quiet'], { allowFail: true, cwd, timeoutMs });
-  if (rb.ok) return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: false };
-
   const fail = (reason, extra = {}) => {
     if (rebaseInProgress(cwd)) git(['rebase', '--abort'], { allowFail: true, cwd });
+    else restoreBackupHead(cwd, backupRef);
     return {
       ok: false,
       reason,
@@ -2852,6 +2869,25 @@ function rebaseOntoOrigin({ cwd, timeoutMs = 60_000 } = {}) {
       ...extra,
     };
   };
+
+  if (rb.ok) {
+    const settled = rebaseSettled(cwd);
+    if (!settled.ok) {
+      return fail(settled.reason || 'rebase-not-settled', {
+        conflictFiles: settled.conflictFiles,
+        error: settled.conflictFiles?.length
+          ? `rebase/autostash 结束后仍有未合并路径,已回退:${settled.conflictFiles.join(', ')}`
+          : 'rebase 命令成功但工作树未结算,已回退',
+      });
+    }
+    return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: false };
+  }
+
+  if (!rebaseInProgress(cwd)) {
+    return fail('rebase-did-not-start', {
+      error: (rb.stderr || rb.stdout).trim().slice(0, 300) || 'git pull --rebase 失败且未进入 rebase',
+    });
+  }
 
   const res = resolveAppendOnlyConflicts(cwd);
   if (!res.resolved) {
@@ -2875,6 +2911,15 @@ function rebaseOntoOrigin({ cwd, timeoutMs = 60_000 } = {}) {
   if (rebaseInProgress(cwd)) {
     return fail('rebase-did-not-finish', { error: 'rebase 未在重试上限内完成,已 abort' });
   }
+  const settled = rebaseSettled(cwd);
+  if (!settled.ok) {
+    return fail(settled.reason || 'rebase-not-settled', {
+      conflictFiles: settled.conflictFiles,
+      error: settled.conflictFiles?.length
+        ? `rebase 结束后仍有未合并路径,已回退:${settled.conflictFiles.join(', ')}`
+        : 'rebase 结束后工作树未结算,已回退',
+    });
+  }
   return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: true };
 }
 
@@ -2886,14 +2931,14 @@ function isEvoBlockedRel(rel) {
   return /(?:^|\/)(?:SKILL\.md|scripts\/[^/]+\.mjs)$/.test(rel);
 }
 
-function unstageEvoCodeFiles(cwd, skillRelPath) {
-  const staged = git(['diff', '--cached', '--name-only'], { allowFail: true, cwd }).stdout.trim();
+function unstageEvoCodeFiles(cwd, skillRelPath, spec) {
+  const nameArgs = spec?.length ? ['diff', '--cached', '--name-only', '--', ...spec] : ['diff', '--cached', '--name-only'];
+  const staged = git(nameArgs, { allowFail: true, cwd }).stdout.trim();
   if (!staged) return [];
   const dropped = [];
   for (const p of staged.split('\n').map((s) => s.trim()).filter(Boolean)) {
-    const rel = (skillRelPath === '.' || p === skillRelPath || !p.startsWith(`${skillRelPath}/`))
-      ? p
-      : p.slice(skillRelPath.length + 1);
+    if (skillRelPath !== '.' && p !== skillRelPath && !p.startsWith(`${skillRelPath}/`)) continue;
+    const rel = (skillRelPath === '.' || p === skillRelPath) ? p : p.slice(skillRelPath.length + 1);
     if (!isEvoBlockedRel(rel)) continue;
     const u = git(['restore', '--staged', '--', p], { allowFail: true, cwd });
     if (u.ok) dropped.push(p);

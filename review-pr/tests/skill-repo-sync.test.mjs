@@ -148,3 +148,81 @@ test('SC-5:diverged 告警文案不再默认归咎脚本/SKILL.md', () => {
   assert.doesNotMatch(src, /走到这一步说明冲突在脚本 \/ SKILL\.md/);
   assert.match(src, /dirtyFiles \/ conflictFiles/);
 });
+
+test('rebase 成功但 SKILL.md 仍 UU 时不得标收敛、不得 push', async () => {
+  const { local } = setupDiverged({ dirtyPreview: false });
+  writeFileSync(join(local, 'SKILL.md'), 'LOCAL DIRTY SKILL\n');
+  const remote = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: local, encoding: 'utf8' });
+  assert.equal(remote.status, 0);
+  const originUrl = spawnSync('git', ['remote', 'get-url', 'origin'], { cwd: local, encoding: 'utf8' }).stdout.trim();
+  const remoteWt = join(local, '..', 'remote-wt');
+  if (existsSync(join(remoteWt, 'SKILL.md'))) {
+    writeFileSync(join(remoteWt, 'SKILL.md'), 'REMOTE SKILL\n');
+    git(['add', 'SKILL.md'], remoteWt);
+    git(['commit', '-q', '-m', 'remote skill'], remoteWt);
+    git(['push', '-q', 'origin', 'main'], remoteWt);
+  } else {
+    const tmp = join(local, '..', 'remote2');
+    git(['clone', '-q', originUrl, tmp], join(local, '..'));
+    git(['config', 'user.email', 't@t'], tmp);
+    git(['config', 'user.name', 't'], tmp);
+    git(['config', 'commit.gpgsign', 'false'], tmp);
+    writeFileSync(join(tmp, 'SKILL.md'), 'REMOTE SKILL\n');
+    git(['add', 'SKILL.md'], tmp);
+    git(['commit', '-q', '-m', 'remote skill'], tmp);
+    git(['push', '-q', 'origin', 'main'], tmp);
+  }
+  const before = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: local, encoding: 'utf8' }).stdout.trim();
+  const lib = await loadLib(local);
+  const r = lib.skillRepoPull({ timeoutMs: 30_000, pushAfterConverge: true });
+  assert.equal(r.ok, false, JSON.stringify(r));
+  assert.notEqual(r.converged, true);
+  assert.notEqual(r.pushed, true);
+  assert.ok(r.reason === 'unmerged-after-rebase' || r.reason === 'diverged-code-change-needs-human' || r.reason === 'rebase-did-not-start', JSON.stringify(r));
+  const after = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: local, encoding: 'utf8' }).stdout.trim();
+  assert.equal(after, before, '失败不得留下已改写的 HEAD');
+  const unmerged = spawnSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: local, encoding: 'utf8' }).stdout.trim();
+  assert.equal(unmerged, '', `失败后不得留下 UU:${unmerged}`);
+});
+
+test('evo 卸脚本不得动兄弟 skill 已暂存的 SKILL.md', async () => {
+  const work = freshTempDir('skill-sibling-');
+  const origin = join(work, 'origin.git');
+  mkdirSync(origin, { recursive: true });
+  git(['init', '-q', '--bare', '-b', 'main'], origin);
+  const local = join(work, 'local');
+  mkdirSync(local);
+  git(['init', '-q', '-b', 'main'], local);
+  git(['config', 'user.email', 't@t'], local);
+  git(['config', 'user.name', 't'], local);
+  git(['config', 'commit.gpgsign', 'false'], local);
+  writeSkillTree(join(local, 'review-pr'), {
+    md: '# evo\n',
+    json: ledger([entry('shared', 'shared')]),
+  });
+  mkdirSync(join(local, 'another'), { recursive: true });
+  writeFileSync(join(local, 'another', 'SKILL.md'), 'SIBLING\n');
+  git(['add', '-A'], local);
+  git(['commit', '-q', '-m', 'base'], local);
+  git(['remote', 'add', 'origin', origin], local);
+  git(['push', '-q', '-u', 'origin', 'main'], local);
+
+  writeFileSync(join(local, 'review-pr', 'evolution', 'ledger.json'), ledger([
+    entry('shared', 'shared'), entry('new-fp', 'new'),
+  ]));
+  writeFileSync(join(local, 'review-pr', 'EVOLUTION.md'), '# evo\n- new\n');
+  writeFileSync(join(local, 'another', 'SKILL.md'), 'SIBLING STAGED\n');
+  git(['add', 'another/SKILL.md'], local);
+
+  const lib = await loadLib(join(local, 'review-pr'));
+  const r = lib.skillRepoCommitPush({ message: 'evo: ledger new-fp' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(!(r.droppedEvoCode ?? []).includes('another/SKILL.md'), JSON.stringify(r));
+  const staged = spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: local, encoding: 'utf8' })
+    .stdout.trim().split('\n').filter(Boolean);
+  assert.ok(staged.includes('another/SKILL.md'), `兄弟 skill 暂存必须保留:${staged.join(',')}`);
+  const names = spawnSync('git', ['show', '--name-only', '--pretty=', 'HEAD'], {
+    cwd: local, encoding: 'utf8',
+  }).stdout.trim().split('\n').filter(Boolean).sort();
+  assert.deepEqual(names, ['review-pr/EVOLUTION.md', 'review-pr/evolution/ledger.json']);
+});
