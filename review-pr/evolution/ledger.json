@@ -2054,6 +2054,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-18T07:10:34.352Z",
       "lastSeen": "2026-08-18T07:10:34.352Z"
+    },
+    {
+      "fingerprint": "confirm-approved-then-new-push-needs-release-marker-hint",
+      "tier": "proposal",
+      "title": " admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么",
+      "detail": "本轮 #147/#159 同型:#148/#160 里 PraiseZhu 都写了「维护者确认:通过,已在当前 head X Approve」,但作者随后又推了新 commit,head 绑定规则(设计正确)使旧确认作废;issue 侧没有跟踪 PR head,维护者以为自己已确认过,PR 却持续 awaiting-discussion。机器判定没问题,缺的是一条对维护者的定向提示:门因 head 前移重新亮了,需要对新 head 重发确认。属文案/通知层改进,不改任何 gate 语义。",
+      "proposal": "在 auto 轮检测到「issue 有确认评论 + 曾有 admins Approve + 当前 head 晚于最后一次确认且 unconfirmedKinds 非空」时,向 owner 汇总加一行定向提示(或复用 notify-sync-alert 类低频出口),说明该 PR 只差对新 head 重新确认;不新增 GitHub 写操作。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-18T08:09:56.095Z",
+      "lastSeen": "2026-08-18T08:09:56.095Z"
     }
   ],
   "escapedHazards": [

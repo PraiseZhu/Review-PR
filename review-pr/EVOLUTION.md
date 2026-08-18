@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `confirm-approved-then-new-push-needs-release-marker-hint` ** admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 现象:本轮 #147/#159 同型:#148/#160 里 PraiseZhu 都写了「维护者确认:通过,已在当前 head X Approve」,但作者随后又推了新 commit,head 绑定规则(设计正确)使旧确认作废;issue 侧没有跟踪 PR head,维护者以为自己已确认过,PR 却持续 awaiting-discussion。机器判定没问题,缺的是一条对维护者的定向提示:门因 head 前移重新亮了,需要对新 head 重发确认。属文案/通知层改进,不改任何 gate 语义。
+  - 提案:在 auto 轮检测到「issue 有确认评论 + 曾有 admins Approve + 当前 head 晚于最后一次确认且 unconfirmedKinds 非空」时,向 owner 汇总加一行定向提示(或复用 notify-sync-alert 类低频出口),说明该 PR 只差对新 head 重新确认;不新增 GitHub 写操作。
 - `signoff-regate-after-push-no-renotice` **门类 hold 在作者 push 后重新亮时无 renotice，维护者对旧 head 的确认静默失效** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
   - 现象:PR #159: admins 在讨论 issue #160 确认并在 head 4cd7e04 Approve(security 门); 作者随后推 748f4ab 并 dismiss 重审, 门按设计重新亮(Approve 绑定 head)。signoff-hold alreadyHeld 幂等跳过(renoticeSkipped=label-already-on), 无任何渠道告知 admins 需对新 head 重新确认, PR 只能靠人工发现。#147 同型(rules 门, 确认绑定旧 head d29b823, 当前 3adf898)。
   - 提案:同门类在新 head 上重新亮、且该门类曾存在旧 head 的维护者确认时, 向讨论 issue 追加一条 @admins 提醒(或经私聊出口), 让『需重新确认』可见。属新增对外写操作, 不放宽任何 gate, 按 8.1 归 proposal 等维护者拍板。
