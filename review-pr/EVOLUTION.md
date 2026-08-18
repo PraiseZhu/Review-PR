@@ -250,6 +250,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr147-format-blocker-bypass-path` **PR 147 格式门外的全部阻断（冲突哨兵翻红/未 resolve thread/CI FAILURE）均为已知 workflow bug 或作者侧收尾，机器判定已正确分流，无需沉淀** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:PR 147: conflict sentinel 翻红=pr-hygiene.yml 缺 issues:write（作者 d29b823 自带修复，#150 已合 main 同源补丁）；greptile 2 条 thread 未 resolve+Greptile Review FAILURE=非 required 第三方检查。PR 145: mergeStateStatus=DIRTY，CI 静默跳过属 GitHub 平台行为。auto.action 路由（skip-gate/pushback-format）与 SKILL 3.5/6 阶段 1 口径一致，无 automatable-gap。
 - `round-no-merge-candidates-hold-conflict-threads` **PR 145/147 未合并根因均为 by-design：确认门 hold + 作者侧冲突/未 resolve** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
   - 现象:145 命中 security 门(package.json)+DIRTY 冲突，issue #146 已开、标签已挂、无 admins Approve；147 命中 security+rules 门(.github/workflows+AGENTS.md)+2 条 conversation 未 resolve，issue #148 已开。三轮分类全部落入 by-design（维护者确认 + 真人 resolve + 语义冲突），无 automatable-gap。
 - `held-pr-stale-check-ok` **两个 held PR 均在 24h 内、讨论 issue 无表态,按设计等把关人确认** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked

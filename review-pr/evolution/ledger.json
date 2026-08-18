@@ -2015,6 +2015,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-18T04:14:38.942Z",
       "lastSeen": "2026-08-18T04:14:38.942Z"
+    },
+    {
+      "fingerprint": "pr147-format-blocker-bypass-path",
+      "tier": "by-design",
+      "title": "PR 147 格式门外的全部阻断（冲突哨兵翻红/未 resolve thread/CI FAILURE）均为已知 workflow bug 或作者侧收尾，机器判定已正确分流，无需沉淀",
+      "detail": "PR 147: conflict sentinel 翻红=pr-hygiene.yml 缺 issues:write（作者 d29b823 自带修复，#150 已合 main 同源补丁）；greptile 2 条 thread 未 resolve+Greptile Review FAILURE=非 required 第三方检查。PR 145: mergeStateStatus=DIRTY，CI 静默跳过属 GitHub 平台行为。auto.action 路由（skip-gate/pushback-format）与 SKILL 3.5/6 阶段 1 口径一致，无 automatable-gap。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-18T05:05:32.125Z",
+      "lastSeen": "2026-08-18T05:05:32.125Z"
     }
   ],
   "escapedHazards": [
