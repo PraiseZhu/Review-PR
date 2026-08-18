@@ -1989,6 +1989,32 @@
       "occurrences": 1,
       "firstSeen": "2026-08-17T22:04:21.612Z",
       "lastSeen": "2026-08-17T22:04:21.612Z"
+    },
+    {
+      "fingerprint": "held-pr-stale-check-ok",
+      "tier": "by-design",
+      "title": "两个 held PR 均在 24h 内、讨论 issue 无表态,按设计等把关人确认",
+      "detail": "PR145/147 命中 security/rules 门挂 awaiting-discussion,讨论 issue #146/#148 均无白名单表态;停滞私聊判定 not-stale-yet(12.1h/10.8h < 24h 阈值)。属 by-design 等人,无 automatable-gap。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-18T01:09:12.700Z",
+      "lastSeen": "2026-08-18T01:09:12.700Z"
+    },
+    {
+      "fingerprint": "round-no-merge-candidates-hold-conflict-threads",
+      "tier": "by-design",
+      "title": "PR 145/147 未合并根因均为 by-design：确认门 hold + 作者侧冲突/未 resolve",
+      "detail": "145 命中 security 门(package.json)+DIRTY 冲突，issue #146 已开、标签已挂、无 admins Approve；147 命中 security+rules 门(.github/workflows+AGENTS.md)+2 条 conversation 未 resolve，issue #148 已开。三轮分类全部落入 by-design（维护者确认 + 真人 resolve + 语义冲突），无 automatable-gap。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-18T04:14:38.942Z",
+      "lastSeen": "2026-08-18T04:14:38.942Z"
     }
   ],
   "escapedHazards": [

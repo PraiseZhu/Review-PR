@@ -250,6 +250,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `round-no-merge-candidates-hold-conflict-threads` **PR 145/147 未合并根因均为 by-design：确认门 hold + 作者侧冲突/未 resolve** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:145 命中 security 门(package.json)+DIRTY 冲突，issue #146 已开、标签已挂、无 admins Approve；147 命中 security+rules 门(.github/workflows+AGENTS.md)+2 条 conversation 未 resolve，issue #148 已开。三轮分类全部落入 by-design（维护者确认 + 真人 resolve + 语义冲突），无 automatable-gap。
+- `held-pr-stale-check-ok` **两个 held PR 均在 24h 内、讨论 issue 无表态,按设计等把关人确认** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:PR145/147 命中 security/rules 门挂 awaiting-discussion,讨论 issue #146/#148 均无白名单表态;停滞私聊判定 not-stale-yet(12.1h/10.8h < 24h 阈值)。属 by-design 等人,无 automatable-gap。
 - `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 3 次,首见 2026-08-14,最近 2026-08-18,status: tracked
   - 现象:PR #145(security:package.json)与 #147(security+rules:pr-hygiene.yml+AGENTS.md)均 alreadyHeld=true,讨论 issue #146/#148 OPEN,标签已挂,holdInvocation 探测判定 issueReuse=prior-open 不重复建。两 PR 均无放行信号(adminsApprovedCurrentHead=false,白名单无留言)。by-design:维护者确认门等的就是人,流程无自动放行通道。
 - `round-2026-08-18-no-new-blockers` **两候选均已在 security/rules 门 hold 等维护者确认,本轮无新增根因** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
