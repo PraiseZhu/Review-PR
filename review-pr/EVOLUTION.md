@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `signoff-regate-after-push-no-renotice` **门类 hold 在作者 push 后重新亮时无 renotice，维护者对旧 head 的确认静默失效** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 现象:PR #159: admins 在讨论 issue #160 确认并在 head 4cd7e04 Approve(security 门); 作者随后推 748f4ab 并 dismiss 重审, 门按设计重新亮(Approve 绑定 head)。signoff-hold alreadyHeld 幂等跳过(renoticeSkipped=label-already-on), 无任何渠道告知 admins 需对新 head 重新确认, PR 只能靠人工发现。#147 同型(rules 门, 确认绑定旧 head d29b823, 当前 3adf898)。
+  - 提案:同门类在新 head 上重新亮、且该门类曾存在旧 head 的维护者确认时, 向讨论 issue 追加一条 @admins 提醒(或经私聊出口), 让『需重新确认』可见。属新增对外写操作, 不放宽任何 gate, 按 8.1 归 proposal 等维护者拍板。
 - `github-graphql-503-intermittent-20260818` **GitHub GraphQL 503 间歇故障导致 scan/探测失败,auto 轮重试成本高且可能误升级 signoff-hold-unavailable** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
   - 现象:本轮 gh graphql 通道间歇 503(REST 正常):--scan-all 部分候选失败、#147 hold 探测两次失败被 F3 升级为 signoff-hold-unavailable(人工介入类),但人工跑同款 dry-run 立即成功(invoked=true ok=true alreadyHeld=true),证明是网络瞬态而非调用点损坏。agent 侧靠多轮 sleep+重试兜住,累计耗时 ~20 分钟。可考虑:spawnScriptJson 对 503 加有限指数退避重试,或 F3 探测失败时区分网络类错误与模块缺失类错误。
 - `merged-mid-review-head-races-clean-receipt` **审查期间 owner 网页合并 PR，clean 回执落盘晚于合并，审计链缺合并者视角** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
@@ -250,6 +253,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `round-2026-08-18a-no-new-gaps` **本轮无新流程缺口:145 硬命中为测试桩形态走既有豁免机制,147/159 为维护者决策类 hold** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:PR145 sk-api-key×2 硬命中(recipes.test.ts:321/322)上下文为 Authorization/X-Mivo-Api-Key 测试桩(验证服务对携带凭据视而不见),属敏感内容门与 sensitiveContent.allowPaths 既有机制的正常触发面,是否豁免由维护者决策;PR147 作者 push 新 head 后旧 Approve 被 dismiss 导致 rules 门重亮、PR159 新增依赖触发 security 门,均为 by-design 维护者确认类。无 automatable-gap、无扩权项。
 - `pr147-format-blocker-bypass-path` **PR 147 格式门外的全部阻断（冲突哨兵翻红/未 resolve thread/CI FAILURE）均为已知 workflow bug 或作者侧收尾，机器判定已正确分流，无需沉淀** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
   - 现象:PR 147: conflict sentinel 翻红=pr-hygiene.yml 缺 issues:write（作者 d29b823 自带修复，#150 已合 main 同源补丁）；greptile 2 条 thread 未 resolve+Greptile Review FAILURE=非 required 第三方检查。PR 145: mergeStateStatus=DIRTY，CI 静默跳过属 GitHub 平台行为。auto.action 路由（skip-gate/pushback-format）与 SKILL 3.5/6 阶段 1 口径一致，无 automatable-gap。
 - `round-no-merge-candidates-hold-conflict-threads` **PR 145/147 未合并根因均为 by-design：确认门 hold + 作者侧冲突/未 resolve** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
