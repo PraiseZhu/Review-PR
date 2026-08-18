@@ -250,14 +250,14 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 3 次,首见 2026-08-14,最近 2026-08-18,status: tracked
+  - 现象:PR #145(security:package.json)与 #147(security+rules:pr-hygiene.yml+AGENTS.md)均 alreadyHeld=true,讨论 issue #146/#148 OPEN,标签已挂,holdInvocation 探测判定 issueReuse=prior-open 不重复建。两 PR 均无放行信号(adminsApprovedCurrentHead=false,白名单无留言)。by-design:维护者确认门等的就是人,流程无自动放行通道。
 - `round-2026-08-18-no-new-blockers` **两候选均已在 security/rules 门 hold 等维护者确认,本轮无新增根因** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR145(冲突+security门)+PR147(threads+security/rules门)均为存量 hold 状态,admins 未 Approve 当前 head;提醒评论均 already-commented 去重跳过,停滞判定均 not-stale-yet。无漏判、无流程缺口。
 - `held-security-gate-waiting-maintainer` **两候选均停在被 hold 等维护者确认(security/rules 门)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR#145 命中 package.json securityReviewPaths,PR#147 命中 workflows+AGENTS.md;均为设计上需人确认,非流程缺口;催办去重与停滞判定本轮验证正常
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 6 次,首见 2026-07-24,最近 2026-08-17,status: tracked
   - 现象:本轮 #145(DIRTY 冲突)/#147(2 条 thread 未 resolve)均处于 signoff hold(security 门),且作者侧卡点提醒评论已发过(指纹去重 already-commented),无新进化项
-- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 2 次,首见 2026-08-14,最近 2026-08-17,status: tracked
-  - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
 - `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap
 - `no-merge-candidates-signoff-holds-only` **本轮两候选均停在维护者确认门,无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked

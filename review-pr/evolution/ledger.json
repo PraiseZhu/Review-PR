@@ -1838,14 +1838,14 @@
       "fingerprint": "security-gate-already-held-no-action",
       "tier": "by-design",
       "title": "security gate 已 hold 的 PR 本轮无需动作",
-      "detail": "auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行",
+      "detail": "PR #145(security:package.json)与 #147(security+rules:pr-hygiene.yml+AGENTS.md)均 alreadyHeld=true,讨论 issue #146/#148 OPEN,标签已挂,holdInvocation 探测判定 issueReuse=prior-open 不重复建。两 PR 均无放行信号(adminsApprovedCurrentHead=false,白名单无留言)。by-design:维护者确认门等的就是人,流程无自动放行通道。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-14T03:02:10.314Z",
-      "lastSeen": "2026-08-17T17:05:04.005Z"
+      "lastSeen": "2026-08-18T00:02:56.129Z"
     },
     {
       "fingerprint": "skillsync-preview-dist-dirty",
