@@ -2314,6 +2314,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T21:03:57.182Z",
       "lastSeen": "2026-08-19T21:03:57.182Z"
+    },
+    {
+      "fingerprint": "skip-gate-conflict-unresolved",
+      "tier": "by-design",
+      "title": "前置门因与主干冲突且 conversation 未 resolve 跳过",
+      "detail": "PR #187 与 main 冲突且 1 条 conversation 未 resolve；auto 不向作者分支推送，属作者侧处理。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T21:04:01.721Z",
+      "lastSeen": "2026-08-19T21:04:01.721Z"
     }
   ],
   "escapedHazards": [

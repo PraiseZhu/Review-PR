@@ -269,6 +269,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-conflict-unresolved` **前置门因与主干冲突且 conversation 未 resolve 跳过** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #187 与 main 冲突且 1 条 conversation 未 resolve；auto 不向作者分支推送，属作者侧处理。
 - `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #180 作者侧未处理上一轮审查意见与 1 条 conversation，属真人决策类，不自动放开。
 - `skip-conflict-await-author` **与主干冲突卡前置门，等作者 rebase** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
