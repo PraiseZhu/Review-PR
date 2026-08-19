@@ -2236,6 +2236,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T10:14:46.149Z",
       "lastSeen": "2026-08-19T10:14:46.149Z"
+    },
+    {
+      "fingerprint": "skip-conflict-and-unresolved-author-side",
+      "tier": "by-design",
+      "title": "冲突+未 resolve thread 必须等作者处理",
+      "detail": "PR 187 同时 DIRTY 与 1 条未 resolve conversation；auto 不能代合语义冲突，也不能代 resolve 真人/非白名单 thread。已按模板 C 公开提醒。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T17:49:50.408Z",
+      "lastSeen": "2026-08-19T17:49:50.408Z"
     }
   ],
   "escapedHazards": [

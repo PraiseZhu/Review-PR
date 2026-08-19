@@ -269,6 +269,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-conflict-and-unresolved-author-side` **冲突+未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR 187 同时 DIRTY 与 1 条未 resolve conversation；auto 不能代合语义冲突，也不能代 resolve 真人/非白名单 thread。已按模板 C 公开提醒。
 - `unresolved-bot-threads-block-merge` **未 resolve 的 bot conversation 卡着合不了** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:本轮 #170/#180/#183 都因 Greptile 或 CodeQL 行内 thread 未 resolve 走 skip-gate。作者点 Resolve 或回复后下一轮才能审合。threadTriage 本仓未启用，auto-resolve 当前不提供。
 - `persist-p1-4a-helpers-merged-clean` **persist Helpers 前段审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
