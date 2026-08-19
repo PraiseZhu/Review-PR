@@ -2106,6 +2106,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T03:39:24.881Z",
       "lastSeen": "2026-08-19T03:39:24.881Z"
+    },
+    {
+      "fingerprint": "stacked-merge-during-security-hold",
+      "tier": "by-design",
+      "title": "堆叠 PR 在安全门 hold 后被人手合进下游分支",
+      "detail": "PR 171 刚挂 awaiting-discussion 并开讨论 issue 175，就被 PraiseZhu 网页合进 PR 170 的 head。170 因此叠上 CI/pr-rules，重扫变 security-gate + size-gate 红。旧 snapshot 审查仍可消费，但不能拿旧回执合新 head。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T03:39:29.269Z",
+      "lastSeen": "2026-08-19T03:39:29.269Z"
     }
   ],
   "escapedHazards": [

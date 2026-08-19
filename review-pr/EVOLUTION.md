@@ -263,6 +263,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `stacked-merge-during-security-hold` **堆叠 PR 在安全门 hold 后被人手合进下游分支** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR 171 刚挂 awaiting-discussion 并开讨论 issue 175，就被 PraiseZhu 网页合进 PR 170 的 head。170 因此叠上 CI/pr-rules，重扫变 security-gate + size-gate 红。旧 snapshot 审查仍可消费，但不能拿旧回执合新 head。
 - `round-2026-08-18a-no-new-gaps` **本轮无新流程缺口:145 硬命中为测试桩形态走既有豁免机制,147/159 为维护者决策类 hold** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
   - 现象:PR145 sk-api-key×2 硬命中(recipes.test.ts:321/322)上下文为 Authorization/X-Mivo-Api-Key 测试桩(验证服务对携带凭据视而不见),属敏感内容门与 sensitiveContent.allowPaths 既有机制的正常触发面,是否豁免由维护者决策;PR147 作者 push 新 head 后旧 Approve 被 dismiss 导致 rules 门重亮、PR159 新增依赖触发 security 门,均为 by-design 维护者确认类。无 automatable-gap、无扩权项。
 - `pr147-format-blocker-bypass-path` **PR 147 格式门外的全部阻断（冲突哨兵翻红/未 resolve thread/CI FAILURE）均为已知 workflow bug 或作者侧收尾，机器判定已正确分流，无需沉淀** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
