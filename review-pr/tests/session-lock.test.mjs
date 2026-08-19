@@ -82,6 +82,19 @@ test('refreshOwnedSessionLock: 锁已存在时 ENOENT 重建不得覆盖(wx/EEXI
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('stopLockHeartbeat: 锁已不在时带 token 也不得按 sidecar pid 乱杀', () => {
+  const dir = freshTempDir('session-lock-');
+  const lockFile = join(dir, 'lock.json');
+  writeFileSync(heartbeatPidPath(lockFile), `${process.pid}\n`);
+  const r = stopLockHeartbeat(lockFile, 'old-owner');
+  assert.equal(r.skipped, 'not-owner');
+  assert.equal(r.stopped, false);
+  assert.equal(existsSync(heartbeatPidPath(lockFile)), true);
+  assert.equal(isPidAlive(process.pid), true);
+  unlinkSync(heartbeatPidPath(lockFile));
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('stopLockHeartbeat: 非 owner token 不得杀掉当前守护', () => {
   const dir = freshTempDir('session-lock-');
   const lockFile = writeLock(dir, 'owner', Date.now());

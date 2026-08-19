@@ -10,7 +10,7 @@
 // 本文件零依赖 lib.mjs,避免和 STATE_DIR 顶层求值缠在一起;调用方传入 lock 路径。
 
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -68,7 +68,11 @@ export function tryCreateSessionLock(lockFile, payload) {
 }
 
 export function writeOwnedSessionLock(lockFile, token, startedAt = new Date()) {
-  writeFileSync(lockFile, sessionLockPayload(token, startedAt));
+  // 同目录 rename 覆盖是 POSIX 原子替换:不会出现半写文件,也不会先 unlink 再 create
+  // 给别人留下 wx 窗口。inode 会换,但锁协议认的是路径上的 token,不是 inode。
+  const tmp = `${lockFile}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, sessionLockPayload(token, startedAt));
+  renameSync(tmp, lockFile);
 }
 
 function rewriteIfOwner(lockFile, token, now) {
@@ -143,7 +147,8 @@ export function isPidAlive(pid) {
 export function stopLockHeartbeat(lockFile, expectedToken) {
   if (expectedToken) {
     const cur = readSessionLock(lockFile);
-    if (cur.present && cur.token !== expectedToken) {
+    // 锁不在或 token 对不上:都可能是别人的回合,不得按 sidecar pid 乱杀
+    if (!cur.present || cur.token !== expectedToken) {
       return { stopped: false, killed: false, pid: null, skipped: 'not-owner' };
     }
   }
