@@ -2301,6 +2301,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T20:03:08.759Z",
       "lastSeen": "2026-08-19T20:03:08.759Z"
+    },
+    {
+      "fingerprint": "skip-gate-changes-requested-unresolved",
+      "tier": "by-design",
+      "title": "前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过",
+      "detail": "PR #180 作者侧未处理上一轮审查意见与 1 条 conversation，属真人决策类，不自动放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T21:03:57.182Z",
+      "lastSeen": "2026-08-19T21:03:57.182Z"
     }
   ],
   "escapedHazards": [
