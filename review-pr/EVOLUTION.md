@@ -266,6 +266,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `persist-p1-4a-helpers-merged-clean` **persist Helpers 前段审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #182 computeResourceKey/isDeleteKind 纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
 - `persist-p1-3-state-machine-merged-clean` **persist 状态机节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #181 纯类型+classifyHttpStatus 纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
 - `persist-p1-type-layer-merged-clean` **persist 类型层列车节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
