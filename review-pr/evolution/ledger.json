@@ -2275,6 +2275,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T19:17:30.865Z",
       "lastSeen": "2026-08-19T19:17:30.865Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-threads-await-author",
+      "tier": "by-design",
+      "title": "未 resolve conversation 卡前置门，等作者点 Resolve",
+      "detail": "本轮 #180 #187 均因 1 条未 resolve conversation 被 skip-gate。催 resolve 脚本已去重（already-commented），未新发评论。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T20:03:04.199Z",
+      "lastSeen": "2026-08-19T20:03:04.199Z"
     }
   ],
   "escapedHazards": [

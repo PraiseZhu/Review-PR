@@ -269,6 +269,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-threads-await-author` **未 resolve conversation 卡前置门，等作者点 Resolve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:本轮 #180 #187 均因 1 条未 resolve conversation 被 skip-gate。催 resolve 脚本已去重（already-commented），未新发评论。
 - `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #193 改 src/lib/writeRetryQueue.ts，auto.action=product-gate。语义判定为已有 persist 列车内部 helper，不是产品/UI，按 fallback 审查并合并。uiPaths 含整个 src/ 是既有从严设计。
   - 提案:若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。
