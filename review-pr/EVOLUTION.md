@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-src-lib-false-positive` **src/lib 纯技术文件命中 uiPaths 会误亮产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 现象:PR #177 只改 src/lib/writeRetryQueue.ts（类型+纯函数搬运、无调用方、无界面），因 uiPaths 含 src/ 被判 product-gate。语义上已放行，但每轮都要人工定性。
+  - 提案:评估把 persist/lib 纯逻辑路径从 uiPaths 收窄，或加 uiExcludePaths 覆盖 src/lib/、src/store/ 等非界面目录，避免 feat+src/lib 反复进产品门。
 - `isolated-reviewer-tmp-write-blocked` **隔离 worktree 审查席写不了 /tmp，任务不该把 rro-1 指到仓外** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
   - 现象:PR 170 审查席 isolation=worktree 时 heredoc 写 /tmp/review-pr-170/rro-1.json 被沙箱拒绝；后又误删整个 /tmp/review-pr-170，task/preflight 一起没了。最终改写进 worktree 内 rro-1.json 才交卷。
   - 提案:阶段二任务模板把输出路径改成隔离 worktree 内相对路径（如 ./rro-1.json），禁止指向 /tmp；主 agent 从 worktree 拷出再 consume。
