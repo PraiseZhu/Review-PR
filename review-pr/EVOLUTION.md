@@ -269,6 +269,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #193 改 src/lib/writeRetryQueue.ts，auto.action=product-gate。语义判定为已有 persist 列车内部 helper，不是产品/UI，按 fallback 审查并合并。uiPaths 含整个 src/ 是既有从严设计。
+  - 提案:若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 7 次,首见 2026-07-24,最近 2026-08-19,status: tracked
   - 现象:本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。
 - `recipe-empty-model-id-falls-to-default-channel` **配方空模型 id 回落默认档是作者侧代码问题** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
