@@ -2145,6 +2145,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T04:04:55.253Z",
       "lastSeen": "2026-08-19T04:04:55.253Z"
+    },
+    {
+      "fingerprint": "security-gate-awaiting-admin-after-stacked-ci-paths",
+      "tier": "by-design",
+      "title": "PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve",
+      "detail": "PR #170 head 叠入 plugin-green-ref.yml / pr-size-gate.yml / pr-rules.json，security-gate 已 hold（issue #176），本轮 alreadyHeld 幂等复用。属维护者确认，不自动放行。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T05:06:03.258Z",
+      "lastSeen": "2026-08-19T05:06:03.258Z"
     }
   ],
   "escapedHazards": [

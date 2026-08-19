@@ -266,6 +266,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-after-stacked-ci-paths` **PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #170 head 叠入 plugin-green-ref.yml / pr-size-gate.yml / pr-rules.json，security-gate 已 hold（issue #176），本轮 alreadyHeld 幂等复用。属维护者确认，不自动放行。
 - `unresolved-greptile-p2-blocks-merge` **Greptile P2 未 resolve 会卡合并，threadTriage 关闭时只能催作者** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #177 唯一阻断是 greptile-apps 一条 P2 注释 thread。本仓未配 threadTriage，auto 不能代 reply/resolve，按 5.3/6 发模板 C 催 resolve。
 - `stacked-merge-during-security-hold` **堆叠 PR 在安全门 hold 后被人手合进下游分支** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
