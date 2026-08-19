@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ci-state-race-scan-to-process` **扫描判 review 的候选在处理时 CI 已失败，靠前置 gate 复核兜住** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 现象:PR167 扫描时（10:41 前）CI 尚未完成故 auto.action=review，处理时实测 head 上 lint+tsc+unit 已失败（5 处单测断言）。本轮靠 3.5 前置 gate 第 4 条人工复核拦下，未造成误审误合。候选方案：context.mjs 扫描时对 statusCheckRollup 含 IN_PROGRESS/QUEUED 的候选延后分类或标注 ci-pending-race，减少这类靠 agent 复核兜底的窗口。
 - `confirm-approved-then-new-push-needs-release-marker-hint` ** admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
   - 现象:本轮 #147/#159 同型:#148/#160 里 PraiseZhu 都写了「维护者确认:通过,已在当前 head X Approve」,但作者随后又推了新 commit,head 绑定规则(设计正确)使旧确认作废;issue 侧没有跟踪 PR head,维护者以为自己已确认过,PR 却持续 awaiting-discussion。机器判定没问题,缺的是一条对维护者的定向提示:门因 head 前移重新亮了,需要对新 head 重发确认。属文案/通知层改进,不改任何 gate 语义。
   - 提案:在 auto 轮检测到「issue 有确认评论 + 曾有 admins Approve + 当前 head 晚于最后一次确认且 unconfirmedKinds 非空」时,向 owner 汇总加一行定向提示(或复用 notify-sync-alert 类低频出口),说明该 PR 只差对新 head 重新确认;不新增 GitHub 写操作。
@@ -202,6 +204,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `symlink-argv1-import-meta-url-mismatch-silent-noop` **audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 现象:脚本用 process.argv[1] 与 import.meta.url 严格相等判定直跑；SKILL 与生产调度一律经 ~/.claude/skills/review-pr 软链调用（argv[1] 为软链路径，import.meta.url 为 realpath），两者永不相等 → main() 不执行、零输出零报错退出 0，A5 事后审计闸在软链部署下从未真正运行（2026-08-19 本轮实跑发现：经软链调用 3 次全静默，经 realpath 调用立即正常输出）。修法：守卫改用 fs.realpathSync(process.argv[1]) 与 import.meta.url 比较（或 realpath 后比较）
 - `stale-pushback-dedup-head-unchanged` **打回去重规则正确覆盖 head 未变场景,无需进化** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: rejected
   - 现象:本轮实测:auto.action=review(needsSelfApproval),审查发现既有 CHANGES_REQUESTED 与本轮 finding 内容一致且作者零新 commit,按 5.2 去重规则跳过重复提交——机制按设计工作,仅登记观察
   - 备注:机制按设计工作(去重规则命中即跳过),非流程缺口,不落 SKILL.md

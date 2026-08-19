@@ -2067,6 +2067,32 @@
       "occurrences": 1,
       "firstSeen": "2026-08-18T08:09:56.095Z",
       "lastSeen": "2026-08-18T08:09:56.095Z"
+    },
+    {
+      "fingerprint": "ci-state-race-scan-to-process",
+      "tier": "proposal",
+      "title": "扫描判 review 的候选在处理时 CI 已失败，靠前置 gate 复核兜住",
+      "detail": "PR167 扫描时（10:41 前）CI 尚未完成故 auto.action=review，处理时实测 head 上 lint+tsc+unit 已失败（5 处单测断言）。本轮靠 3.5 前置 gate 第 4 条人工复核拦下，未造成误审误合。候选方案：context.mjs 扫描时对 statusCheckRollup 含 IN_PROGRESS/QUEUED 的候选延后分类或标注 ci-pending-race，减少这类靠 agent 复核兜底的窗口。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-18T11:05:20.686Z",
+      "lastSeen": "2026-08-18T11:05:20.686Z"
+    },
+    {
+      "fingerprint": "symlink-argv1-import-meta-url-mismatch-silent-noop",
+      "tier": "auto",
+      "title": "audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op",
+      "detail": "脚本用 process.argv[1] 与 import.meta.url 严格相等判定直跑；SKILL 与生产调度一律经 ~/.claude/skills/review-pr 软链调用（argv[1] 为软链路径，import.meta.url 为 realpath），两者永不相等 → main() 不执行、零输出零报错退出 0，A5 事后审计闸在软链部署下从未真正运行（2026-08-19 本轮实跑发现：经软链调用 3 次全静默，经 realpath 调用立即正常输出）。修法：守卫改用 fs.realpathSync(process.argv[1]) 与 import.meta.url 比较（或 realpath 后比较）",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T01:11:00.805Z",
+      "lastSeen": "2026-08-19T01:11:00.805Z"
     }
   ],
   "escapedHazards": [
