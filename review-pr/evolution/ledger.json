@@ -2093,6 +2093,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T01:11:00.805Z",
       "lastSeen": "2026-08-19T01:11:00.805Z"
+    },
+    {
+      "fingerprint": "isolated-reviewer-tmp-write-blocked",
+      "tier": "proposal",
+      "title": "隔离 worktree 审查席写不了 /tmp，任务不该把 rro-1 指到仓外",
+      "detail": "PR 170 审查席 isolation=worktree 时 heredoc 写 /tmp/review-pr-170/rro-1.json 被沙箱拒绝；后又误删整个 /tmp/review-pr-170，task/preflight 一起没了。最终改写进 worktree 内 rro-1.json 才交卷。",
+      "proposal": "阶段二任务模板把输出路径改成隔离 worktree 内相对路径（如 ./rro-1.json），禁止指向 /tmp；主 agent 从 worktree 拷出再 consume。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T03:39:24.881Z",
+      "lastSeen": "2026-08-19T03:39:24.881Z"
     }
   ],
   "escapedHazards": [

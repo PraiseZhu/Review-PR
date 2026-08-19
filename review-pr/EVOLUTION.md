@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `isolated-reviewer-tmp-write-blocked` **隔离 worktree 审查席写不了 /tmp，任务不该把 rro-1 指到仓外** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 现象:PR 170 审查席 isolation=worktree 时 heredoc 写 /tmp/review-pr-170/rro-1.json 被沙箱拒绝；后又误删整个 /tmp/review-pr-170，task/preflight 一起没了。最终改写进 worktree 内 rro-1.json 才交卷。
+  - 提案:阶段二任务模板把输出路径改成隔离 worktree 内相对路径（如 ./rro-1.json），禁止指向 /tmp；主 agent 从 worktree 拷出再 consume。
 - `ci-state-race-scan-to-process` **扫描判 review 的候选在处理时 CI 已失败，靠前置 gate 复核兜住** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
   - 现象:PR167 扫描时（10:41 前）CI 尚未完成故 auto.action=review，处理时实测 head 上 lint+tsc+unit 已失败（5 处单测断言）。本轮靠 3.5 前置 gate 第 4 条人工复核拦下，未造成误审误合。候选方案：context.mjs 扫描时对 statusCheckRollup 含 IN_PROGRESS/QUEUED 的候选延后分类或标注 ci-pending-race，减少这类靠 agent 复核兜底的窗口。
 - `confirm-approved-then-new-push-needs-release-marker-hint` ** admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
