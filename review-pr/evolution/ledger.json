@@ -2249,6 +2249,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T17:49:50.408Z",
       "lastSeen": "2026-08-19T17:49:50.408Z"
+    },
+    {
+      "fingerprint": "recipe-empty-model-id-falls-to-default-channel",
+      "tier": "by-design",
+      "title": "配方空模型 id 回落默认档是作者侧代码问题",
+      "detail": "PR 180 recipeChannelForModel 对空 id 返回空串，经 mivoChannelFor 回落默认通道。已 REQUEST_CHANGES，不属流程缺口。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T17:49:55.102Z",
+      "lastSeen": "2026-08-19T17:49:55.102Z"
     }
   ],
   "escapedHazards": [

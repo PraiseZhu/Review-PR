@@ -269,6 +269,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `recipe-empty-model-id-falls-to-default-channel` **配方空模型 id 回落默认档是作者侧代码问题** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR 180 recipeChannelForModel 对空 id 返回空串，经 mivoChannelFor 回落默认通道。已 REQUEST_CHANGES，不属流程缺口。
 - `skip-conflict-and-unresolved-author-side` **冲突+未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR 187 同时 DIRTY 与 1 条未 resolve conversation；auto 不能代合语义冲突，也不能代 resolve 真人/非白名单 thread。已按模板 C 公开提醒。
 - `unresolved-bot-threads-block-merge` **未 resolve 的 bot conversation 卡着合不了** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
