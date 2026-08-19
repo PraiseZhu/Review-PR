@@ -2371,8 +2371,11 @@ export function evaluateDiscussionIssueConsent({
   headAppearedAt = null,
   headOid = '',
 } = {}) {
-  if (whitelistComments === null || whitelistComments === undefined) {
-    return { consented: false, readFailed: whitelistComments === null, matched: null };
+  if (whitelistComments === undefined) {
+    return { consented: false, readFailed: false, matched: null };
+  }
+  if (whitelistComments === null) {
+    return { consented: false, readFailed: true, matched: null };
   }
   if (!Array.isArray(whitelistComments)) {
     return { consented: false, readFailed: true, matched: null };
