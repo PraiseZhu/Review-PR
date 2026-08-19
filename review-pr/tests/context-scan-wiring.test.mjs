@@ -359,6 +359,19 @@ test('C1 接线:mergeAuthorization:"oops" → context --scan 不崩,configWarnin
 // 之一时,context.mjs 真的 spawn 一次 signoff-hold.mjs --dry-run(脚本调脚本,不是注释/
 // 文档示例)。以下用例锁住"真被调用"这件事本身可观测,不是靠读源码断言。
 
+test('安全门讨论 issue 无同意时仍拦，且产品门 discussionIssue 形状不被改写', () => {
+  const { repo, env } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
+  const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(out, `输出应为 JSON,got status=${r.status}\nstdout=${r.stdout.slice(0, 400)}`);
+  assert.equal(out.auto.action, 'security-gate');
+  assert.equal(out.signoff.released, false);
+  assert.equal(out.signoff.releaseBasis, 'unconfirmed-kinds');
+  assert.equal(out.signoff.discussionIssueConsent.consented, false);
+  assert.equal(out.productGate.needsProductCheck, false, '本夹具不触发产品门语义改写');
+});
+
 test('SC-1 接线:命中 securityReviewPaths → signoff-hold.mjs --dry-run 真被 spawn(脚本调脚本,非注释/文档示例)', () => {
   const { repo, env, ghLog } = setup({ securityReviewPaths: ['src/foo\\.ts'] });
   const r = spawnSync('node', [SCRIPT, '469', '--scan'], { cwd: repo, env, encoding: 'utf8' });

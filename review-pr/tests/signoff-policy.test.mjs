@@ -36,6 +36,7 @@ import assert from 'node:assert/strict';
 import {
   LOCK_STALE_MS,
   parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease,
+  isExplicitSignoffConsent, commentBindsCurrentHead, evaluateDiscussionIssueConsent,
   decideSignoffGateAction,
   parseHoldMarkerWithAuthor, decideCloseOnRelease, performIssueClose,
 } from '../scripts/lib.mjs';
@@ -1411,4 +1412,132 @@ test('signoff: SC2 fail-closed 硬化——slug 缺失拒绝关闭(不跳过同�
   const closedLower = decideCloseOnRelease({ markers: [sameRepo], issueState: 'closed', trustedLogins: ['dashhuang'], slug: 'acme/app' });
   assert.equal(closedLower.shouldClose, false, 'state 小写 closed → 幂等不关');
   assert.equal(closedLower.reason, 'already-closed');
+});
+
+test('signoff: 讨论 issue 明确同意 → released 且 basis 不是 approve-current-head', () => {
+  const r = evaluateSignoffRelease({
+    currentKinds: ['security'],
+    confirmedKinds: [],
+    headApproved: false,
+    issueConsent: true,
+  });
+  assert.equal(r.released, true);
+  assert.equal(r.basis, 'discussion-issue-consent');
+  assert.notEqual(r.basis, 'approve-current-head');
+});
+
+test('signoff: 非明确同意 / 读取失败 / 否定句 一律不放行', () => {
+  assert.equal(isExplicitSignoffConsent('我不同意'), false);
+  assert.equal(isExplicitSignoffConsent('先别放'), false);
+  assert.equal(isExplicitSignoffConsent('随便聊聊同意这个方向'), false);
+  assert.equal(isExplicitSignoffConsent('同意放行'), true);
+  assert.equal(isExplicitSignoffConsent('<!-- signoff:release -->'), true);
+  const failed = evaluateSignoffRelease({
+    currentKinds: ['security'],
+    confirmedKinds: [],
+    headApproved: false,
+    issueConsent: false,
+    issueConsentReadFailed: true,
+  });
+  assert.equal(failed.released, false);
+  assert.deepEqual(failed.unconfirmedKinds, ['security']);
+  const denied = evaluateDiscussionIssueConsent({
+    whitelistComments: [{ author: 'PraiseZhu', createdAt: '2026-08-19T12:00:00Z', body: '我不同意' }],
+    headAppearedAt: '2026-08-19T11:00:00Z',
+    headOid: 'abc123456789',
+  });
+  assert.equal(denied.consented, false);
+});
+
+test('signoff: whitelistComments=null → readFailed,不得当无同意放行', () => {
+  const ev = evaluateDiscussionIssueConsent({ whitelistComments: null, headAppearedAt: '2026-08-19T11:00:00Z' });
+  assert.equal(ev.readFailed, true);
+  assert.equal(ev.consented, false);
+  const r = evaluateSignoffRelease({
+    currentKinds: ['rules'],
+    confirmedKinds: [],
+    headApproved: false,
+    issueConsent: ev.consented,
+    issueConsentReadFailed: ev.readFailed,
+  });
+  assert.equal(r.released, false);
+});
+
+test('signoff: 未归属 Slack 形态不进 whitelistComments 时不得放行', () => {
+  const ev = evaluateDiscussionIssueConsent({
+    whitelistComments: [],
+    headAppearedAt: '2026-08-19T11:00:00Z',
+  });
+  assert.equal(ev.consented, false);
+});
+
+test('signoff: 作者自放行有意保留——admins 兼 PR 作者留言同意仍 released', () => {
+  const ev = evaluateDiscussionIssueConsent({
+    whitelistComments: [{
+      author: 'PraiseZhu',
+      createdAt: '2026-08-19T12:00:00Z',
+      body: '同意放行',
+    }],
+    headAppearedAt: '2026-08-19T11:00:00Z',
+    headOid: 'deadbeefcafebabe',
+  });
+  assert.equal(ev.consented, true);
+  const r = evaluateSignoffRelease({
+    currentKinds: ['security'],
+    confirmedKinds: [],
+    headApproved: false,
+    issueConsent: ev.consented,
+  });
+  assert.equal(r.released, true);
+  assert.equal(r.basis, 'discussion-issue-consent');
+});
+
+test('signoff: head 绑定——旧同意不放行新 head；评论早于 head 1 秒不绑定', () => {
+  const headA = '2026-08-19T10:00:00Z';
+  const headB = '2026-08-19T12:00:00Z';
+  const commentAt = '2026-08-19T10:30:00Z';
+  const old = evaluateDiscussionIssueConsent({
+    whitelistComments: [{ author: 'kirozeng', createdAt: commentAt, body: '同意放行' }],
+    headAppearedAt: headA,
+    headOid: 'aaa1111',
+  });
+  assert.equal(old.consented, true);
+  const nextHead = evaluateDiscussionIssueConsent({
+    whitelistComments: [{ author: 'kirozeng', createdAt: commentAt, body: '同意放行' }],
+    headAppearedAt: headB,
+    headOid: 'bbb2222',
+  });
+  assert.equal(nextHead.consented, false, '旧同意不得绑定新 head');
+  const r = evaluateSignoffRelease({
+    currentKinds: ['security'],
+    confirmedKinds: [],
+    headApproved: false,
+    issueConsent: nextHead.consented,
+  });
+  assert.equal(r.released, false);
+  assert.deepEqual(r.unconfirmedKinds, ['security']);
+  assert.equal(commentBindsCurrentHead({
+    createdAt: '2026-08-19T12:00:00.000Z',
+    headAppearedAt: '2026-08-19T12:00:01.000Z',
+  }), false, '评论早于 head 1 秒不绑定');
+  assert.equal(commentBindsCurrentHead({
+    createdAt: '2026-08-19T12:00:01.000Z',
+    headAppearedAt: '2026-08-19T12:00:01.000Z',
+  }), true, '同秒视为绑定');
+});
+
+test('signoff: 产品门回归——同一份 whitelistComments 夹具不改变产品门原料形状', () => {
+  const fixture = [
+    { author: 'PraiseZhu', createdAt: '2026-08-19T12:00:00Z', body: '同意放行' },
+    { author: 'aj0928', createdAt: '2026-08-19T12:01:00Z', body: '我不同意' },
+  ];
+  const before = fixture.map((c) => ({ ...c }));
+  evaluateDiscussionIssueConsent({
+    whitelistComments: fixture,
+    headAppearedAt: '2026-08-19T11:00:00Z',
+    headOid: 'abc1234',
+  });
+  assert.deepEqual(fixture, before, '安全门消费不得改写产品门原料数组');
+  assert.equal(fixture[0].body, '同意放行');
+  assert.equal(fixture[1].body, '我不同意');
 });
