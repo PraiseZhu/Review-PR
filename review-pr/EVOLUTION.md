@@ -269,6 +269,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-conflict-await-author` **与主干冲突卡前置门，等作者 rebase** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:本轮 #187 现场复核 mergeStateStatus=DIRTY，scan 当时 UNKNOWN 只报了未 resolve thread。auto 不代解冲突（审查未过、thread 未清）。已尝试 --conflict 提醒。
 - `skip-unresolved-threads-await-author` **未 resolve conversation 卡前置门，等作者点 Resolve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:本轮 #180 #187 均因 1 条未 resolve conversation 被 skip-gate。催 resolve 脚本已去重（already-commented），未新发评论。
 - `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked

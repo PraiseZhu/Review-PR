@@ -2288,6 +2288,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T20:03:04.199Z",
       "lastSeen": "2026-08-19T20:03:04.199Z"
+    },
+    {
+      "fingerprint": "skip-conflict-await-author",
+      "tier": "by-design",
+      "title": "与主干冲突卡前置门，等作者 rebase",
+      "detail": "本轮 #187 现场复核 mergeStateStatus=DIRTY，scan 当时 UNKNOWN 只报了未 resolve thread。auto 不代解冲突（审查未过、thread 未清）。已尝试 --conflict 提醒。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T20:03:08.759Z",
+      "lastSeen": "2026-08-19T20:03:08.759Z"
     }
   ],
   "escapedHazards": [
