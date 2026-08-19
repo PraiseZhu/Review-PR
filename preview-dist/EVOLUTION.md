@@ -5,12 +5,30 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
+- `product-gate-src-lib-false-positive` **src/lib 纯技术文件命中 uiPaths 会误亮产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 现象:PR #177 只改 src/lib/writeRetryQueue.ts（类型+纯函数搬运、无调用方、无界面），因 uiPaths 含 src/ 被判 product-gate。语义上已放行，但每轮都要人工定性。
+  - 提案:评估把 persist/lib 纯逻辑路径从 uiPaths 收窄，或加 uiExcludePaths 覆盖 src/lib/、src/store/ 等非界面目录，避免 feat+src/lib 反复进产品门。
+- `isolated-reviewer-tmp-write-blocked` **隔离 worktree 审查席写不了 /tmp，任务不该把 rro-1 指到仓外** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 现象:PR 170 审查席 isolation=worktree 时 heredoc 写 /tmp/review-pr-170/rro-1.json 被沙箱拒绝；后又误删整个 /tmp/review-pr-170，task/preflight 一起没了。最终改写进 worktree 内 rro-1.json 才交卷。
+  - 提案:阶段二任务模板把输出路径改成隔离 worktree 内相对路径（如 ./rro-1.json），禁止指向 /tmp；主 agent 从 worktree 拷出再 consume。
+- `ci-state-race-scan-to-process` **扫描判 review 的候选在处理时 CI 已失败，靠前置 gate 复核兜住** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 现象:PR167 扫描时（10:41 前）CI 尚未完成故 auto.action=review，处理时实测 head 上 lint+tsc+unit 已失败（5 处单测断言）。本轮靠 3.5 前置 gate 第 4 条人工复核拦下，未造成误审误合。候选方案：context.mjs 扫描时对 statusCheckRollup 含 IN_PROGRESS/QUEUED 的候选延后分类或标注 ci-pending-race，减少这类靠 agent 复核兜底的窗口。
+- `confirm-approved-then-new-push-needs-release-marker-hint` ** admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 现象:本轮 #147/#159 同型:#148/#160 里 PraiseZhu 都写了「维护者确认:通过,已在当前 head X Approve」,但作者随后又推了新 commit,head 绑定规则(设计正确)使旧确认作废;issue 侧没有跟踪 PR head,维护者以为自己已确认过,PR 却持续 awaiting-discussion。机器判定没问题,缺的是一条对维护者的定向提示:门因 head 前移重新亮了,需要对新 head 重发确认。属文案/通知层改进,不改任何 gate 语义。
+  - 提案:在 auto 轮检测到「issue 有确认评论 + 曾有 admins Approve + 当前 head 晚于最后一次确认且 unconfirmedKinds 非空」时,向 owner 汇总加一行定向提示(或复用 notify-sync-alert 类低频出口),说明该 PR 只差对新 head 重新确认;不新增 GitHub 写操作。
+- `signoff-regate-after-push-no-renotice` **门类 hold 在作者 push 后重新亮时无 renotice，维护者对旧 head 的确认静默失效** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 现象:PR #159: admins 在讨论 issue #160 确认并在 head 4cd7e04 Approve(security 门); 作者随后推 748f4ab 并 dismiss 重审, 门按设计重新亮(Approve 绑定 head)。signoff-hold alreadyHeld 幂等跳过(renoticeSkipped=label-already-on), 无任何渠道告知 admins 需对新 head 重新确认, PR 只能靠人工发现。#147 同型(rules 门, 确认绑定旧 head d29b823, 当前 3adf898)。
+  - 提案:同门类在新 head 上重新亮、且该门类曾存在旧 head 的维护者确认时, 向讨论 issue 追加一条 @admins 提醒(或经私聊出口), 让『需重新确认』可见。属新增对外写操作, 不放宽任何 gate, 按 8.1 归 proposal 等维护者拍板。
+- `github-graphql-503-intermittent-20260818` **GitHub GraphQL 503 间歇故障导致 scan/探测失败,auto 轮重试成本高且可能误升级 signoff-hold-unavailable** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 现象:本轮 gh graphql 通道间歇 503(REST 正常):--scan-all 部分候选失败、#147 hold 探测两次失败被 F3 升级为 signoff-hold-unavailable(人工介入类),但人工跑同款 dry-run 立即成功(invoked=true ok=true alreadyHeld=true),证明是网络瞬态而非调用点损坏。agent 侧靠多轮 sleep+重试兜住,累计耗时 ~20 分钟。可考虑:spawnScriptJson 对 503 加有限指数退避重试,或 F3 探测失败时区分网络类错误与模块缺失类错误。
+- `merged-mid-review-head-races-clean-receipt` **审查期间 owner 网页合并 PR，clean 回执落盘晚于合并，审计链缺合并者视角** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 现象:PR #139（mivo-canvas-plugin，2026-08-17）：阶段二独立审查进行中（约 06:19 开始），owner 于 06:44 经 GitHub 网页 squash 合并（mergedBy=PraiseZhu，squash 单亲 commit）；审查 agent 06:48 完成后 consume-review-output 判 clean、回执正常落盘，pre-merge-check 才发现 state=MERGED。本轮无害（审查结论 clean 与合并一致），但同类竞态下若审查判 dirty，则问题已进 main、只剩事后发现一条路。proposal：context.mjs scan 后、consume-review-output 前无锚点检查 head 变化；可在 consume-review-output 对已 MERGED 的 PR 落回执时附 mergedAfterReviewStart 标记，或 pre-merge 阶段对 merged PR 出 counterfactual 警示行进汇总。属流程可观测性改进，非扩权。
+  - 提案:consume-review-output.mjs 写回执前查 PR state，非 OPEN 时在回执附 state-at-write 字段并要求汇总显式提示『合并先于审查完成』
 - `scan-race-new-pr-window` **scan-all 落盘时间点与 GitHub PR 创建存在竞态,本轮新开 PR(#136 比 scanState 早 4 秒)要靠 agent 自查补入** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
   - 现象:本轮 PR #136 createdAt=2026-03:03:54Z,scanState.savedAt=03:03:50.630Z——context.mjs --scan-all 的候选拉取发生在 #136 创建之前,候选数 1 不含 #136。靠主 agent 会话中途 gh pr list 自查发现并补扫。若 agent 不自查,该 PR 要等下一轮 cron 才进分类。proposal:扫描后用 createdAt 下界(如 scan 启动时刻)再查一次 gh pr list,把窗口内新开 PR 显式补入本轮处理;或在 SKILL 6 阶段 1 写明'扫描完成后 agent 须再跑一次 gh pr list 对照 candidates 数'。
 - `skillsync-preview-dist-dirty` **skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
   - 现象:prepare.mjs 的 skillSync pull 报 'local changes would be overwritten'：preview-dist/{EVOLUTION.md,dist_manifest.json,evolution/ledger.json} 有未提交本地改动，远端 behind=7 拉不进。自动化不应代为 commit/stash 用户改动（安全边界），需人工到 skill 仓处理这 3 个文件后自同步恢复。不处理则每轮重现，巡审可能持续用旧版 skill 规则审新 PR。
-- `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+- `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:PR #617 走 admin-trust 路由合并:pre-merge-check 确认 structuralBypassReady,回执 verdict=clean,作者在 admins 名单。已连续多轮正确运行,可以考虑在 EVOLUTION.md 中登记为成熟路径。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
@@ -192,6 +210,11 @@
 
 ## 已自动落地(automatable-gap)
 
+- `symlink-argv1-import-meta-url-mismatch-silent-noop` **audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: landed
+  - 现象:脚本用 process.argv[1] 与 import.meta.url 严格相等判定直跑；SKILL 与生产调度一律经 ~/.claude/skills/review-pr 软链调用（argv[1] 为软链路径，import.meta.url 为 realpath），两者永不相等 → main() 不执行、零输出零报错退出 0，A5 事后审计闸在软链部署下从未真正运行（2026-08-19 本轮实跑发现：经软链调用 3 次全静默，经 realpath 调用立即正常输出）。修法：守卫改用 fs.realpathSync(process.argv[1]) 与 import.meta.url 比较（或 realpath 后比较）
+- `stale-pushback-dedup-head-unchanged` **打回去重规则正确覆盖 head 未变场景,无需进化** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: rejected
+  - 现象:本轮实测:auto.action=review(needsSelfApproval),审查发现既有 CHANGES_REQUESTED 与本轮 finding 内容一致且作者零新 commit,按 5.2 去重规则跳过重复提交——机制按设计工作,仅登记观察
+  - 备注:机制按设计工作(去重规则命中即跳过),非流程缺口,不落 SKILL.md
 - `review-agent-spawn-no-worktree-isolation` **审查 agent spawn 漏传 isolation:worktree,主工作树被切到 PR head** — 出现 1 次,首见 2026-08-11,最近 2026-08-11,status: landed
   - 现象:本轮 PR #623 审查:Agent 调用未显式传 isolation:'worktree',审查 agent 在主工作树执行 gh pr checkout 造成 detached HEAD。工作树干净无残留,已 checkout main 恢复,无实际影响。SKILL 已有'优先使用 Agent + isolation worktree'要求,缺口在编排执行层:spawn 后无机器检查点验证主工作树分支未变。改进:主 agent spawn 审查 agent 后立即验证 git branch --show-current 仍为原分支,不符即恢复并记录。
   - 备注:SKILL.md 4 节加 spawn 后自检主工作树分支检查点;commit c38e7cb 已推送 skills 仓 main
@@ -243,23 +266,51 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 1 次,首见 2026-08-14,最近 2026-08-14,status: tracked
-  - 现象:auto 模式扫描发现 PR #47/#48 已由先前的 security gate hold 挂上 awaiting-discussion 标签并开讨论 issue，本轮无新动作，等待 admins 批准放行
+- `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #177 仅 1 条 greptile P2 注释 thread 未 resolve；threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，脚本去重未重发。
+- `security-gate-awaiting-admin-after-stacked-ci-paths` **PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #170 head 叠入 plugin-green-ref.yml / pr-size-gate.yml / pr-rules.json，security-gate 已 hold（issue #176），本轮 alreadyHeld 幂等复用。属维护者确认，不自动放行。
+- `unresolved-greptile-p2-blocks-merge` **Greptile P2 未 resolve 会卡合并，threadTriage 关闭时只能催作者** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #177 唯一阻断是 greptile-apps 一条 P2 注释 thread。本仓未配 threadTriage，auto 不能代 reply/resolve，按 5.3/6 发模板 C 催 resolve。
+- `stacked-merge-during-security-hold` **堆叠 PR 在安全门 hold 后被人手合进下游分支** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR 171 刚挂 awaiting-discussion 并开讨论 issue 175，就被 PraiseZhu 网页合进 PR 170 的 head。170 因此叠上 CI/pr-rules，重扫变 security-gate + size-gate 红。旧 snapshot 审查仍可消费，但不能拿旧回执合新 head。
+- `round-2026-08-18a-no-new-gaps` **本轮无新流程缺口:145 硬命中为测试桩形态走既有豁免机制,147/159 为维护者决策类 hold** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:PR145 sk-api-key×2 硬命中(recipes.test.ts:321/322)上下文为 Authorization/X-Mivo-Api-Key 测试桩(验证服务对携带凭据视而不见),属敏感内容门与 sensitiveContent.allowPaths 既有机制的正常触发面,是否豁免由维护者决策;PR147 作者 push 新 head 后旧 Approve 被 dismiss 导致 rules 门重亮、PR159 新增依赖触发 security 门,均为 by-design 维护者确认类。无 automatable-gap、无扩权项。
+- `pr147-format-blocker-bypass-path` **PR 147 格式门外的全部阻断（冲突哨兵翻红/未 resolve thread/CI FAILURE）均为已知 workflow bug 或作者侧收尾，机器判定已正确分流，无需沉淀** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:PR 147: conflict sentinel 翻红=pr-hygiene.yml 缺 issues:write（作者 d29b823 自带修复，#150 已合 main 同源补丁）；greptile 2 条 thread 未 resolve+Greptile Review FAILURE=非 required 第三方检查。PR 145: mergeStateStatus=DIRTY，CI 静默跳过属 GitHub 平台行为。auto.action 路由（skip-gate/pushback-format）与 SKILL 3.5/6 阶段 1 口径一致，无 automatable-gap。
+- `round-no-merge-candidates-hold-conflict-threads` **PR 145/147 未合并根因均为 by-design：确认门 hold + 作者侧冲突/未 resolve** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:145 命中 security 门(package.json)+DIRTY 冲突，issue #146 已开、标签已挂、无 admins Approve；147 命中 security+rules 门(.github/workflows+AGENTS.md)+2 条 conversation 未 resolve，issue #148 已开。三轮分类全部落入 by-design（维护者确认 + 真人 resolve + 语义冲突），无 automatable-gap。
+- `held-pr-stale-check-ok` **两个 held PR 均在 24h 内、讨论 issue 无表态,按设计等把关人确认** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
+  - 现象:PR145/147 命中 security/rules 门挂 awaiting-discussion,讨论 issue #146/#148 均无白名单表态;停滞私聊判定 not-stale-yet(12.1h/10.8h < 24h 阈值)。属 by-design 等人,无 automatable-gap。
+- `security-gate-already-held-no-action` **security gate 已 hold 的 PR 本轮无需动作** — 出现 3 次,首见 2026-08-14,最近 2026-08-18,status: tracked
+  - 现象:PR #145(security:package.json)与 #147(security+rules:pr-hygiene.yml+AGENTS.md)均 alreadyHeld=true,讨论 issue #146/#148 OPEN,标签已挂,holdInvocation 探测判定 issueReuse=prior-open 不重复建。两 PR 均无放行信号(adminsApprovedCurrentHead=false,白名单无留言)。by-design:维护者确认门等的就是人,流程无自动放行通道。
+- `round-2026-08-18-no-new-blockers` **两候选均已在 security/rules 门 hold 等维护者确认,本轮无新增根因** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR145(冲突+security门)+PR147(threads+security/rules门)均为存量 hold 状态,admins 未 Approve 当前 head;提醒评论均 already-commented 去重跳过,停滞判定均 not-stale-yet。无漏判、无流程缺口。
+- `held-security-gate-waiting-maintainer` **两候选均停在被 hold 等维护者确认(security/rules 门)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR#145 命中 package.json securityReviewPaths,PR#147 命中 workflows+AGENTS.md;均为设计上需人确认,非流程缺口;催办去重与停滞判定本轮验证正常
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 6 次,首见 2026-07-24,最近 2026-08-17,status: tracked
+  - 现象:本轮 #145(DIRTY 冲突)/#147(2 条 thread 未 resolve)均处于 signoff hold(security 门),且作者侧卡点提醒评论已发过(指纹去重 already-commented),无新进化项
+- `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap
+- `no-merge-candidates-signoff-holds-only` **本轮两候选均停在维护者确认门,无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR145 命中 security 门(package.json)+冲突,issue#146 等确认;PR147 命中 security+rules 双门(.github/workflows/pr-hygiene.yml + AGENTS.md),已按 3.4/3.9 hold 到 issue#148。均为 by-design:等 admins 显式确认或作者解决冲突,不应自动化。
+- `round-2026-08-17-t13-both-bydesign` **2 候选未合并均 by-design：143 格式打回待作者改 body，145 security 门待 admins 确认** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:扫描后 #145 作者推新 head(408a222e→0f1d2eca)解决 threads 但引入冲突；notify-author-resolve 线程模式正确返回 no-unresolved-threads 未误发，--conflict 模式按新 head 发出；hold 与格式打回均对 head 漂移安全（放行绑定 adminsApprove 当前 head，格式问题绑定 body）。无流程缺口。
+- `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 2 次,首见 2026-08-10,最近 2026-08-17,status: tracked
+  - 现象:2026-08-17 auto 轮:#143 命中 security(package.json/package-lock)+rules(AGENTS.md/CLAUDE.md) 双门,复用既有 issue #144 幂等 hold,等 admins 在 issue 留言或 Approve 当前 head a2ff8252
+- `round-skipped-candidates-none` **本轮无未合并候选需要复盘(141 已合并,143 by-design hold)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
+  - 现象:PR #143 的 security+rules 门 hold 属维护者确认流程(by-design),admins Approve 放行后自动继续;PR #141 全流程走通无流程缺口。
 - `security-gate-holds-existing-discussion` **Security gate 命中时已有讨论 issue 则静默跳过，无需额外动作** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
   - 现象:PR #47, #48 均命中 security-gate（改了 CI workflow 文件），但 signoff 已持有讨论 issue（alreadyHeld=true），admins 尚未批准放行。本轮正确跳过，无需额外 action。
 - `auto-first-run-2026-08-13` **首轮 auto 运行: 3 候选, 2 安全门 hold, 1 self-fix 投递** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
 - `security-gate-normal-hold` **security-gate 正常拦截安全审查路径 PR** — 出现 1 次,首见 2026-08-13,最近 2026-08-13,status: tracked
   - 现象:PR #43 命中 package-lock.json/package.json(securityReviewPaths),auto.action=security-gate,成功执行 signoff-hold(issue #44 + 评论 + 标签),by-design 无需自动化改进
-- `security-gate-hold-waiting-admins` **securityReviewPaths 命中的 PR 保持 hold 等待 admins 放行(非缺口)** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
-  - 现象:本轮 3 个候选(591/607/608)全部命中 security-gate 且已 hold(issue #613/#614/#615 已开、标签已挂),admins 均未对当前 head 之后 Approve,按流程保持 held 跳过
 - `skip-security-review-package-json-human` **候选 PR 命中 securityReviewPaths(package.json)→ 转人工审查,不自动审不合** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:本轮 #580/#603 均因改动含 package.json 触发 skip-security-review(3.8 供应链能力面防护,防自动化改坏自己);#605 同轮走完整自动化审查+admin-trust 合并,流程正常无缺口
 - `security-review-path-package-json-batch-skip` **候选整批因 package.json 命中 securityReviewPaths 转人工** — 出现 2 次,首见 2026-08-09,最近 2026-08-09,status: tracked
   - 现象:2026-08-10 auto 轮次:2/2 候选(#580 #603,均 kirozeng)再次因改动 package.json 命中 securityReviewPaths,auto.action=skip-security-review 整批转人工。属配置意图(供应链能力面转人工),非遗漏;观察计数,不自动放开。
 - `skip-security-review-package-json` **PR 改 package.json 命中 securityReviewPaths 转人工(设计行为)** — 出现 5 次,首见 2026-08-08,最近 2026-08-09,status: tracked
   - 现象:auto 轮 #580 唯一候选命中 SKILL 3.8 安全审查路径(package.json 在 securityReviewPaths),auto.action=skip-security-review,原样跳过不审不合不提醒。属设计上就该人来的人工审查,计数观察,不自动放开。
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 5 次,首见 2026-07-24,最近 2026-08-08,status: tracked
-  - 现象:本轮 #585(资产 GC)1 条 conversation 未 resolve 被 skip,已发模板 C 提醒评论
 - `skip-security-review-package-json-pr` **package.json 改动 PR 命中 securityReviewPaths → skip-security-review 转人工（by-design 观察计数）** — 出现 2 次,首见 2026-08-08,最近 2026-08-08,status: tracked
   - 现象:本轮 #580(bench 内存基准)含 package.json 改动,命中安全审查路径转人工,设计行为
 - `changelog-generated-data-semantic-conflict` **changelog.json 生成数据分叉使"其余全过仅剩冲突"的 PR 代合并仍判语义冲突** — 出现 1 次,首见 2026-08-06,最近 2026-08-06,status: tracked

@@ -20,9 +20,9 @@
 // `kill(pid, 0)` 永远 ESRCH → 永远判 stale → 锁形同虚设,2026-07 实锤);
 // 而长命的持有者是上层 agent 进程,脚本拿不到它的 PID(父 shell 同样秒退)。
 // TTL 60 分钟按 auto 批处理单轮上限留余量;auto 去掉批量数量上限后单轮可能超时,
-// 长轮次必须用 refresh-lock.mjs 心跳续期(每处理完一个 PR 一次),否则锁会被下一轮
-// scheduler 判 stale 接管,变成两个 auto 会话并发。代价是异常崩溃后最多阻塞下一轮
-// 一小时,scheduler 会自动重试,可接受。
+// 长轮次由 lock-heartbeat-daemon.mjs 在后台续期(每 20 分钟一次),不要让主会话
+// 用 refresh-lock.mjs 空转等待——2026-08-18 巡审把后者打了 4660 次 LLM 回合。
+// 代价是异常崩溃后最多阻塞下一轮一小时,scheduler 会自动重试,可接受。
 // token:acquire 成功时生成随机 token 写进锁文件并输出(lock.token);后续
 // refresh-lock.mjs / release-lock.mjs / cleanup.mjs 都要带 --token,脚本只操作
 // token 匹配的锁——防止"自己超时被接管后,又把接管者的新锁误删"造成双实例。
@@ -34,25 +34,11 @@
 // 跑:node <skill-root>/scripts/prepare.mjs
 
 import { parseRepo, git, gh, print, fail, LOCK_FILE, releaseLockOwned, skillRepoPull } from './lib.mjs';
+import { startLockHeartbeat, stopLockHeartbeat, parseLockStartedAt } from './lib.session-lock.mjs';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 const LOCK_TTL_MS = 60 * 60 * 1000; // 60 minutes
-
-/** 取锁文件里的 startedAt(ms);兼容 {startedAt}/{pid,startedAt} JSON 与裸 ISO,解析失败返回 null。 */
-function parseLockStartedAt(raw) {
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('{')) {
-    try {
-      const t = new Date(JSON.parse(trimmed).startedAt).getTime();
-      return isNaN(t) ? null : t;
-    } catch {
-      return null;
-    }
-  }
-  const t = new Date(trimmed).getTime();
-  return isNaN(t) ? null : t;
-}
 
 const TAKEOVER_FILE = LOCK_FILE + '.takeover';
 const TAKEOVER_TTL_MS = 60 * 1000; // 接管锁正常只持有毫秒级,60s 足够覆盖进程死在中间的自愈
@@ -176,6 +162,7 @@ try {
   let skillSync = null;
   if (lock.acquired) {
     try { skillSync = skillRepoPull({ timeoutMs: 30_000 }); } catch { /* best-effort */ }
+    try { startLockHeartbeat(LOCK_FILE, lock.token); } catch { /* 守护挂了仍可靠 refresh-lock 冷却补救 */ }
   }
 
   const repo = parseRepo();
@@ -206,6 +193,7 @@ try {
   // 拿到锁之后才失败(不是 git 仓库 / origin 缺失…)必须回滚自己的锁,
   // 否则这一轮啥也没干却让后续 60 分钟内的所有轮次全被 lock-held 拦掉。
   if (lock?.acquired && lock.token) {
+    try { stopLockHeartbeat(LOCK_FILE, lock.token); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
     try { releaseLockOwned(lock.token); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
   }
   fail(e);
