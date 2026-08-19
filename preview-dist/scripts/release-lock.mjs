@@ -18,7 +18,7 @@ const token = i >= 0 ? process.argv[i + 1] : undefined;
 
 let result;
 try {
-  stopLockHeartbeat(LOCK_FILE);
+  stopLockHeartbeat(LOCK_FILE, token);
   result = releaseLockOwned(token);
 } catch (e) {
   result = { released: false, alreadyAbsent: false, notOwner: false, error: String(e && e.message ? e.message : e) };

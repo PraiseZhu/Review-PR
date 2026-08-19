@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -67,6 +67,31 @@ test('refreshOwnedSessionLock: 冷却过后同 token 续期', () => {
   assert.equal(r.skipped, null);
   const started = JSON.parse(readFileSync(lockFile, 'utf8')).startedAt;
   assert.equal(Date.parse(started), later);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('refreshOwnedSessionLock: 锁已存在时 ENOENT 重建不得覆盖(wx/EEXIST→lost)', () => {
+  const dir = freshTempDir('session-lock-');
+  const lockFile = join(dir, 'lock.json');
+  writeFileSync(lockFile, sessionLockPayload('owner', Date.now()));
+  const before = readFileSync(lockFile, 'utf8');
+  const r = refreshOwnedSessionLock(lockFile, 'intruder');
+  assert.equal(r.lost, true);
+  assert.equal(r.recreated, false);
+  assert.equal(readFileSync(lockFile, 'utf8'), before);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('stopLockHeartbeat: 非 owner token 不得杀掉当前守护', () => {
+  const dir = freshTempDir('session-lock-');
+  const lockFile = writeLock(dir, 'owner', Date.now());
+  writeFileSync(heartbeatPidPath(lockFile), `${process.pid}\n`);
+  const r = stopLockHeartbeat(lockFile, 'old-owner');
+  assert.equal(r.skipped, 'not-owner');
+  assert.equal(r.stopped, false);
+  assert.equal(existsSync(heartbeatPidPath(lockFile)), true);
+  assert.equal(isPidAlive(process.pid), true);
+  unlinkSync(heartbeatPidPath(lockFile));
   rmSync(dir, { recursive: true, force: true });
 });
 

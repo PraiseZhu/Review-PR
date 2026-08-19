@@ -71,6 +71,17 @@ export function writeOwnedSessionLock(lockFile, token, startedAt = new Date()) {
   writeFileSync(lockFile, sessionLockPayload(token, startedAt));
 }
 
+function rewriteIfOwner(lockFile, token, now) {
+  const again = readSessionLock(lockFile);
+  if (!again.present || again.token !== token) {
+    return { ok: false, lost: true };
+  }
+  writeOwnedSessionLock(lockFile, token, now);
+  const check = readSessionLock(lockFile);
+  if (check.token !== token) return { ok: false, lost: true };
+  return { ok: true, lost: false };
+}
+
 export function refreshOwnedSessionLock(lockFile, token, {
   now = Date.now(),
   minIntervalMs = SESSION_LOCK_REFRESH_MIN_INTERVAL_MS,
@@ -80,7 +91,10 @@ export function refreshOwnedSessionLock(lockFile, token, {
     raw = readFileSync(lockFile, 'utf8');
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
-    writeOwnedSessionLock(lockFile, token, now);
+    // 锁没了只允许 wx 重建;撞 EEXIST = 别人刚建好,视为丢锁,绝不覆盖
+    if (!tryCreateSessionLock(lockFile, sessionLockPayload(token, now))) {
+      return { refreshed: false, recreated: false, lost: true, skipped: null, ageMs: null };
+    }
     return { refreshed: true, recreated: true, lost: false, skipped: null, ageMs: 0 };
   }
 
@@ -95,7 +109,10 @@ export function refreshOwnedSessionLock(lockFile, token, {
   if (ageMs != null && ageMs < minIntervalMs) {
     return { refreshed: false, recreated: false, lost: false, skipped: 'cooldown', ageMs };
   }
-  writeOwnedSessionLock(lockFile, token, now);
+  const wrote = rewriteIfOwner(lockFile, token, now);
+  if (!wrote.ok) {
+    return { refreshed: false, recreated: false, lost: true, skipped: null, ageMs };
+  }
   return { refreshed: true, recreated: false, lost: false, skipped: null, ageMs };
 }
 
@@ -123,7 +140,13 @@ export function isPidAlive(pid) {
   }
 }
 
-export function stopLockHeartbeat(lockFile) {
+export function stopLockHeartbeat(lockFile, expectedToken) {
+  if (expectedToken) {
+    const cur = readSessionLock(lockFile);
+    if (cur.present && cur.token !== expectedToken) {
+      return { stopped: false, killed: false, pid: null, skipped: 'not-owner' };
+    }
+  }
   const path = heartbeatPidPath(lockFile);
   const pid = readHeartbeatPid(lockFile);
   let killed = false;
@@ -161,7 +184,7 @@ export function startLockHeartbeat(lockFile, token, {
 }
 
 export function releaseOwnedSessionLock(lockFile, token) {
-  stopLockHeartbeat(lockFile);
+  stopLockHeartbeat(lockFile, token);
   if (!existsSync(lockFile)) {
     return { released: false, alreadyAbsent: true, notOwner: false };
   }

@@ -39,7 +39,11 @@ const tick = () => {
     const cur = readSessionLock(lockFile);
     if (!cur.present) process.exit(0); // 条件 1:锁已释放,绝不重建
     if (cur.token !== token) process.exit(0); // 条件 2:已被接管
+    const again = readSessionLock(lockFile);
+    if (!again.present || again.token !== token) process.exit(0);
     writeOwnedSessionLock(lockFile, token);
+    const check = readSessionLock(lockFile);
+    if (check.token !== token) process.exit(0); // 写入窗口内被接管,停跳不覆盖回去
   } catch {
     process.exit(0); // 任何异常都宁可停跳(锁 60 分钟后自愈),不留常驻进程
   }

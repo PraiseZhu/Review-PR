@@ -193,7 +193,7 @@ try {
   // 拿到锁之后才失败(不是 git 仓库 / origin 缺失…)必须回滚自己的锁,
   // 否则这一轮啥也没干却让后续 60 分钟内的所有轮次全被 lock-held 拦掉。
   if (lock?.acquired && lock.token) {
-    try { stopLockHeartbeat(LOCK_FILE); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
+    try { stopLockHeartbeat(LOCK_FILE, lock.token); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
     try { releaseLockOwned(lock.token); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
   }
   fail(e);

@@ -69,7 +69,7 @@ let lockReleased = false;
 let lockNotOwner = false;
 let lockError = null;
 try {
-  stopLockHeartbeat(LOCK_FILE);
+  stopLockHeartbeat(LOCK_FILE, token);
   const r = releaseLockOwned(token);
   lockReleased = r.released;
   lockNotOwner = r.notOwner;
