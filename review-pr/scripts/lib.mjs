@@ -2318,6 +2318,79 @@ export function collectConfirmedSignoffKinds({ markers = [], trustedLogins = [] 
 }
 
 /**
+ * 安全/规则门「明确同意」判定算法(结构化 marker 优先,关键词表必须挡否定前缀)。
+ * 取舍:产品门仍由主 agent 语义判;安全门必须机器可测,禁止把任意含「同意」的句子当放行。
+ * 优先认独立成行的 `<!-- signoff:release -->` 或整行恰好是「同意放行」;
+ * 退回关键词表时必须命中正向词且不含否定前缀(不/别/先别/暂不/不同意)。
+ */
+export const SIGNOFF_CONSENT_MARKER_RE = /<!--\s*signoff:release\s*-->/i;
+export const SIGNOFF_CONSENT_LINE_RE = /^\s*同意放行\s*$/m;
+const SIGNOFF_CONSENT_POSITIVE_RE = /(同意放行|予以放行|可以放行|LGTM|lgtm)/;
+const SIGNOFF_CONSENT_NEGATION_RE = /(不\s*同意|先别放|暂不|别放|不要放行|先不要)/;
+
+export function isExplicitSignoffConsent(body) {
+  const text = String(body ?? '');
+  if (SIGNOFF_CONSENT_MARKER_RE.test(text) || SIGNOFF_CONSENT_LINE_RE.test(text)) return true;
+  if (SIGNOFF_CONSENT_NEGATION_RE.test(text)) return false;
+  return SIGNOFF_CONSENT_POSITIVE_RE.test(text);
+}
+
+/**
+ * 留言绑定当前 head 的机制:时间戳比较,宁可漏放不可误放。
+ * 评论 created_at >= head 首次出现时间才绑定该 head;同秒视为绑定;
+ * 评论早于 head 推送(webhook 延迟 / 时钟偏差)一律不绑定。
+ * 备选机制(正文引用 SHA)由调用方在 quoteHeadSha=true 时走另一支。
+ */
+export function commentBindsCurrentHead({
+  createdAt = null,
+  headAppearedAt = null,
+  body = '',
+  headOid = '',
+  requireShaQuote = false,
+} = {}) {
+  const oid = String(headOid ?? '').trim();
+  const short = oid.length >= 7 ? oid.slice(0, 7).toLowerCase() : '';
+  if (requireShaQuote) {
+    if (!short) return false;
+    return String(body ?? '').toLowerCase().includes(short);
+  }
+  if (!createdAt || !headAppearedAt) return false;
+  const commentMs = Date.parse(createdAt);
+  const headMs = Date.parse(headAppearedAt);
+  if (!Number.isFinite(commentMs) || !Number.isFinite(headMs)) return false;
+  return commentMs >= headMs;
+}
+
+/**
+ * 从讨论 issue 白名单留言判定「当前 head 是否已有明确同意」。
+ * whitelistComments=null(读取失败)→ readFailed=true,不得当无同意放行。
+ * 作者自放行有意保留:PR 作者只要 ∈ admins 且留言通过同意算法,同样算同意。
+ */
+export function evaluateDiscussionIssueConsent({
+  whitelistComments,
+  headAppearedAt = null,
+  headOid = '',
+} = {}) {
+  if (whitelistComments === null || whitelistComments === undefined) {
+    return { consented: false, readFailed: whitelistComments === null, matched: null };
+  }
+  if (!Array.isArray(whitelistComments)) {
+    return { consented: false, readFailed: true, matched: null };
+  }
+  for (const c of whitelistComments) {
+    if (!isExplicitSignoffConsent(c?.body)) continue;
+    if (!commentBindsCurrentHead({
+      createdAt: c.createdAt,
+      headAppearedAt,
+      body: c.body,
+      headOid,
+    })) continue;
+    return { consented: true, readFailed: false, matched: c };
+  }
+  return { consented: false, readFailed: false, matched: null };
+}
+
+/**
  * 维护者确认门放行判定(跨 commit 持久 + 门类粒度)。当前 head 触发的每个门类 kind:
  *   - kind ∈ confirmedKinds(历史放行快照)→ 放行,不要求对该 head 重新 Approve;
  *   - kind ∉ confirmedKinds 且当前 head 无 admin Approve → 拦(点名 unconfirmedKinds);
@@ -2327,18 +2400,38 @@ export function collectConfirmedSignoffKinds({ markers = [], trustedLogins = [] 
  * @returns {{released:boolean, confirmedKinds:string[], unconfirmedKinds:string[],
  *   basis:string}}
  */
-export function evaluateSignoffRelease({ currentKinds = [], confirmedKinds = [], headApproved = false } = {}) {
+export function evaluateSignoffRelease({
+  currentKinds = [],
+  confirmedKinds = [],
+  headApproved = false,
+  issueConsent = false,
+  issueConsentReadFailed = false,
+} = {}) {
   const current = [...new Set((currentKinds ?? []).filter(Boolean))];
   const confirmed = new Set((confirmedKinds ?? []).filter(Boolean));
   if (headApproved) {
     for (const k of current) confirmed.add(k);
   }
+  // 讨论 issue / 已归属 Slack 留言同意只确认当前 head:不写入 confirmedKinds,
+  // 作者再 push 后必须重新看到绑定该 head 的同意(或 Approve / 持久标记)。
   const unconfirmed = current.filter((k) => !confirmed.has(k)).sort();
-  const basis = current.length === 0
-    ? 'no-gate-triggered'
-    : (headApproved ? 'approve-current-head'
-      : (unconfirmed.length === 0 ? 'confirmed-kinds-cover' : 'unconfirmed-kinds'));
-  return { released: unconfirmed.length === 0, confirmedKinds: [...confirmed].sort(), unconfirmedKinds: unconfirmed, basis };
+  const coveredByMarkerOrApprove = unconfirmed.length === 0;
+  const coveredByIssueConsent = issueConsent === true && issueConsentReadFailed !== true && current.length > 0;
+  const released = current.length === 0
+    || coveredByMarkerOrApprove
+    || coveredByIssueConsent;
+  let basis;
+  if (current.length === 0) basis = 'no-gate-triggered';
+  else if (headApproved) basis = 'approve-current-head';
+  else if (coveredByMarkerOrApprove) basis = 'confirmed-kinds-cover';
+  else if (coveredByIssueConsent) basis = 'discussion-issue-consent';
+  else basis = 'unconfirmed-kinds';
+  return {
+    released,
+    confirmedKinds: [...confirmed].sort(),
+    unconfirmedKinds: released ? [] : unconfirmed,
+    basis,
+  };
 }
 
 /**
