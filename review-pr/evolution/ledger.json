@@ -2087,7 +2087,7 @@
       "title": "audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op",
       "detail": "脚本用 process.argv[1] 与 import.meta.url 严格相等判定直跑；SKILL 与生产调度一律经 ~/.claude/skills/review-pr 软链调用（argv[1] 为软链路径，import.meta.url 为 realpath），两者永不相等 → main() 不执行、零输出零报错退出 0，A5 事后审计闸在软链部署下从未真正运行（2026-08-19 本轮实跑发现：经软链调用 3 次全静默，经 realpath 调用立即正常输出）。修法：守卫改用 fs.realpathSync(process.argv[1]) 与 import.meta.url 比较（或 realpath 后比较）",
       "proposal": null,
-      "status": "open",
+      "status": "landed",
       "commit": null,
       "note": null,
       "occurrences": 1,

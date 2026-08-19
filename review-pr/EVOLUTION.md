@@ -204,7 +204,7 @@
 
 ## 已自动落地(automatable-gap)
 
-- `symlink-argv1-import-meta-url-mismatch-silent-noop` **audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+- `symlink-argv1-import-meta-url-mismatch-silent-noop` **audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: landed
   - 现象:脚本用 process.argv[1] 与 import.meta.url 严格相等判定直跑；SKILL 与生产调度一律经 ~/.claude/skills/review-pr 软链调用（argv[1] 为软链路径，import.meta.url 为 realpath），两者永不相等 → main() 不执行、零输出零报错退出 0，A5 事后审计闸在软链部署下从未真正运行（2026-08-19 本轮实跑发现：经软链调用 3 次全静默，经 realpath 调用立即正常输出）。修法：守卫改用 fs.realpathSync(process.argv[1]) 与 import.meta.url 比较（或 realpath 后比较）
 - `stale-pushback-dedup-head-unchanged` **打回去重规则正确覆盖 head 未变场景,无需进化** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: rejected
   - 现象:本轮实测:auto.action=review(needsSelfApproval),审查发现既有 CHANGES_REQUESTED 与本轮 finding 内容一致且作者零新 commit,按 5.2 去重规则跳过重复提交——机制按设计工作,仅登记观察
