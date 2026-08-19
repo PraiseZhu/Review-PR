@@ -57,14 +57,14 @@
       "fingerprint": "by-design-threads-unresolved",
       "tier": "by-design",
       "title": "PR 因 unresolved thread 或冲突无法合并,等作者处理",
-      "detail": "本轮 #145(DIRTY 冲突)/#147(2 条 thread 未 resolve)均处于 signoff hold(security 门),且作者侧卡点提醒评论已发过(指纹去重 already-commented),无新进化项",
+      "detail": "本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 6,
+      "occurrences": 7,
       "firstSeen": "2026-07-24T17:36:58.861Z",
-      "lastSeen": "2026-08-17T20:04:33.942Z"
+      "lastSeen": "2026-08-19T19:17:26.172Z"
     },
     {
       "fingerprint": "all-skipped-no-evolution",

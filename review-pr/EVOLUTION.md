@@ -269,6 +269,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 7 次,首见 2026-07-24,最近 2026-08-19,status: tracked
+  - 现象:本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。
 - `recipe-empty-model-id-falls-to-default-channel` **配方空模型 id 回落默认档是作者侧代码问题** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR 180 recipeChannelForModel 对空 id 返回空串，经 mivoChannelFor 回落默认通道。已 REQUEST_CHANGES，不属流程缺口。
 - `skip-conflict-and-unresolved-author-side` **冲突+未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
@@ -303,8 +305,6 @@
   - 现象:PR145(冲突+security门)+PR147(threads+security/rules门)均为存量 hold 状态,admins 未 Approve 当前 head;提醒评论均 already-commented 去重跳过,停滞判定均 not-stale-yet。无漏判、无流程缺口。
 - `held-security-gate-waiting-maintainer` **两候选均停在被 hold 等维护者确认(security/rules 门)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR#145 命中 package.json securityReviewPaths,PR#147 命中 workflows+AGENTS.md;均为设计上需人确认,非流程缺口;催办去重与停滞判定本轮验证正常
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 6 次,首见 2026-07-24,最近 2026-08-17,status: tracked
-  - 现象:本轮 #145(DIRTY 冲突)/#147(2 条 thread 未 resolve)均处于 signoff hold(security 门),且作者侧卡点提醒评论已发过(指纹去重 already-commented),无新进化项
 - `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap
 - `no-merge-candidates-signoff-holds-only` **本轮两候选均停在维护者确认门,无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
