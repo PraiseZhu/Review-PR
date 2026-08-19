@@ -2223,6 +2223,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T10:14:41.712Z",
       "lastSeen": "2026-08-19T10:14:41.712Z"
+    },
+    {
+      "fingerprint": "product-gate-src-persist-helper-false-positive",
+      "tier": "proposal",
+      "title": "src/ 整树当 UI 路径会把 persist helper 搬运误判成产品门",
+      "detail": "本轮 #183 feat(persist) 只改 src/lib/writeRetryQueue.ts（stableTopologicalSort/combineOps 逐字节搬运），被 uiPaths 的 src/ 前缀打成 needsProductCheck。语义判定后按已有功能补充放行，未 hold。扩权：收窄 uiPaths 或给 persist 加排除等于放宽产品门，不能当轮自动改。",
+      "proposal": "若误报变多，再评估给 uiPaths 加 src/lib/ 排除或把 persist 列车标 lightTypes；本轮只观察。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T10:14:46.149Z",
+      "lastSeen": "2026-08-19T10:14:46.149Z"
     }
   ],
   "escapedHazards": [
