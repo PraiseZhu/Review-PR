@@ -266,6 +266,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #177 仅 1 条 greptile P2 注释 thread 未 resolve；threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，脚本去重未重发。
 - `security-gate-awaiting-admin-after-stacked-ci-paths` **PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #170 head 叠入 plugin-green-ref.yml / pr-size-gate.yml / pr-rules.json，security-gate 已 hold（issue #176），本轮 alreadyHeld 幂等复用。属维护者确认，不自动放行。
 - `unresolved-greptile-p2-blocks-merge` **Greptile P2 未 resolve 会卡合并，threadTriage 关闭时只能催作者** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
