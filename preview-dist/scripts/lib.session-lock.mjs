@@ -149,14 +149,36 @@ export function heartbeatPidPath(lockFile) {
   return `${lockFile}.heartbeat.pid`;
 }
 
-function readHeartbeatPid(lockFile) {
+// sidecar pid 文件的内容格式:{pid, token} JSON。token 是这条心跳记录自证的归属,
+// 判断"能不能杀它"只认这个字段,不借道锁文件当前 token 做代理判断——那样会在
+// "读锁文件 token"和"读 pid 文件"这两次独立读之间留出窗口:旧 owner 的检查刚通过,
+// 接管者的新心跳就把同一份 pid 文件覆盖成自己的,旧 owner 随后按"检查已通过"直接
+// 杀掉读到的 pid,实际杀的是接管者刚起的新守护(2026-08-18 review 发现的 P1)。
+// legacy 纯 pid 格式(无 token)一律当"不知道归属",带 expectedToken 校验时永远不匹配,
+// 拒绝动手——比"猜它是谁的"更安全。
+function readHeartbeatRecord(lockFile) {
+  let raw;
   try {
-    const n = Number.parseInt(readFileSync(heartbeatPidPath(lockFile), 'utf8').trim(), 10);
-    return Number.isInteger(n) && n > 0 ? n : null;
+    raw = readFileSync(heartbeatPidPath(lockFile), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return null;
+    if (e.code === 'ENOENT') return { pid: null, token: null };
     throw e;
   }
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const pid = Number.parseInt(parsed.pid, 10);
+      return {
+        pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+        token: typeof parsed.token === 'string' ? parsed.token : null,
+      };
+    } catch {
+      return { pid: null, token: null }; // 坏 JSON,一律当无主
+    }
+  }
+  const pid = Number.parseInt(trimmed, 10); // legacy 裸 pid 格式
+  return { pid: Number.isInteger(pid) && pid > 0 ? pid : null, token: null };
 }
 
 export function isPidAlive(pid) {
@@ -170,15 +192,17 @@ export function isPidAlive(pid) {
 }
 
 export function stopLockHeartbeat(lockFile, expectedToken) {
-  if (expectedToken) {
-    const cur = readSessionLock(lockFile);
-    // 锁不在或 token 对不上:都可能是别人的回合,不得按 sidecar pid 乱杀
-    if (!cur.present || cur.token !== expectedToken) {
-      return { stopped: false, killed: false, pid: null, skipped: 'not-owner' };
-    }
-  }
   const path = heartbeatPidPath(lockFile);
-  const pid = readHeartbeatPid(lockFile);
+  // 一次读取,pid 与 token 同源同时刻——不再分两步查两个不同文件(锁文件 token / pid 文件),
+  // 那种两步查法在两次读之间留出窗口:旧 owner 的检查刚通过,接管者的新心跳就把同一份
+  // pid 文件覆盖成自己的,旧 owner 随后按"检查已通过"直接杀掉读到的 pid,实际杀的是接管者
+  // 刚起的新守护(2026-08-18 review 发现的 P1)。给了 expectedToken 就只信任这条记录自带的
+  // token,不再借道锁文件当前 token 做代理判断。
+  const rec = readHeartbeatRecord(lockFile);
+  if (expectedToken && rec.token !== expectedToken) {
+    return { stopped: false, killed: false, pid: null, skipped: 'not-owner' };
+  }
+  const pid = rec.pid;
   let killed = false;
   if (pid && isPidAlive(pid)) {
     try { process.kill(pid, 'SIGTERM'); killed = true; } catch { /* 已死 */ }
@@ -209,7 +233,7 @@ export function startLockHeartbeat(lockFile, token, {
     env: { ...env },
   });
   child.unref();
-  writeFileSync(heartbeatPidPath(lockFile), `${child.pid}\n`);
+  writeFileSync(heartbeatPidPath(lockFile), JSON.stringify({ pid: child.pid, token }));
   return { started: true, pid: child.pid };
 }
 

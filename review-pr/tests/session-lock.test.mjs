@@ -110,6 +110,21 @@ test('stopLockHeartbeat: 非 owner token 不得杀掉当前守护', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('stopLockHeartbeat: 只信任心跳记录自带的 token,不借道锁文件当前 token(根治接管窗口误杀)', () => {
+  const dir = freshTempDir('session-lock-');
+  // 锁文件仍显示旧主人 tok-A(模拟 A 的清理调用如果去查锁文件,会误判"还是我的锁")
+  const lockFile = writeLock(dir, 'tok-A', Date.now());
+  // 心跳记录已经是接管者 tok-B 的(模拟 B 的 startLockHeartbeat 已抢先完成、覆盖了同一份 pid 文件)
+  writeFileSync(heartbeatPidPath(lockFile), JSON.stringify({ pid: process.pid, token: 'tok-B' }));
+  const r = stopLockHeartbeat(lockFile, 'tok-A');
+  assert.equal(r.skipped, 'not-owner', 'A 拿着旧 token 收尾,不得凭锁文件当前 token 通过检查就去杀 B 的心跳');
+  assert.equal(r.stopped, false);
+  assert.equal(existsSync(heartbeatPidPath(lockFile)), true, 'B 的心跳记录不得被误删');
+  assert.equal(isPidAlive(process.pid), true);
+  unlinkSync(heartbeatPidPath(lockFile));
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('refreshOwnedSessionLock: token 不匹配 → lost,不改锁', () => {
   const dir = freshTempDir('session-lock-');
   const lockFile = writeLock(dir, 'owner', Date.now());
