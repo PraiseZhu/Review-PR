@@ -266,6 +266,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-threads-block-merge` **未 resolve 的 bot conversation 卡着合不了** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:本轮 #170/#180/#183 都因 Greptile 或 CodeQL 行内 thread 未 resolve 走 skip-gate。作者点 Resolve 或回复后下一轮才能审合。threadTriage 本仓未启用，auto-resolve 当前不提供。
 - `persist-p1-4a-helpers-merged-clean` **persist Helpers 前段审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #182 computeResourceKey/isDeleteKind 纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
 - `persist-p1-3-state-machine-merged-clean` **persist 状态机节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
