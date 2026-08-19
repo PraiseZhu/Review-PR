@@ -46,7 +46,7 @@
 // 退出码:0 = 完成(含无事可做);1 = 脚本自身出错。审计发现缺回执**不改变退出码**——
 // 结论在 JSON 输出与告警里,闸的职责是让人看见,不是让巡审主流程炸掉。
 
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -370,8 +370,11 @@ async function main() {
   return 0;
 }
 
-// 与 reconcile-merged 同款直跑守卫:被 import(测试)时不执行主流程
-const isDirectRun = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+// 与 reconcile-merged 同款直跑守卫:被 import(测试)时不执行主流程。
+// argv[1] 先 realpath 再比较:生产经 ~/.claude/skills/review-pr 软链调用时,argv[1] 是
+// 软链路径而 import.meta.url 是真实路径,严格相等会导致 main() 静默 no-op(evo 台账
+// symlink-argv1-import-meta-url-mismatch-silent-noop,2026-08-19 实跑发现审计闸从未运行)。
+const isDirectRun = process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url;
 if (isDirectRun) {
   main().then((c) => process.exit(c ?? 0)).catch((e) => { fail(`audit-merged-loop-prs 出错: ${e.message}`); });
 }

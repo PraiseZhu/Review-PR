@@ -14,7 +14,8 @@
 // 退出码:0 = 干净收尾;1 = 脚本自身出错(此时锁的释放结果也在输出 JSON 里)。
 // 跑:node <skill-root>/scripts/cleanup.mjs --original main --pr 123 [--sync-main] [--token <t>]
 
-import { git, print, fail, releaseLockOwned } from './lib.mjs';
+import { git, print, fail, releaseLockOwned, LOCK_FILE } from './lib.mjs';
+import { stopLockHeartbeat } from './lib.session-lock.mjs';
 
 function flag(name) {
   const i = process.argv.indexOf(name);
@@ -68,6 +69,7 @@ let lockReleased = false;
 let lockNotOwner = false;
 let lockError = null;
 try {
+  stopLockHeartbeat(LOCK_FILE);
   const r = releaseLockOwned(token);
   lockReleased = r.released;
   lockNotOwner = r.notOwner;

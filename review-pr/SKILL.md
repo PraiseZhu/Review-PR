@@ -518,10 +518,13 @@ node "<SKILL_ROOT>/scripts/context.mjs" <N>
 
 `prepare.mjs` 成功获取锁时输出 `lock.token`，整轮保存；之后所有
 `refresh-lock.mjs`、`release-lock.mjs`、`cleanup.mjs` 调用一律带 `--token <token>`，
-脚本只操作归属匹配的锁，防止误删并发实例接管重建的锁。auto 模式每处理完一个
-PR 运行一次 `node "<SKILL_ROOT>/scripts/refresh-lock.mjs" --token <token>` 给锁续期
-（TTL 60 分钟按“距最后一次心跳”计算）；它返回 `lost=true` 表示锁已被别的实例
-接管——立即停止一切 GitHub 写操作、结束本轮并写入汇总，且不要再释放锁。
+脚本只操作归属匹配的锁，防止误删并发实例接管重建的锁。拿到锁后 `prepare.mjs`
+会拉起 `lock-heartbeat-daemon.mjs`（每 20 分钟续一次，TTL 仍按“距最后一次心跳
+60 分钟”计算），主会话**禁止**用 `refresh-lock.mjs` 当等待循环、禁止
+`sleep`+再调、禁止在子 agent 未完成时反复续期。`refresh-lock.mjs` 只留给守护
+挂掉时的补救；10 分钟内重复调用返回 `skipped=cooldown`，不改锁。它返回
+`lost=true` 表示锁已被别的实例接管——立即停止一切 GitHub 写操作、结束本轮并
+写入汇总，且不要再释放锁。
 
 auto 批处理必须一次运行：
 
@@ -1084,6 +1087,9 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 若被切到 PR head（审查 agent 在主工作树执行了 `gh pr checkout`），`git checkout`
 原分支恢复并如实记入汇总（2026-08-11 #623 实测发生过：spawn 漏传
 `isolation` 时审查 agent 会在主工作树 checkout PR head，工作树干净则无残留）。
+**等子 agent 完成时不要调任何工具**（包括 `refresh-lock.mjs`）：锁续期由后台
+守护负责；主会话空转续锁会把整段对话反复计费（2026-08-18 Mini 巡审 4660 次
+心跳、单轮 $515）。宿主会在子 agent 结束时自动唤醒，不要自己轮询。
 
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
 模板首行）：隔离 worktree 里的目标仓库拷贝可能不含（或含未跟踪、指向错误目标的）
@@ -2328,9 +2334,10 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
    P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进
    会话，循环跟进直到合并（本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
-   候选在冲突项落地后补入处理。任何单 PR 异常都写入汇总并继续其他候选。每个候选处理
-   完（无论落地、跳过还是异常）运行一次 `refresh-lock.mjs --token <token>` 心跳续期；
-   `lost=true` 时立即终止本轮剩余候选的所有写操作。
+   候选在冲突项落地后补入处理。任何单 PR 异常都写入汇总并继续其他候选。锁续期由
+   `prepare.mjs` 拉起的后台守护负责，不要在候选之间、等待子 agent 时、或
+   同一分钟内反复跑 `refresh-lock.mjs`。`lost=true`（守护或补救调用返回）时
+   立即终止本轮剩余候选的所有写操作。
 
 auto 模式可以按维护者配置创建产品/架构/安全/规则门的讨论 issue、挂
 `awaiting-discussion` 标签（不再转 draft）、admins Approve 后自动 release（摘标签）

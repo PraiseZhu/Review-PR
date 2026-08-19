@@ -10,13 +10,15 @@
 //
 // 跑:node <skill-root>/scripts/release-lock.mjs [--token <t>]
 
-import { print, releaseLockOwned } from './lib.mjs';
+import { print, releaseLockOwned, LOCK_FILE } from './lib.mjs';
+import { stopLockHeartbeat } from './lib.session-lock.mjs';
 
 const i = process.argv.indexOf('--token');
 const token = i >= 0 ? process.argv[i + 1] : undefined;
 
 let result;
 try {
+  stopLockHeartbeat(LOCK_FILE);
   result = releaseLockOwned(token);
 } catch (e) {
   result = { released: false, alreadyAbsent: false, notOwner: false, error: String(e && e.message ? e.message : e) };
