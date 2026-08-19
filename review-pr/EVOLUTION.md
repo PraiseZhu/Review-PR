@@ -266,6 +266,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-greptile-p2-blocks-merge` **Greptile P2 未 resolve 会卡合并，threadTriage 关闭时只能催作者** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #177 唯一阻断是 greptile-apps 一条 P2 注释 thread。本仓未配 threadTriage，auto 不能代 reply/resolve，按 5.3/6 发模板 C 催 resolve。
 - `stacked-merge-during-security-hold` **堆叠 PR 在安全门 hold 后被人手合进下游分支** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR 171 刚挂 awaiting-discussion 并开讨论 issue 175，就被 PraiseZhu 网页合进 PR 170 的 head。170 因此叠上 CI/pr-rules，重扫变 security-gate + size-gate 红。旧 snapshot 审查仍可消费，但不能拿旧回执合新 head。
 - `round-2026-08-18a-no-new-gaps` **本轮无新流程缺口:145 硬命中为测试桩形态走既有豁免机制,147/159 为维护者决策类 hold** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked

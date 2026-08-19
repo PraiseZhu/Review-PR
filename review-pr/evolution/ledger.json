@@ -2132,6 +2132,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-19T04:04:50.913Z",
       "lastSeen": "2026-08-19T04:04:50.913Z"
+    },
+    {
+      "fingerprint": "unresolved-greptile-p2-blocks-merge",
+      "tier": "by-design",
+      "title": "Greptile P2 未 resolve 会卡合并，threadTriage 关闭时只能催作者",
+      "detail": "PR #177 唯一阻断是 greptile-apps 一条 P2 注释 thread。本仓未配 threadTriage，auto 不能代 reply/resolve，按 5.3/6 发模板 C 催 resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-19T04:04:55.253Z",
+      "lastSeen": "2026-08-19T04:04:55.253Z"
     }
   ],
   "escapedHazards": [
