@@ -266,6 +266,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `persist-p1-type-layer-merged-clean` **persist 类型层列车节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #177 纯类型+纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
 - `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #177 仅 1 条 greptile P2 注释 thread 未 resolve；threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，脚本去重未重发。
 - `security-gate-awaiting-admin-after-stacked-ci-paths` **PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
