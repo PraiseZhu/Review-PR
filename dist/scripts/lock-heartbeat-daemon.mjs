@@ -28,7 +28,7 @@ const token = flag('--token');
 const everyMs = Number(flag('--every-ms') || SESSION_LOCK_REFRESH_EVERY_MS);
 const maxLifetimeMs = Number(flag('--max-lifetime-ms') || SESSION_LOCK_MAX_ROUND_MS);
 if (!lockFile || !token) process.exit(1);
-if (!Number.isFinite(everyMs) || everyMs < 1000) process.exit(1);
+if (!Number.isFinite(everyMs) || everyMs < 20) process.exit(1);
 if (!Number.isFinite(maxLifetimeMs) || maxLifetimeMs < everyMs) process.exit(1);
 
 const bornAt = Date.now();
@@ -39,11 +39,8 @@ const tick = () => {
     const cur = readSessionLock(lockFile);
     if (!cur.present) process.exit(0); // 条件 1:锁已释放,绝不重建
     if (cur.token !== token) process.exit(0); // 条件 2:已被接管
-    const again = readSessionLock(lockFile);
-    if (!again.present || again.token !== token) process.exit(0);
-    writeOwnedSessionLock(lockFile, token);
-    const check = readSessionLock(lockFile);
-    if (check.token !== token) process.exit(0); // 写入窗口内被接管,停跳不覆盖回去
+    const wrote = writeOwnedSessionLock(lockFile, token);
+    if (!wrote.ok) process.exit(0); // 丢锁或 inode 已换,停跳;旧 fd 写不到新锁
   } catch {
     process.exit(0); // 任何异常都宁可停跳(锁 60 分钟后自愈),不留常驻进程
   }

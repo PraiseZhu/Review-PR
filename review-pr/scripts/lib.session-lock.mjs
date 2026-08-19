@@ -10,7 +10,7 @@
 // 本文件零依赖 lib.mjs,避免和 STATE_DIR 顶层求值缠在一起;调用方传入 lock 路径。
 
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, openSync, closeSync, readSync, writeSync, ftruncateSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -67,23 +67,48 @@ export function tryCreateSessionLock(lockFile, payload) {
   }
 }
 
+function readFdUtf8(fd) {
+  const chunks = [];
+  const buf = Buffer.alloc(4096);
+  let pos = 0;
+  for (;;) {
+    const n = readSync(fd, buf, 0, buf.length, pos);
+    if (n === 0) break;
+    chunks.push(Buffer.from(buf.subarray(0, n)));
+    pos += n;
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function tokenFromRaw(raw) {
+  try { return JSON.parse(raw).token ?? null; } catch { return null; }
+}
+
+// 打开当前路径上的 inode,核验 token 后再写这个 fd。
+// takeover 是 unlink+wx create,新锁是新 inode;旧 fd 再写只污染已被 unlink 的旧文件,
+// 路径上的新锁不受影响。这是「按路径 truncate/write 会盖掉接管者」的根治。
 export function writeOwnedSessionLock(lockFile, token, startedAt = new Date()) {
-  // 同目录 rename 覆盖是 POSIX 原子替换:不会出现半写文件,也不会先 unlink 再 create
-  // 给别人留下 wx 窗口。inode 会换,但锁协议认的是路径上的 token,不是 inode。
-  const tmp = `${lockFile}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, sessionLockPayload(token, startedAt));
-  renameSync(tmp, lockFile);
+  let fd;
+  try {
+    fd = openSync(lockFile, 'r+');
+  } catch (e) {
+    if (e.code === 'ENOENT') return { ok: false, lost: true };
+    throw e;
+  }
+  try {
+    const raw = readFdUtf8(fd);
+    if (tokenFromRaw(raw) !== token) return { ok: false, lost: true };
+    const payload = sessionLockPayload(token, startedAt);
+    ftruncateSync(fd, 0);
+    writeSync(fd, payload, 0, 'utf8');
+    return { ok: true, lost: false };
+  } finally {
+    try { closeSync(fd); } catch { /* 已关 */ }
+  }
 }
 
 function rewriteIfOwner(lockFile, token, now) {
-  const again = readSessionLock(lockFile);
-  if (!again.present || again.token !== token) {
-    return { ok: false, lost: true };
-  }
-  writeOwnedSessionLock(lockFile, token, now);
-  const check = readSessionLock(lockFile);
-  if (check.token !== token) return { ok: false, lost: true };
-  return { ok: true, lost: false };
+  return writeOwnedSessionLock(lockFile, token, now);
 }
 
 export function refreshOwnedSessionLock(lockFile, token, {

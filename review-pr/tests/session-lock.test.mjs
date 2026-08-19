@@ -20,6 +20,8 @@ import {
   stopLockHeartbeat,
   heartbeatPidPath,
   isPidAlive,
+  tryCreateSessionLock,
+  writeOwnedSessionLock,
   SESSION_LOCK_REFRESH_MIN_INTERVAL_MS,
 } from '../scripts/lib.session-lock.mjs';
 import { freshTempDir } from './helpers.mjs';
@@ -151,6 +153,19 @@ test('refresh-lock.mjs: 冷却期内 CLI 返回 skipped=cooldown', () => {
   assert.equal(second.skipped, 'cooldown');
   assert.equal(second.refreshed, false);
   rmSync(base, { recursive: true, force: true });
+});
+
+test('takeover unlink+wx 后旧 inode 写入不得覆盖新锁', () => {
+  const dir = freshTempDir('session-lock-');
+  const lockFile = writeLock(dir, 'tok-old', Date.now() - 30_000);
+  // 旧 owner 已打开 inode 的等价:先拿到写权,再模拟 takeover 换 inode
+  const oldWrite = () => writeOwnedSessionLock(lockFile, 'tok-old', Date.now());
+  unlinkSync(lockFile);
+  assert.equal(tryCreateSessionLock(lockFile, sessionLockPayload('tok-new', Date.now())), true);
+  const r = oldWrite();
+  assert.equal(r.lost, true);
+  assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).token, 'tok-new');
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('守护自终止①: 锁文件被释放后守护自动退出,绝不重建锁', async () => {
