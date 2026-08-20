@@ -2496,6 +2496,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T19:04:41.546Z",
       "lastSeen": "2026-08-20T19:04:41.546Z"
+    },
+    {
+      "fingerprint": "security-gate-already-held",
+      "tier": "by-design",
+      "title": "security 门已 hold 后等 admins Approve 当前 head",
+      "detail": "PR #209 命中 securityReviewPaths，alreadyHeld issue #210 + awaiting-discussion，放行前不审不合。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T19:04:45.869Z",
+      "lastSeen": "2026-08-20T19:04:45.869Z"
     }
   ],
   "escapedHazards": [
