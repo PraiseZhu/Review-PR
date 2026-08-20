@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR 201 仍是 CHANGES_REQUESTED + 3 条未 resolve conversation，作者未新 commit。属作者侧决策/修复，不自动代 resolve 真人 thread。
 - `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #209 改 CI workflow 与 loop 脚本，已 hold 讨论 issue #210。
 - `skip-unresolved-threads-after-changes-requested` **审查打回后未 resolve 的 conversation 卡合并，需作者处理** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
