@@ -2327,6 +2327,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-19T21:04:01.721Z",
       "lastSeen": "2026-08-20T01:18:14.207Z"
+    },
+    {
+      "fingerprint": "neg-evidence-anchor-mismatch-patch",
+      "tier": "proposal",
+      "title": "审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid",
+      "detail": "PR187 本轮：审查 agent 对同一实验（run-vr3, exitCode 1, 4 failed）写了两处 outputAnchor——verificationRuns 里登记简短汇总行，negativeEvidence 里改写成含 FAIL 细节的长文本，机器一致性校验按逐字比对判 invalid。主 agent 手工对齐后重消费通过。根因：rro-1 契约要求 command/outputAnchor 与被引用 run 逐字一致，但审查 agent prompt 里该要求埋在字段级形状一节，agent 自然倾向在 negativeEvidence 里写更详尽的失败细节。两次消费中的第一次 invalid 纯属格式损耗（重消费 attempts 计数被清，浪费一轮机器判定）。",
+      "proposal": "在 build-review-task.mjs 生成的 prompt.md 字段级形状节，为 negativeEvidence 的 command/outputAnchor 加一句显式提示：「直接复制被引用 run 的对应字段值，不要改写或增补细节；失败细节放 negativeOracle/observedSignal 之外的说明字段（如 modelVerdictNote）」。改 prompt 模板属于最小自洽改动，可下轮按 8.3 规则自动落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T07:33:24.755Z",
+      "lastSeen": "2026-08-20T07:33:24.755Z"
     }
   ],
   "escapedHazards": [

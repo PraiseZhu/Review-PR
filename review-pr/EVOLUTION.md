@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `neg-evidence-anchor-mismatch-patch` **审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: open
+  - 现象:PR187 本轮：审查 agent 对同一实验（run-vr3, exitCode 1, 4 failed）写了两处 outputAnchor——verificationRuns 里登记简短汇总行，negativeEvidence 里改写成含 FAIL 细节的长文本，机器一致性校验按逐字比对判 invalid。主 agent 手工对齐后重消费通过。根因：rro-1 契约要求 command/outputAnchor 与被引用 run 逐字一致，但审查 agent prompt 里该要求埋在字段级形状一节，agent 自然倾向在 negativeEvidence 里写更详尽的失败细节。两次消费中的第一次 invalid 纯属格式损耗（重消费 attempts 计数被清，浪费一轮机器判定）。
+  - 提案:在 build-review-task.mjs 生成的 prompt.md 字段级形状节，为 negativeEvidence 的 command/outputAnchor 加一句显式提示：「直接复制被引用 run 的对应字段值，不要改写或增补细节；失败细节放 negativeOracle/observedSignal 之外的说明字段（如 modelVerdictNote）」。改 prompt 模板属于最小自洽改动，可下轮按 8.3 规则自动落地。
 - `product-gate-src-persist-helper-false-positive` **src/ 整树当 UI 路径会把 persist helper 搬运误判成产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
   - 现象:本轮 #183 feat(persist) 只改 src/lib/writeRetryQueue.ts（stableTopologicalSort/combineOps 逐字节搬运），被 uiPaths 的 src/ 前缀打成 needsProductCheck。语义判定后按已有功能补充放行，未 hold。扩权：收窄 uiPaths 或给 persist 加排除等于放宽产品门，不能当轮自动改。
   - 提案:若误报变多，再评估给 uiPaths 加 src/lib/ 排除或把 persist 列车标 lightTypes；本轮只观察。
