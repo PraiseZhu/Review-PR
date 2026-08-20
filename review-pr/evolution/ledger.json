@@ -2457,6 +2457,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T16:08:44.997Z",
       "lastSeen": "2026-08-20T16:08:44.997Z"
+    },
+    {
+      "fingerprint": "skip-gate-unresolved-threads",
+      "tier": "by-design",
+      "title": "作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve",
+      "detail": "PR #201 3 条 conversation 未 resolve（含 greptile 与巡审行评），auto 按前置门跳过，已有催 resolve 评论不去重再发。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T17:03:52.863Z",
+      "lastSeen": "2026-08-20T17:03:52.863Z"
     }
   ],
   "escapedHazards": [
