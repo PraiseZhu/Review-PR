@@ -272,6 +272,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 已 hold（issue #210 + awaiting-discussion），signoff.unconfirmedKinds=[security]，adminsApprovedCurrentHead=false。本轮幂等 hold alreadyHeld。
+  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve，gate=threads-unresolved。threadTriage 未启用，auto 只发模板 C 提醒（本轮 already-commented）。
   - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
@@ -279,8 +282,6 @@
   - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。
 - `skip-gate-unresolved-threads` **作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve（含 greptile 与巡审行评），auto 按前置门跳过，已有催 resolve 评论不去重再发。
-- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #209 已 hold（issue #210 / awaiting-discussion），admins 尚未 Approve 当前 head。
 - `skip-unresolved-human-and-bot-threads` **未 resolve conversation 卡合并，作者侧需点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。
 - `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
