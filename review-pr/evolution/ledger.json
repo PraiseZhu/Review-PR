@@ -2319,14 +2319,14 @@
       "fingerprint": "skip-gate-conflict-unresolved",
       "tier": "by-design",
       "title": "前置门因与主干冲突且 conversation 未 resolve 跳过",
-      "detail": "PR #187 与 main 冲突且 1 条 conversation 未 resolve；auto 不向作者分支推送，属作者侧处理。",
+      "detail": "PR #187 作者 aj0928，mergeStateStatus=DIRTY 且 1 条 Greptile conversation 未 resolve，auto 跳过等作者处理。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-19T21:04:01.721Z",
-      "lastSeen": "2026-08-19T21:04:01.721Z"
+      "lastSeen": "2026-08-20T01:18:14.207Z"
     }
   ],
   "escapedHazards": [
