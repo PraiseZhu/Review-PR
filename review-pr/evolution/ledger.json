@@ -2306,14 +2306,14 @@
       "fingerprint": "skip-gate-changes-requested-unresolved",
       "tier": "by-design",
       "title": "前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过",
-      "detail": "PR #180 作者侧未处理上一轮审查意见与 1 条 conversation，属真人决策类，不自动放开。",
+      "detail": "PR #180 作者 aj0928，reviewDecision=CHANGES_REQUESTED 且 1 条 conversation 未 resolve，auto 跳过等作者处理。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-19T21:03:57.182Z",
-      "lastSeen": "2026-08-19T21:03:57.182Z"
+      "lastSeen": "2026-08-20T01:18:09.477Z"
     },
     {
       "fingerprint": "skip-gate-conflict-unresolved",
