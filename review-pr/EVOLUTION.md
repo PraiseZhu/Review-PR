@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。
 - `skip-gate-unresolved-threads` **作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve（含 greptile 与巡审行评），auto 按前置门跳过，已有催 resolve 评论不去重再发。
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
@@ -284,8 +286,6 @@
   - 现象:PR 201 本轮仍是 reviewDecision=CHANGES_REQUESTED + 3 条未 resolve conversation，属作者侧收口，不扩权。
 - `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR 201 仍是 CHANGES_REQUESTED + 3 条未 resolve conversation，作者未新 commit。属作者侧决策/修复，不自动代 resolve 真人 thread。
-- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #209 改 CI workflow 与 loop 脚本，已 hold 讨论 issue #210。
 - `skip-unresolved-threads-after-changes-requested` **审查打回后未 resolve 的 conversation 卡合并，需作者处理** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 已 CHANGES_REQUESTED，3 条 conversation 未 resolve；notify-author-resolve 本轮 already-commented。
 - `ownpr-format-self-fix-handoff` **ownPr 格式门走 fix-handoff 不打 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked

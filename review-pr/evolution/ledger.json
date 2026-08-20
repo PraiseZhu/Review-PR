@@ -2384,14 +2384,14 @@
       "fingerprint": "security-gate-signoff-hold",
       "tier": "by-design",
       "title": "命中 securityReviewPaths 走维护者确认门，不自动审合",
-      "detail": "PR #209 改 CI workflow 与 loop 脚本，已 hold 讨论 issue #210。",
+      "detail": "PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-20T13:05:30.132Z",
-      "lastSeen": "2026-08-20T13:05:30.132Z"
+      "lastSeen": "2026-08-20T17:03:57.335Z"
     },
     {
       "fingerprint": "skip-gate-changes-requested-unresolved-threads",
