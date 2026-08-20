@@ -156,6 +156,7 @@ try {
     '- `findingDispositions[]` 元素:`{findingId, disposition, evidence?, basis?}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status)。`resolved` 必须带结构化 `evidence`(自由文本不算),二选一:`{kind:"diff-anchor", snapshotHash, fileId, hunkId, note}`(锚当前 diff 的具体改动)或 `{kind:"verification-run", snapshotHash, verificationRunId, note}`(`verificationRunId` 必须存在于 `verificationRuns[]`);`invalidated` 必须带非空 `basis`(判误报依据)。**本轮未注入任何未决项(没有"未决 findings"段)时,本数组必须为 `[]`**——GitHub 上的第三方 bot thread(如 Greptile)不属于注入项,不要给它们写 disposition。',
     '- `negativeEvidence[]` 元素:`{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`——',
     '  **`command` 与 `outputAnchor` 必须与 `verificationRuns[]` 里被引用 run 的对应字段逐字一致**(机器会做一致性校验,不一致判 invalid);`verificationRunId` 必须引用真实登记的 runId。',
+    '  做法是**直接复制**被引用 run 的 `command` 与 `outputAnchor` 字符串值,不要改写、缩略或增补失败细节——想把失败现场写得更详细,写进 `negativeOracle`/`modelVerdictNote`,`command`/`outputAnchor` 两字段只认与 run 逐字节相同的复制(2026-08-20 PR187 实跑:同一次实验两处 anchor 写法不同,整轮 invalid,主 agent 手工对齐才通过)。',
     '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor}`——每条实验真实执行并登记。',
     '- `escapeAssessment[]` / `verificationGaps[]`:`{candidateId, verdict:"yes"|"no", basis}` / `{description, required:false}`。',
     '  **以下字段即使为空也必须作为数组包含:`verificationGaps`, `findingDispositions`, `profileAnswers`, `negativeEvidence`**(缺字段或传非数组,机器各自硬报错判 invalid)。',
@@ -201,6 +202,7 @@ try {
     // coverage hunk key,拿它就能伪造 segmentReceipts 绕过投递出口。只留计数。
     L.push(`本轮共 ${requiredNegativeEvidenceKeys.length} 处改动触及等待原语/断言/守卫——具体位置(path/fileId/hunkId/原因)**随对应分段投递给出**。`);
     L.push('', '对每处在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`,并在 `verificationRuns[]` 里登记对应 run。也就是:**把它弄坏一次,证明它真的会红**。', '');
+    L.push('', '填写提醒:`negativeEvidence` 条目的 `command`/`outputAnchor` **直接从你登记的那条 `verificationRuns` run 复制**,逐字节相同——不要为该条证据单独改写一份「更详细的」anchor,两处写法不同机器即判 invalid(2026-08-20 PR187 实跑教训)。', '');
   }
   // SC-4.1: prescan 状态声明——只给状态+总数,不含 observation 明细(明细随对应分段
   // 由 deliver-review-segment.mjs 给出,与必答项/负向证据同一纪律)。

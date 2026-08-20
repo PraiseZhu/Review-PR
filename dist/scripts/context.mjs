@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, evaluateDiscussionIssueConsent, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -1535,6 +1535,22 @@ try {
   //     年龄门测试全量回归仍绿)。
   const releaseMarkers = parseSignoffReleaseMarkers(rawComments);
   const confirmedSignoffKinds = collectConfirmedSignoffKinds({ markers: releaseMarkers, trustedLogins: ADMIN_LOGINS });
+  const inAdminWhitelist = (login) => ADMIN_LOGINS.includes((login ?? '').toLowerCase());
+  const signoffDiscussionIssue = (hitsSecurityReviewPaths || hitsRuleFiles)
+    ? (discussionIssue ?? archDiscussionIssue ?? readDiscussionIssue(inAdminWhitelist))
+    : null;
+  const latestHeadCommit = [...(g.timeline?.nodes ?? [])]
+    .reverse()
+    .find((n) => (n.commit?.oid ?? '').toLowerCase() === headRefOidLower)
+    ?? null;
+  const headAppearedAt = latestHeadCommit?.commit?.committedDate ?? null;
+  const issueConsentEval = evaluateDiscussionIssueConsent({
+    whitelistComments: signoffDiscussionIssue === null
+      ? []
+      : signoffDiscussionIssue.whitelistComments,
+    headAppearedAt,
+    headOid: meta.headRefOid ?? '',
+  });
   const signoffRelease = evaluateSignoffRelease({
     currentKinds: [
       ...(hitsSecurityReviewPaths ? ['security'] : []),
@@ -1542,6 +1558,8 @@ try {
     ],
     confirmedKinds: confirmedSignoffKinds.confirmedKinds,
     headApproved: adminsApprovedCurrentHead,
+    issueConsent: issueConsentEval.consented,
+    issueConsentReadFailed: issueConsentEval.readFailed,
   });
 
   // gate 触发判定抽到 lib.mjs(decideSignoffGateAction,可单测):优先级由 if/else
@@ -1641,6 +1659,11 @@ try {
     confirmedKinds: signoffRelease.confirmedKinds,
     unconfirmedKinds: signoffRelease.unconfirmedKinds,
     rejectedReleaseMarkers: confirmedSignoffKinds.rejected,
+    discussionIssueConsent: {
+      consented: issueConsentEval.consented,
+      readFailed: issueConsentEval.readFailed,
+      headAppearedAt,
+    },
     // ── 放行时关闭讨论 issue 的决策(SC2,2026-08-10,补上游来源校验)──
     // 只在 PR 级放行成立(released=true)且存在 hold marker 时才有意义;决策本身不影响
     // released(关失败不连坐放行,fail-visible 由决策 reason 带出)。close 动作由编排层按

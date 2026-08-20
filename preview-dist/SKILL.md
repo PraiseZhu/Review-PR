@@ -144,7 +144,7 @@ Mivo 拦了一下 PR #<N>，不是代码问题。
 和 <把关人> 对齐方向再往下写。
 已经开了讨论 issue：<链接>，PR 挂上了等待确认标签（awaiting-discussion）。
 
-对齐完在 issue 里回一句（或直接 Approve），我会自动摘标签继续审。
+对齐完在讨论 issue 或对应 Slack 会话回「同意放行」（或直接 Approve 当前 head），下一轮 scan 采信同意后继续审。摘标签 / 关 issue 随 signoff-release 写入脚本在放行成立且 hold marker 作者 ∈ admins 时执行；写入脚本未跑通时不要承诺已经摘掉。
 ```
 
 纪律：**第一句必须先澄清"不是代码问题"**；全条无傲娇、**0 个表情**（人格与表情
