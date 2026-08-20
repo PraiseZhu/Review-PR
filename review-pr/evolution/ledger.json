@@ -2483,6 +2483,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T18:04:14.793Z",
       "lastSeen": "2026-08-20T18:04:14.793Z"
+    },
+    {
+      "fingerprint": "skip-threads-unresolved-human",
+      "tier": "by-design",
+      "title": "未 resolve 的真人 conversation 只能等作者点 Resolve",
+      "detail": "PR #201 3 条未 resolve thread（含巡审本人），threadTriage 未启用；已有催 resolve 评论，本轮 already-commented。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T19:04:41.546Z",
+      "lastSeen": "2026-08-20T19:04:41.546Z"
     }
   ],
   "escapedHazards": [
