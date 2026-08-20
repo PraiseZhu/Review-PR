@@ -2470,6 +2470,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T17:03:52.863Z",
       "lastSeen": "2026-08-20T17:03:52.863Z"
+    },
+    {
+      "fingerprint": "skip-threads-unresolved-author-side",
+      "tier": "by-design",
+      "title": "未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点",
+      "detail": "PR #201 3 条 conversation 未 resolve，gate=threads-unresolved。threadTriage 未启用，auto 只发模板 C 提醒（本轮 already-commented）。",
+      "proposal": "保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。",
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T18:04:14.793Z",
+      "lastSeen": "2026-08-20T18:04:14.793Z"
     }
   ],
   "escapedHazards": [
