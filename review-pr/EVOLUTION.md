@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-threads-after-changes-requested` **审查打回后未 resolve 的 conversation 卡合并，需作者处理** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 已 CHANGES_REQUESTED，3 条 conversation 未 resolve；notify-author-resolve 本轮 already-commented。
 - `ownpr-format-self-fix-handoff` **ownPr 格式门走 fix-handoff 不打 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #205 Description 缺变更说明/提交前自检/备注，selfFixAuthors 命中，已投递跟进会话改 gh pr edit。
 - `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
