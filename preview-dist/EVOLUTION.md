@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `neg-evidence-anchor-mismatch-patch` **审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: open
+  - 现象:PR187 本轮：审查 agent 对同一实验（run-vr3, exitCode 1, 4 failed）写了两处 outputAnchor——verificationRuns 里登记简短汇总行，negativeEvidence 里改写成含 FAIL 细节的长文本，机器一致性校验按逐字比对判 invalid。主 agent 手工对齐后重消费通过。根因：rro-1 契约要求 command/outputAnchor 与被引用 run 逐字一致，但审查 agent prompt 里该要求埋在字段级形状一节，agent 自然倾向在 negativeEvidence 里写更详尽的失败细节。两次消费中的第一次 invalid 纯属格式损耗（重消费 attempts 计数被清，浪费一轮机器判定）。
+  - 提案:在 build-review-task.mjs 生成的 prompt.md 字段级形状节，为 negativeEvidence 的 command/outputAnchor 加一句显式提示：「直接复制被引用 run 的对应字段值，不要改写或增补细节；失败细节放 negativeOracle/observedSignal 之外的说明字段（如 modelVerdictNote）」。改 prompt 模板属于最小自洽改动，可下轮按 8.3 规则自动落地。
+- `product-gate-src-persist-helper-false-positive` **src/ 整树当 UI 路径会把 persist helper 搬运误判成产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 现象:本轮 #183 feat(persist) 只改 src/lib/writeRetryQueue.ts（stableTopologicalSort/combineOps 逐字节搬运），被 uiPaths 的 src/ 前缀打成 needsProductCheck。语义判定后按已有功能补充放行，未 hold。扩权：收窄 uiPaths 或给 persist 加排除等于放宽产品门，不能当轮自动改。
+  - 提案:若误报变多，再评估给 uiPaths 加 src/lib/ 排除或把 persist 列车标 lightTypes；本轮只观察。
 - `product-gate-src-lib-false-positive` **src/lib 纯技术文件命中 uiPaths 会误亮产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
   - 现象:PR #177 只改 src/lib/writeRetryQueue.ts（类型+纯函数搬运、无调用方、无界面），因 uiPaths 含 src/ 被判 product-gate。语义上已放行，但每轮都要人工定性。
   - 提案:评估把 persist/lib 纯逻辑路径从 uiPaths 收窄，或加 uiExcludePaths 覆盖 src/lib/、src/store/ 等非界面目录，避免 feat+src/lib 反复进产品门。
@@ -266,6 +272,31 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-conflict-unresolved` **前置门因与主干冲突且 conversation 未 resolve 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
+  - 现象:PR #187 作者 aj0928，mergeStateStatus=DIRTY 且 1 条 Greptile conversation 未 resolve，auto 跳过等作者处理。
+- `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
+  - 现象:PR #180 作者 aj0928，reviewDecision=CHANGES_REQUESTED 且 1 条 conversation 未 resolve，auto 跳过等作者处理。
+- `skip-conflict-await-author` **与主干冲突卡前置门，等作者 rebase** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:本轮 #187 现场复核 mergeStateStatus=DIRTY，scan 当时 UNKNOWN 只报了未 resolve thread。auto 不代解冲突（审查未过、thread 未清）。已尝试 --conflict 提醒。
+- `skip-unresolved-threads-await-author` **未 resolve conversation 卡前置门，等作者点 Resolve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:本轮 #180 #187 均因 1 条未 resolve conversation 被 skip-gate。催 resolve 脚本已去重（already-commented），未新发评论。
+- `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #193 改 src/lib/writeRetryQueue.ts，auto.action=product-gate。语义判定为已有 persist 列车内部 helper，不是产品/UI，按 fallback 审查并合并。uiPaths 含整个 src/ 是既有从严设计。
+  - 提案:若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 7 次,首见 2026-07-24,最近 2026-08-19,status: tracked
+  - 现象:本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。
+- `recipe-empty-model-id-falls-to-default-channel` **配方空模型 id 回落默认档是作者侧代码问题** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR 180 recipeChannelForModel 对空 id 返回空串，经 mivoChannelFor 回落默认通道。已 REQUEST_CHANGES，不属流程缺口。
+- `skip-conflict-and-unresolved-author-side` **冲突+未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR 187 同时 DIRTY 与 1 条未 resolve conversation；auto 不能代合语义冲突，也不能代 resolve 真人/非白名单 thread。已按模板 C 公开提醒。
+- `unresolved-bot-threads-block-merge` **未 resolve 的 bot conversation 卡着合不了** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:本轮 #170/#180/#183 都因 Greptile 或 CodeQL 行内 thread 未 resolve 走 skip-gate。作者点 Resolve 或回复后下一轮才能审合。threadTriage 本仓未启用，auto-resolve 当前不提供。
+- `persist-p1-4a-helpers-merged-clean` **persist Helpers 前段审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #182 computeResourceKey/isDeleteKind 纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
+- `persist-p1-3-state-machine-merged-clean` **persist 状态机节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #181 纯类型+classifyHttpStatus 纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
+- `persist-p1-type-layer-merged-clean` **persist 类型层列车节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
+  - 现象:PR #177 纯类型+纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
 - `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #177 仅 1 条 greptile P2 注释 thread 未 resolve；threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，脚本去重未重发。
 - `security-gate-awaiting-admin-after-stacked-ci-paths` **PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
@@ -288,8 +319,6 @@
   - 现象:PR145(冲突+security门)+PR147(threads+security/rules门)均为存量 hold 状态,admins 未 Approve 当前 head;提醒评论均 already-commented 去重跳过,停滞判定均 not-stale-yet。无漏判、无流程缺口。
 - `held-security-gate-waiting-maintainer` **两候选均停在被 hold 等维护者确认(security/rules 门)** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:PR#145 命中 package.json securityReviewPaths,PR#147 命中 workflows+AGENTS.md;均为设计上需人确认,非流程缺口;催办去重与停滞判定本轮验证正常
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 6 次,首见 2026-07-24,最近 2026-08-17,status: tracked
-  - 现象:本轮 #145(DIRTY 冲突)/#147(2 条 thread 未 resolve)均处于 signoff hold(security 门),且作者侧卡点提醒评论已发过(指纹去重 already-commented),无新进化项
 - `auto-round-both-held-no-new-gap` **两候选均处 signoff hold 等待 admins 确认,本轮无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked
   - 现象:145/147 均命中 security-gate(已挂 awaiting-discussion+讨论 issue 146/148),admins 尚未 approve 当前 head;by-design 等人,无 automatable-gap
 - `no-merge-candidates-signoff-holds-only` **本轮两候选均停在维护者确认门,无合并动作** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: tracked

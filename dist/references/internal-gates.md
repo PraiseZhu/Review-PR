@@ -127,6 +127,11 @@ auto 每轮消费 `heldDraftResults`：
 放行新出现的 rules 门）。这是本仓对上游（PR 全局持久）的刻意收窄，不是与上游对齐。
 **Approve 不跨 commit 持久**：admin Approve 绑定当前 head oid（adminsApprovedCurrentHead），
 只一次性确认当前 head 上已触发的门类；作者再 push 后若该门类没有放行标记，门重新亮。
+**安全 / 规则门当前 head 的同意来源**（与 Approve 并列，不假冒 `approve-current-head`）：
+讨论 issue 白名单留言（含已归属 Slack 同步评论）经 `isExplicitSignoffConsent` 判定明确同意，
+且评论 `created_at >=` 该 head 首次出现时间。读取失败（`whitelistComments=null`）不得当无同意放行。
+否定句（「我不同意」「先别放」）不放行。issue/Slack 同意不写入跨 commit 持久标记。
+产品 / 架构门既有留言口径不变：脚本只给 `whitelistComments` 原料，语义仍由主 agent 判。
 当前接线到本机制的触发门类为 security / rules；product / arch 走 signoff-hold 既有流程，
 coldUpdate / pluginBase 为上游口径，本仓无对应接线。
 
