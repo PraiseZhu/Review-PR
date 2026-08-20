@@ -2267,14 +2267,14 @@
       "fingerprint": "product-gate-src-persist-not-ui",
       "tier": "by-design",
       "title": "feat+src/ 命中产品门但语义是持久化内部搬迁",
-      "detail": "PR #193 改 src/lib/writeRetryQueue.ts，auto.action=product-gate。语义判定为已有 persist 列车内部 helper，不是产品/UI，按 fallback 审查并合并。uiPaths 含整个 src/ 是既有从严设计。",
+      "detail": "PR #201 feat persist IDB 原语命中 src/ 被标 product-gate；定性为已有功能补充后 fallback skip-gate（CHANGES_REQUESTED + unresolved threads）。不是产品页改动。",
       "proposal": "若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。",
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-19T19:17:30.865Z",
-      "lastSeen": "2026-08-19T19:17:30.865Z"
+      "lastSeen": "2026-08-20T12:16:04.486Z"
     },
     {
       "fingerprint": "skip-unresolved-threads-await-author",
