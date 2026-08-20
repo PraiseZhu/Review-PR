@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `ownpr-format-self-fix-handoff` **ownPr 格式门走 fix-handoff 不打 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #205 Description 缺变更说明/提交前自检/备注，selfFixAuthors 命中，已投递跟进会话改 gh pr edit。
 - `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
   - 现象:PR #201 feat persist IDB 原语命中 src/ 被标 product-gate；定性为已有功能补充后 fallback skip-gate（CHANGES_REQUESTED + unresolved threads）。不是产品页改动。
   - 提案:若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。

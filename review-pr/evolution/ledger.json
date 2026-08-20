@@ -2353,6 +2353,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T10:47:06.956Z",
       "lastSeen": "2026-08-20T10:47:06.956Z"
+    },
+    {
+      "fingerprint": "ownpr-format-self-fix-handoff",
+      "tier": "by-design",
+      "title": "ownPr 格式门走 fix-handoff 不打 REQUEST_CHANGES",
+      "detail": "PR #205 Description 缺变更说明/提交前自检/备注，selfFixAuthors 命中，已投递跟进会话改 gh pr edit。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T12:16:08.901Z",
+      "lastSeen": "2026-08-20T12:16:08.901Z"
     }
   ],
   "escapedHazards": [
