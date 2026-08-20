@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-greptile-thread-unresolved` **Greptile 未 resolve thread 卡住合并** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 skip-gate: greptile-apps 对 deleteWrite IDB 删除失败吞掉提了 P1 thread，作者未 resolve。threadTriage 本仓未启用，只能催作者点 Resolve。属设计上等人，不自动 resolve。
 - `skip-gate-conflict-unresolved` **前置门因与主干冲突且 conversation 未 resolve 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
   - 现象:PR #187 作者 aj0928，mergeStateStatus=DIRTY 且 1 条 Greptile conversation 未 resolve，auto 跳过等作者处理。
 - `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked

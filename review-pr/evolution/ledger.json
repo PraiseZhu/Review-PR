@@ -2340,6 +2340,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T07:33:24.755Z",
       "lastSeen": "2026-08-20T07:33:24.755Z"
+    },
+    {
+      "fingerprint": "skip-gate-greptile-thread-unresolved",
+      "tier": "by-design",
+      "title": "Greptile 未 resolve thread 卡住合并",
+      "detail": "PR #201 skip-gate: greptile-apps 对 deleteWrite IDB 删除失败吞掉提了 P1 thread，作者未 resolve。threadTriage 本仓未启用，只能催作者点 Resolve。属设计上等人，不自动 resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T10:47:06.956Z",
+      "lastSeen": "2026-08-20T10:47:06.956Z"
     }
   ],
   "escapedHazards": [
