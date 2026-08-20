@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-threads-unresolved-bot-and-human` **未 resolve conversation 卡合并,需作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve(Greptile 1 + 巡审 2),auto 已催 resolve,不代点。属真人/作者侧收口。
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 3 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #209 已 hold（issue #210 + awaiting-discussion），本轮 alreadyHeld 幂等复用。放行前不审不合，属维护者确认门不是作者侧卡点。
   - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
