@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-signoff-hold-reuse` **命中 securityReviewPaths 必须等 admins Approve，hold 幂等复用** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 命中 CI workflow 与 loop 脚本，security 门 hold，复用 issue #210 与 awaiting-discussion 标签。放行前不审不合。
 - `skip-threads-unresolved-author-must-resolve` **未 resolve conversation 必须作者处理，巡审不代关** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条未 resolve thread（含 greptile 与维护者必改），auto 记 skip-gate。threadTriage 未配置，不得代 resolve。
 - `security-gate-already-held` **security 门已 hold 后等 admins Approve 当前 head** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked

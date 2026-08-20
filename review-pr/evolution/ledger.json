@@ -2522,6 +2522,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T20:04:18.493Z",
       "lastSeen": "2026-08-20T20:04:18.493Z"
+    },
+    {
+      "fingerprint": "security-gate-signoff-hold-reuse",
+      "tier": "by-design",
+      "title": "命中 securityReviewPaths 必须等 admins Approve，hold 幂等复用",
+      "detail": "PR #209 命中 CI workflow 与 loop 脚本，security 门 hold，复用 issue #210 与 awaiting-discussion 标签。放行前不审不合。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T20:04:22.936Z",
+      "lastSeen": "2026-08-20T20:04:22.936Z"
     }
   ],
   "escapedHazards": [
