@@ -272,11 +272,11 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 4 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 命中 merge-thanks workflow 与 loop 脚本,signoff 已 hold(issue #210, awaiting-discussion)。放行前不审不合。
+  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-threads-unresolved-bot-and-human` **未 resolve conversation 卡合并,需作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve(Greptile 1 + 巡审 2),auto 已催 resolve,不代点。属真人/作者侧收口。
-- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 3 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #209 已 hold（issue #210 + awaiting-discussion），本轮 alreadyHeld 幂等复用。放行前不审不合，属维护者确认门不是作者侧卡点。
-  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-gate-threads-unresolved` **未 resolve conversation 卡合，本轮只能 skip 等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 前置门 threads-unresolved×3，threadTriage 未启用（D7），auto 不代 resolve 真人 thread。已有催 resolve 评论 already-commented，停滞未到 24h。
 - `security-gate-signoff-hold-reuse` **命中 securityReviewPaths 必须等 admins Approve，hold 幂等复用** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
