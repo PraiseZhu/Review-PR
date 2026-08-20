@@ -2449,14 +2449,14 @@
       "fingerprint": "security-gate-awaiting-admin-approve",
       "tier": "by-design",
       "title": "命中 securityReviewPaths 等维护者确认门放行",
-      "detail": "PR #209 已 hold（issue #210 + awaiting-discussion），signoff.unconfirmedKinds=[security]，adminsApprovedCurrentHead=false。本轮幂等 hold alreadyHeld。",
+      "detail": "PR #209 已 hold（issue #210 + awaiting-discussion），本轮 alreadyHeld 幂等复用。放行前不审不合，属维护者确认门不是作者侧卡点。",
       "proposal": "作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。",
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-20T16:08:44.997Z",
-      "lastSeen": "2026-08-20T18:04:19.686Z"
+      "lastSeen": "2026-08-20T21:04:21.749Z"
     },
     {
       "fingerprint": "skip-gate-unresolved-threads",

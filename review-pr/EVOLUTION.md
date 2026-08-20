@@ -272,6 +272,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 3 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 已 hold（issue #210 + awaiting-discussion），本轮 alreadyHeld 幂等复用。放行前不审不合，属维护者确认门不是作者侧卡点。
+  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-gate-threads-unresolved` **未 resolve conversation 卡合，本轮只能 skip 等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 前置门 threads-unresolved×3，threadTriage 未启用（D7），auto 不代 resolve 真人 thread。已有催 resolve 评论 already-commented，停滞未到 24h。
 - `security-gate-signoff-hold-reuse` **命中 securityReviewPaths 必须等 admins Approve，hold 幂等复用** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
@@ -282,9 +285,6 @@
   - 现象:PR #209 命中 securityReviewPaths，alreadyHeld issue #210 + awaiting-discussion，放行前不审不合。
 - `skip-threads-unresolved-human` **未 resolve 的真人 conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条未 resolve thread（含巡审本人），threadTriage 未启用；已有催 resolve 评论，本轮 already-commented。
-- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #209 已 hold（issue #210 + awaiting-discussion），signoff.unconfirmedKinds=[security]，adminsApprovedCurrentHead=false。本轮幂等 hold alreadyHeld。
-  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve，gate=threads-unresolved。threadTriage 未启用，auto 只发模板 C 提醒（本轮 already-commented）。
   - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
