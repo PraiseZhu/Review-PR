@@ -2418,6 +2418,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T15:05:00.895Z",
       "lastSeen": "2026-08-20T15:05:00.895Z"
+    },
+    {
+      "fingerprint": "security-gate-awaiting-admin-signoff",
+      "tier": "by-design",
+      "title": "命中 securityReviewPaths 必须等 admins 确认，不可自动审合",
+      "detail": "PR 209 已 hold issue #210，unconfirmedKinds=security，属维护者确认门。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T15:05:05.500Z",
+      "lastSeen": "2026-08-20T15:05:05.500Z"
     }
   ],
   "escapedHazards": [
