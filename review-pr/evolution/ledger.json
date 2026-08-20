@@ -2431,6 +2431,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T15:05:05.500Z",
       "lastSeen": "2026-08-20T15:05:05.500Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-human-and-bot-threads",
+      "tier": "by-design",
+      "title": "未 resolve conversation 卡合并，作者侧需点 Resolve",
+      "detail": "PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T16:08:40.489Z",
+      "lastSeen": "2026-08-20T16:08:40.489Z"
     }
   ],
   "escapedHazards": [

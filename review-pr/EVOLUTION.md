@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-human-and-bot-threads` **未 resolve conversation 卡合并，作者侧需点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。
 - `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR 209 已 hold issue #210，unconfirmedKinds=security，属维护者确认门。
 - `skip-changes-requested-unresolved` **作者未改 CHANGES_REQUESTED 且 conversation 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
