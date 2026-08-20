@@ -2444,6 +2444,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T16:08:40.489Z",
       "lastSeen": "2026-08-20T16:08:40.489Z"
+    },
+    {
+      "fingerprint": "security-gate-awaiting-admin-approve",
+      "tier": "by-design",
+      "title": "命中 securityReviewPaths 等维护者确认门放行",
+      "detail": "PR #209 已 hold（issue #210 / awaiting-discussion），admins 尚未 Approve 当前 head。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-20T16:08:44.997Z",
+      "lastSeen": "2026-08-20T16:08:44.997Z"
     }
   ],
   "escapedHazards": [
