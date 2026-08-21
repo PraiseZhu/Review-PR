@@ -2821,6 +2821,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T22:04:05.411Z",
       "lastSeen": "2026-08-21T22:04:05.411Z"
+    },
+    {
+      "fingerprint": "product-gate-uipaths-src-lib-persist-false-positive",
+      "tier": "proposal",
+      "title": "uiPaths 含整个 src/ 导致 persist 测试 hook 搬运误亮产品门",
+      "detail": "PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助/复位入口，语义是已有 persist 能力补充，不是产品/UI。主 agent 本轮定性后走 fallback skip-gate。若收窄 uiPaths（排除 src/lib 等非界面层）可少一轮语义定性。",
+      "proposal": "评估把 uiPaths 从整棵 src/ 收到真实 UI 面（如 src/ui、cindyplugin、index.html），persist/lib 不再误触发 product-gate。属门控收窄，需维护者拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T22:04:09.821Z",
+      "lastSeen": "2026-08-21T22:04:09.821Z"
     }
   ],
   "escapedHazards": [
