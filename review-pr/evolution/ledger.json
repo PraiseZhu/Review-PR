@@ -2834,6 +2834,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T22:04:09.821Z",
       "lastSeen": "2026-08-21T22:04:09.821Z"
+    },
+    {
+      "fingerprint": "skip-gate-unresolved-greptile-thread-author-must-resolve",
+      "tier": "by-design",
+      "title": "Greptile 未 resolve thread 卡合，作者须自行点 Resolve",
+      "detail": "PR #229 仅剩 greptile-apps P2 thread（复位遗漏 tombstone），threadTriage 未启用故不代 reply/resolve；已催过 resolve（already-commented），停滞 9.3h 未达 24h 阈值。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T23:04:02.540Z",
+      "lastSeen": "2026-08-21T23:04:02.540Z"
     }
   ],
   "escapedHazards": [
