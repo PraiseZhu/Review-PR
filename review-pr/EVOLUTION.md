@@ -281,6 +281,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `author-merged-during-review` **独立审查进行中作者网页合入，巡审不再重复 merge** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR 232 阶段二 clean 回执落盘后 pre-merge 发现 state=MERGED(kirozeng 网页合入)，本地 mergeAck 因 sender=cloud 不重发。
 - `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR 229 1 条 greptile-apps P2 thread 未 resolve；产品门语义判定为 persist test hooks 搬运非产品/UI，按 fallback skip-gate。
 - `skip-gate-conflict-author-rebase` **与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: tracked

@@ -2717,6 +2717,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-21T15:31:11.482Z",
       "lastSeen": "2026-08-21T16:11:16.344Z"
+    },
+    {
+      "fingerprint": "author-merged-during-review",
+      "tier": "by-design",
+      "title": "独立审查进行中作者网页合入，巡审不再重复 merge",
+      "detail": "PR 232 阶段二 clean 回执落盘后 pre-merge 发现 state=MERGED(kirozeng 网页合入)，本地 mergeAck 因 sender=cloud 不重发。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T16:11:20.894Z",
+      "lastSeen": "2026-08-21T16:11:20.894Z"
     }
   ],
   "escapedHazards": [
