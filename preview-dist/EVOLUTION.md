@@ -5,6 +5,15 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `sync-failed-stale-tracking-branch-deleted-upstream` **auto 巡审 checkout 停在已删远程分支导致 pull --ff-only 整轮 sync-failed** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 现象:本轮本地 HEAD 在 fix/roster-empty-identity-not-miss，远程 ref 已不存在；origin/main 已前进 cd4cd0e..b9e2c14。fail-closed 正确跳过审查，但每轮都会空转直到有人把 checkout 切回默认分支。
+  - 提案:auto 开轮若 tracking 分支在远端已消失，先切到 origin/<defaultBranch> 再 ff-only；切不过仍 sync-failed，不审不写 GitHub。
+- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 现象:PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。
+  - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
+- `auto-review-agent-no-return-before-round-end` **阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 现象:PR #221 已完成 preflight/task/segment 投递并 spawn isolation worktree 审查，但本轮结束前未收回执。按 fail-closed 不得 approve/clean。建议给阶段二审查加硬超时，超时写 invalid 回执并进汇总，避免空等熔断后无机器终态。
+  - 提案:consume 前若审查会话超时，主流程写 non-clean 回执(reason=review-agent-timeout)并 skip，不把「没跑成就沿用上次清白」开口留下。
 - `neg-evidence-anchor-mismatch-patch` **审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: open
   - 现象:PR187 本轮：审查 agent 对同一实验（run-vr3, exitCode 1, 4 failed）写了两处 outputAnchor——verificationRuns 里登记简短汇总行，negativeEvidence 里改写成含 FAIL 细节的长文本，机器一致性校验按逐字比对判 invalid。主 agent 手工对齐后重消费通过。根因：rro-1 契约要求 command/outputAnchor 与被引用 run 逐字一致，但审查 agent prompt 里该要求埋在字段级形状一节，agent 自然倾向在 negativeEvidence 里写更详尽的失败细节。两次消费中的第一次 invalid 纯属格式损耗（重消费 attempts 计数被清，浪费一轮机器判定）。
   - 提案:在 build-review-task.mjs 生成的 prompt.md 字段级形状节，为 negativeEvidence 的 command/outputAnchor 加一句显式提示：「直接复制被引用 run 的对应字段值，不要改写或增补细节；失败细节放 negativeOracle/observedSignal 之外的说明字段（如 modelVerdictNote）」。改 prompt 模板属于最小自洽改动，可下轮按 8.3 规则自动落地。
@@ -272,6 +281,69 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: tracked
+  - 现象:PR #229 1 条 greptile conversation 未 resolve；threadTriage 未启用，不代 reply/resolve
+- `skip-gate-conflict-author-rebase` **与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突** — 出现 3 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #228 mergeStateStatus=DIRTY，审查未跑完不能走 5.5 主干代合并
+- `author-merged-during-review` **独立审查进行中作者网页合入，巡审不再重复 merge** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR 232 阶段二 clean 回执落盘后 pre-merge 发现 state=MERGED(kirozeng 网页合入)，本地 mergeAck 因 sender=cloud 不重发。
+- `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR 229 1 条 greptile-apps P2 thread 未 resolve；产品门语义判定为 persist test hooks 搬运非产品/UI，按 fallback skip-gate。
+- `greptile-unresolved-thread-skip` **Greptile 未 resolve thread 卡前置门** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #198 1 条 greptile conversation 未 resolve，threadTriage 未配置故不能代 resolve。按设计等人点 Resolve。
+- `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:本轮 #218 Description 仍缺变更说明/提交前自检/备注，head 未变，走 skip-stale-pushback。
+- `skip-greptile-unresolved-thread-blocks-auto` **Greptile 未 resolve thread 会挡住 auto 合，且 threadTriage 未启用** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:本轮 #218/#219 各有 1 条 greptile-apps 未 resolve conversation。bot 意见必须 resolve 才能过前置门；threadTriage 未配置，不得代 reply/resolve。
+- `greptile-unresolved-thread-blocks-merge` **白名单 bot 未 resolve thread 阻断合并；threadTriage 未启用故只提醒不代关** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #218/#219 各 1 条 greptile thread，已 notify-author-resolve。
+- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 3 次,首见 2026-07-31,最近 2026-08-21,status: tracked
+  - 现象:PR #218 用 Summary/Validation，缺 变更说明/提交前自检/备注。
+- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 7 次,首见 2026-08-20,最近 2026-08-21,status: tracked
+  - 现象:PR #209 已 hold（issue #210），本轮 alreadyHeld 复用，无新动作。
+  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
+- `skip-threads-unresolved-human-greptile` **未 resolve 的真人+bot conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #201 3 条未 resolve conversation（1 greptile + 2 PraiseZhu 真人），threadTriage 未启用且含白名单外参与者，本轮 skip-gate。已有催 resolve 评论，未重发。
+- `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve，notify-author-resolve 已去重跳过(already-commented)；threadTriage 未配置故不代 reply/resolve。属设计上就该人来。
+- `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-21,status: tracked
+  - 现象:PR #209 命中 securityReviewPaths，signoff-hold 复用既有讨论 issue #210，放行前不自动审不合。
+- `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked
+  - 现象:PR #201 因 3 条 conversation 未 resolve 跳过，属作者侧 gate，不自动代 resolve 真人 thread。
+  - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
+- `skip-unresolved-threads-author-must-resolve` **未 resolve conversation 卡合只能作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve，auto 跳过；已有催 resolve 评论，本轮未重发。
+- `skip-threads-unresolved-bot-and-human` **未 resolve conversation 卡合并,需作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve(Greptile 1 + 巡审 2),auto 已催 resolve,不代点。属真人/作者侧收口。
+- `skip-gate-threads-unresolved` **未 resolve conversation 卡合，本轮只能 skip 等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 前置门 threads-unresolved×3，threadTriage 未启用（D7），auto 不代 resolve 真人 thread。已有催 resolve 评论 already-commented，停滞未到 24h。
+- `security-gate-signoff-hold-reuse` **命中 securityReviewPaths 必须等 admins Approve，hold 幂等复用** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 命中 CI workflow 与 loop 脚本，security 门 hold，复用 issue #210 与 awaiting-discussion 标签。放行前不审不合。
+- `skip-threads-unresolved-author-must-resolve` **未 resolve conversation 必须作者处理，巡审不代关** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条未 resolve thread（含 greptile 与维护者必改），auto 记 skip-gate。threadTriage 未配置，不得代 resolve。
+- `security-gate-already-held` **security 门已 hold 后等 admins Approve 当前 head** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 命中 securityReviewPaths，alreadyHeld issue #210 + awaiting-discussion，放行前不审不合。
+- `skip-threads-unresolved-human` **未 resolve 的真人 conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条未 resolve thread（含巡审本人），threadTriage 未启用；已有催 resolve 评论，本轮 already-commented。
+- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。
+- `skip-gate-unresolved-threads` **作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve（含 greptile 与巡审行评），auto 按前置门跳过，已有催 resolve 评论不去重再发。
+- `skip-unresolved-human-and-bot-threads` **未 resolve conversation 卡合并，作者侧需点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。
+- `skip-changes-requested-unresolved` **作者未改 CHANGES_REQUESTED 且 conversation 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR 201 本轮仍是 reviewDecision=CHANGES_REQUESTED + 3 条未 resolve conversation，属作者侧收口，不扩权。
+- `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR 201 仍是 CHANGES_REQUESTED + 3 条未 resolve conversation，作者未新 commit。属作者侧决策/修复，不自动代 resolve 真人 thread。
+- `skip-unresolved-threads-after-changes-requested` **审查打回后未 resolve 的 conversation 卡合并，需作者处理** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 已 CHANGES_REQUESTED，3 条 conversation 未 resolve；notify-author-resolve 本轮 already-commented。
+- `ownpr-format-self-fix-handoff` **ownPr 格式门走 fix-handoff 不打 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #205 Description 缺变更说明/提交前自检/备注，selfFixAuthors 命中，已投递跟进会话改 gh pr edit。
+- `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
+  - 现象:PR #201 feat persist IDB 原语命中 src/ 被标 product-gate；定性为已有功能补充后 fallback skip-gate（CHANGES_REQUESTED + unresolved threads）。不是产品页改动。
+  - 提案:若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。
+- `skip-gate-greptile-thread-unresolved` **Greptile 未 resolve thread 卡住合并** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
+  - 现象:PR #201 skip-gate: greptile-apps 对 deleteWrite IDB 删除失败吞掉提了 P1 thread，作者未 resolve。threadTriage 本仓未启用，只能催作者点 Resolve。属设计上等人，不自动 resolve。
 - `skip-gate-conflict-unresolved` **前置门因与主干冲突且 conversation 未 resolve 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
   - 现象:PR #187 作者 aj0928，mergeStateStatus=DIRTY 且 1 条 Greptile conversation 未 resolve，auto 跳过等作者处理。
 - `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
@@ -280,9 +352,6 @@
   - 现象:本轮 #187 现场复核 mergeStateStatus=DIRTY，scan 当时 UNKNOWN 只报了未 resolve thread。auto 不代解冲突（审查未过、thread 未清）。已尝试 --conflict 提醒。
 - `skip-unresolved-threads-await-author` **未 resolve conversation 卡前置门，等作者点 Resolve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:本轮 #180 #187 均因 1 条未 resolve conversation 被 skip-gate。催 resolve 脚本已去重（already-commented），未新发评论。
-- `product-gate-src-persist-not-ui` **feat+src/ 命中产品门但语义是持久化内部搬迁** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
-  - 现象:PR #193 改 src/lib/writeRetryQueue.ts，auto.action=product-gate。语义判定为已有 persist 列车内部 helper，不是产品/UI，按 fallback 审查并合并。uiPaths 含整个 src/ 是既有从严设计。
-  - 提案:若同类 persist 内部节反复误亮产品门，再考虑把 src/lib 从 uiPaths 收窄；当前不改阈值。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 7 次,首见 2026-07-24,最近 2026-08-19,status: tracked
   - 现象:本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。
 - `recipe-empty-model-id-falls-to-default-channel` **配方空模型 id 回落默认档是作者侧代码问题** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
@@ -297,8 +366,6 @@
   - 现象:PR #181 纯类型+classifyHttpStatus 纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
 - `persist-p1-type-layer-merged-clean` **persist 类型层列车节审查通过后正常合并** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #177 纯类型+纯函数搬运，产品门路径误伤后语义放行；独立审查 0 P0/P1，APPROVE 后 squash 合并。
-- `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
-  - 现象:PR #177 仅 1 条 greptile P2 注释 thread 未 resolve；threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，脚本去重未重发。
 - `security-gate-awaiting-admin-after-stacked-ci-paths` **PR 叠入 CI/规则路径后停在 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR #170 head 叠入 plugin-green-ref.yml / pr-size-gate.yml / pr-rules.json，security-gate 已 hold（issue #176），本轮 alreadyHeld 幂等复用。属维护者确认，不自动放行。
 - `unresolved-greptile-p2-blocks-merge` **Greptile P2 未 resolve 会卡合并，threadTriage 关闭时只能催作者** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
@@ -376,8 +443,6 @@
   - 现象:本轮两个候选(#437 改 .claude/skills + workflow;#440 dependabot 改 package.json/lock)都命中 3.8 审查执行环境安全门,按设计转人工;两者同时还处于 CI pending。属设计上就该人来的类别,只记计数观察,不放开。
 - `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 4 次,首见 2026-08-01,最近 2026-08-03,status: tracked
   - 现象:PR #433(minor-and-patch group,9 updates)仅改 package.json/package-lock.json,两文件都在 securityReviewPaths 内,auto 直接 skip-security-review;fallback 也因作者 app/dependabot 不在 admins 而无法 admin bypass 结构性 BLOCKED。放宽属扩权类,不自动落地。
-- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 2 次,首见 2026-07-31,最近 2026-08-03,status: tracked
-  - 现象:本轮 PR #434 body 用「需求/改了什么/门禁/测试/验证」自定义标题，缺模板要求的 变更说明/提交前自检/备注 三段，格式门打回（ownPr=true 故走 COMMENT）
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 2 次,首见 2026-07-31,最近 2026-08-02,status: tracked
   - 现象:本轮唯一候选 PR #419 改 .github/workflows/merge-thanks.yml，action=skip-security-review
 - `security-review-path-ci-workflow-manual` **改到 CI workflow / 自动化自身执行面的 PR 必须转人工，机器不该自审自合** — 出现 2 次,首见 2026-08-02,最近 2026-08-02,status: tracked
