@@ -225,7 +225,7 @@
 
 ## 已自动落地(automatable-gap)
 
-- `rro1-segment-receipts-assignedcoveragekeys-alias` **审查 agent 把 segmentReceipts.coverageKeys 写成 assignedCoverageKeys 导致消费前必须手工改字段** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+- `rro1-segment-receipts-assignedcoveragekeys-alias` **审查 agent 把 segmentReceipts.coverageKeys 写成 assignedCoverageKeys 导致消费前必须手工改字段** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: landed,commit `1cd0c64`
   - 现象:本轮 #228 审查席产出的 rro-1 覆盖集合完整且与投递台账逐条一致，但字段名写成 assignedCoverageKeys 而非契约字段 coverageKeys。主 agent 对照 seg-*.meta.json 核对后改名才 consume 到 clean。属 prompt 形状提示缺口，不放宽 gate。
   - 提案:在 build-review-task.mjs 的 segmentReceipts 字段级形状节加一句：coverageKeys 字段名必须是 coverageKeys，禁止写成 assignedCoverageKeys；值必须原样复制该段 assignedCoverageKeys。
 - `symlink-argv1-import-meta-url-mismatch-silent-noop` **audit-merged-loop-prs.mjs 的 isDirectRun 守卫经软链调用时静默 no-op** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: landed
