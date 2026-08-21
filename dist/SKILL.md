@@ -1840,7 +1840,7 @@ PR：<url>（分支 <headRefName>，base <baseRefName>）
 `gh pr checkout` 建出的本地分支在 PR 合并后没人回收，会随 PR 数量线性膨胀。sweep 后
 紧接着运行 `node "<SKILL_ROOT>/scripts/fix-worktree-cleanup.mjs" --scan`，回收对应 PR
 已合并／关闭的托管 worktree 与本地分支。安全边界全在脚本里：只动托管 worktree 目录
-（`.cindy-worktrees`、`.claude/worktrees`、`REVIEW_PR_WORKTREE_ROOTS`），分支对应 PR
+（`.cindy-worktrees`、`.xdt-worktrees`、`.claude/worktrees`、`.worktrees/review-pr`、`REVIEW_PR_WORKTREE_ROOTS`），分支对应 PR
 经 gh 实查全部非 OPEN 才动，默认分支与 locked／含 cwd 的 worktree 永不碰，合并后
 30 分钟宽限期防跟进会话还在收尾，查不到对应 PR 的一律不动只报告。脚本幂等，本轮
 失败／漏跑下轮自愈；`removedWorktrees`／`skipped`／`errors` 结果写入汇总，失败不阻塞
