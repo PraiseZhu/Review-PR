@@ -281,6 +281,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR 229 仅 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重不重发。
 - `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: tracked
   - 现象:PR #229 1 条 greptile conversation 未 resolve；threadTriage 未启用，不代 reply/resolve
 - `skip-gate-conflict-author-rebase` **与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突** — 出现 3 次,首见 2026-08-21,最近 2026-08-21,status: tracked
