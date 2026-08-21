@@ -2423,14 +2423,14 @@
       "fingerprint": "security-gate-awaiting-admin-signoff",
       "tier": "by-design",
       "title": "命中 securityReviewPaths 必须等 admins 确认，不可自动审合",
-      "detail": "PR 209 已 hold issue #210，unconfirmedKinds=security，属维护者确认门。",
+      "detail": "PR #209 命中 securityReviewPaths，signoff-hold 复用既有讨论 issue #210，放行前不自动审不合。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-20T15:05:05.500Z",
-      "lastSeen": "2026-08-20T15:05:05.500Z"
+      "lastSeen": "2026-08-21T01:13:06.471Z"
     },
     {
       "fingerprint": "skip-unresolved-human-and-bot-threads",

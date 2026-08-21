@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-21,status: tracked
+  - 现象:PR #209 命中 securityReviewPaths，signoff-hold 复用既有讨论 issue #210，放行前不自动审不合。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #201 因 3 条 conversation 未 resolve 跳过，属作者侧 gate，不自动代 resolve 真人 thread。
   - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
@@ -298,8 +300,6 @@
   - 现象:PR #201 3 条 conversation 未 resolve（含 greptile 与巡审行评），auto 按前置门跳过，已有催 resolve 评论不去重再发。
 - `skip-unresolved-human-and-bot-threads` **未 resolve conversation 卡合并，作者侧需点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。
-- `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR 209 已 hold issue #210，unconfirmedKinds=security，属维护者确认门。
 - `skip-changes-requested-unresolved` **作者未改 CHANGES_REQUESTED 且 conversation 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR 201 本轮仍是 reviewDecision=CHANGES_REQUESTED + 3 条未 resolve conversation，属作者侧收口，不扩权。
 - `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
