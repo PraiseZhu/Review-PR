@@ -2782,6 +2782,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T20:31:12.287Z",
       "lastSeen": "2026-08-21T20:31:12.287Z"
+    },
+    {
+      "fingerprint": "missing-toplevel-snapshot-hash",
+      "tier": "proposal",
+      "title": "审查输出偶发缺顶层 snapshotHash 导致 consume invalid",
+      "detail": "PR #235 审查 JSON 缺顶层 snapshotHash（段回执里有同值），consume 先报非法 JSON。prompt 已要求该字段。本轮手工补字段后 clean。",
+      "proposal": "consume-review-output 在 JSON 合法但缺顶层 snapshotHash 时给出字段级错误；不放宽 clean 条件。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T20:31:23.030Z",
+      "lastSeen": "2026-08-21T20:31:23.030Z"
     }
   ],
   "escapedHazards": [

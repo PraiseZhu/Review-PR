@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `missing-toplevel-snapshot-hash` **审查输出偶发缺顶层 snapshotHash 导致 consume invalid** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 现象:PR #235 审查 JSON 缺顶层 snapshotHash（段回执里有同值），consume 先报非法 JSON。prompt 已要求该字段。本轮手工补字段后 clean。
+  - 提案:consume-review-output 在 JSON 合法但缺顶层 snapshotHash 时给出字段级错误；不放宽 clean 条件。
 - `product-gate-src-persist-helper-false-positive` **src/ 整树当 UI 路径会把 persist helper 搬运误判成产品门** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: open
   - 现象:本轮 #229 feat(persist) 只搬 src/lib/writeRetryQueue.ts 测试钩子(__dump/__reset 等)，被 uiPaths 的 src/ 前缀打成 product-gate。语义判定后按已有功能补充放行，未 hold。与 #183/#177 同根因。
   - 提案:若误报变多，再评估给 uiPaths 加 src/lib/ 排除或把 persist 列车标 lightTypes；本轮只观察。
