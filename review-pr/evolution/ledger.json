@@ -2696,14 +2696,14 @@
       "fingerprint": "skip-gate-conflict-author-rebase",
       "tier": "by-design",
       "title": "与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突",
-      "detail": "PR 228 mergeStateStatus=DIRTY，本轮 skip-gate，冲突提醒已存在未重发。",
+      "detail": "PR #228 mergeStateStatus=DIRTY，审查未跑完不能走 5.5 主干代合并",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-21T15:31:07.094Z",
-      "lastSeen": "2026-08-21T16:11:11.786Z"
+      "lastSeen": "2026-08-21T17:05:03.666Z"
     },
     {
       "fingerprint": "skip-gate-unresolved-greptile-thread",
