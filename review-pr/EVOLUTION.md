@@ -281,6 +281,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-conflict-author-rebase` **与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR 228 scan 时 mergeStateStatus=UNKNOWN 进 review，落地前重拉已是 DIRTY；未完成阶段二故不走 5.5。已发冲突提醒。
 - `greptile-unresolved-thread-skip` **Greptile 未 resolve thread 卡前置门** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #198 1 条 greptile conversation 未 resolve，threadTriage 未配置故不能代 resolve。按设计等人点 Resolve。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
