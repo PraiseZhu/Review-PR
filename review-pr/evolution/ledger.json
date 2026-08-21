@@ -2704,6 +2704,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T15:31:07.094Z",
       "lastSeen": "2026-08-21T15:31:07.094Z"
+    },
+    {
+      "fingerprint": "skip-gate-unresolved-greptile-thread",
+      "tier": "by-design",
+      "title": "Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关",
+      "detail": "PR 229 产品门语义判定为 persist 测试钩子搬运非产品 UI；fallback 因 1 条 greptile conversation 未 resolve 而 skip-gate。已发催 resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T15:31:11.482Z",
+      "lastSeen": "2026-08-21T15:31:11.482Z"
     }
   ],
   "escapedHazards": [
