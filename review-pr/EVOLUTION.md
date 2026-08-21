@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve，notify-author-resolve 已去重跳过(already-commented)；threadTriage 未配置故不代 reply/resolve。属设计上就该人来。
 - `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #209 命中 securityReviewPaths，signoff-hold 复用既有讨论 issue #210，放行前不自动审不合。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked

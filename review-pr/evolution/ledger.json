@@ -2574,6 +2574,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T00:03:33.558Z",
       "lastSeen": "2026-08-21T00:03:33.558Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-threads-author-side",
+      "tier": "by-design",
+      "title": "未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点",
+      "detail": "PR #201 3 条 conversation 未 resolve，notify-author-resolve 已去重跳过(already-commented)；threadTriage 未配置故不代 reply/resolve。属设计上就该人来。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T02:04:55.706Z",
+      "lastSeen": "2026-08-21T02:04:55.706Z"
     }
   ],
   "escapedHazards": [
