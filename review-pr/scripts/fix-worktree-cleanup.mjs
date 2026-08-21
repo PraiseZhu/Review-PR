@@ -13,6 +13,8 @@
 //   2. 分支对应的 PR 用 gh 实查(--state all),全部非 OPEN 才动;查不到对应 PR 的
 //      分支/worktree 不动(来历不明 → 保守)。gh 查询失败同样保守跳过,下轮重试。
 //   3. 默认分支与 main/master 永不删;仍被其他 worktree 检出的分支 git 自己会拒删。
+//      已判定可回收的托管树用 `git worktree remove --force`（避开脏树卡住;
+//      这不是对用户自建树或默认分支 force）。本地孤儿分支用 `git branch -D`。
 //   4. detached、locked、bare、包含当前 cwd 的 worktree 不动;PR 合并/关闭后
 //      --grace-minutes(默认 30)宽限期内不动,防跟进会话还在收尾(回 thread/留评论)。
 //   5. 分支删除比 worktree 更保守:对应 PR 全部 MERGED 才删;CLOSED 未合并的分支保留
