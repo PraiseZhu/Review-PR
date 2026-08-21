@@ -1842,7 +1842,9 @@ PR：<url>（分支 <headRefName>，base <baseRefName>）
 已合并／关闭的托管 worktree 与本地分支。安全边界全在脚本里：只动托管 worktree 目录
 （`.cindy-worktrees`、`.xdt-worktrees`、`.claude/worktrees`、`.worktrees/review-pr`、`REVIEW_PR_WORKTREE_ROOTS`），分支对应 PR
 经 gh 实查全部非 OPEN 才动，默认分支与 locked／含 cwd 的 worktree 永不碰，合并后
-30 分钟宽限期防跟进会话还在收尾，查不到对应 PR 的一律不动只报告。脚本幂等，本轮
+30 分钟宽限期防跟进会话还在收尾，查不到对应 PR 的一律不动只报告。对已判定可回收
+的托管树，脚本用 `git worktree remove --force`（只为脏树不卡住，不扩到用户自建树
+或默认分支）；本地孤儿分支用 `git branch -D`。脚本幂等，本轮
 失败／漏跑下轮自愈；`removedWorktrees`／`skipped`／`errors` 结果写入汇总，失败不阻塞
 流程。交互模式合并 selfFix PR 后也可用 `--pr <N>` 即时回收；拿不准先 `--dry-run` 预览。
 
