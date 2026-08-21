@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:本轮 #218 Description 仍缺变更说明/提交前自检/备注，head 未变，走 skip-stale-pushback。
 - `skip-greptile-unresolved-thread-blocks-auto` **Greptile 未 resolve thread 会挡住 auto 合，且 threadTriage 未启用** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:本轮 #218/#219 各有 1 条 greptile-apps 未 resolve conversation。bot 意见必须 resolve 才能过前置门；threadTriage 未配置，不得代 reply/resolve。
 - `greptile-unresolved-thread-blocks-merge` **白名单 bot 未 resolve thread 阻断合并；threadTriage 未启用故只提醒不代关** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
