@@ -2808,6 +2808,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T21:03:36.563Z",
       "lastSeen": "2026-08-21T21:03:36.563Z"
+    },
+    {
+      "fingerprint": "threads-unresolved-greptile-bot-threadtriage-disabled",
+      "tier": "by-design",
+      "title": "Greptile 未 resolve thread 卡 skip-gate，threadTriage 按 D7 关闭不得代 resolve",
+      "detail": "PR #229 仅 1 条 greptile-apps P2 thread（复位遗漏 tombstone），作者非 selfFix；pr-rules 未配 threadTriage.extraBots，按 SKILL 3.10 整套关闭。已有模板 C 评论，本轮 notify 去重 already-commented；停滞未到阈值。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T22:04:05.411Z",
+      "lastSeen": "2026-08-21T22:04:05.411Z"
     }
   ],
   "escapedHazards": [

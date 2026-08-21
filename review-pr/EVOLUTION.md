@@ -287,6 +287,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `threads-unresolved-greptile-bot-threadtriage-disabled` **Greptile 未 resolve thread 卡 skip-gate，threadTriage 按 D7 关闭不得代 resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #229 仅 1 条 greptile-apps P2 thread（复位遗漏 tombstone），作者非 selfFix；pr-rules 未配 threadTriage.extraBots，按 SKILL 3.10 整套关闭。已有模板 C 评论，本轮 notify 去重 already-commented；停滞未到阈值。
 - `skip-greptile-unresolved-thread-p2-reset` **Greptile 未 resolve thread 挡合并，作者侧要点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #229 仅剩 greptile-apps P2 thread（writeRetryQueue 复位遗漏 tombstone）。threadTriage 未启用，auto 不能代 resolve；已于 15:04 提醒过作者，本轮 already-commented。
 - `skip-unresolved-greptile-p2-thread-blocks-merge` **Greptile P2 未 resolve 会整轮卡住合并** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
