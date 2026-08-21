@@ -2652,6 +2652,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T10:21:17.234Z",
       "lastSeen": "2026-08-21T10:21:17.234Z"
+    },
+    {
+      "fingerprint": "shallow-clone-merge-base-fail",
+      "tier": "proposal",
+      "title": "浅克隆上 DiffSnapshot 算不出 merge-base",
+      "detail": "PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。",
+      "proposal": "buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T11:26:14.225Z",
+      "lastSeen": "2026-08-21T11:26:14.225Z"
     }
   ],
   "escapedHazards": [
