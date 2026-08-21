@@ -284,6 +284,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-greptile-p2-thread-blocks-merge` **Greptile P2 未 resolve 会整轮卡住合并** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #229 独立审查未进：1 条 greptile-apps conversation 未 resolve，gate 按 threads-unresolved skip。threadTriage 默认关闭且 D7 禁止顺带启用；催 resolve 已去重跳过。属设计上等人点 Resolve，不自动 resolve 他人/bot thread。
 - `persist-src-lib-hits-product-ui-gate` **src/lib 持久化搬运命中 uiPaths，产品门靠语义放行** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR 229 feat + src/lib/writeRetryQueue.ts 被标 needsProductCheck；语义判定为已有 persist 测试钩子搬运，不是产品/UI 改动，按 fallback skip-gate。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
