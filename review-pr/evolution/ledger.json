@@ -2665,6 +2665,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T11:26:14.225Z",
       "lastSeen": "2026-08-21T11:26:14.225Z"
+    },
+    {
+      "fingerprint": "greptile-unresolved-thread-skip",
+      "tier": "by-design",
+      "title": "Greptile 未 resolve thread 卡前置门",
+      "detail": "PR #198 1 条 greptile conversation 未 resolve，threadTriage 未配置故不能代 resolve。按设计等人点 Resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T11:26:18.655Z",
+      "lastSeen": "2026-08-21T11:26:18.655Z"
     }
   ],
   "escapedHazards": [
