@@ -2587,6 +2587,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T02:04:55.706Z",
       "lastSeen": "2026-08-21T02:04:55.706Z"
+    },
+    {
+      "fingerprint": "skip-threads-unresolved-human-greptile",
+      "tier": "by-design",
+      "title": "未 resolve 的真人+bot conversation 只能等作者点 Resolve",
+      "detail": "PR #201 3 条未 resolve conversation（1 greptile + 2 PraiseZhu 真人），threadTriage 未启用且含白名单外参与者，本轮 skip-gate。已有催 resolve 评论，未重发。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T03:04:29.301Z",
+      "lastSeen": "2026-08-21T03:04:29.301Z"
     }
   ],
   "escapedHazards": [

@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-threads-unresolved-human-greptile` **未 resolve 的真人+bot conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #201 3 条未 resolve conversation（1 greptile + 2 PraiseZhu 真人），threadTriage 未启用且含白名单外参与者，本轮 skip-gate。已有催 resolve 评论，未重发。
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 6 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #209 改 CI workflow 与 loop 执行脚本，signoff-hold security 已幂等复用 issue #210；放行前不自动审不合。属设计上就该人来。
   - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
