@@ -2,14 +2,14 @@
 // fix-worktree-cleanup.mjs — 回收已合并/关闭 PR 遗留的跟进 worktree 与本地分支
 //
 // 背景:5.4 fix-handoff 为 selfFixAuthors 的 PR 开跟进会话,宿主用 use_worktree 在托管
-// 目录(.cindy-worktrees / .claude/worktrees)下建独立 worktree,跟进会话在里面
+// 目录(.cindy-worktrees / .claude/worktrees / .worktrees/review-pr)下建独立 worktree,跟进会话在里面
 // gh pr checkout 出与 PR head 同名的本地分支(git worktree 共享 refs,分支落在共享
 // 仓库里)。PR 合并后 fix-session-state.mjs sweep 只清会话绑定,worktree 目录
 // (含 node_modules,单个可达 GB 级)和分支没人回收,会随 PR 数量线性膨胀。
 // 本脚本做确定性回收,安全边界全部内置:
 //   1. 只动「托管 worktree 目录」:路径含 .cindy-worktrees 段、.claude/worktrees 段,
-//      或 REVIEW_PR_WORKTREE_ROOTS(逗号/分号分隔的绝对路径前缀)覆盖的位置;
-//      其余 worktree 一律视为用户自建,永不触碰。
+//      `.worktrees/review-pr` 段,或 REVIEW_PR_WORKTREE_ROOTS(逗号/分号分隔的
+//      绝对路径前缀)覆盖的位置;其余 worktree 一律视为用户自建,永不触碰。
 //   2. 分支对应的 PR 用 gh 实查(--state all),全部非 OPEN 才动;查不到对应 PR 的
 //      分支/worktree 不动(来历不明 → 保守)。gh 查询失败同样保守跳过,下轮重试。
 //   3. 默认分支与 main/master 永不删;仍被其他 worktree 检出的分支 git 自己会拒删。
@@ -75,9 +75,10 @@ const norm = (p) => {
 /** 托管 worktree 目录判定(见文件头安全边界 1)。 */
 function isManagedPath(p) {
   const segs = norm(p).split('/').filter(Boolean);
-  if (segs.includes('.cindy-worktrees')) return true;
+  if (segs.includes('.cindy-worktrees') || segs.includes('.xdt-worktrees')) return true;
   for (let i = 0; i < segs.length - 1; i++) {
     if (segs[i] === '.claude' && segs[i + 1] === 'worktrees') return true;
+    if (segs[i] === '.worktrees' && segs[i + 1] === 'review-pr') return true;
   }
   const extraRoots = (process.env.REVIEW_PR_WORKTREE_ROOTS || '')
     .split(/[;,]/).map((s) => s.trim()).filter(Boolean);
