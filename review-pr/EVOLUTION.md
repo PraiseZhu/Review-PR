@@ -272,14 +272,14 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked
+  - 现象:PR #201 因 3 条 conversation 未 resolve 跳过，属作者侧 gate，不自动代 resolve 真人 thread。
+  - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 5 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，security 门已 hold，复用讨论 issue #210。
   - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-unresolved-threads-author-must-resolve` **未 resolve conversation 卡合只能作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve，auto 跳过；已有催 resolve 评论，本轮未重发。
-- `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #201 3 条 conversation 未 resolve，已提醒过，本轮 skip-gate。属真人操作，不自动代 resolve。
-  - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
 - `skip-threads-unresolved-bot-and-human` **未 resolve conversation 卡合并,需作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve(Greptile 1 + 巡审 2),auto 已催 resolve,不代点。属真人/作者侧收口。
 - `skip-gate-threads-unresolved` **未 resolve conversation 卡合，本轮只能 skip 等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
