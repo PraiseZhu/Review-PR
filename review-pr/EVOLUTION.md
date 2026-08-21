@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-threads-author-must-resolve` **未 resolve conversation 卡合只能作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #201 3 条 conversation 未 resolve，auto 跳过；已有催 resolve 评论，本轮未重发。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve，已提醒过，本轮 skip-gate。属真人操作，不自动代 resolve。
   - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。

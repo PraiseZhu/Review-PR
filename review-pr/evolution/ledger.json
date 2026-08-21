@@ -2561,6 +2561,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-20T22:04:47.125Z",
       "lastSeen": "2026-08-20T22:04:47.125Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-threads-author-must-resolve",
+      "tier": "by-design",
+      "title": "未 resolve conversation 卡合只能作者点 Resolve",
+      "detail": "PR #201 3 条 conversation 未 resolve，auto 跳过；已有催 resolve 评论，本轮未重发。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T00:03:33.558Z",
+      "lastSeen": "2026-08-21T00:03:33.558Z"
     }
   ],
   "escapedHazards": [
