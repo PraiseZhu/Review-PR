@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 3 次,首见 2026-07-31,最近 2026-08-21,status: tracked
+  - 现象:PR #218 用 Summary/Validation，缺 变更说明/提交前自检/备注。
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 7 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #209 已 hold（issue #210），本轮 alreadyHeld 复用，无新动作。
   - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
@@ -418,8 +420,6 @@
   - 现象:本轮两个候选(#437 改 .claude/skills + workflow;#440 dependabot 改 package.json/lock)都命中 3.8 审查执行环境安全门,按设计转人工;两者同时还处于 CI pending。属设计上就该人来的类别,只记计数观察,不放开。
 - `dependabot-always-skip-security-review` **dependabot 的依赖/CI 升级 PR 必然命中 securityReviewPaths，永远转人工，会持续堆积** — 出现 4 次,首见 2026-08-01,最近 2026-08-03,status: tracked
   - 现象:PR #433(minor-and-patch group,9 updates)仅改 package.json/package-lock.json,两文件都在 securityReviewPaths 内,auto 直接 skip-security-review;fallback 也因作者 app/dependabot 不在 admins 而无法 admin bypass 结构性 BLOCKED。放宽属扩权类,不自动落地。
-- `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 2 次,首见 2026-07-31,最近 2026-08-03,status: tracked
-  - 现象:本轮 PR #434 body 用「需求/改了什么/门禁/测试/验证」自定义标题，缺模板要求的 变更说明/提交前自检/备注 三段，格式门打回（ownPr=true 故走 COMMENT）
 - `security-review-paths-ci-workflow-to-human` **CI workflow 改动命中 securityReviewPaths，按设计转人工，不自动审不自动合** — 出现 2 次,首见 2026-07-31,最近 2026-08-02,status: tracked
   - 现象:本轮唯一候选 PR #419 改 .github/workflows/merge-thanks.yml，action=skip-security-review
 - `security-review-path-ci-workflow-manual` **改到 CI workflow / 自动化自身执行面的 PR 必须转人工，机器不该自审自合** — 出现 2 次,首见 2026-08-02,最近 2026-08-02,status: tracked
