@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `sync-failed-stale-tracking-branch-deleted-upstream` **auto 巡审 checkout 停在已删远程分支导致 pull --ff-only 整轮 sync-failed** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 现象:本轮本地 HEAD 在 fix/roster-empty-identity-not-miss，远程 ref 已不存在；origin/main 已前进 cd4cd0e..b9e2c14。fail-closed 正确跳过审查，但每轮都会空转直到有人把 checkout 切回默认分支。
+  - 提案:auto 开轮若 tracking 分支在远端已消失，先切到 origin/<defaultBranch> 再 ff-only；切不过仍 sync-failed，不审不写 GitHub。
 - `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
   - 现象:PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。
   - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。

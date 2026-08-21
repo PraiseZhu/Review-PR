@@ -2678,6 +2678,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T11:26:18.655Z",
       "lastSeen": "2026-08-21T11:26:18.655Z"
+    },
+    {
+      "fingerprint": "sync-failed-stale-tracking-branch-deleted-upstream",
+      "tier": "proposal",
+      "title": "auto 巡审 checkout 停在已删远程分支导致 pull --ff-only 整轮 sync-failed",
+      "detail": "本轮本地 HEAD 在 fix/roster-empty-identity-not-miss，远程 ref 已不存在；origin/main 已前进 cd4cd0e..b9e2c14。fail-closed 正确跳过审查，但每轮都会空转直到有人把 checkout 切回默认分支。",
+      "proposal": "auto 开轮若 tracking 分支在远端已消失，先切到 origin/<defaultBranch> 再 ff-only；切不过仍 sync-failed，不审不写 GitHub。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T13:02:38.812Z",
+      "lastSeen": "2026-08-21T13:02:38.812Z"
     }
   ],
   "escapedHazards": [
