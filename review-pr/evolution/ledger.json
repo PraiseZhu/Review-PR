@@ -2600,6 +2600,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T03:04:29.301Z",
       "lastSeen": "2026-08-21T03:04:29.301Z"
+    },
+    {
+      "fingerprint": "greptile-unresolved-thread-blocks-merge",
+      "tier": "by-design",
+      "title": "白名单 bot 未 resolve thread 阻断合并；threadTriage 未启用故只提醒不代关",
+      "detail": "PR #218/#219 各 1 条 greptile thread，已 notify-author-resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T04:31:06.893Z",
+      "lastSeen": "2026-08-21T04:31:06.893Z"
     }
   ],
   "escapedHazards": [

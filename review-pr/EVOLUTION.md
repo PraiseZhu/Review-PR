@@ -272,6 +272,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `greptile-unresolved-thread-blocks-merge` **白名单 bot 未 resolve thread 阻断合并；threadTriage 未启用故只提醒不代关** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
+  - 现象:PR #218/#219 各 1 条 greptile thread，已 notify-author-resolve。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 3 次,首见 2026-07-31,最近 2026-08-21,status: tracked
   - 现象:PR #218 用 Summary/Validation，缺 变更说明/提交前自检/备注。
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 7 次,首见 2026-08-20,最近 2026-08-21,status: tracked
