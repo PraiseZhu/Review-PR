@@ -152,6 +152,7 @@ try {
     '- `profileAnswers[]` 元素:`{profileId, fileId, checkId, answer, hunkId?, findingRef?, reasonCode?, explanation?}`——`answer` 是字符串闭集 `"checked-clean"|"finding"|"not-applicable"`(不是对象):',
     '  checked-clean 在顶层带 `hunkId`;finding 在顶层带 `findingRef: {family_id, manifestationIndex}`(引用上方 findingFamilies 的真实条目);not-applicable 在顶层带 `reasonCode` + `explanation`。',
     '- `segmentReceipts[].coverageKeys[]` 元素:对象 `{kind:"hunk", fileId, hunkId}`(不是 "fileId:hunkId" 字符串);',
+    '  字段名必须是 `coverageKeys`,禁止写成 `assignedCoverageKeys`;值必须原样复制该段投递 payload 的 assignedCoverageKeys。',
     '  `receivedOrder` 必须等于投递序号,`snapshotHash` 必须等于顶层 snapshotHash。',
     '- `findingDispositions[]` 元素:`{findingId, disposition, evidence?, basis?}`——`disposition` 是闭集 `"resolved"|"invalidated"`(不是 status)。`resolved` 必须带结构化 `evidence`(自由文本不算),二选一:`{kind:"diff-anchor", snapshotHash, fileId, hunkId, note}`(锚当前 diff 的具体改动)或 `{kind:"verification-run", snapshotHash, verificationRunId, note}`(`verificationRunId` 必须存在于 `verificationRuns[]`);`invalidated` 必须带非空 `basis`(判误报依据)。**本轮未注入任何未决项(没有"未决 findings"段)时,本数组必须为 `[]`**——GitHub 上的第三方 bot thread(如 Greptile)不属于注入项,不要给它们写 disposition。',
     '- `negativeEvidence[]` 元素:`{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`——',
@@ -242,7 +243,8 @@ try {
     '',
     '投递出口只接受**下一个**序号(乱序/跳段直接拒且不留记录),并把投递事实记进台账;',
     'consumer 以台账为基准核对回执——没投递过就声称覆盖、或宿主没投完,一律判 invalid。',
-    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`,',
+    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`',
+    '(字段名是 `coverageKeys`,不是 `assignedCoverageKeys`;值原样复制该段 assignedCoverageKeys),',
     '`receivedOrder` 必须等于该段投递序号,且只能认领本段分配到的 key。',
   ].join('\n'), '');
   if (!snapshot.complete) L.push(`> ⚠ DiffSnapshot 不完整(${snapshot.reason})——本轮无论如何都会判 invalid,请上报而不是硬审。`, '');
