@@ -2449,14 +2449,14 @@
       "fingerprint": "security-gate-awaiting-admin-approve",
       "tier": "by-design",
       "title": "命中 securityReviewPaths 等维护者确认门放行",
-      "detail": "PR #209 改 merge-thanks workflow 与 loop 脚本，security 门已 hold，复用讨论 issue #210。",
+      "detail": "PR #209 改 CI workflow 与 loop 执行脚本，signoff-hold security 已幂等复用 issue #210；放行前不自动审不合。属设计上就该人来。",
       "proposal": "作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。",
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 5,
+      "occurrences": 6,
       "firstSeen": "2026-08-20T16:08:44.997Z",
-      "lastSeen": "2026-08-21T00:03:37.959Z"
+      "lastSeen": "2026-08-21T02:05:00.190Z"
     },
     {
       "fingerprint": "skip-gate-unresolved-threads",

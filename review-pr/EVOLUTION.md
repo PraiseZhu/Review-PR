@@ -272,6 +272,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 6 次,首见 2026-08-20,最近 2026-08-21,status: tracked
+  - 现象:PR #209 改 CI workflow 与 loop 执行脚本，signoff-hold security 已幂等复用 issue #210；放行前不自动审不合。属设计上就该人来。
+  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve，notify-author-resolve 已去重跳过(already-commented)；threadTriage 未配置故不代 reply/resolve。属设计上就该人来。
 - `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-21,status: tracked
@@ -279,9 +282,6 @@
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #201 因 3 条 conversation 未 resolve 跳过，属作者侧 gate，不自动代 resolve 真人 thread。
   - 提案:保持现状：作者点 Resolve 或 Close/Draft；不要在观察期打开 threadTriage。
-- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 5 次,首见 2026-08-20,最近 2026-08-21,status: tracked
-  - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，security 门已 hold，复用讨论 issue #210。
-  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-unresolved-threads-author-must-resolve` **未 resolve conversation 卡合只能作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve，auto 跳过；已有催 resolve 评论，本轮未重发。
 - `skip-threads-unresolved-bot-and-human` **未 resolve conversation 卡合并,需作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
