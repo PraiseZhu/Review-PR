@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `auto-review-agent-no-return-before-round-end` **阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 现象:PR #221 已完成 preflight/task/segment 投递并 spawn isolation worktree 审查，但本轮结束前未收回执。按 fail-closed 不得 approve/clean。建议给阶段二审查加硬超时，超时写 invalid 回执并进汇总，避免空等熔断后无机器终态。
+  - 提案:consume 前若审查会话超时，主流程写 non-clean 回执(reason=review-agent-timeout)并 skip，不把「没跑成就沿用上次清白」开口留下。
 - `neg-evidence-anchor-mismatch-patch` **审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: open
   - 现象:PR187 本轮：审查 agent 对同一实验（run-vr3, exitCode 1, 4 failed）写了两处 outputAnchor——verificationRuns 里登记简短汇总行，negativeEvidence 里改写成含 FAIL 细节的长文本，机器一致性校验按逐字比对判 invalid。主 agent 手工对齐后重消费通过。根因：rro-1 契约要求 command/outputAnchor 与被引用 run 逐字一致，但审查 agent prompt 里该要求埋在字段级形状一节，agent 自然倾向在 negativeEvidence 里写更详尽的失败细节。两次消费中的第一次 invalid 纯属格式损耗（重消费 attempts 计数被清，浪费一轮机器判定）。
   - 提案:在 build-review-task.mjs 生成的 prompt.md 字段级形状节，为 negativeEvidence 的 command/outputAnchor 加一句显式提示：「直接复制被引用 run 的对应字段值，不要改写或增补细节；失败细节放 negativeOracle/observedSignal 之外的说明字段（如 modelVerdictNote）」。改 prompt 模板属于最小自洽改动，可下轮按 8.3 规则自动落地。

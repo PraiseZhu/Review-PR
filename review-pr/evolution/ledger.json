@@ -2639,6 +2639,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T05:04:10.535Z",
       "lastSeen": "2026-08-21T05:04:10.535Z"
+    },
+    {
+      "fingerprint": "auto-review-agent-no-return-before-round-end",
+      "tier": "proposal",
+      "title": "阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合",
+      "detail": "PR #221 已完成 preflight/task/segment 投递并 spawn isolation worktree 审查，但本轮结束前未收回执。按 fail-closed 不得 approve/clean。建议给阶段二审查加硬超时，超时写 invalid 回执并进汇总，避免空等熔断后无机器终态。",
+      "proposal": "consume 前若审查会话超时，主流程写 non-clean 回执(reason=review-agent-timeout)并 skip，不把「没跑成就沿用上次清白」开口留下。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-21T10:21:17.234Z",
+      "lastSeen": "2026-08-21T10:21:17.234Z"
     }
   ],
   "escapedHazards": [
