@@ -308,6 +308,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #248 改 docs/loops 与 scripts/loops/bug-doctor/rules.json, 已 hold issue #249, 等待 admins 对当前 head Approve。
 - `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 persist 测试 hook 搬运, 1 条 greptile conversation 未 resolve; 已催 resolve, 本轮因跨通道去重未再私聊。
 - `security-gate-loop-config-awaiting-admin` **loop 配置命中 securityReviewPaths,等 admins Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
