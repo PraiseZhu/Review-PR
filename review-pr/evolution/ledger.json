@@ -3029,6 +3029,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T20:06:29.757Z",
       "lastSeen": "2026-08-22T20:06:29.757Z"
+    },
+    {
+      "fingerprint": "threads-unresolved-greptile-p2",
+      "tier": "by-design",
+      "title": "Greptile P2 thread 未 resolve 挡住合并",
+      "detail": "PR #229 persist 测试 hook 搬运, 1 条 greptile conversation 未 resolve; 已催 resolve, 本轮因跨通道去重未再私聊。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T21:07:33.138Z",
+      "lastSeen": "2026-08-22T21:07:33.138Z"
     }
   ],
   "escapedHazards": [
