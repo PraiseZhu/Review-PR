@@ -308,6 +308,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #229 仅剩 1 条 greptile-apps 行级意见未 resolve，作者已停滞约 27h；notify-author-resolve 去重 already-commented，remind-stale 被跨通道抑制。threadTriage 未配置（SKILL 3.10 D7 默认关闭），属设计上等人点 Resolve，不自动代 resolve。
 - `unresolved-bot-thread-blocks-merge-triage-off` **Greptile 未 resolve thread 卡住合并，threadTriage 关闭故只催作者** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR 229 仅余 greptile-apps 一条 P2 thread（复位遗漏 tombstone）。threadTriage 未配置，3.10 整步关闭；auto 只能 notify-author-resolve，不能代 reply/resolve。
 - `skip-threads-unresolved-bot-greptile` **未 resolve 的 bot conversation 挡住合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
@@ -318,8 +320,6 @@
   - 现象:PR #229 因 greptile-apps 一条 P2 thread（writeRetryQueue 复位遗漏 tombstone）未 resolve 被 skip-gate。threadTriage 未配置故不代 reply/resolve。已有催 resolve 评论（already-commented），停滞 22.3h 未到 24h 阈值。属设计上等人点 Resolve，不自动放开。
 - `skip-threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 导致 skip-gate** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 被 skip-gate:threads-unresolved。唯一未 resolve thread 是 greptile-apps 的 P2（writeRetryQueue 复位未清 idTombstones）。threadTriage 未启用（D7），auto 不得代 resolve。已有催 resolve 评论，本轮 already-commented。
-- `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR 229 1 条 greptile P2 conversation 未 resolve；threadTriage.extraBots 未配置，机制关闭。已有催 resolve 评论，stale 未到阈值。
 - `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 仅剩 1 条 greptile-apps P2 thread（writeRetryQueue 复位未清 idTombstones）。threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，去重跳过；停滞未满 24h。
 - `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 4 次,首见 2026-08-21,最近 2026-08-22,status: tracked
