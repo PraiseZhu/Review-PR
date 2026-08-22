@@ -5,9 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
-  - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试钩子（feat persist 列车搬运），auto.action=product-gate 因为 uiPaths 含 src/。语义判定后按 bugfix/已有功能补充放行，本轮仍被 threads-unresolved 跳过。uiPaths 过宽会让每个 src/ 非 UI PR 都多一轮语义定性。
-  - 提案:评估把 src/lib、src/persist、src/agent 等非界面路径从 uiPaths 拆出，或加 uiExcludePaths 前缀；属放宽门控，需维护者拍板，不自动落地。
+- `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 现象:PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试钩子，无界面。本轮语义判定不属产品/UI，未 hold。proposal 仍 open。
+  - 提案:把 persist 内部库路径移出 uiPaths，或给 src/lib 加 uiExcludePaths，避免 feat+src 误亮产品门。
 - `uipaths-src-false-product-gate-persist-lib` **uiPaths 含 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
   - 现象:PR 229 只改 src/lib/writeRetryQueue.ts 测试钩子，auto.action=product-gate。语义上属已有功能补充，本轮按 fallback skip-gate。可考虑把 src/lib 排除出 uiPaths，减少空转定性。
   - 提案:评估 uiPaths 是否排除 src/lib（或仅对 cindyplugin/src 组件面计 UI），改前用历史 feat+src/lib PR 回归，避免漏拦真 UI。
