@@ -293,12 +293,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-greptile-bot-thread` **bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #229 仅 1 条 greptile-apps P2 thread（复位遗漏 tombstone）。threadTriage 未配置(D7 禁用)，不能代 reply/resolve。notify-author-resolve 已于上轮发过(already-commented)。属真人/作者侧动作，不自动放开。
 - `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 3 次,首见 2026-08-21,最近 2026-08-22,status: tracked
   - 现象:PR #229 1 条 greptile-apps thread 未 resolve；已提醒过（already-commented）；stale 未到阈值 idleHours=16.3
 - `skip-threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 导致 skip-gate** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 persist test hooks 搬运被 1 条 Greptile conversation 卡住;threadTriage 未启用,催 resolve 已去重,作者需自行点 Resolve。不是代码质量门。
-- `skip-unresolved-greptile-bot-thread` **bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，前置门 skip-gate。threadTriage.extraBots 未配置，机制关闭不得代 reply/resolve。作者侧已发过模板 C 催 resolve（already-commented），停滞未到阈值。
 - `skip-gate-unresolved-greptile-thread-author-must-resolve` **Greptile 未 resolve thread 卡合，作者须自行点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #229 仅剩 greptile-apps P2 thread（复位遗漏 tombstone），threadTriage 未启用故不代 reply/resolve；已催过 resolve（already-commented），停滞 9.3h 未达 24h 阈值。
 - `threads-unresolved-greptile-bot-threadtriage-disabled` **Greptile 未 resolve thread 卡 skip-gate，threadTriage 按 D7 关闭不得代 resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked

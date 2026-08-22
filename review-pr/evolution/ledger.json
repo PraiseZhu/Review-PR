@@ -2852,14 +2852,14 @@
       "fingerprint": "skip-unresolved-greptile-bot-thread",
       "tier": "by-design",
       "title": "bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve",
-      "detail": "PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，前置门 skip-gate。threadTriage.extraBots 未配置，机制关闭不得代 reply/resolve。作者侧已发过模板 C 催 resolve（already-commented），停滞未到阈值。",
+      "detail": "PR #229 仅 1 条 greptile-apps P2 thread（复位遗漏 tombstone）。threadTriage 未配置(D7 禁用)，不能代 reply/resolve。notify-author-resolve 已于上轮发过(already-commented)。属真人/作者侧动作，不自动放开。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-22T00:03:19.678Z",
-      "lastSeen": "2026-08-22T00:03:19.678Z"
+      "lastSeen": "2026-08-22T07:03:52.601Z"
     },
     {
       "fingerprint": "skip-threads-unresolved-greptile-p2",
