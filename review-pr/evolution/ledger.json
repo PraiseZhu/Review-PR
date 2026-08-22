@@ -2860,6 +2860,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T00:03:19.678Z",
       "lastSeen": "2026-08-22T00:03:19.678Z"
+    },
+    {
+      "fingerprint": "skip-threads-unresolved-greptile-p2",
+      "tier": "by-design",
+      "title": "Greptile P2 thread 未 resolve 导致 skip-gate",
+      "detail": "PR #229 persist test hooks 搬运被 1 条 Greptile conversation 卡住;threadTriage 未启用,催 resolve 已去重,作者需自行点 Resolve。不是代码质量门。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T05:21:17.932Z",
+      "lastSeen": "2026-08-22T05:21:17.932Z"
     }
   ],
   "escapedHazards": [
