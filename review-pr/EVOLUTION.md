@@ -293,6 +293,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 3 次,首见 2026-08-21,最近 2026-08-22,status: tracked
+  - 现象:PR #229 1 条 greptile-apps thread 未 resolve；已提醒过（already-commented）；stale 未到阈值 idleHours=16.3
 - `skip-threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 导致 skip-gate** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 persist test hooks 搬运被 1 条 Greptile conversation 卡住;threadTriage 未启用,催 resolve 已去重,作者需自行点 Resolve。不是代码质量门。
 - `skip-unresolved-greptile-bot-thread` **bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
@@ -315,8 +317,6 @@
   - 现象:PR #228 mergeStateStatus=DIRTY，审查未跑完不能走 5.5 主干代合并
 - `author-merged-during-review` **独立审查进行中作者网页合入，巡审不再重复 merge** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR 232 阶段二 clean 回执落盘后 pre-merge 发现 state=MERGED(kirozeng 网页合入)，本地 mergeAck 因 sender=cloud 不重发。
-- `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: tracked
-  - 现象:PR 229 1 条 greptile-apps P2 thread 未 resolve；产品门语义判定为 persist test hooks 搬运非产品/UI，按 fallback skip-gate。
 - `greptile-unresolved-thread-skip` **Greptile 未 resolve thread 卡前置门** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #198 1 条 greptile conversation 未 resolve，threadTriage 未配置故不能代 resolve。按设计等人点 Resolve。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
