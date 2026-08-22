@@ -2899,6 +2899,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T07:03:57.042Z",
       "lastSeen": "2026-08-22T07:03:57.042Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-bot-thread-blocks-merge",
+      "tier": "by-design",
+      "title": "未 resolve 的 greptile thread 卡合并，需作者点 Resolve",
+      "detail": "PR #229 仅剩 1 条 greptile-apps P2 thread（writeRetryQueue 复位未清 idTombstones）。threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，去重跳过；停滞未满 24h。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T09:05:20.579Z",
+      "lastSeen": "2026-08-22T09:05:20.579Z"
     }
   ],
   "escapedHazards": [
