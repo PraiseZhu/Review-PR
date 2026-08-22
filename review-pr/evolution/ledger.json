@@ -2982,14 +2982,14 @@
       "fingerprint": "skip-threads-unresolved-bot-greptile",
       "tier": "by-design",
       "title": "未 resolve 的 bot conversation 挡住合并",
-      "detail": "PR #229 greptile P2 thread 未 resolve;threadTriage 未配置故不代 reply/resolve;作者已提醒过,跨通道抑制停滞私聊",
+      "detail": "PR #229 仅剩 greptile-apps 一条 P2 conversation 未 resolve；threadTriage 未配置故机制关闭。属 Require conversation resolution + bot 不点 resolve 的 by-design 卡点，不扩权代 resolve。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-22T14:04:59.380Z",
-      "lastSeen": "2026-08-22T14:04:59.380Z"
+      "lastSeen": "2026-08-22T18:03:43.778Z"
     },
     {
       "fingerprint": "unresolved-bot-thread-blocks-merge-triage-off",
