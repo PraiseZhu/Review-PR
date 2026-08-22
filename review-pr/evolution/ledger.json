@@ -2826,14 +2826,14 @@
       "fingerprint": "product-gate-uipaths-src-lib-persist-false-positive",
       "tier": "proposal",
       "title": "uiPaths 含整个 src/ 导致 persist 测试 hook 搬运误亮产品门",
-      "detail": "PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助/复位入口，语义是已有 persist 能力补充，不是产品/UI。主 agent 本轮定性后走 fallback skip-gate。若收窄 uiPaths（排除 src/lib 等非界面层）可少一轮语义定性。",
-      "proposal": "评估把 uiPaths 从整棵 src/ 收到真实 UI 面（如 src/ui、cindyplugin、index.html），persist/lib 不再误触发 product-gate。属门控收窄，需维护者拍板。",
+      "detail": "PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试 hook，语义非产品/UI；本轮定性后走 skip-gate 未 hold",
+      "proposal": "uiPaths 收窄或给 persist/lib 非 UI 路径加 exclude，避免 feat+src 误亮产品门",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-21T22:04:09.821Z",
-      "lastSeen": "2026-08-21T22:04:09.821Z"
+      "lastSeen": "2026-08-22T06:08:43.068Z"
     },
     {
       "fingerprint": "skip-gate-unresolved-greptile-thread-author-must-resolve",
