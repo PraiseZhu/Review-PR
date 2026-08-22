@@ -3047,14 +3047,14 @@
       "fingerprint": "security-gate-loop-config-hold",
       "tier": "by-design",
       "title": "loop 配置改动走 security 确认门等 admin Approve",
-      "detail": "PR #248 改 docs/loops 与 scripts/loops/bug-doctor/rules.json, 已 hold issue #249, 等待 admins 对当前 head Approve。",
+      "detail": "PR #248 命中 securityReviewPaths，issue #249 仍 OPEN，alreadyHeld=true，等 admins Approve 当前 head。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-22T21:07:37.458Z",
-      "lastSeen": "2026-08-22T21:07:37.458Z"
+      "lastSeen": "2026-08-22T23:07:55.132Z"
     },
     {
       "fingerprint": "product-gate-src-lib-persist-false-positive",

@@ -311,10 +311,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #248 命中 securityReviewPaths，issue #249 仍 OPEN，alreadyHeld=true，等 admins Approve 当前 head。
 - `threads-unresolved-greptile-p2-229` **Greptile P2 thread 未 resolve 会一直挡合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 仍 1 条 greptile conversation 未 resolve；threadTriage 未启用，本轮只去重催 resolve（already-commented），停滞私聊被 24h 跨通道抑制。
-- `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR #248 改 docs/loops 与 scripts/loops/bug-doctor/rules.json, 已 hold issue #249, 等待 admins 对当前 head Approve。
 - `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 persist 测试 hook 搬运, 1 条 greptile conversation 未 resolve; 已催 resolve, 本轮因跨通道去重未再私聊。
 - `security-gate-loop-config-awaiting-admin` **loop 配置命中 securityReviewPaths,等 admins Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
