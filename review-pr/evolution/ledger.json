@@ -3003,6 +3003,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T16:04:30.134Z",
       "lastSeen": "2026-08-22T16:04:30.134Z"
+    },
+    {
+      "fingerprint": "uipaths-src-false-product-gate-persist-lib",
+      "tier": "proposal",
+      "title": "uiPaths 含 src/ 会把 persist 库文件误判成产品门",
+      "detail": "PR 229 只改 src/lib/writeRetryQueue.ts 测试钩子，auto.action=product-gate。语义上属已有功能补充，本轮按 fallback skip-gate。可考虑把 src/lib 排除出 uiPaths，减少空转定性。",
+      "proposal": "评估 uiPaths 是否排除 src/lib（或仅对 cindyplugin/src 组件面计 UI），改前用历史 feat+src/lib PR 回归，避免漏拦真 UI。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T16:04:34.419Z",
+      "lastSeen": "2026-08-22T16:04:34.419Z"
     }
   ],
   "escapedHazards": [

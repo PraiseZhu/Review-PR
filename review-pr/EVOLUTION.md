@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `uipaths-src-false-product-gate-persist-lib` **uiPaths 含 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 现象:PR 229 只改 src/lib/writeRetryQueue.ts 测试钩子，auto.action=product-gate。语义上属已有功能补充，本轮按 fallback skip-gate。可考虑把 src/lib 排除出 uiPaths，减少空转定性。
+  - 提案:评估 uiPaths 是否排除 src/lib（或仅对 cindyplugin/src 组件面计 UI），改前用历史 feat+src/lib PR 回归，避免漏拦真 UI。
 - `ui-paths-persist-lib-false-product-gate` **uiPaths 含 src/ 导致 persist 库文件误亮产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook，无界面。productGate.needsProductCheck=true 因 feat+uiPaths。本轮语义定性为非产品/UI 未 hold。改 uiPaths/排除 persist 属扩权/改闸，只记提案。
   - 提案:评估把 src/lib 持久化/非 UI 路径从 uiPaths 排除，或收窄 uiPaths 到 cindyplugin/ 与真实 UI 组件目录，避免 persist 搬运 PR 每轮都走产品门语义定性。
