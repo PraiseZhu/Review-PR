@@ -308,6 +308,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-loop-config-awaiting-admin` **loop 配置命中 securityReviewPaths,等 admins Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #248 改 scripts/loops/bug-doctor/rules.json 与 scheduler 文档,已 hold issue #249,本轮幂等复用。
 - `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 3 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 1 条 greptile-apps conversation 未 resolve,notify 已去重;threadTriage.extraBots 未配置故不代 reply。属设计上等人点 Resolve。
 - `skip-threads-unresolved-bot-greptile` **未 resolve 的 bot conversation 挡住合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked

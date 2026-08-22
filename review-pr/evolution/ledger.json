@@ -3016,6 +3016,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T16:04:34.419Z",
       "lastSeen": "2026-08-22T16:04:34.419Z"
+    },
+    {
+      "fingerprint": "security-gate-loop-config-awaiting-admin",
+      "tier": "by-design",
+      "title": "loop 配置命中 securityReviewPaths,等 admins Approve",
+      "detail": "PR #248 改 scripts/loops/bug-doctor/rules.json 与 scheduler 文档,已 hold issue #249,本轮幂等复用。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T20:06:29.757Z",
+      "lastSeen": "2026-08-22T20:06:29.757Z"
     }
   ],
   "escapedHazards": [
