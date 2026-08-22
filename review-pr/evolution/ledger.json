@@ -2925,6 +2925,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T09:05:25.018Z",
       "lastSeen": "2026-08-22T09:05:25.018Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-greptile-thread-no-triage",
+      "tier": "by-design",
+      "title": "未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理",
+      "detail": "PR 229 1 条 greptile P2 conversation 未 resolve；threadTriage.extraBots 未配置，机制关闭。已有催 resolve 评论，stale 未到阈值。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T10:03:55.679Z",
+      "lastSeen": "2026-08-22T10:03:55.679Z"
     }
   ],
   "escapedHazards": [
