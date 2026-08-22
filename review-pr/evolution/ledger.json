@@ -2951,6 +2951,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T12:03:39.245Z",
       "lastSeen": "2026-08-22T12:03:39.245Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-greptile-thread",
+      "tier": "by-design",
+      "title": "skip 因 Greptile conversation 未 resolve，作者需点 Resolve",
+      "detail": "PR #229 persist test hooks 搬运；1 条 greptile-apps thread 未 resolve（__resetWriteQueueDb 未清 idTombstones，Greptile 标 P2）。threadTriage 未启用，本轮只 skip + 已有催 resolve 评论（already-commented）。属设计上就该人来。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T13:04:59.246Z",
+      "lastSeen": "2026-08-22T13:04:59.246Z"
     }
   ],
   "escapedHazards": [
