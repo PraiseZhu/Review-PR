@@ -2865,14 +2865,14 @@
       "fingerprint": "skip-threads-unresolved-greptile-p2",
       "tier": "by-design",
       "title": "Greptile P2 thread 未 resolve 导致 skip-gate",
-      "detail": "PR #229 persist test hooks 搬运被 1 条 Greptile conversation 卡住;threadTriage 未启用,催 resolve 已去重,作者需自行点 Resolve。不是代码质量门。",
+      "detail": "PR #229 被 skip-gate:threads-unresolved。唯一未 resolve thread 是 greptile-apps 的 P2（writeRetryQueue 复位未清 idTombstones）。threadTriage 未启用（D7），auto 不得代 resolve。已有催 resolve 评论，本轮 already-commented。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-22T05:21:17.932Z",
-      "lastSeen": "2026-08-22T05:21:17.932Z"
+      "lastSeen": "2026-08-22T11:03:58.501Z"
     },
     {
       "fingerprint": "product-gate-src-prefix-persist-test-hooks",
