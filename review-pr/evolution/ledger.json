@@ -2886,6 +2886,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T05:21:22.447Z",
       "lastSeen": "2026-08-22T05:21:22.447Z"
+    },
+    {
+      "fingerprint": "uipaths-src-prefix-false-product-gate",
+      "tier": "proposal",
+      "title": "uiPaths 覆盖整个 src/ 会把 persist 库文件误判成产品门",
+      "detail": "PR #229 只改 src/lib/writeRetryQueue.ts（测试 hook 搬运），auto.action=product-gate。语义判定为已有功能补充后走 fallback skip-gate。提案：收窄 uiPaths 或给 src/lib 加排除，减少假产品门。",
+      "proposal": "评估把 uiPaths 从整棵 src/ 收窄到真实 UI 面(src/ui、cindyplugin 组件等)，或 uiExcludePaths 加入 src/lib/，避免 persist/infra 改动每轮先过产品门语义。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T07:03:57.042Z",
+      "lastSeen": "2026-08-22T07:03:57.042Z"
     }
   ],
   "escapedHazards": [
