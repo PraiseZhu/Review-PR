@@ -2938,6 +2938,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T10:03:55.679Z",
       "lastSeen": "2026-08-22T10:03:55.679Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-greptile-thread-p2",
+      "tier": "by-design",
+      "title": "bot 行级 thread 未 resolve 挡合并，作者需点 Resolve",
+      "detail": "PR #229 因 greptile-apps 一条 P2 thread（writeRetryQueue 复位遗漏 tombstone）未 resolve 被 skip-gate。threadTriage 未配置故不代 reply/resolve。已有催 resolve 评论（already-commented），停滞 22.3h 未到 24h 阈值。属设计上等人点 Resolve，不自动放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T12:03:39.245Z",
+      "lastSeen": "2026-08-22T12:03:39.245Z"
     }
   ],
   "escapedHazards": [
