@@ -308,10 +308,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 3 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #229 1 条 greptile-apps conversation 未 resolve,notify 已去重;threadTriage.extraBots 未配置故不代 reply。属设计上等人点 Resolve。
 - `skip-threads-unresolved-bot-greptile` **未 resolve 的 bot conversation 挡住合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 仅剩 greptile-apps 一条 P2 conversation 未 resolve；threadTriage 未配置故机制关闭。属 Require conversation resolution + bot 不点 resolve 的 by-design 卡点，不扩权代 resolve。
-- `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR #229 仅剩 1 条 greptile-apps 行级意见未 resolve，作者已停滞约 27h；notify-author-resolve 去重 already-commented，remind-stale 被跨通道抑制。threadTriage 未配置（SKILL 3.10 D7 默认关闭），属设计上等人点 Resolve，不自动代 resolve。
 - `unresolved-bot-thread-blocks-merge-triage-off` **Greptile 未 resolve thread 卡住合并，threadTriage 关闭故只催作者** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR 229 仅余 greptile-apps 一条 P2 thread（复位遗漏 tombstone）。threadTriage 未配置，3.10 整步关闭；auto 只能 notify-author-resolve，不能代 reply/resolve。
 - `skip-unresolved-greptile-thread` **skip 因 Greptile conversation 未 resolve，作者需点 Resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
