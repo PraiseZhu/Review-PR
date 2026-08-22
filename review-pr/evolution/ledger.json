@@ -2847,6 +2847,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-21T23:04:02.540Z",
       "lastSeen": "2026-08-21T23:04:02.540Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-greptile-bot-thread",
+      "tier": "by-design",
+      "title": "bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve",
+      "detail": "PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，前置门 skip-gate。threadTriage.extraBots 未配置，机制关闭不得代 reply/resolve。作者侧已发过模板 C 催 resolve（already-commented），停滞未到阈值。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T00:03:19.678Z",
+      "lastSeen": "2026-08-22T00:03:19.678Z"
     }
   ],
   "escapedHazards": [

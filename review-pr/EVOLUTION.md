@@ -290,6 +290,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-greptile-bot-thread` **bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，前置门 skip-gate。threadTriage.extraBots 未配置，机制关闭不得代 reply/resolve。作者侧已发过模板 C 催 resolve（already-commented），停滞未到阈值。
 - `skip-gate-unresolved-greptile-thread-author-must-resolve` **Greptile 未 resolve thread 卡合，作者须自行点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #229 仅剩 greptile-apps P2 thread（复位遗漏 tombstone），threadTriage 未启用故不代 reply/resolve；已催过 resolve（already-commented），停滞 9.3h 未达 24h 阈值。
 - `threads-unresolved-greptile-bot-threadtriage-disabled` **Greptile 未 resolve thread 卡 skip-gate，threadTriage 按 D7 关闭不得代 resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
