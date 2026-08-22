@@ -3068,6 +3068,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T22:05:50.767Z",
       "lastSeen": "2026-08-22T22:05:50.767Z"
+    },
+    {
+      "fingerprint": "threads-unresolved-greptile-p2-229",
+      "tier": "by-design",
+      "title": "Greptile P2 thread 未 resolve 会一直挡合并",
+      "detail": "PR #229 1 条 greptile-apps conversation（writeRetryQueue.ts:2889 tombstone 复位）未 resolve；已两次公开催 resolve，本轮 already-commented，停滞私聊被 crossChannelSuppress 抑制。threadTriage 未配置，不得代 resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T22:05:55.180Z",
+      "lastSeen": "2026-08-22T22:05:55.180Z"
     }
   ],
   "escapedHazards": [

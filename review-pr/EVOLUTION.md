@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `threads-unresolved-greptile-p2-229` **Greptile P2 thread 未 resolve 会一直挡合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR #229 1 条 greptile-apps conversation（writeRetryQueue.ts:2889 tombstone 复位）未 resolve；已两次公开催 resolve，本轮 already-commented，停滞私聊被 crossChannelSuppress 抑制。threadTriage 未配置，不得代 resolve。
 - `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #248 改 docs/loops 与 scripts/loops/bug-doctor/rules.json, 已 hold issue #249, 等待 admins 对当前 head Approve。
 - `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
