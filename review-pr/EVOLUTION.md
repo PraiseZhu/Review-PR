@@ -305,6 +305,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-thread-blocks-merge-triage-off` **Greptile 未 resolve thread 卡住合并，threadTriage 关闭故只催作者** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
+  - 现象:PR 229 仅余 greptile-apps 一条 P2 thread（复位遗漏 tombstone）。threadTriage 未配置，3.10 整步关闭；auto 只能 notify-author-resolve，不能代 reply/resolve。
 - `skip-threads-unresolved-bot-greptile` **未 resolve 的 bot conversation 挡住合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 greptile P2 thread 未 resolve;threadTriage 未配置故不代 reply/resolve;作者已提醒过,跨通道抑制停滞私聊
 - `skip-unresolved-greptile-thread` **skip 因 Greptile conversation 未 resolve，作者需点 Resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
