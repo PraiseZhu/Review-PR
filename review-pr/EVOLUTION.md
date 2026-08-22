@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `persist-src-lib-hits-product-ui-gate` **src/lib 持久化搬运命中 uiPaths，产品门靠语义放行** — 出现 2 次,首见 2026-08-21,最近 2026-08-22,status: tracked
+  - 现象:PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试 hooks，无用户可见 UI；uiPaths 含 src/ 前缀导致 product-gate。语义判定为已有功能补充后按 fallback skip-gate。
+  - 提案:收窄 uiPaths，把 src/lib persist/queue 纯逻辑路径排除出产品门启发式。
 - `uipaths-src-prefix-false-product-gate` **uiPaths 覆盖整个 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts（测试 hook 搬运），auto.action=product-gate。语义判定为已有功能补充后走 fallback skip-gate。提案：收窄 uiPaths 或给 src/lib 加排除，减少假产品门。
   - 提案:评估把 uiPaths 从整棵 src/ 收窄到真实 UI 面(src/ui、cindyplugin 组件等)，或 uiExcludePaths 加入 src/lib/，避免 persist/infra 改动每轮先过产品门语义。
@@ -310,8 +313,6 @@
   - 现象:PR #229 仅剩 greptile-apps P2 thread（writeRetryQueue 复位遗漏 tombstone）。threadTriage 未启用，auto 不能代 resolve；已于 15:04 提醒过作者，本轮 already-commented。
 - `skip-unresolved-greptile-p2-thread-blocks-merge` **Greptile P2 未 resolve 会整轮卡住合并** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #229 独立审查未进：1 条 greptile-apps conversation 未 resolve，gate 按 threads-unresolved skip。threadTriage 默认关闭且 D7 禁止顺带启用；催 resolve 已去重跳过。属设计上等人点 Resolve，不自动 resolve 他人/bot thread。
-- `persist-src-lib-hits-product-ui-gate` **src/lib 持久化搬运命中 uiPaths，产品门靠语义放行** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
-  - 现象:PR 229 feat + src/lib/writeRetryQueue.ts 被标 needsProductCheck；语义判定为已有 persist 测试钩子搬运，不是产品/UI 改动，按 fallback skip-gate。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR 229 仅 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重不重发。
 - `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: tracked

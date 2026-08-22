@@ -2746,16 +2746,16 @@
     },
     {
       "fingerprint": "persist-src-lib-hits-product-ui-gate",
-      "tier": "by-design",
+      "tier": "proposal",
       "title": "src/lib 持久化搬运命中 uiPaths，产品门靠语义放行",
-      "detail": "PR 229 feat + src/lib/writeRetryQueue.ts 被标 needsProductCheck；语义判定为已有 persist 测试钩子搬运，不是产品/UI 改动，按 fallback skip-gate。",
-      "proposal": null,
+      "detail": "PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试 hooks，无用户可见 UI；uiPaths 含 src/ 前缀导致 product-gate。语义判定为已有功能补充后按 fallback skip-gate。",
+      "proposal": "收窄 uiPaths，把 src/lib persist/queue 纯逻辑路径排除出产品门启发式。",
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-21T18:06:19.140Z",
-      "lastSeen": "2026-08-21T18:06:19.140Z"
+      "lastSeen": "2026-08-22T08:03:51.754Z"
     },
     {
       "fingerprint": "rro1-segment-receipts-assignedcoveragekeys-alias",
