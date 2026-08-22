@@ -2873,6 +2873,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-22T05:21:17.932Z",
       "lastSeen": "2026-08-22T05:21:17.932Z"
+    },
+    {
+      "fingerprint": "product-gate-src-prefix-persist-test-hooks",
+      "tier": "proposal",
+      "title": "uiPaths 命中 src/ 把 persist 测试钩子误判成产品门",
+      "detail": "PR #229 只改 src/lib/writeRetryQueue.ts 测试钩子,context 给 product-gate。主 agent 语义判定属既有功能补充后按 fallback skip-gate。可考虑收窄 uiPaths 或排除 src/lib persist 测试辅助。",
+      "proposal": "评估是否把 src/lib 纯逻辑/测试钩子从 uiPaths 排除,避免每轮都要人工语义定性。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-22T05:21:22.447Z",
+      "lastSeen": "2026-08-22T05:21:22.447Z"
     }
   ],
   "escapedHazards": [

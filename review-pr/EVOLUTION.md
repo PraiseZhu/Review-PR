@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-src-prefix-persist-test-hooks` **uiPaths 命中 src/ 把 persist 测试钩子误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试钩子,context 给 product-gate。主 agent 语义判定属既有功能补充后按 fallback skip-gate。可考虑收窄 uiPaths 或排除 src/lib persist 测试辅助。
+  - 提案:评估是否把 src/lib 纯逻辑/测试钩子从 uiPaths 排除,避免每轮都要人工语义定性。
 - `product-gate-uipaths-src-lib-persist-false-positive` **uiPaths 含整个 src/ 导致 persist 测试 hook 搬运误亮产品门** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助/复位入口，语义是已有 persist 能力补充，不是产品/UI。主 agent 本轮定性后走 fallback skip-gate。若收窄 uiPaths（排除 src/lib 等非界面层）可少一轮语义定性。
   - 提案:评估把 uiPaths 从整棵 src/ 收到真实 UI 面（如 src/ui、cindyplugin、index.html），persist/lib 不再误触发 product-gate。属门控收窄，需维护者拍板。
