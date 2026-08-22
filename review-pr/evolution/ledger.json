@@ -2709,14 +2709,14 @@
       "fingerprint": "skip-gate-unresolved-greptile-thread",
       "tier": "by-design",
       "title": "Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关",
-      "detail": "PR #229 1 条 greptile-apps thread 未 resolve；已提醒过（already-commented）；stale 未到阈值 idleHours=16.3",
+      "detail": "PR #229 仅剩 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未启用，auto 只能催 resolve 不能代关。作者 zhongxingtian-ai 不在 selfFixAuthors。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": "2026-08-21T15:31:11.482Z",
-      "lastSeen": "2026-08-22T06:08:38.662Z"
+      "lastSeen": "2026-08-22T08:03:47.310Z"
     },
     {
       "fingerprint": "author-merged-during-review",
