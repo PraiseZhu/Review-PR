@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ui-paths-persist-lib-false-product-gate` **uiPaths 含 src/ 导致 persist 库文件误亮产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook，无界面。productGate.needsProductCheck=true 因 feat+uiPaths。本轮语义定性为非产品/UI 未 hold。改 uiPaths/排除 persist 属扩权/改闸，只记提案。
+  - 提案:评估把 src/lib 持久化/非 UI 路径从 uiPaths 排除，或收窄 uiPaths 到 cindyplugin/ 与真实 UI 组件目录，避免 persist 搬运 PR 每轮都走产品门语义定性。
 - `uipaths-src-persist-false-positive-product-gate` **uiPaths 含 src/ 会把 persist 库文件误判成产品/UI 门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook 搬运，auto.action=product-gate。主 agent 语义定性为已有功能补充未 hold。扩 uiPaths 收窄属 gate 阈值调整，不自动落地。
   - 提案:评估把 uiPaths 从整棵 src/ 收窄到真实 UI 面（组件/css/插件外壳），persist/lib 纯逻辑不再进产品门。
