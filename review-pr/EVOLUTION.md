@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `uipaths-src-lib-false-product-gate` **src/ 整树进 uiPaths 让 persist 测试搬运误亮产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
+  - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook，scan 因 feat+uiPaths 给 product-gate；语义判断未 hold。可考虑把 src/lib 持久层从 uiPaths 排除，减少误亮。
+  - 提案:评估 uiPaths 是否排除 src/lib、src/persist 等非界面路径，或对 feat+纯测试 hook 搬运给更明确的 exempt 信号。
 - `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 3 次,首见 2026-08-22,最近 2026-08-23,status: open
   - 现象:PR #229 是测试钩子搬运(src/lib/writeRetryQueue.ts)，非产品/UI；scan 因 feat+uiPaths 给 product-gate，语义定性后按 skip-gate 继续。
   - 提案:把 persist 内部库路径移出 uiPaths，或给 src/lib 加 uiExcludePaths，避免 feat+src 误亮产品门。
