@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-feat-uipaths-test-hook-port` **feat + uiPaths 把 persist 测试 hook 搬运误标成产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
+  - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助接口，语义不是产品/UI。本轮人工定性后走 skip-gate。可考虑把纯 persist/lib 测试钩子从 uiPaths 命中中剔除，属配置收窄需维护者拍板。
+  - 提案:评估 uiPaths/uiExcludePaths 是否排除 src/lib 测试 hook 搬运，避免 feat(persist) 反复进产品门。
 - `uipaths-src-lib-false-product-gate` **src/ 整树进 uiPaths 让 persist 测试搬运误亮产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook，scan 因 feat+uiPaths 给 product-gate；语义判断未 hold。可考虑把 src/lib 持久层从 uiPaths 排除，减少误亮。
   - 提案:评估 uiPaths 是否排除 src/lib、src/persist 等非界面路径，或对 feat+纯测试 hook 搬运给更明确的 exempt 信号。

@@ -3185,6 +3185,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-23T07:05:49.856Z",
       "lastSeen": "2026-08-23T07:05:49.856Z"
+    },
+    {
+      "fingerprint": "product-gate-feat-uipaths-test-hook-port",
+      "tier": "proposal",
+      "title": "feat + uiPaths 把 persist 测试 hook 搬运误标成产品门",
+      "detail": "PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助接口，语义不是产品/UI。本轮人工定性后走 skip-gate。可考虑把纯 persist/lib 测试钩子从 uiPaths 命中中剔除，属配置收窄需维护者拍板。",
+      "proposal": "评估 uiPaths/uiExcludePaths 是否排除 src/lib 测试 hook 搬运，避免 feat(persist) 反复进产品门。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T07:05:54.430Z",
+      "lastSeen": "2026-08-23T07:05:54.430Z"
     }
   ],
   "escapedHazards": [
