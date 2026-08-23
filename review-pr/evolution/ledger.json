@@ -3107,6 +3107,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-23T00:05:56.633Z",
       "lastSeen": "2026-08-23T00:05:56.633Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-bot-thread-greptile",
+      "tier": "by-design",
+      "title": "Greptile 行级 thread 未 resolve 导致 skip",
+      "detail": "PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，threadTriage 未启用，notify-author-resolve 已提醒过作者。属设计上等人点 Resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T01:06:40.526Z",
+      "lastSeen": "2026-08-23T01:06:40.526Z"
     }
   ],
   "escapedHazards": [
