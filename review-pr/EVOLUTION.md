@@ -5,8 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `format-gate-custom-section-headings` **owner PR 用等价中文小标题被格式门打回** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
-  - 现象:PR 248/253 有背景与根因/改动/验证,但缺模板 ## 变更说明/提交前自检/备注,pushback-format。本轮已 COMMENT 并投递 selfFix 改 description。
+- `format-gate-custom-section-headings` **owner PR 用等价中文小标题被格式门打回** — 出现 2 次,首见 2026-08-23,最近 2026-08-23,status: open
+  - 现象:PR #257 body 用「为什么/改了什么/验证」，模板只认「变更说明/提交前自检/备注」。selfFix 已投递跟进会话改 description，不放宽格式门。
   - 提案:若要认等价小标题,需改目标仓模板或 format 判定;属放宽格式门,等维护者拍板。
 - `product-gate-feat-uipaths-test-hook-port` **feat + uiPaths 把 persist 测试 hook 搬运误标成产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助接口，语义不是产品/UI。本轮人工定性后走 skip-gate。可考虑把纯 persist/lib 测试钩子从 uiPaths 命中中剔除，属配置收窄需维护者拍板。

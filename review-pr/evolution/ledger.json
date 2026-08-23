@@ -3203,14 +3203,14 @@
       "fingerprint": "format-gate-custom-section-headings",
       "tier": "proposal",
       "title": "owner PR 用等价中文小标题被格式门打回",
-      "detail": "PR 248/253 有背景与根因/改动/验证,但缺模板 ## 变更说明/提交前自检/备注,pushback-format。本轮已 COMMENT 并投递 selfFix 改 description。",
+      "detail": "PR #257 body 用「为什么/改了什么/验证」，模板只认「变更说明/提交前自检/备注」。selfFix 已投递跟进会话改 description，不放宽格式门。",
       "proposal": "若要认等价小标题,需改目标仓模板或 format 判定;属放宽格式门,等维护者拍板。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-23T08:11:37.346Z",
-      "lastSeen": "2026-08-23T08:11:37.346Z"
+      "lastSeen": "2026-08-23T16:10:04.383Z"
     },
     {
       "fingerprint": "author-draft-skip",
