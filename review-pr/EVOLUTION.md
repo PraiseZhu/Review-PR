@@ -320,6 +320,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `author-draft-skip` **作者自转 draft，auto 不审不合** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #256 为作者草稿（feat persist 双写队列），scan-all candidateCount=0 draftSkipped=1，属设计上该等人标回 Ready
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 3 次,首见 2026-08-21,最近 2026-08-23,status: tracked
   - 现象:PR 229 greptile-apps 一条 P2 thread 未 resolve,gate 跳过。threadTriage 未配置,auto 不能代 reply/resolve。作者侧可点 Resolve。
   - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。

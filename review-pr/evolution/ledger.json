@@ -3211,6 +3211,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-23T08:11:37.346Z",
       "lastSeen": "2026-08-23T08:11:37.346Z"
+    },
+    {
+      "fingerprint": "author-draft-skip",
+      "tier": "by-design",
+      "title": "作者自转 draft，auto 不审不合",
+      "detail": "PR #256 为作者草稿（feat persist 双写队列），scan-all candidateCount=0 draftSkipped=1，属设计上该等人标回 Ready",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T13:04:37.411Z",
+      "lastSeen": "2026-08-23T13:04:37.411Z"
     }
   ],
   "escapedHazards": [
