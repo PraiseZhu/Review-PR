@@ -311,6 +311,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 8 次,首见 2026-08-20,最近 2026-08-23,status: tracked
+  - 现象:PR 248 命中 bug-doctor 路径,signoff hold 已挂 awaiting-discussion 与 issue 249,放行前不自动审不合。
+  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-21,最近 2026-08-23,status: tracked
   - 现象:PR 229 被 skip-gate: greptile 一条 conversation 未 resolve。作者侧动作,本流程只催不代 resolve。
 - `security-gate-loop-rules-hold` **loop 配置改动命中 securityReviewPaths 等 admins 放行** — 出现 3 次,首见 2026-08-23,最近 2026-08-23,status: tracked
@@ -371,9 +374,6 @@
   - 现象:PR #218/#219 各 1 条 greptile thread，已 notify-author-resolve。
 - `format-gate-missing-template-sections` **PR description 用自定义标题、缺模板必填段落导致格式门打回** — 出现 3 次,首见 2026-07-31,最近 2026-08-21,status: tracked
   - 现象:PR #218 用 Summary/Validation，缺 变更说明/提交前自检/备注。
-- `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 7 次,首见 2026-08-20,最近 2026-08-21,status: tracked
-  - 现象:PR #209 已 hold（issue #210），本轮 alreadyHeld 复用，无新动作。
-  - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
 - `skip-threads-unresolved-human-greptile` **未 resolve 的真人+bot conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #201 3 条未 resolve conversation（1 greptile + 2 PraiseZhu 真人），threadTriage 未启用且含白名单外参与者，本轮 skip-gate。已有催 resolve 评论，未重发。
 - `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked

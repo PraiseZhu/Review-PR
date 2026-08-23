@@ -2449,14 +2449,14 @@
       "fingerprint": "security-gate-awaiting-admin-approve",
       "tier": "by-design",
       "title": "命中 securityReviewPaths 等维护者确认门放行",
-      "detail": "PR #209 已 hold（issue #210），本轮 alreadyHeld 复用，无新动作。",
+      "detail": "PR 248 命中 bug-doctor 路径,signoff hold 已挂 awaiting-discussion 与 issue 249,放行前不自动审不合。",
       "proposal": "作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。",
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 7,
+      "occurrences": 8,
       "firstSeen": "2026-08-20T16:08:44.997Z",
-      "lastSeen": "2026-08-21T04:30:58.294Z"
+      "lastSeen": "2026-08-23T04:06:11.089Z"
     },
     {
       "fingerprint": "skip-gate-unresolved-threads",
