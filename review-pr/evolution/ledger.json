@@ -3060,14 +3060,14 @@
       "fingerprint": "product-gate-src-lib-persist-false-positive",
       "tier": "proposal",
       "title": "feat + src/lib persist 内部文件会误亮产品/UI 门",
-      "detail": "PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试钩子，无界面。本轮语义判定不属产品/UI，未 hold。proposal 仍 open。",
+      "detail": "PR #229 是测试钩子搬运(src/lib/writeRetryQueue.ts)，非产品/UI；scan 因 feat+uiPaths 给 product-gate，语义定性后按 skip-gate 继续。",
       "proposal": "把 persist 内部库路径移出 uiPaths，或给 src/lib 加 uiExcludePaths，避免 feat+src 误亮产品门。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-22T22:05:50.767Z",
-      "lastSeen": "2026-08-22T23:07:50.816Z"
+      "lastSeen": "2026-08-23T02:06:51.153Z"
     },
     {
       "fingerprint": "threads-unresolved-greptile-p2-229",

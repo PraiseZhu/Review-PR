@@ -5,8 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: open
-  - 现象:PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试钩子，无界面。本轮语义判定不属产品/UI，未 hold。proposal 仍 open。
+- `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 3 次,首见 2026-08-22,最近 2026-08-23,status: open
+  - 现象:PR #229 是测试钩子搬运(src/lib/writeRetryQueue.ts)，非产品/UI；scan 因 feat+uiPaths 给 product-gate，语义定性后按 skip-gate 继续。
   - 提案:把 persist 内部库路径移出 uiPaths，或给 src/lib 加 uiExcludePaths，避免 feat+src 误亮产品门。
 - `uipaths-src-false-product-gate-persist-lib` **uiPaths 含 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
   - 现象:PR 229 只改 src/lib/writeRetryQueue.ts 测试钩子，auto.action=product-gate。语义上属已有功能补充，本轮按 fallback skip-gate。可考虑把 src/lib 排除出 uiPaths，减少空转定性。
