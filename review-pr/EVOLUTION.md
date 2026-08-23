@@ -320,6 +320,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-ci-pending` **前置门 CI 未完成，本轮只等待不审不合** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #257 mergeStateStatus=BLOCKED，required check「PR size gate (hardened)」仍在跑。按 3.5/6 阶段 1 记 skip-gate，不 checkout、不打回、不投递 fix-handoff（CI pending 只等待）。
 - `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 4 次,首见 2026-08-22,最近 2026-08-23,status: tracked
   - 现象:PR #257 仍有 greptile thread 未 resolve；threadTriage 未配置，auto 不代 reply/resolve。selfFix 已把 Resolve 写进跟进会话卡点。
 - `author-draft-skip` **作者自转 draft，auto 不审不合** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked

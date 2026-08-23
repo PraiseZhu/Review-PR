@@ -3224,6 +3224,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-23T13:04:37.411Z",
       "lastSeen": "2026-08-23T13:04:37.411Z"
+    },
+    {
+      "fingerprint": "skip-ci-pending",
+      "tier": "by-design",
+      "title": "前置门 CI 未完成，本轮只等待不审不合",
+      "detail": "PR #257 mergeStateStatus=BLOCKED，required check「PR size gate (hardened)」仍在跑。按 3.5/6 阶段 1 记 skip-gate，不 checkout、不打回、不投递 fix-handoff（CI pending 只等待）。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T17:03:47.729Z",
+      "lastSeen": "2026-08-23T17:03:47.729Z"
     }
   ],
   "escapedHazards": [
