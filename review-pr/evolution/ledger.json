@@ -2930,14 +2930,14 @@
       "fingerprint": "skip-unresolved-greptile-thread-no-triage",
       "tier": "by-design",
       "title": "未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理",
-      "detail": "PR #229 1 条 greptile-apps conversation 未 resolve,notify 已去重;threadTriage.extraBots 未配置故不代 reply。属设计上等人点 Resolve。",
+      "detail": "PR #257 仍有 greptile thread 未 resolve；threadTriage 未配置，auto 不代 reply/resolve。selfFix 已把 Resolve 写进跟进会话卡点。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": "2026-08-22T10:03:55.679Z",
-      "lastSeen": "2026-08-22T20:06:25.377Z"
+      "lastSeen": "2026-08-23T16:10:08.824Z"
     },
     {
       "fingerprint": "skip-unresolved-greptile-thread-p2",
