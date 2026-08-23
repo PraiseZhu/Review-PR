@@ -2163,14 +2163,14 @@
       "fingerprint": "skip-unresolved-bot-thread-no-triage",
       "tier": "by-design",
       "title": "未 resolve 的 bot conversation 阻断合并，threadTriage 未启用",
-      "detail": "PR #229 1 条 greptile conversation 未 resolve；threadTriage 未启用，不代 reply/resolve",
+      "detail": "PR #229 greptile P2 thread 未 resolve,threadTriage 未配置故不代 reply;notify-author-resolve 已去重,stale 私聊被跨通道抑制",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-19T05:06:20.040Z",
-      "lastSeen": "2026-08-21T17:05:08.961Z"
+      "lastSeen": "2026-08-23T05:05:46.461Z"
     },
     {
       "fingerprint": "persist-p1-type-layer-merged-clean",

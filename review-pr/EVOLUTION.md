@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 3 次,首见 2026-08-19,最近 2026-08-23,status: tracked
+  - 现象:PR #229 greptile P2 thread 未 resolve,threadTriage 未配置故不代 reply;notify-author-resolve 已去重,stale 私聊被跨通道抑制
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 8 次,首见 2026-08-20,最近 2026-08-23,status: tracked
   - 现象:PR 248 命中 bug-doctor 路径,signoff hold 已挂 awaiting-discussion 与 issue 249,放行前不自动审不合。
   - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
@@ -358,8 +360,6 @@
   - 现象:PR #229 仅剩 greptile-apps P2 thread（writeRetryQueue 复位遗漏 tombstone）。threadTriage 未启用，auto 不能代 resolve；已于 15:04 提醒过作者，本轮 already-commented。
 - `skip-unresolved-greptile-p2-thread-blocks-merge` **Greptile P2 未 resolve 会整轮卡住合并** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #229 独立审查未进：1 条 greptile-apps conversation 未 resolve，gate 按 threads-unresolved skip。threadTriage 默认关闭且 D7 禁止顺带启用；催 resolve 已去重跳过。属设计上等人点 Resolve，不自动 resolve 他人/bot thread。
-- `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: tracked
-  - 现象:PR #229 1 条 greptile conversation 未 resolve；threadTriage 未启用，不代 reply/resolve
 - `skip-gate-conflict-author-rebase` **与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突** — 出现 3 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #228 mergeStateStatus=DIRTY，审查未跑完不能走 5.5 主干代合并
 - `author-merged-during-review` **独立审查进行中作者网页合入，巡审不再重复 merge** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
