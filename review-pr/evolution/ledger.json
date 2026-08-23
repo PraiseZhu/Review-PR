@@ -3112,14 +3112,14 @@
       "fingerprint": "skip-unresolved-bot-thread-greptile",
       "tier": "by-design",
       "title": "Greptile 行级 thread 未 resolve 导致 skip",
-      "detail": "PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，threadTriage 未启用，notify-author-resolve 已提醒过作者。属设计上等人点 Resolve。",
+      "detail": "PR #229 仍有 1 条 greptile-apps conversation 未 resolve，作者侧可自解；本轮已催过(already-commented)，不代关。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-23T01:06:40.526Z",
-      "lastSeen": "2026-08-23T01:06:40.526Z"
+      "lastSeen": "2026-08-23T02:06:42.486Z"
     },
     {
       "fingerprint": "security-gate-loop-rules-hold",

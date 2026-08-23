@@ -311,10 +311,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-greptile` **Greptile 行级 thread 未 resolve 导致 skip** — 出现 2 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #229 仍有 1 条 greptile-apps conversation 未 resolve，作者侧可自解；本轮已催过(already-commented)，不代关。
 - `security-gate-loop-rules-hold` **loop 配置改动命中 securityReviewPaths 等 admins 放行** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #248 改 scripts/loops/bug-doctor/rules.json 与 scheduler 文档，已 hold issue #249，等 admins Approve 当前 head。
-- `skip-unresolved-bot-thread-greptile` **Greptile 行级 thread 未 resolve 导致 skip** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
-  - 现象:PR #229 仅剩 greptile-apps 一条 conversation 未 resolve，threadTriage 未启用，notify-author-resolve 已提醒过作者。属设计上等人点 Resolve。
 - `security-gate-hold-awaiting-admin-approve` **命中 securityReviewPaths 必须等 admins Approve，不能自动审合** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #248 改 bug-doctor rules.json/docs，security 门已 hold（issue #249），放行前不审不合。
 - `skip-unresolved-bot-thread-author-must-resolve` **未 resolve 的 bot thread 必须作者点 Resolve，巡审不能代关** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
