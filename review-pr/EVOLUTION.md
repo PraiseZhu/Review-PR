@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-21,最近 2026-08-23,status: tracked
+  - 现象:PR 229 被 skip-gate: greptile 一条 conversation 未 resolve。作者侧动作,本流程只催不代 resolve。
 - `security-gate-loop-rules-hold` **loop 配置改动命中 securityReviewPaths 等 admins 放行** — 出现 3 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #248 sentry findingsDir 路径迁移命中 docs/loops + scripts/loops/bug-doctor，已 hold issue #249，等 admins Approve。
 - `skip-unresolved-bot-thread-greptile` **Greptile 行级 thread 未 resolve 导致 skip** — 出现 3 次,首见 2026-08-23,最近 2026-08-23,status: tracked
@@ -353,8 +355,6 @@
   - 现象:PR #229 仅剩 greptile-apps P2 thread（writeRetryQueue 复位遗漏 tombstone）。threadTriage 未启用，auto 不能代 resolve；已于 15:04 提醒过作者，本轮 already-commented。
 - `skip-unresolved-greptile-p2-thread-blocks-merge` **Greptile P2 未 resolve 会整轮卡住合并** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #229 独立审查未进：1 条 greptile-apps conversation 未 resolve，gate 按 threads-unresolved skip。threadTriage 默认关闭且 D7 禁止顺带启用；催 resolve 已去重跳过。属设计上等人点 Resolve，不自动 resolve 他人/bot thread。
-- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
-  - 现象:PR 229 仅 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重不重发。
 - `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: tracked
   - 现象:PR #229 1 条 greptile conversation 未 resolve；threadTriage 未启用，不代 reply/resolve
 - `skip-gate-conflict-author-rebase` **与主干冲突只能等作者 rebase，auto 不代解语义/未审冲突** — 出现 3 次,首见 2026-08-21,最近 2026-08-21,status: tracked
