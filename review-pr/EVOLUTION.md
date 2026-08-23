@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-author-must-resolve` **未 resolve 的 bot thread 必须作者点 Resolve，巡审不能代关** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #229 仍有 1 条 greptile thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，属设计上等人来。
 - `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #248 命中 securityReviewPaths，issue #249 仍 OPEN，alreadyHeld=true，等 admins Approve 当前 head。
 - `threads-unresolved-greptile-p2-229` **Greptile P2 thread 未 resolve 会一直挡合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked

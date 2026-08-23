@@ -3081,6 +3081,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-22T22:05:55.180Z",
       "lastSeen": "2026-08-22T23:07:46.435Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-bot-thread-author-must-resolve",
+      "tier": "by-design",
+      "title": "未 resolve 的 bot thread 必须作者点 Resolve，巡审不能代关",
+      "detail": "PR #229 仍有 1 条 greptile thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，属设计上等人来。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T00:05:52.216Z",
+      "lastSeen": "2026-08-23T00:05:52.216Z"
     }
   ],
   "escapedHazards": [
