@@ -314,6 +314,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-persist-hooks` **非白名单作者 PR 因 greptile thread 未 resolve 卡住，auto 不能代点 Resolve** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #229 persist test-hook 搬运，1 条 greptile conversation 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，stale 私聊被跨通道抑制。
 - `security-gate-loop-scripts-hold` **命中 bug-doctor 执行面走 security hold** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #248/#253 改 scripts/loops/bug-doctor 与调度文档，securityReviewPaths 命中后 hold 等 admins Approve，属防自我损坏闭环的设计门。
 - `skip-unresolved-greptile-p2-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked

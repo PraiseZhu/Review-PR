@@ -3172,6 +3172,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-23T06:08:49.191Z",
       "lastSeen": "2026-08-23T06:08:49.191Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-bot-thread-persist-hooks",
+      "tier": "by-design",
+      "title": "非白名单作者 PR 因 greptile thread 未 resolve 卡住，auto 不能代点 Resolve",
+      "detail": "PR #229 persist test-hook 搬运，1 条 greptile conversation 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，stale 私聊被跨通道抑制。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T07:05:49.856Z",
+      "lastSeen": "2026-08-23T07:05:49.856Z"
     }
   ],
   "escapedHazards": [
