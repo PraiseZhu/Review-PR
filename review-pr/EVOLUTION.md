@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-hold-awaiting-admin-approve` **命中 securityReviewPaths 必须等 admins Approve，不能自动审合** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #248 改 bug-doctor rules.json/docs，security 门已 hold（issue #249），放行前不审不合。
 - `skip-unresolved-bot-thread-author-must-resolve` **未 resolve 的 bot thread 必须作者点 Resolve，巡审不能代关** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #229 仍有 1 条 greptile thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，属设计上等人来。
 - `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
