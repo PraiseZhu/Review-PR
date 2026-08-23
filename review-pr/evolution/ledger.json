@@ -3125,14 +3125,14 @@
       "fingerprint": "security-gate-loop-rules-hold",
       "tier": "by-design",
       "title": "loop 配置改动命中 securityReviewPaths 等 admins 放行",
-      "detail": "PR #248 改 scripts/loops/bug-doctor/rules.json 与 scheduler 文档，已 hold issue #249，等 admins Approve 当前 head。",
+      "detail": "PR #248 改 scripts/loops/bug-doctor/rules.json 与调度文档，alreadyHeld 复用 issue #249，等 admins Approve 当前 head。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-23T01:06:44.942Z",
-      "lastSeen": "2026-08-23T01:06:44.942Z"
+      "lastSeen": "2026-08-23T02:06:46.847Z"
     }
   ],
   "escapedHazards": [
