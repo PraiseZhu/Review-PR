@@ -2735,14 +2735,14 @@
       "fingerprint": "unresolved-bot-thread-blocks-merge",
       "tier": "by-design",
       "title": "Greptile 未 resolve thread 卡住合并，需作者点 Resolve",
-      "detail": "PR 229 被 skip-gate: greptile 一条 conversation 未 resolve。作者侧动作,本流程只催不代 resolve。",
-      "proposal": null,
+      "detail": "PR 229 greptile-apps 一条 P2 thread 未 resolve,gate 跳过。threadTriage 未配置,auto 不能代 reply/resolve。作者侧可点 Resolve。",
+      "proposal": "保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。",
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-21T18:06:14.565Z",
-      "lastSeen": "2026-08-23T04:06:06.666Z"
+      "lastSeen": "2026-08-23T08:11:32.961Z"
     },
     {
       "fingerprint": "persist-src-lib-hits-product-ui-gate",

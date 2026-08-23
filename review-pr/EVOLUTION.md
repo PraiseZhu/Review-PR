@@ -317,6 +317,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 3 次,首见 2026-08-21,最近 2026-08-23,status: tracked
+  - 现象:PR 229 greptile-apps 一条 P2 thread 未 resolve,gate 跳过。threadTriage 未配置,auto 不能代 reply/resolve。作者侧可点 Resolve。
+  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
 - `skip-unresolved-bot-thread-persist-hooks` **非白名单作者 PR 因 greptile thread 未 resolve 卡住，auto 不能代点 Resolve** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #229 persist test-hook 搬运，1 条 greptile conversation 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，stale 私聊被跨通道抑制。
 - `security-gate-loop-scripts-hold` **命中 bug-doctor 执行面走 security hold** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
@@ -330,8 +333,6 @@
 - `security-gate-awaiting-admin-approve` **命中 securityReviewPaths 等维护者确认门放行** — 出现 8 次,首见 2026-08-20,最近 2026-08-23,status: tracked
   - 现象:PR 248 命中 bug-doctor 路径,signoff hold 已挂 awaiting-discussion 与 issue 249,放行前不自动审不合。
   - 提案:作者或另一 admin 对当前 head Approve / 讨论 issue 回同意放行后再审合。
-- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-21,最近 2026-08-23,status: tracked
-  - 现象:PR 229 被 skip-gate: greptile 一条 conversation 未 resolve。作者侧动作,本流程只催不代 resolve。
 - `security-gate-loop-rules-hold` **loop 配置改动命中 securityReviewPaths 等 admins 放行** — 出现 3 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #248 sentry findingsDir 路径迁移命中 docs/loops + scripts/loops/bug-doctor，已 hold issue #249，等 admins Approve。
 - `skip-unresolved-bot-thread-greptile` **Greptile 行级 thread 未 resolve 导致 skip** — 出现 3 次,首见 2026-08-23,最近 2026-08-23,status: tracked
