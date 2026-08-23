@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-loop-scripts-hold` **命中 bug-doctor 执行面走 security hold** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #248/#253 改 scripts/loops/bug-doctor 与调度文档，securityReviewPaths 命中后 hold 等 admins Approve，属防自我损坏闭环的设计门。
 - `skip-unresolved-greptile-p2-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #229 仅剩 greptile P2 测试复位意见未 resolve，分支保护要求 conversation resolution，属真人/作者侧收口，不自动 resolve。
 - `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 3 次,首见 2026-08-22,最近 2026-08-23,status: tracked

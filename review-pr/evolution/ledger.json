@@ -3146,6 +3146,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-23T06:08:40.568Z",
       "lastSeen": "2026-08-23T06:08:40.568Z"
+    },
+    {
+      "fingerprint": "security-gate-loop-scripts-hold",
+      "tier": "by-design",
+      "title": "命中 bug-doctor 执行面走 security hold",
+      "detail": "PR #248/#253 改 scripts/loops/bug-doctor 与调度文档，securityReviewPaths 命中后 hold 等 admins Approve，属防自我损坏闭环的设计门。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T06:08:44.998Z",
+      "lastSeen": "2026-08-23T06:08:44.998Z"
     }
   ],
   "escapedHazards": [
