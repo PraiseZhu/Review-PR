@@ -311,6 +311,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-greptile-p2-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
+  - 现象:PR #229 仅剩 greptile P2 测试复位意见未 resolve，分支保护要求 conversation resolution，属真人/作者侧收口，不自动 resolve。
 - `security-gate-loop-config-hold` **loop 配置改动走 security 确认门等 admin Approve** — 出现 3 次,首见 2026-08-22,最近 2026-08-23,status: tracked
   - 现象:PR #248 改 scripts/loops/bug-doctor/rules.json 与 docs/loops/,alreadyHeld issue #249 等 admins Approve
 - `skip-unresolved-bot-thread-no-triage` **未 resolve 的 bot conversation 阻断合并，threadTriage 未启用** — 出现 3 次,首见 2026-08-19,最近 2026-08-23,status: tracked

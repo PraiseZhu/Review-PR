@@ -3133,6 +3133,19 @@
       "occurrences": 3,
       "firstSeen": "2026-08-23T01:06:44.942Z",
       "lastSeen": "2026-08-23T03:05:20.565Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-greptile-p2-blocks-merge",
+      "tier": "by-design",
+      "title": "Greptile P2 thread 未 resolve 挡住合并",
+      "detail": "PR #229 仅剩 greptile P2 测试复位意见未 resolve，分支保护要求 conversation resolution，属真人/作者侧收口，不自动 resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-23T06:08:40.568Z",
+      "lastSeen": "2026-08-23T06:08:40.568Z"
     }
   ],
   "escapedHazards": [
