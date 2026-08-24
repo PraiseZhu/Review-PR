@@ -3263,6 +3263,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T09:05:05.087Z",
       "lastSeen": "2026-08-24T09:05:05.087Z"
+    },
+    {
+      "fingerprint": "self-fix-format-handoff-omit-checklist-ratio",
+      "tier": "proposal",
+      "title": "selfFix 格式打回首次投递漏写 checklist 勾选率门槛",
+      "detail": "PR #271 首次 handoff 只要求补「变更说明/提交前自检/备注」三段，作者改完后格式门仍因 Self-review 勾选率 2/3(<80%) 未过，同轮二次投递。痛点是跟进会话要跑两轮才碰到 checklistSectionNames 的 80% 规则。",
+      "proposal": "5.4 格式卡点投递模板把 checklistSectionNames 的勾选率门槛（当前 <80% 不过）写进首次消息，避免只修段落标题后又因空勾弹回。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T10:23:16.860Z",
+      "lastSeen": "2026-08-24T10:23:16.860Z"
     }
   ],
   "escapedHazards": [
