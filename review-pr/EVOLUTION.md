@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-human-review-thread` **真人审查 thread 未 resolve，作者侧修完前不能合** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR 273 CHANGES_REQUESTED + 1 条 PraiseZhu 审查 conversation 未 resolve；已提醒过作者，本轮 skip-gate。属设计上等人处理，不自动 resolve 真人 thread。
 - `skip-gate-changes-requested-unresolved-author` **作者侧 CHANGES_REQUESTED + 未 resolve thread，须等人修完/点 Resolve** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR #273 persist 水合补齐被 skip-gate：reviewDecision=CHANGES_REQUESTED，1 条 conversation 未 resolve。作者不在 selfFixAuthors。本轮 notify-author-resolve 去重 already-commented；remind-stale idleHours=5.4 未到 24h 阈值。
 - `skip-changes-requested-unresolved-author-thread` **作者侧 CHANGES_REQUESTED + 未 resolve thread，等作者修完再审** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

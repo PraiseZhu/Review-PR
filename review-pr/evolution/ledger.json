@@ -3393,6 +3393,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T19:04:23.920Z",
       "lastSeen": "2026-08-24T19:04:23.920Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-human-review-thread",
+      "tier": "by-design",
+      "title": "真人审查 thread 未 resolve，作者侧修完前不能合",
+      "detail": "PR 273 CHANGES_REQUESTED + 1 条 PraiseZhu 审查 conversation 未 resolve；已提醒过作者，本轮 skip-gate。属设计上等人处理，不自动 resolve 真人 thread。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T20:05:20.872Z",
+      "lastSeen": "2026-08-24T20:05:20.872Z"
     }
   ],
   "escapedHazards": [
