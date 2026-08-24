@@ -343,6 +343,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-human-review-threads` **他人 reviewer 未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR #268 reviewDecision=CHANGES_REQUESTED 且 2 条 PraiseZhu 必改 thread 未 resolve；auto 只提醒作者、不代 resolve、不进审查。
 - `skip-ci-failed-wait-green` **CI 失败时跳过等待变绿，不代修** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR #268 feat persistBoot 基座：product-gate 语义定性为非产品/UI（persist 内部迁移基座），fallback skip-gate。实际阻断是 lint+tsc+unit 失败连带 size-gate freshness fail；CI 仍在重跑。作者侧 CI 问题，等人修完下轮再审。
 - `author-draft-skip` **作者自转 draft，auto 不审不合** — 出现 2 次,首见 2026-08-23,最近 2026-08-24,status: tracked

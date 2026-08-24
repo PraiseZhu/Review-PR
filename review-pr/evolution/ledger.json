@@ -3276,6 +3276,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T10:23:16.860Z",
       "lastSeen": "2026-08-24T10:23:16.860Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-human-review-threads",
+      "tier": "by-design",
+      "title": "他人 reviewer 未 resolve thread 必须等作者处理",
+      "detail": "PR #268 reviewDecision=CHANGES_REQUESTED 且 2 条 PraiseZhu 必改 thread 未 resolve；auto 只提醒作者、不代 resolve、不进审查。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T11:32:07.831Z",
+      "lastSeen": "2026-08-24T11:32:07.831Z"
     }
   ],
   "escapedHazards": [
