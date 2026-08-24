@@ -176,3 +176,24 @@ test('命中样本已脱敏:只留前 6 字符 + 长度,不还原原文', () => 
   assert.ok(!sink.hard[0].sample.includes(secret), '脱敏后的 sample 不应包含完整原文');
   assert.match(sink.hard[0].sample, /…\(共 \d+ 字符\)/);
 });
+
+test('FAKEKEY 字面量仍 hard hit:正则不豁免,测试桩靠 allowPaths 跳过文件', () => {
+  const patterns = buildSensitivePatterns({
+    allowPaths: ['^src/__tests__/', '^cindyplugin/src/__tests__/'],
+  });
+  // 运行时拼接,源码里不出现完整 sk- / xoxb- 形态,避免本仓安全门把本测试当泄密打回。
+  const fakeSk = 'sk-' + 'FAKEKEY-' + 'abcdefghijklmnopqrst';
+  const fakeSlack = 'xoxb-' + 'FAKEKEY-' + '123456789';
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine(`const k = "${fakeSk}";`, { file: 'cindyplugin/src/__tests__/debugLogRedact.test.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.filter((h) => h.kind === 'sk-api-key').length, 1, '扫描行本身仍命中,避免 FAKEKEY 前缀的真密钥被全局 lookahead 放行');
+  }
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine(`const t = "${fakeSlack}";`, { file: 'src/lib/persist.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.filter((h) => h.kind === 'slack-token').length, 1);
+  }
+  assert.ok(patterns.allowRe.test('cindyplugin/src/__tests__/debugLogRedact.test.ts'));
+  assert.ok(!patterns.allowRe.test('src/lib/persist.ts'));
+});

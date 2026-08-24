@@ -62,7 +62,15 @@ export const BUILTIN_RULES = [
     invariant: 'waitForFunction 的谓词不得是 async/返回 Promise——Promise 恒 truthy,会 1ms 假通过而根本没在等待',
     title: 'waitForFunction 收到 async/Promise 谓词(假等待)',
   },
+  {
+    ruleId: 'playwright-waitforfunction-timeout-arg-position',
+    ruleVersion: 'v1',
+    severity: 'P1',
+    invariant: 'waitForFunction 的 timeout 必须放在第三参数 options,第二参数是 arg——写成 (pred, {timeout}) 会被静默忽略,退化成默认 30s',
+    title: 'waitForFunction 把 timeout 写在第二位置参数(被静默忽略)',
+  },
 ];
+const TIMEOUT_ARG_RULE = BUILTIN_RULES[1];
 
 /**
  * 加载 vendored typescript。返回 { ok, ts?, error?, version?, resolvedPath? }。
@@ -250,6 +258,13 @@ function isAsyncOrPromisePredicate(ts, raw) {
   return functionLikeReturnsPromise(ts, node);
 }
 
+/** 第二位置参数是带 timeout 键的对象字面量 → Playwright 会把它当 pageFunction arg,超时被忽略。 */
+function isTimeoutObjectLiteral(ts, raw) {
+  const node = unwrapExpression(ts, raw);
+  if (!node || !ts.isObjectLiteralExpression(node)) return false;
+  return node.properties.some((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === 'timeout');
+}
+
 /** receiver 是否 lexical 的 page/frame。第 4 轮核验:`(page).waitForFunction(...)` 里
  *  receiver 是 ParenthesizedExpression,不剥壳则整条判定被跳过。 */
 function isPageOrFrameReceiver(ts, expr) {
@@ -282,11 +297,13 @@ export function scanSource(ts, { path, text }) {
       && calleeP.name.text === 'waitForFunction'
       && isPageOrFrameReceiver(ts, calleeP.expression)) {
       const why = isAsyncOrPromisePredicate(ts, node.arguments[0]);
-      if (why) {
+      const timeoutMisplaced = isTimeoutObjectLiteral(ts, node.arguments[1]);
+      if (why || timeoutMisplaced) {
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
+        const hitRule = timeoutMisplaced && !why ? TIMEOUT_ARG_RULE : rule;
         hits.push({
-          ruleId: rule.ruleId, ruleVersion: rule.ruleVersion, severity: rule.severity,
-          invariant: rule.invariant, reason: why,
+          ruleId: hitRule.ruleId, ruleVersion: hitRule.ruleVersion, severity: hitRule.severity,
+          invariant: hitRule.invariant, reason: why || 'timeout-in-second-arg',
           path, line: line + 1,
           nodeStartLine: line + 1,
           nodeEndLine: sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1,

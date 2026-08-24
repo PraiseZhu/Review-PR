@@ -284,3 +284,14 @@ test('R2 第 4 轮核验补齐:receiver/new target 剥壳 + 同步 literal IIFE 
   assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => Promise.resolve(1) || false); }'), 1, '|| 左操作数确定是 Promise → 值就是它,必须报');
   assert.equal(hit('export async function w(page: any){ await page.waitForFunction(() => { function inner(){ return Promise.resolve(1); } return inner; }); }'), 0, '返回的是函数本身,不是 Promise');
 });
+
+test('waitForFunction 第二参数带 timeout 键 → 机器打回(被静默忽略)', () => {
+  const { ts } = loadVendoredTypescript();
+  const r = scanSource(ts, {
+    path: 'a.mjs',
+    text: 'export async function w(page){ await page.waitForFunction(() => document.readyState === "complete", { timeout: 5000 }); }',
+  });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.hits.length, 1);
+  assert.equal(r.hits[0].ruleId, 'playwright-waitforfunction-timeout-arg-position');
+});
