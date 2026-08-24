@@ -2397,14 +2397,14 @@
       "fingerprint": "skip-gate-changes-requested-unresolved-threads",
       "tier": "by-design",
       "title": "作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip",
-      "detail": "PR 201 仍是 CHANGES_REQUESTED + 3 条未 resolve conversation，作者未新 commit。属作者侧决策/修复，不自动代 resolve 真人 thread。",
+      "detail": "PR #273 前置门 BLOCKED(reviewDecision=CHANGES_REQUESTED)+1 条未 resolve thread；已提醒过，本轮不重发。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-20T14:05:19.952Z",
-      "lastSeen": "2026-08-20T14:05:19.952Z"
+      "lastSeen": "2026-08-24T23:04:14.893Z"
     },
     {
       "fingerprint": "skip-changes-requested-unresolved",
