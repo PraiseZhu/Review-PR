@@ -3406,6 +3406,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T20:05:20.872Z",
       "lastSeen": "2026-08-24T20:05:20.872Z"
+    },
+    {
+      "fingerprint": "skip-gate-unresolved-after-changes-requested",
+      "tier": "by-design",
+      "title": "被 CHANGES_REQUESTED 且 conversation 未 resolve 的 PR 只能等作者点 Resolve 或再 push",
+      "detail": "PR 273 persist 水合移植：产品门语义判定为纯技术/已有功能补充未 hold；前置门仍被 1 条未 resolve conversation + CHANGES_REQUESTED 挡住。已有催 resolve 评论，本轮不重发。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T21:07:41.554Z",
+      "lastSeen": "2026-08-24T21:07:41.554Z"
     }
   ],
   "escapedHazards": [

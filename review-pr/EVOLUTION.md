@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-unresolved-after-changes-requested` **被 CHANGES_REQUESTED 且 conversation 未 resolve 的 PR 只能等作者点 Resolve 或再 push** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR 273 persist 水合移植：产品门语义判定为纯技术/已有功能补充未 hold；前置门仍被 1 条未 resolve conversation + CHANGES_REQUESTED 挡住。已有催 resolve 评论，本轮不重发。
 - `skip-unresolved-human-review-thread` **真人审查 thread 未 resolve，作者侧修完前不能合** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR 273 CHANGES_REQUESTED + 1 条 PraiseZhu 审查 conversation 未 resolve；已提醒过作者，本轮 skip-gate。属设计上等人处理，不自动 resolve 真人 thread。
 - `skip-gate-changes-requested-unresolved-author` **作者侧 CHANGES_REQUESTED + 未 resolve thread，须等人修完/点 Resolve** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
