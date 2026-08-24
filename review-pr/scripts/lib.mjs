@@ -1219,14 +1219,14 @@ const HARD_SECRET_PATTERNS_BASE = [
   // slack-token 只覆盖 xox[abprs]- 这一族(user/bot/legacy 等 OAuth 令牌),Slack App-Level
   // Token(xapp-,Socket Mode 等场景用)是完全不同的格式(xapp-<版本>-<APP ID>-<请求
   // ID>-<64 位十六进制>),不会被 xox 系列命中,P1-3 补一条独立规则。
-  ['slack-token', /\bxox[abprs]-(?!FAKEKEY\b)[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
+  ['slack-token', /\bxox[abprs]-[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
   ['slack-app-token', /\bxapp-\d-[A-Z0-9]+-\d+-[a-f0-9]{64}\b/],
   // sk-api-key 此前只认连字符分隔(sk-,覆盖 OpenAI/Anthropic sk-ant-...)。三审时
   // 把 Stripe 的下划线形态放宽成任意 `sk[-_]...`,导致普通变量名(如
   // sk_status_configuration_value)也被误判 hard hit——四审收窄:Stripe 只认
   // `sk_live_`/`sk_test_` 这个具体前缀,不做通用 sk_ 分隔符放宽;原连字符分支
   // (sk-...)不受影响,单独保留。
-  ['sk-api-key', /\bsk-(?!FAKEKEY\b)[A-Za-z0-9_-]{20,}\b/],
+  ['sk-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
   ['stripe-api-key', /\bsk_(?:live|test)_[A-Za-z0-9_-]{20,}\b/],
   ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/],
 ];

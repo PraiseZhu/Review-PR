@@ -178,8 +178,8 @@ try {
     defaultBranch = sym.stdout.trim().replace(/^refs\/remotes\/origin\//, '');
   }
 
-  // tracking 分支远端已删时,ff-only pull 会整轮 sync-failed。auto 开轮只报告并切到
-  // origin/<default> 的本地跟踪(不审不写 GitHub);切不过仍标 syncFailed,由上层 fail-closed。
+  // tracking 分支远端已删时,ff-only pull 会整轮 sync-failed。工作区干净才切到
+  // origin/<default>(不审不写 GitHub);脏树或切不过仍标 syncFailed,由上层 fail-closed。
   let trackingRecovered = false;
   let syncFailed = null;
   const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { allowFail: true });
@@ -188,18 +188,22 @@ try {
     const ls = git(['ls-remote', '--heads', 'origin', remoteRef.replace(/^origin\//, '')], { allowFail: true });
     const remoteGone = !ls.ok || !ls.stdout.trim();
     if (remoteGone && currentBranch !== defaultBranch && currentBranch !== 'HEAD') {
-      const named = git(['checkout', '-q', defaultBranch], { allowFail: true });
-      if (!named.ok) {
-        const detached = git(['checkout', '-q', '--detach', `origin/${defaultBranch}`], { allowFail: true });
-        if (!detached.ok) {
-          syncFailed = `tracking 分支远端已消失(${remoteRef}),切 ${defaultBranch} 失败`;
+      if (!worktreeClean) {
+        syncFailed = `tracking 分支远端已消失(${remoteRef}),工作区不干净,不自动切 ${defaultBranch}`;
+      } else {
+        const named = git(['checkout', '-q', defaultBranch], { allowFail: true });
+        if (!named.ok) {
+          const detached = git(['checkout', '-q', '--detach', `origin/${defaultBranch}`], { allowFail: true });
+          if (!detached.ok) {
+            syncFailed = `tracking 分支远端已消失(${remoteRef}),切 ${defaultBranch} 失败`;
+          } else {
+            trackingRecovered = true;
+            currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+          }
         } else {
           trackingRecovered = true;
           currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
         }
-      } else {
-        trackingRecovered = true;
-        currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
       }
     }
   }

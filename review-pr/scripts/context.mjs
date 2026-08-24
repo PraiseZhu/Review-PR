@@ -1390,9 +1390,17 @@ try {
     autoSkip = false;
     const liveRollup = classifyStatusRollup(meta.statusCheckRollup);
     if (liveRollup?.pending?.length) {
-      autoAction = 'skip-gate';
-      autoReason = `CI 仍在跑(${liveRollup.pending.join(' / ')})——标 ci-pending-race,本轮不审,等跑完再分类`;
-      autoSkip = true;
+      // 只拦 required 还在跑。rollup 里的可选检查(Greptile / stale reminder)可能永远
+      // PENDING,用全集 pending 会把 PR 永久 skip-gate。读不到 required 清单时不跳——
+      // 能走到这里说明 gate 已过,mergeStateStatus 没把可选 pending 当硬门。
+      const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+      const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, meta.baseRefName) : null;
+      const rc = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
+      if (rc?.requiredPending?.length) {
+        autoAction = 'skip-gate';
+        autoReason = `required CI 仍在跑(${rc.requiredPending.join(' / ')})——标 ci-pending-race,本轮不审,等跑完再分类`;
+        autoSkip = true;
+      }
     }
   }
 

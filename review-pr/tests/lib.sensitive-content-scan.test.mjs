@@ -177,16 +177,20 @@ test('命中样本已脱敏:只留前 6 字符 + 长度,不还原原文', () => 
   assert.match(sink.hard[0].sample, /…\(共 \d+ 字符\)/);
 });
 
-test('FAKEKEY 测试桩不 hard hit:sk-FAKEKEY- / xoxb-FAKEKEY- 是测试输入不是真密钥', () => {
-  const patterns = buildSensitivePatterns({});
+test('FAKEKEY 字面量仍 hard hit:正则不豁免,测试桩靠 allowPaths 跳过文件', () => {
+  const patterns = buildSensitivePatterns({
+    allowPaths: ['^src/__tests__/', '^cindyplugin/src/__tests__/'],
+  });
   {
     const sink = { hard: [], soft: [] };
     scanSensitiveLine('const k = "sk-FAKEKEY-abcdefghijklmnopqrst";', { file: 'cindyplugin/src/__tests__/debugLogRedact.test.ts', line: 1 }, patterns, sink);
-    assert.equal(sink.hard.filter((h) => h.kind === 'sk-api-key').length, 0);
+    assert.equal(sink.hard.filter((h) => h.kind === 'sk-api-key').length, 1, '扫描行本身仍命中,避免 sk-FAKEKEY+真密钥被全局 lookahead 放行');
   }
   {
     const sink = { hard: [], soft: [] };
-    scanSensitiveLine('const t = "xoxb-FAKEKEY-123456789";', { file: 'x.ts', line: 1 }, patterns, sink);
-    assert.equal(sink.hard.filter((h) => h.kind === 'slack-token').length, 0);
+    scanSensitiveLine('const t = "xoxb-FAKEKEY-123456789";', { file: 'src/lib/persist.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.filter((h) => h.kind === 'slack-token').length, 1);
   }
+  assert.ok(patterns.allowRe.test('cindyplugin/src/__tests__/debugLogRedact.test.ts'));
+  assert.ok(!patterns.allowRe.test('src/lib/persist.ts'));
 });
