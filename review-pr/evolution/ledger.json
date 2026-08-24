@@ -2631,14 +2631,14 @@
       "fingerprint": "skip-stale-format-pushback-no-new-commit",
       "tier": "by-design",
       "title": "格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES",
-      "detail": "本轮 #218 Description 仍缺变更说明/提交前自检/备注，head 未变，走 skip-stale-pushback。",
+      "detail": "PR #275 Self-review 勾选率 2/4；auto.action=skip-stale-pushback。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-21T05:04:10.535Z",
-      "lastSeen": "2026-08-21T05:04:10.535Z"
+      "lastSeen": "2026-08-24T23:04:19.612Z"
     },
     {
       "fingerprint": "auto-review-agent-no-return-before-round-end",
