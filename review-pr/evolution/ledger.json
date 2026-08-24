@@ -3250,6 +3250,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T05:21:40.398Z",
       "lastSeen": "2026-08-24T05:21:40.398Z"
+    },
+    {
+      "fingerprint": "skip-ci-failed-wait-green",
+      "tier": "by-design",
+      "title": "CI 失败时跳过等待变绿，不代修",
+      "detail": "PR #268 feat persistBoot 基座：product-gate 语义定性为非产品/UI（persist 内部迁移基座），fallback skip-gate。实际阻断是 lint+tsc+unit 失败连带 size-gate freshness fail；CI 仍在重跑。作者侧 CI 问题，等人修完下轮再审。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T09:05:05.087Z",
+      "lastSeen": "2026-08-24T09:05:05.087Z"
     }
   ],
   "escapedHazards": [

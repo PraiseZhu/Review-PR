@@ -320,6 +320,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-ci-failed-wait-green` **CI 失败时跳过等待变绿，不代修** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR #268 feat persistBoot 基座：product-gate 语义定性为非产品/UI（persist 内部迁移基座），fallback skip-gate。实际阻断是 lint+tsc+unit 失败连带 size-gate freshness fail；CI 仍在重跑。作者侧 CI 问题，等人修完下轮再审。
 - `author-draft-skip` **作者自转 draft，auto 不审不合** — 出现 2 次,首见 2026-08-23,最近 2026-08-24,status: tracked
   - 现象:本轮 scan 0 候选；#265 为 PraiseZhu 自转 draft，heldDraftResults 为空
 - `webpage-merged-during-auto-review` **auto 审查进行中 PR 被网页合并，本轮不得再经 merge-pr 出口合一次** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
