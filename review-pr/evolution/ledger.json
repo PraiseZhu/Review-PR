@@ -3315,6 +3315,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T12:04:58.194Z",
       "lastSeen": "2026-08-24T12:04:58.194Z"
+    },
+    {
+      "fingerprint": "review-agent-rro1-missing-bind-fields",
+      "tier": "proposal",
+      "title": "审查席 rro-1 漏 profileId/负向证据绑定字段，主会话机械补齐才过 consumer",
+      "detail": "PR #273 审查席交卷缺 profileAnswers.profileId、negativeEvidence.snapshotHash/negativeOracle/verificationRunId，verificationGaps 缺 required；reasonCode 用了 data-only-baseline 不在闭集。主会话按契约机械补齐后 consume 才 dirty。不回头改本轮判定。",
+      "proposal": "build-review-task/prompt 或 consume 前加一层本地 validateReviewOutput 预检，缺字段时让审查席重交而不是主会话手工补字段。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T13:40:58.007Z",
+      "lastSeen": "2026-08-24T13:40:58.007Z"
     }
   ],
   "escapedHazards": [

@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-rro1-missing-bind-fields` **审查席 rro-1 漏 profileId/负向证据绑定字段，主会话机械补齐才过 consumer** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: open
+  - 现象:PR #273 审查席交卷缺 profileAnswers.profileId、negativeEvidence.snapshotHash/negativeOracle/verificationRunId，verificationGaps 缺 required；reasonCode 用了 data-only-baseline 不在闭集。主会话按契约机械补齐后 consume 才 dirty。不回头改本轮判定。
+  - 提案:build-review-task/prompt 或 consume 前加一层本地 validateReviewOutput 预检，缺字段时让审查席重交而不是主会话手工补字段。
 - `self-fix-format-handoff-omit-checklist-ratio` **selfFix 格式打回首次投递漏写 checklist 勾选率门槛** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: open
   - 现象:PR #271 首次 handoff 只要求补「变更说明/提交前自检/备注」三段，作者改完后格式门仍因 Self-review 勾选率 2/3(<80%) 未过，同轮二次投递。痛点是跟进会话要跑两轮才碰到 checklistSectionNames 的 80% 规则。
   - 提案:5.4 格式卡点投递模板把 checklistSectionNames 的勾选率门槛（当前 <80% 不过）写进首次消息，避免只修段落标题后又因空勾弹回。
