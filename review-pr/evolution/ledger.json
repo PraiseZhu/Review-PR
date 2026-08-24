@@ -3289,6 +3289,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T11:32:07.831Z",
       "lastSeen": "2026-08-24T11:32:07.831Z"
+    },
+    {
+      "fingerprint": "feat-persist-product-gate-semantic",
+      "tier": "by-design",
+      "title": "feat(persist) 水合移植仍进产品门语义定性",
+      "detail": "PR 273 标题 feat、作者非白名单，auto.action=product-gate；uiCodeFiles 空、touchesUi=false，文件是 persistBoot 场景水合+cycle-guard 基线。语义判为已有功能补充/纯技术，不 hold，走 fallback skip-gate。这是设计上要人做的语义判断，不是漏闸。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T12:04:53.729Z",
+      "lastSeen": "2026-08-24T12:04:53.729Z"
     }
   ],
   "escapedHazards": [
