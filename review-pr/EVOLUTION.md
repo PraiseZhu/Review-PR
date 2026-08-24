@@ -5,95 +5,116 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `format-gate-custom-section-headings` **owner PR 用等价中文小标题被格式门打回** — 出现 2 次,首见 2026-08-23,最近 2026-08-23,status: open
+- `format-gate-custom-section-headings` **owner PR 用等价中文小标题被格式门打回** — 出现 2 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #257 body 用「为什么/改了什么/验证」，模板只认「变更说明/提交前自检/备注」。selfFix 已投递跟进会话改 description，不放宽格式门。
   - 提案:若要认等价小标题,需改目标仓模板或 format 判定;属放宽格式门,等维护者拍板。
-- `product-gate-feat-uipaths-test-hook-port` **feat + uiPaths 把 persist 测试 hook 搬运误标成产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
+  - 备注:[decided:2026-08-24] track 放宽格式门影响面大。升格条件：owner 明确改仓模板或加同义词。
+- `product-gate-feat-uipaths-test-hook-port` **feat + uiPaths 把 persist 测试 hook 搬运误标成产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: landed
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试辅助接口，语义不是产品/UI。本轮人工定性后走 skip-gate。可考虑把纯 persist/lib 测试钩子从 uiPaths 命中中剔除，属配置收窄需维护者拍板。
   - 提案:评估 uiPaths/uiExcludePaths 是否排除 src/lib 测试 hook 搬运，避免 feat(persist) 反复进产品门。
-- `uipaths-src-lib-false-product-gate` **src/ 整树进 uiPaths 让 persist 测试搬运误亮产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `uipaths-src-lib-false-product-gate` **src/ 整树进 uiPaths 让 persist 测试搬运误亮产品门** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: landed
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook，scan 因 feat+uiPaths 给 product-gate；语义判断未 hold。可考虑把 src/lib 持久层从 uiPaths 排除，减少误亮。
   - 提案:评估 uiPaths 是否排除 src/lib、src/persist 等非界面路径，或对 feat+纯测试 hook 搬运给更明确的 exempt 信号。
-- `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 3 次,首见 2026-08-22,最近 2026-08-23,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `product-gate-src-lib-persist-false-positive` **feat + src/lib persist 内部文件会误亮产品/UI 门** — 出现 3 次,首见 2026-08-22,最近 2026-08-23,status: landed
   - 现象:PR #229 是测试钩子搬运(src/lib/writeRetryQueue.ts)，非产品/UI；scan 因 feat+uiPaths 给 product-gate，语义定性后按 skip-gate 继续。
   - 提案:把 persist 内部库路径移出 uiPaths，或给 src/lib 加 uiExcludePaths，避免 feat+src 误亮产品门。
-- `uipaths-src-false-product-gate-persist-lib` **uiPaths 含 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `uipaths-src-false-product-gate-persist-lib` **uiPaths 含 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: landed
   - 现象:PR 229 只改 src/lib/writeRetryQueue.ts 测试钩子，auto.action=product-gate。语义上属已有功能补充，本轮按 fallback skip-gate。可考虑把 src/lib 排除出 uiPaths，减少空转定性。
   - 提案:评估 uiPaths 是否排除 src/lib（或仅对 cindyplugin/src 组件面计 UI），改前用历史 feat+src/lib PR 回归，避免漏拦真 UI。
-- `ui-paths-persist-lib-false-product-gate` **uiPaths 含 src/ 导致 persist 库文件误亮产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `ui-paths-persist-lib-false-product-gate` **uiPaths 含 src/ 导致 persist 库文件误亮产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: landed
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook，无界面。productGate.needsProductCheck=true 因 feat+uiPaths。本轮语义定性为非产品/UI 未 hold。改 uiPaths/排除 persist 属扩权/改闸，只记提案。
   - 提案:评估把 src/lib 持久化/非 UI 路径从 uiPaths 排除，或收窄 uiPaths 到 cindyplugin/ 与真实 UI 组件目录，避免 persist 搬运 PR 每轮都走产品门语义定性。
-- `uipaths-src-persist-false-positive-product-gate` **uiPaths 含 src/ 会把 persist 库文件误判成产品/UI 门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `uipaths-src-persist-false-positive-product-gate` **uiPaths 含 src/ 会把 persist 库文件误判成产品/UI 门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: landed
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试 hook 搬运，auto.action=product-gate。主 agent 语义定性为已有功能补充未 hold。扩 uiPaths 收窄属 gate 阈值调整，不自动落地。
   - 提案:评估把 uiPaths 从整棵 src/ 收窄到真实 UI 面（组件/css/插件外壳），persist/lib 纯逻辑不再进产品门。
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
 - `persist-src-lib-hits-product-ui-gate` **src/lib 持久化搬运命中 uiPaths，产品门靠语义放行** — 出现 2 次,首见 2026-08-21,最近 2026-08-22,status: tracked
   - 现象:PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试 hooks，无用户可见 UI；uiPaths 含 src/ 前缀导致 product-gate。语义判定为已有功能补充后按 fallback skip-gate。
   - 提案:收窄 uiPaths，把 src/lib persist/queue 纯逻辑路径排除出产品门启发式。
-- `uipaths-src-prefix-false-product-gate` **uiPaths 覆盖整个 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+- `uipaths-src-prefix-false-product-gate` **uiPaths 覆盖整个 src/ 会把 persist 库文件误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: landed
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts（测试 hook 搬运），auto.action=product-gate。语义判定为已有功能补充后走 fallback skip-gate。提案：收窄 uiPaths 或给 src/lib 加排除，减少假产品门。
   - 提案:评估把 uiPaths 从整棵 src/ 收窄到真实 UI 面(src/ui、cindyplugin 组件等)，或 uiExcludePaths 加入 src/lib/，避免 persist/infra 改动每轮先过产品门语义。
-- `product-gate-uipaths-src-lib-persist-false-positive` **uiPaths 含整个 src/ 导致 persist 测试 hook 搬运误亮产品门** — 出现 2 次,首见 2026-08-21,最近 2026-08-22,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `product-gate-uipaths-src-lib-persist-false-positive` **uiPaths 含整个 src/ 导致 persist 测试 hook 搬运误亮产品门** — 出现 2 次,首见 2026-08-21,最近 2026-08-22,status: landed
   - 现象:PR #229 feat(persist) 只改 src/lib/writeRetryQueue.ts 测试 hook，语义非产品/UI；本轮定性后走 skip-gate 未 hold
   - 提案:uiPaths 收窄或给 persist/lib 非 UI 路径加 exclude，避免 feat+src 误亮产品门
-- `product-gate-src-prefix-persist-test-hooks` **uiPaths 命中 src/ 把 persist 测试钩子误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `product-gate-src-prefix-persist-test-hooks` **uiPaths 命中 src/ 把 persist 测试钩子误判成产品门** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: landed
   - 现象:PR #229 只改 src/lib/writeRetryQueue.ts 测试钩子,context 给 product-gate。主 agent 语义判定属既有功能补充后按 fallback skip-gate。可考虑收窄 uiPaths 或排除 src/lib persist 测试辅助。
   - 提案:评估是否把 src/lib 纯逻辑/测试钩子从 uiPaths 排除,避免每轮都要人工语义定性。
-- `missing-toplevel-snapshot-hash` **审查输出偶发缺顶层 snapshotHash 导致 consume invalid** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `missing-toplevel-snapshot-hash` **审查输出偶发缺顶层 snapshotHash 导致 consume invalid** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #235 审查 JSON 缺顶层 snapshotHash（段回执里有同值），consume 先报非法 JSON。prompt 已要求该字段。本轮手工补字段后 clean。
   - 提案:consume-review-output 在 JSON 合法但缺顶层 snapshotHash 时给出字段级错误；不放宽 clean 条件。
-- `product-gate-src-persist-helper-false-positive` **src/ 整树当 UI 路径会把 persist helper 搬运误判成产品门** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: open
+  - 备注:[decided:2026-08-24] track consume 有一致性检查，缺字段级报错未单独证实。升格条件：再出现 1 次缺 snapshotHash 且错误信息不含字段名。
+- `product-gate-src-persist-helper-false-positive` **src/ 整树当 UI 路径会把 persist helper 搬运误判成产品门** — 出现 2 次,首见 2026-08-19,最近 2026-08-21,status: landed
   - 现象:本轮 #229 feat(persist) 只搬 src/lib/writeRetryQueue.ts 测试钩子(__dump/__reset 等)，被 uiPaths 的 src/ 前缀打成 product-gate。语义判定后按已有功能补充放行，未 hold。与 #183/#177 同根因。
   - 提案:若误报变多，再评估给 uiPaths 加 src/lib/ 排除或把 persist 列车标 lightTypes；本轮只观察。
-- `sync-failed-stale-tracking-branch-deleted-upstream` **auto 巡审 checkout 停在已删远程分支导致 pull --ff-only 整轮 sync-failed** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `sync-failed-stale-tracking-branch-deleted-upstream` **auto 巡审 checkout 停在已删远程分支导致 pull --ff-only 整轮 sync-failed** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
   - 现象:本轮本地 HEAD 在 fix/roster-empty-identity-not-miss，远程 ref 已不存在；origin/main 已前进 cd4cd0e..b9e2c14。fail-closed 正确跳过审查，但每轮都会空转直到有人把 checkout 切回默认分支。
   - 提案:auto 开轮若 tracking 分支在远端已消失，先切到 origin/<defaultBranch> 再 ff-only；切不过仍 sync-failed，不审不写 GitHub。
-- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 prepare.mjs：远端 tracking 已删且工作区干净才切默认分支；脏树只标 syncFailed 不 checkout。merge ff415c7。
+- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
   - 现象:PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。
   - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
-- `auto-review-agent-no-return-before-round-end` **阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。
+- `auto-review-agent-no-return-before-round-end` **阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
   - 现象:PR #221 已完成 preflight/task/segment 投递并 spawn isolation worktree 审查，但本轮结束前未收回执。按 fail-closed 不得 approve/clean。建议给阶段二审查加硬超时，超时写 invalid 回执并进汇总，避免空等熔断后无机器终态。
   - 提案:consume 前若审查会话超时，主流程写 non-clean 回执(reason=review-agent-timeout)并 skip，不把「没跑成就沿用上次清白」开口留下。
-- `neg-evidence-anchor-mismatch-patch` **审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: open
-  - 现象:PR187 本轮：审查 agent 对同一实验（run-vr3, exitCode 1, 4 failed）写了两处 outputAnchor——verificationRuns 里登记简短汇总行，negativeEvidence 里改写成含 FAIL 细节的长文本，机器一致性校验按逐字比对判 invalid。主 agent 手工对齐后重消费通过。根因：rro-1 契约要求 command/outputAnchor 与被引用 run 逐字一致，但审查 agent prompt 里该要求埋在字段级形状一节，agent 自然倾向在 negativeEvidence 里写更详尽的失败细节。两次消费中的第一次 invalid 纯属格式损耗（重消费 attempts 计数被清，浪费一轮机器判定）。
-  - 提案:在 build-review-task.mjs 生成的 prompt.md 字段级形状节，为 negativeEvidence 的 command/outputAnchor 加一句显式提示：「直接复制被引用 run 的对应字段值，不要改写或增补细节；失败细节放 negativeOracle/observedSignal 之外的说明字段（如 modelVerdictNote）」。改 prompt 模板属于最小自洽改动，可下轮按 8.3 规则自动落地。
-- `product-gate-src-lib-false-positive` **src/lib 纯技术文件命中 uiPaths 会误亮产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 SKILL：超时未交 ./rro-1.json 写 non-clean 回执 reason=review-agent-timeout，禁止沿用上次清白。merge ff415c7。
+- `product-gate-src-lib-false-positive` **src/lib 纯技术文件命中 uiPaths 会误亮产品门** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: landed
   - 现象:PR #177 只改 src/lib/writeRetryQueue.ts（类型+纯函数搬运、无调用方、无界面），因 uiPaths 含 src/ 被判 product-gate。语义上已放行，但每轮都要人工定性。
   - 提案:评估把 persist/lib 纯逻辑路径从 uiPaths 收窄，或加 uiExcludePaths 覆盖 src/lib/、src/store/ 等非界面目录，避免 feat+src/lib 反复进产品门。
-- `isolated-reviewer-tmp-write-blocked` **隔离 worktree 审查席写不了 /tmp，任务不该把 rro-1 指到仓外** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: open
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 xindong/mivo-canvas-plugin#265 merge 25573c46；uiExcludePaths 只豁免 persist 前缀（writeRetryQueue/persist/serverPersist/canvasPersist/chatPersist），MarkdownPreview/canvasAppearanceStore 仍走产品门。老仓跟随不改。不再重提除非新路径误报。
+- `isolated-reviewer-tmp-write-blocked` **隔离 worktree 审查席写不了 /tmp，任务不该把 rro-1 指到仓外** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: landed
   - 现象:PR 170 审查席 isolation=worktree 时 heredoc 写 /tmp/review-pr-170/rro-1.json 被沙箱拒绝；后又误删整个 /tmp/review-pr-170，task/preflight 一起没了。最终改写进 worktree 内 rro-1.json 才交卷。
   - 提案:阶段二任务模板把输出路径改成隔离 worktree 内相对路径（如 ./rro-1.json），禁止指向 /tmp；主 agent 从 worktree 拷出再 consume。
-- `ci-state-race-scan-to-process` **扫描判 review 的候选在处理时 CI 已失败，靠前置 gate 复核兜住** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 / SKILL.md:1181 强制隔离 worktree 内相对路径（./rro-1.json），禁止 /tmp。merge ff415c7。
+- `ci-state-race-scan-to-process` **扫描判 review 的候选在处理时 CI 已失败，靠前置 gate 复核兜住** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: landed
   - 现象:PR167 扫描时（10:41 前）CI 尚未完成故 auto.action=review，处理时实测 head 上 lint+tsc+unit 已失败（5 处单测断言）。本轮靠 3.5 前置 gate 第 4 条人工复核拦下，未造成误审误合。候选方案：context.mjs 扫描时对 statusCheckRollup 含 IN_PROGRESS/QUEUED 的候选延后分类或标注 ci-pending-race，减少这类靠 agent 复核兜底的窗口。
-- `confirm-approved-then-new-push-needs-release-marker-hint` ** admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 context.mjs：gate 已过后只对 requiredPending 标 ci-pending-race，可选 pending 不永久 skip。merge ff415c7。
+- `confirm-approved-then-new-push-needs-release-marker-hint` ** admins 在 issue 评论「确认」+ 对旧 head Approve 后作者又推新 head,机器侧仍拦但 PR 上无任何可见提示告诉维护者差什么** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
   - 现象:本轮 #147/#159 同型:#148/#160 里 PraiseZhu 都写了「维护者确认:通过,已在当前 head X Approve」,但作者随后又推了新 commit,head 绑定规则(设计正确)使旧确认作废;issue 侧没有跟踪 PR head,维护者以为自己已确认过,PR 却持续 awaiting-discussion。机器判定没问题,缺的是一条对维护者的定向提示:门因 head 前移重新亮了,需要对新 head 重发确认。属文案/通知层改进,不改任何 gate 语义。
   - 提案:在 auto 轮检测到「issue 有确认评论 + 曾有 admins Approve + 当前 head 晚于最后一次确认且 unconfirmedKinds 非空」时,向 owner 汇总加一行定向提示(或复用 notify-sync-alert 类低频出口),说明该 PR 只差对新 head 重新确认;不新增 GitHub 写操作。
-- `signoff-regate-after-push-no-renotice` **门类 hold 在作者 push 后重新亮时无 renotice，维护者对旧 head 的确认静默失效** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: open
+  - 备注:[decided:2026-08-24] track 与 signoff-regate-after-push-no-renotice 同根。升格条件：同上。
+- `signoff-regate-after-push-no-renotice` **门类 hold 在作者 push 后重新亮时无 renotice，维护者对旧 head 的确认静默失效** — 出现 1 次,首见 2026-08-18,最近 2026-08-18,status: tracked
   - 现象:PR #159: admins 在讨论 issue #160 确认并在 head 4cd7e04 Approve(security 门); 作者随后推 748f4ab 并 dismiss 重审, 门按设计重新亮(Approve 绑定 head)。signoff-hold alreadyHeld 幂等跳过(renoticeSkipped=label-already-on), 无任何渠道告知 admins 需对新 head 重新确认, PR 只能靠人工发现。#147 同型(rules 门, 确认绑定旧 head d29b823, 当前 3adf898)。
   - 提案:同门类在新 head 上重新亮、且该门类曾存在旧 head 的维护者确认时, 向讨论 issue 追加一条 @admins 提醒(或经私聊出口), 让『需重新确认』可见。属新增对外写操作, 不放宽任何 gate, 按 8.1 归 proposal 等维护者拍板。
-- `github-graphql-503-intermittent-20260818` **GitHub GraphQL 503 间歇故障导致 scan/探测失败,auto 轮重试成本高且可能误升级 signoff-hold-unavailable** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 备注:[decided:2026-08-24] track 对作者已有 renotice，缺对 admins 定向提示。升格条件：再出现 1 次维护者以为旧确认仍有效。@admins 是扩权另案。
+- `github-graphql-503-intermittent-20260818` **GitHub GraphQL 503 间歇故障导致 scan/探测失败,auto 轮重试成本高且可能误升级 signoff-hold-unavailable** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: landed
   - 现象:本轮 gh graphql 通道间歇 503(REST 正常):--scan-all 部分候选失败、#147 hold 探测两次失败被 F3 升级为 signoff-hold-unavailable(人工介入类),但人工跑同款 dry-run 立即成功(invoked=true ok=true alreadyHeld=true),证明是网络瞬态而非调用点损坏。agent 侧靠多轮 sleep+重试兜住,累计耗时 ~20 分钟。可考虑:spawnScriptJson 对 503 加有限指数退避重试,或 F3 探测失败时区分网络类错误与模块缺失类错误。
-- `merged-mid-review-head-races-clean-receipt` **审查期间 owner 网页合并 PR，clean 回执落盘晚于合并，审计链缺合并者视角** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.mjs run() 对 gh 遇 502/503/429 有限重试。merge ff415c7。
+- `merged-mid-review-head-races-clean-receipt` **审查期间 owner 网页合并 PR，clean 回执落盘晚于合并，审计链缺合并者视角** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: landed
   - 现象:PR #139（mivo-canvas-plugin，2026-08-17）：阶段二独立审查进行中（约 06:19 开始），owner 于 06:44 经 GitHub 网页 squash 合并（mergedBy=PraiseZhu，squash 单亲 commit）；审查 agent 06:48 完成后 consume-review-output 判 clean、回执正常落盘，pre-merge-check 才发现 state=MERGED。本轮无害（审查结论 clean 与合并一致），但同类竞态下若审查判 dirty，则问题已进 main、只剩事后发现一条路。proposal：context.mjs scan 后、consume-review-output 前无锚点检查 head 变化；可在 consume-review-output 对已 MERGED 的 PR 落回执时附 mergedAfterReviewStart 标记，或 pre-merge 阶段对 merged PR 出 counterfactual 警示行进汇总。属流程可观测性改进，非扩权。
   - 提案:consume-review-output.mjs 写回执前查 PR state，非 OPEN 时在回执附 state-at-write 字段并要求汇总显式提示『合并先于审查完成』
-- `scan-race-new-pr-window` **scan-all 落盘时间点与 GitHub PR 创建存在竞态,本轮新开 PR(#136 比 scanState 早 4 秒)要靠 agent 自查补入** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 consume --verify-live-head 写 stateAtWrite；SKILL 要求非 OPEN 则 skip 并汇总「合并先于审查完成」。merge ff415c7。
+- `scan-race-new-pr-window` **scan-all 落盘时间点与 GitHub PR 创建存在竞态,本轮新开 PR(#136 比 scanState 早 4 秒)要靠 agent 自查补入** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: landed
   - 现象:本轮 PR #136 createdAt=2026-03:03:54Z,scanState.savedAt=03:03:50.630Z——context.mjs --scan-all 的候选拉取发生在 #136 创建之前,候选数 1 不含 #136。靠主 agent 会话中途 gh pr list 自查发现并补扫。若 agent 不自查,该 PR 要等下一轮 cron 才进分类。proposal:扫描后用 createdAt 下界(如 scan 启动时刻)再查一次 gh pr list,把窗口内新开 PR 显式补入本轮处理;或在 SKILL 6 阶段 1 写明'扫描完成后 agent 须再跑一次 gh pr list 对照 candidates 数'。
-- `skillsync-preview-dist-dirty` **skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来** — 出现 1 次,首见 2026-08-17,最近 2026-08-17,status: open
-  - 现象:prepare.mjs 的 skillSync pull 报 'local changes would be overwritten'：preview-dist/{EVOLUTION.md,dist_manifest.json,evolution/ledger.json} 有未提交本地改动，远端 behind=7 拉不进。自动化不应代为 commit/stash 用户改动（安全边界），需人工到 skill 仓处理这 3 个文件后自同步恢复。不处理则每轮重现，巡审可能持续用旧版 skill 规则审新 PR。
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 context.mjs --scan-all 启动后再 list 一次补扫未见过的非 draft。merge ff415c7。
 - `auto-merge-admin-trust-strutural-block` **结构性 BLOCKED 的 admin-trust bypass 合并路径已稳定运行** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: tracked
   - 现象:PR #617 走 admin-trust 路由合并:pre-merge-check 确认 structuralBypassReady,回执 verdict=clean,作者在 admins 名单。已连续多轮正确运行,可以考虑在 EVOLUTION.md 中登记为成熟路径。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+- `review-head-drift-after-review` **阶段二审查期间 head 被 push 时无显式核对检查点** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: landed
   - 现象:auto 轮 #610 实测:扫描拿 head=5e0cc6c0 构建任务,审查 agent 执行期间作者 push d803f98f(修复了审查即将发现的 P1)。旧 snapshot 的 dirty 回执对新 head 不适用,主 agent 靠审查输出 fixGuidance 透露才察觉漂移,手动重建任务重审后 clean 合并。机器兜底链条(pre-merge receiptGate head 绑定 + merge-pr --match-head 原子护栏)工作正常,但 SKILL 3.5/4 无'消费回执前 gh pr view 核对 headRefOid 是否仍等于审查 snapshot'的显式检查点——漏核对会基于旧快照向作者发打回,违反 5.2 '不重复历史上已解决且已验证的意见'纪律,浪费一轮往返。
   - 提案:SKILL.md 第 4 节 consumer 调用前加一句:主 agent 收到审查输出后先 gh pr view --json headRefOid 核对,与任务 snapshot 不一致则对新 head 重建 task/preflight 重审(旧快照回执保留作历史),一致才喂 consume-review-output。
-- `security-hardhit-fakekey-test-stub` **测试文件中的 FAKEKEY 测试桩(sk-FAKEKEY-*/xoxb-FAKEKEY-*)命中敏感内容硬门,12 处全量打回/投递跟进会话** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: open
+  - 备注:[decided:2026-08-24] landed-effective 与 stale-scan-head-before-write 同修：consume 前核对 head，不一致则重审。Review-PR#29 merge ff415c7。
+- `security-hardhit-fakekey-test-stub` **测试文件中的 FAKEKEY 测试桩(sk-FAKEKEY-*/xoxb-FAKEKEY-*)命中敏感内容硬门,12 处全量打回/投递跟进会话** — 出现 1 次,首见 2026-08-10,最近 2026-08-10,status: landed
   - 现象:PR #600 的 12 处硬命中全部位于 cindyplugin/src/__tests__/debugLogRedact.test.ts,内容为 sk-FAKEKEY-*/xoxb-FAKEKEY-* 测试桩(已人工核实非真实凭证),但硬命中门 fail-closed,无 allowPaths 豁免,整 PR 被打回走 fix-handoff。测试脱敏逻辑必须用假凭证形态的输入,属结构性误报。
   - 提案:维护者评估:①把 cindyplugin/src/__tests__/ 加入 sensitiveContent.allowPaths(按 3.1 的既有误报治理通道);或②hard pattern 增加 FAKEKEY 字面量识别(排除 sk-FAKEKEY/xoxb-FAKEKEY 形态);或③维持现状(测试桩继续走打回+跟进会话流程,成本是每轮一次投递)。
+  - 备注:[decided:2026-08-24] landed-effective 插件仓 #265 allowPaths 加 cindyplugin/src/__tests__/ 与 src/__tests__/；硬正则不豁免 FAKEKEY 字面量。Review-PR#29 夹具改为运行时拼接。
 - `task-base-must-be-merge-base` **阶段二任务构建的 base 必须用 merge-base(或 gh baseRefOid),不能用最新 main tip** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed
   - 现象:本轮 #599 首次审查误传了 git rev-parse origin/main 的最新 tip 作为 base(#598 合并后 main 前移),base..head 线性差异把 main 侧已合入的 waitForFunction 修复误判成 PR 回退,产出 3 条伪 finding、多跑一轮重审。gh pr view 返回的 baseRefOid 与 merge-base 一致;base 分支在其生命周期内前进过(合并了其它 PR)时,用最新 tip 会引入 base 侧伪差异。审查 agent 已在 verificationGap 自查出 merge-base 口径但仍在 findingFamilies 报了 base 侧差异,两个口径内部不一致。
   - 提案:SKILL 3.0.1/build-review-task 文档明确:--base 必须传 merge-base(或 gh pr view 的 baseRefOid),并在任务 prompt 中提醒审查 agent:base..head 差异中非 merge-base 净贡献的部分不得报 finding
   - 备注:[decided:2026-08-10] 两半均已落地:①文档半由 commit 0381757c(2026-08-09)在 SKILL.md 3.0.1/4 节明确 --base 取 baseRefOid/merge-base;②prompt 半由 commit 1087130(2026-08-10)在 build-review-task.mjs prompt 抬头补 base 分叉点口径——显式声明只审本 PR 净贡献、base..head 中非净贡献部分不得报 finding、归属拿不准时记 verificationGaps。#599 的 3 条伪 finding 根因(审查 agent 侧无口径约束)已闭合
-- `preflight-timeout-arg-position-rule` **waitForFunction timeout 写第二个位置参数被静默忽略——现有 preflight 只查 async 谓词,查不到 timeout 参数位置** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: open,commit `15ca5d6`
+- `preflight-timeout-arg-position-rule` **waitForFunction timeout 写第二个位置参数被静默忽略——现有 preflight 只查 async 谓词,查不到 timeout 参数位置** — 出现 1 次,首见 2026-08-09,最近 2026-08-09,status: landed,commit `15ca5d6`
   - 现象:2026-08-09 mivo-canvas #598:stamp-overlap.mjs:181 新增 waitForFunction(pred, {timeout:5000}),Playwright 签名 waitForFunction(pageFunction[, arg, options]),第二位置是 arg,超时退化为默认 30s。建议 review-preflight 增加确定性规则:检测 waitForFunction 第二位置参数是对象字面量且含 timeout 键 → 机器打回。需配零误报 fixture,列入预扫描规则开发。
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.preflight-rules.mjs 增加 waitForFunction 第二参数 timeout 机器打回。merge ff415c7。
 - `escape-candidate-issue-ref-blocks-merge` **逃逸候选引用 issue(如 Closes #424)时,审查判 yes 必然登记失败(originHead 取不到)→ 整轮 invalid,同 head 重放永久 blocked** — 出现 1 次,首见 2026-08-07,最近 2026-08-07,status: landed,commit `8c8e23168fd487473bc8dc48294efcc20d0e4bda`
   - 现象:PR #544 body Closes #424,#424 是 issue 不是 PR(gh pr view 424 失败: Could not resolve to a PullRequest)。extractEscapeCandidates 有意多收(含 issue 号引用),但 consumer 登记 pending-fix-merge 时对 verdict=yes 的候选现场取 gh pr view <referencedPr> --json headRefOid,issue 引用拿不到 head → hazardRegisterFailed → invalid。审查 agent 判 yes 语义成立(#424 描述的隐式环境依赖确由更早合并 PR #401 引入),但登记产物 originPr=424 本身不成立。同 head 重放候选集不变、判定不变 → 永久 blocked。本次未走 seam(REVIEW_PR_ORIGIN_HEAD_MAP 为测试专用)、未改答卷,按 fail-closed 处置,PR 本轮不合并。修法候选(均涉 gate 行为或新增 gh 查询,按扩权类待拍板):a) 登记层对 non-PR 引用跳过登记并记 unresolved 进汇总;b) 候选提取时区分 issue/PR(需 gh api 探测);c) prompt 明示候选可能引用 issue,判 yes 须绑定真实 origin PR。
   - 备注:[decided:2026-08-09] 已由 commit 8c8e23168fd487473bc8dc48294efcc20d0e4bda 覆盖(consume-review-output.mjs 取 head 失败时先查 issue,issue 则跳过登记记 skippedHazards)
@@ -113,15 +134,17 @@
   - 现象:2026-08-05 再观测:#519/#520/#521 为 PraiseZhu 自有 PR、CLEAN(无结构性 BLOCKED)、approvalBasis=none,admin-trust 路由只在 structural-check 时才可达,selfFixAuthors 留空故 selfMerge 也不可用——本轮按 depends-on-#518 跳过;#518 打回后若列车重推,这些 CLEAN 自有 PR 即使取消依赖也没有自动合并出口,与既有 open 提案同根因
   - 提案:两条路,均属扩权类须 owner 拍板:(A) 把 owner 加进 pr-rules.json 的 selfFixAuthors,启用现成的 selfMergeAvailable admin self-merge 路径(条件仍要求零 P0/P1、无冲突、thread 全 resolve);(B) 为 structural-check 的 admin bypass 增加「viewer==author 时豁免 reviewDecision=APPROVED」的例外。倾向 A——A 复用已有且已被审计过的路径,B 会放宽一条通用安全条件。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `ownpr-comment-pushback-stale-dedup` **ownPr 的 COMMENT 事件打回不被 hasStalePushback 识别,stale 去重指纹漏掉** — 出现 2 次,首见 2026-08-04,最近 2026-08-04,status: open
+- `ownpr-comment-pushback-stale-dedup` **ownPr 的 COMMENT 事件打回不被 hasStalePushback 识别,stale 去重指纹漏掉** — 出现 2 次,首见 2026-08-04,最近 2026-08-04,status: landed
   - 现象:PR #464 本轮 scan 分类为 pushback-format(isSkip=false),但该 PR 是 ownPr,GitHub 422 禁止自打 REQUEST_CHANGES,4 条格式打回全是 COMMENT 事件(最后一条 05:30 明确指向当前 head 2ffcca2),作者此后无新 commit——按 SKILL 3.2 stale 去重本应 skip。context.mjs 的 pushbackDates 只收集 CHANGES_REQUESTED review + issue-comment 形式 reviewerPushbacks,COMMENT 事件的 review body 两个来源都抓不到,导致 ownPr 打回后每轮都会被重新归类为 pushback-format,靠主 agent 手工查 review 历史才跳过。建议:把 state=COMMENTED 且 body 命中 pushback 模式的 review 也计入 pushbackDates(或对 ownPr 降级处理)。
+  - 备注:[decided:2026-08-24] landed-effective context.mjs:1241-1254 已把 ownPr+viewer COMMENTED 计入 pushbackDates（2026-08-09 #464）。代码已在 main，台账补记。
 - `ownpr-unresolved-thread-deadlock` **本流程账号自己的 PR 挂着未 resolve thread 时,没有任何人会去 resolve,永久卡住** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:465(2 条)/470(1 条)都是 ownPr=true 且作者在 staleAuthorReminder.exemptAuthors 里,notify-author-resolve 直接 exempt-author 跳过,selfFixAuthors 为空所以也不投递跟进会话。结果这两条会每轮被判 skip-gate 并原样留到下一轮,收件人是本流程账号自己,无人消费。
   - 提案:两条路任选:① 把该账号加进 selfFixAuthors,让 5.4 跟进会话去 resolve/修;② 给 ownPr + 未 resolve thread 这一组合单独一条汇总提示,让 owner 每轮显式看到"这几条要你手动点 Resolve"。①改名单属扩权类,②只改汇总文案。两条都不自动落地,等 owner 选。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `stale-scan-head-before-write` **scan-all 的 head 可能在写操作前就过期,流程里没有确定性的复核步骤** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: open
+- `stale-scan-head-before-write` **scan-all 的 head 可能在写操作前就过期,流程里没有确定性的复核步骤** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: landed
   - 现象:本轮 6 个候选里 2 个(464/465)的 head 在 --scan-all 落盘后 ~8 分钟内被新 push 顶掉;464 从 conflict 变成 MERGEABLE、465 从 skip-gate 变成 CLEAN。SKILL 3.5 门 1 要求 head 变化就重新拉元数据,但阶段三只在合并前有 pre-merge-check 复核,打回/评论类写操作没有对应的确定性复核步骤,靠主 agent 自觉比对。本轮是手工比对才发现,否则会对着过期 head 发打回(内容还会引用已经不存在的冲突)。
   - 提案:阶段三在任何 GitHub 写操作(review/comment/issue)前,对该候选跑一次轻量 head 复核(可复用 context.mjs --scan 单 PR 或新增 --verify-head),head 变化即把该候选退回阶段一重新分类。放置位置需 owner 定:它与 3.5 门 1、以及合并侧已有的 pre-merge-check 有职责重叠,合并成一处还是各写一处需要拍板,故不自动落地。
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29：SKILL 阶段三写前 gh pr view headRefOid；consume --verify-live-head 可选。merge ff415c7。
 - `dependabot-security-path-permanent-skip` **dependabot PR 必然命中 securityReviewPaths(package.json/lock)，每轮永久 skip 且无停滞升级机制** — 出现 1 次,首见 2026-08-04,最近 2026-08-04,status: tracked
   - 现象:PR 440 (app/dependabot) 每轮判 skip-security-review。这不是偶发——依赖升级 PR 的定义就是改 package.json / package-lock.json，而这两个路径在 securityReviewPaths 里，所以该类 PR 100% 永不会被自动审、也永不会被催办(dependabot 不是人，模板 B/C 都不适用)，只能靠 owner 每轮从汇总里自己看见。与 SKILL 5.7 已登记的「非 required 第三方 bot 长期缺席无升级」是同一类缺口。
   - 提案:给 skip 类结论加「同一 PR 同一 skip 原因连续 N 轮」计数(可复用 convergence-state 的落盘模式)，达阈值时在汇总里从普通 skip 行升格为显著提示，或经 summaryBroadcast 定向提醒一次。只改可观测性与汇总呈现，不放宽 securityReviewPaths 本身。
@@ -130,15 +153,14 @@
   - 现象:目标仓库累积 8 个 worktree-agent-<agentId> 分支，其中 7 个已无对应 worktree。fix-worktree-cleanup.mjs 对它们判「查不到对应 PR,来历不明不动」——该保守规则对人工分支是对的，但这类分支恰恰是本 skill 每轮派发审查 agent 时宿主自动建的，命名可确定性识别，属自产垃圾。按每轮 1 个的速率线性增长。
   - 提案:在 fix-worktree-cleanup.mjs 增一条独立回收规则：分支名匹配 ^worktree-agent-[0-9a-f]+$ 且当前 git worktree list 里无任何 worktree 指向它、且分支 tip 已包含在默认分支或为空占位 → 回收。与既有「查不到对应 PR 不动」规则并列，不改后者语义。涉及分支删除行为，须 owner 拍板后落地。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `mivo-outbound-notify-channels-all-inert` **mivo 仓对外通知面为零：提醒名单全豁免 + summaryBroadcast 未配置，被卡 PR 无任何外发信号** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
-  - 现象:本轮 9 候选中 4 个卡在作者侧可自解原因（3 个 DIRTY 冲突、1 个 2 条 thread 未 resolve），提醒脚本 4 次调用全部返回 exempt-author：staleAuthorReminder.exemptAuthors 恰好等于本仓全部人类作者集合（3 人），而 notify-author-resolve 的 thread/conflict 两种模式与 remind-stale-author 都查同一份名单，等于三条提醒通道在本仓整体失效。同时 summaryBroadcast 未配置，每轮汇总也不主动推送。两者叠加的结果是：PR 可以长期卡着而没有任何外发信号，只有人主动去看 PR 列表才会发现。
-  - 提案:由 owner 定：① 若确实不想被提醒机器人打扰，现状可接受，但应知道这是有意为之而不是配置漏了；② 若希望冲突/未 resolve 这类硬卡点仍有提醒，可把 exemptAuthors 收窄为只豁免停滞催办（idle 私聊），让 conflict/resolve 两种确定性卡点仍发一次公开评论——需拆 exemptAuthors 为分通道名单，属名单改动，不自动落地；③ 配上 summaryBroadcast.command，至少让每轮汇总主动推到 owner。
-- `runlog-lockreleased-always-false-ordering` **run-log 的 lockReleased 按现行顺序永远只能记 false** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+- `runlog-lockreleased-always-false-ordering` **run-log 的 lockReleased 按现行顺序永远只能记 false** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
   - 现象:SKILL 6.1 要求「每轮结束时先把机器可读 JSON 落盘」,而 7.4 释放锁排在其后。落盘时刻锁必然仍持有,故 schema 里的 lockReleased 在正常路径下恒为 false——本轮实测即如此(落盘 lockReleased:false,随后 cleanup.mjs 返回 lockReleased:true)。该字段当前不具备审计价值,反而会让事后查 runs.jsonl 的人误以为每轮都漏放锁。
   - 提案:二选一,属设计取舍故不自动落地:① 把 run-log 落盘移到 7 收尾释放锁之后(但 6.1 现有措辞把落盘定在自进化复盘之前,需一并调整);② 保留顺序,把字段语义明确为「本轮是否已安排释放」并在 SKILL 6.1 注明,或改由 cleanup.mjs 回写该字段。另:cleanup.mjs 必传 --original <分支名>,SKILL 7.4 的示例只写了 --token,缺参数会直接 ok:false,建议补上。
-- `mass-identical-format-pushback-across-stacked-chain` **同一 stacked 链上 N 个 PR 同因格式打回时,逐个发相同评论是噪声** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: open
+  - 备注:[decided:2026-08-24] track 文档/顺序问题，run-log 源码已无该字段写入。升格条件：SKILL 仍要求该字段且再误导一轮汇总。
+- `mass-identical-format-pushback-across-stacked-chain` **同一 stacked 链上 N 个 PR 同因格式打回时,逐个发相同评论是噪声** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: tracked
   - 现象:本轮 23 个候选里 19 个因完全相同的原因被格式打回(Description 缺 变更说明/提交前自检/备注),其中 18 个属同一作者的两条 stacked 链(pr2/297-a1..a6、b2..b12、t1f)——这批 PR 是从旧基线整链 rebase 重建的,统一沿用了 2026-07-26 前的旧四段模板结构。SKILL 现有逻辑逐 PR 各发一条,作者一次收到 19 条正文近乎逐字相同的评论;信息量等于 1 条,噪声是 19 倍。
   - 提案:auto 模式阶段 2 计划时,把 formatIssues 完全相同、且经 3.6 判定属同一条 stacked 链的候选归并:链顶(base=默认分支的那个)发完整打回,其余各发一条一句话指回链顶的短评论(仍各自留痕、仍各自计 P1、不放宽任何 gate)。属 automatable-gap(不新增 GitHub 写操作类型、不放宽 gate、不碰名单),但涉及通知投递管线改造,超出「最小自洽」范围,故记提案不当轮自动落地。
+  - 备注:[decided:2026-08-24] track 无 stacked 归并代码。升格条件：再出现同链 ≥5 条相同格式打回。不放宽 gate。
 - `ui-evidence-notice-changelog-data-file` **public/changelog.json 触发 UI 证据提醒属噪声,应进 uiExcludePaths** — 出现 1 次,首见 2026-08-03,最近 2026-08-03,status: landed
   - 现象:本轮 #468(docs 类,仅改 public/changelog.json + 一个 docs 文件)被判 uiEvidenceMissing=true,发出「建议补截图」提醒。changelog.json 是纯数据补录,自身无视觉设计可审,要求截图对作者无信息量。同类噪声会在每次 changelog 补扫 PR 上重现(本仓有每日 changelog 自动任务)。
   - 提案:在目标仓库 agent-use/docs/pr-rules.json 的 uiExcludePaths 增加 public/changelog.json(或 ^public/changelog\.json$)。注意:该配置文件本身命中 securityReviewPaths(^agent-use/),不可由本流程自动改,须 owner 人工落地;Skill 侧无需改动。
@@ -147,9 +169,10 @@
   - 现象:本轮 fix-worktree-cleanup.mjs --scan 报 skipped=8，全是「查不到对应 PR，来历不明不动」，其中 7 条是 worktree-agent-* 命名——与阶段二审查 agent 的隔离 worktree 分支命名一致，高度疑似历史轮次未清理干净的残留。第 7 节只在 SKILL 文字里要求主 agent 移除本次创建的 review worktree，没有确定性脚本兜底，任一轮异常退出（锁丢失、宿主中断）就永久遗留，且这些残留每轮都出现在 skipped 噪音里。
   - 提案:新增一个只针对 review worktree 的清理脚本（或扩展 fix-worktree-cleanup.mjs 的一个新模式）：按托管目录 + worktree-agent-* 命名 + 无对应 open PR + 无未推送 commit + 不含任何 active session cwd 四重条件回收；因涉及自动删除 git 分支与目录，有误删风险，先请 owner 拍板边界再落地，不当轮自动改。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `ui-evidence-notice-scope-on-skipped-candidates` **SKILL 3.2 未说明被 skip 的候选是否要发 UI 证据提醒评论** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: open
+- `ui-evidence-notice-scope-on-skipped-candidates` **SKILL 3.2 未说明被 skip 的候选是否要发 UI 证据提醒评论** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: landed
   - 现象:本轮 #396/#397/#409(均 uiEvidenceMissing=true、作者非本流程账号)因 ci-pending / ci-failed / 依赖未合被 skip,scan 已算出 notice 文案,但 SKILL 3.2 把提醒写在阶段一格式门里、§6 阶段 1 又只为 skip 候选列了 notify-author-resolve 一种评论动作,两者未交待 skip 候选该不该发。本轮按保守口径未发(只对进入处理的 #395/#401 发)。
   - 提案:在 SKILL 3.2 补一句边界:被 skip 的候选本轮不发 UI 证据提醒,等它进入处理轮次再发(理由:提醒无时效价值,且避免同一作者同轮收多条噪音)。属收窄不属扩权,可自动落地——本轮因首周观察期只记提案,未改 Skill。
+  - 备注:[decided:2026-08-24] landed-effective SKILL.md:734-736 已写「被 skip 的候选本轮不发 UI 证据提醒」。
 - `bypass-structural-block-auto-vs-interactive-doc-conflict` **SKILL 与 pre-merge-check.mjs 对 bypass-structural-block 是否属 auto 可执行动作口径冲突** — 出现 1 次,首见 2026-08-01,最近 2026-08-01,status: tracked
   - 现象:SKILL 5.3 与 6.1 把 bypass-structural-block 当成 auto 模式的非 skip 落地动作(context.mjs 也返回 isSkip:false),但 pre-merge-check.mjs 的 note 明确写「交互模式可经用户确认走 admin bypass 合」。本轮 PR #394 命中该分支,两处口径不一致时只能自行取舍,是判定不确定性。
   - 提案:文档口径统一:要么 SKILL 5.3 补一句「auto 模式在独立审查零 P0/P1 且 structuralBypassAvailable=true 时可直接 admin bypass 合」,要么 pre-merge-check 的 note 去掉「交互模式」限定。倾向前者(与 context.mjs 的 isSkip:false 一致)。归为提案而非自动落地:改的是合并授权口径,沾扩权面。
@@ -182,9 +205,6 @@
   - 现象:本轮 2 个候选(#358/#361)由 dependabot 提交,只改 package.json/package-lock.json,必然命中 securityReviewPaths → skip-security-review。该类 PR 每周多次,人工队列会持续积压。
   - 提案:属扩权类(放宽安全边界),不自动落地。可选方向:① 保持现状,由 owner 定期人工过;② 为 dependabot 作者 + 仅 lockfile/依赖清单改动 + CI 全绿 的组合单独配一条窄豁免,但仍需 owner 拍板是否接受供应链面自动合并。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `skills-repo-diverged-sync-broken` **skills 仓 main 与远端 diverged，Skill 自同步每轮都失败** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
-  - 现象:prepare.mjs 的 skillSync pull 报 'Not possible to fast-forward'，evolution-note 的 push 报 non-fast-forward（本地落后远端）。后果：远端 skill 更新拉不下来、本地台账推不上去，每轮都静默失败（仅进摘要）。
-  - 提案:需维护者人工在 skills 仓（/Users/praise/AI-Agent/Claude/capabilities/source/cindy-lizi-skills）reconcile main 与 origin/main（merge 或 rebase 后再 push），恢复双向同步。Skill 侧不自动 merge/rebase——改写历史风险大于收益，保持 best-effort 报错即可。
 - `self-authored-pr-no-followup-channel` **自有 PR 卡住时既不催也不自动修，零跟进通道** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:本仓 selfFixAuthors=[]，staleAuthorReminder.exemptAuthors 含唯一作者。结果：卡未 resolve thread / CI 失败的自有 PR 既不发催办评论(exempt-author)，也不投递跟进会话(selfFix=false)，只能靠 owner 自己看汇总。本轮 5 个候选落在该盲区。
   - 提案:扩权类，需 owner 拍板：是否把该账号纳入 selfFixAuthors，让卡点自动投递跟进会话修到可合并。纳入即新增对自有 PR 分支的自动写操作，不自动落地。
@@ -201,9 +221,10 @@
   - 现象:运行环境的 NODE_DEBUG=http,https,net,tls(疑似操作者 shell profile 全局设置,与本 skill 无关)会让 context.mjs/notify-*.mjs 等所有走 node 网络模块(gh api 走的是 fetch/GraphQL 助手)的脚本在 stdout 混入海量调试行,把本该是纯 JSON 的输出弄脏,主 agent 本轮靠手工加 env -u NODE_DEBUG 前缀绕过。若未来某次无人值守调度环境恰好继承了同一 shell 配置,会直接破坏 run-log/summary 的 JSON 解析。
   - 提案:评估是否在 lib.mjs 顶部(所有脚本的唯一入口)加一行 delete process.env.NODE_DEBUG,或在 spawnScriptJson/mapPool 派生子进程时显式清空该变量;需先确认 Node 的 util.debuglog 是否在 net/http/tls 模块 import 时已经lazy读取过该值(ESM 静态 import 提升,可能来不及在业务代码执行前清掉),必要时改用 spawn 时传 env 覆盖而非进程内 delete。不确定是否所有部署环境都会复现,故先记提案不自动落地。
   - 备注:[decided:2026-08-09] 落地 commit ac6464f(已核实合入 main 与 origin/main); lastSeen 2026-07-30 早于修复日,复发归零验证通过
-- `nonrequired-thirdparty-ai-check-blocks-merge` **非 required 的第三方 AI 审查 App check FAILURE 与真正 CI 失败同归 ci-failed** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: open
+- `nonrequired-thirdparty-ai-check-blocks-merge` **非 required 的第三方 AI 审查 App check FAILURE 与真正 CI 失败同归 ci-failed** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:本轮 PR 318:分支保护的 9 项 required check 全部 SUCCESS,唯一 FAILURE 来自非 required 的第三方 AI 审查 App(check-run)。SKILL 3.5 第 4 条规定「所有已上报检查」失败即 gate 未过,所以阻断本身是设计如此;问题在归类与汇总口径——blockClass 统一记 ci-failed,owner 从汇总看不出是「构建/测试挂了」还是「AI 审查 App 给了 FAILURE 结论」,两者的处置动作完全不同(前者改代码,后者读意见或决定是否纳入阻断集)。
   - 提案:两个方向请 owner 拍板:① 仅改汇总口径(低风险):在 skip 行文里点出失败 check 是否属 required,不新增 blockClass 值,不改任何 gate 判定;② 放宽阻断集(扩权类,须显式授权):在 pr-rules.json 增加 nonBlockingCheckAllowlist,命中的非 required check 失败不计入前置门。②会放宽 gate,永不自动落地。
+  - 备注:[decided:2026-08-24] track 代码已能分 nonRequiredFailures，blockClass 仍可能记 ci-failed。升格条件：再出现 1 次「required 全绿却因第三方 AI check 被当成 ci-failed 空转」。方向②放宽阻断集是扩权，另案拍板。
 - `changelog-data-file-hits-uipaths` **public/changelog.json 是纯数据文件却命中 uiPaths,每日误报 UI 证据缺口** — 出现 2 次,首见 2026-07-29,最近 2026-07-30,status: landed
   - 现象:mivo 仓 uiPaths 含前缀 public/,uiExcludePaths 为空,于是每日 changelog 补扫 PR 都被判 uiEvidenceMissing=true。该文件是 Change Log 面板的数据源,改动确实会让面板多一行文案,但截图证据价值极低(渲染结构/组件/样式零改动),要求截图属噪音。
   - 提案:在目标仓 agent-use/docs/pr-rules.json 的 uiExcludePaths 增 public/changelog\\.json。注意该文件在 securityReviewPaths(^agent-use/)内,且本仓禁止直推 main,改动须走 PR + 人工审查,不能自动落地。
@@ -216,9 +237,6 @@
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
 - `threads-unresolved-needs-human` **未 resolve 的 review conversation 只能由人点 Resolve,自动化不代劳** — 出现 3 次,首见 2026-07-29,最近 2026-07-30,status: tracked
   - 现象:本轮 #318(2 条)、#324(1 条)、#333(3 条)因此跳过。作者在 exemptAuthors 白名单内,催 resolve 与停滞私聊均按豁免跳过,不发通知。属署名/决策类,只计数观察,不因出现多次就放开代 resolve。
-- `structural-block-detection-omits-copilot-code-review` **structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: open
-  - 现象:lib.mjs 的 CHECK_RULES 只含 required_status_checks / code_scanning / code_quality。mivo-canvas 的 trunk-guard ruleset 同时启用了 copilot_code_review(另有独立的 copilot-review-on-push ruleset),该类型不被采集进 requiredCheckRules,于是 pre-merge-check 对 PR 342 报 structuralAllowlisted=true(只看到 code_scanning/code_quality 两项,均在 allowlist 内),而实际可能还有一个未被 allowlist 覆盖的 review 门在阻塞。该 PR reviews 为空,Copilot 从未提交 review。
-  - 提案:两条待拍板:① 若 copilot_code_review 确实参与 mergeStateStatus 阻塞,把它纳入 lib.mjs 的 CHECK_RULES,让 requiredCheckRules 完整,从而 structuralAllowlisted 在它未进 allowlist 时正确判 false(方向是 fail-closed,更严);② 若它只是 on-push 触发器不阻塞合并,则在 CHECK_RULES 注释里写明为何刻意排除,避免后续复盘反复怀疑。本轮无法从 API 区分两种语义,故不自动落地。
 - `ui-evidence-false-positive-on-nonvisual-src-paths` **uiPaths 用 src/ 前缀判 UI 面,把纯函数/Agent 动词模块也判成 UI,uiEvidenceMissing 误报** — 出现 2 次,首见 2026-07-29,最近 2026-07-29,status: landed
   - 现象:mivo-canvas#325 命中:uiCodeFiles = src/agent/{snapshotRegion,canvasAgentVerbs}.ts 等纯函数与 Agent 动词模块(零 React、零 JSX、零 CSS、零用户可见文案),因 uiPaths 含 'src/' 前缀被判 UI 面 → uiEvidenceMissing=true。本轮因 auto.ownPr=true 抑制了提醒评论,没造成实际噪音;若作者不是本流程账号,就会收到一条要求给纯函数 PR 补截图的评论。审查 agent 独立判定为误报。
   - 提案:目标仓 pr-rules.json 的 uiExcludePaths 增补非可视路径前缀(如 ^src/agent/、^src/model/、^src/render/ 中的纯契约资产),或把 uiPaths 从 'src/' 收窄到真正的 UI 目录(src/app/、src/canvas/、public/、index.html)。属目标仓配置、由 owner 拍板,不自动落地。
@@ -239,9 +257,10 @@
   - 现象:本轮 --scan 在 .claude/worktrees 下发现 2 个托管 worktree(分支 pr-301 / pr-303)与 3 个 worktree-agent-* 分支,全部因 '查不到对应 PR' 跳过;但 gh 实查 PR 301/303 均为 MERGED。原因:judge() 用 gh pr list --head <branch> 解析,只认与 PR headRefName 同名的分支(gh pr checkout 的产物),而 Claude Code 的 Agent isolation:worktree / create-pr 流程建出的分支名是 pr-<N> 或 worktree-agent-<hash>,永远匹配不上,这类 worktree 会无限累积(含 node_modules)。
   - 提案:考虑在 judge() 增加一条确定性解析:分支名严格匹配 ^pr-(\d+)$ 时,用捕获到的编号走 gh pr view <N> 判状态(仍要求非 OPEN + 30 分钟宽限 + 托管目录三重条件);worktree-agent-<hash> 无编号线索,保持不动。注意这是放宽销毁类操作的识别面,按扩权类处理,须 owner 拍板后再落地。
   - 备注:[decided:2026-08-17] track。升格条件:同 fingerprint 再复发即重新上桌;扩权方向须 owner 显式拍板后才可落地。
-- `stale-dm-requires-human-confirm` **模板B停滞私聊在 auto 模式无法自动发送:lark-cli messages-send 的安全约束要求逐条人工确认收件人/内容/身份** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: open
+- `stale-dm-requires-human-confirm` **模板B停滞私聊在 auto 模式无法自动发送:lark-cli messages-send 的安全约束要求逐条人工确认收件人/内容/身份** — 出现 1 次,首见 2026-07-28,最近 2026-07-28,status: tracked
   - 现象:PR #251(zhongxingtian-ai)remind-stale-author.mjs 判定 shouldRemind=true,resolve-author-feishu.mjs 已匹配到收件人(钟行天),但发送私聊唯一可用通道是 lark-cli im +messages-send,其技能文档明确写「Do not send messages without explicit user approval」,与 auto 模式设计的自动私聊(模板B)假设冲突。本轮已跳过发送,只记录判定结果,未私聊。
   - 提案:方案A:为 auto 模式配置一条不要求逐条确认的专用发送通道(如受限 webhook/机器人群公告代替私聊);方案B:模板B在 --auto 下永久降级为仅记录判定+汇总点名,私聊仅在交互模式下由用户确认发送;需 owner 拍板选哪种,不由 skill 自行决定放宽发送工具的安全约束
+  - 备注:[decided:2026-08-24] track 扩权：A 受限通道 / B auto 只记不发，未选。升格条件：owner 选定 A 或 B；禁止无新证据重提「下次再说」。
 - `bot-threads-after-scan-block-merge` **Bot review threads created after scan block merge of approved PRs** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: tracked
   - 现象:PR #449 was approved and ready to merge, but Copilot and Codex bot reviews created new unresolved threads between scan and merge. One thread (Codex DCO) was factually incorrect. Auto mode cannot resolve threads.
   - 提案:Allow auto-resolving bot threads when: (1) thread author is a known bot, (2) the claim is verifiably false (e.g. DCO signed but bot says not), OR (3) thread is a P2/style suggestion that doesn't block. This is privilege expansion (new resolve action).
@@ -311,9 +330,10 @@
   - 现象:PR #413 作者在 body 表格里用 GitHub blob URL 链接了 3 张 .webp 截图（因私有仓库无法内嵌渲染），但 bodyUiEvidenceKinds 仍为空，导致 uiEvidenceMissing=true。实际证据充分，主 agent 判断不发误导性提醒评论
   - 提案:context.mjs 的证据检测增加对 github.com/.../blob/...\.(webp|png|jpg|jpeg|gif|svg) 格式链接的识别，识别到即视为有效 image 类证据
   - 备注:[decided:2026-08-09] 代码在 context.mjs:452 已实现(UI_IMAGE_EVIDENCE_RE 含 blob 图片模式 github.com/<owner>/<repo>/blob/<path>.<img 扩展名>),但未检索到独立落地 commit(该行随 2026-07-26 import 快照 8fbdf88 整文件进入本仓)
-- `scan-bot-thread-soft-flag-vs-premerge` **scan 把 bot 未 resolve thread 计为 softFlag 而非 blocker，与 pre-merge-check 不一致** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: open
+- `scan-bot-thread-soft-flag-vs-premerge` **scan 把 bot 未 resolve thread 计为 softFlag 而非 blocker，与 pre-merge-check 不一致** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: rejected
   - 现象:PR #402 scan 输出 unresolvedThreadCount=0 + softFlags 含 bot 评论，但 pre-merge-check 正确把同一 thread 计为 unresolved→canMerge=false。导致主 agent 无谓走了完整 review+approve 流程后才发现不能 merge。
   - 提案:context.mjs 的 unresolvedThreadCount 应与 pre-merge-check 口径一致：bot thread 只要未 resolve 就计入 blockers（不论是否 bot），softFlags 保留用于「已 resolve 但内容可能需要人判断」的场景。或在 gate.pass=true 但 softFlags 含 unresolved bot thread 时降级为 gate.pass=false。
+  - 备注:[decided:2026-08-24] reject(非缺陷) 归因错：context.mjs:945-946 unresolvedThreads 已不分作者；softFlags 里的 bot 是 issue comments 不是 review thread。不再重提；重提唯一合法条件=新证据实例证明 bot review thread 仍被漏计。
 - `state-dir-worktree-fragmentation` **状态目录按 cwd 哈希,worktree 轮次导致锁/指纹/去重全碎片化** — 出现 1 次,首见 2026-07-25,最近 2026-07-25,status: landed,commit `a179c3b`
   - 现象:scheduler useWorktree 每轮新建 worktree,锁/空转指纹/fix-session/催办去重按 cwd 哈希落进不同临时目录:两把锁并存互斥失效、pre-check 探测目录与会话写入目录不一致、last-scan 缓存从未命中(空转轮全额烧 token)。已修:lib.mjs 状态锚点改用 git-common-dir,主仓库与全部 worktree 共享同一状态目录
   - 备注:[decided:2026-07-25] 落地 commit a179c3b(git show AuthorDate 核实)
@@ -644,3 +664,10 @@
 ## 已否决的提案(留档防止重复提出)
 
 - `bot-threads-block-review-entry` Copilot/Codex/Greptile 的未 resolve thread 让 PR 进不了首次审查 — 维护者 2026-07-25 拍板维持现状:bot thread 必须 resolve 才进审查;以 skip-notice 催办评论(skip-notice-never-wired)替代,不再重复提出
+- `structural-block-detection-omits-copilot-code-review` structuralBlock 检测漏掉 copilot_code_review 规则类型,allowlist 全命中判定可能基于不完整数据 — [decided:2026-08-24] reject 未证实 copilot_code_review 参与 mergeStateStatus；trunk-guard 语义是请求 Copilot review 不是 required check。不再重提；重提唯一合法条件=API 实证它阻塞合并。
+- `skills-repo-diverged-sync-broken` skills 仓 main 与远端 diverged，Skill 自同步每轮都失败 — [decided:2026-08-24] reject(过期) 2026-08-24 现场 main...origin/main 0/0。不再重提；重提唯一合法条件=再次 diverge 且自同步失败。
+- `mivo-outbound-notify-channels-all-inert` mivo 仓对外通知面为零：提醒名单全豁免 + summaryBroadcast 未配置，被卡 PR 无任何外发信号 — [decided:2026-08-24]
+[part:1][adopted] staleAuthorReminder.exemptAuthors 已空 → 豁免名单那半过期
+[part:2][rejected] summaryBroadcast.command=null → 理由:owner 2026-07-29 拍板汇总不进 Slack，属有意配置不是漏配；不再重提除非 owner 改回 command。
+- `skillsync-preview-dist-dirty` skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来 — [decided:2026-08-24] reject(过期) 本机 preview-dist 已干净；Mini 残留已 stash 后 ff。不再重提；重提唯一合法条件=preview-dist 再脏并挡住 pull。
+- `neg-evidence-anchor-mismatch-patch` 审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid — [decided:2026-08-24] reject(已修/观察) build-review-task.mjs 已要求逐字复制 outputAnchor。不再重提；重提唯一合法条件=prompt 修后仍复发。

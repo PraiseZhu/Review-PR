@@ -1061,11 +1061,11 @@ ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1�
 输出**单一 JSON**（SC-R1a，2026-08-05 起唯一契约，`schemaVersion: "rro-1"`；
 **废除"JSON 或等价 Markdown"双轨**——机器只消费 JSON，你自报的结论不被采信）：
 
-任务正文由**唯一构建器**产出，不要自己拼：
+任务正文由**唯一构建器**产出，不要自己拼。**输出路径必须在隔离 worktree 内**（如 `./rro-1.json` / `./task.json` / `./prompt.md`），禁止指向 `/tmp`——隔离席写仓外会被沙箱拒绝（#170）。
 
 ```bash
 node "<SKILL_ROOT>/scripts/build-review-task.mjs" <N> --base <baseRefOid> --head <headRefOid> \
-  --out-task <task.json> --out-prompt <prompt.md> \
+  --out-task ./task.json --out-prompt ./prompt.md \
   --expected-paths "$(gh pr view <N> --json files --jq '[.files[].path]|join(",")')"
 ```
 
@@ -1159,12 +1159,14 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 > 是 T1 上限。这里的价值在于把"我看过了"变成"我把它弄坏过并留下可核对的锚点"，不是把它
 > 变成机器证明。
 
+主 agent 收到审查输出后、调用 consumer **之前**，先 `gh pr view <N> --json headRefOid,state` 核对：与任务 snapshot 的 head 不一致则对新 head 重建 task/preflight 重审（旧回执留作历史）；`state` 非 OPEN 则本轮 skip，汇总写「合并先于审查完成」。审查会话超时未交 `./rro-1.json` 时，写 non-clean 回执原因 `review-agent-timeout` 并 skip，禁止沿用上次清白。
+
 输出交给唯一消费出口裁决（它算 verdict、写回执、动台账；**clean 回执只能由它写**）：
 
 ```bash
-node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output <rro-1.json> \
+node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output ./rro-1.json \
   --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
-  --task <task.json> --preflight <preflight.json>
+  --task ./task.json --preflight ./preflight.json --verify-live-head
 ```
 
 `--task` **必需**(没有它无法对账覆盖/必答/负向证据)。task 只是"审查方看到的副本",
@@ -1282,6 +1284,8 @@ gpt 实跑复现：两条仅尾部（65+ 字符）不同的 invariant 会被截�
 趋势指标），不影响、也不能被误用来影响任何合并判定路径或 `isReviewReceiptClean`。
 
 ## 5. 阶段三：落地
+
+阶段三任何 GitHub 写操作（review / comment / issue）前，对该候选再跑一次轻量 head 复核（`gh pr view <N> --json headRefOid` 或 `context.mjs <N> --scan`）。head 与扫描快照不一致 → 退回阶段一重新分类，禁止对着过期 head 发打回。
 
 ### 5.0 收敛检查点与同 family 复发
 

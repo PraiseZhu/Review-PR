@@ -564,24 +564,37 @@ export function resolveInRepoRoot(relPath) {
  * 含空格的路径塞进 -C 参数——Windows 下 shell:true 不会自动加引号)。
  * 返回 { ok, stdout, stderr, status }。
  */
+function looksLikeTransientHttp(text) {
+  return /\b503\b|\b502\b|\b429\b|temporarily unavailable|server error/i.test(text ?? '');
+}
+
 export function run(cmd, args, { input, allowFail = false, timeoutMs, cwd } = {}) {
-  const r = spawnSync(cmd, args, {
-    input,
-    encoding: 'utf8',
-    shell: isWin,
-    cwd,
-    maxBuffer: 128 * 1024 * 1024,
-    timeout: timeoutMs,
-  });
-  if (r.error) {
-    if (allowFail) return { ok: false, stdout: '', stderr: String(r.error.message), status: -1 };
-    throw new Error(`${cmd} ${args.join(' ')} 执行失败: ${r.error.message}`);
+  const maxAttempts = cmd === 'gh' ? 3 : 1;
+  let last = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const r = spawnSync(cmd, args, {
+      input,
+      encoding: 'utf8',
+      shell: isWin,
+      cwd,
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: timeoutMs,
+    });
+    if (r.error) {
+      last = { ok: false, stdout: '', stderr: String(r.error.message), status: -1 };
+    } else {
+      last = { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+    }
+    if (last.ok) return last;
+    const transient = looksLikeTransientHttp(`${last.stderr}\n${last.stdout}`);
+    if (!transient || attempt === maxAttempts) break;
+    spawnSync('sleep', [String(attempt)], { encoding: 'utf8' });
   }
-  const out = { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
-  if (!out.ok && !allowFail) {
-    throw new Error(`${cmd} ${args.join(' ')} 退出码 ${r.status}: ${out.stderr.trim()}`);
+  if (!last.ok && !allowFail) {
+    if (last.status === -1) throw new Error(`${cmd} ${args.join(' ')} 执行失败: ${last.stderr}`);
+    throw new Error(`${cmd} ${args.join(' ')} 退出码 ${last.status}: ${last.stderr.trim()}`);
   }
-  return out;
+  return last;
 }
 
 export function git(args, opts) {
@@ -619,7 +632,9 @@ export function ghGraphql(query, vars = {}, { timeoutMs } = {}) {
   if (parsed && parsed.data != null) return parsed;
   if (!r.ok) {
     const gqlMsg = (parsed?.errors ?? []).map((e) => e.message).filter(Boolean).join('; ');
-    throw new Error(`gh api graphql 失败: ${gqlMsg || r.stderr.trim() || '无 data 返回'}`);
+    const blob = `${gqlMsg}\n${r.stderr}\n${r.stdout}`;
+    const kind = looksLikeTransientHttp(blob) ? 'network-transient' : 'module-or-auth';
+    throw new Error(`gh api graphql 失败[${kind}]: ${gqlMsg || r.stderr.trim() || '无 data 返回'}`);
   }
   return parsed;
 }
