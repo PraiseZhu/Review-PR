@@ -343,6 +343,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `ci-pending-skip-wait` **CI 未完成时 skip-gate 等下一轮** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR 273 mergeStateStatus=BLOCKED，lint+tsc+unit 与 pr-size-gate 仍 IN_PROGRESS。auto 不绕过、不等待本轮内轮询，记 skip-gate。
 - `feat-persist-product-gate-semantic` **feat(persist) 水合移植仍进产品门语义定性** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR 273 标题 feat、作者非白名单，auto.action=product-gate；uiCodeFiles 空、touchesUi=false，文件是 persistBoot 场景水合+cycle-guard 基线。语义判为已有功能补充/纯技术，不 hold，走 fallback skip-gate。这是设计上要人做的语义判断，不是漏闸。
 - `skip-unresolved-human-review-threads` **他人 reviewer 未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

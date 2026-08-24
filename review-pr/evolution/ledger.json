@@ -3302,6 +3302,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T12:04:53.729Z",
       "lastSeen": "2026-08-24T12:04:53.729Z"
+    },
+    {
+      "fingerprint": "ci-pending-skip-wait",
+      "tier": "by-design",
+      "title": "CI 未完成时 skip-gate 等下一轮",
+      "detail": "PR 273 mergeStateStatus=BLOCKED，lint+tsc+unit 与 pr-size-gate 仍 IN_PROGRESS。auto 不绕过、不等待本轮内轮询，记 skip-gate。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T12:04:58.194Z",
+      "lastSeen": "2026-08-24T12:04:58.194Z"
     }
   ],
   "escapedHazards": [
