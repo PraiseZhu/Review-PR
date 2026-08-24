@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-changes-requested-unresolved-author-thread` **作者侧 CHANGES_REQUESTED + 未 resolve thread，等作者修完再审** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR 273 persist 水合：上一轮已打回 local-only union 复活已删节点/边；head 未变、thread 未 resolve。属设计上等人来，不自动化 resolve 真人 thread。
 - `skip-changes-requested-unresolved-thread` **作者未 resolve 的 CHANGES_REQUESTED thread 卡合并** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR #273 前置门 BLOCKED：reviewDecision=CHANGES_REQUESTED + 1 条 conversation 未 resolve。上一轮已 REQUEST_CHANGES 并催过 resolve；本轮 already-commented / not-stale-yet。属作者侧动作，不自动放开。
 - `skip-unresolved-human-thread` **他人未 resolve 的审查 thread 卡住合并** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

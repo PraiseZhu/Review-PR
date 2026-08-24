@@ -3367,6 +3367,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T16:04:33.444Z",
       "lastSeen": "2026-08-24T16:04:33.444Z"
+    },
+    {
+      "fingerprint": "skip-changes-requested-unresolved-author-thread",
+      "tier": "by-design",
+      "title": "作者侧 CHANGES_REQUESTED + 未 resolve thread，等作者修完再审",
+      "detail": "PR 273 persist 水合：上一轮已打回 local-only union 复活已删节点/边；head 未变、thread 未 resolve。属设计上等人来，不自动化 resolve 真人 thread。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T18:04:01.528Z",
+      "lastSeen": "2026-08-24T18:04:01.528Z"
     }
   ],
   "escapedHazards": [
