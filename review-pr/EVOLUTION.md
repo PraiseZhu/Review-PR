@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-stale-pushback-format-self-review-checklist` **格式门 Self-review 勾选率不足且作者未新 commit，跳过重复打回** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR 275 格式门 Self-review 勾选率 2/4，上次已打回；本轮 skip-stale-pushback。另有 2 条 greptile conversation 未 resolve，已发催 resolve 评论。
 - `skip-gate-unresolved-threads-after-changes-requested` **作者侧未 resolve thread + CHANGES_REQUESTED，auto 只能提醒不能代合** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR 273 persist 水合补齐被 feat 启发式送进产品门，语义判定为已有 persist 能力补齐而非产品/UI，未 hold；随后因 1 条未 resolve conversation 与 reviewDecision=CHANGES_REQUESTED 走 skip-gate。提醒脚本 already-commented。
 - `format-self-review-checkbox-ratio` **提交前自检勾选率低于 80% 走格式打回** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

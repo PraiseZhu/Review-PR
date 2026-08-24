@@ -3445,6 +3445,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T22:05:11.656Z",
       "lastSeen": "2026-08-24T22:05:11.656Z"
+    },
+    {
+      "fingerprint": "skip-stale-pushback-format-self-review-checklist",
+      "tier": "by-design",
+      "title": "格式门 Self-review 勾选率不足且作者未新 commit，跳过重复打回",
+      "detail": "PR 275 格式门 Self-review 勾选率 2/4，上次已打回；本轮 skip-stale-pushback。另有 2 条 greptile conversation 未 resolve，已发催 resolve 评论。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T22:05:15.999Z",
+      "lastSeen": "2026-08-24T22:05:15.999Z"
     }
   ],
   "escapedHazards": [
