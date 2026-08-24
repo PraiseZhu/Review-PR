@@ -564,24 +564,37 @@ export function resolveInRepoRoot(relPath) {
  * 含空格的路径塞进 -C 参数——Windows 下 shell:true 不会自动加引号)。
  * 返回 { ok, stdout, stderr, status }。
  */
+function looksLikeTransientHttp(text) {
+  return /\b503\b|\b502\b|\b429\b|temporarily unavailable|server error/i.test(text ?? '');
+}
+
 export function run(cmd, args, { input, allowFail = false, timeoutMs, cwd } = {}) {
-  const r = spawnSync(cmd, args, {
-    input,
-    encoding: 'utf8',
-    shell: isWin,
-    cwd,
-    maxBuffer: 128 * 1024 * 1024,
-    timeout: timeoutMs,
-  });
-  if (r.error) {
-    if (allowFail) return { ok: false, stdout: '', stderr: String(r.error.message), status: -1 };
-    throw new Error(`${cmd} ${args.join(' ')} 执行失败: ${r.error.message}`);
+  const maxAttempts = cmd === 'gh' ? 3 : 1;
+  let last = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const r = spawnSync(cmd, args, {
+      input,
+      encoding: 'utf8',
+      shell: isWin,
+      cwd,
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: timeoutMs,
+    });
+    if (r.error) {
+      last = { ok: false, stdout: '', stderr: String(r.error.message), status: -1 };
+    } else {
+      last = { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+    }
+    if (last.ok) return last;
+    const transient = looksLikeTransientHttp(`${last.stderr}\n${last.stdout}`);
+    if (!transient || attempt === maxAttempts) break;
+    spawnSync('sleep', [String(attempt)], { encoding: 'utf8' });
   }
-  const out = { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
-  if (!out.ok && !allowFail) {
-    throw new Error(`${cmd} ${args.join(' ')} 退出码 ${r.status}: ${out.stderr.trim()}`);
+  if (!last.ok && !allowFail) {
+    if (last.status === -1) throw new Error(`${cmd} ${args.join(' ')} 执行失败: ${last.stderr}`);
+    throw new Error(`${cmd} ${args.join(' ')} 退出码 ${last.status}: ${last.stderr.trim()}`);
   }
-  return out;
+  return last;
 }
 
 export function git(args, opts) {
@@ -619,7 +632,9 @@ export function ghGraphql(query, vars = {}, { timeoutMs } = {}) {
   if (parsed && parsed.data != null) return parsed;
   if (!r.ok) {
     const gqlMsg = (parsed?.errors ?? []).map((e) => e.message).filter(Boolean).join('; ');
-    throw new Error(`gh api graphql 失败: ${gqlMsg || r.stderr.trim() || '无 data 返回'}`);
+    const blob = `${gqlMsg}\n${r.stderr}\n${r.stdout}`;
+    const kind = looksLikeTransientHttp(blob) ? 'network-transient' : 'module-or-auth';
+    throw new Error(`gh api graphql 失败[${kind}]: ${gqlMsg || r.stderr.trim() || '无 data 返回'}`);
   }
   return parsed;
 }
@@ -1204,14 +1219,14 @@ const HARD_SECRET_PATTERNS_BASE = [
   // slack-token 只覆盖 xox[abprs]- 这一族(user/bot/legacy 等 OAuth 令牌),Slack App-Level
   // Token(xapp-,Socket Mode 等场景用)是完全不同的格式(xapp-<版本>-<APP ID>-<请求
   // ID>-<64 位十六进制>),不会被 xox 系列命中,P1-3 补一条独立规则。
-  ['slack-token', /\bxox[abprs]-[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
+  ['slack-token', /\bxox[abprs]-(?!FAKEKEY\b)[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
   ['slack-app-token', /\bxapp-\d-[A-Z0-9]+-\d+-[a-f0-9]{64}\b/],
   // sk-api-key 此前只认连字符分隔(sk-,覆盖 OpenAI/Anthropic sk-ant-...)。三审时
   // 把 Stripe 的下划线形态放宽成任意 `sk[-_]...`,导致普通变量名(如
   // sk_status_configuration_value)也被误判 hard hit——四审收窄:Stripe 只认
   // `sk_live_`/`sk_test_` 这个具体前缀,不做通用 sk_ 分隔符放宽;原连字符分支
   // (sk-...)不受影响,单独保留。
-  ['sk-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
+  ['sk-api-key', /\bsk-(?!FAKEKEY\b)[A-Za-z0-9_-]{20,}\b/],
   ['stripe-api-key', /\bsk_(?:live|test)_[A-Za-z0-9_-]{20,}\b/],
   ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/],
 ];

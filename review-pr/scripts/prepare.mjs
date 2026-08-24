@@ -169,13 +169,39 @@ try {
   const ghAuth = gh(['auth', 'status'], { allowFail: true }).ok;
   const porcelain = git(['status', '--porcelain']).stdout.trim();
   const worktreeClean = porcelain === '';
-  const currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+  let currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
 
   // 默认分支:origin/HEAD → refs/remotes/origin/<branch>;解析不到兜底 main
   let defaultBranch = 'main';
   const sym = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { allowFail: true });
   if (sym.ok && sym.stdout.trim()) {
     defaultBranch = sym.stdout.trim().replace(/^refs\/remotes\/origin\//, '');
+  }
+
+  // tracking 分支远端已删时,ff-only pull 会整轮 sync-failed。auto 开轮只报告并切到
+  // origin/<default> 的本地跟踪(不审不写 GitHub);切不过仍标 syncFailed,由上层 fail-closed。
+  let trackingRecovered = false;
+  let syncFailed = null;
+  const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { allowFail: true });
+  if (upstream.ok) {
+    const remoteRef = upstream.stdout.trim(); // 如 origin/fix/foo
+    const ls = git(['ls-remote', '--heads', 'origin', remoteRef.replace(/^origin\//, '')], { allowFail: true });
+    const remoteGone = !ls.ok || !ls.stdout.trim();
+    if (remoteGone && currentBranch !== defaultBranch && currentBranch !== 'HEAD') {
+      const named = git(['checkout', '-q', defaultBranch], { allowFail: true });
+      if (!named.ok) {
+        const detached = git(['checkout', '-q', '--detach', `origin/${defaultBranch}`], { allowFail: true });
+        if (!detached.ok) {
+          syncFailed = `tracking 分支远端已消失(${remoteRef}),切 ${defaultBranch} 失败`;
+        } else {
+          trackingRecovered = true;
+          currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+        }
+      } else {
+        trackingRecovered = true;
+        currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+      }
+    }
   }
 
   print({
@@ -188,6 +214,8 @@ try {
     dirtyFiles: worktreeClean ? [] : porcelain.split('\n'),
     currentBranch,
     defaultBranch,
+    trackingRecovered,
+    syncFailed,
   });
 } catch (e) {
   // 拿到锁之后才失败(不是 git 仓库 / origin 缺失…)必须回滚自己的锁,

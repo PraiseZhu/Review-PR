@@ -176,3 +176,17 @@ test('命中样本已脱敏:只留前 6 字符 + 长度,不还原原文', () => 
   assert.ok(!sink.hard[0].sample.includes(secret), '脱敏后的 sample 不应包含完整原文');
   assert.match(sink.hard[0].sample, /…\(共 \d+ 字符\)/);
 });
+
+test('FAKEKEY 测试桩不 hard hit:sk-FAKEKEY- / xoxb-FAKEKEY- 是测试输入不是真密钥', () => {
+  const patterns = buildSensitivePatterns({});
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine('const k = "sk-FAKEKEY-abcdefghijklmnopqrst";', { file: 'cindyplugin/src/__tests__/debugLogRedact.test.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.filter((h) => h.kind === 'sk-api-key').length, 0);
+  }
+  {
+    const sink = { hard: [], soft: [] };
+    scanSensitiveLine('const t = "xoxb-FAKEKEY-123456789";', { file: 'x.ts', line: 1 }, patterns, sink);
+    assert.equal(sink.hard.filter((h) => h.kind === 'slack-token').length, 0);
+  }
+});

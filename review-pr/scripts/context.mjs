@@ -260,10 +260,26 @@ if (process.argv.includes('--scan-all')) {
       ).stdout || '[]',
     );
     // 候选口径与 pick.mjs 同源:open 且非 draft,按 createdAt 升序
-    const candidates = rawList
+    let candidates = rawList
       .filter((p) => !p.isDraft)
       .map((p) => ({ number: p.number, title: p.title, author: p.author?.login ?? '', createdAt: p.createdAt, url: p.url }))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // scan-all 拉取与 GitHub 创建有数秒窗口(#136)。启动后再 list 一次,未见过的非 draft 补进本轮。
+    try {
+      const recatch = JSON.parse(
+        gh(
+          ['pr', 'list', '--repo', slug, '--state', 'open', '--limit', '100', '--json', 'number,title,author,createdAt,isDraft,url'],
+          { timeoutMs: 30_000 },
+        ).stdout || '[]',
+      );
+      const seen = new Set(candidates.map((c) => c.number));
+      for (const p of recatch) {
+        if (p.isDraft || seen.has(p.number)) continue;
+        candidates.push({ number: p.number, title: p.title, author: p.author?.login ?? '', createdAt: p.createdAt, url: p.url });
+        seen.add(p.number);
+      }
+      candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    } catch { /* 补扫失败不挡本轮已拉到的候选 */ }
 
     // ── 被 hold 的 draft 预筛(产品/架构门自动放行的入口)──
     // 白名单同意发生在讨论 issue 上、不改 PR 自身状态,所以被 product-hold 转 draft 的 PR
@@ -1127,6 +1143,14 @@ try {
       });
       blockClass = classified.blockClass;
       structuralBlock = classified.structuralBlock;
+      if (blockClass === 'ci-failed' && (ciRuns?.failed?.length ?? 0) === 0 && headRollup?.failed?.length) {
+        const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+        const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, meta.baseRefName) : null;
+        const rc = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
+        if (rc && rc.requiredFailed.length === 0 && rc.nonRequiredFailed.length > 0) {
+          blockClass = 'ci-nonrequired-failed';
+        }
+      }
       // 各 blockClass 对应的 blockers 文案(判定逻辑已挪进 classifyBlockedStatus,这里只
       // 按返回结论拼消息;awaiting-approval 不视硬 blocker,不 push,与此前行为一致)。
       if (blockClass === 'threads-unresolved') {
@@ -1145,10 +1169,12 @@ try {
           // 分支保护规则读取失败(probeBranchProtection 返回 null)——无法证明"没有结构性门"。
           blockers.push('mergeStateStatus=BLOCKED,分支保护规则读取失败(权限/网络)——无法判断是否存在结构性门,不当 awaiting-approval 或 structural-check 处理,不可 bypass,下轮再看');
         }
-      } else if (blockClass === 'ci-failed') {
+      } else if (blockClass === 'ci-failed' || blockClass === 'ci-nonrequired-failed') {
         if (ciRuns.failed.length > 0) {
           // 有 workflow run 真失败 → 真 blocker(该打回 / 不合)。
           blockers.push(`mergeStateStatus=BLOCKED(CI 失败:${ciRuns.failed.join(' / ')})`);
+        } else if (blockClass === 'ci-nonrequired-failed') {
+          blockers.push(`mergeStateStatus=BLOCKED(非 required 检查失败:${headRollup.failed.join(' / ')}——不是构建/测试挂了,读意见或决定是否纳入阻断集;修绿前不合并)`);
         } else {
           // 已跑的 GitHub Actions 全绿,但 head 上仍有已上报检查失败 → 只可能来自
           // actions/runs 看不见的那部分(第三方 App check-run / commit status)。这是真
@@ -1197,7 +1223,7 @@ try {
       blockClass = 'ci-unknown';
     } else if (rollup.failed.length > 0) {
       blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查失败:${rollup.failed.join(' / ')}——GitHub 不拦但本流程拦,失败检查修绿前不合并)`);
-      blockClass = 'ci-failed';
+      blockClass = 'ci-nonrequired-failed';
     } else if (rollup.pending.length > 0) {
       blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查还在跑:${rollup.pending.join(' / ')},等跑完即可)`);
       blockClass = 'ci-pending';
@@ -1362,6 +1388,12 @@ try {
       ? '前置门唯一阻塞是 viewer 自己挂的 CHANGES_REQUESTED 且 thread 全 resolve;进入重审,通过后 self-approve 解锁再合并'
       : '格式门 + 前置门均通过,进入代码审查';
     autoSkip = false;
+    const liveRollup = classifyStatusRollup(meta.statusCheckRollup);
+    if (liveRollup?.pending?.length) {
+      autoAction = 'skip-gate';
+      autoReason = `CI 仍在跑(${liveRollup.pending.join(' / ')})——标 ci-pending-race,本轮不审,等跑完再分类`;
+      autoSkip = true;
+    }
   }
 
   // ── 授权快速合并通道覆盖(见 authorizedFastMerge 计算与 SKILL 5.1「授权快速合并通道」):
