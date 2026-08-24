@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-changes-requested-unresolved-author` **作者侧 CHANGES_REQUESTED + 未 resolve thread，须等人修完/点 Resolve** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR #273 persist 水合补齐被 skip-gate：reviewDecision=CHANGES_REQUESTED，1 条 conversation 未 resolve。作者不在 selfFixAuthors。本轮 notify-author-resolve 去重 already-commented；remind-stale idleHours=5.4 未到 24h 阈值。
 - `skip-changes-requested-unresolved-author-thread` **作者侧 CHANGES_REQUESTED + 未 resolve thread，等作者修完再审** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR 273 persist 水合：上一轮已打回 local-only union 复活已删节点/边；head 未变、thread 未 resolve。属设计上等人来，不自动化 resolve 真人 thread。
 - `skip-changes-requested-unresolved-thread` **作者未 resolve 的 CHANGES_REQUESTED thread 卡合并** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

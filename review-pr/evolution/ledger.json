@@ -3380,6 +3380,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T18:04:01.528Z",
       "lastSeen": "2026-08-24T18:04:01.528Z"
+    },
+    {
+      "fingerprint": "skip-gate-changes-requested-unresolved-author",
+      "tier": "by-design",
+      "title": "作者侧 CHANGES_REQUESTED + 未 resolve thread，须等人修完/点 Resolve",
+      "detail": "PR #273 persist 水合补齐被 skip-gate：reviewDecision=CHANGES_REQUESTED，1 条 conversation 未 resolve。作者不在 selfFixAuthors。本轮 notify-author-resolve 去重 already-commented；remind-stale idleHours=5.4 未到 24h 阈值。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T19:04:23.920Z",
+      "lastSeen": "2026-08-24T19:04:23.920Z"
     }
   ],
   "escapedHazards": [
