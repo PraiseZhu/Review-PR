@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `format-self-review-checkbox-ratio` **提交前自检勾选率低于 80% 走格式打回** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR 275 Self-review 勾选率 2/4，auto 提交 REQUEST_CHANGES。未勾的是模板里的 pre-push hook 与 PR checks 已触发两项。
 - `skip-gate-unresolved-after-changes-requested` **被 CHANGES_REQUESTED 且 conversation 未 resolve 的 PR 只能等作者点 Resolve 或再 push** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR 273 persist 水合移植：产品门语义判定为纯技术/已有功能补充未 hold；前置门仍被 1 条未 resolve conversation + CHANGES_REQUESTED 挡住。已有催 resolve 评论，本轮不重发。
 - `skip-unresolved-human-review-thread` **真人审查 thread 未 resolve，作者侧修完前不能合** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

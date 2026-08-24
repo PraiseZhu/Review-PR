@@ -3419,6 +3419,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T21:07:41.554Z",
       "lastSeen": "2026-08-24T21:07:41.554Z"
+    },
+    {
+      "fingerprint": "format-self-review-checkbox-ratio",
+      "tier": "by-design",
+      "title": "提交前自检勾选率低于 80% 走格式打回",
+      "detail": "PR 275 Self-review 勾选率 2/4，auto 提交 REQUEST_CHANGES。未勾的是模板里的 pre-push hook 与 PR checks 已触发两项。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T21:07:46.257Z",
+      "lastSeen": "2026-08-24T21:07:46.257Z"
     }
   ],
   "escapedHazards": [
