@@ -3237,6 +3237,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-23T17:03:47.729Z",
       "lastSeen": "2026-08-24T01:03:19.143Z"
+    },
+    {
+      "fingerprint": "webpage-merged-during-auto-review",
+      "tier": "by-design",
+      "title": "auto 审查进行中 PR 被网页合并，本轮不得再经 merge-pr 出口合一次",
+      "detail": "PR #264 在独立审查尚未 consume 前被 PraiseZhu 网页 squash 合入（APPROVE+merge 05:09Z）。本轮审查仍 clean，但不走 merge-pr.mjs；致谢由 cloud sender 发。不得把网页合并回写成 skill 出口成功。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T05:21:40.398Z",
+      "lastSeen": "2026-08-24T05:21:40.398Z"
     }
   ],
   "escapedHazards": [

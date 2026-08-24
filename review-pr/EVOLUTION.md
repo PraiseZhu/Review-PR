@@ -320,6 +320,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `webpage-merged-during-auto-review` **auto 审查进行中 PR 被网页合并，本轮不得再经 merge-pr 出口合一次** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR #264 在独立审查尚未 consume 前被 PraiseZhu 网页 squash 合入（APPROVE+merge 05:09Z）。本轮审查仍 clean，但不走 merge-pr.mjs；致谢由 cloud sender 发。不得把网页合并回写成 skill 出口成功。
 - `skip-ci-pending` **前置门 CI 未完成，本轮只等待不审不合** — 出现 2 次,首见 2026-08-23,最近 2026-08-24,status: tracked
   - 现象:PR #260 mergeStateStatus=BLOCKED，CI / PR size gate (hardened) 未完成。selfFix=true 但 5.4 规定 CI pending 只等待不投递。
 - `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 4 次,首见 2026-08-22,最近 2026-08-23,status: tracked
