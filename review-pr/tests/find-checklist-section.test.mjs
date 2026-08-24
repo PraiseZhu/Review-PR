@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CONTEXT_URL = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'context.mjs')).href;
+const SKILL_RULES = join(dirname(fileURLToPath(import.meta.url)), '..', 'config', 'pr-rules.json');
 
 function callFind(body, names) {
   const code = `
@@ -14,7 +15,10 @@ import(${JSON.stringify(CONTEXT_URL)}).then(({ findChecklistSection }) => {
   process.stdout.write(JSON.stringify(findChecklistSection(${JSON.stringify(body)}, ${JSON.stringify(names)})));
 }).catch((e) => { console.error(e); process.exit(1); });
 `;
-  const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, ['-e', code], {
+    encoding: 'utf8',
+    env: { ...process.env, REVIEW_PR_RULES_FILE: SKILL_RULES },
+  });
   assert.equal(r.status, 0, r.stderr || r.stdout);
   return JSON.parse(r.stdout);
 }
