@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-changes-requested-await-author` **CHANGES_REQUESTED 后等作者修，本轮 skip-gate** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR #273 feat persist P3-2 水合，上一轮已 REQUEST_CHANGES（已删节点复活），head 未变，1 条 conversation 未 resolve。属真人作者修代码，不自动放开。
 - `ci-pending-skip-wait` **CI 未完成时 skip-gate 等下一轮** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: rejected
   - 现象:PR 273 mergeStateStatus=BLOCKED，lint+tsc+unit 与 pr-size-gate 仍 IN_PROGRESS。auto 不绕过、不等待本轮内轮询，记 skip-gate。
   - 备注:不是缺口：SKILL 已规定 CI pending 只 skip 等下一轮。本轮误记。
