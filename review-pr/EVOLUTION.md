@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-changes-requested-unresolved-thread` **作者未 resolve 的 CHANGES_REQUESTED thread 卡合并** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
+  - 现象:PR #273 前置门 BLOCKED：reviewDecision=CHANGES_REQUESTED + 1 条 conversation 未 resolve。上一轮已 REQUEST_CHANGES 并催过 resolve；本轮 already-commented / not-stale-yet。属作者侧动作，不自动放开。
 - `skip-unresolved-human-thread` **他人未 resolve 的审查 thread 卡住合并** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
   - 现象:PR 273 被 CHANGES_REQUESTED 且 1 条 PraiseZhu 的 persistBoot 水合 union 意见未 resolve；作者未再 push。属真人审查意见，本轮 skip-gate，已有催 resolve 评论不去重重发。
 - `skip-changes-requested-await-author` **CHANGES_REQUESTED 后等作者修，本轮 skip-gate** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked

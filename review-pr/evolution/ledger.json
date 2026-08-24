@@ -3354,6 +3354,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T15:05:03.699Z",
       "lastSeen": "2026-08-24T15:05:03.699Z"
+    },
+    {
+      "fingerprint": "skip-changes-requested-unresolved-thread",
+      "tier": "by-design",
+      "title": "作者未 resolve 的 CHANGES_REQUESTED thread 卡合并",
+      "detail": "PR #273 前置门 BLOCKED：reviewDecision=CHANGES_REQUESTED + 1 条 conversation 未 resolve。上一轮已 REQUEST_CHANGES 并催过 resolve；本轮 already-commented / not-stale-yet。属作者侧动作，不自动放开。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T16:04:33.444Z",
+      "lastSeen": "2026-08-24T16:04:33.444Z"
     }
   ],
   "escapedHazards": [
