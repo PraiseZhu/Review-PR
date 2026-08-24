@@ -3341,6 +3341,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T14:04:39.167Z",
       "lastSeen": "2026-08-24T14:04:39.167Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-human-thread",
+      "tier": "by-design",
+      "title": "他人未 resolve 的审查 thread 卡住合并",
+      "detail": "PR 273 被 CHANGES_REQUESTED 且 1 条 PraiseZhu 的 persistBoot 水合 union 意见未 resolve；作者未再 push。属真人审查意见，本轮 skip-gate，已有催 resolve 评论不去重重发。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-24T15:05:03.699Z",
+      "lastSeen": "2026-08-24T15:05:03.699Z"
     }
   ],
   "escapedHazards": [
