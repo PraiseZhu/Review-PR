@@ -3502,14 +3502,14 @@
       "fingerprint": "lock-busy-concurrent-instance",
       "tier": "by-design",
       "title": "并发实例持锁导致本轮整批跳过",
-      "detail": "本轮 prepare acquired=false。holder startedAt=2026-08-25T13:57:38Z token=f1362e47 heartbeat pid=3477 仍活（elapsed ~8min）。open PR 仅 #288，skip-lock-busy。无 GitHub 写操作。另：主工作树有未跟踪 .worktrees/（含 review-pr/pr-281），prepare 报 worktreeClean=false，但本轮因未拿到锁未进入 dirty-worktree 路径。",
+      "detail": "prepare 未拿到锁；heartbeat daemon pid 仍在、token 匹配；open PR #300 #301 未审。不抢锁、不写 GitHub。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": "2026-08-25T06:05:34.940Z",
-      "lastSeen": "2026-08-25T14:07:24.702Z"
+      "lastSeen": "2026-08-25T15:04:10.878Z"
     },
     {
       "fingerprint": "lock-busy-concurrent-holder",
