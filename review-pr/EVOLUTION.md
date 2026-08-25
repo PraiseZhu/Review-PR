@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `signoff-release-ghfn-not-a-function` **signoff-release 二次调用报 ghFn is not a function，issue 已关但标签没摘** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 现象:PR 286/287 首次 --scan-json 关了讨论 issue，但 scan JSON 没带 labels，摘标签 skipped。补 labels 再跑时脚本 error=ghFn is not a function。本轮改用 gh pr edit --remove-label 手工摘掉。fingerprint 去重。
+  - 提案:signoff-release.mjs 把 lib.mjs 的 gh 正确传入 applySignoffReleaseWrite；scan JSON 缺 labels 时现场 gh pr view --json labels，不要依赖调用方塞 currentLabels。
 - `review-agent-rro1-missing-bind-fields` **审查席 rro-1 漏 profileId/负向证据绑定字段，主会话机械补齐才过 consumer** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: open
   - 现象:PR #273 审查席交卷缺 profileAnswers.profileId、negativeEvidence.snapshotHash/negativeOracle/verificationRunId，verificationGaps 缺 required；reasonCode 用了 data-only-baseline 不在闭集。主会话按契约机械补齐后 consume 才 dirty。不回头改本轮判定。
   - 提案:build-review-task/prompt 或 consume 前加一层本地 validateReviewOutput 预检，缺字段时让审查席重交而不是主会话手工补字段。

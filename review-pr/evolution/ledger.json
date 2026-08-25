@@ -3536,6 +3536,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T09:10:09.560Z",
       "lastSeen": "2026-08-25T09:10:09.560Z"
+    },
+    {
+      "fingerprint": "signoff-release-ghfn-not-a-function",
+      "tier": "proposal",
+      "title": "signoff-release 二次调用报 ghFn is not a function，issue 已关但标签没摘",
+      "detail": "PR 286/287 首次 --scan-json 关了讨论 issue，但 scan JSON 没带 labels，摘标签 skipped。补 labels 再跑时脚本 error=ghFn is not a function。本轮改用 gh pr edit --remove-label 手工摘掉。fingerprint 去重。",
+      "proposal": "signoff-release.mjs 把 lib.mjs 的 gh 正确传入 applySignoffReleaseWrite；scan JSON 缺 labels 时现场 gh pr view --json labels，不要依赖调用方塞 currentLabels。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T13:31:03.275Z",
+      "lastSeen": "2026-08-25T13:31:03.275Z"
     }
   ],
   "escapedHazards": [
