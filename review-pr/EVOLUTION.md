@@ -361,8 +361,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `lock-busy-concurrent-heartbeat-alive` **并发巡审实例持锁，本轮按 lock-busy 跳过不接管** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
-  - 现象:prepare.mjs acquired=false; lock startedAt 2026-08-25T21:01:55Z; heartbeat pid 15413 alive PPID=1; TTL 60m 未到。open PR 306/309/310 未审。这是互斥锁的设计行为，不是漏审。
+- `lock-busy-concurrent-heartbeat-alive` **并发巡审实例持锁，本轮按 lock-busy 跳过不接管** — 出现 2 次,首见 2026-08-25,最近 2026-08-25,status: tracked
+  - 现象:prepare 未拿到锁；heartbeat daemon 仍活（父进程已退出），TTL 未过，不接管。候选 #306 #309 #310 整批 skip。无 GitHub 写操作。
 - `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 6 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:本轮 prepare 未拿到锁。心跳守护仍在(ppid=1)，startedAt 2026-08-25T16:57:38Z。6 个 open PR 全部 lock-busy skip。连续第 4 轮。不抢锁、不写 GitHub。
 - `review-agent-timeout-negative-evidence-stall` **审查席在负向证据实验中卡住被 600s watchdog 杀掉** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked

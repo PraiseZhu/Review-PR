@@ -3606,14 +3606,14 @@
       "fingerprint": "lock-busy-concurrent-heartbeat-alive",
       "tier": "by-design",
       "title": "并发巡审实例持锁，本轮按 lock-busy 跳过不接管",
-      "detail": "prepare.mjs acquired=false; lock startedAt 2026-08-25T21:01:55Z; heartbeat pid 15413 alive PPID=1; TTL 60m 未到。open PR 306/309/310 未审。这是互斥锁的设计行为，不是漏审。",
+      "detail": "prepare 未拿到锁；heartbeat daemon 仍活（父进程已退出），TTL 未过，不接管。候选 #306 #309 #310 整批 skip。无 GitHub 写操作。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-25T21:07:14.916Z",
-      "lastSeen": "2026-08-25T21:07:14.916Z"
+      "lastSeen": "2026-08-25T22:06:26.765Z"
     }
   ],
   "escapedHazards": [
