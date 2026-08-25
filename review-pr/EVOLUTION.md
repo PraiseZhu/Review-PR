@@ -346,10 +346,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 4 次,首见 2026-08-19,最近 2026-08-25,status: tracked
+  - 现象:PR 273 persist 水合续作，产品门语义判为已有功能补充后仍被 skip-gate 拦住；已有催 resolve 评论，本轮 already-commented。
 - `skip-stale-pushback-format-self-review` **格式门 Self-review 勾选不足且已打回、作者未新 commit，跳过重打** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR 275 skip-stale-pushback；另有 CHANGES_REQUESTED 与 2 条未 resolve conversation。
-- `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 3 次,首见 2026-08-19,最近 2026-08-25,status: tracked
-  - 现象:PR 273 persist 水合；产品门 feat 启发式亮灯，语义判定为既有 persist 能力补充非产品/UI，未 hold。卡点是上一轮打回未动。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 2 次,首见 2026-08-21,最近 2026-08-24,status: tracked
   - 现象:PR #275 Self-review 勾选率 2/4；auto.action=skip-stale-pushback。
 - `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 2 次,首见 2026-08-20,最近 2026-08-24,status: tracked
