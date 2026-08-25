@@ -3458,6 +3458,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-24T22:05:15.999Z",
       "lastSeen": "2026-08-24T22:05:15.999Z"
+    },
+    {
+      "fingerprint": "skip-stale-pushback-format-self-review",
+      "tier": "by-design",
+      "title": "格式门 Self-review 勾选不足且已打回、作者未新 commit，跳过重打",
+      "detail": "PR 275 skip-stale-pushback；另有 CHANGES_REQUESTED 与 2 条未 resolve conversation。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T00:05:35.795Z",
+      "lastSeen": "2026-08-25T00:05:35.795Z"
     }
   ],
   "escapedHazards": [
