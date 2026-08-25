@@ -3471,6 +3471,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T00:05:35.795Z",
       "lastSeen": "2026-08-25T00:05:35.795Z"
+    },
+    {
+      "fingerprint": "skip-stale-pushback-format",
+      "tier": "by-design",
+      "title": "格式门已打回且作者未新 commit 时跳过，不重复打回",
+      "detail": "PR 275 Self-review 勾选率不足，auto.action=skip-stale-pushback。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T01:16:03.521Z",
+      "lastSeen": "2026-08-25T01:16:03.521Z"
     }
   ],
   "escapedHazards": [
