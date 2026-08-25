@@ -2462,14 +2462,14 @@
       "fingerprint": "skip-gate-unresolved-threads",
       "tier": "by-design",
       "title": "作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve",
-      "detail": "PR #201 3 条 conversation 未 resolve（含 greptile 与巡审行评），auto 按前置门跳过，已有催 resolve 评论不去重再发。",
+      "detail": "本轮 #273 1 条、#275 2 条未 resolve thread；#275 已发模板 C 催 resolve。属真人操作，不自动代 resolve。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-20T17:03:52.863Z",
-      "lastSeen": "2026-08-20T17:03:52.863Z"
+      "lastSeen": "2026-08-25T02:05:12.415Z"
     },
     {
       "fingerprint": "skip-threads-unresolved-author-side",
