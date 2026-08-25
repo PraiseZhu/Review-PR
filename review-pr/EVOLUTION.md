@@ -352,10 +352,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 3 次,首见 2026-08-25,最近 2026-08-25,status: tracked
+  - 现象:本轮 prepare acquired=false。holder startedAt=2026-08-25T13:57:38Z token=f1362e47 heartbeat pid=3477 仍活（elapsed ~8min）。open PR 仅 #288，skip-lock-busy。无 GitHub 写操作。另：主工作树有未跟踪 .worktrees/（含 review-pr/pr-281），prepare 报 worktreeClean=false，但本轮因未拿到锁未进入 dirty-worktree 路径。
 - `review-agent-timeout-negative-evidence-stall` **审查席在负向证据实验中卡住被 600s watchdog 杀掉** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR 286 独立审查席在 pre-push 负向实验后准备第二项时 stall，10 分钟无进度被杀，未交 rro-1.json。期间作者 kirozeng 已把 PR 合进 main。本轮 skip：合并先于审查完成。
-- `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 2 次,首见 2026-08-25,最近 2026-08-25,status: tracked
-  - 现象:本轮 prepare 未拿到锁。holder startedAt=2026-08-25T10:51:05Z token=f46d8769 heartbeat pid=94161 仍活；review-delivery-287 于 10:53 已投递。open PR 281/286/287/288 全部 skip-lock-busy。无 GitHub 写操作。
 - `lock-busy-concurrent-holder` **auto 轮次撞上仍活着的并发巡审锁，整轮 skip** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:本轮 prepare acquired=false；heartbeat daemon 仍在跑（token 匹配、lock 约 20min 内刷新）；open PR 275/276/281/284/285 全部记 lock-busy。不抢锁、不写 GitHub。
 - `skip-gate-changes-requested` **仍有 reviewer CHANGES_REQUESTED，前置门不过不审不合** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
