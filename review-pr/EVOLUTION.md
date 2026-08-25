@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-src-test-files-false-positive` **uiPaths 含 src/ 时 *.test.ts 会误亮产品门** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 现象:PR #306 feat(ops) 部署注入，唯一命中 uiPaths 的是 src/lib/assetService.test.ts，context 给 product-gate。语义定性为非产品/UI 后走了格式打回。同类测试文件假阳性会每轮烧掉定性。
+  - 提案:uiPaths 判定排除测试文件（*.test.ts/*.test.tsx/*.spec.ts 等），或 uiExcludePaths 增加测试 glob。改前需确认不会让真 UI 测试 PR 漏过产品门。
 - `leftover-review-worktree-dirties-ops-checkout` **已合并 PR 的审查 worktree 残留把生产 checkout 标脏** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:ops checkout 上未跟踪 .worktrees/review-pr/pr-281（对应 PR 已 MERGED）。git status 非空，prepare.worktreeClean=false。锁释放后下一轮仍会因 dirty-worktree 整轮 skip。fix-worktree-cleanup 需持锁才能跑。
   - 提案:两选一：1) 目标仓 .gitignore 忽略 .worktrees/；2) prepare 把 skill 自建的 .worktrees/review-pr 未跟踪目录不计入用户脏树。不要在未持锁时手删生产 checkout 上的树。
