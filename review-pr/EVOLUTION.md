@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `leftover-review-worktree-dirties-ops-checkout` **已合并 PR 的审查 worktree 残留把生产 checkout 标脏** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 现象:ops checkout 上未跟踪 .worktrees/review-pr/pr-281（对应 PR 已 MERGED）。git status 非空，prepare.worktreeClean=false。锁释放后下一轮仍会因 dirty-worktree 整轮 skip。fix-worktree-cleanup 需持锁才能跑。
+  - 提案:两选一：1) 目标仓 .gitignore 忽略 .worktrees/；2) prepare 把 skill 自建的 .worktrees/review-pr 未跟踪目录不计入用户脏树。不要在未持锁时手删生产 checkout 上的树。
 - `signoff-release-ghfn-not-a-function` **signoff-release 二次调用报 ghFn is not a function，issue 已关但标签没摘** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:PR 286/287 首次 --scan-json 关了讨论 issue，但 scan JSON 没带 labels，摘标签 skipped。补 labels 再跑时脚本 error=ghFn is not a function。本轮改用 gh pr edit --remove-label 手工摘掉。fingerprint 去重。
   - 提案:signoff-release.mjs 把 lib.mjs 的 gh 正确传入 applySignoffReleaseWrite；scan JSON 缺 labels 时现场 gh pr view --json labels，不要依赖调用方塞 currentLabels。
