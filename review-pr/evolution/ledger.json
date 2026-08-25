@@ -3502,14 +3502,14 @@
       "fingerprint": "lock-busy-concurrent-instance",
       "tier": "by-design",
       "title": "并发实例持锁导致本轮整批跳过",
-      "detail": "prepare 未拿到锁；heartbeat daemon pid 仍在、token 匹配；open PR #300 #301 未审。不抢锁、不写 GitHub。",
+      "detail": "heartbeat daemon 仍存活并续期；本轮 3 个 open PR (#301/#305/#306) 未审。不抢锁、不写 GitHub。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 4,
+      "occurrences": 5,
       "firstSeen": "2026-08-25T06:05:34.940Z",
-      "lastSeen": "2026-08-25T15:04:10.878Z"
+      "lastSeen": "2026-08-25T16:04:27.030Z"
     },
     {
       "fingerprint": "lock-busy-concurrent-holder",
