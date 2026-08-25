@@ -346,6 +346,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 3 次,首见 2026-08-19,最近 2026-08-25,status: tracked
+  - 现象:PR 273 persist 水合；产品门 feat 启发式亮灯，语义判定为既有 persist 能力补充非产品/UI，未 hold。卡点是上一轮打回未动。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 2 次,首见 2026-08-21,最近 2026-08-24,status: tracked
   - 现象:PR #275 Self-review 勾选率 2/4；auto.action=skip-stale-pushback。
 - `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 2 次,首见 2026-08-20,最近 2026-08-24,status: tracked
@@ -495,8 +497,6 @@
   - 现象:PR #201 skip-gate: greptile-apps 对 deleteWrite IDB 删除失败吞掉提了 P1 thread，作者未 resolve。threadTriage 本仓未启用，只能催作者点 Resolve。属设计上等人，不自动 resolve。
 - `skip-gate-conflict-unresolved` **前置门因与主干冲突且 conversation 未 resolve 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
   - 现象:PR #187 作者 aj0928，mergeStateStatus=DIRTY 且 1 条 Greptile conversation 未 resolve，auto 跳过等作者处理。
-- `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 2 次,首见 2026-08-19,最近 2026-08-20,status: tracked
-  - 现象:PR #180 作者 aj0928，reviewDecision=CHANGES_REQUESTED 且 1 条 conversation 未 resolve，auto 跳过等作者处理。
 - `skip-conflict-await-author` **与主干冲突卡前置门，等作者 rebase** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:本轮 #187 现场复核 mergeStateStatus=DIRTY，scan 当时 UNKNOWN 只报了未 resolve thread。auto 不代解冲突（审查未过、thread 未清）。已尝试 --conflict 提醒。
 - `skip-unresolved-threads-await-author` **未 resolve conversation 卡前置门，等作者点 Resolve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked

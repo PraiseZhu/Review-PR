@@ -2306,14 +2306,14 @@
       "fingerprint": "skip-gate-changes-requested-unresolved",
       "tier": "by-design",
       "title": "前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过",
-      "detail": "PR #180 作者 aj0928，reviewDecision=CHANGES_REQUESTED 且 1 条 conversation 未 resolve，auto 跳过等作者处理。",
+      "detail": "PR 273 persist 水合；产品门 feat 启发式亮灯，语义判定为既有 persist 能力补充非产品/UI，未 hold。卡点是上一轮打回未动。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-19T21:03:57.182Z",
-      "lastSeen": "2026-08-20T01:18:09.477Z"
+      "lastSeen": "2026-08-25T00:05:31.388Z"
     },
     {
       "fingerprint": "skip-gate-conflict-unresolved",
