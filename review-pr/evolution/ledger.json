@@ -3502,14 +3502,14 @@
       "fingerprint": "lock-busy-concurrent-instance",
       "tier": "by-design",
       "title": "并发实例持锁导致本轮整批跳过",
-      "detail": "prepare acquired=false; heartbeat daemon alive; review-delivery-273 updated this minute. No GitHub writes.",
+      "detail": "本轮 prepare 未拿到锁。holder startedAt=2026-08-25T10:51:05Z token=f46d8769 heartbeat pid=94161 仍活；review-delivery-287 于 10:53 已投递。open PR 281/286/287/288 全部 skip-lock-busy。无 GitHub 写操作。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-25T06:05:34.940Z",
-      "lastSeen": "2026-08-25T06:05:34.940Z"
+      "lastSeen": "2026-08-25T11:04:46.048Z"
     },
     {
       "fingerprint": "lock-busy-concurrent-holder",

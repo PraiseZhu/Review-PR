@@ -349,10 +349,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 2 次,首见 2026-08-25,最近 2026-08-25,status: tracked
+  - 现象:本轮 prepare 未拿到锁。holder startedAt=2026-08-25T10:51:05Z token=f46d8769 heartbeat pid=94161 仍活；review-delivery-287 于 10:53 已投递。open PR 281/286/287/288 全部 skip-lock-busy。无 GitHub 写操作。
 - `lock-busy-concurrent-holder` **auto 轮次撞上仍活着的并发巡审锁，整轮 skip** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:本轮 prepare acquired=false；heartbeat daemon 仍在跑（token 匹配、lock 约 20min 内刷新）；open PR 275/276/281/284/285 全部记 lock-busy。不抢锁、不写 GitHub。
-- `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
-  - 现象:prepare acquired=false; heartbeat daemon alive; review-delivery-273 updated this minute. No GitHub writes.
 - `skip-gate-changes-requested` **仍有 reviewer CHANGES_REQUESTED，前置门不过不审不合** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:本轮 #273/#275 reviewDecision=CHANGES_REQUESTED。等作者修完 push 后下轮重扫。
 - `skip-gate-unresolved-threads` **作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve** — 出现 2 次,首见 2026-08-20,最近 2026-08-25,status: tracked
