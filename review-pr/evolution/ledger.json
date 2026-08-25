@@ -3523,6 +3523,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T09:05:32.305Z",
       "lastSeen": "2026-08-25T09:05:32.305Z"
+    },
+    {
+      "fingerprint": "segment-delivery-ledger-required-before-consume",
+      "tier": "auto",
+      "title": "审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid",
+      "detail": "PR #285 独立审查在隔离 worktree 写出 rro-1.json，但 STATE_DIR 无分段投递台账；consume 以 deliveredSegments=0 判 invalid。补跑 deliver-review-segment --order 1 后才 dirty。根因是审查任务虽要求按序调用交付出口，隔离席可能只读了 payload 文件。",
+      "proposal": "build-review-task/prompt 继续强制 deliver-review-segment；主 agent 在 consume 前检查 deliveredSegments，缺台账先补投再消费，不要把审查席读 payload 文件当成已投递。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T09:10:09.560Z",
+      "lastSeen": "2026-08-25T09:10:09.560Z"
     }
   ],
   "escapedHazards": [
@@ -3536,11 +3549,11 @@
       "fixHead": "68f2dd6428636abee74c63572c485440df54bfa4",
       "pattern": "Playwright waitForFunction 收到 async/返回 Promise 的谓词——Promise 恒 truthy,1ms 假通过,测试全绿但根本没等待",
       "paths": [
-        "scripts/e2e/**",
-        "tests/**",
-        "e2e/**",
+        "**/*.spec.*",
         "**/*.test.*",
-        "**/*.spec.*"
+        "e2e/**",
+        "scripts/e2e/**",
+        "tests/**"
       ],
       "evidence": "#469 合并后由 #483 的 AST 守卫一次抓出 19 处;deepseek 单席审查曾给 APPROVED",
       "activationStatus": "active",
@@ -3552,7 +3565,8 @@
         "note": "记的是\"当年由哪个版本接管\"(历史事实);规则此后 bump 到 v4 不影响本条"
       },
       "seededAt": "2026-08-05",
-      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。2026-08-05 第 2 轮核验后补齐 fixHead(#483 已合并,head=68f2dd64…),grandfathered 豁免随之删除——现在**没有任何**免 head 核验的通道;hazardId 改绑稳定事件身份(repo+origin/fix PR+两侧 head),自由文本 pattern 只作 evidence。"
+      "seedNote": "种子条目:R2 首发规则的坏/好 fixture 已全过,故直接标 landed。2026-08-05 第 2 轮核验后补齐 fixHead(#483 已合并,head=68f2dd64…),grandfathered 豁免随之删除——现在**没有任何**免 head 核验的通道;hazardId 改绑稳定事件身份(repo+origin/fix PR+两侧 head),自由文本 pattern 只作 evidence。",
+      "activatedAt": null
     },
     {
       "repo": "xindong/mivo-canvas",

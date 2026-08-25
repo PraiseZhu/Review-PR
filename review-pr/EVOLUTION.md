@@ -286,6 +286,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `segment-delivery-ledger-required-before-consume` **审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 现象:PR #285 独立审查在隔离 worktree 写出 rro-1.json，但 STATE_DIR 无分段投递台账；consume 以 deliveredSegments=0 判 invalid。补跑 deliver-review-segment --order 1 后才 dirty。根因是审查任务虽要求按序调用交付出口，隔离席可能只读了 payload 文件。
+  - 提案:build-review-task/prompt 继续强制 deliver-review-segment；主 agent 在 consume 前检查 deliveredSegments，缺台账先补投再消费，不要把审查席读 payload 文件当成已投递。
 - `rro1-segment-receipts-assignedcoveragekeys-alias` **审查 agent 把 segmentReceipts.coverageKeys 写成 assignedCoverageKeys 导致消费前必须手工改字段** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: landed,commit `1cd0c64`
   - 现象:本轮 #228 审查席产出的 rro-1 覆盖集合完整且与投递台账逐条一致，但字段名写成 assignedCoverageKeys 而非契约字段 coverageKeys。主 agent 对照 seg-*.meta.json 核对后改名才 consume 到 clean。属 prompt 形状提示缺口，不放宽 gate。
   - 提案:在 build-review-task.mjs 的 segmentReceipts 字段级形状节加一句：coverageKeys 字段名必须是 coverageKeys，禁止写成 assignedCoverageKeys；值必须原样复制该段 assignedCoverageKeys。
