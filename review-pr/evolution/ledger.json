@@ -3614,6 +3614,19 @@
       "occurrences": 2,
       "firstSeen": "2026-08-25T21:07:14.916Z",
       "lastSeen": "2026-08-25T22:06:26.765Z"
+    },
+    {
+      "fingerprint": "lock-busy-dead-heartbeat-ttl-not-expired",
+      "tier": "by-design",
+      "title": "锁被死心跳进程占着，TTL 未到不能接管",
+      "detail": "连续多轮 auto 因 lock-busy 整轮跳过。本轮 lock startedAt=2026-08-25T22:41:55Z，heartbeat pid 15413 已不存在，TTL 还剩约 38 分钟。prepare.mjs 明确只认 60min TTL、不按 pid 存活判 stale。#306 #309 #310 未审。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T23:04:54.618Z",
+      "lastSeen": "2026-08-25T23:04:54.618Z"
     }
   ],
   "escapedHazards": [

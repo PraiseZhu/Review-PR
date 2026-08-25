@@ -361,6 +361,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `lock-busy-dead-heartbeat-ttl-not-expired` **锁被死心跳进程占着，TTL 未到不能接管** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
+  - 现象:连续多轮 auto 因 lock-busy 整轮跳过。本轮 lock startedAt=2026-08-25T22:41:55Z，heartbeat pid 15413 已不存在，TTL 还剩约 38 分钟。prepare.mjs 明确只认 60min TTL、不按 pid 存活判 stale。#306 #309 #310 未审。
 - `lock-busy-concurrent-heartbeat-alive` **并发巡审实例持锁，本轮按 lock-busy 跳过不接管** — 出现 2 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:prepare 未拿到锁；heartbeat daemon 仍活（父进程已退出），TTL 未过，不接管。候选 #306 #309 #310 整批 skip。无 GitHub 写操作。
 - `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 6 次,首见 2026-08-25,最近 2026-08-25,status: tracked
