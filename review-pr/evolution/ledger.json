@@ -3484,6 +3484,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T01:16:03.521Z",
       "lastSeen": "2026-08-25T01:16:03.521Z"
+    },
+    {
+      "fingerprint": "skip-gate-changes-requested",
+      "tier": "by-design",
+      "title": "仍有 reviewer CHANGES_REQUESTED，前置门不过不审不合",
+      "detail": "本轮 #273/#275 reviewDecision=CHANGES_REQUESTED。等作者修完 push 后下轮重扫。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T02:05:16.795Z",
+      "lastSeen": "2026-08-25T02:05:16.795Z"
     }
   ],
   "escapedHazards": [
