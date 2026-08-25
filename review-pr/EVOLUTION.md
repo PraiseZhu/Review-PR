@@ -352,8 +352,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 5 次,首见 2026-08-25,最近 2026-08-25,status: tracked
-  - 现象:heartbeat daemon 仍存活并续期；本轮 3 个 open PR (#301/#305/#306) 未审。不抢锁、不写 GitHub。
+- `lock-busy-concurrent-instance` **并发实例持锁导致本轮整批跳过** — 出现 6 次,首见 2026-08-25,最近 2026-08-25,status: tracked
+  - 现象:本轮 prepare 未拿到锁。心跳守护仍在(ppid=1)，startedAt 2026-08-25T16:57:38Z。6 个 open PR 全部 lock-busy skip。连续第 4 轮。不抢锁、不写 GitHub。
 - `review-agent-timeout-negative-evidence-stall` **审查席在负向证据实验中卡住被 600s watchdog 杀掉** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR 286 独立审查席在 pre-push 负向实验后准备第二项时 stall，10 分钟无进度被杀，未交 rro-1.json。期间作者 kirozeng 已把 PR 合进 main。本轮 skip：合并先于审查完成。
 - `lock-busy-concurrent-holder` **auto 轮次撞上仍活着的并发巡审锁，整轮 skip** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
