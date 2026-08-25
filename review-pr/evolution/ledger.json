@@ -3497,6 +3497,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T02:05:16.795Z",
       "lastSeen": "2026-08-25T02:05:16.795Z"
+    },
+    {
+      "fingerprint": "lock-busy-concurrent-instance",
+      "tier": "by-design",
+      "title": "并发实例持锁导致本轮整批跳过",
+      "detail": "prepare acquired=false; heartbeat daemon alive; review-delivery-273 updated this minute. No GitHub writes.",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T06:05:34.940Z",
+      "lastSeen": "2026-08-25T06:05:34.940Z"
     }
   ],
   "escapedHazards": [
