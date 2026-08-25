@@ -3549,6 +3549,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T13:31:03.275Z",
       "lastSeen": "2026-08-25T13:31:03.275Z"
+    },
+    {
+      "fingerprint": "review-agent-timeout-negative-evidence-stall",
+      "tier": "by-design",
+      "title": "审查席在负向证据实验中卡住被 600s watchdog 杀掉",
+      "detail": "PR 286 独立审查席在 pre-push 负向实验后准备第二项时 stall，10 分钟无进度被杀，未交 rro-1.json。期间作者 kirozeng 已把 PR 合进 main。本轮 skip：合并先于审查完成。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T13:31:07.829Z",
+      "lastSeen": "2026-08-25T13:31:07.829Z"
     }
   ],
   "escapedHazards": [
