@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `format-self-review-checks-triggered-checkbox` **提交前自检第三项常因事后回填漏勾而被格式打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 现象:本轮 #305/#306/#307/#309 均 Self-review 勾选率 2/3：第三项「PR 页面 checks 已实际触发」未勾，而 statusCheckRollup 实际全绿。作者习惯 push 后回填却忘了 edit body。
+  - 提案:格式门对第三项改为机器采信 statusCheckRollup（已有非 skip 的 check 即视为勾选），或仅在 checks 未触发时打回。属放宽格式门，需维护者拍板。
 - `product-gate-src-test-files-false-positive` **uiPaths 含 src/ 时 *.test.ts 会误亮产品门** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:PR #306 feat(ops) 部署注入，唯一命中 uiPaths 的是 src/lib/assetService.test.ts，context 给 product-gate。语义定性为非产品/UI 后走了格式打回。同类测试文件假阳性会每轮烧掉定性。
   - 提案:uiPaths 判定排除测试文件（*.test.ts/*.test.tsx/*.spec.ts 等），或 uiExcludePaths 增加测试 glob。改前需确认不会让真 UI 测试 PR 漏过产品门。

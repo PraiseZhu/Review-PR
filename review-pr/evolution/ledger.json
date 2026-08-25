@@ -3588,6 +3588,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T19:01:08.608Z",
       "lastSeen": "2026-08-25T19:01:08.608Z"
+    },
+    {
+      "fingerprint": "format-self-review-checks-triggered-checkbox",
+      "tier": "proposal",
+      "title": "提交前自检第三项常因事后回填漏勾而被格式打回",
+      "detail": "本轮 #305/#306/#307/#309 均 Self-review 勾选率 2/3：第三项「PR 页面 checks 已实际触发」未勾，而 statusCheckRollup 实际全绿。作者习惯 push 后回填却忘了 edit body。",
+      "proposal": "格式门对第三项改为机器采信 statusCheckRollup（已有非 skip 的 check 即视为勾选），或仅在 checks 未触发时打回。属放宽格式门，需维护者拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-25T19:01:13.202Z",
+      "lastSeen": "2026-08-25T19:01:13.202Z"
     }
   ],
   "escapedHazards": [
