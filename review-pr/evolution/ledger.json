@@ -57,14 +57,14 @@
       "fingerprint": "by-design-threads-unresolved",
       "tier": "by-design",
       "title": "PR 因 unresolved thread 或冲突无法合并,等作者处理",
-      "detail": "本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。",
+      "detail": "本轮 #306 Greptile P2 allexport thread 未 resolve(格式打回已 stale skip);#310 Greptile P2 IndexedDB finally thread 未 resolve。均已 already-commented,不重复催。设计上等作者点 Resolve。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 7,
+      "occurrences": 8,
       "firstSeen": "2026-07-24T17:36:58.861Z",
-      "lastSeen": "2026-08-19T19:17:26.172Z"
+      "lastSeen": "2026-08-26T00:18:36.593Z"
     },
     {
       "fingerprint": "all-skipped-no-evolution",

@@ -361,6 +361,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 8 次,首见 2026-07-24,最近 2026-08-26,status: tracked
+  - 现象:本轮 #306 Greptile P2 allexport thread 未 resolve(格式打回已 stale skip);#310 Greptile P2 IndexedDB finally thread 未 resolve。均已 already-commented,不重复催。设计上等作者点 Resolve。
 - `lock-busy-dead-heartbeat-ttl-not-expired` **锁被死心跳进程占着，TTL 未到不能接管** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:连续多轮 auto 因 lock-busy 整轮跳过。本轮 lock startedAt=2026-08-25T22:41:55Z，heartbeat pid 15413 已不存在，TTL 还剩约 38 分钟。prepare.mjs 明确只认 60min TTL、不按 pid 存活判 stale。#306 #309 #310 未审。
 - `lock-busy-concurrent-heartbeat-alive` **并发巡审实例持锁，本轮按 lock-busy 跳过不接管** — 出现 2 次,首见 2026-08-25,最近 2026-08-25,status: tracked
@@ -532,8 +534,6 @@
   - 现象:本轮 #187 现场复核 mergeStateStatus=DIRTY，scan 当时 UNKNOWN 只报了未 resolve thread。auto 不代解冲突（审查未过、thread 未清）。已尝试 --conflict 提醒。
 - `skip-unresolved-threads-await-author` **未 resolve conversation 卡前置门，等作者点 Resolve** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:本轮 #180 #187 均因 1 条未 resolve conversation 被 skip-gate。催 resolve 脚本已去重（already-commented），未新发评论。
-- `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 7 次,首见 2026-07-24,最近 2026-08-19,status: tracked
-  - 现象:本轮 #180 CHANGES_REQUESTED+1 thread、#187 DIRTY 冲突+1 thread；已按模板 C 提醒（#180 posted，#187 already-commented）。设计上该等作者。
 - `recipe-empty-model-id-falls-to-default-channel` **配方空模型 id 回落默认档是作者侧代码问题** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
   - 现象:PR 180 recipeChannelForModel 对空 id 返回空串，经 mivoChannelFor 回落默认通道。已 REQUEST_CHANGES，不属流程缺口。
 - `skip-conflict-and-unresolved-author-side` **冲突+未 resolve thread 必须等作者处理** — 出现 1 次,首见 2026-08-19,最近 2026-08-19,status: tracked
