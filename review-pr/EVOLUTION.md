@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-isolation-worktree-wrong-clone-318` **隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 318 重派审查席时 isolation worktree 建在 Project Mivo Canvas-Plugin 开发仓而不是 _ops 生产 checkout。同一 base/head 的 diffDigest 因工作树噪声不同，fileId/hunkId/snapshotHash 全部漂移。生产仓 consume 对不上审查席答卷。本轮按路径把 ID 映射后仍因 PR 已被网页合并而 invalid。不扩权，只提案把审查席钉在 REVIEW_PR_REPO_ROOT/_ops。
+  - 提案:spawn 隔离审查席前强制 cwd=生产 checkout（_ops/mivo-canvas-plugin），禁止落到开发仓 .claude/worktrees；或在 consume 前校验审查席 toplevel 等于 prepare 记录的 repo root。
 - `product-gate-hits-test-files` **uiPaths 命中测试文件会把 ops PR 送进产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 306 唯一 UI 命中是 src/lib/assetService.test.ts，语义判定非产品改动后走 fallback。
   - 提案:评估 uiExcludePaths 是否覆盖 src/**/*.test.ts；拍板前保持现状、靠语义定性。

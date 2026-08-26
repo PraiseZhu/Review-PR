@@ -3822,6 +3822,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T11:14:48.455Z",
       "lastSeen": "2026-08-26T11:14:48.455Z"
+    },
+    {
+      "fingerprint": "review-isolation-worktree-wrong-clone-318",
+      "tier": "proposal",
+      "title": "隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉",
+      "detail": "PR 318 重派审查席时 isolation worktree 建在 Project Mivo Canvas-Plugin 开发仓而不是 _ops 生产 checkout。同一 base/head 的 diffDigest 因工作树噪声不同，fileId/hunkId/snapshotHash 全部漂移。生产仓 consume 对不上审查席答卷。本轮按路径把 ID 映射后仍因 PR 已被网页合并而 invalid。不扩权，只提案把审查席钉在 REVIEW_PR_REPO_ROOT/_ops。",
+      "proposal": "spawn 隔离审查席前强制 cwd=生产 checkout（_ops/mivo-canvas-plugin），禁止落到开发仓 .claude/worktrees；或在 consume 前校验审查席 toplevel 等于 prepare 记录的 repo root。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T13:32:35.511Z",
+      "lastSeen": "2026-08-26T13:32:35.511Z"
     }
   ],
   "escapedHazards": [
