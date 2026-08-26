@@ -316,6 +316,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `format-self-review-ownpr-handoff-loop` **ownPr 格式打回(fix-handoff)路径为既有闭环机制,本轮无新增自动化缺口** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 319 首次命中 pushback-format+selfFixAuthors 组合,fix-session-state 无绑定走 create 新建跟进会话+use_worktree,投递成功;notify-author-resolve 正确按 self-fix-author 短路,remind-stale-author 按 own-pr 短路——三处去重/分流行为均符合设计,无需改 skill
 - `segment-delivery-ledger-required-before-consume` **审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:PR #285 独立审查在隔离 worktree 写出 rro-1.json，但 STATE_DIR 无分段投递台账；consume 以 deliveredSegments=0 判 invalid。补跑 deliver-review-segment --order 1 后才 dirty。根因是审查任务虽要求按序调用交付出口，隔离席可能只读了 payload 文件。
   - 提案:build-review-task/prompt 继续强制 deliver-review-segment；主 agent 在 consume 前检查 deliveredSegments，缺台账先补投再消费，不要把审查席读 payload 文件当成已投递。

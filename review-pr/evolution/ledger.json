@@ -3848,6 +3848,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T14:06:26.520Z",
       "lastSeen": "2026-08-26T14:06:26.520Z"
+    },
+    {
+      "fingerprint": "format-self-review-ownpr-handoff-loop",
+      "tier": "auto",
+      "title": "ownPr 格式打回(fix-handoff)路径为既有闭环机制,本轮无新增自动化缺口",
+      "detail": "PR 319 首次命中 pushback-format+selfFixAuthors 组合,fix-session-state 无绑定走 create 新建跟进会话+use_worktree,投递成功;notify-author-resolve 正确按 self-fix-author 短路,remind-stale-author 按 own-pr 短路——三处去重/分流行为均符合设计,无需改 skill",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T17:07:38.882Z",
+      "lastSeen": "2026-08-26T17:07:38.882Z"
     }
   ],
   "escapedHazards": [
