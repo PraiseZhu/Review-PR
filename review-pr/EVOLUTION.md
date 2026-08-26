@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-test-path-false-positive` **feat 类型命中测试路径被标成产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 306 是部署脚本与测试（src/lib/assetService.test.ts），auto.action=product-gate。语义定性后按 fallback skip-stale-pushback，未 hold。uiPaths 含 src/ 会把测试文件算进 UI。
+  - 提案:评估 uiPaths 是否应排除 *.test.ts / 测试夹具，避免部署/测试 PR 误进产品门。
 - `format-self-review-checks-triggered-checkbox` **提交前自检第三项常因事后回填漏勾而被格式打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:本轮 #305/#306/#307/#309 均 Self-review 勾选率 2/3：第三项「PR 页面 checks 已实际触发」未勾，而 statusCheckRollup 实际全绿。作者习惯 push 后回填却忘了 edit body。
   - 提案:格式门对第三项改为机器采信 statusCheckRollup（已有非 skip 的 check 即视为勾选），或仅在 checks 未触发时打回。属放宽格式门，需维护者拍板。

@@ -3640,6 +3640,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T00:18:41.034Z",
       "lastSeen": "2026-08-26T00:18:41.034Z"
+    },
+    {
+      "fingerprint": "product-gate-test-path-false-positive",
+      "tier": "proposal",
+      "title": "feat 类型命中测试路径被标成产品门",
+      "detail": "PR 306 是部署脚本与测试（src/lib/assetService.test.ts），auto.action=product-gate。语义定性后按 fallback skip-stale-pushback，未 hold。uiPaths 含 src/ 会把测试文件算进 UI。",
+      "proposal": "评估 uiPaths 是否应排除 *.test.ts / 测试夹具，避免部署/测试 PR 误进产品门。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T01:14:35.836Z",
+      "lastSeen": "2026-08-26T01:14:35.836Z"
     }
   ],
   "escapedHazards": [
