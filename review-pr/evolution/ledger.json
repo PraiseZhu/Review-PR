@@ -3034,14 +3034,14 @@
       "fingerprint": "threads-unresolved-greptile-p2",
       "tier": "by-design",
       "title": "Greptile P2 thread 未 resolve 挡住合并",
-      "detail": "PR #229 persist 测试 hook 搬运, 1 条 greptile conversation 未 resolve; 已催 resolve, 本轮因跨通道去重未再私聊。",
+      "detail": "PR 306 与 310 各有 1 条 greptile-apps P2 conversation 未 resolve。threadTriage 未配置所以不能代 reply/resolve。作者侧可自解，已按 notify-author-resolve 去重跳过（already-commented）。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-22T21:07:33.138Z",
-      "lastSeen": "2026-08-22T21:07:33.138Z"
+      "lastSeen": "2026-08-26T01:14:31.499Z"
     },
     {
       "fingerprint": "security-gate-loop-config-hold",

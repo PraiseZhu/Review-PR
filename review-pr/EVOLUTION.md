@@ -361,6 +361,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
+  - 现象:PR 306 与 310 各有 1 条 greptile-apps P2 conversation 未 resolve。threadTriage 未配置所以不能代 reply/resolve。作者侧可自解，已按 notify-author-resolve 去重跳过（already-commented）。
 - `arch-gate-test-only-huge-diff-semantic-ok` **huge-diff 架构门对纯测试搬运仍触发语义定性——设计如此** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR #310 单文件 3426 行测试主体 BYTE-IDENTICAL 搬运,命中 anyTypeDiffLines=800。语义判定为机械性大 diff/测试列车,不 hold,fallback 因 unresolved thread 跳过。gate 从严正确,不自动豁免 test 类型超大 diff。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 8 次,首见 2026-07-24,最近 2026-08-26,status: tracked
@@ -452,8 +454,6 @@
   - 现象:PR #229 仍有 1 条 greptile thread 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，属设计上等人来。
 - `threads-unresolved-greptile-p2-229` **Greptile P2 thread 未 resolve 会一直挡合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 仍 1 条 greptile conversation 未 resolve；threadTriage 未启用，本轮只去重催 resolve（already-commented），停滞私聊被 24h 跨通道抑制。
-- `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR #229 persist 测试 hook 搬运, 1 条 greptile conversation 未 resolve; 已催 resolve, 本轮因跨通道去重未再私聊。
 - `security-gate-loop-config-awaiting-admin` **loop 配置命中 securityReviewPaths,等 admins Approve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #248 改 scripts/loops/bug-doctor/rules.json 与 scheduler 文档,已 hold issue #249,本轮幂等复用。
 - `skip-threads-unresolved-bot-greptile` **未 resolve 的 bot conversation 挡住合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
