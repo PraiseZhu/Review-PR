@@ -3796,6 +3796,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T08:39:48.416Z",
       "lastSeen": "2026-08-26T08:39:48.416Z"
+    },
+    {
+      "fingerprint": "format-stale-pushback-checkbox",
+      "tier": "by-design",
+      "title": "格式打回后作者未改勾选，本轮跳过",
+      "detail": "PR 306 Self-review 勾选率 2/3，上次已 REQUEST_CHANGES，head 未变，skip-stale-pushback。另有 1 条含真人参与的 unresolved thread。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T09:07:51.954Z",
+      "lastSeen": "2026-08-26T09:07:51.954Z"
     }
   ],
   "escapedHazards": [

@@ -376,6 +376,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `format-stale-pushback-checkbox` **格式打回后作者未改勾选，本轮跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 Self-review 勾选率 2/3，上次已 REQUEST_CHANGES，head 未变，skip-stale-pushback。另有 1 条含真人参与的 unresolved thread。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 6 次,首见 2026-08-21,最近 2026-08-26,status: tracked
   - 现象:PR 316 skip-gate: 1 条 greptile conversation 未 resolve。threadTriage 未启用且 auto-resolve 当前不提供，只能提醒作者点 Resolve。
   - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
