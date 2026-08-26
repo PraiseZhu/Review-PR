@@ -59,6 +59,9 @@ const TITLE_TYPE_RE = new RegExp(`^(${prRules.titleTypes.join('|')})(\\([^)]+\\)
 const LIGHT_TYPES = prRules.lightTypes; // 轻档:不强制段落
 const FEATURE_SECTIONS = prRules.featureSections;
 const BUGFIX_SECTIONS = prRules.bugfixSections;
+const CHECKLIST_SECTION_NAMES = Array.isArray(prRules.checklistSectionNames)
+  ? prRules.checklistSectionNames
+  : ['self-review'];
 const REDLINE_PATH_RE = new RegExp(prRules.redlinePaths.join('|'));
 // CI 配置敏感路径:PR 改了它们 → approve fork workflow 会执行被改过的 CI(详见 approve-workflows.mjs 安全门)
 const CI_SENSITIVE_RE = prRules.ciSensitivePaths?.length ? new RegExp(prRules.ciSensitivePaths.join('|')) : null;
@@ -188,6 +191,40 @@ export function computeTitleFacts(title, loopExclusion) {
   const titleTypeOk = TITLE_TYPE_RE.test(titleForFormat);
   const titleVague = TITLE_VAGUE_RE.test(titleForFormat);
   return { titleForFormat, type, titleTypeOk, titleVague };
+}
+
+/**
+ * 定位 PR body 里的 checklist 段并统计勾选。标题名来自 pr-rules.json 的
+ * checklistSectionNames(缺省/空 = ['self-review'])，按 heading 去 # 后 startsWith
+ * 匹配(大小写不敏感)，只统计该标题到下一个标题之间的 `- [ ]` / `- [x]`。
+ * 不把 featureSections 整表当 checklist——「变更说明」「备注」不是自检清单。
+ */
+export function findChecklistSection(body, names) {
+  const list = (Array.isArray(names) ? names : [])
+    .filter((s) => typeof s === 'string' && s.trim() !== '')
+    .map((s) => s.trim());
+  const wanted = list.length ? list : ['self-review'];
+  const headingRe = /^(#{1,6})\s+(.+?)\s*$/gm;
+  let match;
+  while ((match = headingRe.exec(body ?? '')) !== null) {
+    const title = match[2].trim();
+    const hit = wanted.find((name) => title.toLowerCase().startsWith(name.toLowerCase()));
+    if (!hit) continue;
+    const rest = body.slice(match.index + match[0].length);
+    const nextHeading = rest.search(/^#{1,6}\s/m);
+    const sectionBody = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+    const total = (sectionBody.match(/^\s*- \[[ xX]\]/gm) ?? []).length;
+    const done = (sectionBody.match(/^\s*- \[[xX]\]/gm) ?? []).length;
+    return {
+      hasSection: true,
+      heading: match[0],
+      matchedName: hit,
+      total,
+      done,
+      ratio: total > 0 ? done / total : 0,
+    };
+  }
+  return { hasSection: false, heading: null, matchedName: null, total: 0, done: 0, ratio: 0 };
 }
 
 // ── 前置门判定常量(复刻 SKILL.md 1.6.5)──
@@ -446,19 +483,13 @@ try {
   for (const h of wantSections) sections[h] = new RegExp('^#{1,6}\\s+.*' + escRe(h), 'im').test(body);
   const missingSections = wantSections.filter((h) => !sections[h]);
 
-  // checklist 统计只限 self-review 标题到下一个标题之间的段内复选框——
+  // checklist 统计只限配置的自检标题到下一个标题之间的段内复选框——
   // description 别处的普通 TODO 清单(如「后续拆 issue」)不计入分母,防止勾选率被稀释误报。
-  const checklistHeading = body.match(/^#+\s*self-review.*$/im);
-  let checklistBody = '';
-  if (checklistHeading) {
-    const rest = body.slice(checklistHeading.index + checklistHeading[0].length);
-    const nextHeading = rest.search(/^#{1,6}\s/m);
-    checklistBody = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
-  }
-  const checklistHasSection = checklistHeading != null;
-  const checklistTotal = (checklistBody.match(/^\s*- \[[ xX]\]/gm) ?? []).length;
-  const checklistDone = (checklistBody.match(/^\s*- \[[xX]\]/gm) ?? []).length;
-  const checklistRatio = checklistTotal > 0 ? checklistDone / checklistTotal : 0;
+  const checklist = findChecklistSection(body, CHECKLIST_SECTION_NAMES);
+  const checklistHasSection = checklist.hasSection;
+  const checklistTotal = checklist.total;
+  const checklistDone = checklist.done;
+  const checklistRatio = checklist.ratio;
 
   const redlinePaths = files.map((f) => f.path).filter((p) => REDLINE_PATH_RE.test(p));
   const hitsUpdater = redlinePaths.some((p) => /updater/.test(p));
