@@ -3757,6 +3757,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T07:06:19.037Z",
       "lastSeen": "2026-08-26T07:06:19.037Z"
+    },
+    {
+      "fingerprint": "format-checkbox-stale-skip",
+      "tier": "by-design",
+      "title": "格式门自检勾选未满且已打回，作者未新 commit 则跳过",
+      "detail": "PR 306 Self-review 2/3，CHANGES_REQUESTED 后无新 commit；另有 1 条 Greptile conversation 未 resolve。属作者侧收尾，不自动代勾/代 resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T08:39:33.136Z",
+      "lastSeen": "2026-08-26T08:39:33.136Z"
     }
   ],
   "escapedHazards": [
