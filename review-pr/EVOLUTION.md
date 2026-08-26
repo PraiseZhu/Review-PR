@@ -376,15 +376,15 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 6 次,首见 2026-08-21,最近 2026-08-26,status: tracked
+  - 现象:PR 316 skip-gate: 1 条 greptile conversation 未 resolve。threadTriage 未启用且 auto-resolve 当前不提供，只能提醒作者点 Resolve。
+  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
 - `arch-gate-huge-diff-test-only` **huge-diff 架构门对纯测试搬运需语义判定为机械性大 diff** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 310 单文件 3426 行测试搬运，anyTypeDiffLines≥800 触发 arch-gate；主 agent 定性非架构调整后进审查并合并。
 - `format-checkbox-stale-skip` **格式门自检勾选未满且已打回，作者未新 commit 则跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 Self-review 2/3，CHANGES_REQUESTED 后无新 commit；另有 1 条 Greptile conversation 未 resolve。属作者侧收尾，不自动代勾/代 resolve。
 - `format-self-review-checkbox-stale-pushback` **格式门 self-review 勾选率不足需作者改 body** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 自检第三项未勾选，当前 head 已 CHANGES_REQUESTED，skip-stale-pushback。
-- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 5 次,首见 2026-08-21,最近 2026-08-26,status: tracked
-  - 现象:PR 306/310 各 1 条 greptile conversation 未 resolve；作者已回复 306 仍未点 Resolve。threadTriage 未启用属设计。
-  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
 - `skip-stale-format-checkbox` **格式打回后作者未改 PR body 勾选，跳过重复打回** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:#306 Self-review 2/3，上次已 REQUEST_CHANGES，作者只推了 allexport 代码修未改勾选。
 - `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
