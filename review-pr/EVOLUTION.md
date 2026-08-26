@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-src-test-file` **src/ 下测试文件误触产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 306 feat+命中 src/lib/assetService.test.ts 被判 product-gate；语义为 ops 部署与回归测试，不是产品/UI。uiPaths 含 src/ 且未排除 *.test.ts。
+  - 提案:在目标仓 uiExcludePaths 或 uiPaths 判定中排除 **/*.test.ts 与 **/*.spec.ts，避免测试文件触发产品门语义定性。
 - `product-gate-test-path-false-positive` **feat 类型命中测试路径被标成产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 306 是部署脚本与测试（src/lib/assetService.test.ts），auto.action=product-gate。语义定性后按 fallback skip-stale-pushback，未 hold。uiPaths 含 src/ 会把测试文件算进 UI。
   - 提案:评估 uiPaths 是否应排除 *.test.ts / 测试夹具，避免部署/测试 PR 误进产品门。

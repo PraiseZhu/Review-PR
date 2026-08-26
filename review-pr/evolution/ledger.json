@@ -3653,6 +3653,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T01:14:35.836Z",
       "lastSeen": "2026-08-26T01:14:35.836Z"
+    },
+    {
+      "fingerprint": "product-gate-src-test-file",
+      "tier": "proposal",
+      "title": "src/ 下测试文件误触产品门",
+      "detail": "PR 306 feat+命中 src/lib/assetService.test.ts 被判 product-gate；语义为 ops 部署与回归测试，不是产品/UI。uiPaths 含 src/ 且未排除 *.test.ts。",
+      "proposal": "在目标仓 uiExcludePaths 或 uiPaths 判定中排除 **/*.test.ts 与 **/*.spec.ts，避免测试文件触发产品门语义定性。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T02:07:14.197Z",
+      "lastSeen": "2026-08-26T02:07:14.197Z"
     }
   ],
   "escapedHazards": [
