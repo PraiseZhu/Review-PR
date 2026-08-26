@@ -376,6 +376,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `review-agent-stream-idle-timeout-placeholder-rro` **隔离审查席 stream idle timeout 只留下占位 rro-1,本轮按 timeout skip 不得沿用清白** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 阶段二 isolation worktree 审查席两次未交卷:第一次 API stream idle timeout,续写后又被会话中断。rro-1.json 仍是占位对象。consume-review-output 已写 non-clean/invalid 回执(attempts=1)。根因属宿主流超时/会话回收,不是审查规则漏判。
 - `format-stale-pushback-checkbox` **格式打回后作者未改勾选，本轮跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 Self-review 勾选率 2/3，上次已 REQUEST_CHANGES，head 未变，skip-stale-pushback。另有 1 条含真人参与的 unresolved thread。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 6 次,首见 2026-08-21,最近 2026-08-26,status: tracked

@@ -3809,6 +3809,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T09:07:51.954Z",
       "lastSeen": "2026-08-26T09:07:51.954Z"
+    },
+    {
+      "fingerprint": "review-agent-stream-idle-timeout-placeholder-rro",
+      "tier": "by-design",
+      "title": "隔离审查席 stream idle timeout 只留下占位 rro-1,本轮按 timeout skip 不得沿用清白",
+      "detail": "PR 306 阶段二 isolation worktree 审查席两次未交卷:第一次 API stream idle timeout,续写后又被会话中断。rro-1.json 仍是占位对象。consume-review-output 已写 non-clean/invalid 回执(attempts=1)。根因属宿主流超时/会话回收,不是审查规则漏判。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T11:14:48.455Z",
+      "lastSeen": "2026-08-26T11:14:48.455Z"
     }
   ],
   "escapedHazards": [
