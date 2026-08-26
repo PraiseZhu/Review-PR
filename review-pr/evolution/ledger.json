@@ -3692,6 +3692,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T03:09:58.699Z",
       "lastSeen": "2026-08-26T03:09:58.699Z"
+    },
+    {
+      "fingerprint": "unresolved-greptile-thread-blocks-merge",
+      "tier": "by-design",
+      "title": "Greptile P2 thread 未 resolve 挡住合并",
+      "detail": "PR 306/310 各 1 条 greptile conversation 未 resolve。threadTriage 未启用，不可代 resolve；作者需点 Resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T03:10:03.126Z",
+      "lastSeen": "2026-08-26T03:10:03.126Z"
     }
   ],
   "escapedHazards": [

@@ -370,6 +370,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-greptile-thread-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306/310 各 1 条 greptile conversation 未 resolve。threadTriage 未启用，不可代 resolve；作者需点 Resolve。
 - `format-self-review-checkbox-unfilled` **作者未勾选 PR 模板自检第三项（checks 已触发）** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 格式门 Self-review 2/3。作者新 commit 后勾选仍缺，属作者侧文案动作，不可代勾。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 4 次,首见 2026-08-21,最近 2026-08-26,status: tracked
