@@ -3783,6 +3783,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T08:39:37.704Z",
       "lastSeen": "2026-08-26T08:39:37.704Z"
+    },
+    {
+      "fingerprint": "product-gate-hits-test-files",
+      "tier": "proposal",
+      "title": "uiPaths 命中测试文件会把 ops PR 送进产品门",
+      "detail": "PR 306 唯一 UI 命中是 src/lib/assetService.test.ts，语义判定非产品改动后走 fallback。",
+      "proposal": "评估 uiExcludePaths 是否覆盖 src/**/*.test.ts；拍板前保持现状、靠语义定性。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T08:39:48.416Z",
+      "lastSeen": "2026-08-26T08:39:48.416Z"
     }
   ],
   "escapedHazards": [

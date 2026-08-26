@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-hits-test-files` **uiPaths 命中测试文件会把 ops PR 送进产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 306 唯一 UI 命中是 src/lib/assetService.test.ts，语义判定非产品改动后走 fallback。
+  - 提案:评估 uiExcludePaths 是否覆盖 src/**/*.test.ts；拍板前保持现状、靠语义定性。
 - `product-gate-test-under-src` **feat 加 src 测试文件误亮产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 306 因 feat 且命中 uiPaths(src/lib/assetService.test.ts) 进 product-gate；语义实为部署注入加测试，非产品 UI。uiPaths 含 src/ 且 uiExcludePaths 未排除测试文件。
   - 提案:考虑把测试文件纳入 uiExcludePaths，避免纯测试改动误亮产品门。属放宽触发面，需维护者拍板。
