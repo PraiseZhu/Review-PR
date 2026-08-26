@@ -379,6 +379,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `author-draft-no-reviewable-candidates` **open PR 全是作者 Draft，无可审候选** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:本轮 scan-all 0 候选。#319/#320/#321/#322 均为 PraiseZhu 自开 stacked OIDC draft（p1-jwt → p3-persist → p2-plugin → p4-attach），按 author-draft 跳过，不审不合不催。
 - `review-agent-stream-idle-timeout-placeholder-rro` **隔离审查席 stream idle timeout 只留下占位 rro-1,本轮按 timeout skip 不得沿用清白** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 阶段二 isolation worktree 审查席两次未交卷:第一次 API stream idle timeout,续写后又被会话中断。rro-1.json 仍是占位对象。consume-review-output 已写 non-clean/invalid 回执(attempts=1)。根因属宿主流超时/会话回收,不是审查规则漏判。
 - `format-stale-pushback-checkbox` **格式打回后作者未改勾选，本轮跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked

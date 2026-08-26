@@ -3835,6 +3835,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T13:32:35.511Z",
       "lastSeen": "2026-08-26T13:32:35.511Z"
+    },
+    {
+      "fingerprint": "author-draft-no-reviewable-candidates",
+      "tier": "by-design",
+      "title": "open PR 全是作者 Draft，无可审候选",
+      "detail": "本轮 scan-all 0 候选。#319/#320/#321/#322 均为 PraiseZhu 自开 stacked OIDC draft（p1-jwt → p3-persist → p2-plugin → p4-attach），按 author-draft 跳过，不审不合不催。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T14:06:26.520Z",
+      "lastSeen": "2026-08-26T14:06:26.520Z"
     }
   ],
   "escapedHazards": [
