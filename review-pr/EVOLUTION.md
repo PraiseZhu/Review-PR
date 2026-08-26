@@ -361,6 +361,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `arch-gate-test-only-huge-diff-semantic-ok` **huge-diff 架构门对纯测试搬运仍触发语义定性——设计如此** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR #310 单文件 3426 行测试主体 BYTE-IDENTICAL 搬运,命中 anyTypeDiffLines=800。语义判定为机械性大 diff/测试列车,不 hold,fallback 因 unresolved thread 跳过。gate 从严正确,不自动豁免 test 类型超大 diff。
 - `by-design-threads-unresolved` **PR 因 unresolved thread 或冲突无法合并,等作者处理** — 出现 8 次,首见 2026-07-24,最近 2026-08-26,status: tracked
   - 现象:本轮 #306 Greptile P2 allexport thread 未 resolve(格式打回已 stale skip);#310 Greptile P2 IndexedDB finally thread 未 resolve。均已 already-commented,不重复催。设计上等作者点 Resolve。
 - `lock-busy-dead-heartbeat-ttl-not-expired` **锁被死心跳进程占着，TTL 未到不能接管** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked

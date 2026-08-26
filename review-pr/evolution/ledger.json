@@ -3627,6 +3627,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-25T23:04:54.618Z",
       "lastSeen": "2026-08-25T23:04:54.618Z"
+    },
+    {
+      "fingerprint": "arch-gate-test-only-huge-diff-semantic-ok",
+      "tier": "by-design",
+      "title": "huge-diff 架构门对纯测试搬运仍触发语义定性——设计如此",
+      "detail": "PR #310 单文件 3426 行测试主体 BYTE-IDENTICAL 搬运,命中 anyTypeDiffLines=800。语义判定为机械性大 diff/测试列车,不 hold,fallback 因 unresolved thread 跳过。gate 从严正确,不自动豁免 test 类型超大 diff。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T00:18:41.034Z",
+      "lastSeen": "2026-08-26T00:18:41.034Z"
     }
   ],
   "escapedHazards": [
