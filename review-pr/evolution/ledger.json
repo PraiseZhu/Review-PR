@@ -3770,6 +3770,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T08:39:33.136Z",
       "lastSeen": "2026-08-26T08:39:33.136Z"
+    },
+    {
+      "fingerprint": "arch-gate-huge-diff-test-only",
+      "tier": "by-design",
+      "title": "huge-diff 架构门对纯测试搬运需语义判定为机械性大 diff",
+      "detail": "PR 310 单文件 3426 行测试搬运，anyTypeDiffLines≥800 触发 arch-gate；主 agent 定性非架构调整后进审查并合并。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T08:39:37.704Z",
+      "lastSeen": "2026-08-26T08:39:37.704Z"
     }
   ],
   "escapedHazards": [

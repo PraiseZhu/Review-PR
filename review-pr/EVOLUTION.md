@@ -373,6 +373,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `arch-gate-huge-diff-test-only` **huge-diff 架构门对纯测试搬运需语义判定为机械性大 diff** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 310 单文件 3426 行测试搬运，anyTypeDiffLines≥800 触发 arch-gate；主 agent 定性非架构调整后进审查并合并。
 - `format-checkbox-stale-skip` **格式门自检勾选未满且已打回，作者未新 commit 则跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 Self-review 2/3，CHANGES_REQUESTED 后无新 commit；另有 1 条 Greptile conversation 未 resolve。属作者侧收尾，不自动代勾/代 resolve。
 - `format-self-review-checkbox-stale-pushback` **格式门 self-review 勾选率不足需作者改 body** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
