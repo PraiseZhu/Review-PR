@@ -3705,6 +3705,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T03:10:03.126Z",
       "lastSeen": "2026-08-26T03:10:03.126Z"
+    },
+    {
+      "fingerprint": "arch-gate-mechanical-test-copy",
+      "tier": "by-design",
+      "title": "测试文件机械大 diff 亮架构门后语义回退",
+      "detail": "PR 310 单文件 3426 行测试搬运触发 huge-diff≥800；语义判定为机械性大 diff，走 fallback skip-gate。门阈值工作符合设计。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T04:08:20.844Z",
+      "lastSeen": "2026-08-26T04:08:20.844Z"
     }
   ],
   "escapedHazards": [

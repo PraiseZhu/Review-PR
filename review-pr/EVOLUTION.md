@@ -370,6 +370,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `arch-gate-mechanical-test-copy` **测试文件机械大 diff 亮架构门后语义回退** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 310 单文件 3426 行测试搬运触发 huge-diff≥800；语义判定为机械性大 diff，走 fallback skip-gate。门阈值工作符合设计。
 - `unresolved-greptile-thread-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306/310 各 1 条 greptile conversation 未 resolve。threadTriage 未启用，不可代 resolve；作者需点 Resolve。
 - `format-self-review-checkbox-unfilled` **作者未勾选 PR 模板自检第三项（checks 已触发）** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
