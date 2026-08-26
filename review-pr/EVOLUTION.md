@@ -364,6 +364,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 4 次,首见 2026-08-21,最近 2026-08-26,status: tracked
+  - 现象:PR 306/310 各 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未配置，auto 不能代 reply/resolve。属设计上该人来。
+  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
 - `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
   - 现象:PR 306 与 310 各有 1 条 greptile-apps P2 conversation 未 resolve。threadTriage 未配置所以不能代 reply/resolve。作者侧可自解，已按 notify-author-resolve 去重跳过（already-commented）。
 - `arch-gate-test-only-huge-diff-semantic-ok` **huge-diff 架构门对纯测试搬运仍触发语义定性——设计如此** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
@@ -431,9 +434,6 @@
   - 现象:PR #260 mergeStateStatus=BLOCKED，CI / PR size gate (hardened) 未完成。selfFix=true 但 5.4 规定 CI pending 只等待不投递。
 - `skip-unresolved-greptile-thread-no-triage` **未 resolve 的 greptile thread 卡 skip-gate，threadTriage 未启用故不代处理** — 出现 4 次,首见 2026-08-22,最近 2026-08-23,status: tracked
   - 现象:PR #257 仍有 greptile thread 未 resolve；threadTriage 未配置，auto 不代 reply/resolve。selfFix 已把 Resolve 写进跟进会话卡点。
-- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 3 次,首见 2026-08-21,最近 2026-08-23,status: tracked
-  - 现象:PR 229 greptile-apps 一条 P2 thread 未 resolve,gate 跳过。threadTriage 未配置,auto 不能代 reply/resolve。作者侧可点 Resolve。
-  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
 - `skip-unresolved-bot-thread-persist-hooks` **非白名单作者 PR 因 greptile thread 未 resolve 卡住，auto 不能代点 Resolve** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #229 persist test-hook 搬运，1 条 greptile conversation 未 resolve；threadTriage 未启用，notify-author-resolve 已去重，stale 私聊被跨通道抑制。
 - `security-gate-loop-scripts-hold` **命中 bug-doctor 执行面走 security hold** — 出现 1 次,首见 2026-08-23,最近 2026-08-23,status: tracked
