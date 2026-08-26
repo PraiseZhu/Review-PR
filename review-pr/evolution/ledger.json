@@ -3679,6 +3679,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T02:07:18.547Z",
       "lastSeen": "2026-08-26T02:07:18.547Z"
+    },
+    {
+      "fingerprint": "format-self-review-checkbox-unfilled",
+      "tier": "by-design",
+      "title": "作者未勾选 PR 模板自检第三项（checks 已触发）",
+      "detail": "PR 306 格式门 Self-review 2/3。作者新 commit 后勾选仍缺，属作者侧文案动作，不可代勾。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T03:09:58.699Z",
+      "lastSeen": "2026-08-26T03:09:58.699Z"
     }
   ],
   "escapedHazards": [
