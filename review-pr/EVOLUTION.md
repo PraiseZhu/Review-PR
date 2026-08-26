@@ -373,6 +373,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
+  - 现象:本轮 #306/#310 均因 1 条 greptile conversation 未 resolve 被 skip-gate。threadTriage 未启用属设计，不自动 resolve 他人 thread。
 - `arch-gate-mechanical-test-copy` **测试文件机械大 diff 亮架构门后语义回退** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 310 单文件 3426 行测试搬运触发 huge-diff≥800；语义判定为机械性大 diff，走 fallback skip-gate。门阈值工作符合设计。
 - `unresolved-greptile-thread-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
@@ -484,8 +486,6 @@
   - 现象:PR #229 因 greptile-apps 一条 P2 thread（writeRetryQueue 复位遗漏 tombstone）未 resolve 被 skip-gate。threadTriage 未配置故不代 reply/resolve。已有催 resolve 评论（already-commented），停滞 22.3h 未到 24h 阈值。属设计上等人点 Resolve，不自动放开。
 - `skip-threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 导致 skip-gate** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 被 skip-gate:threads-unresolved。唯一未 resolve thread 是 greptile-apps 的 P2（writeRetryQueue 复位未清 idTombstones）。threadTriage 未启用（D7），auto 不得代 resolve。已有催 resolve 评论，本轮 already-commented。
-- `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR #229 仅剩 1 条 greptile-apps P2 thread（writeRetryQueue 复位未清 idTombstones）。threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，去重跳过；停滞未满 24h。
 - `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 4 次,首见 2026-08-21,最近 2026-08-22,status: tracked
   - 现象:PR #229 仅剩 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未启用，auto 只能催 resolve 不能代关。作者 zhongxingtian-ai 不在 selfFixAuthors。
 - `skip-unresolved-greptile-bot-thread` **bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
