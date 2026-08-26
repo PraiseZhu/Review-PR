@@ -373,6 +373,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `format-self-review-checkbox-stale-pushback` **格式门 self-review 勾选率不足需作者改 body** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 自检第三项未勾选，当前 head 已 CHANGES_REQUESTED，skip-stale-pushback。
 - `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 5 次,首见 2026-08-21,最近 2026-08-26,status: tracked
   - 现象:PR 306/310 各 1 条 greptile conversation 未 resolve；作者已回复 306 仍未点 Resolve。threadTriage 未启用属设计。
   - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。

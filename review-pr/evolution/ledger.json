@@ -3744,6 +3744,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T06:07:54.701Z",
       "lastSeen": "2026-08-26T06:07:54.701Z"
+    },
+    {
+      "fingerprint": "format-self-review-checkbox-stale-pushback",
+      "tier": "by-design",
+      "title": "格式门 self-review 勾选率不足需作者改 body",
+      "detail": "PR 306 自检第三项未勾选，当前 head 已 CHANGES_REQUESTED，skip-stale-pushback。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T07:06:19.037Z",
+      "lastSeen": "2026-08-26T07:06:19.037Z"
     }
   ],
   "escapedHazards": [
