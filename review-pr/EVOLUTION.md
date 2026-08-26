@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `arch-gate-test-only-huge-diff` **纯测试大 diff 误触架构门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 310 单文件 writeRetryQueue.test.ts 3426 行 BYTE-IDENTICAL 搬运，anyTypeDiffLines=800 触发 huge-diff。语义为机械性大 diff，不是架构调整。
+  - 提案:anyTypeDiffLines 统计排除测试文件，或 huge-diff 在 files 全为 test 时不进 arch-gate。
 - `product-gate-src-test-file` **src/ 下测试文件误触产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 306 feat+命中 src/lib/assetService.test.ts 被判 product-gate；语义为 ops 部署与回归测试，不是产品/UI。uiPaths 含 src/ 且未排除 *.test.ts。
   - 提案:在目标仓 uiExcludePaths 或 uiPaths 判定中排除 **/*.test.ts 与 **/*.spec.ts，避免测试文件触发产品门语义定性。
