@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `product-gate-test-under-src` **feat 加 src 测试文件误亮产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 306 因 feat 且命中 uiPaths(src/lib/assetService.test.ts) 进 product-gate；语义实为部署注入加测试，非产品 UI。uiPaths 含 src/ 且 uiExcludePaths 未排除测试文件。
+  - 提案:考虑把测试文件纳入 uiExcludePaths，避免纯测试改动误亮产品门。属放宽触发面，需维护者拍板。
 - `arch-gate-test-only-huge-diff` **纯测试大 diff 误触架构门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 310 单文件 writeRetryQueue.test.ts 3426 行 BYTE-IDENTICAL 搬运，anyTypeDiffLines=800 触发 huge-diff。语义为机械性大 diff，不是架构调整。
   - 提案:anyTypeDiffLines 统计排除测试文件，或 huge-diff 在 files 全为 test 时不进 arch-gate。
