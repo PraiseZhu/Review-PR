@@ -373,6 +373,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-stale-format-checkbox` **格式打回后作者未改 PR body 勾选，跳过重复打回** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:#306 Self-review 2/3，上次已 REQUEST_CHANGES，作者只推了 allexport 代码修未改勾选。
 - `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
   - 现象:本轮 #306/#310 均因 1 条 greptile conversation 未 resolve 被 skip-gate。threadTriage 未启用属设计，不自动 resolve 他人 thread。
 - `arch-gate-mechanical-test-copy` **测试文件机械大 diff 亮架构门后语义回退** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked

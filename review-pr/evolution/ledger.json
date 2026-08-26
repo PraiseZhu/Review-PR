@@ -3731,6 +3731,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T04:08:43.453Z",
       "lastSeen": "2026-08-26T04:08:43.453Z"
+    },
+    {
+      "fingerprint": "skip-stale-format-checkbox",
+      "tier": "by-design",
+      "title": "格式打回后作者未改 PR body 勾选，跳过重复打回",
+      "detail": "#306 Self-review 2/3，上次已 REQUEST_CHANGES，作者只推了 allexport 代码修未改勾选。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-26T06:07:54.701Z",
+      "lastSeen": "2026-08-26T06:07:54.701Z"
     }
   ],
   "escapedHazards": [
