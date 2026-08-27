@@ -3900,6 +3900,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T10:15:03.954Z",
       "lastSeen": "2026-08-27T10:15:03.954Z"
+    },
+    {
+      "fingerprint": "review-agent-rro1-shape-mismatch",
+      "tier": "proposal",
+      "title": "审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过",
+      "detail": "PR #329 auto 轮实测:agent 回执含全部语义内容但字段名/形状与 lib.review-consume.mjs 校验不一致(attempts 记 2 次 invalid)。技能提示词里 JSON 样例已有字段名,但审查 agent 实际按任务 prompt 的自由发挥输出了 path 键。教训:prompt 中样例应加'逐字使用这些字段名'的硬性指令,或在 deliver/consume 层提供宽容映射。",
+      "proposal": "在 spawn 审查 agent 的任务模板中,把 rro-1 字段名列成不可改名清单并附最小可过校验的样例;或给 consume-review-output 加 --shape-fix 模式做确定性映射(path→fileId 依 snapshot 解析)。改动涉及判定链路,需维护者确认影响面后落地。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T12:06:56.367Z",
+      "lastSeen": "2026-08-27T12:06:56.367Z"
     }
   ],
   "escapedHazards": [

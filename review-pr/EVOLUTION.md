@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-rro1-shape-mismatch` **审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR #329 auto 轮实测:agent 回执含全部语义内容但字段名/形状与 lib.review-consume.mjs 校验不一致(attempts 记 2 次 invalid)。技能提示词里 JSON 样例已有字段名,但审查 agent 实际按任务 prompt 的自由发挥输出了 path 键。教训:prompt 中样例应加'逐字使用这些字段名'的硬性指令,或在 deliver/consume 层提供宽容映射。
+  - 提案:在 spawn 审查 agent 的任务模板中,把 rro-1 字段名列成不可改名清单并附最小可过校验的样例;或给 consume-review-output 加 --shape-fix 模式做确定性映射(path→fileId 依 snapshot 解析)。改动涉及判定链路,需维护者确认影响面后落地。
 - `review-scripts-require-repo-root-env-not-bare-cd` **审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:auto 轮 2026-08-27 mivo-canvas-plugin PR#323：build-review-task.mjs 在非 git 目录下跑出 task(snapshotHash=null/escapeSourceIncomplete)，deliver 直接拒绝，consume 判 invalid 浪费一轮；原因=REPO_ROOT 取 process.env.REVIEW_PR_REPO_ROOT||process.cwd()，编排层只在部分调用点显式设了 env。
   - 提案:把『所有确定性脚本一律显式 export REVIEW_PR_REPO_ROOT=<仓库根>』升级为 SKILL.md auto 流程的硬步骤（替代仅靠 cd 的现行说法），避免宿主 cwd 重置或编排层临时切目录造成静默 incomplete task
