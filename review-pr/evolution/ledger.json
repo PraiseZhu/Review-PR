@@ -3939,6 +3939,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T13:52:43.616Z",
       "lastSeen": "2026-08-27T13:52:43.616Z"
+    },
+    {
+      "fingerprint": "archived-fix-session-recreate-dispatch",
+      "tier": "proposal",
+      "title": "fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree）",
+      "detail": "PR #337 review-failed 投递：jump 模式 target_session_id=已归档会话 + working_dir/use_worktree/title 均按 create 形态传 → ARCHIVED（jump 模式忽略 create 字段，归档目标直接拒）。SKILL 5.4 失败处理只写'目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ clear 后改走新建重试一次'，但 agent 首次重试仍带了 target_session_id，又吃一次 ARCHIVED；正确形态是去掉 target_session_id 纯 create + working_dir 指向仓库根 + use_worktree=true。无业务损失（第二次新建成功），但多花一轮失败调用。",
+      "proposal": "5.4 失败处理加一句操作细节：clear 绑定后新建时不得再带 target_session_id（create 模式的判定键），working_dir 传目标仓库根，use_worktree=true。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T14:36:53.819Z",
+      "lastSeen": "2026-08-27T14:36:53.819Z"
     }
   ],
   "escapedHazards": [

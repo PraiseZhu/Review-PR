@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `archived-fix-session-recreate-dispatch` **fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree）** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR #337 review-failed 投递：jump 模式 target_session_id=已归档会话 + working_dir/use_worktree/title 均按 create 形态传 → ARCHIVED（jump 模式忽略 create 字段，归档目标直接拒）。SKILL 5.4 失败处理只写'目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ clear 后改走新建重试一次'，但 agent 首次重试仍带了 target_session_id，又吃一次 ARCHIVED；正确形态是去掉 target_session_id 纯 create + working_dir 指向仓库根 + use_worktree=true。无业务损失（第二次新建成功），但多花一轮失败调用。
+  - 提案:5.4 失败处理加一句操作细节：clear 绑定后新建时不得再带 target_session_id（create 模式的判定键），working_dir 传目标仓库根，use_worktree=true。
 - `pr328-security-rules-gate-hold-consolidated` **PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:PR 328(作者 aj0928,admins 名单)同时命中 securityReviewPaths(package.json)与 ruleFiles.required(AGENTS.md)两门,issue #330 hold 已挂。本轮已完成阶段二独立审查:P0/P1=0,clean 回执绑定 head 8602180,实测 run-vitest 启动器 6+15 用例全绿。signoff.released=false(unconfirmed-kinds: rules/security),讨论 issue 无同意评论,无 admins Approve;按门类持久规则不自动放行
   - 提案:扩权类,不自动落地:owner 在 https://github.com/xindong/mivo-canvas-plugin/pull/328 当前 head Approve 或在讨论 issue #330 回复同意,下轮扫描 releaseBasis 生效后按 fallback 合并
