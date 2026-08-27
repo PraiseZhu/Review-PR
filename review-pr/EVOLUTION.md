@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-context-overflow` **审查 agent 派发默认应指令落文件+分块投递，防上下文超限** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:本轮 3 次 agent 因 autocompact thrashing 被杀（334 两次、332 一次）。334 用「指令写入 /tmp 文件 + prompt 只留一句指路 + payload 按 hunk 分块」后成功（114 tool uses 完成）；332 同样处理仍失败，说明 37-key 大 PR 仍有残余风险。
+  - 提案:SKILL.md 第 4 节审查 agent 任务模板加入默认纪律：主 agent 把完整指令写入 STATE_DIR 外的临时文件，Agent prompt 只留一句路径引用；deliver payload >50KB 时主 agent 预先按 section 分块（每块 ≤14KB）再投给审查会话；连续 2 次超限的 PR 记 blocked 转人工而非反复重试。
 - `archived-fix-session-recreate-dispatch` **fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree）** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:PR #337 review-failed 投递：jump 模式 target_session_id=已归档会话 + working_dir/use_worktree/title 均按 create 形态传 → ARCHIVED（jump 模式忽略 create 字段，归档目标直接拒）。SKILL 5.4 失败处理只写'目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ clear 后改走新建重试一次'，但 agent 首次重试仍带了 target_session_id，又吃一次 ARCHIVED；正确形态是去掉 target_session_id 纯 create + working_dir 指向仓库根 + use_worktree=true。无业务损失（第二次新建成功），但多花一轮失败调用。
   - 提案:5.4 失败处理加一句操作细节：clear 绑定后新建时不得再带 target_session_id（create 模式的判定键），working_dir 传目标仓库根，use_worktree=true。

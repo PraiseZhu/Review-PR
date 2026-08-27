@@ -3952,6 +3952,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T14:36:53.819Z",
       "lastSeen": "2026-08-27T14:36:53.819Z"
+    },
+    {
+      "fingerprint": "review-agent-context-overflow",
+      "tier": "proposal",
+      "title": "审查 agent 派发默认应指令落文件+分块投递，防上下文超限",
+      "detail": "本轮 3 次 agent 因 autocompact thrashing 被杀（334 两次、332 一次）。334 用「指令写入 /tmp 文件 + prompt 只留一句指路 + payload 按 hunk 分块」后成功（114 tool uses 完成）；332 同样处理仍失败，说明 37-key 大 PR 仍有残余风险。",
+      "proposal": "SKILL.md 第 4 节审查 agent 任务模板加入默认纪律：主 agent 把完整指令写入 STATE_DIR 外的临时文件，Agent prompt 只留一句路径引用；deliver payload >50KB 时主 agent 预先按 section 分块（每块 ≤14KB）再投给审查会话；连续 2 次超限的 PR 记 blocked 转人工而非反复重试。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T18:51:18.713Z",
+      "lastSeen": "2026-08-27T18:51:18.713Z"
     }
   ],
   "escapedHazards": [
