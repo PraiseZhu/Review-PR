@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `pr328-security-rules-gate-hold-consolidated` **PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR 328(作者 aj0928,admins 名单)同时命中 securityReviewPaths(package.json)与 ruleFiles.required(AGENTS.md)两门,issue #330 hold 已挂。本轮已完成阶段二独立审查:P0/P1=0,clean 回执绑定 head 8602180,实测 run-vitest 启动器 6+15 用例全绿。signoff.released=false(unconfirmed-kinds: rules/security),讨论 issue 无同意评论,无 admins Approve;按门类持久规则不自动放行
+  - 提案:扩权类,不自动落地:owner 在 https://github.com/xindong/mivo-canvas-plugin/pull/328 当前 head Approve 或在讨论 issue #330 回复同意,下轮扫描 releaseBasis 生效后按 fallback 合并
 - `review-agent-rro1-shape-mismatch` **审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:PR #329 auto 轮实测:agent 回执含全部语义内容但字段名/形状与 lib.review-consume.mjs 校验不一致(attempts 记 2 次 invalid)。技能提示词里 JSON 样例已有字段名,但审查 agent 实际按任务 prompt 的自由发挥输出了 path 键。教训:prompt 中样例应加'逐字使用这些字段名'的硬性指令,或在 deliver/consume 层提供宽容映射。
   - 提案:在 spawn 审查 agent 的任务模板中,把 rro-1 字段名列成不可改名清单并附最小可过校验的样例;或给 consume-review-output 加 --shape-fix 模式做确定性映射(path→fileId 依 snapshot 解析)。改动涉及判定链路,需维护者确认影响面后落地。

@@ -3926,6 +3926,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T13:52:25.148Z",
       "lastSeen": "2026-08-27T13:52:25.148Z"
+    },
+    {
+      "fingerprint": "pr328-security-rules-gate-hold-consolidated",
+      "tier": "proposal",
+      "title": "PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head",
+      "detail": "PR 328(作者 aj0928,admins 名单)同时命中 securityReviewPaths(package.json)与 ruleFiles.required(AGENTS.md)两门,issue #330 hold 已挂。本轮已完成阶段二独立审查:P0/P1=0,clean 回执绑定 head 8602180,实测 run-vitest 启动器 6+15 用例全绿。signoff.released=false(unconfirmed-kinds: rules/security),讨论 issue 无同意评论,无 admins Approve;按门类持久规则不自动放行",
+      "proposal": "扩权类,不自动落地:owner 在 https://github.com/xindong/mivo-canvas-plugin/pull/328 当前 head Approve 或在讨论 issue #330 回复同意,下轮扫描 releaseBasis 生效后按 fallback 合并",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T13:52:43.616Z",
+      "lastSeen": "2026-08-27T13:52:43.616Z"
     }
   ],
   "escapedHazards": [
