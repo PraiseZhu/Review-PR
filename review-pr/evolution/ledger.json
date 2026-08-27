@@ -3874,6 +3874,32 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T02:17:57.131Z",
       "lastSeen": "2026-08-27T02:17:57.131Z"
+    },
+    {
+      "fingerprint": "format-gate-notes-section-working-as-designed",
+      "tier": "by-design",
+      "title": "PR 329 格式门打回与 PR 328 security 门 hold 均为流程按设计运转，无自动化缺口",
+      "detail": "329 缺「备注」段属作者侧输入不完整（context.mjs 已机器判出，打回路径正确）；328 改 package.json 属维护者确认类，by-design。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T08:09:56.466Z",
+      "lastSeen": "2026-08-27T08:09:56.466Z"
+    },
+    {
+      "fingerprint": "format-gate-note-section-missing-r329",
+      "tier": "by-design",
+      "title": "PR 329 二次打回：备注段仍未补——作者侧待修，无自动化缺口",
+      "detail": "PR 329 上一轮已因缺「备注」段被打回，本轮 body 仍缺该段，按 persistent 处理再次 REQUEST_CHANGES；属格式门正常收敛流程，无新缺口",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T10:15:03.954Z",
+      "lastSeen": "2026-08-27T10:15:03.954Z"
     }
   ],
   "escapedHazards": [

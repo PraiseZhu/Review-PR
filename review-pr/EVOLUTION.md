@@ -384,6 +384,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `format-gate-note-section-missing-r329` **PR 329 二次打回：备注段仍未补——作者侧待修，无自动化缺口** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
+  - 现象:PR 329 上一轮已因缺「备注」段被打回，本轮 body 仍缺该段，按 persistent 处理再次 REQUEST_CHANGES；属格式门正常收敛流程，无新缺口
+- `format-gate-notes-section-working-as-designed` **PR 329 格式门打回与 PR 328 security 门 hold 均为流程按设计运转，无自动化缺口** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
+  - 现象:329 缺「备注」段属作者侧输入不完整（context.mjs 已机器判出，打回路径正确）；328 改 package.json 属维护者确认类，by-design。
 - `author-draft-no-reviewable-candidates` **open PR 全是作者 Draft，无可审候选** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:本轮 scan-all 0 候选。#319/#320/#321/#322 均为 PraiseZhu 自开 stacked OIDC draft（p1-jwt → p3-persist → p2-plugin → p4-attach），按 author-draft 跳过，不审不合不催。
 - `review-agent-stream-idle-timeout-placeholder-rro` **隔离审查席 stream idle timeout 只留下占位 rro-1,本轮按 timeout skip 不得沿用清白** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
