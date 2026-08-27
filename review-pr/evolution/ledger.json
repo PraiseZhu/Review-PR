@@ -3965,6 +3965,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T18:51:18.713Z",
       "lastSeen": "2026-08-27T18:51:18.713Z"
+    },
+    {
+      "fingerprint": "review-agent-context-thrash-on-large-payload",
+      "tier": "proposal",
+      "title": "审查子 agent 在大 payload（>100KB）+ UI 证据下载场景下反复 autocompact thrashing 挂起/失败，单 PR 审查耗时 3h+ 且两轮产出形状偏差",
+      "detail": "2026-08-28 mini 巡审实测：PR #332（payload 141KB，37 keys，UI 5 文件）审查 agent 两次 autocompact thrashing 终止、第三次恢复后落盘仍缺 2 条 required 负向证据且字段名错位（receivedOrder→order、profileId 缺失、kind 缺失、command 未逐字复制），主 agent 手工补齐形状与实验才过 consumer。PR #335 agent 同样挂起一次。字段名偏差说明 agent 在压缩后丢失契约细节。",
+      "proposal": "候选方向（等维护者拍板）：a) deliver-review-segment 对 payload 按 sizeBudget 再细分（当前 sizeBudget=60 未拦住 141KB 单段）；b) agent-brief 里把 rro-1 契约字段名清单压缩成一页速查表直接内嵌（降低压缩后丢失概率）；c) consumer invalid 时自动生成字段修复 diff 提示给编排方重投。均不扩权。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T23:57:00.615Z",
+      "lastSeen": "2026-08-27T23:57:00.615Z"
     }
   ],
   "escapedHazards": [
