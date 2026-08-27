@@ -3861,6 +3861,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-26T17:07:38.882Z",
       "lastSeen": "2026-08-26T17:07:38.882Z"
+    },
+    {
+      "fingerprint": "review-scripts-require-repo-root-env-not-bare-cd",
+      "tier": "proposal",
+      "title": "审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做",
+      "detail": "auto 轮 2026-08-27 mivo-canvas-plugin PR#323：build-review-task.mjs 在非 git 目录下跑出 task(snapshotHash=null/escapeSourceIncomplete)，deliver 直接拒绝，consume 判 invalid 浪费一轮；原因=REPO_ROOT 取 process.env.REVIEW_PR_REPO_ROOT||process.cwd()，编排层只在部分调用点显式设了 env。",
+      "proposal": "把『所有确定性脚本一律显式 export REVIEW_PR_REPO_ROOT=<仓库根>』升级为 SKILL.md auto 流程的硬步骤（替代仅靠 cd 的现行说法），避免宿主 cwd 重置或编排层临时切目录造成静默 incomplete task",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T02:17:57.131Z",
+      "lastSeen": "2026-08-27T02:17:57.131Z"
     }
   ],
   "escapedHazards": [

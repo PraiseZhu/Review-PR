@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-scripts-require-repo-root-env-not-bare-cd` **审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:auto 轮 2026-08-27 mivo-canvas-plugin PR#323：build-review-task.mjs 在非 git 目录下跑出 task(snapshotHash=null/escapeSourceIncomplete)，deliver 直接拒绝，consume 判 invalid 浪费一轮；原因=REPO_ROOT 取 process.env.REVIEW_PR_REPO_ROOT||process.cwd()，编排层只在部分调用点显式设了 env。
+  - 提案:把『所有确定性脚本一律显式 export REVIEW_PR_REPO_ROOT=<仓库根>』升级为 SKILL.md auto 流程的硬步骤（替代仅靠 cd 的现行说法），避免宿主 cwd 重置或编排层临时切目录造成静默 incomplete task
 - `review-isolation-worktree-wrong-clone-318` **隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 318 重派审查席时 isolation worktree 建在 Project Mivo Canvas-Plugin 开发仓而不是 _ops 生产 checkout。同一 base/head 的 diffDigest 因工作树噪声不同，fileId/hunkId/snapshotHash 全部漂移。生产仓 consume 对不上审查席答卷。本轮按路径把 ID 映射后仍因 PR 已被网页合并而 invalid。不扩权，只提案把审查席钉在 REVIEW_PR_REPO_ROOT/_ops。
   - 提案:spawn 隔离审查席前强制 cwd=生产 checkout（_ops/mivo-canvas-plugin），禁止落到开发仓 .claude/worktrees；或在 consume 前校验审查席 toplevel 等于 prepare 记录的 repo root。
