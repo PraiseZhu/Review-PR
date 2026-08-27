@@ -3913,6 +3913,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T12:06:56.367Z",
       "lastSeen": "2026-08-27T12:06:56.367Z"
+    },
+    {
+      "fingerprint": "archived-fix-session-stale-binding-dispatch",
+      "tier": "auto",
+      "title": "跟进会话绑定指向已归档 session 时 send_to_session 返 ARCHIVED,clear 后新建重投成功",
+      "detail": "PR 334/335/336/337 四个 selfFix 卡点投递时,fix-session-state 绑定的旧 sessionId 全部已归档(ARCHIVED);按 SKILL 5.4 失败处理清绑定改走新建,4 单全部投递成功并 set 新指纹。旧绑定含 ci-failed 等过期类别,与当前卡点(pushback-format)不同属预期指纹变化,但 ARCHIVED 是新增失败形态",
+      "proposal": "无:新建重投一次成功,现有 ARCHIVED 处理路径足够;仅当 ARCHIVED 高频出现才需要 sweep 扩展为归档探活",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-27T13:52:25.148Z",
+      "lastSeen": "2026-08-27T13:52:25.148Z"
     }
   ],
   "escapedHazards": [

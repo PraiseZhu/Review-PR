@@ -322,6 +322,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `archived-fix-session-stale-binding-dispatch` **跟进会话绑定指向已归档 session 时 send_to_session 返 ARCHIVED,clear 后新建重投成功** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR 334/335/336/337 四个 selfFix 卡点投递时,fix-session-state 绑定的旧 sessionId 全部已归档(ARCHIVED);按 SKILL 5.4 失败处理清绑定改走新建,4 单全部投递成功并 set 新指纹。旧绑定含 ci-failed 等过期类别,与当前卡点(pushback-format)不同属预期指纹变化,但 ARCHIVED 是新增失败形态
+  - 提案:无:新建重投一次成功,现有 ARCHIVED 处理路径足够;仅当 ARCHIVED 高频出现才需要 sweep 扩展为归档探活
 - `format-self-review-ownpr-handoff-loop` **ownPr 格式打回(fix-handoff)路径为既有闭环机制,本轮无新增自动化缺口** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 319 首次命中 pushback-format+selfFixAuthors 组合,fix-session-state 无绑定走 create 新建跟进会话+use_worktree,投递成功;notify-author-resolve 正确按 self-fix-author 短路,remind-stale-author 按 own-pr 短路——三处去重/分流行为均符合设计,无需改 skill
 - `segment-delivery-ledger-required-before-consume` **审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
