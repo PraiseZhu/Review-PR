@@ -5,6 +5,33 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-spawn-output-hygiene` **审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
+  - 现象:本轮首次 spawn 因 autocompact 三连爆而终止重试；重试版在提示词加『长输出一律 tail/重定向后只回显退出码』后顺利完成。建议把该约束写进 SKILL.md 第 4 节审查 agent 任务模板
+  - 提案:在 SKILL.md 第 4 节模板首部追加一条输出卫生 bullet：任何可能长输出的命令一律 | tail -n 40 或重定向到 worktree 内日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出
+- `review-agent-context-thrash-on-large-payload` **审查子 agent 在大 payload（>100KB）+ UI 证据下载场景下反复 autocompact thrashing 挂起/失败，单 PR 审查耗时 3h+ 且两轮产出形状偏差** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:2026-08-28 mini 巡审实测：PR #332（payload 141KB，37 keys，UI 5 文件）审查 agent 两次 autocompact thrashing 终止、第三次恢复后落盘仍缺 2 条 required 负向证据且字段名错位（receivedOrder→order、profileId 缺失、kind 缺失、command 未逐字复制），主 agent 手工补齐形状与实验才过 consumer。PR #335 agent 同样挂起一次。字段名偏差说明 agent 在压缩后丢失契约细节。
+  - 提案:候选方向（等维护者拍板）：a) deliver-review-segment 对 payload 按 sizeBudget 再细分（当前 sizeBudget=60 未拦住 141KB 单段）；b) agent-brief 里把 rro-1 契约字段名清单压缩成一页速查表直接内嵌（降低压缩后丢失概率）；c) consumer invalid 时自动生成字段修复 diff 提示给编排方重投。均不扩权。
+- `review-agent-context-overflow` **审查 agent 派发默认应指令落文件+分块投递，防上下文超限** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:本轮 3 次 agent 因 autocompact thrashing 被杀（334 两次、332 一次）。334 用「指令写入 /tmp 文件 + prompt 只留一句指路 + payload 按 hunk 分块」后成功（114 tool uses 完成）；332 同样处理仍失败，说明 37-key 大 PR 仍有残余风险。
+  - 提案:SKILL.md 第 4 节审查 agent 任务模板加入默认纪律：主 agent 把完整指令写入 STATE_DIR 外的临时文件，Agent prompt 只留一句路径引用；deliver payload >50KB 时主 agent 预先按 section 分块（每块 ≤14KB）再投给审查会话；连续 2 次超限的 PR 记 blocked 转人工而非反复重试。
+- `archived-fix-session-recreate-dispatch` **fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree）** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR #337 review-failed 投递：jump 模式 target_session_id=已归档会话 + working_dir/use_worktree/title 均按 create 形态传 → ARCHIVED（jump 模式忽略 create 字段，归档目标直接拒）。SKILL 5.4 失败处理只写'目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ clear 后改走新建重试一次'，但 agent 首次重试仍带了 target_session_id，又吃一次 ARCHIVED；正确形态是去掉 target_session_id 纯 create + working_dir 指向仓库根 + use_worktree=true。无业务损失（第二次新建成功），但多花一轮失败调用。
+  - 提案:5.4 失败处理加一句操作细节：clear 绑定后新建时不得再带 target_session_id（create 模式的判定键），working_dir 传目标仓库根，use_worktree=true。
+- `pr328-security-rules-gate-hold-consolidated` **PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR 328(作者 aj0928,admins 名单)同时命中 securityReviewPaths(package.json)与 ruleFiles.required(AGENTS.md)两门,issue #330 hold 已挂。本轮已完成阶段二独立审查:P0/P1=0,clean 回执绑定 head 8602180,实测 run-vitest 启动器 6+15 用例全绿。signoff.released=false(unconfirmed-kinds: rules/security),讨论 issue 无同意评论,无 admins Approve;按门类持久规则不自动放行
+  - 提案:扩权类,不自动落地:owner 在 https://github.com/xindong/mivo-canvas-plugin/pull/328 当前 head Approve 或在讨论 issue #330 回复同意,下轮扫描 releaseBasis 生效后按 fallback 合并
+- `review-agent-rro1-shape-mismatch` **审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR #329 auto 轮实测:agent 回执含全部语义内容但字段名/形状与 lib.review-consume.mjs 校验不一致(attempts 记 2 次 invalid)。技能提示词里 JSON 样例已有字段名,但审查 agent 实际按任务 prompt 的自由发挥输出了 path 键。教训:prompt 中样例应加'逐字使用这些字段名'的硬性指令,或在 deliver/consume 层提供宽容映射。
+  - 提案:在 spawn 审查 agent 的任务模板中,把 rro-1 字段名列成不可改名清单并附最小可过校验的样例;或给 consume-review-output 加 --shape-fix 模式做确定性映射(path→fileId 依 snapshot 解析)。改动涉及判定链路,需维护者确认影响面后落地。
+- `review-scripts-require-repo-root-env-not-bare-cd` **审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:auto 轮 2026-08-27 mivo-canvas-plugin PR#323：build-review-task.mjs 在非 git 目录下跑出 task(snapshotHash=null/escapeSourceIncomplete)，deliver 直接拒绝，consume 判 invalid 浪费一轮；原因=REPO_ROOT 取 process.env.REVIEW_PR_REPO_ROOT||process.cwd()，编排层只在部分调用点显式设了 env。
+  - 提案:把『所有确定性脚本一律显式 export REVIEW_PR_REPO_ROOT=<仓库根>』升级为 SKILL.md auto 流程的硬步骤（替代仅靠 cd 的现行说法），避免宿主 cwd 重置或编排层临时切目录造成静默 incomplete task
+- `review-isolation-worktree-wrong-clone-318` **隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 318 重派审查席时 isolation worktree 建在 Project Mivo Canvas-Plugin 开发仓而不是 _ops 生产 checkout。同一 base/head 的 diffDigest 因工作树噪声不同，fileId/hunkId/snapshotHash 全部漂移。生产仓 consume 对不上审查席答卷。本轮按路径把 ID 映射后仍因 PR 已被网页合并而 invalid。不扩权，只提案把审查席钉在 REVIEW_PR_REPO_ROOT/_ops。
+  - 提案:spawn 隔离审查席前强制 cwd=生产 checkout（_ops/mivo-canvas-plugin），禁止落到开发仓 .claude/worktrees；或在 consume 前校验审查席 toplevel 等于 prepare 记录的 repo root。
+- `product-gate-hits-test-files` **uiPaths 命中测试文件会把 ops PR 送进产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 306 唯一 UI 命中是 src/lib/assetService.test.ts，语义判定非产品改动后走 fallback。
+  - 提案:评估 uiExcludePaths 是否覆盖 src/**/*.test.ts；拍板前保持现状、靠语义定性。
 - `product-gate-test-under-src` **feat 加 src 测试文件误亮产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 306 因 feat 且命中 uiPaths(src/lib/assetService.test.ts) 进 product-gate；语义实为部署注入加测试，非产品 UI。uiPaths 含 src/ 且 uiExcludePaths 未排除测试文件。
   - 提案:考虑把测试文件纳入 uiExcludePaths，避免纯测试改动误亮产品门。属放宽触发面，需维护者拍板。
@@ -310,6 +337,11 @@
 
 ## 已自动落地(automatable-gap)
 
+- `archived-fix-session-stale-binding-dispatch` **跟进会话绑定指向已归档 session 时 send_to_session 返 ARCHIVED,clear 后新建重投成功** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 现象:PR 334/335/336/337 四个 selfFix 卡点投递时,fix-session-state 绑定的旧 sessionId 全部已归档(ARCHIVED);按 SKILL 5.4 失败处理清绑定改走新建,4 单全部投递成功并 set 新指纹。旧绑定含 ci-failed 等过期类别,与当前卡点(pushback-format)不同属预期指纹变化,但 ARCHIVED 是新增失败形态
+  - 提案:无:新建重投一次成功,现有 ARCHIVED 处理路径足够;仅当 ARCHIVED 高频出现才需要 sweep 扩展为归档探活
+- `format-self-review-ownpr-handoff-loop` **ownPr 格式打回(fix-handoff)路径为既有闭环机制,本轮无新增自动化缺口** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 现象:PR 319 首次命中 pushback-format+selfFixAuthors 组合,fix-session-state 无绑定走 create 新建跟进会话+use_worktree,投递成功;notify-author-resolve 正确按 self-fix-author 短路,remind-stale-author 按 own-pr 短路——三处去重/分流行为均符合设计,无需改 skill
 - `segment-delivery-ledger-required-before-consume` **审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:PR #285 独立审查在隔离 worktree 写出 rro-1.json，但 STATE_DIR 无分段投递台账；consume 以 deliveredSegments=0 判 invalid。补跑 deliver-review-segment --order 1 后才 dirty。根因是审查任务虽要求按序调用交付出口，隔离席可能只读了 payload 文件。
   - 提案:build-review-task/prompt 继续强制 deliver-review-segment；主 agent 在 consume 前检查 deliveredSegments，缺台账先补投再消费，不要把审查席读 payload 文件当成已投递。
@@ -373,15 +405,39 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `post-review-main-advance-semantic-conflict` **审查通过后主干被网页合并前进，冲突落在两套需共存的业务逻辑上，auto 不代取舍** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
+  - 现象:PR 354 clean 回执落盘后 origin/main 因 #355 网页合并前进，imageNodePsd.ts 单块冲突需把 #355 的 0KB 守卫语义移植进 354 新会话流，属语义组合；按 5.5 拿不准算语义冲突，auto 中止、提醒作者 rebase、点名维护者
+- `pr352-conflict-size-gate-author-side` **PR 352 产品门 hold + 冲突未解 + pr-size-gate 红均为作者侧待办,产品门等白名单留言是设计行为,无自动化缺口** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
+  - 现象:PR 352: discussion issue #353 无白名单留言,冲突需作者 merge origin/main,pr-size-gate 超预算需作者拆分。三者全部卡在作者/白名单决策,自动化无从推进
+- `format-gate-note-section-missing-r329` **PR 329 二次打回：备注段仍未补——作者侧待修，无自动化缺口** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
+  - 现象:PR 329 上一轮已因缺「备注」段被打回，本轮 body 仍缺该段，按 persistent 处理再次 REQUEST_CHANGES；属格式门正常收敛流程，无新缺口
+- `format-gate-notes-section-working-as-designed` **PR 329 格式门打回与 PR 328 security 门 hold 均为流程按设计运转，无自动化缺口** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
+  - 现象:329 缺「备注」段属作者侧输入不完整（context.mjs 已机器判出，打回路径正确）；328 改 package.json 属维护者确认类，by-design。
+- `author-draft-no-reviewable-candidates` **open PR 全是作者 Draft，无可审候选** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:本轮 scan-all 0 候选。#319/#320/#321/#322 均为 PraiseZhu 自开 stacked OIDC draft（p1-jwt → p3-persist → p2-plugin → p4-attach），按 author-draft 跳过，不审不合不催。
+- `review-agent-stream-idle-timeout-placeholder-rro` **隔离审查席 stream idle timeout 只留下占位 rro-1,本轮按 timeout skip 不得沿用清白** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 阶段二 isolation worktree 审查席两次未交卷:第一次 API stream idle timeout,续写后又被会话中断。rro-1.json 仍是占位对象。consume-review-output 已写 non-clean/invalid 回执(attempts=1)。根因属宿主流超时/会话回收,不是审查规则漏判。
+- `format-stale-pushback-checkbox` **格式打回后作者未改勾选，本轮跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 Self-review 勾选率 2/3，上次已 REQUEST_CHANGES，head 未变，skip-stale-pushback。另有 1 条含真人参与的 unresolved thread。
+- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 6 次,首见 2026-08-21,最近 2026-08-26,status: tracked
+  - 现象:PR 316 skip-gate: 1 条 greptile conversation 未 resolve。threadTriage 未启用且 auto-resolve 当前不提供，只能提醒作者点 Resolve。
+  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
+- `arch-gate-huge-diff-test-only` **huge-diff 架构门对纯测试搬运需语义判定为机械性大 diff** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 310 单文件 3426 行测试搬运，anyTypeDiffLines≥800 触发 arch-gate；主 agent 定性非架构调整后进审查并合并。
+- `format-checkbox-stale-skip` **格式门自检勾选未满且已打回，作者未新 commit 则跳过** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 Self-review 2/3，CHANGES_REQUESTED 后无新 commit；另有 1 条 Greptile conversation 未 resolve。属作者侧收尾，不自动代勾/代 resolve。
+- `format-self-review-checkbox-stale-pushback` **格式门 self-review 勾选率不足需作者改 body** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:PR 306 自检第三项未勾选，当前 head 已 CHANGES_REQUESTED，skip-stale-pushback。
+- `skip-stale-format-checkbox` **格式打回后作者未改 PR body 勾选，跳过重复打回** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
+  - 现象:#306 Self-review 2/3，上次已 REQUEST_CHANGES，作者只推了 allexport 代码修未改勾选。
+- `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
+  - 现象:本轮 #306/#310 均因 1 条 greptile conversation 未 resolve 被 skip-gate。threadTriage 未启用属设计，不自动 resolve 他人 thread。
 - `arch-gate-mechanical-test-copy` **测试文件机械大 diff 亮架构门后语义回退** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 310 单文件 3426 行测试搬运触发 huge-diff≥800；语义判定为机械性大 diff，走 fallback skip-gate。门阈值工作符合设计。
 - `unresolved-greptile-thread-blocks-merge` **Greptile P2 thread 未 resolve 挡住合并** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306/310 各 1 条 greptile conversation 未 resolve。threadTriage 未启用，不可代 resolve；作者需点 Resolve。
 - `format-self-review-checkbox-unfilled` **作者未勾选 PR 模板自检第三项（checks 已触发）** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 306 格式门 Self-review 2/3。作者新 commit 后勾选仍缺，属作者侧文案动作，不可代勾。
-- `unresolved-bot-thread-blocks-merge` **Greptile 未 resolve thread 卡住合并，需作者点 Resolve** — 出现 4 次,首见 2026-08-21,最近 2026-08-26,status: tracked
-  - 现象:PR 306/310 各 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未配置，auto 不能代 reply/resolve。属设计上该人来。
-  - 提案:保持现状:作者或维护者点 Resolve。启用 threadTriage 属扩权,不自动落地。
 - `threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 挡住合并** — 出现 2 次,首见 2026-08-22,最近 2026-08-26,status: tracked
   - 现象:PR 306 与 310 各有 1 条 greptile-apps P2 conversation 未 resolve。threadTriage 未配置所以不能代 reply/resolve。作者侧可自解，已按 notify-author-resolve 去重跳过（already-commented）。
 - `arch-gate-test-only-huge-diff-semantic-ok` **huge-diff 架构门对纯测试搬运仍触发语义定性——设计如此** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
@@ -484,8 +540,6 @@
   - 现象:PR #229 因 greptile-apps 一条 P2 thread（writeRetryQueue 复位遗漏 tombstone）未 resolve 被 skip-gate。threadTriage 未配置故不代 reply/resolve。已有催 resolve 评论（already-commented），停滞 22.3h 未到 24h 阈值。属设计上等人点 Resolve，不自动放开。
 - `skip-threads-unresolved-greptile-p2` **Greptile P2 thread 未 resolve 导致 skip-gate** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked
   - 现象:PR #229 被 skip-gate:threads-unresolved。唯一未 resolve thread 是 greptile-apps 的 P2（writeRetryQueue 复位未清 idTombstones）。threadTriage 未启用（D7），auto 不得代 resolve。已有催 resolve 评论，本轮 already-commented。
-- `skip-unresolved-bot-thread-blocks-merge` **未 resolve 的 greptile thread 卡合并，需作者点 Resolve** — 出现 1 次,首见 2026-08-22,最近 2026-08-22,status: tracked
-  - 现象:PR #229 仅剩 1 条 greptile-apps P2 thread（writeRetryQueue 复位未清 idTombstones）。threadTriage 未配置故不代 reply/resolve。本轮已有催 resolve 评论，去重跳过；停滞未满 24h。
 - `skip-gate-unresolved-greptile-thread` **Greptile 未 resolve thread 挡合并，threadTriage 未启用故不代关** — 出现 4 次,首见 2026-08-21,最近 2026-08-22,status: tracked
   - 现象:PR #229 仅剩 1 条 greptile-apps P2 thread 未 resolve；threadTriage 未启用，auto 只能催 resolve 不能代关。作者 zhongxingtian-ai 不在 selfFixAuthors。
 - `skip-unresolved-greptile-bot-thread` **bot review thread 未 resolve 阻断合并，threadTriage 关闭故不代 resolve** — 出现 2 次,首见 2026-08-22,最近 2026-08-22,status: tracked

@@ -97,6 +97,26 @@ try {
   if (!outputFile || !existsSync(outputFile)) bail('invalid', ['缺 --output <rro-1.json>']);
   if (snapshotThrew) bail('invalid', [`DiffSnapshot 构建失败:${snapshotThrew}(fail-closed)`]);
 
+  // 现场 head/state 核对默认关(夹具 PR 号会对上真实仓误伤)。生产由 SKILL 要求主 agent
+  // 先核;显式 --verify-live-head 时脚本再打 GitHub。
+  let stateAtWrite = 'unchecked';
+  if (process.argv.includes('--verify-live-head')) {
+    try {
+      const { owner, repo } = parseRepo();
+      const live = ghJson(['pr', 'view', String(pr), '--repo', `${owner}/${repo}`, '--json', 'state,headRefOid']);
+      const livePrState = live?.state ?? null;
+      const liveHeadOid = (live?.headRefOid ?? '').toLowerCase();
+      if (liveHeadOid && headRefOid && liveHeadOid !== headRefOid) {
+        bail('invalid', [`审查期间 head 已变(任务 ${headRefOid.slice(0, 8)} → 现场 ${liveHeadOid.slice(0, 8)})——旧快照不得消费,需重建 task/preflight`]);
+      }
+      if (livePrState && livePrState !== 'OPEN') {
+        stateAtWrite = livePrState;
+        bail('invalid', [`PR 在写回执前已是 ${livePrState}(合并先于审查完成)——不写 clean,汇总须提示`]);
+      }
+      if (livePrState === 'OPEN') stateAtWrite = 'OPEN';
+    } catch { stateAtWrite = 'unknown'; }
+  }
+
   // ── ledger 加载(损坏 → blocked;仍然写 non-clean 回执)──
   const ledgerFile = ledgerPathFor(STATE_DIR, pr);
   const ledger = loadLedger(ledgerFile);
@@ -462,6 +482,7 @@ try {
 
   print({
     ok: true, pr, mode, verdict, reasons, blocked, deliveryReasons,
+    stateAtWrite,
     attempts: attempts.count, snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
     ledgerHash, effectiveOpenCount: ledgerResult.effectiveOpenCount, acceptedRiskCount: ledgerResult.acceptedRiskCount,
     injectedOpenIds, registeredHazards, skippedHazards,

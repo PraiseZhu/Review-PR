@@ -59,6 +59,9 @@ const TITLE_TYPE_RE = new RegExp(`^(${prRules.titleTypes.join('|')})(\\([^)]+\\)
 const LIGHT_TYPES = prRules.lightTypes; // 轻档:不强制段落
 const FEATURE_SECTIONS = prRules.featureSections;
 const BUGFIX_SECTIONS = prRules.bugfixSections;
+const CHECKLIST_SECTION_NAMES = Array.isArray(prRules.checklistSectionNames)
+  ? prRules.checklistSectionNames
+  : ['self-review'];
 const REDLINE_PATH_RE = new RegExp(prRules.redlinePaths.join('|'));
 // CI 配置敏感路径:PR 改了它们 → approve fork workflow 会执行被改过的 CI(详见 approve-workflows.mjs 安全门)
 const CI_SENSITIVE_RE = prRules.ciSensitivePaths?.length ? new RegExp(prRules.ciSensitivePaths.join('|')) : null;
@@ -190,6 +193,40 @@ export function computeTitleFacts(title, loopExclusion) {
   return { titleForFormat, type, titleTypeOk, titleVague };
 }
 
+/**
+ * 定位 PR body 里的 checklist 段并统计勾选。标题名来自 pr-rules.json 的
+ * checklistSectionNames(缺省/空 = ['self-review'])，按 heading 去 # 后 startsWith
+ * 匹配(大小写不敏感)，只统计该标题到下一个标题之间的 `- [ ]` / `- [x]`。
+ * 不把 featureSections 整表当 checklist——「变更说明」「备注」不是自检清单。
+ */
+export function findChecklistSection(body, names) {
+  const list = (Array.isArray(names) ? names : [])
+    .filter((s) => typeof s === 'string' && s.trim() !== '')
+    .map((s) => s.trim());
+  const wanted = list.length ? list : ['self-review'];
+  const headingRe = /^(#{1,6})\s+(.+?)\s*$/gm;
+  let match;
+  while ((match = headingRe.exec(body ?? '')) !== null) {
+    const title = match[2].trim();
+    const hit = wanted.find((name) => title.toLowerCase().startsWith(name.toLowerCase()));
+    if (!hit) continue;
+    const rest = body.slice(match.index + match[0].length);
+    const nextHeading = rest.search(/^#{1,6}\s/m);
+    const sectionBody = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+    const total = (sectionBody.match(/^\s*- \[[ xX]\]/gm) ?? []).length;
+    const done = (sectionBody.match(/^\s*- \[[xX]\]/gm) ?? []).length;
+    return {
+      hasSection: true,
+      heading: match[0],
+      matchedName: hit,
+      total,
+      done,
+      ratio: total > 0 ? done / total : 0,
+    };
+  }
+  return { hasSection: false, heading: null, matchedName: null, total: 0, done: 0, ratio: 0 };
+}
+
 // ── 前置门判定常量(复刻 SKILL.md 1.6.5)──
 // 注:check-runs / commit-status / 分支保护(branches/*/protection)端点在本项目 PAT 下常 403,
 // 故不逐条读 CI;但 actions/runs 与 rulesets 读得到 —— BLOCKED 时用 classifyHeadChecks 把
@@ -260,10 +297,26 @@ if (process.argv.includes('--scan-all')) {
       ).stdout || '[]',
     );
     // 候选口径与 pick.mjs 同源:open 且非 draft,按 createdAt 升序
-    const candidates = rawList
+    let candidates = rawList
       .filter((p) => !p.isDraft)
       .map((p) => ({ number: p.number, title: p.title, author: p.author?.login ?? '', createdAt: p.createdAt, url: p.url }))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // scan-all 拉取与 GitHub 创建有数秒窗口(#136)。启动后再 list 一次,未见过的非 draft 补进本轮。
+    try {
+      const recatch = JSON.parse(
+        gh(
+          ['pr', 'list', '--repo', slug, '--state', 'open', '--limit', '100', '--json', 'number,title,author,createdAt,isDraft,url'],
+          { timeoutMs: 30_000 },
+        ).stdout || '[]',
+      );
+      const seen = new Set(candidates.map((c) => c.number));
+      for (const p of recatch) {
+        if (p.isDraft || seen.has(p.number)) continue;
+        candidates.push({ number: p.number, title: p.title, author: p.author?.login ?? '', createdAt: p.createdAt, url: p.url });
+        seen.add(p.number);
+      }
+      candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    } catch { /* 补扫失败不挡本轮已拉到的候选 */ }
 
     // ── 被 hold 的 draft 预筛(产品/架构门自动放行的入口)──
     // 白名单同意发生在讨论 issue 上、不改 PR 自身状态,所以被 product-hold 转 draft 的 PR
@@ -430,19 +483,13 @@ try {
   for (const h of wantSections) sections[h] = new RegExp('^#{1,6}\\s+.*' + escRe(h), 'im').test(body);
   const missingSections = wantSections.filter((h) => !sections[h]);
 
-  // checklist 统计只限 self-review 标题到下一个标题之间的段内复选框——
+  // checklist 统计只限配置的自检标题到下一个标题之间的段内复选框——
   // description 别处的普通 TODO 清单(如「后续拆 issue」)不计入分母,防止勾选率被稀释误报。
-  const checklistHeading = body.match(/^#+\s*self-review.*$/im);
-  let checklistBody = '';
-  if (checklistHeading) {
-    const rest = body.slice(checklistHeading.index + checklistHeading[0].length);
-    const nextHeading = rest.search(/^#{1,6}\s/m);
-    checklistBody = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
-  }
-  const checklistHasSection = checklistHeading != null;
-  const checklistTotal = (checklistBody.match(/^\s*- \[[ xX]\]/gm) ?? []).length;
-  const checklistDone = (checklistBody.match(/^\s*- \[[xX]\]/gm) ?? []).length;
-  const checklistRatio = checklistTotal > 0 ? checklistDone / checklistTotal : 0;
+  const checklist = findChecklistSection(body, CHECKLIST_SECTION_NAMES);
+  const checklistHasSection = checklist.hasSection;
+  const checklistTotal = checklist.total;
+  const checklistDone = checklist.done;
+  const checklistRatio = checklist.ratio;
 
   const redlinePaths = files.map((f) => f.path).filter((p) => REDLINE_PATH_RE.test(p));
   const hitsUpdater = redlinePaths.some((p) => /updater/.test(p));
@@ -1127,6 +1174,14 @@ try {
       });
       blockClass = classified.blockClass;
       structuralBlock = classified.structuralBlock;
+      if (blockClass === 'ci-failed' && (ciRuns?.failed?.length ?? 0) === 0 && headRollup?.failed?.length) {
+        const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+        const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, meta.baseRefName) : null;
+        const rc = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
+        if (rc && rc.requiredFailed.length === 0 && rc.nonRequiredFailed.length > 0) {
+          blockClass = 'ci-nonrequired-failed';
+        }
+      }
       // 各 blockClass 对应的 blockers 文案(判定逻辑已挪进 classifyBlockedStatus,这里只
       // 按返回结论拼消息;awaiting-approval 不视硬 blocker,不 push,与此前行为一致)。
       if (blockClass === 'threads-unresolved') {
@@ -1145,10 +1200,12 @@ try {
           // 分支保护规则读取失败(probeBranchProtection 返回 null)——无法证明"没有结构性门"。
           blockers.push('mergeStateStatus=BLOCKED,分支保护规则读取失败(权限/网络)——无法判断是否存在结构性门,不当 awaiting-approval 或 structural-check 处理,不可 bypass,下轮再看');
         }
-      } else if (blockClass === 'ci-failed') {
+      } else if (blockClass === 'ci-failed' || blockClass === 'ci-nonrequired-failed') {
         if (ciRuns.failed.length > 0) {
           // 有 workflow run 真失败 → 真 blocker(该打回 / 不合)。
           blockers.push(`mergeStateStatus=BLOCKED(CI 失败:${ciRuns.failed.join(' / ')})`);
+        } else if (blockClass === 'ci-nonrequired-failed') {
+          blockers.push(`mergeStateStatus=BLOCKED(非 required 检查失败:${headRollup.failed.join(' / ')}——不是构建/测试挂了,读意见或决定是否纳入阻断集;修绿前不合并)`);
         } else {
           // 已跑的 GitHub Actions 全绿,但 head 上仍有已上报检查失败 → 只可能来自
           // actions/runs 看不见的那部分(第三方 App check-run / commit status)。这是真
@@ -1197,7 +1254,7 @@ try {
       blockClass = 'ci-unknown';
     } else if (rollup.failed.length > 0) {
       blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查失败:${rollup.failed.join(' / ')}——GitHub 不拦但本流程拦,失败检查修绿前不合并)`);
-      blockClass = 'ci-failed';
+      blockClass = 'ci-nonrequired-failed';
     } else if (rollup.pending.length > 0) {
       blockers.push(`mergeStateStatus=UNSTABLE(非 required 检查还在跑:${rollup.pending.join(' / ')},等跑完即可)`);
       blockClass = 'ci-pending';
@@ -1362,6 +1419,20 @@ try {
       ? '前置门唯一阻塞是 viewer 自己挂的 CHANGES_REQUESTED 且 thread 全 resolve;进入重审,通过后 self-approve 解锁再合并'
       : '格式门 + 前置门均通过,进入代码审查';
     autoSkip = false;
+    const liveRollup = classifyStatusRollup(meta.statusCheckRollup);
+    if (liveRollup?.pending?.length) {
+      // 只拦 required 还在跑。rollup 里的可选检查(Greptile / stale reminder)可能永远
+      // PENDING,用全集 pending 会把 PR 永久 skip-gate。读不到 required 清单时不跳——
+      // 能走到这里说明 gate 已过,mergeStateStatus 没把可选 pending 当硬门。
+      const checkNodes = fetchHeadCheckContexts({ owner, repo, pr });
+      const expectedRequired = checkNodes ? fetchExpectedRequiredContexts(slug, meta.baseRefName) : null;
+      const rc = (checkNodes && expectedRequired) ? classifyRequiredChecks(checkNodes, expectedRequired) : null;
+      if (rc?.requiredPending?.length) {
+        autoAction = 'skip-gate';
+        autoReason = `required CI 仍在跑(${rc.requiredPending.join(' / ')})——标 ci-pending-race,本轮不审,等跑完再分类`;
+        autoSkip = true;
+      }
+    }
   }
 
   // ── 授权快速合并通道覆盖(见 authorizedFastMerge 计算与 SKILL 5.1「授权快速合并通道」):
