@@ -405,6 +405,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `mivo-plugin-main-push-protected` **mivo-canvas-plugin 主干受分支保护,5.5 冲突代合并的 push 步骤不可达** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
+  - 现象:PR #352 唯一冲突文件 ghost.json 属机械冲突(保留 main 文案+PR version),本地 merge 解完且 tsc+160 用例绿,但 push main 被 repository rule 拒绝(Changes must be made through a pull request)。SKILL 5.5 第4步如实放弃。该仓冲突代合并只能靠作者自行 rebase,建议评论中给出解法口径(已执行)。
 - `post-review-main-advance-semantic-conflict` **审查通过后主干被网页合并前进，冲突落在两套需共存的业务逻辑上，auto 不代取舍** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
   - 现象:PR 354 clean 回执落盘后 origin/main 因 #355 网页合并前进，imageNodePsd.ts 单块冲突需把 #355 的 0KB 守卫语义移植进 354 新会话流，属语义组合；按 5.5 拿不准算语义冲突，auto 中止、提醒作者 rebase、点名维护者
 - `pr352-conflict-size-gate-author-side` **PR 352 产品门 hold + 冲突未解 + pr-size-gate 红均为作者侧待办,产品门等白名单留言是设计行为,无自动化缺口** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
