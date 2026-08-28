@@ -468,7 +468,7 @@ test('signoff: labelsOk 判别——标签 POST 失败 → held=false 点名 lab
   const logPath = join(shimDir, 'gh-calls.log');
   const payloadPath = join(repoDir, 'payload.json');
   writeFileSync(payloadPath, JSON.stringify({
-    issueTitle: '讨论:labelsOk 判别测试专用 issue',
+    issueTitle: '维护者确认 · PR #42 labelsOk 判别测试专用 issue',
     issueBody: '本 issue 由 signoff-policy.test.mjs 的 labelsOk 判别测试自动创建。',
     commentBody: '本 PR 待维护者确认,详情见关联 issue。',
   }));
@@ -507,7 +507,7 @@ test('signoff: D6 幂等 claim——三次运行只建一份 issue、重入复�
   writeFileSync(statePath, '{}');
   const payloadPath = join(repoDir, 'payload.json');
   writeFileSync(payloadPath, JSON.stringify({
-    issueTitle: '讨论:幂等 claim 端到端测试专用 issue',
+    issueTitle: '维护者确认 · PR #42 幂等 claim 端到端测试专用 issue',
     issueBody: '本 issue 由 signoff-policy.test.mjs 的 D6 端到端测试自动创建。',
     commentBody: '本 PR 待维护者确认,详情见关联 issue。',
   }));
@@ -666,7 +666,7 @@ test('signoff: D2 挂住的 gh 调用被超时杀掉——临界区不可能无�
   writeFileSync(ghPath, HANGING_GH_SRC);
   chmodSync(ghPath, 0o755);
   const payloadPath = join(repoDir, 'payload.json');
-  writeFileSync(payloadPath, JSON.stringify({ issueTitle: 'T', issueBody: 'B', commentBody: 'C' }));
+  writeFileSync(payloadPath, JSON.stringify({ issueTitle: '维护者确认 · PR #42 T', issueBody: 'B', commentBody: 'C' }));
   try {
     const t0 = Date.now();
     const r = runSignoff({
@@ -783,7 +783,7 @@ test('signoff: D3 真并发双子进程——恰好 1 issue + 1 评论(锁串行
   writeFileSync(statePath, '{}');
   const payloadPath = join(repoDir, 'payload.json');
   writeFileSync(payloadPath, JSON.stringify({
-    issueTitle: '讨论:真并发 e2e 专用 issue',
+    issueTitle: '维护者确认 · PR #42 真并发 e2e 专用 issue',
     issueBody: '本 issue 由 signoff-policy.test.mjs 的真并发测试自动创建。',
     commentBody: '本 PR 待维护者确认,详情见关联 issue。',
   }));
@@ -1027,7 +1027,7 @@ test('signoff: R6-2 预算分层——可延后吃光额度不影响必要路径
   };
   writeFileSync(statePath, JSON.stringify(PRE));
   const payloadPath = join(repoDir, 'payload.json');
-  writeFileSync(payloadPath, JSON.stringify({ issueTitle: 'T', issueBody: 'B', commentBody: 'C' }));
+  writeFileSync(payloadPath, JSON.stringify({ issueTitle: '维护者确认 · PR #42 T', issueBody: 'B', commentBody: 'C' }));
   try {
     const r = runSignoff({
       scriptPath: join(SCRIPTS_DIR, 'signoff-hold.mjs'),

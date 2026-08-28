@@ -170,6 +170,44 @@ const ghE = makeBudgetedGh(ghT, ESSENTIAL_CALLS);
 const ghD = makeBudgetedGh(ghT, DEFERRABLE_BUDGET);
 
 
+// ── issue 标题契约(2026-08-28 事故修复)──
+// 下游插件仓 merge-thanks 的 issue-announce 只通报标题以「维护者确认 · PR #」开头的
+// issue(维护者确认 · PR #<n> <原标题> 公式,云端侧 parseSignoffIssue 同一口径)。
+// 2026-08-27 #330(PR #328)与 #353(PR #352)两轮 agent 生成的标题偏离公式,云端
+// 播报脚本按合同把非前缀 issue 良性跳过(not-maintainer-confirm-issue)——hold 照常
+// 落地、维护者 Slack 通报却从未发出,两层绿灯链路静默断裂。修复:开 issue 前校验
+// 标题契约,违约 fail-visible 拒绝主动作(held=false + titleContractViolation,并带
+// requiredPrefix 供调用方改写标题重试),不再把违约标题写进 GitHub。
+export const MAINTAINER_CONFIRM_TITLE_PREFIX = '维护者确认 · PR #'
+
+/**
+ * 是否满足确认 issue 标题契约:必须是云端唯一认的规范前缀
+ * 「维护者确认 · PR #<n>」且 <n> 精确等于当前 PR 号(2026-08-28 gpt 单审 P1:下游
+ * isMaintainerConfirmIssue 是 startsWith 精确匹配,空格变体落地后 Slack 仍不发;
+ * 错号标题会向维护者播报错误 PR)。空/非字符串 → false。供本脚本与测试共用。
+ */
+export function issueTitleSatisfiesContract(title, pr) {
+  if (typeof title !== 'string') return false
+  const m = title.match(/^维护者确认 · PR #(\d+)(?:\s|$)/)
+  return m != null && Number(m[1]) === Number(pr)
+}
+
+/**
+ * 负向证据探针:标题是否「疑似确认门但违约」——含对具体 PR 号的引用(#<数字>)
+ * 但不满足标题契约(2026-08-28 收窄后契约需 pr 参数,探针同步接受)。用于事件后
+ * 复盘审计(把 #330/#353 的实际违约形态钉成探针,回退守门时测试转红),不参与
+ * 任何运行时判定。pr 未传时对合规前缀形态按粗匹配排除(仅审计用途)。
+ */
+export function detectLikelyConfirmTitle(title, pr) {
+  const violating = pr !== undefined
+    ? !issueTitleSatisfiesContract(title, pr)
+    : !(typeof title === 'string' && /^维护者确认 · PR #\d+/.test(title))
+  if (violating) {
+    return typeof title === 'string' && /#\d+/.test(title)
+  }
+  return false
+}
+
 // ── 三个生产动作抽成可单测的导出函数(SC-3):均接受可注入的 ghFn(默认真实 gh),
 // 测试用 fake ghFn 记调用次数/参数,不需要真的打 GitHub API。──
 export function performIssueCreate({ pr, slug, kind, author, issueTitle, issueBody, ghFn = gh }) {
@@ -552,9 +590,13 @@ try {
       printOut({
         ok: true, pr, author, dryRun: true,
         alreadyHeld, priorIssueUrl, ...priorIssueInfo,
-        wouldCreateIssue: needIssue && payloadComplete,
-        wouldComment: needIssue && payloadComplete,
+        // 探测口径同步(gpt 单审 P2):违约时把「将建 issue / 将发评论」报为 false,
+        // 与真实执行行为一致;并点名 titleContractViolation,调用方(主 agent)在
+        // dry-run 阶段就能看到,不必等真实执行才撞红线。
+        wouldCreateIssue: needIssue && payloadComplete && issueTitleSatisfiesContract(issueTitle, pr),
+        wouldComment: needIssue && payloadComplete && issueTitleSatisfiesContract(issueTitle, pr),
         missingPayload: needIssue && !payloadComplete,
+        titleContractViolation: needIssue && payloadComplete && !issueTitleSatisfiesContract(issueTitle, pr),
         labels: syncLabels(),
         ...doRenotice(),
       });
@@ -563,6 +605,18 @@ try {
       // 「维护者确认门在拦」,GitHub 后台就该能筛到它。遇到本 reason 补 payload 重试,别排查脚本。
       printOut({
         ok: true, pr, author, held: false, reason: 'missing-payload', alreadyHeld, ...priorIssueInfo,
+        labels: syncLabels(),
+      });
+    } else if (needIssue && !issueTitleSatisfiesContract(issueTitle, pr)) {
+      // 标题契约守门(2026-08-28 事故修复):标题必须匹配「维护者确认 · PR #<n>」公式,
+      // 否则下游 merge-thanks 的 issue-announce 按合同良性跳过,Slack 通报静默丢失
+      // (#330 / #353 实测)。违约时 fail-visible:拒绝开 issue / 发评论(开了也通报不出
+      // 去,等于给链路埋第二颗静默雷),held=false + titleContractViolation,调用方改写
+      // 标题补 payload 重试即可。标签照打——门判定不受文案违约影响,GitHub 后台可筛性保住。
+      printOut({
+        ok: true, pr, author, held: false, reason: 'title-contract-violation',
+        titleContractViolation: true, requiredPrefix: MAINTAINER_CONFIRM_TITLE_PREFIX,
+        givenTitle: issueTitle, alreadyHeld, ...priorIssueInfo,
         labels: syncLabels(),
       });
     } else {

@@ -124,9 +124,16 @@ export function buildDiffSnapshot({ repoRoot, baseRefOid, headOid, fetchMissing 
     git(['fetch', '--quiet', 'origin', baseRefOid, headOid], { cwd, timeoutMs: 120_000 });
   }
   if (!has(baseRefOid) || !has(headOid)) return fail('git objects 缺失(fetch 后仍取不到 base/head commit)');
-  const mb = git(['merge-base', baseRefOid, headOid], { cwd });
+  const isShallow = git(['rev-parse', '--is-shallow-repository'], { cwd }).stdout.trim() === 'true';
+  let mb = git(['merge-base', baseRefOid, headOid], { cwd });
+  if ((!mb.ok || !/^[0-9a-f]{40}$/.test(mb.stdout.trim())) && isShallow) {
+    git(['fetch', '--quiet', '--deepen=50'], { cwd, timeoutMs: 120_000 });
+    mb = git(['merge-base', baseRefOid, headOid], { cwd });
+  }
   const mergeBaseOid = mb.ok ? mb.stdout.trim() : null;
-  if (!mergeBaseOid || !/^[0-9a-f]{40}$/.test(mergeBaseOid)) return fail('merge-base 计算失败');
+  if (!mergeBaseOid || !/^[0-9a-f]{40}$/.test(mergeBaseOid)) {
+    return fail(isShallow ? 'merge-base 计算失败(shallow deepen 后仍算不出)' : 'merge-base 计算失败');
+  }
 
   const rawR = git(['diff', '--raw', '-z', '-M', '-C', mergeBaseOid, headOid], { cwd });
   const patchR = git(['diff', '--patch', '-M', '-C', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', mergeBaseOid, headOid], { cwd });
