@@ -1264,6 +1264,12 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 - required `verificationGap` 非空、必答缺项、覆盖对账不符、注入的 open 未 disposition、
   preflight 未完成、profile 配置非法，任一即 `invalid`；
 - required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受；
+- **negativeEvidence 条目的 `command` 与 `outputAnchor` 必须与其引用的
+  `verificationRuns[]` 条目逐字一致**（consumer 按 `run.command !== n.command ||
+  run.outputAnchor !== n.outputAnchor` 判 `negativeEvidenceInconsistent`，不一致即
+  `invalid`）——两处不要各写一份：先写 run 记录，negativeEvidence 直接照抄同一条
+  command/outputAnchor，不要改写摘要措辞（2026-08-29 实测：语义审查结论 0 P0/P1、
+  9 处负向证据真实跑过，仅因 negativeEvidence 里写了更详细的摘要措辞被判 invalid）；
 - 顶层与每段回执的 `snapshotHash` 都必需且必须等于当前——**旧答卷不得跨 snapshot 重放**。
   这条挡的是「base 前进但 diff 与 coverage key 逐字节相同」时把上一轮答卷原样再交一次：
   重算 task/preflight 验的是「任务与快照」，证明不了「这份答卷属于这个快照」。
