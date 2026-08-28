@@ -3978,6 +3978,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-27T23:57:00.615Z",
       "lastSeen": "2026-08-27T23:57:00.615Z"
+    },
+    {
+      "fingerprint": "pr352-conflict-size-gate-author-side",
+      "tier": "by-design",
+      "title": "PR 352 产品门 hold + 冲突未解 + pr-size-gate 红均为作者侧待办,产品门等白名单留言是设计行为,无自动化缺口",
+      "detail": "PR 352: discussion issue #353 无白名单留言,冲突需作者 merge origin/main,pr-size-gate 超预算需作者拆分。三者全部卡在作者/白名单决策,自动化无从推进",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-28T08:15:34.496Z",
+      "lastSeen": "2026-08-28T08:15:34.496Z"
     }
   ],
   "escapedHazards": [

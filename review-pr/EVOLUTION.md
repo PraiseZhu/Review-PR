@@ -402,6 +402,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr352-conflict-size-gate-author-side` **PR 352 产品门 hold + 冲突未解 + pr-size-gate 红均为作者侧待办,产品门等白名单留言是设计行为,无自动化缺口** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
+  - 现象:PR 352: discussion issue #353 无白名单留言,冲突需作者 merge origin/main,pr-size-gate 超预算需作者拆分。三者全部卡在作者/白名单决策,自动化无从推进
 - `format-gate-note-section-missing-r329` **PR 329 二次打回：备注段仍未补——作者侧待修，无自动化缺口** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
   - 现象:PR 329 上一轮已因缺「备注」段被打回，本轮 body 仍缺该段，按 persistent 处理再次 REQUEST_CHANGES；属格式门正常收敛流程，无新缺口
 - `format-gate-notes-section-working-as-designed` **PR 329 格式门打回与 PR 328 security 门 hold 均为流程按设计运转，无自动化缺口** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
