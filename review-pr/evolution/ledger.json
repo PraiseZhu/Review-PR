@@ -4004,6 +4004,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-28T11:31:49.272Z",
       "lastSeen": "2026-08-28T11:31:49.272Z"
+    },
+    {
+      "fingerprint": "review-agent-spawn-output-hygiene",
+      "tier": "proposal",
+      "title": "审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文",
+      "detail": "本轮首次 spawn 因 autocompact 三连爆而终止重试；重试版在提示词加『长输出一律 tail/重定向后只回显退出码』后顺利完成。建议把该约束写进 SKILL.md 第 4 节审查 agent 任务模板",
+      "proposal": "在 SKILL.md 第 4 节模板首部追加一条输出卫生 bullet：任何可能长输出的命令一律 | tail -n 40 或重定向到 worktree 内日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-28T11:31:53.814Z",
+      "lastSeen": "2026-08-28T11:31:53.814Z"
     }
   ],
   "escapedHazards": [

@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-spawn-output-hygiene` **审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
+  - 现象:本轮首次 spawn 因 autocompact 三连爆而终止重试；重试版在提示词加『长输出一律 tail/重定向后只回显退出码』后顺利完成。建议把该约束写进 SKILL.md 第 4 节审查 agent 任务模板
+  - 提案:在 SKILL.md 第 4 节模板首部追加一条输出卫生 bullet：任何可能长输出的命令一律 | tail -n 40 或重定向到 worktree 内日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出
 - `review-agent-context-thrash-on-large-payload` **审查子 agent 在大 payload（>100KB）+ UI 证据下载场景下反复 autocompact thrashing 挂起/失败，单 PR 审查耗时 3h+ 且两轮产出形状偏差** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:2026-08-28 mini 巡审实测：PR #332（payload 141KB，37 keys，UI 5 文件）审查 agent 两次 autocompact thrashing 终止、第三次恢复后落盘仍缺 2 条 required 负向证据且字段名错位（receivedOrder→order、profileId 缺失、kind 缺失、command 未逐字复制），主 agent 手工补齐形状与实验才过 consumer。PR #335 agent 同样挂起一次。字段名偏差说明 agent 在压缩后丢失契约细节。
   - 提案:候选方向（等维护者拍板）：a) deliver-review-segment 对 payload 按 sizeBudget 再细分（当前 sizeBudget=60 未拦住 141KB 单段）；b) agent-brief 里把 rro-1 契约字段名清单压缩成一页速查表直接内嵌（降低压缩后丢失概率）；c) consumer invalid 时自动生成字段修复 diff 提示给编排方重投。均不扩权。
