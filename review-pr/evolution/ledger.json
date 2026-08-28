@@ -3991,6 +3991,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-28T08:15:34.496Z",
       "lastSeen": "2026-08-28T08:15:34.496Z"
+    },
+    {
+      "fingerprint": "post-review-main-advance-semantic-conflict",
+      "tier": "by-design",
+      "title": "审查通过后主干被网页合并前进，冲突落在两套需共存的业务逻辑上，auto 不代取舍",
+      "detail": "PR 354 clean 回执落盘后 origin/main 因 #355 网页合并前进，imageNodePsd.ts 单块冲突需把 #355 的 0KB 守卫语义移植进 354 新会话流，属语义组合；按 5.5 拿不准算语义冲突，auto 中止、提醒作者 rebase、点名维护者",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-28T11:31:49.272Z",
+      "lastSeen": "2026-08-28T11:31:49.272Z"
     }
   ],
   "escapedHazards": [
