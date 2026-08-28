@@ -337,6 +337,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `negative-evidence-command-anchor-must-copy-run-verbatim` **negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
+  - 现象:2026-08-29 mivo-canvas-plugin #343 轮:语义审查 0 P0/P1、9 处负向证据真实实跑,但主会话组装 rro-1.json 时在 negativeEvidence.command/outputAnchor 写了比 verificationRuns 更详细的摘要措辞,consumer 按 lib 逐字比对判 negativeEvidenceInconsistent → invalid;同 snapshot 3 次重试机会被耗掉 2 次。
+  - 提案:SKILL.md 输出契约段补一条:negativeEvidence 的 command/outputAnchor 先写 run 再照抄;已在 SKILL.md 落地(文档级,无脚本改动)
 - `archived-fix-session-stale-binding-dispatch` **跟进会话绑定指向已归档 session 时 send_to_session 返 ARCHIVED,clear 后新建重投成功** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:PR 334/335/336/337 四个 selfFix 卡点投递时,fix-session-state 绑定的旧 sessionId 全部已归档(ARCHIVED);按 SKILL 5.4 失败处理清绑定改走新建,4 单全部投递成功并 set 新指纹。旧绑定含 ci-failed 等过期类别,与当前卡点(pushback-format)不同属预期指纹变化,但 ARCHIVED 是新增失败形态
   - 提案:无:新建重投一次成功,现有 ARCHIVED 处理路径足够;仅当 ARCHIVED 高频出现才需要 sweep 扩展为归档探活

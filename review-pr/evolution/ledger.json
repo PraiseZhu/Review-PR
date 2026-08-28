@@ -4030,6 +4030,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-28T17:50:18.212Z",
       "lastSeen": "2026-08-28T17:50:18.212Z"
+    },
+    {
+      "fingerprint": "negative-evidence-command-anchor-must-copy-run-verbatim",
+      "tier": "auto",
+      "title": "negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写",
+      "detail": "2026-08-29 mivo-canvas-plugin #343 轮:语义审查 0 P0/P1、9 处负向证据真实实跑,但主会话组装 rro-1.json 时在 negativeEvidence.command/outputAnchor 写了比 verificationRuns 更详细的摘要措辞,consumer 按 lib 逐字比对判 negativeEvidenceInconsistent → invalid;同 snapshot 3 次重试机会被耗掉 2 次。",
+      "proposal": "SKILL.md 输出契约段补一条:negativeEvidence 的 command/outputAnchor 先写 run 再照抄;已在 SKILL.md 落地(文档级,无脚本改动)",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-28T23:51:06.755Z",
+      "lastSeen": "2026-08-28T23:51:06.755Z"
     }
   ],
   "escapedHazards": [
