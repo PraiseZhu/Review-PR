@@ -4022,14 +4022,14 @@
       "fingerprint": "mivo-plugin-main-push-protected",
       "tier": "by-design",
       "title": "mivo-canvas-plugin 主干受分支保护,5.5 冲突代合并的 push 步骤不可达",
-      "detail": "PR #352 唯一冲突文件 ghost.json 属机械冲突(保留 main 文案+PR version),本地 merge 解完且 tsc+160 用例绿,但 push main 被 repository rule 拒绝(Changes must be made through a pull request)。SKILL 5.5 第4步如实放弃。该仓冲突代合并只能靠作者自行 rebase,建议评论中给出解法口径(已执行)。",
+      "detail": "PR 352 满足 5.5 全部门槛(0 P0/P1 回执绑当前 head/产品门白名单已同意/formatPass/required 全绿/唯一阻断冲突仅 ghost.json 且机械),隔离 worktree merge 解冲突+验证全绿(tsc -b/vitest 178 例/build.sh)后 push HEAD:main 被拒(pull_request ruleset+non_fast_forward,org/enterprise 层,与 branch protection API 结果不同)。按 5.5 放弃不绕过,归作者 rebase。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-28T17:50:18.212Z",
-      "lastSeen": "2026-08-28T17:50:18.212Z"
+      "lastSeen": "2026-08-29T09:10:59.220Z"
     },
     {
       "fingerprint": "negative-evidence-command-anchor-must-copy-run-verbatim",
