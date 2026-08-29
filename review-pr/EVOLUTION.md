@@ -411,6 +411,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `draft-ready-race-scan-miscount` **draft→ready 与 --scan-all 快照竞态:转 ready 后首轮仍计 draftSkipped** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked
+  - 现象:PR 372 于 2026-08-29 16:40 由作者标回 Ready,本轮 17:01 --scan-all 仍返回 draftSkipped=1;按 6.1 纪律用 gh pr list 自查展开后发现实际已 Ready,当轮正常处理(格式门打回)。根因是 scan 快照与 GitHub 状态的读取时序,不是判定逻辑错误。处理口径:draftSkipped 计数永远以 gh 实查展开为准,发现计数与实查不符时按实查处理,不按计数 skip。幂等自愈,无需代码改动。
 - `product-gate-consent-precedes-current-head` **产品门白名单同意留言早于当前 head 出现时机器不采信,按 fail-closed 继续等** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked
   - 现象:PR #352:讨论 issue #353 白名单留言(2026-08-28T09:54Z)早于当前 head 出现时间(13:03Z),evaluateDiscussionIssueConsent 判 consented=false;head 变更后旧同意不自动延续到新 head 是设计上的从严(防止同意的是旧实现),不自动放行、维持 held,等白名单对新 head 再次表态
 - `mivo-plugin-main-push-protected` **mivo-canvas-plugin 主干受分支保护,5.5 冲突代合并的 push 步骤不可达** — 出现 2 次,首见 2026-08-28,最近 2026-08-29,status: tracked
