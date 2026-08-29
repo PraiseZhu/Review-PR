@@ -411,6 +411,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr-merged-manually-during-review` **owner 网页手动合并发生在独立审查收尾前,按 state!=OPEN skip 留档** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked
+  - 现象:#372 审查 0 P0/P1 完成后合并先落地(2c6fb9e9),无 GitHub 写操作;回执不落 clean 属预期
 - `pr-conflict-author-side` **PR 与主干冲突属作者侧可自解,review-pr 只提醒不代解** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked
   - 现象:#352 conflict:DIRTY,模板 C 已发,去重正常
 - `draft-ready-race-scan-miscount` **draft→ready 与 --scan-all 快照竞态:转 ready 后首轮仍计 draftSkipped** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked

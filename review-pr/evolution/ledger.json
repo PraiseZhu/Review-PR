@@ -4095,6 +4095,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-29T19:22:48.927Z",
       "lastSeen": "2026-08-29T19:22:48.927Z"
+    },
+    {
+      "fingerprint": "pr-merged-manually-during-review",
+      "tier": "by-design",
+      "title": "owner 网页手动合并发生在独立审查收尾前,按 state!=OPEN skip 留档",
+      "detail": "#372 审查 0 P0/P1 完成后合并先落地(2c6fb9e9),无 GitHub 写操作;回执不落 clean 属预期",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-29T19:22:53.377Z",
+      "lastSeen": "2026-08-29T19:22:53.377Z"
     }
   ],
   "escapedHazards": [
