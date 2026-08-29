@@ -408,6 +408,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `product-gate-consent-precedes-current-head` **产品门白名单同意留言早于当前 head 出现时机器不采信,按 fail-closed 继续等** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked
+  - 现象:PR #352:讨论 issue #353 白名单留言(2026-08-28T09:54Z)早于当前 head 出现时间(13:03Z),evaluateDiscussionIssueConsent 判 consented=false;head 变更后旧同意不自动延续到新 head 是设计上的从严(防止同意的是旧实现),不自动放行、维持 held,等白名单对新 head 再次表态
 - `mivo-plugin-main-push-protected` **mivo-canvas-plugin 主干受分支保护,5.5 冲突代合并的 push 步骤不可达** — 出现 2 次,首见 2026-08-28,最近 2026-08-29,status: tracked
   - 现象:PR 352 满足 5.5 全部门槛(0 P0/P1 回执绑当前 head/产品门白名单已同意/formatPass/required 全绿/唯一阻断冲突仅 ghost.json 且机械),隔离 worktree merge 解冲突+验证全绿(tsc -b/vitest 178 例/build.sh)后 push HEAD:main 被拒(pull_request ruleset+non_fast_forward,org/enterprise 层,与 branch protection API 结果不同)。按 5.5 放弃不绕过,归作者 rebase。
 - `post-review-main-advance-semantic-conflict` **审查通过后主干被网页合并前进，冲突落在两套需共存的业务逻辑上，auto 不代取舍** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked

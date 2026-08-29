@@ -4043,6 +4043,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-28T23:51:06.755Z",
       "lastSeen": "2026-08-28T23:51:06.755Z"
+    },
+    {
+      "fingerprint": "product-gate-consent-precedes-current-head",
+      "tier": "by-design",
+      "title": "产品门白名单同意留言早于当前 head 出现时机器不采信,按 fail-closed 继续等",
+      "detail": "PR #352:讨论 issue #353 白名单留言(2026-08-28T09:54Z)早于当前 head 出现时间(13:03Z),evaluateDiscussionIssueConsent 判 consented=false;head 变更后旧同意不自动延续到新 head 是设计上的从严(防止同意的是旧实现),不自动放行、维持 held,等白名单对新 head 再次表态",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-29T12:14:42.203Z",
+      "lastSeen": "2026-08-29T12:14:42.203Z"
     }
   ],
   "escapedHazards": [
