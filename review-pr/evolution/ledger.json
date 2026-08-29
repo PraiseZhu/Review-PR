@@ -4056,6 +4056,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-29T12:14:42.203Z",
       "lastSeen": "2026-08-29T12:14:42.203Z"
+    },
+    {
+      "fingerprint": "fix-session-thread-verify-timeout",
+      "tier": "proposal",
+      "title": "跟进会话在 review thread 核验步骤反复超时,thread 核验/resolve 可拆给编排层内联执行",
+      "detail": "mivo-canvas-plugin PR370/371 三轮跟进会话均在 GraphQL thread 核验一步超时中止,但每轮的代码 push 均已落地;编排层直接取 thread 全文+对照当前 head 代码核对+统一 reply/resolve,单轮完成 4 条 thread 处置且零代码改动",
+      "proposal": "SKILL 5.4 投递模板建议把「thread 核验+reply/resolve」从跟进会话职责中拆出:跟进会话只负责代码修复与 push,thread 处置由编排层内联执行(只读+流程动作,不碰代码);可避免会话在长步骤超时导致整轮中断",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-29T15:53:08.879Z",
+      "lastSeen": "2026-08-29T15:53:08.879Z"
     }
   ],
   "escapedHazards": [

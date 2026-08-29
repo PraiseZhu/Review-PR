@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `fix-session-thread-verify-timeout` **跟进会话在 review thread 核验步骤反复超时,thread 核验/resolve 可拆给编排层内联执行** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: open
+  - 现象:mivo-canvas-plugin PR370/371 三轮跟进会话均在 GraphQL thread 核验一步超时中止,但每轮的代码 push 均已落地;编排层直接取 thread 全文+对照当前 head 代码核对+统一 reply/resolve,单轮完成 4 条 thread 处置且零代码改动
+  - 提案:SKILL 5.4 投递模板建议把「thread 核验+reply/resolve」从跟进会话职责中拆出:跟进会话只负责代码修复与 push,thread 处置由编排层内联执行(只读+流程动作,不碰代码);可避免会话在长步骤超时导致整轮中断
 - `review-agent-spawn-output-hygiene` **审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
   - 现象:本轮首次 spawn 因 autocompact 三连爆而终止重试；重试版在提示词加『长输出一律 tail/重定向后只回显退出码』后顺利完成。建议把该约束写进 SKILL.md 第 4 节审查 agent 任务模板
   - 提案:在 SKILL.md 第 4 节模板首部追加一条输出卫生 bullet：任何可能长输出的命令一律 | tail -n 40 或重定向到 worktree 内日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出
