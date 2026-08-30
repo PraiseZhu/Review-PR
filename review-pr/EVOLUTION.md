@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `orphaned-heartbeat-keeps-lock-after-parent-crash` **父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
+  - 现象:2026-08-30 18:06Z 轮完成 run-log 后会话崩溃,未走 release-lock;其 lock-heartbeat-daemon(pid 存活)继续每 20 分钟续期,锁 TTL 永不过期直至守护 3h max-lifetime。下一整轮(19:02Z)只能按 lock-busy 跳过全部候选。缺口:心跳守护只验证 token,不感知父会话死活。
+  - 提案:让守护进程持有对父 pid 的引用(PPID/kqueue NOTE_EXIT 或父进程心跳文件),父进程死亡即自杀停止续期,让锁按 TTL 尽快自愈;属可靠性修复,不扩权,建议 owner 拍板后另立 PR。
 - `review-agent-timeout-degrade-path` **审查子 agent 多次超时时缺少明确的降级/收尾路径，编排方被迫代组装答卷** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
   - 现象:2026-08-30 mivo-canvas-plugin 轮：PR #378 审查会话 4 次超时、#373 两次超时，审查 agent 已完成大部分验证但未产出 rro-1.json；最终由编排方基于构建器/投递出口产物组装答卷并通过 consume 机器对账（verdict 由内容推导，未被架空）。但该退化路径本身无 SKILL 依据，存在跨快照/契约口径漂移风险。
   - 提案:在 SKILL 4 节明确：审查会话超时后允许编排方'答卷组装席'接手，但必须重建 task/preflight/分段投递台账且 snapshotHash 四元组与 consume 现场重算一致；并把'snapshotHash 绑定 baseRefOid（PR 元数据），传 merge-base 会产生不同 snapshot'写进 --base 的显式警示（2026-08-30 实测：同 diff 两个 hash，clean 回执被判 stale）。

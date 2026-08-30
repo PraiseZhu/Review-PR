@@ -4147,6 +4147,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-30T15:43:13.012Z",
       "lastSeen": "2026-08-30T15:43:13.012Z"
+    },
+    {
+      "fingerprint": "orphaned-heartbeat-keeps-lock-after-parent-crash",
+      "tier": "proposal",
+      "title": "父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时",
+      "detail": "2026-08-30 18:06Z 轮完成 run-log 后会话崩溃,未走 release-lock;其 lock-heartbeat-daemon(pid 存活)继续每 20 分钟续期,锁 TTL 永不过期直至守护 3h max-lifetime。下一整轮(19:02Z)只能按 lock-busy 跳过全部候选。缺口:心跳守护只验证 token,不感知父会话死活。",
+      "proposal": "让守护进程持有对父 pid 的引用(PPID/kqueue NOTE_EXIT 或父进程心跳文件),父进程死亡即自杀停止续期,让锁按 TTL 尽快自愈;属可靠性修复,不扩权,建议 owner 拍板后另立 PR。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-30T19:13:11.544Z",
+      "lastSeen": "2026-08-30T19:13:11.544Z"
     }
   ],
   "escapedHazards": [
