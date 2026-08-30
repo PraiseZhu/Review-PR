@@ -4121,6 +4121,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-30T01:45:09.576Z",
       "lastSeen": "2026-08-30T01:45:09.576Z"
+    },
+    {
+      "fingerprint": "ownpr-body-evidence-detection-gap-pr-body-file",
+      "tier": "proposal",
+      "title": "ownPr 的 PR body 从 .pr-body.md 工作树文件读取，bodyHasUiEvidence 机械判定对实际附 HTML 证据的 own PR 误报缺失",
+      "detail": "PR #376 body 的证据节实际含 HTML 证据页链接，但 format.bodyHasUiEvidence=false；该 PR 文件清单含 .pr-body.md（build-review-task 的 pr-body seam 源），提示 context 的 body 来源对该形态走的是工作树文件而非 gh 现场数据，机械判定与真实 body 脱节。审查 agent 按证据一致性流程核对实际证据后确认 consistent，未产生错误动作（ownPr 也不发提醒评论），仅判定缺口。",
+      "proposal": "context.mjs 的 body/uiEvidence 采集在 .pr-body.md 存在于 PR 文件清单时，现场用 gh pr view 的 body 交叉核验或直接以 GitHub 侧 body 为权威；或 build-review-task 的 --pr-body-file seam 读取路径改为仓库外临时目录。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-30T02:43:58.425Z",
+      "lastSeen": "2026-08-30T02:43:58.425Z"
     }
   ],
   "escapedHazards": [

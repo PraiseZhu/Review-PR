@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ownpr-body-evidence-detection-gap-pr-body-file` **ownPr 的 PR body 从 .pr-body.md 工作树文件读取，bodyHasUiEvidence 机械判定对实际附 HTML 证据的 own PR 误报缺失** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
+  - 现象:PR #376 body 的证据节实际含 HTML 证据页链接，但 format.bodyHasUiEvidence=false；该 PR 文件清单含 .pr-body.md（build-review-task 的 pr-body seam 源），提示 context 的 body 来源对该形态走的是工作树文件而非 gh 现场数据，机械判定与真实 body 脱节。审查 agent 按证据一致性流程核对实际证据后确认 consistent，未产生错误动作（ownPr 也不发提醒评论），仅判定缺口。
+  - 提案:context.mjs 的 body/uiEvidence 采集在 .pr-body.md 存在于 PR 文件清单时，现场用 gh pr view 的 body 交叉核验或直接以 GitHub 侧 body 为权威；或 build-review-task 的 --pr-body-file seam 读取路径改为仓库外临时目录。
 - `fix-session-thread-verify-timeout` **跟进会话在 review thread 核验步骤反复超时,thread 核验/resolve 可拆给编排层内联执行** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: open
   - 现象:mivo-canvas-plugin PR370/371 三轮跟进会话均在 GraphQL thread 核验一步超时中止,但每轮的代码 push 均已落地;编排层直接取 thread 全文+对照当前 head 代码核对+统一 reply/resolve,单轮完成 4 条 thread 处置且零代码改动
   - 提案:SKILL 5.4 投递模板建议把「thread 核验+reply/resolve」从跟进会话职责中拆出:跟进会话只负责代码修复与 push,thread 处置由编排层内联执行(只读+流程动作,不碰代码);可避免会话在长步骤超时导致整轮中断
