@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-timeout-degrade-path` **审查子 agent 多次超时时缺少明确的降级/收尾路径，编排方被迫代组装答卷** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
+  - 现象:2026-08-30 mivo-canvas-plugin 轮：PR #378 审查会话 4 次超时、#373 两次超时，审查 agent 已完成大部分验证但未产出 rro-1.json；最终由编排方基于构建器/投递出口产物组装答卷并通过 consume 机器对账（verdict 由内容推导，未被架空）。但该退化路径本身无 SKILL 依据，存在跨快照/契约口径漂移风险。
+  - 提案:在 SKILL 4 节明确：审查会话超时后允许编排方'答卷组装席'接手，但必须重建 task/preflight/分段投递台账且 snapshotHash 四元组与 consume 现场重算一致；并把'snapshotHash 绑定 baseRefOid（PR 元数据），传 merge-base 会产生不同 snapshot'写进 --base 的显式警示（2026-08-30 实测：同 diff 两个 hash，clean 回执被判 stale）。
 - `ownpr-body-evidence-detection-gap-pr-body-file` **ownPr 的 PR body 从 .pr-body.md 工作树文件读取，bodyHasUiEvidence 机械判定对实际附 HTML 证据的 own PR 误报缺失** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
   - 现象:PR #376 body 的证据节实际含 HTML 证据页链接，但 format.bodyHasUiEvidence=false；该 PR 文件清单含 .pr-body.md（build-review-task 的 pr-body seam 源），提示 context 的 body 来源对该形态走的是工作树文件而非 gh 现场数据，机械判定与真实 body 脱节。审查 agent 按证据一致性流程核对实际证据后确认 consistent，未产生错误动作（ownPr 也不发提醒评论），仅判定缺口。
   - 提案:context.mjs 的 body/uiEvidence 采集在 .pr-body.md 存在于 PR 文件清单时，现场用 gh pr view 的 body 交叉核验或直接以 GitHub 侧 body 为权威；或 build-review-task 的 --pr-body-file seam 读取路径改为仓库外临时目录。
