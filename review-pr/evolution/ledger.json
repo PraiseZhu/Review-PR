@@ -4173,6 +4173,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-31T03:38:16.135Z",
       "lastSeen": "2026-08-31T03:38:16.135Z"
+    },
+    {
+      "fingerprint": "semantic-conflict-persist-needs-human",
+      "tier": "by-design",
+      "title": "语义冲突的取舍只能由维护者/作者做,auto 不代解",
+      "detail": "PR352 与主干 #371/#373 的 library 写入链改写重叠(cindyGenerationPort.ts persistLibraryBeforeVisibleSuccess 两种业务逻辑),auto 按规则不擅自取舍;已发冲突提醒(去重命中,此前轮已提醒),等作者 merge origin/main 或维护者代修。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-31T03:38:28.354Z",
+      "lastSeen": "2026-08-31T03:38:28.354Z"
     }
   ],
   "escapedHazards": [

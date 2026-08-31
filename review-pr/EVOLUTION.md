@@ -436,6 +436,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `semantic-conflict-persist-needs-human` **语义冲突的取舍只能由维护者/作者做,auto 不代解** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
+  - 现象:PR352 与主干 #371/#373 的 library 写入链改写重叠(cindyGenerationPort.ts persistLibraryBeforeVisibleSuccess 两种业务逻辑),auto 按规则不擅自取舍;已发冲突提醒(去重命中,此前轮已提醒),等作者 merge origin/main 或维护者代修。
 - `stage2-subagent-timeout-first-attempt` **阶段二审查 agent 首派超时，重派成功** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: tracked
   - 现象:PR #375 审查（2026-08-30）：首次派独立审查 agent 未在时限内交付 rro-1.json（超时，无输出、无副作用，主工作树未受影响）；重派时先写初始答卷再补审查、给明确时限后成功。按第 8.1 根因三分类归 by-design：属编排容错而非 skill 缺口——现有契约已要求审查会话超时按 review-agent-timeout 写 non-clean 回执并 skip，重派属正常恢复动作；未发现需要改 SKILL 或脚本的系统性漏洞。后续观察重派频率，若成常态再评估将初始答卷预写+限时交付固化为编排模板。
 - `pr-merged-manually-during-review` **owner 网页手动合并发生在独立审查收尾前,按 state!=OPEN skip 留档** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked
