@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `re-review-same-head-no-increment` **fallback=review 对 viewer 自挂 CHANGES_REQUESTED 且无新 commit 的 PR 每轮全量重审,无信息增量** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:mivo-canvas-plugin #352/#386:同 head 上 viewer 刚打过回(07:16/12:12),作者零动作,context.mjs fallback 仍给 review 路由;1h 网格下每轮重复隔离审查烧大量 token(#352 本轮跑 ~70 分钟负向验证仍未交卷)
+  - 提案:context.mjs fallback 判定加 stale 分支:同 head + 已有 viewer CHANGES_REQUESTED + 无新 commit → 改判 skip(复用 skip-stale-pushback 语义);涉及机器判定逻辑改动,留维护者评审
 - `deepseek-review-seat-no-output` **低配审查席连续两轮超时未产 rro-1.json，靠预提取 diff+最小模板第三轮才完成** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:PR #385 轮：deepseek 审查席前两轮 failed(无输出/超时)，消耗三次 spawn；第三轮把净 diff 与 PR body 预提取成小文件并给出直接模板后一次通过。痛点在任务上下文过大+目标不聚焦，非 skill 脚本缺陷。
   - 提案:考虑在 build-review-task 的 prompt 模板里对文档型 PR 提示『直接读文档与 body，勿跑构建』，或在 SKILL 审查席派工纪律中固化『预提取 net-diff 到文件、给最小回执样例』两步

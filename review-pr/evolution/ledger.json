@@ -4238,6 +4238,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-31T14:19:48.069Z",
       "lastSeen": "2026-08-31T14:19:48.069Z"
+    },
+    {
+      "fingerprint": "re-review-same-head-no-increment",
+      "tier": "proposal",
+      "title": "fallback=review 对 viewer 自挂 CHANGES_REQUESTED 且无新 commit 的 PR 每轮全量重审,无信息增量",
+      "detail": "mivo-canvas-plugin #352/#386:同 head 上 viewer 刚打过回(07:16/12:12),作者零动作,context.mjs fallback 仍给 review 路由;1h 网格下每轮重复隔离审查烧大量 token(#352 本轮跑 ~70 分钟负向验证仍未交卷)",
+      "proposal": "context.mjs fallback 判定加 stale 分支:同 head + 已有 viewer CHANGES_REQUESTED + 无新 commit → 改判 skip(复用 skip-stale-pushback 语义);涉及机器判定逻辑改动,留维护者评审",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-31T14:20:05.734Z",
+      "lastSeen": "2026-08-31T14:20:05.734Z"
     }
   ],
   "escapedHazards": [
