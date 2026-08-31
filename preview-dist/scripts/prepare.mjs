@@ -35,6 +35,7 @@
 
 import { parseRepo, git, gh, print, fail, LOCK_FILE, releaseLockOwned, skillRepoPull } from './lib.mjs';
 import { startLockHeartbeat, stopLockHeartbeat, parseLockStartedAt } from './lib.session-lock.mjs';
+import { porcelainHasUserDirty } from './lib.gate-paths.mjs';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
@@ -168,7 +169,7 @@ try {
   const repo = parseRepo();
   const ghAuth = gh(['auth', 'status'], { allowFail: true }).ok;
   const porcelain = git(['status', '--porcelain']).stdout.trim();
-  const worktreeClean = porcelain === '';
+  const worktreeClean = !porcelainHasUserDirty(porcelain);
   let currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
 
   // 默认分支:origin/HEAD → refs/remotes/origin/<branch>;解析不到兜底 main
@@ -215,7 +216,7 @@ try {
     repo,
     ghAuth,
     worktreeClean,
-    dirtyFiles: worktreeClean ? [] : porcelain.split('\n'),
+    dirtyFiles: worktreeClean ? [] : porcelain.split('\n').filter((line) => porcelainHasUserDirty(line)),
     currentBranch,
     defaultBranch,
     trackingRecovered,

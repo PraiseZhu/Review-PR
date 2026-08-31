@@ -61,6 +61,34 @@ let FINALIZE = null;
 
 try {
   const pr = parsePR(process.argv[2]);
+  // 形状预检:只验 rro-1 字段,不写回执、不改任何字段。缺字段/形状错把 errors 退回审查席重交。
+  if (process.argv.includes('--shape-preflight')) {
+    const outputFile = argOf('--output');
+    if (!outputFile || !existsSync(outputFile)) {
+      print({ ok: false, patched: false, errors: ['缺 --output <rro-1.json>'] });
+      process.exit(2);
+    }
+    let output;
+    try { output = JSON.parse(readFileSync(outputFile, 'utf8')); }
+    catch (e) {
+      print({ ok: false, patched: false, errors: [`输出不是合法 JSON:${e.message}`] });
+      process.exit(2);
+    }
+    const snapshotHash = argOf('--snapshot-hash');
+    const shape = validateReviewOutput(output, {
+      shapeOnly: true,
+      snapshotHash: snapshotHash || null,
+    });
+    print({
+      ok: shape.ok,
+      patched: false,
+      errors: shape.errors,
+      note: shape.ok
+        ? 'shape-preflight 通过,未改写任何字段'
+        : 'shape-preflight 失败,退回审查席按 errors 重交;主会话不得静默补字段,不做 --shape-fix',
+    });
+    process.exit(shape.ok ? 0 : 2);
+  }
   const mode = argOf('--mode');
   const baseRefOid = (argOf('--base') ?? '').toLowerCase();
   const headRefOid = (argOf('--head') ?? '').toLowerCase();

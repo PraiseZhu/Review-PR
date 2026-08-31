@@ -785,3 +785,75 @@ test('㉔ R7 第 4 轮核验:known hazard 同 ID 内容漂移 → task 对账 in
   assert.equal(r2.json.verdict, 'invalid');
   assert.match(r2.json.reasons.join(';'), /knownHazardsHash/);
 });
+
+test('shape-preflight: 缺 profileId 字段级报错且 patched=false,不写回执', () => {
+  const f = setup();
+  const bad = join(f.work, 'rro-bad.json');
+  writeFileSync(bad, JSON.stringify({
+    schemaVersion: 'rro-1',
+    findingFamilies: [],
+    verificationGaps: [],
+    verificationRuns: [],
+    profileAnswers: [{ fileId: 'F1', checkId: 'c1', answer: 'not-applicable', reasonCode: 'x', explanation: 'y' }],
+    findingDispositions: [],
+    negativeEvidence: [],
+    escapeAssessment: [],
+    segmentReceipts: [],
+  }));
+  const r = spawnSync('node', [CONSUME, '469', '--shape-preflight', '--output', bad], {
+    cwd: f.repo, env: f.env, encoding: 'utf8',
+  });
+  let json = null;
+  try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
+  assert.ok(json, `应输出 JSON: ${r.stdout.slice(0, 400)}${r.stderr.slice(0, 200)}`);
+  assert.equal(r.status, 2);
+  assert.equal(json.ok, false);
+  assert.equal(json.patched, false);
+  assert.ok((json.errors || []).some((e) => /profileId/.test(e)), json.errors);
+  const receipts = readdirSync(f.stateDir).filter((n) => n.startsWith('review-receipt-'));
+  assert.equal(receipts.length, 0, 'shape-preflight 不得写回执');
+});
+
+test('shape-preflight: 合法 disposition/prescan 不因缺注入清单误杀;缺 snapshotHash 仍报错', () => {
+  const f = setup();
+  const withDisp = join(f.work, 'rro-disp.json');
+  writeFileSync(withDisp, JSON.stringify({
+    schemaVersion: 'rro-1',
+    snapshotHash: 'snap1-shape',
+    findingFamilies: [],
+    verificationGaps: [],
+    verificationRuns: [],
+    profileAnswers: [],
+    findingDispositions: [{ findingId: 'f-open-1', disposition: 'invalidated', basis: '当前 snapshot 已不成立' }],
+    negativeEvidence: [],
+    escapeAssessment: [],
+    segmentReceipts: [],
+    prescanAssessments: [{ observationId: 'obs-1', disposition: 'dismissed', basis: '预扫误报' }],
+  }));
+  const ok = spawnSync('node', [CONSUME, '469', '--shape-preflight', '--output', withDisp], {
+    cwd: f.repo, env: f.env, encoding: 'utf8',
+  });
+  const okJson = JSON.parse(ok.stdout);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.equal(okJson.ok, true, JSON.stringify(okJson.errors));
+
+  const missing = join(f.work, 'rro-nosnap.json');
+  writeFileSync(missing, JSON.stringify({
+    schemaVersion: 'rro-1',
+    findingFamilies: [],
+    verificationGaps: [],
+    verificationRuns: [],
+    profileAnswers: [],
+    findingDispositions: [],
+    negativeEvidence: [],
+    escapeAssessment: [],
+    segmentReceipts: [],
+  }));
+  const bad = spawnSync('node', [CONSUME, '469', '--shape-preflight', '--output', missing], {
+    cwd: f.repo, env: f.env, encoding: 'utf8',
+  });
+  const badJson = JSON.parse(bad.stdout);
+  assert.equal(bad.status, 2);
+  assert.equal(badJson.ok, false);
+  assert.ok((badJson.errors || []).some((e) => /snapshotHash/.test(e)), badJson.errors);
+});

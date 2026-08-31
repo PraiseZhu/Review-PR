@@ -19,7 +19,7 @@ import { writeFileSync } from 'node:fs';
 import process from 'node:process';
 import { print, fail, REPO_ROOT, STATE_DIR, loadRules, scanPrSensitiveContent } from './lib.mjs';
 import { buildDiffSnapshot, coverageKeysOf } from './lib.diff-snapshot.mjs';
-import { buildSegments } from './lib.review-profiles.mjs';
+import { buildSegments, segmentBudgetFromRules } from './lib.review-profiles.mjs';
 import { validatePrescanConfig } from './lib.prescan.mjs';
 import { loadDeliveries, saveDeliveries, appendDelivery } from './lib.review-delivery.mjs';
 import { join } from 'node:path';
@@ -75,7 +75,7 @@ try {
 
   // SC-2.1: 分段与阶段二审查同一算法(buildSegments),同一 sizeBudget 配置
   const coverageKeys = coverageKeysOf(snapshot);
-  const segments = buildSegments({ coverageKeys, sizeBudget: Number(rules?.reviewSegments?.sizeBudget) || 60 });
+  const segments = buildSegments({ coverageKeys, ...segmentBudgetFromRules(rules) });
   const seg = segments.find((s) => s.order === order);
   if (!seg) {
     print({ ok: false, pr, reasonCode: 'orchestration-incomplete', error: `order ${order} 不在本轮分片里(共 ${segments.length} 段)` });

@@ -441,7 +441,7 @@ const SCRIPTS_DIR = join(__dirname, '..', 'scripts');
 function copyScriptsTo(work) {
   const dir = join(work, 'scripts');
   mkdirSync(dir);
-  for (const f of ['context.mjs', 'lib.mjs', 'lib.escaped-hazards.mjs', 'lib.review-profiles.mjs', 'lib.preflight-rules.mjs']) {
+  for (const f of ['context.mjs', 'lib.mjs', 'lib.gate-paths.mjs', 'lib.escaped-hazards.mjs', 'lib.review-profiles.mjs', 'lib.preflight-rules.mjs']) {
     copyFileSync(join(SCRIPTS_DIR, f), join(dir, f));
   }
   return dir;

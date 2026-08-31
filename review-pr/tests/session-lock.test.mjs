@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -20,6 +20,7 @@ import {
   stopLockHeartbeat,
   heartbeatPidPath,
   isPidAlive,
+  resolveReviewParentPid,
   tryCreateSessionLock,
   writeOwnedSessionLock,
   SESSION_LOCK_REFRESH_MIN_INTERVAL_MS,
@@ -239,4 +240,25 @@ test('startLockHeartbeat / stopLockHeartbeat: 守护续期后能被杀掉', asyn
   await sleep(50);
   assert.equal(isPidAlive(started.pid), false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('守护自终止④: 父进程死后停续,不删锁、不抢锁', async () => {
+  const dir = freshTempDir('session-lock-parent-');
+  const lockFile = writeLock(dir, 'tok-parent', Date.now());
+  const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
+  const started = startLockHeartbeat(lockFile, 'tok-parent', { everyMs: 50, parentPid: sleeper.pid });
+  await sleep(80);
+  assert.equal(isPidAlive(started.pid), true, '父活着时守护应续期');
+  try { process.kill(sleeper.pid, 'SIGKILL'); } catch { /* already dead */ }
+  await sleep(250);
+  assert.equal(isPidAlive(started.pid), false, '父死后守护必须自杀');
+  assert.equal(existsSync(lockFile), true, '只停续不删锁');
+  assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).token, 'tok-parent');
+  stopLockHeartbeat(lockFile);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('resolveReviewParentPid: 显式 pid 优先,非法则 null', () => {
+  assert.equal(resolveReviewParentPid({ explicit: process.pid }), process.pid);
+  assert.equal(resolveReviewParentPid({ explicit: 1, fromPid: 1 }), null);
 });

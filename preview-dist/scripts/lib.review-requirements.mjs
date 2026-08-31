@@ -17,7 +17,7 @@ import { coverageKeysOf } from './lib.diff-snapshot.mjs';
 import { loadVendoredTypescript, oracleCallRanges, scriptKindFor } from './lib.preflight-rules.mjs';
 import {
   mergeProfiles, requiredProfileAnswersFor, classifyRequiredNegativeEvidence,
-  buildSegments, profileSetHash,
+  buildSegments, profileSetHash, segmentBudgetFromRules,
 } from './lib.review-profiles.mjs';
 
 /** 括号净差(用于把改动行扩到它所在的**完整语句**)。 */
@@ -135,6 +135,15 @@ export function lineTextsFor(snapshot, { repoRoot }) {
   return { added, removed, windows, astRanges, incompleteFiles };
 }
 
+function coverageKeyBytes(file, k) {
+  if (!file) return 64;
+  if (k?.kind === 'hunk') {
+    const h = file.hunks?.find((x) => x.hunkId === k.hunkId);
+    return Buffer.byteLength(String(h?.patchText ?? ''), 'utf8') + 128;
+  }
+  return 128;
+}
+
 /**
  * 权威推导(唯一实现)。snapshot 不完整时返回空集合 + incomplete 标记——调用方 fail-closed。
  * @returns {{ profiles, warnings, configIncomplete, coverageKeys, segments,
@@ -144,7 +153,12 @@ export function computeReviewRequirements({ repoRoot, snapshot, rules }) {
   const { profiles, warnings, configIncomplete } = mergeProfiles(rules?.riskProfiles);
   const files = snapshot.complete ? snapshot.files : [];
   const coverageKeys = snapshot.complete ? coverageKeysOf(snapshot) : [];
-  const segments = buildSegments({ coverageKeys, sizeBudget: Number(rules?.reviewSegments?.sizeBudget) || 60 });
+  const { sizeBudget, sizeBudgetBytes } = segmentBudgetFromRules(rules);
+  const fileById = new Map((snapshot.complete ? snapshot.files : []).map((f) => [f.fileId, f]));
+  const segments = buildSegments({
+    coverageKeys, sizeBudget, sizeBudgetBytes,
+    keyBytes: (k) => coverageKeyBytes(fileById.get(k.fileId), k),
+  });
   const requiredProfileAnswers = requiredProfileAnswersFor(profiles, files);
   const texts = snapshot.complete
     ? lineTextsFor(snapshot, { repoRoot })

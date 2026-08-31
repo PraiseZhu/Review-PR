@@ -147,3 +147,13 @@ test('SC-R1b:dirty 不强制绑定(撤销/打回场景),照常可写', () => {
   const r = writeReviewReceipt({ pr: 900012, headRefOid: 'sha-d', verdict: 'dirty', p0p1Count: 1 });
   assert.equal(r.verdict, 'dirty');
 });
+
+test('skip 回执是 non-clean,可带 review-agent-timeout,不能当清白', () => {
+  const r = writeReviewReceipt({
+    pr: 900013, headRefOid: 'sha-skip', verdict: 'skip', p0p1Count: 0,
+    bindings: { reason: 'review-agent-timeout' },
+  });
+  assert.equal(r.verdict, 'skip');
+  assert.equal(r.reason, 'review-agent-timeout');
+  assert.equal(cleanOk(r, 'sha-skip'), false);
+});

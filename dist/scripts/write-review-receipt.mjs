@@ -45,8 +45,8 @@ try {
   if (verdict === 'clean') {
     throw new Error('本 CLI 不再接受 --verdict clean(SC-R1b):clean 回执只能由 consume-review-output.mjs 依据机器派生 verdict 写入,人工/agent 直写 clean 的通道已收口');
   }
-  if (verdict !== 'dirty') {
-    throw new Error('--verdict 必须是 dirty(clean 已收口到 consume-review-output.mjs)');
+  if (verdict !== 'dirty' && verdict !== 'skip') {
+    throw new Error('--verdict 必须是 dirty 或 skip(clean 已收口到 consume-review-output.mjs)');
   }
   const p0p1CountArg = argAfter('--p0p1-count');
   if (p0p1CountArg === '') throw new Error('缺 --p0p1-count <N>');
@@ -64,7 +64,14 @@ try {
   }
   if (!headRefOid) throw new Error('无法确定 headRefOid(未传 --head 且查询失败)');
 
-  const receipt = writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count });
+  const reason = argAfter('--reason');
+  if (verdict === 'skip' && reason !== 'review-agent-timeout') {
+    throw new Error('--verdict skip 必须带 --reason review-agent-timeout(禁止无原因 skip 冒充审查完成)');
+  }
+  const receipt = writeReviewReceipt({
+    pr, headRefOid, verdict, p0p1Count,
+    ...(reason ? { bindings: { reason } } : {}),
+  });
   print({ ok: true, pr, receipt });
 } catch (e) {
   fail(e);

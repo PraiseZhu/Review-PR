@@ -163,6 +163,29 @@ try {
     '  **以下字段即使为空也必须作为数组包含:`verificationGaps`, `findingDispositions`, `profileAnswers`, `negativeEvidence`**(缺字段或传非数组,机器各自硬报错判 invalid)。',
   ].join('\n'), '');
   L.push('> 输出前逐字段自检一遍上述形状;格式偏差会导致整轮判 invalid,机器不会"尽力解析"。', '');
+  L.push('## rro-1 不可改名清单(逐字使用这些字段名)', '');
+  L.push([
+    '- 即使为空也必须作为数组写出:`findingFamilies` `verificationGaps` `verificationRuns` `profileAnswers` `findingDispositions` `negativeEvidence` `escapeAssessment` `segmentReceipts`;',
+    '- `profileAnswers[]` 键名只能是 `profileId` + `fileId` + `checkId` + `answer`(可加 hunkId/findingRef/reasonCode/explanation);**禁止用 `path` 代替 `fileId`,禁止漏 `profileId`**;',
+    '- `segmentReceipts[].coverageKeys[]` 必须是对象 `{kind, fileId, hunkId?}`,禁止写成 `"fileId:hunkId"` 字符串,禁止把字段名写成 `assignedCoverageKeys`;',
+    '- 缺字段时 consumer `--shape-preflight` 会给出字段级错误并退回你重交;**主会话不得代为补字段,没有 --shape-fix**。',
+  ].join('\n'), '');
+  L.push('最小可过样例(无 finding / 无必答时把数组留空,snapshotHash 必须等于任务里那一个):', '');
+  L.push('```json');
+  L.push(JSON.stringify({
+    schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
+    snapshotHash: '<任务里的 snapshotHash>',
+    findingFamilies: [],
+    verificationGaps: [],
+    verificationRuns: [],
+    profileAnswers: [],
+    findingDispositions: [],
+    negativeEvidence: [],
+    escapeAssessment: [],
+    segmentReceipts: [],
+    modelVerdictNote: '',
+  }, null, 2));
+  L.push('```', '');
   if (relevantHazards.length > 0) {
     L.push('## 已知逃逸风险(known hazards — 本仓历史上真的逃过审查、事后被证伪的模式)', '');
     for (const h of relevantHazards) {

@@ -48,7 +48,7 @@ export const NA_REASON_CODES = ['doc-only', 'comment-only', 'generated-file', 'p
  *   每一个都要求恰好一条 prescanAssessments 条目——多退少补都判非法。
  * @returns {{ ok: boolean, errors: string[] }}
  */
-export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null, expectedPrescanObservationIds = [] } = {}) {
+export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null, expectedPrescanObservationIds = [], shapeOnly = false } = {}) {
   const errors = [];
   if (output === null || typeof output !== 'object' || Array.isArray(output)) {
     return { ok: false, errors: ['输出不是 JSON 对象'] };
@@ -57,10 +57,12 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
   // snapshot,于是"base 前进但 diff 与 coverage key 完全相同"时,把旧答卷原样重放就能
   // 再拿一次 clean(实测 exit=0)。consumer 侧重算 task/preflight 挡不住这条——那验的是
   // "任务与快照",不是"这份答卷属于这个快照"。
-  if (snapshotHash != null) {
+  // shapeOnly(consume --shape-preflight):只验字段存在,不拿注入清单/预扫 ID 对账;
+  // 仍要求顶层 snapshotHash 非空,避免缺绑定字段被误报通过。
+  if (shapeOnly || snapshotHash != null) {
     if (!isStr(output.snapshotHash)) {
       errors.push('顶层缺 snapshotHash(答卷必须绑定它所审的那个 snapshot)');
-    } else if (output.snapshotHash !== snapshotHash) {
+    } else if (typeof snapshotHash === 'string' && snapshotHash && output.snapshotHash !== snapshotHash) {
       errors.push(`顶层 snapshotHash 不是当前 snapshot(答卷=${output.snapshotHash},当前=${snapshotHash})——旧答卷不得跨 snapshot 重放`);
     }
   }
@@ -153,7 +155,7 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
         errors.push(`findingDispositions[${i}] 形状非法(需 {findingId, disposition∈${DISPOSITIONS.join('|')}})`);
         return;
       }
-      if (!injected.has(d.findingId)) errors.push(`findingDispositions[${i}].findingId 未在本轮注入的 open 清单里(${d.findingId})——disposition 只能核销注入项`);
+      if (!shapeOnly && !injected.has(d.findingId)) errors.push(`findingDispositions[${i}].findingId 未在本轮注入的 open 清单里(${d.findingId})——disposition 只能核销注入项`);
       if (seen.has(d.findingId)) errors.push(`findingDispositions[${i}] 对 ${d.findingId} 重复 disposition`);
       seen.add(d.findingId);
       if (d.disposition === 'resolved') {
@@ -197,7 +199,7 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
       }
       // 每段回执也绑 snapshot(第 3 轮核验:整份答卷重放之外,还要挡"混用不同 snapshot 的
       // 分段回执"这种拼装)
-      if (snapshotHash != null && r.snapshotHash !== snapshotHash) {
+      if (typeof snapshotHash === 'string' && snapshotHash && r.snapshotHash !== snapshotHash) {
         errors.push(`segmentReceipts[${i}] 的 snapshotHash 不是当前 snapshot(${r.snapshotHash ?? '缺'})`);
       }
       if (segIds.has(r.segmentId)) errors.push(`segmentReceipts[${i}] segmentId 重复:${r.segmentId}`);
@@ -278,7 +280,7 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
           errors.push(`prescanAssessments[${i}] 形状非法(需 {observationId, disposition∈finding|dismissed})`);
           return;
         }
-        if (!expected.has(a.observationId)) errors.push(`prescanAssessments[${i}].observationId 未在本轮已投递的预扫观察清单里(${a.observationId})`);
+        if (!shapeOnly && !expected.has(a.observationId)) errors.push(`prescanAssessments[${i}].observationId 未在本轮已投递的预扫观察清单里(${a.observationId})`);
         if (seen.has(a.observationId)) errors.push(`prescanAssessments[${i}] 对 ${a.observationId} 重复 disposition`);
         seen.add(a.observationId);
         if (a.disposition === 'finding' && !familyRefOk(a.findingRef)) {
