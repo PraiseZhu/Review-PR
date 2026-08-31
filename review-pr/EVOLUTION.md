@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `unchanged-head-open-finding-settle-deadlock` **同 head 未修的 open finding：重报与 disposition 互斥，机器判 invalid，3 轮后 blocked** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR #352 实测：head 未变、历史 open finding 经复核确认仍在。重报 family → ③ 禁止同轮 disposition（先修再核销）；不重报 + resolved → 同 snapshot 禁自证；不处置 → missingDispositions=invalid。三条路都通向 invalid，attempt 3 后 blocked，唯一出路是作者修代码换 head。结果正确（dirty 挡合并）但审查轮次白烧 token 且终态 blocked 需人工。
+  - 提案:给 rro-1 契约增加第三种 disposition（如 confirmed-open：仅当 head 未变且 finding 复核仍真实存在时可用，机器保持 effective-open 但 verdict 记 dirty 而非 invalid），或在 consumer 对「同 head 重报同 invariant」的情况豁免 missingDispositions 检查（重报本身就是处置）。
 - `scan-noop-rereview-unchanged-head` **context.mjs 对 head 未变且上轮回执 dirty 的候选仍给 action=review，导致每轮空转全量重审** — 出现 2 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:本轮复现(第 2 次):#352/#386 head 均与上轮 dirty 回执一致、作者无新 commit,主 agent 按既有提案人工 skip,避免两轮无效独立审查(#386 上轮同规模审查耗约 16.5 万子代理 token)
   - 提案:scan 输出增加 lastReceiptVerdict/lastReceiptHead 字段（读回执台账），编排层据此对 head 未变且上轮 dirty 的候选直接 skip（动作与本轮 #352 人工处理一致），改 scan 输出契约需维护者拍板
