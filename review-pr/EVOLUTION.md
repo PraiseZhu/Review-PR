@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `same-head-rereview-when-open-findings-persist` **同 head 且已有 open findings+既有打回时,扫描仍给 action=review 触发全量重审,只能复述同一结论并撞同快照 disposition 死角** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:2026-08-31 mivo-canvas-plugin 轮:#352 与 #386 作者无新 commit、ledger 已有 effective-open finding、viewer 已在同一 head 提交过含同一问题的 CHANGES_REQUESTED,扫描仍分类为 review,两席各跑一次完整阶段二(合计约 21 万子代理 token),结论只能是同一 P1;#352 的 consume 因同快照禁止 resolved/不许失实 invalidated 判 invalid,attempts 已到 2/3(再一次即 blocked)。同快照重审信息增量为零。
+  - 提案:context.mjs 分类时若 headRefOid 与上一轮回执的 head 相同、effective-open>0 且最近动作是 pushback,则 skip(reason: same-head-findings-open-awaiting-author)而非进阶段二;作者 push 新 head 后自然恢复重审。涉分类语义,留维护者拍板
 - `scan-routing-ignores-per-head-receipts` **scan 路由不查回执：同 head 已有 dirty 回执的 PR 每轮重审，白烧审查席** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:PR #386 实测（2026-09-01 轮）：head 2cd6e5ae 在 2026-08-31T16:10 已有 verdict=dirty 回执且 CHANGES_REQUESTED 已发出，作者未推新 commit；本轮 scan 仍给 action=review，重派审查席（后因上下文震荡挂死）。已有 dirty 回执期间重审不产生新信息，ball 在作者侧。
   - 提案:context.mjs 扫描路由增加回执查询：当前 headRefOid 已存在回执时——verdict=dirty → action 改 skip（reason=reviewed-dirty-awaiting-author）；verdict=clean 且 head 未变 → 才允许进合并路径。回执绑定 headRefOid，作者 push 后自动失效，无 stale 风险。
