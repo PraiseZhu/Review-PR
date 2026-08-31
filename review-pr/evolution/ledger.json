@@ -4277,6 +4277,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-31T18:50:26.742Z",
       "lastSeen": "2026-08-31T18:50:26.742Z"
+    },
+    {
+      "fingerprint": "scan-routing-ignores-per-head-receipts",
+      "tier": "proposal",
+      "title": "scan 路由不查回执：同 head 已有 dirty 回执的 PR 每轮重审，白烧审查席",
+      "detail": "PR #386 实测（2026-09-01 轮）：head 2cd6e5ae 在 2026-08-31T16:10 已有 verdict=dirty 回执且 CHANGES_REQUESTED 已发出，作者未推新 commit；本轮 scan 仍给 action=review，重派审查席（后因上下文震荡挂死）。已有 dirty 回执期间重审不产生新信息，ball 在作者侧。",
+      "proposal": "context.mjs 扫描路由增加回执查询：当前 headRefOid 已存在回执时——verdict=dirty → action 改 skip（reason=reviewed-dirty-awaiting-author）；verdict=clean 且 head 未变 → 才允许进合并路径。回执绑定 headRefOid，作者 push 后自动失效，无 stale 风险。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-31T19:19:46.197Z",
+      "lastSeen": "2026-08-31T19:19:46.197Z"
     }
   ],
   "escapedHazards": [

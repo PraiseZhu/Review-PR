@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `scan-routing-ignores-per-head-receipts` **scan 路由不查回执：同 head 已有 dirty 回执的 PR 每轮重审，白烧审查席** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR #386 实测（2026-09-01 轮）：head 2cd6e5ae 在 2026-08-31T16:10 已有 verdict=dirty 回执且 CHANGES_REQUESTED 已发出，作者未推新 commit；本轮 scan 仍给 action=review，重派审查席（后因上下文震荡挂死）。已有 dirty 回执期间重审不产生新信息，ball 在作者侧。
+  - 提案:context.mjs 扫描路由增加回执查询：当前 headRefOid 已存在回执时——verdict=dirty → action 改 skip（reason=reviewed-dirty-awaiting-author）；verdict=clean 且 head 未变 → 才允许进合并路径。回执绑定 headRefOid，作者 push 后自动失效，无 stale 风险。
 - `unchanged-head-open-finding-settle-deadlock` **同 head 未修的 open finding：重报与 disposition 互斥，机器判 invalid，3 轮后 blocked** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:PR #352 实测：head 未变、历史 open finding 经复核确认仍在。重报 family → ③ 禁止同轮 disposition（先修再核销）；不重报 + resolved → 同 snapshot 禁自证；不处置 → missingDispositions=invalid。三条路都通向 invalid，attempt 3 后 blocked，唯一出路是作者修代码换 head。结果正确（dirty 挡合并）但审查轮次白烧 token 且终态 blocked 需人工。
   - 提案:给 rro-1 契约增加第三种 disposition（如 confirmed-open：仅当 head 未变且 finding 复核仍真实存在时可用，机器保持 effective-open 但 verdict 记 dirty 而非 invalid），或在 consumer 对「同 head 重报同 invariant」的情况豁免 missingDispositions 检查（重报本身就是处置）。
