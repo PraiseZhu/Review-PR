@@ -369,6 +369,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `review-agent-context-overflow-field-extract` **审查席整读结构性大文件致 autocompact 震荡挂死,未交 rro-1.json** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: landed,commit `43a5596`
+  - 现象:mivo-canvas-plugin #386 审查席在分段投递阶段上下文反复回满,3 次连续 compact 后 API 报错终止;#352 席同样未在 ~70 分钟内交付。两个 PR 均按 review-agent-timeout 写 skip 回执
+  - 提案:SKILL 大 payload 纪律补一条:审查席对 task.json/prompt.md 只做字段级抽取(node -e / grep -n),禁止整读;已落地
 - `profile-answer-per-file-not-per-hunk` **审查答卷按 文件×检查 去重而非按 hunk 重复作答** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:PR352 首轮 consume 判 invalid:对含两个 hunk 的测试文件按 hunk 各写一套 profileAnswers,consumer 视为重复不计入补足;另有一处 fileId 手抄错一位。程序化去重+按投递台账回填 receipts 后二轮 clean。
 - `negative-evidence-command-anchor-must-copy-run-verbatim` **negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
