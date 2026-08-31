@@ -363,6 +363,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `profile-answer-per-file-not-per-hunk` **审查答卷按 文件×检查 去重而非按 hunk 重复作答** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR352 首轮 consume 判 invalid:对含两个 hunk 的测试文件按 hunk 各写一套 profileAnswers,consumer 视为重复不计入补足;另有一处 fileId 手抄错一位。程序化去重+按投递台账回填 receipts 后二轮 clean。
 - `negative-evidence-command-anchor-must-copy-run-verbatim` **negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
   - 现象:2026-08-29 mivo-canvas-plugin #343 轮:语义审查 0 P0/P1、9 处负向证据真实实跑,但主会话组装 rro-1.json 时在 negativeEvidence.command/outputAnchor 写了比 verificationRuns 更详细的摘要措辞,consumer 按 lib 逐字比对判 negativeEvidenceInconsistent → invalid;同 snapshot 3 次重试机会被耗掉 2 次。
   - 提案:SKILL.md 输出契约段补一条:negativeEvidence 的 command/outputAnchor 先写 run 再照抄;已在 SKILL.md 落地(文档级,无脚本改动)

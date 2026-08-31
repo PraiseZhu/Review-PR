@@ -4160,6 +4160,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-30T19:13:11.544Z",
       "lastSeen": "2026-08-30T19:13:11.544Z"
+    },
+    {
+      "fingerprint": "profile-answer-per-file-not-per-hunk",
+      "tier": "auto",
+      "title": "审查答卷按 文件×检查 去重而非按 hunk 重复作答",
+      "detail": "PR352 首轮 consume 判 invalid:对含两个 hunk 的测试文件按 hunk 各写一套 profileAnswers,consumer 视为重复不计入补足;另有一处 fileId 手抄错一位。程序化去重+按投递台账回填 receipts 后二轮 clean。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-31T03:38:16.135Z",
+      "lastSeen": "2026-08-31T03:38:16.135Z"
     }
   ],
   "escapedHazards": [
