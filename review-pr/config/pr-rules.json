@@ -58,7 +58,12 @@
   ],
   "uiExcludePaths": [
     "apps/desktop/src/renderer/i18n/locales/",
-    "apps/mobile/src/i18n/locales/"
+    "apps/mobile/src/i18n/locales/",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/__tests__/**"
   ],
   "archGate": {
     "whitelist": [
@@ -127,5 +132,9 @@
   "loopPrExclusion": null,
   "prescan": {
     "enabled": false
+  },
+  "reviewSegments": {
+    "sizeBudget": 60,
+    "sizeBudgetBytes": 50000
   }
 }

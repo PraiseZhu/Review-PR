@@ -22,7 +22,7 @@ import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { print, fail, REPO_ROOT, STATE_DIR, loadRules, writeJsonAtomic } from './lib.mjs';
 import { buildDiffSnapshot, coverageKeysOf } from './lib.diff-snapshot.mjs';
-import { buildSegments } from './lib.review-profiles.mjs';
+import { buildSegments, segmentBudgetFromRules } from './lib.review-profiles.mjs';
 import {
   validatePrescanConfig, validateObservation, deriveObservationId,
   computeInputHash, computePolicyHash, buildArtifact, writePrescanArtifact,
@@ -82,7 +82,7 @@ try {
   }
 
   const coverageKeys = coverageKeysOf(snapshot);
-  const segments = buildSegments({ coverageKeys, sizeBudget: Number(rules?.reviewSegments?.sizeBudget) || 60 });
+  const segments = buildSegments({ coverageKeys, ...segmentBudgetFromRules(rules) });
   const recordFile = prescanRecordPathFor(STATE_DIR, pr);
 
   if (finalize) {

@@ -1715,13 +1715,15 @@ function reviewReceiptFile(pr) {
 
 /**
  * 写入一条阶段二独立审查回执(每 PR 一个独立文件,原子写入)。
- * `verdict` 只接受 `'clean'`(0 P0/P1)或 `'dirty'`——不接受自由文本,防止调用方拼错词
- * 导致 `isReviewReceiptClean` 误判。`headRefOid` 必须非空:回执必须绑定到具体的 head
- * commit,否则"回执是不是针对当前 head"这个核心校验就无从谈起。
+ * `verdict` 只接受 `'clean'`(0 P0/P1)、`'dirty'` 或 `'skip'`(审查未完成的机器终态,
+ * 如超时 review-agent-timeout)——不接受自由文本,防止调用方拼错词导致
+ * `isReviewReceiptClean` 误判。`skip`/`dirty` 都是 non-clean,不能当清白沿用。
+ * `headRefOid` 必须非空:回执必须绑定到具体的 head commit,否则"回执是不是针对当前 head"
+ * 这个核心校验就无从谈起。
  */
 export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count, bindings = null }) {
-  if (verdict !== 'clean' && verdict !== 'dirty') {
-    throw new Error(`verdict 必须是 'clean' 或 'dirty',收到:${JSON.stringify(verdict)}`);
+  if (verdict !== 'clean' && verdict !== 'dirty' && verdict !== 'skip') {
+    throw new Error(`verdict 必须是 'clean' 或 'dirty' 或 'skip',收到:${JSON.stringify(verdict)}`);
   }
   if (!headRefOid) throw new Error('headRefOid 不能为空——回执必须绑定到具体的 head commit');
   // SC-R1b(2026-08-05):clean 回执必须携带五项绑定 {source, schemaVersion, outputHash,
@@ -1754,6 +1756,9 @@ export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count, binding
     writtenAt: new Date().toISOString(),
     ...(bindings ? { ...bindings } : {}),
   };
+  if (verdict === 'skip' && typeof bindings?.reason === 'string' && bindings.reason) {
+    receipt.reason = bindings.reason;
+  }
   writeJsonAtomic(reviewReceiptFile(pr), receipt);
   return receipt;
 }

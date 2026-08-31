@@ -5,72 +5,86 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `orphaned-heartbeat-keeps-lock-after-parent-crash` **父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
+- `orphaned-heartbeat-keeps-lock-after-parent-crash` **父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: adopted
   - 现象:2026-08-30 18:06Z 轮完成 run-log 后会话崩溃,未走 release-lock;其 lock-heartbeat-daemon(pid 存活)继续每 20 分钟续期,锁 TTL 永不过期直至守护 3h max-lifetime。下一整轮(19:02Z)只能按 lock-busy 跳过全部候选。缺口:心跳守护只验证 token,不感知父会话死活。
   - 提案:让守护进程持有对父 pid 的引用(PPID/kqueue NOTE_EXIT 或父进程心跳文件),父进程死亡即自杀停止续期,让锁按 TTL 尽快自愈;属可靠性修复,不扩权,建议 owner 拍板后另立 PR。
-- `review-agent-timeout-degrade-path` **审查子 agent 多次超时时缺少明确的降级/收尾路径，编排方被迫代组装答卷** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
+  - 备注:[decided:2026-08-31] adopted → 提案 heartbeat-parent-death(owner 周度会话全案同意):心跳守护持父 pid(REVIEW_PR_PARENT_PID 或跳过一层 shell),父死即停续期,锁按 TTL 自愈;只做父死停续,不做死锁自动抢。归因 pending
+- `review-agent-timeout-degrade-path` **审查子 agent 多次超时时缺少明确的降级/收尾路径，编排方被迫代组装答卷** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: adopted
   - 现象:2026-08-30 mivo-canvas-plugin 轮：PR #378 审查会话 4 次超时、#373 两次超时，审查 agent 已完成大部分验证但未产出 rro-1.json；最终由编排方基于构建器/投递出口产物组装答卷并通过 consume 机器对账（verdict 由内容推导，未被架空）。但该退化路径本身无 SKILL 依据，存在跨快照/契约口径漂移风险。
   - 提案:在 SKILL 4 节明确：审查会话超时后允许编排方'答卷组装席'接手，但必须重建 task/preflight/分段投递台账且 snapshotHash 四元组与 consume 现场重算一致；并把'snapshotHash 绑定 baseRefOid（PR 元数据），传 merge-base 会产生不同 snapshot'写进 --base 的显式警示（2026-08-30 实测：同 diff 两个 hash，clean 回执被判 stale）。
+  - 备注:[decided:2026-08-31] adopted → 并入提案 review-agent-payload-discipline(主条 review-agent-context-overflow),同案结案
 - `ownpr-body-evidence-detection-gap-pr-body-file` **ownPr 的 PR body 从 .pr-body.md 工作树文件读取，bodyHasUiEvidence 机械判定对实际附 HTML 证据的 own PR 误报缺失** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
   - 现象:PR #376 body 的证据节实际含 HTML 证据页链接，但 format.bodyHasUiEvidence=false；该 PR 文件清单含 .pr-body.md（build-review-task 的 pr-body seam 源），提示 context 的 body 来源对该形态走的是工作树文件而非 gh 现场数据，机械判定与真实 body 脱节。审查 agent 按证据一致性流程核对实际证据后确认 consistent，未产生错误动作（ownPr 也不发提醒评论），仅判定缺口。
   - 提案:context.mjs 的 body/uiEvidence 采集在 .pr-body.md 存在于 PR 文件清单时，现场用 gh pr view 的 body 交叉核验或直接以 GitHub 侧 body 为权威；或 build-review-task 的 --pr-body-file seam 读取路径改为仓库外临时目录。
 - `fix-session-thread-verify-timeout` **跟进会话在 review thread 核验步骤反复超时,thread 核验/resolve 可拆给编排层内联执行** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: open
   - 现象:mivo-canvas-plugin PR370/371 三轮跟进会话均在 GraphQL thread 核验一步超时中止,但每轮的代码 push 均已落地;编排层直接取 thread 全文+对照当前 head 代码核对+统一 reply/resolve,单轮完成 4 条 thread 处置且零代码改动
   - 提案:SKILL 5.4 投递模板建议把「thread 核验+reply/resolve」从跟进会话职责中拆出:跟进会话只负责代码修复与 push,thread 处置由编排层内联执行(只读+流程动作,不碰代码);可避免会话在长步骤超时导致整轮中断
-- `review-agent-spawn-output-hygiene` **审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
+- `review-agent-spawn-output-hygiene` **审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: adopted
   - 现象:本轮首次 spawn 因 autocompact 三连爆而终止重试；重试版在提示词加『长输出一律 tail/重定向后只回显退出码』后顺利完成。建议把该约束写进 SKILL.md 第 4 节审查 agent 任务模板
   - 提案:在 SKILL.md 第 4 节模板首部追加一条输出卫生 bullet：任何可能长输出的命令一律 | tail -n 40 或重定向到 worktree 内日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出
-- `review-agent-context-thrash-on-large-payload` **审查子 agent 在大 payload（>100KB）+ UI 证据下载场景下反复 autocompact thrashing 挂起/失败，单 PR 审查耗时 3h+ 且两轮产出形状偏差** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 备注:[decided:2026-08-31] adopted → 并入提案 review-agent-payload-discipline(主条 review-agent-context-overflow),同案结案
+- `review-agent-context-thrash-on-large-payload` **审查子 agent 在大 payload（>100KB）+ UI 证据下载场景下反复 autocompact thrashing 挂起/失败，单 PR 审查耗时 3h+ 且两轮产出形状偏差** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: adopted
   - 现象:2026-08-28 mini 巡审实测：PR #332（payload 141KB，37 keys，UI 5 文件）审查 agent 两次 autocompact thrashing 终止、第三次恢复后落盘仍缺 2 条 required 负向证据且字段名错位（receivedOrder→order、profileId 缺失、kind 缺失、command 未逐字复制），主 agent 手工补齐形状与实验才过 consumer。PR #335 agent 同样挂起一次。字段名偏差说明 agent 在压缩后丢失契约细节。
   - 提案:候选方向（等维护者拍板）：a) deliver-review-segment 对 payload 按 sizeBudget 再细分（当前 sizeBudget=60 未拦住 141KB 单段）；b) agent-brief 里把 rro-1 契约字段名清单压缩成一页速查表直接内嵌（降低压缩后丢失概率）；c) consumer invalid 时自动生成字段修复 diff 提示给编排方重投。均不扩权。
-- `review-agent-context-overflow` **审查 agent 派发默认应指令落文件+分块投递，防上下文超限** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 备注:[decided:2026-08-31] adopted → 并入提案 review-agent-payload-discipline(主条 review-agent-context-overflow),同案结案
+- `review-agent-context-overflow` **审查 agent 派发默认应指令落文件+分块投递，防上下文超限** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: adopted
   - 现象:本轮 3 次 agent 因 autocompact thrashing 被杀（334 两次、332 一次）。334 用「指令写入 /tmp 文件 + prompt 只留一句指路 + payload 按 hunk 分块」后成功（114 tool uses 完成）；332 同样处理仍失败，说明 37-key 大 PR 仍有残余风险。
   - 提案:SKILL.md 第 4 节审查 agent 任务模板加入默认纪律：主 agent 把完整指令写入 STATE_DIR 外的临时文件，Agent prompt 只留一句路径引用；deliver payload >50KB 时主 agent 预先按 section 分块（每块 ≤14KB）再投给审查会话；连续 2 次超限的 PR 记 blocked 转人工而非反复重试。
+  - 备注:[decided:2026-08-31] adopted → 提案 review-agent-payload-discipline(owner 周度会话全案同意):spawn 指令落文件;deliver sizeBudget 按字节细分;长输出 tail/落日志;超时写 skip 回执 reason=review-agent-timeout,组装席须重建 task/preflight,禁止沿用清白。归因 pending。同案:review-agent-context-thrash-on-large-payload,review-agent-spawn-output-hygiene,review-agent-timeout-degrade-path
 - `archived-fix-session-recreate-dispatch` **fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree）** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:PR #337 review-failed 投递：jump 模式 target_session_id=已归档会话 + working_dir/use_worktree/title 均按 create 形态传 → ARCHIVED（jump 模式忽略 create 字段，归档目标直接拒）。SKILL 5.4 失败处理只写'目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ clear 后改走新建重试一次'，但 agent 首次重试仍带了 target_session_id，又吃一次 ARCHIVED；正确形态是去掉 target_session_id 纯 create + working_dir 指向仓库根 + use_worktree=true。无业务损失（第二次新建成功），但多花一轮失败调用。
   - 提案:5.4 失败处理加一句操作细节：clear 绑定后新建时不得再带 target_session_id（create 模式的判定键），working_dir 传目标仓库根，use_worktree=true。
 - `pr328-security-rules-gate-hold-consolidated` **PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:PR 328(作者 aj0928,admins 名单)同时命中 securityReviewPaths(package.json)与 ruleFiles.required(AGENTS.md)两门,issue #330 hold 已挂。本轮已完成阶段二独立审查:P0/P1=0,clean 回执绑定 head 8602180,实测 run-vitest 启动器 6+15 用例全绿。signoff.released=false(unconfirmed-kinds: rules/security),讨论 issue 无同意评论,无 admins Approve;按门类持久规则不自动放行
   - 提案:扩权类,不自动落地:owner 在 https://github.com/xindong/mivo-canvas-plugin/pull/328 当前 head Approve 或在讨论 issue #330 回复同意,下轮扫描 releaseBasis 生效后按 fallback 合并
-- `review-agent-rro1-shape-mismatch` **审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+- `review-agent-rro1-shape-mismatch` **审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: adopted
   - 现象:PR #329 auto 轮实测:agent 回执含全部语义内容但字段名/形状与 lib.review-consume.mjs 校验不一致(attempts 记 2 次 invalid)。技能提示词里 JSON 样例已有字段名,但审查 agent 实际按任务 prompt 的自由发挥输出了 path 键。教训:prompt 中样例应加'逐字使用这些字段名'的硬性指令,或在 deliver/consume 层提供宽容映射。
   - 提案:在 spawn 审查 agent 的任务模板中,把 rro-1 字段名列成不可改名清单并附最小可过校验的样例;或给 consume-review-output 加 --shape-fix 模式做确定性映射(path→fileId 依 snapshot 解析)。改动涉及判定链路,需维护者确认影响面后落地。
+  - 备注:[decided:2026-08-31] adopted → 并入提案 rro1-shape-preflight(主条 review-agent-rro1-missing-bind-fields),同案结案
 - `review-scripts-require-repo-root-env-not-bare-cd` **审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
   - 现象:auto 轮 2026-08-27 mivo-canvas-plugin PR#323：build-review-task.mjs 在非 git 目录下跑出 task(snapshotHash=null/escapeSourceIncomplete)，deliver 直接拒绝，consume 判 invalid 浪费一轮；原因=REPO_ROOT 取 process.env.REVIEW_PR_REPO_ROOT||process.cwd()，编排层只在部分调用点显式设了 env。
   - 提案:把『所有确定性脚本一律显式 export REVIEW_PR_REPO_ROOT=<仓库根>』升级为 SKILL.md auto 流程的硬步骤（替代仅靠 cd 的现行说法），避免宿主 cwd 重置或编排层临时切目录造成静默 incomplete task
 - `review-isolation-worktree-wrong-clone-318` **隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
   - 现象:PR 318 重派审查席时 isolation worktree 建在 Project Mivo Canvas-Plugin 开发仓而不是 _ops 生产 checkout。同一 base/head 的 diffDigest 因工作树噪声不同，fileId/hunkId/snapshotHash 全部漂移。生产仓 consume 对不上审查席答卷。本轮按路径把 ID 映射后仍因 PR 已被网页合并而 invalid。不扩权，只提案把审查席钉在 REVIEW_PR_REPO_ROOT/_ops。
   - 提案:spawn 隔离审查席前强制 cwd=生产 checkout（_ops/mivo-canvas-plugin），禁止落到开发仓 .claude/worktrees；或在 consume 前校验审查席 toplevel 等于 prepare 记录的 repo root。
-- `product-gate-hits-test-files` **uiPaths 命中测试文件会把 ops PR 送进产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+- `product-gate-hits-test-files` **uiPaths 命中测试文件会把 ops PR 送进产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: adopted
   - 现象:PR 306 唯一 UI 命中是 src/lib/assetService.test.ts，语义判定非产品改动后走 fallback。
   - 提案:评估 uiExcludePaths 是否覆盖 src/**/*.test.ts；拍板前保持现状、靠语义定性。
-- `product-gate-test-under-src` **feat 加 src 测试文件误亮产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 备注:[decided:2026-08-31] adopted → 并入提案 test-glob-uiexclude(主条 product-gate-src-test-files-false-positive),同案结案
+- `product-gate-test-under-src` **feat 加 src 测试文件误亮产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: adopted
   - 现象:PR 306 因 feat 且命中 uiPaths(src/lib/assetService.test.ts) 进 product-gate；语义实为部署注入加测试，非产品 UI。uiPaths 含 src/ 且 uiExcludePaths 未排除测试文件。
   - 提案:考虑把测试文件纳入 uiExcludePaths，避免纯测试改动误亮产品门。属放宽触发面，需维护者拍板。
-- `arch-gate-test-only-huge-diff` **纯测试大 diff 误触架构门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 备注:[decided:2026-08-31] adopted → 并入提案 test-glob-uiexclude(主条 product-gate-src-test-files-false-positive),同案结案
+- `arch-gate-test-only-huge-diff` **纯测试大 diff 误触架构门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: adopted
   - 现象:PR 310 单文件 writeRetryQueue.test.ts 3426 行 BYTE-IDENTICAL 搬运，anyTypeDiffLines=800 触发 huge-diff。语义为机械性大 diff，不是架构调整。
   - 提案:anyTypeDiffLines 统计排除测试文件，或 huge-diff 在 files 全为 test 时不进 arch-gate。
-- `product-gate-src-test-file` **src/ 下测试文件误触产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 备注:[decided:2026-08-31] adopted → 并入提案 test-glob-uiexclude(主条 product-gate-src-test-files-false-positive),同案结案
+- `product-gate-src-test-file` **src/ 下测试文件误触产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: adopted
   - 现象:PR 306 feat+命中 src/lib/assetService.test.ts 被判 product-gate；语义为 ops 部署与回归测试，不是产品/UI。uiPaths 含 src/ 且未排除 *.test.ts。
   - 提案:在目标仓 uiExcludePaths 或 uiPaths 判定中排除 **/*.test.ts 与 **/*.spec.ts，避免测试文件触发产品门语义定性。
-- `product-gate-test-path-false-positive` **feat 类型命中测试路径被标成产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 备注:[decided:2026-08-31] adopted → 并入提案 test-glob-uiexclude(主条 product-gate-src-test-files-false-positive),同案结案
+- `product-gate-test-path-false-positive` **feat 类型命中测试路径被标成产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: adopted
   - 现象:PR 306 是部署脚本与测试（src/lib/assetService.test.ts），auto.action=product-gate。语义定性后按 fallback skip-stale-pushback，未 hold。uiPaths 含 src/ 会把测试文件算进 UI。
   - 提案:评估 uiPaths 是否应排除 *.test.ts / 测试夹具，避免部署/测试 PR 误进产品门。
+  - 备注:[decided:2026-08-31] adopted → 并入提案 test-glob-uiexclude(主条 product-gate-src-test-files-false-positive),同案结案
 - `format-self-review-checks-triggered-checkbox` **提交前自检第三项常因事后回填漏勾而被格式打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:本轮 #305/#306/#307/#309 均 Self-review 勾选率 2/3：第三项「PR 页面 checks 已实际触发」未勾，而 statusCheckRollup 实际全绿。作者习惯 push 后回填却忘了 edit body。
   - 提案:格式门对第三项改为机器采信 statusCheckRollup（已有非 skip 的 check 即视为勾选），或仅在 checks 未触发时打回。属放宽格式门，需维护者拍板。
-- `product-gate-src-test-files-false-positive` **uiPaths 含 src/ 时 *.test.ts 会误亮产品门** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+- `product-gate-src-test-files-false-positive` **uiPaths 含 src/ 时 *.test.ts 会误亮产品门** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: adopted
   - 现象:PR #306 feat(ops) 部署注入，唯一命中 uiPaths 的是 src/lib/assetService.test.ts，context 给 product-gate。语义定性为非产品/UI 后走了格式打回。同类测试文件假阳性会每轮烧掉定性。
   - 提案:uiPaths 判定排除测试文件（*.test.ts/*.test.tsx/*.spec.ts 等），或 uiExcludePaths 增加测试 glob。改前需确认不会让真 UI 测试 PR 漏过产品门。
-- `leftover-review-worktree-dirties-ops-checkout` **已合并 PR 的审查 worktree 残留把生产 checkout 标脏** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 备注:[decided:2026-08-31] adopted → 提案 test-glob-uiexclude(owner 周度会话全案同意):skill 侧测试文件默认不进产品门 UI 命中;uiExcludePaths 支持 glob;默认配置 += **/*.test.ts / **/*.test.tsx / **/*.spec.ts / **/*.spec.tsx / **/__tests__/**;arch-gate 行数统计排除测试文件。归因 pending;实施合并日前复发不算回炉。同案:product-gate-test-path-false-positive,product-gate-src-test-file,product-gate-test-under-src,product-gate-hits-test-files,arch-gate-test-only-huge-diff
+- `leftover-review-worktree-dirties-ops-checkout` **已合并 PR 的审查 worktree 残留把生产 checkout 标脏** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: adopted
   - 现象:ops checkout 上未跟踪 .worktrees/review-pr/pr-281（对应 PR 已 MERGED）。git status 非空，prepare.worktreeClean=false。锁释放后下一轮仍会因 dirty-worktree 整轮 skip。fix-worktree-cleanup 需持锁才能跑。
   - 提案:两选一：1) 目标仓 .gitignore 忽略 .worktrees/；2) prepare 把 skill 自建的 .worktrees/review-pr 未跟踪目录不计入用户脏树。不要在未持锁时手删生产 checkout 上的树。
+  - 备注:[decided:2026-08-31] adopted → 提案 leftover-review-worktree-clean(owner 周度会话全案同意):prepare 不把 skill 自建 .worktrees/review-pr 未跟踪目录计入用户脏树;不在未持锁时手删生产 checkout 上的树。归因 pending
 - `signoff-release-ghfn-not-a-function` **signoff-release 二次调用报 ghFn is not a function，issue 已关但标签没摘** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
   - 现象:PR 286/287 首次 --scan-json 关了讨论 issue，但 scan JSON 没带 labels，摘标签 skipped。补 labels 再跑时脚本 error=ghFn is not a function。本轮改用 gh pr edit --remove-label 手工摘掉。fingerprint 去重。
   - 提案:signoff-release.mjs 把 lib.mjs 的 gh 正确传入 applySignoffReleaseWrite；scan JSON 缺 labels 时现场 gh pr view --json labels，不要依赖调用方塞 currentLabels。
-- `review-agent-rro1-missing-bind-fields` **审查席 rro-1 漏 profileId/负向证据绑定字段，主会话机械补齐才过 consumer** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: open
+- `review-agent-rro1-missing-bind-fields` **审查席 rro-1 漏 profileId/负向证据绑定字段，主会话机械补齐才过 consumer** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: adopted
   - 现象:PR #273 审查席交卷缺 profileAnswers.profileId、negativeEvidence.snapshotHash/negativeOracle/verificationRunId，verificationGaps 缺 required；reasonCode 用了 data-only-baseline 不在闭集。主会话按契约机械补齐后 consume 才 dirty。不回头改本轮判定。
   - 提案:build-review-task/prompt 或 consume 前加一层本地 validateReviewOutput 预检，缺字段时让审查席重交而不是主会话手工补字段。
+  - 备注:[decided:2026-08-31] adopted → 提案 rro1-shape-preflight(owner 周度会话全案同意):任务模板加 rro-1 不可改名清单+最小可过样例;consume --shape-preflight 字段级错误退回审查席重交;禁止主会话静默补字段,不做 --shape-fix。归因 pending。同案:review-agent-rro1-shape-mismatch
 - `self-fix-format-handoff-omit-checklist-ratio` **selfFix 格式打回首次投递漏写 checklist 勾选率门槛** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: open
   - 现象:PR #271 首次 handoff 只要求补「变更说明/提交前自检/备注」三段，作者改完后格式门仍因 Self-review 勾选率 2/3(<80%) 未过，同轮二次投递。痛点是跟进会话要跑两轮才碰到 checklistSectionNames 的 80% 规则。
   - 提案:5.4 格式卡点投递模板把 checklistSectionNames 的勾选率门槛（当前 <80% 不过）写进首次消息，避免只修段落标题后又因空勾弹回。

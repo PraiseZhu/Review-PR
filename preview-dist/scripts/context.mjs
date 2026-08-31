@@ -27,6 +27,7 @@
 //     node <skill-root>/scripts/context.mjs --scan-all
 
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, evaluateDiscussionIssueConsent, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
+import { isTestOrFixturePath, isUiPath } from './lib.gate-paths.mjs';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -443,6 +444,8 @@ try {
     deletions: f.deletions ?? 0,
   }));
   const totalDiffLines = files.reduce((s, f) => s + f.additions + f.deletions, 0);
+  const archCountableFiles = files.filter((f) => !isTestOrFixturePath(f.path));
+  const archCountableDiffLines = archCountableFiles.reduce((s, f) => s + f.additions + f.deletions, 0);
 
   // ── 获取 PR reviews，用于区分 BLOCKED 原因 ──
   // mergeStateStatus=BLOCKED 可能是"需要 approval"，也可能是 CI/冲突。
@@ -525,20 +528,15 @@ try {
   // uiExcludePaths(多语言 locale 等纯文案数据)整体不算 UI:证据与产品门都不触发。
   const uiFiles = files
     .map((f) => f.path)
-    .filter(
-      (p) =>
-        UI_PATH_PREFIXES.some((prefix) => p.startsWith(prefix)) &&
-        !UI_EXCLUDE_PREFIXES.some((prefix) => p.startsWith(prefix)),
-    );
+    .filter((p) => isUiPath(p, { uiPaths: UI_PATH_PREFIXES, uiExcludePaths: UI_EXCLUDE_PREFIXES }));
   const touchesUi = uiFiles.length > 0;
   // 证据提醒只对可能渲染的代码文件:.md 文档与 .d.ts 纯类型声明(如 vite-env.d.ts)
   // 不可能产生视觉变化,不触发 UI 证据提醒(2026-07-25 维护者拍板;产品门 touchesUi 不受影响)。
   const uiCodeFiles = uiFiles.filter((p) => {
     const lower = p.toLowerCase();
     if (lower.endsWith('.md') || lower.endsWith('.d.ts')) return false;
-    // 测试与夹具不会产生用户可见界面,不触发 UI 证据提醒(产品门 touchesUi 仍按 uiFiles 计)。
-    if (/(?:^|\/)(?:__tests__|__mocks__|testdata|test-fixtures)\//.test(lower)) return false;
-    if (/\.(?:test|spec)\.[^/]+$/.test(lower)) return false;
+    // 测试与夹具已在 uiFiles 排除;这里再挡一层防漂移。
+    if (isTestOrFixturePath(p)) return false;
     return true;
   });
   // UI 证据(图片类):markdown 图片 / <img|video> 标签 / GitHub 附件与 user-images 直链(截图或录屏都算)。
@@ -907,13 +905,13 @@ try {
         ? `cold-update-suspect(改到指纹输入 ${coldUpdateFiles.slice(0, 5).join(' / ')}${coldUpdateFiles.length > 5 ? ' 等' : ''}${coldUpdateGuard ? ';guard 结论读不出' : ';无 guard 结论'} → 需确认是否触发冷更)`
         : null;
   // 触发器(任一命中即需语义定性;阈值配置在 pr-rules.json archGate)
-  const archCoreFiles = files.filter((f) => ARCH_CORE_PATHS.some((prefix) => f.path.startsWith(prefix)));
+  const archCoreFiles = archCountableFiles.filter((f) => ARCH_CORE_PATHS.some((prefix) => f.path.startsWith(prefix)));
   const archCoreDiffLines = archCoreFiles.reduce((s, f) => s + f.additions + f.deletions, 0);
   const archTriggers = [
     coldUpdateTrigger,
     archCoreFiles.length > 0 && archCoreDiffLines >= ARCH_CORE_DIFF_LINES ? `core-paths(核心路径改动 ${archCoreDiffLines} 行 ≥ ${ARCH_CORE_DIFF_LINES})` : null,
-    type === 'refactor' && totalDiffLines >= ARCH_REFACTOR_DIFF_LINES ? `refactor-large(refactor 类型且 ${totalDiffLines} 行 ≥ ${ARCH_REFACTOR_DIFF_LINES})` : null,
-    totalDiffLines >= ARCH_ANY_DIFF_LINES ? `huge-diff(${totalDiffLines} 行 ≥ ${ARCH_ANY_DIFF_LINES})` : null,
+    type === 'refactor' && archCountableDiffLines >= ARCH_REFACTOR_DIFF_LINES ? `refactor-large(refactor 类型且 ${archCountableDiffLines} 行 ≥ ${ARCH_REFACTOR_DIFF_LINES})` : null,
+    archCountableDiffLines >= ARCH_ANY_DIFF_LINES ? `huge-diff(${archCountableDiffLines} 行 ≥ ${ARCH_ANY_DIFF_LINES})` : null,
   ].filter(Boolean);
   // 冷更触发时,架构门的常规豁免信号(作者在白名单 / 白名单 Approve / 白名单标回 ready)一律作废:
   // 谁改手机端会触发冷更的代码都要进一步确认,放行只认 coldUpdateApprovers 明确针对冷更的表态。

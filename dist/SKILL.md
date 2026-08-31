@@ -1091,6 +1091,12 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 守护负责；主会话空转续锁会把整段对话反复计费（2026-08-18 Mini 巡审 4660 次
 心跳、单轮 $515）。宿主会在子 agent 结束时自动唤醒，不要自己轮询。
 
+**大 payload 审查纪律**（指令落文件 + 字节分片 + 输出卫生 + 超时降级）：
+- spawn 前把完整审查指令写入隔离 worktree 内文件（如 `./review-task-prompt.md`），Agent 首条 prompt **只留路径引用**，不要把 100KB+ 指令内联进对话；
+- 分段按 `reviewSegments.sizeBudget`（key 数）**与** `sizeBudgetBytes`（默认 50KB，按 hunk patch 字节）同时切，单段不得再出现 141KB 这种「key 未超、字节爆了」；
+- 审查席任何可能长输出的命令一律 `| tail -n 40`，或重定向到 worktree 日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出；
+- 审查会话超时未交 `./rro-1.json`：主会话写 non-clean 回执 `--verdict skip --reason review-agent-timeout --p0p1-count 0`，本轮 skip。**禁止沿用上次清白**。若改由答卷组装席接手，必须**重建** `task.json` / preflight / 分段投递台账，且 `snapshotHash` 与 consume 现场重算一致（`--base` 必须是 PR `baseRefOid`，传 merge-base/tip 会得到不同 hash）。
+
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
 模板首行）：隔离 worktree 里的目标仓库拷贝可能不含（或含未跟踪、指向错误目标的）
 `.claude/skills/review-pr` 软链——软链常被目标仓库的 `.gitignore` 排除，PR 分支的
@@ -1174,6 +1180,7 @@ productGate／archGate／selfFix 结果；UI 改动另加 ruleFiles.uiRequired �
 UI 改动加：UI 证据（截图/录屏/HTML 界面）与 diff 一致性、ruleFiles.uiRequired 设计规范符合性
 （证据完全缺失不记 finding，只在报告注明缺口——提醒作者补证据由主 agent 的评论完成；
 ruleFiles.required／uiRequired 列出但缺失的文件按 fail-closed 记 P1，不与证据缺失混淆）
+输出卫生：任何可能长输出的命令一律 `| tail -n 40` 或重定向到 worktree 日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出。
 
 输出**单一 JSON**（SC-R1a，2026-08-05 起唯一契约，`schemaVersion: "rro-1"`；
 **废除"JSON 或等价 Markdown"双轨**——机器只消费 JSON，你自报的结论不被采信）：
@@ -1264,6 +1271,12 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 - required `verificationGap` 非空、必答缺项、覆盖对账不符、注入的 open 未 disposition、
   preflight 未完成、profile 配置非法，任一即 `invalid`；
 - required 负向证据 key **只能由 `executed` 满足**，`not-applicable` 不接受；
+- **negativeEvidence 条目的 `command` 与 `outputAnchor` 必须与其引用的
+  `verificationRuns[]` 条目逐字一致**（consumer 按 `run.command !== n.command ||
+  run.outputAnchor !== n.outputAnchor` 判 `negativeEvidenceInconsistent`，不一致即
+  `invalid`）——两处不要各写一份：先写 run 记录，negativeEvidence 直接照抄同一条
+  command/outputAnchor，不要改写摘要措辞（2026-08-29 实测：语义审查结论 0 P0/P1、
+  9 处负向证据真实跑过，仅因 negativeEvidence 里写了更详细的摘要措辞被判 invalid）；
 - 顶层与每段回执的 `snapshotHash` 都必需且必须等于当前——**旧答卷不得跨 snapshot 重放**。
   这条挡的是「base 前进但 diff 与 coverage key 逐字节相同」时把上一轮答卷原样再交一次：
   重算 task/preflight 验的是「任务与快照」，证明不了「这份答卷属于这个快照」。
@@ -1276,11 +1289,13 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 > 是 T1 上限。这里的价值在于把"我看过了"变成"我把它弄坏过并留下可核对的锚点"，不是把它
 > 变成机器证明。
 
-主 agent 收到审查输出后、调用 consumer **之前**，先 `gh pr view <N> --json headRefOid,state` 核对：与任务 snapshot 的 head 不一致则对新 head 重建 task/preflight 重审（旧回执留作历史）；`state` 非 OPEN 则本轮 skip，汇总写「合并先于审查完成」。审查会话超时未交 `./rro-1.json` 时，写 non-clean 回执原因 `review-agent-timeout` 并 skip，禁止沿用上次清白。
+主 agent 收到审查输出后、调用 consumer **之前**，先 `gh pr view <N> --json headRefOid,state` 核对：与任务 snapshot 的 head 不一致则对新 head 重建 task/preflight 重审（旧回执留作历史）；`state` 非 OPEN 则本轮 skip，汇总写「合并先于审查完成」。审查会话超时未交 `./rro-1.json` 时，写 non-clean 回执 `--verdict skip --reason review-agent-timeout` 并 skip，禁止沿用上次清白；答卷组装席接手必须重建 task/preflight/投递台账，snapshotHash 绑 `baseRefOid`。主会话在调用 consumer 之前先跑 `--shape-preflight`：缺字段/形状错把字段级 errors 退回审查席重交，**不得静默补 `profileId`/`fileId`，没有 `--shape-fix`**。
 
 输出交给唯一消费出口裁决（它算 verdict、写回执、动台账；**clean 回执只能由它写**）：
 
 ```bash
+node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --shape-preflight --output ./rro-1.json \
+  --snapshot-hash <任务里的 snapshotHash>
 node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output ./rro-1.json \
   --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
   --task ./task.json --preflight ./preflight.json --verify-live-head

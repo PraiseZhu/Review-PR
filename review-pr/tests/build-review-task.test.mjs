@@ -378,6 +378,26 @@ test('SC-R1: prescan 缺失 vs enabled=false 的 task/prompt 逐字节一致(关
   assert.equal(aPromptText, bPromptText, 'prompt.md 在 prescan 缺失 vs enabled=false 时必须逐字节一致(SC-R1)');
 });
 
+test('R4 分片:字节预算切开 key 数未超的大 payload', () => {
+  const keys = Array.from({ length: 3 }, (_, i) => ({ kind: 'hunk', fileId: 'F1', hunkId: `H${i}` }));
+  const segs = buildSegments({
+    coverageKeys: keys, sizeBudget: 60, sizeBudgetBytes: 100,
+    keyBytes: (k) => (k.hunkId === 'H0' ? 90 : 20),
+  });
+  assert.ok(segs.length >= 2, `37-key/141KB 形态:字节超了必须再切,got ${segs.length}`);
+  assert.equal(segs.reduce((n, s) => n + s.assignedCoverageKeys.length, 0), 3);
+});
+
+test('prompt 含 rro-1 不可改名清单与最小可过样例,且不提 --shape-fix', () => {
+  const f = setup();
+  const { prompt } = run(f);
+  assert.match(prompt, /rro-1 不可改名清单/);
+  assert.match(prompt, /禁止用 `path` 代替 `fileId`/);
+  assert.match(prompt, /最小可过样例/);
+  assert.match(prompt, /"profileAnswers": \[\]/);
+  assert.match(prompt, /没有 --shape-fix/);
+});
+
 test('SC-R1: prescan 双跑确定性(task/prompt 无时间字段,输出稳定)', () => {
   const f = setup({ rules: {} });
   const a = run(f);

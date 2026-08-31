@@ -9,7 +9,7 @@
 //
 // 本文件零依赖 lib.mjs,避免和 STATE_DIR 顶层求值缠在一起;调用方传入 lock 路径。
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync, existsSync, openSync, closeSync, readSync, writeSync, ftruncateSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -191,6 +191,35 @@ export function isPidAlive(pid) {
   }
 }
 
+const SHELL_COMMS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'cmd.exe', 'powershell', 'pwsh', '-bash', '-zsh', '-sh']);
+
+function psField(pid, field) {
+  try {
+    const out = execFileSync('ps', ['-o', `${field}=`, '-p', String(pid)], {
+      encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out;
+  } catch {
+    return '';
+  }
+}
+
+/** 解析审查主会话 pid:显式 env/参数优先;否则从 fromPid 跳过一层 shell。
+ *  prepare.mjs 自身秒退,不能跟它的 pid;跟一层之上的 agent 会话。
+ *  解析失败返回 null——不监视,行为与改前一致(只靠 TTL + max-lifetime)。 */
+export function resolveReviewParentPid({ explicit, fromPid = process.ppid } = {}) {
+  const named = Number(explicit);
+  if (Number.isInteger(named) && named > 1 && isPidAlive(named)) return named;
+  let pid = Number(fromPid);
+  if (!Number.isInteger(pid) || pid <= 1 || !isPidAlive(pid)) return null;
+  const comm = (psField(pid, 'comm').split(/[/\\]/).pop() || '').toLowerCase();
+  if (SHELL_COMMS.has(comm)) {
+    const up = Number.parseInt(psField(pid, 'ppid'), 10);
+    if (Number.isInteger(up) && up > 1 && isPidAlive(up)) return up;
+  }
+  return pid;
+}
+
 export function stopLockHeartbeat(lockFile, expectedToken) {
   const path = heartbeatPidPath(lockFile);
   // 一次读取,pid 与 token 同源同时刻——不再分两步查两个不同文件(锁文件 token / pid 文件),
@@ -218,23 +247,31 @@ export function startLockHeartbeat(lockFile, token, {
   maxLifetimeMs = SESSION_LOCK_MAX_ROUND_MS,
   daemonPath = DEFAULT_DAEMON,
   env = process.env,
+  parentPid: parentPidOpt,
 } = {}) {
   stopLockHeartbeat(lockFile);
-  const child = spawn(process.execPath, [
+  const parentPid = parentPidOpt === null
+    ? null
+    : (parentPidOpt ?? resolveReviewParentPid({ explicit: env?.REVIEW_PR_PARENT_PID }));
+  const args = [
     daemonPath,
     '--lock-file', lockFile,
     '--token', token,
     '--every-ms', String(everyMs),
     '--max-lifetime-ms', String(maxLifetimeMs),
-  ], {
+  ];
+  if (Number.isInteger(parentPid) && parentPid > 1) {
+    args.push('--parent-pid', String(parentPid));
+  }
+  const child = spawn(process.execPath, args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
     env: { ...env },
   });
   child.unref();
-  writeFileSync(heartbeatPidPath(lockFile), JSON.stringify({ pid: child.pid, token }));
-  return { started: true, pid: child.pid };
+  writeFileSync(heartbeatPidPath(lockFile), JSON.stringify({ pid: child.pid, token, parentPid: parentPid ?? null }));
+  return { started: true, pid: child.pid, parentPid: parentPid ?? null };
 }
 
 export function releaseOwnedSessionLock(lockFile, token) {

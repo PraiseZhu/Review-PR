@@ -251,11 +251,36 @@ export function classifyRequiredNegativeEvidence({ profiles, files, addedLineTex
   return { required, incomplete: incompleteFiles.length > 0, incompleteFiles };
 }
 
-/** ── SC-R4:coverage keys 分片(单席顺序分片,两类 key 都恰一个 owner)── */
-export function buildSegments({ coverageKeys, sizeBudget = 60 }) {
+export const DEFAULT_SIZE_BUDGET = 60;
+export const DEFAULT_SIZE_BUDGET_BYTES = 50_000;
+
+export function segmentBudgetFromRules(rules) {
+  const sizeBudget = Number(rules?.reviewSegments?.sizeBudget);
+  const sizeBudgetBytes = Number(rules?.reviewSegments?.sizeBudgetBytes);
+  return {
+    sizeBudget: Number.isFinite(sizeBudget) && sizeBudget > 0 ? sizeBudget : DEFAULT_SIZE_BUDGET,
+    sizeBudgetBytes: Number.isFinite(sizeBudgetBytes) && sizeBudgetBytes > 0 ? sizeBudgetBytes : DEFAULT_SIZE_BUDGET_BYTES,
+  };
+}
+
+/** ── SC-R4:coverage keys 分片(单席顺序分片,两类 key 都恰一个 owner)──
+ *  同时受 key 数上限与字节上限约束:141KB/37 key 单段曾未被 sizeBudget=60 拦住。
+ *  单 key 超过字节预算时独占一段,不拆 hunk。 */
+export function buildSegments({ coverageKeys, sizeBudget = DEFAULT_SIZE_BUDGET, sizeBudgetBytes = DEFAULT_SIZE_BUDGET_BYTES, keyBytes } = {}) {
   const segments = [];
   const budget = Math.max(1, sizeBudget);
-  for (let i = 0; i < coverageKeys.length; i += budget) {
+  const byteBudget = Math.max(1, sizeBudgetBytes);
+  const bytesOf = (k) => {
+    if (typeof keyBytes === 'function') {
+      const n = Number(keyBytes(k));
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    }
+    return 1;
+  };
+  let current = [];
+  let currentBytes = 0;
+  const flush = () => {
+    if (current.length === 0) return;
     segments.push({
       segmentId: `seg-${String(segments.length + 1).padStart(2, '0')}`,
       // 顺序投递协议(SC-R4 第 1 轮核验):order 是**确定性**的投递序号,编排必须按它向
@@ -263,11 +288,26 @@ export function buildSegments({ coverageKeys, sizeBudget = 60 }) {
       // 覆盖都会被 consumer 判 invalid(此前只有"最终回执集合",无法区分"真的分段审过"
       // 与"一次性塞给模型再补一份形状正确的回执")。
       order: segments.length + 1,
-      assignedCoverageKeys: coverageKeys.slice(i, i + budget),
+      assignedCoverageKeys: current,
       sizeBudget: budget,
+      sizeBudgetBytes: byteBudget,
+    });
+    current = [];
+    currentBytes = 0;
+  };
+  for (const k of coverageKeys ?? []) {
+    const b = bytesOf(k);
+    if (current.length > 0 && (current.length >= budget || currentBytes + b > byteBudget)) flush();
+    current.push(k);
+    currentBytes += b;
+  }
+  flush();
+  if (segments.length === 0) {
+    segments.push({
+      segmentId: 'seg-01', order: 1, assignedCoverageKeys: [],
+      sizeBudget: budget, sizeBudgetBytes: byteBudget,
     });
   }
-  if (segments.length === 0) segments.push({ segmentId: 'seg-01', order: 1, assignedCoverageKeys: [], sizeBudget: budget });
   return segments;
 }
 
