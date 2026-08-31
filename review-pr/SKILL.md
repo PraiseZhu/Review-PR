@@ -1095,6 +1095,7 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 - spawn 前把完整审查指令写入隔离 worktree 内文件（如 `./review-task-prompt.md`），Agent 首条 prompt **只留路径引用**，不要把 100KB+ 指令内联进对话；
 - 分段按 `reviewSegments.sizeBudget`（key 数）**与** `sizeBudgetBytes`（默认 50KB，按 hunk patch 字节）同时切，单段不得再出现 141KB 这种「key 未超、字节爆了」；
 - 审查席任何可能长输出的命令一律 `| tail -n 40`，或重定向到 worktree 日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出；
+- 审查席对结构性大文件只做字段级抽取（如 `node -e` 读 task.json 的 snapshotHash / segments 数 / 承诺计数，`grep -n` 定位 prompt.md 的候选与必答清单段），禁止整读 task.json / prompt.md / 全量 diff——2026-08-31 mivo-canvas-plugin #386 审查席整读大文件触发 autocompact 连续震荡 3 次挂死，未交 rro-1.json，本轮 skip 收场；
 - 审查会话超时未交 `./rro-1.json`：主会话写 non-clean 回执 `--verdict skip --reason review-agent-timeout --p0p1-count 0`，本轮 skip。**禁止沿用上次清白**。若改由答卷组装席接手，必须**重建** `task.json` / preflight / 分段投递台账，且 `snapshotHash` 与 consume 现场重算一致（`--base` 必须是 PR `baseRefOid`，传 merge-base/tip 会得到不同 hash）。
 
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
