@@ -442,6 +442,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `stale-pushback-awaiting-author` **格式打回后作者未提交新 commit，跳过等作者侧响应** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
+  - 现象:PR 333/386 均为 stale-pushback skip：打回已发、作者未 push 新 commit，属作者侧响应等待，非流程缺口
 - `semantic-conflict-persist-needs-human` **语义冲突的取舍只能由维护者/作者做,auto 不代解** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR352 与主干 #371/#373 的 library 写入链改写重叠(cindyGenerationPort.ts persistLibraryBeforeVisibleSuccess 两种业务逻辑),auto 按规则不擅自取舍;已发冲突提醒(去重命中,此前轮已提醒),等作者 merge origin/main 或维护者代修。
   - 备注:Mini 巡审 2026-08-31 记账,三机同步时从 Mini 未推送 evo 回收

@@ -4212,6 +4212,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-31T07:05:22.494Z",
       "lastSeen": "2026-08-31T07:05:22.494Z"
+    },
+    {
+      "fingerprint": "stale-pushback-awaiting-author",
+      "tier": "by-design",
+      "title": "格式打回后作者未提交新 commit，跳过等作者侧响应",
+      "detail": "PR 333/386 均为 stale-pushback skip：打回已发、作者未 push 新 commit，属作者侧响应等待，非流程缺口",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-31T12:14:10.477Z",
+      "lastSeen": "2026-08-31T12:14:10.477Z"
     }
   ],
   "escapedHazards": [
