@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `scan-noop-rereview-unchanged-head` **context.mjs 对 head 未变且上轮回执 dirty 的候选仍给 action=review，导致每轮空转全量重审** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:本轮 #352：head 自上轮 REQUEST_CHANGES（P1×1）后未变，人工复核该 P1 在当前 head 仍成立后跳过重审，省一轮独立审查（#386 同规模审查消耗约 16.5 万子代理 token）。该判定目前靠主 agent 人工做，无机器信号。
+  - 提案:scan 输出增加 lastReceiptVerdict/lastReceiptHead 字段（读回执台账），编排层据此对 head 未变且上轮 dirty 的候选直接 skip（动作与本轮 #352 人工处理一致），改 scan 输出契约需维护者拍板
 - `re-review-same-head-no-increment` **fallback=review 对 viewer 自挂 CHANGES_REQUESTED 且无新 commit 的 PR 每轮全量重审,无信息增量** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:mivo-canvas-plugin #352/#386:同 head 上 viewer 刚打过回(07:16/12:12),作者零动作,context.mjs fallback 仍给 review 路由;1h 网格下每轮重复隔离审查烧大量 token(#352 本轮跑 ~70 分钟负向验证仍未交卷)
   - 提案:context.mjs fallback 判定加 stale 分支:同 head + 已有 viewer CHANGES_REQUESTED + 无新 commit → 改判 skip(复用 skip-stale-pushback 语义);涉及机器判定逻辑改动,留维护者评审

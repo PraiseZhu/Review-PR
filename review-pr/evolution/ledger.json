@@ -4251,6 +4251,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-31T14:20:05.734Z",
       "lastSeen": "2026-08-31T14:20:05.734Z"
+    },
+    {
+      "fingerprint": "scan-noop-rereview-unchanged-head",
+      "tier": "proposal",
+      "title": "context.mjs 对 head 未变且上轮回执 dirty 的候选仍给 action=review，导致每轮空转全量重审",
+      "detail": "本轮 #352：head 自上轮 REQUEST_CHANGES（P1×1）后未变，人工复核该 P1 在当前 head 仍成立后跳过重审，省一轮独立审查（#386 同规模审查消耗约 16.5 万子代理 token）。该判定目前靠主 agent 人工做，无机器信号。",
+      "proposal": "scan 输出增加 lastReceiptVerdict/lastReceiptHead 字段（读回执台账），编排层据此对 head 未变且上轮 dirty 的候选直接 skip（动作与本轮 #352 人工处理一致），改 scan 输出契约需维护者拍板",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-08-31T16:13:35.600Z",
+      "lastSeen": "2026-08-31T16:13:35.600Z"
     }
   ],
   "escapedHazards": [
