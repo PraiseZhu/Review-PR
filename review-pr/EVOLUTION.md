@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `stage2-scripts-cross-checkout-snapshot-hash-mismatch` **阶段二脚本链 REPO_ROOT 耦合 process.cwd,跨 checkout 混用产生不同 snapshotHash** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR384 轮:preflight 在跟随仓 checkout 跑出 snap1-ae3d,task 在 _ops 生产 checkout 建出 snap1-f173,同 PR 同 base/head 但 diffDigest 不同(git diff 输出受 checkout 侧配置影响),consume 按 snapshotHash 不一致正确 fail-closed 判 invalid,返工一轮。根因:lib.mjs REPO_ROOT=env.REVIEW_PR_REPO_ROOT||process.cwd(),review-preflight 无 repo 身份锚点,同一仓多 checkout 的机器上极易踩中。
+  - 提案:review-preflight/build-review-task 在输出 JSON 里带 repoRoot 绝对路径与 origin URL,consumer 校验 task/preflight/receipt 三者 repoRoot 同源;或文档显式要求同一轮全部脚本锁定同一 cwd(编排 checklist 项)。属流程加固,不改判定语义,留维护者拍板。
 - `orphaned-heartbeat-keeps-lock-after-parent-crash` **父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: adopted
   - 现象:2026-08-30 18:06Z 轮完成 run-log 后会话崩溃,未走 release-lock;其 lock-heartbeat-daemon(pid 存活)继续每 20 分钟续期,锁 TTL 永不过期直至守护 3h max-lifetime。下一整轮(19:02Z)只能按 lock-busy 跳过全部候选。缺口:心跳守护只验证 token,不感知父会话死活。
   - 提案:让守护进程持有对父 pid 的引用(PPID/kqueue NOTE_EXIT 或父进程心跳文件),父进程死亡即自杀停止续期,让锁按 TTL 尽快自愈;属可靠性修复,不扩权,建议 owner 拍板后另立 PR。
