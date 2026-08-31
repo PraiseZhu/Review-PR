@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `deepseek-review-seat-no-output` **低配审查席连续两轮超时未产 rro-1.json，靠预提取 diff+最小模板第三轮才完成** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR #385 轮：deepseek 审查席前两轮 failed(无输出/超时)，消耗三次 spawn；第三轮把净 diff 与 PR body 预提取成小文件并给出直接模板后一次通过。痛点在任务上下文过大+目标不聚焦，非 skill 脚本缺陷。
+  - 提案:考虑在 build-review-task 的 prompt 模板里对文档型 PR 提示『直接读文档与 body，勿跑构建』，或在 SKILL 审查席派工纪律中固化『预提取 net-diff 到文件、给最小回执样例』两步
 - `stage2-scripts-cross-checkout-snapshot-hash-mismatch` **阶段二脚本链 REPO_ROOT 耦合 process.cwd,跨 checkout 混用产生不同 snapshotHash** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:PR384 轮:preflight 在跟随仓 checkout 跑出 snap1-ae3d,task 在 _ops 生产 checkout 建出 snap1-f173,同 PR 同 base/head 但 diffDigest 不同(git diff 输出受 checkout 侧配置影响),consume 按 snapshotHash 不一致正确 fail-closed 判 invalid,返工一轮。根因:lib.mjs REPO_ROOT=env.REVIEW_PR_REPO_ROOT||process.cwd(),review-preflight 无 repo 身份锚点,同一仓多 checkout 的机器上极易踩中。
   - 提案:review-preflight/build-review-task 在输出 JSON 里带 repoRoot 绝对路径与 origin URL,consumer 校验 task/preflight/receipt 三者 repoRoot 同源;或文档显式要求同一轮全部脚本锁定同一 cwd(编排 checklist 项)。属流程加固,不改判定语义,留维护者拍板。
