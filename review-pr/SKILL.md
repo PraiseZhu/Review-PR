@@ -821,7 +821,7 @@ node --test tests/*.test.mjs
 
 1. PR 仍是 open、非 draft，且 base/head 没有在读取后变化；
 2. 没有冲突（`mergeStateStatus` 不为 `DIRTY`；若状态过期，重新拉元数据）；冲突且
-   满足 5.5 条件时可走主干侧冲突代合并；交互模式下若同时还有审查 P0/P1，可由用户
+   满足 5.5 条件时**仅交互模式**可走主干侧冲突代合并（auto 不合、写入汇总）；交互模式下若同时还有审查 P0/P1，可由用户
    选择 5.6 代修合并一并处理；其余情况等作者处理；
 3. 所有 review conversation 都已 resolve；bot 也不能因“是 bot”而自动忽略；
 4. head commit 上**所有已上报检查**（含非 required 的 check-run / commit status，如
@@ -1602,8 +1602,8 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
    审查、重新落回执，不能凭记忆认为"审过了就该行"；
 4. 审查不通过（有 P0/P1）→ 按 5.2 正常打回，`admins` 身份不豁免代码质量要求。
 
-`structuralBypassBasis='approved'` 时不受此限，可直接合、不必等这轮审查、也不需要
-回执——但 **'approved' 的成立条件自 2026-08-04（#469 复盘）起是条件式,不再等于
+`structuralBypassBasis='approved'` 时不受此限，**仅交互模式**可直接合、不必等这轮审查、也不需要
+回执（auto 只审不合，见 §0 / 6.1）；但 **'approved' 的成立条件自 2026-08-04（#469 复盘）起是条件式,不再等于
 `reviewDecision=APPROVED`**,由 `evaluateApprovalBasis` + `resolveApprovedShortcut`
 （lib.mjs,context.mjs 与 pre-merge-check.mjs 共用,禁止各写判据）机器判定:
 - `reviewDecision === 'APPROVED'`（GitHub 聚合裁决）是**必要但不充分**的合取条件
@@ -1767,8 +1767,8 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   head，见 3.4），放行前不自动审、不自动合、放行
   后按 `auto.fallback` 继续（详见「审查执行环境安全」「审查规则文档门」）；未配置
   对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
-  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，
-  见 5.1「授权快速合并通道」）。
+  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
+  交互/人手才按 5.1「授权快速合并通道」合。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -1853,9 +1853,10 @@ PR：<url>（分支 <headRefName>，base <baseRefName>）
 才投递，不同意只报告。
 
 **Auto 模式闭环**：按上面机制自动改道投递，无需确认。跟进会话修完 push → PR head
-变化 → 下轮扫描指纹变化重新分类（审查通过即按 5.1 合并；又有新问题则投递新
-卡点给同一会话）→ **循环直到合并**。不设"最多重试 N 次"硬闸——每轮投递的前提是
-指纹变化，天然限速；维护者每轮都能从汇总看到进展，觉得空转随时人工介入。
+变化 → 下轮扫描指纹变化重新分类（审查通过只落 clean 回执并写入汇总，**不合**，等交互/人手按 5.1 合；又有新问题则投递新
+卡点给同一会话）→ **循环直到审查干净并等人工合**。不设"最多重试 N 次"硬闸——每轮投递的前提是
+指纹变化，天然限速；维护者每轮都能从汇总看到进展，觉得空转随时人工介入。auto 禁止
+`merge-pr.mjs` / `gh pr merge` / 5.5 主干 push。
 合并／关闭后清理绑定：每轮阶段一扫描后运行
 `node "<SKILL_ROOT>/scripts/fix-session-state.mjs" sweep --open <open PR 列表>`。
 

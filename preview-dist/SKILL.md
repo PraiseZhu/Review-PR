@@ -704,7 +704,7 @@ node --test tests/*.test.mjs
 
 1. PR 仍是 open、非 draft，且 base/head 没有在读取后变化；
 2. 没有冲突（`mergeStateStatus` 不为 `DIRTY`；若状态过期，重新拉元数据）；冲突且
-   满足 5.5 条件时可走主干侧冲突代合并；交互模式下若同时还有审查 P0/P1，可由用户
+   满足 5.5 条件时**仅交互模式**可走主干侧冲突代合并（auto 不合、写入汇总）；交互模式下若同时还有审查 P0/P1，可由用户
    选择 5.6 代修合并一并处理；其余情况等作者处理；
 3. 所有 review conversation 都已 resolve；bot 也不能因“是 bot”而自动忽略；
 4. head commit 上**所有已上报检查**（含非 required 的 check-run / commit status，如
@@ -1426,8 +1426,8 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   head，见 3.4），放行前不自动审、不自动合、放行
   后按 `auto.fallback` 继续（详见「审查执行环境安全」「审查规则文档门」）；未配置
   对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
-  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，
-  见 5.1「授权快速合并通道」）。
+  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
+  交互/人手才按 5.1「授权快速合并通道」合。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
