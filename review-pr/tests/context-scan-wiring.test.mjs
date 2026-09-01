@@ -192,14 +192,14 @@ test('SC-2 生产形状锁定:reviewThreads 导出含 id/isResolved/isOutdated/p
 
 // ── automated-review-gate wave0 追加(2026-08-08):SC-3 授权路由接线 ──
 // 意图:人工 break-glass 是唯一例外——只有「admins 成员人工 + 未编辑 + 独占一行 +
-// 当前 head SHA」会被 context 路由到 authorized-fast-merge;bot 评论与旧 SHA 一律不得。
+// 当前 head SHA」会被 context 标为可交互合(review-complete-hold-merge,auto 不合);bot 评论与旧 SHA 一律不得。
 
 // wave0 delta(2026-08-08):授权名单与 admins 解耦后,有效人工命令需 breakGlassApprovers
 // 显式配置——未配置即紧急通道关闭(fail-closed)。以下既有路由用例补上配置保持为行为
 // 对照;新增用例在旧代码上红。
 const GLASS_CONFIG = { breakGlassApprovers: ['PraiseZhu'] };
 
-test('SC-3 路由:breakGlassApprovers 成员人工 + 当前 head SHA → requested=true,auto.action=authorized-fast-merge', () => {
+test('SC-3 路由:breakGlassApprovers 成员人工 + 当前 head SHA → requested=true,auto.action=review-complete-hold-merge(auto 不合)', () => {
   const { repo, env } = setup({ commentNodes: [{
     author: { login: 'PraiseZhu', __typename: 'User' },
     body: `/approve-merge ${HEAD}`,
@@ -212,7 +212,7 @@ test('SC-3 路由:breakGlassApprovers 成员人工 + 当前 head SHA → request
   assert.equal(out.authorizedFastMerge.requested, true, '有效授权必须被识别为 requested');
   assert.equal(out.authorizedFastMerge.eligible, true, `机械前提应满足(required 空集+扫描干净):${JSON.stringify(out.authorizedFastMerge)}`);
   assert.equal(out.authorizedFastMerge.staleComments.length, 0);
-  assert.equal(out.auto.action, 'authorized-fast-merge', 'auto 分流必须路由到紧急通道');
+  assert.equal(out.auto.action, 'review-complete-hold-merge', '有授权也不代合,只标可交互合');
   assert.equal(out.auto.isSkip, false);
 });
 
@@ -319,7 +319,7 @@ test('L1 · Mivo 强制策略:requireAutomatedReviewForAutoMerge=true + 作者�
   assert.equal(out.auto.isSkip, false);
 });
 
-test('L1b · 对照组:requireAutomatedReviewForAutoMerge 未配置 + 作者在 admins + APPROVED@head → bypass-structural-block(现状兼容)', () => {
+test('L1b · 对照组:requireAutomatedReviewForAutoMerge 未配置 + 作者在 admins + APPROVED@head → review-complete-hold-merge(auto 不合)', () => {
   const { repo, env } = setup({
     commentNodes: [],
     adminsExtra: ['aj0928'],
@@ -331,7 +331,7 @@ test('L1b · 对照组:requireAutomatedReviewForAutoMerge 未配置 + 作者在 
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(out, `输出应为 JSON,got status=${r.status}`);
   assert.equal(out.approvedShortcut.granted, true, '未配置强制审查 → shortcut 照常成立');
-  assert.equal(out.auto.action, 'bypass-structural-block', '未配置时保持现状路由');
+  assert.equal(out.auto.action, 'review-complete-hold-merge', '未配置强制审查策略时也不再 auto 合,只标可交互合');
 });
 
 // ── C1 容器级接线(审 C1,2026-08-08):mergeAuthorization 非 plain object ──

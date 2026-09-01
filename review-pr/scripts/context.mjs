@@ -1383,17 +1383,17 @@ try {
       ({ route: structuralBypassRoute } = decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut: approvedShortcut.granted, isAdminAuthor, requireAutomatedReviewForAutoMerge }));
       const structuralRoute = structuralBypassRoute;
       if (structuralRoute === 'bypass-structural-block') {
-        autoAction = 'bypass-structural-block';
-        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果,均在 structuralBypassAllowlist 内),approved shortcut 成立(${approvedShortcut.reason})且当前账号可 bypass——自动 admin bypass 合并`;
+        autoAction = 'review-complete-hold-merge';
+        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果,均在 structuralBypassAllowlist 内),approved shortcut 成立(${approvedShortcut.reason})且当前账号可 bypass——auto 只审不合,不自动 admin bypass 合并,等交互/人手合`;
         autoSkip = false;
       } else if (structuralRoute === 'review-pending-admin-bypass') {
         autoAction = 'review';
-        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果),作者 ${authorLogin} 在 admins 名单但 approved shortcut 不成立(${approvedShortcut.reason};典型如 ownPr——GitHub 422 禁止自批准)——按管理员分级合并策略进入独立审查,审查通过(0 P0/P1)后合并阶段走 admin bypass(见 internal-gates.md;不得跳过本轮独立审查直接合并)`;
+        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果),作者 ${authorLogin} 在 admins 名单但 approved shortcut 不成立(${approvedShortcut.reason};典型如 ownPr——GitHub 422 禁止自批准)——按管理员分级合并策略进入独立审查,审查通过(0 P0/P1)后 auto 只落回执、不合,等交互/人手走 admin bypass(见 internal-gates.md;不得跳过本轮独立审查直接合并)`;
         autoSkip = false;
       } else if (structuralRoute === 'review-pending-approved-bypass') {
         // SC-2:Mivo 强制策略——GitHub APPROVED(即便绑定当前 head)不替代自动化审查。
         autoAction = 'review';
-        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果),approved shortcut 成立(${approvedShortcut.reason})但强制自动化审查策略已开启(mergeAuthorization.requireAutomatedReviewForAutoMerge=true)——不再直接 bypass,先进入独立审查,审查通过(0 P0/P1)后凭当前 head clean 回执在合并阶段走 admin bypass(basis=approved)`;
+        autoReason = `结构性 BLOCKED(${structuralBlock.requiredCheckRules.join('/')} 永不上报结果),approved shortcut 成立(${approvedShortcut.reason})但强制自动化审查策略已开启(mergeAuthorization.requireAutomatedReviewForAutoMerge=true)——不再直接 bypass,先进入独立审查,审查通过(0 P0/P1)后凭当前 head clean 回执由交互/人手合(basis=approved),auto 不合`;
         autoSkip = false;
       } else {
         // 机械前提不满足,或满足但 approved shortcut 不成立且作者不在 admins 名单 → 跳过通知 owner
@@ -1402,7 +1402,7 @@ try {
           ? (structuralBlock && !structuralAllowlisted && structuralBlock.canBypass && structuralBlock.canBypass !== 'never'
             ? `结构性 BLOCKED,当前账号本可 bypass,但命中的必需检查类型(${(structuralBlock.requiredCheckRules ?? []).join('/')})不在 structuralBypassAllowlist 里——不自动 bypass,需 owner 人工确认后手动处理`
             : `结构性 BLOCKED(非作者可处理,当前账号无 bypass 权限):${blockers.join(';')}`)
-          : `结构性 BLOCKED,当前账号可 bypass 但 approved shortcut 不成立(${approvedShortcut.reason}),且作者 ${authorLogin} 不在 admins 名单——不自动合并,需白名单成员对当前 head Approve(且 GitHub 聚合裁决达 APPROVED),或将作者加入 pr-rules.json 的 admins 名单走管理员分级合并策略(进独立审查、通过后再 admin bypass)`;
+          : `结构性 BLOCKED,当前账号可 bypass 但 approved shortcut 不成立(${approvedShortcut.reason}),且作者 ${authorLogin} 不在 admins 名单——auto 不合,需白名单成员对当前 head Approve(且 GitHub 聚合裁决达 APPROVED),或将作者加入 pr-rules.json 的 admins 名单走管理员分级审查(进独立审查、通过后由交互/人手 admin bypass)`;
         autoSkip = true;
       }
     } else {
@@ -1414,8 +1414,8 @@ try {
   } else {
     autoAction = 'review';
     autoReason = selfBlockedResolvable
-      ? '前置门唯一阻塞是 viewer 自己挂的 CHANGES_REQUESTED 且 thread 全 resolve;进入重审,通过后 self-approve 解锁再合并'
-      : '格式门 + 前置门均通过,进入代码审查';
+      ? '前置门唯一阻塞是 viewer 自己挂的 CHANGES_REQUESTED 且 thread 全 resolve;进入重审,通过后 self-approve 解锁,auto 只审不合'
+      : '格式门 + 前置门均通过,进入代码审查(auto 只审不合)';
     autoSkip = false;
     const liveRollup = classifyStatusRollup(meta.statusCheckRollup);
     if (liveRollup?.pending?.length) {
@@ -1435,14 +1435,14 @@ try {
 
   // ── 授权快速合并通道覆盖(见 authorizedFastMerge 计算与 SKILL 5.1「授权快速合并通道」):
   // admins 名单成员明确 /approve-merge 授权 + 机械前提全过时,压过上面主开关算出的一切结论
-  // (含 bypass-structural-block / skip-structural-block / skip-gate / review 等)直接进
-  // 合并,跳过阶段二独立审查。但让位于产品/UI 门与技术架构门(下方紧接的包裹逻辑仍会在
+  // (含 skip-structural-block / skip-gate / review 等)标为可交互合,但 auto 巡审
+  // 不再代合(2026-09-01:只审不合)。让位于产品/UI 门与技术架构门(下方紧接的包裹逻辑仍会在
   // needsProductCheck/needsArchCheck 时整体覆盖本结论)——授权只解决"要不要再审一轮代码",
   // 不解决"这次改动该不该推进"这类更上游的产品方向判断,不能用合并授权去顶替产品/架构对齐。──
   if (authorizedFastMerge.eligible) {
-    autoAction = 'authorized-fast-merge';
-    // reportOnly 三项不阻断,但必须显著写进 autoReason(飞书汇总/合并致谢直接用得上)——
-    // 紧急通道的机器职责是"留痕",不是悄悄吞掉这些信号。
+    autoAction = 'review-complete-hold-merge';
+    // reportOnly 三项不阻断,但必须显著写进 autoReason(飞书汇总直接用得上)——
+    // 紧急通道的机器职责是"留痕",不是悄悄吞掉这些信号;auto 不合。
     const reportHints = [
       authorizedFastMerge.reportOnly.formatIssues.length
         ? `格式门未过(${authorizedFastMerge.reportOnly.formatIssues.join(';')})`
@@ -1455,7 +1455,7 @@ try {
         : null,
     ].filter(Boolean);
     const reportHint = reportHints.length ? `;不阻断但已写入汇总,需在报告里显著提示:${reportHints.join('、')}` : '';
-    autoReason = `管理员授权快速合并:${authorizedFastMerge.admin} 于 ${authorizedFastMerge.commentCreatedAt} 发出 /approve-merge <当前 head SHA>(head 绑定,授权有效)——跳过阶段二独立审查${hitsSecurityReviewPaths ? '与安全审查路径门(securityReviewPaths,授权=人工已过的凭证)' : ''},required 检查全绿即可合${reportHint}`;
+    autoReason = `管理员已授权快速合并:${authorizedFastMerge.admin} 于 ${authorizedFastMerge.commentCreatedAt} 发出 /approve-merge <当前 head SHA>(head 绑定,授权有效)——auto 只审不合,不代合;交互/人手可按 5.1 紧急通道合${hitsSecurityReviewPaths ? '(含跳过安全审查路径门 securityReviewPaths,授权=人工已过的凭证)' : ''}${reportHint}`;
     autoSkip = false;
   }
 
@@ -1832,7 +1832,7 @@ try {
         isAdmin: isAdminAuthor,
         structuralBypassPending: autoAction === 'review' && blockClass === 'structural-check' && (isAdminAuthor || structuralBypassRoute === 'review-pending-approved-bypass'),
       },
-      note: 'scan 精简输出,仅供 auto 批处理阶段 1 扫描分类与汇总;需要 body / 历史全文时对该 PR 单独跑不带 --scan 的全量模式(审查子 agent 在自己 worktree 里自取,别在主 session 拉全量)。structuralBypassPending=true→本轮 action=review 是因为结构性 BLOCKED + 要么作者在 admins 名单但 approved shortcut 不成立(见 approvedShortcut.reason:聚合裁决未达 APPROVED / approve 未绑定当前 head / own-account 待授权——原因不唯一,补救按 reason 指向,别一律当"缺 APPROVED"),要么强制自动化审查策略开启(mergePolicy.requireAutomatedReviewForAutoMerge=true)下 approved shortcut 成立也先审查(SC-2:GitHub APPROVED 不替代自动化审查)——审查通过(0 P0/P1)后由回执支撑合并阶段走 admin bypass,不是普通审查流程,见 SKILL 5.1/5.3。authorizedFastMerge.eligible=true 时 action 已是 authorized-fast-merge,可直接进合并跳过审查——但 reportOnly(formatIssues/unresolvedThreadCount/nonRequiredFailures)非空时必须在汇总里显著提示,不阻断不代表可以吞掉;eligible=false 但 requested=true 时看 blockedReason(还差什么条件,只剩泄密硬门/冲突/required 检查三类)或 staleComments(授权命令的 SHA 不等于当前 head/当前 head 不可判——push/force-push 换 head 即作废,需对当前 head 重发)。signoff-hold-unavailable=命中 security/rules/arch 门但 signoff-hold.mjs 探测(失败重试一次后)仍不可执行(F3)→ 人工介入,不得按原路由静默继续,原因见 signoff.holdInvocation 与 configWarnings。',
+      note: 'scan 精简输出,仅供 auto 批处理阶段 1 扫描分类与汇总;需要 body / 历史全文时对该 PR 单独跑不带 --scan 的全量模式(审查子 agent 在自己 worktree 里自取,别在主 session 拉全量)。auto 巡审只审不合(2026-09-01):不得调用 merge-pr.mjs、不得经 gh 执行 pr merge、不得 5.5 主干 push。structuralBypassPending=true→本轮 action=review 是因为结构性 BLOCKED + 要么作者在 admins 名单但 approved shortcut 不成立(见 approvedShortcut.reason:聚合裁决未达 APPROVED / approve 未绑定当前 head / own-account 待授权——原因不唯一,补救按 reason 指向,别一律当"缺 APPROVED"),要么强制自动化审查策略开启(mergePolicy.requireAutomatedReviewForAutoMerge=true)下 approved shortcut 成立也先审查(SC-2:GitHub APPROVED 不替代自动化审查)——审查通过(0 P0/P1)后只落回执,由交互/人手合,见 SKILL 5.1/5.3。authorizedFastMerge.eligible=true 时 action 是 review-complete-hold-merge:有人工授权也不代合,等交互/人手按 5.1 紧急通道合——reportOnly(formatIssues/unresolvedThreadCount/nonRequiredFailures)非空时必须在汇总里显著提示;eligible=false 但 requested=true 时看 blockedReason(还差什么条件,只剩泄密硬门/冲突/required 检查三类)或 staleComments(授权命令的 SHA 不等于当前 head/当前 head 不可判——push/force-push 换 head 即作废,需对当前 head 重发)。signoff-hold-unavailable=命中 security/rules/arch 门但 signoff-hold.mjs 探测(失败重试一次后)仍不可执行(F3)→ 人工介入,不得按原路由静默继续,原因见 signoff.holdInvocation 与 configWarnings。',
     });
   } else {
   print({

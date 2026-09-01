@@ -36,11 +36,13 @@ description: >
 ## 0. 模式与安全边界
 
 - `$ARGUMENTS` 中含 `--auto` 时进入无人值守模式；不解析手工 PR 号，批量处理所有
-  可审查的 open、非 draft PR。
+  可审查的 open、非 draft PR。**auto 只审不合**（2026-09-01）：打回、写回执、hold、
+  通知、汇总可以做；**禁止**调用 `merge-pr.mjs`、禁止 `gh pr merge`、禁止 5.5 主干
+  `git merge`+push 默认分支。`merge-pr.mjs --mode auto` 会在出口拒绝。
 - 其他情况进入交互模式：提取 `#123`、`123` 或文本中的 PR 号；未指定时选择最早
   创建的 open、非 draft PR。
 - 交互模式在提交 review、发表评论、合并、推送默认分支、关闭或删除远程分支前必须用
-  `AskUserQuestion` 确认。`--auto` 只允许执行本文件明确列出的安全动作。
+  `AskUserQuestion` 确认。`--auto` 只允许执行本文件明确列出的安全动作（不含合并）。
 - 不使用 `git reset --hard`、`git checkout --`、强制删除用户分支或自动 stash。
   不把 token、凭证、组织名册或本地绝对路径写入输出。对 PR 提交内容本身的凭证与
   隐私数据零容忍，见 3.1 安全与隐私内容门；打回与汇总只写文件/行号/类型，不复述
@@ -833,8 +835,9 @@ issue + 发状态评论，等 admins 名单成员（`admins`）显式 Approve �
 T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这个大概率疏忽变成显式等待；
 不冒充 T2（防恶意伪造），恶意者总能改掉配置本身，那不属于本门能力面。
 
-**唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
-可以压过本门——`mergeAuthorization.breakGlassApprovers` 名单成员发出的
+**唯一例外**：有 `/approve-merge` 授权时 `auto.action=review-complete-hold-merge`
+（见 5.1「授权快速合并通道」）——auto **仍不合**，只把「人工已过的凭证」写入汇总，
+等交互/人手合。`mergeAuthorization.breakGlassApprovers` 名单成员发出的
 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
 不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
 与授权通道谁都压不过它。
@@ -978,6 +981,7 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 - spawn 前把完整审查指令写入隔离 worktree 内文件（如 `./review-task-prompt.md`），Agent 首条 prompt **只留路径引用**，不要把 100KB+ 指令内联进对话；
 - 分段按 `reviewSegments.sizeBudget`（key 数）**与** `sizeBudgetBytes`（默认 50KB，按 hunk patch 字节）同时切，单段不得再出现 141KB 这种「key 未超、字节爆了」；
 - 审查席任何可能长输出的命令一律 `| tail -n 40`，或重定向到 worktree 日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出；
+- 审查席对结构性大文件只做字段级抽取（如 `node -e` 读 task.json 的 snapshotHash / segments 数 / 承诺计数，`grep -n` 定位 prompt.md 的候选与必答清单段），禁止整读 task.json / prompt.md / 全量 diff——2026-08-31 mivo-canvas-plugin #386 审查席整读大文件触发 autocompact 连续震荡 3 次挂死，未交 rro-1.json，本轮 skip 收场；
 - 审查会话超时未交 `./rro-1.json`：主会话写 non-clean 回执 `--verdict skip --reason review-agent-timeout --p0p1-count 0`，本轮 skip。**禁止沿用上次清白**。若改由答卷组装席接手，必须**重建** `task.json` / preflight / 分段投递台账，且 `snapshotHash` 与 consume 现场重算一致（`--base` 必须是 PR `baseRefOid`，传 merge-base/tip 会得到不同 hash）。
 
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
@@ -1180,7 +1184,7 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --shape-preflight --output ./rro-1.json \
   --snapshot-hash <任务里的 snapshotHash>
 node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output ./rro-1.json \
-  --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
+  --mode interactive --base <baseRefOid> --head <headRefOid> \
   --task ./task.json --preflight ./preflight.json --verify-live-head
 ```
 
@@ -1737,15 +1741,14 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试；幂等，
    标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
    一次性迁移恢复）；`auto.action=
-   authorized-fast-merge` 的候选跳过阶段二独立审查，直接按 5.1「授权快速合并通道」
-   复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
-   审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
-   通过则按 5.2 正常打回；其余通过审查的 PR 先复核状态再合并，失败的 PR 请求修改，
+   review-complete-hold-merge` 的候选（含有 `/approve-merge` 授权）**不合**，写入汇总等交互/人手按 5.1 合；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
+   审查，通过后只落回执、不合，等交互/人手按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
+   通过则按 5.2 正常打回；其余通过审查的 PR 只落 clean 回执并汇总，**禁止** `merge-pr.mjs` / `gh pr merge` / 5.5 主干 push，失败的 PR 请求修改，
    CI pending、未 resolve thread、权限问题只跳过不绕过——未 resolve thread 的
    阻断判定用 **thread 清理（3.10）回流后**的计数：扫描阶段已代 resolve 的不再阻断，
-   清理后仍 unresolved 的照旧阻断（合并判定前重新拉 `mergeStateStatus`，不凭清理前
+   清理后仍 unresolved 的照旧阻断（不合入，只决定本轮是否打回/跳过，不凭清理前
    的旧计数）；冲突的 PR 若满足 5.5 门槛
-   （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
+   （其余全过、仅剩冲突）**auto 不按 5.5 合**，写入汇总等交互处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
    P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）（preview 版：5.4 fix-handoff 已剥离——这类卡点不打回不投递，在汇总标注「需维护者跟进」）；重叠排队的
