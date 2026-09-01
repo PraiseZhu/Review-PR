@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-context-window-thrash` **审查席子代理用小上下文窗口模型会被 50KB 级 payload + 源码追踪打爆 autocompact,应在 spawn 时显式选大窗口模型** — 出现 1 次,首见 2026-09-01,最近 2026-09-01,status: open
+  - 现象:2026-09-01 mivo-canvas-plugin 巡审:2 个 sonnet 映射审查席(352/386 预派)与 1 个 397 前席均死于 autocompact thrashing(context 3 轮内回满 x3),未交 rro-1.json。改用 1M 窗口模型后同任务 83-84 次工具调用顺利完成。prompt.md 仅 9-10KB,payload ≤50KB,单段内容本身不超标——瓶颈是子代理模型映射的窗口总量。
+  - 提案:SKILL.md §4 大 payload 审查纪律补一行:spawn 审查席时显式选择上下文窗口足以容纳『全局规则+50KB 段 payload+被审源码追踪』的模型(建议 ≥1M);小窗口模型在此负载下稳定震荡挂死,白白烧 token 并把 PR 拖成 skip。另:交付脚本已支持 replayed 重放已投递段,可写进 §4 供审查席接续前席中断的分段审查。
 - `same-head-rereview-when-open-findings-persist` **同 head 且已有 open findings+既有打回时,扫描仍给 action=review 触发全量重审,只能复述同一结论并撞同快照 disposition 死角** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
   - 现象:2026-08-31 mivo-canvas-plugin 轮:#352 与 #386 作者无新 commit、ledger 已有 effective-open finding、viewer 已在同一 head 提交过含同一问题的 CHANGES_REQUESTED,扫描仍分类为 review,两席各跑一次完整阶段二(合计约 21 万子代理 token),结论只能是同一 P1;#352 的 consume 因同快照禁止 resolved/不许失实 invalidated 判 invalid,attempts 已到 2/3(再一次即 blocked)。同快照重审信息增量为零。
   - 提案:context.mjs 分类时若 headRefOid 与上一轮回执的 head 相同、effective-open>0 且最近动作是 pushback,则 skip(reason: same-head-findings-open-awaiting-author)而非进阶段二;作者 push 新 head 后自然恢复重审。涉分类语义,留维护者拍板

@@ -4303,6 +4303,19 @@
       "occurrences": 1,
       "firstSeen": "2026-08-31T20:59:11.227Z",
       "lastSeen": "2026-08-31T20:59:11.227Z"
+    },
+    {
+      "fingerprint": "review-agent-context-window-thrash",
+      "tier": "proposal",
+      "title": "审查席子代理用小上下文窗口模型会被 50KB 级 payload + 源码追踪打爆 autocompact,应在 spawn 时显式选大窗口模型",
+      "detail": "2026-09-01 mivo-canvas-plugin 巡审:2 个 sonnet 映射审查席(352/386 预派)与 1 个 397 前席均死于 autocompact thrashing(context 3 轮内回满 x3),未交 rro-1.json。改用 1M 窗口模型后同任务 83-84 次工具调用顺利完成。prompt.md 仅 9-10KB,payload ≤50KB,单段内容本身不超标——瓶颈是子代理模型映射的窗口总量。",
+      "proposal": "SKILL.md §4 大 payload 审查纪律补一行:spawn 审查席时显式选择上下文窗口足以容纳『全局规则+50KB 段 payload+被审源码追踪』的模型(建议 ≥1M);小窗口模型在此负载下稳定震荡挂死,白白烧 token 并把 PR 拖成 skip。另:交付脚本已支持 replayed 重放已投递段,可写进 §4 供审查席接续前席中断的分段审查。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-01T00:29:30.128Z",
+      "lastSeen": "2026-09-01T00:29:30.128Z"
     }
   ],
   "escapedHazards": [
