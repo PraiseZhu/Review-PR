@@ -1621,14 +1621,14 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
   head 发 `/approve-merge <head SHA>` 才成立;配置未开时保持现状放行;
 - 存在**非巡审账号**的 current-head approve（independent）→ 任何配置下都成立。
 
-**授权快速合并通道**（契约：正常自动合并必经阶段二自动化审查，目标仓库可配
+**授权快速合并通道**（契约：正常交互合并必经阶段二自动化审查，本 skill 的 auto 永不合；目标仓库可配
 `mergeAuthorization.requireAutomatedReviewForAutoMerge: true` 把该前提从意图变成
 强制门（键缺失 = false 兼容；键存在但值非 boolean——null/string/number/object 等
 显式 malformed——fail-closed 按 true 处理并显著告警，绝不静默放宽；
 `mergeAuthorization` 容器整体也必须是 object——string/number/boolean/array 等非
 plain object = 容器级 malformed，不抛错、整体 fail-closed（require 按 true、
 `breakGlassApprovers` 按 [] 且不回退 admins）并显著告警点名容器必须 object）；人工
-`/approve-merge` break-glass 是**唯一**免阶段二独立审查的例外。P2-4：与上面的
+`/approve-merge` break-glass 是**唯一**免阶段二独立审查的例外（仅交互/人手可执行，auto 只落回执、不合）。P2-4：与上面的
 「admins 名单的结构性 BLOCKED 分级合并」是两条完全不同、互不替代的路由，触发条件
 不同、后果也不同，不要概括成一句——上面那条看的是 PR **作者**是否在 `admins` 名单
 （admin-trust），触发后仍要走完阶段二独立审查、落回执才能合；本条看的是有没有

@@ -32,17 +32,17 @@
 - `mergeAuthorization.breakGlassApprovers`：`/approve-merge` 授权快速合并通道的放行
   人名单（GitHub login；字段缺省/未配置 = 兼容期回退到 `admins` 名单作为发令名单并
   输出 warning；显式留空 [] = fail-closed，无人可下达 `/approve-merge`；与 `admins`
-  各自独立、不互相推导）。它是**唯一**免阶段二独立审查的例外——正常自动合并必经
-  阶段二自动化审查（目标仓库可配 `mergeAuthorization.requireAutomatedReviewForAutoMerge`
+  各自独立、不互相推导）。它是**唯一**免阶段二独立审查的例外——正常交互合并必经
+  阶段二自动化审查（本 skill 的 auto 永不合；目标仓库可配 `mergeAuthorization.requireAutomatedReviewForAutoMerge`
   强制该前提），只有名单成员在 PR 评论发出精确独占一行的
-  `/approve-merge <当前 head 完整 40 位 SHA>` 才能跳过，见下方「授权快速合并通道」；
+  `/approve-merge <当前 head 完整 40 位 SHA>` 才能跳过，且仅交互/人手可执行，见下方「授权快速合并通道」；
 - `mergeAuthorization.requireAutomatedReviewForAutoMerge`：中性默认 `false` = 行为
   不变（键缺失 = false 兼容；键存在但值非 boolean——null/string/number/object 等
   显式 malformed——fail-closed 按 true 处理并显著告警，绝不静默放宽）；置 `true` 时
-  正常自动合并（approved shortcut / admin-trust 等免人工路径）必须以阶段二自动化
+  正常交互合并（approved shortcut / admin-trust 等免人工 approve 路径）必须以阶段二自动化
   审查实际跑完且 clean 为前提，`reviewDecision=APPROVED` 不再单独构成无条件放行；
-  唯一不受本键约束的是 `mergeAuthorization.breakGlassApprovers` 经 `/approve-merge`
-  下达的 authorized-fast-merge；
+  本 skill 的 auto 永不合，不受本键放行。唯一不受本键约束的是 `mergeAuthorization.breakGlassApprovers` 经 `/approve-merge`
+  下达的 authorized-fast-merge（仍仅交互/人手可执行）；
 - `slackSyncBots`、`slackSenderAliases`、`feishuNotify`：
   讨论 issue 和飞书通知归属、收件人与去重配置；
 - `staleAuthorReminder`：作者侧停滞提醒阈值（`exemptAuthors` 命中直接跳过催办并清
@@ -240,7 +240,7 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   1. approved shortcut 成立（2026-08-04 SC-B：`reviewDecision=APPROVED` 聚合裁决 ∧
      approve 绑定当前 head ∧ own-account 配置约束通过，由 `evaluateApprovalBasis` +
      `resolveApprovedShortcut` 机器判定，任何作者都适用，不看 `admins`）
-     → 经唯一出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis approved --admin`；
+     → **仅交互/人手**经唯一出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis approved --admin --mode interactive`（auto 只落回执、不合）；
   2. 缺 `APPROVED` 但作者在 `admins` 名单（典型是 ownPr——GitHub 422 禁止对自己的 PR
      提交 APPROVE，`reviewDecision` 永远拿不到）→ **不直接合并**，`auto.action=review`
      进入本轮独立审查；审查输出必须交给
@@ -249,7 +249,7 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
      `headRefOid`/`snapshotHash`/`ledgerHash` 与当前重建值一致、`verdict=clean`、且台账
      `effective-open=0 ∧ accepted-risk=0`（`isReviewReceiptClean` + receiptGate）后才
      返回 `structuralBypassReady=true, structuralBypassBasis='admin-trust'`，再经唯一
-     出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis admin-trust --admin`。「审查是否跑过 / 结论
+     出口 `merge-pr.mjs <PR> --strategy <s> --match-head <headRefOid> --basis admin-trust --admin --mode interactive`（仅交互/人手可执行，auto 只落回执、不合）。「审查是否跑过 / 结论
      是否干净」是语义判断，脚本本身判断不了代码好不好——回执就是这半判断留下的、
      可核验的凭证；无回执 / 回执针对旧 head（审查通过后又推了新 commit）/
      `verdict≠clean` 时 `structuralBypassReady` 恒为 `false`，必须回到独立审查
@@ -319,7 +319,7 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   有没有 `mergeAuthorization.breakGlassApprovers` 名单的**评论者**在这条 PR 下发出
   授权命令，触发后
   **跳过**阶段二独立审查，是审查流程本身的例外通道，不是"换一种方式证明审查过"——
-  正常自动合并必经阶段二自动化审查（目标仓库可配
+  正常交互合并必经阶段二自动化审查（本 skill 的 auto 永不合；目标仓库可配
   `mergeAuthorization.requireAutomatedReviewForAutoMerge` 强制该前提，键缺失 =
   false 兼容；键存在但值非 boolean = fail-closed 按 true 处理并显著告警），人工
   `/approve-merge` break-glass 是**唯一**免阶段二独立审查的
