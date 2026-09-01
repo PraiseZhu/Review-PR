@@ -215,18 +215,18 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
 - `selfFixAuthors` 的 PR 如果卡在格式、审查问题、冲突、CI、未 resolve thread 或停滞，
   不提交无效的 `REQUEST_CHANGES`，也不催本人；按 SKILL 5.4「自动跟进修复
   （fix-handoff）」把卡点投递给独立跟进会话，绑定与去重由 `fix-session-state.mjs`
-  管理，循环跟进直到 PR 被合并。CI pending 仅等待，不投递。PR 合并／关闭后遗留的
+  管理，循环跟进直到审查干净（auto 只落回执、不合，等交互/人手合）。CI pending 仅等待，不投递。PR 合并／关闭后遗留的
   跟进 worktree 与本地分支由 `fix-worktree-cleanup.mjs` 回收（每轮 sweep 后
   `--scan`），不回收会随 PR 数量线性膨胀；安全判定全在脚本内。
 - `selfFixAuthors` 自己的 PR 审查通过时：GitHub 不允许同账号 approve 自己的 PR，
   `pre-merge-check.mjs` 返回 `selfMergeAvailable=true` 后经唯一合并出口执行
   `node "<SKILL_ROOT>/scripts/merge-pr.mjs" <PR> --strategy <s> --match-head <headRefOid>
-  --basis self-merge --admin --delete-branch`（SC-C：所有合并一律经该出口，不得直接
+  --basis self-merge --admin --delete-branch --mode interactive`（SC-C：所有合并一律经该出口，不得直接
   `gh pr merge`，见 SKILL 5.8；`headRefOid` 取 `pre-merge-check.mjs` 本次判定输出的那份，做判定与执行之间的
   原子护栏——判定之后若又有人推了新 commit，`--match-head-commit` 会让 `gh` 直接
   拒绝合并,不会把新代码在没重新判定的情况下合进去）。条件：viewer = author、
   author 在 `selfFixAuthors`、无冲突、thread 全 resolve、独立审查零 P0/P1。
-  auto 模式可执行。
+  **仅交互模式可执行**；auto 只审不合（`merge-pr.mjs --mode auto` 出口拒绝）。
 - fork PR 有 workflow 等待批准时，不把它打回作者。只有 PR 未修改
   `.github/workflows/`、`.github/actions/` 等 CI 文件才可 auto approve；
   改过 CI 文件则跳过并点名维护者手动处理。
@@ -310,8 +310,8 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
 - 审查 agent 发现实质重构了他人历史功能且没有与原作者对齐证据时走 3B，要求补充
   原作者沟通、必要性、阶段、测试范围和测试结果；自我重构与单一主目的的必要连带改动
   不误伤。
-- **授权快速合并通道**（`context.mjs` 的 `authorizedFastMerge` / `auto.action=
-  authorized-fast-merge`，判定逻辑单一来源在 `scripts/lib.mjs` 的
+- **授权快速合并通道**（`context.mjs` 的 `authorizedFastMerge` / auto 标
+  `review-complete-hold-merge` 且不合，判定逻辑单一来源在 `scripts/lib.mjs` 的
   `findApproveMergeAuthorization`（授权本身是否有效）与
   `evaluateAuthorizedFastMerge`（机械前提是否满足））。**P2-4：与上面第②条
   `admin-trust`（`review-pending-admin-bypass`）是两条完全不同、互不替代的路由，
@@ -329,8 +329,8 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
   `/approve-merge <当前 headRefOid 完整 40 位 SHA>` 命令（SC-A 2026-08-04：授权按
   head SHA 绑定，SHA 精确等于当前 head 才有效，push/force-push 换 head 即天然作废、
   需对新 head 重发），构成「人工已过安全与
-  代码审查」的明确授权，可跳过**阶段二独立审查**与 `securityReviewPaths` 门直接进
-  合并（合并本身仍经唯一出口 `merge-pr.mjs --basis authorized-fast-merge --admin`，
+  代码审查」的明确授权，**仅交互/人手**可跳过**阶段二独立审查**与 `securityReviewPaths` 门进
+  合并（auto 标 `review-complete-hold-merge`、不合；合并本身仍经唯一出口 `merge-pr.mjs --basis authorized-fast-merge --admin --mode interactive`，
   见 SKILL 5.8）。这是
   **紧急通道**——2026-08-01 owner 拍板：「特别要紧的 PR 要立即合，只要 CI 绿 +
   明确授权」，管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」，因此阻断面

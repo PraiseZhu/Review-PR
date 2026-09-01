@@ -2358,7 +2358,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
    P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进
-   会话，循环跟进直到合并（本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
+   会话，循环跟进直到审查干净（auto 只落回执、不合，等交互/人手合；本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
    候选在冲突项落地后补入处理。任何单 PR 异常都写入汇总并继续其他候选。锁续期由
    `prepare.mjs` 拉起的后台守护负责，不要在候选之间、等待子 agent 时、或
    同一分钟内反复跑 `refresh-lock.mjs`。`lost=true`（守护或补救调用返回）时
