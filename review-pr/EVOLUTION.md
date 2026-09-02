@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-isolation-tree-misses-rro` **隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
+  - 现象:PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。
+  - 提案:spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。
 - `isolation-worktree-hides-prepared-review-artifacts` **isolation worktree 从默认分支开空树，审查席看不到主会话已备好的 prompt/segment/hunks** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
   - 现象:auto 审 PR 417 时主会话把 prompt.md/segment/hunks 写进 .worktrees/review-pr/pr-417，审查席 isolation=worktree 却落在 ops 仓 main 空树；席找不到材料、未交 rro-1.json，本轮只能 skip。426 因指令写死绝对路径才交卷。
   - 提案:spawn 审查席时把工作目录钉到已备好的 review worktree，或把产物复制进 isolation cwd；禁止只靠相对路径 prompt.md。

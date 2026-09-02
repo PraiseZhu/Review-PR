@@ -4329,6 +4329,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-02T09:59:54.923Z",
       "lastSeen": "2026-09-02T09:59:54.923Z"
+    },
+    {
+      "fingerprint": "review-agent-isolation-tree-misses-rro",
+      "tier": "proposal",
+      "title": "隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json",
+      "detail": "PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。",
+      "proposal": "spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-02T10:28:43.892Z",
+      "lastSeen": "2026-09-02T10:28:43.892Z"
     }
   ],
   "escapedHazards": [
