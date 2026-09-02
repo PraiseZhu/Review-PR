@@ -469,6 +469,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `duplicate-format-comment-ownpr` **ownPr 格式打回确认失败后重复提交 COMMENT** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
+  - 现象:PR 431 格式 COMMENT 因第一次命令未回显成功又提交一次,GitHub 上出现两条相同正文。
 - `greptile-unresolved-threads-by-design` **Greptile 未 resolve thread 挡合并,threadTriage 未启用** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
   - 现象:PR 431 1 条、PR 434 3 条 Greptile conversation 未 resolve。threadTriage 未配置,auto 只催作者点 Resolve。
 - `stale-pushback-awaiting-author` **格式打回后作者未提交新 commit，跳过等作者侧响应** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked

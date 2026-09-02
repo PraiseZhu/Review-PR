@@ -4355,6 +4355,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-02T10:28:48.263Z",
       "lastSeen": "2026-09-02T10:28:48.263Z"
+    },
+    {
+      "fingerprint": "duplicate-format-comment-ownpr",
+      "tier": "by-design",
+      "title": "ownPr 格式打回确认失败后重复提交 COMMENT",
+      "detail": "PR 431 格式 COMMENT 因第一次命令未回显成功又提交一次,GitHub 上出现两条相同正文。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-02T10:28:52.696Z",
+      "lastSeen": "2026-09-02T10:28:52.696Z"
     }
   ],
   "escapedHazards": [
