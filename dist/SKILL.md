@@ -36,11 +36,13 @@ description: >
 ## 0. 模式与安全边界
 
 - `$ARGUMENTS` 中含 `--auto` 时进入无人值守模式；不解析手工 PR 号，批量处理所有
-  可审查的 open、非 draft PR。
+  可审查的 open、非 draft PR。**auto 只审不合**（2026-09-01）：打回、写回执、hold、
+  通知、汇总可以做；**禁止**调用 `merge-pr.mjs`、禁止 `gh pr merge`、禁止 5.5 主干
+  `git merge`+push 默认分支。`merge-pr.mjs --mode auto` 会在出口拒绝。
 - 其他情况进入交互模式：提取 `#123`、`123` 或文本中的 PR 号；未指定时选择最早
   创建的 open、非 draft PR。
 - 交互模式在提交 review、发表评论、合并、推送默认分支、关闭或删除远程分支前必须用
-  `AskUserQuestion` 确认。`--auto` 只允许执行本文件明确列出的安全动作。
+  `AskUserQuestion` 确认。`--auto` 只允许执行本文件明确列出的安全动作（不含合并）。
 - 不使用 `git reset --hard`、`git checkout --`、强制删除用户分支或自动 stash。
   不把 token、凭证、组织名册或本地绝对路径写入输出。对 PR 提交内容本身的凭证与
   隐私数据零容忍，见 3.1 安全与隐私内容门；打回与汇总只写文件/行号/类型，不复述
@@ -819,7 +821,7 @@ node --test tests/*.test.mjs
 
 1. PR 仍是 open、非 draft，且 base/head 没有在读取后变化；
 2. 没有冲突（`mergeStateStatus` 不为 `DIRTY`；若状态过期，重新拉元数据）；冲突且
-   满足 5.5 条件时可走主干侧冲突代合并；交互模式下若同时还有审查 P0/P1，可由用户
+   满足 5.5 条件时**仅交互模式**可走主干侧冲突代合并（auto 不合、写入汇总）；交互模式下若同时还有审查 P0/P1，可由用户
    选择 5.6 代修合并一并处理；其余情况等作者处理；
 3. 所有 review conversation 都已 resolve；bot 也不能因“是 bot”而自动忽略；
 4. head commit 上**所有已上报检查**（含非 required 的 check-run / commit status，如
@@ -950,8 +952,9 @@ issue + 发状态评论，等 admins 名单成员（`admins`）显式 Approve �
 T1（防疏忽/漂移）——把「命中安全面改动却无人确认」这个大概率疏忽变成显式等待；
 不冒充 T2（防恶意伪造），恶意者总能改掉配置本身，那不属于本门能力面。
 
-**唯一例外**：`auto.action=authorized-fast-merge`（见 5.1「授权快速合并通道」）
-可以压过本门——`mergeAuthorization.breakGlassApprovers` 名单成员发出的
+**唯一例外**：有 `/approve-merge` 授权时 `auto.action=review-complete-hold-merge`
+（见 5.1「授权快速合并通道」）——auto **仍不合**，只把「人工已过的凭证」写入汇总，
+等交互/人手合。`mergeAuthorization.breakGlassApprovers` 名单成员发出的
 `/approve-merge <当前 head 完整 40 位 SHA>`（head 绑定，见 5.1）本身就是「人工已过的凭证」，
 不需要 review-pr 再转一次人工。泄密硬门（`security.hardHits`）仍优先级最高，本门
 与授权通道谁都压不过它。
@@ -1095,6 +1098,7 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 - spawn 前把完整审查指令写入隔离 worktree 内文件（如 `./review-task-prompt.md`），Agent 首条 prompt **只留路径引用**，不要把 100KB+ 指令内联进对话；
 - 分段按 `reviewSegments.sizeBudget`（key 数）**与** `sizeBudgetBytes`（默认 50KB，按 hunk patch 字节）同时切，单段不得再出现 141KB 这种「key 未超、字节爆了」；
 - 审查席任何可能长输出的命令一律 `| tail -n 40`，或重定向到 worktree 日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出；
+- 审查席对结构性大文件只做字段级抽取（如 `node -e` 读 task.json 的 snapshotHash / segments 数 / 承诺计数，`grep -n` 定位 prompt.md 的候选与必答清单段），禁止整读 task.json / prompt.md / 全量 diff——2026-08-31 mivo-canvas-plugin #386 审查席整读大文件触发 autocompact 连续震荡 3 次挂死，未交 rro-1.json，本轮 skip 收场；
 - 审查会话超时未交 `./rro-1.json`：主会话写 non-clean 回执 `--verdict skip --reason review-agent-timeout --p0p1-count 0`，本轮 skip。**禁止沿用上次清白**。若改由答卷组装席接手，必须**重建** `task.json` / preflight / 分段投递台账，且 `snapshotHash` 与 consume 现场重算一致（`--base` 必须是 PR `baseRefOid`，传 merge-base/tip 会得到不同 hash）。
 
 **spawn 前必须把 `SKILL_ROOT` 绝对路径显式注入审查 agent 的任务上下文**（见下方
@@ -1297,7 +1301,7 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
 node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --shape-preflight --output ./rro-1.json \
   --snapshot-hash <任务里的 snapshotHash>
 node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output ./rro-1.json \
-  --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
+  --mode interactive --base <baseRefOid> --head <headRefOid> \
   --task ./task.json --preflight ./preflight.json --verify-live-head
 ```
 
@@ -1520,8 +1524,8 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 - required checks 通过，分支可合并；
 - review 权限和合并策略明确。
 
-交互模式按顺序确认”提交 approve / 合并 / 评论”。auto 模式只在上述条件全部可证时
-执行；不使用强制合并、绕过 required checks 或自动批准修改过的 CI。结构性
+交互模式按顺序确认”提交 approve / 合并 / 评论”。auto 模式只审不合：条件全部可证时
+只落 clean 回执并写入汇总，**不**调用 `merge-pr.mjs` / `gh pr merge`；不使用强制合并、绕过 required checks 或自动批准修改过的 CI。结构性
 `BLOCKED` 按三层分级（approved shortcut 成立（`reviewDecision=APPROVED` 聚合裁决
 ∧ approve 绑定当前 head ∧ own-account 配置约束通过，见下方 'approved' 成立条件）/
 作者在 `admins` 名单且本轮审查通过并已落回执 / 均不满足）判断能否 `--admin`，判定逻辑单一来源在
@@ -1536,7 +1540,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 ```bash
 gh pr review <N> --approve --body “<简短、基于事实的结论>”
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
-  --match-head <headRefOid> --basis approved --delete-branch --mode <auto|interactive>
+  --match-head <headRefOid> --basis approved --delete-branch --mode interactive
 ```
 
 **selfFixAuthors 自有 PR 的 self-merge**：当 `pre-merge-check` 返回
@@ -1549,11 +1553,11 @@ PR 拿不到 `selfMergeAvailable=true`，必须先 mark ready 才可能被判定
 
 ```bash
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
-  --match-head <headRefOid> --basis self-merge --admin --delete-branch --mode <auto|interactive>
+  --match-head <headRefOid> --basis self-merge --admin --delete-branch --mode interactive
 ```
 
 此路径仅在审查通过（零 P0/P1）、无冲突、thread 全 resolve 时启用。auto 模式
-可执行 self-merge；不需要额外确认（selfFixAuthors 本身即维护者授权）。合并后同样
+**不**执行 self-merge（只审不合）；交互模式不需要额外确认（selfFixAuthors 本身即维护者授权）。合并后同样
 跑一次上方的 `notify-merge-ack.mjs` 播报步骤。
 
 **admins 名单的结构性 BLOCKED 分级合并**：与上面的 selfFixAuthors self-merge 是
@@ -1574,7 +1578,7 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
 
    ```bash
    node "<SKILL_ROOT>/scripts/consume-review-output.mjs" <N> --output <rro-1.json> \
-     --mode <auto|interactive> --base <baseRefOid> --head <headRefOid> \
+     --mode interactive --base <baseRefOid> --head <headRefOid> \
      --task <task.json> --preflight <preflight.json>
    ```
 
@@ -1588,7 +1592,7 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
 
    ```bash
    node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
-     --match-head <headRefOid> --basis admin-trust --admin --delete-branch --mode <auto|interactive>
+     --match-head <headRefOid> --basis admin-trust --admin --delete-branch --mode interactive
    ```
 
    脚本已经核验过回执的 `headRefOid` 与当前 head 一致且 `verdict=clean`（此前
@@ -1598,8 +1602,8 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
    审查、重新落回执，不能凭记忆认为"审过了就该行"；
 4. 审查不通过（有 P0/P1）→ 按 5.2 正常打回，`admins` 身份不豁免代码质量要求。
 
-`structuralBypassBasis='approved'` 时不受此限，可直接合、不必等这轮审查、也不需要
-回执——但 **'approved' 的成立条件自 2026-08-04（#469 复盘）起是条件式,不再等于
+`structuralBypassBasis='approved'` 时不受此限，**仅交互模式**可直接合、不必等这轮审查、也不需要
+回执（auto 只审不合，见 §0 / 6.1）；但 **'approved' 的成立条件自 2026-08-04（#469 复盘）起是条件式,不再等于
 `reviewDecision=APPROVED`**,由 `evaluateApprovalBasis` + `resolveApprovedShortcut`
 （lib.mjs,context.mjs 与 pre-merge-check.mjs 共用,禁止各写判据）机器判定:
 - `reviewDecision === 'APPROVED'`（GitHub 聚合裁决）是**必要但不充分**的合取条件
@@ -1617,14 +1621,14 @@ PR 给 `auto.action=review`（**不是**直接跳到合并，也**不是**
   head 发 `/approve-merge <head SHA>` 才成立;配置未开时保持现状放行;
 - 存在**非巡审账号**的 current-head approve（independent）→ 任何配置下都成立。
 
-**授权快速合并通道**（契约：正常自动合并必经阶段二自动化审查，目标仓库可配
+**授权快速合并通道**（契约：正常交互合并必经阶段二自动化审查，本 skill 的 auto 永不合；目标仓库可配
 `mergeAuthorization.requireAutomatedReviewForAutoMerge: true` 把该前提从意图变成
 强制门（键缺失 = false 兼容；键存在但值非 boolean——null/string/number/object 等
 显式 malformed——fail-closed 按 true 处理并显著告警，绝不静默放宽；
 `mergeAuthorization` 容器整体也必须是 object——string/number/boolean/array 等非
 plain object = 容器级 malformed，不抛错、整体 fail-closed（require 按 true、
 `breakGlassApprovers` 按 [] 且不回退 admins）并显著告警点名容器必须 object）；人工
-`/approve-merge` break-glass 是**唯一**免阶段二独立审查的例外。P2-4：与上面的
+`/approve-merge` break-glass 是**唯一**免阶段二独立审查的例外（仅交互/人手可执行，auto 只落回执、不合）。P2-4：与上面的
 「admins 名单的结构性 BLOCKED 分级合并」是两条完全不同、互不替代的路由，触发条件
 不同、后果也不同，不要概括成一句——上面那条看的是 PR **作者**是否在 `admins` 名单
 （admin-trust），触发后仍要走完阶段二独立审查、落回执才能合；本条看的是有没有
@@ -1642,12 +1646,12 @@ head 重发。旧的「须晚于最后一次真实 push」时效判定已废除�
 `legacyBare` 供提醒重发；评论若被编辑过——`updatedAt!==createdAt`——一律拒绝，
 要求重发新评论，不接受编辑旧评论），构成「人工已过安全与代码审查」的明确授权。这是**紧急通道**——owner 2026-08-01 拍板：
 管理员显式授权即自担责任，机器的职责从「拦」变成「留痕」。`context.mjs` 给
-`auto.action=authorized-fast-merge` 时，**跳过阶段二独立审查**，直接复核机械
-前提后合并：
+`auto.action=review-complete-hold-merge`（有 `/approve-merge` 授权）时，auto **仍不合**，
+只写入汇总等交互/人手按下面命令合；交互模式才跳过阶段二、复核机械前提后合并：
 
 ```bash
 node "<SKILL_ROOT>/scripts/merge-pr.mjs" <N> --strategy <squash|merge|rebase> \
-  --match-head <headRefOid> --basis authorized-fast-merge --admin --delete-branch --mode <auto|interactive>
+  --match-head <headRefOid> --basis authorized-fast-merge --admin --delete-branch --mode interactive
 ```
 
 若候选是 t2 loop 托管 PR（见 3.7「Loop 托管 PR 排除」），**本通道不适用**——
@@ -1763,8 +1767,8 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   head，见 3.4），放行前不自动审、不自动合、放行
   后按 `auto.fallback` 继续（详见「审查执行环境安全」「审查规则文档门」）；未配置
   对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
-  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时例外（`authorized-fast-merge`，
-  见 5.1「授权快速合并通道」）。
+  `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
+  交互/人手才按 5.1「授权快速合并通道」合。
 - 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
@@ -1849,9 +1853,10 @@ PR：<url>（分支 <headRefName>，base <baseRefName>）
 才投递，不同意只报告。
 
 **Auto 模式闭环**：按上面机制自动改道投递，无需确认。跟进会话修完 push → PR head
-变化 → 下轮扫描指纹变化重新分类（审查通过即按 5.1 合并；又有新问题则投递新
-卡点给同一会话）→ **循环直到合并**。不设"最多重试 N 次"硬闸——每轮投递的前提是
-指纹变化，天然限速；维护者每轮都能从汇总看到进展，觉得空转随时人工介入。
+变化 → 下轮扫描指纹变化重新分类（审查通过只落 clean 回执并写入汇总，**不合**，等交互/人手按 5.1 合；又有新问题则投递新
+卡点给同一会话）→ **循环直到审查干净并等人工合**。不设"最多重试 N 次"硬闸——每轮投递的前提是
+指纹变化，天然限速；维护者每轮都能从汇总看到进展，觉得空转随时人工介入。auto 禁止
+`merge-pr.mjs` / `gh pr merge` / 5.5 主干 push。
 合并／关闭后清理绑定：每轮阶段一扫描后运行
 `node "<SKILL_ROOT>/scripts/fix-session-state.mjs" sweep --open <open PR 列表>`。
 
@@ -1916,7 +1921,7 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
 满足门槛后，冲突性质只决定由谁执行：
 
 - **机械冲突**（lockfile 重新生成、相邻行互不相关的改动、与 3.6 依赖链中已合入
-  代码的重复上下文等）：交互模式确认后执行；auto 模式可直接执行；
+  代码的重复上下文等）：交互模式确认后执行；auto 模式**不**执行（只审不合，写入汇总等交互/人手合）；
 - **语义冲突**（需要在两种业务逻辑之间做取舍）：交互模式先展示冲突文件和解决
   方案，经确认后执行；auto 模式不擅自取舍——`selfFixAuthors` 的 PR 投递 5.4
   跟进会话，其余写入汇总点名维护者；
@@ -2342,19 +2347,18 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （signoff-release.mjs 尚未合入，零测试，已从本批移出、另立 PR 并带测试；幂等，
    标签已摘即无操作；存量被旧 draft 制 hold 成 draft 的 PR 用 `gh pr ready`
    一次性迁移恢复）；`auto.action=
-   authorized-fast-merge` 的候选跳过阶段二独立审查，直接按 5.1「授权快速合并通道」
-   复核机械前提后合并；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
-   审查，通过后按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
-   通过则按 5.2 正常打回；其余通过审查的 PR 先复核状态再合并，失败的 PR 请求修改，
+   review-complete-hold-merge` 的候选（含有 `/approve-merge` 授权）**不合**，写入汇总等交互/人手按 5.1 合；`auto.structuralBypassPending=true` 的候选照常进阶段二独立
+   审查，通过后只落回执、不合，等交互/人手按 5.1「admins 名单的结构性 BLOCKED 分级合并」走 admin bypass，不
+   通过则按 5.2 正常打回；其余通过审查的 PR 只落 clean 回执并汇总，**禁止** `merge-pr.mjs` / `gh pr merge` / 5.5 主干 push，失败的 PR 请求修改，
    CI pending、未 resolve thread、权限问题只跳过不绕过——未 resolve thread 的
    阻断判定用 **thread 清理（3.10）回流后**的计数：扫描阶段已代 resolve 的不再阻断，
-   清理后仍 unresolved 的照旧阻断（合并判定前重新拉 `mergeStateStatus`，不凭清理前
+   清理后仍 unresolved 的照旧阻断（不合入，只决定本轮是否打回/跳过，不凭清理前
    的旧计数）；冲突的 PR 若满足 5.5 门槛
-   （其余全过、仅剩冲突）按 5.5 处理，否则跳过；
+   （其余全过、仅剩冲突）**auto 不按 5.5 合**，写入汇总等交互处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
    P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进
-   会话，循环跟进直到合并（本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
+   会话，循环跟进直到审查干净（auto 只落回执、不合，等交互/人手合；本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
    候选在冲突项落地后补入处理。任何单 PR 异常都写入汇总并继续其他候选。锁续期由
    `prepare.mjs` 拉起的后台守护负责，不要在候选之间、等待子 agent 时、或
    同一分钟内反复跑 `refresh-lock.mjs`。`lost=true`（守护或补救调用返回）时

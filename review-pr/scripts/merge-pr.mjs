@@ -26,6 +26,7 @@
 //     --basis approved|admin-trust|authorized-fast-merge|self-merge \
 //     [--admin] [--delete-branch] [--mode auto|interactive] [--dry-run]
 //   (admin-trust / authorized-fast-merge / self-merge 三条 admin 路径必须显式带 --admin)
+//   --mode auto 一律拒绝执行(2026-09-01:巡审只审不合;交互模式 / 缺省 mode 才能合)
 //   node merge-pr.mjs --reconcile          # 只读核对孤儿 intent,补 result
 //
 // 退出码:0=成功(或 dry-run / reconcile 完成);2=拒绝执行(参数缺失/审计不可用/merge 失败);1=脚本自身错误。
@@ -113,6 +114,13 @@ try {
   if (!/^[0-9a-f]{40}$/.test(matchHead)) refuse('缺 --match-head <完整 40 位 head SHA>(判定与执行之间的原子护栏,必填)');
   if (!BASES.has(basis ?? '')) refuse(`缺 --basis(${[...BASES].join('|')})——审计必须记录凭什么合`);
   if (ADMIN_BASES.has(basis) && !argvHas('--admin')) refuse(`--basis ${basis} 是 admin bypass 路径,必须显式带 --admin(审计 basis 与真实命令必须一致)`);
+  // 2026-09-01:auto 巡审只审不合。--mode auto 在唯一出口 fail-closed,四条 basis
+  // 一律拒绝——编排 agent 漏读 SKILL 也合不出去。交互模式(--mode interactive 或缺省)
+  // 不受影响。--dry-run 仍可演练(上面 dry-run 已提前返回)。
+  const mergeMode = argOf('--mode') ?? 'unknown';
+  if (mergeMode === 'auto') {
+    refuse('auto 模式禁止合并(2026-09-01:巡审只审不合)——merge-pr.mjs --mode auto 一律拒绝;交互模式才能合');
+  }
 
   const args = ['pr', 'merge', String(pr), '--repo', slug, `--${strategy}`, '--match-head-commit', matchHead];
   if (argvHas('--admin')) args.push('--admin');
@@ -206,7 +214,7 @@ try {
   try {
     appendRecord({
       phase: 'intent', opId, pr, slug, ts: new Date().toISOString(), strategy, matchHead, basis, viewer,
-      mode: argOf('--mode') ?? 'unknown', argv: args,
+      mode: mergeMode, argv: args,
       basisVerified: true,
       ...(breakGlass ? { breakGlass } : {}),
     });

@@ -5,6 +5,30 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-context-window-thrash` **审查席子代理用小上下文窗口模型会被 50KB 级 payload + 源码追踪打爆 autocompact,应在 spawn 时显式选大窗口模型** — 出现 1 次,首见 2026-09-01,最近 2026-09-01,status: open
+  - 现象:2026-09-01 mivo-canvas-plugin 巡审:2 个 sonnet 映射审查席(352/386 预派)与 1 个 397 前席均死于 autocompact thrashing(context 3 轮内回满 x3),未交 rro-1.json。改用 1M 窗口模型后同任务 83-84 次工具调用顺利完成。prompt.md 仅 9-10KB,payload ≤50KB,单段内容本身不超标——瓶颈是子代理模型映射的窗口总量。
+  - 提案:SKILL.md §4 大 payload 审查纪律补一行:spawn 审查席时显式选择上下文窗口足以容纳『全局规则+50KB 段 payload+被审源码追踪』的模型(建议 ≥1M);小窗口模型在此负载下稳定震荡挂死,白白烧 token 并把 PR 拖成 skip。另:交付脚本已支持 replayed 重放已投递段,可写进 §4 供审查席接续前席中断的分段审查。
+- `same-head-rereview-when-open-findings-persist` **同 head 且已有 open findings+既有打回时,扫描仍给 action=review 触发全量重审,只能复述同一结论并撞同快照 disposition 死角** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:2026-08-31 mivo-canvas-plugin 轮:#352 与 #386 作者无新 commit、ledger 已有 effective-open finding、viewer 已在同一 head 提交过含同一问题的 CHANGES_REQUESTED,扫描仍分类为 review,两席各跑一次完整阶段二(合计约 21 万子代理 token),结论只能是同一 P1;#352 的 consume 因同快照禁止 resolved/不许失实 invalidated 判 invalid,attempts 已到 2/3(再一次即 blocked)。同快照重审信息增量为零。
+  - 提案:context.mjs 分类时若 headRefOid 与上一轮回执的 head 相同、effective-open>0 且最近动作是 pushback,则 skip(reason: same-head-findings-open-awaiting-author)而非进阶段二;作者 push 新 head 后自然恢复重审。涉分类语义,留维护者拍板
+- `scan-routing-ignores-per-head-receipts` **scan 路由不查回执：同 head 已有 dirty 回执的 PR 每轮重审，白烧审查席** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR #386 实测（2026-09-01 轮）：head 2cd6e5ae 在 2026-08-31T16:10 已有 verdict=dirty 回执且 CHANGES_REQUESTED 已发出，作者未推新 commit；本轮 scan 仍给 action=review，重派审查席（后因上下文震荡挂死）。已有 dirty 回执期间重审不产生新信息，ball 在作者侧。
+  - 提案:context.mjs 扫描路由增加回执查询：当前 headRefOid 已存在回执时——verdict=dirty → action 改 skip（reason=reviewed-dirty-awaiting-author）；verdict=clean 且 head 未变 → 才允许进合并路径。回执绑定 headRefOid，作者 push 后自动失效，无 stale 风险。
+- `unchanged-head-open-finding-settle-deadlock` **同 head 未修的 open finding：重报与 disposition 互斥，机器判 invalid，3 轮后 blocked** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR #352 实测：head 未变、历史 open finding 经复核确认仍在。重报 family → ③ 禁止同轮 disposition（先修再核销）；不重报 + resolved → 同 snapshot 禁自证；不处置 → missingDispositions=invalid。三条路都通向 invalid，attempt 3 后 blocked，唯一出路是作者修代码换 head。结果正确（dirty 挡合并）但审查轮次白烧 token 且终态 blocked 需人工。
+  - 提案:给 rro-1 契约增加第三种 disposition（如 confirmed-open：仅当 head 未变且 finding 复核仍真实存在时可用，机器保持 effective-open 但 verdict 记 dirty 而非 invalid），或在 consumer 对「同 head 重报同 invariant」的情况豁免 missingDispositions 检查（重报本身就是处置）。
+- `scan-noop-rereview-unchanged-head` **context.mjs 对 head 未变且上轮回执 dirty 的候选仍给 action=review，导致每轮空转全量重审** — 出现 2 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:本轮复现(第 2 次):#352/#386 head 均与上轮 dirty 回执一致、作者无新 commit,主 agent 按既有提案人工 skip,避免两轮无效独立审查(#386 上轮同规模审查耗约 16.5 万子代理 token)
+  - 提案:scan 输出增加 lastReceiptVerdict/lastReceiptHead 字段（读回执台账），编排层据此对 head 未变且上轮 dirty 的候选直接 skip（动作与本轮 #352 人工处理一致），改 scan 输出契约需维护者拍板
+- `re-review-same-head-no-increment` **fallback=review 对 viewer 自挂 CHANGES_REQUESTED 且无新 commit 的 PR 每轮全量重审,无信息增量** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:mivo-canvas-plugin #352/#386:同 head 上 viewer 刚打过回(07:16/12:12),作者零动作,context.mjs fallback 仍给 review 路由;1h 网格下每轮重复隔离审查烧大量 token(#352 本轮跑 ~70 分钟负向验证仍未交卷)
+  - 提案:context.mjs fallback 判定加 stale 分支:同 head + 已有 viewer CHANGES_REQUESTED + 无新 commit → 改判 skip(复用 skip-stale-pushback 语义);涉及机器判定逻辑改动,留维护者评审
+- `deepseek-review-seat-no-output` **低配审查席连续两轮超时未产 rro-1.json，靠预提取 diff+最小模板第三轮才完成** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR #385 轮：deepseek 审查席前两轮 failed(无输出/超时)，消耗三次 spawn；第三轮把净 diff 与 PR body 预提取成小文件并给出直接模板后一次通过。痛点在任务上下文过大+目标不聚焦，非 skill 脚本缺陷。
+  - 提案:考虑在 build-review-task 的 prompt 模板里对文档型 PR 提示『直接读文档与 body，勿跑构建』，或在 SKILL 审查席派工纪律中固化『预提取 net-diff 到文件、给最小回执样例』两步
+- `stage2-scripts-cross-checkout-snapshot-hash-mismatch` **阶段二脚本链 REPO_ROOT 耦合 process.cwd,跨 checkout 混用产生不同 snapshotHash** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR384 轮:preflight 在跟随仓 checkout 跑出 snap1-ae3d,task 在 _ops 生产 checkout 建出 snap1-f173,同 PR 同 base/head 但 diffDigest 不同(git diff 输出受 checkout 侧配置影响),consume 按 snapshotHash 不一致正确 fail-closed 判 invalid,返工一轮。根因:lib.mjs REPO_ROOT=env.REVIEW_PR_REPO_ROOT||process.cwd(),review-preflight 无 repo 身份锚点,同一仓多 checkout 的机器上极易踩中。
+  - 提案:review-preflight/build-review-task 在输出 JSON 里带 repoRoot 绝对路径与 origin URL,consumer 校验 task/preflight/receipt 三者 repoRoot 同源;或文档显式要求同一轮全部脚本锁定同一 cwd(编排 checklist 项)。属流程加固,不改判定语义,留维护者拍板。
 - `orphaned-heartbeat-keeps-lock-after-parent-crash` **父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: adopted
   - 现象:2026-08-30 18:06Z 轮完成 run-log 后会话崩溃,未走 release-lock;其 lock-heartbeat-daemon(pid 存活)继续每 20 分钟续期,锁 TTL 永不过期直至守护 3h max-lifetime。下一整轮(19:02Z)只能按 lock-busy 跳过全部候选。缺口:心跳守护只验证 token,不感知父会话死活。
   - 提案:让守护进程持有对父 pid 的引用(PPID/kqueue NOTE_EXIT 或父进程心跳文件),父进程死亡即自杀停止续期,让锁按 TTL 尽快自愈;属可靠性修复,不扩权,建议 owner 拍板后另立 PR。
@@ -363,6 +387,11 @@
 
 ## 已自动落地(automatable-gap)
 
+- `review-agent-context-overflow-field-extract` **审查席整读结构性大文件致 autocompact 震荡挂死,未交 rro-1.json** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: landed,commit `43a5596`
+  - 现象:mivo-canvas-plugin #386 审查席在分段投递阶段上下文反复回满,3 次连续 compact 后 API 报错终止;#352 席同样未在 ~70 分钟内交付。两个 PR 均按 review-agent-timeout 写 skip 回执
+  - 提案:SKILL 大 payload 纪律补一条:审查席对 task.json/prompt.md 只做字段级抽取(node -e / grep -n),禁止整读;已落地
+- `profile-answer-per-file-not-per-hunk` **审查答卷按 文件×检查 去重而非按 hunk 重复作答** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 现象:PR352 首轮 consume 判 invalid:对含两个 hunk 的测试文件按 hunk 各写一套 profileAnswers,consumer 视为重复不计入补足;另有一处 fileId 手抄错一位。程序化去重+按投递台账回填 receipts 后二轮 clean。
 - `negative-evidence-command-anchor-must-copy-run-verbatim` **negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
   - 现象:2026-08-29 mivo-canvas-plugin #343 轮:语义审查 0 P0/P1、9 处负向证据真实实跑,但主会话组装 rro-1.json 时在 negativeEvidence.command/outputAnchor 写了比 verificationRuns 更详细的摘要措辞,consumer 按 lib 逐字比对判 negativeEvidenceInconsistent → invalid;同 snapshot 3 次重试机会被耗掉 2 次。
   - 提案:SKILL.md 输出契约段补一条:negativeEvidence 的 command/outputAnchor 先写 run 再照抄;已在 SKILL.md 落地(文档级,无脚本改动)
@@ -434,6 +463,11 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `stale-pushback-awaiting-author` **格式打回后作者未提交新 commit，跳过等作者侧响应** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
+  - 现象:PR 333/386 均为 stale-pushback skip：打回已发、作者未 push 新 commit，属作者侧响应等待，非流程缺口
+- `semantic-conflict-persist-needs-human` **语义冲突的取舍只能由维护者/作者做,auto 不代解** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
+  - 现象:PR352 与主干 #371/#373 的 library 写入链改写重叠(cindyGenerationPort.ts persistLibraryBeforeVisibleSuccess 两种业务逻辑),auto 按规则不擅自取舍;已发冲突提醒(去重命中,此前轮已提醒),等作者 merge origin/main 或维护者代修。
+  - 备注:Mini 巡审 2026-08-31 记账,三机同步时从 Mini 未推送 evo 回收
 - `stage2-subagent-timeout-first-attempt` **阶段二审查 agent 首派超时，重派成功** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: tracked
   - 现象:PR #375 审查（2026-08-30）：首次派独立审查 agent 未在时限内交付 rro-1.json（超时，无输出、无副作用，主工作树未受影响）；重派时先写初始答卷再补审查、给明确时限后成功。按第 8.1 根因三分类归 by-design：属编排容错而非 skill 缺口——现有契约已要求审查会话超时按 review-agent-timeout 写 non-clean 回执并 skip，重派属正常恢复动作；未发现需要改 SKILL 或脚本的系统性漏洞。后续观察重派频率，若成常态再评估将初始答卷预写+限时交付固化为编排模板。
 - `pr-merged-manually-during-review` **owner 网页手动合并发生在独立审查收尾前,按 state!=OPEN skip 留档** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: tracked

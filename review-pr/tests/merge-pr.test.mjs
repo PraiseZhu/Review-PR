@@ -164,9 +164,19 @@ const glassCommentNode = (head) => ({
   createdAt: '2026-08-08T00:00:00Z', updatedAt: '2026-08-08T00:00:00Z', url: 'c1',
 });
 
-test('① 成功路径:intent → merge(含 --match-head-commit)→ result,opId 一致', () => {
+test('①a --mode auto 一律拒绝(巡审只审不合):exit 2,零 gh 写,零审计', () => {
   const { repo, stateDir, log, env, head } = setup({ receiptHead: 'CURRENT' });
   const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stdout, /auto 模式禁止合并/, '拒绝原因必须点名 auto 不合');
+  const writes = ghCalls(log).filter((c) => c.isWrite);
+  assert.equal(writes.length, 0, 'auto 不得执行任何 gh 写操作');
+  assert.equal(readdirSync(stateDir).filter((d) => existsSync(join(stateDir, d, 'merges.jsonl'))).length, 0, 'auto 拒绝连 intent 都不写');
+});
+
+test('① 成功路径:intent → merge(含 --match-head-commit)→ result,opId 一致', () => {
+  const { repo, stateDir, log, env, head } = setup({ receiptHead: 'CURRENT' });
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'interactive']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const audit = readAudit(stateDir);
   assert.equal(audit.length, 2);
@@ -334,7 +344,7 @@ test('⑧ R7 生产触发链(第 2 轮核验):合并成功后必须真的调用 
     pattern: 'p', evidence: '依据', paths: ['a/**'],
     activationStatus: 'pending-fix-merge', promotionStatus: 'pending', promotionTarget: null,
   };
-  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'interactive']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const out = JSON.parse(r.stdout);
   assert.ok(out.hazardActivation, '合并出口必须带出 hazard 激活结果(证明生产触发链真的接线了,不是只有 SKILL 里的手工命令)');
@@ -342,7 +352,7 @@ test('⑧ R7 生产触发链(第 2 轮核验):合并成功后必须真的调用 
   // 真放一条 pending 再合一次:激活会跑,但 fake gh 查不到 origin PR → 核验不过 → 留 inbox
   const stateSub = readDirOnly(stateDir);
   writeFileSync(join(stateDir, stateSub, 'escaped-hazards-inbox.json'), JSON.stringify({ version: 1, items: [inboxItem] }));
-  const r2 = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  const r2 = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'interactive']);
   assert.equal(r2.status, 0, r2.stdout + r2.stderr);
   const out2 = JSON.parse(r2.stdout);
   assert.equal(out2.hazardActivation.action, 'activate');
@@ -370,7 +380,7 @@ test('⑨ R7 第 3 轮核验:PATH 里的 node 不可用时激活仍要跑(用 pr
   chmodSync(join(shim, 'node'), 0o755);
   const noNodeEnv = { ...env, PATH: `${shim}:${env.PATH}` };
   // 外层用 process.execPath 起(否则连被测脚本都起不来);被测进程的 PATH 里没有 node
-  const r = spawnSync(process.execPath, [SCRIPT, '469', '--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'auto'], { cwd: repo, env: noNodeEnv, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [SCRIPT, '469', '--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'interactive'], { cwd: repo, env: noNodeEnv, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const out = JSON.parse(r.stdout);
   assert.ok(out.hazardActivation, 'PATH 无 node 时也必须拿到激活结果');
@@ -387,7 +397,7 @@ test('⑨ R7 第 3 轮核验:PATH 里的 node 不可用时激活仍要跑(用 pr
 
 test('⑩ 现场复核:--basis approved 无回执 → 拒绝执行(exit 2)且零 gh 写调用', () => {
   const { repo, stateDir, log, env, head } = setup(); // 无 receipt
-  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'auto']);
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'approved', '--admin', '--mode', 'interactive']);
   assert.equal(r.status, 2, r.stdout + r.stderr);
   assert.match(r.stdout, /回执|现场复核|precheck|review-receipt/i, '拒绝原因必须指向执行侧复核');
   const writes = ghCalls(log).filter((c) => c.isWrite);
@@ -434,7 +444,7 @@ test('⑪b 现场复核:回执绑定旧 head(≠ 当前 headRefOid)→ 拒绝执
 
 test('⑫ 现场复核:--basis authorized-fast-merge + 无 break-glass 授权评论 → 拒绝执行', () => {
   const { repo, stateDir, log, env, head } = setup({ commentNodes: [] }); // PR 无任何评论
-  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'auto']);
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'interactive']);
   assert.equal(r.status, 2, r.stdout + r.stderr);
   assert.match(r.stdout, /授权|approve-merge|break-glass/i, '拒绝原因必须指向 break-glass 复核');
   const writes = ghCalls(log).filter((c) => c.isWrite);
@@ -444,7 +454,7 @@ test('⑫ 现场复核:--basis authorized-fast-merge + 无 break-glass 授权评
 test('⑫b 现场复核:--basis authorized-fast-merge + 有效 break-glass 评论(人工+当前 head)→ 放行,审计 basis 如实', () => {
   // 评论正文里的 head SHA 只有建仓后才知道 → commentNodes 传函数 (head) => nodes
   const { repo, stateDir, log, env, head } = setup({ commentNodes: (h) => [glassCommentNode(h)] });
-  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'auto']);
+  const r = runMerge(env, repo, ['--strategy', 'squash', '--match-head', head, '--basis', 'authorized-fast-merge', '--admin', '--mode', 'interactive']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const audit = readAudit(stateDir);
   assert.equal(audit[0].basis, 'authorized-fast-merge', '审计必须记录 break-glass 通道的 basis');
