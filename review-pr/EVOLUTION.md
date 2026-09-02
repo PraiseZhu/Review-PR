@@ -469,6 +469,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `greptile-unresolved-threads-by-design` **Greptile 未 resolve thread 挡合并,threadTriage 未启用** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
+  - 现象:PR 431 1 条、PR 434 3 条 Greptile conversation 未 resolve。threadTriage 未配置,auto 只催作者点 Resolve。
 - `stale-pushback-awaiting-author` **格式打回后作者未提交新 commit，跳过等作者侧响应** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR 333/386 均为 stale-pushback skip：打回已发、作者未 push 新 commit，属作者侧响应等待，非流程缺口
 - `semantic-conflict-persist-needs-human` **语义冲突的取舍只能由维护者/作者做,auto 不代解** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
