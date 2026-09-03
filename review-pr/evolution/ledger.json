@@ -4420,6 +4420,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T11:32:07.793Z",
       "lastSeen": "2026-09-03T11:32:07.793Z"
+    },
+    {
+      "fingerprint": "rro-receipt-missing-snapshot-hash",
+      "tier": "proposal",
+      "title": "审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid",
+      "detail": "PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。",
+      "proposal": "prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T12:35:25.929Z",
+      "lastSeen": "2026-09-03T12:35:25.929Z"
     }
   ],
   "escapedHazards": [

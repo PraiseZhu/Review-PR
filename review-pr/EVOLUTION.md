@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
+  - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
+  - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
 - `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
   - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。
