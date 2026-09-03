@@ -94,6 +94,7 @@ test('[SC-3] SKILL 文本断言:5.1/5.2/5.4/5.5/5.6 动作指令不在,替代说
   // 替代说明在(5 节各一处)
   const notes = (skill.match(/preview 版：本节能力已剥离/g) || []).length;
   assert.equal(notes, 5, `应恰有 5 处节替代说明,实际 ${notes}`);
+  assert.match(skill, /### 5\.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话（preview 版）/);
   // 模板 A/B/C/E/F 已剥离、模板 D 在(上一条已查)
   for (const tpl of ['### 模板 A：PR 打回评论', '### 模板 B：停滞催办私聊', '### 模板 C：催 resolve', '### 模板 E：合并致谢播报', '### 模板 F：给 owner 的每轮汇总']) {
     assert.equal(skill.includes(tpl), false, `SKILL.md 不应含: ${tpl}`);

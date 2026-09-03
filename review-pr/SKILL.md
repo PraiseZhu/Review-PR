@@ -1425,7 +1425,7 @@ gpt 实跑复现：两条仅尾部（65+ 字符）不同的 invariant 会被截�
 
 ### 5.0 收敛检查点与同 family 复发
 
-跨轮次的概念，5.2（打回）与 5.4（自修）共用识别机制，各自的动作见对应小节。
+跨轮次的概念，5.2（打回）用这套识别机制。5.4 已停用，不再有自修动作。
 
 **收敛检查点**：某一轮独立审查报告显示某个 family（第 4 节第 6 条）的全部
 manifestations 已确认修复——该 family 不再出现在本轮 findings，或本轮 Verification
@@ -1767,7 +1767,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
   `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
   交互/人手才按 5.1「授权快速合并通道」合。
-- 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
+- 产品/架构 hold、issue release、通知、self-merge（仅交互）和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
 

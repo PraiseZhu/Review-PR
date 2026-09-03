@@ -28,7 +28,7 @@ function loadState() {
     const parsed = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
-    return {}; // 损坏当空,下次 set 重建
+    return {}; // 损坏当空;set 已停用,只能靠 clear/sweep 清掉旧文件后自然消失
   }
 }
 

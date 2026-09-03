@@ -95,4 +95,5 @@ test('SKILL 5.4 不得再教 agent 开跟进会话', () => {
   assert.doesNotMatch(skill, /要开跟进会话自动修吗/);
   assert.doesNotMatch(skill, /走 5\.4 跟进会话修 PR 分支/);
   assert.doesNotMatch(skill, /投递 5\.4\n\s*跟进会话/);
+  assert.doesNotMatch(skill, /5\.4（自修）/);
 });
