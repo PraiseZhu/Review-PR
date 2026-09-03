@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 2 次,首见 2026-08-21,最近 2026-09-03,status: tracked
+  - 现象:本轮 #434 #453 仍因 CHANGES_REQUESTED + 未 resolve thread skip；催 resolve 已去重 already-commented。
 - `merged-before-review-complete` **扫描后落地前 PR 已被人手合入** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:PR #417 扫描时 OPEN+structural-check，落地前已 MERGED；auto 不合，只尝试 merge-ack（sender-is-cloud 本地不重复）。
 - `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 3 次,首见 2026-08-20,最近 2026-09-03,status: tracked
@@ -679,8 +681,6 @@
   - 现象:PR #218 用 Summary/Validation，缺 变更说明/提交前自检/备注。
 - `skip-threads-unresolved-human-greptile` **未 resolve 的真人+bot conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #201 3 条未 resolve conversation（1 greptile + 2 PraiseZhu 真人），threadTriage 未启用且含白名单外参与者，本轮 skip-gate。已有催 resolve 评论，未重发。
-- `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
-  - 现象:PR #201 3 条 conversation 未 resolve，notify-author-resolve 已去重跳过(already-commented)；threadTriage 未配置故不代 reply/resolve。属设计上就该人来。
 - `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #209 命中 securityReviewPaths，signoff-hold 复用既有讨论 issue #210，放行前不自动审不合。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked
