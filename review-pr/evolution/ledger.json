@@ -2384,14 +2384,14 @@
       "fingerprint": "security-gate-signoff-hold",
       "tier": "by-design",
       "title": "命中 securityReviewPaths 走维护者确认门，不自动审合",
-      "detail": "PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。",
+      "detail": "PR #465 命中 docs/loops/review-pr-setup.md + CLAUDE.md，signoff-hold --kind security 开 issue #467；auto 不审不合。首次 hold 标题必须是「维护者确认 · PR #<n> …」，否则 title-contract-violation 且可能只打上标签。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-08-20T13:05:30.132Z",
-      "lastSeen": "2026-08-20T17:03:57.335Z"
+      "lastSeen": "2026-09-03T16:19:29.573Z"
     },
     {
       "fingerprint": "skip-gate-changes-requested-unresolved-threads",

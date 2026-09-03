@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 3 次,首见 2026-08-20,最近 2026-09-03,status: tracked
+  - 现象:PR #465 命中 docs/loops/review-pr-setup.md + CLAUDE.md，signoff-hold --kind security 开 issue #467；auto 不审不合。首次 hold 标题必须是「维护者确认 · PR #<n> …」，否则 title-contract-violation 且可能只打上标签。
 - `reviewed-clean-structural-bypass-auto-no-merge` **admins 作者 structural BLOCKED 审查干净后 auto 只落回执不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:本轮 #417 同 SHA 已有 clean 回执，不重审；auto 不合
 - `skip-ci-nonrequired-failed` **非 required 检查失败时 skip-gate，等人修绿** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
@@ -696,8 +698,6 @@
   - 现象:PR #209 命中 securityReviewPaths，alreadyHeld issue #210 + awaiting-discussion，放行前不审不合。
 - `skip-threads-unresolved-human` **未 resolve 的真人 conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条未 resolve thread（含巡审本人），threadTriage 未启用；已有催 resolve 评论，本轮 already-commented。
-- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。
 - `skip-unresolved-human-and-bot-threads` **未 resolve conversation 卡合并，作者侧需点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。
 - `skip-changes-requested-unresolved` **作者未改 CHANGES_REQUESTED 且 conversation 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
