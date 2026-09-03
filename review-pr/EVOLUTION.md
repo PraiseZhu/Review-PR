@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-conflict-author-side` **与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #439 #450 #461 mergeState=DIRTY；#461 本轮新发冲突提醒，其余 already-commented。
 - `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 2 次,首见 2026-08-21,最近 2026-09-03,status: tracked
   - 现象:本轮 #434 #453 仍因 CHANGES_REQUESTED + 未 resolve thread skip；催 resolve 已去重 already-commented。
 - `merged-before-review-complete` **扫描后落地前 PR 已被人手合入** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked

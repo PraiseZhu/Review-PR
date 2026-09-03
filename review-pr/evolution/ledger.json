@@ -4524,6 +4524,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T16:19:34.188Z",
       "lastSeen": "2026-09-03T16:19:34.188Z"
+    },
+    {
+      "fingerprint": "skip-conflict-author-side",
+      "tier": "by-design",
+      "title": "与主干冲突，等作者 rebase",
+      "detail": "本轮 #439 #450 #461 mergeState=DIRTY；#461 本轮新发冲突提醒，其余 already-commented。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T17:09:44.661Z",
+      "lastSeen": "2026-09-03T17:09:44.661Z"
     }
   ],
   "escapedHazards": [
