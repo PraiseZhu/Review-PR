@@ -472,6 +472,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-ci-pending-gate-452` **非 required 检查仍在跑时 skip-gate，等人看 CI** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #452 mergeStateStatus=UNSTABLE(gate 还在跑)。按前置门 skip，不审不合。
 - `duplicate-format-comment-ownpr` **ownPr 格式打回确认失败后重复提交 COMMENT** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
   - 现象:PR 431 格式 COMMENT 因第一次命令未回显成功又提交一次,GitHub 上出现两条相同正文。
 - `greptile-unresolved-threads-by-design` **Greptile 未 resolve thread 挡合并,threadTriage 未启用** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
