@@ -4485,6 +4485,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T12:51:58.913Z",
       "lastSeen": "2026-09-03T12:51:58.913Z"
+    },
+    {
+      "fingerprint": "skip-ci-nonrequired-failed",
+      "tier": "by-design",
+      "title": "非 required 检查失败时 skip-gate，等人修绿",
+      "detail": "本轮 #452 mergeStateStatus=UNSTABLE，失败检查 gate；上轮还是 ci-pending",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T13:10:53.574Z",
+      "lastSeen": "2026-09-03T13:10:53.574Z"
     }
   ],
   "escapedHazards": [
