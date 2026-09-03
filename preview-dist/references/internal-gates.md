@@ -213,11 +213,9 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
 ## 作者侧与仓库侧 gate
 
 - `selfFixAuthors` 的 PR 如果卡在格式、审查问题、冲突、CI、未 resolve thread 或停滞，
-  不提交无效的 `REQUEST_CHANGES`，也不催本人；按 SKILL 5.4「自动跟进修复
-  （fix-handoff）」把卡点投递给独立跟进会话，绑定与去重由 `fix-session-state.mjs`
-  管理，循环跟进直到审查干净（auto 只落回执、不合，等交互/人手合）。CI pending 仅等待，不投递。PR 合并／关闭后遗留的
-  跟进 worktree 与本地分支由 `fix-worktree-cleanup.mjs` 回收（每轮 sweep 后
-  `--scan`），不回收会随 PR 数量线性膨胀；安全判定全在脚本内。
+  不提交无效的 `REQUEST_CHANGES`，也不催本人；**禁止**再按 SKILL 5.4 开跟进会话
+  （2026-09-03 停用）。卡点只进汇总，等人处理。CI pending 仅等待。PR 合并／关闭后若仍有
+  历史跟进 worktree，由 `fix-worktree-cleanup.mjs` 回收（每轮 `--scan`），不新开绑定。
 - `selfFixAuthors` 自己的 PR 审查通过时：GitHub 不允许同账号 approve 自己的 PR，
   `pre-merge-check.mjs` 返回 `selfMergeAvailable=true` 后经唯一合并出口执行
   `node "<SKILL_ROOT>/scripts/merge-pr.mjs" <PR> --strategy <s> --match-head <headRefOid>

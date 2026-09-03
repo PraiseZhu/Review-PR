@@ -77,8 +77,8 @@
     },
     {
       "file": "SKILL.md",
-      "find": "### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并",
-      "replace": "### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并（preview 版）\n\n> preview 版：本节能力已剥离（fix-handoff 跟进会话投递不在 preview 产物中），输出内部结论即止。"
+      "find": "### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话",
+      "replace": "### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话（preview 版）\n\n> preview 版：本节能力已剥离（fix-handoff 跟进会话投递不在 preview 产物中），输出内部结论即止。"
     },
     {
       "file": "SKILL.md",
@@ -122,7 +122,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "扫描后按 5.4 运行\n   `fix-session-state.mjs sweep --open <open PR 列表>`，清理已合并／关闭 PR 的\n   跟进会话绑定；随后运行 `fix-worktree-cleanup.mjs --scan` 回收这些 PR 遗留的\n   跟进 worktree 与本地分支（判定与安全边界在脚本内，结果计入汇总，失败不阻塞）。",
+      "find": "扫描后可运行\n   `fix-worktree-cleanup.mjs --scan` 回收**历史**跟进 worktree（5.4 已停用，本轮\n   不再 `fix-session-state.mjs` get/set 新绑定；sweep 只清旧绑定，不作为投递入口）。",
       "replace": "（preview 版：5.4 fix-handoff 与 worktree 回收已剥离，相关脚本不在产物中，本段跳过。）"
     },
     {
@@ -207,7 +207,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "  `auto.action=pushback-security` 提交一次 REQUEST_CHANGES（stale 打回去重规则与\n  格式门相同），`selfFixAuthors` 的 PR 改走 5.4 投递跟进会话。",
+      "find": "  `auto.action=pushback-security` 提交一次 REQUEST_CHANGES（stale 打回去重规则与\n  格式门相同），`selfFixAuthors` 的 PR **也只打回/写汇总，禁止按 5.4 开跟进会话**。",
       "replace": "  `auto.action=pushback-security` 输出打回结论（preview 版：REQUEST_CHANGES 评论与 5.4 fix-handoff 已剥离，结论写内部审查输出，由 owner 在正式流程落地）。"
     },
     {
@@ -222,12 +222,12 @@
     },
     {
       "file": "SKILL.md",
-      "find": "- `selfFixAuthors` 的作者侧问题不提交对自己无效的 `REQUEST_CHANGES`，按 5.4\n  投递给跟进会话自动修复；审查通过后仍可正常合并（含 5.1 的 self-merge）。",
+      "find": "- `selfFixAuthors` 的作者侧问题不提交对自己无效的 `REQUEST_CHANGES`（GitHub 会 422），\n  只在汇总里点名卡点；**禁止按 5.4 开跟进会话**。审查通过后仍可正常合并（含 5.1 的 self-merge）。",
       "replace": "- `selfFixAuthors` 的作者侧问题（preview 版：5.4 fix-handoff 与 5.1 合并已剥离，这类卡点在内部审查输出中标注「需维护者跟进」，不投递、不打回）；"
     },
     {
       "file": "SKILL.md",
-      "find": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进\n   会话，循环跟进直到审查干净（auto 只落回执、不合，等交互/人手合；本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的",
+      "find": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，也**不**按 5.4 投递跟进\n   会话（已停用），写入汇总「需人处理」；重叠排队的",
       "replace": "   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）（preview 版：5.4 fix-handoff 已剥离——这类卡点不打回不投递，在汇总标注「需维护者跟进」）；重叠排队的"
     },
     {
