@@ -4368,6 +4368,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-02T10:28:52.696Z",
       "lastSeen": "2026-09-02T10:28:52.696Z"
+    },
+    {
+      "fingerprint": "format-self-review-third-checkbox-when-ci-green",
+      "tier": "proposal",
+      "title": "格式门把未勾第三项自检当阻断，即使 CI 已实际跑过",
+      "detail": "本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。",
+      "proposal": "若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T08:59:31.569Z",
+      "lastSeen": "2026-09-03T08:59:31.569Z"
     }
   ],
   "escapedHazards": [

@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
+  - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
+  - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。
 - `review-agent-isolation-tree-misses-rro` **隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
   - 现象:PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。
   - 提案:spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。
