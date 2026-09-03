@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-conflict-author-rebase` **与主干冲突只能作者解，auto 不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 439 扫描后变 DIRTY、450 持续冲突；已提醒 already-commented。auto 禁止主干代合并。
 - `skip-unresolved-threads` **未 resolve 的 conversation 挡前置门，设计上要作者点 Resolve** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:本轮 434/453/461 因 conversation 未 resolve 跳过；461 新发催 resolve，434/453 already-commented。
 - `ui-evidence-wrong-image-not-missing-439` **UI 证据贴仓标 logo 按描述不实打回，不是缺证据提醒** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked

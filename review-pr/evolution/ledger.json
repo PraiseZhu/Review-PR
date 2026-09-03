@@ -4446,6 +4446,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T12:51:45.530Z",
       "lastSeen": "2026-09-03T12:51:45.530Z"
+    },
+    {
+      "fingerprint": "skip-conflict-author-rebase",
+      "tier": "by-design",
+      "title": "与主干冲突只能作者解，auto 不合",
+      "detail": "本轮 439 扫描后变 DIRTY、450 持续冲突；已提醒 already-commented。auto 禁止主干代合并。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T12:51:50.051Z",
+      "lastSeen": "2026-09-03T12:51:50.051Z"
     }
   ],
   "escapedHazards": [
