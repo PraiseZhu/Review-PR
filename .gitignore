@@ -1,3 +1,6 @@
 
 # lead 编排用的临时 git worktree（各 worker 的隔离工作区）
 .worktrees/
+
+# 本机备份 / Syncthing 冲突归档（不入库）
+_backup/
