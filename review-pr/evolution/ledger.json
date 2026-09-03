@@ -4459,6 +4459,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T12:51:50.051Z",
       "lastSeen": "2026-09-03T12:51:50.051Z"
+    },
+    {
+      "fingerprint": "skip-ci-pending-nonrequired",
+      "tier": "by-design",
+      "title": "非 required 检查仍在跑时 skip，等绿灯",
+      "detail": "本轮 452 UNSTABLE：非 required 检查 gate 还在跑。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T12:51:54.457Z",
+      "lastSeen": "2026-09-03T12:51:54.457Z"
     }
   ],
   "escapedHazards": [

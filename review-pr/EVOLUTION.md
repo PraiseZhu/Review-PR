@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-ci-pending-nonrequired` **非 required 检查仍在跑时 skip，等绿灯** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 452 UNSTABLE：非 required 检查 gate 还在跑。
 - `skip-conflict-author-rebase` **与主干冲突只能作者解，auto 不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:本轮 439 扫描后变 DIRTY、450 持续冲突；已提醒 already-commented。auto 禁止主干代合并。
 - `skip-unresolved-threads` **未 resolve 的 conversation 挡前置门，设计上要作者点 Resolve** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
