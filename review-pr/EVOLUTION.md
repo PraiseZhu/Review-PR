@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `reviewed-clean-structural-bypass-auto-no-merge` **admins 作者 structural BLOCKED 审查干净后 auto 只落回执不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #417 同 SHA 已有 clean 回执，不重审；auto 不合
 - `skip-ci-nonrequired-failed` **非 required 检查失败时 skip-gate，等人修绿** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:本轮 #452 mergeStateStatus=UNSTABLE，失败检查 gate；上轮还是 ci-pending
 - `skip-conflict-author-rebase` **与主干冲突只能作者解，auto 不合** — 出现 2 次,首见 2026-09-03,最近 2026-09-03,status: tracked

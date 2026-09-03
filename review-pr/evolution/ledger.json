@@ -4498,6 +4498,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T13:10:53.574Z",
       "lastSeen": "2026-09-03T13:10:53.574Z"
+    },
+    {
+      "fingerprint": "reviewed-clean-structural-bypass-auto-no-merge",
+      "tier": "by-design",
+      "title": "admins 作者 structural BLOCKED 审查干净后 auto 只落回执不合",
+      "detail": "本轮 #417 同 SHA 已有 clean 回执，不重审；auto 不合",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T13:10:57.970Z",
+      "lastSeen": "2026-09-03T13:10:57.970Z"
     }
   ],
   "escapedHazards": [
