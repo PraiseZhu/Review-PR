@@ -87,3 +87,12 @@ test('SKILL / internal-gates 不得再把 break-glass 写成 auto 合并入口',
     assert.doesNotMatch(text, /正常自动合并/, `${name} 不得再写「正常自动合并」（auto 永不合）`);
   }
 });
+
+test('SKILL 5.4 不得再教 agent 开跟进会话', () => {
+  assert.match(skill, /### 5\.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话/);
+  assert.doesNotMatch(skill, /你负责跟进修复/);
+  assert.doesNotMatch(skill, /use_worktree: true/);
+  assert.doesNotMatch(skill, /要开跟进会话自动修吗/);
+  assert.doesNotMatch(skill, /走 5\.4 跟进会话修 PR 分支/);
+  assert.doesNotMatch(skill, /投递 5\.4\n\s*跟进会话/);
+});

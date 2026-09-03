@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-isolation-tree-misses-rro` **隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
+  - 现象:PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。
+  - 提案:spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。
+- `isolation-worktree-hides-prepared-review-artifacts` **isolation worktree 从默认分支开空树，审查席看不到主会话已备好的 prompt/segment/hunks** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
+  - 现象:auto 审 PR 417 时主会话把 prompt.md/segment/hunks 写进 .worktrees/review-pr/pr-417，审查席 isolation=worktree 却落在 ops 仓 main 空树；席找不到材料、未交 rro-1.json，本轮只能 skip。426 因指令写死绝对路径才交卷。
+  - 提案:spawn 审查席时把工作目录钉到已备好的 review worktree，或把产物复制进 isolation cwd；禁止只靠相对路径 prompt.md。
 - `review-agent-context-window-thrash` **审查席子代理用小上下文窗口模型会被 50KB 级 payload + 源码追踪打爆 autocompact,应在 spawn 时显式选大窗口模型** — 出现 1 次,首见 2026-09-01,最近 2026-09-01,status: open
   - 现象:2026-09-01 mivo-canvas-plugin 巡审:2 个 sonnet 映射审查席(352/386 预派)与 1 个 397 前席均死于 autocompact thrashing(context 3 轮内回满 x3),未交 rro-1.json。改用 1M 窗口模型后同任务 83-84 次工具调用顺利完成。prompt.md 仅 9-10KB,payload ≤50KB,单段内容本身不超标——瓶颈是子代理模型映射的窗口总量。
   - 提案:SKILL.md §4 大 payload 审查纪律补一行:spawn 审查席时显式选择上下文窗口足以容纳『全局规则+50KB 段 payload+被审源码追踪』的模型(建议 ≥1M);小窗口模型在此负载下稳定震荡挂死,白白烧 token 并把 PR 拖成 skip。另:交付脚本已支持 replayed 重放已投递段,可写进 §4 供审查席接续前席中断的分段审查。
@@ -463,6 +469,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `duplicate-format-comment-ownpr` **ownPr 格式打回确认失败后重复提交 COMMENT** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
+  - 现象:PR 431 格式 COMMENT 因第一次命令未回显成功又提交一次,GitHub 上出现两条相同正文。
+- `greptile-unresolved-threads-by-design` **Greptile 未 resolve thread 挡合并,threadTriage 未启用** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
+  - 现象:PR 431 1 条、PR 434 3 条 Greptile conversation 未 resolve。threadTriage 未配置,auto 只催作者点 Resolve。
 - `stale-pushback-awaiting-author` **格式打回后作者未提交新 commit，跳过等作者侧响应** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR 333/386 均为 stale-pushback skip：打回已发、作者未 push 新 commit，属作者侧响应等待，非流程缺口
 - `semantic-conflict-persist-needs-human` **语义冲突的取舍只能由维护者/作者做,auto 不代解** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked

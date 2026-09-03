@@ -34,7 +34,7 @@
 //     脚本自查 mergeable 确为 CONFLICTING 才发(UNKNOWN/MERGEABLE 不发);去重指纹 =
 //     headRefOid(作者 push 新 commit 后仍冲突会再提醒一次,合理:他动过了),状态键
 //     `<PR>#conflict` 与 thread 模式互不干扰。
-//   两种模式都跳过 selfFixAuthors 的 PR(自己的 PR 走 SKILL 5.4 跟进会话,不催本人)。
+//   两种模式都跳过 selfFixAuthors 的 PR(自己的 PR 不催本人;5.4 已停用,也不开跟进会话)。
 //   多个 PR 号:批量模式,逐个 spawn 自身聚合输出 { batch:true, results:[…] }——
 //   核心判定 / 去重逻辑零改动(就是跑单 PR 模式),单 PR 输出保持原样完全兼容。
 //   批量**必须串行**(mapPool 并发 1):共享 reminded.json 去重状态,并发会读写竞态。
@@ -101,7 +101,7 @@ function postComment(slug, prKey, body) {
   return { ok: r.ok, error: r.ok ? null : (r.stderr || '').trim().slice(0, 300) };
 }
 
-/** selfFixAuthors 的 PR 不催本人(走 SKILL 5.4 跟进会话);名单读取失败按空处理。 */
+/** selfFixAuthors 的 PR 不催本人(5.4 已停用,不开跟进会话);名单读取失败按空处理。 */
 function isSelfFixAuthor(author) {
   try {
     return (loadRules().selfFixAuthors ?? []).some((a) => a.toLowerCase() === (author ?? '').toLowerCase());

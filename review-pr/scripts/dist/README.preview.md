@@ -43,7 +43,7 @@ REVIEW_PR_STATE_DIR=$(mktemp -d) node "<preview-dist>/scripts/…"
 
 **A 类（合并/批准/修代码，文件级剥离）**：`merge-pr.mjs`、`self-approve.mjs`、
 `approve-workflows.mjs`、`fix-session-state.mjs`、`fix-worktree-cleanup.mjs`；SKILL.md 5.1
-（批准并合并）、5.2（REQUEST_CHANGES）、5.4（fix-handoff）、5.5（冲突代合并）、5.6（代修合并）
+（批准并合并）、5.2（REQUEST_CHANGES）、5.4（已停用的 fix-handoff）、5.5（冲突代合并）、5.6（代修合并）
 整节剥离，原位保留替代说明。
 
 **B 类（普通对外传播，文件级剥离）**：`notify-author-resolve.mjs`、`notify-merge-ack.mjs`、

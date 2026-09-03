@@ -6,7 +6,7 @@ description: >
   风险、影响面、测试和规则遵从；支持指定 PR、
   自动选择、交互式合并、代修合并（先合并、主干修复、评论告知作者，仅交互模式）
   以及 --auto 定时批处理。保留维护者专用的产品/UI gate、技术
-  架构 gate、讨论 issue、self-fix、workflow approval、结构性 BLOCKED、Server 通知和
+  架构 gate、讨论 issue、self-merge（仅交互）、workflow approval、结构性 BLOCKED、Server 通知和
   经配置播报出口的通知流程（对外话术遵循统一人格模板）；使用独立审查 agent、前置
   gate、GitHub review/merge 和 scheduler pre-run
   check。汇总 JSON
@@ -676,7 +676,7 @@ node --test tests/*.test.mjs
   凭证、`sk-` 系 API key 等高置信格式。存在任一硬命中即本门不通过：不进入代码审查、
   不合并。交互模式展示命中清单（文件、行号、类型）后确认打回；auto 模式按
   `auto.action=pushback-security` 提交一次 REQUEST_CHANGES（stale 打回去重规则与
-  格式门相同），`selfFixAuthors` 的 PR 改走 5.4 投递跟进会话。打回必须同时要求：
+  格式门相同），`selfFixAuthors` 的 PR **也只打回/写汇总，禁止按 5.4 开跟进会话**。打回必须同时要求：
   ① 从分支历史中彻底移除敏感内容（仅追加一个删除 commit 不算完成，历史仍可见）；
   ② 立即轮换已泄露的凭证——内容一经推到远端即视为已泄露，无论 PR 是否合并。
 - **软命中（`security.softHits`）**：疑似密码／token 字面量赋值、JWT、手机号、
@@ -729,8 +729,8 @@ node --test tests/*.test.mjs
 `<!-- review-pr:ui-evidence-notice -->`；发送前先在已拉取的评论历史里查该标记，
 已存在即不重发（同一 PR 只提醒一次）。交互模式发送前照常确认；auto 模式可直接
 发送（与 notify-author-resolve 的一次性提醒评论同级，发送失败不阻塞流程）。提醒
-不改变任何 gate 结论，也不因作者不补证据而升级为阻断；`selfFixAuthors` 的 PR 走
-5.4 跟进会话时，把「补充 UI 证据到 description」并入跟进消息即可，不单发评论。
+不改变任何 gate 结论，也不因作者不补证据而升级为阻断；`selfFixAuthors` 的 PR
+同样只发这条提醒（或 ownPr 时不发），**禁止**把缺口并进跟进会话消息——5.4 已停用。
 `auto.ownPr=true`（viewer 与作者是同一个账号，即本流程账号自己开的 PR）时不发本
 评论——收件人就是本流程账号自己，评论没有收件人，只会在 PR 上堆无人消费的噪音；
 证据缺口照常写进报告与汇总，gate 结论不变。**被 skip 的候选本轮不发 UI 证据提醒**——
@@ -1503,10 +1503,8 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 但不得作为机器匹配的依据。
 
 判定复发后：
-- **`recurrenceType: 'reopened'`**：作者在 `selfFixAuthors` → 按 5.4「收敛检查点
-  后复发的升级阶梯」自主执行；作者不在 `selfFixAuthors`（对方是独立协作者，不能
-  强制其选择修法）→ 按「对外话术与人格边界」模板 A 追加"收敛检查点请求"段，是
-  建议不是要求。
+- **`recurrenceType: 'reopened'`**：作者在不在 `selfFixAuthors` 都按「对外话术与人格边界」
+  模板 A 追加"收敛检查点请求"段（建议不是要求）。**禁止**再走已停用的 5.4 升级阶梯去开跟进会话。
 - **`recurrenceType: 'persistent'`**：不走升级阶梯，也不在文案里说"已收敛"——
   按普通 P0/P1 打回处理即可，措辞上可以指出"这个问题从上一轮起就一直存在，
   之前的修法没有覆盖到当前这条触发路径"（如实描述"持续未修"，不是"收敛后复发"）。
@@ -1711,8 +1709,8 @@ no-op，`posted:false`，不影响合并本身；loop 托管的 PR 有自己的�
    仅当 5.6 的边界条件全部满足时才提供该选项（安全硬命中、gate 未过等场景不提供）；
 3. **只报告不动作**。
 
-作者在 `selfFixAuthors` 时仍按 5.4 询问是否投递跟进会话，不提供代修合并选项
-（自有 PR 由跟进会话直接修 PR 分支更合适）。
+作者在 `selfFixAuthors` 时也不开跟进会话（5.4 已停用）；交互模式只报告卡点，
+不提供「开跟进会话」选项。代修合并仍按 5.6 边界，不因 selfFix 改道。
 
 选择打回时，确认后执行，`event` 按 `context` 的 `auto.ownPr` 二选一——`ownPr=false`
 （打回别人的 PR）用 `REQUEST_CHANGES`；`ownPr=true`（viewer 与 PR 作者是同一个 GitHub
@@ -1744,8 +1742,8 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
 
 - `format.hitsServer=true` 且没有作者已通知 Lizi 的证据：无论代码审查是否通过，都走
   Server gate 的 3B，不得 auto 放行。
-- `selfFixAuthors` 的作者侧问题不提交对自己无效的 `REQUEST_CHANGES`，按 5.4
-  投递给跟进会话自动修复；审查通过后仍可正常合并（含 5.1 的 self-merge）。
+- `selfFixAuthors` 的作者侧问题不提交对自己无效的 `REQUEST_CHANGES`（GitHub 会 422），
+  只在汇总里点名卡点；**禁止按 5.4 开跟进会话**。审查通过后仍可正常合并（含 5.1 的 self-merge）。
 - fork workflow 待批准执行 `approve-workflows.mjs`；PR 改过 CI 文件时 auto 跳过并在
   汇总点名维护者。
 - `gate.blockClass=structural-check` 不是作者代码问题；机械前提（bypass 权限**且**
@@ -1773,135 +1771,31 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
 
-### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并
+### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话
 <!-- dist:strip:start preview-5.4 -->
 
-下方「投递消息模板」发给的是**跟进会话本身**（一个执行任务的 agent），是工作
-指令，不是对人的消息，不套「对外话术与人格边界」的人格模板；跟进会话完成后若
-需要在 PR 上留评论说明改了什么，那条评论出自跟进会话自己，同样不受本节约束。
-本流程产生的、真正发给人看的内容只有汇总里的"投递/未投递"状态，按 6.1 的口径写。
+**停用（2026-09-03）**：本流程**不得**为任何 PR 开、复用或 jump 跟进修复会话。
+禁止调用宿主 handoff / `send_to_session`（create 或 jump）去修 PR。
+`selfFixAuthors` 命中时同样禁止。没有「跟进会话」这条出路。
+卡点只写汇总 / 打回，等人处理。巡审会话自己也不改 PR 代码。
 
-**背景**：`selfFixAuthors`（pr-rules.json）名单里的作者就是本流程的自动化账号本人。
-GitHub 禁止对自己的 PR 提交 `REQUEST_CHANGES` / `APPROVE`（API 直接 422），3B 打回
-对这类 PR 走不通；打回、催办的收件人也都是本人，没有"别人"会来修。出路：把卡点
-投递给一个**独立的跟进会话**，由它 checkout PR 分支、修复、push、回应 review 意见，
-**直到 PR 能被合并**。本 session 自己始终不改 PR 代码——审查与修复隔离在两个会话，
-与"auto 模式只读不写"不冲突。
-
-**触发条件**：`auto.selfFix=true`（`context.mjs` 按名单判好）**且**卡点在作者侧：
-
-- 安全与隐私门硬命中（`pushback-security`；跟进消息同样只写文件/行号/类型，不引用
-  命中原文）、格式打回（`pushback-format`）、独立审查存在 P0/P1、不能按 5.5 主干代合并
-  或需要语义取舍的冲突、未 resolve thread、CI 失败或作者停滞；
-- CI pending 只等待，不投递；审查通过走 5.1 的 self-merge，不投递；
-- 非作者侧问题（产品/架构 hold、structural-check、权限）不走本流程。
-
-**投递机制**：用宿主提供的会话投递（handoff）能力为该 PR 开／复用专属跟进会话；
-对用户与汇总口径只说"跟进会话"，不暴露内部工具名。新建会话**必须要求独立
-worktree**（如宿主支持 `use_worktree: true`），绝不让跟进会话直接改共享工作树。
-绑定与去重的确定性判定全在 `fix-session-state.mjs`，按以下顺序执行：
-
-1. **拼卡点指纹**：`fp = "<headRefOid>|<卡点类别>"`。`headRefOid` 来自 context 的
-   `meta.headRefOid`；卡点类别用 `auto.action`，唯一例外是审查不通过场景用
-   `review-failed`（区别于"进入审查"本身）。
-2. **查状态**：`node "<SKILL_ROOT>/scripts/fix-session-state.mjs" get <PR> --fingerprint <fp>`
-   - `shouldDispatch=false` → 上次投递后卡点没变（跟进会话大概率还在修），
-     **本轮不投**，汇总用"还在修，没重复打扰"措辞；
-   - `shouldDispatch=true` → 继续下一步。
-3. **投递**：返回的 `sessionId` 非空时复用该会话；为空时新建 PR 专属跟进会话。
-   新建时必须要求独立 worktree（宿主支持时使用 `use_worktree: true`），并记录返回的
-   会话 id。投递成功但返回 `wake_kind=queued` 也算成功。
-4. **回写**：投递成功后
-   `node "<SKILL_ROOT>/scripts/fix-session-state.mjs" set <PR> --session <id> --fingerprint <fp>`
-   （新建与复用成功后都要调）。
-5. **失败处理**（都不 set，指纹未写 → 下轮同卡点自动重投）：
-   - 目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ `clear <PR>` 清绑定，
-     改走新建重试一次；
-   - worktree 建不出来 → **不要**去掉隔离要求降级重试（没有隔离工作区的跟进会话
-     会直接改共享工作树，风险大于收益）；本轮放弃，汇总按"投递失败"点名维护者；
-   - 宿主没有会话投递能力（纯 CLI 等）→ 静默放弃投递；**也不要退回 3B 打回**
-     （对自己的 PR 仍会 422），汇总按"投递失败"点名维护者；
-   - 宿主暂时未就绪 → 本轮放弃，下轮自动重试。
-
-**投递消息模板**（首次投递用全文；后续只带“当前卡点”和“要求”两段。消息
-必须自包含，跟进会话看不到本 session 的任何上下文）：
+`fix-session-state.mjs` 的 `get` / `set` 已拒绝投递（`shouldDispatch` 恒 false；
+`set` 直接失败）。不要把旧绑定、`shouldDispatch` 或「还在修」当成可以开会话。
+每轮阶段一扫描后只允许：
 
 ```text
-你负责跟进修复 <仓库> 的 PR #<N>（<title>），目标是把它修到能被合并。
-PR：<url>（分支 <headRefName>，base <baseRefName>）
-
-当前卡点:
-<逐条列，带全文：审查意见（P0/P1 条目，含 path:line 与意见原文）/ 格式问题清单 /
-与主干冲突 / CI 失败的 workflow 名与失败摘要 / 未 resolve thread 的位置与意见摘要>
-
-要求:
-1. 你的会话已在独立 git worktree 里（放心 checkout，不会影响别人），但全量 checkout
-   可能仍在后台进行——先确认 `git status --short` 干净、无 index.lock 再动 git。
-   然后用 gh pr checkout <N> 拉 PR 分支，逐条修复上面的卡点；与主干冲突就先
-   merge origin/<baseRefName> 解掉冲突再修。
-2. 遵守仓库 AGENTS.md 与 docs/dev-rules 的全部规范；修完运行仓库要求的 typecheck
-   与相关定向测试确认。
-3. push 到 PR 分支；PR 上有 review thread 的，逐条回复说明改法并点 Resolve；
-   title / description 的格式问题直接用 gh pr edit 修好。
-4. 全部修完后在 PR 上留一条简短评论说明本轮改了什么。之后的自动 review 会重新
-   审查这个 PR；如果又发现新问题，会再发消息到本会话，你继续修，直到 PR 被合并。
+node "<SKILL_ROOT>/scripts/fix-session-state.mjs" sweep --open <open PR 列表>
+node "<SKILL_ROOT>/scripts/fix-worktree-cleanup.mjs" --scan
 ```
 
-**交互模式**：流程走到任何"该打回／该等作者"的分叉（格式门不过、前置 gate 卡住、
-审查出 P0/P1）且作者命中 `selfFixAuthors` 时，不走 3B 草稿；先把卡点报告给用户，
-再用 `AskUserQuestion` 询问"这是自己的 PR，打回无效，要开跟进会话自动修吗"，同意
-才投递，不同意只报告。
+sweep 只清已合并／关闭 PR 的历史绑定；cleanup 只回收托管目录里的历史 worktree
+（`.cindy-worktrees`、`.xdt-worktrees`、`.claude/worktrees`、`.worktrees/review-pr`、
+`REVIEW_PR_WORKTREE_ROOTS`）。两者都不是投递入口。安全边界全在脚本里：默认分支、
+locked、含 cwd 的树永不碰；查不到对应 PR 的不动。失败不阻塞本轮。
 
-**Auto 模式闭环**：按上面机制自动改道投递，无需确认。跟进会话修完 push → PR head
-变化 → 下轮扫描指纹变化重新分类（审查通过只落 clean 回执并写入汇总，**不合**，等交互/人手按 5.1 合；又有新问题则投递新
-卡点给同一会话）→ **循环直到审查干净并等人工合**。不设"最多重试 N 次"硬闸——每轮投递的前提是
-指纹变化，天然限速；维护者每轮都能从汇总看到进展，觉得空转随时人工介入。auto 禁止
+交互模式走到该打回／该等作者的分叉时：只报告卡点，不问「要开跟进会话吗」，
+也不提供该选项。auto 同样禁止投递，卡点进汇总「需人处理」；auto 禁止
 `merge-pr.mjs` / `gh pr merge` / 5.5 主干 push。
-合并／关闭后清理绑定：每轮阶段一扫描后运行
-`node "<SKILL_ROOT>/scripts/fix-session-state.mjs" sweep --open <open PR 列表>`。
-
-**合并后回收 worktree 与分支**：跟进会话的宿主 worktree（含 node_modules）和它
-`gh pr checkout` 建出的本地分支在 PR 合并后没人回收，会随 PR 数量线性膨胀。sweep 后
-紧接着运行 `node "<SKILL_ROOT>/scripts/fix-worktree-cleanup.mjs" --scan`，回收对应 PR
-已合并／关闭的托管 worktree 与本地分支。安全边界全在脚本里：只动托管 worktree 目录
-（`.cindy-worktrees`、`.xdt-worktrees`、`.claude/worktrees`、`.worktrees/review-pr`、`REVIEW_PR_WORKTREE_ROOTS`），分支对应 PR
-经 gh 实查全部非 OPEN 才动，默认分支与 locked／含 cwd 的 worktree 永不碰，合并后
-30 分钟宽限期防跟进会话还在收尾，查不到对应 PR 的一律不动只报告。对已判定可回收
-的托管树，脚本用 `git worktree remove --force`（只为脏树不卡住，不扩到用户自建树
-或默认分支）；本地孤儿分支用 `git branch -D`。脚本幂等，本轮
-失败／漏跑下轮自愈；`removedWorktrees`／`skipped`／`errors` 结果写入汇总，失败不阻塞
-流程。交互模式合并 selfFix PR 后也可用 `--pr <N>` 即时回收；拿不准先 `--dry-run` 预览。
-
-**收敛检查点后复发的升级阶梯（selfFix 专用，自主执行不必逐次上报）**：仅当 5.0
-判定"同 family 复发"**且 `recurrenceType: 'reopened'`**（真的消失过一次，不是
-`'persistent'` 持续未修——见 5.0「persistent vs reopened」，D3 阻断修正：`
-persistent` 从未真的收敛过，不构成"复发"，不触发本段升级阶梯，按普通 P0/P1
-打回/投递即可）且作者在 `selfFixAuthors` 时，投递给跟进会话的当前卡点里除了照常
-列出本轮 P0/P1，额外加一句"这是同 family 复发（上一轮已确认收敛）"，并要求跟进
-会话从下面四个方向里选一个，不必等 owner 拍板：
-
-1. **显式状态机**——把隐含的状态迁移写成显式、可枚举的状态机，堵住"漏了一个转移
-   路径"这类复发根源；
-2. **职责上移**——把这个不变量的判定收口到唯一 owner（模块/函数/类型），别处只
-   读取结论，不各自重复判断；
-3. **保语义降机制**——对外行为不变，用更简单的机制实现（例如去掉一层缓存、把
-   异步协调换成同步）；
-4. **划范围**——明确收窄这个不变量的承诺范围（并同步更新相关文档与测试），不再
-   假装它在全部场景都成立。
-
-四选一之外有两条硬闸，任一命中都不能自主执行，必须暂停并把情况报告给 owner：
-
-- **新增基础设施先答一句**：四个方向里任何一个如果要**净新增**并发协调、锁、
-  缓存、持久化状态或重试基础设施，动手前必须先问"删掉它，原始目标还成立吗"——
-  成立（目标不靠这层新机制也能满足）就默认删掉它，改选①～④里更简单的方向；不
-  成立（目标确实依赖这层新机制）就暂停，报告 owner，不能自主加。
-- **用户可见范围硬闸**：四个方向里任何一个如果会改变用户可见行为、功能范围或
-  发布策略，一律不自主执行，报告 owner 拍板，不能借"这是技术方案选择"绕过。
-
-跟进会话按四选一改完之后，仍走本节已有的"push → PR head 变化 → 下轮重新扫描"
-闭环，不新增指纹类别、不改 `fix-session-state.mjs` 的判定逻辑——复发本身已经是
-新的卡点内容，指纹按现有规则（`headRefOid` 变化）天然会触发重投，不需要单独为
-"是否复发"加一层状态。
 
 <!-- dist:strip:end preview-5.4 -->
 ### 5.5 冲突代合并（主干侧解决，不推作者分支）
@@ -1914,7 +1808,7 @@ rebase、不 force-push**。冲突的代处理只有一条路：在主干侧做�
 
 **进入门槛只有一条**：独立审查已通过（0 P0/P1），且格式门、产品/架构 gate、
 thread resolve、required checks 等其余条件**全部**满足——唯一剩下的阻断就是与
-base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常走打回/跳过/跟进流程。
+base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常走打回/跳过。
 交互模式唯一例外：审查存在 P0/P1 时，经用户在 5.2 分叉里明确选择，可升级为 5.6
 代修合并（合并后在默认分支修复问题）；auto 模式无此例外。
 
@@ -1923,8 +1817,8 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
 - **机械冲突**（lockfile 重新生成、相邻行互不相关的改动、与 3.6 依赖链中已合入
   代码的重复上下文等）：交互模式确认后执行；auto 模式**不**执行（只审不合，写入汇总等交互/人手合）；
 - **语义冲突**（需要在两种业务逻辑之间做取舍）：交互模式先展示冲突文件和解决
-  方案，经确认后执行；auto 模式不擅自取舍——`selfFixAuthors` 的 PR 投递 5.4
-  跟进会话，其余写入汇总点名维护者；
+  方案，经确认后执行；auto 模式不擅自取舍——一律写入汇总点名维护者（5.4 已停用，
+  `selfFixAuthors` 也不另开会话）；
 - 拿不准算语义冲突。
 
 **执行步骤（在隔离 worktree，不碰主工作树）**：
@@ -1943,7 +1837,7 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
    合并，完成并确认后再处理下一个，避免主干连续变基造成误判。
 
 **汇总要求**：走本路径落地的 PR 在汇总中标注"主干代合并"，写明冲突文件与验证
-结果；abort 的写明"语义冲突，转作者/跟进会话"。
+结果；abort 的写明"语义冲突，转作者"。
 
 <!-- dist:strip:end preview-5.5 -->
 ### 5.6 代修合并（merge-then-fix，仅交互模式）
@@ -1956,7 +1850,7 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
 
 **边界（任一不满足即不提供本选项）**：
 
-- 仅交互模式；auto 模式一律不走本路径（auto 仍按 5.2/5.4/5.5 处理）；
+- 仅交互模式；auto 模式一律不走本路径（auto 仍按 5.2/5.5 处理，5.4 已停用）；
 - 安全与隐私门硬命中（`security.hardHits`）的 PR 绝不走本路径——合并会把凭证永久
   带进默认分支历史；照常按 3.1 打回清历史并轮换。审查定性为真实凭证/隐私数据的
   P0 同理；
@@ -1966,7 +1860,7 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
   [references/internal-gates.md](references/internal-gates.md) 的 admin 条件；
 - 修复量必须在"本轮能改完、能验证"的范围内：问题多到接近重写、或涉及连维护者也
   拿不准的语义/产品取舍时不硬修，回到 5.2 打回或先与作者讨论；
-- 作者在 `selfFixAuthors` 时不走本路径（走 5.4 跟进会话修 PR 分支）；
+- 作者在 `selfFixAuthors` 时不走本路径（5.4 已停用，不开跟进会话；卡点只报告）；
 - 每步写操作（合并落地的推送、评论、删远程分支）仍逐项 `AskUserQuestion` 确认。
 
 **触发**：交互模式、作者不在 `selfFixAuthors`、审查报告存在 P0/P1（可同时叠加与
@@ -2055,10 +1949,9 @@ receipt，"这一轮是否已经产出过收敛检查点六件套"没有任何�
 与否的差异由各自语义/是否有可核验凭证决定，不是随意的，改动前务必想清楚这一
 点，不要因为看到"通知去重了、检查点没去重"就顺手给检查点也补一层）**：
 
-- **`selfFixAuthors` 的自动跟进修复（5.4）路径**：这是硬拦截点——5.4 步骤 3
-  「投递」下一轮修复任务给跟进会话之前，必须先完成一次收敛检查点（具体问哪几项、
-  记录到哪，按收敛检查点契约执行），检查点完成前**不得**继续投递新的 fix-handoff
-  轮次，避免跟进会话在同一类问题上无限次"修了又坏"式空转；
+- **`selfFixAuthors` 的 PR**：5.4 已停用，**不得**再为复发开跟进会话或投递下一轮
+  修复任务；卡点只进汇总 / 打回。收敛检查点请求按下面常规 PR 口径写进打回正文
+  （ownPr 发 COMMENT 时同样带上），不要当成「可以开会话」的信号；
 - **非 self-fix 的常规 PR（5.2 打回路径）**：本轮打回评论正文里必须显式带一段完整
   的检查点请求（列出连续未收敛的家族清单，逐条附 `invariant` 与最近一次
   `priorHead`/`priorDescription`；具体措辞按「对外话术与人格边界」现有基调写，
@@ -2207,10 +2100,9 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    `heldDraftResults`，按创建时间排序；格式失败、普通 gate 未过或权限不足的候选记为
    skip，不 checkout；`security.hardHits` 非空的候选按 `pushback-security` 优先打回
    （不 checkout、不进审查）。记录每个候选的 base、head SHA、文件路径和原因，并用候选间的
-   `baseRefName`／head 分支交叉比对标出 stacked 依赖（见 3.6）。扫描后按 5.4 运行
-   `fix-session-state.mjs sweep --open <open PR 列表>`，清理已合并／关闭 PR 的
-   跟进会话绑定；随后运行 `fix-worktree-cleanup.mjs --scan` 回收这些 PR 遗留的
-   跟进 worktree 与本地分支（判定与安全边界在脚本内，结果计入汇总，失败不阻塞）。
+   `baseRefName`／head 分支交叉比对标出 stacked 依赖（见 3.6）。扫描后可运行
+   `fix-worktree-cleanup.mjs --scan` 回收**历史**托管 worktree（5.4 已停用，本轮
+   禁止 `fix-session-state.mjs` get/set；sweep 只清旧绑定，不是投递入口）。
    （漏播的合并致谢由 `pre-check.mjs` 负责补发，**不在本阶段跑**：本轮次在「没有 open PR」
    时压根不会创建，而一批 PR 刚全部合完、open 清零正是最该发致谢的时刻，因此该动作必须与
    「有没有审查活」解耦，见 `notify-merge-backfill.mjs` 与「Skill 自同步」一节。）
@@ -2357,8 +2249,8 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
    （其余全过、仅剩冲突）**auto 不按 5.5 合**，写入汇总等交互处理，否则跳过；
    依赖方在被依赖 PR 合并前记 skip（`depends-on-#N`），被依赖者本轮落地
    后重新拉元数据、CI 通过再补入；`selfFix=true` 的作者侧卡点（安全硬命中、格式、审查
-   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，按 5.4 投递给专属跟进
-   会话，循环跟进直到审查干净（auto 只落回执、不合，等交互/人手合；本阶段开头先跑一次 `fix-session-state.mjs sweep`）；重叠排队的
+   P0/P1、语义冲突、CI 失败、未 resolve thread、停滞）不打回，也**不**按 5.4 投递跟进
+   会话（已停用），写入汇总「需人处理」；重叠排队的
    候选在冲突项落地后补入处理。任何单 PR 异常都写入汇总并继续其他候选。锁续期由
    `prepare.mjs` 拉起的后台守护负责，不要在候选之间、等待子 agent 时、或
    同一分钟内反复跑 `refresh-lock.mjs`。`lost=true`（守护或补救调用返回）时
@@ -2367,7 +2259,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
 auto 模式可以按维护者配置创建产品/架构/安全/规则门的讨论 issue、挂
 `awaiting-discussion` 标签（不再转 draft）、admins Approve 后自动 release（摘标签）
 和发送一次定向通知；3B 的作者催办仍按旧流程的去重和停滞规则执行。auto 自己不修改
-PR 代码，修复动作只发生在 5.4 的跟进会话里。
+PR 代码。5.4 已停用，auto **不得**再把修复丢给跟进会话。
 
 ### 6.1 汇总输出格式
 
@@ -2491,8 +2383,8 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 - [#124](<PR_URL>) feat(mobile): 新增扫码 — P1×2：缺测试、未处理错误路径
 - [#132](<PR_URL>) feat(core): 接入三方 API — 凭证泄露×1（github-token），须清历史并轮换
 
-**转跟进会话** <n>
-- [#125](<PR_URL>) fix(core): 会话恢复 — 审查 P1×1，已投递 fix-handoff
+**需人处理（不开跟进会话）** <n>
+- [#125](<PR_URL>) fix(core): 会话恢复 — 审查 P1×1，5.4 已停用，未投递
 
 **被 hold** <n>
 - [#126](<PR_URL>) feat(ui): 新设置页 — 产品讨论 issue #88 等白名单意见

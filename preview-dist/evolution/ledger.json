@@ -4316,6 +4316,58 @@
       "occurrences": 1,
       "firstSeen": "2026-09-01T00:29:30.128Z",
       "lastSeen": "2026-09-01T00:29:30.128Z"
+    },
+    {
+      "fingerprint": "isolation-worktree-hides-prepared-review-artifacts",
+      "tier": "proposal",
+      "title": "isolation worktree 从默认分支开空树，审查席看不到主会话已备好的 prompt/segment/hunks",
+      "detail": "auto 审 PR 417 时主会话把 prompt.md/segment/hunks 写进 .worktrees/review-pr/pr-417，审查席 isolation=worktree 却落在 ops 仓 main 空树；席找不到材料、未交 rro-1.json，本轮只能 skip。426 因指令写死绝对路径才交卷。",
+      "proposal": "spawn 审查席时把工作目录钉到已备好的 review worktree，或把产物复制进 isolation cwd；禁止只靠相对路径 prompt.md。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-02T09:59:54.923Z",
+      "lastSeen": "2026-09-02T09:59:54.923Z"
+    },
+    {
+      "fingerprint": "review-agent-isolation-tree-misses-rro",
+      "tier": "proposal",
+      "title": "隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json",
+      "detail": "PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。",
+      "proposal": "spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-02T10:28:43.892Z",
+      "lastSeen": "2026-09-02T10:28:43.892Z"
+    },
+    {
+      "fingerprint": "greptile-unresolved-threads-by-design",
+      "tier": "by-design",
+      "title": "Greptile 未 resolve thread 挡合并,threadTriage 未启用",
+      "detail": "PR 431 1 条、PR 434 3 条 Greptile conversation 未 resolve。threadTriage 未配置,auto 只催作者点 Resolve。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-02T10:28:48.263Z",
+      "lastSeen": "2026-09-02T10:28:48.263Z"
+    },
+    {
+      "fingerprint": "duplicate-format-comment-ownpr",
+      "tier": "by-design",
+      "title": "ownPr 格式打回确认失败后重复提交 COMMENT",
+      "detail": "PR 431 格式 COMMENT 因第一次命令未回显成功又提交一次,GitHub 上出现两条相同正文。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-02T10:28:52.696Z",
+      "lastSeen": "2026-09-02T10:28:52.696Z"
     }
   ],
   "escapedHazards": [
