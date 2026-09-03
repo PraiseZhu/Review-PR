@@ -612,8 +612,8 @@ node --test tests/*.test.mjs
 `<!-- review-pr:ui-evidence-notice -->`；发送前先在已拉取的评论历史里查该标记，
 已存在即不重发（同一 PR 只提醒一次）。交互模式发送前照常确认；auto 模式可直接
 发送（与 notify-author-resolve 的一次性提醒评论同级，发送失败不阻塞流程）。提醒
-不改变任何 gate 结论，也不因作者不补证据而升级为阻断；`selfFixAuthors` 的 PR 走
-5.4 跟进会话时，把「补充 UI 证据到 description」并入跟进消息即可，不单发评论。
+不改变任何 gate 结论，也不因作者不补证据而升级为阻断；`selfFixAuthors` 的 PR
+同样只发这条提醒（或 ownPr 时不发），**禁止**把缺口并进跟进会话消息——5.4 已停用。
 `auto.ownPr=true`（viewer 与作者是同一个账号，即本流程账号自己开的 PR）时不发本
 评论——收件人就是本流程账号自己，评论没有收件人，只会在 PR 上堆无人消费的噪音；
 证据缺口照常写进报告与汇总，gate 结论不变。**被 skip 的候选本轮不发 UI 证据提醒**——
@@ -1386,10 +1386,8 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 但不得作为机器匹配的依据。
 
 判定复发后：
-- **`recurrenceType: 'reopened'`**：作者在 `selfFixAuthors` → 按 5.4「收敛检查点
-  后复发的升级阶梯」自主执行；作者不在 `selfFixAuthors`（对方是独立协作者，不能
-  强制其选择修法）→ 按「对外话术与人格边界」模板 A 追加"收敛检查点请求"段，是
-  建议不是要求。
+- **`recurrenceType: 'reopened'`**：作者在不在 `selfFixAuthors` 都按「对外话术与人格边界」
+  模板 A 追加"收敛检查点请求"段（建议不是要求）。**禁止**再走已停用的 5.4 升级阶梯去开跟进会话。
 - **`recurrenceType: 'persistent'`**：不走升级阶梯，也不在文案里说"已收敛"——
   按普通 P0/P1 打回处理即可，措辞上可以指出"这个问题从上一轮起就一直存在，
   之前的修法没有覆盖到当前这条触发路径"（如实描述"持续未修"，不是"收敛后复发"）。
@@ -1432,7 +1430,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
 
-### 5.4 自动跟进修复（fix-handoff）：自有 PR 卡住时开跟进会话修到能合并（preview 版）
+### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话（preview 版）
 
 > preview 版：本节能力已剥离（fix-handoff 跟进会话投递不在 preview 产物中），输出内部结论即止。
 ### 5.5 冲突代合并（主干侧解决，不推作者分支）（preview 版）
@@ -1760,7 +1758,7 @@ auto 模式分三阶段，目标是确定性、可重试和不互相污染：
 auto 模式可以按维护者配置创建产品/架构/安全/规则门的讨论 issue、挂
 `awaiting-discussion` 标签（不再转 draft）、admins Approve 后自动 release（摘标签）
 和发送一次定向通知；3B 的作者催办仍按旧流程的去重和停滞规则执行。auto 自己不修改
-PR 代码，修复动作只发生在 5.4 的跟进会话里。
+PR 代码。5.4 已停用，auto **不得**再把修复丢给跟进会话。
 
 ### 6.1 汇总输出格式
 
@@ -1872,8 +1870,8 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 - [#124](<PR_URL>) feat(mobile): 新增扫码 — P1×2：缺测试、未处理错误路径
 - [#132](<PR_URL>) feat(core): 接入三方 API — 凭证泄露×1（github-token），须清历史并轮换
 
-**转跟进会话** <n>
-- [#125](<PR_URL>) fix(core): 会话恢复 — 审查 P1×1，已投递 fix-handoff
+**需人处理（不开跟进会话）** <n>
+- [#125](<PR_URL>) fix(core): 会话恢复 — 审查 P1×1，5.4 已停用，未投递
 
 **被 hold** <n>
 - [#126](<PR_URL>) feat(ui): 新设置页 — 产品讨论 issue #88 等白名单意见
