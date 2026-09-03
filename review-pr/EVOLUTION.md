@@ -472,6 +472,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `ui-evidence-wrong-image-not-missing-439` **UI 证据贴仓标 logo 按描述不实打回，不是缺证据提醒** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #439 caption 写参考线叠层，链到 cindyplugin/icon.jpg。SKILL 第4节第7条：证据与 diff 无关记 P1。
 - `security-gate-workflow-changelog-460` **改 .github/workflows 走 security 确认门 hold** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:PR #460 命中 daily-changelog.yml。signoff-hold security 三件套成功，issue #463。
 - `skip-ci-pending-gate-452` **非 required 检查仍在跑时 skip-gate，等人看 CI** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked

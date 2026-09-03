@@ -4407,6 +4407,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T11:32:03.388Z",
       "lastSeen": "2026-09-03T11:32:03.388Z"
+    },
+    {
+      "fingerprint": "ui-evidence-wrong-image-not-missing-439",
+      "tier": "by-design",
+      "title": "UI 证据贴仓标 logo 按描述不实打回，不是缺证据提醒",
+      "detail": "PR #439 caption 写参考线叠层，链到 cindyplugin/icon.jpg。SKILL 第4节第7条：证据与 diff 无关记 P1。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T11:32:07.793Z",
+      "lastSeen": "2026-09-03T11:32:07.793Z"
     }
   ],
   "escapedHazards": [
