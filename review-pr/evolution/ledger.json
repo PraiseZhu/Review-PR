@@ -4394,6 +4394,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T11:31:58.854Z",
       "lastSeen": "2026-09-03T11:31:58.854Z"
+    },
+    {
+      "fingerprint": "security-gate-workflow-changelog-460",
+      "tier": "by-design",
+      "title": "改 .github/workflows 走 security 确认门 hold",
+      "detail": "PR #460 命中 daily-changelog.yml。signoff-hold security 三件套成功，issue #463。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T11:32:03.388Z",
+      "lastSeen": "2026-09-03T11:32:03.388Z"
     }
   ],
   "escapedHazards": [
