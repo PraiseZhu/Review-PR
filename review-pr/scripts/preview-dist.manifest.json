@@ -122,7 +122,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "扫描后可运行\n   `fix-worktree-cleanup.mjs --scan` 回收**历史**跟进 worktree（5.4 已停用，本轮\n   不再 `fix-session-state.mjs` get/set 新绑定；sweep 只清旧绑定，不作为投递入口）。",
+      "find": "扫描后可运行\n   `fix-worktree-cleanup.mjs --scan` 回收**历史**托管 worktree（5.4 已停用，本轮\n   禁止 `fix-session-state.mjs` get/set；sweep 只清旧绑定，不是投递入口）。",
       "replace": "（preview 版：5.4 fix-handoff 与 worktree 回收已剥离，相关脚本不在产物中，本段跳过。）"
     },
     {

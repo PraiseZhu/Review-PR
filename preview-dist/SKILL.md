@@ -6,7 +6,7 @@ description: >
   风险、影响面、测试和规则遵从；支持指定 PR、
   自动选择、交互式合并、代修合并（先合并、主干修复、评论告知作者，仅交互模式）
   以及 --auto 定时批处理。保留维护者专用的产品/UI gate、技术
-  架构 gate、讨论 issue、self-fix、workflow approval、结构性 BLOCKED、Server 通知和
+  架构 gate、讨论 issue、self-merge（仅交互）、workflow approval、结构性 BLOCKED、Server 通知和
   经配置播报出口的通知流程（对外话术遵循统一人格模板）；使用独立审查 agent、前置
   gate、GitHub review/merge 和 scheduler pre-run
   check。每轮结束做自进化复盘（EVOLUTION.md 台账，扩权类永不自动落地）；汇总 JSON
@@ -1308,7 +1308,7 @@ gpt 实跑复现：两条仅尾部（65+ 字符）不同的 invariant 会被截�
 
 ### 5.0 收敛检查点与同 family 复发
 
-跨轮次的概念，5.2（打回）与 5.4（自修）共用识别机制，各自的动作见对应小节。
+跨轮次的概念，5.2（打回）用这套识别机制。5.4 已停用，不再有自修动作。
 
 **收敛检查点**：某一轮独立审查报告显示某个 family（第 4 节第 6 条）的全部
 manifestations 已确认修复——该 family 不再出现在本轮 findings，或本轮 Verification
@@ -1426,7 +1426,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   对应键时这些分支永不触发；`mergeAuthorization.breakGlassApprovers` 名单成员发
   `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
   交互/人手才按 5.1「授权快速合并通道」合。
-- 产品/架构 hold、issue release、通知、self-fix 和收尾 issue 的详细动作均按
+- 产品/架构 hold、issue release、通知、self-merge（仅交互）和收尾 issue 的详细动作均按
   [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
 
@@ -1488,10 +1488,9 @@ receipt，"这一轮是否已经产出过收敛检查点六件套"没有任何�
 与否的差异由各自语义/是否有可核验凭证决定，不是随意的，改动前务必想清楚这一
 点，不要因为看到"通知去重了、检查点没去重"就顺手给检查点也补一层）**：
 
-- **`selfFixAuthors` 的自动跟进修复（5.4）路径**：这是硬拦截点——5.4 步骤 3
-  「投递」下一轮修复任务给跟进会话之前，必须先完成一次收敛检查点（具体问哪几项、
-  记录到哪，按收敛检查点契约执行），检查点完成前**不得**继续投递新的 fix-handoff
-  轮次，避免跟进会话在同一类问题上无限次"修了又坏"式空转；
+- **`selfFixAuthors` 的 PR**：5.4 已停用，**不得**再为复发开跟进会话或投递下一轮
+  修复任务；卡点只进汇总 / 打回。收敛检查点请求按下面常规 PR 口径写进打回正文
+  （ownPr 发 COMMENT 时同样带上），不要当成「可以开会话」的信号；
 - **非 self-fix 的常规 PR（5.2 打回路径）**：本轮打回评论正文里必须显式带一段完整
   的检查点请求（列出连续未收敛的家族清单，逐条附 `invariant` 与最近一次
   `priorHead`/`priorDescription`；具体措辞按「对外话术与人格边界」现有基调写，

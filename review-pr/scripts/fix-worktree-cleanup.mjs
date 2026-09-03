@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // fix-worktree-cleanup.mjs — 回收已合并/关闭 PR 遗留的跟进 worktree 与本地分支
 //
-// 背景:5.4 fix-handoff 为 selfFixAuthors 的 PR 开跟进会话,宿主用 use_worktree 在托管
-// 目录(.cindy-worktrees / .claude/worktrees / .worktrees/review-pr)下建独立 worktree,跟进会话在里面
-// gh pr checkout 出与 PR head 同名的本地分支(git worktree 共享 refs,分支落在共享
+// 背景:5.4 已停用,不再开跟进会话。历史上宿主曾用 use_worktree 在托管
+// 目录(.cindy-worktrees / .claude/worktrees / .worktrees/review-pr)下建独立 worktree,
+// 并 gh pr checkout 出与 PR head 同名的本地分支(git worktree 共享 refs,分支落在共享
 // 仓库里)。PR 合并后 fix-session-state.mjs sweep 只清会话绑定,worktree 目录
-// (含 node_modules,单个可达 GB 级)和分支没人回收,会随 PR 数量线性膨胀。
+// (含 node_modules,单个可达 GB 级)和分支没人回收,会随历史 PR 数量线性膨胀。
 // 本脚本做确定性回收,安全边界全部内置:
 //   1. 只动「托管 worktree 目录」:路径含 .cindy-worktrees 段、.claude/worktrees 段,
 //      `.worktrees/review-pr` 段,或 REVIEW_PR_WORKTREE_ROOTS(逗号/分号分隔的
