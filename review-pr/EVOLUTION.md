@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-merged-before-hold` **命中 security 门的 PR 在巡审 hold 前被人手合入** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:456 扫描时 action=security-gate，落地前已 MERGED。auto 只审不合，hold 未发出。合并致谢走 cloud sender。
 - `skip-ci-pending-nonrequired` **非 required 检查仍在跑时 skip，等绿灯** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:本轮 452 UNSTABLE：非 required 检查 gate 还在跑。
 - `skip-conflict-author-rebase` **与主干冲突只能作者解，auto 不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
