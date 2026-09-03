@@ -4537,6 +4537,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T17:09:44.661Z",
       "lastSeen": "2026-09-03T17:09:44.661Z"
+    },
+    {
+      "fingerprint": "security-gate-awaiting-admin-465",
+      "tier": "by-design",
+      "title": "安全/规则门已 hold，等 admins 放行",
+      "detail": "PR #465 alreadyHeld issue #467；unconfirmedKinds=rules,security；本轮未重复 hold。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T17:09:49.494Z",
+      "lastSeen": "2026-09-03T17:09:49.494Z"
     }
   ],
   "escapedHazards": [

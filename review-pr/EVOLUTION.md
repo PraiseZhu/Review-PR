@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin-465` **安全/规则门已 hold，等 admins 放行** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #465 alreadyHeld issue #467；unconfirmedKinds=rules,security；本轮未重复 hold。
 - `skip-conflict-author-side` **与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
   - 现象:本轮 #439 #450 #461 mergeState=DIRTY；#461 本轮新发冲突提醒，其余 already-commented。
 - `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 2 次,首见 2026-08-21,最近 2026-09-03,status: tracked
