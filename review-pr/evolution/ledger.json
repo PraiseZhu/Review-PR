@@ -4438,14 +4438,14 @@
       "fingerprint": "skip-unresolved-threads",
       "tier": "by-design",
       "title": "未 resolve 的 conversation 挡前置门，设计上要作者点 Resolve",
-      "detail": "本轮 434/453/461 因 conversation 未 resolve 跳过；461 新发催 resolve，434/453 already-commented。",
+      "detail": "本轮 #434/#453/#461 skip-gate threads-unresolved；催 resolve already-commented",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-03T12:51:45.530Z",
-      "lastSeen": "2026-09-03T12:51:45.530Z"
+      "lastSeen": "2026-09-03T13:10:44.654Z"
     },
     {
       "fingerprint": "skip-conflict-author-rebase",
