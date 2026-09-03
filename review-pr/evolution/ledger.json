@@ -4511,6 +4511,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T13:10:57.970Z",
       "lastSeen": "2026-09-03T13:10:57.970Z"
+    },
+    {
+      "fingerprint": "merged-before-review-complete",
+      "tier": "by-design",
+      "title": "扫描后落地前 PR 已被人手合入",
+      "detail": "PR #417 扫描时 OPEN+structural-check，落地前已 MERGED；auto 不合，只尝试 merge-ack（sender-is-cloud 本地不重复）。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-03T16:19:34.188Z",
+      "lastSeen": "2026-09-03T16:19:34.188Z"
     }
   ],
   "escapedHazards": [

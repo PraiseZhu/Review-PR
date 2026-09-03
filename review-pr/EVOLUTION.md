@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `merged-before-review-complete` **扫描后落地前 PR 已被人手合入** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #417 扫描时 OPEN+structural-check，落地前已 MERGED；auto 不合，只尝试 merge-ack（sender-is-cloud 本地不重复）。
 - `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 3 次,首见 2026-08-20,最近 2026-09-03,status: tracked
   - 现象:PR #465 命中 docs/loops/review-pr-setup.md + CLAUDE.md，signoff-hold --kind security 开 issue #467；auto 不审不合。首次 hold 标题必须是「维护者确认 · PR #<n> …」，否则 title-contract-violation 且可能只打上标签。
 - `reviewed-clean-structural-bypass-auto-no-merge` **admins 作者 structural BLOCKED 审查干净后 auto 只落回执不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
