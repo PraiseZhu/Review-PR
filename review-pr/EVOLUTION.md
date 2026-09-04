@@ -5,9 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `ownpr-empty-commented-review-false-stale` **ownPr 空 COMMENTED review 被当成格式打回，导致 skip-stale-pushback** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
-  - 现象:#474 格式门未过，但 viewer 有一条空 body 的 COMMENTED review 晚于最新 commit，context 把 hasStalePushback 判真，本轮没把格式问题打回去。
-  - 提案:hasStalePushback 的 ownPr COMMENTED 通道只计带格式/打回正文的 review，空 body 或纯 inline comment 的 COMMENTED 不计入 pushbackDates。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
@@ -480,10 +477,6 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `security-gate-awaiting-admin` **命中 securityReviewPaths 后 hold，等 admins 放行** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
-  - 现象:#477 改 agent-use/docs/pr-rules.json，已 hold 讨论 issue #479，等 Approve / 同意放行。
-- `format-three-section-headings-required` **新三节 PR 模板生效后，旧「变更说明」正文会被格式门打回** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
-  - 现象:本轮 #434 #439 #450 #461 #472 都因缺「这次改了什么 / 怎么验证的 / 风险」标题被 pushback-format。内容本身往往已写在旧标题下，属作者改模板标题，不是代码问题。
 - `dirty-worktree-untracked-feature-worktrees` **生产 checkout 有未跟踪 .worktrees 功能树，auto 按脏树跳过** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:porcelain ?? .worktrees/（close-patrol-self-fix 功能树）。auto 不覆盖不清理用户改动；本轮与上两轮 auto 同一 skipReason=dirty-worktree。
 - `interactive-dirty-pushback-new-families` **交互审查发现新 P0/P1 后打回作者，属作者侧修** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
