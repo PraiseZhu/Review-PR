@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `typescript-reviewer-rejects-review-pr-protocol` **阶段二不要派 typescript-reviewer，应派 general-purpose** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:本轮 #439 首次派 typescript-reviewer，子代理以无 Write、怀疑 coordinator 注入为由拒绝执行。
+  - 提案:auto 阶段二隔离席固定用 general-purpose + isolation worktree；typescript-reviewer 会把巡审脚本协议当成越权注入而拒跑。
 - `review-agent-typescript-reviewer-ignores-rro` **用 typescript-reviewer 做 rro-1 审查会套自己的合并门并忽略指令** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:本轮 #478/#439 首次派 typescript-reviewer：#478 把指令当被动上下文、#439 因 seat1/seat2 失败自行 halt。改派 general-purpose 后 #478/#472 交卷。
   - 提案:阶段二独立审查只派 general-purpose（或明确吃 rro-1 契约的席），不要派 typescript-reviewer：它会按自身 merge-readiness 停审，不交 rro-1.json。

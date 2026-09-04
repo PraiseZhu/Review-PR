@@ -4758,6 +4758,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T21:11:48.526Z",
       "lastSeen": "2026-09-04T21:11:48.526Z"
+    },
+    {
+      "fingerprint": "typescript-reviewer-rejects-review-pr-protocol",
+      "tier": "proposal",
+      "title": "阶段二不要派 typescript-reviewer，应派 general-purpose",
+      "detail": "本轮 #439 首次派 typescript-reviewer，子代理以无 Write、怀疑 coordinator 注入为由拒绝执行。",
+      "proposal": "auto 阶段二隔离席固定用 general-purpose + isolation worktree；typescript-reviewer 会把巡审脚本协议当成越权注入而拒跑。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T21:11:52.995Z",
+      "lastSeen": "2026-09-04T21:11:52.995Z"
     }
   ],
   "escapedHazards": [
