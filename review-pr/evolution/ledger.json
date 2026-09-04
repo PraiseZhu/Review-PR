@@ -4771,6 +4771,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T21:11:52.995Z",
       "lastSeen": "2026-09-04T21:11:52.995Z"
+    },
+    {
+      "fingerprint": "review-agent-autocompact-large-payload",
+      "tier": "proposal",
+      "title": "审查席整读/大 payload 触发 autocompact 连续震荡，未交 rro-1，本轮 skip",
+      "detail": "本轮 #439 与 #461 隔离审查席均因 Autocompact thrashing 提前终止，未写出 rro-1.json。#439 已有 task/preflight；#461 已交付 3 段仍未交卷。SKILL 已记录 2026-08-31 #386 同类事故。本轮按 review-agent-timeout 写 skip 回执，禁止沿用上次清白。不扩权、不改 gate。",
+      "proposal": "派审查席时强制字段级抽取（node -e / grep -n），禁止整读 task.json/prompt.md/全量 diff；大 PR 考虑更小 sizeBudgetBytes 或答卷组装席接手并重建 task/preflight。本轮不改脚本。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T23:01:13.562Z",
+      "lastSeen": "2026-09-04T23:01:13.562Z"
     }
   ],
   "escapedHazards": [

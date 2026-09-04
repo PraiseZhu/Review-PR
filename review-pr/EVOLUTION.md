@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-autocompact-large-payload` **审查席整读/大 payload 触发 autocompact 连续震荡，未交 rro-1，本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:本轮 #439 与 #461 隔离审查席均因 Autocompact thrashing 提前终止，未写出 rro-1.json。#439 已有 task/preflight；#461 已交付 3 段仍未交卷。SKILL 已记录 2026-08-31 #386 同类事故。本轮按 review-agent-timeout 写 skip 回执，禁止沿用上次清白。不扩权、不改 gate。
+  - 提案:派审查席时强制字段级抽取（node -e / grep -n），禁止整读 task.json/prompt.md/全量 diff；大 PR 考虑更小 sizeBudgetBytes 或答卷组装席接手并重建 task/preflight。本轮不改脚本。
 - `typescript-reviewer-rejects-review-pr-protocol` **阶段二不要派 typescript-reviewer，应派 general-purpose** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:本轮 #439 首次派 typescript-reviewer，子代理以无 Write、怀疑 coordinator 注入为由拒绝执行。
   - 提案:auto 阶段二隔离席固定用 general-purpose + isolation worktree；typescript-reviewer 会把巡审脚本协议当成越权注入而拒跑。
