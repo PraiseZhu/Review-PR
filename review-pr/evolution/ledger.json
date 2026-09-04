@@ -4732,6 +4732,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T17:59:18.461Z",
       "lastSeen": "2026-09-04T17:59:18.461Z"
+    },
+    {
+      "fingerprint": "review-agent-typescript-reviewer-ignores-rro",
+      "tier": "proposal",
+      "title": "用 typescript-reviewer 做 rro-1 审查会套自己的合并门并忽略指令",
+      "detail": "本轮 #478/#439 首次派 typescript-reviewer：#478 把指令当被动上下文、#439 因 seat1/seat2 失败自行 halt。改派 general-purpose 后 #478/#472 交卷。",
+      "proposal": "阶段二独立审查只派 general-purpose（或明确吃 rro-1 契约的席），不要派 typescript-reviewer：它会按自身 merge-readiness 停审，不交 rro-1.json。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T18:58:06.176Z",
+      "lastSeen": "2026-09-04T18:58:06.176Z"
     }
   ],
   "escapedHazards": [

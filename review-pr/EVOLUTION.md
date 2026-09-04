@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-agent-typescript-reviewer-ignores-rro` **用 typescript-reviewer 做 rro-1 审查会套自己的合并门并忽略指令** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:本轮 #478/#439 首次派 typescript-reviewer：#478 把指令当被动上下文、#439 因 seat1/seat2 失败自行 halt。改派 general-purpose 后 #478/#472 交卷。
+  - 提案:阶段二独立审查只派 general-purpose（或明确吃 rro-1 契约的席），不要派 typescript-reviewer：它会按自身 merge-readiness 停审，不交 rro-1.json。
 - `seat1-snapshot-direction-ambiguity` **三审 runner 浅克隆里 BASE/HEAD 解析需要显式锚定 PR 号** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:mivo-review runner 的席位 checkout 是只含 BASE 与 HEAD 两个孤立提交的浅克隆,git status 显示 detached HEAD、无分支。本席位环境没有注入 PR_NUMBER/BASE_SHA/HEAD_SHA 任何变量,git diff origin/main..HEAD 的方向可能是反向 diff(main 是 HEAD 后代时)。审查 agent 必须先 gh pr view <N> 确认 headRefOid 与本地 HEAD 一致才能开审,否则会审错方向。
 - `pr-template-hard-cutover-open-pr-format-flip` **PR 模板段落名硬切换会把既存 open PR 的 pr-format-gate 打红——切换 PR 应带既存 PR 迁移评估** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
@@ -410,8 +413,6 @@
 
 ## 已自动落地(automatable-gap)
 
-- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
-  - 现象:PR #439 隔离审查席在已有 task.json/prompt.md/preflight.json 后仍写出 93KB segment-1.json 与 30KB all_patches.diff 并整读，autocompact 连续 3 次挂死，未交 rro-1.json。主会话按协议写 skip 回执 --reason review-agent-timeout，禁止沿用上次 dirty/clean。与 #386 同类。
 - `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 2 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:本轮 #439/#450/#461 再次 autocompact 或 watchdog 未交 rro-1；#478/#472 小 payload 交卷并 consume 为 clean。typescript-reviewer 会自加 merge-readiness 门忽略 rro 指令，应派 general-purpose。
   - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
