@@ -4550,6 +4550,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-03T17:09:49.494Z",
       "lastSeen": "2026-09-03T17:09:49.494Z"
+    },
+    {
+      "fingerprint": "interactive-format-edit-then-merge",
+      "tier": "by-design",
+      "title": "交互模式代修 PR 标题/模板后合入，不推作者分支",
+      "detail": "PR 465 格式门因 ops: 标题和缺模板段落不过。维护者 gh pr edit 代补后 squash 合入，head SHA 未变。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T04:40:39.109Z",
+      "lastSeen": "2026-09-04T04:40:39.109Z"
     }
   ],
   "escapedHazards": [
