@@ -4719,6 +4719,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T16:49:10.459Z",
       "lastSeen": "2026-09-04T16:49:10.459Z"
+    },
+    {
+      "fingerprint": "seat1-snapshot-direction-ambiguity",
+      "tier": "proposal",
+      "title": "三审 runner 浅克隆里 BASE/HEAD 解析需要显式锚定 PR 号",
+      "detail": "mivo-review runner 的席位 checkout 是只含 BASE 与 HEAD 两个孤立提交的浅克隆,git status 显示 detached HEAD、无分支。本席位环境没有注入 PR_NUMBER/BASE_SHA/HEAD_SHA 任何变量,git diff origin/main..HEAD 的方向可能是反向 diff(main 是 HEAD 后代时)。审查 agent 必须先 gh pr view <N> 确认 headRefOid 与本地 HEAD 一致才能开审,否则会审错方向。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T17:59:18.461Z",
+      "lastSeen": "2026-09-04T17:59:18.461Z"
     }
   ],
   "escapedHazards": [
