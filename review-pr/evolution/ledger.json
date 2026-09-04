@@ -4615,6 +4615,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T14:26:27.355Z",
       "lastSeen": "2026-09-04T14:26:27.355Z"
+    },
+    {
+      "fingerprint": "ownpr-empty-commented-review-false-stale",
+      "tier": "proposal",
+      "title": "ownPr 空 COMMENTED review 被当成格式打回，导致 skip-stale-pushback",
+      "detail": "#474 格式门未过，但 viewer 有一条空 body 的 COMMENTED review 晚于最新 commit，context 把 hasStalePushback 判真，本轮没把格式问题打回去。",
+      "proposal": "hasStalePushback 的 ownPr COMMENTED 通道只计带格式/打回正文的 review，空 body 或纯 inline comment 的 COMMENTED 不计入 pushbackDates。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T14:26:31.847Z",
+      "lastSeen": "2026-09-04T14:26:31.847Z"
     }
   ],
   "escapedHazards": [

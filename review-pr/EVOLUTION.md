@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `ownpr-empty-commented-review-false-stale` **ownPr 空 COMMENTED review 被当成格式打回，导致 skip-stale-pushback** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:#474 格式门未过，但 viewer 有一条空 body 的 COMMENTED review 晚于最新 commit，context 把 hasStalePushback 判真，本轮没把格式问题打回去。
+  - 提案:hasStalePushback 的 ownPr COMMENTED 通道只计带格式/打回正文的 review，空 body 或纯 inline comment 的 COMMENTED 不计入 pushbackDates。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
