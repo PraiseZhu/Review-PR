@@ -4589,6 +4589,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T15:27:37.433Z",
       "lastSeen": "2026-09-04T15:27:37.433Z"
+    },
+    {
+      "fingerprint": "auto-review-clean-no-merge-observation",
+      "tier": "by-design",
+      "title": "auto 只审不合：clean 回执后等交互合",
+      "detail": "本轮 #477 独立审查 clean、落回执，未 merge/approve。首周观察期按 SKILL 0 节执行。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T15:27:41.782Z",
+      "lastSeen": "2026-09-04T15:27:41.782Z"
     }
   ],
   "escapedHazards": [

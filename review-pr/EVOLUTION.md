@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `auto-review-clean-no-merge-observation` **auto 只审不合：clean 回执后等交互合** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:本轮 #477 独立审查 clean、落回执，未 merge/approve。首周观察期按 SKILL 0 节执行。
 - `skip-gate-nonrequired-ci-failed` **非 required 检查失败时前置门拦合并、本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #478 seat2 失败 UNSTABLE；#474 同时格式 stale + 多检查失败。不绕过、不扩权。
 - `skip-stale-pushback-format-no-new-commit` **格式门打回后作者未新 commit，auto 跳过不再复打** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
