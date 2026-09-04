@@ -480,6 +480,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `security-gate-awaiting-admin` **命中 securityReviewPaths 后 hold，等 admins 放行** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:#477 改 agent-use/docs/pr-rules.json，已 hold 讨论 issue #479，等 Approve / 同意放行。
 - `format-three-section-headings-required` **新三节 PR 模板生效后，旧「变更说明」正文会被格式门打回** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #434 #439 #450 #461 #472 都因缺「这次改了什么 / 怎么验证的 / 风险」标题被 pushback-format。内容本身往往已写在旧标题下，属作者改模板标题，不是代码问题。
 - `dirty-worktree-untracked-feature-worktrees` **生产 checkout 有未跟踪 .worktrees 功能树，auto 按脏树跳过** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked

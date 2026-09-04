@@ -4628,6 +4628,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T14:26:31.847Z",
       "lastSeen": "2026-09-04T14:26:31.847Z"
+    },
+    {
+      "fingerprint": "security-gate-awaiting-admin",
+      "tier": "by-design",
+      "title": "命中 securityReviewPaths 后 hold，等 admins 放行",
+      "detail": "#477 改 agent-use/docs/pr-rules.json，已 hold 讨论 issue #479，等 Approve / 同意放行。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T14:26:36.290Z",
+      "lastSeen": "2026-09-04T14:26:36.290Z"
     }
   ],
   "escapedHazards": [
