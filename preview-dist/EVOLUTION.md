@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
+  - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
+  - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
+- `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
+  - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
+  - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。
 - `review-agent-isolation-tree-misses-rro` **隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
   - 现象:PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。
   - 提案:spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。
@@ -469,6 +475,36 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:PR 465 格式门因 ops: 标题和缺模板段落不过。维护者 gh pr edit 代补后 squash 合入，head SHA 未变。
+- `security-gate-awaiting-admin-465` **安全/规则门已 hold，等 admins 放行** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #465 alreadyHeld issue #467；unconfirmedKinds=rules,security；本轮未重复 hold。
+- `skip-conflict-author-side` **与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #439 #450 #461 mergeState=DIRTY；#461 本轮新发冲突提醒，其余 already-commented。
+- `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 2 次,首见 2026-08-21,最近 2026-09-03,status: tracked
+  - 现象:本轮 #434 #453 仍因 CHANGES_REQUESTED + 未 resolve thread skip；催 resolve 已去重 already-commented。
+- `merged-before-review-complete` **扫描后落地前 PR 已被人手合入** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #417 扫描时 OPEN+structural-check，落地前已 MERGED；auto 不合，只尝试 merge-ack（sender-is-cloud 本地不重复）。
+- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 3 次,首见 2026-08-20,最近 2026-09-03,status: tracked
+  - 现象:PR #465 命中 docs/loops/review-pr-setup.md + CLAUDE.md，signoff-hold --kind security 开 issue #467；auto 不审不合。首次 hold 标题必须是「维护者确认 · PR #<n> …」，否则 title-contract-violation 且可能只打上标签。
+- `reviewed-clean-structural-bypass-auto-no-merge` **admins 作者 structural BLOCKED 审查干净后 auto 只落回执不合** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #417 同 SHA 已有 clean 回执，不重审；auto 不合
+- `skip-ci-nonrequired-failed` **非 required 检查失败时 skip-gate，等人修绿** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #452 mergeStateStatus=UNSTABLE，失败检查 gate；上轮还是 ci-pending
+- `skip-conflict-author-rebase` **与主干冲突只能作者解，auto 不合** — 出现 2 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #439/#450 DIRTY；催冲突 already-commented
+- `skip-unresolved-threads` **未 resolve 的 conversation 挡前置门，设计上要作者点 Resolve** — 出现 2 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 #434/#453/#461 skip-gate threads-unresolved；催 resolve already-commented
+- `security-gate-merged-before-hold` **命中 security 门的 PR 在巡审 hold 前被人手合入** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:456 扫描时 action=security-gate，落地前已 MERGED。auto 只审不合，hold 未发出。合并致谢走 cloud sender。
+- `skip-ci-pending-nonrequired` **非 required 检查仍在跑时 skip，等绿灯** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:本轮 452 UNSTABLE：非 required 检查 gate 还在跑。
+- `ui-evidence-wrong-image-not-missing-439` **UI 证据贴仓标 logo 按描述不实打回，不是缺证据提醒** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #439 caption 写参考线叠层，链到 cindyplugin/icon.jpg。SKILL 第4节第7条：证据与 diff 无关记 P1。
+- `security-gate-workflow-changelog-460` **改 .github/workflows 走 security 确认门 hold** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #460 命中 daily-changelog.yml。signoff-hold security 三件套成功，issue #463。
+- `skip-ci-pending-gate-452` **非 required 检查仍在跑时 skip-gate，等人看 CI** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
+  - 现象:PR #452 mergeStateStatus=UNSTABLE(gate 还在跑)。按前置门 skip，不审不合。
 - `duplicate-format-comment-ownpr` **ownPr 格式打回确认失败后重复提交 COMMENT** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
   - 现象:PR 431 格式 COMMENT 因第一次命令未回显成功又提交一次,GitHub 上出现两条相同正文。
 - `greptile-unresolved-threads-by-design` **Greptile 未 resolve thread 挡合并,threadTriage 未启用** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
@@ -651,8 +687,6 @@
   - 现象:PR #218 用 Summary/Validation，缺 变更说明/提交前自检/备注。
 - `skip-threads-unresolved-human-greptile` **未 resolve 的真人+bot conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
   - 现象:PR #201 3 条未 resolve conversation（1 greptile + 2 PraiseZhu 真人），threadTriage 未启用且含白名单外参与者，本轮 skip-gate。已有催 resolve 评论，未重发。
-- `skip-unresolved-threads-author-side` **未 resolve conversation 卡合是作者侧动作，auto 只提醒不代点** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: tracked
-  - 现象:PR #201 3 条 conversation 未 resolve，notify-author-resolve 已去重跳过(already-commented)；threadTriage 未配置故不代 reply/resolve。属设计上就该人来。
 - `security-gate-awaiting-admin-signoff` **命中 securityReviewPaths 必须等 admins 确认，不可自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-21,status: tracked
   - 现象:PR #209 命中 securityReviewPaths，signoff-hold 复用既有讨论 issue #210，放行前不自动审不合。
 - `skip-threads-unresolved-author-side` **未 resolve conversation 卡合是作者侧动作，巡审只提醒不代点** — 出现 3 次,首见 2026-08-20,最近 2026-08-21,status: tracked
@@ -672,8 +706,6 @@
   - 现象:PR #209 命中 securityReviewPaths，alreadyHeld issue #210 + awaiting-discussion，放行前不审不合。
 - `skip-threads-unresolved-human` **未 resolve 的真人 conversation 只能等作者点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条未 resolve thread（含巡审本人），threadTriage 未启用；已有催 resolve 评论，本轮 already-commented。
-- `security-gate-signoff-hold` **命中 securityReviewPaths 走维护者确认门，不自动审合** — 出现 2 次,首见 2026-08-20,最近 2026-08-20,status: tracked
-  - 现象:PR #209 改 merge-thanks workflow 与 loop 脚本，signoff-hold 复用 issue #210，alreadyHeld。
 - `skip-unresolved-human-and-bot-threads` **未 resolve conversation 卡合并，作者侧需点 Resolve** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
   - 现象:PR #201 3 条 conversation 未 resolve（含真人审查 thread 与 greptile bot）；threadTriage 未启用，auto 只催不代关。
 - `skip-changes-requested-unresolved` **作者未改 CHANGES_REQUESTED 且 conversation 未 resolve 时只能 skip** — 出现 1 次,首见 2026-08-20,最近 2026-08-20,status: tracked
