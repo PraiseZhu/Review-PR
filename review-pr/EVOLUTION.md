@@ -475,6 +475,9 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `dirty-worktree-untracked-feature-worktree` **生产 checkout 挂着未跟踪功能工作树时 auto 必须停** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:prepare 报 worktreeClean=false；.worktrees/review-pr 会被过滤，其它 .worktrees/* 仍算用户脏树。auto 不清理、不审、不合。
+  - 提案:不要让 auto 删别人的工作树。需要巡审时先清掉或忽略非 review-pr 的残留树。
 - `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR 465 格式门因 ops: 标题和缺模板段落不过。维护者 gh pr edit 代补后 squash 合入，head SHA 未变。
 - `security-gate-awaiting-admin-465` **安全/规则门已 hold，等 admins 放行** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked

@@ -4563,6 +4563,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T04:40:39.109Z",
       "lastSeen": "2026-09-04T04:40:39.109Z"
+    },
+    {
+      "fingerprint": "dirty-worktree-untracked-feature-worktree",
+      "tier": "by-design",
+      "title": "生产 checkout 挂着未跟踪功能工作树时 auto 必须停",
+      "detail": "prepare 报 worktreeClean=false；.worktrees/review-pr 会被过滤，其它 .worktrees/* 仍算用户脏树。auto 不清理、不审、不合。",
+      "proposal": "不要让 auto 删别人的工作树。需要巡审时先清掉或忽略非 review-pr 的残留树。",
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T10:53:07.619Z",
+      "lastSeen": "2026-09-04T10:53:07.619Z"
     }
   ],
   "escapedHazards": [
