@@ -5,6 +5,10 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `pr-only-check-on-schedule-skipped-run` **pr_only 名单成员因 schedule run 在 main 留 skipped check-run,green-ref 判绿被 latest-run 规则否决** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:pr-hygiene.yml 每日 schedule run(30 1 * * *)在 main HEAD 上跑,pr-format-gate/conflict-sentinel 两 job 被 if 跳过但仍产出 conclusion=skipped 的 check-run(live 实证:run 33826413453 于 2026-09-04 01:36 在 2e3bfa7 上留下 pr-format-gate skipped)。plugin-green-ref.yml 的 notGreen 谓词是「同名存在即取 completed_at 最新一条的 conclusion,非 success 即不绿」——skipped 被拒,main 全绿的窗口被压缩到「schedule run 之后、下一次 main push 之前」。CI workflow 完成事件触发 green-ref 时若 schedule 已先跑,该 main commit 的推进会被跳过,只能等下一个 commit。建议:green-ref 对 pr_only 名单成员的 skipped 结论按「PR-only 门豁免」同口径放行,或把这两 job 的 if 同时排除 schedule 事件避免留 skipped check-run。
+- `seat1-gh-escape-source-field-unsupported` **席① CI runner 的 gh 不支持 closingIssuesReferences 字段,逃逸候选现场取数恒失败** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:task-466.json 记录 escapeSourceIncomplete=true:gh pr view --json body,closingIssuesReferences 退出码 1 Unknown JSON field;同 runner 上 headRefOid 同样是未知字段,说明 gh 版本偏旧。按 SKILL 5.9 契约 escapeSourceIncomplete 即本轮 invalid,无法落 clean 回执;且该席 Bash 白名单禁 python3 与 skill 外 node,仓库测试无法 executed,required 负向证据不可满足,rro-1 无法交卷。建议:runner 升级 gh,或 build-review-task.mjs 对该字段失败时降级用 gh api graphql 取 closingIssuesReferences。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
   - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
