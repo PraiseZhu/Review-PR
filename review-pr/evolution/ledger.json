@@ -4602,6 +4602,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T13:09:36.712Z",
       "lastSeen": "2026-09-04T13:09:36.712Z"
+    },
+    {
+      "fingerprint": "format-three-section-headings-required",
+      "tier": "by-design",
+      "title": "新三节 PR 模板生效后，旧「变更说明」正文会被格式门打回",
+      "detail": "本轮 #434 #439 #450 #461 #472 都因缺「这次改了什么 / 怎么验证的 / 风险」标题被 pushback-format。内容本身往往已写在旧标题下，属作者改模板标题，不是代码问题。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T14:26:27.355Z",
+      "lastSeen": "2026-09-04T14:26:27.355Z"
     }
   ],
   "escapedHazards": [
