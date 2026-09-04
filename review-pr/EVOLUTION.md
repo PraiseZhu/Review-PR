@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `pr476-doc-ci-list-inconsistency` **模板三节化 PR 内三份文档 CI 清单口径分叉:AGENTS/CLAUDE 移除 secret-scan.yml 而 README 安全节仍指它** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #476 把 AGENTS.md:48 与 CLAUDE.md:77 的 CI 必绿清单改为 pr-hygiene(含 pr-format-gate)+pr-size-gate 并移除 secret-scan.yml,但同 PR 未触碰 README.md:158 安全节「secret-scan workflow 做泄漏扫描」。secret-scan.yml 实际已是 retired 入口(仅 workflow_dispatch),真扫描在 ci.yml gitleaks job。贡献者按 README 安全节排查泄漏扫描会走错门
+- `pr476-checklist-section-coverage-gap` **checklist 门只覆盖「提交前检查」段,模板「风险>需要特别留意」8 项复选框永不被勾选率检查** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #476 模板三节化后,pr-hygiene pr-format-gate 的 checklist 判定 break 于第一个命中 heading(提交前检查,模板最后一个 section,6 项);「风险>需要特别留意」的 8 项风险确认复选框不在任何 checklist 段内,作者全不勾也绿灯。findChecklistSection 语义是单段统计,新增多段 checkbox 需评估是否扩为多段扫描或把风险清单并入 checklistSectionNames 对应段
+- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
   - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
@@ -475,12 +481,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `auto-review-clean-no-merge-observation` **auto 只审不合：clean 回执后等交互合** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
-  - 现象:本轮 #477 独立审查 clean、落回执，未 merge/approve。首周观察期按 SKILL 0 节执行。
-- `skip-gate-nonrequired-ci-failed` **非 required 检查失败时前置门拦合并、本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
-  - 现象:本轮 #478 seat2 失败 UNSTABLE；#474 同时格式 stale + 多检查失败。不绕过、不扩权。
-- `skip-stale-pushback-format-no-new-commit` **格式门打回后作者未新 commit，auto 跳过不再复打** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
-  - 现象:本轮 #434 #439 #450 #461 #472 #474 均为 skip-stale-pushback（格式门未过且上次已打回）。属作者侧格式修复，不扩权。
+- `dirty-worktree-untracked-feature-worktrees` **生产 checkout 有未跟踪 .worktrees 功能树，auto 按脏树跳过** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:porcelain ?? .worktrees/（close-patrol-self-fix 功能树）。auto 不覆盖不清理用户改动；本轮与上两轮 auto 同一 skipReason=dirty-worktree。
+- `interactive-dirty-pushback-new-families` **交互审查发现新 P0/P1 后打回作者，属作者侧修** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:PR 439 本轮 2 个新 family（派生线判定双份硬编码、hitTest 用例绕开新逻辑），已 REQUEST_CHANGES。
 - `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR 465 格式门因 ops: 标题和缺模板段落不过。维护者 gh pr edit 代补后 squash 合入，head SHA 未变。
 - `security-gate-awaiting-admin-465` **安全/规则门已 hold，等 admins 放行** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
