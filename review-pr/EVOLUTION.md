@@ -494,6 +494,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:本轮 #439 general-purpose 隔离席三次 autocompact 撑爆未交卷；#461 typescript-reviewer 卡死 600s 未交卷。已按协议写 skip 回执 review-agent-timeout，禁止沿用上次清白。#439 第一次误派 typescript-reviewer 拒收巡审协议。
 - `seat1-pr476-tri-review-context-gap` **三席审查环境无 PR base 提交,审查口径依赖 PR_BODY.md 自述** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:checkout 是 root commit(整仓 1267 文件),git 侧无 base...head diff 可取;审查事实源只能来自 PR_TITLE/PR_BODY 与工作树文件。作为审查席按 seat 指令只读审查,不执行合并;已验证可读规则文件与守卫接线。
 - `auto-review-clean-no-merge-observation` **auto 只审不合：clean 回执后等交互合** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked

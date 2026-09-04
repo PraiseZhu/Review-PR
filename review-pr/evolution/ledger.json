@@ -4745,6 +4745,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T18:58:06.176Z",
       "lastSeen": "2026-09-04T18:58:06.176Z"
+    },
+    {
+      "fingerprint": "review-agent-timeout-large-pr",
+      "tier": "by-design",
+      "title": "大 PR 审查席超时/autocompact 挂死未交 rro-1",
+      "detail": "本轮 #439 general-purpose 隔离席三次 autocompact 撑爆未交卷；#461 typescript-reviewer 卡死 600s 未交卷。已按协议写 skip 回执 review-agent-timeout，禁止沿用上次清白。#439 第一次误派 typescript-reviewer 拒收巡审协议。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T21:11:48.526Z",
+      "lastSeen": "2026-09-04T21:11:48.526Z"
     }
   ],
   "escapedHazards": [
