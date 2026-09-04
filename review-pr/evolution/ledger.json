@@ -4563,6 +4563,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T04:40:39.109Z",
       "lastSeen": "2026-09-04T04:40:39.109Z"
+    },
+    {
+      "fingerprint": "skip-stale-pushback-format-no-new-commit",
+      "tier": "by-design",
+      "title": "格式门打回后作者未新 commit，auto 跳过不再复打",
+      "detail": "本轮 #434 #439 #450 #461 #472 #474 均为 skip-stale-pushback（格式门未过且上次已打回）。属作者侧格式修复，不扩权。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T15:27:32.980Z",
+      "lastSeen": "2026-09-04T15:27:32.980Z"
     }
   ],
   "escapedHazards": [
