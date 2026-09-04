@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `interactive-dirty-pushback-new-families` **交互审查发现新 P0/P1 后打回作者，属作者侧修** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:PR 439 本轮 2 个新 family（派生线判定双份硬编码、hitTest 用例绕开新逻辑），已 REQUEST_CHANGES。
 - `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR 465 格式门因 ops: 标题和缺模板段落不过。维护者 gh pr edit 代补后 squash 合入，head SHA 未变。
 - `security-gate-awaiting-admin-465` **安全/规则门已 hold，等 admins 放行** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
