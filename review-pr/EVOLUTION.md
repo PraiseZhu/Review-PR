@@ -404,6 +404,9 @@
 
 - `secret-scan-list-docs-drift-after-retire` **AGENTS.md/CLAUDE.md CI 必绿清单与实际门集漂移：secret-scan.yml 9-01 已退役为 manual-only，#476 更新清单时两份文档各自表述不一致** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:mivo-canvas-plugin 2026-09-01 f7a9aab 把 gitleaks 折进 ci.yml、secret-scan.yml 退役为 workflow_dispatch-only。AGENTS.md 与 CLAUDE.md 的 CI 必绿清单长期未同步。#476 更新清单时 AGENTS.md/CLAUDE.md 都删掉了 secret-scan.yml 且补上了 pr-format-gate，但都没有写明 secret 扫描去哪了（在 ci.yml gitleaks job 内、由 verify 收口）——文档读者无法从清单推断 gitleaks 仍是必绿项，尽管 design-governance-wiring.test.mjs 已锁 ci.yml verify 依赖 gitleaks。本轮已把该缺口记为 P1 finding（f1）。自动落地项：本条仅记台账，不改文档（目标仓文档不归 skill 改）；改进归目标仓：清单行应写「secret 扫描在 ci.yml（gitleaks job）」而非静默消失。
+- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #439 隔离审查席在已有 task.json/prompt.md/preflight.json 后仍写出 93KB segment-1.json 与 30KB all_patches.diff 并整读，autocompact 连续 3 次挂死，未交 rro-1.json。主会话按协议写 skip 回执 --reason review-agent-timeout，禁止沿用上次 dirty/clean。与 #386 同类。
+  - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
 - `review-agent-context-overflow-field-extract` **审查席整读结构性大文件致 autocompact 震荡挂死,未交 rro-1.json** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: landed,commit `43a5596`
   - 现象:mivo-canvas-plugin #386 审查席在分段投递阶段上下文反复回满,3 次连续 compact 后 API 报错终止;#352 席同样未在 ~70 分钟内交付。两个 PR 均按 review-agent-timeout 写 skip 回执
   - 提案:SKILL 大 payload 纪律补一条:审查席对 task.json/prompt.md 只做字段级抽取(node -e / grep -n),禁止整读;已落地
