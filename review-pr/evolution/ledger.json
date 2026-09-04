@@ -4576,6 +4576,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T15:27:32.980Z",
       "lastSeen": "2026-09-04T15:27:32.980Z"
+    },
+    {
+      "fingerprint": "skip-gate-nonrequired-ci-failed",
+      "tier": "by-design",
+      "title": "非 required 检查失败时前置门拦合并、本轮 skip",
+      "detail": "本轮 #478 seat2 失败 UNSTABLE；#474 同时格式 stale + 多检查失败。不绕过、不扩权。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T15:27:37.433Z",
+      "lastSeen": "2026-09-04T15:27:37.433Z"
     }
   ],
   "escapedHazards": [

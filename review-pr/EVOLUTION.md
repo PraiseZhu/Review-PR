@@ -475,6 +475,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-nonrequired-ci-failed` **非 required 检查失败时前置门拦合并、本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:本轮 #478 seat2 失败 UNSTABLE；#474 同时格式 stale + 多检查失败。不绕过、不扩权。
 - `skip-stale-pushback-format-no-new-commit` **格式门打回后作者未新 commit，auto 跳过不再复打** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #434 #439 #450 #461 #472 #474 均为 skip-stale-pushback（格式门未过且上次已打回）。属作者侧格式修复，不扩权。
 - `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
