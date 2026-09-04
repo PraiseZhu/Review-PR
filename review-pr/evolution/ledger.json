@@ -4589,6 +4589,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T12:28:55.383Z",
       "lastSeen": "2026-09-04T12:28:55.383Z"
+    },
+    {
+      "fingerprint": "dirty-worktree-untracked-feature-worktrees",
+      "tier": "by-design",
+      "title": "生产 checkout 有未跟踪 .worktrees 功能树，auto 按脏树跳过",
+      "detail": "porcelain ?? .worktrees/（close-patrol-self-fix 功能树）。auto 不覆盖不清理用户改动；本轮与上两轮 auto 同一 skipReason=dirty-worktree。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-04T13:09:36.712Z",
+      "lastSeen": "2026-09-04T13:09:36.712Z"
     }
   ],
   "escapedHazards": [

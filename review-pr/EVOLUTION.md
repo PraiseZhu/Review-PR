@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
   - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
@@ -475,6 +477,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `dirty-worktree-untracked-feature-worktrees` **生产 checkout 有未跟踪 .worktrees 功能树，auto 按脏树跳过** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:porcelain ?? .worktrees/（close-patrol-self-fix 功能树）。auto 不覆盖不清理用户改动；本轮与上两轮 auto 同一 skipReason=dirty-worktree。
 - `interactive-dirty-pushback-new-families` **交互审查发现新 P0/P1 后打回作者，属作者侧修** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR 439 本轮 2 个新 family（派生线判定双份硬编码、hitTest 用例绕开新逻辑），已 REQUEST_CHANGES。
 - `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
