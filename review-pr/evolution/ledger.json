@@ -4823,6 +4823,19 @@
       "occurrences": 3,
       "firstSeen": "2026-09-05T03:15:05.425Z",
       "lastSeen": "2026-09-05T08:10:57.028Z"
+    },
+    {
+      "fingerprint": "skip-stale-pushback-format-434",
+      "tier": "by-design",
+      "title": "作者未补 PR 模板段落，格式打回后无新 commit",
+      "detail": "PR 434 格式缺三段，上次已打回，本轮 skip-stale-pushback",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-05T10:07:56.959Z",
+      "lastSeen": "2026-09-05T10:07:56.959Z"
     }
   ],
   "escapedHazards": [
