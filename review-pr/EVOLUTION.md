@@ -419,8 +419,8 @@
 
 ## 已自动落地(automatable-gap)
 
-- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 2 次,首见 2026-09-04,最近 2026-09-04,status: open
-  - 现象:本轮 #439/#450/#461 再次 autocompact 或 watchdog 未交 rro-1；#478/#472 小 payload 交卷并 consume 为 clean。typescript-reviewer 会自加 merge-readiness 门忽略 rro 指令，应派 general-purpose。
+- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: open
+  - 现象:本轮 #439 与 #461 隔离审查席均在交付分段后 autocompact 连续 3 次打满窗口挂死，未交 rro-1.json；已按规程写 skip 回执，禁止沿用上次清白。#439 1 段、#461 3 段。head 未变。
   - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
 - `secret-scan-list-docs-drift-after-retire` **AGENTS.md/CLAUDE.md CI 必绿清单与实际门集漂移：secret-scan.yml 9-01 已退役为 manual-only，#476 更新清单时两份文档各自表述不一致** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:mivo-canvas-plugin 2026-09-01 f7a9aab 把 gitleaks 折进 ci.yml、secret-scan.yml 退役为 workflow_dispatch-only。AGENTS.md 与 CLAUDE.md 的 CI 必绿清单长期未同步。#476 更新清单时 AGENTS.md/CLAUDE.md 都删掉了 secret-scan.yml 且补上了 pr-format-gate，但都没有写明 secret 扫描去哪了（在 ci.yml gitleaks job 内、由 verify 收口）——文档读者无法从清单推断 gitleaks 仍是必绿项，尽管 design-governance-wiring.test.mjs 已锁 ci.yml verify 依赖 gitleaks。本轮已把该缺口记为 P1 finding（f1）。自动落地项：本条仅记台账，不改文档（目标仓文档不归 skill 改）；改进归目标仓：清单行应写「secret 扫描在 ci.yml（gitleaks job）」而非静默消失。

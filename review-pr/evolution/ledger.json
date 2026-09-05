@@ -4711,14 +4711,14 @@
       "fingerprint": "review-agent-timeout-autocompact-large-segment",
       "tier": "auto",
       "title": "审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1",
-      "detail": "本轮 #439/#450/#461 再次 autocompact 或 watchdog 未交 rro-1；#478/#472 小 payload 交卷并 consume 为 clean。typescript-reviewer 会自加 merge-readiness 门忽略 rro 指令，应派 general-purpose。",
+      "detail": "本轮 #439 与 #461 隔离审查席均在交付分段后 autocompact 连续 3 次打满窗口挂死，未交 rro-1.json；已按规程写 skip 回执，禁止沿用上次清白。#439 1 段、#461 3 段。head 未变。",
       "proposal": "审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-09-04T16:49:10.459Z",
-      "lastSeen": "2026-09-04T18:57:53.939Z"
+      "lastSeen": "2026-09-05T01:51:04.897Z"
     },
     {
       "fingerprint": "seat1-snapshot-direction-ambiguity",
