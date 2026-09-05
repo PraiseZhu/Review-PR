@@ -3476,14 +3476,14 @@
       "fingerprint": "skip-stale-pushback-format",
       "tier": "by-design",
       "title": "格式门已打回且作者未新 commit 时跳过，不重复打回",
-      "detail": "PR 275 Self-review 勾选率不足，auto.action=skip-stale-pushback。",
+      "detail": "PR 434 仍 skip-stale-pushback，作者未新 commit。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-25T01:16:03.521Z",
-      "lastSeen": "2026-08-25T01:16:03.521Z"
+      "lastSeen": "2026-09-05T08:10:48.269Z"
     },
     {
       "fingerprint": "skip-gate-changes-requested",

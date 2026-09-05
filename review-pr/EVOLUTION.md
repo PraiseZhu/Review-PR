@@ -503,6 +503,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-stale-pushback-format` **格式门已打回且作者未新 commit 时跳过，不重复打回** — 出现 2 次,首见 2026-08-25,最近 2026-09-05,status: tracked
+  - 现象:PR 434 仍 skip-stale-pushback，作者未新 commit。
 - `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:本轮 #486 ownPr 1 条 conversation 未 resolve，notify already-commented。
 - `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
@@ -627,8 +629,6 @@
   - 现象:本轮 #273/#275 reviewDecision=CHANGES_REQUESTED。等作者修完 push 后下轮重扫。
 - `skip-gate-unresolved-threads` **作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve** — 出现 2 次,首见 2026-08-20,最近 2026-08-25,status: tracked
   - 现象:本轮 #273 1 条、#275 2 条未 resolve thread；#275 已发模板 C 催 resolve。属真人操作，不自动代 resolve。
-- `skip-stale-pushback-format` **格式门已打回且作者未新 commit 时跳过，不重复打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
-  - 现象:PR 275 Self-review 勾选率不足，auto.action=skip-stale-pushback。
 - `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 4 次,首见 2026-08-19,最近 2026-08-25,status: tracked
   - 现象:PR 273 persist 水合续作，产品门语义判为已有功能补充后仍被 skip-gate 拦住；已有催 resolve 评论，本轮 already-commented。
 - `skip-stale-pushback-format-self-review` **格式门 Self-review 勾选不足且已打回、作者未新 commit，跳过重打** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
