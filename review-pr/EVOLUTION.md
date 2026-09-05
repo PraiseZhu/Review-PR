@@ -503,6 +503,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 483 2 条 conversation 未 resolve；threadTriage 未配置
 - `skip-conflict-472` **PR 与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 472 mergeStateStatus=DIRTY，auto 不合
 - `skip-stale-pushback-format-434` **作者未补 PR 模板段落，格式打回后无新 commit** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
