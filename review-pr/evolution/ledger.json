@@ -4888,19 +4888,6 @@
       "occurrences": 1,
       "firstSeen": "2026-09-05T17:16:31.829Z",
       "lastSeen": "2026-09-05T17:16:31.829Z"
-    },
-    {
-      "fingerprint": "seat-claude-pipe-blocked-convergence-stdin",
-      "tier": "by-design",
-      "title": "审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递",
-      "detail": "L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。",
-      "proposal": null,
-      "status": "tracked",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-05T20:22:40.064Z",
-      "lastSeen": "2026-09-05T20:22:40.064Z"
     }
   ],
   "escapedHazards": [
