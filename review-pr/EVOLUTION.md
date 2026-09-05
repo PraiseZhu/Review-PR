@@ -503,12 +503,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 3 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 483/486 为巡审账号自己的 PR，未 resolve greptile thread，auto 不合。
 - `author-side-conflict-blocks-merge` **与主干冲突(mergeStateStatus=DIRTY)属作者侧,需作者 rebase,本轮 4 个 PR 因此跳过** — 出现 3 次,首见 2026-07-30,最近 2026-09-05,status: tracked
   - 现象:PR 472 skip-gate conflict，已发冲突提醒。
 - `skip-stale-pushback-format` **格式门已打回且作者未新 commit 时跳过，不重复打回** — 出现 2 次,首见 2026-08-25,最近 2026-09-05,status: tracked
   - 现象:PR 434 仍 skip-stale-pushback，作者未新 commit。
-- `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
-  - 现象:本轮 #486 ownPr 1 条 conversation 未 resolve，notify already-commented。
 - `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:本轮 #450 UNSTABLE（gate/seat/publish 失败）skip-gate。
 - `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: tracked
