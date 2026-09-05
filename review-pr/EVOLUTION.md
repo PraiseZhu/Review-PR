@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: open
+  - 现象:PR #482 席①审查复现：gh pr view --json headRefOid 仍报 Unknown JSON field，context.mjs 482 退出码 1。本轮安全/隐私门与格式门以人工通读 61.6KB 全量 diff 完成（无凭证/PII，全部 fixture 为合成 magic bytes）；审查对象改为 git diff <merge-base 父> <PR head>（38d45a8..24523c0），与 gh pr diff 逐文件核对一致。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open
   - 现象:本轮 #478 顶层 snapshotHash 正确但 segmentReceipts[0] 缺该字段，shape-preflight 退回后补上才 clean。
   - 提案:deliver-review-segment payload 或 prompt 回执样例强制带 snapshotHash；审查席不得省略。
@@ -29,8 +31,6 @@
   - 现象:PR #476 把 AGENTS.md:48 与 CLAUDE.md:77 的 CI 必绿清单改为 pr-hygiene(含 pr-format-gate)+pr-size-gate 并移除 secret-scan.yml,但同 PR 未触碰 README.md:158 安全节「secret-scan workflow 做泄漏扫描」。secret-scan.yml 实际已是 retired 入口(仅 workflow_dispatch),真扫描在 ci.yml gitleaks job。贡献者按 README 安全节排查泄漏扫描会走错门
 - `pr476-checklist-section-coverage-gap` **checklist 门只覆盖「提交前检查」段,模板「风险>需要特别留意」8 项复选框永不被勾选率检查** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:PR #476 模板三节化后,pr-hygiene pr-format-gate 的 checklist 判定 break 于第一个命中 heading(提交前检查,模板最后一个 section,6 项);「风险>需要特别留意」的 8 项风险确认复选框不在任何 checklist 段内,作者全不勾也绿灯。findChecklistSection 语义是单段统计,新增多段 checkbox 需评估是否扩为多段扫描或把风险清单并入 checklistSectionNames 对应段
-- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
-  - 现象:PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。
 - `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
   - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。

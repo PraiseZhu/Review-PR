@@ -4646,14 +4646,14 @@
       "fingerprint": "seat1-gh-cli-missing-headrefoid",
       "tier": "proposal",
       "title": "L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail",
-      "detail": "PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。",
+      "detail": "PR #482 席①审查复现：gh pr view --json headRefOid 仍报 Unknown JSON field，context.mjs 482 退出码 1。本轮安全/隐私门与格式门以人工通读 61.6KB 全量 diff 完成（无凭证/PII，全部 fixture 为合成 magic bytes）；审查对象改为 git diff <merge-base 父> <PR head>（38d45a8..24523c0），与 gh pr diff 逐文件核对一致。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-04T10:53:03.293Z",
-      "lastSeen": "2026-09-04T10:53:03.293Z"
+      "lastSeen": "2026-09-05T06:30:15.219Z"
     },
     {
       "fingerprint": "interactive-dirty-pushback-new-families",
