@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 现象:PR #498 run.mjs 报告身份字段 headSha 取自 git HEAD，oracleHash/fixtureHash 却从当前工作树文件计算（computeOracleHash 读 SCHEMA_DIR 实文件）。CLI 主路径有 assertCommittedTree 脏树拦截兜底，但 runLayer allowDirty:true（contract.test.mjs 自用）与未来 adapter 路径没有该保证，同一 headSha 可对应不同 oracleHash，BD3 按身份字段复核会失配。
+  - 提案:computeOracleHash 增加基于 git cat-file 的实现（从 identity.headSha 读 blob 内容哈希），CLI 写报告时优先用 git 版本；文件系统版本仅测试 seam 用；或报告加 worktreeDirty 字段显式声明口径。
+- `pr498-bd2a-contract-skip-unknown-exitcode` **合同 CLI 用 vitest 退出码 1 兼发'测试失败'与'找不到测试文件'，skipVitest 语义失真** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 现象:PR #498 run.mjs runVitestContracts 把 vitest 'No Test Files Found' 的退出码 1 与真实断言失败混为同一 fail 语义。离线/部分 checkout 环境跑合同层会得到 vitest-contracts=fail 而非 unavailable，报告聚合为 fail/exit1，与'适配器缺失=unavailable'的语义分层矛盾。建议区分'跑过且有失败'与'没跑成'（探测试文件存在性或解析 vitest 输出），后者归 unavailable/exit2。
+  - 提案:在 runVitestContracts 里对 spawn 结果补 exit-code 与输出的区分：VITEST_FILES 任一文件不存在（existsSync 校验）时抛专用错误并记 unavailable check；仅当文件齐全且 exit!=0 才记 fail。contract.test.mjs 相应补一条反例。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: open
   - 现象:PR #482 席①审查复现：gh pr view --json headRefOid 仍报 Unknown JSON field，context.mjs 482 退出码 1。本轮安全/隐私门与格式门以人工通读 61.6KB 全量 diff 完成（无凭证/PII，全部 fixture 为合成 magic bytes）；审查对象改为 git diff <merge-base 父> <PR head>（38d45a8..24523c0），与 gh pr diff 逐文件核对一致。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open
