@@ -4836,6 +4836,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-05T10:07:56.959Z",
       "lastSeen": "2026-09-05T10:07:56.959Z"
+    },
+    {
+      "fingerprint": "skip-conflict-472",
+      "tier": "by-design",
+      "title": "PR 与主干冲突，等作者 rebase",
+      "detail": "PR 472 mergeStateStatus=DIRTY，auto 不合",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-05T10:08:01.414Z",
+      "lastSeen": "2026-09-05T10:08:01.414Z"
     }
   ],
   "escapedHazards": [

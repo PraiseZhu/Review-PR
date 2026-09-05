@@ -503,6 +503,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-conflict-472` **PR 与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 472 mergeStateStatus=DIRTY，auto 不合
 - `skip-stale-pushback-format-434` **作者未补 PR 模板段落，格式打回后无新 commit** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 434 格式缺三段，上次已打回，本轮 skip-stale-pushback
 - `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 3 次,首见 2026-09-05,最近 2026-09-05,status: tracked
