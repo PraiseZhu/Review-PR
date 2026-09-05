@@ -500,6 +500,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 3 次,首见 2026-08-21,最近 2026-09-05,status: tracked
+  - 现象:#434 格式门仍缺三段，上次已打回且 head 未新 commit，skip-stale-pushback。
 - `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #439 general-purpose 隔离席三次 autocompact 撑爆未交卷；#461 typescript-reviewer 卡死 600s 未交卷。已按协议写 skip 回执 review-agent-timeout，禁止沿用上次清白。#439 第一次误派 typescript-reviewer 拒收巡审协议。
 - `seat1-pr476-tri-review-context-gap` **三席审查环境无 PR base 提交,审查口径依赖 PR_BODY.md 自述** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
@@ -624,8 +626,6 @@
   - 现象:PR 273 persist 水合续作，产品门语义判为已有功能补充后仍被 skip-gate 拦住；已有催 resolve 评论，本轮 already-commented。
 - `skip-stale-pushback-format-self-review` **格式门 Self-review 勾选不足且已打回、作者未新 commit，跳过重打** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR 275 skip-stale-pushback；另有 CHANGES_REQUESTED 与 2 条未 resolve conversation。
-- `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 2 次,首见 2026-08-21,最近 2026-08-24,status: tracked
-  - 现象:PR #275 Self-review 勾选率 2/4；auto.action=skip-stale-pushback。
 - `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 2 次,首见 2026-08-20,最近 2026-08-24,status: tracked
   - 现象:PR #273 前置门 BLOCKED(reviewDecision=CHANGES_REQUESTED)+1 条未 resolve thread；已提醒过，本轮不重发。
 - `skip-stale-pushback-format-self-review-checklist` **格式门 Self-review 勾选率不足且作者未新 commit，跳过重复打回** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
