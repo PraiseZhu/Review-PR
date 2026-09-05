@@ -4797,6 +4797,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-05T03:14:56.588Z",
       "lastSeen": "2026-09-05T03:14:56.588Z"
+    },
+    {
+      "fingerprint": "skip-gate-nonrequired-ci",
+      "tier": "by-design",
+      "title": "非 required 检查失败按 skip-gate 等人修绿",
+      "detail": "PR 450 mergeStateStatus=UNSTABLE,非 required 检查(gate/seat1/seat2/seat3/publish)失败,流程拦不合。属设计上等人修 CI。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-05T03:15:01.078Z",
+      "lastSeen": "2026-09-05T03:15:01.078Z"
     }
   ],
   "escapedHazards": [

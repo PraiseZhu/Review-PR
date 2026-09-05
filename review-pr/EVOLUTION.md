@@ -503,6 +503,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 450 mergeStateStatus=UNSTABLE,非 required 检查(gate/seat1/seat2/seat3/publish)失败,流程拦不合。属设计上等人修 CI。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 3 次,首见 2026-08-21,最近 2026-09-05,status: tracked
   - 现象:#434 格式门仍缺三段，上次已打回且 head 未新 commit，skip-stale-pushback。
 - `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
