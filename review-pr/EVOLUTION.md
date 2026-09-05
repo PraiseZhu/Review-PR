@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `merge-then-fix-admin-bypass-when-dirty-receipt` **代修合并在 dirty 回执+非 required seat 失败时无法走 merge-pr.mjs** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 现象:PR 483 交互代修合并：独立审查 dirty(1 P1)、seat1/2/3 基础设施失败导致 UNSTABLE。merge-pr.mjs 拒合。5.6 规定不经该出口、主干侧合，但直推 main 被 6 项 required checks 拦（enforce_admins）。最终 gh pr merge --admin，P1 follow-up 开 #499。
+  - 提案:给 5.6 增加经 GitHub merge API 的 admin merge 出口（仍要求 required checks 绿、安全硬门过），dirty 回执允许在用户明确选择代修合并时放行；非 required seat 失败不阻断。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: open
   - 现象:PR #482 席①审查复现：gh pr view --json headRefOid 仍报 Unknown JSON field，context.mjs 482 退出码 1。本轮安全/隐私门与格式门以人工通读 61.6KB 全量 diff 完成（无凭证/PII，全部 fixture 为合成 magic bytes）；审查对象改为 git diff <merge-base 父> <PR head>（38d45a8..24523c0），与 gh pr diff 逐文件核对一致。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open

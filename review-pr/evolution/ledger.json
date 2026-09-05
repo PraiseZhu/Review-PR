@@ -4862,6 +4862,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-05T10:08:05.808Z",
       "lastSeen": "2026-09-05T10:08:05.808Z"
+    },
+    {
+      "fingerprint": "merge-then-fix-admin-bypass-when-dirty-receipt",
+      "tier": "proposal",
+      "title": "代修合并在 dirty 回执+非 required seat 失败时无法走 merge-pr.mjs",
+      "detail": "PR 483 交互代修合并：独立审查 dirty(1 P1)、seat1/2/3 基础设施失败导致 UNSTABLE。merge-pr.mjs 拒合。5.6 规定不经该出口、主干侧合，但直推 main 被 6 项 required checks 拦（enforce_admins）。最终 gh pr merge --admin，P1 follow-up 开 #499。",
+      "proposal": "给 5.6 增加经 GitHub merge API 的 admin merge 出口（仍要求 required checks 绿、安全硬门过），dirty 回执允许在用户明确选择代修合并时放行；非 required seat 失败不阻断。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-05T15:44:40.078Z",
+      "lastSeen": "2026-09-05T15:44:40.078Z"
     }
   ],
   "escapedHazards": [
