@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open
+  - 现象:本轮 #478 顶层 snapshotHash 正确但 segmentReceipts[0] 缺该字段，shape-preflight 退回后补上才 clean。
+  - 提案:deliver-review-segment payload 或 prompt 回执样例强制带 snapshotHash；审查席不得省略。
 - `review-agent-skipped-rro-protocol` **typescript-reviewer 席未交 rro-1,本轮只能 skip** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
   - 现象:PR 461 派 typescript-reviewer isolation=worktree,席按自身系统提示做了标准 TS 审查(MEDIUM 非阻断两条),未按 SKILL 分段协议交 rro-1.json。主会话按 review-agent-timeout 写 skip 回执,禁止沿用上次清白。下轮需换能执行 SKILL 协议的审查席或在派工包里把 rro-1 交卷写成硬约束。
   - 提案:派阶段二审查时用能完整执行 rro-1 协议的席位(或在 prompt 首行把「不交 rro-1.json 即失败」写成硬停止条件);不要假设 typescript-reviewer 会自动切换到 review-pr 协议。
@@ -28,9 +31,6 @@
   - 现象:PR #476 模板三节化后,pr-hygiene pr-format-gate 的 checklist 判定 break 于第一个命中 heading(提交前检查,模板最后一个 section,6 项);「风险>需要特别留意」的 8 项风险确认复选框不在任何 checklist 段内,作者全不勾也绿灯。findChecklistSection 语义是单段统计,新增多段 checkbox 需评估是否扩为多段扫描或把风险清单并入 checklistSectionNames 对应段
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
   - 现象:PR #468 席①审查实测：runner 上 gh pr view --json headRefOid 报 Unknown JSON field（可用字段清单里没有 headRefOid），context.mjs 468 与 --scan 均以 ok:false/退出码 1 失败，无法产出 security 扫描与 format/gate 判定。preflight（review-preflight.mjs）不受影响（不用 gh），本次以人工核对 diff 完成安全/隐私门与机械轴校验。修复方向：runner 升级 gh（headRefOid 在 gh 2.x 后期才进 --json 白名单），或 context.mjs 改用 commits[0].oid / GraphQL 兜底取 head oid。
-- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
-  - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
-  - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
 - `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
   - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。
