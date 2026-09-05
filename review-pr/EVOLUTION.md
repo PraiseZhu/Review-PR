@@ -509,6 +509,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。
 - `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 483 2 条 conversation 未 resolve；threadTriage 未配置
 - `skip-conflict-472` **PR 与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
