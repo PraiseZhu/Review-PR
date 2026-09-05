@@ -503,6 +503,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 486 1 条 greptile conversation 未 resolve;threadTriage 未配置,auto 只发催 resolve 评论,不代 resolve。属 by-design。
 - `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 450 mergeStateStatus=UNSTABLE,非 required 检查(gate/seat1/seat2/seat3/publish)失败,流程拦不合。属设计上等人修 CI。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 3 次,首见 2026-08-21,最近 2026-09-05,status: tracked

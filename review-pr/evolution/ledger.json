@@ -4810,6 +4810,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-05T03:15:01.078Z",
       "lastSeen": "2026-09-05T03:15:01.078Z"
+    },
+    {
+      "fingerprint": "skip-unresolved-own-pr",
+      "tier": "by-design",
+      "title": "ownPr 未 resolve conversation 只 skip 不代 resolve",
+      "detail": "PR 486 1 条 greptile conversation 未 resolve;threadTriage 未配置,auto 只发催 resolve 评论,不代 resolve。属 by-design。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-05T03:15:05.425Z",
+      "lastSeen": "2026-09-05T03:15:05.425Z"
     }
   ],
   "escapedHazards": [
