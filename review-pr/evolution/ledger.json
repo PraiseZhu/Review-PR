@@ -4815,14 +4815,14 @@
       "fingerprint": "skip-unresolved-own-pr",
       "tier": "by-design",
       "title": "ownPr 未 resolve conversation 只 skip 不代 resolve",
-      "detail": "PR 486 1 条 greptile conversation 未 resolve;threadTriage 未配置,auto 只发催 resolve 评论,不代 resolve。属 by-design。",
+      "detail": "本轮 #486 ownPr 1 条 conversation 未 resolve，notify already-commented。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-05T03:15:05.425Z",
-      "lastSeen": "2026-09-05T03:15:05.425Z"
+      "lastSeen": "2026-09-05T04:35:51.147Z"
     }
   ],
   "escapedHazards": [

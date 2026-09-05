@@ -503,12 +503,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:本轮 #486 ownPr 1 条 conversation 未 resolve，notify already-commented。
 - `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:本轮 #450 UNSTABLE（gate/seat/publish 失败）skip-gate。
 - `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: tracked
   - 现象:本轮 #461 三段投递后跑测未交 rro-1.json，写 skip 回执，禁止沿用上次清白。
-- `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
-  - 现象:PR 486 1 条 greptile conversation 未 resolve;threadTriage 未配置,auto 只发催 resolve 评论,不代 resolve。属 by-design。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 3 次,首见 2026-08-21,最近 2026-09-05,status: tracked
   - 现象:#434 格式门仍缺三段，上次已打回且 head 未新 commit，skip-stale-pushback。
 - `seat1-pr476-tri-review-context-gap` **三席审查环境无 PR base 提交,审查口径依赖 PR_BODY.md 自述** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
