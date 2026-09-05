@@ -4784,6 +4784,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-04T23:01:13.562Z",
       "lastSeen": "2026-09-04T23:01:13.562Z"
+    },
+    {
+      "fingerprint": "review-agent-skipped-rro-protocol",
+      "tier": "proposal",
+      "title": "typescript-reviewer 席未交 rro-1,本轮只能 skip",
+      "detail": "PR 461 派 typescript-reviewer isolation=worktree,席按自身系统提示做了标准 TS 审查(MEDIUM 非阻断两条),未按 SKILL 分段协议交 rro-1.json。主会话按 review-agent-timeout 写 skip 回执,禁止沿用上次清白。下轮需换能执行 SKILL 协议的审查席或在派工包里把 rro-1 交卷写成硬约束。",
+      "proposal": "派阶段二审查时用能完整执行 rro-1 协议的席位(或在 prompt 首行把「不交 rro-1.json 即失败」写成硬停止条件);不要假设 typescript-reviewer 会自动切换到 review-pr 协议。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-05T03:14:56.588Z",
+      "lastSeen": "2026-09-05T03:14:56.588Z"
     }
   ],
   "escapedHazards": [
