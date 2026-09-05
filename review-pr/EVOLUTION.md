@@ -503,14 +503,14 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: tracked
+  - 现象:本轮 #461 三段投递后跑测未交 rro-1.json，写 skip 回执，禁止沿用上次清白。
 - `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 486 1 条 greptile conversation 未 resolve;threadTriage 未配置,auto 只发催 resolve 评论,不代 resolve。属 by-design。
 - `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 450 mergeStateStatus=UNSTABLE,非 required 检查(gate/seat1/seat2/seat3/publish)失败,流程拦不合。属设计上等人修 CI。
 - `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 3 次,首见 2026-08-21,最近 2026-09-05,status: tracked
   - 现象:#434 格式门仍缺三段，上次已打回且 head 未新 commit，skip-stale-pushback。
-- `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
-  - 现象:本轮 #439 general-purpose 隔离席三次 autocompact 撑爆未交卷；#461 typescript-reviewer 卡死 600s 未交卷。已按协议写 skip 回执 review-agent-timeout，禁止沿用上次清白。#439 第一次误派 typescript-reviewer 拒收巡审协议。
 - `seat1-pr476-tri-review-context-gap` **三席审查环境无 PR base 提交,审查口径依赖 PR_BODY.md 自述** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:checkout 是 root commit(整仓 1267 文件),git 侧无 base...head diff 可取;审查事实源只能来自 PR_TITLE/PR_BODY 与工作树文件。作为审查席按 seat 指令只读审查,不执行合并;已验证可读规则文件与守卫接线。
 - `auto-review-clean-no-merge-observation` **auto 只审不合：clean 回执后等交互合** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
