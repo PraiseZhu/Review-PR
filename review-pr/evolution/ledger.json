@@ -4966,6 +4966,32 @@
       "occurrences": 1,
       "firstSeen": "2026-09-06T04:17:33.722Z",
       "lastSeen": "2026-09-06T04:17:33.722Z"
+    },
+    {
+      "fingerprint": "context-mjs-gh-headrefoid-unsupported",
+      "tier": "proposal",
+      "title": "context.mjs 在 gh CLI 不支持 headRefOid JSON 字段的 runner 上确定性失败,阶段一确定性上下文断供",
+      "detail": "PR #129 席①回放实测(mivo-review-l20-1-1 runner):gh pr view <N> --json ...,headRefOid,... 退出码 1 报 Unknown JSON field: headRefOid(该 runner 的 gh 版本 REST 字段表无此字段),context.mjs 在产出任何 scan 输出前硬失败,阶段一确定性上下文完全断供;本轮回退到 gh api pulls/<N>(head.sha/base.sha)+ git diff BASE...HEAD 重建全部上下文。提案:字段降级链(headRefOid 不可用时改用 gh api REST 的 head.sha/base.sha,单一来源 lib.mjs 封装)或启动时探测 gh 能力并显著告警。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T04:36:58.225Z",
+      "lastSeen": "2026-09-06T04:36:58.225Z"
+    },
+    {
+      "fingerprint": "pr129-merged-replay-advisory-only",
+      "tier": "by-design",
+      "title": "PR 已 MERGED 的回放审查:阶段三落地动作整体不适用,只产 findings",
+      "detail": "PR #129 状态 MERGED(2026-08-16),本席为事后回放审查:无 merge/review/hold 动作可执行,收敛状态记录也无意义(轮次均已落地)。此形态下 skill 全流程退化为纯静态审查,是设计内行为(合并不可逆),非流程缺口。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T04:37:03.808Z",
+      "lastSeen": "2026-09-06T04:37:03.808Z"
     }
   ],
   "escapedHazards": [
