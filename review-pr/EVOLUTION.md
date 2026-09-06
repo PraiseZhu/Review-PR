@@ -5,8 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `context-mjs-gh-headrefoid-unsupported` **context.mjs 在 gh CLI 不支持 headRefOid JSON 字段的 runner 上确定性失败,阶段一确定性上下文断供** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
-  - 现象:PR #129 席①回放实测(mivo-review-l20-1-1 runner):gh pr view <N> --json ...,headRefOid,... 退出码 1 报 Unknown JSON field: headRefOid(该 runner 的 gh 版本 REST 字段表无此字段),context.mjs 在产出任何 scan 输出前硬失败,阶段一确定性上下文完全断供;本轮回退到 gh api pulls/<N>(head.sha/base.sha)+ git diff BASE...HEAD 重建全部上下文。提案:字段降级链(headRefOid 不可用时改用 gh api REST 的 head.sha/base.sha,单一来源 lib.mjs 封装)或启动时探测 gh 能力并显著告警。
 - `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
   - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
   - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
@@ -521,8 +519,6 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `pr129-merged-replay-advisory-only` **PR 已 MERGED 的回放审查:阶段三落地动作整体不适用,只产 findings** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
-  - 现象:PR #129 状态 MERGED(2026-08-16),本席为事后回放审查:无 merge/review/hold 动作可执行,收敛状态记录也无意义(轮次均已落地)。此形态下 skill 全流程退化为纯静态审查,是设计内行为(合并不可逆),非流程缺口。
 - `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:test_code_review_p0_p1.py 等测试文件存在且随运行时修复持续更新(2026-09-06 #511),但全仓 grep 无任何 workflow/pre-push/package.json 调用它们;normalize_base_url 新分支的回归若不人工跑,只在下次 seat2 实跑时暴露。属 by-design 还是 automatable-gap 需 owner 判断。
 - `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
