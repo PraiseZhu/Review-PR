@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
+  - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
 - `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
   - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
   - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
@@ -516,10 +519,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `seat1-pr513-convergence-stdin-blocked` **审查席 shell 组合被禁,convergence round 无法经 stdin 传入 findings** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
-  - 现象:readonly_bash_guard 禁止管道与重定向,record-convergence-round.mjs 只支持 stdin 读 findings,席①无法落盘收敛状态(状态保持 missing)。已在 verdict 中如实说明;台账改记本条根因。
-- `seat1-pr513-review-context-mismatch` **审查席 checkout 与三席 PR head 不一致，靠 gh api 补 head 文件** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
-  - 现象:PR #513 (mivo-canvas-plugin) 三席 head=66e6503，但 CI checkout 是 765f863 (cindy/paste-split-02 分支头，与 base diverged ahead 37/behind 12)。工作区 15 个改动文件中多个(如 sentry-intake.mjs applyMarkFixed、doctorctl.mjs applySettle、reconcile-merged.mjs、render.mjs、recurrence.test.mjs、state.test.mjs BD4 块)内容为旧版,直接读工作区会审错对象。本次审查改用 gh api git/blobs 按 head SHA 拉真实文件内容核对。建议 workflow 对三席 job checkout PR head ref 而非默认分支/无关分支。
+- `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:test_code_review_p0_p1.py 等测试文件存在且随运行时修复持续更新(2026-09-06 #511),但全仓 grep 无任何 workflow/pre-push/package.json 调用它们;normalize_base_url 新分支的回归若不人工跑,只在下次 seat2 实跑时暴露。属 by-design 还是 automatable-gap 需 owner 判断。
 - `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。
 - `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked

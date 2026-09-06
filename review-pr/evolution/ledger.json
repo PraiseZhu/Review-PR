@@ -4942,30 +4942,30 @@
       "lastSeen": "2026-09-06T02:42:32.658Z"
     },
     {
-      "fingerprint": "seat1-pr513-review-context-mismatch",
+      "fingerprint": "seat1-codex-pytests-not-wired-into-ci",
       "tier": "by-design",
-      "title": "审查席 checkout 与三席 PR head 不一致，靠 gh api 补 head 文件",
-      "detail": "PR #513 (mivo-canvas-plugin) 三席 head=66e6503，但 CI checkout 是 765f863 (cindy/paste-split-02 分支头，与 base diverged ahead 37/behind 12)。工作区 15 个改动文件中多个(如 sentry-intake.mjs applyMarkFixed、doctorctl.mjs applySettle、reconcile-merged.mjs、render.mjs、recurrence.test.mjs、state.test.mjs BD4 块)内容为旧版,直接读工作区会审错对象。本次审查改用 gh api git/blobs 按 head SHA 拉真实文件内容核对。建议 workflow 对三席 job checkout PR head ref 而非默认分支/无关分支。",
+      "title": "插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑",
+      "detail": "test_code_review_p0_p1.py 等测试文件存在且随运行时修复持续更新(2026-09-06 #511),但全仓 grep 无任何 workflow/pre-push/package.json 调用它们;normalize_base_url 新分支的回归若不人工跑,只在下次 seat2 实跑时暴露。属 by-design 还是 automatable-gap 需 owner 判断。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-06T03:16:57.784Z",
-      "lastSeen": "2026-09-06T03:16:57.784Z"
+      "firstSeen": "2026-09-06T04:07:47.359Z",
+      "lastSeen": "2026-09-06T04:07:47.359Z"
     },
     {
-      "fingerprint": "seat1-pr513-convergence-stdin-blocked",
-      "tier": "by-design",
-      "title": "审查席 shell 组合被禁,convergence round 无法经 stdin 传入 findings",
-      "detail": "readonly_bash_guard 禁止管道与重定向,record-convergence-round.mjs 只支持 stdin 读 findings,席①无法落盘收敛状态(状态保持 missing)。已在 verdict 中如实说明;台账改记本条根因。",
-      "proposal": null,
-      "status": "tracked",
+      "fingerprint": "wire-pytests-into-existing-ci-job",
+      "tier": "proposal",
+      "title": "把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job",
+      "detail": "2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。",
+      "proposal": "在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。",
+      "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-06T03:26:17.232Z",
-      "lastSeen": "2026-09-06T03:26:17.232Z"
+      "firstSeen": "2026-09-06T04:17:33.722Z",
+      "lastSeen": "2026-09-06T04:17:33.722Z"
     }
   ],
   "escapedHazards": [
