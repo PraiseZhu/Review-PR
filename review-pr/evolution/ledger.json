@@ -4901,6 +4901,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-05T20:22:40.064Z",
       "lastSeen": "2026-09-05T20:22:40.064Z"
+    },
+    {
+      "fingerprint": "pr488-context-headrefoid-field",
+      "tier": "by-design",
+      "title": "context.mjs 依赖的 gh pr view headRefOid 字段在本 runner 不存在，阶段一确定性上下文拉取失败",
+      "detail": "PR488 席①实跑：gh pr view 的可用字段列表里没有 headRefOid/baseRefOid，context.mjs 488 直接退出 1（Unknown JSON field）。该 runner 的 gh 版本/字段集与 skill 假设不一致。本席改用 git 父提交（merge commit 的两个 parent）推导 base/head 完成 BASE...HEAD 审查，preflight/build-review-task/deliver-review-segment/consume-review-output 用显式 --base/--head 不受影响。建议 evolution：context.mjs 在 headRefOid 不可用时回退 commits[0].oid 或 GraphQL，否则该环境下阶段一永远断。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T00:58:02.738Z",
+      "lastSeen": "2026-09-06T00:58:02.738Z"
     }
   ],
   "escapedHazards": [
