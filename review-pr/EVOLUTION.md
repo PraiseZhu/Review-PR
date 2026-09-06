@@ -519,14 +519,14 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 2 次,首见 2026-09-05,最近 2026-09-06,status: tracked
+  - 现象:PR#472 席①复现（2026-09-06）：守卫禁管道/重定向，record-convergence-round.mjs 472 --head <head> 直接调用即触发 D2 空 stdin 显式拒绝（退出 1，state 未落一个字节，行为正确）；run-log.mjs 同为 stdin 契约不可达，evolution-note.mjs 走 argv 契约不受影响。补充观察：CI 席位工作区每次全新，convergence state 每轮 status=missing——即便 stdin 可投递，跨轮收敛跟踪在 CI runner 上也无法持久（skill 状态设计锚定常驻 checkout，PR#505 首记时已提"留待主流程补记"）。findings 经 StructuredOutput 交付（workflow fail-closed 通道）。
+- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 2 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:2026-09-06 PR#472 席①再现实测：gh pr view --json headRefOid 与 closingIssuesReferences 均 Unknown JSON field，context.mjs 472 退出 1，build-review-task.mjs 现场取数同源失败；阶段一各门以人工 gh api GET + 规则文件通读复刻（安全/隐私人工核对，无凭证/PII），review-preflight.mjs（本地 git objects）不受影响——complete=true、0 hits、0 report-only。与前次（PR#501）一致：runner gh CLI 与 skill 字段契约漂移，非目标 PR 代码问题。
 - `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:审查会话发现 PR 501 state=MERGED(2026-09-06T04:09:25Z)仍被排入三审。发现时点：读 gh pr view 状态字段。当前流程文档假定席位运行时 PR 仍 OPEN；对已合并 PR 输出 findings 无法阻断合并，只能事后审计。按 by-design 处理：owner 用三审做 post-merge 审计属有意行为，不改流程。
-- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
-  - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段（2026-09-06 PR501 席①实测）：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight（本地 git objects）与 deliver-review-segment（--task 本地文件）不受影响。这属于环境与 skill 脚本的字段契约漂移，非本轮 PR 代码问题。
 - `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:test_code_review_p0_p1.py 等测试文件存在且随运行时修复持续更新(2026-09-06 #511),但全仓 grep 无任何 workflow/pre-push/package.json 调用它们;normalize_base_url 新分支的回归若不人工跑,只在下次 seat2 实跑时暴露。属 by-design 还是 automatable-gap 需 owner 判断。
-- `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
-  - 现象:L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。
 - `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 483 2 条 conversation 未 resolve；threadTriage 未配置
 - `skip-conflict-472` **PR 与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
