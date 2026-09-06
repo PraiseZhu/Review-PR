@@ -4903,17 +4903,43 @@
       "lastSeen": "2026-09-05T20:22:40.064Z"
     },
     {
-      "fingerprint": "pr488-context-headrefoid-field",
-      "tier": "by-design",
-      "title": "context.mjs 依赖的 gh pr view headRefOid 字段在本 runner 不存在，阶段一确定性上下文拉取失败",
-      "detail": "PR488 席①实跑：gh pr view 的可用字段列表里没有 headRefOid/baseRefOid，context.mjs 488 直接退出 1（Unknown JSON field）。该 runner 的 gh 版本/字段集与 skill 假设不一致。本席改用 git 父提交（merge commit 的两个 parent）推导 base/head 完成 BASE...HEAD 审查，preflight/build-review-task/deliver-review-segment/consume-review-output 用显式 --base/--head 不受影响。建议 evolution：context.mjs 在 headRefOid 不可用时回退 commits[0].oid 或 GraphQL，否则该环境下阶段一永远断。",
+      "fingerprint": "seat1-dist-guard-review-probe",
+      "tier": "proposal",
+      "title": "探针:席①受限运行时无法执行目标仓测试",
+      "detail": "review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对",
       "proposal": null,
-      "status": "tracked",
+      "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-06T00:58:02.738Z",
-      "lastSeen": "2026-09-06T00:58:02.738Z"
+      "firstSeen": "2026-09-06T01:20:07.060Z",
+      "lastSeen": "2026-09-06T01:20:07.060Z"
+    },
+    {
+      "fingerprint": "pr493-seat1-stdin-pipe-blocked",
+      "tier": "proposal",
+      "title": "席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达",
+      "detail": "record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T01:35:23.039Z",
+      "lastSeen": "2026-09-06T01:35:23.039Z"
+    },
+    {
+      "fingerprint": "context-mjs-headrefoid-gh-field-unsupported",
+      "tier": "proposal",
+      "title": "context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败",
+      "detail": "2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。",
+      "proposal": "context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T02:42:32.658Z",
+      "lastSeen": "2026-09-06T02:42:32.658Z"
     }
   ],
   "escapedHazards": [

@@ -5,6 +5,13 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
+  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
+- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
+- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对
 - `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
   - 现象:PR #498 run.mjs 报告身份字段 headSha 取自 git HEAD，oracleHash/fixtureHash 却从当前工作树文件计算（computeOracleHash 读 SCHEMA_DIR 实文件）。CLI 主路径有 assertCommittedTree 脏树拦截兜底，但 runLayer allowDirty:true（contract.test.mjs 自用）与未来 adapter 路径没有该保证，同一 headSha 可对应不同 oracleHash，BD3 按身份字段复核会失配。
   - 提案:computeOracleHash 增加基于 git cat-file 的实现（从 identity.headSha 读 blob 内容哈希），CLI 写报告时优先用 git 版本；文件系统版本仅测试 seam 用；或报告加 worktreeDirty 字段显式声明口径。
@@ -509,8 +516,6 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `pr488-context-headrefoid-field` **context.mjs 依赖的 gh pr view headRefOid 字段在本 runner 不存在，阶段一确定性上下文拉取失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
-  - 现象:PR488 席①实跑：gh pr view 的可用字段列表里没有 headRefOid/baseRefOid，context.mjs 488 直接退出 1（Unknown JSON field）。该 runner 的 gh 版本/字段集与 skill 假设不一致。本席改用 git 父提交（merge commit 的两个 parent）推导 base/head 完成 BASE...HEAD 审查，preflight/build-review-task/deliver-review-segment/consume-review-output 用显式 --base/--head 不受影响。建议 evolution：context.mjs 在 headRefOid 不可用时回退 commits[0].oid 或 GraphQL，否则该环境下阶段一永远断。
 - `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。
 - `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
