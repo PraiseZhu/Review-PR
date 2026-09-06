@@ -4966,6 +4966,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-06T04:17:33.722Z",
       "lastSeen": "2026-09-06T04:17:33.722Z"
+    },
+    {
+      "fingerprint": "seat-env-gh-json-field-unsupported",
+      "tier": "by-design",
+      "title": "审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败",
+      "detail": "mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段（2026-09-06 PR501 席①实测）：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight（本地 git objects）与 deliver-review-segment（--task 本地文件）不受影响。这属于环境与 skill 脚本的字段契约漂移，非本轮 PR 代码问题。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T05:41:37.345Z",
+      "lastSeen": "2026-09-06T05:41:37.345Z"
     }
   ],
   "escapedHazards": [
