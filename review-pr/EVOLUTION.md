@@ -519,6 +519,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:审查会话发现 PR 501 state=MERGED(2026-09-06T04:09:25Z)仍被排入三审。发现时点：读 gh pr view 状态字段。当前流程文档假定席位运行时 PR 仍 OPEN；对已合并 PR 输出 findings 无法阻断合并，只能事后审计。按 by-design 处理：owner 用三审做 post-merge 审计属有意行为，不改流程。
 - `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段（2026-09-06 PR501 席①实测）：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight（本地 git objects）与 deliver-review-segment（--task 本地文件）不受影响。这属于环境与 skill 脚本的字段契约漂移，非本轮 PR 代码问题。
 - `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked

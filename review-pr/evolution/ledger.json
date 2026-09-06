@@ -4979,6 +4979,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-06T05:41:37.345Z",
       "lastSeen": "2026-09-06T05:41:37.345Z"
+    },
+    {
+      "fingerprint": "pr501-post-merge-triage",
+      "tier": "by-design",
+      "title": "PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口",
+      "detail": "审查会话发现 PR 501 state=MERGED(2026-09-06T04:09:25Z)仍被排入三审。发现时点：读 gh pr view 状态字段。当前流程文档假定席位运行时 PR 仍 OPEN；对已合并 PR 输出 findings 无法阻断合并，只能事后审计。按 by-design 处理：owner 用三审做 post-merge 审计属有意行为，不改流程。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-06T07:36:44.630Z",
+      "lastSeen": "2026-09-06T07:36:44.630Z"
     }
   ],
   "escapedHazards": [
