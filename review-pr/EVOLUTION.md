@@ -5,13 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
-  - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
-  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
-- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
-  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
-- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
-  - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对
+- `seat1-sandbox-cannot-run-required-negative-evidence` **席① bash guard 只放行 skill 脚本与只读 git/gh，task 的 required 负向证据承诺在该席位结构性不可执行** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:PR #511 轮实测：task-511.json 要求 1 处 executed 负向证据（把 cycle-guard e2e 断言弄坏一次证明会红），但 readonly_bash_guard.py 的 SKILL_NODE_OK 白名单不含任意仓内脚本，node/vitest/python 一律拒。席①拿不出 executed 证据只能如实记 verificationGap，契约与席位能力错配每轮 test-infra PR 都会重现。
+  - 提案:二选一：① 在 run-seat-claude 的 guard 里加一个受限执行通道（如允许 node --test/vitest 跑被审 PR head worktree 的指定测试文件，cwd 限 worktree、无网络、无 token 环境变量）；② build-review-task 感知席位能力标记（REVIEW_SEAT_MODE），席位无执行通道时把该 required 键降级为 prompt-level 必答并在回执注明，不再要求机器不可满足的 executed。
+- `seat1-gh-cli-too-old-for-pr-json-fields` **席① runner 的 gh CLI 过旧，不支持 headRefOid/closingIssuesReferences 等 --json 字段，skill 契约取数失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:PR #511 轮实测：gh pr view --json headRefOid 报 Unknown JSON field；build-review-task 现场取 --json body,closingIssuesReferences 同样失败，task.escapeSourceIncomplete=true（按契约本轮应判 invalid）。baseRefOid 只能靠 git show merge-commit --pretty=raw 反推 parent。
+  - 提案:升级 runner 的 gh CLI；或 skill 侧 lib.mjs 做能力探测，对不支持的字段改走 GraphQL（pullRequest.baseRefOid/closingIssuesReferences 均有 GraphQL 等价物），不要让环境版本漂移直接把整轮判 invalid。
 - `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
   - 现象:PR #498 run.mjs 报告身份字段 headSha 取自 git HEAD，oracleHash/fixtureHash 却从当前工作树文件计算（computeOracleHash 读 SCHEMA_DIR 实文件）。CLI 主路径有 assertCommittedTree 脏树拦截兜底，但 runLayer allowDirty:true（contract.test.mjs 自用）与未来 adapter 路径没有该保证，同一 headSha 可对应不同 oracleHash，BD3 按身份字段复核会失配。
   - 提案:computeOracleHash 增加基于 git cat-file 的实现（从 identity.headSha 读 blob 内容哈希），CLI 写报告时优先用 git 版本；文件系统版本仅测试 seam 用；或报告加 worktreeDirty 字段显式声明口径。
@@ -435,6 +434,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `pr511-bare-url-path-collision-collapsed` **PR511 复盘:normalize_base_url 用 rstrip('/')+geturl(),斜杠坍缩输入('//v1')被静默截成 '' 再补 /v1,与'显式路径保留'语义冲突** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:write_codex_home.py normalize_base_url:path=parsed.path.rstrip('/');if not path:path='/v1'。输入 '/​/v1'(双斜杠开头):rstrip('/') 去尾后非空→保留原样;但 '/​//v1//'→rstrip 后 '/​/v1' 中段双斜杠仍在;真正坍缩场景是 path=='//':rstrip→''→判空→补 /v1。这本身是隐性输入规范化,无新 P0/P1,但 query/fragment 拒绝分支没有对应用例锁'default port 剥离'行为(geturl 会丢 :80/:443),行为锚定靠测试面太窄。本轮 0 P0/P1,seat 环境无 python 可执行验证,仅静态推演。
 - `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: open
   - 现象:本轮 #439 与 #461 隔离审查席均在交付分段后 autocompact 连续 3 次打满窗口挂死，未交 rro-1.json；已按规程写 skip 回执，禁止沿用上次清白。#439 1 段、#461 3 段。head 未变。
   - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
@@ -516,6 +517,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr511-cycle-guard-e2e-scratch-root-isolation` **PR511 复盘:cycle-guard 端到端用例改到 mkdtemp 独立根,cwd 与 ROOT=process.cwd 天然一致** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:runGuard 传 cwd 给子进程,codemap.mjs 的 ROOT=process.cwd() 在子进程内重新锚定为 mkdtemp 根,collectFiles/resolveImport 与 src/A.ts+src/B.ts 布局匹配,nonWhitelistedCycles 精确等于 src/A.ts 与 src/B.ts 的环。脆弱面:若未来 cycle-guard.mjs 把 ROOT 改成按 import.meta.url 锚定(而非 process.cwd),该用例会扫到真实仓库基线,toEqual 断言失败。属假设演进非本 PR 缺陷;源注释已声明 ROOT=process.cwd 设计意图。seat 禁 node 跑仓内脚本,静态推演。
+- `pr488-context-headrefoid-field` **context.mjs 依赖的 gh pr view headRefOid 字段在本 runner 不存在，阶段一确定性上下文拉取失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:PR488 席①实跑：gh pr view 的可用字段列表里没有 headRefOid/baseRefOid，context.mjs 488 直接退出 1（Unknown JSON field）。该 runner 的 gh 版本/字段集与 skill 假设不一致。本席改用 git 父提交（merge commit 的两个 parent）推导 base/head 完成 BASE...HEAD 审查，preflight/build-review-task/deliver-review-segment/consume-review-output 用显式 --base/--head 不受影响。建议 evolution：context.mjs 在 headRefOid 不可用时回退 commits[0].oid 或 GraphQL，否则该环境下阶段一永远断。
 - `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。
 - `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
