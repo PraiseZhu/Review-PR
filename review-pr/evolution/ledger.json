@@ -5031,6 +5031,32 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T06:31:18.028Z",
       "lastSeen": "2026-09-07T06:31:18.028Z"
+    },
+    {
+      "fingerprint": "review-findings-outside-pr-diff",
+      "tier": "auto",
+      "title": "三审席位串台:PR #530 上一轮 10 条 findings 全部指向本 PR diff 之外的文件",
+      "detail": "纯文档 PR #530(3 文件)上一轮 seat 审查打出 10 条 REQUEST_CHANGES,逐条 path 均不在该 PR files 清单,实属其他开放 PR 的改动面;作者举证串台后只能以空提交重触发审查,浪费一整轮,且收敛台账无记录。可自动化防线:findings 发布前逐条机器校验 path 属于 gh pr view --json files 清单,未命中即按 SKILL 0 节纪律(无法复现的结论停在当前 gate)丢弃并上报。未落地,待维护者在 consume-review-output 或席位接线中实现。本轮重审已逐条锚定 3 个 diff 文件。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T11:50:59.586Z",
+      "lastSeen": "2026-09-07T11:50:59.586Z"
+    },
+    {
+      "fingerprint": "seat-sandbox-blocks-stdin-scripts",
+      "tier": "auto",
+      "title": "席位沙箱禁 shell 管道,stdin 喂入型 skill 脚本(如 record-convergence-round)不可运行",
+      "detail": "本席位 readonly guard 对所有命令前置拦截 shell 组合字符(含管道与重定向),而 record-convergence-round.mjs 只收 stdin findings、无文件入参回退,导致收敛轮次无法落盘(本轮 PR #530 仅能以 --get 确认状态 missing;台账另有 product-hold.mjs stdin 载荷相关历史条目,同一类受限面)。可自动化方向:为 stdin 型脚本补 --findings-file 之类的文件入参,或在席位接线层预写载荷文件。未落地。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T11:52:07.042Z",
+      "lastSeen": "2026-09-07T11:52:07.042Z"
     }
   ],
   "escapedHazards": [
