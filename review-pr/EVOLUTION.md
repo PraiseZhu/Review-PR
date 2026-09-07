@@ -5,9 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `seat1-depth1-shallow-base-object-missing` **三审席① depth-1 浅克隆缺 BASE 对象，preflight/task/receipt 快照链在本席位整体不可跑** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:2026-09-07 PR530 席①实跑：prepare.mjs 拿锁成功，context.mjs 530 退出码1——gh pr view --json headRefOid 报 Unknown JSON field，属已知 fingerprint seat1-gh-cli-missing-headrefoid。新面：runner checkout 是 depth-1，本地仅含 head d153621 一个提交对象；PR base 379f7cf5 经 gh api pulls/530 取得且为 head 父提交即 merge-base，但本地 git log 379f7cf5 报 bad object——review-preflight.mjs --base 与 build-review-task.mjs 的 DiffSnapshot 重建无对象可用，consume-review-output 回执链随之不可跑。审查改用 gh pr diff 530 --patch 加 gh api 元数据手工完成，未伪造回执，如实上报。
-  - 提案:席位 checkout fetch-depth 至少 2 且显式取 PR base，或注入 PR_NUMBER/BASE_SHA/HEAD_SHA 环境变量；review-preflight 与 build-review-task 对本地缺 base 对象时降级为 gh api 拉 base..head diff 并在输出标注 degraded，避免单一环境缺口拖垮整条快照链。
+- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: open
+  - 现象:复现于 #517 席①:gh pr view --json headRefOid 报 Unknown JSON field;本轮改用 commits[0].oid 与 mergeCommit.oid 锚定 HEAD,diff 经 gh pr diff --patch 取得并与 merge commit 树核对一致。历次:#482 同症状,人工通读全量 diff 替代。
+- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 2 次,首见 2026-08-21,最近 2026-09-07,status: landed
+  - 现象:复现于 #517 席①(L20-1):checkout 仅 2 个孤立提交,preflight/build-review-task 等 git 对象类脚本不可用;已 land 的 deepen 修复在席位环境无效——readonly_bash_guard 拦截 git fetch,席位无法加深克隆。本轮以 gh pr diff --patch 取 diff、HEAD 树直读全文、gh pr view 锚定方向完成审查并在 verdict 披露。原记录:#221 .git/shallow 致 merge-base 失败,deepen 后恢复。
+  - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。
 - `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。
   - 提案:PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。
@@ -27,8 +30,6 @@
 - `pr498-bd2a-contract-skip-unknown-exitcode` **合同 CLI 用 vitest 退出码 1 兼发'测试失败'与'找不到测试文件'，skipVitest 语义失真** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
   - 现象:PR #498 run.mjs runVitestContracts 把 vitest 'No Test Files Found' 的退出码 1 与真实断言失败混为同一 fail 语义。离线/部分 checkout 环境跑合同层会得到 vitest-contracts=fail 而非 unavailable，报告聚合为 fail/exit1，与'适配器缺失=unavailable'的语义分层矛盾。建议区分'跑过且有失败'与'没跑成'（探测试文件存在性或解析 vitest 输出），后者归 unavailable/exit2。
   - 提案:在 runVitestContracts 里对 spawn 结果补 exit-code 与输出的区分：VITEST_FILES 任一文件不存在（existsSync 校验）时抛专用错误并记 unavailable check；仅当文件齐全且 exit!=0 才记 fail。contract.test.mjs 相应补一条反例。
-- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: open
-  - 现象:PR #482 席①审查复现：gh pr view --json headRefOid 仍报 Unknown JSON field，context.mjs 482 退出码 1。本轮安全/隐私门与格式门以人工通读 61.6KB 全量 diff 完成（无凭证/PII，全部 fixture 为合成 magic bytes）；审查对象改为 git diff <merge-base 父> <PR head>（38d45a8..24523c0），与 gh pr diff 逐文件核对一致。
 - `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open
   - 现象:本轮 #478 顶层 snapshotHash 正确但 segmentReceipts[0] 缺该字段，shape-preflight 退回后补上才 clean。
   - 提案:deliver-review-segment payload 或 prompt 回执样例强制带 snapshotHash；审查席不得省略。
@@ -224,10 +225,6 @@
   - 现象:本轮本地 HEAD 在 fix/roster-empty-identity-not-miss，远程 ref 已不存在；origin/main 已前进 cd4cd0e..b9e2c14。fail-closed 正确跳过审查，但每轮都会空转直到有人把 checkout 切回默认分支。
   - 提案:auto 开轮若 tracking 分支在远端已消失，先切到 origin/<defaultBranch> 再 ff-only；切不过仍 sync-failed，不审不写 GitHub。
   - 备注:[decided:2026-08-24] landed-effective Review-PR#29 prepare.mjs：远端 tracking 已删且工作区干净才切默认分支；脏树只标 syncFailed 不 checkout。merge ff415c7。
-- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
-  - 现象:PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。
-  - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
-  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。
 - `auto-review-agent-no-return-before-round-end` **阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
   - 现象:PR #221 已完成 preflight/task/segment 投递并 spawn isolation worktree 审查，但本轮结束前未收回执。按 fail-closed 不得 approve/clean。建议给阶段二审查加硬超时，超时写 invalid 回执并进汇总，避免空等熔断后无机器终态。
   - 提案:consume 前若审查会话超时，主流程写 non-clean 回执(reason=review-agent-timeout)并 skip，不把「没跑成就沿用上次清白」开口留下。

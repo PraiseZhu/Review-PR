@@ -2657,14 +2657,14 @@
       "fingerprint": "shallow-clone-merge-base-fail",
       "tier": "proposal",
       "title": "浅克隆上 DiffSnapshot 算不出 merge-base",
-      "detail": "PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。",
+      "detail": "复现于 #517 席①(L20-1):checkout 仅 2 个孤立提交,preflight/build-review-task 等 git 对象类脚本不可用;已 land 的 deepen 修复在席位环境无效——readonly_bash_guard 拦截 git fetch,席位无法加深克隆。本轮以 gh pr diff --patch 取 diff、HEAD 树直读全文、gh pr view 锚定方向完成审查并在 verdict 披露。原记录:#221 .git/shallow 致 merge-base 失败,deepen 后恢复。",
       "proposal": "buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。",
       "status": "landed",
       "commit": null,
       "note": "[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。",
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-08-21T11:26:14.225Z",
-      "lastSeen": "2026-08-21T11:26:14.225Z"
+      "lastSeen": "2026-09-07T05:42:24.845Z"
     },
     {
       "fingerprint": "greptile-unresolved-thread-skip",
@@ -4646,14 +4646,14 @@
       "fingerprint": "seat1-gh-cli-missing-headrefoid",
       "tier": "proposal",
       "title": "L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail",
-      "detail": "PR #482 席①审查复现：gh pr view --json headRefOid 仍报 Unknown JSON field，context.mjs 482 退出码 1。本轮安全/隐私门与格式门以人工通读 61.6KB 全量 diff 完成（无凭证/PII，全部 fixture 为合成 magic bytes）；审查对象改为 git diff <merge-base 父> <PR head>（38d45a8..24523c0），与 gh pr diff 逐文件核对一致。",
+      "detail": "复现于 #517 席①:gh pr view --json headRefOid 报 Unknown JSON field;本轮改用 commits[0].oid 与 mergeCommit.oid 锚定 HEAD,diff 经 gh pr diff --patch 取得并与 merge commit 树核对一致。历次:#482 同症状,人工通读全量 diff 替代。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-09-04T10:53:03.293Z",
-      "lastSeen": "2026-09-05T06:30:15.219Z"
+      "lastSeen": "2026-09-07T05:42:28.852Z"
     },
     {
       "fingerprint": "interactive-dirty-pushback-new-families",
@@ -5018,19 +5018,6 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T03:51:20.009Z",
       "lastSeen": "2026-09-07T03:51:20.009Z"
-    },
-    {
-      "fingerprint": "seat1-depth1-shallow-base-object-missing",
-      "tier": "proposal",
-      "title": "三审席① depth-1 浅克隆缺 BASE 对象，preflight/task/receipt 快照链在本席位整体不可跑",
-      "detail": "2026-09-07 PR530 席①实跑：prepare.mjs 拿锁成功，context.mjs 530 退出码1——gh pr view --json headRefOid 报 Unknown JSON field，属已知 fingerprint seat1-gh-cli-missing-headrefoid。新面：runner checkout 是 depth-1，本地仅含 head d153621 一个提交对象；PR base 379f7cf5 经 gh api pulls/530 取得且为 head 父提交即 merge-base，但本地 git log 379f7cf5 报 bad object——review-preflight.mjs --base 与 build-review-task.mjs 的 DiffSnapshot 重建无对象可用，consume-review-output 回执链随之不可跑。审查改用 gh pr diff 530 --patch 加 gh api 元数据手工完成，未伪造回执，如实上报。",
-      "proposal": "席位 checkout fetch-depth 至少 2 且显式取 PR base，或注入 PR_NUMBER/BASE_SHA/HEAD_SHA 环境变量；review-preflight 与 build-review-task 对本地缺 base 对象时降级为 gh api 拉 base..head diff 并在输出标注 degraded，避免单一环境缺口拖垮整条快照链。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-07T05:40:27.025Z",
-      "lastSeen": "2026-09-07T05:40:27.025Z"
     }
   ],
   "escapedHazards": [
