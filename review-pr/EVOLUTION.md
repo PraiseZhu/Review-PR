@@ -441,6 +441,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `canvas-truth-scan-vs-wire-contract` **画布即真相类 PR：引用扫描面必须对账 wire 契约白名单，不能只抄客户端 attach 接线** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:PR #434 阶段 3(资产引用生命周期)把服务端引用计数切成「画布即真相」现算,扫描函数只抽了 payload.asset.url 与 fills[].assetUrl——恰是客户端 attach 接线(computeAssetSideEffects)覆盖的子集;而 wire 契约 NODE_PAYLOAD_KEYS 里还有第三个承载资产引用的持久化字段 imageSlot.refs[].assetUrl(校验器放行、随画布落服务端、生成时经 assetBlobForNode 真实消费),漏扫导致槽位参考图在 7 天宽限后被 purge 静默清除。审查启发(可自动化):凡『从持久化 payload 派生真相/计数/GC 判定』的改动,应把扫描字段清单与 shared/persist-contract.ts 的 payload 白名单逐字段对账,并 grep 全仓消费方(mivo-sasset:/assetUrl)找差集——客户端 attach 事件只是计数的触发器子集,不是引用面的权威清单。
 - `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: open
   - 现象:本轮 #439 与 #461 隔离审查席均在交付分段后 autocompact 连续 3 次打满窗口挂死，未交 rro-1.json；已按规程写 skip 回执，禁止沿用上次清白。#439 1 段、#461 3 段。head 未变。
   - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
