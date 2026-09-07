@@ -5,23 +5,19 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 2 次,首见 2026-09-06,最近 2026-09-07,status: open
-  - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用。2026-09-07 PR #528 席①复现同一失败;同轮 build-review-task.mjs 仍成功产出阶段二任务与四段投递,审查未受阻。
-  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
-- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 2 次,首见 2026-09-06,最近 2026-09-07,status: open
-  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑。2026-09-07 PR #528 席①复现,同一阻断,收敛记录仍留待主流程补记。
-- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 2 次,首见 2026-09-06,最近 2026-09-07,status: open
-  - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试被守卫拦截,审查只能静态核对。2026-09-07 PR #528 席①再证实并加重:阶段二 rro-1 契约要求 27 处 executed 负向证据并登记 verificationRuns,席内无法执行 npm/npx/vitest,负向证据结构性不可满足——即使 rro 文件可写,空 negativeEvidence 也会被 consumer 判 invalid。
-  - 提案:可信 job 步骤代跑负向证据实验并把 run 记录交给席位引用,或为席位提供仓外 scratch 副本的测试 runner;否则阶段二任务不应把 executed 负向证据设为只读席位的必答项。
-- `seat1-rro-output-write-allowlist-blocked` **席① Write 白名单只放行台账两文件,rro-1 交付文件在席内无处可写** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:PR #528 席①实跑:run-seat-claude 守卫把 Write/Edit 限定为 skill 根下 EVOLUTION.md 与 evolution/ledger.json,Bash 又禁重定向与管道,阶段二 rro-1 JSON 在席内没有任何可写位置;consume-review-output.mjs 虽在 node 白名单内,但必须传 --output 文件,链路在席位上结构性断路。已落地的 isolated-reviewer 修复——任务模板指向 worktree 相对路径——对本席位不适用,相对路径同样落在写白名单之外。本轮按诚实纪律未伪造 rro 与回执,findings 经 StructuredOutput 交付。
-  - 提案:二选一:守卫为席①放行一个席位作用域的输出路径供 consume-review-output.mjs 的 --output 使用;或编排层加可信步骤代为落盘与 consume,席位只交 StructuredOutput。扩大写面须 owner 拍板。
 - `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。
   - 提案:PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。
 - `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
   - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
   - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
+- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
+  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
+- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
+- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对
 - `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
   - 现象:PR #498 run.mjs 报告身份字段 headSha 取自 git HEAD，oracleHash/fixtureHash 却从当前工作树文件计算（computeOracleHash 读 SCHEMA_DIR 实文件）。CLI 主路径有 assertCommittedTree 脏树拦截兜底，但 runLayer allowDirty:true（contract.test.mjs 自用）与未来 adapter 路径没有该保证，同一 headSha 可对应不同 oracleHash，BD3 按身份字段复核会失配。
   - 提案:computeOracleHash 增加基于 git cat-file 的实现（从 identity.headSha 读 blob 内容哈希），CLI 写报告时优先用 git 版本；文件系统版本仅测试 seam 用；或报告加 worktreeDirty 字段显式声明口径。
