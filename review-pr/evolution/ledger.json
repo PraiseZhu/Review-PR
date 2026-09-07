@@ -5070,19 +5070,6 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T16:25:10.028Z",
       "lastSeen": "2026-09-07T16:25:10.028Z"
-    },
-    {
-      "fingerprint": "context-mjs-headrefoid-gh-compat",
-      "tier": "proposal",
-      "title": "context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败",
-      "detail": "席①审查 PR 543 时实测：runner 的 gh 版本不支持 --json headRefOid 字段，context.mjs 543 直接 exit 1（\"Unknown JSON field: headRefOid\"），导致 skill 自己的上下文步骤整步失败，无法按 3.0 流程取完整 PR 上下文。数据本身并非不可得：REST API repos/{owner}/{repo}/pulls/{N} 返回 head.sha，gh pr view 其余字段也正常。当前只能靠等价机器证据（目标仓自身 pr-format-gate 与 gitleaks 双绿）旁证，且 consume-review-output 的 rro-1 输入口在本席 Write 限制下无法落地，只能走 write-review-receipt CLI 兜底。",
-      "proposal": "context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-07T18:04:44.552Z",
-      "lastSeen": "2026-09-07T18:04:44.552Z"
     }
   ],
   "escapedHazards": [
