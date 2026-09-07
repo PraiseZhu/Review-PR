@@ -526,10 +526,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 2 次,首见 2026-09-06,最近 2026-09-07,status: tracked
+  - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight 走本地 git objects 不受影响。复现记录：2026-09-06 PR501 席①；2026-09-07 PR472 席①——本轮 context.mjs exit 1 报 Unknown JSON field headRefOid，build-review-task 逃逸候选源同败，改用 gh api pulls 端点加 event.json 手工锚定 head 后完成等价判定并披露。属环境与 skill 脚本的字段契约漂移，非目标 PR 代码问题。
 - `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:审查会话发现 PR 501 state=MERGED(2026-09-06T04:09:25Z)仍被排入三审。发现时点：读 gh pr view 状态字段。当前流程文档假定席位运行时 PR 仍 OPEN；对已合并 PR 输出 findings 无法阻断合并，只能事后审计。按 by-design 处理：owner 用三审做 post-merge 审计属有意行为，不改流程。
-- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
-  - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段（2026-09-06 PR501 席①实测）：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight（本地 git objects）与 deliver-review-segment（--task 本地文件）不受影响。这属于环境与 skill 脚本的字段契约漂移，非本轮 PR 代码问题。
 - `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:test_code_review_p0_p1.py 等测试文件存在且随运行时修复持续更新(2026-09-06 #511),但全仓 grep 无任何 workflow/pre-push/package.json 调用它们;normalize_base_url 新分支的回归若不人工跑,只在下次 seat2 实跑时暴露。属 by-design 还是 automatable-gap 需 owner 判断。
 - `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
