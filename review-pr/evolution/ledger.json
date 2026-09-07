@@ -4992,6 +4992,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-06T07:36:44.630Z",
       "lastSeen": "2026-09-06T07:36:44.630Z"
+    },
+    {
+      "fingerprint": "verify-pinned-upstream-source-for-dist-patches",
+      "tier": "proposal",
+      "title": "审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明",
+      "detail": "#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。",
+      "proposal": "PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T02:34:51.565Z",
+      "lastSeen": "2026-09-07T02:34:51.565Z"
     }
   ],
   "escapedHazards": [

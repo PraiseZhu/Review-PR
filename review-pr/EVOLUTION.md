@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。
+  - 提案:PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。
 - `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
   - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
   - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
