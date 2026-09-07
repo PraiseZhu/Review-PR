@@ -5018,6 +5018,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T03:51:20.009Z",
       "lastSeen": "2026-09-07T03:51:20.009Z"
+    },
+    {
+      "fingerprint": "context-mjs-old-gh-cli-headrefoid",
+      "tier": "auto",
+      "title": "context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持",
+      "detail": "PR528 席位实测:CI runner 的 gh CLI 版本较旧,gh pr view --json 不支持 headRefOid 字段,context.mjs 直接 exit 1 报 Unknown JSON field,阶段一上下文收集整轮不可用,只能手工等价收集 PR 元数据与正文与文件与评论。可自动化修法:context.mjs 捕获该错误后回退 gh api 的 pulls 端点取 head sha,或先探测字段支持再选查询路径,避免把环境兼容性问题变成整轮阻断。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T06:31:18.028Z",
+      "lastSeen": "2026-09-07T06:31:18.028Z"
     }
   ],
   "escapedHazards": [
