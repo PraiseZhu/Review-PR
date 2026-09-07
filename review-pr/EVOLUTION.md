@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `preflight-unrunnable-base-only-seat` **preflight/回执流程在 base-only checkout 的审查 seat 不可运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open,commit `e47db371f12d8762d58ae225b87baf6f4bc87620`
+  - 现象:tri-review seat 工作区只检出 BASE 且 guard 禁 git fetch,head 不在本地对象库;review-preflight.mjs 用 git show <head>:<path> 构建 DiffSnapshot 必然 complete:false,build-review-task/consume-review-output 同理依赖本地 head。本轮(mivo-canvas-plugin PR #539)只能人工按 skill 完成审查,机器 preflight 缺席需在汇总如实声明。建议:增加无本地 head 的降级路径(经 gh api contents 取 head 文件构建 snapshot)或在 SKILL.md 声明该环境不适用 preflight,由调用方记录。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: open
   - 现象:复现于 #517 席①:gh pr view --json headRefOid 报 Unknown JSON field;本轮改用 commits[0].oid 与 mergeCommit.oid 锚定 HEAD,diff 经 gh pr diff --patch 取得并与 merge commit 树核对一致。历次:#482 同症状,人工通读全量 diff 替代。
 - `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 2 次,首见 2026-08-21,最近 2026-09-07,status: landed
@@ -441,10 +443,6 @@
 
 ## 已自动落地(automatable-gap)
 
-- `seat-sandbox-blocks-stdin-scripts` **席位沙箱禁 shell 管道,stdin 喂入型 skill 脚本(如 record-convergence-round)不可运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:本席位 readonly guard 对所有命令前置拦截 shell 组合字符(含管道与重定向),而 record-convergence-round.mjs 只收 stdin findings、无文件入参回退,导致收敛轮次无法落盘(本轮 PR #530 仅能以 --get 确认状态 missing;台账另有 product-hold.mjs stdin 载荷相关历史条目,同一类受限面)。可自动化方向:为 stdin 型脚本补 --findings-file 之类的文件入参,或在席位接线层预写载荷文件。未落地。
-- `review-findings-outside-pr-diff` **三审席位串台:PR #530 上一轮 10 条 findings 全部指向本 PR diff 之外的文件** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:纯文档 PR #530(3 文件)上一轮 seat 审查打出 10 条 REQUEST_CHANGES,逐条 path 均不在该 PR files 清单,实属其他开放 PR 的改动面;作者举证串台后只能以空提交重触发审查,浪费一整轮,且收敛台账无记录。可自动化防线:findings 发布前逐条机器校验 path 属于 gh pr view --json files 清单,未命中即按 SKILL 0 节纪律(无法复现的结论停在当前 gate)丢弃并上报。未落地,待维护者在 consume-review-output 或席位接线中实现。本轮重审已逐条锚定 3 个 diff 文件。
 - `context-mjs-old-gh-cli-headrefoid` **context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:PR528 席位实测:CI runner 的 gh CLI 版本较旧,gh pr view --json 不支持 headRefOid 字段,context.mjs 直接 exit 1 报 Unknown JSON field,阶段一上下文收集整轮不可用,只能手工等价收集 PR 元数据与正文与文件与评论。可自动化修法:context.mjs 捕获该错误后回退 gh api 的 pulls 端点取 head sha,或先探测字段支持再选查询路径,避免把环境兼容性问题变成整轮阻断。
 - `canvas-truth-scan-vs-wire-contract` **画布即真相类 PR：引用扫描面必须对账 wire 契约白名单，不能只抄客户端 attach 接线** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
