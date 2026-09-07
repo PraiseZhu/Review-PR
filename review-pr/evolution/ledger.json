@@ -5059,17 +5059,17 @@
       "lastSeen": "2026-09-07T15:19:10.894Z"
     },
     {
-      "fingerprint": "gh-cli-headrefoid-unsupported-on-runner",
-      "tier": "proposal",
-      "title": "runner gh 过旧导致 context/receipt 链路失败",
-      "detail": "seat1 (GitHub Actions runner, gh 2.x lacking headRefOid/closingIssuesReferences JSON fields): context.mjs 539, build-review-task gh-live escape source, and write-review-receipt.mjs 539 all fail with 'Unknown JSON field: headRefOid'. The rro-1 machine-verdict chain cannot complete in this environment even though prepare/preflight/build-review-task(--pr-body fallback unavailable, file seams unwritable)/deliver-review-segment all work. Proposal: add a gh-version capability probe or a --head-oid CLI seam (like --pr-body-file) so context.mjs and write-review-receipt.mjs can accept explicit OIDs; alternatively pin a newer gh in the runner image. Observed on PR #539 review, 2026-09-08; review proceeded manually on the delivered snapshot with preflight clean.",
+      "fingerprint": "runner-gh-cli-too-old-for-skill-scripts",
+      "tier": "auto",
+      "title": "L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行",
+      "detail": "mivo-review runner (L20-1) 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段: context.mjs / build-review-task.mjs / consume-review-output.mjs / escaped-hazards 均以 Unknown JSON field exit 1。席位守卫同时禁止 heredoc/管道,stdin 型脚本(record-convergence-round / run-log)也无法投喂。本轮退路: 用允许的只读命令(gh api --jq / git show / git diff / git blame)手工重建 PR 事实; fork 点用 REST base.sha 而非 main tip,preflight 用 --base <fork-point> 重跑后 complete=true 与 PR 文件清单精确对账。建议: 巡审部署前 probe gh 版本与字段支持,或 skill 脚本对缺失字段降级;席位守卫可为 stdin 型脚本开 --body-file 通道。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-07T16:21:31.566Z",
-      "lastSeen": "2026-09-07T16:21:31.566Z"
+      "firstSeen": "2026-09-07T16:25:10.028Z",
+      "lastSeen": "2026-09-07T16:25:10.028Z"
     }
   ],
   "escapedHazards": [
