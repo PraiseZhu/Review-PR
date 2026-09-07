@@ -5044,6 +5044,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T11:54:34.811Z",
       "lastSeen": "2026-09-07T11:54:34.811Z"
+    },
+    {
+      "fingerprint": "pr-body-drift-after-autopilot-rounds",
+      "tier": "by-design",
+      "title": "多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准",
+      "detail": "PR #528 席①观察：正文『明确不包含：组名导出』『组名栏尚未接入 LOD』，但最终 head (e0d9f78) 已实现组名导出（canvasExportText groupCaptionsOnly 通道）且 GroupCaptionLayer 已过 needsImageCaptionShell LOD 过滤；正文验证节还停在旧候选 SHA 0d05227。多轮 autopilot 修复合入后正文未同步，格式门与 pr-intent 均不拦截。属人工核对项：审查结论只锚 head 代码，正文声明仅作线索不作事实。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T15:19:10.894Z",
+      "lastSeen": "2026-09-07T15:19:10.894Z"
     }
   ],
   "escapedHazards": [

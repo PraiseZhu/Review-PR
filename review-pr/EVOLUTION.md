@@ -528,6 +528,8 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `pr-body-drift-after-autopilot-rounds` **多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: tracked
+  - 现象:PR #528 席①观察：正文『明确不包含：组名导出』『组名栏尚未接入 LOD』，但最终 head (e0d9f78) 已实现组名导出（canvasExportText groupCaptionsOnly 通道）且 GroupCaptionLayer 已过 needsImageCaptionShell LOD 过滤；正文验证节还停在旧候选 SHA 0d05227。多轮 autopilot 修复合入后正文未同步，格式门与 pr-intent 均不拦截。属人工核对项：审查结论只锚 head 代码，正文声明仅作线索不作事实。
 - `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 2 次,首见 2026-09-06,最近 2026-09-07,status: tracked
   - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight 走本地 git objects 不受影响。复现记录：2026-09-06 PR501 席①；2026-09-07 PR472 席①——本轮 context.mjs exit 1 报 Unknown JSON field headRefOid，build-review-task 逃逸候选源同败，改用 gh api pulls 端点加 event.json 手工锚定 head 后完成等价判定并披露。属环境与 skill 脚本的字段契约漂移，非目标 PR 代码问题。
 - `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
