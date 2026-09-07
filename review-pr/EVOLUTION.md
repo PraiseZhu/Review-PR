@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `seat1-depth1-shallow-base-object-missing` **三审席① depth-1 浅克隆缺 BASE 对象，preflight/task/receipt 快照链在本席位整体不可跑** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:2026-09-07 PR530 席①实跑：prepare.mjs 拿锁成功，context.mjs 530 退出码1——gh pr view --json headRefOid 报 Unknown JSON field，属已知 fingerprint seat1-gh-cli-missing-headrefoid。新面：runner checkout 是 depth-1，本地仅含 head d153621 一个提交对象；PR base 379f7cf5 经 gh api pulls/530 取得且为 head 父提交即 merge-base，但本地 git log 379f7cf5 报 bad object——review-preflight.mjs --base 与 build-review-task.mjs 的 DiffSnapshot 重建无对象可用，consume-review-output 回执链随之不可跑。审查改用 gh pr diff 530 --patch 加 gh api 元数据手工完成，未伪造回执，如实上报。
+  - 提案:席位 checkout fetch-depth 至少 2 且显式取 PR base，或注入 PR_NUMBER/BASE_SHA/HEAD_SHA 环境变量；review-preflight 与 build-review-task 对本地缺 base 对象时降级为 gh api 拉 base..head diff 并在输出标注 degraded，避免单一环境缺口拖垮整条快照链。
 - `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。
   - 提案:PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。

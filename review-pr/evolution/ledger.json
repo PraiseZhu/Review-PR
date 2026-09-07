@@ -5018,6 +5018,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T03:51:20.009Z",
       "lastSeen": "2026-09-07T03:51:20.009Z"
+    },
+    {
+      "fingerprint": "seat1-depth1-shallow-base-object-missing",
+      "tier": "proposal",
+      "title": "三审席① depth-1 浅克隆缺 BASE 对象，preflight/task/receipt 快照链在本席位整体不可跑",
+      "detail": "2026-09-07 PR530 席①实跑：prepare.mjs 拿锁成功，context.mjs 530 退出码1——gh pr view --json headRefOid 报 Unknown JSON field，属已知 fingerprint seat1-gh-cli-missing-headrefoid。新面：runner checkout 是 depth-1，本地仅含 head d153621 一个提交对象；PR base 379f7cf5 经 gh api pulls/530 取得且为 head 父提交即 merge-base，但本地 git log 379f7cf5 报 bad object——review-preflight.mjs --base 与 build-review-task.mjs 的 DiffSnapshot 重建无对象可用，consume-review-output 回执链随之不可跑。审查改用 gh pr diff 530 --patch 加 gh api 元数据手工完成，未伪造回执，如实上报。",
+      "proposal": "席位 checkout fetch-depth 至少 2 且显式取 PR base，或注入 PR_NUMBER/BASE_SHA/HEAD_SHA 环境变量；review-preflight 与 build-review-task 对本地缺 base 对象时降级为 gh api 拉 base..head diff 并在输出标注 degraded，避免单一环境缺口拖垮整条快照链。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T05:40:27.025Z",
+      "lastSeen": "2026-09-07T05:40:27.025Z"
     }
   ],
   "escapedHazards": [
