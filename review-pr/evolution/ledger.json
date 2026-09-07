@@ -4906,40 +4906,40 @@
       "fingerprint": "seat1-dist-guard-review-probe",
       "tier": "proposal",
       "title": "探针:席①受限运行时无法执行目标仓测试",
-      "detail": "review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对",
-      "proposal": null,
+      "detail": "review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试被守卫拦截,审查只能静态核对。2026-09-07 PR #528 席①再证实并加重:阶段二 rro-1 契约要求 27 处 executed 负向证据并登记 verificationRuns,席内无法执行 npm/npx/vitest,负向证据结构性不可满足——即使 rro 文件可写,空 negativeEvidence 也会被 consumer 判 invalid。",
+      "proposal": "可信 job 步骤代跑负向证据实验并把 run 记录交给席位引用,或为席位提供仓外 scratch 副本的测试 runner;否则阶段二任务不应把 executed 负向证据设为只读席位的必答项。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T01:20:07.060Z",
-      "lastSeen": "2026-09-06T01:20:07.060Z"
+      "lastSeen": "2026-09-07T03:27:10.219Z"
     },
     {
       "fingerprint": "pr493-seat1-stdin-pipe-blocked",
       "tier": "proposal",
       "title": "席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达",
-      "detail": "record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑",
+      "detail": "record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑。2026-09-07 PR #528 席①复现,同一阻断,收敛记录仍留待主流程补记。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T01:35:23.039Z",
-      "lastSeen": "2026-09-06T01:35:23.039Z"
+      "lastSeen": "2026-09-07T03:27:14.549Z"
     },
     {
       "fingerprint": "context-mjs-headrefoid-gh-field-unsupported",
       "tier": "proposal",
       "title": "context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败",
-      "detail": "2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。",
+      "detail": "2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用。2026-09-07 PR #528 席①复现同一失败;同轮 build-review-task.mjs 仍成功产出阶段二任务与四段投递,审查未受阻。",
       "proposal": "context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T02:42:32.658Z",
-      "lastSeen": "2026-09-06T02:42:32.658Z"
+      "lastSeen": "2026-09-07T03:27:20.657Z"
     },
     {
       "fingerprint": "seat1-codex-pytests-not-wired-into-ci",
@@ -5005,6 +5005,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T02:34:51.565Z",
       "lastSeen": "2026-09-07T02:34:51.565Z"
+    },
+    {
+      "fingerprint": "seat1-rro-output-write-allowlist-blocked",
+      "tier": "proposal",
+      "title": "席① Write 白名单只放行台账两文件,rro-1 交付文件在席内无处可写",
+      "detail": "PR #528 席①实跑:run-seat-claude 守卫把 Write/Edit 限定为 skill 根下 EVOLUTION.md 与 evolution/ledger.json,Bash 又禁重定向与管道,阶段二 rro-1 JSON 在席内没有任何可写位置;consume-review-output.mjs 虽在 node 白名单内,但必须传 --output 文件,链路在席位上结构性断路。已落地的 isolated-reviewer 修复——任务模板指向 worktree 相对路径——对本席位不适用,相对路径同样落在写白名单之外。本轮按诚实纪律未伪造 rro 与回执,findings 经 StructuredOutput 交付。",
+      "proposal": "二选一:守卫为席①放行一个席位作用域的输出路径供 consume-review-output.mjs 的 --output 使用;或编排层加可信步骤代为落盘与 consume,席位只交 StructuredOutput。扩大写面须 owner 拍板。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T03:27:02.159Z",
+      "lastSeen": "2026-09-07T03:27:02.159Z"
     }
   ],
   "escapedHazards": [
