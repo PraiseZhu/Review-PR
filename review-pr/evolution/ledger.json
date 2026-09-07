@@ -5057,6 +5057,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T15:19:10.894Z",
       "lastSeen": "2026-09-07T15:19:10.894Z"
+    },
+    {
+      "fingerprint": "gh-cli-headrefoid-unsupported-on-runner",
+      "tier": "proposal",
+      "title": "runner gh 过旧导致 context/receipt 链路失败",
+      "detail": "seat1 (GitHub Actions runner, gh 2.x lacking headRefOid/closingIssuesReferences JSON fields): context.mjs 539, build-review-task gh-live escape source, and write-review-receipt.mjs 539 all fail with 'Unknown JSON field: headRefOid'. The rro-1 machine-verdict chain cannot complete in this environment even though prepare/preflight/build-review-task(--pr-body fallback unavailable, file seams unwritable)/deliver-review-segment all work. Proposal: add a gh-version capability probe or a --head-oid CLI seam (like --pr-body-file) so context.mjs and write-review-receipt.mjs can accept explicit OIDs; alternatively pin a newer gh in the runner image. Observed on PR #539 review, 2026-09-08; review proceeded manually on the delivered snapshot with preflight clean.",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-07T16:21:31.566Z",
+      "lastSeen": "2026-09-07T16:21:31.566Z"
     }
   ],
   "escapedHazards": [
