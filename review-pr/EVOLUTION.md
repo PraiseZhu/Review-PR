@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `review-seat-dirty-tree-restore-config-from-base` **席位工作树变脏的第三种来源:claude-code-action 自身 restoreConfigFromBase 会把 origin/main 的敏感配置盖到 BASE checkout 上** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:PR #434 席① 复盘(2026-09-07):run-seat-claude 的 Refuse checkout writes 步骤以 git status --porcelain 非空为失败,首跑席因 M CLAUDE.md 被判失败重试,但首跑 transcript 里 Edit/Write 调用为零——脏树不是席位 agent 写的。根因:claude-code-action@v1.0.211 的 restoreConfigFromBase(baseBranch) 会 git fetch origin main --depth=1 后对 SENSITIVE_PATHS(含 CLAUDE.md)执行 git checkout origin/main -- <path> 再 git reset -- <paths>(unstage 但保留工作树内容)。当 PR base 早于 main 上这些文件的最新提交时,BASE checkout 必然出现 M CLAUDE.md——确定性复现,与 diff 大小无关(作者曾误归因为大 diff)。对旧 base 的 PR 该步骤注定失败;findings 在 persist 步骤先行落盘,故审查产物不丢,但 job 显示失败并触发重试空转。可自动化修法:run-seat-claude 在 Refuse checkout writes 前对 SENSITIVE_PATHS 的既有改动做白名单豁免(比对 entrypoint 前后),或固定 entrypoint 时记录基线 git status 快照,只拒绝快照之后新增的改动。
+  - 提案:凡以「工作树必须干净」为验收条件审查 agent 行为的流程,都要先问:脏的可能来源里有没有宿主 action 自己的 checkout/restore 副作用。验收步骤应在 agent 启动前拍基线快照,按快照增量判定,而不是绝对干净;归因 agent 写树前先查 transcript 的 Edit/Write 调用记录。
+- `canvas-truth-refcount-misses-imageslot-refs` **画布即真相现算漏扫 imageSlot.refs[].assetUrl** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:PR #434 审查(席① 正确性/回归/影响面):computedAssetRefCounts 只抽 payload.asset.url 与 fills[].assetUrl 两处,但 wire 契约(shared/persist-contract.ts PAYLOAD_SPECS node.imageSlot.refs[].assetUrl,required key)是第三处持久化 mivo-sasset: 引用挂载点(生成槽参考图,imageSlotModel.ts imageSlotRefFromCanvasNode 拷贝源节点 assetUrl,toRecord 原样持久化)。漏扫方向是少计 → 7 天宽限后 purge 误删仍被槽引用的资产(锁内 confirm 二次现算同盲区)。spec 已知限制只登记了 chat refs,未登记 imageSlot refs。建议:把 imageSlot.refs[].assetUrl 纳入 assetIdsFromNodePayload,或在 spec §1.2 已知限制补记并排期。
+  - 提案:审查「画布即真相」类引用扫描完备性时,以 wire 契约(PAYLOAD_SPECS)为枚举源核对全部持有 assetUrl/asset.url 的字段,而不是沿用客户端上报语义的两处挂载点;本例第三处 imageSlot.refs[].assetUrl 由契约直接可枚举。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: open
   - 现象:复现于 #517 席①:gh pr view --json headRefOid 报 Unknown JSON field;本轮改用 commits[0].oid 与 mergeCommit.oid 锚定 HEAD,diff 经 gh pr diff --patch 取得并与 merge commit 树核对一致。历次:#482 同症状,人工通读全量 diff 替代。
 - `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 2 次,首见 2026-08-21,最近 2026-09-07,status: landed
