@@ -5,9 +5,62 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
-  - 现象:PR 461 首次 consume 因 segmentReceipts[].snapshotHash 缺失判 invalid；退回审查席补字段后第二轮 dirty 打回。主会话不得静默补字段。
-  - 提案:prompt.md 的 segmentReceipts 示例把 snapshotHash 标成与顶层相同的必填字段；或 deliver-review-segment 回执模板带上当前 snapshotHash。
+- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:run-seat-claude 席位的 /usr/bin/gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败，build-review-task.mjs 的 escape-source 现场取数只能落成 escapeSourceIncomplete，席位无法交付 consume-review-output 认可的有效轮。readonly bash guard 禁止管道、重定向与 heredoc，record-convergence-round.mjs 与 run-log.mjs 仅支持 stdin 输入故在席位内不可运行；consume-review-output.mjs 需要先落 rro-1.json 输出文件而席位的 Write 工具被限制在台账文件。建议：为这些脚本补文件型 seam 例如 --findings-file 或 --body-file，或在 runner 镜像升级 gh 至支持上述字段的版本。
+- `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:席①审查 PR 543 时实测：runner 的 gh 版本不支持 --json headRefOid 字段，context.mjs 543 直接 exit 1（"Unknown JSON field: headRefOid"），导致 skill 自己的上下文步骤整步失败，无法按 3.0 流程取完整 PR 上下文。数据本身并非不可得：REST API repos/{owner}/{repo}/pulls/{N} 返回 head.sha，gh pr view 其余字段也正常。当前只能靠等价机器证据（目标仓自身 pr-format-gate 与 gitleaks 双绿）旁证，且 consume-review-output 的 rro-1 输入口在本席 Write 限制下无法落地，只能走 write-review-receipt CLI 兜底。
+  - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。
+- `preflight-unrunnable-base-only-seat` **preflight/回执流程在 base-only checkout 的审查 seat 不可运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open,commit `e47db371f12d8762d58ae225b87baf6f4bc87620`
+  - 现象:tri-review seat 工作区只检出 BASE 且 guard 禁 git fetch,head 不在本地对象库;review-preflight.mjs 用 git show <head>:<path> 构建 DiffSnapshot 必然 complete:false,build-review-task/consume-review-output 同理依赖本地 head。本轮(mivo-canvas-plugin PR #539)只能人工按 skill 完成审查,机器 preflight 缺席需在汇总如实声明。建议:增加无本地 head 的降级路径(经 gh api contents 取 head 文件构建 snapshot)或在 SKILL.md 声明该环境不适用 preflight,由调用方记录。
+- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: open
+  - 现象:复现于 #517 席①:gh pr view --json headRefOid 报 Unknown JSON field;本轮改用 commits[0].oid 与 mergeCommit.oid 锚定 HEAD,diff 经 gh pr diff --patch 取得并与 merge commit 树核对一致。历次:#482 同症状,人工通读全量 diff 替代。
+- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 2 次,首见 2026-08-21,最近 2026-09-07,status: landed
+  - 现象:复现于 #517 席①(L20-1):checkout 仅 2 个孤立提交,preflight/build-review-task 等 git 对象类脚本不可用;已 land 的 deepen 修复在席位环境无效——readonly_bash_guard 拦截 git fetch,席位无法加深克隆。本轮以 gh pr diff --patch 取 diff、HEAD 树直读全文、gh pr view 锚定方向完成审查并在 verdict 披露。原记录:#221 .git/shallow 致 merge-base 失败,deepen 后恢复。
+  - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
+  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。
+- `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。
+  - 提案:PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。
+- `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
+  - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
+- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
+  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
+- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
+- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对
+- `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 现象:PR #498 run.mjs 报告身份字段 headSha 取自 git HEAD，oracleHash/fixtureHash 却从当前工作树文件计算（computeOracleHash 读 SCHEMA_DIR 实文件）。CLI 主路径有 assertCommittedTree 脏树拦截兜底，但 runLayer allowDirty:true（contract.test.mjs 自用）与未来 adapter 路径没有该保证，同一 headSha 可对应不同 oracleHash，BD3 按身份字段复核会失配。
+  - 提案:computeOracleHash 增加基于 git cat-file 的实现（从 identity.headSha 读 blob 内容哈希），CLI 写报告时优先用 git 版本；文件系统版本仅测试 seam 用；或报告加 worktreeDirty 字段显式声明口径。
+- `pr498-bd2a-contract-skip-unknown-exitcode` **合同 CLI 用 vitest 退出码 1 兼发'测试失败'与'找不到测试文件'，skipVitest 语义失真** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 现象:PR #498 run.mjs runVitestContracts 把 vitest 'No Test Files Found' 的退出码 1 与真实断言失败混为同一 fail 语义。离线/部分 checkout 环境跑合同层会得到 vitest-contracts=fail 而非 unavailable，报告聚合为 fail/exit1，与'适配器缺失=unavailable'的语义分层矛盾。建议区分'跑过且有失败'与'没跑成'（探测试文件存在性或解析 vitest 输出），后者归 unavailable/exit2。
+  - 提案:在 runVitestContracts 里对 spawn 结果补 exit-code 与输出的区分：VITEST_FILES 任一文件不存在（existsSync 校验）时抛专用错误并记 unavailable check；仅当文件齐全且 exit!=0 才记 fail。contract.test.mjs 相应补一条反例。
+- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open
+  - 现象:本轮 #478 顶层 snapshotHash 正确但 segmentReceipts[0] 缺该字段，shape-preflight 退回后补上才 clean。
+  - 提案:deliver-review-segment payload 或 prompt 回执样例强制带 snapshotHash；审查席不得省略。
+- `review-agent-skipped-rro-protocol` **typescript-reviewer 席未交 rro-1,本轮只能 skip** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 现象:PR 461 派 typescript-reviewer isolation=worktree,席按自身系统提示做了标准 TS 审查(MEDIUM 非阻断两条),未按 SKILL 分段协议交 rro-1.json。主会话按 review-agent-timeout 写 skip 回执,禁止沿用上次清白。下轮需换能执行 SKILL 协议的审查席或在派工包里把 rro-1 交卷写成硬约束。
+  - 提案:派阶段二审查时用能完整执行 rro-1 协议的席位(或在 prompt 首行把「不交 rro-1.json 即失败」写成硬停止条件);不要假设 typescript-reviewer 会自动切换到 review-pr 协议。
+- `review-agent-autocompact-large-payload` **审查席整读/大 payload 触发 autocompact 连续震荡，未交 rro-1，本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:本轮 #439 与 #461 隔离审查席均因 Autocompact thrashing 提前终止，未写出 rro-1.json。#439 已有 task/preflight；#461 已交付 3 段仍未交卷。SKILL 已记录 2026-08-31 #386 同类事故。本轮按 review-agent-timeout 写 skip 回执，禁止沿用上次清白。不扩权、不改 gate。
+  - 提案:派审查席时强制字段级抽取（node -e / grep -n），禁止整读 task.json/prompt.md/全量 diff；大 PR 考虑更小 sizeBudgetBytes 或答卷组装席接手并重建 task/preflight。本轮不改脚本。
+- `typescript-reviewer-rejects-review-pr-protocol` **阶段二不要派 typescript-reviewer，应派 general-purpose** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:本轮 #439 首次派 typescript-reviewer，子代理以无 Write、怀疑 coordinator 注入为由拒绝执行。
+  - 提案:auto 阶段二隔离席固定用 general-purpose + isolation worktree；typescript-reviewer 会把巡审脚本协议当成越权注入而拒跑。
+- `review-agent-typescript-reviewer-ignores-rro` **用 typescript-reviewer 做 rro-1 审查会套自己的合并门并忽略指令** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:本轮 #478/#439 首次派 typescript-reviewer：#478 把指令当被动上下文、#439 因 seat1/seat2 失败自行 halt。改派 general-purpose 后 #478/#472 交卷。
+  - 提案:阶段二独立审查只派 general-purpose（或明确吃 rro-1 契约的席），不要派 typescript-reviewer：它会按自身 merge-readiness 停审，不交 rro-1.json。
+- `seat1-snapshot-direction-ambiguity` **三审 runner 浅克隆里 BASE/HEAD 解析需要显式锚定 PR 号** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:mivo-review runner 的席位 checkout 是只含 BASE 与 HEAD 两个孤立提交的浅克隆,git status 显示 detached HEAD、无分支。本席位环境没有注入 PR_NUMBER/BASE_SHA/HEAD_SHA 任何变量,git diff origin/main..HEAD 的方向可能是反向 diff(main 是 HEAD 后代时)。审查 agent 必须先 gh pr view <N> 确认 headRefOid 与本地 HEAD 一致才能开审,否则会审错方向。
+- `pr-template-hard-cutover-open-pr-format-flip` **PR 模板段落名硬切换会把既存 open PR 的 pr-format-gate 打红——切换 PR 应带既存 PR 迁移评估** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:mivo-canvas-plugin #476 把 featureSections/bugfixSections 从「变更说明/提交前自检/备注」硬切到「这次改了什么/怎么验证的/风险」。合并后规则源（base 树 pr-rules.json）立即全量换段名，pull_request_target 的 edited/synchronize 重跑让所有按旧模板填写的既存 open PR 的 pr-format-gate 翻红：实测 #461（fix 类型，旧三段 body）在新 head 重跑后 missing=[这次改了什么,怎么验证的] 判红；#434（feat，旧段名）在合并时刻 11:46Z 的 check 仍是 success，但 body 未迁移，下次 synchronize 必红。作者侧唯一出路是手改 body 段名。影响面是「合并那一刻所有非轻档 open PR」而 PR 自述未提及。改进提案：模板段落名切换类 PR，merger 在合并前跑一次 gh api search 列出非轻档 open PR 并评估迁移（或约定规则源加旧段名兼容窗口）。
+  - 提案:模板切换 PR 的 Definition of Done 增加：合并前枚举非轻档 open PR（title type ∈ feat/fix）× 段名比对，逐个在合并后 24h 内代改 body 或评论区告知新段名；或 pr-format-gate 段落判定支持「旧段名→新段名」映射表，给一个版本的过渡窗口。属流程改进（编排层动作），不新增机器写操作。
+- `pr476-doc-ci-list-inconsistency` **模板三节化 PR 内三份文档 CI 清单口径分叉:AGENTS/CLAUDE 移除 secret-scan.yml 而 README 安全节仍指它** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #476 把 AGENTS.md:48 与 CLAUDE.md:77 的 CI 必绿清单改为 pr-hygiene(含 pr-format-gate)+pr-size-gate 并移除 secret-scan.yml,但同 PR 未触碰 README.md:158 安全节「secret-scan workflow 做泄漏扫描」。secret-scan.yml 实际已是 retired 入口(仅 workflow_dispatch),真扫描在 ci.yml gitleaks job。贡献者按 README 安全节排查泄漏扫描会走错门
+- `pr476-checklist-section-coverage-gap` **checklist 门只覆盖「提交前检查」段,模板「风险>需要特别留意」8 项复选框永不被勾选率检查** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:PR #476 模板三节化后,pr-hygiene pr-format-gate 的 checklist 判定 break 于第一个命中 heading(提交前检查,模板最后一个 section,6 项);「风险>需要特别留意」的 8 项风险确认复选框不在任何 checklist 段内,作者全不勾也绿灯。findChecklistSection 语义是单段统计,新增多段 checkbox 需评估是否扩为多段扫描或把风险清单并入 checklistSectionNames 对应段
 - `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
   - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
   - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。
@@ -179,10 +232,6 @@
   - 现象:本轮本地 HEAD 在 fix/roster-empty-identity-not-miss，远程 ref 已不存在；origin/main 已前进 cd4cd0e..b9e2c14。fail-closed 正确跳过审查，但每轮都会空转直到有人把 checkout 切回默认分支。
   - 提案:auto 开轮若 tracking 分支在远端已消失，先切到 origin/<defaultBranch> 再 ff-only；切不过仍 sync-failed，不审不写 GitHub。
   - 备注:[decided:2026-08-24] landed-effective Review-PR#29 prepare.mjs：远端 tracking 已删且工作区干净才切默认分支；脏树只标 syncFailed 不 checkout。merge ff415c7。
-- `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
-  - 现象:PR #221 本地 .git/shallow 导致 git merge-base(baseRefOid, head) 失败，preflight/task complete=false。本轮 git fetch --deepen=50 后恢复。建议 lib.diff-snapshot.mjs 在 merge-base 失败且 is-shallow 时自动 deepen 或 fetch 完整对象，避免整轮审查判 invalid。
-  - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
-  - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。
 - `auto-review-agent-no-return-before-round-end` **阶段二隔离审查未在本轮返回 rro-1，巡审只能 skip 不合** — 出现 1 次,首见 2026-08-21,最近 2026-08-21,status: landed
   - 现象:PR #221 已完成 preflight/task/segment 投递并 spawn isolation worktree 审查，但本轮结束前未收回执。按 fail-closed 不得 approve/clean。建议给阶段二审查加硬超时，超时写 invalid 回执并进汇总，避免空等熔断后无机器终态。
   - 提案:consume 前若审查会话超时，主流程写 non-clean 回执(reason=review-agent-timeout)并 skip，不把「没跑成就沿用上次清白」开口留下。
@@ -399,6 +448,23 @@
 
 ## 已自动落地(automatable-gap)
 
+- `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 2 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR #547 席① 再次复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 547 整步 exit 1。本轮用 gh api pulls/547 的 head.sha/base.sha 加 gh pr diff 重建上下文，preflight/build-review-task/deliver-segment 均正常跑通（快照哈希一致）。
+  - 提案:context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。
+- `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。
+  - 提案:为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。
+- `runner-gh-cli-too-old-for-skill-scripts` **L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:mivo-review runner (L20-1) 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段: context.mjs / build-review-task.mjs / consume-review-output.mjs / escaped-hazards 均以 Unknown JSON field exit 1。席位守卫同时禁止 heredoc/管道,stdin 型脚本(record-convergence-round / run-log)也无法投喂。本轮退路: 用允许的只读命令(gh api --jq / git show / git diff / git blame)手工重建 PR 事实; fork 点用 REST base.sha 而非 main tip,preflight 用 --base <fork-point> 重跑后 complete=true 与 PR 文件清单精确对账。建议: 巡审部署前 probe gh 版本与字段支持,或 skill 脚本对缺失字段降级;席位守卫可为 stdin 型脚本开 --body-file 通道。
+- `context-mjs-old-gh-cli-headrefoid` **context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:PR528 席位实测:CI runner 的 gh CLI 版本较旧,gh pr view --json 不支持 headRefOid 字段,context.mjs 直接 exit 1 报 Unknown JSON field,阶段一上下文收集整轮不可用,只能手工等价收集 PR 元数据与正文与文件与评论。可自动化修法:context.mjs 捕获该错误后回退 gh api 的 pulls 端点取 head sha,或先探测字段支持再选查询路径,避免把环境兼容性问题变成整轮阻断。
+- `canvas-truth-scan-vs-wire-contract` **画布即真相类 PR：引用扫描面必须对账 wire 契约白名单，不能只抄客户端 attach 接线** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:PR #434 阶段 3(资产引用生命周期)把服务端引用计数切成「画布即真相」现算,扫描函数只抽了 payload.asset.url 与 fills[].assetUrl——恰是客户端 attach 接线(computeAssetSideEffects)覆盖的子集;而 wire 契约 NODE_PAYLOAD_KEYS 里还有第三个承载资产引用的持久化字段 imageSlot.refs[].assetUrl(校验器放行、随画布落服务端、生成时经 assetBlobForNode 真实消费),漏扫导致槽位参考图在 7 天宽限后被 purge 静默清除。审查启发(可自动化):凡『从持久化 payload 派生真相/计数/GC 判定』的改动,应把扫描字段清单与 shared/persist-contract.ts 的 payload 白名单逐字段对账,并 grep 全仓消费方(mivo-sasset:/assetUrl)找差集——客户端 attach 事件只是计数的触发器子集,不是引用面的权威清单。
+- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: open
+  - 现象:本轮 #439 与 #461 隔离审查席均在交付分段后 autocompact 连续 3 次打满窗口挂死，未交 rro-1.json；已按规程写 skip 回执，禁止沿用上次清白。#439 1 段、#461 3 段。head 未变。
+  - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
+- `secret-scan-list-docs-drift-after-retire` **AGENTS.md/CLAUDE.md CI 必绿清单与实际门集漂移：secret-scan.yml 9-01 已退役为 manual-only，#476 更新清单时两份文档各自表述不一致** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 现象:mivo-canvas-plugin 2026-09-01 f7a9aab 把 gitleaks 折进 ci.yml、secret-scan.yml 退役为 workflow_dispatch-only。AGENTS.md 与 CLAUDE.md 的 CI 必绿清单长期未同步。#476 更新清单时 AGENTS.md/CLAUDE.md 都删掉了 secret-scan.yml 且补上了 pr-format-gate，但都没有写明 secret 扫描去哪了（在 ci.yml gitleaks job 内、由 verify 收口）——文档读者无法从清单推断 gitleaks 仍是必绿项，尽管 design-governance-wiring.test.mjs 已锁 ci.yml verify 依赖 gitleaks。本轮已把该缺口记为 P1 finding（f1）。自动落地项：本条仅记台账，不改文档（目标仓文档不归 skill 改）；改进归目标仓：清单行应写「secret 扫描在 ci.yml（gitleaks job）」而非静默消失。
 - `review-agent-context-overflow-field-extract` **审查席整读结构性大文件致 autocompact 震荡挂死,未交 rro-1.json** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: landed,commit `43a5596`
   - 现象:mivo-canvas-plugin #386 审查席在分段投递阶段上下文反复回满,3 次连续 compact 后 API 报错终止;#352 席同样未在 ~70 分钟内交付。两个 PR 均按 review-agent-timeout 写 skip 回执
   - 提案:SKILL 大 payload 纪律补一条:审查席对 task.json/prompt.md 只做字段级抽取(node -e / grep -n),禁止整读;已落地
@@ -475,6 +541,46 @@
 
 ## 无法自动化(by-design,只计数观察)
 
+- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 3 次,首见 2026-09-06,最近 2026-09-07,status: tracked
+  - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight 走本地 git objects 不受影响。复现记录：2026-09-06 PR501 席①；2026-09-07 PR472 席①（context.mjs exit 1 报 Unknown JSON field headRefOid，build-review-task 逃逸候选源同败，改用 gh api pulls 端点手工锚定后披露）；2026-09-08 PR533 席①再复现（build-review-task 逃逸候选现场取数同败于 closingIssuesReferences 字段，task 记 escapeSourceIncomplete=true；PR 正文与全部讨论线程人工通读替代逃逸源核对，未据无候选放行）。属环境与 skill 脚本的字段契约漂移，非目标 PR 代码问题。
+- `pr-body-drift-after-autopilot-rounds` **多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: tracked
+  - 现象:PR #528 席①观察：正文『明确不包含：组名导出』『组名栏尚未接入 LOD』，但最终 head (e0d9f78) 已实现组名导出（canvasExportText groupCaptionsOnly 通道）且 GroupCaptionLayer 已过 needsImageCaptionShell LOD 过滤；正文验证节还停在旧候选 SHA 0d05227。多轮 autopilot 修复合入后正文未同步，格式门与 pr-intent 均不拦截。属人工核对项：审查结论只锚 head 代码，正文声明仅作线索不作事实。
+- `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:审查会话发现 PR 501 state=MERGED(2026-09-06T04:09:25Z)仍被排入三审。发现时点：读 gh pr view 状态字段。当前流程文档假定席位运行时 PR 仍 OPEN；对已合并 PR 输出 findings 无法阻断合并，只能事后审计。按 by-design 处理：owner 用三审做 post-merge 审计属有意行为，不改流程。
+- `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
+  - 现象:test_code_review_p0_p1.py 等测试文件存在且随运行时修复持续更新(2026-09-06 #511),但全仓 grep 无任何 workflow/pre-push/package.json 调用它们;normalize_base_url 新分支的回归若不人工跑,只在下次 seat2 实跑时暴露。属 by-design 还是 automatable-gap 需 owner 判断。
+- `seat-claude-pipe-blocked-convergence-stdin` **审查席环境禁止 shell 管道,convergence/run-log 的 stdin JSON 无法投递** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:L20-1 三审 claude 席的 readonly_bash_guard 禁止 shell 组合/重定向/管道,record-convergence-round.mjs 与 run-log.mjs 只接受 stdin JSON,导致这两步在审查席上无法落盘。非阻断:回执已写、findings 经 StructuredOutput 落盘,收敛记录留待主流程补记。PR #505 实测:直接传参会报 D2 守卫(空 stdin 显式拒绝,行为正确)。
+- `skip-threads-unresolved-483` **conversation 未 resolve，前置门跳过** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 483 2 条 conversation 未 resolve；threadTriage 未配置
+- `skip-conflict-472` **PR 与主干冲突，等作者 rebase** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 472 mergeStateStatus=DIRTY，auto 不合
+- `skip-stale-pushback-format-434` **作者未补 PR 模板段落，格式打回后无新 commit** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 434 格式缺三段，上次已打回，本轮 skip-stale-pushback
+- `skip-unresolved-own-pr` **ownPr 未 resolve conversation 只 skip 不代 resolve** — 出现 3 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:PR 483/486 为巡审账号自己的 PR，未 resolve greptile thread，auto 不合。
+- `author-side-conflict-blocks-merge` **与主干冲突(mergeStateStatus=DIRTY)属作者侧,需作者 rebase,本轮 4 个 PR 因此跳过** — 出现 3 次,首见 2026-07-30,最近 2026-09-05,status: tracked
+  - 现象:PR 472 skip-gate conflict，已发冲突提醒。
+- `skip-stale-pushback-format` **格式门已打回且作者未新 commit 时跳过，不重复打回** — 出现 2 次,首见 2026-08-25,最近 2026-09-05,status: tracked
+  - 现象:PR 434 仍 skip-stale-pushback，作者未新 commit。
+- `skip-gate-nonrequired-ci` **非 required 检查失败按 skip-gate 等人修绿** — 出现 2 次,首见 2026-09-05,最近 2026-09-05,status: tracked
+  - 现象:本轮 #450 UNSTABLE（gate/seat/publish 失败）skip-gate。
+- `review-agent-timeout-large-pr` **大 PR 审查席超时/autocompact 挂死未交 rro-1** — 出现 2 次,首见 2026-09-04,最近 2026-09-05,status: tracked
+  - 现象:本轮 #461 三段投递后跑测未交 rro-1.json，写 skip 回执，禁止沿用上次清白。
+- `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 3 次,首见 2026-08-21,最近 2026-09-05,status: tracked
+  - 现象:#434 格式门仍缺三段，上次已打回且 head 未新 commit，skip-stale-pushback。
+- `seat1-pr476-tri-review-context-gap` **三席审查环境无 PR base 提交,审查口径依赖 PR_BODY.md 自述** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:checkout 是 root commit(整仓 1267 文件),git 侧无 base...head diff 可取;审查事实源只能来自 PR_TITLE/PR_BODY 与工作树文件。作为审查席按 seat 指令只读审查,不执行合并;已验证可读规则文件与守卫接线。
+- `auto-review-clean-no-merge-observation` **auto 只审不合：clean 回执后等交互合** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:本轮 #477 独立审查 clean、落回执，未 merge/approve。首周观察期按 SKILL 0 节执行。
+- `skip-gate-nonrequired-ci-failed` **非 required 检查失败时前置门拦合并、本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:本轮 #478 seat2 失败 UNSTABLE；#474 同时格式 stale + 多检查失败。不绕过、不扩权。
+- `skip-stale-pushback-format-no-new-commit` **格式门打回后作者未新 commit，auto 跳过不再复打** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:本轮 #434 #439 #450 #461 #472 #474 均为 skip-stale-pushback（格式门未过且上次已打回）。属作者侧格式修复，不扩权。
+- `dirty-worktree-untracked-feature-worktrees` **生产 checkout 有未跟踪 .worktrees 功能树，auto 按脏树跳过** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:porcelain ?? .worktrees/（close-patrol-self-fix 功能树）。auto 不覆盖不清理用户改动；本轮与上两轮 auto 同一 skipReason=dirty-worktree。
+- `interactive-dirty-pushback-new-families` **交互审查发现新 P0/P1 后打回作者，属作者侧修** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
+  - 现象:PR 439 本轮 2 个新 family（派生线判定双份硬编码、hitTest 用例绕开新逻辑），已 REQUEST_CHANGES。
 - `interactive-format-edit-then-merge` **交互模式代修 PR 标题/模板后合入，不推作者分支** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR 465 格式门因 ops: 标题和缺模板段落不过。维护者 gh pr edit 代补后 squash 合入，head SHA 未变。
 - `security-gate-awaiting-admin-465` **安全/规则门已 hold，等 admins 放行** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: tracked
@@ -579,14 +685,10 @@
   - 现象:本轮 #273/#275 reviewDecision=CHANGES_REQUESTED。等作者修完 push 后下轮重扫。
 - `skip-gate-unresolved-threads` **作者侧 conversation 未 resolve 时 skip-gate，等人点 Resolve** — 出现 2 次,首见 2026-08-20,最近 2026-08-25,status: tracked
   - 现象:本轮 #273 1 条、#275 2 条未 resolve thread；#275 已发模板 C 催 resolve。属真人操作，不自动代 resolve。
-- `skip-stale-pushback-format` **格式门已打回且作者未新 commit 时跳过，不重复打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
-  - 现象:PR 275 Self-review 勾选率不足，auto.action=skip-stale-pushback。
 - `skip-gate-changes-requested-unresolved` **前置门因 CHANGES_REQUESTED 与未 resolve conversation 跳过** — 出现 4 次,首见 2026-08-19,最近 2026-08-25,status: tracked
   - 现象:PR 273 persist 水合续作，产品门语义判为已有功能补充后仍被 skip-gate 拦住；已有催 resolve 评论，本轮 already-commented。
 - `skip-stale-pushback-format-self-review` **格式门 Self-review 勾选不足且已打回、作者未新 commit，跳过重打** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR 275 skip-stale-pushback；另有 CHANGES_REQUESTED 与 2 条未 resolve conversation。
-- `skip-stale-format-pushback-no-new-commit` **格式打回后作者未新 commit，本轮不重复 REQUEST_CHANGES** — 出现 2 次,首见 2026-08-21,最近 2026-08-24,status: tracked
-  - 现象:PR #275 Self-review 勾选率 2/4；auto.action=skip-stale-pushback。
 - `skip-gate-changes-requested-unresolved-threads` **作者未修上次 CHANGES_REQUESTED 且 thread 未 resolve 时只能 skip** — 出现 2 次,首见 2026-08-20,最近 2026-08-24,status: tracked
   - 现象:PR #273 前置门 BLOCKED(reviewDecision=CHANGES_REQUESTED)+1 条未 resolve thread；已提醒过，本轮不重发。
 - `skip-stale-pushback-format-self-review-checklist` **格式门 Self-review 勾选率不足且作者未新 commit，跳过重复打回** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: tracked
@@ -847,8 +949,6 @@
   - 现象:xindong/mivo-canvas PR #347: body 写 '## 改动说明',模板要求 '## 变更说明'/'## 提交前自检'/'## 备注',格式门判三段全缺并打回。修复动作在作者侧(edit description),自动化不代改他人 PR 的 description,属 by-design,只计数观察。
 - `unresolved-threads-require-human-resolve` **未 resolve 的 review conversation 需真人处理,本轮 3 个 PR 因此跳过** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR 324/326/331 分别有 2/1/1 条未 resolve conversation。代 resolve 他人 thread 属 8.1 扩权类,永不自动化。作者在 exemptAuthors 内故不发催 resolve 评论(notify-author-resolve 返回 exempt-author)。
-- `author-side-conflict-blocks-merge` **与主干冲突(mergeStateStatus=DIRTY)属作者侧,需作者 rebase,本轮 4 个 PR 因此跳过** — 出现 2 次,首见 2026-07-30,最近 2026-07-30,status: tracked
-  - 现象:PR 323/325/329/339 均为 DIRTY。本仓 selfFixAuthors 为空(观察期未启用自动修),且作者 PraiseZhu 在 staleAuthorReminder.exemptAuthors 内,故不催办、不私聊。5.5 主干代合并的门槛是「其余全过、仅剩冲突」,这几个 PR 同时还有未 resolve thread,不满足门槛。
 - `security-review-path-blocks-own-gate-widening-pr` **扩大 e2e 门禁覆盖面的 PR 必然改 package.json,因而命中 securityReviewPaths 转人工** — 出现 1 次,首见 2026-07-30,最近 2026-07-30,status: tracked
   - 现象:PR #340(把 chat-copy 加进 test:e2e:prod:subset)只改 package.json 一行 scenario 列表,被判 skip-security-review 转人工。判定正确:package\.json$ 在 securityReviewPaths 内,而 review-pr 自己的两个 e2e required check 就跑这个 script —— 让它自动审并合入一个改动了自身验证命令的 PR,正是该门要防的自我损坏闭环。副作用是「加强门禁覆盖面」这类改动天然无法自动落地,每次都要人工放行。
   - 提案:不建议自动放开(扩权类风险)。若想减少人工介入,可考虑把 e2e scenario 清单从 package.json 抽到独立数据文件(如 scripts/e2e/subset.json),让门禁改动不再触碰 package.json —— 但这是目标仓库的结构调整,不是 skill 侧改动,且需评估是否值得为此增加一层间接。

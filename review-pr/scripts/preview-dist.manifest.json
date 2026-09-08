@@ -92,8 +92,8 @@
     },
     {
       "file": "SKILL.md",
-      "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。`evo:` 提交不会裹进",
-      "replace": "（preview 版：自进化台账仅本地落盘，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort："
+      "find": "底层脚本默认会提交并推送，因此本流程每次 `add` / `set-status` 都必须带 `--no-sync`；该参数不是仅供调试。台账写入授权不包含 commit 或 push。只有另有当次针对 Skills 仓库的提交／推送授权时，才执行对应动作，不能借一次台账更新触发远端写入。失败如实写进摘要，不重试到卡死。",
+      "replace": "（preview 版：自进化台账纯落盘不回推，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort："
     },
     {
       "file": "SKILL.md",
@@ -147,12 +147,7 @@
     },
     {
       "file": "SKILL.md",
-      "find": "每次 `add` / `set-status` 写盘后脚本自动把 `evolution/ledger.json` 与 `EVOLUTION.md`\n提交并推送 skills 仓库 main（只 add 这两个文件，不裹挟其他改动；结果在输出 `sync`\n字段）。`sync.ok=false`（断网、diverged、非 main 分支）不影响台账本身，写进摘要\n「自进化」组即可，不重试到卡死；`--no-sync` 仅本地调试用。",
-      "replace": "每次 `add` / `set-status` 写盘后脚本**只把台账本地落盘**（preview 版：自动提交推送已剥离，`skillRepoCommitPush` 为只读 stub 恒返回 `skipped: 'dist-readonly'`——纯落盘不回推）。`--no-sync` 仅本地调试用。"
-    },
-    {
-      "file": "SKILL.md",
-      "find": "6. 落地 commit 之后运行\n   `node \"<SKILL_ROOT>/scripts/sync-skill-repo.mjs\" push --message \"evo: <fingerprint>\"`\n   把进化推送到 skills 仓库 main（台账部分随后的 `evolution-note.mjs` 会自动推，这一步\n   保证代码/文档 commit 也上去）。推送失败不回滚落地，如实写进摘要。",
+      "find": "6. 只有已有相应 commit 且当次授权覆盖 Skills 仓库目标 remote／分支的 push 时，才运行\n   `node \"<SKILL_ROOT>/scripts/sync-skill-repo.mjs\" push --message \"evo: <fingerprint>\"`\n   推送授权范围内的维护提交。台账命令仍用 `--no-sync`，不另行隐式推送。未授权 push 不运行该命令，也不因此阻断本地维护交付；推送失败不回滚落地，如实写进摘要。",
       "replace": "6. **preview 版不回推**：落地记录与提案留在台账（`evolution/ledger.json` + `EVOLUTION.md`），由维护者在主仓落地——`sync-skill-repo.mjs` push 与 `evolution-note.mjs` 自动回推在 preview 版均为只读 stub（恒返回 `skipped: 'dist-readonly'`），不做任何向上游的提交/推送。"
     },
     {
