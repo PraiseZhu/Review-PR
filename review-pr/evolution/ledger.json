@@ -5028,9 +5028,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-07T06:31:18.028Z",
-      "lastSeen": "2026-09-07T06:31:18.028Z"
+      "lastSeen": "2026-09-08T09:24:04.871Z"
     },
     {
       "fingerprint": "preflight-unrunnable-base-only-seat",
