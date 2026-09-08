@@ -5,11 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 2 次,首见 2026-09-06,最近 2026-09-08,status: open
-  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin，但 readonly_bash_guard 禁止 shell 组合、管道、重定向，Bash 工具没有 stdin 注入通道，席①无法把 findings 喂进脚本；需要为该脚本加 --findings-file 参数或席内可信步骤代跑。2026-09-08 PR547 席①复现：截至本轮该脚本仍只有 stdin 入口，run-log.mjs 同样只读 fd 0；findings 与 verdict 经 StructuredOutput 正常落盘，收敛记录与 run-log 留待主流程补记。
-- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 2 次,首见 2026-09-06,最近 2026-09-08,status: open
-  - 现象:2026-09-06 PR494 席1实跑：context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid；本机 gh 可用字段表无该字段，脚本在此环境不可用，审查退化为手工 gh api 拉取元数据。2026-09-08 PR547 席①再复现同症状：本轮以 gh api pulls 的 base.sha 与 head.sha 锚定受审 head、contents raw 直读三份文件全文并与 diff 核对一致；rules-gate 判定以直读 pr-rules.json 配置加人工比对完成，审查未受阻断。
-  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
+- `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 2 次,首见 2026-09-07,最近 2026-09-08,status: open
+  - 现象:席位 runner 的 gh 版本不认识 headRefOid 字段（该字段较新 gh 才支持），context.mjs 拉单个 PR 上下文全步骤失败，本轮只能用 gh api pulls 端点手工补等价数据继续审查、且不重写 gate 判定逻辑。同一环境每轮都会复现。修法方向：headRefOid 等字段改从 gh api pulls/<n> 的 head.sha 取，或探测 gh 版本降级字段集；PR body/closingIssuesReferences 等字段同步核对可用性。
+  - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。
 - `pr545-window-doc-surface-drift` **时间窗口常量变更只同步了代码/测试/计划文档面,贡献者入口文档未更新且无测试钉住** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #545 把停审窗口 03:00-07:00 改为 06:00-07:00(业务窗口 7x23):代码/workflow/双 timer/三份测试/fixtures/计划文档全部同步,还在 test_code_review_p0_p1.py 加了 assertNotIn 旧窗口字面量 钉住 workflow 文本;但 CONTRIBUTING.md:27 仍写旧窗口 03:00-07:00 不派付费席,且没有任何测试读取该文件,漂移 CI 不可见。提案:审查预扫加一条机器可判定规则——PR 改动含时间/窗口字面量时,全仓 grep 旧字面量的剩余命中(含 md 文档面,排除负向断言与无关子系统命中),非零即 reportOnly;时间窗口值在文档与代码两个 surface 的一致性由审查者逐项确认。
 - `deployed-schedule-two-copies-transition-gap` **改部署时刻的 PR 只改仓内副本，机器侧 systemd timer 靠手工同步，过渡期形成夜间假停窗与更新/席位冲突** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open,commit `67a83f3507c2d6bd4415ca055537379b927d75e9`
@@ -18,9 +16,6 @@
   - 现象:PR #545 把停审窗口 03:00–07:00 改成 06:00–07:00，工作流/健康检查/计划文档/测试全改齐，唯独 CONTRIBUTING.md:27 的『03:00–07:00 不派付费席』漏改，成为全仓唯一残留旧窗口的文件。测试只钉住 workflow 与 timer 的字面量，文档无守卫。建议：审查命中『时间/窗口/魔法常量变更』时强制全仓 grep 旧字面量（含 *.md），漏一处记 P1；或仓内加一致性守卫测试扫文档里的窗口表述。
 - `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:run-seat-claude 席位的 /usr/bin/gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败，build-review-task.mjs 的 escape-source 现场取数只能落成 escapeSourceIncomplete，席位无法交付 consume-review-output 认可的有效轮。readonly bash guard 禁止管道、重定向与 heredoc，record-convergence-round.mjs 与 run-log.mjs 仅支持 stdin 输入故在席位内不可运行；consume-review-output.mjs 需要先落 rro-1.json 输出文件而席位的 Write 工具被限制在台账文件。建议：为这些脚本补文件型 seam 例如 --findings-file 或 --body-file，或在 runner 镜像升级 gh 至支持上述字段的版本。
-- `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:席①审查 PR 543 时实测：runner 的 gh 版本不支持 --json headRefOid 字段，context.mjs 543 直接 exit 1（"Unknown JSON field: headRefOid"），导致 skill 自己的上下文步骤整步失败，无法按 3.0 流程取完整 PR 上下文。数据本身并非不可得：REST API repos/{owner}/{repo}/pulls/{N} 返回 head.sha，gh pr view 其余字段也正常。当前只能靠等价机器证据（目标仓自身 pr-format-gate 与 gitleaks 双绿）旁证，且 consume-review-output 的 rro-1 输入口在本席 Write 限制下无法落地，只能走 write-review-receipt CLI 兜底。
-  - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。
 - `preflight-unrunnable-base-only-seat` **preflight/回执流程在 base-only checkout 的审查 seat 不可运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open,commit `e47db371f12d8762d58ae225b87baf6f4bc87620`
   - 现象:tri-review seat 工作区只检出 BASE 且 guard 禁 git fetch,head 不在本地对象库;review-preflight.mjs 用 git show <head>:<path> 构建 DiffSnapshot 必然 complete:false,build-review-task/consume-review-output 同理依赖本地 head。本轮(mivo-canvas-plugin PR #539)只能人工按 skill 完成审查,机器 preflight 缺席需在汇总如实声明。建议:增加无本地 head 的降级路径(经 gh api contents 取 head 文件构建 snapshot)或在 SKILL.md 声明该环境不适用 preflight,由调用方记录。
 - `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: open
@@ -35,6 +30,11 @@
 - `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
   - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
   - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
+- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
+  - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
+- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
 - `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
   - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对
 - `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
@@ -454,6 +454,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `seat-sandbox-blocks-skill-closing-inputs` **席位 guard 禁管道/限写两文件，record-convergence-round、run-log、rro 消费链路在席①跑不了** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:run-seat-claude 的 PreToolUse guard 拒绝一切管道与组合命令，Write 仅限台账两文件：prepare/context/preflight/build-review-task/deliver-review-segment/write-review-receipt/evolution-note 都能跑，但 record-convergence-round 与 run-log 只收 stdin JSON（无 --body-file 之类的文件入参），rro-N.json 也写不了，consume-review-output 链路同样断。本轮收敛轮次与 run-log 未能落盘，已在回执与汇总中如实标注。修法方向：给这两个脚本加文件入参（不动 guard 安全边界），或由 run-seat action 的可信步骤在 agent 结束后代跑。
 - `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。
   - 提案:为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。
