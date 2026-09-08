@@ -5101,14 +5101,14 @@
       "fingerprint": "context-mjs-gh-headrefoid-unsupported",
       "tier": "auto",
       "title": "context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1",
-      "detail": "tri-review seat 运行环境的 gh CLI 不支持 headRefOid 字段（gh pr view --json 报 Unknown JSON field: headRefOid），context.mjs 整体失败，席位只能手工用 gh api pulls/<N>（head.sha/base.sha）与 compare API 重建上下文。",
+      "detail": "PR #547 席① 再次复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 547 整步 exit 1。本轮用 gh api pulls/547 的 head.sha/base.sha 加 gh pr diff 重建上下文，preflight/build-review-task/deliver-segment 均正常跑通（快照哈希一致）。",
       "proposal": "context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-08T01:35:33.297Z",
-      "lastSeen": "2026-09-08T01:35:33.297Z"
+      "lastSeen": "2026-09-08T05:11:59.127Z"
     },
     {
       "fingerprint": "review-scripts-need-head-object-not-in-seat-checkout",
