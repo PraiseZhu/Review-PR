@@ -448,6 +448,12 @@
 
 ## 已自动落地(automatable-gap)
 
+- `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。
+  - 提案:为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。
+- `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:tri-review seat 运行环境的 gh CLI 不支持 headRefOid 字段（gh pr view --json 报 Unknown JSON field: headRefOid），context.mjs 整体失败，席位只能手工用 gh api pulls/<N>（head.sha/base.sha）与 compare API 重建上下文。
+  - 提案:context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。
 - `runner-gh-cli-too-old-for-skill-scripts` **L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:mivo-review runner (L20-1) 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段: context.mjs / build-review-task.mjs / consume-review-output.mjs / escaped-hazards 均以 Unknown JSON field exit 1。席位守卫同时禁止 heredoc/管道,stdin 型脚本(record-convergence-round / run-log)也无法投喂。本轮退路: 用允许的只读命令(gh api --jq / git show / git diff / git blame)手工重建 PR 事实; fork 点用 REST base.sha 而非 main tip,preflight 用 --base <fork-point> 重跑后 complete=true 与 PR 文件清单精确对账。建议: 巡审部署前 probe gh 版本与字段支持,或 skill 脚本对缺失字段降级;席位守卫可为 stdin 型脚本开 --body-file 通道。
 - `context-mjs-old-gh-cli-headrefoid` **context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open

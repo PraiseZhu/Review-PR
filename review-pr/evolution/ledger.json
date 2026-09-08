@@ -5096,6 +5096,32 @@
       "occurrences": 1,
       "firstSeen": "2026-09-07T18:49:28.494Z",
       "lastSeen": "2026-09-07T18:49:28.494Z"
+    },
+    {
+      "fingerprint": "context-mjs-gh-headrefoid-unsupported",
+      "tier": "auto",
+      "title": "context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1",
+      "detail": "tri-review seat 运行环境的 gh CLI 不支持 headRefOid 字段（gh pr view --json 报 Unknown JSON field: headRefOid），context.mjs 整体失败，席位只能手工用 gh api pulls/<N>（head.sha/base.sha）与 compare API 重建上下文。",
+      "proposal": "context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T01:35:33.297Z",
+      "lastSeen": "2026-09-08T01:35:33.297Z"
+    },
+    {
+      "fingerprint": "review-scripts-need-head-object-not-in-seat-checkout",
+      "tier": "auto",
+      "title": "依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行",
+      "detail": "seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。",
+      "proposal": "为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T01:35:39.860Z",
+      "lastSeen": "2026-09-08T01:35:39.860Z"
     }
   ],
   "escapedHazards": [
