@@ -5,8 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:run-seat-claude 席位的 /usr/bin/gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败，build-review-task.mjs 的 escape-source 现场取数只能落成 escapeSourceIncomplete，席位无法交付 consume-review-output 认可的有效轮。readonly bash guard 禁止管道、重定向与 heredoc，record-convergence-round.mjs 与 run-log.mjs 仅支持 stdin 输入故在席位内不可运行；consume-review-output.mjs 需要先落 rro-1.json 输出文件而席位的 Write 工具被限制在台账文件。建议：为这些脚本补文件型 seam 例如 --findings-file 或 --body-file，或在 runner 镜像升级 gh 至支持上述字段的版本。
+- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 2 次,首见 2026-09-07,最近 2026-09-08,status: open
+  - 现象:run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。
 - `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:席①审查 PR 543 时实测：runner 的 gh 版本不支持 --json headRefOid 字段，context.mjs 543 直接 exit 1（"Unknown JSON field: headRefOid"），导致 skill 自己的上下文步骤整步失败，无法按 3.0 流程取完整 PR 上下文。数据本身并非不可得：REST API repos/{owner}/{repo}/pulls/{N} 返回 head.sha，gh pr view 其余字段也正常。当前只能靠等价机器证据（目标仓自身 pr-format-gate 与 gitleaks 双绿）旁证，且 consume-review-output 的 rro-1 输入口在本席 Write 限制下无法落地，只能走 write-review-receipt CLI 兜底。
   - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。
@@ -448,13 +448,13 @@
 
 ## 已自动落地(automatable-gap)
 
+- `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR #547、#551 席①复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 整步 exit 1。#551 轮改用 gh api pulls/551 的 head.sha/base.sha 锚定 fork 点重建上下文；preflight 0 命中、build-review-task、deliver-review-segment 均正常跑通，快照哈希三步一致——buildDiffSnapshot 内部自 fetch 已把 base/head 对象补进本地库，head 缺对象退化路径未触发；唯 context.mjs 与回执链路仍断，findings 经 StructuredOutput 交付。
+  - 提案:context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。
 - `context-mjs-old-gh-cli-headrefoid` **context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持** — 出现 2 次,首见 2026-09-07,最近 2026-09-08,status: open
   - 现象:PR528 席位实测:CI runner 的 gh CLI 版本较旧,gh pr view --json 不支持 headRefOid 字段,context.mjs 直接 exit 1 报 Unknown JSON field,阶段一上下文收集整轮不可用,只能手工等价收集 PR 元数据与正文与文件与评论。可自动化修法:context.mjs 捕获该错误后回退 gh api 的 pulls 端点取 head sha,或先探测字段支持再选查询路径,避免把环境兼容性问题变成整轮阻断。
 - `gh-json-field-version-compat` **context/build-review-task 硬依赖 gh --json 字段,旧 gh CLI 上 exit 1 无降级** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #528 审查轮实测:L20-1 审查 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences 这两个 --json 字段,gh pr view --json 直接报错,导致 context.mjs exit 1、build-review-task.mjs 同样跑不通,阶段一 gate 与阶段二任务构建整体退回手工 gh api 判定。建议:启动时探测 gh 支持的 --json 字段或加 gh --version 守卫,不支持的字段走 REST fallback——PR head 用 pulls API 的 head.sha,closing 引用经 issues timeline 取——探测失败时明确输出 unsupported-gh-fields 原因,而非裸 exit 1。
-- `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 2 次,首见 2026-09-08,最近 2026-09-08,status: open
-  - 现象:PR #547 席① 再次复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 547 整步 exit 1。本轮用 gh api pulls/547 的 head.sha/base.sha 加 gh pr diff 重建上下文，preflight/build-review-task/deliver-segment 均正常跑通（快照哈希一致）。
-  - 提案:context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。
 - `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。
   - 提案:为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。
