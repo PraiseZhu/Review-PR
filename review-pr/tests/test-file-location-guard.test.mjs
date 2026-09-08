@@ -23,7 +23,7 @@ const REPO_ROOT = join(HERE, '..', '..'); // 仓根
 
 function collectTestFiles(dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (name === 'node_modules' || name === '.git' || name === '.DS_Store') continue;
+    if (name === 'node_modules' || name === '.git' || name === '.worktrees' || name === '.DS_Store') continue;
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) {

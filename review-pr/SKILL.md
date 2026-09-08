@@ -2458,17 +2458,17 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 ## 8. 自进化复盘（self-evolution）
 
 每轮在 run-log 落盘之后、发送最终摘要之前，对本轮**没走到合并**的每个候选做一次根因
-复盘，把可沉淀的经验记入 Skill 自己的进化台账。目标：同一类漏判或流程缺口不第二次
+复盘，在当前审查摘要中提出具体改进与证据；只有当次维护授权覆盖 Skill 台账时才写入。普通审查或 auto 模式不自动取得 Skill 修改、提交或推送权限。目标：同一类漏判或流程缺口不第二次
 靠人发现。复盘只影响未来轮次，**不回头改本轮已做出的任何 gate 判定或 GitHub 动作**。
 
 ### 8.1 根因三分类
 
 - **by-design（设计上就该人来）**：真人署名或决策类——他人 reviewer 的未 resolve
   thread、分支保护要求的真人 approve、语义冲突取舍、产品/架构拍板、权限不足。
-  只记台账计数观察，**永不因「出现多次」就自动放开**。
+  只作观察；台账计数写入仍需维护授权，**永不因「出现多次」就自动放开**。
 - **automatable-gap（可自动化的遗漏）**：不新增任何 GitHub 写操作、不放宽任何 gate 的
   确定性改进——skip 原因归类缺口、去重指纹漏洞、状态文件修复、汇总/催办文案、脚本
-  bug、文档自相矛盾。允许按 8.3 规则当轮自动落地。
+  bug、文档自相矛盾。先提出候选；取得对应维护授权后才按 8.3 落地。
 - **privilege-expansion（扩权类）**：任何会新增或放宽署名操作与安全边界的想法——
   代 resolve 他人 thread、扩大自动 approve 范围、放宽 admin bypass 条件、改动白名单/
   selfFixAuthors/权限 allowlist、放松 gate 阈值。**永不自动落地**，只写提案等维护者
@@ -2478,45 +2478,37 @@ PR Review 汇总（auto · <日期 时间> · 共 <N> 个候选）
 
 台账是 Skill 知识的一部分，随 Skill 仓库走（不是运行时状态，不放外部状态目录）：
 `<SKILL_ROOT>/evolution/ledger.json` 为事实源，`<SKILL_ROOT>/EVOLUTION.md` 由脚本
-再生成（手改会被覆盖）。只经脚本读写，按根因 fingerprint 去重：
+再生成（手改会被覆盖）。未授权维护台账时不运行写入命令，只把候选放入当前审查摘要。授权后只经脚本读写，按根因 fingerprint 去重，并显式禁用隐式提交推送：
 
 ```text
 node "<SKILL_ROOT>/scripts/evolution-note.mjs" add \
   --fingerprint <root-cause-slug> --tier <by-design|proposal|auto> \
-  --title "<一句话根因>" [--detail "<现象与证据>"] [--proposal "<具体改法>"] [--commit <sha>]
+  --title "<一句话根因>" [--detail "<现象与证据>"] [--proposal "<具体改法>"] [--commit <sha>] --no-sync
 ```
 
 返回 `isNew=false`（同指纹已存在）时脚本只自增计数——不要重复分析，也不在摘要里
 重复报告。台账正文不写 token、凭证、内部绝对路径或敏感命中原文，PR 只写号码。
 被维护者否决过的提案（status=rejected）留档，不再重复提出。
 
-每次 `add` / `set-status` 写盘后脚本自动把 `evolution/ledger.json` 与 `EVOLUTION.md`
-提交并推送 skills 仓库 main（只 add 这两个文件，不裹挟其他改动；结果在输出 `sync`
-字段）。`sync.ok=false`（断网、diverged、非 main 分支）不影响台账本身，写进摘要
-「自进化」组即可，不重试到卡死；`--no-sync` 仅本地调试用。
+底层脚本默认会提交并推送，因此本流程每次 `add` / `set-status` 都必须带 `--no-sync`；该参数不是仅供调试。台账写入授权不包含 commit 或 push。只有另有当次针对 Skills 仓库的提交／推送授权时，才执行对应动作，不能借一次台账更新触发远端写入。失败如实写进摘要，不重试到卡死。
 
-### 8.3 automatable-gap 的自动落地规则
+### 8.3 automatable-gap 的授权维护规则
 
-全部满足才允许当轮直接修改 Skill 自身：
+当次授权已覆盖具体 Skill 文件和维护动作，且以下条件全部满足，才允许修改 Skill 自身；普通 `review-pr` 或 `--auto` 不替代该授权：
 
 1. 改动不属于 8.1 的扩权类（拿不准 = 扩权，降级为 `--tier proposal`）；
 2. 改动最小且自洽：只改对应的 SKILL.md 段落、脚本或 config 键，不顺手重构；
 3. 改脚本后必须过 `node --check`，脚本带 `--dry-run` 的再跑一次 dry-run 自测；
    任一失败即恢复原文件、降级为提案；
-4. `SKILL_ROOT` 是 git 仓库且工作区干净时，把这次进化单独提交一个 commit
-   （message 前缀 `evo:`，正文带 fingerprint），并把 sha 记入台账；不是 git 仓库或
-   工作区脏时照常落地，但摘要里写明「未纳入版本控制，需人工同步回 skills 仓库」；
-5. 每轮最多自动落地 1 项（防抖）；其余记 `--tier proposal` 留到维护者或下轮处理；
-6. 落地 commit 之后运行
+4. 提交需独立的当次授权，只提交本次维护文件，不裹挟既有改动；未授权提交时保留本地结果并继续验证，不以 commit 作为维护完成的隐含前提；
+5. 每轮最多落地 1 项（防抖）；其余保留候选，写入提案台账同样需要维护授权；
+6. 只有已有相应 commit 且当次授权覆盖 Skills 仓库目标 remote／分支的 push 时，才运行
    `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" push --message "evo: <fingerprint>"`
-   把进化推送到 skills 仓库 main（台账部分随后的 `evolution-note.mjs` 会自动推，这一步
-   保证代码/文档 commit 也上去）。推送失败不回滚落地，如实写进摘要。
+   推送授权范围内的维护提交。台账命令仍用 `--no-sync`，不另行隐式推送。未授权 push 不运行该命令，也不因此阻断本地维护交付；推送失败不回滚落地，如实写进摘要。
 
 ### 8.4 汇总与交互
 
-- auto 模式：进化结果并入 6.1 摘要的「自进化」组——已落地的写一句话加 commit
-  短 sha；扩权提案点名维护者看 EVOLUTION.md；本轮没有新条目（全是 isNew=false）时
-  整组省略。
+- auto 模式：候选并入 6.1 摘要的「自进化」组，不为写摘要而修改 Skill、台账或 Git 状态。另有维护授权时才报告实际落地结果；没有 commit 就不附造出的 sha。无新候选时整组省略。
 - 交互模式：复盘发现进化项时直接告诉用户，由用户当场决定改不改；不在交互模式
   静默修改 Skill。
 <!-- dist:strip:end self-evolution -->
