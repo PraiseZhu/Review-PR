@@ -4924,9 +4924,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T01:35:23.039Z",
-      "lastSeen": "2026-09-06T01:35:23.039Z"
+      "lastSeen": "2026-09-08T09:40:17.958Z"
     },
     {
       "fingerprint": "context-mjs-headrefoid-gh-field-unsupported",
@@ -4976,9 +4976,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": "2026-09-06T05:41:37.345Z",
-      "lastSeen": "2026-09-07T17:48:41.517Z"
+      "lastSeen": "2026-09-08T09:40:12.135Z"
     },
     {
       "fingerprint": "pr501-post-merge-triage",
@@ -5028,9 +5028,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 1,
       "firstSeen": "2026-09-07T06:31:18.028Z",
-      "lastSeen": "2026-09-08T09:24:04.871Z"
+      "lastSeen": "2026-09-07T06:31:18.028Z"
     },
     {
       "fingerprint": "preflight-unrunnable-base-only-seat",
