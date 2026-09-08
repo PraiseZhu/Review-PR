@@ -155,6 +155,16 @@ SKILL「对外话术与人格边界」模板 D（人格关闭，第一句先澄�
 
 ## 技术架构 gate
 
+### Mivo 业务 size-gate 口径
+
+Mivo 仓库的业务 PR 另由云端 `scripts/ci/size-gate.mjs` 消费
+`agent-use/docs/pr-rules.json` 的 `sizeGate`：非测试 diff 达到 800 行为 `WARN`，达到
+1600 行为 `STOP`；缺配置回退 `budgetLines=1600`、`warnRatio=0.5`，非法配置
+fail-closed。Review-pr 本身不消费该字段，也不把它转写为本地架构门。
+
+本节的 `archGate.anyTypeDiffLines=800` 是 Review-pr 独立的技术架构语义门，仍按架构
+风险判定执行；它不是 Mivo size-gate 的 800 行预警线，二者不得混用。
+
 产品 gate 优先，二者不会同时进入 action。读取 `archGate`：
 
 - 核心路径改动量达到 `coreDiffLines`；
