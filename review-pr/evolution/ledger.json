@@ -4924,9 +4924,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T01:35:23.039Z",
-      "lastSeen": "2026-09-06T01:35:23.039Z"
+      "lastSeen": "2026-09-08T09:40:17.958Z"
     },
     {
       "fingerprint": "context-mjs-headrefoid-gh-field-unsupported",
@@ -4976,9 +4976,9 @@
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": "2026-09-06T05:41:37.345Z",
-      "lastSeen": "2026-09-07T17:48:41.517Z"
+      "lastSeen": "2026-09-08T09:40:12.135Z"
     },
     {
       "fingerprint": "pr501-post-merge-triage",
@@ -5028,9 +5028,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 1,
       "firstSeen": "2026-09-07T06:31:18.028Z",
-      "lastSeen": "2026-09-08T09:24:04.871Z"
+      "lastSeen": "2026-09-07T06:31:18.028Z"
     },
     {
       "fingerprint": "preflight-unrunnable-base-only-seat",
@@ -5088,27 +5088,27 @@
       "fingerprint": "ci-seat-gh-cli-and-stdin-gaps",
       "tier": "proposal",
       "title": "CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑",
-      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
+      "detail": "run-seat-claude 席位的 /usr/bin/gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败，build-review-task.mjs 的 escape-source 现场取数只能落成 escapeSourceIncomplete，席位无法交付 consume-review-output 认可的有效轮。readonly bash guard 禁止管道、重定向与 heredoc，record-convergence-round.mjs 与 run-log.mjs 仅支持 stdin 输入故在席位内不可运行；consume-review-output.mjs 需要先落 rro-1.json 输出文件而席位的 Write 工具被限制在台账文件。建议：为这些脚本补文件型 seam 例如 --findings-file 或 --body-file，或在 runner 镜像升级 gh 至支持上述字段的版本。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 1,
       "firstSeen": "2026-09-07T18:49:28.494Z",
-      "lastSeen": "2026-09-08T10:08:07.211Z"
+      "lastSeen": "2026-09-07T18:49:28.494Z"
     },
     {
       "fingerprint": "context-mjs-gh-headrefoid-unsupported",
       "tier": "auto",
       "title": "context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1",
-      "detail": "PR #547、#551 席①复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 整步 exit 1。#551 轮改用 gh api pulls/551 的 head.sha/base.sha 锚定 fork 点重建上下文；preflight 0 命中、build-review-task、deliver-review-segment 均正常跑通，快照哈希三步一致——buildDiffSnapshot 内部自 fetch 已把 base/head 对象补进本地库，head 缺对象退化路径未触发；唯 context.mjs 与回执链路仍断，findings 经 StructuredOutput 交付。",
+      "detail": "PR #547 席① 再次复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 547 整步 exit 1。本轮用 gh api pulls/547 的 head.sha/base.sha 加 gh pr diff 重建上下文，preflight/build-review-task/deliver-segment 均正常跑通（快照哈希一致）。",
       "proposal": "context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 2,
       "firstSeen": "2026-09-08T01:35:33.297Z",
-      "lastSeen": "2026-09-08T10:07:56.541Z"
+      "lastSeen": "2026-09-08T05:11:59.127Z"
     },
     {
       "fingerprint": "review-scripts-need-head-object-not-in-seat-checkout",
@@ -5148,6 +5148,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T07:30:21.976Z",
       "lastSeen": "2026-09-08T07:30:21.976Z"
+    },
+    {
+      "fingerprint": "gh-cli-old-headrefoid-breaks-context",
+      "tier": "auto",
+      "title": "旧 gh CLI 无 headRefOid 字段,context.mjs 阶段一在 L20-1 直接失败",
+      "detail": null,
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T10:33:35.180Z",
+      "lastSeen": "2026-09-08T10:33:35.180Z"
     }
   ],
   "escapedHazards": [
