@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `sanitizer-order-after-reconstruct` **中和管线缺变换顺序终检：先 scrub 后剥 HTML 注释会把被切断的轮次标记拼回可解析形态** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:三审席①在 publish 硬化 PR 上发现 neutralize_control_tokens 先跑标记 scrub 再剥 HTML 注释，被空注释切断的 review-complete 标记在 scrub 时对正则不可见、剥注释后重组为可解析串，穿透结论评论与补充评论两条不可信到 bot 评论通道，后果是轮次识别永远 proceed、每轮重烧三席。同 PR 自带的形态枚举测试覆盖裸文本、围栏、行内码、整段注释、一串两个五种形态全绿，唯独缺「注释切断」形态——枚举式测试给出了顺序安全的假信心。另该模块 docstring 误写 decide 不扫补充评论，与事实不符，是同一误判的两面。
+  - 提案:对 sanitizer 类改动的审查必答清单加一条：列出管线上每个会拼接文本的变换——剥注释、实体解码、行合并——逐一回答终末是否还有一次 scrub；形态枚举测试不得作为顺序安全的证据，必须补「变换嵌在敏感串内部」的对抗样本用例。
 - `seat-base-snapshot-drift-attribution` **席位本地 BASE 快照可能落后于 PR merge-base，diff 归因前必须以 gh pr view --json files 为准** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:2026-09-08 #472 席①：本地仅有 BASE(f045cdd=main #544)与 HEAD(squash 快照)两个提交，树差 27 文件；GitHub 权威 changedFiles=6。多出的 21 文件是 PR 分支多次 merge origin/main 带入的主干漂移（size-gate 1600 试行、bug-doctor source-coverage 等），若直接按树差归因会把他人已合入 main 的改动算成本 PR 的越权变更面。
   - 提案:席位/巡审在用本地 BASE...HEAD 树差下结论前，先 gh pr view <N> --json changedFiles,files 校验真实变更面；不一致时以 GitHub 三点 diff 为准，并把漂移文件逐一路径排除后再审。
