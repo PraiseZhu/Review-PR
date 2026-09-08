@@ -4919,27 +4919,27 @@
       "fingerprint": "pr493-seat1-stdin-pipe-blocked",
       "tier": "proposal",
       "title": "席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达",
-      "detail": "record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑",
+      "detail": "record-convergence-round.mjs 要求 findings JSON 走 stdin，但 readonly_bash_guard 禁止 shell 组合、管道、重定向，Bash 工具没有 stdin 注入通道，席①无法把 findings 喂进脚本；需要为该脚本加 --findings-file 参数或席内可信步骤代跑。2026-09-08 PR547 席①复现：截至本轮该脚本仍只有 stdin 入口，run-log.mjs 同样只读 fd 0；findings 与 verdict 经 StructuredOutput 正常落盘，收敛记录与 run-log 留待主流程补记。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T01:35:23.039Z",
-      "lastSeen": "2026-09-06T01:35:23.039Z"
+      "lastSeen": "2026-09-08T06:54:20.656Z"
     },
     {
       "fingerprint": "context-mjs-headrefoid-gh-field-unsupported",
       "tier": "proposal",
       "title": "context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败",
-      "detail": "2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。",
+      "detail": "2026-09-06 PR494 席1实跑：context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid；本机 gh 可用字段表无该字段，脚本在此环境不可用，审查退化为手工 gh api 拉取元数据。2026-09-08 PR547 席①再复现同症状：本轮以 gh api pulls 的 base.sha 与 head.sha 锚定受审 head、contents raw 直读三份文件全文并与 diff 核对一致；rules-gate 判定以直读 pr-rules.json 配置加人工比对完成，审查未受阻断。",
       "proposal": "context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-06T02:42:32.658Z",
-      "lastSeen": "2026-09-06T02:42:32.658Z"
+      "lastSeen": "2026-09-08T06:54:14.543Z"
     },
     {
       "fingerprint": "seat1-codex-pytests-not-wired-into-ci",
@@ -5101,14 +5101,14 @@
       "fingerprint": "context-mjs-gh-headrefoid-unsupported",
       "tier": "auto",
       "title": "context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1",
-      "detail": "PR #547 席① 再次复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 547 整步 exit 1。本轮用 gh api pulls/547 的 head.sha/base.sha 加 gh pr diff 重建上下文，preflight/build-review-task/deliver-segment 均正常跑通（快照哈希一致）。",
+      "detail": "tri-review seat 运行环境的 gh CLI 不支持 headRefOid 字段（gh pr view --json 报 Unknown JSON field: headRefOid），context.mjs 整体失败，席位只能手工用 gh api pulls/<N>（head.sha/base.sha）与 compare API 重建上下文。",
       "proposal": "context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。",
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 1,
       "firstSeen": "2026-09-08T01:35:33.297Z",
-      "lastSeen": "2026-09-08T05:11:59.127Z"
+      "lastSeen": "2026-09-08T01:35:33.297Z"
     },
     {
       "fingerprint": "review-scripts-need-head-object-not-in-seat-checkout",
@@ -5124,17 +5124,43 @@
       "lastSeen": "2026-09-08T01:35:39.860Z"
     },
     {
-      "fingerprint": "gh-json-field-version-compat",
-      "tier": "auto",
-      "title": "context/build-review-task 硬依赖 gh --json 字段,旧 gh CLI 上 exit 1 无降级",
-      "detail": "PR #528 审查轮实测:L20-1 审查 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences 这两个 --json 字段,gh pr view --json 直接报错,导致 context.mjs exit 1、build-review-task.mjs 同样跑不通,阶段一 gate 与阶段二任务构建整体退回手工 gh api 判定。建议:启动时探测 gh 支持的 --json 字段或加 gh --version 守卫,不支持的字段走 REST fallback——PR head 用 pulls API 的 head.sha,closing 引用经 issues timeline 取——探测失败时明确输出 unsupported-gh-fields 原因,而非裸 exit 1。",
+      "fingerprint": "window-constant-sweep-missed-contributing-doc",
+      "tier": "proposal",
+      "title": "改窗口常量的 PR 扫了 13 处仍漏掉贡献者文档，repo 内同一常量的文案散布面没有机器对账",
+      "detail": "PR #545 把停审窗口 03:00–07:00 改成 06:00–07:00，工作流/健康检查/计划文档/测试全改齐，唯独 CONTRIBUTING.md:27 的『03:00–07:00 不派付费席』漏改，成为全仓唯一残留旧窗口的文件。测试只钉住 workflow 与 timer 的字面量，文档无守卫。建议：审查命中『时间/窗口/魔法常量变更』时强制全仓 grep 旧字面量（含 *.md），漏一处记 P1；或仓内加一致性守卫测试扫文档里的窗口表述。",
+      "proposal": null,
+      "status": "open",
+      "commit": "67a83f3507c2d6bd4415ca055537379b927d75e9",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T05:23:38.437Z",
+      "lastSeen": "2026-09-08T05:23:38.437Z"
+    },
+    {
+      "fingerprint": "deployed-schedule-two-copies-transition-gap",
+      "tier": "proposal",
+      "title": "改部署时刻的 PR 只改仓内副本，机器侧 systemd timer 靠手工同步，过渡期形成夜间假停窗与更新/席位冲突",
+      "detail": "PR #545 合并瞬间仓库侧 gate（helpers 从 BASE_SHA 归档）即按 06:00–07:00 停审，但 l20-1 机器上的 systemd timer 仍停在 03:00/03:05，直到人工 git pull + setup --timers-only 才翻转。过渡期内：每晚 03:00 close-seats 仍把 healthy.marker 标成 unhealthy，而新窗口下 00:00–05:59 是合法营业时段，席位跨 03:40 仍在跑时 03:05 更新器 wait_idle 直接 die，marker 停在 unhealthy，付费审 fail-closed 近一天直到次日 03:05 重试。建议：审查『部署时刻/调度常量』变更时必须问清第二副本的同步时点与过渡期后果（谁在什么窗口内必须跑什么命令），PR 文档只写步骤不写后果时记 P1。",
+      "proposal": null,
+      "status": "open",
+      "commit": "67a83f3507c2d6bd4415ca055537379b927d75e9",
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T05:23:45.483Z",
+      "lastSeen": "2026-09-08T05:23:45.483Z"
+    },
+    {
+      "fingerprint": "pr545-window-doc-surface-drift",
+      "tier": "proposal",
+      "title": "时间窗口常量变更只同步了代码/测试/计划文档面,贡献者入口文档未更新且无测试钉住",
+      "detail": "PR #545 把停审窗口 03:00-07:00 改为 06:00-07:00(业务窗口 7x23):代码/workflow/双 timer/三份测试/fixtures/计划文档全部同步,还在 test_code_review_p0_p1.py 加了 assertNotIn 旧窗口字面量 钉住 workflow 文本;但 CONTRIBUTING.md:27 仍写旧窗口 03:00-07:00 不派付费席,且没有任何测试读取该文件,漂移 CI 不可见。提案:审查预扫加一条机器可判定规则——PR 改动含时间/窗口字面量时,全仓 grep 旧字面量的剩余命中(含 md 文档面,排除负向断言与无关子系统命中),非零即 reportOnly;时间窗口值在文档与代码两个 surface 的一致性由审查者逐项确认。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-08T06:32:04.003Z",
-      "lastSeen": "2026-09-08T06:32:04.003Z"
+      "firstSeen": "2026-09-08T06:01:59.852Z",
+      "lastSeen": "2026-09-08T06:01:59.852Z"
     }
   ],
   "escapedHazards": [
