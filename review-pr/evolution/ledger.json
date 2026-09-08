@@ -5161,6 +5161,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T10:45:58.526Z",
       "lastSeen": "2026-09-08T10:45:58.526Z"
+    },
+    {
+      "fingerprint": "write-review-receipt-also-headrefoid-casualty",
+      "tier": "auto",
+      "title": "write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在",
+      "detail": "PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T12:13:51.121Z",
+      "lastSeen": "2026-09-08T12:13:51.121Z"
     }
   ],
   "escapedHazards": [

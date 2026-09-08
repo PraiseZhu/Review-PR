@@ -451,6 +451,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `write-review-receipt-also-headrefoid-casualty` **write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。
 - `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #547、#551 席①复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 整步 exit 1。#551 轮改用 gh api pulls/551 的 head.sha/base.sha 锚定 fork 点重建上下文；preflight 0 命中、build-review-task、deliver-review-segment 均正常跑通，快照哈希三步一致——buildDiffSnapshot 内部自 fetch 已把 base/head 对象补进本地库，head 缺对象退化路径未触发；唯 context.mjs 与回执链路仍断，findings 经 StructuredOutput 交付。
   - 提案:context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。
