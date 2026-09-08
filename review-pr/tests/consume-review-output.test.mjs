@@ -5,10 +5,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reviewArtifactsDir } from './helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONSUME = join(__dirname, '..', 'scripts', 'consume-review-output.mjs');
@@ -16,6 +17,7 @@ const RECEIPT_CLI = join(__dirname, '..', 'scripts', 'write-review-receipt.mjs')
 const BUILD = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
 const PREFLIGHT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
 const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
+const DISPATCH = join(__dirname, '..', 'scripts', 'dispatch-review.mjs');
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
@@ -29,10 +31,11 @@ const git = (args, cwd) => {
 // head 默认只改一个普通源码文件:不进 test-infra profile,避免必答/负向证据放大用例噪音
 // (那两维有专门用例覆盖)。
 function setup() {
-  const work = mkdtempSync(join(tmpdir(), 'consume-'));
-  const repo = join(work, 'repo');
+  const root = mkdtempSync(join(tmpdir(), 'consume-'));
+  const repo = join(root, 'repo');
   mkdirSync(repo);
   git(['init', '-q', '-b', 'main'], repo);
+  const work = reviewArtifactsDir(repo);
   git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
   writeFileSync(join(repo, 'src-a.mjs'), 'export const a = 1;\n');
   git(['add', '.'], repo);
@@ -66,13 +69,17 @@ const FAM = (sev = 'P1') => ({
  *  `--pr-body-file` 是 R7 数据源的离线 seam:不传的话构建器会现场 `gh pr view`(生产行为),
  *  单测不该依赖网络。默认给一份"无逃逸引用"的 body。 */
 const BODY_OF = new Map(); // task 路径 → 它构建时用的 body seam(consumer 必须用同一份重算)
-function taskFile(f, { body = '普通改动,无历史 PR 引用。' } = {}) {
+function taskFile(f, { body = '普通改动,无历史 PR 引用。', dispatch = true } = {}) {
   const tf = join(f.work, `task-${Math.random().toString(36).slice(2)}.json`);
   const bodyFile = `${tf}.body.md`;
   writeFileSync(bodyFile, body);
   BODY_OF.set(tf, bodyFile);
   const r = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', `${tf}.md`, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
+  if (dispatch) {
+    const result = spawnSync('node', [DISPATCH, '--task', tf, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, `dispatch-review 应成功:${result.stdout}${result.stderr}`);
+  }
   return tf;
 }
 
@@ -189,6 +196,104 @@ test('① 合规一轮 → clean,回执带五项绑定;缺 --task → invalid(fa
   const noTask = run(f, compliant(ok.taskPath), ['--mode', 'auto', '--preflight', ok.preflightPath]);
   assert.equal(noTask.json.verdict, 'invalid');
   assert.match(noTask.json.reasons.join(';'), /--task/);
+});
+
+test('D/E task identity drift revokes clean and refuses segment delivery', () => {
+  const f = setup();
+  const good = round(f);
+  assert.equal(good.json.verdict, 'clean');
+  const task = JSON.parse(readFileSync(good.taskPath, 'utf8'));
+  task.executionIdentity.skillRoot = f.repo;
+  writeFileSync(good.taskPath, JSON.stringify(task));
+  const delivery = spawnSync('node', [DELIVER, '469', '--task', good.taskPath, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(delivery.status, 2);
+  assert.match(JSON.parse(delivery.stdout).refused, /执行身份不一致/);
+  const bad = run(f, compliant(good.taskPath), ['--mode', 'auto', '--task', good.taskPath, '--preflight', good.preflightPath]);
+  assert.equal(bad.json.verdict, 'invalid');
+  assert.match(bad.json.reasons.join(';'), /执行身份不一致/);
+  assert.notEqual(readReceipt(f).verdict, 'clean');
+});
+
+test('C/D dispatch receipt hash drift refuses segment delivery before recording it', () => {
+  const f = setup();
+  const rawTask = taskFile(f, { dispatch: false });
+  const noReceipt = spawnSync('node', [DELIVER, '469', '--task', rawTask, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(noReceipt.status, 2);
+  assert.match(JSON.parse(noReceipt.stdout).refused, /缺少或过期的阶段二派工凭据/);
+  const taskPath = taskFile(f);
+  const task = JSON.parse(readFileSync(taskPath, 'utf8'));
+  const before = readFileSync(taskPath, 'utf8');
+  const wrongSeat = spawnSync('node', [DISPATCH, '--task', taskPath, '--agent', 'typescript-reviewer', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(wrongSeat.status, 2);
+  assert.match(wrongSeat.stderr, /禁止使用 typescript-reviewer/);
+  assert.equal(readFileSync(taskPath, 'utf8'), before);
+  task.dispatchReceipt.requestHash = 'tampered';
+  writeFileSync(taskPath, JSON.stringify(task));
+  const delivery = spawnSync('node', [DELIVER, '469', '--task', taskPath, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(delivery.status, 2);
+  assert.match(JSON.parse(delivery.stdout).refused, /凭据校验失败/);
+  assert.equal(readdirSync(f.stateDir, { recursive: true }).filter((p) => String(p).includes('review-deliveries')).length, 0);
+});
+
+test('C/D/E missing or tampered dispatch receipt revokes an existing clean result', () => {
+  for (const missing of [false, true]) {
+    const f = setup();
+    const good = round(f);
+    assert.equal(good.json.verdict, 'clean');
+    const task = JSON.parse(readFileSync(good.taskPath, 'utf8'));
+    if (missing) delete task.dispatchReceipt;
+    else task.dispatchReceipt.requestHash = 'tampered';
+    writeFileSync(good.taskPath, JSON.stringify(task));
+    const bad = run(f, compliant(good.taskPath), ['--mode', 'auto', '--task', good.taskPath, '--preflight', good.preflightPath]);
+    assert.equal(bad.r.status, 2);
+    assert.equal(bad.json.verdict, 'invalid');
+    assert.match(bad.json.reasons.join(';'), /派工凭据/);
+    assert.notEqual(readReceipt(f).verdict, 'clean');
+  }
+});
+
+test('D artifact paths outside the bound worktree cannot build, dispatch, deliver or retain clean', () => {
+  const f = setup();
+  const good = round(f);
+  assert.equal(good.json.verdict, 'clean');
+  const outside = join(f.repo, '..', 'outside-task.json');
+  const body = BODY_OF.get(good.taskPath);
+  const build = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', outside, '--out-prompt', `${outside}.md`, '--pr-body-file', body], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.notEqual(build.status, 0);
+  assert.equal(existsSync(outside), false);
+  const dispatch = spawnSync('node', [DISPATCH, '--task', good.taskPath, '--out-task', outside, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(dispatch.status, 2);
+  assert.equal(existsSync(outside), false);
+  writeFileSync(outside, readFileSync(good.taskPath));
+  const delivery = spawnSync('node', [DELIVER, '469', '--task', outside, '--base', f.base, '--head', f.head, '--order', '1'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(delivery.status, 2);
+  assert.match(JSON.parse(delivery.stdout).refused, /输入输出文件/);
+  const pf = spawnSync('node', [PREFLIGHT, '--base', f.base, '--head', f.head, '--out', `${outside}.preflight`], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.notEqual(pf.status, 0);
+  assert.equal(existsSync(`${outside}.preflight`), false);
+  writeFileSync(`${outside}.output`, JSON.stringify(compliant(good.taskPath)));
+  const consumed = spawnSync('node', [CONSUME, '469', '--output', `${outside}.output`, '--task', good.taskPath, '--preflight', good.preflightPath, '--mode', 'auto', '--base', f.base, '--head', f.head, '--pr-body-file', body], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(consumed.status, 2);
+  assert.match(JSON.parse(consumed.stdout).reasons.join(';'), /输入输出文件/);
+  assert.notEqual(readReceipt(f).verdict, 'clean');
+});
+
+test('D/E missing task identity and foreign preflight identity fail closed', () => {
+  const f = setup();
+  const good = round(f);
+  const task = JSON.parse(readFileSync(good.taskPath, 'utf8'));
+  const savedIdentity = task.executionIdentity;
+  delete task.executionIdentity;
+  writeFileSync(good.taskPath, JSON.stringify(task));
+  const args = ['--mode', 'auto', '--task', good.taskPath, '--preflight', good.preflightPath];
+  assert.match(run(f, compliant(good.taskPath), args).json.reasons.join(';'), /缺审查执行身份/);
+  task.executionIdentity = savedIdentity;
+  writeFileSync(good.taskPath, JSON.stringify(task));
+  const pf = JSON.parse(readFileSync(good.preflightPath, 'utf8'));
+  pf.executionIdentity.gitCommonDir = f.repo;
+  writeFileSync(good.preflightPath, JSON.stringify(pf));
+  assert.match(run(f, compliant(good.taskPath), args).json.reasons.join(';'), /preflight:.*不一致/);
+  assert.notEqual(readReceipt(f).verdict, 'clean');
 });
 
 test('② 无 preflight → invalid;preflight 绑定别的 snapshot 也拒', () => {
@@ -436,6 +541,8 @@ test('⑯ R7 生产触发链:候选进 prompt → escapeAssessment 必须逐条�
   BODY_OF.set(tf, bodyFile); // consumer 侧重算要用同一份 body seam
   const b = spawnSync('node', [BUILD, '483', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', pmt, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(b.status, 0, b.stdout + b.stderr);
+  const dispatched = spawnSync('node', [DISPATCH, '--task', tf, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(dispatched.status, 0, dispatched.stdout + dispatched.stderr);
   const task = JSON.parse(readFileSync(tf, 'utf8'));
   const prompt = readFileSync(pmt, 'utf8');
   assert.equal(task.escapeCandidates.length, 1, `只有带修复语义的引用才是候选:${JSON.stringify(task.escapeCandidates)}`);

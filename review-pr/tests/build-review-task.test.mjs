@@ -8,11 +8,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, exist
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reviewArtifactsDir } from './helpers.mjs';
 import { matchPath, mergeProfiles, buildSegments, classifyRequiredNegativeEvidence, BUILTIN_PROFILES } from '../scripts/lib.review-profiles.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
 const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
+const DISPATCH = join(__dirname, '..', 'scripts', 'dispatch-review.mjs');
 const LEDGER_SRC = join(__dirname, '..', 'evolution', 'ledger.json');
 
 const git = (args, cwd) => {
@@ -31,10 +33,11 @@ const E2E = `export async function w(page) {
 `;
 
 function setup({ rules = {}, headFiles, baseFiles } = {}) {
-  const work = mkdtempSync(join(tmpdir(), 'brt-'));
-  const repo = join(work, 'repo');
+  const root = mkdtempSync(join(tmpdir(), 'brt-'));
+  const repo = join(root, 'repo');
   mkdirSync(repo);
   git(['init', '-q', '-b', 'main'], repo);
+  const work = reviewArtifactsDir(repo);
   git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
   writeFileSync(join(repo, 'README.md'), '# x\n');
   for (const [p, c] of Object.entries(baseFiles ?? {})) {
@@ -75,6 +78,10 @@ function run(f, extra = [], { env = {} } = {}) {
   let json = null;
   try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
   assert.ok(json, `应输出 JSON:status=${r.status}\n${r.stdout.slice(0, 500)}\n${r.stderr.slice(0, 500)}`);
+  if (r.status === 0) {
+    const dispatched = spawnSync('node', [DISPATCH, '--task', taskFile, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: { ...f.env, ...env }, encoding: 'utf8' });
+    assert.equal(dispatched.status, 0, `dispatch-review 应成功:${dispatched.stdout}${dispatched.stderr}`);
+  }
   f.lastTaskFile = taskFile; // 供后续投递用例引用同一份 task
   return { r, json, task: JSON.parse(readFileSync(taskFile, 'utf8')), prompt: readFileSync(promptFile, 'utf8') };
 }

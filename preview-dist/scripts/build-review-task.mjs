@@ -23,6 +23,7 @@ import { loadLedger, ledgerPathFor, isEffectiveOpen } from './lib.findings-ledge
 import { loadKnownHazards, hazardsForPaths, resolveEscapeSources, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { REVIEW_OUTPUT_SCHEMA_VERSION } from './lib.review-consume.mjs';
 import { validatePrescanConfig, readPrescanArtifact } from './lib.prescan.mjs';
+import { currentReviewIdentity, assertReviewArtifactPaths } from './lib.review-identity.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
@@ -39,6 +40,8 @@ try {
   const expectedPathsArg = argOf('--expected-paths');
   const expectedPaths = expectedPathsArg ? expectedPathsArg.split(',').map((x) => x.trim()).filter(Boolean) : null;
   const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid, expectedPaths });
+  const executionIdentity = currentReviewIdentity({ explicitRoot: argOf('--repo-root') });
+  assertReviewArtifactPaths(executionIdentity, [outTask, outPrompt, argOf('--pr-body-file'), argOf('--related-issues-file')]);
   const rules = loadRules();
   // 权威推导唯一实现(SC-R1a 第 2 轮核验):consumer 用同一函数重算并与本 task 逐组比对,
   // task 文件不再是 coverage / 必答 / required 的可信来源。
@@ -101,6 +104,7 @@ try {
     classifierIncomplete: classified.incomplete,
     classifierIncompleteFiles: classified.incompleteFiles,
     repo: repoSlug,
+    executionIdentity,
     escapeCandidates,
     // SC-R7 第 4 轮核验:candidate/hazard 不只比 ID——全内容哈希,consumer 与 premerge
     // 都现场重算比对(同 id 内容漂移、clean 后 body/canonical 变化都要可检)。

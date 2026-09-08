@@ -11,6 +11,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reviewArtifactsDir } from './helpers.mjs';
 import { buildDiffSnapshot } from '../scripts/lib.diff-snapshot.mjs';
 import { isReviewReceiptClean } from '../scripts/lib.mjs';
 
@@ -19,6 +20,7 @@ const BUILD = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
 const PREFLIGHT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
 const CONSUME = join(__dirname, '..', 'scripts', 'consume-review-output.mjs');
 const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
+const DISPATCH = join(__dirname, '..', 'scripts', 'dispatch-review.mjs');
 
 const git = (args, cwd) => {
   const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
@@ -30,10 +32,11 @@ const git = (args, cwd) => {
 };
 
 function setup() {
-  const work = mkdtempSync(join(tmpdir(), 'drift-'));
-  const repo = join(work, 'repo');
+  const root = mkdtempSync(join(tmpdir(), 'drift-'));
+  const repo = join(root, 'repo');
   mkdirSync(repo);
   git(['init', '-q', '-b', 'main'], repo);
+  const work = reviewArtifactsDir(repo);
   git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
   writeFileSync(join(repo, 'a.mjs'), 'export const a = 1;\n');
   git(['add', '-A'], repo);
@@ -93,6 +96,7 @@ test('R8 行为级:同一 snapshot 漂移时,preflight / builder / consumer / �
   const t0 = join(f.work, 't0.json');
   const b0 = runJson([BUILD, '469', '--base', f.base0, '--head', f.head, '--out-task', t0, '--out-prompt', `${t0}.md`, '--pr-body-file', f.bodyFile], f);
   assert.equal(b0.json.snapshotHash, s0.snapshotHash);
+  assert.equal(runJson([DISPATCH, '--task', t0, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], f).r.status, 0);
 
   // ③ consumer:拿 base0 的 task + base0 的 preflight,在 base1 上消费 → invalid
   const task0 = JSON.parse(readFileSync(t0, 'utf8'));
@@ -182,10 +186,11 @@ test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与
   // 场景刻意构造成"最难拦"的一种:base 移到不在 head 祖先链上的提交 → mergeBase 与 diff
   // 完全不变、coverage key 逐字节相同,只有 snapshotHash 变了。此时重建 task/preflight/
   // delivery 之后把**旧答卷**原样重放,若答卷本身不绑 snapshot 就会再拿一次 clean(实测)。
-  const work = mkdtempSync(join(tmpdir(), 'replay-'));
-  const repo = join(work, 'repo');
+  const root = mkdtempSync(join(tmpdir(), 'replay-'));
+  const repo = join(root, 'repo');
   mkdirSync(repo);
   git(['init', '-q', '-b', 'main'], repo);
+  const work = reviewArtifactsDir(repo);
   git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
   writeFileSync(join(repo, 'a.mjs'), 'export const a = 1;\n');
   git(['add', '-A'], repo);
@@ -220,6 +225,7 @@ test('R1a/R4 第 3 轮核验 BLOCKER:旧答卷不得跨 snapshot 重放(diff 与
     const t = join(work, `t-${tag}.json`);
     const pf = join(work, `pf-${tag}.json`);
     runJson([BUILD, '469', '--base', baseOid, '--head', head, '--out-task', t, '--out-prompt', `${t}.md`, '--pr-body-file', bodyFile], f);
+    assert.equal(runJson([DISPATCH, '--task', t, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], f).r.status, 0);
     runJson([PREFLIGHT, '--base', baseOid, '--head', head, '--out', pf], f);
     const task = JSON.parse(readFileSync(t, 'utf8'));
     const delivered = [];

@@ -17,6 +17,7 @@ import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { deliveryPathFor, loadDeliveries, saveDeliveries, appendDelivery } from './lib.review-delivery.mjs';
 import { computeReviewRequirements, coverageKeyStr, coverageCommitment } from './lib.review-requirements.mjs';
 import { validatePrescanConfig, readPrescanArtifact } from './lib.prescan.mjs';
+import { currentReviewIdentity, assertReviewIdentity, assertDispatchReceipt, assertReviewArtifactPaths } from './lib.review-identity.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
@@ -27,6 +28,19 @@ try {
   if (!taskFile || !existsSync(taskFile)) fail(new Error('缺 --task <task.json>'));
   if (!Number.isInteger(order) || order < 1) fail(new Error('缺 --order <正整数>'));
   const task = JSON.parse(readFileSync(taskFile, 'utf8'));
+  try {
+    const identity = currentReviewIdentity({ explicitRoot: argOf('--repo-root') });
+    assertReviewArtifactPaths(identity, [taskFile]);
+    assertReviewIdentity(task.executionIdentity, identity);
+    assertDispatchReceipt(task.dispatchReceipt, {
+      pr,
+      snapshotHash: task.snapshotHash,
+      identity,
+    });
+  } catch (error) {
+    print({ ok: false, pr, refused: error.message });
+    process.exit(2);
+  }
   const snapshot = buildDiffSnapshot({
     repoRoot: REPO_ROOT,
     baseRefOid: (argOf('--base') ?? '').toLowerCase(),
