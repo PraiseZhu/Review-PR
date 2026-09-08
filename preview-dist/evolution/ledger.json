@@ -5148,6 +5148,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T07:30:21.976Z",
       "lastSeen": "2026-09-08T07:30:21.976Z"
+    },
+    {
+      "fingerprint": "gh-cli-old-headrefoid-breaks-context",
+      "tier": "auto",
+      "title": "旧 gh CLI 无 headRefOid 字段,context.mjs 阶段一在 L20-1 直接失败",
+      "detail": null,
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T10:33:35.180Z",
+      "lastSeen": "2026-09-08T10:33:35.180Z"
     }
   ],
   "escapedHazards": [

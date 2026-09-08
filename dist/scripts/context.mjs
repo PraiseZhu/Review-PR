@@ -401,6 +401,24 @@ if (process.argv.includes('--scan-all')) {
       scanStateError = String(e?.message ?? e).slice(0, 200);
     }
 
+    let mergeReady = { action: 'skipped' };
+    try {
+      const mergeReadyMod = await import('./merge-ready-reconcile.mjs');
+      const config = mergeReadyMod.resolveMergeReadyConfig({ rules: loadRules() });
+      if (slug === mergeReadyMod.MIVO_REPO && config.enabled) {
+        const numbers = [...new Set(results.filter((r) => r.ok).map((r) => r.pr).filter(Boolean))];
+        mergeReady = { action: 'reconcile', prs: [] };
+        const sibling = SELF_PATH.replace(/context\.mjs$/, 'merge-ready-reconcile.mjs');
+        for (const number of numbers) {
+          const r = await spawnScriptJson(sibling, [String(number)], { timeoutMs: 180_000 });
+          mergeReady.prs.push({ pr: number, ...(r && typeof r === 'object' ? r : { ok: false, error: 'reconcile failed' }) });
+        }
+      } else if (slug !== mergeReadyMod.MIVO_REPO) mergeReady = { action: 'out-of-scope' };
+      else mergeReady = { action: 'disabled' };
+    } catch (e) {
+      mergeReady = { action: 'error', error: String(e?.message ?? e).slice(0, 200) };
+    }
+
     print({
       ok: true,
       scanAll: true,
@@ -411,6 +429,7 @@ if (process.argv.includes('--scan-all')) {
       scanFailures: [...results, ...heldDraftResults].filter((r) => !r.ok).map((r) => ({ pr: r.pr ?? null, error: r.error })),
       results,
       heldDraftResults,
+      mergeReady,
       ...(heldPrefilterError ? { heldPrefilterError } : {}),
       scanState: scanState
         ? { allSkip: scanState.allSkip, savedAt: scanState.savedAt }

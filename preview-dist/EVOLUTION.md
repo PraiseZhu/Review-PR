@@ -448,6 +448,7 @@
 
 ## 已自动落地(automatable-gap)
 
+- `gh-cli-old-headrefoid-breaks-context` **旧 gh CLI 无 headRefOid 字段,context.mjs 阶段一在 L20-1 直接失败** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
 - `gh-json-field-version-compat` **context/build-review-task 硬依赖 gh --json 字段,旧 gh CLI 上 exit 1 无降级** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #528 审查轮实测:L20-1 审查 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences 这两个 --json 字段,gh pr view --json 直接报错,导致 context.mjs exit 1、build-review-task.mjs 同样跑不通,阶段一 gate 与阶段二任务构建整体退回手工 gh api 判定。建议:启动时探测 gh 支持的 --json 字段或加 gh --version 守卫,不支持的字段走 REST fallback——PR head 用 pulls API 的 head.sha,closing 引用经 issues timeline 取——探测失败时明确输出 unsupported-gh-fields 原因,而非裸 exit 1。
 - `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 2 次,首见 2026-09-08,最近 2026-09-08,status: open

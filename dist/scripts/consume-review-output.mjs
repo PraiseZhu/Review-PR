@@ -25,6 +25,9 @@
 // 退出码:0 = verdict clean;2 = dirty/invalid/blocked(JSON 里带原因);1 = 脚本自身错误。
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { parsePR, print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, writeReviewReceipt, stateFile, writeJsonAtomic, ghJson } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
@@ -36,7 +39,23 @@ import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveE
 import { validatePrescanConfig, readTrustedPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
 import { currentReviewIdentity, assertReviewIdentity, assertDispatchReceipt, assertReviewArtifactPaths } from './lib.review-identity.mjs';
 
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
+function reconcileMergeReadyBestEffort(prNumber) {
+  try {
+    const sibling = join(SCRIPT_DIR, 'merge-ready-reconcile.mjs');
+    if (!existsSync(sibling)) return { action: 'skipped' };
+    const { owner, repo } = parseRepo();
+    const r = spawnSync(process.execPath, [sibling, String(prNumber)], {
+      cwd: dirname(SCRIPT_DIR), encoding: 'utf8', env: process.env,
+    });
+    const line = (r.stdout || '').trim().split('\n').at(-1);
+    if (r.status === 0 && line) return JSON.parse(line);
+    return { ok: false, action: 'error', error: (r.stderr || line || `exit ${r.status}`).slice(0, 300) };
+  } catch (error) {
+    return { ok: false, action: 'error', error: String(error?.message ?? error).slice(0, 300) };
+  }
+}
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const setEq = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 /** 只在 shape 校验通过时才把数组字段交给下游;否则一律当空数组。
@@ -517,13 +536,14 @@ try {
   } else {
     writeReviewReceipt({ pr, headRefOid, verdict: 'dirty', p0p1Count: Array.isArray(output.findingFamilies) ? output.findingFamilies.length : 0, bindings: { ...bindings, reason: verdict } });
   }
+  const mergeReady = reconcileMergeReadyBestEffort(pr);
 
   print({
     ok: true, pr, mode, verdict, reasons, blocked, deliveryReasons,
     stateAtWrite,
     attempts: attempts.count, snapshotHash: snapshot.snapshotHash, snapshotComplete: snapshot.complete,
     ledgerHash, effectiveOpenCount: ledgerResult.effectiveOpenCount, acceptedRiskCount: ledgerResult.acceptedRiskCount,
-    injectedOpenIds, registeredHazards, skippedHazards,
+    injectedOpenIds, registeredHazards, skippedHazards, mergeReady,
     authoritative: {
       coverageKeyCount: auth.coverageKeys.length, segmentCount: auth.segments.length,
       requiredProfileAnswerCount: auth.requiredProfileAnswers.length,

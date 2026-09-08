@@ -1,0 +1,8 @@
+{
+  "_comment": "Merge into xindong/mivo-canvas-plugin agent-use/docs/pr-rules.json via a dedicated plugin-repo PR. Shared review-pr default must stay mergeReady.enabled=false.",
+  "mergeReady": {
+    "enabled": true,
+    "repo": "xindong/mivo-canvas-plugin",
+    "label": "review:merge-ready"
+  }
+}
