@@ -17,6 +17,7 @@ import process from 'node:process';
 import { print, fail, REPO_ROOT, loadRules } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
 import { loadVendoredTypescript, scanSource, hitTouchesNewLines, ruleSetHash, BUILTIN_RULES } from './lib.preflight-rules.mjs';
+import { currentReviewIdentity, assertReviewArtifactPaths } from './lib.review-identity.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 
@@ -41,6 +42,8 @@ try {
   const expectedPathsArg = argOf('--expected-paths');
   const expectedPaths = expectedPathsArg ? expectedPathsArg.split(',').map((x) => x.trim()).filter(Boolean) : null;
   const snapshot = buildDiffSnapshot({ repoRoot: REPO_ROOT, baseRefOid, headOid, expectedPaths });
+  const executionIdentity = currentReviewIdentity({ explicitRoot: argOf('--repo-root') });
+  assertReviewArtifactPaths(executionIdentity, [outFile]);
   if (!snapshot.complete) {
     emit({ complete: false, reason: `DiffSnapshot 不完整:${snapshot.reason}`, snapshotHash: null, hits: [], reportOnly: [] });
   }
@@ -94,6 +97,7 @@ try {
   emit({
     complete: true, reason: null,
     snapshotHash: snapshot.snapshotHash,
+    executionIdentity,
     parserVersion: parser.version, parserPath: parser.resolvedPath, ruleSetHash: ruleSetHash(),
     activeRuleIds: activeRules.map((r) => r.ruleId),
     // SC-R5 复审:核销需要**正证据**——"这条规则以这个版本在本 snapshot 真跑过"。

@@ -34,6 +34,7 @@ import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteract
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
 import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { validatePrescanConfig, readTrustedPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
+import { currentReviewIdentity, assertReviewIdentity, assertDispatchReceipt, assertReviewArtifactPaths } from './lib.review-identity.mjs';
 
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -157,6 +158,13 @@ try {
   }
   let task = null;
   try { task = readJson(taskFile); } catch (e) { bail('invalid', [`task 文件不可读:${e.message}`]); }
+  let executionIdentity;
+  try {
+    executionIdentity = currentReviewIdentity({ explicitRoot: argOf('--repo-root') });
+    assertReviewArtifactPaths(executionIdentity, [taskFile, outputFile, argOf('--preflight'), argOf('--pr-body-file'), argOf('--related-issues-file')]);
+    assertReviewIdentity(task.executionIdentity, executionIdentity);
+    assertDispatchReceipt(task.dispatchReceipt, { pr, snapshotHash: task.snapshotHash, identity: executionIdentity });
+  } catch (error) { bail('invalid', [error.message]); }
 
   // ── 权威重算(SC-R1a 第 2 轮核验 BLOCKER)──
   const rules = loadRules();
@@ -295,6 +303,8 @@ try {
   let preflight = null;
   if (preflightFile && existsSync(preflightFile)) {
     try { preflight = readJson(preflightFile); } catch (e) { bail('invalid', [`preflight 文件不可读:${e.message}(fail-closed)`]); }
+    try { assertReviewIdentity(preflight.executionIdentity, executionIdentity); }
+    catch (error) { bail('invalid', [`preflight:${error.message}`]); }
   }
   const preflightIncomplete = !preflight || preflight.complete !== true || preflight.snapshotHash !== snapshot.snapshotHash;
 

@@ -9,7 +9,7 @@
 // 过的方式——测试只是把那套手工重放固化下来。
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, cpSync, readdirSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, realpathSync, cpSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -38,6 +38,14 @@ export function git(args, opts = {}) {
  */
 export function freshTempDir(prefix = 'review-pr-test-') {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+}
+
+export function reviewArtifactsDir(repo) {
+  const dir = join(repo, '.review-artifacts');
+  mkdirSync(dir, { recursive: true });
+  const exclude = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], { cwd: repo }).stdout.trim();
+  appendFileSync(exclude, '\n/.review-artifacts/\n');
+  return dir;
 }
 
 /** 初始化一个最小 git 仓库;`gitignore` 给定时写入 `.gitignore` 并一并提交。 */

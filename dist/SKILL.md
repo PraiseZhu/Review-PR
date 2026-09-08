@@ -1086,6 +1086,24 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 
 代码审查必须由独立的审查 agent 完成，主 agent 不直接替代它。优先使用
 `Agent` + `isolation: "worktree"`，每个 PR 一个隔离 worktree；主工作树不切换分支。
+阶段二派工在 Skill 侧必须先经过唯一入口 `scripts/dispatch-review.mjs`：它校验席位、
+隔离方式、审查 worktree、目标仓根和 Skill 根，并生成绑定当前任务的
+`dispatchReceipt`。只允许 `general-purpose` 审查席；`typescript-reviewer`、其他席位、缺字段、
+非 worktree、串仓或串 worktree 均以非零退出拒绝。入口示例：
+
+```bash
+node "<SKILL_ROOT>/scripts/dispatch-review.mjs" --task ./task.json \
+  --out-task ./task.json --agent general-purpose --provider claude-code \
+  --isolation worktree --repo-root "<REVIEW_REPO_ROOT>"
+```
+
+先在审查 worktree 根运行 `build-review-task.mjs`，生成带执行身份、不带派工凭据的
+`task.json`；再在同一 worktree 运行上述入口，传入实际派工使用的席位与 provider。
+task、prompt、preflight、答卷和显式输入材料均必须位于该 worktree 内；各入口按
+真实文件路径校验，指向树外的符号链接也会拒绝，投递或消费不能靠复制文件串用身份。
+投递和消费会现场重算并校验身份与凭据，缺凭据或绑定不一致的任务不能进入投递台账
+或取得 clean。凭据记录调用方声明的派工参数，不证明宿主实际创建了对应席位；编排方
+必须将同一组参数用于真实派工，并核对宿主返回结果。
 **spawn 返回后立即自检一次 `git branch --show-current` 仍为主工作树原分支**——
 若被切到 PR head（审查 agent 在主工作树执行了 `gh pr checkout`），`git checkout`
 原分支恢复并如实记入汇总（2026-08-11 #623 实测发生过：spawn 漏传

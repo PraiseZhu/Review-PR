@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, exist
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reviewArtifactsDir } from './helpers.mjs';
 import {
   deriveHazardId, deriveHazardFingerprint, loadKnownHazards, hazardsForPaths, upsertHazard,
   verifyActivation, loadInbox, saveInbox, validateHazardShape, activateInboxItems,
@@ -170,10 +171,11 @@ test('R7 端到端注入:改动命中 hazard paths → hazardId 与模式文本�
   mkdirSync(stateDir);
   const rulesFile = join(work, 'pr-rules.json');
   writeFileSync(rulesFile, JSON.stringify({ admins: [] }));
-  const bodyFile = join(work, 'body.md');
+  const artifacts = reviewArtifactsDir(repo);
+  const bodyFile = join(artifacts, 'body.md');
   writeFileSync(bodyFile, '普通改动。\n');
-  const taskFile = join(work, 'task.json');
-  const promptFile = join(work, 'prompt.md');
+  const taskFile = join(artifacts, 'task.json');
+  const promptFile = join(artifacts, 'prompt.md');
   const r = spawnSync('node', [BUILD, '469', '--base', base, '--head', head, '--out-task', taskFile, '--out-prompt', promptFile, '--pr-body-file', bodyFile], {
     cwd: repo, encoding: 'utf8',
     env: { ...process.env, REVIEW_PR_REPO_ROOT: repo, REVIEW_PR_STATE_DIR: stateDir, REVIEW_PR_RULES_FILE: rulesFile },
@@ -201,9 +203,12 @@ test('R7 端到端注入:改动命中 hazard paths → hazardId 与模式文本�
   git(['add', '-A'], repo2);
   git(['commit', '-q', '-m', 'head'], repo2);
   const h2 = git(['rev-parse', 'HEAD'], repo2);
-  const t2 = join(work, 'task2.json');
-  const p2 = join(work, 'prompt2.md');
-  const r2 = spawnSync('node', [BUILD, '470', '--base', b2, '--head', h2, '--out-task', t2, '--out-prompt', p2, '--pr-body-file', bodyFile], {
+  const artifacts2 = reviewArtifactsDir(repo2);
+  const t2 = join(artifacts2, 'task2.json');
+  const p2 = join(artifacts2, 'prompt2.md');
+  const body2 = join(artifacts2, 'body.md');
+  writeFileSync(body2, readFileSync(bodyFile));
+  const r2 = spawnSync('node', [BUILD, '470', '--base', b2, '--head', h2, '--out-task', t2, '--out-prompt', p2, '--pr-body-file', body2], {
     cwd: repo2, encoding: 'utf8',
     env: { ...process.env, REVIEW_PR_REPO_ROOT: repo2, REVIEW_PR_STATE_DIR: join(work, 'state2'), REVIEW_PR_RULES_FILE: rulesFile },
   });

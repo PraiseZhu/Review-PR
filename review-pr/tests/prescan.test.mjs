@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reviewArtifactsDir } from './helpers.mjs';
 import { validatePrescanConfig, validateObservation, deriveObservationId, computeArtifactHash, PRESCAN_CATEGORIES } from '../scripts/lib.prescan.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,7 @@ const PRE_SCAN = join(__dirname, '..', 'scripts', 'pre-scan.mjs');
 const PREPARE = join(__dirname, '..', 'scripts', 'prepare-prescan-segment.mjs');
 const RECORD = join(__dirname, '..', 'scripts', 'record-prescan-segment.mjs');
 const BUILD_TASK = join(__dirname, '..', 'scripts', 'build-review-task.mjs');
+const DISPATCH = join(__dirname, '..', 'scripts', 'dispatch-review.mjs');
 const DELIVER = join(__dirname, '..', 'scripts', 'deliver-review-segment.mjs');
 const CONSUME = join(__dirname, '..', 'scripts', 'consume-review-output.mjs');
 const PREFLIGHT = join(__dirname, '..', 'scripts', 'review-preflight.mjs');
@@ -28,10 +30,11 @@ const git = (args, cwd) => {
 };
 
 function setup({ rules = {}, headFiles, baseFiles } = {}) {
-  const work = mkdtempSync(join(tmpdir(), 'prescan-'));
-  const repo = join(work, 'repo');
+  const root = mkdtempSync(join(tmpdir(), 'prescan-'));
+  const repo = join(root, 'repo');
   mkdirSync(repo);
   git(['init', '-q', '-b', 'main'], repo);
+  const work = reviewArtifactsDir(repo);
   git(['remote', 'add', 'origin', 'https://github.com/xindong/mivo-canvas.git'], repo);
   writeFileSync(join(repo, 'README.md'), '# x\n');
   for (const [p, c] of Object.entries(baseFiles ?? {})) {
@@ -299,6 +302,8 @@ function buildTask(f) {
     '--out-task', taskFile, '--out-prompt', promptFile, '--pr-body-file', bodyFile],
     { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
+  const d = spawnSync('node', [DISPATCH, '--task', taskFile, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(d.status, 0, `dispatch-review 应成功:${d.stdout}${d.stderr}`);
   return { taskFile, promptFile, task: JSON.parse(readFileSync(taskFile, 'utf8')), prompt: readFileSync(promptFile, 'utf8') };
 }
 
@@ -441,6 +446,8 @@ function buildTaskWithBody(f, body = '普通改动,无历史 PR 引用。') {
     '--out-task', taskFile, '--out-prompt', promptFile, '--pr-body-file', bodyFile],
     { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
+  const d = spawnSync('node', [DISPATCH, '--task', taskFile, '--agent', 'general-purpose', '--provider', 'claude-code', '--isolation', 'worktree'], { cwd: f.repo, env: f.env, encoding: 'utf8' });
+  assert.equal(d.status, 0, `dispatch-review 应成功:${d.stdout}${d.stderr}`);
   return { taskFile, bodyFile, task: JSON.parse(readFileSync(taskFile, 'utf8')) };
 }
 

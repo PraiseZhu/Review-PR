@@ -5028,9 +5028,9 @@
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-07T06:31:18.028Z",
-      "lastSeen": "2026-09-07T06:31:18.028Z"
+      "lastSeen": "2026-09-08T09:24:04.871Z"
     },
     {
       "fingerprint": "preflight-unrunnable-base-only-seat",
@@ -5122,6 +5122,32 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T01:35:39.860Z",
       "lastSeen": "2026-09-08T01:35:39.860Z"
+    },
+    {
+      "fingerprint": "gh-json-field-version-compat",
+      "tier": "auto",
+      "title": "context/build-review-task 硬依赖 gh --json 字段,旧 gh CLI 上 exit 1 无降级",
+      "detail": "PR #528 审查轮实测:L20-1 审查 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences 这两个 --json 字段,gh pr view --json 直接报错,导致 context.mjs exit 1、build-review-task.mjs 同样跑不通,阶段一 gate 与阶段二任务构建整体退回手工 gh api 判定。建议:启动时探测 gh 支持的 --json 字段或加 gh --version 守卫,不支持的字段走 REST fallback——PR head 用 pulls API 的 head.sha,closing 引用经 issues timeline 取——探测失败时明确输出 unsupported-gh-fields 原因,而非裸 exit 1。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T06:32:04.003Z",
+      "lastSeen": "2026-09-08T06:32:04.003Z"
+    },
+    {
+      "fingerprint": "canvas-ui-surface-not-in-interaction-gate",
+      "tier": "by-design",
+      "title": "画布新增可交互 DOM 面未登记进 isCanvasUiTarget 唯一闸门",
+      "detail": "PR #528 给画布加了可编辑组名栏(.dom-node-caption / .dom-node-caption-input),isCanvasUiTarget 的选择器清单没同步登记。组名栏为让点组名选中整组而刻意不 stopPropagation,导致编辑态下 input 内 pointerdown 冒泡到 shell:handleShellPointerDown 的失焦分支先 blur 提交收场,dispatchPointerDown 再按 data-group-caption-id 解析成员选中并 setPointerCapture——点光标=关编辑,拖选字=拖动整组;非组图片名栏因 stopPropagation 幸免。单图 caption 既有测试直接 dispatch dblclick 不经过 pointerdown,故未拦住。教训:给画布加新的可编辑 DOM 面时,isCanvasUiTarget 是 shell pointerdown 路由的唯一闸门,必须同步登记或编辑态 stopPropagation;可考虑 data-canvas-ui 属性约定替代逐类名登记,并补 pointerdown-inside-input 交错测试。",
+      "proposal": null,
+      "status": "tracked",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T07:30:21.976Z",
+      "lastSeen": "2026-09-08T07:30:21.976Z"
     }
   ],
   "escapedHazards": [
