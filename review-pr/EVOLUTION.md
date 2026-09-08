@@ -5,6 +5,8 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `seat-finding-off-diff-scope` **审席 finding 未按 PR 变更面过滤,树上零 diff 文件反复成 HIGH** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR #472 多轮 tri-review 复现:审席把 src/lib/canvasExportDerivationEdges.ts(与 origin/main 零 diff,不在 PR files 里)报成 HIGH;又把仓内 PR_BODY.md 的 #129 遗稿当成 PR 正文证据。review-preflight.mjs 已有行级归因(只阻断新增/修改行上的命中,既存命中 reportOnly),但 LLM 审席的 findings 没有同等的机械过滤。建议:consume-review-output 汇总侧对每条 finding 的 path 与 gh pr view --json files 的清单比对,不在清单内或与 base 零 diff 的文件上的 finding 自动降级为 reportOnly 并标注,不阻断合并。这能让作者不用花整轮 push 只为澄清不在变更面里的文件。
 - `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 2 次,首见 2026-09-07,最近 2026-09-08,status: open
   - 现象:席位 runner 的 gh 版本不认识 headRefOid 字段（该字段较新 gh 才支持），context.mjs 拉单个 PR 上下文全步骤失败，本轮只能用 gh api pulls 端点手工补等价数据继续审查、且不重写 gate 判定逻辑。同一环境每轮都会复现。修法方向：headRefOid 等字段改从 gh api pulls/<n> 的 head.sha 取，或探测 gh 版本降级字段集；PR body/closingIssuesReferences 等字段同步核对可用性。
   - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。

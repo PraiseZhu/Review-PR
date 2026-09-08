@@ -5174,6 +5174,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T06:58:43.266Z",
       "lastSeen": "2026-09-08T06:58:43.266Z"
+    },
+    {
+      "fingerprint": "seat-finding-off-diff-scope",
+      "tier": "proposal",
+      "title": "审席 finding 未按 PR 变更面过滤,树上零 diff 文件反复成 HIGH",
+      "detail": "PR #472 多轮 tri-review 复现:审席把 src/lib/canvasExportDerivationEdges.ts(与 origin/main 零 diff,不在 PR files 里)报成 HIGH;又把仓内 PR_BODY.md 的 #129 遗稿当成 PR 正文证据。review-preflight.mjs 已有行级归因(只阻断新增/修改行上的命中,既存命中 reportOnly),但 LLM 审席的 findings 没有同等的机械过滤。建议:consume-review-output 汇总侧对每条 finding 的 path 与 gh pr view --json files 的清单比对,不在清单内或与 base 零 diff 的文件上的 finding 自动降级为 reportOnly 并标注,不阻断合并。这能让作者不用花整轮 push 只为澄清不在变更面里的文件。",
+      "proposal": null,
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T07:17:12.462Z",
+      "lastSeen": "2026-09-08T07:17:12.462Z"
     }
   ],
   "escapedHazards": [
