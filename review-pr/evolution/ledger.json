@@ -5226,6 +5226,32 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T05:38:38.517Z",
       "lastSeen": "2026-09-09T05:38:38.517Z"
+    },
+    {
+      "fingerprint": "review-agent-timeout-fallback-to-lead",
+      "tier": "proposal",
+      "title": "阶段二独立审查席超时未交 rro-1，主会话按契约补审并消费",
+      "detail": "PR 559 交互审：native subagent worker 未交 rro-1.json。主会话在隔离 worktree 内按 prompt/segment 契约审完、跑负向证据、写 rro-1、consume dirty、REQUEST_CHANGES。SKILL 要求独立席，主会话代写是本轮过程缺口。",
+      "proposal": "交互审在派席失败/超时后，主会话可按 skip/review-agent-timeout 收口，或明确允许主会话补交 rro-1 的条件；不要静默把独立席变成主会话审。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T12:15:38.806Z",
+      "lastSeen": "2026-09-08T12:15:38.806Z"
+    },
+    {
+      "fingerprint": "independent-review-seat-failed-to-write-rro",
+      "tier": "proposal",
+      "title": "Cindy native subagent 两次未能在隔离树写出 rro-1.json",
+      "detail": "PR 550 交互审查派 general-purpose 席两次均 failed，隔离树无 rro-1.json。主会话按同一 worktree 材料交卷后 consume 得 clean。",
+      "proposal": "查 Cindy/pi subagent inherit 隔离树 cwd 与失败回传；失败时至少把 stderr 落到审查树。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-08T12:34:33.910Z",
+      "lastSeen": "2026-09-08T12:34:33.910Z"
     }
   ],
   "escapedHazards": [
@@ -5277,6 +5303,34 @@
       "hazardId": "hz2-2fff982f411fdfa5",
       "fingerprint": "hzf2-2fff982f411fdfa5",
       "activatedAt": "2026-08-06T05:31:30.666Z"
+    },
+    {
+      "repo": "xindong/mivo-canvas-plugin",
+      "originPr": 550,
+      "originHead": "231b05bba166351a9ed2a231b0a987fd25c17477",
+      "fixPr": 559,
+      "fixHead": "7b4eaabedea4aa3ed7936c2b0c2b5364844c9a6a",
+      "pattern": "PR body 承认 #550 只做到文件级锚点归属，行级仍会被 GitHub 拒；#539 第 3 轮因此残缺发布。本 PR 把容错落到 publish_inline_comments，是修已合并审查漏掉的发布失败，不是新功能。",
+      "paths": [
+        ".github/scripts/publish_review_result.py",
+        ".github/scripts/review_verdict.py",
+        ".github/scripts/tests/test_code_review_p0_p1.py",
+        ".github/scripts/tests/test_publish_review_result.py",
+        ".github/scripts/tests/test_review_verdict.py",
+        ".github/workflows/code-review.md",
+        ".github/workflows/code-review.yml",
+        "CLAUDE.md",
+        "docs/ops/server-tri-review-plan.md"
+      ],
+      "evidence": "本轮审查判定:PR body 承认 #550 只做到文件级锚点归属，行级仍会被 GitHub 拒；#539 第 3 轮因此残缺发布。本 PR 把容错落到 publish_inline_comments，是修已合并审查漏掉的发布失败，不是新功能。",
+      "activationStatus": "active",
+      "promotionStatus": "pending",
+      "promotionTarget": null,
+      "registeredAt": "2026-09-09T03:55:56.422Z",
+      "registeredBy": "consume-review-output",
+      "hazardId": "hz2-be2e8f5b395ed225",
+      "fingerprint": "hzf2-be2e8f5b395ed225",
+      "activatedAt": "2026-09-09T04:42:58.248Z"
     }
   ]
 }
