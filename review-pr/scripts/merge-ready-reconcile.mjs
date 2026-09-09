@@ -94,6 +94,7 @@ function currentLabels(value) {
 export async function reconcileMergeReady({
   pr, config, gate, api, dryRun = false, now = new Date().toISOString(),
 }) {
+  if (pr.repo === MIVO_REPO && process.env.REVIEW_PR_RESULT_PROTOCOL === 'current-review-v1') return { ok:true, action:'verdict-protocol-no-label', writes:0 };
   if (!config.enabled) return { ok: true, action: 'disabled', writes: 0 };
   if (config.label === 'signoff' || config.label.startsWith('signoff:') || config.label === SIGNOFF_LABEL_DEFAULT) {
     throw new Error('merge-ready label cannot be signoff');
@@ -173,6 +174,7 @@ export async function reconcilePrNumber(prNumber, { dryRun = false } = {}) {
   const parsedRepo = parseRepo();
   const repo = `${parsedRepo.owner}/${parsedRepo.repo}`;
   if (repo !== MIVO_REPO) throw new Error('merge-ready scope is limited to xindong/mivo-canvas-plugin');
+  if (process.env.REVIEW_PR_RESULT_PROTOCOL === 'current-review-v1') return { ok:true, action:'verdict-protocol-no-label', writes:0 };
   const view = JSON.parse(gh(['pr', 'view', String(prNumber), '--repo', repo, '--json', 'baseRefOid,headRefOid,isDraft,state']).stdout);
   const gate = { ...runPreMerge(prNumber), baseRefOid: view.baseRefOid };
   return reconcileMergeReady({
