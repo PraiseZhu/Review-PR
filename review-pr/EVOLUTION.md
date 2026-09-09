@@ -5,9 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `seat-pr-mirror-meta-misread` **席位读不到线上 PR 元数据时退读仓内镜像文件,把别的已合 PR 的标题/正文当成本 PR 判红** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
-  - 现象:#539 第 3 轮与 #548 第 2 轮实证:席位 token 无 pull-requests 读权限(REST/GraphQL 403),退而读仓根 PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md,而这些镜像装的是别的已合 PR(#129/#472/#545)的内容,产出『标题与变更脱节』类误报 HIGH(#548 第 2 轮的补充评论自陈了该判定路径)。#548 已把四个镜像出库并加根锚定 ignore,仓内侧根治;残余:席位 token 仍读不到线上标题/正文,任务书若不注入,席位只能从 changed-files 与 diff 推断 PR 意图。
-  - 提案:tri-review job 在席位任务书里显式注入本 PR 的标题与正文(与 base/head SHA 同级作为任务书必备字段),或给席位 token 补 pull-requests 只读权限;使席位不再有任何理由读仓内镜像文件。
 - `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
   - 现象:#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证
   - 提案:席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件
@@ -473,8 +470,6 @@
 
 ## 已自动落地(automatable-gap)
 
-- `runner-gh-cli-too-old-for-skill-scripts` **L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行** — 出现 2 次,首见 2026-09-07,最近 2026-09-09,status: open
-  - 现象:PR #548 席①复现:gh pr view 548 --json 一旦带 headRefOid 即 Unknown JSON field exit 1(本轮首条命令实测);本轮以 gh pr view 其余字段 + gh pr diff + gh api GET pulls/548/comments 手工重建上下文,head 以任务书注入的 c01804a 为准,并经 gh pr diff 与 workcopy 文件树双重核对。
 - `write-review-receipt-also-headrefoid-casualty` **write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。
 - `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: open
@@ -487,6 +482,8 @@
 - `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。
   - 提案:为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。
+- `runner-gh-cli-too-old-for-skill-scripts` **L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 现象:mivo-review runner (L20-1) 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段: context.mjs / build-review-task.mjs / consume-review-output.mjs / escaped-hazards 均以 Unknown JSON field exit 1。席位守卫同时禁止 heredoc/管道,stdin 型脚本(record-convergence-round / run-log)也无法投喂。本轮退路: 用允许的只读命令(gh api --jq / git show / git diff / git blame)手工重建 PR 事实; fork 点用 REST base.sha 而非 main tip,preflight 用 --base <fork-point> 重跑后 complete=true 与 PR 文件清单精确对账。建议: 巡审部署前 probe gh 版本与字段支持,或 skill 脚本对缺失字段降级;席位守卫可为 stdin 型脚本开 --body-file 通道。
 - `canvas-truth-scan-vs-wire-contract` **画布即真相类 PR：引用扫描面必须对账 wire 契约白名单，不能只抄客户端 attach 接线** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:PR #434 阶段 3(资产引用生命周期)把服务端引用计数切成「画布即真相」现算,扫描函数只抽了 payload.asset.url 与 fills[].assetUrl——恰是客户端 attach 接线(computeAssetSideEffects)覆盖的子集;而 wire 契约 NODE_PAYLOAD_KEYS 里还有第三个承载资产引用的持久化字段 imageSlot.refs[].assetUrl(校验器放行、随画布落服务端、生成时经 assetBlobForNode 真实消费),漏扫导致槽位参考图在 7 天宽限后被 purge 静默清除。审查启发(可自动化):凡『从持久化 payload 派生真相/计数/GC 判定』的改动,应把扫描字段清单与 shared/persist-contract.ts 的 payload 白名单逐字段对账,并 grep 全仓消费方(mivo-sasset:/assetUrl)找差集——客户端 attach 事件只是计数的触发器子集,不是引用面的权威清单。
 - `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: open
@@ -570,12 +567,12 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `pr-body-drift-after-autopilot-rounds` **多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准** — 出现 2 次,首见 2026-09-07,最近 2026-09-09,status: tracked
-  - 现象:PR #548 席①复现:正文『本 PR 包含:删除两个根目录残留文件、.gitignore 补两条规则』『非目标:不改代码/配置/依赖』,而 head c01804a 实删四个镜像文件、加五条 ignore、并改 .gitleaks.toml 注释;验证节记录的 check-ignore 行号(.gitignore:129/130)也是被取代的首提交状态(head 实为 140/141)。pr-format-gate 照常绿——结构检查不校验正文声明与 files 的一致性,只能靠席位人工核对。
 - `canvas-ui-surface-not-in-interaction-gate` **画布新增可交互 DOM 面未登记进 isCanvasUiTarget 唯一闸门** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: tracked
   - 现象:PR #528 给画布加了可编辑组名栏(.dom-node-caption / .dom-node-caption-input),isCanvasUiTarget 的选择器清单没同步登记。组名栏为让点组名选中整组而刻意不 stopPropagation,导致编辑态下 input 内 pointerdown 冒泡到 shell:handleShellPointerDown 的失焦分支先 blur 提交收场,dispatchPointerDown 再按 data-group-caption-id 解析成员选中并 setPointerCapture——点光标=关编辑,拖选字=拖动整组;非组图片名栏因 stopPropagation 幸免。单图 caption 既有测试直接 dispatch dblclick 不经过 pointerdown,故未拦住。教训:给画布加新的可编辑 DOM 面时,isCanvasUiTarget 是 shell pointerdown 路由的唯一闸门,必须同步登记或编辑态 stopPropagation;可考虑 data-canvas-ui 属性约定替代逐类名登记,并补 pointerdown-inside-input 交错测试。
 - `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 3 次,首见 2026-09-06,最近 2026-09-07,status: tracked
   - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight 走本地 git objects 不受影响。复现记录：2026-09-06 PR501 席①；2026-09-07 PR472 席①（context.mjs exit 1 报 Unknown JSON field headRefOid，build-review-task 逃逸候选源同败，改用 gh api pulls 端点手工锚定后披露）；2026-09-08 PR533 席①再复现（build-review-task 逃逸候选现场取数同败于 closingIssuesReferences 字段，task 记 escapeSourceIncomplete=true；PR 正文与全部讨论线程人工通读替代逃逸源核对，未据无候选放行）。属环境与 skill 脚本的字段契约漂移，非目标 PR 代码问题。
+- `pr-body-drift-after-autopilot-rounds` **多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: tracked
+  - 现象:PR #528 席①观察：正文『明确不包含：组名导出』『组名栏尚未接入 LOD』，但最终 head (e0d9f78) 已实现组名导出（canvasExportText groupCaptionsOnly 通道）且 GroupCaptionLayer 已过 needsImageCaptionShell LOD 过滤；正文验证节还停在旧候选 SHA 0d05227。多轮 autopilot 修复合入后正文未同步，格式门与 pr-intent 均不拦截。属人工核对项：审查结论只锚 head 代码，正文声明仅作线索不作事实。
 - `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:审查会话发现 PR 501 state=MERGED(2026-09-06T04:09:25Z)仍被排入三审。发现时点：读 gh pr view 状态字段。当前流程文档假定席位运行时 PR 仍 OPEN；对已合并 PR 输出 findings 无法阻断合并，只能事后审计。按 by-design 处理：owner 用三审做 post-merge 审计属有意行为，不改流程。
 - `seat1-codex-pytests-not-wired-into-ci` **插件仓 .github/scripts/tests 的 Python 单测未挂进任何 CI/pre-push,只在人工跑** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
