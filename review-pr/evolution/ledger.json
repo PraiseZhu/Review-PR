@@ -5049,27 +5049,27 @@
       "fingerprint": "pr-body-drift-after-autopilot-rounds",
       "tier": "by-design",
       "title": "多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准",
-      "detail": "PR #528 席①观察：正文『明确不包含：组名导出』『组名栏尚未接入 LOD』，但最终 head (e0d9f78) 已实现组名导出（canvasExportText groupCaptionsOnly 通道）且 GroupCaptionLayer 已过 needsImageCaptionShell LOD 过滤；正文验证节还停在旧候选 SHA 0d05227。多轮 autopilot 修复合入后正文未同步，格式门与 pr-intent 均不拦截。属人工核对项：审查结论只锚 head 代码，正文声明仅作线索不作事实。",
+      "detail": "PR #548 席①复现:正文『本 PR 包含:删除两个根目录残留文件、.gitignore 补两条规则』『非目标:不改代码/配置/依赖』,而 head c01804a 实删四个镜像文件、加五条 ignore、并改 .gitleaks.toml 注释;验证节记录的 check-ignore 行号(.gitignore:129/130)也是被取代的首提交状态(head 实为 140/141)。pr-format-gate 照常绿——结构检查不校验正文声明与 files 的一致性,只能靠席位人工核对。",
       "proposal": null,
       "status": "tracked",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-07T15:19:10.894Z",
-      "lastSeen": "2026-09-07T15:19:10.894Z"
+      "lastSeen": "2026-09-09T10:57:46.974Z"
     },
     {
       "fingerprint": "runner-gh-cli-too-old-for-skill-scripts",
       "tier": "auto",
       "title": "L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行",
-      "detail": "mivo-review runner (L20-1) 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段: context.mjs / build-review-task.mjs / consume-review-output.mjs / escaped-hazards 均以 Unknown JSON field exit 1。席位守卫同时禁止 heredoc/管道,stdin 型脚本(record-convergence-round / run-log)也无法投喂。本轮退路: 用允许的只读命令(gh api --jq / git show / git diff / git blame)手工重建 PR 事实; fork 点用 REST base.sha 而非 main tip,preflight 用 --base <fork-point> 重跑后 complete=true 与 PR 文件清单精确对账。建议: 巡审部署前 probe gh 版本与字段支持,或 skill 脚本对缺失字段降级;席位守卫可为 stdin 型脚本开 --body-file 通道。",
+      "detail": "PR #548 席①复现:gh pr view 548 --json 一旦带 headRefOid 即 Unknown JSON field exit 1(本轮首条命令实测);本轮以 gh pr view 其余字段 + gh pr diff + gh api GET pulls/548/comments 手工重建上下文,head 以任务书注入的 c01804a 为准,并经 gh pr diff 与 workcopy 文件树双重核对。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": "2026-09-07T16:25:10.028Z",
-      "lastSeen": "2026-09-07T16:25:10.028Z"
+      "lastSeen": "2026-09-09T10:57:51.233Z"
     },
     {
       "fingerprint": "context-mjs-headrefoid-gh-compat",
@@ -5088,14 +5088,14 @@
       "fingerprint": "ci-seat-gh-cli-and-stdin-gaps",
       "tier": "proposal",
       "title": "CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑",
-      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
+      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 2,
       "firstSeen": "2026-09-07T18:49:28.494Z",
-      "lastSeen": "2026-09-09T10:49:54.829Z"
+      "lastSeen": "2026-09-08T10:08:07.211Z"
     },
     {
       "fingerprint": "context-mjs-gh-headrefoid-unsupported",
@@ -5265,6 +5265,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
+    },
+    {
+      "fingerprint": "seat-pr-mirror-meta-misread",
+      "tier": "proposal",
+      "title": "席位读不到线上 PR 元数据时退读仓内镜像文件,把别的已合 PR 的标题/正文当成本 PR 判红",
+      "detail": "#539 第 3 轮与 #548 第 2 轮实证:席位 token 无 pull-requests 读权限(REST/GraphQL 403),退而读仓根 PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md,而这些镜像装的是别的已合 PR(#129/#472/#545)的内容,产出『标题与变更脱节』类误报 HIGH(#548 第 2 轮的补充评论自陈了该判定路径)。#548 已把四个镜像出库并加根锚定 ignore,仓内侧根治;残余:席位 token 仍读不到线上标题/正文,任务书若不注入,席位只能从 changed-files 与 diff 推断 PR 意图。",
+      "proposal": "tri-review job 在席位任务书里显式注入本 PR 的标题与正文(与 base/head SHA 同级作为任务书必备字段),或给席位 token 补 pull-requests 只读权限;使席位不再有任何理由读仓内镜像文件。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-09T10:57:56.263Z",
+      "lastSeen": "2026-09-09T10:57:56.263Z"
     }
   ],
   "escapedHazards": [
