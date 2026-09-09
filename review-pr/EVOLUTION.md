@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `seat-worktree-output-files-fail-checkout-guard` **席位输出类脚本在 review worktree 内落盘即触发 run-seat-claude 终检 Refuse checkout writes 判 fail** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:2026-09-08 PR #551 席①上一轮把 build-review-task 与 deliver-review-segment 跑通后，job 终检报 Claude seat wrote back to the Actions checkout：run-seat-claude 收尾步骤把 restore-config 已知路径复位后，对工作树内任何非 .gitignore 忽略的脏或未跟踪文件零容忍；而这些脚本的输出经 assertReviewArtifactPaths 约束必须落在 review worktree 内，席位上 worktree 即 Actions checkout，默认输出路径非忽略，写盘即终检 fail。2026-09-09 复跑实测安全路径：review-preflight.mjs 省略 --out 走 stdout，outFile 为 null 时被 assertReviewArtifactPaths 的 filter Boolean 跳过校验，complete JSON 全量打印、工作树零写入；确需落盘时只能选 worktree 内被忽略路径如 _tmp/，注意目录可能不存在且席位 guard 禁 mkdir，writeFileSync 不建父目录。
+  - 提案:输出类脚本 context、build-review-task、deliver-review-segment、consume-review-output 补 stdout 交付模式或显式的 gitignored 输出目录参数；在 SKILL 与 seat 部署文档写明 tri-review 席位一律省略 --out 经 stdout 消费、需落盘时先确认目标路径被目标仓 .gitignore 忽略；run-seat-claude refuse 步骤若要放宽白名单需 owner 拍板，不自动改。
 - `preflight-abbreviated-oid-error-unclear` **review-preflight 对缩写 OID 判非法时未提示需完整 40 位 SHA** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
   - 现象:席位审查从 git log 取 7 位缩写 SHA 传入 --base 与 --head，preflight 返回 complete:false 且 reason 为 DiffSnapshot 不完整 base/head oid 缺失或非法，未指明哪个参数、也不说明只接受完整 OID。规范流程 gh pr view baseRefOid 恒为完整 SHA，仅离线推导场景可触发。
   - 提案:入口对缩写 OID 先经 git rev-parse 展开为完整 OID 再校验，或校验失败时报错明示参数名与需完整 40 位 OID 的要求。不改判定逻辑，无新增写操作。

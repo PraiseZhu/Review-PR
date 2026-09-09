@@ -5213,6 +5213,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T04:57:24.578Z",
       "lastSeen": "2026-09-09T04:57:24.578Z"
+    },
+    {
+      "fingerprint": "seat-worktree-output-files-fail-checkout-guard",
+      "tier": "proposal",
+      "title": "席位输出类脚本在 review worktree 内落盘即触发 run-seat-claude 终检 Refuse checkout writes 判 fail",
+      "detail": "2026-09-08 PR #551 席①上一轮把 build-review-task 与 deliver-review-segment 跑通后，job 终检报 Claude seat wrote back to the Actions checkout：run-seat-claude 收尾步骤把 restore-config 已知路径复位后，对工作树内任何非 .gitignore 忽略的脏或未跟踪文件零容忍；而这些脚本的输出经 assertReviewArtifactPaths 约束必须落在 review worktree 内，席位上 worktree 即 Actions checkout，默认输出路径非忽略，写盘即终检 fail。2026-09-09 复跑实测安全路径：review-preflight.mjs 省略 --out 走 stdout，outFile 为 null 时被 assertReviewArtifactPaths 的 filter Boolean 跳过校验，complete JSON 全量打印、工作树零写入；确需落盘时只能选 worktree 内被忽略路径如 _tmp/，注意目录可能不存在且席位 guard 禁 mkdir，writeFileSync 不建父目录。",
+      "proposal": "输出类脚本 context、build-review-task、deliver-review-segment、consume-review-output 补 stdout 交付模式或显式的 gitignored 输出目录参数；在 SKILL 与 seat 部署文档写明 tri-review 席位一律省略 --out 经 stdout 消费、需落盘时先确认目标路径被目标仓 .gitignore 忽略；run-seat-claude refuse 步骤若要放宽白名单需 owner 拍板，不自动改。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-09T05:38:38.517Z",
+      "lastSeen": "2026-09-09T05:38:38.517Z"
     }
   ],
   "escapedHazards": [
