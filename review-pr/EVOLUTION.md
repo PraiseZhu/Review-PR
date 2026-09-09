@@ -5,6 +5,9 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证
+  - 提案:席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件
 - `seat-worktree-output-files-fail-checkout-guard` **席位输出类脚本在 review worktree 内落盘即触发 run-seat-claude 终检 Refuse checkout writes 判 fail** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
   - 现象:2026-09-08 PR #551 席①上一轮把 build-review-task 与 deliver-review-segment 跑通后，job 终检报 Claude seat wrote back to the Actions checkout：run-seat-claude 收尾步骤把 restore-config 已知路径复位后，对工作树内任何非 .gitignore 忽略的脏或未跟踪文件零容忍；而这些脚本的输出经 assertReviewArtifactPaths 约束必须落在 review worktree 内，席位上 worktree 即 Actions checkout，默认输出路径非忽略，写盘即终检 fail。2026-09-09 复跑实测安全路径：review-preflight.mjs 省略 --out 走 stdout，outFile 为 null 时被 assertReviewArtifactPaths 的 filter Boolean 跳过校验，complete JSON 全量打印、工作树零写入；确需落盘时只能选 worktree 内被忽略路径如 _tmp/，注意目录可能不存在且席位 guard 禁 mkdir，writeFileSync 不建父目录。
   - 提案:输出类脚本 context、build-review-task、deliver-review-segment、consume-review-output 补 stdout 交付模式或显式的 gitignored 输出目录参数；在 SKILL 与 seat 部署文档写明 tri-review 席位一律省略 --out 经 stdout 消费、需落盘时先确认目标路径被目标仓 .gitignore 忽略；run-seat-claude refuse 步骤若要放宽白名单需 owner 拍板，不自动改。
@@ -15,6 +18,12 @@
 - `sanitizer-order-after-reconstruct` **中和管线缺变换顺序终检：先 scrub 后剥 HTML 注释会把被切断的轮次标记拼回可解析形态** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:三审席①在 publish 硬化 PR 上发现 neutralize_control_tokens 先跑标记 scrub 再剥 HTML 注释，被空注释切断的 review-complete 标记在 scrub 时对正则不可见、剥注释后重组为可解析串，穿透结论评论与补充评论两条不可信到 bot 评论通道，后果是轮次识别永远 proceed、每轮重烧三席。同 PR 自带的形态枚举测试覆盖裸文本、围栏、行内码、整段注释、一串两个五种形态全绿，唯独缺「注释切断」形态——枚举式测试给出了顺序安全的假信心。另该模块 docstring 误写 decide 不扫补充评论，与事实不符，是同一误判的两面。
   - 提案:对 sanitizer 类改动的审查必答清单加一条：列出管线上每个会拼接文本的变换——剥注释、实体解码、行合并——逐一回答终末是否还有一次 scrub；形态枚举测试不得作为顺序安全的证据，必须补「变换嵌在敏感串内部」的对抗样本用例。
+- `independent-review-seat-failed-to-write-rro` **Cindy native subagent 两次未能在隔离树写出 rro-1.json** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR 550 交互审查派 general-purpose 席两次均 failed，隔离树无 rro-1.json。主会话按同一 worktree 材料交卷后 consume 得 clean。
+  - 提案:查 Cindy/pi subagent inherit 隔离树 cwd 与失败回传；失败时至少把 stderr 落到审查树。
+- `review-agent-timeout-fallback-to-lead` **阶段二独立审查席超时未交 rro-1，主会话按契约补审并消费** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR 559 交互审：native subagent worker 未交 rro-1.json。主会话在隔离 worktree 内按 prompt/segment 契约审完、跑负向证据、写 rro-1、consume dirty、REQUEST_CHANGES。SKILL 要求独立席，主会话代写是本轮过程缺口。
+  - 提案:交互审在派席失败/超时后，主会话可按 skip/review-agent-timeout 收口，或明确允许主会话补交 rro-1 的条件；不要静默把独立席变成主会话审。
 - `seat-base-snapshot-drift-attribution` **席位本地 BASE 快照可能落后于 PR merge-base，diff 归因前必须以 gh pr view --json files 为准** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:2026-09-08 #472 席①：本地仅有 BASE(f045cdd=main #544)与 HEAD(squash 快照)两个提交，树差 27 文件；GitHub 权威 changedFiles=6。多出的 21 文件是 PR 分支多次 merge origin/main 带入的主干漂移（size-gate 1600 试行、bug-doctor source-coverage 等），若直接按树差归因会把他人已合入 main 的改动算成本 PR 的越权变更面。
   - 提案:席位/巡审在用本地 BASE...HEAD 树差下结论前，先 gh pr view <N> --json changedFiles,files 校验真实变更面；不一致时以 GitHub 三点 diff 为准，并把漂移文件逐一路径排除后再审。

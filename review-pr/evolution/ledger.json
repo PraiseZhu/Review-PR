@@ -5252,6 +5252,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T12:34:33.910Z",
       "lastSeen": "2026-09-08T12:34:33.910Z"
+    },
+    {
+      "fingerprint": "target-repo-root-pr-draft-decoys",
+      "tier": "proposal",
+      "title": "目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半",
+      "detail": "#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证",
+      "proposal": "席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-09T07:39:51.246Z",
+      "lastSeen": "2026-09-09T07:39:51.246Z"
     }
   ],
   "escapedHazards": [
