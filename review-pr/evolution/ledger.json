@@ -5088,14 +5088,14 @@
       "fingerprint": "ci-seat-gh-cli-and-stdin-gaps",
       "tier": "proposal",
       "title": "CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑",
-      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
+      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": "2026-09-07T18:49:28.494Z",
-      "lastSeen": "2026-09-08T10:08:07.211Z"
+      "lastSeen": "2026-09-09T10:49:54.829Z"
     },
     {
       "fingerprint": "context-mjs-gh-headrefoid-unsupported",
@@ -5267,17 +5267,17 @@
       "lastSeen": "2026-09-09T07:39:51.246Z"
     },
     {
-      "fingerprint": "dual-validator-same-set-all-dimensions",
-      "tier": "auto",
-      "title": "双端同集不变量的修复与复查要按维度清单穷尽，不能只修被点名的那一维",
-      "detail": "PR566 复审（2026-09-09）：上一轮 P1 要求 imageSlot annotations 的 snapshot 导入谓词与 wire payload 校验接受同一组归一化 box，修复只对齐了数值边界（单边上限、x+w 与 y+h 的 1.0001 容差），结构性维度仍是分叉——wire 侧 obj 校验是 exact schema 拒 unknown-field（box 带 points、loop 带 width、ref 带多余键均 400），snapshot 侧谓词只查已知字段的存在与取值、忽略多余键，此类 snapshot 可经 parseCanvasSnapshot 导入，再经 toRecord 的 ref/annotation 级 spread 透传上服务端即 400，本地/服务端分叉在另一维度复发。审查启发（可自动化）：凡『两个校验器必须接受同一组值』类不变量，把集差拆成维度清单逐一比对——数值边界、必填/可选、判别 union 变体字段、结构精确性（unknown-field）、数组长度与成员谓词、null/undefined 处理——上一轮 manifestation 只点名一维时不代表集差只有那一维。修复后两侧应共用同一谓词或补双侧对称测试钉死每个维度。本轮该残差因触发面仅限外部构造或未来版本的 snapshot（应用自身 TS 闭合 union 不产生多余字段）且与本仓 snapshot 校验器整体前向兼容设计一致，计 MEDIUM 不阻断。",
-      "proposal": null,
+      "fingerprint": "audit-comment-reproducibility-clean-clone",
+      "tier": "proposal",
+      "title": "审计注释的核验命令未锚定消费方口径，clone 相关实测被当成可复现依据",
+      "detail": "#548 连续三轮注释修正后仍残留两处：.gitleaks.toml 核验配方用 git log --all（含分支内死引用）而非消费方真实口径 --log-opts HEAD（HEAD 祖先），实测记的 20/2 在 CI 全历史 clone 上为 13/0，.pr-checkpoint.json 更是从未存在于任何引用；.gitignore『此前只写了两条』指向 squash 后不可观测的分支内中间态（main 从无 PR_* 条目）。前两轮席位核对了归因逻辑但未复跑核验命令，第三轮在干净 clone 复跑才暴露。",
+      "proposal": "审计类注释的核验命令一律与消费方同口径（HEAD 锚定、不依赖本地引用集），数字注明统计口径；审查清单可加一条『注释中作为依据的实测命令须在干净 clone 上可复现』。",
       "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-09T11:51:07.499Z",
-      "lastSeen": "2026-09-09T11:51:07.499Z"
+      "firstSeen": "2026-09-09T11:57:20.548Z",
+      "lastSeen": "2026-09-09T11:57:20.548Z"
     }
   ],
   "escapedHazards": [

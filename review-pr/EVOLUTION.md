@@ -5,6 +5,11 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `audit-comment-reproducibility-clean-clone` **审计注释的核验命令未锚定消费方口径，clone 相关实测被当成可复现依据** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:#548 连续三轮注释修正后仍残留两处：.gitleaks.toml 核验配方用 git log --all（含分支内死引用）而非消费方真实口径 --log-opts HEAD（HEAD 祖先），实测记的 20/2 在 CI 全历史 clone 上为 13/0，.pr-checkpoint.json 更是从未存在于任何引用；.gitignore『此前只写了两条』指向 squash 后不可观测的分支内中间态（main 从无 PR_* 条目）。前两轮席位核对了归因逻辑但未复跑核验命令，第三轮在干净 clone 复跑才暴露。
+  - 提案:审计类注释的核验命令一律与消费方同口径（HEAD 锚定、不依赖本地引用集），数字注明统计口径；审查清单可加一条『注释中作为依据的实测命令须在干净 clone 上可复现』。
+- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 3 次,首见 2026-09-07,最近 2026-09-09,status: open
+  - 现象:run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。
 - `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
   - 现象:#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证
   - 提案:席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件
@@ -27,8 +32,6 @@
 - `seat-base-snapshot-drift-attribution` **席位本地 BASE 快照可能落后于 PR merge-base，diff 归因前必须以 gh pr view --json files 为准** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:2026-09-08 #472 席①：本地仅有 BASE(f045cdd=main #544)与 HEAD(squash 快照)两个提交，树差 27 文件；GitHub 权威 changedFiles=6。多出的 21 文件是 PR 分支多次 merge origin/main 带入的主干漂移（size-gate 1600 试行、bug-doctor source-coverage 等），若直接按树差归因会把他人已合入 main 的改动算成本 PR 的越权变更面。
   - 提案:席位/巡审在用本地 BASE...HEAD 树差下结论前，先 gh pr view <N> --json changedFiles,files 校验真实变更面；不一致时以 GitHub 三点 diff 为准，并把漂移文件逐一路径排除后再审。
-- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 2 次,首见 2026-09-07,最近 2026-09-08,status: open
-  - 现象:run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。
 - `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
   - 现象:席①审查 PR 543 时实测：runner 的 gh 版本不支持 --json headRefOid 字段，context.mjs 543 直接 exit 1（"Unknown JSON field: headRefOid"），导致 skill 自己的上下文步骤整步失败，无法按 3.0 流程取完整 PR 上下文。数据本身并非不可得：REST API repos/{owner}/{repo}/pulls/{N} 返回 head.sha，gh pr view 其余字段也正常。当前只能靠等价机器证据（目标仓自身 pr-format-gate 与 gitleaks 双绿）旁证，且 consume-review-output 的 rro-1 输入口在本席 Write 限制下无法落地，只能走 write-review-receipt CLI 兜底。
   - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。
@@ -470,8 +473,6 @@
 
 ## 已自动落地(automatable-gap)
 
-- `dual-validator-same-set-all-dimensions` **双端同集不变量的修复与复查要按维度清单穷尽，不能只修被点名的那一维** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
-  - 现象:PR566 复审（2026-09-09）：上一轮 P1 要求 imageSlot annotations 的 snapshot 导入谓词与 wire payload 校验接受同一组归一化 box，修复只对齐了数值边界（单边上限、x+w 与 y+h 的 1.0001 容差），结构性维度仍是分叉——wire 侧 obj 校验是 exact schema 拒 unknown-field（box 带 points、loop 带 width、ref 带多余键均 400），snapshot 侧谓词只查已知字段的存在与取值、忽略多余键，此类 snapshot 可经 parseCanvasSnapshot 导入，再经 toRecord 的 ref/annotation 级 spread 透传上服务端即 400，本地/服务端分叉在另一维度复发。审查启发（可自动化）：凡『两个校验器必须接受同一组值』类不变量，把集差拆成维度清单逐一比对——数值边界、必填/可选、判别 union 变体字段、结构精确性（unknown-field）、数组长度与成员谓词、null/undefined 处理——上一轮 manifestation 只点名一维时不代表集差只有那一维。修复后两侧应共用同一谓词或补双侧对称测试钉死每个维度。本轮该残差因触发面仅限外部构造或未来版本的 snapshot（应用自身 TS 闭合 union 不产生多余字段）且与本仓 snapshot 校验器整体前向兼容设计一致，计 MEDIUM 不阻断。
 - `write-review-receipt-also-headrefoid-casualty` **write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。
 - `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: open
