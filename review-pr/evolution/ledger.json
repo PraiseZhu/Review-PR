@@ -5252,32 +5252,6 @@
       "occurrences": 1,
       "firstSeen": "2026-09-08T12:34:33.910Z",
       "lastSeen": "2026-09-08T12:34:33.910Z"
-    },
-    {
-      "fingerprint": "doc-token-grounding-needs-live-pr-comment-search",
-      "tier": "auto",
-      "title": "文档引用的机器标记是否「存在」，仓内代码检索不算穷尽：必须再查线上 PR 评论",
-      "detail": "mivo-canvas-plugin #547 第 3 轮：席位以本仓全量检索、org 默认分支代码搜索、Review-PR skill 仓均查无实据，判 AGENTS.md 引用的 --until-sc 为不存在的标记并记 MEDIUM。本轮实测 gh api 拉取 #472 全部 issue comments：--until-sc 与 dispatch:十六进制 是 pr-autopilot 回复协议的固定行，数十条真实评论在案。仓外工具产出的运行时标记只活在评论流里，代码检索天然查不到，差点促成作者删掉一条正确示例。",
-      "proposal": "判定「文档引用了不存在的标记」前增加一步确定性检查：gh api 拉取本仓近期 PR 的 issue comments 全文搜索该标记，命中即撤销「不存在」指控，不改代码不新增写操作。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-09T07:50:18.379Z",
-      "lastSeen": "2026-09-09T07:50:18.379Z"
-    },
-    {
-      "fingerprint": "fix-worktree-cleanup-grace-zero-coerced",
-      "tier": "proposal",
-      "title": "fix-worktree-cleanup --grace-minutes 0 被 || 30 吃掉",
-      "detail": "交互审合并 PR #529 后按 SKILL/memory 跑 fix-worktree-cleanup.mjs --pr 529 --grace-minutes 0，输出仍 graceMinutes=30，removedWorktrees=[]。根因：Number('0')||30 把合法 0 当成 falsy。审查树是 detached，cleanup-branch 会拒删；本轮改用 git worktree remove --force .worktrees/review-pr/pr-529 收掉。",
-      "proposal": "把 graceMinutes 解析改成 Number.isFinite 判定，允许 0；或文档写明 0 无效必须用 git worktree remove --force。属脚本语义修正，需维护者拍板后改脚本。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-09T08:07:59.606Z",
-      "lastSeen": "2026-09-09T08:07:59.606Z"
     }
   ],
   "escapedHazards": [
