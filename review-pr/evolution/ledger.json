@@ -5088,14 +5088,14 @@
       "fingerprint": "ci-seat-gh-cli-and-stdin-gaps",
       "tier": "proposal",
       "title": "CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑",
-      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
+      "detail": "run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。",
       "proposal": null,
       "status": "open",
       "commit": null,
       "note": null,
-      "occurrences": 3,
+      "occurrences": 2,
       "firstSeen": "2026-09-07T18:49:28.494Z",
-      "lastSeen": "2026-09-09T10:49:54.829Z"
+      "lastSeen": "2026-09-08T10:08:07.211Z"
     },
     {
       "fingerprint": "context-mjs-gh-headrefoid-unsupported",
@@ -5265,6 +5265,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
+    },
+    {
+      "fingerprint": "seat-review-target-superseded-by-main",
+      "tier": "proposal",
+      "title": "席位审查对象可能是已被 main 经其他 PR 合入的重复内容，派席前缺净变更校验",
+      "detail": "2026-09-09 三席轮席①：审查对象为 BASE f045cdd（main 544 号）加仅 CLAUDE.md 的工作树 diff。核对 git diff origin/main -- CLAUDE.md 为空——三处改动已由 555 号 PR（0f7ee70，规模闸行）与 549 号 PR（8104fe4，两条 bot 要点及配套代码修复）合入 main，本 PR 相对 main 零增量，仍烧满三席；且文档陈述（硬闸 1600、明文标记、conclusion、bot login 归一）只对当前 main 成立、对 PR 基准树全部不成立，席位若不交叉核对 main 会误判为描述不实。与 2026-09-08 seat-base-snapshot-drift-attribution 同根不同症：那条是树差被误归因，这条是整份 diff 已被 main 吞并。",
+      "proposal": "派席前或收卷时对 PR 触达文件计算相对当前 main tip 的净变更，恒为空即归类 superseded 提示作者关闭或改基，不进付费席；非空但与 main 部分重合时在席位任务中标注已在 main 的内容，防归因与描述不实误判。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-09T11:44:55.785Z",
+      "lastSeen": "2026-09-09T11:44:55.785Z"
     }
   ],
   "escapedHazards": [
