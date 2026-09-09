@@ -5254,17 +5254,17 @@
       "lastSeen": "2026-09-08T12:34:33.910Z"
     },
     {
-      "fingerprint": "target-repo-root-pr-draft-decoys",
-      "tier": "proposal",
-      "title": "目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半",
-      "detail": "#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证",
-      "proposal": "席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件",
+      "fingerprint": "doc-token-grounding-needs-live-pr-comment-search",
+      "tier": "auto",
+      "title": "文档引用的机器标记是否「存在」，仓内代码检索不算穷尽：必须再查线上 PR 评论",
+      "detail": "mivo-canvas-plugin #547 第 3 轮：席位以本仓全量检索、org 默认分支代码搜索、Review-PR skill 仓均查无实据，判 AGENTS.md 引用的 --until-sc 为不存在的标记并记 MEDIUM。本轮实测 gh api 拉取 #472 全部 issue comments：--until-sc 与 dispatch:十六进制 是 pr-autopilot 回复协议的固定行，数十条真实评论在案。仓外工具产出的运行时标记只活在评论流里，代码检索天然查不到，差点促成作者删掉一条正确示例。",
+      "proposal": "判定「文档引用了不存在的标记」前增加一步确定性检查：gh api 拉取本仓近期 PR 的 issue comments 全文搜索该标记，命中即撤销「不存在」指控，不改代码不新增写操作。",
       "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-09T07:39:51.246Z",
-      "lastSeen": "2026-09-09T07:39:51.246Z"
+      "firstSeen": "2026-09-09T07:50:18.379Z",
+      "lastSeen": "2026-09-09T07:50:18.379Z"
     }
   ],
   "escapedHazards": [

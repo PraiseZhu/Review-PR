@@ -5,9 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
-  - 现象:#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证
-  - 提案:席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件
 - `seat-worktree-output-files-fail-checkout-guard` **席位输出类脚本在 review worktree 内落盘即触发 run-seat-claude 终检 Refuse checkout writes 判 fail** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
   - 现象:2026-09-08 PR #551 席①上一轮把 build-review-task 与 deliver-review-segment 跑通后，job 终检报 Claude seat wrote back to the Actions checkout：run-seat-claude 收尾步骤把 restore-config 已知路径复位后，对工作树内任何非 .gitignore 忽略的脏或未跟踪文件零容忍；而这些脚本的输出经 assertReviewArtifactPaths 约束必须落在 review worktree 内，席位上 worktree 即 Actions checkout，默认输出路径非忽略，写盘即终检 fail。2026-09-09 复跑实测安全路径：review-preflight.mjs 省略 --out 走 stdout，outFile 为 null 时被 assertReviewArtifactPaths 的 filter Boolean 跳过校验，complete JSON 全量打印、工作树零写入；确需落盘时只能选 worktree 内被忽略路径如 _tmp/，注意目录可能不存在且席位 guard 禁 mkdir，writeFileSync 不建父目录。
   - 提案:输出类脚本 context、build-review-task、deliver-review-segment、consume-review-output 补 stdout 交付模式或显式的 gitignored 输出目录参数；在 SKILL 与 seat 部署文档写明 tri-review 席位一律省略 --out 经 stdout 消费、需落盘时先确认目标路径被目标仓 .gitignore 忽略；run-seat-claude refuse 步骤若要放宽白名单需 owner 拍板，不自动改。
@@ -470,6 +467,9 @@
 
 ## 已自动落地(automatable-gap)
 
+- `doc-token-grounding-needs-live-pr-comment-search` **文档引用的机器标记是否「存在」，仓内代码检索不算穷尽：必须再查线上 PR 评论** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:mivo-canvas-plugin #547 第 3 轮：席位以本仓全量检索、org 默认分支代码搜索、Review-PR skill 仓均查无实据，判 AGENTS.md 引用的 --until-sc 为不存在的标记并记 MEDIUM。本轮实测 gh api 拉取 #472 全部 issue comments：--until-sc 与 dispatch:十六进制 是 pr-autopilot 回复协议的固定行，数十条真实评论在案。仓外工具产出的运行时标记只活在评论流里，代码检索天然查不到，差点促成作者删掉一条正确示例。
+  - 提案:判定「文档引用了不存在的标记」前增加一步确定性检查：gh api 拉取本仓近期 PR 的 issue comments 全文搜索该标记，命中即撤销「不存在」指控，不改代码不新增写操作。
 - `write-review-receipt-also-headrefoid-casualty` **write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。
 - `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: open
