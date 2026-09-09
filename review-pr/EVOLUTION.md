@@ -5,9 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `seat-review-target-superseded-by-main` **席位审查对象可能是已被 main 经其他 PR 合入的重复内容，派席前缺净变更校验** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
-  - 现象:2026-09-09 三席轮席①：审查对象为 BASE f045cdd（main 544 号）加仅 CLAUDE.md 的工作树 diff。核对 git diff origin/main -- CLAUDE.md 为空——三处改动已由 555 号 PR（0f7ee70，规模闸行）与 549 号 PR（8104fe4，两条 bot 要点及配套代码修复）合入 main，本 PR 相对 main 零增量，仍烧满三席；且文档陈述（硬闸 1600、明文标记、conclusion、bot login 归一）只对当前 main 成立、对 PR 基准树全部不成立，席位若不交叉核对 main 会误判为描述不实。与 2026-09-08 seat-base-snapshot-drift-attribution 同根不同症：那条是树差被误归因，这条是整份 diff 已被 main 吞并。
-  - 提案:派席前或收卷时对 PR 触达文件计算相对当前 main tip 的净变更，恒为空即归类 superseded 提示作者关闭或改基，不进付费席；非空但与 main 部分重合时在席位任务中标注已在 main 的内容，防归因与描述不实误判。
 - `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
   - 现象:#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证
   - 提案:席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件
@@ -473,6 +470,8 @@
 
 ## 已自动落地(automatable-gap)
 
+- `dual-validator-same-set-all-dimensions` **双端同集不变量的修复与复查要按维度清单穷尽，不能只修被点名的那一维** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:PR566 复审（2026-09-09）：上一轮 P1 要求 imageSlot annotations 的 snapshot 导入谓词与 wire payload 校验接受同一组归一化 box，修复只对齐了数值边界（单边上限、x+w 与 y+h 的 1.0001 容差），结构性维度仍是分叉——wire 侧 obj 校验是 exact schema 拒 unknown-field（box 带 points、loop 带 width、ref 带多余键均 400），snapshot 侧谓词只查已知字段的存在与取值、忽略多余键，此类 snapshot 可经 parseCanvasSnapshot 导入，再经 toRecord 的 ref/annotation 级 spread 透传上服务端即 400，本地/服务端分叉在另一维度复发。审查启发（可自动化）：凡『两个校验器必须接受同一组值』类不变量，把集差拆成维度清单逐一比对——数值边界、必填/可选、判别 union 变体字段、结构精确性（unknown-field）、数组长度与成员谓词、null/undefined 处理——上一轮 manifestation 只点名一维时不代表集差只有那一维。修复后两侧应共用同一谓词或补双侧对称测试钉死每个维度。本轮该残差因触发面仅限外部构造或未来版本的 snapshot（应用自身 TS 闭合 union 不产生多余字段）且与本仓 snapshot 校验器整体前向兼容设计一致，计 MEDIUM 不阻断。
 - `write-review-receipt-also-headrefoid-casualty` **write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。
 - `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: open
