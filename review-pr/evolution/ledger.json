@@ -5202,30 +5202,17 @@
       "lastSeen": "2026-09-08T20:06:40.237Z"
     },
     {
-      "fingerprint": "seat-preflight-outfile-bound-to-cwd-worktree",
+      "fingerprint": "preflight-abbreviated-oid-error-unclear",
       "tier": "proposal",
-      "title": "席位环境按 §3.0.1 带 --out 跑 review-preflight.mjs 会被身份闸拒绝——绑定 worktree 是 cwd（base 检出）而非席位 workcopy",
-      "detail": "PR #552 席① 审查照 SKILL §3.0.1 命令模板带 --out 跑 preflight，报『审查输入输出文件必须位于绑定的 review worktree 内』（lib.review-identity.mjs 的 assertReviewArtifactPaths）。席位 harness 的 cwd 是 GITHUB_WORKSPACE（base 检出），currentReviewIdentity 把 cwd worktree 当绑定 worktree，--out 指向 _temp 即越界；每个照文档跑 §3.0.1 的席位都会撞同一堵墙再临场绕。等价解法已实证：省略 --out，emit 的 print(payload) 始终把完整 JSON 打到 stdout（本轮即如此交卷）。",
-      "proposal": "在 SKILL §3.0.1 或席位 preamble 注明：cwd 不在专用 review worktree（席位/交互场景）时可省略 --out 直接消费 stdout JSON；或让 assertReviewArtifactPaths 接受 --out 落在 additionalDirectories 内。",
+      "title": "review-preflight 对缩写 OID 判非法时未提示需完整 40 位 SHA",
+      "detail": "席位审查从 git log 取 7 位缩写 SHA 传入 --base 与 --head，preflight 返回 complete:false 且 reason 为 DiffSnapshot 不完整 base/head oid 缺失或非法，未指明哪个参数、也不说明只接受完整 OID。规范流程 gh pr view baseRefOid 恒为完整 SHA，仅离线推导场景可触发。",
+      "proposal": "入口对缩写 OID 先经 git rev-parse 展开为完整 OID 再校验，或校验失败时报错明示参数名与需完整 40 位 OID 的要求。不改判定逻辑，无新增写操作。",
       "status": "open",
       "commit": null,
       "note": null,
       "occurrences": 1,
-      "firstSeen": "2026-09-09T05:01:28.099Z",
-      "lastSeen": "2026-09-09T05:01:28.099Z"
-    },
-    {
-      "fingerprint": "sync-subprocess-test-timeout-binds-not-vitest",
-      "tier": "proposal",
-      "title": "同步子进程测试的超时边界是 execFileSync/spawnSync 自己的 timeout，vitest testTimeout 打不断同步体——勿误报『死配置』",
-      "detail": "PR #552 席① 复核 src/render/leaferLinePaintProps.test.ts SC-546-02：execFileSync(timeout:20_000) 起 fresh Node，it() 未传 per-test timeout、vitest.config.ts 也未设 testTimeout（默认 5s）。表面看 20s 会被 5s 先杀（死配置），但测试体是同步的：execFileSync 阻塞 worker 线程，vitest 的超时 race 只能在同步调用返回后才 settle，定时器回调在阻塞期间无法触发——真正能中断子进程的只有 execFileSync 自己的 20s（超时 SIGTERM 并抛错，失败语义清晰）。同型先例 server/app.node-boot.test.ts 双写 it 层 30_000 与 spawnSync timeout 30_000，其中 vitest 层同样是防御性冗余。本条为防未来审查把这类写法误报为缺陷。",
-      "proposal": "在审查指引（或 §4 审查清单）注明：同步 execFileSync/spawnSync 测试的生效超时是子进程调用自身的 timeout 参数；vitest testTimeout 无法打断同步阻塞。评审时勿按『vitest 默认 5s 小于子进程 timeout』判死配置。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-09T05:01:50.346Z",
-      "lastSeen": "2026-09-09T05:01:50.346Z"
+      "firstSeen": "2026-09-09T04:57:24.578Z",
+      "lastSeen": "2026-09-09T04:57:24.578Z"
     }
   ],
   "escapedHazards": [
