@@ -51,3 +51,12 @@ function runCli(args, fixture) {
 
 test('CLI default-off exits zero and never invokes even fake gh', () => { const f = cliFixture({}); const r = runCli(['7'], f); assert.equal(r.status, 0); assert.deepEqual(JSON.parse(r.stdout), { ok: true, action: 'disabled', writes: 0 }); assert.doesNotMatch(r.stderr, /unexpected gh command/); });
 test('CLI enabled path uses real pre-merge entry and fails closed on missing consumer receipt', () => { const f = cliFixture({ mergeReady: { enabled: true, repo: MIVO_REPO } }); const r = runCli(['7', '--dry-run'], f); assert.notEqual(r.status, 0); assert.match(r.stderr, /unexpected gh command|Command failed|Error|gh/); assert.doesNotMatch(r.stdout, /"action":"added"/); });
+
+test('current-review-v1 disables only managed Mivo label side effects', async () => {
+  const previous=process.env.REVIEW_PR_RESULT_PROTOCOL;
+  process.env.REVIEW_PR_RESULT_PROTOCOL='current-review-v1';
+  try {
+    const result=await reconcileMergeReady({pr:{repo:'xindong/mivo-canvas-plugin',number:566},config:{enabled:true},api:{readPullRequest(){throw Error('label API must not be called');}}});
+    assert.equal(result.action,'verdict-protocol-no-label');assert.equal(result.writes,0);
+  } finally { if(previous===undefined)delete process.env.REVIEW_PR_RESULT_PROTOCOL;else process.env.REVIEW_PR_RESULT_PROTOCOL=previous; }
+});
