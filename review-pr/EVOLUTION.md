@@ -5,6 +5,12 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
+- `sync-subprocess-test-timeout-binds-not-vitest` **同步子进程测试的超时边界是 execFileSync/spawnSync 自己的 timeout，vitest testTimeout 打不断同步体——勿误报『死配置』** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:PR #552 席① 复核 src/render/leaferLinePaintProps.test.ts SC-546-02：execFileSync(timeout:20_000) 起 fresh Node，it() 未传 per-test timeout、vitest.config.ts 也未设 testTimeout（默认 5s）。表面看 20s 会被 5s 先杀（死配置），但测试体是同步的：execFileSync 阻塞 worker 线程，vitest 的超时 race 只能在同步调用返回后才 settle，定时器回调在阻塞期间无法触发——真正能中断子进程的只有 execFileSync 自己的 20s（超时 SIGTERM 并抛错，失败语义清晰）。同型先例 server/app.node-boot.test.ts 双写 it 层 30_000 与 spawnSync timeout 30_000，其中 vitest 层同样是防御性冗余。本条为防未来审查把这类写法误报为缺陷。
+  - 提案:在审查指引（或 §4 审查清单）注明：同步 execFileSync/spawnSync 测试的生效超时是子进程调用自身的 timeout 参数；vitest testTimeout 无法打断同步阻塞。评审时勿按『vitest 默认 5s 小于子进程 timeout』判死配置。
+- `seat-preflight-outfile-bound-to-cwd-worktree` **席位环境按 §3.0.1 带 --out 跑 review-preflight.mjs 会被身份闸拒绝——绑定 worktree 是 cwd（base 检出）而非席位 workcopy** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:PR #552 席① 审查照 SKILL §3.0.1 命令模板带 --out 跑 preflight，报『审查输入输出文件必须位于绑定的 review worktree 内』（lib.review-identity.mjs 的 assertReviewArtifactPaths）。席位 harness 的 cwd 是 GITHUB_WORKSPACE（base 检出），currentReviewIdentity 把 cwd worktree 当绑定 worktree，--out 指向 _temp 即越界；每个照文档跑 §3.0.1 的席位都会撞同一堵墙再临场绕。等价解法已实证：省略 --out，emit 的 print(payload) 始终把完整 JSON 打到 stdout（本轮即如此交卷）。
+  - 提案:在 SKILL §3.0.1 或席位 preamble 注明：cwd 不在专用 review worktree（席位/交互场景）时可省略 --out 直接消费 stdout JSON；或让 assertReviewArtifactPaths 接受 --out 落在 additionalDirectories 内。
 - `activity-ledger-key-and-cap-audit` **Activity-ledger 审查要追 key 同源性与 cap 预算来源** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
 - `sanitizer-order-after-reconstruct` **中和管线缺变换顺序终检：先 scrub 后剥 HTML 注释会把被切断的轮次标记拼回可解析形态** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
   - 现象:三审席①在 publish 硬化 PR 上发现 neutralize_control_tokens 先跑标记 scrub 再剥 HTML 注释，被空注释切断的 review-complete 标记在 scrub 时对正则不可见、剥注释后重组为可解析串，穿透结论评论与补充评论两条不可信到 bot 评论通道，后果是轮次识别永远 proceed、每轮重烧三席。同 PR 自带的形态枚举测试覆盖裸文本、围栏、行内码、整段注释、一串两个五种形态全绿，唯独缺「注释切断」形态——枚举式测试给出了顺序安全的假信心。另该模块 docstring 误写 decide 不扫补充评论，与事实不符，是同一误判的两面。
