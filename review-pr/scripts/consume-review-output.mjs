@@ -38,6 +38,7 @@ import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.revi
 import { loadInbox, saveInbox, deriveHazardId, deriveHazardFingerprint, resolveEscapeSources, loadKnownHazards, hazardsForPaths, escapeSourceHash, knownHazardsHash } from './lib.escaped-hazards.mjs';
 import { validatePrescanConfig, readTrustedPrescanArtifact, computePolicyHash, PRESCAN_LIMITS } from './lib.prescan.mjs';
 import { currentReviewIdentity, assertReviewIdentity, assertDispatchReceipt, assertReviewArtifactPaths } from './lib.review-identity.mjs';
+import { managedReadinessRequest } from './merge-ready-reconcile.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const argOf = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
@@ -46,6 +47,8 @@ function reconcileMergeReadyBestEffort(prNumber) {
     const sibling = join(SCRIPT_DIR, 'merge-ready-reconcile.mjs');
     if (!existsSync(sibling)) return { action: 'skipped' };
     const { owner, repo } = parseRepo();
+    const request = managedReadinessRequest(`${owner}/${repo}`, [prNumber]);
+    if (request) return request;
     const r = spawnSync(process.execPath, [sibling, String(prNumber)], {
       cwd: dirname(SCRIPT_DIR), encoding: 'utf8', env: process.env,
     });

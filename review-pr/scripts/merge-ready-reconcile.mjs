@@ -11,6 +11,14 @@ import { gh, loadRulesWithSource, parseRepo, REPO_ROOT, SIGNOFF_LABEL_DEFAULT } 
 export const MIVO_REPO = 'xindong/mivo-canvas-plugin';
 export const READY_LABEL = 'review:merge-ready';
 export const READY_LABEL_COLOR = '0E8A16';
+export function managedReadinessRequest(repo, numbers) {
+  if (repo !== MIVO_REPO) return null;
+  if (!Array.isArray(numbers) || numbers.some(n => !Number.isSafeInteger(n) || n < 1)) {
+    throw new Error('invalid readiness PR numbers');
+  }
+  return { ok: true, action: 'reconcile-required', publisher: 'workflow', writes: 0,
+    prs: [...new Set(numbers)].map(number => ({ repo, number })) };
+}
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = dirname(SCRIPT_DIR);
 
@@ -28,7 +36,7 @@ function mergeReadyRules(rules) {
     throw new Error('mergeReady 配置非法');
   }
   const label = value.label ?? READY_LABEL;
-  if (label === 'signoff' || label.startsWith('signoff:') || label === SIGNOFF_LABEL_DEFAULT) {
+  if (label === 'signoff' || label.startsWith('signoff:') || label === SIGNOFF_LABEL_DEFAULT || label === 'awaiting-discussion') {
     throw new Error('mergeReady.label 不得复用 signoff 标签');
   }
   return {
@@ -49,7 +57,7 @@ function receiptBindings(gate) {
   return Object.fromEntries(BINDING_KEYS.map((key) => [key, receipt[key]]));
 }
 
-export function evaluateMergeReady({ gate, before }) {
+export function evaluateMergeReady({ gate = {}, before = {} }) {
   const bindings = receiptBindings(gate);
   const liveHead = before.headRefOid;
   const liveBase = before.baseRefOid;
@@ -58,19 +66,36 @@ export function evaluateMergeReady({ gate, before }) {
   const snapshotFromGate = gate.receiptGate?.snapshotHash ?? gate.snapshotHash;
   const valid = Boolean(
     bindings
-    && before.state !== 'MERGED'
-    && before.state !== 'CLOSED'
+    && before.state === 'OPEN'
     && before.isDraft === false
     && gate.securityGate?.pass === true
     && gate.canMergeMechanical === true
     && receiptHead === liveHead
     && gateHead === liveHead
-    && (liveBase == null || gate.baseRefOid == null || gate.baseRefOid === liveBase)
+    && typeof liveHead === 'string' && liveHead.length > 0
+    && typeof liveBase === 'string' && liveBase.length > 0
+    && gate.baseRefOid === liveBase
+    && Array.isArray(before.labels)
+    && !currentLabels(before.labels).includes('awaiting-discussion')
     && typeof bindings.snapshotHash === 'string'
     && bindings.snapshotHash === snapshotFromGate
     && bindings.snapshotHash !== liveHead,
   );
   return { valid, bindings };
+}
+
+export async function invalidateMergeReady({ pr, config, api, error }) {
+  try {
+    await api.removeLabel(config.label);
+    const after = await api.readPullRequest(pr);
+    if (!Array.isArray(after?.labels) || currentLabels(after.labels).includes(config.label)) {
+      throw new Error('label absence was not confirmed');
+    }
+    return { ok: false, action: 'error', error: String(error?.message ?? error), invalidated: true };
+  } catch (invalidationError) {
+    return { ok: false, action: 'invalidation-unconfirmed', error: String(error?.message ?? error),
+      invalidated: false, invalidationError: invalidationError.message };
+  }
 }
 
 function ghIssueLabel({ slug, pr, label, add }) {
@@ -92,17 +117,19 @@ function currentLabels(value) {
 }
 
 export async function reconcileMergeReady({
-  pr, config, gate, api, dryRun = false, now = new Date().toISOString(),
+  pr, config, gate, loadGate, api, dryRun = false, now = new Date().toISOString(),
 }) {
   if (!config.enabled) return { ok: true, action: 'disabled', writes: 0 };
-  if (config.label === 'signoff' || config.label.startsWith('signoff:') || config.label === SIGNOFF_LABEL_DEFAULT) {
+  if (config.label === 'signoff' || config.label.startsWith('signoff:') || config.label === SIGNOFF_LABEL_DEFAULT || config.label === 'awaiting-discussion') {
     throw new Error('merge-ready label cannot be signoff');
   }
-  const before = await api.readPullRequest(pr);
-  const { valid, bindings } = evaluateMergeReady({ gate, before });
-  if (dryRun) return { ok: true, action: 'dry-run', writes: 0, ready: valid };
   let changed = false;
   try {
+    if (loadGate) gate = await loadGate();
+    const before = await api.readPullRequest(pr);
+    const { valid, bindings } = evaluateMergeReady({ gate, before });
+    if (dryRun) return { ok: true, action: 'dry-run', writes: 0, ready: valid };
+    if (!Array.isArray(before?.labels)) throw new Error('pull request labels unknown');
     const has = before.labels.includes(config.label);
     if (valid && !has) {
       await api.addLabel(config.label);
@@ -117,18 +144,24 @@ export async function reconcileMergeReady({
         gate.headRefOid !== after.headRefOid || (gate.baseRefOid && gate.baseRefOid !== after.baseRefOid)) {
       throw new Error('pull request changed during reconcile');
     }
-    if (!valid) return { ok: true, action: changed ? 'removed' : 'unchanged', writes: changed ? 1 : 0 };
+    if (!valid) {
+      if (!Array.isArray(after.labels) || currentLabels(after.labels).includes(config.label)) throw new Error('label absence was not confirmed');
+      return { ok: true, action: changed ? 'removed' : 'unchanged', writes: changed ? 1 : 0, ready: false };
+    }
+    if (!evaluateMergeReady({ gate, before: after }).valid) throw new Error('pull request quality changed during reconcile');
     if (after.labels.includes(config.label) !== true) throw new Error('merge-ready label was not confirmed');
     await api.writeReceipt({
-      repo: pr.repo, pr: pr.number, verdict: 'clean', headRefOid: after.headRefOid,
+      repo: pr.repo, pr: pr.number, verdict: 'clean', headRefOid: after.headRefOid, baseRefOid: after.baseRefOid,
       snapshotHash: bindings.snapshotHash, ...bindings, action: 'merge-ready', writtenAt: now,
     });
+    const final = await api.readPullRequest(pr);
+    if (!evaluateMergeReady({ gate, before: final }).valid || !currentLabels(final.labels).includes(config.label)) {
+      throw new Error('pull request changed after receipt publication');
+    }
     return { ok: true, action: changed ? 'added' : 'unchanged', writes: changed ? 1 : 0 };
   } catch (error) {
-    if (changed) {
-      try { await api.removeLabel(config.label); } catch { /* best effort invalidation */ }
-    }
-    return { ok: false, action: 'error', error: error.message, invalidated: changed };
+    if (dryRun) return { ok: false, action: 'error', error: error.message, writes: 0, invalidated: false };
+    return invalidateMergeReady({ pr, config, api, error });
   }
 }
 
@@ -151,7 +184,7 @@ function cliApi(repo, prNumber) {
         'pr', 'view', String(prNumber), '--repo', repo,
         '--json', 'baseRefOid,headRefOid,labels,isDraft,state',
       ]).stdout);
-      return { ...view, labels: currentLabels(view.labels), isDraft: view.isDraft === true ? true : false };
+      return { ...view, labels: Array.isArray(view.labels) ? currentLabels(view.labels) : undefined };
     },
     addLabel: async (label) => {
       gh(['label', 'create', label, '--repo', slug, '--description', '审查机判定当前 head 可人工合并', '--color', READY_LABEL_COLOR], { allowFail: true });
@@ -162,23 +195,27 @@ function cliApi(repo, prNumber) {
       const r = ghIssueLabel({ slug, pr: prNumber, label, add: false });
       if (!r.ok) throw new Error(`remove label failed: ${(r.stderr || r.stdout || '').trim().split('\n')[0]}`);
     },
-    writeReceipt: async () => {},
+    writeReceipt: async () => { throw new Error('merge-ready receipt publisher is not configured; refusing unreceipted readiness'); },
   };
 }
 
 export async function reconcilePrNumber(prNumber, { dryRun = false } = {}) {
+  const parsedRepo = parseRepo();
+  const repo = `${parsedRepo.owner}/${parsedRepo.repo}`;
+  // Repository identity, not rules from an older base, selects the managed writer.
+  const request = managedReadinessRequest(repo, [prNumber]);
+  if (request) return request;
   const { rules } = loadRulesWithSource();
   const config = resolveMergeReadyConfig({ rules });
   if (!config.enabled) return { ok: true, action: 'disabled', writes: 0 };
-  const parsedRepo = parseRepo();
-  const repo = `${parsedRepo.owner}/${parsedRepo.repo}`;
   if (repo !== MIVO_REPO) throw new Error('merge-ready scope is limited to xindong/mivo-canvas-plugin');
-  const view = JSON.parse(gh(['pr', 'view', String(prNumber), '--repo', repo, '--json', 'baseRefOid,headRefOid,isDraft,state']).stdout);
-  const gate = { ...runPreMerge(prNumber), baseRefOid: view.baseRefOid };
   return reconcileMergeReady({
     pr: { repo, number: prNumber },
     config,
-    gate,
+    loadGate: async () => {
+      const view = JSON.parse(gh(['pr', 'view', String(prNumber), '--repo', repo, '--json', 'baseRefOid,headRefOid,isDraft,state']).stdout);
+      return { ...runPreMerge(prNumber), baseRefOid: view.baseRefOid };
+    },
     api: cliApi(repo, prNumber),
     dryRun,
   });
