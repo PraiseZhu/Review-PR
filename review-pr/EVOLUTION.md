@@ -5,9 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `audit-comment-reproducibility-clean-clone` **审计注释的核验命令未锚定消费方口径，clone 相关实测被当成可复现依据** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
-  - 现象:#548 连续三轮注释修正后仍残留两处：.gitleaks.toml 核验配方用 git log --all（含分支内死引用）而非消费方真实口径 --log-opts HEAD（HEAD 祖先），实测记的 20/2 在 CI 全历史 clone 上为 13/0，.pr-checkpoint.json 更是从未存在于任何引用；.gitignore『此前只写了两条』指向 squash 后不可观测的分支内中间态（main 从无 PR_* 条目）。前两轮席位核对了归因逻辑但未复跑核验命令，第三轮在干净 clone 复跑才暴露。
-  - 提案:审计类注释的核验命令一律与消费方同口径（HEAD 锚定、不依赖本地引用集），数字注明统计口径；审查清单可加一条『注释中作为依据的实测命令须在干净 clone 上可复现』。
 - `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 3 次,首见 2026-09-07,最近 2026-09-09,status: open
   - 现象:run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。
 - `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
