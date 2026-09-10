@@ -5265,19 +5265,6 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
-    },
-    {
-      "fingerprint": "seat1-native-phase2-chain-unreachable",
-      "tier": "proposal",
-      "title": "原生交付阶段二链路在席1运行时不可达：逃逸源403、派工凭据出口被守卫拒、worktree身份绑定错位",
-      "detail": "PR #592 本轮是首个通过 restore 步骤的原生交付实跑，链路三处断点全部实测确认：1. 席位 job 权限无 pull-requests:read，gh pr view --json body,closingIssuesReferences 与 gh api pulls/N 均 403，escapeSourceIncomplete=true，consume 判 taskInvalid；可信导出步骤同 token 的 gh api 在 set -euo pipefail 下同样 403，导出在触碰任何工件前即失败。2. dispatch-review.mjs 不在席位 SKILL_NODE_OK 允许清单，任务永远拿不到 dispatchReceipt，deliver-review-segment 以「缺少或过期的阶段二派工凭据」拒绝投递，segmentReceipts 只能如实留空。3. 席位 Bash 禁 cd，skill 脚本 cwd 恒为 workspace，currentReviewIdentity 的 worktree 恒取 process 当前工作目录，task 与 preflight 被 assertReviewArtifactPaths 强制落在 workspace 且 teardown 的 git clean 在导出步骤之前即删除；而 RRO 按席位指令必须写在原生 worktree，consume 全量模式判「审查输入输出文件必须位于绑定的 review worktree 内」，导出侧还要求 task.executionIdentity.worktree 等于 descriptor.worktree 同样不满足。preflight、task 构建、RRO shape-preflight 本身均可真实运行，本轮均已实跑通过——断点集中在凭据签发、数据源权限与身份绑定三处，内容审查本身可完成。",
-      "proposal": "维护者拍板方向：甲、给席位 job 加 pull-requests:read 并同步更新权限锁测试；乙、把 dispatch-review.mjs 加入席位 SKILL_NODE_OK——它是凭据签发的唯一出口，只写台账不改审查状态；丙、为 skill 脚本提供显式 worktree 身份参数或环境覆盖替代 process 当前工作目录推导，并让 teardown 与导出步骤的工件存续顺序对齐。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-10T11:41:51.277Z",
-      "lastSeen": "2026-09-10T11:41:51.277Z"
     }
   ],
   "escapedHazards": [
