@@ -5265,6 +5265,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
+    },
+    {
+      "fingerprint": "seat-native-phase2-structurally-blocked",
+      "tier": "proposal",
+      "title": "原生审查阶段二在席位环境结构性不可完成：guard 把 Bash cwd 钉死在 workspace、dispatch-review 不在 node 白名单",
+      "detail": "PR 609 席位轮实证四项：(1) 阶段二全部脚本(build-review-task/dispatch-review/review-preflight/deliver-review-segment/consume-review-output)经 currentReviewIdentity 以 process.cwd() 推导 executionIdentity，而席位 PreToolUse guard 把 Bash cwd 钉在 workspace 并拦截 cd(子代理 Bash 同被 hook)，身份永远无法等于原生 worktree；(2) deliver-review-segment 要求 dispatch-review.mjs 签发的验签 dispatchReceipt，该脚本不在 guard node 白名单(SKILL_NODE_OK)，任务永远拿不到投递回执，分段投递与 coverage 回执无法满足；(3) required 负向证据需把断言弄坏并运行仓内 node 测试，guard 仅允许 node 跑白名单 skill 脚本；(4) record-convergence-round 只收 stdin findings JSON，guard 无条件禁管道，收敛轮无法登记(实测报缺少 stdin 输入，失败安全无状态变更)。本轮如实 fail-closed：真实 build-review-task 与 review-preflight 产物、原生 worktree 内真实 rro-1 output.json(shape-preflight 通过、gaps 如实申报 required 受阻)，未写 native-review-descriptor(阶段二未完成不伪造完成)。",
+      "proposal": "维护者拍板其一：把 dispatch-review.mjs 加入 guard node 白名单并允许阶段二脚本以原生 worktree 为 cwd(经 REVIEW_NATIVE_WORKTREE 显式豁免)；或给 record-convergence-round 增加 findings 文件入参；或由 workflow 宿主侧代跑 dispatch 与分段投递。任一项落地前，原生轮次的席位交付只能保持 fail-closed 受阻申报，不应据此判席位未履职。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-10T16:19:21.832Z",
+      "lastSeen": "2026-09-10T16:19:21.832Z"
     }
   ],
   "escapedHazards": [
