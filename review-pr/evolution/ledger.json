@@ -5265,19 +5265,6 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
-    },
-    {
-      "fingerprint": "seat1-native-phase2-unreachable",
-      "tier": "proposal",
-      "title": "席位护栏内原生交付阶段二机械不可达:cwd 锁定 GITHUB_WORKSPACE 且 dispatch-review.mjs 不在白名单",
-      "detail": "2026-09-11 PR #604 席①实测:descriptor 契约要求 task.executionIdentity.worktree 等于 REVIEW_NATIVE_WORKTREE,而 identity.worktree 恒取 process.cwd 的 git toplevel;席位 Bash 的 cwd 固定在 GITHUB_WORKSPACE,cd 不在 guard 只读白名单,环境变量前缀与脚本 worktree 参数均不可用,--repo-root 与 REVIEW_PR_REPO_ROOT 不一致会直接抛错,子代理 Bash 走同一 PreToolUse 钩子同样被拦。review-preflight.mjs 把 --out 指向原生 worktree 被拒,报错 审查输入输出文件必须位于绑定的 review worktree 内;Write 与 Edit 钩子仅放行 output.json、native-review-descriptor.json 与台账两文件,task.json 与 preflight.json 在原生 worktree 内无法用任何工具创建。独立第二堵墙:dispatch-review.mjs 是 task.dispatchReceipt 的唯一写入者,deliver-review-segment 与 consume-review-output 都无条件校验该凭据,但它不在 SKILL_NODE_OK 白名单。本席按 SKILL 第0节停在 gate:未写 descriptor、未写 output.json、未伪造 RRO,findings 经 StructuredOutput 交付并在汇总披露。",
-      "proposal": "维护者拍板其一:把 dispatch-review.mjs 加入 SKILL_NODE_OK 并给席位一条受控 cwd 通道,例如放行 cd 到 REVIEW_NATIVE_WORKTREE 后运行白名单脚本,或让相关脚本接受与 REVIEW_NATIVE_WORKTREE 一致的显式 worktree 参数并令 assertReviewArtifactPaths 认可;或改由 job 可信步骤在原生 worktree 内代跑 build-review-task 与 dispatch-review,席位仅在原生 worktree 写 output.json。任一方案都属扩权或流程变更,须 owner 显式拍板后才可落地。",
-      "status": "open",
-      "commit": null,
-      "note": null,
-      "occurrences": 1,
-      "firstSeen": "2026-09-10T16:03:49.212Z",
-      "lastSeen": "2026-09-10T16:03:49.212Z"
     }
   ],
   "escapedHazards": [
