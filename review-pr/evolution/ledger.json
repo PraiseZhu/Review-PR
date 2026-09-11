@@ -5265,6 +5265,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
+    },
+    {
+      "fingerprint": "seat-native-delivery-unreachable",
+      "tier": "proposal",
+      "title": "席位侧原生交付(native-review)链路结构性不可达:guard 禁 cd/组合、dispatch 不在 node 白名单、阶段二脚本把 worktree 钉死 process.cwd()",
+      "detail": "PR #613 席①实测。三席契约要求席位复用既有 native review worktree 跑完整阶段二并写 descriptor;实际四道闸全部过不去:(1) readonly guard 禁止一切 shell 组合/展开/重定向且无 cd 白名单,子 agent 的 Bash 同样被同一 PreToolUse hook 拦截(实测复现);(2) dispatch-review.mjs 不在 node 脚本白名单,dispatchReceipt 无法盖章,后续 deliver-review-segment 与 consume-review-output 双双拒绝;(3) 阶段二脚本的审查身份把 identity.worktree 钉在 process.cwd()(无 --worktree 覆盖参数),而 review_native_export.mjs 校验 task.executionIdentity.worktree 必须等于 native worktree,席位 cwd 被 REVIEW_PR_REPO_ROOT 钉在主仓根;(4) Write 工具仅允许写 RUNNER_TEMP 的 descriptor 与 native worktree 内的 output.json,task/preflight 无法落位到 native worktree。preflight 与 build-review-task 可在主仓根真跑(席位后缀文件名已获 action teardown 豁免),但产物无法搬入 native worktree,descriptor 无真实输入可指。该缺口自 84de3c9 引入原生交付特性起即存在:加了 Write 放行却没给 Bash 任何受控 cwd 通道。",
+      "proposal": "维护者拍板二选一:(a) workflow materialize 步骤作为可信方替席位跑 preflight/build-review-task/dispatch-review 并把产物落进 native worktree(席位只负责审读 prompt 与写 RRO output.json);(b) guard 为 REVIEW_NATIVE_WORKTREE 开定向通道:允许单条 cd 到该目录、把 dispatch-review.mjs 加入 node 白名单、放开 task/preflight 在该目录内的 Write。任一方案落地前,席位原生交付按 fail-closed 处理:不写 descriptor、不伪造 RRO,由 consume 步骤的缺 descriptor 报错如实上屏。",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 1,
+      "firstSeen": "2026-09-11T01:16:54.708Z",
+      "lastSeen": "2026-09-11T01:16:54.708Z"
     }
   ],
   "escapedHazards": [
