@@ -6,7 +6,8 @@
 //
 // 用法:
 //   <findings JSON 数组> | node <skill-root>/scripts/record-convergence-round.mjs <PR> --head <sha> [--seed-existing-rounds <N>]
-//     findings 走 stdin,形如:
+//   node <skill-root>/scripts/record-convergence-round.mjs <PR> --head <sha> --findings-file <path>
+//     指定 --findings-file 时只读文件、忽略 stdin;未指定时读 stdin。形如:
 //       [{"invariant":"缺少空值校验","severity":"P1","description":"...",
 //         "familyId":"F1","recurrenceOfKey":"某历史key"}, ...]
 //     跨轮 join key 是 `invariantKey`(对 invariant 原文算 SHA-256,不截断,唯一
@@ -61,7 +62,29 @@ function argAfter(flag) {
   return i >= 0 ? (process.argv[i + 1] ?? '') : '';
 }
 
+// 文件入口只替换传输方式,后续 JSON/schema 与状态校验仍走原路径。
+function inputFileArg() {
+  const args = process.argv.slice(2);
+  const matches = args.filter((arg) => arg === '--findings-file' || arg.startsWith('--findings-file='));
+  if (matches.length > 1) throw new Error('--findings-file 不能重复');
+  if (!matches.length) return null;
+  const index = args.indexOf(matches[0]);
+  const file = matches[0] === '--findings-file' ? args[index + 1] : matches[0].slice('--findings-file='.length);
+  if (!file || file.trim() === '' || file.startsWith('--')) throw new Error('--findings-file 需要文件路径');
+  return file;
+}
+
+function readInput(file) {
+  // 显式指定文件时它是唯一输入源,绝不读取 stdin(包括未关闭的 pipe)。
+  if (file !== null) return readFileSync(file, 'utf8');
+  return process.stdin.isTTY ? '' : readFileSync(0, 'utf8');
+}
+
 try {
+  const file = inputFileArg();
+  if (file !== null && ['--get', '--mark-notified', '--record-attempt'].some((flag) => process.argv.includes(flag))) {
+    throw new Error('--findings-file 只能用于记录审查轮次');
+  }
   const pr = parsePR(process.argv[2]);
 
   if (process.argv.includes('--get')) {
@@ -103,14 +126,8 @@ try {
     throw new Error('--seed-existing-rounds 必须是非负整数');
   }
 
-  let raw = '';
-  if (!process.stdin.isTTY) {
-    try {
-      raw = readFileSync(0, 'utf8');
-    } catch {
-      /* stdin 不可读——按空处理,下面统一走「空/纯空白必须显式传 JSON」的报错 */
-    }
-  }
+  const raw = readInput(file);
+  const source = file === null ? 'stdin' : '--findings-file';
   // D2 阻断修正:此前 `JSON.parse(raw || '[]')` 会把"stdin 空/纯空白"(接线
   // 漏传 pipe、忘了传参)静默当成显式的 `[]`,退出码 0、把接线故障伪装成收敛
   // 信号。现在空/纯空白必须先在这里就 throw,绝不进入 recordConvergenceRound
@@ -118,7 +135,7 @@ try {
   // `[]`(或任何合法 JSON)才算合法输入。
   if (raw.trim() === '') {
     throw new Error(
-      '缺少 stdin 输入(空或纯空白)——必须显式传 findings JSON,0 个 P0/P1 请显式'
+      `缺少 ${source} 输入(空或纯空白)——必须显式传 findings JSON,0 个 P0/P1 请显式`
       + '传 "[]",不能什么都不传就当作收敛信号(这会把接线漏传误判成本轮已收敛)',
     );
   }
@@ -126,7 +143,7 @@ try {
   try {
     findings = JSON.parse(raw);
   } catch {
-    throw new Error('stdin 不是合法 JSON——请传 findings 数组(可为空数组 []),不要带 markdown 围栏');
+    throw new Error(`${source} 不是合法 JSON——请传 findings 数组(可为空数组 []),不要带 markdown 围栏`);
   }
 
   const result = recordConvergenceRound({ pr, headRefOid, findings, seedRoundCount });

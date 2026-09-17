@@ -19,6 +19,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 // escapedHazards 段的合并与 schema 复验只有一份实现(lib.escaped-hazards 不反向依赖本文件,
 // 无循环:它只引 lib.review-profiles / lib.preflight-rules)。
 import { mergeHazardPair, validateHazardShape } from './lib.escaped-hazards.mjs';
+import { runGhWithPrViewCompat } from './lib.gh-pr-view-compat.mjs';
 
 // NODE_DEBUG 污染防御(复发×5):宿主 shell 可能带 NODE_DEBUG=http,https,net,tls,
 // util.debuglog 在 Node 启动早期即捕获该值,进程内 delete 已无法关闭(实测),但
@@ -602,7 +603,7 @@ export function git(args, opts) {
 }
 
 export function gh(args, opts) {
-  return run('gh', args, opts);
+  return runGhWithPrViewCompat(args, opts, { runRaw: (rawArgs, rawOpts) => run('gh', rawArgs, rawOpts) });
 }
 
 /** gh 命令 + JSON.parse(stdout)。 */

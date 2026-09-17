@@ -121,7 +121,7 @@ process.exit(1);
 `;
 
 const LOCAL_DEPS = [
-  'signoff-hold.mjs', 'lib.mjs', 'lib.escaped-hazards.mjs',
+  'signoff-hold.mjs', 'lib.mjs', 'lib.gh-pr-view-compat.mjs', 'lib.escaped-hazards.mjs',
   'lib.review-profiles.mjs', 'lib.preflight-rules.mjs',
 ];
 
