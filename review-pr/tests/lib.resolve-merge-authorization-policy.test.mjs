@@ -56,6 +56,9 @@ const CONFIG = join(__dirname, '..', 'config', 'pr-rules.json');
 const DIST_CONFIG = join(__dirname, '..', '..', 'dist', 'config', 'pr-rules.json');
 const PREVIEW_CONFIG = join(__dirname, '..', '..', 'preview-dist', 'config', 'pr-rules.json');
 const LIB = join(__dirname, '..', 'scripts', 'lib.mjs');
+const CONTEXT = join(__dirname, '..', 'scripts', 'context.mjs');
+const TARGET_REPO = resolve(__dirname, '..', '..');
+const TARGET_CONFIG = join(TARGET_REPO, 'agent-use', 'docs', 'pr-rules.json');
 const parse = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
 // 在隔离子进程里跑 loadRulesWithSource():cwd/repoRoot 显式给定、REVIEW_PR_RULES_FILE
@@ -103,6 +106,61 @@ test('A1 loadRules 默认优先级(隔离子进程):无目标仓 config + 清除
   const out = JSON.parse(r.stdout);
   assert.equal(out.rulesFile, resolve(CONFIG), '隔离 cwd 无 agent-use/docs/pr-rules.json 时必须落到 skill 默认 config 路径');
   assert.equal(out.hasMergeAuth, true, '默认 config 必须带 mergeAuthorization 对象');
+});
+
+test('A1 本仓目标配置完整且优先加载:context 模块无显式配置也能安全初始化', () => {
+  const requiredFields = [
+    'titleTypes', 'lightTypes', 'featureSections', 'bugfixSections',
+    'checklistSectionNames', 'redlinePaths', 'serverPaths', 'ciSensitivePaths',
+    'sensitiveContent', 'productWhitelist', 'uiPaths', 'uiExcludePaths', 'archGate',
+    'slackSyncBots', 'slackSenderAliases', 'feishuNotify', 'staleAuthorReminder',
+    'selfFixAuthors', 'admins', 'mergeAuthorization', 'structuralBypassAllowlist',
+    'securityReviewPaths', 'ruleFiles', 'summaryBroadcast', 'loopPrExclusion',
+    'prescan', 'reviewSegments', 'sizeGate',
+  ];
+  const script = [
+    `import { loadRulesWithSource } from ${JSON.stringify(pathToFileURL(LIB).href)};`,
+    'const { rules, rulesFile } = loadRulesWithSource();',
+    `const requiredFields = ${JSON.stringify(requiredFields)};`,
+    'console.log(JSON.stringify({ rulesFile, missing: requiredFields.filter((key) => !(key in rules)), rules }));',
+  ].join('\n');
+  const env = { ...process.env, REVIEW_PR_REPO_ROOT: TARGET_REPO };
+  delete env.REVIEW_PR_RULES_FILE;
+
+  const loaded = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+    cwd: TARGET_REPO,
+    env,
+    encoding: 'utf8',
+  });
+  assert.equal(loaded.status, 0, `loadRulesWithSource 失败: ${loaded.stderr}`);
+  const out = JSON.parse(loaded.stdout);
+  assert.equal(out.rulesFile, resolve(TARGET_CONFIG), '目标仓配置存在时必须按优先级 ② 使用它');
+  assert.deepEqual(out.missing, [], '目标仓配置必须提供 context 消费的完整字段');
+  assert.deepEqual(out.rules.sizeGate?.excludePaths, ['^preview-dist/'], '本仓 sizeGate 排除项必须保留');
+
+  assert.deepEqual(out.rules.productWhitelist, []);
+  assert.deepEqual(out.rules.archGate?.whitelist, []);
+  assert.deepEqual(out.rules.archGate?.coldUpdateApprovers, []);
+  assert.deepEqual(out.rules.admins, []);
+  assert.deepEqual(out.rules.selfFixAuthors, []);
+  assert.deepEqual(out.rules.mergeAuthorization?.breakGlassApprovers, []);
+  assert.equal(out.rules.mergeAuthorization?.requireAutomatedReviewForAutoMerge, false);
+  assert.deepEqual(out.rules.securityReviewPaths, []);
+  assert.deepEqual(out.rules.ruleFiles, { required: [], uiRequired: [], ruleMap: null });
+  assert.deepEqual(out.rules.sensitiveContent, { allowPaths: [], extraHardPatterns: [], extraSoftPatterns: [] });
+  assert.deepEqual(out.rules.summaryBroadcast, { command: null });
+  assert.equal(out.rules.loopPrExclusion, null);
+  assert.equal(out.rules.prescan?.enabled, false);
+  assert.deepEqual(out.rules.slackSyncBots, []);
+  assert.deepEqual(out.rules.feishuNotify, { groupName: '', archRecipientName: '', orgMappingRepos: [] });
+
+  const contextSmoke = spawnSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `await import(${JSON.stringify(pathToFileURL(CONTEXT).href)}); console.log('context-ok');`,
+  ], { cwd: TARGET_REPO, env, encoding: 'utf8' });
+  assert.equal(contextSmoke.status, 0, `context 初始化失败: ${contextSmoke.stderr}`);
+  assert.equal(contextSmoke.stdout.trim(), 'context-ok');
 });
 
 test('A1 目标仓形态回归(隔离子进程,模拟 Mivo cwd):REPO_ROOT 有 agent-use/docs/pr-rules.json → loadRules 读目标仓配置,缺失 breakGlass 回退+warning 是设计行为', () => {
