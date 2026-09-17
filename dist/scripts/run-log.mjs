@@ -30,7 +30,7 @@
 // sinceLastRunReason }`——系统字段放在 spread 之后,调用方在汇总 JSON 里伪造
 // 同名字段(如手写一个假的 loggedAt 想搪塞过去)一律被真实值覆盖,不生效。
 //
-// 跑:node <skill-root>/scripts/run-log.mjs   # JSON 走 stdin(pipe 或 --body-file 风格)
+// 跑:node <skill-root>/scripts/run-log.mjs [--body-file <path>]  # 指定文件时只读文件、忽略 stdin;未指定时读 stdin
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { stateFile, print, fail } from './lib.mjs';
@@ -150,13 +150,33 @@ function computeSinceLastRun(runsFile, loggedAt) {
   return { hours: null, reason: 'history-corrupted', skippedLines }; // 全部行都解不出合法 loggedAt
 }
 
+// 文件入口只替换传输方式,后续 JSON/schema 与状态校验仍走原路径。
+function inputFileArg() {
+  const args = process.argv.slice(2);
+  const matches = args.filter((arg) => arg === '--body-file' || arg.startsWith('--body-file='));
+  if (matches.length > 1) throw new Error('--body-file 不能重复');
+  if (!matches.length) return null;
+  const index = args.indexOf(matches[0]);
+  const file = matches[0] === '--body-file' ? args[index + 1] : matches[0].slice('--body-file='.length);
+  if (!file || file.trim() === '' || file.startsWith('--')) throw new Error('--body-file 需要文件路径');
+  return file;
+}
+
+function readInput(file) {
+  // 显式指定文件时它是唯一输入源,绝不读取 stdin(包括未关闭的 pipe)。
+  if (file !== null) return readFileSync(file, 'utf8');
+  return process.stdin.isTTY ? '' : readFileSync(0, 'utf8');
+}
+
 try {
-  const raw = readFileSync(0, 'utf8');
+  const file = inputFileArg();
+  const raw = readInput(file);
+  const source = file === null ? 'stdin' : '--body-file';
   let data;
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error('stdin 不是合法 JSON——请把 6.1 的汇总 JSON 原样 pipe 进来,不要带 markdown 围栏');
+    throw new Error(`${source} 不是合法 JSON——请传 6.1 的汇总 JSON,不要带 markdown 围栏`);
   }
 
   const warnings = validateShape(data);
