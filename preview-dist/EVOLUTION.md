@@ -5,95 +5,270 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 2 次,首见 2026-09-06,最近 2026-09-08,status: open
-  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
-- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:run-seat-claude 席位的 /usr/bin/gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败，build-review-task.mjs 的 escape-source 现场取数只能落成 escapeSourceIncomplete，席位无法交付 consume-review-output 认可的有效轮。readonly bash guard 禁止管道、重定向与 heredoc，record-convergence-round.mjs 与 run-log.mjs 仅支持 stdin 输入故在席位内不可运行；consume-review-output.mjs 需要先落 rro-1.json 输出文件而席位的 Write 工具被限制在台账文件。建议：为这些脚本补文件型 seam 例如 --findings-file 或 --body-file，或在 runner 镜像升级 gh 至支持上述字段的版本。
-- `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+- `native-subagent-review-timeout-rro-skip` **native subagent 长审查任务秒退未交 rro** — 出现 2 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:交互审 PR 434：codex/gpt-5.6-luna worker 约 1h/8 tools 后 Timed out，隔离树无 rro-1.json。主会话在同一 review worktree 重建 snapshot 后补审、负向证据、consume dirty。不回头改本轮判定。
+  - 提案:长审查席失败后不要空等；保留最小探测，主会话可在隔离树完成负向证据与 rro 组装，但须保持独立审查语义并记录 skip/接手。扩权类不自动落地。
+- `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 3 次,首见 2026-09-07,最近 2026-09-09,status: adopted
+  - 现象:run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:#548 只删了 PR_TITLE.txt/PR_BODY.md 并加 ignore，同类 .pr-body.md/.pr-intent.md 仍 tracked 且带着别的已合 PR 的完整描述躺在 workcopy 根目录，与本轮真实 PR body 同用 pr-intent 标记格式；#539 R1-R3 与 #548 席① 审成 #545 均为同类误读实证
+  - 提案:席位任务构建/前言把已知草稿文件名（PR_TITLE.txt/PR_BODY.md/.pr-body.md/.pr-intent.md 等）列为必须忽略的 decoy 清单；审查发现残留时按同族不变量要求全量清理而非逐文件
+- `seat-worktree-output-files-fail-checkout-guard` **席位输出类脚本在 review worktree 内落盘即触发 run-seat-claude 终检 Refuse checkout writes 判 fail** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:2026-09-08 PR #551 席①上一轮把 build-review-task 与 deliver-review-segment 跑通后，job 终检报 Claude seat wrote back to the Actions checkout：run-seat-claude 收尾步骤把 restore-config 已知路径复位后，对工作树内任何非 .gitignore 忽略的脏或未跟踪文件零容忍；而这些脚本的输出经 assertReviewArtifactPaths 约束必须落在 review worktree 内，席位上 worktree 即 Actions checkout，默认输出路径非忽略，写盘即终检 fail。2026-09-09 复跑实测安全路径：review-preflight.mjs 省略 --out 走 stdout，outFile 为 null 时被 assertReviewArtifactPaths 的 filter Boolean 跳过校验，complete JSON 全量打印、工作树零写入；确需落盘时只能选 worktree 内被忽略路径如 _tmp/，注意目录可能不存在且席位 guard 禁 mkdir，writeFileSync 不建父目录。
+  - 提案:输出类脚本 context、build-review-task、deliver-review-segment、consume-review-output 补 stdout 交付模式或显式的 gitignored 输出目录参数；在 SKILL 与 seat 部署文档写明 tri-review 席位一律省略 --out 经 stdout 消费、需落盘时先确认目标路径被目标仓 .gitignore 忽略；run-seat-claude refuse 步骤若要放宽白名单需 owner 拍板，不自动改。
+- `preflight-abbreviated-oid-error-unclear` **review-preflight 对缩写 OID 判非法时未提示需完整 40 位 SHA** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
+  - 现象:席位审查从 git log 取 7 位缩写 SHA 传入 --base 与 --head，preflight 返回 complete:false 且 reason 为 DiffSnapshot 不完整 base/head oid 缺失或非法，未指明哪个参数、也不说明只接受完整 OID。规范流程 gh pr view baseRefOid 恒为完整 SHA，仅离线推导场景可触发。
+  - 提案:入口对缩写 OID 先经 git rev-parse 展开为完整 OID 再校验，或校验失败时报错明示参数名与需完整 40 位 OID 的要求。不改判定逻辑，无新增写操作。
+- `activity-ledger-key-and-cap-audit` **Activity-ledger 审查要追 key 同源性与 cap 预算来源** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: tracked
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r400 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r400。
+归因 pending；类型=扩权（proposal）。只有标题，detail/proposal 均为空；确定性门也不通过。 落点/验证：待补具体 key/cap 不变量、受影响文件和失败实例；当前无可执行落点。 升格/复核触发：首次补齐可回溯实例与具体落点后重做四道门，不因年龄自动升格。
+- `sanitizer-order-after-reconstruct` **中和管线缺变换顺序终检：先 scrub 后剥 HTML 注释会把被切断的轮次标记拼回可解析形态** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: tracked
+  - 现象:三审席①在 publish 硬化 PR 上发现 neutralize_control_tokens 先跑标记 scrub 再剥 HTML 注释，被空注释切断的 review-complete 标记在 scrub 时对正则不可见、剥注释后重组为可解析串，穿透结论评论与补充评论两条不可信到 bot 评论通道，后果是轮次识别永远 proceed、每轮重烧三席。同 PR 自带的形态枚举测试覆盖裸文本、围栏、行内码、整段注释、一串两个五种形态全绿，唯独缺「注释切断」形态——枚举式测试给出了顺序安全的假信心。另该模块 docstring 误写 decide 不扫补充评论，与事实不符，是同一误判的两面。
+  - 提案:对 sanitizer 类改动的审查必答清单加一条：列出管线上每个会拼接文本的变换——剥注释、实体解码、行合并——逐一回答终末是否还有一次 scrub；形态枚举测试不得作为顺序安全的证据，必须补「变换嵌在敏感串内部」的对抗样本用例。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r399 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r399。
+归因 pending；类型=扩权（proposal）。单次文本变换顺序逃逸；tier=proposal，不能因建议收紧检查就改走 auto。 落点/验证：scripts/lib.review-profiles.mjs 的 sanitizer 问句；夹具包含嵌入敏感串中的 HTML 注释。 升格/复核触发：另一独立实例或单独授权的根因核查后再送拍板。
+- `independent-review-seat-failed-to-write-rro` **Cindy native subagent 两次未能在隔离树写出 rro-1.json** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR 550 交互审查派 general-purpose 席两次均 failed，隔离树无 rro-1.json。主会话按同一 worktree 材料交卷后 consume 得 clean。
+  - 提案:查 Cindy/pi subagent inherit 隔离树 cwd 与失败回传；失败时至少把 stderr 落到审查树。
+- `review-agent-timeout-fallback-to-lead` **阶段二独立审查席超时未交 rro-1，主会话按契约补审并消费** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 现象:PR 559 交互审：native subagent worker 未交 rro-1.json。主会话在隔离 worktree 内按 prompt/segment 契约审完、跑负向证据、写 rro-1、consume dirty、REQUEST_CHANGES。SKILL 要求独立席，主会话代写是本轮过程缺口。
+  - 提案:交互审在派席失败/超时后，主会话可按 skip/review-agent-timeout 收口，或明确允许主会话补交 rro-1 的条件；不要静默把独立席变成主会话审。
+- `seat-base-snapshot-drift-attribution` **席位本地 BASE 快照可能落后于 PR merge-base，diff 归因前必须以 gh pr view --json files 为准** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: adopted
+  - 现象:2026-09-08 #472 席①：本地仅有 BASE(f045cdd=main #544)与 HEAD(squash 快照)两个提交，树差 27 文件；GitHub 权威 changedFiles=6。多出的 21 文件是 PR 分支多次 merge origin/main 带入的主干漂移（size-gate 1600 试行、bug-doctor source-coverage 等），若直接按树差归因会把他人已合入 main 的改动算成本 PR 的越权变更面。
+  - 提案:席位/巡审在用本地 BASE...HEAD 树差下结论前，先 gh pr view <N> --json changedFiles,files 校验真实变更面；不一致时以 GitHub 三点 diff 为准，并把漂移文件逐一路径排除后再审。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G09，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G09。
+归因：pending。
+落点：review-pr/scripts/lib.diff-snapshot.mjs、review-preflight.mjs 和 SKILL.md 输入身份步骤；先增加基准、方向、变更文件集合的对账提案。 验证：基准落后与方向反转两种夹具；不一致时拒绝归因，不把额外文件算作 PR 变更，不因取证失败放行。
+复核条件：下一次范围不一致即带平台文件集合与实际基准复核；第一条仅是输入方向无法确认的环境观察，不声称已反向审查。
+- `context-mjs-headrefoid-gh-compat` **context.mjs 依赖 gh --json headRefOid，旧版 gh 上整步硬失败** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: adopted
   - 现象:席①审查 PR 543 时实测：runner 的 gh 版本不支持 --json headRefOid 字段，context.mjs 543 直接 exit 1（"Unknown JSON field: headRefOid"），导致 skill 自己的上下文步骤整步失败，无法按 3.0 流程取完整 PR 上下文。数据本身并非不可得：REST API repos/{owner}/{repo}/pulls/{N} 返回 head.sha，gh pr view 其余字段也正常。当前只能靠等价机器证据（目标仓自身 pr-format-gate 与 gitleaks 双绿）旁证，且 consume-review-output 的 rro-1 输入口在本席 Write 限制下无法落地，只能走 write-review-receipt CLI 兜底。
   - 提案:context.mjs 对 gh --json 的字段查询增加能力探测：先查 gh 版本/字段支持，headRefOid 不支持时降级为 gh api repos/{owner}/{repo}/pulls/{N} 取 head.sha，而不是整步硬失败；或在 SKILL 3.0 记录该环境限制与降级路径。
-- `preflight-unrunnable-base-only-seat` **preflight/回执流程在 base-only checkout 的审查 seat 不可运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open,commit `e47db371f12d8762d58ae225b87baf6f4bc87620`
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `preflight-unrunnable-base-only-seat` **preflight/回执流程在 base-only checkout 的审查 seat 不可运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: adopted,commit `e47db371f12d8762d58ae225b87baf6f4bc87620`
   - 现象:tri-review seat 工作区只检出 BASE 且 guard 禁 git fetch,head 不在本地对象库;review-preflight.mjs 用 git show <head>:<path> 构建 DiffSnapshot 必然 complete:false,build-review-task/consume-review-output 同理依赖本地 head。本轮(mivo-canvas-plugin PR #539)只能人工按 skill 完成审查,机器 preflight 缺席需在汇总如实声明。建议:增加无本地 head 的降级路径(经 gh api contents 取 head 文件构建 snapshot)或在 SKILL.md 声明该环境不适用 preflight,由调用方记录。
-- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G08，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G08。
+归因：pending。
+落点：review-pr/scripts/lib.diff-snapshot.mjs 与准备审查输入的入口；在授权阶段准备完整对象，或定义可验证的只读快照输入。 验证：受限席无对象时明确拒绝；合法预备对象可生成完整快照；错误或缺失对象不降为通过；不放松 guard。
+复核条件：下次复发记录各席位是否具备对象、允许哪些输入，再确定实现分支；不放松 guard。
+- `seat1-gh-cli-missing-headrefoid` **L20-1 席① runner 的 gh CLI 不支持 headRefOid 字段，context.mjs 全量/scan 模式在此环境直接 fail** — 出现 3 次,首见 2026-09-04,最近 2026-09-07,status: adopted
   - 现象:复现于 #517 席①:gh pr view --json headRefOid 报 Unknown JSON field;本轮改用 commits[0].oid 与 mergeCommit.oid 锚定 HEAD,diff 经 gh pr diff --patch 取得并与 merge commit 树核对一致。历次:#482 同症状,人工通读全量 diff 替代。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
 - `shallow-clone-merge-base-fail` **浅克隆上 DiffSnapshot 算不出 merge-base** — 出现 2 次,首见 2026-08-21,最近 2026-09-07,status: landed
   - 现象:复现于 #517 席①(L20-1):checkout 仅 2 个孤立提交,preflight/build-review-task 等 git 对象类脚本不可用;已 land 的 deepen 修复在席位环境无效——readonly_bash_guard 拦截 git fetch,席位无法加深克隆。本轮以 gh pr diff --patch 取 diff、HEAD 树直读全文、gh pr view 锚定方向完成审查并在 verdict 披露。原记录:#221 .git/shallow 致 merge-base 失败,deepen 后恢复。
   - 提案:buildDiffSnapshot 在 merge-base 失败时探测 shallow，best-effort deepen/fetch 后再算一次；仍失败才 complete=false。
   - 备注:[decided:2026-08-24] landed-effective Review-PR#29 lib.diff-snapshot.mjs merge-base 失败时 deepen 再算。merge ff415c7。
-- `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+- `verify-pinned-upstream-source-for-dist-patches` **审查构建期补丁第三方 dist / 依赖回调语义时，按锁定 tag 拉上游源码核验，而非只看 diff 与类型声明** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: tracked
   - 现象:#517 补审(img-fx 0.5.1)：vite 插件字符串替换 node_modules dist、消费侧 onCycle/phase 守卫、setImages 引用抖动三个疑似 P1，全部靠 gh api 拉取上游仓库 v0.5.1 的 ImageGeneration.tsx 与 engine/cycle.ts 源码在数分钟内证实为不可达/P2——补丁锚点在真实源码中确有对应且被替换绑定无后续引用；cycle 的 visible 只在 reveal 完成后发出；setImages 仅换池不动相位。仅凭 diff/类型/文档无法得出这些结论。
   - 提案:PR 含以下任一特征时，审查 agent 应主动拉取锁定版本的第三方上游源码核验：(1) 对 node_modules/dist 的构建期字符串补丁——验证锚点真实存在、被替换绑定无其他引用、fail-closed；(2) 依赖第三方回调/生命周期语义做守卫——从源码确认回调可达条件；(3) securityReviewPaths 触发后被 admin 合并的补审——供应链基线(精确锁定+integrity+上游真实性)必查。上游不可达时如实标注'未核验'，不降级为猜测。
-- `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r385 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r385。
+归因 pending；类型=扩权（proposal）。#517 单次上游源码核验经验；一个 PR 内多个疑点不是跨实例复发。 落点/验证：SKILL.md 审查取证步骤/风险 profile；夹具绑定精确版本与不可达处理。 升格/复核触发：第二个独立依赖语义误判实例再提规则。
+- `wire-pytests-into-existing-ci-job` **把 python3 -m unittest discover -s .github/scripts 挂进 ci.yml 既有 build-and-test job** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:2026-09-06 插件仓 #511:normalize_base_url 新分支(/v1 追加、query/fragment 拒绝)的测试只在人工跑,回归要到下次 seat2 实跑才暴露(fail-closed 但烧失败轮次)。整套 .github/scripts/tests 均如此。
   - 提案:在 ci.yml build-and-test job 末尾加一步 python3 -m unittest discover -s .github/scripts -t .(不新增 job,保持 check 名不变,避免动 required-checks.json 契约);或加进 .githooks/pre-push。改 CI workflow 属 securityReviewPaths,须 owner 拍板。
-- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r382 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r382。
+归因 pending；类型=扩权（proposal）。单次建议把 Python 测试加入目标仓 CI，本轮未查业务仓。 落点/验证：目标仓 .github/workflows/ci.yml 的既有任务；验证现有检查契约。 升格/复核触发：第二次真实漏跑或 owner 单独发起该 CI 任务；本轮不修改 CI。
+- `context-mjs-headrefoid-gh-field-unsupported` **context.mjs 请求 gh 不支持的 headRefOid 字段导致整轮失败** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: adopted
   - 现象:2026-09-06 PR494 席1实跑:context.mjs 内部执行 gh pr view --json headRefOid 退出码1 Unknown JSON field headRefOid;本机 gh 可用字段表无该字段,脚本在此环境不可用,审查退化为手工 gh api 拉取元数据。
   - 提案:context.mjs 对 headRefOid 做降级:gh pr view 字段探测失败时改用 gh api repos-owner-repo-pulls-N 的 head.sha 取 head SHA,不让单一字段名拖垮整轮。
-- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `pr493-seat1-stdin-pipe-blocked` **席①守卫禁 pipe/重定向,record-convergence-round 的 stdin 契约在本席位不可达** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: adopted
+  - 现象:record-convergence-round.mjs 要求 findings JSON 走 stdin,但 readonly_bash_guard 禁止 shell 组合/管道/重定向,Bash 工具没有 stdin 注入通道,席①无法把 findings 喂进脚本;需要为该脚本加 --findings-file 参数或席内可信步骤代跑
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `seat1-dist-guard-review-probe` **探针:席①受限运行时无法执行目标仓测试** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
   - 现象:review-seat 环境把 node 执行限制在 skill 根目录下脚本,目标仓测试(node cindyplugin/check-dist-main.test.mjs)被守卫拦截,审查只能静态核对
-- `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r378 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r378。
+归因 pending；类型=扩权（proposal）。单次受限席禁止运行项目测试；观察到限制不等于应扩大权限。 落点/验证：现有审查准备/测试证据入口；夹具区分未运行与失败。 升格/复核触发：第二个独立实例且能定义不放松 guard 的证据路径再上桌。
+- `pr498-bd2a-oraclehash-workingtree-drift` **oracleHash 从工作树文件计算，与 headSha 身份可漂移** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR #498 run.mjs 报告身份字段 headSha 取自 git HEAD，oracleHash/fixtureHash 却从当前工作树文件计算（computeOracleHash 读 SCHEMA_DIR 实文件）。CLI 主路径有 assertCommittedTree 脏树拦截兜底，但 runLayer allowDirty:true（contract.test.mjs 自用）与未来 adapter 路径没有该保证，同一 headSha 可对应不同 oracleHash，BD3 按身份字段复核会失配。
   - 提案:computeOracleHash 增加基于 git cat-file 的实现（从 identity.headSha 读 blob 内容哈希），CLI 写报告时优先用 git 版本；文件系统版本仅测试 seam 用；或报告加 worktreeDirty 字段显式声明口径。
-- `pr498-bd2a-contract-skip-unknown-exitcode` **合同 CLI 用 vitest 退出码 1 兼发'测试失败'与'找不到测试文件'，skipVitest 语义失真** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r376 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r376。
+归因 pending；类型=扩权（proposal）。#498 主路径已有干净工作区守卫，争议在 allowDirty 测试入口与未来 adapter，当前生产影响未证。 落点/验证：目标项目 computeOracleHash 与报告身份；夹具覆盖工作区修改。 升格/复核触发：现行真实入口出现同身份不同内容实例才升格。
+- `pr498-bd2a-contract-skip-unknown-exitcode` **合同 CLI 用 vitest 退出码 1 兼发'测试失败'与'找不到测试文件'，skipVitest 语义失真** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR #498 run.mjs runVitestContracts 把 vitest 'No Test Files Found' 的退出码 1 与真实断言失败混为同一 fail 语义。离线/部分 checkout 环境跑合同层会得到 vitest-contracts=fail 而非 unavailable，报告聚合为 fail/exit1，与'适配器缺失=unavailable'的语义分层矛盾。建议区分'跑过且有失败'与'没跑成'（探测试文件存在性或解析 vitest 输出），后者归 unavailable/exit2。
   - 提案:在 runVitestContracts 里对 spawn 结果补 exit-code 与输出的区分：VITEST_FILES 任一文件不存在（existsSync 校验）时抛专用错误并记 unavailable check；仅当文件齐全且 exit!=0 才记 fail。contract.test.mjs 相应补一条反例。
-- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r375 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r375。
+归因 pending；类型=扩权（proposal）。#498 单次 unavailable/fail 分层争议，属于目标项目合同 CLI。 落点/验证：台账指明的 run.mjs / contract.test.mjs；测试缺失与断言失败应分开。 升格/复核触发：另一个环境/PR 复现，并确认调用方确实依赖此分层。
+- `rro-receipt-missing-snapshot-hash` **审查席 rro-1 两段回执漏写 snapshotHash，shape-preflight 整轮 invalid** — 出现 2 次,首见 2026-09-03,最近 2026-09-05,status: tracked
   - 现象:本轮 #478 顶层 snapshotHash 正确但 segmentReceipts[0] 缺该字段，shape-preflight 退回后补上才 clean。
   - 提案:deliver-review-segment payload 或 prompt 回执样例强制带 snapshotHash；审查席不得省略。
-- `review-agent-skipped-rro-protocol` **typescript-reviewer 席未交 rro-1,本轮只能 skip** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G07 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G07。
+归因：pending。
+落点：既有 build-review-task.mjs、lib.review-output-shape.mjs、投递/consume 入口与样例。 验证：缺 snapshotHash、未投递、重复文件答案、命令锚点不一致均拒绝；正确答卷可过。
+升格/复核条件：下一次当前模板下仍复发时核对调用链并回到已采纳提案；不可让主会话静默补字段，也不自动结案。
+- `review-agent-skipped-rro-protocol` **typescript-reviewer 席未交 rro-1,本轮只能 skip** — 出现 1 次,首见 2026-09-05,最近 2026-09-05,status: tracked
   - 现象:PR 461 派 typescript-reviewer isolation=worktree,席按自身系统提示做了标准 TS 审查(MEDIUM 非阻断两条),未按 SKILL 分段协议交 rro-1.json。主会话按 review-agent-timeout 写 skip 回执,禁止沿用上次清白。下轮需换能执行 SKILL 协议的审查席或在派工包里把 rro-1 交卷写成硬约束。
   - 提案:派阶段二审查时用能完整执行 rro-1 协议的席位(或在 prompt 首行把「不交 rro-1.json 即失败」写成硬停止条件);不要假设 typescript-reviewer 会自动切换到 review-pr 协议。
-- `review-agent-autocompact-large-payload` **审查席整读/大 payload 触发 autocompact 连续震荡，未交 rro-1，本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G04 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G04。
+归因：confirmed。
+落点：现有 dispatch-review.mjs 和 SKILL.md §4；只补既有实现的调用与生效证据。 验证：错误席位被拒；实际派工参数与凭据一致；合规席位按协议交卷。
+升格/复核条件：下一次当前入口仍派错席位时重新开案；owner 验收现实现后再确认结案，不重复提出同一限制。
+- `review-agent-autocompact-large-payload` **审查席整读/大 payload 触发 autocompact 连续震荡，未交 rro-1，本轮 skip** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #439 与 #461 隔离审查席均因 Autocompact thrashing 提前终止，未写出 rro-1.json。#439 已有 task/preflight；#461 已交付 3 段仍未交卷。SKILL 已记录 2026-08-31 #386 同类事故。本轮按 review-agent-timeout 写 skip 回执，禁止沿用上次清白。不扩权、不改 gate。
   - 提案:派审查席时强制字段级抽取（node -e / grep -n），禁止整读 task.json/prompt.md/全量 diff；大 PR 考虑更小 sizeBudgetBytes 或答卷组装席接手并重建 task/preflight。本轮不改脚本。
-- `typescript-reviewer-rejects-review-pr-protocol` **阶段二不要派 typescript-reviewer，应派 general-purpose** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G06 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G06。
+归因：pending。
+落点：既有 SKILL.md §4、build-review-task.mjs 分片与派工入口；先归并到已采纳提案查执行差距。 验证：记录实际窗口与分段大小；超时只产未通过回执；恢复不能沿用旧结论。
+升格/复核条件：下次复发立即记录实际投递与执行证据，判断违例、窗口不足或分片缺陷；不得以 pending 建议 landed-effective。
+- `typescript-reviewer-rejects-review-pr-protocol` **阶段二不要派 typescript-reviewer，应派 general-purpose** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #439 首次派 typescript-reviewer，子代理以无 Write、怀疑 coordinator 注入为由拒绝执行。
   - 提案:auto 阶段二隔离席固定用 general-purpose + isolation worktree；typescript-reviewer 会把巡审脚本协议当成越权注入而拒跑。
-- `review-agent-typescript-reviewer-ignores-rro` **用 typescript-reviewer 做 rro-1 审查会套自己的合并门并忽略指令** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G04 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G04。
+归因：confirmed。
+落点：现有 dispatch-review.mjs 和 SKILL.md §4；只补既有实现的调用与生效证据。 验证：错误席位被拒；实际派工参数与凭据一致；合规席位按协议交卷。
+升格/复核条件：下一次当前入口仍派错席位时重新开案；owner 验收现实现后再确认结案，不重复提出同一限制。
+- `review-agent-typescript-reviewer-ignores-rro` **用 typescript-reviewer 做 rro-1 审查会套自己的合并门并忽略指令** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:本轮 #478/#439 首次派 typescript-reviewer：#478 把指令当被动上下文、#439 因 seat1/seat2 失败自行 halt。改派 general-purpose 后 #478/#472 交卷。
   - 提案:阶段二独立审查只派 general-purpose（或明确吃 rro-1 契约的席），不要派 typescript-reviewer：它会按自身 merge-readiness 停审，不交 rro-1.json。
-- `seat1-snapshot-direction-ambiguity` **三审 runner 浅克隆里 BASE/HEAD 解析需要显式锚定 PR 号** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G04 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G04。
+归因：confirmed。
+落点：现有 dispatch-review.mjs 和 SKILL.md §4；只补既有实现的调用与生效证据。 验证：错误席位被拒；实际派工参数与凭据一致；合规席位按协议交卷。
+升格/复核条件：下一次当前入口仍派错席位时重新开案；owner 验收现实现后再确认结案，不重复提出同一限制。
+- `seat1-snapshot-direction-ambiguity` **三审 runner 浅克隆里 BASE/HEAD 解析需要显式锚定 PR 号** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: adopted
   - 现象:mivo-review runner 的席位 checkout 是只含 BASE 与 HEAD 两个孤立提交的浅克隆,git status 显示 detached HEAD、无分支。本席位环境没有注入 PR_NUMBER/BASE_SHA/HEAD_SHA 任何变量,git diff origin/main..HEAD 的方向可能是反向 diff(main 是 HEAD 后代时)。审查 agent 必须先 gh pr view <N> 确认 headRefOid 与本地 HEAD 一致才能开审,否则会审错方向。
-- `pr-template-hard-cutover-open-pr-format-flip` **PR 模板段落名硬切换会把既存 open PR 的 pr-format-gate 打红——切换 PR 应带既存 PR 迁移评估** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G09，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G09。
+归因：pending。
+落点：review-pr/scripts/lib.diff-snapshot.mjs、review-preflight.mjs 和 SKILL.md 输入身份步骤；先增加基准、方向、变更文件集合的对账提案。 验证：基准落后与方向反转两种夹具；不一致时拒绝归因，不把额外文件算作 PR 变更，不因取证失败放行。
+复核条件：下一次范围不一致即带平台文件集合与实际基准复核；第一条仅是输入方向无法确认的环境观察，不声称已反向审查。
+- `pr-template-hard-cutover-open-pr-format-flip` **PR 模板段落名硬切换会把既存 open PR 的 pr-format-gate 打红——切换 PR 应带既存 PR 迁移评估** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:mivo-canvas-plugin #476 把 featureSections/bugfixSections 从「变更说明/提交前自检/备注」硬切到「这次改了什么/怎么验证的/风险」。合并后规则源（base 树 pr-rules.json）立即全量换段名，pull_request_target 的 edited/synchronize 重跑让所有按旧模板填写的既存 open PR 的 pr-format-gate 翻红：实测 #461（fix 类型，旧三段 body）在新 head 重跑后 missing=[这次改了什么,怎么验证的] 判红；#434（feat，旧段名）在合并时刻 11:46Z 的 check 仍是 success，但 body 未迁移，下次 synchronize 必红。作者侧唯一出路是手改 body 段名。影响面是「合并那一刻所有非轻档 open PR」而 PR 自述未提及。改进提案：模板段落名切换类 PR，merger 在合并前跑一次 gh api search 列出非轻档 open PR 并评估迁移（或约定规则源加旧段名兼容窗口）。
   - 提案:模板切换 PR 的 Definition of Done 增加：合并前枚举非轻档 open PR（title type ∈ feat/fix）× 段名比对，逐个在合并后 24h 内代改 body 或评论区告知新段名；或 pr-format-gate 段落判定支持「旧段名→新段名」映射表，给一个版本的过渡窗口。属流程改进（编排层动作），不新增机器写操作。
-- `pr476-doc-ci-list-inconsistency` **模板三节化 PR 内三份文档 CI 清单口径分叉:AGENTS/CLAUDE 移除 secret-scan.yml 而 README 安全节仍指它** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r356 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r356。
+归因 pending；类型=扩权（proposal）。#476 一次模板切换；已有 PR 受影响不等于多次切换根因复发。 落点/验证：未来目标仓模板切换规则；夹具验证存量正文的迁移窗口。 升格/复核触发：第二次独立模板切换产生同类失配时回桌；本轮不代改 PR 正文。
+- `pr476-doc-ci-list-inconsistency` **模板三节化 PR 内三份文档 CI 清单口径分叉:AGENTS/CLAUDE 移除 secret-scan.yml 而 README 安全节仍指它** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR #476 把 AGENTS.md:48 与 CLAUDE.md:77 的 CI 必绿清单改为 pr-hygiene(含 pr-format-gate)+pr-size-gate 并移除 secret-scan.yml,但同 PR 未触碰 README.md:158 安全节「secret-scan workflow 做泄漏扫描」。secret-scan.yml 实际已是 retired 入口(仅 workflow_dispatch),真扫描在 ci.yml gitleaks job。贡献者按 README 安全节排查泄漏扫描会走错门
-- `pr476-checklist-section-coverage-gap` **checklist 门只覆盖「提交前检查」段,模板「风险>需要特别留意」8 项复选框永不被勾选率检查** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G11 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G11。
+归因：pending。
+落点：未来单独授权的目标仓 AGENTS.md/CLAUDE.md/README.md 与 CI 实际入口；本轮不改。 验证：说明文件一致指向实际必需扫描入口。
+升格/复核条件：出现不同 PR/日期的新同类实例且回源确认仍有漂移时升格。
+- `pr476-checklist-section-coverage-gap` **checklist 门只覆盖「提交前检查」段,模板「风险>需要特别留意」8 项复选框永不被勾选率检查** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:PR #476 模板三节化后,pr-hygiene pr-format-gate 的 checklist 判定 break 于第一个命中 heading(提交前检查,模板最后一个 section,6 项);「风险>需要特别留意」的 8 项风险确认复选框不在任何 checklist 段内,作者全不勾也绿灯。findChecklistSection 语义是单段统计,新增多段 checkbox 需评估是否扩为多段扫描或把风险清单并入 checklistSectionNames 对应段
-- `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r361 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r361。
+归因 pending；类型=扩权（proposal）。#476 单次多段 checklist 覆盖问题，是否需要全勾属于规则含义决定。 落点/验证：context.mjs 的 checklist 查找与模板对应关系；夹具覆盖多个标题。 升格/复核触发：另一个独立实例证实风险确认本应阻断却未阻断时上桌。
+- `format-self-review-third-checkbox-when-ci-green` **格式门把未勾第三项自检当阻断，即使 CI 已实际跑过** — 出现 1 次,首见 2026-09-03,最近 2026-09-03,status: adopted
   - 现象:本轮 #439/#448/#450 均因 Self-review 勾选率 2/3 打回；第三项是「PR 页面 checks 已实际触发」。三份 PR 的 required CI 实际已跑，作者只是没勾。属格式门作者侧义务，放宽勾选判定会改 gate，记提案不落地。
   - 提案:若要减空转：仅当 statusCheckRollup 已有实际触发记录时，第三项未勾降为提醒而非 formatPass=false。改变阻断条件，需维护者拍板。
-- `review-agent-isolation-tree-misses-rro` **隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G05，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G05。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs 的 checklist 判定；只讨论“检查已触发”这一项的机器证据替代。 验证：从未触发、缺失、跳过的检查不得替代；实际运行的成功/失败与最终 CI 门分开，CI 失败仍阻断。
+复核条件：仅限“检查已触发”这一项的机器证据替代，不得扩大到其它复选框。
+- `review-agent-isolation-tree-misses-rro` **隔离席写到自己的 worktree,指定审查树拿不到 rro-1.json** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
   - 现象:PR 417/426 主会话在 _ops/.worktrees/review-pr/pr-N 准备审查,Agent isolation:worktree 另起 .claude/worktrees/agent-*。417 把 task/preflight 写进隔离树且未交 rro;426 被沙箱拒绝跨树命令,prompt 读完仍无 rro。本轮两席均 skip/review-agent-timeout。
   - 提案:spawn 时不要另指仓内审查树;指令改为在席位 cwd 写 ./rro-1.json,或给隔离席 path 进入已建审查树。
-- `isolation-worktree-hides-prepared-review-artifacts` **isolation worktree 从默认分支开空树，审查席看不到主会话已备好的 prompt/segment/hunks** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G03 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G03。
+归因：pending。
+落点：现有 dispatch-review.mjs / lib.review-identity.mjs 与投递、消费调用点；先核对部署及宿主实际派工参数。 验证：错仓、错树、树外软链必须拒绝；同树完整链可完成；核对宿主返回目录。
+升格/复核条件：下一次错目录复发立即带实际入口、部署版本、任务路径复核；若 owner 先安排既有实现验收，则先补证再决定三态。
+- `isolation-worktree-hides-prepared-review-artifacts` **isolation worktree 从默认分支开空树，审查席看不到主会话已备好的 prompt/segment/hunks** — 出现 1 次,首见 2026-09-02,最近 2026-09-02,status: tracked
   - 现象:auto 审 PR 417 时主会话把 prompt.md/segment/hunks 写进 .worktrees/review-pr/pr-417，审查席 isolation=worktree 却落在 ops 仓 main 空树；席找不到材料、未交 rro-1.json，本轮只能 skip。426 因指令写死绝对路径才交卷。
   - 提案:spawn 审查席时把工作目录钉到已备好的 review worktree，或把产物复制进 isolation cwd；禁止只靠相对路径 prompt.md。
-- `review-agent-context-window-thrash` **审查席子代理用小上下文窗口模型会被 50KB 级 payload + 源码追踪打爆 autocompact,应在 spawn 时显式选大窗口模型** — 出现 1 次,首见 2026-09-01,最近 2026-09-01,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G03 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G03。
+归因：pending。
+落点：现有 dispatch-review.mjs / lib.review-identity.mjs 与投递、消费调用点；先核对部署及宿主实际派工参数。 验证：错仓、错树、树外软链必须拒绝；同树完整链可完成；核对宿主返回目录。
+升格/复核条件：下一次错目录复发立即带实际入口、部署版本、任务路径复核；若 owner 先安排既有实现验收，则先补证再决定三态。
+- `review-agent-context-window-thrash` **审查席子代理用小上下文窗口模型会被 50KB 级 payload + 源码追踪打爆 autocompact,应在 spawn 时显式选大窗口模型** — 出现 1 次,首见 2026-09-01,最近 2026-09-01,status: tracked
   - 现象:2026-09-01 mivo-canvas-plugin 巡审:2 个 sonnet 映射审查席(352/386 预派)与 1 个 397 前席均死于 autocompact thrashing(context 3 轮内回满 x3),未交 rro-1.json。改用 1M 窗口模型后同任务 83-84 次工具调用顺利完成。prompt.md 仅 9-10KB,payload ≤50KB,单段内容本身不超标——瓶颈是子代理模型映射的窗口总量。
   - 提案:SKILL.md §4 大 payload 审查纪律补一行:spawn 审查席时显式选择上下文窗口足以容纳『全局规则+50KB 段 payload+被审源码追踪』的模型(建议 ≥1M);小窗口模型在此负载下稳定震荡挂死,白白烧 token 并把 PR 拖成 skip。另:交付脚本已支持 replayed 重放已投递段,可写进 §4 供审查席接续前席中断的分段审查。
-- `same-head-rereview-when-open-findings-persist` **同 head 且已有 open findings+既有打回时,扫描仍给 action=review 触发全量重审,只能复述同一结论并撞同快照 disposition 死角** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G06 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G06。
+归因：pending。
+落点：既有 SKILL.md §4、build-review-task.mjs 分片与派工入口；先归并到已采纳提案查执行差距。 验证：记录实际窗口与分段大小；超时只产未通过回执；恢复不能沿用旧结论。
+升格/复核条件：下次复发立即记录实际投递与执行证据，判断违例、窗口不足或分片缺陷；不得以 pending 建议 landed-effective。
+- `same-head-rereview-when-open-findings-persist` **同 head 且已有 open findings+既有打回时,扫描仍给 action=review 触发全量重审,只能复述同一结论并撞同快照 disposition 死角** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: adopted
   - 现象:2026-08-31 mivo-canvas-plugin 轮:#352 与 #386 作者无新 commit、ledger 已有 effective-open finding、viewer 已在同一 head 提交过含同一问题的 CHANGES_REQUESTED,扫描仍分类为 review,两席各跑一次完整阶段二(合计约 21 万子代理 token),结论只能是同一 P1;#352 的 consume 因同快照禁止 resolved/不许失实 invalidated 判 invalid,attempts 已到 2/3(再一次即 blocked)。同快照重审信息增量为零。
   - 提案:context.mjs 分类时若 headRefOid 与上一轮回执的 head 相同、effective-open>0 且最近动作是 pushback,则 skip(reason: same-head-findings-open-awaiting-author)而非进阶段二;作者 push 新 head 后自然恢复重审。涉分类语义,留维护者拍板
-- `scan-routing-ignores-per-head-receipts` **scan 路由不查回执：同 head 已有 dirty 回执的 PR 每轮重审，白烧审查席** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G02，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G02。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs 与现有回执读取逻辑；只对当前版本、有效回执、仍未解决的同一问题抑制无增量重审。 验证：同版本未修时等待作者；新版本、新证据、失效回执恢复审查；安全门持续有效，不由跳过导出通过。
+复核条件：实施前与当前本地未完成改动对齐。
+- `scan-routing-ignores-per-head-receipts` **scan 路由不查回执：同 head 已有 dirty 回执的 PR 每轮重审，白烧审查席** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: adopted
   - 现象:PR #386 实测（2026-09-01 轮）：head 2cd6e5ae 在 2026-08-31T16:10 已有 verdict=dirty 回执且 CHANGES_REQUESTED 已发出，作者未推新 commit；本轮 scan 仍给 action=review，重派审查席（后因上下文震荡挂死）。已有 dirty 回执期间重审不产生新信息，ball 在作者侧。
   - 提案:context.mjs 扫描路由增加回执查询：当前 headRefOid 已存在回执时——verdict=dirty → action 改 skip（reason=reviewed-dirty-awaiting-author）；verdict=clean 且 head 未变 → 才允许进合并路径。回执绑定 headRefOid，作者 push 后自动失效，无 stale 风险。
-- `unchanged-head-open-finding-settle-deadlock` **同 head 未修的 open finding：重报与 disposition 互斥，机器判 invalid，3 轮后 blocked** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G02，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G02。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs 与现有回执读取逻辑；只对当前版本、有效回执、仍未解决的同一问题抑制无增量重审。 验证：同版本未修时等待作者；新版本、新证据、失效回执恢复审查；安全门持续有效，不由跳过导出通过。
+复核条件：实施前与当前本地未完成改动对齐。
+- `unchanged-head-open-finding-settle-deadlock` **同 head 未修的 open finding：重报与 disposition 互斥，机器判 invalid，3 轮后 blocked** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR #352 实测：head 未变、历史 open finding 经复核确认仍在。重报 family → ③ 禁止同轮 disposition（先修再核销）；不重报 + resolved → 同 snapshot 禁自证；不处置 → missingDispositions=invalid。三条路都通向 invalid，attempt 3 后 blocked，唯一出路是作者修代码换 head。结果正确（dirty 挡合并）但审查轮次白烧 token 且终态 blocked 需人工。
   - 提案:给 rro-1 契约增加第三种 disposition（如 confirmed-open：仅当 head 未变且 finding 复核仍真实存在时可用，机器保持 effective-open 但 verdict 记 dirty 而非 invalid），或在 consumer 对「同 head 重报同 invariant」的情况豁免 missingDispositions 检查（重报本身就是处置）。
-- `scan-noop-rereview-unchanged-head` **context.mjs 对 head 未变且上轮回执 dirty 的候选仍给 action=review，导致每轮空转全量重审** — 出现 2 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r329 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r329。
+归因 pending；类型=扩权（proposal）。单 PR #352 的处置死角，不能并入 G02 后自动放宽回执契约。 落点/验证：lib.review-output-shape.mjs 的 disposition 校验；夹具确认未修问题持续阻断。 升格/复核触发：新独立 PR 复现同契约死角，先排除 G02 路由修正已消除重复进入。
+- `scan-noop-rereview-unchanged-head` **context.mjs 对 head 未变且上轮回执 dirty 的候选仍给 action=review，导致每轮空转全量重审** — 出现 2 次,首见 2026-08-31,最近 2026-08-31,status: adopted
   - 现象:本轮复现(第 2 次):#352/#386 head 均与上轮 dirty 回执一致、作者无新 commit,主 agent 按既有提案人工 skip,避免两轮无效独立审查(#386 上轮同规模审查耗约 16.5 万子代理 token)
   - 提案:scan 输出增加 lastReceiptVerdict/lastReceiptHead 字段（读回执台账），编排层据此对 head 未变且上轮 dirty 的候选直接 skip（动作与本轮 #352 人工处理一致），改 scan 输出契约需维护者拍板
-- `re-review-same-head-no-increment` **fallback=review 对 viewer 自挂 CHANGES_REQUESTED 且无新 commit 的 PR 每轮全量重审,无信息增量** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G02，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G02。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs 与现有回执读取逻辑；只对当前版本、有效回执、仍未解决的同一问题抑制无增量重审。 验证：同版本未修时等待作者；新版本、新证据、失效回执恢复审查；安全门持续有效，不由跳过导出通过。
+复核条件：实施前与当前本地未完成改动对齐。
+- `re-review-same-head-no-increment` **fallback=review 对 viewer 自挂 CHANGES_REQUESTED 且无新 commit 的 PR 每轮全量重审,无信息增量** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: adopted
   - 现象:mivo-canvas-plugin #352/#386:同 head 上 viewer 刚打过回(07:16/12:12),作者零动作,context.mjs fallback 仍给 review 路由;1h 网格下每轮重复隔离审查烧大量 token(#352 本轮跑 ~70 分钟负向验证仍未交卷)
   - 提案:context.mjs fallback 判定加 stale 分支:同 head + 已有 viewer CHANGES_REQUESTED + 无新 commit → 改判 skip(复用 skip-stale-pushback 语义);涉及机器判定逻辑改动,留维护者评审
-- `deepseek-review-seat-no-output` **低配审查席连续两轮超时未产 rro-1.json，靠预提取 diff+最小模板第三轮才完成** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G02，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G02。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs 与现有回执读取逻辑；只对当前版本、有效回执、仍未解决的同一问题抑制无增量重审。 验证：同版本未修时等待作者；新版本、新证据、失效回执恢复审查；安全门持续有效，不由跳过导出通过。
+复核条件：实施前与当前本地未完成改动对齐。
+- `deepseek-review-seat-no-output` **低配审查席连续两轮超时未产 rro-1.json，靠预提取 diff+最小模板第三轮才完成** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR #385 轮：deepseek 审查席前两轮 failed(无输出/超时)，消耗三次 spawn；第三轮把净 diff 与 PR body 预提取成小文件并给出直接模板后一次通过。痛点在任务上下文过大+目标不聚焦，非 skill 脚本缺陷。
   - 提案:考虑在 build-review-task 的 prompt 模板里对文档型 PR 提示『直接读文档与 body，勿跑构建』，或在 SKILL 审查席派工纪律中固化『预提取 net-diff 到文件、给最小回执样例』两步
-- `stage2-scripts-cross-checkout-snapshot-hash-mismatch` **阶段二脚本链 REPO_ROOT 耦合 process.cwd,跨 checkout 混用产生不同 snapshotHash** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G06 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G06。
+归因：pending。
+落点：既有 SKILL.md §4、build-review-task.mjs 分片与派工入口；先归并到已采纳提案查执行差距。 验证：记录实际窗口与分段大小；超时只产未通过回执；恢复不能沿用旧结论。
+升格/复核条件：下次复发立即记录实际投递与执行证据，判断违例、窗口不足或分片缺陷；不得以 pending 建议 landed-effective。
+- `stage2-scripts-cross-checkout-snapshot-hash-mismatch` **阶段二脚本链 REPO_ROOT 耦合 process.cwd,跨 checkout 混用产生不同 snapshotHash** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR384 轮:preflight 在跟随仓 checkout 跑出 snap1-ae3d,task 在 _ops 生产 checkout 建出 snap1-f173,同 PR 同 base/head 但 diffDigest 不同(git diff 输出受 checkout 侧配置影响),consume 按 snapshotHash 不一致正确 fail-closed 判 invalid,返工一轮。根因:lib.mjs REPO_ROOT=env.REVIEW_PR_REPO_ROOT||process.cwd(),review-preflight 无 repo 身份锚点,同一仓多 checkout 的机器上极易踩中。
   - 提案:review-preflight/build-review-task 在输出 JSON 里带 repoRoot 绝对路径与 origin URL,consumer 校验 task/preflight/receipt 三者 repoRoot 同源;或文档显式要求同一轮全部脚本锁定同一 cwd(编排 checklist 项)。属流程加固,不改判定语义,留维护者拍板。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G03 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G03。
+归因：pending。
+落点：现有 dispatch-review.mjs / lib.review-identity.mjs 与投递、消费调用点；先核对部署及宿主实际派工参数。 验证：错仓、错树、树外软链必须拒绝；同树完整链可完成；核对宿主返回目录。
+升格/复核条件：下一次错目录复发立即带实际入口、部署版本、任务路径复核；若 owner 先安排既有实现验收，则先补证再决定三态。
 - `orphaned-heartbeat-keeps-lock-after-parent-crash` **父会话崩溃后心跳守护仍续锁,后续整轮 lock-busy 最长 3 小时** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: adopted
   - 现象:2026-08-30 18:06Z 轮完成 run-log 后会话崩溃,未走 release-lock;其 lock-heartbeat-daemon(pid 存活)继续每 20 分钟续期,锁 TTL 永不过期直至守护 3h max-lifetime。下一整轮(19:02Z)只能按 lock-busy 跳过全部候选。缺口:心跳守护只验证 token,不感知父会话死活。
   - 提案:让守护进程持有对父 pid 的引用(PPID/kqueue NOTE_EXIT 或父进程心跳文件),父进程死亡即自杀停止续期,让锁按 TTL 尽快自愈;属可靠性修复,不扩权,建议 owner 拍板后另立 PR。
@@ -102,12 +277,12 @@
   - 现象:2026-08-30 mivo-canvas-plugin 轮：PR #378 审查会话 4 次超时、#373 两次超时，审查 agent 已完成大部分验证但未产出 rro-1.json；最终由编排方基于构建器/投递出口产物组装答卷并通过 consume 机器对账（verdict 由内容推导，未被架空）。但该退化路径本身无 SKILL 依据，存在跨快照/契约口径漂移风险。
   - 提案:在 SKILL 4 节明确：审查会话超时后允许编排方'答卷组装席'接手，但必须重建 task/preflight/分段投递台账且 snapshotHash 四元组与 consume 现场重算一致；并把'snapshotHash 绑定 baseRefOid（PR 元数据），传 merge-base 会产生不同 snapshot'写进 --base 的显式警示（2026-08-30 实测：同 diff 两个 hash，clean 回执被判 stale）。
   - 备注:[decided:2026-08-31] adopted → 并入提案 review-agent-payload-discipline(主条 review-agent-context-overflow),同案结案
-- `ownpr-body-evidence-detection-gap-pr-body-file` **ownPr 的 PR body 从 .pr-body.md 工作树文件读取，bodyHasUiEvidence 机械判定对实际附 HTML 证据的 own PR 误报缺失** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: open
+- `ownpr-body-evidence-detection-gap-pr-body-file` **ownPr 的 PR body 从 .pr-body.md 工作树文件读取，bodyHasUiEvidence 机械判定对实际附 HTML 证据的 own PR 误报缺失** — 出现 1 次,首见 2026-08-30,最近 2026-08-30,status: tracked
   - 现象:PR #376 body 的证据节实际含 HTML 证据页链接，但 format.bodyHasUiEvidence=false；该 PR 文件清单含 .pr-body.md（build-review-task 的 pr-body seam 源），提示 context 的 body 来源对该形态走的是工作树文件而非 gh 现场数据，机械判定与真实 body 脱节。审查 agent 按证据一致性流程核对实际证据后确认 consistent，未产生错误动作（ownPr 也不发提醒评论），仅判定缺口。
   - 提案:context.mjs 的 body/uiEvidence 采集在 .pr-body.md 存在于 PR 文件清单时，现场用 gh pr view 的 body 交叉核验或直接以 GitHub 侧 body 为权威；或 build-review-task 的 --pr-body-file seam 读取路径改为仓库外临时目录。
-- `fix-session-thread-verify-timeout` **跟进会话在 review thread 核验步骤反复超时,thread 核验/resolve 可拆给编排层内联执行** — 出现 1 次,首见 2026-08-29,最近 2026-08-29,status: open
-  - 现象:mivo-canvas-plugin PR370/371 三轮跟进会话均在 GraphQL thread 核验一步超时中止,但每轮的代码 push 均已落地;编排层直接取 thread 全文+对照当前 head 代码核对+统一 reply/resolve,单轮完成 4 条 thread 处置且零代码改动
-  - 提案:SKILL 5.4 投递模板建议把「thread 核验+reply/resolve」从跟进会话职责中拆出:跟进会话只负责代码修复与 push,thread 处置由编排层内联执行(只读+流程动作,不碰代码);可避免会话在长步骤超时导致整轮中断
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r318 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r318。
+归因 pending；类型=扩权（proposal）。正文来源推断未证；当前 SKILL:583 已要求现场读取正文，需区分调用 seam 与线上来源。 落点/验证：context.mjs / build-review-task.mjs 正文来源；夹具令工作区正文与平台正文不同。 升格/复核触发：下次误报时记录实际调用参数与两份正文来源。
 - `review-agent-spawn-output-hygiene` **审查席 spawn 提示词缺输出卫生约束，长输出（npm ci/vitest 全量）可撑爆子代理上下文** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: adopted
   - 现象:本轮首次 spawn 因 autocompact 三连爆而终止重试；重试版在提示词加『长输出一律 tail/重定向后只回显退出码』后顺利完成。建议把该约束写进 SKILL.md 第 4 节审查 agent 任务模板
   - 提案:在 SKILL.md 第 4 节模板首部追加一条输出卫生 bullet：任何可能长输出的命令一律 | tail -n 40 或重定向到 worktree 内日志后只 echo 退出码；禁止整读大文件与全量 npm/test 输出
@@ -120,22 +295,32 @@
   - 现象:本轮 3 次 agent 因 autocompact thrashing 被杀（334 两次、332 一次）。334 用「指令写入 /tmp 文件 + prompt 只留一句指路 + payload 按 hunk 分块」后成功（114 tool uses 完成）；332 同样处理仍失败，说明 37-key 大 PR 仍有残余风险。
   - 提案:SKILL.md 第 4 节审查 agent 任务模板加入默认纪律：主 agent 把完整指令写入 STATE_DIR 外的临时文件，Agent prompt 只留一句路径引用；deliver payload >50KB 时主 agent 预先按 section 分块（每块 ≤14KB）再投给审查会话；连续 2 次超限的 PR 记 blocked 转人工而非反复重试。
   - 备注:[decided:2026-08-31] adopted → 提案 review-agent-payload-discipline(owner 周度会话全案同意):spawn 指令落文件;deliver sizeBudget 按字节细分;长输出 tail/落日志;超时写 skip 回执 reason=review-agent-timeout,组装席须重建 task/preflight,禁止沿用清白。归因 pending。同案:review-agent-context-thrash-on-large-payload,review-agent-spawn-output-hygiene,review-agent-timeout-degrade-path
-- `archived-fix-session-recreate-dispatch` **fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree）** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
-  - 现象:PR #337 review-failed 投递：jump 模式 target_session_id=已归档会话 + working_dir/use_worktree/title 均按 create 形态传 → ARCHIVED（jump 模式忽略 create 字段，归档目标直接拒）。SKILL 5.4 失败处理只写'目标会话已不存在（NOT_FOUND / ARCHIVED / DELETED）→ clear 后改走新建重试一次'，但 agent 首次重试仍带了 target_session_id，又吃一次 ARCHIVED；正确形态是去掉 target_session_id 纯 create + working_dir 指向仓库根 + use_worktree=true。无业务损失（第二次新建成功），但多花一轮失败调用。
-  - 提案:5.4 失败处理加一句操作细节：clear 绑定后新建时不得再带 target_session_id（create 模式的判定键），working_dir 传目标仓库根，use_worktree=true。
-- `pr328-security-rules-gate-hold-consolidated` **PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+- `pr328-security-rules-gate-hold-consolidated` **PR 328 security+rules 双门 hold 后已完成独立审查(clean 回执),放行通道仍需 admins 手动 Approve 当前 head** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
   - 现象:PR 328(作者 aj0928,admins 名单)同时命中 securityReviewPaths(package.json)与 ruleFiles.required(AGENTS.md)两门,issue #330 hold 已挂。本轮已完成阶段二独立审查:P0/P1=0,clean 回执绑定 head 8602180,实测 run-vitest 启动器 6+15 用例全绿。signoff.released=false(unconfirmed-kinds: rules/security),讨论 issue 无同意评论,无 admins Approve;按门类持久规则不自动放行
   - 提案:扩权类,不自动落地:owner 在 https://github.com/xindong/mivo-canvas-plugin/pull/328 当前 head Approve 或在讨论 issue #330 回复同意,下轮扫描 releaseBasis 生效后按 fallback 合并
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r303 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r303。
+归因 pending；类型=扩权（proposal）。一次性 PR #328 的维护者确认事项，当前远端状态未查；不是通用规则建设。 落点/验证：既有 signoff 授权流程；核验当前 PR 状态后由 owner 决定。 升格/复核触发：现行不同 PR 再现同类通用缺口才升格；本轮不请求任何外部 Approve。
 - `review-agent-rro1-shape-mismatch` **审查 agent 输出 rro-1.json 字段形状不符:profileAnswers 用 path 而非 fileId+profileId、coverageKeys/negativeEvidence 用字符串 key、outputAnchor 留空,导致 consumer 两次 invalid 才通过** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: adopted
   - 现象:PR #329 auto 轮实测:agent 回执含全部语义内容但字段名/形状与 lib.review-consume.mjs 校验不一致(attempts 记 2 次 invalid)。技能提示词里 JSON 样例已有字段名,但审查 agent 实际按任务 prompt 的自由发挥输出了 path 键。教训:prompt 中样例应加'逐字使用这些字段名'的硬性指令,或在 deliver/consume 层提供宽容映射。
   - 提案:在 spawn 审查 agent 的任务模板中,把 rro-1 字段名列成不可改名清单并附最小可过校验的样例;或给 consume-review-output 加 --shape-fix 模式做确定性映射(path→fileId 依 snapshot 解析)。改动涉及判定链路,需维护者确认影响面后落地。
   - 备注:[decided:2026-08-31] adopted → 并入提案 rro1-shape-preflight(主条 review-agent-rro1-missing-bind-fields),同案结案
-- `review-scripts-require-repo-root-env-not-bare-cd` **审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+- `review-scripts-require-repo-root-env-not-bare-cd` **审查三脚本对 cwd 敏感：编排层若依赖裸 cd，一次落错目录整轮任务作废重做** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: tracked
   - 现象:auto 轮 2026-08-27 mivo-canvas-plugin PR#323：build-review-task.mjs 在非 git 目录下跑出 task(snapshotHash=null/escapeSourceIncomplete)，deliver 直接拒绝，consume 判 invalid 浪费一轮；原因=REPO_ROOT 取 process.env.REVIEW_PR_REPO_ROOT||process.cwd()，编排层只在部分调用点显式设了 env。
   - 提案:把『所有确定性脚本一律显式 export REVIEW_PR_REPO_ROOT=<仓库根>』升级为 SKILL.md auto 流程的硬步骤（替代仅靠 cd 的现行说法），避免宿主 cwd 重置或编排层临时切目录造成静默 incomplete task
-- `review-isolation-worktree-wrong-clone-318` **隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G03 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G03。
+归因：pending。
+落点：现有 dispatch-review.mjs / lib.review-identity.mjs 与投递、消费调用点；先核对部署及宿主实际派工参数。 验证：错仓、错树、树外软链必须拒绝；同树完整链可完成；核对宿主返回目录。
+升格/复核条件：下一次错目录复发立即带实际入口、部署版本、任务路径复核；若 owner 先安排既有实现验收，则先补证再决定三态。
+- `review-isolation-worktree-wrong-clone-318` **隔离审查席落到开发仓 worktree，fileId 与生产 checkout 分叉** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: tracked
   - 现象:PR 318 重派审查席时 isolation worktree 建在 Project Mivo Canvas-Plugin 开发仓而不是 _ops 生产 checkout。同一 base/head 的 diffDigest 因工作树噪声不同，fileId/hunkId/snapshotHash 全部漂移。生产仓 consume 对不上审查席答卷。本轮按路径把 ID 映射后仍因 PR 已被网页合并而 invalid。不扩权，只提案把审查席钉在 REVIEW_PR_REPO_ROOT/_ops。
   - 提案:spawn 隔离审查席前强制 cwd=生产 checkout（_ops/mivo-canvas-plugin），禁止落到开发仓 .claude/worktrees；或在 consume 前校验审查席 toplevel 等于 prepare 记录的 repo root。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G03 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G03。
+归因：pending。
+落点：现有 dispatch-review.mjs / lib.review-identity.mjs 与投递、消费调用点；先核对部署及宿主实际派工参数。 验证：错仓、错树、树外软链必须拒绝；同树完整链可完成；核对宿主返回目录。
+升格/复核条件：下一次错目录复发立即带实际入口、部署版本、任务路径复核；若 owner 先安排既有实现验收，则先补证再决定三态。
 - `product-gate-hits-test-files` **uiPaths 命中测试文件会把 ops PR 送进产品门** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: adopted
   - 现象:PR 306 唯一 UI 命中是 src/lib/assetService.test.ts，语义判定非产品改动后走 fallback。
   - 提案:评估 uiExcludePaths 是否覆盖 src/**/*.test.ts；拍板前保持现状、靠语义定性。
@@ -156,9 +341,14 @@
   - 现象:PR 306 是部署脚本与测试（src/lib/assetService.test.ts），auto.action=product-gate。语义定性后按 fallback skip-stale-pushback，未 hold。uiPaths 含 src/ 会把测试文件算进 UI。
   - 提案:评估 uiPaths 是否应排除 *.test.ts / 测试夹具，避免部署/测试 PR 误进产品门。
   - 备注:[decided:2026-08-31] adopted → 并入提案 test-glob-uiexclude(主条 product-gate-src-test-files-false-positive),同案结案
-- `format-self-review-checks-triggered-checkbox` **提交前自检第三项常因事后回填漏勾而被格式打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+- `format-self-review-checks-triggered-checkbox` **提交前自检第三项常因事后回填漏勾而被格式打回** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: adopted
   - 现象:本轮 #305/#306/#307/#309 均 Self-review 勾选率 2/3：第三项「PR 页面 checks 已实际触发」未勾，而 statusCheckRollup 实际全绿。作者习惯 push 后回填却忘了 edit body。
   - 提案:格式门对第三项改为机器采信 statusCheckRollup（已有非 skip 的 check 即视为勾选），或仅在 checks 未触发时打回。属放宽格式门，需维护者拍板。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G05，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G05。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs 的 checklist 判定；只讨论“检查已触发”这一项的机器证据替代。 验证：从未触发、缺失、跳过的检查不得替代；实际运行的成功/失败与最终 CI 门分开，CI 失败仍阻断。
+复核条件：仅限“检查已触发”这一项的机器证据替代，不得扩大到其它复选框。
 - `product-gate-src-test-files-false-positive` **uiPaths 含 src/ 时 *.test.ts 会误亮产品门** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: adopted
   - 现象:PR #306 feat(ops) 部署注入，唯一命中 uiPaths 的是 src/lib/assetService.test.ts，context 给 product-gate。语义定性为非产品/UI 后走了格式打回。同类测试文件假阳性会每轮烧掉定性。
   - 提案:uiPaths 判定排除测试文件（*.test.ts/*.test.tsx/*.spec.ts 等），或 uiExcludePaths 增加测试 glob。改前需确认不会让真 UI 测试 PR 漏过产品门。
@@ -167,16 +357,16 @@
   - 现象:ops checkout 上未跟踪 .worktrees/review-pr/pr-281（对应 PR 已 MERGED）。git status 非空，prepare.worktreeClean=false。锁释放后下一轮仍会因 dirty-worktree 整轮 skip。fix-worktree-cleanup 需持锁才能跑。
   - 提案:两选一：1) 目标仓 .gitignore 忽略 .worktrees/；2) prepare 把 skill 自建的 .worktrees/review-pr 未跟踪目录不计入用户脏树。不要在未持锁时手删生产 checkout 上的树。
   - 备注:[decided:2026-08-31] adopted → 提案 leftover-review-worktree-clean(owner 周度会话全案同意):prepare 不把 skill 自建 .worktrees/review-pr 未跟踪目录计入用户脏树;不在未持锁时手删生产 checkout 上的树。归因 pending
-- `signoff-release-ghfn-not-a-function` **signoff-release 二次调用报 ghFn is not a function，issue 已关但标签没摘** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+- `signoff-release-ghfn-not-a-function` **signoff-release 二次调用报 ghFn is not a function，issue 已关但标签没摘** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR 286/287 首次 --scan-json 关了讨论 issue，但 scan JSON 没带 labels，摘标签 skipped。补 labels 再跑时脚本 error=ghFn is not a function。本轮改用 gh pr edit --remove-label 手工摘掉。fingerprint 去重。
   - 提案:signoff-release.mjs 把 lib.mjs 的 gh 正确传入 applySignoffReleaseWrite；scan JSON 缺 labels 时现场 gh pr view --json labels，不要依赖调用方塞 currentLabels。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r273 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r273。
+归因 confirmed；类型=扩权（proposal）。当前 signoff-release.mjs:35 接收 ghFn，CLI:78–84 却传 gh；缺 labels 另是一个分支。 落点/验证：scripts/signoff-release.mjs；夹具覆盖存在/缺失 labels 与摘标调用。 升格/复核触发：第二个独立实例登记、满足 occurrences 门后上桌；保留 proposal，不能改称单次 auto。
 - `review-agent-rro1-missing-bind-fields` **审查席 rro-1 漏 profileId/负向证据绑定字段，主会话机械补齐才过 consumer** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: adopted
   - 现象:PR #273 审查席交卷缺 profileAnswers.profileId、negativeEvidence.snapshotHash/negativeOracle/verificationRunId，verificationGaps 缺 required；reasonCode 用了 data-only-baseline 不在闭集。主会话按契约机械补齐后 consume 才 dirty。不回头改本轮判定。
   - 提案:build-review-task/prompt 或 consume 前加一层本地 validateReviewOutput 预检，缺字段时让审查席重交而不是主会话手工补字段。
   - 备注:[decided:2026-08-31] adopted → 提案 rro1-shape-preflight(owner 周度会话全案同意):任务模板加 rro-1 不可改名清单+最小可过样例;consume --shape-preflight 字段级错误退回审查席重交;禁止主会话静默补字段,不做 --shape-fix。归因 pending。同案:review-agent-rro1-shape-mismatch
-- `self-fix-format-handoff-omit-checklist-ratio` **selfFix 格式打回首次投递漏写 checklist 勾选率门槛** — 出现 1 次,首见 2026-08-24,最近 2026-08-24,status: open
-  - 现象:PR #271 首次 handoff 只要求补「变更说明/提交前自检/备注」三段，作者改完后格式门仍因 Self-review 勾选率 2/3(<80%) 未过，同轮二次投递。痛点是跟进会话要跑两轮才碰到 checklistSectionNames 的 80% 规则。
-  - 提案:5.4 格式卡点投递模板把 checklistSectionNames 的勾选率门槛（当前 <80% 不过）写进首次消息，避免只修段落标题后又因空勾弹回。
 - `format-gate-custom-section-headings` **owner PR 用等价中文小标题被格式门打回** — 出现 2 次,首见 2026-08-23,最近 2026-08-23,status: tracked
   - 现象:PR #257 body 用「为什么/改了什么/验证」，模板只认「变更说明/提交前自检/备注」。selfFix 已投递跟进会话改 description，不放宽格式门。
   - 提案:若要认等价小标题,需改目标仓模板或 format 判定;属放宽格式门,等维护者拍板。
@@ -448,42 +638,111 @@
 
 ## 已自动落地(automatable-gap)
 
-- `gh-cli-old-headrefoid-breaks-context` **旧 gh CLI 无 headRefOid 字段,context.mjs 阶段一在 L20-1 直接失败** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
-- `gh-json-field-version-compat` **context/build-review-task 硬依赖 gh --json 字段,旧 gh CLI 上 exit 1 无降级** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
-  - 现象:PR #528 审查轮实测:L20-1 审查 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences 这两个 --json 字段,gh pr view --json 直接报错,导致 context.mjs exit 1、build-review-task.mjs 同样跑不通,阶段一 gate 与阶段二任务构建整体退回手工 gh api 判定。建议:启动时探测 gh 支持的 --json 字段或加 gh --version 守卫,不支持的字段走 REST fallback——PR head 用 pulls API 的 head.sha,closing 引用经 issues timeline 取——探测失败时明确输出 unsupported-gh-fields 原因,而非裸 exit 1。
-- `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 2 次,首见 2026-09-08,最近 2026-09-08,status: open
-  - 现象:PR #547 席① 再次复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 547 整步 exit 1。本轮用 gh api pulls/547 的 head.sha/base.sha 加 gh pr diff 重建上下文，preflight/build-review-task/deliver-segment 均正常跑通（快照哈希一致）。
+- `write-review-receipt-also-headrefoid-casualty` **write-review-receipt.mjs 自身依赖 gh pr view --json headRefOid，旧版 gh 上连 dirty 回执也写不出，早期条目假设的 CLI 兜底通道不存在** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: adopted
+  - 现象:PR #528 席① 2026-09-08 实测：write-review-receipt.mjs 528 --verdict dirty --p0p1-count 0 走到 gh pr view 528 --json headRefOid 即 exit 1(Unknown JSON field)，回执不落盘。ledger 既有条目(runner-gh-cli-too-old-for-skill-scripts 等)把 write-review-receipt 当作 context.mjs 失效后的回执兜底，本轮证明该兜底与其想兜的脚本撞同一堵墙。修法：write-review-receipt.mjs 的 head 锚定改为字段探测失败时降级 gh api repos/:owner/:repo/pulls/:N 的 head.sha，与 context.mjs 待做的降级同源同法。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `context-mjs-gh-headrefoid-unsupported` **context.mjs 依赖 gh pr view --json headRefOid，旧版 gh CLI 直接退出 1** — 出现 3 次,首见 2026-09-08,最近 2026-09-08,status: adopted
+  - 现象:PR #547、#551 席①复现：gh pr view --json headRefOid 报 Unknown JSON field，context.mjs 整步 exit 1。#551 轮改用 gh api pulls/551 的 head.sha/base.sha 锚定 fork 点重建上下文；preflight 0 命中、build-review-task、deliver-review-segment 均正常跑通，快照哈希三步一致——buildDiffSnapshot 内部自 fetch 已把 base/head 对象补进本地库，head 缺对象退化路径未触发；唯 context.mjs 与回执链路仍断，findings 经 StructuredOutput 交付。
   - 提案:context.mjs 在 gh pr view 报 unknown JSON field 时回退 gh api repos/<owner>/<repo>/pulls/<N> 取 head.sha/base.sha；或 prepare/context 前先探测 gh 能力再选字段集。
-- `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `context-mjs-old-gh-cli-headrefoid` **context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持** — 出现 2 次,首见 2026-09-07,最近 2026-09-08,status: adopted
+  - 现象:PR528 席位实测:CI runner 的 gh CLI 版本较旧,gh pr view --json 不支持 headRefOid 字段,context.mjs 直接 exit 1 报 Unknown JSON field,阶段一上下文收集整轮不可用,只能手工等价收集 PR 元数据与正文与文件与评论。可自动化修法:context.mjs 捕获该错误后回退 gh api 的 pulls 端点取 head sha,或先探测字段支持再选查询路径,避免把环境兼容性问题变成整轮阻断。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `gh-json-field-version-compat` **context/build-review-task 硬依赖 gh --json 字段,旧 gh CLI 上 exit 1 无降级** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: adopted
+  - 现象:PR #528 审查轮实测:L20-1 审查 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences 这两个 --json 字段,gh pr view --json 直接报错,导致 context.mjs exit 1、build-review-task.mjs 同样跑不通,阶段一 gate 与阶段二任务构建整体退回手工 gh api 判定。建议:启动时探测 gh 支持的 --json 字段或加 gh --version 守卫,不支持的字段走 REST fallback——PR head 用 pulls API 的 head.sha,closing 引用经 issues timeline 取——探测失败时明确输出 unsupported-gh-fields 原因,而非裸 exit 1。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `review-scripts-need-head-object-not-in-seat-checkout` **依赖 head SHA git 对象的审查脚本在 tri-review BASE-only checkout 上不可运行** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: adopted
   - 现象:seat 的 checkout 只包含 BASE_SHA，PR head 对象不在本地对象库；review-preflight.mjs、build-review-task.mjs、consume-review-output.mjs、write-review-receipt.mjs 均以 head git 对象为输入，在本席位全部无法运行，退化为 compare API 净 diff + 工作区 base 文件的人工审查路径。
   - 提案:为这些脚本增加 head 对象缺失时的降级入口：按 --repo 单对象 fetch（--depth=1）补齐 head，或接受预取的净 diff 文件作为 seam；并在 seat 部署文档写明该形态的降级路径。
-- `runner-gh-cli-too-old-for-skill-scripts` **L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G08，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G08。
+归因：pending。
+落点：review-pr/scripts/lib.diff-snapshot.mjs 与准备审查输入的入口；在授权阶段准备完整对象，或定义可验证的只读快照输入。 验证：受限席无对象时明确拒绝；合法预备对象可生成完整快照；错误或缺失对象不降为通过；不放松 guard。
+复核条件：下次复发记录各席位是否具备对象、允许哪些输入，再确定实现分支；不放松 guard。
+- `runner-gh-cli-too-old-for-skill-scripts` **L20-1 runner gh CLI 过旧,skill 确定性脚本无法运行** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: adopted
   - 现象:mivo-review runner (L20-1) 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段: context.mjs / build-review-task.mjs / consume-review-output.mjs / escaped-hazards 均以 Unknown JSON field exit 1。席位守卫同时禁止 heredoc/管道,stdin 型脚本(record-convergence-round / run-log)也无法投喂。本轮退路: 用允许的只读命令(gh api --jq / git show / git diff / git blame)手工重建 PR 事实; fork 点用 REST base.sha 而非 main tip,preflight 用 --base <fork-point> 重跑后 complete=true 与 PR 文件清单精确对账。建议: 巡审部署前 probe gh 版本与字段支持,或 skill 脚本对缺失字段降级;席位守卫可为 stdin 型脚本开 --body-file 通道。
-- `context-mjs-old-gh-cli-headrefoid` **context.mjs 在旧版 gh CLI 上整轮失败 headRefOid 字段不支持** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
-  - 现象:PR528 席位实测:CI runner 的 gh CLI 版本较旧,gh pr view --json 不支持 headRefOid 字段,context.mjs 直接 exit 1 报 Unknown JSON field,阶段一上下文收集整轮不可用,只能手工等价收集 PR 元数据与正文与文件与评论。可自动化修法:context.mjs 捕获该错误后回退 gh api 的 pulls 端点取 head sha,或先探测字段支持再选查询路径,避免把环境兼容性问题变成整轮阻断。
-- `canvas-truth-scan-vs-wire-contract` **画布即真相类 PR：引用扫描面必须对账 wire 契约白名单，不能只抄客户端 attach 接线** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：采纳 G01，proposal-created（本报告分组提案已生成，尚未实施、未生效）。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G01。
+归因：confirmed。
+落点：review-pr/scripts/context.mjs、write-review-receipt.mjs、record-convergence-round.mjs，及涉及 closingIssuesReferences 的读取点；按能力选择只读查询并提供受控文件输入。 验证：旧字段不可用时取得同一 PR 的当前版本；API 失败仍明确失败；文件输入与 stdin 等价，空输入仍拒绝，不扩大审查席权限。
+复核条件：实施前核对各脚本实际调用，不沿用已被反证的回执兜底。
+- `canvas-truth-scan-vs-wire-contract` **画布即真相类 PR：引用扫描面必须对账 wire 契约白名单，不能只抄客户端 attach 接线** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: tracked
   - 现象:PR #434 阶段 3(资产引用生命周期)把服务端引用计数切成「画布即真相」现算,扫描函数只抽了 payload.asset.url 与 fills[].assetUrl——恰是客户端 attach 接线(computeAssetSideEffects)覆盖的子集;而 wire 契约 NODE_PAYLOAD_KEYS 里还有第三个承载资产引用的持久化字段 imageSlot.refs[].assetUrl(校验器放行、随画布落服务端、生成时经 assetBlobForNode 真实消费),漏扫导致槽位参考图在 7 天宽限后被 purge 静默清除。审查启发(可自动化):凡『从持久化 payload 派生真相/计数/GC 判定』的改动,应把扫描字段清单与 shared/persist-contract.ts 的 payload 白名单逐字段对账,并 grep 全仓消费方(mivo-sasset:/assetUrl)找差集——客户端 attach 事件只是计数的触发器子集,不是引用面的权威清单。
-- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：单次项 r386 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 单次项 r386。
+归因 pending；类型=收紧候选（auto，未通过归因门）。记录描述 #434 漏扫持久化资产引用，证据链具体但本轮未核验业务实现与审查缺口归因；auto 单例不能凭描述直通。 落点/验证：scripts/lib.review-profiles.mjs 的持久化/引用核查问题；夹具覆盖 imageSlot.refs[].assetUrl。 升格/复核触发：同类新实例，或 owner 指定复核并确认归因后，再判断单次纯收紧直通资格。
+- `review-agent-timeout-autocompact-large-segment` **审查席整读分段 payload 触发 autocompact 连续震荡，未交 rro-1** — 出现 3 次,首见 2026-09-04,最近 2026-09-05,status: tracked
   - 现象:本轮 #439 与 #461 隔离审查席均在交付分段后 autocompact 连续 3 次打满窗口挂死，未交 rro-1.json；已按规程写 skip 回执，禁止沿用上次清白。#439 1 段、#461 3 段。head 未变。
   - 提案:审查席 prompt 已禁止整读；本轮不再改 skill。下轮派席时首条只给路径、明确禁止 dump 全量 patch。
-- `secret-scan-list-docs-drift-after-retire` **AGENTS.md/CLAUDE.md CI 必绿清单与实际门集漂移：secret-scan.yml 9-01 已退役为 manual-only，#476 更新清单时两份文档各自表述不一致** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G06 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G06。
+归因：pending。
+落点：既有 SKILL.md §4、build-review-task.mjs 分片与派工入口；先归并到已采纳提案查执行差距。 验证：记录实际窗口与分段大小；超时只产未通过回执；恢复不能沿用旧结论。
+升格/复核条件：下次复发立即记录实际投递与执行证据，判断违例、窗口不足或分片缺陷；不得以 pending 建议 landed-effective。
+- `secret-scan-list-docs-drift-after-retire` **AGENTS.md/CLAUDE.md CI 必绿清单与实际门集漂移：secret-scan.yml 9-01 已退役为 manual-only，#476 更新清单时两份文档各自表述不一致** — 出现 1 次,首见 2026-09-04,最近 2026-09-04,status: tracked
   - 现象:mivo-canvas-plugin 2026-09-01 f7a9aab 把 gitleaks 折进 ci.yml、secret-scan.yml 退役为 workflow_dispatch-only。AGENTS.md 与 CLAUDE.md 的 CI 必绿清单长期未同步。#476 更新清单时 AGENTS.md/CLAUDE.md 都删掉了 secret-scan.yml 且补上了 pr-format-gate，但都没有写明 secret 扫描去哪了（在 ci.yml gitleaks job 内、由 verify 收口）——文档读者无法从清单推断 gitleaks 仍是必绿项，尽管 design-governance-wiring.test.mjs 已锁 ci.yml verify 依赖 gitleaks。本轮已把该缺口记为 P1 finding（f1）。自动落地项：本条仅记台账，不改文档（目标仓文档不归 skill 改）；改进归目标仓：清单行应写「secret 扫描在 ci.yml（gitleaks job）」而非静默消失。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G11 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G11。
+归因：pending。
+落点：未来单独授权的目标仓 AGENTS.md/CLAUDE.md/README.md 与 CI 实际入口；本轮不改。 验证：说明文件一致指向实际必需扫描入口。
+升格/复核条件：出现不同 PR/日期的新同类实例且回源确认仍有漂移时升格。
 - `review-agent-context-overflow-field-extract` **审查席整读结构性大文件致 autocompact 震荡挂死,未交 rro-1.json** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: landed,commit `43a5596`
   - 现象:mivo-canvas-plugin #386 审查席在分段投递阶段上下文反复回满,3 次连续 compact 后 API 报错终止;#352 席同样未在 ~70 分钟内交付。两个 PR 均按 review-agent-timeout 写 skip 回执
   - 提案:SKILL 大 payload 纪律补一条:审查席对 task.json/prompt.md 只做字段级抽取(node -e / grep -n),禁止整读;已落地
-- `profile-answer-per-file-not-per-hunk` **审查答卷按 文件×检查 去重而非按 hunk 重复作答** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: open
+- `profile-answer-per-file-not-per-hunk` **审查答卷按 文件×检查 去重而非按 hunk 重复作答** — 出现 1 次,首见 2026-08-31,最近 2026-08-31,status: tracked
   - 现象:PR352 首轮 consume 判 invalid:对含两个 hunk 的测试文件按 hunk 各写一套 profileAnswers,consumer 视为重复不计入补足;另有一处 fileId 手抄错一位。程序化去重+按投递台账回填 receipts 后二轮 clean。
-- `negative-evidence-command-anchor-must-copy-run-verbatim` **negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G07 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G07。
+归因：pending。
+落点：既有 build-review-task.mjs、lib.review-output-shape.mjs、投递/consume 入口与样例。 验证：缺 snapshotHash、未投递、重复文件答案、命令锚点不一致均拒绝；正确答卷可过。
+升格/复核条件：下一次当前模板下仍复发时核对调用链并回到已采纳提案；不可让主会话静默补字段，也不自动结案。
+- `negative-evidence-command-anchor-must-copy-run-verbatim` **negativeEvidence 的 command/outputAnchor 必须与所引 verificationRun 逐字一致,照抄不得改写** — 出现 1 次,首见 2026-08-28,最近 2026-08-28,status: tracked
   - 现象:2026-08-29 mivo-canvas-plugin #343 轮:语义审查 0 P0/P1、9 处负向证据真实实跑,但主会话组装 rro-1.json 时在 negativeEvidence.command/outputAnchor 写了比 verificationRuns 更详细的摘要措辞,consumer 按 lib 逐字比对判 negativeEvidenceInconsistent → invalid;同 snapshot 3 次重试机会被耗掉 2 次。
   - 提案:SKILL.md 输出契约段补一条:negativeEvidence 的 command/outputAnchor 先写 run 再照抄;已在 SKILL.md 落地(文档级,无脚本改动)
-- `archived-fix-session-stale-binding-dispatch` **跟进会话绑定指向已归档 session 时 send_to_session 返 ARCHIVED,clear 后新建重投成功** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G07 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G07。
+归因：pending。
+落点：既有 build-review-task.mjs、lib.review-output-shape.mjs、投递/consume 入口与样例。 验证：缺 snapshotHash、未投递、重复文件答案、命令锚点不一致均拒绝；正确答卷可过。
+升格/复核条件：下一次当前模板下仍复发时核对调用链并回到已采纳提案；不可让主会话静默补字段，也不自动结案。
+- `archived-fix-session-stale-binding-dispatch` **跟进会话绑定指向已归档 session 时 send_to_session 返 ARCHIVED,clear 后新建重投成功** — 出现 1 次,首见 2026-08-27,最近 2026-08-27,status: rejected
   - 现象:PR 334/335/336/337 四个 selfFix 卡点投递时,fix-session-state 绑定的旧 sessionId 全部已归档(ARCHIVED);按 SKILL 5.4 失败处理清绑定改走新建,4 单全部投递成功并 set 新指纹。旧绑定含 ci-failed 等过期类别,与当前卡点(pushback-format)不同属预期指纹变化,但 ARCHIVED 是新增失败形态
   - 提案:无:新建重投一次成功,现有 ARCHIVED 处理路径足够;仅当 ARCHIVED 高频出现才需要 sweep 扩展为归档探活
-- `format-self-review-ownpr-handoff-loop` **ownPr 格式打回(fix-handoff)路径为既有闭环机制,本轮无新增自动化缺口** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：拒绝 G10 已停用自动跟进流程的旧提案。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G10。
+归因：confirmed。理由：适用流程已停用；SKILL.md §5.4 明确禁止开自动跟进会话。替代：现行卡点汇总由人处理，不恢复 handoff。
+落点：仅建议后续 owner 拍板会话结案这 5 条台账；不改现行 SKILL，不复活 handoff。 验证：逐条确认仅针对已停用的自动跟进路径；若另有现行流程实例，应另列新证据。
+不再重提；重提唯一合法条件=现行授权流程出现新的证据实例。
+- `format-self-review-ownpr-handoff-loop` **ownPr 格式打回(fix-handoff)路径为既有闭环机制,本轮无新增自动化缺口** — 出现 1 次,首见 2026-08-26,最近 2026-08-26,status: rejected
   - 现象:PR 319 首次命中 pushback-format+selfFixAuthors 组合,fix-session-state 无绑定走 create 新建跟进会话+use_worktree,投递成功;notify-author-resolve 正确按 self-fix-author 短路,remind-stale-author 按 own-pr 短路——三处去重/分流行为均符合设计,无需改 skill
-- `segment-delivery-ledger-required-before-consume` **审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: open
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：拒绝 G10 已停用自动跟进流程的旧提案。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G10。
+归因：confirmed。理由：适用流程已停用；SKILL.md §5.4 明确禁止开自动跟进会话。替代：现行卡点汇总由人处理，不恢复 handoff。
+落点：仅建议后续 owner 拍板会话结案这 5 条台账；不改现行 SKILL，不复活 handoff。 验证：逐条确认仅针对已停用的自动跟进路径；若另有现行流程实例，应另列新证据。
+不再重提；重提唯一合法条件=现行授权流程出现新的证据实例。
+- `segment-delivery-ledger-required-before-consume` **审查席读了分段 payload 但未走 deliver-review-segment，consume 先判 invalid** — 出现 1 次,首见 2026-08-25,最近 2026-08-25,status: tracked
   - 现象:PR #285 独立审查在隔离 worktree 写出 rro-1.json，但 STATE_DIR 无分段投递台账；consume 以 deliveredSegments=0 判 invalid。补跑 deliver-review-segment --order 1 后才 dirty。根因是审查任务虽要求按序调用交付出口，隔离席可能只读了 payload 文件。
   - 提案:build-review-task/prompt 继续强制 deliver-review-segment；主 agent 在 consume 前检查 deliveredSegments，缺台账先补投再消费，不要把审查席读 payload 文件当成已投递。
+  - 备注:[decided:2026-09-17]
+owner 本会话决定：G07 track，status=tracked，继续观察。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G07。
+归因：pending。
+落点：既有 build-review-task.mjs、lib.review-output-shape.mjs、投递/consume 入口与样例。 验证：缺 snapshotHash、未投递、重复文件答案、命令锚点不一致均拒绝；正确答卷可过。
+升格/复核条件：下一次当前模板下仍复发时核对调用链并回到已采纳提案；不可让主会话静默补字段，也不自动结案。
 - `rro1-segment-receipts-assignedcoveragekeys-alias` **审查 agent 把 segmentReceipts.coverageKeys 写成 assignedCoverageKeys 导致消费前必须手工改字段** — 出现 2 次,首见 2026-08-21,最近 2026-08-21,status: landed,commit `1cd0c64`
   - 现象:本轮 #228 审查席产出的 rro-1 覆盖集合完整且与投递台账逐条一致，但字段名写成 assignedCoverageKeys 而非契约字段 coverageKeys。主 agent 对照 seg-*.meta.json 核对后改名才 consume 到 clean。属 prompt 形状提示缺口，不放宽 gate。
   - 提案:在 build-review-task.mjs 的 segmentReceipts 字段级形状节加一句：coverageKeys 字段名必须是 coverageKeys，禁止写成 assignedCoverageKeys；值必须原样复制该段 assignedCoverageKeys。
@@ -544,10 +803,10 @@
 
 ## 无法自动化(by-design,只计数观察)
 
-- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 4 次,首见 2026-09-06,最近 2026-09-08,status: tracked
-  - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight 走本地 git objects 不受影响。复现记录：2026-09-06 PR501 席①；2026-09-07 PR472 席①（context.mjs exit 1 报 Unknown JSON field headRefOid，build-review-task 逃逸候选源同败，改用 gh api pulls 端点手工锚定后披露）；2026-09-08 PR533 席①再复现（build-review-task 逃逸候选现场取数同败于 closingIssuesReferences 字段，task 记 escapeSourceIncomplete=true；PR 正文与全部讨论线程人工通读替代逃逸源核对，未据无候选放行）。属环境与 skill 脚本的字段契约漂移，非目标 PR 代码问题。
 - `canvas-ui-surface-not-in-interaction-gate` **画布新增可交互 DOM 面未登记进 isCanvasUiTarget 唯一闸门** — 出现 1 次,首见 2026-09-08,最近 2026-09-08,status: tracked
   - 现象:PR #528 给画布加了可编辑组名栏(.dom-node-caption / .dom-node-caption-input),isCanvasUiTarget 的选择器清单没同步登记。组名栏为让点组名选中整组而刻意不 stopPropagation,导致编辑态下 input 内 pointerdown 冒泡到 shell:handleShellPointerDown 的失焦分支先 blur 提交收场,dispatchPointerDown 再按 data-group-caption-id 解析成员选中并 setPointerCapture——点光标=关编辑,拖选字=拖动整组;非组图片名栏因 stopPropagation 幸免。单图 caption 既有测试直接 dispatch dblclick 不经过 pointerdown,故未拦住。教训:给画布加新的可编辑 DOM 面时,isCanvasUiTarget 是 shell pointerdown 路由的唯一闸门,必须同步登记或编辑态 stopPropagation;可考虑 data-canvas-ui 属性约定替代逐类名登记,并补 pointerdown-inside-input 交错测试。
+- `seat-env-gh-json-field-unsupported` **审查席环境 gh 版本不支持 headRefOid/closingIssuesReferences 字段，context/build-task/consume 现场取数失败** — 出现 3 次,首见 2026-09-06,最近 2026-09-07,status: tracked
+  - 现象:mivo-review-l20 runner 的 gh CLI 不支持 headRefOid 与 closingIssuesReferences JSON 字段：context.mjs 与 build-review-task.mjs 的现场 gh pr view 调用退出码 1，consume-review-output 的逃逸候选重算同源失败。preflight/review-preflight 走本地 git objects 不受影响。复现记录：2026-09-06 PR501 席①；2026-09-07 PR472 席①（context.mjs exit 1 报 Unknown JSON field headRefOid，build-review-task 逃逸候选源同败，改用 gh api pulls 端点手工锚定后披露）；2026-09-08 PR533 席①再复现（build-review-task 逃逸候选现场取数同败于 closingIssuesReferences 字段，task 记 escapeSourceIncomplete=true；PR 正文与全部讨论线程人工通读替代逃逸源核对，未据无候选放行）。属环境与 skill 脚本的字段契约漂移，非目标 PR 代码问题。
 - `pr-body-drift-after-autopilot-rounds` **多轮自动返修后 PR 正文与 head 事实漂移，审查必须以 head 代码为准** — 出现 1 次,首见 2026-09-07,最近 2026-09-07,status: tracked
   - 现象:PR #528 席①观察：正文『明确不包含：组名导出』『组名栏尚未接入 LOD』，但最终 head (e0d9f78) 已实现组名导出（canvasExportText groupCaptionsOnly 通道）且 GroupCaptionLayer 已过 needsImageCaptionShell LOD 过滤；正文验证节还停在旧候选 SHA 0d05227。多轮 autopilot 修复合入后正文未同步，格式门与 pr-intent 均不拦截。属人工核对项：审查结论只锚 head 代码，正文声明仅作线索不作事实。
 - `pr501-post-merge-triage` **PR#501 已合并后仍进三审：席位拿到 MERGED PR 时的流程口径缺口** — 出现 1 次,首见 2026-09-06,最近 2026-09-06,status: tracked
@@ -1031,3 +1290,18 @@
 [part:2][rejected] summaryBroadcast.command=null → 理由:owner 2026-07-29 拍板汇总不进 Slack，属有意配置不是漏配；不再重提除非 owner 改回 command。
 - `skillsync-preview-dist-dirty` skill 仓 preview-dist 本地脏文件挡住自同步 pull，skill 更新拉不进来 — [decided:2026-08-24] reject(过期) 本机 preview-dist 已干净；Mini 残留已 stash 后 ff。不再重提；重提唯一合法条件=preview-dist 再脏并挡住 pull。
 - `neg-evidence-anchor-mismatch-patch` 审查 agent 产出的 negativeEvidence.outputAnchor 与被引用 run 的登记值不一致导致整轮 invalid — [decided:2026-08-24] reject(已修/观察) build-review-task.mjs 已要求逐字复制 outputAnchor。不再重提；重提唯一合法条件=prompt 修后仍复发。
+- `self-fix-format-handoff-omit-checklist-ratio` selfFix 格式打回首次投递漏写 checklist 勾选率门槛 — [decided:2026-09-17]
+owner 本会话决定：拒绝 G10 已停用自动跟进流程的旧提案。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G10。
+归因：confirmed。理由：适用流程已停用；SKILL.md §5.4 明确禁止开自动跟进会话。替代：现行卡点汇总由人处理，不恢复 handoff。
+落点：仅建议后续 owner 拍板会话结案这 5 条台账；不改现行 SKILL，不复活 handoff。 验证：逐条确认仅针对已停用的自动跟进路径；若另有现行流程实例，应另列新证据。
+不再重提；重提唯一合法条件=现行授权流程出现新的证据实例。
+- `archived-fix-session-recreate-dispatch` fix-handoff 目标会话已归档时 send_to_session 连带 working_dir 参数投递失败（ARCHIVED），须先 clear 绑定再纯 create 新建（带 working_dir+use_worktree） — [decided:2026-09-17]
+owner 本会话决定：拒绝 G10 已停用自动跟进流程的旧提案。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G10。
+归因：confirmed。理由：适用流程已停用；SKILL.md §5.4 明确禁止开自动跟进会话。替代：现行卡点汇总由人处理，不恢复 handoff。
+落点：仅建议后续 owner 拍板会话结案这 5 条台账；不改现行 SKILL，不复活 handoff。 验证：逐条确认仅针对已停用的自动跟进路径；若另有现行流程实例，应另列新证据。
+不再重提；重提唯一合法条件=现行授权流程出现新的证据实例。
+- `fix-session-thread-verify-timeout` 跟进会话在 review thread 核验步骤反复超时,thread 核验/resolve 可拆给编排层内联执行 — [decided:2026-09-17]
+owner 本会话决定：拒绝 G10 已停用自动跟进流程的旧提案。来源：周度报告 2026-09-14-triage.md「Agent 识别意见(供拍板)」 G10。
+归因：confirmed。理由：适用流程已停用；SKILL.md §5.4 明确禁止开自动跟进会话。替代：现行卡点汇总由人处理，不恢复 handoff。
+落点：仅建议后续 owner 拍板会话结案这 5 条台账；不改现行 SKILL，不复活 handoff。 验证：逐条确认仅针对已停用的自动跟进路径；若另有现行流程实例，应另列新证据。
+不再重提；重提唯一合法条件=现行授权流程出现新的证据实例。
