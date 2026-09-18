@@ -77,8 +77,8 @@
 | 合并后健康检查 | `typecheck-merged.mjs` |
 | 合并致谢播报 | `notify-merge-ack.mjs`（`loopPrExclusion.mergeAckNotify.notifyModule` 未配置时 no-op） |
 | 汇总 JSON 落盘（不进会话末尾） | `run-log.mjs` |
-| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（preview 版：写盘后仅本地落盘不回推；主仓版写盘后自动提交推送台账到 skills 仓库 main） |
-| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；preview 版 `push` 已禁用恒返回 skipped） |
+| 自进化台账（SKILL 第 8 节） | `evolution-note.mjs`（写盘后自动提交推送台账到 skills 仓库 main） |
+| Skill 仓库自同步 | `sync-skill-repo.mjs`（`pull` 已内置于 pre-check/prepare；`push` 用于 8.3 落地后回推，best-effort 不阻塞） |
 | 跟进 worktree／分支回收（SKILL 5.4） | `fix-worktree-cleanup.mjs`（每轮 sweep 后 `--scan` 全量；`--pr <N>` 定点；`--dry-run` 预览） |
 
 能由脚本确定的字段不要重新用 `grep`、手写 `gh api` 或模型猜测实现。脚本不可用时，

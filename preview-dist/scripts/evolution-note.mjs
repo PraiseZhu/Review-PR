@@ -19,9 +19,10 @@
 //   set-status --fingerprint <slug> --status <open|landed|adopted|rejected> [--note "…"] [--no-sync]
 //   list       (输出整份 ledger)
 //
-// preview 版:台账仅本地落盘(skillRepoCommitPush 为只读 stub,写盘后不提交不推送,
-// 恒返回 skipped:'dist-readonly'——纯落盘,由维护者在主仓落地)。
-// 主仓版:add / set-status 每次写盘后自动把 ledger.json + EVOLUTION.md 提交并推送。
+// 自动回推:add / set-status 每次写盘后自动把 ledger.json + EVOLUTION.md 提交并推送
+// skills 仓库(main 分支;实现见 lib.mjs skillRepoCommitPush,只 add 台账两个文件,
+// 不裹挟其他改动)。同步 best-effort:失败不影响台账写入,结果在输出 sync 字段里,
+// 主 agent 把失败写进汇总即可。--no-sync 跳过(本地调试用)。
 //
 // 联动重建:台账写入成功后,同步重建 preview-dist(三审第③席用的受限分发版,产物
 // 含台账副本,台账一变产物即真过期——见 preview-dist.manifest.json freshnessIgnore
