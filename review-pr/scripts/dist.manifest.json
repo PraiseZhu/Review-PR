@@ -37,27 +37,27 @@
       "replace": "  check。汇总 JSON"
     },
     {
-      "file": "SKILL.md",
+      "file": "references/runtime-and-sync.md",
       "find": "自进化写台账后由 `evolution-note.mjs` 自动提交推送（见 8.2/8.3）。`evo:` 提交不会裹进",
       "replace": "（dist 分发版：写回上游的能力已剥离，本节仅拉取侧生效。）同步是 best-effort："
     },
     {
-      "file": "SKILL.md",
+      "file": "references/runtime-and-sync.md",
       "find": "（`EVOLUTION.md`、`evolution/ledger.json`）用确定性规则自动解冲突（md 取行并集、ledger 按",
       "replace": "（台账类只追加文件）用确定性规则自动解冲突（md 取行并集、ledger 按"
     },
     {
-      "file": "SKILL.md",
+      "file": "references/auto-batch.md",
       "find": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘、自进化复盘完成后，",
       "replace": "**auto 模式必须把完整摘要主动推送给 owner 本人**：run-log 落盘后，"
     },
     {
-      "file": "SKILL.md",
+      "file": "references/auto-batch.md",
       "find": "**自进化** <n>",
       "replace": ""
     },
     {
-      "file": "SKILL.md",
+      "file": "references/auto-batch.md",
       "find": "- 已落地（2026-08-09，见 3.10）：白名单 bot thread 代 reply / 条件 resolve——reply\n  无条件（反停滞），resolve 只在机器可核实条件下执行（己方 marker + 同 headSha +\n  白名单复核），marker 按 viewer 作者身份绑定、状态在 GitHub 侧无本地回执；原\n  `assessThreadEvidence` 字符串共现判据已删除（可被两行普通埋点绕过，实测成立）。",
       "replace": ""
     },
@@ -117,12 +117,12 @@
       "replace": "    if (s?.ok === true && s.skipped === 'dist-readonly') {\n      // dist 分发版:回推能力已剥离,本地 canonical 落盘+上方回读校验通过即视为激活完成并 ack\n      // ——否则 inbox 永久重放(审 D-F2)。主仓不会出现该 skipped 值,此分支在主仓恒不可达。\n      activated.push(hazard.hazardId); continue;\n    }\n    if (!s?.ok || s.pushed !== true) {"
     },
     {
-      "file": "SKILL.md",
+      "file": "references/phase3-landing.md",
       "find": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除）；",
       "replace": "  5. canonical upsert → 回读校验 → **commit&push 成功**，三者全过才 ack（从 inbox 移除；dist 分发版无回推：回读校验通过即 ack）；"
     },
     {
-      "file": "SKILL.md",
+      "file": "references/runtime-and-sync.md",
       "find": "不是故障。`skillRepoCommitPush` 与分叉后的 `skillRepoPull` 共用同一套 rebase：自动",
       "replace": "不是故障。（dist 分发版：`skillRepoCommitPush` 为只读 stub，下述重推/解冲突机制仅在主仓生效。）主仓的该函数会自动 `pull --rebase` 后重推，并对**只追加类台账文件**"
     },

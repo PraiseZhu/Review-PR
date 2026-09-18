@@ -3164,90 +3164,10 @@ export function skillRepoPull({ timeoutMs = 30_000, pushAfterConverge = true } =
   };
 }
 
-// dist:stub:start skillRepoCommitPush
-/**
- * 提交并推送 skill 自身的改动(自进化落地 / 台账更新)。
- *   - paths:相对 skill 根的 pathspec 列表,缺省整个 skill 目录——只 add 这些路径,
- *     绝不把 skills 仓库里其他 skill 的本地改动裹进来;
- *   - message:commit message(经 stdin 传给 git commit -F -,可含空格换行);
- *   - 推送守卫:只在当前分支 == 默认分支(main)时 push;在别的分支上只 commit 不 push,
- *     防止把维护者的实验分支自动发布出去。
- *   - push 被拒(远端先动了)时自动 pull --rebase 后重推一次;再失败如实返回。
- * 返回 { ok, committed, commit, pushed, branch, error | skipped }。
- */
-export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {}) {
-  const info = skillRepoInfo();
-  if (!info) return { ok: true, committed: false, pushed: false, skipped: 'not-a-git-repo' };
-  const cwd = info.gitRoot;
-  const joinSpec = (p) => (info.skillRelPath === '.' ? p : `${info.skillRelPath}/${p}`);
-  const spec = paths?.length ? paths.map(joinSpec) : [info.skillRelPath];
-
-  git(['add', '-A', '--', ...spec], { allowFail: true, cwd, timeoutMs: 15_000 });
-  const droppedEvoCode = /^evo:/.test(message || '') ? unstageEvoCodeFiles(cwd, info.skillRelPath, spec) : [];
-  const staged = git(['diff', '--cached', '--name-only', '--', ...spec], { allowFail: true, cwd }).stdout.trim();
-  const stagedFiles = staged ? staged.split('\n').map((s) => s.trim()).filter(Boolean) : [];
-  let committed = false;
-  let commit = null;
-  if (stagedFiles.length) {
-    const c = git(['commit', '--quiet', '-F', '-', '--', ...stagedFiles], {
-      input: message || 'evo: sync skill state', allowFail: true, cwd, timeoutMs: 15_000,
-    });
-    if (!c.ok) {
-      return { ok: false, committed: false, pushed: false, step: 'commit', error: (c.stderr || c.stdout).trim().slice(0, 300) };
-    }
-    committed = true;
-    commit = git(['rev-parse', '--short', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
-  }
-
-  if (!info.branch || info.branch === 'HEAD') {
-    return { ok: false, committed, commit, pushed: false, skipped: 'detached-head' };
-  }
-  if (info.branch !== info.defaultBranch) {
-    return { ok: true, committed, commit, pushed: false, branch: info.branch, skipped: `not-on-${info.defaultBranch}` };
-  }
-  const aheadR = git(['rev-list', '--count', `origin/${info.branch}..HEAD`], { allowFail: true, cwd });
-  const ahead = aheadR.ok ? Number(aheadR.stdout.trim()) : null;
-  if (ahead === 0) return { ok: true, committed, commit, pushed: false, branch: info.branch, reason: 'nothing-to-push' };
-
-  let push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-  const converge = [];
-  // 被拒(远端先动了)→ rebase 本地未推 commit 后重推。最多试 REBASE_ROUNDS 轮:每轮之间
-  // 远端可能又被另一个写者推进(本机交互式轮次 vs mini 定时轮次),重来一次即可收敛。
-  const REBASE_ROUNDS = 3;
-  for (let round = 0; round < REBASE_ROUNDS && !push.ok
-       && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr); round++) {
-    const conv = rebaseOntoOrigin({ cwd, timeoutMs });
-    if (!conv.ok) {
-      return {
-        ok: false,
-        committed,
-        commit,
-        pushed: false,
-        branch: info.branch,
-        converge,
-        reason: conv.reason,
-        conflictFiles: conv.conflictFiles,
-        backupRef: conv.backupRef,
-        dirtyFiles: conv.dirtyFiles,
-        error: conv.error,
-      };
-    }
-    converge.push({ round: round + 1, resolvedLedgerConflict: conv.resolvedLedgerConflict });
-    push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-    if (push.ok) git(['update-ref', '-d', conv.backupRef], { allowFail: true, cwd });
-  }
-  return {
-    ok: push.ok,
-    committed,
-    commit,
-    pushed: push.ok,
-    branch: info.branch,
-    ...(droppedEvoCode.length ? { droppedEvoCode } : {}),
-    ...(converge.length ? { converge } : {}),
-    error: push.ok ? null : ((push.stderr || push.stdout).trim().slice(0, 300) || 'git push 失败'),
-  };
+/** preview 分发版:写回主仓的能力已剥离;返回既有 skipped 形状,消费方按未提交处理。 */
+export function skillRepoCommitPush() {
+  return { ok: true, committed: false, pushed: false, skipped: 'dist-readonly' };
 }
-// dist:stub:end skillRepoCommitPush
 
 /** 从 origin 解析 { owner, repo }(支持 git@ 与 https 两种 URL)。 */
 export function parseRepo() {

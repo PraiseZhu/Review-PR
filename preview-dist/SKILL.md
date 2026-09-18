@@ -194,9 +194,13 @@ GitHub 写操作前复核 **当前 head**。详细门槛、分级合并、核销
 跨轮身份是 `invariantKey`。`reopened` 才可说“已收敛后复发”；`persistent` 只是持续未修。
 完整判定见 [references/phase3-landing.md](references/phase3-landing.md)。
 
-### 5.1 通过：批准并合并
+### 5.1 通过：批准并合并（preview 版）
 
-### 5.2 不通过：请求修改
+> preview 版：本节能力已剥离（批准/合并/合并致谢不在 preview 产物中），审查通过时输出内部结论即止，不做任何合并落地动作。
+
+### 5.2 不通过：请求修改（preview 版）
+
+> preview 版：本节能力已剥离（REQUEST_CHANGES/COMMENT 打回评论与模板 A 不在 preview 产物中），输出内部结论即止。
 
 ### 5.3 维护者专用分流
 
@@ -204,9 +208,15 @@ GitHub 写操作前复核 **当前 head**。详细门槛、分级合并、核销
 [references/internal-gates.md](references/internal-gates.md) 与
 [references/phase3-landing.md](references/phase3-landing.md)。
 
-### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话
-### 5.5 冲突代合并（主干侧解决，不推作者分支）
-### 5.6 代修合并（merge-then-fix，仅交互模式）
+### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话（preview 版）
+
+> preview 版：本节能力已剥离（fix-handoff 跟进会话投递不在 preview 产物中），输出内部结论即止。
+### 5.5 冲突代合并（主干侧解决，不推作者分支）（preview 版）
+
+> preview 版：本节能力已剥离（主干侧代合并不在 preview 产物中），输出内部结论即止。
+### 5.6 代修合并（merge-then-fix，仅交互模式）（preview 版）
+
+> preview 版：本节能力已剥离（代修合并不在 preview 产物中），输出内部结论即止。
 
 ### 5.7 / 5.8 / 5.9
 
@@ -241,7 +251,7 @@ auto 永不合。
 
 无论成功、打回、跳过、异常还是用户拒绝，都执行收尾：只移除本次创建的 review worktree
 和临时分支；回到 `originalBranch`；释放本轮自己获取的锁。
-   `fix-worktree-cleanup.mjs` 按「对应 PR 已合并／关闭」实查后的回收（见 5.4），
+   （preview 版：`fix-worktree-cleanup.mjs` 已剥离，托管 worktree 回收由维护者在主仓执行；见 5.4）
    除此之外一律不碰。
    汇总发出前先按第 8 节做自进化复盘（进化结果要并入 6.1 摘要的「自进化」组）。
 
@@ -269,16 +279,14 @@ node "<SKILL_ROOT>/scripts/evolution-note.mjs" add \
   --title "<一句话根因>" [--detail "<现象与证据>"] [--proposal "<具体改法>"] [--commit <sha>] --no-sync
 ```
 
-底层脚本默认会提交并推送，因此本流程每次 `add` / `set-status` 都必须带 `--no-sync`；该参数不是仅供调试。台账写入授权不包含 commit 或 push。只有另有当次针对 Skills 仓库的提交／推送授权时，才执行对应动作，不能借一次台账更新触发远端写入。失败如实写进摘要，不重试到卡死。
+（preview 版：自进化台账纯落盘不回推，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort：
 
 ### 8.3 automatable-gap 的授权维护规则
 
 当次授权已覆盖具体 Skill 文件和维护动作，且不属于扩权类、改动最小、脚本 `node --check`
 通过、每轮最多落地 1 项时，才允许修改 Skill 自身。
 
-6. 只有已有相应 commit 且当次授权覆盖 Skills 仓库目标 remote／分支的 push 时，才运行
-   `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" push --message "evo: <fingerprint>"`
-   推送授权范围内的维护提交。台账命令仍用 `--no-sync`，不另行隐式推送。未授权 push 不运行该命令，也不因此阻断本地维护交付；推送失败不回滚落地，如实写进摘要。
+6. **preview 版不回推**：落地记录与提案留在台账（`evolution/ledger.json` + `EVOLUTION.md`），由维护者在主仓落地——`sync-skill-repo.mjs` push 与 `evolution-note.mjs` 自动回推在 preview 版均为只读 stub（恒返回 `skipped: 'dist-readonly'`），不做任何向上游的提交/推送。
 
 ### 8.4 汇总与交互
 

@@ -97,3 +97,11 @@ test('SKILL 5.4 不得再教 agent 开跟进会话', () => {
   assert.doesNotMatch(skill, /投递 5\.4\n\s*跟进会话/);
   assert.doesNotMatch(skill, /5\.4（自修）/);
 });
+
+test('SKILL.md 入口不超过 500 行（官方 progressive disclosure）', () => {
+  const lines = skill.split('\n').length;
+  assert.ok(
+    lines <= 500,
+    `SKILL.md 有 ${lines} 行，超过 500 行上限；细节应外置 references/，不要把流程正文写回入口`,
+  );
+});
