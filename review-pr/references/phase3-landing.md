@@ -128,7 +128,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
 作者在 `admins` 名单且本轮审查通过并已落回执 / 均不满足）判断能否 `--admin`，判定逻辑单一来源在
 `scripts/lib.mjs` 的 `decideStructuralBypassRoute`（结构性 blocker 探测本身用
 `classifyBlockedStatus`，approval 维度不再决定要不要探测，只决定探测完怎么归类），
-完整安全条件见 [references/internal-gates.md](references/internal-gates.md)
+完整安全条件见 [references/internal-gates.md](internal-gates.md)
 「作者侧与仓库侧 gate」，否则跳过。
 合并使用仓库允许的默认策略，不自行改变项目策略。**`pre-merge-check.mjs` 返回的
 `headRefOid` 必须原样带进 `merge-pr.mjs` 的 `--match-head`**（判定与执行之间的
@@ -353,7 +353,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   名单且已有针对**当前 head** 的 `verdict=clean` 审查回执（本轮独立审查通过后由
   `write-review-receipt.mjs` 落盘））才能 admin merge，否则跳过，不把它写成 P1 打回——详见 5.1「admins
   名单的结构性 BLOCKED 分级合并」与
-  [references/internal-gates.md](references/internal-gates.md)。
+  [references/internal-gates.md](internal-gates.md)。
 - `gate.blockClass=ci-unknown`（CI 状态读取失败：权限/网络/解析问题）不是
   structural-check，绝不可 bypass、不催办——本轮跳过，下一轮重新探测。
 - 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
@@ -367,7 +367,7 @@ body 总述的意见，若仓库没有该项 required check，就没有任何机
   `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
   交互/人手才按 5.1「授权快速合并通道」合。
 - 产品/架构 hold、issue release、通知、self-merge（仅交互）和收尾 issue 的详细动作均按
-  [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
+  [references/internal-gates.md](internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
 
 ### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话
@@ -456,7 +456,7 @@ base 的冲突。任何其他 gate 未过的 PR 一律不代解冲突，照常�
 - 产品/UI 与技术架构 gate 必须已豁免或已获白名单同意，不能用"合并后我来改"绕过
   讨论流程；
 - required checks 失败或仍在运行时不合并；结构性 `BLOCKED` 仍按
-  [references/internal-gates.md](references/internal-gates.md) 的 admin 条件；
+  [references/internal-gates.md](internal-gates.md) 的 admin 条件；
 - 修复量必须在"本轮能改完、能验证"的范围内：问题多到接近重写、或涉及连维护者也
   拿不准的语义/产品取舍时不硬修，回到 5.2 打回或先与作者讨论；
 - 作者在 `selfFixAuthors` 时不走本路径（5.4 已停用，不开跟进会话；卡点只报告）；

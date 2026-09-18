@@ -288,7 +288,18 @@ auto 永不合。
 
 ## 7. 清理与收尾
 
-无论成功、打回、跳过、异常还是用户拒绝，都执行收尾：只移除本次创建的 review worktree
-和临时分支；回到 `originalBranch`；释放本轮自己获取的锁。
+无论成功、打回、跳过、异常还是用户拒绝，都执行收尾：
+
+1. 只移除本次创建的 review worktree 和临时分支；不触碰用户已有 worktree 或 active
+   session 的 cwd。`.cindy-worktrees` 等托管目录下唯一的例外是
    `fix-worktree-cleanup.mjs` 按「对应 PR 已合并／关闭」实查后的回收（见 5.4），
-   除此之外一律不碰。
+   除此之外一律不碰；
+2. 回到 `originalBranch`，确认 `git status --short`，不自动修复用户已有脏改动；
+3. 合并成功且用户明确要求同步时，才对默认分支执行 fast-forward-only 更新；
+4. 释放本轮自己获取的锁：`cleanup.mjs --token <token>` 或
+   `release-lock.mjs --token <token>`；带 token 时脚本会拒绝释放归属不匹配的锁
+   （`notOwner=true`），锁未获取时不调用释放；
+5. 汇总 PR、规则命中、P0/P1 数量、实际验证、外部写操作、未完成事项和风险；
+
+不把审查报告、GitHub token、用户数据或临时快照落入仓库。发现已有残留 worktree 或锁
+无法确认归属时不要强删，报告给用户处理。

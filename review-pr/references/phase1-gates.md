@@ -273,7 +273,7 @@ node --test tests/*.test.mjs
 命中事实，`signoff.suggestedHolds` 是编排要执行的 hold 建议，消费规则见 3.8/3.9
 与本节下方「payload 合同」）：
 
-- 产品/UI gate：按 [references/internal-gates.md](references/internal-gates.md) 判定
+- 产品/UI gate：按 [references/internal-gates.md](internal-gates.md) 判定
   `exempt`、`needsProductCheck`、白名单同意（讨论 issue 留言与 PR 评论区直接回复
   同等采信）和 UI/产品语义；
 - 技术架构 gate：产品 gate 未命中时，按 `archGate.triggers`、技术白名单和讨论
@@ -282,7 +282,7 @@ node --test tests/*.test.mjs
   也不受本门常规豁免：谁改手机端会触发冷更的代码都要进一步确认——作者身份、普通
   Approve、标回 Ready 都不算放行，只认 `coldUpdate.approvers` 里的把关人明确针对冷更的
   表态，名单内成员自己提的 PR 也要显式确认（口径与两种 trigger 的处置见
-  [references/internal-gates.md](references/internal-gates.md)「mobile 冷更（runtime
+  [references/internal-gates.md](internal-gates.md)「mobile 冷更（runtime
   fingerprint）触发器」）；
 - 真正命中产品/UI 时运行 `signoff-hold.mjs --kind product`，真正命中架构调整时运行
   `signoff-hold.mjs --kind arch`（与 security/rules 两门共用同一套统一 hold 机制，
@@ -328,7 +328,7 @@ node --test tests/*.test.mjs
   避免讨论 issue 悬挂。
 
 产品/UI gate 和架构 gate 的详细名单、阈值、Slack 归属、通知去重与异常处理见
-[references/internal-gates.md](references/internal-gates.md)。Bugfix、已有功能补充和
+[references/internal-gates.md](internal-gates.md)。Bugfix、已有功能补充和
 纯技术改动不因路径命中就机械 hold，语义拿不准时从严。
 
 ### 3.5 前置 gate

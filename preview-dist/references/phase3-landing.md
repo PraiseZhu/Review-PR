@@ -125,7 +125,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   名单且已有针对**当前 head** 的 `verdict=clean` 审查回执（本轮独立审查通过后由
   `write-review-receipt.mjs` 落盘））才能 admin merge，否则跳过，不把它写成 P1 打回——详见 5.1「admins
   名单的结构性 BLOCKED 分级合并」与
-  [references/internal-gates.md](references/internal-gates.md)。
+  [references/internal-gates.md](internal-gates.md)。
 - `gate.blockClass=ci-unknown`（CI 状态读取失败：权限/网络/解析问题）不是
   structural-check，绝不可 bypass、不催办——本轮跳过，下一轮重新探测。
 - 命中 `loopPrExclusion` 且判定为 loop 自管（`skip-loop-managed`）：不审、不合、
@@ -139,7 +139,7 @@ persistent/reopened 分类（D3，2026-08-02 gpt 阻断修正）。
   `/approve-merge <当前 head 完整 40 位 SHA>` 授权时，auto 标 `review-complete-hold-merge`、**仍不合**；
   交互/人手才按 5.1「授权快速合并通道」合。
 - 产品/架构 hold、issue release、通知、self-merge（仅交互）和收尾 issue 的详细动作均按
-  [references/internal-gates.md](references/internal-gates.md) 执行，脚本返回错误时
+  [references/internal-gates.md](internal-gates.md) 执行，脚本返回错误时
   不重复写入或猜测成功。
 
 ### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话
