@@ -5265,6 +5265,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
+    },
+    {
+      "fingerprint": "seat-cannot-bind-native-worktree",
+      "tier": "proposal",
+      "title": "seat cannot bind native worktree artifacts",
+      "detail": "PR 632 re-hit: native --repo-root rejected as repo-root mismatch, omitting it rejects bound-worktree outputs, dispatch-review.mjs not allowlisted, task and preflight cannot land.",
+      "proposal": "allow REVIEW_NATIVE_WORKTREE as identity.worktree with repoRoot GITHUB_WORKSPACE",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 2,
+      "firstSeen": "2026-09-18T10:18:02.679Z",
+      "lastSeen": "2026-09-18T10:50:38.395Z"
     }
   ],
   "escapedHazards": [
