@@ -194,9 +194,13 @@ GitHub 写操作前复核 **当前 head**。详细门槛、分级合并、核销
 跨轮身份是 `invariantKey`。`reopened` 才可说“已收敛后复发”；`persistent` 只是持续未修。
 完整判定见 [references/phase3-landing.md](references/phase3-landing.md)。
 
-### 5.1 通过：批准并合并
+### 5.1 通过：批准并合并（preview 版）
 
-### 5.2 不通过：请求修改
+> preview 版：本节能力已剥离（批准/合并/合并致谢不在 preview 产物中），审查通过时输出内部结论即止，不做任何合并落地动作。
+
+### 5.2 不通过：请求修改（preview 版）
+
+> preview 版：本节能力已剥离（REQUEST_CHANGES/COMMENT 打回评论与模板 A 不在 preview 产物中），输出内部结论即止。
 
 ### 5.3 维护者专用分流
 
@@ -204,9 +208,15 @@ GitHub 写操作前复核 **当前 head**。详细门槛、分级合并、核销
 [references/internal-gates.md](references/internal-gates.md) 与
 [references/phase3-landing.md](references/phase3-landing.md)。
 
-### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话
-### 5.5 冲突代合并（主干侧解决，不推作者分支）
-### 5.6 代修合并（merge-then-fix，仅交互模式）
+### 5.4 自动跟进修复（fix-handoff）：已停用，禁止开跟进会话（preview 版）
+
+> preview 版：本节能力已剥离（fix-handoff 跟进会话投递不在 preview 产物中），输出内部结论即止。
+### 5.5 冲突代合并（主干侧解决，不推作者分支）（preview 版）
+
+> preview 版：本节能力已剥离（主干侧代合并不在 preview 产物中），输出内部结论即止。
+### 5.6 代修合并（merge-then-fix，仅交互模式）（preview 版）
+
+> preview 版：本节能力已剥离（代修合并不在 preview 产物中），输出内部结论即止。
 
 ### 5.7 / 5.8 / 5.9
 
@@ -239,29 +249,48 @@ auto 永不合。
 
 ## 7. 清理与收尾
 
-无论成功、打回、跳过、异常还是用户拒绝，都执行收尾：只移除本次创建的 review worktree
-和临时分支；回到 `originalBranch`；释放本轮自己获取的锁。
-   `fix-worktree-cleanup.mjs` 按「对应 PR 已合并／关闭」实查后的回收（见 5.4），
-   除此之外一律不碰。
+无论成功、打回、跳过、异常还是用户拒绝，都执行收尾：
+
+1. 只移除本次创建的 review worktree 和临时分支；不触碰用户已有 worktree 或 active
+   session 的 cwd。`.cindy-worktrees` 等托管目录下唯一的例外是
+   （preview 版：`fix-worktree-cleanup.mjs` 已剥离，托管 worktree 回收由维护者在主仓执行；见 5.4）
+   除此之外一律不碰；
+2. 回到 `originalBranch`，确认 `git status --short`，不自动修复用户已有脏改动；
+3. 合并成功且用户明确要求同步时，才对默认分支执行 fast-forward-only 更新；
+4. 释放本轮自己获取的锁：`cleanup.mjs --token <token>` 或
+   `release-lock.mjs --token <token>`；带 token 时脚本会拒绝释放归属不匹配的锁
+   （`notOwner=true`），锁未获取时不调用释放；
+5. 汇总 PR、规则命中、P0/P1 数量、实际验证、外部写操作、未完成事项和风险；
    汇总发出前先按第 8 节做自进化复盘（进化结果要并入 6.1 摘要的「自进化」组）。
+
+不把审查报告、GitHub token、用户数据或临时快照落入仓库。发现已有残留 worktree 或锁
+无法确认归属时不要强删，报告给用户处理。
 
 <!-- dist:strip:start self-evolution -->
 ## 8. 自进化复盘（self-evolution）
 
 每轮在 run-log 落盘之后、发送最终摘要之前，对本轮**没走到合并**的每个候选做一次根因
-复盘。复盘只影响未来轮次，**不回头改本轮已做出的任何 gate 判定或 GitHub 动作**。
-普通审查或 auto 模式不自动取得 Skill 修改、提交或推送权限。
+复盘，在当前审查摘要中提出具体改进与证据；只有当次维护授权覆盖 Skill 台账时才写入。普通审查或 auto 模式不自动取得 Skill 修改、提交或推送权限。目标：同一类漏判或流程缺口不第二次
+靠人发现。复盘只影响未来轮次，**不回头改本轮已做出的任何 gate 判定或 GitHub 动作**。
 
 ### 8.1 根因三分类
 
-- **by-design（设计上就该人来）**：真人署名或决策类。只作观察；**永不因「出现多次」就自动放开**。
-- **automatable-gap（可自动化的遗漏）**：不新增 GitHub 写操作、不放宽 gate 的确定性改进。
-- **privilege-expansion（扩权类）**：任何会新增或放宽署名操作与安全边界的想法。**永不自动落地**。
+- **by-design（设计上就该人来）**：真人署名或决策类——他人 reviewer 的未 resolve
+  thread、分支保护要求的真人 approve、语义冲突取舍、产品/架构拍板、权限不足。
+  只作观察；台账计数写入仍需维护授权，**永不因「出现多次」就自动放开**。
+- **automatable-gap（可自动化的遗漏）**：不新增任何 GitHub 写操作、不放宽任何 gate 的
+  确定性改进——skip 原因归类缺口、去重指纹漏洞、状态文件修复、汇总/催办文案、脚本
+  bug、文档自相矛盾。先提出候选；取得对应维护授权后才按 8.3 落地。
+- **privilege-expansion（扩权类）**：任何会新增或放宽署名操作与安全边界的想法——
+  代 resolve 他人 thread、扩大自动 approve 范围、放宽 admin bypass 条件、改动白名单/
+  selfFixAuthors/权限 allowlist、放松 gate 阈值。**永不自动落地**，只写提案等维护者
+  拍板。拿不准算哪类时，一律按扩权类处理。
 
 ### 8.2 台账
 
-`<SKILL_ROOT>/evolution/ledger.json` 为事实源，`<SKILL_ROOT>/EVOLUTION.md` 由脚本再生成。
-未授权维护台账时不运行写入命令。
+台账是 Skill 知识的一部分，随 Skill 仓库走（不是运行时状态，不放外部状态目录）：
+`<SKILL_ROOT>/evolution/ledger.json` 为事实源，`<SKILL_ROOT>/EVOLUTION.md` 由脚本
+再生成（手改会被覆盖）。未授权维护台账时不运行写入命令，只把候选放入当前审查摘要。授权后只经脚本读写，按根因 fingerprint 去重，并显式禁用隐式提交推送：
 
 ```text
 node "<SKILL_ROOT>/scripts/evolution-note.mjs" add \
@@ -269,19 +298,27 @@ node "<SKILL_ROOT>/scripts/evolution-note.mjs" add \
   --title "<一句话根因>" [--detail "<现象与证据>"] [--proposal "<具体改法>"] [--commit <sha>] --no-sync
 ```
 
-底层脚本默认会提交并推送，因此本流程每次 `add` / `set-status` 都必须带 `--no-sync`；该参数不是仅供调试。台账写入授权不包含 commit 或 push。只有另有当次针对 Skills 仓库的提交／推送授权时，才执行对应动作，不能借一次台账更新触发远端写入。失败如实写进摘要，不重试到卡死。
+返回 `isNew=false`（同指纹已存在）时脚本只自增计数——不要重复分析，也不在摘要里
+重复报告。台账正文不写 token、凭证、内部绝对路径或敏感命中原文，PR 只写号码。
+被维护者否决过的提案（status=rejected）留档，不再重复提出。
+
+（preview 版：自进化台账纯落盘不回推，`evolution-note.mjs` 写盘后不自动提交推送；见 8.2/8.3。）同步是 best-effort：
 
 ### 8.3 automatable-gap 的授权维护规则
 
-当次授权已覆盖具体 Skill 文件和维护动作，且不属于扩权类、改动最小、脚本 `node --check`
-通过、每轮最多落地 1 项时，才允许修改 Skill 自身。
+当次授权已覆盖具体 Skill 文件和维护动作，且以下条件全部满足，才允许修改 Skill 自身；普通 `review-pr` 或 `--auto` 不替代该授权：
 
-6. 只有已有相应 commit 且当次授权覆盖 Skills 仓库目标 remote／分支的 push 时，才运行
-   `node "<SKILL_ROOT>/scripts/sync-skill-repo.mjs" push --message "evo: <fingerprint>"`
-   推送授权范围内的维护提交。台账命令仍用 `--no-sync`，不另行隐式推送。未授权 push 不运行该命令，也不因此阻断本地维护交付；推送失败不回滚落地，如实写进摘要。
+1. 改动不属于 8.1 的扩权类（拿不准 = 扩权，降级为 `--tier proposal`）；
+2. 改动最小且自洽：只改对应的 SKILL.md 段落、脚本或 config 键，不顺手重构；
+3. 改脚本后必须过 `node --check`，脚本带 `--dry-run` 的再跑一次 dry-run 自测；
+   任一失败即恢复原文件、降级为提案；
+4. 提交需独立的当次授权，只提交本次维护文件，不裹挟既有改动；未授权提交时保留本地结果并继续验证，不以 commit 作为维护完成的隐含前提；
+5. 每轮最多落地 1 项（防抖）；其余保留候选，写入提案台账同样需要维护授权；
+6. **preview 版不回推**：落地记录与提案留在台账（`evolution/ledger.json` + `EVOLUTION.md`），由维护者在主仓落地——`sync-skill-repo.mjs` push 与 `evolution-note.mjs` 自动回推在 preview 版均为只读 stub（恒返回 `skipped: 'dist-readonly'`），不做任何向上游的提交/推送。
 
 ### 8.4 汇总与交互
 
-- auto 模式：候选并入 6.1 摘要的「自进化」组，不为写摘要而修改 Skill、台账或 Git 状态。
-- 交互模式：复盘发现进化项时直接告诉用户，不静默修改 Skill。
+- auto 模式：候选并入 6.1 摘要的「自进化」组，不为写摘要而修改 Skill、台账或 Git 状态。另有维护授权时才报告实际落地结果；没有 commit 就不附造出的 sha。无新候选时整组省略。
+- 交互模式：复盘发现进化项时直接告诉用户，由用户当场决定改不改；不在交互模式
+  静默修改 Skill。
 <!-- dist:strip:end self-evolution -->
