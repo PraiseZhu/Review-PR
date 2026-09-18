@@ -596,4 +596,3 @@ resolve thread 计数归零」处理），不凭清理前的旧计数判定。�
 对方可一键 unresolve（unresolve 后按 `skipped-reopened-after-triage` 永久留人工）。
 **幂等**：脚本对已 resolve / 已回复过的 thread 不重复动作（双并发下每 thread 至多
 一次 reply + 条件 resolve，靠脚本内查当前状态 + 持久锁兑 TOCTOU 窗口）。
-

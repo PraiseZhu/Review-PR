@@ -152,4 +152,3 @@ node "<SKILL_ROOT>/scripts/notify-sync-alert.mjs" --kind <diverged|code-conflict
 
 未配置私聊目标（notify.env 的 `SLACK_OPS_ALERT_CHANNEL_ID`）时该脚本 no-op，
 `posted:false, reason:'ops-alert-channel-not-configured'`，不影响本轮任何判定。
-

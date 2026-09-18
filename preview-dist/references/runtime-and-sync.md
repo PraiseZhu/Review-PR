@@ -142,4 +142,3 @@ SKILL.md / config）时一律 `rebase --abort` 转人工**，返回 `reason:
   汇总里要带上 `conflictFiles` 与 `backupRef`。
 
 这两类信号写进 6.1 汇总（preview 版：定向 ops 告警私聊已剥离，`notify-sync-alert.mjs` 不在 preview 产物中），不发起额外通知。
-

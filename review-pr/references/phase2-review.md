@@ -364,4 +364,3 @@ gpt 实跑复现：两条仅尾部（65+ 字符）不同的 invariant 会被截�
 `p0p1Count`、依然应使这一轮的 review-receipt 判 `dirty`（若走 5.1 的 admin-trust
 路由）、依然阻断合并——`recurrenceOfKey` **只**影响 `newFamilyCount`（收敛
 趋势指标），不影响、也不能被误用来影响任何合并判定路径或 `isReviewReceiptClean`。
-
