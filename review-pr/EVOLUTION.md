@@ -5,9 +5,6 @@
 
 ## 待维护者拍板(扩权类提案,永不自动落地)
 
-- `seat-cannot-bind-native-worktree` **seat cannot bind native worktree artifacts** — 出现 2 次,首见 2026-09-18,最近 2026-09-18,status: open
-  - 现象:PR 632 re-hit: native --repo-root rejected as repo-root mismatch, omitting it rejects bound-worktree outputs, dispatch-review.mjs not allowlisted, task and preflight cannot land.
-  - 提案:allow REVIEW_NATIVE_WORKTREE as identity.worktree with repoRoot GITHUB_WORKSPACE
 - `ci-seat-gh-cli-and-stdin-gaps` **CI 席位环境缺口：gh 版本缺字段且 stdin 型脚本不可跑** — 出现 3 次,首见 2026-09-07,最近 2026-09-09,status: open
   - 现象:run-seat-claude 席位 gh 不支持 headRefOid、baseRefOid、closingIssuesReferences 字段，context.mjs 查询直接失败；readonly bash guard 禁管道、重定向与 heredoc，record-convergence-round 与 run-log 仅支持 stdin 输入故席位内不可运行；consume-review-output 需先落 rro-1.json 输出文件而席位 Write 工具被限制在台账两文件。2026-09-08 PR #551 席①三墙齐撞并新增确认：SC-R1b 已收口 write-review-receipt 的 --verdict clean 通道，席位 clean 结论完全无法落机器回执，只能经 StructuredOutput 交付 findings 并在汇总披露。2026-09-09 PR #551 席① head 1b940a2 复发：三墙仍全部在场，且新确认 convergence-state --get 只读可跑、findings 记录被 stdin 墙挡住，PR 551 收敛状态至今 missing——收敛台账在席位环境同样不可写，该 PR 历轮机器审查的收敛信号从未落盘。建议：为这些脚本补 --findings-file、--body-file 一类文件型 seam，或升级 runner 镜像 gh 至支持上述字段。
 - `target-repo-root-pr-draft-decoys` **目标仓根目录的 PR 会话草稿文件是审查席的误读源，清理常只做一半** — 出现 1 次,首见 2026-09-09,最近 2026-09-09,status: open
