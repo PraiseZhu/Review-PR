@@ -20,7 +20,12 @@
     "scripts/dist/",
     "tests/",
     "tests/signoff-policy-script.test.mjs",
-    "tests/resolve-threads.test.mjs"
+    "tests/resolve-threads.test.mjs",
+    "scripts/server-dist.manifest.json",
+    "scripts/review-server.mjs",
+    "scripts/lib.server-review.mjs",
+    "server/",
+    "references/server-seat.md"
   ],
   "markerStrips": [
     {
@@ -293,7 +298,12 @@
     "scripts/dist.manifest.json",
     "scripts/preview-dist.manifest.json",
     "scripts/dist/",
-    "tests/"
+    "tests/",
+    "scripts/server-dist.manifest.json",
+    "scripts/review-server.mjs",
+    "scripts/lib.server-review.mjs",
+    "server",
+    "references/server-seat.md"
   ],
   "freshnessIgnore": []
 }

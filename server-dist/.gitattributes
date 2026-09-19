@@ -1,0 +1,5 @@
+# vendored 第三方文件按上游原样保存(含 CRLF 与行尾空白)——不做 EOL 归一、不参与
+# whitespace 检查。否则 `git diff --check` 会把上游 LICENSE 的每一行都报成 trailing
+# whitespace(实测 55 行全红),而"为了过 lint 去改上游字节"会破坏 vendored verbatim
+# 这个前提(PROVENANCE.json 记的就是原样字节)。
+vendor/** -text -whitespace

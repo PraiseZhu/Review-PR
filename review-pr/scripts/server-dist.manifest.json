@@ -1,0 +1,209 @@
+{
+  "_comment": "server-dist 构建清单:审查机独立席产物。入口 replaceFiles 换成 server/SKILL.md;不派 sub、不回传个人仓、不含合并/通知。prepare/bind/finalize 脚本保留给宿主,席正文只允许 next。",
+  "exclude": [
+    "SKILL.md",
+    "EVOLUTION.md",
+    "evolution/",
+    "tests/",
+    "scripts/dist/",
+    "agents/openai.yaml",
+    "config/mivo-merge-ready.fragment.json",
+    "references/auto-batch.md",
+    "references/internal-gates.md",
+    "references/phase2-review.md",
+    "references/phase3-landing.md",
+    "references/runtime-and-sync.md",
+    "references/upstream-alignment.md",
+    "references/voice-templates.md",
+    "scripts/approve-workflows.mjs",
+    "scripts/audit-merged-loop-prs.mjs",
+    "scripts/build-dist.mjs",
+    "scripts/checkout.mjs",
+    "scripts/cleanup.mjs",
+    "scripts/close-product-issue.mjs",
+    "scripts/convergence-state.mjs",
+    "scripts/dispatch-review.mjs",
+    "scripts/dist.manifest.json",
+    "scripts/evolution-note.mjs",
+    "scripts/fix-session-state.mjs",
+    "scripts/fix-worktree-cleanup.mjs",
+    "scripts/lib.session-lock.mjs",
+    "scripts/lock-heartbeat-daemon.mjs",
+    "scripts/merge-pr.mjs",
+    "scripts/notify-author-resolve.mjs",
+    "scripts/notify-merge-ack.mjs",
+    "scripts/notify-merge-backfill.mjs",
+    "scripts/notify-summary.mjs",
+    "scripts/notify-sync-alert.mjs",
+    "scripts/pick.mjs",
+    "scripts/pre-check.mjs",
+    "scripts/pre-merge-check.mjs",
+    "scripts/pre-scan.mjs",
+    "scripts/prepare-prescan-segment.mjs",
+    "scripts/prepare.mjs",
+    "scripts/preview-dist.manifest.json",
+    "scripts/product-hold.mjs",
+    "scripts/product-release.mjs",
+    "scripts/record-convergence-round.mjs",
+    "scripts/record-escaped-finding.mjs",
+    "scripts/record-prescan-segment.mjs",
+    "scripts/refresh-lock.mjs",
+    "scripts/release-lock.mjs",
+    "scripts/remind-stale-author.mjs",
+    "scripts/resolve-author-feishu.mjs",
+    "scripts/resolve-threads.mjs",
+    "scripts/review-state-bundle.mjs",
+    "scripts/run-log.mjs",
+    "scripts/self-approve.mjs",
+    "scripts/signoff-hold.mjs",
+    "scripts/signoff-release.mjs",
+    "scripts/sync-skill-repo.mjs",
+    "scripts/typecheck-merged.mjs",
+    "scripts/write-review-receipt.mjs",
+    "scripts/server-dist.manifest.json"
+  ],
+  "markerStrips": [],
+  "stubs": [
+    {
+      "file": "scripts/lib.mjs",
+      "name": "skillRepoCommitPush",
+      "replacement": [
+        "/** server 分发版:写回主仓的能力已剥离;返回既有 skipped 形状,消费方按未提交处理。 */",
+        "export function skillRepoCommitPush() {",
+        "  return { ok: true, committed: false, pushed: false, skipped: 'dist-readonly' };",
+        "}"
+      ]
+    }
+  ],
+  "replacements": [],
+  "neutralize": {
+    "file": "config/pr-rules.json",
+    "emptyArrays": [
+      "productWhitelist",
+      "archGate.whitelist",
+      "archGate.coldUpdateApprovers",
+      "feishuNotify.orgMappingRepos",
+      "staleAuthorReminder.exemptAuthors"
+    ],
+    "emptyStrings": [
+      "feishuNotify.groupName",
+      "feishuNotify.archRecipientName"
+    ]
+  },
+  "replaceFiles": [
+    {
+      "src": "server/SKILL.md",
+      "dest": "SKILL.md"
+    },
+    {
+      "src": "scripts/dist/README.server.md",
+      "dest": "README.md"
+    }
+  ],
+  "forbidden": [
+    {
+      "token": "PraiseZhu",
+      "allow": []
+    },
+    {
+      "token": "朱赞",
+      "allow": []
+    },
+    {
+      "token": "magiclizi",
+      "allow": []
+    },
+    {
+      "token": "evolution-note",
+      "allow": []
+    },
+    {
+      "token": "自进化",
+      "allow": [
+        {
+          "file": "scripts/lib.escaped-hazards.mjs",
+          "reason": "历史缺口编号注释,指涉主仓机制沿革,非活动入口"
+        }
+      ]
+    },
+    {
+      "token": "dispatch-review",
+      "allow": []
+    },
+    {
+      "token": "merge-pr.mjs",
+      "allow": [
+        {
+          "file": "scripts/context.mjs",
+          "reason": "auto 永不合的禁令注释"
+        },
+        {
+          "file": "scripts/merge-ready-reconcile.mjs",
+          "reason": "明确写不调用合并出口"
+        }
+      ]
+    }
+  ],
+  "absent": [
+    "EVOLUTION.md",
+    "evolution",
+    "tests",
+    "scripts/dist",
+    "agents/openai.yaml",
+    "config/mivo-merge-ready.fragment.json",
+    "references/auto-batch.md",
+    "references/internal-gates.md",
+    "references/phase2-review.md",
+    "references/phase3-landing.md",
+    "references/runtime-and-sync.md",
+    "references/upstream-alignment.md",
+    "references/voice-templates.md",
+    "scripts/approve-workflows.mjs",
+    "scripts/audit-merged-loop-prs.mjs",
+    "scripts/build-dist.mjs",
+    "scripts/checkout.mjs",
+    "scripts/cleanup.mjs",
+    "scripts/close-product-issue.mjs",
+    "scripts/convergence-state.mjs",
+    "scripts/dispatch-review.mjs",
+    "scripts/dist.manifest.json",
+    "scripts/evolution-note.mjs",
+    "scripts/fix-session-state.mjs",
+    "scripts/fix-worktree-cleanup.mjs",
+    "scripts/lib.session-lock.mjs",
+    "scripts/lock-heartbeat-daemon.mjs",
+    "scripts/merge-pr.mjs",
+    "scripts/notify-author-resolve.mjs",
+    "scripts/notify-merge-ack.mjs",
+    "scripts/notify-merge-backfill.mjs",
+    "scripts/notify-summary.mjs",
+    "scripts/notify-sync-alert.mjs",
+    "scripts/pick.mjs",
+    "scripts/pre-check.mjs",
+    "scripts/pre-merge-check.mjs",
+    "scripts/pre-scan.mjs",
+    "scripts/prepare-prescan-segment.mjs",
+    "scripts/prepare.mjs",
+    "scripts/preview-dist.manifest.json",
+    "scripts/product-hold.mjs",
+    "scripts/product-release.mjs",
+    "scripts/record-convergence-round.mjs",
+    "scripts/record-escaped-finding.mjs",
+    "scripts/record-prescan-segment.mjs",
+    "scripts/refresh-lock.mjs",
+    "scripts/release-lock.mjs",
+    "scripts/remind-stale-author.mjs",
+    "scripts/resolve-author-feishu.mjs",
+    "scripts/resolve-threads.mjs",
+    "scripts/review-state-bundle.mjs",
+    "scripts/run-log.mjs",
+    "scripts/self-approve.mjs",
+    "scripts/signoff-hold.mjs",
+    "scripts/signoff-release.mjs",
+    "scripts/sync-skill-repo.mjs",
+    "scripts/typecheck-merged.mjs",
+    "scripts/write-review-receipt.mjs",
+    "scripts/server-dist.manifest.json"
+  ],
+  "freshnessIgnore": []
+}

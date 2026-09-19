@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildReviewIdentity, validateReviewDispatch, resolveReviewRepoRoot, assertReviewIdentity, createDispatchReceipt, assertDispatchReceipt, assertReviewArtifactPaths } from '../scripts/lib.review-identity.mjs';
+import { buildReviewIdentity, validateReviewDispatch, resolveReviewRepoRoot, assertReviewIdentity, createDispatchReceipt, createServerDispatchReceipt, assertDispatchReceipt, assertReviewArtifactPaths } from '../scripts/lib.review-identity.mjs';
 
 function repo() {
   const root = mkdtempSync(join(tmpdir(), 'review-identity-'));
@@ -58,4 +58,21 @@ test('unrelated repository cannot serve as review worktree or cwd', (t) => {
   assert.throws(() => buildReviewIdentity({ repoRoot: first, skillRoot: first, worktree: second }), /common-dir 不一致/);
   assert.throws(() => resolveReviewRepoRoot({ envRoot: first, cwd: second }), /不是同一 Git 仓库/);
   assert.throws(() => resolveReviewRepoRoot({ envRoot: first, explicitRoot: second, cwd: first }), /不一致/);
+});
+
+test('server v2 binds observed execution explicitly without pretending a nested agent', (t) => {
+  const root = repo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const skill = join(root, 'skill'); mkdirSync(skill);
+  const identity = buildReviewIdentity({ repoRoot: root, skillRoot: skill, worktree: root });
+  const execution = { schemaVersion: 1, executionKind: 'server-seat', sessionId: 'cli-session', model: 'model', provider: 'provider', requestDigest: 'a'.repeat(64), runId: 1, runAttempt: 2, jobId: 3 };
+  const receipt = createServerDispatchReceipt({ pr: 1, snapshotHash: 'snapshot', identity, execution });
+  assert.equal(receipt.schemaVersion, 'review-dispatch/2');
+  assert.equal(receipt.agent, undefined);
+  assert.equal(assertDispatchReceipt(receipt, { pr: 1, snapshotHash: 'snapshot', identity }), true);
+  for (const field of Object.keys(execution)) {
+    assert.throws(() => createServerDispatchReceipt({ pr: 1, snapshotHash: 'snapshot', identity, execution: { ...execution, [field]: undefined } }), /server/);
+  }
+  assert.throws(() => assertDispatchReceipt({ ...receipt, execution: { ...execution, jobId: 4 } }, { pr: 1, snapshotHash: 'snapshot', identity }), /hash/);
+  assert.throws(() => assertDispatchReceipt({ ...receipt, schemaVersion: 'review-dispatch/3' }, { pr: 1, snapshotHash: 'snapshot', identity }), /凭据/);
 });

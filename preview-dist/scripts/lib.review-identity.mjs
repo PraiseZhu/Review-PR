@@ -108,7 +108,30 @@ export function dispatchReview({ pr, snapshotHash, identity, agent = 'general-pu
   return createDispatchReceipt({ pr, snapshotHash, identity: checked.identity, agent, provider, isolation });
 }
 
+export function createServerDispatchReceipt({ pr, snapshotHash, identity, execution } = {}) {
+  if (execution?.schemaVersion !== 1 || execution.executionKind !== 'server-seat') throw new Error('server execution kind required');
+  for (const field of ['sessionId', 'model', 'provider', 'requestDigest']) {
+    if (typeof execution[field] !== 'string' || !execution[field].trim()) throw new Error(`server execution missing ${field}`);
+  }
+  if (!/^[a-f0-9]{64}$/.test(execution.requestDigest)) throw new Error('server request digest invalid');
+  for (const field of ['runId', 'runAttempt', 'jobId']) {
+    if (!/^[1-9][0-9]*$/.test(String(execution[field] ?? ''))) throw new Error(`server execution missing ${field}`);
+  }
+  const checked = buildReviewIdentity({ repoRoot: identity.repoRoot, skillRoot: identity.skillRoot, worktree: identity.worktree });
+  assertReviewIdentity(identity, checked);
+  const request = { pr, snapshotHash, identity, execution: { ...execution } };
+  const requestHash = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+  return { schemaVersion: 'review-dispatch/2', executionKind: 'server-seat', receiptId: requestHash.slice(0, 32), requestHash, ...request };
+}
+
 export function assertDispatchReceipt(receipt, { pr, snapshotHash, identity } = {}) {
+  if (receipt?.schemaVersion === 'review-dispatch/2') {
+    if (receipt.executionKind !== 'server-seat' || receipt.pr !== pr || receipt.snapshotHash !== snapshotHash) throw new Error('server dispatch identity mismatch');
+    assertReviewIdentity(receipt.identity, identity);
+    const expected = createServerDispatchReceipt({ pr, snapshotHash, identity, execution: receipt.execution });
+    if (expected.requestHash !== receipt.requestHash || expected.receiptId !== receipt.receiptId) throw new Error('server dispatch hash mismatch');
+    return true;
+  }
   if (!receipt || receipt.schemaVersion !== 'review-dispatch/1' || receipt.pr !== pr || receipt.snapshotHash !== snapshotHash) {
     throw new Error('缺少或过期的阶段二派工凭据');
   }

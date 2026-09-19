@@ -154,6 +154,7 @@ test('references/ 内不得再写 SKILL 根相对路径 references/…（会落�
     join(ROOT, 'references/auto-batch.md'),
     join(ROOT, 'references/runtime-and-sync.md'),
     join(ROOT, 'references/voice-templates.md'),
+    join(ROOT, 'references/server-seat.md'),
   ];
   const bad = [];
   for (const path of files) {
