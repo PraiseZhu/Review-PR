@@ -11,7 +11,7 @@ import { buildDist, checkDist, productTreeHash } from '../scripts/build-dist.mjs
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, '..');
 const MANIFEST = join(SRC, 'scripts', 'server-dist.manifest.json');
-const REPO_DIST = resolve(SRC, '..', 'server-dist');
+const REPO_DIST = resolve(SRC, '..', 'review-pr-server');
 
 const STRIPPED = [
   'dispatch-review.mjs',
@@ -45,9 +45,9 @@ const DIMS = [
   '本席交卷',
 ];
 
-test('[server 门] 仓内 server-dist/ 必须与当前源 fresh', () => {
+test('[server 门] 仓内 review-pr-server/ 必须与当前源 fresh', () => {
   const res = checkDist({ sourceDir: SRC, manifestPath: MANIFEST, distDir: REPO_DIST });
-  assert.equal(res.fresh, true, `server-dist 过期,先跑:\nnode scripts/build-dist.mjs --manifest scripts/server-dist.manifest.json --out ../server-dist\n${res.problems.join('\n')}`);
+  assert.equal(res.fresh, true, `review-pr-server 过期,先跑:\nnode scripts/build-dist.mjs --manifest scripts/server-dist.manifest.json --out ../review-pr-server\n${res.problems.join('\n')}`);
 });
 
 test('[SC-1] 幂等:两次构建 product_tree_hash 一致', () => {
