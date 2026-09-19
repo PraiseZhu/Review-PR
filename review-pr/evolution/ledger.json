@@ -5265,6 +5265,19 @@
       "occurrences": 1,
       "firstSeen": "2026-09-09T07:39:51.246Z",
       "lastSeen": "2026-09-09T07:39:51.246Z"
+    },
+    {
+      "fingerprint": "seat-dispatch-review-not-allowlisted",
+      "tier": "proposal",
+      "title": "seat1 cannot complete native stage-2 without dispatch-review",
+      "detail": "seat1 bash guard omits dispatch-review.mjs while deliver-review-segment requires a live dispatchReceipt and matching executionIdentity.worktree",
+      "proposal": "Allowlist dispatch-review.mjs for seat1 or bind native delivery identity to REVIEW_NATIVE_WORKTREE",
+      "status": "open",
+      "commit": null,
+      "note": null,
+      "occurrences": 2,
+      "firstSeen": "2026-09-19T19:31:14.577Z",
+      "lastSeen": "2026-09-19T19:33:30.388Z"
     }
   ],
   "escapedHazards": [
