@@ -32,6 +32,16 @@ const NEGATIVE_KINDS = ['executed', 'not-applicable'];
 // R6:executed 的 observedSignal 闭集——机器只认"预期失败被观察到"这一个值;其余
 // 一律不构成负向证据(诚实边界:一致伪报是 T1 上限,机器验的是声明一致性,见 SKILL)。
 const OBSERVED_SIGNALS = ['expected-failure-observed'];
+export const RUN_EXECUTORS = Object.freeze(['seat-model', 'host-verified', 'remote-restricted']);
+export const HOSTED_LAYERS = Object.freeze(['inner-cli', 'outer-test']);
+export function hostedRunFingerprint(run) {
+  return JSON.stringify({
+    runId: run?.runId, command: run?.command, exitCode: run?.exitCode,
+    outputAnchor: run?.outputAnchor ?? run?.outputDigest,
+    layer: run?.provenance?.layer, headRefOid: run?.provenance?.headRefOid,
+    baseRefOid: run?.provenance?.baseRefOid, snapshotHash: run?.provenance?.snapshotHash,
+  });
+}
 // not-applicable 的 reasonCode 闭集(SC-R6 复审:自由文本 reasonCode 等于没有闭集)
 export const NA_REASON_CODES = ['doc-only', 'comment-only', 'generated-file', 'pure-rename', 'config-value-only', 'not-a-test-oracle'];
 
@@ -111,6 +121,22 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
       if (!r || typeof r !== 'object' || !isStr(r.runId) || !isStr(r.command) || !isInt(r.exitCode) || !(isStr(r.outputDigest) || isStr(r.outputAnchor))) {
         errors.push(`verificationRuns[${i}] 形状非法(需 {runId, command, exitCode, outputDigest|outputAnchor})`);
         return;
+      }
+      if (!isStr(r.executor) || !RUN_EXECUTORS.includes(r.executor)) {
+        errors.push(`verificationRuns[${i}].executor 缺失或不在闭集(${RUN_EXECUTORS.join('|')})`);
+        return;
+      }
+      if (r.executor === 'remote-restricted') {
+        errors.push(`verificationRuns[${i}].executor=remote-restricted 本波未实现`);
+      }
+      if (r.executor === 'host-verified') {
+        const p = r.provenance;
+        if (!p || typeof p !== 'object' || !HOSTED_LAYERS.includes(p.layer) || !isStr(p.headRefOid) || !isStr(p.baseRefOid) || !isStr(p.snapshotHash)) {
+          errors.push(`verificationRuns[${i}] host-verified 缺 provenance.{layer,headRefOid,baseRefOid,snapshotHash}`);
+        }
+      }
+      if (r.innerExit !== undefined || r.childReportedExit !== undefined) {
+        errors.push(`verificationRuns[${i}] 禁止子进程自报 innerExit`);
       }
       if (runIds.has(r.runId)) errors.push(`verificationRuns[${i}].runId 重复:${r.runId}`);
       runIds.add(r.runId);
@@ -330,6 +356,7 @@ export function deriveVerdict({ shape, output, ledgerResult, flags = {} }) {
     ['snapshotMismatch', 'snapshot 漂移(输出绑定的 snapshotHash ≠ 当前)'],
     ['coverageMismatch', '覆盖对账不符(coverage keys 集合不相等)'],
     ['requiredNegativeKeysMissing', 'required negative-evidence key 未被 executed 条目满足'],
+    ['hostedProvenanceUnverified', 'host-verified run 未通过注入 attested receipt 核验'],
     ['missingProfileAnswers', '命中 profile 的必答项缺失'],
     ['missingDispositions', '已注入的历史 open findingId 缺 disposition'],
     ['taskInvalid', 'task 文件缺失/不符当前 snapshot/字段不全(没有它无法对账,fail-closed)'],

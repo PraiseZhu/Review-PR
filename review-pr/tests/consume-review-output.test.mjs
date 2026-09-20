@@ -128,7 +128,15 @@ function compliant(tf, over = {}) {
   const negatives = negKeys.map((k, i) => {
     const runId = `r${i + 1}`;
     const command = `node --test ${k.path}`;
-    runs.push({ runId, command, exitCode: 1, outputAnchor: 'expected failure' });
+    runs.push({
+      runId, command, exitCode: 1, outputAnchor: 'expected failure', executor: 'host-verified',
+      provenance: {
+        layer: 'inner-cli',
+        headRefOid: 'a'.repeat(40),
+        baseRefOid: 'b'.repeat(40),
+        snapshotHash: task.snapshotHash,
+      },
+    });
     return {
       fileId: k.fileId, hunkId: k.hunkId, kind: 'executed', snapshotHash: task.snapshotHash,
       command, negativeOracle: '反转断言应红', observedSignal: 'expected-failure-observed',
@@ -154,13 +162,22 @@ function compliant(tf, over = {}) {
   });
 }
 
-function run(f, output, extra = [], { pr = '469', env = {} } = {}) {
+function run(f, output, extra = [], { pr = '469', env = {}, injectHosted = true } = {}) {
   const outFile = join(f.work, `out-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(outFile, typeof output === 'string' ? output : JSON.stringify(output));
   // consumer 也要**独立重算**逃逸候选(R7 第 3 轮核验),离线测试必须喂同一份 body seam
   const ti = extra.indexOf('--task');
   const bodySeam = ti >= 0 && BODY_OF.has(extra[ti + 1]) ? ['--pr-body-file', BODY_OF.get(extra[ti + 1])] : [];
-  const args = [CONSUME, pr, '--output', outFile, '--base', f.base, '--head', f.head, ...extra, ...bodySeam];
+  const hostedArgs = [];
+  if (injectHosted && output && typeof output === 'object') {
+    const hosted = (output.verificationRuns ?? []).filter((r) => r?.executor === 'host-verified');
+    if (hosted.length) {
+      const inj = join(f.work, `hosted-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(inj, JSON.stringify(hosted));
+      hostedArgs.push('--injected-hosted-runs', inj);
+    }
+  }
+  const args = [CONSUME, pr, '--output', outFile, '--base', f.base, '--head', f.head, ...hostedArgs, ...extra, ...bodySeam];
   const r = spawnSync('node', args, { cwd: f.repo, env: { ...f.env, ...env }, encoding: 'utf8' });
   let json = null;
   try { json = JSON.parse(r.stdout); } catch { /* fallthrough */ }
@@ -511,6 +528,9 @@ test('⑭ R6:required 负向证据只能由 executed 满足;N/A 与 run 声明�
     }],
   });
   assert.equal(run(f, mismatch, ['--mode', 'auto', '--task', tf, '--preflight', pf]).json.verdict, 'invalid');
+  const noInj = run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf], { injectHosted: false });
+  assert.equal(noInj.json.verdict, 'invalid', 'host-verified 无注入不得满足 required');
+  assert.match(noInj.json.reasons.join(';'), /negative-evidence|host-verified|provenance/i);
 });
 
 test('⑮ preflight 命中 → 机器入账并 dirty(不经 LLM,审查输出零 finding 也拦)', () => {

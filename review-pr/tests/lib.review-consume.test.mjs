@@ -9,7 +9,12 @@ const FAM = () => ({
   manifestations: [{ path: 'scripts/e2e/a.mjs', line: 10, evidence: 'e', impact: 'i', fix: 'f', verification: 'v', severity: 'P1' }],
   fixGuidance: '改 evaluate 轮询',
 });
-const RUN = () => ({ runId: 'r1', command: 'node --test x', exitCode: 1, outputAnchor: '3 failed' });
+const RUN = (over = {}) => ({ runId: 'r1', command: 'node --test x', exitCode: 1, outputAnchor: '3 failed', executor: 'seat-model', ...over });
+const HOSTED = (over = {}) => RUN({
+  executor: 'host-verified',
+  provenance: { layer: 'inner-cli', headRefOid: 'a'.repeat(40), baseRefOid: 'b'.repeat(40), snapshotHash: 'snap1-t' },
+  ...over,
+});
 const base = (over = {}) => ({
   schemaVersion: REVIEW_OUTPUT_SCHEMA_VERSION,
   findingFamilies: [], verificationGaps: [], verificationRuns: [],
@@ -40,6 +45,16 @@ test('verificationRuns:runId 重复/形状缺失报错', () => {
   const r = ok(base({ verificationRuns: [RUN(), RUN()] }));
   assert.ok(r.errors.some((e) => e.includes('runId 重复')));
   assert.equal(ok(base({ verificationRuns: [{ runId: 'r1' }] })).ok, false);
+});
+
+test('verificationRuns:executor 必填闭集;host-verified 需 provenance;禁 innerExit', () => {
+  assert.equal(ok(base({ verificationRuns: [{ runId: 'r1', command: 'n', exitCode: 1, outputAnchor: 'x' }] })).ok, false, '缺 executor');
+  assert.equal(ok(base({ verificationRuns: [RUN({ executor: 'magic' })] })).ok, false);
+  assert.equal(ok(base({ verificationRuns: [RUN({ executor: 'remote-restricted' })] })).ok, false);
+  assert.equal(ok(base({ verificationRuns: [RUN()] })).ok, true, 'seat-model 形状合法');
+  assert.equal(ok(base({ verificationRuns: [HOSTED()] })).ok, true);
+  assert.equal(ok(base({ verificationRuns: [RUN({ executor: 'host-verified' })] })).ok, false, 'host-verified 无 provenance');
+  assert.equal(ok(base({ verificationRuns: [RUN({ innerExit: 2 })] })).ok, false);
 });
 
 test('profileAnswers:闭集/重复/checked-clean 缺 hunkId/finding 本地引用验真/N-A 缺 reason', () => {
