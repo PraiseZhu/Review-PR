@@ -12,7 +12,10 @@ const FAM = () => ({
 const RUN = (over = {}) => ({ runId: 'r1', command: 'node --test x', exitCode: 1, outputAnchor: '3 failed', executor: 'seat-model', ...over });
 const HOSTED = (over = {}) => RUN({
   executor: 'host-verified',
-  provenance: { layer: 'inner-cli', headRefOid: 'a'.repeat(40), baseRefOid: 'b'.repeat(40), snapshotHash: 'snap1-t' },
+  provenance: {
+    layer: 'inner-cli', oracleId: 'k-test', fileId: 'F1', hunkId: 'H1',
+    headRefOid: 'a'.repeat(40), baseRefOid: 'b'.repeat(40), snapshotHash: 'snap1-t',
+  },
   ...over,
 });
 const base = (over = {}) => ({
@@ -55,6 +58,12 @@ test('verificationRuns:executor 必填闭集;host-verified 需 provenance;禁 in
   assert.equal(ok(base({ verificationRuns: [HOSTED()] })).ok, true);
   assert.equal(ok(base({ verificationRuns: [RUN({ executor: 'host-verified' })] })).ok, false, 'host-verified 无 provenance');
   assert.equal(ok(base({ verificationRuns: [RUN({ innerExit: 2 })] })).ok, false);
+  assert.equal(ok(base({ verificationRuns: [HOSTED({ provenance: { layer: 'inner-cli', headRefOid: 'a'.repeat(40), baseRefOid: 'b'.repeat(40), snapshotHash: 'snap1-t' } })] })).ok, false, '缺 fileId/hunkId/oracleId');
+  assert.equal(ok(base({ verificationRuns: [RUN()] }), { forbidSeatModel: true }).ok, false, 'server 禁 seat-model');
+  assert.equal(ok(base({
+    verificationRuns: [RUN()],
+    findingDispositions: [{ findingId: 'fid-a', disposition: 'resolved', evidence: { kind: 'verification-run', snapshotHash: 's', verificationRunId: 'r1', note: 'x' } }],
+  }), { injectedOpenIds: ['fid-a'], snapshotHash: 's', forbidSeatModel: true }).ok, false, 'seat-model 不得支撑 disposition');
 });
 
 test('profileAnswers:闭集/重复/checked-clean 缺 hunkId/finding 本地引用验真/N-A 缺 reason', () => {

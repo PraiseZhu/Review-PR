@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { parsePR, print, fail, REPO_ROOT, STATE_DIR, loadRules, parseRepo, writeReviewReceipt, stateFile, writeJsonAtomic, ghJson } from './lib.mjs';
 import { buildDiffSnapshot } from './lib.diff-snapshot.mjs';
-import { validateReviewOutput, deriveVerdict, REVIEW_OUTPUT_SCHEMA_VERSION, hostedRunFingerprint } from './lib.review-consume.mjs';
+import { validateReviewOutput, deriveVerdict, REVIEW_OUTPUT_SCHEMA_VERSION, hostedRunFingerprint, provenanceKeyStr } from './lib.review-consume.mjs';
 import { computeReviewRequirements, diffRequirements, coverageKeyStr, profileAnswerKeyStr, negativeKeyStr } from './lib.review-requirements.mjs';
 import { loadLedger, saveLedger, ledgerPathFor, applyReviewOutput, applyInteractiveConfirmation, summarize, isEffectiveOpen } from './lib.findings-ledger.mjs';
 import { deliveryPathFor, loadDeliveries, reconcileDeliveries } from './lib.review-delivery.mjs';
@@ -314,7 +314,10 @@ try {
   let shape;
   try {
     output = JSON.parse(rawOutput);
-    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash, expectedPrescanObservationIds });
+    const forbidSeatModel = task.dispatchReceipt?.executionKind === 'server-seat'
+      || process.env.REVIEW_PR_RESULT_PROTOCOL === 'current-review-v1'
+      || process.argv.includes('--forbid-seat-model');
+    shape = validateReviewOutput(output, { injectedOpenIds, snapshotHash: snapshot.snapshotHash, expectedPrescanObservationIds, forbidSeatModel });
   } catch (e) {
     shape = { ok: false, errors: [`输出不是合法 JSON:${e.message}`] };
     output = {};
@@ -408,6 +411,16 @@ try {
       if (run.executor !== 'host-verified') continue;
       if (!injectedFp.has(hostedRunFingerprint(run))) {
         flags.hostedProvenanceUnverified = true;
+        continue;
+      }
+      const p = run.provenance ?? {};
+      if (p.headRefOid !== headRefOid || p.baseRefOid !== baseRefOid || p.snapshotHash !== snapshot.snapshotHash
+        || (typeof p.repo === 'string' && p.repo && p.repo !== authRepo)) {
+        flags.hostedContextMismatch = true;
+        continue;
+      }
+      if (negativeKeyStr(n) !== provenanceKeyStr(p)) {
+        flags.negativeKeyRunMismatch = true;
         continue;
       }
       got.add(negativeKeyStr(n));

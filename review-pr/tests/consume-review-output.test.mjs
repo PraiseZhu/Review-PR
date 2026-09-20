@@ -69,11 +69,13 @@ const FAM = (sev = 'P1') => ({
  *  `--pr-body-file` 是 R7 数据源的离线 seam:不传的话构建器会现场 `gh pr view`(生产行为),
  *  单测不该依赖网络。默认给一份"无逃逸引用"的 body。 */
 const BODY_OF = new Map(); // task 路径 → 它构建时用的 body seam(consumer 必须用同一份重算)
+const HEAD_OF = new Map();
 function taskFile(f, { body = '普通改动,无历史 PR 引用。', dispatch = true } = {}) {
   const tf = join(f.work, `task-${Math.random().toString(36).slice(2)}.json`);
   const bodyFile = `${tf}.body.md`;
   writeFileSync(bodyFile, body);
   BODY_OF.set(tf, bodyFile);
+  HEAD_OF.set(tf, { head: f.head, base: f.base });
   const r = spawnSync('node', [BUILD, '469', '--base', f.base, '--head', f.head, '--out-task', tf, '--out-prompt', `${tf}.md`, '--pr-body-file', bodyFile], { cwd: f.repo, env: f.env, encoding: 'utf8' });
   assert.equal(r.status, 0, `build-review-task 应成功:${r.stdout}${r.stderr}`);
   if (dispatch) {
@@ -131,10 +133,8 @@ function compliant(tf, over = {}) {
     runs.push({
       runId, command, exitCode: 1, outputAnchor: 'expected failure', executor: 'host-verified',
       provenance: {
-        layer: 'inner-cli',
-        headRefOid: 'a'.repeat(40),
-        baseRefOid: 'b'.repeat(40),
-        snapshotHash: task.snapshotHash,
+        layer: 'inner-cli', oracleId: `oracle-${k.fileId}`, fileId: k.fileId, hunkId: k.hunkId,
+        headRefOid: (HEAD_OF.get(tf) ?? {}).head, baseRefOid: (HEAD_OF.get(tf) ?? {}).base, snapshotHash: task.snapshotHash,
       },
     });
     return {
@@ -531,6 +531,52 @@ test('⑭ R6:required 负向证据只能由 executed 满足;N/A 与 run 声明�
   const noInj = run(f, compliant(tf), ['--mode', 'auto', '--task', tf, '--preflight', pf], { injectHosted: false });
   assert.equal(noInj.json.verdict, 'invalid', 'host-verified 无注入不得满足 required');
   assert.match(noInj.json.reasons.join(';'), /negative-evidence|host-verified|provenance/i);
+});
+
+test('F-1 键 A 的 host-verified receipt 不能满足键 B', () => {
+  const f = setup();
+  mkdirSync(join(f.repo, 'scripts', 'e2e'), { recursive: true });
+  writeFileSync(join(f.repo, 'scripts/e2e/w1.mjs'), 'export async function w(page) {\n  await page.waitForFunction(() => 1);\n}\n');
+  writeFileSync(join(f.repo, 'scripts/e2e/w2.mjs'), 'export async function w(page) {\n  await page.waitForFunction(() => 2);\n}\n');
+  git(['add', '-A'], f.repo);
+  git(['commit', '-q', '-m', 'two waits'], f.repo);
+  f.head = git(['rev-parse', 'HEAD'], f.repo);
+  const tf = taskFile(f);
+  deliverAll(f, tf);
+  const pf = preflightFile(f);
+  const keys = deliveredOf(tf).flatMap((seg) => seg.negativeRequirements ?? []);
+  assert.ok(keys.length >= 2, `need two required keys, got ${keys.length}`);
+  const full = compliant(tf);
+  const runA = full.verificationRuns.find((r) => r.provenance.fileId === keys[0].fileId);
+  const swapped = {
+    ...full,
+    negativeEvidence: full.negativeEvidence.map((n) => (
+      n.fileId === keys[1].fileId
+        ? { ...n, verificationRunId: runA.runId, command: runA.command, outputAnchor: runA.outputAnchor }
+        : n
+    )),
+  };
+  const r = run(f, swapped, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(r.json.verdict, 'invalid');
+  assert.match(r.json.reasons.join(';'), /跨键|key|negative/i);
+});
+
+test('F-4 旧 head provenance 即使注入匹配也拒(重放)', () => {
+  const f = setup();
+  mkdirSync(join(f.repo, 'scripts', 'e2e'), { recursive: true });
+  writeFileSync(join(f.repo, 'scripts/e2e/w.mjs'), 'export async function w(page) {\n  await page.waitForFunction(() => 1);\n}\n');
+  git(['add', '-A'], f.repo);
+  git(['commit', '-q', '-m', 'wait'], f.repo);
+  f.head = git(['rev-parse', 'HEAD'], f.repo);
+  const tf = taskFile(f);
+  deliverAll(f, tf);
+  const pf = preflightFile(f);
+  const full = compliant(tf);
+  const stale = 'c'.repeat(40);
+  for (const run of full.verificationRuns) run.provenance.headRefOid = stale;
+  const r = run(f, full, ['--mode', 'auto', '--task', tf, '--preflight', pf]);
+  assert.equal(r.json.verdict, 'invalid');
+  assert.match(r.json.reasons.join(';'), /重放|head|snapshot|provenance|host-verified/i);
 });
 
 test('⑮ preflight 命中 → 机器入账并 dirty(不经 LLM,审查输出零 finding 也拦)', () => {

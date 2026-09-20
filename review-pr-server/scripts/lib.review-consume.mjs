@@ -34,13 +34,20 @@ const NEGATIVE_KINDS = ['executed', 'not-applicable'];
 const OBSERVED_SIGNALS = ['expected-failure-observed'];
 export const RUN_EXECUTORS = Object.freeze(['seat-model', 'host-verified', 'remote-restricted']);
 export const HOSTED_LAYERS = Object.freeze(['inner-cli', 'outer-test']);
+const SHA40 = /^[0-9a-f]{40}$/;
 export function hostedRunFingerprint(run) {
+  const p = run?.provenance ?? {};
   return JSON.stringify({
     runId: run?.runId, command: run?.command, exitCode: run?.exitCode,
     outputAnchor: run?.outputAnchor ?? run?.outputDigest,
-    layer: run?.provenance?.layer, headRefOid: run?.provenance?.headRefOid,
-    baseRefOid: run?.provenance?.baseRefOid, snapshotHash: run?.provenance?.snapshotHash,
+    layer: p.layer, oracleId: p.oracleId, fileId: p.fileId, hunkId: p.hunkId,
+    headRefOid: p.headRefOid, baseRefOid: p.baseRefOid, snapshotHash: p.snapshotHash,
+    repo: p.repo ?? null,
   });
+}
+export function provenanceKeyStr(p) {
+  if (!p || !isStr(p.fileId) || !isStr(p.hunkId)) return '';
+  return `${p.fileId}:${p.hunkId}`;
 }
 // not-applicable 的 reasonCode 闭集(SC-R6 复审:自由文本 reasonCode 等于没有闭集)
 export const NA_REASON_CODES = ['doc-only', 'comment-only', 'generated-file', 'pure-rename', 'config-value-only', 'not-a-test-oracle'];
@@ -58,7 +65,7 @@ export const NA_REASON_CODES = ['doc-only', 'comment-only', 'generated-file', 'p
  *   每一个都要求恰好一条 prescanAssessments 条目——多退少补都判非法。
  * @returns {{ ok: boolean, errors: string[] }}
  */
-export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null, expectedPrescanObservationIds = [], shapeOnly = false } = {}) {
+export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHash = null, expectedPrescanObservationIds = [], shapeOnly = false, forbidSeatModel = false } = {}) {
   const errors = [];
   if (output === null || typeof output !== 'object' || Array.isArray(output)) {
     return { ok: false, errors: ['输出不是 JSON 对象'] };
@@ -129,10 +136,14 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
       if (r.executor === 'remote-restricted') {
         errors.push(`verificationRuns[${i}].executor=remote-restricted 本波未实现`);
       }
+      if (forbidSeatModel && r.executor === 'seat-model') {
+        errors.push(`verificationRuns[${i}].executor=seat-model 在 server 语境禁止`);
+      }
       if (r.executor === 'host-verified') {
         const p = r.provenance;
-        if (!p || typeof p !== 'object' || !HOSTED_LAYERS.includes(p.layer) || !isStr(p.headRefOid) || !isStr(p.baseRefOid) || !isStr(p.snapshotHash)) {
-          errors.push(`verificationRuns[${i}] host-verified 缺 provenance.{layer,headRefOid,baseRefOid,snapshotHash}`);
+        if (!p || typeof p !== 'object' || !HOSTED_LAYERS.includes(p.layer) || !isStr(p.oracleId) || !isStr(p.fileId) || !isStr(p.hunkId)
+          || !SHA40.test(p.headRefOid ?? '') || !SHA40.test(p.baseRefOid ?? '') || !isStr(p.snapshotHash)) {
+          errors.push(`verificationRuns[${i}] host-verified 缺 provenance.{layer,oracleId,fileId,hunkId,headRefOid(40hex),baseRefOid(40hex),snapshotHash}`);
         }
       }
       if (r.innerExit !== undefined || r.childReportedExit !== undefined) {
@@ -197,8 +208,15 @@ export function validateReviewOutput(output, { injectedOpenIds = [], snapshotHas
           errors.push(`findingDispositions[${i}] resolved evidence 缺 snapshotHash(必须绑定当前 snapshot)`);
         } else if (e.kind === 'diff-anchor' && !(isStr(e.fileId) && isStr(e.hunkId))) {
           errors.push(`findingDispositions[${i}] diff-anchor 需 fileId+hunkId(指向当前 diff 的具体改动)`);
-        } else if (e.kind === 'verification-run' && !(isStr(e.verificationRunId) && runIds.has(e.verificationRunId))) {
-          errors.push(`findingDispositions[${i}] verification-run 的 verificationRunId 悬空`);
+        } else if (e.kind === 'verification-run') {
+          if (!(isStr(e.verificationRunId) && runIds.has(e.verificationRunId))) {
+            errors.push(`findingDispositions[${i}] verification-run 的 verificationRunId 悬空`);
+          } else if (forbidSeatModel) {
+            const evRun = (output.verificationRuns ?? []).find((x) => x && x.runId === e.verificationRunId);
+            if (evRun?.executor === 'seat-model') {
+              errors.push(`findingDispositions[${i}] verification-run 不得引用 server 语境下的 seat-model run`);
+            }
+          }
         }
       }
       if (d.disposition === 'invalidated' && !isStr(d.basis)) {
@@ -357,6 +375,8 @@ export function deriveVerdict({ shape, output, ledgerResult, flags = {} }) {
     ['coverageMismatch', '覆盖对账不符(coverage keys 集合不相等)'],
     ['requiredNegativeKeysMissing', 'required negative-evidence key 未被 executed 条目满足'],
     ['hostedProvenanceUnverified', 'host-verified run 未通过注入 attested receipt 核验'],
+    ['negativeKeyRunMismatch', 'negativeEvidence 键与 verificationRun.provenance 的 fileId/hunkId 不一致(禁止跨键顶替)'],
+    ['hostedContextMismatch', 'host-verified provenance 与当前 repo/head/base/snapshot 不符(重放拒绝)'],
     ['missingProfileAnswers', '命中 profile 的必答项缺失'],
     ['missingDispositions', '已注入的历史 open findingId 缺 disposition'],
     ['taskInvalid', 'task 文件缺失/不符当前 snapshot/字段不全(没有它无法对账,fail-closed)'],

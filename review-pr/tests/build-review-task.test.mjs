@@ -416,3 +416,14 @@ test('SC-R1: prescan 双跑确定性(task/prompt 无时间字段,输出稳定)',
   assert.equal(aTaskText, bTaskText, 'task.json 双跑逐字节一致(build-review-task 无时间字段)');
   assert.equal(aPromptText, bPromptText, 'prompt.md 双跑逐字节一致');
 });
+
+test('F-2 任务书要求复制 host-verified 注入清单,不教亲自跑测试', () => {
+  const f = setup();
+  const { prompt } = run(f);
+  assert.match(prompt, /host-verified/);
+  assert.match(prompt, /executor/);
+  assert.match(prompt, /不得自报 seat-model/);
+  assert.match(prompt, /不要亲自跑测试/);
+  assert.doesNotMatch(prompt, /每条实验真实执行并登记/);
+  assert.doesNotMatch(prompt, /把它弄坏一次/);
+});
