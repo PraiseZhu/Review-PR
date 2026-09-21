@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDiffSnapshot, coverageKeysOf, computeSnapshotHash } from '../scripts/lib.diff-snapshot.mjs';
@@ -105,4 +105,43 @@ test('R8:submodule/mode-only 形态', () => {
   assert.equal(f.newMode, '100755');
   assert.equal(f.hunks.length, 0);
   assert.deepEqual(coverageKeysOf(s).filter((k) => k.fileId === f.fileId), [{ kind: 'file', fileId: f.fileId }], 'mode-only → file-receipt key');
+});
+
+test('git cat-file peel ^{commit} via argv then snapshot complete', () => {
+  const { repo, base, head } = repoWith();
+  const peel = spawnSync('git', ['cat-file', '-e', `${head}^{commit}`], { cwd: repo, encoding: 'utf8', shell: false });
+  assert.equal(peel.status, 0, peel.stderr);
+  const s = buildDiffSnapshot({ repoRoot: repo, baseRefOid: base, headOid: head, fetchMissing: false });
+  assert.equal(s.complete, true, s.reason);
+});
+
+test('repo path with spaces: snapshot complete', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'snap space '));
+  const repo = join(parent, 'my repo');
+  mkdirSync(repo);
+  git(['init', '-q', '-b', 'main'], repo);
+  writeFileSync(join(repo, 'a.txt'), 'one\n');
+  git(['add', '.'], repo);
+  git(['commit', '-q', '-m', 'base'], repo);
+  const base = git(['rev-parse', 'HEAD'], repo);
+  writeFileSync(join(repo, 'a.txt'), 'two\n');
+  git(['add', '.'], repo);
+  git(['commit', '-q', '-m', 'head'], repo);
+  const head = git(['rev-parse', 'HEAD'], repo);
+  const s = buildDiffSnapshot({ repoRoot: repo, baseRefOid: base, headOid: head, fetchMissing: false });
+  assert.equal(s.complete, true, s.reason);
+});
+
+test('lib.diff-snapshot git() spawn is argv (shell false)', () => {
+  const src = readFileSync(new URL('../scripts/lib.diff-snapshot.mjs', import.meta.url), 'utf8');
+  assert.match(src, /spawnSync\('git', args, \{ cwd, encoding: 'utf8', shell: false/);
+  assert.equal(src.includes('shell: isWin'), false);
+});
+
+test('win32 records cmd vs argv peel; argv must succeed', { skip: process.platform !== 'win32' }, () => {
+  const { repo, head } = repoWith();
+  const viaArgv = spawnSync('git', ['cat-file', '-e', `${head}^{commit}`], { cwd: repo, encoding: 'utf8', shell: false });
+  const viaCmd = spawnSync('cmd.exe', ['/d', '/s', '/c', `git cat-file -e ${head}^{commit}`], { cwd: repo, encoding: 'utf8' });
+  assert.equal(viaArgv.status, 0, viaArgv.stderr);
+  process.stdout.write(`win32-cmd-peel status=${viaCmd.status} stderr=${(viaCmd.stderr || '').slice(0, 200)}\n`);
 });

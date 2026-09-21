@@ -1,0 +1,21 @@
+name: skill-node-test
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  node-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: snapshot and git-spawn tests
+        run: node --test review-pr/tests/lib.diff-snapshot.test.mjs
+      - name: lib.mjs git spawn policy
+        run: node --test review-pr/tests/lib.win-git-spawn.test.mjs
