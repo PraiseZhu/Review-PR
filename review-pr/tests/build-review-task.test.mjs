@@ -187,6 +187,7 @@ test('R3/R4 接线:必答 check IDs、segments 出现在 prompt;必答/负向明
     assert.ok(prompt.includes(c.id), `prompt 必须含 check id ${c.id}(check 语义仍要给,给的是 ask,不是 fileId)`);
   }
   assert.ok(prompt.includes(task.snapshotHash), 'prompt 必须携带 snapshotHash');
+  assert.ok(prompt.includes('{segmentId, receivedOrder, snapshotHash, coverageKeys:[...]}'), '覆盖回执样例必须含 snapshotHash');
   assert.ok(task.segments.length >= 1);
   for (const seg of task.segments) assert.ok(prompt.includes(seg.segmentId), `prompt 必须含 ${seg.segmentId}`);
   assert.ok(task.requiredNegativeEvidenceKeyCount > 0, 'e2e 新增等待/断言 → 必须产 required 负向 key');
@@ -229,6 +230,7 @@ test('R4 第 4 轮核验 BLOCKER:key/必答/负向明细与 patch 内容只从�
       assert.match(c.patch, /^@@ /, 'hunk key 必须带 immutable patch 文本');
       assert.ok(seg.payload.includes('```diff'), 'payload 正文必须内嵌 patch 内容');
       assert.ok(seg.payload.includes(c.path), 'payload 正文必须带 path');
+      assert.ok(seg.payload.includes(`snapshotHash:"${seg.snapshotHash}"`), '段卡片样例必须带 next() 同源 snapshotHash');
     }
   }
   // 本段的 required 负向证据明细也随段给出(task/prompt 已不含)

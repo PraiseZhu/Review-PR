@@ -160,7 +160,7 @@ try {
     `## 覆盖分段 ${seg.segmentId}(投递序号 ${seg.order} / 共 ${segments.length} 段)`,
     '',
     `本段分配到 ${seg.assignedCoverageKeys.length} 个 coverage key,逐个审并在 \`segmentReceipts[]\` 追加`,
-    `\`{segmentId:"${seg.segmentId}", receivedOrder:${seg.order}, coverageKeys:[...本段全部 key...]}\`。`,
+    `\`{segmentId:"${seg.segmentId}", receivedOrder:${seg.order}, snapshotHash:"${snapshot.snapshotHash}", coverageKeys:[...本段全部 key...]}\`。`,
     '只能认领本段的 key(跨段冒领/段内重复一律判 invalid)。',
     '',
     ...segmentContent.flatMap((c) => (c.kind === 'hunk'

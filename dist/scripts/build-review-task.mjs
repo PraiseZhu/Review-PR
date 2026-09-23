@@ -162,7 +162,10 @@ try {
     '- `negativeEvidence[]` 元素:`{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`——',
     '  **`command` 与 `outputAnchor` 必须与 `verificationRuns[]` 里被引用 run 的对应字段逐字一致**(机器会做一致性校验,不一致判 invalid);`verificationRunId` 必须引用真实登记的 runId。',
     '  做法是**直接复制**被引用 run 的 `command` 与 `outputAnchor` 字符串值,不要改写、缩略或增补失败细节——想把失败现场写得更详细,写进 `negativeOracle`/`modelVerdictNote`,`command`/`outputAnchor` 两字段只认与 run 逐字节相同的复制(2026-08-20 PR187 实跑:同一次实验两处 anchor 写法不同,整轮 invalid,主 agent 手工对齐才通过)。',
-    '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor}`——每条实验真实执行并登记。',
+    '- `verificationRuns[]` 元素:`{runId, command, exitCode(整数), outputAnchor, executor, provenance}`。',
+    '  `executor` 闭集 `"host-verified"|"seat-model"|"remote-restricted"`。**server 席不得自报 seat-model**（本席无执行面，伪造亲跑一律 invalid）。',
+    '  required 负向证据必须引用宿主注入的 host-verified receipt：把注入清单里 **fileId/hunkId/oracleId 与该处相同** 的条目的 `executor`/`provenance`/`command`/`exitCode`/`outputAnchor` **原样复制**进 `verificationRuns[]`，再让 `negativeEvidence` 引用该 `runId`。',
+    '  **禁止**自己 spawn npm/vitest/node 仓脚本充当 executed；禁止用键 A 的 receipt 顶替键 B。',
     '- `escapeAssessment[]` / `verificationGaps[]`:`{candidateId, verdict:"yes"|"no", basis}` / `{description, required:false}`。',
     '  **以下字段即使为空也必须作为数组包含:`verificationGaps`, `findingDispositions`, `profileAnswers`, `negativeEvidence`**(缺字段或传非数组,机器各自硬报错判 invalid)。',
   ].join('\n'), '');
@@ -229,8 +232,9 @@ try {
     // 第 4 轮核验 BLOCKER:此前这里逐项打印 {path, hunkId, fileId}——fileId/hunkId 正是
     // coverage hunk key,拿它就能伪造 segmentReceipts 绕过投递出口。只留计数。
     L.push(`本轮共 ${requiredNegativeEvidenceKeys.length} 处改动触及等待原语/断言/守卫——具体位置(path/fileId/hunkId/原因)**随对应分段投递给出**。`);
-    L.push('', '对每处在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`,并在 `verificationRuns[]` 里登记对应 run。也就是:**把它弄坏一次,证明它真的会红**。', '');
-    L.push('', '填写提醒:`negativeEvidence` 条目的 `command`/`outputAnchor` **直接从你登记的那条 `verificationRuns` run 复制**,逐字节相同——不要为该条证据单独改写一份「更详细的」anchor,两处写法不同机器即判 invalid(2026-08-20 PR187 实跑教训)。', '');
+    L.push('', '对每处在 `negativeEvidence[]` 里给 `{fileId, hunkId, kind:"executed", snapshotHash, command, negativeOracle, observedSignal:"expected-failure-observed", outputAnchor, verificationRunId}`。',
+      'verificationRuns 必须是宿主注入清单中 **provenance.fileId/hunkId/oracleId 与该处相同** 的 host-verified 条目的原样复制——**不要亲自跑测试**（server 席无执行面）。',
+      '`command`/`outputAnchor` 从该注入 run 逐字节复制。用另一处 hunk 的 receipt 顶替本处 → invalid。', '');
   }
   // SC-4.1: prescan 状态声明——只给状态+总数,不含 observation 明细(明细随对应分段
   // 由 deliver-review-segment.mjs 给出,与必答项/负向证据同一纪律)。
@@ -270,9 +274,9 @@ try {
     '',
     '投递出口只接受**下一个**序号(乱序/跳段直接拒且不留记录),并把投递事实记进台账;',
     'consumer 以台账为基准核对回执——没投递过就声称覆盖、或宿主没投完,一律判 invalid。',
-    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`',
+    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, snapshotHash, coverageKeys:[...]}`',
     '(字段名是 `coverageKeys`,不是 `assignedCoverageKeys`;值原样复制该段 assignedCoverageKeys),',
-    '`receivedOrder` 必须等于该段投递序号,且只能认领本段分配到的 key。',
+    '`receivedOrder` 必须等于该段投递序号,`snapshotHash` 必须等于顶层 snapshotHash,且只能认领本段分配到的 key。',
   ].join('\n'), '');
   if (!snapshot.complete) L.push(`> ⚠ DiffSnapshot 不完整(${snapshot.reason})——本轮无论如何都会判 invalid,请上报而不是硬审。`, '');
   if (configIncomplete) L.push(`> ⚠ 目标仓 riskProfiles 配置有非法项(${warnings.join(';')})——内置与合法项照常审,但本轮会判 invalid。`, '');

@@ -36,14 +36,36 @@ export function runScript(name, args, session) {
   check(result.status === 0, `${name} failed (${result.error?.code ?? result.status})`);
   return JSON.parse(result.stdout);
 }
+function shown(value) {
+  return value === undefined ? 'undefined' : JSON.stringify(value);
+}
 export function validateSegmentAnswer(answer, delivery) {
-  check(answer?.segmentId === delivery.segmentId && answer.receivedOrder === delivery.order && answer.snapshotHash === delivery.snapshotHash, 'segment answer binding mismatch');
+  if (answer?.segmentId !== delivery.segmentId) {
+    throw new Error(`segment answer binding mismatch:segmentId expected ${shown(delivery.segmentId)} got ${shown(answer?.segmentId)}`);
+  }
+  if (answer?.receivedOrder !== delivery.order) {
+    const typeNote = typeof answer?.receivedOrder !== typeof delivery.order ? ' (type)' : '';
+    throw new Error(`segment answer binding mismatch:receivedOrder${typeNote} expected ${shown(delivery.order)} got ${shown(answer?.receivedOrder)}`);
+  }
+  if (answer?.snapshotHash !== delivery.snapshotHash) {
+    throw new Error(`segment answer binding mismatch:snapshotHash expected ${shown(delivery.snapshotHash)} got ${shown(answer?.snapshotHash)}`);
+  }
   const keys = xs => xs.map(x => {
     check(x && ['file', 'hunk'].includes(x.kind) && typeof x.fileId === 'string' && (x.kind !== 'hunk' || typeof x.hunkId === 'string'), 'invalid coverage key');
     return `${x.kind}:${x.fileId}:${x.hunkId ?? ''}`;
   }).sort();
   check(Array.isArray(answer.coverageKeys) && JSON.stringify(keys(answer.coverageKeys)) === JSON.stringify(keys(delivery.assignedCoverageKeys)), 'segment coverage mismatch');
   return true;
+}
+export function preserveFailedModelAnswer(worktree, answerFile, error) {
+  const dest = path.join(worktree, 'failed-model-answer.json');
+  if (typeof answerFile === 'string' && fs.existsSync(answerFile) && !fs.existsSync(dest)) {
+    try { fs.copyFileSync(answerFile, dest, fs.constants.COPYFILE_EXCL); } catch { /* keep original error */ }
+  }
+  if (fs.existsSync(dest) && !String(error.message).includes('; preserved ')) {
+    throw new Error(`${error.message}; preserved ${dest}`, { cause: error });
+  }
+  throw error;
 }
 function sessionAt(file) {
   const s = read(file);
@@ -129,7 +151,11 @@ export function nextServer({ sessionFile, order, previousAnswer }) {
   check(order === s.deliveries.length + 1, 'out-of-order segment');
   if (order > 1) {
     check(previousAnswer, 'previous model answer required'); assertReviewArtifactPaths(s.identity, [previousAnswer]);
-    const answer = read(previousAnswer); validateSegmentAnswer(answer, s.deliveries.at(-1)); s.answers.push(answer);
+    try {
+      const answer = read(previousAnswer); validateSegmentAnswer(answer, s.deliveries.at(-1)); s.answers.push(answer);
+    } catch (error) {
+      preserveFailedModelAnswer(s.worktree, previousAnswer, error);
+    }
   }
   const delivery = runScript('deliver-review-segment.mjs', [String(s.request.pr), '--task', s.taskFile, '--base', s.request.base, '--head', s.request.head, '--order', String(order)], s);
   s.deliveries.push(delivery); save(sessionFile, s);
@@ -139,11 +165,15 @@ export function finalizeServer({ sessionFile, answerFile, outputFile }) {
   const s = sessionAt(sessionFile); assertReviewArtifactPaths(s.identity, [answerFile, outputFile]);
   check(s.taskDigest === digest(read(s.taskFile)), 'bound task changed');
   check(s.execution && s.deliveries.length === s.segmentCount, 'review not fully delivered');
-  const output = read(answerFile);
-  check(output.schemaVersion === 'rro-1' && output.snapshotHash === s.snapshotHash, 'RRO binding mismatch');
-  check(Array.isArray(output.segmentReceipts) && output.segmentReceipts.length === s.deliveries.length, 'missing model segment receipts');
-  for (let i = 0; i < s.deliveries.length; i++) validateSegmentAnswer(output.segmentReceipts[i], s.deliveries[i]);
-  runScript('consume-review-output.mjs', [String(s.request.pr), '--shape-preflight', '--output', answerFile, '--snapshot-hash', s.snapshotHash], s);
+  try {
+    const output = read(answerFile);
+    check(output.schemaVersion === 'rro-1' && output.snapshotHash === s.snapshotHash, 'RRO binding mismatch');
+    check(Array.isArray(output.segmentReceipts) && output.segmentReceipts.length === s.deliveries.length, 'missing model segment receipts');
+    for (let i = 0; i < s.deliveries.length; i++) validateSegmentAnswer(output.segmentReceipts[i], s.deliveries[i]);
+    runScript('consume-review-output.mjs', [String(s.request.pr), '--shape-preflight', '--output', answerFile, '--snapshot-hash', s.snapshotHash], s);
+  } catch (error) {
+    preserveFailedModelAnswer(s.worktree, answerFile, error);
+  }
   // Preserve model-authored bytes. No synthetic coverage, verdict, tests or dispositions.
   fs.copyFileSync(answerFile, outputFile, fs.constants.COPYFILE_EXCL);
   const descriptor = path.join(s.worktree, 'native-review-descriptor.json');

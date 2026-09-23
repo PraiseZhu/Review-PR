@@ -3,9 +3,8 @@
 //
 // 设计原则:这些脚本只做「采集 + 客观判定 + git 动作」这些确定性的事,
 // 不做任何语义判断(段落是否实质、bot 评论是不是个问题等留给 skill 里的 LLM)。
-// 跨平台:spawnSync 在 Windows 走 shell(让 cmd.exe 能解析 gh.cmd / git);
-// 所有外部命令参数都是简单 token(无空格),长字符串(GraphQL query)走 stdin,
-// 因此 Windows 下 shell:true 不会触发引号问题。
+// 跨平台:Windows 上 gh.cmd 仍走 shell;git.exe 一律 argv(shell:false),
+// 避免 cmd 把 <oid>^{commit} 的 ^ 当转义。cwd 承载含空格路径,不把路径塞进 -C。
 //
 // 鉴权统一走 gh(本项目 token 由 gh 管理、存系统凭据),脚本绝不打印 token。
 
@@ -29,6 +28,10 @@ import { runGhWithPrViewCompat } from './lib.gh-pr-view-compat.mjs';
 delete process.env.NODE_DEBUG;
 
 const isWin = process.platform === 'win32';
+/** git.exe is PATHEXT-resolvable. gh.cmd needs cmd.exe. */
+function winShellFor(cmd) {
+  return isWin && cmd !== 'git';
+}
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = join(SCRIPT_DIR, '..');
 
@@ -56,7 +59,7 @@ export const REPO_ROOT = resolve(rawRepoRoot);
 function resolveStateAnchor() {
   try {
     const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
-      cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
+      cwd: REPO_ROOT, encoding: 'utf8', shell: false, timeout: 10_000,
     });
     const out = r.status === 0 ? (r.stdout ?? '').trim() : '';
     if (out) return realpathSync(resolve(REPO_ROOT, out)); // 主仓库返回相对 ".git",worktree 返回绝对路径,一律归一成绝对再 realpath
@@ -107,7 +110,7 @@ const LEGACY_STATE_ROOT = join(tmpdir(), 'review-pr');
  */
 function resolveMainWorktreeRoot() {
   const r = spawnSync('git', ['worktree', 'list', '--porcelain'], {
-    cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
+    cwd: REPO_ROOT, encoding: 'utf8', shell: false, timeout: 10_000,
   });
   if (r.status !== 0) return null;
   const lines = (r.stdout ?? '').split('\n');
@@ -130,7 +133,7 @@ function resolveMainWorktreeRoot() {
   let rawPath;
   if (blocks.length === 1) {
     const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: REPO_ROOT, encoding: 'utf8', shell: isWin, timeout: 10_000,
+      cwd: REPO_ROOT, encoding: 'utf8', shell: false, timeout: 10_000,
     });
     rawPath = top.status === 0 ? (top.stdout ?? '').trim() : '';
   } else {
@@ -155,7 +158,7 @@ function resolveMainWorktreeRoot() {
   // T2 校验②:候选必须能自证是工作树顶层——对候选本身跑 show-toplevel,结果要
   // 正好等于候选自己。
   const selfCheck = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-    cwd: candidate, encoding: 'utf8', shell: isWin, timeout: 10_000,
+    cwd: candidate, encoding: 'utf8', shell: false, timeout: 10_000,
   });
   if (selfCheck.status !== 0) return null;
   let selfTop;
@@ -193,7 +196,7 @@ function nearestExistingAncestor(p) {
  */
 function probeGitWorkTreeState(cwd) {
   const r = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
-    cwd, encoding: 'utf8', shell: isWin, timeout: 10_000,
+    cwd, encoding: 'utf8', shell: false, timeout: 10_000,
   });
   if (r.error) return 'unknown'; // spawn 层失败(git 不在 PATH、超时等)
   if (r.status === 0) {
@@ -222,7 +225,7 @@ function isSafeFromDirtyWorkingTree(candidatePath) {
   const state = probeGitWorkTreeState(cwd);
   if (state === 'unknown') return false;
   if (state === 'outside') return true;
-  const r = spawnSync('git', ['check-ignore', '-q', candidatePath], { cwd, shell: isWin, timeout: 10_000 });
+  const r = spawnSync('git', ['check-ignore', '-q', candidatePath], { cwd, shell: false, timeout: 10_000 });
   if (r.error) return false;
   return r.status === 0;
 }
@@ -230,7 +233,7 @@ function isSafeFromDirtyWorkingTree(candidatePath) {
 /** 拿 cwd 所在仓库的 canonical 身份(git-common-dir 的 realpath);取不到返回 null。 */
 function canonicalRepoIdentity(cwd) {
   const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
-    cwd, encoding: 'utf8', shell: isWin, timeout: 10_000,
+    cwd, encoding: 'utf8', shell: false, timeout: 10_000,
   });
   if (r.status !== 0) return null;
   const out = (r.stdout ?? '').trim();
@@ -576,7 +579,7 @@ export function run(cmd, args, { input, allowFail = false, timeoutMs, cwd } = {}
     const r = spawnSync(cmd, args, {
       input,
       encoding: 'utf8',
-      shell: isWin,
+      shell: winShellFor(cmd),
       cwd,
       maxBuffer: 128 * 1024 * 1024,
       timeout: timeoutMs,
