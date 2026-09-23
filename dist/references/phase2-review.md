@@ -192,7 +192,9 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
     "manifestations": [ { "path": "", "line": 1, "evidence": "", "impact": "", "fix": "", "verification": "", "severity": "P1" } ],
     "fixGuidance": "修复必须覆盖该不变量的全部路径，包括本报告未点名处" } ],
   "verificationGaps": [ { "description": "", "required": false } ],
-  "verificationRuns":  [ { "runId": "r1", "command": "", "exitCode": 0, "outputAnchor": "" } ],
+  "verificationRuns":  [ { "runId": "r1", "command": "", "exitCode": 2, "outputAnchor": "",
+    "executor": "host-verified", "provenance": { "layer": "inner-cli", "oracleId": "", "fileId": "", "hunkId": "",
+      "headRefOid": "", "baseRefOid": "", "snapshotHash": "" } } ],
   "profileAnswers":    [ { "profileId": "test-infra", "fileId": "", "checkId": "",
     "answer": "checked-clean|finding|not-applicable", "hunkId": "", "findingRef": { "family_id": "f1", "manifestationIndex": 0 },
     "reasonCode": "", "explanation": "" } ],
@@ -231,13 +233,9 @@ consumer 以台账为顺序基准核对回执——零投递、缺段、或声�
   这条挡的是「base 前进但 diff 与 coverage key 逐字节相同」时把上一轮答卷原样再交一次：
   重算 task/preflight 验的是「任务与快照」，证明不了「这份答卷属于这个快照」。
 
-> **R6 诚实边界（机器承诺到哪为止）**：机器校验的是**对象绑定**（证据挂在哪个
-> fileId/hunkId）、**快照新鲜度**（snapshotHash 是否当前）、**引用存在性与声明一致性**
-> （verificationRunId 必须指向 `verificationRuns[]` 里存在的 run，且该 run 的
-> command/outputAnchor 与本条一致）。机器**不能**验证命令真的被执行过、也不能验证它与
-> 被改代码语义相关——没有受控执行 wrapper 时，前后一致的伪报（编一个 run 记录再引用它）
-> 是 T1 上限。这里的价值在于把"我看过了"变成"我把它弄坏过并留下可核对的锚点"，不是把它
-> 变成机器证明。
+> **R6 诚实边界**：required 负向证据只认 **host-verified** 且与宿主注入清单指纹一致、
+> `provenance.fileId/hunkId/oracleId` 与该 negativeEvidence 键相同、且 head/base/snapshot
+> 等于本轮上下文的 run。server 席**不得**自报 seat-model 亲跑。跨键顶替与旧 head 重放一律 invalid。
 
 主 agent 收到审查输出后、调用 consumer **之前**，先 `gh pr view <N> --json headRefOid,state` 核对：与任务 snapshot 的 head 不一致则对新 head 重建 task/preflight 重审（旧回执留作历史）；`state` 非 OPEN 则本轮 skip，汇总写「合并先于审查完成」。审查会话超时未交 `./rro-1.json` 时，写 non-clean 回执 `--verdict skip --reason review-agent-timeout` 并 skip，禁止沿用上次清白；答卷组装席接手必须重建 task/preflight/投递台账，snapshotHash 绑 `baseRefOid`。主会话在调用 consumer 之前先跑 `--shape-preflight`：缺字段/形状错把字段级 errors 退回审查席重交，**不得静默补 `profileId`/`fileId`，没有 `--shape-fix`**。
 

@@ -274,9 +274,9 @@ try {
     '',
     '投递出口只接受**下一个**序号(乱序/跳段直接拒且不留记录),并把投递事实记进台账;',
     'consumer 以台账为基准核对回执——没投递过就声称覆盖、或宿主没投完,一律判 invalid。',
-    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, coverageKeys:[...]}`',
+    '每段结束在 `segmentReceipts[]` 追加 `{segmentId, receivedOrder, snapshotHash, coverageKeys:[...]}`',
     '(字段名是 `coverageKeys`,不是 `assignedCoverageKeys`;值原样复制该段 assignedCoverageKeys),',
-    '`receivedOrder` 必须等于该段投递序号,且只能认领本段分配到的 key。',
+    '`receivedOrder` 必须等于该段投递序号,`snapshotHash` 必须等于顶层 snapshotHash,且只能认领本段分配到的 key。',
   ].join('\n'), '');
   if (!snapshot.complete) L.push(`> ⚠ DiffSnapshot 不完整(${snapshot.reason})——本轮无论如何都会判 invalid,请上报而不是硬审。`, '');
   if (configIncomplete) L.push(`> ⚠ 目标仓 riskProfiles 配置有非法项(${warnings.join(';')})——内置与合法项照常审,但本轮会判 invalid。`, '');

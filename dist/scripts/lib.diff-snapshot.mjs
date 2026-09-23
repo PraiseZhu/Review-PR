@@ -15,13 +15,13 @@
 // pre-merge 拒),绝不静默降级。
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import process from 'node:process';
 
-const isWin = process.platform === 'win32';
 const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
+// git.exe via argv. Do not use shell:true: cmd.exe treats ^ as escape, so
+// cat-file -e <oid>^{commit} never peels, and complete=false.
 function git(args, { cwd, timeoutMs = 60_000 } = {}) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', shell: isWin, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', shell: false, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
   return { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
