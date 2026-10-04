@@ -1163,6 +1163,15 @@ export function parseApproveMergeShaCommands(body) {
  * 未提供(null/undefined)时回退到 `admins` 参数(与策略层"字段缺失回退 admins"同口径),
  * 显式 `[]` 才是"关闭紧急通道"。`adminsConfigured` 字段名保留(表示"授权名单已配置且非空")。
  */
+/** Reserved assessment envelopes are display material, never human authorization.
+ * Inspect the full body before clipping; malformed versions and quoted markers
+ * fail closed here. This predicate does not establish ownership or identity.
+ */
+export function isAutomationAssessmentEnvelope(body) {
+  const text = String(body ?? '');
+  return /mivo-issue-assessment\s*:/i.test(text) || /🤖\s*Mivo\s*自动评估/i.test(text);
+}
+
 export function findApproveMergeAuthorization({ comments, breakGlassApprovers, admins, headRefOid }) {
   // 兼容期回退:未显式传入授权名单 → 沿用 admins(旧调用点/旧测试不因改名受伤;
   // 与 resolveMergeAuthorizationPolicy 的缺失回退语义一致)。
@@ -1170,7 +1179,7 @@ export function findApproveMergeAuthorization({ comments, breakGlassApprovers, a
   const { logins: adminLogins } = normalizeLoginList(effectiveList);
   const adminSet = new Set(adminLogins);
   if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [], edited: [], legacyBare: [] };
-  const eligible = (comments ?? []).filter((c) => !c.isBot && adminSet.has((c.author ?? '').toLowerCase()));
+  const eligible = (comments ?? []).filter((c) => !c.isBot && !c.automationExcluded && !isAutomationAssessmentEnvelope(c.body) && adminSet.has((c.author ?? '').toLowerCase()));
   const isEdited = (c) => c.updatedAt != null && c.createdAt != null && c.updatedAt !== c.createdAt;
   // 旧裸格式:仍识别但不授权,单独报告让发令者重发带 SHA 的新格式(不静默吞掉人的意图)。
   const legacyBare = eligible
@@ -2262,6 +2271,7 @@ export function parseSignoffReleases(comments) {
   const released = new Map();
   for (const c of comments ?? []) {
     const body = (typeof c === 'string' ? c : c?.body) ?? '';
+    if (c?.automationExcluded || isAutomationAssessmentEnvelope(body)) continue;
     const createdAt = typeof c === 'string' ? null : c?.createdAt ?? null;
     for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
       for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
@@ -2308,6 +2318,7 @@ export function parseSignoffReleaseMarkers(comments) {
   const out = [];
   for (const c of comments ?? []) {
     const body = (typeof c === 'string' ? c : c?.body) ?? '';
+    if (c?.automationExcluded || isAutomationAssessmentEnvelope(body)) continue;
     const author = commentAuthor(c);
     for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
       for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
@@ -2354,6 +2365,7 @@ const SIGNOFF_CONSENT_NEGATION_RE = /(不\s*同意|先别放|暂不|别放|不�
 
 export function isExplicitSignoffConsent(body) {
   const text = String(body ?? '');
+  if (isAutomationAssessmentEnvelope(text)) return false;
   if (SIGNOFF_CONSENT_MARKER_RE.test(text) || SIGNOFF_CONSENT_LINE_RE.test(text)) return true;
   if (SIGNOFF_CONSENT_NEGATION_RE.test(text)) return false;
   return SIGNOFF_CONSENT_POSITIVE_RE.test(text);
@@ -2405,7 +2417,7 @@ export function evaluateDiscussionIssueConsent({
     return { consented: false, readFailed: true, matched: null };
   }
   for (const c of whitelistComments) {
-    if (!isExplicitSignoffConsent(c?.body)) continue;
+    if (c?.automationExcluded || !isExplicitSignoffConsent(c?.body)) continue;
     if (!commentBindsCurrentHead({
       createdAt: c.createdAt,
       headAppearedAt,
