@@ -26,7 +26,7 @@
 // 跑:node <skill-root>/scripts/context.mjs <PR> [--scan]
 //     node <skill-root>/scripts/context.mjs --scan-all
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, evaluateDiscussionIssueConsent, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, classifyStatusRollup, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, PRODUCT_GATE_MARKER_PREFIX, parseLastHoldMarker, parseFingerprintGuard, matchColdUpdatePaths, loadRules, detectLoopExclusion, normalizeTitlePrefixes, fetchHeadCheckContexts, fetchExpectedRequiredContexts, classifyRequiredChecks, findApproveMergeAuthorization, evaluateAuthorizedFastMerge, decideStructuralBypassRoute, classifyBlockedStatus, scanPrSensitiveContent, normalizeLoginList, evaluateApprovalBasis, resolveApprovedShortcut, resolveMergeAuthorizationPolicy, classifyGateHits, SIGNOFF_LABEL_DEFAULT, parseSignoffReleaseMarkers, collectConfirmedSignoffKinds, evaluateSignoffRelease, evaluateDiscussionIssueConsent, decideSignoffGateAction, parseHoldMarkerWithAuthor, decideCloseOnRelease, isAutomationAssessmentEnvelope } from './lib.mjs';
 import { isTestOrFixturePath, isUiPath } from './lib.gate-paths.mjs';
 import { writeFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -678,6 +678,7 @@ try {
   // 1.5.1 issue comments
   const rawComments = g.comments?.nodes ?? [];
   const comments = rawComments.map((c) => ({
+    automationExcluded: isAutomationAssessmentEnvelope(c.body),
     author: c.author?.login ?? '(unknown)',
     isBot: isBot(c.author),
     createdAt: c.createdAt,
@@ -758,6 +759,7 @@ try {
         let rosterErrors = null;
         let rosterCache = null;
         for (const c of issueMeta.comments ?? []) {
+          if (isAutomationAssessmentEnvelope(c.body)) continue;
           const login = c.author?.login ?? '';
           if (whitelistFn(login)) {
             whitelistComments.push({ author: login, createdAt: c.createdAt, body: clip(c.body, 600) });
@@ -850,6 +852,7 @@ try {
     return rawComments
       .filter((c) => {
         const login = (c.author?.login ?? '').toLowerCase();
+        if (isAutomationAssessmentEnvelope(c.body)) return false;
         if (!whitelistFn(login) || login === viewerLower) return false;
         return !(c.body ?? '').includes('<!-- review-pr:');
       })
@@ -954,7 +957,7 @@ try {
         .filter((c) => isColdUpdateApprover(c.resolvedLogin ?? c.author))
         .map((c) => ({ from: 'discussion-issue', ...c })),
       ...rawComments
-        .filter((c) => isColdUpdateApprover(c.author?.login) && !(c.body ?? '').includes('<!-- review-pr:'))
+        .filter((c) => !isAutomationAssessmentEnvelope(c.body) && isColdUpdateApprover(c.author?.login) && !(c.body ?? '').includes('<!-- review-pr:'))
         .map((c) => ({
           from: 'pr-comment',
           author: c.author?.login ?? '',
