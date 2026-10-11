@@ -81,6 +81,10 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
     GH_CONFIG_DIR: join(fakeHome, '.config', 'gh'),
     npm_config_cache: process.env.npm_config_cache || join(tmp, 'npm-cache'),
   };
+  // 审查服务器出网走 runner 服务单元注入的代理;只带代理变量,不带别的。
+  for (const key of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY', 'all_proxy', 'ALL_PROXY']) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
   const args = [
     '--ask-for-approval', 'never', 'exec',
     '--sandbox', 'workspace-write',

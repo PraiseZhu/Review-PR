@@ -265,14 +265,29 @@ function deps() {
     state.deps = { installed: false, skipped: state.tier === 'light' ? 'light 档不装依赖' : '没有 package-lock.json' };
   }
   if (state.tier === 'heavy') {
+    state.semgrep = ensureSemgrep();
     const ctx = readJson(state.context.file);
     const deps = [...new Set((ctx.signoff?.triggers ?? []).flatMap((t) => t.newDependencyNames ?? []))];
     const scan = runScript('security-scan.mjs', ['--base', state.input.base, ...deps.flatMap((d) => ['--dep', d])],
-      { cwd: REPO_DIR, env: { ...stripSecrets(process.env), REVIEW_PR_REPO_ROOT: REPO_DIR, REVIEW_PR_STATE_DIR: join(WORK, 'scan-state') }, timeoutMs: 10 * 60_000 });
+      { cwd: REPO_DIR, env: { ...stripSecrets(process.env), PATH: semgrepPath(), REVIEW_PR_REPO_ROOT: REPO_DIR, REVIEW_PR_STATE_DIR: join(WORK, 'scan-state') }, timeoutMs: 10 * 60_000 });
     writeJson(join(INPUT_DIR, 'security-scan.json'), scan);
     state.securityScan = { file: join(INPUT_DIR, 'security-scan.json'), ok: scan.ok !== false };
   }
   saveState(state);
+}
+
+// heavy 档的 semgrep:装进 runner 用户自己的 ~/.local(不需要 root),装过就复用;装不上如实记下,
+// security-scan 会输出 available:false,审查报告必须写「未执行」。
+const SEMGREP_VERSION = '1.175.0';
+const semgrepPath = () => `${process.env.HOME}/.local/bin:${process.env.PATH}`;
+function ensureSemgrep() {
+  const probe = run('semgrep', ['--version'], { allowFail: true, env: { ...stripSecrets(process.env), PATH: semgrepPath() }, timeoutMs: 60_000 });
+  if (probe.ok && probe.stdout.trim() === SEMGREP_VERSION) return { available: true, version: SEMGREP_VERSION, installed: false };
+  const install = run('python3', ['-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check', `semgrep==${SEMGREP_VERSION}`],
+    { allowFail: true, env: stripSecrets(process.env), timeoutMs: 10 * 60_000 });
+  const again = run('semgrep', ['--version'], { allowFail: true, env: { ...stripSecrets(process.env), PATH: semgrepPath() }, timeoutMs: 60_000 });
+  return { available: again.ok, version: again.ok ? again.stdout.trim() : null, installed: install.ok,
+    error: again.ok ? null : (install.stderr || again.stderr || '').trim().split('\n').slice(-2).join(' | ').slice(0, 300) };
 }
 
 function stripSecrets(env) {
