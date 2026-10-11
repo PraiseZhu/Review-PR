@@ -531,6 +531,8 @@ function addMergeReady(state, result) {
     '-f', 'description=Mivo 自动审查:当前 head 审查通过'], { cwd: REPO_DIR, allowFail: true });
   const meta = JSON.parse(gh(['api', `repos/${input.targetRepo}/pulls/${input.pr}`]).stdout);
   if (meta.head?.sha !== input.head) { result.warnings.push('加 review:merge-ready 前 head 已变化,不加标签'); return; }
+  // 已有就不再 POST:重复加同一个标签不留事件,但会刷新 PR 的 updatedAt,下一轮指纹就变了,会一直重审。
+  if ((meta.labels ?? []).some((label) => label?.name === MERGE_READY_LABEL)) return;
   const r = run('gh', ['api', '--method', 'POST', `repos/${input.targetRepo}/issues/${input.pr}/labels`, '-f', `labels[]=${MERGE_READY_LABEL}`], { cwd: REPO_DIR, allowFail: true });
   if (!r.ok) result.warnings.push(`review:merge-ready 标签没加上:${r.stderr.trim().slice(0, 200)}`);
 }
