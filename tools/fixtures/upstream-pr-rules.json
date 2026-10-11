@@ -1,0 +1,216 @@
+{
+  "_comment": "测试夹具:lizi 上游 config/pr-rules.json 的结构与取值,只把飞书群 ID 换成占位值。仅供上游自带测试运行(REVIEW_PR_RULES_FILE),生产配置见 review-pr/config/pr-rules.json。",
+  "titleTypes": [
+    "feat",
+    "fix",
+    "refactor",
+    "perf",
+    "chore",
+    "docs",
+    "test",
+    "revert",
+    "build",
+    "ci"
+  ],
+  "lightTypes": [
+    "chore",
+    "docs",
+    "test",
+    "build",
+    "ci",
+    "revert"
+  ],
+  "batch": {
+    "scanConcurrency": 8
+  },
+  "featureSections": [
+    "这次改了什么",
+    "怎么验证的",
+    "风险"
+  ],
+  "bugfixSections": [
+    "这次改了什么",
+    "怎么验证的",
+    "风险"
+  ],
+  "redlinePaths": [
+    "updater",
+    "localDb/schema\\.ts",
+    "drizzle/"
+  ],
+  "serverPaths": [],
+  "ciSensitivePaths": [
+    "\\.github/workflows/",
+    "\\.github/actions/"
+  ],
+  "sensitiveContent": {
+    "allowPaths": [],
+    "extraHardPatterns": [],
+    "extraSoftPatterns": []
+  },
+  "maintainerAllowlist": [
+    "fmfsaisai"
+  ],
+  "selfFixAuthors": [
+    "magiclizi"
+  ],
+  "protectedPaths": {
+    "_comment": "受保护路径:命中这些路径的 PR 一律不自动合并,交人工处理。不看 diff 大小、不看作者、不看标题类型。三个 CODEOWNERS 生效位置必须全覆盖,防 PR 改写下一轮维护者权限。paths 按 matchPathPatterns 口径(目录以 / 结尾=前缀匹配)。",
+    "paths": [
+      ".github/",
+      "CODEOWNERS",
+      "docs/CODEOWNERS"
+    ]
+  },
+  "signoffGate": {
+    "label": "awaiting-discussion",
+    "product": {
+      "uiPaths": [
+        "apps/desktop/src/renderer/",
+        "apps/mobile/",
+        "docs/design-rules/cindy-design-system.md"
+      ],
+      "uiExcludePaths": [
+        "apps/desktop/src/renderer/i18n/locales/",
+        "apps/mobile/src/i18n/locales/",
+        "apps/mobile/scripts/",
+        "apps/desktop/scripts/",
+        "scripts/"
+      ]
+    },
+    "arch": {
+      "corePaths": [
+        "packages/",
+        "cindy-protocol/",
+        "apps/desktop/src/main/",
+        "apps/desktop/src/preload/",
+        "apps/desktop/src/shared/"
+      ],
+      "coreDiffLines": 150,
+      "refactorDiffLines": 400,
+      "anyTypeDiffLines": 800
+    },
+    "security": {
+      "paths": [
+        "apps/desktop/src/preload/",
+        "apps/desktop/cindy-updater/",
+        ".github/workflows/",
+        ".github/actions/"
+      ],
+      "excludePaths": [],
+      "riskyPatterns": {
+        "hard": [],
+        "soft": [],
+        "allowPaths": []
+      },
+      "dependencyScan": {
+        "enabled": true,
+        "excludePaths": []
+      }
+    },
+    "coldUpdate": {
+      "paths": [
+        "apps/mobile/app.json",
+        "apps/mobile/app.config.js",
+        "apps/mobile/eas.json",
+        "apps/mobile/package.json",
+        "apps/mobile/fingerprint.config.cjs",
+        "apps/mobile/plugins/",
+        "apps/mobile/modules/",
+        "scripts/shared/client-endpoint-build-env.cjs"
+      ],
+      "guardMarker": "<!-- mobile-fingerprint-guard -->"
+    },
+    "rules": {
+      "paths": [
+        "**/AGENTS.md",
+        "**/CLAUDE.md",
+        "DESIGN.md",
+        "docs/README.md",
+        "docs/dev-rules/",
+        "docs/product-rules/",
+        "docs/design-rules/",
+        "docs/legal/",
+        ".github/PULL_REQUEST_TEMPLATE.md"
+      ],
+      "excludePaths": [
+        "docs/legal/notices/"
+      ]
+    },
+    "pluginBase": {
+      "paths": [
+        "apps/desktop/src/main/cindy-brain/",
+        "apps/desktop/src/main/plugin-market/",
+        "apps/desktop/src/main/mcp-integrations/ghost.ts",
+        "apps/desktop/src/shared/ghost.ts",
+        "packages/cindy-tools/src/ghost/",
+        "packages/cindy-tools/src/types.ts",
+        "apps/desktop/src/renderer/cindy-brain/installFlow.tsx",
+        "apps/desktop/src/renderer/cindy-brain/installErrorKey.ts",
+        "apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx",
+        "apps/desktop/src/renderer/cindy-brain/useInstalledGhosts.ts",
+        "apps/desktop/src/renderer/cindy-brain/runtimeStates.ts",
+        "apps/desktop/src/renderer/features/plugin/lib/ghostPluginViewModel.ts",
+        "apps/desktop/src/renderer/features/plugin/lib/pluginMarketPresentation.ts"
+      ],
+      "excludePaths": []
+    }
+  },
+  "statusLabels": {
+    "_comment": "展示标签(status:* / touches:*)。只做展示、不参与任何判定:合并前防线只认 signoffGate.label 与旧门类标签,这组贴错 / 贴不上都不改变能否合并。标签名与分组、挂哪个的优先级都在 lib.mjs(DISPLAY_LABELS + computeDisplayLabels,单测 status-labels.test.mjs);这里只放开关、阈值与颜色/描述覆盖。labels.<名字>.enabled=false 可单独关掉某个标签(context 就不再要求它,已挂的下轮被摘掉)。enabled=false 整组停用。落地脚本 scripts/sync-status-labels.mjs。largeDiffLines 别设成 arch.anyTypeDiffLines(800):那个阈值一到就触发架构门 → 必然同时挂 touches:core,2026-08-01 全量实测 24/24 完全重叠,large-diff 沦为 core 的复读机。取它的 2.5 倍(2000)才真的代表「这条特别大」——当时全量分布 800→24 条 / 1500→19 / 2000→15 / 3000→12 / 5000→6(共 47 条候选,中位数 932 行)。",
+    "enabled": true,
+    "largeDiffLines": 2000,
+    "labels": {}
+  },
+  "threadTriage": {
+    "enabled": true,
+    "extraBots": [
+      "greptile-apps"
+    ]
+  },
+  "postMergeSweep": {
+    "enabled": true,
+    "windowHours": 24
+  },
+  "staleRebase": {
+    "_comment": "PR 距上次 rebase 超过 maxDaysBehind 天 → 要求 rebase 以触发最新 CI。不看 PR 自己 push 时间,看 merge base commit(post base...head 的共同祖先)距今多久:作者 rebase 一次 merge base 就前移一次,计时自动归零,不会重复催。背景:旧 CI 是对旧 base 的虚拟 merge commit 跑的,base 前移后旧 CI 结果不再有效——不 rebase 就合等于把未对最新 base 验证过的代码合进主干(尤其 --admin merge 会绕过「Require branches to be up to date」保护)。",
+    "enabled": true,
+    "maxDaysBehind": 3
+  },
+  "botReviewSettle": {
+    "enabled": true,
+    "reviewers": [
+      "copilot-pull-request-reviewer",
+      "chatgpt-codex-connector"
+    ],
+    "quietMinutes": 5,
+    "quietExtraBots": [
+      "greptile-apps"
+    ],
+    "maxWaitMinutes": 20
+  },
+  "securityScan": {
+    "semgrepConfigs": [
+      "p/javascript",
+      "p/nodejs"
+    ],
+    "auditTimeoutMs": 60000,
+    "semgrepTimeoutMs": 180000
+  },
+  "slackSyncBots": [
+    "dash-s-cindy"
+  ],
+  "slackSenderAliases": {
+    "Dash": "dashhuang"
+  },
+  "orgMappingRepos": [
+    "taptap/org",
+    "xindong/org"
+  ],
+  "feishuNotify": {
+    "summaryChat": {
+      "name": "fixture-chat",
+      "chatId": "oc_fixture_chat_id"
+    }
+  }
+}

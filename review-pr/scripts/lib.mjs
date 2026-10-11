@@ -205,8 +205,35 @@ export function parseMaintainerTeamFromCodeowners(codeowners, { repoOwner = '' }
   };
 }
 
+// [MIVO-PATCH maintainer-allowlist] maintainerSource=allowlist 的权限材料：不读 CODEOWNERS，
+// 只认 maintainerAllowlist，且每个成员必须对仓库有 write/maintain/admin 权限。
+export const MAINTAINER_SOURCE_ALLOWLIST = 'allowlist';
+const isAllowlistAuthority = (authority) => authority?.source === MAINTAINER_SOURCE_ALLOWLIST;
+
+function computeAllowlistAuthorityDigest(authority) {
+  const version = Number(authority?.version);
+  const repository = String(authority?.repository ?? '').trim().toLowerCase();
+  const allowlistedMembers = normalizeLoginList(authority?.allowlistedMembers).sort();
+  const members = normalizeLoginList(authority?.members).sort();
+  const permissions = authority?.memberPermissions ?? {};
+  if (
+    version !== MAINTAINER_AUTHORITY_VERSION || !repository || allowlistedMembers.length === 0 ||
+    normalizeLoginList(authority?.teamMembers).length !== 0 ||
+    members.length !== allowlistedMembers.length || members.some((member, index) => member !== allowlistedMembers[index]) ||
+    members.some((member) => !['push', 'maintain', 'admin'].includes(String(permissions[member] ?? '')))
+  ) {
+    throw authorityError('维护者白名单权限材料不完整，无法计算 digest');
+  }
+  const canonical = JSON.stringify({
+    version, repository, source: MAINTAINER_SOURCE_ALLOWLIST, allowlistedMembers, members,
+    memberPermissions: Object.fromEntries(members.map((member) => [member, permissions[member]])),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
 /** 有效审批权限的稳定指纹；不把抓取时间或无关的默认分支提交纳入。 */
 export function computeMaintainerAuthorityDigest(authority) {
+  if (isAllowlistAuthority(authority)) return computeAllowlistAuthorityDigest(authority);
   const version = Number(authority?.version);
   const repository = String(authority?.repository ?? '').trim().toLowerCase();
   const path = String(authority?.codeowners?.path ?? '').trim();
@@ -323,6 +350,7 @@ export function fetchMaintainerAuthority({
   ghFn = gh,
   nowIso = new Date().toISOString(),
   maintainerAllowlist = loadRules().maintainerAllowlist,
+  maintainerSource = loadRules().maintainerSource,
 } = {}) {
   const normalizedOwner = String(owner ?? '').trim();
   const normalizedRepo = String(repo ?? '').trim();
@@ -345,6 +373,64 @@ export function fetchMaintainerAuthority({
   const baseSha = String(commitMeta?.sha ?? '').trim();
   if (!/^[0-9a-f]{40}$/i.test(baseSha)) {
     throw authorityError(`仓库 ${repository} 默认分支 commit SHA 无效`);
+  }
+
+  // [MIVO-PATCH maintainer-allowlist] 只认白名单，逐个核实仓库权限；任何一人核不实就从严停止。
+  if (maintainerSource === MAINTAINER_SOURCE_ALLOWLIST) {
+    const allowlistedMembers = normalizeMaintainerAllowlist(maintainerAllowlist);
+    if (allowlistedMembers.length === 0) throw authorityError('maintainerSource=allowlist 但 maintainerAllowlist 为空');
+    const memberPermissions = {};
+    for (const login of allowlistedMembers) {
+      const permission = parseJsonResult(
+        ghFn(['api', '--method', 'GET', `repos/${repository}/collaborators/${login}/permission`], {
+          allowFail: true,
+          timeoutMs: 20_000,
+        }),
+        `读取 ${login} 对 ${repository} 的权限`,
+      );
+      const role = String(permission?.role_name ?? permission?.permission ?? '').trim().toLowerCase();
+      const mapped = role === 'admin' ? 'admin' : role === 'maintain' ? 'maintain'
+        : (role === 'write' || role === 'push') ? 'push' : null;
+      if (!mapped) {
+        throw authorityError(`maintainerAllowlist 成员 ${login} 对 ${repository} 没有 write 及以上权限(当前 ${role || 'none'})`);
+      }
+      memberPermissions[login] = mapped;
+    }
+    const finalBase = parseJsonResult(
+      ghFn(['api', '--method', 'GET', `repos/${repository}/commits/${encodeURIComponent(baseRef)}`], {
+        allowFail: true,
+        timeoutMs: 20_000,
+      }),
+      `复核 ${repository} 默认分支 commit`,
+    );
+    if (String(finalBase?.sha ?? '').toLowerCase() !== baseSha.toLowerCase()) {
+      throw authorityError(`默认分支在维护者读取期间发生变化:${baseSha} → ${finalBase?.sha ?? '(empty)'}，请重试`);
+    }
+    const authority = {
+      version: MAINTAINER_AUTHORITY_VERSION,
+      repository,
+      source: MAINTAINER_SOURCE_ALLOWLIST,
+      fetchedAt: nowIso,
+      base: { ref: baseRef, sha: baseSha },
+      codeowners: {
+        path: '(maintainerAllowlist)',
+        blobSha: null,
+        line: null,
+        org: null,
+        teamSlug: null,
+        teamHandle: 'maintainerAllowlist',
+        teamPrivacy: null,
+        repositoryPermission: null,
+      },
+      teamMembers: [],
+      teamMemberCount: 0,
+      allowlistedMembers,
+      allowlistedMemberCount: allowlistedMembers.length,
+      members: allowlistedMembers,
+      memberCount: allowlistedMembers.length,
+      memberPermissions,
+    };
+    return { ...authority, digest: computeMaintainerAuthorityDigest(authority) };
   }
 
   let codeowners = null;
@@ -488,9 +574,11 @@ export function validateMaintainerAuthoritySnapshot(snapshot, {
     throw authorityError(`维护者快照仓库不匹配:${snapshot.repository ?? '(empty)'} != ${owner}/${repo}`);
   }
   if (!lockToken || snapshot.runToken !== lockToken) throw authorityError('维护者快照不属于当前 review 锁');
+  // [MIVO-PATCH maintainer-allowlist] 白名单来源没有 Team 成员，白名单本身必须非空。
+  const allowlistSource = isAllowlistAuthority(snapshot);
   const lists = [
-    ['Team 成员', snapshot.teamMembers, true],
-    ['补充白名单', snapshot.allowlistedMembers, false],
+    ['Team 成员', snapshot.teamMembers, !allowlistSource],
+    ['补充白名单', snapshot.allowlistedMembers, allowlistSource],
     ['最终成员', snapshot.members, true],
   ];
   for (const [label, value, mustBeNonEmpty] of lists) {
@@ -2933,4 +3021,84 @@ export async function mapPool(items, concurrency, fn) {
   });
   await Promise.all(workers);
   return results;
+}
+
+// ── Mivo 补丁区(逐条登记在仓库根 MIVO-PATCHES.md)──────────────────────────────
+
+/** [MIVO-PATCH exempt-authors] 作者是否免审查前的维护者确认门(不给放行权)。 */
+export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  return author !== '' && normalizeLoginList(rules.signoffGate?.exemptAuthors).includes(author);
+}
+
+/** [MIVO-PATCH ci-ignore] 去掉本流程自己写的 check(例如 review-pr),它不是作者的 CI。 */
+export function filterIgnoredCiContexts(contexts, rules = loadRules()) {
+  const ignore = new Set((rules.ciIgnoreContexts ?? []).map((name) => String(name)));
+  if (!Array.isArray(contexts) || ignore.size === 0) return contexts;
+  return contexts.filter((context) => !ignore.has(String(context?.name ?? '')));
+}
+
+// [MIVO-PATCH slack-release] Slack 讨论串里维护者回复「同意放行」视为放行。
+// Slack 同步评论(scripts/loops/slack-issue-inbound/sync.mjs 写入)的形态:
+//   来自 Slack #<频道> · @<GitHub login>(<显示名>)\n\n<原文>\n\n<!-- slack-inbound <channel>:<ts> -->
+// 发帖人统一是同步 bot,真正的放行人只能从首行署名里认;署名由 Slack 不可变 user id 映射而来。
+export const SLACK_INBOUND_MARKER_RE = /<!--\s*slack-inbound\s+(\S+?)\s*-->/;
+const SLACK_SIGNATURE_RE = /^来自\s*Slack[^\n]*?·\s*@([A-Za-z0-9][A-Za-z0-9-]*)/;
+const SLACK_CONSENT_NEGATION_RE = /不\s*同意|不\s*放行|先别|别放|暂不|不要放行|先不要|不能放行|还不能/;
+const SLACK_CONSENT_TRAILING_RE = /[\s。．.!！~～]+$/u;
+
+/** 解析一条 Slack 同步评论;不是同步格式返回 null。 */
+export function parseSlackSyncComment(body) {
+  const text = String(body ?? '').replace(/\r/g, '');
+  const signature = text.match(SLACK_SIGNATURE_RE);
+  const marker = text.match(SLACK_INBOUND_MARKER_RE);
+  if (!signature || !marker) return null;
+  const firstBreak = text.indexOf('\n');
+  const message = (firstBreak < 0 ? '' : text.slice(firstBreak + 1)).replace(SLACK_INBOUND_MARKER_RE, '').trim();
+  return { login: signature[1], message, fingerprint: marker[1] };
+}
+
+/** 回复正文里必须有一整行恰好是同意短语(允许末尾标点),且全文没有否定说法。 */
+export function isExplicitSlackConsent(message, consentLine = '同意放行') {
+  const text = String(message ?? '');
+  const phrase = String(consentLine ?? '').trim();
+  if (!phrase || SLACK_CONSENT_NEGATION_RE.test(text)) return false;
+  return text.split('\n').some((line) => line.trim().replace(SLACK_CONSENT_TRAILING_RE, '') === phrase);
+}
+
+/**
+ * 从讨论 issue 的评论里挑出可信的 Slack 放行。三条同时满足才算:
+ * 1. 评论作者在 slackSyncBots,正文带 slack-inbound 标记;
+ * 2. 署名 @login 在最终维护者集合内,且不是 PR 作者;
+ * 3. 回复正文是明确的同意整句。
+ * @returns {{ release: {by:string, at:string|null, via:'slack-release', fingerprint:string}|null, rejected: object[] }}
+ */
+export function selectTrustedSlackReleases({
+  comments = [], syncBots = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
+} = {}) {
+  const bots = new Set(normalizeLoginList(syncBots).map((login) => login.replace(/\[bot\]$/, '')));
+  const members = new Set(normalizeLoginList(maintainers));
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const rejected = [];
+  let release = null;
+  for (const comment of comments ?? []) {
+    const poster = String(comment?.author?.login ?? comment?.author ?? '').trim().toLowerCase().replace(/\[bot\]$/, '');
+    const parsed = parseSlackSyncComment(comment?.body);
+    if (!parsed) continue;
+    const at = comment?.createdAt ?? null;
+    const by = parsed.login.toLowerCase();
+    const reason = !bots.has(poster) ? 'poster-not-sync-bot'
+      : !members.has(by) ? 'signer-not-maintainer'
+        : by === author ? 'signer-is-author'
+          : !isExplicitSlackConsent(parsed.message, consentLine) ? 'not-explicit-consent'
+            : null;
+    if (reason) {
+      if (reason !== 'not-explicit-consent') rejected.push({ by, at, reason });
+      continue;
+    }
+    if (!release || String(at ?? '') >= String(release.at ?? '')) {
+      release = { by, at, via: 'slack-release', fingerprint: parsed.fingerprint };
+    }
+  }
+  return { release, rejected };
 }

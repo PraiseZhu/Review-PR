@@ -25,6 +25,7 @@
 
 import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettle, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
+import { filterIgnoredCiContexts } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
 
 const META_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -179,7 +180,8 @@ try {
   // required 与非 required 一视同仁);actions/runs 是 rollup 403 时的兜底 + awaiting 探测。
   // 判定单一真相源在 lib.mjs evaluateCiStatus(单测 ci-status.test.mjs)。
   const rollupContexts = fetchCiRollup(slug, pr);
-  const rollup = rollupContexts ? classifyRollupContexts(rollupContexts) : null;
+  // [MIVO-PATCH ci-ignore] 只从 CI 总判里去掉本流程自己的 check;必需检查核对仍用原始数据。
+  const rollup = rollupContexts ? classifyRollupContexts(filterIgnoredCiContexts(rollupContexts, rules)) : null;
   const checkRunsWithApps = fetchCheckRunsWithApps(slug, m.headRefOid);
   const { ciRuns } = classifyHeadChecks(slug, m.headRefOid);
   const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: m.mergeStateStatus });

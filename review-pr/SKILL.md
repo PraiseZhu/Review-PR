@@ -584,5 +584,4 @@ REQUEST_CHANGES(422),第 2 条走不通,照实说明并改问「要开跟进会�
 本来就无分支);回到 `originalBranch` 确认 `git status --short`;释放自己拿的锁
 (`cleanup.mjs --original <prepare.currentBranch> --token <token>`);最后给用户一段人话结论——结论在前、原因用短语,
 写明实际运行的验证、外部写操作(approve/merge/comment 各几次)与未完成事项,
-不贴 JSON。发现进化项(流程缺口、脚本 bug)直接告诉用户,由用户决定要不要记台账
-(`evolution-note.mjs`),交互模式不静默修改 skill 自身。
+不贴 JSON。发现流程缺口、脚本 bug 直接告诉用户,交互模式不静默修改 skill 自身。

@@ -73,7 +73,7 @@ review-pr(交互)与 review-pr-auto(批处理)共用本文件。
 | 受保护 review / 合并 | `approve-reviewed-pr.mjs`、`request-changes-reviewed-pr.mjs`、`pre-merge-check.mjs`、`merge-reviewed-pr.mjs` |
 | 催办(GitHub 评论,不走飞书) | `notify-author-resolve.mjs` |
 | 合并后健康检查 | `typecheck-merged.mjs` |
-| 汇总落盘 / 台账 / 自同步 | `run-log.mjs`、`evolution-note.mjs`、`sync-skill-repo.mjs` |
+| 汇总落盘 | `run-log.mjs` |
 | 跟进会话状态 / worktree 回收 | `fix-session-state.mjs`、`fix-worktree-cleanup.mjs` |
 
 能由脚本确定的字段不要用 grep、手写 gh api 或模型猜测重新实现。

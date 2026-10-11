@@ -32,7 +32,8 @@ function eq(name, got, want) {
 }
 
 // ── ① 动态 authority:CODEOWNERS 根 Team 当前成员 + 显式补充白名单 ──
-const config = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+// [MIVO-PATCH test-rules] 上游用例校验上游配置取值;Mivo 用 REVIEW_PR_RULES_FILE 指向上游配置夹具。
+const config = JSON.parse(readFileSync(process.env.REVIEW_PR_RULES_FILE || new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
 check('配置不含 legacy maintainers',
   !Object.prototype.hasOwnProperty.call(config, 'maintainers'));
 check('配置不含 legacy approvalExemptAuthors',

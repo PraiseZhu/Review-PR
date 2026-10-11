@@ -161,7 +161,7 @@ base=<SHA>，reviewEvidence=<plan.evidence>，resume=<claim.resume>。
 resultFile=<roundDir>/results/pr-<N>.json。
 先维护者确认门，再未解决 thread，再现有代码审查；通过则在本轮完成受保护的
 Approve 和合并，有问题开 thread。只写自己的结果，不调用 prepare、run-log、
-finalize、evolution-note、sync-skill-repo、共享锁释放、fix-session-state 或飞书发送，
+finalize、共享锁释放、fix-session-state 或飞书发送，
 不再创建审查/修复子 agent。
 遇到可修复的作者侧卡点时按 pr-worker 产出 fixHandoff 请求，由主 session 投递独立 session。
 ```
@@ -203,8 +203,7 @@ state/mergedAt 与本轮提交证据，不能把未确认的合并当成功，�
 ## 4. 全部完成：汇总、发送、退出
 
 每个子 agent 都要写 [pr-worker.md](references/pr-worker.md) 约定的终态结果。
-主 session 确认所有组已完成、reviewer 已退出且 worktree 已清理，先执行第 5 节台账登记；
-正常模式再各跑一次现有 `post-merge-sweep.mjs` 和
+主 session 确认所有组已完成、reviewer 已退出且 worktree 已清理；正常模式再各跑一次现有 `post-merge-sweep.mjs` 和
 `close-product-issue.mjs --sweep`，结果记在本轮附注，不把范围外 PR 加进本轮审查数量。
 review-only 跳过这两项。
 
@@ -280,22 +279,3 @@ review-pr/history/makecindy-cindy/
 不提交 diff、原始 context、worktree、锁/token、reviewer 报告、agent/fix-session ID、飞书 message ID
 或发送回执。相同 runId 的同内容发布幂等；Summary 或 round-state 冲突时拒绝覆盖。写入/commit/push
 任一步失败都不发送最终卡片、也不能关闭 queue；保留本机轮次，恢复后用原 Summary 重试。
-
-## 5. 台账登记与提交回 skill 仓库
-
-每轮收尾由主 session 汇集真正的脚本缺口、规则矛盾、反复环境异常与待维护者决定的提案，
-经 `evolution-note.mjs add --fingerprint <根因 slug> --tier proposal --title "…" [--detail "…"]`
-登记到 `review-pr/evolution/ledger.json`，自动生成 `EVOLUTION.md`。先查看已有条目，遵守脚本
-精确/近似去重；`written=false` 表示尚未登记，不能当成功。正常等待 thread、CI 或维护者
-不是缺口，不为每个 PR 添加重复问题；每轮执行事实仍由 finalize 的 run-log 全量保存。
-
-`add` / `set-status` 默认自动单独提交这两个台账文件并推送真实 skills 仓库 main，
-不夹带其他文件或已暂存改动。检查 JSON 中的 `sync`，不能只看退出码；更新或回传失败、
-非 main 未推送都如实写进 finalize 的附注与最终摘要，保留本地台账，不无限重试。
-所有台账登记完成后再生成并发送卡片，确保结果包含台账与同步情况。无新缺口时不用造条目。
-
-用户明确要求维护本 skill 时，完成代码修改和验证，先通过上述脚本登记/更新台账，
-然后执行 `node "<SCRIPTS>/sync-skill-repo.mjs" push --message "<本次修改摘要>"`。
-该命令同时覆盖 `review-pr` 与 `review-pr-auto`，只提交这两个目录并推送 main；
-`--no-sync` 仅用于本地测试或这类已安排统一提交的维护任务，不得留下未提交台账就宣称完成。
-自动 PR 审查仍只登记问题与提案，不自行修改、发布 skill 代码。

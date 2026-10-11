@@ -3,7 +3,7 @@
 // node notify-round-targets.mjs --plan <plan.json> --lock-token <token>
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseRepo, loadMaintainerAuthoritySnapshot, assertActiveReviewLock, spawnScriptJson, print, fail } from './lib.mjs';
+import { parseRepo, loadMaintainerAuthoritySnapshot, assertActiveReviewLock, spawnScriptJson, print, fail, loadRules } from './lib.mjs';
 import { atomicWriteJson } from './runtime-io.mjs';
 import { needsTargetBranchNotice, validateTargetBranchNotice } from './review-round.mjs';
 import { startReviewHeartbeat } from './review-heartbeat.mjs';
@@ -49,7 +49,8 @@ try {
         response = await spawnScriptJson(fileURLToPath(new URL('./notify-author-resolve.mjs', import.meta.url)),
           [String(item.pr), '--target-branch', '--lock-token', token, '--expected-head', item.head,
             '--expected-base-ref', item.baseRefName, '--expected-authority-digest', authority.digest,
-            ...(plan.mode === 'review-only' ? ['--review-only'] : [])], { timeoutMs: 180_000 });
+            // [MIVO-PATCH auto-notices] reviewOnlyNotices=auto:review-only 轮也用 auto 措辞(会自动重审)。
+            ...(plan.mode === 'review-only' && loadRules().reviewOnlyNotices !== 'auto' ? ['--review-only'] : [])], { timeoutMs: 180_000 });
       } catch (error) { response = { ok: false, error: error.message }; }
       heartbeat.assertHealthy();
       assertActiveReviewLock(token);

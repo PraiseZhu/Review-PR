@@ -84,6 +84,8 @@ export async function runQueueCommand(options, dependencies = {}) {
       if (notification.runId !== plan.runId || !Array.isArray(notification.pages) || notification.pages.length !== cards.pages.length ||
           new Set(notification.pages.map((p) => p.page)).size !== cards.pages.length || cards.pages.some((page) => {
             const receipt = notification.pages.find((p) => p.page === page.page);
+            // [MIVO-PATCH no-summary] 没配汇总群(plan.summaryChat 为空)时允许 status=disabled,并写明原因。
+            if (receipt?.status === 'disabled') return plan.summaryChat?.chatId || !String(receipt.reason || '').trim() || !Number.isFinite(Date.parse(receipt.attemptedAt));
             return !receipt || !Number.isFinite(Date.parse(receipt.attemptedAt)) ||
               (receipt.status === 'sent' ? !String(receipt.messageId || '').trim() : receipt.status !== 'failed' || !String(receipt.reason || '').trim());
           })) throw new Error('每页飞书卡片必须有真实发送回执或明确失败记录，不能关闭轮次');

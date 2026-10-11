@@ -283,9 +283,14 @@ try {
       const modeNotice = reviewOnly
         ? '本轮是 review-only，不会自动合并；受保护路径仍需人工处理。'
         : 'auto-review 因此不合并、也不会自动审查。';
+      // [MIVO-PATCH protected-contact] 人工处理人可配置(protectedPaths.contact),缺省保持上游。
+      const contact = loadRules().protectedPaths?.contact ?? {};
+      const contactLogin = contact.login || 'MagicLizi';
+      const contactName = contact.name || 'Lizi';
+      const contactPronoun = contact.pronoun || '她';
       const body =
         `${mention}👋 这个 PR 改动了受保护的路径(${hit}${more}),${modeNotice}\n\n` +
-        `这些路径的改动需要人工处理。请在 PR 中 @MagicLizi 通知 Lizi，由她人工处理。`;
+        `这些路径的改动需要人工处理。请在 PR 中 @${contactLogin} 通知 ${contactName}，由${contactPronoun}人工处理。`;
       if (dryRun) {
         print({ ok: true, pr, mode: 'protected-path', posted: false, reason: 'dry-run', author, head, fingerprint, body });
       } else {

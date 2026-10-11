@@ -31,6 +31,8 @@
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, evaluateBotSettle, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
+// [MIVO-PATCH exempt-authors / slack-release / ci-ignore]
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -626,6 +628,8 @@ try {
     authority: maintainerAuthority,
   });
   const isSelfFixAuthor = SELF_FIX_AUTHORS.includes(authorLogin.toLowerCase());
+  // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;代码审查、最终 Approve 照常。
+  const authorSignoffExempt = approvalPolicy.authorIsMaintainer || isSignoffExemptAuthor(authorLogin, prRules);
 
   // 1.5.2 review threads
   const rawThreads = g.reviewThreads?.nodes ?? [];
@@ -791,11 +795,23 @@ try {
           count: unattributedSlackComments.filter((x) => x.sender === u.sender).length,
           createdAt: unattributedSlackComments.filter((x) => x.sender === u.sender).map((x) => x.createdAt).sort().pop(),
         }));
+        // [MIVO-PATCH slack-release] 讨论串里维护者的明确「同意放行」构成放行(判据见 lib.mjs)。
+        const slack = SG.slackRelease?.enabled === true
+          ? selectTrustedSlackReleases({
+            comments: issueMeta.comments ?? [],
+            syncBots: prRules.slackSyncBots ?? [],
+            maintainers: MAINTAINERS,
+            authorLogin,
+            consentLine: SG.slackRelease.consentLine,
+          })
+          : null;
         return {
           url: heldIssueUrl,
           number: Number(issueNum),
           state: issueMeta.state ?? null,
           updatedAt: issueMeta.updatedAt ?? null,
+          ...(slack ? { slackRelease: slack.release } : {}),
+          ...(slack?.rejected?.length ? { slackReleaseRejected: slack.rejected } : {}),
           maintainerComments,
           ...(unattributedBySender.length ? { unattributedSlackComments: unattributedBySender } : {}),
           ...(maintainerErrors ? { maintainerErrors } : {}),
@@ -824,6 +840,12 @@ try {
       })
       .map((c) => ({ author: c.author?.login ?? '', createdAt: c.createdAt, url: c.url, body: clip(c.body, 600) }));
   }
+
+  // [MIVO-PATCH slack-release] 讨论 issue 在评各类确认门之前读:Slack 放行要参与放行判定。
+  // 只有被 hold 过(有讨论 issue)才读,和上游「触发在场才读」的 API 开销一致。
+  const anySignoffMaintainer = (login) => inMaintainers(login);
+  const earlyDiscussionIssue = holdMarker?.issueNumber ? readDiscussionIssue(anySignoffMaintainer) : null;
+  const slackRelease = earlyDiscussionIssue?.slackRelease ?? null;
 
   // 冷更触发器:CI fingerprint guard 的 sticky comment 是权威结论(它在同一 runner 上真算过
   // base(main) 与合并结果两份指纹),压过路径启发式两个方向:
@@ -915,7 +937,8 @@ try {
   const evalSignoffKind = (kind, detail, extra = {}) => {
     const a = KIND_MAINTAINERS[kind];
     const authorIsMaintainer = approvalPolicy.authorIsMaintainer;
-    const markerRelease = releaseMarks.get(kind) ?? null;
+    // [MIVO-PATCH slack-release] 手动标记优先,其次 Slack 明确同意;两者都按标记口径持久有效。
+    const markerRelease = releaseMarks.get(kind) ?? slackRelease ?? null;
     // GitHub Approve 通过(六类统一):完整历史交给 evaluator。当前 head 的 CR 优先交作者;
     // 作者新提交消费 CR 后,历史 Approve 持久放行,包括同一维护者先 Approve 后 CR 的序列。
     const reviewState = evaluateMaintainerReview({
@@ -931,13 +954,14 @@ try {
       maintainers: a.raw,
       enabled: true,
       authorIsMaintainer,
+      authorExempt: authorSignoffExempt,
       released: reviewState.released,
       reviewState: reviewState.reviewState,
       waitingForAuthor: reviewState.waitingForAuthor,
       needsRecheck: reviewState.needsRecheck,
       blocking: evaluateSignoffBlocking({
         enabled: true,
-        authorIsMaintainer,
+        authorIsMaintainer: authorSignoffExempt,
         waitingForAuthor: reviewState.waitingForAuthor,
         released: reviewState.released,
       }),
@@ -1007,8 +1031,7 @@ try {
 
   // 讨论 issue 与 PR 内维护者留言:任一触发在场就读(信息位,不构成通过)。
   // softHit 定性等语义活照旧交主 agent / 审查 agent。
-  const anySignoffMaintainer = (login) => inMaintainers(login);
-  const discussionIssue = signoffTriggers.length > 0 ? readDiscussionIssue(anySignoffMaintainer) : null;
+  const discussionIssue = signoffTriggers.length > 0 ? earlyDiscussionIssue : null;
   const prMaintainerComments = signoffTriggers.length > 0 ? collectPrMaintainerComments(anySignoffMaintainer) : null;
   // 各在拦触发的维护者表态材料(信息位:维护者在评论里表过态但没 Approve 时,汇总提示
   // 对方去 PR 上 Approve;不作为通过依据)
@@ -1056,6 +1079,8 @@ try {
       baseSha: maintainerAuthority.base.sha,
     },
     untrustedReleaseMarks,
+    authorExempt: authorSignoffExempt,
+    slackRelease,
     triggers: signoffTriggers,
     blocking: signoffBlocking,
     currentBlocker: currentBlocker ? { kind: currentBlocker.kind, detail: currentBlocker.detail } : null,
@@ -1083,7 +1108,8 @@ try {
   // 总判定单一真相源在 lib.mjs evaluateCiStatus(单测 ci-status.test.mjs):
   // **ci.status=pass(全绿或无任何 check)才可合并**;unknown(两源都读不到 / UNSTABLE 但
   // 已读到的来源全绿)不得视为通过。权限/网络异常降级为 null,绝不炸掉 context。
-  const rollupContexts = fetchCiRollup(slug, pr);
+  // [MIVO-PATCH ci-ignore] 本流程自己的 review-pr check 不算作者 CI,否则会自己拦自己。
+  const rollupContexts = filterIgnoredCiContexts(fetchCiRollup(slug, pr), prRules);
   const rollup = rollupContexts ? classifyRollupContexts(rollupContexts) : null;
   const { ciRuns } = classifyHeadChecks(slug, meta.headRefOid);
   const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: meta.mergeStateStatus });

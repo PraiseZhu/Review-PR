@@ -1,56 +1,48 @@
-# Review rule map
+# Review rule map（Mivo：xindong/mivo-canvas-plugin）
 
-这张表只负责导航，不复制规则正文。每次审查都读取命中的原文及其 `Review 清单`；
-规则变化后不需要同步本文件，只有路径归属变化才更新映射。
+这张表只负责导航，不复制规则正文。每次审查都读取命中的原文；规则变化后不需要同步本文件，
+只有路径归属变化才更新映射。来源是 Mivo 根 `AGENTS.md` 的「改什么，先读哪里」。
+[MIVO-PATCH rule-map] 上游这份是 Cindy 仓的映射，Mivo 整份替换。
 
 ## 所有 PR
 
-- `AGENTS.md`：仓库边界、工作流、安全底线和 Git 交付规则。
-- `docs/dev-rules/development-workflow.md`：PR 模板事实源、验证真实性、P0/P1/P2 和
-  review gate。
-- `.github/PULL_REQUEST_TEMPLATE.md`：Title、Description 三大段和风险字段。
+- `AGENTS.md`：仓库边界、数据与宿主契约、验证与命令、PR 与审查规则。
+- `CLAUDE.md`：项目约定、敏感数据保护、测试与守卫。
+- `CONTRIBUTING.md`：贡献流程与 PR 模板事实源。
+- `.github/pull_request_template.md`：Title、Description 三大段（这次改了什么 / 怎么验证的 / 风险）。
 
 ## 按改动路径读取
 
 | 命中路径或主题 | 必读规则 |
 |---|---|
-| 任意 Desktop / Main / Renderer / preload / BrowserWindow / WebView / 导航 / IPC / CSP | `docs/dev-rules/electron-security-and-process-boundaries.md`、`docs/dev-rules/engineering-conventions.md` |
-| `apps/desktop/src/main/`、共享 package、布局树、package 依赖方向 | `docs/dev-rules/architecture-invariants.md`、`docs/dev-rules/desktop-development.md` |
-| 凭证、授权、用户数据、临时文件、测试 fixture、运行时落盘 | `docs/dev-rules/credentials-and-local-storage.md` |
-| SQLite、Drizzle schema、migration、companion script、数据库访问 | `docs/dev-rules/database-and-migrations.md` |
-| 媒体、附件、缓存、`cindy-media://`、引用回收、协议解析 | `docs/dev-rules/media-storage-and-protocols.md` |
-| `packages/maker-core`、prompt、tool/MCP、translator、event loop、model、usage | `docs/dev-rules/maker-core-and-agent-behavior.md` |
-| 插件、`.cindy`、Ghost、manifest、sandbox、能力 slot、FORGE_GUIDE | `docs/dev-rules/plugin-security-and-authoring.md` |
-| `cindy-updater`、更新服务 | `docs/dev-rules/cindy-updater.md` |
-| `cindy-protocol`、submodule、device-link、relay、tunnel、wire protocol | `docs/dev-rules/protocol-and-submodules.md` |
-| `apps/mobile/`、Mobile 入口或跨端控制 | `docs/dev-rules/mobile-development.md`、`docs/dev-rules/remote-and-mobile-adaptation.md` |
-| workdir、agent 进程、会话数据、SSH 远程、IPC push/invoke、手机版入口 | `docs/dev-rules/remote-and-mobile-adaptation.md` |
-| Settings、配置文件、profile、agent/MCP/provider 开关 | `docs/dev-rules/configuration-and-overrides.md` |
-| Orca、多 Agent 协同、maker-ipc/orca、orca-workflow | `docs/dev-rules/orca-team-architecture.md` |
-| UI、布局、组件、动效或界面文案 | `DESIGN.md`（**强制**：所有 UI 改动必须符合，违反记 P1，见 SKILL 第 4 节第 8 条）、`docs/design-rules/cindy-design-system.md`、`docs/dev-rules/engineering-conventions.md` |
-| 产品能力、Core/Agent/Skill/插件归属、跨端体验 | `docs/product-rules/core-product-principles.md` |
-| 安装、依赖、submodule 初始化或新 worktree | `docs/dev-rules/environment-setup.md` |
+| 面板、设置页、宿主卡、CSS、主题、动效或 UI 文案（`cindyplugin/`、`src/ui/`、`src/app/`、`*.css`） | `cindyplugin/DESIGN.md`（**强制**：UI 改动必须符合，违反记 P1）及其引用的 `docs/design.md` |
+| 用户操作、成功/跳过/失败反馈、日志或诊断 | `docs/development-logging.md`；生产查询另读 `docs/ops/plugin-debug-log-query.md` |
+| 保存、加载、恢复、删除、归档、迁移或卸载重装（`src/store/`、`src/lib/persist*`、`cindyplugin/src/persist/`、`shared/persist-contract.ts`） | `docs/decisions/library-canvas-store.md`，需要全景时读 `docs/decisions/library-canvas-store-overview.md` |
+| 图片导入、原件、媒体 URL、双写、上传/归档队列或清理 | `docs/ops/image-store-library-default.md`，按改动查 `docs/ops/image-store-slo.md` 及对应 image-store 专题 |
+| 生图、编辑、批次、重试、取消、恢复、落点或视口 | `docs/decisions/generation-activity-contract.md`、`docs/decisions/generation-placement-contract.md`、`docs/decisions/canvas-work-view-contract.md` 中相关部分 |
+| 配方、参考图或 prompt 组装（`server/recipes/`、`server/routes/recipes.ts`） | `docs/recipes-authoring.md` 与实际契约代码 |
+| BFF、鉴权、服务器资产或 persist 模式（`server/`） | `docs/ops/bff-deployment.md`、`docs/ops/image-store-p3-auth-gate.md` 和对应资产专题 |
+| 插件 manifest、版本、构建、测试包、安装或市场发布 | `docs/ops/plugin-release.md`；宿主适配另读 `cindyplugin/README.md` |
+| 跨仓移植 | `docs/sync/plugin-sync-guide.md` 与 `docs/sync/plugin-sync-state.json` |
+| PR、CI、审查机、接单或自动化（`scripts/`、`agent-use/`、`docs/loops/`） | `CONTRIBUTING.md`、`agent-use/docs/pr-rules.json` 与真实 workflow；命中对应功能时再读 `docs/loops/review-pr-setup.md`、`docs/loops/bug-doctor-intake.md` |
+| 四语文案（`src/i18n/`、`cindyplugin/src/i18n/`） | `AGENTS.md`「不得破坏的数据与宿主契约」的 i18n 条目；用 `npm run verify:i18n` 的结果核对 |
 
-若一个文件命中多行，全部读取；若规则正文引用了另一份事实源，继续读取被直接引用的
-文件或代码。规则的增量适用原则有效：不要用新规则审判 PR 未触碰的历史代码。
+若一个文件命中多行，全部读取；若规则正文引用了另一份事实源，继续读取被直接引用的文件或代码。
+规则的增量适用原则有效：不要用新规则审判 PR 未触碰的历史代码。文件在 base 上不存在时，在
+Verification 里如实写明，不凭记忆补规则。
 
 ## 审查时的固定问题
 
 1. PR 是否只做一个可说明的目的，Description 是否与 diff、测试和风险一致？
-2. 共享符号、状态、协议、配置、持久化数据和错误路径的读方是否都被检查？
-3. 权限、凭证、用户数据、远程边界和跨平台行为是否安全且可回滚？
-4. 这次改动是否放松了安全边界、引入了危险写法、新增了第三方依赖，或让用户数据流向了新的
-   地方？（重档专项：`signoff` 里 security 触发的 riskySoftHits 逐条定性、新增依赖来源
-   核查、跑 `scripts/security-scan.mjs` —— 见 SKILL「分档审查」heavy 档；确认的后门／
-   数据外发／越权记 P0。工具未执行必须在 Verification 如实写明，不得写成「已扫描无问题」）
-5. 需要测试的 main、IPC、migration、协议、UI/i18n、Mobile 和远程路径是否有实际证据？
-6. 是否把组织或个人流程塞进 Core，或把已有 Agent 能力重复实现到客户端？
-7. UI 改动附的证据（截图／录屏／HTML）与 diff 是否一致，有没有明显违反 `DESIGN.md`
-   与 `cindy-design-system.md` 的硬伤（硬编码颜色绕过 token、自造组件顶替设计系统
-   组件等，记 P1）？（证据缺失不阻断——context.mjs 标记 uiEvidenceMissing，主 agent
-   发非阻断提醒评论请作者补充；有证据时顺带核对即可，不强制下载渲染逐项对照）
-8. 改到 `apps/mobile` 的原生配置、依赖、config plugin 或原生模块时，是否会改变 runtime
-   fingerprint（触发冷更）？是否必要、Description 是否写清了为什么冷更不可避免、存量装机
-   影响与发版节奏？（判据见 `docs/dev-rules/mobile-development.md` 的「冷更边界」；非必要
-   触发冷更记 P1。维护者是否已确认由维护者确认门判，见 SKILL「维护者确认门」）
-9. 是否发现 P0/P1；若只有 P2，结论必须是通过且不发送 P2？
+2. 共享符号、状态、持久化数据、协议、配置和错误路径的读方是否都被检查？
+3. 读不到档案、鉴权失败、hydration 未完成是否被当成「空库」？确认前是否以缺席判删除？（违反记 P1）
+4. 这次改动是否放松了安全边界、引入了危险写法、新增了第三方依赖，或让用户数据、凭证、
+   prompt 流向了新的地方（日志、广播、KV、外部请求）？（重档专项：security 触发的 riskySoftHits
+   逐条定性、新增依赖来源核查、跑 `scripts/security-scan.mjs`；确认的后门／数据外发／越权记 P0。
+   工具未执行必须在 Verification 如实写明，不得写成「已扫描无问题」）
+5. 新增或修改的用户可见操作，成功、跳过、失败路径是否都有 `debugLogger`，需要即时反馈的是否有
+   `toastFeedback`？（缺失导致失败不可见记 P1）
+6. 生图提交、轮询重试、生成结果提交是否保持幂等与批次归属，会不会重复扣费或复活已取消的占位？
+7. UI 改动附的证据（截图／录屏／HTML）与 diff 是否一致，有没有明显违反 `cindyplugin/DESIGN.md`
+   的硬伤（绕过 token 的硬编码颜色、自造组件顶替设计系统组件等，记 P1）？证据缺失不阻断。
+8. 是否发现 P0/P1；若只有 P2，结论必须是通过且不发送 P2？

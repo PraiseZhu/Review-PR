@@ -1,5 +1,6 @@
 {
-  "_comment": "review-pr / review-pr-auto 共享私有配置。最终维护者集合 = 目标仓库默认分支 CODEOWNERS 唯一全仓根规则 `* @org/team-slug` 的实时 active Team 成员 + maintainerAllowlist。两类成员拥有相同的维护者 Approve 权限；所有作者都需要另一位维护者独立 Approve，viewer 与作者相同则拒绝自批。代码审查、Request Changes、CI、thread、机器人静默期、stale-rebase、受保护路径及安全门仍照常。CODEOWNERS Team 必须可见且对仓库至少有 write 权限；读取不完整、根规则不唯一或 Team 为空时从严停止，maintainerAllowlist 不作为故障兜底。selfFixAuthors 只决定自动代修，不提供审批权限。titleTypes、featureSections、bugfixSections、lightTypes、redlinePaths、serverPaths、ciSensitivePaths、sensitiveContent 描述项目 PR 契约。signoffGate.label 是唯一的维护者确认标签；hold 只做 issue + 评论 + 标签。threadTriage 供合并前 thread 代 resolve，postMergeSweep 供合并后迟到 bot 意见清扫，botReviewSettle 是机器人静默期。signoffGate.pluginBase 是全部已装插件共同依赖的插件基座路径，与 security / coldUpdate 同档，不看 diff 大小、不因 bugfix / 纯技术改动放过。securityScan 供重档依赖漏洞与 semgrep 扫描。statusLabels 只做展示、不参与任何判定。Skill 默认读取本文件，可通过 REVIEW_PR_RULES_FILE 覆盖。",
+  "_comment": "Mivo（xindong/mivo-canvas-plugin）的 review-pr / review-pr-auto 配置。结构沿用 lizi 上游（makecindy/cindy-lizi-skills），取值换成 Mivo；与上游的差异逐条登记在仓库根 MIVO-PATCHES.md。maintainerSource=allowlist：维护者只取 maintainerAllowlist，不读 CODEOWNERS（Mivo 的 CODEOWNERS 根 Team 与维护者不对应）；allowlist 成员必须对仓库有 write 及以上权限，否则 prepare 从严停止。signoffGate.exemptAuthors 只免审查前的维护者确认门，不给放行权；放行只认 maintainerAllowlist 成员的 Approve、signoff-release 标记，或 signoffGate.slackRelease 定义的 Slack「同意放行」。selfFixAuthors 为空：Mivo 不开自动修复会话。不发每轮汇总（无 feishuNotify.summaryChat）。ciIgnoreContexts 是本流程自己写的 check，不算作者 CI。reviewOnlyNotices=auto：review-only 模式下给作者的提醒仍用 auto 措辞（Mivo 会自动重审）。",
+  "maintainerSource": "allowlist",
   "titleTypes": [
     "feat",
     "fix",
@@ -34,57 +35,81 @@
     "风险"
   ],
   "redlinePaths": [
-    "updater",
-    "localDb/schema\\.ts",
-    "drizzle/"
+    "^shared/persist-contract\\.ts$",
+    "^shared/userExportContract\\.ts$",
+    "^server/lib/(?:persistAuth|assetAuth)\\.ts$",
+    "^cindyplugin/src/persist/",
+    "^secrets/"
   ],
   "serverPaths": [],
   "ciSensitivePaths": [
     "\\.github/workflows/",
     "\\.github/actions/"
   ],
+  "ciIgnoreContexts": [
+    "review-pr"
+  ],
+  "reviewOnlyNotices": "auto",
   "sensitiveContent": {
-    "allowPaths": [],
+    "allowPaths": [
+      "^src/__tests__/",
+      "^cindyplugin/src/__tests__/"
+    ],
     "extraHardPatterns": [],
     "extraSoftPatterns": []
   },
   "maintainerAllowlist": [
-    "fmfsaisai"
+    "PraiseZhu",
+    "kirozeng",
+    "aj0928"
   ],
-  "selfFixAuthors": [
-    "magiclizi"
-  ],
+  "selfFixAuthors": [],
   "protectedPaths": {
-    "_comment": "受保护路径:命中这些路径的 PR 一律不自动合并,交人工处理。不看 diff 大小、不看作者、不看标题类型。三个 CODEOWNERS 生效位置必须全覆盖,防 PR 改写下一轮维护者权限。paths 按 matchPathPatterns 口径(目录以 / 结尾=前缀匹配)。",
+    "_comment": "受保护路径:命中即不自动审查、不自动放行,交人工处理。contact 是作者提醒里点名的人工处理人。",
     "paths": [
       ".github/",
       "CODEOWNERS",
       "docs/CODEOWNERS"
-    ]
+    ],
+    "contact": {
+      "login": "PraiseZhu",
+      "name": "PraiseZhu",
+      "pronoun": "他"
+    }
   },
   "signoffGate": {
     "label": "awaiting-discussion",
+    "exemptAuthors": [
+      "PraiseZhu",
+      "kirozeng",
+      "aj0928",
+      "zhongxingtian-ai"
+    ],
+    "slackRelease": {
+      "_comment": "Slack 讨论串回复「同意放行」视为放行。可信条件同时满足:评论作者在 slackSyncBots 且正文带 slack-inbound 标记;署名 @login 在维护者集合内且不是 PR 作者;回复正文有一整行是 consentLine,且没有否定词。",
+      "enabled": true,
+      "consentLine": "同意放行"
+    },
     "product": {
       "uiPaths": [
-        "apps/desktop/src/renderer/",
-        "apps/mobile/",
-        "docs/design-rules/cindy-design-system.md"
+        "cindyplugin/",
+        "src/",
+        "public/",
+        "index.html"
       ],
       "uiExcludePaths": [
-        "apps/desktop/src/renderer/i18n/locales/",
-        "apps/mobile/src/i18n/locales/",
-        "apps/mobile/scripts/",
-        "apps/desktop/scripts/",
-        "scripts/"
+        "public/changelog.json",
+        "src/i18n/locales/",
+        "src/lib/writeRetryQueue",
+        "src/lib/persist",
+        "src/lib/serverPersist",
+        "src/store/canvasPersist",
+        "src/store/chatPersist"
       ]
     },
     "arch": {
       "corePaths": [
-        "packages/",
-        "cindy-protocol/",
-        "apps/desktop/src/main/",
-        "apps/desktop/src/preload/",
-        "apps/desktop/src/shared/"
+        "shared/"
       ],
       "coreDiffLines": 150,
       "refactorDiffLines": 400,
@@ -92,10 +117,27 @@
     },
     "security": {
       "paths": [
-        "apps/desktop/src/preload/",
-        "apps/desktop/cindy-updater/",
+        "**/.npmrc",
+        ".claude/",
+        ".github/actions/",
         ".github/workflows/",
-        ".github/actions/"
+        ".gitleaks.toml",
+        "agent-use/",
+        "docs/loops/",
+        "scripts/ci/main-health-logic.mjs",
+        "scripts/ci/platform-risk.mjs",
+        "scripts/loops/bug-doctor/",
+        "scripts/loops/dashboard/",
+        "scripts/loops/issue-agent/",
+        "scripts/loops/merge-thanks/",
+        "scripts/loops/slack-issue-inbound/",
+        "scripts/ops/mivo-review-cli-update.sh",
+        "scripts/ops/setup-mivo-review-runner.sh",
+        "scripts/review-pr/",
+        "**/npm-shrinkwrap.json",
+        "**/package-lock.json",
+        "**/package.json",
+        "**/pnpm-lock.yaml"
       ],
       "excludePaths": [],
       "riskyPatterns": {
@@ -109,85 +151,54 @@
       }
     },
     "coldUpdate": {
-      "paths": [
-        "apps/mobile/app.json",
-        "apps/mobile/app.config.js",
-        "apps/mobile/eas.json",
-        "apps/mobile/package.json",
-        "apps/mobile/fingerprint.config.cjs",
-        "apps/mobile/plugins/",
-        "apps/mobile/modules/",
-        "scripts/shared/client-endpoint-build-env.cjs"
-      ],
-      "guardMarker": "<!-- mobile-fingerprint-guard -->"
+      "paths": [],
+      "guardMarker": ""
     },
     "rules": {
       "paths": [
         "**/AGENTS.md",
         "**/CLAUDE.md",
-        "DESIGN.md",
-        "docs/README.md",
-        "docs/dev-rules/",
-        "docs/product-rules/",
-        "docs/design-rules/",
-        "docs/legal/",
-        ".github/PULL_REQUEST_TEMPLATE.md"
+        "CONTRIBUTING.md",
+        "cindyplugin/DESIGN.md",
+        "docs/design.md",
+        "docs/development-logging.md",
+        ".github/pull_request_template.md"
       ],
-      "excludePaths": [
-        "docs/legal/notices/"
-      ]
+      "excludePaths": []
     },
     "pluginBase": {
-      "paths": [
-        "apps/desktop/src/main/cindy-brain/",
-        "apps/desktop/src/main/plugin-market/",
-        "apps/desktop/src/main/mcp-integrations/ghost.ts",
-        "apps/desktop/src/shared/ghost.ts",
-        "packages/cindy-tools/src/ghost/",
-        "packages/cindy-tools/src/types.ts",
-        "apps/desktop/src/renderer/cindy-brain/installFlow.tsx",
-        "apps/desktop/src/renderer/cindy-brain/installErrorKey.ts",
-        "apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx",
-        "apps/desktop/src/renderer/cindy-brain/useInstalledGhosts.ts",
-        "apps/desktop/src/renderer/cindy-brain/runtimeStates.ts",
-        "apps/desktop/src/renderer/features/plugin/lib/ghostPluginViewModel.ts",
-        "apps/desktop/src/renderer/features/plugin/lib/pluginMarketPresentation.ts"
-      ],
+      "paths": [],
       "excludePaths": []
     }
   },
   "statusLabels": {
-    "_comment": "展示标签(status:* / touches:*)。只做展示、不参与任何判定:合并前防线只认 signoffGate.label 与旧门类标签,这组贴错 / 贴不上都不改变能否合并。标签名与分组、挂哪个的优先级都在 lib.mjs(DISPLAY_LABELS + computeDisplayLabels,单测 status-labels.test.mjs);这里只放开关、阈值与颜色/描述覆盖。labels.<名字>.enabled=false 可单独关掉某个标签(context 就不再要求它,已挂的下轮被摘掉)。enabled=false 整组停用。落地脚本 scripts/sync-status-labels.mjs。largeDiffLines 别设成 arch.anyTypeDiffLines(800):那个阈值一到就触发架构门 → 必然同时挂 touches:core,2026-08-01 全量实测 24/24 完全重叠,large-diff 沦为 core 的复读机。取它的 2.5 倍(2000)才真的代表「这条特别大」——当时全量分布 800→24 条 / 1500→19 / 2000→15 / 3000→12 / 5000→6(共 47 条候选,中位数 932 行)。",
     "enabled": true,
     "largeDiffLines": 2000,
     "labels": {}
   },
   "threadTriage": {
-    "enabled": true,
+    "enabled": false,
     "extraBots": [
       "greptile-apps"
     ]
   },
   "postMergeSweep": {
-    "enabled": true,
+    "enabled": false,
     "windowHours": 24
   },
   "staleRebase": {
-    "_comment": "PR 距上次 rebase 超过 maxDaysBehind 天 → 要求 rebase 以触发最新 CI。不看 PR 自己 push 时间,看 merge base commit(post base...head 的共同祖先)距今多久:作者 rebase 一次 merge base 就前移一次,计时自动归零,不会重复催。背景:旧 CI 是对旧 base 的虚拟 merge commit 跑的,base 前移后旧 CI 结果不再有效——不 rebase 就合等于把未对最新 base 验证过的代码合进主干(尤其 --admin merge 会绕过「Require branches to be up to date」保护)。",
     "enabled": true,
     "maxDaysBehind": 3
   },
   "botReviewSettle": {
+    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态后再静默 5 分钟,从 head push 起最多等 30 分钟(实测中位 27.5 分钟)。",
     "enabled": true,
     "reviewers": [
-      "copilot-pull-request-reviewer",
-      "chatgpt-codex-connector"
-    ],
-    "quietMinutes": 5,
-    "quietExtraBots": [
       "greptile-apps"
     ],
-    "maxWaitMinutes": 20
+    "quietMinutes": 5,
+    "quietExtraBots": [],
+    "maxWaitMinutes": 30
   },
   "securityScan": {
     "semgrepConfigs": [
@@ -198,19 +209,8 @@
     "semgrepTimeoutMs": 180000
   },
   "slackSyncBots": [
-    "dash-s-cindy"
+    "github-actions[bot]"
   ],
-  "slackSenderAliases": {
-    "Dash": "dashhuang"
-  },
-  "orgMappingRepos": [
-    "taptap/org",
-    "xindong/org"
-  ],
-  "feishuNotify": {
-    "summaryChat": {
-      "name": "Cindy Developer",
-      "chatId": "oc_0107e08279475036ef0d15d95a554e85"
-    }
-  }
+  "slackSenderAliases": {},
+  "orgMappingRepos": []
 }

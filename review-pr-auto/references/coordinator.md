@@ -93,8 +93,7 @@ pre-check 会返回最早尚未 close 的 `resumePlan`，包括仅剩清理或�
 plan 尚无 queue 时用 init 初始化；冻结计划在 init 后不得修改。
 
 finalizer 会再次调用真实 worktree 验证，旧 generation 的清理回执不能用于后来重建的目录。
-所有 worker 退出并清理后，主 session 串行执行 SKILL 第 5 节的台账登记与自动提交推送，
-把实际登记条目及 `sync` 失败加入 finalize 附注；worker 不写共享台账、不更新 skill 代码。
+worker 不更新 skill 代码。
 恢复轮次也读取外部状态目录的 `skill-sync.json`，将本次更新失败纳入尚未生成的摘要；
 已经 finalized 的摘要保持原样，新增同步异常在最终消息中如实说明。
 已 finalized 的轮次复用原汇总并补未发送卡片；全部页有发送回执或明确失败记录后 `queue close`

@@ -190,7 +190,10 @@ try {
       '',
       `- 在拦的是:${scope}。`,
       `- 讨论 issue:<${renoticeIssueUrl}>`,
-      '- 通过方式只有一个:维护者在本 PR 上 **Approve**。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。',
+      // [MIVO-PATCH slack-release] 开了 Slack 放行时,通过方式写成两条。
+      loadRules().signoffGate?.slackRelease?.enabled === true
+        ? '- 通过方式:维护者在本 PR 上 **Approve**,或在 Slack 讨论串回复「同意放行」。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。'
+        : '- 通过方式只有一个:维护者在本 PR 上 **Approve**。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。',
       '- 这期间如果还有 review 意见没处理完、CI 没过,照常修就行,不影响这条等待。',
       '',
       '这条是流程自动发的状态提醒(同一版代码只发一次),不用回复。',

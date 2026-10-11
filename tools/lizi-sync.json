@@ -1,0 +1,41 @@
+{
+  "_comment": "sync-lizi.mjs 的机读清单。upstream.sha 是本仓 review-pr/ 与 review-pr-auto/ 对齐的上游版本;excluded 是不导入的上游路径(目录以 / 结尾);patched 是有 Mivo 补丁的上游文件;added 是本仓新增、上游没有的文件。人读说明见仓库根 MIVO-PATCHES.md。",
+  "upstream": {
+    "repo": "makecindy/cindy-lizi-skills",
+    "sha": "7b882cf405a40faa21ff5ffeaa529da5723178f8"
+  },
+  "managedRoots": [
+    "review-pr/",
+    "review-pr-auto/"
+  ],
+  "excluded": [
+    "review-pr/history/",
+    "review-pr/docs/",
+    "review-pr/EVOLUTION.md",
+    "review-pr/evolution/",
+    "review-pr/scripts/evolution-note.mjs",
+    "review-pr/scripts/evolution-note.dedupe.test.mjs",
+    "review-pr/scripts/sync-skill-repo.mjs",
+    "review-pr/scripts/skill-sync.test.mjs"
+  ],
+  "patched": [
+    "review-pr/SKILL.md",
+    "review-pr/config/pr-rules.json",
+    "review-pr/references/internal-gates.md",
+    "review-pr/references/rule-map.md",
+    "review-pr/scripts/approval-policy.test.mjs",
+    "review-pr/scripts/context.mjs",
+    "review-pr/scripts/lib.mjs",
+    "review-pr/scripts/notify-author-resolve.mjs",
+    "review-pr/scripts/notify-round-targets.mjs",
+    "review-pr/scripts/pr-write-guard.mjs",
+    "review-pr/scripts/pre-merge-check.mjs",
+    "review-pr/scripts/review-queue.mjs",
+    "review-pr/scripts/signoff-hold.mjs",
+    "review-pr-auto/SKILL.md",
+    "review-pr-auto/references/coordinator.md"
+  ],
+  "added": [
+    "review-pr/scripts/mivo-patches.test.mjs"
+  ]
+}
