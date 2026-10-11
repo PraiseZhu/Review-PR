@@ -231,7 +231,9 @@ function computeRulesDigest(baseSha) {
 function createCheckRun(input, { status, title, summary }) {
   const token = process.env.CHECKS_TOKEN;
   if (!token) return null;
-  const body = { name: CHECK_NAME, head_sha: input.head, status, details_url: input.runUrl || undefined,
+  // GitHub 会把 Actions 写的检查的 details_url 改成检查页面,只有 external_id 原样保留;
+  // 盯梢与交付脚本按 external_id 找到写检查的这次 review-pr.yml run。
+  const body = { name: CHECK_NAME, head_sha: input.head, status, external_id: input.runUrl || undefined, details_url: input.runUrl || undefined,
     output: { title, summary } };
   const r = run('gh', ['api', '--method', 'POST', `repos/${input.targetRepo}/check-runs`, '--input', '-'],
     { cwd: WORK, env: { ...process.env, GH_TOKEN: token }, input: JSON.stringify(body), allowFail: true });
@@ -243,8 +245,8 @@ function completeCheckRun(input, checkRunId, { conclusion, title, summary }) {
   const token = process.env.CHECKS_TOKEN;
   if (!token || checkTarget(input) !== 'direct') return { skipped: true };
   const body = conclusion
-    ? { name: CHECK_NAME, head_sha: input.head, status: 'completed', conclusion, completed_at: nowIso(), details_url: input.runUrl || undefined, output: { title, summary } }
-    : { name: CHECK_NAME, head_sha: input.head, status: 'in_progress', details_url: input.runUrl || undefined, output: { title, summary } };
+    ? { name: CHECK_NAME, head_sha: input.head, status: 'completed', conclusion, completed_at: nowIso(), external_id: input.runUrl || undefined, details_url: input.runUrl || undefined, output: { title, summary } }
+    : { name: CHECK_NAME, head_sha: input.head, status: 'in_progress', external_id: input.runUrl || undefined, details_url: input.runUrl || undefined, output: { title, summary } };
   const path = checkRunId ? `repos/${input.targetRepo}/check-runs/${checkRunId}` : `repos/${input.targetRepo}/check-runs`;
   const r = run('gh', ['api', '--method', checkRunId ? 'PATCH' : 'POST', path, '--input', '-'],
     { cwd: WORK, env: { ...process.env, GH_TOKEN: token }, input: JSON.stringify(body), allowFail: true });
