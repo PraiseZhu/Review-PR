@@ -13,10 +13,12 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback } from '../lib/gates.mjs';
+import { inBusinessWindow } from '../lib/health.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
 const QUOTA_PAUSE_MS = 60 * 60_000;
+const HEALTH_PAUSE_MS = 30 * 60_000;
 const MAX_RUN_MINUTES = 120;
 
 // ── 配置与环境 ─────────────────────────────────────────────────────────────
@@ -129,6 +131,8 @@ async function main() {
   ENV = setupEnv(CONFIG);
   const pause = pausedUntil();
   if (pause) { log('paused', pause); return; }
+  // 与老审查机同一个维护窗口:06:00–07:00(Asia/Shanghai)不开新一轮;07:00 后照常采集,窗口里来的 PR 自动补上。
+  if (!inBusinessWindow()) { log('maintenance-window'); return; }
   verifySkillPin();
   wakeHeldPrs();
 
@@ -459,6 +463,9 @@ function manualProtectedApproval(live, task) {
 
 // ── 派发服务器审查 ──────────────────────────────────────────────────────────
 function dispatchReview(ctx, task, { tier, action }, gateResult) {
+  if (!inBusinessWindow()) {
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true });
+  }
   const store = loadStore();
   const record = store.prs[task.pr] ?? {};
   if (dispatchesToday() >= CONFIG.dailyCap) {
@@ -543,6 +550,16 @@ function collectServerRun(ctx, entry) {
   if (server.mivo?.quota) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
     log('quota-pause', { pr: task.pr, reason: server.reason });
+  }
+  const health = server.mivo?.health;
+  if (health && health.ok === false) {
+    // 维护窗口或工具链不健康:服务器没有审,这次派发不算一次尝试;工具链不健康时暂停派发 30 分钟再试。
+    const record = loadStore().prs[task.pr] ?? {};
+    bumpStore(task, { attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) } });
+    if (health.reason !== 'outside-business-window') {
+      writeJson(stateFile('pause.json'), { until: new Date(Date.now() + HEALTH_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
+      log('health-pause', { pr: task.pr, reason: server.reason });
+    }
   }
   bumpStore(task, {
     lastRunId: entry.runId,

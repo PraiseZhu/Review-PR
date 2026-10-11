@@ -15,6 +15,7 @@ import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecre
 import { loadReviewSpec, buildReviewPrompt } from '../lib/prompt.mjs';
 import { TIER_DEFAULTS, tierConfig, nextAttempt } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
+import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { runCodex } from './codex.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
@@ -73,6 +74,8 @@ async function prepare() {
   mkdirSync(OUT, { recursive: true });
   const state = { version: 1, input, startedAt: nowIso(), phase: 'prepare', warnings: [], errors: [] };
   saveState(state);
+  // 与老审查机 gate 的第一次检查相同:营业窗口 + healthy.marker,不过就不开审(不碰 PR、不写 check)。
+  if (!checkHealth(state, 'prepare')) return state;
   try {
     // 1. 检出 PR head(detached),只取需要的对象。
     const repoMeta = JSON.parse(gh(['api', `repos/${input.targetRepo}`], { cwd: WORK }).stdout);
@@ -259,11 +262,26 @@ function dispatchSandboxCheck(input, check) {
   return r.ok ? { ok: true, mirrored: true } : { ok: false, mirrored: true, error: r.stderr.trim().slice(0, 300) };
 }
 
-function finishEarly(state, outcome, reason, retry = false) {
+function finishEarly(state, outcome, reason, retry = false, extra = {}) {
   state.phase = 'done-early';
-  state.early = { outcome, reason, retry };
+  state.early = { outcome, reason, retry, ...extra };
   saveState(state);
   return state;
+}
+
+// 营业窗口与 healthy.marker(lib/health.mjs,语义同老审查机 review_tool_health.py)。
+// 不通过:prepare 阶段直接收尾;codex 阶段记下原因、不调模型,由 publish 把本轮标成「推迟」。
+function checkHealth(state, phase) {
+  const health = readHealth();
+  state.health = { ...(state.health ?? {}), [phase]: health };
+  if (health.markerStale && phase === 'prepare') {
+    state.warnings.push(`healthy.marker 已 ${health.markerAgeHours} 小时没更新(阈值 26 小时,每日更新器可能没在跑)`);
+  }
+  if (health.ok) { saveState(state); return true; }
+  const reason = toHealthReason(health);
+  if (phase === 'prepare') finishEarly(state, 'error', reason, true, { health });
+  else { state.healthHold = { reason, health }; saveState(state); }
+  return false;
 }
 
 // ── deps(无凭据)─────────────────────────────────────────────────────────
@@ -316,6 +334,8 @@ function stripSecrets(env) {
 async function codex() {
   const state = loadState();
   if (state.phase !== 'prepared' || state.protectedApproval || state.scope?.mode === 'reuse') return;
+  // 与老审查机「上席前再查一次窗口和 marker」相同:等依赖的这段时间可能已经进了 06:00。
+  if (!checkHealth(state, 'codex')) return;
   const input = state.input;
   const ctx = readJson(state.context.file);
   const tierCfg = tierConfig(state.tier);
@@ -352,6 +372,11 @@ async function publish() {
   try {
     if (state.phase === 'done-early') {
       Object.assign(result, { outcome: state.early.outcome, reason: state.early.reason, retry: state.early.retry === true });
+      if (state.early.health) {
+        // 维护窗口 / 工具链不健康:不算一次失败的审查,也不写 check。
+        result.mivo.health = state.early.health;
+        return writeResult(result);
+      }
       if (state.early.outcome === 'error') result.errors.push(state.early.reason);
       if (state.early.outcome === 'error' && input.attempt >= 2) {
         result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: 'failure', title: '审查两次未完成,需要人工处理', summary: state.early.reason });
@@ -379,6 +404,7 @@ async function publish() {
       report = reusedReport({ previousReport: readFileSync(join(WORK, 'prev', 'report.md'), 'utf8'), scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
     } else {
+      if (state.healthHold) return holdReview(state, result, state.healthHold);
       const answerFile = join(WORK, 'answer.json');
       if (!existsSync(answerFile)) {
         const last = state.codex?.attempts?.at(-1);
@@ -549,6 +575,14 @@ function failReview(state, result, reason, { quota = false } = {}) {
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, final
     ? { conclusion: 'failure', title: '审查两次未完成,需要人工处理', summary: reason }
     : { conclusion: null, title: '审查未完成,下一轮重试', summary: reason });
+  return writeResult(result);
+}
+
+// 上模型前窗口关了或工具链不健康:本轮推迟,不算失败;check 保持「审查中」并写明原因,下一轮重审覆盖。
+function holdReview(state, result, hold) {
+  Object.assign(result, { outcome: 'error', reason: hold.reason, retry: true, enteredReview: false, reviewed: false });
+  result.mivo.health = hold.health;
+  result.mivo.checkRun = completeCheckRun(state.input, state.checkRunId, { conclusion: null, title: '审查推迟', summary: hold.reason });
   return writeResult(result);
 }
 
