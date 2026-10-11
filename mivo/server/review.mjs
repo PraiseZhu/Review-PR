@@ -13,6 +13,7 @@ import { decideGate } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt } from '../lib/prompt.mjs';
+import { TIER_DEFAULTS, tierConfig, nextAttempt } from '../lib/models.mjs';
 import { runCodex } from './codex.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
@@ -22,12 +23,6 @@ const REPO_DIR = join(WORK, 'repo');
 const INPUT_DIR = join(WORK, 'input');
 const CHECK_NAME = 'review-pr';
 const MERGE_READY_LABEL = 'review:merge-ready';
-const TIER_DEFAULTS = {
-  light: { model: 'openai/gpt-6-luna', effort: 'high', timeoutMin: 15 },
-  standard: { model: 'openai/gpt-6-sol', effort: 'high', timeoutMin: 45 },
-  heavy: { model: 'openai/gpt-6-sol', effort: 'xhigh', timeoutMin: 75 },
-};
-const FALLBACK_MODEL = { 'openai/gpt-6-sol': 'openai/gpt-6-luna', 'openai/gpt-6-luna': 'openai/gpt-6-sol' };
 
 function inputs() {
   const env = process.env;
@@ -318,32 +313,21 @@ async function codex() {
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
   const attempts = [];
-  for (const model of [tierCfg.model, FALLBACK_MODEL[tierCfg.model]].filter(Boolean)) {
+  const startedAt = Date.now();
+  // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。
+  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMin: 0 }); next;
+    next = nextAttempt({ primary: tierCfg, attempts, elapsedMin: (Date.now() - startedAt) / 60_000 })) {
     const result = await runCodex({
       codexBin: process.env.CODEX_BIN || '/AIGC_Group/github-actions-runner/mivo-review-tools/bin/codex',
-      workdir: REPO_DIR, prompt, schema: ANSWER_SCHEMA, model, effort: tierCfg.effort,
-      timeoutMs: tierCfg.timeoutMin * 60_000, credentials: process.env.LITELLM_CREDENTIALS_JSON,
+      workdir: REPO_DIR, prompt, schema: ANSWER_SCHEMA, model: next.model, effort: next.effort,
+      timeoutMs: next.timeoutMin * 60_000, credentials: process.env.LITELLM_CREDENTIALS_JSON,
       tmpRoot: join(WORK, 'codex'), label: `${attempts.length + 1}`,
     });
-    attempts.push({ model, ok: result.ok, error: result.error, quota: result.quota, durationMs: result.durationMs, exitCode: result.exitCode });
-    if (result.ok) {
-      writeJson(join(WORK, 'answer.json'), result.answer);
-      break;
-    }
-    if (result.quota) break; // 额度类报错:不换模型重试,交给 Mini 暂停新系统
+    attempts.push({ model: next.model, effort: next.effort, ok: result.ok, error: result.error, quota: result.quota, durationMs: result.durationMs, exitCode: result.exitCode });
+    if (result.ok) writeJson(join(WORK, 'answer.json'), result.answer);
   }
-  state.codex = { attempts, model: attempts.at(-1)?.model, effort: tierCfg.effort };
+  state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort };
   saveState(state);
-}
-
-function tierConfig(tier) {
-  const key = tier.toUpperCase();
-  const defaults = TIER_DEFAULTS[tier];
-  return {
-    model: process.env[`MIVO_REVIEW_MODEL_${key}`] || defaults.model,
-    effort: process.env[`MIVO_REVIEW_EFFORT_${key}`] || defaults.effort,
-    timeoutMin: Number(process.env[`MIVO_REVIEW_TIMEOUT_${key}`]) || defaults.timeoutMin,
-  };
 }
 
 // ── publish ────────────────────────────────────────────────────────────────
