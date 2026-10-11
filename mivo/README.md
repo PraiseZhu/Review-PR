@@ -35,6 +35,10 @@ flowchart LR
 | `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
 
+## 严重度
+
+服务器审查的任务书（`lib/prompt.mjs`）按维护者 2026-10-12 的决定使用统一分级，覆盖 `review-pr/SKILL.md` 第 5 节的「严重度」段：只报确认成立的 P0（大范围灾难性影响）与 P1（受支持场景中可信可达的触发路径导致核心流程失效、严重数据错误或安全/隐私边界被突破）；规范原文里「记 P1」的具体条款按实际影响重新分级，P2/P3 不报、不阻断。
+
 ## 三种模式
 
 | 模式 | Mini | 服务器 |
