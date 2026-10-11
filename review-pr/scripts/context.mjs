@@ -32,7 +32,7 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiR
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / ci-ignore]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts } from './lib.mjs';
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, onlyOwnRequiredChecksPending } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -1109,7 +1109,8 @@ try {
   // **ci.status=pass(全绿或无任何 check)才可合并**;unknown(两源都读不到 / UNSTABLE 但
   // 已读到的来源全绿)不得视为通过。权限/网络异常降级为 null,绝不炸掉 context。
   // [MIVO-PATCH ci-ignore] 本流程自己的 review-pr check 不算作者 CI,否则会自己拦自己。
-  const rollupContexts = filterIgnoredCiContexts(fetchCiRollup(slug, pr), prRules);
+  const rawRollupContexts = fetchCiRollup(slug, pr);
+  const rollupContexts = filterIgnoredCiContexts(rawRollupContexts, prRules);
   const rollup = rollupContexts ? classifyRollupContexts(rollupContexts) : null;
   const { ciRuns } = classifyHeadChecks(slug, meta.headRefOid);
   const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: meta.mergeStateStatus });
@@ -1217,6 +1218,13 @@ try {
       // 这类不是作者要改 —— 要么 owner 用 admin bypass 合、要么修该门让它能上报结果。
       blockClass = 'structural-check';
       structuralBlock = probeBranchProtection(slug, meta.baseRefName);
+    }
+    // [MIVO-PATCH ci-ignore] 只差本流程自己的必需检查(review-pr)未上报/未通过时不是结构性卡点:
+    // 送审之后才会产出它,当成卡点会死锁。其余任何必需检查缺失仍按结构性卡点处理。
+    if (blockClass === 'structural-check' &&
+        onlyOwnRequiredChecksPending({ probe: structuralBlock, rollupContexts: rawRollupContexts, rules: prRules })) {
+      blockClass = 'none';
+    } else if (blockClass === 'structural-check') {
       const ruleHint = structuralBlock?.requiredCheckRules?.length
         ? structuralBlock.requiredCheckRules.join(' / ')
         : 'code_scanning / code_quality 等';

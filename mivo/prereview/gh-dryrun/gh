@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// dry-run 用的 gh 垫片入口;判定与转发逻辑在 gh-guard.mjs。
+const { pathToFileURL } = require('node:url');
+const { join } = require('node:path');
+import(pathToFileURL(join(__dirname, 'gh-guard.mjs')).href).then((m) => m.main());

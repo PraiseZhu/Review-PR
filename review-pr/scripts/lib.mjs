@@ -1035,7 +1035,9 @@ export function classifyHeadChecks(slug, headSha) {
   const r = gh(['api', `repos/${slug}/actions/runs?head_sha=${headSha}&per_page=100`], { allowFail: true });
   if (!r.ok) return { ciRuns: null };
   try {
-    const runs = JSON.parse(r.stdout || '{}').workflow_runs ?? [];
+    // [MIVO-PATCH ci-ignore] 本流程与已退役审查流程的 workflow 不算作者 CI。
+    const ignoredPaths = new Set((loadRules().ciIgnoreWorkflows?.paths ?? []).map(String));
+    const runs = (JSON.parse(r.stdout || '{}').workflow_runs ?? []).filter((w) => !ignoredPaths.has(String(w.path ?? '')));
     const seen = new Set();
     const latest = [];
     for (const w of runs) {
@@ -3031,11 +3033,16 @@ export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
   return author !== '' && normalizeLoginList(rules.signoffGate?.exemptAuthors).includes(author);
 }
 
-/** [MIVO-PATCH ci-ignore] 去掉本流程自己写的 check(例如 review-pr),它不是作者的 CI。 */
+/**
+ * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
+ * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
+ */
 export function filterIgnoredCiContexts(contexts, rules = loadRules()) {
   const ignore = new Set((rules.ciIgnoreContexts ?? []).map((name) => String(name)));
-  if (!Array.isArray(contexts) || ignore.size === 0) return contexts;
-  return contexts.filter((context) => !ignore.has(String(context?.name ?? '')));
+  const workflows = new Set((rules.ciIgnoreWorkflows?.names ?? []).map((name) => String(name)));
+  if (!Array.isArray(contexts) || (ignore.size === 0 && workflows.size === 0)) return contexts;
+  return contexts.filter((context) => !ignore.has(String(context?.name ?? '')) &&
+    !workflows.has(String(context?.workflowName ?? '')));
 }
 
 // [MIVO-PATCH slack-release] Slack 讨论串里维护者回复「同意放行」视为放行。
@@ -3101,4 +3108,25 @@ export function selectTrustedSlackReleases({
     }
   }
   return { release, rejected };
+}
+
+/**
+ * [MIVO-PATCH ci-ignore] BLOCKED 只因本流程自己的必需检查(ciIgnoreContexts,如 review-pr)
+ * 尚未上报或尚未通过?是则返回 true。probe 读不到、还有别的必需检查未满足,都返回 false(从严)。
+ */
+export function onlyOwnRequiredChecksPending({ probe = null, rollupContexts = null, rules = loadRules() } = {}) {
+  const own = new Set((rules.ciIgnoreContexts ?? []).map((name) => String(name)));
+  if (!probe || !Array.isArray(probe.requiredStatusChecks) || own.size === 0 || !Array.isArray(rollupContexts)) return false;
+  const pass = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  const latest = new Map();
+  rollupContexts.forEach((context, index) => {
+    const order = context?.startedAt ?? context?.createdAt ?? context?.completedAt ?? `9999-${index}`;
+    const prev = latest.get(context?.name);
+    if (!prev || String(order) >= String(prev.order)) latest.set(context?.name, { context, order });
+  });
+  const unmet = probe.requiredStatusChecks
+    .map((check) => String(typeof check === 'string' ? check : check?.context ?? '').trim())
+    .filter(Boolean)
+    .filter((name) => !pass.has(String(latest.get(name)?.context?.conclusion ?? '').toUpperCase()));
+  return unmet.length > 0 && unmet.every((name) => own.has(name));
 }

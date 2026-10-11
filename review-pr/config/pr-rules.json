@@ -49,6 +49,17 @@
   "ciIgnoreContexts": [
     "review-pr"
   ],
+  "ciIgnoreWorkflows": {
+    "_comment": "不算作者 CI 的 workflow:新审查流程自己的 review-pr.yml,以及切换后退役的旧三席 code-review.yml(其历史结果留在旧 head 上,不能再拦 PR)。names 对 statusCheckRollup 的 workflowName,paths 对 actions/runs 的 path。",
+    "names": [
+      "review-pr",
+      "Code Review"
+    ],
+    "paths": [
+      ".github/workflows/review-pr.yml",
+      ".github/workflows/code-review.yml"
+    ]
+  },
   "reviewOnlyNotices": "auto",
   "sensitiveContent": {
     "allowPaths": [

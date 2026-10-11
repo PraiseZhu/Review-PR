@@ -14,6 +14,7 @@ import {
   parseSlackSyncComment,
   isExplicitSlackConsent,
   selectTrustedSlackReleases,
+  onlyOwnRequiredChecksPending,
 } from './lib.mjs';
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
@@ -106,6 +107,8 @@ test('CI 忽略名单只去掉本流程自己的 check', () => {
   assert.deepEqual(filterIgnoredCiContexts(contexts, { ciIgnoreContexts: ['review-pr'] }).map((c) => c.name), ['verify']);
   assert.equal(filterIgnoredCiContexts(null, { ciIgnoreContexts: ['review-pr'] }), null);
   assert.equal(filterIgnoredCiContexts(contexts, {}), contexts);
+  const retired = [{ name: 'seat1', workflowName: 'Code Review', conclusion: 'FAILURE' }, { name: 'verify', workflowName: 'CI', conclusion: 'SUCCESS' }];
+  assert.deepEqual(filterIgnoredCiContexts(retired, { ciIgnoreWorkflows: { names: ['Code Review'] } }).map((c) => c.name), ['verify']);
 });
 
 const syncBody = (login, text, fp = 'C123:1760000000.000100') =>
@@ -174,4 +177,15 @@ test('Slack 放行接入维护者确认门后按标记口径持久有效', () =>
   });
   assert.equal(changes.waitingForAuthor, true);
   assert.equal(changes.released, null);
+});
+
+test('只差本流程自己的必需检查时不算结构性卡点,其余缺失从严', () => {
+  const rules = { ciIgnoreContexts: ['review-pr'] };
+  const probe = { requiredStatusChecks: [{ context: 'verify' }, { context: 'review-pr' }] };
+  const passed = [{ name: 'verify', conclusion: 'SUCCESS' }];
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: passed, rules }), true);
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [...passed, { name: 'review-pr', conclusion: 'FAILURE' }], rules }), true);
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [], rules }), false, 'verify 也没上报');
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [...passed, { name: 'review-pr', conclusion: 'SUCCESS' }], rules }), false, '全部满足就不是这种情况');
+  assert.equal(onlyOwnRequiredChecksPending({ probe: null, rollupContexts: passed, rules }), false);
 });
