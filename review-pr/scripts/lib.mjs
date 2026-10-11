@@ -3036,9 +3036,10 @@ export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
 /**
  * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
  * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
+ * 评审 bot 的 check(ciIgnoreBotChecks,如 Greptile 的信心阈值检查)也不算:它的具体意见以 thread 出现,由 thread 门拦。
  */
 export function filterIgnoredCiContexts(contexts, rules = loadRules()) {
-  const ignore = new Set((rules.ciIgnoreContexts ?? []).map((name) => String(name)));
+  const ignore = new Set([...(rules.ciIgnoreContexts ?? []), ...(rules.ciIgnoreBotChecks ?? [])].map((name) => String(name)));
   const workflows = new Set((rules.ciIgnoreWorkflows?.names ?? []).map((name) => String(name)));
   if (!Array.isArray(contexts) || (ignore.size === 0 && workflows.size === 0)) return contexts;
   return contexts.filter((context) => !ignore.has(String(context?.name ?? '')) &&

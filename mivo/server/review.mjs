@@ -89,6 +89,11 @@ async function prepare() {
     const fetchedHead = git(['rev-parse', 'refs/remotes/pr/head']).stdout.trim();
     if (fetchedHead !== input.head) return finishEarly(state, 'state-changed', `PR head 已变化(${input.head.slice(0, 12)} → ${fetchedHead.slice(0, 12)}),下一轮重新采集`);
     git(['-c', 'advice.detachedHead=false', 'checkout', '-q', '--detach', input.head], { timeoutMs: 600_000 });
+    // 审查步骤没有网络,partial clone 缺的 base 侧 blob 届时取不到:这里先把 base...head 涉及的对象取齐,
+    // 审查时 `git diff <base>...HEAD` 才能离线运行。失败只记警告,审查仍以完整 diff 为准。
+    const warmed = git(['fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', input.base], { allowFail: true, timeoutMs: 600_000 }).ok &&
+      git(['diff', '--numstat', `${input.base}...${input.head}`], { allowFail: true, timeoutMs: 600_000 }).ok;
+    if (!warmed) state.warnings.push(`base ${input.base.slice(0, 12)} 的对象没取齐,审查时本地 git diff 可能不可用`);
 
     // 2. 审查锁与维护者权限(锁只在本 job 的临时目录,与 Mini 的锁互不相干)。
     const prep = runScript('prepare.mjs', ['--skip-skill-pull'], { cwd: REPO_DIR, env: scriptEnv() });
@@ -140,6 +145,7 @@ async function prepare() {
     if (previous?.head && previous.head !== input.head) {
       run('git', [...gitAuth, 'fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', previous.head], { cwd: REPO_DIR, allowFail: true });
       headIsDescendant = run('git', ['merge-base', '--is-ancestor', previous.head, input.head], { cwd: REPO_DIR, allowFail: true }).status === 0;
+      if (headIsDescendant) git(['diff', '--numstat', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 }); // 同上:增量复审离线要用
     }
     const scope = computeReviewScope({ previous, current, headIsDescendant });
     state.scope = scope;

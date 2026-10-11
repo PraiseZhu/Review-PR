@@ -111,6 +111,12 @@ test('CI 忽略名单只去掉本流程自己的 check', () => {
   assert.deepEqual(filterIgnoredCiContexts(retired, { ciIgnoreWorkflows: { names: ['Code Review'] } }).map((c) => c.name), ['verify']);
 });
 
+test('评审 bot 的信心阈值 check 不算作者 CI', () => {
+  const contexts = [{ name: 'Greptile Review', conclusion: 'FAILURE' }, { name: 'verify', workflowName: 'CI', conclusion: 'FAILURE' }];
+  assert.deepEqual(filterIgnoredCiContexts(contexts, { ciIgnoreBotChecks: ['Greptile Review'] }).map((c) => c.name), ['verify']);
+  assert.deepEqual(filterIgnoredCiContexts(contexts, { ciIgnoreContexts: ['review-pr'], ciIgnoreBotChecks: ['Greptile Review'] }).map((c) => c.name), ['verify']);
+});
+
 const syncBody = (login, text, fp = 'C123:1760000000.000100') =>
   `来自 Slack #mivo-canvas · @${login}(显示名)\n\n${text}\n\n<!-- slack-inbound ${fp} -->`;
 const botComment = (login, text, createdAt = '2026-10-11T02:00:00Z', poster = 'github-actions[bot]') =>
