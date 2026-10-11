@@ -125,3 +125,15 @@ test('只缺界面证据:打回正文说清楚补截图或 HTML,不提维护者�
     formatIssues: ['Title 命中含糊词黑名单', '缺界面证据:改了界面(src/ui/Align.tsx)'] } }), 'format');
   assert.match(mixed.body, /不符合仓库的 PR 格式要求/);
 });
+
+test('缺界面证据但只有评论形式的旧打回:打回一次;已有生效的 Request Changes 就不重复', () => {
+  const meta = (reviewDecision) => ({ title: 'docs(canvas): x', author: 'outsider', url: 'u', mergeStateStatus: 'BLOCKED', reviewDecision });
+  const format = { formatPass: false, uiEvidenceRequired: true, formatIssues: ['缺界面证据:改了界面(src/a.tsx)'] };
+  const untold = decideGate(ctx({ meta: meta('APPROVED'), format, auto: { action: 'skip-stale-pushback', reason: 'x' } }));
+  assert.equal(untold.outcome, 'format');
+  assert.deepEqual(untold.actions, [{ script: 'request-changes', gateKind: 'format' }]);
+  const told = decideGate(ctx({ meta: meta('CHANGES_REQUESTED'), format, auto: { action: 'skip-stale-pushback', reason: 'x' } }));
+  assert.deepEqual(told.actions, []);
+  const otherFormat = decideGate(ctx({ meta: meta('APPROVED'), format: { formatPass: false, formatIssues: ['缺段落'] }, auto: { action: 'skip-stale-pushback', reason: 'x' } }));
+  assert.deepEqual(otherFormat.actions, []);
+});

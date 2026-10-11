@@ -97,8 +97,16 @@ export function decideGate(ctx) {
       return withSignoff({ stage: 'protected', outcome: 'protected', reason, actions: [{ script: 'notify-protected' }] });
     case 'pushback-format':
       return withSignoff({ stage: 'format', outcome: 'format', reason: formatReason(ctx), actions: [{ script: 'request-changes', gateKind: 'format' }] });
-    case 'skip-stale-pushback':
+    case 'skip-stale-pushback': {
+      // 「已打回过」也算上了评论形式的弱打回(如旧的维护者确认提醒)。缺界面证据时若 PR 上没有生效的
+      // Request Changes,作者从没收到过补证据的要求:打回一次;打回后 reviewDecision 变成 CHANGES_REQUESTED,不会重复。
+      const evidenceUntold = ctx.format?.formatPass === false && ctx.format?.uiEvidenceRequired === true &&
+        ctx.meta?.reviewDecision !== 'CHANGES_REQUESTED';
+      if (evidenceUntold) {
+        return withSignoff({ stage: 'format', outcome: 'format', reason: formatReason(ctx), actions: [{ script: 'request-changes', gateKind: 'format' }] });
+      }
       return withSignoff({ stage: 'format', outcome: ctx.format?.formatPass === false ? 'format' : 'changes-requested', reason, actions: [] });
+    }
     case 'approve-workflows':
       return withSignoff({ stage: 'ci', outcome: 'ci-pending', reason, actions: [{ script: 'approve-workflows' }] });
     case 'skip-workflow-ci-change':
