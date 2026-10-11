@@ -198,13 +198,16 @@
     "maxDaysBehind": 3
   },
   "botReviewSettle": {
-    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态后再静默 5 分钟,从 head push 起最多等 30 分钟(实测中位 27.5 分钟)。",
+    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态(提交 review、行内评论,或它在当前 head 上的 check 跑完——checkNames)后再静默 5 分钟,从 head push 起最多等 30 分钟(实测中位 27.5 分钟)。",
     "enabled": true,
     "reviewers": [
       "greptile-apps"
     ],
     "quietMinutes": 5,
     "quietExtraBots": [],
+    "checkNames": {
+      "greptile-apps": "Greptile Review"
+    },
     "maxWaitMinutes": 30
   },
   "securityScan": {

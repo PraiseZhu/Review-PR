@@ -12,6 +12,8 @@ import {
   isSignoffExemptAuthor,
   filterIgnoredCiContexts,
   ciMergeStateIgnoring,
+  botCheckActivity,
+  evaluateBotSettle,
   evaluateCiStatus,
   parseSlackSyncComment,
   isExplicitSlackConsent,
@@ -210,4 +212,22 @@ test('只差本流程自己的必需检查时不算结构性卡点,其余缺失�
   assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [], rules }), false, 'verify 也没上报');
   assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [...passed, { name: 'review-pr', conclusion: 'SUCCESS' }], rules }), false, '全部满足就不是这种情况');
   assert.equal(onlyOwnRequiredChecksPending({ probe: null, rollupContexts: passed, rules }), false);
+});
+
+test('机器人在当前 head 上的 check 跑完算表态', () => {
+  const cfg = { reviewers: ['greptile-apps'], quietMinutes: 5, maxWaitMinutes: 30, checkNames: { 'greptile-apps': 'Greptile Review' } };
+  const rollup = [
+    { name: 'Greptile Review', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-10-11T12:56:40Z' },
+    { name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-10-11T12:56:00Z' },
+  ];
+  assert.deepEqual(botCheckActivity(rollup, cfg), [{ author: 'greptile-apps', at: '2026-10-11T12:56:40Z' }]);
+  const settled = evaluateBotSettle({ headCommittedDate: '2026-10-11T12:54:39Z', nowIso: '2026-10-11T13:05:00Z', activity: botCheckActivity(rollup, cfg), cfg });
+  assert.equal(settled.settled, true);
+  assert.equal(settled.timedOut, false);
+  const quiet = evaluateBotSettle({ headCommittedDate: '2026-10-11T12:54:39Z', nowIso: '2026-10-11T12:58:00Z', activity: botCheckActivity(rollup, cfg), cfg });
+  assert.equal(quiet.settled, false, '跑完后仍要静默 5 分钟');
+  const running = [{ name: 'Greptile Review', status: 'IN_PROGRESS', conclusion: null, completedAt: null }];
+  assert.deepEqual(botCheckActivity(running, cfg), []);
+  assert.deepEqual(botCheckActivity(rollup, { reviewers: ['greptile-apps'] }), [], '没配 checkNames 时与上游一致');
+  assert.deepEqual(botCheckActivity(null, cfg), []);
 });

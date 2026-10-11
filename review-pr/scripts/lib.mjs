@@ -2032,6 +2032,18 @@ export const DEFAULT_BOT_REVIEWERS = [
  * @returns {{enabled:boolean, settled:boolean, pending:string[], responded:string[],
  *   waitedMinutes:number|null, timedOut:boolean, maxWaitMinutes:number, reason:string}}
  */
+/**
+ * [MIVO-PATCH bot-check-settle] 机器人在当前 head 上的 check 跑完也算表态(botReviewSettle.checkNames:{机器人: check 名})。
+ * Greptile 没有意见时只发总结评论、不提交 review,只看 review / thread 评论认不出它已审完,每次都要等到超时。
+ * statusCheckRollup 只含当前 head 的 check,所以跑完就说明它审过这个 head。
+ */
+export function botCheckActivity(rollupContexts, cfg = {}) {
+  if (!Array.isArray(rollupContexts)) return [];
+  return Object.entries(cfg.checkNames ?? {}).flatMap(([author, checkName]) => rollupContexts
+    .filter((c) => c?.name === checkName && String(c.status ?? '').toUpperCase() === 'COMPLETED' && c.completedAt)
+    .map((c) => ({ author, at: c.completedAt })));
+}
+
 export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cfg = {} }) {
   const maxWaitMinutes = Number(cfg.maxWaitMinutes ?? 20);
   // 静默窗口(维护者 2026-07-30 定的节奏):必等机器人都表态之后,还要「最近 quietMinutes
