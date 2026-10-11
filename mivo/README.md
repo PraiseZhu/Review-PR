@@ -40,7 +40,7 @@ flowchart LR
 | 模式 | Mini | 服务器 |
 |---|---|---|
 | `dry-run` | 判门、派发都照做，**任何 GitHub 写入都被垫片拦下**，打算做的动作记在结果的 `dryRunActions` | 完整审查，只上传结果包，不写 PR、不写 check |
-| `sandbox` | 对沙箱仓真实写入 | 对沙箱仓真实写入；不写 check（`GITHUB_TOKEN` 只能写本仓） |
+| `sandbox` | 对沙箱仓真实写入 | 对沙箱仓真实写入；check `review-pr` 由沙箱仓的检查镜像 workflow 写（`GITHUB_TOKEN` 只能写本仓，见 `lib/checks.mjs`） |
 | `live` | 对 Mivo 真实写入 | 发 review、开 thread、写 check `review-pr`、挂 `review:merge-ready` |
 
 服务器允许的最高模式由 Mivo 仓库变量 `MIVO_REVIEW_MODE` 决定。

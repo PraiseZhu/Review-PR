@@ -14,6 +14,7 @@ import { splitDiffByFile, filePatchHashes, computeReviewScope } from '../lib/sco
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt } from '../lib/prompt.mjs';
 import { TIER_DEFAULTS, tierConfig, nextAttempt } from '../lib/models.mjs';
+import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { runCodex } from './codex.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
@@ -148,9 +149,12 @@ async function prepare() {
     state.previous = previous ? { head: previous.head, runId: input.prevRunId, lastFullReviewAt: previous.lastFullReviewAt } : null;
     writeJson(join(INPUT_DIR, 'scope.json'), scope);
 
-    // 5. check:审查中(只在 live 且审查对象就是本仓时;沙箱仓的 check 由沙箱自己的验收覆盖)。
-    if (input.mode === 'live' && input.targetRepo === input.workflowRepo) {
-      state.checkRunId = createCheckRun(input, { status: 'in_progress', title: '审查中', summary: `${scope.mode === 'reuse' ? '沿用上一轮结论' : `档位 ${tier},${scope.reason}`}` });
+    // 5. check:审查中(live 审本仓时直接写;sandbox 审沙箱仓时派发沙箱的检查镜像,见 lib/checks.mjs)。
+    const pendingCheck = { status: 'in_progress', title: '审查中', summary: `${scope.mode === 'reuse' ? '沿用上一轮结论' : `档位 ${tier},${scope.reason}`}` };
+    if (checkTarget(input) === 'direct') state.checkRunId = createCheckRun(input, pendingCheck);
+    if (checkTarget(input) === 'sandbox-mirror') {
+      const mirrored = dispatchSandboxCheck(input, pendingCheck);
+      if (!mirrored.ok) state.warnings.push(`沙箱检查镜像派发失败:${mirrored.error}`);
     }
     state.phase = 'prepared';
     saveState(state);
@@ -235,8 +239,9 @@ function createCheckRun(input, { status, title, summary }) {
 }
 
 function completeCheckRun(input, checkRunId, { conclusion, title, summary }) {
+  if (checkTarget(input) === 'sandbox-mirror') return dispatchSandboxCheck(input, { conclusion, title, summary });
   const token = process.env.CHECKS_TOKEN;
-  if (!token || !(input.mode === 'live' && input.targetRepo === input.workflowRepo)) return { skipped: true };
+  if (!token || checkTarget(input) !== 'direct') return { skipped: true };
   const body = conclusion
     ? { name: CHECK_NAME, head_sha: input.head, status: 'completed', conclusion, completed_at: nowIso(), details_url: input.runUrl || undefined, output: { title, summary } }
     : { name: CHECK_NAME, head_sha: input.head, status: 'in_progress', details_url: input.runUrl || undefined, output: { title, summary } };
@@ -244,6 +249,12 @@ function completeCheckRun(input, checkRunId, { conclusion, title, summary }) {
   const r = run('gh', ['api', '--method', checkRunId ? 'PATCH' : 'POST', path, '--input', '-'],
     { cwd: WORK, env: { ...process.env, GH_TOKEN: token }, input: JSON.stringify(body), allowFail: true });
   return r.ok ? { ok: true, id: JSON.parse(r.stdout).id } : { ok: false, error: r.stderr.trim().slice(0, 300) };
+}
+
+// 沙箱仓的 review-pr 检查:用 GH_TOKEN(审查账号)派发沙箱仓的检查镜像 workflow。
+function dispatchSandboxCheck(input, check) {
+  const r = run('gh', toMirrorDispatchArgs(input, check), { cwd: WORK, allowFail: true });
+  return r.ok ? { ok: true, mirrored: true } : { ok: false, mirrored: true, error: r.stderr.trim().slice(0, 300) };
 }
 
 function finishEarly(state, outcome, reason, retry = false) {
