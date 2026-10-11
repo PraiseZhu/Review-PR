@@ -1,13 +1,13 @@
 // models.mjs — 审查模型的选择。三档同一个主模型与思考强度(与 Cindy 一致:档位只决定审查深度),
-// 主模型失败(非额度类)时换一个不同来源的备用模型重试一次。
-// 用户 2026-10-11 决定:主力 gpt-6-luna / max,备用 grok / high。
+// 主模型失败(非额度类)时换备用模型重试一次。
+// 用户 2026-10-11 决定:主力 gpt-6-luna / max,备用 gpt-6.1-sol / medium。
 
 export const TIER_DEFAULTS = {
   light: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 15 },
   standard: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 45 },
   heavy: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 75 },
 };
-export const FALLBACK = { model: 'x-ai-grok/grok-4.6', effort: 'high' };
+export const FALLBACK = { model: 'openai/gpt-6.1-sol', effort: 'medium' };
 // job 上限 110 分钟,扣掉 prepare / deps / publish 的余量后,模型调用合计不超过 90 分钟。
 export const CODEX_BUDGET_MIN = 90;
 const MIN_FALLBACK_MIN = 5;

@@ -7,7 +7,7 @@ test('三档同一个主模型与思考强度,只有超时不同', () => {
     assert.equal(TIER_DEFAULTS[tier].model, 'openai/gpt-6-luna');
     assert.equal(TIER_DEFAULTS[tier].effort, 'max');
   }
-  assert.deepEqual(FALLBACK, { model: 'x-ai-grok/grok-4.6', effort: 'high' });
+  assert.deepEqual(FALLBACK, { model: 'openai/gpt-6.1-sol', effort: 'medium' });
 });
 
 test('仓库变量可以覆盖某一档', () => {
@@ -23,7 +23,7 @@ test('主模型一次;非额度类失败换备用一次;额度类失败或成功
   assert.equal(nextAttempt({ primary, attempts: [{ ok: true }], elapsedMin: 3 }), null);
   assert.equal(nextAttempt({ primary, attempts: [{ ok: false, quota: true }], elapsedMin: 1 }), null);
   assert.deepEqual(nextAttempt({ primary, attempts: [{ ok: false, quota: false }], elapsedMin: 10 }),
-    { model: 'x-ai-grok/grok-4.6', effort: 'high', timeoutMin: 45 });
+    { model: 'openai/gpt-6.1-sol', effort: 'medium', timeoutMin: 45 });
   assert.equal(nextAttempt({ primary, attempts: [{ ok: false }, { ok: false }], elapsedMin: 20 }), null);
 });
 
@@ -31,6 +31,6 @@ test('备用只用剩余预算;不足 5 分钟或与主模型相同时不再试'
   const heavy = tierConfig('heavy', {});
   assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMin: 76 }).timeoutMin, 14);
   assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMin: 86 }), null);
-  const grokPrimary = { ...FALLBACK, timeoutMin: 45 };
-  assert.equal(nextAttempt({ primary: grokPrimary, attempts: [{ ok: false }], elapsedMin: 1 }), null);
+  const fallbackAsPrimary = { ...FALLBACK, timeoutMin: 45 };
+  assert.equal(nextAttempt({ primary: fallbackAsPrimary, attempts: [{ ok: false }], elapsedMin: 1 }), null);
 });
