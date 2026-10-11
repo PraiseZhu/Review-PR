@@ -7,22 +7,17 @@
 //
 // 互斥锁:防止多个 review-pr 实例(scheduler 定时 + 手动)同时跑。
 // 锁文件位于 Skill 外部、按目标仓库隔离的状态目录，内容为 JSON `{startedAt, token}`;
-// 状态目录锚点按 git-common-dir 归一(见 lib.mjs `resolveStateAnchor`)——同一仓库的
-// 主 worktree 与全部 linked worktree 共享同一份状态目录、同一把锁文件,不是各留一份。
 // 获取用 flag:'wx'
-// 原子独占创建,同一状态目录内两个实例同毫秒启动也只有一个能拿到。
-// 锁按"仓库"归一,不是按"checkout"归一:同一仓库的另一个 checkout / worktree 上的
-// 实例看到的是同一把锁,会被正常互斥挡住,不会重复拿锁。真正看不到这把锁、需要靠
-// 操作约定(而非这把锁本身)避免并发的,只有另一台机器上的实例——见 SKILL.md 里
-// 关于开发机 Syncthing 跨机并发的记录段落。
+// 原子独占创建,同一 checkout 内两个实例同毫秒启动也只有一个能拿到。
+// 注意锁是 per-checkout 的:另一个 checkout / worktree / 机器上的实例看不到这把锁。
 // stale 判定:**纯 TTL**——超过 60 分钟未释放判 stale,强制清除后重新获取。
 // 不做 PID 存活判定:本脚本自身秒退,写自己的 PID 进锁文件毫无意义(下一轮
 // `kill(pid, 0)` 永远 ESRCH → 永远判 stale → 锁形同虚设,2026-07 实锤);
 // 而长命的持有者是上层 agent 进程,脚本拿不到它的 PID(父 shell 同样秒退)。
 // TTL 60 分钟按 auto 批处理单轮上限留余量;auto 去掉批量数量上限后单轮可能超时,
-// 长轮次由 lock-heartbeat-daemon.mjs 在后台续期(每 20 分钟一次),不要让主会话
-// 用 refresh-lock.mjs 空转等待——2026-08-18 巡审把后者打了 4660 次 LLM 回合。
-// 代价是异常崩溃后最多阻塞下一轮一小时,scheduler 会自动重试,可接受。
+// 长轮次必须用 refresh-lock.mjs 心跳续期(每处理完一个 PR 一次),否则锁会被下一轮
+// scheduler 判 stale 接管,变成两个 auto 会话并发。代价是异常崩溃后最多阻塞下一轮
+// 一小时,scheduler 会自动重试,可接受。
 // token:acquire 成功时生成随机 token 写进锁文件并输出(lock.token);后续
 // refresh-lock.mjs / release-lock.mjs / cleanup.mjs 都要带 --token,脚本只操作
 // token 匹配的锁——防止"自己超时被接管后,又把接管者的新锁误删"造成双实例。
@@ -33,13 +28,38 @@
 //
 // 跑:node <skill-root>/scripts/prepare.mjs
 
-import { parseRepo, git, gh, print, fail, LOCK_FILE, releaseLockOwned, skillRepoPull } from './lib.mjs';
-import { startLockHeartbeat, stopLockHeartbeat, parseLockStartedAt } from './lib.session-lock.mjs';
-import { porcelainHasUserDirty } from './lib.gate-paths.mjs';
+import {
+  parseRepo,
+  git,
+  gh,
+  print,
+  fail,
+  LOCK_FILE,
+  releaseLockOwned,
+  skillRepoPull,
+  fetchMaintainerAuthority,
+  writeMaintainerAuthoritySnapshot,
+  removeMaintainerAuthoritySnapshot,
+} from './lib.mjs';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 const LOCK_TTL_MS = 60 * 60 * 1000; // 60 minutes
+
+/** 取锁文件里的 startedAt(ms);兼容 {startedAt}/{pid,startedAt} JSON 与裸 ISO,解析失败返回 null。 */
+function parseLockStartedAt(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const t = new Date(JSON.parse(trimmed).startedAt).getTime();
+      return isNaN(t) ? null : t;
+    } catch {
+      return null;
+    }
+  }
+  const t = new Date(trimmed).getTime();
+  return isNaN(t) ? null : t;
+}
 
 const TAKEOVER_FILE = LOCK_FILE + '.takeover';
 const TAKEOVER_TTL_MS = 60 * 1000; // 接管锁正常只持有毫秒级,60s 足够覆盖进程死在中间的自愈
@@ -144,7 +164,10 @@ function acquireLock() {
           holderStartedAt: new Date(again.startedAt).toISOString(),
         };
       }
+      let staleToken = null;
+      try { staleToken = JSON.parse(again.raw).token ?? null; } catch { /* 旧锁无 token */ }
       tryUnlink(LOCK_FILE);
+      if (staleToken) removeMaintainerAuthoritySnapshot(staleToken);
     }
     // 空档期可能被快路径的新实例抢先 create,抢不到就让锁
     if (tryCreateLock(payload)) return { acquired: true, stale: true, holder: null, token };
@@ -159,54 +182,46 @@ try {
   lock = acquireLock();
 
   // Skill 自更新:交互模式不经过 pre-check 的 pull,这里兜底一次。只在拿到锁后 pull
-  // (没拿到锁 = 别的实例在跑,不换它脚下的脚本);失败不阻塞,结果放进输出让 LLM 汇总。
-  let skillSync = null;
-  if (lock.acquired) {
+  // 自动模式已由 pre-check 更新并重启到新代码，传 --skip-skill-pull 避免重复拉取。
+  // 失败不阻塞，结果放进输出让 LLM 汇总。
+  const skipSkillPull = process.argv.includes('--skip-skill-pull');
+  let skillSync = skipSkillPull ? { ok: true, skipped: 'preflight-already-synced' } : null;
+  if (lock.acquired && !skipSkillPull) {
     try { skillSync = skillRepoPull({ timeoutMs: 30_000 }); } catch { /* best-effort */ }
-    try { startLockHeartbeat(LOCK_FILE, lock.token); } catch { /* 守护挂了仍可靠 refresh-lock 冷却补救 */ }
   }
 
   const repo = parseRepo();
   const ghAuth = gh(['auth', 'status'], { allowFail: true }).ok;
   const porcelain = git(['status', '--porcelain']).stdout.trim();
-  const worktreeClean = !porcelainHasUserDirty(porcelain);
-  let currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+  const worktreeClean = porcelain === '';
+  const currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
 
-  // 默认分支:origin/HEAD → refs/remotes/origin/<branch>;解析不到兜底 main
+  // 默认分支:origin/HEAD → refs/remotes/origin/<branch>;解析不到兜底 main。
+  // 维护者权限本身不用这个本地值，而是 fetchMaintainerAuthority 读取 GitHub 默认分支。
   let defaultBranch = 'main';
   const sym = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { allowFail: true });
   if (sym.ok && sym.stdout.trim()) {
     defaultBranch = sym.stdout.trim().replace(/^refs\/remotes\/origin\//, '');
   }
 
-  // tracking 分支远端已删时,ff-only pull 会整轮 sync-failed。工作区干净才切到
-  // origin/<default>(不审不写 GitHub);脏树或切不过仍标 syncFailed,由上层 fail-closed。
-  let trackingRecovered = false;
-  let syncFailed = null;
-  const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { allowFail: true });
-  if (upstream.ok) {
-    const remoteRef = upstream.stdout.trim(); // 如 origin/fix/foo
-    const ls = git(['ls-remote', '--heads', 'origin', remoteRef.replace(/^origin\//, '')], { allowFail: true });
-    const remoteGone = !ls.ok || !ls.stdout.trim();
-    if (remoteGone && currentBranch !== defaultBranch && currentBranch !== 'HEAD') {
-      if (!worktreeClean) {
-        syncFailed = `tracking 分支远端已消失(${remoteRef}),工作区不干净,不自动切 ${defaultBranch}`;
-      } else {
-        const named = git(['checkout', '-q', defaultBranch], { allowFail: true });
-        if (!named.ok) {
-          const detached = git(['checkout', '-q', '--detach', `origin/${defaultBranch}`], { allowFail: true });
-          if (!detached.ok) {
-            syncFailed = `tracking 分支远端已消失(${remoteRef}),切 ${defaultBranch} 失败`;
-          } else {
-            trackingRecovered = true;
-            currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
-          }
-        } else {
-          trackingRecovered = true;
-          currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
-        }
-      }
-    }
+  let maintainerAuthority = null;
+  if (lock.acquired) {
+    if (!ghAuth) throw new Error('gh 未登录，无法读取 CODEOWNERS 维护者 Team 与补充白名单');
+    const authority = fetchMaintainerAuthority(repo);
+    writeMaintainerAuthoritySnapshot(authority, { lockToken: lock.token });
+    maintainerAuthority = {
+      verified: true,
+      teamHandle: authority.codeowners.teamHandle,
+      teamMemberCount: authority.teamMemberCount,
+      allowlistedMemberCount: authority.allowlistedMemberCount,
+      allowlistedMembers: authority.allowlistedMembers,
+      memberCount: authority.memberCount,
+      baseRef: authority.base.ref,
+      baseSha: authority.base.sha,
+      codeownersPath: authority.codeowners.path,
+      digest: authority.digest,
+      fetchedAt: authority.fetchedAt,
+    };
   }
 
   print({
@@ -216,17 +231,15 @@ try {
     repo,
     ghAuth,
     worktreeClean,
-    dirtyFiles: worktreeClean ? [] : porcelain.split('\n').filter((line) => porcelainHasUserDirty(line)),
+    dirtyFiles: worktreeClean ? [] : porcelain.split('\n'),
     currentBranch,
     defaultBranch,
-    trackingRecovered,
-    syncFailed,
+    maintainerAuthority,
   });
 } catch (e) {
   // 拿到锁之后才失败(不是 git 仓库 / origin 缺失…)必须回滚自己的锁,
   // 否则这一轮啥也没干却让后续 60 分钟内的所有轮次全被 lock-held 拦掉。
   if (lock?.acquired && lock.token) {
-    try { stopLockHeartbeat(LOCK_FILE, lock.token); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
     try { releaseLockOwned(lock.token); } catch { /* 回滚失败只能等 TTL,不掩盖原始错误 */ }
   }
   fail(e);

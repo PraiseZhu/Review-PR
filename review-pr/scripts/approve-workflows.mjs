@@ -8,7 +8,7 @@
 //   找到该 PR head SHA 上 conclusion/status=action_required 的 workflow run,逐个
 //   POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve(无 body,成功 201)。
 //
-// ⚠️ 安全边界写在代码里,不靠调用方记得检查(对齐 self-approve.mjs 的「机械前置自核验」):
+// ⚠️ 安全边界写在代码里,不靠调用方记得检查(对齐 approve-reviewed-pr.mjs 的「机械前置自核验」):
 //   approve fork workflow = 放行该 PR 的代码进 CI 跑。最高危场景是 PR 自己改了 CI 配置
 //   (.github/workflows/** 等)——批准就等于直接执行被改过的 workflow。因此脚本默认
 //   **拒绝**对「改了 CI 配置」的 PR 真批,必须显式传 --allow-ci-changes 覆盖(由 SKILL 在
