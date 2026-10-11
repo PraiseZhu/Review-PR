@@ -1,5 +1,5 @@
 {
-  "_comment": "E1 沙箱仓(xindong/mivo-review-sandbox)用的配置:与 Mivo 生产配置相同,只改三处——维护者只有 PraiseZhu(沙箱仓里只有这个账号有写权限);不设豁免名单;bot 静默期关闭(沙箱仓没有 greptile)。只在 target_repo 不是 Mivo 本仓时由 review-pr.yml 与沙箱前置审查使用。",
+  "_comment": "E1 沙箱仓(xindong/mivo-review-sandbox)用的配置:与 Mivo 生产配置相同,只改两处——维护者只有 PraiseZhu(沙箱仓里只有这个账号有写权限);不设豁免名单;bot 静默期与生产一致(组织级 greptile 也会审沙箱仓)。只在 target_repo 不是 Mivo 本仓时由 review-pr.yml 与沙箱前置审查使用。",
   "maintainerSource": "allowlist",
   "titleTypes": [
     "feat",
@@ -196,7 +196,7 @@
   },
   "botReviewSettle": {
     "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态后再静默 5 分钟,从 head push 起最多等 30 分钟(实测中位 27.5 分钟)。",
-    "enabled": false,
+    "enabled": true,
     "reviewers": [
       "greptile-apps"
     ],

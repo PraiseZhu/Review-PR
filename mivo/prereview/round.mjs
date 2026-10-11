@@ -189,7 +189,19 @@ async function drive(planFile, token, authorityDigest) {
       if (reconcile.reconciled) break;
     }
     const final = script('finalize-review-round.mjs', ['--plan', planFile, '--lock-token', token], { timeoutMs: 300_000 });
-    if (!final.ok) throw new Error(`finalize 失败:${final.error}`);
+    if (!final.ok) {
+      // 无人值守:同一轮收尾连续失败两次就放弃这一轮(写 completed.json 标 abandoned),
+      // 下一轮按旧的 round-state 重新采集,不让一个坏轮次永久卡住前置审查。
+      const attemptsFile = join(roundDir, 'mivo-finalize-attempts.json');
+      const attempts = [...readJson(attemptsFile, []), { at: nowIso(), error: final.error }];
+      writeJson(attemptsFile, attempts);
+      if (attempts.length >= 2) {
+        writeJson(join(roundDir, 'completed.json'), { runId: plan.runId, completedAt: nowIso(), abandoned: true, reason: final.error });
+        log('round-abandoned', { runId: plan.runId, error: final.error });
+        return;
+      }
+      throw new Error(`finalize 失败:${final.error}`);
+    }
     // Mivo 不发每轮汇总(2026-10-11 决定):写明确的 disabled 回执,队列才能关闭。
     writeJson(join(roundDir, 'notification.json'), { runId: plan.runId,
       pages: [{ page: 1, status: 'disabled', reason: 'Mivo 不发每轮汇总(owner 2026-10-11 决定)', attemptedAt: nowIso() }] });
@@ -293,6 +305,16 @@ async function handleTask(ctx, task) {
   if (dry && decision.actions.length) result.dryRunActions = decision.actions.map((a) => `${a.script}${a.mode ? `:${a.mode}` : ''}${a.kind ? `:${a.kind}` : ''}${a.gateKind ? `:${a.gateKind}` : ''}`);
 
   for (const action of dry ? [] : decision.actions) executeGateAction({ action, live, task, bindings, result, roundDir });
+  if (dry) {
+    // dry-run 不发作者提醒;受保护路径 / rebase 终态按 Cindy 规则必须带提醒回执,如实记「没发」并下轮重试。
+    for (const action of decision.actions) {
+      const kind = action.script === 'notify-protected' ? 'protected-path' : action.script === 'notify-rebase' ? 'stale-rebase' : null;
+      if (kind) {
+        result.authorNotice = { kind, status: 'failed', head: task.head, reason: 'dry-run:没有发提醒' };
+        result.retry = true;
+      }
+    }
+  }
   if (!dry) syncDisplayLabels(live, task, result);
   if (!dry) dropStaleMergeReady(live, task, result);
 
