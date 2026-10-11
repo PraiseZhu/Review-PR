@@ -3046,6 +3046,17 @@ export function filterIgnoredCiContexts(contexts, rules = loadRules()) {
     !workflows.has(String(context?.workflowName ?? '')));
 }
 
+/**
+ * [MIVO-PATCH ci-ignore] UNSTABLE 只由被忽略的 check 造成时(原始 rollup 读得到,被忽略的 check 里有非通过的),
+ * UNSTABLE 已有解释,不再判「CI 状态读取不完整」;剩下的 check 仍由 evaluateCiStatus 照常判 failed/pending。
+ */
+export function ciMergeStateIgnoring(mergeStateStatus, rawContexts, rules = loadRules()) {
+  if (mergeStateStatus !== 'UNSTABLE' || !Array.isArray(rawContexts)) return mergeStateStatus;
+  const kept = new Set(filterIgnoredCiContexts(rawContexts, rules));
+  const ignored = classifyRollupContexts(rawContexts.filter((context) => !kept.has(context)));
+  return ignored.failed.length || ignored.pending.length || ignored.awaiting.length ? 'UNSTABLE_IGNORED_ONLY' : mergeStateStatus;
+}
+
 // [MIVO-PATCH slack-release] Slack 讨论串里维护者回复「同意放行」视为放行。
 // Slack 同步评论(scripts/loops/slack-issue-inbound/sync.mjs 写入)的形态:
 //   来自 Slack #<频道> · @<GitHub login>(<显示名>)\n\n<原文>\n\n<!-- slack-inbound <channel>:<ts> -->

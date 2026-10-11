@@ -11,6 +11,8 @@ import {
   evaluateSignoffBlocking,
   isSignoffExemptAuthor,
   filterIgnoredCiContexts,
+  ciMergeStateIgnoring,
+  evaluateCiStatus,
   parseSlackSyncComment,
   isExplicitSlackConsent,
   selectTrustedSlackReleases,
@@ -109,6 +111,20 @@ test('CI 忽略名单只去掉本流程自己的 check', () => {
   assert.equal(filterIgnoredCiContexts(contexts, {}), contexts);
   const retired = [{ name: 'seat1', workflowName: 'Code Review', conclusion: 'FAILURE' }, { name: 'verify', workflowName: 'CI', conclusion: 'SUCCESS' }];
   assert.deepEqual(filterIgnoredCiContexts(retired, { ciIgnoreWorkflows: { names: ['Code Review'] } }).map((c) => c.name), ['verify']);
+});
+
+test('UNSTABLE 只由被忽略的 check 造成时 CI 判通过,另有失败仍判失败', () => {
+  const rules = { ciIgnoreBotChecks: ['Greptile Review'] };
+  const greptileRed = [{ name: 'Greptile Review', conclusion: 'FAILURE' }, { name: 'verify', workflowName: 'CI', conclusion: 'SUCCESS' }];
+  const state = ciMergeStateIgnoring('UNSTABLE', greptileRed, rules);
+  assert.equal(evaluateCiStatus({ rollup: { failed: [], pending: [], awaiting: [] }, ciRuns: null, mergeStateStatus: state }).status, 'pass');
+  const allGreen = [{ name: 'Greptile Review', conclusion: 'SUCCESS' }, { name: 'verify', conclusion: 'SUCCESS' }];
+  assert.equal(ciMergeStateIgnoring('UNSTABLE', allGreen, rules), 'UNSTABLE', '被忽略的都通过,UNSTABLE 另有原因,保持从严');
+  assert.equal(ciMergeStateIgnoring('UNSTABLE', null, rules), 'UNSTABLE');
+  assert.equal(ciMergeStateIgnoring('BLOCKED', greptileRed, rules), 'BLOCKED');
+  const bothRed = [...greptileRed.slice(0, 1), { name: 'verify', conclusion: 'FAILURE' }];
+  assert.equal(evaluateCiStatus({ rollup: { failed: ['verify'], pending: [], awaiting: [] }, ciRuns: null,
+    mergeStateStatus: ciMergeStateIgnoring('UNSTABLE', bothRed, rules) }).status, 'failed');
 });
 
 test('评审 bot 的信心阈值 check 不算作者 CI', () => {

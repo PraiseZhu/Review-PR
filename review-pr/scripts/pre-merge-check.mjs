@@ -25,7 +25,7 @@
 
 import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettle, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
-import { filterIgnoredCiContexts } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
+import { filterIgnoredCiContexts, ciMergeStateIgnoring } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
 
 const META_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -184,7 +184,7 @@ try {
   const rollup = rollupContexts ? classifyRollupContexts(filterIgnoredCiContexts(rollupContexts, rules)) : null;
   const checkRunsWithApps = fetchCheckRunsWithApps(slug, m.headRefOid);
   const { ciRuns } = classifyHeadChecks(slug, m.headRefOid);
-  const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: m.mergeStateStatus });
+  const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: ciMergeStateIgnoring(m.mergeStateStatus, rollupContexts, rules) });
   if (m.state !== 'OPEN') blockers.push(`PR state=${m.state}(非 OPEN)`);
   if (m.mergeable === 'CONFLICTING') blockers.push('mergeable=CONFLICTING(有冲突)');
   if (m.mergeStateStatus === 'DIRTY') {

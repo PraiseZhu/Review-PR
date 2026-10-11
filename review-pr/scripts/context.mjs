@@ -32,7 +32,7 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiR
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / ci-ignore]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, onlyOwnRequiredChecksPending } from './lib.mjs';
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -1113,7 +1113,7 @@ try {
   const rollupContexts = filterIgnoredCiContexts(rawRollupContexts, prRules);
   const rollup = rollupContexts ? classifyRollupContexts(rollupContexts) : null;
   const { ciRuns } = classifyHeadChecks(slug, meta.headRefOid);
-  const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: meta.mergeStateStatus });
+  const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: ciMergeStateIgnoring(meta.mergeStateStatus, rawRollupContexts, prRules) });
   const workflowsAwaitingApproval = ciRuns ? ciRuns.awaiting : null; // null=未查/查不到;[]=无;非空=待批清单
   const hasWorkflowsAwaiting = Array.isArray(workflowsAwaitingApproval) && workflowsAwaitingApproval.length > 0;
 
