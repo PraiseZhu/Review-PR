@@ -45,6 +45,7 @@ Git 历史推送只对 `makecindy/cindy` 生效，对 Mivo 天然不触发；飞
 | `tools/sync-lizi.mjs`、`tools/sync-lizi.test.mjs`、`tools/lizi-sync.json` | 上游同步与差异核对 |
 | `tools/fixtures/upstream-pr-rules.json` | 上游配置夹具（群 ID 换成占位值），只给上游测试用 |
 | `mivo/` | Mivo 的拆分运行胶水：Mini 前置审查、服务器后置审查。见 `mivo/README.md` |
+| `.gitleaks.toml` | 只放行上游 `maintainer-authority.test.mjs` 里的假锁 token（`12345678-abcd`），其余沿用 gitleaks 默认规则 |
 
 ## 测试
 

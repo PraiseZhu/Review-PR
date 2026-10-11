@@ -1,0 +1,9 @@
+# gitleaks 配置:在默认规则之上,只放行上游测试夹具里的假锁 token(形如 12345678-abcd,不是凭证)。
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "lizi 上游 maintainer-authority 测试的假 review 锁 token"
+condition = "AND"
+paths = ['''^review-pr/scripts/maintainer-authority\.test\.mjs$''']
+regexes = ['''12345678-abcd''']
