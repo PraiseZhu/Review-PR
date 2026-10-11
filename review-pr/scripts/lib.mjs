@@ -3046,6 +3046,23 @@ export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
 }
 
 /**
+ * [MIVO-PATCH ui-evidence] Mivo 不让改界面的 PR 等维护者确认(signoffGate.product.enabled=false),
+ * 改为要求作者附界面证据(截图/录屏或 HTML)。requireUiEvidence 取值:
+ * 'non-exempt' = 维护者与 exemptAuthors 以外的作者缺证据进格式门;'all' = 所有作者;其他 = 不要求(上游行为)。
+ */
+export function isProductSignoffEnabled(rules = loadRules()) {
+  return rules.signoffGate?.product?.enabled !== false;
+}
+
+export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt }, rules = loadRules()) {
+  if (!uiEvidenceMissing) return false;
+  const mode = rules.signoffGate?.product?.requireUiEvidence;
+  if (mode === 'all') return true;
+  if (mode === 'non-exempt') return authorExempt !== true;
+  return false;
+}
+
+/**
  * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
  * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
  * 评审 bot 的 check(ciIgnoreBotChecks,如 Greptile 的信心阈值检查)也不算:它的具体意见以 thread 出现,由 thread 门拦。

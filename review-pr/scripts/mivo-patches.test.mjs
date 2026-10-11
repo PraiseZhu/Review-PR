@@ -1,6 +1,7 @@
 // mivo-patches.test.mjs — Mivo 补丁的回归(登记见仓库根 MIVO-PATCHES.md)。
 // 只测补丁自己的纯函数与权限读取;上游行为由上游自带测试覆盖。
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   fetchMaintainerAuthority,
@@ -10,6 +11,8 @@ import {
   evaluateMaintainerReview,
   evaluateSignoffBlocking,
   isSignoffExemptAuthor,
+  isProductSignoffEnabled,
+  isUiEvidenceRequired,
   filterIgnoredCiContexts,
   ciMergeStateIgnoring,
   botCheckActivity,
@@ -230,4 +233,23 @@ test('机器人在当前 head 上的 check 跑完算表态', () => {
   assert.deepEqual(botCheckActivity(running, cfg), []);
   assert.deepEqual(botCheckActivity(rollup, { reviewers: ['greptile-apps'] }), [], '没配 checkNames 时与上游一致');
   assert.deepEqual(botCheckActivity(null, cfg), []);
+});
+
+test('改界面不进维护者确认门,按 requireUiEvidence 要求附界面证据', () => {
+  assert.equal(isProductSignoffEnabled({ signoffGate: { product: { enabled: false } } }), false);
+  assert.equal(isProductSignoffEnabled({ signoffGate: { product: {} } }), true); // 上游缺省:照常触发
+  const nonExempt = { signoffGate: { product: { requireUiEvidence: 'non-exempt' } } };
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false }, nonExempt), true);
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: true }, nonExempt), false);
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: false, authorExempt: false }, nonExempt), false);
+  const all = { signoffGate: { product: { requireUiEvidence: 'all' } } };
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: true }, all), true);
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false }, { signoffGate: {} }), false);
+});
+
+test('Mivo 生产配置:产品/UI 门关闭,非豁免作者缺界面证据要打回', () => {
+  const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  assert.equal(isProductSignoffEnabled(rules), false);
+  assert.equal(rules.signoffGate.product.requireUiEvidence, 'non-exempt');
+  assert.ok(rules.signoffGate.product.uiPaths.includes('src/'));
 });

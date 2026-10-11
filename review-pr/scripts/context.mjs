@@ -31,8 +31,8 @@
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, evaluateBotSettle, botCheckActivity, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
-// [MIVO-PATCH exempt-authors / slack-release / ci-ignore]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending } from './lib.mjs';
+// [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence]
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -573,7 +573,6 @@ try {
   const uiEvidenceNotice = uiEvidenceMissing
     ? `命中 UI 路径(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''})但 description 未附界面效果证据——建议补充改动后效果:截图/录屏,或改动后界面的 HTML 页面(\`\`\`html 代码块、.html 附件或在线预览链接),便于确认界面符合 DESIGN.md 设计规范`
     : null;
-  const formatPass = formatIssues.length === 0;
 
   // ── 1.5 + 1.6.5:GraphQL 拉历史 ──
   // ghGraphql 容忍 GraphQL 部分成功(某字段被 token 拒时其余字段仍能拿到),作通用兜底。
@@ -630,6 +629,12 @@ try {
   const isSelfFixAuthor = SELF_FIX_AUTHORS.includes(authorLogin.toLowerCase());
   // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;代码审查、最终 Approve 照常。
   const authorSignoffExempt = approvalPolicy.authorIsMaintainer || isSignoffExemptAuthor(authorLogin, prRules);
+  // [MIVO-PATCH ui-evidence] 改界面不等维护者确认,改为要求附界面证据:按 requireUiEvidence 缺证据进格式门(打回补证据)。
+  const uiEvidenceRequired = isUiEvidenceRequired({ uiEvidenceMissing, authorExempt: authorSignoffExempt }, prRules);
+  if (uiEvidenceRequired) {
+    formatIssues.push(`缺界面证据:改了界面(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''}),但描述里没有改动后的截图/录屏或 HTML 界面。请在「效果展示」里补上(图片、\`\`\`html 代码块、.html 附件或在线预览链接都可以)`);
+  }
+  const formatPass = formatIssues.length === 0;
 
   // 1.5.2 review threads
   const rawThreads = g.reviewThreads?.nodes ?? [];
@@ -706,7 +711,8 @@ try {
   const maintainerApprovals = maintainerReviews.filter((r) => r.state === 'APPROVED');
   // product 触发:feat 类型或命中 UI 面路径(是否真属产品/UI 变更由主 agent 语义定性,
   // bugfix / 已有功能补充 / 纯技术改动不 hold)。
-  const productTriggered = type === 'feat' || touchesUi;
+  // [MIVO-PATCH ui-evidence] signoffGate.product.enabled=false 时产品/UI 门不触发;uiPaths 仍用于界面证据判定。
+  const productTriggered = isProductSignoffEnabled(prRules) && (type === 'feat' || touchesUi);
   // 讨论 issue 的维护者留言(信息位:2026-07-30 起评论不再构成通过——只认 GitHub
   // Approve 与 signoff-release 标记;留言仍收集,供汇总展示「维护者表过态但还没 Approve」
   // 并提醒对方去 PR 上 Approve。仅命中门的 PR 才查,省 API):
@@ -1595,7 +1601,7 @@ try {
       statusLabels,
       review,
       security,
-      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice },
+      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice, uiEvidenceRequired },
       gate: {
         gatePass,
         blockClass,
@@ -1666,9 +1672,10 @@ try {
       bodyUiEvidenceKinds,
       uiEvidenceMissing,
       uiEvidenceNotice,
+      uiEvidenceRequired,
       formatPass,
       formatIssues,
-      note: 'formatPass=false 一定不合规;true 仍需 LLM 判段落是否实质、title 语言(关 3)。uiCodeFiles 非空而无证据时 uiEvidenceMissing=true(截图/录屏或 HTML 界面都算证据,类型见 bodyUiEvidenceKinds)——不进 formatIssues、不打回,由主 agent 把 uiEvidenceNotice 作为非阻断评论发给作者(SKILL 3.2);已附证据的,内容与 diff 是否一致、界面是否符合 DESIGN.md 由阶段二审查 agent 判',
+      note: 'formatPass=false 一定不合规;true 仍需 LLM 判段落是否实质、title 语言(关 3)。uiCodeFiles 非空而无证据时 uiEvidenceMissing=true(截图/录屏或 HTML 界面都算证据,类型见 bodyUiEvidenceKinds)——不进 formatIssues、不打回,由主 agent 把 uiEvidenceNotice 作为非阻断评论发给作者(SKILL 3.2);[MIVO-PATCH ui-evidence] uiEvidenceRequired=true 时缺证据已记进 formatIssues、按格式门打回;已附证据的,内容与 diff 是否一致、界面是否符合 DESIGN.md 由阶段二审查 agent 判',
     },
     history: { comments, reviewThreads, commits, latestCommitDate },
     gate: {

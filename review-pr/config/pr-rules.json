@@ -1,5 +1,5 @@
 {
-  "_comment": "Mivo（xindong/mivo-canvas-plugin）的 review-pr / review-pr-auto 配置。结构沿用 lizi 上游（makecindy/cindy-lizi-skills），取值换成 Mivo；与上游的差异逐条登记在仓库根 MIVO-PATCHES.md。maintainerSource=allowlist：维护者只取 maintainerAllowlist，不读 CODEOWNERS（Mivo 的 CODEOWNERS 根 Team 与维护者不对应）；allowlist 成员必须对仓库有 write 及以上权限，否则 prepare 从严停止。signoffGate.exemptAuthors 只免审查前的维护者确认门，不给放行权；放行只认 maintainerAllowlist 成员的 Approve、signoff-release 标记，或 signoffGate.slackRelease 定义的 Slack「同意放行」。selfFixAuthors 为空：Mivo 不开自动修复会话。不发每轮汇总（无 feishuNotify.summaryChat）。ciIgnoreContexts 是本流程自己写的 check，不算作者 CI。reviewOnlyNotices=auto：review-only 模式下给作者的提醒仍用 auto 措辞（Mivo 会自动重审）。",
+  "_comment": "Mivo（xindong/mivo-canvas-plugin）的 review-pr / review-pr-auto 配置。结构沿用 lizi 上游（makecindy/cindy-lizi-skills），取值换成 Mivo；与上游的差异逐条登记在仓库根 MIVO-PATCHES.md。maintainerSource=allowlist：维护者只取 maintainerAllowlist，不读 CODEOWNERS（Mivo 的 CODEOWNERS 根 Team 与维护者不对应）；allowlist 成员必须对仓库有 write 及以上权限，否则 prepare 从严停止。signoffGate.exemptAuthors 只免审查前的维护者确认门，不给放行权；放行只认 maintainerAllowlist 成员的 Approve、signoff-release 标记，或 signoffGate.slackRelease 定义的 Slack「同意放行」。改界面不进维护者确认门，只要求附界面证据（signoffGate.product）。selfFixAuthors 为空：Mivo 不开自动修复会话。不发每轮汇总（无 feishuNotify.summaryChat）。ciIgnoreContexts 是本流程自己写的 check，不算作者 CI。reviewOnlyNotices=auto：review-only 模式下给作者的提醒仍用 auto 措辞（Mivo 会自动重审）。",
   "maintainerSource": "allowlist",
   "titleTypes": [
     "feat",
@@ -105,6 +105,9 @@
       "consentLine": "同意放行"
     },
     "product": {
+      "_comment": "Mivo 不让改界面的 PR 等维护者确认(enabled=false,feat 类型同样不触发);改界面只要求作者在描述里附截图/录屏或 HTML 界面。requireUiEvidence=non-exempt:维护者与 exemptAuthors 以外的作者缺证据按格式门打回,补上后继续审查。uiPaths / uiExcludePaths 只用于判定是否改了界面。",
+      "enabled": false,
+      "requireUiEvidence": "non-exempt",
       "uiPaths": [
         "cindyplugin/",
         "src/",

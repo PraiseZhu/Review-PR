@@ -114,3 +114,14 @@ test('凭证打回只写文件/行号/类型,行内评论锚在新增行', () =>
   assert.match(pushback.body, /`src\/a.ts` 第 3 行:github-token/);
   assert.deepEqual(pushback.comments.map((c) => [c.path, c.line]), [['src/a.ts', 3]]);
 });
+
+test('只缺界面证据:打回正文说清楚补截图或 HTML,不提维护者确认', () => {
+  const pushback = buildGatePushback(ctx({ format: { formatPass: false, uiEvidenceRequired: true,
+    formatIssues: ['缺界面证据:改了界面(src/ui/Align.tsx),但描述里没有改动后的截图/录屏或 HTML 界面。'] } }), 'format');
+  assert.match(pushback.body, /改了界面,描述里还没有改动后的界面证据/);
+  assert.match(pushback.body, /只要在描述里补上截图\/录屏或 HTML 界面/);
+  assert.doesNotMatch(pushback.body, /三段/);
+  const mixed = buildGatePushback(ctx({ format: { formatPass: false, uiEvidenceRequired: true,
+    formatIssues: ['Title 命中含糊词黑名单', '缺界面证据:改了界面(src/ui/Align.tsx)'] } }), 'format');
+  assert.match(mixed.body, /不符合仓库的 PR 格式要求/);
+});
