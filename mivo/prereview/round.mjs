@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
+import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -472,6 +473,11 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `今日服务器审查已达上限 ${CONFIG.dailyCap} 次,明天继续`, retry: true });
   }
   const attempt = (record.attempts?.[task.head] ?? 0) + 1;
+  const retry = toRetryDecision({ failure: record.failures?.[task.head], attempt });
+  if (!retry.dispatch) {
+    log('retry-held', { pr: task.pr, head: task.head, attempt, reason: retry.reason });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: retry.reason, retry: true });
+  }
   const prevRunId = record.lastCompleteRunId ?? '';
   const dispatchId = randomUUID().slice(0, 8);
   const inputs = {
@@ -518,6 +524,7 @@ function collectServerRun(ctx, entry) {
       run('gh', ['run', 'cancel', entry.runId, '-R', CONFIG.workflowRepo], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
       writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: `服务器审查超过 ${MAX_RUN_MINUTES} 分钟未结束,已取消`, retry: true, enteredReview: true });
       bumpStore(task, { lastRunId: entry.runId });
+      recordFailure(task, true);
       return true;
     }
     return false;
@@ -528,11 +535,13 @@ function collectServerRun(ctx, entry) {
   if (!dl.ok || !existsSync(join(dir, 'result.json'))) {
     writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: `服务器审查没有产出结果(run ${entry.runId} ${info.conclusion})`, retry: true });
     bumpStore(task, { lastRunId: entry.runId });
+    recordFailure(task, true);
     return true;
   }
   const server = readJson(join(dir, 'result.json'));
   if (server.pr !== task.pr || server.head !== task.head || server.runId !== ctx.plan.runId) {
     writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: '服务器结果与任务不匹配(PR/head/轮次)', retry: true });
+    recordFailure(task, true);
     return true;
   }
   const result = { ...server };
@@ -560,6 +569,8 @@ function collectServerRun(ctx, entry) {
       writeJson(stateFile('pause.json'), { until: new Date(Date.now() + HEALTH_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
       log('health-pause', { pr: task.pr, reason: server.reason });
     }
+  } else {
+    recordFailure(task, server.outcome === 'error');
   }
   bumpStore(task, {
     lastRunId: entry.runId,
@@ -574,6 +585,12 @@ function bumpStore(task, patch) {
   const store = loadStore();
   store.prs[task.pr] = { ...(store.prs[task.pr] ?? {}), ...patch, updatedAt: nowIso() };
   saveStore(store);
+}
+
+// 记这个 head 的一次失败或成功,dispatchReview 据此退避(规则见 lib/retry.mjs)。
+function recordFailure(task, failed) {
+  const record = loadStore().prs[task.pr] ?? {};
+  bumpStore(task, { failures: toFailureRecord(record.failures, task.head, failed, nowIso()) });
 }
 
 function finishGate(ctx, task, result) {
