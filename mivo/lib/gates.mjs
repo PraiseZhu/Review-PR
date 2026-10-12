@@ -224,7 +224,7 @@ export function buildGatePushback(ctx, gateKind) {
       ...issues.map((i) => `- ${i}`),
       '',
       evidenceOnly
-        ? '改界面不需要等维护者确认,只要在描述里补上截图/录屏或 HTML 界面。改完描述后,下一轮 auto-review 会自动重新审查这个 PR。'
+        ? '改界面不需要等维护者确认,只要在描述里补上截图/录屏或 HTML 界面;这次改动看不出界面变化的,在「效果展示」第一行写「不涉及」也可以。改完描述后,下一轮 auto-review 会自动重新审查这个 PR。'
         : '请按 PR 模板补齐(标题 `<type>(<scope>): <描述>`;描述包含「这次改了什么 / 怎么验证的 / 风险」三段)。改完后,下一轮 auto-review 会自动重新审查这个 PR。',
     ].join('\n'),
     comments: [],

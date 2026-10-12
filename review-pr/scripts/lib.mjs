@@ -3050,12 +3050,27 @@ export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
  * 改为要求作者附界面证据(截图/录屏或 HTML)。requireUiEvidence 取值:
  * 'non-exempt' = 维护者与 exemptAuthors 以外的作者缺证据进格式门;'all' = 所有作者;其他 = 不要求(上游行为)。
  */
+/**
+ * [MIVO-PATCH ui-evidence] PR 正文的「效果展示」段第一行写「不涉及」(可带括号或冒号说明)。
+ * 只看这一段:HTML 注释(模板提示)先去掉;段内其他位置出现「不涉及」不算。
+ */
+export function declaresNoUiChange(body, section = '效果展示') {
+  const lines = String(body ?? '').replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/);
+  const at = lines.findIndex((line) => /^#{1,6}\s/.test(line) && line.includes(section));
+  if (at < 0) return false;
+  const first = lines.slice(at + 1).find((line) => line.trim() !== '');
+  if (first === undefined || /^#{1,6}\s/.test(first)) return false;
+  return /^不涉及(?:$|[\s(（:：,，。;；])/.test(first.trim());
+}
+
 export function isProductSignoffEnabled(rules = loadRules()) {
   return rules.signoffGate?.product?.enabled !== false;
 }
 
-export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt }, rules = loadRules()) {
+export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt, declaredNotApplicable = false }, rules = loadRules()) {
   if (!uiEvidenceMissing) return false;
+  // 作者在「效果展示」写明「不涉及」(没有界面变化)也算过;是否属实由服务器审查判。
+  if (declaredNotApplicable && rules.signoffGate?.product?.acceptNotApplicable === true) return false;
   const mode = rules.signoffGate?.product?.requireUiEvidence;
   if (mode === 'all') return true;
   if (mode === 'non-exempt') return authorExempt !== true;

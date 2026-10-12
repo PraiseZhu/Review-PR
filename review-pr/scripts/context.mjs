@@ -32,7 +32,7 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiR
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired } from './lib.mjs';
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, declaresNoUiChange } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -630,9 +630,11 @@ try {
   // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;代码审查、最终 Approve 照常。
   const authorSignoffExempt = approvalPolicy.authorIsMaintainer || isSignoffExemptAuthor(authorLogin, prRules);
   // [MIVO-PATCH ui-evidence] 改界面不等维护者确认,改为要求附界面证据:按 requireUiEvidence 缺证据进格式门(打回补证据)。
-  const uiEvidenceRequired = isUiEvidenceRequired({ uiEvidenceMissing, authorExempt: authorSignoffExempt }, prRules);
+  const uiEvidenceDeclaredNotApplicable = declaresNoUiChange(body);
+  const uiEvidenceRequired = isUiEvidenceRequired({ uiEvidenceMissing, authorExempt: authorSignoffExempt,
+    declaredNotApplicable: uiEvidenceDeclaredNotApplicable }, prRules);
   if (uiEvidenceRequired) {
-    formatIssues.push(`缺界面证据:改了界面(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''}),但描述里没有改动后的截图/录屏或 HTML 界面。请在「效果展示」里补上(图片、\`\`\`html 代码块、.html 附件或在线预览链接都可以)`);
+    formatIssues.push(`缺界面证据:改了界面(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''}),但描述里没有改动后的截图/录屏或 HTML 界面。请在「效果展示」里补上(图片、\`\`\`html 代码块、.html 附件或在线预览链接都可以);这次改动看不出界面变化的,在「效果展示」第一行写「不涉及」`);
   }
   const formatPass = formatIssues.length === 0;
 
@@ -1601,7 +1603,7 @@ try {
       statusLabels,
       review,
       security,
-      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice, uiEvidenceRequired },
+      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice, uiEvidenceRequired, uiEvidenceDeclaredNotApplicable },
       gate: {
         gatePass,
         blockClass,
@@ -1673,6 +1675,7 @@ try {
       uiEvidenceMissing,
       uiEvidenceNotice,
       uiEvidenceRequired,
+      uiEvidenceDeclaredNotApplicable,
       formatPass,
       formatIssues,
       note: 'formatPass=false 一定不合规;true 仍需 LLM 判段落是否实质、title 语言(关 3)。uiCodeFiles 非空而无证据时 uiEvidenceMissing=true(截图/录屏或 HTML 界面都算证据,类型见 bodyUiEvidenceKinds)——不进 formatIssues、不打回,由主 agent 把 uiEvidenceNotice 作为非阻断评论发给作者(SKILL 3.2);[MIVO-PATCH ui-evidence] uiEvidenceRequired=true 时缺证据已记进 formatIssues、按格式门打回;已附证据的,内容与 diff 是否一致、界面是否符合 DESIGN.md 由阶段二审查 agent 判',

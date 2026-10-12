@@ -13,6 +13,7 @@ import {
   isSignoffExemptAuthor,
   isProductSignoffEnabled,
   isUiEvidenceRequired,
+  declaresNoUiChange,
   filterIgnoredCiContexts,
   ciMergeStateIgnoring,
   botCheckActivity,
@@ -252,4 +253,22 @@ test('Mivo 生产配置:产品/UI 门关闭,非豁免作者缺界面证据要打
   assert.equal(isProductSignoffEnabled(rules), false);
   assert.equal(rules.signoffGate.product.requireUiEvidence, 'non-exempt');
   assert.ok(rules.signoffGate.product.uiPaths.includes('src/'));
+});
+
+test('「效果展示」第一行写「不涉及」:配了 acceptNotApplicable 就不再要求界面证据', () => {
+  const tpl = (content) => `## 这次改了什么\n\n### 效果展示\n\n<!--\n涉及页面或生成效果时，附截图、录屏或生成样例。\n不涉及则写「不涉及」。\n-->\n${content}\n\n## 怎么验证的\n`;
+  assert.equal(declaresNoUiChange(tpl('不涉及')), true);
+  assert.equal(declaresNoUiChange(tpl('不涉及（只改注释，界面没有变化）')), true);
+  assert.equal(declaresNoUiChange(tpl('不涉及：只改日志')), true);
+  assert.equal(declaresNoUiChange(tpl('')), false, '只有模板注释、没写内容');
+  assert.equal(declaresNoUiChange(tpl('界面有变化,截图稍后补;不涉及动效')), false, '「不涉及」不在第一行开头');
+  assert.equal(declaresNoUiChange(tpl('不涉及的部分略')), false, '「不涉及的」不是声明');
+  assert.equal(declaresNoUiChange('## 这次改了什么\n\n不涉及\n'), false, '没有「效果展示」段');
+  const rules = { signoffGate: { product: { requireUiEvidence: 'non-exempt', acceptNotApplicable: true } } };
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false, declaredNotApplicable: true }, rules), false);
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false, declaredNotApplicable: false }, rules), true);
+  const strict = { signoffGate: { product: { requireUiEvidence: 'non-exempt' } } };
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false, declaredNotApplicable: true }, strict), true);
+  const prod = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  assert.equal(prod.signoffGate.product.acceptNotApplicable, true);
 });
