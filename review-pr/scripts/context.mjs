@@ -31,8 +31,8 @@
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, evaluateBotSettle, botCheckActivity, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
-// [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, declaresNoUiChange } from './lib.mjs';
+// [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence / self-review]
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, declaresNoUiChange, isAutomatedViewerReview } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -699,6 +699,8 @@ try {
     untrusted: untrustedReleaseMarks,
   } = selectTrustedSignoffReleases(releaseEvents, MAINTAINERS);
   const viewerLower = viewerLogin.toLowerCase();
+  // [MIVO-PATCH self-review] 确认门只看维护者本人的表态:审查账号自动提交的 review(带本流程标记)不计入。
+  const signoffReviews = prReviews.filter((r) => !isAutomatedViewerReview(r, viewerLower));
   // maintainers 成员的 GitHub review(信息位;通过判定在 evalSignoffKind 里按「每人最新实质
   // review」另算):非 viewer 的成员任意 state 都列;viewer(本流程自动化账号)只列
   // APPROVED——自动化自己会以 viewer 身份发 REQUEST_CHANGES(打回),不能当维护者确认信号;
@@ -950,7 +952,7 @@ try {
     // GitHub Approve 通过(六类统一):完整历史交给 evaluator。当前 head 的 CR 优先交作者;
     // 作者新提交消费 CR 后,历史 Approve 持久放行,包括同一维护者先 Approve 后 CR 的序列。
     const reviewState = evaluateMaintainerReview({
-      reviews: prReviews,
+      reviews: signoffReviews,
       maintainers: a.raw,
       latestCommitDate,
       markerRelease,

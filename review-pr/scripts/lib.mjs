@@ -3078,6 +3078,20 @@ export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt, declared
 }
 
 /**
+ * [MIVO-PATCH self-review] 审查账号(viewer)由本流程自动提交的 review:门禁打回、审查结论的
+ * Approve / Request Changes。它们都带本流程的隐藏标记或「Mivo 自动审查」报告头。Mivo 的审查账号
+ * 同时是维护者,而 review-only 下 PR 在自动 Approve 后继续开着,所以这些 review 不能当维护者确认:
+ * 自动 Approve 不得放行之后才出现的确认门,自动打回也不得让确认门判「等作者改」。
+ * 维护者本人手动提交的 review 没有这些标记,照常计入。
+ */
+const AUTOMATED_REVIEW_RE = /<!--\s*(?:review-pr|mivo-review):|^>\s*Mivo 自动审查/m;
+export function isAutomatedViewerReview(review, viewerLogin) {
+  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
+  return viewer !== '' && login === viewer && AUTOMATED_REVIEW_RE.test(String(review?.body ?? ''));
+}
+
+/**
  * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
  * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
  * 评审 bot 的 check(ciIgnoreBotChecks,如 Greptile 的信心阈值检查)也不算:它的具体意见以 thread 出现,由 thread 门拦。

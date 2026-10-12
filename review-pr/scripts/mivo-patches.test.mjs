@@ -23,6 +23,7 @@ import {
   isExplicitSlackConsent,
   selectTrustedSlackReleases,
   onlyOwnRequiredChecksPending,
+  isAutomatedViewerReview,
 } from './lib.mjs';
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
@@ -271,4 +272,40 @@ test('「效果展示」第一行写「不涉及」:配了 acceptNotApplicable �
   assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false, declaredNotApplicable: true }, strict), true);
   const prod = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
   assert.equal(prod.signoffGate.product.acceptNotApplicable, true);
+});
+
+test('审查账号自动提交的 review 不算维护者确认,维护者本人手动的照常算', () => {
+  const viewer = 'PraiseZhu';
+  const review = (login, state, body, at) => ({ user: { login }, author: { login }, state, body, submittedAt: at });
+  const gateRc = review(viewer, 'CHANGES_REQUESTED', '缺界面证据\n\n<!-- review-pr:gate-review kind=format head=' + SHA + ' -->', '2026-10-12T03:00:00Z');
+  const autoApprove = review(viewer, 'APPROVED', '> Mivo 自动审查 · [PR](https://example) · head `aaaaaaaaaaaa`\n\n## Overall\n\npass', '2026-10-11T03:00:00Z');
+  const findingsRc = review(viewer, 'CHANGES_REQUESTED', '> Mivo 自动审查 · ...\n\n<!-- review-pr:findings head=' + SHA + ' digest=x -->', '2026-10-12T03:00:00Z');
+  assert.equal(isAutomatedViewerReview(gateRc, viewer), true);
+  assert.equal(isAutomatedViewerReview(autoApprove, 'praisezhu'), true, 'login 大小写不敏感');
+  assert.equal(isAutomatedViewerReview(findingsRc, viewer), true);
+  assert.equal(isAutomatedViewerReview(review(viewer, 'APPROVED', '看过了,可以合', '2026-10-12T04:00:00Z'), viewer), false, '维护者本人手动 Approve');
+  assert.equal(isAutomatedViewerReview(review('kirozeng', 'APPROVED', '<!-- review-pr:gate-review kind=format -->', '2026-10-12T04:00:00Z'), viewer), false, '别人的 review 不因带标记被排除');
+  assert.equal(isAutomatedViewerReview(gateRc, ''), false, '不知道审查账号时不排除');
+
+  const maintainers = ['kirozeng', 'praisezhu'];
+  const evaluate = (reviews) => evaluateMaintainerReview({
+    reviews: reviews.filter((r) => !isAutomatedViewerReview(r, viewer)),
+    maintainers, authorLogin: 'lubinyu-lab', latestCommitDate: '2026-10-12T02:00:00Z',
+  });
+  // F1:自动 Approve 在旧 head 上,之后作者推了大改动、新触发确认门 → 不能被它放行。
+  assert.equal(evaluate([autoApprove]).released, null);
+  assert.ok(evaluateMaintainerReview({ reviews: [autoApprove], maintainers, authorLogin: 'lubinyu-lab', latestCommitDate: '2026-10-12T02:00:00Z' }).released,
+    '不排除时(上游口径)自动 Approve 会被当成维护者放行');
+  // F2:维护者已放行,审查账号因缺界面证据自动打回,作者只改描述 → 确认门仍算放行,不判「等作者改」。
+  const kiroApprove = review('kirozeng', 'APPROVED', 'ok', '2026-10-11T05:00:00Z');
+  const f2 = evaluate([kiroApprove, gateRc]);
+  assert.equal(f2.waitingForAuthor, false);
+  assert.equal(f2.released?.by, 'kirozeng');
+  // 维护者本人在当前 head 上手动 Request Changes,仍然交给作者。
+  const manualRc = review(viewer, 'CHANGES_REQUESTED', '这里的交互不对,先改', '2026-10-12T04:00:00Z');
+  assert.equal(evaluate([kiroApprove, manualRc]).waitingForAuthor, true);
+  // 接线:context.mjs 用排除后的 review 评确认门。
+  const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  assert.match(context, /evaluateMaintainerReview\(\{\n\s+reviews: signoffReviews,/);
+  assert.match(context, /const signoffReviews = prReviews\.filter\(\(r\) => !isAutomatedViewerReview\(r, viewerLower\)\);/);
 });
