@@ -1,0 +1,230 @@
+{
+  "_comment": "E1 沙箱仓(xindong/mivo-review-sandbox)用的配置:与 Mivo 生产配置相同,只改两处——维护者只有 PraiseZhu(沙箱仓里只有这个账号有写权限);不设豁免名单;bot 静默期与生产一致(组织级 greptile 也会审沙箱仓)。只在 target_repo 不是 Mivo 本仓时由 review-pr.yml 与沙箱前置审查使用。",
+  "maintainerSource": "allowlist",
+  "titleTypes": [
+    "feat",
+    "fix",
+    "refactor",
+    "perf",
+    "chore",
+    "docs",
+    "test",
+    "revert",
+    "build",
+    "ci"
+  ],
+  "lightTypes": [
+    "chore",
+    "docs",
+    "test",
+    "build",
+    "ci",
+    "revert"
+  ],
+  "batch": {
+    "scanConcurrency": 8
+  },
+  "featureSections": [
+    "这次改了什么",
+    "怎么验证的",
+    "风险"
+  ],
+  "bugfixSections": [
+    "这次改了什么",
+    "怎么验证的",
+    "风险"
+  ],
+  "redlinePaths": [
+    "^shared/persist-contract\\.ts$",
+    "^shared/userExportContract\\.ts$",
+    "^server/lib/(?:persistAuth|assetAuth)\\.ts$",
+    "^cindyplugin/src/persist/",
+    "^secrets/"
+  ],
+  "serverPaths": [],
+  "ciSensitivePaths": [
+    "\\.github/workflows/",
+    "\\.github/actions/"
+  ],
+  "ciIgnoreContexts": [
+    "review-pr"
+  ],
+  "ciIgnoreBotChecks": [
+    "Greptile Review"
+  ],
+  "ciIgnoreWorkflows": {
+    "_comment": "不算作者 CI 的 workflow:新审查流程自己的 review-pr.yml,以及切换后退役的旧三席 code-review.yml(其历史结果留在旧 head 上,不能再拦 PR)。names 对 statusCheckRollup 的 workflowName,paths 对 actions/runs 的 path。",
+    "names": [
+      "review-pr",
+      "Code Review"
+    ],
+    "paths": [
+      ".github/workflows/review-pr.yml",
+      ".github/workflows/code-review.yml"
+    ]
+  },
+  "reviewOnlyNotices": "auto",
+  "sensitiveContent": {
+    "allowPaths": [
+      "^src/__tests__/",
+      "^cindyplugin/src/__tests__/"
+    ],
+    "extraHardPatterns": [],
+    "extraSoftPatterns": []
+  },
+  "maintainerAllowlist": [
+    "PraiseZhu"
+  ],
+  "selfFixAuthors": [],
+  "protectedPaths": {
+    "_comment": "受保护路径:命中即不自动审查、不自动放行,交人工处理。contact 是作者提醒里点名的人工处理人。",
+    "paths": [
+      ".github/",
+      "CODEOWNERS",
+      "docs/CODEOWNERS"
+    ],
+    "contact": {
+      "login": "PraiseZhu",
+      "name": "PraiseZhu",
+      "pronoun": "他"
+    }
+  },
+  "signoffGate": {
+    "label": "awaiting-discussion",
+    "exemptAuthors": [],
+    "slackRelease": {
+      "_comment": "Slack 讨论串回复「同意放行」视为放行。可信条件同时满足:评论作者在 slackSyncBots 且正文带 slack-inbound 标记;署名 @login 在维护者集合内且不是 PR 作者;回复正文有一整行是 consentLine,且没有否定词。",
+      "enabled": true,
+      "consentLine": "同意放行"
+    },
+    "product": {
+      "_comment": "Mivo 不让改界面的 PR 等维护者确认(enabled=false,feat 类型同样不触发);改界面只要求作者在描述里附截图/录屏或 HTML 界面。requireUiEvidence=non-exempt:维护者与 exemptAuthors 以外的作者缺证据按格式门打回,补上后继续审查。acceptNotApplicable=true:作者在「效果展示」第一行写「不涉及」也算过(维护者 2026-10-12 决定),是否属实由服务器审查判。uiPaths / uiExcludePaths 只用于判定是否改了界面。",
+      "enabled": false,
+      "requireUiEvidence": "non-exempt",
+      "acceptNotApplicable": true,
+      "uiPaths": [
+        "cindyplugin/",
+        "src/",
+        "public/",
+        "index.html"
+      ],
+      "uiExcludePaths": [
+        "public/changelog.json",
+        "src/i18n/locales/",
+        "src/lib/writeRetryQueue",
+        "src/lib/persist",
+        "src/lib/serverPersist",
+        "src/store/canvasPersist",
+        "src/store/chatPersist"
+      ]
+    },
+    "arch": {
+      "corePaths": [
+        "shared/"
+      ],
+      "coreDiffLines": 150,
+      "refactorDiffLines": 400,
+      "anyTypeDiffLines": 800
+    },
+    "security": {
+      "paths": [
+        "**/.npmrc",
+        ".claude/",
+        ".github/actions/",
+        ".github/workflows/",
+        ".gitleaks.toml",
+        "agent-use/",
+        "docs/loops/",
+        "scripts/ci/main-health-logic.mjs",
+        "scripts/ci/platform-risk.mjs",
+        "scripts/loops/bug-doctor/",
+        "scripts/loops/dashboard/",
+        "scripts/loops/issue-agent/",
+        "scripts/loops/merge-thanks/",
+        "scripts/loops/slack-issue-inbound/",
+        "scripts/ops/mivo-review-cli-update.sh",
+        "scripts/ops/setup-mivo-review-runner.sh",
+        "scripts/review-pr/",
+        "**/npm-shrinkwrap.json",
+        "**/package-lock.json",
+        "**/package.json",
+        "**/pnpm-lock.yaml"
+      ],
+      "excludePaths": [],
+      "riskyPatterns": {
+        "hard": [],
+        "soft": [],
+        "allowPaths": []
+      },
+      "dependencyScan": {
+        "enabled": true,
+        "excludePaths": []
+      }
+    },
+    "coldUpdate": {
+      "paths": [],
+      "guardMarker": ""
+    },
+    "rules": {
+      "paths": [
+        "**/AGENTS.md",
+        "**/CLAUDE.md",
+        "CONTRIBUTING.md",
+        "cindyplugin/DESIGN.md",
+        "docs/design.md",
+        "docs/development-logging.md",
+        ".github/pull_request_template.md"
+      ],
+      "excludePaths": []
+    },
+    "pluginBase": {
+      "paths": [],
+      "excludePaths": []
+    }
+  },
+  "statusLabels": {
+    "enabled": true,
+    "largeDiffLines": 2000,
+    "labels": {}
+  },
+  "threadTriage": {
+    "enabled": false,
+    "extraBots": [
+      "greptile-apps"
+    ]
+  },
+  "postMergeSweep": {
+    "enabled": false,
+    "windowHours": 24
+  },
+  "staleRebase": {
+    "enabled": true,
+    "maxDaysBehind": 3
+  },
+  "botReviewSettle": {
+    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态(提交 review、行内评论,或它在当前 head 上的 check 跑完——checkNames)后再静默 5 分钟,从 head push 起最多等 30 分钟(实测中位 27.5 分钟)。",
+    "enabled": true,
+    "reviewers": [
+      "greptile-apps"
+    ],
+    "quietMinutes": 5,
+    "quietExtraBots": [],
+    "checkNames": {
+      "greptile-apps": "Greptile Review"
+    },
+    "maxWaitMinutes": 30
+  },
+  "securityScan": {
+    "semgrepConfigs": [
+      "p/javascript",
+      "p/nodejs"
+    ],
+    "auditTimeoutMs": 60000,
+    "semgrepTimeoutMs": 180000
+  },
+  "slackSyncBots": [
+    "github-actions[bot]"
+  ],
+  "slackSenderAliases": {},
+  "orgMappingRepos": []
+}

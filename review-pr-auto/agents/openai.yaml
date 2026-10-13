@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review PR (Auto)"
+  short_description: "Rolling PR reviews, verified approvals, and worktree cleanup"
+  default_prompt: "Use $review-pr-auto to review the preflight list with rolling independent PR agents, verify eligible approvals and merge, clean each review worktree before completion, preserve own-PR fix sessions, and send the final Feishu card; --review-only disables merge and fix-session handoffs."
+
+policy:
+  allow_implicit_invocation: false

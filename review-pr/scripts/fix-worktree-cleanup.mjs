@@ -1,20 +1,18 @@
 #!/usr/bin/env node
 // fix-worktree-cleanup.mjs — 回收已合并/关闭 PR 遗留的跟进 worktree 与本地分支
 //
-// 背景:5.4 已停用,不再开跟进会话。历史上宿主曾用 use_worktree 在托管
-// 目录(.cindy-worktrees / .claude/worktrees / .worktrees/review-pr)下建独立 worktree,
-// 并 gh pr checkout 出与 PR head 同名的本地分支(git worktree 共享 refs,分支落在共享
+// 背景:5.4 fix-handoff 为 selfFixAuthors 的 PR 开跟进会话,宿主用 use_worktree 在托管
+// 目录(.cindy-worktrees / .claude/worktrees)下建独立 worktree,跟进会话在里面
+// gh pr checkout 出与 PR head 同名的本地分支(git worktree 共享 refs,分支落在共享
 // 仓库里)。PR 合并后 fix-session-state.mjs sweep 只清会话绑定,worktree 目录
-// (含 node_modules,单个可达 GB 级)和分支没人回收,会随历史 PR 数量线性膨胀。
+// (含 node_modules,单个可达 GB 级)和分支没人回收,会随 PR 数量线性膨胀。
 // 本脚本做确定性回收,安全边界全部内置:
 //   1. 只动「托管 worktree 目录」:路径含 .cindy-worktrees 段、.claude/worktrees 段,
-//      `.worktrees/review-pr` 段,或 REVIEW_PR_WORKTREE_ROOTS(逗号/分号分隔的
-//      绝对路径前缀)覆盖的位置;其余 worktree 一律视为用户自建,永不触碰。
+//      或 REVIEW_PR_WORKTREE_ROOTS(逗号/分号分隔的绝对路径前缀)覆盖的位置;
+//      其余 worktree 一律视为用户自建,永不触碰。
 //   2. 分支对应的 PR 用 gh 实查(--state all),全部非 OPEN 才动;查不到对应 PR 的
 //      分支/worktree 不动(来历不明 → 保守)。gh 查询失败同样保守跳过,下轮重试。
 //   3. 默认分支与 main/master 永不删;仍被其他 worktree 检出的分支 git 自己会拒删。
-//      已判定可回收的托管树用 `git worktree remove --force`（避开脏树卡住;
-//      这不是对用户自建树或默认分支 force）。本地孤儿分支用 `git branch -D`。
 //   4. detached、locked、bare、包含当前 cwd 的 worktree 不动;PR 合并/关闭后
 //      --grace-minutes(默认 30)宽限期内不动,防跟进会话还在收尾(回 thread/留评论)。
 //   5. 分支删除比 worktree 更保守:对应 PR 全部 MERGED 才删;CLOSED 未合并的分支保留
@@ -41,7 +39,10 @@ const isWin = process.platform === 'win32';
 const q = (p) => (isWin && /\s/.test(p) ? `"${p}"` : p);
 
 const GH_TIMEOUT = 30_000;
-const ORPHAN_LOOKUP_CAP = 30; // 每轮孤儿分支最多实查 30 条,防 gh 调用爆炸;幂等,下轮继续
+const ORPHAN_LOOKUP_CAP = 30; // 每轮孤儿分支最多**单条**实查 30 条,防 gh 调用爆炸;幂等,下轮继续
+// 批量预取窗口:一次 gh 拉最近这么多 PR(含 headRefName)填缓存,命中的分支不计入上限。
+// 孤儿分支对应的都是近期 PR,500 足够覆盖;落在窗口外的分支照旧走单条实查(仍受上限)。
+const PREFETCH_LIMIT = 500;
 
 function argAfter(flag) {
   const i = process.argv.indexOf(flag);
@@ -77,10 +78,9 @@ const norm = (p) => {
 /** 托管 worktree 目录判定(见文件头安全边界 1)。 */
 function isManagedPath(p) {
   const segs = norm(p).split('/').filter(Boolean);
-  if (segs.includes('.cindy-worktrees') || segs.includes('.xdt-worktrees')) return true;
+  if (segs.includes('.cindy-worktrees')) return true;
   for (let i = 0; i < segs.length - 1; i++) {
     if (segs[i] === '.claude' && segs[i + 1] === 'worktrees') return true;
-    if (segs[i] === '.worktrees' && segs[i + 1] === 'review-pr') return true;
   }
   const extraRoots = (process.env.REVIEW_PR_WORKTREE_ROOTS || '')
     .split(/[;,]/).map((s) => s.trim()).filter(Boolean);
@@ -126,6 +126,44 @@ try {
       prCache.set(branch, prs);
     }
     return prCache.get(branch);
+  }
+
+  // ── 批量预取(把 N 次单查压成 1 次)──
+  // 孤儿分支实查原本每条一次 gh(`pr view` 或 `pr list --head`),受 ORPHAN_LOOKUP_CAP=30 限流:
+  // 上限本身是对的(30 次 × 30s 超时 = 最坏 15 分钟),但积压多时要好几轮才清完,每轮还各记一笔
+  // 台账(实测 11 条同因记录)。硬抬上限只是把 15 分钟换成 50 分钟,治不了根。
+  // 改成先一次性拉一窗口 PR(带 headRefName),把 prCache 和「PR 号 → state」都填上:之后绝大多数
+  // 分支都是缓存命中、不计入上限,上限就不再是瓶颈。
+  // 两条保守纪律:① 预取失败(整条命令挂了)**不填任何缓存**,原样退回逐条实查,行为与改动前一致;
+  // ② 只给「确实在结果里出现过」的分支填缓存 —— 没出现的分支不能填 [],那等于替它断言「查不到
+  // 对应 PR」,而它的 PR 可能只是落在窗口外,必须让它走原本的单查。
+  const prStateByNumber = new Map();
+  let prefetch = { done: false, ok: false, count: 0 };
+  function prefetchPrs() {
+    if (prefetch.done) return prefetch;
+    prefetch.done = true;
+    const r = gh(
+      ['pr', 'list', '--repo', slug, '--state', 'all', '--limit', String(PREFETCH_LIMIT),
+        '--json', 'number,state,mergedAt,closedAt,headRefName'],
+      { allowFail: true, timeoutMs: GH_TIMEOUT },
+    );
+    if (!r.ok) return prefetch;
+    let list;
+    try { list = JSON.parse(r.stdout || '[]'); } catch { return prefetch; }
+    if (!Array.isArray(list)) return prefetch;
+    const byBranch = new Map();
+    for (const p of list) {
+      prStateByNumber.set(Number(p.number), p.state);
+      const b = p.headRefName;
+      if (!b) continue;
+      if (!byBranch.has(b)) byBranch.set(b, []);
+      byBranch.get(b).push({ number: p.number, state: p.state, mergedAt: p.mergedAt, closedAt: p.closedAt });
+    }
+    // 只填正面命中的分支(见上面纪律 ②)
+    for (const [b, prs] of byBranch) if (!prCache.has(b)) prCache.set(b, prs);
+    prefetch.ok = true;
+    prefetch.count = list.length;
+    return prefetch;
   }
 
   /** 分支可否回收:{ removable, allMerged, prs, reason }。 */
@@ -208,6 +246,14 @@ try {
   const localBranches = git(['for-each-ref', 'refs/heads', '--format=%(refname:short)'])
     .stdout.split('\n').map((s) => s.trim()).filter(Boolean);
 
+  // 进孤儿分支循环前先批量预取一次:把大多数分支变成缓存命中,不再各自吃一次 gh + 上限配额。
+  // 只在真有孤儿候选时才预取(定点 --pr 模式通常一条都没有,不白花一次调用)。
+  const hasOrphanCandidate = localBranches.some(
+    (b) => !protectedBranches.has(b) && !stillCheckedOut.has(b)
+      && (!targetBranches || targetBranches.has(b)) && !branchDeleteWanted.has(b),
+  );
+  const prefetchResult = hasOrphanCandidate ? prefetchPrs() : { done: false, ok: false, count: 0 };
+
   let orphanLookups = 0;
   for (const branch of localBranches) {
     if (protectedBranches.has(branch)) continue;
@@ -217,17 +263,23 @@ try {
       // 孤儿分支:worktree 早没了(或本就没建过)但分支残留。pr-<N> 是我们自己的审查/
       // 检出命名,MERGED/CLOSED 都删;其他名字按 judge 从严(全 MERGED 才删)。
       const prMatch = branch.match(/^pr-(\d+)$/);
-      if (!prCache.has(branch) && ++orphanLookups > ORPHAN_LOOKUP_CAP) {
-        skipped.push({ branch, reason: `本轮孤儿分支实查已达 ${ORPHAN_LOOKUP_CAP} 条上限,下轮继续` });
+      // 预取命中的不算实查(不花 gh 调用,自然也不该吃上限配额)
+      const cached = prMatch
+        ? prStateByNumber.has(Number(prMatch[1]))
+        : prCache.has(branch);
+      if (!cached && ++orphanLookups > ORPHAN_LOOKUP_CAP) {
+        skipped.push({ branch, reason: `本轮孤儿分支单条实查已达 ${ORPHAN_LOOKUP_CAP} 条上限,下轮继续` });
         continue;
       }
       if (prMatch) {
-        const v = gh(
-          ['pr', 'view', prMatch[1], '--repo', slug, '--json', 'state'],
-          { allowFail: true, timeoutMs: GH_TIMEOUT },
-        );
-        let state = null;
-        if (v.ok) { try { state = JSON.parse(v.stdout).state; } catch { state = null; } }
+        let state = prStateByNumber.get(Number(prMatch[1])) ?? null;
+        if (state === null) {
+          const v = gh(
+            ['pr', 'view', prMatch[1], '--repo', slug, '--json', 'state'],
+            { allowFail: true, timeoutMs: GH_TIMEOUT },
+          );
+          if (v.ok) { try { state = JSON.parse(v.stdout).state; } catch { state = null; } }
+        }
         if (state !== 'MERGED' && state !== 'CLOSED') {
           skipped.push({ branch, reason: state === 'OPEN' ? 'PR 仍 open' : 'PR 状态未知,保守跳过' });
           continue;
@@ -260,6 +312,10 @@ try {
     repo: slug,
     defaultBranch,
     graceMinutes,
+    // 预取可观测:ok=false 表示退回了逐条实查(上限重新成为瓶颈),汇总里能看出来
+    prefetch: prefetchResult.done
+      ? { ok: prefetchResult.ok, prs: prefetchResult.count, singleLookups: orphanLookups }
+      : { ok: false, skipped: 'no-orphan-candidate' },
     removedWorktrees,
     deletedBranches,
     skipped,

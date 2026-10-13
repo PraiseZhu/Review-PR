@@ -3,35 +3,23 @@
 //
 // 设计原则:这些脚本只做「采集 + 客观判定 + git 动作」这些确定性的事,
 // 不做任何语义判断(段落是否实质、bot 评论是不是个问题等留给 skill 里的 LLM)。
-// 跨平台:Windows 上 gh.cmd 仍走 shell;git.exe 一律 argv(shell:false),
-// 避免 cmd 把 <oid>^{commit} 的 ^ 当转义。cwd 承载含空格路径,不把路径塞进 -C。
+// 跨平台:spawnSync 在 Windows 走 shell(让 cmd.exe 能解析 gh.cmd / git);
+// 所有外部命令参数都是简单 token(无空格),长字符串(GraphQL query)走 stdin,
+// 因此 Windows 下 shell:true 不会触发引号问题。
 //
 // 鉴权统一走 gh(本项目 token 由 gh 管理、存系统凭据),脚本绝不打印 token。
 
 import { spawnSync, spawn } from 'node:child_process';
 import process from 'node:process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, realpathSync, readdirSync, copyFileSync, renameSync, lstatSync, openSync, closeSync, writeSync, statSync, constants as fsConstants } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-// escapedHazards 段的合并与 schema 复验只有一份实现(lib.escaped-hazards 不反向依赖本文件,
-// 无循环:它只引 lib.review-profiles / lib.preflight-rules)。
-import { mergeHazardPair, validateHazardShape } from './lib.escaped-hazards.mjs';
-import { runGhWithPrViewCompat } from './lib.gh-pr-view-compat.mjs';
-
-// NODE_DEBUG 污染防御(复发×5):宿主 shell 可能带 NODE_DEBUG=http,https,net,tls,
-// util.debuglog 在 Node 启动早期即捕获该值,进程内 delete 已无法关闭(实测),但
-// spawn 子进程继承的是 process.env——此处删除后,本文件所有 spawnSync/spawn 的
-// 子进程(gh/git/node 脚本)环境均不含 NODE_DEBUG,纯 JSON stdout 不被调试行污染。
-// 只影响本进程及其子进程,不改宿主环境。
-delete process.env.NODE_DEBUG;
+import { createHash } from 'node:crypto';
+import { atomicWriteJson, parseApiJson, parseScriptResult } from './runtime-io.mjs';
+export { atomicWriteJson, parseApiJson } from './runtime-io.mjs';
 
 const isWin = process.platform === 'win32';
-/** git.exe is PATHEXT-resolvable. gh.cmd needs cmd.exe. */
-function winShellFor(cmd) {
-  return isWin && cmd !== 'git';
-}
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = join(SCRIPT_DIR, '..');
 
@@ -39,9 +27,7 @@ const SKILL_ROOT = join(SCRIPT_DIR, '..');
  * Skill 与目标仓库解耦：
  * - 所有 git / gh 命令默认作用于调用方 cwd（scheduler 的 workingDir）。
  * - REVIEW_PR_REPO_ROOT 可显式指定目标仓库，入口脚本应在执行前 chdir 到该目录。
- * - 运行时状态默认落进目标仓库主 worktree 的 `history/loops/review-pr/state/`
- *   （见下方 `resolvePersistentStateRoot`），经 git-ignore/自写/可写三道校验；
- *   任一校验不过或无法判定主 worktree 时才回退系统临时目录，不写 Skill 目录本身。
+ * - 运行时状态放在系统临时目录并按目标仓库绝对路径隔离，不写 Skill 或项目仓库。
  */
 const rawRepoRoot = process.env.REVIEW_PR_REPO_ROOT || process.cwd();
 export const REPO_ROOT = resolve(rawRepoRoot);
@@ -50,19 +36,13 @@ export const REPO_ROOT = resolve(rawRepoRoot);
 // 不同目录——互斥锁形同虚设(多轮并发)、pre-check 探测的锁目录与会话实际写入目录
 // 对不上、last-scan 空转缓存永不命中(2026-07-25 实锤)。用 git-common-dir(同一仓库
 // 所有 worktree 共享的主 .git)归一锚点;非 git 仓库 / git 不可用时退回 REPO_ROOT。
-// R1(2026-08-01 二审):对 common-dir 结果额外做 realpathSync 归一——macOS 的
-// /var↔/private/var(以及类似的系统级符号链接)会让"相对路径拼出的绝对路径"与
-// "git 自己吐出的绝对路径"字符串不同但指向同一个真实目录,字符串级哈希会把同一
-// 仓库判成两个不同的 repoStateKey(锁/审计/去重身份分裂)。这是本 skill 多仓库
-// 通用安装场景下会自然触发的真实风险,不是测试环境噪音。只加这一层 realpath,
-// 不改其它判定逻辑。
 function resolveStateAnchor() {
   try {
     const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
-      cwd: REPO_ROOT, encoding: 'utf8', shell: false, timeout: 10_000,
+      cwd: REPO_ROOT, encoding: 'utf8', shell: false, windowsHide: true, timeout: 10_000,
     });
     const out = r.status === 0 ? (r.stdout ?? '').trim() : '';
-    if (out) return realpathSync(resolve(REPO_ROOT, out)); // 主仓库返回相对 ".git",worktree 返回绝对路径,一律归一成绝对再 realpath
+    if (out) return resolve(REPO_ROOT, out); // 主仓库返回相对 ".git",worktree 返回绝对路径,一律归一成绝对
   } catch { /* 回退 REPO_ROOT */ }
   return REPO_ROOT;
 }
@@ -71,393 +51,9 @@ const repoStateKey = createHash('sha256')
   .update(isWin ? stateAnchor.toLowerCase() : stateAnchor)
   .digest('hex')
   .slice(0, 20);
-const LEGACY_STATE_ROOT = join(tmpdir(), 'review-pr');
-
-/**
- * 主 worktree 根目录(F1,经 R7 二审、T2 三审两次重写)。状态根不能拼当前
- * checkout 的 REPO_ROOT——REPO_ROOT 可能是某一轮审查用的 linked worktree,
- * 按它算状态根会让同一仓库的不同 worktree/轮次各自写到不同目录,锁/审计/去重
- * 照样分裂(与上面 stateAnchor 要解决的问题同源)。
- *
- * 不用 `basename(git-common-dir) === '.git'` 判断(一审的实现):这条对
- * submodule 必然失败——submodule 的 common-dir 形如
- * `<父仓库>/.git/modules/<name>`,basename 是 `<name>` 不是 `.git`,会被无条件
- * 打回系统临时目录。改用 `git worktree list --porcelain`:多条记录(真正存在
- * linked worktree)时取**第一条**——git 保证主 worktree 永远排第一(不管从
- * 主 worktree 还是任意 linked worktree 跑这条命令,结果一致);只有一条记录时
- * 改用 `--show-toplevel`——实测(git 2.50.1)对没有任何 `worktree add` 记录
- * 的仓库(包括 submodule),`worktree list --porcelain` 的自报路径存在已知
- * 偏差:submodule 场景下会报成它自己的 git-dir 而不是真实工作目录。
- *
- * T2(2026-08-01 四审):上面这套"多条记录就信第一条"仍不够——submodule 自己
- * 又被 `worktree add` 出一个 linked worktree、或 `git init
- * --separate-git-dir` 配合 linked worktree,porcelain 的**第一条**依然会报
- * 成 git-dir 本身(实测:即使此时确有 2 条记录)。无法只靠"记录数"区分可信/
- * 不可信,必须对拿到的候选路径做两项独立验证,任一不过就 fail-closed(submodule
- * 持久化能力让路给安全,不做更复杂的补救):
- *   ① 候选路径不能等于、也不能落在 `stateAnchor`(REPO_ROOT 的 canonical
- *      common-dir,已在上面 realpath 归一)之内——候选若是 git 元数据目录
- *      本身或其子目录,这里会命中;
- *   ② 对候选路径本身跑 `rev-parse --show-toplevel`,结果必须成功且正好等于
- *      候选路径自己——git-dir 被误当候选时,这条命令要么报错("must be run in
- *      a work tree",separate-git-dir 场景实测如此),要么通过 core.worktree
- *      解析出一个完全不同的路径(submodule 场景实测如此),两种情况都通不过
- *      这个自证检查。
- *
- * 裸仓库的首条记录会带一行 `bare` 标记(没有真正的工作目录)——命中即返回
- * null。命令本身失败(非 git 仓库、git 不可用)也返回 null。调用方回退系统
- * 临时目录。
- */
-function resolveMainWorktreeRoot() {
-  const r = spawnSync('git', ['worktree', 'list', '--porcelain'], {
-    cwd: REPO_ROOT, encoding: 'utf8', shell: false, timeout: 10_000,
-  });
-  if (r.status !== 0) return null;
-  const lines = (r.stdout ?? '').split('\n');
-  const blocks = [];
-  let cur = [];
-  for (const line of lines) {
-    if (line.trim() === '') {
-      if (cur.length) blocks.push(cur);
-      cur = [];
-    } else {
-      cur.push(line);
-    }
-  }
-  if (cur.length) blocks.push(cur);
-  if (!blocks.length) return null;
-
-  const firstBlock = blocks[0];
-  if (firstBlock.some((l) => l.trim() === 'bare')) return null; // 裸仓库,没有真正的工作目录
-
-  let rawPath;
-  if (blocks.length === 1) {
-    const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: REPO_ROOT, encoding: 'utf8', shell: false, timeout: 10_000,
-    });
-    rawPath = top.status === 0 ? (top.stdout ?? '').trim() : '';
-  } else {
-    const worktreeLine = firstBlock.find((l) => l.startsWith('worktree '));
-    rawPath = worktreeLine ? worktreeLine.slice('worktree '.length).trim() : '';
-  }
-  if (!rawPath) return null;
-
-  let candidate;
-  try {
-    candidate = realpathSync(rawPath); // R1 同款 realpath 归一,消解符号链接身份分裂
-  } catch {
-    return null;
-  }
-
-  // T2 校验①:候选不能等于/落在 common-dir 内(git 元数据本身)。
-  if (stateAnchor !== REPO_ROOT) {
-    const relToCommonDir = relative(stateAnchor, candidate);
-    if (relToCommonDir === '' || (!relToCommonDir.startsWith('..') && !isAbsolute(relToCommonDir))) return null;
-  }
-
-  // T2 校验②:候选必须能自证是工作树顶层——对候选本身跑 show-toplevel,结果要
-  // 正好等于候选自己。
-  const selfCheck = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-    cwd: candidate, encoding: 'utf8', shell: false, timeout: 10_000,
-  });
-  if (selfCheck.status !== 0) return null;
-  let selfTop;
-  try {
-    selfTop = realpathSync((selfCheck.stdout ?? '').trim());
-  } catch {
-    return null;
-  }
-  if (selfTop !== candidate) return null;
-
-  return candidate;
-}
-
-/** 从某个可能尚不存在的路径向上找最近一个已存在的祖先目录(git 命令与 realpath 都需要真实存在的 cwd)。 */
-function nearestExistingAncestor(p) {
-  let cur = p;
-  while (!existsSync(cur)) {
-    const parent = dirname(cur);
-    if (parent === cur) break;
-    cur = parent;
-  }
-  return cur;
-}
-
-/**
- * cwd 相对某个 git 工作树的三态判定(R3,2026-08-01 二审)。一审版本把"git 命令
- * 本身判断不了"(spawn 失败/超时/权限问题/意外退出码)与"确认不在工作树内"
- * 混为一谈,统一按 false(=outside)处理——等价于对"判断不了"的情况 fail-open
- * 放行,与这套改动"宁可回退 tmpdir、绝不冒险"的总原则相反。现在明确三态:
- *   'inside'  — 确认在工作树内(status 0, stdout 'true');
- *   'outside' — 确认不在任何工作树内(git 明确报 "not a git repository",
- *               或 status 0 且 stdout 'false' — 在 .git 目录内但非工作树部分);
- *   'unknown' — 无法判定(spawn 失败/ENOENT/超时/权限问题/其它未预期的退出码
- *               或输出)——调用方必须把 unknown 当不安全处理,不能当 outside。
- */
-function probeGitWorkTreeState(cwd) {
-  const r = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
-    cwd, encoding: 'utf8', shell: false, timeout: 10_000,
-  });
-  if (r.error) return 'unknown'; // spawn 层失败(git 不在 PATH、超时等)
-  if (r.status === 0) {
-    const out = (r.stdout ?? '').trim();
-    if (out === 'true') return 'inside';
-    if (out === 'false') return 'outside';
-    return 'unknown'; // 意外输出,不猜测
-  }
-  if (r.status === 128 && /not a git repository/i.test(r.stderr ?? '')) return 'outside';
-  return 'unknown'; // 其它退出码(权限问题等)一律归 unknown,fail-closed
-}
-
-/**
- * F2①:该路径是否可以安全写入而不弄脏某个 git working tree(R3 二审:三态
- * fail-closed)。
- *   - 确认不在任何 git 工作树内('outside')→ 没有"脏树"这个概念,视为安全;
- *   - 确认在工作树内('inside')→ 必须被该仓库的 `.gitignore` 覆盖
- *     (`git check-ignore -q` exit 0)才安全,check-ignore 本身失败(spawn 错误 /
- *     非 0/1 的退出码)一律按不安全处理;
- *   - 无法判定('unknown')→ 直接按不安全处理,回退系统临时目录——判不了就不能
- *     当作"没问题"放行。
- * cwd 用路径本身最近的已存在祖先目录——路径可能尚不存在(如首次落盘前)。
- */
-function isSafeFromDirtyWorkingTree(candidatePath) {
-  const cwd = nearestExistingAncestor(candidatePath);
-  const state = probeGitWorkTreeState(cwd);
-  if (state === 'unknown') return false;
-  if (state === 'outside') return true;
-  const r = spawnSync('git', ['check-ignore', '-q', candidatePath], { cwd, shell: false, timeout: 10_000 });
-  if (r.error) return false;
-  return r.status === 0;
-}
-
-/** 拿 cwd 所在仓库的 canonical 身份(git-common-dir 的 realpath);取不到返回 null。 */
-function canonicalRepoIdentity(cwd) {
-  const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
-    cwd, encoding: 'utf8', shell: false, timeout: 10_000,
-  });
-  if (r.status !== 0) return null;
-  const out = (r.stdout ?? '').trim();
-  if (!out) return null;
-  try {
-    return realpathSync(resolve(cwd, out));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * F2②:拒绝状态根落在 Skill 自身仓库内(防自写,R2 二审修订)。一审版本比较
- * 的是"worktree 的文件系统根路径"(`git rev-parse --show-toplevel` 的
- * realpath)——Skill 仓库若存在另一个 linked worktree(如本次改动本身就跑在
- * 这样一个 worktree 里),候选路径落在那个 worktree 下时,文件系统根路径比对
- * 完全不同,门形同虚设。现在比较双方的 canonical 仓库身份(git-common-dir 的
- * realpath)——同一仓库的所有 worktree 共享同一个 common-dir,不管候选路径
- * 落在哪个 worktree 下都能正确识别为"同一个 skill 仓库"。
- */
-function isInsideSkillRepo(candidatePath) {
-  const info = skillRepoInfo();
-  if (!info) return false; // Skill 不在任何 git 仓库内,没有"自写"这个风险
-  const skillIdentity = canonicalRepoIdentity(info.gitRoot);
-  if (!skillIdentity) return false;
-  const ancestor = nearestExistingAncestor(resolve(candidatePath));
-  const candidateIdentity = canonicalRepoIdentity(ancestor);
-  if (!candidateIdentity) return false; // 候选路径不在任何 git 仓库内,不可能是 skill 仓库
-  return candidateIdentity === skillIdentity;
-}
-
-/**
- * F3/R4:写文件 + 删除的真实探针。mkdir 成功不代表可写(某些只读文件系统对
- * 已存在目录的 mkdir 直接成功,真正写文件才报错);unlink 失败同样必须判定
- * "不可用"——锁文件(`release-lock.mjs`/`cleanup.mjs`)的整个生命周期依赖
- * unlink 成功,一个只能创建/写入但删不掉文件的目录会让锁永久卡死,不是可用
- * 的状态根。
- */
-function writeProbeOk(dir) {
-  const probe = join(dir, `.write-probe-${process.pid}-${Date.now()}`);
-  try {
-    writeFileSync(probe, '');
-  } catch {
-    return false;
-  }
-  try {
-    unlinkSync(probe);
-  } catch {
-    return false;
-  }
-  return true;
-}
-
-/**
- * 某候选根目录是否可以安全、可靠地作为状态根(F1-F3 三道校验合一):
- * 不在未忽略的工作树内(F2①)、不在 Skill 自身仓库内(F2②)、且最终叶子目录
- * `root/repoStateKey` 通过真实写探针(F3)。三者全过才返回 true。
- */
-function isStateRootSafeAndWritable(root) {
-  if (!isSafeFromDirtyWorkingTree(root)) return false;
-  if (isInsideSkillRepo(root)) return false;
-  const dir = join(root, repoStateKey);
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    return false;
-  }
-  return writeProbeOk(dir);
-}
-
-/**
- * 状态根目录优先级(SC2-1,经 2026-08-01 审核 F1/F2/F3 修订)。此前恒为系统
- * 临时目录,mac mini 实测:scheduler 停摆超过 3 天,macOS dirhelper 的
- * `CLEAN_FILES_OLDER_THAN_DAYS=3` 清理策略会把 runs.jsonl / last-scan.json /
- * fix-sessions.json 等审计历史整个清空。当前优先级:
- *   ① `REVIEW_PR_STATE_DIR` 环境变量——显式覆盖,但仍须过 F2①/F2②/F3 三道
- *      校验(文档已声称"不能指向受 Git 跟踪的项目目录或 Skill 目录",这里是
- *      真正执行,不再只是文档承诺);校验不过直接回退系统临时目录,不静默
- *      改用仓库默认(用户的显式选择不该被 skill 偷偷换掉);
- *   ② `<主 worktree>/history/loops/review-pr/state`——锚定同仓库所有 worktree
- *      共享的主 checkout(见 `resolveMainWorktreeRoot`,不是当前 REPO_ROOT),
- *      随该 checkout 常驻;同样须过 F2①/F2②/F3;
- *   ③ 系统临时目录(旧默认)——裸仓库、非 git 仓库、或以上两层任一校验不过时
- *      的最终回退,好于直接抛错崩溃。
- * `repoStateKey` 子目录隔离保持不变:三层优先级只决定"根在哪",同一仓库的
- * 不同 worktree/轮次仍共享同一个 `<根>/<repoStateKey>/`(见上方 stateAnchor
- * 注释——这层由 git-common-dir 锚定,与本次改动无关,不受影响)。
- */
-// 只读模式(REVIEW_PR_LIB_READONLY=1,SC-D 2026-08-04 复审修订):pre-check --probe-only
-// 在 import 本模块**之前**置此环境变量。此前模块加载期就有三类写副作用——写探针
-// (writeProbeOk)、mkdirSync(STATE_DIR)、legacy 迁移(migrateLegacyStateIfNeeded)——
-// "probe-only 零本地状态写"的承诺在 import 层就已破产。只读模式下:
-//   - 状态根解析不做写探针/mkdir,只做两条只读安全谓词(工作树/skill 仓);
-//   - 不建目录、不迁移;STATE_DIR 只用于**读**(锁文件/scan state),目录不存在时读
-//     自然失败 → 调用方按"查不了≠没活"fail-open,方向与 pre-check 既有契约一致;
-//   - 解析结果可能与写模式不同(写模式下写探针失败会回退 LEGACY),后果同样只是
-//     probe 读不到锁/state → 多放行一轮,不会漏写任何生产状态。
-const LIB_READONLY = process.env.REVIEW_PR_LIB_READONLY === '1';
-
-function isStateRootUsableReadOnly(root) {
-  return isSafeFromDirtyWorkingTree(root) && !isInsideSkillRepo(root);
-}
-
-function resolvePersistentStateRoot() {
-  if (LIB_READONLY) {
-    if (process.env.REVIEW_PR_STATE_DIR) {
-      const envRoot = resolve(process.env.REVIEW_PR_STATE_DIR);
-      return isStateRootUsableReadOnly(envRoot) ? envRoot : LEGACY_STATE_ROOT;
-    }
-    const mainRoot = resolveMainWorktreeRoot();
-    if (mainRoot) {
-      const repoBased = join(mainRoot, 'history', 'loops', 'review-pr', 'state');
-      if (isStateRootUsableReadOnly(repoBased)) return repoBased;
-    }
-    return LEGACY_STATE_ROOT;
-  }
-  if (process.env.REVIEW_PR_STATE_DIR) {
-    const envRoot = resolve(process.env.REVIEW_PR_STATE_DIR);
-    if (isStateRootSafeAndWritable(envRoot)) return envRoot;
-    process.stderr.write(
-      `[review-pr] REVIEW_PR_STATE_DIR=${envRoot} 未通过校验(工作树状态无法判定 / ` +
-      '未被 .gitignore 忽略 / 落在 Skill 自身仓库内 / 写探针失败),回退系统临时目录\n',
-    );
-    return LEGACY_STATE_ROOT;
-  }
-  const mainRoot = resolveMainWorktreeRoot();
-  if (mainRoot) {
-    const repoBased = join(mainRoot, 'history', 'loops', 'review-pr', 'state');
-    if (isStateRootSafeAndWritable(repoBased)) return repoBased;
-    process.stderr.write(
-      `[review-pr] 默认状态根 ${repoBased} 未通过校验(工作树状态无法判定 / ` +
-      '未被 .gitignore 忽略 / 落在 Skill 自身仓库内 / 写探针失败),回退系统临时目录\n',
-    );
-  }
-  return LEGACY_STATE_ROOT;
-}
-
-const stateRoot = resolvePersistentStateRoot();
+const stateRoot = resolve(process.env.REVIEW_PR_STATE_DIR || join(tmpdir(), 'review-pr'));
 export const STATE_DIR = join(stateRoot, repoStateKey);
-if (!LIB_READONLY) mkdirSync(STATE_DIR, { recursive: true });
-
-const MIGRATION_MARKER = '.migrated-from-tmp.json';
-
-/**
- * 一次性迁移(F4,2026-08-01 一审修订;R5 二审补充目标类型冲突检测;T1 四审
- * 补充悬空 symlink 与检查-复制竞态修复)。判据改为"marker 是否存在"而不是
- * "新目录有没有 runs.jsonl"——旧判据在部分失败场景下会永久卡死(第一次迁移
- * 复制完 runs.jsonl 后在其他文件上失败,marker 没写;下一次调用因为 runs.jsonl
- * 已经"看起来存在"而直接跳过,永远补不齐剩下的文件)。现在:
- *   - 触发条件只看 marker 是否存在,marker 不存在就总会重试;
- *   - 逐文件 no-clobber:目标已存在的文件跳过不覆盖——保证即使本轮已经产生了
- *     真实的新数据(如 runs.jsonl 已被新一轮 review 追加过),重试迁移也绝不会
- *     用旧 tmpdir 里更早、更小的版本覆盖回去;
- *   - T1:判断"目标是否已存在"**不用 `existsSync` 前置**——`existsSync` 会跟随
- *     符号链接,对**悬空 symlink**(链接目标不存在)返回 `false`,导致误判成
- *     "目标不存在"从而继续走复制;`copyFileSync` 沿着这个悬空链接写入会把
- *     legacy 内容写到状态根之外的任意路径(实测复现)。直接 `lstatSync`(不
- *     跟随链接):`ENOENT` 才是"确实不存在";只要 lstat 成功,不管是普通文件、
- *     目录、还是(悬空与否的)symlink,都当"已存在"处理,只有普通文件算
- *     "已迁移完成、可跳过",其余(含任何 symlink)一律按类型冲突处理——
- *     和 R5 的判定合一,不再需要先 `existsSync` 短路;
- *   - T1:实际复制用 `COPYFILE_EXCL` 排他创建——`lstatSync` 检查和 `copyFileSync`
- *     复制之间仍有微小窗口,任何东西(并发进程、新出现的符号链接)在这期间
- *     抢先在目标位置落地,`EXCL` 会让复制原子性地失败(`EEXIST`)而不是沿着
- *     新出现的东西写,不依赖"检查时看到的状态在复制时还成立"这个假设;
- *   - 目标存在但不是普通文件(目录/symlink/其它类型),或 lstat/复制本身因
- *     非 `ENOENT` 原因失败,都记 warning、**不写 marker**,保住下次重试的
- *     机会(不会被静默当成"已完成");
- *   - 只有这一轮没有任何类型冲突、且把 legacy 目录里的每个文件都处理完
- *     (拷贝成功或因目标已确认是普通文件而跳过)才写 marker,且 marker 用
- *     临时文件 + rename 落盘(同文件系统下 rename 是原子操作)——marker 存在
- *     ⇔ 迁移已完整跑完,不会出现"半完成但已标记完成"的中间态,迁移失败
- *     (权限/磁盘等)只记 stderr warning、不阻断,下次调用会自动重试补齐。
- */
-function migrateLegacyStateIfNeeded() {
-  if (stateRoot === LEGACY_STATE_ROOT) return; // 新旧根相同,无需迁移
-  const legacyDir = join(LEGACY_STATE_ROOT, repoStateKey);
-  const marker = join(STATE_DIR, MIGRATION_MARKER);
-  if (existsSync(marker) || !existsSync(legacyDir)) return;
-  try {
-    let hasConflict = false;
-    for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
-      if (!entry.isFile() || entry.name === MIGRATION_MARKER) continue;
-      const dest = join(STATE_DIR, entry.name);
-
-      let destStat = null;
-      try {
-        destStat = lstatSync(dest); // 不跟随符号链接;悬空 symlink 在这里会正常返回(报告的是链接本身)
-      } catch (e) {
-        if (e.code !== 'ENOENT') {
-          hasConflict = true;
-          process.stderr.write(`[review-pr] 迁移目标 ${dest} 类型无法确认(${e.message}),按冲突处理,保留重试机会\n`);
-          continue;
-        }
-        // ENOENT = 确实不存在,继续往下走复制路径(destStat 保持 null)
-      }
-      if (destStat) {
-        if (!destStat.isFile()) {
-          hasConflict = true;
-          const kind = destStat.isDirectory() ? '目录' : destStat.isSymbolicLink() ? 'symlink(可能悬空)' : '其它类型';
-          process.stderr.write(`[review-pr] 迁移目标 ${dest} 已存在但不是普通文件(${kind}),视为冲突,跳过并保留重试机会\n`);
-        }
-        continue; // 无论"已完成"(普通文件)还是"冲突",都不覆盖已存在的目标
-      }
-
-      try {
-        copyFileSync(join(legacyDir, entry.name), dest, fsConstants.COPYFILE_EXCL);
-      } catch (e) {
-        hasConflict = true;
-        process.stderr.write(`[review-pr] 迁移目标 ${dest} 复制时被抢先占用或失败(${e.message}),视为冲突,跳过并保留重试机会\n`);
-      }
-    }
-    if (hasConflict) return; // R5/T1:冲突未消除就不写 marker,下次调用会重新检查
-    const tmpMarker = `${marker}.tmp-${process.pid}`;
-    writeFileSync(
-      tmpMarker,
-      JSON.stringify({ migratedAt: new Date().toISOString(), from: legacyDir, to: STATE_DIR }, null, 2),
-    );
-    renameSync(tmpMarker, marker); // 同文件系统 rename 是原子操作,marker 不会以"半写"状态出现
-  } catch (e) {
-    process.stderr.write(`[review-pr] 状态目录一次性迁移未完成(不阻断,下次调用会重试补齐): ${e.message}\n`);
-  }
-}
-if (!LIB_READONLY) migrateLegacyStateIfNeeded();
+mkdirSync(STATE_DIR, { recursive: true });
 
 export function stateFile(name) {
   return join(STATE_DIR, name);
@@ -478,7 +74,14 @@ export function releaseLockOwned(token) {
   try {
     raw = readFileSync(LOCK_FILE, 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
+    if (e.code === 'ENOENT') {
+      if (token) {
+        try { unlinkSync(authoritySnapshotFile(token)); } catch (cleanupError) {
+          if (cleanupError.code !== 'ENOENT') throw cleanupError;
+        }
+      }
+      return { released: false, alreadyAbsent: true, notOwner: false };
+    }
     throw e;
   }
   if (token) {
@@ -491,127 +94,769 @@ export function releaseLockOwned(token) {
   } catch (e) {
     if (e.code !== 'ENOENT') throw e; // 并发下别人可能已抢先删,等价于已释放
   }
+  if (token) {
+    try {
+      unlinkSync(authoritySnapshotFile(token));
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+  }
   return { released: true, alreadyAbsent: false, notOwner: false };
 }
 
-/**
- * 读取 review-pr 私有规则 + 实际采用的配置文件绝对路径,解析顺序(先命中先用):
- *   ① 环境变量 REVIEW_PR_RULES_FILE ——安装方显式指向别的配置文件,优先级最高;
- *   ② 目标仓库自己的 <REPO_ROOT>/agent-use/docs/pr-rules.json ——存在即用,让接入仓库
- *      不改 Skill 本体就能装配自己的全套规则(白名单、门控开关等),这是多仓库共用同一份
- *      Skill 源码的关键机制;
- *   ③ Skill 自带的 config/pr-rules.json(中性默认,不含任何具体仓库的白名单/路径)。
- *
- * 一次 IO 同时拿到内容与来源路径,保证「解析用的是哪份、报告说的是哪份」不漂移
- * (SKILL 6 节 auto provenance 行、context.mjs 等需要如实报告来源路径的消费方都应
- * 用这个,不要自己重演三层优先级去猜——猜错的后果是 provenance 报告与实际读取的
- * 配置文件不一致)。`loadRules()` 是本函数的薄包装,只取 `.rules`,保持原有签名与
- * 返回值不变,兼容所有既有消费方。
- */
-export function loadRulesWithSource() {
-  if (process.env.REVIEW_PR_RULES_FILE) {
-    const rulesFile = resolve(process.env.REVIEW_PR_RULES_FILE);
-    return { rules: JSON.parse(readFileSync(rulesFile, 'utf8')), rulesFile };
-  }
-  const repoRulesFile = join(REPO_ROOT, 'agent-use', 'docs', 'pr-rules.json');
-  if (existsSync(repoRulesFile)) {
-    return { rules: JSON.parse(readFileSync(repoRulesFile, 'utf8')), rulesFile: repoRulesFile };
-  }
-  const skillRulesFile = join(SKILL_ROOT, 'config', 'pr-rules.json');
-  return { rules: JSON.parse(readFileSync(skillRulesFile, 'utf8')), rulesFile: skillRulesFile };
-}
-
-/** 薄包装,见 `loadRulesWithSource()`——只取规则内容,签名与返回值与此前完全一致。 */
+/** 读取 Skill 私有规则；允许安装方用环境变量覆盖配置文件。 */
 export function loadRules() {
-  return loadRulesWithSource().rules;
+  const rulesFile = resolve(
+    process.env.REVIEW_PR_RULES_FILE || join(SKILL_ROOT, 'config', 'pr-rules.json'),
+  );
+  const rules = JSON.parse(readFileSync(rulesFile, 'utf8'));
+  const legacyKeys = ['maintainers', 'approvalExemptAuthors'].filter((key) =>
+    Object.prototype.hasOwnProperty.call(rules, key));
+  if (legacyKeys.length) {
+    throw new Error(
+      `${rulesFile} 仍含旧审批名单 ${legacyKeys.join(' / ')}；请改用 maintainerAllowlist 补充 CODEOWNERS 根 Team`,
+    );
+  }
+  rules.maintainerAllowlist = normalizeMaintainerAllowlist(rules.maintainerAllowlist);
+  return rules;
+}
+
+function normalizeLoginList(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((login) => String(login ?? '').trim().toLowerCase()).filter(Boolean))];
+}
+
+/** 审批补充白名单：配置异常必须阻断，不能静默丢掉本应生效或本不应生效的账号。 */
+export function normalizeMaintainerAllowlist(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error('maintainerAllowlist 必须是 GitHub login 数组');
+  for (let index = 0; index < value.length; index += 1) {
+    const login = typeof value[index] === 'string' ? value[index].trim() : '';
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(login)) {
+      throw new Error(`maintainerAllowlist[${index}] 不是有效的 GitHub login`);
+    }
+  }
+  return normalizeLoginList(value).sort();
+}
+
+export const MAINTAINER_AUTHORITY_VERSION = 2;
+export const CODEOWNERS_PATHS = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+
+function authorityError(message) {
+  const error = new Error(message);
+  error.code = 'MAINTAINER_AUTHORITY_UNAVAILABLE';
+  return error;
+}
+
+function parseJsonResult(result, label) {
+  if (!result?.ok) {
+    const detail = String(result?.stderr || result?.stdout || '').trim().split('\n')[0];
+    throw authorityError(`${label}失败:${detail || 'GitHub 未返回可用结果'}`);
+  }
+  try {
+    return JSON.parse(result.stdout || 'null');
+  } catch (error) {
+    throw authorityError(`${label}返回的 JSON 无法解析:${error.message}`);
+  }
 }
 
 /**
- * 把 pr-rules.json 里配置的仓库相对路径解析成绝对路径,并做 containment 校验(校验结果
- * 确实落在 REPO_ROOT 内),供 detectLoopExclusion 的 stateFile、notify-merge-ack.mjs 的
- * dedupFile/stateDir/notifyModule 等消费,避免每处各写一份校验逐渐漂移。
- *
- * 用 `realpath` + `path.relative` 而不是 `resolved.startsWith(REPO_ROOT)`——后者是纯字符串
- * 前缀比较,有两个绕过口子:①同级前缀目录(仓库叫 `foo`,配置写 `../foo-evil/x`,拼出来的
- * 字符串仍以 `.../foo` 开头,`startsWith` 误判为"在仓库内");②symlink(仓库内某祖先目录
- * 若是指向仓库外的软链接,字符串层面看着在仓库内,`realpath` 消解后其实不在)。`path.relative`
- * 算出的相对路径以 `..` 开头,才是"确实跳出了仓库根"的准确判据。
- *
- * 目标路径可能还不存在(如去重指纹文件首次写入前)——从 `naive` 开始向上找最深的已存在
- * 祖先目录做 `realpathSync`(消解该祖先链路上的 symlink),再把还不存在的尾部路径段原样
- * 拼回去参与 containment 判断(尾部本身没有内容、不存在 symlink 风险)。
+ * 解析 CODEOWNERS 中唯一的全仓维护者 Team。只认精确根规则 `* @org/team-slug`；
+ * 局部 owner 不获得 review-pr 的审批权限。
  */
-export function resolveInRepoRoot(relPath) {
-  const repoRootReal = realpathSync(REPO_ROOT);
-  const naive = join(REPO_ROOT, relPath);
-  let existingAncestor = naive;
-  const restSegments = [];
-  while (!existsSync(existingAncestor)) {
-    const parent = dirname(existingAncestor);
-    if (parent === existingAncestor) break; // 已到文件系统根仍不存在,极端情况,交给下面 relative 判断兜底
-    restSegments.unshift(existingAncestor.slice(parent.length + 1));
-    existingAncestor = parent;
+export function parseMaintainerTeamFromCodeowners(codeowners, { repoOwner = '' } = {}) {
+  const rootRules = [];
+  const lines = String(codeowners ?? '').replace(/^﻿/, '').split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const tokens = trimmed.split(/\s+/);
+    if (tokens[0] !== '*') continue;
+    const commentIndex = tokens.findIndex((token, tokenIndex) => tokenIndex > 0 && token.startsWith('#'));
+    const owners = tokens.slice(1, commentIndex < 0 ? tokens.length : commentIndex);
+    rootRules.push({ line: index + 1, owners });
   }
-  const ancestorReal = realpathSync(existingAncestor);
-  const resolved = restSegments.length ? join(ancestorReal, ...restSegments) : ancestorReal;
-  const rel = relative(repoRootReal, resolved);
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error(`配置路径跳出仓库根:${relPath}(resolve 后 ${resolved})`);
+
+  if (rootRules.length !== 1) {
+    throw authorityError(
+      rootRules.length === 0
+        ? 'CODEOWNERS 缺少唯一的全仓根规则 `* @org/team-slug`'
+        : `CODEOWNERS 找到 ${rootRules.length} 条 ` + '`*` 根规则，无法唯一确定维护者 Team',
+    );
   }
-  return resolved;
+  const [{ line, owners }] = rootRules;
+  if (owners.length !== 1) {
+    throw authorityError(`CODEOWNERS:${line} 的 ` + '`*` 根规则必须且只能指定一个 GitHub Team');
+  }
+  const match = owners[0].match(/^@([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9_-]*)$/);
+  if (!match) {
+    throw authorityError(`CODEOWNERS:${line} 的 ` + '`*` 根 owner 必须是 @org/team-slug');
+  }
+  const org = match[1].toLowerCase();
+  const teamSlug = match[2].toLowerCase();
+  if (repoOwner && org !== String(repoOwner).trim().toLowerCase()) {
+    throw authorityError(`CODEOWNERS:${line} 的 Team @${org}/${teamSlug} 不属于仓库组织 ${repoOwner}`);
+  }
+  return {
+    line,
+    org,
+    teamSlug,
+    teamHandle: `@${org}/${teamSlug}`,
+  };
+}
+
+// [MIVO-PATCH maintainer-allowlist] maintainerSource=allowlist 的权限材料：不读 CODEOWNERS，
+// 只认 maintainerAllowlist，且每个成员必须对仓库有 write/maintain/admin 权限。
+export const MAINTAINER_SOURCE_ALLOWLIST = 'allowlist';
+const isAllowlistAuthority = (authority) => authority?.source === MAINTAINER_SOURCE_ALLOWLIST;
+
+function computeAllowlistAuthorityDigest(authority) {
+  const version = Number(authority?.version);
+  const repository = String(authority?.repository ?? '').trim().toLowerCase();
+  const allowlistedMembers = normalizeLoginList(authority?.allowlistedMembers).sort();
+  const members = normalizeLoginList(authority?.members).sort();
+  const permissions = authority?.memberPermissions ?? {};
+  if (
+    version !== MAINTAINER_AUTHORITY_VERSION || !repository || allowlistedMembers.length === 0 ||
+    normalizeLoginList(authority?.teamMembers).length !== 0 ||
+    members.length !== allowlistedMembers.length || members.some((member, index) => member !== allowlistedMembers[index]) ||
+    members.some((member) => !['push', 'maintain', 'admin'].includes(String(permissions[member] ?? '')))
+  ) {
+    throw authorityError('维护者白名单权限材料不完整，无法计算 digest');
+  }
+  const canonical = JSON.stringify({
+    version, repository, source: MAINTAINER_SOURCE_ALLOWLIST, allowlistedMembers, members,
+    memberPermissions: Object.fromEntries(members.map((member) => [member, permissions[member]])),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** 有效审批权限的稳定指纹；不把抓取时间或无关的默认分支提交纳入。 */
+export function computeMaintainerAuthorityDigest(authority) {
+  if (isAllowlistAuthority(authority)) return computeAllowlistAuthorityDigest(authority);
+  const version = Number(authority?.version);
+  const repository = String(authority?.repository ?? '').trim().toLowerCase();
+  const path = String(authority?.codeowners?.path ?? '').trim();
+  const org = String(authority?.codeowners?.org ?? '').trim().toLowerCase();
+  const teamSlug = String(authority?.codeowners?.teamSlug ?? '').trim().toLowerCase();
+  const teamPrivacy = String(authority?.codeowners?.teamPrivacy ?? '').trim().toLowerCase();
+  const repositoryPermission = String(authority?.codeowners?.repositoryPermission ?? '').trim().toLowerCase();
+  const teamMembers = normalizeLoginList(authority?.teamMembers).sort();
+  const allowlistedMembers = normalizeLoginList(authority?.allowlistedMembers).sort();
+  const members = normalizeLoginList(authority?.members).sort();
+  const expectedMembers = normalizeLoginList([...teamMembers, ...allowlistedMembers]).sort();
+  if (
+    version !== MAINTAINER_AUTHORITY_VERSION || !repository || !path || !org || !teamSlug ||
+    teamPrivacy !== 'closed' || !['push', 'maintain', 'admin'].includes(repositoryPermission) ||
+    teamMembers.length === 0 || members.length === 0 ||
+    members.length !== expectedMembers.length || members.some((member, index) => member !== expectedMembers[index])
+  ) {
+    throw authorityError('维护者权限材料不完整，无法计算 digest');
+  }
+  const canonical = JSON.stringify({
+    version, repository, path, org, teamSlug, teamPrivacy, repositoryPermission,
+    teamMembers, allowlistedMembers, members,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+const TEAM_REPO_MEDIA_TYPE = 'application/vnd.github.v3.repository+json';
+
+/**
+ * GitHub 默认 Accept 读 Team 单个仓库权限时常回 HTTP 204 空 body。
+ * repository media type 或 Team 仓库列表才会带 permissions / role_name。
+ * role_name=write 与 permissions.push 都映射为 digest 使用的 push。
+ */
+function mapTeamRepositoryPermission(teamRepo) {
+  if (!teamRepo || typeof teamRepo !== 'object' || Array.isArray(teamRepo)) return null;
+  const permissions = teamRepo.permissions;
+  if (permissions?.admin === true) return 'admin';
+  if (permissions?.maintain === true) return 'maintain';
+  if (permissions?.push === true) return 'push';
+  const role = String(teamRepo.role_name ?? '').trim().toLowerCase();
+  if (role === 'admin') return 'admin';
+  if (role === 'maintain') return 'maintain';
+  if (role === 'write' || role === 'push') return 'push';
+  return null;
+}
+
+function parseTeamRepoPayload(result) {
+  if (!result?.ok) {
+    const detail = String(result?.stderr || result?.stdout || '').trim().split('\n')[0];
+    return { ok: false, value: null, detail: detail || 'GitHub 未返回可用结果' };
+  }
+  if (!String(result.stdout ?? '').trim()) return { ok: true, value: null, detail: null };
+  try {
+    return { ok: true, value: JSON.parse(result.stdout), detail: null };
+  } catch (error) {
+    return { ok: false, value: null, detail: `JSON 无法解析:${error.message}` };
+  }
+}
+
+function fetchTeamRepositoryPermission({
+  org, teamSlug, owner, repo, teamHandle, repository, ghFn,
+}) {
+  const endpoint = `orgs/${org}/teams/${teamSlug}/repos/${owner}/${repo}`;
+  const first = parseTeamRepoPayload(ghFn(
+    ['api', '--method', 'GET', endpoint],
+    { allowFail: true, timeoutMs: 20_000 },
+  ));
+  if (!first.ok) {
+    throw authorityError(`验证 Team ${teamHandle} 的仓库权限失败:${first.detail}`);
+  }
+  const firstPermission = mapTeamRepositoryPermission(first.value);
+  if (firstPermission) return firstPermission;
+
+  const media = parseTeamRepoPayload(ghFn(
+    ['api', '--method', 'GET', endpoint, '-H', `Accept:${TEAM_REPO_MEDIA_TYPE}`],
+    { allowFail: true, timeoutMs: 20_000 },
+  ));
+  if (!media.ok) {
+    throw authorityError(`验证 Team ${teamHandle} 的仓库权限失败:${media.detail}`);
+  }
+  const mediaPermission = mapTeamRepositoryPermission(media.value);
+  if (mediaPermission) return mediaPermission;
+
+  const listed = fetchPaginatedRestItems(
+    `orgs/${org}/teams/${teamSlug}/repos`,
+    { ghFn, fields: [['per_page', '100']] },
+  );
+  const wanted = `${owner}/${repo}`.toLowerCase();
+  const match = listed.find((item) => String(item?.full_name ?? '').toLowerCase() === wanted);
+  const listedPermission = mapTeamRepositoryPermission(match);
+  if (listedPermission) return listedPermission;
+
+  throw authorityError(`Team ${teamHandle} 对 ${repository} 没有可验证的 write/maintain/admin 权限`);
+}
+
+function fetchPaginatedRestItems(endpoint, { ghFn = gh, fields = [] } = {}) {
+  const args = ['api', '--method', 'GET', '--paginate', '--slurp', endpoint];
+  for (const [key, value] of fields) args.push('-f', `${key}=${value}`);
+  const result = ghFn(args, { allowFail: true, timeoutMs: 30_000 });
+  const pages = parseJsonResult(result, `GitHub 分页读取 ${endpoint}`);
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw authorityError(`GitHub 分页读取 ${endpoint} 的结果形状异常`);
+  }
+  return pages.flat();
+}
+
+/**
+ * 从目标仓库默认分支的 CODEOWNERS 根 Team 实时解析成员，再与 Skill 的补充白名单取并集。
+ * Team 仍是必需信任锚；任何不完整输入均抛错，白名单不得充当读取失败时的兜底。
+ */
+export function fetchMaintainerAuthority({
+  owner,
+  repo,
+  ghFn = gh,
+  nowIso = new Date().toISOString(),
+  maintainerAllowlist = loadRules().maintainerAllowlist,
+  maintainerSource = loadRules().maintainerSource,
+} = {}) {
+  const normalizedOwner = String(owner ?? '').trim();
+  const normalizedRepo = String(repo ?? '').trim();
+  if (!normalizedOwner || !normalizedRepo) throw authorityError('缺少目标仓库 owner/repo');
+  const repository = `${normalizedOwner}/${normalizedRepo}`;
+
+  const repoMeta = parseJsonResult(
+    ghFn(['api', `repos/${repository}`], { allowFail: true, timeoutMs: 20_000 }),
+    `读取仓库 ${repository}`,
+  );
+  const baseRef = String(repoMeta?.default_branch ?? '').trim();
+  if (!baseRef) throw authorityError(`仓库 ${repository} 没有可验证的默认分支`);
+  const commitMeta = parseJsonResult(
+    ghFn(['api', '--method', 'GET', `repos/${repository}/commits/${encodeURIComponent(baseRef)}`], {
+      allowFail: true,
+      timeoutMs: 20_000,
+    }),
+    `读取 ${repository} 默认分支 commit`,
+  );
+  const baseSha = String(commitMeta?.sha ?? '').trim();
+  if (!/^[0-9a-f]{40}$/i.test(baseSha)) {
+    throw authorityError(`仓库 ${repository} 默认分支 commit SHA 无效`);
+  }
+
+  // [MIVO-PATCH maintainer-allowlist] 只认白名单，逐个核实仓库权限；任何一人核不实就从严停止。
+  if (maintainerSource === MAINTAINER_SOURCE_ALLOWLIST) {
+    const allowlistedMembers = normalizeMaintainerAllowlist(maintainerAllowlist);
+    if (allowlistedMembers.length === 0) throw authorityError('maintainerSource=allowlist 但 maintainerAllowlist 为空');
+    const memberPermissions = {};
+    for (const login of allowlistedMembers) {
+      const permission = parseJsonResult(
+        ghFn(['api', '--method', 'GET', `repos/${repository}/collaborators/${login}/permission`], {
+          allowFail: true,
+          timeoutMs: 20_000,
+        }),
+        `读取 ${login} 对 ${repository} 的权限`,
+      );
+      const role = String(permission?.role_name ?? permission?.permission ?? '').trim().toLowerCase();
+      const mapped = role === 'admin' ? 'admin' : role === 'maintain' ? 'maintain'
+        : (role === 'write' || role === 'push') ? 'push' : null;
+      if (!mapped) {
+        throw authorityError(`maintainerAllowlist 成员 ${login} 对 ${repository} 没有 write 及以上权限(当前 ${role || 'none'})`);
+      }
+      memberPermissions[login] = mapped;
+    }
+    const finalBase = parseJsonResult(
+      ghFn(['api', '--method', 'GET', `repos/${repository}/commits/${encodeURIComponent(baseRef)}`], {
+        allowFail: true,
+        timeoutMs: 20_000,
+      }),
+      `复核 ${repository} 默认分支 commit`,
+    );
+    if (String(finalBase?.sha ?? '').toLowerCase() !== baseSha.toLowerCase()) {
+      throw authorityError(`默认分支在维护者读取期间发生变化:${baseSha} → ${finalBase?.sha ?? '(empty)'}，请重试`);
+    }
+    const authority = {
+      version: MAINTAINER_AUTHORITY_VERSION,
+      repository,
+      source: MAINTAINER_SOURCE_ALLOWLIST,
+      fetchedAt: nowIso,
+      base: { ref: baseRef, sha: baseSha },
+      codeowners: {
+        path: '(maintainerAllowlist)',
+        blobSha: null,
+        line: null,
+        org: null,
+        teamSlug: null,
+        teamHandle: 'maintainerAllowlist',
+        teamPrivacy: null,
+        repositoryPermission: null,
+      },
+      teamMembers: [],
+      teamMemberCount: 0,
+      allowlistedMembers,
+      allowlistedMemberCount: allowlistedMembers.length,
+      members: allowlistedMembers,
+      memberCount: allowlistedMembers.length,
+      memberPermissions,
+    };
+    return { ...authority, digest: computeMaintainerAuthorityDigest(authority) };
+  }
+
+  let codeowners = null;
+  const misses = [];
+  for (const path of CODEOWNERS_PATHS) {
+    const result = ghFn([
+      'api', '--method', 'GET', `repos/${repository}/contents/${path}`, '-f', `ref=${baseSha}`,
+    ], { allowFail: true, timeoutMs: 20_000 });
+    if (!result?.ok) {
+      const detail = String(result?.stderr || result?.stdout || '').trim().split('\n')[0];
+      if (!/404|not found/i.test(detail)) {
+        throw authorityError(`读取 ${path} 失败:${detail || 'GitHub 未返回可用结果'}`);
+      }
+      misses.push(`${path}:${detail || 'HTTP 404 Not Found'}`);
+      continue;
+    }
+    const file = parseJsonResult(result, `读取 ${path}`);
+    if (file?.type !== 'file' || file?.encoding !== 'base64' || typeof file?.content !== 'string') {
+      throw authorityError(`${path} 不是可读取的 base64 CODEOWNERS 文件`);
+    }
+    let text;
+    try {
+      text = Buffer.from(file.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+    } catch (error) {
+      throw authorityError(`${path} base64 解码失败:${error.message}`);
+    }
+    codeowners = { path, blobSha: String(file.sha ?? '').trim(), text };
+    break;
+  }
+  if (!codeowners) {
+    throw authorityError(`默认分支没有可读取的 CODEOWNERS(${misses.join(' / ')})`);
+  }
+
+  const team = parseMaintainerTeamFromCodeowners(codeowners.text, { repoOwner: normalizedOwner });
+  const teamMeta = parseJsonResult(
+    ghFn(['api', '--method', 'GET', `orgs/${team.org}/teams/${team.teamSlug}`], {
+      allowFail: true,
+      timeoutMs: 20_000,
+    }),
+    `读取 Team ${team.teamHandle}`,
+  );
+  const teamPrivacy = String(teamMeta?.privacy ?? '').trim().toLowerCase();
+  if (teamPrivacy !== 'closed') {
+    throw authorityError(`Team ${team.teamHandle} 必须是 GitHub 可见 Team(privacy=closed)，当前为 ${teamPrivacy || '(empty)'}`);
+  }
+  const repositoryPermission = fetchTeamRepositoryPermission({
+    org: team.org,
+    teamSlug: team.teamSlug,
+    owner: normalizedOwner,
+    repo: normalizedRepo,
+    teamHandle: team.teamHandle,
+    repository,
+    ghFn,
+  });
+  const rawMembers = fetchPaginatedRestItems(
+    `orgs/${team.org}/teams/${team.teamSlug}/members`,
+    { ghFn, fields: [['role', 'all'], ['per_page', '100']] },
+  );
+  if (rawMembers.some((member) => !member || typeof member.login !== 'string' || !member.login.trim())) {
+    throw authorityError(`Team ${team.teamHandle} 成员结果包含无效账号`);
+  }
+  const teamMembers = normalizeLoginList(rawMembers.map((member) => member.login)).sort();
+  if (teamMembers.length === 0) throw authorityError(`Team ${team.teamHandle} 没有可验证的有效成员`);
+  const allowlistedMembers = normalizeMaintainerAllowlist(maintainerAllowlist);
+  const members = normalizeLoginList([...teamMembers, ...allowlistedMembers]).sort();
+
+  const finalCommitMeta = parseJsonResult(
+    ghFn(['api', '--method', 'GET', `repos/${repository}/commits/${encodeURIComponent(baseRef)}`], {
+      allowFail: true,
+      timeoutMs: 20_000,
+    }),
+    `复核 ${repository} 默认分支 commit`,
+  );
+  if (String(finalCommitMeta?.sha ?? '').toLowerCase() !== baseSha.toLowerCase()) {
+    throw authorityError(`默认分支在维护者读取期间发生变化:${baseSha} → ${finalCommitMeta?.sha ?? '(empty)'}，请重试`);
+  }
+
+  const authority = {
+    version: MAINTAINER_AUTHORITY_VERSION,
+    repository,
+    fetchedAt: nowIso,
+    base: { ref: baseRef, sha: baseSha },
+    codeowners: {
+      path: codeowners.path,
+      blobSha: codeowners.blobSha || null,
+      line: team.line,
+      org: team.org,
+      teamSlug: team.teamSlug,
+      teamHandle: team.teamHandle,
+      teamPrivacy,
+      repositoryPermission,
+    },
+    teamMembers,
+    teamMemberCount: teamMembers.length,
+    allowlistedMembers,
+    allowlistedMemberCount: allowlistedMembers.length,
+    members,
+    memberCount: members.length,
+  };
+  return { ...authority, digest: computeMaintainerAuthorityDigest(authority) };
+}
+
+function authoritySnapshotFile(lockToken) {
+  const token = String(lockToken ?? '').trim();
+  if (!/^[A-Za-z0-9-]{8,128}$/.test(token)) throw authorityError('review 锁 token 无效');
+  return stateFile(`maintainer-authority-${token}.json`);
+}
+
+export function removeMaintainerAuthoritySnapshot(lockToken) {
+  try {
+    unlinkSync(authoritySnapshotFile(lockToken));
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** 将一次 fresh GitHub 读取绑定到本轮 review 锁；token 唯一，所以无需覆盖旧文件。 */
+export function writeMaintainerAuthoritySnapshot(authority, { lockToken } = {}) {
+  const snapshot = { ...authority, runToken: String(lockToken ?? '').trim() };
+  validateMaintainerAuthoritySnapshot(snapshot, {
+    owner: String(authority?.repository ?? '').split('/')[0],
+    repo: String(authority?.repository ?? '').split('/').slice(1).join('/'),
+    lockToken: snapshot.runToken,
+    expectedDigest: authority?.digest,
+  });
+  const file = authoritySnapshotFile(snapshot.runToken);
+  writeFileSync(file, JSON.stringify(snapshot, null, 2), { flag: 'wx' });
+  return { file, snapshot };
+}
+
+export function validateMaintainerAuthoritySnapshot(snapshot, {
+  owner = '', repo = '', lockToken = '', expectedDigest = '',
+} = {}) {
+  if (!snapshot || snapshot.version !== MAINTAINER_AUTHORITY_VERSION) {
+    throw authorityError('维护者快照版本缺失或不支持');
+  }
+  const expectedRepository = `${owner}/${repo}`.toLowerCase();
+  if (!owner || !repo || String(snapshot.repository ?? '').toLowerCase() !== expectedRepository) {
+    throw authorityError(`维护者快照仓库不匹配:${snapshot.repository ?? '(empty)'} != ${owner}/${repo}`);
+  }
+  if (!lockToken || snapshot.runToken !== lockToken) throw authorityError('维护者快照不属于当前 review 锁');
+  // [MIVO-PATCH maintainer-allowlist] 白名单来源没有 Team 成员，白名单本身必须非空。
+  const allowlistSource = isAllowlistAuthority(snapshot);
+  const lists = [
+    ['Team 成员', snapshot.teamMembers, !allowlistSource],
+    ['补充白名单', snapshot.allowlistedMembers, allowlistSource],
+    ['最终成员', snapshot.members, true],
+  ];
+  for (const [label, value, mustBeNonEmpty] of lists) {
+    const normalized = normalizeLoginList(value).sort();
+    if (
+      !Array.isArray(value) || (mustBeNonEmpty && normalized.length === 0) ||
+      normalized.length !== value.length || normalized.some((member, index) => member !== value[index])
+    ) {
+      throw authorityError(`维护者快照${label}必须${mustBeNonEmpty ? '是非空、' : ''}去重、排序的小写 login`);
+    }
+  }
+  const expectedMembers = normalizeLoginList([...snapshot.teamMembers, ...snapshot.allowlistedMembers]).sort();
+  if (
+    expectedMembers.length !== snapshot.members.length ||
+    expectedMembers.some((member, index) => member !== snapshot.members[index])
+  ) {
+    throw authorityError('维护者快照最终成员不是 Team 与补充白名单的并集');
+  }
+  if (snapshot.teamMemberCount !== snapshot.teamMembers.length) throw authorityError('维护者快照 teamMemberCount 不匹配');
+  if (snapshot.allowlistedMemberCount !== snapshot.allowlistedMembers.length) throw authorityError('维护者快照 allowlistedMemberCount 不匹配');
+  if (snapshot.memberCount !== snapshot.members.length) throw authorityError('维护者快照 memberCount 不匹配');
+  const digest = computeMaintainerAuthorityDigest(snapshot);
+  if (snapshot.digest !== digest) throw authorityError('维护者快照 digest 校验失败');
+  if (expectedDigest && expectedDigest !== digest) {
+    throw authorityError(`维护者权限已变化:${expectedDigest} → ${digest}`);
+  }
+  return snapshot;
+}
+
+function readActiveLockToken() {
+  let lock;
+  try {
+    lock = JSON.parse(readFileSync(LOCK_FILE, 'utf8'));
+  } catch (error) {
+    throw authorityError(`无法读取当前 review 锁:${error.message}`);
+  }
+  const token = String(lock?.token ?? '').trim();
+  if (!token) throw authorityError('当前 review 锁没有 token');
+  return token;
+}
+
+export function assertActiveReviewLock(lockToken) {
+  const expected = String(lockToken ?? '').trim();
+  if (!expected) throw authorityError('缺少本轮 prepare.lock.token');
+  const active = readActiveLockToken();
+  if (active !== expected) {
+    throw authorityError('当前活动锁不属于本轮 review，立即停止所有 GitHub 写操作');
+  }
+  return true;
+}
+
+/** 读取 prepare 为当前活动锁写下的 fresh snapshot。 */
+export function loadMaintainerAuthoritySnapshot({
+  owner, repo, expectedDigest = '', lockToken = '',
+} = {}) {
+  const expectedLockToken = String(lockToken ?? '').trim();
+  if (!expectedLockToken) throw authorityError('缺少本轮 prepare.lock.token');
+  const activeLockToken = readActiveLockToken();
+  if (activeLockToken !== expectedLockToken) {
+    throw authorityError('当前活动锁不属于本轮 review，拒绝借用其它轮次的 authority 快照');
+  }
+  let snapshot;
+  try {
+    snapshot = JSON.parse(readFileSync(authoritySnapshotFile(expectedLockToken), 'utf8'));
+  } catch (error) {
+    throw authorityError(`无法读取本轮维护者快照:${error.message}`);
+  }
+  return validateMaintainerAuthoritySnapshot(snapshot, {
+    owner,
+    repo,
+    lockToken: expectedLockToken,
+    expectedDigest,
+  });
+}
+
+/** 当前 viewer/作者相对于 Team + maintainerAllowlist 最终维护者集合的统一审批策略。 */
+export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null } = {}) {
+  const members = new Set(normalizeLoginList(authority?.members));
+  const teamMembers = new Set(normalizeLoginList(authority?.teamMembers));
+  const allowlistedMembers = new Set(normalizeLoginList(authority?.allowlistedMembers));
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  const authorIsMaintainer = author !== '' && members.has(author);
+  const viewerIsMaintainer = viewer !== '' && members.has(viewer);
+  const viewerIsAuthor = author !== '' && viewer !== '' && author === viewer;
+  const authoritySource = (login, isMaintainer) => {
+    if (!isMaintainer) return null;
+    if (teamMembers.has(login)) return 'codeowners-root-team';
+    if (allowlistedMembers.has(login)) return 'maintainer-allowlist';
+    return 'combined-maintainer-authority';
+  };
+  return {
+    author,
+    viewer,
+    authorIsMaintainer,
+    viewerIsMaintainer,
+    viewerIsAuthor,
+    viewerCanApprove: viewerIsMaintainer && !viewerIsAuthor,
+    authorAuthoritySource: authoritySource(author, authorIsMaintainer),
+    viewerAuthoritySource: authoritySource(viewer, viewerIsMaintainer),
+    approvalRequired: true,
+    teamHandle: authority?.codeowners?.teamHandle ?? null,
+    authorityDigest: authority?.digest ?? null,
+  };
+}
+
+/** 兼容现有 route 输出：现行策略不再按作者维护者身份豁免独立 Approve。 */
+export function evaluateApprovalExemption({ authorLogin = '', authority = null } = {}) {
+  const policy = evaluateMaintainerApprovalPolicy({ authorLogin, authority });
+  return {
+    exempt: false,
+    authorIsMaintainer: policy.authorIsMaintainer,
+    author: policy.author,
+    source: policy.authorAuthoritySource ?? 'combined-maintainer-authority',
+    teamHandle: policy.teamHandle,
+    authorityDigest: policy.authorityDigest,
+    reason: policy.authorIsMaintainer
+      ? (policy.authorAuthoritySource === 'maintainer-allowlist'
+        ? `作者 ${policy.author} 在 maintainerAllowlist 补充白名单中，但仍需另一位维护者独立 Approve`
+        : `作者 ${policy.author} 是 ${policy.teamHandle ?? '维护者 Team'} 当前成员，但仍需另一位维护者独立 Approve`)
+      : policy.author
+        ? `作者 ${policy.author} 不是维护者，仍需维护者 Approve`
+        : '作者身份为空，仍需维护者 Approve',
+  };
+}
+
+/** GitHub 缺少 reviewer approval 的聚合状态(null / 空串也按缺 approval 处理)。 */
+export function isApprovalPendingReviewDecision(reviewDecision) {
+  if (reviewDecision == null) return true;
+  const normalized = String(reviewDecision).trim().toUpperCase();
+  return normalized === '' || normalized === 'REVIEW_REQUIRED';
+}
+
+/** 六类维护者确认门的审查前 blocking 公式；维护者作者改在最终审查后独立 Approve。 */
+export function evaluateSignoffBlocking({
+  enabled = false,
+  authorIsMaintainer = false,
+  waitingForAuthor = false,
+  released = null,
+} = {}) {
+  return Boolean(
+    enabled &&
+    !authorIsMaintainer &&
+    !waitingForAuthor &&
+    !released
+  );
 }
 
 /**
  * 跑外部命令。input 作为 stdin;allowFail=true 时不抛错、返回结果对象;
  * timeoutMs 可选(网络类 git 操作务必带上,防 auto 轮被挂死的子进程卡住);
  * cwd 可选(skill 仓库自同步等「不作用于目标仓库」的 git 操作用它,避免把可能
- * 含空格的路径塞进 -C 参数——Windows 下 shell:true 不会自动加引号)。
+ * 含空格的路径塞进 -C 参数——Windows 下 shell:true 不会自动加引号);
+ * env 可选(整份替换子进程环境,给 gh 的凭证 fallback 用——见 credFallbackPlan)。
  * 返回 { ok, stdout, stderr, status }。
  */
-function looksLikeTransientHttp(text) {
-  return /\b503\b|\b502\b|\b429\b|temporarily unavailable|server error/i.test(text ?? '');
-}
-
-export function run(cmd, args, { input, allowFail = false, timeoutMs, cwd } = {}) {
-  const maxAttempts = cmd === 'gh' ? 3 : 1;
-  let last = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const r = spawnSync(cmd, args, {
-      input,
-      encoding: 'utf8',
-      shell: winShellFor(cmd),
-      cwd,
-      maxBuffer: 128 * 1024 * 1024,
-      timeout: timeoutMs,
-    });
-    if (r.error) {
-      last = { ok: false, stdout: '', stderr: String(r.error.message), status: -1 };
-    } else {
-      last = { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
-    }
-    if (last.ok) return last;
-    const transient = looksLikeTransientHttp(`${last.stderr}\n${last.stdout}`);
-    if (!transient || attempt === maxAttempts) break;
-    spawnSync('sleep', [String(attempt)], { encoding: 'utf8' });
+export function run(cmd, args, { input, allowFail = false, timeoutMs = 30_000, cwd, env } = {}) {
+  const r = spawnSync(cmd, args, {
+    input,
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+    cwd,
+    env,
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: timeoutMs,
+  });
+  if (r.error) {
+    if (allowFail) return { ok: false, stdout: '', stderr: String(r.error.message), status: -1 };
+    throw new Error(`${cmd} ${args.join(' ')} 执行失败: ${r.error.message}`);
   }
-  if (!last.ok && !allowFail) {
-    if (last.status === -1) throw new Error(`${cmd} ${args.join(' ')} 执行失败: ${last.stderr}`);
-    throw new Error(`${cmd} ${args.join(' ')} 退出码 ${last.status}: ${last.stderr.trim()}`);
+  const out = { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+  if (!out.ok && !allowFail) {
+    throw new Error(`${cmd} ${args.join(' ')} 退出码 ${r.status}: ${out.stderr.trim()}`);
   }
-  return last;
+  return out;
 }
 
 export function git(args, opts) {
   return run('git', args, opts);
 }
 
-export function gh(args, opts) {
-  return runGhWithPrViewCompat(args, opts, { runRaw: (rawArgs, rawOpts) => run('gh', rawArgs, rawOpts) });
+// ── gh 凭证 fallback(GH_TOKEN 环境变量权限不足时换同账号钥匙串凭证重试一次)──
+//
+// 背景:gh 的凭证优先级是「GH_TOKEN / GITHUB_TOKEN 环境变量 > gh auth login 的钥匙串」。
+// 本项目实测两台机器的 GH_TOKEN(都是 fine-grained PAT)各缺一批权限,且**缺的不是同一批**:
+//   - 机器 A(2026-07-31 实测):贴/摘标签这个写动作本身被拒 —— gh pr edit 报
+//     addLabelsToLabelable 403,换 REST(POST issues/:n/labels)同样 403,只有摘掉
+//     GH_TOKEN 用钥匙串凭证(scopes gist/read:org/repo)才成功;
+//   - 机器 B(同日实测):标签写权限正常(摘标签成功),但 gh pr edit 会顺带预查
+//     reviewRequests.nodes.0.requestedReviewer,该字段被拒 → 整条命令陪葬。
+// 所以标签同步同时做两件事:走 REST(绕开 B 的无关预查,见 syncSignoffLabel)+ 本 fallback
+// (兜住 A 的写权限缺失)。历史坑:两种坏法的报错都被概括成「token 无标签写权限」,
+// 机器 B 据此去查权限查不出问题(见台账 gh-comment-blocked-by-gh-token-pat),所以对外
+// 报错一律照抄原文第一行,不替 GitHub 下结论。
+//
+// 为什么重试安全:403「Resource not accessible」是 GitHub 在执行前拒掉,这次写根本没发生,
+// 换凭证重试不会产生重复写入(与网络中断后重试的语义完全不同)。只重试一次;非权限错不重试。
+// 用过 fallback 必须让调用方看见(credFallbackStats),不做静默换凭证。
+// REVIEW_PR_NO_CRED_FALLBACK=1 关掉(排查凭证问题时用)。
+export const CRED_ENV_KEYS = ['GH_TOKEN', 'GITHUB_TOKEN'];
+const CRED_PERM_RE = /Resource not accessible by (?:personal access token|integration)/i;
+
+/** 纯函数:这个 gh 结果是不是「凭证权限不足」。stdout 也查——GraphQL 的错在 stdout 里。 */
+export function isCredPermissionError(r) {
+  if (!r || r.ok) return false;
+  return CRED_PERM_RE.test(`${r.stderr ?? ''}${r.stdout ?? ''}`);
+}
+
+/**
+ * 纯函数:要不要换凭证重试 + 该摘哪些环境变量。单测覆盖(security-patterns.test.mjs)。
+ * 返回 { retry, stripped }。
+ */
+export function credFallbackPlan({ result, env = process.env, disabled = false } = {}) {
+  if (disabled || env.REVIEW_PR_NO_CRED_FALLBACK === '1') return { retry: false, stripped: [] };
+  if (!isCredPermissionError(result)) return { retry: false, stripped: [] };
+  // 环境变量里没有 token 可摘 = 当前用的已经是钥匙串凭证,重试只会得到同一个 403
+  const stripped = CRED_ENV_KEYS.filter((k) => env[k]);
+  return { retry: stripped.length > 0, stripped };
+}
+
+const CRED_FALLBACKS = [];
+const REQUEST_METRICS = { requests: 0, retries: 0, elapsedMs: 0, failures: 0 };
+export function requestMetrics() { return { ...REQUEST_METRICS, credentialFallbacks: CRED_FALLBACKS.length }; }
+/** 本进程用过几次凭证 fallback(脚本汇总里带出去,不静默换凭证)。 */
+export function credFallbackStats() {
+  return CRED_FALLBACKS.slice();
+}
+
+export function gh(args, opts = {}) {
+  const { allowFail = false, noCredFallback = false, readOnly, ...rest } = opts;
+  const safeRead = readOnly ?? (
+    ['pr', 'issue', 'repo'].includes(args[0]) && ['view', 'list'].includes(args[1]) ||
+    args[0] === 'api' && !args.includes('graphql') &&
+      !args.some((arg) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(arg)) &&
+      (args.includes('GET') || !args.some((arg) => ['-f', '-F', '--input'].includes(arg)))
+  );
+  const invoke = (extra = {}) => {
+    const started = Date.now();
+    REQUEST_METRICS.requests++;
+    const result = run('gh', args, { ...rest, allowFail: true, ...extra });
+    REQUEST_METRICS.elapsedMs += Date.now() - started;
+    return result;
+  };
+  let r = invoke();
+  // Only repeat reads. A timeout after a mutation may mean the write already succeeded.
+  for (let retry = 0; safeRead && retry < 2; retry++) {
+    const transient = /HTTP (?:429|502|503|504)|ETIMEDOUT|ECONNRESET|TLS handshake timeout|connection reset/i.test(r.stderr) ||
+      args[0] === 'api' && /^\s*<(?:!DOCTYPE|html)\b/i.test(r.stdout);
+    if (!transient) break;
+    REQUEST_METRICS.retries++;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, [500, 1500][retry]);
+    r = invoke();
+  }
+  const plan = credFallbackPlan({ result: r, disabled: noCredFallback });
+  if (plan.retry) {
+    const env = { ...process.env };
+    for (const k of plan.stripped) delete env[k];
+    const retry = invoke({ env });
+    CRED_FALLBACKS.push({
+      cmd: args.slice(0, 3).join(' '),
+      stripped: plan.stripped,
+      ok: retry.ok,
+    });
+    // fallback 也失败:两套凭证的报错都带回去,别只报后者
+    r = retry.ok
+      ? retry
+      : { ...retry, stderr: `${(r.stderr ?? '').trim()}\n[cred-fallback] ${(retry.stderr ?? '').trim()}`.trim() };
+  }
+  if (!r.ok && !allowFail) {
+    throw new Error(`gh ${args.join(' ')} ${r.status === -1 ? '执行失败' : `退出码 ${r.status}`}: ${r.stderr.trim()}`);
+  }
+  return r;
 }
 
 /** gh 命令 + JSON.parse(stdout)。 */
-export function ghJson(args) {
-  return JSON.parse(gh(args).stdout || 'null');
+export function ghJson(args, opts = {}) {
+  return parseApiJson(gh(args, opts).stdout, `gh ${args.slice(0, 3).join(' ')}`);
 }
 
 /**
@@ -620,27 +865,158 @@ export function ghJson(args) {
  * 返回解析后的 JSON(取 .data 之外的完整对象,调用方自行取 .data)。
  */
 export function ghGraphql(query, vars = {}, { timeoutMs } = {}) {
-  const args = ['api', 'graphql', '-F', 'query=@-'];
-  for (const [k, v] of Object.entries(vars)) {
-    if (typeof v === 'number') args.push('-F', `${k}=${v}`);
-    else args.push('-f', `${k}=${v}`);
-  }
+  const args = ['api', 'graphql', '--input', '-'];
   // GraphQL「部分成功」容错:当 query 里某个字段无权访问(典型:fine-grained PAT
   // 读不到 statusCheckRollup)时,GitHub 仍会在 stdout 返回
   // { data:{...其余字段已填充}, errors:[FORBIDDEN ...] },但 gh 会以非 0 退出。
   // 此时不能整体丢弃——只要 data 非 null 就把 partial 结果交给调用方按字段容错,
   // errors 一并带回供调用方识别哪个字段被拒。只有 data 真为 null
   // (查询语法错 / 整体鉴权失败)才抛。
-  const r = gh(args, { input: query, allowFail: true, timeoutMs });
-  const parsed = JSON.parse(r.stdout || 'null');
+  const mutation = /^\s*mutation\b/.test(query);
+  const r = gh(args, { input: JSON.stringify({ query, variables: vars }), allowFail: true, timeoutMs,
+    noCredFallback: mutation, readOnly: !mutation });
+  const parsed = parseApiJson(r.stdout, `gh api graphql (exit ${r.status})`);
+  if (mutation && (parsed?.errors?.length || !r.ok || !parsed?.data)) {
+    throw new Error(`GraphQL mutation 未完成:${(parsed?.errors ?? []).map((e) => e.message).join('; ') || r.stderr || 'missing data'}`);
+  }
+  if (!r.ok) REQUEST_METRICS.failures++;
   if (parsed && parsed.data != null) return parsed;
   if (!r.ok) {
     const gqlMsg = (parsed?.errors ?? []).map((e) => e.message).filter(Boolean).join('; ');
-    const blob = `${gqlMsg}\n${r.stderr}\n${r.stdout}`;
-    const kind = looksLikeTransientHttp(blob) ? 'network-transient' : 'module-or-auth';
-    throw new Error(`gh api graphql 失败[${kind}]: ${gqlMsg || r.stderr.trim() || '无 data 返回'}`);
+    throw new Error(`gh api graphql 失败: ${gqlMsg || r.stderr.trim() || '无 data 返回'}`);
   }
   return parsed;
+}
+
+export function fetchGraphqlConnection(query, variables, select, {
+  ghGraphqlFn = ghGraphql, timeoutMs = 20_000,
+} = {}) {
+  const nodes = [];
+  const cursors = new Set();
+  let cursor;
+  let totalCount;
+  for (let page = 0; page < 1000; page++) {
+    const result = ghGraphqlFn(query, { ...variables, ...(cursor ? { cursor } : {}) }, { timeoutMs });
+    if (result?.errors?.length) throw new Error(result.errors.map((e) => e.message).join('; '));
+    const connection = select(result?.data);
+    if (!connection || !Array.isArray(connection.nodes) || connection.nodes.some((n) => n == null) ||
+        typeof connection.pageInfo?.hasNextPage !== 'boolean') {
+      throw new Error('GraphQL connection 缺失、含空节点或缺少完整分页状态');
+    }
+    if (Number.isInteger(connection.totalCount)) {
+      if (totalCount !== undefined && totalCount !== connection.totalCount) throw new Error('分页期间集合数量变化，请重新读取');
+      totalCount = connection.totalCount;
+    }
+    nodes.push(...connection.nodes);
+    if (!connection.pageInfo.hasNextPage) {
+      if (totalCount !== undefined && totalCount !== nodes.length) throw new Error(`分页不完整:${nodes.length}/${totalCount}`);
+      return nodes;
+    }
+    const next = connection.pageInfo.endCursor;
+    if (!next || cursors.has(next)) throw new Error('GraphQL 分页游标缺失或重复');
+    cursors.add(next);
+    cursor = next;
+  }
+  throw new Error('GraphQL 分页超出 1000 页，拒绝把部分结果视为完整');
+}
+
+export function fetchRestPages(endpoint, { ghFn = gh, timeoutMs = 30_000 } = {}) {
+  const r = ghFn(['api', '--method', 'GET', '--paginate', '--slurp', endpoint, '-f', 'per_page=100'], { timeoutMs });
+  if (r.ok === false) throw new Error(`GET ${endpoint}: ${r.stderr || 'request failed'}`);
+  const pages = parseApiJson(r.stdout, `GET ${endpoint}`);
+  if (!Array.isArray(pages) || !pages.length || pages.some((p) => !Array.isArray(p))) {
+    throw new Error(`GET ${endpoint}: REST 分页结果形状异常`);
+  }
+  return pages.flat();
+}
+
+const REVIEW_THREADS_PAGE_QUERY = `
+  query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$num){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{ hasNextPage endCursor }
+          nodes{
+            id isResolved isOutdated path line
+            firstComments:comments(first:1){ nodes{ author{ login __typename } body createdAt } }
+            lastComments:comments(last:1){ nodes{ author{ login __typename } body createdAt } }
+          }
+        }
+      }
+    }
+  }`;
+
+/** 完整分页读取 review threads;任何 partial error / 缺页 / 游标不前进都返回 verified=false。 */
+export function fetchAllReviewThreads(owner, repo, pr, { ghGraphqlFn = ghGraphql, includeComments = false } = {}) {
+  const threads = [];
+  const errors = [];
+  const seenCursors = new Set();
+  let cursor = null;
+  while (true) {
+    let result;
+    try {
+      const query = includeComments ? REVIEW_THREADS_PAGE_QUERY.replace(
+        /firstComments:comments\(first:1\)\{[^\n]+\}\s*lastComments:comments\(last:1\)\{[^\n]+\}/,
+        'comments(first:100){ pageInfo{ hasNextPage endCursor } nodes{ id author{ login __typename } body createdAt updatedAt url } }',
+      ) : REVIEW_THREADS_PAGE_QUERY;
+      result = ghGraphqlFn(query, {
+        owner,
+        repo,
+        num: pr,
+        ...(cursor ? { cursor } : {}),
+      }, { timeoutMs: 20_000 });
+    } catch (error) {
+      errors.push(String(error?.message ?? error));
+      return { threads, verified: false, errors };
+    }
+    if (result?.errors?.length) {
+      errors.push(...result.errors.map((error) => error?.message ?? 'GraphQL partial error'));
+      return { threads, verified: false, errors };
+    }
+    const connection = result?.data?.repository?.pullRequest?.reviewThreads;
+    if (!connection || !Array.isArray(connection.nodes) || !connection.pageInfo) {
+      errors.push('reviewThreads 字段缺失或形状异常');
+      return { threads, verified: false, errors };
+    }
+    for (const thread of connection.nodes) {
+      if (!thread || typeof thread.isResolved !== 'boolean') {
+        return { threads, verified: false, errors: ['review thread 节点缺失或 isResolved 未验证'] };
+      }
+      if (includeComments) {
+        try {
+          if (!thread.id || !Array.isArray(thread.comments?.nodes) || !thread.comments?.pageInfo) throw new Error('thread comments 缺失');
+          if (thread.comments.pageInfo.hasNextPage) {
+            const comments = fetchGraphqlConnection(`query($id:ID!,$cursor:String){
+              node(id:$id){ ... on PullRequestReviewThread {
+                comments(first:100,after:$cursor){ pageInfo{ hasNextPage endCursor } nodes{ id author{ login __typename } body createdAt updatedAt url } }
+              }}
+            }`, { id: thread.id }, (data) => data?.node?.comments, { ghGraphqlFn });
+            thread.comments = { nodes: comments };
+          }
+          threads.push(thread);
+          continue;
+        } catch (error) { return { threads, verified: false, errors: [error.message] }; }
+      }
+      const first = thread.firstComments?.nodes?.[0] ?? null;
+      const last = thread.lastComments?.nodes?.[0] ?? first;
+      threads.push({
+        id: thread.id,
+        line: thread.line,
+        isResolved: thread.isResolved,
+        isOutdated: thread.isOutdated,
+        path: thread.path,
+        comments: { nodes: [first, last].filter(Boolean) },
+      });
+    }
+    if (!connection.pageInfo.hasNextPage) return { threads, verified: true, errors: [] };
+    const next = connection.pageInfo.endCursor;
+    if (!next || seenCursors.has(next)) {
+      errors.push('reviewThreads 分页游标缺失或重复');
+      return { threads, verified: false, errors };
+    }
+    seenCursors.add(next);
+    cursor = next;
+  }
 }
 
 /**
@@ -659,7 +1035,9 @@ export function classifyHeadChecks(slug, headSha) {
   const r = gh(['api', `repos/${slug}/actions/runs?head_sha=${headSha}&per_page=100`], { allowFail: true });
   if (!r.ok) return { ciRuns: null };
   try {
-    const runs = JSON.parse(r.stdout || '{}').workflow_runs ?? [];
+    // [MIVO-PATCH ci-ignore] 本流程与已退役审查流程的 workflow 不算作者 CI。
+    const ignoredPaths = new Set((loadRules().ciIgnoreWorkflows?.paths ?? []).map(String));
+    const runs = (JSON.parse(r.stdout || '{}').workflow_runs ?? []).filter((w) => !ignoredPaths.has(String(w.path ?? '')));
     const seen = new Set();
     const latest = [];
     for (const w of runs) {
@@ -692,1206 +1070,607 @@ export function classifyHeadChecks(slug, headSha) {
 }
 
 /**
- * 分类 PR statusCheckRollup(gh pr view --json statusCheckRollup)为 failed / pending。
- * 与 classifyHeadChecks 互补:actions/runs 只看得到 GitHub Actions 的 workflow run,
- * 看不到第三方 App 的 check-run(Greptile 等)与 commit status;rollup 两者都含,
- * 是「head commit 上所有已上报检查」的全集。主要消费方是 mergeStateStatus=UNSTABLE
- * 分支——UNSTABLE = 可合并但有非 required 检查失败/未完成,GitHub 不拦、我们必须拦
- * (典型:PG smoke 这类跑在 PR 上但未升门的检查挂了,不拦就会自动合并带病 PR)。
- * rollup 为 null/非数组(字段没取 / 权限异常)返 null——调用方须按「未知」保守处理,
- * 不得当「无失败」放行。CANCELLED 计入 failed:rollup 只看 head commit,头上挂着
- * 被取消的 run 说明该检查没跑完整,方向安全(最多多跳过一轮,不会漏拦)。
- */
-export function classifyStatusRollup(rollup) {
-  if (!Array.isArray(rollup)) return null;
-  const FAIL_RUN = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
-  const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
-  const failed = [];
-  const pending = [];
-  const ok = []; // 已上报且通过(SUCCESS/NEUTRAL/SKIPPED)的检查名——probeBranchProtection 用它判 required_status_checks 规则是否已满足
-  for (const c of rollup) {
-    // CheckRun(name/status/conclusion)与 StatusContext(context/state)字段形状不同,统一归一
-    const name = c?.name ?? c?.context ?? '(unnamed check)';
-    if (c?.state != null) {
-      // StatusContext:state = SUCCESS / FAILURE / ERROR / PENDING / EXPECTED
-      if (c.state === 'FAILURE' || c.state === 'ERROR') failed.push(name);
-      else if (c.state !== 'SUCCESS') pending.push(name);
-      else ok.push(name);
-    } else if (c?.status !== 'COMPLETED') {
-      pending.push(name);
-    } else if (FAIL_RUN.has(c?.conclusion)) {
-      failed.push(name);
-    } else if (!OK_RUN.has(c?.conclusion)) {
-      // 未知 conclusion(GitHub 新增枚举等)按未完成处理,方向安全
-      pending.push(name);
-    } else {
-      ok.push(name);
-    }
-  }
-  return { failed, pending, ok };
-}
-
-/**
- * 拉 head commit 上「所有已上报检查」的 isRequired 标注(IO 函数,非纯函数——发 GraphQL
- * 网络请求;只读,best-effort)。gh 的 `--json statusCheckRollup` 模板不带 isRequired
- * 字段(仅 classifyStatusRollup 消费的那份没有),必须单独发一次 GraphQL 查
- * `isRequired(pullRequestNumber:)`——这是 CheckRun / StatusContext 都实现的字段,用来把
- * 「required 检查全绿」与「非 required 检查失败但不阻断」精确区分开(授权快速合并通道
- * 的 CI 口径,见 findApproveMergeAuthorization 与 SKILL 5.1)。只在真的有候选授权评论时
- * 才调用(省 API):批量扫描几十个 PR 时,绝大多数没人发过 `/approve-merge`,不值得每条
- * 都多打一次 GraphQL。
- *
- * P1-3(2026-08-02)完整分页:`contexts` 用 `first:100` 单页曾经只取前 100 条,若某 PR
- * 的已上报检查超过 100 条(大型 monorepo 常见),第 101 条起会静默丢失——若那条恰好是
- * required 且 FAILURE,调用方会误判"没看到失败=全绿"。改用 `pageInfo{hasNextPage
- * endCursor}` 循环取全;**任一页读取异常或声称有下一页却拿不到 cursor,整体返回 null**
- * (fail-closed,不返回"读到一半"的部分结果——部分结果如果被当作"完整集合"消费,后面
- * 没读到的页面里若有失败检查,会被误判为不存在,这与只查 100 条的老问题是同一类风险,
- * 只是边界从 100 挪到了"读取中断的那一页",治标不治本)。
- */
-export function fetchHeadCheckContexts({ owner, repo, pr }) {
-  const buildQuery = (withCursor) => `
-    query($owner:String!,$repo:String!,$num:Int!${withCursor ? ',$cursor:String!' : ''}){
-      repository(owner:$owner,name:$repo){
-        pullRequest(number:$num){
-          commits(last:1){ nodes{ commit{
-            statusCheckRollup{
-              contexts(first:100${withCursor ? ',after:$cursor' : ''}){
-                nodes{
-                  __typename
-                  ... on CheckRun { name status conclusion isRequired(pullRequestNumber:$num) }
-                  ... on StatusContext { context state isRequired(pullRequestNumber:$num) }
-                }
-                pageInfo{ hasNextPage endCursor }
-              }
-            }
-          }}}
-        }
-      }
-    }`;
-  const allNodes = [];
-  let cursor = null;
-  const MAX_PAGES = 50; // 5000 条检查的硬上限,纯防御性,真实仓库远不会到这个量级
-  try {
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const vars = { owner, repo, num: pr, ...(cursor ? { cursor } : {}) };
-      const data = ghGraphql(buildQuery(cursor != null), vars, { timeoutMs: 30_000 })?.data;
-      const contexts = data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
-      const nodes = contexts?.nodes;
-      if (!Array.isArray(nodes)) return null; // 本页读不出 nodes → 整体判未知,不返回部分结果
-      allNodes.push(...nodes);
-      if (!contexts?.pageInfo?.hasNextPage) return allNodes; // 正常结束,拿到完整集合
-      if (!contexts.pageInfo.endCursor) return null; // 声称还有下一页但给不出 cursor,异常,视为读取失败
-      cursor = contexts.pageInfo.endCursor;
-    }
-    return null; // 超过硬上限仍未结束(真实场景不会发生)——不敢说读全了,fail-closed
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 解析 HTTP `Link` header(RFC 5988,GitHub REST 分页用它标 rel="next"/"last")。
- * 纯函数,便于单测。返回 `{ next?, last?, ... }` 的 rel→url 映射,读不出结构时返回
- * 空对象(不抛错——调用方按"没有 next"处理,即视为已到最后一页)。
- */
-export function parseLinkHeader(headerValue) {
-  const links = {};
-  if (!headerValue) return links;
-  for (const part of headerValue.split(',')) {
-    const m = part.trim().match(/^<([^>]+)>\s*;\s*rel="([^"]+)"/);
-    if (m) links[m[2]] = m[1];
-  }
-  return links;
-}
-
-/**
- * 单页 REST 数组端点拉取(IO,非纯函数——发 `gh api <url> -i` 网络请求,`-i` 带上响应头
- * 才能读到 `Link`)。拆出响应头与 body,解析出 `rel="next"` 的下一页 URL(GitHub 返回的
- * 是绝对 URL,`gh api` 可直接接受,不需要再拼 owner/repo)。任一环节失败(请求失败/找不到
- * 头体分隔符/body 不是 JSON 数组)返回 `null`。
- */
-function fetchRestArrayPage(url) {
-  const r = gh(['api', url, '-i'], { allowFail: true, timeoutMs: 30_000 });
-  if (!r.ok) return null;
-  const sepIdx = r.stdout.indexOf('\r\n\r\n');
-  if (sepIdx === -1) return null;
-  const headerBlock = r.stdout.slice(0, sepIdx);
-  const bodyText = r.stdout.slice(sepIdx + 4);
-  let body;
-  try {
-    body = JSON.parse(bodyText || '[]');
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(body)) return null;
-  const linkLine = headerBlock.split('\r\n').find((l) => /^link:/i.test(l));
-  const links = linkLine ? parseLinkHeader(linkLine.slice(linkLine.indexOf(':') + 1)) : {};
-  return { body, nextUrl: links.next ?? null };
-}
-
-/**
- * 完整遍历一个 REST 数组端点的所有分页(Link header 分页;P1-1,2026-08-02 二审修复)。
- * 此前 `fetchExpectedRequiredContexts` / `probeBranchProtection` 都只读第一页——mivo
- * 实测 `GET /repos/{slug}/rules/branches/{branch}` 端点确实会分页(Link `page=9
- * rel="last"`),规则落在第 2 页起就会静默丢失,与刚修的 GraphQL `contexts` 分页
- * (P1-3 首轮)是同一类 bug,只是出现在 REST 侧、上一轮漏改。
- *
- * `fetchPage` 参数供单测注入(构造"规则落在第 N 页"/"中途页失败"场景,不必真的发
- * 网络请求),默认调用真实 `gh api`。**任一页失败(`fetchPage` 返回 null)整体返回
- * null,不返回部分结果**——部分结果如果被当作"读全了"消费,后面没读到的页面里若有
- * 目标规则，会被误判为不存在，这正是本次要修的静默丢失。
- */
-export function fetchAllRestPages(startUrl, { fetchPage = fetchRestArrayPage, maxPages = 50 } = {}) {
-  const all = [];
-  let url = startUrl;
-  for (let i = 0; i < maxPages; i++) {
-    const page = fetchPage(url);
-    if (!page) return null;
-    all.push(...page.body);
-    if (!page.nextUrl) return all;
-    url = page.nextUrl;
-  }
-  return null; // 超过硬上限仍未结束(真实场景不会发生)，fail-closed，不敢说读全了
-}
-
-/**
- * 读取分支保护 `required_status_checks` 规则要求的完整 context 名单(IO 函数,非纯
- * 函数——发 REST 网络请求;只读,best-effort;P1-3,2026-08-02)。用于弥补
- * `classifyRequiredChecks` 单看 `contexts` 的盲区:一条必需检查如果从未开始跑(工作流
- * 触发条件没命中、还没创建 check-run 等),就根本不会出现在 `fetchHeadCheckContexts` 的
- * 结果里——既不在 failed 也不在 pending,单看 contexts 会误判"没有已知问题"=全绿。本
- * 函数给出"这条分支到底要求哪些 context 上报"的权威名单,供调用方与实际观测到的
- * context 集合做差,缺失的一律按 pending(未上报≠绿)处理。分页遍历见
- * `fetchAllRestPages`(P1-1 二审修复:此前只读一页)。
- *
- * 返回 `Set<string>`(可能为空集合——这是唯一允许"没有 required_status_checks 类型规则"
- * 结论的凭证,因为端点确实读到了、只是没有这类规则)或 `null`(端点读取失败/解析失败/
- * 任一分页失败,fail-closed,调用方不得当"无要求"处理)。与 probeBranchProtection 共用
- * 同一个端点(`GET /repos/{slug}/rules/branches/{branch}`),但目的不同:后者判"结构性
- * 门是否已满足"(context 满足即从 requiredCheckRules 剔除该规则,不算 blocker);本函数
- * 只给"要求了哪些 context",不做满足性判断。第三参 `opts`(如 `{ fetchPage }`)供单测
- * 注入,透传给 `fetchAllRestPages`。
- */
-export function fetchExpectedRequiredContexts(slug, branch, opts = {}) {
-  if (!branch) return null;
-  const rules = fetchAllRestPages(`repos/${slug}/rules/branches/${encodeURIComponent(branch)}?per_page=100`, opts);
-  if (!Array.isArray(rules)) return null;
-  try {
-    const names = new Set();
-    for (const r of rules) {
-      if (r?.type !== 'required_status_checks') continue;
-      for (const c of r.parameters?.required_status_checks ?? []) {
-        if (typeof c?.context === 'string' && c.context !== '') names.add(c.context);
-      }
-    }
-    return names;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 把 fetchHeadCheckContexts 的原始节点分成 required / 非 required 两条轨,每条再分
- * failed / pending(纯函数,便于单测)。required 检查从不上报(如 structural-check 场景
- * 里真空的 code_scanning/code_quality)时,该检查根本不会出现在 contexts 里——既不在
- * failed 也不在 pending,视为「没有已知问题」,与「required 检查全绿即可合」的口径一致
- * (授权快速合并通道正是为解这类场景设计的,见 SKILL 5.1「授权快速合并通道」)。
- * nodes 非数组(读取失败)返 null——调用方必须按「未知」处理,不得当「全绿」放行。
- *
- * P1-3(2026-08-02)required 完整性:可选第二参 `expectedRequiredNames`
- * (`fetchExpectedRequiredContexts` 的返回值,`Set<string>`)——传入时,任何"要求了但从未
- * 出现在 nodes 里"的 context 名一律追加进 `requiredPending`(未上报≠绿,不能默认放行,
- * 这正是"required 检查从不上报=没有已知问题"这条既有口径的盲区:该检查从未开始跑时,
- * 单看 nodes 同样看不出问题,但它跟 code_scanning/code_quality 这类"结构性地从不产生
- * 结果"不是一回事——它本该跑,只是没跑,必须当"还没绿"处理)。不传(`null`/未提供)时
- * 行为与此前完全一致,不做完整性核验——调用方(context.mjs / pre-merge-check.mjs)必须
- * 显式传入,且 `fetchExpectedRequiredContexts` 返回 `null` 时应把整体结果视为
- * unreadable(参见两处调用点的组合逻辑),不能悄悄跳过完整性核验。
- */
-export function classifyRequiredChecks(nodes, expectedRequiredNames = null) {
-  if (!Array.isArray(nodes)) return null;
-  const FAIL_RUN = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
-  const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
-  const requiredFailed = [];
-  const requiredPending = [];
-  const nonRequiredFailed = [];
-  const nonRequiredPending = [];
-  const requiredSeen = new Set(); // 无论 ok/failed/pending,只要是 required 且真的出现过就记录
-  for (const c of nodes ?? []) {
-    const name = c?.name ?? c?.context ?? '(unnamed check)';
-    const required = c?.isRequired === true;
-    if (required) requiredSeen.add(name);
-    let bucket;
-    if (c?.state != null) {
-      if (c.state === 'FAILURE' || c.state === 'ERROR') bucket = 'failed';
-      else if (c.state !== 'SUCCESS') bucket = 'pending';
-      else bucket = 'ok';
-    } else if (c?.status !== 'COMPLETED') {
-      bucket = 'pending';
-    } else if (FAIL_RUN.has(c?.conclusion)) {
-      bucket = 'failed';
-    } else if (!OK_RUN.has(c?.conclusion)) {
-      bucket = 'pending';
-    } else {
-      bucket = 'ok';
-    }
-    if (bucket === 'failed') (required ? requiredFailed : nonRequiredFailed).push(name);
-    else if (bucket === 'pending') (required ? requiredPending : nonRequiredPending).push(name);
-  }
-  if (expectedRequiredNames instanceof Set) {
-    for (const name of expectedRequiredNames) {
-      if (!requiredSeen.has(name)) requiredPending.push(name); // 要求了但从未出现在 nodes 里 → 未上报,不能当绿
-    }
-  }
-  return { requiredFailed, requiredPending, nonRequiredFailed, nonRequiredPending };
-}
-
-/**
- * 规范化配置里的"登录名清单"字段(admins 等;P2-3,2026-08-02):Array.isArray 校验 +
- * 过滤非空字符串 + 统一 trim + 小写。非法形态(整体非数组,或数组内混入非字符串/空
- * 字符串)一律不抛 TypeError——静默按"能用的部分"处理,并显式给出 `invalid=true` 供
- * 调用方在报告里显著告警"admins 配置形态不合法",不能因为配置写错就让脚本崩掉,也
- * 不能悄悄吞掉这个信号让 owner 以为配置是对的。未配置(null/undefined)是正常默认,
- * 不算 invalid。三处消费点(context.mjs 的 ADMINS、pre-merge-check.mjs 的 ADMINS、
- * findApproveMergeAuthorization 内部的 adminSet)都必须走这一份,不许各自重新实现。
- * 返回 { logins: string[], invalid: boolean }。
- */
-export function normalizeLoginList(value) {
-  if (value == null) return { logins: [], invalid: false };
-  if (!Array.isArray(value)) return { logins: [], invalid: true };
-  const logins = [];
-  let invalid = false;
-  for (const v of value) {
-    if (typeof v === 'string' && v.trim() !== '') logins.push(v.trim().toLowerCase());
-    else invalid = true;
-  }
-  return { logins, invalid };
-}
-
-/**
- * 合并授权策略的单一解析函数(SC-1,2026-08-08):把 `mergeAuthorization` 配置里的两个
- * 新键解析成统一形状,context.mjs 与 pre-merge-check.mjs 共用,防两处判据漂移。
- *
- * 配置 Schema(pr-rules.json 的 mergeAuthorization 对象):
- *   - `requireAutomatedReviewForAutoMerge`(boolean,默认缺失=false):强制自动化审查
- *     策略开关。开启后,除人工 break-glass(/approve-merge)外,每一种自动合并 basis
- *     (ordinary / self-merge / structural approved / admin-trust)都必须绑定当前 head
- *     的 clean 阶段二回执——仅绿 CI 或 GitHub APPROVED 都不能单独放行(SC-2)。
- *   - `breakGlassApprovers`(string[]):人工 `/approve-merge <SHA>` 发令名单——只决定
- *     谁能发这条命令跳过阶段二独立审查,与 PR 作者是否在 `admins`(admin-trust 信任
- *     名单)无关。**拆分自 `admins`**(SC-1):授权快速合并通道不再与 admin-trust 共用
- *     同一份名单;`admins` 保留作结构性 BLOCKED 的 admin-trust 路由。
- *
- * 兼容期规则(未配置新字段的消费仓行为不被静默改变):
- *   - 未配置 `breakGlassApprovers`(null/undefined)→ 明确回退到 `admins` 名单并输出
- *     warning(旧仓 /approve-merge 行为不变;Mivo 显式配置后不再走回退)。
- *   - 已配置但形态非法(非数组 / 混入非字符串 / 空字符串)→ normalizeLoginList
- *     fail-closed 处理能用的部分,并输出 warning 显著告警(不抛错、不静默当空名单)。
- *   - `requireAutomatedReviewForAutoMerge` **键缺失**(mergeAuthorization 对象里没有
- *     这个键,或整个 mergeAuthorization 缺失)→ 兼容 false(旧仓行为不变,不告警);
- *     **键存在但值非 boolean**(null/string/number/object/undefined 等显式 malformed,
- *     null 按「显式写了但写错」算 malformed 而非缺失,因为键在配置里就占了一个位置)
- *     → fail-closed 按 true 处理(从安全方向强制自动化审查,绝不静默放宽成 false)
- *     并输出 warning 显著告警(审 A2,2026-08-08:此前 `'true'` 这类字符串会静默变
- *     false 且无任何 warning,结构性 approved 可免阶段二回执直接合——fail-open)。
- *
- * 容器级规则(审 C1,2026-08-08):`mergeAuthorization` 整体必须是 **plain object**。
- *   - 缺失 / null → 正常兼容默认,视为空对象(旧仓形态,行为不变:require=false;
- *     breakGlass 走回退 admins + warning)。
- *   - string/number/boolean/array/function 等非 plain object = **容器级 malformed**:
- *     此前 `'requireAutomatedReviewForAutoMerge' in <string>` 会抛 TypeError 把
- *     context/pre-merge 脚本整个打崩(exit1 + stack trace);数组虽不抛,却被静默
- *     当成合法对象消费字段、breakGlass 静默回退 admins 扩大发令名单(fail-open)。
- *     修复:必须不抛;整体 fail-closed,不消费畸形容器内任何字段——require 强制
- *     true(宁严勿松)、breakGlassApprovers 置 [] 且**不回退 admins**(回退会扩大
- *     /approve-merge 发令名单)、显著 warning 点名容器必须 object。
- *
- * 返回 `{ requireAutomatedReviewForAutoMerge: boolean, breakGlassApprovers: string[],
- *         warnings: string[] }`。
- */
-export function resolveMergeAuthorizationPolicy(rules) {
-  const warnings = [];
-  const rawMergeAuth = rules?.mergeAuthorization;
-  const isPlainObject = rawMergeAuth != null && typeof rawMergeAuth === 'object' && !Array.isArray(rawMergeAuth);
-  if (!isPlainObject && rawMergeAuth != null) {
-    // 容器级 malformed(整体 fail-closed):不读容器内任何字段,不给 breakGlass 回退
-    // admins 的机会。缺失/null 不在这里——那是正常兼容默认,继续走下方字段规则。
-    warnings.push(`mergeAuthorization 配置形态不合法(应为 object,实际为 ${Array.isArray(rawMergeAuth) ? 'array' : typeof rawMergeAuth})——容器级 fail-closed:requireAutomatedReviewForAutoMerge 按 true(强制自动化审查)、breakGlassApprovers 按 [] (不回退 admins 扩大权限),请检查配置`);
-    return { requireAutomatedReviewForAutoMerge: true, breakGlassApprovers: [], warnings };
-  }
-  const mergeAuth = isPlainObject ? rawMergeAuth : {};
-  // 存在性按 `in` 判(键真在对象里才算「存在」),缺失走兼容 false 不告警;
-  // 存在但非 boolean → fail-closed 按 true(宁严勿松)+ 显著告警,禁止静默当 false。
-  let requireAutomatedReviewForAutoMerge = false;
-  if ('requireAutomatedReviewForAutoMerge' in mergeAuth) {
-    const raw = mergeAuth.requireAutomatedReviewForAutoMerge;
-    if (typeof raw !== 'boolean') {
-      requireAutomatedReviewForAutoMerge = true;
-      warnings.push('mergeAuthorization.requireAutomatedReviewForAutoMerge 配置形态不合法(应为 boolean,null/string/number/object 均不接受)——fail-closed 按 true 处理(强制自动化审查开启),请改为显式 true/false');
-    } else {
-      requireAutomatedReviewForAutoMerge = raw;
-    }
-  }
-  let breakGlassApprovers = [];
-  if (mergeAuth.breakGlassApprovers == null) {
-    // 兼容期回退:未配置 → 沿用 admins 名单作为 /approve-merge 发令名单,显式告警
-    // (SC-1 拆分后仍建议目标仓显式配置,否则发令名单与 admin-trust 名单继续混同)。
-    const { logins } = normalizeLoginList(rules?.admins);
-    breakGlassApprovers = logins;
-    warnings.push('mergeAuthorization.breakGlassApprovers 未配置——兼容期回退到 admins 名单作为 /approve-merge 发令名单(SC-1:建议显式配置拆分,否则发令名单与 admin-trust 名单混同)');
-  } else {
-    const { logins, invalid } = normalizeLoginList(mergeAuth.breakGlassApprovers);
-    breakGlassApprovers = logins;
-    if (invalid) {
-      warnings.push('mergeAuthorization.breakGlassApprovers 配置形态不合法(应为字符串数组,非法条目被过滤)——已按能用的部分处理,请检查配置');
-    }
-  }
-  return { requireAutomatedReviewForAutoMerge, breakGlassApprovers, warnings };
-}
-
-const APPROVE_MERGE_COMMAND = '/approve-merge';
-
-/**
- * 剔除 fenced code block(```/~~~ 围栏,含到文末仍未闭合的情况)、blockquote(`>` 开头)、
- * Markdown 缩进代码块(4 空格或 tab 开头)——这三类都是"展示/引用这条命令长什么样",不是
- * "下达这条命令"。逐行状态机,纯函数,内部用,配合 hasApproveMergeCommand 一起单测。
- *
- * P2-1(三审修复):此前用一次性正则 ```[\s\S]*?``` /~~~[\s\S]*?~~~ 匹配"已闭合"的围栏,
- * 有两个缺口:①未闭合到文末的围栏完全测不到,里面的内容会被当成普通文本继续扫描,
- * `/approve-merge` 写在一段"没写完的代码示例"里仍会被判成真下达;②完全不处理 4 空格/
- * tab 缩进代码块,同样的"展示"语境测不到。
- *
- * 四审修复:三审改成的逐行状态机只查了闭合标记的类型与长度,没查标记之后是否只跟
- * 空白——审核方实测反例:```` ```not-a-close ```` 这种"反引号后紧跟非空白文字"的行
- * 会被误判成有效闭合(CommonMark 规定闭合围栏标记后只能跟空格/tab,否则不构成闭合)。
- * 改为与 CommonMark 一致:围栏识别做类型 + 长度 + 闭合标记后仅空白 三重匹配——反引号
- * 围栏只能被反引号闭合、波浪号围栏只能被波浪号闭合,闭合标记长度必须 >= 开启标记长度,
- * 且闭合标记后除空格/tab 外不能有其它字符;否则不构成闭合,围栏内容会提前"暴露"成
- * 候选命令行(fail-open 风险,不只是正确性瑕疵)。开启标记同样限制前导缩进 0-3 空格
- * (与 CommonMark 一致;4 空格起属缩进代码块,不是围栏,交给下面的缩进代码块分支处理)。
- */
-function stripFencedAndQuoted(body) {
-  const lines = (body ?? '').split('\n');
-  const kept = [];
-  let fenceChar = null; // null = 不在围栏内;否则是 '`' 或 '~'
-  let fenceLen = 0;
-  for (const line of lines) {
-    const m = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-    if (m) {
-      const [, marker, trailing] = m;
-      const char = marker[0];
-      const len = marker.length;
-      if (fenceChar === null) {
-        fenceChar = char;
-        fenceLen = len;
-        continue;
-      }
-      const isValidClose = char === fenceChar && len >= fenceLen && /^[ \t]*$/.test(trailing);
-      if (isValidClose) {
-        fenceChar = null;
-        fenceLen = 0;
-        continue;
-      }
-      // 类型/长度不匹配,或闭合标记后还有非空白内容——不构成闭合,仍是围栏内部的一行,
-      // 走下面"仍在围栏内"分支跳过。
-    }
-    if (fenceChar !== null) continue; // 围栏内部(含未闭合到文末),整段跳过
-    if (/^\s*>/.test(line)) continue; // blockquote
-    if (/^(?: {4}|\t)/.test(line)) continue; // Markdown 缩进代码块
-    kept.push(line);
-  }
-  return kept.join('\n');
-}
-
-/**
- * 判定一段评论正文是否真的"下达"了 `/approve-merge` 命令(纯函数,便于单测;P1-6,
- * 2026-08-02 owner 裁决收紧,推翻此前"允许行内追加说明"的裁决——被审核方实例证伪:
- * 允许行内文字会把"我觉得可以发 /approve-merge 了,但再看一眼"这类**讨论**命令的句子
- * 误判成**下达**命令)。口径:先剔除 fenced code block 与 blockquote(展示/引用不算
- * 下达),剩余每一行 trim 后必须**精确等于** `/approve-merge`(大小写敏感,不含任何
- * 行内追加说明)才算命中。
- */
-export function hasApproveMergeCommand(body) {
-  return stripFencedAndQuoted(body)
-    .split('\n')
-    .some((line) => line.trim() === APPROVE_MERGE_COMMAND);
-}
-
-/**
- * head 绑定授权命令的解析(SC-A,2026-08-04):`/approve-merge <完整 40 位 head SHA>`,
- * 独占一行(同 stripFencedAndQuoted 剔除展示语境)。返回命中的 sha(小写)数组。
- *
- * 为什么改 head 绑定、废除 pushedDate 时效判定:旧判定依赖 `Commit.pushedDate` +
- * `HeadRefForcePushedEvent.createdAt` 的"授权须晚于最后真实 push"。实测(2026-08-04,
- * mivo-canvas #469)`Commit.pushedDate` 已被 GitHub schema 标为不再支持、12 个 commit
- * 全部返回 null——无 force-push 的普通 PR 上 latestPushDate 恒为空串,isFresh 恒 false,
- * 全部授权被误判 stale;反之有旧 force-push 后再普通 push,旧 force 时间可能早于授权,
- * 造成"之后又推了代码的旧授权"被误判 fresh。SHA 绑定不依赖任何时间戳:授权只对点名的
- * 那个 head 生效,push 换 head 即天然作废,重发须带新 SHA。
- * 旧裸格式 `/approve-merge`(不带 SHA)不再构成授权(breaking change,owner 2026-08-04
- * 知情拍板),由调用方经 `legacyBare` 报告提醒重发。
- */
-export function parseApproveMergeShaCommands(body) {
-  return stripFencedAndQuoted(body)
-    .split('\n')
-    .map((line) => line.trim().match(/^\/approve-merge ([0-9a-fA-F]{40})$/))
-    .filter(Boolean)
-    .map((m) => m[1].toLowerCase());
-}
-
-/**
- * 授权快速合并通道的确定性检测(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」)。
- * `breakGlassApprovers` 名单成员(大小写不敏感)在 PR 评论里发出 `/approve-merge <完整
- * head SHA>`(判定口径见 `parseApproveMergeShaCommands`)= 人工已过安全与代码审查的明确
- * 授权。
- * 安全边界:
- *   - 机器人自己发的评论不算(comments 数组的 isBot 已由调用方标注);
- *   - `breakGlassApprovers` 缺失/为空/非法形态 → adminsConfigured=false,authorized 恒为
- *     null(fail-closed);
- *   - 已编辑的评论不算(`updatedAt !== createdAt` → `edited`,要求重发);
- *   - **授权绑定 head SHA**(SC-A,2026-08-04):命令里的 SHA 必须精确等于当前 `headRefOid`
- *     才有效;不等(之后又推了新 commit / force-push 换了 head)计入 `stale`,需对新 head
- *     重发。headRefOid 缺失/非法 → 全部判 stale(fail-closed)。不再使用 pushedDate 时效
- *     判定(该数据源已实测失效,见 parseApproveMergeShaCommands 注释);
- *   - 旧裸格式 `/approve-merge` 计入 `legacyBare`,不构成授权,调用方应提醒重发。
- * `comments` 是已映射过的评论数组(`{ author, isBot, createdAt, updatedAt, url, body }`)。
- *
- * SC-1(2026-08-08):授权名单与 `admins`(admin-trust 信任名单)解耦——`breakGlassApprovers`
- * 是紧急通道的唯一授权名单,context.mjs / pre-merge-check.mjs 只传策略解析出的
- * `resolveMergeAuthorizationPolicy().breakGlassApprovers`。兼容期(裁决):`breakGlassApprovers`
- * 未提供(null/undefined)时回退到 `admins` 参数(与策略层"字段缺失回退 admins"同口径),
- * 显式 `[]` 才是"关闭紧急通道"。`adminsConfigured` 字段名保留(表示"授权名单已配置且非空")。
- */
-/** Reserved assessment envelopes are display material, never human authorization.
- * Inspect the full body before clipping; malformed versions and quoted markers
- * fail closed here. This predicate does not establish ownership or identity.
- */
-export function isAutomationAssessmentEnvelope(body) {
-  const text = String(body ?? '');
-  return /mivo-issue-assessment\s*:/i.test(text) || /🤖\s*Mivo\s*自动评估/i.test(text);
-}
-
-export function findApproveMergeAuthorization({ comments, breakGlassApprovers, admins, headRefOid }) {
-  // 兼容期回退:未显式传入授权名单 → 沿用 admins(旧调用点/旧测试不因改名受伤;
-  // 与 resolveMergeAuthorizationPolicy 的缺失回退语义一致)。
-  const effectiveList = breakGlassApprovers == null ? (admins ?? []) : breakGlassApprovers;
-  const { logins: adminLogins } = normalizeLoginList(effectiveList);
-  const adminSet = new Set(adminLogins);
-  if (adminSet.size === 0) return { adminsConfigured: false, authorized: null, stale: [], edited: [], legacyBare: [] };
-  const eligible = (comments ?? []).filter((c) => !c.isBot && !c.automationExcluded && !isAutomationAssessmentEnvelope(c.body) && adminSet.has((c.author ?? '').toLowerCase()));
-  const isEdited = (c) => c.updatedAt != null && c.createdAt != null && c.updatedAt !== c.createdAt;
-  // 旧裸格式:仍识别但不授权,单独报告让发令者重发带 SHA 的新格式(不静默吞掉人的意图)。
-  const legacyBare = eligible
-    .filter((c) => hasApproveMergeCommand(c.body ?? '') && parseApproveMergeShaCommands(c.body ?? '').length === 0)
-    .map((c) => ({ author: c.author, createdAt: c.createdAt, url: c.url }));
-  const commandHits = eligible
-    .map((c) => ({ c, shas: parseApproveMergeShaCommands(c.body ?? '') }))
-    .filter(({ shas }) => shas.length > 0);
-  const edited = commandHits
-    .filter(({ c }) => isEdited(c))
-    .map(({ c }) => ({ author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, url: c.url }));
-  const head = (headRefOid ?? '').toLowerCase();
-  // headRefOid 缺失 → fail-closed:没有"当前 head"可比对,任何授权都判 stale,绝不放行。
-  const candidates = commandHits
-    .filter(({ c }) => !isEdited(c))
-    .map(({ c, shas }) => ({ author: c.author, createdAt: c.createdAt, url: c.url, shas }));
-  const isFresh = (cand) => head.length === 40 && cand.shas.includes(head);
-  const fresh = candidates.filter(isFresh).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const stale = candidates.filter((cand) => !isFresh(cand)).map(({ author, createdAt, url }) => ({ author, createdAt, url }));
-  return {
-    adminsConfigured: true,
-    authorized: fresh.length ? { author: fresh[fresh.length - 1].author, createdAt: fresh[fresh.length - 1].createdAt, url: fresh[fresh.length - 1].url } : null,
-    stale,
-    edited,
-    legacyBare,
-  };
-}
-
-// computeLatestPushDate 已删除(SC-A,2026-08-04):其唯一消费场景是 /approve-merge 的
-// pushedDate 时效判定,该数据源已实测失效(Commit.pushedDate 被 GitHub 废弃、实测恒 null),
-// 授权判定改为 head SHA 绑定(见 findApproveMergeAuthorization)。
-
-// ── 安全与隐私内容扫描(P1-1,2026-08-02;context.mjs 与 pre-merge-check.mjs 共用同一份
-// 判据,防两处漂移——此前 pre-merge-check.mjs 对"是否有泄密硬命中"恒传 false、完全不
-// 扫描,是紧急通道的核心 fail-open 缺口)──
-const HARD_SECRET_PATTERNS_BASE = [
-  ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/],
-  // P1-3(三审修复)→ 四审收窄:此前只认 AKIA(长期访问密钥),漏了 ASIA(STS 临时
-  // 凭证,和长期凭证一样能直接用来调 API,泄露危害不比 AKIA 低)。三审时误把
-  // AROA/AIDA/AGPA/AIPA/ANPA/ANVA 也当成"AWS 凭证前缀"一起加了进来——审核方查证:
-  // 这几个是 IAM 资源的唯一 ID(角色/用户/用户组/实例配置/托管策略/托管策略版本),
-  // 不能用于签名调用,不是凭证,不该判 hard(误报,而且密钥类硬命中的代价是"打回+
-  // 清 git 历史+轮换凭证",误伤成本高)。真正能直接用于签名的只有 AKIA(长期）、
-  // ASIA(STS 临时)、以及旧版 A3T 前缀(S3 前端令牌)。这几个 IAM 资源 ID 若确有
-  // 审计价值可另立 soft 类型,本次判断价值有限暂不新增,只做移除。
-  ['aws-access-key-id', /\b(?:AKIA|ASIA|A3T[A-Z0-9])[0-9A-Z]{16}\b/],
-  ['github-token', /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/],
-  ['gitlab-token', /\bglpat-[A-Za-z0-9_-]{20,}\b/],
-  ['npm-token', /\bnpm_[A-Za-z0-9]{36,}\b/],
-  // slack-token 只覆盖 xox[abprs]- 这一族(user/bot/legacy 等 OAuth 令牌),Slack App-Level
-  // Token(xapp-,Socket Mode 等场景用)是完全不同的格式(xapp-<版本>-<APP ID>-<请求
-  // ID>-<64 位十六进制>),不会被 xox 系列命中,P1-3 补一条独立规则。
-  ['slack-token', /\bxox[abprs]-[A-Za-z0-9][A-Za-z0-9-]{8,}\b/],
-  ['slack-app-token', /\bxapp-\d-[A-Z0-9]+-\d+-[a-f0-9]{64}\b/],
-  // sk-api-key 此前只认连字符分隔(sk-,覆盖 OpenAI/Anthropic sk-ant-...)。三审时
-  // 把 Stripe 的下划线形态放宽成任意 `sk[-_]...`,导致普通变量名(如
-  // sk_status_configuration_value)也被误判 hard hit——四审收窄:Stripe 只认
-  // `sk_live_`/`sk_test_` 这个具体前缀,不做通用 sk_ 分隔符放宽;原连字符分支
-  // (sk-...)不受影响,单独保留。
-  ['sk-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
-  ['stripe-api-key', /\bsk_(?:live|test)_[A-Za-z0-9_-]{20,}\b/],
-  ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/],
-];
-// 核查结论(P1-3,不只补审核方点名的两个样本,把其余条目也核一遍):github-token 的
-// gh[pousr]_ 已覆盖 ghp_/gho_/ghu_/ghs_/ghr_ 全部官方前缀 + github_pat_ 细粒度令牌,
-// 无遗漏,本轮不改;private-key/gitlab-token/npm-token/google-api-key 格式单一,
-// 未发现类似"同族另一变体被漏掉"的明显缺口。
-// credential-assignment 的占位符豁免(${VAR}/test/example 等)只给软命中降噪,不影响硬命中
-const SENSITIVE_PLACEHOLDER_RE = /\$\{|\$\(|process\.env|<[^>]*>|xxx|your[-_]|placeholder|change[-_]?me|example|sample|dummy|test|fake|mock|stub|redacted|\*{3,}/i;
-const SAFE_EMAIL_RE = /@example\.(?:com|org|net)\b|@test\.|\.invalid\b|noreply|no-reply|users\.noreply\.github\.com/i;
-const SOFT_SENSITIVE_PATTERNS_BASE = [
-  ['credential-assignment', /\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/i],
-  ['jwt', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/],
-  ['cn-mobile', /(?<!\d)1[3-9]\d{9}(?!\d)/],
-  ['cn-id-number', /(?<!\d)\d{17}[\dXx](?!\d)/],
-  ['email', /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/],
-];
-const SECURITY_HIT_CAP = 20;
-const maskSensitive = (s) => `${s.replace(/\s+/g, ' ').slice(0, 6)}…(共 ${s.length} 字符)`;
-
-/** 组装扫描用的正则清单(含 pr-rules.json 的 extraHardPatterns/extraSoftPatterns/allowPaths)。
- * 纯函数,便于单测。 */
-export function buildSensitivePatterns(sensitiveRules) {
-  const rules = sensitiveRules ?? {};
-  const hard = [
-    ...HARD_SECRET_PATTERNS_BASE,
-    ...(rules.extraHardPatterns ?? []).map((p, i) => [`custom-hard-${i + 1}`, new RegExp(p)]),
-  ];
-  const soft = [
-    ...SOFT_SENSITIVE_PATTERNS_BASE,
-    ...(rules.extraSoftPatterns ?? []).map((p, i) => [`custom-soft-${i + 1}`, new RegExp(p)]),
-  ];
-  const allowRe = (rules.allowPaths ?? []).length ? new RegExp(rules.allowPaths.join('|')) : null;
-  return { hard, soft, allowRe };
-}
-
-/** 扫描单行文本,把命中推进 sink.hard/sink.soft(纯函数,便于单测)。patterns 由
- * buildSensitivePatterns 组装。 */
-export function scanSensitiveLine(line, location, patterns, sink) {
-  for (const [kind, re] of patterns.hard) {
-    const m = line.match(re);
-    if (m) sink.hard.push({ ...location, kind, sample: maskSensitive(m[0]) });
-  }
-  for (const [kind, re] of patterns.soft) {
-    const m = line.match(re);
-    if (!m) continue;
-    if (kind === 'credential-assignment' && SENSITIVE_PLACEHOLDER_RE.test(m[0])) continue;
-    if (kind === 'email' && SAFE_EMAIL_RE.test(m[0])) continue;
-    sink.soft.push({ ...location, kind, sample: maskSensitive(m[0]) });
-  }
-}
-
-/**
- * 对 PR 标题/body/diff 新增行做安全与隐私内容扫描(IO 函数,非纯函数——发 `gh pr diff`
- * 网络请求;P1-1,2026-08-02)。context.mjs 与 pre-merge-check.mjs 都必须调用本函数,
- * 防两处判据漂移——此前 pre-merge-check.mjs 对"泄密硬命中"恒传 false、完全不扫描,把
- * "没扫到"直接当成了"无命中",而不是"扫描没跑,fail-closed"。
- *
- * 返回 `{ scanned, error, hardHitCount, softHitCount, hardHits, softHits }`。
- * `scanned=false`(diff 拉取失败等)必须让调用方判"未证明无泄露",fail-closed 不放行,
- * **不能**当"无命中"处理——`evaluateAuthorizedFastMerge` 的 `security.scanned` 参数
- * 就是接这个字段,这是 P1-1 修复的核心边界。
- */
-// SC-R8(2026-08-05):`snapshotPatch` 是"四方同源"的接入点——调用方若已构建 DiffSnapshot
-// (immutable git objects 出的 patch),就把 `snapshot.rawPatch` 传进来,安全扫描与
-// preflight/覆盖 manifest/负向证据锚点消费**同一份**快照,不再各自 `gh pr diff` 造出多份
-// 跨 head 的快照。未传时保留原有 `gh pr diff` 路径(兼容既有调用方与"拿不到 base oid"的
-// 场景),但那条路径不参与 snapshotHash 绑定——如实声明,不冒称已全面同源。
-export function scanPrSensitiveContent({ owner, repo, pr, title, body, sensitiveRules, snapshotPatch = null }) {
-  const patterns = buildSensitivePatterns(sensitiveRules);
-  const sink = { hard: [], soft: [] };
-  const scanText = (text, file) => {
-    const lines = (text ?? '').split('\n');
-    for (let i = 0; i < lines.length; i++) scanSensitiveLine(lines[i], { file, line: i + 1 }, patterns, sink);
-  };
-  scanText(title, 'PR title');
-  scanText(body, 'PR body');
-  let error = null;
-  try {
-    const diffText = typeof snapshotPatch === 'string'
-      ? snapshotPatch
-      : (gh(['pr', 'diff', String(pr), '--repo', `${owner}/${repo}`], { timeoutMs: 120_000 }).stdout ?? '');
-    let curFile = null;
-    let curAllowed = false;
-    let newLine = 0;
-    for (const raw of diffText.split('\n')) {
-      if (raw.startsWith('+++ ')) {
-        curFile = raw.replace(/^\+\+\+ /, '').replace(/^b\//, '').trim();
-        curAllowed = curFile === '/dev/null' || (patterns.allowRe?.test(curFile) ?? false);
-        continue;
-      }
-      const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
-      if (hunk) { newLine = Number(hunk[1]); continue; }
-      if (raw.startsWith('+')) {
-        if (!curAllowed && curFile) scanSensitiveLine(raw.slice(1), { file: curFile, line: newLine }, patterns, sink);
-        newLine += 1;
-      } else if (!raw.startsWith('-') && !raw.startsWith('\\')) {
-        newLine += 1;
-      }
-    }
-  } catch (e) {
-    error = String(e?.message ?? e).slice(0, 200);
-  }
-  return {
-    scanned: error == null,
-    error,
-    hardHitCount: sink.hard.length,
-    softHitCount: sink.soft.length,
-    hardHits: sink.hard.slice(0, SECURITY_HIT_CAP),
-    softHits: sink.soft.slice(0, SECURITY_HIT_CAP),
-  };
-}
-
-/**
- * 授权快速合并通道的机械前提判定(纯函数,便于单测;见 SKILL 5.1「授权快速合并通道」;
- * context.mjs 与 pre-merge-check.mjs 都必须调用本函数,防两处判据漂移)。只在调用方已
- * 确认存在有效(非 stale、非编辑、admins 成员、非机器人)`/approve-merge` 授权时才调用
- * ——本函数不重复检测授权本身,只判"授权到手后,这次机械上能不能合"。
- *
- * 2026-08-01 owner 拍板收窄阻断面,2026-08-02 补 P1-1 fail-closed 化:紧急通道的语义是
- * "管理员显式授权即自担责任,机器的职责从'拦'变成'留痕'"，因此只有下面几类**任何情况
- * 不可绕过**：
- *   - 安全扫描没跑成(`security.scanned===false`,如 diff 拉取失败)——未证明无泄露,
- *     不能当"无命中"放行,必须重试;
- *   - 泄密硬门(`security.hardHitCount>0`)——授权任何情况压不过;
- *   - 物理不可合(mergeStateStatus='DIRTY',有冲突,GitHub 层面就合不了);
- *   - required 检查未全绿或读取失败(requiredChecks 为 null/requiredFailed/
- *     requiredPending 非空)——CI 口径是硬指标,不因授权而放宽;
- *   - （授权本身失效/过期/被编辑由调用方在调用前处理，本函数不管）。
- * 格式门未过、未 resolve thread、非 required 检查失败**不再阻断**，改为 reportOnly：
- * eligible 仍可为 true，但调用方必须把 `reportOnly` 里非空的项显著写进报告/汇总/合并
- * 致谢，不能悄悄吞掉——这是"留痕代替拦"的落地方式。
- *
- * `security` 参数形状为 `{ scanned, hardHitCount }`(与 `scanPrSensitiveContent` 的返回
- * 值兼容,直接传即可)。
- */
-export function evaluateAuthorizedFastMerge({ security, mergeStateStatus, unresolvedThreadCount, formatPass, formatIssues, requiredChecks }) {
-  const reportOnly = {
-    formatIssues: formatPass ? [] : (formatIssues ?? []),
-    unresolvedThreadCount: unresolvedThreadCount ?? 0,
-    nonRequiredFailures: requiredChecks?.nonRequiredFailed ?? [],
-  };
-  if (!security?.scanned) {
-    return { eligible: false, blockedReason: '安全与隐私内容扫描未成功完成(如 diff 拉取失败)——未证明无泄露,fail-closed 不放行,需重试', reportOnly };
-  }
-  if (security.hardHitCount > 0) {
-    return { eligible: false, blockedReason: '安全与隐私门硬命中(security.hardHits)——授权通道任何情况不可压过泄密硬门', reportOnly };
-  }
-  if (mergeStateStatus === 'DIRTY') {
-    return { eligible: false, blockedReason: '有冲突(mergeStateStatus=DIRTY),物理不可合,需先 rebase', reportOnly };
-  }
-  if (!requiredChecks) {
-    return { eligible: false, blockedReason: 'head commit 的必需检查 isRequired 状态读取失败——未证明 required 检查全绿,不放行(fail-closed)', reportOnly };
-  }
-  if (requiredChecks.requiredFailed.length > 0) {
-    return { eligible: false, blockedReason: `必需检查失败:${requiredChecks.requiredFailed.join(' / ')}`, reportOnly };
-  }
-  if (requiredChecks.requiredPending.length > 0) {
-    return { eligible: false, blockedReason: `必需检查还在跑:${requiredChecks.requiredPending.join(' / ')},等跑完再合`, reportOnly };
-  }
-  return { eligible: true, blockedReason: null, reportOnly };
-}
-
-/**
- * A2(缴械配套,owner 2026-08-04):loop 托管 PR **无条件**封死授权快速合并通道——
- * loop 的 PR-write token 能发评论,不封则一句 `/approve-merge <sha>` 就能骗巡审替它
- * 代合,整套「review-pr 是唯一合并闸」被一条评论绕穿。从 pre-merge-check.mjs 主流程抽出
- * 为纯函数(2026-08-05,seat②adversarial 复审:原判定内嵌在大函数里,现有测试只能靠源码
- * 字符串/分支存在性断言,测不出"条件被改成语义恒假"这类判定被拆掉的情形),不改变既有行为。
- *
- * 只把「loop 命中就无条件覆盖为 false,不看其余任何条件」这个决策本身收成纯函数——
- * "其余条件是否满足"(evaluateAuthorizedFastMerge + securityGate.pass 的合取)仍由调用方
- * 通过 computeEligibility 回调提供,本函数不重算、也不改这部分的既有表达式。
- * computeEligibility 是回调而非直接传值:非 loop 分支才需要发起 fetchHeadCheckContexts
- * 等网络调用,loop 分支必须保持"完全不发起这些请求"的既有行为——直接传值会强迫调用方
- * 在进这个函数之前就把网络请求都发出去。
- *
- * 输入:
- *   - approveMergeAuth: findApproveMergeAuthorization 的返回值(取其 .authorized)
- *   - loopExclusionForGate: detectLoopExclusion 的返回值(loop 命中即 truthy)
- *   - computeEligibility: () => { authorizedFastMergeAvailable, blockedReason, reportOnly }
- *     (调用方算好的"若不看 loop,是否该放行");仅在"有授权评论且非 loop"时才会被调用
- * 输出: { authorizedFastMergeAvailable, authorizedFastMergeInfo }
- */
-export function decideAuthorizedFastMerge({ approveMergeAuth, loopExclusionForGate, computeEligibility }) {
-  const authorized = approveMergeAuth?.authorized ?? null;
-  if (!authorized) {
-    return { authorizedFastMergeAvailable: false, authorizedFastMergeInfo: null };
-  }
-  if (loopExclusionForGate) {
-    return {
-      authorizedFastMergeAvailable: false,
-      authorizedFastMergeInfo: {
-        admin: authorized.author,
-        commentUrl: authorized.url,
-        commentCreatedAt: authorized.createdAt,
-        blockedReason: 'loop-managed-pr-fast-merge-forbidden(loop 托管 PR 不设紧急通道,一律走完整审查)',
-        reportOnly: [],
-      },
-    };
-  }
-  const { authorizedFastMergeAvailable, blockedReason, reportOnly } = computeEligibility();
-  return {
-    authorizedFastMergeAvailable,
-    authorizedFastMergeInfo: {
-      admin: authorized.author,
-      commentUrl: authorized.url,
-      commentCreatedAt: authorized.createdAt,
-      blockedReason,
-      reportOnly,
-    },
-  };
-}
-
-/**
- * ApprovalBasis 单一真相源(SC-B,2026-08-04 #469 复盘):把「这个 PR 的 APPROVED 到底
- * 算不算数」收成一个纯函数,context.mjs 与 pre-merge-check.mjs 共用,禁止各写一份。
- *
- * 为什么不能直接用 reviewDecision==='APPROVED':#469 实测,交互会话(与巡审同一 GitHub
- * 账号)approve 后 force-push 换了 head,分支保护 dismiss_stale_reviews=false 下旧 approve
- * 依然把 reviewDecision 顶成 APPROVED,自动化按 5.1 直接合——四个角色(打回/修改/批准/
- * 合并)同账号,零制衡。本函数把两件事拆出来机器判:①approve 绑定的是不是当前 head;
- * ②current-head 的 approve 是不是只来自巡审账号自己(own-account)。
- *
- * 输入(第 3 轮复审修订,2026-08-05):
- *   - reviews: GitHub 原生 `latestOpinionatedReviews` 的已映射节点
- *     [{ author, isBot, state, commitOid }]——服务端已保证"每 reviewer 恰一条最新
- *     opinionated review",本函数不再自算 latest-per-reviewer(上一版手工按 submittedAt
- *     排序,时间并列同 state 不同 commitOid 时结果由返回顺序决定,复审实测可翻转 granted,
- *     属假放行;DISMISSED 的语义也由服务端处理——被 dismiss 的 approve 不再出现为
- *     APPROVED);
- *   - headRefOid: 当前 head SHA
- *   - viewerLogin: 当前 gh 账号(巡审自动化账号)
- *   - reviewsComplete: connection 存在且 pageInfo.hasNextPage === false 才为 true
- *     (调用方判;connection/pageInfo 任一缺失都必须传 false → fail-closed)
- * 输出:
- *   { basis: 'independent'|'own-account'|'stale'|'none',
- *     independentApprovers, ownAccountCurrentHead, staleApprovers, reasons, dataComplete }
- *
- * 判定(fail 方向逐条写死):
- *   - 只有 state==='APPROVED' 的节点构成 approval;
- *   - approval 的 commitOid === headRefOid → current-head;缺 commitOid 或不等 → stale
- *     (fail-closed:缺失不猜"可能是当前的")。
- *   - viewerLogin 缺失 → 无法区分 own-account,所有 current-head approval 保守按 own-account
- *     处理(fail-closed 方向:宁可多要一道授权,不冒认 independent)。
- *   - reviewsComplete=false / headRefOid 缺失 → basis='none' + reason(数据不完整不承认任何
- *     approval basis)。
- *   - bot 的 review 不计入任何 basis;同一 login 出现多条不一致记录(违反原生字段契约)
- *     → 该 reviewer 整体不计入,不排序不猜。
- */
-export function evaluateApprovalBasis({ reviews, headRefOid, viewerLogin, reviewsComplete }) {
-  const reasons = [];
-  const head = (headRefOid ?? '').toLowerCase();
-  if (reviewsComplete === false) {
-    return { basis: 'none', independentApprovers: [], ownAccountCurrentHead: false, staleApprovers: [], reasons: ['reviews-pagination-incomplete(fail-closed,不承认任何 approval)'], dataComplete: false };
-  }
-  if (head.length !== 40) {
-    return { basis: 'none', independentApprovers: [], ownAccountCurrentHead: false, staleApprovers: [], reasons: ['headRefOid 缺失/非法(fail-closed)'], dataComplete: false };
-  }
-  const viewer = (viewerLogin ?? '').toLowerCase();
-  if (!viewer) reasons.push('viewerLogin 缺失——current-head approval 一律按 own-account 保守处理');
-  // 第 3 轮复审修订(2026-08-05):输入改为 GitHub 原生 latestOpinionatedReviews——服务端
-  // 保证"每个 reviewer 恰一条最新 opinionated review",本函数**不再自算** latest-per-reviewer
-  // (上一版手工按 submittedAt 排序,时间并列同 state 不同 commitOid 时结果由 GraphQL 返回
-  // 顺序决定,是复审实测翻转出的假放行)。这里只保留:bot 过滤、login 缺失跳过、以及一条
-  // 防数据异常的 fail-closed 守卫——同一 login 出现多条且 state/commitOid 不一致(原生字段
-  // 契约下不该发生)时,该 reviewer 整体不计入,不做任何排序猜测。
-  const latestByReviewer = new Map();
-  const conflicted = new Set();
-  for (const r of reviews ?? []) {
-    if (!r || r.isBot) continue;
-    const login = (r.author ?? '').toLowerCase();
-    if (!login || conflicted.has(login)) continue;
-    const prev = latestByReviewer.get(login);
-    if (prev && (prev.state !== r.state || (prev.commitOid ?? '') !== (r.commitOid ?? ''))) {
-      latestByReviewer.delete(login);
-      conflicted.add(login);
-      reasons.push(`reviewer ${login} 在 latestOpinionatedReviews 里出现多条不一致记录(数据异常),fail-closed 不计入`);
-      continue;
-    }
-    latestByReviewer.set(login, r);
-  }
-  const independentApprovers = [];
-  const staleApprovers = [];
-  let ownAccountCurrentHead = false;
-  for (const [login, r] of latestByReviewer) {
-    if (r.state !== 'APPROVED') continue;
-    const atHead = (r.commitOid ?? '').toLowerCase() === head;
-    if (!atHead) { staleApprovers.push(login); continue; }
-    if (!viewer || login === viewer) ownAccountCurrentHead = true;
-    else independentApprovers.push(login);
-  }
-  const basis = independentApprovers.length > 0 ? 'independent'
-    : ownAccountCurrentHead ? 'own-account'
-    : staleApprovers.length > 0 ? 'stale'
-    : 'none';
-  if (basis === 'stale') reasons.push(`APPROVED 存在但均非当前 head(${staleApprovers.join(',')})——approve 之后代码又变过,不作合并依据`);
-  return { basis, independentApprovers, ownAccountCurrentHead, staleApprovers, reasons, dataComplete: true };
-}
-
-/**
- * approved shortcut 的最终裁决(SC3.2):consume evaluateApprovalBasis + 配置键 + head 绑定
- * 授权,输出「能否把 approve 当作 basis='approved' 直接合」的布尔与理由。
- *
- * 复审修订(2026-08-04):`reviewDecision === 'APPROVED'` 是**必要但不充分**的合取条件。
- * reviewDecision 是 GitHub 对 PR 整体 code-review 状态的聚合裁决(审批数量、Code Owner、
- * dismiss 规则都算在内)——单条 current-head approval 替代不了它:若仓库要求 2 个 approval
- * 或 Code Owner、目前只有 1 条 current-head APPROVED,聚合态仍是 REVIEW_REQUIRED,此时
- * granted 会让调用方用 --admin 绕过尚未满足的 review 规则(复审抓出的假放行)。反过来
- * reviewDecision 单独也不充分——#469 正是 reviewDecision=APPROVED 但 approve 绑定旧 head。
- * 两个条件必须同时成立:聚合态 APPROVED(GitHub 的规则视角)∧ basis 判定通过(head 绑定
- * + own-account 视角)。注意副作用方向:不要求 approve 的仓库 reviewDecision 恒为 null,
- * 此处恒不 granted → 落 admin-trust 路由(要求独立审查回执),fail-closed,符合预期。
- *
- *   - basis='independent'(存在非巡审账号的 current-head APPROVED)→ granted,任何配置下都行;
- *   - basis='own-account':配置 mergeAuthorization.ownAccountApprovalRequiresAck 未开启 →
- *     granted(现状兼容);开启 → 必须另有 head 绑定 /approve-merge(headBoundAuthorized)
- *     才 granted,否则 reason='own-account-approval-needs-explicit-auth'(命名如实:机器只
- *     认账号,分不清同账号下是真人还是自动化会话,同账号一律收紧是意图不是误杀);
- *   - basis='stale'/'none' → 恒不 granted(head 绑定失败/无 approve,走别的路由)。
- */
-export function resolveApprovedShortcut({ approvalBasis, ownAckRequired, headBoundAuthorized, reviewDecision }) {
-  if (reviewDecision !== 'APPROVED') {
-    return { granted: false, reason: `github-review-decision-not-approved(reviewDecision=${reviewDecision ?? 'null'}——GitHub 聚合裁决未达 APPROVED,单条 review 不能替代审批数/Code Owner 等规则)` };
-  }
-  const b = approvalBasis?.basis ?? 'none';
-  if (b === 'independent') return { granted: true, reason: 'independent-current-head-approval' };
-  if (b === 'own-account') {
-    if (!ownAckRequired) return { granted: true, reason: 'own-account-approval(mergeAuthorization.ownAccountApprovalRequiresAck 未开启,按现状放行)' };
-    if (headBoundAuthorized) return { granted: true, reason: 'own-account-approval + head 绑定 /approve-merge 显式授权' };
-    return { granted: false, reason: 'own-account-approval-needs-explicit-auth(同账号 approve 不构成无条件合并资格,需 owner 对当前 head 发 /approve-merge <sha>)' };
-  }
-  if (b === 'stale') return { granted: false, reason: 'stale-approval(approve 非当前 head)' };
-  return { granted: false, reason: `no-approval-basis(${(approvalBasis?.reasons ?? []).join(';') || '无 APPROVED'})` };
-}
-
-/**
- * 结构性 BLOCKED(blockClass='structural-check')三层分级合并路由的纯判定(便于单测;
- * context.mjs 的 auto 分流与 pre-merge-check.mjs 的 structuralBypassAvailable 都必须
- * 调用本函数,防两处判据漂移 —— 这是 2026-08-01 修复的 fail-open 核心逻辑,历史上两处
- * 各写了一份、都没校验 reviewDecision,PR #342/#366 曾在零 review 下被自动 admin 合入)。
- *
- * 机械前提(canBypass 且 requiredCheckRules 全部命中 structuralBypassAllowlist)由调用方
- * 算好通过 `structuralCanBypass` 传入,本函数只处理"谁来担保没有 APPROVED 也能合"这一层:
- *   - 机械前提不满足 → route='skip-structural-block',basis=null(不看 reviewDecision/admin);
- *   - 机械前提满足 + approvedShortcut=true → route='bypass-structural-block',basis='approved'。
- *     approvedShortcut 是调用方用 evaluateApprovalBasis + resolveApprovedShortcut 算出的布尔
- *     (2026-08-04 #469 复盘:不再直接消费 reviewDecision——它分不清 approve 绑定的是哪个
- *     head、也分不清 approve 是不是巡审账号自己给的)。SC-2(2026-08-08):强制自动化审查
- *     策略开启时(requireAutomatedReviewForAutoMerge=true)此分支改返回
- *     route='review-pending-approved-bypass'(basis 仍是 'approved')——GitHub APPROVED
- *     即便绑定当前 head 也不替代自动化审查,先进独立审查,凭当前 head clean 回执才能合
- *     (pre-merge-check.mjs 的 structuralBypassReady 对这条路同样要求 receiptClean);
- *   - 机械前提满足 + 缺 APPROVED + 作者在 admins 名单 → route='review-pending-admin-bypass',
- *     basis='admin-trust'(典型 ownPr,GitHub 422 禁止自批准;不直接合并,要求本轮先跑一次
- *     独立审查,通过后才能在合并阶段认"审查干净"为 APPROVED 的等价物,调用方负责这一半的
- *     语义核验,本函数只给路由结论);
- *   - 机械前提满足 + 缺 APPROVED + 非 admins 名单 → route='skip-structural-block',
- *     basis=null(2026-08-01 前的默认行为,现在必须显式满足前两条之一才能 bypass)。
- *
- * `requireAutomatedReviewForAutoMerge` 缺省 false(=策略关闭,行为与拆分前一致),保证
- * 未启用强制策略的消费仓与既有单测不受影响。
- */
-export function decideStructuralBypassRoute({ structuralCanBypass, approvedShortcut, isAdminAuthor, requireAutomatedReviewForAutoMerge = false }) {
-  if (!structuralCanBypass) return { route: 'skip-structural-block', basis: null };
-  if (approvedShortcut === true) {
-    if (requireAutomatedReviewForAutoMerge) return { route: 'review-pending-approved-bypass', basis: 'approved' };
-    return { route: 'bypass-structural-block', basis: 'approved' };
-  }
-  if (isAdminAuthor) return { route: 'review-pending-admin-bypass', basis: 'admin-trust' };
-  return { route: 'skip-structural-block', basis: null };
-}
-
-/**
- * `mergeStateStatus=BLOCKED` 的 blockClass 细分(便于单测;context.mjs 与
- * pre-merge-check.mjs 共用同一份判据,防两处判据漂移;P1-4,2026-08-02)。
- *
- * 核心修复(第②层可达性):此前两处代码都在 `reviewDecision==='REVIEW_REQUIRED'||
- * reviewDecision==null` 时**直接短路**判 `blockClass='awaiting-approval'`,从不往下探测
- * 是否存在真实的结构性 blocker(unresolved thread / CI / 永不上报的必需检查)。在**不
- * 要求 approve** 的仓库(如 mivo-canvas,分支保护只挂了 code_scanning/code_quality/
- * copilot_code_review 三个从不上报结果的门,没有 required-approving-review 规则)里,
- * `reviewDecision` 恒为 `REVIEW_REQUIRED`/`null`——短路判定的结果是这类仓库的
- * `blockClass` 永远到不了 `'structural-check'`,`decideStructuralBypassRoute` 的
- * `review-pending-admin-bypass`(admin-trust)路由因此永久不可达,即便作者在 `admins`
- * 名单也没有任何合并出口(`EVOLUTION.md` 的 `own-pr-has-no-merge-path-when-selffix-empty`
- * 根因)。修复方式:approval 维度只影响"最终怎么归类",不再决定"要不要往下探测"——
- * unresolved thread / CI 失败或还在跑 / 结构性探测这几层,不管 `reviewDecision` 是什么
- * 都必须走一遍;唯一的区别是走到最后、什么都排查不出真实问题时,`reviewDecision` 才用来
- * 决定归到 `'awaiting-approval'`(真的只是缺 approve)还是 `'structural-check'`(存在
- * 真实的永不上报门,不管有没有 approve 都要走三层分级合并路由)。
- *
- * 参数:
- *   - `reviewDecision`:调用方已排除 `CHANGES_REQUESTED`(含 self-resolvable 特判,那
- *     两个分支正交于本函数,继续留在调用方判);
- *   - `hasUnresolvedThreads`:boolean;
- *   - `ciRuns`:`{failed:string[], pending:string[]}|null`(`classifyHeadChecks` 返回值,
- *     `null`=读取失败);
- *   - `headRollup`:`{failed:string[], pending:string[], ok:string[]}|null`
- *     (`classifyStatusRollup` 返回值,`null`=读取失败);
- *   - `probeStructuralBlock`:`() => {requiredCheckRules,canBypass,rulesetIds}|null` ——
- *     惰性回调,只有真正走到"其余维度都排查完、要看是否存在结构性门"这一步才调用(避免
- *     每个 BLOCKED 的 PR 都白打一次分支保护规则的 API)。
- *
- * 返回 `{ blockClass, structuralBlock }`(`structuralBlock` 仅
- * `blockClass==='structural-check'` 时非空)。`blockClass` 新增枚举值
- * `'blocked-unexplained'`:走完全部已知维度(review/thread/CI/rollup/结构性探测)都查
- * 不出原因,但 `mergeStateStatus` 仍 `BLOCKED`——这是探测失败或未知规则类型的异常兜底,
- * fail-closed(不当 `awaiting-approval` 或 `structural-check` 处理,不可 bypass、不催办,
- * 下轮再看)。
- */
-export function classifyBlockedStatus({ reviewDecision, hasUnresolvedThreads, ciRuns, headRollup, probeStructuralBlock }) {
-  if (hasUnresolvedThreads) return { blockClass: 'threads-unresolved', structuralBlock: null };
-  if (ciRuns === null) return { blockClass: 'ci-unknown', structuralBlock: null };
-  if (ciRuns.failed.length > 0) return { blockClass: 'ci-failed', structuralBlock: null };
-  if (ciRuns.pending.length > 0) return { blockClass: 'ci-pending', structuralBlock: null };
-  if (headRollup === null) return { blockClass: 'ci-unknown', structuralBlock: null };
-  if (headRollup.failed.length > 0) return { blockClass: 'ci-failed', structuralBlock: null };
-  if (headRollup.pending.length > 0) return { blockClass: 'ci-pending', structuralBlock: null };
-  // 到这里:无未 resolve thread,CI 与 rollup 全干净——不管 reviewDecision 是什么,都必须
-  // 先探测是否存在真实的结构性门,才能判"唯一原因是缺 approval"还是"存在永不上报的门"。
-  const structuralBlock = probeStructuralBlock();
-  if (structuralBlock === null) {
-    // 分支保护规则读取失败(权限/网络)——无法证明"没有结构性门",不能默认判
-    // awaiting-approval,也不能判 structural-check(没有 requiredCheckRules 细节)。
-    return { blockClass: 'ci-unknown', structuralBlock: null };
-  }
-  if (structuralBlock.requiredCheckRules.length > 0) {
-    return { blockClass: 'structural-check', structuralBlock };
-  }
-  if (reviewDecision === 'REVIEW_REQUIRED' || reviewDecision == null) {
-    // 探测证实:没有结构性门,唯一原因就是缺 approval。
-    return { blockClass: 'awaiting-approval', structuralBlock: null };
-  }
-  // reviewDecision===APPROVED,结构性探测也证实无问题,其余维度全干净,但仍 BLOCKED——
-  // 排查了全部已知维度查不出根因,fail-closed。
-  return { blockClass: 'blocked-unexplained', structuralBlock: null };
-}
-
-// ── 阶段二独立审查回执(P1-5,2026-08-02;P1-2 三审修复:并发安全重做存储)──
-// 结构性 BLOCKED 的 admin-trust 路由(decideStructuralBypassRoute 的
-// review-pending-admin-bypass)只是"路由结论"——它说"作者在 admins 名单、机械前提满足",
-// 不代表"这次真的审查过而且干净"。脚本本身判断不了代码好不好,那是 LLM 审查 agent 的
-// 语义判断;回执就是这半判断留下的、可核验的凭证。**只用既有 stateFile() 接口定位文件,
-// 不新建状态目录结构、不改 STATE_DIR 布局**——只是把"单文件存全部 PR"换成"每个 PR 一个
-// 独立文件",布局本身(STATE_DIR 下平铺文件)不变。
-//
-// 此前是单文件 `review-receipts.json` 存全部 PR、"整份读→改一键→整份写回"的非原子
-// read-modify-write:auto 并行审多 PR 时,多个进程同时读到同一份旧内容、各自改自己的
-// PR 键、再各自整份写回——后写的进程会用"读的时候还没看到别的 PR 新回执"的旧快照,把
-// 别的 PR 刚写入的新回执整个覆盖丢失(不是"数据损坏",是"静默丢了别人的写")。审核方
-// 实测 40 并发只有约 12 个 PR 的回执存活,且更危险的是:PR 已有最新 dirty 回执时,另一个
-// 早于它、还在用旧快照的进程写回自己的 PR 时会把这份 dirty 一并覆盖回旧的 clean ——
-// `isReviewReceiptClean` 随后读到复活的旧 clean,`structuralBypassReady` 被误判为
-// 可合并,这是正常并行审查路径下就会踩的 fail-open,不是边界场景。
-//
-// 改法:每个 PR 一个独立文件 `review-receipt-<pr>.json`,PR 之间物理隔离,不再有"整份
-// 读改写"的共享状态,天然消除跨 PR 覆盖;单个 PR 内部的写入通过 writeJsonAtomic 走
-// "唯一临时文件 + rename"——rename 在同一文件系统内是原子操作,不会有"写到一半被读到
-// 半个文件"或"两个并发写者交错出损坏 JSON"的中间态,最后一个 rename 落地的即为最终态
-// (last-write-wins,但每次写的都是完整、自洽的一条回执,不会被"部分覆盖")。
-
-/**
- * 原子写 JSON(唯一临时文件 + renameSync)。`pid + 随机 6 字节十六进制` 保证同一进程内
- * 多次调用、以及不同进程并发调用之间临时文件名互不冲突,避免两个写者的临时文件互相
- * 覆盖后再各自 rename 出现竞态。导出供其它需要同样原子写语义的状态模块复用
- * (如 convergence-state.mjs 的 per-PR 收敛状态)——不重新发明一遍同样的 tmp+rename 逻辑。
- */
-export function writeJsonAtomic(filePath, data) {
-  const tmpPath = `${filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`);
-  renameSync(tmpPath, filePath);
-}
-
-/**
- * 定位某 PR 的回执文件路径。`pr` 必须是可转成非负整数的值——回执文件名直接拼进
- * 文件系统路径,防御性拒绝非法值(如意外传入字符串路径片段),不静默拼出奇怪路径。
- */
-function reviewReceiptFile(pr) {
-  const n = Number(pr);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`回执文件路径要求 pr 是非负整数,收到:${JSON.stringify(pr)}`);
-  }
-  return stateFile(`review-receipt-${n}.json`);
-}
-
-/**
- * 写入一条阶段二独立审查回执(每 PR 一个独立文件,原子写入)。
- * `verdict` 只接受 `'clean'`(0 P0/P1)、`'dirty'` 或 `'skip'`(审查未完成的机器终态,
- * 如超时 review-agent-timeout)——不接受自由文本,防止调用方拼错词导致
- * `isReviewReceiptClean` 误判。`skip`/`dirty` 都是 non-clean,不能当清白沿用。
- * `headRefOid` 必须非空:回执必须绑定到具体的 head commit,否则"回执是不是针对当前 head"
- * 这个核心校验就无从谈起。
- */
-export function writeReviewReceipt({ pr, headRefOid, verdict, p0p1Count, bindings = null }) {
-  if (verdict !== 'clean' && verdict !== 'dirty' && verdict !== 'skip') {
-    throw new Error(`verdict 必须是 'clean' 或 'dirty' 或 'skip',收到:${JSON.stringify(verdict)}`);
-  }
-  if (!headRefOid) throw new Error('headRefOid 不能为空——回执必须绑定到具体的 head commit');
-  // SC-R1b(2026-08-05):clean 回执必须携带五项绑定 {source, schemaVersion, outputHash,
-  // snapshotHash, ledgerHash}——consume-review-output.mjs 是唯一能算出这五项的调用方,
-  // 因此它事实上是唯一 clean writer;public CLI(write-review-receipt.mjs)已直接禁
-  // clean。缺任一绑定的 clean 写入在这里(可被 import 的公开函数)也拒绝,不能只指望
-  // CLI 层校验。dirty 不强制绑定(撤销/打回场景可能算不出 outputHash)。
-  if (verdict === 'clean') {
-    // R7 第 4 轮核验:+escapeSourceHash/knownHazardsHash——clean 还要绑逃逸数据源与
-    // canonical hazard 的全内容(premerge 现场重算比对)。
-    for (const k of ['source', 'schemaVersion', 'outputHash', 'snapshotHash', 'ledgerHash', 'escapeSourceHash', 'knownHazardsHash']) {
-      if (typeof bindings?.[k] !== 'string' || !bindings[k]) {
-        throw new Error(`clean 回执缺绑定字段 ${k}——clean 只能由 consume-review-output.mjs 依据机器 verdict 写入(SC-R1b)`);
-      }
-    }
-  }
-  // P2-2 三审修复:此前 `Number(p0p1Count) || 0` 会把任何非法输入(undefined/NaN/
-  // 负数/字符串)静默吞成 0,等价于"没传就当 0 P0/P1",这正是 isReviewReceiptClean
-  // 误判的源头之一——写入侧本该拒绝的脏输入,被这里悄悄洗白成合法回执。write-review-
-  // receipt.mjs(CLI)已经校验过,但 writeReviewReceipt 是可以被直接 import 调用的公开
-  // 函数,校验不能只指望调用方,这里必须自己也守住。
-  const p0p1CountNum = Number(p0p1Count);
-  if (!Number.isInteger(p0p1CountNum) || p0p1CountNum < 0) {
-    throw new Error(`p0p1Count 必须是非负整数,收到:${JSON.stringify(p0p1Count)}`);
-  }
-  const receipt = {
-    headRefOid,
-    verdict,
-    p0p1Count: p0p1CountNum,
-    writtenAt: new Date().toISOString(),
-    ...(bindings ? { ...bindings } : {}),
-  };
-  if (verdict === 'skip' && typeof bindings?.reason === 'string' && bindings.reason) {
-    receipt.reason = bindings.reason;
-  }
-  writeJsonAtomic(reviewReceiptFile(pr), receipt);
-  return receipt;
-}
-
-/** 读取某 PR 当前的审查回执,无则返回 null(文件不存在/损坏都按"无回执"处理,fail-closed)。 */
-export function readReviewReceipt(pr) {
-  const file = reviewReceiptFile(pr);
-  if (!existsSync(file)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 判定某条审查回执对"当前 head"是否仍然「干净且新鲜」(纯函数,便于单测;P1-5,
- * 2026-08-02;P2-2 三审修复:p0p1Count 校验收紧)。pre-merge-check.mjs 消费它来
- * 决定 admin-trust 路由是否真的 `structuralBypassReady`:
- *   - 无回执 → false(从未写过,或从未针对这个 PR 写过);
- *   - `receipt.headRefOid !== headRefOid` → false(回执针对的是旧 head——审查通过之后
- *     又推了新 commit,旧回执不再覆盖新代码,必须重新审查、重新落回执);
- *   - `verdict !== 'clean'` → false(审查跑完了但没通过);
- *   - `p0p1Count` 不是「严格等于 0 的整数」→ false。此前用 `(p0p1Count ?? 0) > 0`,
- *     字段缺失(undefined)会被 `?? 0` 洗成 0、`-1 > 0` 为假——两种本该判脏的畸形回执
- *     都被误判成 clean。改用 `Number.isInteger(...) && === 0`,只有明确写着"0 个
- *     P0/P1"的回执才算干净,字段缺失/负数/非整数一律 fail-closed 判不干净。
- */
-export function isReviewReceiptClean({ receipt, headRefOid, snapshotHash, ledgerHash, escapeSourceHash, knownHazardsHash, expectedPrescanHash }) {
-  if (!receipt) return false;
-  if (receipt.headRefOid !== headRefOid) return false;
-  if (receipt.verdict !== 'clean') return false;
-  if (!Number.isInteger(receipt.p0p1Count) || receipt.p0p1Count !== 0) return false;
-  // R7 第 4 轮核验:clean 后 PR body/关联 issue/canonical hazard 内容变化必须打 stale。
-  // 期望值缺失(undefined)一律判不 clean(fail-closed),与下方 snapshot/ledger 同口径。
-  if (typeof escapeSourceHash !== 'string' || !escapeSourceHash || receipt.escapeSourceHash !== escapeSourceHash) return false;
-  if (typeof knownHazardsHash !== 'string' || !knownHazardsHash || receipt.knownHazardsHash !== knownHazardsHash) return false;
-  // SC-R1b/R5(2026-08-05):clean 的新鲜度不再只看 head——必须同时匹配当前重建的
-  // snapshotHash(base 前进 head 不变时旧 clean 即 stale)与当前 ledgerHash("先 clean
-  // 后新增 open"会改变 ledgerHash,旧 clean 失效)。调用方不提供这两个期望值(undefined)
-  // 时一律判不 clean(fail-closed),不存在"旧签名照常放行"的兼容通道;历史旧格式回执
-  // (无绑定字段)同样在此失效,forward-only。
-  if (typeof snapshotHash !== 'string' || !snapshotHash || receipt.snapshotHash !== snapshotHash) return false;
-  if (typeof ledgerHash !== 'string' || !ledgerHash || receipt.ledgerHash !== ledgerHash) return false;
-  // SC-6.2(final SC v2):prescan 条件性绑定,三态期望值——
-  //   undefined:调用方未声明 prescan 状态(旧调用点未升级)→ fail-closed;
-  //   null:明确声明 prescan disabled → 要求 receipt 不携带 prescanHash(不得偷带旧值);
-  //   string:明确声明 prescan enabled → 要求 receipt.prescanHash 严格相等。
-  if (expectedPrescanHash === undefined) return false;
-  if (expectedPrescanHash === null) {
-    if (receipt.prescanHash !== undefined) return false;
-  } else {
-    if (typeof expectedPrescanHash !== 'string' || !expectedPrescanHash || receipt.prescanHash !== expectedPrescanHash) return false;
-  }
-  return true;
-}
-
-/**
  * 探测某分支的「必需检查门」+ 当前账号能否 bypass(只读,best-effort,失败返 null)。
  * 用于解释「review 都过了、CI 也没失败,但永久 BLOCKED」——多半是 org ruleset 的
  * code_scanning(CodeQL)/ code_quality / required_status_checks 这类要求结果上报、
  * 但本仓库根本没产出结果的门,owner 通常靠 admin bypass 合(current_user_can_bypass)。
- * 端点:GET /repos/{slug}/rules/branches/{branch}(列命中规则,PAT 通常可读,完整分页
- * 遍历见 `fetchAllRestPages`——P1-1 二审修复:此前只读一页,与 fetchExpectedRequiredContexts
- * 同一个 bug,这里此前漏改)+ GET /repos/{slug}/rulesets/{id}(取 current_user_can_bypass)。
- * 第三参 `fetchPage` 供单测注入,透传给 `fetchAllRestPages`。
- * 返回 { requiredCheckRules, canBypass, rulesetIds } | null。
+ * 端点:GET /repos/{slug}/rules/branches/{branch}(列命中规则,PAT 通常可读)
+ *      + GET /repos/{slug}/rulesets/{id}(取 current_user_can_bypass)。
+ * 返回 { requiredCheckRules, requiredStatusChecks, requiredStatusChecksKnown,
+ *          adminUnverifiedRuleTypes, ruleTypes, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch, { satisfiedContexts = null, fetchPage } = {}) {
+export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
   if (!branch) return null;
-  const rules = fetchAllRestPages(
-    `repos/${slug}/rules/branches/${encodeURIComponent(branch)}?per_page=100`,
-    fetchPage ? { fetchPage } : {},
-  );
-  if (!Array.isArray(rules)) return null;
+  const encodedBranch = encodeURIComponent(branch);
+  const rr = ghFn(['api', `repos/${slug}/rules/branches/${encodedBranch}`], { allowFail: true });
+  if (!rr.ok) return null;
+  const classicResult = ghFn(['api', `repos/${slug}/branches/${encodedBranch}/protection`], { allowFail: true });
+  const classicMissing = !classicResult.ok && /(?:HTTP 404|Not Found)/i.test(`${classicResult.stderr ?? ''}${classicResult.stdout ?? ''}`);
+  if (!classicResult.ok && !classicMissing) return null;
   try {
+    const rules = JSON.parse(rr.stdout || '[]');
+    if (!Array.isArray(rules)) return null;
+    const classic = classicResult.ok ? JSON.parse(classicResult.stdout || '{}') : null;
     const CHECK_RULES = new Set(['required_status_checks', 'code_scanning', 'code_quality']);
-    // required_status_checks 与 code_scanning/code_quality 本质不同:后两者在 GHAS 未接线的仓
-    // 永不上报(真·结构性门,structuralBypassAllowlist 管的就是它们);前者要求的是具体 CI
-    // context,head commit 的 rollup 里全绿即为「已满足」——已满足的规则不是 blocker,必须
-    // 从 requiredCheckRules 剔除,否则 allowlist 的 every() 永远差这一项,自动 bypass 被
-    // 永久锁死(实测:ci-required-checks ruleset 上线后所有 PR 卡死在 skip-structural-block)。
-    // fail-closed:调用方没给 satisfiedContexts(rollup 读不到)、或规则里读不出 context 清单、
-    // 或有任一 context 不在已通过集合里 → 一律保留该规则(宁可不 bypass,不可误 bypass)。
-    const satisfied = satisfiedContexts instanceof Set ? satisfiedContexts : null;
-    const missingRequiredContexts = [];
-    const activeCheckRules = rules.filter((r) => {
-      if (!CHECK_RULES.has(r.type)) return false;
-      if (r.type !== 'required_status_checks' || satisfied === null) return true;
-      const wanted = (r.parameters?.required_status_checks ?? [])
-        .map((c) => c?.context)
-        .filter((c) => typeof c === 'string' && c !== '');
-      if (wanted.length === 0) return true; // 读不出要求的 context → 保守保留
-      const missing = wanted.filter((c) => !satisfied.has(c));
-      if (missing.length === 0) return false; // 全部已上报且通过 → 规则已满足,不是 blocker
-      missingRequiredContexts.push(...missing);
-      return true;
-    });
-    const requiredCheckRules = [...new Set(activeCheckRules.map((r) => r.type))];
+    const requiredCheckRules = [...new Set(rules.filter((r) => CHECK_RULES.has(r.type)).map((r) => r.type))];
+    const ruleTypes = [...new Set(rules.map((r) => r.type).filter(Boolean))];
+    const requiredStatusRules = rules.filter((r) => r.type === 'required_status_checks');
+    const rulesetChecksKnown = requiredStatusRules.every(
+      (rule) => Array.isArray(rule.parameters?.required_status_checks) &&
+        typeof rule.parameters?.strict_required_status_checks_policy === 'boolean',
+    );
+    const rulesetStrict = requiredStatusRules.some(
+      (rule) => rule.parameters?.strict_required_status_checks_policy === true,
+    );
+    const rulesetChecks = requiredStatusRules.flatMap((rule) =>
+      (rule.parameters?.required_status_checks ?? []).map((check) => ({
+        context: String(check?.context ?? '').trim(),
+        integrationId: check?.integration_id == null ? null : Number(check.integration_id),
+        source: 'ruleset',
+      }))
+    ).filter((check) => check.context);
+
+    const classicStatus = classic?.required_status_checks ?? null;
+    const classicChecksKnown = classic == null || classicStatus == null || (
+      (Array.isArray(classicStatus.checks) || Array.isArray(classicStatus.contexts)) &&
+      typeof classicStatus.strict === 'boolean'
+    );
+    const classicStrict = classicStatus?.strict === true;
+    const classicChecks = classicStatus == null
+      ? []
+      : Array.isArray(classicStatus.checks)
+        ? classicStatus.checks.map((check) => ({
+          context: String(check?.context ?? '').trim(),
+          integrationId: check?.app_id == null ? null : Number(check.app_id),
+          source: 'classic',
+        }))
+        : (classicStatus.contexts ?? []).map((context) => ({
+          context: String(context ?? '').trim(), integrationId: null, source: 'classic',
+        }));
+    const dedupedChecks = new Map();
+    for (const check of [...rulesetChecks, ...classicChecks].filter((item) => item.context)) {
+      dedupedChecks.set(`${check.context}|${check.integrationId ?? ''}`, check);
+    }
+    const requiredStatusChecks = [...dedupedChecks.values()];
+    const requiredStatusChecksKnown = rulesetChecksKnown && classicChecksKnown;
+    const requiredStatusChecksStrict = rulesetStrict || classicStrict;
+
+    // pull_request 的 approval / thread 由调用方分别证明;required_status_checks 另与
+    // check 数据对照。repository_name 是 ruleset 条件投影；creation/deletion/non_fast_forward
+    // 不限制已有 base 分支通过 PR 向前移动。update 等其余 active rule 仍从严视为不可验证。
+    const ADMIN_LOCALLY_VERIFIABLE = new Set([
+      'pull_request', 'required_status_checks', 'repository_name',
+      'creation', 'deletion', 'non_fast_forward',
+    ]);
+    const adminUnverifiedRuleTypes = ruleTypes.filter((type) => !ADMIN_LOCALLY_VERIFIABLE.has(type));
+    const classicUnverified = [];
+    if (classic?.required_linear_history?.enabled) classicUnverified.push('classic:required_linear_history');
+    if (classic?.lock_branch?.enabled) classicUnverified.push('classic:lock_branch');
+    if (classic?.restrictions != null) classicUnverified.push('classic:restrictions');
+    if (Array.isArray(classic?.required_deployments) && classic.required_deployments.length > 0) {
+      classicUnverified.push('classic:required_deployments');
+    }
+    if (classic != null) {
+      const signatureResult = ghFn([
+        'api', `repos/${slug}/branches/${encodedBranch}/protection/required_signatures`,
+      ], { allowFail: true });
+      const signatureMissing = !signatureResult.ok && /(?:HTTP 404|Not Found)/i.test(`${signatureResult.stderr ?? ''}${signatureResult.stdout ?? ''}`);
+      if (!signatureResult.ok && !signatureMissing) return null;
+      if (signatureResult.ok && JSON.parse(signatureResult.stdout || '{}').enabled === true) {
+        classicUnverified.push('classic:required_signatures');
+      }
+    }
+    adminUnverifiedRuleTypes.push(...classicUnverified);
+
     const rulesetIds = [...new Set(rules.map((r) => r.ruleset_id).filter((x) => typeof x === 'number'))];
     let canBypass = null; // null=未知;'never'/false=不能;'always'/'pull_requests'=能
     for (const id of rulesetIds) {
-      const rs = gh(['api', `repos/${slug}/rulesets/${id}`], { allowFail: true });
+      const rs = ghFn(['api', `repos/${slug}/rulesets/${id}`], { allowFail: true });
       if (!rs.ok) continue;
       try {
         const cb = JSON.parse(rs.stdout || '{}').current_user_can_bypass;
-        if (cb && cb !== 'never') { canBypass = cb; break; } // 任一 ruleset 可 bypass 即可
+        if (cb && cb !== 'never') { canBypass = cb; break; }
         if (canBypass == null) canBypass = cb ?? null;
       } catch { /* 单条 ruleset 读失败忽略,继续看下一条 */ }
     }
-    return { requiredCheckRules, canBypass, rulesetIds, missingRequiredContexts };
+    return {
+      requiredCheckRules,
+      requiredStatusChecks,
+      requiredStatusChecksKnown,
+      requiredStatusChecksStrict,
+      adminUnverifiedRuleTypes: [...new Set(adminUnverifiedRuleTypes)],
+      ruleTypes,
+      classicProtectionKnown: true,
+      canBypass,
+      rulesetIds,
+    };
   } catch {
     return null;
   }
 }
 
 /**
- * 拉公司 org 名录 README(共享底座:resolve-author-feishu.mjs 私聊映射、context.mjs
- * 产品门 Slack 同步评论发送者归属都用它)。读取顺序(fine-grained PAT 读不到跨 org 仓库,
+ * 读 PR head 的 statusCheckRollup 原始 contexts(只读,best-effort)。
+ * 这是覆盖面最全的 CI 来源:GitHub Actions check-run、外部 CI 的 check-run、
+ * legacy commit status 全在里面,required 与非 required 一视同仁。
+ * fine-grained PAT 可能读不到(见 ghGraphql 注释的 FORBIDDEN partial),失败返 null,
+ * 由调用方回退 classifyHeadChecks(只覆盖 Actions)——两个来源都读不到才算 CI 状态未知。
+ */
+export function fetchCiRollup(slug, pr) {
+  const r = gh(['pr', 'view', String(pr), '--repo', slug, '--json', 'statusCheckRollup'], { allowFail: true });
+  if (!r.ok) return null;
+  try {
+    const contexts = JSON.parse(r.stdout || '{}').statusCheckRollup;
+    if (!Array.isArray(contexts)) return null;
+    return contexts.map((c) => ({
+      // CheckRun 有 name+status+conclusion(+workflowName/startedAt/completedAt);
+      // StatusContext 只有 context+state(+createdAt)。时间戳留给 classifyRollupContexts
+      // 做同名去重(同一 head SHA 上 re-run / concurrency 顶掉会留同名多条),别在这里剥掉。
+      name: c.name ?? c.context ?? '(unnamed)',
+      workflowName: c.workflowName || null,
+      startedAt: c.startedAt ?? null,
+      createdAt: c.createdAt ?? null,
+      completedAt: c.completedAt ?? null,
+      status: c.status ?? null,
+      conclusion: c.conclusion ?? c.state ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/** required check 绑定 integration_id 时,用 REST check-runs 保留 app.id 供精确核对。 */
+export function fetchCheckRunsWithApps(slug, headSha) {
+  if (!headSha) return null;
+  const r = gh([
+    'api', '--paginate', '--slurp',
+    `repos/${slug}/commits/${headSha}/check-runs?per_page=100`,
+  ], { allowFail: true, timeoutMs: 20_000 });
+  if (!r.ok) return null;
+  try {
+    const pages = JSON.parse(r.stdout || '[]');
+    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page?.check_runs))) return null;
+    return pages.flatMap((page) => page.check_runs).map((run) => ({
+      name: run.name ?? '(unnamed)',
+      integrationId: run.app?.id == null ? null : Number(run.app.id),
+      startedAt: run.started_at ?? null,
+      completedAt: run.completed_at ?? null,
+      status: run.status ?? null,
+      conclusion: run.conclusion ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 纯函数:把 statusCheckRollup contexts 分成 failed / pending / awaiting(单测 ci-status.test.mjs)。
+ * 口径与 classifyHeadChecks 对齐:cancelled / timed_out / startup_failure 都算失败;
+ * ACTION_REQUIRED = fork workflow 待批准(单列 awaiting,别当失败打回作者);
+ * NEUTRAL / SKIPPED / STALE / SUCCESS 放行;其余(没跑完 / PENDING / EXPECTED)算 pending。
+ *
+ * 同名 check 先去重、只留最新一条再分类(与 classifyHeadChecks「同名 workflow 只留最新」
+ * 同口径,2026-08-16 修,根因台账 ci-cancelled-rollup-masks-success):re-run /
+ * concurrency cancel-in-progress 会在同一 head SHA 上留下同名多条——旧的 CANCELLED +
+ * 新的 SUCCESS。GitHub 分支保护按「同名最新一条」评估,逐条全算会把被顶掉的旧 run
+ * 误判成 CI 失败(PR #2755 / #2621:auto-review 反复贴 status:ci-failed,而 GitHub
+ * 侧 mergeStateStatus 一直 CLEAN)。去重键 workflowName+name(不同 workflow 的同名
+ * job 互不相干,不能互相顶掉);排序键 startedAt(退 createdAt / completedAt,都没有
+ * 视为最新——还没 start 的新 run 本来就是最新的;时间戳全缺时按数组序、靠后当更新)。
+ */
+export function classifyRollupContexts(contexts) {
+  const FAIL = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'STARTUP_FAILURE', 'CANCELLED']);
+  const PASS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'STALE']);
+  // '9999' > 任何 '20xx' ISO 时间戳:没 start 的新 run 排在一切已启动的 run 之后
+  const orderKey = (c) => c.startedAt ?? c.createdAt ?? c.completedAt ?? '9999';
+  const latest = new Map();
+  for (const c of contexts ?? []) {
+    const key = `${c.workflowName || ''}/${c.name}`;
+    const prev = latest.get(key);
+    if (!prev || orderKey(c) >= orderKey(prev)) latest.set(key, c);
+  }
+  const failed = [];
+  const pending = [];
+  const awaiting = [];
+  for (const c of latest.values()) {
+    const concl = (c.conclusion ?? '').toUpperCase();
+    const status = (c.status ?? '').toUpperCase();
+    if (concl === 'ACTION_REQUIRED' || status === 'ACTION_REQUIRED') awaiting.push(c.name);
+    else if (FAIL.has(concl)) failed.push(c.name);
+    else if (PASS.has(concl)) continue;
+    else pending.push(c.name);
+  }
+  return { failed, pending, awaiting };
+}
+
+/**
+ * 纯函数:确认 approval 之外的 branch/ruleset 门都能由本地信号证明已满足。
+ * probe 读不到、规则参数不完整、存在无法验证的规则、必需 check 未出现/未通过均 fail closed。
+ */
+export function evaluateAdminBranchRules({
+  probe = null,
+  rollupContexts = null,
+  checkRunsWithApps = null,
+  behindBy = null,
+} = {}) {
+  const failedChecks = [];
+  if (!probe) {
+    failedChecks.push('branch/ruleset 规则读不到');
+    return { verified: false, failedChecks, requiredStatusChecks: [] };
+  }
+  if (probe.classicProtectionKnown !== true) failedChecks.push('classic branch protection 状态未确认');
+  if (!probe.requiredStatusChecksKnown) failedChecks.push('required_status_checks 参数不完整');
+  if (probe.requiredStatusChecksStrict === true) {
+    if (typeof behindBy !== 'number' || !Number.isFinite(behindBy)) {
+      failedChecks.push('required status checks 要求分支最新,但 behind_by 未验证');
+    } else if (behindBy !== 0) {
+      failedChecks.push(`required status checks 要求分支最新,当前 behind_by=${behindBy}`);
+    }
+  }
+  if (!Array.isArray(probe.adminUnverifiedRuleTypes)) {
+    failedChecks.push('branch rule 类型清单不完整');
+  }
+  for (const type of probe.adminUnverifiedRuleTypes ?? []) {
+    failedChecks.push(`存在无法本地证明通过的 branch rule:${type}`);
+  }
+  const requiredStatusChecks = (probe.requiredStatusChecks ?? []).map((check) =>
+    typeof check === 'string'
+      ? { context: check, integrationId: null, source: 'unknown' }
+      : check
+  );
+  const needsRollup = requiredStatusChecks.some((check) => check?.integrationId == null);
+  const needsAppChecks = requiredStatusChecks.some((check) => check?.integrationId != null);
+  if (needsRollup && !Array.isArray(rollupContexts)) {
+    failedChecks.push('statusCheckRollup 读不到,无法核对未绑定 App 的 required checks');
+  }
+  if (needsAppChecks && !Array.isArray(checkRunsWithApps)) {
+    failedChecks.push('check-runs 读不到,无法核对绑定 App 的 required checks');
+  }
+  const strictPass = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  const orderKey = (context, index) => context.startedAt ?? context.createdAt ?? context.completedAt ?? `9999-${index}`;
+  for (const required of requiredStatusChecks) {
+    const name = String(required?.context ?? '').trim();
+    if (!name) {
+      failedChecks.push('required check context 为空');
+      continue;
+    }
+    const source = required?.integrationId == null ? rollupContexts : checkRunsWithApps;
+    if (!Array.isArray(source)) continue;
+    const matching = source.filter((context) =>
+      context?.name === name &&
+      (required?.integrationId == null || Number(context?.integrationId) === Number(required.integrationId))
+    );
+    if (matching.length === 0) {
+      const appHint = required?.integrationId == null ? '' : `,integration=${required.integrationId}`;
+      failedChecks.push(`required check 未上报:${name}${appHint}`);
+      continue;
+    }
+    const latest = matching
+      .map((context, index) => ({ context, order: orderKey(context, index) }))
+      .sort((a, b) => String(a.order).localeCompare(String(b.order)))
+      .at(-1)?.context;
+    const conclusion = String(latest?.conclusion ?? '').toUpperCase();
+    const status = String(latest?.status ?? '').toUpperCase();
+    if (!strictPass.has(conclusion) || (status && status !== 'COMPLETED')) {
+      failedChecks.push(`required check 未严格通过:${name}(status=${status || 'n/a'},conclusion=${conclusion || 'n/a'})`);
+    }
+  }
+  return {
+    verified: failedChecks.length === 0,
+    failedChecks,
+    requiredStatusChecks,
+  };
+}
+
+/**
+ * 纯函数:合并前 CI 总判定(单一真相源,pre-merge-check.mjs 与 context.mjs 共用;
+ * 单测 ci-status.test.mjs)。口径:**required 与非 required 一视同仁,CI 全绿才算 pass**。
+ * 由来(2026-08-04):旧逻辑只在 mergeStateStatus=BLOCKED 时看 CI,而 GitHub 只把
+ * required check 失败算进 BLOCKED——非 required 的红 CI 给的是 UNSTABLE,旧判定完全
+ * 不设防;selfMerge(--admin)路径更是在 awaiting-approval 分支就提前返回,CI 分类
+ * 永远不执行。本函数无条件消费两个来源,堵这两个洞。
+ *
+ * 输入:rollup = classifyRollupContexts 的结果(读不到 = null,全覆盖来源);
+ *      ciRuns = classifyHeadChecks 的结果(读不到 = null,只覆盖 Actions);
+ *      mergeStateStatus 仅用于「UNSTABLE 但两个来源都没看到问题」的自洽校验。
+ * 返回 { status, failed, pending, awaiting, reason }:
+ *   - failed:任一来源见到失败 → 不得合并,把名单提示用户/作者;
+ *   - pending:还有 check 没跑完 → 等跑完再合;
+ *   - awaiting:workflow 待批准才能跑 → 走 approve-workflows 流程,批完等下轮;
+ *   - unknown:两个来源都读不到,或 GitHub 说 UNSTABLE(有 check 非通过)但已读到的
+ *     来源全绿(读取不完整)→ **不得视为通过**,如实报告;
+ *   - pass:全绿(或该仓库根本没有任何 check)。
+ */
+export function evaluateCiStatus({ rollup = null, ciRuns = null, mergeStateStatus = null } = {}) {
+  const failed = [...new Set([...(rollup?.failed ?? []), ...(ciRuns?.failed ?? [])])];
+  const pending = [...new Set([...(rollup?.pending ?? []), ...(ciRuns?.pending ?? [])])];
+  const awaiting = [...new Set([
+    ...(rollup?.awaiting ?? []),
+    ...(ciRuns?.awaiting ?? []).map((w) => (typeof w === 'string' ? w : w.name)),
+  ])];
+  const base = { failed, pending, awaiting };
+  if (failed.length) return { ...base, status: 'failed', reason: `CI 失败:${failed.join(' / ')}` };
+  if (pending.length) return { ...base, status: 'pending', reason: `CI 还在跑:${pending.join(' / ')}` };
+  if (awaiting.length) return { ...base, status: 'awaiting', reason: `workflow 待批准才能跑 CI:${awaiting.join(' / ')}` };
+  if (!rollup && !ciRuns) {
+    return { ...base, status: 'unknown', reason: 'CI 状态读不到(statusCheckRollup 与 actions/runs 均不可用)——不得视为通过' };
+  }
+  if (mergeStateStatus === 'UNSTABLE') {
+    return { ...base, status: 'unknown', reason: 'GitHub 报 UNSTABLE(有 check 非通过)但已读到的来源全绿——CI 状态读取不完整,不得视为通过' };
+  }
+  return { ...base, status: 'pass', reason: 'CI 全绿(或无任何 check)' };
+}
+
+/** merge 写入前最后一跳的纯函数守卫；所有会变化的远端身份/状态都重新绑定。 */
+export function evaluateFinalMergeAuthorization({
+  admin = false,
+  approvalExemptAdminAvailable = false,
+  structuralBypassAvailable = false,
+  expectedHead = '',
+  actualHead = '',
+  expectedAuthorityDigest = '',
+  actualAuthorityDigest = '',
+  expectedViewer = '',
+  actualViewer = '',
+  expectedAuthor = '',
+  actualAuthor = '',
+  authorIsMaintainer = false,
+  approvalRequired = true,
+  maintainerReviewsVerified = false,
+  effectiveMaintainerApproval = false,
+  reviewDecision = null,
+  state = '',
+} = {}) {
+  const failedChecks = [];
+  const norm = (value) => String(value ?? '').trim().toLowerCase();
+  if (!expectedAuthorityDigest || actualAuthorityDigest !== expectedAuthorityDigest) {
+    failedChecks.push(`维护者权限已变化:${expectedAuthorityDigest || '(empty)'} → ${actualAuthorityDigest || '(empty)'}`);
+  }
+  if (!expectedHead || norm(actualHead) !== norm(expectedHead)) {
+    failedChecks.push(`head 已变化:${expectedHead || '(empty)'} → ${actualHead || '(empty)'}`);
+  }
+  if (!expectedViewer || norm(actualViewer) !== norm(expectedViewer)) {
+    failedChecks.push(`GitHub viewer 已变化:${expectedViewer || '(empty)'} → ${actualViewer || '(empty)'}`);
+  }
+  if (!expectedAuthor || norm(actualAuthor) !== norm(expectedAuthor)) failedChecks.push('PR 作者身份已变化');
+  if (state !== 'OPEN') failedChecks.push(`PR state=${state || '(empty)'}`);
+  if (reviewDecision === 'CHANGES_REQUESTED') failedChecks.push('写操作前出现 CHANGES_REQUESTED');
+  if (approvalRequired) {
+    if (!maintainerReviewsVerified) failedChecks.push('写操作前维护者 review 未完整读取');
+    else if (!effectiveMaintainerApproval) failedChecks.push('写操作前已无最终维护者集合成员的有效 Approve');
+  }
+  if (admin && approvalExemptAdminAvailable) {
+    if (!authorIsMaintainer) failedChecks.push('approval-exempt admin route 的作者已不是维护者');
+    if (reviewDecision !== 'REVIEW_REQUIRED') {
+      failedChecks.push(`approval-exempt admin route reviewDecision=${reviewDecision || '(empty)'}(必须 REVIEW_REQUIRED)`);
+    }
+  }
+  if (admin && structuralBypassAvailable && reviewDecision !== 'APPROVED') {
+    failedChecks.push(`structural admin route reviewDecision=${reviewDecision || '(empty)'}(必须 APPROVED)`);
+  }
+  return { available: failedChecks.length === 0, failedChecks };
+}
+
+/** 维护者作者普通 merge 也必须绑定已审查 head 并完成 stale-rebase 复核。 */
+export function evaluateNormalMergeAvailable({
+  canMerge = false,
+  blockClass = 'none',
+  approvalExempt = false,
+  headVerified = false,
+  staleRebaseChecked = false,
+} = {}) {
+  return Boolean(
+    canMerge &&
+    blockClass !== 'awaiting-approval' &&
+    (!approvalExempt || (headVerified && staleRebaseChecked))
+  );
+}
+
+/**
+ * 纯函数:维护者作者的 PR 是否只因缺 approval 而需要 admin merge。
+ * --admin 会绕过整套 branch protection,所以每个本地硬门都显式 fail closed;
+ * blockers 是调用方已经汇总的其它机械 blocker 数量,必须为 0。
+ */
+export function evaluateApprovalExemptAdminMerge({
+  approvalExempt = false,
+  headVerified = false,
+  state = '',
+  mergeable = '',
+  mergeStateStatus = '',
+  reviewDecision = null,
+  blockClass = 'none',
+  blockerCount = 0,
+  unresolvedCount = 0,
+  threadsVerified = false,
+  botSettled = false,
+  botSettleVerified = false,
+  hasSignoffLabel = false,
+  staleRebaseBlocking = false,
+  staleRebaseChecked = false,
+  protectedFileCount = 0,
+  branchRulesVerified = false,
+  ciStatus = 'unknown',
+} = {}) {
+  const failedChecks = [];
+  if (!approvalExempt) failedChecks.push('作者不在最终维护者集合中');
+  if (!headVerified) failedChecks.push('当前 head 未与已审查 SHA 对齐');
+  if (state !== 'OPEN') failedChecks.push(`PR state=${state || '(empty)'}(非 OPEN)`);
+  if (mergeable !== 'MERGEABLE') failedChecks.push(`mergeable=${mergeable || '(empty)'}(必须明确为 MERGEABLE)`);
+  if (mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
+  if (reviewDecision !== 'REVIEW_REQUIRED') {
+    failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(必须明确为 REVIEW_REQUIRED)`);
+  }
+  if (blockClass !== 'awaiting-approval') failedChecks.push(`blockClass=${blockClass}(非 awaiting-approval)`);
+  if (Number(blockerCount) !== 0) failedChecks.push(`仍有 ${Number(blockerCount) || 0} 个其它 blocker`);
+  if (!threadsVerified) failedChecks.push('review thread 状态未完整验证');
+  if (Number(unresolvedCount) !== 0) failedChecks.push(`仍有 ${Number(unresolvedCount) || 0} 条未 resolve thread`);
+  if (!botSettleVerified) failedChecks.push('机器人静默期输入未完整验证');
+  if (!botSettled) failedChecks.push('机器人静默期未过');
+  if (hasSignoffLabel) failedChecks.push('维护者确认标签仍在');
+  if (!staleRebaseChecked) failedChecks.push('stale-rebase compare 未完成');
+  if (staleRebaseBlocking) failedChecks.push('stale-rebase 仍在阻断');
+  if (Number(protectedFileCount) !== 0) failedChecks.push(`命中 ${Number(protectedFileCount) || 0} 个受保护路径`);
+  if (!branchRulesVerified) failedChecks.push('approval 之外的 branch/ruleset 门未完整验证');
+  if (ciStatus !== 'pass') failedChecks.push(`CI status=${ciStatus}(非 pass)`);
+  return {
+    available: failedChecks.length === 0,
+    failedChecks,
+    route: 'approval-exempt-admin',
+    reviewDecisionWasEmpty: reviewDecision == null || String(reviewDecision).trim() === '',
+  };
+}
+
+/** 每个 reviewer 只保留最后一条 APPROVED / CHANGES_REQUESTED，避免历史 CR 冒充当前 blocker。 */
+export function latestSubstantiveReviews(reviews) {
+  const latest = new Map();
+  for (const review of Array.isArray(reviews) ? reviews : []) {
+    const state = String(review?.state ?? '').toUpperCase();
+    if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED' && state !== 'DISMISSED') continue;
+    const login = String(review?.user?.login ?? review?.author?.login ?? review?.login ?? '')
+      .trim()
+      .toLowerCase();
+    if (!login) continue;
+    const at = String(review?.submitted_at ?? review?.submittedAt ?? review?.at ?? '');
+    const previous = latest.get(login);
+    const previousAt = String(previous?.submitted_at ?? previous?.submittedAt ?? previous?.at ?? '');
+    if (!previous || at >= previousAt) latest.set(login, review);
+  }
+  return [...latest.values()];
+}
+
+/**
+ * 纯函数:维护者作者重审通过后,是否可 dismiss viewer 自己留下的旧 CR。
+ * reviews 使用 REST review 形状(id/state/user.login);绝不替别人当前有效的 CR。
+ */
+export function evaluateOwnReviewDismissal({
+  approvalExempt = false,
+  reviewClean = false,
+  state = '',
+  mergeStateStatus = '',
+  reviewDecision = null,
+  viewerLogin = '',
+  reviews = [],
+  unresolvedCount = 0,
+  threadsVerified = false,
+  expectedHead = '',
+  actualHead = '',
+} = {}) {
+  const failedChecks = [];
+  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  const changesRequested = latestSubstantiveReviews(reviews)
+    .filter((review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED');
+  const ownReviews = changesRequested.filter((review) =>
+    String(review?.user?.login ?? review?.author?.login ?? '').trim().toLowerCase() === viewer
+  );
+  const allOwnReviews = (Array.isArray(reviews) ? reviews : []).filter((review) =>
+    String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED' &&
+    String(review?.user?.login ?? review?.author?.login ?? '').trim().toLowerCase() === viewer
+  );
+  const reviewIds = allOwnReviews
+    .map((review) => Number(review?.id))
+    .filter((id) => Number.isInteger(id) && id > 0);
+
+  if (!approvalExempt) failedChecks.push('作者不在最终维护者集合中');
+  if (!reviewClean) failedChecks.push('调用方未确认最终代码重审通过(--review-clean)');
+  if (state !== 'OPEN') failedChecks.push(`PR state=${state || '(empty)'}(非 OPEN)`);
+  if (mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
+  if (reviewDecision !== 'CHANGES_REQUESTED') failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(非 CHANGES_REQUESTED)`);
+  if (!viewer) failedChecks.push('viewer 身份为空');
+  if (changesRequested.length === 0) failedChecks.push('没有任何 CHANGES_REQUESTED review');
+  if (changesRequested.length > ownReviews.length) failedChecks.push('存在别人留下的 CHANGES_REQUESTED review');
+  if (allOwnReviews.length !== reviewIds.length) failedChecks.push('viewer 自己的 review 缺少 REST numeric id');
+  if (!threadsVerified) failedChecks.push('review thread 状态未完整验证');
+  if (Number(unresolvedCount) !== 0) failedChecks.push(`仍有 ${Number(unresolvedCount) || 0} 条未 resolve thread`);
+  const expected = String(expectedHead ?? '').trim().toLowerCase();
+  const actual = String(actualHead ?? '').trim().toLowerCase();
+  if (!expected) failedChecks.push('缺少被审查的 expected head SHA');
+  if (!actual) failedChecks.push('当前 head SHA 为空');
+  if (expected && actual && expected !== actual) failedChecks.push(`head 已变化:${expected} → ${actual}`);
+
+  return {
+    available: failedChecks.length === 0,
+    failedChecks,
+    reviewIds,
+    viewer,
+  };
+}
+
+/** compare API 字段解析；null / 字符串 / 负数 / 落后但无有效日期均视为未验证。 */
+export function parseStaleRebaseCompare(data = {}) {
+  const rawBehindBy = data?.behind_by;
+  const behindValid = typeof rawBehindBy === 'number' && Number.isFinite(rawBehindBy) && rawBehindBy >= 0;
+  const behindBy = behindValid ? rawBehindBy : 0;
+  const mergeBaseDate = String(data?.merge_base_date ?? '').trim();
+  const mergeBaseValid = mergeBaseDate !== '' && !Number.isNaN(Date.parse(mergeBaseDate));
+  return {
+    verified: behindValid && (behindBy === 0 || mergeBaseValid),
+    behindBy,
+    mergeBaseDate,
+  };
+}
+
+/** Scan, notification and merge must use the same immutable head and the same age test. */
+export function fetchStaleRebase({ slug, baseRef, headSha, cfg = {}, nowIso = new Date().toISOString(), ghFn = gh }) {
+  if (!cfg.enabled) return { verified: true, blocking: false, reason: 'stale-rebase 未启用', behindBy: null };
+  try {
+    if (!baseRef || !/^[0-9a-f]{40,64}$/i.test(headSha ?? '')) throw new Error('缺少 base 或完整 PR head SHA');
+    const endpoint = `repos/${slug}/compare/${encodeURIComponent(baseRef)}...${headSha}`;
+    const r = ghFn(['api', endpoint], { allowFail: true, timeoutMs: 15_000 });
+    if (!r.ok) throw new Error(r.stderr || 'compare request failed');
+    const data = parseApiJson(r.stdout, endpoint);
+    const parsed = parseStaleRebaseCompare({ behind_by: data.behind_by,
+      merge_base_date: data.merge_base_commit?.commit?.committer?.date });
+    if (!parsed.verified) throw new Error('compare 的 behind_by / merge base 日期未完整验证');
+    return { ...parsed, ...checkStaleRebase({ ...parsed, nowIso, cfg }) };
+  } catch (error) {
+    return { verified: false, blocking: false, behindBy: null, mergeBaseDate: null,
+      reason: `stale-rebase 未验证:${error.message}` };
+  }
+}
+
+/**
+ * 判定 PR 是否因太久没 rebase 而需要重做。
+ * 纯函数(输入 merge base 日期、配置,输出判定),不做网络调用。
+ *
+ * 判据:PR 分支从 main 分叉出来的点(merge base commit)距今超过 maxDaysBehind 天,
+ * 说明作者已经这么久没 rebase 过了——旧 CI 是对旧 base 的虚拟 merge commit 跑的,
+ * 结果已不再有效(尤其 --admin merge 会绕过「Require branches to be up to date」)。
+ * 作者 rebase 后 merge base 自然前移,计时自动归零。
+ *
+ * @param {{ behindBy: number, mergeBaseDate: string, nowIso: string, cfg: object }}
+ * @returns {{ blocking: boolean, reason: string, daysSinceRebase?: number, mergeBaseDate?: string }}
+ */
+export function checkStaleRebase({ behindBy, mergeBaseDate, nowIso, cfg = {} }) {
+  if (!cfg?.enabled) return { blocking: false, reason: 'stale-rebase 未启用' };
+  const maxDaysBehind = Number(cfg.maxDaysBehind ?? 3);
+  if (maxDaysBehind <= 0) return { blocking: false, reason: 'stale-rebase 阈值无效' };
+  if (behindBy <= 0) return { blocking: false, reason: '未落后 base,无需 rebase' };
+  if (!mergeBaseDate) return { blocking: false, reason: 'merge base 时间读不到,跳过 stale-rebase 判定' };
+  const baseMs = Date.parse(mergeBaseDate);
+  const nowMs = Date.parse(nowIso);
+  if (Number.isNaN(baseMs) || Number.isNaN(nowMs)) {
+    return { blocking: false, reason: '时间解析失败,跳过 stale-rebase 判定' };
+  }
+  const daysSinceRebase = (nowMs - baseMs) / (24 * 60 * 60 * 1000);
+  if (daysSinceRebase >= maxDaysBehind) {
+    return {
+      blocking: true,
+      daysSinceRebase: Math.round(daysSinceRebase * 10) / 10,
+      mergeBaseDate,
+      reason: `距上次 rebase 已 ${Math.round(daysSinceRebase)} 天(≥${maxDaysBehind} 天阈值),需要 rebase 以触发最新 CI`,
+    };
+  }
+  return {
+    blocking: false,
+    daysSinceRebase: Math.round(daysSinceRebase * 10) / 10,
+    mergeBaseDate,
+    reason: `距上次 rebase ${Math.round(daysSinceRebase)} 天,未超 ${maxDaysBehind} 天阈值`,
+  };
+}
+
+/**
+ * 拉公司 org 名录 README(供 context.mjs 产品门 Slack 同步评论发送者归属使用,
+ * 配置键 orgMappingRepos)。读取顺序(fine-grained PAT 读不到跨 org 仓库,
  * 本机 SSH key 读得到):
  *   1. 本地 roster clone(~/.cindy/org-rosters/<owner>-<repo>,仓库工作区之外;老
  *      ~/.xdmaker/org-rosters 副本弃用,首跑自动重新 clone):存在则先
@@ -1947,274 +1726,52 @@ export function parseRosterLine(line) {
   return email || name ? { githubLogin: login, name, email } : null;
 }
 
-// ── Loop 托管 PR 排除(与目标仓库自有的自动修 bug loop 共存;context.mjs 扫描分类、
-// notify-merge-ack.mjs 判断是否要发合并致谢共用同一份判定,防止两处判据漂移)──
+// ── 维护者确认门 hold / 通过标记(signoff-hold.mjs 写入 PR 评论;context.mjs 扫描分类、
+// signoff-release.mjs 通过校验共用同一份解析,防止多处正则漂移)──
 
-// normalizeTitlePrefixes 的可信上限(SC-E1-1,2026-08-02):防止误配置(整段贴错 JSON、
-// 脚本生成的巨量前缀等)拖成分钟级停顿——20000 项唯一前缀在旧版 O(n²) 实现下实测耗时
-// 2775.7ms。取值依据:①MAX_ITEM_BYTES=128,真实 loop 前缀形如 `[bug-doctor] `/`[mivo] `
-// 不到 20 字节,128 留出 6 倍以上冗余,同时挡掉误粘贴的整行文本;②MAX_COUNT=32,一个仓库
-// 迁移期同时存在的新旧 loop 前缀通常是个位数,32 已是"十几个 loop 并存"都覆盖不到的
-// 宽松上限,真配到这个数量基本可判定为误配而非正常迁移;③MAX_TOTAL_BYTES=4096,与前两项
-// 自洽(32×128=4096),保证 20000 项级误配在归一化阶段就被判定超限。
-const TITLE_PREFIX_MAX_COUNT = 32;
-const TITLE_PREFIX_MAX_ITEM_BYTES = 128;
-const TITLE_PREFIX_MAX_TOTAL_BYTES = 4096;
-
-/**
- * 归一化 loopPrExclusion 的标题前缀配置:兼容 legacy `titlePrefix`(单值 string)与新
- * `titlePrefixes`(string[])——两者可以同时配置(如目标仓库 loop 改名后新旧前缀并存的
- * 迁移期)。用 Set 做 O(n) 去重(SC-E1-1,2026-08-02:替掉此前 `prefixes.includes(p)` 在
- * 循环内造成的 O(n²))。返回的 prefixes 按长度降序排列供调用方 `.find()` 命中最长前缀
- * (SC-LONGEST-2)——不依赖数组声明顺序,也不假设"数组项在前、legacy 追加末尾"。
- *
- * ⚠️ 配置 titlePrefixes/titlePrefix 时,前缀字面量必须包含标题里实际存在的尾随空格——
- * 写 `"[mivo] "` 而非 `"[mivo]"`。少了这个空格,剥离后 titleForFormat 会带一个前导空格
- * (如 " fix: ..."),TITLE_TYPE_RE 锚定行首 `^(type)` 匹配不到,格式门仍会误判——这不是
- * 本函数的 bug,它只按字面量精确剥离,不做 trim。
- *
- * 非法形态(非数组 / 非字符串 / 空字符串)按同文件 `normalizeLoginList` 的既有约定处理
- * (SC-WARN-3,2026-08-02):过滤掉非法条目、用能过滤到的合法子集继续工作,同时返回
- * `invalid=true`——不再是"静默过滤,不抛错"就完事;调用方(context.mjs)必须在 invalid
- * 时经既有 CONFIG_WARNINGS 通道显著告警,不能悄悄吞掉"配置形态不合法"这个信号。
- *
- * 项数 / 单项长度 / 总字节任一超过上方可信上限时返回 `overLimit=true`、`prefixes=[]`——
- * fail-safe 整体禁用 loop 托管 PR 排除机制,不是"超限的丢弃、没超限的部分继续工作"
- * (调用方 detectLoopExclusion 据此直接返回 null,不能只吞掉超限前缀后用剩下的凑合判定,
- * 否则误配置只会表现为"部分 loop PR 突然被当成人类 PR 审"这种难定位的诡异行为)。
- *
- * rules 为 null/未配置任一字段时返回 `{ prefixes: [], invalid: false, overLimit: false }`。
- * 配置文件本身来自 REVIEW_PR_RULES_FILE 环境变量 / 目标仓库自己的
- * `<REPO_ROOT>/agent-use/docs/pr-rules.json` / 本 Skill 默认配置三者之一(见 loadRules()
- * 的解析优先级),不是"本仓自己的 pr-rules.json"——不同脚本读取到的可能是目标仓库自备的
- * 那份,不能假设就是 Skill 自带默认值。
- *
- * 返回 { prefixes: string[], invalid: boolean, overLimit: boolean }。
- */
-export function normalizeTitlePrefixes(rules) {
-  const seen = new Set();
-  let invalid = false;
-
-  const collect = (value, isArrayField) => {
-    if (value === undefined || value === null) return;
-    if (isArrayField && !Array.isArray(value)) { invalid = true; return; }
-    for (const p of (isArrayField ? value : [value])) {
-      if (typeof p !== 'string' || p === '') { invalid = true; continue; }
-      seen.add(p); // Set 天然去重,O(1) 均摊,不再是 O(n) 的 includes() 扫描
-    }
-  };
-  collect(rules?.titlePrefixes, true);
-  collect(rules?.titlePrefix, false);
-
-  const prefixes = [...seen];
-  let totalBytes = 0;
-  let overLimit = prefixes.length > TITLE_PREFIX_MAX_COUNT;
-  for (const p of prefixes) {
-    const bytes = Buffer.byteLength(p, 'utf8');
-    if (bytes > TITLE_PREFIX_MAX_ITEM_BYTES) overLimit = true;
-    totalBytes += bytes;
-  }
-  if (totalBytes > TITLE_PREFIX_MAX_TOTAL_BYTES) overLimit = true;
-  if (overLimit) return { prefixes: [], invalid, overLimit: true };
-
-  prefixes.sort((a, b) => b.length - a.length); // 最长前缀优先命中(SC-LONGEST-2)
-  return { prefixes, invalid, overLimit: false };
-}
-
-/**
- * 判定该 PR 是否由目标仓库自有的自动修 bug loop 托管、以及其 T-level。
- * 返回 null(未命中任一 titlePrefix/titlePrefixes,或命中但本地台账没有该 PR 号的
- * 记录——与 loop 无关 / 无法证明托管关系,按普通 PR 处理)或
- * { matched:true, verdict:'t1'|'t2', source, matchedPrefix }。
- * verdict='t1' 时 review-pr 必须跳过(loop 自己合并,不审不合不催,也不重复播报合并致谢);
- * 'skip'(=已确认托管但拿不准 T-level,defaultWhenAmbiguous)按同款处理;'t2' 时正常走 review-pr。
- * source 标注判据来源(body-marker / state.json / default),供排查与飞书汇总措辞用。
- * matchedPrefix 是实际命中的那一个前缀字面量(供调用方剥标题用,如 context.mjs 的
- * titleForFormat——不能假设是 rules.titlePrefix,配置了 titlePrefixes 数组时命中的可能
- * 是数组里的任一项,且总是取归一化后按长度降序排列的最长匹配项,见 normalizeTitlePrefixes)。
- * rules 来自 pr-rules.json 的 loopPrExclusion 字段,调用方自行 JSON.parse 后传入
- * (不同脚本读取 pr-rules.json 的相对路径不同,本函数不做路径假设)。rules 为 null/未配置
- * loopPrExclusion,或 titlePrefix/titlePrefixes 均未配置(目标仓库没有这类 loop),或
- * titlePrefix/titlePrefixes 超过 normalizeTitlePrefixes 的可信上限被 fail-safe 整体禁用
- * (overLimit)时,均恒返回 null——整套机制天然关闭。
- *
- * ⚠️ 身份门槛(反伪造):仅标题前缀**不足以**认定 PR 由 loop 托管——任何贡献者都能在自己
- * PR 的标题前加一句 titlePrefix/titlePrefixes 字面量,冒充 loop 托管来拿到
- * defaultWhenAmbiguous 的默认 skip,让自己的 PR 永久漏审。必须本地台账(`rules.stateFile`,
- * loop 自己写入、贡献者在 GitHub 侧碰不到这份本机文件)里精确命中该 PR 号,才认定为真托管;
- * 命中前缀但台账查不到(文件不存在 / 读不到 / 没有该 PR 号)→ **直接返回 null,按普通 PR
- * 处理**,不再落到 defaultWhenAmbiguous。未来若 loop 加了可信 label / commit 签名等机制,
- * 可以在这里追加作为身份门槛的替代或补充信号,但不能只靠可由 PR 作者自行填写的字段
- * (标题 / body 文本)单独作数。
- */
-export function detectLoopExclusion({ title, body, pr, rules }) {
-  const { prefixes, overLimit } = normalizeTitlePrefixes(rules);
-  if (overLimit) return null; // fail-safe(SC-E1-1):前缀配置超可信上限,整体禁用,不部分工作
-  const matchedPrefix = prefixes.find((p) => title.startsWith(p)) ?? null;
-  if (!matchedPrefix) return null;
-  if (!rules.stateFile) return null; // 没配台账路径 = 没有身份门槛可验,不认定托管
-
-  let cluster = null;
-  try {
-    // containment 校验(见 resolveInRepoRoot):stateFile 来自本仓自己的 pr-rules.json
-    // (非 PR 可控),风险很低,但配置写错(如误填 `../../../etc/passwd`)时该显式报错
-    // 而不是静默读到仓库外的文件——校验成本几乎为零。
-    const statePath = resolveInRepoRoot(rules.stateFile);
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    // state.json 里 pr 字段的历史写法不保证是 number(曾见过字符串),统一 Number 归一化再比较。
-    cluster = Object.values(state.clusters ?? {}).find((c) => Number(c.pr) === Number(pr)) ?? null;
-  } catch {
-    cluster = null; // 台账不存在 / 读不到 / 配置跳出仓库根,身份门槛过不了
-  }
-  if (!cluster) return null; // 台账没有这个 PR 号——无法证明托管关系,按普通 PR 走全套 review-pr 流程
-
-  // force-review 强制路由(缴械配套,owner 2026-08-04 决策 mergeAuthority=review-pr-only):
-  // 配置了 forceVerdict 时,身份确认后**不再看** body marker 与 cluster.tCap,一律按 t2 进
-  // 全套审查——loop 侧数据(body 标记/台账 tCap)漂移回 T1 也不能再造成跳审。唯一有意义的
-  // 取值是 't2';为防拼写漂移静默失效(t1/skip 都意味着无人审),任何非空值都收敛为 't2',
-  // 绝不产生比 t2 更宽松的结果(fail-safe 朝「进审」方向),coerced 时 source 单独标注供告警。
-  if (rules.forceVerdict != null && rules.forceVerdict !== '') {
-    const coerced = rules.forceVerdict !== 't2';
-    return { matched: true, verdict: 't2', source: coerced ? 'force-config-coerced' : 'force-config', matchedPrefix };
-  }
-
-  // 身份确认后再判 T-level:先看 body 里 loop 自己声明的独立 metadata 行(锚定整行、加 m 标志
-  // 逐行匹配,避免自然语言正文里偶然出现的"这次不建议合并"之类描述性语句被误当成 T-level 声明);
-  // 没写明再退回本地台账的 cluster.tCap(身份门槛已过,这里可信采信)。
-  for (const re of rules.t1BodyMarkers ?? []) {
-    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't1', source: 'body-marker', matchedPrefix };
-  }
-  for (const re of rules.t2BodyMarkers ?? []) {
-    if (new RegExp(re, 'm').test(body)) return { matched: true, verdict: 't2', source: 'body-marker', matchedPrefix };
-  }
-  if (cluster.tCap === 'T1') return { matched: true, verdict: 't1', source: 'state.json', matchedPrefix };
-  if (cluster.tCap === 'T2') return { matched: true, verdict: 't2', source: 'state.json', matchedPrefix };
-
-  return { matched: true, verdict: rules.defaultWhenAmbiguous ?? 'skip', source: 'default', matchedPrefix };
-}
-
-// ── 产品/架构门 hold 标记(product-hold.mjs 写入 PR 评论;context.mjs 扫描分类、
-// product-release.mjs 放行校验共用同一份解析,防止三处正则漂移)──
-
-/** hold 标记前缀(隐藏 HTML 注释),用于 includes() 级别的廉价预筛。 */
+/** hold 标记前缀(隐藏 HTML 注释),用于 includes() 级别的廉价预筛。
+ *  沿用旧前缀 review-pr:product-gate —— 存量被 hold 的 PR 评论里就是它,换前缀会丢失
+ *  「当初开的哪个讨论 issue」这条确定性记忆。 */
 export const PRODUCT_GATE_MARKER_PREFIX = '<!-- review-pr:product-gate';
-
-/**
- * 从一组评论 body 里解析「最后一条」product-hold 标记(与 product-hold.mjs 的去重口径
- * 一致:取最后一条带 issue= 的标记)。返回 { kind:'product'|'arch', issueUrl, issueNumber }
- * | null(从未被 hold 过,或只有无 issue= 的旧版标记)。
- */
-export function parseLastHoldMarker(bodies) {
-  let last = null;
-  for (const body of bodies ?? []) {
-    for (const m of (body ?? '').matchAll(/<!--\s*review-pr:product-gate\b([^>]*?)issue=(\S+?)\s*-->/g)) {
-      last = { kind: /\bkind=arch\b/.test(m[1]) ? 'arch' : 'product', issueUrl: m[2] };
-    }
-  }
-  if (!last) return null;
-  const num = last.issueUrl.match(/\/issues\/(\d+)/)?.[1] ?? null;
-  return { ...last, issueNumber: num ? Number(num) : null };
-}
-
-// ── 冷更(mobile runtime fingerprint)判定原料 ──
-// 纯函数放这里而不是内联进 context.mjs:冷更门的结论直接决定「能不能合并」,解析必须可单测,
-// 且未来若有第二个消费方(如 pre-merge-check 复核)不能出现第二份正则。
-
-/**
- * 解析 PR 上 fingerprint guard 的 sticky comment(取最后一条带 marker 的评论)。
- * 结论优先读机器可读行 `<!-- fingerprint-changed: true|false -->`
- * (apps/mobile/scripts/ci-fingerprint.mjs 的 guardChangedMarker 写入);老版评论没有该行时
- * 退回标题文案判定;两者都读不出 → changed=null(未知,不得当作「没变」放行)。
- * @returns {{changed:boolean|null, source:'marker'|'heading'|'unparsed', createdAt:string|null,
- *   updatedAt:string|null, staleVsHead:boolean|null, url:string|null} | null} 无 guard 评论返回 null
- */
-export function parseFingerprintGuard(comments, marker, latestCommitDate) {
-  if (!marker) return null;
-  const c = (comments ?? []).filter((x) => (x?.body ?? '').includes(marker)).pop();
-  if (!c) return null;
-  const body = c.body ?? '';
-  const machine = body.match(/<!--\s*fingerprint-changed:\s*(true|false)\s*-->/)?.[1] ?? null;
-  let changed = machine != null ? machine === 'true' : null;
-  let source = machine != null ? 'marker' : 'unparsed';
-  if (changed == null) {
-    if (/会改变\s*mobile\s*原生\s*runtime\s*fingerprint/.test(body)) { changed = true; source = 'heading'; }
-    else if (/不再改变\s*mobile\s*runtime\s*fingerprint/.test(body)) { changed = false; source = 'heading'; }
-  }
-  return {
-    changed,
-    source,
-    createdAt: c.createdAt ?? null,
-    updatedAt: c.updatedAt ?? null,
-    // guard 评论是 sticky(原地更新):updatedAt 早于最新 commit = 结论可能没覆盖当前 head
-    staleVsHead: latestCommitDate && c.updatedAt ? latestCommitDate > c.updatedAt : null,
-    url: c.url ?? null,
-  };
-}
-
-/**
- * 挑出命中「指纹输入路径」的文件。pattern 以 `/` 结尾按前缀匹配(目录),否则按整路径相等
- * (避免 `apps/mobile/package.json` 误中 `apps/mobile/package.json.bak` 这类近邻文件)。
- */
-export function matchColdUpdatePaths(filePaths, patterns) {
-  const list = patterns ?? [];
-  return (filePaths ?? []).filter((p) => list.some((pat) => (pat.endsWith('/') ? p.startsWith(pat) : p === pat)));
-}
-
-/**
- * 把文案里的 {{ISSUE_URL}} 占位符替换成真实 issue 链接(product-hold.mjs 发 PR 评论 /
- * product-release.mjs 发放行评论共用)。裸占位符一律渲染成 <url> 角括号 autolink——
- * 对外文案是全角标点的中文,GitHub 的裸 URL 自动链接不认全角标点为边界,`{{ISSUE_URL}}，后文`
- * 会把后面整段中文吞进超链接(线上实踩);<url> 形式在 `>` 处确定性截断,渲染效果不变。
- * 占位符已写在 markdown 链接目标位(`]({{ISSUE_URL}})`)时保持裸 URL(目标位本身有边界)。
- */
-export function renderIssueUrl(body, issueUrl) {
-  return body
-    .replaceAll(']({{ISSUE_URL}})', `](${issueUrl})`)
-    .replaceAll('{{ISSUE_URL}}', `<${issueUrl}>`);
-}
-
-// ── 维护者确认门(signoff)统一标签/标记制 ──
-// signoff-hold.mjs 写入 PR 评论(signoff-release 写入脚本尚未合入,见下注);context.mjs 扫描分类、
-// signoff-policy.test.mjs 覆盖。2026-08-09 起由旧 draft 制(product-hold 转 draft /
-// product-release 标回 ready)升级为标签制:hold=开讨论 issue + 状态评论 + 挂
-// awaiting-discussion 标签(不转 draft);release=admins 名单成员在当前 head 之后的
-// GitHub Approve,摘标签由维护者按本 SKILL 手工操作(signoff-release --labels-only 尚未合入)。标签只是 GitHub 后台的
-// 可筛性入口,真正挡合并的是流程内部判定;摘标签不构成通过。
-//
-// 与上游(lizi)同源的解析/判定函数全部收在这里,防止 signoff-hold / context.mjs 正则漂移
-// (signoff-release 写入脚本尚未合入,合入后同收于此);缺省标签名走 SIGNOFF_LABEL_DEFAULT,pr-rules.json 的
-// signoffGate.label 可覆盖(与上游 signoff-hold.mjs 只读这一个嵌套键的契约一致)。
-
-/** hold 标记前缀沿用 PRODUCT_GATE_MARKER_PREFIX(存量被 hold 的 PR 评论里就是它)。 */
-// 通过标记前缀:本 PR(#11 拆节后)只提供 marker 的**解析**(parseSignoffReleases,
-// context.mjs 消费);**写入** marker 的脚本(signoff-release.mjs)零测试,已从本批
-// 移出、另立 PR 并带测试。当前写入方式是维护者按 SKILL.md 手工发评论——本常量
-// 保留为解析契约,不因写入脚本缺位而成为孤儿。
+/** 通过标记前缀(signoff-release.mjs 写入):记录哪些触发类别曾被维护者确认;当前 head 是否有效另判。 */
 export const SIGNOFF_RELEASE_MARKER_PREFIX = '<!-- review-pr:signoff-release';
 /** 状态回帖标记前缀(signoff-hold.mjs 写入):按 head sha 去重,同一版代码只回帖一次。 */
 export const SIGNOFF_RENOTICE_MARKER_PREFIX = '<!-- review-pr:signoff-renotice';
 /** 维护者确认标签缺省名(pr-rules.json signoffGate.label 可覆盖)。 */
 export const SIGNOFF_LABEL_DEFAULT = 'awaiting-discussion';
-/** 标签颜色(紫色=「等人确认」不是「出错」,红色会被误读成失败)。 */
-export const SIGNOFF_LABEL_COLOR = '7057FF';
-/** 上一代标签:只用于迁移和合并前防线,不再创建。 */
+/** 上一个标签:只用于迁移和合并前防线,不再创建。 */
 export const LEGACY_MAINTAINER_DISCUSSION_LABEL = 'awaiting-maintainer-discussion';
-/** 更早的统一标签:只用于迁移,不再创建。 */
+/** 更早的统一标签:只用于迁移和合并前防线,不再创建。 */
 export const LEGACY_MAINTAINER_APPROVAL_LABEL = 'needs-maintainer-approval';
-/** 更早的旧主标签:只用于迁移,不再创建。 */
+/** 更早的旧主标签:只用于迁移和合并前防线,不再创建。 */
 export const LEGACY_SIGNOFF_LABEL = 'need-whitelist';
-/** 旧标签(仅供迁移时识别摘除,不再创建)。 */
-export const LEGACY_GATE_LABELS = [
-  LEGACY_MAINTAINER_DISCUSSION_LABEL,
-  LEGACY_MAINTAINER_APPROVAL_LABEL,
-  LEGACY_SIGNOFF_LABEL,
-  ...['product', 'arch', 'security', 'cold', 'coldupdate', 'rules'].map((g) => `${LEGACY_SIGNOFF_LABEL}:${g}`),
-];
+
+/**
+ * 从一组评论里解析该 PR 最后一条 hold 标记(与 signoff-hold.mjs 的去重口径一致:取最后一条
+ * 带 issue= 的标记)。入参可以是 body 字符串数组,也可以是 { body, createdAt } 数组
+ * (给了 createdAt 才有 heldAt:放行事件要求晚于它)。
+ * 兼容旧标记形态(kind=arch),kind 只是历史信息,当前在拦哪些触发以 context.mjs 的
+ * signoff.triggers 为准。
+ * @returns {{kind:string, issueUrl:string, issueNumber:number|null, heldAt:string|null} | null}
+ */
+export function parseLastHoldMarker(comments) {
+  let hold = null;
+  for (const c of comments ?? []) {
+    const body = (typeof c === 'string' ? c : c?.body) ?? '';
+    const createdAt = typeof c === 'string' ? null : c?.createdAt ?? null;
+    for (const m of body.matchAll(/<!--\s*review-pr:product-gate\b([^>]*?)issue=(\S+?)\s*-->/g)) {
+      hold = { kind: /\bkind=arch\b/.test(m[1]) ? 'arch' : 'product', issueUrl: m[2], heldAt: createdAt };
+    }
+  }
+  if (!hold) return null;
+  const num = hold.issueUrl.match(/\/issues\/(\d+)/)?.[1] ?? null;
+  return { ...hold, issueNumber: num ? Number(num) : null };
+}
 
 /**
  * 测试-only 路径判定(product 门的确定性排除;signoff-policy.test.mjs 覆盖)。
- * 与 `.d.ts` 排除同理:测试 / mock / snapshot 文件不可能产生任何视觉变化,产品门不该
- * 因它触发 —— 这是确定事实,不交给每轮的语义判断。
+ * 与 `.d.ts` 排除同理(见 context.mjs uiPathFiles 注释):测试 / mock / snapshot 文件不可能
+ * 产生任何视觉变化,产品门不该因它触发 —— 这是确定事实,不交给每轮的语义判断。
  * 只认边界明确的形态:目录段 __tests__ / __mocks__ / __snapshots__ / test / tests / mocks,
  * 文件名后缀 .test.* / .spec.* / .mock.* / .snap。段边界用 (^|/) 锚定,防子串误伤
  * (latest.ts / testimonials.tsx / contest.tsx 都不得命中)。
@@ -2261,341 +1818,142 @@ export function shouldCloseDiscussionIssue({ held = null, triggerCount = 0 } = {
 }
 
 /**
- * 解析维护者确认门的通过标记(写入脚本尚未合入,当前由维护者按 SKILL.md 手工发评论,形如
+ * 解析维护者确认门的通过标记(signoff-release.mjs 写入,形如
  * `<!-- review-pr:signoff-release gates=security,rules by=dashhuang -->`)。
  * 通过状态按触发类别取最后一次标记;标记只对它之后的当前 head 有效,作者新 push 后要
- * 重新确认。
+ * 重新确认(由 `evaluateMaintainerReview` 比较标记时间和最新 commit 时间)。
  * @returns {Map<string, {by:string|null, at:string|null, via:'release-marker'}>} kind → 放行事件
  */
-export function parseSignoffReleases(comments) {
-  const released = new Map();
+export function parseSignoffReleaseEvents(comments) {
+  const events = [];
   for (const c of comments ?? []) {
     const body = (typeof c === 'string' ? c : c?.body) ?? '';
-    if (c?.automationExcluded || isAutomationAssessmentEnvelope(body)) continue;
     const createdAt = typeof c === 'string' ? null : c?.createdAt ?? null;
+    const commentAuthor = typeof c === 'string'
+      ? null
+      : String(c?.author?.login ?? c?.author ?? '').trim() || null;
     for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
       for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
-        released.set(kind, { by: m[2] ?? null, at: createdAt, via: 'release-marker' });
+        events.push({
+          kind,
+          by: m[2] ?? null,
+          commentAuthor,
+          at: createdAt,
+          via: 'release-marker',
+        });
       }
     }
   }
+  return events;
+}
+
+export function parseSignoffReleases(comments) {
+  const released = new Map();
+  for (const event of parseSignoffReleaseEvents(comments)) released.set(event.kind, event);
   return released;
 }
 
-// ── 持久放行改良(2026-08-10,lz-port-persist)──
-// 上游 evaluateMaintainerReview 的 historicalApproval 不带 kind,而 evalSignoffKind 对六个
-// 门类传同一组全局 reviews → 旧的 security Approve 会连带放行之后新出现的 rules 门(纯函数
-// 实测复现,上游 173 条测试无一覆盖)。本仓改良:放行快照记录**已确认门类集合**
-// (confirmedKinds),新触发的门类不在集合内 → 仍拦。同时保持两条既有硬约束:
-//   - 放行标记的作者身份校验不得削弱:marker 评论作者必须 ∈ 信任名单(admins),文本形状
-//     谁都能复制,评论作者(GitHub 侧可验证身份)才是信源;marker 的 by= 字段是自称,只作
-//     记录不作信源;
-//   - PR 级持久放行与 thread 级年龄门(MIN_MARKER_AGE_MS,resolve-threads.mjs,10min 人工
-//     反对窗口)两级正交:本函数族不消费任何时间戳/年龄输入,thread 年龄门判定由
-//     resolve-threads.mjs 独立持有,不因 PR 级放行成立而被改变或绕过(正交由测试证明)。
-
-/**
- * 从评论对象提取可校验作者(GitHub 侧身份)。生产输入是 GraphQL 节点
- * (author 为 { login, __typename } 对象),测试/映射输入可能是 author 字符串;
- * 两种形状都收:对象取 author.login,字符串直接用。取不到 → null(不可信,
- * 调用方按 null 处理 = 拒,不 fail-open)。String({...}) 会得到 "[object Object]",
- * 绝不能拿它当登录名比对。
- * @param {any} c 评论(字符串或对象)
- * @returns {string|null}
- */
-function commentAuthor(c) {
-  if (typeof c === 'string' || c?.author == null) return null;
-  return typeof c.author === 'string' ? c.author : (c.author.login ?? null);
-}
-
-/**
- * 解析放行标记并带出评论作者(作者校验的数据原料)。与 parseSignoffReleases 同一正则,
- * 仅多取作者:对象输入取 author.login(author 为对象时)或 author(author 已是字符串),
- * 字符串输入作者为 null(不可信,调用方按 null 处理)。
- * @returns {Array<{kind:string, by:string|null, author:string|null}>}
- */
-export function parseSignoffReleaseMarkers(comments) {
-  const out = [];
-  for (const c of comments ?? []) {
-    const body = (typeof c === 'string' ? c : c?.body) ?? '';
-    if (c?.automationExcluded || isAutomationAssessmentEnvelope(body)) continue;
-    const author = commentAuthor(c);
-    for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
-      for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
-        out.push({ kind, by: m[2] ?? null, author });
-      }
-    }
+/** 先验证 marker 的 GitHub 评论作者与最终维护者集合身份，再按 kind 取最后一条可信事件。 */
+export function selectTrustedSignoffReleases(events, maintainers) {
+  const members = new Set(normalizeLoginList(maintainers));
+  const trusted = new Map();
+  const untrusted = [];
+  for (const event of events ?? []) {
+    const by = String(event?.by ?? '').trim().toLowerCase();
+    const commentAuthor = String(event?.commentAuthor ?? '').trim().toLowerCase();
+    if (by && by === commentAuthor && members.has(by)) trusted.set(event.kind, event);
+    else untrusted.push(event);
   }
-  return out;
+  return { trusted, untrusted };
 }
 
 /**
- * 作者校验后收集「已确认门类集合」(放行快照)。只认评论作者 ∈ trustedLogins 的 marker;
- * 非可信作者(或作者未知)的 marker 一律进 rejected 且不计入 —— 伪 marker 不能制造放行。
- * by= 字段只作记录,不作信源。
- * @param {{markers?: Array<{kind:string, author:string|null, by?:string|null}>,
- *   trustedLogins?: string[]}} o
- * @returns {{confirmedKinds:string[], rejected:Array<{kind:string, author:string|null}>}}
+ * 按维护者每人最后一条实质 review 判定当前 head 的确认状态。
+ *
+ * Request Changes 的当前 head 交给作者修改,不算「等维护者确认」。
+ * Approve 与 signoff-release 标记一旦发生即持久有效:维护者确认过后,作者再推新
+ * commit 不会重新触发确认门——门保持 released。最终审查会对照 PR 描述、讨论结果
+ * 与 diff 范围复核,夹带私货或未落实讨论要求的仍会拦下。标签只是结论的外部同步。
  */
-export function collectConfirmedSignoffKinds({ markers = [], trustedLogins = [] } = {}) {
-  const trusted = new Set((trustedLogins ?? []).map((s) => String(s).toLowerCase()));
-  const confirmedKinds = [];
-  const rejected = [];
-  for (const m of markers ?? []) {
-    const login = m?.author == null ? null : String(m.author).toLowerCase();
-    if (login !== null && trusted.has(login)) {
-      if (!confirmedKinds.includes(m.kind)) confirmedKinds.push(m.kind);
-    } else {
-      rejected.push({ kind: m.kind, author: m?.author ?? null });
-    }
-  }
-  return { confirmedKinds: [...confirmedKinds].sort(), rejected };
-}
-
-/**
- * 安全/规则门「明确同意」判定算法(结构化 marker 优先,关键词表必须挡否定前缀)。
- * 取舍:产品门仍由主 agent 语义判;安全门必须机器可测,禁止把任意含「同意」的句子当放行。
- * 优先认独立成行的 `<!-- signoff:release -->` 或整行恰好是「同意放行」;
- * 退回关键词表时必须命中正向词且不含否定前缀(不/别/先别/暂不/不同意)。
- */
-export const SIGNOFF_CONSENT_MARKER_RE = /<!--\s*signoff:release\s*-->/i;
-export const SIGNOFF_CONSENT_LINE_RE = /^\s*同意放行\s*$/m;
-const SIGNOFF_CONSENT_POSITIVE_RE = /(同意放行|予以放行|可以放行|LGTM|lgtm)/;
-const SIGNOFF_CONSENT_NEGATION_RE = /(不\s*同意|先别放|暂不|别放|不要放行|先不要)/;
-
-export function isExplicitSignoffConsent(body) {
-  const text = String(body ?? '');
-  if (isAutomationAssessmentEnvelope(text)) return false;
-  if (SIGNOFF_CONSENT_MARKER_RE.test(text) || SIGNOFF_CONSENT_LINE_RE.test(text)) return true;
-  if (SIGNOFF_CONSENT_NEGATION_RE.test(text)) return false;
-  return SIGNOFF_CONSENT_POSITIVE_RE.test(text);
-}
-
-/**
- * 留言绑定当前 head 的机制:时间戳比较,宁可漏放不可误放。
- * 评论 created_at >= head 首次出现时间才绑定该 head;同秒视为绑定;
- * 评论早于 head 推送(webhook 延迟 / 时钟偏差)一律不绑定。
- * 备选机制(正文引用 SHA)由调用方在 quoteHeadSha=true 时走另一支。
- */
-export function commentBindsCurrentHead({
-  createdAt = null,
-  headAppearedAt = null,
-  body = '',
-  headOid = '',
-  requireShaQuote = false,
+export function evaluateMaintainerReview({
+  reviews = [], maintainers = [], latestCommitDate = '', markerRelease = null, authorLogin = '',
 } = {}) {
-  const oid = String(headOid ?? '').trim();
-  const short = oid.length >= 7 ? oid.slice(0, 7).toLowerCase() : '';
-  if (requireShaQuote) {
-    if (!short) return false;
-    return String(body ?? '').toLowerCase().includes(short);
+  const allowed = new Set(maintainers.map((s) => String(s).toLowerCase()));
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const normalizedReviews = [];
+  const latestByLogin = new Map();
+  for (const review of reviews) {
+    const login = String(review?.login ?? review?.author?.login ?? '').toLowerCase();
+    if (!allowed.has(login) || (author && login === author)) continue;
+    if (review?.state !== 'APPROVED' && review?.state !== 'CHANGES_REQUESTED' && review?.state !== 'DISMISSED') continue;
+    const normalized = {
+      ...review,
+      login,
+      at: review.at ?? review.submittedAt ?? '',
+    };
+    normalizedReviews.push(normalized);
+    const previous = latestByLogin.get(login);
+    if (!previous || String(normalized.at) >= String(previous.at)) latestByLogin.set(login, normalized);
   }
-  if (!createdAt || !headAppearedAt) return false;
-  const commentMs = Date.parse(createdAt);
-  const headMs = Date.parse(headAppearedAt);
-  if (!Number.isFinite(commentMs) || !Number.isFinite(headMs)) return false;
-  return commentMs >= headMs;
-}
-
-/**
- * 从讨论 issue 白名单留言判定「当前 head 是否已有明确同意」。
- * whitelistComments=null(读取失败)→ readFailed=true,不得当无同意放行。
- * 作者自放行有意保留:PR 作者只要 ∈ admins 且留言通过同意算法,同样算同意。
- */
-export function evaluateDiscussionIssueConsent({
-  whitelistComments,
-  headAppearedAt = null,
-  headOid = '',
-} = {}) {
-  if (whitelistComments === undefined) {
-    return { consented: false, readFailed: false, matched: null };
-  }
-  if (whitelistComments === null) {
-    return { consented: false, readFailed: true, matched: null };
-  }
-  if (!Array.isArray(whitelistComments)) {
-    return { consented: false, readFailed: true, matched: null };
-  }
-  for (const c of whitelistComments) {
-    if (c?.automationExcluded || !isExplicitSignoffConsent(c?.body)) continue;
-    if (!commentBindsCurrentHead({
-      createdAt: c.createdAt,
-      headAppearedAt,
-      body: c.body,
-      headOid,
-    })) continue;
-    return { consented: true, readFailed: false, matched: c };
-  }
-  return { consented: false, readFailed: false, matched: null };
-}
-
-/**
- * 维护者确认门放行判定(跨 commit 持久 + 门类粒度)。当前 head 触发的每个门类 kind:
- *   - kind ∈ confirmedKinds(历史放行快照)→ 放行,不要求对该 head 重新 Approve;
- *   - kind ∉ confirmedKinds 且当前 head 无 admin Approve → 拦(点名 unconfirmedKinds);
- *   - headApproved=true(admin Approve 绑定当前 head oid)→ 当前 head 上全部已触发门类
- *     一次性确认(既有语义保留:Approve 当前 head 即放行当前触发门类)。
- * @param {{currentKinds?: string[], confirmedKinds?: string[], headApproved?: boolean}} o
- * @returns {{released:boolean, confirmedKinds:string[], unconfirmedKinds:string[],
- *   basis:string}}
- */
-export function evaluateSignoffRelease({
-  currentKinds = [],
-  confirmedKinds = [],
-  headApproved = false,
-  issueConsent = false,
-  issueConsentReadFailed = false,
-} = {}) {
-  const current = [...new Set((currentKinds ?? []).filter(Boolean))];
-  const confirmed = new Set((confirmedKinds ?? []).filter(Boolean));
-  if (headApproved) {
-    for (const k of current) confirmed.add(k);
-  }
-  // 讨论 issue / 已归属 Slack 留言同意只确认当前 head:不写入 confirmedKinds,
-  // 作者再 push 后必须重新看到绑定该 head 的同意(或 Approve / 持久标记)。
-  const unconfirmed = current.filter((k) => !confirmed.has(k)).sort();
-  const coveredByMarkerOrApprove = unconfirmed.length === 0;
-  const coveredByIssueConsent = issueConsent === true && issueConsentReadFailed !== true && current.length > 0;
-  const released = current.length === 0
-    || coveredByMarkerOrApprove
-    || coveredByIssueConsent;
-  let basis;
-  if (current.length === 0) basis = 'no-gate-triggered';
-  else if (headApproved) basis = 'approve-current-head';
-  else if (coveredByMarkerOrApprove) basis = 'confirmed-kinds-cover';
-  else if (coveredByIssueConsent) basis = 'discussion-issue-consent';
-  else basis = 'unconfirmed-kinds';
-  return {
-    released,
-    confirmedKinds: [...confirmed].sort(),
-    unconfirmedKinds: released ? [] : unconfirmed,
-    basis,
-  };
-}
-
-/**
- * 维护者确认门的机器层 gate 触发判定(security-gate / rules-gate 二选一,优先级
- * security > rules)。context.mjs 的 auto.action 接线用,抽成纯函数是为了让「哪条
- * 分支会触发」可单测。
- * 反例(2026-08-10 复审实测):门类粒度确认引入后,两条分支的触发条件各自独立
- * (unconfirmedKinds 按门类点名)。若 rules 分支仍用 `!hitsSecurityReviewPaths` 互斥
- * 守卫——security 已确认、rules 新触发、两路径同时命中时,security 分支因已确认不
- * 触发,rules 分支因守卫不可达 → 机器层 autoAction 漏放 rules-gate(仅剩 agent 侧
- * suggestedHolds 兜底)。优先级改由 if/else 顺序表达,守卫只保留「autoAction 已落
- * 更高优先级门」的保护(与原接线一致):
- *   - 两门都未确认 → security-gate(顺序优先);
- *   - 仅 rules 未确认(security 已确认)→ rules-gate;
- *   - 任一未确认门且 autoAction 已落 skip-loop-managed / authorized-fast-merge
- *     (security)或 product-gate / arch-gate(rules)→ 保持原值,不覆盖。
- * @param {{securityBlocked?: boolean, hitsSecurityReviewPaths?: boolean,
- *   hitsRuleFiles?: boolean, unconfirmedKinds?: string[], autoAction?: string}} o
- * @returns {{action:string, holdKind:'security'|'rules'|null}}
- */
-export function decideSignoffGateAction({ securityBlocked = false, hitsSecurityReviewPaths = false, hitsRuleFiles = false, unconfirmedKinds = [], autoAction = 'review' } = {}) {
-  if (securityBlocked) return { action: autoAction, holdKind: null };
-  if (hitsSecurityReviewPaths && unconfirmedKinds.includes('security')
-    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge') {
-    return { action: 'security-gate', holdKind: 'security' };
-  }
-  if (hitsRuleFiles && unconfirmedKinds.includes('rules')
-    && autoAction !== 'skip-loop-managed' && autoAction !== 'authorized-fast-merge'
-    && autoAction !== 'product-gate' && autoAction !== 'arch-gate') {
-    return { action: 'rules-gate', holdKind: 'rules' };
-  }
-  return { action: autoAction, holdKind: null };
-}
-
-/**
- * 解析 hold 标记并带出评论作者(close-on-release 的校验原料)。正则与 parseLastHoldMarker
- * 同一份(前缀 + issue= 提取 + kind=arch 判定),仅多取作者(author 提取形状见 commentAuthor)。
- * @returns {Array<{kind:string, issueUrl:string, issueNumber:number|null, author:string|null}>}
- */
-export function parseHoldMarkerWithAuthor(comments) {
-  const out = [];
-  for (const c of comments ?? []) {
-    const body = (typeof c === 'string' ? c : c?.body) ?? '';
-    const author = commentAuthor(c);
-    for (const m of body.matchAll(/<!--\s*review-pr:product-gate\b([^>]*?)issue=(\S+?)\s*-->/g)) {
-      const num = m[2].match(/\/issues\/(\d+)/)?.[1] ?? null;
-      out.push({ kind: /\bkind=arch\b/.test(m[1]) ? 'arch' : 'product', issueUrl: m[2], issueNumber: num ? Number(num) : null, author });
-    }
-  }
-  return out;
-}
-
-/**
- * 放行时关闭讨论 issue 的决策(补上游缺失的来源校验,2026-08-10)。上游 parseLastHoldMarker
- * 只校验 issue URL 属于同仓,不验 marker 评论作者 → 任意可评论者贴伪 marker 就能让放行路径
- * 关错 issue。本决策:
- *   - marker 评论作者必须 ∈ trustedLogins(白名单/机制账号),否则拒绝关闭(伪 marker 被拒);
- *   - issue 已 CLOSED → 幂等,不再关;
- *   - URL 解析失败(跨仓 / 无编号)→ 拒绝关闭;slug 缺失(无法验证归属)同样拒绝;
- *   - 决策只回答「该不该关」,不执行 close 动作;close 失败不连坐放行由调用方保证
- *     (放行判定 evaluateSignoffRelease 与 close 决策无数据依赖,测试证明)。
- * @param {{markers?: Array<{issueUrl?:string|null, issueNumber?:number|null,
- *   author?:string|null}>, issueState?: 'OPEN'|'CLOSED'|null,
- *   trustedLogins?: string[], slug?: string}} o
- * @returns {{shouldClose:boolean, reason:string, issueNumber:number|null,
- *   markerAuthor:string|null, markerTrusted:boolean}}
- *   reason ∈ {close, already-closed, marker-author-rejected, url-unparsable, no-marker}
- */
-export function decideCloseOnRelease({ markers = [], issueState = null, trustedLogins = [], slug = '' } = {}) {
-  const last = [...(markers ?? [])].pop() ?? null;
-  if (!last) return { shouldClose: false, reason: 'no-marker', issueNumber: null, markerAuthor: null, markerTrusted: false };
-  const trusted = new Set((trustedLogins ?? []).map((s) => String(s).toLowerCase()));
-  const author = last.author == null ? null : String(last.author).toLowerCase();
-  const markerTrusted = author !== null && trusted.has(author);
-  if (!markerTrusted) {
-    return { shouldClose: false, reason: 'marker-author-rejected', issueNumber: last.issueNumber ?? null, markerAuthor: last.author ?? null, markerTrusted };
-  }
-  // 同仓校验:slug 缺失(无法验证归属)或跨仓库 / 解析失败的 URL 一律拒绝关闭
-  // (与 signoff-hold 关 issue 口径一致)。slug 空串不再回退到裸 issueNumber——
-  // 那会跳过同仓校验,让跨仓 URL 的 marker 判「应关」。
-  const issueNumber = slug
-    ? (last.issueUrl ? issueNumberFromUrl(slug, last.issueUrl) : last.issueNumber ?? null)
+  const latestReviews = [...latestByLogin.values()];
+  const isCurrent = (review) =>
+    Boolean(review) && (!latestCommitDate || !review.at || String(review.at) >= String(latestCommitDate));
+  const currentChanges = latestReviews
+    .filter((review) => review.state === 'CHANGES_REQUESTED' && isCurrent(review))
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const currentApprovals = latestReviews
+    .filter((review) => review.state === 'APPROVED' && isCurrent(review))
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  // 全部未撤销的 Approve(不限当前 head):不能只查 latestReviews——同一维护者后来的 CR
+  // 只控制当前 head,不应抹掉此前已经完成的维护者确认。若该维护者最新状态为 DISMISSED,
+  // 则从严视为撤销其历史 Approve,避免被撤销的确认在后续提交后复活。
+  const dismissedReviewers = new Set(
+    latestReviews.filter((review) => review.state === 'DISMISSED').map((review) => review.login),
+  );
+  const allApprovals = normalizedReviews
+    .filter((review) => review.state === 'APPROVED' && !dismissedReviewers.has(review.login))
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const waitingForAuthor = currentChanges.length > 0;
+  const latestApproval = currentApprovals.at(-1) ?? null;
+  const currentApproval = !waitingForAuthor && latestApproval
+    ? { by: latestApproval.login, at: latestApproval.at || null, via: 'github-approve' }
     : null;
-  if (issueNumber == null) {
-    return { shouldClose: false, reason: 'url-unparsable', issueNumber: null, markerAuthor: last.author ?? null, markerTrusted };
-  }
-  // gh issue view --json state 返回小写 open/closed,统一大写再判(未知/缺失=空串)。
-  const state = String(issueState ?? '').toUpperCase();
-  if (state === 'CLOSED') {
-    return { shouldClose: false, reason: 'already-closed', issueNumber, markerAuthor: last.author ?? null, markerTrusted };
-  }
-  if (state === 'OPEN' || state === '') {
-    // state 未知(查询失败)→ 仍尝试关闭:close 本身幂等,失败了 fail-visible 留给下一轮;
-    // 这不同于「已确认 CLOSED」——后者确定不需要动作,前者是"没查到但值得试"。
-    return { shouldClose: true, reason: 'close', issueNumber, markerAuthor: last.author ?? null, markerTrusted };
-  }
-  return { shouldClose: false, reason: 'url-unparsable', issueNumber: null, markerAuthor: last.author ?? null, markerTrusted };
-}
-
-/**
- * 执行讨论 issue 关闭(只 close,不发说明评论——说明评论由 close-product-issue.mjs 在合并
- * 后关闭路径承担;本函数定位是旁路动作,越轻越好)。输出字段自洽:真结果字段**只有**
- * closed(上游 tryCloseIssue 先写 issueClosed:false、helper 真结果字段叫 closed,成功时
- * 两字段矛盾 —— 不复刻)。失败 closeError 可见,不吞。
- * 注意:本函数是「动作」,只能落在不含 /approve-merge 字面量的文件里(SC-6a 静态门:
- * 能生成授权命令文本的文件不得含评论投递调用点;lib.mjs 含该字面量,所以本函数
- * 只用 `issue close` 形态、不投递任何评论 body)。
- * @param {{slug:string, issueNumber:number, ghFn?:Function, dryRun?:boolean}} o
- * @returns {{closed:boolean, closeError:string|null, dryRun?:boolean}}
- */
-export function performIssueClose({ slug, issueNumber, ghFn, dryRun = false }) {
-  if (dryRun) return { closed: false, closeError: null, dryRun: true };
-  const fn = ghFn ?? gh;
-  const r = fn(['issue', 'close', String(issueNumber), '--repo', slug], { allowFail: true });
+  // 历史 Approve(不限当前 head):讨论一旦解除,后续新 commit 不再重新亮门。
+  const anyHistoricalApproval = allApprovals.at(-1) ?? null;
+  const historicalApproval = !waitingForAuthor && !currentApproval && anyHistoricalApproval
+    ? { by: anyHistoricalApproval.login, at: anyHistoricalApproval.at || null, via: 'github-approve' }
+    : null;
+  const latest = latestReviews
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)))
+    .at(-1) ?? null;
+  // 历史 release marker(不限当前 head):同 Approve,维护者通过标记也持久有效。
+  const historicalMarker = !waitingForAuthor && !currentApproval && !historicalApproval && markerRelease
+    ? markerRelease
+    : null;
+  const released = waitingForAuthor
+    ? null
+    : currentApproval ?? historicalApproval ?? historicalMarker ?? markerRelease;
+  const needsRecheck = !waitingForAuthor && !released && Boolean(latest);
   return {
-    closed: r.ok,
-    closeError: r.ok ? null : (r.stderr || r.stdout || '').trim().slice(0, 300),
+    latest,
+    latestReviews,
+    waitingForAuthor,
+    needsRecheck,
+    released,
+    reviewState: waitingForAuthor
+      ? 'waiting-for-author'
+      : needsRecheck
+        ? 'needs-maintainer-recheck'
+        : released?.via ?? null,
   };
 }
 
 /**
  * 解析状态回帖标记(signoff-hold.mjs 写入,形如 `<!-- review-pr:signoff-renotice head=<sha> -->`)。
- * 回帖是给**作者**的:门从「放行 / 等作者改」翻回「等维护者确认」时告诉他球已经不在他手里。
- * 按 head sha 去重 —— 作者对同一版代码反复点 request review、标签反复摘挂,都只回一次;
- * 他再推一版新代码、门又亮起来,才会再回一条。
+ *
+ * 回帖是给**作者**的:门从「放行 / 等作者改」翻回「等维护者确认」时告诉他球已经不在他手里
+ * (由来见 signoff-hold.mjs 顶部注释)。按 head sha 去重 —— 作者对同一版代码反复点
+ * request review、标签反复摘挂,都只回一次;他再推一版新代码、门又亮起来,才会再回一条。
  * @returns {Set<string>} 已回帖过的 head sha 集合
  */
 export function parseSignoffRenotices(comments) {
@@ -2609,12 +1967,168 @@ export function parseSignoffRenotices(comments) {
   return heads;
 }
 
+
+/**
+ * 关闭讨论 issue(先发说明评论、再 close)。供 signoff-release / close-product-issue 共用。
+ * @returns {{ closed:boolean, closeError:string|null, commentPosted:boolean, commentError:string|null }}
+ */
+export function closeDiscussIssue({ slug, issueNumber, commentBody, dryRun, ghFn }) {
+  if (dryRun) return { closed: false, wouldClose: true, closeError: null };
+  const g = ghFn ?? gh;
+  const c = g(
+    ['issue', 'comment', String(issueNumber), '--repo', slug, '--body-file', '-'],
+    { input: commentBody, allowFail: true },
+  );
+  const r = g(['issue', 'close', String(issueNumber), '--repo', slug], { allowFail: true });
+  return {
+    closed: r.ok,
+    closeError: r.ok ? null : (r.stderr || r.stdout || '').trim().slice(0, 300),
+    commentPosted: c.ok,
+    commentError: c.ok ? null : (c.stderr || c.stdout || '').trim().slice(0, 300),
+  };
+}
+
+// 「维护者亲手摘掉确认标签」曾是确定性通过信号(evaluateLabelRelease),2026-07-30 随
+// 「通过统一到 GitHub Approve / Request Changes」下线:摘标签不再构成通过,下一轮
+// context 判定仍 blocking 时会把标签重新挂上(labels.stale 同步)。
+
+// ── 机器人静默期(bot review settle)──
+//
+// 问题(2026-07-28 维护者反馈,PR #716 实锤):本流程从「作者推最后一个 commit」到「合并完」
+// 只用 3.2 分钟,而外部 review 机器人要 6~11 分钟才对新 commit 表态(实测 #716 的 13 轮 push:
+// Copilot 平均 6.8 分钟 / 最慢 8.7,Codex 平均 8.7 / 最慢 10.9)。于是合并**结构性地**跑在
+// 机器人前面:#716 合并后 3 分钟 Copilot 提 1 条、7.7 分钟 Codex 提 4 条,5 条全是真 P1
+// (作者随后在 #728 逐条修掉),但代码已经进主干了。
+//
+// 台账里关于这个 race 有约 20 条记录,全是 tracked/open —— 因为它们只记了「机器人抢在合并前
+// 发言导致合并被拦」这半边(对本流程不利的那半边),没人记「本流程赢了竞速导致未审代码进主干」。
+//
+// 判据(证据优先 + 超时兜底):
+//   - 每个配置的机器人只要对**当前 head commit 之后**有过任何 review / thread 发言,就算已表态;
+//   - 全部表态 → settled,可以合;
+//   - 未全部表态但 head commit 已推送超过 maxWaitMinutes → settled(timedOut),照常合 ——
+//     否则某个机器人挂掉 / 被停用会让 PR 永远合不了(方向上宁可偶尔抢跑,不可永久卡死);
+//   - 否则 → 未 settled,本轮不合并(下一轮再看;auto 是循环跑的,等一轮成本极低)。
+// 注意「表态」只要求时间晚于 head commit,不要求 GitHub 把 review 关联到该 commit ——
+// 机器人常把 thread 挂在文件行上而不带 commit 关联,按时间判才不会漏。
+
+/**
+ * 需要等其表态的外部 review 机器人默认名单(pr-rules.json 的 botReviewSettle.reviewers 可覆盖)。
+ *
+ * ⚠️ 只放**响应率高**的机器人。全仓 40 个 PR / 552 次 push 的实测响应率:
+ * Copilot 74%、Codex 54%、greptile 仅 16% —— 把 greptile 放进必需名单等于永远等不到它,
+ * 每个 PR 都会拖到超时上限,「等证据」这条路形同虚设。响应率低的机器人不进名单:
+ * 它们的意见仍可能在合并后才到,这是本门用超时上限换吞吐时接受的已知残留风险。
+ */
+export const DEFAULT_BOT_REVIEWERS = [
+  'copilot-pull-request-reviewer',
+  'chatgpt-codex-connector',
+];
+/**
+ * 判「机器人是否都已对当前 head 表态」。纯函数,便于单测(结论直接决定能不能合并)。
+ * @param {{headCommittedDate:string, nowIso:string,
+ *   activity:Array<{author:string, at:string}>, cfg?:object}} o
+ *   activity = 该 PR 上所有 review / thread 评论的 {author, at},调用方拉一次给进来。
+ * @returns {{enabled:boolean, settled:boolean, pending:string[], responded:string[],
+ *   waitedMinutes:number|null, timedOut:boolean, maxWaitMinutes:number, reason:string}}
+ */
+/**
+ * [MIVO-PATCH bot-check-settle] 机器人在当前 head 上的 check 跑完也算表态(botReviewSettle.checkNames:{机器人: check 名})。
+ * Greptile 没有意见时只发总结评论、不提交 review,只看 review / thread 评论认不出它已审完,每次都要等到超时。
+ * statusCheckRollup 只含当前 head 的 check,所以跑完就说明它审过这个 head。
+ */
+export function botCheckActivity(rollupContexts, cfg = {}) {
+  if (!Array.isArray(rollupContexts)) return [];
+  return Object.entries(cfg.checkNames ?? {}).flatMap(([author, checkName]) => rollupContexts
+    .filter((c) => c?.name === checkName && String(c.status ?? '').toUpperCase() === 'COMPLETED' && c.completedAt)
+    .map((c) => ({ author, at: c.completedAt })));
+}
+
+export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cfg = {} }) {
+  const maxWaitMinutes = Number(cfg.maxWaitMinutes ?? 20);
+  // 静默窗口(维护者 2026-07-30 定的节奏):必等机器人都表态之后,还要「最近 quietMinutes
+  // 分钟内所有 quiet 名单机器人都没有新动静」才放行 —— 防止我们的审查/合并跟一波还在
+  // 陆续到达的 bot 意见抢跑。quiet 名单 = reviewers ∪ quietExtraBots(greptile 这类响应率
+  // 太低、不值得必等的机器人放这里:不说话就是安静,真说话会重置静默计时)。
+  const quietMinutes = Number(cfg.quietMinutes ?? 0);
+  const reviewers = (cfg.reviewers ?? DEFAULT_BOT_REVIEWERS).map((s) => String(s).toLowerCase());
+  const quietBots = [...new Set([...reviewers, ...(cfg.quietExtraBots ?? []).map((s) => String(s).toLowerCase())])];
+  const base = { enabled: cfg.enabled !== false, maxWaitMinutes, quietMinutes, pending: [], responded: [], timedOut: false };
+  if (cfg.enabled === false || reviewers.length === 0) {
+    return { ...base, settled: true, waitedMinutes: null, reason: '机器人静默期未启用' };
+  }
+  // head commit 时间读不到 → 无法判等了多久。不拦(避免把「查不到」变成永久阻断),如实说明。
+  if (!headCommittedDate) {
+    return { ...base, settled: true, waitedMinutes: null, reason: 'head commit 时间读不到,跳过静默期判定(未证明机器人已表态)' };
+  }
+  const norm = (s) => String(s ?? '').toLowerCase().replace(/\[bot\]$/, '');
+  const responded = reviewers.filter((r) => activity.some((a) => norm(a.author) === r && a.at > headCommittedDate));
+  const pending = reviewers.filter((r) => !responded.includes(r));
+  const waitedMs = Date.parse(nowIso) - Date.parse(headCommittedDate);
+  const waitedMinutes = Number.isNaN(waitedMs) ? null : waitedMs / 60_000;
+  // 超时兜底最优先:总时长(距 head push)到上限即放行,防机器人挂掉 / 静默窗口被反复重置卡死
+  if (pending.length > 0 && waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
+    return {
+      ...base, settled: true, responded, pending, waitedMinutes, timedOut: true,
+      reason: `已等 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限),${pending.join(' / ')} 仍未表态 —— 按超时放行,汇总要说明这几个机器人的意见可能在合并后才到`,
+    };
+  }
+  if (pending.length > 0) {
+    return {
+      ...base, settled: false, responded, pending, waitedMinutes,
+      reason: `等 ${pending.join(' / ')} 对当前 head 表态(已等 ${waitedMinutes == null ? '?' : waitedMinutes.toFixed(1)} 分钟,上限 ${maxWaitMinutes})—— 本轮不合并,下一轮再看`,
+    };
+  }
+  // 必等机器人都表态了 → 再看静默窗口
+  const lastBotAt = activity
+    .filter((a) => quietBots.includes(norm(a.author)))
+    .map((a) => a.at)
+    .sort()
+    .pop() ?? '';
+  const quietMs = lastBotAt ? Date.parse(nowIso) - Date.parse(lastBotAt) : null;
+  const quietSinceMinutes = quietMs == null || Number.isNaN(quietMs) ? null : quietMs / 60_000;
+  const quietOk = quietMinutes <= 0 || lastBotAt === '' || (quietSinceMinutes != null && quietSinceMinutes >= quietMinutes);
+  if (!quietOk) {
+    // 静默没满也受总上限兜底:反复被新动静重置时不至于永远进不了审查
+    if (waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
+      return {
+        ...base, settled: true, responded, waitedMinutes, quietSinceMinutes, timedOut: true,
+        reason: `距 head push 已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
+      };
+    }
+    return {
+      ...base, settled: false, responded, waitedMinutes, quietSinceMinutes, lastBotActivityAt: lastBotAt,
+      reason: `机器人已表态,但最近 ${quietSinceMinutes == null ? '?' : quietSinceMinutes.toFixed(1)} 分钟前还有 bot 动静 —— 等满 ${quietMinutes} 分钟静默再进审查/合并(总上限 ${maxWaitMinutes})`,
+    };
+  }
+  return {
+    ...base, settled: true, responded, waitedMinutes, quietSinceMinutes,
+    reason: `全部 ${responded.length} 个机器人已对当前 head 表态${quietMinutes > 0 ? `,且已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})` : ''}`,
+  };
+}
+
+// ── 待维护者讨论标签(维护者讨论门在 GitHub 侧的筛选入口)──
+// 需要先由维护者讨论的 PR 打**唯一**的新标签(缺省 awaiting-discussion,
+// signoffGate.label 可配)。一个精确标签即可
+// `is:pr is:open label:awaiting-discussion` 一键筛全部待讨论。
+// 上两版 awaiting-maintainer-discussion / needs-maintainer-approval、旧主标签与旧门类子标签
+// 都只用于迁移:遇到时摘掉,不再创建。
+
+/** 旧标签(仅供迁移时识别摘除,不再创建)。 */
+export const LEGACY_GATE_LABELS = [
+  LEGACY_MAINTAINER_DISCUSSION_LABEL,
+  LEGACY_MAINTAINER_APPROVAL_LABEL,
+  LEGACY_SIGNOFF_LABEL,
+  ...['product', 'arch', 'security', 'cold', 'coldupdate', 'rules'].map((g) => `${LEGACY_SIGNOFF_LABEL}:${g}`),
+];
+
 /**
  * 给 PR / issue 增删单个标签。**必须走 REST 的 issue-label 端点,不许回退到
  * `gh pr edit --add-label/--remove-label`**:后者在改标签前会顺带预查一段较宽的 GraphQL
  * (含 reviewRequests.nodes.N.requestedReviewer),该字段被 fine-grained PAT 拒时整条命令
- * 陪葬 —— 标签写权限明明是好的,报错却长得像「无权限贴标签」。REST 端点只碰标签本身,
- * PR 在 GitHub API 里也是 issue,所以 issues/:n/labels 对 PR 同样有效。
+ * 陪葬 —— 标签写权限明明是好的,报错却长得像「无权限贴标签」(2026-07-31 双机实测,
+ * 台账 gh-comment-blocked-by-gh-token-pat)。REST 端点只碰标签本身,PR 在 GitHub API 里
+ * 也是 issue,所以 issues/:n/labels 对 PR 同样有效。
  * 删除时 404 = 本来就没挂,属幂等成功,不算错。
  */
 function ghIssueLabel(ghFn, { slug, pr, label, add }) {
@@ -2646,13 +2160,13 @@ export function syncSignoffLabel({ owner, repo, pr, want, label = SIGNOFF_LABEL_
   if (dryRun) return { changed: true, dryRun: true, added: want ? [label] : [], removed: want ? [] : [label], errors: [] };
   const errors = [];
   const firstLine = (r) => ((r.stderr || r.stdout || '').trim().split('\n')[0] ?? '').slice(0, 200);
-  // 标签失败必须一眼可见:调用方(signoff-hold)把它顶到输出顶层,
+  // 标签失败必须一眼可见:调用方(signoff-hold / signoff-release)把它顶到输出顶层,
   // SKILL 要求最终报告里照抄。少了标签 = GitHub 后台与待确认面板都筛不到该 PR。
   const withWarning = (result) => (result.errors.length
     ? { ...result, warning: `维护者确认标签${want ? '没挂上' : '没摘掉'}:${result.errors[0]}` }
     : result);
   if (want) {
-    // 颜色用紫色(SIGNOFF_LABEL_COLOR):这是「等人确认」不是「出错」,红色会被误读成失败
+    // 颜色用紫色(SIGNOFF_LABEL_COLOR=7057FF):这是「等人确认」不是「出错」,红色会被误读成失败
     const cr = ghFn(['label', 'create', label, '--repo', slug, '--description', '等待维护者讨论(review-pr)', '--color', SIGNOFF_LABEL_COLOR], { allowFail: true });
     const createError = cr.ok || /already exists/i.test(`${cr.stderr}${cr.stdout}`) ? null : firstLine(cr);
     const r = ghIssueLabel(ghFn, { slug, pr, label, add: true });
@@ -2687,50 +2201,523 @@ export function removeLegacyGateLabels({ owner, repo, pr, current = [], ghFn, dr
   return { legacyRemoved, errors };
 }
 
+// ── 展示标签(status: / touches:)──
+//
+// **只做展示,绝不参与任何判定。** 合并前防线(pre-merge-check.mjs)只认维护者确认标签
+// awaiting-discussion 与 LEGACY_GATE_LABELS;本组标签贴错、贴不上、被人手工摘掉,都不许
+// 改变「能不能合并」的结论。理由:标签写操作实测会因凭证问题失败(台账
+// gh-comment-blocked-by-gh-token-pat,两台机器两种坏法),让展示标签参与判定等于把
+// 一条易碎的外部状态接进闸门——那会既漏放行也误放行。
+//
+// 分两组:
+//   - status:*  「现在卡在谁身上」,**同一时间最多一个**(互斥),由优先级决定挂哪个。
+//     维护者确认门在拦时(signoffLabelDesired=true)本组一律不挂:那条状态由
+//     awaiting-discussion 自己表达,再挂一个就是重复。
+//   - touches:* 「这个改动碰了什么」,可多挂,来自 diff 事实(确认门六类触发 + 红线路径 +
+//     新增依赖 + 纯文档 + 大改动),PR 不变它就不变,几乎无 churn。
+//
+// 注:touches:* 里 security / plugin-base / cold-update / rules / product-ui / core 这六个
+// 与 2026-07-30 删掉的「门类子标签」覆盖同一批信息。差别是那批参与筛选与流程语义
+// (need-whitelist:<kind>,进 LEGACY_GATE_LABELS 被合并前防线认),这批只做展示、
+// 与判定完全解耦,且反映「diff 碰到了什么」而非「现在是否在拦」(所以豁免 / 已确认的
+// 触发照样挂着,不会因为门放行就摘掉)。2026-08-01 维护者拍板加回。
+
+// ── 配色口径(2026-08-01 定稿,维护者拍板「一标一色、不要灰」)──
+//
+// GitHub 深色模式**不直接用**给定 hex,而是按 Primer 的 .IssueLabel 算法现算:背景取该色
+// 18% 透明度,文字取「把该色的 HSL 亮度补到感知亮度 0.6」的结果。由此有三条硬规矩,
+// 每条都是踩出来的,改色前必须一起满足(scripts/status-labels.test.mjs 的 palette/* 兜底):
+//
+//   ① **感知亮度必须落在 0.12~0.60**。本来就浅的 hex(> 0.6)一点都不提亮,在深色底上
+//      是灰扑扑一坨 —— 初版的 8ED6E0 / C2E0C6 / E4E669 / FEF2C0 全是这么糊掉的。
+//   ② **同色相靠深浅分层 = 白分**。提亮是「补到同一个亮度」,所以深浅会被压平:初版
+//      0B4F6C(深)与 8ED6E0(浅)想表达「重 / 轻」,实测提亮后几乎同色。分层只能靠色相。
+//   ③ **十个 touches 的感知亮度要彼此拉齐(这里 ≈0.44)**,而不是拉齐 HSL 亮度。不齐的话
+//      蓝紫会被提得很淡、黄绿几乎不动,一眼就散。附带好处:0.44 卡在浅色模式「白字 / 黑字」
+//      分界(0.453)下方一点,十个色会拿到同一种文字色(全白),看起来才像一套板。
+//
+// 色相排布不是随手取的,三条约束:
+//   - 「几乎每条 PR 都同时出现」的 core / product-ui / rules 互相拉到 ≥23°;
+//   - 靠近 awaiting-discussion 靛紫(249°)的槽位只给罕见标签,且 status 的绿从常用的
+//     1A7F37(色相 142)挪到 118 —— 142 距 product-ui 的 152 只有 10°,两个绿会天天并排;
+//   - 判定「会不会看混」要**同时**看色相差和亮度差:深红 D1242F 与亮玫红 E24D78 色相只差
+//     13° 也不会混(亮度差 0.15),而色相差 10° + 亮度相同就一定混。单测按这个口径卡。
+
+/** 展示标签注册表:**名字与分组是逻辑**(判定函数返回它们),放代码里;颜色与描述是
+ *  展示,可被 pr-rules.json 的 statusLabels.labels 覆盖或用 enabled:false 单独关掉。
+ *  顺序即输出顺序(desired 数组稳定,便于 diff 与单测)。 */
+export const DISPLAY_LABELS = {
+  // status 组:同一时间只挂一个,所以不必一条一色,颜色只回答「球在谁手里」——
+  // 金 = 等作者动手(改代码 / 回评论 / 解冲突);橙 = CI 挂了;红 = 要人插手;
+  // 绿 = 有机器在动、你不用管(CI 在跑 / 等机器人 / 自动修中 / 等另一个 PR 先合)。
+  // 只用这四色的另一个原因:把整个冷色区 + 品红区腾给 touches 做一标一色。
+  'status:awaiting-author': { group: 'status', color: 'BF8700', description: '等作者修改(review-pr 自动维护,仅展示)' },
+  'status:conflict': { group: 'status', color: 'BF8700', description: '与目标分支有冲突(review-pr 自动维护,仅展示)' },
+  'status:ci-failed': { group: 'status', color: 'BC4C00', description: 'CI 失败(review-pr 自动维护,仅展示)' },
+  'status:threads-open': { group: 'status', color: 'BF8700', description: '还有未 resolve 的评审讨论(review-pr 自动维护,仅展示)' },
+  'status:blocked-by-pr': { group: 'status', color: '1C9318', description: '等另一个 PR 先合并 / 等 retarget(review-pr 自动维护,仅展示)' },
+  'status:needs-human': { group: 'status', color: 'D1242F', description: '需要人工处理(必需检查门 / 要手动批 CI,review-pr 自动维护,仅展示)' },
+  'status:auto-fixing': { group: 'status', color: '1C9318', description: '已派跟进会话自动修复中(review-pr 自动维护,仅展示)' },
+  'status:awaiting-bot-review': { group: 'status', color: '1C9318', description: '等外部审查机器人表态(review-pr 自动维护,仅展示)' },
+  'status:ci-running': { group: 'status', color: '1C9318', description: 'CI 还在跑(review-pr 自动维护,仅展示)' },
+  // touches 组:**一标一色**。一行最多挂十个,靠颜色认标签比靠读文字快,所以每条一个色。
+  // 十个色是一条连续色相带(玫红 → 品红 → 紫 → 蓝 → 天青 → 青 → 青绿 → 黄绿 → 橄榄),
+  // 饱和度与感知亮度全部拉齐 —— 是一套色板,不是十个随机色。色相怎么排见上面那段。
+  'touches:security': { group: 'touches', color: 'E24D78', description: '改动碰到安全边界(review-pr 自动维护,仅展示)' },
+  'touches:plugin-base': { group: 'touches', color: 'E148AC', description: '改动碰到插件基座(review-pr 自动维护,仅展示)' },
+  'touches:cold-update': { group: 'touches', color: '1D82B2', description: '改动影响移动端冷更新(review-pr 自动维护,仅展示)' },
+  'touches:redline': { group: 'touches', color: 'DE44E1', description: '改动碰到红线路径(updater / DB schema 等,review-pr 自动维护,仅展示)' },
+  'touches:core': { group: 'touches', color: '168A80', description: '改动碰到架构核心路径(review-pr 自动维护,仅展示)' },
+  'touches:product-ui': { group: 'touches', color: '178E56', description: '改动碰到产品 / UI 面(review-pr 自动维护,仅展示)' },
+  'touches:rules': { group: 'touches', color: 'AC52E3', description: '改动碰到规则 / 规范文档(review-pr 自动维护,仅展示)' },
+  'touches:new-dependency': { group: 'touches', color: '4372E0', description: '新增第三方依赖(review-pr 自动维护,仅展示)' },
+  'touches:docs-only': { group: 'touches', color: '6D7A14', description: '只改文档 / 文案(review-pr 自动维护,仅展示)' },
+  'touches:large-diff': { group: 'touches', color: '498516', description: '改动量较大(review-pr 自动维护,仅展示)' },
+};
+
+/** 维护者确认标签的颜色(syncSignoffLabel 建标时用)。放这里是为了让配色单测能把它一起
+ *  算进「会不会和某个展示标签看混」——它和 touches:* 会同时出现在一行。 */
+export const SIGNOFF_LABEL_COLOR = '7057FF';
+
+/** 展示标签缺省阈值:diff 行数达到它就挂 touches:large-diff(pr-rules.json 可覆盖)。 */
+export const DISPLAY_LARGE_DIFF_LINES_DEFAULT = 800;
+
 /**
- * 三门(security / rules / arch-core 路径层)触发判定的纯函数 —— context.mjs 与
- * signoff-policy.test.mjs 共用同一份,防「触发判定」在 context 与测试之间漂移。
- * 只做**路径匹配事实**,不做 hold 决策(hold 判定唯一 owner=signoff-hold.mjs,编排只消费
- * 本函数输出的事实 + context.mjs 的语义定性字段)。arch 门完整判定(白名单 / diff 行数
- * 阈值 / 冷更 guard)留在 context.mjs,本函数只算 archGate.corePaths 的路径层命中。
- * 路径匹配语义与 mivo 既有消费方一致:
- *   - security:securityReviewPaths 为正则片段数组,join('|') 后整体 test;空数组/全部
- *     为空字符串 = 门关闭,恒不命中(D2,2026-08-09:context.mjs 不再自行维护一份
- *     SECURITY_REVIEW_RE 正则,security 门的路径匹配唯一实现收敛到本函数,context.mjs 直接
- *     消费 classifyGateHits({...}).security,不留第二份判定逻辑);
- *   - rules:ruleFiles.required 为规则文档清单,`/` 结尾按前缀匹配、否则整路径相等
- *     (同 matchColdUpdatePaths 语义,防近邻文件误伤);ruleMap(规则文档 → 管辖路径映射,
- *     value 数组同样按该语义匹配)命中明细单独输出,供编排按目标仓库配置语义消费;
- *   - archCore:archGate.corePaths 前缀命中(目录语义,与 context.mjs ARCH_CORE_PATHS 一致)。
- * @param {{paths:string[], securityReviewPaths:string[], ruleFiles?:object|null,
- *   archCorePaths?:string[]}} o
- * @returns {{security:string[], rules:string[], ruleMapHits:Array<{doc:string, paths:string[]}>,
- *   archCore:string[]}}
+ * 读展示标签配置(pr-rules.json statusLabels),把颜色 / 描述覆盖合并进注册表,
+ * 并算出本次「受管标签全集」——**只有它里面的名字才会被增删**,人工手挂的任何标签永不触碰。
+ * @returns {{enabled:boolean, largeDiffLines:number, registry:Record<string,{group:string,color:string,description:string}>, managed:string[], disabled:string[]}}
  */
-export function classifyGateHits({ paths = [], securityReviewPaths = [], ruleFiles = null, archCorePaths = [] } = {}) {
-  const list = paths ?? [];
-  // D8(2026-08-09,PR #12 round2):securityReviewPaths 若混入空字符串条目,join('|') 会拼出
-  // 形如 "a||b" 的正则——中间的空分支在任意位置恒真,导致这条正则对**所有路径**都命中,
-  // 安全门失去选择性、变成对每个 PR 都触发 hold(配置一个空字符串就能让整条门失效为"逢 PR
-  // 必拦")。与 required/ruleMap 等其它字段一致,先 .filter 掉非字符串/空字符串条目再判空、
-  // 再 join,防一个坏配置值污染整条正则。
-  const validSecurityPaths = (securityReviewPaths ?? []).filter((p) => typeof p === 'string' && p.length > 0);
-  const security = validSecurityPaths.length
-    ? list.filter((p) => new RegExp(validSecurityPaths.join('|')).test(p))
-    : [];
-  const required = (ruleFiles?.required ?? []).filter(Boolean);
-  const matchOne = (p, pats) => (pats ?? []).some((pat) => (pat.endsWith('/') ? p.startsWith(pat) : p === pat));
-  const rules = required.length ? list.filter((p) => matchOne(p, required)) : [];
-  const ruleMap = (ruleFiles?.ruleMap ?? null) && typeof ruleFiles.ruleMap === 'object'
-    ? Object.entries(ruleFiles.ruleMap).filter(([, pats]) => Array.isArray(pats))
-    : [];
-  const ruleMapHits = ruleMap
-    .map(([doc, pats]) => ({ doc, paths: list.filter((p) => matchOne(p, pats)) }))
-    .filter((h) => h.paths.length > 0);
-  const archCore = (archCorePaths ?? []).length
-    ? list.filter((p) => (archCorePaths ?? []).some((c) => p.startsWith(c)))
-    : [];
-  return { security, rules, ruleMapHits, archCore };
+export function loadDisplayLabelConfig(rules = {}) {
+  const cfg = rules.statusLabels ?? {};
+  const overrides = cfg.labels ?? {};
+  const registry = {};
+  const disabled = [];
+  for (const [name, base] of Object.entries(DISPLAY_LABELS)) {
+    const o = overrides[name] ?? {};
+    if (o.enabled === false) { disabled.push(name); continue; }
+    registry[name] = {
+      group: base.group,
+      color: (o.color ?? base.color).replace(/^#/, ''),
+      description: o.description ?? base.description,
+    };
+  }
+  return {
+    enabled: cfg.enabled !== false,
+    largeDiffLines: Number(cfg.largeDiffLines) || DISPLAY_LARGE_DIFF_LINES_DEFAULT,
+    registry,
+    managed: Object.keys(registry),
+    disabled,
+  };
+}
+
+/**
+ * 纯函数:从 context 已经算好的确定性信号推出这个 PR 该挂哪些展示标签。
+ * 不读配置、不发请求、不做语义判断 —— 同样的输入永远同样的输出(单测 status-labels.test.mjs)。
+ *
+ * status 组优先级(第一个命中的就是它,最多一个):
+ *   0. 维护者确认门在拦 → 不挂(awaiting-discussion 自己表达这个状态)
+ *   1. needs-human:跟进会话已交回给人
+ *   2. auto-fixing:卡点在作者侧且已有跟进会话在修(看门狗未超时)
+ *   3. awaiting-author:凭证硬命中 / 格式不合规 / 打回后作者未动 / 别人的 CR 未消
+ *   4. conflict → 5. ci-failed → 6. threads-open → 7. blocked-by-pr(等别的 PR / retarget)
+ *   8. needs-human(结构性必需检查门、改了 CI 配置要手动批)
+ *   8. awaiting-bot-review(机器人静默期未过)→ 9. ci-running
+ *   都不命中 → 不挂(门全过,本轮就在审 / 要合了,挂了下一秒就要摘,纯噪音)
+ *
+ * @param {object} i 见下方解构;缺省值都取「最不激进」的一侧
+ * @returns {{status:string|null, touches:string[], desired:string[], statusReason:string}}
+ */
+export function computeDisplayLabels({
+  signoffLabelDesired = false,
+  securityHardHit = false,
+  formatPass = true,
+  autoAction = '',
+  blockClass = 'none',
+  hasStalePushback = false,
+  hardPushbackCount = 0,
+  botSettled = true,
+  needsRetarget = false,
+  basePrOpen = false,
+  fixSessionActive = false,
+  fixNeedsHuman = false,
+  fixWatchdogExpired = false,
+  triggerKinds = [],
+  newDependency = false,
+  redline = false,
+  docOnly = false,
+  totalDiffLines = 0,
+  largeDiffLines = DISPLAY_LARGE_DIFF_LINES_DEFAULT,
+  managed = Object.keys(DISPLAY_LABELS),
+} = {}) {
+  const allowed = new Set(managed);
+  // 「球在作者手里」:这些卡点只有作者(或代他修的跟进会话)能动
+  const authorFix =
+    securityHardHit ||
+    formatPass === false ||
+    autoAction === 'pushback-security' ||
+    autoAction === 'pushback-format' ||
+    autoAction === 'skip-stale-pushback' ||
+    blockClass === 'review-changes-requested' ||
+    hardPushbackCount > 0 ||
+    // self-resolvable = 只剩本流程账号自己挂的旧 CR、thread 全清,不是作者要改
+    (hasStalePushback && blockClass !== 'self-resolvable');
+  const authorSide = authorFix || blockClass === 'conflict' || blockClass === 'ci-failed' || blockClass === 'threads-unresolved';
+
+  let status = null;
+  let statusReason = '门全过或本轮就在审 / 要合,不挂状态标签(挂了下一秒就摘,纯噪音)';
+  if (signoffLabelDesired) {
+    statusReason = `维护者确认门在拦,状态由 ${SIGNOFF_LABEL_DEFAULT} 表达,status 组不挂`;
+  } else if (fixNeedsHuman && authorSide) {
+    status = 'status:needs-human';
+    statusReason = '跟进会话已交回维护者,不再自动修';
+  } else if (fixSessionActive && authorSide && !fixWatchdogExpired) {
+    status = 'status:auto-fixing';
+    statusReason = '卡点在作者侧且已有跟进会话在修';
+  } else if (authorFix) {
+    status = 'status:awaiting-author';
+    statusReason = '卡点要作者改(凭证 / 格式 / 已打回未动 / reviewer 要求修改)';
+  } else if (blockClass === 'conflict') {
+    status = 'status:conflict';
+    statusReason = 'mergeStateStatus=DIRTY,有冲突';
+  } else if (blockClass === 'ci-failed') {
+    status = 'status:ci-failed';
+    statusReason = 'CI 有 workflow run 真失败';
+  } else if (blockClass === 'threads-unresolved') {
+    status = 'status:threads-open';
+    statusReason = '还有未 resolve 的 conversation';
+  } else if (needsRetarget || basePrOpen) {
+    status = 'status:blocked-by-pr';
+    statusReason = needsRetarget ? 'base PR 已合并,等 GitHub retarget' : '被依赖的 PR 仍 open,等它先合';
+  } else if (autoAction === 'skip-structural-block' || autoAction === 'skip-workflow-ci-change') {
+    status = 'status:needs-human';
+    statusReason = autoAction === 'skip-structural-block'
+      ? '结构性必需检查门未上报结果且当前账号无 bypass 权限'
+      : 'fork workflow 待批但 PR 改了 CI 配置,须人工 approve';
+  } else if (!botSettled) {
+    status = 'status:awaiting-bot-review';
+    statusReason = '外部审查机器人静默期未过';
+  } else if (blockClass === 'ci-pending' || blockClass === 'workflow-awaiting') {
+    status = 'status:ci-running';
+    statusReason = blockClass === 'ci-pending' ? 'CI 还在跑' : 'fork workflow 待批准才能跑 CI(本轮会自动放行)';
+  }
+  if (status && !allowed.has(status)) {
+    statusReason = `${statusReason}(${status} 已被配置关掉,不挂)`;
+    status = null;
+  }
+
+  // touches 组:diff 事实,与门是否在拦无关(豁免 / 已确认的触发照样挂着)
+  const kinds = new Set(triggerKinds ?? []);
+  const touchCandidates = [
+    kinds.has('security') && 'touches:security',
+    kinds.has('pluginBase') && 'touches:plugin-base',
+    kinds.has('coldUpdate') && 'touches:cold-update',
+    redline && 'touches:redline',
+    kinds.has('arch') && 'touches:core',
+    kinds.has('product') && 'touches:product-ui',
+    kinds.has('rules') && 'touches:rules',
+    newDependency && 'touches:new-dependency',
+    docOnly && 'touches:docs-only',
+    Number(totalDiffLines) >= Number(largeDiffLines) && 'touches:large-diff',
+  ].filter(Boolean);
+  const touches = touchCandidates.filter((n) => allowed.has(n));
+
+  return { status, touches, desired: [...(status ? [status] : []), ...touches], statusReason };
+}
+
+/**
+ * 把展示标签同步到 desired。只增删 managed 里的名字,其它标签(含 awaiting-discussion
+ * 与人工手挂的)一概不碰。加标一次 POST 带全部新标签,摘标逐个 DELETE(404=本来没挂,幂等)。
+ * 失败**不抛**:errors 带原始报错第一行给调用方,展示标签失败不影响任何判定。
+ * @param {{owner:string, repo:string, pr:number, desired:string[], managed:string[],
+ *   current:string[], ghFn:Function, dryRun?:boolean}} o
+ * @returns {{changed:boolean, added:string[], removed:string[], kept:string[], errors:string[], warning?:string, dryRun?:boolean}}
+ */
+export function syncDisplayLabels({ owner, repo, pr, desired = [], managed = [], current = [], ghFn, dryRun = false }) {
+  const slug = `${owner}/${repo}`;
+  const managedSet = new Set(managed);
+  const desiredSet = new Set(desired.filter((n) => managedSet.has(n)));
+  const cur = current ?? [];
+  const toAdd = [...desiredSet].filter((n) => !cur.includes(n));
+  const toRemove = cur.filter((n) => managedSet.has(n) && !desiredSet.has(n));
+  const kept = cur.filter((n) => desiredSet.has(n));
+  if (!toAdd.length && !toRemove.length) return { changed: false, added: [], removed: [], kept, errors: [] };
+  if (dryRun) return { changed: true, dryRun: true, added: toAdd, removed: toRemove, kept, errors: [] };
+
+  const errors = [];
+  const firstLine = (r) => ((r.stderr || r.stdout || '').trim().split('\n')[0] ?? '').slice(0, 200);
+  const added = [];
+  if (toAdd.length) {
+    // 一次 POST 带全部新标签(REST issue-label 端点,理由同 ghIssueLabel 的注释)
+    const args = ['api', '-X', 'POST', `repos/${slug}/issues/${pr}/labels`];
+    for (const n of toAdd) args.push('-f', `labels[]=${n}`);
+    const r = ghFn(args, { allowFail: true });
+    if (r.ok) added.push(...toAdd);
+    else errors.push(`add ${toAdd.join(',')}: ${firstLine(r)}`);
+  }
+  const removed = [];
+  for (const n of toRemove) {
+    const r = ghIssueLabel(ghFn, { slug, pr, label: n, add: false });
+    if (r.ok) removed.push(n);
+    else errors.push(`remove ${n}: ${firstLine(r)}`);
+  }
+  const out = { changed: added.length > 0 || removed.length > 0, added, removed, kept, errors };
+  return errors.length ? { ...out, warning: `展示标签同步不完整:${errors[0]}` } : out;
+}
+
+/**
+ * 确保受管标签在仓库里存在,**且颜色 / 描述与注册表一致**。
+ *
+ * 两件事都必须做:
+ *   - 缺了要建。直接 POST 加标 GitHub 也会隐式建出来,但颜色是随机的 —— 列表好不好看全靠这步。
+ *   - 已经存在的要纠色。改 DISPLAY_LABELS 的 hex 对已建好的标签是**零效果**的:
+ *     `gh label create` 撞名即失败,不会改色。所以这里对已存在的标签比一次 color /
+ *     description,不一致就 `gh label edit` 改过来 —— 否则「改了配色但线上没变」会被
+ *     误当成同步失败去查凭证(实际是这里根本没发请求)。
+ *
+ * 每个仓库每 ttlHours 只做一次(结果缓存在 STATE_DIR,和锁 / 空转指纹同一套隔离),
+ * 免得每条 PR 都多花一次 label list。缓存指纹带上颜色与描述:改了配色 → 指纹变 →
+ * 下一条 PR 立刻重跑纠色,不用等 24h 也不用手动 --ensure。失败不抛,errors 带回。
+ * @returns {{ensured:boolean, created:string[], recolored:string[], existing:number, cached?:boolean, errors:string[]}}
+ */
+export function ensureDisplayLabelsExist({
+  owner, repo, registry, ghFn, ttlHours = 24, force = false, nowMs = Date.now(),
+  cacheFile = stateFile('display-labels-ensured.json'), // 单测传临时路径,别污染真实状态目录
+}) {
+  const slug = `${owner}/${repo}`;
+  // 指纹 = 名字 + 颜色 + 描述:任一项改了都要重跑(只放名字的话改色永远不会被落地)
+  const wanted = Object.entries(registry)
+    .map(([n, d]) => `${n}:${String(d.color).toLowerCase()}:${d.description ?? ''}`)
+    .sort().join('|');
+  if (!force) {
+    try {
+      const c = JSON.parse(readFileSync(cacheFile, 'utf8'));
+      if (c?.slug === slug && c?.wanted === wanted && nowMs - Number(c.at ?? 0) < ttlHours * 3600_000) {
+        return { ensured: true, cached: true, created: [], recolored: [], existing: Number(c.existing ?? 0), errors: [] };
+      }
+    } catch { /* 无缓存 / 损坏 → 正常走一次 */ }
+  }
+  const errors = [];
+  const firstLine = (r) => ((r.stderr || r.stdout || '').trim().split('\n')[0] ?? '').slice(0, 200);
+  const list = ghFn(['label', 'list', '--repo', slug, '--limit', '500', '--json', 'name,color,description'], { allowFail: true });
+  if (!list.ok) return { ensured: false, created: [], recolored: [], existing: 0, errors: [`list: ${firstLine(list)}`] };
+  let rows = [];
+  try { rows = JSON.parse(list.stdout || '[]') ?? []; } catch { rows = []; }
+  const have = new Map(rows.map((l) => [l.name, l]));
+  const created = [];
+  const recolored = [];
+  for (const [name, def] of Object.entries(registry)) {
+    const cur = have.get(name);
+    if (!cur) {
+      const r = ghFn(['label', 'create', name, '--repo', slug, '--color', def.color, '--description', def.description], { allowFail: true });
+      if (r.ok || /already exists/i.test(`${r.stderr}${r.stdout}`)) created.push(name);
+      else errors.push(`create ${name}: ${firstLine(r)}`);
+      continue;
+    }
+    // 颜色比较去掉井号并统一小写:gh 返回不带 #,配置可能带
+    const curColor = String(cur.color ?? '').replace(/^#/, '').toLowerCase();
+    const wantColor = String(def.color ?? '').replace(/^#/, '').toLowerCase();
+    if (curColor === wantColor && (cur.description ?? '') === (def.description ?? '')) continue;
+    const r = ghFn(['label', 'edit', name, '--repo', slug, '--color', def.color, '--description', def.description], { allowFail: true });
+    if (r.ok) recolored.push(name);
+    else errors.push(`edit ${name}: ${firstLine(r)}`);
+  }
+  if (!errors.length) {
+    try {
+      writeFileSync(cacheFile, `${JSON.stringify({ slug, wanted, existing: have.size, at: nowMs }, null, 2)}\n`);
+    } catch { /* 缓存写不进去只是下轮多跑一次,不算错 */ }
+  }
+  return { ensured: errors.length === 0, created, recolored, existing: have.size, errors };
+}
+
+// ── 安全敏感改动门(SKILL 3.4)的判定正则与纯函数 ──
+// 放这里的理由与冷更同款(见下一段):本门结论直接决定「能不能合并」,必须可单测
+// (scripts/security-patterns.test.mjs),且未来若有第二个消费方(如 pre-merge-check 复核)
+// 不能出现第二份正则。配置追加项(riskyPatterns.hard/.soft)与命中样本脱敏留在 context.mjs
+// —— 前者要读 pr-rules.json,后者依赖内容门的凭证模式表。
+
+/** 危险写法硬命中基础表:命中即硬拦(转 draft 等 securityApprovers 确认)。 */
+export const RISKY_HARD_BASE_PATTERNS = [
+  // Electron 进程隔离与网页安全开关被放松(webPreferences / 命令行开关)
+  ['electron-isolation-off', /\b(?:nodeIntegration|nodeIntegrationInWorker|nodeIntegrationInSubFrames|experimentalFeatures|allowRunningInsecureContent|enableRemoteModule)\s*:\s*true\b|\b(?:contextIsolation|webSecurity|sandbox)\s*:\s*false\b|--no-sandbox|--disable-web-security|--allow-file-access-from-files/],
+  // 动态求值:把数据当代码执行。dynamic import 不抓(现代代码常用且相对可控),只抓 eval / Function / vm / require(变量)
+  ['dynamic-eval', /\beval\s*\(|\bnew\s+Function\s*\(|\bvm\.(?:runIn|compileFunction)|\brequire\s*\(\s*[^'")\s]/],
+  // 拼字符串执行 shell(命令注入主入口)。spawn(cmd, [args]) 这种安全写法不抓。
+  // ⚠️ `xxx.exec(` 绝大多数是 RegExp.prototype.exec(正则匹配),与 child_process 无关 ——
+  // 实测 PR #526 的 `raw!.exec(`模板串`)` 就是正则,被旧口径误判成 shell 执行。所以这里
+  // 只硬拦「确定是 child_process」的形态:前面不带 `.` 的裸 exec / execSync / execFile。
+  ['shell-string-exec', /(?<![.\w$])(?:exec|execSync|execFile|execFileSync)\s*\([^)]*(?:\$\{|`|\+)|\bshell\s*:\s*true\b/],
+  // `obj.exec(` 里**参数带 shell 命令特征**的:host.exec(`bash -c ...`) 这种远程执行拼接命令
+  // 是真危险(实测 PR #715),但形态与正则 exec 相同 —— 靠参数内容区分,不靠调用形态。
+  ['shell-cmd-exec', /\.\s*exec\w*\s*\([^)]*(?:bash\s+-c|sh\s+-c|cmd\s*\/c|powershell|\brm\s+-[rf]|&&|\|\|)/i],
+  // CSP 放宽:unsafe-inline / unsafe-eval 只会出现在 CSP 上下文;带 * 的 CSP 同样算放宽
+  ['csp-relax', /unsafe-(?:inline|eval)|Content-Security-Policy[^\n]*\*/i],
+  // 导航与新窗口逃逸点:决定网页能把用户带到哪、能不能开出没有隔离的窗口
+  ['navigation-escape', /\bshell\.openExternal\s*\(|\bsetWindowOpenHandler\s*\(|['"]will-navigate['"]|\ballowpopups\b/],
+  // 权限与证书校验:关掉证书校验或放开权限请求 = 中间人与越权的直接入口
+  ['permission-bypass', /\bsetPermission(?:Request|Check)Handler\s*\(|\bsetCertificateVerifyProc\s*\(|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED/],
+  // 安装钩子:npm 供应链攻击的经典载荷位置(prepare 不抓 —— husky 等正常用途太多)
+  ['install-hook', /"(?:pre|post)install"\s*:/],
+];
+/** 软命中基础表:不拦,交阶段二审查 agent 逐条定性(正常代码里也大量存在,硬拦会天天误伤)。 */
+export const RISKY_SOFT_BASE_PATTERNS = [
+  // 新增外发网络请求(字面量外部地址;本地回环不算)
+  ['net-egress', /\b(?:fetch|axios(?:\.\w+)?|got|superagent|request)\s*\(\s*['"`]https?:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/],
+  // 落盘与删除:用户数据写到哪、删了什么
+  ['fs-write', /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|rm|rmSync|unlink|unlinkSync|rmdir|rmdirSync)\s*\(/],
+  // 读敏感环境变量(普通 process.env.FOO 不抓,太吵)
+  ['env-secret-read', /process\.env\.[A-Za-z_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL)/i],
+  // 新引入子进程能力(本仓到处要跑 agent 进程,所以只软报)
+  ['child-process-import', /(?:require\(\s*['"]|from\s+['"])(?:node:)?child_process['"]/],
+  // `obj.exec(` 带拼接但看不出 shell 特征:多半是正则 exec,少数是包了一层的命令执行 ——
+  // 歧义交给能读上下文的审查 agent 定性,不硬拦(硬拦会把测试里的正则匹配天天拦下来)
+  ['obj-exec-interpolated', /\.\s*exec\w*\s*\([^)]*(?:\$\{|`|\+)/],
+  // XSS 入口
+  ['dangerous-html', /\binnerHTML\s*=|\bouterHTML\s*=|dangerouslySetInnerHTML|\bdocument\.write\s*\(/],
+  // 弱哈希(签名 / 校验场景下是真问题)
+  ['weak-crypto', /createHash\s*\(\s*['"](?:md5|sha1)['"]/i],
+];
+/**
+ * 「安全保护被移除」:只在**删除行**上判。命中这些标识说明该行涉及安全边界,
+ * 整行被删或被改写都要让维护者看一眼(改一行 = 一删一加,删的那行会命中)。
+ * 只扫新增行会漏掉「删掉 CSP / 关掉隔离」这一整类降级,所以必须单列。
+ */
+export const REMOVED_GUARD_RE = /Content-Security-Policy|\b(?:contextIsolation|nodeIntegration|webSecurity|sandbox)\s*:|\bsetPermission(?:Request|Check)Handler\b|\bsetWindowOpenHandler\b|\bvalidateSender\b|\bsetCertificateVerifyProc\b/;
+/** 纯注释 / 空行(不构成实质改动)。yaml 的 `#`、html 的 `<!--` 一并盖住。 */
+export const COMMENT_ONLY_RE = /^\s*(?:\/\/|\/\*|\*|#|<!--|$)/;
+/**
+ * 安全边界路径的「实质内容」判据 —— 路径触发的第二个条件。
+ *
+ * 教训:光按路径拦会大量误报。preload.ts 是单文件、所有 IPC 桥都在里面,于是「加一个新通道」
+ * 甚至「改一行 JSDoc 注释」都会命中路径 —— 实测 10 个真实 PR 里 4 个被这样拦下,其中一个只
+ * 改了注释。台账里 docs/legal/notices 反复误触发规则文档门是同一个病。所以路径不作为独立
+ * 触发器,而是「路径 + 该文件里确实动了安全边界内容」双条件。
+ *
+ * 兜底没被削弱:REMOVED_GUARD_RE 对**所有文件**生效(删掉 CSP / sender 校验照样硬拦),
+ * 且新增字面量通道这类改动仍由审查 agent 按 rule-map 读 electron 规则逐条审(SKILL 第 4 节)。
+ */
+export const BOUNDARY_FEATURES = [
+  {
+    label: 'preload 桥接边界',
+    pathRe: /(?:^|\/)preload\//,
+    // 拦:改 contextBridge 暴露方式、**变量 channel** 的转发(能调任意 handler = 真逃逸)、
+    //     把 Node 能力(require / process / webFrame)递给渲染层。
+    // 不拦:新增一个**字面量 channel** 的 invoke —— 风险在 main 侧 handler(那儿有 sender 闸),
+    //     preload 自身没放松边界。
+    // require 的判据不能要求带括号:`nodeRequire: require,` 把整个 require 函数递给渲染层,
+    // 是最彻底的逃逸,却没有括号。改成「require 后面不紧跟字符串字面量就算」——
+    // preload 里正常的 require('electron') 不命中,把 require 当值传、或 require(变量) 都命中。
+    featureRe: /contextBridge|exposeInMainWorld|ipcRenderer\s*\.\s*(?:invoke|send|sendSync|sendTo|on|once|postMessage)\s*\(\s*[^'"`\s)]|\bwebFrame\b|\brequire\b(?!\s*\(\s*['"])|\bprocess\.(?!env\.NODE_ENV)|__dirname|globalThis\s*\./,
+  },
+  {
+    label: 'CI 供应链',
+    pathRe: /(?:^|\/)\.github\//,
+    // pull_request_target(跑 fork 代码还拿得到 secrets)、改 permissions、用 secrets、
+    // 引用移动版本的 action(@main/@master/@latest = 上游随时能换掉你跑的代码)、
+    // run 里从网上拉东西执行、把 github.event.* 直接插进 run(脚本注入)。
+    // 固定版本的 uses(@v4 / @<sha>)不算 —— 那是推荐写法。
+    featureRe: /pull_request_target|^\s*permissions\s*:|secrets\.[A-Za-z_]|uses\s*:\s*[^\s]+@(?:main|master|latest|HEAD)\b|\b(?:curl|wget)\b[^\n]*\|\s*(?:ba)?sh|base64\s+(?:-d|--decode)|\$\{\{\s*github\.event\./,
+  },
+];
+/** 该文件属于哪类安全边界;没有专门特征表的条目(如 updater)返回 null,按「任何实质改动都算」处理。 */
+export const boundaryFeatureFor = (file) => BOUNDARY_FEATURES.find((f) => f.pathRe.test(file)) ?? null;
+/**
+ * 扫一行安全边界文件的改动:命中则说明这次真的动了安全边界内容(而不是改注释 / 加个普通通道)。
+ * 有专门特征表的按表判;没有的(如 updater —— 它能给用户推任意代码,风险太高)按「非注释实质行」判。
+ * @param sink Set,命中的文件路径会被加进去
+ */
+export function scanBoundaryLine(line, file, sink) {
+  if (COMMENT_ONLY_RE.test(line)) return;
+  const feature = boundaryFeatureFor(file);
+  if (feature) {
+    if (feature.featureRe.test(line)) sink.add(file);
+    return;
+  }
+  sink.add(file);
+}
+/**
+ * package.json 新增第三方依赖(供应链的主要入口)。
+ * 只认「版本号形态」的值 —— scripts 字段的命令值(如 "build": "tsc -b")不会命中。
+ * workspace: / catalog: / file: / link: 是仓库内部或本地引用,不是第三方,不算。
+ */
+export const NEW_DEPENDENCY_RE = /^\s*"([^"]+)"\s*:\s*"(?:[\^~>=<]|\d|\*|latest$|next$|npm:|git\+|https?:)/;
+/** package.json 里长得像依赖但不是依赖的字段名(顶层元数据 / engines)。 */
+export const NON_DEPENDENCY_KEYS = new Set([
+  'version', 'name', 'main', 'module', 'browser', 'types', 'typings', 'license', 'description',
+  'author', 'homepage', 'packageManager', 'node', 'npm', 'pnpm', 'yarn', 'vscode',
+]);
+/** 扫 package.json 的一行新增:是新增/升级的第三方依赖则返回包名,否则 null。 */
+export function matchNewDependency(line) {
+  const m = line.match(NEW_DEPENDENCY_RE);
+  if (!m) return null;
+  return NON_DEPENDENCY_KEYS.has(m[1]) ? null : m[1];
+}
+
+// ── 冷更(mobile runtime fingerprint)判定原料 ──
+// 纯函数放这里而不是内联进 context.mjs:冷更门的结论直接决定「能不能合并」,解析必须可单测,
+// 且未来若有第二个消费方(如 pre-merge-check 复核)不能出现第二份正则。
+
+/**
+ * 解析 PR 上 fingerprint guard 的 sticky comment(取最后一条带 marker 的评论)。
+ * 结论优先读机器可读行 `<!-- fingerprint-changed: true|false -->`
+ * (apps/mobile/scripts/ci-fingerprint.mjs 的 guardChangedMarker 写入);老版评论没有该行时
+ * 退回标题文案判定;两者都读不出 → changed=null(未知,不得当作「没变」放行)。
+ * @returns {{changed:boolean|null, source:'marker'|'heading'|'unparsed', createdAt:string|null,
+ *   updatedAt:string|null, staleVsHead:boolean|null, url:string|null} | null} 无 guard 评论返回 null
+ */
+export function parseFingerprintGuard(comments, marker, latestCommitDate) {
+  if (!marker) return null;
+  const c = (comments ?? []).filter((x) => (x?.body ?? '').includes(marker)).pop();
+  if (!c) return null;
+  const body = c.body ?? '';
+  const machine = body.match(/<!--\s*fingerprint-changed:\s*(true|false)\s*-->/)?.[1] ?? null;
+  let changed = machine != null ? machine === 'true' : null;
+  let source = machine != null ? 'marker' : 'unparsed';
+  if (changed == null) {
+    if (/会改变\s*mobile\s*原生\s*runtime\s*fingerprint/.test(body)) { changed = true; source = 'heading'; }
+    else if (/不再改变\s*mobile\s*runtime\s*fingerprint/.test(body)) { changed = false; source = 'heading'; }
+  }
+  return {
+    changed,
+    source,
+    createdAt: c.createdAt ?? null,
+    updatedAt: c.updatedAt ?? null,
+    // guard 评论是 sticky(原地更新):updatedAt 早于最新 commit = 结论可能没覆盖当前 head
+    staleVsHead: latestCommitDate && c.updatedAt ? latestCommitDate > c.updatedAt : null,
+    url: c.url ?? null,
+  };
+}
+
+/**
+ * 挑出命中给定路径清单的文件(冷更的「指纹输入路径」coldUpdatePaths、规则文档门的 rulesPaths
+ * 共用)。三种 pattern:
+ * - `**\/<名字>`:任意目录下的同名文件(含仓库根),按 basename 匹配 —— 本仓规则鼓励把模块专属
+ *   规则放进嵌套 `AGENTS.md`,所以规则文档门必须能盖住将来新增的嵌套文件,否则把规则改动塞进
+ *   `apps/xxx/AGENTS.md` 就绕过了门;
+ * - 以 `/` 结尾:按目录前缀匹配;
+ * - 其余:按整路径相等 —— 避免 `apps/mobile/package.json` 误中 `package.json.bak` 这类近邻文件。
+ */
+export function matchPathPatterns(filePaths, patterns) {
+  const list = patterns ?? [];
+  return (filePaths ?? []).filter((p) => list.some((pat) => {
+    if (pat.startsWith('**/')) {
+      const base = pat.slice(3);
+      return p === base || p.endsWith(`/${base}`);
+    }
+    return pat.endsWith('/') ? p.startsWith(pat) : p === pat;
+  }));
+}
+
+/**
+ * 把文案里的 {{ISSUE_URL}} 占位符替换成真实 issue 链接(product-hold.mjs 发 PR 评论 /
+ * product-release.mjs 发放行评论共用)。裸占位符一律渲染成 <url> 角括号 autolink——
+ * 对外文案是全角标点的中文,GitHub 的裸 URL 自动链接不认全角标点为边界,`{{ISSUE_URL}}，后文`
+ * 会把后面整段中文吞进超链接(线上实踩);<url> 形式在 `>` 处确定性截断,渲染效果不变。
+ * 占位符已写在 markdown 链接目标位(`]({{ISSUE_URL}})`)时保持裸 URL(目标位本身有边界)。
+ */
+export function renderIssueUrl(body, issueUrl) {
+  return body
+    .replaceAll(']({{ISSUE_URL}})', `](${issueUrl})`)
+    .replaceAll('{{ISSUE_URL}}', `<${issueUrl}>`);
 }
 
 // ── Skill 仓库自同步(pull / commit+push)──
@@ -2742,14 +2729,10 @@ export function classifyGateHits({ paths = [], securityReviewPaths = [], ruleFil
  * 解析 skill 的真实安装位置与所属 git 仓库。
  * 返回 { skillRoot, gitRoot, skillRelPath, branch, defaultBranch } | null(不在 git 仓库内)。
  */
-export function skillRepoInfo({ timeoutMs = 15_000 } = {}) {
+export function skillRepoInfo({ timeoutMs = 15_000, skillRoot = SKILL_ROOT } = {}) {
   let real;
   try {
-    // REVIEW_PR_SKILL_ROOT_OVERRIDE:测试专用缝(SC-D 复审修订)——让 skillRepoPull 在
-    // 测试里指向 fixture 仓库,使"probe-only 不 pull / 正常轮会 pull"成为可实测的行为
-    // (此前测试环境里 pull 天然 no-op,守卫删了测试照样绿)。生产不设置;误设的后果
-    // 只是 best-effort 自更新指错地方,不触及任何 review/merge 判定。
-    real = realpathSync(process.env.REVIEW_PR_SKILL_ROOT_OVERRIDE || SKILL_ROOT);
+    real = realpathSync(skillRoot);
   } catch {
     return null;
   }
@@ -2767,444 +2750,81 @@ export function skillRepoInfo({ timeoutMs = 15_000 } = {}) {
 }
 
 /**
- * 读**远端**(origin/<defaultBranch>)上的 skill 仓文件并交给 predicate 判定。
- * 用途:push 成功但进程在 ack 前崩溃时,重放拿到 `nothing-to-push`,必须凭远端内容确认
- * 事实已落地才安全 ack(SC-R7 第 2 轮核验)。fail-closed:读不到即 { ok:false }。
- * @returns {{ ok: boolean, present?: boolean, error?: string }}
+ * 把 skills 仓库 pull 到最新(--ff-only,不产生 merge commit、diverged 时安全失败)。
+ * 每轮执行前调用(pre-check / prepare 已内置)。返回:
+ *   { ok, action:'pull', updated, before, after, branch, error } 或 { ok:true, skipped }。
  */
-export function readRemoteSkillFile(relPath, predicate, { timeoutMs = 20_000 } = {}) {
-  const info = skillRepoInfo();
-  if (!info) return { ok: false, error: 'not-a-git-repo' };
-  const spec = info.skillRelPath === '.' ? relPath : `${info.skillRelPath}/${relPath}`;
-  const fetched = git(['fetch', 'origin', info.defaultBranch, '--quiet'], { allowFail: true, cwd: info.gitRoot, timeoutMs });
-  if (!fetched.ok) return { ok: false, error: `fetch 失败:${(fetched.stderr || '').trim().slice(0, 200)}` };
-  const show = git(['show', `origin/${info.defaultBranch}:${spec}`], { allowFail: true, cwd: info.gitRoot, timeoutMs });
-  if (!show.ok) return { ok: false, error: `远端读不到 ${spec}` };
-  try {
-    return { ok: true, present: predicate(show.stdout) === true };
-  } catch (e) {
-    return { ok: false, error: `远端内容解析失败:${String(e.message ?? e).slice(0, 160)}` };
-  }
-}
-
-/**
- * 只追加类台账文件的白名单 —— 唯一允许自动解冲突的文件。
- *
- * 背景(2026-07-31 实测):本机交互式轮次与 mini 定时轮次都会往 skills 仓写 evo 台账,
- * 两个写者并发时 push 必然撞 non-fast-forward。下方 skillRepoCommitPush 早就有
- * 「被拒 → pull --rebase → 重推」的重试,但 rebase **每次都在这两个文件上冲突**
- * (两边各自往同一段尾部追加),于是 rebase --abort 回到分叉态;后续每轮 ff-pull 与
- * push 双向死锁,永久不自愈——18 个 evo commit 因此积压一天多。
- *
- * 只对这两个文件自动收敛,理由(与 8.1「扩权类不自动落地」的边界划清):
- *   - 语义是纯追加,合并规则确定(md 取行并集、ledger 按 fingerprint 并集),不需要语义判断;
- *   - 被 rebase 改写的只是**本地尚未推送**的 evo commit,没有第三方持有该历史,改写无副作用;
- *   - 任何其他文件(脚本 / SKILL.md / config)一旦冲突,一律 abort 转人工——那类冲突
- *     是真的代码分歧,自动合并会静默丢改动,风险确实大于收益。
- */
-const APPEND_ONLY_CONFLICT_FILES = [
-  /(^|\/)EVOLUTION\.md$/,
-  /(^|\/)evolution\/ledger\.json$/,
-];
-
-const isAppendOnlyConflictFile = (p) => APPEND_ONLY_CONFLICT_FILES.some((re) => re.test(p));
-
-/** 当前处于冲突态(unmerged)的文件列表。 */
-function conflictedPaths(cwd) {
-  const r = git(['diff', '--name-only', '--diff-filter=U'], { allowFail: true, cwd });
-  return r.ok ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : [];
-}
-
-/** 取冲突文件的某一 stage 内容(1=base, 2=ours/upstream, 3=theirs/被重放的提交);缺失返回 null。 */
-function conflictStage(cwd, stage, path) {
-  const r = git(['show', `:${stage}:${path}`], { allowFail: true, cwd });
-  return r.ok ? r.stdout : null;
-}
-
-/**
- * evo 台账 JSON 的确定性合并:按 fingerprint 取并集。
- * 同指纹:occurrences 取大、firstSeen 取早、lastSeen 取晚,其余字段以 lastSeen 更新的一侧为准
- * (时间戳对称比较,与哪边是 ours/theirs 无关,合并结果不受 rebase 方向影响)。
- * 解析失败返回 null(交由调用方 abort 转人工,绝不猜测)。
- */
-export function mergeLedgerJson(oursText, theirsText) {
-  let ours;
-  let theirs;
-  try {
-    ours = JSON.parse(oursText);
-    theirs = JSON.parse(theirsText);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(ours?.entries) || !Array.isArray(theirs?.entries)) return null;
-  const CARRY = ['status', 'commit', 'note', 'detail', 'proposal', 'title', 'tier'];
-  const merged = new Map();
-  for (const e of [...ours.entries, ...theirs.entries]) {
-    const fp = e?.fingerprint;
-    if (!fp) return null; // 结构不符预期,不冒险
-    const cur = merged.get(fp);
-    if (!cur) {
-      merged.set(fp, { ...e });
-      continue;
-    }
-    cur.occurrences = Math.max(cur.occurrences || 0, e.occurrences || 0);
-    if (e.firstSeen && (!cur.firstSeen || e.firstSeen < cur.firstSeen)) cur.firstSeen = e.firstSeen;
-    if (e.lastSeen && (!cur.lastSeen || e.lastSeen > cur.lastSeen)) {
-      cur.lastSeen = e.lastSeen;
-      for (const f of CARRY) if (e[f] !== undefined && e[f] !== null) cur[f] = e[f];
-    }
-  }
-  // SC-R7(2026-08-05 核验):escapedHazards 段也必须合并——此前只合 entries,rebase 时
-  // 会把远端或本地新登记的 hazard 整段丢掉。按 (repo, hazardId) 取并集,**不增条、不降级**
-  // (active 不回退 pending-fix-merge;landed 不回退 pending),与 upsertHazard 同口径。
-  // 第 2 轮核验:合并必须**方向无关**且状态与其附属元数据原子同源——一方 landed+target、
-  // 另一方 pending+显式 promotionTarget:null 时,旧实现一个方向得 landed+null、反向得
-  // landed+target(状态升级却被低态 payload 覆盖)。逻辑收敛到 mergeHazardPair 唯一实现,
-  // 合完再走完整 schema 复验:形状不合就返回 null(交人工处理,不写出半坏的 ledger)。
-  const hazards = new Map();
-  for (const h of [...(Array.isArray(ours?.escapedHazards) ? ours.escapedHazards : []),
-    ...(Array.isArray(theirs?.escapedHazards) ? theirs.escapedHazards : [])]) {
-    if (!h?.hazardId) return null; // 结构不符预期,不冒险
-    const key = `${h.repo ?? '(no-repo)'}|${h.hazardId}`;
-    const cur = hazards.get(key);
-    try {
-      hazards.set(key, cur ? mergeHazardPair(cur, h) : { ...h });
-    } catch { return null; } // 身份不一致等异常 → 整体 abort 转人工,不写半坏的 ledger
-  }
-  for (const h of hazards.values()) {
-    const v = validateHazardShape(h);
-    if (!v.ok) return null;
-  }
-  const out = { ...ours, entries: [...merged.values()] };
-  if (hazards.size > 0 || ours?.escapedHazards !== undefined || theirs?.escapedHazards !== undefined) {
-    out.escapedHazards = [...hazards.values()];
-  }
-  return `${JSON.stringify(out, null, 2)}\n`;
-}
-
-/** Markdown 台账的确定性合并:交给 git merge-file --union 做逐 hunk 行并集(不留冲突标记)。 */
-function mergeMarkdownUnion(cwd, base, ours, theirs) {
-  const dir = mkdtempSync(join(tmpdir(), 'review-pr-union-'));
-  try {
-    const f = (n, c) => {
-      const p = join(dir, n);
-      writeFileSync(p, c ?? '');
-      return p;
-    };
-    const r = git(['merge-file', '--union', '-p', f('ours', ours), f('base', base), f('theirs', theirs)], {
-      allowFail: true, cwd,
-    });
-    return r.ok ? r.stdout : null; // --union 下不应有冲突;非 0 视为异常,转人工
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-/**
- * 尝试把当前 rebase 的全部冲突用确定性规则解掉。
- * 返回 { resolved:true } 或 { resolved:false, blockedBy:[非白名单或解不了的文件] }。
- */
-function resolveAppendOnlyConflicts(cwd) {
-  const paths = conflictedPaths(cwd);
-  if (!paths.length) return { resolved: true };
-  const blockedBy = paths.filter((p) => !isAppendOnlyConflictFile(p));
-  if (blockedBy.length) return { resolved: false, blockedBy };
-
-  for (const p of paths) {
-    const base = conflictStage(cwd, 1, p);
-    const ours = conflictStage(cwd, 2, p);
-    const theirs = conflictStage(cwd, 3, p);
-    if (ours == null || theirs == null) return { resolved: false, blockedBy: [p] }; // 增删类冲突不自动处理
-    const out = p.endsWith('.json')
-      ? mergeLedgerJson(ours, theirs)
-      : mergeMarkdownUnion(cwd, base, ours, theirs);
-    if (out == null) return { resolved: false, blockedBy: [p] };
-    writeFileSync(join(cwd, p), out);
-    const add = git(['add', '--', p], { allowFail: true, cwd });
-    if (!add.ok) return { resolved: false, blockedBy: [p] };
-  }
-  return { resolved: true };
-}
-
-/** rebase 是否仍在进行中。 */
-function rebaseInProgress(cwd) {
-  const gd = git(['rev-parse', '--git-path', 'rebase-merge'], { allowFail: true, cwd }).stdout.trim();
-  const ga = git(['rev-parse', '--git-path', 'rebase-apply'], { allowFail: true, cwd }).stdout.trim();
-  const abs = (p) => (p && isAbsolute(p) ? p : join(cwd, p || ''));
-  return Boolean((gd && existsSync(abs(gd))) || (ga && existsSync(abs(ga))));
-}
-
-/** porcelain 脏路径(含未跟踪)。只用于告警/诊断,不参与合并决策。 */
-function listDirtyFiles(cwd) {
-  const r = git(['status', '--porcelain', '-uall'], { allowFail: true, cwd });
-  if (!r.ok || !r.stdout.trim()) return [];
-  return r.stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean);
-}
-
-function unmergedPaths(cwd) {
-  const r = git(['diff', '--name-only', '--diff-filter=U'], { allowFail: true, cwd });
-  return r.ok ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : [];
-}
-
-/** rebase/autostash 结束后工作树必须可继续用,否则不得宣称收敛、不得 push。 */
-function rebaseSettled(cwd) {
-  if (rebaseInProgress(cwd)) return { ok: false, reason: 'rebase-still-in-progress' };
-  const blocked = unmergedPaths(cwd);
-  if (blocked.length) return { ok: false, reason: 'unmerged-after-rebase', conflictFiles: blocked };
-  return { ok: true };
-}
-
-function currentHead(cwd) {
-  return git(['rev-parse', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
-}
-
-function restoreBackupHead(cwd, backupRef) {
-  if (!backupRef) return;
-  const now = currentHead(cwd);
-  const old = git(['rev-parse', backupRef], { allowFail: true, cwd }).stdout.trim();
-  // HEAD 没动过(rebase 根本没开始 / autostash 已自行 pop 回来)时硬 reset 会抹掉用户脏树。
-  if (!now || !old || now === old) return;
-  git(['reset', '--hard', backupRef], { allowFail: true, cwd });
-}
-
-function aheadBehind(cwd, branch) {
-  const c = git(['rev-list', '--left-right', '--count', `origin/${branch}...HEAD`], { allowFail: true, cwd });
-  if (!c.ok) return { ahead: null, behind: null };
-  const [b, a] = c.stdout.trim().split(/\s+/).map(Number);
-  return {
-    behind: Number.isFinite(b) ? b : null,
-    ahead: Number.isFinite(a) ? a : null,
-  };
-}
-
-function trimSkillSyncRefs(cwd) {
-  const olds = git(['for-each-ref', '--format=%(refname)', '--sort=-refname', 'refs/skill-sync/'], { allowFail: true, cwd });
-  if (!olds.ok) return;
-  for (const ref of olds.stdout.split('\n').map((s) => s.trim()).filter(Boolean).slice(5)) {
-    git(['update-ref', '-d', ref], { allowFail: true, cwd });
-  }
-}
-
-/**
- * 把本地未推提交 rebase 到 origin/<当前分支>。
- * 脏工作区靠 --autostash,不因 preview-dist 残留挡住 rebase。
- * 只有台账白名单冲突自动解;其它文件 abort 保持原状。
- */
-function rebaseOntoOrigin({ cwd, timeoutMs = 60_000 } = {}) {
-  const dirtyFiles = listDirtyFiles(cwd);
-  trimSkillSyncRefs(cwd);
-  const backupRef = `refs/skill-sync/pre-rebase-${Date.now()}`;
-  git(['update-ref', backupRef, 'HEAD'], { allowFail: true, cwd });
-
-  const rb = git(['pull', '--rebase', '--autostash', '--quiet'], { allowFail: true, cwd, timeoutMs });
-  const fail = (reason, extra = {}) => {
-    if (rebaseInProgress(cwd)) git(['rebase', '--abort'], { allowFail: true, cwd });
-    else restoreBackupHead(cwd, backupRef);
-    return {
-      ok: false,
-      reason,
-      backupRef,
-      dirtyFiles,
-      error: extra.error || ((rb.stderr || rb.stdout).trim().slice(0, 300) || 'git pull --rebase 失败'),
-      ...extra,
-    };
-  };
-
-  if (rb.ok) {
-    const settled = rebaseSettled(cwd);
-    if (!settled.ok) {
-      return fail(settled.reason || 'rebase-not-settled', {
-        conflictFiles: settled.conflictFiles,
-        error: settled.conflictFiles?.length
-          ? `rebase/autostash 结束后仍有未合并路径,已回退:${settled.conflictFiles.join(', ')}`
-          : 'rebase 命令成功但工作树未结算,已回退',
-      });
-    }
-    return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: false };
-  }
-
-  if (!rebaseInProgress(cwd)) {
-    return fail('rebase-did-not-start', {
-      error: (rb.stderr || rb.stdout).trim().slice(0, 300) || 'git pull --rebase 失败且未进入 rebase',
-    });
-  }
-
-  const res = resolveAppendOnlyConflicts(cwd);
-  if (!res.resolved) {
-    return fail('diverged-code-change-needs-human', {
-      conflictFiles: res.blockedBy,
-      error: `skills 仓分叉且冲突文件不是只追加台账,已 abort 保持原状,需人工 reconcile:${res.blockedBy.join(', ')}`,
-    });
-  }
-  let guard = 0;
-  while (rebaseInProgress(cwd) && guard++ < 50) {
-    const cont = git(['-c', 'core.editor=true', 'rebase', '--continue'], { allowFail: true, cwd, timeoutMs: 30_000 });
-    if (cont.ok) continue;
-    const again = resolveAppendOnlyConflicts(cwd);
-    if (!again.resolved) {
-      return fail('diverged-code-change-needs-human', {
-        conflictFiles: again.blockedBy,
-        error: `rebase 重放中出现非台账冲突,已 abort:${again.blockedBy.join(', ')}`,
-      });
-    }
-  }
-  if (rebaseInProgress(cwd)) {
-    return fail('rebase-did-not-finish', { error: 'rebase 未在重试上限内完成,已 abort' });
-  }
-  const settled = rebaseSettled(cwd);
-  if (!settled.ok) {
-    return fail(settled.reason || 'rebase-not-settled', {
-      conflictFiles: settled.conflictFiles,
-      error: settled.conflictFiles?.length
-        ? `rebase 结束后仍有未合并路径,已回退:${settled.conflictFiles.join(', ')}`
-        : 'rebase 结束后工作树未结算,已回退',
-    });
-  }
-  return { ok: true, backupRef, dirtyFiles, resolvedLedgerConflict: true };
-}
-
-// evo 提交禁止裹进源码:只拦 skill 根下的 SKILL.md 与 scripts/*.mjs。
-// preview-dist/ 与 dist/ 是重建产物,不在这条规则里(由 autostash 处理脏树)。
-function isEvoBlockedRel(rel) {
-  if (!rel) return false;
-  if (rel.startsWith('preview-dist/') || rel.startsWith('dist/')) return false;
-  return /(?:^|\/)(?:SKILL\.md|scripts\/[^/]+\.mjs)$/.test(rel);
-}
-
-function unstageEvoCodeFiles(cwd, skillRelPath, spec) {
-  const nameArgs = spec?.length ? ['diff', '--cached', '--name-only', '--', ...spec] : ['diff', '--cached', '--name-only'];
-  const staged = git(nameArgs, { allowFail: true, cwd }).stdout.trim();
-  if (!staged) return [];
-  const dropped = [];
-  for (const p of staged.split('\n').map((s) => s.trim()).filter(Boolean)) {
-    if (skillRelPath !== '.' && p !== skillRelPath && !p.startsWith(`${skillRelPath}/`)) continue;
-    const rel = (skillRelPath === '.' || p === skillRelPath) ? p : p.slice(skillRelPath.length + 1);
-    if (!isEvoBlockedRel(rel)) continue;
-    const u = git(['restore', '--staged', '--', p], { allowFail: true, cwd });
-    if (u.ok) dropped.push(p);
-  }
-  return dropped;
-}
-
-/**
- * 把 skills 仓库 pull 到最新。
- * 先 --ff-only;若已分叉(ahead>0 且 behind>0)再走与 push 相同的台账 rebase
- * (--autostash)+默认分支回推。仍失败才标 diverged。
- * 返回:
- *   { ok, action:'pull', updated, before, after, branch, diverged, ahead, behind,
- *     dirtyFiles, conflictFiles, error }
- *   或 { ok:true, skipped }。
- */
-export function skillRepoPull({ timeoutMs = 30_000, pushAfterConverge = true } = {}) {
-  const info = skillRepoInfo();
+export function skillRepoPull({ timeoutMs = 30_000, skillRoot = SKILL_ROOT } = {}) {
+  const info = skillRepoInfo({ skillRoot });
   if (!info) return { ok: true, action: 'pull', skipped: 'not-a-git-repo' };
   if (!info.branch || info.branch === 'HEAD') return { ok: true, action: 'pull', skipped: 'detached-head' };
   const cwd = info.gitRoot;
+  const status = git(['status', '--porcelain'], { allowFail: true, cwd });
+  if (!status.ok || status.stdout.trim()) return { ok: false, action: 'pull', skipped: 'dirty-or-unreadable-worktree',
+    error: 'skill 仓库有本地改动或状态读取失败，保留当前副本' };
   const head = () => git(['rev-parse', '--short', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
   const before = head();
   const pull = git(['pull', '--ff-only', '--quiet'], { allowFail: true, cwd, timeoutMs });
-  if (pull.ok) {
-    const after = head();
-    return {
-      ok: true,
-      action: 'pull',
-      branch: info.branch,
-      updated: before !== after,
-      before,
-      after,
-      error: null,
-    };
-  }
-
-  const { ahead, behind } = aheadBehind(cwd, info.branch);
-  const remoteHead = git(['rev-parse', '--short', `origin/${info.branch}`], { allowFail: true, cwd }).stdout.trim() || null;
-  const dirtyFiles = listDirtyFiles(cwd);
-  const failPull = (extra = {}) => ({
-    ok: false,
-    action: 'pull',
-    branch: info.branch,
-    updated: false,
-    before,
-    after: head(),
-    diverged: ahead > 0 && behind > 0,
-    ahead,
-    behind,
-    head: head(),
-    remoteHead,
-    dirtyFiles,
-    error: extra.error || ((pull.stderr || pull.stdout).trim().slice(0, 300) || 'git pull 失败'),
-    ...extra,
-  });
-
-  if (!(ahead > 0 && behind > 0)) return failPull();
-
-  const conv = rebaseOntoOrigin({ cwd, timeoutMs });
-  if (!conv.ok) {
-    return failPull({
-      reason: conv.reason,
-      conflictFiles: conv.conflictFiles,
-      backupRef: conv.backupRef,
-      error: conv.error,
-    });
-  }
-
-  let pushed = false;
-  let pushError = null;
-  // preview-dist / dist 是只读产物,realpath 仍落在同一 git 仓里——禁止从那里回推。
-  const readonlyDistCopy = /^(preview-dist|dist)$/.test(info.skillRelPath);
-  if (pushAfterConverge && info.branch === info.defaultBranch && !readonlyDistCopy) {
-    const pushResult = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-    pushed = pushResult.ok;
-    if (!pushResult.ok) {
-      pushError = (pushResult.stderr || pushResult.stdout).trim().slice(0, 300) || 'git push 失败';
-    }
-  }
   const after = head();
-  const counts = aheadBehind(cwd, info.branch);
   return {
-    ok: true,
+    ok: pull.ok,
     action: 'pull',
     branch: info.branch,
-    updated: before !== after,
+    updated: pull.ok && before !== after,
     before,
     after,
-    converged: true,
-    pushed,
-    dirtyFiles: conv.dirtyFiles,
-    backupRef: conv.backupRef,
-    converge: [{ round: 1, resolvedLedgerConflict: conv.resolvedLedgerConflict }],
-    ...(pushError ? { pushError } : {}),
-    ...(counts.ahead > 0 && counts.behind > 0 ? { diverged: true, ...counts, remoteHead } : {}),
-    error: null,
+    error: pull.ok ? null : ((pull.stderr || pull.stdout).trim().slice(0, 300) || 'git pull 失败'),
   };
 }
 
-// dist:stub:start skillRepoCommitPush
 /**
  * 提交并推送 skill 自身的改动(自进化落地 / 台账更新)。
- *   - paths:相对 skill 根的 pathspec 列表,缺省整个 skill 目录——只 add 这些路径,
- *     绝不把 skills 仓库里其他 skill 的本地改动裹进来;
+ *   - paths:相对 skill 根的路径列表,缺省整个核心 skill；includeAuto 同时包括兄弟
+ *     review-pr-auto。只提交这些路径，即使共享 index 已暂存其他改动也不能裹入;
  *   - message:commit message(经 stdin 传给 git commit -F -,可含空格换行);
  *   - 推送守卫:只在当前分支 == 默认分支(main)时 push;在别的分支上只 commit 不 push,
  *     防止把维护者的实验分支自动发布出去。
  *   - push 被拒(远端先动了)时自动 pull --rebase 后重推一次;再失败如实返回。
  * 返回 { ok, committed, commit, pushed, branch, error | skipped }。
  */
-export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {}) {
-  const info = skillRepoInfo();
+export function skillRepoCommitPush({ paths, includeAuto = false, message, timeoutMs = 60_000, skillRoot = SKILL_ROOT } = {}) {
+  const info = skillRepoInfo({ skillRoot });
   if (!info) return { ok: true, committed: false, pushed: false, skipped: 'not-a-git-repo' };
   const cwd = info.gitRoot;
-  const joinSpec = (p) => (info.skillRelPath === '.' ? p : `${info.skillRelPath}/${p}`);
-  const spec = paths?.length ? paths.map(joinSpec) : [info.skillRelPath];
-
-  git(['add', '-A', '--', ...spec], { allowFail: true, cwd, timeoutMs: 15_000 });
-  const droppedEvoCode = /^evo:/.test(message || '') ? unstageEvoCodeFiles(cwd, info.skillRelPath, spec) : [];
-  const staged = git(['diff', '--cached', '--name-only', '--', ...spec], { allowFail: true, cwd }).stdout.trim();
-  const stagedFiles = staged ? staged.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+  const rejected = (step, error) => ({ ok: false, committed: false, pushed: false, step, error });
+  if (!info.branch || info.branch === 'HEAD') return rejected('branch', 'detached-head');
+  const inside = (root, path) => {
+    const rel = relative(root, path);
+    return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+  };
+  const targets = [];
+  for (const path of paths?.length ? paths : ['.']) {
+    const target = resolve(info.skillRoot, path);
+    if (!inside(info.skillRoot, target)) return rejected('paths', '提交路径超出核心 skill');
+    let existing = target;
+    while (!existsSync(existing) && existing !== dirname(existing)) existing = dirname(existing);
+    if (!inside(info.skillRoot, realpathSync(existing))) return rejected('paths', '提交路径指向 skill 之外');
+    targets.push(target);
+  }
+  if (includeAuto && !paths?.length) {
+    const autoRoot = join(dirname(info.skillRoot), 'review-pr-auto');
+    if (existsSync(autoRoot)) {
+      const autoInfo = skillRepoInfo({ skillRoot: autoRoot });
+      if (!autoInfo || autoInfo.gitRoot !== cwd || !inside(cwd, autoInfo.skillRoot)) {
+        return rejected('paths', 'review-pr-auto 不属于同一个 skill 仓库');
+      }
+      targets.push(autoInfo.skillRoot);
+    }
+  }
+  const spec = targets.map((path) => `:(top,literal)${relative(cwd, path).split(sep).join('/') || '.'}`);
+  const added = git(['add', '-A', '--', ...spec], { allowFail: true, cwd, timeoutMs: 15_000 });
+  if (!added.ok) return rejected('add', (added.stderr || added.stdout).trim().slice(0, 300));
+  const staged = git(['diff', '--cached', '--name-only', '--', ...spec], { allowFail: true, cwd });
+  if (!staged.ok) return rejected('diff', (staged.stderr || staged.stdout).trim().slice(0, 300));
   let committed = false;
   let commit = null;
-  if (stagedFiles.length) {
-    const c = git(['commit', '--quiet', '-F', '-', '--', ...stagedFiles], {
+  if (staged.stdout.trim()) {
+    const c = git(['commit', '--only', '--quiet', '-F', '-', '--', ...spec], {
       input: message || 'evo: sync skill state', allowFail: true, cwd, timeoutMs: 15_000,
     });
     if (!c.ok) {
@@ -3214,9 +2834,6 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
     commit = git(['rev-parse', '--short', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
   }
 
-  if (!info.branch || info.branch === 'HEAD') {
-    return { ok: false, committed, commit, pushed: false, skipped: 'detached-head' };
-  }
   if (info.branch !== info.defaultBranch) {
     return { ok: true, committed, commit, pushed: false, branch: info.branch, skipped: `not-on-${info.defaultBranch}` };
   }
@@ -3225,31 +2842,16 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
   if (ahead === 0) return { ok: true, committed, commit, pushed: false, branch: info.branch, reason: 'nothing-to-push' };
 
   let push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-  const converge = [];
-  // 被拒(远端先动了)→ rebase 本地未推 commit 后重推。最多试 REBASE_ROUNDS 轮:每轮之间
-  // 远端可能又被另一个写者推进(本机交互式轮次 vs mini 定时轮次),重来一次即可收敛。
-  const REBASE_ROUNDS = 3;
-  for (let round = 0; round < REBASE_ROUNDS && !push.ok
-       && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr); round++) {
-    const conv = rebaseOntoOrigin({ cwd, timeoutMs });
-    if (!conv.ok) {
-      return {
-        ok: false,
-        committed,
-        commit,
-        pushed: false,
-        branch: info.branch,
-        converge,
-        reason: conv.reason,
-        conflictFiles: conv.conflictFiles,
-        backupRef: conv.backupRef,
-        dirtyFiles: conv.dirtyFiles,
-        error: conv.error,
-      };
+  if (!push.ok && /non-fast-forward|fetch first|rejected|stale info/i.test(push.stderr)) {
+    const rb = git(['pull', '--rebase', '--quiet'], { allowFail: true, cwd, timeoutMs });
+    if (rb.ok) {
+      push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
+      if (committed) commit = git(['rev-parse', '--short', 'HEAD'], { allowFail: true, cwd }).stdout.trim();
+    } else {
+      git(['rebase', '--abort'], { allowFail: true, cwd });
+      return { ok: false, committed, commit, pushed: false, branch: info.branch, step: 'rebase',
+        error: (rb.stderr || rb.stdout).trim().slice(0, 300) || 'git pull --rebase 失败' };
     }
-    converge.push({ round: round + 1, resolvedLedgerConflict: conv.resolvedLedgerConflict });
-    push = git(['push', '--quiet', 'origin', info.branch], { allowFail: true, cwd, timeoutMs });
-    if (push.ok) git(['update-ref', '-d', conv.backupRef], { allowFail: true, cwd });
   }
   return {
     ok: push.ok,
@@ -3257,12 +2859,9 @@ export function skillRepoCommitPush({ paths, message, timeoutMs = 60_000 } = {})
     commit,
     pushed: push.ok,
     branch: info.branch,
-    ...(droppedEvoCode.length ? { droppedEvoCode } : {}),
-    ...(converge.length ? { converge } : {}),
     error: push.ok ? null : ((push.stderr || push.stdout).trim().slice(0, 300) || 'git push 失败'),
   };
 }
-// dist:stub:end skillRepoCommitPush
 
 /** 从 origin 解析 { owner, repo }(支持 git@ 与 https 两种 URL)。 */
 export function parseRepo() {
@@ -3308,12 +2907,13 @@ export function fail(error) {
 export const SCAN_STATE_FILE = stateFile('last-scan.json');
 
 const SNAPSHOT_GQL = `
-  query($owner:String!,$repo:String!){
+  query($owner:String!,$repo:String!,$cursor:String){
     repository(owner:$owner,name:$repo){
-      pullRequests(states:OPEN, first:100){
+      pullRequests(states:OPEN, first:30, after:$cursor){
+        totalCount pageInfo{ hasNextPage endCursor }
         nodes{
-          number headRefOid updatedAt isDraft mergeable mergeStateStatus reviewDecision
-          reviewThreads(first:100){ nodes{ isResolved } }
+          number title url createdAt author{login} baseRefName baseRefOid headRefName headRepository{ nameWithOwner } headRefOid updatedAt isDraft mergeable mergeStateStatus reviewDecision
+          reviewThreads(first:100){ pageInfo{ hasNextPage endCursor } nodes{ isResolved } }
           commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
         }
       }
@@ -3331,14 +2931,35 @@ const SNAPSHOT_GQL = `
  * (最多 3 次),仍 UNKNOWN 就用当前值(方向安全:只多放行不漏放行)。pre-check 比对侧
  * 不需要它(比对时拿到 UNKNOWN → mismatch → 放行,本就是 fail-open 方向)。
  */
-export function fetchOpenPrSnapshot({ owner, repo, timeoutMs, settleUnknown = false } = {}) {
+export function fetchOpenPrSnapshot({ owner, repo, timeoutMs, settleUnknown = false, ghGraphqlFn = ghGraphql } = {}) {
   if (!owner || !repo) ({ owner, repo } = parseRepo());
   const fetchOnce = () => {
-    const nodes =
-      ghGraphql(SNAPSHOT_GQL, { owner, repo }, { timeoutMs })?.data?.repository?.pullRequests?.nodes ?? [];
+    const nodes = fetchGraphqlConnection(SNAPSHOT_GQL, { owner, repo },
+      (data) => data?.repository?.pullRequests, { timeoutMs, ghGraphqlFn });
+    if (new Set(nodes.map((n) => n.number)).size !== nodes.length) throw new Error('open PR 分页出现重复编号，请重新扫描');
+    for (const node of nodes) {
+      if (!Number.isInteger(node.number) || !node.headRefOid || !node.updatedAt ||
+          !Array.isArray(node.reviewThreads?.nodes) || !node.reviewThreads?.pageInfo ||
+          node.reviewThreads.nodes.some((t) => typeof t?.isResolved !== 'boolean')) {
+        throw new Error('open PR 快照字段未完整读取');
+      }
+      if (node.reviewThreads.pageInfo.hasNextPage) {
+        const all = fetchAllReviewThreads(owner, repo, node.number, { ghGraphqlFn });
+        if (!all.verified) throw new Error(all.errors.join('; '));
+        node.reviewThreads.nodes = all.threads;
+      }
+    }
     return nodes
       .map((n) => ({
         number: n.number,
+        title: n.title,
+        url: n.url,
+        createdAt: n.createdAt,
+        author: n.author?.login ?? '',
+        baseRefName: n.baseRefName,
+        headRefName: n.headRefName,
+        headRepository: n.headRepository?.nameWithOwner ?? null,
+        base: n.baseRefOid,
         head: n.headRefOid ?? null,
         updatedAt: n.updatedAt ?? null,
         isDraft: !!n.isDraft,
@@ -3381,12 +3002,7 @@ export function spawnScriptJson(scriptPath, args, { timeoutMs = 180_000 } = {}) 
     let out = '';
     let err = '';
     let settled = false;
-    const child = spawn(process.execPath, [scriptPath, ...args], {
-      windowsHide: true,
-      // 显式快照 env(顶部已 delete NODE_DEBUG):即使未来有人恢复 process.env,
-      // 批量 spawn 的子脚本环境也保证剥离,纯 JSON stdout 不被调试行污染
-      env: { ...process.env },
-    });
+    const child = spawn(process.execPath, [scriptPath, ...args], { windowsHide: true });
     const settle = (v) => {
       if (settled) return;
       settled = true;
@@ -3395,18 +3011,14 @@ export function spawnScriptJson(scriptPath, args, { timeoutMs = 180_000 } = {}) 
     };
     const timer = setTimeout(() => {
       try { child.kill(); } catch { /* already exited */ }
-      settle({ ok: false, error: `子进程超时(${timeoutMs}ms): ${args.join(' ')}` });
+      // Error reasons reach round reports/cards; argv can contain the review lock.
+      settle({ ok: false, error: `子进程超时(${timeoutMs}ms)，请检查该 PR 的进度文件` });
     }, timeoutMs);
     child.stdout.on('data', (c) => { out += c; });
     child.stderr.on('data', (c) => { err += c; });
     child.on('error', (e) => settle({ ok: false, error: `spawn 失败: ${e.message}` }));
-    child.on('close', () => {
-      try {
-        const parsed = JSON.parse(out);
-        settle(parsed && typeof parsed === 'object' ? parsed : { ok: false, error: '子进程输出非 JSON 对象' });
-      } catch {
-        settle({ ok: false, error: `子进程输出解析失败: ${(err || out).trim().slice(0, 300)}` });
-      }
+    child.on('close', (status, signal) => {
+      settle(parseScriptResult({ stdout: out, stderr: err, status, signal }));
     });
   });
 }
@@ -3425,252 +3037,166 @@ export async function mapPool(items, concurrency, fn) {
   return results;
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-// signoff-hold 锁原语(R8 拆节自 signoff-hold.mjs 整体迁入,逻辑零改动;
-// stderr 前缀保持 [signoff-hold] 不变,勿改——测试与调用方按原前缀消费)
-// ══════════════════════════════════════════════════════════════════════════
+// ── Mivo 补丁区(逐条登记在仓库根 MIVO-PATCHES.md)──────────────────────────────
 
-// ── 幂等原子 claim(SC-1) ──
-// 旧实现是 check-then-act:读标记评论判「是否已 hold 过」和写 issue/评论之间没有互斥,
-// 同一份本地 checkout 下的两个并发实例(如同一 worktree 被同一台机器上的两条流水线
-// 同时触发)会各自认为「没 hold 过」,各建一份 issue、各发一条评论。这里用
-// fs.openSync(path,'wx') 排他创建当锁——它是文件系统级原子操作,不存在「检查时不存在、
-// 创建时已被抢先」的窗口。锁覆盖从读 PR 元数据到写完 issue/评论/标签的整段
-// check-then-act,谁抢到锁谁独占执行,另一个实例原地等待(轮询)或超时退让,不会出现
-// "两边都判定为需要新建"的竞态。
-// 覆盖边界(round2 收窄声明,勿再扩大):锁目录锚定在本地 git-common-dir 的 realpath
-// 哈希(见 lib.mjs repoStateKey)——同一份本地 clone 下的所有 worktree 共享同一把锁,
-// 但不同 clone(不同机器 / 不同 CI runner 各自 checkout 一份)拿到的是不同锁目录,
-// 互斥在这种场景下不生效。真正的跨机器互斥需要挪到 GitHub 一侧(如基于
-// If-Match/conditional write 的原子标记),留作后续独立 PR,这里先如实收窄声明范围。
-const LOCK_POLL_MS = 100;
-const LOCK_TIMEOUT_MS = Number(process.env.SIGNOFF_HOLD_LOCK_TIMEOUT_MS || 15000);
-
-// 锁内容损坏/legacy 纯 pid 格式读不出 token 时的 mtime 兜底阈值
-export const LOCK_STALE_MS = 5 * 60 * 1000;
-
-function lockPathFor(owner, repo, pr) {
-  const dir = process.env.SIGNOFF_HOLD_LOCK_DIR || stateFile('signoff-hold-locks');
-  mkdirSync(dir, { recursive: true });
-  return join(dir, `${owner}__${repo}__${pr}.lock`);
+/** [MIVO-PATCH exempt-authors] 作者是否免审查前的维护者确认门(不给放行权)。 */
+export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  return author !== '' && normalizeLoginList(rules.signoffGate?.exemptAuthors).includes(author);
 }
 
-// 同步阻塞等待,不依赖 subprocess/sleep 二进制;Node 主线程允许 Atomics.wait(仅浏览器
-// 主线程禁止),这里跑在 CLI 脚本里,合法且不引入额外依赖。
-function sleepSync(ms) {
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, ms);
+/**
+ * [MIVO-PATCH ui-evidence] Mivo 不让改界面的 PR 等维护者确认(signoffGate.product.enabled=false),
+ * 改为要求作者附界面证据(截图/录屏或 HTML)。requireUiEvidence 取值:
+ * 'non-exempt' = 维护者与 exemptAuthors 以外的作者缺证据进格式门;'all' = 所有作者;其他 = 不要求(上游行为)。
+ */
+/**
+ * [MIVO-PATCH ui-evidence] PR 正文的「效果展示」段第一行写「不涉及」(可带括号或冒号说明)。
+ * 只看这一段:HTML 注释(模板提示)先去掉;段内其他位置出现「不涉及」不算。
+ */
+export function declaresNoUiChange(body, section = '效果展示') {
+  const lines = String(body ?? '').replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/);
+  const at = lines.findIndex((line) => /^#{1,6}\s/.test(line) && line.includes(section));
+  if (at < 0) return false;
+  const first = lines.slice(at + 1).find((line) => line.trim() !== '');
+  if (first === undefined || /^#{1,6}\s/.test(first)) return false;
+  return /^不涉及(?:$|[\s(（:：,，。;；])/.test(first.trim());
 }
 
-function readLockInfo(path) {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8'));
-    if (parsed && typeof parsed.pid === 'number' && typeof parsed.token === 'string') return parsed;
-  } catch { /* 内容损坏,或 round1 遗留的纯 pid 字符串格式 → 交给调用方走 mtime 兜底 */ }
-  return null;
+export function isProductSignoffEnabled(rules = loadRules()) {
+  return rules.signoffGate?.product?.enabled !== false;
 }
 
-function isPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true; // 收到信号本身就说明进程还在(不管是否同用户可签)
-  } catch (e) {
-    return e.code !== 'ESRCH'; // ESRCH=进程已死→陈旧;EPERM 等一律保守当"还活着"
-  }
-}
-
-// round3 D2(blocker 修复):陈旧判据 = 「进程死了」或「持有超过 LOCK_STALE_MS」任一成立。
-// round2 只看 pid,而 readLockInfo 对合法 JSON 恒返回非 null → mtime 兜底分支永远走不到;
-// 叠加 isPidAlive 在 EPERM(跨用户杀不动)与 PID 复用(死进程 pid 被新进程复用)下都判
-// "活着" → 锁永久不可回收、门永久失效,相对 round1 纯 mtime(5 分钟自愈)是能力回退。
-// 加回时间上限后,EPERM/PID 复用最坏只把回收延迟到 LOCK_STALE_MS 之后,不会永久死锁。
-// startedAt 缺失/非法(旧格式 JSON)时该子句恒 false,退化为仅 pid 判定,行为同 round2。
-// round4 D1(blocker 修复):写入方统一 ISO 8601(round3 写数字时间戳,而 Date.parse 对
-// 数字返回 NaN → 该模块自己写出的锁,自己永远判不出陈旧);判据对两种形态都容错,
-// 防止旧格式数字锁文件残留时又踩坑:
-//   - 数字毫秒时间戳(旧格式残留):正确解析,超 LOCK_STALE_MS 即判陈旧可回收;
-//   - 缺失 / 非法字符串:无法凭时间判定年龄 → 退化为仅 pid 判定(fail-closed:
-//     不凭时间抢占活进程;pid 已死则照常回收,不会"永不陈旧");
-//   - 未来时间戳(时钟偏移/写入错误):年龄为负,同样 fail-closed 不回收,等 pid 判定。
-// round5 R5-3:导出供测试做「生产写入 → 读取判定」端到端断言(acquireHoldLock 真实
-// 写锁后读回,用同一份 parseStartedAtMs / isLockStale 验证真实形状,不再只喂手搓对象)。
-export function parseStartedAtMs(value) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
-  if (typeof value === 'string') {
-    const t = Date.parse(value);
-    return Number.isNaN(t) ? NaN : t;
-  }
-  return NaN;
-}
-
-export function isLockStale(info) {
-  if (!info) return true;
-  if (!isPidAlive(info.pid)) return true;
-  const startedAt = parseStartedAtMs(info.startedAt);
-  if (!Number.isFinite(startedAt)) return false; // 缺失/非法 → 仅 pid 判定(fail-closed)
-  return Date.now() - startedAt > LOCK_STALE_MS;
-}
-
-// 接管锁正常只持有毫秒级,60s 足够覆盖进程死在中间的自愈(对齐 prepare.mjs 的
-// TAKEOVER_TTL_MS)。
-const TAKEOVER_TTL_MS = 60 * 1000;
-
-// round3 D3:takeover 文件读回;round2 写入的是裸 pid 字符串,连日后加 TTL 都无从计算,
-// 这里统一为 JSON {startedAt, token}。解析失败/旧裸 pid 格式 → 返回 null,视为可清理
-// 的陈旧残留(不视为"别人正在接管")。
-function readTakeoverInfo(path) {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8'));
-    if (parsed && typeof parsed.token === 'string') return parsed;
-  } catch { /* 残留旧格式 / 内容损坏 → 交给调用方当陈旧残留处理 */ }
-  return null;
-}
-
-export function tryTakeoverStaleLock(path, takeoverPath, token, writeOwn) {
-  // 两阶段抢占(镜像 prepare.mjs 的 takeover 机制,round2 D2 修复):先原子创建 sibling
-  // .takeover 文件当"抢占锁",拿到后在其保护下复核主锁确实还陈旧、再 unlink+recreate;
-  // 避免两个并发实例同时判定陈旧、同时抢占导致互相删对方刚写的新锁。
-  // round3 D3:takeover 文件带 {startedAt, token} 元数据——SIGKILL 下 finally 不执行,
-  // 残留文件必须能自愈:未超 TAKEOVER_TTL_MS 视为"另一实例正在接管"放弃本轮(交外层
-  // 轮询重试),超 TTL 的残留(含 round2 裸 pid 格式)清理后重试一轮。
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const takeoverPayload = JSON.stringify({ startedAt: new Date().toISOString(), token });
-    try {
-      const tfd = openSync(takeoverPath, 'wx');
-      try {
-        writeSync(tfd, takeoverPayload);
-      } finally {
-        closeSync(tfd);
-      }
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      const info = readTakeoverInfo(takeoverPath);
-      const startedAt = info?.startedAt == null ? NaN : Date.parse(info.startedAt);
-      if (Number.isFinite(startedAt) && Date.now() - startedAt < TAKEOVER_TTL_MS) {
-        return false; // 另一实例正在接管,本轮放弃,交给外层轮询重试
-      }
-      // 残留(进程死在中间 / round2 裸 pid 格式)→ 清理后重试;清理失败(极端竞态)也放弃
-      try { unlinkSync(takeoverPath); } catch { return false; }
-      continue;
-    }
-    try {
-      // round3 D4(wx 成功后复核内容):上面「stale 残留 → unlink → create」不是原子抢占,
-      // 另一实例可能基于更早的 stale 读把我们刚建的接管锁误删重建(与主锁当年踩过的
-      // unlink+create 竞态同款,prepare.mjs 同款复核)。内容不是自己的就退出竞争,
-      // 避免两个实例同时自认持有接管锁 → 双持有主锁。
-      const own = readTakeoverInfo(takeoverPath);
-      if (!own || own.token !== token) return false;
-      // 持有接管锁后复核主锁:可能已被别的实例接管重建(变新),那就不是我们的了
-      const recheck = readLockInfo(path);
-      if (recheck && !isLockStale(recheck)) return false; // 被别的实例刷新成活锁,不抢
-      try { unlinkSync(path); } catch { /* 已被抢占清理过 */ }
-      // round4 D6(blocker 修复):宽 catch 不能吞编程错误——round3 自己踩过
-      // ReferenceError 被 catch 吞掉的坑,同类模式不许再留。wx 成功 = 文件是**我们**
-      // 创建的,writeOwn 失败时 close + unlink 清掉 0 字节残留(否则后续轮询读到
-      // 新 mtime 的空锁一路走到超时);ReferenceError/TypeError 是编程错误,重新抛出,
-      // 不得静默降级成"抢占失败";其余带 errno 的 IO 错误(EEXIST 竞态等)才按
-      // 预期失败处理,交外层轮询重试。
-      let fd = null;
-      try {
-        fd = openSync(path, 'wx');
-        writeOwn(fd);
-        closeSync(fd);
-        fd = null;
-        return true;
-      } catch (e) {
-        if (fd != null) {
-          try { closeSync(fd); } catch { /* fd 已不可用 */ }
-          try { unlinkSync(path); } catch { /* 已被抢先清理 */ }
-        }
-        if (e instanceof ReferenceError || e instanceof TypeError) throw e;
-        return false; // 极端竞态/IO 错误下重建失败,交外层轮询重试而不是崩溃
-      }
-    } finally {
-      try { unlinkSync(takeoverPath); } catch { /* 本就没有,或已清理 */ }
-    }
-  }
+export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt, declaredNotApplicable = false }, rules = loadRules()) {
+  if (!uiEvidenceMissing) return false;
+  // 作者在「效果展示」写明「不涉及」(没有界面变化)也算过;是否属实由服务器审查判。
+  if (declaredNotApplicable && rules.signoffGate?.product?.acceptNotApplicable === true) return false;
+  const mode = rules.signoffGate?.product?.requireUiEvidence;
+  if (mode === 'all') return true;
+  if (mode === 'non-exempt') return authorExempt !== true;
   return false;
 }
 
-export function acquireHoldLock(owner, repo, pr, { timeoutMs = LOCK_TIMEOUT_MS } = {}) {
-  const path = lockPathFor(owner, repo, pr);
-  const takeoverPath = `${path}.takeover`;
-  const deadline = Date.now() + timeoutMs;
-  const token = randomUUID();
-  // round4 D1:写入 ISO 8601 字符串(与同仓 prepare.mjs 的 new Date().toISOString() 一致),
-  // 不再写数字时间戳——round3 写数字导致 Date.parse 判据恒 NaN、自己写出的锁永远判不出
-  // 陈旧。判据侧对数字/ISO 两种形态都容错,旧格式数字残留锁不会踩坑。
-  const writeOwn = (fd) => writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), token }));
-  for (;;) {
-    try {
-      const fd = openSync(path, 'wx'); // 原子排他创建:已存在则抛 EEXIST,不存在才会创建成功
-      writeOwn(fd);
-      closeSync(fd);
-      return { path, acquired: true, token };
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      // 判陈旧(round3 D2,替换 round2 纯 pid 判定):「持有者进程死了」或「持有超过
-      // LOCK_STALE_MS」任一成立即陈旧(见 isLockStale)。一次性判定,不是心跳续期。
-      // 锁内容损坏/round1 遗留纯 pid 字符串格式(读不出 pid+token)时,退回 mtime 超时
-      // 兜底,这条兜底路径预期随存量锁文件自然淘汰。
-      const info = readLockInfo(path);
-      let stale = false;
-      if (info) {
-        stale = isLockStale(info);
-      } else {
-        try {
-          const st = statSync(path);
-          stale = Date.now() - st.mtimeMs > LOCK_STALE_MS;
-        } catch { /* 锁在检测瞬间被持有者自己释放,走下面超时判断/轮询重试 */ }
-      }
-      if (stale && tryTakeoverStaleLock(path, takeoverPath, token, writeOwn)) {
-        return { path, acquired: true, token };
-      }
-      if (Date.now() >= deadline) {
-        // 超时且锁还在被(可能仍然活着的)另一实例占用:不再是旧版的静默
-        // {acquired:false, timeout:true} —— 显式标注 needsIntervention,把持锁方 pid/
-        // 起始时间带出去,让调用方决定要不要报警/人工介入,而不是悄悄交给下一轮空转。
-        const holder = readLockInfo(path) ?? {};
-        return {
-          path, acquired: false, timeout: true, needsIntervention: true,
-          holderPid: holder.pid ?? null, holderStartedAt: holder.startedAt ?? null,
-        };
-      }
-      sleepSync(LOCK_POLL_MS);
-    }
-  }
+/**
+ * [MIVO-PATCH self-review] 审查账号(viewer)由本流程自动提交的 review:门禁打回、审查结论的
+ * Approve / Request Changes。它们都带本流程的隐藏标记或「Mivo 自动审查」报告头。Mivo 的审查账号
+ * 同时是维护者,而 review-only 下 PR 在自动 Approve 后继续开着,所以这些 review 不能当维护者确认:
+ * 自动 Approve 不得放行之后才出现的确认门,自动打回也不得让确认门判「等作者改」。
+ * 维护者本人手动提交的 review 没有这些标记,照常计入。
+ */
+const AUTOMATED_REVIEW_RE = /<!--\s*(?:review-pr|mivo-review):|^>\s*Mivo 自动审查/m;
+export function isAutomatedViewerReview(review, viewerLogin) {
+  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
+  return viewer !== '' && login === viewer && AUTOMATED_REVIEW_RE.test(String(review?.body ?? ''));
 }
 
-export function releaseHoldLock(lockInfo) {
-  if (!lockInfo?.acquired) return { released: false, alreadyAbsent: false, notOwner: false };
-  // round2 D3:释放前核对 token,不再无条件按路径 unlink——旧版的 bug 是 acquire 写进 pid
-  // 却从来不读回来比对,release 时见路径存在就删。误删的后果是双实例同跑,比漏删严重
-  // 得多(同 main lock 的 releaseLockOwned 教训,见 lib.mjs releaseLockOwned)。
-  let raw;
-  try {
-    raw = readFileSync(lockInfo.path, 'utf8');
-  } catch (e) {
-    // round4 D5(blocker 修复):**读**失败与 unlink 失败同规则——只有 ENOENT 才是真
-    // 「已缺席」;EACCES 等其它 errno 是读取失败,报 alreadyAbsent:true 是事实错误且
-    // 静默(锁文件还在,调用方却以为没了)。非 ENOENT 写 stderr + 显式 readError。
-    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
-    process.stderr.write(`[signoff-hold] 读取锁失败(${lockInfo.path}):${e.code ?? e.message}\n`);
-    return { released: false, alreadyAbsent: false, notOwner: false, readError: e.code ?? String(e.message) };
+/**
+ * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
+ * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
+ * 评审 bot 的 check(ciIgnoreBotChecks,如 Greptile 的信心阈值检查)也不算:它的具体意见以 thread 出现,由 thread 门拦。
+ */
+export function filterIgnoredCiContexts(contexts, rules = loadRules()) {
+  const ignore = new Set([...(rules.ciIgnoreContexts ?? []), ...(rules.ciIgnoreBotChecks ?? [])].map((name) => String(name)));
+  const workflows = new Set((rules.ciIgnoreWorkflows?.names ?? []).map((name) => String(name)));
+  if (!Array.isArray(contexts) || (ignore.size === 0 && workflows.size === 0)) return contexts;
+  return contexts.filter((context) => !ignore.has(String(context?.name ?? '')) &&
+    !workflows.has(String(context?.workflowName ?? '')));
+}
+
+/**
+ * [MIVO-PATCH ci-ignore] UNSTABLE 只由被忽略的 check 造成时(原始 rollup 读得到,被忽略的 check 里有非通过的),
+ * UNSTABLE 已有解释,不再判「CI 状态读取不完整」;剩下的 check 仍由 evaluateCiStatus 照常判 failed/pending。
+ */
+export function ciMergeStateIgnoring(mergeStateStatus, rawContexts, rules = loadRules()) {
+  if (mergeStateStatus !== 'UNSTABLE' || !Array.isArray(rawContexts)) return mergeStateStatus;
+  const kept = new Set(filterIgnoredCiContexts(rawContexts, rules));
+  const ignored = classifyRollupContexts(rawContexts.filter((context) => !kept.has(context)));
+  return ignored.failed.length || ignored.pending.length || ignored.awaiting.length ? 'UNSTABLE_IGNORED_ONLY' : mergeStateStatus;
+}
+
+// [MIVO-PATCH slack-release] Slack 讨论串里维护者回复「同意放行」视为放行。
+// Slack 同步评论(scripts/loops/slack-issue-inbound/sync.mjs 写入)的形态:
+//   来自 Slack #<频道> · @<GitHub login>(<显示名>)\n\n<原文>\n\n<!-- slack-inbound <channel>:<ts> -->
+// 发帖人统一是同步 bot,真正的放行人只能从首行署名里认;署名由 Slack 不可变 user id 映射而来。
+export const SLACK_INBOUND_MARKER_RE = /<!--\s*slack-inbound\s+(\S+?)\s*-->/;
+const SLACK_SIGNATURE_RE = /^来自\s*Slack[^\n]*?·\s*@([A-Za-z0-9][A-Za-z0-9-]*)/;
+const SLACK_CONSENT_NEGATION_RE = /不\s*同意|不\s*放行|先别|别放|暂不|不要放行|先不要|不能放行|还不能/;
+const SLACK_CONSENT_TRAILING_RE = /[\s。．.!！~～]+$/u;
+
+/** 解析一条 Slack 同步评论;不是同步格式返回 null。 */
+export function parseSlackSyncComment(body) {
+  const text = String(body ?? '').replace(/\r/g, '');
+  const signature = text.match(SLACK_SIGNATURE_RE);
+  const marker = text.match(SLACK_INBOUND_MARKER_RE);
+  if (!signature || !marker) return null;
+  const firstBreak = text.indexOf('\n');
+  const message = (firstBreak < 0 ? '' : text.slice(firstBreak + 1)).replace(SLACK_INBOUND_MARKER_RE, '').trim();
+  return { login: signature[1], message, fingerprint: marker[1] };
+}
+
+/** 回复正文里必须有一整行恰好是同意短语(允许末尾标点),且全文没有否定说法。 */
+export function isExplicitSlackConsent(message, consentLine = '同意放行') {
+  const text = String(message ?? '');
+  const phrase = String(consentLine ?? '').trim();
+  if (!phrase || SLACK_CONSENT_NEGATION_RE.test(text)) return false;
+  return text.split('\n').some((line) => line.trim().replace(SLACK_CONSENT_TRAILING_RE, '') === phrase);
+}
+
+/**
+ * 从讨论 issue 的评论里挑出可信的 Slack 放行。三条同时满足才算:
+ * 1. 评论作者在 slackSyncBots,正文带 slack-inbound 标记;
+ * 2. 署名 @login 在最终维护者集合内,且不是 PR 作者;
+ * 3. 回复正文是明确的同意整句。
+ * @returns {{ release: {by:string, at:string|null, via:'slack-release', fingerprint:string}|null, rejected: object[] }}
+ */
+export function selectTrustedSlackReleases({
+  comments = [], syncBots = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
+} = {}) {
+  const bots = new Set(normalizeLoginList(syncBots).map((login) => login.replace(/\[bot\]$/, '')));
+  const members = new Set(normalizeLoginList(maintainers));
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const rejected = [];
+  let release = null;
+  for (const comment of comments ?? []) {
+    const poster = String(comment?.author?.login ?? comment?.author ?? '').trim().toLowerCase().replace(/\[bot\]$/, '');
+    const parsed = parseSlackSyncComment(comment?.body);
+    if (!parsed) continue;
+    const at = comment?.createdAt ?? null;
+    const by = parsed.login.toLowerCase();
+    const reason = !bots.has(poster) ? 'poster-not-sync-bot'
+      : !members.has(by) ? 'signer-not-maintainer'
+        : by === author ? 'signer-is-author'
+          : !isExplicitSlackConsent(parsed.message, consentLine) ? 'not-explicit-consent'
+            : null;
+    if (reason) {
+      if (reason !== 'not-explicit-consent') rejected.push({ by, at, reason });
+      continue;
+    }
+    if (!release || String(at ?? '') >= String(release.at ?? '')) {
+      release = { by, at, via: 'slack-release', fingerprint: parsed.fingerprint };
+    }
   }
-  let info = null;
-  try { info = JSON.parse(raw); } catch { /* legacy 纯 pid 字符串格式,无法核对 token */ }
-  if (!info || info.token !== lockInfo.token) {
-    return { released: false, alreadyAbsent: false, notOwner: true };
-  }
-  try {
-    unlinkSync(lockInfo.path);
-    return { released: true, alreadyAbsent: false, notOwner: false };
-  } catch (e) {
-    // round3 #6:unlink 失败 ≠ 锁不存在。ENOENT 才是真「已缺席」;EACCES/EBUSY/EROFS 等
-    // 是删除失败,报 alreadyAbsent:true 是事实错误且静默(调用方会以为锁已经没了,
-    // 而它其实还在)。非 ENOENT 写 stderr + 显式 unlinkError,不让调用方误读。
-    if (e.code === 'ENOENT') return { released: false, alreadyAbsent: true, notOwner: false };
-    process.stderr.write(`[signoff-hold] 释放锁失败(unlink ${lockInfo.path}):${e.code ?? e.message}\n`);
-    return { released: false, alreadyAbsent: false, notOwner: false, unlinkError: e.code ?? String(e.message) };
-  }
+  return { release, rejected };
+}
+
+/**
+ * [MIVO-PATCH ci-ignore] BLOCKED 只因本流程自己的必需检查(ciIgnoreContexts,如 review-pr)
+ * 尚未上报或尚未通过?是则返回 true。probe 读不到、还有别的必需检查未满足,都返回 false(从严)。
+ */
+export function onlyOwnRequiredChecksPending({ probe = null, rollupContexts = null, rules = loadRules() } = {}) {
+  const own = new Set((rules.ciIgnoreContexts ?? []).map((name) => String(name)));
+  if (!probe || !Array.isArray(probe.requiredStatusChecks) || own.size === 0 || !Array.isArray(rollupContexts)) return false;
+  const pass = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  const latest = new Map();
+  rollupContexts.forEach((context, index) => {
+    const order = context?.startedAt ?? context?.createdAt ?? context?.completedAt ?? `9999-${index}`;
+    const prev = latest.get(context?.name);
+    if (!prev || String(order) >= String(prev.order)) latest.set(context?.name, { context, order });
+  });
+  const unmet = probe.requiredStatusChecks
+    .map((check) => String(typeof check === 'string' ? check : check?.context ?? '').trim())
+    .filter(Boolean)
+    .filter((name) => !pass.has(String(latest.get(name)?.context?.conclusion ?? '').toUpperCase()));
+  return unmet.length > 0 && unmet.every((name) => own.has(name));
 }

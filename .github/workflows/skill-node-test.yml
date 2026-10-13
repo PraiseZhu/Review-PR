@@ -3,19 +3,27 @@ on:
   pull_request:
   push:
     branches: [main]
+permissions:
+  contents: read
 jobs:
   node-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
-      - name: snapshot and git-spawn tests
-        run: node --test review-pr/tests/lib.diff-snapshot.test.mjs
-      - name: lib.mjs git spawn policy
-        run: node --test review-pr/tests/lib.win-git-spawn.test.mjs
+      - name: git identity for fixture repos
+        run: |
+          git config --global user.name "skill-ci"
+          git config --global user.email "skill-ci@example.invalid"
+          git config --global init.defaultBranch main
+      - name: upstream tests (upstream config fixture)
+        env:
+          REVIEW_PR_RULES_FILE: ${{ github.workspace }}/tools/fixtures/upstream-pr-rules.json
+        run: node --test "review-pr/scripts/*.test.mjs"
+      - name: Mivo patch and glue tests (Mivo config)
+        run: node --test review-pr/scripts/mivo-patches.test.mjs "tools/*.test.mjs" "mivo/**/*.test.mjs"
