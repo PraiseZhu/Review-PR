@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitDiffByFile, filePatchHashes, computeReviewScope } from './scope.mjs';
+import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from './scope.mjs';
 import { validateAnswer, finalizeReport, scrubSecrets, renderDeferredSection, REPORT_SECTIONS, ANSWER_SCHEMA, DEFERRED_SECTION, DEFER_HINT } from './report.mjs';
 
 const diff = (bodyA, bodyB = '+b2') => [
@@ -34,12 +34,12 @@ const files = splitDiffByFile(diff('+added'));
 const current = (over = {}) => ({
   head: 'h1', baseRefName: 'main', diffHash: 'd1', filePatchHashes: filePatchHashes(files),
   fileChangedLines: { 'src/a.ts': 1, 'src/b.ts': 1 }, totalDiffLines: 2, tier: 'standard', triggerKinds: [],
-  skillSha: 's', rulesDigest: 'r', now: Date.parse('2026-10-11T12:00:00Z'), ...over,
+  specDigest: 'spec-1', now: Date.parse('2026-10-11T12:00:00Z'), ...over,
 });
 const previous = (over = {}) => ({
   head: 'h0', baseRefName: 'main', diffHash: 'd0', reviewed: true, reportComplete: true, outcome: 'review-only', reviewClean: true,
   findings: [], filePatchHashes: { ...filePatchHashes(files), 'src/a.ts': 'old' }, totalDiffLines: 10, tier: 'standard',
-  triggerKinds: [], skillSha: 's', rulesDigest: 'r', lastFullReviewAt: '2026-10-10T12:00:00Z', ...over,
+  triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z', ...over,
 });
 
 test('增量:只审 patch 变了的文件,外加上轮有问题的文件', () => {
@@ -60,8 +60,8 @@ test('全量兜底:各条件都会退回全量', () => {
     [previous({ reportComplete: false }), /没审完/],
     [previous({ baseRefName: 'dev' }), /base 分支变了/],
     [previous({ tier: 'light' }), /档位升级/],
-    [previous({ skillSha: 'old' }), /skill 版本/],
-    [previous({ rulesDigest: 'old' }), /规则文件/],
+    [previous({ specDigest: 'spec-0' }), /任务书或规则变了/],
+    [previous({ specDigest: undefined }), /上一轮没有任务书版本/],
     [previous({ lastFullReviewAt: '2026-10-01T00:00:00Z' }), /7 天/],
   ];
   for (const [prev, re] of cases) assert.match(computeReviewScope({ previous: prev, current: current(), headIsDescendant: true }).reason, re);
@@ -166,4 +166,24 @@ test('最终报告:有阻断问题时结论照旧并补一句;阻断里有 P1 �
   assert.deepEqual(renderDeferredSection({ deferred: [], rejected: [] }), []);
   assert.deepEqual(renderDeferredSection({ rejected: [{ ref: 'o/r#5', reason: '跨仓引用,只认本仓 issue' }] }).slice(0, 4),
     [DEFERRED_SECTION, '', '- 无', '- 登记了但没采用：']);
+});
+
+test('specDigest:旧产物缺字段退回全量,两边都缺也不能判成相等;skill 换版本但任务书没变仍可增量', () => {
+  assert.equal(computeReviewScope({ previous: previous({ specDigest: undefined }), current: current({ specDigest: undefined }), headIsDescendant: true }).mode, 'full');
+  assert.match(computeReviewScope({ previous: previous(), current: current({ specDigest: '' }), headIsDescendant: true }).reason, /本轮没有任务书版本/);
+  const scope = computeReviewScope({ previous: previous({ skillSha: 'old-sha', rulesDigest: 'old' }), current: current({ skillSha: 'new-sha' }), headIsDescendant: true });
+  assert.equal(scope.mode, 'incremental', '只换了审查机代码版本,任务书材料没变');
+  assert.equal(computeReviewScope({ previous: previous({ head: 'h1', filePatchHashes: filePatchHashes(files) }), current: current(), headIsDescendant: null }).mode, 'reuse', '同 head 复用');
+});
+
+test('上一轮结果包 → 上一轮记录:specDigest 等字段原样带回', () => {
+  const result = { pr: 7, head: 'h0', reviewed: true, reviewClean: true, outcome: 'review-only',
+    reviewEvidence: { baseRefName: 'main', diffHash: 'd0' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], filePatchHashes: { 'a.ts': 'x' }, totalDiffLines: 3,
+      tier: 'standard', triggerKinds: [], skillSha: 'sha', specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const prev = previousFromResult(result, 'report');
+  assert.equal(prev.specDigest, 'spec-1');
+  assert.equal(prev.report, 'report');
+  assert.deepEqual(prev.filePatchHashes, { 'a.ts': 'x' });
+  assert.equal(previousFromResult({ ...result, mivo: { ...result.mivo, specDigest: undefined } }, '').specDigest, undefined);
 });
