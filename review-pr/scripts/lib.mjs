@@ -3092,6 +3092,37 @@ export function isAutomatedViewerReview(review, viewerLogin) {
 }
 
 /**
+ * [MIVO-PATCH self-review] 审查账号上维护者本人仍有效的 Request Changes。
+ * GitHub 与 latestSubstantiveReviews 都按登录名只留最后一条实质 review,审查机后发的
+ * CR / Approve 会盖掉更早的人工 CR(#941:人工 CR 5506920945 被审查机 CR 5512930585 盖掉)。
+ * 判定按人分开:去掉带审查机标记的 viewer review,剩下的人工 review 里取最后一条
+ * APPROVED / CHANGES_REQUESTED / DISMISSED;它是 CHANGES_REQUESTED 才算仍有效。
+ * 人工之后 Approve,或该 review 被 dismiss,都不再有效。
+ * 兼容 REST(user.login, submitted_at)与 context(author.login, submittedAt)。
+ */
+export function selectStandingViewerHumanChangesRequest(reviews, viewerLogin) {
+  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  if (!viewer) return null;
+  let latest = null;
+  let latestAt = '';
+  for (const review of Array.isArray(reviews) ? reviews : []) {
+    const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
+    if (login !== viewer) continue;
+    // REST 正常都带 body;缺 body 无法证明有没有审查机标记,不能当成人工 CR。
+    if (review?.body == null) continue;
+    if (isAutomatedViewerReview(review, viewer)) continue;
+    const state = String(review?.state ?? '').toUpperCase();
+    if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED' && state !== 'DISMISSED') continue;
+    const at = String(review?.submitted_at ?? review?.submittedAt ?? review?.at ?? '');
+    if (!latest || at >= latestAt) {
+      latest = review;
+      latestAt = at;
+    }
+  }
+  return String(latest?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED' ? latest : null;
+}
+
+/**
  * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
  * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
  * 评审 bot 的 check(ciIgnoreBotChecks,如 Greptile 的信心阈值检查)也不算:它的具体意见以 thread 出现,由 thread 门拦。

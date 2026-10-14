@@ -4,7 +4,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseRepo, parsePR, gh, ghJson, fetchAllReviewThreads, fetchMaintainerAuthority,
-  evaluateMaintainerApprovalPolicy, latestSubstantiveReviews, assertActiveReviewLock, stateFile, print } from './lib.mjs';
+  evaluateMaintainerApprovalPolicy, latestSubstantiveReviews, selectStandingViewerHumanChangesRequest,
+  assertActiveReviewLock, stateFile, print } from './lib.mjs';
 import { atomicWriteJson } from './runtime-io.mjs';
 import { approvalReceiptFromReview, existingMaintainerApprovalReceipt, pendingApproval, APPROVAL_REPOST_AFTER_MS } from './approval-state.mjs';
 
@@ -95,6 +96,10 @@ try {
     if (!reviews.verified) reject('reviews-unverified', reviews.error);
     if (changes.some((review) => !same(review.user?.login, viewer))) {
       reject('other-changes-requested', '存在别人的有效 CHANGES_REQUESTED，不能靠本次 Approve 覆盖');
+    }
+    // [MIVO-PATCH self-review] 同一账号上维护者本人的人工 CR 仍有效时,不能靠审查机 Approve 覆盖。
+    if (selectStandingViewerHumanChangesRequest(reviews.reviews, viewer)) {
+      reject('other-changes-requested', '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审');
     }
     if (meta.reviewDecision === 'CHANGES_REQUESTED' && !changes.length) {
       reject('reviews-unverified', 'reviewDecision=CHANGES_REQUESTED，但未读取到对应 review');

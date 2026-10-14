@@ -358,6 +358,11 @@ test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖�
   assert.equal(selectStandingViewerHumanChangesRequest(onlyHeader, viewer), null, '只有带报告头的审查机 CR:可自解');
   assert.equal(selectStandingViewerHumanChangesRequest(reviews941, ''), null, '不知道审查账号时不判');
   assert.equal(selectStandingViewerHumanChangesRequest(reviews941, 'kirozeng'), null, '别人的人工 CR 不算审查账号自己的');
+  const missingBody = [viewerReview(123, 'CHANGES_REQUESTED', undefined, '2026-10-14T03:00:00Z')];
+  delete missingBody[0].body;
+  assert.equal(selectStandingViewerHumanChangesRequest(missingBody, viewer), null, '缺 body 无法证明有没有审查机标记,不算人工 CR');
+  assert.equal(selectStandingViewerHumanChangesRequest([viewerReview(124, 'CHANGES_REQUESTED', '', '2026-10-14T03:00:00Z')], viewer)?.id, 124,
+    '空正文仍是人工 CR');
 
   const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
   assert.match(context, /selectStandingViewerHumanChangesRequest\(prReviews, viewerLogin\)/);
