@@ -50,6 +50,14 @@ const ROUNDS = [];
 const ADMIT_ERRORS = [];
 let ADMISSION_CLOSED = null; // 不再接新轮的原因
 let SKILL_HEAD = null;
+// 同时恢复几轮时,要等每一轮都登记完已派发的 run,才放任何一轮领取新任务。
+// 否则先启动的那一轮只看见自己的在途数,会把别的轮次已占的槽位当成空槽派出去。
+let releaseResumeBarrier;
+const RESUME_BARRIER = new Promise((resolve) => { releaseResumeBarrier = resolve; });
+// 某一轮失败时,如果手里还有已派发的 run,这些 run 没人回收,占的槽位永远不会释放。
+// 这时其它轮次停下、不收尾,整个进程退出;launchd 重启后,未完成的轮次一起恢复(已派发的 run 从 queue.json 重新登记)。
+let ABORTED = null;
+class RoundAborted extends Error {}
 
 function setupEnv(config) {
   const env = { ...process.env, REVIEW_PR_REPO_ROOT: config.repoRoot, REVIEW_PR_STATE_DIR: config.stateDir };
@@ -111,6 +119,11 @@ function closeAdmission(reason) {
   if (ADMISSION_CLOSED) return;
   ADMISSION_CLOSED = reason;
   log('admission-closed', { reason, runningRounds: ROUNDS.filter((r) => !r.finished).map((r) => r.runId) });
+}
+function abortRounds(reason) {
+  if (ABORTED) return;
+  ABORTED = reason;
+  log('rounds-aborting', { reason, runningRounds: ROUNDS.filter((r) => !r.finished).map((r) => r.runId) });
 }
 
 // ── 讨论 issue 有新留言(Slack 同步)时唤醒对应 PR ──────────────────────────
@@ -186,6 +199,7 @@ async function main() {
     }
     const drives = [];
     for (const file of planFiles) startDrive(file, token, digest, drives);
+    releaseResumeBarrier();
     await admitLoop(token, digest, drives);
     const failures = (await Promise.all(drives)).filter(Boolean).map((error) => error.message);
     failures.push(...ADMIT_ERRORS);
@@ -220,8 +234,13 @@ function startDrive(planFile, token, digest, drives) {
   ROUNDS.push(round);
   // resolve 成 null 或 Error,不留 rejected promise:要等所有轮次跑完才汇总,挂着的 rejection 会让 Node 直接退出进程。
   drives.push(drive(round, token, digest).then(() => null, (error) => {
-    log('round-failed', { runId: round.runId, error: error.message });
+    if (error instanceof RoundAborted) {
+      log('round-aborted', { runId: round.runId, reason: error.message, inflight: round.inflight.size });
+      return error;
+    }
+    log('round-failed', { runId: round.runId, error: error.message, inflight: round.inflight.size });
     closeAdmission('round-failed');
+    if (round.inflight.size > 0) abortRounds(`轮次 ${round.runId} 失败,还有 ${round.inflight.size} 个已派发的服务器审查没收回`);
     return error;
   }).finally(() => { round.finished = true; }));
 }
@@ -296,6 +315,7 @@ async function drive(round, token, authorityDigest) {
   };
   try {
     resumeInflight({ plan, planFile, roundDir }, inflight, queue);
+    await RESUME_BARRIER;
     for (let pass = 0; pass < 2; pass += 1) {
       await runQueue({ round, plan, planFile, roundDir, token, authorityDigest, queue, inflight, ensureWatch });
       const reconcile = queue('reconcile');
@@ -334,6 +354,8 @@ async function drive(round, token, authorityDigest) {
 async function runQueue(ctx) {
   const { round, queue, inflight } = ctx;
   for (;;) {
+    // 只有在等待期间别的轮次才可能失败,所以每次醒来先看一眼。中止的轮次不收尾,留给重启后恢复。
+    if (ABORTED) throw new RoundAborted(ABORTED);
     ctx.ensureWatch();
     queue('status');
     // 全进程在审数满了就不领取。claim → 判门 → 派发 → 登记在途之间没有 await,别的轮次看不到过时的空槽。

@@ -66,8 +66,9 @@ flowchart LR
 - 同一个 PR 不会同时进两个未完成的轮次；依赖在审 PR 的 PR（round-state 里的 `dependencyPrs`，按传递关系）一起延后。
 - 维护者确认 issue 有新留言（Slack 放行）时，在审 PR 先不唤醒，等它所在那一轮结束后的检查点再唤醒。
 - 进程运行满 60 分钟，或检出了新的 skill SHA、某一轮失败、接单时 plan 失败，就不再接新轮；手上的轮次跑完就退出，launchd 用新代码、新日志文件重新拉起。
-- 中断后下次启动，所有未完成的轮次一起接着跑。
-- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admission-closed`、`resume-rounds`、`round-failed`、`watch-restart`、`wake-held-deferred`。
+- 某一轮失败时，如果它手里还有已派发、没收回的服务器 run，这些槽位没人释放：其余轮次停下、不收尾，整个进程退出，launchd 重新拉起后一起恢复。失败的那一轮手里没有在途 run 时，只停止接新轮，其余轮次照常跑完。
+- 中断后下次启动，所有未完成的轮次一起接着跑：先把每一轮已派发的 run 都登记进在审数，再开始领取新任务。
+- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admission-closed`、`resume-rounds`、`round-failed`、`rounds-aborting`、`round-aborted`、`watch-restart`、`wake-held-deferred`。
 
 ## 三种模式
 
