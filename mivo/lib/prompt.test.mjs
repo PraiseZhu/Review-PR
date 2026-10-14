@@ -101,3 +101,14 @@ test('specDigest:只改实现代码不变;必读或命中的规则变了就变;�
   assert.equal(m.pathRules['docs/recipes-authoring.md'], undefined);
   assert.equal(manifest({ material: { 'CONTRIBUTING.md': null } }).mustRead['CONTRIBUTING.md'], null, '文件不存在如实记 null');
 });
+
+// 增量轮专属的固定指令也是任务书:只改它也要让 digest 变,否则同 head 的旧干净报告会被沿用、新指令整轮不执行。
+test('specDigest:固定模板盖到每个分支(全量/增量范围、上一轮问题、转 issue 一节的空与非空)', () => {
+  const { template } = manifest();
+  assert.deepEqual(Object.keys(template).sort(), ['full', 'incremental']);
+  const all = Object.values(template).join('\n');
+  for (const phrase of ['**全量审查**', '**增量复审**', '**优先规则**', '本轮是增量复审', '上一轮的问题(逐条核对)', '标了「已转 #N」的',
+    '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
+  const tweaked = { ...manifest(), template: { ...template, incremental: template.incremental.replace('**优先规则**', '**优先规则(改)**') } };
+  assert.notEqual(specDigestOf(tweaked), specDigestOf(manifest()), '只改增量专属的一句');
+});

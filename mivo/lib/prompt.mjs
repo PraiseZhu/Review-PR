@@ -219,6 +219,10 @@ export function matchesRulePath(pattern, file) {
 }
 
 const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>', url: '<url>', headRefOid: '<head>', baseRefName: '<base-ref>', baseRefOid: '<base>' } };
+// 固定模板要盖到每个分支:全量/增量两种范围说明,上一轮问题与「已转 #N」提示,转 issue 一节的空与非空两种写法。
+// 只取全量模板时,只改增量专属指令的 skill 升级算不出任务书变化,同 head 的旧干净报告会被直接沿用。
+const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1 };
+const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
 
 /**
  * @param {object} p
@@ -233,10 +237,14 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config }) 
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
   const read = (path) => { const text = readFile(path); return typeof text === 'string' ? text : null; };
+  const toTemplate = (scope, deferrals) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals,
+    inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined } });
   return {
     version: 1,
-    template: buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope: { mode: 'full', reason: '<reason>' }, workdir: '<workdir>', tier,
-      inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined } }),
+    template: {
+      full: toTemplate({ mode: 'full', reason: '<reason>' }, []),
+      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL]),
+    },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),
     config: String(config ?? ''),
