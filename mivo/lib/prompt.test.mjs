@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY } from './prompt.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY, toRuleMapPlan, matchesRulePath, buildSpecManifest, specDigestOf } from './prompt.mjs';
 import { SKILL_ROOT } from './common.mjs';
 
 const prompt = (tier = 'standard', over = {}) => buildReviewPrompt({
@@ -47,4 +49,66 @@ test('上一轮已转 issue 的问题在核对列表里标出来', () => {
   assert.ok(text.includes('- `a.ts:3`(已转 #1001) [P1] x'));
   assert.ok(text.includes('- `b.ts` [P1] y'));
   assert.match(text, /标了「已转 #N」的/);
+});
+
+test('增量复审:范围和优先规则写在规范原文之前,不再要求对完整 diff 做最终复核', () => {
+  const text = prompt('standard', { scope: { mode: 'incremental', reason: '增量(基于 h0,本轮审 1 个文件)', files: ['src/a.ts'], previousFindings: [] } });
+  const rule = text.indexOf('优先规则');
+  assert.ok(rule > 0 && rule < text.indexOf('## 审查规范'), '优先规则在规范原文之前');
+  assert.match(text, /本轮的审查范围是:本轮变化的文件\(`src\/a\.ts`\)、上一轮提过的问题、以及这些改动直接影响到的共享状态、协议、持久化、错误和回滚路径/);
+  const ruleText = text.slice(rule, text.indexOf('## 审查规范'));
+  for (const phrase of ['完整 diff', '本 PR 改动', '最终逐项对照', '最终复核']) assert.ok(ruleText.includes(`「${phrase}」`), phrase);
+  assert.doesNotMatch(text, /追查调用方的范围\*\*不缩小\*\*/);
+  assert.doesNotMatch(text, /始终针对\*\*完整 diff\*\*/);
+  assert.match(text.slice(text.indexOf('## 审查规范')), /本轮是增量复审/, '规范原文前再提醒一次');
+  assert.doesNotMatch(prompt('standard'), /优先规则|本轮是增量复审/, '全量审查不受影响');
+});
+
+const RULE_MAP = readFileSync(join(SKILL_ROOT, 'review-pr', 'references', 'rule-map.md'), 'utf8');
+
+test('rule-map 解析:所有 PR 必读的文件;按路径命中的规则文件;命令不算文件', () => {
+  const plan = toRuleMapPlan(RULE_MAP);
+  assert.deepEqual(plan.mustRead, ['AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md', '.github/pull_request_template.md']);
+  const hit = (file) => [...new Set(plan.rows.filter((r) => r.patterns.some((p) => matchesRulePath(p, file))).flatMap((r) => r.files))];
+  assert.ok(hit('cindyplugin/src/panel.tsx').includes('cindyplugin/DESIGN.md'));
+  assert.ok(hit('src/styles/theme.css').includes('cindyplugin/DESIGN.md'), '*.css 任意深度');
+  assert.ok(hit('src/lib/persistQueue.ts').includes('docs/decisions/library-canvas-store.md'), 'src/lib/persist* 前缀');
+  assert.ok(hit('server/routes/recipes.ts').includes('docs/recipes-authoring.md'));
+  assert.deepEqual(hit('README.md'), []);
+  assert.ok(plan.rows.flatMap((r) => r.files).every((f) => !/\s/.test(f)), '`npm run verify:i18n` 这类命令不算规则文件');
+});
+
+const MATERIAL = { 'AGENTS.md': 'agents v1', 'CLAUDE.md': 'claude v1', 'CONTRIBUTING.md': 'contributing v1',
+  '.github/pull_request_template.md': 'template v1', 'cindyplugin/DESIGN.md': 'design v1', 'docs/design.md': 'design doc v1',
+  'docs/recipes-authoring.md': 'recipes v1' };
+const manifest = ({ files = ['cindyplugin/src/panel.tsx'], material = {}, config = '{"maintainerSource":"allowlist"}', tier = 'standard' } = {}) =>
+  buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier, files, readFile: (path) => ({ ...MATERIAL, ...material })[path] ?? null, config });
+
+test('specDigest:只改实现代码不变;必读或命中的规则变了就变;未命中的规则变了不变', () => {
+  const base = specDigestOf(manifest());
+  assert.match(base, /^[0-9a-f]{64}$/);
+  assert.equal(specDigestOf(manifest()), base, '同样的材料同样的 digest');
+  assert.equal(specDigestOf(manifest({ files: ['cindyplugin/src/panel.tsx', 'cindyplugin/src/settings.tsx'] })), base, '多改一个同区域的实现文件');
+  assert.notEqual(specDigestOf(manifest({ material: { 'CLAUDE.md': 'claude v2' } })), base, 'rule-map 要求必读的 CLAUDE.md 变了');
+  assert.notEqual(specDigestOf(manifest({ material: { 'cindyplugin/DESIGN.md': 'design v2' } })), base, '命中的 DESIGN.md 变了');
+  assert.equal(specDigestOf(manifest({ material: { 'docs/recipes-authoring.md': 'recipes v2' } })), base, '没命中的配方规则变了');
+  assert.notEqual(specDigestOf(manifest({ files: ['server/routes/recipes.ts'] })), base, '改到新区域,命中的规则集合变了');
+  assert.notEqual(specDigestOf(manifest({ config: '{"maintainerSource":"codeowners"}' })), base, '生效配置变了');
+  assert.notEqual(specDigestOf(manifest({ tier: 'heavy' })), base, '选档说明变了');
+  const m = manifest();
+  assert.deepEqual(Object.keys(m).sort(), ['config', 'mustRead', 'pathRules', 'schemaVersion', 'template', 'version']);
+  assert.equal(m.mustRead['AGENTS.md'], 'agents v1');
+  assert.equal(m.pathRules['docs/recipes-authoring.md'], undefined);
+  assert.equal(manifest({ material: { 'CONTRIBUTING.md': null } }).mustRead['CONTRIBUTING.md'], null, '文件不存在如实记 null');
+});
+
+// 增量轮专属的固定指令也是任务书:只改它也要让 digest 变,否则同 head 的旧干净报告会被沿用、新指令整轮不执行。
+test('specDigest:固定模板盖到每个分支(全量/增量范围、上一轮问题、转 issue 一节的空与非空)', () => {
+  const { template } = manifest();
+  assert.deepEqual(Object.keys(template).sort(), ['full', 'incremental']);
+  const all = Object.values(template).join('\n');
+  for (const phrase of ['**全量审查**', '**增量复审**', '**优先规则**', '本轮是增量复审', '上一轮的问题(逐条核对)', '标了「已转 #N」的',
+    '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
+  const tweaked = { ...manifest(), template: { ...template, incremental: template.incremental.replace('**优先规则**', '**优先规则(改)**') } };
+  assert.notEqual(specDigestOf(tweaked), specDigestOf(manifest()), '只改增量专属的一句');
 });

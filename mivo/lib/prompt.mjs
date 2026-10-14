@@ -4,6 +4,8 @@
 // 唯一例外是严重度:按仓库维护者 2026-10-12 的决定,改用下方 SEVERITY 的统一分级,覆盖规范原文的「严重度」段。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { ANSWER_SCHEMA } from './report.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -90,13 +92,15 @@ const TIER_HINT = {
  */
 export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [] }) {
   const meta = ctx.meta ?? {};
-  const scopeText = scope.mode === 'incremental'
+  // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
+  const incremental = scope.mode === 'incremental';
+  const scopeText = incremental
     ? [
       `**增量复审**:${scope.reason}。`,
-      `本轮只需逐行审这些文件的改动:${scope.files.map((f) => `\`${f}\``).join('、')}。`,
-      '追查调用方的范围**不缩小**:改到的共享符号、状态、持久化与协议,照样追到 diff 之外。',
+      `本轮的审查范围是:本轮变化的文件(${scope.files.map((f) => `\`${f}\``).join('、')})、上一轮提过的问题、以及这些改动直接影响到的共享状态、协议、持久化、错误和回滚路径。`,
+      '**优先规则**:下文规范原文里的「完整 diff」「本 PR 改动」「最终逐项对照」「最终复核」等说法,本轮一律按上面这个范围理解;'
+        + '上一轮已经对完整 diff 做过审查和最终复核,本轮不再对完整 diff 逐项复核。完整 diff 文件只用来定位上下文。',
       '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报。',
-      '第 5 节第 7 条「最终复核」始终针对**完整 diff**。',
     ].join('\n')
     : `**全量审查**:${scope.reason}。审完整 diff。`;
   const previousFindings = scope.previousFindings ?? [];
@@ -143,6 +147,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '`docs/dev-rules/*`、`apps/*`、`scripts/checkout.mjs`),在 Mivo 一律换成下方 rule-map 指向的文件;',
     '你已经在 PR head 的工作目录里,不需要再 checkout,也不再派生其他 agent。严重度**不**按下文「严重度」一段,',
     '改按本任务书后面的「分级(Mivo 统一口径)」;下文凡写「记 P1」「按 P1 打回」的条款,都按那一节重新分级。',
+    ...(incremental ? ['本轮是增量复审:下文针对完整 diff 的说法(含最终复核)按上面「本轮范围」的优先规则理解。'] : []),
     '',
     spec.tiered,
     '',
@@ -174,3 +179,79 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '- 只报本 PR 可证实、达到上面「分级」P0/P1 定义的问题;P2、P3、风格、猜测一律不报。没有问题时 `findings` 为空数组,Overall 写 pass。',
   ].join('\n');
 }
+
+// ── 任务书版本(specDigest) ───────────────────────────────────────────────
+// 增量复审只在「任务书材料没变」时成立(方案 Step 16)。材料是一份确定性的清单:固定模板与分级、选档说明、
+// 规范原文、rule-map 全文、rule-map 要求所有 PR 必读的文件、按改动路径命中的规则文件、生效配置与答卷 schema。
+// PR 号、head、工作目录、时间等每轮都变的东西不进清单。文件按审查实际读的版本(PR head)取,取不到记 null。
+
+const backticks = (text) => [...String(text ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1].trim());
+const RULE_FILE_RE = /^[\w.][\w./-]*\.(?:md|json|ya?ml|ts|mjs|js)$/;
+
+/** rule-map 的机读部分:「所有 PR」一节的必读文件;「按改动路径读取」表每行的路径模式与规则文件。 */
+export function toRuleMapPlan(ruleMap) {
+  const text = String(ruleMap ?? '');
+  const section = (title) => {
+    const start = text.indexOf(`## ${title}`);
+    if (start < 0) return '';
+    const next = text.indexOf('\n## ', start + 3);
+    return text.slice(start, next < 0 ? undefined : next);
+  };
+  const mustRead = section('所有 PR').split('\n').filter((line) => line.trim().startsWith('- '))
+    .map((line) => backticks(line)[0]).filter((path) => path && RULE_FILE_RE.test(path));
+  const rows = section('按改动路径读取').split('\n').filter((line) => /^\|/.test(line) && !/^\|\s*-/.test(line))
+    .map((line) => line.split('|').slice(1, -1))
+    .filter((cells) => cells.length >= 2)
+    .map(([topic, rules]) => ({ patterns: backticks(topic), files: backticks(rules).filter((path) => RULE_FILE_RE.test(path)) }))
+    .filter((row) => row.patterns.length && row.files.length);
+  return { mustRead: [...new Set(mustRead)], rows };
+}
+
+/** rule-map 的路径模式:以 / 结尾是目录前缀;`*.ext` 匹配任意深度的扩展名;带 * 的按前缀;其余按完整路径。 */
+export function matchesRulePath(pattern, file) {
+  const p = String(pattern ?? '');
+  const f = String(file ?? '');
+  if (!p) return false;
+  if (p.endsWith('/')) return f.startsWith(p);
+  if (p.startsWith('*.')) return f.endsWith(p.slice(1));
+  if (p.includes('*')) return f.startsWith(p.slice(0, p.indexOf('*')));
+  return f === p;
+}
+
+const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>', url: '<url>', headRefOid: '<head>', baseRefName: '<base-ref>', baseRefOid: '<base>' } };
+// 固定模板要盖到每个分支:全量/增量两种范围说明,上一轮问题与「已转 #N」提示,转 issue 一节的空与非空两种写法。
+// 只取全量模板时,只改增量专属指令的 skill 升级算不出任务书变化,同 head 的旧干净报告会被直接沿用。
+const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1 };
+const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
+
+/**
+ * @param {object} p
+ * @param {object} p.spec loadReviewSpec() 的结果
+ * @param {string} p.tier 本轮档位(选档说明随档位变)
+ * @param {string[]} p.files 本 PR diff 里的文件
+ * @param {(path:string)=>string|null} p.readFile 按审查实际读的版本取文件内容,取不到返回 null
+ * @param {string} p.config 生效的 pr-rules 配置原文
+ */
+export function buildSpecManifest({ spec, tier, files = [], readFile, config }) {
+  const plan = toRuleMapPlan(spec.ruleMap);
+  const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
+    .flatMap((row) => row.files))].sort();
+  const read = (path) => { const text = readFile(path); return typeof text === 'string' ? text : null; };
+  const toTemplate = (scope, deferrals) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals,
+    inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined } });
+  return {
+    version: 1,
+    template: {
+      full: toTemplate({ mode: 'full', reason: '<reason>' }, []),
+      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL]),
+    },
+    mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
+    pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),
+    config: String(config ?? ''),
+    schemaVersion: createHash('sha256').update(JSON.stringify(ANSWER_SCHEMA)).digest('hex'),
+  };
+}
+
+const stable = (value) => (Array.isArray(value) ? value.map(stable)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])])) : value);
+export const specDigestOf = (manifest) => createHash('sha256').update(JSON.stringify(stable(manifest))).digest('hex');
