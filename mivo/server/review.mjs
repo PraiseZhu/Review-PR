@@ -14,7 +14,7 @@ import { splitDiffByFile, filePatchHashes, computeReviewScope } from '../lib/sco
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
-import { TIER_DEFAULTS, tierConfig, nextAttempt } from '../lib/models.mjs';
+import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { runCodex } from './codex.mjs';
@@ -77,6 +77,9 @@ async function prepare() {
   saveState(state);
   // 与老审查机 gate 的第一次检查相同:营业窗口 + healthy.marker,不过就不开审(不碰 PR、不写 check)。
   if (!checkHealth(state, 'prepare')) return state;
+  // codex 阶段按作业的真实开始时间算模型预算(codex 步骤没有 GitHub 令牌,这里先读好)。
+  state.jobStart = readJobStart(input);
+  saveState(state);
   try {
     // 1. 检出 PR head(detached),只取需要的对象。
     const repoMeta = JSON.parse(gh(['api', `repos/${input.targetRepo}`], { cwd: WORK }).stdout);
@@ -169,6 +172,21 @@ async function prepare() {
   } catch (error) {
     finishEarly(state, 'error', `prepare 异常:${error.message}`, true);
   }
+}
+
+// 作业开始时间:优先读本 job 的 started_at;读不到就用这次 run 的 created_at,它一定不晚于 job 开始,是可靠下界。
+// 两个都读不到时 codex 阶段不启动付费模型、记 error,交给 Mini 按现有规则重试。不用「现在 − 已知步骤耗时」去估:
+// 下载解压 skill 等步骤的耗时不全知道,估出来的起点会偏晚,挤掉发布余量。
+function readJobStart(input) {
+  if (!input.runId) return { at: null, from: null, error: '没有 GITHUB_RUN_ID' };
+  const api = (path) => run('gh', ['api', path], { cwd: WORK, allowFail: true, timeoutMs: 60_000 });
+  const parse = (r) => { if (!r.ok) return null; try { return JSON.parse(r.stdout); } catch { return null; } };
+  const jobs = api(`repos/${input.workflowRepo}/actions/runs/${input.runId}/jobs?filter=latest&per_page=100`);
+  const fromJob = pickJobStart({ jobsJson: parse(jobs), runnerName: process.env.RUNNER_NAME });
+  if (fromJob) return fromJob;
+  const view = api(`repos/${input.workflowRepo}/actions/runs/${input.runId}`);
+  return pickJobStart({ runJson: parse(view) }) ??
+    { at: null, from: null, error: `读不到作业开始时间:${(view.stderr || jobs.stderr || '').trim().slice(0, 200) || '返回内容没有时间字段'}` };
 }
 
 function prepareProtectedApprove(state, ctx) {
@@ -359,7 +377,18 @@ async function codex() {
   if (!checkHealth(state, 'codex')) return;
   const input = state.input;
   const ctx = readJson(state.context.file);
-  const tierCfg = tierConfig(state.tier);
+  // 模型预算(lib/models.mjs):作业截止 = 开始 + 作业上限;预算 = min(120 分钟, 截止 − 现在 − 发布预留),主备共用。
+  const jobTimeoutMin = Number(process.env.MIVO_REVIEW_JOB_TIMEOUT_MIN) || DEFAULT_JOB_TIMEOUT_MIN;
+  const jobStartMs = Date.parse(state.jobStart?.at ?? '');
+  const budget = { jobStartAt: state.jobStart?.at ?? null, jobStartFrom: state.jobStart?.from ?? null, jobTimeoutMin };
+  if (!Number.isFinite(jobStartMs)) {
+    state.codex = { attempts: [], skipped: 'job-start-unknown', budget: { ...budget, error: state.jobStart?.error || '没有作业开始时间' } };
+    saveState(state);
+    return;
+  }
+  budget.budgetMs = codexBudgetMs({ jobStartMs, jobTimeoutMin, nowMs: Date.now() });
+  const tierCfg = tierConfig(state.tier, process.env, { budgetMs: budget.budgetMs });
+  budget.primaryTimeoutMs = tierCfg.timeoutMs;
   const prompt = buildReviewPrompt({
     spec: loadReviewSpec(SKILL_ROOT), ctx, scope: state.scope, workdir: REPO_DIR, tier: state.tier,
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile: join(INPUT_DIR, 'scope.json'),
@@ -370,18 +399,23 @@ async function codex() {
   const attempts = [];
   const startedAt = Date.now();
   // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。
-  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMin: 0 }); next;
-    next = nextAttempt({ primary: tierCfg, attempts, elapsedMin: (Date.now() - startedAt) / 60_000 })) {
+  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs }); next;
+    next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs })) {
     const result = await runCodex({
       codexBin: process.env.CODEX_BIN || '/AIGC_Group/github-actions-runner/mivo-review-tools/bin/codex',
       workdir: REPO_DIR, prompt, schema: ANSWER_SCHEMA, model: next.model, effort: next.effort,
-      timeoutMs: next.timeoutMin * 60_000, credentials: process.env.LITELLM_CREDENTIALS_JSON,
+      timeoutMs: next.timeoutMs, credentials: process.env.LITELLM_CREDENTIALS_JSON,
       tmpRoot: join(WORK, 'codex'), label: `${attempts.length + 1}`,
     });
-    attempts.push({ model: next.model, effort: next.effort, ok: result.ok, error: result.error, quota: result.quota, durationMs: result.durationMs, exitCode: result.exitCode });
+    // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
+    attempts.push({ model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
+      quota: result.quota, durationMs: result.durationMs, exitCode: result.exitCode, timedOut: result.timedOut, idleKilled: result.idleKilled,
+      firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
+      maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}) });
     if (result.ok) writeJson(join(WORK, 'answer.json'), result.answer);
   }
-  state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort };
+  state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget,
+    ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
 }
 
@@ -432,7 +466,10 @@ async function publish() {
       const answerFile = join(WORK, 'answer.json');
       if (!existsSync(answerFile)) {
         const last = state.codex?.attempts?.at(-1);
-        return failReview(state, result, `模型审查没有完成:${last?.error || '没有答卷'}`, { quota: last?.quota === true });
+        const why = last?.error || (state.codex?.skipped
+          ? `没有启动模型(${state.codex.budget?.error || (state.codex.skipped === 'budget-exhausted' ? '作业剩余时间不够一次模型调用' : state.codex.skipped)})`
+          : '没有答卷');
+        return failReview(state, result, `模型审查没有完成:${why}`, { quota: last?.quota === true });
       }
       const checked = validateAnswer(readJson(answerFile), { diffFiles, deferrals: state.deferrals?.verified ?? [] });
       if (!checked.ok) return failReview(state, result, `模型答卷不合格:${checked.error}`);
