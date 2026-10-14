@@ -900,18 +900,119 @@ test('世界:取消请求失败、旧 run 仍在排队、取消没赶上自然�
     w.openPr(1, 'A', { durationMs: variant === 'late' ? 10 * MIN : 40 * MIN, queueMs: variant === 'queued' ? 20 * MIN : 4_000 });
     w.openPr(2, 'Y', { durationMs: 120 * MIN });
     if (variant === 'late') w.cancelDelayMs = 5 * MIN;
-    w.schedule(t0 + (variant === 'late' ? 8 : 5) * MIN, () => w.push(1, 'B'));
+    // cancel-fails:推新提交之前就让取消请求一直失败,旧 run 只能自己跑完。
+    w.schedule(t0 + (variant === 'late' ? 8 : 5) * MIN, () => {
+      if (variant === 'cancel-fails') w.cancelFails.add(w.dispatchesOf(1)[0].runId);
+      w.push(1, 'B');
+    });
     const proc = w.start();
-    assert.ok(await w.runUntil(() => w.dispatchesOf(1).length === 2 || proc.settled, { maxMs: 60 * MIN }));
-    if (variant === 'cancel-fails') w.cancelFails.add(w.dispatchesOf(1)[0].runId);
     assert.ok(await w.runUntil(() => proc.settled, { maxMs: 300 * MIN }), variant);
     assert.equal(proc.failure, null, `${variant}:${proc.failure?.stack}`);
+    if (variant === 'cancel-fails') {
+      const old = w.runs.get(w.dispatchesOf(1)[0].runId);
+      assert.equal(old.cancelMs, undefined, '取消一直没成功');
+      assert.ok(w.cancels.filter((c) => c.runId === old.id).length >= 2, '取消失败后隔几分钟再发');
+      assert.ok(w.dispatchesOf(1)[1].at >= old.createdMs + old.queueMs + old.durationMs, '旧 run 自己跑完前,新 head 不派');
+    }
     const r1 = w.read(`${w.roundDir('R1')}/results/pr-1.json`);
     assert.equal(r1.outcome, 'state-changed', variant);
     assert.deepEqual(w.dispatchesOf(1).map((d) => d.head), ['A', 'B'], variant);
     assert.equal(w.read(w.state('reviews.json')).prs[1].failures?.A, undefined, `${variant}:旧 head 不计失败`);
     assert.equal(w.read(w.state('reviews.json')).prs[1].cleanHead, 'B', variant);
   }
+});
+
+// 超时取消必须等旧 run 确认结束:取消失败或迟迟不生效时,提前放槽会让在审数超过上限、同 head 在退避后被派第二次、
+// 部署停点在旧 run 还在跑时就声称已排空。
+test('世界:超时取消失败或迟迟不生效:旧 run 确认结束前仍占槽,不重派同 head;部署停点等它结束才握手', async () => {
+  const endOf = (r) => r.createdMs + r.queueMs + r.durationMs;
+  // 排队超过 120 分钟,取消一直失败:run 在 130 分钟开跑、140 分钟跑完。
+  const queued = makeWorld({ maxParallel: 1 });
+  queued.openPr(1, 'h1', { queueMs: 130 * MIN, durationMs: 10 * MIN });
+  queued.openPr(2, 'h2');
+  const q = queued.start();
+  assert.ok(await queued.runUntil(() => queued.dispatchesOf(1).length === 1));
+  const stuck = queued.runs.get(queued.dispatchesOf(1)[0].runId);
+  queued.cancelFails.add(stuck.id);
+  assert.ok(await queued.runUntil(() => q.settled, { maxMs: 300 * MIN }));
+  assert.equal(q.failure, null, String(q.failure?.stack));
+  assert.ok(queued.cancels.filter((c) => c.runId === stuck.id).length >= 2, '取消失败后隔几分钟再发');
+  assert.ok(queued.dispatchesOf(2)[0].at >= endOf(stuck), `#2 在 ${(queued.dispatchesOf(2)[0].at - endOf(stuck)) / MIN} 分钟派出,旧 run 还没结束`);
+  assert.equal(queued.read(`${queued.roundDir('R1')}/results/pr-1.json`).outcome, 'approval', '取消没成功、run 自己跑完:按正常结果收');
+
+  // 执行超过 170 分钟,取消被接受但 5 分钟后才生效。
+  const slow = makeWorld({ maxParallel: 1 });
+  slow.cancelDelayMs = 5 * MIN;
+  slow.openPr(1, 'h1', { durationMs: 200 * MIN });
+  slow.openPr(2, 'h2');
+  const s1 = slow.start();
+  assert.ok(await slow.runUntil(() => s1.settled, { maxMs: 400 * MIN }));
+  assert.equal(s1.failure, null, String(s1.failure?.stack));
+  const cancelled = slow.runs.get(slow.dispatchesOf(1)[0].runId);
+  assert.ok(slow.dispatchesOf(2)[0].at >= cancelled.cancelMs + slow.cancelDelayMs, '取消生效、旧 run 结束后才放槽');
+  const r1 = slow.read(`${slow.roundDir('R1')}/results/pr-1.json`);
+  assert.match(r1.reason, /执行超过 170 分钟/);
+  assert.equal(slow.read(slow.state('reviews.json')).prs[1].failures.h1.count, 1);
+
+  // 执行超过 170 分钟,取消一直失败:同一个 head 只派一次,等 run 自己结束。
+  const dup = makeWorld();
+  dup.openPr(1, 'h1', { durationMs: 200 * MIN });
+  const d = dup.start();
+  assert.ok(await dup.runUntil(() => dup.dispatchesOf(1).length === 1));
+  dup.cancelFails.add(dup.dispatchesOf(1)[0].runId);
+  assert.ok(await dup.runUntil(() => d.settled, { maxMs: 400 * MIN }));
+  assert.equal(d.failure, null, String(d.failure?.stack));
+  assert.equal(dup.dispatchesOf(1).length, 1, '同 PR 同 head 不出现第二个在审 run');
+
+  // 部署暂停时旧 run 还在排队、取消一直失败:旧 run 结束前不握手、不放锁。
+  const hold = makeWorld();
+  hold.openPr(1, 'h1', { queueMs: 130 * MIN, durationMs: 10 * MIN });
+  const h = hold.start();
+  assert.ok(await hold.runUntil(() => hold.dispatchesOf(1).length === 1));
+  const held = hold.runs.get(hold.dispatchesOf(1)[0].runId);
+  hold.cancelFails.add(held.id);
+  hold.schedule(held.createdMs + 119 * MIN, () => hold.files.set(hold.state('deploy-hold.json'), { at: iso(hold.now) }));
+  assert.ok(await hold.runUntil(() => hold.now >= endOf(held) - MIN, { maxMs: 300 * MIN }));
+  assert.equal(hold.files.has(hold.state('quiesced.json')), false, '旧 run 还在,不算停点');
+  assert.ok(hold.lock, '锁还在本进程手里');
+  assert.ok(await hold.runUntil(() => h.settled, { maxMs: 60 * MIN }));
+  assert.equal(h.failure, null, String(h.failure?.stack));
+  assert.equal(hold.read(hold.state('quiesced.json')).lockReleased, true);
+});
+
+test('世界:超时取消意图写下后被杀:恢复时补发取消,旧 run 结束后按超时记一次失败', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  const runId = w.seedRun(1, 'h1', 'R0', 'slow0010', { createdMs: w.now - 175 * MIN, durationMs: 200 * MIN });
+  const dir = w.seedRound('R0', [{ pr: 1, head: 'h1', phase: 'running', attempts: 1, agentId: `gha:${runId}:slow0010` }]);
+  w.files.set(`${dir}/cancel-intent-1.json`, { runId, reason: 'timeout', kind: 'exec', at: iso(w.now - 5 * MIN) });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.cancels.length, 1, '恢复时补发取消');
+  assert.match(w.read(`${dir}/results/pr-1.json`).reason, /执行超过 170 分钟/);
+  assert.equal(w.read(w.state('reviews.json')).prs[1].failures.h1.count, 1);
+  assert.equal(w.files.has(`${dir}/mivo-released.json`), false, '超时取消不提前释放');
+});
+
+// 正常收尾时 review-queue complete 先把任务记成 cleanup-pending 再删审查 worktree;删到一半进程没了,
+// 恢复时要沿同一个 agent 再 complete,不能按派发意图重新 bind(bind 只接受 ready/running)。
+test('世界:收尾清理中途中断(cleanup-pending):重启后续做清理收尾,不重新绑定、不重派', async () => {
+  const w = makeWorld();
+  w.openPr(7, 'h7');
+  const runId = w.seedRun(7, 'h7', 'R0', 'done0009', { createdMs: w.now - 30 * MIN });
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'cleanup-pending', attempts: 1, agentId: `gha:${runId}:done0009` }]);
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'done0009', attempt: 1, claimAttempt: 1, intentAt: iso(w.now - 30 * MIN), state: 'bound', runId });
+  w.files.set(`${dir}/results/pr-7.json`, { runId: 'R0', mode: 'review-only', pr: 7, head: 'h7', outcome: 'approval', reason: '审查通过', retry: false });
+  for (let i = 0; i < 2; i += 1) {
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled, { maxMs: 30 * MIN }));
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+  }
+  assert.equal(w.read(`${dir}/queue.json`).tasks[0].phase, 'complete');
+  assert.ok(w.files.has(`${dir}/completed.json`), '这一轮收尾了');
+  assert.equal(w.dispatches.length, 0, '不重派');
+  assert.equal(w.read(`${dir}/results/pr-7.json`).outcome, 'approval', '已有结果不被改写');
 });
 
 test('round-state 归属(review-round.mjs 的 round-owner 补丁):旧轮晚收尾不把新轮写过的行写回成旧 head', async () => {
