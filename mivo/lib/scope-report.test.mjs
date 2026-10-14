@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { splitDiffByFile, filePatchHashes, computeReviewScope } from './scope.mjs';
-import { validateAnswer, finalizeReport, scrubSecrets, REPORT_SECTIONS } from './report.mjs';
+import { validateAnswer, finalizeReport, scrubSecrets, renderDeferredSection, REPORT_SECTIONS, ANSWER_SCHEMA, DEFERRED_SECTION, DEFER_HINT } from './report.mjs';
 
 const diff = (bodyA, bodyB = '+b2') => [
   'diff --git a/src/a.ts b/src/a.ts',
@@ -103,4 +103,67 @@ test('发布前脱敏:高置信凭证格式全部替换', () => {
   const { text, hits } = scrubSecrets(`读到了 ${token} 和 sk-${'a'.repeat(24)}`);
   assert.equal(hits, 2);
   assert.doesNotMatch(text, /ghp_|sk-a/);
+});
+
+test('上一轮有转 issue 的问题:不算干净、不沿用结论,问题文件进增量范围并带上 deferredTo', () => {
+  const deferred = [{ path: 'src/b.ts', line: 1, side: 'RIGHT', body: '[P1] 漏列', deferredTo: 1001 }];
+  const same = computeReviewScope({ previous: previous({ head: 'h1', filePatchHashes: filePatchHashes(files), deferred }), current: current(), headIsDescendant: null });
+  assert.equal(same.mode, 'incremental');
+  assert.deepEqual(same.files, ['src/b.ts']);
+  assert.equal(same.previousFindings[0].deferredTo, 1001);
+  const rebased = computeReviewScope({ previous: previous({ diffHash: 'd1', deferred }), current: current(), headIsDescendant: false });
+  assert.equal(rebased.mode, 'full');
+});
+
+test('答卷校验:核验过的 P1 转 issue 不阻断;P0、名单外、非法 issue 号照常阻断', () => {
+  assert.ok(ANSWER_SCHEMA.properties.findings.items.required.includes('deferredTo'));
+  assert.deepEqual(ANSWER_SCHEMA.properties.findings.items.properties.deferredTo.type, ['integer', 'null']);
+  const checked = validateAnswer({ report: fullReport, findings: [
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 转走的', deferredTo: 1001 },
+    { path: 'src/a.ts', line: 99, side: 'RIGHT', body: '[P1] 转走但行号不对', deferredTo: 1001 },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P0] 想转的 P0', deferredTo: 1001 },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 名单外', deferredTo: 1002 },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 非法号', deferredTo: '#1001' },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 缺字段' },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 显式 null', deferredTo: null },
+  ] }, { diffFiles: files, deferrals: [{ issue: 1001 }] });
+  assert.equal(checked.ok, true);
+  assert.deepEqual(checked.deferred, [
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 转走的', deferredTo: 1001 },
+    { path: 'src/a.ts', subject_type: 'file', body: '[P1] 转走但行号不对', deferredTo: 1001 },
+  ]);
+  assert.deepEqual(checked.findings.map((f) => f.body), ['[P0] 想转的 P0', '[P1] 名单外', '[P1] 非法号', '[P1] 缺字段', '[P1] 显式 null']);
+  assert.ok(checked.findings.every((f) => !('deferredTo' in f)), '阻断问题的形状不变');
+  assert.ok(checked.notes.some((n) => /P0,不能转 issue\(#1001\)/.test(n)));
+  assert.ok(checked.notes.some((n) => /#1002 不在核验通过的 issue 里/.test(n)));
+  assert.ok(checked.notes.some((n) => /deferredTo 不是 issue 号/.test(n)));
+  const noList = validateAnswer({ report: fullReport, findings: [{ path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] x', deferredTo: 1001 }] }, { diffFiles: files });
+  assert.equal(noList.findings.length, 1, '没有核验通过的条目时一律阻断');
+});
+
+const finalize = (over) => finalizeReport({ report: fullReport, findings: [], pr: 1, url: 'https://github.com/o/r/pull/1',
+  head: 'a'.repeat(40), base: 'b'.repeat(40), diffHash: 'c'.repeat(64), tier: 'heavy', scope: { mode: 'full', reason: '首次' }, ...over });
+
+test('最终报告:只有转 issue 的问题时结论是 pass,并在 Rule coverage 前单列', () => {
+  const report = finalize({ deferred: [{ path: 'src/a.ts', line: 11, body: '[P1] 旧 ghost 列表静默漏列\n影响', deferredTo: 1001 }],
+    deferralsRejected: [{ issue: 1002, ref: '#1002', reason: 'issue 不是 OPEN(closed)' }] });
+  assert.match(report, /## Overall\npass —— 没有阻断的 P0\/P1；1 条 P1 已转 issue 跟进\(#1001\)，不阻断本 PR。/);
+  assert.ok(report.indexOf(DEFERRED_SECTION) >= 0 && report.indexOf(DEFERRED_SECTION) < report.indexOf('## Rule coverage'));
+  assert.ok(report.includes('- #1001 · `src/a.ts:11` · [P1] 旧 ghost 列表静默漏列'));
+  assert.ok(report.includes('  - `#1002`：issue 不是 OPEN(closed)'));
+  assert.ok(!report.includes(DEFER_HINT), 'pass 时不附转 issue 的做法');
+});
+
+test('最终报告:有阻断问题时结论照旧并补一句;阻断里有 P1 才附转 issue 的做法', () => {
+  const mixed = finalize({ findings: [{ path: 'src/a.ts', line: 11, body: '[P1] x' }], deferred: [{ path: 'src/b.ts', body: '[P1] y', deferredTo: 1001 }] });
+  assert.match(mixed, /## Overall\nchanges-requested —— 1 条 P0\/P1，已在对应位置开 review thread。另有 1 条 P1 已转 issue 跟进\(#1001\)，不阻断。\n\n本 PR 修不了/);
+  assert.ok(mixed.includes('- #1001 · `src/b.ts` · [P1] y'));
+  const onlyP0 = finalize({ findings: [{ path: 'src/a.ts', line: 11, body: '[P0] z' }] });
+  assert.ok(!onlyP0.includes(DEFER_HINT));
+  const plain = finalize({});
+  assert.ok(!plain.includes(DEFERRED_SECTION), '没有转 issue 也没有未采用登记时,报告和以前一样');
+  assert.match(plain, /## Overall\npass —— 没有 P0\/P1。\n?$/);
+  assert.deepEqual(renderDeferredSection({ deferred: [], rejected: [] }), []);
+  assert.deepEqual(renderDeferredSection({ rejected: [{ ref: 'o/r#5', reason: '跨仓引用,只认本仓 issue' }] }).slice(0, 4),
+    [DEFERRED_SECTION, '', '- 无', '- 登记了但没采用：']);
 });
