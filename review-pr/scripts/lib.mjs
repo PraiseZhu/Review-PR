@@ -3108,8 +3108,6 @@ export function selectStandingViewerHumanChangesRequest(reviews, viewerLogin) {
   for (const review of Array.isArray(reviews) ? reviews : []) {
     const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
     if (login !== viewer) continue;
-    // REST 正常都带 body;缺 body 无法证明有没有审查机标记,不能当成人工 CR。
-    if (review?.body == null) continue;
     if (isAutomatedViewerReview(review, viewer)) continue;
     const state = String(review?.state ?? '').toUpperCase();
     if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED' && state !== 'DISMISSED') continue;
