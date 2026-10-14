@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFreeSlots, toAdmissionDecision, toBusyPrs, toExcludedPrs, toHeldWake, MAX_ADMIT_MS, ADMIT_INTERVAL_MS } from './admission.mjs';
+import { toFreeSlots, toAdmissionDecision, toBusyPrs, toExcludedPrs, toHeldWake, toRunTiming, toDispatchFailure, findDispatchRun,
+  MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
 const round = (inflight, { queued = 0, finished = false } = {}) => ({ inflight, queued, finished });
@@ -8,9 +9,9 @@ const decide = (over = {}) => toAdmissionDecision({
   nowMs: T0 + 5 * 60_000, startedAtMs: T0, paused: false, inWindow: true, rounds: [round(1)], maxParallel: 10, ...over,
 });
 
-test('检查间隔 3 分钟,进程最多接单 60 分钟', () => {
+test('检查间隔 3 分钟;接单只剩 24 小时的保险上限', () => {
   assert.equal(ADMIT_INTERVAL_MS, 180_000);
-  assert.equal(MAX_ADMIT_MS, 60 * 60_000);
+  assert.equal(MAX_ADMIT_MS, 24 * 60 * 60_000);
 });
 
 test('空闲槽位 = maxParallel 减去所有轮次在审数之和,已结束和失败的轮次也算,不小于 0', () => {
@@ -20,7 +21,7 @@ test('空闲槽位 = maxParallel 减去所有轮次在审数之和,已结束和�
   assert.equal(toFreeSlots({ rounds: [], maxParallel: 10 }), 10);
 });
 
-test('有空槽、没有积压、没满 60 分钟、没暂停、在窗口内:另开一轮', () => {
+test('有空槽、没有积压、没暂停、在窗口内:另开一轮', () => {
   assert.deepEqual(decide(), { admit: true, freeSlots: 9 });
 });
 
@@ -28,18 +29,21 @@ test('已经停止接单时原因原样返回', () => {
   assert.deepEqual(decide({ closedReason: 'round-failed' }), { admit: false, reason: 'round-failed' });
 });
 
-test('进程运行满 60 分钟就停止接单;59 分 59 秒还能接', () => {
-  assert.deepEqual(decide({ nowMs: T0 + MAX_ADMIT_MS }), { admit: false, reason: 'max-runtime', close: true });
+test('轮次重叠满 61 分钟仍接单,不再按运行时长关门;满 24 小时才停止接单', () => {
+  assert.equal(decide({ nowMs: T0 + 61 * 60_000 }).admit, true);
   assert.equal(decide({ nowMs: T0 + MAX_ADMIT_MS - 1000 }).admit, true);
+  assert.deepEqual(decide({ nowMs: T0 + MAX_ADMIT_MS }), { admit: false, reason: 'max-runtime', close: true });
 });
 
-test('暂停或维护窗口内本次不接,但不停止接单', () => {
+test('进入维护窗口就停止接单,而且优先于暂停;暂停只是本次不接', () => {
+  assert.deepEqual(decide({ inWindow: false }), { admit: false, reason: 'maintenance-window', close: true });
+  assert.deepEqual(decide({ inWindow: false, paused: true }), { admit: false, reason: 'maintenance-window', close: true });
   assert.deepEqual(decide({ paused: true }), { admit: false, reason: 'paused' });
-  assert.deepEqual(decide({ inWindow: false }), { admit: false, reason: 'maintenance-window' });
 });
 
-test('判断顺序:暂停期间满了 60 分钟,也要停止接单', () => {
-  assert.deepEqual(decide({ paused: true, nowMs: T0 + MAX_ADMIT_MS }), { admit: false, reason: 'max-runtime', close: true });
+test('部署暂停:不开新轮并停止接单,先于维护窗口和暂停', () => {
+  assert.deepEqual(decide({ deployHold: true }), { admit: false, reason: 'deploy-hold', close: true });
+  assert.deepEqual(decide({ deployHold: true, inWindow: false, paused: true }), { admit: false, reason: 'deploy-hold', close: true });
 });
 
 test('未结束的轮次还有未领取任务时不接;已结束轮次的残留不挡', () => {
@@ -96,4 +100,58 @@ test('held 唤醒:确认 issue 有新留言且 PR 不在审就唤醒;在审就�
   assert.deepEqual(r.next[970], { pr: 970, updatedAt: 't1' }, '第一次见到只记录,不唤醒');
   assert.equal(r.next[960], undefined);
   assert.equal(r.next[961], undefined);
+});
+
+test('提前释放的 PR(作者推了新提交、旧 run 已确认结束)不再算忙,同轮其它 PR 照旧算', () => {
+  const plans = [{ manifest: { candidates: [{ number: 941 }, { number: 950 }] }, groups: [{ prs: [{ pr: 941 }, { pr: 950 }] }],
+    released: { 950: { at: '2026-10-14T10:00:00Z' } } }];
+  assert.deepEqual([...toBusyPrs(plans)], [941]);
+});
+
+const MIN = 60_000;
+const runAt = (createdMin, { startedMin = null, status = 'in_progress' } = {}) => ({ status, createdAt: new Date(T0 + createdMin * MIN).toISOString(),
+  jobs: [{ status: startedMin === null ? 'queued' : status, startedAt: startedMin === null ? '0001-01-01T00:00:00Z' : new Date(T0 + startedMin * MIN).toISOString() }] });
+
+test('取消线:排队和执行分开计时;排队 40 分钟加执行 160 分钟不取消', () => {
+  assert.equal(MAX_EXEC_MINUTES, 170);
+  assert.equal(MAX_QUEUE_MINUTES, 120);
+  const long = toRunTiming({ nowMs: T0 + 200 * MIN, run: runAt(0, { startedMin: 40 }) });
+  assert.equal(long.phase, 'running');
+  assert.equal(long.cancel, null);
+  assert.equal(Math.round(long.execMin), 160);
+  assert.equal(toRunTiming({ nowMs: T0 + 171 * MIN, run: runAt(0, { startedMin: 0 }) }).cancel, 'exec', '执行超过 170 分钟才取消');
+  assert.equal(toRunTiming({ nowMs: T0 + 169 * MIN, run: runAt(0, { startedMin: 0 }) }).cancel, null);
+});
+
+test('排队超过 30 分钟记慢,超过 120 分钟才取消;排队中的 job 不用它的 started_at', () => {
+  const slow = toRunTiming({ nowMs: T0 + 31 * MIN, run: runAt(0) });
+  assert.deepEqual([slow.phase, slow.slow, slow.cancel], ['queued', true, null]);
+  assert.equal(toRunTiming({ nowMs: T0 + 29 * MIN, run: runAt(0) }).slow, false);
+  assert.equal(toRunTiming({ nowMs: T0 + 121 * MIN, run: runAt(0) }).cancel, 'queue');
+  const queuedJobWithTime = { status: 'queued', createdAt: new Date(T0).toISOString(), jobs: [{ status: 'queued', startedAt: new Date(T0).toISOString() }] };
+  assert.equal(toRunTiming({ nowMs: T0 + 171 * MIN, run: queuedJobWithTime }).cancel, 'queue', '排队的 job 按排队算');
+  assert.equal(toRunTiming({ nowMs: T0 + 5 * MIN, run: { status: 'queued', createdAt: new Date(T0).toISOString(), jobs: [] } }).phase, 'queued', '还没有 job');
+  assert.equal(toRunTiming({ nowMs: T0, run: { status: 'queued', jobs: [] } }).cancel, null, '读不到时间不取消');
+});
+
+test('派发失败:只有带错误内容的 HTTP 4xx 算明确被拒;超时、断线、5xx 都按不知道有没有派出', () => {
+  assert.equal(toDispatchFailure({ stderr: 'could not create workflow dispatch event: HTTP 422: Unexpected inputs provided: ["x"]' }), 'rejected');
+  assert.equal(toDispatchFailure({ stderr: 'HTTP 403: Must have admin rights to Repository.' }), 'rejected');
+  assert.equal(toDispatchFailure({ stderr: 'HTTP 502: Bad Gateway' }), 'unknown');
+  assert.equal(toDispatchFailure({ stderr: 'HTTP 404' }), 'unknown', '只有状态码没有内容');
+  assert.equal(toDispatchFailure({ stderr: '', error: 'spawnSync gh ETIMEDOUT' }), 'unknown');
+  assert.equal(toDispatchFailure({ stderr: 'HTTP 422: x', error: 'spawnSync gh ETIMEDOUT' }), 'unknown', '超时时不信半截输出');
+  assert.equal(toDispatchFailure({ stderr: 'error connecting to api.github.com' }), 'unknown');
+});
+
+test('按 dispatch_id 找 run:分页结果里按 run 名找;列表不完整时如实标出', () => {
+  const pages = [
+    { total_count: 3, workflow_runs: [{ id: 11, display_title: 'review-pr #950 aaaa1111' }, { id: 12, display_title: 'review-pr #951 bbbb2222' }] },
+    { total_count: 3, workflow_runs: [{ id: 13, display_title: 'review-pr #950 cccc3333' }] },
+  ];
+  assert.deepEqual(findDispatchRun(pages, { pr: 950, dispatchId: 'cccc3333' }), { runId: '13', complete: true });
+  assert.deepEqual(findDispatchRun(pages, { pr: 950, dispatchId: 'dddd4444' }), { runId: null, complete: true });
+  assert.deepEqual(findDispatchRun([pages[0]], { pr: 950, dispatchId: 'dddd4444' }), { runId: null, complete: false }, '只拿到第一页');
+  assert.deepEqual(findDispatchRun(null, { pr: 950, dispatchId: 'x' }), { runId: null, complete: false });
+  assert.deepEqual(findDispatchRun(pages, { pr: 95, dispatchId: 'aaaa1111' }), { runId: null, complete: true }, 'PR 号要完全对上');
 });
