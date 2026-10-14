@@ -33,6 +33,7 @@
     "review-pr/scripts/pr-write-guard.mjs",
     "review-pr/scripts/pre-merge-check.mjs",
     "review-pr/scripts/review-queue.mjs",
+    "review-pr/scripts/review-round.mjs",
     "review-pr/scripts/signoff-hold.mjs",
     "review-pr-auto/SKILL.md",
     "review-pr-auto/references/coordinator.md"

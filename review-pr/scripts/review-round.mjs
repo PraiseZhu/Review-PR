@@ -517,8 +517,14 @@ export function collectRoundResults(plan, results) {
 
 export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
   const prs = { ...(previous.version === 1 && previous.mode === plan.mode ? previous.prs : {}) };
+  // [MIVO-PATCH round-owner] 作者推了新提交时,Mivo 前置把 PR 提前从旧轮释放、交给更新的轮次。旧轮晚收尾时,
+  // 这一行已经由更新的轮次写过,不能写回成旧 head。行里记着写它的轮次和创建时间;没有记录的旧行照常覆盖。
+  const roundCreatedAt = plan.manifest?.createdAt ?? null;
+  const roundAt = Date.parse(roundCreatedAt ?? '');
+  const ownedByNewerRound = (row) => Number.isFinite(roundAt) && Date.parse(row?.roundCreatedAt ?? '') > roundAt;
   for (const result of payload.processed) {
     if (!plan.manifest.candidates.some((p) => p.number === result.pr)) continue;
+    if (ownedByNewerRound(prs[result.pr])) continue;
     const dependencyPrs = result.dependencyPrs ?? [];
     // Cache the observation BEFORE actions. Never swallow a racing new thread
     // by fingerprinting a post-action state we did not actually review.
@@ -536,14 +542,15 @@ export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
       reviewClean: result.reviewClean === true,
       ...(result.approval ? { approval: result.approval } : {}),
       retry: result.retry === true || ['error', 'state-changed', 'merge-queued', 'approval-pending'].includes(result.outcome) || result.approval?.status === 'pending' || Boolean(result.errors?.length) || result.fixHandoff?.status === 'stale' || result.authorNotice?.status === 'failed' || result.targetBranchNotice?.status === 'failed',
-      retryAt: result.outcome === 'bot-pending' ? formatLocalIso(now + 5 * 60 * 1000) : null };
+      retryAt: result.outcome === 'bot-pending' ? formatLocalIso(now + 5 * 60 * 1000) : null,
+      ...(roundCreatedAt ? { roundRunId: plan.runId, roundCreatedAt } : {}) };
   }
   // A skipped unchanged PR was still observed this round.  Refresh its
   // diagnostic baseline without changing its review outcome or checkedAt.
   const candidateNumbers = new Set(plan.manifest.candidates.map((candidate) => candidate.number));
   for (const original of plan.manifest.snapshot.filter((item) => !item.isDraft && !candidateNumbers.has(item.number))) {
     const row = prs[original.number];
-    if (!row) continue;
+    if (!row || ownedByNewerRound(row)) continue;
     const dependencyPrs = row.dependencyPrs ?? [];
     const observation = observeCandidateFingerprint(original, plan.manifest.snapshot, row, dependencyPrs);
     if (observation.equivalentToPrevious) {
