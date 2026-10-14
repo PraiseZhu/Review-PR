@@ -1,7 +1,11 @@
 // mivo-patches.test.mjs — Mivo 补丁的回归(登记见仓库根 MIVO-PATCHES.md)。
 // 只测补丁自己的纯函数与权限读取;上游行为由上游自带测试覆盖。
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import {
   fetchMaintainerAuthority,
@@ -380,4 +384,158 @@ test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖�
   assert.match(approve, /selectStandingViewerHumanChangesRequest\(/);
   assert.match(approve, /reject\('other-changes-requested'/);
   assert.match(approve, new RegExp(HUMAN_CR_BLOCKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('只带 review-pr:findings 暗记的打回算人工打回;有报告头或别的流程标记才算审查机自己的', () => {
+  const viewer = 'PraiseZhu';
+  const findingsOnly = viewerReview(503, 'CHANGES_REQUESTED', `交互式审查:2 条 P1\n\n<!-- review-pr:findings head=${SHA} digest=y -->`, '2026-10-14T00:40:00Z');
+  const serverFindings = viewerReview(501, 'CHANGES_REQUESTED', `${AUTO_CR_HEADER}\n<!-- review-pr:findings head=${SHA} digest=x -->`, '2026-10-14T04:05:00Z');
+  const gateWithFindings = viewerReview(502, 'CHANGES_REQUESTED', `${AUTO_GATE_BODY}\n\n<!-- review-pr:findings head=${SHA} digest=z -->`, '2026-10-14T01:00:00Z');
+  const reportComment = viewerReview(504, 'COMMENTED', `${AUTO_CR_HEADER}\n<!-- mivo-review:report head=${SHA} -->`, '2026-10-14T02:00:00Z');
+  assert.equal(isAutomatedViewerReview(findingsOnly, viewer), false, '交互式带行内评论的打回是维护者本人的');
+  assert.equal(isAutomatedViewerReview(serverFindings, viewer), true, '服务器打回有报告头');
+  assert.equal(isAutomatedViewerReview(gateWithFindings, viewer), true, '门禁打回有 gate-review 标记');
+  assert.equal(isAutomatedViewerReview(reportComment, viewer), true);
+  assert.equal(selectStandingViewerHumanChangesRequest([findingsOnly, serverFindings], viewer)?.id, 503,
+    '审查机后发的打回盖不掉交互式人工打回');
+});
+
+// approve-reviewed-pr.mjs 的真实 CLI:gh 换成夹具,不碰 GitHub。夹具与 approval-cli.test.mjs 同一套接口。
+function ownCrFixtureGh(args, options, fixture) {
+  const ok = (value) => ({ status: 0, signal: null, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr: '' });
+  const endpoint = args.find((arg) => typeof arg === 'string' && /^(?:repos|orgs)\//.test(arg));
+  if (args[0] === 'pr' && args[1] === 'view') return ok(fixture.meta);
+  if (args[0] === 'api' && args[1] === 'user') return ok(fixture.viewer);
+  if (endpoint === 'repos/o/r') return ok({ default_branch: 'main' });
+  if (endpoint === 'repos/o/r/commits/main') return ok({ sha: fixture.base });
+  if (endpoint === 'repos/o/r/contents/.github/CODEOWNERS') return ok({ type: 'file', encoding: 'base64', sha: 'blob',
+    content: Buffer.from('* @o/maintainers\n').toString('base64') });
+  if (endpoint === 'orgs/o/teams/maintainers') return ok({ privacy: 'closed' });
+  if (endpoint === 'orgs/o/teams/maintainers/repos/o/r') return ok({ permissions: { push: true } });
+  if (endpoint === 'orgs/o/teams/maintainers/members') return ok([[{ login: 'maintainer' }, { login: 'other' }]]);
+  if (args[0] === 'api' && args[1] === 'graphql') return ok({ data: { repository: { pullRequest: {
+    reviewThreads: { nodes: fixture.threads || [], pageInfo: { hasNextPage: false, endCursor: null } },
+  } } } });
+  if (endpoint === 'repos/o/r/pulls/1/reviews' && args.includes('GET')) return ok([fixture.reviews]);
+  if (endpoint === 'repos/o/r/pulls/1/reviews' && args.includes('POST')) {
+    fixture.posts++;
+    fixture.reviews.push(fixture.newReview);
+    return ok(fixture.newReview);
+  }
+  throw new Error(`unexpected fixture command: ${args.join(' ')}`);
+}
+
+test('审查机 Approve 只能盖掉审查机自己的打回;--allow-override-own-cr 只放行指定的那一条人工打回', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mivo-own-cr-'));
+  try {
+    const head = 'a'.repeat(40);
+    const base = 'b'.repeat(40);
+    const repoRoot = join(directory, 'repo');
+    mkdirSync(repoRoot);
+    for (const args of [['init', '--quiet'], ['remote', 'add', 'origin', 'https://github.com/o/r.git']]) {
+      const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    const rulesFile = join(directory, 'rules.json');
+    writeFileSync(rulesFile, JSON.stringify({ maintainerAllowlist: [] }));
+    const fixtureFile = join(directory, 'fixture.json');
+    const mockFile = join(directory, 'mock.mjs');
+    writeFileSync(mockFile, `import { readFileSync, writeFileSync } from 'node:fs';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const ownCrFixtureGh = ${ownCrFixtureGh.toString()};
+const original = cp.spawnSync;
+cp.spawnSync = (command, args, options) => {
+  if (command !== 'gh') return original(command, args, options);
+  const fixture = JSON.parse(readFileSync(process.env.OWN_CR_FIXTURE, 'utf8'));
+  const result = ownCrFixtureGh(args, options, fixture);
+  writeFileSync(process.env.OWN_CR_FIXTURE, JSON.stringify(fixture));
+  return result;
+};
+syncBuiltinESMExports();
+`);
+    const own = (id, body) => ({ id, user: { login: 'maintainer' }, state: 'CHANGES_REQUESTED', commit_id: 'c'.repeat(40),
+      submitted_at: '2026-10-14T00:40:00Z', body });
+    const SERVER_CR = own(501, `> Mivo 自动审查 · [PR](https://example) · head \`cccccccccccc\`\n\n## Overall\n\n<!-- review-pr:findings head=${'c'.repeat(40)} digest=x -->`);
+    const HANDWRITTEN_CR = own(502, '这里的交互不对,先改');
+    const INTERACTIVE_CR = own(503, `交互式审查:2 条 P1\n\n<!-- review-pr:findings head=${'c'.repeat(40)} digest=y -->`);
+    const basic = (reviews) => ({ head, base, viewer: 'maintainer', posts: 0, reviews,
+      meta: { state: 'OPEN', isDraft: false, author: { login: 'author' }, headRefOid: head, baseRefName: 'main', baseRefOid: base, reviewDecision: 'CHANGES_REQUESTED' },
+      newReview: { id: 999, state: 'APPROVED', commit_id: head, user: { login: 'maintainer' },
+        submitted_at: '2026-10-14T06:00:00Z', html_url: 'https://github.com/o/r/pull/1#pullrequestreview-999' } });
+    const authority = fetchMaintainerAuthority({ owner: 'o', repo: 'r', maintainerAllowlist: [], maintainerSource: null,
+      ghFn: (args, options) => { const result = ownCrFixtureGh(args, options, basic([])); return { ...result, ok: result.status === 0 }; } });
+    const envBase = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(mockFile).href}`].filter(Boolean).join(' '),
+      REVIEW_PR_REPO_ROOT: repoRoot, REVIEW_PR_RULES_FILE: rulesFile, OWN_CR_FIXTURE: fixtureFile, REVIEW_PR_NO_CRED_FALLBACK: '1' };
+    let index = 0;
+    const scenario = (fixture) => {
+      const env = { ...envBase, REVIEW_PR_STATE_DIR: join(directory, `state-${index++}`) };
+      writeFileSync(fixtureFile, JSON.stringify(fixture));
+      const setup = spawnSync(process.execPath, ['--input-type=module', '-e',
+        `import {stateFile} from ${JSON.stringify(new URL('./lib.mjs', import.meta.url).href)}; import {writeFileSync} from 'node:fs'; writeFileSync(stateFile('lock.json'), JSON.stringify({token:'fixture-lock'}));`],
+      { cwd: repoRoot, env, encoding: 'utf8', windowsHide: true });
+      assert.equal(setup.status, 0, setup.stderr);
+      return (extra = []) => {
+        const child = spawnSync(process.execPath, [fileURLToPath(new URL('./approve-reviewed-pr.mjs', import.meta.url)), '1',
+          '--review-clean', '--lock-token', 'fixture-lock', '--expected-head', head, '--expected-base', base,
+          '--expected-base-ref', 'main', '--expected-authority-digest', authority.digest, ...extra],
+        { cwd: repoRoot, env, encoding: 'utf8', windowsHide: true });
+        assert.ok([0, 1, 2].includes(child.status), child.stdout + child.stderr);
+        return JSON.parse(child.stdout);
+      };
+    };
+    const posts = () => JSON.parse(readFileSync(fixtureFile, 'utf8')).posts;
+
+    // ① 服务器打回(报告头):审查机重审通过后可以用 Approve 覆盖。
+    let result = scenario(basic([SERVER_CR]))();
+    assert.equal(result.approval.status, 'verified', JSON.stringify(result));
+    assert.equal(posts(), 1);
+    assert.equal(result.overrodeOwnHumanCr, undefined);
+    // ② 维护者手写的打回:不能覆盖。
+    result = scenario(basic([HANDWRITTEN_CR]))();
+    assert.equal(result.approval.code, 'other-changes-requested');
+    assert.equal(posts(), 0);
+    // ③ 交互式 review-pr 带行内评论的打回(只有 findings 暗记):不能覆盖。
+    result = scenario(basic([INTERACTIVE_CR]))();
+    assert.equal(result.approval.code, 'other-changes-requested', JSON.stringify(result));
+    assert.equal(posts(), 0);
+    // ④ 操作者当面同意后带上那条打回的 id 才能覆盖;换别的 id 不行。
+    let run = scenario(basic([INTERACTIVE_CR]));
+    result = run(['--allow-override-own-cr', '999999']);
+    assert.equal(result.approval.code, 'other-changes-requested');
+    assert.equal(posts(), 0);
+    result = run(['--allow-override-own-cr', '503']);
+    assert.equal(result.approval.status, 'verified', JSON.stringify(result));
+    assert.equal(result.overrodeOwnHumanCr, '503');
+    assert.equal(posts(), 1);
+    // 带参数时其它检查照旧:head、base、权限、thread、别人的打回。
+    for (const [label, patch] of [
+      ['head 变了', (f) => { f.meta.headRefOid = 'd'.repeat(40); }],
+      ['base 变了', (f) => { f.meta.baseRefOid = 'e'.repeat(40); }],
+      ['viewer 不是维护者', (f) => { f.viewer = 'stranger'; }],
+      ['还有未解决 thread', (f) => { f.threads = [{ id: 't1', isResolved: false }]; }],
+      ['别人的打回', (f) => { f.reviews.push({ id: 11, user: { login: 'other' }, state: 'CHANGES_REQUESTED', submitted_at: '2026-10-14T01:00:00Z', body: '先别合' }); }],
+    ]) {
+      const fixture = basic([INTERACTIVE_CR]);
+      patch(fixture);
+      result = scenario(fixture)(['--allow-override-own-cr', '503']);
+      assert.equal(result.approval.status, 'blocked', `${label}:${JSON.stringify(result)}`);
+      assert.equal(result.overrodeOwnHumanCr, undefined, label);
+      assert.equal(posts(), 0, label);
+    }
+    // 参数值不是 review id:拒绝,不当成「没传」。
+    result = scenario(basic([INTERACTIVE_CR]))(['--allow-override-own-cr', '--dry-run']);
+    assert.equal(result.approval.status, 'blocked');
+    assert.equal(posts(), 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('无人值守的前置审查与服务器审查永远不传 --allow-override-own-cr', () => {
+  const root = new URL('../../', import.meta.url);
+  for (const file of ['mivo/prereview/round.mjs', 'mivo/server/review.mjs']) {
+    assert.doesNotMatch(readFileSync(new URL(file, root), 'utf8'), /allow-override-own-cr/, file);
+  }
+  const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8');
+  assert.match(skill, /--allow-override-own-cr <[^>]*id>/);
+  assert.match(skill, /要用 Approve 覆盖你之前的打回吗/);
 });

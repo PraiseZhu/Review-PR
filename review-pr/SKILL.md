@@ -469,6 +469,13 @@ node "<SKILL_ROOT>/scripts/pre-merge-check.mjs" <N> \
   finish flow：清理确认标签、重跑 `pre-merge-check`，只为 GitHub 刚提交 Approve 后的短暂
   状态重算等待几秒；一旦 `canMerge=true` 就在本轮调用受保护的 merge 脚本，不等下一轮。
   CI、head、权限、thread、确认标签或 stale-rebase 等真实 blocker 不得用等待掩盖；不再因作者是维护者而走 approval-exempt admin route。
+- **[MIVO-PATCH self-review] 覆盖审查账号自己之前的人工打回**:context 报「审查账号上有维护者本人的
+  Request Changes」时,脚本默认拒绝 Approve。只有本次交互式重审通过、要用 Approve 盖掉操作者自己
+  之前那条打回时,先问操作者「要用 Approve 覆盖你之前的打回吗?」;同意才查出那条打回的 review id
+  (`gh api --paginate repos/<owner>/<repo>/pulls/<N>/reviews --jq '.[] | select(.state=="CHANGES_REQUESTED") | [.id, .user.login, .submitted_at] | @tsv'`),
+  在上面的命令后加 `--allow-override-own-cr <review id>`。只放行这一条;head、base、权限、thread、
+  别人的打回照旧检查。成功时输出 `overrodeOwnHumanCr`。不同意就停下,等本人 Approve 或 dismiss。
+  无人值守的前置审查和服务器审查永远不传这个参数。
 - `selfFixAuthors` 只影响代修/催办,不提供任何审批绕过。
 
 所有 GitHub 普通/admin/structural merge 都必须经同一个写侧守卫,不得裸跑 `gh pr merge`:
