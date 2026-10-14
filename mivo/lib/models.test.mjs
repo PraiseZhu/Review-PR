@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TIER_DEFAULTS, FALLBACK, CODEX_BUDGET_MS, SETTLE_MS, PUBLISH_RESERVE_MS, tierConfig, nextAttempt, codexBudgetMs } from './models.mjs';
+import { TIER_DEFAULTS, FALLBACK, CODEX_BUDGET_MS, SETTLE_MS, PUBLISH_RESERVE_MS, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from './models.mjs';
 
 const MIN = 60_000;
 
@@ -81,4 +81,19 @@ test('预算不够时不启动模型;备用可用时间不足 15 分钟时不再
   assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: 105 * MIN }), null, '120 − 105 − 1 = 14 分钟');
   const fallbackAsPrimary = { ...FALLBACK, timeoutMs: 45 * MIN };
   assert.equal(nextAttempt({ primary: fallbackAsPrimary, attempts: [{ ok: false }], elapsedMs: MIN }), null);
+});
+
+test('作业开始时间:先用本 job 的 started_at;jobs 接口读不到用 run 的 created_at;两者都没有返回 null', () => {
+  const jobsJson = { jobs: [
+    { runner_name: 'mivo-review-l20-1-3', started_at: '2026-10-14T10:00:05Z' },
+    { runner_name: 'mivo-review-l20-1-8', started_at: '2026-10-14T10:02:00Z' },
+  ] };
+  assert.deepEqual(pickJobStart({ jobsJson, runnerName: 'mivo-review-l20-1-8' }), { at: '2026-10-14T10:02:00Z', from: 'job' });
+  assert.deepEqual(pickJobStart({ jobsJson: { jobs: [jobsJson.jobs[0]] } }), { at: '2026-10-14T10:00:05Z', from: 'job' }, '只有一个 job');
+  assert.equal(pickJobStart({ jobsJson, runnerName: 'other' }), null, '多个 job 又对不上 runner 时不乱猜');
+  const runJson = { created_at: '2026-10-14T09:59:58Z' };
+  assert.deepEqual(pickJobStart({ jobsJson: null, runJson }), { at: '2026-10-14T09:59:58Z', from: 'run-created' });
+  assert.deepEqual(pickJobStart({ jobsJson: { jobs: [{ runner_name: 'x', started_at: null }] }, runJson }), { at: '2026-10-14T09:59:58Z', from: 'run-created' });
+  assert.equal(pickJobStart({ jobsJson: null, runJson: null }), null);
+  assert.equal(pickJobStart({ jobsJson: { message: 'Not Found' }, runJson: { created_at: 'bad' } }), null);
 });
