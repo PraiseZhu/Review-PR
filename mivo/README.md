@@ -30,7 +30,9 @@ flowchart LR
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
-| `prereview/round.mjs` | Mini 一轮的主流程 |
+| `lib/admission.mjs` | 滚动接单的判断：什么时候另开一轮、哪些 PR 不进新一轮、held PR 什么时候唤醒 |
+| `prereview/round.mjs` | Mini 前置审查主流程（一个进程可以同时推进多轮） |
+| `prereview/admit-candidates.mjs` | 滚动接单用的候选名单（去掉未完成轮次里的 PR 及依赖它们的 PR） |
 | `prereview/gh-dryrun/` | dry-run 模式的 gh 垫片：读放行，写一律拦下 |
 | `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
@@ -56,6 +58,17 @@ flowchart LR
 规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败。被拦住时 Mini 日志写 `retry-held`。
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
+
+## 并发与滚动接单
+
+- 全进程「在审」（已派发、还没收回结果的服务器 run，GitHub 上 queued 或 in_progress 都算）不超过配置的 `maxParallel`（上限 10）。每次领取任务前都先查全局在审数，满了就不领取。
+- 已有轮次在等服务器审查时，每 3 分钟检查一次；同时满足下面几条才另开一轮：没有暂停（`pause.json`）、不在 06:00–07:00 维护窗口、进程运行不满 60 分钟、没有轮次还积压着未领取的任务、有空槽。
+- 同一个 PR 不会同时进两个未完成的轮次；依赖在审 PR 的 PR（round-state 里的 `dependencyPrs`，按传递关系）一起延后。
+- 维护者确认 issue 有新留言（Slack 放行）时，在审 PR 先不唤醒，等它所在那一轮结束后的检查点再唤醒。
+- 进程运行满 60 分钟，或检出了新的 skill SHA、某一轮失败、接单时 plan 失败，就不再接新轮；手上的轮次跑完就退出，launchd 用新代码、新日志文件重新拉起。
+- 某一轮失败时，如果它手里还有已派发、没收回的服务器 run，这些槽位没人释放：其余轮次停下、不收尾，整个进程退出，launchd 重新拉起后一起恢复。失败的那一轮手里没有在途 run 时，只停止接新轮，其余轮次照常跑完。
+- 中断后下次启动，所有未完成的轮次一起接着跑：先把每一轮已派发的 run 都登记进在审数，再开始领取新任务。
+- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admission-closed`、`resume-rounds`、`round-failed`、`rounds-aborting`、`round-aborted`、`watch-restart`、`wake-held-deferred`。
 
 ## 三种模式
 
@@ -83,4 +96,4 @@ bash ~/mivo-prereview/skill/mivo/prereview/install-mini.sh --sha <SHA> --instanc
   --target-repo xindong/mivo-canvas-plugin --mode dry-run --workflow-ref main
 ```
 
-日志在 `~/Library/Logs/mivo-prereview/<实例>/`，每轮一行 JSON。
+日志在 `~/Library/Logs/mivo-prereview/<实例>/round-<UTC 日期>.jsonl`，每个事件一行 JSON。
