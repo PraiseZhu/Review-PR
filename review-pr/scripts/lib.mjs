@@ -3083,12 +3083,16 @@ export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt, declared
  * 同时是维护者,而 review-only 下 PR 在自动 Approve 后继续开着,所以这些 review 不能当维护者确认:
  * 自动 Approve 不得放行之后才出现的确认门,自动打回也不得让确认门判「等作者改」。
  * 维护者本人手动提交的 review 没有这些标记,照常计入。
+ * 只带 `<!-- review-pr:findings` 的打回不算:交互式 review-pr 由维护者本人操作,带行内评论打回时
+ * request-changes-reviewed-pr.mjs 也写这个标记,它是人工打回,不能被审查机的 Approve 盖掉。
  */
-const AUTOMATED_REVIEW_RE = /<!--\s*(?:review-pr|mivo-review):|^>\s*Mivo 自动审查/m;
+const AUTOMATED_REPORT_HEADER_RE = /^>\s*Mivo 自动审查/m;
+const AUTOMATED_FLOW_MARKER_RE = /<!--\s*(?:review-pr|mivo-review):(?!findings\b)/;
 export function isAutomatedViewerReview(review, viewerLogin) {
   const viewer = String(viewerLogin ?? '').trim().toLowerCase();
   const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
-  return viewer !== '' && login === viewer && AUTOMATED_REVIEW_RE.test(String(review?.body ?? ''));
+  const body = String(review?.body ?? '');
+  return viewer !== '' && login === viewer && (AUTOMATED_REPORT_HEADER_RE.test(body) || AUTOMATED_FLOW_MARKER_RE.test(body));
 }
 
 /**

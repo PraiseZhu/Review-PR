@@ -4,6 +4,8 @@
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
+import { scrubSecrets } from '../lib/report.mjs';
 
 const PROVIDER_ID = 'company-litellm';
 const SHELL_ENV_EXCLUDE = ['CODEX_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GH_TOKEN', 'GITHUB_TOKEN'];
@@ -50,8 +52,67 @@ export function redact(text, secrets) {
 const sizeOf = (file) => { try { return statSync(file).size; } catch { return 0; } };
 
 /**
+ * 按完整 JSONL 事件统计一次调用的节奏:一个事件可能分几块写入,换行到达才算一个事件,时间取换行到达那一刻。
+ * 时间都相对调用开始,单位秒;maxGapSec 包括「开始到第一个事件」和「最后一个事件到退出」两段空白。
+ * usage 取 turn.completed 事件的 usage,没有记 null。只是记录,不能单独当作变慢原因的证据。
+ */
+export function createEventMeter(startedMs) {
+  let pending = '';
+  let count = 0;
+  let firstMs = null;
+  let lastMs = null;
+  let maxGapMs = 0;
+  let usage = null;
+  const take = (line, atMs) => {
+    const text = line.trim();
+    if (!text) return;
+    let event;
+    try { event = JSON.parse(text); } catch { return; }
+    count += 1;
+    maxGapMs = Math.max(maxGapMs, atMs - (lastMs ?? startedMs));
+    if (firstMs === null) firstMs = atMs;
+    lastMs = atMs;
+    if (event?.type === 'turn.completed') usage = event.usage ?? null;
+  };
+  const sec = (ms) => Math.round(ms / 100) / 10;
+  return {
+    feed(text, atMs) {
+      pending += text;
+      for (let at = pending.indexOf('\n'); at >= 0; at = pending.indexOf('\n')) {
+        take(pending.slice(0, at), atMs);
+        pending = pending.slice(at + 1);
+      }
+    },
+    finish(exitMs) {
+      take(pending, exitMs);
+      pending = '';
+      maxGapMs = Math.max(maxGapMs, exitMs - (lastMs ?? startedMs));
+      return {
+        firstEventSec: firstMs === null ? null : sec(firstMs - startedMs),
+        lastEventSec: lastMs === null ? null : sec(lastMs - startedMs),
+        eventCount: count, maxGapSec: sec(maxGapMs), usage,
+      };
+    },
+  };
+}
+
+const STDERR_TAIL_LINES = 50;
+const STDERR_TAIL_BYTES = 8192;
+/** 失败时给人看的 stderr 末尾:先去掉 key 原文和通用凭证格式,再取最后 50 行,最多 8 KB。只进 result.json,不进 PR 评论。 */
+export function toStderrTail(stderr, secrets = []) {
+  const clean = scrubSecrets(redact(stderr, secrets)).text.trimEnd();
+  if (!clean) return '';
+  const tail = clean.split('\n').slice(-STDERR_TAIL_LINES).join('\n');
+  const bytes = Buffer.from(tail, 'utf8');
+  if (bytes.length <= STDERR_TAIL_BYTES) return tail;
+  return bytes.subarray(bytes.length - STDERR_TAIL_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+}
+
+/**
  * @returns {Promise<{ok:boolean, answer:object|null, exitCode:number|null, timedOut:boolean, idleKilled:boolean,
- *   quota:boolean, durationMs:number, error:string|null, model:string, effort:string}>}
+ *   quota:boolean, durationMs:number, error:string|null, model:string, effort:string,
+ *   firstEventSec:number|null, lastEventSec:number|null, eventCount:number, maxGapSec:number, usage:object|null,
+ *   stderrTail?:string}>}  stderrTail 只在失败时有
  */
 export async function runCodex({ codexBin, workdir, prompt, schema, model, effort, timeoutMs, idleMs = 12 * 60_000,
   credentials, tmpRoot, label, pathEnv = process.env.PATH }) {
@@ -105,6 +166,9 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
   const child = spawn(codexBin, args, { cwd: workdir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.pipe(out);
   child.stderr.pipe(err);
+  const meter = createEventMeter(started);
+  const decoder = new StringDecoder('utf8');
+  child.stdout.on('data', (chunk) => meter.feed(decoder.write(chunk), Date.now()));
   let timedOut = false;
   let idleKilled = false;
   let lastGrowth = Date.now();
@@ -118,6 +182,8 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
   }, 15_000);
   const exitCode = await new Promise((resolve) => child.on('close', (code) => resolve(code)));
   clearInterval(watchdog);
+  meter.feed(decoder.end(), Date.now());
+  const events = meter.finish(Date.now());
   await Promise.all([new Promise((r) => out.end(r)), new Promise((r) => err.end(r))]);
   const secrets = [creds.apiKey];
   for (const file of [stdoutFile, stderrFile, answerFile]) writeFileSync(file, redact(readFileSync(file, 'utf8'), secrets));
@@ -133,11 +199,12 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
       try { answer = fenced ? JSON.parse(fenced[1]) : null; } catch { answer = null; }
     }
   }
-  const base = { exitCode, timedOut, idleKilled, quota, durationMs: Date.now() - started, model, effort, stdoutFile, stderrFile, answerFile };
-  if (timedOut) return { ...base, ok: false, answer: null, error: `审查超时(${Math.round(timeoutMs / 60000)} 分钟)` };
-  if (idleKilled) return { ...base, ok: false, answer: null, error: `审查 ${Math.round(idleMs / 60000)} 分钟没有任何输出,判定卡住` };
-  if (exitCode !== 0) return { ...base, ok: false, answer, error: `codex exec 退出码 ${exitCode}:${tail(stderr) || tail(errorEvents) || '无错误输出'}` };
-  if (!answer) return { ...base, ok: false, answer: null, error: '模型没有交出可解析的最终答卷' };
+  const base = { exitCode, timedOut, idleKilled, quota, durationMs: Date.now() - started, model, effort, stdoutFile, stderrFile, answerFile, ...events };
+  const failed = (extra) => ({ ...base, ok: false, stderrTail: toStderrTail(stderr, secrets), ...extra });
+  if (timedOut) return failed({ answer: null, error: `审查超时(${Math.round(timeoutMs / 60000)} 分钟)` });
+  if (idleKilled) return failed({ answer: null, error: `审查 ${Math.round(idleMs / 60000)} 分钟没有任何输出,判定卡住` });
+  if (exitCode !== 0) return failed({ answer, error: `codex exec 退出码 ${exitCode}:${tail(stderr) || tail(errorEvents) || '无错误输出'}` });
+  if (!answer) return failed({ answer: null, error: '模型没有交出可解析的最终答卷' });
   return { ...base, ok: true, answer, error: null };
 
   function fail(error) {
