@@ -50,6 +50,10 @@ try {
   const bodyFile = argValue('--body-file');
   const body = bodyFile ? readFileSync(bodyFile === '-' ? 0 : bodyFile, 'utf8').trim()
     : '代码重审通过：当前 head 未发现 P0/P1，全部 conversation 已 resolve。';
+  // [MIVO-PATCH self-review] 交互式重审通过、操作者当面同意后才带它:只放行审查账号上指名的那一条人工
+  // Request Changes。无人值守的前置审查和服务器审查永远不传。
+  const overrideRequested = process.argv.includes('--allow-override-own-cr');
+  const overrideOwnCr = overrideRequested ? argValue('--allow-override-own-cr') : '';
 
   const collect = () => {
     assertActiveReviewLock(lockToken);
@@ -97,14 +101,19 @@ try {
     if (changes.some((review) => !same(review.user?.login, viewer))) {
       reject('other-changes-requested', '存在别人的有效 CHANGES_REQUESTED，不能靠本次 Approve 覆盖');
     }
-    // [MIVO-PATCH self-review] 同一账号上维护者本人的人工 CR 仍有效时,不能靠审查机 Approve 覆盖。
-    if (selectStandingViewerHumanChangesRequest(reviews.reviews, viewer)) {
+    // [MIVO-PATCH self-review] 同一账号上维护者本人的人工 CR 仍有效时,不能靠审查机 Approve 覆盖;
+    // 只有 --allow-override-own-cr 指名的正是这一条时放行,其它检查照旧。
+    const standingOwnCr = selectStandingViewerHumanChangesRequest(reviews.reviews, viewer);
+    if (overrideRequested && !/^\d{1,20}$/.test(overrideOwnCr)) {
+      reject('override-id-invalid', `--allow-override-own-cr 需要一条 review id，收到「${overrideOwnCr.slice(0, 40)}」`);
+    }
+    if (standingOwnCr && String(standingOwnCr.id ?? '') !== overrideOwnCr) {
       reject('other-changes-requested', '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审');
     }
     if (meta.reviewDecision === 'CHANGES_REQUESTED' && !changes.length) {
       reject('reviews-unverified', 'reviewDecision=CHANGES_REQUESTED，但未读取到对应 review');
     }
-    return { meta, viewer, authority, policy, failures,
+    return { meta, viewer, authority, policy, failures, overriddenOwnCr: standingOwnCr ? String(standingOwnCr.id) : null,
       receipt: independentReceipt ?? existingReceipt(reviews, viewer, expectedHead) };
   };
   const stop = (snapshot, extraFailures = []) => {
@@ -146,6 +155,8 @@ try {
       ...(expectedBase ? { expectedBase } : {}), approvalPolicy: fresh.policy,
       ...(expectedBaseRef ? { expectedBaseRef } : {}),
       authority: { digest: fresh.authority.digest, teamHandle: fresh.authority.codeowners.teamHandle, memberCount: fresh.authority.memberCount },
+      // [MIVO-PATCH self-review] 本次真的提交了 Approve,才写明盖掉的是哪一条人工打回。
+      ...(approval.status === 'verified' && !alreadyApproved && fresh.overriddenOwnCr ? { overrodeOwnHumanCr: fresh.overriddenOwnCr } : {}),
       ...(approval.reason ? { reason: approval.reason } : {}) });
     process.exit(approval.status === 'verified' ? 0 : 2);
   };
