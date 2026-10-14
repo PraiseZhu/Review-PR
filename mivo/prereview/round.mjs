@@ -540,7 +540,7 @@ async function runQueue(ctx) {
       if (!done) continue;
       completeTask(queue, pr, entry.agentId);
       inflight.delete(pr);
-      if (entry.cancelIntent) releasePr(ctx, entry);
+      if (entry.cancelIntent?.newHead) releasePr(ctx, entry);
     }
     if (ABORTED) throw new RoundAborted(ABORTED);
     const status = queue('status');
@@ -578,7 +578,18 @@ function resumeInflight(ctx, inflight, queue) {
     const cancelIntent = readJson(cancelIntentFile(ctx, task.pr), null);
     if (task.phase === 'complete') {
       // 取消旧审查后已收尾、但还没记下提前释放就中断了:补上释放。
-      if (cancelIntent && !ctx.round.released?.[task.pr]) releasePr(ctx, { task: item, runId: cancelIntent.runId, cancelIntent });
+      if (cancelIntent?.newHead && !ctx.round.released?.[task.pr]) releasePr(ctx, { task: item, runId: cancelIntent.runId, cancelIntent });
+      continue;
+    }
+    if (task.phase === 'cleanup-pending') {
+      // review-queue complete 已记下收尾、删审查 worktree 时中断(或领取时建 worktree 失败):沿同一个 agent 再 complete
+      // 一次把清理做完。不按派发意图重新 bind(bind 只接受 ready/running),也不重派。
+      finishResolution(readIntent(ctx, task.pr));
+      if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '上次运行在收尾清理中途中断,下一轮重新处理', retry: true });
+      if (task.agentId) completeTask(queue, task.pr, task.agentId);
+      else completeUnstarted(queue, task.pr);
+      if (cancelIntent?.newHead && !ctx.round.released?.[task.pr]) releasePr(ctx, { task: item, runId: cancelIntent.runId, cancelIntent });
+      log('resume-cleanup', { pr: task.pr, agentId: task.agentId ?? null });
       continue;
     }
     const m = String(task.agentId ?? '').match(/^gha:(\d+):([^:]*)/);
@@ -966,21 +977,24 @@ function currentHeads() {
 }
 
 // 作者在审查中途推了新提交:先在轮次目录写持久取消意图,再取消旧 run。旧 run 确认结束前仍占槽。
+// 已经在取消(换 head 或超时)的不再处理;取消请求失败或迟迟不生效时由 collectServerRun 确认 run 还没结束后重发。
 function cancelIfSuperseded(ctx, entry) {
-  if (!entry.runId) return;
-  if (entry.cancelIntent) {
-    if (!entry.cancelResend) return;
-    // 恢复时:取消意图已写下,不确定取消请求发出去没有,再发一次(对已结束的 run 无副作用)。
-    entry.cancelResend = false;
-  } else {
-    const head = currentHeads()?.get(entry.task.pr);
-    if (!head || head === entry.task.head) return;
-    entry.cancelIntent = { runId: entry.runId, oldHead: entry.task.head, newHead: head, at: nowIso() };
-    writeJson(cancelIntentFile(ctx, entry.task.pr), entry.cancelIntent);
-  }
+  if (!entry.runId || entry.cancelIntent) return;
+  const head = currentHeads()?.get(entry.task.pr);
+  if (!head || head === entry.task.head) return;
+  entry.cancelIntent = { runId: entry.runId, reason: 'superseded', oldHead: entry.task.head, newHead: head, at: nowIso() };
+  writeJson(cancelIntentFile(ctx, entry.task.pr), entry.cancelIntent);
+  requestCancel(entry);
+}
+
+function requestCancel(entry) {
   assertNotFenced();
+  entry.cancelResend = false;
+  entry.cancelSentAt = Date.now();
+  const intent = entry.cancelIntent;
   const r = run('gh', ['run', 'cancel', entry.runId, '-R', CONFIG.workflowRepo], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
-  log('cancel-superseded', { pr: entry.task.pr, runId: entry.runId, oldHead: entry.cancelIntent.oldHead, newHead: entry.cancelIntent.newHead,
+  log(intent.newHead ? 'cancel-superseded' : 'cancel-timeout', { pr: entry.task.pr, runId: entry.runId,
+    ...(intent.newHead ? { oldHead: intent.oldHead, newHead: intent.newHead } : { kind: intent.kind }),
     cancelled: r.ok, ...(r.ok ? {} : { error: String(r.stderr || r.error || '').trim().slice(0, 200) }) });
 }
 
@@ -1004,23 +1018,34 @@ function collectServerRun(ctx, entry) {
   if (info.status !== 'completed') {
     const timing = toRunTiming({ nowMs: Date.now(), run: info });
     if (timing.slow) logOnce(`queue-slow:${entry.runId}`, 'queue-slow', { pr: task.pr, runId: entry.runId, queueMin: Math.round(timing.queueMin) });
+    if (entry.cancelIntent) {
+      // 已经在取消(换 head 或超时):run 确认结束前一直占槽、不写结果;取消请求失败或迟迟不生效,隔一个检查间隔再发。
+      if (entry.cancelResend || Date.now() - (entry.cancelSentAt ?? 0) >= ADMIT_INTERVAL_MS) requestCancel(entry);
+      return false;
+    }
     if (!timing.cancel) return false;
-    assertNotFenced();
-    run('gh', ['run', 'cancel', entry.runId, '-R', CONFIG.workflowRepo], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
-    const reason = timing.cancel === 'exec'
-      ? `服务器审查执行超过 ${MAX_EXEC_MINUTES} 分钟未结束,已取消`
-      : `服务器审查排队超过 ${MAX_QUEUE_MINUTES} 分钟没有开始,已取消`;
-    writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason, retry: true, enteredReview: timing.cancel === 'exec' });
-    bumpOwned(ctx, task, { lastRunId: entry.runId });
-    recordFailure(ctx, task, true);
-    log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'error', cancelled: timing.cancel });
-    return true;
+    // 超时:先写持久取消意图再取消。失败记录和放槽都等 run 确认结束,否则在审数会超过上限、同 head 会在退避后被派第二次。
+    entry.cancelIntent = { runId: entry.runId, reason: 'timeout', kind: timing.cancel, at: nowIso() };
+    writeJson(cancelIntentFile(ctx, task.pr), entry.cancelIntent);
+    requestCancel(entry);
+    return false;
   }
   if (entry.cancelIntent && info.conclusion === 'cancelled') {
-    // 作者推了新提交、旧审查已取消:合法终态 state-changed,不算失败,派发账本保留。
-    writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'state-changed', reason: '作者推了新提交,旧审查已取消', retry: true });
+    if (entry.cancelIntent.newHead) {
+      // 作者推了新提交、旧审查已取消:合法终态 state-changed,不算失败,派发账本保留。
+      writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'state-changed', reason: '作者推了新提交,旧审查已取消', retry: true });
+      bumpOwned(ctx, task, { lastRunId: entry.runId });
+      log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'state-changed', superseded: true });
+      return true;
+    }
+    const kind = entry.cancelIntent.kind;
+    const reason = kind === 'exec'
+      ? `服务器审查执行超过 ${MAX_EXEC_MINUTES} 分钟未结束,已取消`
+      : `服务器审查排队超过 ${MAX_QUEUE_MINUTES} 分钟没有开始,已取消`;
+    writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason, retry: true, enteredReview: kind === 'exec' });
     bumpOwned(ctx, task, { lastRunId: entry.runId });
-    log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'state-changed', superseded: true });
+    recordFailure(ctx, task, true);
+    log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'error', cancelled: kind });
     return true;
   }
   const dir = join(ctx.roundDir, 'server', `pr-${task.pr}-${entry.runId}`);
