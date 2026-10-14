@@ -23,6 +23,7 @@
     "review-pr/config/pr-rules.json",
     "review-pr/references/internal-gates.md",
     "review-pr/references/rule-map.md",
+    "review-pr/scripts/approval-cli.test.mjs",
     "review-pr/scripts/approval-policy.test.mjs",
     "review-pr/scripts/approve-reviewed-pr.mjs",
     "review-pr/scripts/context.mjs",

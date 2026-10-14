@@ -210,7 +210,8 @@ syncBuiltinESMExports();
     // Run the actual finish CLI through a delayed aggregate CR and through an
     // inner pre-write UNKNOWN. Both must finish in this invocation, one write.
     const oldOwnReview = { id: 123, user: { login: 'maintainer' }, state: 'CHANGES_REQUESTED',
-      commit_id: 'c'.repeat(40), submitted_at: '2026-09-07T00:00:00Z' };
+      commit_id: 'c'.repeat(40), submitted_at: '2026-09-07T00:00:00Z',
+      body: `缺界面证据\n\n<!-- review-pr:gate-review kind=format head=${head} -->` };
     const ownLag = { ...unknownMergeCheck, actualHead: head, mergeable: 'MERGEABLE', mergeableUnknown: false,
       mergeStateStatus: 'BLOCKED', reviewDecision: 'CHANGES_REQUESTED', blockClass: 'review-changes-requested',
       blockers: ['mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)'],
