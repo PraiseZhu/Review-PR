@@ -360,7 +360,15 @@ test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖�
   assert.equal(selectStandingViewerHumanChangesRequest(reviews941, 'kirozeng'), null, '别人的人工 CR 不算审查账号自己的');
   const missingBody = [viewerReview(123, 'CHANGES_REQUESTED', undefined, '2026-10-14T03:00:00Z')];
   delete missingBody[0].body;
-  assert.equal(selectStandingViewerHumanChangesRequest(missingBody, viewer), null, '缺 body 无法证明有没有审查机标记,不算人工 CR');
+  assert.equal(selectStandingViewerHumanChangesRequest(missingBody, viewer)?.id, 123,
+    '缺 body 无法证明有没有审查机标记,仍算有效人工 CR');
+  const missingBodyApproveAfterHuman = [
+    viewerReview(5506920945, 'CHANGES_REQUESTED', HUMAN_CR_BODY, '2026-10-13T16:40:00Z'),
+    viewerReview(125, 'APPROVED', undefined, '2026-10-14T05:00:00Z'),
+  ];
+  delete missingBodyApproveAfterHuman[1].body;
+  assert.equal(selectStandingViewerHumanChangesRequest(missingBodyApproveAfterHuman, viewer), null,
+    '缺 body 的 viewer APPROVED 排在人工 CR 之后时,人工 CR 不再有效');
   assert.equal(selectStandingViewerHumanChangesRequest([viewerReview(124, 'CHANGES_REQUESTED', '', '2026-10-14T03:00:00Z')], viewer)?.id, 124,
     '空正文仍是人工 CR');
 
