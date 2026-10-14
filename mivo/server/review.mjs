@@ -8,11 +8,11 @@
 // 输入全部来自环境变量 INPUT_*(workflow_dispatch 的 inputs),工作目录 MIVO_REVIEW_WORK。
 import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, sha256, requireMatch, nowIso } from '../lib/common.mjs';
+import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, computeReviewScope } from '../lib/scope.mjs';
+import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
-import { loadReviewSpec, buildReviewPrompt } from '../lib/prompt.mjs';
+import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
@@ -140,13 +140,16 @@ async function prepare() {
     const diffText = readFileSync(diffFile, 'utf8');
     const diffFiles = splitDiffByFile(diffText);
     const previous = input.prevRunId ? downloadPrevious(input, state) : null;
-    const rulesDigest = computeRulesDigest(input.base);
+    // 任务书版本:按审查实际读的版本(PR head)取规则文件,算 scope 之前生成(lib/prompt.mjs)。
+    const specDigest = specDigestOf(buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier, files: Object.keys(diffFiles),
+      readFile: (path) => { const r = git(['show', `${input.head}:${path}`], { allowFail: true }); return r.ok ? r.stdout : null; },
+      config: readFileSync(process.env.MIVO_REVIEW_RULES_FILE || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'), 'utf8') }));
     const current = {
       head: input.head, baseRefName: ctx.meta.baseRefName, diffHash: ctx.evidence?.diffHash,
       filePatchHashes: filePatchHashes(diffFiles),
       fileChangedLines: Object.fromEntries(Object.entries(diffFiles).map(([p, f]) => [p, f.changedLines])),
       totalDiffLines: ctx.totalDiffLines, tier, triggerKinds: (ctx.signoff?.triggers ?? []).map((t) => t.kind).sort(),
-      skillSha: input.skillSha, rulesDigest, now: Date.now(),
+      skillSha: input.skillSha, specDigest, now: Date.now(),
     };
     let headIsDescendant = null;
     if (previous?.head && previous.head !== input.head) {
@@ -246,28 +249,7 @@ function downloadPrevious(input, state) {
     state.warnings.push('上一轮结果与本 PR 不匹配,按全量审查');
     return null;
   }
-  return {
-    head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
-    reviewed: result.reviewed, reviewClean: result.reviewClean, outcome: result.outcome,
-    reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
-    filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
-    tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
-    rulesDigest: result.mivo?.rulesDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt,
-    report: existsSync(join(dir, 'report.md')) ? readFileSync(join(dir, 'report.md'), 'utf8') : '',
-  };
-}
-
-// 规则版本:skill 配置 + rule-map + 目标仓 base 上的根规则文档。任何一个变了都退回全量审查。
-function computeRulesDigest(baseSha) {
-  const parts = [
-    readFileSync(join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'), 'utf8'),
-    readFileSync(join(SKILL_ROOT, 'review-pr', 'references', 'rule-map.md'), 'utf8'),
-  ];
-  for (const path of ['AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md', 'cindyplugin/DESIGN.md', 'docs/design.md']) {
-    const r = run('git', [...gitAuth, 'show', `${baseSha}:${path}`], { cwd: REPO_DIR, allowFail: true });
-    parts.push(`${path}\n${r.ok ? r.stdout : '(missing)'}`);
-  }
-  return sha256(parts.join('\n\0\n'));
+  return previousFromResult(result, existsSync(join(dir, 'report.md')) ? readFileSync(join(dir, 'report.md'), 'utf8') : '');
 }
 
 function createCheckRun(input, { status, title, summary }) {
@@ -521,7 +503,7 @@ function baseResult(state) {
       baseRefName: state.context.evidence.baseRefName, diffHash: state.context.evidence.diffHash } : undefined,
     mivo: {
       targetRepo: input.targetRepo, serverMode: input.mode, runId: input.runId, runUrl: input.runUrl, attempt: input.attempt,
-      tier: state.tier, scope: state.scope, skillSha: input.skillSha, rulesDigest: current.rulesDigest,
+      tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
       filePatchHashes: current.filePatchHashes, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], completedAt: null,
     },

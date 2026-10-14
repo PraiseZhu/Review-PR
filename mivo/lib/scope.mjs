@@ -65,7 +65,7 @@ export const filePatchHashes = (files) => Object.fromEntries(Object.entries(file
 /**
  * @param {object} p
  * @param {object|null} p.previous 上一次服务器审查结果(含 head/baseRefName/diffHash/filePatchHashes/findings/deferred/...)
- * @param {object} p.current 本次 {head, baseRefName, diffHash, filePatchHashes, totalDiffLines, tier, triggerKinds, skillSha, rulesDigest, now}
+ * @param {object} p.current 本次 {head, baseRefName, diffHash, filePatchHashes, totalDiffLines, tier, triggerKinds, specDigest, now}
  * @param {boolean|null} p.headIsDescendant H0 是否是 H1 的祖先(git merge-base --is-ancestor);null=未知
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
@@ -77,8 +77,11 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   if ((TIER_RANK[current.tier] ?? 1) > (TIER_RANK[previous.tier] ?? 1)) return full(`档位升级(${previous.tier} → ${current.tier})`);
   const newKinds = (current.triggerKinds ?? []).filter((kind) => !(previous.triggerKinds ?? []).includes(kind));
   if (newKinds.length) return full(`新增确认门触发(${newKinds.join('、')})`);
-  if (previous.skillSha !== current.skillSha) return full('审查 skill 版本变了');
-  if (previous.rulesDigest !== current.rulesDigest) return full('规则文件变了');
+  // 任务书版本(prompt.mjs 的 specDigest):只比任务书材料,审查机代码换版本但材料没变时仍可增量。
+  // 先显式判断字段存在:旧结果没有这个字段时退回全量,不能让两个 undefined 判成相等。
+  if (!previous.specDigest) return full('上一轮没有任务书版本记录');
+  if (!current.specDigest) return full('本轮没有任务书版本');
+  if (previous.specDigest !== current.specDigest) return full('审查任务书或规则变了');
   const lastFull = Date.parse(previous.lastFullReviewAt ?? '');
   if (!Number.isFinite(lastFull) || current.now - lastFull > FULL_REVIEW_MAX_AGE_MS) return full('距上次完整审查超过 7 天');
 
@@ -117,4 +120,16 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
 
 function reuse(previous, reason) {
   return { mode: 'reuse', reason, files: [], previousFindings: previous.findings ?? [], basedOn: previous.head };
+}
+
+/** 上一次服务器审查的结果包(result.json + report.md)→ computeReviewScope 用的上一轮记录。 */
+export function previousFromResult(result, report = '') {
+  return {
+    head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
+    reviewed: result.reviewed, reviewClean: result.reviewClean, outcome: result.outcome,
+    reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
+    filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
+    tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
+    specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,
+  };
 }
