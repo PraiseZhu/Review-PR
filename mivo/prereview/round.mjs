@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// round.mjs — Mini 上的前置审查,一次运行处理一轮(launchd 每 3 分钟拉起一次)。
+// round.mjs — Mini 上的前置审查(launchd 每 3 分钟拉起一次;上一个进程还在跑时不会再起第二个)。
 // 流程照搬 review-pr-auto 的主 session:pre-check → prepare → plan → 滚动队列 → finalize。
-// 不同点只有一处(D1):每个 PR 的「子 agent」拆成两段——判门在本机用 Cindy 脚本做完(不调模型),
+// 不同点(D1):每个 PR 的「子 agent」拆成两段——判门在本机用 Cindy 脚本做完(不调模型),
 // 需要代码审查时派发服务器上的 review-pr.yml,服务器审完把结果包回传,这里写进本轮目录。
+// 滚动接单:一个进程可以同时推进多轮。已有轮次在等服务器审查时,每 3 分钟检查一次新候选,有空槽就另开一轮;
+// 全进程在审(已派发、还没收回结果的服务器 run)不超过 maxParallel;运行满 60 分钟不再接新轮,手上的跑完就退出。
+// 规则见 lib/admission.mjs。
 //
 //   node mivo/prereview/round.mjs --config <配置 JSON>
 // 配置字段见 mivo/README.md。退出码:0=正常(含没有候选),1=本轮异常。
@@ -11,10 +14,11 @@ import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
+import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
+import { ADMIT_INTERVAL_MS, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -39,7 +43,13 @@ function loadConfig() {
 
 let CONFIG;
 let ENV;
-let LOG_FILE;
+// 滚动接单的进程级状态。ROUNDS[i]:{ runId, planFile, plan, inflight: Map, queued, finished, completed }
+// finished = 这一轮的 drive 已结束(成功或失败);completed = 已写 completed.json(正常关闭或放弃)。
+const STARTED_AT = Date.now();
+const ROUNDS = [];
+const ADMIT_ERRORS = [];
+let ADMISSION_CLOSED = null; // 不再接新轮的原因
+let SKILL_HEAD = null;
 
 function setupEnv(config) {
   const env = { ...process.env, REVIEW_PR_REPO_ROOT: config.repoRoot, REVIEW_PR_STATE_DIR: config.stateDir };
@@ -57,8 +67,10 @@ function setupEnv(config) {
 }
 
 function log(event, detail = {}) {
-  const line = JSON.stringify({ at: nowIso(), event, ...detail });
-  try { appendFileSync(LOG_FILE, `${line}\n`); } catch { /* 日志失败不影响本轮 */ }
+  const at = nowIso();
+  const line = JSON.stringify({ at, event, ...detail });
+  // 进程可能跨过 UTC 零点:每条日志按写入时的日期选文件。
+  try { appendFileSync(join(CONFIG.logDir, `round-${at.slice(0, 10)}.jsonl`), `${line}\n`); } catch { /* 日志失败不影响本轮 */ }
   if (process.env.MIVO_PREREVIEW_VERBOSE) console.log(line);
 }
 
@@ -84,24 +96,34 @@ function pausedUntil() {
   return pause && Date.parse(pause.until) > Date.now() ? pause : null;
 }
 
+// ── 滚动接单的小工具 ────────────────────────────────────────────────────────
+const roundLoads = () => ROUNDS.map((r) => ({ finished: r.finished, queued: r.queued, inflight: r.inflight.size }));
+const freeSlots = () => toFreeSlots({ rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
+const busyPrs = () => toBusyPrs(ROUNDS.filter((r) => !r.completed).map((r) => r.plan));
+const admitScript = (args) => script(join(HERE, 'admit-candidates.mjs'), ['--repo-root', CONFIG.repoRoot, ...args], { timeoutMs: 120_000 });
+const skillHead = () => run('git', ['-C', SKILL_ROOT, 'rev-parse', 'HEAD'], { allowFail: true }).stdout.trim();
+function incompletePlanFiles() {
+  const r = admitScript(['--incomplete-only']);
+  if (!r.ok) throw new Error(`读取未完成轮次失败:${r.error}`);
+  return r.incompletePlans ?? [];
+}
+function closeAdmission(reason) {
+  if (ADMISSION_CLOSED) return;
+  ADMISSION_CLOSED = reason;
+  log('admission-closed', { reason, runningRounds: ROUNDS.filter((r) => !r.finished).map((r) => r.runId) });
+}
+
 // ── 讨论 issue 有新留言(Slack 同步)时唤醒对应 PR ──────────────────────────
 // pre-check 的指纹只看 PR 自身;Slack「同意放行」落在讨论 issue 上,不改 PR 的指纹。
 // 这里比对确认 issue 的 updatedAt,变了就把本机 round-state 里该 PR 标成需要重查。
-function wakeHeldPrs() {
+// 正在某一轮里的 PR 先不唤醒(那一轮 finalize 会覆盖 retry),记录保留旧值,等它不在审时再触发。
+function wakeHeldPrs(busy = new Set()) {
   const issues = ghRead(['api', '--method', 'GET', '--paginate', '--slurp', `repos/${CONFIG.targetRepo}/issues`,
     '-f', 'state=open', '-f', 'per_page=100'], { allowFail: true });
   if (!issues.ok) { log('wake-held-skip', { reason: issues.stderr.trim().slice(0, 200) }); return; }
   const seenFile = stateFile('held-issues.json');
-  const seen = readJson(seenFile, {});
-  const next = {};
-  const wake = [];
-  for (const issue of JSON.parse(issues.stdout).flat()) {
-    if (issue.pull_request) continue;
-    const m = String(issue.title ?? '').match(/^维护者确认 · PR #(\d+)/);
-    if (!m) continue;
-    next[issue.number] = { pr: Number(m[1]), updatedAt: issue.updated_at };
-    if (seen[issue.number] && seen[issue.number].updatedAt !== issue.updated_at) wake.push(Number(m[1]));
-  }
+  const { next, wake, deferred } = toHeldWake({ issues: JSON.parse(issues.stdout).flat(), seen: readJson(seenFile, {}), busyPrs: busy });
+  if (deferred.length) log('wake-held-deferred', { prs: deferred });
   if (wake.length) {
     const rs = readJson(join(CONFIG.stateDir, roundStateKey(), 'round-state.json'), null);
     if (rs?.prs) {
@@ -128,14 +150,17 @@ async function main() {
   CONFIG = loadConfig();
   mkdirSync(CONFIG.logDir, { recursive: true });
   mkdirSync(join(CONFIG.stateDir, 'mivo'), { recursive: true });
-  LOG_FILE = join(CONFIG.logDir, `round-${new Date().toISOString().slice(0, 10)}.jsonl`);
   ENV = setupEnv(CONFIG);
   const pause = pausedUntil();
   if (pause) { log('paused', pause); return; }
   // 与老审查机同一个维护窗口:06:00–07:00(Asia/Shanghai)不开新一轮;07:00 后照常采集,窗口里来的 PR 自动补上。
   if (!inBusinessWindow()) { log('maintenance-window'); return; }
   verifySkillPin();
-  wakeHeldPrs();
+  let busyAtStart = null;
+  try { busyAtStart = toBusyPrs(incompletePlanFiles().map((file) => readJson(file))); } catch (error) {
+    log('wake-held-skip', { reason: error.message.slice(0, 200) });
+  }
+  if (busyAtStart) wakeHeldPrs(busyAtStart);
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
   if (pre.exitCode === 2) { log('no-candidates', { reason: pre.reason }); return; }
@@ -145,18 +170,26 @@ async function main() {
   if (!prep.ok || !prep.lock?.acquired) { log('lock-not-acquired', { lock: prep.lock, error: prep.error }); return; }
   if (!prep.maintainerAuthority?.verified) throw new Error(`维护者权限未核实:${prep.error}`);
   const token = prep.lock.token;
+  const digest = prep.maintainerAuthority.digest;
   try {
-    let planFile;
+    let planFiles;
     if (pre.reason === 'unfinished-round') {
-      planFile = pre.resumePlan;
-      log('resume-round', { planFile });
+      // 中断后恢复:拿锁后重读一次,所有未完成的轮次一起接着跑(pre-check 只给最早那一轮)。
+      planFiles = incompletePlanFiles();
+      if (!planFiles.length) planFiles = [pre.resumePlan];
+      log('resume-rounds', { planFiles, count: planFiles.length });
     } else {
       const plan = script('plan-review-round.mjs', ['--lock-token', token, '--mode', 'review-only', '--candidate-list', pre.candidateList], { timeoutMs: 1_800_000 });
       if (!plan.ok) throw new Error(`plan 失败:${plan.error}`);
-      planFile = plan.planFile;
+      planFiles = [plan.planFile];
       log('plan', { runId: plan.runId, groups: plan.groups?.map((g) => g.prs.map((p) => p.pr)), skipped: plan.skipped?.map((s) => [s.pr, s.outcome]) });
     }
-    await drive(planFile, token, prep.maintainerAuthority.digest);
+    const drives = [];
+    for (const file of planFiles) startDrive(file, token, digest, drives);
+    await admitLoop(token, digest, drives);
+    const failures = (await Promise.all(drives)).filter(Boolean).map((error) => error.message);
+    failures.push(...ADMIT_ERRORS);
+    if (failures.length) throw new Error(`${failures.length} 项失败:${failures.join(' | ')}`.slice(0, 1000));
     if (CONFIG.mode === 'live') {
       const sweep = script('close-product-issue.mjs', ['--sweep']);
       log('product-issue-sweep', { closed: sweep.closedCount, error: sweep.error });
@@ -170,27 +203,104 @@ function verifySkillPin() {
   const own = run('git', ['-C', SKILL_ROOT, 'rev-parse', 'HEAD']).stdout.trim();
   const pinned = ghRead(['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', CONFIG.workflowRepo], { allowFail: true }).stdout.trim();
   if (own !== pinned) throw new Error(`本机 skill 版本 ${own.slice(0, 12)} 与服务器钉住的 MIVO_REVIEW_SKILL_SHA ${pinned.slice(0, 12) || '(未设置)'} 不一致,拒绝运行`);
+  SKILL_HEAD = own;
 }
 
-async function drive(planFile, token, authorityDigest) {
+// ── 滚动接单 ─────────────────────────────────────────────────────────────────
+function startDrive(planFile, token, digest, drives) {
+  let plan;
+  try { plan = readJson(planFile); } catch (error) {
+    // 读不到计划不能让 main 提前释放锁(别的轮次还在跑):记成失败,收尾时报错,下次启动再恢复。
+    ADMIT_ERRORS.push(error.message);
+    log('round-failed', { planFile, error: error.message });
+    closeAdmission('round-failed');
+    return;
+  }
+  const round = { runId: plan.runId, planFile, plan, inflight: new Map(), queued: 0, finished: false, completed: false };
+  ROUNDS.push(round);
+  // resolve 成 null 或 Error,不留 rejected promise:要等所有轮次跑完才汇总,挂着的 rejection 会让 Node 直接退出进程。
+  drives.push(drive(round, token, digest).then(() => null, (error) => {
+    log('round-failed', { runId: round.runId, error: error.message });
+    closeAdmission('round-failed');
+    return error;
+  }).finally(() => { round.finished = true; }));
+}
+
+// 有轮次在跑就每 3 分钟检查一次要不要另开一轮;所有轮次结束就返回(进程退出,launchd 再拉起)。本函数不抛错。
+async function admitLoop(token, digest, drives) {
+  let nextAt = STARTED_AT + ADMIT_INTERVAL_MS;
+  let lastSkip = null;
+  while (ROUNDS.some((r) => !r.finished)) {
+    const wait = Math.min(CONFIG.pollSeconds * 1000, nextAt - Date.now());
+    if (wait > 0) { await new Promise((r) => setTimeout(r, wait)); continue; }
+    nextAt = Date.now() + ADMIT_INTERVAL_MS;
+    try {
+      // Mini 上检出了新 SHA:不再用内存里的旧代码开新轮,手上的跑完退出,launchd 用新代码拉起。
+      if (!ADMISSION_CLOSED && skillHead() !== SKILL_HEAD) closeAdmission('skill-updated');
+      const decision = toAdmissionDecision({ nowMs: Date.now(), startedAtMs: STARTED_AT, closedReason: ADMISSION_CLOSED,
+        paused: Boolean(pausedUntil()), inWindow: inBusinessWindow(), rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
+      if (decision.close) closeAdmission(decision.reason);
+      if (!decision.admit) {
+        if (decision.reason !== lastSkip) log('admit-skip', { reason: decision.reason, inflight: CONFIG.maxParallel - freeSlots() });
+        lastSkip = decision.reason;
+        continue;
+      }
+      lastSkip = null;
+      await admitRound(token, digest, drives, decision.freeSlots);
+    } catch (error) {
+      ADMIT_ERRORS.push(`接单检查失败:${error.message}`);
+      log('admit-error', { error: error.message });
+      closeAdmission('admit-error');
+    }
+  }
+}
+
+async function admitRound(token, digest, drives, slots) {
+  wakeHeldPrs(busyPrs());
+  const admit = admitScript([]);
+  if (admit.exitCode === 2) { log('admit-none', { excluded: admit.excludedPrs }); return; }
+  // 采集只读、没有副作用:失败记日志,下个检查点再试。
+  if (admit.exitCode !== 0 || !admit.ok) { log('admit-error', { error: admit.error || `exit ${admit.exitCode}` }); return; }
+  // plan 要几分钟:异步跑,别的轮次照常轮询、续锁。
+  const plan = await runScriptAsync('plan-review-round.mjs', ['--lock-token', token, '--mode', 'review-only', '--candidate-list', admit.candidateList],
+    { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 1_800_000 });
+  if (!plan.ok) {
+    // plan 可能已写出 plan.json 或发过目标分支提醒:停止接单,手上的轮次收尾后报错,下次启动按未完成轮次恢复。
+    ADMIT_ERRORS.push(`接单 plan 失败:${plan.error}`);
+    log('admit-plan-error', { error: plan.error, runId: admit.runId });
+    closeAdmission('admit-plan-failed');
+    return;
+  }
+  log('plan', { runId: plan.runId, admitted: true, freeSlots: slots, excluded: admit.excludedPrs,
+    groups: plan.groups?.map((g) => g.prs.map((p) => p.pr)), skipped: plan.skipped?.map((s) => [s.pr, s.outcome]) });
+  startDrive(plan.planFile, token, digest, drives);
+}
+
+async function drive(round, token, authorityDigest) {
+  const { planFile, plan, inflight } = round;
   const queue = (action, extra = []) => runScript('review-queue.mjs', [action, '--plan', planFile, '--lock-token', token, ...extra],
     { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 600_000 });
-  const plan = readJson(planFile);
   const roundDir = dirname(planFile);
   if (!existsSync(join(roundDir, 'queue.json'))) {
     const init = queue('init', ['--concurrency', String(CONFIG.maxParallel)]);
     if (!init.ok) throw new Error(`queue init 失败:${init.error}`);
   }
-  const watch = spawn(process.execPath, [join(SCRIPTS, 'review-queue.mjs'), 'watch', '--plan', planFile, '--lock-token', token],
+  const spawnWatch = () => spawn(process.execPath, [join(SCRIPTS, 'review-queue.mjs'), 'watch', '--plan', planFile, '--lock-token', token],
     { cwd: CONFIG.repoRoot, env: ENV, stdio: 'ignore' });
-  const inflight = new Map();
+  let watch = spawnWatch();
+  // 多轮并存时,别的轮次一次长时间的同步处理会让本轮 coordinator 超过 10 分钟没刷新,watch 自行退出、停止续锁:退出了就重启。
+  const ensureWatch = () => {
+    if (watch.exitCode === null && watch.signalCode === null) return;
+    log('watch-restart', { runId: plan.runId, exitCode: watch.exitCode, signal: watch.signalCode });
+    watch = spawnWatch();
+  };
   try {
     resumeInflight({ plan, planFile, roundDir }, inflight, queue);
     for (let pass = 0; pass < 2; pass += 1) {
-      await runQueue({ plan, planFile, roundDir, token, authorityDigest, queue, inflight });
+      await runQueue({ round, plan, planFile, roundDir, token, authorityDigest, queue, inflight, ensureWatch });
       const reconcile = queue('reconcile');
       if (!reconcile.ok) throw new Error(`reconcile 失败:${reconcile.error}`);
-      log('reconcile', { reopened: reconcile.reopened, allComplete: reconcile.allComplete });
+      log('reconcile', { runId: plan.runId, reopened: reconcile.reopened, allComplete: reconcile.allComplete });
       if (reconcile.reconciled) break;
     }
     const final = script('finalize-review-round.mjs', ['--plan', planFile, '--lock-token', token], { timeoutMs: 300_000 });
@@ -202,6 +312,7 @@ async function drive(planFile, token, authorityDigest) {
       writeJson(attemptsFile, attempts);
       if (attempts.length >= 2) {
         writeJson(join(roundDir, 'completed.json'), { runId: plan.runId, completedAt: nowIso(), abandoned: true, reason: final.error });
+        round.completed = true;
         log('round-abandoned', { runId: plan.runId, error: final.error });
         return;
       }
@@ -212,6 +323,7 @@ async function drive(planFile, token, authorityDigest) {
       pages: [{ page: 1, status: 'disabled', reason: 'Mivo 不发每轮汇总(owner 2026-10-11 决定)', attemptedAt: nowIso() }] });
     const closed = queue('close');
     if (!closed.ok) throw new Error(`queue close 失败:${closed.error}`);
+    round.completed = true;
     log('round-complete', { runId: plan.runId, entered: final.enteredCount, skipped: final.skippedCount });
   } finally {
     queue('stop');
@@ -220,16 +332,18 @@ async function drive(planFile, token, authorityDigest) {
 }
 
 async function runQueue(ctx) {
-  const { queue, inflight } = ctx;
+  const { round, queue, inflight } = ctx;
   for (;;) {
+    ctx.ensureWatch();
     queue('status');
-    for (;;) {
+    // 全进程在审数满了就不领取。claim → 判门 → 派发 → 登记在途之间没有 await,别的轮次看不到过时的空槽。
+    while (freeSlots() > 0) {
       const claim = queue('claim');
       if (!claim.ok) throw new Error(`claim 失败:${claim.error}`);
       if (!claim.claimed) break;
       const task = claim.task;
       try {
-        const outcome = await handleTask(ctx, task);
+        const outcome = handleTask(ctx, task);
         if (outcome.dispatched) {
           bind(queue, task.pr, outcome.agentId);
           inflight.set(task.pr, { ...outcome, task });
@@ -253,7 +367,8 @@ async function runQueue(ctx) {
       inflight.delete(pr);
     }
     const status = queue('status');
-    if (!inflight.size && (status.queued?.length ?? 0) === 0 && (status.active?.length ?? 0) === 0) return;
+    round.queued = status.queued?.length ?? 0;
+    if (!inflight.size && round.queued === 0 && (status.active?.length ?? 0) === 0) return;
     await new Promise((r) => setTimeout(r, CONFIG.pollSeconds * 1000));
   }
 }
@@ -292,7 +407,7 @@ function resumeInflight(ctx, inflight, queue) {
 }
 
 // ── 单个 PR:判门(本机) ─────────────────────────────────────────────────────
-async function handleTask(ctx, task) {
+function handleTask(ctx, task) {
   const { roundDir, token, authorityDigest } = ctx;
   const liveFile = join(roundDir, `pr-${task.pr}-live.json`);
   const live = script('context.mjs', [String(task.pr), '--lock-token', token, '--cached-context', task.contextFile,
