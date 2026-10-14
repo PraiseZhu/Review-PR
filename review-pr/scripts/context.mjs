@@ -32,7 +32,7 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiR
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence / self-review]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, declaresNoUiChange, isAutomatedViewerReview } from './lib.mjs';
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -1138,14 +1138,19 @@ try {
   // 作者只 dismiss 自己的旧 review。⚠️ 只要掺了「别人」的 CR(allChangesRequestedBySelf=false)、
   // 或还有 thread 没 resolve,
   // 就不命中 → 照旧硬拦,绝不替别人撤 review。
+  // [MIVO-PATCH self-review] GitHub 按登录名只认最后一条实质 review,审查机后发的 CR 会把
+  // 同一账号更早的人工 CR 从 latestSubstantiveReviews 里盖掉。人工 CR 仍有效时不能自解。
+  const standingHumanChangesRequest = selectStandingViewerHumanChangesRequest(prReviews, viewerLogin);
   const allChangesRequestedBySelf =
     hasChangesRequested && viewerLogin !== '' &&
-    changesRequestedReviews.every((r) => (r.author?.login ?? '') === viewerLogin);
+    changesRequestedReviews.every((r) => (r.author?.login ?? '') === viewerLogin) &&
+    !standingHumanChangesRequest;
   const selfBlockedResolvable =
     meta.mergeStateStatus === 'BLOCKED' &&
     meta.reviewDecision === 'CHANGES_REQUESTED' &&
     allChangesRequestedBySelf &&
     unresolvedThreads.length === 0;
+  const STANDING_HUMAN_CR_BLOCKER = '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审';
 
   // ── 1.6.5.3 评论类:bot 总结评论 + reviewer 历史打回(issue comment 形式)──
   const botComments = comments
@@ -1194,7 +1199,9 @@ try {
         // 再由合并阶段 approve-reviewed-pr 解锁(见 selfBlockedResolvable 注释)。
         blockClass = 'self-resolvable';
       } else {
-        blockers.push('mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)');
+        if (!standingHumanChangesRequest) {
+          blockers.push('mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)');
+        }
         blockClass = 'review-changes-requested';
       }
     } else if (isApprovalPendingReviewDecision(reviewDecision)) {
@@ -1244,6 +1251,14 @@ try {
       blockers.push(
         `mergeStateStatus=BLOCKED(必需检查门「${ruleHint}」未上报结果;review 与 CI(双源)均无问题——非作者可处理,需 admin bypass 合或修该门;${bypassHint})`,
       );
+    }
+  }
+  // [MIVO-PATCH self-review] 审查机后来 Approve 过时 GitHub reviewDecision 可能不再是
+  // CHANGES_REQUESTED,人工 CR 仍有效,同样硬拦,不能进审查后再用 Approve 盖掉它。
+  if (standingHumanChangesRequest) {
+    blockers.push(STANDING_HUMAN_CR_BLOCKER);
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'self-resolvable') {
+      blockClass = 'review-changes-requested';
     }
   }
   // ── CI 总门(权威,独立于 mergeStateStatus):CI 全绿才可合并,required 与非 required

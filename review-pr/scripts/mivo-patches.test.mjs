@@ -24,6 +24,8 @@ import {
   selectTrustedSlackReleases,
   onlyOwnRequiredChecksPending,
   isAutomatedViewerReview,
+  latestSubstantiveReviews,
+  selectStandingViewerHumanChangesRequest,
 } from './lib.mjs';
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
@@ -308,4 +310,74 @@ test('审查账号自动提交的 review 不算维护者确认,维护者本人�
   const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
   assert.match(context, /evaluateMaintainerReview\(\{\n\s+reviews: signoffReviews,/);
   assert.match(context, /const signoffReviews = prReviews\.filter\(\(r\) => !isAutomatedViewerReview\(r, viewerLower\)\);/);
+});
+
+const viewerReview = (id, state, body, at, extra = {}) => ({
+  id,
+  user: { login: extra.login ?? 'PraiseZhu' },
+  author: { login: extra.login ?? 'PraiseZhu' },
+  state,
+  body,
+  submitted_at: at,
+  submittedAt: at,
+});
+const HUMAN_CR_BODY = '交互式审查:2 条 P1,先改再合';
+const AUTO_CR_HEADER = '> Mivo 自动审查 · [PR](https://github.com/xindong/mivo-canvas-plugin/pull/941) · head `aaaaaaaaaaaa`\n\n## Overall\n';
+const AUTO_GATE_BODY = '缺界面证据\n\n<!-- review-pr:gate-review kind=format head=' + SHA + ' -->';
+const HUMAN_CR_BLOCKER = '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审';
+// #941:人工 Approve(空正文) → 人工 CR 5506920945(无标记) → 审查机 CR 5512930585(报告头)
+const reviews941 = [
+  viewerReview(1, 'APPROVED', '', '2026-10-13T16:31:00Z'),
+  viewerReview(5506920945, 'CHANGES_REQUESTED', HUMAN_CR_BODY, '2026-10-13T16:40:00Z'),
+  viewerReview(5512930585, 'CHANGES_REQUESTED', AUTO_CR_HEADER, '2026-10-14T04:05:00Z'),
+];
+
+test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖不掉,context 不自解、approve 拒绝', () => {
+  const viewer = 'PraiseZhu';
+  assert.deepEqual(latestSubstantiveReviews(reviews941).map((r) => r.id), [5512930585],
+    '按登录名截最新一条时,人工 CR 已经看不见了');
+  const standing = selectStandingViewerHumanChangesRequest(reviews941, viewer);
+  assert.equal(standing?.id, 5506920945);
+  assert.equal(standing?.state, 'CHANGES_REQUESTED');
+  const gqlShape = reviews941.map(({ user, submitted_at, ...rest }) => rest);
+  assert.equal(selectStandingViewerHumanChangesRequest(gqlShape, 'praisezhu')?.id, 5506920945,
+    '兼容 context 的 author.login / submittedAt 形状,login 大小写不敏感');
+
+  const laterHumanApprove = [...reviews941, viewerReview(9, 'APPROVED', '看过了,可以合', '2026-10-14T05:00:00Z')];
+  assert.equal(selectStandingViewerHumanChangesRequest(laterHumanApprove, viewer), null, '人工 CR 之后人工 Approve:不再有效');
+
+  const dismissed = [
+    viewerReview(5506920945, 'DISMISSED', HUMAN_CR_BODY, '2026-10-13T16:40:00Z'),
+    viewerReview(5512930585, 'CHANGES_REQUESTED', AUTO_CR_HEADER, '2026-10-14T04:05:00Z'),
+  ];
+  assert.equal(selectStandingViewerHumanChangesRequest(dismissed, viewer), null, '人工 CR 被 dismiss:不再有效');
+
+  const onlyGate = [viewerReview(5512305370, 'CHANGES_REQUESTED', AUTO_GATE_BODY, '2026-10-14T01:00:00Z')];
+  const onlyHeader = [viewerReview(5512720382, 'CHANGES_REQUESTED', AUTO_CR_HEADER, '2026-10-14T02:00:00Z')];
+  assert.equal(selectStandingViewerHumanChangesRequest(onlyGate, viewer), null, '只有带 <!-- review-pr: 的审查机 CR:可自解');
+  assert.equal(selectStandingViewerHumanChangesRequest(onlyHeader, viewer), null, '只有带报告头的审查机 CR:可自解');
+  assert.equal(selectStandingViewerHumanChangesRequest(reviews941, ''), null, '不知道审查账号时不判');
+  assert.equal(selectStandingViewerHumanChangesRequest(reviews941, 'kirozeng'), null, '别人的人工 CR 不算审查账号自己的');
+  const missingBody = [viewerReview(123, 'CHANGES_REQUESTED', undefined, '2026-10-14T03:00:00Z')];
+  delete missingBody[0].body;
+  assert.equal(selectStandingViewerHumanChangesRequest(missingBody, viewer)?.id, 123,
+    '缺 body 无法证明有没有审查机标记,仍算有效人工 CR');
+  const missingBodyApproveAfterHuman = [
+    viewerReview(5506920945, 'CHANGES_REQUESTED', HUMAN_CR_BODY, '2026-10-13T16:40:00Z'),
+    viewerReview(125, 'APPROVED', undefined, '2026-10-14T05:00:00Z'),
+  ];
+  delete missingBodyApproveAfterHuman[1].body;
+  assert.equal(selectStandingViewerHumanChangesRequest(missingBodyApproveAfterHuman, viewer), null,
+    '缺 body 的 viewer APPROVED 排在人工 CR 之后时,人工 CR 不再有效');
+  assert.equal(selectStandingViewerHumanChangesRequest([viewerReview(124, 'CHANGES_REQUESTED', '', '2026-10-14T03:00:00Z')], viewer)?.id, 124,
+    '空正文仍是人工 CR');
+
+  const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  assert.match(context, /selectStandingViewerHumanChangesRequest\(prReviews, viewerLogin\)/);
+  assert.match(context, /!standingHumanChangesRequest/);
+  assert.match(context, new RegExp(HUMAN_CR_BLOCKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const approve = readFileSync(new URL('./approve-reviewed-pr.mjs', import.meta.url), 'utf8');
+  assert.match(approve, /selectStandingViewerHumanChangesRequest\(/);
+  assert.match(approve, /reject\('other-changes-requested'/);
+  assert.match(approve, new RegExp(HUMAN_CR_BLOCKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
