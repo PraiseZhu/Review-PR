@@ -4,12 +4,13 @@
 // 不同点(D1):每个 PR 的「子 agent」拆成两段——判门在本机用 Cindy 脚本做完(不调模型),
 // 需要代码审查时派发服务器上的 review-pr.yml,服务器审完把结果包回传,这里写进本轮目录。
 // 滚动接单:一个进程可以同时推进多轮。已有轮次在等服务器审查时,每 3 分钟检查一次新候选,有空槽就另开一轮;
-// 全进程在审(已派发、还没收回结果的服务器 run)不超过 maxParallel;运行满 60 分钟不再接新轮,手上的跑完就退出。
-// 规则见 lib/admission.mjs。
+// 全进程在审(已派发、还没收回结果的服务器 run,以及还不知道有没有派出的派发)不超过 maxParallel。
+// 所有轮次结束时进程退出,launchd 再拉起;进入 06:00 维护窗口、检出新 SHA、维护者名单变化、部署暂停时不再开新轮,
+// 运行满 24 小时是保险上限。规则见 lib/admission.mjs。
 //
 //   node mivo/prereview/round.mjs --config <配置 JSON>
-// 配置字段见 mivo/README.md。退出码:0=正常(含没有候选),1=本轮异常。
-import { existsSync, mkdirSync, readFileSync, copyFileSync, appendFileSync, readdirSync } from 'node:fs';
+// 配置字段见 mivo/README.md。退出码:0=正常(含没有候选、部署停机握手),1=本轮异常或续锁失败。
+import { existsSync, mkdirSync, readFileSync, copyFileSync, appendFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,13 +19,16 @@ import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, w
 import { decideGate, buildSignoffPayload, buildGatePushback } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
 const QUOTA_PAUSE_MS = 60 * 60_000;
 const HEALTH_PAUSE_MS = 30 * 60_000;
-const MAX_RUN_MINUTES = 120;
+// 派发后从意图时间起 60 分钟还找不到 run:记 dispatch-unresolved 由巡检提醒;占槽和未决记录都保留,不重派。
+const DISPATCH_UNRESOLVED_MS = 60 * 60_000;
+const HEARTBEAT_EVERY_MS = 15 * 60_000;
+const HEARTBEAT_VARIABLE = 'MIVO_PREREVIEW_HEARTBEAT';
 
 // ── 配置与环境 ─────────────────────────────────────────────────────────────
 function loadConfig() {
@@ -43,8 +47,10 @@ function loadConfig() {
 
 let CONFIG;
 let ENV;
-// 滚动接单的进程级状态。ROUNDS[i]:{ runId, planFile, plan, inflight: Map, queued, finished, completed }
-// finished = 这一轮的 drive 已结束(成功或失败);completed = 已写 completed.json(正常关闭或放弃)。
+// 滚动接单的进程级状态。ROUNDS[i]:{ runId, planFile, plan, inflight: Map, queued, finished, completed, released }
+// finished = 这一轮的 drive 已结束(成功、失败或停机握手);completed = 已写 completed.json(正常关闭或放弃);
+// released = 作者推了新提交、旧 run 已确认结束而提前释放的 PR(轮次目录的 mivo-released.json)。
+// inflight 里的条目 runId 为 null 时是「还不知道有没有派出」的派发:照样占槽,按 dispatch_id 找回,不重派。
 const STARTED_AT = Date.now();
 const ROUNDS = [];
 const ADMIT_ERRORS = [];
@@ -58,6 +64,17 @@ const RESUME_BARRIER = new Promise((resolve) => { releaseResumeBarrier = resolve
 // 这时其它轮次停下、不收尾,整个进程退出;launchd 重启后,未完成的轮次一起恢复(已派发的 run 从 queue.json 重新登记)。
 let ABORTED = null;
 class RoundAborted extends Error {}
+// 部署停机握手:这一轮已没有在审 run 和未决派发,停下等新版本恢复(不收尾,还没领取的任务留在轮次文件里)。
+class RoundQuiesced extends Error {}
+// 续锁返回不是 refreshed:true:锁已不属于本进程。之后不领取、不派发、不取消、不写评论和标签,不写心跳,
+// 也不释放锁(那是接管者的),非 0 退出让巡检报出来。
+let FENCED = false;
+// 看到部署暂停文件的时间:不开新轮、不领取、不派发;在审 run 与未决派发都归零后完成停机握手。
+let QUIESCING = null;
+// PR 当前 head 的缓存(作者推新提交时取消旧审查用):最多 3 分钟查一次全部开着的 PR。
+const HEADS = { atMs: 0, map: null };
+// 同一件事只记一次日志(未决派发、排队过慢、无效的人工解除记录、归属已转走)。
+const LOGGED_ONCE = new Set();
 
 function setupEnv(config) {
   const env = { ...process.env, REVIEW_PR_REPO_ROOT: config.repoRoot, REVIEW_PR_STATE_DIR: config.stateDir };
@@ -71,6 +88,15 @@ function setupEnv(config) {
     env.MIVO_DRYRUN_LOG = join(config.logDir, 'dry-run-blocked.log');
     env.PATH = `${join(HERE, 'gh-dryrun')}:${env.PATH}`;
   }
+  // 前置的仓库副本关掉后台 gc、维护任务和 commit-graph:两次整轮失败都出在 fetch 刚结束、建工作目录的时刻,
+  // 同一秒有新包和新 commit-graph 写出,最可能是后台 gc 抢了副本(推测,未证实)。手动 gc 放在维护窗口里做。
+  const gitConfig = [['gc.auto', '0'], ['maintenance.auto', 'false'], ['core.commitGraph', 'false']];
+  const offset = Number(env.GIT_CONFIG_COUNT) || 0;
+  gitConfig.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${offset + i}`] = key;
+    env[`GIT_CONFIG_VALUE_${offset + i}`] = value;
+  });
+  env.GIT_CONFIG_COUNT = String(offset + gitConfig.length);
   return env;
 }
 
@@ -81,12 +107,17 @@ function log(event, detail = {}) {
   try { appendFileSync(join(CONFIG.logDir, `round-${at.slice(0, 10)}.jsonl`), `${line}\n`); } catch { /* 日志失败不影响本轮 */ }
   if (process.env.MIVO_PREREVIEW_VERBOSE) console.log(line);
 }
+function logOnce(key, event, detail = {}) {
+  if (LOGGED_ONCE.has(key)) return;
+  LOGGED_ONCE.add(key);
+  log(event, detail);
+}
 
 const script = (name, args, options = {}) => runScript(name, args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 const ghRead = (args, options = {}) => run('gh', args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 const stateFile = (name) => join(CONFIG.stateDir, 'mivo', name);
 
-// ── 本机记录:每个 PR 的服务器审查记录、每日派发账本、额度暂停 ─────────────
+// ── 本机记录:每个 PR 的服务器审查记录、每日派发账本、额度暂停、部署暂停 ─────
 function loadStore() { return readJson(stateFile('reviews.json'), { version: 1, prs: {} }); }
 function saveStore(store) { writeJson(stateFile('reviews.json'), store); }
 function dispatchesToday() {
@@ -103,11 +134,29 @@ function pausedUntil() {
   const pause = readJson(stateFile('pause.json'), null);
   return pause && Date.parse(pause.until) > Date.now() ? pause : null;
 }
+// 部署暂停(方案 Step 5 用):文件在就算,读不懂也算(宁可不开新轮)。
+function deployHold() {
+  const file = stateFile('deploy-hold.json');
+  return existsSync(file) ? readJson(file, {}) : null;
+}
+
+// 心跳(Mini 之外的看门狗读):只有生产实例(instance=mivo 且 live)写,15 分钟内最多一次,隔离后不再写。
+// 写失败只记日志,不影响审查。
+function writeHeartbeat() {
+  if (FENCED || CONFIG.instance !== 'mivo' || CONFIG.mode !== 'live') return;
+  const last = Date.parse(readJson(stateFile('heartbeat.json'), {})?.at ?? '');
+  if (Number.isFinite(last) && Date.now() - last < HEARTBEAT_EVERY_MS) return;
+  const at = nowIso();
+  const r = run('gh', ['variable', 'set', HEARTBEAT_VARIABLE, '-R', CONFIG.workflowRepo, '--body', at],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  if (!r.ok) { log('heartbeat-error', { error: String(r.stderr || r.error || '').trim().slice(0, 200) }); return; }
+  writeJson(stateFile('heartbeat.json'), { at });
+}
 
 // ── 滚动接单的小工具 ────────────────────────────────────────────────────────
 const roundLoads = () => ROUNDS.map((r) => ({ finished: r.finished, queued: r.queued, inflight: r.inflight.size }));
 const freeSlots = () => toFreeSlots({ rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
-const busyPrs = () => toBusyPrs(ROUNDS.filter((r) => !r.completed).map((r) => r.plan));
+const busyPrs = () => toBusyPrs(ROUNDS.filter((r) => !r.completed).map((r) => ({ ...r.plan, released: r.released })));
 const admitScript = (args) => script(join(HERE, 'admit-candidates.mjs'), ['--repo-root', CONFIG.repoRoot, ...args], { timeoutMs: 120_000 });
 const skillHead = () => run('git', ['-C', SKILL_ROOT, 'rev-parse', 'HEAD'], { allowFail: true }).stdout.trim();
 function incompletePlanFiles() {
@@ -124,6 +173,26 @@ function abortRounds(reason) {
   if (ABORTED) return;
   ABORTED = reason;
   log('rounds-aborting', { reason, runningRounds: ROUNDS.filter((r) => !r.finished).map((r) => r.runId) });
+}
+// 续锁:返回不是 refreshed:true 就隔离——锁已不属于本进程(被接管、被删,或读写锁文件失败)。
+function refreshLock(token) {
+  if (FENCED) return false;
+  const r = script('refresh-lock.mjs', ['--token', token]);
+  if (r.refreshed === true) return true;
+  FENCED = true;
+  log('lock-lost', { refreshed: r.refreshed ?? null, lost: r.lost ?? null, error: r.error ?? null });
+  closeAdmission('lock-lost');
+  abortRounds('lock-lost');
+  return false;
+}
+function assertNotFenced() {
+  if (FENCED) throw new RoundAborted('lock-lost');
+}
+function startQuiescing() {
+  if (QUIESCING) return;
+  QUIESCING = nowIso();
+  log('deploy-hold', { running: true, rounds: ROUNDS.filter((r) => !r.finished).map((r) => r.runId) });
+  closeAdmission('deploy-hold');
 }
 
 // ── 讨论 issue 有新留言(Slack 同步)时唤醒对应 PR ──────────────────────────
@@ -164,13 +233,17 @@ async function main() {
   mkdirSync(CONFIG.logDir, { recursive: true });
   mkdirSync(join(CONFIG.stateDir, 'mivo'), { recursive: true });
   ENV = setupEnv(CONFIG);
+  // 心跳在部署暂停、暂停、维护窗口三处提前返回之前写:额度暂停一次 60 分钟,不写就会被看门狗误判成停机。
+  writeHeartbeat();
+  // 部署暂停:不拿锁直接退出。停机握手退出后到部署脚本 bootout 之间,launchd 再拉起的进程不会拿到锁。
+  if (deployHold()) { log('deploy-hold'); return; }
   const pause = pausedUntil();
   if (pause) { log('paused', pause); return; }
   // 与老审查机同一个维护窗口:06:00–07:00(Asia/Shanghai)不开新一轮;07:00 后照常采集,窗口里来的 PR 自动补上。
   if (!inBusinessWindow()) { log('maintenance-window'); return; }
   verifySkillPin();
   let busyAtStart = null;
-  try { busyAtStart = toBusyPrs(incompletePlanFiles().map((file) => readJson(file))); } catch (error) {
+  try { busyAtStart = toBusyPrs(incompletePlanFiles().map((file) => ({ ...readJson(file), released: readJson(join(dirname(file), 'mivo-released.json'), {}) }))); } catch (error) {
     log('wake-held-skip', { reason: error.message.slice(0, 200) });
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
@@ -184,6 +257,7 @@ async function main() {
   if (!prep.maintainerAuthority?.verified) throw new Error(`维护者权限未核实:${prep.error}`);
   const token = prep.lock.token;
   const digest = prep.maintainerAuthority.digest;
+  let lockHandled = false;
   try {
     let planFiles;
     if (pre.reason === 'unfinished-round') {
@@ -201,16 +275,40 @@ async function main() {
     for (const file of planFiles) startDrive(file, token, digest, drives);
     releaseResumeBarrier();
     await admitLoop(token, digest, drives);
-    const failures = (await Promise.all(drives)).filter(Boolean).map((error) => error.message);
+    const ended = await Promise.all(drives);
+    if (FENCED) {
+      // 锁已不属于本进程:不释放锁(那是接管者的),未完成的轮次留给持锁者恢复。
+      lockHandled = true;
+      throw new Error('续锁失败,锁已不属于本进程:已停止一切写入,不释放锁');
+    }
+    const failures = ended.filter((error) => error && !(error instanceof RoundQuiesced)).map((error) => error.message);
     failures.push(...ADMIT_ERRORS);
     if (failures.length) throw new Error(`${failures.length} 项失败:${failures.join(' | ')}`.slice(0, 1000));
+    if (QUIESCING && deployHold()) {
+      lockHandled = quiesce(token);
+      return;
+    }
     if (CONFIG.mode === 'live') {
       const sweep = script('close-product-issue.mjs', ['--sweep']);
       log('product-issue-sweep', { closed: sweep.closedCount, error: sweep.error });
     }
   } finally {
-    script('release-lock.mjs', ['--token', token]);
+    if (!lockHandled) script('release-lock.mjs', ['--token', token]);
   }
+}
+
+// 部署停机握手(方案 Step 1 第 6 条):所有轮次已没有在审 run 和未决派发,还没领取的任务留在轮次文件里给新版本。
+// 用自己的 token 释放锁;release-lock 失败时也输出 ok:true,所以只有 released:true 才写 lockReleased:true。
+function quiesce(token) {
+  let released = null;
+  for (let attempt = 0; attempt < 3 && released?.released !== true; attempt += 1) {
+    if (attempt > 0) run('sleep', ['2']);
+    released = script('release-lock.mjs', ['--token', token]);
+  }
+  const lockReleased = released?.released === true;
+  writeJson(stateFile('quiesced.json'), { pid: process.pid, at: nowIso(), lockReleased, ...(lockReleased ? {} : { release: released }) });
+  log('quiesced', { lockReleased, rounds: ROUNDS.map((r) => r.runId) });
+  return true;
 }
 
 function verifySkillPin() {
@@ -230,12 +328,17 @@ function startDrive(planFile, token, digest, drives) {
     closeAdmission('round-failed');
     return;
   }
-  const round = { runId: plan.runId, planFile, plan, inflight: new Map(), queued: 0, finished: false, completed: false };
+  const round = { runId: plan.runId, planFile, plan, inflight: new Map(), queued: 0, finished: false, completed: false,
+    released: readJson(join(dirname(planFile), 'mivo-released.json'), {}) };
   ROUNDS.push(round);
   // resolve 成 null 或 Error,不留 rejected promise:要等所有轮次跑完才汇总,挂着的 rejection 会让 Node 直接退出进程。
   drives.push(drive(round, token, digest).then(() => null, (error) => {
     if (error instanceof RoundAborted) {
       log('round-aborted', { runId: round.runId, reason: error.message, inflight: round.inflight.size });
+      return error;
+    }
+    if (error instanceof RoundQuiesced) {
+      log('round-quiesced', { runId: round.runId, queued: round.queued });
       return error;
     }
     log('round-failed', { runId: round.runId, error: error.message, inflight: round.inflight.size });
@@ -245,7 +348,8 @@ function startDrive(planFile, token, digest, drives) {
   }).finally(() => { round.finished = true; }));
 }
 
-// 有轮次在跑就每 3 分钟检查一次要不要另开一轮;所有轮次结束就返回(进程退出,launchd 再拉起)。本函数不抛错。
+// 有轮次在跑就每 3 分钟检查一次:续锁、写心跳、看部署暂停,再决定要不要另开一轮;所有轮次结束就返回
+// (进程退出,launchd 再拉起)。本函数不抛错。
 async function admitLoop(token, digest, drives) {
   let nextAt = STARTED_AT + ADMIT_INTERVAL_MS;
   let lastSkip = null;
@@ -253,10 +357,15 @@ async function admitLoop(token, digest, drives) {
     const wait = Math.min(CONFIG.pollSeconds * 1000, nextAt - Date.now());
     if (wait > 0) { await new Promise((r) => setTimeout(r, wait)); continue; }
     nextAt = Date.now() + ADMIT_INTERVAL_MS;
+    if (FENCED) continue;
     try {
+      if (!refreshLock(token)) continue;
+      writeHeartbeat();
       // Mini 上检出了新 SHA:不再用内存里的旧代码开新轮,手上的跑完退出,launchd 用新代码拉起。
       if (!ADMISSION_CLOSED && skillHead() !== SKILL_HEAD) closeAdmission('skill-updated');
-      const decision = toAdmissionDecision({ nowMs: Date.now(), startedAtMs: STARTED_AT, closedReason: ADMISSION_CLOSED,
+      const hold = Boolean(deployHold());
+      if (hold) startQuiescing();
+      const decision = toAdmissionDecision({ nowMs: Date.now(), startedAtMs: STARTED_AT, closedReason: ADMISSION_CLOSED, deployHold: hold,
         paused: Boolean(pausedUntil()), inWindow: inBusinessWindow(), rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
       if (decision.close) closeAdmission(decision.reason);
       if (!decision.admit) {
@@ -276,6 +385,15 @@ async function admitLoop(token, digest, drives) {
 
 async function admitRound(token, digest, drives, slots) {
   wakeHeldPrs(busyPrs());
+  // 维护者名单只读比对一次(不写快照:快照按锁 token 命名、同一个锁只能写一次)。变了就停止接单,
+  // 手上的轮次跑完退出,launchd 重启时 prepare 写新快照。
+  const authority = admitScript(['--authority-only']);
+  if (!authority.ok) { log('admit-error', { error: `维护者权限读取失败:${authority.error || `exit ${authority.exitCode}`}` }); return; }
+  if (authority.digest !== digest) {
+    log('authority-changed', { from: digest, to: authority.digest });
+    closeAdmission('authority-changed');
+    return;
+  }
   const admit = admitScript([]);
   if (admit.exitCode === 2) { log('admit-none', { excluded: admit.excludedPrs }); return; }
   // 采集只读、没有副作用:失败记日志,下个检查点再试。
@@ -290,9 +408,26 @@ async function admitRound(token, digest, drives, slots) {
     closeAdmission('admit-plan-failed');
     return;
   }
+  // plan 跑了几分钟:启动这一轮前重查锁、skill SHA、维护窗口和部署暂停。任一不满足就不启动,
+  // plan 文件留在轮次目录里,下次启动按未完成轮次恢复。
+  const blocked = startBlocker(token);
+  if (blocked) {
+    log('admit-deferred', { runId: plan.runId, planFile: plan.planFile, reason: blocked });
+    if (blocked === 'deploy-hold') startQuiescing();
+    closeAdmission(blocked);
+    return;
+  }
   log('plan', { runId: plan.runId, admitted: true, freeSlots: slots, excluded: admit.excludedPrs,
     groups: plan.groups?.map((g) => g.prs.map((p) => p.pr)), skipped: plan.skipped?.map((s) => [s.pr, s.outcome]) });
   startDrive(plan.planFile, token, digest, drives);
+}
+
+function startBlocker(token) {
+  if (!refreshLock(token)) return 'lock-lost';
+  if (skillHead() !== SKILL_HEAD) return 'skill-updated';
+  if (!inBusinessWindow()) return 'maintenance-window';
+  if (deployHold()) return 'deploy-hold';
+  return null;
 }
 
 async function drive(round, token, authorityDigest) {
@@ -313,11 +448,12 @@ async function drive(round, token, authorityDigest) {
     log('watch-restart', { runId: plan.runId, exitCode: watch.exitCode, signal: watch.signalCode });
     watch = spawnWatch();
   };
+  const ctx = { round, plan, planFile, roundDir, token, authorityDigest, queue, inflight, ensureWatch };
   try {
-    resumeInflight({ plan, planFile, roundDir }, inflight, queue);
+    resumeInflight(ctx, inflight, queue);
     await RESUME_BARRIER;
     for (let pass = 0; pass < 2; pass += 1) {
-      await runQueue({ round, plan, planFile, roundDir, token, authorityDigest, queue, inflight, ensureWatch });
+      await runQueue(ctx);
       const reconcile = queue('reconcile');
       if (!reconcile.ok) throw new Error(`reconcile 失败:${reconcile.error}`);
       log('reconcile', { runId: plan.runId, reopened: reconcile.reopened, allComplete: reconcile.allComplete });
@@ -356,18 +492,23 @@ async function runQueue(ctx) {
   for (;;) {
     // 只有在等待期间别的轮次才可能失败,所以每次醒来先看一眼。中止的轮次不收尾,留给重启后恢复。
     if (ABORTED) throw new RoundAborted(ABORTED);
+    if (!QUIESCING && deployHold()) startQuiescing();
     ctx.ensureWatch();
     queue('status');
-    // 全进程在审数满了就不领取。claim → 判门 → 派发 → 登记在途之间没有 await,别的轮次看不到过时的空槽。
-    while (freeSlots() > 0) {
+    // 全进程在审数满了就不领取;部署暂停后也不领取。claim → 判门 → 派发 → 登记在途之间没有 await,别的轮次看不到过时的空槽。
+    while (!QUIESCING && freeSlots() > 0) {
+      assertNotFenced();
       const claim = queue('claim');
       if (!claim.ok) throw new Error(`claim 失败:${claim.error}`);
       if (!claim.claimed) break;
       const task = claim.task;
+      // 归属:最近一次接走这个 PR 的轮次。旧轮晚收尾时,归属已经转走的 PR 不写回本机记录。
+      bumpStore(task, { ownerRoundId: round.runId });
       try {
         const outcome = handleTask(ctx, task);
         if (outcome.dispatched) {
-          bind(queue, task.pr, outcome.agentId);
+          // 找到 run 才绑定;还不知道有没有派出的,先占槽,之后按 dispatch_id 找回或等人工解除。
+          if (outcome.runId) bind(queue, task.pr, outcome.agentId);
           inflight.set(task.pr, { ...outcome, task });
         } else {
           const agentId = `mini-gate:${task.pr}:${randomUUID().slice(0, 8)}`;
@@ -375,6 +516,7 @@ async function runQueue(ctx) {
           completeTask(queue, task.pr, agentId);
         }
       } catch (error) {
+        if (error instanceof RoundAborted) throw error;
         log('task-error', { pr: task.pr, error: error.message });
         writeTaskResult(ctx, task, { outcome: 'error', reason: `前置审查异常:${error.message}`, retry: true, errors: [error.message] });
         const agentId = `mini-gate:${task.pr}:${randomUUID().slice(0, 8)}`;
@@ -383,14 +525,29 @@ async function runQueue(ctx) {
       }
     }
     for (const [pr, entry] of inflight) {
+      if (ABORTED) break;
+      if (!entry.runId) {
+        const settled = settleDispatch(ctx, entry);
+        if (settled === 'not-submitted') {
+          completeUnstarted(queue, pr);
+          inflight.delete(pr);
+          continue;
+        }
+        if (settled !== 'bound') continue;
+      }
+      cancelIfSuperseded(ctx, entry);
       const done = collectServerRun(ctx, entry);
       if (!done) continue;
       completeTask(queue, pr, entry.agentId);
       inflight.delete(pr);
+      if (entry.cancelIntent?.newHead) releasePr(ctx, entry);
     }
+    if (ABORTED) throw new RoundAborted(ABORTED);
     const status = queue('status');
     round.queued = status.queued?.length ?? 0;
     if (!inflight.size && round.queued === 0 && (status.active?.length ?? 0) === 0) return;
+    // 部署暂停:这一轮已没有在审 run 和未决派发,停下;还没领取的任务留在轮次文件里给新版本。
+    if (QUIESCING && !inflight.size) throw new RoundQuiesced('deploy-hold');
     await new Promise((r) => setTimeout(r, CONFIG.pollSeconds * 1000));
   }
 }
@@ -403,28 +560,71 @@ function completeTask(queue, pr, agentId) {
   const r = queue('complete', ['--pr', String(pr), '--agent-id', agentId, '--agent-exited']);
   if (!r.ok) throw new Error(`complete #${pr} 失败:${r.error}`);
 }
+function completeUnstarted(queue, pr) {
+  const r = queue('complete', ['--pr', String(pr), '--no-agent-started', '--agent-exited']);
+  if (!r.ok) throw new Error(`complete #${pr} 失败:${r.error}`);
+}
 
-// 中断后恢复:队列里已绑定到服务器 run 的任务继续轮询;本机判门任务(同步完成)若中途断了,
-// 有结果就补 complete,没结果就补一条 error 结果再 complete;只领取没绑定的,当作没启动过。
+// 中断后恢复:队列里已绑定到服务器 run 的任务继续轮询;没绑定的看派发意图——只有 prepared(或没有意图)
+// 能证明没外发,按「判门中途断了」补一条 error 结果再 complete;dispatching / sent 不自动重发,按 dispatch_id 找回;
+// 已找到 run(bound)就补绑定;人工核实没派出(not-submitted)就按没派出收尾。只领取没绑定的,当作没启动过。
 function resumeInflight(ctx, inflight, queue) {
   const queueFile = join(ctx.roundDir, 'queue.json');
   if (!existsSync(queueFile)) return;
   const planned = ctx.plan.groups.flatMap((g) => g.prs);
   for (const task of readJson(queueFile).tasks) {
-    if (['queued', 'complete'].includes(task.phase)) continue;
+    if (task.phase === 'queued') continue;
     const item = { ...planned.find((p) => p.pr === task.pr), ...task, resultFile: join(ctx.roundDir, 'results', `pr-${task.pr}.json`) };
-    const m = String(task.agentId ?? '').match(/^gha:(\d+):/);
+    const cancelIntent = readJson(cancelIntentFile(ctx, task.pr), null);
+    if (task.phase === 'complete') {
+      // 取消旧审查后已收尾、但还没记下提前释放就中断了:补上释放。
+      if (cancelIntent?.newHead && !ctx.round.released?.[task.pr]) releasePr(ctx, { task: item, runId: cancelIntent.runId, cancelIntent });
+      continue;
+    }
+    if (task.phase === 'cleanup-pending') {
+      // review-queue complete 已记下收尾、删审查 worktree 时中断(或领取时建 worktree 失败):沿同一个 agent 再 complete
+      // 一次把清理做完。不按派发意图重新 bind(bind 只接受 ready/running),也不重派。
+      finishResolution(readIntent(ctx, task.pr));
+      if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '上次运行在收尾清理中途中断,下一轮重新处理', retry: true });
+      if (task.agentId) completeTask(queue, task.pr, task.agentId);
+      else completeUnstarted(queue, task.pr);
+      if (cancelIntent?.newHead && !ctx.round.released?.[task.pr]) releasePr(ctx, { task: item, runId: cancelIntent.runId, cancelIntent });
+      log('resume-cleanup', { pr: task.pr, agentId: task.agentId ?? null });
+      continue;
+    }
+    const m = String(task.agentId ?? '').match(/^gha:(\d+):([^:]*)/);
     if (m && task.phase === 'running') {
-      inflight.set(task.pr, { dispatched: true, agentId: task.agentId, runId: m[1], task: item, dispatchedAt: task.boundAt, gateResult: {} });
+      const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt, gateResult: {} };
+      if (cancelIntent?.runId === m[1]) Object.assign(entry, { cancelIntent, cancelResend: true });
+      finishResolution(readIntent(ctx, task.pr));
+      inflight.set(task.pr, entry);
+      continue;
+    }
+    const intent = readIntent(ctx, task.pr);
+    if (intent && intent.claimAttempt === task.attempts && ['dispatching', 'sent', 'bound', 'not-submitted'].includes(intent.state)) {
+      const entry = { dispatched: true, dispatchId: intent.dispatchId, intentAt: intent.intentAt, attempt: intent.attempt,
+        dispatchedAt: intent.intentAt, gateResult: {}, runId: null, agentId: null, task: item };
+      if (intent.state === 'not-submitted') {
+        finishResolution(intent);
+        if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '人工核实这次派发没有发出,下一轮重新送审', retry: true });
+        completeUnstarted(queue, task.pr);
+        log('resume-dispatch', { pr: task.pr, dispatchId: intent.dispatchId, state: intent.state });
+        continue;
+      }
+      if (intent.state === 'bound' && intent.runId) {
+        entry.runId = String(intent.runId);
+        entry.agentId = `gha:${entry.runId}:${intent.dispatchId}`;
+        bind(queue, task.pr, entry.agentId);
+        finishResolution(intent);
+      }
+      inflight.set(task.pr, entry);
+      log('resume-dispatch', { pr: task.pr, dispatchId: intent.dispatchId, state: intent.state, runId: entry.runId });
       continue;
     }
     if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '上次运行在判门中途中断,下一轮重新处理', retry: true });
     if (task.agentId) completeTask(queue, task.pr, task.agentId);
-    else {
-      const r = queue('complete', ['--pr', String(task.pr), '--no-agent-started', '--agent-exited']);
-      if (!r.ok) throw new Error(`恢复 #${task.pr} 失败:${r.error}`);
-    }
-    log('resume-orphan', { pr: task.pr, phase: task.phase });
+    else completeUnstarted(queue, task.pr);
+    log('resume-orphan', { pr: task.pr, phase: task.phase, intent: intent?.state ?? null });
   }
 }
 
@@ -472,6 +672,7 @@ function handleTask(ctx, task) {
 }
 
 function executeGateAction({ action, live, task, bindings, result, roundDir }) {
+  assertNotFenced();
   const pr = String(task.pr);
   const record = (name, out) => {
     result.gate[name] = out;
@@ -571,6 +772,7 @@ function noticeFrom(kind, out, head) {
 function syncDisplayLabels(live, task, result) {
   const labels = live.statusLabels;
   if (!labels?.enabled || !labels.stale) return;
+  assertNotFenced();
   const out = script('sync-status-labels.mjs', [String(task.pr), '--desired', (labels.desired ?? []).join(','), '--current', (labels.current ?? []).join(',')]);
   if (out.warning || out.errors?.length) result.warnings.push(`展示标签同步:${out.warning || out.errors.join('; ')}`);
 }
@@ -580,6 +782,7 @@ function dropStaleMergeReady(live, task, result) {
   if (!(live.meta?.labels ?? []).includes(MERGE_READY_LABEL)) return;
   const record = loadStore().prs[task.pr];
   if (record?.cleanHead === task.head) return;
+  assertNotFenced();
   const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${task.pr}/labels/${encodeURIComponent(MERGE_READY_LABEL)}`],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
   if (!r.ok && !/404/.test(r.stderr)) result.warnings.push(`review:merge-ready 没摘掉:${r.stderr.trim().slice(0, 200)}`);
@@ -600,10 +803,18 @@ function manualProtectedApproval(live, task) {
 }
 
 // ── 派发服务器审查 ──────────────────────────────────────────────────────────
+// 派发分四个落盘状态,写在轮次目录的 dispatch-intent-<pr>.json:prepared(生成了 dispatch_id、还没外发)→
+// dispatching(调 gh workflow run 之前)→ sent(gh 返回成功)→ bound(找到 runId)。恢复时只有 prepared 能证明没外发。
 function dispatchReview(ctx, task, { tier, action }, gateResult) {
   if (!inBusinessWindow()) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true });
   }
+  // 部署暂停:不派发,也不算失败;上线后的新版本重审。
+  if (QUIESCING || deployHold()) {
+    log('dispatch-held', { pr: task.pr, head: task.head, reason: 'deploy-hold' });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '部署暂停,本次没有派发服务器审查,上线后自动重审', retry: true });
+  }
+  assertNotFenced();
   const store = loadStore();
   const record = store.prs[task.pr] ?? {};
   if (dispatchesToday() >= CONFIG.dailyCap) {
@@ -621,64 +832,236 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
     target_repo: CONFIG.targetRepo, pr: String(task.pr), head_sha: task.head, base_sha: task.base, tier,
     round_id: ctx.plan.runId, mode: CONFIG.mode, action, prev_run_id: String(prevRunId), attempt: String(attempt), dispatch_id: dispatchId,
   };
+  const intent = { pr: task.pr, head: task.head, dispatchId, attempt, claimAttempt: task.attempts, tier, action, intentAt: nowIso(), state: 'prepared' };
+  saveIntent(ctx, intent);
+  saveIntent(ctx, { ...intent, state: 'dispatching' });
   const args = ['workflow', 'run', 'review-pr.yml', '-R', CONFIG.workflowRepo, '--ref', CONFIG.workflowRef];
   for (const [key, value] of Object.entries(inputs)) args.push('-f', `${key}=${value}`);
   const fired = run('gh', args, { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
-  if (!fired.ok) return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发服务器审查失败:${fired.stderr.trim().slice(0, 200)}`, retry: true });
-  const runId = findDispatchedRun(task.pr, dispatchId);
-  recordDispatch({ at: nowIso(), pr: task.pr, head: task.head, runId, dispatchId, action });
-  log('dispatched', { pr: task.pr, head: task.head, tier, action, runId, prevRunId, attempt });
-  if (!runId) return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '已派发但找不到对应的服务器 run', retry: true });
-  record.attempts = { ...(record.attempts ?? {}), [task.head]: attempt };
-  store.prs[task.pr] = record;
-  saveStore(store);
-  return { dispatched: true, agentId: `gha:${runId}:${dispatchId}`, runId, dispatchedAt: nowIso(), gateResult };
+  const stderr = String(fired.stderr ?? '').trim().slice(0, 300);
+  if (!fired.ok && toDispatchFailure({ stderr: fired.stderr, error: fired.error }) === 'rejected') {
+    // 明确被拒(HTTP 4xx 且有错误内容):没有派出,按失败重试。
+    saveIntent(ctx, { ...intent, state: 'rejected', error: stderr });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发服务器审查被拒:${stderr.slice(0, 200)}`, retry: true });
+  }
+  if (fired.ok) saveIntent(ctx, { ...intent, state: 'sent', sentAt: nowIso() });
+  recordDispatch({ at: nowIso(), pr: task.pr, head: task.head, dispatchId, action, ...(fired.ok ? {} : { uncertain: true }) });
+  // 超时、断线、5xx 都按「不知道有没有派出」:不重发,先占槽,按 dispatch_id 找回。gh 返回成功也可能一时找不到 run。
+  const found = fired.ok ? lookupDispatchedRun(task.pr, dispatchId, intent.intentAt, { tries: 12 }) : { runId: null };
+  log('dispatched', { pr: task.pr, head: task.head, tier, action, runId: found.runId, dispatchId, prevRunId, attempt,
+    ...(fired.ok ? {} : { uncertain: stderr || String(fired.error ?? '').slice(0, 200) }) });
+  const entry = { dispatched: true, dispatchId, intentAt: intent.intentAt, attempt, dispatchedAt: nowIso(), gateResult, runId: null, agentId: null };
+  if (!found.runId) {
+    log('dispatch-unknown', { pr: task.pr, head: task.head, dispatchId, sent: fired.ok });
+    return entry;
+  }
+  markBound(ctx, task, entry, found.runId);
+  return entry;
 }
 
-function findDispatchedRun(pr, dispatchId) {
-  const title = `review-pr #${pr} ${dispatchId}`;
-  for (let i = 0; i < 12; i += 1) {
-    const list = run('gh', ['run', 'list', '-R', CONFIG.workflowRepo, '--workflow', 'review-pr.yml', '--event', 'workflow_dispatch',
-      '--limit', '30', '--json', 'databaseId,displayTitle'], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
-    if (list.ok) {
-      const hit = JSON.parse(list.stdout).find((r) => r.displayTitle === title);
-      if (hit) return String(hit.databaseId);
-    }
-    run('sleep', ['5']);
+function intentFile(ctx, pr) { return join(ctx.roundDir, `dispatch-intent-${pr}.json`); }
+function cancelIntentFile(ctx, pr) { return join(ctx.roundDir, `cancel-intent-${pr}.json`); }
+function resolutionFile(dispatchId) { return stateFile(`dispatch-resolution-${dispatchId}.json`); }
+function readIntent(ctx, pr) { return readJson(intentFile(ctx, pr), null); }
+function saveIntent(ctx, intent) { writeJson(intentFile(ctx, intent.pr), intent); }
+
+// 派发找到了 run:意图记 bound,登记这个 head 的派发次数。队列绑定由调用方做。
+function markBound(ctx, task, entry, runId) {
+  entry.runId = String(runId);
+  entry.agentId = `gha:${entry.runId}:${entry.dispatchId}`;
+  const intent = readIntent(ctx, task.pr) ?? { pr: task.pr, head: task.head, dispatchId: entry.dispatchId, intentAt: entry.intentAt };
+  saveIntent(ctx, { ...intent, state: 'bound', runId: entry.runId, boundAt: nowIso() });
+  const record = loadStore().prs[task.pr] ?? {};
+  bumpStore(task, { attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(Number(entry.attempt) || 1, record.attempts?.[task.head] ?? 0) } });
+}
+
+// 按 dispatch_id 在意图时间前后分页找自己派的 run(不只看最近 30 条)。查询失败、列表不完整都算「未知」。
+function lookupDispatchedRun(pr, dispatchId, intentAt, { tries = 1 } = {}) {
+  const since = new Date(Date.parse(intentAt) - 5 * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  for (let i = 0; i < tries; i += 1) {
+    if (i > 0) run('sleep', ['5']);
+    const r = run('gh', ['api', '--paginate', '--slurp',
+      `repos/${CONFIG.workflowRepo}/actions/workflows/review-pr.yml/runs?event=workflow_dispatch&created=>=${since}&per_page=100`],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 120_000 });
+    if (!r.ok) continue;
+    let pages;
+    try { pages = JSON.parse(r.stdout); } catch { continue; }
+    const hit = findDispatchRun(pages, { pr, dispatchId });
+    if (hit.runId) return hit;
   }
+  return { runId: null };
+}
+
+// 还不知道有没有派出的派发(runId 为 null):不自动重发。先看人工解除记录,再按 dispatch_id 找 run;
+// 都没有就继续占槽,从意图时间起满 60 分钟记 dispatch-unresolved 由巡检提醒。
+// 作者推了新提交不算解除的证据:这个 PR 还在本轮,新 head 要等解除后才派。
+function settleDispatch(ctx, entry) {
+  const { task } = entry;
+  const resolution = readJson(resolutionFile(entry.dispatchId), null);
+  if (resolution) {
+    const outcome = applyResolution(ctx, entry, resolution);
+    if (outcome) return outcome;
+  }
+  // 按 dispatch_id 找 run 最多 3 分钟一次(每次是一组分页调用);人工解除记录每次轮询都看。
+  if (!entry.lookedUpAt || Date.now() - entry.lookedUpAt >= ADMIT_INTERVAL_MS) {
+    entry.lookedUpAt = Date.now();
+    const found = lookupDispatchedRun(task.pr, entry.dispatchId, entry.intentAt);
+    if (found.runId) {
+      markBound(ctx, task, entry, found.runId);
+      bind(ctx.queue, task.pr, entry.agentId);
+      log('dispatch-found', { pr: task.pr, dispatchId: entry.dispatchId, runId: entry.runId });
+      return 'bound';
+    }
+  }
+  if (Date.now() - Date.parse(entry.intentAt) > DISPATCH_UNRESOLVED_MS) {
+    logOnce(`unresolved:${entry.dispatchId}`, 'dispatch-unresolved', { pr: task.pr, head: task.head, dispatchId: entry.dispatchId, intentAt: entry.intentAt });
+  }
+  return 'pending';
+}
+
+// 人工解除记录 <stateDir>/mivo/dispatch-resolution-<dispatch_id>.json,二选一:
+//   {"resolution":"not-submitted"}          核实没有派出:按没派出收尾,不计失败,PR 回到候选;
+//   {"resolution":"found","runId":"<id>"}   找到了:只把「不知道」变成「已知是这个 run」,占槽不变,run 结束才释放。
+// 处理顺序:先把结果写进意图文件,再记 dispatch-resolved,最后删解除记录;中途被杀,重启后只补后两步。
+function applyResolution(ctx, entry, resolution) {
+  const { task } = entry;
+  const intent = readIntent(ctx, task.pr) ?? { pr: task.pr, head: task.head, dispatchId: entry.dispatchId, intentAt: entry.intentAt };
+  const kind = resolution?.resolution;
+  if (kind === 'not-submitted') {
+    saveIntent(ctx, { ...intent, state: 'not-submitted', resolution: { kind, at: nowIso() } });
+    finishResolution(readIntent(ctx, task.pr));
+    writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: '人工核实这次派发没有发出,下一轮重新送审', retry: true });
+    return 'not-submitted';
+  }
+  if (kind === 'found') {
+    const runId = String(resolution.runId ?? '');
+    const match = /^\d{1,20}$/.test(runId) ? runMatchesDispatch(runId, task.pr, entry.dispatchId) : 'mismatch';
+    if (match === 'unknown') return null;
+    if (match === 'mismatch') {
+      logOnce(`invalid:${entry.dispatchId}:${runId}`, 'dispatch-resolution-invalid', { pr: task.pr, dispatchId: entry.dispatchId, runId });
+      return null;
+    }
+    saveIntent(ctx, { ...intent, state: 'bound', runId, boundAt: nowIso(), resolution: { kind, runId, at: nowIso() } });
+    finishResolution(readIntent(ctx, task.pr));
+    markBound(ctx, task, entry, runId);
+    bind(ctx.queue, task.pr, entry.agentId);
+    return 'bound';
+  }
+  logOnce(`invalid:${entry.dispatchId}:${kind}`, 'dispatch-resolution-invalid', { pr: task.pr, dispatchId: entry.dispatchId, resolution: kind ?? null });
   return null;
 }
 
-// 服务器 run 结束后取回结果包,写进本轮目录;没结束返回 false。
+// 解除结果已写进意图文件之后的两步:记日志、删解除记录。重复调用不重复记。
+function finishResolution(intent) {
+  if (!intent?.resolution) return;
+  const file = resolutionFile(intent.dispatchId);
+  if (!existsSync(file)) return;
+  log('dispatch-resolved', { pr: intent.pr, dispatchId: intent.dispatchId, resolution: intent.resolution.kind, runId: intent.resolution.runId ?? null });
+  try { unlinkSync(file); } catch { /* 已被删,结果相同 */ }
+}
+
+function runMatchesDispatch(runId, pr, dispatchId) {
+  const view = run('gh', ['run', 'view', runId, '-R', CONFIG.workflowRepo, '--json', 'displayTitle'], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
+  if (!view.ok) return /not found|HTTP 404/i.test(view.stderr) ? 'mismatch' : 'unknown';
+  try { return JSON.parse(view.stdout).displayTitle === `review-pr #${pr} ${dispatchId}` ? 'match' : 'mismatch'; } catch { return 'unknown'; }
+}
+
+// PR 当前 head:最多 3 分钟查一次全部开着的 PR(一次分页调用),失败沿用上一次的结果。
+function currentHeads() {
+  if (HEADS.atMs && Date.now() - HEADS.atMs < ADMIT_INTERVAL_MS) return HEADS.map;
+  HEADS.atMs = Date.now();
+  const r = ghRead(['api', '--paginate', '--slurp', `repos/${CONFIG.targetRepo}/pulls?state=open&per_page=100`], { allowFail: true, timeoutMs: 60_000 });
+  if (!r.ok) { log('heads-skip', { reason: String(r.stderr || r.error || '').trim().slice(0, 200) }); return HEADS.map; }
+  try { HEADS.map = new Map(JSON.parse(r.stdout).flat().map((pr) => [Number(pr.number), pr.head?.sha])); } catch { /* 读不懂沿用上次 */ }
+  return HEADS.map;
+}
+
+// 作者在审查中途推了新提交:先在轮次目录写持久取消意图,再取消旧 run。旧 run 确认结束前仍占槽。
+// 已经在取消(换 head 或超时)的不再处理;取消请求失败或迟迟不生效时由 collectServerRun 确认 run 还没结束后重发。
+function cancelIfSuperseded(ctx, entry) {
+  if (!entry.runId || entry.cancelIntent) return;
+  const head = currentHeads()?.get(entry.task.pr);
+  if (!head || head === entry.task.head) return;
+  entry.cancelIntent = { runId: entry.runId, reason: 'superseded', oldHead: entry.task.head, newHead: head, at: nowIso() };
+  writeJson(cancelIntentFile(ctx, entry.task.pr), entry.cancelIntent);
+  requestCancel(entry);
+}
+
+function requestCancel(entry) {
+  assertNotFenced();
+  entry.cancelResend = false;
+  entry.cancelSentAt = Date.now();
+  const intent = entry.cancelIntent;
+  const r = run('gh', ['run', 'cancel', entry.runId, '-R', CONFIG.workflowRepo], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
+  log(intent.newHead ? 'cancel-superseded' : 'cancel-timeout', { pr: entry.task.pr, runId: entry.runId,
+    ...(intent.newHead ? { oldHead: intent.oldHead, newHead: intent.newHead } : { kind: intent.kind }),
+    cancelled: r.ok, ...(r.ok ? {} : { error: String(r.stderr || r.error || '').trim().slice(0, 200) }) });
+}
+
+// 作者推了新提交、旧 run 已确认结束:这个 PR 提前从本轮释放,新 head 进新一轮。同 head 的普通结果仍随原轮收尾。
+function releasePr(ctx, entry) {
+  const file = join(ctx.roundDir, 'mivo-released.json');
+  const released = { ...readJson(file, {}), [entry.task.pr]: { at: nowIso(), runId: entry.runId,
+    oldHead: entry.cancelIntent?.oldHead ?? null, newHead: entry.cancelIntent?.newHead ?? null } };
+  writeJson(file, released);
+  ctx.round.released = released;
+  log('pr-released', { pr: entry.task.pr, roundId: ctx.plan.runId, runId: entry.runId, newHead: entry.cancelIntent?.newHead ?? null });
+}
+
+// 服务器 run 结束后取回结果包,写进本轮目录;没结束返回 false。排队和执行分开计时(lib/admission.mjs 的 toRunTiming)。
 function collectServerRun(ctx, entry) {
   const { task } = entry;
-  const view = run('gh', ['run', 'view', entry.runId, '-R', CONFIG.workflowRepo, '--json', 'status,conclusion,createdAt'],
+  const view = run('gh', ['run', 'view', entry.runId, '-R', CONFIG.workflowRepo, '--json', 'status,conclusion,createdAt,jobs'],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
   if (!view.ok) return false;
   const info = JSON.parse(view.stdout);
   if (info.status !== 'completed') {
-    if (Date.now() - Date.parse(info.createdAt) > MAX_RUN_MINUTES * 60_000) {
-      run('gh', ['run', 'cancel', entry.runId, '-R', CONFIG.workflowRepo], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
-      writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: `服务器审查超过 ${MAX_RUN_MINUTES} 分钟未结束,已取消`, retry: true, enteredReview: true });
-      bumpStore(task, { lastRunId: entry.runId });
-      recordFailure(task, true);
+    const timing = toRunTiming({ nowMs: Date.now(), run: info });
+    if (timing.slow) logOnce(`queue-slow:${entry.runId}`, 'queue-slow', { pr: task.pr, runId: entry.runId, queueMin: Math.round(timing.queueMin) });
+    if (entry.cancelIntent) {
+      // 已经在取消(换 head 或超时):run 确认结束前一直占槽、不写结果;取消请求失败或迟迟不生效,隔一个检查间隔再发。
+      if (entry.cancelResend || Date.now() - (entry.cancelSentAt ?? 0) >= ADMIT_INTERVAL_MS) requestCancel(entry);
+      return false;
+    }
+    if (!timing.cancel) return false;
+    // 超时:先写持久取消意图再取消。失败记录和放槽都等 run 确认结束,否则在审数会超过上限、同 head 会在退避后被派第二次。
+    entry.cancelIntent = { runId: entry.runId, reason: 'timeout', kind: timing.cancel, at: nowIso() };
+    writeJson(cancelIntentFile(ctx, task.pr), entry.cancelIntent);
+    requestCancel(entry);
+    return false;
+  }
+  if (entry.cancelIntent && info.conclusion === 'cancelled') {
+    if (entry.cancelIntent.newHead) {
+      // 作者推了新提交、旧审查已取消:合法终态 state-changed,不算失败,派发账本保留。
+      writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'state-changed', reason: '作者推了新提交,旧审查已取消', retry: true });
+      bumpOwned(ctx, task, { lastRunId: entry.runId });
+      log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'state-changed', superseded: true });
       return true;
     }
-    return false;
+    const kind = entry.cancelIntent.kind;
+    const reason = kind === 'exec'
+      ? `服务器审查执行超过 ${MAX_EXEC_MINUTES} 分钟未结束,已取消`
+      : `服务器审查排队超过 ${MAX_QUEUE_MINUTES} 分钟没有开始,已取消`;
+    writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason, retry: true, enteredReview: kind === 'exec' });
+    bumpOwned(ctx, task, { lastRunId: entry.runId });
+    recordFailure(ctx, task, true);
+    log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'error', cancelled: kind });
+    return true;
   }
   const dir = join(ctx.roundDir, 'server', `pr-${task.pr}-${entry.runId}`);
   const dl = run('gh', ['run', 'download', entry.runId, '-R', CONFIG.workflowRepo, '-n', `review-pr-${task.pr}`, '-D', dir],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 180_000 });
   if (!dl.ok || !existsSync(join(dir, 'result.json'))) {
     writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: `服务器审查没有产出结果(run ${entry.runId} ${info.conclusion})`, retry: true });
-    bumpStore(task, { lastRunId: entry.runId });
-    recordFailure(task, true);
+    bumpOwned(ctx, task, { lastRunId: entry.runId });
+    recordFailure(ctx, task, true);
+    log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: 'error', missingResult: true });
     return true;
   }
   const server = readJson(join(dir, 'result.json'));
   if (server.pr !== task.pr || server.head !== task.head || server.runId !== ctx.plan.runId) {
     writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: '服务器结果与任务不匹配(PR/head/轮次)', retry: true });
-    recordFailure(task, true);
+    recordFailure(ctx, task, true);
     return true;
   }
   const result = { ...server };
@@ -701,20 +1084,20 @@ function collectServerRun(ctx, entry) {
   if (health && health.ok === false) {
     // 维护窗口或工具链不健康:服务器没有审,这次派发不算一次尝试;工具链不健康时暂停派发 30 分钟再试。
     const record = loadStore().prs[task.pr] ?? {};
-    bumpStore(task, { attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) } });
+    bumpOwned(ctx, task, { attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) } });
     if (health.reason !== 'outside-business-window') {
       writeJson(stateFile('pause.json'), { until: new Date(Date.now() + HEALTH_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
       log('health-pause', { pr: task.pr, reason: server.reason });
     }
   } else {
-    recordFailure(task, server.outcome === 'error');
+    recordFailure(ctx, task, server.outcome === 'error');
   }
-  bumpStore(task, {
+  bumpOwned(ctx, task, {
     lastRunId: entry.runId,
     ...(server.reviewed && server.mivo?.reportComplete ? { lastCompleteRunId: entry.runId } : {}),
     ...(server.reviewClean && ['review-only', 'approval'].includes(server.outcome) ? { cleanHead: task.head } : {}),
   });
-  log('collected', { pr: task.pr, runId: entry.runId, outcome: server.outcome, reviewClean: server.reviewClean });
+  log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: server.outcome, reviewClean: server.reviewClean });
   return true;
 }
 
@@ -724,10 +1107,20 @@ function bumpStore(task, patch) {
   saveStore(store);
 }
 
+// 归属已经转给更新的轮次(作者推了新提交、旧轮晚收尾)时不写回:旧结果不覆盖新 head 的 cleanHead、lastCompleteRunId。
+function bumpOwned(ctx, task, patch) {
+  const owner = loadStore().prs[task.pr]?.ownerRoundId;
+  if (owner && owner !== ctx.plan.runId) {
+    logOnce(`stale-owner:${ctx.plan.runId}:${task.pr}`, 'store-skip', { pr: task.pr, roundId: ctx.plan.runId, owner });
+    return;
+  }
+  bumpStore(task, patch);
+}
+
 // 记这个 head 的一次失败或成功,dispatchReview 据此退避(规则见 lib/retry.mjs)。
-function recordFailure(task, failed) {
+function recordFailure(ctx, task, failed) {
   const record = loadStore().prs[task.pr] ?? {};
-  bumpStore(task, { failures: toFailureRecord(record.failures, task.head, failed, nowIso()) });
+  bumpOwned(ctx, task, { failures: toFailureRecord(record.failures, task.head, failed, nowIso()) });
 }
 
 function finishGate(ctx, task, result) {

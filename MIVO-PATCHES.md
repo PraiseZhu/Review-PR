@@ -34,6 +34,7 @@
 | bot-check-settle | 机器人静默期把「机器人在当前 head 上的 check 跑完」也算作表态（`botReviewSettle.checkNames`，Mivo 配 `greptile-apps → Greptile Review`）；仍要再静默 `quietMinutes` | `scripts/lib.mjs`（`botCheckActivity`）、`scripts/context.mjs`、`scripts/pre-merge-check.mjs` | Greptile 没有意见时只发总结评论、不提交 review，上游只看 review 和行内评论，认不出它已审完，干净的 PR 每次都要等满 30 分钟超时 |
 | auto-notices | `reviewOnlyNotices=auto` 时，review-only 轮的目标分支提醒用 auto 措辞 | `scripts/notify-round-targets.mjs` | Mivo 以 review-only 模式运行，但会自动重审，「请重新运行 review-only」的说法不对 |
 | no-summary | 没配汇总群时，轮次收尾接受 `status=disabled` 的通知回执 | `scripts/review-queue.mjs` | Mivo 不发每轮汇总（2026-10-11 决定） |
+| round-owner | 轮次状态（round-state）每行记下写它的轮次与创建时间；旧轮晚收尾时，跳过已经由更新轮次写过的行，不写回成旧 head | `scripts/review-round.mjs`（`nextRoundState`） | Mivo 前置在作者推新提交、旧审查确认结束后，把这个 PR 提前从旧轮释放、交给新一轮（2026-10-14 修正方案 Step 2）；旧轮里其它 PR 还在审时它晚收尾，会把新 head 的状态写回成旧的 |
 | rule-map | 整份换成 Mivo 的规则导航（来源：Mivo `AGENTS.md`「改什么，先读哪里」） | `references/rule-map.md` | 上游是 Cindy 仓的映射 |
 | test-rules | 上游的配置取值测试改读 `REVIEW_PR_RULES_FILE`；上游测试用 `tools/fixtures/upstream-pr-rules.json` 运行 | `scripts/approval-policy.test.mjs` | 生产配置换成了 Mivo 的值，上游用例仍要验证上游行为 |
 
