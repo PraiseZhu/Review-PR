@@ -13,6 +13,7 @@ import { decideGate } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt } from '../lib/prompt.mjs';
+import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { TIER_DEFAULTS, tierConfig, nextAttempt } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
@@ -128,6 +129,10 @@ async function prepare() {
     if (tier !== input.tier) state.warnings.push(`档位与前置给出的不同(${input.tier} → ${tier}),按进场复核结果审查`);
     state.tier = tier;
 
+    // 3b. 转 issue 跟进的审查问题:解析 PR 说明里登记的 issue 并逐个核验;读失败只记未采用,不让整轮失败。
+    state.deferrals = collectDeferrals(input, ctx, state);
+    writeJson(join(INPUT_DIR, 'deferrals.json'), state.deferrals);
+
     // 4. 审查范围(增量复审,方案第 8 节)。上一轮结果来自上一次 run 的 artifact。
     const diffText = readFileSync(diffFile, 'utf8');
     const diffFiles = splitDiffByFile(diffText);
@@ -193,6 +198,22 @@ function findHeadApproval(input, maintainers, author) {
   return null;
 }
 
+// 转 issue 跟进的登记(见 lib/deferrals.mjs):只放核验通过的条目进任务书;没采用的连同原因写进报告。
+function collectDeferrals(input, ctx, state) {
+  try {
+    const parsed = parseDeferrals(ctx.meta?.body, { repo: input.targetRepo, pr: input.pr });
+    const checked = verifyDeferrals({
+      entries: parsed.entries, repo: input.targetRepo, pr: input.pr, prUrl: ctx.meta?.url,
+      author: ctx.meta?.author, maintainers: ctx.signoff?.maintainers ?? [],
+      readIssue: (number) => toIssueRead(gh(['api', `repos/${input.targetRepo}/issues/${number}`], { allowFail: true, timeoutMs: 60_000 })),
+    });
+    return { found: parsed.found, verified: checked.verified, rejected: [...parsed.rejected, ...checked.rejected] };
+  } catch (error) {
+    state.warnings.push(`转 issue 登记没有核验成(${error.message}),本轮不采用任何登记`);
+    return { found: false, verified: [], rejected: [], error: error.message };
+  }
+}
+
 function downloadPrevious(input, state) {
   const dir = join(WORK, 'prev');
   rmSync(dir, { recursive: true, force: true });
@@ -210,7 +231,7 @@ function downloadPrevious(input, state) {
   return {
     head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
     reviewed: result.reviewed, reviewClean: result.reviewClean, outcome: result.outcome,
-    reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [],
+    reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     rulesDigest: result.mivo?.rulesDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt,
@@ -343,6 +364,7 @@ async function codex() {
     spec: loadReviewSpec(SKILL_ROOT), ctx, scope: state.scope, workdir: REPO_DIR, tier: state.tier,
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile: join(INPUT_DIR, 'scope.json'),
       securityScanFile: state.securityScan?.file },
+    deferrals: state.deferrals?.verified ?? [],
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
   const attempts = [];
@@ -398,9 +420,11 @@ async function publish() {
     const diffFiles = splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'));
     let report;
     let findings;
+    let deferred = [];
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
       findings = previous.mivo?.findings ?? [];
+      deferred = previous.mivo?.deferred ?? [];
       report = reusedReport({ previousReport: readFileSync(join(WORK, 'prev', 'report.md'), 'utf8'), scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
     } else {
@@ -410,12 +434,15 @@ async function publish() {
         const last = state.codex?.attempts?.at(-1);
         return failReview(state, result, `模型审查没有完成:${last?.error || '没有答卷'}`, { quota: last?.quota === true });
       }
-      const checked = validateAnswer(readJson(answerFile), { diffFiles });
+      const checked = validateAnswer(readJson(answerFile), { diffFiles, deferrals: state.deferrals?.verified ?? [] });
       if (!checked.ok) return failReview(state, result, `模型答卷不合格:${checked.error}`);
       result.warnings.push(...checked.notes);
       findings = checked.findings.slice(0, 100);
       if (checked.findings.length > 100) result.warnings.push(`问题超过 100 条,只发布前 100 条`);
-      report = finalizeReport({ report: checked.report, findings, pr: input.pr, url: state.context.url, head: input.head,
+      deferred = checked.deferred.slice(0, 100);
+      if (checked.deferred.length > 100) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
+      report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
+        pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier, scope: state.scope });
       result.mivo.lastFullReviewAt = state.scope.mode === 'full' ? nowIso() : state.previous?.lastFullReviewAt;
     }
@@ -423,11 +450,16 @@ async function publish() {
     let secretHits = scrubbed.hits;
     report = scrubbed.text;
     findings = findings.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return { ...finding, body: s.text }; });
+    deferred = deferred.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return { ...finding, body: s.text }; });
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0, reportFile: 'report.md' });
-    Object.assign(result.mivo, { reportComplete: true, findings });
+    // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
+    Object.assign(result.mivo, { reportComplete: true, findings, deferred, deferrals: {
+      verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
+      rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
+    } });
 
     if (findings.length > 0) await publishFindings(state, result, reportFile, findings);
     else await publishClean(state, result, reportFile);
@@ -454,7 +486,7 @@ function baseResult(state) {
       targetRepo: input.targetRepo, serverMode: input.mode, runId: input.runId, runUrl: input.runUrl, attempt: input.attempt,
       tier: state.tier, scope: state.scope, skillSha: input.skillSha, rulesDigest: current.rulesDigest,
       filePatchHashes: current.filePatchHashes, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
-      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], completedAt: null,
+      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], completedAt: null,
     },
   };
 }
@@ -463,7 +495,10 @@ async function publishFindings(state, result, reportFile, findings) {
   const input = state.input;
   result.outcome = 'findings';
   result.reason = `发现 ${findings.length} 条 P0/P1`;
-  const conclusionCheck = { conclusion: 'failure', title: `发现 ${findings.length} 条 P0/P1`, summary: `档位 ${state.tier}。问题已在 PR 上开 review thread,修复并 resolve 后自动重审。` };
+  const deferredSummary = toDeferredSummary(result.mivo.deferred);
+  const deferHint = findings.some((finding) => /^\s*\[P1\]/.test(finding.body)) ? '本 PR 修不了的 P1 可以转 issue 跟进,做法见报告。' : '';
+  const conclusionCheck = { conclusion: 'failure', title: `发现 ${findings.length} 条 P0/P1`,
+    summary: `档位 ${state.tier}。问题已在 PR 上开 review thread,修复并 resolve 后自动重审。${deferHint}${deferredSummary ? `另有 ${deferredSummary.text},不阻断。` : ''}` };
   if (input.mode === 'dry-run') {
     result.reason += '(dry-run:没有写入 GitHub)';
     return;
@@ -488,8 +523,11 @@ async function publishFindings(state, result, reportFile, findings) {
 
 async function publishClean(state, result, reportFile) {
   const input = state.input;
+  // 只有转 issue 跟进的 P1 时也走这里:不阻断,check 标题和摘要写明条数与 issue 号。
+  const deferredSummary = toDeferredSummary(result.mivo.deferred);
+  const clean = deferredSummary ? `没有阻断的 P0/P1;${deferredSummary.text},不阻断本 PR` : '没有 P0/P1';
   if (input.mode === 'dry-run') {
-    Object.assign(result, { outcome: 'approval', reason: '审查通过,没有 P0/P1(dry-run:没有写入 GitHub)',
+    Object.assign(result, { outcome: 'approval', reason: `审查通过,${clean}(dry-run:没有写入 GitHub)`,
       approval: { status: 'blocked', code: 'dry-run', reason: 'dry-run 只审查,不写入 GitHub' } });
     return;
   }
@@ -501,9 +539,10 @@ async function publishClean(state, result, reportFile) {
   const receipt = existsSync(finishFile) ? readJson(finishFile, null) : null;
   result.approval = receipt?.approval ?? finish.approval ?? { status: 'pending', code: 'approval-result-unverified', reason: finish.error || 'finish 没有回执' };
   if (receipt?.retry || finish.retry) result.retry = true;
-  const check = { conclusion: 'success', title: `审查通过(${state.tier})`, summary: `没有 P0/P1。${state.scope.reason}` };
+  const check = { conclusion: 'success', title: deferredSummary ? `审查通过(${state.tier}),${deferredSummary.count} 条 P1 已转 issue` : `审查通过(${state.tier})`,
+    summary: `${clean}。${state.scope.reason}` };
   if (receipt?.stage === 'reviewed-only' && result.approval.status === 'verified') {
-    Object.assign(result, { outcome: 'review-only', reason: '审查通过,已 Approve;review-only 不执行合并,由维护者手动合并' });
+    Object.assign(result, { outcome: 'review-only', reason: `审查通过,已 Approve${deferredSummary ? `(${deferredSummary.text})` : ''};review-only 不执行合并,由维护者手动合并` });
     addMergeReady(state, result);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
     return;
@@ -511,7 +550,7 @@ async function publishClean(state, result, reportFile) {
   if (result.approval.status === 'blocked' && result.approval.code === 'independent-approval-required' && state.context.viewerIsAuthor) {
     // 作者就是审查账号(PraiseZhu 自己的 PR):不能自批,改用 COMMENT 发同样的报告(同 Cindy --comment-only)。
     const comment = postReportComment(state, reportFile);
-    Object.assign(result, { outcome: 'approval', reason: '审查通过,没有 P0/P1;作者是审查账号本人,以评论发布报告,需另一位维护者 Approve' });
+    Object.assign(result, { outcome: 'approval', reason: `审查通过,${clean};作者是审查账号本人,以评论发布报告,需另一位维护者 Approve` });
     result.mivo.reportComment = comment;
     if (comment.ok) {
       addMergeReady(state, result);
@@ -593,7 +632,7 @@ function writeBareError(reason) {
     runId: String(env.INPUT_ROUND_ID ?? ''), mode: 'review-only', pr: Number(env.INPUT_PR), head: String(env.INPUT_HEAD_SHA ?? ''),
     base: String(env.INPUT_BASE_SHA ?? ''), enteredReview: false, reviewed: false, reviewClean: false, merged: false,
     outcome: 'error', reason, threadUrls: [], errors: [reason], warnings: [], retry: true,
-    mivo: { targetRepo: String(env.INPUT_TARGET_REPO ?? ''), serverMode: String(env.INPUT_MODE ?? ''), runId: env.GITHUB_RUN_ID || '', findings: [], reportComplete: false },
+    mivo: { targetRepo: String(env.INPUT_TARGET_REPO ?? ''), serverMode: String(env.INPUT_MODE ?? ''), runId: env.GITHUB_RUN_ID || '', findings: [], deferred: [], reportComplete: false },
   };
   mkdirSync(OUT, { recursive: true });
   return writeResult(result);

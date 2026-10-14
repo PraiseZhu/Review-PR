@@ -64,7 +64,7 @@ export const filePatchHashes = (files) => Object.fromEntries(Object.entries(file
 
 /**
  * @param {object} p
- * @param {object|null} p.previous 上一次服务器审查结果(含 head/baseRefName/diffHash/filePatchHashes/findings/...)
+ * @param {object|null} p.previous 上一次服务器审查结果(含 head/baseRefName/diffHash/filePatchHashes/findings/deferred/...)
  * @param {object} p.current 本次 {head, baseRefName, diffHash, filePatchHashes, totalDiffLines, tier, triggerKinds, skillSha, rulesDigest, now}
  * @param {boolean|null} p.headIsDescendant H0 是否是 H1 的祖先(git merge-base --is-ancestor);null=未知
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
@@ -83,7 +83,9 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   if (!Number.isFinite(lastFull) || current.now - lastFull > FULL_REVIEW_MAX_AGE_MS) return full('距上次完整审查超过 7 天');
 
   const sameDiff = previous.diffHash && previous.diffHash === current.diffHash;
-  const previousClean = (previous.findings ?? []).length === 0 && previous.reviewClean === true;
+  // 上一轮转 issue 跟进的问题(deferred)也不算干净:issue 可能已关闭或撤了登记,每轮都重新核验,不沿用结论。
+  const carried = [...(previous.findings ?? []), ...(previous.deferred ?? [])];
+  const previousClean = carried.length === 0 && previous.reviewClean === true;
   if (previous.head !== current.head && headIsDescendant !== true) {
     if (sameDiff && previousClean) return reuse(previous, '强制推送/rebase,但 diff 完全相同,沿用上次结论');
     return full('上次审过的版本不是当前版本的祖先(强制推送或 rebase)');
@@ -93,7 +95,7 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   const after = current.filePatchHashes ?? {};
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((path) => before[path] !== after[path]).sort();
-  const findingFiles = [...new Set((previous.findings ?? []).map((f) => f.path).filter((path) => path in after))];
+  const findingFiles = [...new Set(carried.map((f) => f.path).filter((path) => path in after))];
   const changedLines = changed.reduce((sum, path) => sum + (current.fileChangedLines?.[path] ?? 0), 0);
   if (previous.totalDiffLines > 0 && changedLines > previous.totalDiffLines / 2) {
     return full(`变化行数 ${changedLines} 超过上一版 diff(${previous.totalDiffLines} 行)的一半`);
@@ -108,7 +110,7 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
     mode: 'incremental',
     reason: `增量(基于 ${String(previous.head).slice(0, 12)},本轮审 ${files.length} 个文件)`,
     files,
-    previousFindings: previous.findings ?? [],
+    previousFindings: carried,
     basedOn: previous.head,
   };
 }
