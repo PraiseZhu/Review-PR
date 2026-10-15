@@ -32,7 +32,7 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiR
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence / self-review]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
+import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -631,8 +631,18 @@ try {
   const authorSignoffExempt = approvalPolicy.authorIsMaintainer || isSignoffExemptAuthor(authorLogin, prRules);
   // [MIVO-PATCH ui-evidence] 改界面不等维护者确认,改为要求附界面证据:按 requireUiEvidence 缺证据进格式门(打回补证据)。
   const uiEvidenceDeclaredNotApplicable = declaresNoUiChange(body);
+  // requireUiEvidence=non-admin:只在真缺证据时读一次作者的仓库权限;读不到按不是 admin(要证据),原因写进 uiEvidenceAuthorAdmin。
+  let uiEvidenceAuthorAdmin = null;
+  if (uiEvidenceMissing && !uiEvidenceDeclaredNotApplicable && authorLogin && uiEvidenceNeedsAdminLookup(prRules)) {
+    const r = gh(['api', '--method', 'GET', `repos/${slug}/collaborators/${encodeURIComponent(authorLogin)}/permission`], { allowFail: true, timeoutMs: 20_000 });
+    try {
+      uiEvidenceAuthorAdmin = r.ok !== false ? { verified: true, admin: isAdminPermission(JSON.parse(r.stdout)) } : { verified: false, admin: false, error: String(r.stderr ?? '').slice(0, 200) };
+    } catch (error) {
+      uiEvidenceAuthorAdmin = { verified: false, admin: false, error: String(error?.message ?? error).slice(0, 200) };
+    }
+  }
   const uiEvidenceRequired = isUiEvidenceRequired({ uiEvidenceMissing, authorExempt: authorSignoffExempt,
-    declaredNotApplicable: uiEvidenceDeclaredNotApplicable }, prRules);
+    authorIsAdmin: uiEvidenceAuthorAdmin?.admin === true, declaredNotApplicable: uiEvidenceDeclaredNotApplicable }, prRules);
   if (uiEvidenceRequired) {
     formatIssues.push(`缺界面证据:改了界面(${uiCodeFiles.slice(0, 3).join(' / ')}${uiCodeFiles.length > 3 ? ' 等' : ''}),但描述里没有改动后的截图/录屏或 HTML 界面。请在「效果展示」里补上(图片、\`\`\`html 代码块、.html 附件或在线预览链接都可以);这次改动看不出界面变化的,在「效果展示」第一行写「不涉及」`);
   }
@@ -1620,7 +1630,7 @@ try {
       statusLabels,
       review,
       security,
-      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice, uiEvidenceRequired, uiEvidenceDeclaredNotApplicable },
+      format: { formatPass, formatIssues, hitsServer, uiCodeFiles, bodyHasUiEvidence, bodyUiEvidenceKinds, uiEvidenceMissing, uiEvidenceNotice, uiEvidenceRequired, uiEvidenceDeclaredNotApplicable, uiEvidenceAuthorAdmin },
       gate: {
         gatePass,
         blockClass,
@@ -1692,6 +1702,7 @@ try {
       uiEvidenceMissing,
       uiEvidenceNotice,
       uiEvidenceRequired,
+      uiEvidenceAuthorAdmin,
       uiEvidenceDeclaredNotApplicable,
       formatPass,
       formatIssues,

@@ -3048,6 +3048,7 @@ export function isSignoffExemptAuthor(authorLogin, rules = loadRules()) {
 /**
  * [MIVO-PATCH ui-evidence] Mivo 不让改界面的 PR 等维护者确认(signoffGate.product.enabled=false),
  * 改为要求作者附界面证据(截图/录屏或 HTML)。requireUiEvidence 取值:
+ * 'non-admin' = 对仓库没有 admin 权限的作者缺证据进格式门(维护者 2026-10-15 决定:admin 不需要截图);
  * 'non-exempt' = 维护者与 exemptAuthors 以外的作者缺证据进格式门;'all' = 所有作者;其他 = 不要求(上游行为)。
  */
 /**
@@ -3067,14 +3068,26 @@ export function isProductSignoffEnabled(rules = loadRules()) {
   return rules.signoffGate?.product?.enabled !== false;
 }
 
-export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt, declaredNotApplicable = false }, rules = loadRules()) {
+export function isUiEvidenceRequired({ uiEvidenceMissing, authorExempt, authorIsAdmin = false, declaredNotApplicable = false }, rules = loadRules()) {
   if (!uiEvidenceMissing) return false;
   // 作者在「效果展示」写明「不涉及」(没有界面变化)也算过;是否属实由服务器审查判。
   if (declaredNotApplicable && rules.signoffGate?.product?.acceptNotApplicable === true) return false;
   const mode = rules.signoffGate?.product?.requireUiEvidence;
   if (mode === 'all') return true;
   if (mode === 'non-exempt') return authorExempt !== true;
+  if (mode === 'non-admin') return authorIsAdmin !== true;
   return false;
+}
+
+/** [MIVO-PATCH ui-evidence] 是否只有在 requireUiEvidence=non-admin 时才需要读作者的仓库权限。 */
+export function uiEvidenceNeedsAdminLookup(rules = loadRules()) {
+  return rules.signoffGate?.product?.requireUiEvidence === 'non-admin';
+}
+
+/** [MIVO-PATCH ui-evidence] `repos/{repo}/collaborators/{login}/permission` 的结果是否是 admin。读不到按不是 admin(要证据)。 */
+export function isAdminPermission(permission) {
+  const role = String(permission?.role_name ?? permission?.permission ?? '').trim().toLowerCase();
+  return role === 'admin' || permission?.user?.permissions?.admin === true;
 }
 
 /**

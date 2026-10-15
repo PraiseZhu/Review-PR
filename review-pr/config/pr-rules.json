@@ -105,9 +105,9 @@
       "consentLine": "同意放行"
     },
     "product": {
-      "_comment": "Mivo 不让改界面的 PR 等维护者确认(enabled=false,feat 类型同样不触发);改界面只要求作者在描述里附截图/录屏或 HTML 界面。requireUiEvidence=non-exempt:维护者与 exemptAuthors 以外的作者缺证据按格式门打回,补上后继续审查。acceptNotApplicable=true:作者在「效果展示」第一行写「不涉及」也算过(维护者 2026-10-12 决定),是否属实由服务器审查判。uiPaths / uiExcludePaths 只用于判定是否改了界面。",
+      "_comment": "Mivo 不让改界面的 PR 等维护者确认(enabled=false,feat 类型同样不触发);改界面只要求作者在描述里附截图/录屏或 HTML 界面。requireUiEvidence=non-admin:对仓库没有 admin 权限的作者缺证据按格式门打回(维护者 2026-10-15 决定:admin 不需要截图),作者权限读不到时按要证据处理。acceptNotApplicable=true:作者在「效果展示」第一行写「不涉及」也算过(维护者 2026-10-12 决定),是否属实由服务器审查判。uiPaths / uiExcludePaths 只用于判定是否改了界面。",
       "enabled": false,
-      "requireUiEvidence": "non-exempt",
+      "requireUiEvidence": "non-admin",
       "acceptNotApplicable": true,
       "uiPaths": [
         "cindyplugin/",
