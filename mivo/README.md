@@ -100,10 +100,11 @@ flowchart LR
 - 同一个 PR 不会同时进两个未完成的轮次；依赖在审 PR 的 PR（round-state 里的 `dependencyPrs`，按传递关系）一起延后。
 - 维护者确认 issue 有新留言（Slack 放行）时，在审 PR 先不唤醒，等它所在那一轮结束后的检查点再唤醒。
 - 进入 06:00 维护窗口、检出了新的 skill SHA、维护者名单变化、部署暂停、某一轮失败、接单时 plan 失败，就不再接新轮；手上的轮次跑完就退出，launchd 用新代码重新拉起。运行满 24 小时是保险上限。所有轮次结束时进程本来就会退出，空闲时寿命不变。
+- 不再接新轮之后，某一轮在审的只剩「还不知道有没有派出」的派发、又领不到新任务时，这一轮不再空等，按停机握手停下（`round-quiesced`，`reason: unresolved-only`）：不收尾，派发意图留在轮次目录里。进程照样退出、放锁，launchd 拉起的新进程带着这个占位接着找，并照常接新 PR。否则这种派发一直查不清，这一轮就永远结束不了，进程不退出，停止接单也不会复位。
 - 续锁（`refresh-lock.mjs`）返回不是 `refreshed: true`：锁已不属于本进程。记 `lock-lost`，所有轮次停下，之后不领取、不派发、不取消、不写评论和标签、不写心跳，也不释放锁（那是接管者的），进程非 0 退出，未完成轮次留给持锁者恢复。
 - 某一轮失败时，如果它手里还有已派发、没收回的服务器 run，这些槽位没人释放：其余轮次停下、不收尾，整个进程退出，launchd 重新拉起后一起恢复。失败的那一轮手里没有在途 run 时，只停止接新轮，其余轮次照常跑完。
 - 中断后下次启动，所有未完成的轮次一起接着跑：先把每一轮已派发的 run 都登记进在审数，再开始领取新任务。收尾时删审查 worktree 中途中断的任务（队列阶段 `cleanup-pending`）沿同一个 agent 再 complete 一次，不重新绑定、不重派（`resume-cleanup`）。
-- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admit-deferred`、`authority-changed`、`admission-closed`、`resume-rounds`、`resume-dispatch`、`round-failed`、`rounds-aborting`、`round-aborted`、`round-quiesced`、`resume-cleanup`、`watch-restart`、`wake-held-deferred`、`lock-lost`、`heartbeat-error`；派发与收结果见下面几节。
+- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admit-deferred`、`authority-changed`、`admission-closed`、`resume-rounds`、`resume-dispatch`、`round-failed`、`rounds-aborting`、`round-aborted`、`round-quiesced`（带 `reason`：`deploy-hold` 或 `unresolved-only`）、`resume-cleanup`、`watch-restart`、`wake-held-deferred`、`lock-lost`、`heartbeat-error`、`heartbeat-paused`、`heartbeat-resumed`、`repo-gc`、`repo-gc-error`；派发与收结果见下面几节。
 
 ## 派发落盘与未决派发
 
@@ -111,7 +112,7 @@ flowchart LR
 
 - 中断后恢复时，只有 `prepared`（或没有意图）能证明没外发，按「判门中途断了」收尾，下一轮重新派。`dispatching`、`sent` 一律不自动重发：按 dispatch_id 在意图时间前后分页找 run（不只看最近 30 条），找到就登记；查询失败、列表不完整、暂时看不到，都记 `dispatch-unknown`，照样占一个槽，3 分钟后再查。
 - `gh workflow run` 明确被拒（HTTP 4xx 且有错误内容）才算没派出，按失败重试；超时、断线、5xx 都按「不知道有没有派出」处理。派发当时找不到 run 也一样。
-- 从意图时间起 60 分钟还找不到：记 `dispatch-unresolved`，巡检提醒人工核对。占槽和这个 PR 的未决记录都保留，作者推新提交也不算解除。
+- 从意图时间起 60 分钟还找不到：记 `dispatch-unresolved`，并在状态目录 `heartbeat-pause.json` 登记、停写心跳（`heartbeat-paused`，`reason: dispatch-unresolved`），由 Mini 之外的看门狗发 Slack 提醒人工核对（见「心跳」）。占槽和这个 PR 的未决记录都保留，作者推新提交也不算解除。登记跨进程保留；每次写心跳前都按意图文件复核，派发找到了 run、被人工解除或那一轮已收尾就去掉，去光后记 `heartbeat-resumed`、恢复写心跳。停止接单之后在审只剩这种派发时，这一轮按停机握手停下、进程退出，下次启动接着找（见上一节）。
 - 人工核对后在 `<stateDir>/mivo/dispatch-resolution-<dispatch_id>.json` 写解除记录，二选一：`{"resolution":"not-submitted"}`（核实没派出：按没派出收尾，不计失败，PR 回到候选）；`{"resolution":"found","runId":"<id>"}`（找到了：只把「不知道」变成「已知是这个 run」，占槽不变，run 结束才释放；run 名不是 `review-pr #<PR> <dispatch_id>` 就忽略，记 `dispatch-resolution-invalid`）。处理顺序：先写进意图文件，再记 `dispatch-resolved`，最后删解除记录；中途被杀，重启后只补后两步。
 
 ## 服务器审查的取消线与作者推新提交
@@ -126,15 +127,25 @@ flowchart LR
 ## 部署停点（换版本用）
 
 - 新增 `<stateDir>/mivo/deploy-hold.json`：进程启动时看到它就记 `deploy-hold` 直接退出、不拿锁；在跑的进程不开新轮、不领取、不派发（`dispatch-held`，不算失败），已派出的照常收结果。
-- 在审 run 和未决派发都归零后完成停机握手：还没领取的任务留在轮次文件里，用自己的 token 调 `release-lock.mjs`，只有返回 `released: true` 才在 `quiesced.json` 写 `lockReleased: true`（否则写 `false` 和返回内容），正常退出。有未决派发时到不了停点。部署脚本只认这个回执，不对还在跑的进程 `bootout`。
+- 在审 run 归零后完成停机握手（只剩未决派发也算归零：派发意图留在轮次目录里，新版本按 dispatch_id 接着找，照样占槽）：还没领取的任务留在轮次文件里，用自己的 token 调 `release-lock.mjs`，只有返回 `released: true` 才在 `quiesced.json` 写 `lockReleased: true`（否则写 `false` 和返回内容），正常退出。部署脚本只认这个回执，不对还在跑的进程 `bootout`。
 
 ## 心跳
 
-只有生产实例（配置 `instance=mivo` 且 `mode=live`）写：进程启动时（在部署暂停、暂停、维护窗口三处提前返回之前）和每个检查点，距上次超过 15 分钟就 `gh variable set MIVO_PREREVIEW_HEARTBEAT`（UTC 时间），上次写入时间记在状态目录 `heartbeat.json`。写失败只记 `heartbeat-error`；续锁失败后不再写。Mini 之外的看门狗读这个变量。
+只有生产实例（配置 `instance=mivo` 且 `mode=live`）写，距上次超过 15 分钟就 `gh variable set MIVO_PREREVIEW_HEARTBEAT`（UTC 时间），上次写入时间记在状态目录 `heartbeat.json`。什么时候写：
+
+- 部署暂停、暂停、维护窗口三处提前返回之前写（额度暂停一次 60 分钟，不写会被误判成停机）。
+- 正常启动时，等 skill 版本核对和 pre-check 都通过后才写（没有候选也写）。版本不一致、读不到仓库变量、读不了 GitHub 而每次整轮报错时不写，看门狗才报得出来。
+- 每个检查点（3 分钟一次）。
+
+不写的情况：续锁失败之后；有超过 60 分钟还查不清的派发时（见「派发落盘与未决派发」）。写失败只记 `heartbeat-error`。
+
+Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这个变量，超过 45 分钟没更新就发 Slack。通常在心跳停下后 45～75 分钟内报出；GitHub 定时任务常会晚几分钟到十几分钟，最慢约 90 分钟。
 
 ## 仓库副本的 git 配置
 
-前置调用的 git 都带 `gc.auto=0`、`maintenance.auto=false`、`core.commitGraph=false`（`GIT_CONFIG_*` 环境变量）。两次整轮失败都出在 fetch 刚结束、建工作目录的时刻，最可能是后台 gc 抢了副本（推测，未证实）。手动 gc 放在 06:00–07:00 窗口里做。
+前置调用的 git 都带 `gc.auto=0`、`maintenance.auto=false`、`core.commitGraph=false`（`GIT_CONFIG_*` 环境变量）。两次整轮失败都出在 fetch 刚结束、建工作目录的时刻，最可能是后台 gc 抢了副本（推测，未证实）。
+
+关掉后台 gc 以后由前置自己每周手动 gc 一次：06:00–07:00 维护窗口里 launchd 刚拉起的进程，距上次成功满 7 天就对副本跑 `git gc --quiet`（最长 30 分钟），记 `repo-gc`（前后的 pack 数和用时），时间记在状态目录 `repo-gc.json`。同一个 launchd 任务不会同时跑两个，前一个进程退出后没有别人动这个副本。失败记 `repo-gc-error`，不影响审查，下一次窗口再试。
 
 ## 三种模式
 

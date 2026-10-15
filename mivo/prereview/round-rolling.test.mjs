@@ -258,7 +258,9 @@ const WORLD_SOURCE = (() => {
 function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance = 'sandbox', mode = 'sandbox' } = {}) {
   const w = { now: Date.parse(start), files: new Map(), logs: [], procs: [], events: [], prs: new Map(), runs: new Map(), nextRunId: 5000,
     lock: null, nextToken: 1, authorityDigest: 'digest-1', skillSha: 'skill-1', dispatches: [], cancels: [], heartbeats: [], releases: [],
-    dispatchFailures: [], hiddenUntil: new Map(), cancelFails: new Set(), noArtifact: new Set(), roundNo: 0, planDelayMs: 15_000, cancelDelayMs: 30_000 };
+    dispatchFailures: [], hiddenUntil: new Map(), cancelFails: new Set(), noArtifact: new Set(), roundNo: 0, planDelayMs: 15_000, cancelDelayMs: 30_000,
+    // 仓库副本 gc、钉住的 skill 版本、pre-check 的故障注入
+    gitCalls: [], packs: 49, gcFails: false, pinned: null, pinFails: false, precheckFail: null };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -368,6 +370,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         return { ok: true, exitCode: 0, candidateList: '/w/state/admit-candidates.json', excludedPrs: [...busy()] };
       }
       case 'pre-check.mjs': {
+        if (w.precheckFail) return { decision: null, reason: 'error', error: w.precheckFail, exitCode: 1 };
         const pending = w.incomplete();
         if (pending.length) return { decision: 'run', reason: 'unfinished-round', resumePlan: pending[0], exitCode: 0 };
         const list = candidates();
@@ -414,11 +417,20 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
   const fail = (stderr) => ({ ok: false, status: 1, stdout: '', stderr, error: null });
   const run = (command, args) => {
     if (command === 'sleep') { w.now += Number(args[0]) * 1000; return ok(); }
-    if (command === 'git') return ok(`${w.skillSha}\n`);
+    if (command === 'git') {
+      w.gitCalls.push([...args]); // 复制成本测试的数组,deepStrictEqual 才不比较到 vm 里的原型
+      if (args.includes('count-objects')) return ok(`count: 0\nsize: 0\nin-pack: 100\npacks: ${w.packs}\n`);
+      if (args.includes('gc')) {
+        if (w.gcFails) return fail('fatal: gc is already running on machine');
+        w.packs = 1;
+        return ok();
+      }
+      return ok(`${w.skillSha}\n`);
+    }
     if (args[0] === '-c' && String(args[1]).includes('command -v gh')) return ok('gh-real\n');
     if (command !== 'gh') throw new Error(`Unexpected external command: ${command}`);
     const path = args.find((a) => /^repos\//.test(a)) ?? '';
-    if (args[0] === 'variable' && args[1] === 'get') return ok(`${w.skillSha}\n`);
+    if (args[0] === 'variable' && args[1] === 'get') return w.pinFails ? fail('HTTP 502: Bad Gateway') : ok(`${w.pinned ?? w.skillSha}\n`);
     if (args[0] === 'variable' && args[1] === 'set') { w.heartbeats.push({ at: w.now, value: argOf(args, '--body') }); return ok(); }
     if (args[0] === 'api' && path.startsWith('repos/o/target/issues')) return ok(args.includes('DELETE') ? '' : '[]');
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
@@ -784,18 +796,135 @@ test('世界:部署暂停——在跑的进程不开新轮、不领取、不派�
   assert.deepEqual([2, 3].map((pr) => w.dispatchesOf(pr).length), [1, 1], '新版本立即拿到锁并恢复这些任务');
 });
 
-test('世界:部署暂停时有未决派发,到不了停点,不写 quiesced.json', async () => {
-  const w = makeWorld();
+test('世界:部署暂停时只剩未决派发:照样握手退出,意图留着;新版本接着按 dispatch_id 找、照样占槽,别的 PR 照常派', async () => {
+  const w = makeWorld({ maxParallel: 2 });
   w.openPr(7, 'h7');
   const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
   w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0007', attempt: 1, claimAttempt: 1, intentAt: iso(w.now), state: 'dispatching' });
   const proc = w.start();
   await w.runUntil(() => false, { maxMs: 2 * MIN });
   w.files.set(w.state('deploy-hold.json'), { at: iso(w.now) });
-  await w.runUntil(() => false, { maxMs: 70 * MIN });
-  assert.equal(proc.settled, false);
-  assert.equal(w.files.has(w.state('quiesced.json')), false);
-  assert.ok(w.lock, '锁还在本进程手里');
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 10 * MIN }), '未决派发不再挡住停机握手');
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.read(w.state('quiesced.json')).lockReleased, true);
+  assert.equal(w.lock, null);
+  assert.deepEqual(w.logged('round-quiesced').map((e) => [e.runId, e.reason, e.unresolved]), [['R0', 'deploy-hold', 1]]);
+  assert.equal(w.read(`${dir}/dispatch-intent-7.json`).state, 'dispatching', '意图文件留给新版本');
+  assert.equal(w.files.has(`${dir}/completed.json`), false, '这一轮不收尾');
+  w.files.delete(w.state('deploy-hold.json'));
+  w.files.delete(w.state('quiesced.json'));
+  w.openPr(8, 'h8');
+  const fresh = w.start();
+  assert.ok(await w.runUntil(() => w.dispatchesOf(8).length === 1, { maxMs: 30 * MIN }), '新版本照常接单');
+  assert.equal(w.dispatchesOf(7).length, 0, '#7 不重派');
+  assert.ok(w.logged('resume-dispatch').some((e) => e.pr === 7 && e.state === 'dispatching'), '按 dispatch_id 接着找');
+  w.files.set(w.state('dispatch-resolution-lost0007.json'), { resolution: 'not-submitted' });
+  assert.ok(await w.runUntil(() => fresh.settled, { maxMs: 90 * MIN }));
+  assert.equal(fresh.failure, null, String(fresh.failure?.stack));
+});
+
+test('世界:06:00 停止接单后只剩未决派发:这一轮停下、放锁退出;07:00 后新进程带着占位接着找,并照常接新 PR', async () => {
+  const w = makeWorld({ start: '2026-10-14T21:00:00Z', maxParallel: 2 }); // 北京 05:00
+  w.openPr(7, 'h7');
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0011', attempt: 1, claimAttempt: 1, intentAt: iso(w.now - 10 * MIN), state: 'sent' });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 90 * MIN }), '停止接单后不再空等');
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.ok(w.now >= Date.parse('2026-10-14T22:00:00Z'), '06:00 之前照常等');
+  assert.deepEqual(w.logged('admission-closed').map((e) => e.reason), ['maintenance-window']);
+  assert.deepEqual(w.logged('round-quiesced').map((e) => [e.runId, e.reason, e.unresolved]), [['R0', 'unresolved-only', 1]]);
+  assert.equal(w.lock, null, '放锁,launchd 能拉起新进程');
+  assert.equal(w.read(`${dir}/dispatch-intent-7.json`).state, 'sent', '意图文件留着');
+  assert.equal(w.files.has(`${dir}/completed.json`), false, '这一轮不收尾');
+  w.now = Date.parse('2026-10-14T23:05:00Z'); // 北京 07:05,launchd 拉起新进程
+  w.openPr(8, 'h8');
+  const next = w.start();
+  assert.ok(await w.runUntil(() => w.dispatchesOf(8).length === 1, { maxMs: 30 * MIN }), '新 PR 照常派出');
+  assert.equal(w.dispatchesOf(7).length, 0, '#7 不重派');
+  assert.ok(w.logged('resume-dispatch').some((e) => e.pr === 7 && e.state === 'sent'), '带着占位接着找');
+  assert.equal(next.settled, false, '占位还在,这一轮继续找');
+});
+
+test('世界:未决派发满 60 分钟就停写心跳,跨进程保留(维护窗口里启动也不写);人工解除后恢复写', async () => {
+  const w = makeWorld({ start: '2026-10-14T21:00:00Z', maxParallel: 2, instance: 'mivo', mode: 'live' }); // 北京 05:00
+  w.openPr(7, 'h7');
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
+  const intentAt = w.now - 10 * MIN;
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0012', attempt: 1, claimAttempt: 1, intentAt: iso(intentAt), state: 'sent' });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 90 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.ok(w.heartbeats.length >= 2, '满 60 分钟之前照常写');
+  assert.ok(w.heartbeats.every((h) => h.at <= intentAt + 63 * MIN), `满 60 分钟后不再写:${w.heartbeats.map((h) => iso(h.at))}`);
+  assert.equal(w.logged('heartbeat-paused').length, 1);
+  assert.deepEqual(Object.keys(w.read(w.state('heartbeat-pause.json')).dispatches), ['lost0012']);
+  const before = w.heartbeats.length;
+  w.now = Date.parse('2026-10-14T22:30:00Z'); // 北京 06:30:维护窗口里启动,提前返回前本该写
+  const inWindow = w.start();
+  assert.ok(await w.runUntil(() => inWindow.settled));
+  w.now = Date.parse('2026-10-14T23:05:00Z'); // 北京 07:05:新进程恢复这一轮
+  const next = w.start();
+  await w.runUntil(() => false, { maxMs: 20 * MIN });
+  assert.equal(w.heartbeats.length, before, '登记跨进程保留,重启后仍不写');
+  w.files.set(w.state('dispatch-resolution-lost0012.json'), { resolution: 'not-submitted' });
+  assert.ok(await w.runUntil(() => next.settled, { maxMs: 30 * MIN }));
+  assert.equal(next.failure, null, String(next.failure?.stack));
+  w.start(); // launchd 再拉起
+  assert.ok(await w.runUntil(() => w.heartbeats.length > before, { maxMs: 10 * MIN }), '解除后恢复写心跳');
+  assert.equal(w.logged('heartbeat-resumed').length, 1);
+  assert.equal(w.files.has(w.state('heartbeat-pause.json')), false);
+});
+
+test('世界:skill 版本不一致、读不到钉住的版本、pre-check 失败时整轮报错且不写心跳;没有候选时照常写', async () => {
+  const cases = [
+    [(w) => { w.pinned = 'skill-other'; }, /不一致,拒绝运行/],
+    [(w) => { w.pinFails = true; }, /读不到仓库变量 MIVO_REVIEW_SKILL_SHA/],
+    [(w) => { w.precheckFail = 'HTTP 401: Bad credentials'; }, /pre-check 失败/],
+  ];
+  for (const [inject, pattern] of cases) {
+    const w = makeWorld({ instance: 'mivo', mode: 'live' });
+    w.openPr(1, 'h1');
+    inject(w);
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled));
+    assert.match(String(proc.failure?.message), pattern);
+    assert.equal(w.heartbeats.length, 0, `${pattern} 时不写心跳`);
+  }
+  const idle = makeWorld({ instance: 'mivo', mode: 'live' });
+  const quiet = idle.start();
+  assert.ok(await idle.runUntil(() => quiet.settled));
+  assert.equal(quiet.failure, null, String(quiet.failure?.stack));
+  assert.equal(idle.heartbeats.length, 1, '没有候选也是正常运行,照常写');
+});
+
+test('世界:维护窗口里刚拉起的进程每 7 天 gc 一次仓库副本;失败下一次窗口再试;窗口外不做', async () => {
+  const w = makeWorld({ start: '2026-10-14T22:10:00Z' }); // 北京 06:10
+  const gcCalls = () => w.gitCalls.filter((args) => args.includes('gc'));
+  const first = w.start();
+  assert.ok(await w.runUntil(() => first.settled));
+  assert.equal(first.failure, null, String(first.failure?.stack));
+  assert.deepEqual(gcCalls(), [['-C', '/w/repo', 'gc', '--quiet']], '只对仓库副本做一次');
+  assert.deepEqual(w.logged('repo-gc').map((e) => [e.packsBefore, e.packsAfter]), [[49, 1]]);
+  w.now += 3 * MIN;
+  const again = w.start();
+  assert.ok(await w.runUntil(() => again.settled));
+  assert.equal(gcCalls().length, 1, '7 天内不重做');
+  w.now += 7 * 24 * 60 * MIN;
+  w.gcFails = true;
+  const failing = w.start();
+  assert.ok(await w.runUntil(() => failing.settled));
+  assert.equal(failing.failure, null, 'gc 失败不影响本次运行');
+  assert.equal(w.logged('repo-gc-error').length, 1);
+  w.now += 24 * 60 * MIN;
+  w.gcFails = false;
+  const retried = w.start();
+  assert.ok(await w.runUntil(() => retried.settled));
+  assert.equal(w.logged('repo-gc').length, 2, '失败没记时间,下一次窗口再做');
+  const day = makeWorld(); // 北京 10:00
+  const busy = day.start();
+  assert.ok(await day.runUntil(() => busy.settled));
+  assert.equal(day.gitCalls.filter((args) => args.includes('gc')).length, 0, '窗口外不做');
 });
 
 test('世界:心跳只由生产实例写,15 分钟内最多一次;暂停中启动也写;沙箱实例不写', async () => {
