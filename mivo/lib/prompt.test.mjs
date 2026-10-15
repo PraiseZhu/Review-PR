@@ -108,7 +108,7 @@ test('specDigest:固定模板盖到每个分支(全量/增量范围、上一轮�
   assert.deepEqual(Object.keys(template).sort(), ['full', 'incremental']);
   const all = Object.values(template).join('\n');
   for (const phrase of ['**全量审查**', '**增量复审**', '**优先规则**', '本轮是增量复审', '上一轮的问题(逐条核对)', '标了「已转 #N」的',
-    '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)', '## 维护者裁定不改的问题(服务器已核验)', '## 写明的产品意图不算缺陷']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
+    '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)', '## 维护者裁定不改的问题(服务器已核验)', '## 写明的产品意图不算缺陷', '## 作者对以前问题的申辩(逐条核对)']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
   const tweaked = { ...manifest(), template: { ...template, incremental: template.incremental.replace('**优先规则**', '**优先规则(改)**') } };
   assert.notEqual(specDigestOf(tweaked), specDigestOf(manifest()), '只改增量专属的一句');
 });
@@ -129,4 +129,12 @@ test('维护者裁定不改:有条目才出现一节;增量复审不再把它们
   assert.match(ruled, /## 维护者裁定不改的问题\(服务器已核验\)/);
   assert.match(ruled, /`src\/a.tsx:3` 弹菜单 —— @owner 裁定不改:「保留」/);
   assert.match(ruled, /没修好的照常再报;下方「维护者裁定不改」列出的除外/);
+});
+
+test('作者申辩:有条目才出现一节;增量复审写明核对成立的不再报', () => {
+  assert.doesNotMatch(prompt(), /作者对以前问题的申辩/);
+  const text = prompt('standard', { rebuttals: [{ path: 'src/a.tsx', line: 3, severity: 'P1', finding: '弹菜单', reply: '正文写明保留' }],
+    scope: { mode: 'incremental', reason: 'r', files: ['src/a.tsx'], previousFindings: [] } });
+  assert.match(text, /## 作者对以前问题的申辩\(逐条核对\)/);
+  assert.match(text, /「作者申辩」核对成立的也不再报/);
 });

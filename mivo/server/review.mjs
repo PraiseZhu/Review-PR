@@ -14,7 +14,7 @@ import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResul
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
-import { collectRulings } from '../lib/rulings.mjs';
+import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
@@ -141,6 +141,8 @@ async function prepare() {
     // 3c. 维护者裁定不改(见 lib/rulings.mjs):只认维护者在审查机 thread 里的裁定回复。
     state.rulings = collectRulings({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, maintainers: ctx.signoff?.maintainers ?? [] });
     for (const r of state.rulings.rejected) state.warnings.push(`裁定不改没有采用(${r.path ?? r.threadId}):${r.reason}`);
+    // 3d. 作者申辩:作者一方在审查机 thread 里说明不成立的依据,任务书要求逐条核对(见 lib/rulings.mjs)。
+    state.rebuttals = collectRebuttals({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, author: ctx.meta?.author });
 
     // 4. 审查范围(增量复审,方案第 8 节)。上一轮结果来自上一次 run 的 artifact。
     const diffText = readFileSync(diffFile, 'utf8');
@@ -383,6 +385,7 @@ async function codex() {
       securityScanFile: state.securityScan?.file },
     deferrals: state.deferrals?.verified ?? [],
     rulings: state.rulings?.verified ?? [],
+    rebuttals: state.rebuttals ?? [],
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
   const attempts = [];

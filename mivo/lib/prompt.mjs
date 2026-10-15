@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ANSWER_SCHEMA } from './report.mjs';
-import { rulingSection } from './rulings.mjs';
+import { rulingSection, rebuttalSection } from './rulings.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -103,7 +103,7 @@ const TIER_HINT = {
  * @param {object} p.inputs 材料文件的绝对路径 {contextFile, diffFile, scopeFile, securityScanFile?}
  * @param {object[]} [p.deferrals] 服务器核验通过的转 issue 条目 {issue, title, text}
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [] }) {
+export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [] }) {
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
   const incremental = scope.mode === 'incremental';
@@ -113,7 +113,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
       `本轮的审查范围是:本轮变化的文件(${scope.files.map((f) => `\`${f}\``).join('、')})、上一轮提过的问题、以及这些改动直接影响到的共享状态、协议、持久化、错误和回滚路径。`,
       '**优先规则**:下文规范原文里的「完整 diff」「本 PR 改动」「最终逐项对照」「最终复核」等说法,本轮一律按上面这个范围理解;'
         + '上一轮已经对完整 diff 做过审查和最终复核,本轮不再对完整 diff 逐项复核。完整 diff 文件只用来定位上下文。',
-      '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报;下方「维护者裁定不改」列出的除外。',
+      '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报;下方「维护者裁定不改」列出的除外,「作者申辩」核对成立的也不再报。',
     ].join('\n')
     : `**全量审查**:${scope.reason}。审完整 diff。`;
   const previousFindings = scope.previousFindings ?? [];
@@ -178,6 +178,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '',
     deferralSection(deferrals),
     ...(rulings.length ? ['', rulingSection(rulings)] : []),
+    ...(rebuttals.length ? ['', rebuttalSection(rebuttals)] : []),
     '',
     '## 交卷格式',
     '',
@@ -240,6 +241,7 @@ const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>',
 const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1 };
 const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
 const TEMPLATE_RULING = { path: '<path>', line: 1, finding: '<finding>', by: '<maintainer>', reason: '<reason>' };
+const TEMPLATE_REBUTTAL = { path: '<path>', line: 1, severity: 'P1', finding: '<finding>', reply: '<reply>' };
 
 /**
  * @param {object} p
@@ -254,13 +256,13 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config }) 
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
   const read = (path) => { const text = readFile(path); return typeof text === 'string' ? text : null; };
-  const toTemplate = (scope, deferrals, rulings = []) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings,
+  const toTemplate = (scope, deferrals, rulings = [], rebuttals = []) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals,
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined } });
   return {
     version: 1,
     template: {
       full: toTemplate({ mode: 'full', reason: '<reason>' }, []),
-      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING]),
+      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),
