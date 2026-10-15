@@ -6,7 +6,7 @@
 // 滚动接单:一个进程可以同时推进多轮。已有轮次在等服务器审查时,每 3 分钟检查一次新候选,有空槽就另开一轮;
 // 全进程在审(已派发、还没收回结果的服务器 run,以及还不知道有没有派出的派发)不超过 maxParallel。
 // 所有轮次结束时进程退出,launchd 再拉起;进入 06:00 维护窗口、检出新 SHA、维护者名单变化、部署暂停时不再开新轮,
-// 运行满 24 小时是保险上限。规则见 lib/admission.mjs。
+// 运行满 24 小时是保险上限。不再开新轮之后,在审只剩查不清的派发的轮次按停机握手停下,进程照样退出。规则见 lib/admission.mjs。
 //
 //   node mivo/prereview/round.mjs --config <配置 JSON>
 // 配置字段见 mivo/README.md。退出码:0=正常(含没有候选、部署停机握手),1=本轮异常或续锁失败。
@@ -25,10 +25,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
 const QUOTA_PAUSE_MS = 60 * 60_000;
 const HEALTH_PAUSE_MS = 30 * 60_000;
-// 派发后从意图时间起 60 分钟还找不到 run:记 dispatch-unresolved 由巡检提醒;占槽和未决记录都保留,不重派。
+// 派发后从意图时间起 60 分钟还找不到 run:记 dispatch-unresolved,并停写心跳,让 Mini 之外的看门狗发 Slack 等人核对;
+// 占槽和未决记录都保留,不重派。停止接单之后在审的只剩这种派发时,这一轮按停机握手停下,下次启动接着找。
 const DISPATCH_UNRESOLVED_MS = 60 * 60_000;
 const HEARTBEAT_EVERY_MS = 15 * 60_000;
 const HEARTBEAT_VARIABLE = 'MIVO_PREREVIEW_HEARTBEAT';
+// 仓库副本每周手动 gc 一次(后台 gc 已关,见 setupEnv)。
+const REPO_GC_EVERY_MS = 7 * 24 * 60 * 60_000;
 
 // ── 配置与环境 ─────────────────────────────────────────────────────────────
 function loadConfig() {
@@ -64,12 +67,13 @@ const RESUME_BARRIER = new Promise((resolve) => { releaseResumeBarrier = resolve
 // 这时其它轮次停下、不收尾,整个进程退出;launchd 重启后,未完成的轮次一起恢复(已派发的 run 从 queue.json 重新登记)。
 let ABORTED = null;
 class RoundAborted extends Error {}
-// 部署停机握手:这一轮已没有在审 run 和未决派发,停下等新版本恢复(不收尾,还没领取的任务留在轮次文件里)。
+// 停机握手:部署暂停时这一轮已没有在审 run;或停止接单之后,在审的只剩还不知道有没有派出的派发。
+// 停下等下次启动恢复(不收尾,还没领取的任务和派发意图都留在轮次目录里)。
 class RoundQuiesced extends Error {}
 // 续锁返回不是 refreshed:true:锁已不属于本进程。之后不领取、不派发、不取消、不写评论和标签,不写心跳,
 // 也不释放锁(那是接管者的),非 0 退出让巡检报出来。
 let FENCED = false;
-// 看到部署暂停文件的时间:不开新轮、不领取、不派发;在审 run 与未决派发都归零后完成停机握手。
+// 看到部署暂停文件的时间:不开新轮、不领取、不派发;在审 run 归零(只剩未决派发也算,意图留给新版本接着找)后完成停机握手。
 let QUIESCING = null;
 // PR 当前 head 的缓存(作者推新提交时取消旧审查用):最多 3 分钟查一次全部开着的 PR。
 const HEADS = { atMs: 0, map: null };
@@ -89,7 +93,7 @@ function setupEnv(config) {
     env.PATH = `${join(HERE, 'gh-dryrun')}:${env.PATH}`;
   }
   // 前置的仓库副本关掉后台 gc、维护任务和 commit-graph:两次整轮失败都出在 fetch 刚结束、建工作目录的时刻,
-  // 同一秒有新包和新 commit-graph 写出,最可能是后台 gc 抢了副本(推测,未证实)。手动 gc 放在维护窗口里做。
+  // 同一秒有新包和新 commit-graph 写出,最可能是后台 gc 抢了副本(推测,未证实)。手动 gc 每周一次,在维护窗口里做(weeklyRepoGc)。
   const gitConfig = [['gc.auto', '0'], ['maintenance.auto', 'false'], ['core.commitGraph', 'false']];
   const offset = Number(env.GIT_CONFIG_COUNT) || 0;
   gitConfig.forEach(([key, value], i) => {
@@ -141,9 +145,10 @@ function deployHold() {
 }
 
 // 心跳(Mini 之外的看门狗读):只有生产实例(instance=mivo 且 live)写,15 分钟内最多一次,隔离后不再写。
-// 写失败只记日志,不影响审查。
+// 有超过 60 分钟还查不清的派发时不写(heartbeatPaused),让看门狗报到 Slack。写失败只记日志,不影响审查。
 function writeHeartbeat() {
   if (FENCED || CONFIG.instance !== 'mivo' || CONFIG.mode !== 'live') return;
+  if (heartbeatPaused()) return;
   const last = Date.parse(readJson(stateFile('heartbeat.json'), {})?.at ?? '');
   if (Number.isFinite(last) && Date.now() - last < HEARTBEAT_EVERY_MS) return;
   const at = nowIso();
@@ -151,6 +156,33 @@ function writeHeartbeat() {
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
   if (!r.ok) { log('heartbeat-error', { error: String(r.stderr || r.error || '').trim().slice(0, 200) }); return; }
   writeJson(stateFile('heartbeat.json'), { at });
+}
+
+// 停写心跳的登记 <stateDir>/mivo/heartbeat-pause.json:{dispatches:{<dispatch_id>:{pr, intentAt, intentFile}}},由
+// settleDispatch 在派发查不清满 60 分钟时写,跨进程保留(停机握手退出、重启后照样不写)。每次都按意图文件复核:文件没了、
+// 那一轮已收尾(completed.json),或状态已不是 dispatching / sent(找到了 run、人工解除),就从登记里去掉;
+// 去光了删掉登记,记 heartbeat-resumed,照常写心跳。
+function heartbeatPaused() {
+  const file = stateFile('heartbeat-pause.json');
+  const pause = readJson(file, null);
+  if (!pause) return false;
+  const listed = pause.dispatches ?? {};
+  const kept = {};
+  for (const [dispatchId, item] of Object.entries(listed)) {
+    const intent = item?.intentFile ? readJson(item.intentFile, null) : null;
+    if (intent?.dispatchId === dispatchId && ['dispatching', 'sent'].includes(intent.state) &&
+        !existsSync(join(dirname(item.intentFile), 'completed.json'))) kept[dispatchId] = item;
+  }
+  const ids = Object.keys(kept).sort();
+  if (!ids.length) {
+    try { unlinkSync(file); } catch { /* 已被删,结果相同 */ }
+    log('heartbeat-resumed', { dispatches: Object.keys(listed) });
+    return false;
+  }
+  if (ids.length !== Object.keys(listed).length) writeJson(file, { dispatches: kept });
+  logOnce(`heartbeat-paused:${ids.join(',')}`, 'heartbeat-paused',
+    { reason: 'dispatch-unresolved', dispatches: ids.map((id) => ({ dispatchId: id, pr: kept[id].pr, intentAt: kept[id].intentAt })) });
+  return true;
 }
 
 // ── 滚动接单的小工具 ────────────────────────────────────────────────────────
@@ -233,14 +265,15 @@ async function main() {
   mkdirSync(CONFIG.logDir, { recursive: true });
   mkdirSync(join(CONFIG.stateDir, 'mivo'), { recursive: true });
   ENV = setupEnv(CONFIG);
-  // 心跳在部署暂停、暂停、维护窗口三处提前返回之前写:额度暂停一次 60 分钟,不写就会被看门狗误判成停机。
-  writeHeartbeat();
+  // 心跳只在本机确实能干活时写:部署暂停、暂停、维护窗口三处合法的提前返回先写再返回(额度暂停一次 60 分钟,
+  // 不写就会被看门狗误判成停机);正常路径等 skill 版本核对和 pre-check 都过了再写。版本不一致、读不了 GitHub
+  // 而每次整轮报错时不写,看门狗才报得出来。
   // 部署暂停:不拿锁直接退出。停机握手退出后到部署脚本 bootout 之间,launchd 再拉起的进程不会拿到锁。
-  if (deployHold()) { log('deploy-hold'); return; }
+  if (deployHold()) { writeHeartbeat(); log('deploy-hold'); return; }
   const pause = pausedUntil();
-  if (pause) { log('paused', pause); return; }
+  if (pause) { writeHeartbeat(); log('paused', pause); return; }
   // 与老审查机同一个维护窗口:06:00–07:00(Asia/Shanghai)不开新一轮;07:00 后照常采集,窗口里来的 PR 自动补上。
-  if (!inBusinessWindow()) { log('maintenance-window'); return; }
+  if (!inBusinessWindow()) { writeHeartbeat(); weeklyRepoGc(); log('maintenance-window'); return; }
   verifySkillPin();
   let busyAtStart = null;
   try { busyAtStart = toBusyPrs(incompletePlanFiles().map((file) => ({ ...readJson(file), released: readJson(join(dirname(file), 'mivo-released.json'), {}) }))); } catch (error) {
@@ -249,8 +282,9 @@ async function main() {
   if (busyAtStart) wakeHeldPrs(busyAtStart);
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
-  if (pre.exitCode === 2) { log('no-candidates', { reason: pre.reason }); return; }
+  if (pre.exitCode === 2) { writeHeartbeat(); log('no-candidates', { reason: pre.reason }); return; }
   if (pre.exitCode !== 0 || !pre.decision) throw new Error(`pre-check 失败:${pre.error || pre.reason || `exit ${pre.exitCode}`}`);
+  writeHeartbeat();
 
   const prep = script('prepare.mjs', ['--skip-skill-pull']);
   if (!prep.ok || !prep.lock?.acquired) { log('lock-not-acquired', { lock: prep.lock, error: prep.error }); return; }
@@ -297,7 +331,8 @@ async function main() {
   }
 }
 
-// 部署停机握手(方案 Step 1 第 6 条):所有轮次已没有在审 run 和未决派发,还没领取的任务留在轮次文件里给新版本。
+// 部署停机握手(方案 Step 1 第 6 条):所有轮次已没有在审 run(只剩查不清的派发也算,意图文件留给新版本接着找),
+// 还没领取的任务留在轮次文件里给新版本。
 // 用自己的 token 释放锁;release-lock 失败时也输出 ok:true,所以只有 released:true 才写 lockReleased:true。
 function quiesce(token) {
   let released = null;
@@ -313,9 +348,34 @@ function quiesce(token) {
 
 function verifySkillPin() {
   const own = run('git', ['-C', SKILL_ROOT, 'rev-parse', 'HEAD']).stdout.trim();
-  const pinned = ghRead(['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', CONFIG.workflowRepo], { allowFail: true }).stdout.trim();
-  if (own !== pinned) throw new Error(`本机 skill 版本 ${own.slice(0, 12)} 与服务器钉住的 MIVO_REVIEW_SKILL_SHA ${pinned.slice(0, 12) || '(未设置)'} 不一致,拒绝运行`);
+  const read = ghRead(['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', CONFIG.workflowRepo], { allowFail: true });
+  if (!read.ok) throw new Error(`读不到仓库变量 MIVO_REVIEW_SKILL_SHA(${String(read.stderr || read.error || '').trim().slice(0, 200)}),拒绝运行`);
+  const pinned = read.stdout.trim();
+  if (own !== pinned) throw new Error(`本机 skill 版本 ${own.slice(0, 12)} 与服务器钉住的 MIVO_REVIEW_SKILL_SHA ${pinned.slice(0, 12) || '(变量为空)'} 不一致,拒绝运行`);
   SKILL_HEAD = own;
+}
+
+// 仓库副本每周手动 gc 一次(修正方案 Step 7 第 2 条)。只在维护窗口里、launchd 刚拉起的进程做:同一个 launchd 任务
+// 不会同时跑两个,前一个进程退出后没有别人动这个副本。成功才记时间(repo-gc.json),失败只记日志,下一次窗口再试。
+function weeklyRepoGc() {
+  const file = stateFile('repo-gc.json');
+  const last = Date.parse(readJson(file, {})?.at ?? '');
+  if (Number.isFinite(last) && Date.now() - last < REPO_GC_EVERY_MS) return;
+  const packs = () => {
+    const r = run('git', ['-C', CONFIG.repoRoot, 'count-objects', '-v'], { env: ENV, allowFail: true });
+    const n = Number(/^packs: (\d+)$/m.exec(r.stdout ?? '')?.[1]);
+    return Number.isFinite(n) ? n : null;
+  };
+  const packsBefore = packs();
+  const startedMs = Date.now();
+  const r = run('git', ['-C', CONFIG.repoRoot, 'gc', '--quiet'], { env: ENV, allowFail: true, timeoutMs: 30 * 60_000 });
+  if (!r.ok) {
+    log('repo-gc-error', { packsBefore, error: String(r.stderr || r.error || '').trim().slice(0, 200) });
+    return;
+  }
+  const done = { at: nowIso(), packsBefore, packsAfter: packs(), seconds: Math.round((Date.now() - startedMs) / 1000) };
+  writeJson(file, done);
+  log('repo-gc', done);
 }
 
 // ── 滚动接单 ─────────────────────────────────────────────────────────────────
@@ -338,7 +398,7 @@ function startDrive(planFile, token, digest, drives) {
       return error;
     }
     if (error instanceof RoundQuiesced) {
-      log('round-quiesced', { runId: round.runId, queued: round.queued });
+      log('round-quiesced', { runId: round.runId, reason: error.message, queued: round.queued, unresolved: round.inflight.size });
       return error;
     }
     log('round-failed', { runId: round.runId, error: error.message, inflight: round.inflight.size });
@@ -546,8 +606,13 @@ async function runQueue(ctx) {
     const status = queue('status');
     round.queued = status.queued?.length ?? 0;
     if (!inflight.size && round.queued === 0 && (status.active?.length ?? 0) === 0) return;
-    // 部署暂停:这一轮已没有在审 run 和未决派发,停下;还没领取的任务留在轮次文件里给新版本。
-    if (QUIESCING && !inflight.size) throw new RoundQuiesced('deploy-hold');
+    // 在审的只剩还不知道有没有派出的派发(runId 为 null):它们可能一直查不清,这一轮也就一直结束不了。
+    const onlyUnresolved = inflight.size > 0 && [...inflight.values()].every((entry) => !entry.runId);
+    // 部署暂停:这一轮已没有在审 run(或只剩未决派发),停下;还没领取的任务和派发意图留在轮次目录里给新版本。
+    if (QUIESCING && (!inflight.size || onlyUnresolved)) throw new RoundQuiesced('deploy-hold');
+    // 已停止接单(维护窗口、24 小时上限、换版本、维护者名单变化等),又只剩未决派发、领不到新任务时不再空等:
+    // 这一轮停下,进程才能退出,launchd 拉起的新进程带着这个占位接着找,并照常接单。
+    if (ADMISSION_CLOSED && onlyUnresolved && (round.queued === 0 || freeSlots() === 0)) throw new RoundQuiesced('unresolved-only');
     await new Promise((r) => setTimeout(r, CONFIG.pollSeconds * 1000));
   }
 }
@@ -893,7 +958,7 @@ function lookupDispatchedRun(pr, dispatchId, intentAt, { tries = 1 } = {}) {
 }
 
 // 还不知道有没有派出的派发(runId 为 null):不自动重发。先看人工解除记录,再按 dispatch_id 找 run;
-// 都没有就继续占槽,从意图时间起满 60 分钟记 dispatch-unresolved 由巡检提醒。
+// 都没有就继续占槽,从意图时间起满 60 分钟记 dispatch-unresolved,并登记停写心跳,由看门狗报到 Slack。
 // 作者推了新提交不算解除的证据:这个 PR 还在本轮,新 head 要等解除后才派。
 function settleDispatch(ctx, entry) {
   const { task } = entry;
@@ -915,8 +980,18 @@ function settleDispatch(ctx, entry) {
   }
   if (Date.now() - Date.parse(entry.intentAt) > DISPATCH_UNRESOLVED_MS) {
     logOnce(`unresolved:${entry.dispatchId}`, 'dispatch-unresolved', { pr: task.pr, head: task.head, dispatchId: entry.dispatchId, intentAt: entry.intentAt });
+    pauseHeartbeatFor(ctx, entry);
   }
   return 'pending';
+}
+
+// 登记停写心跳(见 heartbeatPaused);已登记的不重复写。
+function pauseHeartbeatFor(ctx, entry) {
+  const file = stateFile('heartbeat-pause.json');
+  const pause = readJson(file, null) ?? {};
+  if (pause.dispatches?.[entry.dispatchId]) return;
+  writeJson(file, { dispatches: { ...(pause.dispatches ?? {}),
+    [entry.dispatchId]: { pr: entry.task.pr, intentAt: entry.intentAt, intentFile: intentFile(ctx, entry.task.pr) } } });
 }
 
 // 人工解除记录 <stateDir>/mivo/dispatch-resolution-<dispatch_id>.json,二选一:
