@@ -17,6 +17,8 @@ import {
   isSignoffExemptAuthor,
   isProductSignoffEnabled,
   isUiEvidenceRequired,
+  isAdminPermission,
+  uiEvidenceNeedsAdminLookup,
   declaresNoUiChange,
   filterIgnoredCiContexts,
   ciMergeStateIgnoring,
@@ -255,10 +257,11 @@ test('改界面不进维护者确认门,按 requireUiEvidence 要求附界面证
   assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false }, { signoffGate: {} }), false);
 });
 
-test('Mivo 生产配置:产品/UI 门关闭,非豁免作者缺界面证据要打回', () => {
+test('Mivo 生产配置:产品/UI 门关闭,admin 以外的作者缺界面证据要打回', () => {
   const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
   assert.equal(isProductSignoffEnabled(rules), false);
-  assert.equal(rules.signoffGate.product.requireUiEvidence, 'non-exempt');
+  assert.equal(rules.signoffGate.product.requireUiEvidence, 'non-admin');
+  assert.equal(uiEvidenceNeedsAdminLookup(rules), true);
   assert.ok(rules.signoffGate.product.uiPaths.includes('src/'));
 });
 
@@ -538,4 +541,19 @@ test('无人值守的前置审查与服务器审查永远不传 --allow-override
   const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8');
   assert.match(skill, /--allow-override-own-cr <[^>]*id>/);
   assert.match(skill, /要用 Approve 覆盖你之前的打回吗/);
+});
+
+// 维护者 2026-10-15:截图只对 admin 以外的作者要求;admin 不需要。按仓库权限判,不看维护者名单或 exemptAuthors。
+test('requireUiEvidence=non-admin:admin 免证据,其他人(含 exemptAuthors、维护者)要;权限读不到按要证据', () => {
+  const rules = { signoffGate: { product: { requireUiEvidence: 'non-admin', acceptNotApplicable: true } } };
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorIsAdmin: true, authorExempt: false }, rules), false);
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorIsAdmin: false, authorExempt: true }, rules), true, 'exemptAuthors 不再免证据');
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorExempt: false }, rules), true, '没读到权限按要证据');
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: true, authorIsAdmin: false, declaredNotApplicable: true }, rules), false, '「不涉及」照样算过');
+  assert.equal(isUiEvidenceRequired({ uiEvidenceMissing: false, authorIsAdmin: false }, rules), false);
+  assert.equal(uiEvidenceNeedsAdminLookup({ signoffGate: { product: { requireUiEvidence: 'non-exempt' } } }), false);
+  assert.equal(isAdminPermission({ permission: 'admin', role_name: 'admin' }), true);
+  assert.equal(isAdminPermission({ permission: 'write', role_name: 'maintain' }), false);
+  assert.equal(isAdminPermission({ permission: 'write', role_name: 'write', user: { permissions: { admin: true } } }), true);
+  assert.equal(isAdminPermission(null), false);
 });
