@@ -15,7 +15,7 @@
 
 | 命中路径或主题 | 必读规则 |
 |---|---|
-| 面板、设置页、宿主卡、CSS、主题、动效或 UI 文案（`cindyplugin/`、`src/ui/`、`src/app/`、`*.css`） | `cindyplugin/DESIGN.md`（**强制**：UI 改动必须符合，违反记 P1）及其引用的 `docs/design.md` |
+| 面板、设置页、宿主卡、CSS、主题、动效或 UI 文案（`cindyplugin/`、`src/ui/`、`src/app/`、`*.css`） | `cindyplugin/DESIGN.md`（**强制**：UI 改动必须符合；违反时按统一分级判，达到 P1 定义才报；PR 正文或维护者裁定写明的有意设计不算违反，有疑问写进「待 owner 确认」）及其引用的 `docs/design.md` |
 | 用户操作、成功/跳过/失败反馈、日志或诊断 | `docs/development-logging.md`；生产查询另读 `docs/ops/plugin-debug-log-query.md` |
 | 保存、加载、恢复、删除、归档、迁移或卸载重装（`src/store/`、`src/lib/persist*`、`cindyplugin/src/persist/`、`shared/persist-contract.ts`） | `docs/decisions/library-canvas-store.md`，需要全景时读 `docs/decisions/library-canvas-store-overview.md` |
 | 图片导入、原件、媒体 URL、双写、上传/归档队列或清理 | `docs/ops/image-store-library-default.md`，按改动查 `docs/ops/image-store-slo.md` 及对应 image-store 专题 |

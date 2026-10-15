@@ -79,19 +79,28 @@ export function decideGate(ctx) {
     }
   }
 
-  // 2. 未解决 thread(不论谁留的)
+  // 2. 未解决 thread。只剩机器人(Greptile 等)留的 thread 时照样送审,但不放行(2026-10-15 #927:
+  //    3 条 Greptile thread 没关,审查机一次没审,PR 被强合)。合并仍由组织规则要求 thread 全部 resolve。
   const unresolved = gate.unresolvedThreads?.length ?? gate.unresolvedThreadCount ?? 0;
-  if (unresolved > 0) {
-    return {
-      stage: 'threads', outcome: 'threads-unresolved',
-      reason: `${unresolved} 条 conversation 未 resolve`, actions: signoffActions,
-    };
-  }
+  const threadsResult = { stage: 'threads', outcome: 'threads-unresolved', reason: `${unresolved} 条 conversation 未 resolve`, actions: signoffActions };
+  const botThreadsOnly = isBotThreadsOnly(gate, unresolved);
+  if (unresolved > 0 && !botThreadsOnly) return threadsResult;
+  const pendingGates = botThreadsOnly ? ['bot-threads'] : [];
 
   // 3. 受保护路径 / 格式 / CI / 其他前置门(沿用 context.auto 的确定性分流)
   const withSignoff = (decision) => ({ ...decision, actions: [...signoffActions, ...(decision.actions ?? [])] });
   const action = auto.action === 'signoff-gate' ? auto.fallback?.action : auto.action;
   const reason = auto.action === 'signoff-gate' ? auto.fallback?.reason : auto.reason;
+  // 只缺界面证据、其他前置门都过时:照样打回要证据,同时送审代码(2026-10-15 #926/#935 因缺截图零审查被强合)。
+  // 审查没有 P0/P1 也不 Approve,等证据补上后重审放行。
+  const evidenceOnly = ['pushback-format', 'skip-stale-pushback'].includes(action) && isEvidenceOnly(ctx) && otherGatesClear(gate, botThreadsOnly);
+  if (evidenceOnly) {
+    const evidenceUntold = action === 'pushback-format' || ctx.meta?.reviewDecision !== 'CHANGES_REQUESTED';
+    return withSignoff({ stage: 'review', outcome: null, reason: `${formatReason(ctx)};代码照审,补齐前不放行`,
+      actions: evidenceUntold ? [{ script: 'request-changes', gateKind: 'format' }] : [],
+      tier: ctx.review?.tier ?? 'standard', pendingGates: ['ui-evidence', ...pendingGates] });
+  }
+  if (botThreadsOnly && action !== 'review') return threadsResult;
   switch (action) {
     case 'skip-protected-path':
       return withSignoff({ stage: 'protected', outcome: 'protected', reason, actions: [{ script: 'notify-protected' }] });
@@ -118,11 +127,39 @@ export function decideGate(ctx) {
     case 'bypass-structural-block':
       return withSignoff(classifyGateBlock(ctx, reason));
     case 'review':
-      return withSignoff({ stage: 'review', outcome: null, reason: '前置门全部通过,送服务器审查', actions: [], tier: ctx.review?.tier ?? 'standard' });
+      return withSignoff({ stage: 'review', outcome: null, actions: [], tier: ctx.review?.tier ?? 'standard',
+        ...(pendingGates.length
+          ? { reason: `只剩 ${unresolved} 条机器人留的 conversation 未 resolve;代码照审,resolve 前不放行`, pendingGates }
+          : { reason: '前置门全部通过,送服务器审查' }) });
     default:
       return withSignoff({ stage: 'error', outcome: 'error', reason: `未知的 auto.action:${action ?? '(empty)'}`, actions: [] });
   }
 }
+
+// 未 resolve 的 thread 全是机器人发起的(context.mjs 的 isBot 判首条评论作者)。读不到明细时按有人的算。
+function isBotThreadsOnly(gate, unresolved) {
+  const threads = gate.unresolvedThreads;
+  return unresolved > 0 && Array.isArray(threads) && threads.length === unresolved && threads.every((t) => t?.isBot === true);
+}
+
+// 格式门唯一的问题是缺界面证据(与 buildGatePushback 的 evidenceOnly 同口径)。
+function isEvidenceOnly(ctx) {
+  return ctx.format?.formatPass === false && ctx.format?.uiEvidenceRequired === true && (ctx.format?.formatIssues ?? []).length === 1;
+}
+
+// 格式门之外的前置门(冲突、CI、他人 CR、bot 静默期、rebase 等)都过了;只剩机器人 thread 的不算卡。
+const THREAD_BLOCKER_RE = /条 conversation 未 resolve/;
+function otherGatesClear(gate, botThreadsOnly) {
+  if (gate.gatePass === true) return true;
+  const blockers = gate.blockers ?? [];
+  return botThreadsOnly && blockers.length > 0 && blockers.every((b) => THREAD_BLOCKER_RE.test(String(b)));
+}
+
+/** 送审但不能放行的前置门 → 给作者看的说明。 */
+export const PENDING_GATE_TEXT = {
+  'ui-evidence': 'PR 描述里还缺改动后的界面证据(截图/录屏或 HTML)',
+  'bot-threads': '还有机器人(如 Greptile)留的讨论没有 resolve',
+};
 
 function formatReason(ctx) {
   const issues = ctx.format?.formatIssues ?? [];

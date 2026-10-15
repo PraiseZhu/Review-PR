@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ANSWER_SCHEMA } from './report.mjs';
+import { rulingSection } from './rulings.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -45,6 +46,18 @@ export const SEVERITY = [
   '- 规范原文里「记 P1」「按 P1 打回」的具体条款(设计规范、平台或界面证据、PR 描述与 diff 不符、夹带改动、缺必要测试、',
   '  讨论里的要求未落实等)一律按上表的实际影响重新判:达到 P1 定义才报,否则不报。',
   '- 真实凭证或个人数据进了 diff、恶意代码、越权或数据外发,按实际影响判 P0/P1。',
+].join('\n');
+
+// 写明的产品意图不算缺陷(维护者 2026-10-15 决定):#926/#927/#935 上有 6 条 P1 要是照改,会推翻 PR 正文或维护者裁定写明的设计。
+export const PRODUCT_INTENT = [
+  '## 写明的产品意图不算缺陷',
+  '',
+  '- PR 正文写明的需求和有意设计(例如「产品意图」一节)、维护者在 PR 讨论或维护者确认 issue 里的裁定,不当缺陷报。',
+  '  你认为这类设计有问题时,写进 Rule coverage 的「待 owner 确认」并说明理由,不写进 `findings`。',
+  '- 实现和规格文档、设计规范对不上时:PR 正文或维护者裁定解释了这个差异的,按有意设计处理;没有解释的,也写进「待 owner 确认」,',
+  '  不报成 P1。只有差异本身造成上面「分级」里 P1 定义的后果(核心流程失效、严重数据错误、安全/隐私边界被突破)才报。',
+  '- 例外:有意设计本身造成 P0(严重泄露、批量不可逆数据损坏等)照常报。',
+  '- 判断「写明」只看 PR 正文、规格文档和维护者的发言;作者在评论里事后补的理由不算维护者裁定。',
 ].join('\n');
 
 // 作者转 issue 跟进的问题(维护者 2026-10-14 决定,见 deferrals.mjs):只列服务器核验通过的条目,P0 不能转。
@@ -90,7 +103,7 @@ const TIER_HINT = {
  * @param {object} p.inputs 材料文件的绝对路径 {contextFile, diffFile, scopeFile, securityScanFile?}
  * @param {object[]} [p.deferrals] 服务器核验通过的转 issue 条目 {issue, title, text}
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [] }) {
+export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [] }) {
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
   const incremental = scope.mode === 'incremental';
@@ -100,7 +113,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
       `本轮的审查范围是:本轮变化的文件(${scope.files.map((f) => `\`${f}\``).join('、')})、上一轮提过的问题、以及这些改动直接影响到的共享状态、协议、持久化、错误和回滚路径。`,
       '**优先规则**:下文规范原文里的「完整 diff」「本 PR 改动」「最终逐项对照」「最终复核」等说法,本轮一律按上面这个范围理解;'
         + '上一轮已经对完整 diff 做过审查和最终复核,本轮不再对完整 diff 逐项复核。完整 diff 文件只用来定位上下文。',
-      '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报。',
+      '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报;下方「维护者裁定不改」列出的除外。',
     ].join('\n')
     : `**全量审查**:${scope.reason}。审完整 diff。`;
   const previousFindings = scope.previousFindings ?? [];
@@ -161,7 +174,10 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '',
     SEVERITY,
     '',
+    PRODUCT_INTENT,
+    '',
     deferralSection(deferrals),
+    ...(rulings.length ? ['', rulingSection(rulings)] : []),
     '',
     '## 交卷格式',
     '',
@@ -223,6 +239,7 @@ const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>',
 // 只取全量模板时,只改增量专属指令的 skill 升级算不出任务书变化,同 head 的旧干净报告会被直接沿用。
 const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1 };
 const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
+const TEMPLATE_RULING = { path: '<path>', line: 1, finding: '<finding>', by: '<maintainer>', reason: '<reason>' };
 
 /**
  * @param {object} p
@@ -237,13 +254,13 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config }) 
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
   const read = (path) => { const text = readFile(path); return typeof text === 'string' ? text : null; };
-  const toTemplate = (scope, deferrals) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals,
+  const toTemplate = (scope, deferrals, rulings = []) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings,
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined } });
   return {
     version: 1,
     template: {
       full: toTemplate({ mode: 'full', reason: '<reason>' }, []),
-      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL]),
+      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING]),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),

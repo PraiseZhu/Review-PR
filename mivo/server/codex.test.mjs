@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEventMeter, toStderrTail, runCodex } from './codex.mjs';
+import { createEventMeter, toStderrTail, runCodex, CODEX_IDLE_MS } from './codex.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
 const at = (sec) => T0 + sec * 1000;
@@ -121,4 +121,8 @@ test('runCodex 把事件记录、用量和失败时脱敏的 stderrTail 带回�
     assert.ok(!failed.stderrTail.includes('line 29 '), '只留最后 50 行');
     assert.ok(!failed.stderrTail.includes(key), '假令牌不能出现在 stderrTail');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('卡住判定比正常运行里最长的停顿宽:luna/max 正常跑完的停顿到过 666 秒', () => {
+  assert.ok(CODEX_IDLE_MS >= 15 * 60_000, `idle ${CODEX_IDLE_MS}ms 太短`);
 });
