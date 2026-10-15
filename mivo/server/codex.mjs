@@ -114,7 +114,10 @@ export function toStderrTail(stderr, secrets = []) {
  *   firstEventSec:number|null, lastEventSec:number|null, eventCount:number, maxGapSec:number, usage:object|null,
  *   stderrTail?:string}>}  stderrTail 只在失败时有
  */
-export async function runCodex({ codexBin, workdir, prompt, schema, model, effort, timeoutMs, idleMs = 12 * 60_000,
+// 多久没有任何输出算卡住。原来是 12 分钟:2026-10-15 前后的运行记录里,正常跑完的 luna/max 最长停顿 666 秒(#991)、
+// 592 秒(#990),#992 停顿 734 秒就被判卡住、换备用模型重跑。max 档长时间思考不出事件,12 分钟落在正常停顿的尾部,放宽到 20 分钟。
+export const CODEX_IDLE_MS = 20 * 60_000;
+export async function runCodex({ codexBin, workdir, prompt, schema, model, effort, timeoutMs, idleMs = CODEX_IDLE_MS,
   credentials, tmpRoot, label, pathEnv = process.env.PATH }) {
   const started = Date.now();
   if (!existsSync(codexBin)) return fail(`Codex CLI 不存在:${codexBin}`);

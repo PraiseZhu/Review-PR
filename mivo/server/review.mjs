@@ -9,11 +9,12 @@
 import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
-import { decideGate } from '../lib/gates.mjs';
+import { decideGate, PENDING_GATE_TEXT } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
+import { collectRulings } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
@@ -128,6 +129,8 @@ async function prepare() {
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
     }
+    // 只缺界面证据或只剩机器人 thread:照审,但没有 P0/P1 也不放行(publishAdvisory)。
+    state.pendingGates = gate.pendingGates ?? [];
     const tier = ctx.review?.tier ?? input.tier;
     if (tier !== input.tier) state.warnings.push(`档位与前置给出的不同(${input.tier} → ${tier}),按进场复核结果审查`);
     state.tier = tier;
@@ -135,6 +138,9 @@ async function prepare() {
     // 3b. 转 issue 跟进的审查问题:解析 PR 说明里登记的 issue 并逐个核验;读失败只记未采用,不让整轮失败。
     state.deferrals = collectDeferrals(input, ctx, state);
     writeJson(join(INPUT_DIR, 'deferrals.json'), state.deferrals);
+    // 3c. 维护者裁定不改(见 lib/rulings.mjs):只认维护者在审查机 thread 里的裁定回复。
+    state.rulings = collectRulings({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, maintainers: ctx.signoff?.maintainers ?? [] });
+    for (const r of state.rulings.rejected) state.warnings.push(`裁定不改没有采用(${r.path ?? r.threadId}):${r.reason}`);
 
     // 4. 审查范围(增量复审,方案第 8 节)。上一轮结果来自上一次 run 的 artifact。
     const diffText = readFileSync(diffFile, 'utf8');
@@ -376,6 +382,7 @@ async function codex() {
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile: join(INPUT_DIR, 'scope.json'),
       securityScanFile: state.securityScan?.file },
     deferrals: state.deferrals?.verified ?? [],
+    rulings: state.rulings?.verified ?? [],
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
   const attempts = [];
@@ -481,6 +488,7 @@ async function publish() {
     } });
 
     if (findings.length > 0) await publishFindings(state, result, reportFile, findings);
+    else if (state.pendingGates?.length) await publishAdvisory(state, result, reportFile);
     else await publishClean(state, result, reportFile);
     return writeResult(result);
   } catch (error) {
@@ -595,12 +603,41 @@ async function publishClean(state, result, reportFile) {
   Object.assign(result, { outcome: 'error', reason: `guarded finish 未完成:${receipt?.reason || finish.error || '未知'}`, retry: true });
 }
 
-function postReportComment(state, reportFile) {
+// 代码没有 P0/P1,但还有前置门没过(缺界面证据、机器人 thread 没 resolve):以评论发报告,不 Approve、
+// 不挂 review:merge-ready,check 留在进行中。补齐后下一轮重审(同 head 走复用)才放行。
+// reviewClean 记 false:Mini 不把这个 head 当成审查通过,也不会为补 Approve 反复派发。
+async function publishAdvisory(state, result, reportFile) {
   const input = state.input;
-  const marker = `<!-- mivo-review:report head=${input.head} -->`;
+  const pending = state.pendingGates.map((gate) => PENDING_GATE_TEXT[gate] ?? gate);
+  // threads-unresolved 表示「前置门没过、没进审查」,轮次汇总会拒绝它带 enteredReview;只剩机器人 thread 记 merge-blocked。
+  const outcome = state.pendingGates.includes('ui-evidence') ? 'format' : 'merge-blocked';
+  const why = pending.join(';');
+  Object.assign(result, { outcome, reviewClean: false, reason: `代码审查没有 P0/P1,但还不能放行:${why}` });
+  result.approval = { status: 'blocked', code: 'gates-pending', reason: why };
+  result.mivo.advisory = { pendingGates: state.pendingGates };
+  if (input.mode === 'dry-run') { result.reason += '(dry-run:没有写入 GitHub)'; return; }
+  const banner = [
+    `> **代码审查没有发现 P0/P1,但这个 PR 还不能放行**:${why}。`,
+    '> 补齐后审查机会自动重审;代码没变时直接沿用这次的结论并 Approve。',
+    '',
+  ].join('\n');
+  const comment = postReportComment(state, reportFile, { marker: `<!-- mivo-review:advisory head=${input.head} -->`, prefix: banner });
+  result.mivo.reportComment = comment;
+  if (!comment.ok) {
+    result.errors.push(`报告评论发布失败:${comment.error}`);
+    result.retry = true;
+    return;
+  }
+  removeMergeReady(state, result);
+  result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: null,
+    title: `代码审查没有 P0/P1(${state.tier}),等补齐后放行`, summary: `${why}。${state.scope.reason}` });
+}
+
+function postReportComment(state, reportFile, { marker = `<!-- mivo-review:report head=${state.input.head} -->`, prefix = '' } = {}) {
+  const input = state.input;
   const existing = run('gh', ['api', '--paginate', '--slurp', `repos/${input.targetRepo}/pulls/${input.pr}/reviews?per_page=100`], { cwd: REPO_DIR, allowFail: true });
   if (existing.ok && JSON.parse(existing.stdout).flat().some((r) => String(r.body ?? '').includes(marker))) return { ok: true, deduplicated: true };
-  const body = `${readFileSync(reportFile, 'utf8').trim()}\n\n${marker}`;
+  const body = `${prefix}${readFileSync(reportFile, 'utf8').trim()}\n\n${marker}`;
   const r = run('gh', ['api', '--method', 'POST', `repos/${input.targetRepo}/pulls/${input.pr}/reviews`, '--input', '-'],
     { cwd: REPO_DIR, input: JSON.stringify({ event: 'COMMENT', commit_id: input.head, body }), allowFail: true });
   return r.ok ? { ok: true, id: JSON.parse(r.stdout).id } : { ok: false, error: r.stderr.trim().slice(0, 300) };

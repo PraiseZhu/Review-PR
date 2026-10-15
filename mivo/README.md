@@ -24,11 +24,12 @@ flowchart LR
 
 | 目录 | 内容 |
 |---|---|
-| `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过 |
+| `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
 | `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（都按 PR head 取）、生效配置与答卷 schema |
 | `lib/deferrals.mjs` | 审查问题转 issue 跟进：解析 PR 说明里的登记、核验 issue、汇总 |
+| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书 |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
 | `lib/admission.mjs` | 滚动接单的判断：什么时候另开一轮、哪些 PR 不进新一轮、held PR 什么时候唤醒 |
@@ -59,6 +60,29 @@ flowchart LR
 - 转 issue 的 P1 不开 thread、不阻断。没有其他 P0/P1 时照常 Approve、check `review-pr` 写 success、挂 `review:merge-ready`。报告单列「已转 issue 跟进的问题（不阻断本 PR）」，check 标题写明几条 P1 已转 issue。这不是免审：问题照样写在报告里。
 - 打回时，只要阻断问题里有 P1，报告结论下面会附上这套做法。
 - issue 关闭或从 PR 说明里删掉登记后就不再算。上一轮有转 issue 的问题时不沿用上一轮结论，每次重审都重新核验；已经发出的 Approve 要等下一次重审才会变。放行后加 `review:merge-ready` 标签会触发一次增量重审，这是已知代价。
+
+## 送审但不放行
+
+维护者 2026-10-15 决定：前置门里有两种卡点不再挡住代码审查（#926、#935 缺截图，#927 有 3 条 Greptile 讨论没关，都是零审查被强合）。
+
+- **只缺界面证据**：格式门照样打回要证据，同时送审代码。
+- **只剩机器人留的 thread 没 resolve**（首条评论作者是 Bot，如 Greptile）：照样送审。有人留的 thread 没关，照旧不送审。
+
+两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`。作者补齐后下一轮重审；代码没变时沿用这次结论，Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+
+## 写明的产品意图与维护者裁定不改
+
+任务书多了一节「写明的产品意图不算缺陷」：PR 正文写明的需求和有意设计、维护者的裁定，不当缺陷报；有疑问写进 Rule coverage 的「待 owner 确认」。实现和规格对不上、又没人解释时，也先写「待 owner 确认」，只有达到 P1 定义的后果才报。有意设计本身造成 P0 照常报。rule-map 里 `DESIGN.md`「违反记 P1」的写法同步改成按统一分级判。
+
+审查机报的某条 P1，维护者决定保留现状时，在那条 thread 里回复一行以「维护者裁定不改」开头的话并写明理由，例如：
+
+```text
+维护者裁定不改：保留「+」弹出的图/文菜单，见 PR 正文「产品意图」
+```
+
+服务器 `prepare` 读 context 里的全部 review thread，只采用同时满足这些条件的：thread 由审查账号开、首条是 `[P1]`；回复人在维护者名单里；写了理由；不是盯梢带 `mivo-watcher-receipt` 标记的回帖。P0 不能裁定不改；同一 thread 有多条裁定时以最后一条为准；最多 20 条。没采用的写进 warnings。任务书列出采用的条目，审查模型把同一问题（同一根因、同一触发路径）当成已裁定，不再报；根因不同或变成 P0 的照常报。和「转 issue 跟进」的区别：转 issue 是以后要修，裁定不改是不打算修。
+
+信任边界：审查账号也是维护者本人的账号，用它回复的裁定同样会被采用；agent 不得用这个账号代写裁定。
 
 ## 每天的运维
 

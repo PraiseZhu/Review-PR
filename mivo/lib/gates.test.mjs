@@ -137,3 +137,38 @@ test('缺界面证据但只有评论形式的旧打回:打回一次;已有生效
   const otherFormat = decideGate(ctx({ meta: meta('APPROVED'), format: { formatPass: false, formatIssues: ['缺段落'] }, auto: { action: 'skip-stale-pushback', reason: 'x' } }));
   assert.deepEqual(otherFormat.actions, []);
 });
+
+// 2026-10-15:只剩 Greptile thread(#927)或只缺界面证据(#926/#935)时零审查被强合;现在照审,补齐前不放行。
+const botThread = (id) => ({ id, isBot: true, author: 'greptile-apps' });
+const humanThread = (id) => ({ id, isBot: false, author: 'someone' });
+
+test('只剩机器人 thread:照样送审,带 pendingGates;有人留的 thread 照旧卡住', () => {
+  const bot = decideGate(ctx({ gate: { unresolvedThreads: [botThread('t1'), botThread('t2')] } }));
+  assert.equal(bot.stage, 'review');
+  assert.deepEqual(bot.pendingGates, ['bot-threads']);
+  assert.match(bot.reason, /只剩 2 条机器人/);
+  assert.equal(decideGate(ctx({ gate: { unresolvedThreads: [botThread('t1'), humanThread('t2')] } })).outcome, 'threads-unresolved');
+  assert.equal(decideGate(ctx({ gate: { unresolvedThreads: undefined, unresolvedThreadCount: 2 } })).outcome, 'threads-unresolved', '读不到明细按有人的算');
+  // 机器人 thread 之外还有别的卡点(context 走 skip-gate):照旧按 thread 卡住,不送审。
+  assert.equal(decideGate(ctx({ gate: { unresolvedThreads: [botThread('t1')], ci: { status: 'failed' } }, auto: { action: 'skip-gate', reason: 'x' } })).outcome, 'threads-unresolved');
+  assert.equal(decideGate(ctx()).pendingGates, undefined, '全部通过时没有 pendingGates');
+});
+
+test('只缺界面证据、其他门都过:打回要证据,同时送审代码', () => {
+  const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
+  const first = decideGate(ctx({ format: evidence, gate: { gatePass: true }, auto: { action: 'pushback-format' } }));
+  assert.equal(first.stage, 'review');
+  assert.deepEqual(first.pendingGates, ['ui-evidence']);
+  assert.deepEqual(first.actions, [{ script: 'request-changes', gateKind: 'format' }]);
+  // 已经打回过、作者没动:不重复打回,照审。
+  const stale = decideGate(ctx({ format: evidence, gate: { gatePass: true }, meta: { reviewDecision: 'CHANGES_REQUESTED' }, auto: { action: 'skip-stale-pushback' } }));
+  assert.equal(stale.stage, 'review');
+  assert.deepEqual(stale.actions, []);
+  // 机器人 thread + 缺证据:两项都挂上。
+  const both = decideGate(ctx({ format: evidence, gate: { gatePass: false, blockers: ['1 条 conversation 未 resolve(不分作者)'], unresolvedThreads: [botThread('t1')] }, auto: { action: 'pushback-format' } }));
+  assert.deepEqual(both.pendingGates, ['ui-evidence', 'bot-threads']);
+  // 还有别的前置门没过,或格式门还有别的问题:照旧只打回。
+  assert.equal(decideGate(ctx({ format: evidence, gate: { gatePass: false, blockers: ['CI 未全过:x'] }, auto: { action: 'pushback-format' } })).outcome, 'format');
+  assert.equal(decideGate(ctx({ format: { ...evidence, formatIssues: ['缺界面证据', '标题格式不对'] }, gate: { gatePass: true }, auto: { action: 'pushback-format' } })).outcome, 'format');
+  assert.equal(decideGate(ctx({ format: { formatPass: false, formatIssues: ['缺段落'] }, gate: { gatePass: true }, auto: { action: 'pushback-format' } })).outcome, 'format');
+});

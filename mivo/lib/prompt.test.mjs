@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY, toRuleMapPlan, matchesRulePath, buildSpecManifest, specDigestOf } from './prompt.mjs';
+import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY, PRODUCT_INTENT, toRuleMapPlan, matchesRulePath, buildSpecManifest, specDigestOf } from './prompt.mjs';
 import { SKILL_ROOT } from './common.mjs';
 
 const prompt = (tier = 'standard', over = {}) => buildReviewPrompt({
@@ -108,7 +108,25 @@ test('specDigest:固定模板盖到每个分支(全量/增量范围、上一轮�
   assert.deepEqual(Object.keys(template).sort(), ['full', 'incremental']);
   const all = Object.values(template).join('\n');
   for (const phrase of ['**全量审查**', '**增量复审**', '**优先规则**', '本轮是增量复审', '上一轮的问题(逐条核对)', '标了「已转 #N」的',
-    '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
+    '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)', '## 维护者裁定不改的问题(服务器已核验)', '## 写明的产品意图不算缺陷']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
   const tweaked = { ...manifest(), template: { ...template, incremental: template.incremental.replace('**优先规则**', '**优先规则(改)**') } };
   assert.notEqual(specDigestOf(tweaked), specDigestOf(manifest()), '只改增量专属的一句');
+});
+
+test('写明的产品意图不算缺陷:放在分级之后;rule-map 不再写「违反记 P1」', () => {
+  const text = prompt();
+  assert.ok(text.indexOf(SEVERITY) < text.indexOf(PRODUCT_INTENT) && text.indexOf(PRODUCT_INTENT) < text.indexOf('## 交卷格式'));
+  assert.match(PRODUCT_INTENT, /PR 正文写明的需求和有意设计/);
+  assert.match(PRODUCT_INTENT, /「待 owner 确认」/);
+  assert.match(PRODUCT_INTENT, /有意设计本身造成 P0[^]*照常报/);
+  assert.doesNotMatch(loadReviewSpec(SKILL_ROOT).ruleMap, /DESIGN\.md`（\*\*强制\*\*：UI 改动必须符合，违反记 P1）/);
+});
+
+test('维护者裁定不改:有条目才出现一节;增量复审不再把它们当没修好', () => {
+  assert.doesNotMatch(prompt(), /维护者裁定不改的问题/);
+  const ruled = prompt('standard', { rulings: [{ path: 'src/a.tsx', line: 3, finding: '弹菜单', by: 'owner', reason: '保留' }],
+    scope: { mode: 'incremental', reason: 'r', files: ['src/a.tsx'], previousFindings: [] } });
+  assert.match(ruled, /## 维护者裁定不改的问题\(服务器已核验\)/);
+  assert.match(ruled, /`src\/a.tsx:3` 弹菜单 —— @owner 裁定不改:「保留」/);
+  assert.match(ruled, /没修好的照常再报;下方「维护者裁定不改」列出的除外/);
 });
