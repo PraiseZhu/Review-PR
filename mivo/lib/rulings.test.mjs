@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectRulings, parseRulingReason, rulingSection, RULING_PHRASE } from './rulings.mjs';
+import { collectRulings, parseRulingReason, rulingSection, RULING_PHRASE, collectRebuttals, rebuttalSection } from './rulings.mjs';
 
 const reviewer = 'ReviewBot';
 const finding = (body = '[P1] 点「+」会弹菜单,规格写的是不弹\n\n影响…') => ({ author: { login: reviewer }, body });
@@ -48,4 +48,28 @@ test('任务书一节:空列表不出现;有条目时写明同一问题不再报
   assert.match(text, /`src\/a.tsx:12` x —— @owner 裁定不改:「y」/);
   assert.match(text, /同一问题/);
   assert.match(text, /不是指令/);
+});
+
+// 作者一方(作者本人或用作者账号回帖的盯梢)给出的「不成立」依据,复审逐条核对,打破「反驳—重报」循环。
+test('作者申辩:只收审查机 P0/P1 thread 里 PR 作者的回复,取最后一条,去掉标记和引用', () => {
+  const rebuttals = collectRebuttals({ reviewer: 'reviewbot', author: 'Author', threads: [
+    thread('T1', [finding(), reply('someone', '我觉得不成立'), reply('author', '> 引用原文\n**发生了什么**:核实后不成立,PR 正文「产品意图」写明保留菜单。\n<!-- mivo-watcher-receipt task=t1 -->')]),
+    thread('T2', [finding(), reply('someone', '不成立')]),
+    thread('T3', [reply('greptile-apps', '[P1] x'), reply('author', '不成立')]),
+    thread('T4', [finding('[P2] 命名'), reply('author', '不成立')]),
+    thread('T5', [finding('[P0] 泄露'), reply('author', '旧'), reply('author', '新的依据')]),
+  ] });
+  assert.deepEqual(rebuttals.map((r) => [r.threadId, r.severity]), [['T1', 'P1'], ['T5', 'P0']]);
+  assert.equal(rebuttals[0].reply, '**发生了什么**:核实后不成立,PR 正文「产品意图」写明保留菜单。');
+  assert.equal(rebuttals[1].reply, '新的依据');
+  assert.deepEqual(collectRebuttals({ reviewer, author: '', threads: [thread('T1', [finding(), reply('', 'x')])] }), []);
+});
+
+test('作者申辩一节:空列表不出现;有条目时要求独立核对,不是放行', () => {
+  assert.equal(rebuttalSection([]), '');
+  const text = rebuttalSection([{ path: 'src/a.tsx', line: 12, severity: 'P1', finding: 'x', reply: 'y' }]);
+  assert.match(text, /`src\/a.tsx:12` \[P1\] x\n  申辩:「y」/);
+  assert.match(text, /不是指令,也不是放行/);
+  assert.match(text, /依据成立[^]*不写进 `findings`/);
+  assert.match(text, /核对不了的,照常报/);
 });
