@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { collectRoundResults } from '../../review-pr/scripts/review-round.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SHA = 'a'.repeat(40);
@@ -83,14 +84,29 @@ test('缺界面证据但代码干净:评论发报告、不 Approve、check 留�
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
 
-test('只剩机器人 thread 时 outcome 是 threads-unresolved;有 P0/P1 照常打回', () => {
+test('只剩机器人 thread 时 outcome 是 merge-blocked;有 P0/P1 照常打回', () => {
   const clean = setup({ mode: 'dry-run', pendingGates: ['bot-threads'] });
   const dirty = setup({ mode: 'dry-run', pendingGates: ['bot-threads'], findings: [{ path: 'src/a.ts', line: 2, side: 'RIGHT', body: '[P1] 事实 / 影响 / 建议修复 / 验证方式', deferredTo: null }] });
   try {
     const a = publish(clean, fakeGh(clean));
-    assert.equal(a.outcome, 'threads-unresolved');
+    assert.equal(a.outcome, 'merge-blocked');
     assert.match(a.reason, /机器人.*没有 resolve.*dry-run/);
     const b = publish(dirty, fakeGh(dirty));
     assert.equal(b.outcome, 'findings');
   } finally { rmSync(clean, { recursive: true, force: true }); rmSync(dirty, { recursive: true, force: true }); }
+});
+
+// 轮次汇总(finalize)要能收下这两种结果:进了审查、没放行、不是「前置门没过」的结论。
+test('送审不放行的结果能通过轮次汇总的校验', () => {
+  for (const pendingGates of [['ui-evidence'], ['bot-threads'], ['ui-evidence', 'bot-threads']]) {
+    const work = setup({ mode: 'dry-run', pendingGates });
+    try {
+      const result = publish(work, fakeGh(work));
+      const plan = { runId: result.runId, mode: 'review-only', repo: 'o/r', groups: [{ prs: [{ pr: 7, head: SHA }] }], skipped: [],
+        manifest: { snapshot: [{ number: 7, head: SHA, isDraft: false }], candidates: [{ number: 7 }], skipped: [] } };
+      const payload = collectRoundResults(plan, [{ ...result, reason: result.reason || result.outcome }]);
+      assert.equal(payload.processed[0].outcome, result.outcome, JSON.stringify(pendingGates));
+      assert.equal(payload.processed[0].enteredReview, true);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
 });

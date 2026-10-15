@@ -609,7 +609,8 @@ async function publishClean(state, result, reportFile) {
 async function publishAdvisory(state, result, reportFile) {
   const input = state.input;
   const pending = state.pendingGates.map((gate) => PENDING_GATE_TEXT[gate] ?? gate);
-  const outcome = state.pendingGates.includes('ui-evidence') ? 'format' : 'threads-unresolved';
+  // threads-unresolved 表示「前置门没过、没进审查」,轮次汇总会拒绝它带 enteredReview;只剩机器人 thread 记 merge-blocked。
+  const outcome = state.pendingGates.includes('ui-evidence') ? 'format' : 'merge-blocked';
   const why = pending.join(';');
   Object.assign(result, { outcome, reviewClean: false, reason: `代码审查没有 P0/P1,但还不能放行:${why}` });
   result.approval = { status: 'blocked', code: 'gates-pending', reason: why };

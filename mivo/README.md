@@ -68,7 +68,7 @@ flowchart LR
 - **只缺界面证据**：格式门照样打回要证据，同时送审代码。
 - **只剩机器人留的 thread 没 resolve**（首条评论作者是 Bot，如 Greptile）：照样送审。有人留的 thread 没关，照旧不送审。
 
-两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format` 或 `threads-unresolved`，`reviewClean=false`。作者补齐后下一轮重审；代码没变时沿用这次结论，Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`。作者补齐后下一轮重审；代码没变时沿用这次结论，Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
 
 ## 写明的产品意图与维护者裁定不改
 
