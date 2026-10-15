@@ -180,6 +180,6 @@ node deploy-tuple.mjs --old-skill <旧提交> --new-skill <新提交> --old-wf <
 
 - `--preview` 只读核对新旧 tuple、三台 trust 和要合并的 PR，打印预览，不写任何东西。
 - 停点：`--stop pause` 给不认 `deploy-hold` 的旧代码用（写 `pause.json` 只抬高 `until`、保留原字段，被旧进程改写就提回，收尾时恢复成还没到期、`until` 最晚的那份运行暂停）；`--stop hold` 写 `deploy-hold.json`，等新代码写出 `lockReleased: true` 的 `quiesced.json` 并退出。两种都确认进程已退、锁文件已不在才 `bootout`，并给巡检放计划内维护标记。
-- 到停点后（带 `--pr` 时先绕过合并该 PR），逐项「先比对旧值再写」切换变量、Mini 检出和三台 trust，再跑 prerequisites；全部通过才撤销暂停、删停点标记、`bootstrap`。任一步失败按已切部分反向退回；tuple 不是整体一致（或 workflow 已合入但 trust 退回了）就保持停止，不 `bootstrap`。
-- 回滚：新旧参数对调，用 `--stop hold`，workflow 另行 revert。
+- 到停点后（带 `--pr` 时先绕过合并该 PR），逐项「先比对旧值再写」切换变量、Mini 检出和三台 trust，再跑 prerequisites；全部通过才撤销暂停、删停点标记、`bootstrap`。任一步失败按已切部分反向退回；撤销停点之前再读一遍 main 上的 workflow、仓库变量、Mini 检出和三台 trust，整组都是旧值才恢复前置审查。不一致（包括读不到、workflow 已合入但其余部分退回了）就保持停止，不 `bootstrap`，按脚本提示人工处理。
+- 回滚：新旧参数对调，用 `--stop hold`，workflow 另行 revert。不带 `--pr` 时脚本要求 main 上的 workflow 已经是回滚目标：从 revert 合入到切换完成之间 tuple 不一致，revert 合入后要紧接着运行；这时如果切换失败，退回后整组仍不一致，脚本保持停止。
 - 每次运行在同目录写 `deploy-<新提交前 7 位>-<时间>.record.json`。首次整组上线是 2026-10-15 00:27（`2f55cb8` + `review-pr.yml` `1624d62b…`，`deploy-2f55cb8-2026-10-14T1627.record.json`）。
