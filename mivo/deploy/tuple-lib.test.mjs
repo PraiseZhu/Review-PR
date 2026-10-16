@@ -9,6 +9,7 @@ import {
   toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
   toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock, toLockExpiresAt,
   toLockKeep, toLockBlockedText, toLinkLockScript, toReleaseLockScript, finalizeDeployError,
+  RELEASE_LOCK_RETRIES, toReleaseLockResult,
   shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
 } from './tuple-lib.mjs';
 
@@ -346,6 +347,19 @@ test('释放锁:确认是自己的才删掉', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('释放锁只发一次:ssh 断线不重试,报结果未知并给人工核对办法', () => {
+  assert.equal(RELEASE_LOCK_RETRIES, 1);
+  assert.deepEqual(toReleaseLockResult({ status: 0, stderr: '' }), { ok: true, message: '' });
+  assert.deepEqual(toReleaseLockResult({ status: 0, stderr: '部署锁已不是本次的,不删\n' }), { ok: true, message: '部署锁已不是本次的,不删' });
+  const lost = toReleaseLockResult({ status: 255, stderr: 'Connection reset' });
+  assert.equal(lost.ok, false);
+  assert.match(lost.message, /结果未知/);
+  assert.ok(lost.message.includes(DEPLOY_LOCK_PATH), lost.message);
+  const failed = toReleaseLockResult({ status: 1, stderr: 'rm: Permission denied' });
+  assert.equal(failed.ok, false);
+  assert.match(failed.message, /Permission denied/);
 });
 
 test('save 抛 ENOSPC 时仍释放自己的锁', () => {
