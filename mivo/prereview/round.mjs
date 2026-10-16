@@ -16,7 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -709,7 +709,7 @@ function handleTask(ctx, task) {
   const decision = decideGate(live);
   const result = { outcome: decision.outcome, reason: decision.reason, errors: [], warnings: [], gate: { stage: decision.stage, actions: decision.actions } };
   const dry = CONFIG.mode === 'dry-run';
-  if (dry && decision.actions.length) result.dryRunActions = decision.actions.map((a) => `${a.script}${a.mode ? `:${a.mode}` : ''}${a.kind ? `:${a.kind}` : ''}${a.gateKind ? `:${a.gateKind}` : ''}`);
+  if (dry && decision.actions.length) result.dryRunActions = decision.actions.map((a) => `${a.script}${a.mode ? `:${a.mode}` : ''}${a.kind ? `:${a.kind}` : ''}${a.issueMode ? `:${a.issueMode}` : ''}${a.gateKind ? `:${a.gateKind}` : ''}`);
 
   for (const action of dry ? [] : decision.actions) executeGateAction({ action, live, task, bindings, result, roundDir });
   if (dry) {
@@ -726,8 +726,12 @@ function handleTask(ctx, task) {
   if (!dry) dropStaleMergeReady(live, task, result);
 
   if (decision.stage === 'protected' && decision.outcome === 'protected') {
-    const manual = manualProtectedApproval(live, task);
-    if (manual) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result);
+    // 受保护路径的人工放行(维护者 Approve / 确认 issue 上的「同意放行」,不绑 head)成立:review-pr 还没写成功就派
+    // 服务器独立复核并写;已经成功就由 Mini 补关确认 issue(服务器令牌的 issue 写权限未核实,关 issue 不交给服务器)。
+    const protectedPath = live.protectedPath;
+    const next = toProtectedDispatch({ decision, protectedPath, checkDone: protectedCheckDone(task) });
+    if (next.closeIssue && !dry) executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue' }, live, task, bindings, result, roundDir });
+    if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result);
   }
   if (decision.stage !== 'review') {
     if (decision.retry) result.retry = true;
@@ -747,14 +751,21 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
   switch (action.script) {
     case 'signoff-hold': {
       const payloadFile = join(roundDir, `signoff-payload-pr-${pr}.json`);
-      writeJson(payloadFile, buildSignoffPayload(live, action.kind));
+      writeJson(payloadFile, buildSignoffPayload(live, action.kind, action.issueMode));
+      // issueMode: protected = 受保护路径确认 issue;notice = 豁免作者的通知 issue(创建后即关闭,不拦 PR)。
+      const modeArgs = action.issueMode ? ['--signoff-mode', action.issueMode] : [];
       const args = action.mode === 'labels-only'
-        ? [pr, '--labels-only', '--kind', action.kind, ...bindings]
-        : [pr, '--kind', action.kind, '--payload-file', payloadFile, ...bindings];
+        ? [pr, '--labels-only', '--kind', action.kind, ...modeArgs, ...bindings]
+        : [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings];
       let out = script('signoff-hold.mjs', args);
-      if (out.needsFreshHold || out.reason === 'missing-payload') out = script('signoff-hold.mjs', [pr, '--kind', action.kind, '--payload-file', payloadFile, ...bindings]);
+      if (out.needsFreshHold || out.reason === 'missing-payload') out = script('signoff-hold.mjs', [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings]);
       if (out.issueError) result.errors.push(`确认 issue 创建失败:${out.issueError}`);
       if (out.commentError) result.errors.push(`确认首评发布失败:${out.commentError}`);
+      if (action.issueMode === 'notice') {
+        // 通知没发出去不挡送审,下一轮重判时再发(PR 上没有去重标记就会重来);关闭失败只记警告。
+        result.gate.signoffNotice = out;
+        if (out.closeError) result.warnings.push(`通知 issue 没关掉:${out.closeError}`);
+      }
       record('signoffHold', out);
       if (out.issueError || out.commentError) result.retry = true;
       break;
@@ -853,18 +864,11 @@ function dropStaleMergeReady(live, task, result) {
   if (!r.ok && !/404/.test(r.stderr)) result.warnings.push(`review:merge-ready 没摘掉:${r.stderr.trim().slice(0, 200)}`);
 }
 
-// 受保护路径:维护者(非作者)在当前 head 上 Approve 了,且 review-pr check 还没写成 success,就派「人工放行」。
-function manualProtectedApproval(live, task) {
-  const maintainers = new Set((live.signoff?.maintainers ?? []).map((m) => String(m).toLowerCase()));
-  const author = String(live.meta?.author ?? '').toLowerCase();
-  const reviews = ghRead(['api', '--paginate', '--slurp', `repos/${CONFIG.targetRepo}/pulls/${task.pr}/reviews?per_page=100`], { allowFail: true });
-  if (!reviews.ok) return null;
-  const approved = JSON.parse(reviews.stdout).flat().some((r) => r.state === 'APPROVED' && r.commit_id === task.head &&
-    maintainers.has(String(r.user?.login ?? '').toLowerCase()) && String(r.user?.login ?? '').toLowerCase() !== author);
-  if (!approved) return null;
+// 受保护路径:当前 head 的 review-pr check 是否已经写成 success。放行信号本身由 context 的 protectedPath 给出。
+// check 读不到按「没写成功」处理:最多多派一次服务器复核,服务器写 check 是幂等的。
+function protectedCheckDone(task) {
   const checks = ghRead(['api', `repos/${CONFIG.targetRepo}/commits/${task.head}/check-runs?check_name=review-pr`], { allowFail: true });
-  const done = checks.ok && (JSON.parse(checks.stdout).check_runs ?? []).some((c) => c.conclusion === 'success');
-  return done ? null : { approved: true };
+  return checks.ok && (JSON.parse(checks.stdout).check_runs ?? []).some((c) => c.conclusion === 'success');
 }
 
 // ── 派发服务器审查 ──────────────────────────────────────────────────────────
@@ -1139,7 +1143,8 @@ function collectServerRun(ctx, entry) {
     recordFailure(ctx, task, true);
     return true;
   }
-  const result = { ...server };
+  // 服务器复核没认到放行时只回 protected、不带作者提醒回执:沿用前置判门这一轮的回执,否则整轮汇总会抛错。
+  const result = withProtectedAuthorNotice({ ...server }, { gateResult: entry.gateResult, head: task.head });
   if (existsSync(join(dir, 'report.md'))) {
     const reportFile = join(ctx.roundDir, 'reports', `pr-${task.pr}.md`);
     mkdirSync(dirname(reportFile), { recursive: true });

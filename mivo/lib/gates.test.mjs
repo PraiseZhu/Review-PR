@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideGate, buildSignoffPayload, buildGatePushback } from './gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch } from './gates.mjs';
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -40,12 +40,85 @@ test('维护者确认门:首次在拦开 issue,已 hold 只同步标签', () => 
 });
 
 test('维护者确认门:豁免作者不拦,残留标签摘掉;放行后关 issue 再往下走', () => {
-  const exempt = decideGate(ctx({ signoff: { authorExempt: true, triggers: [productTrigger({ blocking: false })], labels: { hasAnyLabel: true } } }));
+  // 已通知过(held 存在):不再发通知,只摘残留标签。
+  const exempt = decideGate(ctx({ signoff: { authorExempt: true, triggers: [productTrigger({ blocking: false })], held: { issueNumber: 9 }, labels: { hasAnyLabel: true } } }));
   assert.equal(exempt.stage, 'review');
   assert.deepEqual(exempt.actions, [{ script: 'signoff-release', mode: 'labels-only' }]);
   const released = decideGate(ctx({ signoff: { triggers: [productTrigger({ blocking: false, released: { via: 'slack-release' } })], labels: { hasAnyLabel: true }, held: { issueNumber: 9 } } }));
   assert.equal(released.stage, 'review');
   assert.deepEqual(released.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }]);
+});
+
+const protectedPath = (extra = {}) => ({ files: ['.github/workflows/ci.yml'], fileCount: 1, released: null, waitingForAuthor: false, ...extra });
+const protectedCtx = (overrides = {}) => ctx({ protectedPath: protectedPath(), auto: { action: 'skip-protected-path', reason: '受保护路径' }, ...overrides });
+
+test('受保护路径:豁免作者(#971)也开确认 issue 转人工审核,不送审', () => {
+  const exempt = { authorExempt: true, triggers: [] };
+  assert.equal(isProtectedPathHit(protectedCtx()), true);
+  assert.equal(isProtectedPathHit(ctx()), false);
+  const first = decideGate(protectedCtx({ signoff: exempt, approvalPolicy: { authorIsMaintainer: true } }));
+  assert.equal(first.stage, 'protected');
+  assert.equal(first.outcome, 'protected');
+  assert.deepEqual(first.actions, [
+    { script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' },
+    { script: 'notify-protected' },
+  ]);
+  // 已有可复用的确认 issue:只补标签
+  const held = decideGate(protectedCtx({ signoff: { ...exempt, held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' } } }));
+  assert.deepEqual(held.actions[0], { script: 'signoff-hold', mode: 'labels-only', kind: 'protected', issueMode: 'protected' });
+  // 旧 issue 是通知(或已关闭):另开新的完整 issue
+  for (const heldIssue of [{ number: 9, state: 'CLOSED', mode: 'notice' }, { number: 9, state: 'OPEN', mode: 'notice' }, { number: 9, state: 'CLOSED', mode: 'protected' }]) {
+    const fresh = decideGate(protectedCtx({ signoff: { ...exempt, held: { issueNumber: 9 }, heldIssue } }));
+    assert.equal(fresh.actions[0].mode, 'full', JSON.stringify(heldIssue));
+  }
+  // 非豁免作者 + security 触发 + 受保护路径:只出一个 protected 的 hold,不出普通 hold
+  const withSecurity = decideGate(protectedCtx({ signoff: { triggers: [{ kind: 'security', detail: 'x', blocking: true, released: null }], currentBlocker: { kind: 'security' } } }));
+  assert.equal(withSecurity.outcome, 'protected');
+  assert.deepEqual(withSecurity.actions.filter((a) => a.script === 'signoff-hold'), [{ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' }]);
+});
+
+test('受保护路径已放行:不再 hold,有残留标签只摘标签;当前 head 被 Request Changes 交作者', () => {
+  const released = decideGate(protectedCtx({
+    protectedPath: protectedPath({ released: { by: 'kirozeng', via: 'github-approve', at: '2026-10-16T01:00:00Z' } }),
+    signoff: { authorExempt: true, labels: { hasAnyLabel: true } },
+  }));
+  assert.equal(released.outcome, 'protected');
+  assert.deepEqual(released.actions, [{ script: 'signoff-release', mode: 'labels-only' }, { script: 'notify-protected' }]);
+  const clean = decideGate(protectedCtx({ protectedPath: protectedPath({ released: { by: 'kirozeng', via: 'issue-comment' } }) }));
+  assert.deepEqual(clean.actions, [{ script: 'notify-protected' }]);
+  const waiting = decideGate(protectedCtx({ protectedPath: protectedPath({ waitingForAuthor: true }), signoff: { labels: { hasAnyLabel: true } } }));
+  assert.equal(waiting.outcome, 'changes-requested');
+  assert.deepEqual(waiting.actions, [{ script: 'signoff-release', mode: 'labels-only' }]);
+});
+
+test('豁免作者碰到确认门但没改受保护路径:发通知 issue,同一轮照常送审;已通知或没有触发不再发', () => {
+  const exempt = { authorExempt: true };
+  const notice = decideGate(ctx({ signoff: { ...exempt, triggers: [productTrigger({ blocking: false }), { kind: 'arch', detail: 'huge-diff', blocking: false }] } }));
+  assert.equal(notice.stage, 'review');
+  assert.deepEqual(notice.actions, [{ script: 'signoff-hold', mode: 'full', kind: 'product', issueMode: 'notice' }]);
+  // 类别按处置优先级取
+  const sec = decideGate(ctx({ signoff: { ...exempt, triggers: [{ kind: 'arch', blocking: false }, { kind: 'security', blocking: false }] } }));
+  assert.equal(sec.actions[0].kind, 'security');
+  // 通知不挂标签:有残留标签时只是摘掉
+  const withLabel = decideGate(ctx({ signoff: { ...exempt, triggers: [productTrigger({ blocking: false })], labels: { hasAnyLabel: true } } }));
+  assert.deepEqual(withLabel.actions.map((a) => a.script), ['signoff-hold', 'signoff-release']);
+  // 已通知(PR 上有确认标记)/ 没有触发:不发
+  assert.deepEqual(decideGate(ctx({ signoff: { ...exempt, triggers: [productTrigger({ blocking: false })], held: { issueNumber: 9 } } })).actions, []);
+  assert.deepEqual(decideGate(ctx({ signoff: { ...exempt, triggers: [] } })).actions, []);
+  // 维护者作者同样走通知
+  const maintainerAuthor = decideGate(ctx({ approvalPolicy: { authorIsMaintainer: true }, signoff: { triggers: [productTrigger({ blocking: false })] } }));
+  assert.equal(maintainerAuthor.actions[0].issueMode, 'notice');
+});
+
+test('toProtectedDispatch:放行成立才派 protected-approve;review-pr 已成功只补关 issue', () => {
+  const decision = { stage: 'protected', outcome: 'protected' };
+  const released = protectedPath({ released: { by: 'kirozeng', via: 'github-approve' } });
+  assert.deepEqual(toProtectedDispatch({ decision, protectedPath: released, checkDone: false }), { dispatch: true, closeIssue: false });
+  assert.deepEqual(toProtectedDispatch({ decision, protectedPath: released, checkDone: true }), { dispatch: false, closeIssue: true });
+  assert.deepEqual(toProtectedDispatch({ decision, protectedPath: protectedPath(), checkDone: false }), { dispatch: false, closeIssue: false });
+  assert.deepEqual(toProtectedDispatch({ decision, protectedPath: { ...released, waitingForAuthor: true } }), { dispatch: false, closeIssue: false });
+  assert.deepEqual(toProtectedDispatch({ decision: { stage: 'review', outcome: null }, protectedPath: released }), { dispatch: false, closeIssue: false });
+  assert.deepEqual(toProtectedDispatch({ decision: { stage: 'protected', outcome: 'changes-requested' }, protectedPath: released }), { dispatch: false, closeIssue: false });
 });
 
 test('维护者 Request Changes → changes-requested,不进审查', () => {
@@ -100,9 +173,34 @@ test('确认 issue 文案:标题前缀、三段正文与确认方式固定', () 
   assert.equal(payload.issueTitle, '维护者确认 · PR #12 feat(canvas): 新增对齐线');
   assert.match(payload.issueBody, /^### 触发原因\n\n\*\*product\*\* — feat 类型/);
   assert.match(payload.issueBody, /### PR\nhttps:\/\/github.com\/o\/r\/pull\/12/);
-  assert.match(payload.issueBody, /在相关 Slack 会话留言「同意放行」，或直接在 PR 上 Approve/);
+  assert.match(payload.issueBody, /在相关 Slack 会话留言「同意放行」、在本 issue 下评论「同意放行」，或直接在 PR 上 Approve；批一次一直有效/);
   assert.match(payload.issueBody, /`src\/ui\/Align.tsx`\(42 行\)/);
   assert.match(payload.commentBody, /讨论 issue：\{\{ISSUE_URL\}\}/);
+});
+
+test('确认 issue 三种模式:骨架一致(标题前缀 + 三段),确认方式与首评文案各自写准,正文不含「关联 PR:#」', () => {
+  const base = ctx({ signoff: { triggers: [productTrigger()] }, protectedPath: protectedPath() });
+  const payloads = {
+    normal: buildSignoffPayload(base, 'product', 'normal'),
+    protected: buildSignoffPayload(base, 'protected', 'protected'),
+    notice: buildSignoffPayload(base, 'product', 'notice'),
+  };
+  for (const [mode, payload] of Object.entries(payloads)) {
+    assert.equal(payload.issueTitle, '维护者确认 · PR #12 feat(canvas): 新增对齐线', mode);
+    assert.match(payload.issueBody, /^### 触发原因\n\n[\s\S]*\n### PR\nhttps:\/\/github.com\/o\/r\/pull\/12\n\n### 确认方式\n\n/, mode);
+    assert.doesNotMatch(payload.issueBody, /关联\s*PR:#/, mode);
+    assert.match(payload.commentBody, /\{\{ISSUE_URL\}\}/, mode);
+  }
+  assert.match(payloads.protected.issueBody, /\*\*protected\*\* — 改动受保护路径 \.github\/workflows\/ci\.yml\(转人工审核\)/);
+  assert.match(payloads.protected.issueBody, /批一次一直有效/);
+  assert.match(payloads.protected.issueBody, /把 `review-pr` 检查写为通过/);
+  assert.match(payloads.protected.commentBody, /已转人工审核/);
+  assert.match(payloads.protected.commentBody, /批一次之后再推新提交不用重批/);
+  assert.match(payloads.notice.issueBody, /本 issue 只是通知：作者在豁免名单内，维护者确认门不拦/);
+  assert.doesNotMatch(payloads.notice.issueBody, /\*\*通过\*\*/);
+  assert.match(payloads.notice.commentBody, /确认门不拦，PR 照常进入自动审查/);
+  assert.doesNotMatch(payloads.notice.commentBody, /请维护者审阅/);
+  assert.match(payloads.normal.commentBody, /在 Slack 讨论串、讨论 issue 下回复「同意放行」/);
 });
 
 test('凭证打回只写文件/行号/类型,行内评论锚在新增行', () => {

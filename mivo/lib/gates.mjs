@@ -11,7 +11,42 @@ export const KIND_TOPICS = {
   coldUpdate: 'mobile 冷更(runtime fingerprint 变化)',
   rules: '审查规则文档变更',
   pluginBase: '插件基座改动(影响全部已装插件)',
+  // 括号里不放逗号:Mivo parseSignoffIssue 用「涉及的…,维护者确认后」截取主题。
+  protected: '受保护路径改动(.github / CODEOWNERS)',
 };
+
+// 与 review-pr/scripts/context.mjs 的 KIND_PRIORITY 同序:通知 issue 的主题取最先的那一类。
+const SIGNOFF_KIND_PRIORITY = ['product', 'security', 'pluginBase', 'rules', 'coldUpdate', 'arch'];
+
+/**
+ * 服务器复核没认到放行(Approve 被撤销、评论被删、名单变化)时只回 outcome=protected、不带作者提醒回执;
+ * 轮次汇总(collectRoundResults)要求受保护路径的结果有提醒终态,缺了会让整轮 finalize 抛错。
+ * 这里补上:沿用前置判门这一轮的回执(Mini 已经发过提醒),丢了就记失败并重试。纯函数,不改入参。
+ */
+export function withProtectedAuthorNotice(result, { gateResult = null, head = '' } = {}) {
+  if (result?.outcome !== 'protected' || result.authorNotice) return result;
+  const authorNotice = gateResult?.authorNotice
+    ?? { kind: 'protected-path', status: 'failed', head, reason: '服务器复核没认到放行,前置提醒回执已丢失(中断恢复)' };
+  return { ...result, authorNotice, ...(authorNotice.status === 'failed' ? { retry: true } : {}) };
+}
+
+/** 改了受保护路径(.github 等)?context 的 protectedPath 为准;旧 context 退回 auto 分流。 */
+export function isProtectedPathHit(ctx) {
+  if (ctx?.protectedPath?.files?.length > 0) return true;
+  const auto = ctx?.auto ?? {};
+  return (auto.action === 'signoff-gate' ? auto.fallback?.action : auto.action) === 'skip-protected-path';
+}
+
+/**
+ * 受保护路径放行后要不要派服务器写 review-pr check。纯函数,round.mjs 用它决定派发还是补关 issue:
+ * 只有判门结果是 protected、人工放行成立、当前 head 没有维护者 Request Changes 时才考虑;
+ * review-pr 已是 success(checkDone)就不再派,改为补关确认 issue(服务器关失败的兜底)。
+ */
+export function toProtectedDispatch({ decision, protectedPath, checkDone = false } = {}) {
+  const eligible = decision?.stage === 'protected' && decision?.outcome === 'protected' &&
+    Boolean(protectedPath?.released) && protectedPath?.waitingForAuthor !== true;
+  return { dispatch: eligible && !checkDone, closeIssue: eligible && checkDone };
+}
 
 /**
  * @returns {{
@@ -46,7 +81,35 @@ export function decideGate(ctx) {
   // 1. 维护者确认门
   const exempt = signoff.authorExempt === true || ctx.approvalPolicy?.authorIsMaintainer === true;
   const signoffActions = [];
-  if (exempt) {
+  const protectedHit = isProtectedPathHit(ctx);
+  if (protectedHit) {
+    // 受保护路径(任何作者,含豁免名单):前置审查开确认 issue 转人工审核,放行前审查机不写绿。
+    // 放行信号(维护者 Approve / issue 上的 Slack 或 GitHub「同意放行」)统一由 context 的 protectedPath 算好。
+    // 它的确认门触发(如 .github/workflows 同时命中 security)并入这一个 issue,不再另开普通 hold。
+    const protectedPath = ctx.protectedPath ?? {};
+    if (protectedPath.waitingForAuthor) {
+      if (labels.hasAnyLabel) signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
+      return {
+        stage: 'signoff', outcome: 'changes-requested',
+        reason: '维护者在当前 head 上 Request Changes,等待作者修改',
+        actions: signoffActions,
+      };
+    }
+    if (!protectedPath.released) {
+      // 已有确认 issue 且仍可复用(不是通知 issue、没关闭)只补标签;否则开完整的新 issue。
+      const heldIssue = signoff.heldIssue ?? null;
+      const reusable = Boolean(signoff.held) && heldIssue?.mode !== 'notice' && heldIssue?.state !== 'CLOSED';
+      signoffActions.push({ script: 'signoff-hold', mode: reusable ? 'labels-only' : 'full', kind: 'protected', issueMode: 'protected' });
+    } else if (labels.hasAnyLabel) {
+      // 放行后只摘标签。确认 issue 等服务器把 review-pr 写成功后再关(round 的 toProtectedDispatch)。
+      signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
+    }
+  } else if (exempt) {
+    // 豁免名单作者碰到确认门:不拦,但开一个通知 issue 让维护者看见(每个 PR 一次,创建后即关闭、不挂标签)。
+    if (triggers.length > 0 && !signoff.held) {
+      const kind = SIGNOFF_KIND_PRIORITY.find((k) => triggers.some((t) => t.kind === k)) ?? triggers[0].kind;
+      signoffActions.push({ script: 'signoff-hold', mode: 'full', kind, issueMode: 'notice' });
+    }
     if (labels.hasAnyLabel) signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
   } else {
     const blocking = triggers.filter((t) => t.blocking);
@@ -187,12 +250,20 @@ export function classifyGateBlock(ctx, reason) {
   return { stage: 'gate', outcome: 'merge-blocked', reason, actions: [] };
 }
 
-/** 确认 issue / PR 首评文案(Mivo 现有固定模板,见方案附录 A)。不调用模型。 */
-export function buildSignoffPayload(ctx, kind) {
+/**
+ * 确认 issue / PR 首评文案(Mivo 现有固定模板,见方案附录 A)。不调用模型。
+ * mode:normal = 普通确认门;protected = 受保护路径(转人工审核);notice = 豁免作者的通知。
+ * 三种模式的 issue 骨架一致(标题前缀「维护者确认 · PR #」+ 三段 ### ),Mivo parseSignoffIssue 靠它解析;
+ * 正文里不能出现「关联 PR:#」(footer 由 signoff-hold 追加,解析取最后一处)。
+ */
+export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const pr = ctx.pr;
   const title = ctx.meta?.title ?? '';
   const author = ctx.meta?.author ?? '';
-  const trigger = (ctx.signoff?.triggers ?? []).find((t) => t.kind === kind) ?? ctx.signoff?.currentBlocker ?? {};
+  const isProtected = mode === 'protected';
+  const trigger = isProtected
+    ? { detail: `改动受保护路径 ${(ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ')}(转人工审核)`, files: ctx.protectedPath?.files ?? [] }
+    : (ctx.signoff?.triggers ?? []).find((t) => t.kind === kind) ?? ctx.signoff?.currentBlocker ?? {};
   const blockingKinds = (ctx.signoff?.triggers ?? []).filter((t) => t.blocking).map((t) => t.kind);
   const files = [...(ctx.files ?? [])]
     .map((f) => ({ path: f.path, lines: (f.additions ?? 0) + (f.deletions ?? 0) }))
@@ -205,6 +276,13 @@ export function buildSignoffPayload(ctx, kind) {
   const changedSummary = top.length
     ? ['涉及文件(前 5 个,按改动行数):', ...top.map((f) => `- \`${f.path}\`(${f.lines} 行)`)].join('\n')
     : '';
+  const confirmSection = mode === 'notice'
+    ? ['- 本 issue 只是通知：作者在豁免名单内，维护者确认门不拦，PR 照常进入自动审查，不需要回复。']
+    : [
+      '- **通过**：在相关 Slack 会话留言「同意放行」、在本 issue 下评论「同意放行」，或直接在 PR 上 Approve；批一次一直有效',
+      '- **需要修改**：Request Changes，作者改完后重新同意或重新 Approve 即放行',
+      ...(isProtected ? ['- 本 PR 改了受保护路径，自动审查不审这类改动；放行后审查机把 `review-pr` 检查写为通过'] : []),
+    ];
   const issueBody = [
     '### 触发原因',
     '',
@@ -217,17 +295,30 @@ export function buildSignoffPayload(ctx, kind) {
     '',
     '### 确认方式',
     '',
-    '- **通过**：在相关 Slack 会话留言「同意放行」，或直接在 PR 上 Approve',
-    '- **需要修改**：Request Changes，作者改完后重新同意或重新 Approve 即放行',
+    ...confirmSection,
   ].join('\n');
-  const topicList = (blockingKinds.length ? blockingKinds : [kind]).map((k) => KIND_TOPICS[k] ?? k).join('、');
-  const commentBody = [
-    `本 PR 需要**维护者确认**（触发类别：${topicList}）。`,
-    '',
-    '请维护者审阅后**直接在 PR 上 Approve** 表示确认，或在 Slack 讨论串回复「同意放行」；如需作者修改，请 Request Changes 并写明要求。',
-    '',
-    '讨论 issue：{{ISSUE_URL}}',
-  ].join('\n');
+  const topicList = isProtected
+    ? KIND_TOPICS.protected
+    : (blockingKinds.length ? blockingKinds : [kind]).map((k) => KIND_TOPICS[k] ?? k).join('、');
+  const commentBody = mode === 'notice'
+    ? [
+      `本 PR 命中维护者确认门（触发类别：${KIND_TOPICS[kind] ?? kind}）。作者在豁免名单内，确认门不拦，PR 照常进入自动审查；已开通知 issue 告知维护者：{{ISSUE_URL}}`,
+    ].join('\n')
+    : isProtected
+      ? [
+        `本 PR 改了受保护路径（${(ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ')}），自动审查不审这类改动，**已转人工审核**。`,
+        '',
+        '维护者在确认 issue 下评论「同意放行」、在 Slack 讨论串回复「同意放行」，或直接在 PR 上 Approve 后，审查机会把 review-pr 写成通过；批一次之后再推新提交不用重批。',
+        '',
+        '确认 issue：{{ISSUE_URL}}',
+      ].join('\n')
+      : [
+        `本 PR 需要**维护者确认**（触发类别：${topicList}）。`,
+        '',
+        '请维护者审阅后**直接在 PR 上 Approve** 表示确认，或在 Slack 讨论串、讨论 issue 下回复「同意放行」；如需作者修改，请 Request Changes 并写明要求。',
+        '',
+        '讨论 issue：{{ISSUE_URL}}',
+      ].join('\n');
   return { issueTitle: `维护者确认 · PR #${pr} ${title}`.trim(), issueBody, commentBody, author };
 }
 
