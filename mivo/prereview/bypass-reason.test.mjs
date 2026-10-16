@@ -83,7 +83,8 @@ test('没有原因评论的绕过:发一条提醒(@ 绕过的人,带暗记),记�
     const again = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + SWEEP_EVERY_MS + 1 });
     assert.deepEqual(again.reminded, []);
     assert.equal(world.posts.length, 1, '同一个 PR 只收一条提醒');
-    assert.ok(again.skipped.some((s) => s.pr === 941 && s.why === 'reminded'));
+    assert.deepEqual(again.skipped, [], '已判定的记录第二轮不再进入判定');
+    assert.deepEqual(Object.keys(read().checked), [sha(1)]);
   }, live);
 });
 
@@ -147,6 +148,93 @@ test('单轮最多 5 条;发一条就立刻记账,中途发不出去时已记的
     const retry = sweep({ repo: REPO, stateDir: dir, gh: makeGh({ suites, prs }).gh, now: T0 + 2 * HOUR });
     assert.deepEqual(retry.reminded, [302, 303, 304, 305, 306], '没发出去的下次补,已提醒的不再发');
   }, live);
+});
+
+// 21 条以上的记录:按 after_sha 记下已判定完的(已提醒、已有原因、找不到 PR),下一轮从没判定的接着查
+const manySuites = (n) => Array.from({ length: n }, (_, i) => suite(1000 + i, { at: new Date(Date.parse('2026-10-17T09:00:00+08:00') + i * 1000).toISOString() }));
+const lookups = (calls) => calls.filter((c) => /\/commits\/[0-9a-f]{40}\/pulls$/.test(c.find((a) => a.startsWith('repos/')) ?? '')).map((c) => c.find((a) => a.startsWith('repos/')).match(/commits\/(\d+)\/pulls/)[1] * 1);
+
+test('21 条记录、前 20 条都已有原因:第一轮判定完前 20 条,第二轮轮到第 21 条并提醒(不再卡在前 20 条)', () => {
+  const suites = manySuites(21);
+  const prs = Object.fromEntries(suites.map((s, i) => [s.after_sha, 500 + i]));
+  const comments = Object.fromEntries(suites.slice(0, 20).map((_, i) => [500 + i, [{ user: { login: 'PraiseZhu', type: 'User' }, body: REAL_REASON }]]));
+  withState((dir, read) => {
+    const world = makeGh({ suites, prs, comments });
+    const first = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 });
+    assert.deepEqual([first.ok, first.reminded], [true, []]);
+    assert.equal(lookups(world.calls).length, 20, '一轮最多反查 20 条');
+    assert.equal(Object.keys(read().checked).length, 20, '前 20 条已判定');
+    const second = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + SWEEP_EVERY_MS + 1 });
+    assert.deepEqual(second.reminded, [520], '第 21 条这一轮被检查到并提醒');
+    assert.equal(world.posts.length, 1);
+    // 前 20 条整个过程只反查过一次;第 21 条只在第二轮查
+    const all = lookups(world.calls);
+    assert.equal(all.length, 21);
+    assert.equal(new Set(all).size, 21, '已判定的记录不重复反查');
+  }, live);
+});
+
+test('找不到 PR 的记录也算判定完:前 20 条没有 PR,第二轮只反查第 21 条', () => {
+  const suites = manySuites(21);
+  withState((dir, read) => {
+    const world = makeGh({ suites, prs: { [suites[20].after_sha]: 777 } });
+    sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 });
+    assert.equal(Object.keys(read().checked).length, 20);
+    const second = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + SWEEP_EVERY_MS + 1 });
+    assert.deepEqual(second.reminded, [777]);
+    assert.equal(lookups(world.calls).length, 21, '前 20 条各只反查一次');
+  }, live);
+});
+
+test('30 条都要提醒:单轮 5 条、反查 20 条的上限保留,连扫几轮后每个 PR 恰好收一条提醒', () => {
+  const suites = manySuites(30);
+  const prs = Object.fromEntries(suites.map((s, i) => [s.after_sha, 600 + i]));
+  withState((dir, read) => {
+    const world = makeGh({ suites, prs });
+    const rounds = [];
+    for (let i = 0; i < 8; i += 1) {
+      const before = lookups(world.calls).length;
+      const result = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + i * (SWEEP_EVERY_MS + 1) });
+      assert.ok(result.reminded.length <= 5, '单轮最多 5 条');
+      assert.ok(lookups(world.calls).length - before <= 20, '单轮最多反查 20 条');
+      rounds.push(result.reminded);
+    }
+    assert.deepEqual(rounds.flat().sort(), Array.from({ length: 30 }, (_, i) => 600 + i), '30 个 PR 各一条,没有漏也没有重复');
+    assert.equal(world.posts.length, 30);
+    assert.equal(Object.keys(read().checked).length, 30);
+    // 单轮反查不超过 20 条
+  }, live);
+});
+
+test('发评论中途失败:已发出的记入 checked,没发的不记(下一轮接着来)', () => {
+  const suites = manySuites(4);
+  const prs = Object.fromEntries(suites.map((s, i) => [s.after_sha, 700 + i]));
+  withState((dir, read) => {
+    const world = makeGh({ suites, prs, failPostAt: 2 });
+    const result = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 });
+    assert.equal(result.ok, false);
+    assert.deepEqual(Object.keys(read().checked).sort(), [suites[0].after_sha, suites[1].after_sha].sort());
+    const retry = sweep({ repo: REPO, stateDir: dir, gh: makeGh({ suites, prs }).gh, now: T0 + 2 * HOUR });
+    assert.deepEqual(retry.reminded, [702, 703]);
+  }, live);
+});
+
+test('checked 里超出一周窗口(留 8 天)的旧记录被清掉,窗口内的保留', () => {
+  const day = 24 * HOUR;
+  const state = { ...live, checked: { [sha(1)]: new Date(T0 - 9 * day).toISOString(), [sha(2)]: new Date(T0 - 1 * day).toISOString() } };
+  withState((dir, read) => {
+    sweep({ repo: REPO, stateDir: dir, gh: makeGh({ suites: [] }).gh, now: T0 });
+    assert.deepEqual(Object.keys(read().checked), [sha(2)]);
+  }, state);
+});
+
+test('读 GitHub 失败:checked 不变(已有的保留,没有新增)', () => {
+  const state = { ...live, checked: { [sha(2)]: new Date(T0 - 3600_000).toISOString() } };
+  withState((dir, read) => {
+    const result = sweep({ repo: REPO, stateDir: dir, gh: makeGh({ failOn: /rule-suites/ }).gh, now: T0 });
+    assert.equal(result.ok, false);
+    assert.deepEqual(Object.keys(read().checked), [sha(2)]);
+  }, state);
 });
 
 test('--dry-run:只读,不发评论,也不写状态文件(含第一次初始化)', () => {

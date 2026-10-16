@@ -5,8 +5,9 @@
 
 export const REMINDER_MARKER = '<!-- mivo-bypass-reminder -->';
 // 评论里出现其中任一词就算写了原因;宁可漏提醒,不误提醒(漏发只是少一次提醒,不影响审查)。
-// 「例外」是维护者人工审批合入的写法(#1031:「人工审批例外」,没有前四个词)。
-const REASON_RE = /绕过|强合|bypass|三审|例外/i;
+// 「审批例外」是维护者人工审批合入的写法(#1031:「人工审批例外」,没有前四个词);不能用单独的「例外」:
+// 「缺测例外」(#941:某些实机项没测,主人接受)在 Mivo 很常见,但不是在说明绕过。
+const REASON_RE = /绕过|强合|bypass|三审|审批例外/i;
 // 机器自己发的评论暗记:审查机的审查报告(mivo-review:)和流程评论(review-pr:,hold 告知、放行告知等)、issue 评估(mivo-issue-assessment)、本提醒(mivo-bypass-reminder)。
 // 这些评论常用维护者的账号发,作者判断排除不了,正文里又可能碰巧有关键词,所以按暗记排除。
 // 人手写的其它 mivo- 暗记(例如 mivo-pr1031-approved-merge-exception)不排除。

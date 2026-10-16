@@ -4,7 +4,9 @@
 //   node mivo/prereview/bypass-reason.mjs --sweep --repo <owner/repo> --state-dir <状态目录> [--dry-run]
 //
 // 判定规则在 ../lib/bypass.mjs(纯函数)。这里只管读写:
-//   - 状态文件 <state-dir>/mivo/bypass-reminders.json:{ since, lastSweepAt, reminded: { <pr>: { at, commentUrl } } }
+//   - 状态文件 <state-dir>/mivo/bypass-reminders.json:{ since, lastSweepAt, reminded: { <pr>: { at, commentUrl } }, checked: { <after_sha>: <pushed_at> } }
+//   - checked 记下已经判定完的规则集记录(已提醒、已有原因、找不到 PR),下一轮跳过它们,单轮 20 条的反查预算才会往后推进;
+//     因为预算用完或单轮 5 条提醒用完而没处理到的不记,下一轮接着查;超过 8 天(接口只返回最近一周)的记录从 checked 清掉
 //   - 第一次运行只写 since = 现在就退出,只管上线以后的绕过,不回头提醒旧 PR
 //   - 距 lastSweepAt 不到 1 小时:直接 skipped: 'throttled';每次真正扫描,不论成败,都先更新 lastSweepAt,出错时不会每轮重试
 //   - 读 GitHub 只用 REST(不占 GraphQL 额度);读失败输出 ok:false 加原因,不发任何评论
@@ -18,6 +20,9 @@ import { readJson, writeJson } from '../lib/common.mjs';
 import { selectBypassSuites, toBypassReminders, toReminderBody } from '../lib/bypass.mjs';
 
 export const SWEEP_EVERY_MS = 60 * 60_000;
+export const CHECKED_KEEP_MS = 8 * 24 * 60 * 60_000; // 接口只返回最近一周的记录,多留一天
+// 判定完的几种结果(见 toBypassReminders 的 skipped.why);over-limit 是没轮到,不算判定完
+const SETTLED = new Set(['no-pr', 'duplicate', 'reminded', 'has-reason']);
 const MAX_PR_LOOKUPS = 20; // 单次最多反查这么多条规则集记录对应的 PR,余下的下一次再查
 const stateFileOf = (stateDir) => join(stateDir, 'mivo', 'bypass-reminders.json');
 
@@ -66,25 +71,32 @@ export function sweep({ repo, stateDir, gh = ghCli, now = Date.now(), dryRun = f
   const last = Date.parse(state.lastSweepAt ?? '');
   if (Number.isFinite(last) && now - last < SWEEP_EVERY_MS) return { ok: true, skipped: 'throttled', reminded: [] };
   const reminded = { ...(state.reminded ?? {}) };
+  const checked = toCheckedWithinWindow(state.checked, now);
   // 先记扫描时间:读 GitHub 失败也不会每轮重试
-  const save = () => { if (!dryRun) writeState(file, { ...state, lastSweepAt: at, reminded }); };
+  const save = () => { if (!dryRun) writeState(file, { ...state, lastSweepAt: at, reminded, checked }); };
   save();
   let plan;
+  let pending;
   try {
     const suites = readSuites(gh, repo);
+    // 已判定完的跳过,剩下的取最早的 MAX_PR_LOOKUPS 条:预算每轮往后推进,不会一直卡在最早的那批
+    pending = selectBypassSuites({ suites, since: state.since }).filter((suite) => !Object.hasOwn(checked, suite.after_sha)).slice(0, MAX_PR_LOOKUPS);
     const prBySha = {};
     const commentsByPr = {};
-    for (const entry of selectBypassSuites({ suites, since: state.since }).slice(0, MAX_PR_LOOKUPS)) {
+    for (const entry of pending) {
       const pr = readPrNumber(gh, repo, entry.after_sha);
       if (!pr) continue;
       prBySha[entry.after_sha] = pr;
       if (!Object.hasOwn(reminded, String(pr)) && !Object.hasOwn(commentsByPr, pr)) commentsByPr[pr] = readComments(gh, repo, pr);
     }
-    plan = toBypassReminders({ suites, prBySha, commentsByPr, reminded, since: state.since });
+    plan = toBypassReminders({ suites: pending, prBySha, commentsByPr, reminded, since: state.since });
   } catch (error) {
     return { ...fail(error.message), reminded: [], skipped: [] };
   }
   if (dryRun) return { ok: true, dryRun: true, wouldRemind: plan.remind.map((r) => r.pr), reminded: [], skipped: plan.skipped };
+  const pushedAtOf = new Map(pending.map((suite) => [suite.after_sha, suite.pushed_at]));
+  for (const item of plan.skipped) if (SETTLED.has(item.why)) checked[item.sha] = pushedAtOf.get(item.sha);
+  save();
   const done = [];
   for (const item of plan.remind) {
     const posted = gh(['api', `repos/${repo}/issues/${item.pr}/comments`, '-f', `body=${toReminderBody({ actor: item.actor })}`]);
@@ -95,10 +107,20 @@ export function sweep({ repo, stateDir, gh = ghCli, now = Date.now(), dryRun = f
     let commentUrl = null;
     try { commentUrl = JSON.parse(posted.stdout)?.html_url ?? null; } catch { /* 评论已发出,链接没有也要记账 */ }
     reminded[String(item.pr)] = { at: new Date().toISOString(), commentUrl };
+    checked[item.sha] = item.at;
     save();
     done.push(item.pr);
   }
   return { ok: true, reminded: done, skipped: plan.skipped };
+}
+
+/** checked 里只留最近 CHECKED_KEEP_MS 内的记录(值是该记录的 pushed_at);读不懂时间的也清掉。 */
+function toCheckedWithinWindow(checked, now) {
+  const kept = {};
+  for (const [sha, pushedAt] of Object.entries(checked ?? {})) {
+    if (now - Date.parse(pushedAt) <= CHECKED_KEEP_MS) kept[sha] = pushedAt;
+  }
+  return kept;
 }
 
 function main() {

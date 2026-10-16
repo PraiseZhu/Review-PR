@@ -13,6 +13,9 @@ export const REAL_REASON_COMMENTS = {
   1024: "**维护者 PraiseZhu 决定对本 PR 使用紧急强合口子(bypass),说明如下。**\n\n- **跳过哪一项**:只跳过必需检查 `review-pr`。本 PR 改了 `.github/workflows/plugin-health.yml`,属于受保护路径,自动审查机不审、不出这条检查;作者本人不能 Approve 自己的 PR。\n- **为什么不等**:不是线上事故,是维护者 PraiseZhu 在会话中明确要求「审查和 e2e 通过就合」(2026-10-16)。\n- **其余门禁都已满足**(head `90a67b3fea973cdd743bf6c54138d0829ddf8a73`):必需检查除 `review-pr` 外全部成功,无失败或进行中的检查;未解决评审线程 0 条;Greptile 5/5。\n- **补充的人工把关**:\n  - 独立代码审查(review-pr skill,GPT):PASS+NOTES,没有成立的 P0/P1。去掉新增白名单块后脚本与 base 字节一致;其余 5 个被监控 workflow 新旧版 1,620 组组合行为一致;误开单、误关单两个方向在 base 上可复现、在 head 上都被挡住。记录 1 条 P3(注释把已退役的 secret-scan dispatch 说成真实复跑),不修。\n  - e2e(GPT):E2E PASS。用真实历史 run 数据驱动新旧版脚本对照,覆盖 #1021 的 dispatch 失败、当年误关 #638/#682 的 dispatch 成功、每日 schedule 与其余 5 个 workflow;新增测试在 base 上按预期失败。\n- **已知取舍**:PR Hygiene 中只在手动派发时出现的真实瞬时故障不再开红灯单,持续故障由每日 schedule 覆盖。\n- **合并方式**:Squash,`--match-head-commit` 锁定上述 head。\n\n合并后 #1021 将按误报手动关闭(not planned)。\n",
 };
 
+// #941 上作者的复审请求(节选):「缺测例外」是说某些实机项没测,不是在说明绕过;正文没有 绕过/强合/bypass/三审/审批例外。
+const REAL_941_COMMENT = '@PraiseZhu 您在 review `5506920945` 提出的两条 P1,已按方案 A 处理,请在当前 head `c8ed8477ae5b806a24f32977aff12bd94cc289c9` 上复审。\n\n小 SVG 的 Greptile P2 已一并修复,两条 Greptile 讨论已回复证据并销案。当前 head 的 CI 全部通过,Windows 证据也绑定当前 head。主人已接受 `c8ed8477` 的缺测例外,范围与 e7a170a8 相同:真实 Cindy、硬件渲染、系统缩放、真实旧照片和旧档迁移都未实测。这不是实机通过,也不豁免审查。\n\n<!-- machine: review=5506920945 head=c8ed8477ae5b806a24f32977aff12bd94cc289c9 base=fa2ac737 -->';
+
 const SINCE = '2026-10-17T02:00:00+08:00';
 const suite = (sha, { actor = 'PraiseZhu', at = '2026-10-17T10:00:00+08:00', result = 'bypass', ref = 'refs/heads/main' } = {}) =>
   ({ id: Number.parseInt(sha, 16) || 1, actor_name: actor, after_sha: sha, before_sha: 'f'.repeat(40), pushed_at: at, result, ref, evaluation_result: null });
@@ -135,9 +138,20 @@ test('#1031 的「人工审批例外」评论(正文有「例外」,暗记是人
   assert.deepEqual(skipped.map((x) => x.why), ['has-reason']);
 });
 
-test('关键词加了「例外」;只有暗记、没有任何关键词的评论不算原因', () => {
-  assert.equal(hasBypassReason([human('PraiseZhu', '本次按维护者授权做一次人工例外')]), true);
+test('关键词是「审批例外」,不是单独的「例外」;只有暗记、没有任何关键词的评论不算原因', () => {
+  assert.equal(hasBypassReason([human('PraiseZhu', '本次按维护者授权做一次人工审批例外')]), true);
+  assert.equal(hasBypassReason([human('PraiseZhu', '审批例外已记录')]), true);
   assert.equal(hasBypassReason([human('PraiseZhu', '<!-- mivo-pr77-approved-merge-exception head=abc -->')]), false);
+  // 单独的「例外」太宽:「缺测例外」「例外情况」之类的日常写法不是绕过原因
+  assert.equal(hasBypassReason([human('x', '这个分支是例外情况,不用管')]), false);
+});
+
+test('#941 上「缺测例外」评论(2026-10-17 取回节选):不算写了原因,绕过合入照样提醒', () => {
+  const comment = human('aj0928', REAL_941_COMMENT);
+  assert.equal(hasBypassReason([comment]), false);
+  const { remind, skipped } = toBypassReminders({ suites: [suite(sha(60), { actor: 'aj0928' })], prBySha: { [sha(60)]: 941 }, commentsByPr: { 941: [comment] }, since: SINCE });
+  assert.deepEqual(remind.map((r) => r.pr), [941]);
+  assert.deepEqual(skipped, []);
 });
 
 test('审查账号(PraiseZhu)发的带 <!-- review-pr: 暗记的流程评论,正文含「绕过」也不算原因,照样提醒', () => {
