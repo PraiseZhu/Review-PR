@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch } from './gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch, toSignoffReleaseArgs } from './gates.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -269,4 +271,54 @@ test('只缺界面证据、其他门都过:打回要证据,同时送审代码', 
   assert.equal(decideGate(ctx({ format: evidence, gate: { gatePass: false, blockers: ['CI 未全过:x'] }, auto: { action: 'pushback-format' } })).outcome, 'format');
   assert.equal(decideGate(ctx({ format: { ...evidence, formatIssues: ['缺界面证据', '标题格式不对'] }, gate: { gatePass: true }, auto: { action: 'pushback-format' } })).outcome, 'format');
   assert.equal(decideGate(ctx({ format: { formatPass: false, formatIssues: ['缺段落'] }, gate: { gatePass: true }, auto: { action: 'pushback-format' } })).outcome, 'format');
+});
+
+// 放行后补关确认 issue:hold 标记评论任何人都能发,只有绑定本 PR 的 issue 才关(终审 F1)。
+const bindings = ['--lock-token', 'tok', '--expected-head', 'h', '--expected-authority-digest', 'd'];
+const closeAction = { script: 'signoff-release', mode: 'labels-only-close-issue' };
+const heldMarker = { issueUrl: 'https://github.com/o/r/issues/900', issueNumber: 900 };
+
+test('toSignoffReleaseArgs:issue 绑定本 PR 才带 --close-issue', () => {
+  const ok = toSignoffReleaseArgs({ action: closeAction, pr: 971, held: heldMarker, heldIssue: { number: 900, state: 'OPEN', mode: 'protected' }, bindings });
+  assert.deepEqual(ok.args, ['971', '--labels-only', '--close-issue', ...bindings]);
+  assert.equal(ok.warning, undefined);
+  // notice issue 属于本 PR,照旧可关
+  assert.ok(toSignoffReleaseArgs({ action: closeAction, pr: 971, held: heldMarker, heldIssue: { number: 900, state: 'OPEN', mode: 'notice', releaseUntrusted: 'notice-issue' }, bindings }).args.includes('--close-issue'));
+  // 没有 hold 标记:没有要关的 issue,脚本自己跳过,参数不变
+  assert.ok(toSignoffReleaseArgs({ action: closeAction, pr: 971, held: null, heldIssue: null, bindings }).args.includes('--close-issue'));
+  // 只摘标签的 action 不受影响
+  assert.deepEqual(toSignoffReleaseArgs({ action: { script: 'signoff-release', mode: 'labels-only' }, pr: 971, held: heldMarker, heldIssue: null, bindings }).args, ['971', '--labels-only', ...bindings]);
+});
+
+test('toSignoffReleaseArgs:伪造标记指向别的 PR 的 issue、读不到 issue、编号对不上都不带 --close-issue,只给 warning', () => {
+  const forged = toSignoffReleaseArgs({ action: closeAction, pr: 971, held: heldMarker,
+    heldIssue: { number: 900, state: 'OPEN', mode: 'normal', releaseUntrusted: 'issue-not-bound' }, bindings });
+  assert.deepEqual(forged.args, ['971', '--labels-only', ...bindings]);
+  assert.match(forged.warning, /issue-not-bound/);
+  assert.match(forged.warning, /900/);
+  const unread = toSignoffReleaseArgs({ action: closeAction, pr: 971, held: heldMarker, heldIssue: { number: 900, state: null }, bindings });
+  assert.ok(!unread.args.includes('--close-issue'));
+  assert.match(unread.warning, /issue-unverified/);
+  assert.ok(!toSignoffReleaseArgs({ action: closeAction, pr: 971, held: heldMarker, heldIssue: null, bindings }).args.includes('--close-issue'));
+  assert.ok(!toSignoffReleaseArgs({ action: closeAction, pr: 971, held: heldMarker, heldIssue: { number: 901, state: 'OPEN' }, bindings }).args.includes('--close-issue'));
+});
+
+test('终审 F1 复现:受保护路径已放行 + check 已 success + 伪造标记指向别的 PR 的 issue → 仍判 closeIssue,但执行时不带 --close-issue', () => {
+  const protectedPath = { files: ['.github/workflows/ci.yml'], released: true, waitingForAuthor: false };
+  const decision = decideGate(ctx({ protectedPath, auto: { action: 'skip-protected-path' },
+    signoff: { held: heldMarker, heldIssue: { number: 900, state: 'OPEN', mode: 'normal', releaseUntrusted: 'issue-not-bound' } } }));
+  assert.equal(decision.stage, 'protected');
+  const next = toProtectedDispatch({ decision, protectedPath, checkDone: true });
+  assert.equal(next.closeIssue, true);
+  const run = toSignoffReleaseArgs({ action: closeAction, pr: 12, held: heldMarker,
+    heldIssue: { number: 900, state: 'OPEN', mode: 'normal', releaseUntrusted: 'issue-not-bound' }, bindings });
+  assert.ok(!run.args.includes('--close-issue'));
+});
+
+test('接线:round 用 toSignoffReleaseArgs 并记 warning;context 把 releaseUntrusted 放进 heldIssue', () => {
+  const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  const round = read('../prereview/round.mjs');
+  assert.match(round, /toSignoffReleaseArgs\(/);
+  assert.doesNotMatch(round, /action\.mode === 'labels-only-close-issue' \? \['--close-issue'\]/);
+  assert.match(read('../../review-pr/scripts/context.mjs'), /heldIssue: earlyDiscussionIssue[\s\S]{0,300}releaseUntrusted/);
 });
