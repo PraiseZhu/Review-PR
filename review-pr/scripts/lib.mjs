@@ -1747,16 +1747,47 @@ export const LEGACY_MAINTAINER_APPROVAL_LABEL = 'needs-maintainer-approval';
 export const LEGACY_SIGNOFF_LABEL = 'need-whitelist';
 
 /**
+ * 评论作者 login(兼容 GraphQL author.login / REST user.login /字符串 author)。
+ * GraphQL Bot 的 __typename=Bot 且 login 不带 [bot];REST bot 的 login 带 [bot]。
+ */
+export function commentAuthorLogin(comment) {
+  if (typeof comment === 'string' || comment == null) return { login: '', typename: '' };
+  const login = String(comment?.author?.login ?? (typeof comment?.author === 'string' ? comment.author : '') ?? comment?.user?.login ?? '').trim();
+  const typename = String(comment?.author?.__typename ?? comment?.user?.type ?? '').trim();
+  return { login, typename };
+}
+
+/** github-actions bot:同仓 PR workflow 可以这个身份发评论,不能当审查账号。REST 是 github-actions[bot],GraphQL 是 github-actions + Bot。 */
+export function isGithubActionsBot(login, typename = '') {
+  const raw = String(login ?? '').trim().toLowerCase();
+  if (raw === 'github-actions[bot]') return true;
+  return raw === 'github-actions' && /^bot$/i.test(String(typename ?? '').trim());
+}
+
+/** [MIVO-PATCH hold-viewer] hold 标记只认当前审查账号(不认 github-actions bot)。viewerLogin 为空时 fail-closed。 */
+export function isTrustedHoldMarkerAuthor(comment, viewerLogin) {
+  const viewer = String(viewerLogin ?? '').trim();
+  if (!viewer) return false;
+  const { login, typename } = commentAuthorLogin(comment);
+  if (!login || isGithubActionsBot(login, typename)) return false;
+  return login.toLowerCase() === viewer.toLowerCase();
+}
+
+/**
  * 从一组评论里解析该 PR 最后一条 hold 标记(与 signoff-hold.mjs 的去重口径一致:取最后一条
- * 带 issue= 的标记)。入参可以是 body 字符串数组,也可以是 { body, createdAt } 数组
+ * 带 issue= 的标记)。入参可以是 body 字符串数组,也可以是 { body, createdAt, author } 数组
  * (给了 createdAt 才有 heldAt:放行事件要求晚于它)。
  * 兼容旧标记形态(kind=arch),kind 只是历史信息,当前在拦哪些触发以 context.mjs 的
  * signoff.triggers 为准。
+ * [MIVO-PATCH hold-viewer] 传了 viewerLogin(含空字符串)时只采信该审查账号写的标记;
+ * 没传时保持上游行为(不看作者),给 security-patterns.test.mjs。
  * @returns {{kind:string, issueUrl:string, issueNumber:number|null, heldAt:string|null} | null}
  */
-export function parseLastHoldMarker(comments) {
+export function parseLastHoldMarker(comments, { viewerLogin } = {}) {
+  const filterByViewer = viewerLogin !== undefined;
   let hold = null;
   for (const c of comments ?? []) {
+    if (filterByViewer && !isTrustedHoldMarkerAuthor(c, viewerLogin)) continue;
     const body = (typeof c === 'string' ? c : c?.body) ?? '';
     const createdAt = typeof c === 'string' ? null : c?.createdAt ?? null;
     for (const m of body.matchAll(/<!--\s*review-pr:product-gate\b([^>]*?)issue=(\S+?)\s*-->/g)) {
@@ -3198,6 +3229,7 @@ export function isExplicitSlackConsent(message, consentLine = '同意放行') {
  */
 export function selectTrustedSlackReleases({
   comments = [], syncBots = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
+  prCreatedAt = null,
 } = {}) {
   const bots = new Set(normalizeLoginList(syncBots).map((login) => login.replace(/\[bot\]$/, '')));
   const members = new Set(normalizeLoginList(maintainers));
@@ -3219,6 +3251,11 @@ export function selectTrustedSlackReleases({
       if (reason !== 'not-explicit-consent') rejected.push({ by, at, reason });
       continue;
     }
+    // [MIVO-PATCH release-after-pr] 放行必须晚于本 PR 创建;同一 PR 后续 push 仍有效。
+    if (prCreatedAt != null && String(at ?? '') <= String(prCreatedAt)) {
+      rejected.push({ by, at, reason: 'before-pr-created' });
+      continue;
+    }
     if (!release || String(at ?? '') >= String(release.at ?? '')) {
       release = { by, at, via: 'slack-release', fingerprint: parsed.fingerprint };
     }
@@ -3235,6 +3272,7 @@ const AUTOMATED_ISSUE_COMMENT_RE = /<!--\s*(?:review-pr:|mivo-|slack-inbound\b)/
  */
 export function selectTrustedIssueCommentReleases({
   comments = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
+  prCreatedAt = null,
 } = {}) {
   const members = new Set(normalizeLoginList(maintainers));
   const author = String(authorLogin ?? '').trim().toLowerCase();
@@ -3252,6 +3290,11 @@ export function selectTrustedIssueCommentReleases({
       rejected.push({ by, at, reason: 'commenter-is-author' });
       continue;
     }
+    // [MIVO-PATCH release-after-pr] 放行必须晚于本 PR 创建;同一 PR 后续 push 仍有效。
+    if (prCreatedAt != null && String(at ?? '') <= String(prCreatedAt)) {
+      rejected.push({ by, at, reason: 'before-pr-created' });
+      continue;
+    }
     if (!release || String(at ?? '') >= String(release.at ?? '')) {
       release = { by, at, via: 'issue-comment', fingerprint: String(comment?.id ?? comment?.url ?? at ?? '') };
     }
@@ -3259,13 +3302,17 @@ export function selectTrustedIssueCommentReleases({
   return { release, rejected };
 }
 
-// [MIVO-PATCH signoff-mode] 确认 issue 的模式标记:footer 末尾的隐藏注释。没有标记 = 普通确认门。
-//   protected = 改了受保护路径(.github 等)的 PR,任何作者都开,放行后审查机才把 review-pr 写绿;
-//   notice    = 豁免作者碰到确认门但没改受保护路径,只通知,不拦(创建后即关闭),上面的任何放行都不算。
-export const SIGNOFF_MODE_MARKER_RE = /<!--\s*review-pr:signoff-mode=(protected|notice)\s*-->/g;
+// [MIVO-PATCH signoff-mode] 确认 issue 的模式标记。契约与 Mivo from-github-event.mjs 一致:
+// 只认 footer 流程标记句(最后一次出现)之后、且在正文最末尾的那一个;值不认识或位置不对 = 普通模式。
+export const SIGN_OFF_PROCESS_MARKER = '本 issue 由 review-pr 流程自动创建';
+export const SIGNOFF_MODE_RE = /<!--\s*review-pr:signoff-mode=([a-z-]+)\s*-->\s*$/;
+export const SIGNOFF_MODES = new Set(['protected', 'notice']);
 export function parseSignoffMode(body) {
-  const all = [...String(body ?? '').matchAll(SIGNOFF_MODE_MARKER_RE)];
-  return all.at(-1)?.[1] ?? 'normal';
+  const text = String(body ?? '');
+  const footerAt = text.lastIndexOf(SIGN_OFF_PROCESS_MARKER);
+  if (footerAt < 0) return 'normal';
+  const m = text.slice(footerAt).match(SIGNOFF_MODE_RE);
+  return m && SIGNOFF_MODES.has(m[1]) ? m[1] : 'normal';
 }
 
 /** 确认 issue footer 里的「关联 PR:#n」(取最后一处;Mivo parseSignoffIssue 的契约句式,半角冒号)。 */
@@ -3284,7 +3331,7 @@ export function parseSignoffIssueFooterPr(body) {
  */
 export function selectDiscussionIssueReleases({
   issue = {}, pr, syncBots = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
-  slackEnabled = false, commentEnabled = false,
+  slackEnabled = false, commentEnabled = false, prCreatedAt = null,
 } = {}) {
   const mode = parseSignoffMode(issue?.body);
   const titleBound = new RegExp(`^维护者确认 · PR #${Number(pr)}(?!\\d)`).test(String(issue?.title ?? ''));
@@ -3295,12 +3342,12 @@ export function selectDiscussionIssueReleases({
   };
   if (releaseUntrusted) return out;
   if (slackEnabled) {
-    const slack = selectTrustedSlackReleases({ comments: issue.comments ?? [], syncBots, maintainers, authorLogin, consentLine });
+    const slack = selectTrustedSlackReleases({ comments: issue.comments ?? [], syncBots, maintainers, authorLogin, consentLine, prCreatedAt });
     out.slackRelease = slack.release;
     out.slackReleaseRejected = slack.rejected;
   }
   if (commentEnabled) {
-    const typed = selectTrustedIssueCommentReleases({ comments: issue.comments ?? [], maintainers, authorLogin, consentLine });
+    const typed = selectTrustedIssueCommentReleases({ comments: issue.comments ?? [], maintainers, authorLogin, consentLine, prCreatedAt });
     out.issueCommentRelease = typed.release;
     out.issueCommentReleaseRejected = typed.rejected;
   }
@@ -3341,7 +3388,7 @@ export function evaluateProtectedPathRelease({
 
 /** [MIVO-PATCH signoff-mode] 确认 issue footer。句式是 Mivo parseSignoffIssue 的契约,只在末尾追加模式标记。 */
 export function buildSignoffIssueFooter({ pr, author, topic, mode = 'normal' }) {
-  const base = `\n\n---\n关联 PR:#${pr}(作者 @${author});本 issue 由 review-pr 流程自动创建,用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
+  const base = `\n\n---\n关联 PR:#${pr}(作者 @${author});${SIGN_OFF_PROCESS_MARKER},用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
   return mode === 'protected' || mode === 'notice' ? `${base}\n<!-- review-pr:signoff-mode=${mode} -->` : base;
 }
 
