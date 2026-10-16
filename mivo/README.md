@@ -138,23 +138,35 @@ flowchart LR
 
 ## 审查时长与超时
 
-维护者 2026-10-14 决定大 PR 审得深（`lib/models.mjs`）：
+维护者 2026-10-14 决定大 PR 审得深；2026-10-15 决定小 PR 上限 1 小时；2026-10-16 起 standard 也改为 60 分钟，因为 45 分钟上限截断了还在输出的审查（`lib/models.mjs`）：
 
 | 档位 | 主模型上限 | 备用模型 | 说明 |
 |---|---|---|---|
-| light | 15 分钟 | 15 分钟 | |
-| standard | 45 分钟 | 45 分钟 | 模型合计最多 90 分钟，加上准备和发布，整个作业会更长 |
+| light | 60 分钟 | 最长 60 分钟，预算 120 分钟下主模型用满（含 1 分钟收尾）后实际 58 分钟 | 剩余不足 15 分钟不启动备用；最坏一次审查约 2 小时，仍在作业 160 分钟以内 |
+| standard | 60 分钟 | 同 light | 同 light |
 | heavy | 98 分钟 | 实足 20 分钟以上 | 主模型在 98 分 6 秒被终止时，备用还有 20 分 54 秒 |
 
 - 主备共用一个预算：调模型前按本 job 的真实开始时间（jobs 接口的 `started_at`，读不到就用 run 的 `created_at`）算「作业截止 − 现在 − 10 分钟发布预留」，再与 120 分钟取小。装依赖、扫描、装 semgrep 累计超过 30 分钟时，预算跟着收缩，发布（含产物上传）始终有 10 分钟。两个时间都读不到就不启动模型，本次记 error，由 Mini 按下一节的规则重试。
 - 作业上限是 `review-pr.yml` 的 `timeout-minutes`（160），codex 步骤用环境变量 `MIVO_REVIEW_JOB_TIMEOUT_MIN` 传进来；没传时按旧 workflow 的 110 分钟算。
+- 结果包 `mivo` 里记 `runnerName`（审查位，来自 `RUNNER_NAME`）和 `codexVersion`（调模型前取一次 `codex --version` 的第一行；没调模型的审查、CLI 不存在或命令超时都是 `null`，取不到不影响审查），排查失败不用再去查 jobs 接口和服务器升级日志。
 - 每次模型调用在结果包的 `mivo.codex.attempts[]` 里按 JSONL 事件留下记录：`firstEventSec`、`lastEventSec`、`eventCount`、`maxGapSec`（含开始到第一个事件、最后一个事件到退出两段空白）、`usage`（取 `turn.completed`，没有记 null）；失败时另记脱敏后最后 50 行、最多 8 KB 的 `stderrTail`。这些只进结果包，不进 PR 评论，也不能单独当作「变慢原因」的证据。
 
 ## 审查失败后怎么重试
 
-规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败。被拦住时 Mini 日志写 `retry-held`。
+规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
+
+## 绕过必需检查合入没写原因时的提醒
+
+规则在 Mivo `docs/loops/review-pr-setup.md`「紧急强合」：强合前要在 PR 上写一条评论，说明为什么紧急、跳过哪几项检查或条件、谁决定的。只靠文档不够（#964 写进文档之后仍有 PR 没写），所以 Mini 每轮在 wake-held 之后、pre-check 之前调一次 `prereview/bypass-reason.mjs --sweep`（只在 `live` 模式；失败、超时、抛异常都只记日志，不影响本轮接单）。
+
+- 判定数据用 GitHub 规则集自己记的绕过记录：`gh api 'repos/<仓库>/rulesets/rule-suites?ref=refs/heads/main&rule_suite_result=bypass&time_period=week&per_page=100'`，只看 `result=bypass`、`ref=refs/heads/main`、`pushed_at` 不早于上线时间的记录，再反查 `commits/<after_sha>/pulls` 取第一个 PR。全程只用 REST，不占 GraphQL 额度。
+- 「已有原因」：PR 上任意一条评论同时满足 ① 作者不是 bot（登录名不以 `[bot]` 结尾）；② 正文不含机器自己的暗记（`<!-- mivo-review:` 审查报告、`<!-- review-pr:` 流程评论（hold 告知、放行告知等，审查账号以维护者身份发）、`<!-- mivo-issue-assessment` issue 评估、`<!-- mivo-bypass-reminder -->` 本提醒；这些评论常用维护者账号发，所以按暗记排除，人手写的其它 `mivo-` 暗记不排除）；③ 正文匹配 `绕过|强合|bypass|三审|审批例外`（不分大小写；「审批例外」是维护者人工审批合入的写法，如 #1031 的「人工审批例外」；不用单独的「例外」，因为 #941 那种「缺测例外」不是在说明绕过）。不维护「谁能强合」的名单。
+- 没有原因：在该 PR 上发一条评论，@ 绕过的人，请补原因，末尾带暗记 `<!-- mivo-bypass-reminder -->`（所以提醒本身不会被当成原因）。每个 PR 只提醒一次（状态文件记账；PR 上已经有带这个暗记的评论也按已提醒处理，状态文件丢了或发评论的结果不确定时不会发第二条），单轮最多 5 条，发一条就立刻记账再发下一条。
+- 状态文件 `<状态目录>/mivo/bypass-reminders.json`：`{ since, lastSweepAt, reminded: { <PR 号>: { at, commentUrl } }, checked: { <after_sha>: <pushed_at> }, noPr: { <after_sha>: { pushedAt, lastLookupAt } } }`。`checked` 记已经判定完的规则集记录（已提醒、已有原因），下一轮直接跳过，所以「单轮最多反查 20 条」的预算每轮往后推进，不会一直卡在最早的那批；因为预算用完、或单轮 5 条提醒用完而没处理到的不记，下一轮接着查。反查不到 PR 的记录**不**算判定完（刚合并几秒内 `commits/<sha>/pulls` 会返回 200 加空数组，过一会儿才查得到），记进 `noPr`：每轮先查没查过的记录（按合入先后），再按 `lastLookupAt` 从早到晚轮转重查 `noPr`，合起来仍是最多 20 条；查到 PR 就从 `noPr` 移走；永远没有 PR 的（直接推送到 main）不会占满名额，也不会饿死后面的记录。两张表里超过 8 天（接口只返回最近一周）的记录都清掉。第一次运行只写 `since`（现在）就退出，所以上线以前的绕过（#927、#935、#941、#967）不会被自动提醒；距 `lastSweepAt` 不到 1 小时直接 `skipped: throttled`；每次真正扫描不论成败都先更新 `lastSweepAt`，出错时不会每轮重试。
+- 读 GitHub 失败输出 `ok:false` 和原因（退出码仍为 0），不发评论。`--dry-run` 只读：不发评论，也不写状态文件。
+- 日志事件 `bypass-reminder`（节流时不记）：`ok`、`reminded`、`initialized`、`skipped`、`error`。
 
 ## 并发与滚动接单
 

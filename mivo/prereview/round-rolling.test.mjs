@@ -260,7 +260,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     lock: null, nextToken: 1, authorityDigest: 'digest-1', skillSha: 'skill-1', dispatches: [], cancels: [], heartbeats: [], releases: [],
     dispatchFailures: [], hiddenUntil: new Map(), cancelFails: new Set(), noArtifact: new Set(), roundNo: 0, planDelayMs: 15_000, cancelDelayMs: 30_000,
     // 仓库副本 gc、钉住的 skill 版本、pre-check 的故障注入
-    gitCalls: [], packs: 49, gcFails: false, pinned: null, pinFails: false, precheckFail: null };
+    gitCalls: [], packs: 49, gcFails: false, pinned: null, pinFails: false, precheckFail: null,
+    // 绕过原因提醒脚本:调用顺序记录、可注入的返回值或异常;服务器结果报 GitHub 限额的 PR 集合
+    scriptOrder: [], bypassCalls: [], bypassResult: null, bypassThrows: false, rateLimited: new Set() };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -370,6 +372,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         return { ok: true, exitCode: 0, candidateList: '/w/state/admit-candidates.json', excludedPrs: [...busy()] };
       }
       case 'pre-check.mjs': {
+        w.scriptOrder.push('pre-check');
         if (w.precheckFail) return { decision: null, reason: 'error', error: w.precheckFail, exitCode: 1 };
         const pending = w.incomplete();
         if (pending.length) return { decision: 'run', reason: 'unfinished-round', resumePlan: pending[0], exitCode: 0 };
@@ -400,6 +403,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         w.lock = null;
         return { ok: true, released: true };
       case 'close-product-issue.mjs': return { ok: true, closedCount: 0 };
+      case 'bypass-reason.mjs':
+        w.scriptOrder.push('bypass-reason');
+        w.bypassCalls.push([...args]);
+        if (w.bypassThrows) throw new Error('spawn 失败');
+        return w.bypassResult ?? { ok: true, reminded: [], skipped: [], exitCode: 0 };
       default: throw new Error(`Unexpected external script: ${file}`);
     }
   };
@@ -475,9 +483,15 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       if (view.status !== 'completed' || view.conclusion !== 'success' || w.noArtifact.has(r.pr)) return fail('no valid artifacts found to download');
       const same = w.prs.get(r.pr).head === r.head;
       const dir = argOf(args, '-D');
-      w.files.set(`${dir}/result.json`, { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [],
-        enteredReview: same, reviewed: same, reviewClean: same, outcome: same ? 'approval' : 'state-changed', reason: same ? '审查通过' : '发布前 PR 已变化',
-        retry: !same, errors: [], warnings: [], mivo: { reportComplete: same } });
+      const limited = w.rateLimited.has(r.pr);
+      const limitedReason = `context 读取失败:gh pr view ${r.pr} --repo o/target --json headRefOid,baseRefOid,baseRefName 退出码 1: GraphQL: API rate limit already exceeded for user ID 1.`;
+      w.files.set(`${dir}/result.json`, limited
+        ? { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [], enteredReview: false, reviewed: false, reviewClean: false,
+          outcome: 'error', reason: limitedReason, retry: true, errors: [limitedReason], warnings: [],
+          mivo: { reportComplete: false, ...(w.rateLimitedAfterModel ? { codex: { attempts: [{ model: 'm', ok: true }] } } : {}) } }
+        : { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [],
+          enteredReview: same, reviewed: same, reviewClean: same, outcome: same ? 'approval' : 'state-changed', reason: same ? '审查通过' : '发布前 PR 已变化',
+          retry: !same, errors: [], warnings: [], mivo: { reportComplete: same } });
       w.files.set(`${dir}/report.md`, 'report');
       return ok();
     }
@@ -1163,4 +1177,127 @@ test('round-state 归属(review-round.mjs 的 round-owner 补丁):旧轮晚收�
   // 没有轮次时间的旧行(补丁之前写的)照常覆盖。
   const legacy = { version: 1, mode: 'review-only', prs: { 1: { fingerprint: 'x', outcome: 'approval', retry: false } } };
   assert.equal(nextRoundState(oldRound, payloadOf('state-changed', true), legacy).prs[1].roundRunId, 'R1');
+});
+
+// ── 绕过必需检查合入、又没写原因的 PR:Mini 提醒一次(mivo/prereview/bypass-reason.mjs) ───────────
+
+test('世界:live 模式每轮在 wake-held 之后、pre-check 之前调一次提醒脚本,参数是仓库和状态目录', async () => {
+  const w = makeWorld({ instance: 'mivo', mode: 'live' });
+  w.openPr(1, 'h1');
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.deepEqual(w.bypassCalls[0], ['--sweep', '--repo', 'o/target', '--state-dir', '/w/state']);
+  assert.equal(w.scriptOrder.indexOf('bypass-reason') < w.scriptOrder.indexOf('pre-check'), true, '提醒在 pre-check 之前');
+  assert.equal(w.dispatchesOf(1).length, 1, '照常接单、派发');
+});
+
+test('世界:非 live 模式(sandbox / dry-run)不调提醒脚本', async () => {
+  for (const mode of ['sandbox', 'dry-run']) {
+    const w = makeWorld({ instance: 'sandbox', mode });
+    w.openPr(1, 'h1');
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled), mode);
+    assert.deepEqual(w.bypassCalls, [], mode);
+  }
+});
+
+test('世界:提醒脚本失败、超时、抛异常或返回 ok:false 时,本轮照常接单、派发、收结果', async () => {
+  const cases = [
+    ['ok:false', (w) => { w.bypassResult = { ok: false, error: 'bypass-reason.mjs 没有返回 JSON(exit null):timeout', exitCode: null }; }],
+    ['非零退出码', (w) => { w.bypassResult = { ok: false, error: '读规则集记录失败:HTTP 403', exitCode: 1, reminded: [] }; }],
+    ['抛异常', (w) => { w.bypassThrows = true; }],
+  ];
+  for (const [name, inject] of cases) {
+    const w = makeWorld({ instance: 'mivo', mode: 'live' });
+    w.openPr(1, 'h1');
+    inject(w);
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled), name);
+    assert.equal(proc.failure, null, `${name}:${proc.failure?.stack}`);
+    assert.equal(w.dispatchesOf(1).length, 1, `${name}:照常派发`);
+    assert.equal(w.read(`${w.roundDir('R1')}/results/pr-1.json`).outcome, 'approval', `${name}:照常收结果`);
+    const logged = w.logged('bypass-reminder');
+    assert.equal(logged.length >= 1 && logged.every((e) => e.ok === false), true, `${name}:只记日志`);
+  }
+});
+
+test('世界:提醒脚本被节流(skipped: throttled)时不刷日志;真正扫描了才记 bypass-reminder', async () => {
+  const w = makeWorld({ instance: 'mivo', mode: 'live' });
+  w.bypassResult = { ok: true, skipped: 'throttled', reminded: [], exitCode: 0 };
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled));
+  assert.equal(w.logged('bypass-reminder').length, 0);
+  const scanned = makeWorld({ instance: 'mivo', mode: 'live' });
+  scanned.bypassResult = { ok: true, reminded: [941], skipped: [], exitCode: 0 };
+  const proc2 = scanned.start();
+  assert.ok(await scanned.runUntil(() => proc2.settled));
+  assert.deepEqual(scanned.logged('bypass-reminder')[0].reminded, [941]);
+});
+
+// ── GitHub 限额用完不算一次审查失败 ─────────────────────────────────────────────
+
+test('世界:服务器结果报 GitHub 限额用完:这个提交的尝试次数和失败次数都不变;其它报错照旧计数', async () => {
+  const limited = makeWorld();
+  limited.openPr(1, 'h1');
+  limited.rateLimited.add(1);
+  const limitedProc = limited.start();
+  assert.ok(await limited.runUntil(() => limited.logged('collected').length >= 1));
+  const store = limited.read(limited.state('reviews.json')).prs[1];
+  assert.deepEqual(store.failures ?? {}, {}, '不计失败次数');
+  assert.equal(store.attempts?.h1 ?? 0, 0, '退回这次尝试,和派发前一样');
+  assert.equal(limited.logged('github-rate-limited').length, 1);
+  assert.match(limited.read(`${limited.roundDir('R1')}/results/pr-1.json`).reason, /API rate limit already exceeded/, '结果文件照实记录这次没审成');
+  limitedProc.stop();
+  // 对照:同样的 world、同样是 error 结果但不是限额(结果包缺失)→ 失败 1 次、尝试 1 次
+  const other = makeWorld();
+  other.openPr(1, 'h1');
+  other.noArtifact.add(1);
+  other.start();
+  assert.ok(await other.runUntil(() => other.logged('collected').length >= 1));
+  const counted = other.read(other.state('reviews.json')).prs[1];
+  assert.equal(counted.failures.h1.count, 1);
+  assert.equal(counted.attempts.h1, 1);
+  assert.equal(other.logged('github-rate-limited').length, 0);
+});
+
+test('世界:同一个提交连续撞限额,退回尝试最多 3 次;第 4 次起照旧记失败走退避(限额分支自带封顶)', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.rateLimited.add(1);
+  // launchd 每 3 分钟拉起一个新进程:一个进程收完这个提交的结果就退出,下一个进程再派发。
+  for (let i = 0; i < 6 && w.logged('collected').length < 4; i += 1) {
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled, { maxMs: 300 * MIN }), `第 ${i + 1} 个进程结束`);
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+    w.now += 3 * MIN;
+  }
+  const store = w.read(w.state('reviews.json')).prs[1];
+  assert.equal(w.logged('collected').length, 4, '同一个提交派发了 4 次');
+  assert.equal(w.logged('github-rate-limited').length, 3, '只退回 3 次');
+  assert.equal(store.rateLimitRefunds.h1, 3);
+  assert.equal(store.failures.h1.count, 1, '第 4 次起记失败,进入退避');
+  assert.equal(store.attempts.h1, 1, '第 4 次的尝试次数不再退回');
+});
+
+test('世界:正常审过的结果不会被误当成限额', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.start();
+  assert.ok(await w.runUntil(() => w.logged('collected').length >= 1));
+  assert.equal(w.logged('github-rate-limited').length, 0);
+  assert.equal(w.read(w.state('reviews.json')).prs[1].cleanHead, 'h1');
+});
+
+test('世界:模型已经调用过(attempts 非空)之后才报的限额,照旧记一次失败——退回尝试只限没花过模型调用的情况', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.rateLimited.add(1);
+  w.rateLimitedAfterModel = true;
+  w.start();
+  assert.ok(await w.runUntil(() => w.logged('collected').length >= 1));
+  const store = w.read(w.state('reviews.json')).prs[1];
+  assert.equal(store.failures.h1.count, 1);
+  assert.equal(store.attempts.h1, 1);
+  assert.equal(w.logged('github-rate-limited').length, 0);
 });

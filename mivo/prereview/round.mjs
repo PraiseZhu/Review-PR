@@ -249,6 +249,32 @@ function wakeHeldPrs(busy = new Set()) {
   writeJson(seenFile, next);
 }
 
+// ── 绕过必需检查合入、又没写原因的 PR:提醒一次 ─────────────────────────────────
+// 子脚本 bypass-reason.mjs 自己限流(一小时最多真正扫一次)、自己记账、自己只读 GitHub 后才发评论;这里只管调用。
+// 失败、超时、抛异常都只记日志,绝不影响本轮接单。只在 live 模式调用,沙箱和干跑不碰真实仓库的评论。
+function sweepBypassReminders() {
+  if (CONFIG.mode !== 'live') return;
+  try {
+    const sweep = script(join(HERE, 'bypass-reason.mjs'), ['--sweep', '--repo', CONFIG.targetRepo, '--state-dir', CONFIG.stateDir], { timeoutMs: 60_000 });
+    if (sweep.skipped === 'throttled') return;
+    log('bypass-reminder', { ok: sweep.ok === true, reminded: sweep.reminded, initialized: sweep.initialized, skipped: sweep.skipped, error: sweep.error });
+  } catch (error) {
+    log('bypass-reminder', { ok: false, error: String(error.message).slice(0, 200) });
+  }
+}
+
+// 服务器结果是「GitHub 限额用完」造成的错误(例如读 PR 信息时 GraphQL 限额已用完):这不是这个提交的问题。
+// 只限还没花过模型调用的情况(mivo.codex.attempts 为空):模型审完才在发布阶段撞限额的,照旧记失败走退避,
+// 否则下一轮会不带退避地重跑一次完整的付费审查。
+const GITHUB_RATE_LIMIT_RE = /API rate limit already exceeded|RATE_LIMITED/;
+// 同一个提交最多退回这么多次:限额一直不恢复(或每次都撞)时,第 4 次起照旧记失败走退避,不会无限重派。
+const RATE_LIMIT_REFUNDS_PER_HEAD = 3;
+function isGithubRateLimited(server) {
+  if (server?.outcome !== 'error') return false;
+  if ((server.mivo?.codex?.attempts ?? []).length > 0) return false;
+  return GITHUB_RATE_LIMIT_RE.test([server.reason, ...(server.errors ?? [])].map(String).join('\n'));
+}
+
 // #68 上线前 outcome=protected 的 round-state 指纹没变,会被 pre-check 当成 unchanged。
 // 只给这些 PR 标 retry 一次,不清空缓存、不让全部 PR 重审。标记写在 Mini 本机 mivo 状态目录。
 function wakeProtectedHoldOnce() {
@@ -293,6 +319,7 @@ async function main() {
     log('wake-held-skip', { reason: error.message.slice(0, 200) });
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
+  sweepBypassReminders();
   try { wakeProtectedHoldOnce(); } catch (error) {
     log('wake-protected-hold-skip', { reason: error.message.slice(0, 200) });
   }
@@ -1187,6 +1214,17 @@ function collectServerRun(ctx, entry) {
       writeJson(stateFile('pause.json'), { until: new Date(Date.now() + HEALTH_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
       log('health-pause', { pr: task.pr, reason: server.reason });
     }
+  } else if (isGithubRateLimited(server) && (loadStore().prs[task.pr]?.rateLimitRefunds?.[task.head] ?? 0) < RATE_LIMIT_REFUNDS_PER_HEAD) {
+    // GitHub 限额用完:服务器没读到 PR 信息就没审成,这次派发不算一次尝试、也不算一次失败,
+    // 同一提交的派发上限和退避不被白白占用。不加整体暂停:额度没恢复时下一轮 pre-check 自己会失败,也就不会派发;
+    // 自带封顶:同一个提交最多退回 RATE_LIMIT_REFUNDS_PER_HEAD 次,之后照旧记失败走退避。
+    const record = loadStore().prs[task.pr] ?? {};
+    const refunds = record.rateLimitRefunds?.[task.head] ?? 0;
+    bumpOwned(ctx, task, {
+      attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) },
+      rateLimitRefunds: { ...(record.rateLimitRefunds ?? {}), [task.head]: refunds + 1 },
+    });
+    log('github-rate-limited', { pr: task.pr, runId: entry.runId, head: task.head, refunds: refunds + 1 });
   } else {
     recordFailure(ctx, task, server.outcome === 'error');
   }
