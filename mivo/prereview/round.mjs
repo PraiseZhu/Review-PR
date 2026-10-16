@@ -19,7 +19,7 @@ import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, w
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -249,6 +249,19 @@ function wakeHeldPrs(busy = new Set()) {
   writeJson(seenFile, next);
 }
 
+// #68 上线前 outcome=protected 的 round-state 指纹没变,会被 pre-check 当成 unchanged。
+// 只给这些 PR 标 retry 一次,不清空缓存、不让全部 PR 重审。标记写在 Mini 本机 mivo 状态目录。
+function wakeProtectedHoldOnce() {
+  const markerFile = stateFile('protected-hold-wake.json');
+  const already = readJson(markerFile, { done: false });
+  const rsPath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
+  const rs = readJson(rsPath, null);
+  const result = toProtectedHoldWake({ roundState: rs, alreadyDone: already.done === true });
+  if (result.wake.length && rs?.prs) writeJson(rsPath, result.next);
+  if (result.wake.length) log('wake-protected-hold', { prs: result.wake });
+  writeJson(markerFile, { done: true, at: nowIso(), wake: result.wake });
+}
+
 // Cindy 的状态目录按目标仓库 git common-dir 的哈希分子目录;用 lib 的同一算法定位。
 let STATE_KEY = null;
 function roundStateKey() {
@@ -280,6 +293,9 @@ async function main() {
     log('wake-held-skip', { reason: error.message.slice(0, 200) });
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
+  try { wakeProtectedHoldOnce(); } catch (error) {
+    log('wake-protected-hold-skip', { reason: error.message.slice(0, 200) });
+  }
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
   if (pre.exitCode === 2) { writeHeartbeat(); log('no-candidates', { reason: pre.reason }); return; }

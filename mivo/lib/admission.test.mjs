@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFreeSlots, toAdmissionDecision, toBusyPrs, toExcludedPrs, toHeldWake, toRunTiming, toDispatchFailure, findDispatchRun,
+import { toFreeSlots, toAdmissionDecision, toBusyPrs, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun,
   MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
@@ -170,4 +170,26 @@ test('按 dispatch_id 找 run:分页结果里按 run 名找;列表不完整时�
   assert.deepEqual(findDispatchRun([pages[0]], { pr: 950, dispatchId: 'dddd4444' }), { runId: null, complete: false }, '只拿到第一页');
   assert.deepEqual(findDispatchRun(null, { pr: 950, dispatchId: 'x' }), { runId: null, complete: false });
   assert.deepEqual(findDispatchRun(pages, { pr: 95, dispatchId: 'aaaa1111' }), { runId: null, complete: true }, 'PR 号要完全对上');
+});
+
+test('旧受保护记录只标 retry 一次,不清空缓存、不碰其它 PR', () => {
+  const roundState = {
+    version: 1, mode: 'review-only',
+    prs: {
+      951: { outcome: 'protected', retry: false, fingerprint: 'aa' },
+      941: { outcome: 'approval', retry: false, fingerprint: 'bb' },
+      978: { outcome: 'protected', retry: true, fingerprint: 'cc' },
+    },
+  };
+  const first = toProtectedHoldWake({ roundState, alreadyDone: false });
+  assert.equal(first.done, true);
+  assert.deepEqual(first.wake, [951]);
+  assert.equal(first.next.prs[951].retry, true);
+  assert.equal(first.next.prs[951].fingerprint, 'aa');
+  assert.equal(first.next.prs[941].retry, false);
+  assert.equal(first.next.prs[941].fingerprint, 'bb');
+  assert.equal(first.next.prs[978].retry, true);
+  const again = toProtectedHoldWake({ roundState: first.next, alreadyDone: true });
+  assert.deepEqual(again.wake, []);
+  assert.equal(again.next, first.next);
 });

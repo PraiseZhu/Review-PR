@@ -79,14 +79,37 @@ test('受保护路径:豁免作者(#971)也开确认 issue 转人工审核,不�
   assert.deepEqual(withSecurity.actions.filter((a) => a.script === 'signoff-hold'), [{ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' }]);
 });
 
+test('受保护路径从未 hold 过时即使已放行也开 protected issue;已 hold 过才只摘标签', () => {
+  const released = protectedPath({ released: { by: 'kirozeng', via: 'github-approve', at: '2026-10-16T01:00:00Z' } });
+  const first = decideGate(protectedCtx({ protectedPath: released, signoff: { authorExempt: true } }));
+  assert.equal(first.outcome, 'protected');
+  assert.deepEqual(first.actions.filter((a) => a.script === 'signoff-hold'), [
+    { script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' },
+  ]);
+  assert.ok(first.actions.some((a) => a.script === 'notify-protected'));
+  const held = decideGate(protectedCtx({
+    protectedPath: released,
+    signoff: { authorExempt: true, held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' }, labels: { hasAnyLabel: true } },
+  }));
+  assert.equal(held.actions.some((a) => a.script === 'signoff-hold' && a.mode === 'full'), false);
+  assert.deepEqual(held.actions, [{ script: 'signoff-release', mode: 'labels-only' }, { script: 'notify-protected' }]);
+});
+
 test('受保护路径已放行:不再 hold,有残留标签只摘标签;当前 head 被 Request Changes 交作者', () => {
   const released = decideGate(protectedCtx({
     protectedPath: protectedPath({ released: { by: 'kirozeng', via: 'github-approve', at: '2026-10-16T01:00:00Z' } }),
     signoff: { authorExempt: true, labels: { hasAnyLabel: true } },
   }));
   assert.equal(released.outcome, 'protected');
-  assert.deepEqual(released.actions, [{ script: 'signoff-release', mode: 'labels-only' }, { script: 'notify-protected' }]);
-  const clean = decideGate(protectedCtx({ protectedPath: protectedPath({ released: { by: 'kirozeng', via: 'issue-comment' } }) }));
+  assert.deepEqual(released.actions, [
+    { script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' },
+    { script: 'signoff-release', mode: 'labels-only' },
+    { script: 'notify-protected' },
+  ]);
+  const clean = decideGate(protectedCtx({
+    protectedPath: protectedPath({ released: { by: 'kirozeng', via: 'issue-comment' } }),
+    signoff: { held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' } },
+  }));
   assert.deepEqual(clean.actions, [{ script: 'notify-protected' }]);
   const waiting = decideGate(protectedCtx({ protectedPath: protectedPath({ waitingForAuthor: true }), signoff: { labels: { hasAnyLabel: true } } }));
   assert.equal(waiting.outcome, 'changes-requested');
