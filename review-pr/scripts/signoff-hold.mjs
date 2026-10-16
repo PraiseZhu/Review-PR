@@ -34,8 +34,8 @@
 // 退出码恒 0(脚本自身异常才 1):结果全在 JSON 字段,让 auto 轮转能继续下一候选。
 //
 // 跑:node <skill-root>/scripts/signoff-hold.mjs <PR> [--payload-file <path|->]
-//     [--kind <product|arch|security|coldUpdate|rules|pluginBase>] [--labels-only] [--dry-run]
-//     [--no-renotice]
+//     [--kind <product|arch|security|coldUpdate|rules|pluginBase|protected>] [--labels-only] [--dry-run]
+//     [--no-renotice] [--signoff-mode <protected|notice>]
 //   --payload-file:JSON 文案来源,`-` = stdin(推荐,避开中文/引号问题)。结构:
 //     { "issueTitle": "...", "issueBody": "...", "commentBody": "...{{ISSUE_URL}}..." }
 //     commentBody 里的 {{ISSUE_URL}} 会被替换成新建 issue 的链接;没写占位符则自动在
@@ -46,6 +46,10 @@
 //   --labels-only:只确保维护者确认标签挂上(并摘掉旧门类子标签),不开 issue、不发首次
 //     hold 评论。用于 signoff.labels.stale=true 的重同步。**状态回帖照发**(见上)。
 //   --no-renotice:关掉状态回帖(只给测试/特殊场景用;正常流程别加,加了作者就又收不到通知)
+//   --signoff-mode:[MIVO-PATCH signoff-mode] 确认 issue 的模式,写进 issue footer 末尾的隐藏标记。
+//     protected = 改了受保护路径的 PR(任何作者都开,放行前审查机不写绿);
+//     notice    = 豁免作者碰到确认门但没改受保护路径:只开通知 issue + PR 评论(带去重标记),
+//                 创建后立即关闭 issue,不挂标签、不回帖、不拦 PR。不传 = 普通确认门。
 //   --dry-run:只探测(是否已拦截过 / 将做什么),不写任何外部状态
 //
 // 正确调用(`-` 走 stdin):
@@ -55,7 +59,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -64,6 +68,8 @@ const MARKER_PREFIX = PRODUCT_GATE_MARKER_PREFIX;
 const marker = (issueUrl, kind) =>
   kind === 'product' ? `${MARKER_PREFIX} issue=${issueUrl} -->` : `${MARKER_PREFIX} kind=arch issue=${issueUrl} -->`;
 
+const NOTICE_CLOSE_COMMENT = '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。\n\n<!-- review-pr:signoff-notice-close -->';
+
 const KIND_TOPICS = {
   product: '产品 / UI 变更',
   arch: '技术架构调整',
@@ -71,6 +77,8 @@ const KIND_TOPICS = {
   coldUpdate: 'mobile 冷更(runtime fingerprint 变化)',
   rules: '审查规则文档变更',
   pluginBase: '插件基座改动(影响全部已装插件)',
+  // [MIVO-PATCH signoff-mode] 括号里不放逗号:Mivo topicMatch 用「涉及的…,维护者确认后」截取主题。
+  protected: '受保护路径改动(.github / CODEOWNERS)',
 };
 
 try {
@@ -78,8 +86,13 @@ try {
   const pr = parsePR(process.argv[2]);
   const slug = `${owner}/${repo}`;
   const arg = (name) => { const i = process.argv.indexOf(name); return i < 0 ? '' : String(process.argv[i + 1] ?? ''); };
+  // [MIVO-PATCH signoff-mode] 模式决定写保护的 purpose:受保护路径确认 issue 任何作者都能开;通知 issue 只给免确认门的作者。
+  const signoffModeArg = arg('--signoff-mode');
+  if (signoffModeArg && signoffModeArg !== 'protected' && signoffModeArg !== 'notice') throw new Error(`--signoff-mode 只接受 protected / notice,收到 ${signoffModeArg}`);
+  const signoffMode = signoffModeArg || 'normal';
   const binding = { owner, repo, pr, lockToken: arg('--lock-token'), expectedHead: arg('--expected-head'),
-    expectedAuthorityDigest: arg('--expected-authority-digest'), purpose: 'hold' };
+    expectedAuthorityDigest: arg('--expected-authority-digest'),
+    purpose: signoffMode === 'protected' ? 'protected-hold' : signoffMode === 'notice' ? 'signoff-notice' : 'hold' };
   // Interactive legacy callers remain supported; auto passes all three bindings.
   const writeGh = binding.lockToken || binding.expectedHead || binding.expectedAuthorityDigest ? createPrWriteGuard(binding) : gh;
   const dryRun = process.argv.includes('--dry-run');
@@ -137,29 +150,37 @@ try {
   // 网络抖动不该制造重复 issue,下一轮查到 CLOSED 再开也不迟。
   let priorIssueState = null;
   let priorIssueStateError = null;
+  let priorIssueBody = '';
   if (priorIssueUrl != null) {
     const priorNum = issueNumberFromUrl(slug, priorIssueUrl);
     if (priorNum == null) {
       priorIssueStateError = 'issue-url-unparsable';
     } else {
-      const r = gh(['issue', 'view', String(priorNum), '--repo', slug, '--json', 'state'], { allowFail: true });
+      const r = gh(['issue', 'view', String(priorNum), '--repo', slug, '--json', 'state,body'], { allowFail: true });
       if (r.ok) {
         try {
           const s = String(JSON.parse(r.stdout || '{}').state ?? '').toUpperCase();
           priorIssueState = s === 'OPEN' || s === 'CLOSED' ? s : null;
+          priorIssueBody = String(JSON.parse(r.stdout || '{}').body ?? '');
         } catch { priorIssueStateError = 'state-parse-failed'; }
       } else {
         priorIssueStateError = (r.stderr || r.stdout || '').trim().split('\n')[0]?.slice(0, 200) || 'unknown';
       }
     }
   }
-  const reuse = decideIssueReuse({ priorIssueUrl, issueState: priorIssueState });
+  // [MIVO-PATCH signoff-mode] 旧 issue 只是通知(notice)时,非通知模式不复用它:通知 issue 没有放行语义,
+  // 当作已关闭另开确认 issue。
+  const priorIsNotice = priorIssueUrl != null && parseSignoffMode(priorIssueBody) === 'notice';
+  const reuse = decideIssueReuse({
+    priorIssueUrl,
+    issueState: priorIsNotice && signoffMode !== 'notice' ? 'CLOSED' : priorIssueState,
+  });
   const needIssue = reuse.needNewIssue;
   // 输出透出旧 issue 状态;labels-only 模式不建 issue,旧 issue 已关闭时以 needsFreshHold
   // 提示调用方带 payload 重跑完整模式(见 internal-gates「讨论 issue 收尾」)。
   const priorIssueInfo = priorIssueUrl == null ? {} : {
     priorIssueState,
-    issueReuse: reuse.reason,
+    issueReuse: priorIsNotice && signoffMode !== 'notice' ? 'prior-notice' : reuse.reason,
     ...(priorIssueStateError ? { priorIssueStateError } : {}),
     ...(reuse.needNewIssue ? { priorIssueClosed: true } : {}),
   };
@@ -191,9 +212,11 @@ try {
       `- 在拦的是:${scope}。`,
       `- 讨论 issue:<${renoticeIssueUrl}>`,
       // [MIVO-PATCH slack-release] 开了 Slack 放行时,通过方式写成两条。
-      loadRules().signoffGate?.slackRelease?.enabled === true
-        ? '- 通过方式:维护者在本 PR 上 **Approve**,或在 Slack 讨论串回复「同意放行」。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。'
-        : '- 通过方式只有一个:维护者在本 PR 上 **Approve**。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。',
+      loadRules().signoffGate?.issueCommentRelease?.enabled === true
+        ? '- 通过方式:维护者在本 PR 上 **Approve**,在 Slack 讨论串回复「同意放行」,或在讨论 issue 下评论「同意放行」。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。'
+        : loadRules().signoffGate?.slackRelease?.enabled === true
+          ? '- 通过方式:维护者在本 PR 上 **Approve**,或在 Slack 讨论串回复「同意放行」。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。'
+          : '- 通过方式只有一个:维护者在本 PR 上 **Approve**。维护者觉得要改会直接 **Request Changes**,那时候球才回到你手里。',
       '- 这期间如果还有 review 意见没处理完、CI 没过,照常修就行,不影响这条等待。',
       '',
       '这条是流程自动发的状态提醒(同一版代码只发一次),不用回复。',
@@ -225,6 +248,52 @@ try {
   // 已合并 / 已关闭的 PR 不碰
   if (meta.state !== 'OPEN' || meta.mergedAt) {
     print({ ok: true, pr, author, held: false, reason: 'pr-not-open', state: meta.state });
+  } else if (signoffMode === 'notice') {
+    // [MIVO-PATCH signoff-mode] 通知 issue:豁免作者碰到确认门,确认门不拦,只让维护者看见。
+    // 不挂标签、不回帖;issue 创建后立即关闭(Mivo 的 Slack 通报只在 issues.opened 事件上跑,关闭不影响;
+    // 开着的话,之后同一 PR 又改了受保护路径会复用它,Slack 就收不到「转人工审核」)。
+    if (alreadyHeld) {
+      // 去重:PR 上已有确认标记就不再通知。上次关闭失败留下的通知 issue 顺手补关。
+      const priorNum = priorIssueUrl == null ? null : issueNumberFromUrl(slug, priorIssueUrl);
+      const stillOpenNotice = priorIsNotice && priorIssueState === 'OPEN' && priorNum != null;
+      const closed = stillOpenNotice
+        ? closeDiscussIssue({ slug, issueNumber: priorNum, commentBody: NOTICE_CLOSE_COMMENT, dryRun, ghFn: writeGh })
+        : null;
+      print({ ok: true, pr, author, notice: true, alreadyNotified: true, ...priorIssueInfo,
+        ...(closed ? { issueClosed: closed.closed || closed.wouldClose === true, closeError: closed.closeError } : {}) });
+    } else if (!payloadComplete) {
+      print({ ok: true, pr, author, notice: true, held: false, reason: 'missing-payload' });
+    } else if (dryRun) {
+      print({ ok: true, pr, author, dryRun: true, notice: true, wouldCreateIssue: true, wouldComment: true, wouldClose: true });
+    } else {
+      const footer = buildSignoffIssueFooter({ pr, author, topic: KIND_TOPICS[kind], mode: 'notice' });
+      const created = writeGh(['issue', 'create', '--repo', slug, '--title', issueTitle, '--body-file', '-'], {
+        input: issueBody + footer,
+        allowFail: true,
+      });
+      const issueUrl = (created.stdout || '').trim().split('\n').pop()?.trim() ?? '';
+      if (!(created.ok && /^https:\/\//.test(issueUrl))) {
+        print({ ok: true, pr, author, notice: true, issueCreated: false, issueError: (created.stderr || created.stdout || '').trim().slice(0, 300) });
+      } else {
+        const rendered = commentBody.includes('{{ISSUE_URL}}')
+          ? renderIssueUrl(commentBody, issueUrl)
+          : `${commentBody}\n\n讨论 issue:<${issueUrl}>`;
+        const c = writeGh(['pr', 'comment', String(pr), '--repo', slug, '--body-file', '-'], {
+          input: `${rendered}\n\n${marker(issueUrl, kind)}`,
+          allowFail: true,
+        });
+        const issueNum = issueNumberFromUrl(slug, issueUrl);
+        // 评论没发出去也要关:issue 已经创建,留着开放的通知 issue 会被之后的受保护路径 hold 误复用。
+        const closed = issueNum == null
+          ? { closed: false, closeError: 'issue-url-unparsable' }
+          : closeDiscussIssue({ slug, issueNumber: issueNum, commentBody: NOTICE_CLOSE_COMMENT, dryRun: false, ghFn: writeGh });
+        print({
+          ok: true, pr, author, notice: true, kind, issueUrl, issueCreated: true,
+          commented: c.ok, commentError: c.ok ? null : (c.stderr || '').trim().slice(0, 300),
+          issueClosed: closed.closed, closeError: closed.closeError,
+        });
+      }
+    }
   } else if (labelsOnly) {
     // 标签先挂回去,再回帖:回帖里说的「在等维护者确认」要和 GitHub 上的标签状态一致。
     // 旧 issue 已关闭 → needsFreshHold=true:labels-only 建不了 issue,调用方带 payload
@@ -261,7 +330,8 @@ try {
         // footer 由代码追加,保证 issue 一定回链到 PR / 点名作者;保留「由 review-pr 流程
         // 自动创建」签名(close-product-issue.mjs 的定向关闭与 sweep 兜底依赖它)。
         const topic = KIND_TOPICS[kind];
-        const footer = `\n\n---\n关联 PR:#${pr}(作者 @${author});本 issue 由 review-pr 流程自动创建,用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
+        // [MIVO-PATCH signoff-mode] footer 句式不变,仅 protected 模式在末尾追加模式标记(见 lib.mjs buildSignoffIssueFooter)。
+        const footer = buildSignoffIssueFooter({ pr, author, topic, mode: signoffMode });
         const r = writeGh(['issue', 'create', '--repo', slug, '--title', issueTitle, '--body-file', '-'], {
           input: issueBody + footer,
           allowFail: true,

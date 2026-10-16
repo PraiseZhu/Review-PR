@@ -19,6 +19,9 @@ export function createPrWriteGuard(binding, dependencies = {}) {
     if (purpose === 'hold' && policy.authorIsMaintainer) throw new Error('维护者作者免前置确认门，拒绝 hold');
     // [MIVO-PATCH exempt-authors] 豁免名单作者同样免前置确认门。
     if (purpose === 'hold' && api.isSignoffExemptAuthor(meta.author?.login)) throw new Error('豁免名单作者免前置确认门，拒绝 hold');
+    // [MIVO-PATCH signoff-mode] 通知 issue 只给免确认门的作者(维护者或豁免名单);受保护路径的确认 issue(protected-hold)
+    // 任何作者都开——它比 hold 更严,误用只会多等人工。上面两条 hold 拒绝保持不变。
+    if (purpose === 'signoff-notice' && !(policy.authorIsMaintainer || api.isSignoffExemptAuthor(meta.author?.login))) throw new Error('非豁免作者不发通知 issue，应走 hold');
     boundViewer = viewer;
     api.assertActiveReviewLock(lockToken);
     return api.gh(args, { ...options, noCredFallback: true });

@@ -31,8 +31,8 @@
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, evaluateBotSettle, botCheckActivity, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
-// [MIVO-PATCH exempt-authors / slack-release / ci-ignore / ui-evidence / self-review]
-import { isSignoffExemptAuthor, selectTrustedSlackReleases, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
+// [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
+import { isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -743,7 +743,7 @@ try {
     const issueNum = holdMarker?.issueNumber ?? null;
     if (issueNum) {
       try {
-        const issueMeta = ghJson(['issue', 'view', String(issueNum), '--repo', slug, '--json', 'state,comments,updatedAt']);
+        const issueMeta = ghJson(['issue', 'view', String(issueNum), '--repo', slug, '--json', 'state,comments,updatedAt,title,body']);
         // 维护者留言两个来源:① 维护者成员本人直接评论;② Slack 同步 bot 代发的评论——
         // GitHub 作者是 bot,真实发言人在正文「发送者:<名字>」里,拿名字去 org 名录反查
         // GitHub 账号(要求唯一命中)再对维护者。名录只在真的碰到 bot 评论时才加载(省 IO)。
@@ -815,23 +815,29 @@ try {
           count: unattributedSlackComments.filter((x) => x.sender === u.sender).length,
           createdAt: unattributedSlackComments.filter((x) => x.sender === u.sender).map((x) => x.createdAt).sort().pop(),
         }));
-        // [MIVO-PATCH slack-release] 讨论串里维护者的明确「同意放行」构成放行(判据见 lib.mjs)。
-        const slack = SG.slackRelease?.enabled === true
-          ? selectTrustedSlackReleases({
-            comments: issueMeta.comments ?? [],
-            syncBots: prRules.slackSyncBots ?? [],
-            maintainers: MAINTAINERS,
-            authorLogin,
-            consentLine: SG.slackRelease.consentLine,
-          })
-          : null;
+        // [MIVO-PATCH slack-release / issue-comment-release / issue-binding] 讨论串里维护者的明确「同意放行」
+        // (Slack 同步评论,或维护者直接在 issue 下评论)构成放行(判据见 lib.mjs)。issue 必须属于本 PR 且不是通知 issue。
+        const releases = selectDiscussionIssueReleases({
+          issue: issueMeta,
+          pr,
+          syncBots: prRules.slackSyncBots ?? [],
+          maintainers: MAINTAINERS,
+          authorLogin,
+          consentLine: SG.slackRelease?.consentLine ?? '同意放行',
+          slackEnabled: SG.slackRelease?.enabled === true,
+          commentEnabled: SG.issueCommentRelease?.enabled === true,
+        });
         return {
           url: heldIssueUrl,
           number: Number(issueNum),
           state: issueMeta.state ?? null,
           updatedAt: issueMeta.updatedAt ?? null,
-          ...(slack ? { slackRelease: slack.release } : {}),
-          ...(slack?.rejected?.length ? { slackReleaseRejected: slack.rejected } : {}),
+          mode: releases.mode,
+          ...(releases.releaseUntrusted ? { releaseUntrusted: releases.releaseUntrusted } : {}),
+          slackRelease: releases.slackRelease,
+          ...(releases.slackReleaseRejected.length ? { slackReleaseRejected: releases.slackReleaseRejected } : {}),
+          issueCommentRelease: releases.issueCommentRelease,
+          ...(releases.issueCommentReleaseRejected.length ? { issueCommentReleaseRejected: releases.issueCommentReleaseRejected } : {}),
           maintainerComments,
           ...(unattributedBySender.length ? { unattributedSlackComments: unattributedBySender } : {}),
           ...(maintainerErrors ? { maintainerErrors } : {}),
@@ -866,6 +872,8 @@ try {
   const anySignoffMaintainer = (login) => inMaintainers(login);
   const earlyDiscussionIssue = holdMarker?.issueNumber ? readDiscussionIssue(anySignoffMaintainer) : null;
   const slackRelease = earlyDiscussionIssue?.slackRelease ?? null;
+  const issueCommentRelease = earlyDiscussionIssue?.issueCommentRelease ?? null;
+  const issueRelease = latestIssueRelease(slackRelease, issueCommentRelease);
 
   // 冷更触发器:CI fingerprint guard 的 sticky comment 是权威结论(它在同一 runner 上真算过
   // base(main) 与合并结果两份指纹),压过路径启发式两个方向:
@@ -909,6 +917,11 @@ try {
     : null;
   // 受保护路径(.github/** 等):命中即不自动合并,交人工处理。
   const protectedFiles = matchPathPatterns(files.map((f) => f.path), PROTECTED_PATHS);
+  // [MIVO-PATCH protected-signoff] 受保护路径的人工放行(不绑 head,持久有效):未撤销的维护者 Approve,
+  // 或确认 issue 上的 Slack / GitHub 评论「同意放行」。Mini 判门与服务器复核各自重跑本 context 读它。
+  const protectedPath = evaluateProtectedPathRelease({
+    protectedFiles, reviews: signoffReviews, maintainers: MAINTAINERS_RAW, latestCommitDate, issueRelease, authorLogin,
+  });
   // 安全敏感改动触发器:三路取并集,任一命中即触发(口径见 SECURITY_PATHS 注释)。
   // 与规则文档门一样不设 diff 阈值 —— 一行 `contextIsolation: false` 与重写整个 preload 同级。
   // 危险写法样本已由 clipRisky 把凭证脱敏,但仍是代码原文:打回评论只写文件/行号/类型,
@@ -957,8 +970,8 @@ try {
   const evalSignoffKind = (kind, detail, extra = {}) => {
     const a = KIND_MAINTAINERS[kind];
     const authorIsMaintainer = approvalPolicy.authorIsMaintainer;
-    // [MIVO-PATCH slack-release] 手动标记优先,其次 Slack 明确同意;两者都按标记口径持久有效。
-    const markerRelease = releaseMarks.get(kind) ?? slackRelease ?? null;
+    // [MIVO-PATCH slack-release / issue-comment-release] 手动标记优先,其次讨论 issue 里的明确同意(Slack 或 issue 评论);都按标记口径持久有效。
+    const markerRelease = releaseMarks.get(kind) ?? issueRelease ?? null;
     // GitHub Approve 通过(六类统一):完整历史交给 evaluator。当前 head 的 CR 优先交作者;
     // 作者新提交消费 CR 后,历史 Approve 持久放行,包括同一维护者先 Approve 后 CR 的序列。
     const reviewState = evaluateMaintainerReview({
@@ -1101,6 +1114,10 @@ try {
     untrustedReleaseMarks,
     authorExempt: authorSignoffExempt,
     slackRelease,
+    issueCommentRelease,
+    heldIssue: earlyDiscussionIssue
+      ? { number: earlyDiscussionIssue.number, state: earlyDiscussionIssue.state, mode: earlyDiscussionIssue.mode ?? 'normal' }
+      : null,
     triggers: signoffTriggers,
     blocking: signoffBlocking,
     currentBlocker: currentBlocker ? { kind: currentBlocker.kind, detail: currentBlocker.detail } : null,
@@ -1627,6 +1644,7 @@ try {
       maintainerAuthority: signoff.authority,
       approvalPolicy,
       signoff,
+      protectedPath,
       statusLabels,
       review,
       security,
@@ -1681,6 +1699,7 @@ try {
     maintainerAuthority: signoff.authority,
     approvalPolicy,
     signoff,
+    protectedPath,
     statusLabels,
     review,
     security,
