@@ -10,7 +10,7 @@ import {
   toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock, toLockExpiresAt,
   toLockKeep, toLockBlockedText, toLinkLockScript, toReleaseLockScript, finalizeDeployError,
   RELEASE_LOCK_RETRIES, toReleaseLockResult,
-  shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
+  shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck, toMergedPrNumbers, toBehindMainNote,
 } from './tuple-lib.mjs';
 
 const A = 'a'.repeat(40);
@@ -371,4 +371,56 @@ test('save 抛 ENOSPC 时仍释放自己的锁', () => {
   assert.equal(released, true);
   assert.equal(saveError.message, 'ENOSPC');
   assert.equal(releaseError, null);
+});
+
+// 目标落后 main 时只提示、不拒绝:10-15 那次部署选了比 main 落后 26 分钟的提交,漏了 #64、#65,没人看得出来。
+test('目标等于 main:不提示', () => {
+  assert.equal(toBehindMainNote({ status: 'identical', aheadBy: 0, messages: [] }), null);
+});
+
+test('目标落后 main、期间有两个合并提交:提示个数并列出 #64 #65', () => {
+  const messages = ['Merge pull request #64 from PraiseZhu/keel/a', 'Merge pull request #65 from PraiseZhu/keel/b'];
+  assert.deepEqual(toMergedPrNumbers(messages), [64, 65]);
+  const note = toBehindMainNote({ status: 'ahead', aheadBy: 2, messages });
+  assert.equal(note, '目标比 main 落后 2 个提交，没包含：#64 #65');
+});
+
+test('落后部分里有非合并提交:提示里给出这类提交的个数', () => {
+  const messages = ['fix(mivo): 一个直接提交', 'Merge pull request #66 from PraiseZhu/keel/c', 'docs: 另一个直接提交'];
+  const note = toBehindMainNote({ status: 'ahead', aheadBy: 3, messages });
+  assert.match(note, /落后 3 个提交/);
+  assert.match(note, /没包含：#66/);
+  assert.match(note, /其中 2 个不是合并提交（含已合并 PR 分支上自带的提交）/);
+  const onlyOther = toBehindMainNote({ status: 'ahead', aheadBy: 1, messages: ['chore: 直接提交'] });
+  assert.equal(onlyOther, '目标比 main 落后 1 个提交，其中 1 个不是合并提交（含已合并 PR 分支上自带的提交）');
+});
+
+test('squash 合并的提交(标题末尾 (#N))也认出 PR 号;同一个 PR 的合并提交和 squash 提交只列一次', () => {
+  const messages = ['fix(mivo): 一个改动 (#52)', 'Merge pull request #64 from PraiseZhu/keel/a', 'feat: 另一个 (#47)', 'Merge pull request #64 from PraiseZhu/keel/a again', '修 bug (#12) 之后的补丁'];
+  assert.deepEqual(toMergedPrNumbers(messages), [52, 64, 47]);
+  const note = toBehindMainNote({ status: 'ahead', aheadBy: 5, messages });
+  assert.match(note, /没包含：#52 #64 #47/);
+  assert.match(note, /其中 1 个不是合并提交/, '只有标题中间带 (#12) 的那条不算 squash');
+});
+
+test('提交列表被接口截断(messages 比 aheadBy 少):提示里写明只列出了前面的一部分', () => {
+  const messages = Array.from({ length: 250 }, (_, i) => `Merge pull request #${i + 1} from PraiseZhu/keel/x${i}`);
+  const note = toBehindMainNote({ status: 'ahead', aheadBy: 926, messages });
+  assert.match(note, /^目标比 main 落后 926 个提交/);
+  assert.match(note, /只列出最早 250 个提交里的 PR/);
+  assert.doesNotMatch(toBehindMainNote({ status: 'ahead', aheadBy: 2, messages: messages.slice(0, 2) }), /只列出/);
+});
+
+test('不在 main 上(diverged、behind)不是「落后」提示的事:函数不出声,拒绝仍由 preflight 负责', () => {
+  assert.equal(toBehindMainNote({ status: 'diverged', aheadBy: 2, messages: ['x'] }), null);
+  assert.equal(toBehindMainNote({ status: 'behind', aheadBy: 0, messages: [] }), null);
+});
+
+test('preflight 仍然拒绝不在 main 上的目标,只是落后才提示(源码里两个判断都在)', () => {
+  const source = fs.readFileSync(new URL('./deploy-tuple.mjs', import.meta.url), 'utf8');
+  assert.match(source, /\['identical', 'ahead'\]\.includes\(/, '拒绝条件不变');
+  assert.match(source, /不在 Review-PR main 上/);
+  assert.match(source, /toBehindMainNote\(/);
+  assert.match(source, /record\.behindMain = /);
+  assert.doesNotMatch(source, /--allow-behind|allowBehind/, '不加放行参数');
 });

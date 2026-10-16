@@ -242,3 +242,33 @@ export function toNewCommitCheck({ preview, hasCommit }) {
   if (preview) return { action: 'missing', message: 'Mini 尚未取到该提交' };
   return { action: 'fetch' };
 }
+
+// 目标落后 main 时只提示、不拒绝(拒绝会妨碍回滚)。messages 是 compare 接口里每个提交消息的第一行,按时间从旧到新。
+// PR 号取两种写法:合并提交「Merge pull request #N」和 squash 提交标题末尾的「(#N)」;同一个 PR 只列一次。
+// 其余提交只报个数:已合并 PR 分支上自带的提交也在里面,所以这个数偏多,提示里写明。
+const prNumberOf = (message) => {
+  const text = String(message ?? '');
+  const found = /^Merge pull request #(\d+)/.exec(text)?.[1] ?? /\(#(\d+)\)\s*$/.exec(text)?.[1];
+  return found ? Number(found) : null;
+};
+
+export function toMergedPrNumbers(messages) {
+  const seen = new Set();
+  for (const message of messages ?? []) {
+    const pr = prNumberOf(message);
+    if (pr !== null) seen.add(pr);
+  }
+  return [...seen];
+}
+
+// compare 接口一次最多返回 250 个提交(aheadBy 是真实总数):messages 比 aheadBy 少时,只有最早那部分被列出来。
+export function toBehindMainNote({ status, aheadBy, messages }) {
+  if (status !== 'ahead') return null;
+  const listed = messages ?? [];
+  const prs = toMergedPrNumbers(listed);
+  const others = listed.filter((message) => prNumberOf(message) === null).length;
+  const merged = prs.length ? `，没包含：${prs.map((n) => `#${n}`).join(' ')}` : '';
+  const direct = others > 0 ? `${prs.length ? '；' : '，'}其中 ${others} 个不是合并提交（含已合并 PR 分支上自带的提交）` : '';
+  const truncated = listed.length < aheadBy ? `；接口最多返回 250 个提交，只列出最早 ${listed.length} 个提交里的 PR，更新的没列全` : '';
+  return `目标比 main 落后 ${aheadBy} 个提交${merged}${direct}${truncated}`;
+}

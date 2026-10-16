@@ -18,7 +18,7 @@ import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
-import { runCodex } from './codex.mjs';
+import { runCodex, readCodexVersion } from './codex.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
 const STATE_FILE = join(WORK, 'state.json');
@@ -347,6 +347,7 @@ function stripSecrets(env) {
 }
 
 // ── codex(只有模型网关凭据)─────────────────────────────────────────────
+const codexBin = () => process.env.CODEX_BIN || '/AIGC_Group/github-actions-runner/mivo-review-tools/bin/codex';
 async function codex() {
   const state = loadState();
   if (state.phase !== 'prepared' || state.protectedApproval || state.scope?.mode === 'reuse') return;
@@ -375,13 +376,15 @@ async function codex() {
     rebuttals: state.rebuttals ?? [],
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
+  // 只有真要调用模型的审查才取 CLI 版本;取不到是 null,不影响审查。
+  state.codexVersion = readCodexVersion(codexBin());
   const attempts = [];
   const startedAt = Date.now();
   // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。
   for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs }); next;
     next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs })) {
     const result = await runCodex({
-      codexBin: process.env.CODEX_BIN || '/AIGC_Group/github-actions-runner/mivo-review-tools/bin/codex',
+      codexBin: codexBin(),
       workdir: REPO_DIR, prompt, schema: ANSWER_SCHEMA, model: next.model, effort: next.effort,
       timeoutMs: next.timeoutMs, credentials: process.env.LITELLM_CREDENTIALS_JSON,
       tmpRoot: join(WORK, 'codex'), label: `${attempts.length + 1}`,
@@ -506,6 +509,7 @@ function baseResult(state) {
       targetRepo: input.targetRepo, serverMode: input.mode, runId: input.runId, runUrl: input.runUrl, attempt: input.attempt,
       tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
       filePatchHashes: current.filePatchHashes, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
+      runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], completedAt: null,
     },
   };

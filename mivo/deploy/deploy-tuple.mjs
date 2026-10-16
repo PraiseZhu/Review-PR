@@ -32,6 +32,7 @@ import {
   WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
   toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
   toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
+  toMergedPrNumbers, toBehindMainNote,
 } from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -186,8 +187,16 @@ function preflight() {
   const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
   if (variable !== OLD_SKILL) throw new Error(`仓库变量现在是 ${variable},不是预期的旧值 ${OLD_SKILL}`);
   must(run('gh', ['api', `repos/${SKILL_REPO}/commits/${NEW_SKILL}`, '--jq', '.sha']), `Review-PR 上找 ${NEW_SKILL}`);
-  const onMain = must(run('gh', ['api', `repos/${SKILL_REPO}/compare/${NEW_SKILL}...main`, '--jq', '.status']), '比对 Review-PR main').trim();
+  // 一次取回状态、落后个数和每个提交消息的第一行:落后只提示(回滚时落后是常态),不在 main 上才拒绝。
+  const compare = JSON.parse(must(run('gh', ['api', `repos/${SKILL_REPO}/compare/${NEW_SKILL}...main`, '--jq',
+    '{status: .status, aheadBy: .ahead_by, messages: [.commits[].commit.message | split("\\n")[0]]}']), '比对 Review-PR main'));
+  const onMain = String(compare.status ?? '').trim();
   if (!['identical', 'ahead'].includes(onMain)) throw new Error(`${NEW_SKILL} 不在 Review-PR main 上(compare=${onMain})`);
+  const behind = toBehindMainNote({ status: onMain, aheadBy: compare.aheadBy, messages: compare.messages });
+  if (behind) {
+    say(behind);
+    record.behindMain = { aheadBy: compare.aheadBy, prs: toMergedPrNumbers(compare.messages) };
+  }
   const head = remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`);
   if (head.stdout.trim() !== OLD_SKILL) throw new Error(`Mini 的 skill 检出是 ${head.stdout.trim() || head.stderr},不是 ${OLD_SKILL}`);
   const hasCommit = remote('mini', `git -C ${SKILL_REL} cat-file -e ${NEW_SKILL}^{commit}`).ok;
