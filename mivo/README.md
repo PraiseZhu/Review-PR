@@ -219,14 +219,14 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
   [--pr <改 review-pr.yml 的 Mivo PR> --pr-head <head>] [--stop pause|hold] [--max-wait-min 180] [--record-dir <目录>] [--preview]
 ```
 
-- `--preview` 只读核对新旧 tuple、三台 trust 和要合并的 PR，打印预览，不写任何东西，也不 `git fetch`。新提交还不在 Mini 检出里时只报告「Mini 尚未取到该提交」，不去取。`--preview` 与 `auto-update.mjs --check` 都不拿部署锁。
-- 同一时间只允许一次换版本：开始写任何东西之前在 Mini 上 CAS 拿 `~/mivo-prereview/state/mivo/mivo/deploy-tuple.lock.json`（记下拿锁方、pid、时间、目标版本）。锁已被别人占用且未过期时不改任何东西、退出码 1、说明谁占着。本次结束（成功、失败退回、保持停止）都只按内容删自己的锁。超过 4 小时的残锁视为过期、可以顶替；否则在 Mini 上删掉该文件后再跑。
+- `--preview` 只读核对新旧 tuple、三台 trust 和要合并的 PR，打印预览，不动 Mini 和线上状态，也不 `git fetch`。新提交还不在 Mini 检出里时只报告「Mini 尚未取到该提交」，不去取。`--preview` 与 `auto-update.mjs --check` 都不拿部署锁。
+- 同一时间只允许一次换版本：开始改 Mini 或线上状态之前，在 Mini 上用 `mkdir` 原子拿 `~/mivo-prereview/state/mivo/mivo/deploy-tuple.lock`（目录存在即占用；`owner.json` 记下拿锁方、pid、时间、目标版本、过期时间）。锁已被别人占用且未到期时不动 Mini 和线上状态、退出码 1、说明谁占着。本次结束（成功、失败退回、保持停止）都只按内容删自己的锁。过期时间是开始时间 + `--max-wait-min` + 90 分钟余量；到期视为残锁、可以顶替。人工删除前先确认原持有进程已结束：看 `owner.json` 的 `owner`（`deploy-tuple:<机器>`，`pro`/`mini`/`air`）和 `pid`，到那台机器上 `ps -p <pid>`，没有这个进程再删整个锁目录。
 - 停点：`--stop pause` 给不认 `deploy-hold` 的旧代码用（写 `pause.json` 只抬高 `until`、保留原字段，被旧进程改写就提回，收尾时恢复成还没到期、`until` 最晚的那份运行暂停）；`--stop hold` 写 `deploy-hold.json`，等前置停下：新代码停机握手、写出 `lockReleased: true` 的 `quiesced.json` 并退出，或者前置在停点写入前已经空闲退出（launchd 不在运行、没有锁、没有回执）。两种都确认进程已退、锁文件已不在才 `bootout`，并给巡检放计划内维护标记。最多等 `--max-wait-min` 分钟，到点没停下就撤销停点、什么都不切。只撤本次写过的停点：停点前就失败（例如别人的维护标记还在）时，不动别人的 `deploy-hold.json`、`pause.json`；`deploy-hold.json` 按内容认是不是本次写的，写成功但 ssh 回执丢了也照样撤。
 - 到停点后（带 `--pr` 时先绕过合并该 PR），逐项「先比对旧值再写」切换变量、Mini 检出和三台 trust，再跑 prerequisites；全部通过才撤销暂停、删停点标记。开始前 launchd 已加载（运行中或空闲）才 `bootstrap`；开始前就是 `absent`（维护者已停用）则保持停用，输出「开始前前置已停用,未重新加载」。失败退回同样只恢复本次停掉的。任一步失败按已切部分反向退回；撤销停点之前再读一遍 main 上的 workflow、仓库变量、Mini 检出和三台 trust，整组都是旧值才恢复前置审查。不一致（包括读不到、workflow 已合入但其余部分退回了）就保持停止，不 `bootstrap`，按脚本提示人工处理。tuple 已整组切到新版本之后，撤停点或 `bootstrap` 失败也保持停止、退出码 2，说明「新版本已上、前置审查停止、要人工处理」。
 - 回滚：先按下面「每天自动换版本」暂停自动任务，否则第二天 06:30 它会把 `main` 换回来。新旧参数对调，用 `--stop hold`，workflow 另行 revert。不带 `--pr` 时脚本要求 main 上的 workflow 已经是回滚目标：从 revert 合入到切换完成之间 tuple 不一致，revert 合入后要紧接着运行；这时如果切换失败，退回后整组仍不一致，脚本保持停止。
 - 从 Mini 的 `~/mivo-prereview/skill` 里直接跑也可以：`prereq-check.mjs` 在启动时读进内存，切换检出后照旧用启动时那份。
 - 退出码：0 整组上线完成；1 失败，但线上仍是旧 tuple、前置已恢复（或什么都没切，含部署锁被别人占用）；2 失败且保持停止，要人工处理（含新版本已上但前置停着）。
-- 每次运行在 `--record-dir`（默认 `~/Library/Logs/mivo-prereview/deploy/`）写 `deploy-<新提交前 7 位>-<时间>.record.json`，核对用的 trust 快照放同目录的 `trust-snap-<新提交前 7 位>/`。`--on <本机> --selftest` 只在 Mini 的临时文件上演练读写与比对，再读一遍三台的 trust，不碰线上文件。
+- 拿锁成功后才在 `--record-dir`（默认 `~/Library/Logs/mivo-prereview/deploy/`）写 `deploy-<新提交前 7 位>-<时间>.record.json`，核对用的 trust 快照放同目录的 `trust-snap-<新提交前 7 位>/`。`--on <本机> --selftest` 只在 Mini 的临时文件上演练读写与比对，再读一遍三台的 trust，不碰线上文件。
 - 首次整组上线是 2026-10-15 00:27（`2f55cb8` + `review-pr.yml` `1624d62b…`）。2026-10-16 之前脚本放在 Pro 本机 `~/AI-Agent/Claude/projects/Project Mivo Canvas-Plugin/_tmp/r41/`（不进 git），那时的部署记录留在那里。
 
 ### 每天自动换版本
@@ -236,10 +236,10 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 跑在 Mini 的 Cindy 定时任务「Mivo 审查机每天换版本」：仅运行脚本，`30 6 * * *`。前置检查跑 `auto-update.mjs --check`：已是最新、或 `main` 的 CI 还没跑完，就跳过这一轮，不执行也不提醒。
 - 执行 `auto-update.mjs --cindy-script`：读仓库变量、Mini 检出和 `main`。三种情况不换、记失败提醒：Mini 检出和仓库变量不一致；`main` 不是线上提交的后续提交；`main` 有没过的 CI。否则调 `deploy-tuple.mjs --on mini --stop hold --max-wait-min 40` 整组换上；`review-pr.yml` 不变，新旧 workflow 都取 Mivo `main` 上现在的 sha256。
 - 结果：换好了记成功；没换成记失败，退出码 1 表示线上仍是旧版本、前置照常（第二天 06:30 再试）；退出码 2 表示新版本可能已上或保持停止，要按日志人工处理，不再写成「线上仍是旧版、前置照常」。Cindy 每次执行完都会提醒，跳过的轮次不提醒。日志和部署记录在 Mini 的 `~/Library/Logs/mivo-prereview/deploy/`（`auto-update-<时间>.log`）。
-- 手动与每天自动换版本不会同时改：两边都走 `deploy-tuple.mjs` 的部署锁，后到的那次不改任何东西就退出。
+- 手动与每天自动换版本不会同时改：两边都走 `deploy-tuple.mjs` 的部署锁，后到的那次不动 Mini 和线上状态就退出。
 - 停点最多等 40 分钟：06:00 前派出的长审查到 07:10 还没收完，今天就不换，撤销停点、什么都不切。Pro 或 Air 连不上时预检失败，今天也不换。
 - 要暂停，就在 Mini 的 Cindy 自动化里暂停这个任务。等正在跑的那一轮结束再暂停：Cindy 暂停时会立刻杀掉正在换版本的进程，可能留下 `deploy-hold.json`，前置就一直停着（心跳照写，看门狗看不出来）。
-- 手动跑上面的脚本换版本或回滚前，先暂停这个任务；`main` 也改成想要的版本（例如 revert 掉有问题的提交、CI 全绿）后再恢复。不暂停的话，第二天 06:30 它会把 `main` 换回来。两次换版本撞上时，后到的那次拿不到锁、什么都不改。
+- 手动跑上面的脚本换版本或回滚前，先暂停这个任务；`main` 也改成想要的版本（例如 revert 掉有问题的提交、CI 全绿）后再恢复。不暂停的话，第二天 06:30 它会把 `main` 换回来。两次换版本撞上时，后到的那次拿不到锁、不动 Mini 和线上状态。
 - 要马上换，点「立即运行」：白天也用 hold 停点，在途审查收完前新 PR 要排队。
 - 任务跑的是线上那一版的 `auto-update.mjs`（`~/mivo-prereview/skill/mivo/deploy/`）。回滚到没有这个目录的旧版本后，前置检查会失败，要先暂停任务。
 - 审查任务书（`specDigest`）变了的版本，开放 PR 下次送审时按新任务书全量重审；只改代码不算，见 `lib/scope.mjs`。

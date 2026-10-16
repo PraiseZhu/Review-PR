@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
-  HOSTS, WF_PATH, DEPLOY_LOCK_TTL_MS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  HOSTS, WF_PATH, DEPLOY_LOCK_REL, DEPLOY_LOCK_SLACK_MS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
   toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
-  toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock,
+  toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock, toLockExpiresAt,
+  toMkdirLockScript, toStealLockScript, toReleaseLockScript, finalizeDeployError,
   shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
 } from './tuple-lib.mjs';
 
@@ -158,8 +164,11 @@ test('自动换版本:deploy-tuple exit 2 不再写线上仍是旧版、前置�
 
 test('部署锁:无人占用才拿锁,别人占用且未过期则不改任何东西', () => {
   const now = Date.parse('2026-10-16T06:30:00.000Z');
-  assert.deepEqual(toLockAcquire({ existing: { exists: false, text: null }, now }), { action: 'acquire', expected: 'none' });
-  const holder = { owner: 'deploy-tuple:pro', pid: 4242, at: '2026-10-16T06:29:00.000Z', target: A };
+  assert.deepEqual(toLockAcquire({ existing: { exists: false, text: null }, now }), { action: 'acquire' });
+  const holder = {
+    owner: 'deploy-tuple:pro', pid: 4242, at: '2026-10-16T06:29:00.000Z', target: A,
+    expiresAt: '2026-10-16T11:00:00.000Z',
+  };
   const held = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now });
   assert.equal(held.action, 'blocked');
   assert.match(held.reason, /deploy-tuple:pro/);
@@ -167,13 +176,18 @@ test('部署锁:无人占用才拿锁,别人占用且未过期则不改任何东
   assert.equal(held.holder.pid, 4242);
 });
 
-test('部署锁:超过最长运行时间的残锁视为过期,可以顶替', () => {
-  const now = Date.parse('2026-10-16T12:00:00.000Z');
-  const stale = { owner: 'deploy-tuple:mini', pid: 9, at: '2026-10-16T06:30:00.000Z', target: A };
-  const d = toLockAcquire({ existing: { exists: true, text: toDeployLockText(stale) }, now, ttlMs: DEPLOY_LOCK_TTL_MS });
-  assert.equal(d.action, 'steal');
-  assert.equal(d.previous.pid, 9);
-  assert.ok(DEPLOY_LOCK_TTL_MS >= 4 * 60 * 60 * 1000);
+test('部署锁:过期用 expiresAt,合法等待期内不顶替', () => {
+  const start = Date.parse('2026-10-16T00:00:00.000Z');
+  const maxWaitMs = 300 * 60 * 1000;
+  const expiresAt = toLockExpiresAt(start, maxWaitMs);
+  assert.equal(Date.parse(expiresAt), start + maxWaitMs + DEPLOY_LOCK_SLACK_MS);
+  assert.ok(DEPLOY_LOCK_SLACK_MS >= 90 * 60 * 1000);
+  const holder = { owner: 'deploy-tuple:mini', pid: 9, at: new Date(start).toISOString(), target: A, expiresAt };
+  const live = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now: start + 241 * 60 * 1000 });
+  assert.equal(live.action, 'blocked', '241 分钟仍在 max-wait-min 300 + 90 余量之内');
+  const stale = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now: Date.parse(expiresAt) });
+  assert.equal(stale.action, 'steal');
+  assert.equal(stale.previous.pid, 9);
 });
 
 test('部署锁:只删自己的(按内容认),preview 和 check 不拿锁', () => {
@@ -199,4 +213,113 @@ test('--preview 缺提交只报告 Mini 尚未取到,不 fetch', () => {
   assert.deepEqual(toNewCommitCheck({ preview: false, hasCommit: false }), { action: 'fetch' });
   assert.deepEqual(toNewCommitCheck({ preview: true, hasCommit: true }), { action: 'ok' });
   assert.deepEqual(toNewCommitCheck({ preview: false, hasCommit: true }), { action: 'ok' });
+});
+
+test('拿锁脚本用 mkdir,不用读后写比对', () => {
+  const script = toMkdirLockScript(DEPLOY_LOCK_REL);
+  assert.match(script, /mkdir "\$d"/);
+  assert.doesNotMatch(script, /shasum/);
+  assert.doesNotMatch(script, /set -C|noclobber|flock|lockf/);
+  assert.ok(DEPLOY_LOCK_REL.endsWith('deploy-tuple.lock'));
+  assert.doesNotMatch(DEPLOY_LOCK_REL, /\.json$/);
+});
+
+test('mkdir 锁:两个进程同时拿,只有一个成功', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-mkdir-'));
+  try {
+    fs.writeFileSync(path.join(root, 'worker.sh'), `${toMkdirLockScript(DEPLOY_LOCK_REL)}\n`);
+    const parallel = spawnSync('sh', ['-c', [
+      `cd ${JSON.stringify(root)}`,
+      '( printf "a\\n" | sh worker.sh; echo A:$? ) > a.out &',
+      '( printf "b\\n" | sh worker.sh; echo B:$? ) > b.out &',
+      'wait',
+      'cat a.out b.out',
+    ].join('\n')], { encoding: 'utf8' });
+    assert.equal(parallel.status, 0, parallel.stderr);
+    const codes = [...parallel.stdout.matchAll(/[AB]:(\d+)/g)].map((m) => Number(m[1]));
+    assert.equal(codes.length, 2);
+    assert.equal(codes.filter((c) => c === 0).length, 1, parallel.stdout);
+    assert.equal(codes.filter((c) => c === 1).length, 1, parallel.stdout);
+    assert.equal(fs.existsSync(path.join(root, DEPLOY_LOCK_REL)), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('顶替残锁:rename 后再 mkdir,两个进程不能都顶替成功', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-steal-'));
+  try {
+    const dir = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'owner.json'), toDeployLockText({
+      owner: 'old', pid: 1, at: '2026-10-16T00:00:00.000Z', target: A, expiresAt: '2026-10-16T00:00:01.000Z',
+    }));
+    const stale = fs.readFileSync(path.join(dir, 'owner.json'));
+    const expected = createHash('sha256').update(stale).digest('hex');
+    const aText = toDeployLockText({ owner: 'A', pid: 100, at: '2026-10-16T06:00:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    const bText = toDeployLockText({ owner: 'B', pid: 200, at: '2026-10-16T06:00:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(path.join(root, 'a.json'), aText);
+    fs.writeFileSync(path.join(root, 'b.json'), bText);
+    fs.writeFileSync(path.join(root, 'steal.sh'), `${toStealLockScript(DEPLOY_LOCK_REL, expected)}\n`);
+    const parallel = spawnSync('sh', ['-c', [
+      `cd ${JSON.stringify(root)}`,
+      '( cat a.json | sh steal.sh; echo A:$? ) > a.out &',
+      '( cat b.json | sh steal.sh; echo B:$? ) > b.out &',
+      'wait',
+      'cat a.out b.out',
+    ].join('\n')], { encoding: 'utf8' });
+    assert.equal(parallel.status, 0, parallel.stderr);
+    const codes = [...parallel.stdout.matchAll(/[AB]:(\d+)/g)].map((m) => Number(m[1]));
+    assert.equal(codes.filter((c) => c === 0).length, 1, parallel.stdout);
+    const owner = JSON.parse(fs.readFileSync(path.join(root, DEPLOY_LOCK_REL, 'owner.json'), 'utf8'));
+    assert.ok(owner.owner === 'A' || owner.owner === 'B');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('释放锁:rename 后发现不是自己的就放回,不删别人刚顶替的', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-rel-'));
+  try {
+    const dir = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    fs.mkdirSync(dir);
+    const mine = toDeployLockText({ owner: 'A', pid: 1, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+    const other = toDeployLockText({ owner: 'B', pid: 2, at: '2026-10-16T06:01:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(path.join(dir, 'owner.json'), other);
+    const expected = createHash('sha256').update(mine).digest('hex');
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toReleaseLockScript(DEPLOY_LOCK_REL, expected)}`], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.readFileSync(path.join(dir, 'owner.json'), 'utf8'), other);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('释放锁:确认是自己的才删掉', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-rel-own-'));
+  try {
+    const dir = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    fs.mkdirSync(dir);
+    const mine = toDeployLockText({ owner: 'A', pid: 1, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(path.join(dir, 'owner.json'), mine);
+    const expected = createHash('sha256').update(mine).digest('hex');
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toReleaseLockScript(DEPLOY_LOCK_REL, expected)}`], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(dir), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('save 抛 ENOSPC 时仍释放自己的锁', () => {
+  let released = false;
+  const { saveError, releaseError } = finalizeDeployError({
+    save: () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); },
+    release: () => { released = true; },
+  });
+  assert.equal(released, true);
+  assert.equal(saveError.message, 'ENOSPC');
+  assert.equal(releaseError, null);
 });

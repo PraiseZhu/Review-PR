@@ -6,10 +6,12 @@
 export const WF_PATH = '.github/workflows/review-pr.yml';
 // 三台机器在彼此 ~/.ssh/config 里用同一组别名。
 export const HOSTS = { pro: 'Praise-MacBook', mini: 'Praise-Mini', air: 'Praise-MacAir' };
-// Mini 上的换版本互斥锁:开始写任何东西之前 CAS 写入,结束只按内容删自己的。
-export const DEPLOY_LOCK_REL = 'mivo-prereview/state/mivo/mivo/deploy-tuple.lock.json';
-// 超过这个时间的锁当残锁(SIGKILL 没清掉):默认可覆盖 --max-wait-min 180 再留余量。
-export const DEPLOY_LOCK_TTL_MS = 4 * 60 * 60 * 1000;
+// Mini 上的换版本互斥锁目录:mkdir 成功才算拿到,里面的 owner.json 记占用者。
+export const DEPLOY_LOCK_REL = 'mivo-prereview/state/mivo/mivo/deploy-tuple.lock';
+export const DEPLOY_LOCK_OWNER_REL = `${DEPLOY_LOCK_REL}/owner.json`;
+// 锁过期时间 = 开始时间 + --max-wait-min + 这段余量,避免合法等待被当成残锁。
+export const DEPLOY_LOCK_SLACK_MS = 90 * 60 * 1000;
+const shQuote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
 const RESULT_TEXT_MAX = 4000;
 const short = (sha) => String(sha ?? '').slice(0, 7) || '(空)';
 
@@ -110,8 +112,12 @@ export function toAutoUpdateFinish(status, { reason, current, log, tail }) {
   return { code: 1, text: `换版本 ${reason} 没换成,线上仍是 ${short(current)},前置照常。日志 ${log}\n${tail}` };
 }
 
-export function toDeployLockText({ owner, pid, at, target }) {
-  return `${JSON.stringify({ owner, pid, at, target })}\n`;
+export function toDeployLockText({ owner, pid, at, target, expiresAt }) {
+  return `${JSON.stringify({ owner, pid, at, target, expiresAt })}\n`;
+}
+
+export function toLockExpiresAt(startMs, maxWaitMs, slackMs = DEPLOY_LOCK_SLACK_MS) {
+  return new Date(startMs + maxWaitMs + slackMs).toISOString();
 }
 
 function parseDeployLock(text) {
@@ -124,19 +130,95 @@ function parseDeployLock(text) {
   }
 }
 
-// 开始写之前拿锁。existing 是 Mini 上锁文件的 { exists, text }。无人占用才 acquire;
-// 别人占用且未过期 blocked(不改任何东西);超过 ttlMs 的残锁 steal。
-export function toLockAcquire({ existing, now, ttlMs = DEPLOY_LOCK_TTL_MS }) {
-  if (!existing.exists) return { action: 'acquire', expected: 'none' };
+// 开始改 Mini / 线上之前拿锁。existing 是 Mini 上 owner.json 的 { exists, text }。
+// 无人占用 acquire;别人占用且 now < expiresAt 则 blocked;到期或过期 steal。
+export function toLockAcquire({ existing, now }) {
+  if (!existing.exists) return { action: 'acquire' };
   const holder = parseDeployLock(existing.text);
-  const at = Date.parse(holder?.at);
-  if (holder && Number.isFinite(at) && now - at > ttlMs) return { action: 'steal', previous: holder };
+  const exp = Date.parse(holder?.expiresAt);
+  if (holder && Number.isFinite(exp) && now >= exp) return { action: 'steal', previous: holder };
   const who = holder ? `${holder.owner}(pid ${holder.pid})` : '无法解析的占用者';
   return { action: 'blocked', reason: `部署锁被 ${who} 占用`, holder };
 }
 
 export function isOwnLock(lock, lockText) {
   return Boolean(lockText) && lock.exists === true && lock.text === lockText;
+}
+
+// Mini 上一条 mkdir:成功才算拿到。已存在则 exit 1,不写文件。
+export function toMkdirLockScript(rel) {
+  return [
+    `d=${shQuote(rel)}`,
+    `mkdir -p "$(dirname "$d")"`,
+    `if mkdir "$d"; then`,
+    `  cat > "$d/owner.json" || { rm -f "$d/owner.json"; rmdir "$d" 2>/dev/null; exit 2; }`,
+    `  exit 0`,
+    `fi`,
+    `exit 1`,
+  ].join('\n');
+}
+
+// 顶替过期残锁:先按内容核对,再 rename 到唯一名,然后 mkdir。两边不能都顶替成功。
+export function toStealLockScript(rel, expectedSha) {
+  return [
+    `d=${shQuote(rel)}`,
+    `exp=${shQuote(expectedSha)}`,
+    `tmp="$d.steal.$$.$RANDOM"`,
+    `if [ ! -d "$d" ]; then echo "锁目录不在" >&2; exit 1; fi`,
+    `if [ -f "$d/owner.json" ]; then cur=$(shasum -a 256 < "$d/owner.json" | cut -c1-64); else cur=none; fi`,
+    `if [ "$cur" != "$exp" ]; then echo "现在是 $cur" >&2; exit 3; fi`,
+    `mv "$d" "$tmp" || exit 1`,
+    `if [ -f "$tmp/owner.json" ]; then cur=$(shasum -a 256 < "$tmp/owner.json" | cut -c1-64); else cur=none; fi`,
+    `if [ "$cur" != "$exp" ]; then`,
+    `  echo "顶替前锁已被别人换掉,放回去" >&2`,
+    `  if mv "$tmp" "$d"; then exit 3; fi`,
+    `  echo "放回失败,临时目录 $tmp" >&2`,
+    `  exit 1`,
+    `fi`,
+    `if mkdir "$d"; then`,
+    `  cat > "$d/owner.json" || { rm -rf "$d"; mv "$tmp" "$d" 2>/dev/null; exit 2; }`,
+    `  rm -rf "$tmp"`,
+    `  exit 0`,
+    `fi`,
+    `rm -rf "$tmp"`,
+    `exit 1`,
+  ].join('\n');
+}
+
+// 释放:先按内容认是自己的,rename 到唯一临时名,复核仍是自己的再删;不是就挪回去。
+export function toReleaseLockScript(rel, expectedSha) {
+  return [
+    `d=${shQuote(rel)}`,
+    `exp=${shQuote(expectedSha)}`,
+    `tmp="$d.release.$$.$RANDOM"`,
+    `if [ ! -d "$d" ]; then exit 0; fi`,
+    `if [ -f "$d/owner.json" ]; then cur=$(shasum -a 256 < "$d/owner.json" | cut -c1-64); else cur=none; fi`,
+    `if [ "$cur" != "$exp" ]; then echo "部署锁已不是本次的,不删" >&2; exit 0; fi`,
+    `mv "$d" "$tmp" || exit 0`,
+    `if [ -f "$tmp/owner.json" ]; then cur=$(shasum -a 256 < "$tmp/owner.json" | cut -c1-64); else cur=none; fi`,
+    `if [ "$cur" = "$exp" ]; then rm -rf "$tmp"; exit 0; fi`,
+    `echo "部署锁在释放前已被别人顶替,放回去" >&2`,
+    `if mv "$tmp" "$d"; then exit 0; fi`,
+    `echo "放回失败,临时目录 $tmp" >&2`,
+    `exit 1`,
+  ].join('\n');
+}
+
+// save 抛错也要释放自己的锁:两个动作各自包起来,互不影响。
+export function finalizeDeployError({ save, release }) {
+  let saveError = null;
+  let releaseError = null;
+  try {
+    release();
+  } catch (error) {
+    releaseError = error;
+  }
+  try {
+    save();
+  } catch (error) {
+    saveError = error;
+  }
+  return { saveError, releaseError };
 }
 
 export function shouldTakeDeployLock({ preview, check }) {
