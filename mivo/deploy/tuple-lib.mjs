@@ -242,3 +242,21 @@ export function toNewCommitCheck({ preview, hasCommit }) {
   if (preview) return { action: 'missing', message: 'Mini 尚未取到该提交' };
   return { action: 'fetch' };
 }
+
+// 目标落后 main 时只提示、不拒绝(拒绝会妨碍回滚)。messages 是 compare 接口里每个提交消息的第一行,按时间从旧到新。
+// 合并提交取「Merge pull request #N」里的 PR 号;不是合并提交的只报个数。
+export function toMergedPrNumbers(messages) {
+  return (messages ?? [])
+    .map((message) => /^Merge pull request #(\d+)/.exec(String(message ?? ''))?.[1])
+    .filter(Boolean)
+    .map(Number);
+}
+
+export function toBehindMainNote({ status, aheadBy, messages }) {
+  if (status !== 'ahead') return null;
+  const prs = toMergedPrNumbers(messages);
+  const others = (messages ?? []).length - prs.length;
+  const merged = prs.length ? `，没包含：${prs.map((n) => `#${n}`).join(' ')}` : '';
+  const direct = others > 0 ? `${prs.length ? '；' : '，'}其中 ${others} 个不是合并提交` : '';
+  return `目标比 main 落后 ${aheadBy} 个提交${merged}${direct}`;
+}

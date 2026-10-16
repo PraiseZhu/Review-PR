@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEventMeter, toStderrTail, runCodex, CODEX_IDLE_MS } from './codex.mjs';
+import { createEventMeter, toStderrTail, runCodex, readCodexVersion, CODEX_IDLE_MS } from './codex.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
 const at = (sec) => T0 + sec * 1000;
@@ -125,4 +125,21 @@ test('runCodex 把事件记录、用量和失败时脱敏的 stderrTail 带回�
 
 test('卡住判定比正常运行里最长的停顿宽:luna/max 正常跑完的停顿到过 666 秒', () => {
   assert.ok(CODEX_IDLE_MS >= 15 * 60_000, `idle ${CODEX_IDLE_MS}ms 太短`);
+});
+
+test('readCodexVersion:返回 --version 输出的第一行并去掉首尾空白,调用参数固定', () => {
+  const calls = [];
+  const exec = (bin, args, options) => { calls.push({ bin, args, options }); return '  codex-cli 0.162.1  \nsecond line\n'; };
+  assert.equal(readCodexVersion('/tools/bin/codex', exec), 'codex-cli 0.162.1');
+  assert.deepEqual(calls, [{ bin: '/tools/bin/codex', args: ['--version'], options: { encoding: 'utf8', timeout: 10_000 } }]);
+});
+
+test('readCodexVersion:命令报错返回 null,不抛错', () => {
+  const exec = () => { throw Object.assign(new Error('spawn /nope ENOENT'), { code: 'ENOENT' }); };
+  assert.equal(readCodexVersion('/nope', exec), null);
+});
+
+test('readCodexVersion:超时返回 null,不抛错', () => {
+  const exec = () => { throw Object.assign(new Error('spawnSync /tools/bin/codex ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' }); };
+  assert.equal(readCodexVersion('/tools/bin/codex', exec), null);
 });

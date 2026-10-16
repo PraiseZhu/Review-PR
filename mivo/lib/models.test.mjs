@@ -15,7 +15,7 @@ test('三档同一个主模型与思考强度,只有超时不同', () => {
 test('仓库变量可以覆盖某一档', () => {
   const cfg = tierConfig('heavy', { MIVO_REVIEW_MODEL_HEAVY: 'openai/gpt-6-sol', MIVO_REVIEW_EFFORT_HEAVY: 'high' });
   assert.deepEqual(cfg, { model: 'openai/gpt-6-sol', effort: 'high', timeoutMs: 98 * MIN });
-  assert.deepEqual(tierConfig('light', {}), { model: 'openai/gpt-6-luna', effort: 'max', timeoutMs: 15 * MIN });
+  assert.deepEqual(tierConfig('light', {}), { model: 'openai/gpt-6-luna', effort: 'max', timeoutMs: 60 * MIN });
   assert.throws(() => tierConfig('huge', {}), /档位不合法/);
 });
 
@@ -29,13 +29,17 @@ test('heavy 主模型上限 98 分钟;主模型在 98 分 6 秒被终止后备�
   assert.ok(98 * MIN + 6_000 + fallback.timeoutMs + SETTLE_MS <= CODEX_BUDGET_MS, '主备加收尾不超过模型预算');
 });
 
-test('standard 主备 45/45,light 15/15', () => {
-  const standard = tierConfig('standard', {});
-  assert.equal(standard.timeoutMs, 45 * MIN);
-  assert.equal(nextAttempt({ primary: standard, attempts: [{ ok: false }], elapsedMs: 45 * MIN + 30_000 }).timeoutMs, 45 * MIN);
-  const light = tierConfig('light', {});
-  assert.equal(light.timeoutMs, 15 * MIN);
-  assert.equal(nextAttempt({ primary: light, attempts: [{ ok: false }], elapsedMs: 15 * MIN + 10_000 }).timeoutMs, 15 * MIN);
+test('light、standard 主模型上限 60 分钟;主模型用满 61 分钟(含收尾)后备用 58 分钟', () => {
+  for (const tier of ['light', 'standard']) {
+    const primary = tierConfig(tier, {});
+    assert.equal(primary.timeoutMs, 60 * MIN, tier);
+    // 预算 120 分钟,主模型用满 60 分钟 + 1 分钟收尾:备用 = min(60, 120 − 61 − 1) = 58 分钟
+    const fallback = nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 61 * MIN });
+    assert.equal(fallback.model, FALLBACK.model, tier);
+    assert.equal(fallback.timeoutMs, 58 * MIN, tier);
+    // 剩余不足 15 分钟时不启动备用(120 − 105 − 1 = 14)
+    assert.equal(nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 105 * MIN }), null, tier);
+  }
 });
 
 test('主模型一次;非额度类失败换备用一次;额度类失败或成功都不再试', () => {
@@ -44,7 +48,7 @@ test('主模型一次;非额度类失败换备用一次;额度类失败或成功
   assert.equal(nextAttempt({ primary, attempts: [{ ok: true }], elapsedMs: 3 * MIN }), null);
   assert.equal(nextAttempt({ primary, attempts: [{ ok: false, quota: true }], elapsedMs: MIN }), null);
   assert.deepEqual(nextAttempt({ primary, attempts: [{ ok: false, quota: false }], elapsedMs: 10 * MIN }),
-    { model: 'openai/gpt-6.1-sol', effort: 'medium', timeoutMs: 45 * MIN });
+    { model: 'openai/gpt-6.1-sol', effort: 'medium', timeoutMs: 60 * MIN });
   assert.equal(nextAttempt({ primary, attempts: [{ ok: false }, { ok: false }], elapsedMs: 20 * MIN }), null);
 });
 
@@ -79,7 +83,7 @@ test('预算不够时不启动模型;备用可用时间不足 15 分钟时不再
   assert.equal(nextAttempt({ primary: tiny, attempts: [], elapsedMs: 0, budgetMs: 20 * MIN }), null);
   const heavy = tierConfig('heavy', {});
   assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: 105 * MIN }), null, '120 − 105 − 1 = 14 分钟');
-  const fallbackAsPrimary = { ...FALLBACK, timeoutMs: 45 * MIN };
+  const fallbackAsPrimary = { ...FALLBACK, timeoutMs: 60 * MIN };
   assert.equal(nextAttempt({ primary: fallbackAsPrimary, attempts: [{ ok: false }], elapsedMs: MIN }), null);
 });
 

@@ -2,6 +2,7 @@
 // 主模型失败(非额度类)时换备用模型重试一次。
 // 用户 2026-10-11 决定:主力 gpt-6-luna / max,备用 gpt-6.1-sol / medium。
 // 用户 2026-10-14 决定大 PR 审得深:heavy 主模型最多 98 分钟,备用实足 20 分钟以上,作业上限 160 分钟。
+// 用户 2026-10-15 决定小 PR 上限 1 小时;2026-10-16 起 standard 也改为 60(45 分钟上限截断了正在输出的审查)。
 //
 // 时间一律按毫秒算。主备共用一个预算 budgetMs:review.mjs 在调模型前按本 job 的真实开始时间算
 // 「作业截止 − 现在 − 发布预留」,再与 120 分钟取小(codexBudgetMs)。非模型阶段用时长了,预算跟着收缩,
@@ -9,8 +10,8 @@
 
 const MIN = 60_000;
 export const TIER_DEFAULTS = {
-  light: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 15 },
-  standard: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 45 },
+  light: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 60 },
+  standard: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 60 },
   heavy: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 100 },
 };
 export const FALLBACK = { model: 'openai/gpt-6.1-sol', effort: 'medium' };
