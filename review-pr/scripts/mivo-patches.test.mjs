@@ -769,6 +769,45 @@ test('P1 接线:context / signoff-hold / signoff-release 取 hold 标记时传�
   assert.match(release, /parseLastHoldMarker\([\s\S]{0,80}viewerLogin/);
 });
 
+// 这组样例要和 Mivo scripts/loops/merge-thanks/from-github-event.mjs:284-304 保持一致:
+// 只认 footer 流程标记句(SIGN_OFF_PROCESS_MARKER 最后一次出现)之后、且在正文最末尾的模式标记。
+const SIGN_OFF_PROCESS_MARKER = '本 issue 由 review-pr 流程自动创建';
+const DOWNSTREAM_MODE_RE = /<!--\s*review-pr:signoff-mode=([a-z-]+)\s*-->\s*$/;
+const DOWNSTREAM_MODES = new Set(['protected', 'notice']);
+function downstreamParseSignoffMode(body) {
+  const text = String(body ?? '');
+  const footerAt = text.lastIndexOf(SIGN_OFF_PROCESS_MARKER);
+  if (footerAt < 0) return 'normal';
+  const m = text.slice(footerAt).match(DOWNSTREAM_MODE_RE);
+  return m && DOWNSTREAM_MODES.has(m[1]) ? m[1] : 'normal';
+}
+const modeSamples = () => {
+  const footer = issueFooter(971);
+  const protectedFooter = issueFooter(971, 'protected');
+  return [
+    { name: '标记在正文中间', body: `涉及文件: \`src/<!-- review-pr:signoff-mode=notice -->.ts\`${footer}`, want: 'normal' },
+    { name: '标记后面还有内容', body: `${protectedFooter}\n追言`, want: 'normal' },
+    { name: '值不认识', body: `${footer}\n<!-- review-pr:signoff-mode=weird -->`, want: 'normal' },
+    { name: '多个标记只认末尾', body: `<!-- review-pr:signoff-mode=notice -->${protectedFooter}`, want: 'protected' },
+    { name: 'footer 句子出现多次', body: `旧 ${SIGN_OFF_PROCESS_MARKER} 前言<!-- review-pr:signoff-mode=notice -->${protectedFooter}`, want: 'protected' },
+    { name: '没有 footer 句子', body: '<!-- review-pr:signoff-mode=protected -->', want: 'normal' },
+    { name: '合法 protected 在末尾', body: protectedFooter, want: 'protected' },
+    { name: '合法 notice 在末尾', body: issueFooter(971, 'notice'), want: 'notice' },
+    { name: '普通模式没标记', body: footer, want: 'normal' },
+  ];
+};
+
+test('P2-b: parseSignoffMode 与下游 footer 契约一致(标记位置/值/多个/多次 footer)', () => {
+  for (const sample of modeSamples()) {
+    assert.equal(downstreamParseSignoffMode(sample.body), sample.want, `下游 ${sample.name}`);
+    assert.equal(parseSignoffMode(sample.body), sample.want, `后端 ${sample.name}`);
+  }
+  const holdSrc = readFileSync(new URL('./signoff-hold.mjs', import.meta.url), 'utf8');
+  assert.match(holdSrc, /buildSignoffIssueFooter\(\{ pr, author, topic, mode: signoffMode \}\)/);
+  const generated = `### 触发原因\n\nx${issueFooter(971, 'protected')}`;
+  assert.equal(downstreamParseSignoffMode(generated), 'protected', 'signoff-hold 生成的正文必须被下游认成 protected');
+});
+
 test('确认 issue footer:三种模式的句式不变,只在末尾追加模式标记;Mivo parseSignoffIssue 仍能解析', () => {
   // 以下三条正则抄自 Mivo scripts/loops/merge-thanks/from-github-event.mjs 的 parseSignoffIssue(Mivo 仓 signoff-issue-skeleton.test.mjs 锁定)。
   const parseSignoffIssue = (issue) => {
