@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  HOSTS, WF_PATH, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
+  HOSTS, WF_PATH, DEPLOY_LOCK_TTL_MS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
+  toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock,
+  shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
 } from './tuple-lib.mjs';
 
 const A = 'a'.repeat(40);
@@ -124,4 +127,76 @@ test('自动换版本只换本仓提交,在 Mini 上用 hold 停点', () => {
     '--on', 'mini', '--old-skill', A, '--new-skill', B, '--old-wf', WF, '--new-wf', WF,
     '--stop', 'hold', '--max-wait-min', '40', '--record-dir', '/logs',
   ]);
+});
+
+test('tuple 已整组切到新版本后撤停点或 bootstrap 失败:exit 2,说明新版本已上', () => {
+  const all = toFinalizeFailure({ switchedCount: 5, stepCount: 5 });
+  assert.equal(all.code, 2);
+  assert.match(all.message, /新版本已上/);
+  assert.match(all.message, /前置审查停止/);
+  assert.match(all.message, /要人工处理/);
+  const none = toFinalizeFailure({ switchedCount: 0, stepCount: 5 });
+  assert.equal(none.code, 1);
+  assert.match(none.message, /线上仍是旧版/);
+  assert.match(none.message, /前置照常/);
+  const partial = toFinalizeFailure({ switchedCount: 3, stepCount: 5 });
+  assert.equal(partial.code, 1);
+});
+
+test('自动换版本:deploy-tuple exit 2 不再写线上仍是旧版、前置照常', () => {
+  const stopped = toAutoUpdateFinish(2, { reason: 'aaaaaaa → bbbbbbb', current: A, log: '/l', tail: 'x' });
+  assert.equal(stopped.code, 2);
+  assert.doesNotMatch(stopped.text, /线上仍是/);
+  assert.doesNotMatch(stopped.text, /前置照常/);
+  assert.match(stopped.text, /前置审查保持停止/);
+  const reverted = toAutoUpdateFinish(1, { reason: 'aaaaaaa → bbbbbbb', current: A, log: '/l', tail: 'x' });
+  assert.equal(reverted.code, 1);
+  assert.match(reverted.text, /线上仍是 aaaaaaa/);
+  assert.match(reverted.text, /前置照常/);
+  assert.equal(toAutoUpdateFinish(0, { reason: 'aaaaaaa → bbbbbbb', current: A, log: '/l', tail: '' }).code, 0);
+});
+
+test('部署锁:无人占用才拿锁,别人占用且未过期则不改任何东西', () => {
+  const now = Date.parse('2026-10-16T06:30:00.000Z');
+  assert.deepEqual(toLockAcquire({ existing: { exists: false, text: null }, now }), { action: 'acquire', expected: 'none' });
+  const holder = { owner: 'deploy-tuple:pro', pid: 4242, at: '2026-10-16T06:29:00.000Z', target: A };
+  const held = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now });
+  assert.equal(held.action, 'blocked');
+  assert.match(held.reason, /deploy-tuple:pro/);
+  assert.match(held.reason, /4242/);
+  assert.equal(held.holder.pid, 4242);
+});
+
+test('部署锁:超过最长运行时间的残锁视为过期,可以顶替', () => {
+  const now = Date.parse('2026-10-16T12:00:00.000Z');
+  const stale = { owner: 'deploy-tuple:mini', pid: 9, at: '2026-10-16T06:30:00.000Z', target: A };
+  const d = toLockAcquire({ existing: { exists: true, text: toDeployLockText(stale) }, now, ttlMs: DEPLOY_LOCK_TTL_MS });
+  assert.equal(d.action, 'steal');
+  assert.equal(d.previous.pid, 9);
+  assert.ok(DEPLOY_LOCK_TTL_MS >= 4 * 60 * 60 * 1000);
+});
+
+test('部署锁:只删自己的(按内容认),preview 和 check 不拿锁', () => {
+  const mine = toDeployLockText({ owner: 'deploy-tuple:mini', pid: 1, at: '2026-10-16T06:30:01.000Z', target: B });
+  assert.equal(isOwnLock({ exists: true, text: mine }, mine), true);
+  assert.equal(isOwnLock({ exists: true, text: toDeployLockText({ owner: 'other', pid: 2, at: '2026-10-16T06:29:00.000Z', target: A }) }, mine), false);
+  assert.equal(isOwnLock({ exists: false, text: null }, mine), false);
+  assert.equal(shouldTakeDeployLock({ preview: true, check: false }), false);
+  assert.equal(shouldTakeDeployLock({ preview: false, check: true }), false);
+  assert.equal(shouldTakeDeployLock({ preview: false, check: false }), true);
+});
+
+test('收尾 bootstrap:开始前 absent 不重新加载,已加载的才恢复', () => {
+  const disabled = shouldResumePrereview('absent');
+  assert.equal(disabled.resume, false);
+  assert.equal(disabled.message, '开始前前置已停用,未重新加载');
+  assert.deepEqual(shouldResumePrereview('running'), { resume: true });
+  assert.deepEqual(shouldResumePrereview('not running'), { resume: true });
+});
+
+test('--preview 缺提交只报告 Mini 尚未取到,不 fetch', () => {
+  assert.deepEqual(toNewCommitCheck({ preview: true, hasCommit: false }), { action: 'missing', message: 'Mini 尚未取到该提交' });
+  assert.deepEqual(toNewCommitCheck({ preview: false, hasCommit: false }), { action: 'fetch' });
+  assert.deepEqual(toNewCommitCheck({ preview: true, hasCommit: true }), { action: 'ok' });
+  assert.deepEqual(toNewCommitCheck({ preview: false, hasCommit: true }), { action: 'ok' });
 });
