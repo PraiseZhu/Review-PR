@@ -390,9 +390,25 @@ test('落后部分里有非合并提交:提示里给出这类提交的个数', (
   const note = toBehindMainNote({ status: 'ahead', aheadBy: 3, messages });
   assert.match(note, /落后 3 个提交/);
   assert.match(note, /没包含：#66/);
-  assert.match(note, /其中 2 个不是合并提交/);
+  assert.match(note, /其中 2 个不是合并提交（含已合并 PR 分支上自带的提交）/);
   const onlyOther = toBehindMainNote({ status: 'ahead', aheadBy: 1, messages: ['chore: 直接提交'] });
-  assert.equal(onlyOther, '目标比 main 落后 1 个提交，其中 1 个不是合并提交');
+  assert.equal(onlyOther, '目标比 main 落后 1 个提交，其中 1 个不是合并提交（含已合并 PR 分支上自带的提交）');
+});
+
+test('squash 合并的提交(标题末尾 (#N))也认出 PR 号;同一个 PR 的合并提交和 squash 提交只列一次', () => {
+  const messages = ['fix(mivo): 一个改动 (#52)', 'Merge pull request #64 from PraiseZhu/keel/a', 'feat: 另一个 (#47)', 'Merge pull request #64 from PraiseZhu/keel/a again', '修 bug (#12) 之后的补丁'];
+  assert.deepEqual(toMergedPrNumbers(messages), [52, 64, 47]);
+  const note = toBehindMainNote({ status: 'ahead', aheadBy: 5, messages });
+  assert.match(note, /没包含：#52 #64 #47/);
+  assert.match(note, /其中 1 个不是合并提交/, '只有标题中间带 (#12) 的那条不算 squash');
+});
+
+test('提交列表被接口截断(messages 比 aheadBy 少):提示里写明只列出了前面的一部分', () => {
+  const messages = Array.from({ length: 250 }, (_, i) => `Merge pull request #${i + 1} from PraiseZhu/keel/x${i}`);
+  const note = toBehindMainNote({ status: 'ahead', aheadBy: 926, messages });
+  assert.match(note, /^目标比 main 落后 926 个提交/);
+  assert.match(note, /只列出最早 250 个提交里的 PR/);
+  assert.doesNotMatch(toBehindMainNote({ status: 'ahead', aheadBy: 2, messages: messages.slice(0, 2) }), /只列出/);
 });
 
 test('不在 main 上(diverged、behind)不是「落后」提示的事:函数不出声,拒绝仍由 preflight 负责', () => {
