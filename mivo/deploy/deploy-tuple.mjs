@@ -29,9 +29,9 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  WF_PATH, HOSTS, DEPLOY_LOCK_REL, DEPLOY_LOCK_OWNER_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
-  toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toMkdirLockScript, toStealLockScript,
-  toReleaseLockScript, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
+  WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
+  toLockBlockedText, toReleaseLockScript, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
 } from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -462,37 +462,22 @@ function acquireLock() {
   const lockText = toDeployLockText({
     owner: `deploy-tuple:${SELF}`,
     pid: process.pid,
+    host: HOSTS[SELF],
     at: new Date(started).toISOString(),
     target: NEW_SKILL,
     expiresAt: toLockExpiresAt(started, MAX_WAIT_MS),
   });
-  const created = remote('mini', toMkdirLockScript(DEPLOY_LOCK_REL), { input: lockText });
-  if (created.ok) return keepLock(lockText);
-  const existing = readRemote('mini', DEPLOY_LOCK_OWNER_REL);
-  // mkdir 已成功但 ssh 回执丢了:按内容认回自己的锁,不要当成别人占用。
-  if (existing.text === lockText) return keepLock(lockText);
-  if (!existing.exists) {
-    const stolenEmpty = remote('mini', toStealLockScript(DEPLOY_LOCK_REL, 'none'), { input: lockText });
-    if (stolenEmpty.ok || readRemote('mini', DEPLOY_LOCK_OWNER_REL).text === lockText) return keepLock(lockText);
-    throw new Error('部署锁被占用(读不到占用者),不动 Mini 和线上状态');
-  }
-  const decision = toLockAcquire({ existing, now: Date.now() });
-  if (decision.action === 'blocked') throw new Error(`${decision.reason},不动 Mini 和线上状态`);
-  if (decision.previous) say(`部署锁过期,顶替 ${decision.previous.owner}(pid ${decision.previous.pid})`);
-  const stolen = remote('mini', toStealLockScript(DEPLOY_LOCK_REL, sha256(existing.text)), { input: lockText });
-  if (stolen.ok) return keepLock(lockText);
-  const again = readRemote('mini', DEPLOY_LOCK_OWNER_REL);
-  if (again.text === lockText) return keepLock(lockText);
-  if (!again.exists) {
-    const retry = remote('mini', toMkdirLockScript(DEPLOY_LOCK_REL), { input: lockText });
-    if (retry.ok || readRemote('mini', DEPLOY_LOCK_OWNER_REL).text === lockText) return keepLock(lockText);
-  }
-  const who = again.exists ? toLockAcquire({ existing: again, now: Date.now() }) : { reason: '部署锁被占用' };
-  throw new Error(`${who.reason || '部署锁被占用'},不动 Mini 和线上状态`);
+  const created = remote('mini', toLinkLockScript(DEPLOY_LOCK_REL), { input: lockText });
+  const existing = created.ok ? { exists: true, text: lockText } : readRemote('mini', DEPLOY_LOCK_REL);
+  if (toLockKeep({ createdOk: created.ok, existing, lockText }).action === 'keep') return keepLock(lockText);
+  const decision = existing.exists
+    ? toLockAcquire({ existing, now: Date.now() })
+    : { action: 'blocked', reason: '部署锁被占用(读不到占用者)', holder: null, expired: false };
+  throw new Error(toLockBlockedText(decision));
 }
 function releaseLock() {
   if (!record.lockText) return;
-  const r = remote('mini', toReleaseLockScript(DEPLOY_LOCK_REL, sha256(record.lockText)));
+  const r = remote('mini', toReleaseLockScript(DEPLOY_LOCK_REL), { input: record.lockText });
   if (!r.ok) throw new Error(`释放部署锁失败:${r.stderr.slice(0, 200)}`);
   if (r.stderr) say(r.stderr.trim());
   record.lockText = null;
