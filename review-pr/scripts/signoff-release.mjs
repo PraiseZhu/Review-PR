@@ -78,7 +78,7 @@ try {
     createdAt: c.createdAt,
     author: c.author,
   }));
-  const holdMarker = parseLastHoldMarker(commentObjs);
+  const holdMarker = parseLastHoldMarker(commentObjs, { viewerLogin });
   const releaseEvents = parseSignoffReleaseEvents(commentObjs);
   const already = new Map();
   let newGates = gates.slice();

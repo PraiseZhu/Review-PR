@@ -34,6 +34,7 @@ import {
   evaluateProtectedPathRelease,
   buildSignoffIssueFooter,
   parseSignoffMode,
+  parseLastHoldMarker,
   onlyOwnRequiredChecksPending,
   isAutomatedViewerReview,
   latestSubstantiveReviews,
@@ -688,6 +689,125 @@ test('受保护路径放行:未撤销的维护者 Approve(不绑 head)或 issue 
   assert.equal(evaluateProtectedPathRelease({ ...protectedBase, reviews: signoffReviews }).released, null);
 });
 
+const holdMarkerBody = (n) => `borrow\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/${n} -->`;
+const holdComment = (login, n, extra = {}) => ({
+  body: holdMarkerBody(n), createdAt: '2026-10-17T01:00:00Z', author: { login }, ...extra,
+});
+
+test('P1: hold 标记只认审查账号;非审查账号或 github-actions bot 指向已放行 issue 也不采信', () => {
+  const attacker = holdComment('mallory', 88);
+  const viewer = holdComment('PraiseZhu', 99, { createdAt: '2026-10-17T02:00:00Z' });
+  const ghaRest = holdComment('github-actions[bot]', 77);
+  const ghaGql = holdComment('github-actions', 66, { author: { login: 'github-actions', __typename: 'Bot' } });
+  assert.equal(parseLastHoldMarker([attacker], { viewerLogin: 'PraiseZhu' }), null, '攻击者标记不采信');
+  assert.equal(parseLastHoldMarker([ghaRest], { viewerLogin: 'PraiseZhu' }), null, 'REST github-actions[bot] 不采信');
+  assert.equal(parseLastHoldMarker([ghaGql], { viewerLogin: 'PraiseZhu' }), null, 'GraphQL github-actions Bot 不采信');
+  assert.equal(parseLastHoldMarker([ghaRest], { viewerLogin: 'github-actions[bot]' }), null, '即使 viewer 是该 bot 也不采信');
+  assert.equal(parseLastHoldMarker([viewer], { viewerLogin: 'PraiseZhu' })?.issueNumber, 99);
+  // 攻击者后发的标记不能盖住审查账号的标记
+  assert.equal(parseLastHoldMarker([viewer, attacker], { viewerLogin: 'PraiseZhu' })?.issueNumber, 99);
+  assert.equal(parseLastHoldMarker([attacker, viewer], { viewerLogin: 'PraiseZhu' })?.issueNumber, 99);
+  assert.equal(parseLastHoldMarker([attacker], { viewerLogin: '' }), null, '读不到 viewer 时 fail-closed');
+});
+
+test('P1: 放行评论必须晚于本 PR 创建时间;同一 PR 推新提交后早先放行仍有效', () => {
+  const prCreatedAt = '2026-10-16T12:00:00Z';
+  const earlyIssue = issueComment('kirozeng', '同意放行', '2026-10-16T11:59:59Z');
+  const equalIssue = issueComment('aj0928', '同意放行', prCreatedAt);
+  const lateIssue = issueComment('kirozeng', '同意放行', '2026-10-16T12:00:01Z');
+  const earlySlack = botComment('kirozeng', '同意放行', '2026-10-16T11:00:00Z');
+  const lateSlack = botComment('aj0928', '同意放行', '2026-10-16T13:00:00Z');
+
+  const before = selectDiscussionIssueReleases({
+    ...releaseOpts, pr: 971, prCreatedAt, issue: confirmIssue(971, { comments: [earlyIssue, equalIssue, earlySlack] }),
+  });
+  assert.equal(before.releaseUntrusted, null, '标题 footer 绑定仍过');
+  assert.equal(before.issueCommentRelease, null);
+  assert.equal(before.slackRelease, null);
+  assert.ok(before.issueCommentReleaseRejected.every((row) => row.reason === 'before-pr-created'));
+  assert.equal(before.issueCommentReleaseRejected.length, 2, '早于和等于 PR 创建时间的 issue 放行都拒绝');
+  assert.ok(before.slackReleaseRejected.some((row) => row.reason === 'before-pr-created'));
+
+  const after = selectDiscussionIssueReleases({
+    ...releaseOpts, pr: 971, prCreatedAt, issue: confirmIssue(971, { comments: [lateIssue, lateSlack] }),
+  });
+  assert.equal(after.issueCommentRelease?.by, 'kirozeng');
+  assert.equal(after.slackRelease?.by, 'aj0928');
+
+  const afterPush = evaluateProtectedPathRelease({
+    ...protectedBase,
+    latestCommitDate: '2026-10-18T00:00:00Z',
+    issueRelease: latestIssueRelease(after.slackRelease, after.issueCommentRelease),
+  });
+  assert.ok(afterPush.released, '推新提交后早先放行仍有效');
+  assert.equal(afterPush.released.via, 'slack-release');
+});
+
+test('P1: 受保护路径走借用旧放行攻击时 released 为空', () => {
+  const prCreatedAt = '2026-10-17T00:00:00Z';
+  // 旧 issue 已被改成新 PR 的标题/footer,上面有早于本 PR 的「同意放行」
+  const stolen = confirmIssue(971, { comments: [issueComment('kirozeng', '同意放行', '2026-10-10T00:00:00Z'), botComment('aj0928', '同意放行', '2026-10-11T00:00:00Z')] });
+  const stolenRel = selectDiscussionIssueReleases({ ...releaseOpts, pr: 971, prCreatedAt, issue: stolen });
+  const attack = evaluateProtectedPathRelease({
+    ...protectedBase,
+    issueRelease: latestIssueRelease(stolenRel.slackRelease, stolenRel.issueCommentRelease),
+  });
+  assert.equal(stolenRel.issueCommentRelease, null);
+  assert.equal(stolenRel.slackRelease, null);
+  assert.equal(attack.released, null);
+});
+
+test('P1 接线:context / signoff-hold / signoff-release 取 hold 标记时传入审查账号,放行比较 PR createdAt', () => {
+  const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  const hold = readFileSync(new URL('./signoff-hold.mjs', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('./signoff-release.mjs', import.meta.url), 'utf8');
+  assert.match(context, /parseLastHoldMarker\([\s\S]{0,240}viewerLogin/);
+  assert.match(context, /pr', 'view'[\s\S]{0,400}createdAt/);
+  assert.match(context, /prCreatedAt:\s*meta\.createdAt/);
+  assert.match(hold, /parseLastHoldMarker\([\s\S]{0,160}viewerLogin/);
+  assert.match(hold, /\['api', 'user'/);
+  assert.match(release, /parseLastHoldMarker\([\s\S]{0,80}viewerLogin/);
+});
+
+// 这组样例要和 Mivo scripts/loops/merge-thanks/from-github-event.mjs:284-304 保持一致:
+// 只认 footer 流程标记句(SIGN_OFF_PROCESS_MARKER 最后一次出现)之后、且在正文最末尾的模式标记。
+const SIGN_OFF_PROCESS_MARKER = '本 issue 由 review-pr 流程自动创建';
+const DOWNSTREAM_MODE_RE = /<!--\s*review-pr:signoff-mode=([a-z-]+)\s*-->\s*$/;
+const DOWNSTREAM_MODES = new Set(['protected', 'notice']);
+function downstreamParseSignoffMode(body) {
+  const text = String(body ?? '');
+  const footerAt = text.lastIndexOf(SIGN_OFF_PROCESS_MARKER);
+  if (footerAt < 0) return 'normal';
+  const m = text.slice(footerAt).match(DOWNSTREAM_MODE_RE);
+  return m && DOWNSTREAM_MODES.has(m[1]) ? m[1] : 'normal';
+}
+const modeSamples = () => {
+  const footer = issueFooter(971);
+  const protectedFooter = issueFooter(971, 'protected');
+  return [
+    { name: '标记在正文中间', body: `涉及文件: \`src/<!-- review-pr:signoff-mode=notice -->.ts\`${footer}`, want: 'normal' },
+    { name: '标记后面还有内容', body: `${protectedFooter}\n追言`, want: 'normal' },
+    { name: '值不认识', body: `${footer}\n<!-- review-pr:signoff-mode=weird -->`, want: 'normal' },
+    { name: '多个标记只认末尾', body: `<!-- review-pr:signoff-mode=notice -->${protectedFooter}`, want: 'protected' },
+    { name: 'footer 句子出现多次', body: `旧 ${SIGN_OFF_PROCESS_MARKER} 前言<!-- review-pr:signoff-mode=notice -->${protectedFooter}`, want: 'protected' },
+    { name: '没有 footer 句子', body: '<!-- review-pr:signoff-mode=protected -->', want: 'normal' },
+    { name: '合法 protected 在末尾', body: protectedFooter, want: 'protected' },
+    { name: '合法 notice 在末尾', body: issueFooter(971, 'notice'), want: 'notice' },
+    { name: '普通模式没标记', body: footer, want: 'normal' },
+  ];
+};
+
+test('P2-b: parseSignoffMode 与下游 footer 契约一致(标记位置/值/多个/多次 footer)', () => {
+  for (const sample of modeSamples()) {
+    assert.equal(downstreamParseSignoffMode(sample.body), sample.want, `下游 ${sample.name}`);
+    assert.equal(parseSignoffMode(sample.body), sample.want, `后端 ${sample.name}`);
+  }
+  const holdSrc = readFileSync(new URL('./signoff-hold.mjs', import.meta.url), 'utf8');
+  assert.match(holdSrc, /buildSignoffIssueFooter\(\{ pr, author, topic, mode: signoffMode \}\)/);
+  const generated = `### 触发原因\n\nx${issueFooter(971, 'protected')}`;
+  assert.equal(downstreamParseSignoffMode(generated), 'protected', 'signoff-hold 生成的正文必须被下游认成 protected');
+});
+
 test('确认 issue footer:三种模式的句式不变,只在末尾追加模式标记;Mivo parseSignoffIssue 仍能解析', () => {
   // 以下三条正则抄自 Mivo scripts/loops/merge-thanks/from-github-event.mjs 的 parseSignoffIssue(Mivo 仓 signoff-issue-skeleton.test.mjs 锁定)。
   const parseSignoffIssue = (issue) => {
@@ -765,6 +885,7 @@ test('接线:context 用 signoffReviews 与统一的 issueRelease 评放行并�
 function holdFixtureGh(args, options, fixture) {
   const done = (stdout = '') => ({ status: 0, stdout, stderr: '', signal: null, pid: 1, output: [null, stdout, ''] });
   fixture.calls.push({ args, input: options?.input ?? null });
+  if (args[0] === 'api' && args[1] === 'user') return done(`${fixture.viewer ?? 'PraiseZhu'}\n`);
   if (args[0] === 'pr' && args[1] === 'view') return done(JSON.stringify(fixture.pr));
   if (args[0] === 'issue' && args[1] === 'view') {
     const issue = fixture.issues[args[2]];
@@ -848,13 +969,13 @@ syncBuiltinESMExports();
     assert.match(closeComment.input, /review-pr:signoff-notice-close/);
 
     // ② 已有标记:不重复通知
-    fresh([{ body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+    fresh([{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
       { 901: { state: 'CLOSED', body: `x${issueFooter(971, 'notice')}` } });
     out = hold(['--signoff-mode', 'notice']);
     assert.equal(out.alreadyNotified, true);
     assert.equal(writes().length, 0);
     // 上次关闭失败留下的开放通知 issue 顺手补关
-    fresh([{ body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+    fresh([{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
       { 901: { state: 'OPEN', body: `x${issueFooter(971, 'notice')}` } });
     out = hold(['--signoff-mode', 'notice']);
     assert.equal(out.issueClosed, true);
@@ -873,7 +994,7 @@ syncBuiltinESMExports();
     assert.equal(writes().length, 0);
 
     // ⑤ protected 模式:旧 issue 是通知(即使还开着)就不复用,另开确认 issue,footer 带 protected 标记且挂标签
-    fresh([{ body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+    fresh([{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
       { 901: { state: 'OPEN', body: `x${issueFooter(971, 'notice')}` } });
     out = hold(['--signoff-mode', 'protected', '--kind', 'protected']);
     assert.equal(out.issueCreated, true, JSON.stringify(out));
@@ -891,5 +1012,114 @@ syncBuiltinESMExports();
     const bad = spawnSync(process.execPath, [fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url)), '971', '--signoff-mode', 'weird'],
       { cwd: repoRoot, env, encoding: 'utf8' });
     assert.notEqual(bad.status, 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('P1: signoff-hold 不采信非审查账号写的 hold 标记,不复用攻击者指定的旧 issue', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mivo-hold-p1-'));
+  try {
+    const repoRoot = join(directory, 'repo');
+    mkdirSync(repoRoot);
+    for (const args of [['init', '--quiet'], ['remote', 'add', 'origin', 'https://github.com/o/r.git']]) {
+      assert.equal(spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).status, 0);
+    }
+    const rulesFile = join(directory, 'rules.json');
+    writeFileSync(rulesFile, JSON.stringify({ maintainerAllowlist: [], signoffGate: { label: 'awaiting-discussion' } }));
+    const fixtureFile = join(directory, 'fixture.json');
+    const mockFile = join(directory, 'mock.mjs');
+    writeFileSync(mockFile, `import { readFileSync, writeFileSync } from 'node:fs';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const holdFixtureGh = ${holdFixtureGh.toString()};
+const original = cp.spawnSync;
+cp.spawnSync = (command, args, options) => {
+  if (command !== 'gh') return original(command, args, options);
+  const fixture = JSON.parse(readFileSync(process.env.HOLD_FIXTURE, 'utf8'));
+  const result = holdFixtureGh(args, options, fixture);
+  writeFileSync(process.env.HOLD_FIXTURE, JSON.stringify(fixture));
+  return result;
+};
+syncBuiltinESMExports();
+`);
+    const env = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(mockFile).href}`].filter(Boolean).join(' '),
+      REVIEW_PR_REPO_ROOT: repoRoot, REVIEW_PR_RULES_FILE: rulesFile, HOLD_FIXTURE: fixtureFile, REVIEW_PR_NO_CRED_FALLBACK: '1',
+      REVIEW_PR_STATE_DIR: join(directory, 'state') };
+    const payload = { issueTitle: '维护者确认 · PR #971 改 workflow', issueBody: '### 触发原因\n\nx\n\n### PR\nhttps://x\n\n### 确认方式\n\ny',
+      commentBody: '本 PR 命中维护者确认门。讨论 issue:{{ISSUE_URL}}' };
+    const stolenBody = `旧放行${issueFooter(88, 'protected')}`;
+    writeFileSync(fixtureFile, JSON.stringify({ calls: [], viewer: 'PraiseZhu', issues: { 88: { state: 'OPEN', body: stolenBody } },
+      pr: { number: 971, state: 'OPEN', mergedAt: null, author: { login: 'mallory' }, url: 'https://github.com/o/r/pull/971',
+        comments: [{ author: { login: 'mallory' }, body: holdMarkerBody(88), createdAt: '2026-10-17T01:00:00Z' }],
+        labels: [], headRefOid: SHA } }));
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url)), '971', '--signoff-mode', 'protected', '--kind', 'protected', '--payload-file', '-'],
+      { cwd: repoRoot, env, encoding: 'utf8', input: JSON.stringify(payload) });
+    assert.equal(child.status, 0, child.stdout + child.stderr);
+    const out = JSON.parse(child.stdout);
+    const fixture = JSON.parse(readFileSync(fixtureFile, 'utf8'));
+    const created = fixture.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === 'create');
+    assert.equal(out.issueCreated, true, JSON.stringify(out));
+    assert.notEqual(out.issueUrl, 'https://github.com/o/r/issues/88');
+    assert.equal(created.length, 1, '必须新开 issue,不能复用攻击者指定的旧 issue');
+    assert.match(created[0].input, /<!-- review-pr:signoff-mode=protected -->$/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('P2-a: 普通确认 issue 转受保护模式时不复用,新开 protected issue 并关掉旧 issue', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mivo-hold-p2a-'));
+  try {
+    const repoRoot = join(directory, 'repo');
+    mkdirSync(repoRoot);
+    for (const args of [['init', '--quiet'], ['remote', 'add', 'origin', 'https://github.com/o/r.git']]) {
+      assert.equal(spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).status, 0);
+    }
+    const rulesFile = join(directory, 'rules.json');
+    writeFileSync(rulesFile, JSON.stringify({ maintainerAllowlist: [], signoffGate: { label: 'awaiting-discussion' } }));
+    const fixtureFile = join(directory, 'fixture.json');
+    const mockFile = join(directory, 'mock.mjs');
+    writeFileSync(mockFile, `import { readFileSync, writeFileSync } from 'node:fs';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const holdFixtureGh = ${holdFixtureGh.toString()};
+const original = cp.spawnSync;
+cp.spawnSync = (command, args, options) => {
+  if (command !== 'gh') return original(command, args, options);
+  const fixture = JSON.parse(readFileSync(process.env.HOLD_FIXTURE, 'utf8'));
+  const result = holdFixtureGh(args, options, fixture);
+  writeFileSync(process.env.HOLD_FIXTURE, JSON.stringify(fixture));
+  return result;
+};
+syncBuiltinESMExports();
+`);
+    const env = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(mockFile).href}`].filter(Boolean).join(' '),
+      REVIEW_PR_REPO_ROOT: repoRoot, REVIEW_PR_RULES_FILE: rulesFile, HOLD_FIXTURE: fixtureFile, REVIEW_PR_NO_CRED_FALLBACK: '1',
+      REVIEW_PR_STATE_DIR: join(directory, 'state') };
+    const payload = { issueTitle: '维护者确认 · PR #971 改 workflow', issueBody: '### 触发原因\n\nx\n\n### PR\nhttps://x\n\n### 确认方式\n\ny',
+      commentBody: '本 PR 命中维护者确认门。讨论 issue:{{ISSUE_URL}}' };
+    writeFileSync(fixtureFile, JSON.stringify({ calls: [], viewer: 'PraiseZhu', issues: { 901: { state: 'OPEN', body: `x${issueFooter(971)}` } },
+      pr: { number: 971, state: 'OPEN', mergedAt: null, author: { login: 'outsider' }, url: 'https://github.com/o/r/pull/971',
+        comments: [{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+        labels: ['awaiting-discussion'], headRefOid: SHA } }));
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url)), '971', '--signoff-mode', 'protected', '--kind', 'protected', '--payload-file', '-'],
+      { cwd: repoRoot, env, encoding: 'utf8', input: JSON.stringify(payload) });
+    assert.equal(child.status, 0, child.stdout + child.stderr);
+    const out = JSON.parse(child.stdout);
+    const fixture = JSON.parse(readFileSync(fixtureFile, 'utf8'));
+    const created = fixture.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === 'create');
+    const closed = fixture.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === 'close' && c.args[2] === '901');
+    const closeComment = fixture.calls.find((c) => c.args[0] === 'issue' && c.args[1] === 'comment' && c.args[2] === '901');
+    assert.equal(out.issueCreated, true, JSON.stringify(out));
+    assert.equal(out.issueReuse, 'prior-not-protected', JSON.stringify(out));
+    assert.equal(created.length, 1, '不能复用普通确认 issue');
+    assert.match(created[0].input, /<!-- review-pr:signoff-mode=protected -->$/);
+    assert.equal(closed.length, 1, '旧普通确认 issue 必须关掉');
+    assert.match(closeComment?.input ?? '', /issues\/90[0-9]/);
+    assert.match(closeComment?.input ?? '', /review-pr:signoff-protected-supersede/);
+    assert.equal(fixture.issues['901'].state, 'CLOSED');
+    // 旧普通 issue 上的同意放行不能当受保护路径放行:新 issue 还没有放行评论
+    const newBody = created[0].input;
+    assert.equal(parseSignoffMode(newBody), 'protected');
+    const newRel = selectDiscussionIssueReleases({ ...releaseOpts, pr: 971, issue: { title: payload.issueTitle, body: newBody, comments: [] } });
+    assert.equal(newRel.issueCommentRelease, null);
+    assert.equal(evaluateProtectedPathRelease({ ...protectedBase, issueRelease: null }).released, null);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
