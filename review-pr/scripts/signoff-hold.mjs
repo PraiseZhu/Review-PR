@@ -69,6 +69,8 @@ const marker = (issueUrl, kind) =>
   kind === 'product' ? `${MARKER_PREFIX} issue=${issueUrl} -->` : `${MARKER_PREFIX} kind=arch issue=${issueUrl} -->`;
 
 const NOTICE_CLOSE_COMMENT = '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。\n\n<!-- review-pr:signoff-notice-close -->';
+const protectedSupersedeComment = (url) =>
+  `本 PR 已改为受保护路径确认,请在新 issue 上重新放行。后续讨论见 <${url}>。流程已关闭本 issue。\n\n<!-- review-pr:signoff-protected-supersede -->`;
 
 const KIND_TOPICS = {
   product: '产品 / UI 变更',
@@ -168,17 +170,20 @@ try {
   }
   // [MIVO-PATCH signoff-mode] 旧 issue 只是通知(notice)时,非通知模式不复用它:通知 issue 没有放行语义,
   // 当作已关闭另开确认 issue。
-  const priorIsNotice = priorIssueUrl != null && parseSignoffMode(priorIssueBody) === 'notice';
+  const priorMode = priorIssueUrl != null ? parseSignoffMode(priorIssueBody) : null;
+  const priorIsNotice = priorMode === 'notice';
+  const priorNotProtected = signoffMode === 'protected' && priorMode != null && priorMode !== 'protected';
   const reuse = decideIssueReuse({
     priorIssueUrl,
-    issueState: priorIsNotice && signoffMode !== 'notice' ? 'CLOSED' : priorIssueState,
+    issueState: (priorIsNotice && signoffMode !== 'notice') || priorNotProtected ? 'CLOSED' : priorIssueState,
   });
   const needIssue = reuse.needNewIssue;
   // 输出透出旧 issue 状态;labels-only 模式不建 issue,旧 issue 已关闭时以 needsFreshHold
   // 提示调用方带 payload 重跑完整模式(见 internal-gates「讨论 issue 收尾」)。
   const priorIssueInfo = priorIssueUrl == null ? {} : {
     priorIssueState,
-    issueReuse: priorIsNotice && signoffMode !== 'notice' ? 'prior-notice' : reuse.reason,
+    issueReuse: priorIsNotice && signoffMode !== 'notice' ? 'prior-notice'
+      : priorNotProtected ? 'prior-not-protected' : reuse.reason,
     ...(priorIssueStateError ? { priorIssueStateError } : {}),
     ...(reuse.needNewIssue ? { priorIssueClosed: true } : {}),
   };
@@ -343,6 +348,17 @@ try {
         }
       }
 
+      // [MIVO-PATCH protected-upgrade] 新 protected issue 开出来之后关掉仍开着的旧普通/通知 issue。
+      let superseded = null;
+      if (issueCreated && issueUrl && priorNotProtected && priorIssueState === 'OPEN') {
+        const priorNum = issueNumberFromUrl(slug, priorIssueUrl);
+        if (priorNum != null) {
+          superseded = closeDiscussIssue({
+            slug, issueNumber: priorNum, commentBody: protectedSupersedeComment(issueUrl), dryRun: false, ghFn: writeGh,
+          });
+        }
+      }
+
       // 2) 发评论(带隐藏标记;仅在本轮新开了 issue 时——评论的核心就是给 issue 链接)
       let commented = false;
       let commentError = null;
@@ -371,6 +387,7 @@ try {
         commented, alreadyHeld, commentError,
         labels,
         ...renotice,
+        ...(superseded ? { priorSuperseded: superseded.closed, priorSupersedeError: superseded.closeError } : {}),
         url: meta.url,
       });
     }
