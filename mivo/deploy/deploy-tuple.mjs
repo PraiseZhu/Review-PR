@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import {
   WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
   toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
-  toLockBlockedText, toReleaseLockScript, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
+  toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
 } from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -477,9 +477,10 @@ function acquireLock() {
 }
 function releaseLock() {
   if (!record.lockText) return;
-  const r = remote('mini', toReleaseLockScript(DEPLOY_LOCK_REL), { input: record.lockText });
-  if (!r.ok) throw new Error(`释放部署锁失败:${r.stderr.slice(0, 200)}`);
-  if (r.stderr) say(r.stderr.trim());
+  const r = remote('mini', toReleaseLockScript(DEPLOY_LOCK_REL), { input: record.lockText, retries: RELEASE_LOCK_RETRIES });
+  const released = toReleaseLockResult(r);
+  if (!released.ok) throw new Error(released.message);
+  if (released.message) say(released.message);
   record.lockText = null;
 }
 function finish(code) {

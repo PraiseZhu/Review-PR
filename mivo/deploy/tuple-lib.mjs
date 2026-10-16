@@ -196,6 +196,19 @@ export function toReleaseLockScript(rel) {
   ].join('\n');
 }
 
+// 释放只发一次:ssh 断线(255)时远端命令可能还活着、已 cmp 完还没 rm,重发会和它重叠,
+// 让它在下一位拿锁后删掉别人的锁。不重发就没有这个窗口:它要么删掉自己的锁,要么锁留着等人工处理。
+export const RELEASE_LOCK_RETRIES = 1;
+
+export function toReleaseLockResult({ status, stderr }) {
+  const text = String(stderr ?? '').trim();
+  if (status === 0) return { ok: true, message: text };
+  if (status === 255) {
+    return { ok: false, message: `释放部署锁结果未知(ssh 断线,不重发):到 Mini 看 ${DEPLOY_LOCK_PATH},内容还是本次的就删掉` };
+  }
+  return { ok: false, message: `释放部署锁失败(exit ${status}):${text.slice(0, 200)}` };
+}
+
 // save 抛错也要释放自己的锁:两个动作各自包起来,互不影响。
 export function finalizeDeployError({ save, release }) {
   let saveError = null;
