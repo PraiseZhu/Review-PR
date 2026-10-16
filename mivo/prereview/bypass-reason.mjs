@@ -4,9 +4,12 @@
 //   node mivo/prereview/bypass-reason.mjs --sweep --repo <owner/repo> --state-dir <状态目录> [--dry-run]
 //
 // 判定规则在 ../lib/bypass.mjs(纯函数)。这里只管读写:
-//   - 状态文件 <state-dir>/mivo/bypass-reminders.json:{ since, lastSweepAt, reminded: { <pr>: { at, commentUrl } }, checked: { <after_sha>: <pushed_at> } }
-//   - checked 记下已经判定完的规则集记录(已提醒、已有原因、找不到 PR),下一轮跳过它们,单轮 20 条的反查预算才会往后推进;
+//   - 状态文件 <state-dir>/mivo/bypass-reminders.json:{ since, lastSweepAt, reminded: { <pr>: { at, commentUrl } }, checked: { <after_sha>: <pushed_at> }, noPr: { <after_sha>: { pushedAt, lastLookupAt } } }
+//   - checked 记下已经判定完的规则集记录(已提醒、已有原因),下一轮跳过它们,单轮 20 条的反查预算才会往后推进;
 //     因为预算用完或单轮 5 条提醒用完而没处理到的不记,下一轮接着查;超过 8 天(接口只返回最近一周)的记录从 checked 清掉
+//   - 找不到 PR 的记录不算判定完(刚合并几秒内 commits/<sha>/pulls 会返回 200 加空数组,过一会儿才查得到):
+//     记进 noPr:{ <after_sha>: { pushedAt, lastLookupAt } },之后每轮先查没查过的,再按 lastLookupAt 从早到晚轮转重查 noPr;
+//     查到 PR 就从 noPr 移走,超过 8 天同样清掉
 //   - 第一次运行只写 since = 现在就退出,只管上线以后的绕过,不回头提醒旧 PR
 //   - 距 lastSweepAt 不到 1 小时:直接 skipped: 'throttled';每次真正扫描,不论成败,都先更新 lastSweepAt,出错时不会每轮重试
 //   - 读 GitHub 只用 REST(不占 GraphQL 额度);读失败输出 ok:false 加原因,不发任何评论
@@ -21,8 +24,8 @@ import { selectBypassSuites, toBypassReminders, toReminderBody } from '../lib/by
 
 export const SWEEP_EVERY_MS = 60 * 60_000;
 export const CHECKED_KEEP_MS = 8 * 24 * 60 * 60_000; // 接口只返回最近一周的记录,多留一天
-// 判定完的几种结果(见 toBypassReminders 的 skipped.why);over-limit 是没轮到,不算判定完
-const SETTLED = new Set(['no-pr', 'duplicate', 'reminded', 'has-reason']);
+// 判定完的几种结果(见 toBypassReminders 的 skipped.why);over-limit 是没轮到,no-pr 是可能还没关联上,都不算判定完
+const SETTLED = new Set(['duplicate', 'reminded', 'has-reason']);
 const MAX_PR_LOOKUPS = 20; // 单次最多反查这么多条规则集记录对应的 PR,余下的下一次再查
 const stateFileOf = (stateDir) => join(stateDir, 'mivo', 'bypass-reminders.json');
 
@@ -71,18 +74,24 @@ export function sweep({ repo, stateDir, gh = ghCli, now = Date.now(), dryRun = f
   const last = Date.parse(state.lastSweepAt ?? '');
   if (Number.isFinite(last) && now - last < SWEEP_EVERY_MS) return { ok: true, skipped: 'throttled', reminded: [] };
   const reminded = { ...(state.reminded ?? {}) };
-  const checked = toCheckedWithinWindow(state.checked, now);
+  const checked = toCheckedWithinWindow(state.checked, now, (value) => value);
+  const noPr = toCheckedWithinWindow(state.noPr, now, (value) => value?.pushedAt);
   // 先记扫描时间:读 GitHub 失败也不会每轮重试
-  const save = () => { if (!dryRun) writeState(file, { ...state, lastSweepAt: at, reminded, checked }); };
+  const save = () => { if (!dryRun) writeState(file, { ...state, lastSweepAt: at, reminded, checked, noPr }); };
   save();
+  const prBySha = {};
+  const commentsByPr = {};
   let plan;
   let pending;
   try {
     const suites = readSuites(gh, repo);
-    // 已判定完的跳过,剩下的取最早的 MAX_PR_LOOKUPS 条:预算每轮往后推进,不会一直卡在最早的那批
-    pending = selectBypassSuites({ suites, since: state.since }).filter((suite) => !Object.hasOwn(checked, suite.after_sha)).slice(0, MAX_PR_LOOKUPS);
-    const prBySha = {};
-    const commentsByPr = {};
+    // 已判定完的跳过;剩下的先查没查过的(按合入先后),再轮转重查 noPr(上次查询最早的先查),合起来最多 MAX_PR_LOOKUPS 条:
+    // 预算每轮往后推进,既不会卡在最早的那批,也不会让永远没有 PR 的记录占满名额
+    const open = selectBypassSuites({ suites, since: state.since }).filter((suite) => !Object.hasOwn(checked, suite.after_sha));
+    const lookupAtOf = (suite) => Date.parse(noPr[suite.after_sha].lastLookupAt) || 0;
+    const unseen = open.filter((suite) => !Object.hasOwn(noPr, suite.after_sha));
+    const retry = open.filter((suite) => Object.hasOwn(noPr, suite.after_sha)).sort((a, b) => lookupAtOf(a) - lookupAtOf(b));
+    pending = [...unseen, ...retry].slice(0, MAX_PR_LOOKUPS);
     for (const entry of pending) {
       const pr = readPrNumber(gh, repo, entry.after_sha);
       if (!pr) continue;
@@ -95,7 +104,12 @@ export function sweep({ repo, stateDir, gh = ghCli, now = Date.now(), dryRun = f
   }
   if (dryRun) return { ok: true, dryRun: true, wouldRemind: plan.remind.map((r) => r.pr), reminded: [], skipped: plan.skipped };
   const pushedAtOf = new Map(pending.map((suite) => [suite.after_sha, suite.pushed_at]));
-  for (const item of plan.skipped) if (SETTLED.has(item.why)) checked[item.sha] = pushedAtOf.get(item.sha);
+  // 这一轮查到了 PR 的,不再是 noPr(没提醒完的回到「没查过」的优先级);查不到的记下查询时间,下一轮轮转重查
+  for (const suite of pending) if (prBySha[suite.after_sha]) delete noPr[suite.after_sha];
+  for (const item of plan.skipped) {
+    if (SETTLED.has(item.why)) checked[item.sha] = pushedAtOf.get(item.sha);
+    else if (item.why === 'no-pr') noPr[item.sha] = { pushedAt: pushedAtOf.get(item.sha), lastLookupAt: at };
+  }
   save();
   const done = [];
   for (const item of plan.remind) {
@@ -114,11 +128,11 @@ export function sweep({ repo, stateDir, gh = ghCli, now = Date.now(), dryRun = f
   return { ok: true, reminded: done, skipped: plan.skipped };
 }
 
-/** checked 里只留最近 CHECKED_KEEP_MS 内的记录(值是该记录的 pushed_at);读不懂时间的也清掉。 */
-function toCheckedWithinWindow(checked, now) {
+/** checked / noPr 里只留最近 CHECKED_KEEP_MS 内的记录(pushedAtOf 取出该记录的 pushed_at);读不懂时间的也清掉。 */
+function toCheckedWithinWindow(records, now, pushedAtOf) {
   const kept = {};
-  for (const [sha, pushedAt] of Object.entries(checked ?? {})) {
-    if (now - Date.parse(pushedAt) <= CHECKED_KEEP_MS) kept[sha] = pushedAt;
+  for (const [sha, value] of Object.entries(records ?? {})) {
+    if (now - Date.parse(pushedAtOf(value)) <= CHECKED_KEEP_MS) kept[sha] = value;
   }
   return kept;
 }

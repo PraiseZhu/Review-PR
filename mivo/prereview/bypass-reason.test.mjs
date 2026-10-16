@@ -174,16 +174,69 @@ test('21 条记录、前 20 条都已有原因:第一轮判定完前 20 条,第�
   }, live);
 });
 
-test('找不到 PR 的记录也算判定完:前 20 条没有 PR,第二轮只反查第 21 条', () => {
+// 找不到 PR 的记录不永久记账:刚合并几秒内 commits/<sha>/pulls 会返回 200 加空数组,过一会儿才查得到(第三轮 GPT 单审)
+test('第一次查到空(刚合并,关联还没出来),之后查得到 PR:提醒一次,之后不重复', () => {
+  const suites = manySuites(1);
+  const prs = {};
+  withState((dir, read) => {
+    const world = makeGh({ suites, prs });
+    const first = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 });
+    assert.deepEqual([first.ok, first.reminded], [true, []]);
+    assert.deepEqual(Object.keys(read().checked ?? {}), [], '找不到 PR 不进永久的 checked');
+    assert.deepEqual(Object.keys(read().noPr), [suites[0].after_sha]);
+    assert.equal(read().noPr[suites[0].after_sha].lastLookupAt, new Date(T0).toISOString());
+    prs[suites[0].after_sha] = 1031; // 一小时后关联出现了
+    const second = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + SWEEP_EVERY_MS + 1 });
+    assert.deepEqual(second.reminded, [1031]);
+    assert.deepEqual(read().noPr, {}, '查到 PR 后从临时记录里移走');
+    assert.deepEqual(Object.keys(read().checked), [suites[0].after_sha]);
+    const third = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + 2 * (SWEEP_EVERY_MS + 1) });
+    assert.deepEqual(third.reminded, []);
+    assert.equal(world.posts.length, 1, '同一个 PR 只收一条提醒');
+    assert.equal(lookups(world.calls).length, 2, '提醒过以后不再反查');
+  }, live);
+});
+
+test('前 20 条一直查不到 PR、第 21 条是有效记录:第二轮先查没查过的,第 21 条被提醒;每轮反查不超过 20 条', () => {
   const suites = manySuites(21);
   withState((dir, read) => {
     const world = makeGh({ suites, prs: { [suites[20].after_sha]: 777 } });
     sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 });
-    assert.equal(Object.keys(read().checked).length, 20);
+    assert.equal(Object.keys(read().noPr).length, 20);
+    const before = lookups(world.calls).length;
     const second = sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + SWEEP_EVERY_MS + 1 });
-    assert.deepEqual(second.reminded, [777]);
-    assert.equal(lookups(world.calls).length, 21, '前 20 条各只反查一次');
+    assert.deepEqual(second.reminded, [777], '没查过的记录排在 no-pr 重查之前');
+    assert.ok(lookups(world.calls).length - before <= 20);
   }, live);
+});
+
+test('一直查不到 PR 的记录按上次查询时间轮转重查:连扫 4 轮,30 条各至少被查 2 次,每轮不超过 20 条', () => {
+  const suites = manySuites(30);
+  withState((dir) => {
+    const world = makeGh({ suites, prs: {} });
+    for (let i = 0; i < 4; i += 1) {
+      const before = lookups(world.calls).length;
+      sweep({ repo: REPO, stateDir: dir, gh: world.gh, now: T0 + i * (SWEEP_EVERY_MS + 1) });
+      assert.ok(lookups(world.calls).length - before <= 20, '单轮最多反查 20 条');
+    }
+    const counts = new Map();
+    for (const n of lookups(world.calls)) counts.set(n, (counts.get(n) ?? 0) + 1);
+    assert.equal(counts.size, 30);
+    assert.ok([...counts.values()].every((n) => n >= 2), `按上次查询时间轮转,不是每轮只重查最早合入的那批:${JSON.stringify([...counts.values()])}`);
+    assert.equal(world.posts.length, 0);
+  }, live);
+});
+
+test('no-pr 临时记录:查到 PR 后移走,超过 8 天的清掉,窗口内的保留', () => {
+  const day = 24 * HOUR;
+  const state = { ...live, noPr: {
+    [sha(1)]: { pushedAt: new Date(T0 - 9 * day).toISOString(), lastLookupAt: new Date(T0 - 2 * day).toISOString() },
+    [sha(2)]: { pushedAt: new Date(T0 - 1 * day).toISOString(), lastLookupAt: new Date(T0 - 3 * HOUR).toISOString() },
+  } };
+  withState((dir, read) => {
+    sweep({ repo: REPO, stateDir: dir, gh: makeGh({ suites: [] }).gh, now: T0 });
+    assert.deepEqual(Object.keys(read().noPr), [sha(2)]);
+  }, state);
 });
 
 test('30 条都要提醒:单轮 5 条、反查 20 条的上限保留,连扫几轮后每个 PR 恰好收一条提醒', () => {
