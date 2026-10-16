@@ -249,6 +249,27 @@ function wakeHeldPrs(busy = new Set()) {
   writeJson(seenFile, next);
 }
 
+// ── 绕过必需检查合入、又没写原因的 PR:提醒一次 ─────────────────────────────────
+// 子脚本 bypass-reason.mjs 自己限流(一小时最多真正扫一次)、自己记账、自己只读 GitHub 后才发评论;这里只管调用。
+// 失败、超时、抛异常都只记日志,绝不影响本轮接单。只在 live 模式调用,沙箱和干跑不碰真实仓库的评论。
+function sweepBypassReminders() {
+  if (CONFIG.mode !== 'live') return;
+  try {
+    const sweep = script(join(HERE, 'bypass-reason.mjs'), ['--sweep', '--repo', CONFIG.targetRepo, '--state-dir', CONFIG.stateDir], { timeoutMs: 60_000 });
+    if (sweep.skipped === 'throttled') return;
+    log('bypass-reminder', { ok: sweep.ok === true, reminded: sweep.reminded, initialized: sweep.initialized, skipped: sweep.skipped, error: sweep.error });
+  } catch (error) {
+    log('bypass-reminder', { ok: false, error: String(error.message).slice(0, 200) });
+  }
+}
+
+// 服务器结果是「GitHub 限额用完」造成的错误(例如读 PR 信息时 GraphQL 限额已用完):这不是这个提交的问题。
+const GITHUB_RATE_LIMIT_RE = /API rate limit already exceeded|RATE_LIMITED/;
+function isGithubRateLimited(server) {
+  if (server?.outcome !== 'error') return false;
+  return GITHUB_RATE_LIMIT_RE.test([server.reason, ...(server.errors ?? [])].map(String).join('\n'));
+}
+
 // Cindy 的状态目录按目标仓库 git common-dir 的哈希分子目录;用 lib 的同一算法定位。
 let STATE_KEY = null;
 function roundStateKey() {
@@ -280,6 +301,7 @@ async function main() {
     log('wake-held-skip', { reason: error.message.slice(0, 200) });
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
+  sweepBypassReminders();
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
   if (pre.exitCode === 2) { writeHeartbeat(); log('no-candidates', { reason: pre.reason }); return; }
@@ -1171,6 +1193,12 @@ function collectServerRun(ctx, entry) {
       writeJson(stateFile('pause.json'), { until: new Date(Date.now() + HEALTH_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
       log('health-pause', { pr: task.pr, reason: server.reason });
     }
+  } else if (isGithubRateLimited(server)) {
+    // GitHub 限额用完:服务器没读到 PR 信息就没审成,这次派发不算一次尝试、也不算一次失败,
+    // 同一提交的派发上限和退避不被白白占用。不加整体暂停:额度没恢复时下一轮 pre-check 自己会失败,也就不会派发。
+    const record = loadStore().prs[task.pr] ?? {};
+    bumpOwned(ctx, task, { attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) } });
+    log('github-rate-limited', { pr: task.pr, runId: entry.runId, head: task.head });
   } else {
     recordFailure(ctx, task, server.outcome === 'error');
   }
