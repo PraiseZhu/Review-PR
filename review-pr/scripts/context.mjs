@@ -370,7 +370,7 @@ try {
   // ── 1.1 + 1.3 元数据 / 文件 ──
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'number,title,body,state,headRefName,headRefOid,isCrossRepository,baseRefName,baseRefOid,author,url,mergeable,mergeStateStatus,reviewDecision,isDraft,mergedAt,labels',
+    '--json', 'number,title,body,state,headRefName,headRefOid,isCrossRepository,baseRefName,baseRefOid,author,url,mergeable,mergeStateStatus,reviewDecision,isDraft,mergedAt,labels,createdAt',
   ]);
   const title = meta.title ?? '';
   const body = meta.body ?? '';
@@ -699,7 +699,7 @@ try {
   // 当前 head 的 Approve / Request Changes 由流程自己按时间判断,不依赖仓库是否开启
   // dismiss stale approvals:Approve 只通过当时的 head;Request Changes 后先摘标签交给作者,
   // 作者新 push 且仍命中触发时重新挂标签等待维护者。
-  const holdMarker = parseLastHoldMarker(rawComments.map((c) => ({ body: c.body, createdAt: c.createdAt })));
+  const holdMarker = parseLastHoldMarker(rawComments.map((c) => ({ body: c.body, createdAt: c.createdAt, author: c.author })), { viewerLogin });
   const inMaintainers = (login) => MAINTAINERS.includes((login ?? '').toLowerCase());
   const releaseEvents = parseSignoffReleaseEvents(
     rawComments.map((c) => ({ body: c.body, createdAt: c.createdAt, author: c.author })),
@@ -826,6 +826,7 @@ try {
           consentLine: SG.slackRelease?.consentLine ?? '同意放行',
           slackEnabled: SG.slackRelease?.enabled === true,
           commentEnabled: SG.issueCommentRelease?.enabled === true,
+          prCreatedAt: meta.createdAt ?? null,
         });
         return {
           url: heldIssueUrl,

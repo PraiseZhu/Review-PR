@@ -35,6 +35,7 @@
     "review-pr/scripts/review-queue.mjs",
     "review-pr/scripts/review-round.mjs",
     "review-pr/scripts/signoff-hold.mjs",
+    "review-pr/scripts/signoff-release.mjs",
     "review-pr-auto/SKILL.md",
     "review-pr-auto/references/coordinator.md"
   ],
