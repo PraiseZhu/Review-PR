@@ -32,7 +32,7 @@
 //     与 conflict / thread 模式互不干扰。评论还带 marker,本机状态丢失后会核验当前 viewer
 //     留下的历史评论并恢复去重状态。
 //   --protected-path:受保护路径提醒模式——auto 因「改动受保护路径(.github/** 等)」
-//     跳过时,评论告知作者改了哪个文件、自动流程不合并、执意要改联系 Lizi。脚本自查
+//     跳过时,评论告知作者改了哪个文件、会开确认 issue 转人工审核、三种放行方式。脚本自查
 //     当前确实命中受保护路径才发(已经撤销全部受保护改动的清状态);去重指纹 = 受保护
 //     文件集合排序拼接(同一批文件只提醒一次,改了别的受保护文件会再提醒),状态键
 //     `<PR>#protected-path` 与其它模式互不干扰。
@@ -252,7 +252,7 @@ try {
 
   // ── 受保护路径提醒模式(状态键 `<PR>#protected-path`)──
   // auto 因「改动受保护路径(.github/** 等)」跳过该 PR 时,评论告知作者改了哪个文件、
-  // 自动流程不合并、执意要改联系 Lizi。去重指纹 = 受保护文件集合排序拼接(同一批文件
+  // 会开确认 issue 转人工审核、三种放行方式。去重指纹 = 受保护文件集合排序拼接(同一批文件
   // 只提醒一次;改了别的受保护文件 / 撤销全部受保护改动会重新评估)。
   const protectedPathMode = process.argv.includes('--protected-path');
   if (protectedPathMode) {
@@ -281,16 +281,11 @@ try {
       const more = protectedFiles.length > 5 ? ' 等' : '';
       const mention = author ? `@${author} ` : '';
       const modeNotice = reviewOnly
-        ? '本轮是 review-only，不会自动合并；受保护路径仍需人工处理。'
-        : 'auto-review 因此不合并、也不会自动审查。';
-      // [MIVO-PATCH protected-contact] 人工处理人可配置(protectedPaths.contact),缺省保持上游。
-      const contact = loadRules().protectedPaths?.contact ?? {};
-      const contactLogin = contact.login || 'MagicLizi';
-      const contactName = contact.name || 'Lizi';
-      const contactPronoun = contact.pronoun || '她';
+        ? '本轮是 review-only，不会自动合并。'
+        : '自动流程不会合并、也不会自动审查。';
       const body =
-        `${mention}👋 这个 PR 改动了受保护的路径(${hit}${more}),${modeNotice}\n\n` +
-        `这些路径的改动需要人工处理。请在 PR 中 @${contactLogin} 通知 ${contactName}，由${contactPronoun}人工处理。`;
+        `${mention}👋 这个 PR 改动了受保护的路径(${hit}${more})。${modeNotice}\n\n` +
+        '审查机会开确认 issue，转人工审核。维护者可用这三种方式放行：在确认 issue 上回复「同意放行」、在对应 Slack 讨论回复「同意放行」，或在本 PR 上 Approve。';
       if (dryRun) {
         print({ ok: true, pr, mode: 'protected-path', posted: false, reason: 'dry-run', author, head, fingerprint, body });
       } else {
