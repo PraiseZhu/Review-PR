@@ -52,6 +52,7 @@ test('只有 bot 评论,或带 <!-- mivo- 暗记的机器评论含关键词:不�
     { user: { login: 'github-actions[bot]', type: 'Bot' }, body: '本 PR 绕过了必需检查 bypass 强合 三审' },
     { user: { login: 'someone-bot', type: 'Bot' }, body: '三审通过' },
     human('PraiseZhu', `强合 bypass\n\n<!-- mivo-review:report head=${'a'.repeat(40)} -->`),
+    human('PraiseZhu', `三审通过\n\n<!-- review-pr:findings head=${'a'.repeat(40)} digest=b -->`),
   ];
   assert.equal(hasBypassReason(comments), false);
   assert.equal(hasBypassReason([human('PraiseZhu', toReminderBody({ actor: 'PraiseZhu' }))]), false, '提醒自己带暗记,不会被当成原因');
@@ -126,22 +127,24 @@ test('规则集记录按合入先后处理(接口返回新的在前,最旧的先
   assert.deepEqual(remind.map((r) => r.pr), [1, 2]);
 });
 
-test('#1031 的「人工审批例外」评论(带 mivo-pr1031-approved-merge-exception 暗记)认作已写原因', () => {
+test('#1031 的「人工审批例外」评论(正文有「例外」,暗记是人手写的 mivo-pr1031-approved-merge-exception)认作已写原因', () => {
   const comment = human('PraiseZhu', REAL_REASON_COMMENTS[1031]);
   assert.equal(hasBypassReason([comment]), true);
   const { remind, skipped } = toBypassReminders({ suites: [suite(sha(40))], prBySha: { [sha(40)]: 1031 }, commentsByPr: { 1031: [comment] }, since: SINCE });
   assert.deepEqual(remind, []);
   assert.deepEqual(skipped.map((x) => x.why), ['has-reason']);
-  // 暗记本身就是维护者手写的例外记录;正文写「审批例外」四个字也认
-  assert.equal(hasBypassReason([human('PraiseZhu', '本次人工审批例外,原因见 …')]), true);
-  assert.equal(hasBypassReason([human('PraiseZhu', '<!-- mivo-pr77-approved-merge-exception head=abc -->')]), true);
 });
 
-test('只排除机器自己的暗记(mivo-review:、mivo-issue-assessment、mivo-bypass-reminder);人手写的其它 mivo- 暗记不当机器评论', () => {
+test('关键词加了「例外」;只有暗记、没有任何关键词的评论不算原因', () => {
+  assert.equal(hasBypassReason([human('PraiseZhu', '本次按维护者授权做一次人工例外')]), true);
+  assert.equal(hasBypassReason([human('PraiseZhu', '<!-- mivo-pr77-approved-merge-exception head=abc -->')]), false);
+});
+
+test('只排除机器自己的三种暗记(mivo-review:、review-pr:、mivo-bypass-reminder);人手写的其它 mivo- 暗记不排除', () => {
   assert.equal(hasBypassReason([human('PraiseZhu', '强合 <!-- mivo-review:advisory head=a -->')]), false);
-  assert.equal(hasBypassReason([human('PraiseZhu', 'bypass <!-- mivo-issue-assessment:v1 repo=o/r -->')]), false);
+  assert.equal(hasBypassReason([human('PraiseZhu', `强合 <!-- review-pr:findings head=${'a'.repeat(40)} digest=b -->`)]), false);
   assert.equal(hasBypassReason([human('PraiseZhu', `三审 ${REMINDER_MARKER}`)]), false);
   assert.equal(hasBypassReason([human('PraiseZhu', '强合,原因见上 <!-- mivo-custom-note -->')]), true);
-  // 暗记是例外记录,但作者是 bot 时仍不算
-  assert.equal(hasBypassReason([{ user: { login: 'github-actions[bot]', type: 'Bot' }, body: '<!-- mivo-pr1-approved-merge-exception -->' }]), false);
+  // 作者是 bot 时,带关键词也不算
+  assert.equal(hasBypassReason([{ user: { login: 'github-actions[bot]', type: 'Bot' }, body: '例外 强合' }]), false);
 });
