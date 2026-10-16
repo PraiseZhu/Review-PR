@@ -362,6 +362,17 @@ test('释放锁只发一次:ssh 断线不重试,报结果未知并给人工核�
   assert.match(failed.message, /Permission denied/);
 });
 
+test('释放锁 rm 失败用专门退出码,报锁文件还在', () => {
+  const script = toReleaseLockScript(DEPLOY_LOCK_REL);
+  assert.match(script, /rm -f "\$f" \|\| exit 3/);
+  assert.equal(RELEASE_LOCK_RETRIES, 1);
+  const fail = toReleaseLockResult({ status: 3, stderr: '' });
+  assert.equal(fail.ok, false);
+  assert.match(fail.message, /释放失败/);
+  assert.match(fail.message, /锁文件还在/);
+  assert.ok(fail.message.includes(DEPLOY_LOCK_PATH), fail.message);
+});
+
 test('save 抛 ENOSPC 时仍释放自己的锁', () => {
   let released = false;
   const { saveError, releaseError } = finalizeDeployError({

@@ -40,6 +40,8 @@
     "review-pr-auto/references/coordinator.md"
   ],
   "added": [
-    "review-pr/scripts/mivo-patches.test.mjs"
+    "review-pr/scripts/mivo-patches.test.mjs",
+    "review-pr/scripts/notify-author-resolve.test.mjs",
+    "review-pr/scripts/signoff-release.hold-gap.test.mjs"
   ]
 }

@@ -75,6 +75,26 @@ export function toExcludedPrs({ busyPrs = new Set(), roundState = {}, mode = 're
  * 第一次见到的 issue:没有评论只记录;已经有评论(comments > 0)也要唤醒。issue 创建后最多隔一个周期才被第一次记录,
  * 维护者在这段时间里回复的「同意放行」否则要等到指纹再变化才被看到(受保护路径 PR 会白等)。多一次重判,没有副作用。
  */
+/**
+ * #68 上线前 round-state 里 outcome=protected 的 PR 指纹没变,下一轮会被当成 unchanged 跳过。
+ * 只给这些记录标 retry=true 一次;不清空缓存,也不改其它 outcome。alreadyDone 后不再动。
+ */
+export function toProtectedHoldWake({ roundState, alreadyDone = false } = {}) {
+  if (alreadyDone) return { done: true, wake: [], next: roundState };
+  const prs = roundState?.prs && typeof roundState.prs === 'object' ? roundState.prs : {};
+  const nextPrs = { ...prs };
+  const wake = [];
+  for (const [pr, row] of Object.entries(prs)) {
+    if (row?.outcome !== 'protected' || row.retry === true) continue;
+    const n = Number(pr);
+    if (!Number.isSafeInteger(n) || n <= 0) continue;
+    nextPrs[pr] = { ...row, retry: true };
+    wake.push(n);
+  }
+  wake.sort((a, b) => a - b);
+  return { done: true, wake, next: { ...roundState, prs: nextPrs } };
+}
+
 export function toHeldWake({ issues = [], seen = {}, busyPrs = new Set() }) {
   const next = {};
   const wake = [];

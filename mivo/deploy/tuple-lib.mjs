@@ -190,7 +190,7 @@ export function toReleaseLockScript(rel) {
   return [
     `f=${shQuote(rel)}`,
     `if [ ! -e "$f" ]; then exit 0; fi`,
-    `if cmp -s "$f" -; then rm -f "$f"; exit 0; fi`,
+    `if cmp -s "$f" -; then rm -f "$f" || exit 3; exit 0; fi`,
     `echo "部署锁已不是本次的,不删" >&2`,
     `exit 0`,
   ].join('\n');
@@ -203,6 +203,7 @@ export const RELEASE_LOCK_RETRIES = 1;
 export function toReleaseLockResult({ status, stderr }) {
   const text = String(stderr ?? '').trim();
   if (status === 0) return { ok: true, message: text };
+  if (status === 3) return { ok: false, message: `释放失败，锁文件还在 ${DEPLOY_LOCK_PATH}` };
   if (status === 255) {
     return { ok: false, message: `释放部署锁结果未知(ssh 断线,不重发):到 Mini 看 ${DEPLOY_LOCK_PATH},内容还是本次的就删掉` };
   }

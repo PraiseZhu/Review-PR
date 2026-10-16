@@ -112,12 +112,14 @@ export function decideGate(ctx) {
         actions: signoffActions,
       };
     }
-    if (!protectedPath.released) {
+    if (!protectedPath.released || !signoff.held) {
+      // 从未 hold 过即使已放行也开完整 protected issue,让确认记录落在 GitHub。
       // 已有确认 issue 且仍可复用(不是通知 issue、没关闭)只补标签;否则开完整的新 issue。
       const heldIssue = signoff.heldIssue ?? null;
       const reusable = Boolean(signoff.held) && heldIssue?.mode !== 'notice' && heldIssue?.state !== 'CLOSED';
       signoffActions.push({ script: 'signoff-hold', mode: reusable ? 'labels-only' : 'full', kind: 'protected', issueMode: 'protected' });
-    } else if (labels.hasAnyLabel) {
+    }
+    if (protectedPath.released && labels.hasAnyLabel) {
       // 放行后只摘标签。确认 issue 等服务器把 review-pr 写成功后再关(round 的 toProtectedDispatch)。
       signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
     }
