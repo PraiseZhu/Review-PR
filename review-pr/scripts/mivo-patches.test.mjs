@@ -930,13 +930,13 @@ syncBuiltinESMExports();
     assert.match(closeComment.input, /review-pr:signoff-notice-close/);
 
     // ② 已有标记:不重复通知
-    fresh([{ body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+    fresh([{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
       { 901: { state: 'CLOSED', body: `x${issueFooter(971, 'notice')}` } });
     out = hold(['--signoff-mode', 'notice']);
     assert.equal(out.alreadyNotified, true);
     assert.equal(writes().length, 0);
     // 上次关闭失败留下的开放通知 issue 顺手补关
-    fresh([{ body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+    fresh([{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
       { 901: { state: 'OPEN', body: `x${issueFooter(971, 'notice')}` } });
     out = hold(['--signoff-mode', 'notice']);
     assert.equal(out.issueClosed, true);
@@ -955,7 +955,7 @@ syncBuiltinESMExports();
     assert.equal(writes().length, 0);
 
     // ⑤ protected 模式:旧 issue 是通知(即使还开着)就不复用,另开确认 issue,footer 带 protected 标记且挂标签
-    fresh([{ body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+    fresh([{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
       { 901: { state: 'OPEN', body: `x${issueFooter(971, 'notice')}` } });
     out = hold(['--signoff-mode', 'protected', '--kind', 'protected']);
     assert.equal(out.issueCreated, true, JSON.stringify(out));

@@ -59,7 +59,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -136,13 +136,11 @@ try {
   const withLabelWarning = (out) => (out.labels?.warning ? { ...out, labelWarning: out.labels.warning } : out);
   const printOut = (out) => print(withLabelWarning(out));
 
-  // 找既有标记评论,读出当时开的 issue 链接。取「最后一条带 issue= 的标记」为准。
-  const markerComments = (meta.comments ?? []).filter((c) => (c.body ?? '').includes(MARKER_PREFIX));
-  const alreadyHeld = markerComments.length > 0;
-  const priorIssueUrl = markerComments
-    .map((c) => c.body.match(/issue=(\S+?)\s*-->/)?.[1] ?? null)
-    .filter(Boolean)
-    .pop() ?? null;
+  // [MIVO-PATCH hold-viewer] 只认审查账号写的 hold 标记;github-actions bot 永不采信。
+  const viewerLogin = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const holdMarker = parseLastHoldMarker(meta.comments ?? [], { viewerLogin });
+  const alreadyHeld = holdMarker != null;
+  const priorIssueUrl = holdMarker?.issueUrl ?? null;
   // ── 旧讨论 issue 复用/新开判定(decideIssueReuse,见 lib.mjs;signoff-policy.test.mjs 覆盖)──
   // 旧 issue 可能已被 close-product-issue.mjs --no-longer-required 收尾关闭(作者一度移除了
   // 全部触发),之后 gate 再亮起来时不能把作者引到一个已关闭的讨论里 —— 视同没开过,凭
