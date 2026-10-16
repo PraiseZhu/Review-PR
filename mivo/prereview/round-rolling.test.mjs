@@ -487,7 +487,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       const limitedReason = `context 读取失败:gh pr view ${r.pr} --repo o/target --json headRefOid,baseRefOid,baseRefName 退出码 1: GraphQL: API rate limit already exceeded for user ID 1.`;
       w.files.set(`${dir}/result.json`, limited
         ? { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [], enteredReview: false, reviewed: false, reviewClean: false,
-          outcome: 'error', reason: limitedReason, retry: true, errors: [limitedReason], warnings: [], mivo: { reportComplete: false } }
+          outcome: 'error', reason: limitedReason, retry: true, errors: [limitedReason], warnings: [],
+          mivo: { reportComplete: false, ...(w.rateLimitedAfterModel ? { codex: { attempts: [{ model: 'm', ok: true }] } } : {}) } }
         : { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [],
           enteredReview: same, reviewed: same, reviewClean: same, outcome: same ? 'approval' : 'state-changed', reason: same ? '审查通过' : '发布前 PR 已变化',
           retry: !same, errors: [], warnings: [], mivo: { reportComplete: same } });
@@ -1260,12 +1261,24 @@ test('世界:服务器结果报 GitHub 限额用完:这个提交的尝试次数�
   assert.equal(other.logged('github-rate-limited').length, 0);
 });
 
-test('世界:限额报错只认 GitHub 的「API rate limit already exceeded」和 RATE_LIMITED;模型额度类报错不在这里处理', async () => {
+test('世界:正常审过的结果不会被误当成限额', async () => {
   const w = makeWorld();
   w.openPr(1, 'h1');
   w.start();
   assert.ok(await w.runUntil(() => w.logged('collected').length >= 1));
-  // 正常审过的结果(retry:false 的 approval)不会被误当成限额
   assert.equal(w.logged('github-rate-limited').length, 0);
   assert.equal(w.read(w.state('reviews.json')).prs[1].cleanHead, 'h1');
+});
+
+test('世界:模型已经调用过(attempts 非空)之后才报的限额,照旧记一次失败——退回尝试只限没花过模型调用的情况', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.rateLimited.add(1);
+  w.rateLimitedAfterModel = true;
+  w.start();
+  assert.ok(await w.runUntil(() => w.logged('collected').length >= 1));
+  const store = w.read(w.state('reviews.json')).prs[1];
+  assert.equal(store.failures.h1.count, 1);
+  assert.equal(store.attempts.h1, 1);
+  assert.equal(w.logged('github-rate-limited').length, 0);
 });

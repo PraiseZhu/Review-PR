@@ -264,9 +264,12 @@ function sweepBypassReminders() {
 }
 
 // 服务器结果是「GitHub 限额用完」造成的错误(例如读 PR 信息时 GraphQL 限额已用完):这不是这个提交的问题。
+// 只限还没花过模型调用的情况(mivo.codex.attempts 为空):模型审完才在发布阶段撞限额的,照旧记失败走退避,
+// 否则下一轮会不带退避地重跑一次完整的付费审查。
 const GITHUB_RATE_LIMIT_RE = /API rate limit already exceeded|RATE_LIMITED/;
 function isGithubRateLimited(server) {
   if (server?.outcome !== 'error') return false;
+  if ((server.mivo?.codex?.attempts ?? []).length > 0) return false;
   return GITHUB_RATE_LIMIT_RE.test([server.reason, ...(server.errors ?? [])].map(String).join('\n'));
 }
 

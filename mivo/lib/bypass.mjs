@@ -22,6 +22,11 @@ export function hasBypassReason(comments) {
   });
 }
 
+/** PR 上是否已经有本提醒自己发的评论(带 REMINDER_MARKER):状态文件丢了、发评论的结果不确定时,靠它避免发第二条。 */
+export function hasReminderMarker(comments) {
+  return (comments ?? []).some((comment) => String(comment?.body ?? '').includes(REMINDER_MARKER));
+}
+
 /** 规则集记录里要关心的:合入 main、结果是绕过、发生在上线(since)以后。其它记录静默忽略。 */
 export function selectBypassSuites({ suites, since }) {
   const sinceMs = Date.parse(since);
@@ -48,7 +53,7 @@ export function toBypassReminders({ suites, prBySha = {}, commentsByPr = {}, rem
     if (!pr) { skipped.push({ pr: null, sha, why: 'no-pr' }); continue; }
     if (seen.has(pr)) { skipped.push({ pr, sha, why: 'duplicate' }); continue; }
     seen.add(pr);
-    if (Object.hasOwn(reminded, String(pr))) { skipped.push({ pr, sha, why: 'reminded' }); continue; }
+    if (Object.hasOwn(reminded, String(pr)) || hasReminderMarker(commentsByPr[pr])) { skipped.push({ pr, sha, why: 'reminded' }); continue; }
     if (hasBypassReason(commentsByPr[pr])) { skipped.push({ pr, sha, why: 'has-reason' }); continue; }
     if (remind.length >= maxPerRun) { skipped.push({ pr, sha, why: 'over-limit' }); continue; }
     remind.push({ pr, actor: String(suite.actor_name ?? ''), sha, at: suite.pushed_at });

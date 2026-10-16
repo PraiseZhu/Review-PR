@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { REMINDER_MARKER, hasBypassReason, selectBypassSuites, toBypassReminders, toReminderBody } from './bypass.mjs';
+import { REMINDER_MARKER, hasBypassReason, hasReminderMarker, selectBypassSuites, toBypassReminders, toReminderBody } from './bypass.mjs';
 
 // 真实评论原文(2026-10-17 从 xindong/mivo-canvas-plugin 的 #970、#972、#1018、#1024 取回):
 // 前两条的写法是「绕过合并说明」,后两条是「紧急强合口子(bypass)」。两种写法都必须认作「已写原因」。
@@ -50,13 +50,22 @@ test('只有 bot 评论,或带 <!-- mivo- 暗记的机器评论含关键词:不�
     { user: { login: 'github-actions[bot]', type: 'Bot' }, body: '本 PR 绕过了必需检查 bypass 强合 三审' },
     { user: { login: 'someone-bot', type: 'Bot' }, body: '三审通过' },
     human('PraiseZhu', `强合 bypass\n\n<!-- mivo-review:report head=${'a'.repeat(40)} -->`),
-    human('PraiseZhu', toReminderBody({ actor: 'PraiseZhu' })),
   ];
   assert.equal(hasBypassReason(comments), false);
+  assert.equal(hasBypassReason([human('PraiseZhu', toReminderBody({ actor: 'PraiseZhu' }))]), false, '提醒自己带暗记,不会被当成原因');
   const { remind } = toBypassReminders({ suites: [suite(sha(3))], prBySha: { [sha(3)]: 8 }, commentsByPr: { 8: comments }, since: SINCE });
   assert.equal(remind.length, 1);
   // 关键词大小写不敏感;只要有一条人写的原因评论就不提醒
   assert.equal(hasBypassReason([...comments, human('kirozeng', 'Bypass 原因:CI 机器故障')]), true);
+});
+
+test('PR 上已经有本提醒自己的暗记评论:按已提醒处理(状态文件丢了、或发评论的结果不确定时也不会再发第二条)', () => {
+  const comments = [{ user: { login: 'PraiseZhu', type: 'User' }, body: toReminderBody({ actor: 'PraiseZhu' }) }];
+  const { remind, skipped } = toBypassReminders({ suites: [suite(sha(30))], prBySha: { [sha(30)]: 60 }, commentsByPr: { 60: comments }, since: SINCE });
+  assert.deepEqual(remind, []);
+  assert.deepEqual(skipped, [{ pr: 60, sha: sha(30), why: 'reminded' }]);
+  assert.equal(hasReminderMarker(comments), true);
+  assert.equal(hasReminderMarker([human('x', '普通评论 <!-- mivo-review:report head=a -->')]), false, '别的 mivo- 暗记不算');
 });
 
 test('关键词四选一都算原因:绕过、强合、bypass、三审', () => {
