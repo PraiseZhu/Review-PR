@@ -16,7 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -771,7 +771,9 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
       break;
     }
     case 'signoff-release': {
-      const args = [pr, '--labels-only', ...(action.mode === 'labels-only-close-issue' ? ['--close-issue'] : []), ...bindings];
+      // 补关 issue 只关绑定本 PR 的:hold 标记评论任何人都能发,指向别的 PR 的 issue 时不关、不评论,只记 warning。
+      const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings });
+      if (warning) result.warnings.push(`signoffRelease:${warning}`);
       record('signoffRelease', script('signoff-release.mjs', args));
       break;
     }

@@ -49,6 +49,23 @@ export function toProtectedDispatch({ decision, protectedPath, checkDone = false
 }
 
 /**
+ * signoff-release 的参数。带 --close-issue 的 action 只在 hold 标记指向的 issue 绑定本 PR 时才保留该开关:
+ * 标记评论任何人都能发,指向别的 PR 的 issue 时关了会越权(终审 F1)。判据来自 context 对 heldIssue 的评估
+ * (releaseUntrusted=issue-not-bound);读不到 issue 或编号对不上也不关。没绑定:不关、不评论,返回 warning。
+ */
+export function toSignoffReleaseArgs({ action, pr, held, heldIssue, bindings = [] } = {}) {
+  const base = [String(pr), '--labels-only'];
+  if (action?.mode !== 'labels-only-close-issue') return { args: [...base, ...bindings] };
+  if (!held?.issueUrl) return { args: [...base, '--close-issue', ...bindings] };
+  const reason = !heldIssue || heldIssue.state == null || heldIssue.number !== held.issueNumber ? 'issue-unverified'
+    : heldIssue.releaseUntrusted === 'issue-not-bound' ? 'issue-not-bound' : null;
+  if (reason) {
+    return { args: [...base, ...bindings], warning: `hold 标记指向的 issue #${held.issueNumber ?? '?'} 未通过绑定本 PR 的校验(${reason}),没有评论也没有关闭` };
+  }
+  return { args: [...base, '--close-issue', ...bindings] };
+}
+
+/**
  * @returns {{
  *   stage: 'signoff'|'threads'|'security'|'protected'|'format'|'ci'|'gate'|'review',
  *   outcome: string|null,      // pr-worker OUTCOMES;review 时为 null

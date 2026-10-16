@@ -1116,7 +1116,11 @@ try {
     slackRelease,
     issueCommentRelease,
     heldIssue: earlyDiscussionIssue
-      ? { number: earlyDiscussionIssue.number, state: earlyDiscussionIssue.state, mode: earlyDiscussionIssue.mode ?? 'normal' }
+      ? {
+        number: earlyDiscussionIssue.number, state: earlyDiscussionIssue.state, mode: earlyDiscussionIssue.mode ?? 'normal',
+        // [MIVO-PATCH issue-binding] 写 issue(补关)前要知道它是不是绑定本 PR:issue-not-bound 时不能写。
+        ...(earlyDiscussionIssue.releaseUntrusted ? { releaseUntrusted: earlyDiscussionIssue.releaseUntrusted } : {}),
+      }
       : null,
     triggers: signoffTriggers,
     blocking: signoffBlocking,
