@@ -3302,13 +3302,17 @@ export function selectTrustedIssueCommentReleases({
   return { release, rejected };
 }
 
-// [MIVO-PATCH signoff-mode] 确认 issue 的模式标记:footer 末尾的隐藏注释。没有标记 = 普通确认门。
-//   protected = 改了受保护路径(.github 等)的 PR,任何作者都开,放行后审查机才把 review-pr 写绿;
-//   notice    = 豁免作者碰到确认门但没改受保护路径,只通知,不拦(创建后即关闭),上面的任何放行都不算。
-export const SIGNOFF_MODE_MARKER_RE = /<!--\s*review-pr:signoff-mode=(protected|notice)\s*-->/g;
+// [MIVO-PATCH signoff-mode] 确认 issue 的模式标记。契约与 Mivo from-github-event.mjs 一致:
+// 只认 footer 流程标记句(最后一次出现)之后、且在正文最末尾的那一个;值不认识或位置不对 = 普通模式。
+export const SIGN_OFF_PROCESS_MARKER = '本 issue 由 review-pr 流程自动创建';
+export const SIGNOFF_MODE_RE = /<!--\s*review-pr:signoff-mode=([a-z-]+)\s*-->\s*$/;
+export const SIGNOFF_MODES = new Set(['protected', 'notice']);
 export function parseSignoffMode(body) {
-  const all = [...String(body ?? '').matchAll(SIGNOFF_MODE_MARKER_RE)];
-  return all.at(-1)?.[1] ?? 'normal';
+  const text = String(body ?? '');
+  const footerAt = text.lastIndexOf(SIGN_OFF_PROCESS_MARKER);
+  if (footerAt < 0) return 'normal';
+  const m = text.slice(footerAt).match(SIGNOFF_MODE_RE);
+  return m && SIGNOFF_MODES.has(m[1]) ? m[1] : 'normal';
 }
 
 /** 确认 issue footer 里的「关联 PR:#n」(取最后一处;Mivo parseSignoffIssue 的契约句式,半角冒号)。 */
@@ -3384,7 +3388,7 @@ export function evaluateProtectedPathRelease({
 
 /** [MIVO-PATCH signoff-mode] 确认 issue footer。句式是 Mivo parseSignoffIssue 的契约,只在末尾追加模式标记。 */
 export function buildSignoffIssueFooter({ pr, author, topic, mode = 'normal' }) {
-  const base = `\n\n---\n关联 PR:#${pr}(作者 @${author});本 issue 由 review-pr 流程自动创建,用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
+  const base = `\n\n---\n关联 PR:#${pr}(作者 @${author});${SIGN_OFF_PROCESS_MARKER},用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
   return mode === 'protected' || mode === 'notice' ? `${base}\n<!-- review-pr:signoff-mode=${mode} -->` : base;
 }
 
