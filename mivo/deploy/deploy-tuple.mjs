@@ -27,7 +27,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { WF_PATH, HOSTS, toHostCommand, toTrustText, trustTuple, toStopReady } from './tuple-lib.mjs';
+import { WF_PATH, HOSTS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold } from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // 从 Mini 的 skill 检出里跑时,切换检出后同目录的文件已是新版本:prereq-check.mjs 在启动时就读进来。
@@ -261,9 +261,10 @@ function stopPoint() {
     const hold = readRemote('mini', HOLD_REL);
     if (hold.exists) throw new Error(`已有 ${HOLD_REL},先弄清是谁的`);
     must(remote('mini', `rm -f ${q(QUIESCED_REL)}`), '删旧的 quiesced.json');
-    casRemote('mini', HOLD_REL, 'none', `${JSON.stringify({ at: nowIso(), reason: `整组上线 ${NEW_SKILL.slice(0, 7)}` })}\n`);
-    record.holdWritten = true;
+    // 写之前先记下内容:写成功但 ssh 回执丢了(重试时 CAS 会报内容已变)也能在收尾时按内容认出是本次写的。
+    record.holdText = `${JSON.stringify({ at: nowIso(), reason: `整组上线 ${NEW_SKILL.slice(0, 7)}` })}\n`;
     save();
+    casRemote('mini', HOLD_REL, 'none', record.holdText);
   }
   phase('停点:暂停已写,等前置审查退出');
   const deadline = Date.now() + MAX_WAIT_MS;
@@ -415,9 +416,12 @@ function releaseStop() {
     record.pauseWritten = false;
     say(keep ? `pause.json 恢复成到 ${keep.until} 的运行暂停` : '已删 pause.json');
   }
-  if (STOP === 'hold' && record.holdWritten) {
-    must(remote('mini', `rm -f ${q(HOLD_REL)} ${q(QUIESCED_REL)}`), '删 deploy-hold.json、quiesced.json');
-    record.holdWritten = false;
+  if (STOP === 'hold' && record.holdText) {
+    // 按内容认:是本次写的才删(连同握手回执);没写成或是别人的都不动。读不到就抛错,由调用方按要人工处理退出。
+    if (isOwnHold(readRemote('mini', HOLD_REL), record.holdText)) {
+      must(remote('mini', `rm -f ${q(HOLD_REL)} ${q(QUIESCED_REL)}`), '删 deploy-hold.json、quiesced.json');
+    }
+    record.holdText = null;
   }
   if (record.monitorPause) {
     casRemote('mini', MONITOR_PAUSE_REL, sha256(monitorPauseText), null);

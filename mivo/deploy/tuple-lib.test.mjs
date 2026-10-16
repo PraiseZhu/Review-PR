@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  HOSTS, WF_PATH, toHostCommand, toTrustText, trustTuple, toStopReady, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
+  HOSTS, WF_PATH, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
 } from './tuple-lib.mjs';
 
 const A = 'a'.repeat(40);
@@ -53,6 +53,14 @@ test('hold:有停机握手回执时要写明锁已放掉', () => {
   const held = toStopReady({ stop: 'hold', state: 'not running', lock: '', quiesced: { lockReleased: false } });
   assert.equal(held.ready, false);
   assert.match(held.reason, /锁没放掉/);
+});
+
+test('hold 按内容认是不是本次写的:写成功但 ssh 回执丢了也认,不存在或内容不同(别人的)不认', () => {
+  const mine = '{"at":"2026-10-16T06:30:01.000Z","reason":"整组上线 bbbbbbb"}\n';
+  assert.equal(isOwnHold({ exists: true, text: mine }, mine), true);
+  assert.equal(isOwnHold({ exists: true, text: '{"at":"2026-10-16T06:29:00.000Z","reason":"别人的维护"}\n' }, mine), false);
+  assert.equal(isOwnHold({ exists: false, text: null }, mine), false);
+  assert.equal(isOwnHold({ exists: true, text: mine }, null), false, '还没开始写停点');
 });
 
 test('pause:不看回执', () => {

@@ -44,6 +44,13 @@ export function toStopReady({ stop, state, lock, quiesced }) {
   return { ready: false, reason: '停机握手回执写明锁没放掉' };
 }
 
+// Mini 上的 deploy-hold.json 是不是本次写的:按内容认,不按回执认。hold 是 readRemote 的结果({ exists, text }),
+// holdText 是本次写之前记下的内容。写成功但 ssh 回执丢了也算本次写的;不存在、内容不同(别人的)都不算。
+// round.mjs 只读不改这个文件,所以内容一直是写进去的样子。
+export function isOwnHold(hold, holdText) {
+  return Boolean(holdText) && hold.exists === true && hold.text === holdText;
+}
+
 // 每天自动换版本要不要换。current 是仓库变量里的线上提交,checkout 是 Mini 的检出,target 是本仓 main,
 // compare 是 GitHub compare current...target 的 status,checks 是 target 上的 check runs({ name, status, conclusion })。
 // action:none(已是最新)、wait(CI 还没出结果,改天再看)、blocked(要人看)、update(换)。
