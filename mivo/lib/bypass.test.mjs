@@ -140,6 +140,21 @@ test('关键词加了「例外」;只有暗记、没有任何关键词的评论�
   assert.equal(hasBypassReason([human('PraiseZhu', '<!-- mivo-pr77-approved-merge-exception head=abc -->')]), false);
 });
 
+test('审查账号(PraiseZhu)发的带 <!-- review-pr: 暗记的流程评论,正文含「绕过」也不算原因,照样提醒', () => {
+  const flow = [
+    human('PraiseZhu', '本 PR 绕过了必需检查,已转人工审核。\n\n<!-- review-pr:product-gate pr=77 issue=https://github.com/o/r/issues/9 -->'),
+    human('PraiseZhu', `维护者确认已放行,绕过 hold 继续。\n\n<!-- review-pr:signoff-mode=protected -->`),
+  ];
+  assert.equal(hasBypassReason(flow), false);
+  const { remind } = toBypassReminders({ suites: [suite(sha(50))], prBySha: { [sha(50)]: 77 }, commentsByPr: { 77: flow }, since: SINCE });
+  assert.deepEqual(remind.map((r) => r.pr), [77]);
+});
+
+test('issue 评估评论(<!-- mivo-issue-assessment)也是机器评论:含关键词不算原因', () => {
+  const assessment = human('PraiseZhu', '评估:不需要绕过检查,强合风险低。\n<!-- mivo-issue-assessment:v1 repo=o/r issue=5 -->');
+  assert.equal(hasBypassReason([assessment]), false);
+});
+
 test('只排除机器自己的三种暗记(mivo-review:、review-pr:、mivo-bypass-reminder);人手写的其它 mivo- 暗记不排除', () => {
   assert.equal(hasBypassReason([human('PraiseZhu', '强合 <!-- mivo-review:advisory head=a -->')]), false);
   assert.equal(hasBypassReason([human('PraiseZhu', `强合 <!-- review-pr:findings head=${'a'.repeat(40)} digest=b -->`)]), false);
