@@ -7,14 +7,14 @@
 //                                         --cindy-script 时 stdout 只有一行 cindy-script/1 收尾帧,过程写日志。
 //   [--log-dir <目录>]                     日志与部署记录目录,默认 ~/Library/Logs/mivo-prereview/deploy。
 // 执行模式退出码:0 换好了、已是最新或今天先不换;1 不能自动换(要人看),或没换成但线上仍是旧版本、前置照常;
-// 2 换失败且前置保持停止,要人工处理。
+// 2 换失败且前置保持停止(含新版本已上),要人工处理。--check 不调 deploy-tuple,不拿锁。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { WF_PATH, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs } from './tuple-lib.mjs';
+import { WF_PATH, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs, toAutoUpdateFinish } from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = 'xindong/mivo-canvas-plugin';
@@ -90,9 +90,8 @@ function main() {
   if (decision.action === 'blocked') return finish(1, `今天不自动换:${decision.reason}`);
   if (decision.action !== 'update') return finish(0, `今天不换:${decision.reason}`);
   const result = deploy({ current, target });
-  if (result.status === 0) return finish(0, `已整组换上 ${decision.reason}。日志 ${result.log}`);
-  if (result.status === 2) return finish(2, `换版本 ${decision.reason} 失败,前置审查保持停止,要人工处理。日志 ${result.log}\n${result.tail}`);
-  return finish(1, `换版本 ${decision.reason} 没换成,线上仍是 ${current.slice(0, 7)},前置照常。日志 ${result.log}\n${result.tail}`);
+  const done = toAutoUpdateFinish(result.status ?? 1, { reason: decision.reason, current, log: result.log, tail: result.tail });
+  return finish(done.code, done.text);
 }
 
 main();

@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
-  HOSTS, WF_PATH, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
+  HOSTS, WF_PATH, DEPLOY_LOCK_REL, DEPLOY_LOCK_PATH, DEPLOY_LOCK_SLACK_MS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
+  toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock, toLockExpiresAt,
+  toLockKeep, toLockBlockedText, toLinkLockScript, toReleaseLockScript, finalizeDeployError,
+  RELEASE_LOCK_RETRIES, toReleaseLockResult,
+  shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
 } from './tuple-lib.mjs';
 
 const A = 'a'.repeat(40);
@@ -124,4 +133,242 @@ test('自动换版本只换本仓提交,在 Mini 上用 hold 停点', () => {
     '--on', 'mini', '--old-skill', A, '--new-skill', B, '--old-wf', WF, '--new-wf', WF,
     '--stop', 'hold', '--max-wait-min', '40', '--record-dir', '/logs',
   ]);
+});
+
+test('tuple 已整组切到新版本后撤停点或 bootstrap 失败:exit 2,说明新版本已上', () => {
+  const all = toFinalizeFailure({ switchedCount: 5, stepCount: 5 });
+  assert.equal(all.code, 2);
+  assert.match(all.message, /新版本已上/);
+  assert.match(all.message, /前置审查停止/);
+  assert.match(all.message, /要人工处理/);
+  const none = toFinalizeFailure({ switchedCount: 0, stepCount: 5 });
+  assert.equal(none.code, 1);
+  assert.match(none.message, /线上仍是旧版/);
+  assert.match(none.message, /前置照常/);
+  const partial = toFinalizeFailure({ switchedCount: 3, stepCount: 5 });
+  assert.equal(partial.code, 1);
+});
+
+test('自动换版本:deploy-tuple exit 2 不再写线上仍是旧版、前置照常', () => {
+  const stopped = toAutoUpdateFinish(2, { reason: 'aaaaaaa → bbbbbbb', current: A, log: '/l', tail: 'x' });
+  assert.equal(stopped.code, 2);
+  assert.doesNotMatch(stopped.text, /线上仍是/);
+  assert.doesNotMatch(stopped.text, /前置照常/);
+  assert.match(stopped.text, /前置审查保持停止/);
+  const reverted = toAutoUpdateFinish(1, { reason: 'aaaaaaa → bbbbbbb', current: A, log: '/l', tail: 'x' });
+  assert.equal(reverted.code, 1);
+  assert.match(reverted.text, /线上仍是 aaaaaaa/);
+  assert.match(reverted.text, /前置照常/);
+  assert.equal(toAutoUpdateFinish(0, { reason: 'aaaaaaa → bbbbbbb', current: A, log: '/l', tail: '' }).code, 0);
+});
+
+test('部署锁:无人占用才拿锁,别人占用且未过期则不改任何东西', () => {
+  const now = Date.parse('2026-10-16T06:30:00.000Z');
+  assert.deepEqual(toLockAcquire({ existing: { exists: false, text: null }, now }), { action: 'acquire' });
+  const holder = {
+    owner: 'deploy-tuple:pro', pid: 4242, host: HOSTS.pro, at: '2026-10-16T06:29:00.000Z', target: A,
+    expiresAt: '2026-10-16T11:00:00.000Z',
+  };
+  const held = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now });
+  assert.equal(held.action, 'blocked');
+  assert.equal(held.expired, false);
+  assert.match(held.reason, /deploy-tuple:pro/);
+  assert.match(held.reason, /4242/);
+  assert.match(held.reason, /expiresAt 2026-10-16T11:00:00.000Z/);
+  assert.equal(held.holder.pid, 4242);
+  assert.match(toLockBlockedText(held), /不动 Mini 和线上状态/);
+  assert.doesNotMatch(toLockBlockedText(held), /锁已过期/);
+});
+
+test('部署锁:过期也不顶替,只提示人工删除', () => {
+  const start = Date.parse('2026-10-16T00:00:00.000Z');
+  const maxWaitMs = 300 * 60 * 1000;
+  const expiresAt = toLockExpiresAt(start, maxWaitMs);
+  assert.equal(Date.parse(expiresAt), start + maxWaitMs + DEPLOY_LOCK_SLACK_MS);
+  assert.ok(DEPLOY_LOCK_SLACK_MS >= 90 * 60 * 1000);
+  const holder = { owner: 'deploy-tuple:mini', pid: 9, host: HOSTS.mini, at: new Date(start).toISOString(), target: A, expiresAt };
+  const live = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now: start + 241 * 60 * 1000 });
+  assert.equal(live.action, 'blocked', '241 分钟仍在 max-wait-min 300 + 90 余量之内');
+  assert.equal(live.expired, false);
+  const atExpiry = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now: Date.parse(expiresAt) });
+  assert.equal(atExpiry.action, 'blocked', 'now === expiresAt 仍不顶替');
+  assert.equal(atExpiry.expired, false);
+  const stale = toLockAcquire({ existing: { exists: true, text: toDeployLockText(holder) }, now: Date.parse(expiresAt) + 1 });
+  assert.equal(stale.action, 'blocked');
+  assert.equal(stale.expired, true);
+  const text = toLockBlockedText(stale);
+  assert.match(text, /锁已过期/);
+  assert.match(text, new RegExp(`先在 ${HOSTS.mini} 上按 pid 9 确认原进程已结束`));
+  assert.match(text, new RegExp(`再删 ${DEPLOY_LOCK_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} 后重跑`));
+  assert.doesNotMatch(text, /顶替/);
+});
+
+test('部署锁:只删自己的(按内容认),preview 和 check 不拿锁', () => {
+  const mine = toDeployLockText({ owner: 'deploy-tuple:mini', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:30:01.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+  assert.equal(isOwnLock({ exists: true, text: mine }, mine), true);
+  assert.equal(isOwnLock({ exists: true, text: toDeployLockText({ owner: 'other', pid: 2, host: HOSTS.pro, at: '2026-10-16T06:29:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' }) }, mine), false);
+  assert.equal(isOwnLock({ exists: false, text: null }, mine), false);
+  assert.equal(shouldTakeDeployLock({ preview: true, check: false }), false);
+  assert.equal(shouldTakeDeployLock({ preview: false, check: true }), false);
+  assert.equal(shouldTakeDeployLock({ preview: false, check: false }), true);
+});
+
+test('部署锁:ln 回执丢失时按内容认回自己的锁', () => {
+  const mine = toDeployLockText({ owner: 'deploy-tuple:mini', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:30:01.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+  assert.equal(toLockKeep({ createdOk: true, existing: { exists: false, text: null }, lockText: mine }).action, 'keep');
+  assert.equal(toLockKeep({ createdOk: false, existing: { exists: true, text: mine }, lockText: mine }).action, 'keep');
+  assert.equal(toLockKeep({ createdOk: false, existing: { exists: true, text: mine + 'x' }, lockText: mine }).action, 'blocked');
+  assert.equal(toLockKeep({ createdOk: false, existing: { exists: false, text: null }, lockText: mine }).action, 'blocked');
+});
+
+test('收尾 bootstrap:开始前 absent 不重新加载,已加载的才恢复', () => {
+  const disabled = shouldResumePrereview('absent');
+  assert.equal(disabled.resume, false);
+  assert.equal(disabled.message, '开始前前置已停用,未重新加载');
+  assert.deepEqual(shouldResumePrereview('running'), { resume: true });
+  assert.deepEqual(shouldResumePrereview('not running'), { resume: true });
+});
+
+test('--preview 缺提交只报告 Mini 尚未取到,不 fetch', () => {
+  assert.deepEqual(toNewCommitCheck({ preview: true, hasCommit: false }), { action: 'missing', message: 'Mini 尚未取到该提交' });
+  assert.deepEqual(toNewCommitCheck({ preview: false, hasCommit: false }), { action: 'fetch' });
+  assert.deepEqual(toNewCommitCheck({ preview: true, hasCommit: true }), { action: 'ok' });
+  assert.deepEqual(toNewCommitCheck({ preview: false, hasCommit: true }), { action: 'ok' });
+});
+
+test('拿锁脚本用 ln,目标已存在则失败,锁名不被 lockHeld 误认', () => {
+  const script = toLinkLockScript(DEPLOY_LOCK_REL);
+  assert.match(script, /ln "\$tmp" "\$f"/);
+  assert.doesNotMatch(script, /mkdir "\$[df]"|toSteal|steal/);
+  assert.doesNotMatch(script, /set -C|noclobber|flock|lockf/);
+  assert.ok(DEPLOY_LOCK_REL.endsWith('deploy-tuple.lock'));
+  assert.doesNotMatch(path.basename(DEPLOY_LOCK_REL), /^lock\.json$/);
+  const matched = (p) => p.startsWith('mivo-prereview/state/mivo/')
+    && p.slice('mivo-prereview/state/mivo/'.length).split('/').length <= 2
+    && path.basename(p) === 'lock.json';
+  assert.equal(matched(DEPLOY_LOCK_REL), false);
+  assert.equal(matched(`${DEPLOY_LOCK_REL}.tmp.1.2`), false);
+  assert.equal(matched('mivo-prereview/state/mivo/01234567890123456789/lock.json'), true);
+});
+
+test('ln 锁:两个进程同时拿,只有一个成功,锁文件创建时已有完整内容', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-ln-'));
+  try {
+    const aText = toDeployLockText({ owner: 'A', pid: 100, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    const bText = toDeployLockText({ owner: 'B', pid: 200, host: HOSTS.pro, at: '2026-10-16T06:00:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(path.join(root, 'a.json'), aText);
+    fs.writeFileSync(path.join(root, 'b.json'), bText);
+    fs.writeFileSync(path.join(root, 'worker.sh'), `${toLinkLockScript(DEPLOY_LOCK_REL)}\n`);
+    const parallel = spawnSync('sh', ['-c', [
+      `cd ${JSON.stringify(root)}`,
+      '( cat a.json | sh worker.sh; echo A:$? ) > a.out &',
+      '( cat b.json | sh worker.sh; echo B:$? ) > b.out &',
+      'wait',
+      'cat a.out b.out',
+    ].join('\n')], { encoding: 'utf8' });
+    assert.equal(parallel.status, 0, parallel.stderr);
+    const codes = [...parallel.stdout.matchAll(/[AB]:(\d+)/g)].map((m) => Number(m[1]));
+    assert.equal(codes.length, 2);
+    assert.equal(codes.filter((c) => c === 0).length, 1, parallel.stdout);
+    assert.equal(codes.filter((c) => c === 1).length, 1, parallel.stdout);
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    assert.equal(fs.statSync(lockFile).isFile(), true);
+    const body = fs.readFileSync(lockFile, 'utf8');
+    assert.ok(body === aText || body === bText);
+    assert.match(body, /"expiresAt"/);
+    assert.equal(fs.readdirSync(path.dirname(lockFile)).some((name) => name.includes('.tmp.')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ln 锁:目标已存在则失败,不改已有内容', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-ln-exist-'));
+  try {
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    const other = toDeployLockText({ owner: 'B', pid: 2, host: HOSTS.pro, at: '2026-10-16T06:01:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(lockFile, other);
+    const mine = toDeployLockText({ owner: 'A', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toLinkLockScript(DEPLOY_LOCK_REL)}`], { encoding: 'utf8', input: mine });
+    assert.equal(r.status, 1, r.stderr);
+    assert.equal(fs.readFileSync(lockFile, 'utf8'), other);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('过期锁不顶替:ln 仍失败,内容原样', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-stale-'));
+  try {
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    const stale = toDeployLockText({ owner: 'old', pid: 1, host: HOSTS.mini, at: '2026-10-16T00:00:00.000Z', target: A, expiresAt: '2026-10-16T00:00:01.000Z' });
+    fs.writeFileSync(lockFile, stale);
+    const mine = toDeployLockText({ owner: 'A', pid: 100, host: HOSTS.pro, at: '2026-10-16T06:00:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toLinkLockScript(DEPLOY_LOCK_REL)}`], { encoding: 'utf8', input: mine });
+    assert.equal(r.status, 1, r.stderr);
+    assert.equal(fs.readFileSync(lockFile, 'utf8'), stale);
+    const decision = toLockAcquire({ existing: { exists: true, text: stale }, now: Date.parse('2026-10-16T06:00:00.000Z') });
+    assert.equal(decision.action, 'blocked');
+    assert.equal(decision.expired, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('释放锁:内容不同就不删,只告警', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-rel-'));
+  try {
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    const mine = toDeployLockText({ owner: 'A', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+    const other = toDeployLockText({ owner: 'B', pid: 2, host: HOSTS.pro, at: '2026-10-16T06:01:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(lockFile, other);
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toReleaseLockScript(DEPLOY_LOCK_REL)}`], { encoding: 'utf8', input: mine });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /已不是本次的,不删/);
+    assert.equal(fs.readFileSync(lockFile, 'utf8'), other);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('释放锁:确认是自己的才删掉', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-rel-own-'));
+  try {
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    const mine = toDeployLockText({ owner: 'A', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(lockFile, mine);
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toReleaseLockScript(DEPLOY_LOCK_REL)}`], { encoding: 'utf8', input: mine });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(lockFile), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('释放锁只发一次:ssh 断线不重试,报结果未知并给人工核对办法', () => {
+  assert.equal(RELEASE_LOCK_RETRIES, 1);
+  assert.deepEqual(toReleaseLockResult({ status: 0, stderr: '' }), { ok: true, message: '' });
+  assert.deepEqual(toReleaseLockResult({ status: 0, stderr: '部署锁已不是本次的,不删\n' }), { ok: true, message: '部署锁已不是本次的,不删' });
+  const lost = toReleaseLockResult({ status: 255, stderr: 'Connection reset' });
+  assert.equal(lost.ok, false);
+  assert.match(lost.message, /结果未知/);
+  assert.ok(lost.message.includes(DEPLOY_LOCK_PATH), lost.message);
+  const failed = toReleaseLockResult({ status: 1, stderr: 'rm: Permission denied' });
+  assert.equal(failed.ok, false);
+  assert.match(failed.message, /Permission denied/);
+});
+
+test('save 抛 ENOSPC 时仍释放自己的锁', () => {
+  let released = false;
+  const { saveError, releaseError } = finalizeDeployError({
+    save: () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); },
+    release: () => { released = true; },
+  });
+  assert.equal(released, true);
+  assert.equal(saveError.message, 'ENOSPC');
+  assert.equal(releaseError, null);
 });
