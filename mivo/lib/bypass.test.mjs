@@ -8,6 +8,8 @@ export const REAL_REASON_COMMENTS = {
   970: "**绕过合并说明**(Art Support 维护者 PraiseZhu 决定)\n\n- 为什么绕过:本 PR 只改 `.github/workflows/review-pr.yml`(受保护路径),作者是 PraiseZhu,服务器审查要等作者以外的维护者放行。按新审查机修正方案,这个改动必须和 Review-PR 新版本(模型预算按作业时间收缩、Mini 执行超过 170 分钟才取消)在同一个上线停点一起生效,所以由维护者决定绕过合并。\n- 跳过的条件:必需检查 `review-pr`(受保护路径要作者以外的维护者放行)。其它必需检查都已通过。\n- 已做的审查:GPT 单审(gpt-6.1-sol)没有 P0/P1;`review_pr_workflow.node-test.mjs` 12/12 通过,变异测试确认把 160 改回 110 或删掉新环境变量会被拦住。\n- 合并的提交:`e808709d0911502a628c2c790ea704cda969ad0f`。",
   972: "**绕过合并说明**（Art Support 维护者 PraiseZhu 决定）\n\n- 为什么绕过：本 PR 新增 `.github/workflows/review-watchdog.yml`（受保护路径），作者是 PraiseZhu，服务器审查要等作者以外的维护者放行；维护者已决定按新审查机修正方案用 Art Support 绕过合并。\n- 跳过的条件：必需检查 `review-pr`（受保护路径要作者以外的维护者放行）。其它必需检查都已通过，含平台证据门与当前 head 的 Windows 单测、冒烟。\n- 已做的审查：GPT 单审（gpt-6.1-sol）没有 P0/P1；记 1 条 P2：真实故障已提醒后，手动用 1～45 分钟的 `simulate_age_min` 演练会发出不带「演练」标记的「已恢复」，下一次正常运行会重新告警。`check.test.mjs` 13/13、`review_pr_workflow.node-test.mjs` 14/14 通过。\n- 合并的提交：`4efd9bf4e6af34ca2a655d1a2df437807f000e67`（在 GPT 审过的 `99d3b2c` 上合入最新 main，本 PR 自己的改动没有变）。\n",
   1018: "**维护者 PraiseZhu 决定对本 PR 使用紧急强合口子(bypass),说明如下。**\n\n- **跳过哪一项**:只跳过必需检查 `review-pr`。本 PR 改了 `.github/workflows/ci.yml` 和 `.github/workflows/plugin-health.yml`,属于受保护路径,自动审查机不审、不出这条检查,按 `CONTRIBUTING.md` 需要另一位维护者在当前 head 上 Approve 才会变绿。作者本人不能 Approve 自己的 PR。\n- **为什么不等**:这不是线上事故,是维护者 PraiseZhu 在本会话明确要求强合(2026-10-16)。\n- **其余门禁都已满足**(head `1d965474e0645242ba5d717bed4755ada1fe4059`):8 项必需检查里除 `review-pr` 外 7 项成功;Windows 4 个 unit 分片和 Windows plugin smoke 成功;未解决评审线程 0 条。\n- **补充的人工把关**:独立代码审查(review-pr skill,GPT)结论 PASS+NOTES,没有成立的 P0/P1;e2e 验证(真实 vitest、真实 job 数据干跑 plugin-health)结论 E2E PASS。记录的 P2/P3 不阻塞,不在本 PR 修。\n- **合并方式**:Squash,并用 `--match-head-commit` 锁定上述 head,head 变化则拒绝合并。\n\n背景:issue #1004(Plugin Nightly 因 depositBrain 用例超时翻红)。本 PR 不关闭该 issue,它按哨兵规则在 main 上 Plugin Nightly 实际重跑转绿后自动关闭。\n",
+  // #1031(2026-10-17 01:23 绕过合入)上的「人工审批例外」说明:正文没有 绕过/强合/bypass/三审,末尾是 mivo-pr1031-approved-merge-exception 暗记
+  1031: "本次按维护者在当前会话的明确授权（“合并”），对 #1031 执行一次人工审批例外。独立 GPT 单审和端到端验证已通过，没有 P0/P1；当前提交的构建、Linux/Windows 测试、CodeQL、Greptile 和增量安全扫描均通过，未解决评审线程为 0。\n\n本次仅跳过尚未产生的 review-pr 人工审批检查（受保护路径等待另一位维护者 Approve），以 squash 方式合并并绑定已验证的提交。合入后将 main/release 的 pr-size-gate 检查替换为 pr-ci-freshness，其余门禁保留。\n\n执行账号：PraiseZhu。已验证 head：f6c0dc383f63db4e73f75eea8a12f653446a7c09；base：aac55b01dcc855d5728fbe9ebfdb4ab5b655abea。\n<!-- mivo-pr1031-approved-merge-exception head=f6c0dc383f63db4e73f75eea8a12f653446a7c09 -->",
   1024: "**维护者 PraiseZhu 决定对本 PR 使用紧急强合口子(bypass),说明如下。**\n\n- **跳过哪一项**:只跳过必需检查 `review-pr`。本 PR 改了 `.github/workflows/plugin-health.yml`,属于受保护路径,自动审查机不审、不出这条检查;作者本人不能 Approve 自己的 PR。\n- **为什么不等**:不是线上事故,是维护者 PraiseZhu 在会话中明确要求「审查和 e2e 通过就合」(2026-10-16)。\n- **其余门禁都已满足**(head `90a67b3fea973cdd743bf6c54138d0829ddf8a73`):必需检查除 `review-pr` 外全部成功,无失败或进行中的检查;未解决评审线程 0 条;Greptile 5/5。\n- **补充的人工把关**:\n  - 独立代码审查(review-pr skill,GPT):PASS+NOTES,没有成立的 P0/P1。去掉新增白名单块后脚本与 base 字节一致;其余 5 个被监控 workflow 新旧版 1,620 组组合行为一致;误开单、误关单两个方向在 base 上可复现、在 head 上都被挡住。记录 1 条 P3(注释把已退役的 secret-scan dispatch 说成真实复跑),不修。\n  - e2e(GPT):E2E PASS。用真实历史 run 数据驱动新旧版脚本对照,覆盖 #1021 的 dispatch 失败、当年误关 #638/#682 的 dispatch 成功、每日 schedule 与其余 5 个 workflow;新增测试在 base 上按预期失败。\n- **已知取舍**:PR Hygiene 中只在手动派发时出现的真实瞬时故障不再开红灯单,持续故障由每日 schedule 覆盖。\n- **合并方式**:Squash,`--match-head-commit` 锁定上述 head。\n\n合并后 #1021 将按误报手动关闭(not planned)。\n",
 };
 
@@ -122,4 +124,24 @@ test('规则集记录按合入先后处理(接口返回新的在前,最旧的先
   const older = suite(sha(21), { at: '2026-10-17T09:00:00+08:00' });
   const { remind } = toBypassReminders({ suites: [newer, older], prBySha: { [sha(20)]: 2, [sha(21)]: 1 }, since: SINCE });
   assert.deepEqual(remind.map((r) => r.pr), [1, 2]);
+});
+
+test('#1031 的「人工审批例外」评论(带 mivo-pr1031-approved-merge-exception 暗记)认作已写原因', () => {
+  const comment = human('PraiseZhu', REAL_REASON_COMMENTS[1031]);
+  assert.equal(hasBypassReason([comment]), true);
+  const { remind, skipped } = toBypassReminders({ suites: [suite(sha(40))], prBySha: { [sha(40)]: 1031 }, commentsByPr: { 1031: [comment] }, since: SINCE });
+  assert.deepEqual(remind, []);
+  assert.deepEqual(skipped.map((x) => x.why), ['has-reason']);
+  // 暗记本身就是维护者手写的例外记录;正文写「审批例外」四个字也认
+  assert.equal(hasBypassReason([human('PraiseZhu', '本次人工审批例外,原因见 …')]), true);
+  assert.equal(hasBypassReason([human('PraiseZhu', '<!-- mivo-pr77-approved-merge-exception head=abc -->')]), true);
+});
+
+test('只排除机器自己的暗记(mivo-review:、mivo-issue-assessment、mivo-bypass-reminder);人手写的其它 mivo- 暗记不当机器评论', () => {
+  assert.equal(hasBypassReason([human('PraiseZhu', '强合 <!-- mivo-review:advisory head=a -->')]), false);
+  assert.equal(hasBypassReason([human('PraiseZhu', 'bypass <!-- mivo-issue-assessment:v1 repo=o/r -->')]), false);
+  assert.equal(hasBypassReason([human('PraiseZhu', `三审 ${REMINDER_MARKER}`)]), false);
+  assert.equal(hasBypassReason([human('PraiseZhu', '强合,原因见上 <!-- mivo-custom-note -->')]), true);
+  // 暗记是例外记录,但作者是 bot 时仍不算
+  assert.equal(hasBypassReason([{ user: { login: 'github-actions[bot]', type: 'Bot' }, body: '<!-- mivo-pr1-approved-merge-exception -->' }]), false);
 });

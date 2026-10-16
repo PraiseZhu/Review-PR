@@ -267,6 +267,8 @@ function sweepBypassReminders() {
 // 只限还没花过模型调用的情况(mivo.codex.attempts 为空):模型审完才在发布阶段撞限额的,照旧记失败走退避,
 // 否则下一轮会不带退避地重跑一次完整的付费审查。
 const GITHUB_RATE_LIMIT_RE = /API rate limit already exceeded|RATE_LIMITED/;
+// 同一个提交最多退回这么多次:限额一直不恢复(或每次都撞)时,第 4 次起照旧记失败走退避,不会无限重派。
+const RATE_LIMIT_REFUNDS_PER_HEAD = 3;
 function isGithubRateLimited(server) {
   if (server?.outcome !== 'error') return false;
   if ((server.mivo?.codex?.attempts ?? []).length > 0) return false;
@@ -1196,12 +1198,17 @@ function collectServerRun(ctx, entry) {
       writeJson(stateFile('pause.json'), { until: new Date(Date.now() + HEALTH_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
       log('health-pause', { pr: task.pr, reason: server.reason });
     }
-  } else if (isGithubRateLimited(server)) {
+  } else if (isGithubRateLimited(server) && (loadStore().prs[task.pr]?.rateLimitRefunds?.[task.head] ?? 0) < RATE_LIMIT_REFUNDS_PER_HEAD) {
     // GitHub 限额用完:服务器没读到 PR 信息就没审成,这次派发不算一次尝试、也不算一次失败,
-    // 同一提交的派发上限和退避不被白白占用。不加整体暂停:额度没恢复时下一轮 pre-check 自己会失败,也就不会派发。
+    // 同一提交的派发上限和退避不被白白占用。不加整体暂停:额度没恢复时下一轮 pre-check 自己会失败,也就不会派发;
+    // 自带封顶:同一个提交最多退回 RATE_LIMIT_REFUNDS_PER_HEAD 次,之后照旧记失败走退避。
     const record = loadStore().prs[task.pr] ?? {};
-    bumpOwned(ctx, task, { attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) } });
-    log('github-rate-limited', { pr: task.pr, runId: entry.runId, head: task.head });
+    const refunds = record.rateLimitRefunds?.[task.head] ?? 0;
+    bumpOwned(ctx, task, {
+      attempts: { ...(record.attempts ?? {}), [task.head]: Math.max(0, (record.attempts?.[task.head] ?? 1) - 1) },
+      rateLimitRefunds: { ...(record.rateLimitRefunds ?? {}), [task.head]: refunds + 1 },
+    });
+    log('github-rate-limited', { pr: task.pr, runId: entry.runId, head: task.head, refunds: refunds + 1 });
   } else {
     recordFailure(ctx, task, server.outcome === 'error');
   }

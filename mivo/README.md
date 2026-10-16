@@ -153,7 +153,7 @@ flowchart LR
 
 ## 审查失败后怎么重试
 
-规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发。被拦住时 Mini 日志写 `retry-held`。
+规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
 
@@ -162,7 +162,7 @@ flowchart LR
 规则在 Mivo `docs/loops/review-pr-setup.md`「紧急强合」：强合前要在 PR 上写一条评论，说明为什么紧急、跳过哪几项检查或条件、谁决定的。只靠文档不够（#964 写进文档之后仍有 PR 没写），所以 Mini 每轮在 wake-held 之后、pre-check 之前调一次 `prereview/bypass-reason.mjs --sweep`（只在 `live` 模式；失败、超时、抛异常都只记日志，不影响本轮接单）。
 
 - 判定数据用 GitHub 规则集自己记的绕过记录：`gh api 'repos/<仓库>/rulesets/rule-suites?ref=refs/heads/main&rule_suite_result=bypass&time_period=week&per_page=100'`，只看 `result=bypass`、`ref=refs/heads/main`、`pushed_at` 不早于上线时间的记录，再反查 `commits/<after_sha>/pulls` 取第一个 PR。全程只用 REST，不占 GraphQL 额度。
-- 「已有原因」：PR 上任意一条评论同时满足 ① 作者不是 bot（登录名不以 `[bot]` 结尾）；② 正文不含 `<!-- mivo-` 机器暗记；③ 正文匹配 `绕过|强合|bypass|三审`（不分大小写）。不维护「谁能强合」的名单。
+- 「已有原因」：PR 上任意一条评论同时满足 ① 作者不是 bot（登录名不以 `[bot]` 结尾）；② 正文不含机器自己的暗记（`<!-- mivo-review:` 审查报告、`<!-- mivo-issue-assessment` issue 评估、`<!-- mivo-bypass-reminder -->` 本提醒；这些评论常用维护者账号发，所以按暗记排除，人手写的其它 `mivo-` 暗记不排除）；③ 正文匹配 `绕过|强合|bypass|三审|审批例外`（不分大小写），或带维护者手写的「人工审批例外」暗记 `<!-- mivo-pr<N>-approved-merge-exception … -->`（#1031 的写法）。不维护「谁能强合」的名单。
 - 没有原因：在该 PR 上发一条评论，@ 绕过的人，请补原因，末尾带暗记 `<!-- mivo-bypass-reminder -->`（所以提醒本身不会被当成原因）。每个 PR 只提醒一次（状态文件记账；PR 上已经有带这个暗记的评论也按已提醒处理，状态文件丢了或发评论的结果不确定时不会发第二条），单轮最多 5 条，发一条就立刻记账再发下一条。
 - 状态文件 `<状态目录>/mivo/bypass-reminders.json`：`{ since, lastSweepAt, reminded: { <PR 号>: { at, commentUrl } } }`。第一次运行只写 `since`（现在）就退出，所以上线以前的绕过（#927、#935、#941、#967）不会被自动提醒；距 `lastSweepAt` 不到 1 小时直接 `skipped: throttled`；每次真正扫描不论成败都先更新 `lastSweepAt`，出错时不会每轮重试。
 - 读 GitHub 失败输出 `ok:false` 和原因（退出码仍为 0），不发评论。`--dry-run` 只读：不发评论，也不写状态文件。

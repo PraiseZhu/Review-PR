@@ -1261,6 +1261,25 @@ test('世界:服务器结果报 GitHub 限额用完:这个提交的尝试次数�
   assert.equal(other.logged('github-rate-limited').length, 0);
 });
 
+test('世界:同一个提交连续撞限额,退回尝试最多 3 次;第 4 次起照旧记失败走退避(限额分支自带封顶)', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.rateLimited.add(1);
+  // launchd 每 3 分钟拉起一个新进程:一个进程收完这个提交的结果就退出,下一个进程再派发。
+  for (let i = 0; i < 6 && w.logged('collected').length < 4; i += 1) {
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled, { maxMs: 300 * MIN }), `第 ${i + 1} 个进程结束`);
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+    w.now += 3 * MIN;
+  }
+  const store = w.read(w.state('reviews.json')).prs[1];
+  assert.equal(w.logged('collected').length, 4, '同一个提交派发了 4 次');
+  assert.equal(w.logged('github-rate-limited').length, 3, '只退回 3 次');
+  assert.equal(store.rateLimitRefunds.h1, 3);
+  assert.equal(store.failures.h1.count, 1, '第 4 次起记失败,进入退避');
+  assert.equal(store.attempts.h1, 1, '第 4 次的尝试次数不再退回');
+});
+
 test('世界:正常审过的结果不会被误当成限额', async () => {
   const w = makeWorld();
   w.openPr(1, 'h1');

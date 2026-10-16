@@ -5,20 +5,28 @@
 
 export const REMINDER_MARKER = '<!-- mivo-bypass-reminder -->';
 // 评论里出现其中任一词就算写了原因;宁可漏提醒,不误提醒(漏发只是少一次提醒,不影响审查)。
-const REASON_RE = /绕过|强合|bypass|三审/i;
-const MACHINE_MARK = '<!-- mivo-';
+// 「审批例外」是维护者人工审批合入的写法(#1031:「人工审批例外」,没有上面四个词)。
+const REASON_RE = /绕过|强合|bypass|三审|审批例外/i;
+// 机器自己发的评论暗记:审查报告(mivo-review:)、issue 评估(mivo-issue-assessment)、本提醒(mivo-bypass-reminder)。
+// 这些评论常常用维护者的账号发,作者判断排除不了它们,正文里又可能碰巧有关键词,所以按暗记排除。
+// 人手写的其它 mivo- 暗记(例如 mivo-pr1031-approved-merge-exception)不当机器评论。
+const MACHINE_MARK_RE = /<!--\s*mivo-(?:review:|issue-assessment|bypass-reminder)/;
+// 维护者手写的「人工审批例外」记录暗记:带它的人写评论本身就是原因说明。
+const EXCEPTION_MARK_RE = /<!--\s*mivo-pr\d+-approved-merge-exception/;
 
 const loginOf = (comment) => String(comment?.user?.login ?? comment?.login ?? '');
 const isBot = (comment) => comment?.user?.type === 'Bot' || /\[bot\]$/i.test(loginOf(comment));
 
 /**
  * PR 上是否已经有人写了绕过原因:任意一条评论同时满足
- * ① 作者不是 bot(登录名不以 [bot] 结尾);② 正文不含 `<!-- mivo-` 机器暗记(含本提醒自己的暗记);③ 正文匹配关键词。
+ * ① 作者不是 bot(登录名不以 [bot] 结尾);② 正文不含机器暗记(审查报告、issue 评估、本提醒自己的暗记);
+ * ③ 正文匹配关键词,或带「人工审批例外」暗记。
  */
 export function hasBypassReason(comments) {
   return (comments ?? []).some((comment) => {
     const body = String(comment?.body ?? '');
-    return loginOf(comment) !== '' && !isBot(comment) && !body.includes(MACHINE_MARK) && REASON_RE.test(body);
+    return loginOf(comment) !== '' && !isBot(comment) && !MACHINE_MARK_RE.test(body)
+      && (REASON_RE.test(body) || EXCEPTION_MARK_RE.test(body));
   });
 }
 
