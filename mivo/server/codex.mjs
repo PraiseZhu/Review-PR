@@ -1,7 +1,7 @@
 // codex.mjs — 在隔离工作区里跑 Codex CLI 审查。沿用 Mivo 旧席位已验证的做法:
 // 凭据写进 CODEX_HOME、key 只放在 CLI 进程的 CODEX_API_KEY、沙箱子进程排除这些变量;
 // 另外整个子进程环境从零构造,GitHub 令牌不可能被继承。产物落盘前把 key 原文替换掉。
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -50,6 +50,19 @@ export function redact(text, secrets) {
 }
 
 const sizeOf = (file) => { try { return statSync(file).size; } catch { return 0; } };
+
+/**
+ * CLI 的版本串(`codex --version` 输出的第一行,去掉首尾空白),写进结果包好让失败排查不用再去服务器上翻升级日志。
+ * 只是记录:CLI 不存在、命令报错或超时都返回 null,绝不能让审查因此中断。
+ */
+export function readCodexVersion(bin, exec = execFileSync) {
+  try {
+    const first = String(exec(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 })).split('\n')[0].trim();
+    return first || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 按完整 JSONL 事件统计一次调用的节奏:一个事件可能分几块写入,换行到达才算一个事件,时间取换行到达那一刻。
