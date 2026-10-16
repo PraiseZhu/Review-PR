@@ -1024,3 +1024,63 @@ syncBuiltinESMExports();
     assert.match(created[0].input, /<!-- review-pr:signoff-mode=protected -->$/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('P2-a: 普通确认 issue 转受保护模式时不复用,新开 protected issue 并关掉旧 issue', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mivo-hold-p2a-'));
+  try {
+    const repoRoot = join(directory, 'repo');
+    mkdirSync(repoRoot);
+    for (const args of [['init', '--quiet'], ['remote', 'add', 'origin', 'https://github.com/o/r.git']]) {
+      assert.equal(spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).status, 0);
+    }
+    const rulesFile = join(directory, 'rules.json');
+    writeFileSync(rulesFile, JSON.stringify({ maintainerAllowlist: [], signoffGate: { label: 'awaiting-discussion' } }));
+    const fixtureFile = join(directory, 'fixture.json');
+    const mockFile = join(directory, 'mock.mjs');
+    writeFileSync(mockFile, `import { readFileSync, writeFileSync } from 'node:fs';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const holdFixtureGh = ${holdFixtureGh.toString()};
+const original = cp.spawnSync;
+cp.spawnSync = (command, args, options) => {
+  if (command !== 'gh') return original(command, args, options);
+  const fixture = JSON.parse(readFileSync(process.env.HOLD_FIXTURE, 'utf8'));
+  const result = holdFixtureGh(args, options, fixture);
+  writeFileSync(process.env.HOLD_FIXTURE, JSON.stringify(fixture));
+  return result;
+};
+syncBuiltinESMExports();
+`);
+    const env = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(mockFile).href}`].filter(Boolean).join(' '),
+      REVIEW_PR_REPO_ROOT: repoRoot, REVIEW_PR_RULES_FILE: rulesFile, HOLD_FIXTURE: fixtureFile, REVIEW_PR_NO_CRED_FALLBACK: '1',
+      REVIEW_PR_STATE_DIR: join(directory, 'state') };
+    const payload = { issueTitle: '维护者确认 · PR #971 改 workflow', issueBody: '### 触发原因\n\nx\n\n### PR\nhttps://x\n\n### 确认方式\n\ny',
+      commentBody: '本 PR 命中维护者确认门。讨论 issue:{{ISSUE_URL}}' };
+    writeFileSync(fixtureFile, JSON.stringify({ calls: [], viewer: 'PraiseZhu', issues: { 901: { state: 'OPEN', body: `x${issueFooter(971)}` } },
+      pr: { number: 971, state: 'OPEN', mergedAt: null, author: { login: 'outsider' }, url: 'https://github.com/o/r/pull/971',
+        comments: [{ author: { login: 'PraiseZhu' }, body: '通知\n\n<!-- review-pr:product-gate kind=arch issue=https://github.com/o/r/issues/901 -->', createdAt: '2026-10-16T01:00:00Z' }],
+        labels: ['awaiting-discussion'], headRefOid: SHA } }));
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./signoff-hold.mjs', import.meta.url)), '971', '--signoff-mode', 'protected', '--kind', 'protected', '--payload-file', '-'],
+      { cwd: repoRoot, env, encoding: 'utf8', input: JSON.stringify(payload) });
+    assert.equal(child.status, 0, child.stdout + child.stderr);
+    const out = JSON.parse(child.stdout);
+    const fixture = JSON.parse(readFileSync(fixtureFile, 'utf8'));
+    const created = fixture.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === 'create');
+    const closed = fixture.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === 'close' && c.args[2] === '901');
+    const closeComment = fixture.calls.find((c) => c.args[0] === 'issue' && c.args[1] === 'comment' && c.args[2] === '901');
+    assert.equal(out.issueCreated, true, JSON.stringify(out));
+    assert.equal(out.issueReuse, 'prior-not-protected', JSON.stringify(out));
+    assert.equal(created.length, 1, '不能复用普通确认 issue');
+    assert.match(created[0].input, /<!-- review-pr:signoff-mode=protected -->$/);
+    assert.equal(closed.length, 1, '旧普通确认 issue 必须关掉');
+    assert.match(closeComment?.input ?? '', /issues\/90[0-9]/);
+    assert.match(closeComment?.input ?? '', /review-pr:signoff-protected-supersede/);
+    assert.equal(fixture.issues['901'].state, 'CLOSED');
+    // 旧普通 issue 上的同意放行不能当受保护路径放行:新 issue 还没有放行评论
+    const newBody = created[0].input;
+    assert.equal(parseSignoffMode(newBody), 'protected');
+    const newRel = selectDiscussionIssueReleases({ ...releaseOpts, pr: 971, issue: { title: payload.issueTitle, body: newBody, comments: [] } });
+    assert.equal(newRel.issueCommentRelease, null);
+    assert.equal(evaluateProtectedPathRelease({ ...protectedBase, issueRelease: null }).released, null);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
