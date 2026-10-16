@@ -9,7 +9,7 @@
 //        [--pr <Mivo PR 号> --pr-head <sha>] [--stop pause|hold] [--max-wait-min 180] [--record-dir <目录>] [--preview]
 //   --on 本机是哪台(pro、mini、air):本机的命令直接执行,另外两台经 ssh(三台互相用同一组 ssh 别名)。
 //   --record-dir 部署记录与 trust 快照放哪,默认 ~/Library/Logs/mivo-prereview/deploy。
-//   --preview 只读核对并打印新旧 tuple,不写任何东西。
+//   --preview 只读核对并打印新旧 tuple,不写任何东西,也不 git fetch;新提交 Mini 还没有时只报告「Mini 尚未取到该提交」。
 //   --stop pause:首次上线(线上旧代码不认 deploy-hold):写 pause.json 只抬高 until、保留其它字段,被旧进程改写就提回;
 //                收尾时恢复成原内容与最近一次运行暂停里 until 最晚、还没到期的那份,都到期才删除。
 //   --stop hold:之后的上线与回滚:写 deploy-hold.json,等前置停下——新代码停机握手,写出 lockReleased:true 的
@@ -20,14 +20,18 @@
 //        workflow 先变、其余还没切的这段时间 tuple 不一致,要紧接着运行;这时切换失败,退回后整组仍不一致,保持停止。
 // 不对还在跑的进程 bootout(SIGTERM 不走 finally,会留下 60 分钟的锁),也不删不知道归属的锁。
 // 任一步失败:已切的部分按「先比对旧值再写」退回;tuple 不是整体一致(全旧或全新)就保持停止并提醒,不 bootstrap。
-// 退出码:0 整组上线完成;1 失败但已整组退回旧值、恢复前置(或什么都没切);2 失败且保持停止,要人工处理。
+// 退出码:0 整组上线完成;1 失败但已整组退回旧值、恢复前置(或什么都没切,含部署锁被别人占用);2 失败且保持停止,要人工处理
+// (含 tuple 已整组切到新版本后撤停点或 bootstrap 失败:新版本已上、前置审查停止)。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { WF_PATH, HOSTS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold } from './tuple-lib.mjs';
+import {
+  WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  toFinalizeFailure, toLockAcquire, toDeployLockText, isOwnLock, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
+} from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // 从 Mini 的 skill 检出里跑时,切换检出后同目录的文件已是新版本:prereq-check.mjs 在启动时就读进来。
@@ -183,7 +187,10 @@ function preflight() {
   if (!['identical', 'ahead'].includes(onMain)) throw new Error(`${NEW_SKILL} 不在 Review-PR main 上(compare=${onMain})`);
   const head = remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`);
   if (head.stdout.trim() !== OLD_SKILL) throw new Error(`Mini 的 skill 检出是 ${head.stdout.trim() || head.stderr},不是 ${OLD_SKILL}`);
-  must(remote('mini', `git -C ${SKILL_REL} fetch --quiet origin ${NEW_SKILL} && git -C ${SKILL_REL} cat-file -e ${NEW_SKILL}^{commit}`), 'Mini 预取新提交');
+  const hasCommit = remote('mini', `git -C ${SKILL_REL} cat-file -e ${NEW_SKILL}^{commit}`).ok;
+  const commitCheck = toNewCommitCheck({ preview: PREVIEW, hasCommit });
+  if (commitCheck.action === 'missing') throw new Error(commitCheck.message);
+  record.needFetch = commitCheck.action === 'fetch';
   const mainWf = mainWorkflowSha();
   if (PR) {
     if (mainWf !== OLD_WF) throw new Error(`main 上 ${WF_PATH} 的 sha256 是 ${mainWf},不是旧值 ${OLD_WF}`);
@@ -434,6 +441,42 @@ function bootstrap() {
   sleep(15_000);
   say(`前置审查已重新加载,state=${launchState()}`);
 }
+function resumePrereview() {
+  const d = shouldResumePrereview(record.stateAtStart);
+  if (!d.resume) {
+    say(d.message);
+    return;
+  }
+  bootstrap();
+}
+function acquireLock() {
+  if (!shouldTakeDeployLock({ preview: PREVIEW, check: false })) return;
+  const existing = readRemote('mini', DEPLOY_LOCK_REL);
+  const decision = toLockAcquire({ existing, now: Date.now() });
+  if (decision.action === 'blocked') throw new Error(`${decision.reason},没有改任何东西`);
+  const expected = decision.action === 'steal' ? sha256(existing.text) : 'none';
+  if (decision.action === 'steal') say(`部署锁过期,顶替 ${decision.previous.owner}(pid ${decision.previous.pid})`);
+  record.lockText = toDeployLockText({ owner: `deploy-tuple:${SELF}`, pid: process.pid, at: nowIso(), target: NEW_SKILL });
+  save();
+  casRemote('mini', DEPLOY_LOCK_REL, expected, record.lockText);
+}
+function releaseLock() {
+  if (!record.lockText) return;
+  if (isOwnLock(readRemote('mini', DEPLOY_LOCK_REL), record.lockText)) {
+    casRemote('mini', DEPLOY_LOCK_REL, sha256(record.lockText), null);
+  }
+  record.lockText = null;
+  save();
+}
+function finish(code) {
+  try {
+    releaseLock();
+  } catch (error) {
+    say(`释放部署锁失败:${error.message}`);
+    if (code === 0) code = 2;
+  }
+  process.exit(code);
+}
 
 // 主流程
 try {
@@ -443,6 +486,11 @@ try {
     process.exit(0);
   }
   phase('只读预检通过');
+  record.stateAtStart = launchState();
+  acquireLock();
+  if (record.needFetch) {
+    must(remote('mini', `git -C ${SKILL_REL} fetch --quiet origin ${NEW_SKILL} && git -C ${SKILL_REL} cat-file -e ${NEW_SKILL}^{commit}`), 'Mini 预取新提交');
+  }
   stopPoint();
   if (PR) mergePr();
   try {
@@ -458,17 +506,18 @@ try {
     save();
     if (failed.length || record.merged || mismatch.length) {
       say(`保持停止,没有 bootstrap。${failed.length ? `退回失败:${failed.join(' | ')}。` : ''}${record.merged ? `#${PR} 已合入 main(${record.merged}),现在 workflow 是新的、tuple 其余部分是旧的:要么 revert 这个合并,要么修好后重新切。` : ''}${mismatch.length ? `退回后整组 tuple 不一致:${mismatch.join(';')}。要么把 main 上的 workflow 改回旧值,要么修好后重新切。` : ''}部署记录:${RECORD_FILE}`);
-      process.exit(2);
+      finish(2);
     }
     releaseStop();
-    bootstrap();
-    say(`已整组退回旧 tuple 并恢复前置审查。部署记录:${RECORD_FILE}`);
-    process.exit(1);
+    resumePrereview();
+    say(`已整组退回旧 tuple。部署记录:${RECORD_FILE}`);
+    finish(1);
   }
   releaseStop();
-  bootstrap();
+  resumePrereview();
   phase('整组上线完成');
   say(`部署记录:${RECORD_FILE}`);
+  finish(0);
 } catch (error) {
   record.error = error.message;
   save();
@@ -481,16 +530,18 @@ try {
       record.tupleMismatch = mismatch;
       save();
       say(`保持停止,不撤销可能已写的停点:整组 tuple 不一致:${mismatch.join(';')}。请人工核对 Mini 的 pause.json、deploy-hold.json、巡检维护标记和 launchd。部署记录:${RECORD_FILE}`);
-      process.exit(2);
+      finish(2);
     }
     try {
       releaseStop();
-      if (record.phases.some((p) => p.name.includes('已 bootout'))) bootstrap();
+      if (record.phases.some((p) => p.name.includes('已 bootout'))) resumePrereview();
       say('什么都没切,已撤销停点');
     } catch (undo) {
       say(`撤销停点也失败了:${undo.message},请人工核对 Mini 的 pause.json、deploy-hold.json、维护标记和 launchd`);
-      process.exit(2);
+      finish(2);
     }
   }
-  process.exit(1);
+  const fin = toFinalizeFailure({ switchedCount: record.switched.length, stepCount: STEPS.length });
+  if (fin.code === 2) say(fin.message);
+  finish(fin.code);
 }

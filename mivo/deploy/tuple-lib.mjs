@@ -6,6 +6,10 @@
 export const WF_PATH = '.github/workflows/review-pr.yml';
 // 三台机器在彼此 ~/.ssh/config 里用同一组别名。
 export const HOSTS = { pro: 'Praise-MacBook', mini: 'Praise-Mini', air: 'Praise-MacAir' };
+// Mini 上的换版本互斥锁:开始写任何东西之前 CAS 写入,结束只按内容删自己的。
+export const DEPLOY_LOCK_REL = 'mivo-prereview/state/mivo/mivo/deploy-tuple.lock.json';
+// 超过这个时间的锁当残锁(SIGKILL 没清掉):默认可覆盖 --max-wait-min 180 再留余量。
+export const DEPLOY_LOCK_TTL_MS = 4 * 60 * 60 * 1000;
 const RESULT_TEXT_MAX = 4000;
 const short = (sha) => String(sha ?? '').slice(0, 7) || '(空)';
 
@@ -86,4 +90,68 @@ export function toDeployArgs({ current, target, wf, recordDir, maxWaitMin }) {
 // Cindy 定时任务「仅运行脚本」模式的收尾帧:stdout 只能有这一行。
 export function toCompleteFrame(resultText) {
   return `${JSON.stringify({ protocol: 'cindy-script/1', type: 'complete', resultText: String(resultText).slice(0, RESULT_TEXT_MAX) })}\n`;
+}
+
+// tuple 已整组切到新版本之后,撤停点或 bootstrap 失败:新版本已上,不能再报成「线上仍是旧版」。
+// switchedCount === stepCount 才算整组已切;没切或只切了一部分仍按旧口径(由调用方决定退回还是保持停止)。
+export function toFinalizeFailure({ switchedCount, stepCount }) {
+  if (switchedCount === stepCount && stepCount > 0) {
+    return { code: 2, message: '新版本已上、前置审查停止、要人工处理' };
+  }
+  return { code: 1, message: '线上仍是旧版、前置照常' };
+}
+
+// 自动换版本根据 deploy-tuple 退出码写给维护者的那句话。exit 2 不再写「线上仍是旧版、前置照常」。
+export function toAutoUpdateFinish(status, { reason, current, log, tail }) {
+  if (status === 0) return { code: 0, text: `已整组换上 ${reason}。日志 ${log}` };
+  if (status === 2) {
+    return { code: 2, text: `换版本 ${reason} 失败,前置审查保持停止,要人工处理。日志 ${log}\n${tail}` };
+  }
+  return { code: 1, text: `换版本 ${reason} 没换成,线上仍是 ${short(current)},前置照常。日志 ${log}\n${tail}` };
+}
+
+export function toDeployLockText({ owner, pid, at, target }) {
+  return `${JSON.stringify({ owner, pid, at, target })}\n`;
+}
+
+function parseDeployLock(text) {
+  try {
+    const j = JSON.parse(text);
+    if (!j || typeof j.owner !== 'string' || j.pid == null || typeof j.at !== 'string') return null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
+// 开始写之前拿锁。existing 是 Mini 上锁文件的 { exists, text }。无人占用才 acquire;
+// 别人占用且未过期 blocked(不改任何东西);超过 ttlMs 的残锁 steal。
+export function toLockAcquire({ existing, now, ttlMs = DEPLOY_LOCK_TTL_MS }) {
+  if (!existing.exists) return { action: 'acquire', expected: 'none' };
+  const holder = parseDeployLock(existing.text);
+  const at = Date.parse(holder?.at);
+  if (holder && Number.isFinite(at) && now - at > ttlMs) return { action: 'steal', previous: holder };
+  const who = holder ? `${holder.owner}(pid ${holder.pid})` : '无法解析的占用者';
+  return { action: 'blocked', reason: `部署锁被 ${who} 占用`, holder };
+}
+
+export function isOwnLock(lock, lockText) {
+  return Boolean(lockText) && lock.exists === true && lock.text === lockText;
+}
+
+export function shouldTakeDeployLock({ preview, check }) {
+  return !preview && !check;
+}
+
+// 收尾要不要 bootstrap:开始前 launchd 已是 absent(维护者停用)就保持停用;运行中或空闲的才重新加载。
+export function shouldResumePrereview(stateAtStart) {
+  if (stateAtStart === 'absent') return { resume: false, message: '开始前前置已停用,未重新加载' };
+  return { resume: true };
+}
+
+// --preview 全程只读:新提交不在 Mini 检出里时只报告,不去 fetch。
+export function toNewCommitCheck({ preview, hasCommit }) {
+  if (hasCommit) return { action: 'ok' };
+  if (preview) return { action: 'missing', message: 'Mini 尚未取到该提交' };
+  return { action: 'fetch' };
 }
