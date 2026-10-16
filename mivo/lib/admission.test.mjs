@@ -89,7 +89,7 @@ test('held 唤醒:确认 issue 有新留言且 PR 不在审就唤醒;在审就�
     { number: 954, title: '维护者确认 · PR #935 feat: y', updated_at: 't2' },
     { number: 960, title: '服务器收尾', updated_at: 't2' },
     { number: 961, title: '维护者确认 · PR #1 z', updated_at: 't2', pull_request: {} },
-    { number: 970, title: '维护者确认 · PR #970 新开', updated_at: 't1' },
+    { number: 970, title: '维护者确认 · PR #970 新开', updated_at: 't1', comments: 0 },
   ];
   const seen = { 952: { pr: 926, updatedAt: 't1' }, 954: { pr: 935, updatedAt: 't1' } };
   const r = toHeldWake({ issues, seen, busyPrs: new Set([935]) });
@@ -97,9 +97,25 @@ test('held 唤醒:确认 issue 有新留言且 PR 不在审就唤醒;在审就�
   assert.deepEqual(r.deferred, [935]);
   assert.deepEqual(r.next[952], { pr: 926, updatedAt: 't2' });
   assert.deepEqual(r.next[954], { pr: 935, updatedAt: 't1' });
-  assert.deepEqual(r.next[970], { pr: 970, updatedAt: 't1' }, '第一次见到只记录,不唤醒');
+  assert.deepEqual(r.next[970], { pr: 970, updatedAt: 't1' }, '第一次见到且没有评论只记录,不唤醒');
   assert.equal(r.next[960], undefined);
   assert.equal(r.next[961], undefined);
+});
+
+test('held 唤醒:第一次见到的 issue 已有评论也唤醒(创建到被记录之间收到的「同意放行」不能漏);在审的延后且不记录', () => {
+  const issues = [
+    { number: 980, title: '维护者确认 · PR #971 改 workflow', updated_at: 't1', comments: 2 },
+    { number: 981, title: '维护者确认 · PR #972 b', updated_at: 't1', comments: 1 },
+    { number: 982, title: '维护者确认 · PR #973 c', updated_at: 't1', comments: 0 },
+  ];
+  const r = toHeldWake({ issues, seen: {}, busyPrs: new Set([972]) });
+  assert.deepEqual(r.wake, [971]);
+  assert.deepEqual(r.deferred, [972]);
+  assert.deepEqual(r.next[980], { pr: 971, updatedAt: 't1' });
+  assert.equal(r.next[981], undefined, '在审的首次见到不记录,下个周期仍按首次处理');
+  assert.deepEqual(r.next[982], { pr: 973, updatedAt: 't1' });
+  // 已记录过、没有变化:不再重复唤醒
+  assert.deepEqual(toHeldWake({ issues: [issues[0]], seen: r.next }).wake, []);
 });
 
 test('提前释放的 PR(作者推了新提交、旧 run 已确认结束)不再算忙,同轮其它 PR 照旧算', () => {

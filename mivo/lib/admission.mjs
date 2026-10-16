@@ -72,7 +72,8 @@ export function toExcludedPrs({ busyPrs = new Set(), roundState = {}, mode = 're
 /**
  * 维护者确认 issue 有新留言(Slack「同意放行」同步过来)时唤醒对应 PR。
  * 在审 PR 先不唤醒、保留旧记录:现在写 retry 会被那一轮的 finalize 覆盖,放行就丢了;等它不在审时再触发。
- * 第一次见到的 issue 只记录,不唤醒。
+ * 第一次见到的 issue:没有评论只记录;已经有评论(comments > 0)也要唤醒。issue 创建后最多隔一个周期才被第一次记录,
+ * 维护者在这段时间里回复的「同意放行」否则要等到指纹再变化才被看到(受保护路径 PR 会白等)。多一次重判,没有副作用。
  */
 export function toHeldWake({ issues = [], seen = {}, busyPrs = new Set() }) {
   const next = {};
@@ -85,13 +86,15 @@ export function toHeldWake({ issues = [], seen = {}, busyPrs = new Set() }) {
     const pr = Number(m[1]);
     const previous = seen[issue.number];
     const changed = Boolean(previous) && previous.updatedAt !== issue.updated_at;
-    if (changed && busyPrs.has(pr)) {
-      next[issue.number] = previous;
+    const firstSeenWithComments = !previous && Number(issue?.comments) > 0;
+    if ((changed || firstSeenWithComments) && busyPrs.has(pr)) {
+      // 首次见到的不记录:下个周期仍是首次,在审结束后照样唤醒。
+      if (previous) next[issue.number] = previous;
       deferred.push(pr);
       continue;
     }
     next[issue.number] = { pr, updatedAt: issue.updated_at };
-    if (changed) wake.push(pr);
+    if (changed || firstSeenWithComments) wake.push(pr);
   }
   return { next, wake, deferred };
 }

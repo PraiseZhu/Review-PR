@@ -117,7 +117,7 @@ async function prepare() {
     writeJson(contextFile, ctx);
     state.context = { file: contextFile, diffFile, evidence: ctx.evidence, author: ctx.meta.author, viewer: ctx.approvalPolicy?.viewer,
       viewerIsAuthor: ctx.approvalPolicy?.viewerIsAuthor === true, url: ctx.meta.url, baseRefName: ctx.meta.baseRefName,
-      title: ctx.meta.title, protectedFiles: ctx.auto?.action === 'skip-protected-path' };
+      title: ctx.meta.title, protectedFiles: Boolean(ctx.protectedPath?.files?.length) || [ctx.auto?.action, ctx.auto?.fallback?.action].includes('skip-protected-path') };
     if (ctx.meta.state !== 'OPEN' || ctx.meta.isDraft) return finishEarly(state, 'state-changed', 'PR 已关闭或转为 draft');
     if (ctx.meta.headRefOid !== input.head || ctx.meta.baseRefOid !== input.base) {
       return finishEarly(state, 'state-changed', `PR 的 head/base 已变化(base ${input.base.slice(0, 12)} → ${String(ctx.meta.baseRefOid).slice(0, 12)}),下一轮重新采集`);
@@ -201,30 +201,17 @@ function readJobStart(input) {
 }
 
 function prepareProtectedApprove(state, ctx) {
-  // 受保护路径的 PR 不自动审查;维护者在当前 head 上 Approve 后,这里核验那条 Approve 再写 check。
-  const author = String(ctx.meta.author ?? '').toLowerCase();
-  const maintainers = new Set((ctx.signoff?.maintainers ?? []).map((m) => String(m).toLowerCase()));
+  // 受保护路径的 PR 不自动审查。放行信号由本 job 自己重跑的 context(protectedPath)独立复核,不信 Mini 的判断:
+  // 维护者(非作者)未撤销的 GitHub Approve(不绑 head),或确认 issue 上的 Slack / GitHub「同意放行」。
   if (!state.context.protectedFiles) return finishEarly(state, 'state-changed', '当前 head 已不涉及受保护路径,按普通 PR 重新送审');
-  const approval = findHeadApproval(state.input, maintainers, author);
-  if (!approval) return finishEarly(state, 'protected', '受保护路径:当前 head 还没有作者之外的维护者 Approve');
-  state.protectedApproval = approval;
+  const release = ctx.protectedPath?.released;
+  if (ctx.protectedPath?.waitingForAuthor || !release?.by) {
+    // retry:Mini 与服务器的判断出现分歧(Approve 被撤销、评论被删、名单变化)时,让下一轮重新判。
+    return finishEarly(state, 'protected', '受保护路径:服务器复核没认到作者之外的维护者放行(Approve、Slack 或确认 issue「同意放行」)', true);
+  }
+  state.protectedApproval = { by: release.by, via: release.via, at: release.at ?? null, fingerprint: release.fingerprint ?? `${release.via}:${release.by}:${release.at ?? ''}` };
   state.phase = 'prepared';
   saveState(state);
-}
-
-function findHeadApproval(input, maintainers, author) {
-  const reviews = JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${input.targetRepo}/pulls/${input.pr}/reviews?per_page=100`]).stdout).flat();
-  const latest = new Map();
-  for (const review of reviews) {
-    const login = String(review.user?.login ?? '').toLowerCase();
-    if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) latest.set(login, review);
-  }
-  for (const [login, review] of latest) {
-    if (review.state === 'APPROVED' && login !== author && maintainers.has(login) && review.commit_id === input.head) {
-      return { by: review.user.login, reviewId: review.id, at: review.submitted_at };
-    }
-  }
-  return null;
 }
 
 // 转 issue 跟进的登记(见 lib/deferrals.mjs):只放核验通过的条目进任务书;没采用的连同原因写进报告。
@@ -432,12 +419,15 @@ async function publish() {
       return writeResult(result);
     }
     if (state.protectedApproval) {
-      const by = state.protectedApproval.by;
+      const { by, via, at, fingerprint } = state.protectedApproval;
+      const viaText = { 'github-approve': 'GitHub Approve', 'slack-release': 'Slack「同意放行」', 'issue-comment': '确认 issue 评论「同意放行」' }[via] ?? via;
       result.outcome = 'protected';
-      result.reason = `受保护路径:由 ${by} 人工审查通过`;
-      result.authorNotice = { kind: 'protected-path', status: 'deduplicated', head: input.head, reason: 'manual-approved', fingerprint: `manual:${state.protectedApproval.reviewId}` };
+      result.reason = `受保护路径:由 ${by} 人工审核放行(${viaText})`;
+      result.authorNotice = { kind: 'protected-path', status: 'deduplicated', head: input.head, reason: 'manual-approved', fingerprint: `manual:${fingerprint}` };
+      // 只写 review-pr check。确认 issue 由 Mini 在看到 check 已成功后关(服务器令牌的 issue 写权限未核实)。
       if (input.mode !== 'dry-run') {
-        result.mivo.checkRun = completeCheckRun(input, null, { conclusion: 'success', title: `受保护路径:由 ${by} 人工审查通过`, summary: `维护者 ${by} 在当前 head 上 Approve(review ${state.protectedApproval.reviewId})。` });
+        result.mivo.checkRun = completeCheckRun(input, null, { conclusion: 'success', title: `受保护路径:由 ${by} 人工审核放行(${viaText})`,
+          summary: `维护者 ${by} 通过 ${viaText} 放行${at ? `(${at})` : ''},批一次一直有效,不绑定提交。放行凭据:${fingerprint}` });
       }
       return writeResult(result);
     }

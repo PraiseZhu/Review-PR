@@ -24,7 +24,7 @@ flowchart LR
 
 | 目录 | 内容 |
 |---|---|
-| `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
+| `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。确认门这一步先看是否改了受保护路径：改了就任何作者（含豁免名单）都走受保护路径确认 issue；没改，豁免作者开通知 issue 但不拦，非豁免作者走普通确认门（见「维护者确认 issue 的三种模式」）。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
 | `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（都按 PR head 取）、生效配置与答卷 schema |
@@ -38,6 +38,40 @@ flowchart LR
 | `prereview/gh-dryrun/` | dry-run 模式的 gh 垫片：读放行，写一律拦下 |
 | `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
+
+## 维护者确认 issue 的三种模式
+
+2026-10-16 维护者确认的规则（背景：#971，zhongxingtian-ai 改 `.github/workflows`，没有 issue 也没有 Slack 通报，白等 10 小时）。三种 issue 的骨架一样：标题前缀「维护者确认 · PR #」、三段 `###`、footer 句式不变，Mivo 的 `parseSignoffIssue` 照常解析；模式只靠 footer 末尾的隐藏标记区分，没有标记就是普通确认门。issue 由 Mini 上 PraiseZhu 的 `gh` 创建（在 Mivo 的 `signoffAnnounceAuthors` 内），每个 PR 一个，靠 PR 评论里的去重标记复用。
+
+| 模式 | 什么时候开 | footer 标记 | 标签 | 放行后 |
+|---|---|---|---|---|
+| 普通确认门 | 非豁免作者命中确认门（产品/架构/安全/冷更/规则文档/插件基座） | 无 | 挂 `awaiting-discussion` | 现有流程，放行后关 issue |
+| 受保护路径 | 改了受保护路径（`.github/**` 等），**任何作者**，含豁免名单 4 人 | `<!-- review-pr:signoff-mode=protected -->` | 挂 | 服务器把 `review-pr` 写成通过，Mini 看到后关 issue |
+| 通知 | 豁免名单作者命中确认门，但没改受保护路径 | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭，PR 同一轮照常送审 |
+
+放行有三条路，**批一次一直有效**，不绑提交：
+
+1. 维护者（非 PR 作者）在 PR 上 Approve。审查账号自己自动提交的 review 不算；维护者最新的状态是 DISMISSED 视为撤销；当前 head 上有维护者 Request Changes 时不放行，球在作者。
+2. 维护者在 Slack 讨论串回复「同意放行」（`slackRelease`，现有）。
+3. 维护者直接在 GitHub 确认 issue 下评论「同意放行」（`signoffGate.issueCommentRelease`，默认开启）。评论人要在维护者集合内且不是 PR 作者；必须有一整行是「同意放行」且全文没有否定词（「同意放行，xxx」不算）；带流程标记的评论（审查账号自己也是维护者）和被折叠的评论不算。
+
+**issue 必须属于本 PR**：issue 标题里的 PR 号和 footer 里的「关联 PR:#n」都要等于本 PR，否则这个 issue 上的任何放行都不采用。PR 评论里的去重标记任何人都能发，不校验这一条，作者就能把标记指向别的 PR 已经放行的 issue 借走放行。通知 issue 上的「同意放行」同样不算放行。
+
+受保护路径 PR 的流程：
+
+- 前置审查（Mini）判门：改了受保护路径且没有放行 → 开确认 issue（`--signoff-mode protected`）、挂标签、给作者发受保护路径提醒，PR 不送模型审查；Slack 通报写明「转人工审核」。已有可复用的确认 issue（不是通知 issue、没关闭）时复用，不另开；非豁免 PR 之前已有普通确认 issue 的话也复用，Slack 当初的文案不是「转人工审核」，但放行路径相同。
+- 放行成立后，Mini 派 `protected-approve`；服务器**独立重跑 context** 复核同一个放行信号（Approve 被撤销、评论被删、名单变化时不认），再写 `review-pr` check：标题写明是谁、用什么方式放行。服务器只写 check，不碰 issue（服务器令牌的账号和 issue 写权限没核实）。
+- 服务器没认到放行时回 `protected` 加重试；Mini 把前置判门那一轮的作者提醒回执补进结果，轮次汇总不会因为缺回执抛错。
+- 关 issue 由 Mini 做：下一次判门看到 `review-pr` 已经是 success，就跑 `signoff-release --labels-only --close-issue`（issue 已关则什么都不做）。失败只记警告，下一轮再试，合并后还有 sweep 兜底。
+- 确认 issue 有新评论时，`wakeHeldPrs` 在一个周期内唤醒重判。
+- dry-run 不写 GitHub：不开 issue、不写 check。
+
+通知 issue（豁免作者）：
+
+- 前置审查开 issue（带 notice 标记）、在 PR 上发带去重标记的评论，然后**立即关闭 issue**。Mivo 的 Slack 通报只在 `issues: opened` 事件上跑、读事件载荷，不检查 issue 是否 open，所以立即关闭不影响通报。关闭是为了：通知 issue 一直开着的话，之后同一个 PR 又改了受保护路径会复用它，Slack 收不到「转人工审核」。受保护路径模式碰到旧的通知 issue 一律另开新 issue。
+- 不挂 `awaiting-discussion`，不拦 PR，同一轮照常送审。PR 上已有确认标记就不再通知。
+- 通知没发出去（issue 或评论失败）不挡送审，记入结果并标记重试，下一轮重判时再发。
+- `pr-write-guard` 对豁免作者和维护者作者仍然拒绝 `hold`（普通确认 issue），只放行 `signoff-notice` 这个用途；受保护路径确认 issue（`protected-hold`）任何作者都能开。
 
 ## 严重度
 
@@ -128,7 +162,7 @@ flowchart LR
 - 已有轮次在等服务器审查时，每 3 分钟检查一次：先续锁、写心跳、看部署暂停，再判断要不要另开一轮。同时满足下面几条才另开一轮：没有部署暂停、不在 06:00–07:00 维护窗口、没有暂停（`pause.json`）、没有轮次还积压着未领取的任务、有空槽。轮次重叠多久都照常接单（用户 2026-10-14：白天不停接单）。
 - 开新一轮前只读比对一次维护者名单（`admit-candidates.mjs --authority-only`，不写快照）；变了就停止接单，手上的跑完退出，launchd 重启时 prepare 写新快照。plan 要跑几分钟，回来后启动这一轮前再查一次锁、skill SHA、维护窗口和部署暂停，任一不满足就不启动，plan 文件留给下次启动恢复。
 - 同一个 PR 不会同时进两个未完成的轮次；依赖在审 PR 的 PR（round-state 里的 `dependencyPrs`，按传递关系）一起延后。
-- 维护者确认 issue 有新留言（Slack 放行）时，在审 PR 先不唤醒，等它所在那一轮结束后的检查点再唤醒。
+- 维护者确认 issue 有新留言（Slack 放行、issue 评论放行）时，在审 PR 先不唤醒，等它所在那一轮结束后的检查点再唤醒。第一次被看到的 issue 如果已经有评论也唤醒：issue 创建后最多隔一个周期才被第一次记录，这段时间里收到的「同意放行」否则要等指纹再变化才被看到。
 - 进入 06:00 维护窗口、检出了新的 skill SHA、维护者名单变化、部署暂停、某一轮失败、接单时 plan 失败，就不再接新轮；手上的轮次跑完就退出，launchd 用新代码重新拉起。运行满 24 小时是保险上限。所有轮次结束时进程本来就会退出，空闲时寿命不变。
 - 不再接新轮之后，某一轮在审的只剩「还不知道有没有派出」的派发、又领不到新任务时，这一轮不再空等，按停机握手停下（`round-quiesced`，`reason: unresolved-only`）：不收尾，派发意图留在轮次目录里。进程照样退出、放锁，launchd 拉起的新进程带着这个占位接着找，并照常接新 PR。否则这种派发一直查不清，这一轮就永远结束不了，进程不退出，停止接单也不会复位。
 - 续锁（`refresh-lock.mjs`）返回不是 `refreshed: true`：锁已不属于本进程。记 `lock-lost`，所有轮次停下，之后不领取、不派发、不取消、不写评论和标签、不写心跳，也不释放锁（那是接管者的），进程非 0 退出，未完成轮次留给持锁者恢复。

@@ -3226,6 +3226,125 @@ export function selectTrustedSlackReleases({
   return { release, rejected };
 }
 
+// [MIVO-PATCH issue-comment-release] 维护者直接在确认 issue 下评论「同意放行」视为放行(判据同 slack-release:
+// 一整行是同意短语、全文无否定词)。评论人必须在维护者集合内且不是 PR 作者;被折叠的评论、带流程标记的
+// 自动评论(审查账号也是维护者,它发的流程评论不能算)、Slack 同步评论都不算。
+const AUTOMATED_ISSUE_COMMENT_RE = /<!--\s*(?:review-pr:|mivo-|slack-inbound\b)/;
+/**
+ * @returns {{ release: {by:string, at:string|null, via:'issue-comment', fingerprint:string}|null, rejected: object[] }}
+ */
+export function selectTrustedIssueCommentReleases({
+  comments = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
+} = {}) {
+  const members = new Set(normalizeLoginList(maintainers));
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const rejected = [];
+  let release = null;
+  for (const comment of comments ?? []) {
+    const by = String(comment?.author?.login ?? comment?.author ?? '').trim().toLowerCase();
+    if (!by || !members.has(by)) continue;
+    if (comment?.isMinimized === true) continue;
+    const body = String(comment?.body ?? '');
+    if (AUTOMATED_ISSUE_COMMENT_RE.test(body)) continue;
+    if (!isExplicitSlackConsent(body, consentLine)) continue;
+    const at = comment?.createdAt ?? null;
+    if (by === author) {
+      rejected.push({ by, at, reason: 'commenter-is-author' });
+      continue;
+    }
+    if (!release || String(at ?? '') >= String(release.at ?? '')) {
+      release = { by, at, via: 'issue-comment', fingerprint: String(comment?.id ?? comment?.url ?? at ?? '') };
+    }
+  }
+  return { release, rejected };
+}
+
+// [MIVO-PATCH signoff-mode] 确认 issue 的模式标记:footer 末尾的隐藏注释。没有标记 = 普通确认门。
+//   protected = 改了受保护路径(.github 等)的 PR,任何作者都开,放行后审查机才把 review-pr 写绿;
+//   notice    = 豁免作者碰到确认门但没改受保护路径,只通知,不拦(创建后即关闭),上面的任何放行都不算。
+export const SIGNOFF_MODE_MARKER_RE = /<!--\s*review-pr:signoff-mode=(protected|notice)\s*-->/g;
+export function parseSignoffMode(body) {
+  const all = [...String(body ?? '').matchAll(SIGNOFF_MODE_MARKER_RE)];
+  return all.at(-1)?.[1] ?? 'normal';
+}
+
+/** 确认 issue footer 里的「关联 PR:#n」(取最后一处;Mivo parseSignoffIssue 的契约句式,半角冒号)。 */
+export function parseSignoffIssueFooterPr(body) {
+  const all = [...String(body ?? '').matchAll(/关联\s*PR:#(\d+)/g)];
+  return all.length ? Number(all.at(-1)[1]) : null;
+}
+
+/**
+ * [MIVO-PATCH issue-binding] 确认 issue 必须属于本 PR、且不是通知 issue,它上面的放行才可信。
+ * 标记评论(parseLastHoldMarker)任何人都能在自己的 PR 上发,指向别的 PR 的已放行 issue 就能借走放行。
+ * 绑定判据:标题以「维护者确认 · PR #<本 PR>」开头(后面不是数字,#97 不匹配 #971),且 footer 的「关联 PR:#n」
+ * 也等于本 PR。notice 模式的 issue 只是通知,「同意放行」不算放行。
+ * @returns {{mode:string, releaseUntrusted:string|null, slackRelease:object|null, slackReleaseRejected:object[],
+ *   issueCommentRelease:object|null, issueCommentReleaseRejected:object[]}}
+ */
+export function selectDiscussionIssueReleases({
+  issue = {}, pr, syncBots = [], maintainers = [], authorLogin = '', consentLine = '同意放行',
+  slackEnabled = false, commentEnabled = false,
+} = {}) {
+  const mode = parseSignoffMode(issue?.body);
+  const titleBound = new RegExp(`^维护者确认 · PR #${Number(pr)}(?!\\d)`).test(String(issue?.title ?? ''));
+  const footerBound = parseSignoffIssueFooterPr(issue?.body) === Number(pr);
+  const releaseUntrusted = !titleBound || !footerBound ? 'issue-not-bound' : mode === 'notice' ? 'notice-issue' : null;
+  const out = {
+    mode, releaseUntrusted, slackRelease: null, slackReleaseRejected: [], issueCommentRelease: null, issueCommentReleaseRejected: [],
+  };
+  if (releaseUntrusted) return out;
+  if (slackEnabled) {
+    const slack = selectTrustedSlackReleases({ comments: issue.comments ?? [], syncBots, maintainers, authorLogin, consentLine });
+    out.slackRelease = slack.release;
+    out.slackReleaseRejected = slack.rejected;
+  }
+  if (commentEnabled) {
+    const typed = selectTrustedIssueCommentReleases({ comments: issue.comments ?? [], maintainers, authorLogin, consentLine });
+    out.issueCommentRelease = typed.release;
+    out.issueCommentReleaseRejected = typed.rejected;
+  }
+  return out;
+}
+
+/** 多个放行取更晚的一条(at 字符串比较,与 selectTrusted* 同口径);都没有返回 null。 */
+export function latestIssueRelease(...releases) {
+  let latest = null;
+  for (const release of releases) {
+    if (release && (!latest || String(release.at ?? '') >= String(latest.at ?? ''))) latest = release;
+  }
+  return latest;
+}
+
+/**
+ * [MIVO-PATCH protected-signoff] 受保护路径(.github 等)的人工放行,与确认门同一组信号,不绑 head、持久有效:
+ * 维护者(非作者)未撤销的 GitHub Approve,或确认 issue 上的 Slack / GitHub 评论「同意放行」(issueRelease)。
+ * reviews 必须是已去掉审查账号自动 review 的 signoffReviews;维护者最新状态是 DISMISSED 视为撤销。
+ * 当前 head 上有维护者 Request Changes 时 waitingForAuthor=true,不算放行。没有受保护文件返回 null。
+ */
+export function evaluateProtectedPathRelease({
+  protectedFiles = [], reviews = [], maintainers = [], latestCommitDate = '', issueRelease = null, authorLogin = '',
+} = {}) {
+  if (!protectedFiles.length) return null;
+  const review = evaluateMaintainerReview({ reviews, maintainers, latestCommitDate, markerRelease: issueRelease, authorLogin });
+  const released = review.released
+    ? { ...review.released, fingerprint: review.released.fingerprint ?? `${review.released.via}:${review.released.by}:${review.released.at ?? ''}` }
+    : null;
+  return {
+    files: protectedFiles.slice(0, 30),
+    fileCount: protectedFiles.length,
+    released,
+    waitingForAuthor: review.waitingForAuthor,
+    reviewState: review.reviewState,
+  };
+}
+
+/** [MIVO-PATCH signoff-mode] 确认 issue footer。句式是 Mivo parseSignoffIssue 的契约,只在末尾追加模式标记。 */
+export function buildSignoffIssueFooter({ pr, author, topic, mode = 'normal' }) {
+  const base = `\n\n---\n关联 PR:#${pr}(作者 @${author});本 issue 由 review-pr 流程自动创建,用于先讨论该 PR 涉及的${topic},维护者确认后 PR 会恢复推进。`;
+  return mode === 'protected' || mode === 'notice' ? `${base}\n<!-- review-pr:signoff-mode=${mode} -->` : base;
+}
+
 /**
  * [MIVO-PATCH ci-ignore] BLOCKED 只因本流程自己的必需检查(ciIgnoreContexts,如 review-pr)
  * 尚未上报或尚未通过?是则返回 true。probe 读不到、还有别的必需检查未满足,都返回 false(从严)。
