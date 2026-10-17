@@ -43,6 +43,7 @@
 | auto-notices | `reviewOnlyNotices=auto` 时，review-only 轮的目标分支提醒用 auto 措辞 | `scripts/notify-round-targets.mjs` | Mivo 以 review-only 模式运行，但会自动重审，「请重新运行 review-only」的说法不对 |
 | no-summary | 没配汇总群时，轮次收尾接受 `status=disabled` 的通知回执 | `scripts/review-queue.mjs` | Mivo 不发每轮汇总（2026-10-11 决定） |
 | round-owner | 轮次状态（round-state）每行记下写它的轮次与创建时间；旧轮晚收尾时，跳过已经由更新轮次写过的行，不写回成旧 head | `scripts/review-round.mjs`（`nextRoundState`） | Mivo 前置在作者推新提交、旧审查确认结束后，把这个 PR 提前从旧轮释放、交给新一轮（2026-10-14 修正方案 Step 2）；旧轮里其它 PR 还在审时它晚收尾，会把新 head 的状态写回成旧的 |
+| self-write | pre-check 指纹只有 `updatedAt` 变、且不晚于上一轮收尾时刻 `checkedAt` 时，当作审查机自己的写动作（发评论、摘标签、重置 check），不选中同一个 head，基线前移；其它字段变化、收尾之后的改动、缺 `fingerprintFields`/`checkedAt` 的旧状态照常唤醒 | `scripts/review-round.mjs`（`observeCandidateFingerprint`） | 状态里记的是动手前的观察值，审查机自己的写动作会让 `updatedAt` 前移，下一轮把没变的 head 又选中（#1081 因此多做了一次完整审查，2026-10-17）；测试在 `mivo/prereview/self-write-fingerprint.test.mjs` |
 | rule-map | 整份换成 Mivo 的规则导航（来源：Mivo `AGENTS.md`「改什么，先读哪里」） | `references/rule-map.md` | 上游是 Cindy 仓的映射 |
 | test-rules | 上游的配置取值测试改读 `REVIEW_PR_RULES_FILE`；上游测试用 `tools/fixtures/upstream-pr-rules.json` 运行 | `scripts/approval-policy.test.mjs` | 生产配置换成了 Mivo 的值，上游用例仍要验证上游行为 |
 

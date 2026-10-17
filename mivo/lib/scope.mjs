@@ -122,11 +122,17 @@ function reuse(previous, reason) {
   return { mode: 'reuse', reason, files: [], previousFindings: previous.findings ?? [], basedOn: previous.head };
 }
 
+// advisory(review.mjs 的 publishAdvisory):代码没有 P0/P1,只是前置门没过。result.reviewClean 记 false 是给 Mini 看的「还没放行」,
+// 不是「代码审查有问题」。范围判定要的是后者:有挂起的门、且没有问题条目,代码层面就是干净的。
+// 转 issue 的问题(deferred)不在这里算,computeReviewScope 的 carried 另外拦。
+const codeReviewClean = (result) => result.reviewClean === true
+  || ((result.mivo?.advisory?.pendingGates?.length ?? 0) > 0 && (result.mivo?.findings ?? []).length === 0);
+
 /** 上一次服务器审查的结果包(result.json + report.md)→ computeReviewScope 用的上一轮记录。 */
 export function previousFromResult(result, report = '') {
   return {
     head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
-    reviewed: result.reviewed, reviewClean: result.reviewClean, outcome: result.outcome,
+    reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
     reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
