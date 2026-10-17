@@ -119,6 +119,12 @@ flowchart LR
 
 两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`。作者补齐后下一轮重审；代码没变时沿用这次结论，Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
 
+`review:merge-ready` 的三条补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在）：
+
+- **作者就是审查账号**（自己的 PR，Approve 必被拒）：只有「除了不能自批，其它拦截项全部通过」才以评论发报告、挂标签、写 success。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。
+- **门禁失效也摘标签**，不只在 head 变化时：Mini 每轮判门后，与 base 冲突，或判门停在稳定卡点（冲突、人工讨论未 resolve、他人 Request Changes、维护者确认门、凭证、格式、CI 失败、rebase、retarget）时摘。只用判门已经拿到的 context，不多打 API。CI 在跑、机器人没说完、读失败这类瞬态，以及 GitHub 的 `BLOCKED`（多半只是等维护者 Approve）不摘，避免反复加摘；摘掉后标签不在，下一轮不会重复 DELETE。门禁重新全过回到送审，服务器沿用结论再加回。
+- **机器人静默期的超时从转 Ready 起算**：取「转 Ready 的时间」和 head 提交时间里较晚的一个。先当很久 Draft 的 PR，不会一转 Ready 就按「已等满 30 分钟」放行。Draft 期间机器人对当前 head 已有的表态仍算数。转 Ready 的时间只在「按 head 提交算已超时」时才用 REST 读一次（`issues/<n>/events`），平时不多一次请求、也不碰 GraphQL；读失败退回 head 提交起算。
+
 ## 写明的产品意图与维护者裁定不改
 
 任务书多了一节「写明的产品意图不算缺陷」：PR 正文写明的需求和有意设计、维护者的裁定，不当缺陷报；有疑问写进 Rule coverage 的「待 owner 确认」。实现和规格对不上、又没人解释时，也先写「待 owner 确认」，只有达到 P1 定义的后果才报。有意设计本身造成 P0 照常报。rule-map 里 `DESIGN.md`「违反记 P1」的写法同步改成按统一分级判。

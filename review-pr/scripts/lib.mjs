@@ -2075,7 +2075,19 @@ export function botCheckActivity(rollupContexts, cfg = {}) {
     .map((c) => ({ author, at: c.completedAt })));
 }
 
-export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cfg = {} }) {
+/**
+ * [MIVO-PATCH bot-settle-ready] 从 REST `issues/<n>/events` 的事件列表取最近一次转 Ready(event=ready_for_review)的时间。
+ * 从没转过 Ready(一开始就是 Ready)或读不到返回空串。
+ */
+export function toReadyForReviewAt(events) {
+  const times = (Array.isArray(events) ? events : [])
+    .filter((item) => item?.event === 'ready_for_review')
+    .map((item) => item?.created_at)
+    .filter((time) => typeof time === 'string' && Number.isFinite(Date.parse(time)));
+  return times.sort().pop() ?? '';
+}
+
+export function evaluateBotSettle({ headCommittedDate, readyForReviewAt = '', nowIso, activity = [], cfg = {} }) {
   const maxWaitMinutes = Number(cfg.maxWaitMinutes ?? 20);
   // 静默窗口(维护者 2026-07-30 定的节奏):必等机器人都表态之后,还要「最近 quietMinutes
   // 分钟内所有 quiet 名单机器人都没有新动静」才放行 —— 防止我们的审查/合并跟一波还在
@@ -2095,19 +2107,28 @@ export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cf
   const norm = (s) => String(s ?? '').toLowerCase().replace(/\[bot\]$/, '');
   const responded = reviewers.filter((r) => activity.some((a) => norm(a.author) === r && a.at > headCommittedDate));
   const pending = reviewers.filter((r) => !responded.includes(r));
-  const waitedMs = Date.parse(nowIso) - Date.parse(headCommittedDate);
+  // [MIVO-PATCH bot-settle-ready] 超时计时从「转 Ready 的时间」和 head 提交时间里较晚的一个起算:机器人不审 Draft,
+  // 先当很久 Draft 再转 Ready 的 PR,从 head 提交起算会让第一轮就「已等满上限」按超时放行(2026-10-17 #1081,Greptile 2 分钟后才到)。
+  // 「是否已表态」仍按 head 提交之后算:Draft 期间机器人对当前 head 的表态有效,转 Ready 不会让它重审。
+  // 转 Ready 时间读不到或无法解析时退回 head 提交时间(与改前一致)。
+  const readyMs = Date.parse(readyForReviewAt);
+  const fromReady = Number.isFinite(readyMs) && readyMs > Date.parse(headCommittedDate);
+  const waitStartedAt = fromReady ? readyForReviewAt : headCommittedDate;
+  const since = fromReady ? '(自转 Ready 起算)' : '';
+  const timing = { ...base, waitStartedAt };
+  const waitedMs = Date.parse(nowIso) - Date.parse(waitStartedAt);
   const waitedMinutes = Number.isNaN(waitedMs) ? null : waitedMs / 60_000;
   // 超时兜底最优先:总时长(距 head push)到上限即放行,防机器人挂掉 / 静默窗口被反复重置卡死
   if (pending.length > 0 && waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
     return {
-      ...base, settled: true, responded, pending, waitedMinutes, timedOut: true,
-      reason: `已等 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限),${pending.join(' / ')} 仍未表态 —— 按超时放行,汇总要说明这几个机器人的意见可能在合并后才到`,
+      ...timing, settled: true, responded, pending, waitedMinutes, timedOut: true,
+      reason: `已等 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)${since},${pending.join(' / ')} 仍未表态 —— 按超时放行,汇总要说明这几个机器人的意见可能在合并后才到`,
     };
   }
   if (pending.length > 0) {
     return {
-      ...base, settled: false, responded, pending, waitedMinutes,
-      reason: `等 ${pending.join(' / ')} 对当前 head 表态(已等 ${waitedMinutes == null ? '?' : waitedMinutes.toFixed(1)} 分钟,上限 ${maxWaitMinutes})—— 本轮不合并,下一轮再看`,
+      ...timing, settled: false, responded, pending, waitedMinutes,
+      reason: `等 ${pending.join(' / ')} 对当前 head 表态(已等 ${waitedMinutes == null ? '?' : waitedMinutes.toFixed(1)} 分钟${since},上限 ${maxWaitMinutes})—— 本轮不合并,下一轮再看`,
     };
   }
   // 必等机器人都表态了 → 再看静默窗口
@@ -2123,19 +2144,35 @@ export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cf
     // 静默没满也受总上限兜底:反复被新动静重置时不至于永远进不了审查
     if (waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
       return {
-        ...base, settled: true, responded, waitedMinutes, quietSinceMinutes, timedOut: true,
-        reason: `距 head push 已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
+        ...timing, settled: true, responded, waitedMinutes, quietSinceMinutes, timedOut: true,
+        reason: `距${fromReady ? '转 Ready' : ' head push '}已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
       };
     }
     return {
-      ...base, settled: false, responded, waitedMinutes, quietSinceMinutes, lastBotActivityAt: lastBotAt,
+      ...timing, settled: false, responded, waitedMinutes, quietSinceMinutes, lastBotActivityAt: lastBotAt,
       reason: `机器人已表态,但最近 ${quietSinceMinutes == null ? '?' : quietSinceMinutes.toFixed(1)} 分钟前还有 bot 动静 —— 等满 ${quietMinutes} 分钟静默再进审查/合并(总上限 ${maxWaitMinutes})`,
     };
   }
   return {
-    ...base, settled: true, responded, waitedMinutes, quietSinceMinutes,
+    ...timing, settled: true, responded, waitedMinutes, quietSinceMinutes,
     reason: `全部 ${responded.length} 个机器人已对当前 head 表态${quietMinutes > 0 ? `,且已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})` : ''}`,
   };
+}
+
+/**
+ * [MIVO-PATCH bot-settle-ready] 先按 head 提交时间判;只有结论是「超时放行」(timedOut)时,转 Ready 时间才会改变它
+ * (「是否已表态」「静默窗口」都不看它),这时才调 readEvents() 读 REST 事件、按转 Ready 重算。常规路径零额外请求,
+ * 不碰 GraphQL。readEvents 返回 `issues/<n>/events` 的事件数组,可以抛错:读失败退回 head 提交起算,结果带 readyLookup。
+ * @returns evaluateBotSettle 的结果;尝试过读取时多一个 readyLookup:'found' | 'none' | 'failed'
+ */
+export function evaluateBotSettleSinceReady(input, readEvents) {
+  const first = evaluateBotSettle(input);
+  if (!first.timedOut) return first;
+  let events;
+  try { events = readEvents(); } catch { return { ...first, readyLookup: 'failed' }; }
+  const readyForReviewAt = toReadyForReviewAt(events);
+  if (!readyForReviewAt) return { ...first, readyLookup: 'none' };
+  return { ...evaluateBotSettle({ ...input, readyForReviewAt }), readyLookup: 'found' };
 }
 
 // ── 待维护者讨论标签(维护者讨论门在 GitHub 侧的筛选入口)──
