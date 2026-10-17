@@ -2,7 +2,7 @@
 // 凭据写进 CODEX_HOME、key 只放在 CLI 进程的 CODEX_API_KEY、沙箱子进程排除这些变量;
 // 另外整个子进程环境从零构造,GitHub 令牌不可能被继承。产物落盘前把 key 原文替换掉。
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { scrubSecrets } from '../lib/report.mjs';
@@ -47,6 +47,15 @@ export function redact(text, secrets) {
   let out = String(text ?? '');
   for (const secret of secrets.filter((s) => s && s.length >= 8)) out = out.split(secret).join('***');
   return out;
+}
+
+/**
+ * 删掉一次 runCodex 在 tmpRoot 下留的全部痕迹(CLI 输出日志、stderr、最后一条消息、CODEX_HOME、HOME、TMPDIR)。
+ * 主审交卷并取完计量数据后调用:核对员运行期间,磁盘上不能有主审的答卷和日志(沙箱只限写不限读)。只留 schema 文件(只有 schema,没有答案)。
+ */
+export function removeRunArtifacts(tmpRoot, label) {
+  for (const name of [`codex-${label}.stdout`, `codex-${label}.stderr`, `codex-${label}.answer.json`,
+    `codex-home-${label}`, `home-${label}`, `tmp-${label}`]) rmSync(join(tmpRoot, name), { recursive: true, force: true });
 }
 
 const sizeOf = (file) => { try { return statSync(file).size; } catch { return 0; } };

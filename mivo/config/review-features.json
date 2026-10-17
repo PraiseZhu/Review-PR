@@ -1,6 +1,6 @@
 {
   "verify": {
-    "mode": "off",
+    "mode": "enforce",
     "model": "openai/gpt-6.1-sol",
     "effort": "medium",
     "tiers": ["standard", "heavy"],

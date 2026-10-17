@@ -122,3 +122,9 @@ test('collectRulings 解析 thread 里的 marker key;没有 marker 时不加字�
   assert.equal(out.verified[0].key, KEY);
   assert.equal('key' in out.verified[1], false);
 });
+
+test('核对员推翻/降级过的问题 key 算上一轮已见过(下一轮按 supersedes 对上同一问题)', () => {
+  const prev = toPreviousRound({ mivo: { findings: [], verifierOverruled: [{ key: KEY, verdict: 'refuted' }] } });
+  assert.deepEqual([...prev.keys], [KEY]);
+  assert.deepEqual(prev.findings, []);
+});

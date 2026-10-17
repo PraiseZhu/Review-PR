@@ -10,6 +10,8 @@ export const REPORT_HEADER = 'Mivo 自动审查';
 export const DEFERRED_SECTION = '## 已转 issue 跟进的问题（不阻断本 PR）';
 export const PREEXISTING_SECTION = '## PR 之前就存在的问题（不阻断本 PR）';
 export const RULED_KEPT_SECTION = '## 维护者已裁定不改、审查机本轮仍报了（未阻断）';
+export const VERIFIER_REFUTED_SECTION = '## 核对员认为不成立（不阻断本 PR）';
+export const VERIFIER_DOWNGRADED_SECTION = '## 核对员降级（不阻断本 PR）';
 // 打回且有阻断的 P1 时附在结论行后:告诉作者本 PR 修不了的 P1 可以怎么转 issue 跟进。
 export const DEFER_HINT = '本 PR 修不了、要留到后续 PR 修的 P1，可以转 issue 跟进：开 issue 写明来自本 PR；在 PR 说明加「转 issue 跟进的审查问题」一节登记，每条一行 `- #<issue 号> <简述>`；再回复并 resolve 对应讨论。审查机重审时不再因它打回。P0 不能这样处理。';
 const SEVERITY_RE = /^\s*\[(P0|P1)\]/;
@@ -148,18 +150,37 @@ export function renderRuledKeptSection(list = []) {
   return [RULED_KEPT_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 裁定:@${f.rulingBy ?? ''}`), ''];
 }
 
+const locations = (list) => (list ?? []).map((e) => `\`${whereOf(e)}\``).join('、') || '(未给出)';
+const oneLine = (text, max = 300) => { const t = String(text ?? '').replace(/\s+/g, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
+
+/** 报告里「核对员认为不成立」一节:公开列出标题、位置和推翻证据,作者与维护者可以复核核对员。没有时返回空数组。 */
+export function renderVerifierRefutedSection(list = []) {
+  if (!list.length) return [];
+  return [VERIFIER_REFUTED_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 推翻证据：${locations(f.evidence)}${f.note ? ` · 依据：${oneLine(f.note)}` : ''}`), ''];
+}
+
+/** 报告里「核对员降级」一节:问题成立但核对员认为实际只是 P2,附理由。 */
+export function renderVerifierDowngradedSection(list = []) {
+  if (!list.length) return [];
+  return [VERIFIER_DOWNGRADED_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 降级理由：${oneLine(f.note)}`), ''];
+}
+
 /**
  * 最终报告:固定头部 + 模型正文;结论行按问题数量重写,保证与实际发布的 thread 一致。
  * 有转 issue 跟进的问题或未采用的登记时,在 Rule coverage 前插一节单列;打回且阻断问题里有 P1 时,结论行后附转 issue 的做法。
  */
-export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [],
+export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [],
   pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '' }) {
   const summary = toDeferredSummary(deferred);
+  const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
-    ? (summary ? `pass —— 没有阻断的 P0/P1；${summary.text}，不阻断本 PR。` : (preexisting.length ? 'pass —— 没有阻断的 P0/P1。' : 'pass —— 没有 P0/P1。'))
+    ? (summary ? `pass —— 没有阻断的 P0/P1；${summary.text}，不阻断本 PR。` : (preexisting.length || overruled ? 'pass —— 没有阻断的 P0/P1。' : 'pass —— 没有 P0/P1。'))
     : `changes-requested —— ${findings.length} 条 P0/P1，已在对应位置开 review thread。`;
   if (findings.length && summary) conclusion += `另有 ${summary.text}，不阻断。`;
   if (!findings.length && preexisting.length) conclusion += `另有 ${preexisting.length} 条 PR 之前就存在的 P1，不阻断本 PR。`;
+  // 核对员推翻/降级的 P1:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
+  if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
+  else if (overruled) conclusion += `另有 ${overruled} 条 P1 被核对员推翻/降级，不阻断。`;
   const lines = String(report).trim().split('\n');
   const overallIndex = lines.findIndex((line) => /^## Overall\s*$/.test(line));
   if (overallIndex >= 0) {
@@ -179,7 +200,7 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
   }
   // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
   const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting),
-    ...renderRuledKeptSection(ruledKept), ...convergenceLines];
+    ...renderRuledKeptSection(ruledKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...convergenceLines];
   if (extraLines.length) {
     const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
     if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...extraLines);

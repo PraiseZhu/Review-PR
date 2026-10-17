@@ -19,8 +19,9 @@ import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
-import { loadFeatures, runVerification, buildVerifyPrompt, VERIFY_SCHEMA } from '../lib/verify.mjs';
-import { runCodex, readCodexVersion } from './codex.mjs';
+import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, VERIFY_SCHEMA } from '../lib/verify.mjs';
+import { checkEvidence } from '../lib/finding.mjs';
+import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
 const STATE_FILE = join(WORK, 'state.json');
@@ -398,49 +399,63 @@ async function codex() {
   state.codexVersion = readCodexVersion(codexBin());
   const attempts = [];
   const startedAt = Date.now();
+  // 主审答卷只留在内存里,等核对员全部跑完再写盘(下面的 finally);每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹
+  // (输出日志、stderr、最后一条消息、CODEX_HOME 等)。核对员运行期间磁盘上不存在主审的答卷和日志:沙箱只限写不限读,靠这个缓解。
+  let answer = null;
   // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。
   for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs }); next;
     next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs })) {
+    const label = `${attempts.length + 1}`;
     const result = await runCodex({
       codexBin: codexBin(),
       workdir: REPO_DIR, prompt, schema: ANSWER_SCHEMA, model: next.model, effort: next.effort,
       timeoutMs: next.timeoutMs, credentials: process.env.LITELLM_CREDENTIALS_JSON,
-      tmpRoot: join(WORK, 'codex'), label: `${attempts.length + 1}`,
+      tmpRoot: join(WORK, 'codex'), label,
     });
     // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
     attempts.push({ model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
       quota: result.quota, durationMs: result.durationMs, exitCode: result.exitCode, timedOut: result.timedOut, idleKilled: result.idleKilled,
       firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
       maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}) });
-    if (result.ok) writeJson(join(WORK, 'answer.json'), result.answer);
+    answer = result.ok ? result.answer : null;
+    removeRunArtifacts(join(WORK, 'codex'), label);
   }
   state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget,
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
-  // 逐条核验器(lib/verify.mjs):off 不动;shadow 只记录结果、不影响任何发布。整段在这里吞掉异常——
-  // 入口的 catch 会把异常变成 finishEarly(error),那样 shadow 就改变了 outcome。核验调用不写进 state.codex.attempts。
   const last = attempts.at(-1);
-  if (last?.ok) {
-    try {
-      const features = loadFeatures(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
-      state.warnings.push(...features.warnings);
-      const cfg = features.verify;
-      if (cfg.mode !== 'shadow') state.verification = { mode: cfg.mode, items: [], skipped: [] };
-      else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: 'shadow', items: [], skipped: [{ key: null, reason: 'tier' }] };
-      else {
-        const classified = classifyAnswer(state, ctx, readJson(join(WORK, 'answer.json')));
-        state.verification = classified.ok && classified.findings.length
-          ? await runVerification({ findings: classified.findings, config: cfg, answeredBy: last.model, primary: tierCfg,
-            remainingMs: () => budget.budgetMs - (Date.now() - budgetAt),
-            runOne: (finding, index, model) => runCodex({ codexBin: codexBin(), workdir: REPO_DIR,
+  if (!(last?.ok && answer)) return;
+  try {
+    // 逐条核对员(lib/verify.mjs):off 不动;shadow 只记录;enforce 由 publish 把被推翻/降级的 P1 移出阻断。整段在这里吞掉异常——
+    // 入口的 catch 会把异常变成 finishEarly(error),那样核对员出错就让整轮审查作废了;出错的条目照常阻断。核对调用不写进 state.codex.attempts。
+    const features = loadFeatures(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+    state.warnings.push(...features.warnings);
+    const cfg = features.verify;
+    if (cfg.mode === 'off') state.verification = { mode: 'off', items: [], skipped: [] };
+    else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'tier' }] };
+    else {
+      const classified = classifyAnswer(state, ctx, answer);
+      const headReader = headReaderFor(state.input.head);
+      state.verification = classified.ok && classified.findings.length
+        ? await runVerification({ findings: classified.findings, config: cfg, answeredBy: last.model, primary: tierCfg,
+          remainingMs: () => budget.budgetMs - (Date.now() - budgetAt),
+          checkEvidence: (evidence) => checkEvidence({ evidence }, { headReader }),
+          runOne: async (finding, index, model) => {
+            const label = `verify-${index + 1}`;
+            const run1 = await runCodex({ codexBin: codexBin(), workdir: REPO_DIR,
               prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
               schema: VERIFY_SCHEMA, model: model.model, effort: model.effort, timeoutMs: cfg.perCallTimeoutMin * 60_000,
-              credentials: process.env.LITELLM_CREDENTIALS_JSON, tmpRoot: join(WORK, 'codex'), label: `verify-${index + 1}` }) })
-          : { mode: 'shadow', items: [], skipped: [] };
-      }
-    } catch (error) {
-      state.verification = { mode: 'shadow', error: String(error?.message ?? error).slice(0, 300), items: [], skipped: [] };
+              credentials: process.env.LITELLM_CREDENTIALS_JSON, tmpRoot: join(WORK, 'codex'), label });
+            removeRunArtifacts(join(WORK, 'codex'), label);
+            return run1;
+          } })
+        : { mode: cfg.mode, items: [], skipped: [] };
     }
+  } catch (error) {
+    state.verification = { mode: state.verification?.mode ?? 'enforce', error: String(error?.message ?? error).slice(0, 300), items: [], skipped: [] };
+  } finally {
+    // 核对员全部跑完(或放弃)才把主审答卷写盘,publish 阶段读这一份。
+    writeJson(join(WORK, 'answer.json'), answer);
     saveState(state);
   }
 }
@@ -479,6 +494,14 @@ function classifyAnswer(state, ctx, answer) {
     deferred: checked.deferred.slice(0, 100), scope: state.scope, roundIndex, previousRound: state.previousRound ?? null,
     history, rulings: state.rulings?.verified ?? [], head: state.input.head });
   return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100 } };
+}
+
+// 核对结果进结果包:只留结论、耗时、模型和证据/理由(模型文本过一遍脱敏),供遥测脚本统计。
+function toStoredVerification(verification) {
+  if (!verification) return null;
+  const clipScrub = (text, max) => scrubSecrets(String(text ?? '').slice(0, max)).text;
+  return { ...verification, ...(verification.error ? { error: clipScrub(verification.error, 300) } : {}),
+    items: (verification.items ?? []).map((item) => ({ ...item, ...(item.note ? { note: clipScrub(item.note, 600) } : {}), ...(item.error ? { error: clipScrub(item.error, 300) } : {}) })) };
 }
 
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
@@ -535,6 +558,10 @@ async function publish() {
     let preexisting = [];
     let ruledKept = [];
     let convergence = null;
+    let verifierRefuted = [];
+    let verifierDowngraded = [];
+    let verifierOverruled = [];
+    let hadBlockers = false;
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
       findings = previous.mivo?.findings ?? [];
@@ -543,6 +570,7 @@ async function publish() {
       preexisting = previous.mivo?.preexisting ?? [];
       ruledKept = previous.mivo?.ruledKept ?? [];
       convergence = previous.mivo?.convergence ?? null;
+      verifierOverruled = previous.mivo?.verifierOverruled ?? [];
       report = reusedReport({ previousReport: readFileSync(join(WORK, 'prev', 'report.md'), 'utf8'), scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
     } else {
@@ -558,15 +586,24 @@ async function publish() {
       const checked = classifyAnswer(state, ctx, readJson(answerFile));
       if (!checked.ok) return failReview(state, result, `模型答卷不合格:${checked.error}`);
       result.warnings.push(...checked.notes);
-      findings = checked.findings;
       if (checked.truncated.findings) result.warnings.push(`问题超过 100 条,只发布前 100 条`);
+      // 核对员(enforce):推翻/降级的 P1 移出阻断,公开写进报告;P0 和其余 P1 照常阻断。
+      hadBlockers = checked.findings.length > 0;
+      const verified = applyVerification({ findings: checked.findings, verification: state.verification });
+      findings = verified.findings;
+      verifierRefuted = verified.refuted;
+      verifierDowngraded = verified.downgraded;
+      verifierOverruled = [...verified.refuted.map((f) => ({ ...f, verdict: 'refuted' })), ...verified.downgraded.map((f) => ({ ...f, verdict: 'downgraded' }))]
+        .map((f) => ({ ...f, title: scrubSecrets(f.title).text, note: scrubSecrets(f.note).text }));
+      const stuck = checked.stuck.filter((item) => findings.some((f) => f.key === item.key));
       deferred = checked.deferred;
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
-      convergence = checked.convergence;
+      convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
+        rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
-        preexisting, ruledKept, convergenceLines: renderConvergenceSection(checked.convergence, checked.stuck),
+        preexisting, ruledKept, verifierRefuted, verifierDowngraded, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier, scope: state.scope,
         skillSha: input.skillSha, specDigest: state.current?.specDigest });
@@ -582,16 +619,19 @@ async function publish() {
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
-    Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0, reportFile: 'report.md' });
+    // 原本有 P1 卡点、被核对员全部推翻/降级:不 Approve(reviewClean 记 false,同一 head 再来也不会被沿用成通过),只发评论请人工看一眼。
+    const allOverruled = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
+    Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
     Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, convergence,
-      rulesSource: state.rulesSource ?? null, verification: state.verification ?? null, deferrals: {
+      rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
     } });
 
     if (findings.length > 0) await publishFindings(state, result, reportFile, findings);
     else if (state.pendingGates?.length) await publishAdvisory(state, result, reportFile);
+    else if (allOverruled) await publishOverruled(state, result, reportFile);
     else await publishClean(state, result, reportFile);
     return writeResult(result);
   } catch (error) {
@@ -617,7 +657,7 @@ function baseResult(state) {
       tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
       filePatchHashes: current.filePatchHashes, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
-      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], convergence: null, completedAt: null,
+      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },
   };
 }
@@ -735,6 +775,28 @@ async function publishAdvisory(state, result, reportFile) {
   removeMergeReady(state, result);
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: null,
     title: `代码审查没有 P0/P1(${state.tier}),等补齐后放行`, summary: `${why}。${state.scope.reason}` });
+}
+
+// 原本有 P1 卡点,被核对员全部推翻/降级:代码审查没有留下阻断问题,但这个结论来自模型核对员而不是人。
+// 只以评论发报告,不 Approve、不挂 merge-ready;check 写成功(用户 2026-10-17 决定),由人看过报告再合。
+async function publishOverruled(state, result, reportFile) {
+  const input = state.input;
+  const why = '核对员推翻/降级了全部卡点，请人工看一眼再合';
+  const count = result.mivo.verifierOverruled.length;
+  Object.assign(result, { outcome: 'merge-blocked', reviewClean: false, reason: `代码审查的 ${count} 条 P1 卡点全部被核对员推翻/降级,不 Approve:${why}` });
+  result.approval = { status: 'blocked', code: 'verifier-overruled', reason: why };
+  if (input.mode === 'dry-run') { result.reason += '(dry-run:没有写入 GitHub)'; return; }
+  const banner = [`> **主审报了 ${count} 条 P1,核对员全部推翻或降级,所以没有阻断问题,但这不是人工结论**：${why}。`, '> 核对员给出的证据和理由列在下面对应的小节里,请核对;服务器不会 Approve。', ''].join('\n');
+  const comment = postReportComment(state, reportFile, { marker: `<!-- mivo-review:verifier-overruled head=${input.head} -->`, prefix: banner });
+  result.mivo.reportComment = comment;
+  if (!comment.ok) {
+    result.errors.push(`报告评论发布失败:${comment.error}`);
+    result.retry = true;
+    return;
+  }
+  removeMergeReady(state, result);
+  result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: 'success', title: `核对员推翻/降级了全部卡点(${state.tier}),请人工看一眼`,
+    summary: `主审的 ${count} 条 P1 都被核对员推翻或降级。${why}。${state.scope.reason}` });
 }
 
 function postReportComment(state, reportFile, { marker = `<!-- mivo-review:report head=${state.input.head} -->`, prefix = '' } = {}) {
