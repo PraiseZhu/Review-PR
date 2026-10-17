@@ -6,7 +6,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync,
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { loadFeatures, selectForVerification, pickVerifierModel, runVerification, applyVerification, buildVerifyPrompt, agentInstructionFiles, VERIFY_SCHEMA, DEFAULT_FEATURES } from '../lib/verify.mjs';
 import { finalizeReport, VERIFIER_REFUTED_SECTION, VERIFIER_DOWNGRADED_SECTION } from '../lib/report.mjs';
@@ -157,16 +158,49 @@ test('报告:核对员推翻/降级各单列一节(公开标题与证据/理由)
   assert.ok(!none.includes(VERIFIER_REFUTED_SECTION) && !none.includes('核对员'));
 });
 
-test('removeRunArtifacts:删掉一次调用留在 tmpRoot 下的日志、答卷和 CODEX_HOME,只留 schema', () => {
+test('removeRunArtifacts:删掉一次调用留在 tmpRoot 下的日志、答卷和 CODEX_HOME,只留 schema', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mivo-artifacts-'));
   try {
     for (const dir of ['codex-home-1', 'home-1', 'tmp-1', 'codex-home-2']) mkdirSync(join(root, dir));
     for (const file of ['codex-1.stdout', 'codex-1.stderr', 'codex-1.answer.json', 'schema-1.json', 'codex-home-1/log.txt', 'codex-2.stdout']) writeFileSync(join(root, file), 'x');
-    removeRunArtifacts(root, '1');
+    assert.deepEqual(await removeRunArtifacts(root, '1'), [], '全部清掉时没有失败项');
     assert.deepEqual(['codex-1.stdout', 'codex-1.stderr', 'codex-1.answer.json', 'codex-home-1', 'home-1', 'tmp-1'].filter((f) => existsSync(join(root, f))), []);
     assert.ok(existsSync(join(root, 'schema-1.json')) && existsSync(join(root, 'codex-2.stdout')) && existsSync(join(root, 'codex-home-2')), '别的调用的东西不动');
-    removeRunArtifacts(root, '1');
+    assert.deepEqual(await removeRunArtifacts(root, '1'), [], '重复清理不报错');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('removeRunArtifacts:某个路径清不掉(ENOTEMPTY 等)不抛错,返回失败项,其余路径照删,并带退避重试参数', async () => {
+  const tried = [];
+  const remove = async (path, options) => {
+    tried.push([path.split('/').at(-1), options]);
+    if (path.endsWith('codex-home-1')) throw Object.assign(new Error("ENOTEMPTY: directory not empty, rmdir '/secret/path'"), { code: 'ENOTEMPTY' });
+    if (path.endsWith('home-1') && !path.endsWith('codex-home-1')) throw new TypeError('没有 code 的异常');
+  };
+  const failed = await removeRunArtifacts('/w', '1', remove);
+  assert.deepEqual(failed, [{ name: 'codex-home-1', code: 'ENOTEMPTY' }, { name: 'home-1', code: 'TypeError' }], '失败项只带文件名和错误码,不带路径');
+  assert.deepEqual(tried.map(([name]) => name).sort(), ['codex-1.answer.json', 'codex-1.stderr', 'codex-1.stdout', 'codex-home-1', 'home-1', 'tmp-1'], '前面失败不影响后面的路径');
+  for (const [, options] of tried) {
+    assert.equal(options.recursive, true);
+    assert.equal(options.force, true);
+    assert.ok(options.maxRetries >= 3 && options.retryDelay >= 100, 'fs.promises.rm 的退避重试');
+  }
+});
+
+// 清理时目录里还有进程在写文件:真实的 ENOTEMPTY(同步 rmSync 在 Node 24 上对这种情况几乎不等待,50ms 内就放弃)。
+const WRITER = `const fs = require('node:fs'), path = require('node:path');
+const dir = process.argv[1], end = Date.now() + Number(process.argv[2]);
+fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+for (let i = 0; Date.now() < end; i++) { try { fs.mkdirSync(path.join(dir, 'sub'), { recursive: true }); fs.writeFileSync(path.join(dir, 'sub', 'f' + i), 'x'); } catch {} }`;
+test('removeRunArtifacts:清理时目录里仍有进程在写文件(ENOTEMPTY)会退避重试,不抛错', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mivo-artifacts-busy-'));
+  const dir = join(root, 'tmp-1');
+  const writer = spawn(process.execPath, ['-e', WRITER, dir, '400'], { stdio: 'ignore' });
+  const closed = new Promise((resolve) => writer.on('close', resolve));
+  try {
+    for (let i = 0; i < 300 && !existsSync(join(dir, 'sub', 'f0')); i += 1) await sleep(10);
+    assert.deepEqual(await removeRunArtifacts(root, '1'), []);
+  } finally { writer.kill(); await closed; rmSync(root, { recursive: true, force: true }); }
 });
 
 // ── 集成:假 codex ─────────────────────────────────────────────────────────
@@ -199,6 +233,7 @@ const ctl = ${JSON.stringify(ctl)};
 const work = ${JSON.stringify(work)};
 const model = at('--model');
 const log = (line) => fs.appendFileSync(path.join(ctl, 'calls.log'), line + '\\n');
+const lock = (kind) => { if (!fs.existsSync(path.join(ctl, 'lock-' + kind))) return; const dir = path.join(process.env.TMPDIR, 'locked'); fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'x'), 'x'); fs.chmodSync(dir, 0o555); };
 const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"verdict"');
 const scan = (dir) => { let hit = false; for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
   const full = path.join(dir, entry.name);
@@ -207,12 +242,14 @@ if (verify) {
   const seq = JSON.parse(fs.readFileSync(path.join(ctl, 'verify-seq.json'), 'utf8'));
   const index = fs.readFileSync(path.join(ctl, 'calls.log'), 'utf8').split('\\n').filter((l) => l.startsWith('verify')).length;
   log('verify ' + model + ' ' + (scan(work) ? 'leak' : 'clean'));
+  lock('verify');
   const step = seq[Math.min(index, seq.length - 1)];
   if (step === 'fail') { process.stderr.write('verifier exploded'); process.exit(3); }
   fs.writeFileSync(at('--output-last-message'), JSON.stringify(step));
 } else {
   const mains = fs.readFileSync(path.join(ctl, 'calls.log'), 'utf8').split('\\n').filter((l) => l.startsWith('main')).length;
   log('main ' + model);
+  lock('main');
   if (fs.existsSync(path.join(ctl, 'main-fail-first')) && mains === 0) { process.stderr.write('primary exploded'); process.exit(1); }
   fs.writeFileSync(at('--output-last-message'), fs.readFileSync(path.join(ctl, 'main-answer.json'), 'utf8'));
   console.log(JSON.stringify({ type: 'item.completed', text: ${JSON.stringify(SENTINEL)} }));
@@ -223,7 +260,7 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, o
   return bin;
 }
 
-function runCase({ features = feat({ mode: 'enforce' }), mode = 'live', main = TWO_P1, seq = [CONFIRMED], mainFailFirst = false, diff = DIFF }) {
+function runCase({ features = feat({ mode: 'enforce' }), mode = 'live', main = TWO_P1, seq = [CONFIRMED], mainFailFirst = false, diff = DIFF, lockMain = false, lockVerify = false }) {
   const work = mkdtempSync(join(tmpdir(), 'mivo-review-verify-'));
   const ctl = mkdtempSync(join(tmpdir(), 'mivo-review-verify-ctl-'));
   try {
@@ -250,6 +287,8 @@ process.stdout.write(JSON.stringify({ id: 5 }));
     writeFileSync(join(ctl, 'main-answer.json'), JSON.stringify(main));
     writeFileSync(join(ctl, 'verify-seq.json'), JSON.stringify(seq));
     if (mainFailFirst) writeFileSync(join(ctl, 'main-fail-first'), '1');
+    if (lockMain) writeFileSync(join(ctl, 'lock-main'), '1');
+    if (lockVerify) writeFileSync(join(ctl, 'lock-verify'), '1');
     writeFileSync(join(ctl, 'features.json'), features);
     writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: { title: 't' } }));
     writeFileSync(join(work, 'input', 'pr.diff'), diff);
@@ -275,7 +314,11 @@ process.stdout.write(JSON.stringify({ id: 5 }));
       comments: read(work, 'comments.json') ? JSON.parse(read(work, 'comments.json')) : null, report: read(work, 'out/report.md'),
       answerOnDisk: read(work, 'answer.json'), finishFile: existsSync(join(work, 'out', 'finish.json')),
       gh: (read(ctl, 'gh.log') ?? '').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) };
-  } finally { rmSync(work, { recursive: true, force: true }); rmSync(ctl, { recursive: true, force: true }); }
+  } finally {
+    spawnSync('chmod', ['-R', 'u+rwx', work]); // 假 codex 留下的只读目录先放开,才能删掉
+    rmSync(work, { recursive: true, force: true });
+    rmSync(ctl, { recursive: true, force: true });
+  }
 }
 
 const skip = !inBusinessWindow() && '06:00–07:00 维护窗口内服务器本来就不审';
@@ -345,6 +388,40 @@ test('enforce:主审 fallback 到 sol 时核对员改用 luna', { skip }, () => 
   assert.deepEqual(r.calls.slice(0, 2), ['main openai/gpt-6-luna', 'main openai/gpt-6.1-sol']);
   assert.ok(r.calls.slice(2).every((c) => c === 'verify openai/gpt-6-luna clean'), r.calls.join('|'));
   assert.equal(r.calls.length, 4);
+});
+
+// ── 清理运行产物失败不能让已经审完的结果作废 ─────────────────────────────────
+// 用「TMPDIR 里留一个只读目录」让清理必然失败(非 root 下 unlink 报 EACCES);root 不受目录权限限制,测不出来。
+const skipLock = skip || (process.getuid?.() === 0 && 'root 不受目录只读限制,造不出清理失败');
+
+test('主审的运行产物清不掉:主审结果照常采用,记告警;残留可能被核对员读到,这一轮不核对,P1 照原样阻断', { skip: skipLock }, () => {
+  const r = runCase({ lockMain: true, seq: [REFUTED, REFUTED], mode: 'dry-run' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna'], '核对员没有被调用');
+  assert.equal(r.result.outcome, 'findings', '不是 error:主审结果没有作废');
+  assert.equal(r.result.mivo.findings.length, 2, 'P1 照常阻断');
+  assert.ok(r.answerOnDisk?.includes(SENTINEL), 'answer.json 照常写盘');
+  assert.ok(r.result.warnings.some((w) => /清理 codex 运行产物失败\(1\):tmp-1\((EACCES|EPERM)\)/.test(w)), r.result.warnings.join('|'));
+  assert.deepEqual(r.result.mivo.verification.skipped, [{ key: null, reason: 'artifacts-cleanup-failed', lines: ['tmp-1'] }]);
+  assert.equal(r.result.errors.length, 0);
+});
+
+test('主审第一次失败又清不掉、备用模型成功:备用模型的结果被采用,两次的残留都记下', { skip: skipLock }, () => {
+  const r = runCase({ lockMain: true, mainFailFirst: true, mode: 'dry-run' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna', 'main openai/gpt-6.1-sol']);
+  assert.equal(r.result.outcome, 'findings');
+  assert.equal(r.result.mivo.findings.length, 2);
+  assert.deepEqual(r.result.mivo.verification.skipped, [{ key: null, reason: 'artifacts-cleanup-failed', lines: ['tmp-1', 'tmp-2'] }]);
+});
+
+test('核对员自己的运行产物清不掉:只记告警,核对结论照常采用', { skip: skipLock }, () => {
+  const r = runCase({ lockVerify: true, seq: [REFUTED, CONFIRMED], mode: 'dry-run' });
+  assert.deepEqual(r.calls.map((c) => c.split(' ')[0]), ['main', 'verify', 'verify']);
+  assert.deepEqual(r.result.mivo.verification.items.map((i) => [i.ok, i.verdict, i.applied]), [[true, 'refuted', 'refuted'], [true, 'confirmed', null]], '核对员没有因为清理失败被记成出错');
+  assert.equal(r.result.mivo.findings.length, 1, '被推翻的那条不再阻断');
+  const warnings = r.result.warnings.filter((w) => /清理 codex 运行产物失败/.test(w));
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /\(verify-1\):tmp-verify-1\(/);
+  assert.match(warnings[1], /\(verify-2\):tmp-verify-2\(/);
 });
 
 test('原本就零 P1 的 PR:不起核对员,行为不变', { skip }, () => {
