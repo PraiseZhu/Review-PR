@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch, toSignoffReleaseArgs } from './gates.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { toProtectedHoldWake } from './admission.mjs';
 
 // 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
 const { toAutoReleaseNotice, toAutoReleaseCloseComment } = await import('./gates.mjs');
@@ -476,4 +477,18 @@ test('接线:Mini 与服务器只读 context 的 protectedPath.released;说明�
   // 脚本:signoff-release 读 closeCommentBody;signoff-hold 的 notice 关闭文案按 kind 取
   assert.match(release, /closeCommentBody/);
   assert.match(hold, /toNoticeCloseComment\(/);
+});
+
+test('接线:自动放行上线时,已 hold 的 protected 记录再被唤醒一次(独立标记文件,不和 #68 那次互相挡)', () => {
+  const round = readFileSync(fileURLToPath(new URL('../prereview/round.mjs', import.meta.url)), 'utf8');
+  assert.match(round, /function wakeProtectedHoldOnce\(markerName/);
+  assert.match(round, /'protected-hold-wake\.json'/);
+  assert.match(round, /'protected-author-release-wake\.json'/);
+  // 存量维护者 PR(如 #1037)outcome=protected,指纹没变:toProtectedHoldWake 把它们标 retry 一次
+  const roundState = { prs: { 1037: { outcome: 'protected', head: 'h' }, 1040: { outcome: 'review', head: 'h2' } } };
+  const wake = toProtectedHoldWake({ roundState, alreadyDone: false });
+  assert.deepEqual(wake.wake, [1037]);
+  assert.equal(wake.next.prs[1037].retry, true);
+  assert.equal(wake.next.prs[1040].retry, undefined);
+  assert.deepEqual(toProtectedHoldWake({ roundState, alreadyDone: true }).wake, []);
 });
