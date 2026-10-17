@@ -75,6 +75,27 @@ export function toAutoReleaseNotice({ head = '', by = '' } = {}) {
   return { kind: 'protected-path', status: 'deduplicated', head, fingerprint: `author-maintainer:${String(by).toLowerCase()}`, reason: 'author-maintainer-auto-release' };
 }
 
+/**
+ * 受保护路径作者提醒回执(kind=protected-path)只对 outcome=protected 有意义:派发前被挡、服务器 run 被取消、
+ * 作者中途推新 head 时结果会被改成 error / state-changed 而回执还跟着 gateResult 展开,
+ * review-round 的 validateProtectedPathAuthorNotice 会抛「非受保护路径卡点却记录了受保护路径提醒」。写任务结果前统一清掉。
+ * 纯函数,不改入参。
+ */
+export function dropStaleProtectedNotice(result) {
+  if (result?.outcome === 'protected' || result?.authorNotice?.kind !== 'protected-path') return result;
+  const { authorNotice, ...rest } = result;
+  return rest;
+}
+
+/**
+ * 前置判门这一轮没发出 notice(issue / 评论创建失败)会在 gateResult 里标 retry;同轮派了 protected-approve,
+ * 采用服务器结果后这个标记丢了,通报就此静默缺失。protected 结果沿用它,其它结果不动。纯函数,不改入参。
+ */
+export function withProtectedGateRetry(result, gateResult) {
+  if (result?.outcome !== 'protected' || gateResult?.retry !== true || result.retry === true) return result;
+  return { ...result, retry: true };
+}
+
 /** 关掉存量 protected issue 时留的那句说明(经 signoff-release 的 payload 文件 closeCommentBody 带过去)。 */
 export function toAutoReleaseCloseComment({ pr, url, by } = {}) {
   return `作者为维护者，按新规则自动放行：受保护路径改动不再等人工审核，审查机已直接放行（作者 @${by}）。本确认 issue 不再需要。关联 PR:#${pr}(${url})。本 issue 由 review-pr 流程自动关闭。`;

@@ -16,7 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -1203,7 +1203,7 @@ function collectServerRun(ctx, entry) {
     return true;
   }
   // 服务器复核没认到放行时只回 protected、不带作者提醒回执:沿用前置判门这一轮的回执,否则整轮汇总会抛错。
-  const result = withProtectedAuthorNotice({ ...server }, { gateResult: entry.gateResult, head: task.head });
+  const result = withProtectedGateRetry(withProtectedAuthorNotice({ ...server }, { gateResult: entry.gateResult, head: task.head }), entry.gateResult);
   if (existsSync(join(dir, 'report.md'))) {
     const reportFile = join(ctx.roundDir, 'reports', `pr-${task.pr}.md`);
     mkdirSync(dirname(reportFile), { recursive: true });
@@ -1281,12 +1281,12 @@ function finishGate(ctx, task, result) {
 // pr-worker 第 6 节的终态文件;判门阶段的结果都没有进入代码审查。
 function writeTaskResult(ctx, task, result, { raw = false } = {}) {
   const base = raw ? {} : { enteredReview: false, reviewed: false, reviewClean: false, merged: false, threadUrls: [] };
-  const payload = {
+  const payload = dropStaleProtectedNotice({
     runId: ctx.plan.runId, mode: 'review-only', pr: task.pr, head: task.head, base: task.base,
     ...base, ...result,
     outcome: result.outcome ?? 'error', reason: String(result.reason || result.outcome || '未知'),
     errors: result.errors ?? [], warnings: result.warnings ?? [],
-  };
+  });
   if (!raw && payload.outcome === 'error') payload.retry = true;
   writeJson(task.resultFile, payload);
 }
