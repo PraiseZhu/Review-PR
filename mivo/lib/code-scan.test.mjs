@@ -282,12 +282,16 @@ test('唤醒判断:稳定状态与基线不同才唤醒;瞬态 / 读不到不唤
     { pr: 5, head: 'h5', state: 'transient', at: A },  // 服务器当时没等到结果,现在稳定通过 → 唤醒
     { pr: 6, head: 'h6', state: 'fail', at: A },       // 读不到
     { pr: 7, head: 'h7', state: 'fail', at: A },       // 在审:推迟
+    { pr: 8, head: 'h8', state: 'transient', at: A },  // 服务器读规则遇到 5xx 记了瞬态,现在读到规则不再要求扫描(null)→ 唤醒
+    { pr: 9, head: 'h9', state: 'fail', at: A },       // 规则被撤销(null)→ 唤醒
+    { pr: 10, head: 'h10', state: 'pass', at: A },     // 本来就是通过,规则撤销(null)不必唤醒
   ];
-  const observed = { 1: 'pass', 2: 'fail', 3: 'pass', 4: 'transient', 5: 'pass', 6: null, 7: 'pass' };
+  const observed = { 1: 'pass', 2: 'fail', 3: 'pass', 4: 'transient', 5: 'pass', 7: 'pass', 8: null, 9: null, 10: null };
   const r = toCodeScanWake({ watched, observed, seen: {}, busyPrs: new Set([7]) });
-  assert.deepEqual(r.wake, [1, 2, 5]);
+  assert.deepEqual(r.wake, [1, 2, 5, 8, 9]);
   assert.deepEqual(r.deferred, [7]);
-  assert.deepEqual(r.next, { 1: { head: 'h1', state: 'pass', at: A }, 2: { head: 'h2', state: 'fail', at: A }, 3: { head: 'h3', state: 'pass', at: A }, 5: { head: 'h5', state: 'pass', at: A } });
+  assert.deepEqual(r.next, { 1: { head: 'h1', state: 'pass', at: A }, 2: { head: 'h2', state: 'fail', at: A }, 3: { head: 'h3', state: 'pass', at: A }, 5: { head: 'h5', state: 'pass', at: A },
+    8: { head: 'h8', state: 'pass', at: A }, 9: { head: 'h9', state: 'pass', at: A }, 10: { head: 'h10', state: 'pass', at: A } });
   // 唤醒过一次后基线是上次观察到的值:同一个状态不再重复唤醒
   const again = toCodeScanWake({ watched, observed, seen: r.next, busyPrs: new Set([7]) });
   assert.deepEqual(again.wake, []);

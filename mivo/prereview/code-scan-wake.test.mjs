@@ -28,7 +28,7 @@ const NOW = Date.parse('2026-10-17T20:00:00Z');
 const codeql = (conclusion, status = 'completed') => [{ name: 'CodeQL', app: { slug: 'github-advanced-security' }, status, conclusion,
   output: { title: conclusion === 'neutral' ? '1 configuration not found' : '' }, completed_at: status === 'completed' ? new Date(NOW - 600_000).toISOString() : null }];
 
-function makeWorld({ records = {}, checks = {}, issues = [], rs = null, rulesStatus = 'ok', watch = undefined, now = NOW, storeThrows = false } = {}) {
+function makeWorld({ records = {}, checks = {}, issues = [], rs = null, rulesStatus = 'ok', rules = [SCAN_RULE], watch = undefined, now = NOW, storeThrows = false } = {}) {
   const files = new Map();
   if (rs) files.set('/state/key/round-state.json', rs);
   if (watch) files.set('/state/mivo/code-scan-watch.json', watch);
@@ -51,7 +51,7 @@ function makeWorld({ records = {}, checks = {}, issues = [], rs = null, rulesSta
       gh.push(path);
       // wakeHeldPrs 读的开放 issue 列表(--paginate --slurp:每页一个数组)
       if (args.includes('--slurp') && path === 'repos/o/r/issues') return ok([[...issuesList, { number: 999 }]]);
-      if (path.includes('/rules/branches/')) return rulesStatus === 'ok' ? ok([SCAN_RULE]) : { ok: false, stdout: '', stderr: 'HTTP 502' };
+      if (path.includes('/rules/branches/')) return rulesStatus === 'ok' ? ok(rules) : { ok: false, stdout: '', stderr: 'HTTP 502' };
       const sha = path.match(/commits\/([^/]+)\/check-runs/)?.[1];
       if (sha) return ok({ total_count: (checks[sha] ?? []).length, check_runs: checks[sha] ?? [] });
       throw new Error(`意外的读取:${args.join(' ')}`);
@@ -177,4 +177,22 @@ test('开放 PR 多于一次的读取上限:按上次读取时间轮转,后面�
   world.sweep();
   assert.ok(world.gh.some((path) => path.includes(`commits/h${total}/check-runs`)));
   assert.equal(retryOf(world, total), true);
+});
+
+// 审查(第三轮)P2:服务器读规则遇到 5xx 记了 transient,恢复后规则其实不要求扫描(或规则被撤销)——这是确定的放行状态,必须唤醒一次重判。
+test('服务器记 transient / fail 的 PR,之后读到规则不再要求扫描:唤醒一次重判;本来是 pass 的不必', () => {
+  const recovered = makeWorld({ records: { 1: record('transient') }, issues: [1], rs: roundState(1), rules: [{ type: 'deletion' }] });
+  recovered.sweep();
+  assert.equal(retryOf(recovered, 1), true);
+  assert.equal(recovered.gh.filter((path) => path.includes('/check-runs')).length, 0, '不要求扫描时不读 check run');
+  const revoked = makeWorld({ records: { 2: record('fail', 'h2') }, issues: [2], rs: roundState(2), rules: [] });
+  revoked.sweep();
+  assert.equal(retryOf(revoked, 2), true);
+  const wasPass = makeWorld({ records: { 3: record('pass', 'h3') }, issues: [3], rs: roundState(3), rules: [] });
+  wasPass.sweep();
+  assert.equal(retryOf(wasPass, 3), false);
+  // 规则读不到(5xx)不是「不受约束」:仍然不唤醒
+  const unreadable = makeWorld({ records: { 4: record('transient', 'h4') }, issues: [4], rs: roundState(4), rulesStatus: 'fail' });
+  unreadable.sweep();
+  assert.equal(retryOf(unreadable, 4), false);
 });

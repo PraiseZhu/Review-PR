@@ -221,14 +221,17 @@ export function toCodeScanWakeState(gate) {
  * observed = {pr: 现在的三态 | null(读不到)};seen = 上次扫描记下的 {pr: {head, state, at}};busyPrs = 正在某一轮里的 PR(先推迟)。
  * 基线:seen 与服务器记录是同一次评估(head 和 at 都相同)才用 seen 的 state,否则以服务器记的为准——
  * 服务器在唤醒之后又评估了一次(哪怕同一个 head),旧的 seen 就作废,不然会漏掉之后的变化。
- * 现在是瞬态或读不到:不唤醒、基线不变。稳定状态与基线不同:唤醒并把基线推到现在。
+ * observed[pr]:'pass' | 'fail' | 'transient' | undefined(没读到);null 表示读到了规则、确定不再受约束,按通过算。
+ * 现在是瞬态或没读到:不唤醒、基线不变。稳定状态与基线不同:唤醒并把基线推到现在。
  */
 export function toCodeScanWake({ watched = [], observed = {}, seen = {}, busyPrs = new Set() } = {}) {
   const next = {};
   const wake = [];
   const deferred = [];
   for (const { pr, head, state, at } of watched) {
-    const current = observed[pr];
+    // observed[pr]:'pass' | 'fail' | 'transient' | 读不到(undefined);null = 读到了规则、确定不再受约束,等同通过
+    // (原来记 fail / transient 的 PR 规则被撤销或读取恢复后才发现不要求扫描,同样要唤醒一次重判;原来就是 pass 的不必)。
+    const current = observed[pr] === null ? 'pass' : observed[pr];
     const previous = seen[pr]?.head === head && seen[pr]?.at === at ? seen[pr] : null;
     if (current !== 'pass' && current !== 'fail') {
       if (previous) next[pr] = previous;
