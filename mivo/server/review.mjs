@@ -19,6 +19,7 @@ import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
+import { loadFeatures, runVerification, buildVerifyPrompt, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { runCodex, readCodexVersion } from './codex.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
@@ -381,6 +382,7 @@ async function codex() {
     return;
   }
   budget.budgetMs = codexBudgetMs({ jobStartMs, jobTimeoutMin, nowMs: Date.now() });
+  const budgetAt = Date.now();
   const tierCfg = tierConfig(state.tier, process.env, { budgetMs: budget.budgetMs });
   budget.primaryTimeoutMs = tierCfg.timeoutMs;
   const prompt = buildReviewPrompt({
@@ -415,6 +417,32 @@ async function codex() {
   state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget,
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
+  // 逐条核验器(lib/verify.mjs):off 不动;shadow 只记录结果、不影响任何发布。整段在这里吞掉异常——
+  // 入口的 catch 会把异常变成 finishEarly(error),那样 shadow 就改变了 outcome。核验调用不写进 state.codex.attempts。
+  const last = attempts.at(-1);
+  if (last?.ok) {
+    try {
+      const features = loadFeatures(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+      state.warnings.push(...features.warnings);
+      const cfg = features.verify;
+      if (cfg.mode !== 'shadow') state.verification = { mode: cfg.mode, items: [], skipped: [] };
+      else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: 'shadow', items: [], skipped: [{ key: null, reason: 'tier' }] };
+      else {
+        const classified = classifyAnswer(state, ctx, readJson(join(WORK, 'answer.json')));
+        state.verification = classified.ok && classified.findings.length
+          ? await runVerification({ findings: classified.findings, config: cfg, answeredBy: last.model, primary: tierCfg,
+            remainingMs: () => budget.budgetMs - (Date.now() - budgetAt),
+            runOne: (finding, index, model) => runCodex({ codexBin: codexBin(), workdir: REPO_DIR,
+              prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
+              schema: VERIFY_SCHEMA, model: model.model, effort: model.effort, timeoutMs: cfg.perCallTimeoutMin * 60_000,
+              credentials: process.env.LITELLM_CREDENTIALS_JSON, tmpRoot: join(WORK, 'codex'), label: `verify-${index + 1}` }) })
+          : { mode: 'shadow', items: [], skipped: [] };
+      }
+    } catch (error) {
+      state.verification = { mode: 'shadow', error: String(error?.message ?? error).slice(0, 300), items: [], skipped: [] };
+    }
+    saveState(state);
+  }
 }
 
 // ── 答卷分类(publish 与 codex 阶段共用)──────────────────────────────────────
@@ -557,7 +585,7 @@ async function publish() {
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
     Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, convergence,
-      rulesSource: state.rulesSource ?? null, deferrals: {
+      rulesSource: state.rulesSource ?? null, verification: state.verification ?? null, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
     } });

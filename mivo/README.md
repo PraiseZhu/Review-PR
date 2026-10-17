@@ -27,9 +27,14 @@ flowchart LR
 | `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。确认门这一步先看是否改了受保护路径：改了就任何作者（含豁免名单）都走受保护路径确认 issue；没改，豁免作者开通知 issue 但不拦，非豁免作者走普通确认门（见「维护者确认 issue 的三种模式」）。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
 | `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
-| `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（都按 PR head 取）、生效配置与答卷 schema |
+| `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
 | `lib/deferrals.mjs` | 审查问题转 issue 跟进：解析 PR 说明里的登记、核验 issue、汇总 |
-| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书 |
+| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书；thread 带 `mivo-finding` marker 时把 key 一起带出来 |
+| `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
+| `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
+| `lib/verify.mjs` | 逐条核验器（off / shadow），开关见 `config/review-features.json` |
+| `config/review-features.json` | 核验器开关，默认 off；只在 codex 阶段读，不进任务书、不进 `specDigest` |
+| `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
 | `lib/admission.mjs` | 滚动接单的判断：什么时候另开一轮、哪些 PR 不进新一轮、held PR 什么时候唤醒 |
@@ -38,6 +43,39 @@ flowchart LR
 | `prereview/gh-dryrun/` | dry-run 模式的 gh 垫片：读放行，写一律拦下 |
 | `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
+
+## 借鉴 Claude 官方的审查改造
+
+参照 Claude 官方审查机的做法，审查机做了三件事。全部只改 `mivo/` 下的审查机代码，不改 review-pr skill、Mivo 插件仓和 live tuple。
+
+1. **只读结果遥测**（`telemetry/review-outcomes.mjs`）。`node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>`，只读 GitHub，输出 `outcomes.json` 与 `outcomes.md`：作者反应分桶（ruled-keep / deferred / re-raised / rebutted / fixed-proxy / unknown）、rounds-to-pass（一轮通过、五轮及以上、平均轮数，三项都带分母）、回滚候选、高频问题类型 Top 10。分桶是代理指标，不是事实真伪。默认不输出 finding 正文、首行和 PR 标题，`--include-text` 才带。加 `--fixture <file>` 时只读本地文件，不调 gh（测试用）。
+2. **答卷 v2 与跨轮收敛**。
+   - 每条问题带触发条件、错误行为、影响、证据（head 上真实存在的文件和行号）和来源（`introduced` / `made-reachable` / `pre-existing`）。证据按 head 的 git 对象核对，缺失只记 warning，问题照常阻断。
+   - **PR 之前就存在的 P1 不阻断**，报告单列「PR 之前就存在的问题」，建议另开 issue；P0 不论来源都阻断；声称 pre-existing 但落在本 PR 新增行上的，服务器改判 introduced。
+   - 同一类问题只报一条，其余位置写进 `instances`。
+   - thread 正文末尾带 `<!-- mivo-finding key=… round=… head=… class=… -->`：key 在文件、问题类型和标题不变时稳定，跨轮靠它认出同一问题。
+   - 同一个 P0/P1 连续 3 轮没修好，报告插一节「收敛提示」，只提示、不改结论、不停审。
+   - 维护者对某个 key 裁定不改的 P1，本轮模型仍报了就移出阻断、单列；同 key 的 P0 永不移出阻断。
+   - 规则文件（AGENTS.md、DESIGN.md 等）按 PR 的 **base** 读取，写进 `input/rules-base/`，并参与 `specDigest`；PR 对规则文件的改动本身是被审对象。base 取不到时整组回退到 head，并在 `warnings` 写「规则文件 base 版本取不到,本轮按 head 读」。
+   - 报告头带 `skill` 与 `spec` 的 7 位短 hash；`result.json` 的 `mivo` 增加 `preexisting`、`ruledKept`、`convergence`、`rulesSource`、`verification`，每条问题多 `key`、`severity`、`origin`、`seenRounds` 等字段（只存紧凑形状，不存长文本）。
+3. **逐条核验器**（`lib/verify.mjs`，默认 off）。`config/review-features.json` 的 `verify.mode`：
+   - `off`：不核验，只调 1 次模型（默认）。
+   - `shadow`：主审之后，另一个模型逐条尝试驳倒阻断问题（按 `maxFindings` 取，P0 优先），结果只写进 `result.json` 的 `mivo.verification`。**不改任何评论、报告、结论和 check**；核验失败、超时、异常都不影响本轮 outcome；预算不够就记 `skipped: budget`。
+   - `enforce`：未实现，按 shadow 处理并告警。
+   - 开关文件读不到或任一项不合法时按 off 并写 warning。开关文件只在 codex 阶段读，不进任务书，所以改开关**不会**触发全量重审。
+   - 核验的独立性靠「只给这一条论断、不给主审报告和推理」，不靠隔离：审查沙箱只限制写、不限制读。
+
+### 上线影响：全量重审
+
+答卷 schema 和任务书（交卷格式、rules-base 一节）都进 `specDigest`，合入后的第一个审查轮，所有开放 PR 因「审查任务书或规则变了」各做一次**全量重审**。`dailyCap=30`、`maxParallel=3` 会自然限流，建议选开放 PR 少的时候合入。遥测只读、按需运行，不接任何定时任务。
+
+### enforce 前置条件
+
+`enforce`（核验被驳倒的问题自动降级或不阻断）目前不实现。要做至少需要：
+
+- 用 `telemetry/review-outcomes.mjs` 积累一段时间的 shadow 数据，对核验结论（`refuted`）和作者反应分桶（`rebutted` / `ruled-keep`）做对照，确认核验器的误驳率可接受；
+- 核验模型与主审模型的独立性有数据支撑（不同模型、不同上下文）；
+- 单独的计划和维护者批准，包含出错时的回滚办法；`enforce` 之前不得让核验结果影响 outcome。
 
 ## 维护者确认 issue 的三种模式
 

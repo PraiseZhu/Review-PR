@@ -1,0 +1,11 @@
+{
+  "verify": {
+    "mode": "off",
+    "model": "openai/gpt-6.1-sol",
+    "effort": "medium",
+    "tiers": ["standard", "heavy"],
+    "maxFindings": 3,
+    "perCallTimeoutMin": 15,
+    "budgetMin": 20
+  }
+}
