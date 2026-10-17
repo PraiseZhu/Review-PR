@@ -30,6 +30,8 @@ const toml = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '
 export function renderCodexConfig(baseUrl) {
   return [
     `model_provider = ${toml(PROVIDER_ID)}`,
+    // 不读 PR head 里的 AGENTS.md:规则只认任务书给的 base 版本,PR 改不了审查规则(实测默认会读)
+    'project_doc_max_bytes = 0',
     `[model_providers.${PROVIDER_ID}]`,
     `name = ${toml(PROVIDER_ID)}`,
     `base_url = ${toml(baseUrl)}`,
