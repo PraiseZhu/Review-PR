@@ -1,8 +1,9 @@
 // Bind each write in a multi-step action to the same lock, viewer, authority and head.
-import { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor } from './lib.mjs';
+import { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, stateFile } from './lib.mjs';
+import { recordSelfWrite } from './self-write-receipts.mjs';
 
 export function createPrWriteGuard(binding, dependencies = {}) {
-  const api = { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, ...dependencies };
+  const api = { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, recordSelfWrite, ...dependencies };
   const { owner, repo, pr, lockToken, expectedHead, expectedAuthorityDigest, purpose } = binding;
   if (!lockToken || !expectedHead || !expectedAuthorityDigest) throw new Error('写操作缺少 lock/head/authority 绑定');
   let boundViewer = String(binding.expectedViewer ?? '').trim().toLowerCase() || null;
@@ -24,6 +25,11 @@ export function createPrWriteGuard(binding, dependencies = {}) {
     if (purpose === 'signoff-notice' && !(policy.authorIsMaintainer || api.isSignoffExemptAuthor(meta.author?.login))) throw new Error('非豁免作者不发通知 issue，应走 hold');
     boundViewer = viewer;
     api.assertActiveReviewLock(lockToken);
-    return api.gh(args, { ...options, noCredFallback: true });
+    const startedAt = Date.now();
+    const result = api.gh(args, { ...options, noCredFallback: true });
+    api.recordSelfWrite({ directory: process.env.REVIEW_PR_SELF_WRITE_DIR || stateFile('self-writes'),
+      repo: `${owner}/${repo}`, pr, head: expectedHead, scope: lockToken,
+      args, result, startedAt, finishedAt: Date.now() });
+    return result;
   };
 }

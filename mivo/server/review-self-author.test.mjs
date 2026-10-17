@@ -35,6 +35,8 @@ function makeRoot() {
   mkdirSync(join(root, 'review-pr', 'scripts'), { recursive: true });
   for (const file of readdirSync(LIB_DIR).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))) copyFileSync(join(LIB_DIR, file), join(root, 'mivo', 'lib', file));
   for (const file of ['review.mjs', 'codex.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
+  copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'self-write-receipts.mjs'),
+    join(root, 'review-pr', 'scripts', 'self-write-receipts.mjs'));
   writeFileSync(join(root, 'review-pr', 'scripts', 'finish-reviewed-pr.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';
 const out = JSON.parse(readFileSync(process.env.STUB_FINISH, 'utf8'));
 writeFileSync(process.argv[process.argv.indexOf('--result-file') + 1], JSON.stringify(out));
@@ -63,7 +65,7 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input }) + '\\n
 if (args.includes('--paginate')) { process.stdout.write('[[]]'); process.exit(0); }
 if (args.includes('DELETE')) { process.stderr.write('HTTP 404 Label does not exist'); process.exit(1); }
 if (args.length === 2 && args[0] === 'api' && args[1] === 'repos/o/r/pulls/7') { process.stdout.write(JSON.stringify({ head: { sha: ${JSON.stringify(SHA)} }, labels: [] })); process.exit(0); }
-process.stdout.write(JSON.stringify({ id: 5 }));
+process.stdout.write(JSON.stringify({ id: 5, updated_at: new Date().toISOString() }));
 `);
   chmodSync(join(bin, 'gh'), 0o755);
   return { bin, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [] };
@@ -123,6 +125,8 @@ test('作者自批是唯一拦截项:评论发报告、挂 review:merge-ready、
     const calls = gh.calls();
     assert.equal(result.outcome, 'approval');
     assert.equal(result.reviewClean, true);
+    assert.ok(result.selfWriteReceipts.length >= 1, '服务器发布回执随现有结果文件传回');
+    assert.ok(result.selfWriteReceipts.every((receipt) => receipt.repo === 'o/r' && receipt.pr === 7 && receipt.head === SHA));
     assert.match(result.reason, /作者是审查账号本人/);
     assert.ok(addedLabel(calls), '只差另一位维护者 Approve:挂标签');
     const [comment] = reportComments(calls);

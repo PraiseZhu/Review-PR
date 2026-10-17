@@ -39,3 +39,25 @@ test('multi-step hold stops every subsequent write after lock/head/authority/vie
     assert.equal(writes, 1, change);
   }
 });
+
+test('guard forwards successful writes to the same head/lock receipt recorder without extra GitHub reads', () => {
+  const receipts = [];
+  const calls = [];
+  const guard = createPrWriteGuard({ owner: 'o', repo: 'r', pr: 1, lockToken: 'token',
+    expectedHead: 'a'.repeat(40), expectedAuthorityDigest: 'digest' }, {
+    assertActiveReviewLock() {},
+    gh(args) { calls.push(args); return { ok: true, stdout: args[1] === 'user' ? 'alice' : '{}' }; },
+    ghJson: () => ({ state: 'OPEN', isDraft: false, headRefOid: 'a'.repeat(40), author: { login: 'bob' } }),
+    fetchMaintainerAuthority: () => ({ digest: 'digest' }),
+    evaluateMaintainerApprovalPolicy: () => ({ viewerIsMaintainer: true }),
+    recordSelfWrite: (receipt) => receipts.push(receipt),
+  });
+  const args = ['api', '--method', 'POST', 'repos/o/r/issues/1/comments'];
+  const response = guard(args);
+  assert.equal(calls.length, 2);
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].result, response);
+  assert.deepEqual([receipts[0].repo, receipts[0].pr, receipts[0].head, receipts[0].scope],
+    ['o/r', 1, 'a'.repeat(40), 'token']);
+  assert.deepEqual(receipts[0].args, args);
+});
