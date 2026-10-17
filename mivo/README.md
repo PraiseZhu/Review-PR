@@ -112,6 +112,8 @@ flowchart LR
 
 维护者作者的受保护路径 PR：
 
+Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功检查，不把同名的工作流 job 当成放行证据。检查必须来自 `github-actions`，其 `external_id` 必须指向配置中的审查仓运行；该运行还须是配置分支上 `.github/workflows/review-pr.yml` 的成功 `workflow_dispatch`。较新的正式失败或进行中结果不能被旧 success 遮蔽；来源读不到或数据不完整时仍派服务器复核。这里核对的是正式检查来源，不是代码扫描门或 `review:merge-ready` 标签规则。
+
 - 「作者是不是维护者」只在 `context.mjs` 判一次：`protectedPath.released` 直接成立（`via=author-maintainer`，指纹 `author-maintainer:<login>`）。Mini 判门和服务器 `prepareProtectedApprove` 都只读这个结果，各自不另写判断。别的维护者在当前 head 上 Request Changes 时仍然交作者，不放行。
 - Mini 开 notice issue（`--kind protected --signoff-mode notice`，每个 PR 一次，建完即关），不挂标签，不给作者发「转人工审核」提醒，作者提醒回执记 `deduplicated`。随后派 `protected-approve`，服务器写 `review-pr` check，标题「受保护路径：作者为维护者，自动放行」，不送模型审查。
 - 一个 PR 只通报一次：这个 PR 之前已经开过别的类别的 notice issue 时，后来才改到受保护路径不会再开第二个。

@@ -1005,8 +1005,25 @@ function readCodeScanGate(task) {
 // 受保护路径:当前 head 的 review-pr check 是否已经写成 success。放行信号本身由 context 的 protectedPath 给出。
 // check 读不到按「没写成功」处理:最多多派一次服务器复核,服务器写 check 是幂等的。
 function protectedCheckDone(task) {
-  const checks = ghRead(['api', `repos/${CONFIG.targetRepo}/commits/${task.head}/check-runs?check_name=review-pr`], { allowFail: true });
-  return checks.ok && (JSON.parse(checks.stdout).check_runs ?? []).some((c) => c.conclusion === 'success');
+  try {
+    const checks = ghRead(['api', `repos/${CONFIG.targetRepo}/commits/${task.head}/check-runs?check_name=review-pr&per_page=100`, '--paginate', '--slurp'], { allowFail: true });
+    if (!checks.ok) return false;
+    const prefix = `https://github.com/${CONFIG.workflowRepo}/actions/runs/`;
+    const formal = JSON.parse(checks.stdout).flatMap((page) => page.check_runs ?? [])
+      .filter((check) => check.name === 'review-pr' && check.head_sha === task.head
+        && check.app?.slug === 'github-actions' && typeof check.external_id === 'string'
+        && check.external_id.startsWith(prefix) && /^[1-9]\d*$/.test(check.external_id.slice(prefix.length)))
+      .sort((left, right) => right.id - left.id)[0];
+    if (formal?.status !== 'completed' || formal.conclusion !== 'success') return false;
+    const response = ghRead(['api', `repos/${CONFIG.workflowRepo}/actions/runs/${formal.external_id.slice(prefix.length)}`], { allowFail: true });
+    if (!response.ok) return false;
+    const workflow = JSON.parse(response.stdout);
+    return workflow?.html_url === formal.external_id && workflow.repository?.full_name === CONFIG.workflowRepo
+      && workflow.path === '.github/workflows/review-pr.yml' && workflow.event === 'workflow_dispatch'
+      && workflow.head_branch === CONFIG.workflowRef && workflow.status === 'completed' && workflow.conclusion === 'success';
+  } catch {
+    return false;
+  }
 }
 
 // ── 派发服务器审查 ──────────────────────────────────────────────────────────
