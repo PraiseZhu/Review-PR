@@ -8,6 +8,7 @@ import { parseRepo, parsePR, gh, ghJson, fetchAllReviewThreads, fetchMaintainerA
   assertActiveReviewLock, stateFile, print } from './lib.mjs';
 import { atomicWriteJson } from './runtime-io.mjs';
 import { approvalReceiptFromReview, existingMaintainerApprovalReceipt, pendingApproval, APPROVAL_REPOST_AFTER_MS } from './approval-state.mjs';
+import { recordSelfWrite } from './self-write-receipts.mjs';
 
 const argValue = (name) => {
   const index = process.argv.indexOf(name);
@@ -57,8 +58,9 @@ try {
 
   const collect = () => {
     assertActiveReviewLock(lockToken);
+    const beforeObservedAt = Date.now();
     const meta = ghJson(['pr', 'view', String(pr), '--repo', slug,
-      '--json', 'state,isDraft,reviewDecision,author,headRefOid,baseRefName,baseRefOid']);
+      '--json', 'state,isDraft,reviewDecision,author,headRefOid,baseRefName,baseRefOid,updatedAt']);
     const viewer = String(gh(['api', 'user', '--jq', '.login'], { noCredFallback: true }).stdout ?? '').trim();
     let authority = null;
     let authorityError;
@@ -113,7 +115,7 @@ try {
     if (meta.reviewDecision === 'CHANGES_REQUESTED' && !changes.length) {
       reject('reviews-unverified', 'reviewDecision=CHANGES_REQUESTED，但未读取到对应 review');
     }
-    return { meta, viewer, authority, policy, failures, overriddenOwnCr: standingOwnCr ? String(standingOwnCr.id) : null,
+    return { meta, beforeObservedAt, viewer, authority, policy, failures, overriddenOwnCr: standingOwnCr ? String(standingOwnCr.id) : null,
       receipt: independentReceipt ?? existingReceipt(reviews, viewer, expectedHead) };
   };
   const stop = (snapshot, extraFailures = []) => {
@@ -200,8 +202,13 @@ try {
   persist('posting');
   assertActiveReviewLock(lockToken);
   attempted = true;
+  const writeStartedAt = Date.now();
   const response = gh(['api', '--method', 'POST', `repos/${slug}/pulls/${pr}/reviews`, '--input', '-'],
     { input: JSON.stringify({ event: 'APPROVE', commit_id: expectedHead, body }), allowFail: true, noCredFallback: true, timeoutMs: 60_000 });
+  recordSelfWrite({ directory: process.env.REVIEW_PR_SELF_WRITE_DIR || stateFile('self-writes'),
+    repo: slug, pr, head: expectedHead, scope: lockToken, beforeUpdatedAt: fresh.meta.updatedAt, beforeObservedAt: fresh.beforeObservedAt,
+    args: ['api', '--method', 'POST', `repos/${slug}/pulls/${pr}/reviews`],
+    result: response, startedAt: writeStartedAt, finishedAt: Date.now() });
   let receipt;
   if (response.ok) {
     try { receipt = approvalReceiptFromReview(JSON.parse(response.stdout), { viewer: fresh.viewer, head: expectedHead }); } catch { /* reconcile once */ }

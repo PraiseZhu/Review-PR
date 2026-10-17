@@ -13,6 +13,7 @@ import { verifyReviewArtifacts } from './review-artifacts.mjs';
 import { publishReviewHistory } from './review-history.mjs';
 import { buildReviewSummary, formatReviewCard, formatReviewCards } from './review-summary.mjs';
 import { formatLocalIso } from './local-time.mjs';
+import { readSelfWrites } from './self-write-receipts.mjs';
 
 const arg = (name) => {
   const i = process.argv.indexOf(name);
@@ -58,6 +59,11 @@ try {
   const resultDir = join(directory, 'results');
   const results = readdirSync(resultDir).filter((name) => /^pr-\d+\.json$/.test(name))
     .map((name) => JSON.parse(readFileSync(join(resultDir, name), 'utf8')));
+  for (const result of results) {
+    result.selfWriteReceipts = [...(Array.isArray(result.selfWriteReceipts) ? result.selfWriteReceipts : []),
+      ...readSelfWrites({ directory: process.env.REVIEW_PR_SELF_WRITE_DIR || stateFile('self-writes'),
+        repo: plan.repo, pr: result.pr, head: result.head, scope: token })];
+  }
   const payload = collectRoundResults(plan, results);
   for (const result of results) verifyReviewArtifacts(planFile, plan, result);
   const notesFile = arg('--notes-file');
