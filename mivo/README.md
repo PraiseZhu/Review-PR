@@ -172,7 +172,7 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - 指纹其它字段（head、base、reviewDecision、unresolved、mergeable、mergeStateStatus、ci、dependencies）与基线完全一致，只有 `updatedAt` 变了；
 - 新的 `updatedAt` 不晚于上一轮的收尾时刻 `checkedAt`（收尾在审查机所有写动作之后，吸收后 `checkedAt` 不变）。
 
-收尾之后的任何改动 `updatedAt` 都会更晚，照常唤醒；没有 `fingerprintFields` 或 `checkedAt` 的旧状态无法确认，也照常唤醒。已知取舍：动手前到收尾之间，别人恰好只改了 `updatedAt`（只发普通评论或改说明，没有 thread / CI / review 变化）也会被吸收一次；之后任何新动静仍会唤醒。
+收尾所在那一秒之后的改动，`updatedAt` 才会更晚而照常唤醒；没有 `fingerprintFields` 或 `checkedAt` 的旧状态无法确认，也照常唤醒。已知取舍有两条，都只影响没有 thread / CI / review 变化、只改了 `updatedAt` 的普通评论或改说明：一是动手前到收尾之间别人恰好改了，会被吸收一次；二是 GitHub 的 `updatedAt` 只到秒、`checkedAt` 到毫秒，收尾之后同一秒内的外部改动也会被吸收（窗口不超过 1 秒）。吸收之后任何新动静仍会唤醒。
 
 `review:merge-ready` 的三条补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在）：
 
