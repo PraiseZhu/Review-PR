@@ -2,7 +2,8 @@
 // 凭据写进 CODEX_HOME、key 只放在 CLI 进程的 CODEX_API_KEY、沙箱子进程排除这些变量;
 // 另外整个子进程环境从零构造,GitHub 令牌不可能被继承。产物落盘前把 key 原文替换掉。
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { scrubSecrets } from '../lib/report.mjs';
@@ -51,13 +52,21 @@ export function redact(text, secrets) {
   return out;
 }
 
+// 退避重试:每个路径最多重试 3 次,间隔 200/400/600ms(只对 EBUSY/ENOTEMPTY/EPERM 等可重试错误生效)。
+const RUN_ARTIFACT_RM = { recursive: true, force: true, maxRetries: 3, retryDelay: 200 };
 /**
- * 删掉一次 runCodex 在 tmpRoot 下留的全部痕迹(CLI 输出日志、stderr、最后一条消息、CODEX_HOME、HOME、TMPDIR)。
+ * 删掉一次 runCodex 在 tmpRoot 下的全部痕迹(CLI 输出日志、stderr、最后一条消息、CODEX_HOME、HOME、TMPDIR)。
  * 主审交卷并取完计量数据后调用:核对员运行期间,磁盘上不能有主审的答卷和日志(沙箱只限写不限读)。只留 schema 文件(只有 schema,没有答案)。
+ * 永不抛错:六个路径各删各的,清不掉的(CLI 退出后仍有孙进程往 TMPDIR 写文件会让 rmdir 报 ENOTEMPTY)不影响别的路径,
+ * 也不能让已经审完的结果作废。返回清不掉的 [{name, code}](只带文件名和错误码,不带路径);调用方负责记告警和决定后续。
+ * 用异步的 fs.promises.rm:它的 maxRetries 才会真的按 retryDelay 退避;同步 rmSync 在 Node 24 上遇到 ENOTEMPTY 几乎不等待(实测 50ms 内就放弃)。
  */
-export function removeRunArtifacts(tmpRoot, label) {
-  for (const name of [`codex-${label}.stdout`, `codex-${label}.stderr`, `codex-${label}.answer.json`,
-    `codex-home-${label}`, `home-${label}`, `tmp-${label}`]) rmSync(join(tmpRoot, name), { recursive: true, force: true });
+export async function removeRunArtifacts(tmpRoot, label, remove = rm) {
+  const names = [`codex-${label}.stdout`, `codex-${label}.stderr`, `codex-${label}.answer.json`,
+    `codex-home-${label}`, `home-${label}`, `tmp-${label}`];
+  const settled = await Promise.allSettled(names.map(async (name) => remove(join(tmpRoot, name), RUN_ARTIFACT_RM)));
+  return settled.flatMap((result, i) => (result.status === 'rejected'
+    ? [{ name: names[i], code: String(result.reason?.code ?? result.reason?.name ?? 'UNKNOWN') }] : []));
 }
 
 const sizeOf = (file) => { try { return statSync(file).size; } catch { return 0; } };

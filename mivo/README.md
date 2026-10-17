@@ -69,6 +69,7 @@ flowchart LR
    - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。这个状态跨轮保留（`verifierOverruledAll`）：下一轮不论改了什么，都因「上一轮核对员推翻/降级了全部卡点」退回全量重审，得出新结论之前不会 Approve。原本就没有 P1 的 PR 行为不变。
    - `result.json` 的 `mivo.verification` 记每条核对的结论、`applied`（实际生效的是 refuted 还是 downgraded）、模型、耗时和证据/理由；`mivo.verifierOverruled` 记被推翻/降级的问题（紧凑形状）。
    - **主审答卷不落盘**：主审交卷后答卷只留在 codex 阶段的进程内存里，每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹（CLI 输出日志、stderr、最后一条消息、`CODEX_HOME`、临时目录），核对员全部跑完才把 `answer.json` 写盘给 publish 阶段读。
+   - **清理失败不会让主审结果作废**：清理按路径各删各的（`fs.promises.rm`，ENOTEMPTY 等可重试错误最多退避重试 3 次），清不掉的只往 `result.json` 的 `warnings` 记一条「清理 codex 运行产物失败」（只带文件名和错误码），主审结果照常采用、照常发布。主审（含失败的尝试）的痕迹没清干净时，核对员可能读到主审的日志，这一轮不核对：`mivo.verification.skipped` 记 `artifacts-cleanup-failed` 和没清掉的文件名，P1 照原样阻断。核对员自己的痕迹清不掉只记告警，核对结论照常采用。
 
 ### 上线影响：全量重审
 

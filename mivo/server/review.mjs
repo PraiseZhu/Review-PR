@@ -409,6 +409,8 @@ async function codex() {
   // 主审答卷只留在内存里,等核对员全部跑完再写盘(下面的 finally);每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹
   // (输出日志、stderr、最后一条消息、CODEX_HOME 等)。核对员运行期间磁盘上不存在主审的答卷和日志:沙箱只限写不限读,靠这个缓解。
   let answer = null;
+  // 没清掉的主审(含失败尝试)痕迹:有残留时核对员可能读到主审的日志,这一轮不核对(见下面的 artifacts-cleanup-failed)。
+  const cleanupLeft = [];
   // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。
   for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs }); next;
     next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs })) {
@@ -425,7 +427,7 @@ async function codex() {
       firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
       maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}) });
     answer = result.ok ? result.answer : null;
-    removeRunArtifacts(join(WORK, 'codex'), label);
+    cleanupLeft.push(...await clearRunArtifacts(state, label));
   }
   state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget,
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
@@ -444,6 +446,9 @@ async function codex() {
     else if ((instructionFiles = agentInstructionFiles(readFileSync(state.context.diffFile, 'utf8'))).length) {
       // PR 改了给 agent 看的说明文件:核对员会在 head 上读到它们并可能照做,这一轮不核对,P1 照原样阻断
       state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'agent-instructions-changed', lines: instructionFiles }] };
+    } else if (cleanupLeft.length) {
+      // 主审的运行产物没清干净:沙箱只限写不限读,核对员可能读到主审的答卷或日志,失去独立性。主审结果照常采用,这一轮不核对,P1 照原样阻断。
+      state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'artifacts-cleanup-failed', lines: cleanupLeft }] };
     } else {
       const classified = classifyAnswer(state, ctx, answer);
       const headReader = headReaderFor(state.input.head);
@@ -457,7 +462,7 @@ async function codex() {
               prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
               schema: VERIFY_SCHEMA, model: model.model, effort: model.effort, timeoutMs: cfg.perCallTimeoutMin * 60_000,
               credentials: process.env.LITELLM_CREDENTIALS_JSON, tmpRoot: join(WORK, 'codex'), label });
-            removeRunArtifacts(join(WORK, 'codex'), label);
+            await clearRunArtifacts(state, label);
             return run1;
           } })
         : { mode: cfg.mode, items: [], skipped: [] };
@@ -469,6 +474,14 @@ async function codex() {
     writeJson(join(WORK, 'answer.json'), answer);
     saveState(state);
   }
+}
+
+// ── 运行产物清理 ─────────────────────────────────────────────────────────────
+// 清理失败只记告警,不能让已经审完的结果作废(入口的 catch 会把异常变成 finishEarly(error),整轮主审作废)。返回没清掉的文件名。
+async function clearRunArtifacts(state, label) {
+  const failed = await removeRunArtifacts(join(WORK, 'codex'), label);
+  if (failed.length) state.warnings.push(`清理 codex 运行产物失败(${label}):${failed.map((f) => `${f.name}(${f.code})`).join('、')},审查结果照常采用`);
+  return failed.map((f) => f.name);
 }
 
 // ── 答卷分类(publish 与 codex 阶段共用)──────────────────────────────────────
