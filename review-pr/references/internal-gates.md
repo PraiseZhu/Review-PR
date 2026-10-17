@@ -24,7 +24,8 @@ review-pr(交互)与 review-pr-auto(批处理)共用本文件。
   docs/legal/notices/)、`pluginBase.{paths,excludePaths}`(插件基座:所有已装插件共同
   踩着的那层,判据见目标仓 `docs/dev-rules/plugin-security-and-authoring.md` 第 5 节);
 - `protectedPaths`:受保护路径(`paths`,含 `.github/`、根 `CODEOWNERS`、`docs/CODEOWNERS`)。命中这些路径的 PR **一律不自动合并**,
-  交人工处理——不看作者、不看 diff 大小、不看标题类型;
+  交人工处理——不看 diff 大小、不看标题类型。[MIVO-PATCH protected-author-release] 作者是维护者
+  (`authorSignoffExempt`)时不等人工放行:开 notice issue 通报后自动放行(`review-pr` 写通过,仍不自动合并);非维护者作者照旧;
 - `statusLabels`:展示标签开关与外观(`enabled` 整组、`largeDiffLines` 大改动阈值、
   `labels.<名字>.{color,description,enabled}` 逐个覆盖)。**只影响展示,不影响任何判定**;
   标签名与优先级是逻辑,在 `lib.mjs` 的 `DISPLAY_LABELS` / `computeDisplayLabels`;

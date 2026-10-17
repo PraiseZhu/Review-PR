@@ -46,8 +46,8 @@ flowchart LR
 | 模式 | 什么时候开 | footer 标记 | 标签 | 放行后 |
 |---|---|---|---|---|
 | 普通确认门 | 非豁免作者命中确认门（产品/架构/安全/冷更/规则文档/插件基座） | 无 | 挂 `awaiting-discussion` | 现有流程，放行后关 issue |
-| 受保护路径 | 改了受保护路径（`.github/**` 等），**任何作者**，含豁免名单 4 人 | `<!-- review-pr:signoff-mode=protected -->` | 挂 | 服务器把 `review-pr` 写成通过，Mini 看到后关 issue |
-| 通知 | 豁免名单作者命中确认门，但没改受保护路径 | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭，PR 同一轮照常送审 |
+| 受保护路径 | 改了受保护路径（`.github/**` 等），**非维护者作者**（不在豁免名单 4 人内） | `<!-- review-pr:signoff-mode=protected -->` | 挂 | 服务器把 `review-pr` 写成通过，Mini 看到后关 issue |
+| 通知 | 豁免名单作者（维护者 3 人 + zhongxingtian-ai，即 `authorSignoffExempt`）命中确认门；或**改了受保护路径**（此时标题、正文写明「作者为维护者，自动放行」） | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭；确认门的 PR 同一轮照常送审，受保护路径的 PR 自动放行（见下） |
 
 放行有三条路，**批一次一直有效**，不绑提交：
 
@@ -57,7 +57,22 @@ flowchart LR
 
 **issue 必须属于本 PR**：issue 标题里的 PR 号和 footer 里的「关联 PR:#n」都要等于本 PR，否则这个 issue 上的任何放行都不采用。PR 评论里的去重标记任何人都能发，不校验这一条，作者就能把标记指向别的 PR 已经放行的 issue 借走放行。通知 issue 上的「同意放行」同样不算放行。
 
-受保护路径 PR 的流程：
+2026-10-17 维护者拍板的规则：**维护者自己的 PR 照样在 GitHub 开 issue、在 Slack 通报，但自动放行，不等任何人；只有非维护者才需要维护者放行。** 「维护者」指 `authorSignoffExempt`：`maintainerAllowlist` 成员（PraiseZhu、kirozeng、aj0928）加 `signoffGate.exemptAuthors`（再多一个 zhongxingtian-ai）。这条只放宽「谁的 PR 自动放行」；「谁能给别人的 PR 放行」仍然只有 `maintainerAllowlist` 三人，zhongxingtian-ai 的 Approve 或「同意放行」放行不了别人。agent 也用 PraiseZhu 账号开 PR，所以 agent 开的受保护路径 PR 同样自动放行，这是已知后果。
+
+| 作者 | 受保护路径 | 普通确认门 |
+|---|---|---|
+| 维护者（上面 4 人） | notice issue + Slack 通报，**自动放行**，不送模型审查 | notice（不变） |
+| 非维护者 | protected issue 转人工审核，维护者放行（不变） | 普通确认门（不变） |
+
+维护者作者的受保护路径 PR：
+
+- 「作者是不是维护者」只在 `context.mjs` 判一次：`protectedPath.released` 直接成立（`via=author-maintainer`，指纹 `author-maintainer:<login>`）。Mini 判门和服务器 `prepareProtectedApprove` 都只读这个结果，各自不另写判断。别的维护者在当前 head 上 Request Changes 时仍然交作者，不放行。
+- Mini 开 notice issue（`--kind protected --signoff-mode notice`，每个 PR 一次，建完即关），不挂标签，不给作者发「转人工审核」提醒，作者提醒回执记 `deduplicated`。随后派 `protected-approve`，服务器写 `review-pr` check，标题「受保护路径：作者为维护者，自动放行」，不送模型审查。
+- 一个 PR 只通报一次：这个 PR 之前已经开过别的类别的 notice issue 时，后来才改到受保护路径不会再开第二个。
+- 存量：此前已经按人工审核 hold 住的维护者 PR（`protected` 模式的确认 issue 仍 OPEN，如 Mivo #1037 / issue #1054），下一轮由 `signoff-release --labels-only --close-issue` 关掉并留一句「作者为维护者，按新规则自动放行」，再照常写 `review-pr`。`round.mjs` 会用独立标记文件 `protected-author-release-wake.json` 把已有的 `outcome=protected` 记录再唤醒一次，不然指纹没变会被当成 unchanged 跳过。
+- 一致性：Mini 的 `verifySkillPin` 要求本机 skill 检出等于仓库变量 `MIVO_REVIEW_SKILL_SHA`，服务器 workflow 按同一变量取 tarball；两边读同一份 `review-pr/config/pr-rules.json`（生产的 Mini 实例没有 `rulesFile` 覆盖，只有 target 仓不是 workflow 仓的沙箱才用 `sandbox-pr-rules.json`），所以 `exemptAuthors` 不用进 authority digest。
+
+非维护者作者的受保护路径 PR 的流程（不变）：
 
 - 前置审查（Mini）判门：改了受保护路径且没有放行 → 开确认 issue（`--signoff-mode protected`）、挂标签、给作者发受保护路径提醒，PR 不送模型审查；Slack 通报写明「转人工审核」。已有可复用的确认 issue（不是通知 issue、没关闭）时复用，不另开；非豁免 PR 之前已有普通确认 issue 的话也复用，Slack 当初的文案不是「转人工审核」，但放行路径相同。
 - 放行成立后，Mini 派 `protected-approve`；服务器**独立重跑 context** 复核同一个放行信号（Approve 被撤销、评论被删、名单变化时不认），再写 `review-pr` check：标题写明是谁、用什么方式放行。服务器只写 check，不碰 issue（服务器令牌的账号和 issue 写权限没核实）。
@@ -66,7 +81,7 @@ flowchart LR
 - 确认 issue 有新评论时，`wakeHeldPrs` 在一个周期内唤醒重判。
 - dry-run 不写 GitHub：不开 issue、不写 check。
 
-通知 issue（豁免作者）：
+通知 issue（豁免作者；维护者作者改受保护路径同样用它）：
 
 - 前置审查开 issue（带 notice 标记）、在 PR 上发带去重标记的评论，然后**立即关闭 issue**。Mivo 的 Slack 通报只在 `issues: opened` 事件上跑、读事件载荷，不检查 issue 是否 open，所以立即关闭不影响通报。关闭是为了：通知 issue 一直开着的话，之后同一个 PR 又改了受保护路径会复用它，Slack 收不到「转人工审核」。受保护路径模式碰到旧的通知 issue 一律另开新 issue。
 - 不挂 `awaiting-discussion`，不拦 PR，同一轮照常送审。PR 上已有确认标记就不再通知。
