@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
-import { decideGate, PENDING_GATE_TEXT } from '../lib/gates.mjs';
+import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf } from '../lib/prompt.mjs';
@@ -579,6 +579,13 @@ async function publishClean(state, result, reportFile) {
   }
   if (result.approval.status === 'blocked' && result.approval.code === 'independent-approval-required' && state.context.viewerIsAuthor) {
     // 作者就是审查账号(PraiseZhu 自己的 PR):不能自批,改用 COMMENT 发同样的报告(同 Cindy --comment-only)。
+    // approval.code 只是第一个拦截项;「除了不能自批其它全部通过」才能挂标签、写 success。
+    // 还有未 resolve 的讨论等别的拦截时,与「送审但不放行」一致(2026-10-17 #1081)。
+    const self = toAuthorSelfApproval((receipt ?? finish)?.approvalResult);
+    if (!self.authorOnly) {
+      await publishAdvisory(state, result, reportFile, { blockers: self.others.map((other) => other.reason), retry: self.retry });
+      return;
+    }
     const comment = postReportComment(state, reportFile);
     Object.assign(result, { outcome: 'approval', reason: `审查通过,${clean};作者是审查账号本人,以评论发布报告,需另一位维护者 Approve` });
     result.mivo.reportComment = comment;
@@ -609,19 +616,25 @@ async function publishClean(state, result, reportFile) {
 // 代码没有 P0/P1,但还有前置门没过(缺界面证据、机器人 thread 没 resolve):以评论发报告,不 Approve、
 // 不挂 review:merge-ready,check 留在进行中。补齐后下一轮重审(同 head 走复用)才放行。
 // reviewClean 记 false:Mini 不把这个 head 当成审查通过,也不会为补 Approve 反复派发。
-async function publishAdvisory(state, result, reportFile) {
+// blockers:判门之外、发布时才发现的拦截项原文(作者是审查账号时 approve 回执里的其它失败项),与 pendingGates 并列写进待办;
+// retry:其中有读取不确定的项,下一轮重读。
+async function publishAdvisory(state, result, reportFile, { blockers = [], retry = false } = {}) {
   const input = state.input;
-  const pending = state.pendingGates.map((gate) => PENDING_GATE_TEXT[gate] ?? gate);
+  const pendingGates = state.pendingGates ?? [];
+  const pending = [...pendingGates.map((gate) => PENDING_GATE_TEXT[gate] ?? gate), ...blockers];
   // threads-unresolved 表示「前置门没过、没进审查」,轮次汇总会拒绝它带 enteredReview;只剩机器人 thread 记 merge-blocked。
-  const outcome = state.pendingGates.includes('ui-evidence') ? 'format' : 'merge-blocked';
+  const outcome = pendingGates.includes('ui-evidence') ? 'format' : 'merge-blocked';
   const why = pending.join(';');
   Object.assign(result, { outcome, reviewClean: false, reason: `代码审查没有 P0/P1,但还不能放行:${why}` });
   result.approval = { status: 'blocked', code: 'gates-pending', reason: why };
-  result.mivo.advisory = { pendingGates: state.pendingGates };
+  result.mivo.advisory = { pendingGates, ...(blockers.length ? { blockers } : {}) };
+  if (retry) result.retry = true;
   if (input.mode === 'dry-run') { result.reason += '(dry-run:没有写入 GitHub)'; return; }
   const banner = [
     `> **代码审查没有发现 P0/P1,但这个 PR 还不能放行**:${why}。`,
-    '> 补齐后审查机会自动重审;代码没变时直接沿用这次的结论并 Approve。',
+    blockers.length
+      ? '> 补齐后审查机会自动重审(代码没变时直接沿用这次的结论);作者是审查账号本人,不能自批,放行仍需另一位维护者 Approve。'
+      : '> 补齐后审查机会自动重审;代码没变时直接沿用这次的结论并 Approve。',
     '',
   ].join('\n');
   const comment = postReportComment(state, reportFile, { marker: `<!-- mivo-review:advisory head=${input.head} -->`, prefix: banner });

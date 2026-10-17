@@ -299,6 +299,52 @@ export const PENDING_GATE_TEXT = {
   'bot-threads': '还有机器人(如 Greptile)留的讨论没有 resolve',
 };
 
+const AUTHOR_SELF_APPROVAL_CODE = 'independent-approval-required';
+// approve-reviewed-pr 里「没读全」的拦截:读失败不是确定的拦截,下一轮重读可能就过了。
+const UNCERTAIN_APPROVAL_CODES = new Set(['authority-unverified', 'viewer-unverified', 'threads-unverified', 'reviews-unverified']);
+
+/**
+ * 作者就是审查账号(自己的 PR)时 Approve 必被拒(independent-approval-required),审查机改以评论发报告。
+ * 但只有「除这一条外没有别的拦截项」才能挂 review:merge-ready、写 success;还有未 resolve 的讨论、别人的 CR 等
+ * 就该与「送审但不放行」一致(2026-10-17 #1081)。approve-reviewed-pr 的回执带逐项 failures:[{code, reason}]
+ * (approval.code 只取第一个真拦截,不够用)。读不到明细(旧回执、缺字段、形状不对)一律按「还有别的拦截项」处理。
+ * @returns {{authorOnly: boolean, others: Array<{code: string, reason: string}>, retry: boolean}}
+ *   others = 作者自批之外的拦截项;retry = 其中有读取不确定的项,值得下一轮重读。纯函数,不改入参。
+ */
+export function toAuthorSelfApproval(approvalResult) {
+  const failures = approvalResult?.failures;
+  const readable = Array.isArray(failures) && failures.length > 0 &&
+    failures.every((f) => typeof f?.code === 'string' && f.code !== '' && typeof f?.reason === 'string' && f.reason !== '') &&
+    failures.some((f) => f.code === AUTHOR_SELF_APPROVAL_CODE);
+  if (!readable) return { authorOnly: false, others: [{ code: 'failures-unreadable', reason: '拦截项明细读不到,无法确认只剩作者自批这一项' }], retry: true };
+  const others = failures.filter((f) => f.code !== AUTHOR_SELF_APPROVAL_CODE).map(({ code, reason }) => ({ code, reason }));
+  return { authorOnly: others.length === 0, others, retry: others.some((f) => UNCERTAIN_APPROVAL_CODES.has(f.code)) };
+}
+
+// 稳定、由人驱动的卡点:出现时之前的审查通过结论不再成立,标签该摘。不含瞬态(CI 在跑、机器人没说完、读失败)——
+// 否则 CI 重跑一次标签就被摘、审查通过后又加回来,来回抖动;也不含 protected(受保护路径走自己的放行信号)。
+const STALE_MERGE_READY_OUTCOMES = new Set([
+  'conflict', 'threads-unresolved', 'changes-requested', 'maintainer-signoff', 'security', 'format', 'ci-failed', 'rebase', 'retarget',
+]);
+
+/**
+ * Mini 每轮判门后,review:merge-ready 标签还该不该留。标签的含义是「当前 head/base 的审查回执、CI、安全、讨论和依赖门都过」
+ * (pr-rules.json mergeReady._comment),新提交或门禁失效必须撤销。head 变化由调用方另判;这里只看门禁:
+ *   - 与 base 有冲突(mergeStateStatus=DIRTY / mergeable=CONFLICTING),不管判门先撞上了哪个卡点;
+ *   - 判门停在稳定卡点(见 STALE_MERGE_READY_OUTCOMES)。stage=review(含只剩机器人 thread 的送审)交给服务器的 publishAdvisory。
+ * 只用 context 已有字段,不多打 API。GitHub 的 BLOCKED 多半只是「等维护者 Approve」,是带标签 PR 的常态,不算失效。
+ * @returns {string|null} 失效原因;null = 不摘。
+ */
+export function toStaleMergeReadyReason({ decision, meta } = {}) {
+  if (meta?.mergeStateStatus === 'DIRTY' || meta?.mergeable === 'CONFLICTING') {
+    return `与 base 有冲突(mergeStateStatus=${meta.mergeStateStatus ?? '?'},mergeable=${meta.mergeable ?? '?'})`;
+  }
+  if (decision?.stage !== 'review' && STALE_MERGE_READY_OUTCOMES.has(decision?.outcome)) {
+    return `判门未过:${decision.outcome}${decision.reason ? `(${decision.reason})` : ''}`;
+  }
+  return null;
+}
+
 function formatReason(ctx) {
   const issues = ctx.format?.formatIssues ?? [];
   return issues.length ? `格式门未通过:${issues.join(';')}` : '格式门未通过';

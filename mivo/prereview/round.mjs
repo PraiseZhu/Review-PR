@@ -16,7 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -774,7 +774,7 @@ function handleTask(ctx, task) {
   // 作者是维护者、受保护路径自动放行:不发「转人工审核」提醒,作者提醒回执记 deduplicated(轮次汇总要求 protected 有终态)。
   if (decision.autoRelease) result.authorNotice = toAutoReleaseNotice({ head: task.head, by: decision.autoRelease.by });
   if (!dry) syncDisplayLabels(live, task, result);
-  if (!dry) dropStaleMergeReady(live, task, result);
+  if (!dry) dropStaleMergeReady(live, task, result, decision);
 
   if (decision.stage === 'protected' && decision.outcome === 'protected') {
     // 受保护路径的人工放行(维护者 Approve / 确认 issue 上的「同意放行」,不绑 head)成立:review-pr 还没写成功就派
@@ -914,15 +914,21 @@ function syncDisplayLabels(live, task, result) {
   if (out.warning || out.errors?.length) result.warnings.push(`展示标签同步:${out.warning || out.errors.join('; ')}`);
 }
 
-// head 变了就摘掉旧的 review:merge-ready(它只对审查通过的那个 head 有效)。
-function dropStaleMergeReady(live, task, result) {
+// 摘掉不再成立的 review:merge-ready。标签只对「审查通过的那个 head、且门禁仍然全过」成立:
+//   - head 变了(审查通过的 head 不是当前 head);
+//   - 门禁失效:与 base 冲突、人工讨论未 resolve 等稳定卡点(判据见 lib/gates.mjs 的 toStaleMergeReadyReason)。
+//     只用本轮判门已经拿到的 context,不多打 API;摘掉后标签不在了,下一轮不会重复 DELETE。
+//     门禁重新全过后,判门回到送审阶段,服务器沿用结论(同 head 走复用)再把标签加回来。
+function dropStaleMergeReady(live, task, result, decision) {
   if (!(live.meta?.labels ?? []).includes(MERGE_READY_LABEL)) return;
   const record = loadStore().prs[task.pr];
-  if (record?.cleanHead === task.head) return;
+  const gateReason = toStaleMergeReadyReason({ decision, meta: live.meta });
+  if (record?.cleanHead === task.head && !gateReason) return;
   assertNotFenced();
   const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${task.pr}/labels/${encodeURIComponent(MERGE_READY_LABEL)}`],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
   if (!r.ok && !/404/.test(r.stderr)) result.warnings.push(`review:merge-ready 没摘掉:${r.stderr.trim().slice(0, 200)}`);
+  else if (r.ok) log('merge-ready-dropped', { pr: task.pr, head: task.head, reason: gateReason ?? 'head-changed' });
 }
 
 // 受保护路径:当前 head 的 review-pr check 是否已经写成 success。放行信号本身由 context 的 protectedPath 给出。

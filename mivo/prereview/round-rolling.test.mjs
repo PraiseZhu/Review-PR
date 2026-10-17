@@ -264,7 +264,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 绕过原因提醒脚本:调用顺序记录、可注入的返回值或异常;服务器结果报 GitHub 限额的 PR 集合
     scriptOrder: [], bypassCalls: [], bypassResult: null, bypassThrows: false, rateLimited: new Set(),
     // 维护者作者改了受保护路径的 PR 集合(判门自动放行 + notice issue,派 protected-approve);notice 创建的故障注入与调用记录
-    protectedAuthors: new Set(), noticeFailures: 0, noticeCalls: [] };
+    protectedAuthors: new Set(), noticeFailures: 0, noticeCalls: [],
+    // 带 review:merge-ready 的 PR 集合、按 PR 覆盖 context 的字段(meta 浅合并)、被摘标签的 DELETE 路径记录
+    labeled: new Set(), contextPatch: new Map(), labelDeletes: [] };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -392,10 +394,13 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       case 'context.mjs': {
         const pr = w.prs.get(Number(args[0]));
         const author = w.protectedAuthors.has(Number(args[0]));
-        return { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main', labels: [],
+        const context = { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main',
+          labels: w.labeled.has(Number(args[0])) ? ['review:merge-ready'] : [],
           ...(author ? { author: 'PraiseZhu', url: `https://github.com/o/target/pull/${args[0]}` } : {}) },
         auto: { action: author ? 'skip-protected-path' : 'review' }, review: { tier: 'standard' },
         ...(author ? { signoff: {}, protectedPath: { files: ['.github/workflows/ci.yml'], released: { by: 'praisezhu', via: 'author-maintainer' } } } : {}) };
+        const patch = w.contextPatch.get(Number(args[0]));
+        return patch ? { ...context, ...clone(patch), meta: { ...context.meta, ...clone(patch.meta ?? {}) } } : context;
       }
       case 'signoff-hold.mjs':
         w.noticeCalls.push([...args]);
@@ -452,7 +457,13 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     const path = args.find((a) => /^repos\//.test(a)) ?? '';
     if (args[0] === 'variable' && args[1] === 'get') return w.pinFails ? fail('HTTP 502: Bad Gateway') : ok(`${w.pinned ?? w.skillSha}\n`);
     if (args[0] === 'variable' && args[1] === 'set') { w.heartbeats.push({ at: w.now, value: argOf(args, '--body') }); return ok(); }
-    if (args[0] === 'api' && path.startsWith('repos/o/target/issues')) return ok(args.includes('DELETE') ? '' : '[]');
+    if (args[0] === 'api' && path.startsWith('repos/o/target/issues')) {
+      if (args.includes('DELETE') && path.includes('/labels/')) {
+        w.labelDeletes.push(path);
+        w.labeled.delete(Number(path.match(/issues\/(\d+)\//)[1]));
+      }
+      return ok(args.includes('DELETE') ? '' : '[]');
+    }
     if (args[0] === 'api' && path.includes('/check-runs')) return ok({ check_runs: [] });
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
       return ok([[...w.prs].filter(([, p]) => p.open).map(([number, p]) => ({ number, head: { sha: p.head } }))]);
@@ -1404,4 +1415,23 @@ test('世界:notice 创建失败后已派发,进程没有重启:retry 和错误�
   assert.equal(next.failure, null, String(next.failure?.stack));
   assert.equal(w.noticeCalls.length, 2);
   assert.equal(w.read('/w/state/round-state.json').prs[7].retry, false);
+});
+
+// 2026-10-17 P2-3:标签只在 head 变化时摘,#978 冲突了一天标签还在。门禁失效(冲突/人工讨论未 resolve 等稳定卡点)也要摘;
+// CI 在跑这类瞬态不摘(否则 CI 重跑一次标签就被摘、审完又加回来);正常送审不动。
+test('世界:review:merge-ready 在冲突、人工讨论未 resolve 时摘,head 变了照摘;CI 在跑和正常送审不摘,且各摘一次', async () => {
+  const w = makeWorld();
+  const label = (pr) => `repos/o/target/issues/${pr}/labels/review%3Amerge-ready`;
+  for (const pr of [1, 2, 3, 4, 5]) { w.openPr(pr, `h${pr}`); w.labeled.add(pr); }
+  // 审查通过过的 head:除 #4 外都等于当前 head(#4 之后又推了新提交)
+  w.files.set(w.state('reviews.json'), { version: 1, prs: { 1: { cleanHead: 'h1' }, 2: { cleanHead: 'h2' }, 3: { cleanHead: 'h3' }, 4: { cleanHead: 'old' }, 5: { cleanHead: 'h5' } } });
+  w.contextPatch.set(1, { meta: { mergeStateStatus: 'DIRTY' }, auto: { action: 'skip-gate' }, gate: { blockClass: 'conflict' } });
+  w.contextPatch.set(2, { auto: { action: 'skip-gate' }, gate: { blockClass: 'ci-pending', ci: { status: 'pending' } } });
+  w.contextPatch.set(5, { gate: { unresolvedThreads: [{ isBot: false }] } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.deepEqual([...w.labelDeletes].sort(), [label(1), label(4), label(5)].sort(), '冲突、旧 head、人工讨论各摘一次;CI 在跑(#2)和正常送审(#3)不摘');
+  assert.deepEqual([...w.labeled].sort(), [2, 3]);
+  assert.deepEqual([1, 2, 3, 4, 5].map((pr) => w.dispatchesOf(pr).length), [0, 0, 1, 1, 0], '判门没过的不派发服务器审查');
 });

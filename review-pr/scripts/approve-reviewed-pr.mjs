@@ -125,6 +125,9 @@ try {
     print({ ok: true, pr, approved: false, dryRun, expectedHead, actualHead: snapshot.meta.headRefOid,
       approval: { status, code: (realBlocker || failures[0]).code, reason: failures.map((item) => item.reason).join('; ') },
       retry: status === 'pending',
+      // [MIVO-PATCH approval-failures] approval.code 只取第一个真拦截;逐项 {code, reason} 一并带出,
+      // 作者就是审查账号时,服务器审查靠它分清「只差另一位维护者 Approve」和「除此之外还有别的没过」。
+      failures: failures.map(({ code, reason }) => ({ code, reason })),
       approvalPolicy: snapshot.policy, failedChecks: failures.map((item) => item.reason), reason: failures.map((item) => item.reason).join('; ') });
     process.exit(2);
   };
