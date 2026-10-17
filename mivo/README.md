@@ -152,7 +152,7 @@ flowchart LR
 - 任务书只列采用的 issue。审查模型只能把和它们是同一问题（同一根因、同一触发路径）的 P1 标成 `deferredTo`；对不上或拿不准的照常阻断。`publish` 再核一遍：P0、或 issue 不在采用名单里的，照常阻断。
 - 转 issue 的 P1 不开 thread、不阻断。没有其他 P0/P1 时照常 Approve、check `review-pr` 写 success、挂 `review:merge-ready`。报告单列「已转 issue 跟进的问题（不阻断本 PR）」，check 标题写明几条 P1 已转 issue。这不是免审：问题照样写在报告里。
 - 打回时，只要阻断问题里有 P1，报告结论下面会附上这套做法。
-- issue 关闭或从 PR 说明里删掉登记后就不再算。上一轮有转 issue 的问题时不沿用上一轮结论，每次重审都重新核验；已经发出的 Approve 要等下一次重审才会变。放行后加 `review:merge-ready` 标签会触发一次增量重审，这是已知代价。
+- issue 关闭或从 PR 说明里删掉登记后就不再算。上一轮有转 issue 的问题时不沿用上一轮结论，每次重审都重新核验；已经发出的 Approve 要等下一次重审才会变。放行后加 `review:merge-ready` 标签只会让 PR 的 `updatedAt` 前移，不再单独触发重审（见下面「审查机自己的写动作」）。
 
 ## 送审但不放行
 
@@ -161,7 +161,18 @@ flowchart LR
 - **只缺界面证据**：格式门照样打回要证据，同时送审代码。
 - **只剩机器人留的 thread 没 resolve**（首条评论作者是 Bot，如 Greptile）：照样送审。有人留的 thread 没关，照旧不送审。
 
-两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`。作者补齐后下一轮重审；代码没变时沿用这次结论，Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`（给 Mini 看的「还没放行」；结果里同时有 `mivo.advisory.pendingGates`）。作者补齐后下一轮重审；代码没变时沿用这次结论（`previousFromResult` 把「有挂起的门、没有问题条目」的 advisory 记成代码层面干净，不会因为 `reviewClean=false` 退回全量重审），Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+
+## 审查机自己的写动作不再唤醒同一个 head
+
+pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评论这类没有 thread / CI / review 变化的动静。`nextRoundState` 记的是动手前的观察值（不能吞掉并发的新 thread），所以审查机自己发评论、加摘标签、重置 check 让 `updatedAt` 前移，也会被下一轮当成「PR 有变化」（#1081 因此在 head 没变的情况下又派了一次完整审查）。
+
+补丁 `self-write`：下一轮同时满足这两条时，当作自己的写动作，不选中也不唤醒，并把基线前移到新的 `updatedAt`：
+
+- 指纹其它字段（head、base、reviewDecision、unresolved、mergeable、mergeStateStatus、ci、dependencies）与基线完全一致，只有 `updatedAt` 变了；
+- 新的 `updatedAt` 不晚于上一轮的收尾时刻 `checkedAt`（收尾在审查机所有写动作之后，吸收后 `checkedAt` 不变）。
+
+收尾之后的任何改动 `updatedAt` 都会更晚，照常唤醒；没有 `fingerprintFields` 或 `checkedAt` 的旧状态无法确认，也照常唤醒。已知取舍：动手前到收尾之间，别人恰好只改了 `updatedAt`（只发普通评论或改说明，没有 thread / CI / review 变化）也会被吸收一次；之后任何新动静仍会唤醒。
 
 `review:merge-ready` 的三条补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在）：
 

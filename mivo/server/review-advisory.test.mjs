@@ -8,6 +8,7 @@ import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { collectRoundResults } from '../../review-pr/scripts/review-round.mjs';
+import { previousFromResult, computeReviewScope } from '../lib/scope.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SHA = 'a'.repeat(40);
@@ -107,6 +108,23 @@ test('送审不放行的结果能通过轮次汇总的校验', () => {
       const payload = collectRoundResults(plan, [{ ...result, reason: result.reason || result.outcome }]);
       assert.equal(payload.processed[0].outcome, result.outcome, JSON.stringify(pendingGates));
       assert.equal(payload.processed[0].enteredReview, true);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+});
+
+// #1081(2026-10-17):前置门没过的 advisory 结果被当成「上一轮有问题」,同一 head 代码没变也做了第二次完整审查。
+// 「门没过」和「代码审查不干净」要分开:advisory 的 reviewClean 仍是 false(Mini 不能当它已放行),但下一轮的范围判定看到的是代码干净。
+test('advisory 之后同一 head 沿用结论,不再重审;Mini 看到的 reviewClean 仍是 false', () => {
+  for (const pendingGates of [['bot-threads'], ['ui-evidence']]) {
+    const work = setup({ mode: 'dry-run', pendingGates });
+    try {
+      const result = publish(work, fakeGh(work));
+      assert.equal(result.reviewClean, false, '放行判断不变');
+      const prev = previousFromResult(result, readFileSync(join(work, 'out', 'report.md'), 'utf8'));
+      const scope = computeReviewScope({ previous: prev, headIsDescendant: null, current: {
+        head: SHA, baseRefName: 'main', diffHash: 'd1', filePatchHashes: { 'src/a.ts': 'h' }, fileChangedLines: { 'src/a.ts': 1 },
+        totalDiffLines: 1, tier: 'standard', triggerKinds: [], specDigest: 'spec-xyz', now: Date.now() } });
+      assert.equal(scope.mode, 'reuse', `${JSON.stringify(pendingGates)}: ${scope.reason}`);
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
 });

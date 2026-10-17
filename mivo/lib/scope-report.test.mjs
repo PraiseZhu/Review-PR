@@ -188,6 +188,25 @@ test('上一轮结果包 → 上一轮记录:specDigest 等字段原样带回', 
   assert.equal(previousFromResult({ ...result, mivo: { ...result.mivo, specDigest: undefined } }, '').specDigest, undefined);
 });
 
+// advisory(代码没有 P0/P1、前置门没过)的结果包:reviewClean 记 false 是给 Mini 看的「还没放行」,
+// 不是「代码审查有问题」。范围判定把它当成代码干净;有转 issue 的问题或不是 advisory 的 false 仍然不算干净。
+test('上一轮结果包:advisory 视为代码干净,其余 reviewClean=false 仍不干净', () => {
+  const base = { pr: 7, head: 'h1', reviewed: true, reviewClean: false, outcome: 'merge-blocked',
+    reviewEvidence: { baseRefName: 'main', diffHash: 'd1' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], filePatchHashes: filePatchHashes(files), totalDiffLines: 2,
+      tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const advisory = { ...base, mivo: { ...base.mivo, advisory: { pendingGates: ['bot-threads'] } } };
+  const scope = (result) => computeReviewScope({ previous: previousFromResult(result, ''), current: current({ head: 'h1', diffHash: 'd1' }), headIsDescendant: null });
+  assert.equal(scope(advisory).mode, 'reuse', 'advisory:同一 head 沿用');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, deferred: [{ path: 'src/a.ts', body: '[P1] x', deferredTo: 9 }] } }).mode, 'incremental', '有转 issue 的问题不沿用,重新核验');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, findings: [{ path: 'src/a.ts', body: '[P1] x' }] } }).mode, 'incremental', '有 P0/P1 不沿用,重审问题文件');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, advisory: { pendingGates: [] } } }).mode, 'full', '没有挂起的门不算 advisory');
+  assert.equal(scope(base).mode, 'full', '不是 advisory 的 reviewClean=false 仍不干净');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, verifierOverruledAll: true } }).mode, 'full', '核对员推翻全部卡点、等人工复核的 advisory 仍全量(manualReview 优先)');
+  assert.equal(previousFromResult(advisory, '').reviewClean, true, '记录里是代码层面的干净;result.reviewClean 本身仍是 false');
+  assert.equal(advisory.reviewClean, false);
+});
+
 test('addedLines 只含 + 行的新侧行号;增量范围带 changedFiles', () => {
   const split = splitDiffByFile(diff('+added'));
   assert.deepEqual([...split['src/a.ts'].addedLines], [11]);

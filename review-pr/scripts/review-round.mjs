@@ -224,7 +224,21 @@ function observeCandidateFingerprint(pr, snapshot, previous, dependencyPrs = [])
     const baseline = previous.fingerprintFields?.[field];
     if (rawMaterial[field] === 'UNKNOWN' && baseline !== undefined && baseline !== 'UNKNOWN') material[field] = baseline;
   }
-  return { material, fingerprint: fingerprintFromMaterial(pr, material), equivalentToPrevious: false };
+  return { material, fingerprint: fingerprintFromMaterial(pr, material), equivalentToPrevious: onlyOwnWritesBumpedUpdatedAt(previous, material) };
+}
+
+// [MIVO-PATCH self-write] nextRoundState 记的是动手前的观察值(不吞并发的新 thread / CI / review),代价是审查机自己发评论、
+// 加摘标签、重置 check 让 updatedAt 前移,下一轮会把同一个 head 当成「PR 有变化」再选中(#1081 因此多审了一次)。
+// 只认一种情形当作自己的写动作:(1) 其它字段与基线完全一致,只有 updatedAt 变;(2) 新 updatedAt 不晚于上一轮收尾时刻(checkedAt,
+// 在审查机所有写动作之后)。收尾之后的任何改动 updatedAt 都会更晚,照常唤醒;缺基线字段或收尾时刻的旧状态无法确认,也照常唤醒。
+// 已知取舍:动手前到收尾之间、别人恰好只改了 updatedAt(只发普通评论/改说明、没有 thread/CI/review 变化)也会被吸收一次。
+function onlyOwnWritesBumpedUpdatedAt(previous, material) {
+  const fields = previous.fingerprintFields;
+  const checkedAt = Date.parse(previous.checkedAt ?? '');
+  const updatedAt = Date.parse(material.updatedAt ?? '');
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields) || !Number.isFinite(checkedAt) || !Number.isFinite(updatedAt)) return false;
+  const { baseline, changedFields } = fingerprintMaterialDiff(fields, material);
+  return baseline === 'available' && changedFields.length === 1 && changedFields[0] === 'updatedAt' && updatedAt <= checkedAt;
 }
 
 export function fingerprintMaterialDiff(previous, current) {
