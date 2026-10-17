@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 export const FULL_REVIEW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const TIER_RANK = { light: 0, standard: 1, heavy: 2 };
 
-/** 按文件切 unified diff;返回 { path: { hash, changedLines, rightLines:Set<number> } }。 */
+/** 按文件切 unified diff;返回 { path: { hash, changedLines, rightLines:Set<number>, addedLines:Set<number> } };addedLines 只含 `+` 行的新侧行号。 */
 export function splitDiffByFile(diffText) {
   const files = {};
   let current = null;
@@ -20,7 +20,7 @@ export function splitDiffByFile(diffText) {
     if (raw.startsWith('diff --git ')) {
       finish();
       const m = raw.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      current = { path: m ? m[2] : raw, body: [], changedLines: 0, rightLines: new Set() };
+      current = { path: m ? m[2] : raw, body: [], changedLines: 0, rightLines: new Set(), addedLines: new Set() };
       files[current.path] = current;
       continue;
     }
@@ -47,6 +47,7 @@ export function splitDiffByFile(diffText) {
       current.body.push(raw);
       current.changedLines += 1;
       current.rightLines.add(newLine);
+      current.addedLines.add(newLine);
       newLine += 1;
     } else if (raw.startsWith('-')) {
       current.body.push(raw);
@@ -73,6 +74,9 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   const full = (reason) => ({ mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: [], basedOn: null });
   if (!previous) return full('没有上一轮审查记录');
   if (previous.reviewed !== true || previous.reportComplete !== true || previous.outcome === 'error') return full('上一轮没审完或没有完整报告');
+  // 上一轮核对员推翻/降级了全部卡点、等人工复核(服务器没有 Approve):状态不能被无关文件的小改动冲掉,
+  // 否则增量范围里没有争议代码,新一轮主审返回零问题就会恢复 Approve。重新全量审查,得出新结论为止。
+  if (previous.manualReview === true) return full('上一轮核对员推翻/降级了全部卡点,等待人工复核,本轮重新全量审查');
   if (previous.baseRefName !== current.baseRefName) return full(`base 分支变了(${previous.baseRefName} → ${current.baseRefName})`);
   if ((TIER_RANK[current.tier] ?? 1) > (TIER_RANK[previous.tier] ?? 1)) return full(`档位升级(${previous.tier} → ${current.tier})`);
   const newKinds = (current.triggerKinds ?? []).filter((kind) => !(previous.triggerKinds ?? []).includes(kind));
@@ -115,6 +119,8 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
     files,
     previousFindings: carried,
     basedOn: previous.head,
+    // 本轮 patch 变了的文件:收敛模块据此判断「新问题是不是出在没改过的文件里」。
+    changedFiles: changed.filter((path) => path in after),
   };
 }
 
@@ -137,5 +143,8 @@ export function previousFromResult(result, report = '') {
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,
+    // 全部卡点被核对员推翻/降级、等人工复核。没有显式标记时按形状认:没有阻断问题、有被推翻/降级的问题、而且上一轮没有放行。
+    manualReview: result.mivo?.verifierOverruledAll === true || (result.reviewClean !== true && (result.mivo?.findings ?? []).length === 0
+      && (result.mivo?.deferred ?? []).length === 0 && (result.mivo?.verifierOverruled ?? []).length > 0),
   };
 }

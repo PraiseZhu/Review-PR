@@ -3,10 +3,15 @@
 // 只报 P0/P1。Mivo 加一行「Mivo 自动审查」区分 PraiseZhu 本人的评论(两者同一账号发出)。
 // 作者转 issue 跟进的 P1(见 deferrals.mjs)单列成「已转 issue 跟进的问题」,不阻断、不开 thread。
 import { toDeferredSummary } from './deferrals.mjs';
+import { FINDING_ITEM_SCHEMA, SEVERITIES, normalizeFinding, classifyOrigin, checkEvidence, renderFindingBody, titleOfBody } from './finding.mjs';
 
 export const REPORT_SECTIONS = ['## Findings', '## Rule coverage', '## Verification', '## Overall'];
 export const REPORT_HEADER = 'Mivo 自动审查';
 export const DEFERRED_SECTION = '## 已转 issue 跟进的问题（不阻断本 PR）';
+export const PREEXISTING_SECTION = '## PR 之前就存在的问题（不阻断本 PR）';
+export const RULED_KEPT_SECTION = '## 维护者已裁定不改、审查机本轮仍报了（未阻断）';
+export const VERIFIER_REFUTED_SECTION = '## 核对员认为不成立（不阻断本 PR）';
+export const VERIFIER_DOWNGRADED_SECTION = '## 核对员降级（不阻断本 PR）';
 // 打回且有阻断的 P1 时附在结论行后:告诉作者本 PR 修不了的 P1 可以怎么转 issue 跟进。
 export const DEFER_HINT = '本 PR 修不了、要留到后续 PR 修的 P1，可以转 issue 跟进：开 issue 写明来自本 PR；在 PR 说明加「转 issue 跟进的审查问题」一节登记，每条一行 `- #<issue 号> <简述>`；再回复并 resolve 对应讨论。审查机重审时不再因它打回。P0 不能这样处理。';
 const SEVERITY_RE = /^\s*\[(P0|P1)\]/;
@@ -17,32 +22,19 @@ export const ANSWER_SCHEMA = {
   required: ['report', 'findings'],
   properties: {
     report: { type: 'string', description: '完整 Markdown 审查报告,含四段骨架' },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['path', 'line', 'side', 'body', 'deferredTo'],
-        properties: {
-          path: { type: 'string', description: '问题所在文件,必须是本 PR diff 里的文件' },
-          line: { type: ['integer', 'null'], description: 'RIGHT 侧行号;没有准确行号写 null' },
-          side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
-          body: { type: 'string', description: '以 [P0] 或 [P1] 开头,写事实/影响/建议修复/验证方式' },
-          deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1,且必须在任务书核验通过的列表里);其他一律 null' },
-        },
-      },
-    },
+    findings: { type: 'array', items: FINDING_ITEM_SCHEMA },
   },
 };
 
 /**
  * @param {unknown} answer 模型交回的 JSON
- * @param {{diffFiles: Record<string,{rightLines:Set<number>}>, deferrals?: {issue:number}[]}} p
- *   diffFiles 是 splitDiffByFile 的结果;deferrals 是服务器核验通过的转 issue 条目
- * @returns {{ok:true, report:string, findings:object[], deferred:object[], notes:string[]} | {ok:false, error:string}}
- *   findings 是阻断问题;deferred 是转 issue 跟进的 P1(带 deferredTo,不阻断)
+ * @param {{diffFiles: Record<string,{rightLines:Set<number>, addedLines?:Set<number>}>, deferrals?: {issue:number}[], headReader?: (path:string)=>{exists:boolean,lineCount:number}}} p
+ *   diffFiles 是 splitDiffByFile 的结果;deferrals 是服务器核验通过的转 issue 条目;headReader 按 head 上的 git 对象读文件(核对证据)
+ * @returns {{ok:true, report:string, findings:object[], deferred:object[], preexisting:object[], notes:string[], evidenceIncomplete:number} | {ok:false, error:string}}
+ *   findings 是阻断问题;deferred 是转 issue 跟进的 P1(带 deferredTo,不阻断);preexisting 是 PR 之前就存在的 P1(不阻断)
+ *   没有 severity 字段的 v1 项保持原来的判级与输出形状;v2 项带 severity/title/证据/来源等元数据。
  */
-export function validateAnswer(answer, { diffFiles, deferrals = [] }) {
+export function validateAnswer(answer, { diffFiles, deferrals = [], headReader = null }) {
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return { ok: false, error: '答卷不是 JSON 对象' };
   if (typeof answer.report !== 'string' || !answer.report.trim()) return { ok: false, error: '答卷缺少 report' };
   if (!Array.isArray(answer.findings)) return { ok: false, error: '答卷缺少 findings 数组' };
@@ -51,11 +43,14 @@ export function validateAnswer(answer, { diffFiles, deferrals = [] }) {
   const notes = [];
   const findings = [];
   const deferred = [];
+  const preexisting = [];
+  let evidenceIncomplete = 0;
   const verifiedIssues = new Set((deferrals ?? []).map((d) => d.issue));
   for (const [index, raw] of answer.findings.entries()) {
-    const body = String(raw?.body ?? '').trim();
+    const v2 = typeof raw?.severity === 'string';
     const path = String(raw?.path ?? '').trim();
-    const severity = body.match(SEVERITY_RE)?.[1];
+    let body = String(raw?.body ?? '').trim();
+    const severity = v2 ? (SEVERITIES.includes(raw.severity) ? raw.severity : undefined) : body.match(SEVERITY_RE)?.[1];
     if (!severity) {
       notes.push(`第 ${index + 1} 条问题不是 P0/P1,按口径不发布`);
       continue;
@@ -67,28 +62,52 @@ export function validateAnswer(answer, { diffFiles, deferrals = [] }) {
     if (line != null && side === 'RIGHT' && diffFiles[path].rightLines.has(line)) {
       item = { path, line, side, body };
     } else {
-      // 行号不在 diff 的新侧时不伪造行号:改成文件级 thread(Cindy pr-worker 第 4 节)。
+      // 行号不在 diff 的新侧时不伪造行号:改成文件级 thread(Cindy pr-worker 第 4 节)。文件级项不能带 line 键。
       if (line != null) notes.push(`第 ${index + 1} 条问题的行号 ${line} 不在 diff 新侧,改为文件级评论`);
       item = { path, subject_type: 'file', body };
     }
+    if (v2) {
+      const normalized = normalizeFinding(raw);
+      for (const note of normalized.notes) notes.push(`第 ${index + 1} 条问题:${note}`);
+      const meta = normalized.item;
+      const origin = classifyOrigin({ ...meta, path, line }, { diffFiles });
+      if (origin.note) notes.push(`第 ${index + 1} 条问题:${origin.note}`);
+      meta.origin = origin.origin;
+      let evidenceComplete = meta.evidence.length > 0;
+      if (headReader) {
+        const checked = checkEvidence(meta, { headReader });
+        evidenceComplete = checked.complete;
+        if (!checked.complete) {
+          evidenceIncomplete += 1;
+          const where = checked.missing.map((m) => (m.path ? `${m.path}${m.line ? `:${m.line}` : ''}` : '(无证据)')).join('、');
+          notes.push(`第 ${index + 1} 条问题的证据不完整(${where} 在 head 上找不到),照常阻断`);
+        }
+      }
+      body = renderFindingBody(meta);
+      item = { ...item, body, severity, title: meta.title, trigger: meta.trigger, behavior: meta.behavior, impact: meta.impact, fix: meta.fix,
+        verify: meta.verify, evidence: meta.evidence, instances: meta.instances, origin: meta.origin, bugClass: meta.bugClass,
+        supersedes: meta.supersedes, evidenceComplete };
+    }
+    // PR 之前就存在的 P1 不阻断本 PR;P0 不论来源都阻断。
+    const place = (target) => ((v2 && severity === 'P1' && target.origin === 'pre-existing') ? preexisting : findings).push(target);
     // 转 issue 跟进:只有 P1、且 issue 号在服务器核验通过的列表里才不阻断;其他情况照常阻断。
     const target = raw.deferredTo ?? null;
     if (target === null) {
-      findings.push(item);
+      place(item);
     } else if (!Number.isInteger(target) || target <= 0) {
       notes.push(`第 ${index + 1} 条问题的 deferredTo 不是 issue 号,按 null 处理`);
-      findings.push(item);
+      place(item);
     } else if (severity === 'P0') {
       notes.push(`第 ${index + 1} 条是 P0,不能转 issue(#${target}),照常阻断`);
-      findings.push(item);
+      place(item);
     } else if (!verifiedIssues.has(target)) {
       notes.push(`第 ${index + 1} 条的 deferredTo #${target} 不在核验通过的 issue 里,照常阻断`);
-      findings.push(item);
+      place(item);
     } else {
       deferred.push({ ...item, deferredTo: target });
     }
   }
-  return { ok: true, report: answer.report.trim(), findings, deferred, notes };
+  return { ok: true, report: answer.report.trim(), findings, deferred, preexisting, notes, evidenceIncomplete };
 }
 
 /** 报告里「已转 issue 跟进的问题」一节;没有转 issue 的问题、也没有未采用的登记时返回空数组。 */
@@ -113,16 +132,55 @@ export function renderDeferredSection({ deferred = [], rejected = [] } = {}) {
   return lines;
 }
 
+const whereOf = (finding) => (finding.line ? `${finding.path}:${finding.line}` : finding.path);
+const titleOf = (finding) => {
+  const text = finding.title || titleOfBody(finding.body);
+  return text.length > 200 ? `${text.slice(0, 199)}…` : text;
+};
+
+/** 报告里「PR 之前就存在的问题」一节;没有时返回空数组。这些 P1 不阻断本 PR,建议另开 issue 跟进。 */
+export function renderPreexistingSection(list = []) {
+  if (!list.length) return [];
+  return [PREEXISTING_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 建议另开 issue 跟进`), ''];
+}
+
+/** 报告里「维护者已裁定不改、审查机本轮仍报了」一节;这些 P1 已从阻断问题里移出。 */
+export function renderRuledKeptSection(list = []) {
+  if (!list.length) return [];
+  return [RULED_KEPT_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 裁定:@${f.rulingBy ?? ''}`), ''];
+}
+
+const locations = (list) => (list ?? []).map((e) => `\`${whereOf(e)}\``).join('、') || '(未给出)';
+const oneLine = (text, max = 300) => { const t = String(text ?? '').replace(/\s+/g, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
+
+/** 报告里「核对员认为不成立」一节:公开列出标题、位置和推翻证据,作者与维护者可以复核核对员。没有时返回空数组。 */
+export function renderVerifierRefutedSection(list = []) {
+  if (!list.length) return [];
+  return [VERIFIER_REFUTED_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 推翻证据：${locations(f.evidence)}${f.note ? ` · 依据：${oneLine(f.note)}` : ''}`), ''];
+}
+
+/** 报告里「核对员降级」一节:问题成立但核对员认为实际只是 P2,附理由。 */
+export function renderVerifierDowngradedSection(list = []) {
+  if (!list.length) return [];
+  return [VERIFIER_DOWNGRADED_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 降级理由：${oneLine(f.note)}`), ''];
+}
+
 /**
  * 最终报告:固定头部 + 模型正文;结论行按问题数量重写,保证与实际发布的 thread 一致。
  * 有转 issue 跟进的问题或未采用的登记时,在 Rule coverage 前插一节单列;打回且阻断问题里有 P1 时,结论行后附转 issue 的做法。
  */
-export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], pr, url, head, base, diffHash, tier, scope }) {
+export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [],
+  pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '' }) {
   const summary = toDeferredSummary(deferred);
+  const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
-    ? (summary ? `pass —— 没有阻断的 P0/P1；${summary.text}，不阻断本 PR。` : 'pass —— 没有 P0/P1。')
+    ? (summary ? `pass —— 没有阻断的 P0/P1；${summary.text}，不阻断本 PR。` : (preexisting.length || overruled ? 'pass —— 没有阻断的 P0/P1。' : 'pass —— 没有 P0/P1。'))
     : `changes-requested —— ${findings.length} 条 P0/P1，已在对应位置开 review thread。`;
   if (findings.length && summary) conclusion += `另有 ${summary.text}，不阻断。`;
+  if (!findings.length && preexisting.length) conclusion += `另有 ${preexisting.length} 条 PR 之前就存在的 P1，不阻断本 PR。`;
+  // 核对员推翻/降级的 P1:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
+  if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
+  else if (overruled) conclusion += `另有 ${overruled} 条 P1 被核对员推翻/降级，不阻断。`;
   const lines = String(report).trim().split('\n');
   const overallIndex = lines.findIndex((line) => /^## Overall\s*$/.test(line));
   if (overallIndex >= 0) {
@@ -140,14 +198,17 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
   if (verificationIndex >= 0 && !lines.slice(verificationIndex + 1, verificationIndex + 3).some((line) => line.startsWith('审查范围'))) {
     lines.splice(verificationIndex + 1, 0, '', scopeLine);
   }
-  const deferredLines = renderDeferredSection({ deferred, rejected: deferralsRejected });
-  if (deferredLines.length) {
+  // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
+  const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting),
+    ...renderRuledKeptSection(ruledKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...convergenceLines];
+  if (extraLines.length) {
     const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
-    if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...deferredLines);
-    else lines.push('', ...deferredLines);
+    if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...extraLines);
+    else lines.push('', ...extraLines);
   }
+  const versions = `${skillSha ? ` · skill \`${String(skillSha).slice(0, 7)}\`` : ''}${specDigest ? ` · spec \`${String(specDigest).slice(0, 7)}\`` : ''}`;
   const header = [
-    `> ${REPORT_HEADER} · [PR](${url}) · head \`${String(head).slice(0, 12)}\` · base \`${String(base).slice(0, 12)}\` · diffHash \`${String(diffHash ?? '').slice(0, 12)}\` · 档位 ${tier}`,
+    `> ${REPORT_HEADER} · [PR](${url}) · head \`${String(head).slice(0, 12)}\` · base \`${String(base).slice(0, 12)}\` · diffHash \`${String(diffHash ?? '').slice(0, 12)}\` · 档位 ${tier}${versions}`,
     '',
   ];
   const body = lines.join('\n').replace(/^>\s*Mivo 自动审查[^\n]*\n+/, '');

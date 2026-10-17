@@ -202,6 +202,34 @@ test('上一轮结果包:advisory 视为代码干净,其余 reviewClean=false �
   assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, findings: [{ path: 'src/a.ts', body: '[P1] x' }] } }).mode, 'incremental', '有 P0/P1 不沿用,重审问题文件');
   assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, advisory: { pendingGates: [] } } }).mode, 'full', '没有挂起的门不算 advisory');
   assert.equal(scope(base).mode, 'full', '不是 advisory 的 reviewClean=false 仍不干净');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, verifierOverruledAll: true } }).mode, 'full', '核对员推翻全部卡点、等人工复核的 advisory 仍全量(manualReview 优先)');
   assert.equal(previousFromResult(advisory, '').reviewClean, true, '记录里是代码层面的干净;result.reviewClean 本身仍是 false');
   assert.equal(advisory.reviewClean, false);
+});
+
+test('addedLines 只含 + 行的新侧行号;增量范围带 changedFiles', () => {
+  const split = splitDiffByFile(diff('+added'));
+  assert.deepEqual([...split['src/a.ts'].addedLines], [11]);
+  assert.deepEqual([...split['src/b.ts'].addedLines], [1]);
+  const scope = computeReviewScope({ previous: previous({ reviewClean: false, findings: [{ path: 'src/b.ts', body: '[P1] x' }] }), current: current(), headIsDescendant: true });
+  assert.deepEqual(scope.changedFiles, ['src/a.ts']);
+});
+
+test('上一轮「核对员推翻了全部卡点、等人工复核」的状态跨轮保留:无关文件的小改动也不能走增量并恢复 Approve', () => {
+  const result = { pr: 7, head: 'h0', reviewed: true, reviewClean: false, outcome: 'merge-blocked', reviewEvidence: { baseRefName: 'main', diffHash: 'd0' },
+    approval: { status: 'blocked', code: 'verifier-overruled' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], verifierOverruled: [{ path: 'src/a.ts' }], verifierOverruledAll: true,
+      filePatchHashes: { 'src/a.ts': 'same', 'src/b.ts': 'old' }, totalDiffLines: 100, tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const prev = previousFromResult(result, 'report');
+  assert.equal(prev.manualReview, true);
+  const cur = current({ filePatchHashes: { 'src/a.ts': 'same', 'src/b.ts': 'new' }, fileChangedLines: { 'src/b.ts': 1 }, totalDiffLines: 101 });
+  for (const headIsDescendant of [true, null]) {
+    const scope = computeReviewScope({ previous: prev, current: cur, headIsDescendant });
+    assert.equal(scope.mode, 'full', `headIsDescendant=${headIsDescendant}`);
+    assert.match(scope.reason, /核对员推翻\/降级了全部卡点/);
+  }
+  assert.equal(computeReviewScope({ previous: { ...prev, head: 'h1' }, current: current({ head: 'h1', filePatchHashes: cur.filePatchHashes }), headIsDescendant: null }).mode, 'full', '同一 head 也重新全量');
+  const unmarked = previousFromResult({ ...result, approval: undefined, mivo: { ...result.mivo, verifierOverruledAll: undefined } }, '');
+  assert.equal(unmarked.manualReview, true, '没有显式标记时按形状认(没有阻断问题、有被推翻的问题、没放行)');
+  assert.equal(previousFromResult({ ...result, reviewClean: true, mivo: { ...result.mivo, verifierOverruledAll: undefined, verifierOverruled: [] } }, '').manualReview, false);
 });

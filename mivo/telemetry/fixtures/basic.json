@@ -1,0 +1,299 @@
+{
+  "prs": [
+    {
+      "number": 1,
+      "title": "Feature X SENTINEL-FINDING-TEXT",
+      "body": "",
+      "state": "MERGED",
+      "merged": true,
+      "mergedAt": "2026-10-05T00:00:00Z",
+      "createdAt": "2026-10-01T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-01T01:00:00Z",
+          "commitOid": "aaaaaaaaaaaa0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaaa` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-01T05:00:00Z",
+          "commitOid": "aaaaaaaaaaab0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaab` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": true,
+          "path": "src/a.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 1\n\n**触发条件**：SENTINEL-FINDING-TEXT",
+              "createdAt": "2026-10-01T01:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-01T01:00:01Z"
+            },
+            {
+              "author": "owner",
+              "body": "维护者裁定不改: 产品意图",
+              "createdAt": "2026-10-01T02:00:00Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-01T02:00:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "title": "t2",
+      "body": "## 转 issue 跟进的审查问题\n- #901 后续修",
+      "state": "MERGED",
+      "merged": true,
+      "createdAt": "2026-10-02T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-02T01:00:00Z",
+          "commitOid": "aaaaaaaaaaac0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaac` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 heavy\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-02T05:00:00Z",
+          "commitOid": "aaaaaaaaaaad0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaad` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 heavy\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": true,
+          "path": "src/b.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 2\n\n**触发条件**：SENTINEL-FINDING-TEXT",
+              "createdAt": "2026-10-02T01:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-02T01:00:01Z"
+            },
+            {
+              "author": "alice",
+              "body": "已转 #901 跟进",
+              "createdAt": "2026-10-02T02:00:00Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-02T02:00:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "title": "t3",
+      "body": "",
+      "state": "OPEN",
+      "merged": false,
+      "createdAt": "2026-10-03T00:00:00Z",
+      "author": "bob",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-03T01:00:00Z",
+          "commitOid": "aaaaaaaaaaae0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaae` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-03T05:00:00Z",
+          "commitOid": "aaaaaaaaaaaf0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaaf` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": false,
+          "path": "src/c/x.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 3\n\n**触发条件**：SENTINEL-FINDING-TEXT\n\n<!-- mivo-finding key=111111111111 round=1 head=aaaaaaaaaaae class=race -->",
+              "createdAt": "2026-10-03T01:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-03T01:00:01Z"
+            }
+          ]
+        },
+        {
+          "isResolved": false,
+          "path": "src/c/x.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 3\n\n**触发条件**：SENTINEL-FINDING-TEXT\n\n<!-- mivo-finding key=111111111111 round=1 head=aaaaaaaaaaaf class=race -->",
+              "createdAt": "2026-10-03T05:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-03T05:00:01Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "title": "t4",
+      "body": "",
+      "state": "MERGED",
+      "merged": true,
+      "createdAt": "2026-10-04T00:00:00Z",
+      "author": "bob",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-04T01:00:00Z",
+          "commitOid": "aaaaaaaaaaa10000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaa1` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-04T05:00:00Z",
+          "commitOid": "aaaaaaaaaaa20000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaa2` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": true,
+          "path": "src/d.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 4\n\n**触发条件**：SENTINEL-FINDING-TEXT",
+              "createdAt": "2026-10-04T01:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-04T01:00:01Z"
+            },
+            {
+              "author": "bob",
+              "body": "这个不成立 SENTINEL-FINDING-TEXT",
+              "createdAt": "2026-10-04T02:00:00Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-04T02:00:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "title": "t5",
+      "body": "",
+      "state": "MERGED",
+      "merged": true,
+      "createdAt": "2026-10-05T00:00:00Z",
+      "author": "carol",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-05T01:00:00Z",
+          "commitOid": "aaaaaaaaaaa30000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaa3` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-05T05:00:00Z",
+          "commitOid": "aaaaaaaaaaa40000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaa4` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": true,
+          "path": "src/e.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 5\n\n**触发条件**：SENTINEL-FINDING-TEXT\n\n<!-- mivo-finding key=222222222222 round=1 head=aaaaaaaaaaa3 class=null-deref -->",
+              "createdAt": "2026-10-05T01:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-05T01:00:01Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "title": "t6",
+      "body": "",
+      "state": "OPEN",
+      "merged": false,
+      "createdAt": "2026-10-06T00:00:00Z",
+      "author": "carol",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-06T01:00:00Z",
+          "commitOid": "aaaaaaaaaaa50000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaa5` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。\n"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": false,
+          "path": "lib/f.ts",
+          "line": 3,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P1] SENTINEL-FINDING-TEXT 6\n\n**触发条件**：SENTINEL-FINDING-TEXT",
+              "createdAt": "2026-10-06T01:00:01Z",
+              "url": "https://github.com/o/r/pull/x#c-2026-10-06T01:00:01Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "title": "t7",
+      "body": "",
+      "state": "MERGED",
+      "merged": true,
+      "createdAt": "2026-10-07T00:00:00Z",
+      "author": "dave",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-07T01:00:00Z",
+          "commitOid": "aaaaaaaaaaa60000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaa6` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 light\n\n## Findings\n无\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": []
+    },
+    {
+      "number": 8,
+      "title": "Revert \"Feature X SENTINEL-FINDING-TEXT\"",
+      "body": "Reverts o/r#1",
+      "state": "MERGED",
+      "merged": true,
+      "createdAt": "2026-10-08T00:00:00Z",
+      "author": "alice",
+      "reviews": [],
+      "threads": []
+    }
+  ]
+}

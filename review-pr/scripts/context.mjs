@@ -28,7 +28,7 @@
 // --diff-output <absolute-file>:原子保存本次实际扫描的 diff，供 roundDir 内材料复用。
 // --cached-context <file>:仅复用同 head/base 且 hash 一致的 diff/files；其余资料实时重取。
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, evaluateBotSettle, botCheckActivity, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, botCheckActivity, evaluateBotSettleSinceReady, toHeadPushedAt, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
@@ -1343,12 +1343,15 @@ try {
     ...rawThreads.flatMap((t) => (t.comments?.nodes ?? []).map((c) => ({ author: c.author?.login ?? '', at: c.createdAt ?? '' }))),
     ...botCheckActivity(rawRollupContexts, BOT_SETTLE_RULES), // [MIVO-PATCH bot-check-settle]
   ].filter((a) => a.author && a.at);
-  const botSettle = evaluateBotSettle({
+  // [MIVO-PATCH bot-settle-ready] 超时从 max(提交, 推送, 转 Ready) 起算:推送时间用 head 上最早的检查开始时间估(rollup 已拿到,零请求);
+  // 转 Ready 只有按这个起点算已超时才读一次 REST 事件(见 lib.mjs),常规路径不多打请求。
+  const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate: latestCommitDate,
+    headPushedAt: toHeadPushedAt(rawRollupContexts),
     nowIso: new Date().toISOString(),
     activity: botActivityForSettle,
     cfg: BOT_SETTLE_RULES,
-  });
+  }, () => fetchRestPages(`repos/${slug}/issues/${pr}/events`));
   if (!botSettle.settled) blockers.push(`机器人静默期未过:${botSettle.reason}`);
 
   // ── stale-rebase: behind_by > 0 且 merge base 距今超过阈值 → 需要 rebase ──
