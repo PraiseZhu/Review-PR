@@ -136,8 +136,9 @@ export function decideGate(ctx) {
       const heldIssue = signoff.heldIssue ?? null;
       if (!signoff.held) {
         signoffActions.push({ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'notice' });
-      } else if (heldIssue?.state === 'OPEN' && heldIssue.mode === 'protected') {
-        // 存量:此前按人工审核 hold 住的 protected issue,新规则下不再有人要管它。关掉并留一句说明(同时摘残留标签)。
+      } else if (heldIssue?.state === 'OPEN' && heldIssue.mode !== 'notice') {
+        // 存量:此前按人工审核 hold 住的 protected issue(或更早的普通确认 issue),新规则下不再有人要管它。
+        // 关掉并留一句说明(同时摘残留标签);关闭前 toSignoffReleaseArgs 仍会核对 issue 绑定本 PR。
         signoffActions.push({ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease });
       } else if (labels.hasAnyLabel) {
         signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
