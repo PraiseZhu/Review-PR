@@ -278,7 +278,7 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - 排队和执行分开计时（`toRunTiming`）：执行超过 170 分钟才取消（作业上限 160 分钟）；排队超过 30 分钟记 `queue-slow`，超过 120 分钟才取消。超时也先写 `cancel-intent-<PR>.json`（`reason: timeout`）再 `gh run cancel`（`cancel-timeout`）；旧 run 确认结束前仍占槽、不写结果，结束后才按失败记一次并重试。取消没成功、run 自然跑完的，按正常流程收结果。
 - 作者在审查中途推了新提交：先在轮次目录写 `cancel-intent-<PR>.json`（`reason: superseded`），再 `gh run cancel`（`cancel-superseded`）。旧 run 确认结束前仍占槽；结束后任务结果写合法终态 `state-changed`，不计失败，派发账本保留；取消没成功、旧 run 自然跑完的，按正常流程收结果。已经在超时取消的 run 不再改记。
 - 取消请求失败或迟迟不生效：每次轮询确认 run 还没结束后，距上次发送满 3 分钟就再发一次，直到 run 结束。进程重启后有取消意图的 run 先补发一次。
-- 只有「head 已变、旧 run 已确认结束」的 PR 从未完成轮次里提前释放（超时取消不提前释放）（轮次目录 `mivo-released.json`，`pr-released`），新 head 在下一个检查点进新一轮，不等同轮其它 PR。同 head 的普通结果仍随原轮收尾。
+- 「head 已变、旧 run 已确认结束」的 PR 可以提前释放；同 HEAD 的 `ci-pending`／`bot-pending` 也在本机任务收尾后提前释放，但必须没有派发意图、在途审查或结果错误（轮次目录 `mivo-released.json`，`pr-released`）。新一轮重新采集并执行全部门禁，不等同轮其它 PR。暂缓结果只在候选查询中请求重判，旧轮仅保留历史结果、不再覆盖该 PR 的共享当前状态；超时取消、未决派发、清理未完成及其他结果不提前释放。
 - `reviews.json` 每个 PR 记 `ownerRoundId`（最近一次接走它的轮次）；旧轮晚收尾时不写回已转给新轮的 PR（`store-skip`）。轮次状态的写回保护在 `review-pr/scripts/review-round.mjs`（MIVO-PATCHES 的 round-owner）。
 - `collected` 日志带 `head`。
 

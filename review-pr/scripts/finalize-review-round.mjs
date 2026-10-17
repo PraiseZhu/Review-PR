@@ -93,7 +93,9 @@ try {
 
   let previous = {};
   try { previous = JSON.parse(readFileSync(stateFile('round-state.json'), 'utf8')); } catch { /* first run */ }
-  const nextState = nextRoundState(plan, payload, previous, Date.parse(summary.generatedAt));
+  const releasedFile = join(directory, 'mivo-released.json');
+  const released = existsSync(releasedFile) ? JSON.parse(readFileSync(releasedFile, 'utf8')) : {};
+  const nextState = nextRoundState({ ...plan, released }, payload, previous, Date.parse(summary.generatedAt));
   atomicWriteJson(stateFile('round-state.json'), nextState);
 
   assertActiveReviewLock(token);

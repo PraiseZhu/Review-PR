@@ -19,6 +19,21 @@ const result = (plan, item, outcome = 'merged', extra = {}) => ({ runId: plan.ru
     reportFile: 'fixture-report.md' } : {}),
   merged: outcome === 'merged', outcome, reason: '已执行', ...extra });
 
+test('released deferred gates keep history without overwriting shared state even before the next round finalizes', () => {
+  const rows = snapshot(1);
+  const manifest = createCandidateList({ repo: 'o/r', snapshot: rows, now, mode: 'review-only' });
+  const plan = makeReviewPlan(manifest, contexts(rows));
+  const item = plan.groups[0].prs[0];
+  const deferred = { pr: item.pr, head: item.head, base: item.base, outcome: 'bot-pending' };
+  const payload = { processed: [deferred] };
+  const released = { 1: { reason: 'gate-deferred', roundId: plan.runId, ...deferred } };
+  const previous = { version: 1, mode: 'review-only', prs: { 1: { outcome: 'approval', retry: false } } };
+  assert.deepEqual(nextRoundState({ ...plan, released }, payload, previous, now), previous);
+  assert.equal(nextRoundState({ ...plan, released }, payload, {}, now).prs[1], undefined);
+  const wrongBinding = { 1: { ...released[1], head: 'other' } };
+  assert.equal(nextRoundState({ ...plan, released: wrongBinding }, payload, previous, now).prs[1].outcome, 'bot-pending');
+});
+
 test('mode aliases preserve default and reject contradictory/invalid booleans', () => {
   assert.equal(parseReviewMode([]), 'auto');
   for (const args of [['--review-only'], ['reviewOnly=true'], ['--no-merge'], ['--review-only', 'true']]) assert.equal(parseReviewMode(args), 'review-only');

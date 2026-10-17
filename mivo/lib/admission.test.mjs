@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFreeSlots, toAdmissionDecision, toBusyPrs, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun,
+import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun,
   MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
@@ -63,6 +63,39 @@ test('忙 PR = 未完成计划的全部候选(含计划阶段跳过的)加分组
   assert.deepEqual([...toBusyPrs(plans)].sort((a, b) => a - b), [927, 941, 950, 956]);
   assert.equal(toBusyPrs([]).size, 0);
   assert.equal(toBusyPrs([null, {}]).size, 0);
+});
+
+test('暂缓判门只释放已收尾、绑定正确且无服务器派发的等待结果', () => {
+  const task = { pr: 1025, head: 'head', base: 'base', phase: 'complete', agentId: 'mini-gate:1025:done' };
+  const result = { pr: 1025, head: 'head', base: 'base', runId: 'round', mode: 'review-only',
+    outcome: 'bot-pending', enteredReview: false, reviewed: false, errors: [] };
+  const input = { task, result, roundId: 'round' };
+  assert.equal(canReleaseDeferredGate(input), true);
+  assert.equal(canReleaseDeferredGate({ ...input, result: { ...result, outcome: 'ci-pending' } }), true);
+  for (const patch of [{ phase: 'cleanup-pending' }, { phase: 'running' }, { agentId: 'gha:1:dispatch' }]) {
+    assert.equal(canReleaseDeferredGate({ ...input, task: { ...task, ...patch } }), false);
+  }
+  for (const patch of [{ outcome: 'approval' }, { outcome: 'error' }, { enteredReview: true }, { reviewed: true },
+    { head: 'other' }, { base: 'other' }, { runId: 'other' }, { mode: 'auto' }, { errors: ['failure'] }, { retry: true }]) {
+    assert.equal(canReleaseDeferredGate({ ...input, result: { ...result, ...patch } }), false);
+  }
+  for (const state of ['dispatching', 'sent', 'bound', 'not-submitted', 'unknown']) {
+    assert.equal(canReleaseDeferredGate({ ...input, dispatchIntent: { state } }), false);
+  }
+  assert.equal(canReleaseDeferredGate({ ...input, result: null }), false);
+});
+
+test('已释放暂缓结果只在候选查询中请求重判,不修改共享状态或覆盖更新轮次', () => {
+  const state = { version: 1, mode: 'review-only', prs: { 1025: { retry: false },
+    1071: { retry: false, roundCreatedAt: '2026-10-18T02:00:00Z' } } };
+  const marker = { reason: 'gate-deferred', roundId: 'round' };
+  const plan = { runId: 'round', manifest: { createdAt: '2026-10-18T01:00:00Z' },
+    released: { 1025: marker, 1071: marker, 1080: { reason: 'head-superseded' } } };
+  const next = withDeferredGateRetries(state, [plan]);
+  assert.equal(next.prs[1025].retry, true);
+  assert.equal(next.prs[1071].retry, false);
+  assert.equal(next.prs[1080], undefined);
+  assert.equal(state.prs[1025].retry, false);
 });
 
 test('排除集:在审 PR,加上传递依赖它们的 PR;无关 PR 不受影响', () => {

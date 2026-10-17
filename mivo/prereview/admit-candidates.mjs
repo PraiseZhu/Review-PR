@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SCRIPTS } from '../lib/common.mjs';
-import { toBusyPrs, toExcludedPrs } from '../lib/admission.mjs';
+import { toBusyPrs, toExcludedPrs, withDeferredGateRetries } from '../lib/admission.mjs';
 
 const args = process.argv.slice(2);
 const arg = (name) => { const i = args.indexOf(name); return i < 0 ? '' : String(args[i + 1] ?? ''); };
@@ -45,8 +45,9 @@ try {
     process.exit(0);
   }
 
-  const state = readState(stateFile('round-state.json'));
-  const busy = toBusyPrs(incompletePlans.map(readPlan));
+  const plans = incompletePlans.map(readPlan);
+  const state = withDeferredGateRetries(readState(stateFile('round-state.json')), plans);
+  const busy = toBusyPrs(plans);
   const excluded = toExcludedPrs({ busyPrs: busy, roundState: state, mode });
   const snapshot = fetchOpenPrSnapshot({ owner, repo, timeoutMs: 30_000 }).filter((pr) => !excluded.has(pr.number));
   const manifest = createCandidateList({ repo: repository, snapshot, mode, state, fixSessions: readState(stateFile('fix-sessions.json')) });
