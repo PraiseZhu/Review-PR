@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
-import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval } from '../lib/gates.mjs';
+import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
@@ -725,7 +725,8 @@ async function publishClean(state, result, reportFile) {
     summary: `${clean}。${state.scope.reason}` };
   if (receipt?.stage === 'reviewed-only' && result.approval.status === 'verified') {
     Object.assign(result, { outcome: 'review-only', reason: `审查通过,已 Approve${deferredSummary ? `(${deferredSummary.text})` : ''};review-only 不执行合并,由维护者手动合并` });
-    addMergeReady(state, result);
+    // 挂标签前按 finish 带回的实时 preMerge 复核 CI / 讨论 / 冲突:finish 对 review-only 无条件返回 reviewed-only,canMerge 只是附带信息。
+    attachMergeReady(state, result, toMergeReadyGateBlockers(receipt.preMerge));
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
     return;
   }
@@ -736,6 +737,13 @@ async function publishClean(state, result, reportFile) {
     const self = toAuthorSelfApproval((receipt ?? finish)?.approvalResult);
     if (!self.authorOnly) {
       await publishAdvisory(state, result, reportFile, { blockers: self.others.map((other) => other.reason), retry: self.retry });
+      return;
+    }
+    // approve 脚本当场读的只有身份、权限、head/base、讨论和 review,不含 CI、冲突:prepare 之后才变坏的这里补跑 pre-merge-check 复核。
+    // 必须先于发报告评论——评论带干净报告标记,盯梢会当成放行。
+    const gates = toMergeReadyGateBlockers(runPreMerge(state));
+    if (gates.blockers.length) {
+      await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
       return;
     }
     const comment = postReportComment(state, reportFile);
@@ -831,6 +839,23 @@ function postReportComment(state, reportFile, { marker = `<!-- mivo-review:repor
   const r = run('gh', ['api', '--method', 'POST', `repos/${input.targetRepo}/pulls/${input.pr}/reviews`, '--input', '-'],
     { cwd: REPO_DIR, input: JSON.stringify({ event: 'COMMENT', commit_id: input.head, body }), allowFail: true });
   return r.ok ? { ok: true, id: JSON.parse(r.stdout).id } : { ok: false, error: r.stderr.trim().slice(0, 300) };
+}
+
+// 实时门禁复核通过才挂 review:merge-ready;没过就不挂、摘掉已有的(门禁恢复后 Mini 重新送审,同 head 沿用结论再加回)。
+function attachMergeReady(state, result, gates) {
+  if (gates.blockers.length === 0) return addMergeReady(state, result);
+  removeMergeReady(state, result);
+  result.mivo.labelWithheld = gates.blockers;
+  result.warnings.push(`review:merge-ready 没挂(挂标前门禁复核未过):${gates.blockers.map((blocker) => blocker.reason).join(';')}`);
+  if (gates.retry) result.retry = true;
+}
+
+// 跑一次 pre-merge-check(只读),拿 CI / 讨论 / 冲突的实时状态;参数与 finish 内部那次一致。脚本崩溃或没有 JSON 返回 {ok:false,error}。
+function runPreMerge(state) {
+  const input = state.input;
+  return runScript('pre-merge-check.mjs', [String(input.pr), '--lock-token', state.lockToken, '--expected-head', input.head,
+    '--expected-authority-digest', state.authorityDigest, '--expected-base', input.base, '--expected-base-ref', state.context.baseRefName],
+  { cwd: REPO_DIR, env: scriptEnv(), timeoutMs: 180_000 });
 }
 
 function addMergeReady(state, result) {

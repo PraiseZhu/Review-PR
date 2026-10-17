@@ -207,6 +207,24 @@ test('上一轮结果包:advisory 视为代码干净,其余 reviewClean=false �
   assert.equal(advisory.reviewClean, false);
 });
 
+// 2026-10-17 补审:作者即审查账号时,publishAdvisory 把发布阶段才发现的拦截项写进 advisory.blockers(pendingGates 为空)。
+// 这类结果和「只剩机器人 thread」一样,代码层面是干净的,同 head 该沿用,不该多跑一轮完整审查。
+test('上一轮结果包:advisory.blockers(作者自批之外的发布阶段拦截项)也算代码干净,同 head 沿用', () => {
+  const base = { pr: 7, head: 'h1', reviewed: true, reviewClean: false, outcome: 'merge-blocked',
+    reviewEvidence: { baseRefName: 'main', diffHash: 'd1' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], filePatchHashes: filePatchHashes(files), totalDiffLines: 2,
+      tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const blockers = { ...base, mivo: { ...base.mivo, advisory: { pendingGates: [], blockers: ['仍有 conversation 未 resolve'] } } };
+  const scope = (result) => computeReviewScope({ previous: previousFromResult(result, ''), current: current({ head: 'h1', diffHash: 'd1' }), headIsDescendant: null });
+  assert.equal(scope(blockers).mode, 'reuse', '只有 blockers 的 advisory:同一 head 沿用');
+  assert.equal(previousFromResult(blockers, '').reviewClean, true);
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, advisory: { pendingGates: [], blockers: [] } } }).mode, 'full', '两者都为空不算 advisory');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, advisory: { blockers: ['x'] } } }).mode, 'reuse', '缺 pendingGates 字段也认 blockers');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, findings: [{ path: 'src/a.ts', body: '[P1] x' }] } }).mode, 'incremental', '有 P0/P1 不沿用');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, deferred: [{ path: 'src/a.ts', body: '[P1] x', deferredTo: 9 }] } }).mode, 'incremental', '有转 issue 的问题不沿用');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, verifierOverruledAll: true } }).mode, 'full', '核对员推翻全部卡点的 advisory 仍全量');
+});
+
 test('addedLines 只含 + 行的新侧行号;增量范围带 changedFiles', () => {
   const split = splitDiffByFile(diff('+added'));
   assert.deepEqual([...split['src/a.ts'].addedLines], [11]);

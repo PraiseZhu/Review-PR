@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
-import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
+import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -956,8 +956,12 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   if (dispatchesToday() >= CONFIG.dailyCap) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `今日服务器审查已达上限 ${CONFIG.dailyCap} 次,明天继续`, retry: true });
   }
-  const attempt = (record.attempts?.[task.head] ?? 0) + 1;
-  const retry = toRetryDecision({ failure: record.failures?.[task.head], attempt });
+  // attempt = 连续失败数 + 1(服务器据此升级模型、判定最终失败,review-pr.yml 的守卫只收 1–9)。不再累计成功的派发:
+  // 摘标签后门禁恢复要再派发一次才能把标签加回,同 head 累计派发满 9 次就加不回来(2026-10-17 补审)。
+  // 防失控靠 completedRuns 上限;record.attempts 只留作遥测,旧记录里累计到 9 的 head 也因此自动解开。
+  const failure = record.failures?.[task.head];
+  const attempt = toDispatchAttempt(failure);
+  const retry = toRetryDecision({ failure, attempt, completedRuns: record.completedRuns?.[task.head] ?? 0 });
   if (!retry.dispatch) {
     log('retry-held', { pr: task.pr, head: task.head, attempt, reason: retry.reason });
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: retry.reason, retry: true });
@@ -1230,6 +1234,7 @@ function collectServerRun(ctx, entry) {
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
   const health = server.mivo?.health;
+  let completedRun = false;
   if (health && health.ok === false) {
     // 维护窗口或工具链不健康:服务器没有审,这次派发不算一次尝试;工具链不健康时暂停派发 30 分钟再试。
     const record = loadStore().prs[task.pr] ?? {};
@@ -1251,9 +1256,12 @@ function collectServerRun(ctx, entry) {
     log('github-rate-limited', { pr: task.pr, runId: entry.runId, head: task.head, refunds: refunds + 1 });
   } else {
     recordFailure(ctx, task, server.outcome === 'error');
+    completedRun = server.outcome !== 'error';
   }
   bumpOwned(ctx, task, {
     lastRunId: entry.runId,
+    // 这次收回的是一次完成的审查(不是失败、不是健康/限额退回):累计这个 head 的已完成次数,toRetryDecision 据此封顶。
+    ...(completedRun ? { completedRuns: toCompletedRunsRecord(loadStore().prs[task.pr]?.completedRuns, task.head) } : {}),
     ...(server.reviewed && server.mivo?.reportComplete ? { lastCompleteRunId: entry.runId } : {}),
     ...(server.reviewClean && ['review-only', 'approval'].includes(server.outcome) ? { cleanHead: task.head } : {}),
   });

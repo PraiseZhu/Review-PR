@@ -9,6 +9,7 @@ import { toProtectedHoldWake } from './admission.mjs';
 const { toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry } = await import('./gates.mjs');
 // 2026-10-17 两个 P2 新增的纯函数,同样动态取。
 const { toAuthorSelfApproval, toStaleMergeReadyReason } = await import('./gates.mjs');
+const { toMergeReadyGateBlockers } = await import('./gates.mjs');
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -613,4 +614,47 @@ test('门禁没有失效不摘:送审阶段(含只剩机器人 thread / 缺界�
   assert.equal(toStaleMergeReadyReason({ decision: { stage: 'review' }, meta: { mergeable: 'UNKNOWN' } }), null);
   assert.equal(toStaleMergeReadyReason({}), null);
   assert.equal(toStaleMergeReadyReason(), null);
+});
+
+// ── 挂 review:merge-ready 之前按实时门禁复核(2026-10-17 补审)──
+// 已 Approve 路径用 finish 带回的 preMerge;作者自批路径补跑 pre-merge-check。只拦确定的负面(CI 失败、讨论未 resolve、冲突、head/base 变了),
+// CI 在跑/机器人没说完这类瞬态不拦;读不到按「拦并重试」处理。
+const PASS = { ok: true, headVerified: true, baseVerified: true, threadsVerified: true, unresolvedThreads: [], ci: { status: 'pass' }, mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE', canMerge: false };
+
+test('挂标前复核:全部通过(含 canMerge=false 的「等维护者 Approve」常态)不拦', () => {
+  assert.deepEqual(toMergeReadyGateBlockers(PASS), { blockers: [], retry: false });
+  for (const status of ['pending', 'awaiting', 'unknown']) {
+    assert.deepEqual(toMergeReadyGateBlockers({ ...PASS, ci: { status } }).blockers, [], `CI ${status} 是瞬态,不拦`);
+  }
+  assert.deepEqual(toMergeReadyGateBlockers({ ...PASS, botSettle: { settled: false } }).blockers, [], '机器人没说完不在这里拦');
+});
+
+test('挂标前复核:CI 失败、讨论未 resolve、冲突、head/base 变化各自拦下并给出原因', () => {
+  const one = (patch) => toMergeReadyGateBlockers({ ...PASS, ...patch });
+  assert.deepEqual(one({ ci: { status: 'failed', reason: 'verify 失败' } }).blockers.map((b) => b.code), ['ci-failed']);
+  assert.match(one({ ci: { status: 'failed', reason: 'verify 失败' } }).blockers[0].reason, /CI 失败.*verify 失败/);
+  const threads = one({ unresolvedThreads: [{}, {}] });
+  assert.deepEqual(threads.blockers.map((b) => b.code), ['threads-unresolved']);
+  assert.match(threads.blockers[0].reason, /仍有 2 条 conversation 未 resolve/);
+  assert.equal(threads.retry, false, '确定的拦截,等人处理');
+  assert.deepEqual(one({ mergeStateStatus: 'DIRTY' }).blockers.map((b) => b.code), ['conflict']);
+  assert.deepEqual(one({ mergeable: 'CONFLICTING' }).blockers.map((b) => b.code), ['conflict']);
+  const moved = one({ headVerified: false });
+  assert.deepEqual(moved.blockers.map((b) => b.code), ['head-or-base-changed']);
+  assert.equal(moved.retry, true);
+  assert.deepEqual(one({ baseVerified: false }).blockers.map((b) => b.code), ['head-or-base-changed']);
+  const all = one({ ci: { status: 'failed' }, unresolvedThreads: [{}], mergeStateStatus: 'DIRTY' });
+  assert.deepEqual(all.blockers.map((b) => b.code), ['threads-unresolved', 'ci-failed', 'conflict']);
+});
+
+test('挂标前复核:读不到(缺失、ok:false、thread 没读全)一律拦并标 retry', () => {
+  for (const bad of [null, undefined, 'x', { ok: false, error: 'boom' }, { ...PASS, threadsVerified: false }]) {
+    const r = toMergeReadyGateBlockers(bad);
+    assert.ok(r.blockers.length >= 1, JSON.stringify(bad));
+    assert.equal(r.retry, true, JSON.stringify(bad));
+  }
+  assert.deepEqual(toMergeReadyGateBlockers(null).blockers.map((b) => b.code), ['pre-merge-missing']);
+  assert.deepEqual(toMergeReadyGateBlockers({ ok: false, error: 'boom' }).blockers.map((b) => b.code), ['pre-merge-failed']);
+  assert.match(toMergeReadyGateBlockers({ ok: false, error: 'boom' }).blockers[0].reason, /boom/);
+  assert.deepEqual(toMergeReadyGateBlockers({ ...PASS, threadsVerified: false }).blockers.map((b) => b.code), ['threads-unverified']);
 });

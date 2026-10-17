@@ -131,8 +131,10 @@ function reuse(previous, reason) {
 // advisory(review.mjs 的 publishAdvisory):代码没有 P0/P1,只是前置门没过。result.reviewClean 记 false 是给 Mini 看的「还没放行」,
 // 不是「代码审查有问题」。范围判定要的是后者:有挂起的门、且没有问题条目,代码层面就是干净的。
 // 转 issue 的问题(deferred)不在这里算,computeReviewScope 的 carried 另外拦。
+// 挂起的门有两种来源:pendingGates(prepare 时判门发现的)和 blockers(作者就是审查账号时,发布阶段 approve 脚本实时读到的其它拦截项),都算。
 const codeReviewClean = (result) => result.reviewClean === true
-  || ((result.mivo?.advisory?.pendingGates?.length ?? 0) > 0 && (result.mivo?.findings ?? []).length === 0);
+  || (((result.mivo?.advisory?.pendingGates?.length ?? 0) + (result.mivo?.advisory?.blockers?.length ?? 0)) > 0
+    && (result.mivo?.findings ?? []).length === 0);
 
 /** 上一次服务器审查的结果包(result.json + report.md)→ computeReviewScope 用的上一轮记录。 */
 export function previousFromResult(result, report = '') {

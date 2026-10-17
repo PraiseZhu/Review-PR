@@ -174,11 +174,17 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 
 收尾所在那一秒之后的改动，`updatedAt` 才会更晚而照常唤醒；没有 `fingerprintFields` 或 `checkedAt` 的旧状态无法确认，也照常唤醒。已知取舍有两条，都只影响没有 thread / CI / review 变化、只改了 `updatedAt` 的普通评论或改说明：一是动手前到收尾之间别人恰好改了，会被吸收一次；二是 GitHub 的 `updatedAt` 只到秒、`checkedAt` 到毫秒，收尾之后同一秒内的外部改动也会被吸收（窗口不超过 1 秒）。吸收之后任何新动静仍会唤醒。
 
-`review:merge-ready` 的三条补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在）：
+`review:merge-ready` 的补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在；同日补审后又加三条，见末尾）：
 
 - **作者就是审查账号**（自己的 PR，Approve 必被拒）：只有「除了不能自批，其它拦截项全部通过」才以评论发报告、挂标签、写 success。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。
 - **门禁失效也摘标签**，不只在 head 变化时：Mini 每轮判门后，与 base 冲突，或判门停在稳定卡点（冲突、人工讨论未 resolve、他人 Request Changes、维护者确认门、凭证、格式、CI 失败、rebase、retarget）时摘。只用判门已经拿到的 context，不多打 API。CI 在跑、机器人没说完、读失败这类瞬态，以及 GitHub 的 `BLOCKED`（多半只是等维护者 Approve）不摘，避免反复加摘；摘掉后标签不在，下一轮不会重复 DELETE。门禁重新全过回到送审，服务器沿用结论再加回。
 - **机器人静默期的超时从推送 / 转 Ready 起算**：取 head 的提交时间、推送时间、转 Ready 时间里最晚的一个。先当很久 Draft 的 PR 不会一转 Ready 就按「已等满 30 分钟」放行，先本地提交、很久以后才推送的新 head 也不会被提交时间吃掉窗口。推送时间用该 head 上最早的检查开始时间估（已有的 statusCheckRollup，零额外请求）；转 Ready 的时间只在按前两者算已超时时才用 REST 读一次（`issues/<n>/events`），不碰 GraphQL；读失败退回。Draft 期间机器人对当前 head 已有的表态仍算数。
+
+补审后追加（2026-10-18，对已合并的前三条再审、再测的 P2）：
+
+- **挂标签前按实时门禁复核 CI / 讨论 / 冲突**：审查账号不是作者、Approve 已发出时，用 finish 带回的 `preMerge`（`finish` 对 review-only 无条件返回 `reviewed-only`，`canMerge` 只是附带信息，`canMerge=false` 是「等维护者 Approve」的常态，不拦）；作者就是审查账号时，approve 脚本当场只读身份、权限、head/base、讨论和 review，不含 CI 和冲突，所以补跑一次 `pre-merge-check.mjs`。CI 失败、讨论未 resolve、与 base 冲突、head/base 复核时已变就不挂标签、摘掉已有的：已 Approve 路径 check 仍写 success（Approve 已发出，原因记在 `mivo.labelWithheld` 与 warnings），作者自批路径走「送审但不放行」（先复核、后发评论，所以不会先发出带干净报告标记的评论）。CI 在跑、awaiting、unknown 这类瞬态不拦；复核结果缺失或读不全拦下并标 `retry`。门禁恢复后 Mini 重新送审，同 head 沿用结论再把标签加回。
+- **作者自批之外的拦截项（`advisory.blockers`）也算代码干净**：同 head 沿用上一轮结论，不再多跑一轮完整审查。
+- **摘标签后能加回来**：见上文失败重试一节，`attempt` 不再累计成功的派发，旧记录里累计到 9 的 head 自动解开。
 
 ## 写明的产品意图与维护者裁定不改
 
@@ -229,7 +235,7 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 
 ## 审查失败后怎么重试
 
-规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
+规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试。派发给服务器的 `attempt` 是「连续失败数 + 1」（`review-pr.yml` 守卫只收 1–9，失败上限内不会超），不再累计成功的派发；防失控的保险是「同一个 head 已完成审查满 20 次」也停（`completedRuns`）。成功一次失败记录就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
 
