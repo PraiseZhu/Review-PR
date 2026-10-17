@@ -365,12 +365,76 @@ test('evaluateBotSettleSinceReady:转 Ready 后再等满上限仍按超时放行
   assert.equal(r.readyLookup, 'found');
 });
 
+// 先本地提交、很久以后才推送的新 head:提交时间远早于推送时间,从提交起算会把 30 分钟窗口吃掉大半。
+// #1081 新 head 2d09368f2:提交 13:32:30Z,推送 13:54:32Z,窗口只剩约 8 分钟。推送时间用该 head 上最早的检查开始时间估
+// (statusCheckRollup 已经拿到,零额外请求;实测 13:54:35Z,与推送只差 3 秒)。
+const { toHeadPushedAt } = await import('./lib.mjs');
+
+test('toHeadPushedAt 取 head 上最早的检查开始时间(CheckRun 用 startedAt,StatusContext 用 createdAt),读不到就是空串', () => {
+  const rollup = [
+    { name: 'verify', startedAt: '2026-10-17T14:02:59Z', createdAt: null },
+    { name: 'lint', startedAt: '2026-10-17T13:54:37Z', createdAt: null },
+    { name: 'legacy-status', startedAt: null, createdAt: '2026-10-17T13:54:35Z' },
+    { name: 'queued-not-started', startedAt: null, createdAt: null },
+    { name: 'bad', startedAt: 'not-a-date', createdAt: null },
+  ];
+  assert.equal(toHeadPushedAt(rollup), '2026-10-17T13:54:35Z');
+  for (const bad of [null, undefined, [], {}, [{}], [{ startedAt: 'x' }], [null]]) assert.equal(toHeadPushedAt(bad), '', JSON.stringify(bad));
+});
+
+test('静默期:提交很久以后才推送的新 head,超时从推送起算(#1081 新 head)', () => {
+  const base = { headCommittedDate: '2026-10-17T13:32:30Z', headPushedAt: '2026-10-17T13:54:35Z', activity: [], cfg: READY_CFG };
+  const early = evaluateBotSettle({ ...base, nowIso: '2026-10-17T14:03:30Z' });
+  assert.equal(early.settled, false, '推送才 9 分钟,不能按「提交后 31 分钟」放行');
+  assert.equal(early.timedOut, false);
+  assert.equal(early.waitAnchor, 'push');
+  assert.equal(early.waitStartedAt, '2026-10-17T13:54:35Z');
+  assert.match(early.reason, /自推送起算/);
+  const old = evaluateBotSettle({ ...base, headPushedAt: '', nowIso: '2026-10-17T14:03:30Z' });
+  assert.equal(old.timedOut, true, '对照:不传推送时间时是旧行为,从提交起算');
+  assert.equal(old.waitAnchor, 'commit');
+  const late = evaluateBotSettle({ ...base, nowIso: '2026-10-17T14:25:36Z' });
+  assert.equal(late.settled, true);
+  assert.equal(late.timedOut, true, '从推送起算满上限仍按超时放行');
+  assert.equal(late.waitAnchor, 'push');
+});
+
+test('静默期:起点取提交、推送、转 Ready 三者里最晚的一个;推送早于提交(时钟偏差)或无法解析时忽略', () => {
+  const base = { headCommittedDate: '2026-10-17T13:00:00Z', activity: [], cfg: READY_CFG, nowIso: '2026-10-17T13:20:00Z' };
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: '2026-10-17T13:10:00Z', readyForReviewAt: '2026-10-17T13:15:00Z' }).waitAnchor, 'ready');
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: '2026-10-17T13:15:00Z', readyForReviewAt: '2026-10-17T13:10:00Z' }).waitAnchor, 'push');
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: '2026-10-17T12:59:00Z' }).waitAnchor, 'commit');
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: 'not-a-date', readyForReviewAt: 'x' }).waitAnchor, 'commit');
+  assert.equal(evaluateBotSettle(base).waitStartedAt, '2026-10-17T13:00:00Z');
+});
+
+test('静默期:推送时间只推迟超时起点,不影响「是否已表态」和静默窗口', () => {
+  const r = evaluateBotSettle({ headCommittedDate: '2026-10-17T13:32:30Z', headPushedAt: '2026-10-17T13:54:35Z', nowIso: '2026-10-17T14:03:30Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-17T13:40:00Z' }], cfg: READY_CFG });
+  assert.deepEqual(r.responded, ['greptile-apps'], '提交之后的表态仍算数');
+  assert.equal(r.settled, true);
+});
+
+test('evaluateBotSettleSinceReady:推送时间由调用方随 input 给(零请求),转 Ready 仍只在超时时才读事件', () => {
+  const input = { headCommittedDate: '2026-10-17T13:32:30Z', headPushedAt: '2026-10-17T13:54:35Z', nowIso: '2026-10-17T14:03:30Z', activity: [], cfg: READY_CFG };
+  const never = () => { throw new Error('不应该读事件'); };
+  assert.equal(evaluateBotSettleSinceReady(input, never).waitAnchor, 'push');
+  // 推送起算也超时了,再读事件:转 Ready 更晚时以它为准
+  const timedOut = { ...input, nowIso: '2026-10-17T14:30:00Z' };
+  let reads = 0;
+  const r = evaluateBotSettleSinceReady(timedOut, () => { reads += 1; return [{ event: 'ready_for_review', created_at: '2026-10-17T14:20:00Z' }]; });
+  assert.equal(reads, 1);
+  assert.equal(r.settled, false);
+  assert.equal(r.waitAnchor, 'ready');
+});
+
 test('静默期接线:context.mjs 与 pre-merge-check.mjs 用 evaluateBotSettleSinceReady,经 REST 读 issues/<n>/events,不碰 GraphQL', () => {
   for (const file of ['context.mjs', 'pre-merge-check.mjs']) {
     const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
     // 不用 assert.match:失败时它会把整份源码打印出来。
     assert.ok(/evaluateBotSettleSinceReady\(\{[\s\S]*?\},\s*\(\)\s*=>/.test(source), `${file} 调用 evaluateBotSettleSinceReady 并传入读事件的回调`);
     assert.ok(/repos\/\$\{slug\}\/issues\/\$\{pr\}\/events/.test(source), `${file} 读 REST 事件`);
+    assert.ok(/headPushedAt:\s*toHeadPushedAt\(/.test(source), `${file} 用已有的 statusCheckRollup 估推送时间传入静默期`);
     assert.ok(!/timelineItems/.test(source), `${file} 的 GraphQL 查询不加转 Ready 连接(不增加 GraphQL 消耗,也不会因它让整条查询失败)`);
     assert.ok(!/=\s*evaluateBotSettle\(/.test(source), `${file} 不再直接用 evaluateBotSettle 判静默期`);
   }

@@ -2087,7 +2087,20 @@ export function toReadyForReviewAt(events) {
   return times.sort().pop() ?? '';
 }
 
-export function evaluateBotSettle({ headCommittedDate, readyForReviewAt = '', nowIso, activity = [], cfg = {} }) {
+/**
+ * [MIVO-PATCH bot-settle-ready] 估 head 的推送时间:该 head 上最早的检查开始时间(CheckRun 用 startedAt,StatusContext 用 createdAt)。
+ * 检查在推送瞬间由 GitHub 触发,statusCheckRollup 只含当前 head,调用方本来就拿着,零额外请求
+ * (实测 #1081 新 head 最早检查 13:54:35Z,推送 13:54:32Z)。一个检查都没有或读不到返回空串。
+ * 入参是 fetchCiRollup 的返回(未经 ciIgnore 过滤也没关系:本流程自己的检查一定更晚)。
+ */
+export function toHeadPushedAt(rollupContexts) {
+  const times = (Array.isArray(rollupContexts) ? rollupContexts : [])
+    .map((context) => context?.startedAt ?? context?.createdAt)
+    .filter((time) => typeof time === 'string' && Number.isFinite(Date.parse(time)));
+  return times.sort()[0] ?? '';
+}
+
+export function evaluateBotSettle({ headCommittedDate, headPushedAt = '', readyForReviewAt = '', nowIso, activity = [], cfg = {} }) {
   const maxWaitMinutes = Number(cfg.maxWaitMinutes ?? 20);
   // 静默窗口(维护者 2026-07-30 定的节奏):必等机器人都表态之后,还要「最近 quietMinutes
   // 分钟内所有 quiet 名单机器人都没有新动静」才放行 —— 防止我们的审查/合并跟一波还在
@@ -2107,15 +2120,21 @@ export function evaluateBotSettle({ headCommittedDate, readyForReviewAt = '', no
   const norm = (s) => String(s ?? '').toLowerCase().replace(/\[bot\]$/, '');
   const responded = reviewers.filter((r) => activity.some((a) => norm(a.author) === r && a.at > headCommittedDate));
   const pending = reviewers.filter((r) => !responded.includes(r));
-  // [MIVO-PATCH bot-settle-ready] 超时计时从「转 Ready 的时间」和 head 提交时间里较晚的一个起算:机器人不审 Draft,
-  // 先当很久 Draft 再转 Ready 的 PR,从 head 提交起算会让第一轮就「已等满上限」按超时放行(2026-10-17 #1081,Greptile 2 分钟后才到)。
-  // 「是否已表态」仍按 head 提交之后算:Draft 期间机器人对当前 head 的表态有效,转 Ready 不会让它重审。
-  // 转 Ready 时间读不到或无法解析时退回 head 提交时间(与改前一致)。
-  const readyMs = Date.parse(readyForReviewAt);
-  const fromReady = Number.isFinite(readyMs) && readyMs > Date.parse(headCommittedDate);
-  const waitStartedAt = fromReady ? readyForReviewAt : headCommittedDate;
-  const since = fromReady ? '(自转 Ready 起算)' : '';
-  const timing = { ...base, waitStartedAt };
+  // [MIVO-PATCH bot-settle-ready] 超时计时的起点 = head 提交时间、head 推送时间、转 Ready 时间里最晚的一个。
+  // 机器人在推送后、且 PR 是 Ready 时才会审:先当很久 Draft 再转 Ready 的 PR(2026-10-17 #1081,Greptile 2 分钟后才到),
+  // 或先本地提交、很久以后才推送的新 head(同 PR 新 head 提交 13:32:30Z、推送 13:54:32Z,窗口只剩 8 分钟),
+  // 从提交起算都会让第一轮就「已等满上限」按超时放行。
+  // 「是否已表态」仍按 head 提交之后算:机器人对当前 head 在 Draft 期间的表态有效,转 Ready 不会让它重审。
+  // 推送 / 转 Ready 时间读不到、无法解析或早于提交(时钟偏差)时忽略,退回 head 提交时间(与改前一致)。
+  let waitAnchor = 'commit';
+  let waitStartedAt = headCommittedDate;
+  let waitStartMs = Date.parse(headCommittedDate);
+  for (const [anchor, value] of [['push', headPushedAt], ['ready', readyForReviewAt]]) {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms) && ms > waitStartMs) { waitAnchor = anchor; waitStartedAt = value; waitStartMs = ms; }
+  }
+  const since = { commit: '', push: '(自推送起算)', ready: '(自转 Ready 起算)' }[waitAnchor];
+  const timing = { ...base, waitStartedAt, waitAnchor };
   const waitedMs = Date.parse(nowIso) - Date.parse(waitStartedAt);
   const waitedMinutes = Number.isNaN(waitedMs) ? null : waitedMs / 60_000;
   // 超时兜底最优先:总时长(距 head push)到上限即放行,防机器人挂掉 / 静默窗口被反复重置卡死
@@ -2145,7 +2164,7 @@ export function evaluateBotSettle({ headCommittedDate, readyForReviewAt = '', no
     if (waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
       return {
         ...timing, settled: true, responded, waitedMinutes, quietSinceMinutes, timedOut: true,
-        reason: `距${fromReady ? '转 Ready' : ' head push '}已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
+        reason: `距${{ commit: ' head push ', push: '推送', ready: '转 Ready' }[waitAnchor]}已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
       };
     }
     return {

@@ -110,7 +110,9 @@ test('作者自批是唯一拦截项:评论发报告、挂 review:merge-ready、
   } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
 
-test('作者自批之外还有未 resolve 的讨论(#1081):按「送审但不放行」处理——不挂标签、摘标签、check 留在进行中', () => {
+// prepare 阶段只算一次 pendingGates(review.mjs prepare):#1081 在 12:49 prepare 时 Greptile 还没发评论,pendingGates 为空;
+// publish 时的拦截项来自 approve-reviewed-pr 当场的实时读取(finish 阶段),不是 prepare 的快照。setup() 里 pendingGates 固定为 []。
+test('prepare 时没有待办门、publish 时实时读到未 resolve 的讨论(#1081):按「送审但不放行」处理——不挂标签、摘标签、check 留在进行中', () => {
   const env = setup({ failures: [AUTHOR, THREADS] });
   const gh = fakeGh(env.work);
   try {

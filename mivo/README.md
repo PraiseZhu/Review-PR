@@ -123,7 +123,7 @@ flowchart LR
 
 - **作者就是审查账号**（自己的 PR，Approve 必被拒）：只有「除了不能自批，其它拦截项全部通过」才以评论发报告、挂标签、写 success。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。
 - **门禁失效也摘标签**，不只在 head 变化时：Mini 每轮判门后，与 base 冲突，或判门停在稳定卡点（冲突、人工讨论未 resolve、他人 Request Changes、维护者确认门、凭证、格式、CI 失败、rebase、retarget）时摘。只用判门已经拿到的 context，不多打 API。CI 在跑、机器人没说完、读失败这类瞬态，以及 GitHub 的 `BLOCKED`（多半只是等维护者 Approve）不摘，避免反复加摘；摘掉后标签不在，下一轮不会重复 DELETE。门禁重新全过回到送审，服务器沿用结论再加回。
-- **机器人静默期的超时从转 Ready 起算**：取「转 Ready 的时间」和 head 提交时间里较晚的一个。先当很久 Draft 的 PR，不会一转 Ready 就按「已等满 30 分钟」放行。Draft 期间机器人对当前 head 已有的表态仍算数。转 Ready 的时间只在「按 head 提交算已超时」时才用 REST 读一次（`issues/<n>/events`），平时不多一次请求、也不碰 GraphQL；读失败退回 head 提交起算。
+- **机器人静默期的超时从推送 / 转 Ready 起算**：取 head 的提交时间、推送时间、转 Ready 时间里最晚的一个。先当很久 Draft 的 PR 不会一转 Ready 就按「已等满 30 分钟」放行，先本地提交、很久以后才推送的新 head 也不会被提交时间吃掉窗口。推送时间用该 head 上最早的检查开始时间估（已有的 statusCheckRollup，零额外请求）；转 Ready 的时间只在按前两者算已超时时才用 REST 读一次（`issues/<n>/events`），不碰 GraphQL；读失败退回。Draft 期间机器人对当前 head 已有的表态仍算数。
 
 ## 写明的产品意图与维护者裁定不改
 
