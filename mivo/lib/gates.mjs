@@ -321,6 +321,42 @@ export function toAuthorSelfApproval(approvalResult) {
   return { authorOnly: others.length === 0, others, retry: others.some((f) => UNCERTAIN_APPROVAL_CODES.has(f.code)) };
 }
 
+/**
+ * 挂 review:merge-ready 之前按实时门禁复核(2026-10-17 补审):已 Approve 路径用 finish 带回的 preMerge,作者自批路径补跑 pre-merge-check。
+ * 只拦确定的负面——CI 失败、conversation 未 resolve、与 base 冲突、head/base 在复核时已变;CI 在跑/awaiting/unknown、机器人没说完、
+ * canMerge=false(review-only 下「等维护者 Approve」是常态)都不拦。读不到(缺失、ok:false、thread 没读全)拦并标 retry。
+ * 拦下后标签由 Mini 在门禁恢复、重新送审时再加回(同 head 沿用结论)。纯函数。
+ * @returns {{blockers: Array<{code: string, reason: string}>, retry: boolean}}
+ */
+export function toMergeReadyGateBlockers(preMerge) {
+  if (!preMerge || typeof preMerge !== 'object') {
+    return { blockers: [{ code: 'pre-merge-missing', reason: '合并前门禁复核结果缺失,无法确认 CI、讨论和冲突' }], retry: true };
+  }
+  if (preMerge.ok === false) {
+    return { blockers: [{ code: 'pre-merge-failed', reason: `合并前门禁复核没有完成:${String(preMerge.error ?? preMerge.reason ?? '未知').slice(0, 200)}` }], retry: true };
+  }
+  const blockers = [];
+  let retry = false;
+  if (preMerge.headVerified === false || preMerge.baseVerified === false) {
+    blockers.push({ code: 'head-or-base-changed', reason: '复核时 head 或 base 已变化' });
+    retry = true;
+  }
+  const unresolved = preMerge.unresolvedThreads?.length ?? 0;
+  if (preMerge.threadsVerified === false) {
+    blockers.push({ code: 'threads-unverified', reason: 'review thread 状态未完整读取' });
+    retry = true;
+  } else if (unresolved > 0) {
+    blockers.push({ code: 'threads-unresolved', reason: `仍有 ${unresolved} 条 conversation 未 resolve` });
+  }
+  if (preMerge.ci?.status === 'failed') {
+    blockers.push({ code: 'ci-failed', reason: `CI 失败${preMerge.ci.reason ? `:${String(preMerge.ci.reason).slice(0, 160)}` : ''}` });
+  }
+  if (preMerge.mergeStateStatus === 'DIRTY' || preMerge.mergeable === 'CONFLICTING') {
+    blockers.push({ code: 'conflict', reason: '与 base 有冲突' });
+  }
+  return { blockers, retry };
+}
+
 // 稳定、由人驱动的卡点:出现时之前的审查通过结论不再成立,标签该摘。不含瞬态(CI 在跑、机器人没说完、读失败)——
 // 否则 CI 重跑一次标签就被摘、审查通过后又加回来,来回抖动;也不含 protected(受保护路径走自己的放行信号)。
 const STALE_MERGE_READY_OUTCOMES = new Set([

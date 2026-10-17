@@ -484,7 +484,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         const id = String(w.nextRunId++);
         w.runs.set(id, { id, pr, head: inputs.head_sha, roundId: inputs.round_id, dispatchId: inputs.dispatch_id,
           title: `review-pr #${pr} ${inputs.dispatch_id}`, createdMs: w.now, durationMs: spec.durationMs, queueMs: spec.queueMs });
-        w.dispatches.push({ at: w.now, pr, head: inputs.head_sha, dispatchId: inputs.dispatch_id, runId: id });
+        w.dispatches.push({ at: w.now, pr, head: inputs.head_sha, dispatchId: inputs.dispatch_id, runId: id, attempt: inputs.attempt });
       }
       return failure ? fail('HTTP 502: Bad Gateway') : ok();
     }
@@ -1434,4 +1434,48 @@ test('世界:review:merge-ready 在冲突、人工讨论未 resolve 时摘,head 
   assert.deepEqual([...w.labelDeletes].sort(), [label(1), label(4), label(5)].sort(), '冲突、旧 head、人工讨论各摘一次;CI 在跑(#2)和正常送审(#3)不摘');
   assert.deepEqual([...w.labeled].sort(), [2, 3]);
   assert.deepEqual([1, 2, 3, 4, 5].map((pr) => w.dispatchesOf(pr).length), [0, 0, 1, 1, 0], '判门没过的不派发服务器审查');
+});
+
+// 2026-10-17 补审:attempts 原先累计同 head 的所有派发(含成功的复用),满 9 次就停;摘标签后门禁恢复要靠再派发把标签加回,
+// 同 head 已派 9 次时就加不回来。现在 attempt = 连续失败数 + 1,旧记录里已经累计到 9 的 head 自动解开;
+// 防失控的保险改成「同 head 已完成审查次数」上限(20)。
+test('世界:旧记录 attempts 已累计到 9 的 head,摘标签后门禁恢复仍能再派发(attempt 从 1 起),并累计已完成次数', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.labeled.add(1);
+  w.files.set(w.state('reviews.json'), { version: 1, prs: { 1: { cleanHead: 'h1', attempts: { h1: 9 } } } });
+  w.contextPatch.set(1, { gate: { unresolvedThreads: [{ isBot: false }] } });
+  const first = w.start();
+  assert.ok(await w.runUntil(() => first.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(first.failure, null, String(first.failure?.stack));
+  assert.equal(w.labelDeletes.length, 1, '人工讨论未 resolve:标签被摘');
+  assert.equal(w.dispatchesOf(1).length, 0, '判门没过不派发');
+  // 讨论 resolve:门禁恢复,指纹变化让它重新成为候选
+  w.contextPatch.delete(1);
+  w.files.get('/w/state/round-state.json').prs[1].retry = true;
+  const next = w.start();
+  assert.ok(await w.runUntil(() => next.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(next.failure, null, String(next.failure?.stack));
+  assert.equal(w.dispatchesOf(1).length, 1, '门禁恢复后再派发一次(旧版这里 attempt=10 被拒)');
+  assert.equal(w.dispatchesOf(1)[0].attempt, '1', 'attempt 是连续重试第几次,不是累计派发数');
+  assert.equal(w.read(w.state('reviews.json')).prs[1].completedRuns.h1, 1);
+});
+
+test('世界:同 head 已完成审查满 20 次就停,记原因、不派发;推新提交重新计数', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.files.set(w.state('reviews.json'), { version: 1, prs: { 1: { completedRuns: { h1: 20 } } } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.dispatchesOf(1).length, 0);
+  const held = w.read(`${w.roundDir('R1')}/results/pr-1.json`);
+  assert.match(held.reason, /已完成 20 次服务器审查.*停止自动重试/);
+  assert.equal(held.retry, true);
+  // 作者推了新提交:新 head 没有记录,正常派发
+  w.push(1, 'h2');
+  const next = w.start();
+  assert.ok(await w.runUntil(() => next.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(next.failure, null, String(next.failure?.stack));
+  assert.equal(w.dispatchesOf(1).filter((d) => d.head === 'h2').length, 1);
 });
