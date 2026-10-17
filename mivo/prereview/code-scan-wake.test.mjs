@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake } from '../lib/code-scan.mjs';
+import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet } from '../lib/code-scan.mjs';
 import { toHeldWake } from '../lib/admission.mjs';
 
 const source = readFileSync(new URL('./round.mjs', import.meta.url), 'utf8');
@@ -36,7 +36,7 @@ function makeWorld({ records = {}, checks = {}, issues = [], rs = null, rulesSta
   const logs = [];
   const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '' });
   const sandbox = {
-    fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toHeldWake, encodeURIComponent, join, Date: class extends Date { static now() { return now; } },
+    fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toHeldWake, encodeURIComponent, join, Date: class extends Date { static now() { return now; } },
     CODE_SCAN_SWEEP_EVERY_MS: SWEEP_MS, CODE_SCAN_MAX_WATCHED: MAX_WATCHED,
     CONFIG: { targetRepo: 'o/r', stateDir: '/state', repoRoot: '/repo' }, ENV: {},
     loadStore: () => { if (storeThrows) throw new Error('reviews.json 损坏'); return { prs: records }; },
@@ -70,7 +70,7 @@ test('服务器记 pass 的 PR(标签已挂),CodeQL 稳定变成 neutral:标 ret
   world.sweep();
   assert.equal(retryOf(world, 1), true);
   assert.equal(world.logs.find((entry) => entry.event === 'wake-code-scan').prs[0], 1);
-  assert.deepEqual(world.files.get('/state/mivo/code-scan-watch.json').seen, { 1: { head: 'h1', state: 'fail' } });
+  assert.deepEqual(world.files.get('/state/mivo/code-scan-watch.json').seen, { 1: { head: 'h1', state: 'fail', at: '2026-10-17T19:00:00Z' } });
 });
 
 test('服务器记 fail 的 PR(作者自批 advisory / 标签被拦),CodeQL 重跑成 success:唤醒,重新放行', () => {
@@ -146,4 +146,35 @@ test('接线:wakeHeldPrs 读完开放 issue 列表后顺带对照代码扫描状
   const plain = makeWorld({ records: {}, issues: [1], rs: roundState(1) });
   plain.wakeHeld();
   assert.deepEqual(plain.gh, ['repos/o/r/issues']);
+});
+
+// 审查 P2(复审):服务器在唤醒之后又评估了一次(同 head、新的评估时间)时,旧的 seen 作废。
+test('服务器重新评估后(同 head、新的 at),上次扫描的 seen 作废:仍按服务器新记录对照,不漏唤醒', () => {
+  const world = makeWorld({ records: { 1: record('fail') }, issues: [1], rs: roundState(1), checks: { h1: codeql('success') } });
+  world.sweep();
+  assert.equal(retryOf(world, 1), true);
+  // 唤醒后服务器复核时 CodeQL 仍是 fail,采纳时 Mini 记下新的评估(同一个 head,at 变了)
+  world.files.get('/state/key/round-state.json').prs[1].retry = false;
+  world.files.set('/state/mivo/code-scan-watch.json', { ...world.files.get('/state/mivo/code-scan-watch.json'), lastSweepAt: new Date(NOW - SWEEP_MS - 1).toISOString() });
+  const sweepAgain = makeWorld({ records: { 1: { codeScan: { ...record('fail').codeScan, at: '2026-10-17T19:30:00Z' } } }, issues: [1], rs: world.files.get('/state/key/round-state.json'),
+    checks: { h1: codeql('success') }, watch: world.files.get('/state/mivo/code-scan-watch.json') });
+  sweepAgain.sweep();
+  assert.equal(retryOf(sweepAgain, 1), true, '新记录 fail、现在 pass:要再唤醒一次');
+});
+
+test('开放 PR 多于一次的读取上限:按上次读取时间轮转,后面的 PR 下一轮就轮到', () => {
+  const total = MAX_WATCHED + 1;
+  const prs = Array.from({ length: total }, (_, i) => i + 1);
+  const records = Object.fromEntries(prs.map((pr) => [pr, record('pass', `h${pr}`)]));
+  const checks = Object.fromEntries(prs.map((pr) => [pr, 0]).map(([pr]) => [`h${pr}`, codeql(pr === total ? 'neutral' : 'success')]));
+  const world = makeWorld({ records, issues: prs, rs: roundState(...prs), checks });
+  world.sweep();
+  assert.equal(world.gh.filter((path) => path.includes('/check-runs')).length, MAX_WATCHED, '一次只读上限个');
+  assert.equal(retryOf(world, total), false, '第 31 个这轮没轮到');
+  // 过了间隔再扫一次:上一轮没读到的排最前,第 31 个被读到并唤醒
+  world.files.set('/state/mivo/code-scan-watch.json', { ...world.files.get('/state/mivo/code-scan-watch.json'), lastSweepAt: new Date(NOW - SWEEP_MS - 1).toISOString() });
+  world.gh.length = 0;
+  world.sweep();
+  assert.ok(world.gh.some((path) => path.includes(`commits/h${total}/check-runs`)));
+  assert.equal(retryOf(world, total), true);
 });

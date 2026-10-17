@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
-import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanRecord } from '../lib/code-scan.mjs';
+import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord } from '../lib/code-scan.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -260,22 +260,25 @@ function wakeHeldPrs(busy = new Set()) {
 // mergeStateStatus 也不动。没有独立依据,已挂的标签不会被摘,修好 CodeQL 的 PR 也停在原地。
 // 这里复用 wakeHeldPrs 已读的开放 issue 列表(零额外请求),对服务器上次评估时记了三态的开放 PR,每隔 10 分钟各读一次 head 的
 // check run(规则按 base 缓存),稳定状态(通过 / 不通过)与基线不同才把本机 round-state 里该 PR 标 retry;瞬态(进行中、缺失、读不到)
-// 不唤醒,避免 CodeQL 重跑时来回加摘。在审的 PR 先推迟。任何意外都只记日志,不影响接单。
+// 不唤醒,避免 CodeQL 重跑时来回加摘。基线是服务器那次评估(head 与评估时间都对得上才沿用上次扫描记的状态)。
+// 一次最多读 30 个,按上次读取时间轮转,开放 PR 多于 30 个也轮得到。在审的 PR 先推迟。任何意外都只记日志,不影响接单。
 function wakeCodeScanPrs(openIssues, busy = new Set()) {
   try {
     const open = new Set((openIssues ?? []).filter((issue) => issue?.pull_request).map((issue) => issue.number));
     const records = loadStore().prs;
-    const watched = [...open].map((pr) => ({ pr, ...records[pr]?.codeScan }))
-      .filter((entry) => entry.required === true && entry.head && entry.base && entry.state).slice(0, CODE_SCAN_MAX_WATCHED);
+    const watched = [...open].map((pr) => ({ pr, ...records[pr]?.codeScan })).filter((entry) => entry.required === true && entry.head && entry.base && entry.state && entry.at);
     if (watched.length === 0) return;
     const watchFile = stateFile('code-scan-watch.json');
     const watch = readJson(watchFile, {}) ?? {};
     if (Date.now() - (Date.parse(watch.lastSweepAt) || 0) < CODE_SCAN_SWEEP_EVERY_MS) return;
     const cache = codeScanCache();
+    const batch = toCodeScanSweepSet({ watched, checked: watch.checked ?? {}, max: CODE_SCAN_MAX_WATCHED });
     const observed = {};
-    for (const entry of watched) {
+    const checked = {};
+    for (const entry of batch) {
       observed[entry.pr] = toCodeScanWakeState(toCodeScanGate(fetchCodeScanFacts({ ghFn: (args) => ghRead(args, { allowFail: true }),
         repo: CONFIG.targetRepo, baseRefName: entry.base, head: entry.head, cache })));
+      checked[entry.pr] = Date.now();
     }
     const { wake, deferred, next } = toCodeScanWake({ watched, observed, seen: watch.seen ?? {}, busyPrs: busy });
     if (deferred.length) log('wake-code-scan-deferred', { prs: deferred });
@@ -288,7 +291,9 @@ function wakeCodeScanPrs(openIssues, busy = new Set()) {
       }
       log('wake-code-scan', { prs: wake });
     }
-    writeJson(watchFile, { lastSweepAt: nowIso(), seen: next });
+    // checked 只留还开放的 PR:没读这轮的沿用上次的读取时间,轮转才有依据
+    const keptChecked = Object.fromEntries(watched.map((entry) => [entry.pr, checked[entry.pr] ?? watch.checked?.[entry.pr] ?? 0]));
+    writeJson(watchFile, { lastSweepAt: nowIso(), seen: next, checked: keptChecked });
   } catch (error) {
     log('wake-code-scan-skip', { reason: String(error?.message ?? error).slice(0, 200) });
   }

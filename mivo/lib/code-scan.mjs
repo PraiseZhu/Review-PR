@@ -10,13 +10,9 @@
 // 扫描类 check。所以质量门只在 head 上真的出现该 check 时要求 success,缺失不拦(否则所有 PR 都挂不上标签)。
 
 export const CODE_SCAN_APP_SLUG = 'github-advanced-security';
-// 规则里要求的 check 还没出现,但别的 check 刚跑完(或还在跑):结果可能只是还没上报,按瞬态处理;过了这个窗口仍没有就是稳定缺失。
-export const MISSING_GRACE_MS = 20 * 60_000;
 // 目标分支的规则很少变,按 base 缓存;太久不刷新会让已撤销的规则继续拦。
 export const RULES_TTL_MS = 30 * 60_000;
 const ACTIONS_APP_SLUG = 'github-actions';
-// 审查机自己写的 check(server/review.mjs 的 CHECK_NAME):每轮复核时它都是进行中 / 刚完成,不能算作「别的 check 还在跑 / 刚跑完」。
-const OWN_CHECK_NAMES = new Set(['review-pr']);
 const QUALITY_NAME_RE = /code[\s_-]*quality/i;
 const TITLE_MAX = 160;
 
@@ -121,36 +117,24 @@ const isScanResultOf = (tool) => (check) => {
 };
 const isQualityResult = (check) => QUALITY_NAME_RE.test(String(check.name ?? '')) && Boolean(check.appSlug) && check.appSlug !== ACTIONS_APP_SLUG;
 
-// 规则里要求的 check 没出现:别的 check 还在跑,或刚跑完不久,结果可能只是没上报;否则是稳定缺失。
-// 审查机自己的 review-pr 不算(见 OWN_CHECK_NAMES):否则本轮的 in_progress 会让稳定缺失永远判成瞬态,每轮重新派发直到撞上限。
-function isMissingTransient(checks, nowMs) {
-  const others = checks.filter((check) => !OWN_CHECK_NAMES.has(check.name));
-  if (others.some((check) => check.status && check.status !== 'completed')) return true;
-  const done = others.map((check) => toMs(check.completedAt)).filter((ms) => ms !== null);
-  return done.length > 0 && nowMs - Math.max(...done) < MISSING_GRACE_MS;
-}
-
-const blocked = (code, reason, retry, required = true) => ({ required, items: [], blockers: [{ code, reason }], retry });
-
-// 读失败里"等也等不来"的:没权限、没有这个资源、凭证无效(令牌缺 Metadata 读权限等),标 retry 只会每轮重新派发白烧额度。
-// 限流(403 但提示 rate limit)、5xx、超时、断线是瞬态,值得下一轮重读。
-const isStableReadError = (message) => /Resource not accessible|HTTP (?:401|404)\b|Not Found|Bad credentials/i.test(String(message ?? '')) &&
-  !/rate limit|secondary/i.test(String(message ?? ''));
+const blocked = (code, reason, required = true) => ({ required, items: [], blockers: [{ code, reason }] });
 
 /**
  * 挂 review:merge-ready 之前的代码扫描 / 质量门。规则不要求就不判;要求时 check 必须是明确的 success。
  * @returns {{required: boolean, items: Array<{kind: 'scan'|'quality', tool: string, state: string, title: string, reason?: string}>,
- *   blockers: Array<{code: string, reason: string}>, retry: boolean}}
+ *   blockers: Array<{code: string, reason: string}>}}
  *   state: pass / pending(进行中)/ neutral(没有结论,含 configuration not found)/ failure / missing。
- *   retry 只给会自己变化的状态(进行中、刚跑完还没出现、读不到):neutral / failure 要人处理(重跑 CodeQL、修告警),
- *   靠 PR 指纹变化(mergeStateStatus 等)唤醒重判;标 retry 会让 Mini 每 3 分钟重新派发一次服务器审查,dailyCap 很快用完。
+ *   门本身不标 retry:不管是要人处理的(neutral / failure,重跑 CodeQL、修告警)还是会自己变化的(进行中、还没出现、读不到),
+ *   标 retry 都会让 Mini 每 3 分钟重新派发一次服务器审查,dailyCap=30 很快用完,同 head 还有 20 次完成上限。
+ *   "等结果出来再判"改由 Mini 的 wakeCodeScanPrs 做:服务器把三态(toCodeScanWakeState)随结果回传,Mini 每隔一段时间用一次 REST
+ *   对照,稳定状态变了才唤醒(见文件末尾)。
  */
-export function toCodeScanGate(facts, { nowMs = Date.now() } = {}) {
+export function toCodeScanGate(facts) {
   if (!facts || typeof facts !== 'object') {
-    return blocked('code-scanning-not-reported', '合并前门禁复核没有带回代码扫描结果(pre-merge-check 版本与服务器代码对不上),无法确认 CodeQL', false);
+    return blocked('code-scanning-not-reported', '合并前门禁复核没有带回代码扫描结果(pre-merge-check 版本与服务器代码对不上),无法确认 CodeQL');
   }
   if (!Array.isArray(facts.rules)) {
-    return blocked('code-scanning-unverified', `目标分支的代码扫描规则没读到:${clean(facts.rulesError) || '未知'}`, !isStableReadError(facts.rulesError));
+    return blocked('code-scanning-unverified', `目标分支的代码扫描规则没读到:${clean(facts.rulesError) || '未知'}`);
   }
   const scanRules = facts.rules.filter((rule) => rule?.type === 'code_scanning');
   const qualityRequired = facts.rules.some((rule) => rule?.type === 'code_quality');
@@ -158,25 +142,23 @@ export function toCodeScanGate(facts, { nowMs = Date.now() } = {}) {
   for (const rule of scanRules) {
     const listed = rule.parameters?.code_scanning_tools;
     if (!Array.isArray(listed)) {
-      return blocked('code-scanning-unverified', 'code_scanning 规则里没有 code_scanning_tools,认不出要求哪些扫描工具', false);
+      return blocked('code-scanning-unverified', 'code_scanning 规则里没有 code_scanning_tools,认不出要求哪些扫描工具');
     }
     for (const entry of listed) {
       const name = String(entry?.tool ?? '').trim();
       if (name && !tools.some((tool) => tool.toLowerCase() === name.toLowerCase())) tools.push(name);
     }
   }
-  if (tools.length === 0 && !qualityRequired) return { required: false, items: [], blockers: [], retry: false };
+  if (tools.length === 0 && !qualityRequired) return { required: false, items: [], blockers: [] };
   if (!Array.isArray(facts.checks)) {
-    return blocked('code-scanning-unverified', `head 上的检查结果没读全:${clean(facts.checksError) || '未知'}`, !isStableReadError(facts.checksError));
+    return blocked('code-scanning-unverified', `head 上的检查结果没读全:${clean(facts.checksError) || '未知'}`);
   }
 
   const items = [];
   for (const tool of tools) {
     const found = facts.checks.filter(isScanResultOf(tool));
     if (found.length === 0) {
-      const transient = isMissingTransient(facts.checks, nowMs);
-      items.push({ kind: 'scan', tool, state: 'missing', title: '', retry: transient,
-        reason: `规则要求代码扫描(${tool}),但 head 上还没有它的结果${transient ? '(其它检查刚跑完或还在跑,可能只是还没上报)' : ''}` });
+      items.push({ kind: 'scan', tool, state: 'missing', title: '', reason: `规则要求代码扫描(${tool}),但 head 上还没有它的结果` });
       continue;
     }
     items.push(toItem('scan', tool, latestOf(found)));
@@ -193,9 +175,8 @@ export function toCodeScanGate(facts, { nowMs = Date.now() } = {}) {
   const failing = items.filter((item) => item.state !== 'pass');
   return {
     required: true,
-    items: items.map(({ retry, ...item }) => item),
+    items,
     blockers: failing.map((item) => ({ code: `${item.kind === 'scan' ? 'code-scanning' : 'code-quality'}-${item.state === 'failure' ? 'failed' : item.state}`, reason: item.reason })),
-    retry: failing.some((item) => item.retry),
   };
 }
 
@@ -209,7 +190,7 @@ function toItem(kind, tool, check) {
     neutral: `${label}没有结论:${title}。GitHub 判不出本 PR 引入的告警,组织规则会挡合并,需要重跑 ${tool}`,
     failure: `${label}没通过:${title}`,
   };
-  return { kind, tool, state, title, reason: reasons[state], retry: state === 'pending' };
+  return { kind, tool, state, title, reason: reasons[state] };
 }
 
 /**
@@ -225,7 +206,8 @@ export function toStaleCodeScanReason(gate) {
 // PR 指纹里的 ci 是 statusCheckRollup 的聚合状态,CodeQL 在 success / neutral 之间变化它不动;mergeStateStatus 在别的门一直 BLOCKED 时
 // 也不动(例如作者自批后 review-pr 留在进行中)。没有独立的唤醒依据,已挂的标签不会被摘,修好 CodeQL 的 PR 也停在原地。
 // 这里把门压成三态:pass / fail(neutral、failure,要人处理)/ transient(进行中、缺失、读不到,会自己变化),Mini 每隔一段时间
-// 用一次 REST 对照,稳定状态变了才把该 PR 标 retry 重判;瞬态不唤醒,避免 CodeQL 重跑时来回加摘。
+// 用一次 REST 对照,稳定状态变了才把该 PR 标 retry 重判(这是代码扫描门唯一会标 retry 的地方,一次状态变化唤醒一次);
+// 瞬态不唤醒,避免 CodeQL 重跑时来回加摘。
 
 /** 门 → 'pass' | 'fail' | 'transient' | null(规则不要求,没什么可唤醒的)。 */
 export function toCodeScanWakeState(gate) {
@@ -235,23 +217,25 @@ export function toCodeScanWakeState(gate) {
 }
 
 /**
- * 哪些 PR 该唤醒(纯函数)。watched = [{pr, head, state}](服务器上次评估时记的三态);observed = {pr: 现在的三态 | null(读不到)};
- * seen = 上次扫描记下的 {pr: {head, state}}(同一个 head 才作基线,否则以服务器记的为准);busyPrs = 正在某一轮里的 PR(先推迟)。
+ * 哪些 PR 该唤醒(纯函数)。watched = [{pr, head, state, at}](服务器上次评估时记的三态与评估时间);
+ * observed = {pr: 现在的三态 | null(读不到)};seen = 上次扫描记下的 {pr: {head, state, at}};busyPrs = 正在某一轮里的 PR(先推迟)。
+ * 基线:seen 与服务器记录是同一次评估(head 和 at 都相同)才用 seen 的 state,否则以服务器记的为准——
+ * 服务器在唤醒之后又评估了一次(哪怕同一个 head),旧的 seen 就作废,不然会漏掉之后的变化。
  * 现在是瞬态或读不到:不唤醒、基线不变。稳定状态与基线不同:唤醒并把基线推到现在。
  */
 export function toCodeScanWake({ watched = [], observed = {}, seen = {}, busyPrs = new Set() } = {}) {
   const next = {};
   const wake = [];
   const deferred = [];
-  for (const { pr, head, state } of watched) {
+  for (const { pr, head, state, at } of watched) {
     const current = observed[pr];
-    const previous = seen[pr]?.head === head ? seen[pr] : null;
+    const previous = seen[pr]?.head === head && seen[pr]?.at === at ? seen[pr] : null;
     if (current !== 'pass' && current !== 'fail') {
       if (previous) next[pr] = previous;
       continue;
     }
     if (current === (previous?.state ?? state)) {
-      next[pr] = { head, state: current };
+      next[pr] = { head, state: current, at };
       continue;
     }
     if (busyPrs.has(pr)) {
@@ -260,9 +244,17 @@ export function toCodeScanWake({ watched = [], observed = {}, seen = {}, busyPrs
       continue;
     }
     wake.push(pr);
-    next[pr] = { head, state: current };
+    next[pr] = { head, state: current, at };
   }
   return { wake, deferred, next };
+}
+
+/**
+ * 这次扫描读哪些 PR(纯函数):最多 max 个,按上次读取时间从早到晚轮转(没读过的最先),
+ * 开放 PR 多于 max 时靠轮转轮流覆盖,不会让排在后面的永远轮不到。checked = {pr: 上次读取的毫秒时间}。
+ */
+export function toCodeScanSweepSet({ watched = [], checked = {}, max = 30 } = {}) {
+  return [...watched].sort((a, b) => (Number(checked[a.pr]) || 0) - (Number(checked[b.pr]) || 0) || a.pr - b.pr).slice(0, max);
 }
 
 /**

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toCodeScanGate, toStaleCodeScanReason, toRuleFacts, toCheckFacts, fetchCodeScanFacts, toCodeScanWakeState, toCodeScanWake, toCodeScanRecord, MISSING_GRACE_MS, RULES_TTL_MS } from './code-scan.mjs';
+import { toCodeScanGate, toStaleCodeScanReason, toRuleFacts, toCheckFacts, fetchCodeScanFacts, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord, RULES_TTL_MS } from './code-scan.mjs';
 
 // 2026-10-17 #1025:组织规则集对 main 设了 code_scanning(CodeQL)与 code_quality 两条规则;#1025 head 上的 CodeQL check 是
 // neutral「1 configuration not found」,GitHub 判不出本 PR 引入了什么告警,mergeStateStatus=BLOCKED,审查机却挂了 review:merge-ready。
@@ -17,12 +17,12 @@ const quality = (patch = {}) => ({ name: 'CodeQL - Code Quality', appSlug: 'gith
   title: 'No new code quality findings', completedAt: iso(NOW - min(5)), ...patch });
 const actionsCheck = (patch = {}) => ({ name: 'verify', appSlug: 'github-actions', status: 'completed', conclusion: 'success', title: null, completedAt: iso(NOW - min(6)), ...patch });
 const facts = (patch = {}) => ({ rules: [SCAN_RULE, QUALITY_RULE], rulesError: null, checks: [actionsCheck(), codeql()], ...patch });
-const gate = (f, opts = {}) => toCodeScanGate(f, { nowMs: NOW, ...opts });
+const gate = (f) => toCodeScanGate(f);
 const codes = (g) => g.blockers.map((b) => b.code);
 
 test('分支不受代码扫描 / 代码质量规则约束:不拦,也不要求有 CodeQL(#1036 的 base 是功能分支)', () => {
   const g = gate(facts({ rules: [], checks: [actionsCheck()] }));
-  assert.deepEqual(g, { required: false, items: [], blockers: [], retry: false });
+  assert.deepEqual(g, { required: false, items: [], blockers: [] });
   // 规则里没有这两类、读到的 check 里却有 CodeQL(neutral)也不影响:没有规则就不判
   assert.deepEqual(codes(gate(facts({ rules: [], checks: [codeql({ conclusion: 'neutral' })] }))), []);
 });
@@ -31,16 +31,14 @@ test('CodeQL success:照常放行', () => {
   const g = gate(facts());
   assert.equal(g.required, true);
   assert.deepEqual(g.blockers, []);
-  assert.equal(g.retry, false);
   assert.deepEqual(g.items.map((i) => [i.kind, i.tool, i.state]), [['scan', 'CodeQL', 'pass']]);
 });
 
-test('#1025:CodeQL neutral(1 configuration not found)拦下,原因带 check 标题;不标 retry(要人重跑 CodeQL,靠指纹变化唤醒)', () => {
+test('#1025:CodeQL neutral(1 configuration not found)拦下,原因带 check 标题', () => {
   const g = gate(facts({ checks: [actionsCheck(), codeql({ conclusion: 'neutral', title: '1 configuration not found' })] }));
   assert.deepEqual(codes(g), ['code-scanning-neutral']);
   assert.match(g.blockers[0].reason, /CodeQL/);
   assert.match(g.blockers[0].reason, /1 configuration not found/);
-  assert.equal(g.retry, false);
 });
 
 test('CodeQL skipped / stale 也是没有结论,与 neutral 同处理', () => {
@@ -49,35 +47,27 @@ test('CodeQL skipped / stale 也是没有结论,与 neutral 同处理', () => {
   }
 });
 
-test('CodeQL failure / cancelled / timed_out / action_required:拦下,不标 retry', () => {
+test('CodeQL failure / cancelled / timed_out / action_required:拦下', () => {
   for (const conclusion of ['failure', 'cancelled', 'timed_out', 'action_required']) {
     const g = gate(facts({ checks: [codeql({ conclusion, title: '3 new alerts including 1 high severity security vulnerability' })] }));
     assert.deepEqual(codes(g), ['code-scanning-failed'], conclusion);
-    assert.equal(g.retry, false, conclusion);
   }
   assert.match(gate(facts({ checks: [codeql({ conclusion: 'failure', title: '3 new alerts' })] })).blockers[0].reason, /3 new alerts/);
 });
 
-test('CodeQL 还在跑:拦下并标 retry(会自己变化)', () => {
+test('CodeQL 还在跑:拦下', () => {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const g = gate(facts({ checks: [codeql({ status, conclusion: null, completedAt: null })] }));
     assert.deepEqual(codes(g), ['code-scanning-pending'], status);
-    assert.equal(g.retry, true, status);
   }
 });
 
-test('CodeQL 缺失:其它 check 刚跑完 / 还在跑时可能只是结果还没出现,标 retry;其它 check 早就跑完了仍没有,视为稳定缺失,不标 retry', () => {
-  const justDone = gate(facts({ checks: [actionsCheck({ completedAt: iso(NOW - min(5)) })] }));
-  assert.deepEqual(codes(justDone), ['code-scanning-missing']);
-  assert.equal(justDone.retry, true);
-  const running = gate(facts({ checks: [actionsCheck({ completedAt: iso(NOW - min(300)) }), actionsCheck({ name: 'lint', status: 'in_progress', conclusion: null, completedAt: null })] }));
-  assert.equal(running.retry, true, '还有 check 在跑');
-  const old = gate(facts({ checks: [actionsCheck({ completedAt: iso(NOW - MISSING_GRACE_MS - min(1)) })] }));
-  assert.deepEqual(codes(old), ['code-scanning-missing']);
-  assert.equal(old.retry, false);
-  const none = gate(facts({ checks: [] }));
-  assert.deepEqual(codes(none), ['code-scanning-missing']);
-  assert.equal(none.retry, false, '一个 check 都没有时没有"刚跑完"的依据');
+test('CodeQL 缺失:拦下;审查机自己的 review-pr 以及别的 check 在不在跑都不改变判断', () => {
+  for (const checks of [[], [actionsCheck()], [actionsCheck({ completedAt: iso(NOW - min(600)) }), actionsCheck({ name: 'review-pr', status: 'in_progress', conclusion: null, completedAt: null })]]) {
+    const g = gate(facts({ checks }));
+    assert.deepEqual(codes(g), ['code-scanning-missing']);
+    assert.equal(g.items[0].state, 'missing');
+  }
 });
 
 test('名为 CodeQL 的 Actions job 不能冒充代码扫描结果:只认 github-advanced-security', () => {
@@ -115,11 +105,9 @@ test('代码质量:规则要求且 head 上出现该 check 时必须 success;缺
   assert.deepEqual(codes(gate({ rules, rulesError: null, checks: [codeql(), quality()] })), []);
   const neutral = gate({ rules, rulesError: null, checks: [codeql(), quality({ conclusion: 'neutral', title: 'analysis incomplete' })] });
   assert.deepEqual(codes(neutral), ['code-quality-neutral']);
-  assert.equal(neutral.retry, false);
   assert.deepEqual(codes(gate({ rules, rulesError: null, checks: [codeql(), quality({ conclusion: 'failure' })] })), ['code-quality-failed']);
   const pending = gate({ rules, rulesError: null, checks: [codeql(), quality({ status: 'in_progress', conclusion: null, completedAt: null })] });
   assert.deepEqual(codes(pending), ['code-quality-pending']);
-  assert.equal(pending.retry, true);
   // Actions job 恰好叫这个名字也不算
   assert.deepEqual(codes(gate({ rules, rulesError: null, checks: [codeql(), quality({ appSlug: 'github-actions', conclusion: 'failure' })] })), []);
   // 规则里没有 code_quality 时,出现的 quality check 不影响
@@ -128,39 +116,35 @@ test('代码质量:规则要求且 head 上出现该 check 时必须 success;缺
   assert.deepEqual(codes(gate({ rules: [QUALITY_RULE], rulesError: null, checks: [] })), []);
 });
 
-test('两项都不通过时各自列出,retry 取并集', () => {
+test('两项都不通过时各自列出', () => {
   const g = gate(facts({ checks: [codeql({ conclusion: 'neutral' }), quality({ status: 'queued', conclusion: null, completedAt: null })] }));
   assert.deepEqual(codes(g), ['code-scanning-neutral', 'code-quality-pending']);
-  assert.equal(g.retry, true);
 });
 
-test('规则或 check 读不到:拦下并标 retry;规则形状认不出:拦下但不标 retry(等不来)', () => {
+test('规则或 check 读不到 / 规则形状认不出:拦下', () => {
   const noRules = gate(facts({ rules: null, rulesError: 'HTTP 502: Bad Gateway' }));
   assert.deepEqual(codes(noRules), ['code-scanning-unverified']);
   assert.match(noRules.blockers[0].reason, /HTTP 502/);
-  assert.equal(noRules.retry, true);
-  // 限流是瞬态,可以重读;没权限 / 不存在 / 凭证无效等不来,标 retry 只会每轮重新派发
-  assert.equal(gate(facts({ rules: null, rulesError: 'HTTP 403: API rate limit exceeded' })).retry, true);
-  for (const error of ['HTTP 404: Not Found', 'HTTP 403: Resource not accessible by integration', 'HTTP 401: Bad credentials']) {
-    assert.equal(gate(facts({ rules: null, rulesError: error })).retry, false, error);
-    assert.equal(gate(facts({ checks: null, checksError: error })).retry, false, error);
-  }
-  const noChecks = gate(facts({ checks: null }));
+  const noChecks = gate(facts({ checks: null, checksError: 'HTTP 403: Resource not accessible by integration' }));
   assert.deepEqual(codes(noChecks), ['code-scanning-unverified']);
-  assert.equal(noChecks.retry, true);
-  const drift = gate(facts({ rules: [{ type: 'code_scanning', parameters: {} }] }));
-  assert.deepEqual(codes(drift), ['code-scanning-unverified']);
-  assert.equal(drift.retry, false);
+  assert.match(noChecks.blockers[0].reason, /Resource not accessible/);
+  assert.deepEqual(codes(gate(facts({ rules: [{ type: 'code_scanning', parameters: {} }] }))), ['code-scanning-unverified']);
   assert.deepEqual(codes(gate(facts({ rules: [{ type: 'code_scanning' }] }))), ['code-scanning-unverified']);
   // check 读不到但规则明确不要求:不受影响
   assert.deepEqual(gate({ rules: [], rulesError: null, checks: null }).blockers, []);
 });
 
-test('回执里根本没有 codeScanning 字段(脚本版本对不上):拦下,不标 retry', () => {
-  for (const bad of [undefined, null, 'x', 42]) {
-    const g = toCodeScanGate(bad, { nowMs: NOW });
-    assert.deepEqual(codes(g), ['code-scanning-not-reported'], String(bad));
-    assert.equal(g.retry, false, String(bad));
+test('回执里根本没有 codeScanning 字段(脚本版本对不上):拦下', () => {
+  for (const bad of [undefined, null, 'x', 42]) assert.deepEqual(codes(toCodeScanGate(bad)), ['code-scanning-not-reported'], String(bad));
+});
+
+// 代码扫描门本身不标 retry:标 retry 会让 Mini 每 3 分钟重新派发一次服务器审查(dailyCap=30、同 head 20 次完成上限)。
+// 审查指出过「进行中 / 5xx 也标 retry」同样会烧额度;"等结果出来再判"由 wakeCodeScanPrs 靠状态变化唤醒。
+test('门的结果里没有 retry:不管是什么状态都不会让 Mini 每轮重新派发', () => {
+  const running = codeql({ status: 'in_progress', conclusion: null, completedAt: null });
+  for (const f of [facts(), facts({ checks: [codeql({ conclusion: 'neutral' })] }), facts({ checks: [running] }), facts({ checks: [] }),
+    facts({ rules: null, rulesError: 'HTTP 502' }), facts({ checks: null }), facts({ rules: [] }), undefined]) {
+    assert.equal('retry' in toCodeScanGate(f), false, JSON.stringify(f)?.slice(0, 80));
   }
 });
 
@@ -272,23 +256,6 @@ test('fetchCodeScanFacts:读不到规则不缓存,读不到 check-runs / 条数�
   assert.equal(calls.length, 2);
 });
 
-// ── 审查 P2-1:审查机自己的 review-pr 不能参与「别的 check 还在跑 / 刚跑完」的判断 ──
-test('CodeQL 稳定缺失:本轮审查自己的 review-pr(进行中、刚完成)不能把它一直判成瞬态,否则每轮重新派发直到撞上限', () => {
-  const longAgo = actionsCheck({ completedAt: iso(NOW - min(600)) });
-  const ownRunning = actionsCheck({ name: 'review-pr', status: 'in_progress', conclusion: null, completedAt: null });
-  const ownJustDone = actionsCheck({ name: 'review-pr', completedAt: iso(NOW - min(1)) });
-  for (const own of [ownRunning, ownJustDone]) {
-    const g = gate(facts({ checks: [longAgo, own] }));
-    assert.deepEqual(codes(g), ['code-scanning-missing']);
-    assert.equal(g.retry, false, own.status);
-  }
-  // 别人的 check 在跑 / 刚跑完仍然算瞬态
-  assert.equal(gate(facts({ checks: [longAgo, ownRunning, actionsCheck({ name: 'lint', status: 'in_progress', conclusion: null, completedAt: null })] })).retry, true);
-  assert.equal(gate(facts({ checks: [longAgo, ownJustDone, actionsCheck({ name: 'lint', completedAt: iso(NOW - min(2)) })] })).retry, true);
-  // 只有审查机自己的 check:没有「别的 check 刚跑完」的依据
-  assert.equal(gate(facts({ checks: [ownJustDone] })).retry, false);
-});
-
 // ── 审查 P2-2:代码扫描状态变化不改 PR 指纹(ci 仍是聚合状态),要有独立的唤醒依据 ──
 test('唤醒用的状态:通过 / 稳定不通过(neutral、failure)/ 瞬态(进行中、缺失、读不到)/ 不受约束', () => {
   const state = (f) => toCodeScanWakeState(gate(f));
@@ -306,32 +273,65 @@ test('唤醒用的状态:通过 / 稳定不通过(neutral、failure)/ 瞬态(进
 });
 
 test('唤醒判断:稳定状态与基线不同才唤醒;瞬态 / 读不到不唤醒也不改基线;在审的 PR 推迟', () => {
+  const A = '2026-10-17T20:00:00Z';
   const watched = [
-    { pr: 1, head: 'h1', state: 'fail' },       // 作者自批 advisory:CodeQL 重跑成功 → 唤醒重新放行
-    { pr: 2, head: 'h2', state: 'pass' },       // 标签已挂:CodeQL 变 neutral → 唤醒摘标签
-    { pr: 3, head: 'h3', state: 'pass' },       // 没变
-    { pr: 4, head: 'h4', state: 'fail' },       // 重跑中(瞬态):不唤醒
-    { pr: 5, head: 'h5', state: 'transient' },  // 服务器当时没等到结果,现在稳定通过 → 唤醒
-    { pr: 6, head: 'h6', state: 'fail' },       // 读不到
-    { pr: 7, head: 'h7', state: 'fail' },       // 在审:推迟
+    { pr: 1, head: 'h1', state: 'fail', at: A },       // 作者自批 advisory:CodeQL 重跑成功 → 唤醒重新放行
+    { pr: 2, head: 'h2', state: 'pass', at: A },       // 标签已挂:CodeQL 变 neutral → 唤醒摘标签
+    { pr: 3, head: 'h3', state: 'pass', at: A },       // 没变
+    { pr: 4, head: 'h4', state: 'fail', at: A },       // 重跑中(瞬态):不唤醒
+    { pr: 5, head: 'h5', state: 'transient', at: A },  // 服务器当时没等到结果,现在稳定通过 → 唤醒
+    { pr: 6, head: 'h6', state: 'fail', at: A },       // 读不到
+    { pr: 7, head: 'h7', state: 'fail', at: A },       // 在审:推迟
   ];
   const observed = { 1: 'pass', 2: 'fail', 3: 'pass', 4: 'transient', 5: 'pass', 6: null, 7: 'pass' };
   const r = toCodeScanWake({ watched, observed, seen: {}, busyPrs: new Set([7]) });
   assert.deepEqual(r.wake, [1, 2, 5]);
   assert.deepEqual(r.deferred, [7]);
-  assert.deepEqual(r.next, { 1: { head: 'h1', state: 'pass' }, 2: { head: 'h2', state: 'fail' }, 3: { head: 'h3', state: 'pass' }, 5: { head: 'h5', state: 'pass' } });
-  // 唤醒过一次后基线是上次观察到的值:同一个状态不再重复唤醒;换了 head 重新以服务器记录为基线
+  assert.deepEqual(r.next, { 1: { head: 'h1', state: 'pass', at: A }, 2: { head: 'h2', state: 'fail', at: A }, 3: { head: 'h3', state: 'pass', at: A }, 5: { head: 'h5', state: 'pass', at: A } });
+  // 唤醒过一次后基线是上次观察到的值:同一个状态不再重复唤醒
   const again = toCodeScanWake({ watched, observed, seen: r.next, busyPrs: new Set([7]) });
   assert.deepEqual(again.wake, []);
   assert.deepEqual(again.deferred, [7]);
-  const newHead = toCodeScanWake({ watched: [{ pr: 1, head: 'h1b', state: 'pass' }], observed: { 1: 'pass' }, seen: { 1: { head: 'h1', state: 'fail' } } });
+  // 换了 head 重新以服务器记录为基线
+  const newHead = toCodeScanWake({ watched: [{ pr: 1, head: 'h1b', state: 'pass', at: A }], observed: { 1: 'pass' }, seen: { 1: { head: 'h1', state: 'fail', at: A } } });
   assert.deepEqual(newHead.wake, []);
-  assert.deepEqual(newHead.next, { 1: { head: 'h1b', state: 'pass' } });
+  assert.deepEqual(newHead.next, { 1: { head: 'h1b', state: 'pass', at: A } });
   // 瞬态期间保留上次的基线:pass → 重跑中 → 又 pass 不算变化
-  const flap = toCodeScanWake({ watched: [{ pr: 2, head: 'h2', state: 'fail' }], observed: { 2: 'transient' }, seen: { 2: { head: 'h2', state: 'pass' } } });
+  const flap = toCodeScanWake({ watched: [{ pr: 2, head: 'h2', state: 'fail', at: A }], observed: { 2: 'transient' }, seen: { 2: { head: 'h2', state: 'pass', at: A } } });
   assert.deepEqual(flap.wake, []);
-  assert.deepEqual(flap.next, { 2: { head: 'h2', state: 'pass' } });
+  assert.deepEqual(flap.next, { 2: { head: 'h2', state: 'pass', at: A } });
   assert.deepEqual(toCodeScanWake(), { wake: [], deferred: [], next: {} });
+});
+
+// 审查 P2(复审):服务器在唤醒之后又评估了一次(同一个 head、新的评估时间)时,旧的 seen 必须作废,
+// 否则「fail → 唤醒(seen=pass)→ 服务器复核时仍是 fail,记 fail → CodeQL 又变 pass」会因为 seen=pass 对 pass 而漏掉这次唤醒。
+test('服务器重新评估过(同 head、新的评估时间):旧的 seen 作废,以服务器新记录为基线', () => {
+  const first = toCodeScanWake({ watched: [{ pr: 1, head: 'h1', state: 'fail', at: 'T1' }], observed: { 1: 'pass' }, seen: {} });
+  assert.deepEqual(first.wake, [1]);
+  assert.deepEqual(first.next[1], { head: 'h1', state: 'pass', at: 'T1' });
+  const second = toCodeScanWake({ watched: [{ pr: 1, head: 'h1', state: 'fail', at: 'T2' }], observed: { 1: 'pass' }, seen: first.next });
+  assert.deepEqual(second.wake, [1], '服务器 T2 又记了 fail,现在 pass:要再唤醒一次');
+  // 对称:服务器重挂标签后记 pass,之后 CodeQL 变 fail
+  const third = toCodeScanWake({ watched: [{ pr: 1, head: 'h1', state: 'pass', at: 'T3' }], observed: { 1: 'fail' }, seen: second.next });
+  assert.deepEqual(third.wake, [1]);
+  // 同一次评估(at 没变)不会因为 seen 重复唤醒
+  const same = toCodeScanWake({ watched: [{ pr: 1, head: 'h1', state: 'fail', at: 'T2' }], observed: { 1: 'pass' }, seen: second.next });
+  assert.deepEqual(same.wake, []);
+});
+
+test('每次最多读 max 个,按上次读取时间轮转(没读过的最先):开放 PR 多于 max 时不会让后面的永远轮不到', () => {
+  const watched = Array.from({ length: 5 }, (_, i) => ({ pr: i + 1, head: `h${i + 1}`, state: 'pass', at: 'T' }));
+  const picked = [];
+  let checked = {};
+  for (let round = 0; round < 3; round += 1) {
+    const batch = toCodeScanSweepSet({ watched, checked, max: 2 });
+    assert.equal(batch.length, 2);
+    picked.push(batch.map((entry) => entry.pr));
+    checked = { ...checked, ...Object.fromEntries(batch.map((entry) => [entry.pr, 1000 + round])) };
+  }
+  assert.deepEqual(picked, [[1, 2], [3, 4], [5, 1]]);
+  assert.deepEqual(toCodeScanSweepSet({ watched, checked: {}, max: 30 }).map((entry) => entry.pr), [1, 2, 3, 4, 5]);
+  assert.deepEqual(toCodeScanSweepSet(), []);
 });
 
 test('服务器结果被采纳时的基线记录:评估过就记,完成了但没评估就清,失败 / 退回不动', () => {

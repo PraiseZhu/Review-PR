@@ -327,7 +327,7 @@ export function toAuthorSelfApproval(approvalResult) {
  * 只拦确定的负面——CI 失败、conversation 未 resolve、与 base 冲突、head/base 在复核时已变;CI 在跑/awaiting/unknown、机器人没说完、
  * canMerge=false(review-only 下「等维护者 Approve」是常态)都不拦。读不到(缺失、ok:false、thread 没读全)拦并标 retry。
  * 代码扫描 / 代码质量门(2026-10-18,#1025):目标分支的组织规则要求 CodeQL 时,它必须是明确的 success;neutral(含「configuration not found」)、
- * failure、进行中、缺失、读不到都不挂(GitHub 自己会挡合并,标签不能先说能合)。判据与 retry 口径见 code-scan.mjs。
+ * failure、进行中、缺失、读不到都不挂(GitHub 自己会挡合并,标签不能先说能合),这一道不标 retry。判据与唤醒口径见 code-scan.mjs。
  * 拦下后标签由 Mini 在门禁恢复、重新送审时再加回(同 head 沿用结论)。纯函数。
  * @returns {{blockers: Array<{code: string, reason: string}>, retry: boolean}}
  */
@@ -357,9 +357,8 @@ export function toMergeReadyGateBlockers(preMerge) {
   if (preMerge.mergeStateStatus === 'DIRTY' || preMerge.mergeable === 'CONFLICTING') {
     blockers.push({ code: 'conflict', reason: '与 base 有冲突' });
   }
-  const scan = toCodeScanGate(preMerge.codeScanning);
-  blockers.push(...scan.blockers);
-  if (scan.retry) retry = true;
+  // 代码扫描门不标 retry(见 code-scan.mjs):等 CodeQL 的结果靠 Mini 的 wakeCodeScanPrs 对照三态唤醒,不靠每轮重新派发
+  blockers.push(...toCodeScanGate(preMerge.codeScanning).blockers);
   return { blockers, retry };
 }
 

@@ -352,13 +352,13 @@ test('已 Approve 路径:CodeQL success 照常挂;分支不受代码扫描规则
   }
 });
 
-test('已 Approve 路径:CodeQL 进行中 / 读不到规则:不挂并标 retry;failure 不挂不标 retry;回执没有 codeScanning 不挂', () => {
+test('已 Approve 路径:CodeQL 进行中 / 读不到规则 / failure / 回执没有 codeScanning:都不挂,都不标 retry(靠 mivo.codeScan 三态让 Mini 唤醒)', () => {
   const running = codeql({ status: 'in_progress', conclusion: null, completedAt: null });
-  for (const [name, codeScanning, code, retry] of [
-    ['进行中', scanning([running]), 'code-scanning-pending', true],
-    ['规则读不到', { rules: null, rulesError: 'HTTP 502', checks: [codeql()] }, 'code-scanning-unverified', true],
-    ['failure', scanning([codeql({ conclusion: 'failure', title: '2 new alerts' })]), 'code-scanning-failed', false],
-    ['没有字段', undefined, 'code-scanning-not-reported', false],
+  for (const [name, codeScanning, code] of [
+    ['进行中', scanning([running]), 'code-scanning-pending'],
+    ['规则读不到', { rules: null, rulesError: 'HTTP 502', checks: [codeql()] }, 'code-scanning-unverified'],
+    ['failure', scanning([codeql({ conclusion: 'failure', title: '2 new alerts' })]), 'code-scanning-failed'],
+    ['没有字段', undefined, 'code-scanning-not-reported'],
   ]) {
     const { codeScanning: _drop, ...rest } = PASS_GATES;
     const env = setup({ verified: true, preMerge: codeScanning === undefined ? rest : { ...rest, codeScanning } });
@@ -367,7 +367,7 @@ test('已 Approve 路径:CodeQL 进行中 / 读不到规则:不挂并标 retry;f
       const result = publish(env, gh);
       assert.equal(addedLabel(gh.calls()), false, name);
       assert.deepEqual(result.mivo.labelWithheld.map((b) => b.code), [code], name);
-      assert.equal(result.retry === true, retry, name);
+      assert.notEqual(result.retry, true, `${name}:代码扫描门不标 retry`);
     } finally { rmSync(env.root, { recursive: true, force: true }); }
   }
 });

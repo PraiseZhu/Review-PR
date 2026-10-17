@@ -679,17 +679,20 @@ test('挂标前复核:#1025 的情形(CodeQL neutral / configuration not found)�
   assert.equal(r.retry, false, '要人重跑 CodeQL,靠指纹变化唤醒,不能每轮重新派发');
 });
 
-test('挂标前复核:CodeQL failure 不挂;进行中 / 缺失(刚跑完)/ 读不到 不挂并标 retry', () => {
+test('挂标前复核:CodeQL failure / 进行中 / 读不到都不挂,且都不标 retry(等结果由 Mini 的 wakeCodeScanPrs 唤醒,不靠每轮重新派发)', () => {
   const run = (check) => toMergeReadyGateBlockers({ ...PASS, codeScanning: { rules: SCAN_RULES, rulesError: null, checks: check ? [check] : [] } });
   const failed = run({ ...CODEQL, conclusion: 'failure', title: '2 new alerts' });
   assert.deepEqual(failed.blockers.map((b) => b.code), ['code-scanning-failed']);
   assert.equal(failed.retry, false);
   const pending = run({ ...CODEQL, status: 'in_progress', conclusion: null, completedAt: null });
   assert.deepEqual(pending.blockers.map((b) => b.code), ['code-scanning-pending']);
-  assert.equal(pending.retry, true);
+  assert.equal(pending.retry, false, '标 retry 会让 Mini 每 3 分钟重派一次,dailyCap=30');
+  assert.deepEqual(run(null).blockers.map((b) => b.code), ['code-scanning-missing']);
   const unread = toMergeReadyGateBlockers({ ...PASS, codeScanning: { rules: null, rulesError: 'HTTP 502', checks: [CODEQL] } });
   assert.deepEqual(unread.blockers.map((b) => b.code), ['code-scanning-unverified']);
-  assert.equal(unread.retry, true);
+  assert.equal(unread.retry, false);
+  // 原有的读不到(整份 preMerge 缺失 / thread 没读全)仍标 retry,不受影响
+  assert.equal(toMergeReadyGateBlockers(null).retry, true);
 });
 
 test('挂标前复核:回执没有 codeScanning 字段一律不挂(脚本版本对不上);与其它拦截项并存时各自列出', () => {
