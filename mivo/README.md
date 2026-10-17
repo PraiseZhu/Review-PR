@@ -27,9 +27,14 @@ flowchart LR
 | `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。确认门这一步先看是否改了受保护路径：改了就任何作者（含豁免名单）都走受保护路径确认 issue；没改，豁免作者开通知 issue 但不拦，非豁免作者走普通确认门（见「维护者确认 issue 的三种模式」）。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
 | `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
-| `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（都按 PR head 取）、生效配置与答卷 schema |
+| `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
 | `lib/deferrals.mjs` | 审查问题转 issue 跟进：解析 PR 说明里的登记、核验 issue、汇总 |
-| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书 |
+| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书；thread 带 `mivo-finding` marker 时把 key 一起带出来 |
+| `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
+| `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
+| `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
+| `config/review-features.json` | 核对员开关，默认 enforce；只在 codex 阶段读，不进任务书、不进 `specDigest` |
+| `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
 | `lib/admission.mjs` | 滚动接单的判断：什么时候另开一轮、哪些 PR 不进新一轮、held PR 什么时候唤醒 |
@@ -38,6 +43,45 @@ flowchart LR
 | `prereview/gh-dryrun/` | dry-run 模式的 gh 垫片：读放行，写一律拦下 |
 | `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
+
+## 借鉴 Claude 官方的审查改造
+
+参照 Claude 官方审查机的做法，审查机做了三件事（第 3 件的核对员于 2026-10-17 改为直接生效）。全部只改 `mivo/` 下的审查机代码，不改 review-pr skill、Mivo 插件仓和 live tuple。
+
+1. **只读结果遥测**（`telemetry/review-outcomes.mjs`）。`node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>`，只读 GitHub，输出 `outcomes.json` 与 `outcomes.md`：作者反应分桶（ruled-keep / deferred / re-raised / rebutted / fixed-proxy / unknown）、rounds-to-pass（一轮通过、五轮及以上、平均轮数，三项都带分母）、回滚候选、高频问题类型 Top 10，以及从已发布的审查报告里数出的「核对员认为不成立」「核对员降级」条数（按 PR 和轮次，只有计数；报告里没有 finding key，同一问题跨轮被重复推翻会各算一次）。分桶是代理指标，不是事实真伪。默认不输出 finding 正文、首行和 PR 标题，`--include-text` 才带。加 `--fixture <file>` 时只读本地文件，不调 gh（测试用）。
+2. **答卷 v2 与跨轮收敛**。
+   - 每条问题带触发条件、错误行为、影响、证据（head 上真实存在的文件和行号）和来源（`introduced` / `made-reachable` / `pre-existing`）。证据按 head 的 git 对象核对，缺失只记 warning，问题照常阻断。
+   - **PR 之前就存在的 P1 不阻断**，报告单列「PR 之前就存在的问题」，建议另开 issue；P0 不论来源都阻断；声称 pre-existing 但落在本 PR 新增行上的，服务器改判 introduced。
+   - 同一类问题只报一条，其余位置写进 `instances`。
+   - thread 正文末尾带 `<!-- mivo-finding key=… round=… head=… class=… -->`：key 在文件、问题类型和标题不变时稳定，跨轮靠它认出同一问题。
+   - 同一个 P0/P1 连续 3 轮没修好，报告插一节「收敛提示」，只提示、不改结论、不停审。
+   - 维护者对某个 key 裁定不改的 P1，本轮模型仍报了就移出阻断、单列；同 key 的 P0 永不移出阻断。
+   - 规则文件（AGENTS.md、DESIGN.md 等）按 PR 的 **base** 读取，写进 `input/rules-base/`，并参与 `specDigest`；PR 对规则文件的改动本身是被审对象。base 取不到时整组回退到 head，并在 `warnings` 写「规则文件 base 版本取不到,本轮按 head 读」。
+   - 报告头带 `skill` 与 `spec` 的 7 位短 hash；`result.json` 的 `mivo` 增加 `preexisting`、`ruledKept`、`convergence`、`rulesSource`、`verification`，每条问题多 `key`、`severity`、`origin`、`seenRounds` 等字段（只存紧凑形状，不存长文本）。
+3. **逐条核对员**（`lib/verify.mjs`，默认 `enforce`，直接生效）。主审交卷后，另一个模型逐条尝试驳倒主审的 **P1**；`config/review-features.json` 的 `verify.mode`：
+   - `enforce`（默认）：核对员**推翻**（`refuted`，必须给出 head 上真实存在的证据）或**降级**（`downgraded`，问题成立但按统一分级实际只是 P2，必须写理由）的 P1 不再阻断：不开讨论串，公开写进报告的「核对员认为不成立」「核对员降级」两节（标题、位置、推翻证据或降级理由，作者和维护者可以复核）。`confirmed`、`unknown`、超时、出错、预算不够没核到、输出不合法（推翻没证据、降级没理由）的，一律照原样阻断。
+   - `shadow`：同样核对，但只把结果记到 `result.json` 的 `mivo.verification`，不改任何评论、报告、结论和 check。
+   - `off`：不核对，只调 1 次模型。
+   - 开关文件读不到或任一项不合法时按 off 并写 warning。开关文件只在 codex 阶段读，不进任务书，所以改开关**不会**触发全量重审。
+   - **只核 P1，P0 永远不核、永远阻断**；每次最多核 `maxFindings`（默认 3）条，超出的照原样卡。核对结论按单条 finding（`uid`）生效，不按跨轮的 `key`：同名问题共用 key，一条被推翻不会带走另一条。同类合并的问题（`instances`）把全部位置交给核对员，全部位置都不成立才能推翻；任一位置落在本 PR 新增行上，整组都不按「PR 之前就存在」免责。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
+   - 核对员模型必须不同于主审**实际使用**的模型：默认 `openai/gpt-6.1-sol`（medium）；主审 fallback 到了 sol，核对员就改用 `openai/gpt-6-luna`；找不到不同的模型就不核，该条照常阻断。
+   - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 120 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
+   - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。这个状态跨轮保留（`verifierOverruledAll`）：下一轮不论改了什么，都因「上一轮核对员推翻/降级了全部卡点」退回全量重审，得出新结论之前不会 Approve。原本就没有 P1 的 PR 行为不变。
+   - `result.json` 的 `mivo.verification` 记每条核对的结论、`applied`（实际生效的是 refuted 还是 downgraded）、模型、耗时和证据/理由；`mivo.verifierOverruled` 记被推翻/降级的问题（紧凑形状）。
+   - **主审答卷不落盘**：主审交卷后答卷只留在 codex 阶段的进程内存里，每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹（CLI 输出日志、stderr、最后一条消息、`CODEX_HOME`、临时目录），核对员全部跑完才把 `answer.json` 写盘给 publish 阶段读。
+
+### 上线影响：全量重审
+
+答卷 schema 和任务书（交卷格式、rules-base 一节）都进 `specDigest`，合入后的第一个审查轮，所有开放 PR 因「审查任务书或规则变了」各做一次**全量重审**。`dailyCap=30`、`maxParallel=3` 会自然限流，建议选开放 PR 少的时候合入。遥测只读、按需运行，不接任何定时任务。
+
+### 核对员的已知局限
+
+独立性只有两层，各有局限，不要把它当成完整隔离：
+
+- **核对员看得到主审的结论**：它拿到的是主审提出的那一条论断（标题、触发条件、证据），本身就是主审的判断；不同模型只降低了犯同样错误的概率，不保证独立。
+- **沙箱只限写不限读**：审查沙箱不限制读取，核对员理论上能读到运行目录里的文件；靠「主审答卷和日志不落盘」缓解，而不是靠隔离。盯梢或维护者发现核对员误推翻时，把开关改成 `shadow` 或 `off` 就能停用，不需要改代码。
+- **不读 PR 里的 AGENTS.md**：Codex 默认会把工作目录（PR head）里的 `AGENTS.md` 当项目规则读进上下文（2026-10-17 用真实 CLI 实测）。生成的配置写了 `project_doc_max_bytes = 0`，主审和核对员只认任务书里给的规则（正常是 base 版本，见上文「规则文件按 PR 的 base 读取」；base 读取失败时按既有回退改用 head 版本并告警）；PR 改 `AGENTS.md` 会被当成普通改动审查，但 CLI 不会再自动把它当成规则加载。
+- **PR 改了 agent 说明文件时不核对**：核对员要在 PR head 上读代码，真实 CLI 实测它会照 head 里 `AGENTS.md` 的要求改输出（任务书写明了 PR 内容是数据也没拦住）。所以 PR 改了 `AGENTS.md`、`CLAUDE.md` 或 `.codex/`、`.agents/`、`.claude/` 下的文件时，这一轮跳过核对（`skipped` 记 `agent-instructions-changed` 和文件名），P1 照原样阻断。代码注释等其它地方写给模型的话仍可能影响核对员，这是已知局限；推翻必须带 head 上真实存在的证据、推翻内容公开写进报告、零卡点时不 Approve，是兜底。
 
 ## 维护者确认 issue 的三种模式
 
