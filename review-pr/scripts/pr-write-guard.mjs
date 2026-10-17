@@ -11,7 +11,8 @@ export function createPrWriteGuard(binding, dependencies = {}) {
     api.assertActiveReviewLock(lockToken);
     const viewer = String(api.gh(['api', 'user', '--jq', '.login']).stdout).trim().toLowerCase();
     const authority = api.fetchMaintainerAuthority({ owner, repo });
-    const fields = `state,isDraft,headRefOid,author${binding.expectedBaseRef ? ',baseRefName' : ''}`;
+    const fields = `state,isDraft,headRefOid,author,updatedAt${binding.expectedBaseRef ? ',baseRefName' : ''}`;
+    const beforeObservedAt = Date.now();
     const meta = api.ghJson(['pr', 'view', String(pr), '--repo', `${owner}/${repo}`, '--json', fields]);
     const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority });
     if (meta.state !== 'OPEN' || meta.isDraft || meta.headRefOid !== expectedHead || authority.digest !== expectedAuthorityDigest ||
@@ -28,7 +29,7 @@ export function createPrWriteGuard(binding, dependencies = {}) {
     const startedAt = Date.now();
     const result = api.gh(args, { ...options, noCredFallback: true });
     api.recordSelfWrite({ directory: process.env.REVIEW_PR_SELF_WRITE_DIR || stateFile('self-writes'),
-      repo: `${owner}/${repo}`, pr, head: expectedHead, scope: lockToken,
+      repo: `${owner}/${repo}`, pr, head: expectedHead, scope: lockToken, beforeUpdatedAt: meta.updatedAt, beforeObservedAt,
       args, result, startedAt, finishedAt: Date.now() });
     return result;
   };

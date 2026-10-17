@@ -4,7 +4,7 @@ import { validateApprovalDisposition } from './approval-state.mjs';
 import { MERGE_RETRY_VERSION, legacyMergeRetryDue } from './merge-retry.mjs';
 import { formatLocalIso } from './local-time.mjs';
 import { evaluateFixDispatch, FIX_WATCHDOG_MS } from './fix-session-state.mjs';
-import { writeSecond } from './self-write-receipts.mjs';
+import { writeSecond, selfWriteChainMatches } from './self-write-receipts.mjs';
 export { explicitDependencies } from './review-dependencies.mjs';
 export { FIX_WATCHDOG_MS };
 
@@ -234,8 +234,7 @@ function onlyOwnWritesBumpedUpdatedAt(previous, material) {
   if (!fields || typeof fields !== 'object' || Array.isArray(fields) || updatedAt === null) return false;
   const { baseline, changedFields } = fingerprintMaterialDiff(fields, material);
   return baseline === 'available' && changedFields.length === 1 && changedFields[0] === 'updatedAt' &&
-    Array.isArray(previous.selfWriteReceipts) && previous.selfWriteReceipts.some((receipt) =>
-      receipt?.head === material.head && writeSecond(receipt.updatedAt) === updatedAt);
+    selfWriteChainMatches(previous.selfWriteReceipts, fields.updatedAt, material.updatedAt, material.head);
 }
 
 export function fingerprintMaterialDiff(previous, current) {
@@ -544,7 +543,8 @@ export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
     prs[result.pr] = { fingerprint: observation.fingerprint,
       fingerprintFields: observation.material,
       selfWriteReceipts: (Array.isArray(result.selfWriteReceipts) ? result.selfWriteReceipts : [])
-        .filter((receipt) => receipt?.repo === plan.repo && receipt.pr === result.pr && receipt.head === original.head && writeSecond(receipt.updatedAt) !== null),
+        .filter((receipt) => receipt?.repo === plan.repo && receipt.pr === result.pr && receipt.head === original.head &&
+          writeSecond(receipt.beforeUpdatedAt) !== null && writeSecond(receipt.updatedAt) !== null),
       dependencyPrs, checkedAt: formatLocalIso(now), outcome: result.outcome, reason: result.reason,
       ...(result.outcome === 'merge-blocked' ? { mergeRetryVersion: MERGE_RETRY_VERSION } : {}),
       ...(result.fixHandoff ? { fixHandoff: result.fixHandoff } : {}),

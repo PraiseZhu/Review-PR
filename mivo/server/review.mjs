@@ -864,11 +864,12 @@ function addMergeReady(state, result) {
   const input = state.input;
   run('gh', ['api', '--method', 'POST', `repos/${input.targetRepo}/labels`, '-f', `name=${MERGE_READY_LABEL}`, '-f', 'color=0E8A16',
     '-f', 'description=Mivo 自动审查:当前 head 审查通过'], { cwd: REPO_DIR, allowFail: true });
+  const beforeObservedAt = Date.now();
   const meta = JSON.parse(gh(['api', `repos/${input.targetRepo}/pulls/${input.pr}`]).stdout);
   if (meta.head?.sha !== input.head) { result.warnings.push('加 review:merge-ready 前 head 已变化,不加标签'); return; }
   // 已有就不再 POST:重复加同一个标签不留事件,但会刷新 PR 的 updatedAt,下一轮指纹就变了,会一直重审。
   if ((meta.labels ?? []).some((label) => label?.name === MERGE_READY_LABEL)) return;
-  const r = recordedPrWrite(state, ['api', '--method', 'POST', `repos/${input.targetRepo}/issues/${input.pr}/labels`, '-f', `labels[]=${MERGE_READY_LABEL}`], { cwd: REPO_DIR, allowFail: true });
+  const r = recordedPrWrite(state, ['api', '--method', 'POST', `repos/${input.targetRepo}/issues/${input.pr}/labels`, '-f', `labels[]=${MERGE_READY_LABEL}`], { cwd: REPO_DIR, allowFail: true }, { beforeUpdatedAt: meta.updated_at ?? null, beforeObservedAt });
   if (!r.ok) result.warnings.push(`review:merge-ready 标签没加上:${r.stderr.trim().slice(0, 200)}`);
 }
 
@@ -911,11 +912,19 @@ function writeBareError(reason) {
   return writeResult(result);
 }
 
-function recordedPrWrite(state, args, options) {
+function recordedPrWrite(state, args, options, observation) {
+  if (observation === undefined) {
+    const beforeObservedAt = Date.now();
+    try {
+      const read = gh(['api', `repos/${state.input.targetRepo}/pulls/${state.input.pr}`], { allowFail: true });
+      const meta = read.ok ? JSON.parse(read.stdout) : null;
+      observation = { beforeUpdatedAt: meta?.head?.sha === state.input.head ? meta.updated_at : null, beforeObservedAt };
+    } catch { observation = { beforeUpdatedAt: null, beforeObservedAt }; }
+  }
   const startedAt = Date.now();
   const response = run('gh', args, options);
   recordSelfWrite({ directory: join(WORK, 'self-writes'), repo: state.input.targetRepo,
-    pr: state.input.pr, head: state.input.head, scope: state.lockToken,
+    pr: state.input.pr, head: state.input.head, scope: state.lockToken, ...observation,
     args, result: response, startedAt, finishedAt: Date.now() });
   return response;
 }

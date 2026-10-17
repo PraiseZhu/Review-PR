@@ -52,7 +52,7 @@ process.exit(2);
   return root;
 }
 
-function fakeGh(dir) {
+function fakeGh(dir, { failSnapshot = false } = {}) {
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   const log = join(dir, 'gh-calls.jsonl');
@@ -62,9 +62,10 @@ const args = process.argv.slice(2);
 let input = '';
 try { input = fs.readFileSync(0, 'utf8'); } catch {}
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input }) + '\\n');
+if (${JSON.stringify(failSnapshot)} && args[1] === 'repos/o/r/pulls/7' && fs.readFileSync(${JSON.stringify(log)}, 'utf8').trim().split('\\n').filter((line) => JSON.parse(line).args[1] === 'repos/o/r/pulls/7').length === 1) { process.stderr.write('snapshot read failed'); process.exit(1); }
 if (args.includes('--paginate')) { process.stdout.write('[[]]'); process.exit(0); }
 if (args.includes('DELETE')) { process.stderr.write('HTTP 404 Label does not exist'); process.exit(1); }
-if (args.length === 2 && args[0] === 'api' && args[1] === 'repos/o/r/pulls/7') { process.stdout.write(JSON.stringify({ head: { sha: ${JSON.stringify(SHA)} }, labels: [] })); process.exit(0); }
+if (args.length === 2 && args[0] === 'api' && args[1] === 'repos/o/r/pulls/7') { process.stdout.write(JSON.stringify({ head: { sha: ${JSON.stringify(SHA)} }, labels: [], updated_at: new Date(Date.now() - 1000).toISOString() })); process.exit(0); }
 process.stdout.write(JSON.stringify({ id: 5, updated_at: new Date().toISOString() }));
 `);
   chmodSync(join(bin, 'gh'), 0o755);
@@ -116,6 +117,17 @@ const reportComments = (calls) => calls.filter((c) => c.args.includes('repos/o/r
 const checkBodies = (calls) => calls.filter((c) => c.args.includes('repos/o/r/check-runs/99')).map((c) => JSON.parse(c.input));
 const addedLabel = (calls) => calls.some((c) => c.args.includes('labels[]=review:merge-ready'));
 const removedLabel = (calls) => calls.some((c) => c.args.includes('DELETE') && c.args.some((a) => /issues\/7\/labels\//.test(a)));
+
+test('自写前 REST GET 失败不拦原本发布,但不生成该次自写回执', () => {
+  const env = setup({ failures: [AUTHOR, THREADS] });
+  const gh = fakeGh(env.work, { failSnapshot: true });
+  try {
+    const result = publish(env, gh);
+    assert.equal(reportComments(gh.calls()).length, 1);
+    assert.equal(result.outcome, 'merge-blocked');
+    assert.deepEqual(result.selfWriteReceipts, []);
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
+});
 
 test('作者自批是唯一拦截项:评论发报告、挂 review:merge-ready、review-pr 写 success(原有行为不变)', () => {
   const env = setup({ failures: [AUTHOR] });

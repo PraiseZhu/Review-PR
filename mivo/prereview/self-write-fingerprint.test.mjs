@@ -50,7 +50,8 @@ test('审查机自己的写动作只改 updatedAt 时不再选中同一个 head;
   const manifest = createCandidateList({ repo: 'o/r', snapshot: rows, now: before });
   const plan = makeReviewPlan(manifest, contexts(rows));
   const payload = collectRoundResults(plan, [{ ...result(plan, plan.groups[0].prs[0], 'ci-pending'),
-    selfWriteReceipts: [{ repo: 'o/r', pr: 1, head: rows[0].head, updatedAt: new Date(now - 5000).toISOString() }] }]);
+    selfWriteReceipts: [{ repo: 'o/r', pr: 1, head: rows[0].head,
+      beforeUpdatedAt: rows[0].updatedAt, updatedAt: new Date(now - 5000).toISOString() }] }]);
   const state = nextRoundState(plan, payload, {}, now);
   const select = (data, saved = state, time = now + 1000) => createCandidateList({ repo: 'o/r', snapshot: data, state: saved, now: time });
   const own = [{ ...rows[0], updatedAt: new Date(now - 5000).toISOString() }];
@@ -77,6 +78,15 @@ test('审查机自己的写动作只改 updatedAt 时不再选中同一个 head;
   const noFields = { ...state, prs: { 1: { ...state.prs[1], fingerprintFields: undefined } } };
   assert.equal(wake({}, noChecked), 1, '没有自写回执的旧状态无法确认,照旧唤醒');
   assert.equal(wake({}, noFields), 1, '没有字段明细的旧状态无法确认,照旧唤醒');
+  const afterAuthor = nextRoundState(plan, { ...payload, processed: [{ ...payload.processed[0],
+    selfWriteReceipts: [{ ...payload.processed[0].selfWriteReceipts[0],
+      beforeUpdatedAt: new Date(now - 10000).toISOString() }] }] }, {}, now);
+  assert.equal(wake({}, afterAuthor), 1, '作者10:00:05改说明、机器10:00:10发评论,自写不能盖掉外部变化');
+  const legacyReceipt = { ...payload.processed[0].selfWriteReceipts[0] };
+  delete legacyReceipt.beforeUpdatedAt;
+  const legacyState = nextRoundState(plan, { ...payload, processed: [{ ...payload.processed[0],
+    selfWriteReceipts: [legacyReceipt] }] }, {}, now);
+  assert.equal(wake({}, legacyState), 1, '旧回执缺少写前观察值不能归属');
   for (const patch of [{ repo: 'other/r' }, { pr: 2 }, { head: 'b'.repeat(40) }]) {
     const receipt = { ...payload.processed[0].selfWriteReceipts[0], ...patch };
     const mismatched = nextRoundState(plan, { ...payload,
