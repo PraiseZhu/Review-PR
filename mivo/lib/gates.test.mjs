@@ -94,19 +94,19 @@ test('受保护路径:作者是维护者/豁免名单(#971)开 notice issue 并�
 });
 
 test('受保护路径:维护者作者存量 hold 住的 protected issue 下一轮自动放行并关掉,不留无人管的 open issue', () => {
-  const stored = maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'OPEN', mode: 'protected' }, labels: { hasAnyLabel: true } } });
+  const stored = maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' }, labels: { hasAnyLabel: true } } });
   const d = decideGate(stored);
   assert.equal(d.outcome, 'protected');
   assert.deepEqual(d.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
   assert.deepEqual(d.autoRelease, { by: 'praisezhu' });
   // 没有残留标签也要关 issue
-  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'OPEN', mode: 'protected' } } })).actions,
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' } } })).actions,
     [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
   // 更早的普通确认 issue(没有模式标记)还开着:同样是无人管的 open issue,一并关掉
-  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'OPEN', mode: 'normal' } } })).actions,
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'OPEN', mode: 'normal' } } })).actions,
     [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
   // protected issue 已经被人关了:不再动
-  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'CLOSED', mode: 'protected' } } })).actions, []);
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'CLOSED', mode: 'protected' } } })).actions, []);
   // 放行成立后派服务器写 review-pr
   assert.deepEqual(toProtectedDispatch({ decision: d, protectedPath: stored.protectedPath, checkDone: false }), { dispatch: true, closeIssue: false });
 });
@@ -439,24 +439,24 @@ test('自动放行的作者提醒回执:deduplicated + 指纹,不发评论;能�
 });
 
 test('toAutoReleaseCloseComment:关闭存量 protected issue 时留一句说明', () => {
-  const body = toAutoReleaseCloseComment({ pr: 1037, url: 'https://github.com/o/r/pull/1037', by: 'PraiseZhu' });
+  const body = toAutoReleaseCloseComment({ pr: 2001, url: 'https://github.com/o/r/pull/2001', by: 'PraiseZhu' });
   assert.match(body, /作者为维护者，按新规则自动放行/);
   assert.match(body, /@PraiseZhu/);
-  assert.match(body, /关联 PR:#1037/);
+  assert.match(body, /关联 PR:#2001/);
   assert.match(body, /本 issue 由 review-pr 流程自动关闭/);
 });
 
 test('toSignoffReleaseArgs:自动放行的关 issue 动作带说明文案文件;绑定校验失败时不带 --close-issue 也不带文案', () => {
   const action = { script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } };
-  const held = { issueUrl: 'https://github.com/o/r/issues/1054', issueNumber: 1054 };
-  const ok = toSignoffReleaseArgs({ action, pr: 1037, held, heldIssue: { number: 1054, state: 'OPEN', mode: 'protected' }, bindings, payloadFile: '/r/close.json' });
-  assert.deepEqual(ok.args, ['1037', '--labels-only', '--close-issue', '--payload-file', '/r/close.json', ...bindings]);
-  const forged = toSignoffReleaseArgs({ action, pr: 1037, held, heldIssue: { number: 1054, state: 'OPEN', mode: 'protected', releaseUntrusted: 'issue-not-bound' }, bindings, payloadFile: '/r/close.json' });
-  assert.deepEqual(forged.args, ['1037', '--labels-only', ...bindings]);
+  const held = { issueUrl: 'https://github.com/o/r/issues/2002', issueNumber: 2002 };
+  const ok = toSignoffReleaseArgs({ action, pr: 2001, held, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' }, bindings, payloadFile: '/r/close.json' });
+  assert.deepEqual(ok.args, ['2001', '--labels-only', '--close-issue', '--payload-file', '/r/close.json', ...bindings]);
+  const forged = toSignoffReleaseArgs({ action, pr: 2001, held, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected', releaseUntrusted: 'issue-not-bound' }, bindings, payloadFile: '/r/close.json' });
+  assert.deepEqual(forged.args, ['2001', '--labels-only', ...bindings]);
   assert.match(forged.warning, /issue-not-bound/);
   // 非自动放行的动作不受影响
-  assert.deepEqual(toSignoffReleaseArgs({ action: closeAction, pr: 1037, held, heldIssue: { number: 1054, state: 'OPEN', mode: 'protected' }, bindings, payloadFile: '/r/close.json' }).args,
-    ['1037', '--labels-only', '--close-issue', ...bindings]);
+  assert.deepEqual(toSignoffReleaseArgs({ action: closeAction, pr: 2001, held, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' }, bindings, payloadFile: '/r/close.json' }).args,
+    ['2001', '--labels-only', '--close-issue', ...bindings]);
 });
 
 test('接线:Mini 与服务器只读 context 的 protectedPath.released;说明文案经 payload 文件走 signoff-release/signoff-hold', () => {
@@ -487,11 +487,11 @@ test('接线:自动放行上线时,已 hold 的 protected 记录再被唤醒一�
   assert.match(round, /function wakeProtectedHoldOnce\(markerName/);
   assert.match(round, /'protected-hold-wake\.json'/);
   assert.match(round, /'protected-author-release-wake\.json'/);
-  // 存量维护者 PR(如 #1037)outcome=protected,指纹没变:toProtectedHoldWake 把它们标 retry 一次
-  const roundState = { prs: { 1037: { outcome: 'protected', head: 'h' }, 1040: { outcome: 'review', head: 'h2' } } };
+  // 存量维护者 PRoutcome=protected,指纹没变:toProtectedHoldWake 把它们标 retry 一次
+  const roundState = { prs: { 2001: { outcome: 'protected', head: 'h' }, 2003: { outcome: 'review', head: 'h2' } } };
   const wake = toProtectedHoldWake({ roundState, alreadyDone: false });
-  assert.deepEqual(wake.wake, [1037]);
-  assert.equal(wake.next.prs[1037].retry, true);
-  assert.equal(wake.next.prs[1040].retry, undefined);
+  assert.deepEqual(wake.wake, [2001]);
+  assert.equal(wake.next.prs[2001].retry, true);
+  assert.equal(wake.next.prs[2003].retry, undefined);
   assert.deepEqual(toProtectedHoldWake({ roundState, alreadyDone: true }).wake, []);
 });

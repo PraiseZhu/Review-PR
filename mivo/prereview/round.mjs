@@ -277,7 +277,7 @@ function isGithubRateLimited(server) {
 
 // #68 上线前 outcome=protected 的 round-state 指纹没变,会被 pre-check 当成 unchanged。
 // 只给这些 PR 标 retry 一次,不清空缓存、不让全部 PR 重审。标记写在 Mini 本机 mivo 状态目录。
-// 「作者为维护者自动放行」上线时同理:已 hold 住的维护者受保护路径 PR(如 #1037)指纹没变,要再唤醒一次,
+// 「作者为维护者自动放行」上线时同理:已 hold 住的维护者受保护路径 PR 指纹没变,要再唤醒一次,
 // 用独立的标记文件,不和 #68 那次互相挡。
 function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json') {
   const markerFile = stateFile(markerName);

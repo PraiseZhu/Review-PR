@@ -1174,8 +1174,8 @@ test('通知 issue 关闭文案:受保护路径写准「作者是维护者、自
 });
 
 test('关闭讨论 issue 的说明:默认沿用原文,调用方给了文案就用调用方的', () => {
-  const url = 'https://github.com/o/r/pull/1037';
-  assert.equal(toDiscussIssueCloseBody({ pr: 1037, url }), `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#1037(${url})。本 issue 由 review-pr 流程自动关闭。`);
-  assert.equal(toDiscussIssueCloseBody({ pr: 1037, url, closeCommentBody: '作者为维护者，按新规则自动放行。' }), '作者为维护者，按新规则自动放行。');
-  assert.equal(toDiscussIssueCloseBody({ pr: 1037, url, closeCommentBody: '   ' }), toDiscussIssueCloseBody({ pr: 1037, url }));
+  const url = 'https://github.com/o/r/pull/2001';
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url }), `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#2001(${url})。本 issue 由 review-pr 流程自动关闭。`);
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '作者为维护者，按新规则自动放行。' }), '作者为维护者，按新规则自动放行。');
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '   ' }), toDiscussIssueCloseBody({ pr: 2001, url }));
 });

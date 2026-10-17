@@ -69,7 +69,7 @@ flowchart LR
 - 「作者是不是维护者」只在 `context.mjs` 判一次：`protectedPath.released` 直接成立（`via=author-maintainer`，指纹 `author-maintainer:<login>`）。Mini 判门和服务器 `prepareProtectedApprove` 都只读这个结果，各自不另写判断。别的维护者在当前 head 上 Request Changes 时仍然交作者，不放行。
 - Mini 开 notice issue（`--kind protected --signoff-mode notice`，每个 PR 一次，建完即关），不挂标签，不给作者发「转人工审核」提醒，作者提醒回执记 `deduplicated`。随后派 `protected-approve`，服务器写 `review-pr` check，标题「受保护路径：作者为维护者，自动放行」，不送模型审查。
 - 一个 PR 只通报一次：这个 PR 之前已经开过别的类别的 notice issue 时，后来才改到受保护路径不会再开第二个。
-- 存量：此前已经按人工审核 hold 住的维护者 PR（`protected` 模式或更早的普通模式确认 issue 仍 OPEN，如 Mivo #1037 / issue #1054），下一轮由 `signoff-release --labels-only --close-issue` 关掉并留一句「作者为维护者，按新规则自动放行」，再照常写 `review-pr`。`round.mjs` 会用独立标记文件 `protected-author-release-wake.json` 把已有的 `outcome=protected` 记录再唤醒一次，不然指纹没变会被当成 unchanged 跳过。
+- 存量：此前已经按人工审核 hold 住的维护者 PR（`protected` 模式或更早的普通模式确认 issue 仍 OPEN），下一轮由 `signoff-release --labels-only --close-issue` 关掉并留一句「作者为维护者，按新规则自动放行」，再照常写 `review-pr`。`round.mjs` 会用独立标记文件 `protected-author-release-wake.json` 把已有的 `outcome=protected` 记录再唤醒一次，不然指纹没变会被当成 unchanged 跳过。
 - 一致性：Mini 的 `verifySkillPin` 要求本机 skill 检出等于仓库变量 `MIVO_REVIEW_SKILL_SHA`，服务器 workflow 按同一变量取 tarball；两边读同一份 `review-pr/config/pr-rules.json`（生产的 Mini 实例没有 `rulesFile` 覆盖，只有 target 仓不是 workflow 仓的沙箱才用 `sandbox-pr-rules.json`），所以 `exemptAuthors` 不用进 authority digest。
 
 非维护者作者的受保护路径 PR 的流程（不变）：
