@@ -434,9 +434,9 @@ async function codex() {
     let instructionFiles = [];
     if (cfg.mode === 'off') state.verification = { mode: 'off', items: [], skipped: [] };
     else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'tier' }] };
-    else if ((instructionFiles = agentInstructionFiles(Object.keys(splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'))))).length) {
+    else if ((instructionFiles = agentInstructionFiles(readFileSync(state.context.diffFile, 'utf8'))).length) {
       // PR 改了给 agent 看的说明文件:核对员会在 head 上读到它们并可能照做,这一轮不核对,P1 照原样阻断
-      state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'agent-instructions-changed', files: instructionFiles }] };
+      state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'agent-instructions-changed', lines: instructionFiles }] };
     } else {
       const classified = classifyAnswer(state, ctx, answer);
       const headReader = headReaderFor(state.input.head);
