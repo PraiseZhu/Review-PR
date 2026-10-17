@@ -3,6 +3,7 @@
 // 受保护路径 / CI / 冲突 / 他人 CR / bot 静默期 / rebase → 送审。唯一调整:凭证硬命中排在最前,
 // 与 context.mjs 的 auto 分流和 review-pr SKILL「凭证与隐私门最先执行」一致(泄露越早打回越早轮换)。
 // 输入是 context.mjs 的完整输出;输出是「下一步动作」,真正的 GitHub 写入由调用方用 Cindy 脚本执行。
+import { toCodeScanGate, toStaleCodeScanReason } from './code-scan.mjs';
 
 export const KIND_TOPICS = {
   product: '产品 / UI 变更',
@@ -325,6 +326,8 @@ export function toAuthorSelfApproval(approvalResult) {
  * 挂 review:merge-ready 之前按实时门禁复核(2026-10-17 补审):已 Approve 路径用 finish 带回的 preMerge,作者自批路径补跑 pre-merge-check。
  * 只拦确定的负面——CI 失败、conversation 未 resolve、与 base 冲突、head/base 在复核时已变;CI 在跑/awaiting/unknown、机器人没说完、
  * canMerge=false(review-only 下「等维护者 Approve」是常态)都不拦。读不到(缺失、ok:false、thread 没读全)拦并标 retry。
+ * 代码扫描 / 代码质量门(2026-10-18,#1025):目标分支的组织规则要求 CodeQL 时,它必须是明确的 success;neutral(含「configuration not found」)、
+ * failure、进行中、缺失、读不到都不挂(GitHub 自己会挡合并,标签不能先说能合)。判据与 retry 口径见 code-scan.mjs。
  * 拦下后标签由 Mini 在门禁恢复、重新送审时再加回(同 head 沿用结论)。纯函数。
  * @returns {{blockers: Array<{code: string, reason: string}>, retry: boolean}}
  */
@@ -354,6 +357,9 @@ export function toMergeReadyGateBlockers(preMerge) {
   if (preMerge.mergeStateStatus === 'DIRTY' || preMerge.mergeable === 'CONFLICTING') {
     blockers.push({ code: 'conflict', reason: '与 base 有冲突' });
   }
+  const scan = toCodeScanGate(preMerge.codeScanning);
+  blockers.push(...scan.blockers);
+  if (scan.retry) retry = true;
   return { blockers, retry };
 }
 
@@ -367,18 +373,21 @@ const STALE_MERGE_READY_OUTCOMES = new Set([
  * Mini 每轮判门后,review:merge-ready 标签还该不该留。标签的含义是「当前 head/base 的审查回执、CI、安全、讨论和依赖门都过」
  * (pr-rules.json mergeReady._comment),新提交或门禁失效必须撤销。head 变化由调用方另判;这里只看门禁:
  *   - 与 base 有冲突(mergeStateStatus=DIRTY / mergeable=CONFLICTING),不管判门先撞上了哪个卡点;
- *   - 判门停在稳定卡点(见 STALE_MERGE_READY_OUTCOMES)。stage=review(含只剩机器人 thread 的送审)交给服务器的 publishAdvisory。
- * 只用 context 已有字段,不多打 API。GitHub 的 BLOCKED 多半只是「等维护者 Approve」,是带标签 PR 的常态,不算失效。
+ *   - 判门停在稳定卡点(见 STALE_MERGE_READY_OUTCOMES)。stage=review(含只剩机器人 thread 的送审)交给服务器的 publishAdvisory;
+ *   - 代码扫描 / 质量门稳定不通过(2026-10-18,codeScan 是 code-scan.mjs 的 toCodeScanGate 结果):neutral / failure 才摘,
+ *     进行中、缺失、读不到不摘——CodeQL 重跑一次标签就被摘、跑完又加回会来回抖动。
+ * 判门与冲突只用 context 已有字段,不多打 API;codeScan 由调用方在标签挂着时按需读(规则按 base 缓存,check run 一次 REST)。
+ * GitHub 的 BLOCKED 多半只是「等维护者 Approve」,是带标签 PR 的常态,不算失效。
  * @returns {string|null} 失效原因;null = 不摘。
  */
-export function toStaleMergeReadyReason({ decision, meta } = {}) {
+export function toStaleMergeReadyReason({ decision, meta, codeScan = null } = {}) {
   if (meta?.mergeStateStatus === 'DIRTY' || meta?.mergeable === 'CONFLICTING') {
     return `与 base 有冲突(mergeStateStatus=${meta.mergeStateStatus ?? '?'},mergeable=${meta.mergeable ?? '?'})`;
   }
   if (decision?.stage !== 'review' && STALE_MERGE_READY_OUTCOMES.has(decision?.outcome)) {
     return `判门未过:${decision.outcome}${decision.reason ? `(${decision.reason})` : ''}`;
   }
-  return null;
+  return toStaleCodeScanReason(codeScan);
 }
 
 function formatReason(ctx) {

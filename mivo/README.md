@@ -28,6 +28,7 @@ flowchart LR
 | `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
+| `lib/code-scan.mjs` | 挂 `review:merge-ready` 之前的代码扫描 / 代码质量门：读目标分支生效的 `code_scanning` / `code_quality` 规则（`rules/branches/<base>`，Mini 侧按 base 缓存 30 分钟）和 head 上的 check run，规则要求 CodeQL 时它必须是明确的 success；Mini 摘标签只认稳定不通过（见「`review:merge-ready` 的补充规则」末尾） |
 | `lib/deferrals.mjs` | 审查问题转 issue 跟进：解析 PR 说明里的登记、核验 issue、汇总 |
 | `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书；thread 带 `mivo-finding` marker 时把 key 一起带出来 |
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
@@ -190,6 +191,16 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - **挂标签前按实时门禁复核 CI / 讨论 / 冲突**：审查账号不是作者、Approve 已发出时，用 finish 带回的 `preMerge`（`finish` 对 review-only 无条件返回 `reviewed-only`，`canMerge` 只是附带信息，`canMerge=false` 是「等维护者 Approve」的常态，不拦）；作者就是审查账号时，approve 脚本当场只读身份、权限、head/base、讨论和 review，不含 CI 和冲突，所以补跑一次 `pre-merge-check.mjs`。CI 失败、讨论未 resolve、与 base 冲突、head/base 复核时已变就不挂标签、摘掉已有的：已 Approve 路径 check 仍写 success（Approve 已发出，原因记在 `mivo.labelWithheld` 与 warnings），作者自批路径走「送审但不放行」（先复核、后发评论，所以不会先发出带干净报告标记的评论）。CI 在跑、awaiting、unknown 这类瞬态不拦；复核结果缺失或读不全拦下并标 `retry`。门禁恢复后 Mini 重新送审，同 head 沿用结论再把标签加回。
 - **作者自批之外的拦截项（`advisory.blockers`）也算代码干净**：同 head 沿用上一轮结论，不再多跑一轮完整审查。
 - **摘标签后能加回来**：见上文失败重试一节，`attempt` 不再累计成功的派发，旧记录里累计到 9 的 head 自动解开。
+
+代码扫描门（2026-10-18，#1025：`review:merge-ready` 挂上了，GitHub 却因 CodeQL 报「1 configuration not found」挡合并）：
+
+- **标签的含义补一条**：`review:merge-ready` 不只是「当前 head 审查通过、CI / 讨论 / 冲突都过」，目标分支受组织规则集的 `code_scanning`（要求 CodeQL）约束时，head 上的 CodeQL 还必须是明确的 success。GitHub 判不出本 PR 引入的告警（CodeQL check 是 `neutral`，标题「N configuration not found」）就会挡合并，此时标签不挂。
+- **怎么判是否受约束**：`pre-merge-check.mjs` 读一次 `GET repos/<repo>/rules/branches/<base>`（REST，只取 `code_scanning` / `code_quality` 两类），再用已经读过的 head check run（`app.slug`、`output.title` 是这次补进去的字段，不另读）。功能分支这类 base 的规则里没有 `code_scanning`，不要求 CodeQL，也不受影响（例如 base=`feat/automerge-gate` 的 PR 本来就没有 CodeQL check）。解释都在 `lib/code-scan.mjs` 的 `toCodeScanGate`，回执里是 `codeScanning:{rules, rulesError, checks, checksError}`。
+- **CodeQL 的认法**：check 名与规则里的 tool 名相同（不分大小写），且 CodeQL 必须来自 `github-advanced-security`——Actions 里名叫 `CodeQL` 的 job 冒充不了。`success` 放行；`neutral`（含 `skipped` / `stale`）、`failure` 等拦下；`queued` / `in_progress` 等拦下；规则要求但 head 上没有结果也拦下。
+- **代码质量（`code_quality`）**：官方文档里它对应的 check 叫「CodeQL - Code Quality」，但这个仓没启用 Code Quality——近期 PR 的 head 上只有 CodeQL 一个扫描类 check，没有任何质量类 check，PR 照常合并。所以只在 head 上真的出现这类 check（名字含 code quality、不是 Actions job）且规则里有 `code_quality` 时才要求 success，缺失不拦；否则所有 PR 都挂不上标签。以后仓里启用了 Code Quality，这条自动生效。
+- **`retry` 只给会自己变化的状态**：进行中、规则要求的 check 刚好还没出现（别的 check 刚跑完或还在跑，窗口 20 分钟）、读取失败里的瞬态（5xx、限流、超时）标 `retry`。`neutral` / `failure` / 稳定缺失 / 读取失败里的没权限（401、404、`Resource not accessible`）**不标** `retry`：它们要人处理（重跑 CodeQL、修告警、补令牌权限），靠 PR 指纹里的 `mergeStateStatus` / `ci` 变化唤醒重判。标 `retry` 会让 Mini 每 3 分钟重新派发一次服务器审查，`dailyCap=30` 一个卡住的 PR 半天就用完，同 head 还有 20 次完成上限。
+- **已挂标签的摘除**：Mini 判门后，标签还在、审查通过的就是当前 head、也没有别的失效原因时，才读一次规则（按 base 缓存 30 分钟）和该 head 的 check run（一次 REST，不碰 GraphQL）；只有 CodeQL / 质量检查**稳定不通过**（`neutral` / `failure`）才摘。进行中、缺失、读不到都不摘：CodeQL 重跑一次就摘、跑完又加回会来回抖动。摘掉后 CodeQL 变 success，PR 的 `mergeStateStatus` 变化会唤醒重判，服务器沿用结论把标签加回来。
+- **不变的部分**：`review-pr` 这个 check 写不写 success 照旧，它代表审查结论，这次只管标签；GitHub 自己的合并门不受影响。回执里没有 `codeScanning` 字段（脚本和服务器代码版本对不上）按「没读到」处理：不挂标签、不标 `retry`，在 `mivo.labelWithheld` 与 warnings 里写明。
 
 ## 写明的产品意图与维护者裁定不改
 

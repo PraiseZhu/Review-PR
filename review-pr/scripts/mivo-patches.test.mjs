@@ -44,6 +44,8 @@ import { createPrWriteGuard } from './pr-write-guard.mjs';
 
 // 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
 const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mjs');
+// code-scan-gate 新增的导出,同样动态取。
+const { fetchCodeScanRules, toCodeScanCheckFacts } = await import('./lib.mjs');
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
 const bad = (message) => ({ ok: false, stdout: '', stderr: message, status: 1 });
@@ -1362,4 +1364,36 @@ test('关闭讨论 issue 的说明:默认沿用原文,调用方给了文案就�
   assert.equal(toDiscussIssueCloseBody({ pr: 2001, url }), `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#2001(${url})。本 issue 由 review-pr 流程自动关闭。`);
   assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '作者为维护者，按新规则自动放行。' }), '作者为维护者，按新规则自动放行。');
   assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '   ' }), toDiscussIssueCloseBody({ pr: 2001, url }));
+});
+
+// ── code-scan-gate(2026-10-18,#1025):挂 review:merge-ready 之前核代码扫描 / 代码质量门 ──
+test('code-scan-gate:fetchCodeScanRules 只取 code_scanning / code_quality 两类规则,base 分支名做 URL 编码,读不到给原因', () => {
+  const calls = [];
+  const rules = [{ type: 'deletion' }, { type: 'code_scanning', ruleset_id: 9, parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }, { type: 'code_quality', parameters: { severity: 'warnings' } }, { type: 'pull_request', parameters: {} }];
+  const ghFn = (args) => { calls.push(args[1]); return ok(rules); };
+  assert.deepEqual(fetchCodeScanRules('xindong/mivo-canvas-plugin', 'feat/x', { ghFn }), {
+    rules: [{ type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }, { type: 'code_quality', parameters: { severity: 'warnings' } }], error: null });
+  assert.deepEqual(calls, ['repos/xindong/mivo-canvas-plugin/rules/branches/feat%2Fx?per_page=100']);
+  assert.deepEqual(fetchCodeScanRules('o/r', 'main', { ghFn: () => ok([{ type: 'deletion' }]) }), { rules: [], error: null });
+  assert.match(fetchCodeScanRules('o/r', 'main', { ghFn: () => bad('HTTP 404: Not Found') }).error, /404/);
+  assert.equal(fetchCodeScanRules('o/r', 'main', { ghFn: () => bad('HTTP 404: Not Found') }).rules, null);
+  assert.equal(fetchCodeScanRules('o/r', 'main', { ghFn: () => ok({ message: 'x' }) }).rules, null);
+  assert.equal(fetchCodeScanRules('o/r', 'main', { ghFn: () => ({ ok: true, stdout: 'not json', stderr: '' }) }).rules, null);
+  assert.equal(fetchCodeScanRules('o/r', '', { ghFn: () => ok([]) }).rules, null);
+});
+
+test('code-scan-gate:toCodeScanCheckFacts 只留代码扫描门要看的字段,读不到原样给 null', () => {
+  const runs = [{ name: 'CodeQL', integrationId: 57789, appSlug: 'github-advanced-security', title: '1 configuration not found', startedAt: 'a', completedAt: 'b', status: 'completed', conclusion: 'neutral' }, { name: 'x' }];
+  assert.deepEqual(toCodeScanCheckFacts(runs), [
+    { name: 'CodeQL', appSlug: 'github-advanced-security', status: 'completed', conclusion: 'neutral', title: '1 configuration not found', completedAt: 'b' },
+    { name: 'x', appSlug: null, status: null, conclusion: null, title: null, completedAt: null }]);
+  assert.equal(toCodeScanCheckFacts(null), null);
+});
+
+test('code-scan-gate 接线:pre-merge-check.mjs 读规则、复用已读的 check run,输出 codeScanning;不新增 GraphQL', () => {
+  const source = readFileSync(fileURLToPath(new URL('./pre-merge-check.mjs', import.meta.url)), 'utf8');
+  assert.ok(/fetchCodeScanRules\(slug,\s*m\.baseRefName\)/.test(source), '按 PR 的 base 分支读规则');
+  assert.ok(/codeScanning:\s*\{[\s\S]*?rules:\s*codeScanRules\.rules[\s\S]*?rulesError:\s*codeScanRules\.error[\s\S]*?checks:\s*toCodeScanCheckFacts\(checkRunsWithApps\)/.test(source), '回执带规则与已读的 check run');
+  assert.equal((source.match(/fetchCheckRunsWithApps\(/g) ?? []).length, 1, 'check run 只读一次:代码扫描门复用必需检查核对已读的那份');
+  assert.equal((source.match(/ghGraphql\(/g) ?? []).length, 1, '不新增 GraphQL 调用');
 });

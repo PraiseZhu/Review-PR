@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
+import { fetchCodeScanFacts, toCodeScanGate } from '../lib/code-scan.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -918,18 +919,36 @@ function syncDisplayLabels(live, task, result) {
 // 摘掉不再成立的 review:merge-ready。标签只对「审查通过的那个 head、且门禁仍然全过」成立:
 //   - head 变了(审查通过的 head 不是当前 head);
 //   - 门禁失效:与 base 冲突、人工讨论未 resolve 等稳定卡点(判据见 lib/gates.mjs 的 toStaleMergeReadyReason)。
-//     只用本轮判门已经拿到的 context,不多打 API;摘掉后标签不在了,下一轮不会重复 DELETE。
+//     这两类只用本轮判门已经拿到的 context,不多打 API;摘掉后标签不在了,下一轮不会重复 DELETE。
 //     门禁重新全过后,判门回到送审阶段,服务器沿用结论(同 head 走复用)再把标签加回来。
+//   - 代码扫描 / 质量门稳定不通过(CodeQL neutral / failure,2026-10-18 #1025):只在前两类都没发现问题时才读一次
+//     (规则按 base 缓存 30 分钟,head 上的 check run 一次 REST,不碰 GraphQL);进行中、缺失、读不到不摘,避免来回加摘。
 function dropStaleMergeReady(live, task, result, decision) {
   if (!(live.meta?.labels ?? []).includes(MERGE_READY_LABEL)) return;
   const record = loadStore().prs[task.pr];
-  const gateReason = toStaleMergeReadyReason({ decision, meta: live.meta });
-  if (record?.cleanHead === task.head && !gateReason) return;
+  const headMatches = record?.cleanHead === task.head;
+  let gateReason = toStaleMergeReadyReason({ decision, meta: live.meta });
+  if (headMatches && !gateReason) gateReason = toStaleMergeReadyReason({ decision, meta: live.meta, codeScan: readCodeScanGate(task) });
+  if (headMatches && !gateReason) return;
   assertNotFenced();
   const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${task.pr}/labels/${encodeURIComponent(MERGE_READY_LABEL)}`],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
   if (!r.ok && !/404/.test(r.stderr)) result.warnings.push(`review:merge-ready 没摘掉:${r.stderr.trim().slice(0, 200)}`);
   else if (r.ok) log('merge-ready-dropped', { pr: task.pr, head: task.head, reason: gateReason ?? 'head-changed' });
+}
+
+// 代码扫描门的事实:规则按 base 缓存在本机状态目录(code-scan-rules.json),读不到时 toCodeScanGate 给出 unverified,调用方不摘。
+// 这一步只是多一道摘标签的依据:任何意外(缓存文件损坏、gh 起不来)都按「读不到」处理,不影响判门和派发。
+function readCodeScanGate(task) {
+  try {
+    const file = stateFile('code-scan-rules.json');
+    const cache = { get: (key) => readJson(file, {})?.[key] ?? null, set: (key, value) => writeJson(file, { ...readJson(file, {}), [key]: value }) };
+    return toCodeScanGate(fetchCodeScanFacts({ ghFn: (args) => ghRead(args, { allowFail: true }), repo: CONFIG.targetRepo,
+      baseRefName: task.baseRefName, head: task.head, cache }));
+  } catch (error) {
+    log('code-scan-gate-error', { pr: task.pr, head: task.head, error: String(error?.message ?? error).slice(0, 200) });
+    return null;
+  }
 }
 
 // 受保护路径:当前 head 的 review-pr check 是否已经写成 success。放行信号本身由 context 的 protectedPath 给出。

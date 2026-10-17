@@ -1274,6 +1274,8 @@ export function fetchCheckRunsWithApps(slug, headSha) {
     return pages.flatMap((page) => page.check_runs).map((run) => ({
       name: run.name ?? '(unnamed)',
       integrationId: run.app?.id == null ? null : Number(run.app.id),
+      appSlug: run.app?.slug ?? null, // [MIVO-PATCH code-scan-gate]
+      title: run.output?.title ?? null, // [MIVO-PATCH code-scan-gate]
       startedAt: run.started_at ?? null,
       completedAt: run.completed_at ?? null,
       status: run.status ?? null,
@@ -1282,6 +1284,41 @@ export function fetchCheckRunsWithApps(slug, headSha) {
   } catch {
     return null;
   }
+}
+
+/**
+ * [MIVO-PATCH code-scan-gate] 目标分支生效的 code_scanning / code_quality 规则(只读 REST,best-effort)。
+ * 组织规则集要求 CodeQL 时,GitHub 判不出本 PR 引入的告警(CodeQL check 是 neutral)就挡合并;挂 review:merge-ready 前要核这道门。
+ * 只取这两类规则的 {type, parameters},解释在 mivo/lib/code-scan.mjs。读不到返回 {rules: null, error}。
+ */
+export function fetchCodeScanRules(slug, branch, { ghFn = gh } = {}) {
+  if (!branch) return { rules: null, error: '缺少 base 分支名' };
+  const r = ghFn(['api', `repos/${slug}/rules/branches/${encodeURIComponent(branch)}?per_page=100`], { allowFail: true, timeoutMs: 20_000 });
+  if (!r.ok) return { rules: null, error: String(r.stderr || r.stdout || '').trim().slice(0, 200) || 'rules/branches 读取失败' };
+  try {
+    const rules = JSON.parse(r.stdout || '[]');
+    if (!Array.isArray(rules)) return { rules: null, error: 'rules/branches 返回的形状不是数组' };
+    return {
+      rules: rules.filter((rule) => rule?.type === 'code_scanning' || rule?.type === 'code_quality')
+        .map((rule) => ({ type: rule.type, parameters: rule.parameters ?? null })),
+      error: null,
+    };
+  } catch (error) {
+    return { rules: null, error: `rules/branches JSON 解析失败:${error.message}` };
+  }
+}
+
+/** [MIVO-PATCH code-scan-gate] head 上的 check run → 代码扫描门要看的字段;读不到(null)原样返回 null。 */
+export function toCodeScanCheckFacts(checkRuns) {
+  if (!Array.isArray(checkRuns)) return null;
+  return checkRuns.map((run) => ({
+    name: String(run?.name ?? ''),
+    appSlug: run?.appSlug ?? null,
+    status: run?.status ?? null,
+    conclusion: run?.conclusion ?? null,
+    title: run?.title ?? null,
+    completedAt: run?.completedAt ?? null,
+  }));
 }
 
 /**
