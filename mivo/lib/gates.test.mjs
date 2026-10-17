@@ -102,6 +102,9 @@ test('受保护路径:维护者作者存量 hold 住的 protected issue 下一�
   // 没有残留标签也要关 issue
   assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'OPEN', mode: 'protected' } } })).actions,
     [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
+  // 更早的普通确认 issue(没有模式标记)还开着:同样是无人管的 open issue,一并关掉
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'OPEN', mode: 'normal' } } })).actions,
+    [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
   // protected issue 已经被人关了:不再动
   assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 1054 }, heldIssue: { number: 1054, state: 'CLOSED', mode: 'protected' } } })).actions, []);
   // 放行成立后派服务器写 review-pr
