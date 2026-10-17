@@ -128,3 +128,14 @@ test('核对员推翻/降级过的问题 key 算上一轮已见过(下一轮按 
   assert.deepEqual([...prev.keys], [KEY]);
   assert.deepEqual(prev.findings, []);
 });
+
+test('同 key 的多条问题各有唯一 uid(按单条 finding 的内容),内容完全相同的也按出现次序区分', () => {
+  const twin = (over = {}) => v2({ trigger: '另一个调用方', line: 2, ...over });
+  const r = applyConvergence({ findings: [v2(), twin(), twin()], scope: { mode: 'full' }, roundIndex: 1, previousRound: null, history: history([]), head: HEAD });
+  assert.equal(new Set(r.findings.map((f) => f.key)).size, 1, '它们共用一个跨轮 key');
+  const uids = r.findings.map((f) => f.uid);
+  assert.ok(uids.every((u) => /^[0-9a-f]{12}(#\d+)?$/.test(u)));
+  assert.equal(new Set(uids).size, 3);
+  const again = applyConvergence({ findings: [v2(), twin(), twin()], scope: { mode: 'full' }, roundIndex: 1, previousRound: null, history: history([]), head: HEAD });
+  assert.deepEqual(again.findings.map((f) => f.uid), uids, '同一答卷两次分类得到同样的 uid(codex 阶段和 publish 阶段各算一次)');
+});

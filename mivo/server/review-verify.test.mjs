@@ -76,7 +76,7 @@ const ok = (answer, durationMs = MIN) => ({ ok: true, durationMs, answer });
 
 test('预算不足 skipped(该条照常阻断):作业剩余时间不够一次调用、累计用时超过 budgetMin 都跳过;runOne 抛错记失败', async () => {
   const none = await runVerification({ findings: P1S, config: CFG, ...same, remainingMs: () => 5 * MIN, runOne: () => assert.fail('不该调用') });
-  assert.deepEqual(none.skipped, P1S.map((f) => ({ key: f.key, reason: 'budget' })));
+  assert.deepEqual(none.skipped, P1S.map((f) => ({ key: f.key, uid: null, reason: 'budget' })));
   const ran = [];
   const result = await runVerification({ findings: P1S, config: CFG, ...same, remainingMs: () => 90 * MIN,
     runOne: async (finding) => { ran.push(finding.key); if (finding.key === 'a') throw new Error('boom'); return ok({ verdict: 'confirmed', evidence: [], note: 'n'.repeat(900) }, 6 * MIN); } });
@@ -87,7 +87,7 @@ test('预算不足 skipped(该条照常阻断):作业剩余时间不够一次调
   assert.equal(result.items[1].verdict, 'confirmed');
   assert.equal(result.items[1].note.length, 600);
   assert.equal(result.items[1].applied, null);
-  assert.deepEqual(result.skipped, [{ key: 'c', reason: 'budget' }]);
+  assert.deepEqual(result.skipped, [{ key: 'c', uid: null, reason: 'budget' }]);
   const nomodel = await runVerification({ findings: P1S, config: CFG, answeredBy: CFG.model, primary: { model: CFG.model }, remainingMs: () => 90 * MIN, runOne: () => assert.fail('同模型不核对') });
   assert.deepEqual(nomodel.skipped.map((s) => s.reason), ['same-model', 'same-model', 'same-model']);
 });
@@ -119,20 +119,23 @@ test('enforce 下 refuted 要有真实证据、downgraded 要有理由才生效;
   assert.equal(bad.items[0].applied, null);
 });
 
-test('applyVerification:推翻/降级的 P1 移出阻断;P0、confirmed、出错、没核到的照常阻断;shadow 与 off 不动', () => {
+test('applyVerification:按单条 finding 的 uid 应用;推翻/降级的 P1 移出阻断;P0、confirmed、出错、没核到的照常阻断;shadow 与 off 不动', () => {
   const findings = [
-    { severity: 'P1', key: 'a', path: 'a.ts', line: 1, title: '被推翻' },
-    { severity: 'P1', key: 'b', path: 'b.ts', line: 2, title: '被降级' },
-    { severity: 'P1', key: 'c', path: 'c.ts', title: '被确认' },
-    { severity: 'P0', key: 'a', path: 'a.ts', line: 1, title: '同 key 的 P0' },
-    { severity: 'P1', key: 'd', path: 'd.ts', title: '核对出错' },
-    { severity: 'P1', key: 'e', path: 'e.ts', title: '没核到' },
+    { severity: 'P1', key: 'a', uid: 'ua', path: 'a.ts', line: 1, title: '被推翻' },
+    { severity: 'P1', key: 'b', uid: 'ub', path: 'b.ts', line: 2, title: '被降级' },
+    { severity: 'P1', key: 'c', uid: 'uc', path: 'c.ts', title: '被确认' },
+    { severity: 'P0', key: 'a', uid: 'ua0', path: 'a.ts', line: 1, title: '同 key 的 P0' },
+    { severity: 'P1', key: 'a', uid: 'ua2', path: 'a.ts', line: 7, title: '同 key 的另一条 P1(没核到)' },
+    { severity: 'P1', key: 'd', uid: 'ud', path: 'd.ts', title: '核对出错' },
+    { severity: 'P1', key: 'e', uid: 'ue', path: 'e.ts', title: '没核到' },
+    { severity: 'P1', key: 'f', path: 'f.ts', title: '没有 uid' },
   ];
-  const item = (key, applied, extra = {}) => ({ key, ok: true, applied, verdict: applied ?? 'confirmed', evidence: [{ path: 'x.ts', line: 3 }], note: '依据', ...extra });
-  const verification = { mode: 'enforce', items: [item('a', 'refuted'), item('b', 'downgraded'), item('c', null), { key: 'd', ok: false, applied: null, error: 'x' }], skipped: [{ key: 'e', reason: 'budget' }] };
+  const item = (uid, applied, extra = {}) => ({ key: uid.slice(1), uid, ok: true, applied, verdict: applied ?? 'confirmed', evidence: [{ path: 'x.ts', line: 3 }], note: '依据', ...extra });
+  const verification = { mode: 'enforce', items: [item('ua', 'refuted'), item('ub', 'downgraded'), item('uc', null), { key: 'd', uid: 'ud', ok: false, applied: null, error: 'x' }, item('uf', 'refuted', { key: 'f' })],
+    skipped: [{ key: 'e', uid: 'ue', reason: 'budget' }, { key: 'a', uid: 'ua2', reason: 'max-findings' }] };
   const out = applyVerification({ findings, verification });
-  assert.deepEqual(out.findings.map((f) => f.title), ['被确认', '同 key 的 P0', '核对出错', '没核到']);
-  assert.deepEqual(out.refuted, [{ key: 'a', severity: 'P1', path: 'a.ts', line: 1, title: '被推翻', evidence: [{ path: 'x.ts', line: 3 }], note: '依据' }]);
+  assert.deepEqual(out.findings.map((f) => f.title), ['被确认', '同 key 的 P0', '同 key 的另一条 P1(没核到)', '核对出错', '没核到', '没有 uid']);
+  assert.deepEqual(out.refuted, [{ key: 'a', uid: 'ua', severity: 'P1', path: 'a.ts', line: 1, title: '被推翻', evidence: [{ path: 'x.ts', line: 3 }], note: '依据' }]);
   assert.deepEqual(out.downgraded.map((f) => f.title), ['被降级']);
   for (const mode of ['shadow', 'off']) assert.deepEqual(applyVerification({ findings, verification: { ...verification, mode } }), { findings, refuted: [], downgraded: [] });
   assert.deepEqual(applyVerification({ findings, verification: null }).findings, findings);
@@ -372,4 +375,48 @@ test('非法开关按 off 并写 warning;档位不在名单里也不核对', { s
   const tier = runCase({ features: feat({ mode: 'enforce', tiers: ['heavy'] }), mode: 'dry-run' });
   assert.deepEqual(tier.calls, ['main openai/gpt-6-luna']);
   assert.deepEqual(tier.result.mivo.verification.skipped, [{ key: null, reason: 'tier' }]);
+});
+
+// ── GPT 单审 3 项 P1 的回归 ─────────────────────────────────────────────────
+test('同 key 的两条 P1:一条 refuted、一条 confirmed 时,confirmed 的那条仍然阻断', () => {
+  const twin = [finding({ title: '同名问题' }), finding({ title: '同名问题', line: null, trigger: '另一个调用方', evidence: [{ path: 'src/a.ts', line: 1 }] })];
+  const r = runCase({ main: { report: REPORT, findings: twin }, seq: [REFUTED, CONFIRMED], mode: 'dry-run' });
+  assert.equal(r.result.mivo.findings.length, 1, 'confirmed 的那条不能被另一条的推翻带走');
+  assert.equal(r.result.mivo.findings[0].trigger, undefined, '结果包只存紧凑形状');
+  assert.equal(r.result.mivo.verifierOverruled.length, 1);
+  assert.equal(r.result.outcome, 'findings');
+});
+
+test('同 key 的两条 P1:超出 maxFindings 没核的那条,不会因另一条被推翻而放行', () => {
+  const twin = [finding({ title: '同名问题' }), finding({ title: '同名问题', line: null, trigger: '另一个调用方', evidence: [{ path: 'src/a.ts', line: 1 }] })];
+  const r = runCase({ features: feat({ mode: 'enforce', maxFindings: 1 }), main: { report: REPORT, findings: twin }, seq: [REFUTED], mode: 'dry-run' });
+  assert.equal(r.calls.filter((c) => c.startsWith('verify')).length, 1);
+  assert.deepEqual(r.result.mivo.verification.skipped.map((s) => s.reason), ['max-findings']);
+  assert.equal(r.result.mivo.findings.length, 1, '没核到的那条照常阻断');
+  assert.equal(r.result.outcome, 'findings');
+});
+
+test('同类合并的 pre-existing 问题:任一实例在本 PR 新增行上就照卡,并交给核对员', () => {
+  const merged = finding({ origin: 'pre-existing', line: 1, evidence: [{ path: 'src/a.ts', line: 1 }], instances: [{ path: 'src/a.ts', line: 2 }] });
+  const r = runCase({ main: { report: REPORT, findings: [merged] }, seq: [CONFIRMED], mode: 'dry-run' });
+  assert.equal(r.result.mivo.preexisting.length, 0);
+  assert.equal(r.result.mivo.findings.length, 1, '新增行上的实例不能随旧代表位置免责');
+  assert.equal(r.result.outcome, 'findings');
+  assert.deepEqual(r.calls.map((c) => c.split(' ')[0]), ['main', 'verify']);
+});
+
+test('核对任务书带上全部位置(instances),并要求全部位置都不成立才能写 refuted', () => {
+  const prompt = buildVerifyPrompt({ finding: { severity: 'P1', title: '空指针', path: 'a.ts', line: 3, trigger: 't', behavior: 'b', impact: 'i',
+    evidence: [{ path: 'a.ts', line: 3 }], instances: [{ path: 'src/admin.ts', line: 50 }, { path: 'src/b.ts', line: null }] }, workdir: '/w' });
+  assert.ok(prompt.includes('`src/admin.ts:50`') && prompt.includes('`src/b.ts`'));
+  assert.match(prompt, /同类位置/);
+  assert.match(prompt, /全部位置都不成立才能写 refuted/);
+  assert.ok(!buildVerifyPrompt({ finding: { severity: 'P1', title: 't', path: 'a.ts' }, workdir: '/w' }).includes('同类位置：'), '没有 instances 时不写这一行');
+});
+
+test('全部卡点被推翻/降级的状态写进结果包(verifierOverruledAll),供下一轮保留', { skip }, () => {
+  const r = runCase({ seq: [REFUTED, DOWNGRADED] });
+  assert.equal(r.result.mivo.verifierOverruledAll, true);
+  const partial = runCase({ seq: [REFUTED, CONFIRMED], mode: 'dry-run' });
+  assert.equal(partial.result.mivo.verifierOverruledAll, false);
 });

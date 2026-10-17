@@ -156,13 +156,13 @@ export function checkEvidence(item, { headReader }) {
 }
 
 /**
- * 声称 pre-existing 但问题行或任一证据行落在本 PR 新增行上 → 改判 introduced。
- * 证据一起判:防止模型把 line 写成 null 来躲开判定。
+ * 声称 pre-existing 但问题行、任一证据行或任一同类位置(instances)落在本 PR 新增行上 → 改判 introduced。
+ * 证据一起判:防止模型把 line 写成 null 来躲开判定;同类合并的问题只要有一个实例是本 PR 新增的,整组就不能按旧问题免责。
  */
 export function classifyOrigin(item, { diffFiles }) {
   if (item?.origin !== 'pre-existing') return { origin: item?.origin ?? 'introduced', note: null };
   const added = (path, line) => Boolean(line) && diffFiles?.[path]?.addedLines?.has(line);
-  const hit = added(item.path, item.line) || (item.evidence ?? []).some((e) => added(e.path, e.line));
+  const hit = added(item.path, item.line) || [...(item.evidence ?? []), ...(item.instances ?? [])].some((e) => added(e.path, e.line));
   return hit
     ? { origin: 'introduced', note: '声称 PR 之前就存在,但落在本 PR 新增行上,按本 PR 引入处理' }
     : { origin: 'pre-existing', note: null };

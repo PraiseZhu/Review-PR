@@ -63,10 +63,10 @@ flowchart LR
    - `shadow`：同样核对，但只把结果记到 `result.json` 的 `mivo.verification`，不改任何评论、报告、结论和 check。
    - `off`：不核对，只调 1 次模型。
    - 开关文件读不到或任一项不合法时按 off 并写 warning。开关文件只在 codex 阶段读，不进任务书，所以改开关**不会**触发全量重审。
-   - **只核 P1，P0 永远不核、永远阻断**；每次最多核 `maxFindings`（默认 3）条，超出的照原样卡。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
+   - **只核 P1，P0 永远不核、永远阻断**；每次最多核 `maxFindings`（默认 3）条，超出的照原样卡。核对结论按单条 finding（`uid`）生效，不按跨轮的 `key`：同名问题共用 key，一条被推翻不会带走另一条。同类合并的问题（`instances`）把全部位置交给核对员，全部位置都不成立才能推翻；任一位置落在本 PR 新增行上，整组都不按「PR 之前就存在」免责。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
    - 核对员模型必须不同于主审**实际使用**的模型：默认 `openai/gpt-6.1-sol`（medium）；主审 fallback 到了 sol，核对员就改用 `openai/gpt-6-luna`；找不到不同的模型就不核，该条照常阻断。
    - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 120 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
-   - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。原本就没有 P1 的 PR 行为不变。
+   - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。这个状态跨轮保留（`verifierOverruledAll`）：下一轮不论改了什么，都因「上一轮核对员推翻/降级了全部卡点」退回全量重审，得出新结论之前不会 Approve。原本就没有 P1 的 PR 行为不变。
    - `result.json` 的 `mivo.verification` 记每条核对的结论、`applied`（实际生效的是 refuted 还是 downgraded）、模型、耗时和证据/理由；`mivo.verifierOverruled` 记被推翻/降级的问题（紧凑形状）。
    - **主审答卷不落盘**：主审交卷后答卷只留在 codex 阶段的进程内存里，每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹（CLI 输出日志、stderr、最后一条消息、`CODEX_HOME`、临时目录），核对员全部跑完才把 `answer.json` 写盘给 publish 阶段读。
 

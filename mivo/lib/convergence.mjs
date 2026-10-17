@@ -1,6 +1,7 @@
 // convergence.mjs — 审查收敛:同一问题跨轮用同一个 key,连续多轮没修好时提醒回头看方案,带 key 的维护者裁定自动复核。纯函数。
 // 只提示、不改结论:同一条 P0/P1 连续 3 轮(含)以上报出,报告插一节「收敛提示」,阻断与否不变;不停审、不放行。
 // 裁定复核:维护者对某个 key 裁定不改的 P1,模型本轮仍报了就移出阻断(单列在报告里);P0 永不移出阻断。
+import { createHash } from 'node:crypto';
 import { findingKeyOf, findingMarker, parseFindingMarker, renderFindingBody, titleOfBody } from './finding.mjs';
 
 export const STUCK_ROUNDS = 3;
@@ -67,6 +68,16 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
   const known = new Set([...(previousRound?.keys ?? []), ...hist.byKey.keys(), ...rulingKeys]);
   const previousBlocking = new Map((previousRound?.findings ?? []).map((f) => [f.key, f.seenRounds]));
   const legacyCount = (scope?.previousFindings ?? []).length;
+  // uid:本轮单条 finding 的身份(内容摘要 + 内容完全相同时的出现次序)。key 是跨轮的稳定标识,不同位置的同名问题会共用一个 key,
+  // 所以核对结论只能按 uid 应用到单条 finding 上;codex 阶段和 publish 阶段对同一份答卷分类得到同样的 uid。
+  const uidSeen = new Map();
+  const uidOf = (item) => {
+    const base = createHash('sha256').update(JSON.stringify([item.path, item.line ?? null, item.side ?? null, item.subject_type ?? null, item.bugClass ?? '',
+      item.title ?? item.body ?? '', item.trigger ?? '', item.behavior ?? '', item.impact ?? '', item.evidence ?? [], item.instances ?? []])).digest('hex').slice(0, 12);
+    const n = uidSeen.get(base) ?? 0;
+    uidSeen.set(base, n + 1);
+    return n ? `${base}#${n}` : base;
+  };
 
   const keyed = (item) => {
     const severity = severityOf(item);
@@ -84,7 +95,7 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
     // v2 项重新渲染(带 marker);没有结构化字段的 v1 项在原正文后追加 marker。
     const body = item.title ? renderFindingBody(item, marker) : `${item.body}\n\n${findingMarker(marker)}`;
     const late = scope?.mode === 'incremental' && (item.supersedes ?? null) === null && !(scope.changedFiles ?? []).includes(item.path);
-    return { ...item, body, key, severity, origin: item.origin ?? 'introduced', bugClass, seenRounds, late, evidenceComplete: item.evidenceComplete };
+    return { ...item, body, key, uid: uidOf(item), severity, origin: item.origin ?? 'introduced', bugClass, seenRounds, late, evidenceComplete: item.evidenceComplete };
   };
 
   const ruledKept = [];

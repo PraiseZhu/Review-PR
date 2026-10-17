@@ -506,7 +506,7 @@ function toStoredVerification(verification) {
 
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
 function toStoredFinding(finding) {
-  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes'];
+  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes'];
   const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
   return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
 }
@@ -624,7 +624,7 @@ async function publish() {
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
     Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, convergence,
-      rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, deferrals: {
+      rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, verifierOverruledAll: allOverruled, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
     } });

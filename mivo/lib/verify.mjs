@@ -93,9 +93,10 @@ export function buildVerifyPrompt({ finding, meta = {}, workdir, rulesBaseDir = 
     `- 错误行为:${finding.behavior ?? ''}`,
     `- 实际影响:${finding.impact ?? ''}`,
     `- 证据:${(finding.evidence ?? []).map((e) => `\`${where(e)}\``).join('、') || '(无)'}`,
+    ...((finding.instances ?? []).length ? [`- 同类位置：${finding.instances.map((e) => `\`${where(e)}\``).join('、')}（论断同时覆盖这些位置）`] : []),
     '',
     '判定:',
-    '- 自己在 head 上读代码、调用方和测试,找能驳倒论断的事实。',
+    '- 自己在 head 上读代码、调用方和测试,找能驳倒论断的事实。论断有「同类位置」时覆盖全部位置:全部位置都不成立才能写 refuted 或 downgraded,只要有一个位置成立就写 confirmed。',
     '  - 找到了确凿的事实 → `verdict=refuted`,`evidence` 写这些事实所在的文件和行号(至少 1 项,必须真实存在),`note` 写依据。',
     '  - 论断说的问题确实存在,但按下面的统一分级实际只是 P2 → `verdict=downgraded`,`note` 写降级理由。',
     '  - 核对后论断成立 → `confirmed`;核对不了 → `unknown`。拿不准就不要写 refuted 或 downgraded。',
@@ -120,20 +121,21 @@ export async function runVerification({ findings, config, answeredBy, primary, r
   const model = pickVerifierModel({ configured: config, answeredBy, primary });
   const result = { mode: config.mode, model: model?.model ?? null, effort: model?.effort ?? null, items: [], skipped: [] };
   const keyOf = (f) => f.key ?? null;
+  const uidOf = (f) => f.uid ?? null;
   if (!model) {
-    for (const f of selected) result.skipped.push({ key: keyOf(f), reason: 'same-model' });
+    for (const f of selected) result.skipped.push({ key: keyOf(f), uid: uidOf(f), reason: 'same-model' });
   } else {
     const perCall = config.perCallTimeoutMin * MIN;
     let used = 0;
     for (const [index, finding] of selected.entries()) {
-      if (remainingMs() < perCall + SETTLE_MS || used + perCall > config.budgetMin * MIN) { result.skipped.push({ key: keyOf(finding), reason: 'budget' }); continue; }
+      if (remainingMs() < perCall + SETTLE_MS || used + perCall > config.budgetMin * MIN) { result.skipped.push({ key: keyOf(finding), uid: uidOf(finding), reason: 'budget' }); continue; }
       const started = Date.now();
       let outcome;
       try { outcome = await runOne(finding, index, model); } catch (error) { outcome = { ok: false, error: String(error?.message ?? error) }; }
       const durationMs = outcome?.durationMs ?? Date.now() - started;
       used += durationMs;
       const answer = outcome?.answer;
-      const base = { key: keyOf(finding), severity: finding.severity, model: model.model, durationMs };
+      const base = { key: keyOf(finding), uid: uidOf(finding), severity: finding.severity, model: model.model, durationMs };
       if (!outcome?.ok || !['confirmed', 'refuted', 'downgraded', 'unknown'].includes(answer?.verdict)) {
         result.items.push({ ...base, ok: false, applied: null, error: clip(outcome?.ok ? '核对答卷不合格' : outcome?.error || '核对失败', 300) });
         continue;
@@ -156,25 +158,27 @@ export async function runVerification({ findings, config, answeredBy, primary, r
       result.items.push({ ...base, ok: true, verdict: answer.verdict, evidence, note, applied, ...(rejected ? { rejected } : {}), usage: outcome.usage ?? null });
     }
   }
-  for (const f of overflow) result.skipped.push({ key: keyOf(f), reason: 'max-findings' });
+  for (const f of overflow) result.skipped.push({ key: keyOf(f), uid: uidOf(f), reason: 'max-findings' });
   return result;
 }
 
 /**
  * 把 enforce 的核对结果用到阻断问题上:applied 为 refuted / downgraded 的 P1 移出 findings。
- * P0 永远不动;mode 不是 enforce、没有核对结果时原样返回。
+ * 按单条 finding 的 uid 对应(不是跨轮的 key:不同位置的同名问题共用一个 key,按 key 会让一条的推翻带走另一条);
+ * 没核到的(超出 maxFindings、超时、出错、预算不够)、被确认的、P0、没有 uid 的一律保留阻断。
+ * mode 不是 enforce、没有核对结果时原样返回。
  * @returns {{findings:object[], refuted:object[], downgraded:object[]}} refuted / downgraded 是移出的问题(带核对员给出的证据与理由)
  */
 export function applyVerification({ findings, verification }) {
   const out = { findings, refuted: [], downgraded: [] };
   if (verification?.mode !== 'enforce' || !Array.isArray(verification.items)) return out;
-  const byKey = new Map(verification.items.filter((i) => i.ok && i.applied && i.key).map((i) => [i.key, i]));
-  if (!byKey.size) return out;
+  const byUid = new Map(verification.items.filter((i) => i.ok && i.applied && i.uid).map((i) => [i.uid, i]));
+  if (!byUid.size) return out;
   out.findings = [];
   for (const finding of findings) {
-    const item = finding.severity === 'P1' ? byKey.get(finding.key) : null;
+    const item = finding.severity === 'P1' && finding.uid ? byUid.get(finding.uid) : null;
     if (!item) { out.findings.push(finding); continue; }
-    const record = { key: finding.key, severity: 'P1', path: finding.path, line: finding.line ?? null, title: finding.title ?? '',
+    const record = { key: finding.key, uid: finding.uid, severity: 'P1', path: finding.path, line: finding.line ?? null, title: finding.title ?? '',
       evidence: item.evidence ?? [], note: item.note ?? '' };
     (item.applied === 'refuted' ? out.refuted : out.downgraded).push(record);
   }

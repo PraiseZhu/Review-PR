@@ -152,3 +152,16 @@ test('最终报告:PR 之前就存在的问题单列,结论仍是 pass;报告头
   const plain = finalizeReport({ report: REPORT, findings: [], pr: 1, url: 'u', head: 'a'.repeat(40), base: 'b'.repeat(40), tier: 'standard', scope: { mode: 'full', reason: '首次' } });
   assert.match(plain, /diffHash `` · 档位 standard\n/, '没有版本信息时报告头不变');
 });
+
+test('同类合并的 instances 参与来源判断:任一实例落在新增行上,整组按 introduced', () => {
+  const diffFiles = { 'src/a.ts': { addedLines: new Set([2]) }, 'src/b.ts': { addedLines: new Set() } };
+  const pre = (over) => item({ origin: 'pre-existing', path: 'src/a.ts', line: 1, evidence: [{ path: 'src/a.ts', line: 1 }], ...over });
+  assert.equal(classifyOrigin(pre({ instances: [{ path: 'src/b.ts', line: 9 }] }), { diffFiles }).origin, 'pre-existing');
+  const hit = classifyOrigin(pre({ instances: [{ path: 'src/b.ts', line: 9 }, { path: 'src/a.ts', line: 2 }] }), { diffFiles });
+  assert.equal(hit.origin, 'introduced');
+  assert.match(hit.note, /落在本 PR 新增行上/);
+  const checked = validateAnswer({ report: REPORT, findings: [v2({ origin: 'pre-existing', line: 1, evidence: [{ path: 'src/a.ts', line: 1 }], instances: [{ path: 'src/a.ts', line: 11 }] })] },
+    { diffFiles: splitDiffByFile(DIFF), headReader });
+  assert.equal(checked.preexisting.length, 0, '旧代表位置 + 新增实例不能整组免责');
+  assert.equal(checked.findings.length, 1);
+});
