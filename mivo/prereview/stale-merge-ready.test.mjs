@@ -49,7 +49,7 @@ function makeWorld({ rules = [SCAN_RULE], rulesStatus = 'ok', runs = [check()], 
     ghRead,
     run: (command, args) => { deletes.push(args.join(' ')); return { ok: true, stdout: '', stderr: '' }; },
   };
-  vm.runInNewContext(`${extractFunction('dropStaleMergeReady')}\n${extractFunction('readCodeScanGate')}\nglobalThis.api = { dropStaleMergeReady };`, sandbox);
+  vm.runInNewContext(`${extractFunction('dropStaleMergeReady')}\n${extractFunction('codeScanCache')}\n${extractFunction('readCodeScanGate')}\nglobalThis.api = { dropStaleMergeReady };`, sandbox);
   const drop = ({ pr = 7, head = 'head-7', base = 'main', meta = {}, decision = { stage: 'review', outcome: null } } = {}) => {
     const result = { warnings: [] };
     sandbox.api.dropStaleMergeReady({ meta: { labels, ...meta } }, { pr, head, baseRefName: base }, result, decision);

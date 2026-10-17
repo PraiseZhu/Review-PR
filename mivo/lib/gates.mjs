@@ -3,7 +3,7 @@
 // 受保护路径 / CI / 冲突 / 他人 CR / bot 静默期 / rebase → 送审。唯一调整:凭证硬命中排在最前,
 // 与 context.mjs 的 auto 分流和 review-pr SKILL「凭证与隐私门最先执行」一致(泄露越早打回越早轮换)。
 // 输入是 context.mjs 的完整输出;输出是「下一步动作」,真正的 GitHub 写入由调用方用 Cindy 脚本执行。
-import { toCodeScanGate, toStaleCodeScanReason } from './code-scan.mjs';
+import { toCodeScanGate, toCodeScanWakeState, toStaleCodeScanReason } from './code-scan.mjs';
 
 export const KIND_TOPICS = {
   product: '产品 / UI 变更',
@@ -361,6 +361,17 @@ export function toMergeReadyGateBlockers(preMerge) {
   blockers.push(...scan.blockers);
   if (scan.retry) retry = true;
   return { blockers, retry };
+}
+
+/**
+ * 服务器评估代码扫描门的三态({required: true, state: 'pass'|'fail'|'transient'}),随结果回传给 Mini 做唤醒基线:
+ * CodeQL 在 success / neutral 之间变化不改 PR 指纹,Mini 靠它对照(见 code-scan.mjs 的 toCodeScanWake)。
+ * 规则不要求、复核结果缺失或没完成时返回 null(没有可对照的)。纯函数。
+ */
+export function toCodeScanWatch(preMerge) {
+  if (!preMerge || typeof preMerge !== 'object' || preMerge.ok === false) return null;
+  const state = toCodeScanWakeState(toCodeScanGate(preMerge.codeScanning));
+  return state ? { required: true, state } : null;
 }
 
 // 稳定、由人驱动的卡点:出现时之前的审查通过结论不再成立,标签该摘。不含瞬态(CI 在跑、机器人没说完、读失败)——

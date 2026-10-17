@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toCodeScanGate, toStaleCodeScanReason, toRuleFacts, toCheckFacts, fetchCodeScanFacts, MISSING_GRACE_MS, RULES_TTL_MS } from './code-scan.mjs';
+import { toCodeScanGate, toStaleCodeScanReason, toRuleFacts, toCheckFacts, fetchCodeScanFacts, toCodeScanWakeState, toCodeScanWake, toCodeScanRecord, MISSING_GRACE_MS, RULES_TTL_MS } from './code-scan.mjs';
 
 // 2026-10-17 #1025:组织规则集对 main 设了 code_scanning(CodeQL)与 code_quality 两条规则;#1025 head 上的 CodeQL check 是
 // neutral「1 configuration not found」,GitHub 判不出本 PR 引入了什么告警,mergeStateStatus=BLOCKED,审查机却挂了 review:merge-ready。
@@ -270,4 +270,79 @@ test('fetchCodeScanFacts:读不到规则不缓存,读不到 check-runs / 条数�
   const { ghFn, calls } = fakeGh([['/rules/branches/main', ok(REST_RULES)], ['/check-runs', ok(REST_CHECKS)]]);
   fetchCodeScanFacts({ ghFn, repo: 'o/r', baseRefName: 'main', head: 'abc', cache: dirty, nowMs: NOW });
   assert.equal(calls.length, 2);
+});
+
+// ── 审查 P2-1:审查机自己的 review-pr 不能参与「别的 check 还在跑 / 刚跑完」的判断 ──
+test('CodeQL 稳定缺失:本轮审查自己的 review-pr(进行中、刚完成)不能把它一直判成瞬态,否则每轮重新派发直到撞上限', () => {
+  const longAgo = actionsCheck({ completedAt: iso(NOW - min(600)) });
+  const ownRunning = actionsCheck({ name: 'review-pr', status: 'in_progress', conclusion: null, completedAt: null });
+  const ownJustDone = actionsCheck({ name: 'review-pr', completedAt: iso(NOW - min(1)) });
+  for (const own of [ownRunning, ownJustDone]) {
+    const g = gate(facts({ checks: [longAgo, own] }));
+    assert.deepEqual(codes(g), ['code-scanning-missing']);
+    assert.equal(g.retry, false, own.status);
+  }
+  // 别人的 check 在跑 / 刚跑完仍然算瞬态
+  assert.equal(gate(facts({ checks: [longAgo, ownRunning, actionsCheck({ name: 'lint', status: 'in_progress', conclusion: null, completedAt: null })] })).retry, true);
+  assert.equal(gate(facts({ checks: [longAgo, ownJustDone, actionsCheck({ name: 'lint', completedAt: iso(NOW - min(2)) })] })).retry, true);
+  // 只有审查机自己的 check:没有「别的 check 刚跑完」的依据
+  assert.equal(gate(facts({ checks: [ownJustDone] })).retry, false);
+});
+
+// ── 审查 P2-2:代码扫描状态变化不改 PR 指纹(ci 仍是聚合状态),要有独立的唤醒依据 ──
+test('唤醒用的状态:通过 / 稳定不通过(neutral、failure)/ 瞬态(进行中、缺失、读不到)/ 不受约束', () => {
+  const state = (f) => toCodeScanWakeState(gate(f));
+  assert.equal(state(facts()), 'pass');
+  assert.equal(state(facts({ checks: [codeql({ conclusion: 'neutral' })] })), 'fail');
+  assert.equal(state(facts({ checks: [codeql({ conclusion: 'failure' })] })), 'fail');
+  assert.equal(state(facts({ checks: [codeql(), quality({ conclusion: 'failure' })] })), 'fail');
+  assert.equal(state(facts({ checks: [codeql({ status: 'in_progress', conclusion: null, completedAt: null })] })), 'transient');
+  assert.equal(state(facts({ checks: [actionsCheck()] })), 'transient', '缺失');
+  assert.equal(state(facts({ rules: null, rulesError: 'boom' })), 'transient');
+  assert.equal(state(facts({ checks: null })), 'transient');
+  assert.equal(toCodeScanWakeState(toCodeScanGate(undefined)), 'transient');
+  assert.equal(state(facts({ rules: [] })), null, '不受约束:没有什么可唤醒的');
+  assert.equal(toCodeScanWakeState(null), null);
+});
+
+test('唤醒判断:稳定状态与基线不同才唤醒;瞬态 / 读不到不唤醒也不改基线;在审的 PR 推迟', () => {
+  const watched = [
+    { pr: 1, head: 'h1', state: 'fail' },       // 作者自批 advisory:CodeQL 重跑成功 → 唤醒重新放行
+    { pr: 2, head: 'h2', state: 'pass' },       // 标签已挂:CodeQL 变 neutral → 唤醒摘标签
+    { pr: 3, head: 'h3', state: 'pass' },       // 没变
+    { pr: 4, head: 'h4', state: 'fail' },       // 重跑中(瞬态):不唤醒
+    { pr: 5, head: 'h5', state: 'transient' },  // 服务器当时没等到结果,现在稳定通过 → 唤醒
+    { pr: 6, head: 'h6', state: 'fail' },       // 读不到
+    { pr: 7, head: 'h7', state: 'fail' },       // 在审:推迟
+  ];
+  const observed = { 1: 'pass', 2: 'fail', 3: 'pass', 4: 'transient', 5: 'pass', 6: null, 7: 'pass' };
+  const r = toCodeScanWake({ watched, observed, seen: {}, busyPrs: new Set([7]) });
+  assert.deepEqual(r.wake, [1, 2, 5]);
+  assert.deepEqual(r.deferred, [7]);
+  assert.deepEqual(r.next, { 1: { head: 'h1', state: 'pass' }, 2: { head: 'h2', state: 'fail' }, 3: { head: 'h3', state: 'pass' }, 5: { head: 'h5', state: 'pass' } });
+  // 唤醒过一次后基线是上次观察到的值:同一个状态不再重复唤醒;换了 head 重新以服务器记录为基线
+  const again = toCodeScanWake({ watched, observed, seen: r.next, busyPrs: new Set([7]) });
+  assert.deepEqual(again.wake, []);
+  assert.deepEqual(again.deferred, [7]);
+  const newHead = toCodeScanWake({ watched: [{ pr: 1, head: 'h1b', state: 'pass' }], observed: { 1: 'pass' }, seen: { 1: { head: 'h1', state: 'fail' } } });
+  assert.deepEqual(newHead.wake, []);
+  assert.deepEqual(newHead.next, { 1: { head: 'h1b', state: 'pass' } });
+  // 瞬态期间保留上次的基线:pass → 重跑中 → 又 pass 不算变化
+  const flap = toCodeScanWake({ watched: [{ pr: 2, head: 'h2', state: 'fail' }], observed: { 2: 'transient' }, seen: { 2: { head: 'h2', state: 'pass' } } });
+  assert.deepEqual(flap.wake, []);
+  assert.deepEqual(flap.next, { 2: { head: 'h2', state: 'pass' } });
+  assert.deepEqual(toCodeScanWake(), { wake: [], deferred: [], next: {} });
+});
+
+test('服务器结果被采纳时的基线记录:评估过就记,完成了但没评估就清,失败 / 退回不动', () => {
+  const base = { head: 'h1', base: 'main', at: '2026-10-17T20:00:00Z' };
+  assert.deepEqual(toCodeScanRecord({ ...base, codeScan: { required: true, state: 'fail' }, completed: true }), { codeScan: { head: 'h1', base: 'main', required: true, state: 'fail', at: base.at } });
+  assert.deepEqual(toCodeScanRecord({ ...base, codeScan: { required: true, state: 'pass' }, completed: false }).codeScan.state, 'pass');
+  assert.deepEqual(toCodeScanRecord({ ...base, codeScan: undefined, completed: true }), { codeScan: null }, '这次审查完成了、规则不要求:清掉旧基线');
+  assert.deepEqual(toCodeScanRecord({ ...base, codeScan: undefined, completed: false }), {}, '失败 / 退回:保留上一次的基线');
+  for (const bad of [{ required: false, state: 'pass' }, { required: true, state: 'weird' }, { state: 'pass' }, 'x']) {
+    assert.deepEqual(toCodeScanRecord({ ...base, codeScan: bad, completed: true }), { codeScan: null }, JSON.stringify(bad));
+  }
+  assert.deepEqual(toCodeScanRecord({ codeScan: { required: true, state: 'pass' }, head: 'h1', completed: true }), { codeScan: null }, '缺 base 不记');
+  assert.deepEqual(toCodeScanRecord(), {});
 });

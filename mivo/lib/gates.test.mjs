@@ -11,6 +11,7 @@ const { toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice
 const { toAuthorSelfApproval, toStaleMergeReadyReason } = await import('./gates.mjs');
 const { toMergeReadyGateBlockers } = await import('./gates.mjs');
 const { toCodeScanGate } = await import('./code-scan.mjs');
+const { toCodeScanWatch } = await import('./gates.mjs');
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -710,4 +711,15 @@ test('门禁失效:代码扫描稳定不通过(neutral / failure)摘标签;进�
   }
   // 冲突等原有判据优先,不被代码扫描结果盖掉
   assert.match(toStaleMergeReadyReason({ decision, meta: { mergeStateStatus: 'DIRTY' }, codeScan: gate([CODEQL]) }), /冲突/);
+});
+
+test('代码扫描三态随服务器结果回传(Mini 用它做唤醒基线):通过 / 稳定不通过 / 瞬态;不受约束和没有回执返回 null', () => {
+  const watch = (checks, extra = {}) => toCodeScanWatch({ ...PASS, codeScanning: { rules: SCAN_RULES, rulesError: null, checks, ...extra } });
+  assert.deepEqual(watch([CODEQL]), { required: true, state: 'pass' });
+  assert.deepEqual(watch([{ ...CODEQL, conclusion: 'neutral' }]), { required: true, state: 'fail' });
+  assert.deepEqual(watch([{ ...CODEQL, conclusion: 'failure' }]), { required: true, state: 'fail' });
+  assert.deepEqual(watch([{ ...CODEQL, status: 'in_progress', conclusion: null, completedAt: null }]), { required: true, state: 'transient' });
+  assert.deepEqual(watch([CODEQL], { rules: null, rulesError: 'HTTP 502' }), { required: true, state: 'transient' });
+  assert.equal(toCodeScanWatch({ ...PASS, codeScanning: { rules: [], rulesError: null, checks: [] } }), null);
+  for (const bad of [null, undefined, 'x', { ok: false, error: 'boom' }]) assert.equal(toCodeScanWatch(bad), null, JSON.stringify(bad));
 });

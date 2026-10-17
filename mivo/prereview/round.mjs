@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
-import { fetchCodeScanFacts, toCodeScanGate } from '../lib/code-scan.mjs';
+import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanRecord } from '../lib/code-scan.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -31,6 +31,9 @@ const HEALTH_PAUSE_MS = 30 * 60_000;
 const DISPATCH_UNRESOLVED_MS = 60 * 60_000;
 const HEARTBEAT_EVERY_MS = 15 * 60_000;
 const HEARTBEAT_VARIABLE = 'MIVO_PREREVIEW_HEARTBEAT';
+// 代码扫描状态对照:每隔 10 分钟对开放 PR 里服务器记过三态的各读一次 head 的 check run(REST),最多看 30 个。
+const CODE_SCAN_SWEEP_EVERY_MS = 10 * 60_000;
+const CODE_SCAN_MAX_WATCHED = 30;
 // 仓库副本每周手动 gc 一次(后台 gc 已关,见 setupEnv)。
 const REPO_GC_EVERY_MS = 7 * 24 * 60 * 60_000;
 
@@ -237,7 +240,8 @@ function wakeHeldPrs(busy = new Set()) {
     '-f', 'state=open', '-f', 'per_page=100'], { allowFail: true });
   if (!issues.ok) { log('wake-held-skip', { reason: issues.stderr.trim().slice(0, 200) }); return; }
   const seenFile = stateFile('held-issues.json');
-  const { next, wake, deferred } = toHeldWake({ issues: JSON.parse(issues.stdout).flat(), seen: readJson(seenFile, {}), busyPrs: busy });
+  const openIssues = JSON.parse(issues.stdout).flat();
+  const { next, wake, deferred } = toHeldWake({ issues: openIssues, seen: readJson(seenFile, {}), busyPrs: busy });
   if (deferred.length) log('wake-held-deferred', { prs: deferred });
   if (wake.length) {
     const rs = readJson(join(CONFIG.stateDir, roundStateKey(), 'round-state.json'), null);
@@ -248,6 +252,46 @@ function wakeHeldPrs(busy = new Set()) {
     log('wake-held', { prs: wake });
   }
   writeJson(seenFile, next);
+  wakeCodeScanPrs(openIssues, busy);
+}
+
+// ── 代码扫描状态变了(CodeQL success ⇄ neutral)时唤醒对应 PR ────────────────────
+// PR 指纹里的 ci 是 statusCheckRollup 的聚合状态,CodeQL 变化不改它;别的门一直 BLOCKED(例如作者自批后 review-pr 留在进行中)时
+// mergeStateStatus 也不动。没有独立依据,已挂的标签不会被摘,修好 CodeQL 的 PR 也停在原地。
+// 这里复用 wakeHeldPrs 已读的开放 issue 列表(零额外请求),对服务器上次评估时记了三态的开放 PR,每隔 10 分钟各读一次 head 的
+// check run(规则按 base 缓存),稳定状态(通过 / 不通过)与基线不同才把本机 round-state 里该 PR 标 retry;瞬态(进行中、缺失、读不到)
+// 不唤醒,避免 CodeQL 重跑时来回加摘。在审的 PR 先推迟。任何意外都只记日志,不影响接单。
+function wakeCodeScanPrs(openIssues, busy = new Set()) {
+  try {
+    const open = new Set((openIssues ?? []).filter((issue) => issue?.pull_request).map((issue) => issue.number));
+    const records = loadStore().prs;
+    const watched = [...open].map((pr) => ({ pr, ...records[pr]?.codeScan }))
+      .filter((entry) => entry.required === true && entry.head && entry.base && entry.state).slice(0, CODE_SCAN_MAX_WATCHED);
+    if (watched.length === 0) return;
+    const watchFile = stateFile('code-scan-watch.json');
+    const watch = readJson(watchFile, {}) ?? {};
+    if (Date.now() - (Date.parse(watch.lastSweepAt) || 0) < CODE_SCAN_SWEEP_EVERY_MS) return;
+    const cache = codeScanCache();
+    const observed = {};
+    for (const entry of watched) {
+      observed[entry.pr] = toCodeScanWakeState(toCodeScanGate(fetchCodeScanFacts({ ghFn: (args) => ghRead(args, { allowFail: true }),
+        repo: CONFIG.targetRepo, baseRefName: entry.base, head: entry.head, cache })));
+    }
+    const { wake, deferred, next } = toCodeScanWake({ watched, observed, seen: watch.seen ?? {}, busyPrs: busy });
+    if (deferred.length) log('wake-code-scan-deferred', { prs: deferred });
+    if (wake.length) {
+      const roundStatePath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
+      const roundState = readJson(roundStatePath, null);
+      if (roundState?.prs) {
+        for (const pr of wake) if (roundState.prs[pr]) roundState.prs[pr].retry = true;
+        writeJson(roundStatePath, roundState);
+      }
+      log('wake-code-scan', { prs: wake });
+    }
+    writeJson(watchFile, { lastSweepAt: nowIso(), seen: next });
+  } catch (error) {
+    log('wake-code-scan-skip', { reason: String(error?.message ?? error).slice(0, 200) });
+  }
 }
 
 // ── 绕过必需检查合入、又没写原因的 PR:提醒一次 ─────────────────────────────────
@@ -939,12 +983,14 @@ function dropStaleMergeReady(live, task, result, decision) {
 
 // 代码扫描门的事实:规则按 base 缓存在本机状态目录(code-scan-rules.json),读不到时 toCodeScanGate 给出 unverified,调用方不摘。
 // 这一步只是多一道摘标签的依据:任何意外(缓存文件损坏、gh 起不来)都按「读不到」处理,不影响判门和派发。
+function codeScanCache() {
+  const file = stateFile('code-scan-rules.json');
+  return { get: (key) => readJson(file, {})?.[key] ?? null, set: (key, value) => writeJson(file, { ...readJson(file, {}), [key]: value }) };
+}
 function readCodeScanGate(task) {
   try {
-    const file = stateFile('code-scan-rules.json');
-    const cache = { get: (key) => readJson(file, {})?.[key] ?? null, set: (key, value) => writeJson(file, { ...readJson(file, {}), [key]: value }) };
     return toCodeScanGate(fetchCodeScanFacts({ ghFn: (args) => ghRead(args, { allowFail: true }), repo: CONFIG.targetRepo,
-      baseRefName: task.baseRefName, head: task.head, cache }));
+      baseRefName: task.baseRefName, head: task.head, cache: codeScanCache() }));
   } catch (error) {
     log('code-scan-gate-error', { pr: task.pr, head: task.head, error: String(error?.message ?? error).slice(0, 200) });
     return null;
@@ -1300,6 +1346,8 @@ function collectServerRun(ctx, entry) {
     ...(completedRun ? { completedRuns: toCompletedRunsRecord(loadStore().prs[task.pr]?.completedRuns, task.head) } : {}),
     ...(server.reviewed && server.mivo?.reportComplete ? { lastCompleteRunId: entry.runId } : {}),
     ...(server.reviewClean && ['review-only', 'approval'].includes(server.outcome) ? { cleanHead: task.head } : {}),
+    // 服务器评估的代码扫描三态:wakeCodeScanPrs 的对照基线。
+    ...toCodeScanRecord({ codeScan: server.mivo?.codeScan, head: task.head, base: task.baseRefName, completed: completedRun, at: nowIso() }),
   });
   log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: server.outcome, reviewClean: server.reviewClean });
   return true;

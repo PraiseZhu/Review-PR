@@ -402,3 +402,24 @@ test('作者自批路径:CodeQL success 照常发报告评论、挂标签、写 
     assert.equal(checkBodies(gh.calls()).at(-1).conclusion, 'success');
   } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
+
+// 代码扫描三态随结果回传:Mini 用它做唤醒基线——CodeQL 在 success / neutral 之间变化不改 PR 指纹(ci 是聚合状态),没有它已挂的标签不会被摘,修好的 PR 也停在原地。
+test('服务器结果带 mivo.codeScan 三态:已 Approve 路径与作者自批路径都记;不受约束不记', () => {
+  const running = codeql({ status: 'in_progress', conclusion: null, completedAt: null });
+  for (const [name, options, checks, expected] of [
+    ['已 Approve / success', { verified: true }, [codeql()], { required: true, state: 'pass' }],
+    ['已 Approve / neutral', { verified: true }, [NEUTRAL], { required: true, state: 'fail' }],
+    ['已 Approve / 进行中', { verified: true }, [running], { required: true, state: 'transient' }],
+    ['作者自批 / success', { failures: [AUTHOR] }, [codeql()], { required: true, state: 'pass' }],
+    ['作者自批 / neutral(advisory)', { failures: [AUTHOR] }, [NEUTRAL], { required: true, state: 'fail' }],
+  ]) {
+    const env = setup({ ...options, preMerge: { ...PASS_GATES, codeScanning: scanning(checks) } });
+    const gh = fakeGh(env.work);
+    try { assert.deepEqual(publish(env, gh).mivo.codeScan, expected, name); } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
+  for (const options of [{ verified: true }, { failures: [AUTHOR] }]) {
+    const env = setup({ ...options, preMerge: { ...PASS_GATES, codeScanning: scanning([], []) } });
+    const gh = fakeGh(env.work);
+    try { assert.equal(publish(env, gh).mivo.codeScan, undefined); } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
+});

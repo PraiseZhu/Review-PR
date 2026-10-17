@@ -15,6 +15,8 @@ export const MISSING_GRACE_MS = 20 * 60_000;
 // 目标分支的规则很少变,按 base 缓存;太久不刷新会让已撤销的规则继续拦。
 export const RULES_TTL_MS = 30 * 60_000;
 const ACTIONS_APP_SLUG = 'github-actions';
+// 审查机自己写的 check(server/review.mjs 的 CHECK_NAME):每轮复核时它都是进行中 / 刚完成,不能算作「别的 check 还在跑 / 刚跑完」。
+const OWN_CHECK_NAMES = new Set(['review-pr']);
 const QUALITY_NAME_RE = /code[\s_-]*quality/i;
 const TITLE_MAX = 160;
 
@@ -120,9 +122,11 @@ const isScanResultOf = (tool) => (check) => {
 const isQualityResult = (check) => QUALITY_NAME_RE.test(String(check.name ?? '')) && Boolean(check.appSlug) && check.appSlug !== ACTIONS_APP_SLUG;
 
 // 规则里要求的 check 没出现:别的 check 还在跑,或刚跑完不久,结果可能只是没上报;否则是稳定缺失。
+// 审查机自己的 review-pr 不算(见 OWN_CHECK_NAMES):否则本轮的 in_progress 会让稳定缺失永远判成瞬态,每轮重新派发直到撞上限。
 function isMissingTransient(checks, nowMs) {
-  if (checks.some((check) => check.status && check.status !== 'completed')) return true;
-  const done = checks.map((check) => toMs(check.completedAt)).filter((ms) => ms !== null);
+  const others = checks.filter((check) => !OWN_CHECK_NAMES.has(check.name));
+  if (others.some((check) => check.status && check.status !== 'completed')) return true;
+  const done = others.map((check) => toMs(check.completedAt)).filter((ms) => ms !== null);
   return done.length > 0 && nowMs - Math.max(...done) < MISSING_GRACE_MS;
 }
 
@@ -215,4 +219,60 @@ function toItem(kind, tool, check) {
 export function toStaleCodeScanReason(gate) {
   const item = gate?.items?.find((entry) => entry.state === 'neutral' || entry.state === 'failure');
   return item ? `代码扫描门未过:${item.reason}` : null;
+}
+
+// ── 唤醒 ─────────────────────────────────────────────────────────────────
+// PR 指纹里的 ci 是 statusCheckRollup 的聚合状态,CodeQL 在 success / neutral 之间变化它不动;mergeStateStatus 在别的门一直 BLOCKED 时
+// 也不动(例如作者自批后 review-pr 留在进行中)。没有独立的唤醒依据,已挂的标签不会被摘,修好 CodeQL 的 PR 也停在原地。
+// 这里把门压成三态:pass / fail(neutral、failure,要人处理)/ transient(进行中、缺失、读不到,会自己变化),Mini 每隔一段时间
+// 用一次 REST 对照,稳定状态变了才把该 PR 标 retry 重判;瞬态不唤醒,避免 CodeQL 重跑时来回加摘。
+
+/** 门 → 'pass' | 'fail' | 'transient' | null(规则不要求,没什么可唤醒的)。 */
+export function toCodeScanWakeState(gate) {
+  if (!gate?.required) return null;
+  if (gate.items.some((item) => item.state === 'neutral' || item.state === 'failure')) return 'fail';
+  return gate.blockers.length === 0 ? 'pass' : 'transient';
+}
+
+/**
+ * 哪些 PR 该唤醒(纯函数)。watched = [{pr, head, state}](服务器上次评估时记的三态);observed = {pr: 现在的三态 | null(读不到)};
+ * seen = 上次扫描记下的 {pr: {head, state}}(同一个 head 才作基线,否则以服务器记的为准);busyPrs = 正在某一轮里的 PR(先推迟)。
+ * 现在是瞬态或读不到:不唤醒、基线不变。稳定状态与基线不同:唤醒并把基线推到现在。
+ */
+export function toCodeScanWake({ watched = [], observed = {}, seen = {}, busyPrs = new Set() } = {}) {
+  const next = {};
+  const wake = [];
+  const deferred = [];
+  for (const { pr, head, state } of watched) {
+    const current = observed[pr];
+    const previous = seen[pr]?.head === head ? seen[pr] : null;
+    if (current !== 'pass' && current !== 'fail') {
+      if (previous) next[pr] = previous;
+      continue;
+    }
+    if (current === (previous?.state ?? state)) {
+      next[pr] = { head, state: current };
+      continue;
+    }
+    if (busyPrs.has(pr)) {
+      deferred.push(pr);
+      if (previous) next[pr] = previous;
+      continue;
+    }
+    wake.push(pr);
+    next[pr] = { head, state: current };
+  }
+  return { wake, deferred, next };
+}
+
+/**
+ * 服务器结果被采纳时,本机记录里的代码扫描基线(合进 reviews.json 的 patch,纯函数):
+ * 服务器评估了(结果带 mivo.codeScan)就记 {head, base, required, state, at};这次完成的审查没评估(规则不要求等)就清掉;
+ * 失败 / 退回(completed=false)的不动,保留上一次的基线。
+ */
+export function toCodeScanRecord({ codeScan = null, head = '', base = '', completed = false, at = '' } = {}) {
+  if (codeScan?.required === true && ['pass', 'fail', 'transient'].includes(codeScan.state) && head && base) {
+    return { codeScan: { head, base, required: true, state: codeScan.state, at } };
+  }
+  return completed ? { codeScan: null } : {};
 }
