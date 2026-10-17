@@ -19,7 +19,7 @@ import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
-import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, VERIFY_SCHEMA } from '../lib/verify.mjs';
+import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
 
@@ -431,9 +431,13 @@ async function codex() {
     const features = loadFeatures(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     state.warnings.push(...features.warnings);
     const cfg = features.verify;
+    let instructionFiles = [];
     if (cfg.mode === 'off') state.verification = { mode: 'off', items: [], skipped: [] };
     else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'tier' }] };
-    else {
+    else if ((instructionFiles = agentInstructionFiles(Object.keys(splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'))))).length) {
+      // PR 改了给 agent 看的说明文件:核对员会在 head 上读到它们并可能照做,这一轮不核对,P1 照原样阻断
+      state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'agent-instructions-changed', files: instructionFiles }] };
+    } else {
       const classified = classifyAnswer(state, ctx, answer);
       const headReader = headReaderFor(state.input.head);
       state.verification = classified.ok && classified.findings.length

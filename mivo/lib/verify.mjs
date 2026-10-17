@@ -72,6 +72,15 @@ const where = ({ path, line }) => (line ? `${path}:${line}` : path);
  * 核对任务书:只给这一条 P1 的结构化字段(标题、位置、触发条件、错误行为、影响、证据、来源),不给主审报告和推理。
  * 小节标题 `## 核对任务` 固定,测试里的假 codex 靠它识别。独立性靠「不给主审结论」加「主审答卷不落盘」,不靠隔离。
  */
+/**
+ * PR 改了给 agent 看的说明文件(AGENTS.md、CLAUDE.md、.codex/、.agents/、.claude/ 下的文件)时返回这些路径。
+ * 核对员要在 PR head 上读代码,这类文件写给 agent 的话最容易被它当成指令(真实 CLI 实测:核对员照 head AGENTS.md 的要求改了输出);
+ * 这一轮就不核对,P1 照原样阻断。
+ */
+export function agentInstructionFiles(paths = []) {
+  return paths.filter((p) => /(^|\/)(AGENTS|CLAUDE)\.md$/.test(p) || /(^|\/)\.(codex|agents|claude)\//i.test(p)).sort();
+}
+
 export function buildVerifyPrompt({ finding, meta = {}, workdir, rulesBaseDir = null }) {
   return [
     '你是 Mivo 仓 PR 审查的独立核对员。另一个审查 agent 对本 PR 提出了下面这一条 P1 论断,你的任务是**尝试驳倒它**。',
