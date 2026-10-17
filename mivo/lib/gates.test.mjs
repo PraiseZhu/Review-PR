@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { toProtectedHoldWake } from './admission.mjs';
 
 // 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
-const { toAutoReleaseNotice, toAutoReleaseCloseComment } = await import('./gates.mjs');
+const { toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry } = await import('./gates.mjs');
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -494,4 +494,47 @@ test('接线:自动放行上线时,已 hold 的 protected 记录再被唤醒一�
   assert.equal(wake.next.prs[2001].retry, true);
   assert.equal(wake.next.prs[2003].retry, undefined);
   assert.deepEqual(toProtectedHoldWake({ roundState, alreadyDone: true }).wake, []);
+});
+
+// 独立审查 P2-1:作者提醒回执(protected-path)跟着 gateResult 展开进非 protected 结果(派发前被挡、服务器 run 被取消等),
+// collectRoundResults 会抛「非受保护路径卡点却记录了受保护路径提醒」。维护者作者的受保护路径 PR 每个都会走到派发,暴露面变大。
+test('非 protected 结果不带受保护路径作者提醒回执;protected 结果原样保留', async () => {
+  const { collectRoundResults } = await import('../../review-pr/scripts/review-round.mjs');
+  const notice = toAutoReleaseNotice({ head: 'h1', by: 'praisezhu' });
+  const gateResult = { outcome: 'protected', reason: 'x', authorNotice: notice, errors: [], warnings: [] };
+  const plan = { runId: 'r1', mode: 'review-only', repo: 'o/r', groups: [{ prs: [{ pr: 12, head: 'h1' }] }], skipped: [],
+    manifest: { snapshot: [{ number: 12, head: 'h1', isDraft: false }], candidates: [{ number: 12 }], skipped: [] } };
+  const base = { runId: 'r1', mode: 'review-only', pr: 12, head: 'h1', base: 'b1', enteredReview: false, reviewed: false, reviewClean: false, merged: false, threadUrls: [], errors: [], warnings: [] };
+  for (const outcome of ['error', 'state-changed']) {
+    const broken = { ...base, ...gateResult, outcome, reason: '部署暂停', retry: true };
+    assert.throws(() => collectRoundResults(plan, [broken]), /非受保护路径卡点却记录了受保护路径提醒/, outcome);
+    const fixed = dropStaleProtectedNotice(broken);
+    assert.equal(fixed.authorNotice, undefined);
+    assert.equal(collectRoundResults(plan, [fixed]).processed[0].outcome, outcome);
+  }
+  const kept = dropStaleProtectedNotice({ ...base, ...gateResult });
+  assert.deepEqual(kept.authorNotice, notice);
+  // 其它提醒(rebase)和没有回执的结果都不动
+  const rebase = { outcome: 'rebase', authorNotice: { kind: 'stale-rebase', status: 'posted', head: 'h1', fingerprint: 'f' } };
+  assert.deepEqual(dropStaleProtectedNotice(rebase), rebase);
+  assert.deepEqual(dropStaleProtectedNotice({ outcome: 'error' }), { outcome: 'error' });
+});
+
+// 独立审查 P2-2:notice issue/评论创建失败时 Mini 在 gateResult 里标了 retry,但同轮又派了 protected-approve,
+// 采用服务器结果后 retry 丢了,Slack 通报静默缺失。
+test('protected 结果沿用前置判门的 retry(notice 没发出去),其它结果不动', () => {
+  assert.equal(withProtectedGateRetry({ outcome: 'protected' }, { retry: true }).retry, true);
+  assert.equal(withProtectedGateRetry({ outcome: 'protected' }, { retry: false }).retry, undefined);
+  assert.equal(withProtectedGateRetry({ outcome: 'protected' }, null).retry, undefined);
+  assert.equal(withProtectedGateRetry({ outcome: 'protected', retry: true }, {}).retry, true);
+  assert.equal(withProtectedGateRetry({ outcome: 'error' }, { retry: true }).retry, undefined);
+  const input = { outcome: 'protected' };
+  withProtectedGateRetry(input, { retry: true });
+  assert.equal(input.retry, undefined, '不改入参');
+});
+
+test('接线:round 在写任务结果前清掉过期的受保护提醒回执,并沿用前置判门的 retry', () => {
+  const round = readFileSync(fileURLToPath(new URL('../prereview/round.mjs', import.meta.url)), 'utf8');
+  assert.match(round, /dropStaleProtectedNotice\(/);
+  assert.match(round, /withProtectedGateRetry\(/);
 });
