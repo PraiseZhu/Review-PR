@@ -257,6 +257,35 @@ Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这
   可选 `MIVO_REVIEW_MODEL_*` / `MIVO_REVIEW_EFFORT_*`；
 - secrets：`MIVO_REVIEW_BOT_TOKEN`（发布用）、`LITELLM_CREDENTIALS_JSON`（模型网关）。
 
+### prepare 用 integration 令牌读上下文（代码已支持，workflow 未接）
+
+`review.mjs prepare` 里的读取（`prepare.mjs`、`context.mjs`）可以用 integration 令牌（`github.token` 或 GitHub App 安装令牌）跑，读请求不再占 PraiseZhu 的额度。三个变量都不设（或为空）时，行为和现在完全一样；publish 写入路径不受影响。
+
+| 变量 | 作用 |
+|---|---|
+| `REVIEW_PR_VIEWER_LOGIN` | 审查账号登录名，填 `PraiseZhu`。context 用它代替 GraphQL 的 `viewer{login}`，查询里不再要 viewer：hold 标记认人、排除审查机自己的 review、`viewerIsAuthor`、评论过滤、自解死锁、服务器认裁定和申辩 thread 都用它。prepare 的登录检查改为读一次目标仓库（integration 令牌没有 `/user`，`gh auth status` 会误报）。必须和发布用的 `MIVO_REVIEW_BOT_TOKEN` 是同一个账号，代码不核对。格式不对直接报错。 |
+| `REVIEW_PR_IDENTITY_TOKEN` | 要审查账号身份或 Administration 读权限的调用改用它：`branches/<base>/protection`、`.../required_signatures`、`rulesets/<id>` 的 `current_user_can_bypass`、沙箱检查镜像的跨仓派发。其余调用仍用 `GH_TOKEN`。这几个调用失败时不换凭证重试。 |
+| `REVIEW_PR_NO_CRED_FALLBACK` | 设为 `1` 时关掉「403 Resource not accessible 时摘掉 GH_TOKEN 重试」。用 integration 令牌时必须设：runner 上没有别的凭证，重试只会把原始报错盖掉。 |
+
+后续接 `review-pr.yml`（只改 workflow，不改代码）：
+
+1. 只在审本仓时切（`inputs.target_repo` 等于 `github.repository`，即 live 与 dry-run）。沙箱仓是跨仓，`github.token` 读不到，沙箱 prepare 照旧用 `MIVO_REVIEW_BOT_TOKEN`。
+2. Prepare 步骤里取 skill tarball 的那条 `gh api` 仍用 PraiseZhu（`PraiseZhu/Review-PR` 是私有仓）；身份读也仍用 PraiseZhu。跑 `review.mjs prepare` 的环境按 target_repo 选令牌，示例：
+
+   ```yaml
+   env:
+     GH_TOKEN: ${{ inputs.target_repo == github.repository && github.token || secrets.MIVO_REVIEW_BOT_TOKEN }}
+     REVIEW_PR_IDENTITY_TOKEN: ${{ inputs.target_repo == github.repository && secrets.MIVO_REVIEW_BOT_TOKEN || '' }}
+     REVIEW_PR_VIEWER_LOGIN: ${{ inputs.target_repo == github.repository && 'PraiseZhu' || '' }}
+     REVIEW_PR_NO_CRED_FALLBACK: ${{ inputs.target_repo == github.repository && '1' || '' }}
+   ```
+
+3. workflow 的 `permissions:` 补 `issues: read`（讨论 issue、转 issue 登记）和 `statuses: read`（statusCheckRollup 里的 commit status）。少了它们，context 读不全，CI 会判成 unknown 或直接报错。现有的 `contents: read`、`pull-requests: read`、`actions: read`、`checks: write` 保留。
+4. publish 步骤不动：写入和写前复核（`gh api user`）仍是 PraiseZhu。
+5. `review-pr.yml` 的 sha256 在三台 trust 里：先让本仓带这个改动的提交通过「每天自动换版本」上线（那时变量都没设，行为不变），再开 Mivo PR 改 `review-pr.yml`，用 `deploy-tuple.mjs --pr <PR> --pr-head <head>` 整组换，不能只改 workflow 单文件。
+6. 切 live 之前先在 dry-run 跑同一批 PR，对比两种令牌下 context 的 `meta.mergeStateStatus`、`gate.blockClass`、`gate.ci.status`、`approvalPolicy`，一致再切。`mergeStateStatus` 是否随调用身份变化、`collaborators/<login>/permission` 在 integration 令牌下是否可读，都还没有实测；读不到时 prepare 会报错并重试，不会放行。
+7. `github.token` 的 REST 限额是每仓每小时 1000 次（企业版 15000），按每天 `MIVO_REVIEW_DAILY_CAP` 次估算应当够用；每次 prepare 的实际请求数未实测。
+
 Mini：
 
 ```bash
