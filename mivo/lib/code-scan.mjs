@@ -218,7 +218,7 @@ export function toCodeScanWakeState(gate) {
 
 /**
  * 哪些 PR 该唤醒(纯函数)。watched = [{pr, head, state, at}](服务器上次评估时记的三态与评估时间);
- * observed = {pr: 现在的三态 | null(读不到)};seen = 上次扫描记下的 {pr: {head, state, at}};busyPrs = 正在某一轮里的 PR(先推迟)。
+ * observed = {pr: 现在的三态};seen = 上次扫描记下的 {pr: {head, state, at}};busyPrs = 正在某一轮里的 PR(先推迟)。
  * 基线:seen 与服务器记录是同一次评估(head 和 at 都相同)才用 seen 的 state,否则以服务器记的为准——
  * 服务器在唤醒之后又评估了一次(哪怕同一个 head),旧的 seen 就作废,不然会漏掉之后的变化。
  * observed[pr]:'pass' | 'fail' | 'transient' | undefined(没读到);null 表示读到了规则、确定不再受约束,按通过算。
