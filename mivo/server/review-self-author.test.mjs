@@ -22,8 +22,13 @@ const AUTHOR = { code: 'independent-approval-required', reason: '当前 viewer �
 const THREADS = { code: 'threads-unresolved', reason: '仍有 conversation 未 resolve' };
 const THREADS_UNVERIFIED = { code: 'threads-unverified', reason: 'review thread 状态未完整读取' };
 // pre-merge-check / finish 的 preMerge 里挂标要看的字段;canMerge=false + BLOCKED 是 review-only「等维护者 Approve」的常态,不拦。
+// codeScanning:2026-10-18 起挂标前还要核代码扫描门(#1025);默认是「目标分支要求 CodeQL,且已 success」。
+const SCAN_RULES = [{ type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }, { type: 'code_quality', parameters: { severity: 'warnings' } }];
+const codeql = (patch = {}) => ({ name: 'CodeQL', appSlug: 'github-advanced-security', status: 'completed', conclusion: 'success',
+  title: 'No new alerts in code changed by this pull request', completedAt: new Date().toISOString(), ...patch });
+const scanning = (checks, rules = SCAN_RULES) => ({ rules, rulesError: null, checks });
 const PASS_GATES = { ok: true, headVerified: true, baseVerified: true, threadsVerified: true, unresolvedThreads: [], ci: { status: 'pass' },
-  mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE', canMerge: false };
+  mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE', canMerge: false, codeScanning: scanning([codeql()]) };
 const premergeCalls = (work) => existsSync(join(work, 'premerge-calls.jsonl'))
   ? readFileSync(join(work, 'premerge-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
 
@@ -313,4 +318,108 @@ test('作者自批路径:pre-merge-check 崩溃或没有 JSON:不放行,标 retr
     assert.match(result.mivo.advisory.blockers.join(';'), /合并前门禁复核没有完成/);
     assert.equal(reportComments(calls).filter((c) => /mivo-review:report/.test(c.body)).length, 0);
   } finally { rmSync(env.root, { recursive: true, force: true }); }
+});
+
+// ── 代码扫描门(2026-10-18,#1025:CodeQL neutral「1 configuration not found」,GitHub 挡合并,审查机却挂了标签)──
+const NEUTRAL = codeql({ conclusion: 'neutral', title: '1 configuration not found' });
+
+test('#1025 已 Approve 路径:CodeQL neutral 不挂 review:merge-ready(摘掉已有的),不标 retry;review-pr 仍写 success', () => {
+  const env = setup({ verified: true, preMerge: { ...PASS_GATES, codeScanning: scanning([NEUTRAL]) } });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh);
+    const calls = gh.calls();
+    assert.equal(addedLabel(calls), false);
+    assert.ok(removedLabel(calls));
+    assert.equal(result.outcome, 'review-only');
+    assert.deepEqual(result.mivo.labelWithheld.map((b) => b.code), ['code-scanning-neutral']);
+    assert.match(result.mivo.labelWithheld[0].reason, /1 configuration not found/);
+    assert.ok(result.warnings.some((w) => /review:merge-ready 没挂.*1 configuration not found/.test(w)));
+    assert.notEqual(result.retry, true, '要人重跑 CodeQL:标 retry 会让 Mini 每轮重新派发,dailyCap 很快用完');
+    assert.equal(checkBodies(calls).at(-1).conclusion, 'success', 'review-pr 代表审查结论,这次不动');
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
+});
+
+test('已 Approve 路径:CodeQL success 照常挂;分支不受代码扫描规则约束(功能分支)不受影响', () => {
+  for (const [name, codeScanning] of [['success', scanning([codeql()])], ['不受约束', scanning([], [])]]) {
+    const env = setup({ verified: true, preMerge: { ...PASS_GATES, codeScanning } });
+    const gh = fakeGh(env.work);
+    try {
+      const result = publish(env, gh);
+      assert.ok(addedLabel(gh.calls()), name);
+      assert.equal(result.mivo.labelWithheld, undefined, name);
+    } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
+});
+
+test('已 Approve 路径:CodeQL 进行中 / 读不到规则 / failure / 回执没有 codeScanning:都不挂,都不标 retry(靠 mivo.codeScan 三态让 Mini 唤醒)', () => {
+  const running = codeql({ status: 'in_progress', conclusion: null, completedAt: null });
+  for (const [name, codeScanning, code] of [
+    ['进行中', scanning([running]), 'code-scanning-pending'],
+    ['规则读不到', { rules: null, rulesError: 'HTTP 502', checks: [codeql()] }, 'code-scanning-unverified'],
+    ['failure', scanning([codeql({ conclusion: 'failure', title: '2 new alerts' })]), 'code-scanning-failed'],
+    ['没有字段', undefined, 'code-scanning-not-reported'],
+  ]) {
+    const { codeScanning: _drop, ...rest } = PASS_GATES;
+    const env = setup({ verified: true, preMerge: codeScanning === undefined ? rest : { ...rest, codeScanning } });
+    const gh = fakeGh(env.work);
+    try {
+      const result = publish(env, gh);
+      assert.equal(addedLabel(gh.calls()), false, name);
+      assert.deepEqual(result.mivo.labelWithheld.map((b) => b.code), [code], name);
+      assert.notEqual(result.retry, true, `${name}:代码扫描门不标 retry`);
+    } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
+});
+
+test('作者自批路径:CodeQL neutral 走 advisory——不发干净报告标记、不挂标签、check 留在进行中,原因写进待办', () => {
+  const env = setup({ failures: [AUTHOR], preMerge: { ...PASS_GATES, codeScanning: scanning([NEUTRAL]) } });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh);
+    const calls = gh.calls();
+    assert.equal(addedLabel(calls), false);
+    assert.ok(removedLabel(calls));
+    assert.equal(result.outcome, 'merge-blocked');
+    assert.equal(result.reviewClean, false);
+    assert.match(result.mivo.advisory.blockers.join(';'), /代码扫描\(CodeQL\).*1 configuration not found/);
+    assert.notEqual(result.retry, true);
+    const comments = reportComments(calls);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, new RegExp(`<!-- mivo-review:advisory head=${SHA} -->$`));
+    assert.doesNotMatch(comments[0].body, /mivo-review:report/);
+    assert.equal(checkBodies(calls).at(-1).conclusion, undefined);
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
+});
+
+test('作者自批路径:CodeQL success 照常发报告评论、挂标签、写 success', () => {
+  const env = setup({ failures: [AUTHOR], preMerge: { ...PASS_GATES, codeScanning: scanning([codeql()]) } });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh);
+    assert.equal(result.outcome, 'approval');
+    assert.ok(addedLabel(gh.calls()));
+    assert.equal(checkBodies(gh.calls()).at(-1).conclusion, 'success');
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
+});
+
+// 代码扫描三态随结果回传:Mini 用它做唤醒基线——CodeQL 在 success / neutral 之间变化不改 PR 指纹(ci 是聚合状态),没有它已挂的标签不会被摘,修好的 PR 也停在原地。
+test('服务器结果带 mivo.codeScan 三态:已 Approve 路径与作者自批路径都记;不受约束不记', () => {
+  const running = codeql({ status: 'in_progress', conclusion: null, completedAt: null });
+  for (const [name, options, checks, expected] of [
+    ['已 Approve / success', { verified: true }, [codeql()], { required: true, state: 'pass' }],
+    ['已 Approve / neutral', { verified: true }, [NEUTRAL], { required: true, state: 'fail' }],
+    ['已 Approve / 进行中', { verified: true }, [running], { required: true, state: 'transient' }],
+    ['作者自批 / success', { failures: [AUTHOR] }, [codeql()], { required: true, state: 'pass' }],
+    ['作者自批 / neutral(advisory)', { failures: [AUTHOR] }, [NEUTRAL], { required: true, state: 'fail' }],
+  ]) {
+    const env = setup({ ...options, preMerge: { ...PASS_GATES, codeScanning: scanning(checks) } });
+    const gh = fakeGh(env.work);
+    try { assert.deepEqual(publish(env, gh).mivo.codeScan, expected, name); } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
+  for (const options of [{ verified: true }, { failures: [AUTHOR] }]) {
+    const env = setup({ ...options, preMerge: { ...PASS_GATES, codeScanning: scanning([], []) } });
+    const gh = fakeGh(env.work);
+    try { assert.equal(publish(env, gh).mivo.codeScan, undefined); } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
 });

@@ -33,6 +33,7 @@ const load = (file) => import(pathToFileURL(join(REPO_ROOT, file)).href);
 const common = await load('mivo/lib/common.mjs');
 const admission = await load('mivo/lib/admission.mjs');
 const gates = await load('mivo/lib/gates.mjs');
+const codeScan = await load('mivo/lib/code-scan.mjs');
 const retry = await load('mivo/lib/retry.mjs');
 const health = await load('mivo/lib/health.mjs');
 const source = process.env.ROUND_FIXTURE_SOURCE_REV
@@ -164,7 +165,7 @@ function makeFixture(scenario) {
     constructor(...args) { super(...(args.length ? args : [clockMs])); }
     static now() { return clockMs; }
   }
-  const sandbox = { ...common, ...admission, ...gates, ...retry,
+  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry,
     dirname, join, resolve, randomUUID, Date: FixtureDate,
     inBusinessWindow: () => health.inBusinessWindow(new Date(clockMs)),
     nowIso: () => new Date(clockMs).toISOString(), readJson, writeJson,
@@ -266,7 +267,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 维护者作者改了受保护路径的 PR 集合(判门自动放行 + notice issue,派 protected-approve);notice 创建的故障注入与调用记录
     protectedAuthors: new Set(), noticeFailures: 0, noticeCalls: [],
     // 带 review:merge-ready 的 PR 集合、按 PR 覆盖 context 的字段(meta 浅合并)、被摘标签的 DELETE 路径记录
-    labeled: new Set(), contextPatch: new Map(), labelDeletes: [] };
+    labeled: new Set(), contextPatch: new Map(), labelDeletes: [],
+    // 目标分支的 code_scanning 规则(rules/branches 的返回)与按 head 给的 check run(摘标签的代码扫描判据)、读规则的次数
+    rulesPayload: [], codeScanChecks: {}, rulesReads: 0 };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -466,6 +469,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       }
       return ok(args.includes('DELETE') ? '' : '[]');
     }
+    if (args[0] === 'api' && path.includes('/rules/branches/')) { w.rulesReads += 1; return ok(w.rulesPayload); }
+    if (args[0] === 'api' && path.includes('/check-runs') && !path.includes('check_name=')) {
+      const runs = w.codeScanChecks[path.match(/commits\/([^/]+)\/check-runs/)[1]] ?? [];
+      return ok({ total_count: runs.length, check_runs: runs });
+    }
     if (args[0] === 'api' && path.includes('/check-runs')) return ok({ check_runs: [] });
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
       return ok([[...w.prs].filter(([, p]) => p.open).map(([number, p]) => ({ number, head: { sha: p.head } }))]);
@@ -534,7 +542,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       constructor(...args) { super(...(args.length ? args : [w.now])); }
       static now() { return w.now; }
     }
-    const sandbox = { ...common, ...admission, ...gates, ...retry, dirname, join, resolve, randomUUID, Date: FixtureDate,
+    const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, dirname, join, resolve, randomUUID, Date: FixtureDate,
       inBusinessWindow: () => health.inBusinessWindow(new Date(w.now)), nowIso: () => iso(w.now),
       readJson: (file, fallback) => {
         if (w.files.has(file)) return clone(w.files.get(file));
@@ -1479,6 +1487,26 @@ test('世界:review:merge-ready 在冲突、人工讨论未 resolve 时摘,head 
   assert.deepEqual([...w.labelDeletes].sort(), [label(1), label(4), label(5)].sort(), '冲突、旧 head、人工讨论各摘一次;CI 在跑(#2)和正常送审(#3)不摘');
   assert.deepEqual([...w.labeled].sort(), [2, 3]);
   assert.deepEqual([1, 2, 3, 4, 5].map((pr) => w.dispatchesOf(pr).length), [0, 0, 1, 1, 0], '判门没过的不派发服务器审查');
+});
+
+// 2026-10-18 #1025:标签已挂,之后 CodeQL 稳定变成 neutral(configuration not found)也要摘;CodeQL 进行中 / 通过不摘;
+// 规则按 base 缓存,同一 base 的多个 PR 只读一次规则。
+test('世界:review:merge-ready 挂着,CodeQL neutral 摘、failure 摘、success 和进行中不摘;规则只读一次,各摘一次', async () => {
+  const w = makeWorld();
+  const label = (pr) => `repos/o/target/issues/${pr}/labels/review%3Amerge-ready`;
+  w.rulesPayload = [{ type: 'deletion' }, { type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }];
+  const codeql = (conclusion, status = 'completed') => [{ name: 'CodeQL', app: { slug: 'github-advanced-security' }, status, conclusion,
+    output: { title: conclusion === 'neutral' ? '1 configuration not found' : '' }, completed_at: status === 'completed' ? '2026-10-14T09:00:00Z' : null }];
+  w.codeScanChecks = { h1: codeql('neutral'), h2: codeql('success'), h3: codeql(null, 'in_progress'), h4: codeql('failure') };
+  for (const pr of [1, 2, 3, 4]) { w.openPr(pr, `h${pr}`); w.labeled.add(pr); }
+  w.files.set(w.state('reviews.json'), { version: 1, prs: Object.fromEntries([1, 2, 3, 4].map((pr) => [pr, { cleanHead: `h${pr}` }])) });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.deepEqual([...w.labelDeletes].sort(), [label(1), label(4)].sort(), 'neutral(#1)与 failure(#4)各摘一次;success(#2)和进行中(#3)不摘');
+  assert.deepEqual([...w.labeled].sort(), [2, 3]);
+  assert.equal(w.rulesReads, 1, '四个 PR 同一个 base:规则只读一次,走缓存');
+  assert.ok(w.files.has(w.state('code-scan-rules.json')));
 });
 
 // 2026-10-17 补审:attempts 原先累计同 head 的所有派发(含成功的复用),满 9 次就停;摘标签后门禁恢复要靠再派发把标签加回,

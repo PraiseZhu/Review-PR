@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
-import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers } from '../lib/gates.mjs';
+import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
@@ -742,6 +742,7 @@ async function publishClean(state, result, reportFile) {
     Object.assign(result, { outcome: 'review-only', reason: `审查通过,已 Approve${deferredSummary ? `(${deferredSummary.text})` : ''};review-only 不执行合并,由维护者手动合并` });
     // 挂标签前按 finish 带回的实时 preMerge 复核 CI / 讨论 / 冲突:finish 对 review-only 无条件返回 reviewed-only,canMerge 只是附带信息。
     attachMergeReady(state, result, toMergeReadyGateBlockers(receipt.preMerge));
+    recordCodeScan(result, receipt.preMerge);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
     return;
   }
@@ -756,7 +757,9 @@ async function publishClean(state, result, reportFile) {
     }
     // approve 脚本当场读的只有身份、权限、head/base、讨论和 review,不含 CI、冲突:prepare 之后才变坏的这里补跑 pre-merge-check 复核。
     // 必须先于发报告评论——评论带干净报告标记,盯梢会当成放行。
-    const gates = toMergeReadyGateBlockers(runPreMerge(state));
+    const preMerge = runPreMerge(state);
+    recordCodeScan(result, preMerge);
+    const gates = toMergeReadyGateBlockers(preMerge);
     if (gates.blockers.length) {
       await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
       return;
@@ -863,6 +866,13 @@ function attachMergeReady(state, result, gates) {
   result.mivo.labelWithheld = gates.blockers;
   result.warnings.push(`review:merge-ready 没挂(挂标前门禁复核未过):${gates.blockers.map((blocker) => blocker.reason).join(';')}`);
   if (gates.retry) result.retry = true;
+}
+
+// 代码扫描门的三态随结果回传:Mini 用它做唤醒基线。CodeQL 在 success / neutral 之间变化不改 PR 指纹(ci 是聚合状态,
+// 别的门一直 BLOCKED 时 mergeStateStatus 也不动),没有它已挂的标签不会被摘,修好 CodeQL 的 PR 也停在原地。规则不要求时不记。
+function recordCodeScan(result, preMerge) {
+  const watch = toCodeScanWatch(preMerge);
+  if (watch) result.mivo.codeScan = watch;
 }
 
 // 跑一次 pre-merge-check(只读),拿 CI / 讨论 / 冲突的实时状态;参数与 finish 内部那次一致。脚本崩溃或没有 JSON 返回 {ok:false,error}。

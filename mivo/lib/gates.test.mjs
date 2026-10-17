@@ -10,6 +10,8 @@ const { toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice
 // 2026-10-17 两个 P2 新增的纯函数,同样动态取。
 const { toAuthorSelfApproval, toStaleMergeReadyReason } = await import('./gates.mjs');
 const { toMergeReadyGateBlockers } = await import('./gates.mjs');
+const { toCodeScanGate } = await import('./code-scan.mjs');
+const { toCodeScanWatch } = await import('./gates.mjs');
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -619,7 +621,11 @@ test('门禁没有失效不摘:送审阶段(含只剩机器人 thread / 缺界�
 // ── 挂 review:merge-ready 之前按实时门禁复核(2026-10-17 补审)──
 // 已 Approve 路径用 finish 带回的 preMerge;作者自批路径补跑 pre-merge-check。只拦确定的负面(CI 失败、讨论未 resolve、冲突、head/base 变了),
 // CI 在跑/机器人没说完这类瞬态不拦;读不到按「拦并重试」处理。
-const PASS = { ok: true, headVerified: true, baseVerified: true, threadsVerified: true, unresolvedThreads: [], ci: { status: 'pass' }, mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE', canMerge: false };
+// codeScanning:目标分支受 code_scanning 规则约束,CodeQL 已 success(2026-10-18 起挂标前还要核代码扫描门,见 code-scan.mjs)。
+const SCAN_RULES = [{ type: 'code_scanning', parameters: { code_scanning_tools: [{ tool: 'CodeQL' }] } }, { type: 'code_quality', parameters: { severity: 'warnings' } }];
+const CODEQL = { name: 'CodeQL', appSlug: 'github-advanced-security', status: 'completed', conclusion: 'success', title: 'No new alerts in code changed by this pull request', completedAt: new Date().toISOString() };
+const PASS = { ok: true, headVerified: true, baseVerified: true, threadsVerified: true, unresolvedThreads: [], ci: { status: 'pass' }, mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE', canMerge: false,
+  codeScanning: { rules: SCAN_RULES, rulesError: null, checks: [CODEQL] } };
 
 test('挂标前复核:全部通过(含 canMerge=false 的「等维护者 Approve」常态)不拦', () => {
   assert.deepEqual(toMergeReadyGateBlockers(PASS), { blockers: [], retry: false });
@@ -657,4 +663,66 @@ test('挂标前复核:读不到(缺失、ok:false、thread 没读全)一律拦�
   assert.deepEqual(toMergeReadyGateBlockers({ ok: false, error: 'boom' }).blockers.map((b) => b.code), ['pre-merge-failed']);
   assert.match(toMergeReadyGateBlockers({ ok: false, error: 'boom' }).blockers[0].reason, /boom/);
   assert.deepEqual(toMergeReadyGateBlockers({ ...PASS, threadsVerified: false }).blockers.map((b) => b.code), ['threads-unverified']);
+});
+
+// ── 代码扫描 / 代码质量门(2026-10-18,#1025:CodeQL neutral「1 configuration not found」,GitHub 挡合并,审查机却挂了标签)──
+test('挂标前复核:CodeQL success 照常挂;分支不受代码扫描规则约束(功能分支)不影响', () => {
+  assert.deepEqual(toMergeReadyGateBlockers(PASS), { blockers: [], retry: false });
+  assert.deepEqual(toMergeReadyGateBlockers({ ...PASS, codeScanning: { rules: [], rulesError: null, checks: [] } }), { blockers: [], retry: false });
+});
+
+test('挂标前复核:#1025 的情形(CodeQL neutral / configuration not found)不挂标签,原因写明,不标 retry', () => {
+  const neutral = { ...CODEQL, conclusion: 'neutral', title: '1 configuration not found' };
+  const r = toMergeReadyGateBlockers({ ...PASS, codeScanning: { rules: SCAN_RULES, rulesError: null, checks: [neutral] } });
+  assert.deepEqual(r.blockers.map((b) => b.code), ['code-scanning-neutral']);
+  assert.match(r.blockers[0].reason, /1 configuration not found/);
+  assert.equal(r.retry, false, '要人重跑 CodeQL,靠指纹变化唤醒,不能每轮重新派发');
+});
+
+test('挂标前复核:CodeQL failure / 进行中 / 读不到都不挂,且都不标 retry(等结果由 Mini 的 wakeCodeScanPrs 唤醒,不靠每轮重新派发)', () => {
+  const run = (check) => toMergeReadyGateBlockers({ ...PASS, codeScanning: { rules: SCAN_RULES, rulesError: null, checks: check ? [check] : [] } });
+  const failed = run({ ...CODEQL, conclusion: 'failure', title: '2 new alerts' });
+  assert.deepEqual(failed.blockers.map((b) => b.code), ['code-scanning-failed']);
+  assert.equal(failed.retry, false);
+  const pending = run({ ...CODEQL, status: 'in_progress', conclusion: null, completedAt: null });
+  assert.deepEqual(pending.blockers.map((b) => b.code), ['code-scanning-pending']);
+  assert.equal(pending.retry, false, '标 retry 会让 Mini 每 3 分钟重派一次,dailyCap=30');
+  assert.deepEqual(run(null).blockers.map((b) => b.code), ['code-scanning-missing']);
+  const unread = toMergeReadyGateBlockers({ ...PASS, codeScanning: { rules: null, rulesError: 'HTTP 502', checks: [CODEQL] } });
+  assert.deepEqual(unread.blockers.map((b) => b.code), ['code-scanning-unverified']);
+  assert.equal(unread.retry, false);
+  // 原有的读不到(整份 preMerge 缺失 / thread 没读全)仍标 retry,不受影响
+  assert.equal(toMergeReadyGateBlockers(null).retry, true);
+});
+
+test('挂标前复核:回执没有 codeScanning 字段一律不挂(脚本版本对不上);与其它拦截项并存时各自列出', () => {
+  const { codeScanning, ...old } = PASS;
+  assert.deepEqual(toMergeReadyGateBlockers(old).blockers.map((b) => b.code), ['code-scanning-not-reported']);
+  const both = toMergeReadyGateBlockers({ ...PASS, ci: { status: 'failed' }, codeScanning: { rules: SCAN_RULES, rulesError: null, checks: [{ ...CODEQL, conclusion: 'neutral' }] } });
+  assert.deepEqual(both.blockers.map((b) => b.code), ['ci-failed', 'code-scanning-neutral']);
+});
+
+test('门禁失效:代码扫描稳定不通过(neutral / failure)摘标签;进行中 / 缺失 / 读不到 / 通过 / 不受约束不摘', () => {
+  const decision = { stage: 'review', outcome: null };
+  const clean = { mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE' };
+  const gate = (checks, extra = {}) => toCodeScanGate({ rules: SCAN_RULES, rulesError: null, checks, ...extra });
+  assert.match(toStaleMergeReadyReason({ decision, meta: clean, codeScan: gate([{ ...CODEQL, conclusion: 'neutral', title: '1 configuration not found' }]) }), /1 configuration not found/);
+  assert.match(toStaleMergeReadyReason({ decision, meta: clean, codeScan: gate([{ ...CODEQL, conclusion: 'failure', title: '2 new alerts' }]) }), /2 new alerts/);
+  for (const codeScan of [gate([CODEQL]), gate([{ ...CODEQL, status: 'in_progress', conclusion: null, completedAt: null }]), gate([]), gate(null), gate([CODEQL], { rules: null, rulesError: 'x' }),
+    toCodeScanGate({ rules: [], rulesError: null, checks: [] }), null, undefined]) {
+    assert.equal(toStaleMergeReadyReason({ decision, meta: clean, codeScan }), null, JSON.stringify(codeScan));
+  }
+  // 冲突等原有判据优先,不被代码扫描结果盖掉
+  assert.match(toStaleMergeReadyReason({ decision, meta: { mergeStateStatus: 'DIRTY' }, codeScan: gate([CODEQL]) }), /冲突/);
+});
+
+test('代码扫描三态随服务器结果回传(Mini 用它做唤醒基线):通过 / 稳定不通过 / 瞬态;不受约束和没有回执返回 null', () => {
+  const watch = (checks, extra = {}) => toCodeScanWatch({ ...PASS, codeScanning: { rules: SCAN_RULES, rulesError: null, checks, ...extra } });
+  assert.deepEqual(watch([CODEQL]), { required: true, state: 'pass' });
+  assert.deepEqual(watch([{ ...CODEQL, conclusion: 'neutral' }]), { required: true, state: 'fail' });
+  assert.deepEqual(watch([{ ...CODEQL, conclusion: 'failure' }]), { required: true, state: 'fail' });
+  assert.deepEqual(watch([{ ...CODEQL, status: 'in_progress', conclusion: null, completedAt: null }]), { required: true, state: 'transient' });
+  assert.deepEqual(watch([CODEQL], { rules: null, rulesError: 'HTTP 502' }), { required: true, state: 'transient' });
+  assert.equal(toCodeScanWatch({ ...PASS, codeScanning: { rules: [], rulesError: null, checks: [] } }), null);
+  for (const bad of [null, undefined, 'x', { ok: false, error: 'boom' }]) assert.equal(toCodeScanWatch(bad), null, JSON.stringify(bad));
 });

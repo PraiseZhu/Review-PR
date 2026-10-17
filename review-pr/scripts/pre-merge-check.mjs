@@ -26,6 +26,7 @@
 import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
 import { filterIgnoredCiContexts, ciMergeStateIgnoring } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
+import { fetchCodeScanRules, toCodeScanCheckFacts } from './lib.mjs'; // [MIVO-PATCH code-scan-gate]
 
 const META_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!){
@@ -183,6 +184,8 @@ try {
   // [MIVO-PATCH ci-ignore] 只从 CI 总判里去掉本流程自己的 check;必需检查核对仍用原始数据。
   const rollup = rollupContexts ? classifyRollupContexts(filterIgnoredCiContexts(rollupContexts, rules)) : null;
   const checkRunsWithApps = fetchCheckRunsWithApps(slug, m.headRefOid);
+  // [MIVO-PATCH code-scan-gate] 目标分支的 code_scanning / code_quality 规则(一次 REST)+ 上面已读的 check run,事实交给 Mivo 的 toCodeScanGate 判。
+  const codeScanRules = fetchCodeScanRules(slug, m.baseRefName);
   const { ciRuns } = classifyHeadChecks(slug, m.headRefOid);
   const ci = evaluateCiStatus({ rollup, ciRuns, mergeStateStatus: ciMergeStateIgnoring(m.mergeStateStatus, rollupContexts, rules) });
   if (m.state !== 'OPEN') blockers.push(`PR state=${m.state}(非 OPEN)`);
@@ -443,6 +446,13 @@ try {
     staleRebaseChecked,
     compareVerified,
     blockers,
+    // [MIVO-PATCH code-scan-gate] mivo/lib/code-scan.mjs 的 toCodeScanGate 读它:CodeQL 不是明确的 success 就不挂 review:merge-ready。
+    codeScanning: {
+      rules: codeScanRules.rules,
+      rulesError: codeScanRules.error,
+      checks: toCodeScanCheckFacts(checkRunsWithApps),
+      checksError: checkRunsWithApps ? null : 'head 上的 check-runs 读取失败',
+    },
     canMerge: finalCanMerge,
     note: '所有作者都必须先由另一位最终维护者集合成员通过 approve-reviewed-pr.mjs 提交 Approve，再重跑本脚本；维护者作者不再走 approval-exempt admin route。所有 merge route 都必须绑定 expectedHead 与 expectedAuthorityDigest。authority 读取失败/变化、head 变化、维护者 Approve 缺失、CI 非 pass、thread 未 resolve、机器人静默期未过、stale rebase、受保护路径或 branch rules 未验证都不得 bypass。selfFixAuthors 只影响代修,不提供 self-merge 权限。',
   });
