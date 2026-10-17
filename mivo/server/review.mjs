@@ -12,7 +12,8 @@ import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, 
 import { decideGate, PENDING_GATE_TEXT } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
-import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf } from '../lib/prompt.mjs';
+import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
+import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
@@ -148,9 +149,20 @@ async function prepare() {
     const diffText = readFileSync(diffFile, 'utf8');
     const diffFiles = splitDiffByFile(diffText);
     const previous = input.prevRunId ? downloadPrevious(input, state) : null;
-    // 任务书版本:按审查实际读的版本(PR head)取规则文件,算 scope 之前生成(lib/prompt.mjs)。
-    const specDigest = specDigestOf(buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier, files: Object.keys(diffFiles),
-      readFile: (path) => { const r = git(['show', `${input.head}:${path}`], { allowFail: true }); return r.ok ? r.stdout : null; },
+    // 任务书版本:规则文件按 base 读(PR 改规则文件本身是被审对象,不能用它放宽审查),base 取不到回退 head 并告警(lib/prompt.mjs)。
+    const spec = loadReviewSpec(SKILL_ROOT);
+    const rules = readRuleSources({ paths: ruleFilesFor({ spec, files: Object.keys(diffFiles) }), base: input.base, head: input.head,
+      git: (args) => git(args, { allowFail: true, timeoutMs: 120_000 }) });
+    if (rules.warning) state.warnings.push(rules.warning);
+    state.rulesSource = rules.source;
+    state.rulesBaseDir = null;
+    if (rules.source === 'base') {
+      const dir = join(INPUT_DIR, 'rules-base');
+      for (const [path, text] of Object.entries(rules.files)) if (typeof text === 'string') writeText(join(dir, path), text);
+      state.rulesBaseDir = dir;
+    }
+    const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles),
+      readFile: (path) => rules.files[path] ?? null,
       config: readFileSync(process.env.MIVO_REVIEW_RULES_FILE || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'), 'utf8') }));
     const current = {
       head: input.head, baseRefName: ctx.meta.baseRefName, diffHash: ctx.evidence?.diffHash,
@@ -245,6 +257,9 @@ function downloadPrevious(input, state) {
     state.warnings.push('上一轮结果与本 PR 不匹配,按全量审查');
     return null;
   }
+  // 上一轮的问题 key 与轮次(state 要落盘成 JSON,Set 存成数组)。旧结果没有这些字段时是空值。
+  const previousRound = toPreviousRound(result);
+  state.previousRound = { ...previousRound, keys: [...previousRound.keys] };
   return previousFromResult(result, existsSync(join(dir, 'report.md')) ? readFileSync(join(dir, 'report.md'), 'utf8') : '');
 }
 
@@ -371,7 +386,7 @@ async function codex() {
   const prompt = buildReviewPrompt({
     spec: loadReviewSpec(SKILL_ROOT), ctx, scope: state.scope, workdir: REPO_DIR, tier: state.tier,
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile: join(INPUT_DIR, 'scope.json'),
-      securityScanFile: state.securityScan?.file },
+      securityScanFile: state.securityScan?.file, rulesBaseDir: state.rulesBaseDir ?? null },
     deferrals: state.deferrals?.verified ?? [],
     rulings: state.rulings?.verified ?? [],
     rebuttals: state.rebuttals ?? [],
@@ -400,6 +415,49 @@ async function codex() {
   state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget,
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
+}
+
+// ── 答卷分类(publish 与 codex 阶段共用)──────────────────────────────────────
+// 证据按 head 的 git 对象核对,不看工作树:审查模型对 REPO_DIR 有写权限,能造出文件让证据「存在」。永不抛错。
+function headReaderFor(head) {
+  const cache = new Map();
+  const git0 = (args) => run('git', args, { cwd: REPO_DIR, allowFail: true, timeoutMs: 30_000 });
+  return (path) => {
+    if (cache.has(path)) return cache.get(path);
+    let read = { exists: false, lineCount: 0 };
+    if (path && !String(path).startsWith('/') && !String(path).includes('\\') && !String(path).split('/').includes('..')) {
+      const tree = git0(['ls-tree', '--name-only', head, '--', path]);
+      if (tree.ok && tree.stdout.trim()) {
+        const type = git0(['cat-file', '-t', `${head}:${path}`]);
+        if (type.ok && type.stdout.trim() === 'blob') {
+          const blob = git0(['cat-file', '-p', `${head}:${path}`]);
+          const text = blob.ok ? blob.stdout : '';
+          read = { exists: true, lineCount: text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0 };
+        } else read = { exists: true, lineCount: 0 };
+      }
+    }
+    cache.set(path, read);
+    return read;
+  };
+}
+
+function classifyAnswer(state, ctx, answer) {
+  const diffFiles = splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'));
+  const checked = validateAnswer(answer, { diffFiles, deferrals: state.deferrals?.verified ?? [], headReader: headReaderFor(state.input.head) });
+  if (!checked.ok) return checked;
+  const history = collectMarkerHistory({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer ?? state.context.viewer, currentHead: state.input.head });
+  const roundIndex = roundIndexOf({ previousRound: state.previousRound ?? null, hasPrevious: Boolean(state.previous), history });
+  const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
+    deferred: checked.deferred.slice(0, 100), scope: state.scope, roundIndex, previousRound: state.previousRound ?? null,
+    history, rulings: state.rulings?.verified ?? [], head: state.input.head });
+  return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100 } };
+}
+
+// 结果包里的问题只留判级、定位、正文和收敛需要的字段。
+function toStoredFinding(finding) {
+  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes'];
+  const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
+  return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
 }
 
 // ── publish ────────────────────────────────────────────────────────────────
@@ -446,10 +504,17 @@ async function publish() {
     let report;
     let findings;
     let deferred = [];
+    let preexisting = [];
+    let ruledKept = [];
+    let convergence = null;
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
       findings = previous.mivo?.findings ?? [];
       deferred = previous.mivo?.deferred ?? [];
+      // 沿用上一轮结论:不重算 key 与轮次。
+      preexisting = previous.mivo?.preexisting ?? [];
+      ruledKept = previous.mivo?.ruledKept ?? [];
+      convergence = previous.mivo?.convergence ?? null;
       report = reusedReport({ previousReport: readFileSync(join(WORK, 'prev', 'report.md'), 'utf8'), scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
     } else {
@@ -462,16 +527,21 @@ async function publish() {
           : '没有答卷');
         return failReview(state, result, `模型审查没有完成:${why}`, { quota: last?.quota === true });
       }
-      const checked = validateAnswer(readJson(answerFile), { diffFiles, deferrals: state.deferrals?.verified ?? [] });
+      const checked = classifyAnswer(state, ctx, readJson(answerFile));
       if (!checked.ok) return failReview(state, result, `模型答卷不合格:${checked.error}`);
       result.warnings.push(...checked.notes);
-      findings = checked.findings.slice(0, 100);
-      if (checked.findings.length > 100) result.warnings.push(`问题超过 100 条,只发布前 100 条`);
-      deferred = checked.deferred.slice(0, 100);
-      if (checked.deferred.length > 100) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
+      findings = checked.findings;
+      if (checked.truncated.findings) result.warnings.push(`问题超过 100 条,只发布前 100 条`);
+      deferred = checked.deferred;
+      if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
+      preexisting = checked.preexisting;
+      ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
+      convergence = checked.convergence;
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
+        preexisting, ruledKept, convergenceLines: renderConvergenceSection(checked.convergence, checked.stuck),
         pr: input.pr, url: state.context.url, head: input.head,
-        base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier, scope: state.scope });
+        base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier, scope: state.scope,
+        skillSha: input.skillSha, specDigest: state.current?.specDigest });
       result.mivo.lastFullReviewAt = state.scope.mode === 'full' ? nowIso() : state.previous?.lastFullReviewAt;
     }
     const scrubbed = scrubSecrets(report);
@@ -479,12 +549,15 @@ async function publish() {
     report = scrubbed.text;
     findings = findings.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return { ...finding, body: s.text }; });
     deferred = deferred.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return { ...finding, body: s.text }; });
+    // 结果包只存紧凑形状:Mini 的 round.mjs 会把 server.mivo 整份带进轮次文件,正文以外的长文本不放进去。
+    preexisting = preexisting.map((finding) => toStoredFinding(finding));
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
-    Object.assign(result.mivo, { reportComplete: true, findings, deferred, deferrals: {
+    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, convergence,
+      rulesSource: state.rulesSource ?? null, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
     } });
@@ -516,7 +589,7 @@ function baseResult(state) {
       tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
       filePatchHashes: current.filePatchHashes, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
-      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], completedAt: null,
+      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], convergence: null, completedAt: null,
     },
   };
 }
