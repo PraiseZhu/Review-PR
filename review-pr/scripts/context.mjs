@@ -31,6 +31,8 @@
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, botCheckActivity, evaluateBotSettleSinceReady, toHeadPushedAt, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
+// [MIVO-PATCH identity-env]
+import { viewerLoginOverride } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
 import { isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
@@ -241,6 +243,10 @@ const GQL = `
     }
   }`;
 
+// [MIVO-PATCH identity-env] 设了 REVIEW_PR_VIEWER_LOGIN 时查询里去掉 viewer:integration 令牌的 viewer 是 bot 或读不到,
+// 不能让它决定审查账号,也不能让它的字段错误拖垮整个查询。没设时仍发原来的 GQL,一字不改。
+const GQL_WITHOUT_VIEWER = GQL.replace(/^[ \t]*viewer\{ login \}\n/m, '');
+
 const isBot = (a) => a?.__typename === 'Bot' || /\[bot\]$/i.test(a?.login ?? '');
 const clip = (s, n) => (s ?? '').replace(/\r/g, '').slice(0, n);
 
@@ -355,6 +361,8 @@ try {
   const { owner, repo } = parseRepo();
   const pr = parsePR(process.argv[2]);
   const slug = `${owner}/${repo}`;
+  // [MIVO-PATCH identity-env] 格式不对在发出任何请求之前报错(fail 输出 JSON,退出码 1)。
+  const viewerOverride = viewerLoginOverride();
   const argument = (name) => {
     const i = process.argv.indexOf(name);
     if (i < 0) return '';
@@ -576,8 +584,8 @@ try {
 
   // ── 1.5 + 1.6.5:GraphQL 拉历史 ──
   // ghGraphql 容忍 GraphQL 部分成功(某字段被 token 拒时其余字段仍能拿到),作通用兜底。
-  const gqlResult = ghGraphql(GQL, { owner, repo, num: pr });
-  if (gqlResult?.errors?.length || !gqlResult?.data?.repository?.pullRequest || !gqlResult?.data?.viewer?.login) {
+  const gqlResult = ghGraphql(viewerOverride ? GQL_WITHOUT_VIEWER : GQL, { owner, repo, num: pr });
+  if (gqlResult?.errors?.length || !gqlResult?.data?.repository?.pullRequest || (!viewerOverride && !gqlResult?.data?.viewer?.login)) {
     throw new Error('PR 或 viewer 元数据未完整读取');
   }
   const gqlData = gqlResult.data;
@@ -593,7 +601,9 @@ try {
       commit: { oid: c.sha, committedDate: c.commit?.committer?.date, messageHeadline: c.commit?.message?.split('\n')[0] },
     })) },
   };
-  const viewerLogin = gqlData.viewer?.login ?? '';
+  // [MIVO-PATCH identity-env] 审查账号唯一来源:hold 标记认人、审查机 review 排除、viewerIsAuthor、评论过滤、
+  // 自解死锁,以及服务器 review.mjs 用 approvalPolicy.viewer 认裁定/申辩 thread,全部从这里取。
+  const viewerLogin = viewerOverride || (gqlData.viewer?.login ?? '');
   // ── 堆叠 PR(stacked)的 retarget 信号 ──
   // 非默认 base 可能是 stacked PR,也可能是正常的 release 等长期分支。
   // 只有同仓库、同 head ref 的 PR 才构成分支依赖;fork 同名分支不是这个 base。
@@ -1178,7 +1188,8 @@ try {
   const standingHumanChangesRequest = selectStandingViewerHumanChangesRequest(prReviews, viewerLogin);
   const allChangesRequestedBySelf =
     hasChangesRequested && viewerLogin !== '' &&
-    changesRequestedReviews.every((r) => (r.author?.login ?? '') === viewerLogin) &&
+    // [MIVO-PATCH identity-env] 按小写比:REVIEW_PR_VIEWER_LOGIN 的大小写可能和 GitHub 返回的不同。GitHub 登录名不分大小写,没设变量时结果不变。
+    changesRequestedReviews.every((r) => (r.author?.login ?? '').toLowerCase() === viewerLower) &&
     !standingHumanChangesRequest;
   const selfBlockedResolvable =
     meta.mergeStateStatus === 'BLOCKED' &&

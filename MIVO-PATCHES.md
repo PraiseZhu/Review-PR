@@ -47,6 +47,7 @@
 | round-owner | 轮次状态（round-state）每行记下写它的轮次与创建时间；旧轮晚收尾时，跳过已经由更新轮次写过的行，不写回成旧 head | `scripts/review-round.mjs`（`nextRoundState`） | Mivo 前置在作者推新提交、旧审查确认结束后，把这个 PR 提前从旧轮释放、交给新一轮（2026-10-14 修正方案 Step 2）；旧轮里其它 PR 还在审时它晚收尾，会把新 head 的状态写回成旧的 |
 | rule-map | 整份换成 Mivo 的规则导航（来源：Mivo `AGENTS.md`「改什么，先读哪里」） | `references/rule-map.md` | 上游是 Cindy 仓的映射 |
 | test-rules | 上游的配置取值测试改读 `REVIEW_PR_RULES_FILE`；上游测试用 `tools/fixtures/upstream-pr-rules.json` 运行 | `scripts/approval-policy.test.mjs` | 生产配置换成了 Mivo 的值，上游用例仍要验证上游行为 |
+| identity-env | 三个可选变量让 prepare 读上下文能用 integration 令牌(github.token / App 安装令牌)跑:REVIEW_PR_VIEWER_LOGIN 代替 GraphQL viewer(查询里不再要 viewer;context 的审查账号只从 viewerLogin 一处取,自解死锁比较改成不分大小写);REVIEW_PR_IDENTITY_TOKEN 只给分支保护、required_signatures、ruleset current_user_can_bypass 与沙箱跨仓派发用;prepare 的登录检查在设了 REVIEW_PR_VIEWER_LOGIN 时改为读一次仓库。三个都不设(或为空)时每个调用与改动前相同 | scripts/lib.mjs(viewerLoginOverride、identityTokenOptions、probeGhAuth、probeBranchProtection)、scripts/context.mjs、scripts/prepare.mjs;mivo/server/review.mjs(toIdentityEnv) | 把服务器 prepare 的读请求从 PraiseZhu 的额度挪走,后续只改 review-pr.yml;integration 令牌没有用户身份,GraphQL viewer 是 bot、/user 403、没有 Administration 读 |
 
 只改配置、不改代码的部分：bot 静默期只等 `greptile-apps`（静默 5 分钟，最多 30 分钟）；
 Git 历史推送只对 `makecindy/cindy` 生效，对 Mivo 天然不触发；飞书卡片只生成不发送。
