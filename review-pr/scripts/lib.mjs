@@ -3370,20 +3370,46 @@ export function latestIssueRelease(...releases) {
  * 当前 head 上有维护者 Request Changes 时 waitingForAuthor=true,不算放行。没有受保护文件返回 null。
  */
 export function evaluateProtectedPathRelease({
-  protectedFiles = [], reviews = [], maintainers = [], latestCommitDate = '', issueRelease = null, authorLogin = '',
+  protectedFiles = [], reviews = [], maintainers = [], latestCommitDate = '', issueRelease = null, authorLogin = '', authorExempt = false,
 } = {}) {
   if (!protectedFiles.length) return null;
   const review = evaluateMaintainerReview({ reviews, maintainers, latestCommitDate, markerRelease: issueRelease, authorLogin });
-  const released = review.released
-    ? { ...review.released, fingerprint: review.released.fingerprint ?? `${review.released.via}:${review.released.by}:${review.released.at ?? ''}` }
+  // [MIVO-PATCH protected-author-release] 作者是维护者(authorExempt = context 的 authorSignoffExempt:
+  // 维护者集合成员或 exemptAuthors)时放行直接成立,不等 Approve / 「同意放行」。「谁能给别人的 PR 放行」仍只看
+  // maintainers(maintainerAllowlist),这里不动;别的维护者在当前 head 上 Request Changes 时照旧交作者。
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const authorRelease = authorExempt === true && author !== '' && !review.waitingForAuthor
+    ? { by: author, via: 'author-maintainer', at: null, fingerprint: `author-maintainer:${author}` }
+    : null;
+  const raw = authorRelease ?? review.released;
+  const released = raw
+    ? { ...raw, fingerprint: raw.fingerprint ?? `${raw.via}:${raw.by}:${raw.at ?? ''}` }
     : null;
   return {
     files: protectedFiles.slice(0, 30),
     fileCount: protectedFiles.length,
     released,
     waitingForAuthor: review.waitingForAuthor,
-    reviewState: review.reviewState,
+    reviewState: authorRelease ? 'author-maintainer' : review.reviewState,
   };
+}
+
+/**
+ * [MIVO-PATCH protected-author-release] 通知 issue 建完即关时留的那句说明。kind=protected(受保护路径、作者是维护者、
+ * 自动放行)单独写准;其余沿用原文。尾部暗记不变,Mivo 侧靠它识别流程评论。
+ */
+export const NOTICE_CLOSE_MARKER = '<!-- review-pr:signoff-notice-close -->';
+export function toNoticeCloseComment(kind = 'product') {
+  const text = kind === 'protected'
+    ? '本 issue 只是通知：作者是维护者，受保护路径改动按规则自动放行，审查机直接把 `review-pr` 写为通过。流程已自动关闭本 issue，不需要回复。'
+    : '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。';
+  return `${text}\n\n${NOTICE_CLOSE_MARKER}`;
+}
+
+/** [MIVO-PATCH protected-author-release] 放行后关讨论 issue 时留的说明:调用方给了文案(如自动放行)就用它,否则沿用原文。 */
+export function toDiscussIssueCloseBody({ pr, url, closeCommentBody = '' } = {}) {
+  const custom = String(closeCommentBody ?? '').trim();
+  return custom !== '' ? custom : `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#${pr}(${url})。本 issue 由 review-pr 流程自动关闭。`;
 }
 
 /** [MIVO-PATCH signoff-mode] 确认 issue footer。句式是 Mivo parseSignoffIssue 的契约,只在末尾追加模式标记。 */

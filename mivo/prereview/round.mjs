@@ -16,7 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -277,8 +277,10 @@ function isGithubRateLimited(server) {
 
 // #68 上线前 outcome=protected 的 round-state 指纹没变,会被 pre-check 当成 unchanged。
 // 只给这些 PR 标 retry 一次,不清空缓存、不让全部 PR 重审。标记写在 Mini 本机 mivo 状态目录。
-function wakeProtectedHoldOnce() {
-  const markerFile = stateFile('protected-hold-wake.json');
+// 「作者为维护者自动放行」上线时同理:已 hold 住的维护者受保护路径 PR(如 #1037)指纹没变,要再唤醒一次,
+// 用独立的标记文件,不和 #68 那次互相挡。
+function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json') {
+  const markerFile = stateFile(markerName);
   const already = readJson(markerFile, { done: false });
   const rsPath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
   const rs = readJson(rsPath, null);
@@ -320,8 +322,10 @@ async function main() {
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
   sweepBypassReminders();
-  try { wakeProtectedHoldOnce(); } catch (error) {
-    log('wake-protected-hold-skip', { reason: error.message.slice(0, 200) });
+  for (const markerName of ['protected-hold-wake.json', 'protected-author-release-wake.json']) {
+    try { wakeProtectedHoldOnce(markerName); } catch (error) {
+      log('wake-protected-hold-skip', { marker: markerName, reason: error.message.slice(0, 200) });
+    }
   }
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
@@ -765,6 +769,8 @@ function handleTask(ctx, task) {
       }
     }
   }
+  // 作者是维护者、受保护路径自动放行:不发「转人工审核」提醒,作者提醒回执记 deduplicated(轮次汇总要求 protected 有终态)。
+  if (decision.autoRelease) result.authorNotice = toAutoReleaseNotice({ head: task.head, by: decision.autoRelease.by });
   if (!dry) syncDisplayLabels(live, task, result);
   if (!dry) dropStaleMergeReady(live, task, result);
 
@@ -773,7 +779,9 @@ function handleTask(ctx, task) {
     // 服务器独立复核并写;已经成功就由 Mini 补关确认 issue(服务器令牌的 issue 写权限未核实,关 issue 不交给服务器)。
     const protectedPath = live.protectedPath;
     const next = toProtectedDispatch({ decision, protectedPath, checkDone: protectedCheckDone(task) });
-    if (next.closeIssue && !dry) executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue' }, live, task, bindings, result, roundDir });
+    if (next.closeIssue && !dry) {
+      executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
+    }
     if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result);
   }
   if (decision.stage !== 'review') {
@@ -815,7 +823,13 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
     }
     case 'signoff-release': {
       // 补关 issue 只关绑定本 PR 的:hold 标记评论任何人都能发,指向别的 PR 的 issue 时不关、不评论,只记 warning。
-      const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings });
+      // 自动放行关存量 protected issue:说明文案写进 payload 文件(closeCommentBody)交给 signoff-release。
+      let payloadFile = '';
+      if (action.autoRelease) {
+        payloadFile = join(roundDir, `auto-release-close-pr-${pr}.json`);
+        writeJson(payloadFile, { closeCommentBody: toAutoReleaseCloseComment({ pr, url: live.meta?.url, by: live.meta?.author ?? action.autoRelease.by }) });
+      }
+      const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings, payloadFile });
       if (warning) result.warnings.push(`signoffRelease:${warning}`);
       record('signoffRelease', script('signoff-release.mjs', args));
       break;

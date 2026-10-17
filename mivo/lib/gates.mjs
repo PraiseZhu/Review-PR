@@ -53,16 +53,31 @@ export function toProtectedDispatch({ decision, protectedPath, checkDone = false
  * 标记评论任何人都能发,指向别的 PR 的 issue 时关了会越权(终审 F1)。判据来自 context 对 heldIssue 的评估
  * (releaseUntrusted=issue-not-bound);读不到 issue 或编号对不上也不关。没绑定:不关、不评论,返回 warning。
  */
-export function toSignoffReleaseArgs({ action, pr, held, heldIssue, bindings = [] } = {}) {
+export function toSignoffReleaseArgs({ action, pr, held, heldIssue, bindings = [], payloadFile = '' } = {}) {
   const base = [String(pr), '--labels-only'];
   if (action?.mode !== 'labels-only-close-issue') return { args: [...base, ...bindings] };
-  if (!held?.issueUrl) return { args: [...base, '--close-issue', ...bindings] };
+  // [MIVO-PATCH protected-author-release] 自动放行关 issue 时带说明文案文件({ closeCommentBody });其余动作不带。
+  const closeArgs = ['--close-issue', ...(action.autoRelease && payloadFile ? ['--payload-file', payloadFile] : [])];
+  if (!held?.issueUrl) return { args: [...base, ...closeArgs, ...bindings] };
   const reason = !heldIssue || heldIssue.state == null || heldIssue.number !== held.issueNumber ? 'issue-unverified'
     : heldIssue.releaseUntrusted === 'issue-not-bound' ? 'issue-not-bound' : null;
   if (reason) {
     return { args: [...base, ...bindings], warning: `hold 标记指向的 issue #${held.issueNumber ?? '?'} 未通过绑定本 PR 的校验(${reason}),没有评论也没有关闭` };
   }
-  return { args: [...base, '--close-issue', ...bindings] };
+  return { args: [...base, ...closeArgs, ...bindings] };
+}
+
+/**
+ * [MIVO-PATCH protected-author-release] 作者是维护者、受保护路径自动放行时,Mini 不发「转人工审核」提醒,
+ * 作者提醒回执直接记 deduplicated(指纹带作者),让轮次汇总对 outcome=protected 的终态校验通过。
+ */
+export function toAutoReleaseNotice({ head = '', by = '' } = {}) {
+  return { kind: 'protected-path', status: 'deduplicated', head, fingerprint: `author-maintainer:${String(by).toLowerCase()}`, reason: 'author-maintainer-auto-release' };
+}
+
+/** 关掉存量 protected issue 时留的那句说明(经 signoff-release 的 payload 文件 closeCommentBody 带过去)。 */
+export function toAutoReleaseCloseComment({ pr, url, by } = {}) {
+  return `作者为维护者，按新规则自动放行：受保护路径改动不再等人工审核，审查机已直接放行（作者 @${by}）。本确认 issue 不再需要。关联 PR:#${pr}(${url})。本 issue 由 review-pr 流程自动关闭。`;
 }
 
 /**
@@ -99,10 +114,15 @@ export function decideGate(ctx) {
   const exempt = signoff.authorExempt === true || ctx.approvalPolicy?.authorIsMaintainer === true;
   const signoffActions = [];
   const protectedHit = isProtectedPathHit(ctx);
+  // [MIVO-PATCH protected-author-release] 作者是维护者(context 的 authorSignoffExempt)时,context 把 protectedPath.released
+  // 直接算成 via=author-maintainer。这里只认 context 的结论,不自己判作者身份;读不到这个结论就按下面的人工审核流程走(从严)。
+  const authorRelease = ctx.protectedPath?.released?.via === 'author-maintainer' ? ctx.protectedPath.released : null;
+  const autoRelease = protectedHit && authorRelease ? { by: authorRelease.by } : null;
   if (protectedHit) {
-    // 受保护路径(任何作者,含豁免名单):前置审查开确认 issue 转人工审核,放行前审查机不写绿。
+    // 受保护路径:前置审查开确认 issue 转人工审核,放行前审查机不写绿。
     // 放行信号(维护者 Approve / issue 上的 Slack 或 GitHub「同意放行」)统一由 context 的 protectedPath 算好。
     // 它的确认门触发(如 .github/workflows 同时命中 security)并入这一个 issue,不再另开普通 hold。
+    // 作者是维护者:开 notice issue(建完即关、不挂标签,Slack 照常通报),自动放行,不等任何人。
     const protectedPath = ctx.protectedPath ?? {};
     if (protectedPath.waitingForAuthor) {
       if (labels.hasAnyLabel) signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
@@ -112,14 +132,24 @@ export function decideGate(ctx) {
         actions: signoffActions,
       };
     }
-    if (!protectedPath.released || !signoff.held) {
+    if (autoRelease) {
+      const heldIssue = signoff.heldIssue ?? null;
+      if (!signoff.held) {
+        signoffActions.push({ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'notice' });
+      } else if (heldIssue?.state === 'OPEN' && heldIssue.mode === 'protected') {
+        // 存量:此前按人工审核 hold 住的 protected issue,新规则下不再有人要管它。关掉并留一句说明(同时摘残留标签)。
+        signoffActions.push({ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease });
+      } else if (labels.hasAnyLabel) {
+        signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
+      }
+    } else if (!protectedPath.released || !signoff.held) {
       // 从未 hold 过即使已放行也开完整 protected issue,让确认记录落在 GitHub。
       // 已有确认 issue 且仍可复用(不是通知 issue、没关闭)只补标签;否则开完整的新 issue。
       const heldIssue = signoff.heldIssue ?? null;
       const reusable = Boolean(signoff.held) && heldIssue?.mode !== 'notice' && heldIssue?.state !== 'CLOSED';
       signoffActions.push({ script: 'signoff-hold', mode: reusable ? 'labels-only' : 'full', kind: 'protected', issueMode: 'protected' });
     }
-    if (protectedPath.released && labels.hasAnyLabel) {
+    if (!autoRelease && protectedPath.released && labels.hasAnyLabel) {
       // 放行后只摘标签。确认 issue 等服务器把 review-pr 写成功后再关(round 的 toProtectedDispatch)。
       signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
     }
@@ -185,6 +215,10 @@ export function decideGate(ctx) {
   if (botThreadsOnly && action !== 'review') return threadsResult;
   switch (action) {
     case 'skip-protected-path':
+      // 自动放行不发「转人工审核」提醒;作者提醒回执由 round 用 toAutoReleaseNotice 补。
+      if (autoRelease) {
+        return withSignoff({ stage: 'protected', outcome: 'protected', reason: `受保护路径:作者为维护者(${autoRelease.by}),自动放行`, actions: [], autoRelease });
+      }
       return withSignoff({ stage: 'protected', outcome: 'protected', reason, actions: [{ script: 'notify-protected' }] });
     case 'pushback-format':
       return withSignoff({ stage: 'format', outcome: 'format', reason: formatReason(ctx), actions: [{ script: 'request-changes', gateKind: 'format' }] });
@@ -280,9 +314,14 @@ export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const title = ctx.meta?.title ?? '';
   const author = ctx.meta?.author ?? '';
   const isProtected = mode === 'protected';
+  // [MIVO-PATCH protected-author-release] 受保护路径的 notice:作者是维护者,自动放行,只通知。
+  const isProtectedNotice = mode === 'notice' && kind === 'protected';
+  const protectedFileList = (ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ');
   const trigger = isProtected
-    ? { detail: `改动受保护路径 ${(ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ')}(转人工审核)`, files: ctx.protectedPath?.files ?? [] }
-    : (ctx.signoff?.triggers ?? []).find((t) => t.kind === kind) ?? ctx.signoff?.currentBlocker ?? {};
+    ? { detail: `改动受保护路径 ${protectedFileList}(转人工审核)`, files: ctx.protectedPath?.files ?? [] }
+    : isProtectedNotice
+      ? { detail: `改动受保护路径 ${protectedFileList}(作者为维护者，自动放行)`, files: ctx.protectedPath?.files ?? [] }
+      : (ctx.signoff?.triggers ?? []).find((t) => t.kind === kind) ?? ctx.signoff?.currentBlocker ?? {};
   const blockingKinds = (ctx.signoff?.triggers ?? []).filter((t) => t.blocking).map((t) => t.kind);
   const files = [...(ctx.files ?? [])]
     .map((f) => ({ path: f.path, lines: (f.additions ?? 0) + (f.deletions ?? 0) }))
@@ -295,7 +334,12 @@ export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const changedSummary = top.length
     ? ['涉及文件(前 5 个,按改动行数):', ...top.map((f) => `- \`${f.path}\`(${f.lines} 行)`)].join('\n')
     : '';
-  const confirmSection = mode === 'notice'
+  const confirmSection = isProtectedNotice
+    ? [
+      '- 本 issue 只是通知：作者是维护者，受保护路径改动按规则自动放行，不需要回复',
+      '- 自动审查不审这类改动；审查机直接把 `review-pr` 检查写为通过',
+    ]
+    : mode === 'notice'
     ? ['- 本 issue 只是通知：作者在豁免名单内，维护者确认门不拦，PR 照常进入自动审查，不需要回复。']
     : [
       '- **通过**：在相关 Slack 会话留言「同意放行」、在本 issue 下评论「同意放行」，或直接在 PR 上 Approve；批一次一直有效',
@@ -319,7 +363,11 @@ export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const topicList = isProtected
     ? KIND_TOPICS.protected
     : (blockingKinds.length ? blockingKinds : [kind]).map((k) => KIND_TOPICS[k] ?? k).join('、');
-  const commentBody = mode === 'notice'
+  const commentBody = isProtectedNotice
+    ? [
+      `本 PR 改了受保护路径（${(ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ')}），作者是维护者，按规则自动放行（自动审查不审这类改动，审查机直接把 review-pr 写为通过）；已开通知 issue 告知维护者：{{ISSUE_URL}}`,
+    ].join('\n')
+    : mode === 'notice'
     ? [
       `本 PR 命中维护者确认门（触发类别：${KIND_TOPICS[kind] ?? kind}）。作者在豁免名单内，确认门不拦，PR 照常进入自动审查；已开通知 issue 告知维护者：{{ISSUE_URL}}`,
     ].join('\n')

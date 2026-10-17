@@ -47,9 +47,10 @@
 //     hold 评论。用于 signoff.labels.stale=true 的重同步。**状态回帖照发**(见上)。
 //   --no-renotice:关掉状态回帖(只给测试/特殊场景用;正常流程别加,加了作者就又收不到通知)
 //   --signoff-mode:[MIVO-PATCH signoff-mode] 确认 issue 的模式,写进 issue footer 末尾的隐藏标记。
-//     protected = 改了受保护路径的 PR(任何作者都开,放行前审查机不写绿);
-//     notice    = 豁免作者碰到确认门但没改受保护路径:只开通知 issue + PR 评论(带去重标记),
-//                 创建后立即关闭 issue,不挂标签、不回帖、不拦 PR。不传 = 普通确认门。
+//     protected = 非维护者作者改了受保护路径的 PR(放行前审查机不写绿);
+//     notice    = 豁免作者碰到确认门,或维护者作者改了受保护路径(--kind protected,自动放行):
+//                 只开通知 issue + PR 评论(带去重标记),创建后立即关闭 issue,不挂标签、不回帖、
+//                 不拦 PR。不传 = 普通确认门。
 //   --dry-run:只探测(是否已拦截过 / 将做什么),不写任何外部状态
 //
 // 正确调用(`-` 走 stdin):
@@ -59,7 +60,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, toNoticeCloseComment } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -68,7 +69,6 @@ const MARKER_PREFIX = PRODUCT_GATE_MARKER_PREFIX;
 const marker = (issueUrl, kind) =>
   kind === 'product' ? `${MARKER_PREFIX} issue=${issueUrl} -->` : `${MARKER_PREFIX} kind=arch issue=${issueUrl} -->`;
 
-const NOTICE_CLOSE_COMMENT = '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。\n\n<!-- review-pr:signoff-notice-close -->';
 const protectedSupersedeComment = (url) =>
   `本 PR 已改为受保护路径确认,请在新 issue 上重新放行。后续讨论见 <${url}>。流程已关闭本 issue。\n\n<!-- review-pr:signoff-protected-supersede -->`;
 
@@ -260,7 +260,7 @@ try {
       const priorNum = priorIssueUrl == null ? null : issueNumberFromUrl(slug, priorIssueUrl);
       const stillOpenNotice = priorIsNotice && priorIssueState === 'OPEN' && priorNum != null;
       const closed = stillOpenNotice
-        ? closeDiscussIssue({ slug, issueNumber: priorNum, commentBody: NOTICE_CLOSE_COMMENT, dryRun, ghFn: writeGh })
+        ? closeDiscussIssue({ slug, issueNumber: priorNum, commentBody: toNoticeCloseComment(), dryRun, ghFn: writeGh })
         : null;
       print({ ok: true, pr, author, notice: true, alreadyNotified: true, ...priorIssueInfo,
         ...(closed ? { issueClosed: closed.closed || closed.wouldClose === true, closeError: closed.closeError } : {}) });
@@ -289,7 +289,7 @@ try {
         // 评论没发出去也要关:issue 已经创建,留着开放的通知 issue 会被之后的受保护路径 hold 误复用。
         const closed = issueNum == null
           ? { closed: false, closeError: 'issue-url-unparsable' }
-          : closeDiscussIssue({ slug, issueNumber: issueNum, commentBody: NOTICE_CLOSE_COMMENT, dryRun: false, ghFn: writeGh });
+          : closeDiscussIssue({ slug, issueNumber: issueNum, commentBody: toNoticeCloseComment(kind), dryRun: false, ghFn: writeGh });
         print({
           ok: true, pr, author, notice: true, kind, issueUrl, issueCreated: true,
           commented: c.ok, commentError: c.ok ? null : (c.stderr || '').trim().slice(0, 300),
