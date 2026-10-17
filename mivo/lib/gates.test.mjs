@@ -7,6 +7,8 @@ import { toProtectedHoldWake } from './admission.mjs';
 
 // 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
 const { toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry } = await import('./gates.mjs');
+// 2026-10-17 两个 P2 新增的纯函数,同样动态取。
+const { toAuthorSelfApproval, toStaleMergeReadyReason } = await import('./gates.mjs');
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -537,4 +539,78 @@ test('接线:round 在写任务结果前清掉过期的受保护提醒回执,并
   const round = readFileSync(fileURLToPath(new URL('../prereview/round.mjs', import.meta.url)), 'utf8');
   assert.match(round, /dropStaleProtectedNotice\(/);
   assert.match(round, /withProtectedGateRetry\(/);
+});
+
+// ── review:merge-ready 的两个 P2(2026-10-17,#1081 带着未 resolve 讨论拿到标签)──
+
+// P2-1:作者就是审查账号时自批被拒是预期的;但只有「除此之外全部通过」才能挂标签、写 success。
+test('作者自批:approve 回执只有这一个拦截项才算 authorOnly', () => {
+  const author = { code: 'independent-approval-required', reason: '当前 viewer 是 PR 作者，未核验到另一位维护者的有效 Approve，不能自批' };
+  assert.deepEqual(toAuthorSelfApproval({ failures: [author] }), { authorOnly: true, others: [], retry: false });
+});
+
+test('作者自批:还有别的拦截项(#1081 的未 resolve 讨论)不是 authorOnly,并把它们带出来', () => {
+  const author = { code: 'independent-approval-required', reason: '不能自批' };
+  const threads = { code: 'threads-unresolved', reason: '仍有 conversation 未 resolve' };
+  const r = toAuthorSelfApproval({ failures: [author, threads] });
+  assert.equal(r.authorOnly, false);
+  assert.deepEqual(r.others, [threads]);
+  assert.equal(r.retry, false, '讨论没 resolve 是确定的拦截,等人处理,不是读失败');
+  const other = { code: 'other-changes-requested', reason: '存在别人的有效 CHANGES_REQUESTED' };
+  assert.deepEqual(toAuthorSelfApproval({ failures: [author, other] }).others, [other]);
+});
+
+test('作者自批:别的拦截项只是读取不确定(threads-unverified 等)时不放行,但标 retry 等下一轮重读', () => {
+  const author = { code: 'independent-approval-required', reason: '不能自批' };
+  for (const code of ['authority-unverified', 'viewer-unverified', 'threads-unverified', 'reviews-unverified']) {
+    const r = toAuthorSelfApproval({ failures: [{ code, reason: `${code} 未读到` }, author] });
+    assert.equal(r.authorOnly, false, code);
+    assert.equal(r.retry, true, code);
+    assert.equal(r.others.length, 1, code);
+  }
+});
+
+test('作者自批:读不到逐项明细(旧回执、缺字段、形状不对)一律按「还有别的拦截项」处理,不放行', () => {
+  const author = { code: 'independent-approval-required', reason: '不能自批' };
+  for (const bad of [null, undefined, {}, { failures: [] }, { failures: 'x' }, { failures: [{ code: '', reason: 'r' }, author] },
+    { failures: [author, { code: 'threads-unresolved' }] }, { failures: [{ code: 'threads-unresolved', reason: 'r' }] }]) {
+    const r = toAuthorSelfApproval(bad);
+    assert.equal(r.authorOnly, false, JSON.stringify(bad));
+    assert.equal(r.retry, true, JSON.stringify(bad));
+    assert.equal(r.others.length, 1, JSON.stringify(bad));
+    assert.equal(r.others[0].code, 'failures-unreadable', JSON.stringify(bad));
+  }
+});
+
+// P2-3:门禁失效(冲突等)时也摘 review:merge-ready,不只在 head 变化时摘。
+// 判据只用 Mini 判门已经拿到的 context(不多打 API),且只认稳定、人驱动的失效;瞬态(CI 在跑、机器人没说完、读失败)不摘,避免反复加摘。
+test('门禁失效:冲突(DIRTY / CONFLICTING)摘标签,判门没走到冲突分支也一样(#978)', () => {
+  const decision = { stage: 'review', outcome: null };
+  assert.match(toStaleMergeReadyReason({ decision, meta: { mergeStateStatus: 'DIRTY' } }), /冲突/);
+  assert.match(toStaleMergeReadyReason({ decision, meta: { mergeable: 'CONFLICTING' } }), /冲突/);
+  // 判门先撞上别的卡点(未 resolve 的人工讨论)时,冲突仍然独立成立
+  assert.match(toStaleMergeReadyReason({ decision: { stage: 'threads', outcome: 'threads-unresolved' }, meta: { mergeStateStatus: 'DIRTY' } }), /冲突/);
+});
+
+test('门禁失效:稳定的卡点(讨论/他人 CR/确认门/凭证/格式/CI 失败/rebase/retarget)摘标签', () => {
+  for (const outcome of ['conflict', 'threads-unresolved', 'changes-requested', 'maintainer-signoff', 'security', 'format', 'ci-failed', 'rebase', 'retarget']) {
+    const reason = toStaleMergeReadyReason({ decision: { stage: 'gate', outcome, reason: `卡在 ${outcome}` }, meta: { mergeStateStatus: 'BLOCKED' } });
+    assert.ok(reason, outcome);
+    assert.match(reason, new RegExp(outcome), `原因要带上判门结论:${outcome}`);
+  }
+});
+
+test('门禁没有失效不摘:送审阶段(含只剩机器人 thread / 缺界面证据的 advisory)、瞬态卡点、受保护路径', () => {
+  const clean = { mergeStateStatus: 'CLEAN' };
+  assert.equal(toStaleMergeReadyReason({ decision: { stage: 'review', outcome: null, pendingGates: ['bot-threads'] }, meta: clean }), null, 'advisory 由服务器 publishAdvisory 摘');
+  for (const outcome of ['ci-pending', 'ci-unknown', 'bot-pending', 'error', 'state-changed', 'merge-blocked', 'protected']) {
+    assert.equal(toStaleMergeReadyReason({ decision: { stage: 'gate', outcome }, meta: clean }), null, outcome);
+  }
+  // GitHub 的 BLOCKED 通常只是「等维护者 Approve」,正是带标签 PR 的常态(#997/#1025),不能当失效
+  for (const mergeStateStatus of ['BLOCKED', 'UNKNOWN', 'BEHIND', 'UNSTABLE', 'HAS_HOOKS', null]) {
+    assert.equal(toStaleMergeReadyReason({ decision: { stage: 'review', outcome: null }, meta: { mergeStateStatus, mergeable: 'MERGEABLE' } }), null, String(mergeStateStatus));
+  }
+  assert.equal(toStaleMergeReadyReason({ decision: { stage: 'review' }, meta: { mergeable: 'UNKNOWN' } }), null);
+  assert.equal(toStaleMergeReadyReason({}), null);
+  assert.equal(toStaleMergeReadyReason(), null);
 });
