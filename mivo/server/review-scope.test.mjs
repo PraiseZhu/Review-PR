@@ -47,3 +47,31 @@ for (const mode of ['full', 'incremental', 'reuse']) {
     } finally { rmSync(work, { recursive: true, force: true }); }
   });
 }
+
+test('head fallback warns in result:规则文件回退到 head 时,结果包带 rulesSource 与告警;v1 上一轮结果的增量轮不报错', () => {
+  const work = mkdtempSync(join(tmpdir(), 'mivo-review-rules-'));
+  try {
+    for (const dir of ['input', 'out', 'repo', 'prev']) mkdirSync(join(work, dir), { recursive: true });
+    writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: {} }));
+    writeFileSync(join(work, 'input', 'pr.diff'), DIFF);
+    const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: SHA, base: SHA, tier: 'standard', prevRunId: '41',
+      roundId: 'round-12345678', attempt: 1, mode: 'dry-run', action: 'review', skillSha: SHA, runId: '42', runUrl: '' };
+    // 上一轮结果是 v1 形状(没有 key / convergence):toPreviousRound 给出空清单,本轮照常发布。
+    writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard',
+      warnings: ['规则文件 base 版本取不到,本轮按 head 读'], errors: [], rulesSource: 'head-fallback', rulesBaseDir: null,
+      context: { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'https://github.com/o/r/pull/7',
+        evidence: { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, baseRefName: 'main', viewerIsAuthor: false },
+      current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
+      previousRound: { roundIndex: null, findings: [], keys: [] }, previous: { head: 'h0', runId: '41' },
+      scope: { mode: 'incremental', reason: '增量(基于 h0,本轮审 1 个文件)', files: ['src/a.ts'], previousFindings: [{ path: 'src/a.ts', body: '[P1] 旧问题' }], changedFiles: ['src/a.ts'] },
+      deferrals: { verified: [], rejected: [] }, codex: { attempts: [{ ok: true }] } }));
+    writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT, findings: [] }));
+    const r = spawnSync(process.execPath, [REVIEW, 'publish'], { env: { ...process.env, MIVO_REVIEW_WORK: work, GH_TOKEN: '', CHECKS_TOKEN: '' }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const result = JSON.parse(readFileSync(join(work, 'out', 'result.json'), 'utf8'));
+    assert.equal(result.outcome, 'approval', JSON.stringify(result));
+    assert.equal(result.mivo.rulesSource, 'head-fallback');
+    assert.ok(result.warnings.includes('规则文件 base 版本取不到,本轮按 head 读'));
+    assert.equal(result.mivo.convergence.roundIndex, null, '有上一轮但数不出轮次,不猜');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

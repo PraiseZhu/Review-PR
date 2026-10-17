@@ -190,6 +190,20 @@ syncBuiltinESMExports();
       assert.equal(readFixture().posts, 0);
     }
 
+    // [MIVO-PATCH approval-failures] 拦截项逐项带 code:作者就是审查账号时,调用方要分得清
+    // 「只差另一位维护者 Approve」和「除此之外还有别的没过」,不能只看第一个 code。
+    const authorViewer = { ...basic(), meta: { ...basic().meta, author: { login: 'maintainer' } } };
+    run = scenario(authorViewer);
+    result = run();
+    assert.equal(result.approval.code, 'independent-approval-required');
+    assert.deepEqual(result.failures.map((item) => item.code), ['independent-approval-required']);
+    run = scenario({ ...authorViewer, threads: [{ id: 't1', isResolved: false }] });
+    result = run();
+    assert.equal(result.approval.code, 'independent-approval-required', '第一个 code 仍是作者自批,别的拦截项靠 failures 才看得见');
+    assert.deepEqual(result.failures.map((item) => item.code), ['independent-approval-required', 'threads-unresolved']);
+    assert.equal(result.failures.at(-1).reason, '仍有 conversation 未 resolve');
+    assert.equal(readFixture().posts, 0);
+
     const unknownMergeCheck = { ok: true, state: 'OPEN', canMerge: false, normalMergeAvailable: false,
       mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN', mergeableUnknown: true,
       headVerified: true, baseVerified: true, authorityVerified: true, threadsVerified: true, unresolvedThreads: [],

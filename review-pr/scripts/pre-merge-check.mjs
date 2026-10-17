@@ -23,7 +23,7 @@
 //     --expected-authority-digest <digest>
 // 所有作者都必须传已审查 head SHA 与 authority digest;任一缺失/变化时所有 merge route 都不可用。
 
-import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettle, botCheckActivity, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
+import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
 import { filterIgnoredCiContexts, ciMergeStateIgnoring } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
 
@@ -275,11 +275,17 @@ try {
     ...commentActivity.items.map((comment) => ({ author: comment.user?.login ?? '', at: comment.created_at ?? '' })),
     ...botCheckActivity(rollupContexts, rules.botReviewSettle ?? {}), // [MIVO-PATCH bot-check-settle]
   ].filter((activity) => activity.author && activity.at);
-  const botSettle = evaluateBotSettle({
+  // [MIVO-PATCH bot-settle-ready] 与 context.mjs 同口径:超时从 max(提交, 推送, 转 Ready) 起算,推送时间用 head 上最早的检查开始时间估。
+  const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate,
+    headPushedAt: toHeadPushedAt(rollupContexts),
     nowIso: new Date().toISOString(),
     activity: botActivity,
     cfg: rules.botReviewSettle ?? {},
+  }, () => {
+    const events = fetchRestPages(`repos/${slug}/issues/${pr}/events`);
+    if (!events.verified) throw new Error(events.error);
+    return events.items;
   });
   const botSettleVerified = botSettle.enabled === false || (Boolean(headCommittedDate) && botActivityVerified);
   if (!botSettleVerified) {

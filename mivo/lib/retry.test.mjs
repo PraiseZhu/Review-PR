@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { toRetryDecision, toFailureRecord, MAX_FAILURES_PER_HEAD, MAX_DISPATCH_ATTEMPT } from './retry.mjs';
+// 2026-10-17 补审新增:派发次数按连续失败数算、已完成审查次数单独封顶。
+const { toDispatchAttempt, toCompletedRunsRecord, MAX_COMPLETED_RUNS_PER_HEAD } = await import('./retry.mjs');
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');
 const min = (n) => n * 60_000;
@@ -41,4 +43,36 @@ test('失败记录:失败累加,成功清掉,只动这个 head', () => {
   assert.deepEqual(b.h0, { count: 2, at: 'x' });
   assert.deepEqual(toFailureRecord(b, 'h1', false, 'y'), { h0: { count: 2, at: 'x' } });
   assert.deepEqual(toFailureRecord(undefined, 'h1', false, 'y'), {});
+});
+
+// 2026-10-17 补审:attempts 原先累计同 head 的所有派发(含成功的复用),满 9 次就停。摘标签后门禁恢复要靠再派发一次把标签加回,
+// 同 head 已派 9 次时就加不回来。attempt 是「这一轮连续重试第几次」(服务器据此升级模型、判定最终失败,workflow 守卫只收 1–9),
+// 改按连续失败数算;防失控的保险改成单独的「已完成审查次数」上限。
+test('派发的 attempt = 连续失败数 + 1:成功过的 head 再派发从 1 开始,不再累计', () => {
+  assert.equal(toDispatchAttempt(null), 1);
+  assert.equal(toDispatchAttempt(undefined), 1);
+  assert.equal(toDispatchAttempt({ count: 0 }), 1);
+  assert.equal(toDispatchAttempt({ count: 1 }), 2);
+  assert.equal(toDispatchAttempt({ count: MAX_FAILURES_PER_HEAD - 1 }), MAX_FAILURES_PER_HEAD);
+  assert.ok(toDispatchAttempt({ count: MAX_FAILURES_PER_HEAD }) <= MAX_DISPATCH_ATTEMPT, '失败上限内,attempt 不会超过 workflow 守卫的 9');
+  assert.equal(toDispatchAttempt({ count: 'x' }), 1);
+});
+
+test('同 head 已完成审查满上限就停,防止指纹反复变化造成的失控派发;未满照常', () => {
+  assert.ok(MAX_COMPLETED_RUNS_PER_HEAD > MAX_DISPATCH_ATTEMPT, '上限要比原先的 9 次宽,留给摘标签后再加回的派发');
+  assert.equal(toRetryDecision({ attempt: 1, completedRuns: MAX_COMPLETED_RUNS_PER_HEAD - 1, nowMs: T0 }).dispatch, true);
+  const stop = toRetryDecision({ attempt: 1, completedRuns: MAX_COMPLETED_RUNS_PER_HEAD, nowMs: T0 });
+  assert.equal(stop.dispatch, false);
+  assert.match(stop.reason, new RegExp(`已完成 ${MAX_COMPLETED_RUNS_PER_HEAD} 次`));
+  assert.match(stop.reason, /停止自动重试,需要人工处理/);
+  assert.equal(toRetryDecision({ attempt: 1, nowMs: T0 }).dispatch, true, '没传 completedRuns 与旧调用方一致');
+});
+
+test('已完成审查次数记录:只动这个 head,不改入参', () => {
+  const before = { h0: 3 };
+  const a = toCompletedRunsRecord(before, 'h1');
+  assert.deepEqual(a, { h0: 3, h1: 1 });
+  assert.deepEqual(toCompletedRunsRecord(a, 'h1'), { h0: 3, h1: 2 });
+  assert.deepEqual(before, { h0: 3 });
+  assert.deepEqual(toCompletedRunsRecord(undefined, 'h1'), { h1: 1 });
 });

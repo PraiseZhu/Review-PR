@@ -37,6 +37,7 @@ import {
   LOCK_FILE,
   releaseLockOwned,
   skillRepoPull,
+  probeGhAuth,
   fetchMaintainerAuthority,
   writeMaintainerAuthoritySnapshot,
   removeMaintainerAuthoritySnapshot,
@@ -191,7 +192,9 @@ try {
   }
 
   const repo = parseRepo();
-  const ghAuth = gh(['auth', 'status'], { allowFail: true }).ok;
+  // [MIVO-PATCH identity-env] integration 令牌没有 /user,`gh auth status` 会误报;设了 REVIEW_PR_VIEWER_LOGIN 改为读一次仓库。没设照旧。
+  const ghAuthProbe = probeGhAuth(repo);
+  const ghAuth = ghAuthProbe.ok;
   const porcelain = git(['status', '--porcelain']).stdout.trim();
   const worktreeClean = porcelain === '';
   const currentBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
@@ -206,7 +209,11 @@ try {
 
   let maintainerAuthority = null;
   if (lock.acquired) {
-    if (!ghAuth) throw new Error('gh 未登录，无法读取 CODEOWNERS 维护者 Team 与补充白名单');
+    if (!ghAuth) {
+      throw new Error(ghAuthProbe.via === 'repo-read'
+        ? `GH_TOKEN 读不了仓库 ${repo.owner}/${repo.repo}(REVIEW_PR_VIEWER_LOGIN 已设,按 integration 令牌检查):${ghAuthProbe.error}`
+        : 'gh 未登录，无法读取 CODEOWNERS 维护者 Team 与补充白名单');
+    }
     const authority = fetchMaintainerAuthority(repo);
     writeMaintainerAuthoritySnapshot(authority, { lockToken: lock.token });
     maintainerAuthority = {
@@ -230,6 +237,7 @@ try {
     skillSync,
     repo,
     ghAuth,
+    ...(ghAuthProbe.via === 'repo-read' ? { ghAuthVia: 'repo-read' } : {}),
     worktreeClean,
     dirtyFiles: worktreeClean ? [] : porcelain.split('\n'),
     currentBranch,

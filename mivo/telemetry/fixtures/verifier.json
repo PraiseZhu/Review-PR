@@ -1,0 +1,75 @@
+{
+  "prs": [
+    {
+      "number": 20,
+      "title": "t20 SENTINEL-FINDING-TEXT",
+      "body": "",
+      "state": "OPEN",
+      "merged": false,
+      "createdAt": "2026-10-10T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-10T01:00:00Z",
+          "commitOid": "aaaaaaaaaaaa0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaaa` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n\n## 核对员认为不成立（不阻断本 PR）\n\n- `src/a.ts:2` · [P1] SENTINEL-FINDING-TEXT 推翻 0 · 推翻证据：`src/b.ts:9` · 依据：SENTINEL-FINDING-TEXT\n- `src/a.ts:3` · [P1] SENTINEL-FINDING-TEXT 推翻 1 · 推翻证据：`src/b.ts:9` · 依据：SENTINEL-FINDING-TEXT\n\n## 核对员降级（不阻断本 PR）\n\n- `src/c.ts` · [P1] SENTINEL-FINDING-TEXT 降级 0 · 降级理由：SENTINEL-FINDING-TEXT\n\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。另有 3 条 P1 被核对员推翻/降级，不阻断。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-10T05:00:00Z",
+          "commitOid": "aaaaaaaaaaab0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaab` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n\n## 核对员认为不成立（不阻断本 PR）\n\n- `src/a.ts:2` · [P1] SENTINEL-FINDING-TEXT 推翻 0 · 推翻证据：`src/b.ts:9` · 依据：SENTINEL-FINDING-TEXT\n\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\nchanges-requested —— 1 条 P0/P1,已在对应位置开 review thread。另有 3 条 P1 被核对员推翻/降级，不阻断。\n"
+        },
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-10T09:00:00Z",
+          "commitOid": "aaaaaaaaaaac0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaac` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": []
+    },
+    {
+      "number": 21,
+      "title": "t21 SENTINEL-FINDING-TEXT",
+      "body": "",
+      "state": "OPEN",
+      "merged": false,
+      "createdAt": "2026-10-10T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-11T01:00:00Z",
+          "commitOid": "aaaaaaaaaaaa0000000000000000000000000000",
+          "body": "> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaaa` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有 P0/P1。\n"
+        }
+      ],
+      "threads": []
+    },
+    {
+      "number": 22,
+      "title": "t22 SENTINEL-FINDING-TEXT",
+      "body": "",
+      "state": "OPEN",
+      "merged": false,
+      "createdAt": "2026-10-10T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-12T01:00:00Z",
+          "commitOid": "aaaaaaaaaaaa0000000000000000000000000000",
+          "body": "> **主审报了 1 条 P1,核对员全部推翻或降级,所以没有阻断问题,但这不是人工结论**：请人工看一眼再合。\n\n> Mivo 自动审查 · [PR](https://github.com/o/r/pull/1) · head `aaaaaaaaaaaa` · base `bbbbbbbbbbbb` · diffHash `cccccccccccc` · 档位 standard\n\n## Findings\n无\n\n## 核对员降级（不阻断本 PR）\n\n- `src/c.ts` · [P1] SENTINEL-FINDING-TEXT 降级 0 · 降级理由：SENTINEL-FINDING-TEXT\n\n## Rule coverage\nAGENTS.md\n## Verification\n未执行\n## Overall\npass —— 没有阻断的 P0/P1。核对员推翻/降级了全部卡点（1 条），请人工看一眼再合。\n"
+        }
+      ],
+      "threads": []
+    }
+  ]
+}

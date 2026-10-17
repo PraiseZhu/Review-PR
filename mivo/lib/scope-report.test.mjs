@@ -187,3 +187,67 @@ test('上一轮结果包 → 上一轮记录:specDigest 等字段原样带回', 
   assert.deepEqual(prev.filePatchHashes, { 'a.ts': 'x' });
   assert.equal(previousFromResult({ ...result, mivo: { ...result.mivo, specDigest: undefined } }, '').specDigest, undefined);
 });
+
+// advisory(代码没有 P0/P1、前置门没过)的结果包:reviewClean 记 false 是给 Mini 看的「还没放行」,
+// 不是「代码审查有问题」。范围判定把它当成代码干净;有转 issue 的问题或不是 advisory 的 false 仍然不算干净。
+test('上一轮结果包:advisory 视为代码干净,其余 reviewClean=false 仍不干净', () => {
+  const base = { pr: 7, head: 'h1', reviewed: true, reviewClean: false, outcome: 'merge-blocked',
+    reviewEvidence: { baseRefName: 'main', diffHash: 'd1' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], filePatchHashes: filePatchHashes(files), totalDiffLines: 2,
+      tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const advisory = { ...base, mivo: { ...base.mivo, advisory: { pendingGates: ['bot-threads'] } } };
+  const scope = (result) => computeReviewScope({ previous: previousFromResult(result, ''), current: current({ head: 'h1', diffHash: 'd1' }), headIsDescendant: null });
+  assert.equal(scope(advisory).mode, 'reuse', 'advisory:同一 head 沿用');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, deferred: [{ path: 'src/a.ts', body: '[P1] x', deferredTo: 9 }] } }).mode, 'incremental', '有转 issue 的问题不沿用,重新核验');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, findings: [{ path: 'src/a.ts', body: '[P1] x' }] } }).mode, 'incremental', '有 P0/P1 不沿用,重审问题文件');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, advisory: { pendingGates: [] } } }).mode, 'full', '没有挂起的门不算 advisory');
+  assert.equal(scope(base).mode, 'full', '不是 advisory 的 reviewClean=false 仍不干净');
+  assert.equal(scope({ ...advisory, mivo: { ...advisory.mivo, verifierOverruledAll: true } }).mode, 'full', '核对员推翻全部卡点、等人工复核的 advisory 仍全量(manualReview 优先)');
+  assert.equal(previousFromResult(advisory, '').reviewClean, true, '记录里是代码层面的干净;result.reviewClean 本身仍是 false');
+  assert.equal(advisory.reviewClean, false);
+});
+
+// 2026-10-17 补审:作者即审查账号时,publishAdvisory 把发布阶段才发现的拦截项写进 advisory.blockers(pendingGates 为空)。
+// 这类结果和「只剩机器人 thread」一样,代码层面是干净的,同 head 该沿用,不该多跑一轮完整审查。
+test('上一轮结果包:advisory.blockers(作者自批之外的发布阶段拦截项)也算代码干净,同 head 沿用', () => {
+  const base = { pr: 7, head: 'h1', reviewed: true, reviewClean: false, outcome: 'merge-blocked',
+    reviewEvidence: { baseRefName: 'main', diffHash: 'd1' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], filePatchHashes: filePatchHashes(files), totalDiffLines: 2,
+      tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const blockers = { ...base, mivo: { ...base.mivo, advisory: { pendingGates: [], blockers: ['仍有 conversation 未 resolve'] } } };
+  const scope = (result) => computeReviewScope({ previous: previousFromResult(result, ''), current: current({ head: 'h1', diffHash: 'd1' }), headIsDescendant: null });
+  assert.equal(scope(blockers).mode, 'reuse', '只有 blockers 的 advisory:同一 head 沿用');
+  assert.equal(previousFromResult(blockers, '').reviewClean, true);
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, advisory: { pendingGates: [], blockers: [] } } }).mode, 'full', '两者都为空不算 advisory');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, advisory: { blockers: ['x'] } } }).mode, 'reuse', '缺 pendingGates 字段也认 blockers');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, findings: [{ path: 'src/a.ts', body: '[P1] x' }] } }).mode, 'incremental', '有 P0/P1 不沿用');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, deferred: [{ path: 'src/a.ts', body: '[P1] x', deferredTo: 9 }] } }).mode, 'incremental', '有转 issue 的问题不沿用');
+  assert.equal(scope({ ...blockers, mivo: { ...blockers.mivo, verifierOverruledAll: true } }).mode, 'full', '核对员推翻全部卡点的 advisory 仍全量');
+});
+
+test('addedLines 只含 + 行的新侧行号;增量范围带 changedFiles', () => {
+  const split = splitDiffByFile(diff('+added'));
+  assert.deepEqual([...split['src/a.ts'].addedLines], [11]);
+  assert.deepEqual([...split['src/b.ts'].addedLines], [1]);
+  const scope = computeReviewScope({ previous: previous({ reviewClean: false, findings: [{ path: 'src/b.ts', body: '[P1] x' }] }), current: current(), headIsDescendant: true });
+  assert.deepEqual(scope.changedFiles, ['src/a.ts']);
+});
+
+test('上一轮「核对员推翻了全部卡点、等人工复核」的状态跨轮保留:无关文件的小改动也不能走增量并恢复 Approve', () => {
+  const result = { pr: 7, head: 'h0', reviewed: true, reviewClean: false, outcome: 'merge-blocked', reviewEvidence: { baseRefName: 'main', diffHash: 'd0' },
+    approval: { status: 'blocked', code: 'verifier-overruled' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], verifierOverruled: [{ path: 'src/a.ts' }], verifierOverruledAll: true,
+      filePatchHashes: { 'src/a.ts': 'same', 'src/b.ts': 'old' }, totalDiffLines: 100, tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  const prev = previousFromResult(result, 'report');
+  assert.equal(prev.manualReview, true);
+  const cur = current({ filePatchHashes: { 'src/a.ts': 'same', 'src/b.ts': 'new' }, fileChangedLines: { 'src/b.ts': 1 }, totalDiffLines: 101 });
+  for (const headIsDescendant of [true, null]) {
+    const scope = computeReviewScope({ previous: prev, current: cur, headIsDescendant });
+    assert.equal(scope.mode, 'full', `headIsDescendant=${headIsDescendant}`);
+    assert.match(scope.reason, /核对员推翻\/降级了全部卡点/);
+  }
+  assert.equal(computeReviewScope({ previous: { ...prev, head: 'h1' }, current: current({ head: 'h1', filePatchHashes: cur.filePatchHashes }), headIsDescendant: null }).mode, 'full', '同一 head 也重新全量');
+  const unmarked = previousFromResult({ ...result, approval: undefined, mivo: { ...result.mivo, verifierOverruledAll: undefined } }, '');
+  assert.equal(unmarked.manualReview, true, '没有显式标记时按形状认(没有阻断问题、有被推翻的问题、没放行)');
+  assert.equal(previousFromResult({ ...result, reviewClean: true, mivo: { ...result.mivo, verifierOverruledAll: undefined, verifierOverruled: [] } }, '').manualReview, false);
+});

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEventMeter, toStderrTail, runCodex, readCodexVersion, CODEX_IDLE_MS } from './codex.mjs';
+import { createEventMeter, toStderrTail, runCodex, readCodexVersion, CODEX_IDLE_MS, renderCodexConfig } from './codex.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
 const at = (sec) => T0 + sec * 1000;
@@ -142,4 +142,10 @@ test('readCodexVersion:命令报错返回 null,不抛错', () => {
 test('readCodexVersion:超时返回 null,不抛错', () => {
   const exec = () => { throw Object.assign(new Error('spawnSync /tools/bin/codex ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' }); };
   assert.equal(readCodexVersion('/tools/bin/codex', exec), null);
+});
+
+test('生成的 Codex 配置关掉项目说明文件,PR head 的 AGENTS.md 进不了主审和核对员的上下文', () => {
+  const lines = renderCodexConfig('https://gateway.example.invalid/v1').split('\n');
+  const top = lines.slice(0, lines.findIndex((l) => l.startsWith('[')));
+  assert.ok(top.includes('project_doc_max_bytes = 0'), `顶层配置应含 project_doc_max_bytes = 0,实际: ${top.join(' | ')}`);
 });

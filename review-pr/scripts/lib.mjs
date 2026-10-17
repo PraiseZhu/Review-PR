@@ -808,6 +808,45 @@ export function credFallbackStats() {
   return CRED_FALLBACKS.slice();
 }
 
+// ── [MIVO-PATCH identity-env] prepare 用 integration 令牌读上下文 ──
+// integration 令牌(github.token / GitHub App 安装令牌)没有用户身份:GraphQL viewer 是 bot 或读不到,
+// /user 403,也没有 Administration 读权限。下面三个变量都可选;都没设(或为空)时这里的函数不改变任何调用:
+//   REVIEW_PR_VIEWER_LOGIN       审查账号登录名,代替 GraphQL viewer{login}(context.mjs)
+//   REVIEW_PR_IDENTITY_TOKEN     要审查账号身份或 Administration 读的调用改用它(分支保护、ruleset bypass)
+//   REVIEW_PR_NO_CRED_FALLBACK=1 见上方 credFallbackPlan;integration 令牌下必须设
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/** REVIEW_PR_VIEWER_LOGIN 去空白后的值;没设或为空返回 ''。设了但不是合法 GitHub 登录名直接抛错,不退回 GraphQL viewer。 */
+export function viewerLoginOverride(env = process.env) {
+  const login = String(env.REVIEW_PR_VIEWER_LOGIN ?? '').trim();
+  if (!login) return '';
+  if (!GITHUB_LOGIN_RE.test(login)) {
+    throw new Error(`REVIEW_PR_VIEWER_LOGIN 不是合法的 GitHub 登录名(期望字母、数字、连字符,最长 39 位,实际 ${JSON.stringify(login.slice(0, 60))})`);
+  }
+  return login;
+}
+
+/** 要审查账号身份的单次 gh 调用的额外选项。没设(或为空)返回 {}(调用与改动前相同);
+ *  设了就把这次调用的 GH_TOKEN 换成它,并关掉换凭证重试——不能静默退回别的身份。 */
+export function identityTokenOptions(env = process.env) {
+  const identity = String(env.REVIEW_PR_IDENTITY_TOKEN ?? '').trim();
+  return identity ? { env: { ...env, GH_TOKEN: identity }, noCredFallback: true } : {};
+}
+
+/** prepare 的 gh 登录检查。没设 REVIEW_PR_VIEWER_LOGIN:照旧 `gh auth status`。
+ *  设了:integration 令牌没有 /user,`gh auth status` 会误报未登录,改为读一次目标仓库元数据核实令牌可用。 */
+export function probeGhAuth({ owner, repo }, { ghFn = gh, env = process.env } = {}) {
+  if (!viewerLoginOverride(env)) return { ok: ghFn(['auth', 'status'], { allowFail: true }).ok, via: 'auth-status' };
+  const slug = `${owner}/${repo}`;
+  const r = ghFn(['api', '--method', 'GET', `repos/${slug}`], { allowFail: true, timeoutMs: 20_000 });
+  let fullName = '';
+  try { fullName = String(JSON.parse(r.stdout || '{}').full_name ?? ''); } catch { /* 读不出按失败处理 */ }
+  const ok = r.ok && fullName.toLowerCase() === slug.toLowerCase();
+  if (ok) return { ok, via: 'repo-read' };
+  const error = r.ok ? `full_name=${JSON.stringify(fullName.slice(0, 120))}` : String(r.stderr ?? '').trim().split('\n')[0].slice(0, 200);
+  return { ok, via: 'repo-read', error };
+}
+
 export function gh(args, opts = {}) {
   const { allowFail = false, noCredFallback = false, readOnly, ...rest } = opts;
   const safeRead = readOnly ?? (
@@ -1079,12 +1118,14 @@ export function classifyHeadChecks(slug, headSha) {
  * 返回 { requiredCheckRules, requiredStatusChecks, requiredStatusChecksKnown,
  *          adminUnverifiedRuleTypes, ruleTypes, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
+export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.env } = {}) {
   if (!branch) return null;
+  // [MIVO-PATCH identity-env] 分支保护要 Administration 读,current_user_can_bypass 随调用身份变化:这三类调用用身份令牌。
+  const identity = identityTokenOptions(env);
   const encodedBranch = encodeURIComponent(branch);
   const rr = ghFn(['api', `repos/${slug}/rules/branches/${encodedBranch}`], { allowFail: true });
   if (!rr.ok) return null;
-  const classicResult = ghFn(['api', `repos/${slug}/branches/${encodedBranch}/protection`], { allowFail: true });
+  const classicResult = ghFn(['api', `repos/${slug}/branches/${encodedBranch}/protection`], { allowFail: true, ...identity });
   const classicMissing = !classicResult.ok && /(?:HTTP 404|Not Found)/i.test(`${classicResult.stderr ?? ''}${classicResult.stdout ?? ''}`);
   if (!classicResult.ok && !classicMissing) return null;
   try {
@@ -1153,7 +1194,7 @@ export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
     if (classic != null) {
       const signatureResult = ghFn([
         'api', `repos/${slug}/branches/${encodedBranch}/protection/required_signatures`,
-      ], { allowFail: true });
+      ], { allowFail: true, ...identity });
       const signatureMissing = !signatureResult.ok && /(?:HTTP 404|Not Found)/i.test(`${signatureResult.stderr ?? ''}${signatureResult.stdout ?? ''}`);
       if (!signatureResult.ok && !signatureMissing) return null;
       if (signatureResult.ok && JSON.parse(signatureResult.stdout || '{}').enabled === true) {
@@ -1165,7 +1206,7 @@ export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
     const rulesetIds = [...new Set(rules.map((r) => r.ruleset_id).filter((x) => typeof x === 'number'))];
     let canBypass = null; // null=未知;'never'/false=不能;'always'/'pull_requests'=能
     for (const id of rulesetIds) {
-      const rs = ghFn(['api', `repos/${slug}/rulesets/${id}`], { allowFail: true });
+      const rs = ghFn(['api', `repos/${slug}/rulesets/${id}`], { allowFail: true, ...identity });
       if (!rs.ok) continue;
       try {
         const cb = JSON.parse(rs.stdout || '{}').current_user_can_bypass;
@@ -2075,7 +2116,32 @@ export function botCheckActivity(rollupContexts, cfg = {}) {
     .map((c) => ({ author, at: c.completedAt })));
 }
 
-export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cfg = {} }) {
+/**
+ * [MIVO-PATCH bot-settle-ready] 从 REST `issues/<n>/events` 的事件列表取最近一次转 Ready(event=ready_for_review)的时间。
+ * 从没转过 Ready(一开始就是 Ready)或读不到返回空串。
+ */
+export function toReadyForReviewAt(events) {
+  const times = (Array.isArray(events) ? events : [])
+    .filter((item) => item?.event === 'ready_for_review')
+    .map((item) => item?.created_at)
+    .filter((time) => typeof time === 'string' && Number.isFinite(Date.parse(time)));
+  return times.sort().pop() ?? '';
+}
+
+/**
+ * [MIVO-PATCH bot-settle-ready] 估 head 的推送时间:该 head 上最早的检查开始时间(CheckRun 用 startedAt,StatusContext 用 createdAt)。
+ * 检查在推送瞬间由 GitHub 触发,statusCheckRollup 只含当前 head,调用方本来就拿着,零额外请求
+ * (实测 #1081 新 head 最早检查 13:54:35Z,推送 13:54:32Z)。一个检查都没有或读不到返回空串。
+ * 入参是 fetchCiRollup 的返回(未经 ciIgnore 过滤也没关系:本流程自己的检查一定更晚)。
+ */
+export function toHeadPushedAt(rollupContexts) {
+  const times = (Array.isArray(rollupContexts) ? rollupContexts : [])
+    .map((context) => context?.startedAt ?? context?.createdAt)
+    .filter((time) => typeof time === 'string' && Number.isFinite(Date.parse(time)));
+  return times.sort()[0] ?? '';
+}
+
+export function evaluateBotSettle({ headCommittedDate, headPushedAt = '', readyForReviewAt = '', nowIso, activity = [], cfg = {} }) {
   const maxWaitMinutes = Number(cfg.maxWaitMinutes ?? 20);
   // 静默窗口(维护者 2026-07-30 定的节奏):必等机器人都表态之后,还要「最近 quietMinutes
   // 分钟内所有 quiet 名单机器人都没有新动静」才放行 —— 防止我们的审查/合并跟一波还在
@@ -2095,19 +2161,34 @@ export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cf
   const norm = (s) => String(s ?? '').toLowerCase().replace(/\[bot\]$/, '');
   const responded = reviewers.filter((r) => activity.some((a) => norm(a.author) === r && a.at > headCommittedDate));
   const pending = reviewers.filter((r) => !responded.includes(r));
-  const waitedMs = Date.parse(nowIso) - Date.parse(headCommittedDate);
+  // [MIVO-PATCH bot-settle-ready] 超时计时的起点 = head 提交时间、head 推送时间、转 Ready 时间里最晚的一个。
+  // 机器人在推送后、且 PR 是 Ready 时才会审:先当很久 Draft 再转 Ready 的 PR(2026-10-17 #1081,Greptile 2 分钟后才到),
+  // 或先本地提交、很久以后才推送的新 head(同 PR 新 head 提交 13:32:30Z、推送 13:54:32Z,窗口只剩 8 分钟),
+  // 从提交起算都会让第一轮就「已等满上限」按超时放行。
+  // 「是否已表态」仍按 head 提交之后算:机器人对当前 head 在 Draft 期间的表态有效,转 Ready 不会让它重审。
+  // 推送 / 转 Ready 时间读不到、无法解析或早于提交(时钟偏差)时忽略,退回 head 提交时间(与改前一致)。
+  let waitAnchor = 'commit';
+  let waitStartedAt = headCommittedDate;
+  let waitStartMs = Date.parse(headCommittedDate);
+  for (const [anchor, value] of [['push', headPushedAt], ['ready', readyForReviewAt]]) {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms) && ms > waitStartMs) { waitAnchor = anchor; waitStartedAt = value; waitStartMs = ms; }
+  }
+  const since = { commit: '', push: '(自推送起算)', ready: '(自转 Ready 起算)' }[waitAnchor];
+  const timing = { ...base, waitStartedAt, waitAnchor };
+  const waitedMs = Date.parse(nowIso) - Date.parse(waitStartedAt);
   const waitedMinutes = Number.isNaN(waitedMs) ? null : waitedMs / 60_000;
   // 超时兜底最优先:总时长(距 head push)到上限即放行,防机器人挂掉 / 静默窗口被反复重置卡死
   if (pending.length > 0 && waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
     return {
-      ...base, settled: true, responded, pending, waitedMinutes, timedOut: true,
-      reason: `已等 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限),${pending.join(' / ')} 仍未表态 —— 按超时放行,汇总要说明这几个机器人的意见可能在合并后才到`,
+      ...timing, settled: true, responded, pending, waitedMinutes, timedOut: true,
+      reason: `已等 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)${since},${pending.join(' / ')} 仍未表态 —— 按超时放行,汇总要说明这几个机器人的意见可能在合并后才到`,
     };
   }
   if (pending.length > 0) {
     return {
-      ...base, settled: false, responded, pending, waitedMinutes,
-      reason: `等 ${pending.join(' / ')} 对当前 head 表态(已等 ${waitedMinutes == null ? '?' : waitedMinutes.toFixed(1)} 分钟,上限 ${maxWaitMinutes})—— 本轮不合并,下一轮再看`,
+      ...timing, settled: false, responded, pending, waitedMinutes,
+      reason: `等 ${pending.join(' / ')} 对当前 head 表态(已等 ${waitedMinutes == null ? '?' : waitedMinutes.toFixed(1)} 分钟${since},上限 ${maxWaitMinutes})—— 本轮不合并,下一轮再看`,
     };
   }
   // 必等机器人都表态了 → 再看静默窗口
@@ -2123,19 +2204,35 @@ export function evaluateBotSettle({ headCommittedDate, nowIso, activity = [], cf
     // 静默没满也受总上限兜底:反复被新动静重置时不至于永远进不了审查
     if (waitedMinutes != null && waitedMinutes >= maxWaitMinutes) {
       return {
-        ...base, settled: true, responded, waitedMinutes, quietSinceMinutes, timedOut: true,
-        reason: `距 head push 已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
+        ...timing, settled: true, responded, waitedMinutes, quietSinceMinutes, timedOut: true,
+        reason: `距${{ commit: ' head push ', push: '推送', ready: '转 Ready' }[waitAnchor]}已 ${waitedMinutes.toFixed(1)} 分钟(≥${maxWaitMinutes} 上限)—— 静默窗口未满仍按超时放行`,
       };
     }
     return {
-      ...base, settled: false, responded, waitedMinutes, quietSinceMinutes, lastBotActivityAt: lastBotAt,
+      ...timing, settled: false, responded, waitedMinutes, quietSinceMinutes, lastBotActivityAt: lastBotAt,
       reason: `机器人已表态,但最近 ${quietSinceMinutes == null ? '?' : quietSinceMinutes.toFixed(1)} 分钟前还有 bot 动静 —— 等满 ${quietMinutes} 分钟静默再进审查/合并(总上限 ${maxWaitMinutes})`,
     };
   }
   return {
-    ...base, settled: true, responded, waitedMinutes, quietSinceMinutes,
+    ...timing, settled: true, responded, waitedMinutes, quietSinceMinutes,
     reason: `全部 ${responded.length} 个机器人已对当前 head 表态${quietMinutes > 0 ? `,且已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})` : ''}`,
   };
+}
+
+/**
+ * [MIVO-PATCH bot-settle-ready] 先按 head 提交时间判;只有结论是「超时放行」(timedOut)时,转 Ready 时间才会改变它
+ * (「是否已表态」「静默窗口」都不看它),这时才调 readEvents() 读 REST 事件、按转 Ready 重算。常规路径零额外请求,
+ * 不碰 GraphQL。readEvents 返回 `issues/<n>/events` 的事件数组,可以抛错:读失败退回 head 提交起算,结果带 readyLookup。
+ * @returns evaluateBotSettle 的结果;尝试过读取时多一个 readyLookup:'found' | 'none' | 'failed'
+ */
+export function evaluateBotSettleSinceReady(input, readEvents) {
+  const first = evaluateBotSettle(input);
+  if (!first.timedOut) return first;
+  let events;
+  try { events = readEvents(); } catch { return { ...first, readyLookup: 'failed' }; }
+  const readyForReviewAt = toReadyForReviewAt(events);
+  if (!readyForReviewAt) return { ...first, readyLookup: 'none' };
+  return { ...evaluateBotSettle({ ...input, readyForReviewAt }), readyLookup: 'found' };
 }
 
 // ── 待维护者讨论标签(维护者讨论门在 GitHub 侧的筛选入口)──
@@ -3370,20 +3467,46 @@ export function latestIssueRelease(...releases) {
  * 当前 head 上有维护者 Request Changes 时 waitingForAuthor=true,不算放行。没有受保护文件返回 null。
  */
 export function evaluateProtectedPathRelease({
-  protectedFiles = [], reviews = [], maintainers = [], latestCommitDate = '', issueRelease = null, authorLogin = '',
+  protectedFiles = [], reviews = [], maintainers = [], latestCommitDate = '', issueRelease = null, authorLogin = '', authorExempt = false,
 } = {}) {
   if (!protectedFiles.length) return null;
   const review = evaluateMaintainerReview({ reviews, maintainers, latestCommitDate, markerRelease: issueRelease, authorLogin });
-  const released = review.released
-    ? { ...review.released, fingerprint: review.released.fingerprint ?? `${review.released.via}:${review.released.by}:${review.released.at ?? ''}` }
+  // [MIVO-PATCH protected-author-release] 作者是维护者(authorExempt = context 的 authorSignoffExempt:
+  // 维护者集合成员或 exemptAuthors)时放行直接成立,不等 Approve / 「同意放行」。「谁能给别人的 PR 放行」仍只看
+  // maintainers(maintainerAllowlist),这里不动;别的维护者在当前 head 上 Request Changes 时照旧交作者。
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const authorRelease = authorExempt === true && author !== '' && !review.waitingForAuthor
+    ? { by: author, via: 'author-maintainer', at: null, fingerprint: `author-maintainer:${author}` }
+    : null;
+  const raw = authorRelease ?? review.released;
+  const released = raw
+    ? { ...raw, fingerprint: raw.fingerprint ?? `${raw.via}:${raw.by}:${raw.at ?? ''}` }
     : null;
   return {
     files: protectedFiles.slice(0, 30),
     fileCount: protectedFiles.length,
     released,
     waitingForAuthor: review.waitingForAuthor,
-    reviewState: review.reviewState,
+    reviewState: authorRelease ? 'author-maintainer' : review.reviewState,
   };
+}
+
+/**
+ * [MIVO-PATCH protected-author-release] 通知 issue 建完即关时留的那句说明。kind=protected(受保护路径、作者是维护者、
+ * 自动放行)单独写准;其余沿用原文。尾部暗记不变,Mivo 侧靠它识别流程评论。
+ */
+export const NOTICE_CLOSE_MARKER = '<!-- review-pr:signoff-notice-close -->';
+export function toNoticeCloseComment(kind = 'product') {
+  const text = kind === 'protected'
+    ? '本 issue 只是通知：作者是维护者，受保护路径改动按规则自动放行，审查机直接把 `review-pr` 写为通过。流程已自动关闭本 issue，不需要回复。'
+    : '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。';
+  return `${text}\n\n${NOTICE_CLOSE_MARKER}`;
+}
+
+/** [MIVO-PATCH protected-author-release] 放行后关讨论 issue 时留的说明:调用方给了文案(如自动放行)就用它,否则沿用原文。 */
+export function toDiscussIssueCloseBody({ pr, url, closeCommentBody = '' } = {}) {
+  const custom = String(closeCommentBody ?? '').trim();
+  return custom !== '' ? custom : `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#${pr}(${url})。本 issue 由 review-pr 流程自动关闭。`;
 }
 
 /** [MIVO-PATCH signoff-mode] 确认 issue footer。句式是 Mivo parseSignoffIssue 的契约,只在末尾追加模式标记。 */

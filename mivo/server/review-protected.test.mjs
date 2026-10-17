@@ -10,6 +10,8 @@ import { spawnSync } from 'node:child_process';
 import { collectRoundResults } from '../../review-pr/scripts/review-round.mjs';
 import { withProtectedAuthorNotice } from '../lib/gates.mjs';
 
+const { toAutoReleaseNotice } = await import('../lib/gates.mjs');
+
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SHA = 'a'.repeat(40);
 
@@ -123,4 +125,40 @@ test('接线:服务器复核读自己重跑的 context.protectedPath,不再查�
   assert.match(source, /ctx\.protectedPath\?\.waitingForAuthor \|\| !release\?\.by/);
   assert.doesNotMatch(source, /findHeadApproval/);
   assert.doesNotMatch(source, /signoff-release\.mjs/, '关 issue 由 Mini 做');
+});
+
+test('live:作者为维护者自动放行——review-pr 写 success,标题写清「作者为维护者,自动放行」;汇总收得下 Mini 的自动放行回执', () => {
+  const approval = { by: 'praisezhu', via: 'author-maintainer', at: null, fingerprint: 'author-maintainer:praisezhu' };
+  const work = setup({ mode: 'live', protectedApproval: approval });
+  const gh = fakeGh(work);
+  try {
+    const result = publish(work, gh);
+    assert.equal(result.outcome, 'protected');
+    assert.equal(result.reason, '受保护路径:作者为维护者,自动放行');
+    assert.equal(result.authorNotice.fingerprint, 'manual:author-maintainer:praisezhu');
+    const calls = gh.calls();
+    const check = calls.find((c) => c.args.includes('repos/o/r/check-runs'));
+    assert.ok(check?.args.includes('POST'), '新建 check run');
+    const body = JSON.parse(check.input);
+    assert.equal(body.name, 'review-pr');
+    assert.equal(body.conclusion, 'success');
+    assert.equal(body.output.title, '受保护路径:作者为维护者,自动放行');
+    assert.match(body.output.summary, /praisezhu/);
+    assert.match(body.output.summary, /不绑定提交/);
+    assert.doesNotMatch(body.output.summary, /人工审核放行/);
+    assert.ok(!calls.some((c) => c.args[0] === 'issue' || c.args.some((a) => /\/issues\//.test(String(a)))), '服务器不写 issue');
+    assert.equal(collectRoundResults(planFor(result), [result]).processed[0].outcome, 'protected');
+    // Mini 自己判门时的自动放行回执同样能过汇总校验
+    const miniResult = { ...result, authorNotice: toAutoReleaseNotice({ head: SHA, by: 'praisezhu' }) };
+    assert.equal(collectRoundResults(planFor(result), [miniResult]).processed[0].outcome, 'protected');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('人工放行三种方式的标题不变(自动放行只加一种)', () => {
+  const work = setup({ mode: 'live', protectedApproval: { by: 'kirozeng', via: 'github-approve', at: '2026-10-16T01:00:00Z', fingerprint: 'github-approve:kirozeng:fp' } });
+  const gh = fakeGh(work);
+  try {
+    const result = publish(work, gh);
+    assert.equal(result.reason, '受保护路径:由 kirozeng 人工审核放行(GitHub Approve)');
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });

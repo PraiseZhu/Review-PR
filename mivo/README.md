@@ -27,9 +27,14 @@ flowchart LR
 | `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。确认门这一步先看是否改了受保护路径：改了就任何作者（含豁免名单）都走受保护路径确认 issue；没改，豁免作者开通知 issue 但不拦，非豁免作者走普通确认门（见「维护者确认 issue 的三种模式」）。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
 | `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
-| `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（都按 PR head 取）、生效配置与答卷 schema |
+| `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
 | `lib/deferrals.mjs` | 审查问题转 issue 跟进：解析 PR 说明里的登记、核验 issue、汇总 |
-| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书 |
+| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书；thread 带 `mivo-finding` marker 时把 key 一起带出来 |
+| `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
+| `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
+| `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
+| `config/review-features.json` | 核对员开关，默认 enforce；只在 codex 阶段读，不进任务书、不进 `specDigest` |
+| `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
 | `lib/admission.mjs` | 滚动接单的判断：什么时候另开一轮、哪些 PR 不进新一轮、held PR 什么时候唤醒 |
@@ -39,6 +44,45 @@ flowchart LR
 | `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
 
+## 借鉴 Claude 官方的审查改造
+
+参照 Claude 官方审查机的做法，审查机做了三件事（第 3 件的核对员于 2026-10-17 改为直接生效）。全部只改 `mivo/` 下的审查机代码，不改 review-pr skill、Mivo 插件仓和 live tuple。
+
+1. **只读结果遥测**（`telemetry/review-outcomes.mjs`）。`node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>`，只读 GitHub，输出 `outcomes.json` 与 `outcomes.md`：作者反应分桶（ruled-keep / deferred / re-raised / rebutted / fixed-proxy / unknown）、rounds-to-pass（一轮通过、五轮及以上、平均轮数，三项都带分母）、回滚候选、高频问题类型 Top 10，以及从已发布的审查报告里数出的「核对员认为不成立」「核对员降级」条数（按 PR 和轮次，只有计数；报告里没有 finding key，同一问题跨轮被重复推翻会各算一次）。分桶是代理指标，不是事实真伪。默认不输出 finding 正文、首行和 PR 标题，`--include-text` 才带。加 `--fixture <file>` 时只读本地文件，不调 gh（测试用）。
+2. **答卷 v2 与跨轮收敛**。
+   - 每条问题带触发条件、错误行为、影响、证据（head 上真实存在的文件和行号）和来源（`introduced` / `made-reachable` / `pre-existing`）。证据按 head 的 git 对象核对，缺失只记 warning，问题照常阻断。
+   - **PR 之前就存在的 P1 不阻断**，报告单列「PR 之前就存在的问题」，建议另开 issue；P0 不论来源都阻断；声称 pre-existing 但落在本 PR 新增行上的，服务器改判 introduced。
+   - 同一类问题只报一条，其余位置写进 `instances`。
+   - thread 正文末尾带 `<!-- mivo-finding key=… round=… head=… class=… -->`：key 在文件、问题类型和标题不变时稳定，跨轮靠它认出同一问题。
+   - 同一个 P0/P1 连续 3 轮没修好，报告插一节「收敛提示」，只提示、不改结论、不停审。
+   - 维护者对某个 key 裁定不改的 P1，本轮模型仍报了就移出阻断、单列；同 key 的 P0 永不移出阻断。
+   - 规则文件（AGENTS.md、DESIGN.md 等）按 PR 的 **base** 读取，写进 `input/rules-base/`，并参与 `specDigest`；PR 对规则文件的改动本身是被审对象。base 取不到时整组回退到 head，并在 `warnings` 写「规则文件 base 版本取不到,本轮按 head 读」。
+   - 报告头带 `skill` 与 `spec` 的 7 位短 hash；`result.json` 的 `mivo` 增加 `preexisting`、`ruledKept`、`convergence`、`rulesSource`、`verification`，每条问题多 `key`、`severity`、`origin`、`seenRounds` 等字段（只存紧凑形状，不存长文本）。
+3. **逐条核对员**（`lib/verify.mjs`，默认 `enforce`，直接生效）。主审交卷后，另一个模型逐条尝试驳倒主审的 **P1**；`config/review-features.json` 的 `verify.mode`：
+   - `enforce`（默认）：核对员**推翻**（`refuted`，必须给出 head 上真实存在的证据）或**降级**（`downgraded`，问题成立但按统一分级实际只是 P2，必须写理由）的 P1 不再阻断：不开讨论串，公开写进报告的「核对员认为不成立」「核对员降级」两节（标题、位置、推翻证据或降级理由，作者和维护者可以复核）。`confirmed`、`unknown`、超时、出错、预算不够没核到、输出不合法（推翻没证据、降级没理由）的，一律照原样阻断。
+   - `shadow`：同样核对，但只把结果记到 `result.json` 的 `mivo.verification`，不改任何评论、报告、结论和 check。
+   - `off`：不核对，只调 1 次模型。
+   - 开关文件读不到或任一项不合法时按 off 并写 warning。开关文件只在 codex 阶段读，不进任务书，所以改开关**不会**触发全量重审。
+   - **只核 P1，P0 永远不核、永远阻断**；每次最多核 `maxFindings`（默认 3）条，超出的照原样卡。核对结论按单条 finding（`uid`）生效，不按跨轮的 `key`：同名问题共用 key，一条被推翻不会带走另一条。同类合并的问题（`instances`）把全部位置交给核对员，全部位置都不成立才能推翻；任一位置落在本 PR 新增行上，整组都不按「PR 之前就存在」免责。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
+   - 核对员模型必须不同于主审**实际使用**的模型：默认 `openai/gpt-6.1-sol`（medium）；主审 fallback 到了 sol，核对员就改用 `openai/gpt-6-luna`；找不到不同的模型就不核，该条照常阻断。
+   - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 120 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
+   - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。这个状态跨轮保留（`verifierOverruledAll`）：下一轮不论改了什么，都因「上一轮核对员推翻/降级了全部卡点」退回全量重审，得出新结论之前不会 Approve。原本就没有 P1 的 PR 行为不变。
+   - `result.json` 的 `mivo.verification` 记每条核对的结论、`applied`（实际生效的是 refuted 还是 downgraded）、模型、耗时和证据/理由；`mivo.verifierOverruled` 记被推翻/降级的问题（紧凑形状）。
+   - **主审答卷不落盘**：主审交卷后答卷只留在 codex 阶段的进程内存里，每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹（CLI 输出日志、stderr、最后一条消息、`CODEX_HOME`、临时目录），核对员全部跑完才把 `answer.json` 写盘给 publish 阶段读。
+
+### 上线影响：全量重审
+
+答卷 schema 和任务书（交卷格式、rules-base 一节）都进 `specDigest`，合入后的第一个审查轮，所有开放 PR 因「审查任务书或规则变了」各做一次**全量重审**。`dailyCap=30`、`maxParallel=3` 会自然限流，建议选开放 PR 少的时候合入。遥测只读、按需运行，不接任何定时任务。
+
+### 核对员的已知局限
+
+独立性只有两层，各有局限，不要把它当成完整隔离：
+
+- **核对员看得到主审的结论**：它拿到的是主审提出的那一条论断（标题、触发条件、证据），本身就是主审的判断；不同模型只降低了犯同样错误的概率，不保证独立。
+- **沙箱只限写不限读**：审查沙箱不限制读取，核对员理论上能读到运行目录里的文件；靠「主审答卷和日志不落盘」缓解，而不是靠隔离。盯梢或维护者发现核对员误推翻时，把开关改成 `shadow` 或 `off` 就能停用，不需要改代码。
+- **不读 PR 里的 AGENTS.md**：Codex 默认会把工作目录（PR head）里的 `AGENTS.md` 当项目规则读进上下文（2026-10-17 用真实 CLI 实测）。生成的配置写了 `project_doc_max_bytes = 0`，主审和核对员只认任务书里给的规则（正常是 base 版本，见上文「规则文件按 PR 的 base 读取」；base 读取失败时按既有回退改用 head 版本并告警）；PR 改 `AGENTS.md` 会被当成普通改动审查，但 CLI 不会再自动把它当成规则加载。
+- **PR 改了 agent 说明文件时不核对**：核对员要在 PR head 上读代码，真实 CLI 实测它会照 head 里 `AGENTS.md` 的要求改输出（任务书写明了 PR 内容是数据也没拦住）。所以 PR 改了 `AGENTS.md`、`CLAUDE.md` 或 `.codex/`、`.agents/`、`.claude/` 下的文件时，这一轮跳过核对（`skipped` 记 `agent-instructions-changed` 和文件名），P1 照原样阻断。代码注释等其它地方写给模型的话仍可能影响核对员，这是已知局限；推翻必须带 head 上真实存在的证据、推翻内容公开写进报告、零卡点时不 Approve，是兜底。
+
 ## 维护者确认 issue 的三种模式
 
 2026-10-16 维护者确认的规则（背景：#971，zhongxingtian-ai 改 `.github/workflows`，没有 issue 也没有 Slack 通报，白等 10 小时）。三种 issue 的骨架一样：标题前缀「维护者确认 · PR #」、三段 `###`、footer 句式不变，Mivo 的 `parseSignoffIssue` 照常解析；模式只靠 footer 末尾的隐藏标记区分，没有标记就是普通确认门。issue 由 Mini 上 PraiseZhu 的 `gh` 创建（在 Mivo 的 `signoffAnnounceAuthors` 内），每个 PR 一个，靠 PR 评论里的去重标记复用。
@@ -46,8 +90,8 @@ flowchart LR
 | 模式 | 什么时候开 | footer 标记 | 标签 | 放行后 |
 |---|---|---|---|---|
 | 普通确认门 | 非豁免作者命中确认门（产品/架构/安全/冷更/规则文档/插件基座） | 无 | 挂 `awaiting-discussion` | 现有流程，放行后关 issue |
-| 受保护路径 | 改了受保护路径（`.github/**` 等），**任何作者**，含豁免名单 4 人 | `<!-- review-pr:signoff-mode=protected -->` | 挂 | 服务器把 `review-pr` 写成通过，Mini 看到后关 issue |
-| 通知 | 豁免名单作者命中确认门，但没改受保护路径 | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭，PR 同一轮照常送审 |
+| 受保护路径 | 改了受保护路径（`.github/**` 等），**非维护者作者**（不在豁免名单 4 人内） | `<!-- review-pr:signoff-mode=protected -->` | 挂 | 服务器把 `review-pr` 写成通过，Mini 看到后关 issue |
+| 通知 | 豁免名单作者（维护者 3 人 + zhongxingtian-ai，即 `authorSignoffExempt`）命中确认门；或**改了受保护路径**（此时标题、正文写明「作者为维护者，自动放行」） | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭；确认门的 PR 同一轮照常送审，受保护路径的 PR 自动放行（见下） |
 
 放行有三条路，**批一次一直有效**，不绑提交：
 
@@ -57,7 +101,22 @@ flowchart LR
 
 **issue 必须属于本 PR**：issue 标题里的 PR 号和 footer 里的「关联 PR:#n」都要等于本 PR，否则这个 issue 上的任何放行都不采用。PR 评论里的去重标记任何人都能发，不校验这一条，作者就能把标记指向别的 PR 已经放行的 issue 借走放行。通知 issue 上的「同意放行」同样不算放行。
 
-受保护路径 PR 的流程：
+2026-10-17 维护者拍板的规则：**维护者自己的 PR 照样在 GitHub 开 issue、在 Slack 通报，但自动放行，不等任何人；只有非维护者才需要维护者放行。** 「维护者」指 `authorSignoffExempt`：`maintainerAllowlist` 成员（PraiseZhu、kirozeng、aj0928）加 `signoffGate.exemptAuthors`（再多一个 zhongxingtian-ai）。这条只放宽「谁的 PR 自动放行」；「谁能给别人的 PR 放行」仍然只有 `maintainerAllowlist` 三人，zhongxingtian-ai 的 Approve 或「同意放行」放行不了别人。agent 也用 PraiseZhu 账号开 PR，所以 agent 开的受保护路径 PR 同样自动放行，这是已知后果。
+
+| 作者 | 受保护路径 | 普通确认门 |
+|---|---|---|
+| 维护者（上面 4 人） | notice issue + Slack 通报，**自动放行**，不送模型审查 | notice（不变） |
+| 非维护者 | protected issue 转人工审核，维护者放行（不变） | 普通确认门（不变） |
+
+维护者作者的受保护路径 PR：
+
+- 「作者是不是维护者」只在 `context.mjs` 判一次：`protectedPath.released` 直接成立（`via=author-maintainer`，指纹 `author-maintainer:<login>`）。Mini 判门和服务器 `prepareProtectedApprove` 都只读这个结果，各自不另写判断。别的维护者在当前 head 上 Request Changes 时仍然交作者，不放行。
+- Mini 开 notice issue（`--kind protected --signoff-mode notice`，每个 PR 一次，建完即关），不挂标签，不给作者发「转人工审核」提醒，作者提醒回执记 `deduplicated`。随后派 `protected-approve`，服务器写 `review-pr` check，标题「受保护路径：作者为维护者，自动放行」，不送模型审查。
+- 一个 PR 只通报一次：这个 PR 之前已经开过别的类别的 notice issue 时，后来才改到受保护路径不会再开第二个。
+- 存量：此前已经按人工审核 hold 住的维护者 PR（`protected` 模式或更早的普通模式确认 issue 仍 OPEN），下一轮由 `signoff-release --labels-only --close-issue` 关掉并留一句「作者为维护者，按新规则自动放行」，再照常写 `review-pr`。`round.mjs` 会用独立标记文件 `protected-author-release-wake.json` 把已有的 `outcome=protected` 记录再唤醒一次，不然指纹没变会被当成 unchanged 跳过。
+- 一致性：Mini 的 `verifySkillPin` 要求本机 skill 检出等于仓库变量 `MIVO_REVIEW_SKILL_SHA`，服务器 workflow 按同一变量取 tarball；两边读同一份 `review-pr/config/pr-rules.json`（生产的 Mini 实例没有 `rulesFile` 覆盖，只有 target 仓不是 workflow 仓的沙箱才用 `sandbox-pr-rules.json`），所以 `exemptAuthors` 不用进 authority digest。
+
+非维护者作者的受保护路径 PR 的流程（不变）：
 
 - 前置审查（Mini）判门：改了受保护路径且没有放行 → 开确认 issue（`--signoff-mode protected`）、挂标签、给作者发受保护路径提醒，PR 不送模型审查；Slack 通报写明「转人工审核」。已有可复用的确认 issue（不是通知 issue、没关闭）时复用，不另开；非豁免 PR 之前已有普通确认 issue 的话也复用，Slack 当初的文案不是「转人工审核」，但放行路径相同。
 - 放行成立后，Mini 派 `protected-approve`；服务器**独立重跑 context** 复核同一个放行信号（Approve 被撤销、评论被删、名单变化时不认），再写 `review-pr` check：标题写明是谁、用什么方式放行。服务器只写 check，不碰 issue（服务器令牌的账号和 issue 写权限没核实）。
@@ -66,7 +125,7 @@ flowchart LR
 - 确认 issue 有新评论时，`wakeHeldPrs` 在一个周期内唤醒重判。
 - dry-run 不写 GitHub：不开 issue、不写 check。
 
-通知 issue（豁免作者）：
+通知 issue（豁免作者；维护者作者改受保护路径同样用它）：
 
 - 前置审查开 issue（带 notice 标记）、在 PR 上发带去重标记的评论，然后**立即关闭 issue**。Mivo 的 Slack 通报只在 `issues: opened` 事件上跑、读事件载荷，不检查 issue 是否 open，所以立即关闭不影响通报。关闭是为了：通知 issue 一直开着的话，之后同一个 PR 又改了受保护路径会复用它，Slack 收不到「转人工审核」。受保护路径模式碰到旧的通知 issue 一律另开新 issue。
 - 不挂 `awaiting-discussion`，不拦 PR，同一轮照常送审。PR 上已有确认标记就不再通知。
@@ -93,7 +152,7 @@ flowchart LR
 - 任务书只列采用的 issue。审查模型只能把和它们是同一问题（同一根因、同一触发路径）的 P1 标成 `deferredTo`；对不上或拿不准的照常阻断。`publish` 再核一遍：P0、或 issue 不在采用名单里的，照常阻断。
 - 转 issue 的 P1 不开 thread、不阻断。没有其他 P0/P1 时照常 Approve、check `review-pr` 写 success、挂 `review:merge-ready`。报告单列「已转 issue 跟进的问题（不阻断本 PR）」，check 标题写明几条 P1 已转 issue。这不是免审：问题照样写在报告里。
 - 打回时，只要阻断问题里有 P1，报告结论下面会附上这套做法。
-- issue 关闭或从 PR 说明里删掉登记后就不再算。上一轮有转 issue 的问题时不沿用上一轮结论，每次重审都重新核验；已经发出的 Approve 要等下一次重审才会变。放行后加 `review:merge-ready` 标签会触发一次增量重审，这是已知代价。
+- issue 关闭或从 PR 说明里删掉登记后就不再算。上一轮有转 issue 的问题时不沿用上一轮结论，每次重审都重新核验；已经发出的 Approve 要等下一次重审才会变。放行后加 `review:merge-ready` 标签只会让 PR 的 `updatedAt` 前移，不再单独触发重审（见下面「审查机自己的写动作」）。
 
 ## 送审但不放行
 
@@ -102,7 +161,30 @@ flowchart LR
 - **只缺界面证据**：格式门照样打回要证据，同时送审代码。
 - **只剩机器人留的 thread 没 resolve**（首条评论作者是 Bot，如 Greptile）：照样送审。有人留的 thread 没关，照旧不送审。
 
-两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`。作者补齐后下一轮重审；代码没变时沿用这次结论，Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`（给 Mini 看的「还没放行」；结果里同时有 `mivo.advisory.pendingGates`）。作者补齐后下一轮重审；代码没变时沿用这次结论（`previousFromResult` 把「有挂起的门、没有问题条目」的 advisory 记成代码层面干净，不会因为 `reviewClean=false` 退回全量重审），Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+
+## 审查机自己的写动作不再唤醒同一个 head
+
+pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评论这类没有 thread / CI / review 变化的动静。`nextRoundState` 记的是动手前的观察值（不能吞掉并发的新 thread），所以审查机自己发评论、加摘标签、重置 check 让 `updatedAt` 前移，也会被下一轮当成「PR 有变化」（#1081 因此在 head 没变的情况下又派了一次完整审查）。
+
+补丁 `self-write`：下一轮同时满足这两条时，当作自己的写动作，不选中也不唤醒，并把基线前移到新的 `updatedAt`：
+
+- 指纹其它字段（head、base、reviewDecision、unresolved、mergeable、mergeStateStatus、ci、dependencies）与基线完全一致，只有 `updatedAt` 变了；
+- 新的 `updatedAt` 不晚于上一轮的收尾时刻 `checkedAt`（收尾在审查机所有写动作之后，吸收后 `checkedAt` 不变）。
+
+收尾所在那一秒之后的改动，`updatedAt` 才会更晚而照常唤醒；没有 `fingerprintFields` 或 `checkedAt` 的旧状态无法确认，也照常唤醒。已知取舍有两条，都只影响没有 thread / CI / review 变化、只改了 `updatedAt` 的普通评论或改说明：一是动手前到收尾之间别人恰好改了，会被吸收一次；二是 GitHub 的 `updatedAt` 只到秒、`checkedAt` 到毫秒，收尾之后同一秒内的外部改动也会被吸收（窗口不超过 1 秒）。吸收之后任何新动静仍会唤醒。
+
+`review:merge-ready` 的补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在；同日补审后又加三条，见末尾）：
+
+- **作者就是审查账号**（自己的 PR，Approve 必被拒）：只有「除了不能自批，其它拦截项全部通过」才以评论发报告、挂标签、写 success。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。
+- **门禁失效也摘标签**，不只在 head 变化时：Mini 每轮判门后，与 base 冲突，或判门停在稳定卡点（冲突、人工讨论未 resolve、他人 Request Changes、维护者确认门、凭证、格式、CI 失败、rebase、retarget）时摘。只用判门已经拿到的 context，不多打 API。CI 在跑、机器人没说完、读失败这类瞬态，以及 GitHub 的 `BLOCKED`（多半只是等维护者 Approve）不摘，避免反复加摘；摘掉后标签不在，下一轮不会重复 DELETE。门禁重新全过回到送审，服务器沿用结论再加回。
+- **机器人静默期的超时从推送 / 转 Ready 起算**：取 head 的提交时间、推送时间、转 Ready 时间里最晚的一个。先当很久 Draft 的 PR 不会一转 Ready 就按「已等满 30 分钟」放行，先本地提交、很久以后才推送的新 head 也不会被提交时间吃掉窗口。推送时间用该 head 上最早的检查开始时间估（已有的 statusCheckRollup，零额外请求）；转 Ready 的时间只在按前两者算已超时时才用 REST 读一次（`issues/<n>/events`），不碰 GraphQL；读失败退回。Draft 期间机器人对当前 head 已有的表态仍算数。
+
+补审后追加（2026-10-18，对已合并的前三条再审、再测的 P2）：
+
+- **挂标签前按实时门禁复核 CI / 讨论 / 冲突**：审查账号不是作者、Approve 已发出时，用 finish 带回的 `preMerge`（`finish` 对 review-only 无条件返回 `reviewed-only`，`canMerge` 只是附带信息，`canMerge=false` 是「等维护者 Approve」的常态，不拦）；作者就是审查账号时，approve 脚本当场只读身份、权限、head/base、讨论和 review，不含 CI 和冲突，所以补跑一次 `pre-merge-check.mjs`。CI 失败、讨论未 resolve、与 base 冲突、head/base 复核时已变就不挂标签、摘掉已有的：已 Approve 路径 check 仍写 success（Approve 已发出，原因记在 `mivo.labelWithheld` 与 warnings），作者自批路径走「送审但不放行」（先复核、后发评论，所以不会先发出带干净报告标记的评论）。CI 在跑、awaiting、unknown 这类瞬态不拦；复核结果缺失或读不全拦下并标 `retry`。门禁恢复后 Mini 重新送审，同 head 沿用结论再把标签加回。
+- **作者自批之外的拦截项（`advisory.blockers`）也算代码干净**：同 head 沿用上一轮结论，不再多跑一轮完整审查。
+- **摘标签后能加回来**：见上文失败重试一节，`attempt` 不再累计成功的派发，旧记录里累计到 9 的 head 自动解开。
 
 ## 写明的产品意图与维护者裁定不改
 
@@ -153,7 +235,7 @@ flowchart LR
 
 ## 审查失败后怎么重试
 
-规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试，派发次数超过 9 次（`review-pr.yml` 守卫的上限）也停。成功一次就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
+规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试。派发给服务器的 `attempt` 是「连续失败数 + 1」（`review-pr.yml` 守卫只收 1–9，失败上限内不会超），不再累计成功的派发；防失控的保险是「同一个 head 已完成审查满 20 次」也停（`completedRuns`）。成功一次失败记录就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
 
@@ -184,7 +266,7 @@ flowchart LR
 
 ## 派发落盘与未决派发
 
-派发分四个落盘状态，写在轮次目录的 `dispatch-intent-<PR>.json`：`prepared`（生成了 dispatch_id、还没外发）→ `dispatching`（调 `gh workflow run` 之前）→ `sent`（gh 返回成功）→ `bound`（找到 runId）。
+派发分四个落盘状态，写在轮次目录的 `dispatch-intent-<PR>.json`：`prepared`（生成了 dispatch_id、还没外发）→ `dispatching`（调 `gh workflow run` 之前）→ `sent`（gh 返回成功）→ `bound`（找到 runId）。意图文件还带着前置判门这一轮的 `gateResult`（errors、warnings、retry、作者提醒回执）：派发后进程重启，两个恢复分支都从这里还原，所以「通知 issue 没建出来」这类还没了结的状态（retry）不会随重启丢掉，下一轮照常补发。
 
 - 中断后恢复时，只有 `prepared`（或没有意图）能证明没外发，按「判门中途断了」收尾，下一轮重新派。`dispatching`、`sent` 一律不自动重发：按 dispatch_id 在意图时间前后分页找 run（不只看最近 30 条），找到就登记；查询失败、列表不完整、暂时看不到，都记 `dispatch-unknown`，照样占一个槽，3 分钟后再查。
 - `gh workflow run` 明确被拒（HTTP 4xx 且有错误内容）才算没派出，按失败重试；超时、断线、5xx 都按「不知道有没有派出」处理。派发当时找不到 run 也一样。
@@ -241,6 +323,35 @@ Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这
   `MIVO_REVIEW_SANDBOX_REPO`、`MIVO_REVIEW_DAILY_CAP`、`MIVO_REVIEW_RUNNER_LABEL`（切换前 `mivo-review-next`）、
   可选 `MIVO_REVIEW_MODEL_*` / `MIVO_REVIEW_EFFORT_*`；
 - secrets：`MIVO_REVIEW_BOT_TOKEN`（发布用）、`LITELLM_CREDENTIALS_JSON`（模型网关）。
+
+### prepare 用 integration 令牌读上下文（代码已支持，workflow 未接）
+
+`review.mjs prepare` 里的读取（`prepare.mjs`、`context.mjs`）可以用 integration 令牌（`github.token` 或 GitHub App 安装令牌）跑，读请求不再占 PraiseZhu 的额度。三个变量都不设（或为空）时，行为和现在完全一样；publish 写入路径不受影响。
+
+| 变量 | 作用 |
+|---|---|
+| `REVIEW_PR_VIEWER_LOGIN` | 审查账号登录名，填 `PraiseZhu`。context 用它代替 GraphQL 的 `viewer{login}`，查询里不再要 viewer：hold 标记认人、排除审查机自己的 review、`viewerIsAuthor`、评论过滤、自解死锁、服务器认裁定和申辩 thread 都用它。prepare 的登录检查改为读一次目标仓库（integration 令牌没有 `/user`，`gh auth status` 会误报）。必须和发布用的 `MIVO_REVIEW_BOT_TOKEN` 是同一个账号，代码不核对。格式不对直接报错。 |
+| `REVIEW_PR_IDENTITY_TOKEN` | 要审查账号身份或 Administration 读权限的调用改用它：`branches/<base>/protection`、`.../required_signatures`、`rulesets/<id>` 的 `current_user_can_bypass`、沙箱检查镜像的跨仓派发。其余调用仍用 `GH_TOKEN`。这几个调用失败时不换凭证重试。 |
+| `REVIEW_PR_NO_CRED_FALLBACK` | 设为 `1` 时关掉「403 Resource not accessible 时摘掉 GH_TOKEN 重试」。用 integration 令牌时必须设：runner 上没有别的凭证，重试只会把原始报错盖掉。 |
+
+后续接 `review-pr.yml`（只改 workflow，不改代码）：
+
+1. 只在审本仓时切（`inputs.target_repo` 等于 `github.repository`，即 live 与 dry-run）。沙箱仓是跨仓，`github.token` 读不到，沙箱 prepare 照旧用 `MIVO_REVIEW_BOT_TOKEN`。
+2. Prepare 步骤里取 skill tarball 的那条 `gh api` 仍用 PraiseZhu（`PraiseZhu/Review-PR` 是私有仓）；身份读也仍用 PraiseZhu。跑 `review.mjs prepare` 的环境按 target_repo 选令牌，示例：
+
+   ```yaml
+   env:
+     GH_TOKEN: ${{ inputs.target_repo == github.repository && github.token || secrets.MIVO_REVIEW_BOT_TOKEN }}
+     REVIEW_PR_IDENTITY_TOKEN: ${{ inputs.target_repo == github.repository && secrets.MIVO_REVIEW_BOT_TOKEN || '' }}
+     REVIEW_PR_VIEWER_LOGIN: ${{ inputs.target_repo == github.repository && 'PraiseZhu' || '' }}
+     REVIEW_PR_NO_CRED_FALLBACK: ${{ inputs.target_repo == github.repository && '1' || '' }}
+   ```
+
+3. workflow 的 `permissions:` 补 `issues: read`（讨论 issue、转 issue 登记）和 `statuses: read`（statusCheckRollup 里的 commit status）。少了它们，context 读不全，CI 会判成 unknown 或直接报错。现有的 `contents: read`、`pull-requests: read`、`actions: read`、`checks: write` 保留。
+4. publish 步骤不动：写入和写前复核（`gh api user`）仍是 PraiseZhu。
+5. `review-pr.yml` 的 sha256 在三台 trust 里：先让本仓带这个改动的提交通过「每天自动换版本」上线（那时变量都没设，行为不变），再开 Mivo PR 改 `review-pr.yml`，用 `deploy-tuple.mjs --pr <PR> --pr-head <head>` 整组换，不能只改 workflow 单文件。
+6. 切 live 之前先在 dry-run 跑同一批 PR，对比两种令牌下 context 的 `meta.mergeStateStatus`、`gate.blockClass`、`gate.ci.status`、`approvalPolicy`，一致再切。`mergeStateStatus` 是否随调用身份变化、`collaborators/<login>/permission` 在 integration 令牌下是否可读，都还没有实测；读不到时 prepare 会报错并重试，不会放行。
+7. `github.token` 的 REST 限额是每仓每小时 1000 次（企业版 15000），按每天 `MIVO_REVIEW_DAILY_CAP` 次估算应当够用；每次 prepare 的实际请求数未实测。
 
 Mini：
 

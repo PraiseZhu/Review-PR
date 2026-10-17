@@ -42,6 +42,9 @@ import {
 } from './lib.mjs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
 
+// 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
+const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mjs');
+
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
 const bad = (message) => ({ ok: false, stdout: '', stderr: message, status: 1 });
 const SHA = 'a'.repeat(40);
@@ -251,6 +254,190 @@ test('机器人在当前 head 上的 check 跑完算表态', () => {
   assert.deepEqual(botCheckActivity(running, cfg), []);
   assert.deepEqual(botCheckActivity(rollup, { reviewers: ['greptile-apps'] }), [], '没配 checkNames 时与上游一致');
   assert.deepEqual(botCheckActivity(null, cfg), []);
+});
+
+// [MIVO-PATCH bot-settle-ready] 静默期上限从「转 Ready 的时间」和 head 提交时间里较晚的一个起算。
+// 2026-10-17 #1081:先当 74 分钟 Draft,转 Ready 时距 head 提交已超 30 分钟上限,第一轮就按「超时」放行,Greptile 2 分钟后才到。
+const READY_CFG = { reviewers: ['greptile-apps'], quietMinutes: 5, maxWaitMinutes: 30, checkNames: { 'greptile-apps': 'Greptile Review' } };
+const { toReadyForReviewAt } = await import('./lib.mjs');
+
+test('静默期:Draft 放了很久才转 Ready,超时从转 Ready 起算(#1081)', () => {
+  const headCommittedDate = '2026-10-17T11:34:00Z';
+  const nowIso = '2026-10-17T12:48:10Z';
+  const before = evaluateBotSettle({ headCommittedDate, nowIso, activity: [], cfg: READY_CFG });
+  assert.equal(before.settled, true, '对照:不传 readyForReviewAt 时是旧行为——74 分钟前的提交一转 Ready 就按超时放行');
+  assert.equal(before.timedOut, true);
+  const r = evaluateBotSettle({ headCommittedDate, readyForReviewAt: '2026-10-17T12:48:00Z', nowIso, activity: [], cfg: READY_CFG });
+  assert.equal(r.settled, false);
+  assert.equal(r.timedOut, false);
+  assert.deepEqual(r.pending, ['greptile-apps']);
+  assert.ok(r.waitedMinutes < 1, `等待时长从转 Ready 起算:${r.waitedMinutes}`);
+  assert.equal(r.waitStartedAt, '2026-10-17T12:48:00Z');
+  assert.match(r.reason, /自转 Ready 起算/);
+});
+
+test('静默期:从转 Ready 起算满上限仍按超时放行,不会永久卡死', () => {
+  const base = { headCommittedDate: '2026-10-17T11:34:00Z', readyForReviewAt: '2026-10-17T12:48:00Z', activity: [], cfg: READY_CFG };
+  assert.equal(evaluateBotSettle({ ...base, nowIso: '2026-10-17T13:17:00Z' }).settled, false, '29 分钟还在等');
+  const late = evaluateBotSettle({ ...base, nowIso: '2026-10-17T13:19:00Z' });
+  assert.equal(late.settled, true);
+  assert.equal(late.timedOut, true);
+  assert.match(late.reason, /自转 Ready 起算/);
+});
+
+test('静默期:转 Ready 后 Greptile 表态,仍要再静默 quietMinutes 才放行', () => {
+  const base = { headCommittedDate: '2026-10-17T11:34:00Z', readyForReviewAt: '2026-10-17T12:48:00Z', cfg: READY_CFG,
+    activity: [{ author: 'greptile-apps', at: '2026-10-17T12:50:55Z' }] };
+  const quiet = evaluateBotSettle({ ...base, nowIso: '2026-10-17T12:52:00Z' });
+  assert.equal(quiet.settled, false, '刚表态,静默没满');
+  assert.deepEqual(quiet.responded, ['greptile-apps']);
+  assert.equal(evaluateBotSettle({ ...base, nowIso: '2026-10-17T12:56:30Z' }).settled, true);
+});
+
+test('静默期:Draft 期间机器人已对当前 head 表态的算数(它不会因为转 Ready 再审一遍),只是计时起点后移', () => {
+  const r = evaluateBotSettle({ headCommittedDate: '2026-10-17T11:34:00Z', readyForReviewAt: '2026-10-17T12:48:00Z', nowIso: '2026-10-17T12:48:10Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-17T11:40:00Z' }], cfg: READY_CFG });
+  assert.equal(r.settled, true);
+  assert.deepEqual(r.responded, ['greptile-apps']);
+});
+
+test('静默期:转 Ready 早于 head 提交(Ready 之后又推了新提交)、时间读不到或无法解析时,起点仍是 head 提交时间', () => {
+  const base = { headCommittedDate: '2026-10-17T12:30:00Z', nowIso: '2026-10-17T13:05:00Z', activity: [], cfg: READY_CFG };
+  for (const readyForReviewAt of ['2026-10-17T12:00:00Z', '', undefined, 'not-a-date']) {
+    const r = evaluateBotSettle({ ...base, readyForReviewAt });
+    assert.equal(r.timedOut, true, String(readyForReviewAt));
+    assert.equal(r.waitStartedAt, '2026-10-17T12:30:00Z', String(readyForReviewAt));
+    assert.doesNotMatch(r.reason, /自转 Ready 起算/);
+  }
+});
+
+test('toReadyForReviewAt 取 REST 事件里最近一次 ready_for_review 的时间,没有就是空串', () => {
+  const events = [{ event: 'labeled', created_at: '2026-10-17T12:46:00Z' }, { event: 'ready_for_review', created_at: '2026-10-17T12:45:17Z' }, { event: 'review_requested', created_at: '2026-10-17T12:45:20Z' }];
+  assert.equal(toReadyForReviewAt(events), '2026-10-17T12:45:17Z');
+  assert.equal(toReadyForReviewAt([{ event: 'ready_for_review', created_at: '2026-10-17T10:00:00Z' }, { event: 'convert_to_draft', created_at: '2026-10-17T11:00:00Z' },
+    { event: 'ready_for_review', created_at: '2026-10-17T12:48:00Z' }]), '2026-10-17T12:48:00Z', '转回 Draft 再转 Ready:取最近一次');
+  for (const bad of [null, undefined, {}, [], [{ event: 'labeled', created_at: '2026-10-17T12:46:00Z' }], [{ event: 'ready_for_review' }], [{ event: 'ready_for_review', created_at: 'x' }], [null]]) {
+    assert.equal(toReadyForReviewAt(bad), '', JSON.stringify(bad));
+  }
+});
+
+// 只有「按 head 提交算已超时」时转 Ready 时间才会改变结论,所以只在这时才读 REST 事件;常规路径零额外请求。
+const { evaluateBotSettleSinceReady } = await import('./lib.mjs');
+const SINCE_BASE = { headCommittedDate: '2026-10-17T11:34:00Z', nowIso: '2026-10-17T12:48:10Z', activity: [], cfg: READY_CFG };
+const READY_EVENTS = [{ event: 'ready_for_review', created_at: '2026-10-17T12:45:17Z' }];
+
+test('evaluateBotSettleSinceReady:按 head 提交已超时才读事件,并从转 Ready 重算(#1081)', () => {
+  let reads = 0;
+  const r = evaluateBotSettleSinceReady(SINCE_BASE, () => { reads += 1; return READY_EVENTS; });
+  assert.equal(reads, 1);
+  assert.equal(r.settled, false);
+  assert.equal(r.timedOut, false);
+  assert.equal(r.readyLookup, 'found');
+  assert.equal(r.waitStartedAt, '2026-10-17T12:45:17Z');
+  assert.match(r.reason, /自转 Ready 起算/);
+});
+
+test('evaluateBotSettleSinceReady:没超时(还在等、已表态)不读事件,结果与 evaluateBotSettle 完全一致', () => {
+  const never = () => { throw new Error('不应该读事件'); };
+  const waiting = { ...SINCE_BASE, headCommittedDate: '2026-10-17T12:40:00Z' };
+  assert.deepEqual(evaluateBotSettleSinceReady(waiting, never), evaluateBotSettle(waiting));
+  const responded = { ...SINCE_BASE, activity: [{ author: 'greptile-apps', at: '2026-10-17T11:50:00Z' }] };
+  assert.deepEqual(evaluateBotSettleSinceReady(responded, never), evaluateBotSettle(responded));
+  assert.equal(evaluateBotSettleSinceReady({ ...SINCE_BASE, cfg: { ...READY_CFG, enabled: false } }, never).settled, true, '静默期关闭');
+  assert.equal(evaluateBotSettleSinceReady({ ...SINCE_BASE, headCommittedDate: '' }, never).settled, true, 'head 时间读不到');
+});
+
+test('evaluateBotSettleSinceReady:事件读失败或没有转 Ready 事件,退回 head 提交起算(与改前一致),并标明原因', () => {
+  const failed = evaluateBotSettleSinceReady(SINCE_BASE, () => { throw new Error('HTTP 502'); });
+  assert.equal(failed.settled, true);
+  assert.equal(failed.timedOut, true);
+  assert.equal(failed.readyLookup, 'failed');
+  const none = evaluateBotSettleSinceReady(SINCE_BASE, () => [{ event: 'labeled', created_at: '2026-10-17T12:00:00Z' }]);
+  assert.equal(none.timedOut, true);
+  assert.equal(none.readyLookup, 'none');
+  assert.equal(none.waitStartedAt, '2026-10-17T11:34:00Z');
+});
+
+test('evaluateBotSettleSinceReady:转 Ready 后再等满上限仍按超时放行', () => {
+  const r = evaluateBotSettleSinceReady({ ...SINCE_BASE, nowIso: '2026-10-17T13:16:00Z' }, () => READY_EVENTS);
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, true);
+  assert.equal(r.readyLookup, 'found');
+});
+
+// 先本地提交、很久以后才推送的新 head:提交时间远早于推送时间,从提交起算会把 30 分钟窗口吃掉大半。
+// #1081 新 head 2d09368f2:提交 13:32:30Z,推送 13:54:32Z,窗口只剩约 8 分钟。推送时间用该 head 上最早的检查开始时间估
+// (statusCheckRollup 已经拿到,零额外请求;实测 13:54:35Z,与推送只差 3 秒)。
+const { toHeadPushedAt } = await import('./lib.mjs');
+
+test('toHeadPushedAt 取 head 上最早的检查开始时间(CheckRun 用 startedAt,StatusContext 用 createdAt),读不到就是空串', () => {
+  const rollup = [
+    { name: 'verify', startedAt: '2026-10-17T14:02:59Z', createdAt: null },
+    { name: 'lint', startedAt: '2026-10-17T13:54:37Z', createdAt: null },
+    { name: 'legacy-status', startedAt: null, createdAt: '2026-10-17T13:54:35Z' },
+    { name: 'queued-not-started', startedAt: null, createdAt: null },
+    { name: 'bad', startedAt: 'not-a-date', createdAt: null },
+  ];
+  assert.equal(toHeadPushedAt(rollup), '2026-10-17T13:54:35Z');
+  for (const bad of [null, undefined, [], {}, [{}], [{ startedAt: 'x' }], [null]]) assert.equal(toHeadPushedAt(bad), '', JSON.stringify(bad));
+});
+
+test('静默期:提交很久以后才推送的新 head,超时从推送起算(#1081 新 head)', () => {
+  const base = { headCommittedDate: '2026-10-17T13:32:30Z', headPushedAt: '2026-10-17T13:54:35Z', activity: [], cfg: READY_CFG };
+  const early = evaluateBotSettle({ ...base, nowIso: '2026-10-17T14:03:30Z' });
+  assert.equal(early.settled, false, '推送才 9 分钟,不能按「提交后 31 分钟」放行');
+  assert.equal(early.timedOut, false);
+  assert.equal(early.waitAnchor, 'push');
+  assert.equal(early.waitStartedAt, '2026-10-17T13:54:35Z');
+  assert.match(early.reason, /自推送起算/);
+  const old = evaluateBotSettle({ ...base, headPushedAt: '', nowIso: '2026-10-17T14:03:30Z' });
+  assert.equal(old.timedOut, true, '对照:不传推送时间时是旧行为,从提交起算');
+  assert.equal(old.waitAnchor, 'commit');
+  const late = evaluateBotSettle({ ...base, nowIso: '2026-10-17T14:25:36Z' });
+  assert.equal(late.settled, true);
+  assert.equal(late.timedOut, true, '从推送起算满上限仍按超时放行');
+  assert.equal(late.waitAnchor, 'push');
+});
+
+test('静默期:起点取提交、推送、转 Ready 三者里最晚的一个;推送早于提交(时钟偏差)或无法解析时忽略', () => {
+  const base = { headCommittedDate: '2026-10-17T13:00:00Z', activity: [], cfg: READY_CFG, nowIso: '2026-10-17T13:20:00Z' };
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: '2026-10-17T13:10:00Z', readyForReviewAt: '2026-10-17T13:15:00Z' }).waitAnchor, 'ready');
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: '2026-10-17T13:15:00Z', readyForReviewAt: '2026-10-17T13:10:00Z' }).waitAnchor, 'push');
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: '2026-10-17T12:59:00Z' }).waitAnchor, 'commit');
+  assert.equal(evaluateBotSettle({ ...base, headPushedAt: 'not-a-date', readyForReviewAt: 'x' }).waitAnchor, 'commit');
+  assert.equal(evaluateBotSettle(base).waitStartedAt, '2026-10-17T13:00:00Z');
+});
+
+test('静默期:推送时间只推迟超时起点,不影响「是否已表态」和静默窗口', () => {
+  const r = evaluateBotSettle({ headCommittedDate: '2026-10-17T13:32:30Z', headPushedAt: '2026-10-17T13:54:35Z', nowIso: '2026-10-17T14:03:30Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-17T13:40:00Z' }], cfg: READY_CFG });
+  assert.deepEqual(r.responded, ['greptile-apps'], '提交之后的表态仍算数');
+  assert.equal(r.settled, true);
+});
+
+test('evaluateBotSettleSinceReady:推送时间由调用方随 input 给(零请求),转 Ready 仍只在超时时才读事件', () => {
+  const input = { headCommittedDate: '2026-10-17T13:32:30Z', headPushedAt: '2026-10-17T13:54:35Z', nowIso: '2026-10-17T14:03:30Z', activity: [], cfg: READY_CFG };
+  const never = () => { throw new Error('不应该读事件'); };
+  assert.equal(evaluateBotSettleSinceReady(input, never).waitAnchor, 'push');
+  // 推送起算也超时了,再读事件:转 Ready 更晚时以它为准
+  const timedOut = { ...input, nowIso: '2026-10-17T14:30:00Z' };
+  let reads = 0;
+  const r = evaluateBotSettleSinceReady(timedOut, () => { reads += 1; return [{ event: 'ready_for_review', created_at: '2026-10-17T14:20:00Z' }]; });
+  assert.equal(reads, 1);
+  assert.equal(r.settled, false);
+  assert.equal(r.waitAnchor, 'ready');
+});
+
+test('静默期接线:context.mjs 与 pre-merge-check.mjs 用 evaluateBotSettleSinceReady,经 REST 读 issues/<n>/events,不碰 GraphQL', () => {
+  for (const file of ['context.mjs', 'pre-merge-check.mjs']) {
+    const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
+    // 不用 assert.match:失败时它会把整份源码打印出来。
+    assert.ok(/evaluateBotSettleSinceReady\(\{[\s\S]*?\},\s*\(\)\s*=>/.test(source), `${file} 调用 evaluateBotSettleSinceReady 并传入读事件的回调`);
+    assert.ok(/repos\/\$\{slug\}\/issues\/\$\{pr\}\/events/.test(source), `${file} 读 REST 事件`);
+    assert.ok(/headPushedAt:\s*toHeadPushedAt\(/.test(source), `${file} 用已有的 statusCheckRollup 估推送时间传入静默期`);
+    assert.ok(!/timelineItems/.test(source), `${file} 的 GraphQL 查询不加转 Ready 连接(不增加 GraphQL 消耗,也不会因它让整条查询失败)`);
+    assert.ok(!/=\s*evaluateBotSettle\(/.test(source), `${file} 不再直接用 evaluateBotSettle 判静默期`);
+  }
 });
 
 test('改界面不进维护者确认门,按 requireUiEvidence 要求附界面证据', () => {
@@ -1122,4 +1309,57 @@ syncBuiltinESMExports();
     assert.equal(newRel.issueCommentRelease, null);
     assert.equal(evaluateProtectedPathRelease({ ...protectedBase, issueRelease: null }).released, null);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+// 2026-10-17 维护者拍板:作者是维护者(approvalPolicy.authorIsMaintainer 或 exemptAuthors,即 context 的 authorSignoffExempt)
+// 改受保护路径时放行直接成立;放行权名单(maintainerAllowlist)不因此扩大。
+test('受保护路径放行:作者是维护者/豁免名单时直接放行(via=author-maintainer);放行权不变', () => {
+  const exemptBase = { ...protectedBase, authorExempt: true };
+  const auto = evaluateProtectedPathRelease(exemptBase);
+  assert.equal(auto.released?.by, 'zhongxingtian-ai');
+  assert.equal(auto.released?.via, 'author-maintainer');
+  assert.equal(auto.released?.at, null);
+  assert.equal(auto.released?.fingerprint, 'author-maintainer:zhongxingtian-ai');
+  assert.equal(auto.waitingForAuthor, false);
+  assert.deepEqual(auto.files, ['.github/workflows/ci.yml']);
+  // 没有受保护文件:仍然 null
+  assert.equal(evaluateProtectedPathRelease({ ...exemptBase, protectedFiles: [] }), null);
+  // 别的维护者在当前 head 上 Request Changes:交作者,不自动放行
+  const changes = evaluateProtectedPathRelease({ ...exemptBase, reviews: [protectedReview('kirozeng', 'CHANGES_REQUESTED', '2026-10-16T11:00:00Z')] });
+  assert.equal(changes.waitingForAuthor, true);
+  assert.equal(changes.released, null);
+  // 非豁免作者:无 authorExempt 时一切照旧(作者本人 Approve 不算、没人表态不放行)
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, authorExempt: false }).released, null);
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] }).released, null);
+  // 豁免作者不是放行人:放行名单(maintainerAllowlist 三人)之外的 zhongxingtian-ai 给别人 PR 的 Approve 不算
+  const releasers = ['praisezhu', 'kirozeng', 'aj0928'];
+  const other = evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] });
+  assert.equal(other.released, null);
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('kirozeng', 'APPROVED', '2026-10-15T01:00:00Z')] }).released?.by, 'kirozeng');
+});
+
+test('放行权名单固定:exemptAuthors 含 zhongxingtian-ai,但 maintainerAllowlist 不含,且 exemptAuthors 是 allowlist 的超集', () => {
+  const rules = JSON.parse(readFileSync(fileURLToPath(new URL('../config/pr-rules.json', import.meta.url)), 'utf8'));
+  const allow = rules.maintainerAllowlist.map((x) => x.toLowerCase());
+  const exempt = rules.signoffGate.exemptAuthors.map((x) => x.toLowerCase());
+  assert.deepEqual(allow.slice().sort(), ['aj0928', 'kirozeng', 'praisezhu']);
+  assert.ok(exempt.includes('zhongxingtian-ai'));
+  assert.ok(!allow.includes('zhongxingtian-ai'));
+  for (const login of allow) assert.ok(exempt.includes(login), `${login} 在 exemptAuthors`);
+});
+
+test('通知 issue 关闭文案:受保护路径写准「作者是维护者、自动放行」,其余沿用原文', () => {
+  const protectedText = toNoticeCloseComment('protected');
+  assert.match(protectedText, /作者是维护者，受保护路径改动按规则自动放行/);
+  assert.match(protectedText, /不需要回复/);
+  assert.match(protectedText, /<!-- review-pr:signoff-notice-close -->/);
+  assert.equal(toNoticeCloseComment('product'), '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。\n\n<!-- review-pr:signoff-notice-close -->');
+  assert.equal(toNoticeCloseComment(), toNoticeCloseComment('product'));
+});
+
+test('关闭讨论 issue 的说明:默认沿用原文,调用方给了文案就用调用方的', () => {
+  const url = 'https://github.com/o/r/pull/2001';
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url }), `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#2001(${url})。本 issue 由 review-pr 流程自动关闭。`);
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '作者为维护者，按新规则自动放行。' }), '作者为维护者，按新规则自动放行。');
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '   ' }), toDiscussIssueCloseBody({ pr: 2001, url }));
 });

@@ -53,16 +53,52 @@ export function toProtectedDispatch({ decision, protectedPath, checkDone = false
  * 标记评论任何人都能发,指向别的 PR 的 issue 时关了会越权(终审 F1)。判据来自 context 对 heldIssue 的评估
  * (releaseUntrusted=issue-not-bound);读不到 issue 或编号对不上也不关。没绑定:不关、不评论,返回 warning。
  */
-export function toSignoffReleaseArgs({ action, pr, held, heldIssue, bindings = [] } = {}) {
+export function toSignoffReleaseArgs({ action, pr, held, heldIssue, bindings = [], payloadFile = '' } = {}) {
   const base = [String(pr), '--labels-only'];
   if (action?.mode !== 'labels-only-close-issue') return { args: [...base, ...bindings] };
-  if (!held?.issueUrl) return { args: [...base, '--close-issue', ...bindings] };
+  // [MIVO-PATCH protected-author-release] 自动放行关 issue 时带说明文案文件({ closeCommentBody });其余动作不带。
+  const closeArgs = ['--close-issue', ...(action.autoRelease && payloadFile ? ['--payload-file', payloadFile] : [])];
+  if (!held?.issueUrl) return { args: [...base, ...closeArgs, ...bindings] };
   const reason = !heldIssue || heldIssue.state == null || heldIssue.number !== held.issueNumber ? 'issue-unverified'
     : heldIssue.releaseUntrusted === 'issue-not-bound' ? 'issue-not-bound' : null;
   if (reason) {
     return { args: [...base, ...bindings], warning: `hold 标记指向的 issue #${held.issueNumber ?? '?'} 未通过绑定本 PR 的校验(${reason}),没有评论也没有关闭` };
   }
-  return { args: [...base, '--close-issue', ...bindings] };
+  return { args: [...base, ...closeArgs, ...bindings] };
+}
+
+/**
+ * [MIVO-PATCH protected-author-release] 作者是维护者、受保护路径自动放行时,Mini 不发「转人工审核」提醒,
+ * 作者提醒回执直接记 deduplicated(指纹带作者),让轮次汇总对 outcome=protected 的终态校验通过。
+ */
+export function toAutoReleaseNotice({ head = '', by = '' } = {}) {
+  return { kind: 'protected-path', status: 'deduplicated', head, fingerprint: `author-maintainer:${String(by).toLowerCase()}`, reason: 'author-maintainer-auto-release' };
+}
+
+/**
+ * 受保护路径作者提醒回执(kind=protected-path)只对 outcome=protected 有意义:派发前被挡、服务器 run 被取消、
+ * 作者中途推新 head 时结果会被改成 error / state-changed 而回执还跟着 gateResult 展开,
+ * review-round 的 validateProtectedPathAuthorNotice 会抛「非受保护路径卡点却记录了受保护路径提醒」。写任务结果前统一清掉。
+ * 纯函数,不改入参。
+ */
+export function dropStaleProtectedNotice(result) {
+  if (result?.outcome === 'protected' || result?.authorNotice?.kind !== 'protected-path') return result;
+  const { authorNotice, ...rest } = result;
+  return rest;
+}
+
+/**
+ * 前置判门这一轮没发出 notice(issue / 评论创建失败)会在 gateResult 里标 retry;同轮派了 protected-approve,
+ * 采用服务器结果后这个标记丢了,通报就此静默缺失。protected 结果沿用它,其它结果不动。纯函数,不改入参。
+ */
+export function withProtectedGateRetry(result, gateResult) {
+  if (result?.outcome !== 'protected' || gateResult?.retry !== true || result.retry === true) return result;
+  return { ...result, retry: true };
+}
+
+/** 关掉存量 protected issue 时留的那句说明(经 signoff-release 的 payload 文件 closeCommentBody 带过去)。 */
+export function toAutoReleaseCloseComment({ pr, url, by } = {}) {
+  return `作者为维护者，按新规则自动放行：受保护路径改动不再等人工审核，审查机已直接放行（作者 @${by}）。本确认 issue 不再需要。关联 PR:#${pr}(${url})。本 issue 由 review-pr 流程自动关闭。`;
 }
 
 /**
@@ -99,10 +135,15 @@ export function decideGate(ctx) {
   const exempt = signoff.authorExempt === true || ctx.approvalPolicy?.authorIsMaintainer === true;
   const signoffActions = [];
   const protectedHit = isProtectedPathHit(ctx);
+  // [MIVO-PATCH protected-author-release] 作者是维护者(context 的 authorSignoffExempt)时,context 把 protectedPath.released
+  // 直接算成 via=author-maintainer。这里只认 context 的结论,不自己判作者身份;读不到这个结论就按下面的人工审核流程走(从严)。
+  const authorRelease = ctx.protectedPath?.released?.via === 'author-maintainer' ? ctx.protectedPath.released : null;
+  const autoRelease = protectedHit && authorRelease ? { by: authorRelease.by } : null;
   if (protectedHit) {
-    // 受保护路径(任何作者,含豁免名单):前置审查开确认 issue 转人工审核,放行前审查机不写绿。
+    // 受保护路径:前置审查开确认 issue 转人工审核,放行前审查机不写绿。
     // 放行信号(维护者 Approve / issue 上的 Slack 或 GitHub「同意放行」)统一由 context 的 protectedPath 算好。
     // 它的确认门触发(如 .github/workflows 同时命中 security)并入这一个 issue,不再另开普通 hold。
+    // 作者是维护者:开 notice issue(建完即关、不挂标签,Slack 照常通报),自动放行,不等任何人。
     const protectedPath = ctx.protectedPath ?? {};
     if (protectedPath.waitingForAuthor) {
       if (labels.hasAnyLabel) signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
@@ -112,14 +153,25 @@ export function decideGate(ctx) {
         actions: signoffActions,
       };
     }
-    if (!protectedPath.released || !signoff.held) {
+    if (autoRelease) {
+      const heldIssue = signoff.heldIssue ?? null;
+      if (!signoff.held) {
+        signoffActions.push({ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'notice' });
+      } else if (heldIssue?.state === 'OPEN' && heldIssue.mode !== 'notice') {
+        // 存量:此前按人工审核 hold 住的 protected issue(或更早的普通确认 issue),新规则下不再有人要管它。
+        // 关掉并留一句说明(同时摘残留标签);关闭前 toSignoffReleaseArgs 仍会核对 issue 绑定本 PR。
+        signoffActions.push({ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease });
+      } else if (labels.hasAnyLabel) {
+        signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
+      }
+    } else if (!protectedPath.released || !signoff.held) {
       // 从未 hold 过即使已放行也开完整 protected issue,让确认记录落在 GitHub。
       // 已有确认 issue 且仍可复用(不是通知 issue、没关闭)只补标签;否则开完整的新 issue。
       const heldIssue = signoff.heldIssue ?? null;
       const reusable = Boolean(signoff.held) && heldIssue?.mode !== 'notice' && heldIssue?.state !== 'CLOSED';
       signoffActions.push({ script: 'signoff-hold', mode: reusable ? 'labels-only' : 'full', kind: 'protected', issueMode: 'protected' });
     }
-    if (protectedPath.released && labels.hasAnyLabel) {
+    if (!autoRelease && protectedPath.released && labels.hasAnyLabel) {
       // 放行后只摘标签。确认 issue 等服务器把 review-pr 写成功后再关(round 的 toProtectedDispatch)。
       signoffActions.push({ script: 'signoff-release', mode: 'labels-only' });
     }
@@ -185,6 +237,10 @@ export function decideGate(ctx) {
   if (botThreadsOnly && action !== 'review') return threadsResult;
   switch (action) {
     case 'skip-protected-path':
+      // 自动放行不发「转人工审核」提醒;作者提醒回执由 round 用 toAutoReleaseNotice 补。
+      if (autoRelease) {
+        return withSignoff({ stage: 'protected', outcome: 'protected', reason: `受保护路径:作者为维护者(${autoRelease.by}),自动放行`, actions: [], autoRelease });
+      }
       return withSignoff({ stage: 'protected', outcome: 'protected', reason, actions: [{ script: 'notify-protected' }] });
     case 'pushback-format':
       return withSignoff({ stage: 'format', outcome: 'format', reason: formatReason(ctx), actions: [{ script: 'request-changes', gateKind: 'format' }] });
@@ -243,6 +299,88 @@ export const PENDING_GATE_TEXT = {
   'bot-threads': '还有机器人(如 Greptile)留的讨论没有 resolve',
 };
 
+const AUTHOR_SELF_APPROVAL_CODE = 'independent-approval-required';
+// approve-reviewed-pr 里「没读全」的拦截:读失败不是确定的拦截,下一轮重读可能就过了。
+const UNCERTAIN_APPROVAL_CODES = new Set(['authority-unverified', 'viewer-unverified', 'threads-unverified', 'reviews-unverified']);
+
+/**
+ * 作者就是审查账号(自己的 PR)时 Approve 必被拒(independent-approval-required),审查机改以评论发报告。
+ * 但只有「除这一条外没有别的拦截项」才能挂 review:merge-ready、写 success;还有未 resolve 的讨论、别人的 CR 等
+ * 就该与「送审但不放行」一致(2026-10-17 #1081)。approve-reviewed-pr 的回执带逐项 failures:[{code, reason}]
+ * (approval.code 只取第一个真拦截,不够用)。读不到明细(旧回执、缺字段、形状不对)一律按「还有别的拦截项」处理。
+ * @returns {{authorOnly: boolean, others: Array<{code: string, reason: string}>, retry: boolean}}
+ *   others = 作者自批之外的拦截项;retry = 其中有读取不确定的项,值得下一轮重读。纯函数,不改入参。
+ */
+export function toAuthorSelfApproval(approvalResult) {
+  const failures = approvalResult?.failures;
+  const readable = Array.isArray(failures) && failures.length > 0 &&
+    failures.every((f) => typeof f?.code === 'string' && f.code !== '' && typeof f?.reason === 'string' && f.reason !== '') &&
+    failures.some((f) => f.code === AUTHOR_SELF_APPROVAL_CODE);
+  if (!readable) return { authorOnly: false, others: [{ code: 'failures-unreadable', reason: '拦截项明细读不到,无法确认只剩作者自批这一项' }], retry: true };
+  const others = failures.filter((f) => f.code !== AUTHOR_SELF_APPROVAL_CODE).map(({ code, reason }) => ({ code, reason }));
+  return { authorOnly: others.length === 0, others, retry: others.some((f) => UNCERTAIN_APPROVAL_CODES.has(f.code)) };
+}
+
+/**
+ * 挂 review:merge-ready 之前按实时门禁复核(2026-10-17 补审):已 Approve 路径用 finish 带回的 preMerge,作者自批路径补跑 pre-merge-check。
+ * 只拦确定的负面——CI 失败、conversation 未 resolve、与 base 冲突、head/base 在复核时已变;CI 在跑/awaiting/unknown、机器人没说完、
+ * canMerge=false(review-only 下「等维护者 Approve」是常态)都不拦。读不到(缺失、ok:false、thread 没读全)拦并标 retry。
+ * 拦下后标签由 Mini 在门禁恢复、重新送审时再加回(同 head 沿用结论)。纯函数。
+ * @returns {{blockers: Array<{code: string, reason: string}>, retry: boolean}}
+ */
+export function toMergeReadyGateBlockers(preMerge) {
+  if (!preMerge || typeof preMerge !== 'object') {
+    return { blockers: [{ code: 'pre-merge-missing', reason: '合并前门禁复核结果缺失,无法确认 CI、讨论和冲突' }], retry: true };
+  }
+  if (preMerge.ok === false) {
+    return { blockers: [{ code: 'pre-merge-failed', reason: `合并前门禁复核没有完成:${String(preMerge.error ?? preMerge.reason ?? '未知').slice(0, 200)}` }], retry: true };
+  }
+  const blockers = [];
+  let retry = false;
+  if (preMerge.headVerified === false || preMerge.baseVerified === false) {
+    blockers.push({ code: 'head-or-base-changed', reason: '复核时 head 或 base 已变化' });
+    retry = true;
+  }
+  const unresolved = preMerge.unresolvedThreads?.length ?? 0;
+  if (preMerge.threadsVerified === false) {
+    blockers.push({ code: 'threads-unverified', reason: 'review thread 状态未完整读取' });
+    retry = true;
+  } else if (unresolved > 0) {
+    blockers.push({ code: 'threads-unresolved', reason: `仍有 ${unresolved} 条 conversation 未 resolve` });
+  }
+  if (preMerge.ci?.status === 'failed') {
+    blockers.push({ code: 'ci-failed', reason: `CI 失败${preMerge.ci.reason ? `:${String(preMerge.ci.reason).slice(0, 160)}` : ''}` });
+  }
+  if (preMerge.mergeStateStatus === 'DIRTY' || preMerge.mergeable === 'CONFLICTING') {
+    blockers.push({ code: 'conflict', reason: '与 base 有冲突' });
+  }
+  return { blockers, retry };
+}
+
+// 稳定、由人驱动的卡点:出现时之前的审查通过结论不再成立,标签该摘。不含瞬态(CI 在跑、机器人没说完、读失败)——
+// 否则 CI 重跑一次标签就被摘、审查通过后又加回来,来回抖动;也不含 protected(受保护路径走自己的放行信号)。
+const STALE_MERGE_READY_OUTCOMES = new Set([
+  'conflict', 'threads-unresolved', 'changes-requested', 'maintainer-signoff', 'security', 'format', 'ci-failed', 'rebase', 'retarget',
+]);
+
+/**
+ * Mini 每轮判门后,review:merge-ready 标签还该不该留。标签的含义是「当前 head/base 的审查回执、CI、安全、讨论和依赖门都过」
+ * (pr-rules.json mergeReady._comment),新提交或门禁失效必须撤销。head 变化由调用方另判;这里只看门禁:
+ *   - 与 base 有冲突(mergeStateStatus=DIRTY / mergeable=CONFLICTING),不管判门先撞上了哪个卡点;
+ *   - 判门停在稳定卡点(见 STALE_MERGE_READY_OUTCOMES)。stage=review(含只剩机器人 thread 的送审)交给服务器的 publishAdvisory。
+ * 只用 context 已有字段,不多打 API。GitHub 的 BLOCKED 多半只是「等维护者 Approve」,是带标签 PR 的常态,不算失效。
+ * @returns {string|null} 失效原因;null = 不摘。
+ */
+export function toStaleMergeReadyReason({ decision, meta } = {}) {
+  if (meta?.mergeStateStatus === 'DIRTY' || meta?.mergeable === 'CONFLICTING') {
+    return `与 base 有冲突(mergeStateStatus=${meta.mergeStateStatus ?? '?'},mergeable=${meta.mergeable ?? '?'})`;
+  }
+  if (decision?.stage !== 'review' && STALE_MERGE_READY_OUTCOMES.has(decision?.outcome)) {
+    return `判门未过:${decision.outcome}${decision.reason ? `(${decision.reason})` : ''}`;
+  }
+  return null;
+}
+
 function formatReason(ctx) {
   const issues = ctx.format?.formatIssues ?? [];
   return issues.length ? `格式门未通过:${issues.join(';')}` : '格式门未通过';
@@ -280,9 +418,14 @@ export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const title = ctx.meta?.title ?? '';
   const author = ctx.meta?.author ?? '';
   const isProtected = mode === 'protected';
+  // [MIVO-PATCH protected-author-release] 受保护路径的 notice:作者是维护者,自动放行,只通知。
+  const isProtectedNotice = mode === 'notice' && kind === 'protected';
+  const protectedFileList = (ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ');
   const trigger = isProtected
-    ? { detail: `改动受保护路径 ${(ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ')}(转人工审核)`, files: ctx.protectedPath?.files ?? [] }
-    : (ctx.signoff?.triggers ?? []).find((t) => t.kind === kind) ?? ctx.signoff?.currentBlocker ?? {};
+    ? { detail: `改动受保护路径 ${protectedFileList}(转人工审核)`, files: ctx.protectedPath?.files ?? [] }
+    : isProtectedNotice
+      ? { detail: `改动受保护路径 ${protectedFileList}(作者为维护者，自动放行)`, files: ctx.protectedPath?.files ?? [] }
+      : (ctx.signoff?.triggers ?? []).find((t) => t.kind === kind) ?? ctx.signoff?.currentBlocker ?? {};
   const blockingKinds = (ctx.signoff?.triggers ?? []).filter((t) => t.blocking).map((t) => t.kind);
   const files = [...(ctx.files ?? [])]
     .map((f) => ({ path: f.path, lines: (f.additions ?? 0) + (f.deletions ?? 0) }))
@@ -295,7 +438,12 @@ export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const changedSummary = top.length
     ? ['涉及文件(前 5 个,按改动行数):', ...top.map((f) => `- \`${f.path}\`(${f.lines} 行)`)].join('\n')
     : '';
-  const confirmSection = mode === 'notice'
+  const confirmSection = isProtectedNotice
+    ? [
+      '- 本 issue 只是通知：作者是维护者，受保护路径改动按规则自动放行，不需要回复',
+      '- 自动审查不审这类改动；审查机直接把 `review-pr` 检查写为通过',
+    ]
+    : mode === 'notice'
     ? ['- 本 issue 只是通知：作者在豁免名单内，维护者确认门不拦，PR 照常进入自动审查，不需要回复。']
     : [
       '- **通过**：在相关 Slack 会话留言「同意放行」、在本 issue 下评论「同意放行」，或直接在 PR 上 Approve；批一次一直有效',
@@ -319,7 +467,11 @@ export function buildSignoffPayload(ctx, kind, mode = 'normal') {
   const topicList = isProtected
     ? KIND_TOPICS.protected
     : (blockingKinds.length ? blockingKinds : [kind]).map((k) => KIND_TOPICS[k] ?? k).join('、');
-  const commentBody = mode === 'notice'
+  const commentBody = isProtectedNotice
+    ? [
+      `本 PR 改了受保护路径（${(ctx.protectedPath?.files ?? []).slice(0, 5).join(' / ')}），作者是维护者，按规则自动放行（自动审查不审这类改动，审查机直接把 review-pr 写为通过）；已开通知 issue 告知维护者：{{ISSUE_URL}}`,
+    ].join('\n')
+    : mode === 'notice'
     ? [
       `本 PR 命中维护者确认门（触发类别：${KIND_TOPICS[kind] ?? kind}）。作者在豁免名单内，确认门不拦，PR 照常进入自动审查；已开通知 issue 告知维护者：{{ISSUE_URL}}`,
     ].join('\n')

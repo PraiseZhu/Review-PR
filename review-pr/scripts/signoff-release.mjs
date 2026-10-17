@@ -31,7 +31,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
 
 const VALID_KINDS = new Set(['product', 'arch', 'security', 'coldUpdate', 'rules', 'pluginBase']);
 
@@ -59,9 +59,10 @@ try {
   const writeGh = expectedHead ? createPrWriteGuard({ owner, repo, pr, lockToken, expectedHead, expectedAuthorityDigest }) : gh;
   const pfIdx = process.argv.indexOf('--payload-file');
   const payloadSrc = pfIdx >= 0 ? process.argv[pfIdx + 1] : null;
-  const commentBody = payloadSrc
-    ? (JSON.parse(readFileSync(payloadSrc === '-' ? 0 : payloadSrc, 'utf8'))?.commentBody ?? '').trim()
-    : '';
+  const payloadJson = payloadSrc ? JSON.parse(readFileSync(payloadSrc === '-' ? 0 : payloadSrc, 'utf8')) : null;
+  const commentBody = (payloadJson?.commentBody ?? '').trim();
+  // [MIVO-PATCH protected-author-release] 关 issue 时的说明文案(自动放行关存量 protected issue 用);缺省沿用原文。
+  const closeCommentBody = (payloadJson?.closeCommentBody ?? '').trim();
   const closeIssue = process.argv.includes('--close-issue');
   const SIGNOFF_LABEL = (loadRules().signoffGate?.label ?? SIGNOFF_LABEL_DEFAULT).trim() || SIGNOFF_LABEL_DEFAULT;
 
@@ -128,7 +129,7 @@ try {
     if (issueNumber == null) return { issueClosed: false, issueCloseSkipped: 'issue-url-unparsable', issueUrl: holdMarker.issueUrl };
     const issue = ghJson(['issue', 'view', String(issueNumber), '--repo', slug, '--json', 'state,url']);
     if (!issue || issue.state !== 'OPEN') return { issueClosed: false, issueAlreadyClosed: true, issueNumber };
-    const body = `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#${pr}(${meta.url})。本 issue 由 review-pr 流程自动关闭。`;
+    const body = toDiscussIssueCloseBody({ pr, url: meta.url, closeCommentBody });
     return {
       issueClosed: false, // 下面填充
       ...closeDiscussIssue({ slug, issueNumber, commentBody: body, dryRun, ghFn: writeGh }),

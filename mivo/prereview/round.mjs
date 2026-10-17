@@ -16,9 +16,9 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
-import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
+import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -277,8 +277,10 @@ function isGithubRateLimited(server) {
 
 // #68 上线前 outcome=protected 的 round-state 指纹没变,会被 pre-check 当成 unchanged。
 // 只给这些 PR 标 retry 一次,不清空缓存、不让全部 PR 重审。标记写在 Mini 本机 mivo 状态目录。
-function wakeProtectedHoldOnce() {
-  const markerFile = stateFile('protected-hold-wake.json');
+// 「作者为维护者自动放行」上线时同理:已 hold 住的维护者受保护路径 PR 指纹没变,要再唤醒一次,
+// 用独立的标记文件,不和 #68 那次互相挡。
+function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json') {
+  const markerFile = stateFile(markerName);
   const already = readJson(markerFile, { done: false });
   const rsPath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
   const rs = readJson(rsPath, null);
@@ -320,8 +322,10 @@ async function main() {
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
   sweepBypassReminders();
-  try { wakeProtectedHoldOnce(); } catch (error) {
-    log('wake-protected-hold-skip', { reason: error.message.slice(0, 200) });
+  for (const markerName of ['protected-hold-wake.json', 'protected-author-release-wake.json']) {
+    try { wakeProtectedHoldOnce(markerName); } catch (error) {
+      log('wake-protected-hold-skip', { marker: markerName, reason: error.message.slice(0, 200) });
+    }
   }
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
@@ -702,17 +706,19 @@ function resumeInflight(ctx, inflight, queue) {
       continue;
     }
     const m = String(task.agentId ?? '').match(/^gha:(\d+):([^:]*)/);
+    const intent = readIntent(ctx, task.pr);
     if (m && task.phase === 'running') {
-      const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt, gateResult: {} };
+      // 前置判门的状态(errors / retry / authorNotice)随派发意图落盘;只认 dispatch_id 对得上的那份。
+      const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt,
+        gateResult: intent?.dispatchId === m[2] ? intent.gateResult ?? {} : {} };
       if (cancelIntent?.runId === m[1]) Object.assign(entry, { cancelIntent, cancelResend: true });
-      finishResolution(readIntent(ctx, task.pr));
+      finishResolution(intent);
       inflight.set(task.pr, entry);
       continue;
     }
-    const intent = readIntent(ctx, task.pr);
     if (intent && intent.claimAttempt === task.attempts && ['dispatching', 'sent', 'bound', 'not-submitted'].includes(intent.state)) {
       const entry = { dispatched: true, dispatchId: intent.dispatchId, intentAt: intent.intentAt, attempt: intent.attempt,
-        dispatchedAt: intent.intentAt, gateResult: {}, runId: null, agentId: null, task: item };
+        dispatchedAt: intent.intentAt, gateResult: intent.gateResult ?? {}, runId: null, agentId: null, task: item };
       if (intent.state === 'not-submitted') {
         finishResolution(intent);
         if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '人工核实这次派发没有发出,下一轮重新送审', retry: true });
@@ -766,15 +772,19 @@ function handleTask(ctx, task) {
       }
     }
   }
+  // 作者是维护者、受保护路径自动放行:不发「转人工审核」提醒,作者提醒回执记 deduplicated(轮次汇总要求 protected 有终态)。
+  if (decision.autoRelease) result.authorNotice = toAutoReleaseNotice({ head: task.head, by: decision.autoRelease.by });
   if (!dry) syncDisplayLabels(live, task, result);
-  if (!dry) dropStaleMergeReady(live, task, result);
+  if (!dry) dropStaleMergeReady(live, task, result, decision);
 
   if (decision.stage === 'protected' && decision.outcome === 'protected') {
     // 受保护路径的人工放行(维护者 Approve / 确认 issue 上的「同意放行」,不绑 head)成立:review-pr 还没写成功就派
     // 服务器独立复核并写;已经成功就由 Mini 补关确认 issue(服务器令牌的 issue 写权限未核实,关 issue 不交给服务器)。
     const protectedPath = live.protectedPath;
     const next = toProtectedDispatch({ decision, protectedPath, checkDone: protectedCheckDone(task) });
-    if (next.closeIssue && !dry) executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue' }, live, task, bindings, result, roundDir });
+    if (next.closeIssue && !dry) {
+      executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
+    }
     if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result);
   }
   if (decision.stage !== 'review') {
@@ -816,7 +826,13 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
     }
     case 'signoff-release': {
       // 补关 issue 只关绑定本 PR 的:hold 标记评论任何人都能发,指向别的 PR 的 issue 时不关、不评论,只记 warning。
-      const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings });
+      // 自动放行关存量 protected issue:说明文案写进 payload 文件(closeCommentBody)交给 signoff-release。
+      let payloadFile = '';
+      if (action.autoRelease) {
+        payloadFile = join(roundDir, `auto-release-close-pr-${pr}.json`);
+        writeJson(payloadFile, { closeCommentBody: toAutoReleaseCloseComment({ pr, url: live.meta?.url, by: live.meta?.author ?? action.autoRelease.by }) });
+      }
+      const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings, payloadFile });
       if (warning) result.warnings.push(`signoffRelease:${warning}`);
       record('signoffRelease', script('signoff-release.mjs', args));
       break;
@@ -899,15 +915,21 @@ function syncDisplayLabels(live, task, result) {
   if (out.warning || out.errors?.length) result.warnings.push(`展示标签同步:${out.warning || out.errors.join('; ')}`);
 }
 
-// head 变了就摘掉旧的 review:merge-ready(它只对审查通过的那个 head 有效)。
-function dropStaleMergeReady(live, task, result) {
+// 摘掉不再成立的 review:merge-ready。标签只对「审查通过的那个 head、且门禁仍然全过」成立:
+//   - head 变了(审查通过的 head 不是当前 head);
+//   - 门禁失效:与 base 冲突、人工讨论未 resolve 等稳定卡点(判据见 lib/gates.mjs 的 toStaleMergeReadyReason)。
+//     只用本轮判门已经拿到的 context,不多打 API;摘掉后标签不在了,下一轮不会重复 DELETE。
+//     门禁重新全过后,判门回到送审阶段,服务器沿用结论(同 head 走复用)再把标签加回来。
+function dropStaleMergeReady(live, task, result, decision) {
   if (!(live.meta?.labels ?? []).includes(MERGE_READY_LABEL)) return;
   const record = loadStore().prs[task.pr];
-  if (record?.cleanHead === task.head) return;
+  const gateReason = toStaleMergeReadyReason({ decision, meta: live.meta });
+  if (record?.cleanHead === task.head && !gateReason) return;
   assertNotFenced();
   const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${task.pr}/labels/${encodeURIComponent(MERGE_READY_LABEL)}`],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
   if (!r.ok && !/404/.test(r.stderr)) result.warnings.push(`review:merge-ready 没摘掉:${r.stderr.trim().slice(0, 200)}`);
+  else if (r.ok) log('merge-ready-dropped', { pr: task.pr, head: task.head, reason: gateReason ?? 'head-changed' });
 }
 
 // 受保护路径:当前 head 的 review-pr check 是否已经写成 success。放行信号本身由 context 的 protectedPath 给出。
@@ -935,8 +957,12 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   if (dispatchesToday() >= CONFIG.dailyCap) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `今日服务器审查已达上限 ${CONFIG.dailyCap} 次,明天继续`, retry: true });
   }
-  const attempt = (record.attempts?.[task.head] ?? 0) + 1;
-  const retry = toRetryDecision({ failure: record.failures?.[task.head], attempt });
+  // attempt = 连续失败数 + 1(服务器据此升级模型、判定最终失败,review-pr.yml 的守卫只收 1–9)。不再累计成功的派发:
+  // 摘标签后门禁恢复要再派发一次才能把标签加回,同 head 累计派发满 9 次就加不回来(2026-10-17 补审)。
+  // 防失控靠 completedRuns 上限;record.attempts 只留作遥测,旧记录里累计到 9 的 head 也因此自动解开。
+  const failure = record.failures?.[task.head];
+  const attempt = toDispatchAttempt(failure);
+  const retry = toRetryDecision({ failure, attempt, completedRuns: record.completedRuns?.[task.head] ?? 0 });
   if (!retry.dispatch) {
     log('retry-held', { pr: task.pr, head: task.head, attempt, reason: retry.reason });
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: retry.reason, retry: true });
@@ -947,7 +973,9 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
     target_repo: CONFIG.targetRepo, pr: String(task.pr), head_sha: task.head, base_sha: task.base, tier,
     round_id: ctx.plan.runId, mode: CONFIG.mode, action, prev_run_id: String(prevRunId), attempt: String(attempt), dispatch_id: dispatchId,
   };
-  const intent = { pr: task.pr, head: task.head, dispatchId, attempt, claimAttempt: task.attempts, tier, action, intentAt: nowIso(), state: 'prepared' };
+  // gateResult(判门留下的 errors / warnings / retry / 作者提醒回执)一起落盘:派发后进程重启,恢复出来的 entry 才不会丢掉
+  // 「通知没发出去」这类还没了结的状态(否则 round-state 写 retry=false,下一轮判 unchanged,通知永久缺失)。
+  const intent = { pr: task.pr, head: task.head, dispatchId, attempt, claimAttempt: task.attempts, tier, action, intentAt: nowIso(), state: 'prepared', gateResult };
   saveIntent(ctx, intent);
   saveIntent(ctx, { ...intent, state: 'dispatching' });
   const args = ['workflow', 'run', 'review-pr.yml', '-R', CONFIG.workflowRepo, '--ref', CONFIG.workflowRef];
@@ -1206,7 +1234,7 @@ function collectServerRun(ctx, entry) {
     return true;
   }
   // 服务器复核没认到放行时只回 protected、不带作者提醒回执:沿用前置判门这一轮的回执,否则整轮汇总会抛错。
-  const result = withProtectedAuthorNotice({ ...server }, { gateResult: entry.gateResult, head: task.head });
+  const result = withProtectedGateRetry(withProtectedAuthorNotice({ ...server }, { gateResult: entry.gateResult, head: task.head }), entry.gateResult);
   if (existsSync(join(dir, 'report.md'))) {
     const reportFile = join(ctx.roundDir, 'reports', `pr-${task.pr}.md`);
     mkdirSync(dirname(reportFile), { recursive: true });
@@ -1223,6 +1251,7 @@ function collectServerRun(ctx, entry) {
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
   const health = server.mivo?.health;
+  let completedRun = false;
   if (health && health.ok === false) {
     // 维护窗口或工具链不健康:服务器没有审,这次派发不算一次尝试;工具链不健康时暂停派发 30 分钟再试。
     const record = loadStore().prs[task.pr] ?? {};
@@ -1244,9 +1273,12 @@ function collectServerRun(ctx, entry) {
     log('github-rate-limited', { pr: task.pr, runId: entry.runId, head: task.head, refunds: refunds + 1 });
   } else {
     recordFailure(ctx, task, server.outcome === 'error');
+    completedRun = server.outcome !== 'error';
   }
   bumpOwned(ctx, task, {
     lastRunId: entry.runId,
+    // 这次收回的是一次完成的审查(不是失败、不是健康/限额退回):累计这个 head 的已完成次数,toRetryDecision 据此封顶。
+    ...(completedRun ? { completedRuns: toCompletedRunsRecord(loadStore().prs[task.pr]?.completedRuns, task.head) } : {}),
     ...(server.reviewed && server.mivo?.reportComplete ? { lastCompleteRunId: entry.runId } : {}),
     ...(server.reviewClean && ['review-only', 'approval'].includes(server.outcome) ? { cleanHead: task.head } : {}),
   });
@@ -1284,12 +1316,12 @@ function finishGate(ctx, task, result) {
 // pr-worker 第 6 节的终态文件;判门阶段的结果都没有进入代码审查。
 function writeTaskResult(ctx, task, result, { raw = false } = {}) {
   const base = raw ? {} : { enteredReview: false, reviewed: false, reviewClean: false, merged: false, threadUrls: [] };
-  const payload = {
+  const payload = dropStaleProtectedNotice({
     runId: ctx.plan.runId, mode: 'review-only', pr: task.pr, head: task.head, base: task.base,
     ...base, ...result,
     outcome: result.outcome ?? 'error', reason: String(result.reason || result.outcome || '未知'),
     errors: result.errors ?? [], warnings: result.warnings ?? [],
-  };
+  });
   if (!raw && payload.outcome === 'error') payload.retry = true;
   writeJson(task.resultFile, payload);
 }
