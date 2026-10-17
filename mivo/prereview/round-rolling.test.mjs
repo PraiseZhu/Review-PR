@@ -262,7 +262,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 仓库副本 gc、钉住的 skill 版本、pre-check 的故障注入
     gitCalls: [], packs: 49, gcFails: false, pinned: null, pinFails: false, precheckFail: null,
     // 绕过原因提醒脚本:调用顺序记录、可注入的返回值或异常;服务器结果报 GitHub 限额的 PR 集合
-    scriptOrder: [], bypassCalls: [], bypassResult: null, bypassThrows: false, rateLimited: new Set() };
+    scriptOrder: [], bypassCalls: [], bypassResult: null, bypassThrows: false, rateLimited: new Set(),
+    // 维护者作者改了受保护路径的 PR 集合(判门自动放行 + notice issue,派 protected-approve);notice 创建的故障注入与调用记录
+    protectedAuthors: new Set(), noticeFailures: 0, noticeCalls: [] };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -389,9 +391,19 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       case 'review-queue.mjs': return queueCommand(args);
       case 'context.mjs': {
         const pr = w.prs.get(Number(args[0]));
-        return { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main', labels: [] },
-          auto: { action: 'review' }, review: { tier: 'standard' } };
+        const author = w.protectedAuthors.has(Number(args[0]));
+        return { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main', labels: [],
+          ...(author ? { author: 'PraiseZhu', url: `https://github.com/o/target/pull/${args[0]}` } : {}) },
+        auto: { action: author ? 'skip-protected-path' : 'review' }, review: { tier: 'standard' },
+        ...(author ? { signoff: {}, protectedPath: { files: ['.github/workflows/ci.yml'], released: { by: 'praisezhu', via: 'author-maintainer' } } } : {}) };
       }
+      case 'signoff-hold.mjs':
+        w.noticeCalls.push([...args]);
+        if (w.noticeFailures > 0) {
+          w.noticeFailures -= 1;
+          return { ok: true, issueCreated: false, issueError: 'temporary 503' };
+        }
+        return { ok: true, issueCreated: true };
       case 'finalize-review-round.mjs': return finalize(args);
       case 'refresh-lock.mjs':
         if (w.lock?.token !== argOf(args, '--token')) return { ok: true, refreshed: false, lost: true, error: null };
@@ -441,6 +453,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     if (args[0] === 'variable' && args[1] === 'get') return w.pinFails ? fail('HTTP 502: Bad Gateway') : ok(`${w.pinned ?? w.skillSha}\n`);
     if (args[0] === 'variable' && args[1] === 'set') { w.heartbeats.push({ at: w.now, value: argOf(args, '--body') }); return ok(); }
     if (args[0] === 'api' && path.startsWith('repos/o/target/issues')) return ok(args.includes('DELETE') ? '' : '[]');
+    if (args[0] === 'api' && path.includes('/check-runs')) return ok({ check_runs: [] });
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
       return ok([[...w.prs].filter(([, p]) => p.open).map(([number, p]) => ({ number, head: { sha: p.head } }))]);
     }
@@ -485,7 +498,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       const dir = argOf(args, '-D');
       const limited = w.rateLimited.has(r.pr);
       const limitedReason = `context 读取失败:gh pr view ${r.pr} --repo o/target --json headRefOid,baseRefOid,baseRefName 退出码 1: GraphQL: API rate limit already exceeded for user ID 1.`;
-      w.files.set(`${dir}/result.json`, limited
+      w.files.set(`${dir}/result.json`, w.protectedAuthors.has(r.pr)
+        ? { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [], enteredReview: false, reviewed: false, reviewClean: false,
+          outcome: 'protected', reason: '受保护路径:作者为维护者,自动放行', authorNotice: gates.toAutoReleaseNotice({ head: r.head, by: 'praisezhu' }),
+          errors: [], warnings: [], mivo: { reportComplete: false } }
+        : limited
         ? { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [], enteredReview: false, reviewed: false, reviewClean: false,
           outcome: 'error', reason: limitedReason, retry: true, errors: [limitedReason], warnings: [],
           mivo: { reportComplete: false, ...(w.rateLimitedAfterModel ? { codex: { attempts: [{ model: 'm', ok: true }] } } : {}) } }
@@ -1300,4 +1317,91 @@ test('世界:模型已经调用过(attempts 非空)之后才报的限额,照旧�
   assert.equal(store.failures.h1.count, 1);
   assert.equal(store.attempts.h1, 1);
   assert.equal(w.logged('github-rate-limited').length, 0);
+});
+
+// ── 通知(notice issue)没发出去的重试状态要熬过 Mini 重启 ────────────────────────────────────────
+// 维护者作者改了受保护路径:判门自动放行并建 notice issue,同轮派 protected-approve。notice 创建遇到临时错误时
+// executeGateAction 记下 errors 和 retry,但派发后进程在收回服务器结果前被杀;恢复分支原先用空的 gateResult,
+// retry 和错误记录一起丢,round-state 写 retry=false,下一轮判 unchanged,GitHub / Slack 通知永久缺失。
+
+// 跑到派发绑定 run(意图 bound、任务 running)就杀进程,返回第一轮目录。resumeAs: 'running' 照原样重启(绑定后被杀);
+// 'sent' 把磁盘回退成「gh 返回成功、run 还没绑定」(派发意图 sent、任务 ready 没 agent)再重启——两个恢复分支各走一遍。
+async function killAfterProtectedDispatch(w, { resumeAs }) {
+  const first = w.start();
+  const dir = w.roundDir('R1');
+  assert.ok(await w.runUntil(() => w.read(`${dir}/dispatch-intent-7.json`)?.state === 'bound'), '派发已绑定 run');
+  first.stop();
+  w.lock = null;
+  if (resumeAs === 'sent') {
+    const { runId, boundAt, ...sent } = w.read(`${dir}/dispatch-intent-7.json`);
+    w.files.set(`${dir}/dispatch-intent-7.json`, { ...sent, state: 'sent' });
+    const queue = w.read(`${dir}/queue.json`);
+    Object.assign(queue.tasks[0], { phase: 'ready', agentId: null });
+    w.files.set(`${dir}/queue.json`, queue);
+  }
+  return dir;
+}
+
+for (const resumeAs of ['running', 'sent']) {
+  test(`世界:notice 创建失败后已派发,Mini 重启(${resumeAs} 分支)收回结果:retry 和错误记录保留,下一轮仍补发通知`, async () => {
+    const w = makeWorld();
+    w.openPr(7, 'h7');
+    w.protectedAuthors.add(7);
+    w.noticeFailures = 1;
+    const dir = await killAfterProtectedDispatch(w, { resumeAs });
+    assert.equal(w.noticeCalls.length, 1, '第一轮判门试过一次 notice,失败');
+    const second = w.start();
+    assert.ok(await w.runUntil(() => second.settled, { maxMs: 6 * 60 * MIN }));
+    assert.equal(second.failure, null, String(second.failure?.stack));
+    const first = w.read(`${dir}/results/pr-7.json`);
+    assert.equal(first.outcome, 'protected');
+    assert.equal(first.retry, true, '通知没发出去,这一轮结果必须标 retry');
+    assert.match(first.errors.join('\n'), /temporary 503/, '错误记录不丢');
+    assert.equal(w.noticeCalls.length, 1, '一个进程只跑一轮');
+    const third = w.start();
+    assert.ok(await w.runUntil(() => third.settled, { maxMs: 6 * 60 * MIN }));
+    assert.equal(third.failure, null, String(third.failure?.stack));
+    assert.equal(w.noticeCalls.length, 2, '下一轮重判,notice 补发');
+    assert.equal(w.read('/w/state/round-state.json').prs[7].retry, false, '补发成功后不再重试');
+    assert.equal(w.dispatches.length, 2, '两轮各派一次 protected-approve');
+  });
+
+  test(`世界:notice 创建成功(正常路径),Mini 重启(${resumeAs} 分支)后不多补发通知、不多开一轮`, async () => {
+    const w = makeWorld();
+    w.openPr(7, 'h7');
+    w.protectedAuthors.add(7);
+    const dir = await killAfterProtectedDispatch(w, { resumeAs });
+    const second = w.start();
+    assert.ok(await w.runUntil(() => second.settled, { maxMs: 6 * 60 * MIN }));
+    assert.equal(second.failure, null, String(second.failure?.stack));
+    const result = w.read(`${dir}/results/pr-7.json`);
+    assert.equal(result.outcome, 'protected');
+    assert.notEqual(result.retry, true);
+    assert.deepEqual(result.errors, []);
+    assert.equal(w.read('/w/state/round-state.json').prs[7].retry, false);
+    const third = w.start();
+    assert.ok(await w.runUntil(() => third.settled, { maxMs: 6 * 60 * MIN }));
+    assert.equal(third.failure, null, String(third.failure?.stack));
+    assert.equal(w.noticeCalls.length, 1, '没有下一轮');
+    assert.equal(w.dispatches.length, 1);
+  });
+}
+
+test('世界:notice 创建失败后已派发,进程没有重启:retry 和错误记录保留,下一轮补发(对照:夹具本身没问题)', async () => {
+  const w = makeWorld();
+  w.openPr(7, 'h7');
+  w.protectedAuthors.add(7);
+  w.noticeFailures = 1;
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  const first = w.read(`${w.roundDir('R1')}/results/pr-7.json`);
+  assert.equal(first.retry, true);
+  assert.match(first.errors.join('\n'), /temporary 503/);
+  assert.equal(w.noticeCalls.length, 1);
+  const next = w.start();
+  assert.ok(await w.runUntil(() => next.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(next.failure, null, String(next.failure?.stack));
+  assert.equal(w.noticeCalls.length, 2);
+  assert.equal(w.read('/w/state/round-state.json').prs[7].retry, false);
 });

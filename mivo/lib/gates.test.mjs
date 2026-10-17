@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch, toSignoffReleaseArgs } from './gates.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { toProtectedHoldWake } from './admission.mjs';
+
+// 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
+const { toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry } = await import('./gates.mjs');
 
 // 合成的 context.mjs 输出:只放判门用到的字段。
 function ctx(overrides = {}) {
@@ -54,51 +58,114 @@ test('维护者确认门:豁免作者不拦,残留标签摘掉;放行后关 issu
 const protectedPath = (extra = {}) => ({ files: ['.github/workflows/ci.yml'], fileCount: 1, released: null, waitingForAuthor: false, ...extra });
 const protectedCtx = (overrides = {}) => ctx({ protectedPath: protectedPath(), auto: { action: 'skip-protected-path', reason: '受保护路径' }, ...overrides });
 
-test('受保护路径:豁免作者(#971)也开确认 issue 转人工审核,不送审', () => {
-  const exempt = { authorExempt: true, triggers: [] };
+const maintainerRelease = { by: 'praisezhu', via: 'author-maintainer', at: null, fingerprint: 'author-maintainer:praisezhu' };
+const maintainerAuthorCtx = (overrides = {}) => protectedCtx({
+  meta: { title: 'ci: 调整 workflow', author: 'PraiseZhu', url: 'https://github.com/o/r/pull/12', mergeStateStatus: 'BLOCKED' },
+  protectedPath: protectedPath({ released: maintainerRelease }),
+  ...overrides,
+  signoff: { authorExempt: true, triggers: [], ...(overrides.signoff ?? {}) },
+});
+
+// 2026-10-17 维护者拍板:作者是维护者(approvalPolicy.authorIsMaintainer 或 exemptAuthors,即 authorSignoffExempt)改了受保护路径,
+// 照样开 GitHub issue、Slack 通报(notice 模式,建完即关),但自动放行,不等任何人。非维护者作者的行为不变。
+test('受保护路径:作者是维护者/豁免名单(#971)开 notice issue 并自动放行,不 hold、不发「转人工」提醒', () => {
   assert.equal(isProtectedPathHit(protectedCtx()), true);
   assert.equal(isProtectedPathHit(ctx()), false);
-  const first = decideGate(protectedCtx({ signoff: exempt, approvalPolicy: { authorIsMaintainer: true } }));
-  assert.equal(first.stage, 'protected');
+  for (const who of [{ signoff: { authorExempt: true } }, { signoff: { authorExempt: false }, approvalPolicy: { authorIsMaintainer: true } }]) {
+    const first = decideGate(maintainerAuthorCtx(who));
+    assert.equal(first.stage, 'protected');
+    assert.equal(first.outcome, 'protected');
+    assert.deepEqual(first.actions, [{ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'notice' }]);
+    assert.deepEqual(first.autoRelease, { by: 'praisezhu' });
+    assert.match(first.reason, /作者为维护者/);
+    // 已经通知过(notice issue 建完即关):什么都不再做,仍然自动放行
+    for (const heldIssue of [{ number: 9, state: 'CLOSED', mode: 'notice' }, { number: 9, state: 'OPEN', mode: 'notice' }]) {
+      const again = decideGate(maintainerAuthorCtx({ ...who, signoff: { ...who.signoff, held: { issueNumber: 9 }, heldIssue } }));
+      assert.deepEqual(again.actions, [], JSON.stringify(heldIssue));
+      assert.deepEqual(again.autoRelease, { by: 'praisezhu' });
+    }
+  }
+  // 残留的确认标签摘掉
+  const labelled = decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'CLOSED', mode: 'notice' }, labels: { hasAnyLabel: true } } }));
+  assert.deepEqual(labelled.actions, [{ script: 'signoff-release', mode: 'labels-only' }]);
+  // 受保护路径同时命中 security 触发:并入这一个 notice,不另开
+  const withSecurity = decideGate(maintainerAuthorCtx({ signoff: { triggers: [{ kind: 'security', detail: 'x', blocking: false, released: null }] } }));
+  assert.deepEqual(withSecurity.actions, [{ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'notice' }]);
+});
+
+test('受保护路径:维护者作者存量 hold 住的 protected issue 下一轮自动放行并关掉,不留无人管的 open issue', () => {
+  const stored = maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' }, labels: { hasAnyLabel: true } } });
+  const d = decideGate(stored);
+  assert.equal(d.outcome, 'protected');
+  assert.deepEqual(d.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
+  assert.deepEqual(d.autoRelease, { by: 'praisezhu' });
+  // 没有残留标签也要关 issue
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' } } })).actions,
+    [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
+  // 更早的普通确认 issue(没有模式标记)还开着:同样是无人管的 open issue,一并关掉
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'OPEN', mode: 'normal' } } })).actions,
+    [{ script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } }]);
+  // protected issue 已经被人关了:不再动
+  assert.deepEqual(decideGate(maintainerAuthorCtx({ signoff: { held: { issueNumber: 2002 }, heldIssue: { number: 2002, state: 'CLOSED', mode: 'protected' } } })).actions, []);
+  // 放行成立后派服务器写 review-pr
+  assert.deepEqual(toProtectedDispatch({ decision: d, protectedPath: stored.protectedPath, checkDone: false }), { dispatch: true, closeIssue: false });
+});
+
+test('受保护路径:维护者作者被别的维护者在当前 head Request Changes 时仍交作者,不通知、不放行', () => {
+  const d = decideGate(maintainerAuthorCtx({ protectedPath: protectedPath({ waitingForAuthor: true }) }));
+  assert.equal(d.outcome, 'changes-requested');
+  assert.deepEqual(d.actions, []);
+  assert.equal(d.autoRelease, undefined);
+});
+
+test('受保护路径:非维护者作者行为不变——开 protected issue 转人工审核,作者本人的放行不算', () => {
+  const outsider = { meta: { title: 'ci: x', author: 'outsider', url: 'https://github.com/o/r/pull/12', mergeStateStatus: 'BLOCKED' }, signoff: { authorExempt: false, triggers: [] } };
+  const first = decideGate(protectedCtx(outsider));
   assert.equal(first.outcome, 'protected');
   assert.deepEqual(first.actions, [
     { script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' },
     { script: 'notify-protected' },
   ]);
+  assert.equal(first.autoRelease, undefined);
   // 已有可复用的确认 issue:只补标签
-  const held = decideGate(protectedCtx({ signoff: { ...exempt, held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' } } }));
+  const held = decideGate(protectedCtx({ ...outsider, signoff: { ...outsider.signoff, held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' } } }));
   assert.deepEqual(held.actions[0], { script: 'signoff-hold', mode: 'labels-only', kind: 'protected', issueMode: 'protected' });
   // 旧 issue 是通知(或已关闭):另开新的完整 issue
   for (const heldIssue of [{ number: 9, state: 'CLOSED', mode: 'notice' }, { number: 9, state: 'OPEN', mode: 'notice' }, { number: 9, state: 'CLOSED', mode: 'protected' }]) {
-    const fresh = decideGate(protectedCtx({ signoff: { ...exempt, held: { issueNumber: 9 }, heldIssue } }));
+    const fresh = decideGate(protectedCtx({ ...outsider, signoff: { ...outsider.signoff, held: { issueNumber: 9 }, heldIssue } }));
     assert.equal(fresh.actions[0].mode, 'full', JSON.stringify(heldIssue));
   }
   // 非豁免作者 + security 触发 + 受保护路径:只出一个 protected 的 hold,不出普通 hold
   const withSecurity = decideGate(protectedCtx({ signoff: { triggers: [{ kind: 'security', detail: 'x', blocking: true, released: null }], currentBlocker: { kind: 'security' } } }));
   assert.equal(withSecurity.outcome, 'protected');
   assert.deepEqual(withSecurity.actions.filter((a) => a.script === 'signoff-hold'), [{ script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' }]);
+  // 作者本人的放行 context 不会给出 released(evaluateMaintainerReview 剔除作者):没有 released 就不派发
+  assert.deepEqual(toProtectedDispatch({ decision: first, protectedPath: protectedPath(), checkDone: false }), { dispatch: false, closeIssue: false });
 });
 
-test('受保护路径从未 hold 过时即使已放行也开 protected issue;已 hold 过才只摘标签', () => {
+test('受保护路径从未 hold 过时(非维护者作者)即使已放行也开 protected issue;已 hold 过才只摘标签', () => {
   const released = protectedPath({ released: { by: 'kirozeng', via: 'github-approve', at: '2026-10-16T01:00:00Z' } });
-  const first = decideGate(protectedCtx({ protectedPath: released, signoff: { authorExempt: true } }));
+  const outsider = { meta: { title: 'ci: x', author: 'outsider', url: 'u', mergeStateStatus: 'BLOCKED' } };
+  const first = decideGate(protectedCtx({ ...outsider, protectedPath: released, signoff: { authorExempt: false } }));
   assert.equal(first.outcome, 'protected');
   assert.deepEqual(first.actions.filter((a) => a.script === 'signoff-hold'), [
     { script: 'signoff-hold', mode: 'full', kind: 'protected', issueMode: 'protected' },
   ]);
   assert.ok(first.actions.some((a) => a.script === 'notify-protected'));
   const held = decideGate(protectedCtx({
+    ...outsider,
     protectedPath: released,
-    signoff: { authorExempt: true, held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' }, labels: { hasAnyLabel: true } },
+    signoff: { authorExempt: false, held: { issueNumber: 9 }, heldIssue: { number: 9, state: 'OPEN', mode: 'protected' }, labels: { hasAnyLabel: true } },
   }));
   assert.equal(held.actions.some((a) => a.script === 'signoff-hold' && a.mode === 'full'), false);
   assert.deepEqual(held.actions, [{ script: 'signoff-release', mode: 'labels-only' }, { script: 'notify-protected' }]);
 });
 
-test('受保护路径已放行:不再 hold,有残留标签只摘标签;当前 head 被 Request Changes 交作者', () => {
+test('受保护路径已放行(非维护者作者):不再 hold,有残留标签只摘标签;当前 head 被 Request Changes 交作者', () => {
   const released = decideGate(protectedCtx({
+    meta: { title: 'ci: x', author: 'outsider', url: 'u', mergeStateStatus: 'BLOCKED' },
     protectedPath: protectedPath({ released: { by: 'kirozeng', via: 'github-approve', at: '2026-10-16T01:00:00Z' } }),
-    signoff: { authorExempt: true, labels: { hasAnyLabel: true } },
+    signoff: { authorExempt: false, labels: { hasAnyLabel: true } },
   }));
   assert.equal(released.outcome, 'protected');
   assert.deepEqual(released.actions, [
@@ -344,4 +411,130 @@ test('接线:round 用 toSignoffReleaseArgs 并记 warning;context 把 releaseUn
   assert.match(round, /toSignoffReleaseArgs\(/);
   assert.doesNotMatch(round, /action\.mode === 'labels-only-close-issue' \? \['--close-issue'\]/);
   assert.match(read('../../review-pr/scripts/context.mjs'), /heldIssue: earlyDiscussionIssue[\s\S]{0,300}releaseUntrusted/);
+});
+
+test('受保护路径 notice 文案:骨架与普通 notice 一致,写准「作者为维护者、自动放行」,不要求任何人回复', () => {
+  const base = maintainerAuthorCtx();
+  const payload = buildSignoffPayload(base, 'protected', 'notice');
+  assert.equal(payload.issueTitle, '维护者确认 · PR #12 ci: 调整 workflow');
+  assert.match(payload.issueBody, /^### 触发原因\n\n[\s\S]*\n### PR\nhttps:\/\/github.com\/o\/r\/pull\/12\n\n### 确认方式\n\n/);
+  assert.doesNotMatch(payload.issueBody, /关联\s*PR:#/);
+  assert.match(payload.issueBody, /\*\*protected\*\* — 改动受保护路径 \.github\/workflows\/ci\.yml(?:\(|（)作者为维护者，自动放行/);
+  assert.match(payload.issueBody, /本 issue 只是通知：作者是维护者，受保护路径改动按规则自动放行，不需要回复/);
+  assert.match(payload.issueBody, /把 `review-pr` 检查写为通过/);
+  assert.doesNotMatch(payload.issueBody, /同意放行|转人工审核|豁免名单/);
+  assert.match(payload.commentBody, /本 PR 改了受保护路径（\.github\/workflows\/ci\.yml）/);
+  assert.match(payload.commentBody, /作者是维护者，按规则自动放行/);
+  assert.match(payload.commentBody, /\{\{ISSUE_URL\}\}/);
+  assert.doesNotMatch(payload.commentBody, /已转人工审核|请维护者审阅/);
+  // 普通 notice 与 protected 模式文案不被碰
+  assert.match(buildSignoffPayload(ctx({ signoff: { triggers: [productTrigger()] }, protectedPath: protectedPath() }), 'product', 'notice').issueBody, /本 issue 只是通知：作者在豁免名单内，维护者确认门不拦/);
+  assert.match(buildSignoffPayload(ctx({ protectedPath: protectedPath() }), 'protected', 'protected').commentBody, /已转人工审核/);
+});
+
+test('自动放行的作者提醒回执:deduplicated + 指纹,不发评论;能过轮次汇总的受保护提醒校验', () => {
+  assert.deepEqual(toAutoReleaseNotice({ head: 'h1', by: 'praisezhu' }), {
+    kind: 'protected-path', status: 'deduplicated', head: 'h1', fingerprint: 'author-maintainer:praisezhu', reason: 'author-maintainer-auto-release',
+  });
+});
+
+test('toAutoReleaseCloseComment:关闭存量 protected issue 时留一句说明', () => {
+  const body = toAutoReleaseCloseComment({ pr: 2001, url: 'https://github.com/o/r/pull/2001', by: 'PraiseZhu' });
+  assert.match(body, /作者为维护者，按新规则自动放行/);
+  assert.match(body, /@PraiseZhu/);
+  assert.match(body, /关联 PR:#2001/);
+  assert.match(body, /本 issue 由 review-pr 流程自动关闭/);
+});
+
+test('toSignoffReleaseArgs:自动放行的关 issue 动作带说明文案文件;绑定校验失败时不带 --close-issue 也不带文案', () => {
+  const action = { script: 'signoff-release', mode: 'labels-only-close-issue', autoRelease: { by: 'praisezhu' } };
+  const held = { issueUrl: 'https://github.com/o/r/issues/2002', issueNumber: 2002 };
+  const ok = toSignoffReleaseArgs({ action, pr: 2001, held, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' }, bindings, payloadFile: '/r/close.json' });
+  assert.deepEqual(ok.args, ['2001', '--labels-only', '--close-issue', '--payload-file', '/r/close.json', ...bindings]);
+  const forged = toSignoffReleaseArgs({ action, pr: 2001, held, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected', releaseUntrusted: 'issue-not-bound' }, bindings, payloadFile: '/r/close.json' });
+  assert.deepEqual(forged.args, ['2001', '--labels-only', ...bindings]);
+  assert.match(forged.warning, /issue-not-bound/);
+  // 非自动放行的动作不受影响
+  assert.deepEqual(toSignoffReleaseArgs({ action: closeAction, pr: 2001, held, heldIssue: { number: 2002, state: 'OPEN', mode: 'protected' }, bindings, payloadFile: '/r/close.json' }).args,
+    ['2001', '--labels-only', '--close-issue', ...bindings]);
+});
+
+test('接线:Mini 与服务器只读 context 的 protectedPath.released;说明文案经 payload 文件走 signoff-release/signoff-hold', () => {
+  const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  const round = read('../prereview/round.mjs');
+  const review = read('../server/review.mjs');
+  const context = read('../../review-pr/scripts/context.mjs');
+  const release = read('../../review-pr/scripts/signoff-release.mjs');
+  const hold = read('../../review-pr/scripts/signoff-hold.mjs');
+  // 「作者是不是维护者」只在 context 判一次(authorSignoffExempt),Mini 与服务器各自不另写判断
+  assert.match(context, /evaluateProtectedPathRelease\(\{[\s\S]{0,300}authorExempt: authorSignoffExempt/);
+  for (const [name, src] of [['round.mjs', round], ['review.mjs', review]]) {
+    assert.doesNotMatch(src, /exemptAuthors|isSignoffExemptAuthor|authorIsMaintainer/, name);
+  }
+  assert.match(review, /ctx\.protectedPath\?\.released/);
+  // round:自动放行补作者提醒回执,关 issue 的说明文案走 payload 文件
+  assert.match(round, /toAutoReleaseNotice\(/);
+  assert.match(round, /decision\.autoRelease/);
+  assert.match(round, /toAutoReleaseCloseComment\(/);
+  assert.match(round, /payloadFile/);
+  // 脚本:signoff-release 读 closeCommentBody;signoff-hold 的 notice 关闭文案按 kind 取
+  assert.match(release, /closeCommentBody/);
+  assert.match(hold, /toNoticeCloseComment\(/);
+});
+
+test('接线:自动放行上线时,已 hold 的 protected 记录再被唤醒一次(独立标记文件,不和 #68 那次互相挡)', () => {
+  const round = readFileSync(fileURLToPath(new URL('../prereview/round.mjs', import.meta.url)), 'utf8');
+  assert.match(round, /function wakeProtectedHoldOnce\(markerName/);
+  assert.match(round, /'protected-hold-wake\.json'/);
+  assert.match(round, /'protected-author-release-wake\.json'/);
+  // 存量维护者 PRoutcome=protected,指纹没变:toProtectedHoldWake 把它们标 retry 一次
+  const roundState = { prs: { 2001: { outcome: 'protected', head: 'h' }, 2003: { outcome: 'review', head: 'h2' } } };
+  const wake = toProtectedHoldWake({ roundState, alreadyDone: false });
+  assert.deepEqual(wake.wake, [2001]);
+  assert.equal(wake.next.prs[2001].retry, true);
+  assert.equal(wake.next.prs[2003].retry, undefined);
+  assert.deepEqual(toProtectedHoldWake({ roundState, alreadyDone: true }).wake, []);
+});
+
+// 独立审查 P2-1:作者提醒回执(protected-path)跟着 gateResult 展开进非 protected 结果(派发前被挡、服务器 run 被取消等),
+// collectRoundResults 会抛「非受保护路径卡点却记录了受保护路径提醒」。维护者作者的受保护路径 PR 每个都会走到派发,暴露面变大。
+test('非 protected 结果不带受保护路径作者提醒回执;protected 结果原样保留', async () => {
+  const { collectRoundResults } = await import('../../review-pr/scripts/review-round.mjs');
+  const notice = toAutoReleaseNotice({ head: 'h1', by: 'praisezhu' });
+  const gateResult = { outcome: 'protected', reason: 'x', authorNotice: notice, errors: [], warnings: [] };
+  const plan = { runId: 'r1', mode: 'review-only', repo: 'o/r', groups: [{ prs: [{ pr: 12, head: 'h1' }] }], skipped: [],
+    manifest: { snapshot: [{ number: 12, head: 'h1', isDraft: false }], candidates: [{ number: 12 }], skipped: [] } };
+  const base = { runId: 'r1', mode: 'review-only', pr: 12, head: 'h1', base: 'b1', enteredReview: false, reviewed: false, reviewClean: false, merged: false, threadUrls: [], errors: [], warnings: [] };
+  for (const outcome of ['error', 'state-changed']) {
+    const broken = { ...base, ...gateResult, outcome, reason: '部署暂停', retry: true };
+    assert.throws(() => collectRoundResults(plan, [broken]), /非受保护路径卡点却记录了受保护路径提醒/, outcome);
+    const fixed = dropStaleProtectedNotice(broken);
+    assert.equal(fixed.authorNotice, undefined);
+    assert.equal(collectRoundResults(plan, [fixed]).processed[0].outcome, outcome);
+  }
+  const kept = dropStaleProtectedNotice({ ...base, ...gateResult });
+  assert.deepEqual(kept.authorNotice, notice);
+  // 其它提醒(rebase)和没有回执的结果都不动
+  const rebase = { outcome: 'rebase', authorNotice: { kind: 'stale-rebase', status: 'posted', head: 'h1', fingerprint: 'f' } };
+  assert.deepEqual(dropStaleProtectedNotice(rebase), rebase);
+  assert.deepEqual(dropStaleProtectedNotice({ outcome: 'error' }), { outcome: 'error' });
+});
+
+// 独立审查 P2-2:notice issue/评论创建失败时 Mini 在 gateResult 里标了 retry,但同轮又派了 protected-approve,
+// 采用服务器结果后 retry 丢了,Slack 通报静默缺失。
+test('protected 结果沿用前置判门的 retry(notice 没发出去),其它结果不动', () => {
+  assert.equal(withProtectedGateRetry({ outcome: 'protected' }, { retry: true }).retry, true);
+  assert.equal(withProtectedGateRetry({ outcome: 'protected' }, { retry: false }).retry, undefined);
+  assert.equal(withProtectedGateRetry({ outcome: 'protected' }, null).retry, undefined);
+  assert.equal(withProtectedGateRetry({ outcome: 'protected', retry: true }, {}).retry, true);
+  assert.equal(withProtectedGateRetry({ outcome: 'error' }, { retry: true }).retry, undefined);
+  const input = { outcome: 'protected' };
+  withProtectedGateRetry(input, { retry: true });
+  assert.equal(input.retry, undefined, '不改入参');
+});
+
+test('接线:round 在写任务结果前清掉过期的受保护提醒回执,并沿用前置判门的 retry', () => {
+  const round = readFileSync(fileURLToPath(new URL('../prereview/round.mjs', import.meta.url)), 'utf8');
+  assert.match(round, /dropStaleProtectedNotice\(/);
+  assert.match(round, /withProtectedGateRetry\(/);
 });

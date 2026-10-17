@@ -202,7 +202,8 @@ function readJobStart(input) {
 
 function prepareProtectedApprove(state, ctx) {
   // 受保护路径的 PR 不自动审查。放行信号由本 job 自己重跑的 context(protectedPath)独立复核,不信 Mini 的判断:
-  // 维护者(非作者)未撤销的 GitHub Approve(不绑 head),或确认 issue 上的 Slack / GitHub「同意放行」。
+  // 维护者(非作者)未撤销的 GitHub Approve(不绑 head),或确认 issue 上的 Slack / GitHub「同意放行」,
+  // 或作者本人是维护者(context 算出 via=author-maintainer;名单与 Mini 读的是同一个钉住 SHA 的 pr-rules.json)。
   if (!state.context.protectedFiles) return finishEarly(state, 'state-changed', '当前 head 已不涉及受保护路径,按普通 PR 重新送审');
   const release = ctx.protectedPath?.released;
   if (ctx.protectedPath?.waitingForAuthor || !release?.by) {
@@ -424,13 +425,18 @@ async function publish() {
     if (state.protectedApproval) {
       const { by, via, at, fingerprint } = state.protectedApproval;
       const viaText = { 'github-approve': 'GitHub Approve', 'slack-release': 'Slack「同意放行」', 'issue-comment': '确认 issue 评论「同意放行」' }[via] ?? via;
+      // [MIVO-PATCH protected-author-release] 作者是维护者:context 算出 via=author-maintainer,不是人工放行,标题单独写。
+      const byAuthor = via === 'author-maintainer';
+      const title = byAuthor ? '受保护路径:作者为维护者,自动放行' : `受保护路径:由 ${by} 人工审核放行(${viaText})`;
       result.outcome = 'protected';
-      result.reason = `受保护路径:由 ${by} 人工审核放行(${viaText})`;
+      result.reason = title;
       result.authorNotice = { kind: 'protected-path', status: 'deduplicated', head: input.head, reason: 'manual-approved', fingerprint: `manual:${fingerprint}` };
       // 只写 review-pr check。确认 issue 由 Mini 在看到 check 已成功后关(服务器令牌的 issue 写权限未核实)。
       if (input.mode !== 'dry-run') {
-        result.mivo.checkRun = completeCheckRun(input, null, { conclusion: 'success', title: `受保护路径:由 ${by} 人工审核放行(${viaText})`,
-          summary: `维护者 ${by} 通过 ${viaText} 放行${at ? `(${at})` : ''},批一次一直有效,不绑定提交。放行凭据:${fingerprint}` });
+        result.mivo.checkRun = completeCheckRun(input, null, { conclusion: 'success', title,
+          summary: byAuthor
+            ? `作者 ${by} 是维护者,受保护路径改动按规则自动放行,不绑定提交。自动审查不审这类改动。放行凭据:${fingerprint}`
+            : `维护者 ${by} 通过 ${viaText} 放行${at ? `(${at})` : ''},批一次一直有效,不绑定提交。放行凭据:${fingerprint}` });
       }
       return writeResult(result);
     }

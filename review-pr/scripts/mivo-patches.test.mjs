@@ -42,6 +42,9 @@ import {
 } from './lib.mjs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
 
+// 自动放行新增的导出:动态取,缺失时只让对应用例失败,不让整个文件无法加载。
+const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mjs');
+
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
 const bad = (message) => ({ ok: false, stdout: '', stderr: message, status: 1 });
 const SHA = 'a'.repeat(40);
@@ -1122,4 +1125,57 @@ syncBuiltinESMExports();
     assert.equal(newRel.issueCommentRelease, null);
     assert.equal(evaluateProtectedPathRelease({ ...protectedBase, issueRelease: null }).released, null);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+// 2026-10-17 维护者拍板:作者是维护者(approvalPolicy.authorIsMaintainer 或 exemptAuthors,即 context 的 authorSignoffExempt)
+// 改受保护路径时放行直接成立;放行权名单(maintainerAllowlist)不因此扩大。
+test('受保护路径放行:作者是维护者/豁免名单时直接放行(via=author-maintainer);放行权不变', () => {
+  const exemptBase = { ...protectedBase, authorExempt: true };
+  const auto = evaluateProtectedPathRelease(exemptBase);
+  assert.equal(auto.released?.by, 'zhongxingtian-ai');
+  assert.equal(auto.released?.via, 'author-maintainer');
+  assert.equal(auto.released?.at, null);
+  assert.equal(auto.released?.fingerprint, 'author-maintainer:zhongxingtian-ai');
+  assert.equal(auto.waitingForAuthor, false);
+  assert.deepEqual(auto.files, ['.github/workflows/ci.yml']);
+  // 没有受保护文件:仍然 null
+  assert.equal(evaluateProtectedPathRelease({ ...exemptBase, protectedFiles: [] }), null);
+  // 别的维护者在当前 head 上 Request Changes:交作者,不自动放行
+  const changes = evaluateProtectedPathRelease({ ...exemptBase, reviews: [protectedReview('kirozeng', 'CHANGES_REQUESTED', '2026-10-16T11:00:00Z')] });
+  assert.equal(changes.waitingForAuthor, true);
+  assert.equal(changes.released, null);
+  // 非豁免作者:无 authorExempt 时一切照旧(作者本人 Approve 不算、没人表态不放行)
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, authorExempt: false }).released, null);
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] }).released, null);
+  // 豁免作者不是放行人:放行名单(maintainerAllowlist 三人)之外的 zhongxingtian-ai 给别人 PR 的 Approve 不算
+  const releasers = ['praisezhu', 'kirozeng', 'aj0928'];
+  const other = evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] });
+  assert.equal(other.released, null);
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('kirozeng', 'APPROVED', '2026-10-15T01:00:00Z')] }).released?.by, 'kirozeng');
+});
+
+test('放行权名单固定:exemptAuthors 含 zhongxingtian-ai,但 maintainerAllowlist 不含,且 exemptAuthors 是 allowlist 的超集', () => {
+  const rules = JSON.parse(readFileSync(fileURLToPath(new URL('../config/pr-rules.json', import.meta.url)), 'utf8'));
+  const allow = rules.maintainerAllowlist.map((x) => x.toLowerCase());
+  const exempt = rules.signoffGate.exemptAuthors.map((x) => x.toLowerCase());
+  assert.deepEqual(allow.slice().sort(), ['aj0928', 'kirozeng', 'praisezhu']);
+  assert.ok(exempt.includes('zhongxingtian-ai'));
+  assert.ok(!allow.includes('zhongxingtian-ai'));
+  for (const login of allow) assert.ok(exempt.includes(login), `${login} 在 exemptAuthors`);
+});
+
+test('通知 issue 关闭文案:受保护路径写准「作者是维护者、自动放行」,其余沿用原文', () => {
+  const protectedText = toNoticeCloseComment('protected');
+  assert.match(protectedText, /作者是维护者，受保护路径改动按规则自动放行/);
+  assert.match(protectedText, /不需要回复/);
+  assert.match(protectedText, /<!-- review-pr:signoff-notice-close -->/);
+  assert.equal(toNoticeCloseComment('product'), '本 issue 只是通知:作者在豁免名单内,维护者确认门不拦,PR 照常进入自动审查。流程已自动关闭本 issue,不需要回复。\n\n<!-- review-pr:signoff-notice-close -->');
+  assert.equal(toNoticeCloseComment(), toNoticeCloseComment('product'));
+});
+
+test('关闭讨论 issue 的说明:默认沿用原文,调用方给了文案就用调用方的', () => {
+  const url = 'https://github.com/o/r/pull/2001';
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url }), `维护者确认已通过,讨论结束,PR 恢复正常推进。关联 PR:#2001(${url})。本 issue 由 review-pr 流程自动关闭。`);
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '作者为维护者，按新规则自动放行。' }), '作者为维护者，按新规则自动放行。');
+  assert.equal(toDiscussIssueCloseBody({ pr: 2001, url, closeCommentBody: '   ' }), toDiscussIssueCloseBody({ pr: 2001, url }));
 });

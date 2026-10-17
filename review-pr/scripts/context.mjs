@@ -920,8 +920,11 @@ try {
   const protectedFiles = matchPathPatterns(files.map((f) => f.path), PROTECTED_PATHS);
   // [MIVO-PATCH protected-signoff] 受保护路径的人工放行(不绑 head,持久有效):未撤销的维护者 Approve,
   // 或确认 issue 上的 Slack / GitHub 评论「同意放行」。Mini 判门与服务器复核各自重跑本 context 读它。
+  // [MIVO-PATCH protected-author-release] 作者是维护者(authorSignoffExempt:维护者集合或 exemptAuthors)时放行直接成立;
+  // 「作者是不是维护者」只在这里判一次,Mini 判门与服务器 prepareProtectedApprove 都只读 protectedPath.released。
   const protectedPath = evaluateProtectedPathRelease({
     protectedFiles, reviews: signoffReviews, maintainers: MAINTAINERS_RAW, latestCommitDate, issueRelease, authorLogin,
+    authorExempt: authorSignoffExempt,
   });
   // 安全敏感改动触发器:三路取并集,任一命中即触发(口径见 SECURITY_PATHS 注释)。
   // 与规则文档门一样不设 diff 阈值 —— 一行 `contextIsolation: false` 与重写整个 preload 同级。
