@@ -19,7 +19,7 @@ import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, w
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs } from '../lib/gates.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toRetryDecision, toFailureRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -52,7 +52,7 @@ let CONFIG;
 let ENV;
 // 滚动接单的进程级状态。ROUNDS[i]:{ runId, planFile, plan, inflight: Map, queued, finished, completed, released }
 // finished = 这一轮的 drive 已结束(成功、失败或停机握手);completed = 已写 completed.json(正常关闭或放弃);
-// released = 作者推了新提交、旧 run 已确认结束而提前释放的 PR(轮次目录的 mivo-released.json)。
+// released = 换 HEAD 或已收尾的暂缓判门任务提前释放的 PR(轮次目录的 mivo-released.json)。
 // inflight 里的条目 runId 为 null 时是「还不知道有没有派出」的派发:照样占槽,按 dispatch_id 找回,不重派。
 const STARTED_AT = Date.now();
 const ROUNDS = [];
@@ -598,6 +598,7 @@ async function runQueue(ctx) {
     if (!QUIESCING && deployHold()) startQuiescing();
     ctx.ensureWatch();
     queue('status');
+    releaseDeferredGates(ctx);
     // 全进程在审数满了就不领取;部署暂停后也不领取。claim → 判门 → 派发 → 登记在途之间没有 await,别的轮次看不到过时的空槽。
     while (!QUIESCING && freeSlots() > 0) {
       assertNotFenced();
@@ -1122,14 +1123,30 @@ function requestCancel(entry) {
     cancelled: r.ok, ...(r.ok ? {} : { error: String(r.stderr || r.error || '').trim().slice(0, 200) }) });
 }
 
-// 作者推了新提交、旧 run 已确认结束:这个 PR 提前从本轮释放,新 head 进新一轮。同 head 的普通结果仍随原轮收尾。
+// 换 HEAD 或未派服务器的暂缓判门任务提前释放,新一轮仍执行全部门禁。
 function releasePr(ctx, entry) {
   const file = join(ctx.roundDir, 'mivo-released.json');
   const released = { ...readJson(file, {}), [entry.task.pr]: { at: nowIso(), runId: entry.runId,
-    oldHead: entry.cancelIntent?.oldHead ?? null, newHead: entry.cancelIntent?.newHead ?? null } };
+    oldHead: entry.cancelIntent?.oldHead ?? null, newHead: entry.cancelIntent?.newHead ?? null,
+    ...(entry.deferredGate ? { reason: 'gate-deferred', roundId: ctx.plan.runId, pr: entry.task.pr,
+      head: entry.task.head, base: entry.task.base, outcome: entry.deferredGate.outcome } : {}) } };
   writeJson(file, released);
   ctx.round.released = released;
   log('pr-released', { pr: entry.task.pr, roundId: ctx.plan.runId, runId: entry.runId, newHead: entry.cancelIntent?.newHead ?? null });
+}
+
+function releaseDeferredGates(ctx) {
+  if (!ctx.inflight.size) return;
+  const planned = ctx.plan.groups.flatMap((group) => group.prs);
+  for (const queued of readJson(join(ctx.roundDir, 'queue.json')).tasks) {
+    if (ctx.round.released?.[queued.pr] || ctx.inflight.has(queued.pr)) continue;
+    const task = { ...planned.find((item) => item.pr === queued.pr), ...queued };
+    const result = readJson(join(ctx.roundDir, 'results', `pr-${task.pr}.json`), null);
+    const dispatchIntent = existsSync(intentFile(ctx, task.pr)) ? readJson(intentFile(ctx, task.pr)) : null;
+    if (!canReleaseDeferredGate({ task, result, roundId: ctx.plan.runId, dispatchIntent })) continue;
+    assertNotFenced();
+    releasePr(ctx, { task, runId: null, deferredGate: result });
+  }
 }
 
 // 服务器 run 结束后取回结果包,写进本轮目录;没结束返回 false。排队和执行分开计时(lib/admission.mjs 的 toRunTiming)。

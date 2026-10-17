@@ -51,6 +51,27 @@ export function toBusyPrs(plans = []) {
   return busy;
 }
 
+export function canReleaseDeferredGate({ task, result, roundId, dispatchIntent = null }) {
+  return task?.phase === 'complete' && String(task.agentId ?? '').startsWith(`mini-gate:${task.pr}:`)
+    && dispatchIntent === null && result?.runId === roundId && result.pr === task.pr
+    && result.head === task.head && result.base === task.base && result.mode === 'review-only'
+    && result.enteredReview === false && result.reviewed === false
+    && ['ci-pending', 'bot-pending'].includes(result.outcome)
+    && Array.isArray(result.errors) && result.errors.length === 0 && result.retry !== true;
+}
+
+export function withDeferredGateRetries(state, plans = []) {
+  const prs = { ...(state?.version === 1 && state.mode === 'review-only' ? state.prs : {}) };
+  for (const plan of plans) {
+    for (const [number, released] of Object.entries(plan?.released ?? {})) {
+      if (released.reason !== 'gate-deferred' || released.roundId !== plan.runId) continue;
+      if (Date.parse(prs[number]?.roundCreatedAt ?? '') > Date.parse(plan.manifest?.createdAt ?? '')) continue;
+      prs[number] = { ...prs[number], retry: true };
+    }
+  }
+  return { ...state, version: 1, mode: 'review-only', prs };
+}
+
 /** 新一轮要从快照里去掉的 PR:在审 PR,加上 round-state 里(传递地)依赖它们的 PR。 */
 export function toExcludedPrs({ busyPrs = new Set(), roundState = {}, mode = 'review-only' }) {
   const excluded = new Set([...busyPrs].map(Number));

@@ -524,6 +524,9 @@ export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
   const ownedByNewerRound = (row) => Number.isFinite(roundAt) && Date.parse(row?.roundCreatedAt ?? '') > roundAt;
   for (const result of payload.processed) {
     if (!plan.manifest.candidates.some((p) => p.number === result.pr)) continue;
+    const released = plan.released?.[result.pr];
+    if (released?.reason === 'gate-deferred' && released.roundId === plan.runId && released.pr === result.pr
+      && released.head === result.head && released.base === result.base && released.outcome === result.outcome) continue;
     if (ownedByNewerRound(prs[result.pr])) continue;
     const dependencyPrs = result.dependencyPrs ?? [];
     // Cache the observation BEFORE actions. Never swallow a racing new thread

@@ -262,7 +262,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 仓库副本 gc、钉住的 skill 版本、pre-check 的故障注入
     gitCalls: [], packs: 49, gcFails: false, pinned: null, pinFails: false, precheckFail: null,
     // 绕过原因提醒脚本:调用顺序记录、可注入的返回值或异常;服务器结果报 GitHub 限额的 PR 集合
-    scriptOrder: [], bypassCalls: [], bypassResult: null, bypassThrows: false, rateLimited: new Set() };
+    scriptOrder: [], bypassCalls: [], bypassResult: null, bypassThrows: false, rateLimited: new Set(), contextPatch: new Map() };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -280,7 +280,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
   const busy = () => admission.toBusyPrs(w.incomplete().map((f) => ({ ...w.files.get(f), released: w.files.get(`${dirname(f)}/mivo-released.json`) ?? {} })));
   // 简化的候选规则:开着、不在未完成轮次里、round-state 里没有这个 head 的结论或标了 retry。
   const candidates = () => {
-    const rows = w.files.get('/w/state/round-state.json')?.prs ?? {};
+    const rows = admission.withDeferredGateRetries(w.files.get('/w/state/round-state.json') ?? {},
+      w.incomplete().map((file) => ({ ...w.files.get(file), released: w.files.get(`${dirname(file)}/mivo-released.json`) ?? {} }))).prs;
     const taken = busy();
     return [...w.prs].filter(([n, p]) => p.open && !taken.has(n) && (!rows[n] || rows[n].head !== p.head || rows[n].retry))
       .map(([n, p]) => ({ number: n, head: p.head }));
@@ -353,6 +354,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     for (const p of plan.groups.flatMap((g) => g.prs)) {
       const result = w.files.get(`${dir}/results/pr-${p.pr}.json`);
       if (!result) return { ok: false, error: `#${p.pr} 没有结果` };
+      if (w.files.get(`${dir}/mivo-released.json`)?.[p.pr]?.reason === 'gate-deferred') continue;
       // 与 review-round.mjs 的 round-owner 补丁同一规则:更新的轮次写过的行不写回。
       if (Date.parse(state.prs[p.pr]?.roundCreatedAt ?? '') > plan.createdMs) continue;
       state.prs[p.pr] = { head: result.head, outcome: result.outcome, roundCreatedAt: plan.manifest.createdAt,
@@ -389,8 +391,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       case 'review-queue.mjs': return queueCommand(args);
       case 'context.mjs': {
         const pr = w.prs.get(Number(args[0]));
-        return { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main', labels: [] },
+        const context = { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main', labels: [] },
           auto: { action: 'review' }, review: { tier: 'standard' } };
+        return { ...context, ...clone(w.contextPatch.get(Number(args[0])) ?? {}) };
       }
       case 'finalize-review-round.mjs': return finalize(args);
       case 'refresh-lock.mjs':
@@ -982,6 +985,49 @@ test('世界:真实收结果——正常收回;执行超过 170 分钟取消;结
     c.check(w, w.read(`${w.roundDir('R1')}/results/pr-1.json`));
     assert.ok(w.logged('collected').every((e) => e.head === 'h1'), 'collected 日志带 head');
   }
+});
+
+test('世界:同 HEAD 等待判门在长审查期间释放并重判,旧轮不能覆盖新轮结论', async () => {
+  for (const outcome of ['bot-pending', 'ci-pending']) {
+    const w = makeWorld();
+    const start = w.now;
+    w.openPr(1025, 'same', { durationMs: 5 * MIN });
+    w.openPr(1071, 'long', { durationMs: 90 * MIN });
+    const gate = outcome === 'bot-pending' ? { botSettle: { settled: false } } : { ci: { status: 'pending' } };
+    w.contextPatch.set(1025, { auto: { action: 'skip-gate' }, gate });
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => w.logged('pr-released').some((entry) => entry.pr === 1025), { maxMs: 5 * MIN }));
+    assert.equal(w.dispatchesOf(1025).length, 0);
+    w.contextPatch.delete(1025);
+    assert.ok(await w.runUntil(() => w.dispatchesOf(1025).length === 1, { maxMs: 8 * MIN }));
+    assert.ok(w.now - start < 15 * MIN);
+    assert.equal(w.dispatchesOf(1071).length, 1);
+    assert.ok(await w.runUntil(() => proc.settled, { maxMs: 150 * MIN }));
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+    assert.equal(w.dispatchesOf(1025).length, 1);
+    assert.equal(w.read('/w/state/round-state.json').prs[1025].outcome, 'approval');
+    assert.equal(w.read(`${w.roundDir('R1')}/results/pr-1025.json`).outcome, outcome);
+  }
+});
+
+test('世界:完成暂缓任务后释放前中断,恢复时补释放且不重复执行旧任务', async () => {
+  const w = makeWorld();
+  w.openPr(1025, 'same');
+  w.openPr(1071, 'long');
+  const runId = w.seedRun(1071, 'long', 'R0', 'existing', { durationMs: 90 * MIN });
+  const dir = w.seedRound('R0', [
+    { pr: 1025, head: 'same', phase: 'complete', agentId: 'mini-gate:1025:done' },
+    { pr: 1071, head: 'long', phase: 'running', agentId: `gha:${runId}:existing` },
+  ]);
+  w.files.set(`${dir}/results/pr-1025.json`, { runId: 'R0', pr: 1025, head: 'same', base: 'base', mode: 'review-only',
+    outcome: 'bot-pending', enteredReview: false, reviewed: false, errors: [] });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => w.dispatchesOf(1025).length === 1, { maxMs: 8 * MIN }));
+  assert.equal(w.read(`${dir}/mivo-released.json`)[1025].reason, 'gate-deferred');
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 150 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.dispatchesOf(1025).length, 1);
+  assert.equal(w.read('/w/state/round-state.json').prs[1025].outcome, 'approval');
 });
 
 test('世界:作者推新提交(A→B→C):取消旧审查,state-changed 不计失败,只有换了 head 的 PR 提前释放;同轮其它 PR 不受影响', async () => {
