@@ -705,17 +705,19 @@ function resumeInflight(ctx, inflight, queue) {
       continue;
     }
     const m = String(task.agentId ?? '').match(/^gha:(\d+):([^:]*)/);
+    const intent = readIntent(ctx, task.pr);
     if (m && task.phase === 'running') {
-      const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt, gateResult: {} };
+      // 前置判门的状态(errors / retry / authorNotice)随派发意图落盘;只认 dispatch_id 对得上的那份。
+      const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt,
+        gateResult: intent?.dispatchId === m[2] ? intent.gateResult ?? {} : {} };
       if (cancelIntent?.runId === m[1]) Object.assign(entry, { cancelIntent, cancelResend: true });
-      finishResolution(readIntent(ctx, task.pr));
+      finishResolution(intent);
       inflight.set(task.pr, entry);
       continue;
     }
-    const intent = readIntent(ctx, task.pr);
     if (intent && intent.claimAttempt === task.attempts && ['dispatching', 'sent', 'bound', 'not-submitted'].includes(intent.state)) {
       const entry = { dispatched: true, dispatchId: intent.dispatchId, intentAt: intent.intentAt, attempt: intent.attempt,
-        dispatchedAt: intent.intentAt, gateResult: {}, runId: null, agentId: null, task: item };
+        dispatchedAt: intent.intentAt, gateResult: intent.gateResult ?? {}, runId: null, agentId: null, task: item };
       if (intent.state === 'not-submitted') {
         finishResolution(intent);
         if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '人工核实这次派发没有发出,下一轮重新送审', retry: true });
@@ -960,7 +962,9 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
     target_repo: CONFIG.targetRepo, pr: String(task.pr), head_sha: task.head, base_sha: task.base, tier,
     round_id: ctx.plan.runId, mode: CONFIG.mode, action, prev_run_id: String(prevRunId), attempt: String(attempt), dispatch_id: dispatchId,
   };
-  const intent = { pr: task.pr, head: task.head, dispatchId, attempt, claimAttempt: task.attempts, tier, action, intentAt: nowIso(), state: 'prepared' };
+  // gateResult(判门留下的 errors / warnings / retry / 作者提醒回执)一起落盘:派发后进程重启,恢复出来的 entry 才不会丢掉
+  // 「通知没发出去」这类还没了结的状态(否则 round-state 写 retry=false,下一轮判 unchanged,通知永久缺失)。
+  const intent = { pr: task.pr, head: task.head, dispatchId, attempt, claimAttempt: task.attempts, tier, action, intentAt: nowIso(), state: 'prepared', gateResult };
   saveIntent(ctx, intent);
   saveIntent(ctx, { ...intent, state: 'dispatching' });
   const args = ['workflow', 'run', 'review-pr.yml', '-R', CONFIG.workflowRepo, '--ref', CONFIG.workflowRef];
