@@ -808,6 +808,45 @@ export function credFallbackStats() {
   return CRED_FALLBACKS.slice();
 }
 
+// ── [MIVO-PATCH identity-env] prepare 用 integration 令牌读上下文 ──
+// integration 令牌(github.token / GitHub App 安装令牌)没有用户身份:GraphQL viewer 是 bot 或读不到,
+// /user 403,也没有 Administration 读权限。下面三个变量都可选;都没设(或为空)时这里的函数不改变任何调用:
+//   REVIEW_PR_VIEWER_LOGIN       审查账号登录名,代替 GraphQL viewer{login}(context.mjs)
+//   REVIEW_PR_IDENTITY_TOKEN     要审查账号身份或 Administration 读的调用改用它(分支保护、ruleset bypass)
+//   REVIEW_PR_NO_CRED_FALLBACK=1 见上方 credFallbackPlan;integration 令牌下必须设
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/** REVIEW_PR_VIEWER_LOGIN 去空白后的值;没设或为空返回 ''。设了但不是合法 GitHub 登录名直接抛错,不退回 GraphQL viewer。 */
+export function viewerLoginOverride(env = process.env) {
+  const login = String(env.REVIEW_PR_VIEWER_LOGIN ?? '').trim();
+  if (!login) return '';
+  if (!GITHUB_LOGIN_RE.test(login)) {
+    throw new Error(`REVIEW_PR_VIEWER_LOGIN 不是合法的 GitHub 登录名(期望字母、数字、连字符,最长 39 位,实际 ${JSON.stringify(login.slice(0, 60))})`);
+  }
+  return login;
+}
+
+/** 要审查账号身份的单次 gh 调用的额外选项。没设(或为空)返回 {}(调用与改动前相同);
+ *  设了就把这次调用的 GH_TOKEN 换成它,并关掉换凭证重试——不能静默退回别的身份。 */
+export function identityTokenOptions(env = process.env) {
+  const identity = String(env.REVIEW_PR_IDENTITY_TOKEN ?? '').trim();
+  return identity ? { env: { ...env, GH_TOKEN: identity }, noCredFallback: true } : {};
+}
+
+/** prepare 的 gh 登录检查。没设 REVIEW_PR_VIEWER_LOGIN:照旧 `gh auth status`。
+ *  设了:integration 令牌没有 /user,`gh auth status` 会误报未登录,改为读一次目标仓库元数据核实令牌可用。 */
+export function probeGhAuth({ owner, repo }, { ghFn = gh, env = process.env } = {}) {
+  if (!viewerLoginOverride(env)) return { ok: ghFn(['auth', 'status'], { allowFail: true }).ok, via: 'auth-status' };
+  const slug = `${owner}/${repo}`;
+  const r = ghFn(['api', '--method', 'GET', `repos/${slug}`], { allowFail: true, timeoutMs: 20_000 });
+  let fullName = '';
+  try { fullName = String(JSON.parse(r.stdout || '{}').full_name ?? ''); } catch { /* 读不出按失败处理 */ }
+  const ok = r.ok && fullName.toLowerCase() === slug.toLowerCase();
+  if (ok) return { ok, via: 'repo-read' };
+  const error = r.ok ? `full_name=${JSON.stringify(fullName.slice(0, 120))}` : String(r.stderr ?? '').trim().split('\n')[0].slice(0, 200);
+  return { ok, via: 'repo-read', error };
+}
+
 export function gh(args, opts = {}) {
   const { allowFail = false, noCredFallback = false, readOnly, ...rest } = opts;
   const safeRead = readOnly ?? (
@@ -1079,12 +1118,14 @@ export function classifyHeadChecks(slug, headSha) {
  * 返回 { requiredCheckRules, requiredStatusChecks, requiredStatusChecksKnown,
  *          adminUnverifiedRuleTypes, ruleTypes, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
+export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.env } = {}) {
   if (!branch) return null;
+  // [MIVO-PATCH identity-env] 分支保护要 Administration 读,current_user_can_bypass 随调用身份变化:这三类调用用身份令牌。
+  const identity = identityTokenOptions(env);
   const encodedBranch = encodeURIComponent(branch);
   const rr = ghFn(['api', `repos/${slug}/rules/branches/${encodedBranch}`], { allowFail: true });
   if (!rr.ok) return null;
-  const classicResult = ghFn(['api', `repos/${slug}/branches/${encodedBranch}/protection`], { allowFail: true });
+  const classicResult = ghFn(['api', `repos/${slug}/branches/${encodedBranch}/protection`], { allowFail: true, ...identity });
   const classicMissing = !classicResult.ok && /(?:HTTP 404|Not Found)/i.test(`${classicResult.stderr ?? ''}${classicResult.stdout ?? ''}`);
   if (!classicResult.ok && !classicMissing) return null;
   try {
@@ -1153,7 +1194,7 @@ export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
     if (classic != null) {
       const signatureResult = ghFn([
         'api', `repos/${slug}/branches/${encodedBranch}/protection/required_signatures`,
-      ], { allowFail: true });
+      ], { allowFail: true, ...identity });
       const signatureMissing = !signatureResult.ok && /(?:HTTP 404|Not Found)/i.test(`${signatureResult.stderr ?? ''}${signatureResult.stdout ?? ''}`);
       if (!signatureResult.ok && !signatureMissing) return null;
       if (signatureResult.ok && JSON.parse(signatureResult.stdout || '{}').enabled === true) {
@@ -1165,7 +1206,7 @@ export function probeBranchProtection(slug, branch, { ghFn = gh } = {}) {
     const rulesetIds = [...new Set(rules.map((r) => r.ruleset_id).filter((x) => typeof x === 'number'))];
     let canBypass = null; // null=未知;'never'/false=不能;'always'/'pull_requests'=能
     for (const id of rulesetIds) {
-      const rs = ghFn(['api', `repos/${slug}/rulesets/${id}`], { allowFail: true });
+      const rs = ghFn(['api', `repos/${slug}/rulesets/${id}`], { allowFail: true, ...identity });
       if (!rs.ok) continue;
       try {
         const cb = JSON.parse(rs.stdout || '{}').current_user_can_bypass;
