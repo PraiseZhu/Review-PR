@@ -187,3 +187,11 @@ test('上一轮结果包 → 上一轮记录:specDigest 等字段原样带回', 
   assert.deepEqual(prev.filePatchHashes, { 'a.ts': 'x' });
   assert.equal(previousFromResult({ ...result, mivo: { ...result.mivo, specDigest: undefined } }, '').specDigest, undefined);
 });
+
+test('addedLines 只含 + 行的新侧行号;增量范围带 changedFiles', () => {
+  const split = splitDiffByFile(diff('+added'));
+  assert.deepEqual([...split['src/a.ts'].addedLines], [11]);
+  assert.deepEqual([...split['src/b.ts'].addedLines], [1]);
+  const scope = computeReviewScope({ previous: previous({ reviewClean: false, findings: [{ path: 'src/b.ts', body: '[P1] x' }] }), current: current(), headIsDescendant: true });
+  assert.deepEqual(scope.changedFiles, ['src/a.ts']);
+});

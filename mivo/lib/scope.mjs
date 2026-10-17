@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 export const FULL_REVIEW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const TIER_RANK = { light: 0, standard: 1, heavy: 2 };
 
-/** 按文件切 unified diff;返回 { path: { hash, changedLines, rightLines:Set<number> } }。 */
+/** 按文件切 unified diff;返回 { path: { hash, changedLines, rightLines:Set<number>, addedLines:Set<number> } };addedLines 只含 `+` 行的新侧行号。 */
 export function splitDiffByFile(diffText) {
   const files = {};
   let current = null;
@@ -20,7 +20,7 @@ export function splitDiffByFile(diffText) {
     if (raw.startsWith('diff --git ')) {
       finish();
       const m = raw.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      current = { path: m ? m[2] : raw, body: [], changedLines: 0, rightLines: new Set() };
+      current = { path: m ? m[2] : raw, body: [], changedLines: 0, rightLines: new Set(), addedLines: new Set() };
       files[current.path] = current;
       continue;
     }
@@ -47,6 +47,7 @@ export function splitDiffByFile(diffText) {
       current.body.push(raw);
       current.changedLines += 1;
       current.rightLines.add(newLine);
+      current.addedLines.add(newLine);
       newLine += 1;
     } else if (raw.startsWith('-')) {
       current.body.push(raw);
@@ -115,6 +116,8 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
     files,
     previousFindings: carried,
     basedOn: previous.head,
+    // 本轮 patch 变了的文件:收敛模块据此判断「新问题是不是出在没改过的文件里」。
+    changedFiles: changed.filter((path) => path in after),
   };
 }
 
