@@ -273,9 +273,16 @@ function completeCheckRun(input, checkRunId, { conclusion, title, summary }) {
   return r.ok ? { ok: true, id: JSON.parse(r.stdout).id } : { ok: false, error: r.stderr.trim().slice(0, 300) };
 }
 
-// 沙箱仓的 review-pr 检查:用 GH_TOKEN(审查账号)派发沙箱仓的检查镜像 workflow。
+// 派发沙箱仓的检查镜像要审查账号身份(跨仓):设了 REVIEW_PR_IDENTITY_TOKEN 就用它当 GH_TOKEN;
+// 没设(或为空)原样用 process.env,与改动前相同。与 review-pr/scripts/lib.mjs 的 identityTokenOptions 同一约定。
+function toIdentityEnv(env) {
+  const identity = String(env.REVIEW_PR_IDENTITY_TOKEN ?? '').trim();
+  return identity ? { ...env, GH_TOKEN: identity } : env;
+}
+
+// 沙箱仓的 review-pr 检查:用 GH_TOKEN(审查账号,或 REVIEW_PR_IDENTITY_TOKEN)派发沙箱仓的检查镜像 workflow。
 function dispatchSandboxCheck(input, check) {
-  const r = run('gh', toMirrorDispatchArgs(input, check), { cwd: WORK, allowFail: true });
+  const r = run('gh', toMirrorDispatchArgs(input, check), { cwd: WORK, allowFail: true, env: toIdentityEnv(process.env) });
   return r.ok ? { ok: true, mirrored: true } : { ok: false, mirrored: true, error: r.stderr.trim().slice(0, 300) };
 }
 
