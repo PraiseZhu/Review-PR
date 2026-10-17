@@ -48,7 +48,7 @@ flowchart LR
 
 参照 Claude 官方审查机的做法，审查机做了三件事（第 3 件的核对员于 2026-10-17 改为直接生效）。全部只改 `mivo/` 下的审查机代码，不改 review-pr skill、Mivo 插件仓和 live tuple。
 
-1. **只读结果遥测**（`telemetry/review-outcomes.mjs`）。`node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>`，只读 GitHub，输出 `outcomes.json` 与 `outcomes.md`：作者反应分桶（ruled-keep / deferred / re-raised / rebutted / fixed-proxy / unknown）、rounds-to-pass（一轮通过、五轮及以上、平均轮数，三项都带分母）、回滚候选、高频问题类型 Top 10。分桶是代理指标，不是事实真伪。默认不输出 finding 正文、首行和 PR 标题，`--include-text` 才带。加 `--fixture <file>` 时只读本地文件，不调 gh（测试用）。
+1. **只读结果遥测**（`telemetry/review-outcomes.mjs`）。`node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>`，只读 GitHub，输出 `outcomes.json` 与 `outcomes.md`：作者反应分桶（ruled-keep / deferred / re-raised / rebutted / fixed-proxy / unknown）、rounds-to-pass（一轮通过、五轮及以上、平均轮数，三项都带分母）、回滚候选、高频问题类型 Top 10，以及从已发布的审查报告里数出的「核对员认为不成立」「核对员降级」条数（按 PR 和轮次，只有计数；报告里没有 finding key，同一问题跨轮被重复推翻会各算一次）。分桶是代理指标，不是事实真伪。默认不输出 finding 正文、首行和 PR 标题，`--include-text` 才带。加 `--fixture <file>` 时只读本地文件，不调 gh（测试用）。
 2. **答卷 v2 与跨轮收敛**。
    - 每条问题带触发条件、错误行为、影响、证据（head 上真实存在的文件和行号）和来源（`introduced` / `made-reachable` / `pre-existing`）。证据按 head 的 git 对象核对，缺失只记 warning，问题照常阻断。
    - **PR 之前就存在的 P1 不阻断**，报告单列「PR 之前就存在的问题」，建议另开 issue；P0 不论来源都阻断；声称 pre-existing 但落在本 PR 新增行上的，服务器改判 introduced。
@@ -63,7 +63,7 @@ flowchart LR
    - `shadow`：同样核对，但只把结果记到 `result.json` 的 `mivo.verification`，不改任何评论、报告、结论和 check。
    - `off`：不核对，只调 1 次模型。
    - 开关文件读不到或任一项不合法时按 off 并写 warning。开关文件只在 codex 阶段读，不进任务书，所以改开关**不会**触发全量重审。
-   - **只核 P1，P0 永远不核、永远阻断**；每个 PR 最多核 `maxFindings`（默认 3）条，其余照常阻断。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
+   - **只核 P1，P0 永远不核、永远阻断**；每次最多核 `maxFindings`（默认 3）条，超出的照原样卡。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
    - 核对员模型必须不同于主审**实际使用**的模型：默认 `openai/gpt-6.1-sol`（medium）；主审 fallback 到了 sol，核对员就改用 `openai/gpt-6-luna`；找不到不同的模型就不核，该条照常阻断。
    - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 120 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
    - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。原本就没有 P1 的 PR 行为不变。

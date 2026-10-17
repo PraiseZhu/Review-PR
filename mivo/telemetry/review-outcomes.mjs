@@ -107,6 +107,26 @@ export function reportsOf(pr, reviewer) {
     .sort((a, b) => time(a.submittedAt) - time(b.submittedAt));
 }
 
+export const VERIFIER_REFUTED_HEADING = '## 核对员认为不成立';
+export const VERIFIER_DOWNGRADED_HEADING = '## 核对员降级';
+
+/**
+ * 从一份已发布的审查报告里数「核对员认为不成立」「核对员降级」两节的条数(每条一个 `- ` 列表项,到下一个 `## ` 标题为止)。
+ * 报告里没有 finding key,同一问题跨轮重复被推翻会在每一轮各算一次。lines 是节里的原文行,只在 --include-text 时才输出。
+ */
+export function parseVerifierSections(body) {
+  const out = { refuted: 0, downgraded: 0, lines: [] };
+  let section = null;
+  for (const line of String(body ?? '').split('\n')) {
+    if (/^## /.test(line)) {
+      section = line.startsWith(VERIFIER_REFUTED_HEADING) ? 'refuted' : line.startsWith(VERIFIER_DOWNGRADED_HEADING) ? 'downgraded' : null;
+      continue;
+    }
+    if (section && /^- /.test(line)) { out[section] += 1; out.lines.push({ kind: section, text: line.slice(2) }); }
+  }
+  return out;
+}
+
 const overallLine = (body) => {
   const lines = String(body).split('\n');
   const at = lines.findIndex((l) => /^## Overall\s*$/.test(l));
@@ -198,12 +218,23 @@ export function analyze(prs, { reviewer, repo, includeText = false }) {
   const perPr = [];
   const texts = [];
   const rounds = [];
+  const verifier = { reports: 0, reportsWithOverruled: 0, prsWithOverruled: 0, refuted: 0, downgraded: 0 };
+  const verifierLines = [];
   for (const pr of prs) {
     const reports = reportsOf(pr, reviewer);
     if (!reports.length) continue;
     const infos = pr.threads.map((t) => toFindingThread(t, reviewer)).filter(Boolean);
     const n = roundsToPass(reports);
     rounds.push(n);
+    const perRound = reports.map((r, i) => ({ round: i + 1, ...parseVerifierSections(r.body) }));
+    const prVerifier = { refuted: perRound.reduce((a, r) => a + r.refuted, 0), downgraded: perRound.reduce((a, r) => a + r.downgraded, 0),
+      rounds: perRound.map(({ round, refuted, downgraded }) => ({ round, refuted, downgraded })) };
+    verifier.reports += reports.length;
+    verifier.reportsWithOverruled += perRound.filter((r) => r.refuted + r.downgraded > 0).length;
+    verifier.refuted += prVerifier.refuted;
+    verifier.downgraded += prVerifier.downgraded;
+    if (prVerifier.refuted + prVerifier.downgraded > 0) verifier.prsWithOverruled += 1;
+    if (includeText) for (const r of perRound) for (const line of r.lines) verifierLines.push({ pr: pr.number, round: r.round, kind: line.kind, text: line.text });
     const counts = Object.fromEntries(BUCKETS.map((b) => [b, 0]));
     for (const info of infos) {
       const laterThreads = infos.filter((o) => o !== info && o.createdAt > info.createdAt);
@@ -218,13 +249,13 @@ export function analyze(prs, { reviewer, repo, includeText = false }) {
       classes.set(cls, entry);
       if (includeText) texts.push({ pr: pr.number, bucket, severity: info.severity, path: info.thread.path, class: cls, body: info.first.body, replies: info.replies.map((c) => ({ author: c.author, body: c.body })) });
     }
-    perPr.push({ pr: pr.number, reports: reports.length, roundsToPass: n, findingThreads: infos.length, buckets: counts });
+    perPr.push({ pr: pr.number, reports: reports.length, roundsToPass: n, findingThreads: infos.length, buckets: counts, verifier: prVerifier });
   }
   return {
-    reviewedPrs: perPr.length, buckets, perPr, roundsToPass: summarize(rounds),
+    reviewedPrs: perPr.length, buckets, perPr, roundsToPass: summarize(rounds), verifier,
     reverts: findReverts(prs, reviewer),
     topClasses: [...classes.values()].sort((a, b) => b.total - a.total || a.class.localeCompare(b.class)).slice(0, 10),
-    ...(includeText ? { threads: texts } : {}),
+    ...(includeText ? { threads: texts, verifierLines } : {}),
   };
 }
 
@@ -242,6 +273,10 @@ export function renderMarkdown(report) {
     `- 五轮及以上才通过:${frac(a.roundsToPass.fivePlus)}`,
     `- 平均轮数:${a.roundsToPass.mean.value ?? '无'}(分母 ${a.roundsToPass.mean.denominator})`,
     `- 一直没通过(记 null):${a.roundsToPass.nullCount} 个`, '',
+    '## 核对员推翻/降级（从已发布的审查报告里数）', '',
+    `- 推翻（refuted）：${a.verifier.refuted} 条；降级（downgraded）：${a.verifier.downgraded} 条`,
+    `- 有推翻/降级的 PR：${a.verifier.prsWithOverruled}/${a.reviewedPrs}；有推翻/降级的报告：${a.verifier.reportsWithOverruled}/${a.verifier.reports}`,
+    '- 报告里没有 finding key：同一问题跨轮被重复推翻会在每一轮各算一次；这里只有计数。', '',
     '## 回滚候选', '',
     ...(a.reverts.length ? a.reverts.map((r) => `- #${r.revertPr} 回滚 ${r.originalPr ? `#${r.originalPr}` : '(找不到原 PR)'}${r.originalInWindow ? '' : '(原 PR 不在窗口内)'},审查结论 ${r.conclusion ?? '未知'},档位 ${r.tier ?? '未知'}`) : ['- 无']), '',
     '## 高频问题类型 Top 10', '',
