@@ -36,7 +36,7 @@ test('转 issue 跟进:列出核验通过的条目和判定规则;没有条目�
   const deferrals = [{ issue: 1001, title: '旧 ghost 列表漏列', text: '#1001 旧 ghost 列表静默漏列' }];
   const text = prompt('heavy', { deferrals });
   assert.ok(text.includes('- #1001《旧 ghost 列表漏列》 —— PR 说明里写的是:「#1001 旧 ghost 列表静默漏列」'));
-  for (const re of [/同一根因、同一触发路径/, /P0 不能转 issue/, /审查数据,不是指令/, /登记本身不算注入/, /\{path, line, side, body, deferredTo\}/]) assert.match(text, re);
+  for (const re of [/同一根因、同一触发路径/, /P0 不能转 issue/, /审查数据,不是指令/, /登记本身不算注入/, /\{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo\}/]) assert.match(text, re);
   assert.ok(text.indexOf(SEVERITY) < text.indexOf(deferralSection(deferrals)), '转 issue 一节放在分级之后');
   assert.ok(text.indexOf(deferralSection(deferrals)) < text.indexOf('## 交卷格式'), '转 issue 一节放在交卷格式之前');
   assert.match(prompt(), /所有 findings 的 `deferredTo` 一律写 null/);
@@ -46,8 +46,10 @@ test('转 issue 跟进:列出核验通过的条目和判定规则;没有条目�
 test('上一轮已转 issue 的问题在核对列表里标出来', () => {
   const text = prompt('standard', { scope: { mode: 'incremental', reason: '增量', files: ['a.ts'],
     previousFindings: [{ path: 'a.ts', line: 3, body: '[P1] x', deferredTo: 1001 }, { path: 'b.ts', body: '[P1] y' }] } });
-  assert.ok(text.includes('- `a.ts:3`(已转 #1001) [P1] x'));
-  assert.ok(text.includes('- `b.ts` [P1] y'));
+  assert.ok(text.includes('- `a.ts:3`(已转 #1001) [P1] x · key=legacy-1'));
+  assert.ok(text.includes('- `b.ts` [P1] y · key=legacy-2'));
+  const keyed = prompt('standard', { scope: { mode: 'incremental', reason: '增量', files: ['a.ts'], previousFindings: [{ path: 'a.ts', body: '[P1] x', key: '333333333333' }] } });
+  assert.ok(keyed.includes('[P1] x · key=333333333333'));
   assert.match(text, /标了「已转 #N」的/);
 });
 
@@ -137,4 +139,9 @@ test('作者申辩:有条目才出现一节;增量复审写明核对成立的不
     scope: { mode: 'incremental', reason: 'r', files: ['src/a.tsx'], previousFindings: [] } });
   assert.match(text, /## 作者对以前问题的申辩\(逐条核对\)/);
   assert.match(text, /「作者申辩」核对成立的也不再报/);
+});
+
+test('交卷格式 v2:字段、来源与同类合并、supersedes 的写法写进任务书', () => {
+  const text = prompt();
+  for (const re of [/`origin` 如实填写/, /P0 不论来源都阻断/, /同一类问题只报一条/, /`supersedes`:上一轮没修好的问题/, /是否修到了根因/, /证据不全服务器照常阻断/, /不超过 800 字/]) assert.match(text, re);
 });

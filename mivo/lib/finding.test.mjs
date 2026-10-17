@@ -82,3 +82,73 @@ test('pre-existing 落在新增行(问题行或证据行)上改判 introduced;�
   assert.equal(classifyOrigin(pre({ line: null, evidence: [{ path: 'src/b.ts', line: 5 }] }), { diffFiles }).origin, 'introduced', '证据行落在新增行');
   assert.equal(classifyOrigin(item({ origin: 'made-reachable', line: 11, path: 'src/a.ts' }), { diffFiles }).origin, 'made-reachable');
 });
+
+// ── 答卷 v2 校验(report.mjs)─────────────────────────────────────────────
+import { validateAnswer, finalizeReport, ANSWER_SCHEMA, PREEXISTING_SECTION, RULED_KEPT_SECTION, renderPreexistingSection } from './report.mjs';
+import { splitDiffByFile } from './scope.mjs';
+
+const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1。'].join('\n');
+const DIFF = ['diff --git a/src/a.ts b/src/a.ts', 'index 1..2 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -10,3 +10,4 @@', ' keep', '+added', ' tail',
+  'diff --git a/src/b.ts b/src/b.ts', 'index 1..2 100644', '--- a/src/b.ts', '+++ b/src/b.ts', '@@ -1,2 +1,2 @@', ' old', ' ctx'].join('\n');
+const diffFiles = splitDiffByFile(DIFF);
+const headReader = (path) => (path.startsWith('src/') ? { exists: true, lineCount: 50 } : { exists: false, lineCount: 0 });
+const v2 = (over = {}) => ({ ...item(), path: 'src/a.ts', line: 11, side: 'RIGHT', deferredTo: null, ...over });
+const validate = (findings, extra = {}) => validateAnswer({ report: REPORT, findings }, { diffFiles, headReader, ...extra });
+
+test('v2 答卷:证据缺失仍阻断并计数,报告里带警告', () => {
+  const checked = validate([v2({ evidence: [{ path: 'gone.ts', line: 1 }] })]);
+  assert.equal(checked.ok, true);
+  assert.equal(checked.evidenceIncomplete, 1);
+  assert.equal(checked.findings.length, 1);
+  assert.equal(checked.findings[0].evidenceComplete, false);
+  assert.ok(checked.notes.some((n) => /证据不完整\(gone\.ts:1 在 head 上找不到\),照常阻断/.test(n)));
+  assert.match(checked.findings[0].body, /^\[P1\] 空指针/);
+  assert.equal(validate([v2({ evidence: [] })]).evidenceIncomplete, 1);
+  assert.equal(validate([v2()]).evidenceIncomplete, 0);
+});
+
+test('v2 答卷:pre-existing 的 P1 不阻断,pre-existing 的 P0 阻断,落在新增行上改判 introduced', () => {
+  const checked = validate([
+    v2({ origin: 'pre-existing', path: 'src/b.ts', line: 2, title: '旧问题 P1', evidence: [{ path: 'src/b.ts', line: 2 }] }),
+    v2({ origin: 'pre-existing', severity: 'P0', path: 'src/b.ts', line: 2, title: '旧问题 P0', evidence: [{ path: 'src/b.ts', line: 2 }] }),
+    v2({ origin: 'pre-existing', title: '其实是新增行', line: 11, evidence: [{ path: 'src/a.ts', line: 11 }] }),
+    v2({ origin: 'made-reachable', title: '变得可达', line: 11 }),
+  ]);
+  assert.deepEqual(checked.preexisting.map((f) => f.title), ['旧问题 P1']);
+  assert.deepEqual(checked.findings.map((f) => f.title), ['旧问题 P0', '其实是新增行', '变得可达']);
+  assert.equal(checked.findings[1].origin, 'introduced');
+  assert.ok(checked.notes.some((n) => /落在本 PR 新增行上/.test(n)));
+  assert.equal(validate([v2({ origin: 'pre-existing', path: 'elsewhere.ts' })]).ok, false, 'pre-existing 的文件也必须在 diff 里');
+});
+
+test('v2 答卷:文件级项不带 line 键;转 issue 规则与 v1 一致', () => {
+  const checked = validate([v2({ line: 99 }), v2({ line: null, title: '文件级' }),
+    v2({ title: '转走', deferredTo: 1001 }), v2({ severity: 'P0', title: '想转的 P0', deferredTo: 1001 }), v2({ title: '名单外', deferredTo: 1002 })], { deferrals: [{ issue: 1001 }] });
+  assert.ok(checked.findings.filter((f) => f.subject_type === 'file').every((f) => !('line' in f) && !('side' in f)));
+  assert.equal(checked.findings.filter((f) => f.subject_type === 'file').length, 2);
+  assert.deepEqual(checked.deferred.map((f) => [f.title, f.deferredTo]), [['转走', 1001]]);
+  assert.deepEqual(checked.findings.map((f) => f.title).slice(2), ['想转的 P0', '名单外']);
+  assert.ok(ANSWER_SCHEMA.properties.findings.items.required.includes('severity'));
+});
+
+test('v2 答卷:severity 不是 P0/P1 的不发布;v1 项仍按 body 前缀判级', () => {
+  const checked = validate([{ ...v2(), severity: 'P2' }, { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 旧格式', deferredTo: null }]);
+  assert.equal(checked.findings.length, 1);
+  assert.deepEqual(checked.findings[0], { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 旧格式' });
+});
+
+test('最终报告:PR 之前就存在的问题单列,结论仍是 pass;报告头带 skill/spec 短 hash;收敛节与裁定节在 Rule coverage 前', () => {
+  const pre = [{ severity: 'P1', title: '旧问题', path: 'src/b.ts', line: 2, body: '[P1] 旧问题' }];
+  const report = finalizeReport({ report: REPORT, findings: [], preexisting: pre, ruledKept: [{ severity: 'P1', title: '已裁定', path: 'src/a.ts', line: 11, rulingBy: 'owner' }],
+    convergenceLines: ['## 收敛提示', '', '- x', ''], pr: 1, url: 'https://github.com/o/r/pull/1', head: 'a'.repeat(40), base: 'b'.repeat(40), diffHash: 'c'.repeat(64),
+    tier: 'standard', scope: { mode: 'full', reason: '首次' }, skillSha: '3333333333336789', specDigest: '444444444444cdef' });
+  assert.match(report, /档位 standard · skill `3333333` · spec `4444444`/);
+  assert.match(report, /## Overall\npass —— 没有阻断的 P0\/P1。另有 1 条 PR 之前就存在的 P1，不阻断本 PR。/);
+  const coverage = report.indexOf('## Rule coverage');
+  for (const section of [PREEXISTING_SECTION, RULED_KEPT_SECTION, '## 收敛提示']) assert.ok(report.indexOf(section) > 0 && report.indexOf(section) < coverage, section);
+  assert.ok(report.includes('- `src/b.ts:2` · [P1] 旧问题 · 建议另开 issue 跟进'));
+  assert.ok(report.includes('- `src/a.ts:11` · [P1] 已裁定 · 裁定:@owner'));
+  assert.deepEqual(renderPreexistingSection([]), []);
+  const plain = finalizeReport({ report: REPORT, findings: [], pr: 1, url: 'u', head: 'a'.repeat(40), base: 'b'.repeat(40), tier: 'standard', scope: { mode: 'full', reason: '首次' } });
+  assert.match(plain, /diffHash `` · 档位 standard\n/, '没有版本信息时报告头不变');
+});

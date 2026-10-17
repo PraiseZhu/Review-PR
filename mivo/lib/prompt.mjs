@@ -120,7 +120,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
   const previous = previousFindings.length
     ? [
       '上一轮的问题(逐条核对):',
-      ...previousFindings.map((f) => `- \`${f.path}${f.line ? `:${f.line}` : ''}\`${f.deferredTo ? `(已转 #${f.deferredTo})` : ''} ${String(f.body).split('\n')[0]}`),
+      ...previousFindings.map((f, i) => `- \`${f.path}${f.line ? `:${f.line}` : ''}\`${f.deferredTo ? `(已转 #${f.deferredTo})` : ''} ${String(f.body).split('\n')[0]} · key=${f.key ?? `legacy-${i + 1}`}`),
       ...(previousFindings.some((f) => f.deferredTo)
         ? ['标了「已转 #N」的:#N 仍在下方「转 issue 跟进的问题」核验通过的列表里、且还是同一问题时,继续填 `deferredTo`;不在列表里(issue 已关闭或撤了登记)就照常报、照常阻断。']
         : []),
@@ -189,10 +189,14 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '  - Rule coverage:读了哪些规则文件、逐项结论;文件在 base 上不存在就如实写。',
     '  - Verification:实际运行的命令与退出码、结果;没运行的写明「未执行 + 原因」。',
     '  - Overall:第一行只能是 `pass —— 没有 P0/P1。` 或 `changes-requested —— N 条 P0/P1…`。',
-    '- `findings`:每条 P0/P1 一项 `{path, line, side, body, deferredTo}`。`path` 必须是本 PR diff 里的文件;',
-    '  `line` 是新版本(RIGHT)的行号,而且必须落在 diff 的改动或上下文行上;拿不准准确行号就写 `null`(会发成文件级评论),不要编。',
-    '  `body` 以 `[P0]` 或 `[P1]` 开头,分「事实(触发条件与错误行为,附证据)/ 影响 / 建议修复 / 验证方式」四段写清。',
-    '  `deferredTo` 只能是上面「转 issue 跟进的问题」里核验通过的 issue 号,且只用于 P1;其他情况一律 null。',
+    '- `findings`:每条 P0/P1 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。',
+    '  - `severity` 写 `P0` 或 `P1`;`title` 一句话不超过 120 字;`trigger`(触发条件)、`behavior`(错误行为)、`impact`(实际影响)、`fix`(建议修复)、`verify`(验证方式)各不超过 800 字;`bugClass` 写问题类型短标签(不超过 60 字)。服务器会截断超长内容。',
+    '  - `evidence`:1–8 项 `{path, line}`,写 PR head 上真实存在的仓内相对路径和行号;证据不全服务器照常阻断,但会记入警告。',
+    '  - `path` 必须是本 PR diff 里的文件(PR 之前就存在的问题也一样);`line` 是新版本(RIGHT)的行号,而且必须落在 diff 的改动或上下文行上;拿不准准确行号就写 `null`(会发成文件级评论),不要编。',
+    '  - `origin` 如实填写:`introduced`=本 PR 引入;`made-reachable`=本 PR 让旧代码变得可达,阻断;`pre-existing`=PR 之前就存在,P1 不阻断本 PR(服务器单列),P0 不论来源都阻断;问题落在本 PR 新增行上时服务器按 introduced 处理。PR 之前就存在的问题不要写进 Findings 段。',
+    '  - 同一类问题只报一条:其余位置写进 `instances`(最多 20 项),不要拆成多条。',
+    '  - `supersedes`:上一轮没修好的问题,填「上一轮的问题」或「维护者裁定」里列出的 key(12 位十六进制或 legacy-N);新问题写 null。上一轮标题类型是 fix 的问题,要写明是否修到了根因,而不是只压住了现象。',
+    '  - `deferredTo` 只能是上面「转 issue 跟进的问题」里核验通过的 issue 号,且只用于 P1;其他情况一律 null。',
     '- 只报本 PR 可证实、达到上面「分级」P0/P1 定义的问题;P2、P3、风格、猜测一律不报。没有问题时 `findings` 为空数组,Overall 写 pass。',
   ].join('\n');
 }
@@ -238,7 +242,7 @@ export function matchesRulePath(pattern, file) {
 const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>', url: '<url>', headRefOid: '<head>', baseRefName: '<base-ref>', baseRefOid: '<base>' } };
 // 固定模板要盖到每个分支:全量/增量两种范围说明,上一轮问题与「已转 #N」提示,转 issue 一节的空与非空两种写法。
 // 只取全量模板时,只改增量专属指令的 skill 升级算不出任务书变化,同 head 的旧干净报告会被直接沿用。
-const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1 };
+const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1, key: '<key>' };
 const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
 const TEMPLATE_RULING = { path: '<path>', line: 1, finding: '<finding>', by: '<maintainer>', reason: '<reason>' };
 const TEMPLATE_REBUTTAL = { path: '<path>', line: 1, severity: 'P1', finding: '<finding>', reply: '<reply>' };
