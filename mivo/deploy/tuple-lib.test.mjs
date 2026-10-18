@@ -449,3 +449,16 @@ test('toLatestChecks keeps only the newest run of each check', async () => {
   assert.equal(latest.find((c) => c.name === 'pr-format-gate').conclusion, 'SUCCESS');
   assert.equal(latest.find((c) => c.name === 'unit').conclusion, 'FAILURE');
 });
+
+test('toLatestChecks: a queued rerun without a start time is newer than an old SUCCESS (never hidden)', async () => {
+  const { toLatestChecks } = await import('./tuple-lib.mjs');
+  for (const startedAt of [null, '0001-01-01T00:00:00Z', undefined]) {
+    for (const order of ['old-first', 'queued-first']) {
+      const old = { workflowName: 'CI', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-10-18T03:00:00Z' };
+      const queued = { workflowName: 'CI', name: 'unit', status: 'QUEUED', conclusion: '', startedAt };
+      const latest = toLatestChecks(order === 'old-first' ? [old, queued] : [queued, old]);
+      assert.equal(latest.length, 1);
+      assert.equal(latest[0].status, 'QUEUED', `${startedAt} ${order}`);
+    }
+  }
+});

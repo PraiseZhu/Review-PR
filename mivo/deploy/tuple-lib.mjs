@@ -275,10 +275,14 @@ export function toBehindMainNote({ status, aheadBy, messages }) {
 }
 
 // PR 的检查列表里,同一个检查(workflow + 名字)可能有多次运行:旧 payload 的重跑会留下失败记录,之后的新运行已经通过。
-// 只看每个检查最新的那次(按 startedAt,没有就按 completedAt),和审查机 classifyRollupContexts 的去重口径一致。
+// 只看每个检查最新的那次(按 startedAt,状态检查按 createdAt)。还在排队的检查没有开始时间(null 或 0001-01-01):
+// 当成最新的,不能当成最旧——否则旧的 SUCCESS 会盖住正在排队的新检查,后面 --admin 合并就绕过了没跑完的 CI。
 export function toLatestChecks(rollup) {
   const latest = new Map();
-  const at = (c) => Date.parse(c.startedAt ?? c.completedAt ?? '') || 0;
+  const at = (c) => {
+    const ms = Date.parse(c.startedAt ?? c.createdAt ?? c.completedAt ?? '');
+    return Number.isFinite(ms) && ms > 0 ? ms : Infinity;
+  };
   for (const c of rollup ?? []) {
     const key = `${c.workflowName ?? ''}\u0000${c.name ?? c.context ?? ''}`;
     const prev = latest.get(key);
