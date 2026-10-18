@@ -19,6 +19,7 @@ import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, w
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
 import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord } from '../lib/code-scan.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
+import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
@@ -31,6 +32,12 @@ const HEALTH_PAUSE_MS = 30 * 60_000;
 const DISPATCH_UNRESOLVED_MS = 60 * 60_000;
 const HEARTBEAT_EVERY_MS = 15 * 60_000;
 const HEARTBEAT_VARIABLE = 'MIVO_PREREVIEW_HEARTBEAT';
+// 主 key / 备用 key(维护者 2026-10-18,服务器规则见 server/keys.mjs):主 key 审到一半才报 key 错误时,之后 60 分钟新派的审查直接用备用 key;
+// 主 key 状态(primary / backup / down)变化时写给看门狗发 Slack。两个变量都只由生产实例写,写失败只记日志,下次再写。
+const PREFER_BACKUP_VARIABLE = 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL';
+const PREFER_BACKUP_MS = 60 * 60_000;
+const KEY_STATUS_VARIABLE = 'MIVO_REVIEW_KEY_STATUS';
+const PRIMARY_SECRET = 'LITELLM_CREDENTIALS_JSON';
 // 代码扫描状态对照:每隔 10 分钟对开放 PR 里服务器记过三态的各读一次 head 的 check run(REST),最多看 30 个。
 const CODE_SCAN_SWEEP_EVERY_MS = 10 * 60_000;
 const CODE_SCAN_MAX_WATCHED = 30;
@@ -160,7 +167,56 @@ function writeHeartbeat() {
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
   if (!r.ok) { log('heartbeat-error', { error: String(r.stderr || r.error || '').trim().slice(0, 200) }); return; }
   writeJson(stateFile('heartbeat.json'), { at });
+  resetPreferBackupIfRotated();
 }
+
+// ── 主 key / 备用 key 的冷却期与状态 ─────────────────────────────────────
+const isKeyWriter = () => !FENCED && CONFIG.instance === 'mivo' && CONFIG.mode === 'live';
+function setRepoVariable(name, body, event) {
+  const r = run('gh', ['variable', 'set', name, '-R', CONFIG.workflowRepo, '--body', body],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  if (!r.ok) log(`${event}-error`, { error: String(r.stderr || r.error || '').trim().slice(0, 200) });
+  return r.ok;
+}
+
+// 服务器结果收回后调用:审到一半主 key 报 key 错误 → 写冷却期;key 状态变了 → 写状态变量(本机记一份,没变不重写)。
+function noteKeyState(server, { pr, runId }) {
+  const credential = server.mivo?.codex?.credential;
+  if (!credential || !isKeyWriter()) return;
+  const attempts = server.mivo?.codex?.attempts ?? [];
+  if (credential.primaryFailedMidRun && credential.backupConfigured) {
+    const until = new Date(Date.now() + PREFER_BACKUP_MS).toISOString();
+    if (setRepoVariable(PREFER_BACKUP_VARIABLE, until, 'key-prefer-backup')) {
+      writeJson(stateFile('key-prefer-backup.json'), { until, setAt: nowIso(), pr, runId });
+      log('key-prefer-backup', { pr, runId, until });
+    }
+  }
+  const status = toKeyStatus(credential, attempts);
+  if (!status || readJson(stateFile('key-status.json'), null)?.status === status) return;
+  const record = { status, since: nowIso(), reason: toKeyStatusReason(status, credential, attempts), pr, runId };
+  if (setRepoVariable(KEY_STATUS_VARIABLE, JSON.stringify(record), 'key-status')) {
+    writeJson(stateFile('key-status.json'), record);
+    log('key-status', record);
+  }
+}
+
+// 冷却期里维护者换了主 key(仓库 Secret 的更新时间晚于冷却开始):提前结束冷却,下一轮就先试新的主 key。
+// 跟心跳一起最多 15 分钟查一次;读不到 Secret 的更新时间(权限不够、网络)就等冷却自然到期。
+function resetPreferBackupIfRotated() {
+  const local = readJson(stateFile('key-prefer-backup.json'), null);
+  if (!local) return;
+  if (!(Date.parse(local.until) > Date.now())) { rmQuiet(stateFile('key-prefer-backup.json')); return; }
+  const r = run('gh', ['api', `repos/${CONFIG.workflowRepo}/actions/secrets/${PRIMARY_SECRET}`, '--jq', '.updated_at'],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  const rotatedAt = Date.parse(String(r.stdout ?? '').trim());
+  if (!r.ok || !Number.isFinite(rotatedAt) || rotatedAt <= Date.parse(local.setAt)) return;
+  const del = run('gh', ['variable', 'delete', PREFER_BACKUP_VARIABLE, '-R', CONFIG.workflowRepo],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  if (!del.ok) { log('key-prefer-backup-reset-error', { error: String(del.stderr || del.error || '').trim().slice(0, 200) }); return; }
+  rmQuiet(stateFile('key-prefer-backup.json'));
+  log('key-prefer-backup-reset', { rotatedAt: new Date(rotatedAt).toISOString() });
+}
+function rmQuiet(file) { try { unlinkSync(file); } catch { /* 已经没有了 */ } }
 
 // 停写心跳的登记 <stateDir>/mivo/heartbeat-pause.json:{dispatches:{<dispatch_id>:{pr, intentAt, intentFile}}},由
 // settleDispatch 在派发查不清满 60 分钟时写,跨进程保留(停机握手退出、重启后照样不写)。每次都按意图文件复核:文件没了、
@@ -1337,6 +1393,7 @@ function collectServerRun(ctx, entry) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
+  noteKeyState(server, { pr: task.pr, runId: entry.runId });
   const health = server.mivo?.health;
   let completedRun = false;
   if (health && health.ok === false) {

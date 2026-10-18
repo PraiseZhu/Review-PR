@@ -254,6 +254,31 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - 结果包 `mivo` 里记 `runnerName`（审查位，来自 `RUNNER_NAME`）和 `codexVersion`（调模型前取一次 `codex --version` 的第一行；没调模型的审查、CLI 不存在或命令超时都是 `null`，取不到不影响审查），排查失败不用再去查 jobs 接口和服务器升级日志。
 - 每次模型调用在结果包的 `mivo.codex.attempts[]` 里按 JSONL 事件留下记录：`firstEventSec`、`lastEventSec`、`eventCount`、`maxGapSec`（含开始到第一个事件、最后一个事件到退出两段空白）、`usage`（取 `turn.completed`，没有记 null）；失败时另记脱敏后最后 50 行、最多 8 KB 的 `stderrTail`。这些只进结果包，不进 PR 评论，也不能单独当作「变慢原因」的证据。
 
+## 换审查模型（Mini 上的三个 Cindy 自动化）
+
+维护者 2026-10-18 决定：主审、备用模型、核对员的模型和思考档位，在 Mini 的 Cindy 自动化里选，点「运行」就切到服务器审查机。
+
+- 三个自动化：「审查机主审模型」「审查机备用模型」「审查机核对员模型」。在自动化里选好模型和思考档位再运行。自动化只做一件事：用 `schedule_get` 读出自己选的模型、来源和档位，原样传给 `node ~/mivo-prereview/skill/mivo/models/switch.mjs --role primary|fallback|verifier --model <模型> --effort <档位> --provider <来源>`，再把结果转述出来。它不凭自己的模型身份猜。
+- `switch.mjs`（本机 gh，只用 REST）：把 Cindy 的模型 id 映射成网关 id（取最后一段，加 `openai/`；只接 gpt / o 系，因为服务器跑的是 Codex CLI）。已经是这个配置就不动。随后派发 Mivo 的 `review-model-check.yml`（服务器上跑 `models/check.mjs`），等它跑完、取回 `check.json`。验证通过才写这个角色的仓库变量，写完读回核对；读回不一致就恢复原值。验证没通过时原配置不动。同一角色同时只跑一个（本机锁）。
+- 服务器验证（`models/check.mjs`，只拿模型网关凭据）：先用实际审查 key 查网关的模型清单，再让 Codex CLI 用目标模型和档位跑一次最小任务。这个任务必须调用 shell 读出工作目录里的随机数，并按 JSON schema 交卷，随机数对上才算通过。主 key 必测；配了备用 key 也测一次。主 key 通过即放行。主 key 报 key 本身的错误、而备用 key 通过时也放行，因为模型和档位已经证明可用。备用 key 没通过只告警：主 key 正常时不影响审查，但主 key 出问题时换不过去。06:00–07:00 维护窗口内拒绝验证（CLI 可能正在升级）。
+- 角色变量：`MIVO_REVIEW_ROLE_PRIMARY`（三档主审）、`MIVO_REVIEW_ROLE_FALLBACK`（备用模型）、`MIVO_REVIEW_ROLE_VERIFIER`（核对员，覆盖 `config/review-features.json` 的 model/effort），值是 JSON，服务器只认 `model` 与 `effort`。优先级：单档覆盖变量 `MIVO_REVIEW_{MODEL,EFFORT}_<档>`（只在测试时临时用）> 角色变量 > 默认值。有单档覆盖变量时，`switch.mjs` 拒绝切主审：切了也不会生效。变量格式不对时服务器用默认值，并把告警写进结果包。
+- 告警（不阻断）：备用模型和主审是同一个模型时，主审失败不会再换模型重试；核对员和主审是同一个模型时，没有独立性。
+- 生效时间：下一次派发的服务器审查。正在跑的那一轮不受影响。
+- 查看与回退：`node mivo/models/switch.mjs --status` 列出三个角色当前生效的模型、网关 key 状态和冷却期。`--role <角色> --rollback` 把这个角色恢复到本机上一次切换之前的值（历史在 `~/mivo-prereview/state/model-switch/history.jsonl`）。退出码：0 已切换或本来就是；1 没切换（原配置不动）；2 写入结果未知，要人工核对变量。
+- 每天 06:05 的 CLI 探活（Mivo 仓的 `review_models.py`）仍固定测默认的 Luna / Sol，不读这些变量。换到别的模型后，只要 Luna 或 Sol 还在网关上，探活就不受影响。两个都下线时探活会失败，工具链会被标成不健康，审查会暂停，需要有服务器 root 的维护者同步改探活模型。
+
+## 主 key 与备用 key
+
+维护者 2026-10-18 定的规则（`server/keys.mjs`）：
+
+- 主 key 是 `LITELLM_CREDENTIALS_JSON`。备用 key 来自组织 Secret `ANTHROPIC_API_KEY`，workflow 传成 `LITELLM_BACKUP_API_KEY`。备用 key 的网关地址取 `LITELLM_BACKUP_BASE_URL`（仓库变量 `MIVO_REVIEW_BACKUP_BASE_URL`），没设时用主凭据的地址。备用 key 没配、格式不对或与主 key 相同，都当没有备用，主 key 照常工作。
+- 每轮都从主 key 开始。只有最终错误是 key 本身的问题才换备用 key：认证失败（401、key 无效、过期、被封）、额度或预算用完、没有该模型的权限（403）、限流（429，CLI 已自己退避重试 5 次）。判定只看 CLI 的 `turn.failed` 和顶层 error 事件（`codex.mjs` 的 `toFinalError` / `toKeyFailure`），不看 stderr 和模型输出。超时、卡住、5xx、断网、参数错、模型不存在、答卷不合格都不换 key，照旧走「换备用模型 / 暂停」。
+- 换了就同模型、同档位原地重跑一次。这次重跑不占备用模型的那一次机会；一轮只换一次，也不换回，之后的调用（备用模型、核对员）都用备用 key。剩余时间不够（主审要 15 分钟，核对员要一次调用的上限）就不重跑：备用 key 还没试过，所以不按额度类处理，Mini 不暂停，照常退避重试。
+- 两把都报 key 错误时，按额度类处理（`quota`），Mini 照旧暂停 60 分钟。
+- 主 key 审到一半（模型已经产出过条目，开场那条「Model metadata ... not found」的 error 条目不算）才报 key 错误时，同样换备用 key 重跑，并记 `primaryFailedMidRun`。Mini 收到后写仓库变量 `MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL`（现在 + 60 分钟），这段时间里新派的审查直接用备用 key，到期后先试主 key。冷却期内维护者更新了 `LITELLM_CREDENTIALS_JSON`（Secret 更新时间晚于冷却开始）时，Mini 随心跳检查（最多 15 分钟一次），发现后就提前删掉冷却变量。
+- 结果包 `mivo.codex.credential` 记这一轮从哪把 key 开始、最后用哪把、有没有换（`switched` 记错误类别与是否审到一半）、主 key 是否能用。每次尝试记 `credential` 与 `keyFailure`，换过 key 的尝试另记 `keySwitch`。这些字段里没有 key 原文和网关地址。产物里两把 key 都会抹掉。
+- Mini 按 `lib/key-status.mjs` 推出 key 状态：`primary`（主 key 正常）、`backup`（正在用备用 key）、`down`（在用的那把也报 key 错误）。状态变化时写仓库变量 `MIVO_REVIEW_KEY_STATUS`（JSON：`status`、`since`、`reason`、`pr`、`runId`），Mivo 的看门狗据此往 Slack 发「已改用备用 key」「两把都不能用」「已回到主 key」。推不出状态时不写，例如冷却期里只用了备用 key、或网关 5xx。只有生产实例（`instance=mivo` 且 live）写这两个变量。
+
 ## 审查失败后怎么重试
 
 规则在 `lib/retry.mjs`，记录在 Mini 状态目录 `reviews.json` 每个 PR 的 `failures`（按 head）。服务器审查失败（`outcome=error`、超时取消、没有结果包、结果对不上）后，同一个 head 等 10 分钟再派，之后每次翻倍，最多等 4 小时；同一个 head 失败满 6 次停止自动重试。派发给服务器的 `attempt` 是「连续失败数 + 1」（`review-pr.yml` 守卫只收 1–9，失败上限内不会超），不再累计成功的派发；防失控的保险是「同一个 head 已完成审查满 20 次」也停（`completedRuns`）。成功一次失败记录就清零；作者推新提交是新 head，重新计数。维护窗口与工具链不健康不算失败；**GitHub 限额用完也不算**：服务器结果是 `error`，且原因或错误里有 `API rate limit already exceeded`（或 GraphQL 的 `RATE_LIMITED`）且这次派发还没花过模型调用（结果包 `mivo.codex.attempts` 为空，例如读 PR 信息时就撞限额）时，这次派发的尝试次数退回、不记失败，Mini 日志写 `github-rate-limited`（结果文件照实记录这次没审成）；模型已经审完、发布阶段才撞限额的照旧记失败走退避，免得下一轮不带退避地重跑一次完整的付费审查。不加整体暂停：额度没恢复时，下一轮 pre-check 自己会失败，也就不会派发；同时自带封顶：同一个提交最多退回 3 次（`reviews.json` 里 `rateLimitRefunds`），第 4 次起照旧记失败走退避，不会无限重派。被拦住时 Mini 日志写 `retry-held`。
@@ -342,8 +367,9 @@ Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这
 
 - 仓库变量：`MIVO_REVIEW_SKILL_SHA`（本仓提交，Mini 与服务器必须一致）、`MIVO_REVIEW_MODE`、
   `MIVO_REVIEW_SANDBOX_REPO`、`MIVO_REVIEW_DAILY_CAP`、`MIVO_REVIEW_RUNNER_LABEL`（切换前 `mivo-review-next`）、
-  可选 `MIVO_REVIEW_MODEL_*` / `MIVO_REVIEW_EFFORT_*`；
-- secrets：`MIVO_REVIEW_BOT_TOKEN`（发布用）、`LITELLM_CREDENTIALS_JSON`（模型网关）。
+  可选 `MIVO_REVIEW_MODEL_*` / `MIVO_REVIEW_EFFORT_*`（测试用）、`MIVO_REVIEW_ROLE_{PRIMARY,FALLBACK,VERIFIER}`（`switch.mjs` 写）、
+  `MIVO_REVIEW_BACKUP_BASE_URL`；Mini 写的 `MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL`、`MIVO_REVIEW_KEY_STATUS`（见「主 key 与备用 key」）；
+- secrets：`MIVO_REVIEW_BOT_TOKEN`（发布用）、`LITELLM_CREDENTIALS_JSON`（模型网关主 key）；组织 Secret `ANTHROPIC_API_KEY`（备用 key）。
 
 ### prepare 用 integration 令牌读上下文（代码已支持，workflow 未接）
 

@@ -39,7 +39,7 @@ function makeRoot() {
   mkdirSync(join(root, 'mivo', 'server'), { recursive: true });
   mkdirSync(join(root, 'review-pr', 'scripts'), { recursive: true });
   for (const file of readdirSync(LIB_DIR).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))) copyFileSync(join(LIB_DIR, file), join(root, 'mivo', 'lib', file));
-  for (const file of ['review.mjs', 'codex.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
+  for (const file of ['review.mjs', 'codex.mjs', 'keys.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
   copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'self-write-receipts.mjs'),
     join(root, 'review-pr', 'scripts', 'self-write-receipts.mjs'));
   writeFileSync(join(root, 'review-pr', 'scripts', 'finish-reviewed-pr.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';

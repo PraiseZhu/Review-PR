@@ -16,12 +16,13 @@ import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, 
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
-import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, tierConfig, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
+import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
+import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
 import { recordSelfWrite, readSelfWrites } from '../../review-pr/scripts/self-write-receipts.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
@@ -395,6 +396,10 @@ async function codex() {
   const budgetAt = Date.now();
   const tierCfg = tierConfig(state.tier, process.env, { budgetMs: budget.budgetMs });
   budget.primaryTimeoutMs = tierCfg.timeoutMs;
+  // 备用模型与核对员按角色变量(lib/models.mjs);主 key / 备用 key 按 keys.mjs 的规则。告警进结果包。
+  const fallbackCfg = roleModel('fallback', process.env);
+  const ring = toKeyRing(process.env);
+  state.warnings.push(...roleWarnings(process.env), ...ring.warnings);
   const prompt = buildReviewPrompt({
     spec: loadReviewSpec(SKILL_ROOT), ctx, scope: state.scope, workdir: REPO_DIR, tier: state.tier,
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile: join(INPUT_DIR, 'scope.json'),
@@ -413,25 +418,41 @@ async function codex() {
   let answer = null;
   // 没清掉的主审(含失败尝试)痕迹:有残留时核对员可能读到主审的日志,这一轮不核对(见下面的 artifacts-cleanup-failed)。
   const cleanupLeft = [];
-  // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。
-  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs }); next;
-    next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs })) {
-    const label = `${attempts.length + 1}`;
-    const result = await runCodex({
-      codexBin: codexBin(),
-      workdir: REPO_DIR, prompt, schema: ANSWER_SCHEMA, model: next.model, effort: next.effort,
-      timeoutMs: next.timeoutMs, credentials: process.env.LITELLM_CREDENTIALS_JSON,
-      tmpRoot: join(WORK, 'codex'), label,
-    });
+  // 一次模型调用:主 key 报 key 本身的错误(keys.mjs)时换备用 key,同模型同档位原地重跑一次,剩余时间不够 minRetryMs 就不重跑。
+  // 被换掉的那次先清掉运行产物再重跑。返回最后一次的结果与运行标签、它用的是哪把 key、换 key 记录和没清掉的产物。
+  const callModel = async ({ label, model, effort, timeoutMs, prompt: text, schema, minRetryMs, remainingMs }) => {
+    const once = (runLabel, ms) => runCodex({ codexBin: codexBin(), workdir: REPO_DIR, prompt: text, schema, model, effort, timeoutMs: ms,
+      credentials: activeCredentials(ring, process.env), redactKeys: keyTexts(ring), tmpRoot: join(WORK, 'codex'), label: runLabel });
+    const credential = ring.active;
+    const first = await once(label, timeoutMs);
+    const change = toKeySwitch(ring, first);
+    if (!change) return { result: first, label, credential, keySwitch: null, left: [] };
+    switchToBackup(ring, change, { model, label });
+    const retryMs = Math.min(timeoutMs, remainingMs());
+    const keySwitch = { ...change, durationMs: first.durationMs, error: first.error, retried: retryMs >= minRetryMs };
+    if (!keySwitch.retried) return { result: first, label, credential, keySwitch, left: [] };
+    const left = await clearRunArtifacts(state, label);
+    const retryLabel = `${label}-backup`;
+    return { result: await once(retryLabel, retryMs), label: retryLabel, credential: 'backup', keySwitch, left };
+  };
+  // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
+  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs, fallback: fallbackCfg }); next;
+    next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg })) {
+    const { result, label, credential, keySwitch, left } = await callModel({ label: `${attempts.length + 1}`, model: next.model, effort: next.effort,
+      timeoutMs: next.timeoutMs, prompt, schema: ANSWER_SCHEMA, minRetryMs: MIN_FALLBACK_MS,
+      remainingMs: () => budget.budgetMs - (Date.now() - startedAt) - SETTLE_MS });
     // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
+    // 换了 key 但时间不够没重跑:备用 key 还没试过,不按额度类处理(不让 Mini 暂停),主 key 的报错照实记在 keySwitch。
     attempts.push({ model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
-      quota: result.quota, durationMs: result.durationMs, exitCode: result.exitCode, timedOut: result.timedOut, idleKilled: result.idleKilled,
+      quota: keySwitch && !keySwitch.retried ? false : result.quota, keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
+      timedOut: result.timedOut, idleKilled: result.idleKilled,
       firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
-      maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}) });
+      maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}),
+      ...(keySwitch ? { keySwitch } : {}) });
     answer = result.ok ? result.answer : null;
-    cleanupLeft.push(...await clearRunArtifacts(state, label));
+    cleanupLeft.push(...left, ...await clearRunArtifacts(state, label));
   }
-  state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget,
+  state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget, credential: toCredentialSummary(ring),
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
   const last = attempts.at(-1);
@@ -441,7 +462,9 @@ async function codex() {
     // 入口的 catch 会把异常变成 finishEarly(error),那样核对员出错就让整轮审查作废了;出错的条目照常阻断。核对调用不写进 state.codex.attempts。
     const features = loadFeatures(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     state.warnings.push(...features.warnings);
-    const cfg = features.verify;
+    // 核对员模型:角色变量 MIVO_REVIEW_ROLE_VERIFIER 合法时覆盖开关文件里的 model/effort,其余开关照旧。
+    const verifierRole = roleModel('verifier', process.env);
+    const cfg = verifierRole ? { ...features.verify, model: verifierRole.model, effort: verifierRole.effort } : features.verify;
     let instructionFiles = [];
     if (cfg.mode === 'off') state.verification = { mode: 'off', items: [], skipped: [] };
     else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'tier' }] };
@@ -459,21 +482,21 @@ async function codex() {
           remainingMs: () => budget.budgetMs - (Date.now() - budgetAt),
           checkEvidence: (evidence) => checkEvidence({ evidence }, { headReader }),
           runOne: async (finding, index, model) => {
-            const label = `verify-${index + 1}`;
-            const run1 = await runCodex({ codexBin: codexBin(), workdir: REPO_DIR,
+            const perCallMs = cfg.perCallTimeoutMin * 60_000;
+            const run1 = await callModel({ label: `verify-${index + 1}`, model: model.model, effort: model.effort, timeoutMs: perCallMs,
               prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
-              schema: VERIFY_SCHEMA, model: model.model, effort: model.effort, timeoutMs: cfg.perCallTimeoutMin * 60_000,
-              credentials: process.env.LITELLM_CREDENTIALS_JSON, tmpRoot: join(WORK, 'codex'), label });
-            await clearRunArtifacts(state, label);
-            return run1;
+              schema: VERIFY_SCHEMA, minRetryMs: perCallMs, remainingMs: () => budget.budgetMs - (Date.now() - budgetAt) - SETTLE_MS });
+            await clearRunArtifacts(state, run1.label);
+            return run1.result;
           } })
         : { mode: cfg.mode, items: [], skipped: [] };
     }
   } catch (error) {
     state.verification = { mode: state.verification?.mode ?? 'enforce', error: String(error?.message ?? error).slice(0, 300), items: [], skipped: [] };
   } finally {
-    // 核对员全部跑完(或放弃)才把主审答卷写盘,publish 阶段读这一份。
+    // 核对员全部跑完(或放弃)才把主审答卷写盘,publish 阶段读这一份。核对员也可能换了 key,摘要按最后的状态重写一次。
     writeJson(join(WORK, 'answer.json'), answer);
+    state.codex.credential = toCredentialSummary(ring);
     saveState(state);
   }
 }

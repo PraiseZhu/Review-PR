@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEventMeter, toStderrTail, runCodex, readCodexVersion, CODEX_IDLE_MS, renderCodexConfig } from './codex.mjs';
+import { createEventMeter, toStderrTail, runCodex, readCodexVersion, CODEX_IDLE_MS, renderCodexConfig, toFinalError, toKeyFailure } from './codex.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
 const at = (sec) => T0 + sec * 1000;
@@ -13,14 +13,14 @@ test('按完整 JSONL 事件计数计时:第 2、7 秒两个事件,开始到首�
   meter.feed('{"type":"thread.started"}\n', at(2));
   meter.feed('{"type":"turn.completed","usage":{"input_tokens":1200,"output_tokens":340}}\n', at(7));
   assert.deepEqual(meter.finish(at(9)), {
-    firstEventSec: 2, lastEventSec: 7, eventCount: 2, maxGapSec: 5,
+    firstEventSec: 2, lastEventSec: 7, eventCount: 2, outputItems: 0, maxGapSec: 5,
     usage: { input_tokens: 1200, output_tokens: 340 },
   });
 });
 
 test('没有任何输出:事件数 0,最大空白就是整次调用', () => {
   assert.deepEqual(createEventMeter(T0).finish(at(30)),
-    { firstEventSec: null, lastEventSec: null, eventCount: 0, maxGapSec: 30, usage: null });
+    { firstEventSec: null, lastEventSec: null, eventCount: 0, outputItems: 0, maxGapSec: 30, usage: null });
 });
 
 test('末尾长时间静默:最后一个事件到退出的空白计入最大空白', () => {
@@ -148,4 +148,64 @@ test('生成的 Codex 配置关掉项目说明文件,PR head 的 AGENTS.md 进�
   const lines = renderCodexConfig('https://gateway.example.invalid/v1').split('\n');
   const top = lines.slice(0, lines.findIndex((l) => l.startsWith('[')));
   assert.ok(top.includes('project_doc_max_bytes = 0'), `顶层配置应含 project_doc_max_bytes = 0,实际: ${top.join(' | ')}`);
+});
+
+// ── 换备用 key 的判定(维护者 2026-10-18)───────────────────────────────────
+// 2026-10-18 在 Pro 上用无效 key 对公司网关(LiteLLM)跑 codex-cli 0.146.0 得到的真实事件(key 片段已是网关自己打的码)。
+const REAL_401 = [
+  '{"type":"thread.started","thread_id":"t"}',
+  '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `openai/gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}',
+  '{"type":"turn.started"}',
+  '{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000, Key Hash (Token) =6218. Unable to find token in cache or `LiteLLM_VerificationTokenTable`, url: https://gw.example.com/v1/responses)"}',
+  '{"type":"error","message":"unexpected status 401 Unauthorized: Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000, Key Hash (Token) =6218. Unable to find token in cache or `LiteLLM_VerificationTokenTable`, url: https://gw.example.com/v1/responses"}',
+  '{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000, Key Hash (Token) =6218. Unable to find token in cache or `LiteLLM_VerificationTokenTable`, url: https://gw.example.com/v1/responses"}}',
+].join('\n');
+
+test('真实 401:最终错误取 turn.failed;判为认证失败;开场的 error 条目不算模型输出', () => {
+  assert.match(toFinalError(REAL_401), /^unexpected status 401 Unauthorized: Authentication Error/);
+  assert.deepEqual(toKeyFailure(toFinalError(REAL_401)), { kind: 'auth', status: 401 });
+  const meter = createEventMeter(T0);
+  meter.feed(`${REAL_401}\n`, at(5));
+  assert.equal(meter.finish(at(6)).outputItems, 0);
+  const working = createEventMeter(T0);
+  working.feed('{"type":"item.completed","item":{"type":"reasoning","text":"x"}}\n{"type":"item.started","item":{"type":"command_execution"}}\n', at(1));
+  assert.equal(working.finish(at(2)).outputItems, 2);
+});
+
+test('key 本身的问题才换 key:额度/预算、无模型权限、限流;5xx、断网、参数错、模型不存在、空错误都不换', () => {
+  const cases = [
+    ['unexpected status 400 Bad Request: Budget has been exceeded! Current cost: 51.2, Max budget: 50.0', { kind: 'budget', status: 400 }],
+    ['unexpected status 429 Too Many Requests: {"error":{"type":"budget_exceeded"}}', { kind: 'budget', status: 429 }],
+    ['unexpected status 403 Forbidden: key not allowed to access model. This key can only access models=[a]', { kind: 'access', status: 403 }],
+    ['unexpected status 429 Too Many Requests: LiteLLM Rate Limit Handler for rate limit type = key. Crossed TPM / RPM', { kind: 'rate-limit', status: 429 }],
+    ['unexpected status 401 Unauthorized: Authentication Error - Expired Key', { kind: 'auth', status: 401 }],
+  ];
+  for (const [message, want] of cases) assert.deepEqual(toKeyFailure(message), want, message);
+  for (const message of ['unexpected status 502 Bad Gateway: upstream error', 'stream disconnected before completion: error sending request',
+    'unexpected status 400 Bad Request: Unsupported value: reasoning.effort', 'unexpected status 404 Not Found: model openai/gpt-x does not exist', '', null]) {
+    assert.equal(toKeyFailure(message), null, String(message));
+  }
+  assert.equal(toFinalError('{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}'), null, '只有重连提示时没有最终错误');
+  assert.equal(toFinalError('not json\n{"type":"item.completed","item":{"type":"agent_message","text":"unexpected status 401"}}'), null, '模型文字里的 401 不算');
+});
+
+test('runCodex:假 CLI 报真实 401 时带回 keyFailure,产物里两把 key 都被抹掉', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mivo-codex-key-'));
+  try {
+    const KEY_A = 'sk-primary-AAAAAAAAAAAA';
+    const KEY_B = 'sk-backup-BBBBBBBBBBBB';
+    const bin = join(root, 'codex');
+    writeFileSync(bin, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(`${REAL_401}\n`)});
+process.stderr.write('using ' + process.env.CODEX_API_KEY + ' and ${KEY_B}\\n');
+process.exit(1);
+`, { mode: 0o755 });
+    mkdirSync(join(root, 'work'));
+    const r = await runCodex({ codexBin: bin, workdir: join(root, 'work'), prompt: 'p', schema: {}, model: 'openai/m', effort: 'low', timeoutMs: 60_000,
+      credentials: { apiKey: KEY_A, baseUrl: 'https://gw.example.com/v1' }, redactKeys: [KEY_B], tmpRoot: root, label: 'k' });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.keyFailure, { kind: 'auth', status: 401 });
+    assert.equal(r.outputStarted, false);
+    assert.doesNotMatch(r.stderrTail, /AAAAAAAA|BBBBBBBB/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
