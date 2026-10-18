@@ -12,9 +12,15 @@
 //   node mivo/models/switch.mjs --role primary|fallback|verifier --model <Cindy 模型 id> --effort <档位> [--provider <来源>]
 //   node mivo/models/switch.mjs --role <角色> --rollback
 //   node mivo/models/switch.mjs --status
-// 通用参数:[--repo xindong/mivo-canvas-plugin] [--json]。退出码:0 已切换或本来就是;1 没切换(原配置不动);2 写入异常,要人工核对。
-import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+// 自动化里的 agent 跑终端命令有单次超时,而服务器验证可能要几十分钟,所以自动化用后台方式:
+//   node mivo/models/switch.mjs --role ... --model ... --effort ... --detach   立刻返回 job id,切换在后台跑
+//   node mivo/models/switch.mjs --wait <job id> [--max-wait-sec 240]           最多等这么久;没跑完退出码 3,再运行同一条
+// 通用参数:[--repo xindong/mivo-canvas-plugin] [--json]。
+// 退出码:0 已切换或本来就是;1 没切换(原配置不动);2 写入异常或后台任务意外结束,要人工核对;3 还在进行(只有 --wait)。
+import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync, writeFileSync, mkdtempSync, openSync, closeSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -30,8 +36,11 @@ const LOCK_STALE_MS = 60 * 60_000;
 // 轮询间隔;测试用 MIVO_MODEL_SWITCH_POLL_MS 调小。
 const POLL_MS = Number(process.env.MIVO_MODEL_SWITCH_POLL_MS) || 10_000;
 
+const JOB_ID_RE = /^job-[a-z]+-[0-9a-f]{12}$/;
+const DEFAULT_WAIT_SEC = 240;
+
 function parseArgs(argv) {
-  const opts = { repo: DEFAULT_REPO, json: false, rollback: false, status: false };
+  const opts = { repo: DEFAULT_REPO, json: false, rollback: false, status: false, detach: false, maxWaitSec: DEFAULT_WAIT_SEC };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => { const v = argv[i + 1]; if (v === undefined) throw new Error(`${arg} 缺少参数值`); i += 1; return v; };
@@ -43,8 +52,14 @@ function parseArgs(argv) {
     else if (arg === '--json') opts.json = true;
     else if (arg === '--rollback') opts.rollback = true;
     else if (arg === '--status') opts.status = true;
+    else if (arg === '--detach') opts.detach = true;
+    else if (arg === '--wait') opts.wait = value();
+    else if (arg === '--job') opts.job = value();
+    else if (arg === '--max-wait-sec') opts.maxWaitSec = Number(value());
     else throw new Error(`不认识的参数:${arg}`);
   }
+  for (const id of [opts.wait, opts.job].filter((v) => v !== undefined)) if (!JOB_ID_RE.test(id)) throw new Error(`job id 不合法:${String(id).slice(0, 40)}`);
+  if (!Number.isInteger(opts.maxWaitSec) || opts.maxWaitSec < 1 || opts.maxWaitSec > 3600) throw new Error('--max-wait-sec 要在 1–3600 之间');
   if (!REPO_RE.test(opts.repo)) throw new Error(`--repo 不合法:${opts.repo}`);
   return opts;
 }
@@ -201,16 +216,66 @@ function doStatus(opts) {
   return { exitCode: 0, changed: false, summary: lines.join('\n'), effective };
 }
 
+// ── 后台方式(给自动化用)────────────────────────────────────────────────────
+const jobsDir = () => join(stateDir(), 'jobs');
+const jobFile = (id, ext) => join(jobsDir(), `${id}.${ext}`);
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+// 先把参数校验完(错了立刻报,不开后台),再以 --job 拉起自己,输出写进 jobs/<id>.log,结果写 jobs/<id>.json。
+function doDetach(opts) {
+  const role = toRole(opts.role);
+  toServerModel(opts.model);
+  toEffort(opts.effort);
+  mkdirSync(jobsDir(), { recursive: true });
+  const id = `job-${role}-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  const out = openSync(jobFile(id, 'log'), 'a');
+  const args = ['--role', role, '--model', opts.model, '--effort', opts.effort, ...(opts.provider ? ['--provider', opts.provider] : []), '--repo', opts.repo, '--job', id];
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...args],
+    { detached: true, stdio: ['ignore', out, out], env: process.env });
+  closeSync(out);
+  writeFileSync(jobFile(id, 'started.json'), JSON.stringify({ pid: child.pid, at: nowIso(), role }));
+  child.unref();
+  return { exitCode: 0, changed: false, jobId: id, summary: `已在后台开始${ROLE_TEXT[role]}切换(job ${id})。接着运行:node ${fileURLToPath(import.meta.url)} --wait ${id}` };
+}
+
+async function doWait(opts) {
+  const deadline = Date.now() + opts.maxWaitSec * 1000;
+  for (;;) {
+    const result = readJson(jobFile(opts.wait, 'json'), null);
+    if (result) return result;
+    const started = readJson(jobFile(opts.wait, 'started.json'), null);
+    if (!started) return { exitCode: 1, changed: false, summary: `找不到后台任务 ${opts.wait}` };
+    if (!pidAlive(started.pid)) {
+      await sleep(1000);
+      const late = readJson(jobFile(opts.wait, 'json'), null);
+      if (late) return late;
+      return { exitCode: 2, changed: false, summary: `后台任务 ${opts.wait} 意外结束,没有留下结果;请运行 --status 核对当前配置,日志在 ${jobFile(opts.wait, 'log')}` };
+    }
+    if (Date.now() >= deadline) {
+      const last = existsSync(jobFile(opts.wait, 'log')) ? readFileSync(jobFile(opts.wait, 'log'), 'utf8').trim().split('\n').filter(Boolean).at(-1) : '';
+      return { exitCode: 3, changed: false, jobId: opts.wait, summary: `还在进行(job ${opts.wait}${last ? `,最近一步:${last.slice(0, 200)}` : ''}),请再运行同一条 --wait 命令` };
+    }
+    await sleep(Math.min(POLL_MS, 5000));
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const log = (line) => { if (!opts.json) console.error(line); };
   let result;
   try {
-    if (opts.status) result = doStatus(opts);
+    if (opts.wait) result = await doWait(opts);
+    else if (opts.status) result = doStatus(opts);
     else if (opts.rollback) result = doRollback(opts);
-    else result = await doSwitch(opts, log);
+    else if (opts.detach) result = doDetach(opts);
+    else result = await doSwitch(opts, opts.job ? (line) => console.error(line) : log);
   } catch (error) {
     result = { exitCode: 1, changed: false, summary: `没有切换:${String(error?.message ?? error).slice(0, 300)}` };
+  }
+  if (opts.job) {
+    const tmp = `${jobFile(opts.job, 'json')}.tmp`;
+    writeFileSync(tmp, JSON.stringify(result));
+    renameSync(tmp, jobFile(opts.job, 'json'));
   }
   if (opts.json) console.log(JSON.stringify(result));
   else {

@@ -122,3 +122,31 @@ test('写入失败:恢复原值,报没切换;独立性告警随结果给出', ()
     assert.match(r.warnings.join('\n'), /核对员和主审是同一个模型/);
   } finally { t.done(); }
 });
+
+test('后台方式:--detach 立刻返回 job id;--wait 没跑完退出码 3,跑完给出结果;参数错直接拒绝不开后台', async () => {
+  const t = setup();
+  try {
+    const env = { ...process.env, PATH: `${join(t.dir, 'bin')}${delimiter}${process.env.PATH}`, MIVO_MODEL_SWITCH_STATE: join(t.dir, 'state'), MIVO_MODEL_SWITCH_POLL_MS: '20' };
+    const call = (...args) => {
+      const r = spawnSync(process.execPath, [SWITCH, '--repo', REPO, '--json', ...args], { encoding: 'utf8', timeout: 60_000, env });
+      return { code: r.status, ...JSON.parse(r.stdout.trim().split('\n').pop()) };
+    };
+    const bad = call('--role', 'primary', '--model', 'claude-opus-5-5', '--effort', 'max', '--detach');
+    assert.equal(bad.code, 1);
+    assert.match(bad.summary, /gpt 系模型/);
+    const started = call('--role', 'fallback', '--model', 'gpt-6.1-sol', '--effort', 'high', '--provider', 'xd', '--detach');
+    assert.equal(started.code, 0, started.summary);
+    assert.match(started.jobId, /^job-fallback-[0-9a-f]{12}$/);
+    let done = null;
+    for (let i = 0; i < 20 && !done; i += 1) {
+      const r = call('--wait', started.jobId, '--max-wait-sec', '3');
+      if (r.code !== 3) done = r;
+    }
+    assert.ok(done, '后台任务没有在预期时间内结束');
+    assert.equal(done.code, 0, done.summary);
+    assert.match(done.summary, /已切换 备用模型 → openai\/gpt-6\.1-sol \/ high/);
+    assert.equal(JSON.parse(t.vars().MIVO_REVIEW_ROLE_FALLBACK).provider, 'xd');
+    assert.equal(call('--wait', 'job-fallback-000000000000').code, 1, '不存在的 job');
+    assert.throws(() => JSON.parse(spawnSync(process.execPath, [SWITCH, '--wait', '../../etc'], { encoding: 'utf8', env }).stdout), Error, 'job id 不合法时也只输出说明');
+  } finally { t.done(); }
+});

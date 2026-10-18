@@ -258,13 +258,13 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 
 维护者 2026-10-18 决定：主审、备用模型、核对员的模型和思考档位，在 Mini 的 Cindy 自动化里选，点「运行」就切到服务器审查机。
 
-- 三个自动化：「审查机主审模型」「审查机备用模型」「审查机核对员模型」。在自动化里选好模型和思考档位再运行。自动化只做一件事：用 `schedule_get` 读出自己选的模型、来源和档位，原样传给 `node ~/mivo-prereview/skill/mivo/models/switch.mjs --role primary|fallback|verifier --model <模型> --effort <档位> --provider <来源>`，再把结果转述出来。它不凭自己的模型身份猜。
+- 三个自动化：「审查机主审模型」「审查机备用模型」「审查机核对员模型」。在自动化里选好模型和思考档位再运行。自动化只做一件事：用 `schedule_get` 读出自己选的模型、来源和档位，原样传给 `node ~/mivo-prereview/skill/mivo/models/switch.mjs --role primary|fallback|verifier --model <模型> --effort <档位> --provider <来源> --detach`，再反复运行 `--wait <job id>`，直到退出码不是 3，最后把结果转述出来。它不凭自己的模型身份猜。自动化里 agent 的终端命令有单次超时，服务器验证却可能要几十分钟，所以切换放在后台跑：`--detach` 先校验参数，再立刻返回 job id；`--wait` 每次最多等 240 秒。
 - `switch.mjs`（本机 gh，只用 REST）：把 Cindy 的模型 id 映射成网关 id（取最后一段，加 `openai/`；只接 gpt / o 系，因为服务器跑的是 Codex CLI）。已经是这个配置就不动。随后派发 Mivo 的 `review-model-check.yml`（服务器上跑 `models/check.mjs`），等它跑完、取回 `check.json`。验证通过才写这个角色的仓库变量，写完读回核对；读回不一致就恢复原值。验证没通过时原配置不动。同一角色同时只跑一个（本机锁）。
 - 服务器验证（`models/check.mjs`，只拿模型网关凭据）：先用实际审查 key 查网关的模型清单，再让 Codex CLI 用目标模型和档位跑一次最小任务。这个任务必须调用 shell 读出工作目录里的随机数，并按 JSON schema 交卷，随机数对上才算通过。主 key 必测；配了备用 key 也测一次。主 key 通过即放行。主 key 报 key 本身的错误、而备用 key 通过时也放行，因为模型和档位已经证明可用。备用 key 没通过只告警：主 key 正常时不影响审查，但主 key 出问题时换不过去。06:00–07:00 维护窗口内拒绝验证（CLI 可能正在升级）。
 - 角色变量：`MIVO_REVIEW_ROLE_PRIMARY`（三档主审）、`MIVO_REVIEW_ROLE_FALLBACK`（备用模型）、`MIVO_REVIEW_ROLE_VERIFIER`（核对员，覆盖 `config/review-features.json` 的 model/effort），值是 JSON，服务器只认 `model` 与 `effort`。优先级：单档覆盖变量 `MIVO_REVIEW_{MODEL,EFFORT}_<档>`（只在测试时临时用）> 角色变量 > 默认值。有单档覆盖变量时，`switch.mjs` 拒绝切主审：切了也不会生效。变量格式不对时服务器用默认值，并把告警写进结果包。
 - 告警（不阻断）：备用模型和主审是同一个模型时，主审失败不会再换模型重试；核对员和主审是同一个模型时，没有独立性。
 - 生效时间：下一次派发的服务器审查。正在跑的那一轮不受影响。
-- 查看与回退：`node mivo/models/switch.mjs --status` 列出三个角色当前生效的模型、网关 key 状态和冷却期。`--role <角色> --rollback` 把这个角色恢复到本机上一次切换之前的值（历史在 `~/mivo-prereview/state/model-switch/history.jsonl`）。退出码：0 已切换或本来就是；1 没切换（原配置不动）；2 写入结果未知，要人工核对变量。
+- 查看与回退：`node mivo/models/switch.mjs --status` 列出三个角色当前生效的模型、网关 key 状态和冷却期。`--role <角色> --rollback` 把这个角色恢复到本机上一次切换之前的值（历史在 `~/mivo-prereview/state/model-switch/history.jsonl`）。退出码：0 已切换或本来就是；1 没切换（原配置不动）；2 写入结果未知或后台任务意外结束，要人工核对变量；3 还在进行（只有 `--wait`）。后台任务的日志和结果在 `~/mivo-prereview/state/model-switch/jobs/`。
 - 每天 06:05 的 CLI 探活（Mivo 仓的 `review_models.py`）仍固定测默认的 Luna / Sol，不读这些变量。换到别的模型后，只要 Luna 或 Sol 还在网关上，探活就不受影响。两个都下线时探活会失败，工具链会被标成不健康，审查会暂停，需要有服务器 root 的维护者同步改探活模型。
 
 ## 主 key 与备用 key
