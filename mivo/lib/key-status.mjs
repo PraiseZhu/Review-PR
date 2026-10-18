@@ -11,6 +11,7 @@ const kindText = (failure) => (failure ? `${KIND_TEXT[failure.kind] ?? failure.k
 export function toKeyStatus(credential, attempts = []) {
   if (!credential || typeof credential !== 'object') return null;
   const last = Array.isArray(attempts) ? attempts.at(-1) : null;
+  if (credential.down) return 'down';
   if (last?.keyFailure && (last.credential === 'backup' || !credential.backupConfigured)) return 'down';
   if (credential.switched || (credential.startedOn === 'backup' && !credential.preferBackup)) return 'backup';
   if (credential.primaryOk) return 'primary';
@@ -21,10 +22,16 @@ export function toKeyStatus(credential, attempts = []) {
 export function toKeyStatusReason(status, credential, attempts = []) {
   const last = Array.isArray(attempts) ? attempts.at(-1) : null;
   if (status === 'primary') return '主 key 正常';
+  if (status === 'down' && credential?.down?.phase === 'verify') {
+    return credential.backupConfigured
+      ? `核对员调用时备用 key 也报 key 错误:${kindText(credential.down) || '未知'};本轮主审结果照常发布,下一轮先试主 key`
+      : `核对员调用时主 key 报 key 错误:${kindText(credential.down) || '未知'},没有配置备用 key;本轮主审结果照常发布`;
+  }
   if (status === 'down') {
+    const failure = last?.keyFailure ?? credential?.down;
     return credential?.backupConfigured
-      ? `备用 key 也报 key 错误:${kindText(last?.keyFailure) || '未知'};Mini 暂停审查 60 分钟后再试`
-      : `主 key 报 key 错误:${kindText(last?.keyFailure) || '未知'},没有配置备用 key;Mini 暂停审查 60 分钟后再试`;
+      ? `备用 key 也报 key 错误:${kindText(failure) || '未知'};Mini 暂停审查 60 分钟后再试`
+      : `主 key 报 key 错误:${kindText(failure) || '未知'},没有配置备用 key;Mini 暂停审查 60 分钟后再试`;
   }
   if (credential?.switched) {
     return `主 key ${kindText(credential.switched) || '报 key 错误'}${credential.switched.midRun ? '(审到一半)' : ''},已自动改用备用 key`;

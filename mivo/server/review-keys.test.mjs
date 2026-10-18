@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { inBusinessWindow } from '../lib/health.mjs';
+import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const PRIMARY_KEY = 'sk-primary-PPPPPPPPPPPP';
@@ -23,7 +24,7 @@ const P1 = { severity: 'P1', title: '空指针', trigger: '未登录', behavior:
 const ONE_P1 = { report: REPORT.replace('approve', 'changes-requested —— 1 条 P0/P1'), findings: [P1] };
 const CONFIRMED = { verdict: 'confirmed', evidence: [{ path: 'src/a.ts', line: 2 }], note: '成立' };
 
-// 行为:ok | 401 | mid401 | blocked(没有状态码的 key 错误)| 500(正文带 rate limit 的网关 5xx)| explode(非 key 失败)。按 key 读 ctl/mode-primary、ctl/mode-backup。
+// 行为:ok | 401 | mid401 | verify401(主审成功、核对员 401)| blocked(没有状态码的 key 错误)| 500(正文带 rate limit 的网关 5xx)| explode(非 key 失败)。按 key 读 ctl/mode-primary、ctl/mode-backup。
 function writeFakeCodex(ctl) {
   const bin = join(ctl, 'fake-codex');
   writeFileSync(bin, `#!/usr/bin/env node
@@ -38,6 +39,7 @@ const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"verdict
 const mode = fs.readFileSync(path.join(ctl, 'mode-' + key), 'utf8').trim();
 fs.appendFileSync(path.join(ctl, 'calls.log'), (verify ? 'verify ' : 'main ') + at('--model') + ' ' + at('-c').replace('model_reasoning_effort=', '') + ' ' + key + '\\n');
 const fail401 = () => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400); // 失败的那次也花时间,核对员预算要算上它
   const msg = 'unexpected status 401 Unauthorized: Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000';
   console.log(JSON.stringify({ type: 'error', message: 'Reconnecting... 1/5 (' + msg + ')' }));
   console.log(JSON.stringify({ type: 'turn.failed', error: { message: msg } }));
@@ -45,7 +47,7 @@ const fail401 = () => {
   process.exit(1);
 };
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'error', message: 'Model metadata not found' } }));
-if (mode === '401') fail401();
+if (mode === '401' || (mode === 'verify401' && verify)) fail401();
 if (mode === 'mid401') { console.log(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } })); fail401(); }
 if (mode === 'blocked') { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'Authentication Error, Key is blocked. Update via /key/unblock' } })); process.exit(1); }
 if (mode === '500') { console.log(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } })); console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 500 Internal Server Error: rate limit exceeded upstream' } })); process.exit(1); }
@@ -101,7 +103,7 @@ function runCodexPhase({ primary = 'ok', backup = 'ok', withBackup = true, main 
     assert.equal(r.status, 0, r.stderr);
     const state = JSON.parse(readFileSync(join(work, 'state.json'), 'utf8'));
     const leaked = walk(work).filter((file) => { const text = readFileSync(file, 'utf8'); return text.includes(PRIMARY_KEY) || text.includes(BACKUP_KEY); });
-    return { calls: readFileSync(join(ctl, 'calls.log'), 'utf8').trim().split('\n').filter(Boolean), codex: state.codex, warnings: state.warnings, leaked };
+    return { calls: readFileSync(join(ctl, 'calls.log'), 'utf8').trim().split('\n').filter(Boolean), codex: state.codex, verification: state.verification, warnings: state.warnings, leaked };
   } finally {
     spawnSync('chmod', ['-R', 'u+rwx', work]);
     rmSync(work, { recursive: true, force: true });
@@ -201,4 +203,26 @@ test('网关 5xx 即使正文带 rate limit 也不换 key、不进冷却期(是�
   assert.equal(r.codex.attempts[0].keyFailure, null);
   assert.equal(r.codex.credential.switched, null);
   assert.equal(r.codex.credential.primaryFailedMidRun, false);
+});
+
+test('核对员调用时两把 key 都报 key 错误:key 状态是 down(不是 backup),原因写明是核对员', { skip }, () => {
+  const r = runCodexPhase({ primary: 'verify401', backup: 'verify401', main: ONE_P1, verifyMode: 'enforce' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'verify openai/gpt-6.1-sol medium primary', 'verify openai/gpt-6.1-sol medium backup']);
+  assert.equal(r.codex.attempts.length, 1);
+  assert.equal(r.codex.attempts[0].ok, true);
+  assert.deepEqual(r.codex.credential.down, { kind: 'auth', status: 401, credential: 'backup', phase: 'verify' });
+  const status = toKeyStatus(r.codex.credential, r.codex.attempts);
+  assert.equal(status, 'down');
+  assert.match(toKeyStatusReason(status, r.codex.credential, r.codex.attempts), /核对员调用时备用 key 也报 key 错误/);
+  assert.deepEqual(r.leaked, []);
+});
+
+test('核对员换 key 重跑:被换掉的那次时长也算进核对员预算', { skip }, () => {
+  const r = runCodexPhase({ primary: 'verify401', backup: 'ok', main: ONE_P1, verifyMode: 'enforce' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'verify openai/gpt-6.1-sol medium primary', 'verify openai/gpt-6.1-sol medium backup']);
+  assert.equal(r.verification.items.length, 1);
+  assert.equal(r.verification.items[0].ok, true);
+  assert.ok(r.verification.items[0].durationMs >= 400, `durationMs=${r.verification.items[0].durationMs}`);
+  assert.equal(r.codex.credential.down, null);
+  assert.equal(toKeyStatus(r.codex.credential, r.codex.attempts), 'backup');
 });

@@ -21,3 +21,12 @@ test('key 状态:主 key 能用 → primary;换过备用 → backup;在用的那
   assert.equal(toKeyStatus(midRunNoRetry, [{ credential: 'primary', ok: false, keyFailure: { kind: 'rate-limit', status: 429 } }]), 'backup', '换了但没时间重跑:备用没试过,不算 down');
   assert.match(toKeyStatusReason('backup', midRunNoRetry), /被限流\(429\)\(审到一半\)/);
 });
+
+test('key 状态:结果包记了 down(核对员也报 key 错误)就是 down,哪怕主审最后一次成功', () => {
+  const credential = { backupConfigured: true, startedOn: 'primary', switched: { kind: 'auth', status: 401 }, primaryOk: true,
+    down: { kind: 'auth', status: 401, credential: 'backup', phase: 'verify' } };
+  assert.equal(toKeyStatus(credential, [{ ok: true, credential: 'backup', keyFailure: null }]), 'down');
+  assert.match(toKeyStatusReason('down', credential, []), /核对员调用时备用 key 也报 key 错误:认证失败\(401\)/);
+  const noBackup = { ...credential, backupConfigured: false, switched: null, down: { kind: 'budget', status: null, credential: 'primary', phase: 'review' } };
+  assert.match(toKeyStatusReason('down', noBackup, []), /主 key 报 key 错误:额度或预算用完,没有配置备用 key/);
+});

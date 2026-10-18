@@ -104,6 +104,12 @@ function appendHistory(entry) {
   mkdirSync(stateDir(), { recursive: true });
   appendFileSync(historyFile(), `${JSON.stringify(entry)}\n`);
 }
+// 历史只用来 --rollback;变量已经写好时历史写失败不能把结果改成「没切换」,只附一条告警。
+function tryAppendHistory(entry) {
+  try { appendHistory(entry); return null; } catch (error) {
+    return `切换已生效,但历史没记上(${String(error?.message ?? error).slice(0, 120)}):这一次不能用 --rollback 恢复`;
+  }
+}
 function readHistory() {
   if (!existsSync(historyFile())) return [];
   return readFileSync(historyFile(), 'utf8').split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
@@ -181,9 +187,9 @@ async function doSwitch(opts, log) {
     if (!verdict.ok) return { exitCode: 1, changed: false, runId, summary: `没有切换(${text}):服务器验证没通过——${verdict.reason},原配置不动`, warnings: allWarnings, available: check?.keys?.primary?.models?.available };
     const value = toRoleValue({ model, effort, cindyModel: opts.model, provider: opts.provider, checkRunId: runId, setAt: nowIso() });
     const written = writeRole(opts.repo, name, value, previous);
-    if (written.ok) appendHistory({ at: nowIso(), kind: 'switch', role, name, from: previous, to: value, checkRunId: runId });
+    const historyWarning = written.ok ? tryAppendHistory({ at: nowIso(), kind: 'switch', role, name, from: previous, to: value, checkRunId: runId }) : null;
     return written.ok
-      ? { exitCode: 0, changed: true, runId, summary: `已切换 ${text}(${verdict.reason});下一次派发的服务器审查开始生效`, warnings: allWarnings }
+      ? { exitCode: 0, changed: true, runId, summary: `已切换 ${text}(${verdict.reason});下一次派发的服务器审查开始生效`, warnings: [...allWarnings, ...(historyWarning ? [historyWarning] : [])] }
       : { exitCode: written.exitCode, changed: false, runId, summary: `没有切换(${text}):${written.reason}`, warnings: allWarnings };
   } finally { release(); }
 }
@@ -197,10 +203,10 @@ function doRollback(opts) {
     const last = readHistory().filter((e) => e.role === role && e.kind === 'switch' && e.to === current).at(-1);
     if (!last) return { exitCode: 1, changed: false, summary: `${ROLE_TEXT[role]}的当前值不是本机切换写的,找不到可以恢复的上一个值;没有改动` };
     const written = writeRole(opts.repo, name, last.from, current);
-    if (written.ok) appendHistory({ at: nowIso(), kind: 'rollback', role, name, from: current, to: last.from });
+    const historyWarning = written.ok ? tryAppendHistory({ at: nowIso(), kind: 'rollback', role, name, from: current, to: last.from }) : null;
     const target = parseRoleModel(last.from).value;
     return written.ok
-      ? { exitCode: 0, changed: true, summary: `已回退${ROLE_TEXT[role]}到 ${target ? `${target.model} / ${target.effort}` : '默认值(删除变量)'}` }
+      ? { exitCode: 0, changed: true, summary: `已回退${ROLE_TEXT[role]}到 ${target ? `${target.model} / ${target.effort}` : '默认值(删除变量)'}`, warnings: historyWarning ? [historyWarning] : [] }
       : { exitCode: written.exitCode, changed: false, summary: `回退没有完成:${written.reason}` };
   } finally { release(); }
 }
@@ -220,6 +226,14 @@ function doStatus(opts) {
 const jobsDir = () => join(stateDir(), 'jobs');
 const jobFile = (id, ext) => join(jobsDir(), `${id}.${ext}`);
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// 后台任务还活着:pid 在,而且那个进程的命令行带着这个 job id。只看 pid 会被复用:任务结束后 pid 给了别的进程,
+// --wait 就会一直报「还在进行」。读不到命令行(ps 不可用)时退回只看 pid。
+function jobAlive(pid, id) {
+  if (!pidAlive(pid)) return false;
+  const ps = run('ps', ['-o', 'command=', '-p', String(pid)], { allowFail: true, timeoutMs: 10_000 });
+  if (!ps.ok) return ps.status !== 1;
+  return ps.stdout.includes(id);
+}
 
 // 先把参数校验完(错了立刻报,不开后台),再以 --job 拉起自己,输出写进 jobs/<id>.log,结果写 jobs/<id>.json。
 function doDetach(opts) {
@@ -245,7 +259,7 @@ async function doWait(opts) {
     if (result) return result;
     const started = readJson(jobFile(opts.wait, 'started.json'), null);
     if (!started) return { exitCode: 1, changed: false, summary: `找不到后台任务 ${opts.wait}` };
-    if (!pidAlive(started.pid)) {
+    if (!jobAlive(started.pid, opts.wait)) {
       await sleep(1000);
       const late = readJson(jobFile(opts.wait, 'json'), null);
       if (late) return late;

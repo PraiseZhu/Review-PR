@@ -22,7 +22,7 @@ import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
-import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
+import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
 import { recordSelfWrite, readSelfWrites } from '../../review-pr/scripts/self-write-receipts.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
@@ -420,20 +420,22 @@ async function codex() {
   const cleanupLeft = [];
   // 一次模型调用:主 key 报 key 本身的错误(keys.mjs)时换备用 key,同模型同档位原地重跑一次,剩余时间不够 minRetryMs 就不重跑。
   // 被换掉的那次先清掉运行产物再重跑。返回最后一次的结果与运行标签、它用的是哪把 key、换 key 记录和没清掉的产物。
-  const callModel = async ({ label, model, effort, timeoutMs, prompt: text, schema, minRetryMs, remainingMs }) => {
+  const callModel = async ({ label, model, effort, timeoutMs, prompt: text, schema, minRetryMs, remainingMs, phase = 'review' }) => {
     const once = (runLabel, ms) => runCodex({ codexBin: codexBin(), workdir: REPO_DIR, prompt: text, schema, model, effort, timeoutMs: ms,
       credentials: activeCredentials(ring, process.env), redactKeys: keyTexts(ring), tmpRoot: join(WORK, 'codex'), label: runLabel });
     const credential = ring.active;
     const first = await once(label, timeoutMs);
     const change = toKeySwitch(ring, first);
-    if (!change) return { result: first, label, credential, keySwitch: null, left: [] };
+    if (!change) { noteKeyResult(ring, credential, first, phase); return { result: first, label, credential, keySwitch: null, left: [] }; }
     switchToBackup(ring, change, { model, label });
     const retryMs = Math.min(timeoutMs, remainingMs());
     const keySwitch = { ...change, durationMs: first.durationMs, error: first.error, retried: retryMs >= minRetryMs };
     if (!keySwitch.retried) return { result: first, label, credential, keySwitch, left: [] };
     const left = await clearRunArtifacts(state, label);
     const retryLabel = `${label}-backup`;
-    return { result: await once(retryLabel, retryMs), label: retryLabel, credential: 'backup', keySwitch, left };
+    const second = await once(retryLabel, retryMs);
+    noteKeyResult(ring, 'backup', second, phase);
+    return { result: second, label: retryLabel, credential: 'backup', keySwitch, left };
   };
   // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
   for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs, fallback: fallbackCfg }); next;
@@ -486,9 +488,11 @@ async function codex() {
             const perCallMs = cfg.perCallTimeoutMin * 60_000;
             const run1 = await callModel({ label: `verify-${index + 1}`, model: model.model, effort: model.effort, timeoutMs: perCallMs,
               prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
-              schema: VERIFY_SCHEMA, minRetryMs: perCallMs, remainingMs: () => budget.budgetMs - (Date.now() - budgetAt) - SETTLE_MS });
+              schema: VERIFY_SCHEMA, minRetryMs: perCallMs, phase: 'verify', remainingMs: () => budget.budgetMs - (Date.now() - budgetAt) - SETTLE_MS });
             await clearRunArtifacts(state, run1.label);
-            return run1.result;
+            // 换 key 重跑时,被换掉的那次也花了时间:一起算进核对员预算,不然预算会少算。
+            const spent = run1.keySwitch?.retried ? (run1.keySwitch.durationMs ?? 0) : 0;
+            return spent ? { ...run1.result, durationMs: (run1.result.durationMs ?? 0) + spent } : run1.result;
           } })
         : { mode: cfg.mode, items: [], skipped: [] };
     }
