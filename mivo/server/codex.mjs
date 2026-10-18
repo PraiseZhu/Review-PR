@@ -38,6 +38,8 @@ export function toKeyFailure(message) {
   const text = String(message ?? '');
   if (!text) return null;
   const status = Number(text.match(/unexpected status (\d{3})/)?.[1]) || null;
+  // 网关 5xx 是网关或上游的问题,正文里即使带「rate limit」「Authentication」之类的字样也不换 key。
+  if (status !== null && status >= 500) return null;
   if (status === 401 || /Authentication Error|token_not_found|invalid[_ ]api[_ ]key|expired[_ ]key|key is blocked/i.test(text)) return { kind: 'auth', status };
   if (/budget_exceeded|budget has been exceeded|ExceededBudget|exceeded (?:the |your )?(?:current )?(?:budget|quota)|insufficient_quota/i.test(text)) return { kind: 'budget', status };
   if (status === 403 || /not allowed to access model|model_access_denied/i.test(text)) return { kind: 'access', status };

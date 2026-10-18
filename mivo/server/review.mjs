@@ -443,8 +443,9 @@ async function codex() {
       remainingMs: () => budget.budgetMs - (Date.now() - startedAt) - SETTLE_MS });
     // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
     // 换了 key 但时间不够没重跑:备用 key 还没试过,不按额度类处理(不让 Mini 暂停),主 key 的报错照实记在 keySwitch。
+    // 最后一次是 key 本身的错误(备用 key 也坏,或没有备用)也算额度类:旧的 QUOTA_RE 认不出「key is blocked」之类的报错。
     attempts.push({ model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
-      quota: keySwitch && !keySwitch.retried ? false : result.quota, keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
+      quota: keySwitch && !keySwitch.retried ? false : result.quota || Boolean(result.keyFailure), keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
       timedOut: result.timedOut, idleKilled: result.idleKilled,
       firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
       maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}),

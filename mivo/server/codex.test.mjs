@@ -181,7 +181,8 @@ test('key 本身的问题才换 key:额度/预算、无模型权限、限流;5xx
     ['unexpected status 401 Unauthorized: Authentication Error - Expired Key', { kind: 'auth', status: 401 }],
   ];
   for (const [message, want] of cases) assert.deepEqual(toKeyFailure(message), want, message);
-  for (const message of ['unexpected status 502 Bad Gateway: upstream error', 'stream disconnected before completion: error sending request',
+  for (const message of ['unexpected status 502 Bad Gateway: upstream error', 'unexpected status 500 Internal Server Error: rate limit exceeded upstream',
+    'unexpected status 503 Service Unavailable: Authentication Error from upstream provider', 'stream disconnected before completion: error sending request',
     'unexpected status 400 Bad Request: Unsupported value: reasoning.effort', 'unexpected status 404 Not Found: model openai/gpt-x does not exist', '', null]) {
     assert.equal(toKeyFailure(message), null, String(message));
   }

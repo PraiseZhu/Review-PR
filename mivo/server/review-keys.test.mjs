@@ -23,7 +23,7 @@ const P1 = { severity: 'P1', title: '空指针', trigger: '未登录', behavior:
 const ONE_P1 = { report: REPORT.replace('approve', 'changes-requested —— 1 条 P0/P1'), findings: [P1] };
 const CONFIRMED = { verdict: 'confirmed', evidence: [{ path: 'src/a.ts', line: 2 }], note: '成立' };
 
-// 行为:ok | 401 | mid401 | explode(非 key 失败)。按 key 读 ctl/mode-primary、ctl/mode-backup。
+// 行为:ok | 401 | mid401 | blocked(没有状态码的 key 错误)| 500(正文带 rate limit 的网关 5xx)| explode(非 key 失败)。按 key 读 ctl/mode-primary、ctl/mode-backup。
 function writeFakeCodex(ctl) {
   const bin = join(ctl, 'fake-codex');
   writeFileSync(bin, `#!/usr/bin/env node
@@ -47,6 +47,8 @@ const fail401 = () => {
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'error', message: 'Model metadata not found' } }));
 if (mode === '401') fail401();
 if (mode === 'mid401') { console.log(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } })); fail401(); }
+if (mode === 'blocked') { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'Authentication Error, Key is blocked. Update via /key/unblock' } })); process.exit(1); }
+if (mode === '500') { console.log(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } })); console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 500 Internal Server Error: rate limit exceeded upstream' } })); process.exit(1); }
 if (mode === 'explode') { process.stderr.write('primary exploded'); process.exit(1); }
 fs.writeFileSync(at('--output-last-message'), fs.readFileSync(path.join(ctl, verify ? 'verify-answer.json' : 'main-answer.json'), 'utf8'));
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }));
@@ -184,4 +186,19 @@ test('核对员:角色变量覆盖开关文件的模型;主审换过 key 后核�
     env: { MIVO_REVIEW_ROLE_VERIFIER: JSON.stringify({ model: 'openai/gpt-7-verify', effort: 'high' }) } });
   assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'main openai/gpt-6-luna max backup', 'verify openai/gpt-7-verify high backup']);
   assert.deepEqual(r.leaked, []);
+});
+
+test('两把 key 都报没有状态码的 key 错误(key is blocked):也按额度类处理,不再换备用模型', { skip }, () => {
+  const r = runCodexPhase({ primary: 'blocked', backup: 'blocked' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'main openai/gpt-6-luna max backup']);
+  assert.equal(r.codex.attempts.length, 1);
+  assert.equal(r.codex.attempts[0].quota, true);
+});
+
+test('网关 5xx 即使正文带 rate limit 也不换 key、不进冷却期(是否换备用模型照旧由 QUOTA_RE 决定)', { skip }, () => {
+  const r = runCodexPhase({ primary: '500' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary']);
+  assert.equal(r.codex.attempts[0].keyFailure, null);
+  assert.equal(r.codex.credential.switched, null);
+  assert.equal(r.codex.credential.primaryFailedMidRun, false);
 });
