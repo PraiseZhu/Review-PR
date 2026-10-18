@@ -150,3 +150,31 @@ test('后台方式:--detach 立刻返回 job id;--wait 没跑完退出码 3,跑�
     assert.throws(() => JSON.parse(spawnSync(process.execPath, [SWITCH, '--wait', '../../etc'], { encoding: 'utf8', env }).stdout), Error, 'job id 不合法时也只输出说明');
   } finally { t.done(); }
 });
+
+test('变量已写好但历史写不进去:仍报已切换(退出码 0),附告警说明这次不能 --rollback', () => {
+  const t = setup();
+  try {
+    mkdirSync(join(t.dir, 'state', 'history.jsonl'), { recursive: true });
+    const r = t.switchTo('verifier', 'gpt-6.1-sol', 'high');
+    assert.equal(r.code, 0, r.summary);
+    assert.equal(r.changed, true);
+    assert.match(r.summary, /已切换 核对员/);
+    assert.ok(r.warnings.some((w) => /历史没记上/.test(w)), JSON.stringify(r.warnings));
+    assert.equal(JSON.parse(t.vars().MIVO_REVIEW_ROLE_VERIFIER).effort, 'high');
+  } finally { t.done(); }
+});
+
+test('--wait:后台任务的 pid 已被别的进程复用(命令行里没有这个 job id)就按意外结束处理,不会一直报还在进行', () => {
+  const t = setup();
+  try {
+    const id = 'job-primary-abcdef012345';
+    const jobs = join(t.dir, 'state', 'jobs');
+    mkdirSync(jobs, { recursive: true });
+    writeFileSync(join(jobs, `${id}.started.json`), JSON.stringify({ pid: process.pid, at: new Date().toISOString(), role: 'primary' }));
+    const r = spawnSync(process.execPath, [SWITCH, '--repo', REPO, '--json', '--wait', id, '--max-wait-sec', '2'], { encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, MIVO_MODEL_SWITCH_STATE: join(t.dir, 'state'), MIVO_MODEL_SWITCH_POLL_MS: '20' } });
+    const out = JSON.parse(r.stdout.trim().split('\n').pop());
+    assert.equal(r.status, 2, out.summary);
+    assert.match(out.summary, /意外结束/);
+  } finally { t.done(); }
+});

@@ -44,6 +44,7 @@ export function toKeyRing(env, nowMs = Date.now()) {
     startedOn: active,
     switched: null, // { kind, status, midRun, model, label }:本轮从主 key 换到备用 key 的那次
     primaryOk: false, // 本轮至少有一次主 key 调用没有报 key 错误(主 key 能用)
+    down: null, // { kind, status, credential, phase }:本轮最后能用的那把(备用,或没有备用时的主 key)也报了 key 错误
   };
 }
 
@@ -66,6 +67,19 @@ export function toKeySwitch(ring, result) {
   return { kind: result.keyFailure.kind, status: result.keyFailure.status ?? null, midRun: result.outputStarted === true };
 }
 
+/**
+ * 一次调用(含换 key 重跑)结束后:用的是最后那把 key(备用,或没有备用时的主 key)还报 key 错误,就记成 down。
+ * 主审之外的调用(核对员)也走这里,两把都坏时 key 状态才能报 down,不会停在 backup。phase 区分主审与核对员。
+ */
+export function noteKeyResult(ring, credential, result, phase) {
+  const last = credential === 'backup' || !ring.backup;
+  // 同一把 key 后面又成功了(例如备用 key 没有主审模型的权限,备用模型却能用):它不是 down。
+  if (!result?.keyFailure) { if (last && (result?.ok || result?.outputStarted)) ring.down = null; return; }
+  if (last) {
+    ring.down = { kind: result.keyFailure.kind, status: result.keyFailure.status ?? null, credential, phase };
+  }
+}
+
 /** 换到备用 key:只换一次,之后本轮都用备用。 */
 export function switchToBackup(ring, change, { model, label }) {
   ring.active = 'backup';
@@ -83,6 +97,7 @@ export function toCredentialSummary(ring) {
     switched: ring.switched,
     primaryFailedMidRun: ring.switched?.midRun === true,
     primaryOk: ring.primaryOk,
+    down: ring.down,
     warnings: [...ring.warnings],
   };
 }

@@ -273,3 +273,16 @@ export function toBehindMainNote({ status, aheadBy, messages }) {
   const truncated = listed.length < aheadBy ? `；接口最多返回 250 个提交，只列出最早 ${listed.length} 个提交里的 PR，更新的没列全` : '';
   return `目标比 main 落后 ${aheadBy} 个提交${merged}${direct}${truncated}`;
 }
+
+// PR 的检查列表里,同一个检查(workflow + 名字)可能有多次运行:旧 payload 的重跑会留下失败记录,之后的新运行已经通过。
+// 只看每个检查最新的那次(按 startedAt,没有就按 completedAt),和审查机 classifyRollupContexts 的去重口径一致。
+export function toLatestChecks(rollup) {
+  const latest = new Map();
+  const at = (c) => Date.parse(c.startedAt ?? c.completedAt ?? '') || 0;
+  for (const c of rollup ?? []) {
+    const key = `${c.workflowName ?? ''}\u0000${c.name ?? c.context ?? ''}`;
+    const prev = latest.get(key);
+    if (!prev || at(c) >= at(prev)) latest.set(key, c);
+  }
+  return [...latest.values()];
+}

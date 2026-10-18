@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
+import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary, noteKeyResult } from './keys.mjs';
 
 const PRIMARY = JSON.stringify({ api_key: 'sk-primary-AAAAAAAA', base_url: 'https://gw.example.com/v1' });
 const NOW = Date.parse('2026-10-18T03:00:00Z');
@@ -56,4 +56,19 @@ test('只在用主 key、有备用、失败且是 key 本身的问题时换;一�
   assert.doesNotMatch(JSON.stringify(summary), /AAAAAAAA|BBBBBBBB|gw\.example/);
   const noBackup = toKeyRing({ LITELLM_CREDENTIALS_JSON: PRIMARY }, NOW);
   assert.equal(toKeySwitch(noBackup, { ok: false, keyFailure: { kind: 'auth', status: 401 } }), null, '没有备用 key 时照旧');
+});
+
+test('down:最后能用的那把 key 报 key 错误才记;同一把后来又成功就清掉;主 key 在有备用时报错不算', () => {
+  const ring = toKeyRing(env(), NOW);
+  noteKeyResult(ring, 'primary', { ok: false, keyFailure: { kind: 'auth', status: 401 } }, 'review');
+  assert.equal(ring.down, null, '有备用时主 key 报错是换 key,不是 down');
+  noteKeyResult(ring, 'backup', { ok: false, keyFailure: { kind: 'access', status: 403 } }, 'review');
+  assert.deepEqual(ring.down, { kind: 'access', status: 403, credential: 'backup', phase: 'review' });
+  noteKeyResult(ring, 'backup', { ok: true, keyFailure: null }, 'review');
+  assert.equal(ring.down, null, '备用模型在备用 key 上成功:key 没坏');
+  noteKeyResult(ring, 'backup', { ok: false, keyFailure: { kind: 'auth', status: 401 } }, 'verify');
+  assert.deepEqual(toCredentialSummary(ring).down, { kind: 'auth', status: 401, credential: 'backup', phase: 'verify' });
+  const noBackup = toKeyRing({ LITELLM_CREDENTIALS_JSON: PRIMARY }, NOW);
+  noteKeyResult(noBackup, 'primary', { ok: false, keyFailure: { kind: 'budget', status: null } }, 'review');
+  assert.equal(noBackup.down.credential, 'primary');
 });

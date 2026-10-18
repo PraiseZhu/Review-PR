@@ -32,7 +32,7 @@ import {
   WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
   toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
   toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
-  toMergedPrNumbers, toBehindMainNote,
+  toMergedPrNumbers, toBehindMainNote, toLatestChecks,
 } from './tuple-lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -210,7 +210,7 @@ function preflight() {
     if (pr.state !== 'OPEN' || pr.headRefOid !== PR_HEAD) throw new Error(`PR #${PR} 状态 ${pr.state}、head ${pr.headRefOid},不是开着的 ${PR_HEAD}`);
     const checkName = (c) => c.name ?? c.context;
     const checkResult = (c) => c.conclusion || c.state || c.status;
-    const bad = pr.statusCheckRollup.filter((c) => checkName(c) !== 'review-pr' && !['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(checkResult(c)));
+    const bad = toLatestChecks(pr.statusCheckRollup).filter((c) => checkName(c) !== 'review-pr' && !['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(checkResult(c)));
     if (bad.length) throw new Error(`PR #${PR} 还有没通过的检查:${bad.map((c) => `${checkName(c)}=${checkResult(c)}`).join(', ')}`);
     const prWf = mainWorkflowSha(PR_HEAD);
     if (prWf !== NEW_WF) throw new Error(`PR #${PR} 上 ${WF_PATH} 的 sha256 是 ${prWf},不是新值 ${NEW_WF}`);

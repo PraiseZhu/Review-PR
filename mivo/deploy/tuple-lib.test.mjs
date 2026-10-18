@@ -435,3 +435,17 @@ test('preflight 仍然拒绝不在 main 上的目标,只是落后才提示(源�
   assert.match(source, /record\.behindMain = /);
   assert.doesNotMatch(source, /--allow-behind|allowBehind/, '不加放行参数');
 });
+
+test('toLatestChecks keeps only the newest run of each check', async () => {
+  const { toLatestChecks } = await import('./tuple-lib.mjs');
+  const rollup = [
+    { workflowName: 'PR Hygiene Sentinel', name: 'pr-format-gate', conclusion: 'FAILURE', startedAt: '2026-10-18T03:04:15Z' },
+    { workflowName: 'PR Hygiene Sentinel', name: 'pr-format-gate', conclusion: 'SUCCESS', startedAt: '2026-10-18T03:09:47Z' },
+    { workflowName: 'CI', name: 'unit', conclusion: 'FAILURE', startedAt: '2026-10-18T03:00:00Z' },
+    { context: 'legacy-status', state: 'SUCCESS' },
+  ];
+  const latest = toLatestChecks(rollup);
+  assert.equal(latest.length, 3);
+  assert.equal(latest.find((c) => c.name === 'pr-format-gate').conclusion, 'SUCCESS');
+  assert.equal(latest.find((c) => c.name === 'unit').conclusion, 'FAILURE');
+});
