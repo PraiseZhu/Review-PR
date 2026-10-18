@@ -12,6 +12,41 @@ const PROVIDER_ID = 'company-litellm';
 const SHELL_ENV_EXCLUDE = ['CODEX_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GH_TOKEN', 'GITHUB_TOKEN'];
 export const QUOTA_RE = /\b(?:401|403|429)\b|insufficient_quota|budget|quota|rate.?limit|Unauthorized|Forbidden/i;
 
+/**
+ * 一次失败调用的最终错误:取最后一个 turn.failed 的 error.message;没有就取最后一个不是「Reconnecting...」的顶层 error 事件。
+ * 只看 CLI 自己的结构化事件,不看 stderr 和模型输出:命令输出、模型文字里出现 401 之类的字样不能触发换 key。
+ */
+export function toFinalError(stdout) {
+  let failed = null;
+  let error = null;
+  for (const line of String(stdout ?? '').split('\n')) {
+    if (!line.includes('"type"')) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event?.type === 'turn.failed' && typeof event.error?.message === 'string') failed = event.error.message;
+    else if (event?.type === 'error' && typeof event.message === 'string' && !/^Reconnecting\.\.\./.test(event.message)) error = event.message;
+  }
+  return failed ?? error;
+}
+
+/**
+ * 最终错误是不是「key 本身的问题」(维护者 2026-10-18 定的换备用 key 条件):认证失败(401、key 无效/过期/被封)、
+ * 额度或预算用完、没有该模型的权限(403)、限流(429,CLI 自己已经退避重试过 5 次)。其余(5xx、断网、参数错、
+ * 模型不存在、答卷不合格、超时、卡住)返回 null,不换 key。网关是 LiteLLM:401 样本见 codex.test.mjs(2026-10-18 实测)。
+ */
+export function toKeyFailure(message) {
+  const text = String(message ?? '');
+  if (!text) return null;
+  const status = Number(text.match(/unexpected status (\d{3})/)?.[1]) || null;
+  // 网关 5xx 是网关或上游的问题,正文里即使带「rate limit」「Authentication」之类的字样也不换 key。
+  if (status !== null && status >= 500) return null;
+  if (status === 401 || /Authentication Error|token_not_found|invalid[_ ]api[_ ]key|expired[_ ]key|key is blocked/i.test(text)) return { kind: 'auth', status };
+  if (/budget_exceeded|budget has been exceeded|ExceededBudget|exceeded (?:the |your )?(?:current )?(?:budget|quota)|insufficient_quota/i.test(text)) return { kind: 'budget', status };
+  if (status === 403 || /not allowed to access model|model_access_denied/i.test(text)) return { kind: 'access', status };
+  if (status === 429 || /rate.?limit|too many requests|max parallel request/i.test(text)) return { kind: 'rate-limit', status };
+  return null;
+}
+
 export function parseCredentials(raw) {
   let value;
   try { value = JSON.parse(String(raw ?? '')); } catch { throw new Error('LiteLLM 凭据不是合法 JSON'); }
@@ -88,10 +123,13 @@ export function readCodexVersion(bin, exec = execFileSync) {
  * 按完整 JSONL 事件统计一次调用的节奏:一个事件可能分几块写入,换行到达才算一个事件,时间取换行到达那一刻。
  * 时间都相对调用开始,单位秒;maxGapSec 包括「开始到第一个事件」和「最后一个事件到退出」两段空白。
  * usage 取 turn.completed 事件的 usage,没有记 null。只是记录,不能单独当作变慢原因的证据。
+ * outputItems 是模型真正产出的条目数(item.* 事件,不算 type=error 的条目):CLI 开场就会发一条
+ * 「Model metadata ... not found」的 error 条目(0.146 实测),那不是模型输出。换备用 key 时据此判断这次调用有没有开始干活。
  */
 export function createEventMeter(startedMs) {
   let pending = '';
   let count = 0;
+  let outputItems = 0;
   let firstMs = null;
   let lastMs = null;
   let maxGapMs = 0;
@@ -106,6 +144,7 @@ export function createEventMeter(startedMs) {
     if (firstMs === null) firstMs = atMs;
     lastMs = atMs;
     if (event?.type === 'turn.completed') usage = event.usage ?? null;
+    if (String(event?.type ?? '').startsWith('item.') && event?.item?.type !== 'error') outputItems += 1;
   };
   const sec = (ms) => Math.round(ms / 100) / 10;
   return {
@@ -123,7 +162,7 @@ export function createEventMeter(startedMs) {
       return {
         firstEventSec: firstMs === null ? null : sec(firstMs - startedMs),
         lastEventSec: lastMs === null ? null : sec(lastMs - startedMs),
-        eventCount: count, maxGapSec: sec(maxGapMs), usage,
+        eventCount: count, outputItems, maxGapSec: sec(maxGapMs), usage,
       };
     },
   };
@@ -142,19 +181,22 @@ export function toStderrTail(stderr, secrets = []) {
 }
 
 /**
+ * credentials 可以是 LiteLLM 凭据 JSON 文本,也可以是 parseCredentials 的结果 {apiKey, baseUrl}(备用 key 由 keys.mjs 组装)。
+ * redactKeys:除本次用的 key 外还要从产物里抹掉的 key(主备两把都抹,产物里不能出现任何一把)。
+ * keyFailure 只在失败、非超时/卡住时有值:toKeyFailure(最终错误);outputStarted 表示模型已经产出过条目。
  * @returns {Promise<{ok:boolean, answer:object|null, exitCode:number|null, timedOut:boolean, idleKilled:boolean,
- *   quota:boolean, durationMs:number, error:string|null, model:string, effort:string,
- *   firstEventSec:number|null, lastEventSec:number|null, eventCount:number, maxGapSec:number, usage:object|null,
+ *   quota:boolean, keyFailure:{kind:string,status:number|null}|null, outputStarted:boolean, durationMs:number, error:string|null, model:string, effort:string,
+ *   firstEventSec:number|null, lastEventSec:number|null, eventCount:number, outputItems:number, maxGapSec:number, usage:object|null,
  *   stderrTail?:string}>}  stderrTail 只在失败时有
  */
 // 多久没有任何输出算卡住。原来是 12 分钟:2026-10-15 前后的运行记录里,正常跑完的 luna/max 最长停顿 666 秒(#991)、
 // 592 秒(#990),#992 停顿 734 秒就被判卡住、换备用模型重跑。max 档长时间思考不出事件,12 分钟落在正常停顿的尾部,放宽到 20 分钟。
 export const CODEX_IDLE_MS = 20 * 60_000;
 export async function runCodex({ codexBin, workdir, prompt, schema, model, effort, timeoutMs, idleMs = CODEX_IDLE_MS,
-  credentials, tmpRoot, label, pathEnv = process.env.PATH }) {
+  credentials, redactKeys = [], tmpRoot, label, pathEnv = process.env.PATH }) {
   const started = Date.now();
   if (!existsSync(codexBin)) return fail(`Codex CLI 不存在:${codexBin}`);
-  const creds = parseCredentials(credentials);
+  const creds = credentials && typeof credentials === 'object' && credentials.apiKey ? credentials : parseCredentials(credentials);
   const home = join(tmpRoot, `codex-home-${label}`);
   const fakeHome = join(tmpRoot, `home-${label}`);
   const tmp = join(tmpRoot, `tmp-${label}`);
@@ -221,13 +263,15 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
   meter.feed(decoder.end(), Date.now());
   const events = meter.finish(Date.now());
   await Promise.all([new Promise((r) => out.end(r)), new Promise((r) => err.end(r))]);
-  const secrets = [creds.apiKey];
+  const secrets = [creds.apiKey, ...redactKeys];
   for (const file of [stdoutFile, stderrFile, answerFile]) writeFileSync(file, redact(readFileSync(file, 'utf8'), secrets));
   const stderr = readFileSync(stderrFile, 'utf8');
   const stdout = readFileSync(stdoutFile, 'utf8');
   const rawAnswer = readFileSync(answerFile, 'utf8').trim();
   const errorEvents = stdout.split('\n').filter((line) => /"type"\s*:\s*"(?:error|turn\.failed)"/.test(line)).join('\n');
   const quota = QUOTA_RE.test(`${stderr.slice(-4000)}\n${errorEvents.slice(-4000)}`) && exitCode !== 0;
+  const keyFailure = exitCode !== 0 && !timedOut && !idleKilled ? toKeyFailure(toFinalError(stdout)) : null;
+  const outputStarted = events.outputItems > 0;
   let answer = null;
   if (rawAnswer) {
     try { answer = JSON.parse(rawAnswer); } catch {
@@ -235,7 +279,7 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
       try { answer = fenced ? JSON.parse(fenced[1]) : null; } catch { answer = null; }
     }
   }
-  const base = { exitCode, timedOut, idleKilled, quota, durationMs: Date.now() - started, model, effort, stdoutFile, stderrFile, answerFile, ...events };
+  const base = { exitCode, timedOut, idleKilled, quota, keyFailure, outputStarted, durationMs: Date.now() - started, model, effort, stdoutFile, stderrFile, answerFile, ...events };
   const failed = (extra) => ({ ...base, ok: false, stderrTail: toStderrTail(stderr, secrets), ...extra });
   if (timedOut) return failed({ answer: null, error: `审查超时(${Math.round(timeoutMs / 60000)} 分钟)` });
   if (idleKilled) return failed({ answer: null, error: `审查 ${Math.round(idleMs / 60000)} 分钟没有任何输出,判定卡住` });
@@ -244,7 +288,7 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
   return { ...base, ok: true, answer, error: null };
 
   function fail(error) {
-    return { ok: false, answer: null, exitCode: null, timedOut: false, idleKilled: false, quota: false, durationMs: Date.now() - started, error, model, effort };
+    return { ok: false, answer: null, exitCode: null, timedOut: false, idleKilled: false, quota: false, keyFailure: null, outputStarted: false, durationMs: Date.now() - started, error, model, effort };
   }
 }
 

@@ -24,15 +24,58 @@ export const MIN_FALLBACK_MS = 15 * MIN;
 // 按旧上限算才不会把模型预算排到作业被 GitHub 掐断之后。
 export const DEFAULT_JOB_TIMEOUT_MIN = 110;
 
-/** 某档的主模型配置;仓库变量 MIVO_REVIEW_{MODEL,EFFORT,TIMEOUT}_<档> 可覆盖默认值。主模型上限给备用和两次收尾留出时间。 */
+// 角色变量(维护者 2026-10-18):Mini 上「审查机主审模型 / 备用模型 / 核对员模型」三个 Cindy 自动化验证通过后写的仓库变量,
+// review-pr.yml 原样传进来。值是 JSON,只认 model 和 effort 两项,其余字段(选的 Cindy 模型、验证 run)只是记录:
+//   MIVO_REVIEW_ROLE_PRIMARY  = {"model":"openai/gpt-6-luna","effort":"max",...}   三档主审
+//   MIVO_REVIEW_ROLE_FALLBACK = {"model":"openai/gpt-6.1-sol","effort":"medium",...} 主审失败(非额度类)时的备用模型
+//   MIVO_REVIEW_ROLE_VERIFIER = {...}                                                 核对员,覆盖 review-features.json 的 model/effort
+// 优先级:单档覆盖 MIVO_REVIEW_{MODEL,EFFORT}_<档>(只在测试时临时用)> 角色变量 > 默认值。
+// 变量格式不对时用默认值并给出告警,不让整轮审查失败:写入方(models/switch.mjs)写之前已经验证过格式和可用性。
+export const ROLE_ENV = { primary: 'MIVO_REVIEW_ROLE_PRIMARY', fallback: 'MIVO_REVIEW_ROLE_FALLBACK', verifier: 'MIVO_REVIEW_ROLE_VERIFIER' };
+export const ROLE_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const SERVER_MODEL_RE = /^openai\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+
+/** 解析一个角色变量:没设返回 { value: null };格式不对返回 { value: null, error }。 */
+export function parseRoleModel(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { value: null, error: null };
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return { value: null, error: '不是合法 JSON' }; }
+  const model = typeof parsed?.model === 'string' ? parsed.model.trim() : '';
+  const effort = typeof parsed?.effort === 'string' ? parsed.effort.trim() : '';
+  if (!SERVER_MODEL_RE.test(model)) return { value: null, error: `model 不合法(${model.slice(0, 80) || '空'})` };
+  if (!ROLE_EFFORTS.includes(effort)) return { value: null, error: `effort 不合法(${effort.slice(0, 20) || '空'})` };
+  return { value: { model, effort }, error: null };
+}
+
+/** 某个角色当前生效的模型:角色变量合法就用它,否则用默认值;verifier 没有默认值(用 review-features.json),返回 null。 */
+export function roleModel(role, env = process.env) {
+  if (!ROLE_ENV[role]) throw new Error(`角色不合法:${role}`);
+  const { value } = parseRoleModel(env[ROLE_ENV[role]]);
+  if (value) return value;
+  if (role === 'primary') return { model: TIER_DEFAULTS.standard.model, effort: TIER_DEFAULTS.standard.effort };
+  if (role === 'fallback') return { ...FALLBACK };
+  return null;
+}
+
+/** 三个角色变量里格式不对的,每个一条告警(写进结果包,给人看)。 */
+export function roleWarnings(env = process.env) {
+  return Object.entries(ROLE_ENV).flatMap(([role, name]) => {
+    const { error } = parseRoleModel(env[name]);
+    return error ? [`仓库变量 ${name} ${error},${role} 按默认值处理`] : [];
+  });
+}
+
+/** 某档的主模型配置;单档变量 MIVO_REVIEW_{MODEL,EFFORT,TIMEOUT}_<档> > 角色变量 MIVO_REVIEW_ROLE_PRIMARY > 默认值。主模型上限给备用和两次收尾留出时间。 */
 export function tierConfig(tier, env = process.env, { budgetMs = CODEX_BUDGET_MS } = {}) {
   const defaults = TIER_DEFAULTS[tier];
   if (!defaults) throw new Error(`档位不合法:${tier}`);
   const key = tier.toUpperCase();
   const timeoutMin = Number(env[`MIVO_REVIEW_TIMEOUT_${key}`]) || defaults.timeoutMin;
+  const role = parseRoleModel(env[ROLE_ENV.primary]).value;
   return {
-    model: env[`MIVO_REVIEW_MODEL_${key}`] || defaults.model,
-    effort: env[`MIVO_REVIEW_EFFORT_${key}`] || defaults.effort,
+    model: env[`MIVO_REVIEW_MODEL_${key}`] || role?.model || defaults.model,
+    effort: env[`MIVO_REVIEW_EFFORT_${key}`] || role?.effort || defaults.effort,
     timeoutMs: Math.max(0, Math.min(timeoutMin * MIN, budgetMs - FALLBACK_RESERVE_MS - 2 * SETTLE_MS)),
   };
 }
@@ -58,16 +101,17 @@ export function codexBudgetMs({ jobStartMs, jobTimeoutMin, nowMs }) {
 /**
  * 下一次尝试;没有下一次时返回 null。主模型上限为 0(预算不够)时不启动。
  * 只在主模型失败且不是额度类报错时换备用;备用超时取 min(主模型上限, 预算 − 已用 − 收尾余量),
- * 不足 15 分钟或备用与主模型相同时不再尝试。
+ * 不足 15 分钟或备用与主模型相同时不再尝试。备用模型取 fallback(review.mjs 传 roleModel('fallback')),默认 FALLBACK。
+ * 换备用 key 重跑同一模型不算一次尝试(见 server/keys.mjs),attempts 里每个模型只有一项。
  */
-export function nextAttempt({ primary, attempts, elapsedMs, budgetMs = CODEX_BUDGET_MS }) {
+export function nextAttempt({ primary, attempts, elapsedMs, budgetMs = CODEX_BUDGET_MS, fallback = FALLBACK }) {
   if (attempts.length === 0) return primary.timeoutMs > 0 ? { ...primary } : null;
   if (attempts.length > 1) return null;
   const last = attempts[0];
   if (last.ok) return null;
   if (last.quota) return null;
-  if (FALLBACK.model === primary.model) return null;
+  if (fallback.model === primary.model) return null;
   const available = budgetMs - elapsedMs - SETTLE_MS;
   if (available < MIN_FALLBACK_MS) return null;
-  return { ...FALLBACK, timeoutMs: Math.min(primary.timeoutMs, available) };
+  return { model: fallback.model, effort: fallback.effort, timeoutMs: Math.min(primary.timeoutMs, available) };
 }
