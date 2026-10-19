@@ -96,46 +96,33 @@ function eq(name, got, want) {
   eq('rollup/无时间戳按数组序取靠后', r.failed, []);
 }
 {
-  // #1109:同一 head 上 pr-format-gate 5 条 check run(北京 2026-10-19)。
-  // 新 pull_request 事件 18:37 绿(run id 更大);旧 pull_request_target 重跑把 startedAt
-  // 刷新成 18:41/18:42/18:58 红(run id 更小,GitHub 重跑复用旧事件 payload)。
-  // 18:59 绿是同一新事件 run 的完成时间,startedAt 仍是 18:37。按 startedAt 会把旧事件重跑当最新。
-  const contexts = [
-    {
-      name: 'pr-format-gate', workflowName: 'pr-format-gate',
-      startedAt: '2026-10-19T10:37:00Z', completedAt: '2026-10-19T10:37:20Z',
-      status: 'COMPLETED', conclusion: 'SUCCESS',
-      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100370/job/1',
-    },
-    {
-      name: 'pr-format-gate', workflowName: 'pr-format-gate',
-      startedAt: '2026-10-19T10:41:58Z', completedAt: '2026-10-19T10:42:05Z',
-      status: 'COMPLETED', conclusion: 'FAILURE',
-      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100001/job/2',
-    },
-    {
-      name: 'pr-format-gate', workflowName: 'pr-format-gate',
-      startedAt: '2026-10-19T10:42:00Z', completedAt: '2026-10-19T10:42:08Z',
-      status: 'COMPLETED', conclusion: 'FAILURE',
-      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100002/job/3',
-    },
-    {
-      name: 'pr-format-gate', workflowName: 'pr-format-gate',
-      startedAt: '2026-10-19T10:58:29Z', completedAt: '2026-10-19T10:58:40Z',
-      status: 'COMPLETED', conclusion: 'FAILURE',
-      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100003/job/4',
-    },
-    {
-      name: 'pr-format-gate', workflowName: 'pr-format-gate',
-      startedAt: '2026-10-19T10:37:00Z', completedAt: '2026-10-19T10:59:49Z',
-      status: 'COMPLETED', conclusion: 'SUCCESS',
-      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100370/job/5',
-    },
-  ];
-  const r = classifyRollupContexts(contexts);
-  eq('rollup/#1109 旧事件重跑红不盖过新事件绿', r.failed, []);
-  eq('rollup/#1109 去重后无 pending', r.pending, []);
-  eq('eval/#1109 聚合 pass', evaluateCiStatus({ rollup: r, ciRuns: { failed: [], pending: [], awaiting: [] } }).status, 'pass');
+  // #1109 真实 statusCheckRollup(gh pr view 1109 --json statusCheckRollup,仓 xindong/mivo-canvas-plugin)。
+  // name 全部是 'pr-format-gate (title/body template)',workflowName 全部是 'PR Hygiene Sentinel'。
+  // 2)3) 是 10:27/10:29 创建的旧事件 run 被重跑(attempt 4);4) 是 10:38:38 创建的 run,attempt 1 成功、
+  // attempt 3 重跑后红;5) 是 10:55:26 创建的最新事件 run(attempt 2 绿)。run id 与事件创建先后一致,
+  // 重跑不改 run id,只刷新 check run 的 startedAt。
+  // 红只出现在窗口 10:42:00Z–10:58:29Z;之后 10:59:49Z 转绿但 ci-failed 结果不带 retry,才有 P2-b。
+  const gate = (run, job, startedAt, completedAt, conclusion) => ({
+    name: 'pr-format-gate (title/body template)', workflowName: 'PR Hygiene Sentinel',
+    startedAt, completedAt, status: 'COMPLETED', conclusion,
+    detailsUrl: `https://github.com/xindong/mivo-canvas-plugin/actions/runs/${run}/job/${job}`,
+  });
+  const c1 = gate(39238799609, 118014311098, '2026-10-19T10:37:42Z', '2026-10-19T10:37:57Z', 'SUCCESS');
+  const c2 = gate(39237584356, 118015944001, '2026-10-19T10:41:58Z', '2026-10-19T10:42:06Z', 'FAILURE');
+  const c3 = gate(39237804692, 118015953846, '2026-10-19T10:42:00Z', '2026-10-19T10:42:08Z', 'FAILURE');
+  const c4 = gate(39238914833, 118022372242, '2026-10-19T10:58:29Z', '2026-10-19T10:58:38Z', 'FAILURE');
+  const c5 = gate(39240914892, 118022879118, '2026-10-19T10:59:49Z', '2026-10-19T11:00:04Z', 'SUCCESS');
+  {
+    // 先红:10:42:08Z 时已存在的 1)+2)+3)。run id 最大的是 1) 绿;旧代码 startedAt 最大的是 3) 红。
+    const r = classifyRollupContexts([c1, c2, c3]);
+    eq('rollup/#1109 窗口内旧事件重跑红不盖过新事件绿', r.failed, []);
+    eq('eval/#1109 窗口内聚合 pass', evaluateCiStatus({ rollup: r, ciRuns: { failed: [], pending: [], awaiting: [] } }).status, 'pass');
+  }
+  {
+    // 5 条齐全:旧代码这里也判绿(5) 的 startedAt 最大),这条只做保护,不是先红用例。
+    const r = classifyRollupContexts([c1, c2, c3, c4, c5]);
+    eq('rollup/#1109 五条齐全 failed 为空', r.failed, []);
+  }
 }
 {
   // 最新一次事件的 run 失败仍判失败(run id 更大,即使 startedAt 更早)
