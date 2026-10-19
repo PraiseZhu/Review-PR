@@ -25,6 +25,15 @@ function eq(name, got, want) {
   const w = JSON.stringify(want);
   check(name, g === w, `got ${g}, want ${w}`);
 }
+function permutations(items) {
+  if (items.length <= 1) return [items.slice()];
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    const rest = items.slice(0, i).concat(items.slice(i + 1));
+    for (const p of permutations(rest)) out.push([items[i], ...p]);
+  }
+  return out;
+}
 
 // ── ① classifyRollupContexts:CheckRun 与 StatusContext 混排 ──
 {
@@ -123,6 +132,51 @@ function eq(name, got, want) {
     const r = classifyRollupContexts([c1, c2, c3, c4, c5]);
     eq('rollup/#1109 五条齐全 failed 为空', r.failed, []);
   }
+  {
+    const bad3 = permutations([c1, c2, c3]).filter((p) => JSON.stringify(classifyRollupContexts(p).failed) !== '[]');
+    check('rollup/#1109 窗口 6 排列 failed 都为空', bad3.length === 0, `${bad3.length}/6 不一致`);
+    const bad5 = permutations([c1, c2, c3, c4, c5]).filter((p) => JSON.stringify(classifyRollupContexts(p).failed) !== '[]');
+    check('rollup/#1109 五条 120 排列 failed 都为空', bad5.length === 0, `${bad5.length}/120 不一致`);
+  }
+}
+{
+  // 同名一组里有的能取到 run id、有的取不到:比较必须是全序,结果不依赖输入顺序。
+  // 整组回退 startedAt 后 A(10:00Z FAILURE) 最新,6 个排列都应 failed=['g']。
+  const A = {
+    name: 'g', workflowName: 'w', startedAt: '2026-10-19T10:00:00Z',
+    status: 'COMPLETED', conclusion: 'FAILURE',
+    detailsUrl: 'https://github.com/o/r/actions/runs/100/job/1',
+  };
+  const B = {
+    name: 'g', workflowName: 'w', startedAt: '2026-10-19T09:00:00Z',
+    status: 'COMPLETED', conclusion: 'SUCCESS',
+    detailsUrl: 'https://github.com/o/r/actions/runs/200/job/1',
+  };
+  const C = {
+    name: 'g', workflowName: 'w', startedAt: '2026-10-19T09:30:00Z',
+    status: 'COMPLETED', conclusion: 'SUCCESS',
+  };
+  const results = permutations([A, B, C]).map((p) => classifyRollupContexts(p).failed);
+  const want = JSON.stringify(['g']);
+  const mismatch = results.filter((failed) => JSON.stringify(failed) !== want);
+  check('rollup/混有无 run id 的 6 排列结果一致且为失败', mismatch.length === 0,
+    `got ${results.map((r) => JSON.stringify(r)).join('|')}, want ${want}`);
+}
+{
+  // 全部有 run id 且 run id 相同、startedAt 不同:按 startedAt 取新
+  const r = classifyRollupContexts([
+    {
+      name: 'g', workflowName: 'w', startedAt: '2026-10-19T09:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/actions/runs/100/job/1',
+    },
+    {
+      name: 'g', workflowName: 'w', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/actions/runs/100/job/2',
+    },
+  ]);
+  eq('rollup/同 run id 按 startedAt 取新', r.failed, ['g']);
 }
 {
   // 最新一次事件的 run 失败仍判失败(run id 更大,即使 startedAt 更早)
