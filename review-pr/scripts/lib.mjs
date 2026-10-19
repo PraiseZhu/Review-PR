@@ -1244,14 +1244,16 @@ export function fetchCiRollup(slug, pr) {
     const contexts = JSON.parse(r.stdout || '{}').statusCheckRollup;
     if (!Array.isArray(contexts)) return null;
     return contexts.map((c) => ({
-      // CheckRun 有 name+status+conclusion(+workflowName/startedAt/completedAt);
-      // StatusContext 只有 context+state(+createdAt)。时间戳留给 classifyRollupContexts
-      // 做同名去重(同一 head SHA 上 re-run / concurrency 顶掉会留同名多条),别在这里剥掉。
+      // CheckRun 有 name+status+conclusion(+workflowName/startedAt/completedAt/detailsUrl);
+      // StatusContext 只有 context+state(+createdAt/targetUrl)。时间戳与 detailsUrl 留给
+      // classifyRollupContexts 做同名去重(同一 head SHA 上 re-run / concurrency 顶掉会留同名多条),别在这里剥掉。
+      // [MIVO-PATCH ci-rollup-run-id] detailsUrl 透传:去重按 workflow run id,不按刷新过的 startedAt。
       name: c.name ?? c.context ?? '(unnamed)',
       workflowName: c.workflowName || null,
       startedAt: c.startedAt ?? null,
       createdAt: c.createdAt ?? null,
       completedAt: c.completedAt ?? null,
+      detailsUrl: c.detailsUrl ?? c.targetUrl ?? null,
       status: c.status ?? null,
       conclusion: c.conclusion ?? c.state ?? null,
     }));
@@ -1333,19 +1335,37 @@ export function toCodeScanCheckFacts(checkRuns) {
  * 新的 SUCCESS。GitHub 分支保护按「同名最新一条」评估,逐条全算会把被顶掉的旧 run
  * 误判成 CI 失败(PR #2755 / #2621:auto-review 反复贴 status:ci-failed,而 GitHub
  * 侧 mergeStateStatus 一直 CLEAN)。去重键 workflowName+name(不同 workflow 的同名
- * job 互不相干,不能互相顶掉);排序键 startedAt(退 createdAt / completedAt,都没有
- * 视为最新——还没 start 的新 run 本来就是最新的;时间戳全缺时按数组序、靠后当更新)。
+ * job 互不相干,不能互相顶掉)。
+ * [MIVO-PATCH ci-rollup-run-id] 排序键是这次运行何时发起的:detailsUrl 的 /runs/<id>
+ * (workflow run id,越大越新)或 run created_at。GitHub 重跑旧 pull_request_target 会刷新
+ * check run 的 startedAt,但复用旧事件、旧 run id(#1109 pr-format-gate:旧事件重跑的红盖过
+ * 新事件的绿,而 statusCheckRollup.state 仍是 SUCCESS)。取不到 run id 时保持原行为:
+ * startedAt(退 createdAt / completedAt,都没有视为最新——还没 start 的新 run 本来就是最新的;
+ * 时间戳全缺时按数组序、靠后当更新)。最新一次事件的 run 失败仍判失败。
  */
+function workflowRunId(detailsUrl) {
+  const match = String(detailsUrl ?? '').match(/\/runs\/(\d+)/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
 export function classifyRollupContexts(contexts) {
   const FAIL = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'STARTUP_FAILURE', 'CANCELLED']);
   const PASS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'STALE']);
   // '9999' > 任何 '20xx' ISO 时间戳:没 start 的新 run 排在一切已启动的 run 之后
-  const orderKey = (c) => c.startedAt ?? c.createdAt ?? c.completedAt ?? '9999';
+  const orderKey = (c) => c.runCreatedAt ?? c.startedAt ?? c.createdAt ?? c.completedAt ?? '9999';
+  const newerThan = (c, prev) => {
+    const cId = workflowRunId(c.detailsUrl);
+    const pId = workflowRunId(prev.detailsUrl);
+    if (cId != null && pId != null && cId !== pId) return cId > pId;
+    return orderKey(c) >= orderKey(prev);
+  };
   const latest = new Map();
   for (const c of contexts ?? []) {
     const key = `${c.workflowName || ''}/${c.name}`;
     const prev = latest.get(key);
-    if (!prev || orderKey(c) >= orderKey(prev)) latest.set(key, c);
+    if (!prev || newerThan(c, prev)) latest.set(key, c);
   }
   const failed = [];
   const pending = [];

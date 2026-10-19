@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet } from '../lib/code-scan.mjs';
-import { toHeldWake } from '../lib/admission.mjs';
+import { toHeldWake, toCiWake } from '../lib/admission.mjs';
 
 const source = readFileSync(new URL('./round.mjs', import.meta.url), 'utf8');
 function extractFunction(name) {
@@ -36,7 +36,7 @@ function makeWorld({ records = {}, checks = {}, issues = [], rs = null, rulesSta
   const logs = [];
   const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '' });
   const sandbox = {
-    fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toHeldWake, encodeURIComponent, join, Date: class extends Date { static now() { return now; } },
+    fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toHeldWake, toCiWake, encodeURIComponent, join, Date: class extends Date { static now() { return now; } },
     CODE_SCAN_SWEEP_EVERY_MS: SWEEP_MS, CODE_SCAN_MAX_WATCHED: MAX_WATCHED,
     CONFIG: { targetRepo: 'o/r', stateDir: '/state', repoRoot: '/repo' }, ENV: {},
     loadStore: () => { if (storeThrows) throw new Error('reviews.json 损坏'); return { prs: records }; },
@@ -58,7 +58,7 @@ function makeWorld({ records = {}, checks = {}, issues = [], rs = null, rulesSta
     },
   };
   const issuesList = issues.map((number) => ({ number, pull_request: {} }));
-  vm.runInNewContext(`${extractFunction('codeScanCache')}\n${extractFunction('wakeCodeScanPrs')}\n${extractFunction('wakeHeldPrs')}\nglobalThis.api = { wakeCodeScanPrs, wakeHeldPrs };`, sandbox);
+  vm.runInNewContext(`${extractFunction('codeScanCache')}\n${extractFunction('wakeCodeScanPrs')}\n${extractFunction('wakeCiFailedPrs')}\n${extractFunction('wakeHeldPrs')}\nglobalThis.api = { wakeCodeScanPrs, wakeHeldPrs };`, sandbox);
   return { sweep: (busy = new Set()) => sandbox.api.wakeCodeScanPrs([...issuesList, { number: 999 }], busy), wakeHeld: (busy = new Set()) => sandbox.api.wakeHeldPrs(busy), gh, logs, files };
 }
 const record = (state, head = 'h1') => ({ codeScan: { head, base: 'main', required: true, state, at: '2026-10-17T19:00:00Z' } });

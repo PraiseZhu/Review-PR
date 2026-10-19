@@ -21,7 +21,7 @@ import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake
 import { inBusinessWindow } from '../lib/health.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -318,6 +318,7 @@ function wakeHeldPrs(busy = new Set()) {
   }
   writeJson(seenFile, next);
   wakeCodeScanPrs(openIssues, busy);
+  wakeCiFailedPrs(openIssues, busy);
 }
 
 // ── 代码扫描状态变了(CodeQL success ⇄ neutral)时唤醒对应 PR ────────────────────
@@ -361,6 +362,40 @@ function wakeCodeScanPrs(openIssues, busy = new Set()) {
     writeJson(watchFile, { lastSweepAt: nowIso(), seen: next, checked: keptChecked });
   } catch (error) {
     log('wake-code-scan-skip', { reason: String(error?.message ?? error).slice(0, 200) });
+  }
+}
+
+// ── 上轮 ci-failed、GitHub 聚合 ci 已是 SUCCESS 时唤醒对应 PR ────────────────────
+// 指纹里的 ci 是 statusCheckRollup 的聚合 state;判门用 classifyRollupContexts 的逐条去重,旧事件重跑会把
+// 已刷新 startedAt 的红当最新,outcome=ci-failed 又不带 retry。PR 之后没改动 → 永远不重判,status:ci-failed 一直挂着。
+// 复用 wakeHeldPrs 已读的开放 issue 列表和 round-state 里上次快照的聚合 ci,不另打 GraphQL。只重判门:
+// 聚合仍红不唤醒;唤醒过一次、同一 head+ci 不再唤醒,避免每 3 分钟重派服务器审查。在审的 PR 先推迟。任何意外只记日志。
+function wakeCiFailedPrs(openIssues, busy = new Set()) {
+  try {
+    const open = new Set((openIssues ?? []).filter((issue) => issue?.pull_request).map((issue) => issue.number));
+    const roundStatePath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
+    const roundState = readJson(roundStatePath, null);
+    const rows = roundState?.prs ?? {};
+    const watched = [...open].flatMap((pr) => {
+      const row = rows[pr];
+      if (row?.outcome !== 'ci-failed') return [];
+      return [{ pr, head: row.fingerprintFields?.head ?? null, ci: row.fingerprintFields?.ci ?? null }];
+    });
+    if (watched.length === 0) return;
+    const watchFile = stateFile('ci-wake.json');
+    const watch = readJson(watchFile, {}) ?? {};
+    const { wake, deferred, next } = toCiWake({ watched, seen: watch.seen ?? {}, busyPrs: busy });
+    if (deferred.length) log('wake-ci-deferred', { prs: deferred });
+    if (wake.length) {
+      if (roundState?.prs) {
+        for (const pr of wake) if (roundState.prs[pr]) roundState.prs[pr].retry = true;
+        writeJson(roundStatePath, roundState);
+      }
+      log('wake-ci', { prs: wake });
+    }
+    writeJson(watchFile, { seen: next });
+  } catch (error) {
+    log('wake-ci-skip', { reason: String(error?.message ?? error).slice(0, 200) });
   }
 }
 

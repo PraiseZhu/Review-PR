@@ -141,6 +141,39 @@ export function toHeldWake({ issues = [], seen = {}, busyPrs = new Set() }) {
 }
 
 /**
+ * 上轮 outcome=ci-failed、已有快照聚合 ci=SUCCESS(或与上轮判定不同)时唤醒一次重判。
+ * 不另打 GitHub:ci 用快照里的 statusCheckRollup.state。状态稳定后不重复唤醒,避免每 3 分钟重派。
+ * watched = [{pr, head, ci}](round-state 里 outcome=ci-failed 的开放 PR,ci 来自 fingerprintFields);
+ * observed = {pr: 当前聚合 ci},不传或没有该 key 时用 watched.ci;seen = {pr: {head, ci}};
+ * busyPrs = 正在某一轮里的 PR(先推迟)。
+ */
+export function toCiWake({ watched = [], observed = {}, seen = {}, busyPrs = new Set() } = {}) {
+  const next = {};
+  const wake = [];
+  const deferred = [];
+  for (const { pr, head, ci } of watched) {
+    const current = Object.prototype.hasOwnProperty.call(observed, pr) ? observed[pr] : ci;
+    const previous = seen[pr]?.head === head ? seen[pr] : null;
+    if (current !== 'SUCCESS') {
+      if (previous) next[pr] = previous;
+      continue;
+    }
+    if (previous?.ci === current) {
+      next[pr] = { head, ci: current };
+      continue;
+    }
+    if (busyPrs.has(pr)) {
+      deferred.push(pr);
+      if (previous) next[pr] = previous;
+      continue;
+    }
+    wake.push(pr);
+    next[pr] = { head, ci: current };
+  }
+  return { wake, deferred, next };
+}
+
+/**
  * 还没结束的服务器 run 怎么办:排队和执行分开计时。run 是 `gh run view --json status,createdAt,jobs` 的结果。
  * 只有已经开始执行的 job 才用它的 startedAt;排队中的 job 按 run 的 createdAt 算排队时间。
  * 返回 {phase, execMin?, queueMin?, cancel: 'exec'|'queue'|null, slow}。
