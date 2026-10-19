@@ -1336,11 +1336,11 @@ export function toCodeScanCheckFacts(checkRuns) {
  * 误判成 CI 失败(PR #2755 / #2621:auto-review 反复贴 status:ci-failed,而 GitHub
  * 侧 mergeStateStatus 一直 CLEAN)。去重键 workflowName+name(不同 workflow 的同名
  * job 互不相干,不能互相顶掉)。
- * [MIVO-PATCH ci-rollup-run-id] 排序键只用 detailsUrl 的 /runs/<id>(workflow run id,越大越新)。
- * GitHub 重跑旧 pull_request_target 会刷新 check run 的 startedAt,但复用旧事件、旧 run id
- * (#1109 pr-format-gate:旧事件重跑的红盖过新事件的绿,而 statusCheckRollup.state 仍是 SUCCESS)。
- * 取不到 run id 时回退 startedAt(退 createdAt / completedAt,都没有视为最新——还没 start 的新 run
- * 本来就是最新的;时间戳全缺时按数组序、靠后当更新)。最新一次事件的 run 失败仍判失败。
+ * [MIVO-PATCH ci-rollup-run-id] 同名一组里每条都取到 run id 才按 run id 排(越大越新;run id 相同再比
+ * 原 orderKey),只要有一条取不到,整组回退 startedAt(退 createdAt / completedAt)。GitHub 重跑旧
+ * pull_request_target 会刷新 check run 的 startedAt,但复用旧事件、旧 run id(#1109 pr-format-gate:
+ * 旧事件重跑的红盖过新事件的绿,而 statusCheckRollup.state 仍是 SUCCESS)。时间戳全缺时按数组序、
+ * 靠后当更新(保持 >=)。最新一次事件的 run 失败仍判失败。
  */
 function workflowRunId(detailsUrl) {
   const match = String(detailsUrl ?? '').match(/\/runs\/(\d+)/);
@@ -1354,17 +1354,25 @@ export function classifyRollupContexts(contexts) {
   const PASS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'STALE']);
   // '9999' > 任何 '20xx' ISO 时间戳:没 start 的新 run 排在一切已启动的 run 之后
   const orderKey = (c) => c.startedAt ?? c.createdAt ?? c.completedAt ?? '9999';
-  const newerThan = (c, prev) => {
-    const cId = workflowRunId(c.detailsUrl);
-    const pId = workflowRunId(prev.detailsUrl);
-    if (cId != null && pId != null && cId !== pId) return cId > pId;
-    return orderKey(c) >= orderKey(prev);
-  };
-  const latest = new Map();
+  const groups = new Map();
   for (const c of contexts ?? []) {
     const key = `${c.workflowName || ''}/${c.name}`;
-    const prev = latest.get(key);
-    if (!prev || newerThan(c, prev)) latest.set(key, c);
+    const list = groups.get(key);
+    if (list) list.push(c);
+    else groups.set(key, [c]);
+  }
+  const latest = new Map();
+  for (const [key, list] of groups) {
+    const useRunId = list.every((c) => workflowRunId(c.detailsUrl) != null);
+    let pick = list[0];
+    for (let i = 1; i < list.length; i++) {
+      const c = list[i];
+      const cId = useRunId ? workflowRunId(c.detailsUrl) : null;
+      const pId = useRunId ? workflowRunId(pick.detailsUrl) : null;
+      const newer = useRunId && cId !== pId ? cId > pId : orderKey(c) >= orderKey(pick);
+      if (newer) pick = c;
+    }
+    latest.set(key, pick);
   }
   const failed = [];
   const pending = [];

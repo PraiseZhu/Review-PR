@@ -210,7 +210,7 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 
 CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条 check run，GitHub 重跑旧 `pull_request_target` 把 `startedAt` 刷新成现在，审查机按时间把红当最新，GitHub 聚合 `ci` 仍是 SUCCESS，`status:ci-failed` 一直挂着）：
 
-- **去重按 workflow run id**：`classifyRollupContexts` 同名去重不再把刷新过的 `startedAt` 当「最新」。排序键只用 `detailsUrl` 里的 `/runs/<id>`（越大越新）；取不到 run id 时回退 `startedAt`（退 `createdAt` / `completedAt`）。最新一次事件的 run 失败仍判失败。`fetchCiRollup` 把 `detailsUrl` 透传下去。
+- **去重按 workflow run id**：`classifyRollupContexts` 同名去重不再把刷新过的 `startedAt` 当「最新」。同名一组里每条都取到 run id 才按 `detailsUrl` 的 `/runs/<id>` 排（越大越新）；只要有一条取不到，整组回退 `startedAt`（退 `createdAt` / `completedAt`）。最新一次事件的 run 失败仍判失败。`fetchCiRollup` 把 `detailsUrl` 透传下去。
 - **CI 红→绿唤醒一次**：指纹里的 `ci` 是 `statusCheckRollup` 的聚合 state；`ci-failed` 不带 `retry`。判门红、聚合一直绿、PR 没改动时下一轮会当成 unchanged。`wakeHeldPrs` 复用已读的开放 issue 列表和 round-state 里上次快照的聚合 `ci`（**不另打 GraphQL**）：上轮 `outcome=ci-failed` 且聚合 `ci=SUCCESS` 时把该 PR 标 `retry` 重判门；聚合仍红不唤醒；同一 head+ci 不重复唤醒，避免每 3 分钟重派。在审的 PR 先推迟。重判通过后按原标签逻辑摘掉 `status:ci-failed`。
 
 ## 写明的产品意图与维护者裁定不改
