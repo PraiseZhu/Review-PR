@@ -1336,12 +1336,11 @@ export function toCodeScanCheckFacts(checkRuns) {
  * 误判成 CI 失败(PR #2755 / #2621:auto-review 反复贴 status:ci-failed,而 GitHub
  * 侧 mergeStateStatus 一直 CLEAN)。去重键 workflowName+name(不同 workflow 的同名
  * job 互不相干,不能互相顶掉)。
- * [MIVO-PATCH ci-rollup-run-id] 排序键是这次运行何时发起的:detailsUrl 的 /runs/<id>
- * (workflow run id,越大越新)或 run created_at。GitHub 重跑旧 pull_request_target 会刷新
- * check run 的 startedAt,但复用旧事件、旧 run id(#1109 pr-format-gate:旧事件重跑的红盖过
- * 新事件的绿,而 statusCheckRollup.state 仍是 SUCCESS)。取不到 run id 时保持原行为:
- * startedAt(退 createdAt / completedAt,都没有视为最新——还没 start 的新 run 本来就是最新的;
- * 时间戳全缺时按数组序、靠后当更新)。最新一次事件的 run 失败仍判失败。
+ * [MIVO-PATCH ci-rollup-run-id] 排序键只用 detailsUrl 的 /runs/<id>(workflow run id,越大越新)。
+ * GitHub 重跑旧 pull_request_target 会刷新 check run 的 startedAt,但复用旧事件、旧 run id
+ * (#1109 pr-format-gate:旧事件重跑的红盖过新事件的绿,而 statusCheckRollup.state 仍是 SUCCESS)。
+ * 取不到 run id 时回退 startedAt(退 createdAt / completedAt,都没有视为最新——还没 start 的新 run
+ * 本来就是最新的;时间戳全缺时按数组序、靠后当更新)。最新一次事件的 run 失败仍判失败。
  */
 function workflowRunId(detailsUrl) {
   const match = String(detailsUrl ?? '').match(/\/runs\/(\d+)/);
@@ -1354,7 +1353,7 @@ export function classifyRollupContexts(contexts) {
   const FAIL = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'STARTUP_FAILURE', 'CANCELLED']);
   const PASS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'STALE']);
   // '9999' > 任何 '20xx' ISO 时间戳:没 start 的新 run 排在一切已启动的 run 之后
-  const orderKey = (c) => c.runCreatedAt ?? c.startedAt ?? c.createdAt ?? c.completedAt ?? '9999';
+  const orderKey = (c) => c.startedAt ?? c.createdAt ?? c.completedAt ?? '9999';
   const newerThan = (c, prev) => {
     const cId = workflowRunId(c.detailsUrl);
     const pId = workflowRunId(prev.detailsUrl);
