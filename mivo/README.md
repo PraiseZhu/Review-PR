@@ -208,6 +208,11 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - **已挂标签的摘除**：Mini 判门后，标签还在、审查通过的就是当前 head、也没有别的失效原因时，才读一次规则（按 base 缓存 30 分钟）和该 head 的 check run（一次 REST，不碰 GraphQL）；只有 CodeQL / 质量检查**稳定不通过**（`neutral` / `failure`）才摘。进行中、缺失、读不到都不摘：CodeQL 重跑一次就摘、跑完又加回会来回抖动。摘掉后 CodeQL 变 success，上面的「唤醒」会把 PR 标 `retry` 重判，服务器沿用结论把标签加回来。
 - **不变的部分**：`review-pr` 这个 check 写不写 success 照旧，它代表审查结论，这次只管标签；GitHub 自己的合并门不受影响。回执里没有 `codeScanning` 字段（脚本和服务器代码版本对不上）按「没读到」处理：不挂标签、不标 `retry`，在 `mivo.labelWithheld` 与 warnings 里写明。
 
+CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条 check run，GitHub 重跑旧 `pull_request_target` 把 `startedAt` 刷新成现在，审查机按时间把红当最新，GitHub 聚合 `ci` 仍是 SUCCESS，`status:ci-failed` 一直挂着）：
+
+- **去重按 workflow run id**：`classifyRollupContexts` 同名去重不再把刷新过的 `startedAt` 当「最新」。同名一组里每条都取到 run id 才按 run id 排（越大越新）；只认 `workflowName` 非空且 `detailsUrl` 路径为 `/<owner>/<repo>/actions/runs/<id>` 的 Actions CheckRun，外部 CI、check-run 链接、StatusContext 不用 run id，按 `startedAt`/`createdAt`/`completedAt`。只要有一条取不到，整组回退 `startedAt`（退 `createdAt` / `completedAt`）。最新一次事件的 run 失败仍判失败。`fetchCiRollup` 只透传 CheckRun 的 `detailsUrl`。
+- **CI 红→绿唤醒一次**：指纹里的 `ci` 是 `statusCheckRollup` 的聚合 state；`ci-failed` 不带 `retry`。判门红、聚合一直绿、PR 没改动时下一轮会当成 unchanged。`wakeHeldPrs` 复用已读的开放 issue 列表和 round-state 里上次快照的聚合 `ci`（**不另打 GraphQL**）：上轮 `outcome=ci-failed` 且聚合 `ci=SUCCESS` 时把该 PR 标 `retry` 重判门；聚合仍红不唤醒；同一 head+ci 不重复唤醒，避免每 3 分钟重派。在审的 PR 先推迟。重判通过后按原标签逻辑摘掉 `status:ci-failed`。
+
 ## 写明的产品意图与维护者裁定不改
 
 任务书多了一节「写明的产品意图不算缺陷」：PR 正文写明的需求和有意设计、维护者的裁定，不当缺陷报；有疑问写进 Rule coverage 的「待 owner 确认」。实现和规格对不上、又没人解释时，也先写「待 owner 确认」，只有达到 P1 定义的后果才报。有意设计本身造成 P0 照常报。rule-map 里 `DESIGN.md`「违反记 P1」的写法同步改成按统一分级判。

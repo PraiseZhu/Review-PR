@@ -26,6 +26,7 @@
     "review-pr/scripts/approval-cli.test.mjs",
     "review-pr/scripts/approval-policy.test.mjs",
     "review-pr/scripts/approve-reviewed-pr.mjs",
+    "review-pr/scripts/ci-status.test.mjs",
     "review-pr/scripts/context.mjs",
     "review-pr/scripts/lib.mjs",
     "review-pr/scripts/notify-author-resolve.mjs",
