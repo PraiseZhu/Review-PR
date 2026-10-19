@@ -159,6 +159,13 @@ export function renderVerifierRefutedSection(list = []) {
   return [VERIFIER_REFUTED_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 推翻证据：${locations(f.evidence)}${f.note ? ` · 依据：${oneLine(f.note)}` : ''}`), ''];
 }
 
+export const VERIFIER_UNAVAILABLE_SECTION = '## 核对员未运行（不影响结论）';
+/** 核对员模型不可用没核的 P1:只提示,不改结论和阻断判定(这些 P1 照常阻断)。unverified=0 或没有原因时返回空数组。 */
+export function renderVerifierUnavailableSection({ count = 0, reason = '' } = {}) {
+  if (!count) return [];
+  return [VERIFIER_UNAVAILABLE_SECTION, '', `${reason || '核对员模型当前不可用'},${count} 条 P1 没有经过核对员核对,照常阻断。`, ''];
+}
+
 /** 报告里「核对员降级」一节:问题成立但核对员认为实际只是 P2,附理由。 */
 export function renderVerifierDowngradedSection(list = []) {
   if (!list.length) return [];
@@ -169,7 +176,7 @@ export function renderVerifierDowngradedSection(list = []) {
  * 最终报告:固定头部 + 模型正文;结论行按问题数量重写,保证与实际发布的 thread 一致。
  * 有转 issue 跟进的问题或未采用的登记时,在 Rule coverage 前插一节单列;打回且阻断问题里有 P1 时,结论行后附转 issue 的做法。
  */
-export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [],
+export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
   pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '' }) {
   const summary = toDeferredSummary(deferred);
   const overruled = verifierRefuted.length + verifierDowngraded.length;
@@ -200,7 +207,7 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
   }
   // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
   const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting),
-    ...renderRuledKeptSection(ruledKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...convergenceLines];
+    ...renderRuledKeptSection(ruledKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...renderVerifierUnavailableSection(verifierUnavailable ?? {}), ...convergenceLines];
   if (extraLines.length) {
     const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
     if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...extraLines);

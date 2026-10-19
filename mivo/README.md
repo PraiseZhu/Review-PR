@@ -69,6 +69,7 @@ flowchart LR
    - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 120 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
    - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。这个状态跨轮保留（`verifierOverruledAll`）：下一轮不论改了什么，都因「上一轮核对员推翻/降级了全部卡点」退回全量重审，得出新结论之前不会 Approve。原本就没有 P1 的 PR 行为不变。
    - `result.json` 的 `mivo.verification` 记每条核对的结论、`applied`（实际生效的是 refuted 还是 downgraded）、模型、耗时和证据/理由；`mivo.verifierOverruled` 记被推翻/降级的问题（紧凑形状）。
+   - **核对员模型不可用时不白等**：核对员要用的模型被 marker 标为降级（见「每天的运维」），或这一轮主审已经在这个模型上超时/卡住/网关类失败时，整个核对员跳过，`mivo.verification.skipped` 记 `model-unavailable`，一次都不调用。marker 没标、但核对员第一次调用就超时/卡住/网关类失败（5xx、断流、网关拒绝 key/额度类错误）时，熔断：本轮剩下的 P1 也不核（同样记 `model-unavailable`）。答卷不合格和普通非零退出不熔断。没核到的 P1 照原样阻断，P0 本来就不核；`warnings` 写一条「核对员未运行」，报告里在有 P1 因此没核时多一节「核对员未运行（不影响结论）」，结论行和阻断判定不变。
    - **主审答卷不落盘**：主审交卷后答卷只留在 codex 阶段的进程内存里，每次主审调用取完计量数据就删掉它在磁盘上的全部痕迹（CLI 输出日志、stderr、最后一条消息、`CODEX_HOME`、临时目录），核对员全部跑完才把 `answer.json` 写盘给 publish 阶段读。
    - **清理失败不会让主审结果作废**：清理按路径各删各的（`fs.promises.rm`，ENOTEMPTY 等可重试错误最多退避重试 3 次），清不掉的只往 `result.json` 的 `warnings` 记一条「清理 codex 运行产物失败」（只带文件名和错误码），主审结果照常采用、照常发布。主审（含失败的尝试）的痕迹没清干净时，核对员可能读到主审的日志，这一轮不核对：`mivo.verification.skipped` 记 `artifacts-cleanup-failed` 和没清掉的文件名，P1 照原样阻断。核对员自己的痕迹清不掉只记告警，核对结论照常采用。
 
@@ -239,6 +240,16 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 
 判据在 `lib/health.mjs`，逐条照搬 Mivo 的 `.github/scripts/review_tool_health.py`：06:00–06:59 关门；marker `status=healthy` 且有 `run_id` 才放行；缺文件放行；读不到按不健康；超过 26 小时没更新只告警不拦。没通过时，服务器不调模型，这次派发不算一次失败的尝试；工具链不健康时，Mini 暂停派发 30 分钟再试。
 
+**备用/核对员模型降级字段**（2026-10-19：sol 网关超时，standard/heavy 每轮在核对员白等最多 20 分钟，主审失败切备用也白耗到超时）。marker 里可选的三行，字段名与取值集中在 `lib/health.mjs` 的 `MARKER_FALLBACK`，名字以 Mivo 仓更新器写的为准，改名只动这一处：
+
+| 字段 | 含义 |
+|---|---|
+| `fallback=down` | 备用模型当前不可用；同义值 `unavailable` / `failed` / `timeout`，大小写不敏感 |
+| `fallback_reason=<一句话>` | 可选，原因，进 `warnings` 和报告（去控制字符，最多 200 字） |
+| `fallback_model=<模型 id>` | 可选，被标降级的模型，缺省 = 默认备用模型 `openai/gpt-6.1-sol` |
+
+读到后 `readHealth` 的 verdict 多一个 `degraded: { model, reason }`（没有则为 `null`）。**只影响备用和核对员，不改放行判据**：`ok` / `window` / `reason` / `markerStatus` 照旧，不新增 GraphQL 调用。没有这些字段、读不到文件、值不认识、模型 id 格式不对，一律按没有降级（现行为）。降级只对「模型 id 等于被标降级的模型」生效：角色变量把备用/核对员换成别的模型时不受影响。
+
 ## 审查时长与超时
 
 维护者 2026-10-14 决定大 PR 审得深；2026-10-15 决定小 PR 上限 1 小时；2026-10-16 起 standard 也改为 60 分钟，因为 45 分钟上限截断了还在输出的审查（`lib/models.mjs`）：
@@ -262,6 +273,7 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - `switch.mjs`（本机 gh，只用 REST）：把 Cindy 的模型 id 映射成网关 id（取最后一段，加 `openai/`；只接 gpt / o 系，因为服务器跑的是 Codex CLI）。已经是这个配置就不动。随后派发 Mivo 的 `review-model-check.yml`（服务器上跑 `models/check.mjs`），等它跑完、取回 `check.json`。验证通过才写这个角色的仓库变量，写完读回核对；读回不一致就恢复原值。验证没通过时原配置不动。同一角色同时只跑一个（本机锁）。
 - 服务器验证（`models/check.mjs`，只拿模型网关凭据）：先用实际审查 key 查网关的模型清单，再让 Codex CLI 用目标模型和档位跑一次最小任务。这个任务必须调用 shell 读出工作目录里的随机数，并按 JSON schema 交卷，随机数对上才算通过。主 key 必测；配了备用 key 也测一次。主 key 通过即放行。主 key 报 key 本身的错误、而备用 key 通过时也放行，因为模型和档位已经证明可用。备用 key 没通过只告警：主 key 正常时不影响审查，但主 key 出问题时换不过去。06:00–07:00 维护窗口内拒绝验证（CLI 可能正在升级）。
 - 角色变量：`MIVO_REVIEW_ROLE_PRIMARY`（三档主审）、`MIVO_REVIEW_ROLE_FALLBACK`（备用模型）、`MIVO_REVIEW_ROLE_VERIFIER`（核对员，覆盖 `config/review-features.json` 的 model/effort），值是 JSON，服务器只认 `model` 与 `effort`。优先级：单档覆盖变量 `MIVO_REVIEW_{MODEL,EFFORT}_<档>`（只在测试时临时用）> 角色变量 > 默认值。有单档覆盖变量时，`switch.mjs` 拒绝切主审：切了也不会生效。变量格式不对时服务器用默认值，并把告警写进结果包。
+- 备用模型被 marker 标为降级时，主审非额度类失败后不再换备用（`nextAttempt` 返回 `null`），`mivo.codex.fallbackSkipped` 记模型和原因，`warnings` 写一条，失败原因（`reason`）写明「备用模型……被 healthy.marker 标为不可用，已跳过」。
 - 告警（不阻断）：备用模型和主审是同一个模型时，主审失败不会再换模型重试；核对员和主审是同一个模型时，没有独立性。
 - 生效时间：下一次派发的服务器审查。正在跑的那一轮不受影响。
 - 查看与回退：`node mivo/models/switch.mjs --status` 列出三个角色当前生效的模型、网关 key 状态和冷却期。`--role <角色> --rollback` 把这个角色恢复到本机上一次切换之前的值（历史在 `~/mivo-prereview/state/model-switch/history.jsonl`）。退出码：0 已切换或本来就是；1 没切换（原配置不动）；2 写入结果未知或后台任务意外结束，要人工核对变量；3 还在进行（只有 `--wait`）。后台任务的日志和结果在 `~/mivo-prereview/state/model-switch/jobs/`。

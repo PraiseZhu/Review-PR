@@ -16,10 +16,10 @@ import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, 
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
-import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
+import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
-import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, VERIFY_SCHEMA } from '../lib/verify.mjs';
+import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, toUnavailableModels, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
 import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
@@ -398,6 +398,8 @@ async function codex() {
   budget.primaryTimeoutMs = tierCfg.timeoutMs;
   // 备用模型与核对员按角色变量(lib/models.mjs);主 key / 备用 key 按 keys.mjs 的规则。告警进结果包。
   const fallbackCfg = roleModel('fallback', process.env);
+  // healthy.marker 的降级字段(lib/health.mjs):备用/核对员用的模型网关不可用时,不去试、不去等。
+  const degraded = state.health?.codex?.degraded ?? null;
   const ring = toKeyRing(process.env);
   state.warnings.push(...roleWarnings(process.env), ...ring.warnings);
   const prompt = buildReviewPrompt({
@@ -438,8 +440,8 @@ async function codex() {
     return { result: second, label: retryLabel, credential: 'backup', keySwitch, left };
   };
   // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
-  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs, fallback: fallbackCfg }); next;
-    next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg })) {
+  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs, fallback: fallbackCfg, degraded }); next;
+    next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg, degraded })) {
     const { result, label, credential, keySwitch, left } = await callModel({ label: `${attempts.length + 1}`, model: next.model, effort: next.effort,
       timeoutMs: next.timeoutMs, prompt, schema: ANSWER_SCHEMA, minRetryMs: MIN_FALLBACK_MS,
       remainingMs: () => budget.budgetMs - (Date.now() - startedAt) - SETTLE_MS });
@@ -455,7 +457,15 @@ async function codex() {
     answer = result.ok ? result.answer : null;
     cleanupLeft.push(...left, ...await clearRunArtifacts(state, label));
   }
+  // 只有「不是降级的话本来会换备用」时才记为被降级跳过(额度类、预算不够、备用与主审同模型本来就不换)。
+  let fallbackSkipped = null;
+  if (degraded && attempts.length === 1 && !attempts[0].ok
+    && nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg }) && isDegraded(degraded, fallbackCfg.model)) {
+    fallbackSkipped = { model: fallbackCfg.model, reason: degraded.reason };
+    state.warnings.push(`备用模型 ${fallbackCfg.model} 被 healthy.marker 标为不可用${degraded.reason ? `(${degraded.reason})` : ''},主审失败后已跳过备用尝试`);
+  }
   state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget, credential: toCredentialSummary(ring),
+    ...(fallbackSkipped ? { fallbackSkipped } : {}),
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
   const last = attempts.at(-1);
@@ -482,6 +492,7 @@ async function codex() {
       const headReader = headReaderFor(state.input.head);
       state.verification = classified.ok && classified.findings.length
         ? await runVerification({ findings: classified.findings, config: cfg, answeredBy: last.model, primary: tierCfg,
+          unavailable: toUnavailableModels({ degraded, attempts }),
           remainingMs: () => budget.budgetMs - (Date.now() - budgetAt),
           checkEvidence: (evidence) => checkEvidence({ evidence }, { headReader }),
           runOne: async (finding, index, model) => {
@@ -495,6 +506,8 @@ async function codex() {
             return spent ? { ...run1.result, durationMs: (run1.result.durationMs ?? 0) + spent } : run1.result;
           } })
         : { mode: cfg.mode, items: [], skipped: [] };
+      const unverified = (state.verification.skipped ?? []).filter((s) => s.reason === 'model-unavailable').length;
+      if (unverified) state.warnings.push(`核对员未运行:${state.verification.unavailable},${unverified} 条 P1 没核,照常阻断`);
     }
   } catch (error) {
     state.verification = { mode: state.verification?.mode ?? 'enforce', error: String(error?.message ?? error).slice(0, 300), items: [], skipped: [] };
@@ -555,6 +568,7 @@ function toStoredVerification(verification) {
   if (!verification) return null;
   const clipScrub = (text, max) => scrubSecrets(String(text ?? '').slice(0, max)).text;
   return { ...verification, ...(verification.error ? { error: clipScrub(verification.error, 300) } : {}),
+    ...(verification.unavailable ? { unavailable: clipScrub(verification.unavailable, 300) } : {}),
     items: (verification.items ?? []).map((item) => ({ ...item, ...(item.note ? { note: clipScrub(item.note, 600) } : {}), ...(item.error ? { error: clipScrub(item.error, 300) } : {}) })) };
 }
 
@@ -632,7 +646,7 @@ async function publish() {
       const answerFile = join(WORK, 'answer.json');
       if (!existsSync(answerFile)) {
         const last = state.codex?.attempts?.at(-1);
-        const why = last?.error || (state.codex?.skipped
+        const why = (last?.error ? `${last.error}${state.codex?.fallbackSkipped ? `;备用模型 ${state.codex.fallbackSkipped.model} 被 healthy.marker 标为不可用${state.codex.fallbackSkipped.reason ? `(${state.codex.fallbackSkipped.reason})` : ''},已跳过` : ''}` : '') || (state.codex?.skipped
           ? `没有启动模型(${state.codex.budget?.error || (state.codex.skipped === 'budget-exhausted' ? '作业剩余时间不够一次模型调用' : state.codex.skipped)})`
           : '没有答卷');
         return failReview(state, result, `模型审查没有完成:${why}`, { quota: last?.quota === true });
@@ -656,8 +670,12 @@ async function publish() {
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
       convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
         rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
+      // 因核对员模型不可用没核的 P1(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
+      const unverifiedUids = new Set((state.verification?.skipped ?? []).filter((s) => s.reason === 'model-unavailable' && s.uid).map((s) => s.uid));
+      const unverifiedCount = findings.filter((f) => f.severity === 'P1' && unverifiedUids.has(f.uid)).length;
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
-        preexisting, ruledKept, verifierRefuted, verifierDowngraded, convergenceLines: renderConvergenceSection(convergence, stuck),
+        preexisting, ruledKept, verifierRefuted, verifierDowngraded,
+        verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier, scope: state.scope,
         skillSha: input.skillSha, specDigest: state.current?.specDigest });
