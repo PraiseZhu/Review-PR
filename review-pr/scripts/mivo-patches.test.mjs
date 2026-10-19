@@ -1397,3 +1397,67 @@ test('code-scan-gate 接线:pre-merge-check.mjs 读规则、复用已读的 chec
   assert.equal((source.match(/fetchCheckRunsWithApps\(/g) ?? []).length, 1, 'check run 只读一次:代码扫描门复用必需检查核对已读的那份');
   assert.equal((source.match(/ghGraphql\(/g) ?? []).length, 1, '不新增 GraphQL 调用');
 });
+
+// [MIVO-PATCH app-readable-snapshot]
+function snapshotFixture(prs) {
+  const queries = [];
+  const ghGraphqlFn = (query) => {
+    queries.push(query);
+    return { data: { repository: { pullRequests: {
+      totalCount: prs.length, pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: prs.map((pr, i) => ({ number: i + 1, headRefOid: String(i + 1).repeat(40), updatedAt: '2026-10-19T00:00:00Z',
+        headRefName: pr.headRefName ?? 'feature', baseRefName: 'main', ...pr.node,
+        reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } })),
+    } } } };
+  };
+  return { ghGraphqlFn, queries };
+}
+
+test('app-readable-snapshot:不读 fork 名时查询只要 isCrossRepository,同仓记本仓、fork 记 null', async () => {
+  const { fetchOpenPrSnapshot } = await import('./lib.mjs');
+  const f = snapshotFixture([{ node: { isCrossRepository: false } }, { node: { isCrossRepository: true } }]);
+  const snapshot = fetchOpenPrSnapshot({ owner: 'o', repo: 'r', ghGraphqlFn: f.ghGraphqlFn, readsForkName: false });
+  assert.equal(f.queries.length, 1);
+  assert.doesNotMatch(f.queries[0], /headRepository|nameWithOwner/);
+  assert.match(f.queries[0], /\bisCrossRepository\b/);
+  assert.deepEqual(snapshot.map((p) => p.headRepository), ['o/r', null]);
+});
+
+test('app-readable-snapshot:缺 isCrossRepository 时快照从严报错', async () => {
+  const { fetchOpenPrSnapshot } = await import('./lib.mjs');
+  const f = snapshotFixture([{ node: {} }]);
+  assert.throws(() => fetchOpenPrSnapshot({ owner: 'o', repo: 'r', ghGraphqlFn: f.ghGraphqlFn, readsForkName: false }), /快照字段未完整读取/);
+});
+
+test('app-readable-snapshot:REVIEW_PR_SNAPSHOT_FORK_NAME=0 才关;不设时照旧读 nameWithOwner', async () => {
+  const { fetchOpenPrSnapshot } = await import('./lib.mjs');
+  const saved = process.env.REVIEW_PR_SNAPSHOT_FORK_NAME;
+  try {
+    delete process.env.REVIEW_PR_SNAPSHOT_FORK_NAME;
+    const upstream = snapshotFixture([{ node: { headRepository: { nameWithOwner: 'contributor/fork' } } }]);
+    assert.deepEqual(fetchOpenPrSnapshot({ owner: 'o', repo: 'r', ghGraphqlFn: upstream.ghGraphqlFn }).map((p) => p.headRepository), ['contributor/fork']);
+    assert.match(upstream.queries[0], /headRepository\s*\{\s*nameWithOwner\s*\}/);
+    process.env.REVIEW_PR_SNAPSHOT_FORK_NAME = '0';
+    const mini = snapshotFixture([{ node: { isCrossRepository: false } }]);
+    fetchOpenPrSnapshot({ owner: 'o', repo: 'r', ghGraphqlFn: mini.ghGraphqlFn });
+    assert.doesNotMatch(mini.queries[0], /headRepository/);
+  } finally {
+    if (saved === undefined) delete process.env.REVIEW_PR_SNAPSHOT_FORK_NAME;
+    else process.env.REVIEW_PR_SNAPSHOT_FORK_NAME = saved;
+  }
+});
+
+test('app-readable-snapshot:叠放依赖(stackedBaseDependencies)两种快照判定一致', async () => {
+  const { fetchOpenPrSnapshot } = await import('./lib.mjs');
+  const { stackedBaseDependencies } = await import('./review-dependencies.mjs');
+  const prs = [
+    { headRefName: 'parent', node: { isCrossRepository: false, headRepository: { nameWithOwner: 'o/r' } } },
+    { headRefName: 'parent', node: { isCrossRepository: true, headRepository: { nameWithOwner: 'someone/r' } } },
+    { headRefName: 'parent', node: { isCrossRepository: true, headRepository: null } },
+  ];
+  const pick = (readsForkName) => stackedBaseDependencies({ repo: 'O/R', pr: 99, baseRefName: 'parent', defaultBranch: 'main',
+    snapshot: fetchOpenPrSnapshot({ owner: 'o', repo: 'r', ghGraphqlFn: snapshotFixture(prs).ghGraphqlFn, readsForkName }) })
+    .map((p) => p.number);
+  assert.deepEqual(pick(false), [1]);
+  assert.deepEqual(pick(false), pick(true));
+});
