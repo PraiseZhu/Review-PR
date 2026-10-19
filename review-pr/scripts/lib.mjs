@@ -1245,15 +1245,16 @@ export function fetchCiRollup(slug, pr) {
     if (!Array.isArray(contexts)) return null;
     return contexts.map((c) => ({
       // CheckRun 有 name+status+conclusion(+workflowName/startedAt/completedAt/detailsUrl);
-      // StatusContext 只有 context+state(+createdAt/targetUrl)。时间戳与 detailsUrl 留给
+      // StatusContext 只有 context+state(+createdAt)。时间戳与 detailsUrl 留给
       // classifyRollupContexts 做同名去重(同一 head SHA 上 re-run / concurrency 顶掉会留同名多条),别在这里剥掉。
-      // [MIVO-PATCH ci-rollup-run-id] detailsUrl 透传:去重按 workflow run id,不按刷新过的 startedAt。
+      // [MIVO-PATCH ci-rollup-run-id] 只透传 CheckRun 的 detailsUrl(不回退 StatusContext.targetUrl);
+      // 去重只认 Actions 的 /actions/runs/<id>,不按刷新过的 startedAt。
       name: c.name ?? c.context ?? '(unnamed)',
       workflowName: c.workflowName || null,
       startedAt: c.startedAt ?? null,
       createdAt: c.createdAt ?? null,
       completedAt: c.completedAt ?? null,
-      detailsUrl: c.detailsUrl ?? c.targetUrl ?? null,
+      detailsUrl: c.detailsUrl ?? null,
       status: c.status ?? null,
       conclusion: c.conclusion ?? c.state ?? null,
     }));
@@ -1337,13 +1338,15 @@ export function toCodeScanCheckFacts(checkRuns) {
  * 侧 mergeStateStatus 一直 CLEAN)。去重键 workflowName+name(不同 workflow 的同名
  * job 互不相干,不能互相顶掉)。
  * [MIVO-PATCH ci-rollup-run-id] 同名一组里每条都取到 run id 才按 run id 排(越大越新;run id 相同再比
- * 原 orderKey),只要有一条取不到,整组回退 startedAt(退 createdAt / completedAt)。GitHub 重跑旧
- * pull_request_target 会刷新 check run 的 startedAt,但复用旧事件、旧 run id(#1109 pr-format-gate:
- * 旧事件重跑的红盖过新事件的绿,而 statusCheckRollup.state 仍是 SUCCESS)。时间戳全缺时按数组序、
- * 靠后当更新(保持 >=)。最新一次事件的 run 失败仍判失败。
+ * 原 orderKey),只要有一条取不到,整组回退 startedAt(退 createdAt / completedAt)。只认 GitHub Actions
+ * 的 /actions/runs/<id>;其它 URL(外部 CI、check-run 链接)和 StatusContext 不用 run id,按
+ * startedAt/createdAt/completedAt。GitHub 重跑旧 pull_request_target 会刷新 check run 的 startedAt,
+ * 但复用旧事件、旧 run id(#1109 pr-format-gate:旧事件重跑的红盖过新事件的绿,而
+ * statusCheckRollup.state 仍是 SUCCESS)。时间戳全缺时按数组序、靠后当更新(保持 >=)。
+ * 最新一次事件的 run 失败仍判失败。
  */
 function workflowRunId(detailsUrl) {
-  const match = String(detailsUrl ?? '').match(/\/runs\/(\d+)/);
+  const match = String(detailsUrl ?? '').match(/\/actions\/runs\/(\d+)(?=[/?#]|$)/);
   if (!match) return null;
   const id = Number(match[1]);
   return Number.isSafeInteger(id) ? id : null;
