@@ -95,6 +95,72 @@ function eq(name, got, want) {
   ]);
   eq('rollup/无时间戳按数组序取靠后', r.failed, []);
 }
+{
+  // #1109:同一 head 上 pr-format-gate 5 条 check run(北京 2026-10-19)。
+  // 新 pull_request 事件 18:37 绿(run id 更大);旧 pull_request_target 重跑把 startedAt
+  // 刷新成 18:41/18:42/18:58 红(run id 更小,GitHub 重跑复用旧事件 payload)。
+  // 18:59 绿是同一新事件 run 的完成时间,startedAt 仍是 18:37。按 startedAt 会把旧事件重跑当最新。
+  const contexts = [
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T10:37:00Z', completedAt: '2026-10-19T10:37:20Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100370/job/1',
+    },
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T10:41:58Z', completedAt: '2026-10-19T10:42:05Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100001/job/2',
+    },
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T10:42:00Z', completedAt: '2026-10-19T10:42:08Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100002/job/3',
+    },
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T10:58:29Z', completedAt: '2026-10-19T10:58:40Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100003/job/4',
+    },
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T10:37:00Z', completedAt: '2026-10-19T10:59:49Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/xindong/mivo-canvas-plugin/actions/runs/1860100370/job/5',
+    },
+  ];
+  const r = classifyRollupContexts(contexts);
+  eq('rollup/#1109 旧事件重跑红不盖过新事件绿', r.failed, []);
+  eq('rollup/#1109 去重后无 pending', r.pending, []);
+  eq('eval/#1109 聚合 pass', evaluateCiStatus({ rollup: r, ciRuns: { failed: [], pending: [], awaiting: [] } }).status, 'pass');
+}
+{
+  // 最新一次事件的 run 失败仍判失败(run id 更大,即使 startedAt 更早)
+  const r = classifyRollupContexts([
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T11:00:00Z', status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/actions/runs/100/job/1',
+    },
+    {
+      name: 'pr-format-gate', workflowName: 'pr-format-gate',
+      startedAt: '2026-10-19T10:00:00Z', status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/actions/runs/200/job/2',
+    },
+  ]);
+  eq('rollup/最新 run 红仍失败', r.failed, ['pr-format-gate']);
+}
+{
+  // 取不到 run id 时保持原行为:按 startedAt 取最新
+  const r = classifyRollupContexts([
+    { name: 'build', workflowName: 'ci', startedAt: '2026-08-14T10:00:00Z', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    { name: 'build', workflowName: 'ci', startedAt: '2026-08-14T11:00:00Z', status: 'COMPLETED', conclusion: 'CANCELLED' },
+  ]);
+  eq('rollup/无 run id 仍按 startedAt', r.failed, ['build']);
+}
 
 // ── ② evaluateCiStatus:failed 压过一切 ──
 {
