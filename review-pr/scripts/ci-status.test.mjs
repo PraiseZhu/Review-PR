@@ -267,6 +267,111 @@ function permutations(items) {
   ]);
   eq('rollup/Actions URL 带查询串仍按 run id', r.failed, []);
 }
+{
+  // 外部 CheckRun 把 host 写成 /actions/runs/<id> 不是 Actions:workflowName 空,应按 startedAt 取新红
+  const r = classifyRollupContexts([
+    {
+      name: 'external-ci', workflowName: null, startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://evil.example/actions/runs/2',
+    },
+    {
+      name: 'external-ci', workflowName: null, startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://evil.example/actions/runs/1',
+    },
+  ]);
+  eq('rollup/外部 host 伪 /actions/runs 且无 workflowName 不按 run id', r.failed, ['external-ci']);
+  eq('eval/外部 host 伪 /actions/runs 判失败', evaluateCiStatus({ rollup: r, ciRuns: { failed: [], pending: [], awaiting: [] } }).status, 'failed');
+}
+{
+  const r = classifyRollupContexts([
+    {
+      name: 'external-ci', workflowName: '', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://evil.example/actions/runs/2',
+    },
+    {
+      name: 'external-ci', workflowName: '', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://evil.example/actions/runs/1',
+    },
+  ]);
+  eq('rollup/workflowName 空串不按 run id', r.failed, ['external-ci']);
+}
+{
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://ci.example/build?next=/actions/runs/900',
+    },
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://ci.example/build?next=/actions/runs/100',
+    },
+  ]);
+  eq('rollup/查询串夹带 /actions/runs 不按 run id', r.failed, ['gate']);
+}
+{
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://ci.example/build/x/y/actions/runs/900',
+    },
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://ci.example/build/x/y/actions/runs/100',
+    },
+  ]);
+  eq('rollup/路径前缀多于两段不按 run id', r.failed, ['gate']);
+}
+{
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/actions/runs/0/job/1',
+    },
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/actions/runs/5/job/1',
+    },
+  ]);
+  eq('rollup/run id 为 0 整组回退 startedAt', r.failed, ['gate']);
+}
+{
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'not a url',
+    },
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: null,
+    },
+  ]);
+  eq('rollup/非法 URL 与 null 混合不抛且按 startedAt', r.failed, ['gate']);
+}
+{
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/actions/runs/900?check_suite_focus=true',
+    },
+    {
+      name: 'gate', workflowName: 'W', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/actions/runs/100/job/2',
+    },
+  ]);
+  eq('rollup/真实 Actions 路径+workflowName 仍按 run id', r.failed, []);
+}
 
 // ── ② evaluateCiStatus:failed 压过一切 ──
 {
