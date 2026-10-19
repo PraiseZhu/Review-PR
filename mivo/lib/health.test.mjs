@@ -70,3 +70,40 @@ test('readHealth 读真实文件:存在、缺失、没权限', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('marker 降级字段:fallback=down(及同义值,大小写不敏感)→ verdict.degraded;缺省模型是默认备用 sol;放行判据不变', () => {
+  const now = at('2026-10-19T10:00:00+08:00');
+  const writtenAt = at('2026-10-19T06:05:00+08:00');
+  const base = 'status=healthy\nrun_id=timer-1\nfail_streak=0\n';
+  const verdict = (extra) => toHealthVerdict({ now, fields: parseMarker(base + extra), writtenAt });
+  assert.deepEqual(verdict('fallback=down\nfallback_reason=gateway timeout\n').degraded, { model: 'openai/gpt-6.1-sol', reason: 'gateway timeout' });
+  for (const value of ['down', 'DOWN', 'Unavailable', 'failed', 'timeout', ' Timeout ']) {
+    assert.equal(verdict(`fallback=${value}`).degraded?.model, 'openai/gpt-6.1-sol', value);
+  }
+  assert.equal(verdict('fallback=down\nfallback_model=openai/gpt-6-luna').degraded.model, 'openai/gpt-6-luna');
+  // 无字段、值不认识、模型 id 格式不对 = 现行为(没有降级)
+  for (const extra of ['', 'fallback=ok', 'fallback=healthy', 'fallback=', 'fallback=weird', 'fallback=down\nfallback_model=bad model!', 'fallback_reason=x']) {
+    assert.equal(verdict(extra).degraded, null, extra);
+  }
+  // 放行判据(ok/window/reason/status/runId)不受降级字段影响
+  const plain = verdict('');
+  const degraded = verdict('fallback=down');
+  for (const key of ['ok', 'window', 'reason', 'markerStatus', 'runId', 'failStreak']) assert.equal(degraded[key], plain[key], key);
+  assert.equal(degraded.ok, true);
+  // 缺文件、读不到、不健康的 marker 没有降级信息
+  assert.equal(toHealthVerdict({ now, fields: null }).degraded, null);
+  assert.equal(toHealthVerdict({ now, fields: null, unreadable: true }).degraded, null);
+});
+
+test('readHealth 读到带降级字段的真实 marker', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mivo-health-degraded-'));
+  try {
+    const marker = join(dir, 'healthy.marker');
+    writeFileSync(marker, 'status=healthy\nrun_id=timer-1\nfallback=down\nfallback_reason=10-19 sol 网关超时\n');
+    const verdict = readHealth({ now: at('2026-10-19T10:00:00+08:00'), markerPath: marker });
+    assert.equal(verdict.ok, true);
+    assert.deepEqual(verdict.degraded, { model: 'openai/gpt-6.1-sol', reason: '10-19 sol 网关超时' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

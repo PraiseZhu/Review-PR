@@ -98,19 +98,24 @@ export function codexBudgetMs({ jobStartMs, jobTimeoutMin, nowMs }) {
   return Math.min(CODEX_BUDGET_MS, jobStartMs + jobTimeoutMin * MIN - nowMs - PUBLISH_RESERVE_MS);
 }
 
+/** healthy.marker 把这个模型标成降级(网关不可用)了吗?degraded 是 health.mjs 的 { model, reason } 或 null,按模型 id 比较。 */
+export const isDegraded = (degraded, model) => Boolean(degraded?.model) && degraded.model === model;
+
 /**
  * 下一次尝试;没有下一次时返回 null。主模型上限为 0(预算不够)时不启动。
  * 只在主模型失败且不是额度类报错时换备用;备用超时取 min(主模型上限, 预算 − 已用 − 收尾余量),
  * 不足 15 分钟或备用与主模型相同时不再尝试。备用模型取 fallback(review.mjs 传 roleModel('fallback')),默认 FALLBACK。
+ * 备用模型被 healthy.marker 标降级(degraded.model 等于它)时不再尝试:网关不可用,等也是白等到超时(2026-10-19 sol 实测)。
  * 换备用 key 重跑同一模型不算一次尝试(见 server/keys.mjs),attempts 里每个模型只有一项。
  */
-export function nextAttempt({ primary, attempts, elapsedMs, budgetMs = CODEX_BUDGET_MS, fallback = FALLBACK }) {
+export function nextAttempt({ primary, attempts, elapsedMs, budgetMs = CODEX_BUDGET_MS, fallback = FALLBACK, degraded = null }) {
   if (attempts.length === 0) return primary.timeoutMs > 0 ? { ...primary } : null;
   if (attempts.length > 1) return null;
   const last = attempts[0];
   if (last.ok) return null;
   if (last.quota) return null;
   if (fallback.model === primary.model) return null;
+  if (isDegraded(degraded, fallback.model)) return null;
   const available = budgetMs - elapsedMs - SETTLE_MS;
   if (available < MIN_FALLBACK_MS) return null;
   return { model: fallback.model, effort: fallback.effort, timeoutMs: Math.min(primary.timeoutMs, available) };

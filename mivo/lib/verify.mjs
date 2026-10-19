@@ -66,6 +66,32 @@ export function pickVerifierModel({ configured, answeredBy, primary }) {
   return null;
 }
 
+// 模型当前不可用(网关超时/卡住/5xx/断流,或认证额度类 key 故障):再等同一个模型也是白等(2026-10-19 sol 实测每轮白等到超时)。
+// 答卷不合格、普通非零退出不算(模型能应答,只是这一条没答好)。
+const GATEWAY_RE = /unexpected status 5\d\d|\b50[234]\b|bad gateway|gateway time-?out|service unavailable|stream disconnected|ECONN(?:RESET|REFUSED)|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|connection (?:refused|reset|closed)/i;
+export function toInfraFailure(outcome) {
+  if (!outcome || outcome.ok) return null;
+  if (outcome.timedOut) return '调用超时';
+  if (outcome.idleKilled) return '调用卡住无输出';
+  if (outcome.keyFailure || outcome.quota) return '网关拒绝(key/额度类错误)';
+  if (GATEWAY_RE.test(String(outcome.error ?? ''))) return '网关错误';
+  return null;
+}
+
+/**
+ * 本轮不能再用的模型:{ 模型 id: 原因 }。healthy.marker 标降级的模型,加上主审本轮已因超时/卡住/网关类失败的模型。
+ * 核对员要用其中任何一个就整体跳过。
+ */
+export function toUnavailableModels({ degraded = null, attempts = [] } = {}) {
+  const out = {};
+  if (degraded?.model) out[degraded.model] = `healthy.marker 标为不可用${degraded.reason ? `(${degraded.reason})` : ''}`;
+  for (const a of attempts) {
+    const why = toInfraFailure({ ok: a.ok, timedOut: a.timedOut, idleKilled: a.idleKilled, keyFailure: a.keyFailure, quota: a.quota, error: a.error });
+    if (why && a.model && !out[a.model]) out[a.model] = `本轮主审已${why}`;
+  }
+  return out;
+}
+
 const where = ({ path, line }) => (line ? `${path}:${line}` : path);
 
 /**
@@ -128,26 +154,32 @@ const clip = (text, max) => String(text ?? '').slice(0, max);
  * 逐条核对。runOne(finding, index, model) → {ok, answer, error?, durationMs?, usage?};抛错也按失败记。
  * 预算:调用前要求作业剩余时间(已扣发布预留)够一次调用加收尾余量,且累计用时加一次调用上限不超过 budgetMin;不够的跳过(照常阻断)。
  * enforce 下,refuted 要有 head 上真实存在的证据、downgraded 要有理由,才记 applied;否则只记结论、applied 为 null。
+ * 模型不可用就不去等:unavailable({模型 id: 原因},见 toUnavailableModels)含核对员要用的模型时整体跳过(reason=model-unavailable);
+ * 核对员某次调用超时/卡住/网关类失败(toInfraFailure)后,本轮剩下的也不再核。跳过的 P1 照常阻断。
  * @param {object} p.checkEvidence 可选 (evidence) => {complete:boolean}:按 head 的 git 对象核对推翻证据
  */
-export async function runVerification({ findings, config, answeredBy, primary, remainingMs, runOne, checkEvidence = null }) {
+export async function runVerification({ findings, config, answeredBy, primary, remainingMs, runOne, checkEvidence = null, unavailable = {} }) {
   const { selected, overflow } = selectForVerification(findings, config);
   const model = pickVerifierModel({ configured: config, answeredBy, primary });
   const result = { mode: config.mode, model: model?.model ?? null, effort: model?.effort ?? null, items: [], skipped: [] };
   const keyOf = (f) => f.key ?? null;
   const uidOf = (f) => f.uid ?? null;
+  let down = model && unavailable?.[model.model] ? unavailable[model.model] : null;
   if (!model) {
     for (const f of selected) result.skipped.push({ key: keyOf(f), uid: uidOf(f), reason: 'same-model' });
   } else {
     const perCall = config.perCallTimeoutMin * MIN;
     let used = 0;
     for (const [index, finding] of selected.entries()) {
+      if (down) { result.skipped.push({ key: keyOf(finding), uid: uidOf(finding), reason: 'model-unavailable' }); continue; }
       if (remainingMs() < perCall + SETTLE_MS || used + perCall > config.budgetMin * MIN) { result.skipped.push({ key: keyOf(finding), uid: uidOf(finding), reason: 'budget' }); continue; }
       const started = Date.now();
       let outcome;
       try { outcome = await runOne(finding, index, model); } catch (error) { outcome = { ok: false, error: String(error?.message ?? error) }; }
       const durationMs = outcome?.durationMs ?? Date.now() - started;
       used += durationMs;
+      const infra = toInfraFailure(outcome);
+      if (infra) down = `核对员模型 ${model.model} ${infra},本轮不再核对`;
       const answer = outcome?.answer;
       const base = { key: keyOf(finding), uid: uidOf(finding), severity: finding.severity, model: model.model, durationMs };
       if (!outcome?.ok || !['confirmed', 'refuted', 'downgraded', 'unknown'].includes(answer?.verdict)) {
@@ -172,6 +204,7 @@ export async function runVerification({ findings, config, answeredBy, primary, r
       result.items.push({ ...base, ok: true, verdict: answer.verdict, evidence, note, applied, ...(rejected ? { rejected } : {}), usage: outcome.usage ?? null });
     }
   }
+  if (down) result.unavailable = down;
   for (const f of overflow) result.skipped.push({ key: keyOf(f), uid: uidOf(f), reason: 'max-findings' });
   return result;
 }

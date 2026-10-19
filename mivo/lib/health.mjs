@@ -5,10 +5,20 @@
 //   - marker:status=healthy 且有 run_id 才放行;缺文件放行(还没装更新器);读不到按不健康;
 //   - 超过 26 小时没更新只告警、不拦(维护者 2026-09-09 决定「通知但不停审」)。
 import { readFileSync, statSync } from 'node:fs';
+import { FALLBACK, SERVER_MODEL_RE } from './models.mjs';
 
 export const DEFAULT_MARKER = '/AIGC_Group/github-actions-runner/mivo-review-tools/healthy.marker';
 export const STALE_AFTER_HOURS = 26;
 const ALLOWED_STATUS = new Set(['healthy', 'unhealthy', 'updating']);
+// marker 里的备用/核对员模型降级字段(字段名与取值集中在这里;Mivo 仓更新器写入,名字以那边为准):
+//   fallback=down|unavailable|failed|timeout(大小写不敏感)  备用模型(同时也是核对员默认用的模型)网关当前不可用;
+//   fallback_reason=<一句话>                                 可选,原因,进 warnings 和报告;
+//   fallback_model=<模型 id>                                 可选,被标降级的模型,缺省 = 默认备用模型。
+// 没有这些字段、值不认识、模型 id 格式不对 = 没有降级(现行为)。不影响放行判据。
+export const MARKER_FALLBACK = {
+  statusKey: 'fallback', reasonKey: 'fallback_reason', modelKey: 'fallback_model',
+  downValues: new Set(['down', 'unavailable', 'failed', 'timeout']), defaultModel: FALLBACK.model,
+};
 const HOUR_FORMAT = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hourCycle: 'h23' });
 
 export function shanghaiHour(now = new Date()) {
@@ -42,6 +52,18 @@ export function isHealthyMarker(fields) {
   return markerStatus(fields) === 'healthy' && String(fields?.run_id ?? '').trim() !== '';
 }
 
+/** marker 的降级信息:{ model, reason } 或 null。 */
+export function toDegradation(fields) {
+  if (!fields) return null;
+  const value = String(fields[MARKER_FALLBACK.statusKey] ?? '').trim().toLowerCase();
+  if (!MARKER_FALLBACK.downValues.has(value)) return null;
+  const model = String(fields[MARKER_FALLBACK.modelKey] ?? '').trim() || MARKER_FALLBACK.defaultModel;
+  if (!SERVER_MODEL_RE.test(model)) return null;
+  // 原因进报告和 warnings:去掉控制字符并限长
+  const reason = String(fields[MARKER_FALLBACK.reasonKey] ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200);
+  return { model, reason };
+}
+
 /** 纯函数:fields=null 表示文件不存在;unreadable=true 表示存在但读不到(按不健康)。 */
 export function toHealthVerdict({ now = new Date(), fields = null, unreadable = false, writtenAt = null, markerPath = DEFAULT_MARKER } = {}) {
   const window = inBusinessWindow(now);
@@ -71,6 +93,7 @@ export function toHealthVerdict({ now = new Date(), fields = null, unreadable = 
     runId: fields?.run_id ?? '', failStreak: fields?.fail_streak ?? '0',
     markerWrittenAt: writtenAt ? writtenAt.toISOString() : '', markerAgeHours: ageHours,
     markerStale: ageHours !== null && ageHours > STALE_AFTER_HOURS, markerPath,
+    degraded: unreadable ? null : toDegradation(fields),
   };
 }
 
