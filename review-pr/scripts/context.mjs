@@ -34,7 +34,7 @@ import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlC
 // [MIVO-PATCH identity-env]
 import { viewerLoginOverride } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
-import { isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
+import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -388,7 +388,8 @@ try {
     additions: f.additions ?? 0,
     deletions: f.deletions ?? 0,
   }));
-  const totalDiffLines = files.reduce((s, f) => s + f.additions + f.deletions, 0);
+  // [MIVO-PATCH handoff-lines] 本 PR 自己的交接文件(docs/pr/<PR号>/)不计入行数,见 lib.mjs countDiffLines。
+  const totalDiffLines = countDiffLines(files, pr);
 
   // ── 获取 PR reviews，用于区分 BLOCKED 原因 ──
   // mergeStateStatus=BLOCKED 可能是"需要 approval"，也可能是 CI/冲突。

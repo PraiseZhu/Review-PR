@@ -21,6 +21,7 @@ import {
   uiEvidenceNeedsAdminLookup,
   declaresNoUiChange,
   filterIgnoredCiContexts,
+  countDiffLines,
   ciMergeStateIgnoring,
   botCheckActivity,
   evaluateBotSettle,
@@ -1460,4 +1461,16 @@ test('app-readable-snapshot:叠放依赖(stackedBaseDependencies)两种快照判
     .map((p) => p.number);
   assert.deepEqual(pick(false), [1]);
   assert.deepEqual(pick(false), pick(true));
+});
+
+test('handoff-lines: 改动行数不算本 PR 自己的交接文件,别的 PR 的交接照常计数', () => {
+  const files = [
+    { path: 'src/a.ts', additions: 3, deletions: 1 },
+    { path: 'docs/pr/12/review.md', additions: 90, deletions: 0 },
+    { path: 'docs/pr/12/qa.md', additions: 80, deletions: 0 },
+    { path: 'docs/pr/120/qa.md', additions: 5, deletions: 0 },
+  ];
+  assert.equal(countDiffLines(files, 12), 9);
+  assert.equal(countDiffLines(files, '12'), 9);
+  assert.equal(countDiffLines([], 12), 0);
 });

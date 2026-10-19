@@ -36,6 +36,7 @@ const gates = await load('mivo/lib/gates.mjs');
 const codeScan = await load('mivo/lib/code-scan.mjs');
 const retry = await load('mivo/lib/retry.mjs');
 const health = await load('mivo/lib/health.mjs');
+const handoff = await load('mivo/lib/handoff.mjs');
 const source = process.env.ROUND_FIXTURE_SOURCE_REV
   ? execFileSync('git', ['show', `${process.env.ROUND_FIXTURE_SOURCE_REV}:mivo/prereview/round.mjs`], { cwd: REPO_ROOT, encoding: 'utf8' })
   : readFileSync(join(REPO_ROOT, 'mivo/prereview/round.mjs'), 'utf8');
@@ -165,7 +166,7 @@ function makeFixture(scenario) {
     constructor(...args) { super(...(args.length ? args : [clockMs])); }
     static now() { return clockMs; }
   }
-  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry,
+  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff,
     dirname, join, resolve, randomUUID, Date: FixtureDate,
     inBusinessWindow: () => health.inBusinessWindow(new Date(clockMs)),
     nowIso: () => new Date(clockMs).toISOString(), readJson, writeJson,
@@ -542,7 +543,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       constructor(...args) { super(...(args.length ? args : [w.now])); }
       static now() { return w.now; }
     }
-    const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, dirname, join, resolve, randomUUID, Date: FixtureDate,
+    const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, dirname, join, resolve, randomUUID, Date: FixtureDate,
       inBusinessWindow: () => health.inBusinessWindow(new Date(w.now)), nowIso: () => iso(w.now),
       readJson: (file, fallback) => {
         if (w.files.has(file)) return clone(w.files.get(file));
