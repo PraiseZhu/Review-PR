@@ -430,6 +430,8 @@ Mini 的 `gh` 经 GitHub App 分流（`~/mivo-gh-router/praisebuild`）。查询
 
 - 配置 JSON 可加 `"viewerLogin": "PraiseZhu"`（必须是 `gh` 登录的账号）：`round.mjs` 给脚本设 `REVIEW_PR_VIEWER_LOGIN`，context 不再查 `viewer`（见上节 identity-env）。不填时行为不变。
 - `round.mjs` 固定设 `REVIEW_PR_SNAPSHOT_FORK_NAME=0`：每轮的 open PR 快照不读 fork 名，只读 `isCrossRepository`（MIVO-PATCH app-readable-snapshot）。
+- 配置 JSON 可加 `"branchProtectionCacheMs": 600000`（0–3600000 整数毫秒）：`round.mjs` 给脚本设 `REVIEW_PR_BRANCH_PROTECTION_CACHE_MS`，分支保护读取按「仓+分支」缓存 10 分钟（MIVO-PATCH branch-protection-cache）。不配=每次都读。
+- 服务器 publish 的读请求经 PraiseBuild App 令牌：workflow 在 publish 前现取令牌并设 `REVIEW_PR_READ_TOKEN` / `REVIEW_PR_READ_REPOS`（MIVO-PATCH app-read-route）；仓库变量 `MIVO_REVIEW_APP_PUBLISH_READ_ENABLED=true` 才开，设成别的值或删掉即关闭。核对：下载 run 的 `review-pr-<PR号>` 结果包，看 `result.json` 的 `mivo.ghRoute`（`app` 是走 App 的读，`appFallback` 是 App 被拒后改用 PraiseZhu 的读，`user` 是写和身份类）。
 
 ### 换版本（整组上线与回滚）
 

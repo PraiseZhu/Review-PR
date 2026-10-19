@@ -17,6 +17,7 @@ import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { atomicWriteJson, parseApiJson, parseScriptResult } from './runtime-io.mjs';
+import { readRouteConfig, decideReadRoute, appReadEnv, shouldFallbackToUser, recordRoute } from './gh-read-route.mjs';
 export { atomicWriteJson, parseApiJson } from './runtime-io.mjs';
 
 const isWin = process.platform === 'win32';
@@ -862,7 +863,14 @@ export function gh(args, opts = {}) {
     REQUEST_METRICS.elapsedMs += Date.now() - started;
     return result;
   };
-  let r = invoke();
+  // [MIVO-PATCH app-read-route] 设了 REVIEW_PR_READ_TOKEN + REVIEW_PR_READ_REPOS 时,classify 判为只读的请求先用 App 令牌;
+  // App 那次因权限/不存在/令牌失效失败,换原令牌重试一次。没设时 routeConfig 为 null,下面全部等同改动前。
+  const routeConfig = readRouteConfig();
+  const route = decideReadRoute(args, { input: rest.input, config: routeConfig, explicitEnv: rest.env !== undefined, noCredFallback });
+  const viaApp = route.route === 'app';
+  const first = () => (viaApp ? invoke({ env: appReadEnv(process.env, routeConfig.token) }) : invoke());
+  const routeStarted = Date.now();
+  let r = first();
   // Only repeat reads. A timeout after a mutation may mean the write already succeeded.
   for (let retry = 0; safeRead && retry < 2; retry++) {
     const transient = /HTTP (?:429|502|503|504)|ETIMEDOUT|ECONNRESET|TLS handshake timeout|connection reset/i.test(r.stderr) ||
@@ -870,7 +878,12 @@ export function gh(args, opts = {}) {
     if (!transient) break;
     REQUEST_METRICS.retries++;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, [500, 1500][retry]);
-    r = invoke();
+    r = first();
+  }
+  if (routeConfig) {
+    const fellBack = viaApp && shouldFallbackToUser(r);
+    if (fellBack) r = invoke();
+    recordRoute(routeConfig, { route: fellBack ? 'app-fallback' : route.route, reason: fellBack ? 'app_denied_retry_user' : route.reason, args, ms: Date.now() - routeStarted });
   }
   const plan = credFallbackPlan({ result: r, disabled: noCredFallback });
   if (plan.retry) {
@@ -1118,8 +1131,47 @@ export function classifyHeadChecks(slug, headSha) {
  * 返回 { requiredCheckRules, requiredStatusChecks, requiredStatusChecksKnown,
  *          adminUnverifiedRuleTypes, ruleTypes, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.env } = {}) {
+export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.env, now = Date.now, cacheFile } = {}) {
   if (!branch) return null;
+  // [MIVO-PATCH branch-protection-cache] 设了 REVIEW_PR_BRANCH_PROTECTION_CACHE_MS(毫秒)时,按 仓+分支 缓存成功结果。
+  // 分支保护要 Administration 读,App 令牌读不了,只能少读;规则很少变,Mini 前置审查每轮都读是白费 PraiseZhu 的额度。
+  // 默认不设=每次都读(服务器 publish 不受影响)。失败(null)不缓存,下一次照常重读。
+  const ttl = branchProtectionCacheMs(env);
+  if (ttl <= 0) return probeBranchProtectionUncached(slug, branch, { ghFn, env });
+  const file = cacheFile ?? stateFile('branch-protection-cache.json');
+  const key = `${String(slug).toLowerCase()}#${branch}`;
+  const at = now();
+  const cache = readBranchProtectionCache(file);
+  const hit = cache[key];
+  if (hit && Number.isFinite(hit.at) && at >= hit.at && at - hit.at < ttl && hit.value) return hit.value;
+  const value = probeBranchProtectionUncached(slug, branch, { ghFn, env });
+  if (!value) return value;
+  const next = {};
+  for (const [k, v] of Object.entries(cache)) if (v && Number.isFinite(v.at) && at >= v.at && at - v.at < ttl) next[k] = v;
+  next[key] = { at, value };
+  try { atomicWriteJson(file, next); } catch { /* 缓存写失败只是下次重读 */ }
+  return value;
+}
+
+/** REVIEW_PR_BRANCH_PROTECTION_CACHE_MS 去空白后的毫秒数;没设返回 0(不缓存)。设了但不是 0–3600000 的整数直接抛错,不悄悄退回不缓存。 */
+export function branchProtectionCacheMs(env = process.env) {
+  const raw = String(env.REVIEW_PR_BRANCH_PROTECTION_CACHE_MS ?? '').trim();
+  if (!raw) return 0;
+  const ms = Number(raw);
+  if (!Number.isInteger(ms) || ms < 0 || ms > 3_600_000) {
+    throw new Error(`REVIEW_PR_BRANCH_PROTECTION_CACHE_MS 不合法(期望 0–3600000 的整数毫秒,实际 ${JSON.stringify(raw.slice(0, 20))})`);
+  }
+  return ms;
+}
+
+function readBranchProtectionCache(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+function probeBranchProtectionUncached(slug, branch, { ghFn = gh, env = process.env } = {}) {
   // [MIVO-PATCH identity-env] 分支保护要 Administration 读,current_user_can_bypass 随调用身份变化:这三类调用用身份令牌。
   const identity = identityTokenOptions(env);
   const encodedBranch = encodeURIComponent(branch);

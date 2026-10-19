@@ -42,6 +42,11 @@ function makeRoot() {
   for (const file of ['review.mjs', 'codex.mjs', 'keys.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
   copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'self-write-receipts.mjs'),
     join(root, 'review-pr', 'scripts', 'self-write-receipts.mjs'));
+  // review.mjs 读分流日志汇总用的 gh-read-route.mjs(及它搬运的分类器)。
+  mkdirSync(join(root, 'review-pr', 'scripts', 'vendor'), { recursive: true });
+  copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'gh-read-route.mjs'), join(root, 'review-pr', 'scripts', 'gh-read-route.mjs'));
+  copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'vendor', 'gh-app-classify.mjs'),
+    join(root, 'review-pr', 'scripts', 'vendor', 'gh-app-classify.mjs'));
   writeFileSync(join(root, 'review-pr', 'scripts', 'finish-reviewed-pr.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';
 const out = JSON.parse(readFileSync(process.env.STUB_FINISH, 'utf8'));
 writeFileSync(process.argv[process.argv.indexOf('--result-file') + 1], JSON.stringify(out));

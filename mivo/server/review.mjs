@@ -24,10 +24,13 @@ import { checkEvidence } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
 import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
 import { recordSelfWrite, readSelfWrites } from '../../review-pr/scripts/self-write-receipts.mjs';
+import { summarizeRouteLog } from '../../review-pr/scripts/gh-read-route.mjs';
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
 const STATE_FILE = join(WORK, 'state.json');
 const OUT = join(WORK, 'out');
+// [MIVO-PATCH app-read-route] 读请求分流日志:只有命令前两个词、原因、结果,随结果包一起上传,部署后据此核对分流是否生效。
+const ROUTE_LOG = join(OUT, 'gh-routes.jsonl');
 const REPO_DIR = join(WORK, 'repo');
 const INPUT_DIR = join(WORK, 'input');
 const CHECK_NAME = 'review-pr';
@@ -62,7 +65,7 @@ function inputs() {
 // Cindy 脚本只认 cwd 的 git remote 与这些变量;令牌只经 GH_TOKEN 给 gh,不写进任何文件。
 function scriptEnv(extra = {}) {
   const env = { ...process.env, REVIEW_PR_REPO_ROOT: REPO_DIR, REVIEW_PR_STATE_DIR: join(WORK, 'review-state'),
-    REVIEW_PR_SELF_WRITE_DIR: join(WORK, 'self-writes'), ...extra };
+    REVIEW_PR_SELF_WRITE_DIR: join(WORK, 'self-writes'), REVIEW_PR_GH_ROUTE_LOG: ROUTE_LOG, ...extra };
   if (process.env.MIVO_REVIEW_RULES_FILE) env.REVIEW_PR_RULES_FILE = process.env.MIVO_REVIEW_RULES_FILE;
   return env;
 }
@@ -1004,6 +1007,8 @@ function writeResult(result) {
   result.selfWriteReceipts = readSelfWrites({ directory: join(WORK, 'self-writes'),
     repo: result.mivo.targetRepo, pr: result.pr, head: result.head, scope: state?.lockToken });
   if (!result.reason) result.reason = result.outcome;
+  const ghRoute = summarizeRouteLog(ROUTE_LOG);
+  if (ghRoute) result.mivo.ghRoute = ghRoute;
   writeJson(join(OUT, 'result.json'), result);
   console.log(JSON.stringify({ ok: true, pr: result.pr, outcome: result.outcome, reason: result.reason, reviewClean: result.reviewClean }));
   return result;
