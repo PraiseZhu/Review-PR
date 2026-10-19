@@ -238,14 +238,19 @@ const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"verdict
 const scan = (dir) => { let hit = false; for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
   const full = path.join(dir, entry.name);
   if (entry.isDirectory()) hit = scan(full) || hit; else if (fs.readFileSync(full, 'utf8').includes(${JSON.stringify(SENTINEL)})) hit = true; } return hit; };
+const hung = verify && fs.existsSync(path.join(ctl, 'hang-model')) && fs.readFileSync(path.join(ctl, 'hang-model'), 'utf8') === model;
 if (verify) {
   const seq = JSON.parse(fs.readFileSync(path.join(ctl, 'verify-seq.json'), 'utf8'));
   const index = fs.readFileSync(path.join(ctl, 'calls.log'), 'utf8').split('\\n').filter((l) => l.startsWith('verify')).length;
   log('verify ' + model + ' ' + (scan(work) ? 'leak' : 'clean'));
   lock('verify');
+  // hang-model:这个模型的核对调用一直不返回(10-19 实测 sol 网关超时),直到被超时终止
+  if (hung) setInterval(() => {}, 1000);
+  else {
   const step = seq[Math.min(index, seq.length - 1)];
   if (step === 'fail') { process.stderr.write('verifier exploded'); process.exit(3); }
   fs.writeFileSync(at('--output-last-message'), JSON.stringify(step));
+  }
 } else {
   const mains = fs.readFileSync(path.join(ctl, 'calls.log'), 'utf8').split('\\n').filter((l) => l.startsWith('main')).length;
   log('main ' + model);
@@ -254,13 +259,13 @@ if (verify) {
   fs.writeFileSync(at('--output-last-message'), fs.readFileSync(path.join(ctl, 'main-answer.json'), 'utf8'));
   console.log(JSON.stringify({ type: 'item.completed', text: ${JSON.stringify(SENTINEL)} }));
 }
-console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }));
+if (!hung) console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }));
 `);
   chmodSync(bin, 0o755);
   return bin;
 }
 
-function runCase({ features = feat({ mode: 'enforce' }), mode = 'live', main = TWO_P1, seq = [CONFIRMED], mainFailFirst = false, diff = DIFF, lockMain = false, lockVerify = false }) {
+function runCase({ features = feat({ mode: 'enforce' }), mode = 'live', main = TWO_P1, seq = [CONFIRMED], mainFailFirst = false, diff = DIFF, lockMain = false, lockVerify = false, marker = null, hangModel = null }) {
   const work = mkdtempSync(join(tmpdir(), 'mivo-review-verify-'));
   const ctl = mkdtempSync(join(tmpdir(), 'mivo-review-verify-ctl-'));
   try {
@@ -290,6 +295,8 @@ process.stdout.write(JSON.stringify({ id: 5 }));
     if (lockMain) writeFileSync(join(ctl, 'lock-main'), '1');
     if (lockVerify) writeFileSync(join(ctl, 'lock-verify'), '1');
     writeFileSync(join(ctl, 'features.json'), features);
+    if (hangModel) writeFileSync(join(ctl, 'hang-model'), hangModel);
+    if (marker !== null) writeFileSync(join(ctl, 'healthy.marker'), marker);
     writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: { title: 't' } }));
     writeFileSync(join(work, 'input', 'pr.diff'), diff);
     writeFileSync(join(work, 'input', 'scope.json'), '{}');
@@ -302,7 +309,7 @@ process.stdout.write(JSON.stringify({ id: 5 }));
       current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
       scope: { mode: 'full', reason: '没有上一轮审查记录', files: ['src/a.ts'], previousFindings: [] }, checkRunId: 99, pendingGates: [],
       deferrals: { verified: [], rejected: [] }, checkRunExists: true }));
-    const env = { ...process.env, MIVO_REVIEW_WORK: work, MIVO_REVIEW_HEALTH_MARKER: join(work, 'no-marker'), MIVO_REVIEW_FEATURES_FILE: join(ctl, 'features.json'),
+    const env = { ...process.env, MIVO_REVIEW_WORK: work, MIVO_REVIEW_HEALTH_MARKER: marker !== null ? join(ctl, 'healthy.marker') : join(work, 'no-marker'), MIVO_REVIEW_FEATURES_FILE: join(ctl, 'features.json'),
       LITELLM_CREDENTIALS_JSON: JSON.stringify({ api_key: FAKE_KEY, base_url: 'https://gw.example.com/v1' }), CODEX_BIN: codexBin,
       GH_TOKEN: 'x', CHECKS_TOKEN: 'y', PATH: `${join(ctl, 'bin')}${delimiter}${process.env.PATH}` };
     for (const phase of ['codex', 'publish']) {
@@ -520,4 +527,53 @@ test('agentInstructionFiles:扫原始 diff 头行,带引号转义的路径、重
   assert.ok(!hits(hdr('a/docs/agents.md', 'b/docs/agents.md')), '小写 agents.md 不算');
   assert.ok(!hits(hdr('a/src/AGENTS.md.bak', 'b/src/AGENTS.md.bak')));
   assert.ok(!hits(['diff --git a/src/a.ts b/src/a.ts', '+// see AGENTS.md for rules'].join('\n')), '正文里提到不算');
+});
+
+// ── 网关不可用时不白等(2026-10-19 实测 sol 超时)──────────────────────────────
+// 假 codex 对 sol 的核对调用一直挂住;perCallTimeoutMin=1,不修时每条 P1 白等 60 秒到超时。
+const MARKER = 'status=healthy\nrun_id=timer-1\nfail_streak=0\n';
+const SOL = 'openai/gpt-6.1-sol';
+const feat1 = () => feat({ mode: 'enforce', perCallTimeoutMin: 1 });
+
+test('10-19 复现:marker 标 sol 降级 → 核对员整体跳过,不调用 sol;P1 照旧阻断,跳过原因进 warnings 与报告', { skip }, () => {
+  const started = Date.now();
+  const r = runCase({ features: feat1(), seq: [REFUTED, REFUTED], mode: 'dry-run', marker: `${MARKER}fallback=down\nfallback_reason=sol gateway timeout\n`, hangModel: SOL });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna'], '核对员没有去调 sol');
+  assert.ok(Date.now() - started < 50_000, '没有白等超时');
+  assert.equal(r.result.outcome, 'findings');
+  assert.equal(r.result.mivo.findings.length, 2, 'P1 照常阻断');
+  assert.deepEqual(r.result.mivo.verification.skipped.map((s) => s.reason), ['model-unavailable', 'model-unavailable']);
+  assert.ok(r.result.warnings.some((w) => /核对员/.test(w) && /sol gateway timeout/.test(w)), r.result.warnings.join('|'));
+  assert.match(r.report, /核对员未运行/);
+  assert.match(r.report, /2 条 P1/);
+  assert.match(r.report, /changes-requested —— 2 条 P0\/P1/, '结论与阻断判定不变');
+});
+
+test('10-19 复现:marker 没有降级字段,sol 挂住 → 第一次超时后熔断,本轮不再核剩下的;P1 照旧阻断', { skip }, () => {
+  const r = runCase({ features: feat1(), seq: [REFUTED, REFUTED], mode: 'dry-run', marker: MARKER, hangModel: SOL });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna', `verify ${SOL} clean`], '只试了第一条,第二条没再去等');
+  assert.equal(r.result.outcome, 'findings');
+  assert.equal(r.result.mivo.findings.length, 2);
+  const v = r.result.mivo.verification;
+  assert.equal(v.items.length, 1);
+  assert.equal(v.items[0].ok, false);
+  assert.match(v.items[0].error, /超时/);
+  assert.deepEqual(v.skipped.map((s) => s.reason), ['model-unavailable']);
+  assert.ok(r.result.warnings.some((w) => /核对员/.test(w)), r.result.warnings.join('|'));
+  assert.match(r.report, /核对员未运行/);
+});
+
+test('marker 降级字段读不到/格式异常 = 现行为:核对员照常运行', { skip }, () => {
+  const r = runCase({ seq: [CONFIRMED, CONFIRMED], mode: 'dry-run', marker: `${MARKER}fallback=banana\nfallback_model=bad model!\n` });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna', `verify ${SOL} clean`, `verify ${SOL} clean`]);
+  assert.ok(!/核对员未运行/.test(r.report));
+});
+
+test('主审失败 + marker 标备用降级 → 不再尝试备用,失败原因写明已跳过', { skip }, () => {
+  const r = runCase({ mainFailFirst: true, mode: 'dry-run', marker: `${MARKER}fallback=down\nfallback_reason=sol gateway timeout\n` });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna'], '没有试备用 sol');
+  assert.equal(r.result.outcome, 'error');
+  assert.match(r.result.reason, /备用模型.*不可用.*已跳过/);
+  assert.equal(r.result.mivo.codex.attempts.length, 1);
+  assert.ok(r.result.warnings.some((w) => /备用模型/.test(w)), r.result.warnings.join('|'));
 });

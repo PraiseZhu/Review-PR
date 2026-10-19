@@ -137,3 +137,18 @@ test('nextAttempt 用传进来的备用模型;备用与主模型相同就不再�
   assert.deepEqual(nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 10 * MIN, fallback }), { ...fallback, timeoutMs: 60 * MIN });
   assert.equal(nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 10 * MIN, fallback: { model: primary.model, effort: 'low' } }), null);
 });
+
+test('备用模型被 marker 标为降级:主审非额度类失败后不再尝试备用;降级的是别的模型、或没有降级字段时与原来一致', () => {
+  const primary = tierConfig('standard', {});
+  const attempts = [{ ok: false, quota: false }];
+  const sol = { model: FALLBACK.model, reason: 'gateway timeout' };
+  assert.deepEqual(nextAttempt({ primary, attempts, elapsedMs: 10 * MIN }), { model: FALLBACK.model, effort: FALLBACK.effort, timeoutMs: primary.timeoutMs });
+  assert.equal(nextAttempt({ primary, attempts, elapsedMs: 10 * MIN, degraded: sol }), null);
+  assert.deepEqual(nextAttempt({ primary, attempts, elapsedMs: 10 * MIN, degraded: null }), nextAttempt({ primary, attempts, elapsedMs: 10 * MIN }));
+  assert.ok(nextAttempt({ primary, attempts, elapsedMs: 10 * MIN, degraded: { model: 'openai/other', reason: '' } }), '降级的不是备用模型就照常换');
+  // 角色变量把备用换成别的模型时,按 id 比较,sol 的降级不影响它
+  const other = { model: 'openai/gpt-6-terra', effort: 'high' };
+  assert.equal(nextAttempt({ primary, attempts, elapsedMs: 10 * MIN, fallback: other, degraded: sol })?.model, other.model);
+  // 主审第一次尝试不受降级影响
+  assert.deepEqual(nextAttempt({ primary, attempts: [], elapsedMs: 0, degraded: sol }), primary);
+});
