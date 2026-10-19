@@ -3084,6 +3084,9 @@ const SNAPSHOT_GQL = `
       }
     }
   }`;
+// [MIVO-PATCH app-readable-snapshot] REVIEW_PR_SNAPSHOT_FORK_NAME=0 时不读 fork 的 nameWithOwner,只读 isCrossRepository:
+// Mini 的 gh 分流器把带 headRepository 的 GraphQL 整条交给个人账号(App 看不到私有 fork 时 GitHub 静默返回 null)。
+const SNAPSHOT_GQL_NO_FORK_NAME = SNAPSHOT_GQL.replace('headRepository{ nameWithOwner }', 'isCrossRepository');
 
 /**
  * 一次 GraphQL 拉全部 open PR(含 draft——draft↔ready 切换必须反映进指纹)的指纹字段。
@@ -3096,16 +3099,22 @@ const SNAPSHOT_GQL = `
  * (最多 3 次),仍 UNKNOWN 就用当前值(方向安全:只多放行不漏放行)。pre-check 比对侧
  * 不需要它(比对时拿到 UNKNOWN → mismatch → 放行,本就是 fail-open 方向)。
  */
-export function fetchOpenPrSnapshot({ owner, repo, timeoutMs, settleUnknown = false, ghGraphqlFn = ghGraphql } = {}) {
+export function fetchOpenPrSnapshot({ owner, repo, timeoutMs, settleUnknown = false, ghGraphqlFn = ghGraphql,
+  readsForkName = process.env.REVIEW_PR_SNAPSHOT_FORK_NAME !== '0' } = {}) {
   if (!owner || !repo) ({ owner, repo } = parseRepo());
+  // [MIVO-PATCH app-readable-snapshot] 不读 fork 名时,同仓 PR 的 headRepository 记本仓、fork PR 记 null;
+  // 下游 stackedBaseDependencies 只比较是否等于本仓,判定不变。
+  const headRepositoryOf = (n) => (readsForkName ? n.headRepository?.nameWithOwner ?? null
+    : n.isCrossRepository === false ? `${owner}/${repo}` : null);
   const fetchOnce = () => {
-    const nodes = fetchGraphqlConnection(SNAPSHOT_GQL, { owner, repo },
+    const nodes = fetchGraphqlConnection(readsForkName ? SNAPSHOT_GQL : SNAPSHOT_GQL_NO_FORK_NAME, { owner, repo },
       (data) => data?.repository?.pullRequests, { timeoutMs, ghGraphqlFn });
     if (new Set(nodes.map((n) => n.number)).size !== nodes.length) throw new Error('open PR 分页出现重复编号，请重新扫描');
     for (const node of nodes) {
       if (!Number.isInteger(node.number) || !node.headRefOid || !node.updatedAt ||
           !Array.isArray(node.reviewThreads?.nodes) || !node.reviewThreads?.pageInfo ||
-          node.reviewThreads.nodes.some((t) => typeof t?.isResolved !== 'boolean')) {
+          node.reviewThreads.nodes.some((t) => typeof t?.isResolved !== 'boolean') ||
+          (!readsForkName && typeof node.isCrossRepository !== 'boolean')) {
         throw new Error('open PR 快照字段未完整读取');
       }
       if (node.reviewThreads.pageInfo.hasNextPage) {
@@ -3123,7 +3132,7 @@ export function fetchOpenPrSnapshot({ owner, repo, timeoutMs, settleUnknown = fa
         author: n.author?.login ?? '',
         baseRefName: n.baseRefName,
         headRefName: n.headRefName,
-        headRepository: n.headRepository?.nameWithOwner ?? null,
+        headRepository: headRepositoryOf(n),
         base: n.baseRefOid,
         head: n.headRefOid ?? null,
         updatedAt: n.updatedAt ?? null,

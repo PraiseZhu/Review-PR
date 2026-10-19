@@ -56,6 +56,10 @@ function loadConfig() {
   config.maxParallel = Math.max(1, Math.min(10, Number(config.maxParallel) || 3));
   config.dailyCap = Number(config.dailyCap) || 30;
   config.pollSeconds = Number(config.pollSeconds) || 30;
+  if (config.viewerLogin !== undefined
+      && (typeof config.viewerLogin !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.viewerLogin))) {
+    throw new Error(`viewerLogin 不是合法的 GitHub 登录名:${JSON.stringify(config.viewerLogin)}`);
+  }
   return config;
 }
 
@@ -95,6 +99,11 @@ function setupEnv(config) {
   const env = { ...process.env, REVIEW_PR_REPO_ROOT: config.repoRoot, REVIEW_PR_STATE_DIR: config.stateDir };
   if (config.rulesFile) env.REVIEW_PR_RULES_FILE = config.rulesFile;
   else delete env.REVIEW_PR_RULES_FILE;
+  // Mini 的 gh 经 GitHub App 分流:查询里有 viewer 或 headRepository 的读请求会整条交给 PraiseZhu。
+  // viewerLogin(审查账号,即 gh 登录的账号)让 context 不再查 viewer;open PR 快照不读 fork 名(MIVO-PATCH app-readable-snapshot)。
+  if (config.viewerLogin) env.REVIEW_PR_VIEWER_LOGIN = String(config.viewerLogin);
+  else delete env.REVIEW_PR_VIEWER_LOGIN;
+  env.REVIEW_PR_SNAPSHOT_FORK_NAME = '0';
   if (config.mode === 'dry-run') {
     // dry-run:Cindy 脚本里的任何 GitHub 写入都被垫片拦下;只放行派发 dry-run 服务器审查。
     const realGh = run('/bin/sh', ['-c', 'command -v gh']).stdout.trim();
