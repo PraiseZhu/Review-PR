@@ -202,6 +202,71 @@ function permutations(items) {
   ]);
   eq('rollup/无 run id 仍按 startedAt', r.failed, ['build']);
 }
+{
+  // 外部 CI 的 /build/runs/<n> 不是 Actions workflow run id,应按 startedAt 取新红
+  const r = classifyRollupContexts([
+    {
+      name: 'external-ci', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://ci.example/build/runs/900',
+    },
+    {
+      name: 'external-ci', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://ci.example/build/runs/100',
+    },
+  ]);
+  eq('rollup/外部 CI /build/runs 不按 run id', r.failed, ['external-ci']);
+  eq('eval/外部 CI /build/runs 判失败', evaluateCiStatus({ rollup: r, ciRuns: { failed: [], pending: [], awaiting: [] } }).status, 'failed');
+}
+{
+  // GitHub check-run 链接 /o/r/runs/<checkRunId> 也不是 workflow run id
+  const r = classifyRollupContexts([
+    {
+      name: 'review-pr', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/runs/900',
+    },
+    {
+      name: 'review-pr', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/runs/100',
+    },
+  ]);
+  check('rollup/check-run 链接不按 run id', r.failed.length > 0, `got ${JSON.stringify(r.failed)}`);
+}
+{
+  // /actions/runs/900oops 数字后不是边界,不能当 run id,按时间取新红
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'ci', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/actions/runs/900oops',
+    },
+    {
+      name: 'gate', workflowName: 'ci', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/actions/runs/100oops',
+    },
+  ]);
+  eq('rollup/actions/runs 数字后无边界不按 run id', r.failed, ['gate']);
+}
+{
+  // 带查询串的 Actions URL 仍认 run id:旧绿 run 900,新红 run 100(时间更晚)→ 取 900 通过
+  const r = classifyRollupContexts([
+    {
+      name: 'gate', workflowName: 'ci', startedAt: '2026-10-19T10:00:00Z',
+      status: 'COMPLETED', conclusion: 'SUCCESS',
+      detailsUrl: 'https://github.com/o/r/actions/runs/900?check_suite_focus=true',
+    },
+    {
+      name: 'gate', workflowName: 'ci', startedAt: '2026-10-19T10:01:00Z',
+      status: 'COMPLETED', conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/o/r/actions/runs/100/job/2',
+    },
+  ]);
+  eq('rollup/Actions URL 带查询串仍按 run id', r.failed, []);
+}
 
 // ── ② evaluateCiStatus:failed 压过一切 ──
 {
