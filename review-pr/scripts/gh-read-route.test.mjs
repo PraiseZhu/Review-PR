@@ -23,6 +23,11 @@ const mode = process.env.FAKE_APP_MODE || 'ok';
 if (token === 'app-token' && mode === '403') { process.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n'); process.exit(1); }
 if (token === 'app-token' && mode === '404') { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1); }
 if (token === 'app-token' && mode === '500') { process.stderr.write('gh: Internal Server Error (HTTP 500)\\n'); process.exit(1); }
+if (token !== 'app-token' && process.env.FAKE_USER_FLAKY_FILE) {
+  const n = Number(fs.existsSync(process.env.FAKE_USER_FLAKY_FILE) ? fs.readFileSync(process.env.FAKE_USER_FLAKY_FILE, 'utf8') : '0');
+  fs.writeFileSync(process.env.FAKE_USER_FLAKY_FILE, String(n + 1));
+  if (n === 0) { process.stderr.write('gh: Service Unavailable (HTTP 503)\\n'); process.exit(1); }
+}
 process.stdout.write(JSON.stringify({ data: { by: token }, by: token }));
 `);
 chmodSync(join(BIN, 'gh'), 0o755);
@@ -37,7 +42,7 @@ function setup(extra = {}) {
   rmSync(CALLS, { force: true });
   rmSync(ROUTE_LOG, { force: true });
   route.resetRouteMetrics();
-  for (const key of ['REVIEW_PR_READ_TOKEN', 'REVIEW_PR_READ_REPOS', 'REVIEW_PR_GH_ROUTE_LOG', 'FAKE_APP_MODE']) delete process.env[key];
+  for (const key of ['REVIEW_PR_READ_TOKEN', 'REVIEW_PR_READ_REPOS', 'REVIEW_PR_GH_ROUTE_LOG', 'FAKE_APP_MODE', 'FAKE_USER_FLAKY_FILE']) delete process.env[key];
   process.env.GH_TOKEN = 'user-token';
   process.env.GITHUB_TOKEN = 'user-token';
   Object.assign(process.env, extra);
@@ -154,6 +159,16 @@ test('gh():App 返回 403/404 → 换原令牌重试一次并记为 app-fallback
     assert.equal(route.summarizeRouteLog(ROUTE_LOG).appFallback, 1);
     assert.deepEqual(route.routeMetrics(), { app: 0, appFallback: 1, user: 0 });
   }
+});
+
+test('gh():App 被拒后改用原令牌那次遇到 503,照常做瞬时错误重试', () => {
+  const flaky = join(WORK, 'flaky-count');
+  rmSync(flaky, { force: true });
+  setup({ ...ENABLED, FAKE_APP_MODE: '403', FAKE_USER_FLAKY_FILE: flaky });
+  const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5']);
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token', 'user-token']);
+  assert.equal(JSON.parse(r.stdout).by, 'user-token');
 });
 
 test('gh():App 返回 500 → 不换原令牌,失败原样交给调用方', () => {

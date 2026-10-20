@@ -127,7 +127,7 @@ export async function runCli() {
       print({ ok: true, pr, action: 'reconciled', journal }); process.exit(0); }
     print({ ok: true, pr, action: 'pending-reconciliation', retry: true, journal, ...previous }); process.exit(2);
   }
-  const probe = probeBranchProtection(slug, meta.baseRefName);
+  const probe = probeBranchProtection(slug, meta.baseRefName, { fresh: true });
   const requiredChecks = requiredCheckNames(probe);
   if (!requiredChecks.length || probe?.requiredStatusChecksKnown === false) {
     print({ ok: true, pr, action: 'not-eligible', reason: 'required checks 未能完整读取，拒绝自动重跑', requiredChecks }); process.exit(0);

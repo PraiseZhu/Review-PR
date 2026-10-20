@@ -870,19 +870,24 @@ export function gh(args, opts = {}) {
   const viaApp = route.route === 'app';
   const first = () => (viaApp ? invoke({ env: appReadEnv(process.env, routeConfig.token) }) : invoke());
   const routeStarted = Date.now();
-  let r = first();
   // Only repeat reads. A timeout after a mutation may mean the write already succeeded.
-  for (let retry = 0; safeRead && retry < 2; retry++) {
-    const transient = /HTTP (?:429|502|503|504)|ETIMEDOUT|ECONNRESET|TLS handshake timeout|connection reset/i.test(r.stderr) ||
-      args[0] === 'api' && /^\s*<(?:!DOCTYPE|html)\b/i.test(r.stdout);
-    if (!transient) break;
-    REQUEST_METRICS.retries++;
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, [500, 1500][retry]);
-    r = first();
-  }
+  const withTransientRetry = (call) => {
+    let res = call();
+    for (let retry = 0; safeRead && retry < 2; retry++) {
+      const transient = /HTTP (?:429|502|503|504)|ETIMEDOUT|ECONNRESET|TLS handshake timeout|connection reset/i.test(res.stderr) ||
+        args[0] === 'api' && /^\s*<(?:!DOCTYPE|html)\b/i.test(res.stdout);
+      if (!transient) break;
+      REQUEST_METRICS.retries++;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, [500, 1500][retry]);
+      res = call();
+    }
+    return res;
+  };
+  let r = withTransientRetry(first);
   if (routeConfig) {
     const fellBack = viaApp && shouldFallbackToUser(r);
-    if (fellBack) r = invoke();
+    // App 被拒后换原令牌的那次读,同样享有瞬时错误重试。
+    if (fellBack) r = withTransientRetry(() => invoke());
     recordRoute(routeConfig, { route: fellBack ? 'app-fallback' : route.route, reason: fellBack ? 'app_denied_retry_user' : route.reason, args, ms: Date.now() - routeStarted });
   }
   const plan = credFallbackPlan({ result: r, disabled: noCredFallback });
@@ -1131,11 +1136,12 @@ export function classifyHeadChecks(slug, headSha) {
  * 返回 { requiredCheckRules, requiredStatusChecks, requiredStatusChecksKnown,
  *          adminUnverifiedRuleTypes, ruleTypes, canBypass, rulesetIds } | null。
  */
-export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.env, now = Date.now, cacheFile } = {}) {
+export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.env, now = Date.now, cacheFile, fresh = false } = {}) {
   if (!branch) return null;
   // [MIVO-PATCH branch-protection-cache] 设了 REVIEW_PR_BRANCH_PROTECTION_CACHE_MS(毫秒)时,按 仓+分支 缓存成功结果。
   // 分支保护要 Administration 读,App 令牌读不了,只能少读;规则很少变,Mini 前置审查每轮都读是白费 PraiseZhu 的额度。
   // 默认不设=每次都读(服务器 publish 不受影响)。失败(null)不缓存,下一次照常重读。
+  // fresh:要据此做合并 / bypass / 重跑决定的调用方(pre-merge-check、retry-ci)不读缓存,只把新结果写回缓存。
   const ttl = branchProtectionCacheMs(env);
   if (ttl <= 0) return probeBranchProtectionUncached(slug, branch, { ghFn, env });
   const file = cacheFile ?? stateFile('branch-protection-cache.json');
@@ -1143,7 +1149,7 @@ export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.e
   const at = now();
   const cache = readBranchProtectionCache(file);
   const hit = cache[key];
-  if (hit && Number.isFinite(hit.at) && at >= hit.at && at - hit.at < ttl && hit.value) return hit.value;
+  if (!fresh && hit && Number.isFinite(hit.at) && at >= hit.at && at - hit.at < ttl && hit.value) return hit.value;
   const value = probeBranchProtectionUncached(slug, branch, { ghFn, env });
   if (!value) return value;
   const next = {};
