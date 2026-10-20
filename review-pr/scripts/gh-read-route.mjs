@@ -16,6 +16,8 @@ import { classify, needsStdin, APP } from './vendor/gh-app-classify.mjs';
 export const READ_TOKEN_ENV = 'REVIEW_PR_READ_TOKEN';
 const TOKEN_KEYS = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'];
 const REPO_RE = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
+// 随调用者身份变化的字段:合并状态(含 admin / bypass 视角)、viewer* 系列。
+const IDENTITY_FIELD_RE = /mergeStateStatus|viewerCan|viewerDid|viewerHas|viewerIs|viewerLatestReview|viewerPermission|viewerSubscription|viewerThumbsUp/i;
 
 const METRICS = { app: 0, appFallback: 0, user: 0 };
 export function routeMetrics() { return { ...METRICS }; }
@@ -43,7 +45,12 @@ export function decideReadRoute(args, { input, env = process.env, config, explic
     stdinText = input;
   }
   const d = classify(args, { repos: config.repos, env, stdinText, readFile: (path) => readFileSync(path, 'utf8') });
-  return { route: d.route === APP ? 'app' : 'user', reason: d.reason };
+  if (d.route !== APP) return { route: 'user', reason: d.reason };
+  // 本地补一道:GitHub 按「谁在读」返回不同值的字段一律用原令牌。实测(2026-10-20,xindong/mivo-canvas-plugin):
+  // PraiseZhu 作者的 PR 上 mergeStateStatus 个人令牌读到 CLEAN、App 读到 BLOCKED;审查机对「作者就是审查账号」的 PR
+  // 用它复核合并状态,读错会把该放行的 PR 当成未放行。分类器是搬运的原文不改,所以在这里挡。
+  if (IDENTITY_FIELD_RE.test(`${args.join(' ')}\n${stdinText ?? ''}`)) return { route: 'user', reason: 'identity_field' };
+  return { route: 'app', reason: d.reason };
 }
 
 /** 给 App 那次调用用的环境:摘掉调用方带来的令牌,只放 App 令牌。不改入参。 */

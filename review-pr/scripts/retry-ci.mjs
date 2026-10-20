@@ -163,7 +163,7 @@ export async function runCli() {
       releaseClaim(journal);
       print({ ok: true, pr, action: 'state-changed', reason: 'CI 重跑前 PR head/base/state 或维护者权限已变化', retry: true }); process.exit(2);
     }
-    const latestProbe = probeBranchProtection(slug, latestMeta.baseRefName);
+    const latestProbe = probeBranchProtection(slug, latestMeta.baseRefName, { fresh: true });
     const latestRequired = requiredCheckNames(latestProbe);
     if (!latestRequired.length || latestProbe?.requiredStatusChecksKnown === false) {
       releaseClaim(journal);

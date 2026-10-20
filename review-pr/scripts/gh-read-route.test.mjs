@@ -89,6 +89,21 @@ test('decideReadRoute:读走 App,写/身份/管理/没写仓/不在名单走原�
   assert.equal(route.decideReadRoute(['api', 'repos/o/r/pulls/5'], { config: null }).route, 'user');
 });
 
+test('decideReadRoute:带 mergeStateStatus / viewer* 等随身份变化字段的读一律走原令牌', () => {
+  const config = { token: 't', repos: ['o/r'], logFile: '' };
+  const decide = (args, input) => route.decideReadRoute(args, { config, env: {}, input });
+  assert.deepEqual(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus']), { route: 'user', reason: 'identity_field' });
+  assert.deepEqual(decide(['pr', 'list', '--repo', 'o/r', '--json', 'number,mergeStateStatus']), { route: 'user', reason: 'identity_field' });
+  const gql = (fields) => JSON.stringify({ query: `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){number ${fields}}}}`, variables: { owner: 'o', name: 'r', n: 5 } });
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('mergeStateStatus')).reason, 'identity_field');
+  // viewer* 在分类器里本来就被判给个人账号(原因 graphql_viewer);这里只要求不走 App。
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('viewerCanMergeAsAdmin')).route, 'user');
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('viewerLatestReview{state}')).route, 'user');
+  // 不带这些字段的照旧走 App
+  assert.equal(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeable,reviewDecision,headRefOid']).route, 'app');
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('state')).route, 'app');
+});
+
 test('shouldFallbackToUser:只认权限/不存在/令牌失效', () => {
   const bad = (stderr, extra = {}) => ({ ok: false, stdout: '', stderr, status: 1, ...extra });
   assert.equal(route.shouldFallbackToUser({ ok: true, stdout: '', stderr: '', status: 0 }), false);
