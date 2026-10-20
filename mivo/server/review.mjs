@@ -146,7 +146,7 @@ async function prepare() {
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
     }
-    // 只缺界面证据或只剩机器人 thread:照审,但没有 P0/P1 也不放行(publishAdvisory)。
+    // 只缺界面证据或只剩机器人 thread:照审,但没有 P0/P1/P2 也不放行(publishAdvisory)。
     state.pendingGates = gate.pendingGates ?? [];
     const tier = ctx.review?.tier ?? input.tier;
     if (tier !== input.tier) state.warnings.push(`档位与前置给出的不同(${input.tier} → ${tier}),按进场复核结果审查`);
@@ -486,7 +486,7 @@ async function codex() {
   const last = attempts.at(-1);
   if (!(last?.ok && answer)) return;
   try {
-    // 逐条核对员(lib/verify.mjs):off 不动;shadow 只记录;enforce 由 publish 把被推翻/降级的 P1 移出阻断。整段在这里吞掉异常——
+    // 逐条核对员(lib/verify.mjs):off 不动;shadow 只记录;enforce 由 publish 把被推翻/降级的 P1/P2 移出阻断。整段在这里吞掉异常——
     // 入口的 catch 会把异常变成 finishEarly(error),那样核对员出错就让整轮审查作废了;出错的条目照常阻断。核对调用不写进 state.codex.attempts。
     const features = loadFeatures(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     state.warnings.push(...features.warnings);
@@ -497,10 +497,10 @@ async function codex() {
     if (cfg.mode === 'off') state.verification = { mode: 'off', items: [], skipped: [] };
     else if (!cfg.tiers.includes(state.tier)) state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'tier' }] };
     else if ((instructionFiles = agentInstructionFiles(readFileSync(state.context.diffFile, 'utf8'))).length) {
-      // PR 改了给 agent 看的说明文件:核对员会在 head 上读到它们并可能照做,这一轮不核对,P1 照原样阻断
+      // PR 改了给 agent 看的说明文件:核对员会在 head 上读到它们并可能照做,这一轮不核对,P1/P2 照原样阻断
       state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'agent-instructions-changed', lines: instructionFiles }] };
     } else if (cleanupLeft.length) {
-      // 主审的运行产物没清干净:沙箱只限写不限读,核对员可能读到主审的答卷或日志,失去独立性。主审结果照常采用,这一轮不核对,P1 照原样阻断。
+      // 主审的运行产物没清干净:沙箱只限写不限读,核对员可能读到主审的答卷或日志,失去独立性。主审结果照常采用,这一轮不核对,P1/P2 照原样阻断。
       state.verification = { mode: cfg.mode, items: [], skipped: [{ key: null, reason: 'artifacts-cleanup-failed', lines: cleanupLeft }] };
     } else {
       const classified = classifyAnswer(state, ctx, answer);
@@ -522,7 +522,7 @@ async function codex() {
           } })
         : { mode: cfg.mode, items: [], skipped: [] };
       const unverified = (state.verification.skipped ?? []).filter((s) => s.reason === 'model-unavailable').length;
-      if (unverified) state.warnings.push(`核对员未运行:${state.verification.unavailable},${unverified} 条 P1 没核,照常阻断`);
+      if (unverified) state.warnings.push(`核对员未运行:${state.verification.unavailable},${unverified} 条 P1/P2 没核,照常阻断`);
     }
   } catch (error) {
     state.verification = { mode: state.verification?.mode ?? 'enforce', error: String(error?.message ?? error).slice(0, 300), items: [], skipped: [] };
@@ -670,7 +670,7 @@ async function publish() {
       if (!checked.ok) return failReview(state, result, `模型答卷不合格:${checked.error}`);
       result.warnings.push(...checked.notes);
       if (checked.truncated.findings) result.warnings.push(`问题超过 100 条,只发布前 100 条`);
-      // 核对员(enforce):推翻/降级的 P1 移出阻断,公开写进报告;P0 和其余 P1 照常阻断。
+      // 核对员(enforce):推翻/降级的 P1/P2 移出阻断,公开写进报告;P0 和其余条目照常阻断。
       hadBlockers = checked.findings.length > 0;
       const verified = applyVerification({ findings: checked.findings, verification: state.verification });
       findings = verified.findings;
@@ -678,16 +678,23 @@ async function publish() {
       verifierDowngraded = verified.downgraded;
       verifierOverruled = [...verified.refuted.map((f) => ({ ...f, verdict: 'refuted' })), ...verified.downgraded.map((f) => ({ ...f, verdict: 'downgraded' }))]
         .map((f) => ({ ...f, title: scrubSecrets(f.title).text, note: scrubSecrets(f.note).text }));
-      const stuck = checked.stuck.filter((item) => findings.some((f) => f.key === item.key));
+      const rank = { P0: 0, P1: 1, P2: 2 };
+      const severityByKey = new Map();
+      for (const f of findings) {
+        const prev = severityByKey.get(f.key);
+        if (!prev || (rank[f.severity] ?? 9) < (rank[prev] ?? 9)) severityByKey.set(f.key, f.severity);
+      }
+      const stuck = checked.stuck.filter((item) => findings.some((f) => f.key === item.key))
+        .map((item) => ({ ...item, severity: severityByKey.get(item.key) ?? item.severity }));
       deferred = checked.deferred;
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
       convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
         rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
-      // 因核对员模型不可用没核的 P1(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
+      // 因核对员模型不可用没核的 P1/P2(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
       const unverifiedUids = new Set((state.verification?.skipped ?? []).filter((s) => s.reason === 'model-unavailable' && s.uid).map((s) => s.uid));
-      const unverifiedCount = findings.filter((f) => f.severity === 'P1' && unverifiedUids.has(f.uid)).length;
+      const unverifiedCount = findings.filter((f) => ['P1', 'P2'].includes(f.severity) && unverifiedUids.has(f.uid)).length;
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
         preexisting, ruledKept, verifierRefuted, verifierDowngraded,
         verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
@@ -706,7 +713,7 @@ async function publish() {
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
-    // 原本有 P1 卡点、被核对员全部推翻/降级:不 Approve(reviewClean 记 false,同一 head 再来也不会被沿用成通过),只发评论请人工看一眼。
+    // 原本有 P1/P2 卡点、被核对员全部推翻/降级:不 Approve(reviewClean 记 false,同一 head 再来也不会被沿用成通过),只发评论请人工看一眼。
     const allOverruled = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
@@ -752,10 +759,10 @@ function baseResult(state) {
 async function publishFindings(state, result, reportFile, findings) {
   const input = state.input;
   result.outcome = 'findings';
-  result.reason = `发现 ${findings.length} 条 P0/P1`;
+  result.reason = `发现 ${findings.length} 条 P0/P1/P2`;
   const deferredSummary = toDeferredSummary(result.mivo.deferred);
-  const deferHint = findings.some((finding) => /^\s*\[P1\]/.test(finding.body)) ? '本 PR 修不了的 P1 可以转 issue 跟进,做法见报告。' : '';
-  const conclusionCheck = { conclusion: 'failure', title: `发现 ${findings.length} 条 P0/P1`,
+  const deferHint = findings.some((finding) => /^\s*\[P[12]\]/.test(finding.body)) ? '本 PR 修不了的 P1/P2 可以转 issue 跟进,做法见报告。' : '';
+  const conclusionCheck = { conclusion: 'failure', title: `发现 ${findings.length} 条 P0/P1/P2`,
     summary: `档位 ${state.tier}。问题已在 PR 上开 review thread,修复并 resolve 后自动重审。${deferHint}${deferredSummary ? `另有 ${deferredSummary.text},不阻断。` : ''}` };
   if (input.mode === 'dry-run') {
     result.reason += '(dry-run:没有写入 GitHub)';
@@ -781,9 +788,9 @@ async function publishFindings(state, result, reportFile, findings) {
 
 async function publishClean(state, result, reportFile) {
   const input = state.input;
-  // 只有转 issue 跟进的 P1 时也走这里:不阻断,check 标题和摘要写明条数与 issue 号。
+  // 只有转 issue 跟进的 P1/P2 时也走这里:不阻断,check 标题和摘要写明条数与 issue 号。
   const deferredSummary = toDeferredSummary(result.mivo.deferred);
-  const clean = deferredSummary ? `没有阻断的 P0/P1;${deferredSummary.text},不阻断本 PR` : '没有 P0/P1';
+  const clean = deferredSummary ? `没有阻断的 P0/P1/P2;${deferredSummary.text},不阻断本 PR` : '没有 P0/P1/P2';
   if (input.mode === 'dry-run') {
     Object.assign(result, { outcome: 'approval', reason: `审查通过,${clean}(dry-run:没有写入 GitHub)`,
       approval: { status: 'blocked', code: 'dry-run', reason: 'dry-run 只审查,不写入 GitHub' } });
@@ -797,7 +804,7 @@ async function publishClean(state, result, reportFile) {
   const receipt = existsSync(finishFile) ? readJson(finishFile, null) : null;
   result.approval = receipt?.approval ?? finish.approval ?? { status: 'pending', code: 'approval-result-unverified', reason: finish.error || 'finish 没有回执' };
   if (receipt?.retry || finish.retry) result.retry = true;
-  const check = { conclusion: 'success', title: deferredSummary ? `审查通过(${state.tier}),${deferredSummary.count} 条 P1 已转 issue` : `审查通过(${state.tier})`,
+  const check = { conclusion: 'success', title: deferredSummary ? `审查通过(${state.tier}),${deferredSummary.count} 条 P1/P2 已转 issue` : `审查通过(${state.tier})`,
     summary: `${clean}。${state.scope.reason}` };
   if (receipt?.stage === 'reviewed-only' && result.approval.status === 'verified') {
     Object.assign(result, { outcome: 'review-only', reason: `审查通过,已 Approve${deferredSummary ? `(${deferredSummary.text})` : ''};review-only 不执行合并,由维护者手动合并` });
@@ -852,7 +859,7 @@ async function publishClean(state, result, reportFile) {
   Object.assign(result, { outcome: 'error', reason: `guarded finish 未完成:${receipt?.reason || finish.error || '未知'}`, retry: true });
 }
 
-// 代码没有 P0/P1,但还有前置门没过(缺界面证据、机器人 thread 没 resolve):以评论发报告,不 Approve、
+// 代码没有 P0/P1/P2,但还有前置门没过(缺界面证据、机器人 thread 没 resolve):以评论发报告,不 Approve、
 // 不挂 review:merge-ready,check 留在进行中。补齐后下一轮重审(同 head 走复用)才放行。
 // reviewClean 记 false:Mini 不把这个 head 当成审查通过,也不会为补 Approve 反复派发。
 // blockers:判门之外、发布时才发现的拦截项原文(作者是审查账号时 approve 回执里的其它失败项),与 pendingGates 并列写进待办;
@@ -864,13 +871,13 @@ async function publishAdvisory(state, result, reportFile, { blockers = [], retry
   // threads-unresolved 表示「前置门没过、没进审查」,轮次汇总会拒绝它带 enteredReview;只剩机器人 thread 记 merge-blocked。
   const outcome = pendingGates.includes('ui-evidence') || pendingGates.includes('handoff') ? 'format' : 'merge-blocked';
   const why = pending.join(';');
-  Object.assign(result, { outcome, reviewClean: false, reason: `代码审查没有 P0/P1,但还不能放行:${why}` });
+  Object.assign(result, { outcome, reviewClean: false, reason: `代码审查没有 P0/P1/P2,但还不能放行:${why}` });
   result.approval = { status: 'blocked', code: 'gates-pending', reason: why };
   result.mivo.advisory = { pendingGates, ...(blockers.length ? { blockers } : {}) };
   if (retry) result.retry = true;
   if (input.mode === 'dry-run') { result.reason += '(dry-run:没有写入 GitHub)'; return; }
   const banner = [
-    `> **代码审查没有发现 P0/P1,但这个 PR 还不能放行**:${why}。`,
+    `> **代码审查没有发现 P0/P1/P2,但这个 PR 还不能放行**:${why}。`,
     blockers.length
       ? '> 补齐后审查机会自动重审(代码没变时直接沿用这次的结论);作者是审查账号本人,不能自批,放行仍需另一位维护者 Approve。'
       : '> 补齐后审查机会自动重审;代码没变时直接沿用这次的结论并 Approve。',
@@ -885,19 +892,19 @@ async function publishAdvisory(state, result, reportFile, { blockers = [], retry
   }
   removeMergeReady(state, result);
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: null,
-    title: `代码审查没有 P0/P1(${state.tier}),等补齐后放行`, summary: `${why}。${state.scope.reason}` });
+    title: `代码审查没有 P0/P1/P2(${state.tier}),等补齐后放行`, summary: `${why}。${state.scope.reason}` });
 }
 
-// 原本有 P1 卡点,被核对员全部推翻/降级:代码审查没有留下阻断问题,但这个结论来自模型核对员而不是人。
+// 原本有 P1/P2 卡点,被核对员全部推翻/降级:代码审查没有留下阻断问题,但这个结论来自模型核对员而不是人。
 // 只以评论发报告,不 Approve、不挂 merge-ready;check 写成功(用户 2026-10-17 决定),由人看过报告再合。
 async function publishOverruled(state, result, reportFile) {
   const input = state.input;
   const why = '核对员推翻/降级了全部卡点，请人工看一眼再合';
   const count = result.mivo.verifierOverruled.length;
-  Object.assign(result, { outcome: 'merge-blocked', reviewClean: false, reason: `代码审查的 ${count} 条 P1 卡点全部被核对员推翻/降级,不 Approve:${why}` });
+  Object.assign(result, { outcome: 'merge-blocked', reviewClean: false, reason: `代码审查的 ${count} 条 P1/P2 卡点全部被核对员推翻/降级,不 Approve:${why}` });
   result.approval = { status: 'blocked', code: 'verifier-overruled', reason: why };
   if (input.mode === 'dry-run') { result.reason += '(dry-run:没有写入 GitHub)'; return; }
-  const banner = [`> **主审报了 ${count} 条 P1,核对员全部推翻或降级,所以没有阻断问题,但这不是人工结论**：${why}。`, '> 核对员给出的证据和理由列在下面对应的小节里,请核对;服务器不会 Approve。', ''].join('\n');
+  const banner = [`> **主审报了 ${count} 条 P1/P2,核对员全部推翻或降级,所以没有阻断问题,但这不是人工结论**：${why}。`, '> 核对员给出的证据和理由列在下面对应的小节里,请核对;服务器不会 Approve。', ''].join('\n');
   const comment = postReportComment(state, reportFile, { marker: `<!-- mivo-review:verifier-overruled head=${input.head} -->`, prefix: banner });
   result.mivo.reportComment = comment;
   if (!comment.ok) {
@@ -907,7 +914,7 @@ async function publishOverruled(state, result, reportFile) {
   }
   removeMergeReady(state, result);
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: 'success', title: `核对员推翻/降级了全部卡点(${state.tier}),请人工看一眼`,
-    summary: `主审的 ${count} 条 P1 都被核对员推翻或降级。${why}。${state.scope.reason}` });
+    summary: `主审的 ${count} 条 P1/P2 都被核对员推翻或降级。${why}。${state.scope.reason}` });
 }
 
 function postReportComment(state, reportFile, { marker = `<!-- mivo-review:report head=${state.input.head} -->`, prefix = '' } = {}) {

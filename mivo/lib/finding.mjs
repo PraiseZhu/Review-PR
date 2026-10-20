@@ -4,7 +4,7 @@
 // 被拒收会让每个审查都在模型阶段失败。长度与条数的限制只写在 description 里,由 normalizeFinding 在服务器端截断。
 import { createHash } from 'node:crypto';
 
-export const SEVERITIES = ['P0', 'P1'];
+export const SEVERITIES = ['P0', 'P1', 'P2'];
 export const ORIGINS = ['introduced', 'made-reachable', 'pre-existing'];
 export const LIMITS = { title: 120, text: 800, bugClass: 60, evidence: 8, instances: 20 };
 export const FINDING_MARKER_RE = /<!--\s*mivo-finding\s+key=([0-9a-f]{12})\s+round=(\d+|null)\s+head=([0-9a-f]{7,40})(?:\s+class=([^\s>]*))?\s*-->/g;
@@ -40,7 +40,7 @@ export const FINDING_ITEM_SCHEMA = {
     path: { type: 'string', description: '问题所在文件,必须是本 PR diff 里的文件(PR 之前就存在的问题也一样)' },
     line: { type: ['integer', 'null'], description: 'RIGHT 侧行号;没有准确行号写 null' },
     side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
-    deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1,且必须在任务书核验通过的列表里);其他一律 null' },
+    deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1/P2,且必须在任务书核验通过的列表里);其他一律 null' },
   },
 };
 
@@ -60,7 +60,7 @@ export function findingKeyOf({ path, bugClass = '', title = '' }) {
 }
 
 /** v1 项(只有 body)的标题:body 首行去掉 [Px] 前缀。 */
-export const titleOfBody = (body) => collapse(String(body ?? '').split('\n')[0].replace(/^\s*\[(?:P0|P1)\]\s*/, ''));
+export const titleOfBody = (body) => collapse(String(body ?? '').split('\n')[0].replace(/^\s*\[P[012]\]\s*/, ''));
 
 const normalizeLocations = (list, limit, label, notes) => {
   const items = Array.isArray(list) ? list : [];
@@ -98,7 +98,7 @@ export function normalizeFinding(raw) {
 const where = ({ path, line }) => (line ? `${path}:${line}` : path);
 const codeList = (list) => list.map((item) => `\`${escapeModelText(where(item))}\``).join('、');
 
-/** thread 正文(不含 marker)。首行必须是 `[P0|P1] 标题`:rulings、报告、发布都靠它判级。 */
+/** thread 正文(不含 marker)。首行必须是 `[P0|P1|P2] 标题`:rulings、报告、发布都靠它判级。 */
 export function renderFindingText(item) {
   const lines = [`[${item.severity}] ${escapeModelText(item.title)}`, ''];
   lines.push(`**触发条件**：${escapeModelText(item.trigger)}`);

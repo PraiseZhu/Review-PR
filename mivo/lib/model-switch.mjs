@@ -80,7 +80,7 @@ export function toSwitchWarnings({ role, target, effective }) {
     warnings.push(`备用模型和主审是同一个模型(${next.primary.model}):主审失败时不会再换备用模型重试`);
   }
   if (next.verifier && next.primary && next.verifier.model === next.primary.model) {
-    warnings.push(`核对员和主审是同一个模型(${next.primary.model}):主审成功时核对员会改用主审配置,还相同就不核对,P1 照常阻断`);
+    warnings.push(`核对员和主审是同一个模型(${next.primary.model}):主审成功时核对员会改用主审配置,还相同就不核对,P1/P2 照常阻断`);
   }
   return warnings;
 }
