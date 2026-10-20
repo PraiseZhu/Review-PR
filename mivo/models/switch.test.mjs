@@ -107,7 +107,7 @@ test('验证没通过、验证入口没上线、单档覆盖变量压住主审:�
   }
   const t = setup();
   try {
-    assert.match(t.switchTo('verifier', 'claude-opus-5-5', 'high').summary, /只能用网关上的 gpt 系模型/);
+    assert.match(t.switchTo('verifier', 'claude-opus-5-5', 'high').summary, /非 gpt 模型要选网关同名的来源/);
     assert.match(t.switchTo('fallback', 'gpt-6.1-sol', '').summary, /先在自动化里选好档位/);
     assert.deepEqual(t.dispatches(), []);
   } finally { t.done(); }
@@ -133,7 +133,7 @@ test('后台方式:--detach 立刻返回 job id;--wait 没跑完退出码 3,跑�
     };
     const bad = call('--role', 'primary', '--model', 'claude-opus-5-5', '--effort', 'max', '--detach');
     assert.equal(bad.code, 1);
-    assert.match(bad.summary, /gpt 系模型/);
+    assert.match(bad.summary, /非 gpt 模型要选网关同名的来源/);
     const started = call('--role', 'fallback', '--model', 'gpt-6.1-sol', '--effort', 'high', '--provider', 'xd', '--detach');
     assert.equal(started.code, 0, started.summary);
     assert.match(started.jobId, /^job-fallback-[0-9a-f]{12}$/);

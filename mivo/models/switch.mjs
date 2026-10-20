@@ -2,7 +2,7 @@
 // switch.mjs — 在 Mini 上切换服务器审查机某个角色(主审 / 备用模型 / 核对员)的模型和思考档位(维护者 2026-10-18)。
 // 由 Mini 上三个 Cindy 自动化「审查机主审模型」「审查机备用模型」「审查机核对员模型」调用:自动化读出自己选的模型和档位,
 // 原样传进来。流程:
-//   1. 把 Cindy 的模型 id 映射成网关 id(openai/...),校验档位;同一角色同时只跑一个(本机锁);
+//   1. 把 Cindy 的模型 id 映射成网关 id(gpt/o 系走 openai/<末段>,其他带来源前缀的按网关 <来源>/<模型> 原样),校验档位;同一角色同时只跑一个(本机锁);
 //   2. 读仓库变量:已经是这个配置就不动;主审被测试用的单档覆盖变量压住时拒绝;
 //   3. 派发 Mivo 的 review-model-check.yml(服务器上用实际审查 key 验证模型、档位、工具调用、结构化输出),等它跑完、取结果;
 //   4. 验证通过才写这个角色的仓库变量 MIVO_REVIEW_ROLE_<角色>,写完读回核对;读回不一致就恢复原值。验证没通过,原配置不动。
@@ -295,7 +295,7 @@ async function main() {
   else {
     console.log(result.summary);
     for (const w of result.warnings ?? []) console.log(`告警:${w}`);
-    if (result.available?.length) console.log(`网关上可用的 openai/ 模型:${result.available.join('、')}`);
+    if (result.available?.length) console.log(`网关上可用的模型:${result.available.join('、')}`);
   }
   process.exit(result.exitCode);
 }

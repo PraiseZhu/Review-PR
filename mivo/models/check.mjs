@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // check.mjs — 服务器上的审查模型验证(Mivo 的 review-model-check.yml 调用;这一步只拿模型网关凭据,没有 GitHub 令牌)。
 // 用实际审查 key 做两件事:
-//   1. 查网关的模型清单(GET /models),记下有没有目标模型,以及网关上所有 openai/ 模型(给人挑);
+//   1. 查网关的模型清单(GET /models),记下有没有目标模型,以及网关上所有模型(给人挑);
 //   2. 让 Codex CLI 用目标模型和思考档位跑一次最小任务:必须调用 shell 读出工作目录里的随机数,并按 JSON schema 交卷。
 //      交回的随机数对得上,才算「模型存在 + 档位被接受 + 工具调用 + 结构化输出」都成立。
 // 主 key 必测;配了备用 key 也测一次。放行规则在 lib/model-switch.mjs 的 toCheckVerdict(由 Mini 的 switch.mjs 判)。
@@ -61,7 +61,7 @@ async function checkKey({ name, creds, ring, model, effort, tmpRoot, runModel, r
   if (!creds) return { configured: false };
   const listed = listModels(creds, { runCmd });
   const models = { ok: listed.ok, status: listed.status, error: listed.error, count: listed.ids.length,
-    present: listed.ok ? listed.ids.includes(model) : null, available: listed.ids.filter((id) => id.startsWith('openai/')).sort().slice(0, 200) };
+    present: listed.ok ? listed.ids.includes(model) : null, available: [...listed.ids].sort().slice(0, 200) };
   return { configured: true, models, smoke: await smoke({ creds, ring, model, effort, tmpRoot, label: `check-${name}`, runModel }) };
 }
 

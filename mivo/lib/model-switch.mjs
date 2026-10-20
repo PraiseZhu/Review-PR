@@ -11,19 +11,28 @@ export const REQUEST_ID_RE = /^[A-Za-z0-9-]{8,80}$/;
 export const TIER_OVERRIDE_VARS = ['LIGHT', 'STANDARD', 'HEAVY'].flatMap((t) => [`MIVO_REVIEW_MODEL_${t}`, `MIVO_REVIEW_EFFORT_${t}`]);
 
 /**
- * Cindy 自动化里选的模型 → 服务器网关上的模型 id。Cindy 的 id 可能带来源前缀(openai/、codex/、openai-codex/ 等),
- * 只取最后一段,再加网关的 openai/ 前缀。服务器审查机跑的是 Codex CLI,只接 gpt 系(含 o 系)模型。
+ * Cindy 自动化里选的模型 → 服务器网关上的模型 id。
+ * 末段是 gpt-/o 系 → openai/<末段>(覆盖 Cindy 的 openai/、codex/、openai-codex/ 与裸 id)。
+ * 否则 raw 恰好是「来源/模型」一段斜杠、且来源不是 codex / openai-codex / chatgpt → 原样作为网关 id(再过 SERVER_MODEL_RE)。
+ * 裸的非 gpt id 被拒:非 gpt 模型要选网关同名的来源(如 xd),id 形如 deepseek/xxx。
+ * 能不能真的用由服务器验证(模型清单 + Codex CLI 冒烟)决定。
  */
 export function toServerModel(cindyModel) {
   const raw = String(cindyModel ?? '').trim();
   if (!raw) throw new Error('没有读到自动化选的模型');
-  const base = raw.split('/').pop();
-  if (!/^(?:gpt-|o\d)[A-Za-z0-9._-]*$/i.test(base)) {
-    throw new Error(`服务器审查机用 Codex CLI,只能用网关上的 gpt 系模型;自动化选的是 ${raw.slice(0, 80)}`);
+  const parts = raw.split('/');
+  const base = parts.at(-1);
+  if (/^(?:gpt-|o\d)[A-Za-z0-9._-]*$/i.test(base)) {
+    const model = `openai/${base}`;
+    if (!SERVER_MODEL_RE.test(model)) throw new Error(`模型 id 不合法:${model.slice(0, 80)}`);
+    return model;
   }
-  const model = `openai/${base}`;
-  if (!SERVER_MODEL_RE.test(model)) throw new Error(`模型 id 不合法:${model.slice(0, 80)}`);
-  return model;
+  const source = parts[0];
+  if (parts.length === 2 && !['codex', 'openai-codex', 'chatgpt'].includes(source)) {
+    if (!SERVER_MODEL_RE.test(raw)) throw new Error(`模型 id 不合法:${raw.slice(0, 80)}`);
+    return raw;
+  }
+  throw new Error(`非 gpt 模型要选网关同名的来源(如 xd),id 形如 deepseek/xxx;自动化选的是 ${raw.slice(0, 80)}`);
 }
 
 export function toEffort(effort) {
