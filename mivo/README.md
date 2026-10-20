@@ -34,7 +34,8 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；只在 codex 阶段读，不进任务书、不进 `specDigest` |
+| `config/review-features.json` | 核对员开关，默认 enforce；只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），默认 off |
+| `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解，判门与任务书用 |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
@@ -167,6 +168,20 @@ Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功�
 - **只剩机器人留的 thread 没 resolve**（首条评论作者是 Bot，如 Greptile）：照样送审。有人留的 thread 没关，照旧不送审。
 
 两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`（给 Mini 看的「还没放行」；结果里同时有 `mivo.advisory.pendingGates`）。作者补齐后下一轮重审；代码没变时沿用这次结论（`previousFromResult` 把「有挂起的门、没有问题条目」的 advisory 记成代码层面干净，不会因为 `reviewClean=false` 退回全量重审），Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+
+## 作者交接文件
+
+Mivo 仓 2026-10-19 起要求每个 PR 附 `docs/pr/<PR号>/review.md`（给审查）与 `qa.md`（给测试），写法见 Mivo 仓 `docs/pr/README.md`。
+Mivo 的 `PR Handoff` workflow（`pull_request_target`）在 head 上写检查 `pr-handoff-gate`，问题写成注解：`[MODE] observe|enforce|exempt` 一条，其余 `[错误码] 说明`。
+审查机不重新校验内容，只读这些注解（`lib/handoff.mjs`；从 `.github/workflows/pr-handoff.yml` 在当前 head 上的 `pull_request_target` 运行出发，只读最新一次运行所在 check suite 里的检查。PR 分支自带的同名 job 不在这个 workflow 的运行里，数量再多也挤不掉可信结果）。
+
+开关 `config/review-features.json` 的 `handoff.mode`：
+
+- `off`（默认）：不读交接，判门、任务书与 `specDigest` 和没有这个功能时逐字一致。
+- `observe`：任务书加「作者交接」一节，要求主审在 `## Rule coverage` 里加 `### 作者交接核对`，逐条写 R 成立 / 不成立 / 未核实、B 是否构成 P0/P1、交接之外的发现条数。不打回、不挡放行。切到 observe 会改变任务书，已审 PR 下一轮全量重审一次。
+- `enforce`：在 observe 的基础上，Mivo 门也是 enforce 且交接有错误时，按「送审但不放行」处理：照审、打回（固定文案列出错误）、`pendingGates` 挂 `handoff`；本 PR 第一次送审时交接已过期也一样。交接补齐后下一轮全量重审。
+
+切 enforce 之前，先把 `PR Handoff` 加进 `review-pr/config/pr-rules.json` 的 `ciIgnoreWorkflows`（`names` 与 `paths`），否则它的失败会先被当成 CI 失败、根本不送审。
 
 ## 审查机自己的写动作不再唤醒同一个 head
 

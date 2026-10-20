@@ -14,6 +14,7 @@ import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResul
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
+import { loadHandoffMode, readHandoffFacts, toHandoffPending } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
@@ -134,6 +135,13 @@ async function prepare() {
 
     if (input.action === 'protected-approve') return prepareProtectedApprove(state, ctx);
 
+    // 作者交接(lib/handoff.mjs):prepare 有 GitHub 令牌,在这里读;codex 阶段只用 state.handoff。开关 off 时不读。
+    const handoffMode = loadHandoffMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+    if (handoffMode.warning) state.warnings.push(handoffMode.warning);
+    ctx.mivoHandoff = { featureMode: handoffMode.mode,
+      facts: handoffMode.mode === 'off' ? null : readHandoffFacts({ repo: input.targetRepo, head: input.head, ghFn: (args) => gh(args, { allowFail: true }) }) };
+    if (ctx.mivoHandoff.facts?.readError) state.warnings.push(`交接事实读不到:${ctx.mivoHandoff.facts.readError}`);
+    state.handoff = ctx.mivoHandoff;
     const gate = decideGate(ctx);
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
@@ -169,7 +177,7 @@ async function prepare() {
       for (const [path, text] of Object.entries(rules.files)) if (typeof text === 'string') writeText(join(dir, path), text);
       state.rulesBaseDir = dir;
     }
-    const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles),
+    const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
       readFile: (path) => rules.files[path] ?? null,
       config: readFileSync(process.env.MIVO_REVIEW_RULES_FILE || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'), 'utf8') }));
     const current = {
@@ -177,7 +185,7 @@ async function prepare() {
       filePatchHashes: filePatchHashes(diffFiles),
       fileChangedLines: Object.fromEntries(Object.entries(diffFiles).map(([p, f]) => [p, f.changedLines])),
       totalDiffLines: ctx.totalDiffLines, tier, triggerKinds: (ctx.signoff?.triggers ?? []).map((t) => t.kind).sort(),
-      skillSha: input.skillSha, specDigest, now: Date.now(),
+      skillSha: input.skillSha, specDigest, now: Date.now(), pendingGates: [...state.pendingGates],
     };
     let headIsDescendant = null;
     if (previous?.head && previous.head !== input.head) {
@@ -187,6 +195,9 @@ async function prepare() {
     }
     const scope = computeReviewScope({ previous, current, headIsDescendant });
     state.scope = scope;
+    // 本 PR 第一次送审(没有上一轮结果)时交接已过期:enforce 下同样挂 handoff,代码照审、不放行。
+    state.handoff.firstReview = !previous;
+    if (!previous && !state.pendingGates.includes('handoff') && toHandoffPending(state.handoff, { firstReview: true }).length) state.pendingGates.push('handoff');
     state.current = current;
     state.previous = previous ? { head: previous.head, runId: input.prevRunId, lastFullReviewAt: previous.lastFullReviewAt } : null;
     writeJson(join(INPUT_DIR, 'scope.json'), scope);
@@ -412,6 +423,7 @@ async function codex() {
     deferrals: state.deferrals?.verified ?? [],
     rulings: state.rulings?.verified ?? [],
     rebuttals: state.rebuttals ?? [],
+    handoff: state.handoff ?? null,
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
   // 只有真要调用模型的审查才取 CLI 版本;取不到是 null,不影响审查。
@@ -850,7 +862,7 @@ async function publishAdvisory(state, result, reportFile, { blockers = [], retry
   const pendingGates = state.pendingGates ?? [];
   const pending = [...pendingGates.map((gate) => PENDING_GATE_TEXT[gate] ?? gate), ...blockers];
   // threads-unresolved 表示「前置门没过、没进审查」,轮次汇总会拒绝它带 enteredReview;只剩机器人 thread 记 merge-blocked。
-  const outcome = pendingGates.includes('ui-evidence') ? 'format' : 'merge-blocked';
+  const outcome = pendingGates.includes('ui-evidence') || pendingGates.includes('handoff') ? 'format' : 'merge-blocked';
   const why = pending.join(';');
   Object.assign(result, { outcome, reviewClean: false, reason: `代码审查没有 P0/P1,但还不能放行:${why}` });
   result.approval = { status: 'blocked', code: 'gates-pending', reason: why };

@@ -4,6 +4,7 @@
 // 与 context.mjs 的 auto 分流和 review-pr SKILL「凭证与隐私门最先执行」一致(泄露越早打回越早轮换)。
 // 输入是 context.mjs 的完整输出;输出是「下一步动作」,真正的 GitHub 写入由调用方用 Cindy 脚本执行。
 import { toCodeScanGate, toCodeScanWakeState, toStaleCodeScanReason } from './code-scan.mjs';
+import { toHandoffPending } from './handoff.mjs';
 
 export const KIND_TOPICS = {
   product: '产品 / UI 变更',
@@ -229,11 +230,14 @@ export function decideGate(ctx) {
   // 只缺界面证据、其他前置门都过时:照样打回要证据,同时送审代码(2026-10-15 #926/#935 因缺截图零审查被强合)。
   // 审查没有 P0/P1 也不 Approve,等证据补上后重审放行。
   const evidenceOnly = ['pushback-format', 'skip-stale-pushback'].includes(action) && isEvidenceOnly(ctx) && otherGatesClear(gate, botThreadsOnly);
+  // [handoff] 交接文件不完整(只在 review-features.json handoff.mode=enforce 且 Mivo 门为 enforce 时成立):同样照审 + 打回 + 不放行。
+  const handoffReasons = toHandoffPending(ctx.mivoHandoff);
+  const handoffUntold = ctx.meta?.reviewDecision !== 'CHANGES_REQUESTED';
   if (evidenceOnly) {
     const evidenceUntold = action === 'pushback-format' || ctx.meta?.reviewDecision !== 'CHANGES_REQUESTED';
     return withSignoff({ stage: 'review', outcome: null, reason: `${formatReason(ctx)};代码照审,补齐前不放行`,
       actions: evidenceUntold ? [{ script: 'request-changes', gateKind: 'format' }] : [],
-      tier: ctx.review?.tier ?? 'standard', pendingGates: ['ui-evidence', ...pendingGates] });
+      tier: ctx.review?.tier ?? 'standard', pendingGates: ['ui-evidence', ...(handoffReasons.length ? ['handoff'] : []), ...pendingGates] });
   }
   if (botThreadsOnly && action !== 'review') return threadsResult;
   switch (action) {
@@ -266,6 +270,11 @@ export function decideGate(ctx) {
     case 'bypass-structural-block':
       return withSignoff(classifyGateBlock(ctx, reason));
     case 'review':
+      if (handoffReasons.length) {
+        return withSignoff({ stage: 'review', outcome: null, tier: ctx.review?.tier ?? 'standard',
+          reason: `交接文件不完整(${handoffReasons.length} 处);代码照审,补齐前不放行`,
+          actions: handoffUntold ? [{ script: 'request-changes', gateKind: 'handoff' }] : [], pendingGates: ['handoff', ...pendingGates] });
+      }
       return withSignoff({ stage: 'review', outcome: null, actions: [], tier: ctx.review?.tier ?? 'standard',
         ...(pendingGates.length
           ? { reason: `只剩 ${unresolved} 条机器人留的 conversation 未 resolve;代码照审,resolve 前不放行`, pendingGates }
@@ -297,6 +306,7 @@ function otherGatesClear(gate, botThreadsOnly) {
 /** 送审但不能放行的前置门 → 给作者看的说明。 */
 export const PENDING_GATE_TEXT = {
   'ui-evidence': 'PR 描述里还缺改动后的界面证据(截图/录屏或 HTML)',
+  handoff: 'PR 还缺有效的交接文件(docs/pr/<PR号>/review.md 与 qa.md)',
   'bot-threads': '还有机器人(如 Greptile)留的讨论没有 resolve',
 };
 
@@ -528,6 +538,19 @@ export function buildGatePushback(ctx, gateKind) {
       ].join('\n'),
       comments: hits.filter((h) => h.file && !/^PR (title|body)$/.test(h.file) && Number.isInteger(h.line) && h.line > 0)
         .map((h) => ({ path: h.file, line: h.line, side: 'RIGHT', body: `[P0] 疑似真实凭证(${h.kind})。请移除并轮换,不要只在后续 commit 里删掉。` })),
+    };
+  }
+  if (gateKind === 'handoff') {
+    const reasons = toHandoffPending(ctx.mivoHandoff, { firstReview: ctx.mivoHandoff?.firstReview === true });
+    return {
+      body: [
+        `${author}这个 PR 的交接文件(\`docs/pr/${ctx.pr}/review.md\` 与 \`qa.md\`)还不完整。代码照常审查,补齐前不放行。`,
+        '',
+        ...reasons.map((r) => `- ${r}`),
+        '',
+        '写法见仓内 `docs/pr/README.md`;本地可以先跑 `node scripts/pr-handoff/check.mjs <PR号>` 自查。改完推送后,下一轮会自动重新审查。',
+      ].join('\n'),
+      comments: [],
     };
   }
   const issues = ctx.format?.formatIssues ?? [];

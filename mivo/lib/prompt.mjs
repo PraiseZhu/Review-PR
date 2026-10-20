@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ANSWER_SCHEMA } from './report.mjs';
 import { rulingSection, rebuttalSection } from './rulings.mjs';
+import { toHandoffPromptLines } from './handoff.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -103,7 +104,7 @@ const TIER_HINT = {
  * @param {object} p.inputs 材料文件的绝对路径 {contextFile, diffFile, scopeFile, securityScanFile?}
  * @param {object[]} [p.deferrals] 服务器核验通过的转 issue 条目 {issue, title, text}
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [] }) {
+export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null }) {
   const rulesBaseDir = inputs.rulesBaseDir ?? null;
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
@@ -184,6 +185,8 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     deferralSection(deferrals),
     ...(rulings.length ? ['', rulingSection(rulings)] : []),
     ...(rebuttals.length ? ['', rebuttalSection(rebuttals)] : []),
+    // 作者交接一节:开关 off 时为空,任务书与改动前逐字一致(specDigest 不变)。
+    ...((lines) => (lines.length ? ['', ...lines] : []))(toHandoffPromptLines({ handoff, prNumber: ctx.pr, workdir })),
     '',
     '## 交卷格式',
     '',
@@ -294,13 +297,14 @@ export function readRuleSources({ paths = [], base, head, git }) {
  * @param {(path:string)=>string|null} p.readFile 按审查实际读的版本取文件内容,取不到返回 null
  * @param {string} p.config 生效的 pr-rules 配置原文
  */
-export function buildSpecManifest({ spec, tier, files = [], readFile, config }) {
+export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off' }) {
   const plan = toRuleMapPlan(spec.ruleMap);
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
   const read = (path) => { const text = readFile(path); return typeof text === 'string' ? text : null; };
   // 规则文件 base 版本一节:全量模板按「有 rules-base」写,增量模板按「head 读取」写,两种写法都进 digest。
-  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals,
+  const handoff = handoffMode === 'off' ? null : { featureMode: handoffMode, facts: null };
+  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir } });
   return {
     version: 1,
