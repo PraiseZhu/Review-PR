@@ -3,6 +3,7 @@
 这张表只负责导航，不复制规则正文。每次审查都读取命中的原文；规则变化后不需要同步本文件，
 只有路径归属变化才更新映射。来源是 Mivo 根 `AGENTS.md` 的「改什么，先读哪里」。
 [MIVO-PATCH rule-map] 上游这份是 Cindy 仓的映射，Mivo 整份替换。
+[MIVO-PATCH p2-blocking] UI 规则行与核对清单第 8 条按 P0/P1/P2 报告并阻断，P3 不报。
 
 ## 所有 PR
 

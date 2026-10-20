@@ -1508,5 +1508,7 @@ test('p2-blocking: 三个新增上游文件已登记,口径不再写 P2 不报',
   assert.doesNotMatch(worker, /只报告本 PR 可证实的 P0\/P1，不以 P2/);
   assert.doesNotMatch(ruleMap, /若只有 P2，结论必须是通过/);
   assert.match(skill, /\[P0\|P1\|P2\]/);
+  assert.match(skill, /\[MIVO-PATCH p2-blocking\]/);
+  assert.match(ruleMap, /\[MIVO-PATCH p2-blocking\]/);
   assert.match(worker, /P0\/P1\/P2/);
 });
