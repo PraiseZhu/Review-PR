@@ -181,6 +181,8 @@ Mivo 的 `PR Handoff` workflow（`pull_request_target`）在 head 上写检查 `
 - `observe`：任务书加「作者交接」一节，要求主审在 `## Rule coverage` 里加 `### 作者交接核对`，逐条写 R 成立 / 不成立 / 未核实、B 是否构成 P0/P1、交接之外的发现条数。不打回、不挡放行。切到 observe 会改变任务书，已审 PR 下一轮全量重审一次。
 - `enforce`：在 observe 的基础上，Mivo 门也是 enforce 且交接有错误时，按「送审但不放行」处理：照审、打回（固定文案列出错误）、`pendingGates` 挂 `handoff`；本 PR 第一次送审时交接已过期也一样。交接补齐后下一轮全量重审。
 
+受保护路径的人工放行（`protected-approve`）不看这个开关：服务器写 `review-pr` 成功之前读一次交接检查，Mivo 门是 enforce 且当前 head 上有错误时不放行，结果记 `protected`、理由列出错误（`toProtectedHandoffBlock`）。`pr-handoff-gate` 不是必需检查，不加这一步，改了 `.github/**` 又被维护者放行的 PR 就能绕过交接强制。读不到交接检查时照常放行。
+
 切 enforce 之前，先把 `PR Handoff` 加进 `review-pr/config/pr-rules.json` 的 `ciIgnoreWorkflows`（`names` 与 `paths`），否则它的失败会先被当成 CI 失败、根本不送审。
 
 ## 审查机自己的写动作不再唤醒同一个 head

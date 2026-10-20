@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { loadHandoffMode, toHandoffFacts, readHandoffFacts, toHandoffPending, toHandoffPromptLines, HANDOFF_WORKFLOW_PATH } from './handoff.mjs';
+import { readFileSync } from 'node:fs';
+import { loadHandoffMode, toHandoffFacts, readHandoffFacts, toHandoffPending, toHandoffPromptLines, toProtectedHandoffBlock, HANDOFF_WORKFLOW_PATH } from './handoff.mjs';
 import { decideGate, buildGatePushback, PENDING_GATE_TEXT } from './gates.mjs';
 import { buildReviewPrompt, buildSpecManifest, specDigestOf, loadReviewSpec } from './prompt.mjs';
 import { computeReviewScope, previousFromResult } from './scope.mjs';
@@ -149,4 +150,23 @@ test('handoff 范围:上一轮因交接没放行、本轮补齐 → 全量重审
   assert.match(scope.reason, /交接/);
   const still = computeReviewScope({ previous, current: { ...current, pendingGates: ['handoff'] }, headIsDescendant: true });
   assert.doesNotMatch(still.reason, /交接已补齐/);
+});
+
+test('handoff 受保护路径放行:Mivo 门 enforce 且有错误才挡,与审查机开关无关;读不到不挡', () => {
+  assert.match(toProtectedHandoffBlock(enforceFacts()), /^受保护路径:作者交接检查 pr-handoff-gate 未通过.*\[HANDOFF_MISSING\]/);
+  assert.equal(toProtectedHandoffBlock(enforceFacts({ mode: 'observe' })), null);
+  assert.equal(toProtectedHandoffBlock(enforceFacts({ errors: [] })), null);
+  assert.equal(toProtectedHandoffBlock({ ...enforceFacts(), present: false, readError: 'HTTP 403' }), null);
+  assert.equal(toProtectedHandoffBlock(null), null);
+  const many = enforceFacts({ errors: Array.from({ length: 5 }, (_, i) => ({ code: 'FIELD_EMPTY', message: `第 ${i} 处` })) });
+  assert.match(toProtectedHandoffBlock(many), /等 5 处/);
+});
+
+test('handoff 受保护路径放行:server 在写放行之前读交接并按 toProtectedHandoffBlock 收尾', () => {
+  const src = readFileSync(new URL('../server/review.mjs', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('function prepareProtectedApprove'), src.indexOf('// 转 issue 跟进的登记'));
+  const block = body.indexOf('toProtectedHandoffBlock(');
+  assert.ok(block > 0, 'prepareProtectedApprove 要调用 toProtectedHandoffBlock');
+  assert.ok(block < body.indexOf('state.protectedApproval ='), '交接门在记录放行之前');
+  assert.match(body, /readHandoffFacts\(\{ repo: input\.targetRepo, head: input\.head/);
 });

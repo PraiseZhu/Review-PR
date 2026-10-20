@@ -99,6 +99,17 @@ export function toHandoffPending(handoff, { firstReview = false } = {}) {
   return reasons;
 }
 
+/**
+ * 受保护路径人工放行前的交接门:Mivo 门本身是 enforce 且当前 head 上的可信检查有错误时,返回不放行的理由;否则 null。
+ * 不看审查机开关(handoff.mode):这里尊重的是 Mivo 仓自己的强制结论。pr-handoff-gate 不是必需检查,
+ * 放行写 review-pr=success 会让缺交接的受保护路径 PR 绕过它。读不到(present:false)不挡,与其它路径一致。
+ */
+export function toProtectedHandoffBlock(facts) {
+  if (!facts?.present || facts.mode !== 'enforce' || !facts.errors?.length) return null;
+  const list = facts.errors.slice(0, 3).map((e) => `[${e.code}] ${e.message}`).join(';');
+  return `受保护路径:作者交接检查 ${HANDOFF_CHECK} 未通过,交接补齐前不放行(${list}${facts.errors.length > 3 ? ` 等 ${facts.errors.length} 处` : ''})`;
+}
+
 /** 审查任务书里的交接一节;off、没有交接信息时返回 [](任务书与改动前完全一致)。 */
 export function toHandoffPromptLines({ handoff, prNumber, workdir }) {
   if (!handoff || handoff.featureMode === 'off' || !HANDOFF_MODES.includes(handoff.featureMode)) return [];

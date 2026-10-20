@@ -14,7 +14,7 @@ import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResul
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
-import { loadHandoffMode, readHandoffFacts, toHandoffPending } from '../lib/handoff.mjs';
+import { loadHandoffMode, readHandoffFacts, toHandoffPending, toProtectedHandoffBlock } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
@@ -133,7 +133,7 @@ async function prepare() {
       return finishEarly(state, 'state-changed', `PR 的 head/base 已变化(base ${input.base.slice(0, 12)} → ${String(ctx.meta.baseRefOid).slice(0, 12)}),下一轮重新采集`);
     }
 
-    if (input.action === 'protected-approve') return prepareProtectedApprove(state, ctx);
+    if (input.action === 'protected-approve') return prepareProtectedApprove(state, ctx, input);
 
     // 作者交接(lib/handoff.mjs):prepare 有 GitHub 令牌,在这里读;codex 阶段只用 state.handoff。开关 off 时不读。
     const handoffMode = loadHandoffMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
@@ -231,7 +231,7 @@ function readJobStart(input) {
     { at: null, from: null, error: `读不到作业开始时间:${(view.stderr || jobs.stderr || '').trim().slice(0, 200) || '返回内容没有时间字段'}` };
 }
 
-function prepareProtectedApprove(state, ctx) {
+function prepareProtectedApprove(state, ctx, input) {
   // 受保护路径的 PR 不自动审查。放行信号由本 job 自己重跑的 context(protectedPath)独立复核,不信 Mini 的判断:
   // 维护者(非作者)未撤销的 GitHub Approve(不绑 head),或确认 issue 上的 Slack / GitHub「同意放行」,
   // 或作者本人是维护者(context 算出 via=author-maintainer;名单与 Mini 读的是同一个钉住 SHA 的 pr-rules.json)。
@@ -241,6 +241,12 @@ function prepareProtectedApprove(state, ctx) {
     // retry:Mini 与服务器的判断出现分歧(Approve 被撤销、评论被删、名单变化)时,让下一轮重新判。
     return finishEarly(state, 'protected', '受保护路径:服务器复核没认到作者之外的维护者放行(Approve、Slack 或确认 issue「同意放行」)', true);
   }
+  // 人工放行也不越过 Mivo 的交接强制门:pr-handoff-gate 不是必需检查,这里写了 success 它就被绕过。
+  // 作者补交接必然推新 head,所以不标 retry,避免同一 head 每轮重派。
+  const handoffFacts = readHandoffFacts({ repo: input.targetRepo, head: input.head, ghFn: (args) => gh(args, { allowFail: true }) });
+  if (handoffFacts.readError) state.warnings.push(`交接事实读不到:${handoffFacts.readError}`);
+  const handoffBlock = toProtectedHandoffBlock(handoffFacts);
+  if (handoffBlock) return finishEarly(state, 'protected', handoffBlock);
   state.protectedApproval = { by: release.by, via: release.via, at: release.at ?? null, fingerprint: release.fingerprint ?? `${release.via}:${release.by}:${release.at ?? ''}` };
   state.phase = 'prepared';
   saveState(state);
