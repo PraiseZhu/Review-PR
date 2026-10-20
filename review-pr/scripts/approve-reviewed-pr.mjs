@@ -50,7 +50,7 @@ try {
   const expectedAuthorityDigest = argValue('--expected-authority-digest');
   const bodyFile = argValue('--body-file');
   const body = bodyFile ? readFileSync(bodyFile === '-' ? 0 : bodyFile, 'utf8').trim()
-    : '代码重审通过：当前 head 未发现 P0/P1，全部 conversation 已 resolve。';
+    : '代码重审通过：当前 head 未发现 P0/P1/P2，全部 conversation 已 resolve。';
   // [MIVO-PATCH self-review] 交互式重审通过、操作者当面同意后才带它:只放行审查账号上指名的那一条人工
   // Request Changes。无人值守的前置审查和服务器审查永远不传。
   const overrideRequested = process.argv.includes('--allow-override-own-cr');

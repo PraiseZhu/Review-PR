@@ -9,7 +9,8 @@
 
 - 身份来自 `context.auto.selfFix`（作者在 `selfFixAuthors` 中），不把所有维护者都当作自有 PR。
   作者身份本身不需要开空 session；必须有作者侧问题。
-- 正常 auto 模式的凭证/格式/P0-P1/未解决 thread/CI 失败/冲突/rebase/作者侧 Request Changes
+<!-- [MIVO-PATCH p2-blocking] -->
+- 正常 auto 模式的凭证/格式/P0-P1-P2/未解决 thread/CI 失败/冲突/rebase/作者侧 Request Changes
   触发跟进。调用 `review-round.mjs createFixHandoffRequest` 得到请求和指纹。
   thread 沿用 `head|skip-gate`；CI 失败用 `head|skip-ci-failed`；冲突用 `head|skip-conflict|<base>`。
   自动批次看到未解决 thread 就停止自己的审查，直接把证据交给修复 session，不先 triage。
@@ -18,7 +19,8 @@
   不因卡点发生在审查后而漏跟进，也不把纯权限或等待合并队列的问题投递给修复者。
 - 维护门、未合并依赖、权限、受保护路径、structural-check、仅缺另一位维护者 Approve、
   CI pending/unknown、bot 静默期均不投递。`review-only` 完全不创建或唤醒自动修复 session。
-- 审查中的 P0/P1 仍按新流程开真实问题 thread；viewer=作者用 COMMENT，不自发
+<!-- [MIVO-PATCH p2-blocking] -->
+- 审查中的 P0/P1/P2 仍按新流程开真实问题 thread；viewer=作者用 COMMENT，不自发
   REQUEST_CHANGES/APPROVE。只有 PR 正文格式错误等确实无文件可锚定时，直接写修复说明。
   已确认问题的 thread 发布失败记录 errors，并继续投递修复，不让发布失败吞掉作者侧问题。
 - 修复 session 不使用批次的 review 锁，不运行 Approve/Merge，不自审自批；有争议的要求
