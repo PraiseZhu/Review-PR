@@ -81,6 +81,7 @@ test('marker 降级字段:fallback=down(及同义值,大小写不敏感)→ verd
     assert.equal(verdict(`fallback=${value}`).degraded?.model, 'openai/gpt-6.1-sol', value);
   }
   assert.equal(verdict('fallback=down\nfallback_model=openai/gpt-6-luna').degraded.model, 'openai/gpt-6-luna');
+  assert.equal(verdict('fallback=down\nfallback_model=deepseek/deepseek-v4.1-flash').degraded.model, 'deepseek/deepseek-v4.1-flash');
   // 无字段、值不认识、模型 id 格式不对 = 现行为(没有降级)
   for (const extra of ['', 'fallback=ok', 'fallback=healthy', 'fallback=', 'fallback=weird', 'fallback=down\nfallback_model=bad model!', 'fallback_reason=x']) {
     assert.equal(verdict(extra).degraded, null, extra);

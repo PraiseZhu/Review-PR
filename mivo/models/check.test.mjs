@@ -60,3 +60,11 @@ test('模型清单:key 走 stdin 的 curl 配置,不进参数;非 200 与非法 
   assert.equal(listModels({ apiKey: 'k', baseUrl: 'https://g/v1' }, { runCmd: () => ({ ok: true, stdout: '{"error":1}\n401' }) }).error, '模型清单读取失败(HTTP 401)');
   assert.equal(listModels({ apiKey: 'k', baseUrl: 'https://g/v1' }, { runCmd: () => ({ ok: true, stdout: 'nope\n200' }) }).error, '模型清单不是合法 JSON');
 });
+test('模型清单 available 列全部网关 id,不再只留 openai/', async () => {
+  const r = await runCheck({ env: env({ INPUT_MODEL: 'deepseek/deepseek-v4.1-flash' }), runModel: fakeModel({ primary: 'ok', backup: 'ok' }),
+    runCmd: curlOk(['openai/gpt-7', 'deepseek/deepseek-v4.1-flash', 'anthropic/x']), now: NOON });
+  assert.equal(r.ok, true);
+  assert.equal(r.keys.primary.models.present, true);
+  assert.deepEqual(r.keys.primary.models.available, ['anthropic/x', 'deepseek/deepseek-v4.1-flash', 'openai/gpt-7']);
+});
+

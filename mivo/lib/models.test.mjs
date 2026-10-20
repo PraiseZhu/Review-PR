@@ -129,6 +129,10 @@ test('角色变量:主审三档共用、备用模型可换;单档覆盖变量仍
   assert.match(warnings.join('\n'), /MIVO_REVIEW_ROLE_VERIFIER effort 不合法/);
   assert.deepEqual(roleWarnings({}), []);
   assert.deepEqual(parseRoleModel(''), { value: null, error: null });
+  assert.deepEqual(parseRoleModel(JSON.stringify({ model: 'deepseek/deepseek-v4.1-flash', effort: 'max' })),
+    { value: { model: 'deepseek/deepseek-v4.1-flash', effort: 'max' }, error: null });
+  assert.match(parseRoleModel(JSON.stringify({ model: 'DeepSeek/x', effort: 'max' })).error, /model 不合法/);
+  assert.match(parseRoleModel(JSON.stringify({ model: 'deepseek/a b', effort: 'max' })).error, /model 不合法/);
 });
 
 test('nextAttempt 用传进来的备用模型;备用与主模型相同就不再试', () => {

@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { toServerModel, toEffort, toRole, toRoleValue, toEffectiveRoles, toSwitchBlocker, toSwitchWarnings, toCheckVerdict } from './model-switch.mjs';
 
+test('Cindy 非 gpt 模型:网关同名来源原样返回;裸 id、codex 前缀与非法字符被拒', () => {
+  assert.equal(toServerModel('deepseek/deepseek-v4.1-flash'), 'deepseek/deepseek-v4.1-flash');
+  assert.equal(toServerModel('anthropic/claude-sonnet-5-5'), 'anthropic/claude-sonnet-5-5');
+  for (const bad of ['codex/deepseek-x', 'claude-opus-5-5', 'grok-4.6']) {
+    assert.throws(() => toServerModel(bad), /非 gpt 模型要选网关同名的来源/, bad);
+  }
+  for (const bad of ['deepseek/a b', 'deepseek/$(id)', 'DeepSeek/x']) {
+    assert.throws(() => toServerModel(bad), /模型 id 不合法/, bad);
+  }
+});
+
 test('Cindy 模型 id 映射成网关 id:去掉来源前缀加 openai/;只接 gpt / o 系', () => {
   assert.equal(toServerModel('gpt-6-luna'), 'openai/gpt-6-luna');
   assert.equal(toServerModel(' openai/gpt-6.1-sol '), 'openai/gpt-6.1-sol');
