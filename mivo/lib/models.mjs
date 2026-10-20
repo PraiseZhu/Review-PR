@@ -33,7 +33,8 @@ export const DEFAULT_JOB_TIMEOUT_MIN = 110;
 // 变量格式不对时用默认值并给出告警,不让整轮审查失败:写入方(models/switch.mjs)写之前已经验证过格式和可用性。
 export const ROLE_ENV = { primary: 'MIVO_REVIEW_ROLE_PRIMARY', fallback: 'MIVO_REVIEW_ROLE_FALLBACK', verifier: 'MIVO_REVIEW_ROLE_VERIFIER' };
 export const ROLE_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-export const SERVER_MODEL_RE = /^openai\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+// 网关模型 id 形态:小写来源 + / + 模型。不再只认 openai/;能不能真的用由服务器验证(模型清单 + Codex CLI 冒烟)决定。
+export const SERVER_MODEL_RE = /^[a-z0-9][a-z0-9-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
 /** 解析一个角色变量:没设返回 { value: null };格式不对返回 { value: null, error }。 */
 export function parseRoleModel(raw) {

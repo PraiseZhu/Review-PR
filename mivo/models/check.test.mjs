@@ -22,7 +22,7 @@ test('主备两把都验证:模型清单与最小任务都通过;结果里没有
   const r = await runCheck({ env: env(), runModel: fakeModel({ primary: 'ok', backup: 'ok' }), runCmd: curlOk(['openai/gpt-7', 'openai/gpt-6-luna', 'anthropic/x']), now: NOON });
   assert.equal(r.ok, true);
   assert.equal(r.keys.primary.models.present, true);
-  assert.deepEqual(r.keys.primary.models.available, ['openai/gpt-6-luna', 'openai/gpt-7']);
+  assert.deepEqual(r.keys.primary.models.available, ['anthropic/x', 'openai/gpt-6-luna', 'openai/gpt-7']);
   assert.equal(r.keys.backup.smoke.ok, true);
   assert.doesNotMatch(JSON.stringify(r), /PPPPPPPP|BBBBBBBB/);
 });

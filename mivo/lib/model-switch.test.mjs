@@ -13,12 +13,13 @@ test('Cindy 非 gpt 模型:网关同名来源原样返回;裸 id、codex 前缀�
   }
 });
 
-test('Cindy 模型 id 映射成网关 id:去掉来源前缀加 openai/;只接 gpt / o 系', () => {
+test('Cindy 模型 id 映射成网关 id:gpt/o 系去掉来源前缀加 openai/;非法裸 id 仍拒绝', () => {
   assert.equal(toServerModel('gpt-6-luna'), 'openai/gpt-6-luna');
   assert.equal(toServerModel(' openai/gpt-6.1-sol '), 'openai/gpt-6.1-sol');
   assert.equal(toServerModel('openai-codex/gpt-5.5'), 'openai/gpt-5.5');
+  assert.equal(toServerModel('codex/gpt-6-luna'), 'openai/gpt-6-luna');
   assert.equal(toServerModel('o5-mini'), 'openai/o5-mini');
-  for (const bad of ['claude-opus-5-5', 'anthropic/claude-sonnet-5-5', 'grok-4.6', '', null, 'gpt-6 luna']) assert.throws(() => toServerModel(bad), Error, String(bad));
+  for (const bad of ['claude-opus-5-5', 'grok-4.6', '', null, 'gpt-6 luna']) assert.throws(() => toServerModel(bad), Error, String(bad));
   assert.equal(toEffort('max'), 'max');
   assert.equal(toEffort('ultra'), 'ultra');
   assert.throws(() => toEffort(''), /先在自动化里选好档位/);
