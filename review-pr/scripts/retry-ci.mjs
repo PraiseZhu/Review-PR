@@ -127,7 +127,7 @@ export async function runCli() {
       print({ ok: true, pr, action: 'reconciled', journal }); process.exit(0); }
     print({ ok: true, pr, action: 'pending-reconciliation', retry: true, journal, ...previous }); process.exit(2);
   }
-  const probe = probeBranchProtection(slug, meta.baseRefName);
+  const probe = probeBranchProtection(slug, meta.baseRefName, { fresh: true });
   const requiredChecks = requiredCheckNames(probe);
   if (!requiredChecks.length || probe?.requiredStatusChecksKnown === false) {
     print({ ok: true, pr, action: 'not-eligible', reason: 'required checks 未能完整读取，拒绝自动重跑', requiredChecks }); process.exit(0);
@@ -163,7 +163,7 @@ export async function runCli() {
       releaseClaim(journal);
       print({ ok: true, pr, action: 'state-changed', reason: 'CI 重跑前 PR head/base/state 或维护者权限已变化', retry: true }); process.exit(2);
     }
-    const latestProbe = probeBranchProtection(slug, latestMeta.baseRefName);
+    const latestProbe = probeBranchProtection(slug, latestMeta.baseRefName, { fresh: true });
     const latestRequired = requiredCheckNames(latestProbe);
     if (!latestRequired.length || latestProbe?.requiredStatusChecksKnown === false) {
       releaseClaim(journal);

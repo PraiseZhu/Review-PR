@@ -23,6 +23,11 @@ const mode = process.env.FAKE_APP_MODE || 'ok';
 if (token === 'app-token' && mode === '403') { process.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n'); process.exit(1); }
 if (token === 'app-token' && mode === '404') { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1); }
 if (token === 'app-token' && mode === '500') { process.stderr.write('gh: Internal Server Error (HTTP 500)\\n'); process.exit(1); }
+if (token !== 'app-token' && process.env.FAKE_USER_FLAKY_FILE) {
+  const n = Number(fs.existsSync(process.env.FAKE_USER_FLAKY_FILE) ? fs.readFileSync(process.env.FAKE_USER_FLAKY_FILE, 'utf8') : '0');
+  fs.writeFileSync(process.env.FAKE_USER_FLAKY_FILE, String(n + 1));
+  if (n === 0) { process.stderr.write('gh: Service Unavailable (HTTP 503)\\n'); process.exit(1); }
+}
 process.stdout.write(JSON.stringify({ data: { by: token }, by: token }));
 `);
 chmodSync(join(BIN, 'gh'), 0o755);
@@ -37,7 +42,7 @@ function setup(extra = {}) {
   rmSync(CALLS, { force: true });
   rmSync(ROUTE_LOG, { force: true });
   route.resetRouteMetrics();
-  for (const key of ['REVIEW_PR_READ_TOKEN', 'REVIEW_PR_READ_REPOS', 'REVIEW_PR_GH_ROUTE_LOG', 'FAKE_APP_MODE']) delete process.env[key];
+  for (const key of ['REVIEW_PR_READ_TOKEN', 'REVIEW_PR_READ_REPOS', 'REVIEW_PR_GH_ROUTE_LOG', 'FAKE_APP_MODE', 'FAKE_USER_FLAKY_FILE']) delete process.env[key];
   process.env.GH_TOKEN = 'user-token';
   process.env.GITHUB_TOKEN = 'user-token';
   Object.assign(process.env, extra);
@@ -82,6 +87,21 @@ test('decideReadRoute:读走 App,写/身份/管理/没写仓/不在名单走原�
   assert.equal(decide(['api', 'repos/o/r/pulls/5'], { explicitEnv: true }), 'user', '调用方显式给了 env(身份令牌)');
   assert.equal(decide(['api', 'repos/o/r/pulls/5'], { noCredFallback: true }), 'user');
   assert.equal(route.decideReadRoute(['api', 'repos/o/r/pulls/5'], { config: null }).route, 'user');
+});
+
+test('decideReadRoute:带 mergeStateStatus / viewer* 等随身份变化字段的读一律走原令牌', () => {
+  const config = { token: 't', repos: ['o/r'], logFile: '' };
+  const decide = (args, input) => route.decideReadRoute(args, { config, env: {}, input });
+  assert.deepEqual(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus']), { route: 'user', reason: 'identity_field' });
+  assert.deepEqual(decide(['pr', 'list', '--repo', 'o/r', '--json', 'number,mergeStateStatus']), { route: 'user', reason: 'identity_field' });
+  const gql = (fields) => JSON.stringify({ query: `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){number ${fields}}}}`, variables: { owner: 'o', name: 'r', n: 5 } });
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('mergeStateStatus')).reason, 'identity_field');
+  // viewer* 在分类器里本来就被判给个人账号(原因 graphql_viewer);这里只要求不走 App。
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('viewerCanMergeAsAdmin')).route, 'user');
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('viewerLatestReview{state}')).route, 'user');
+  // 不带这些字段的照旧走 App
+  assert.equal(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeable,reviewDecision,headRefOid']).route, 'app');
+  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('state')).route, 'app');
 });
 
 test('shouldFallbackToUser:只认权限/不存在/令牌失效', () => {
@@ -154,6 +174,16 @@ test('gh():App 返回 403/404 → 换原令牌重试一次并记为 app-fallback
     assert.equal(route.summarizeRouteLog(ROUTE_LOG).appFallback, 1);
     assert.deepEqual(route.routeMetrics(), { app: 0, appFallback: 1, user: 0 });
   }
+});
+
+test('gh():App 被拒后改用原令牌那次遇到 503,照常做瞬时错误重试', () => {
+  const flaky = join(WORK, 'flaky-count');
+  rmSync(flaky, { force: true });
+  setup({ ...ENABLED, FAKE_APP_MODE: '403', FAKE_USER_FLAKY_FILE: flaky });
+  const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5']);
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token', 'user-token']);
+  assert.equal(JSON.parse(r.stdout).by, 'user-token');
 });
 
 test('gh():App 返回 500 → 不换原令牌,失败原样交给调用方', () => {

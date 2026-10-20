@@ -224,7 +224,7 @@ try {
       // (code_scanning/code_quality 等)→ 普通 merge 过不了,但 canBypass 时可走 admin bypass
       // (由 3A 决定;auto 模式仅在 internal-gates 安全条件全满足时)。
       blockClass = 'structural-check';
-      structuralBlock = probeBranchProtection(slug, m.baseRefName);
+      structuralBlock = probeBranchProtection(slug, m.baseRefName, { fresh: true });
       const ruleHint = structuralBlock?.requiredCheckRules?.length
         ? structuralBlock.requiredCheckRules.join(' / ')
         : 'code_scanning / code_quality 等';
@@ -352,7 +352,7 @@ try {
   // 旧版维护者作者 approval-exempt admin route 保留只读输出兼容，但现行策略的
   // approvalExemption.exempt 恒为 false，因此缺 Approve 不能再靠 --admin 绕过。
   const approvalBranchProbe = approvalExemption.exempt
-    ? (structuralBlock ?? probeBranchProtection(slug, m.baseRefName))
+    ? (structuralBlock ?? probeBranchProtection(slug, m.baseRefName, { fresh: true }))
     : null;
   const approvalBranchRules = evaluateAdminBranchRules({
     probe: approvalBranchProbe,

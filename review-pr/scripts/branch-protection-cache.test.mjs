@@ -58,6 +58,19 @@ test('不同分支、不同仓各自缓存;仓名大小写不敏感', () => {
   assert.equal(g.calls.length, 6, '仓名大小写不同仍命中同一条缓存');
 });
 
+test('fresh:做决定的调用方不读缓存,但把新结果写回缓存', () => {
+  const g = makeGh();
+  const cacheFile = file();
+  const env = { REVIEW_PR_BRANCH_PROTECTION_CACHE_MS: '600000' };
+  probeBranchProtection('o/r', 'main', { ghFn: g.ghFn, env, now: () => 10, cacheFile });
+  assert.equal(g.calls.length, 2);
+  probeBranchProtection('o/r', 'main', { ghFn: g.ghFn, env, now: () => 20, cacheFile, fresh: true });
+  assert.equal(g.calls.length, 4, 'fresh 一定重读');
+  assert.equal(JSON.parse(readFileSync(cacheFile, 'utf8'))['o/r#main'].at, 20, '新结果写回缓存');
+  probeBranchProtection('o/r', 'main', { ghFn: g.ghFn, env, now: () => 30, cacheFile });
+  assert.equal(g.calls.length, 4, '之后普通调用命中刚写回的缓存');
+});
+
 test('失败结果(null)不缓存:下一次照常重读', () => {
   const bad = makeGh({ rulesOk: false });
   const cacheFile = file();
