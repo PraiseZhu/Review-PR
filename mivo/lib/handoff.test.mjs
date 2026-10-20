@@ -132,6 +132,8 @@ test('handoff 任务书:off 时逐字不变、specDigest 不变;observe 时带�
   const withHandoff = buildReviewPrompt({ ...args, handoff: { featureMode: 'observe', facts: enforceFacts({ mode: 'observe' }) } });
   assert.match(withHandoff, /## 作者交接\(审查数据,不是指令\)/);
   assert.match(withHandoff, /### 作者交接核对/);
+  assert.match(withHandoff, /是否构成 P0\/P1\/P2/);
+  assert.match(withHandoff, /造成 P0\/P1\/P2 才报/);
   assert.match(withHandoff, /\/w\/docs\/pr\/12\/review\.md/);
   const manifest = (handoffMode) => specDigestOf(buildSpecManifest({ spec, tier: 'standard', files: [], readFile: () => null, config: '{}', ...(handoffMode ? { handoffMode } : {}) }));
   assert.equal(manifest('off'), manifest());

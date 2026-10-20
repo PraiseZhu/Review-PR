@@ -11,7 +11,7 @@ import { parseFindingMarker } from '../lib/finding.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SKILL_SHA = 'a'.repeat(40);
-const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 1 条 P0/P1'].join('\n');
+const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 1 条 P0/P1/P2'].join('\n');
 const DIFF = ['diff --git a/src/a.ts b/src/a.ts', 'index 1..2 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,1 +1,2 @@', ' keep', '+added'].join('\n');
 
 function git(dir, ...args) {
@@ -117,4 +117,19 @@ test('v2 发布:带 key 的裁定把 P1 移出阻断,P0 仍阻断;同 key 的上
     assert.equal(blocked.mivo.convergence.rethink, true);
     assert.ok(readFileSync(join(p0.work, 'out', 'report.md'), 'utf8').includes('## 收敛提示'));
   } finally { rmSync(work, { recursive: true, force: true }); rmSync(p0.work, { recursive: true, force: true }); }
+});
+
+
+test('v2 发布:只有 P2 也 REQUEST_CHANGES 并开 [P2] thread', () => {
+  const { work } = setup({ findings: [finding({ severity: 'P2', title: '局部缺陷', bugClass: 'partial' })] });
+  try {
+    const result = publish(work);
+    const comments = JSON.parse(readFileSync(join(work, 'comments.json'), 'utf8'));
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, /^\[P2\] 局部缺陷/);
+    assert.equal(result.reviewClean, false);
+    const report = readFileSync(join(work, 'out', 'report.md'), 'utf8');
+    assert.match(report, /\[P2\] src\/a.ts:2 — 局部缺陷/);
+    assert.match(report, /changes-requested —— 1 条 P0\/P1\/P2/);
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });

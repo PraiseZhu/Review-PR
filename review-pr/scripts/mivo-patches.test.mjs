@@ -1488,3 +1488,25 @@ test('handoff-gate-kind: Mivo 判门发出的每种打回 kind 都能生成并�
   }
   assert.throws(() => gateReviewMarker('other', head), /gate kind/);
 });
+
+test('p2-blocking: 三个新增上游文件已登记,口径不再写 P2 不报', () => {
+  const root = new URL('../../', import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL('tools/lizi-sync.json', root), 'utf8'));
+  for (const file of [
+    'review-pr-auto/references/pr-worker.md',
+    'review-pr/references/fix-handoff.md',
+    'review-pr/scripts/dismiss-own-review.mjs',
+  ]) {
+    assert.ok(manifest.patched.includes(file), file);
+    const text = readFileSync(new URL(file, root), 'utf8');
+    assert.match(text, /\[MIVO-PATCH p2-blocking\]/);
+  }
+  const skill = readFileSync(new URL('review-pr/SKILL.md', root), 'utf8');
+  const worker = readFileSync(new URL('review-pr-auto/references/pr-worker.md', root), 'utf8');
+  const ruleMap = readFileSync(new URL('review-pr/references/rule-map.md', root), 'utf8');
+  assert.doesNotMatch(skill, /P2 = 风格与可选优化/);
+  assert.doesNotMatch(worker, /只报告本 PR 可证实的 P0\/P1，不以 P2/);
+  assert.doesNotMatch(ruleMap, /若只有 P2，结论必须是通过/);
+  assert.match(skill, /\[P0\|P1\|P2\]/);
+  assert.match(worker, /P0\/P1\/P2/);
+});

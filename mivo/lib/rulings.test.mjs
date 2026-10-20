@@ -23,7 +23,7 @@ test('非维护者、P0、没写理由的裁定不采用;别人开的 thread 和
     thread('T3', [finding(), reply('owner', RULING_PHRASE)]),
     thread('T4', [reply('greptile-apps', '[P1] x'), reply('owner', `${RULING_PHRASE}:不改`)]),
     thread('T5', [finding(), reply(reviewer, `${RULING_PHRASE}:不改\n<!-- mivo-watcher-receipt task=x -->`)]),
-    thread('T6', [finding('[P2] 命名'), reply('owner', `${RULING_PHRASE}:不改`)]),
+    thread('T6', [finding('[P3] 命名'), reply('owner', `${RULING_PHRASE}:不改`)]),
   ] });
   assert.deepEqual(verified, []);
   assert.deepEqual(rejected.map((r) => [r.threadId, r.reason]), [
@@ -56,7 +56,7 @@ test('作者申辩:只收审查机 P0/P1 thread 里 PR 作者的回复,取最后
     thread('T1', [finding(), reply('someone', '我觉得不成立'), reply('author', '> 引用原文\n**发生了什么**:核实后不成立,PR 正文「产品意图」写明保留菜单。\n<!-- mivo-watcher-receipt task=t1 -->')]),
     thread('T2', [finding(), reply('someone', '不成立')]),
     thread('T3', [reply('greptile-apps', '[P1] x'), reply('author', '不成立')]),
-    thread('T4', [finding('[P2] 命名'), reply('author', '不成立')]),
+    thread('T4', [finding('[P3] 命名'), reply('author', '不成立')]),
     thread('T5', [finding('[P0] 泄露'), reply('author', '旧'), reply('author', '新的依据')]),
   ] });
   assert.deepEqual(rebuttals.map((r) => [r.threadId, r.severity]), [['T1', 'P1'], ['T5', 'P0']]);

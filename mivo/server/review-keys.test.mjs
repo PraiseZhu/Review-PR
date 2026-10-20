@@ -21,7 +21,7 @@ const CLEAN = { report: REPORT, findings: [] };
 const P1 = { severity: 'P1', title: '空指针', trigger: '未登录', behavior: '抛错', impact: '白屏', fix: '判空', verify: '补测',
   evidence: [{ path: 'src/a.ts', line: 2 }], origin: 'introduced', bugClass: 'null-deref', instances: [], supersedes: null,
   path: 'src/a.ts', line: 2, side: 'RIGHT', deferredTo: null };
-const ONE_P1 = { report: REPORT.replace('approve', 'changes-requested —— 1 条 P0/P1'), findings: [P1] };
+const ONE_P1 = { report: REPORT.replace('approve', 'changes-requested —— 1 条 P0/P1/P2'), findings: [P1] };
 const CONFIRMED = { verdict: 'confirmed', evidence: [{ path: 'src/a.ts', line: 2 }], note: '成立' };
 
 // 行为:ok | 401 | mid401 | verify401(主审成功、核对员 401)| blocked(没有状态码的 key 错误)| 500(正文带 rate limit 的网关 5xx)| explode(非 key 失败)。按 key 读 ctl/mode-primary、ctl/mode-backup。

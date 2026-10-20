@@ -71,19 +71,21 @@ test('全量兜底:各条件都会退回全量', () => {
   assert.match(computeReviewScope({ previous: previous({ totalDiffLines: 1 }), current: current(), headIsDescendant: true }).reason, /一半/);
 });
 
-const fullReport = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1。'].join('\n');
+const fullReport = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
 
 test('答卷校验:四段齐全;问题必须在 diff 里;行号不在新侧就改成文件级', () => {
   assert.equal(validateAnswer({ report: '## Findings', findings: [] }, { diffFiles: files }).ok, false);
   const ok = validateAnswer({ report: fullReport, findings: [
     { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 真问题' },
     { path: 'src/a.ts', line: 99, side: 'RIGHT', body: '[P0] 行号不对' },
-    { path: 'src/a.ts', line: null, side: 'RIGHT', body: '[P2] 风格' },
+    { path: 'src/a.ts', line: null, side: 'RIGHT', body: '[P3] 风格' },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P2] 真实局部缺陷' },
   ] }, { diffFiles: files });
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.findings, [
     { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 真问题' },
     { path: 'src/a.ts', subject_type: 'file', body: '[P0] 行号不对' },
+    { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P2] 真实局部缺陷' },
   ]);
   assert.equal(validateAnswer({ report: fullReport, findings: [{ path: 'other.ts', line: 1, side: 'RIGHT', body: '[P1] x' }] }, { diffFiles: files }).ok, false);
 });
@@ -94,7 +96,7 @@ test('最终报告:固定头部、审查范围行;结论行跟实际问题数一
     scope: { mode: 'incremental', reason: '增量(基于 h0,本轮审 1 个文件)' } });
   assert.match(report, /^> Mivo 自动审查 · \[PR\]\(https:\/\/github.com\/o\/r\/pull\/1\)/);
   assert.match(report, /## Verification\n\n审查范围:增量\(基于 h0,本轮审 1 个文件\)/);
-  assert.match(report, /## Overall\nchanges-requested —— 1 条 P0\/P1/);
+  assert.match(report, /## Overall\nchanges-requested —— 1 条 P0\/P1\/P2/);
   for (const section of REPORT_SECTIONS) assert.ok(report.includes(section));
 });
 
@@ -147,7 +149,7 @@ const finalize = (over) => finalizeReport({ report: fullReport, findings: [], pr
 test('最终报告:只有转 issue 的问题时结论是 pass,并在 Rule coverage 前单列', () => {
   const report = finalize({ deferred: [{ path: 'src/a.ts', line: 11, body: '[P1] 旧 ghost 列表静默漏列\n影响', deferredTo: 1001 }],
     deferralsRejected: [{ issue: 1002, ref: '#1002', reason: 'issue 不是 OPEN(closed)' }] });
-  assert.match(report, /## Overall\npass —— 没有阻断的 P0\/P1；1 条 P1 已转 issue 跟进\(#1001\)，不阻断本 PR。/);
+  assert.match(report, /## Overall\npass —— 没有阻断的 P0\/P1\/P2；1 条 P1\/P2 已转 issue 跟进\(#1001\)，不阻断本 PR。/);
   assert.ok(report.indexOf(DEFERRED_SECTION) >= 0 && report.indexOf(DEFERRED_SECTION) < report.indexOf('## Rule coverage'));
   assert.ok(report.includes('- #1001 · `src/a.ts:11` · [P1] 旧 ghost 列表静默漏列'));
   assert.ok(report.includes('  - `#1002`：issue 不是 OPEN(closed)'));
@@ -156,13 +158,13 @@ test('最终报告:只有转 issue 的问题时结论是 pass,并在 Rule covera
 
 test('最终报告:有阻断问题时结论照旧并补一句;阻断里有 P1 才附转 issue 的做法', () => {
   const mixed = finalize({ findings: [{ path: 'src/a.ts', line: 11, body: '[P1] x' }], deferred: [{ path: 'src/b.ts', body: '[P1] y', deferredTo: 1001 }] });
-  assert.match(mixed, /## Overall\nchanges-requested —— 1 条 P0\/P1，已在对应位置开 review thread。另有 1 条 P1 已转 issue 跟进\(#1001\)，不阻断。\n\n本 PR 修不了/);
+  assert.match(mixed, /## Overall\nchanges-requested —— 1 条 P0\/P1\/P2，已在对应位置开 review thread。另有 1 条 P1\/P2 已转 issue 跟进\(#1001\)，不阻断。\n\n本 PR 修不了/);
   assert.ok(mixed.includes('- #1001 · `src/b.ts` · [P1] y'));
   const onlyP0 = finalize({ findings: [{ path: 'src/a.ts', line: 11, body: '[P0] z' }] });
   assert.ok(!onlyP0.includes(DEFER_HINT));
   const plain = finalize({});
   assert.ok(!plain.includes(DEFERRED_SECTION), '没有转 issue 也没有未采用登记时,报告和以前一样');
-  assert.match(plain, /## Overall\npass —— 没有 P0\/P1。\n?$/);
+  assert.match(plain, /## Overall\npass —— 没有 P0\/P1\/P2。\n?$/);
   assert.deepEqual(renderDeferredSection({ deferred: [], rejected: [] }), []);
   assert.deepEqual(renderDeferredSection({ rejected: [{ ref: 'o/r#5', reason: '跨仓引用,只认本仓 issue' }] }).slice(0, 4),
     [DEFERRED_SECTION, '', '- 无', '- 登记了但没采用：']);
