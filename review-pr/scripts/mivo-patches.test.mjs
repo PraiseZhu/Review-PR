@@ -21,6 +21,7 @@ import {
   uiEvidenceNeedsAdminLookup,
   declaresNoUiChange,
   filterIgnoredCiContexts,
+  countDiffLines,
   ciMergeStateIgnoring,
   botCheckActivity,
   evaluateBotSettle,
@@ -1460,4 +1461,30 @@ test('app-readable-snapshot:叠放依赖(stackedBaseDependencies)两种快照判
     .map((p) => p.number);
   assert.deepEqual(pick(false), [1]);
   assert.deepEqual(pick(false), pick(true));
+});
+
+test('handoff-lines: 改动行数不算本 PR 自己的交接文件,别的 PR 的交接照常计数', () => {
+  const files = [
+    { path: 'src/a.ts', additions: 3, deletions: 1 },
+    { path: 'docs/pr/12/review.md', additions: 90, deletions: 0 },
+    { path: 'docs/pr/12/qa.md', additions: 80, deletions: 0 },
+    { path: 'docs/pr/120/qa.md', additions: 5, deletions: 0 },
+  ];
+  assert.equal(countDiffLines(files, 12), 9);
+  assert.equal(countDiffLines(files, '12'), 9);
+  assert.equal(countDiffLines([], 12), 0);
+});
+
+test('handoff-gate-kind: Mivo 判门发出的每种打回 kind 都能生成并识别 gate review 标记', async () => {
+  const { gateReviewMarker, selectGateReviewsToDismiss } = await import('./review-markers.mjs');
+  const gatesSrc = readFileSync(new URL('../../mivo/lib/gates.mjs', import.meta.url), 'utf8');
+  const kinds = [...new Set([...gatesSrc.matchAll(/gateKind: '([a-z]+)'/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(kinds, ['format', 'handoff', 'security']);
+  const head = 'a'.repeat(40);
+  const old = 'b'.repeat(40);
+  for (const kind of kinds) {
+    const reviews = [{ id: 1, state: 'CHANGES_REQUESTED', user: { login: 'bot' }, commit_id: old, body: `x\n\n${gateReviewMarker(kind, old)}` }];
+    assert.deepEqual(selectGateReviewsToDismiss(reviews, 'bot', head).map((r) => r.id), [1], kind);
+  }
+  assert.throws(() => gateReviewMarker('other', head), /gate kind/);
 });

@@ -74,6 +74,8 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   const full = (reason) => ({ mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: [], basedOn: null });
   if (!previous) return full('没有上一轮审查记录');
   if (previous.reviewed !== true || previous.reportComplete !== true || previous.outcome === 'error') return full('上一轮没审完或没有完整报告');
+  // 上一轮因为交接不完整没放行、本轮交接补齐了:按交接重新全量审(增量范围只有那两份 md,看不到交接指向的代码)。
+  if ((previous.pendingGates ?? []).includes('handoff') && !(current.pendingGates ?? []).includes('handoff')) return full('上一轮缺有效交接、本轮已补齐,按交接重新全量审查');
   // 上一轮核对员推翻/降级了全部卡点、等人工复核(服务器没有 Approve):状态不能被无关文件的小改动冲掉,
   // 否则增量范围里没有争议代码,新一轮主审返回零问题就会恢复 Approve。重新全量审查,得出新结论为止。
   if (previous.manualReview === true) return full('上一轮核对员推翻/降级了全部卡点,等待人工复核,本轮重新全量审查');
@@ -141,6 +143,7 @@ export function previousFromResult(result, report = '') {
   return {
     head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
     reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
+    pendingGates: result.mivo?.advisory?.pendingGates ?? [],
     reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,

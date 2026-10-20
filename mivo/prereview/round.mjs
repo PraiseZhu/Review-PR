@@ -19,6 +19,7 @@ import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, w
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
 import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord } from '../lib/code-scan.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
+import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
@@ -906,8 +907,14 @@ function handleTask(ctx, task) {
     return finishGate(ctx, task, { outcome: 'state-changed', reason: '名单生成后 PR 已关闭、转 draft,或 head/base 已变化;下轮重新采集' });
   }
   const bindings = ['--lock-token', token, '--expected-head', task.head, '--expected-authority-digest', authorityDigest];
+  // 作者交接(lib/handoff.mjs):开关 off 时不读,判门与改动前完全一致。
+  const handoffMode = loadHandoffMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+  live.mivoHandoff = { featureMode: handoffMode.mode,
+    facts: handoffMode.mode === 'off' ? null : readHandoffFacts({ repo: CONFIG.targetRepo, head: task.head, ghFn: (args) => ghRead(args, { allowFail: true }) }) };
   const decision = decideGate(live);
   const result = { outcome: decision.outcome, reason: decision.reason, errors: [], warnings: [], gate: { stage: decision.stage, actions: decision.actions } };
+  if (handoffMode.warning) result.warnings.push(handoffMode.warning);
+  if (live.mivoHandoff.facts?.readError) result.warnings.push(`交接事实读不到:${live.mivoHandoff.facts.readError}`);
   const dry = CONFIG.mode === 'dry-run';
   if (dry && decision.actions.length) result.dryRunActions = decision.actions.map((a) => `${a.script}${a.mode ? `:${a.mode}` : ''}${a.kind ? `:${a.kind}` : ''}${a.issueMode ? `:${a.issueMode}` : ''}${a.gateKind ? `:${a.gateKind}` : ''}`);
 

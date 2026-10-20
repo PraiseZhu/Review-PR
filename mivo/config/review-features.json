@@ -7,5 +7,8 @@
     "maxFindings": 3,
     "perCallTimeoutMin": 15,
     "budgetMin": 20
+  },
+  "handoff": {
+    "mode": "off"
   }
 }

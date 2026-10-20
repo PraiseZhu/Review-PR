@@ -3348,6 +3348,16 @@ export function selectStandingViewerHumanChangesRequest(reviews, viewerLogin) {
 }
 
 /**
+ * [MIVO-PATCH handoff-lines] PR 的改动行数,不算本 PR 自己的交接文件(docs/pr/<PR号>/ 下的 review.md、qa.md)。
+ * 每个 PR 必交的文档不应把 PR 推进「超大 diff(≥ anyTypeDiffLines)」的维护者确认门;别的 PR 的交接目录照常计数。
+ */
+export function countDiffLines(files, pr) {
+  const prefix = `docs/pr/${String(pr)}/`;
+  return (files ?? []).filter((f) => !String(f?.path ?? '').startsWith(prefix))
+    .reduce((sum, f) => sum + (f.additions ?? 0) + (f.deletions ?? 0), 0);
+}
+
+/**
  * [MIVO-PATCH ci-ignore] 去掉不属于作者 CI 的 check:本流程自己写的(ciIgnoreContexts,如 review-pr),
  * 以及已退役审查流程的 workflow(ciIgnoreWorkflows.names 按 rollup 的 workflowName 匹配)。
  * 评审 bot 的 check(ciIgnoreBotChecks,如 Greptile 的信心阈值检查)也不算:它的具体意见以 thread 出现,由 thread 门拦。
