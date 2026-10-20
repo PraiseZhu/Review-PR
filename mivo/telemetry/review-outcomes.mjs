@@ -19,7 +19,7 @@ export const BUCKETS = ['ruled-keep', 'deferred', 're-raised', 'rebutted', 'fixe
 export const NOTE = '作者反应分桶是代理指标,不是事实真伪';
 const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const FINDING_RE = /^\s*\[(P[01])\]/;
+const FINDING_RE = /^\s*\[(P[012])\]/;
 const lower = (value) => String(value ?? '').toLowerCase();
 const time = (value) => { const t = Date.parse(value ?? ''); return Number.isFinite(t) ? t : 0; };
 
@@ -153,7 +153,7 @@ export function summarize(rounds) {
   };
 }
 
-/** reviewer 开的 [P0]/[P1] thread 的信息;不是审查机的 thread 返回 null。 */
+/** reviewer 开的 [P0]/[P1]/[P2] thread 的信息;不是审查机的 thread 返回 null。 */
 export function toFindingThread(thread, reviewer) {
   const [first, ...replies] = thread.comments ?? [];
   if (!first || lower(first.author) !== lower(reviewer)) return null;

@@ -3,6 +3,7 @@
 这张表只负责导航，不复制规则正文。每次审查都读取命中的原文；规则变化后不需要同步本文件，
 只有路径归属变化才更新映射。来源是 Mivo 根 `AGENTS.md` 的「改什么，先读哪里」。
 [MIVO-PATCH rule-map] 上游这份是 Cindy 仓的映射，Mivo 整份替换。
+[MIVO-PATCH p2-blocking] UI 规则行与核对清单第 8 条按 P0/P1/P2 报告并阻断，P3 不报。
 
 ## 所有 PR
 
@@ -15,7 +16,7 @@
 
 | 命中路径或主题 | 必读规则 |
 |---|---|
-| 面板、设置页、宿主卡、CSS、主题、动效或 UI 文案（`cindyplugin/`、`src/ui/`、`src/app/`、`*.css`） | `cindyplugin/DESIGN.md`（**强制**：UI 改动必须符合；违反时按统一分级判，达到 P1 定义才报；PR 正文或维护者裁定写明的有意设计不算违反，有疑问写进「待 owner 确认」）及其引用的 `docs/design.md` |
+| 面板、设置页、宿主卡、CSS、主题、动效或 UI 文案（`cindyplugin/`、`src/ui/`、`src/app/`、`*.css`） | `cindyplugin/DESIGN.md`（**强制**：UI 改动必须符合；违反时按统一分级判，按统一分级判 P0/P1/P2；PR 正文或维护者裁定写明的有意设计不算违反，有疑问写进「待 owner 确认」）及其引用的 `docs/design.md` |
 | 用户操作、成功/跳过/失败反馈、日志或诊断 | `docs/development-logging.md`；生产查询另读 `docs/ops/plugin-debug-log-query.md` |
 | 保存、加载、恢复、删除、归档、迁移或卸载重装（`src/store/`、`src/lib/persist*`、`cindyplugin/src/persist/`、`shared/persist-contract.ts`） | `docs/decisions/library-canvas-store.md`，需要全景时读 `docs/decisions/library-canvas-store-overview.md` |
 | 图片导入、原件、媒体 URL、双写、上传/归档队列或清理 | `docs/ops/image-store-library-default.md`，按改动查 `docs/ops/image-store-slo.md` 及对应 image-store 专题 |
@@ -45,4 +46,4 @@ Verification 里如实写明，不凭记忆补规则。
 6. 生图提交、轮询重试、生成结果提交是否保持幂等与批次归属，会不会重复扣费或复活已取消的占位？
 7. UI 改动附的证据（截图／录屏／HTML）与 diff 是否一致，有没有明显违反 `cindyplugin/DESIGN.md`
    的硬伤（绕过 token 的硬编码颜色、自造组件顶替设计系统组件等，记 P1）？证据缺失不阻断。
-8. 是否发现 P0/P1；若只有 P2，结论必须是通过且不发送 P2？
+8. 是否发现已证实的 P0/P1/P2；存在任一则 changes-requested；均无才通过；P3 不报？

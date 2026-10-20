@@ -19,8 +19,12 @@
     "review-pr/scripts/skill-sync.test.mjs"
   ],
   "patched": [
+    "review-pr-auto/SKILL.md",
+    "review-pr-auto/references/coordinator.md",
+    "review-pr-auto/references/pr-worker.md",
     "review-pr/SKILL.md",
     "review-pr/config/pr-rules.json",
+    "review-pr/references/fix-handoff.md",
     "review-pr/references/internal-gates.md",
     "review-pr/references/rule-map.md",
     "review-pr/scripts/approval-cli.test.mjs",
@@ -28,6 +32,7 @@
     "review-pr/scripts/approve-reviewed-pr.mjs",
     "review-pr/scripts/ci-status.test.mjs",
     "review-pr/scripts/context.mjs",
+    "review-pr/scripts/dismiss-own-review.mjs",
     "review-pr/scripts/lib.mjs",
     "review-pr/scripts/notify-author-resolve.mjs",
     "review-pr/scripts/notify-round-targets.mjs",
@@ -37,9 +42,7 @@
     "review-pr/scripts/review-queue.mjs",
     "review-pr/scripts/review-round.mjs",
     "review-pr/scripts/signoff-hold.mjs",
-    "review-pr/scripts/signoff-release.mjs",
-    "review-pr-auto/SKILL.md",
-    "review-pr-auto/references/coordinator.md"
+    "review-pr/scripts/signoff-release.mjs"
   ],
   "added": [
     "review-pr/scripts/mivo-patches.test.mjs",

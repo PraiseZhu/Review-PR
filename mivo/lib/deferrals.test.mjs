@@ -120,5 +120,5 @@ test('gh 读取结果转换与摘要', () => {
   assert.equal(toIssueRead({ ok: false, stderr: 'network down' }).notFound, false);
   assert.equal(toDeferredSummary([]), null);
   assert.deepEqual(toDeferredSummary([{ deferredTo: 1001 }, { deferredTo: 1000 }, { deferredTo: 1001 }]),
-    { count: 3, issues: [1000, 1001], text: '3 条 P1 已转 issue 跟进(#1000、#1001)' });
+    { count: 3, issues: [1000, 1001], text: '3 条 P1/P2 已转 issue 跟进(#1000、#1001)' });
 });

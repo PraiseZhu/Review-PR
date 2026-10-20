@@ -30,7 +30,7 @@ export function loadReviewSpec(skillRoot) {
   };
 }
 
-// 维护者统一分级(2026-10-12 决定):只报确认成立的 P0/P1,规范原文里「记 P1」的条款按实际影响重判。
+// 维护者统一分级(2026-10-12 决定):只报确认成立的 P0/P1/P2,规范原文里「记 P1」的条款按实际影响重判。
 export const SEVERITY = [
   '## 分级(Mivo 统一口径,覆盖规范原文的「严重度」段)',
   '',
@@ -38,15 +38,15 @@ export const SEVERITY = [
   '|---|---|---|',
   '| P0 紧急严重事故 | 正在发生或正常使用即可确定触发的大范围灾难性影响,例如严重泄露、批量不可逆数据损坏、系统性不可用,且缺乏有效隔离 | 报 |',
   '| P1 严重缺陷 | 在受支持场景中存在可信、可达的触发路径,导致核心流程失效、严重数据错误或安全/隐私边界被突破 | 报 |',
-  '| P2 一般缺陷 | 问题真实,但影响局部、程度有限,未达到 P1;可能有可接受的绕行办法 | 不报 |',
+  '| P2 一般缺陷 | 本 PR 引入或改动范围内已证实的真实缺陷、规范违反或必要测试缺口;问题真实,但影响局部、程度有限,未达到 P1;可能有可接受的绕行办法 | 报 |',
   '| P3 改进建议 | 没有已证实功能或安全影响的风格、命名、整理、视觉润色、通用行数/覆盖率建议,以及没有实际收益证据的优化 | 不报 |',
   '',
-  '- 每条 P0/P1 必须写清:触发条件、错误行为、实际影响、证据。证据不足时先在工作目录里做必要的验证;仍证实不了的不报,',
+  '- 每条 P0/P1/P2 必须写清:触发条件、错误行为、实际影响、证据。证据不足时先在工作目录里做必要的验证;仍证实不了的不报,',
   '  在 Rule coverage 里单列「待核实」并写明缺什么证据。不要凭猜测升到 P1,也不要为了少报而降级。',
   '- 多数票、重复意见、工具分数、修复便宜、违反通用规范、单纯缺测试,都**不能单独**把问题升到 P1。',
   '- 规范原文里「记 P1」「按 P1 打回」的具体条款(设计规范、平台或界面证据、PR 描述与 diff 不符、夹带改动、缺必要测试、',
-  '  讨论里的要求未落实等)一律按上表的实际影响重新判:达到 P1 定义才报,否则不报。',
-  '- 真实凭证或个人数据进了 diff、恶意代码、越权或数据外发,按实际影响判 P0/P1。',
+  '  讨论里的要求未落实等)一律按上表的实际影响重新判:按实际影响判 P0/P1/P2,达到任一报告定义则报;仅 P3 不报。确认的 P2 不得因未达 P1 而舍弃。',
+  '- 真实凭证或个人数据进了 diff、恶意代码、越权或数据外发,按实际影响判 P0/P1/P2。',
 ].join('\n');
 
 // 写明的产品意图不算缺陷(维护者 2026-10-15 决定):#926/#927/#935 上有 6 条 P1 要是照改,会推翻 PR 正文或维护者裁定写明的设计。
@@ -56,7 +56,7 @@ export const PRODUCT_INTENT = [
   '- PR 正文写明的需求和有意设计(例如「产品意图」一节)、维护者在 PR 讨论或维护者确认 issue 里的裁定,不当缺陷报。',
   '  你认为这类设计有问题时,写进 Rule coverage 的「待 owner 确认」并说明理由,不写进 `findings`。',
   '- 实现和规格文档、设计规范对不上时:PR 正文或维护者裁定解释了这个差异的,按有意设计处理;没有解释的,也写进「待 owner 确认」,',
-  '  不报成 P1。只有差异本身造成上面「分级」里 P1 定义的后果(核心流程失效、严重数据错误、安全/隐私边界被突破)才报。',
+  '  不报成缺陷。已核实违反适用权威规范、存在实际缺陷或必要测试缺口的,按 P0/P1/P2 报告;意图不明、证据不足或纯取舍才写「待 owner 确认」。',
   '- 例外:有意设计本身造成 P0(严重泄露、批量不可逆数据损坏等)照常报。',
   '- 判断「写明」只看 PR 正文、规格文档和维护者的发言;作者在评论里事后补的理由不算维护者裁定。',
 ].join('\n');
@@ -81,16 +81,16 @@ export function deferralSection(deferrals) {
     ...list.map((d) => `- #${d.issue}《${d.title}》 —— PR 说明里写的是:「${d.text}」`),
     '',
     '判定规则:',
-    '- 某条 P1 和上面某个 issue 描述的是**同一问题**(同一根因、同一触发路径)时,照常写进 `findings`(事实/影响/建议修复/验证方式照写),并把 `deferredTo` 填成该 issue 号;它不阻断本 PR,也不开 review thread。',
+    '- 某条 P1/P2 和上面某个 issue 描述的是**同一问题**(同一根因、同一触发路径)时,照常写进 `findings`(事实/影响/建议修复/验证方式照写),并把 `deferredTo` 填成该 issue 号;它不阻断本 PR,也不开 review thread。',
     '- P0 不能转 issue:P0 照常报,`deferredTo` 写 null。',
     '- 只是相关、根因或触发路径不同、issue 只泛泛写「后续修复审查问题」、或你拿不准的,`deferredTo` 写 null,照常阻断。',
     '- 不在上面列表里的 issue 号不能填进 `deferredTo`。',
-    '- report 的 Findings 段照常列出这些 P1,并在该条末尾注明「已转 #N」。',
+    '- report 的 Findings 段照常列出这些 P1/P2,并在该条末尾注明「已转 #N」。',
   ].join('\n');
 }
 
 const TIER_HINT = {
-  light: '本 PR 是 light 档(纯文档/文案、零触发):通读 diff,按 P0/P1 口径判;security.softHits 顺带定性。',
+  light: '本 PR 是 light 档(纯文档/文案、零触发):通读 diff,按 P0/P1/P2 口径判;security.softHits 顺带定性。',
   standard: '本 PR 是 standard 档:按 rule-map 选规则原文逐条审,追查共享符号与调用方,做最终复核。',
   heavy: '本 PR 是 heavy 档:standard 的全部内容,加上第 5 节第 6 条的恶意代码与数据外发专项;security-scan 结果在材料里,工具没跑成必须在 Verification 如实写「未执行 + 原因」。',
 };
@@ -193,19 +193,19 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '只交一个 JSON 对象:`{"report": "<Markdown 报告>", "findings": [ ... ]}`。',
     '',
     '- `report` 必须依次包含四段,标题一字不差:`## Findings`、`## Rule coverage`、`## Verification`、`## Overall`。',
-    '  - Findings:每条 `[P0|P1] path:line — 事实(触发条件与错误行为,附证据);影响;建议修复;验证方式`;没有就写「无」。',
+    '  - Findings:每条 `[P0|P1|P2] path:line — 事实(触发条件与错误行为,附证据);影响;建议修复;验证方式`;没有就写「无」。',
     '  - Rule coverage:读了哪些规则文件、逐项结论;文件在 base 上不存在就如实写。',
     '  - Verification:实际运行的命令与退出码、结果;没运行的写明「未执行 + 原因」。',
-    '  - Overall:第一行只能是 `pass —— 没有 P0/P1。` 或 `changes-requested —— N 条 P0/P1…`。',
-    '- `findings`:每条 P0/P1 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。',
-    '  - `severity` 写 `P0` 或 `P1`;`title` 一句话不超过 120 字;`trigger`(触发条件)、`behavior`(错误行为)、`impact`(实际影响)、`fix`(建议修复)、`verify`(验证方式)各不超过 800 字;`bugClass` 写问题类型短标签(不超过 60 字)。服务器会截断超长内容。',
+    '  - Overall:第一行只能是 `pass —— 没有 P0/P1/P2。` 或 `changes-requested —— N 条 P0/P1/P2…`。',
+    '- `findings`:每条 P0/P1/P2 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。',
+    '  - `severity` 写 `P0`、`P1` 或 `P2`;`title` 一句话不超过 120 字;`trigger`(触发条件)、`behavior`(错误行为)、`impact`(实际影响)、`fix`(建议修复)、`verify`(验证方式)各不超过 800 字;`bugClass` 写问题类型短标签(不超过 60 字)。服务器会截断超长内容。',
     '  - `evidence`:1–8 项 `{path, line}`,写 PR head 上真实存在的仓内相对路径和行号;证据不全服务器照常阻断,但会记入警告。',
     '  - `path` 必须是本 PR diff 里的文件(PR 之前就存在的问题也一样);`line` 是新版本(RIGHT)的行号,而且必须落在 diff 的改动或上下文行上;拿不准准确行号就写 `null`(会发成文件级评论),不要编。',
-    '  - `origin` 如实填写:`introduced`=本 PR 引入;`made-reachable`=本 PR 让旧代码变得可达,阻断;`pre-existing`=PR 之前就存在,P1 不阻断本 PR(服务器单列),P0 不论来源都阻断;问题落在本 PR 新增行上时服务器按 introduced 处理。PR 之前就存在的问题不要写进 Findings 段。',
+    '  - `origin` 如实填写:`introduced`=本 PR 引入;`made-reachable`=本 PR 让旧代码变得可达,阻断;`pre-existing`=PR 之前就存在,P1/P2 不阻断本 PR(服务器单列),P0 不论来源都阻断;问题落在本 PR 新增行上时服务器按 introduced 处理。PR 之前就存在的问题不要写进 Findings 段。',
     '  - 同一类问题只报一条:其余位置写进 `instances`(最多 20 项),不要拆成多条。',
     '  - `supersedes`:上一轮没修好的问题,填「上一轮的问题」或「维护者裁定」里列出的 key(12 位十六进制或 legacy-N);新问题写 null。上一轮标题类型是 fix 的问题,要写明是否修到了根因,而不是只压住了现象。',
-    '  - `deferredTo` 只能是上面「转 issue 跟进的问题」里核验通过的 issue 号,且只用于 P1;其他情况一律 null。',
-    '- 只报本 PR 可证实、达到上面「分级」P0/P1 定义的问题;P2、P3、风格、猜测一律不报。没有问题时 `findings` 为空数组,Overall 写 pass。',
+    '  - `deferredTo` 只能是上面「转 issue 跟进的问题」里核验通过的 issue 号,且只用于 P1/P2;其他情况一律 null。',
+    '- 只报本 PR 可证实、达到上面「分级」P0/P1/P2 定义的问题;P3 与未证实猜测不报。违反适用规范或缺必要测试可构成 P2,通用偏好或单纯覆盖率数字仍为 P3。不凭通用规范或单纯缺测试就升级 P1。没有问题时 `findings` 为空数组,Overall 写 pass。',
   ].join('\n');
 }
 

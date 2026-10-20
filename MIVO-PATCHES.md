@@ -56,15 +56,17 @@
 | branch-protection-cache | `REVIEW_PR_BRANCH_PROTECTION_CACHE_MS`(0–3600000 整数毫秒,没设=不缓存)>0 时,`probeBranchProtection` 按「仓+分支」把成功结果缓存在 `STATE_DIR/branch-protection-cache.json`,TTL 内不重复读;失败(null)不缓存;要据此做合并 / bypass / 重跑决定的 `pre-merge-check`、`retry-ci` 传 `fresh: true`,不读缓存、只把新结果写回。Mini 前置审查在配置 JSON 里写 `branchProtectionCacheMs: 600000` 启用;服务器 publish 不设。 | 分支保护要 Administration 读,App 令牌读不了,只能少读;规则很少变,前置审查每轮重读约占 PraiseZhu 额度的 29 次/小时。 |
 | handoff-lines | PR 的改动行数不算本 PR 自己的交接文件（`docs/pr/<PR号>/`），由新增的 `countDiffLines` 计算；别的 PR 的交接目录照常计数 | `scripts/lib.mjs`、`scripts/context.mjs` | Mivo 2026-10-19 起每个 PR 必交 review.md 与 qa.md，必交文档不应把 PR 推进超大 diff（`signoffGate.arch.anyTypeDiffLines`）的维护者确认门 |
 | handoff-gate-kind | gate review 标记多认一种 `kind=handoff`：生成（`gateReviewMarker`）与换 head 后摘旧打回（`selectGateReviewsToDismiss`）都接受 | `scripts/review-markers.mjs`、`scripts/mivo-patches.test.mjs` | Mivo 审查机在 `handoff.mode=enforce` 时按作者交接文件打回（`mivo/lib/gates.mjs` 的 `gateKind: 'handoff'`），上游白名单只有 format / security，打回脚本会直接报「gate kind / head 不合法」 |
+| p2-blocking | P0/P1/P2 均报告并阻断合并，P3 不报；交互版/auto 口径与服务器一致 | `review-pr/SKILL.md`、`review-pr/references/rule-map.md`、`review-pr/references/fix-handoff.md`、`review-pr-auto/references/pr-worker.md`、`review-pr/scripts/context.mjs`、`review-pr/scripts/approve-reviewed-pr.mjs`、`review-pr/scripts/dismiss-own-review.mjs`；测试在 `review-pr/scripts/mivo-patches.test.mjs` | 本 fork 把真实 P2 当阻断项，不再按风格忽略 |
 
 只改配置、不改代码的部分：bot 静默期只等 `greptile-apps`（静默 5 分钟，最多 30 分钟）；
 Git 历史推送只对 `makecindy/cindy` 生效，对 Mivo 天然不触发；飞书卡片只生成不发送。
 
-## 与 Cindy 的有意差异（不改上游文件）
+## 与 Cindy 的有意差异
 
 | 差异 | 在哪里 | 依据 |
 |---|---|---|
 | 复审只看新改动：增量轮的任务书加一条优先规则，规范原文里「完整 diff」「本 PR 改动」「最终逐项对照」「最终复核」等说法按本轮范围（本轮变化的文件、上一轮的问题、它们直接影响到的共享状态、协议、持久化、错误和回滚路径）理解，不再对完整 diff 做最终复核。上游 `review-pr/SKILL.md` 第 5 节、`pr-worker.md` 第 3 节原文不改 | `mivo/lib/prompt.mjs` | 维护者原话「复审只审 diff」（R14）；2026-10-14 晚选择「复审只看新改动」 |
+| 本 fork P2 报告并阻断，P3 不报（Cindy 默认只报 P0/P1） | `mivo/lib/prompt.mjs`、`mivo/lib/finding.mjs`、`mivo/lib/report.mjs`、`mivo/lib/verify.mjs`、`review-pr/SKILL.md`、`review-pr-auto/references/pr-worker.md` | 用户 2026-10-20：P2 要挡合并 |
 
 ## 新增文件
 

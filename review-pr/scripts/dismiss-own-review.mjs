@@ -4,7 +4,8 @@
 //
 // ⚠️ 安全边界:
 // - 仅限仍在最终维护者集合中的作者，并绑定本轮 authority digest;
-// - 调用方必须显式传 --review-clean,表示已对当前 head 完成最终代码重审且零 P0/P1;
+// [MIVO-PATCH p2-blocking] 零 P0/P1/P2 才允许 dismiss
+// - 调用方必须显式传 --review-clean,表示已对当前 head 完成最终代码重审且零 P0/P1/P2;
 // - 只 dismiss viewer 自己的 CR,只要掺有别人的 CR 或未 resolve thread 就拒绝;
 // - review ID 从 REST 拉取,避免把 GraphQL node id 误传给 REST dismissal 端点。
 //
@@ -104,7 +105,7 @@ try {
   }
 
   const message =
-    '当前 head 已完成最终代码重审且零 P0/P1,所有 conversation 已 resolve。' +
+    '当前 head 已完成最终代码重审且零 P0/P1/P2,所有 conversation 已 resolve。' +
     '作者仍在最终维护者集合中,故只 dismiss viewer 自己的旧 CHANGES_REQUESTED,不提交新的 APPROVE。';
 
   if (dryRun) {

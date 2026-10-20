@@ -25,11 +25,17 @@ test('任务书用维护者统一分级,覆盖规范原文的严重度段', () =
 
 test('统一分级的关键约束写进任务书', () => {
   assert.match(SEVERITY, /P1 严重缺陷 \| 在受支持场景中存在可信、可达的触发路径/);
-  assert.match(SEVERITY, /P2 一般缺陷 .*\| 不报 \|/);
+  assert.match(SEVERITY, /P2 一般缺陷 .*\| 报 \|/);
   assert.match(SEVERITY, /P3 改进建议 .*\| 不报 \|/);
   assert.match(SEVERITY, /触发条件、错误行为、实际影响、证据/);
   assert.match(SEVERITY, /违反通用规范、单纯缺测试,都\*\*不能单独\*\*把问题升到 P1/);
   assert.match(SEVERITY, /「记 P1」「按 P1 打回」的具体条款/);
+  const text = prompt();
+  assert.match(text, /\[P0\|P1\|P2\]/);
+  assert.match(text, /severity` 写 `P0`、`P1` 或 `P2/);
+  assert.doesNotMatch(text, /P2、P3、风格、猜测一律不报/);
+  assert.doesNotMatch(text, /达到 P1 定义才报,否则不报/);
+  assert.match(text, /仅 P3 不报/);
 });
 
 test('转 issue 跟进:列出核验通过的条目和判定规则;没有条目时 deferredTo 一律 null', () => {

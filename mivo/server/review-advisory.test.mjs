@@ -12,7 +12,7 @@ import { previousFromResult, computeReviewScope } from '../lib/scope.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SHA = 'a'.repeat(40);
-const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1。'].join('\n');
+const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
 const DIFF = ['diff --git a/src/a.ts b/src/a.ts', 'index 1..2 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,1 +1,2 @@', ' keep', '+added'].join('\n');
 
 function fakeGh(dir) {
@@ -46,7 +46,7 @@ function setup({ mode, pendingGates, findings = [] }) {
     current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
     scope: { mode: 'full', reason: '没有上一轮审查记录', files: ['src/a.ts'], previousFindings: [] }, checkRunId: 99, pendingGates,
     deferrals: { verified: [], rejected: [] }, codex: { attempts: [{ ok: true }] } }));
-  writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: findings.length ? REPORT.replace('pass —— 没有 P0/P1。', 'changes-requested —— 1 条 P0/P1') : REPORT, findings }));
+  writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: findings.length ? REPORT.replace('pass —— 没有 P0/P1/P2。', 'changes-requested —— 1 条 P0/P1/P2') : REPORT, findings }));
   return work;
 }
 
@@ -67,12 +67,12 @@ test('缺界面证据但代码干净:评论发报告、不 Approve、check 留�
     assert.equal(result.reviewClean, false, 'Mini 不能把这个 head 记成审查通过');
     assert.equal(result.approval.code, 'gates-pending');
     assert.deepEqual(result.mivo.advisory.pendingGates, ['ui-evidence']);
-    assert.match(result.reason, /代码审查没有 P0\/P1,但还不能放行:PR 描述里还缺改动后的界面证据/);
+    assert.match(result.reason, /代码审查没有 P0\/P1\/P2,但还不能放行:PR 描述里还缺改动后的界面证据/);
     const calls = gh.calls();
     const review = calls.find((c) => c.args.includes('repos/o/r/pulls/7/reviews') && c.args.includes('POST'));
     const body = JSON.parse(review.input);
     assert.equal(body.event, 'COMMENT');
-    assert.match(body.body, /^> \*\*代码审查没有发现 P0\/P1,但这个 PR 还不能放行\*\*/);
+    assert.match(body.body, /^> \*\*代码审查没有发现 P0\/P1\/P2,但这个 PR 还不能放行\*\*/);
     assert.match(body.body, new RegExp(`<!-- mivo-review:advisory head=${SHA} -->$`));
     assert.doesNotMatch(body.body, /mivo-review:report/, '不带干净报告标记,盯梢不会当成放行');
     assert.ok(!calls.some((c) => c.args.some((a) => /finish-reviewed-pr|APPROVE/.test(a)) || c.input.includes('"APPROVE"')));
@@ -81,7 +81,7 @@ test('缺界面证据但代码干净:评论发报告、不 Approve、check 留�
     const checkBody = JSON.parse(check.input);
     assert.equal(checkBody.status, 'in_progress');
     assert.equal(checkBody.conclusion, undefined);
-    assert.match(checkBody.output.title, /代码审查没有 P0\/P1\(standard\),等补齐后放行/);
+    assert.match(checkBody.output.title, /代码审查没有 P0\/P1\/P2\(standard\),等补齐后放行/);
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
 

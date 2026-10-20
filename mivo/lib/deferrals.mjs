@@ -1,6 +1,6 @@
 // deferrals.mjs — 审查问题转 issue 跟进:解析 PR 说明里登记的 issue,并按规则核验。纯函数,读 issue 由调用方注入。
-// PR 作者决定把审查出的 P1 留到后续 PR 修时,开 issue 并在 PR 说明加「转 issue 跟进的审查问题」一节登记;
-// 服务器只采用核验通过的条目,审查模型只能把同一问题的 P1 标到这些 issue 上,P0 不能转(维护者 2026-10-14 决定)。
+// PR 作者决定把审查出的 P1/P2 留到后续 PR 修时,开 issue 并在 PR 说明加「转 issue 跟进的审查问题」一节登记;
+// 服务器只采用核验通过的条目,审查模型只能把同一问题的 P1/P2 标到这些 issue 上,P0 不能转(维护者 2026-10-14 决定)。
 
 export const DEFERRAL_HEADING = '转 issue 跟进的审查问题';
 export const MAX_DEFERRALS = 10;
@@ -122,5 +122,5 @@ export function toDeferredSummary(deferred) {
   const list = deferred ?? [];
   if (!list.length) return null;
   const issues = [...new Set(list.map((f) => f.deferredTo))].sort((a, b) => a - b);
-  return { count: list.length, issues, text: `${list.length} 条 P1 已转 issue 跟进(${issues.map((n) => `#${n}`).join('、')})` };
+  return { count: list.length, issues, text: `${list.length} 条 P1/P2 已转 issue 跟进(${issues.map((n) => `#${n}`).join('、')})` };
 }

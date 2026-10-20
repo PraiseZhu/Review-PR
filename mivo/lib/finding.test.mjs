@@ -16,6 +16,8 @@ test('key 是 12 位十六进制,大小写与空白折叠后稳定', () => {
   assert.equal(findingKeyOf({ path: 'a.ts', bugClass: ' null-deref ', title: '空指针 崩溃' }), key);
   assert.notEqual(findingKeyOf({ path: 'b.ts', bugClass: 'null-deref', title: '空指针 崩溃' }), key);
   assert.equal(titleOfBody('[P1] 空指针   崩溃\n影响'), '空指针 崩溃');
+  assert.equal(titleOfBody('[P2] 局部缺陷'), '局部缺陷');
+  assert.deepEqual(FINDING_ITEM_SCHEMA.properties.severity.enum, ['P0', 'P1', 'P2']);
 });
 
 test('正文顺序与 marker:首行 [Px] 标题,marker 在最后', () => {
@@ -87,7 +89,7 @@ test('pre-existing 落在新增行(问题行或证据行)上改判 introduced;�
 import { validateAnswer, finalizeReport, ANSWER_SCHEMA, PREEXISTING_SECTION, RULED_KEPT_SECTION, renderPreexistingSection } from './report.mjs';
 import { splitDiffByFile } from './scope.mjs';
 
-const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1。'].join('\n');
+const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
 const DIFF = ['diff --git a/src/a.ts b/src/a.ts', 'index 1..2 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -10,3 +10,4 @@', ' keep', '+added', ' tail',
   'diff --git a/src/b.ts b/src/b.ts', 'index 1..2 100644', '--- a/src/b.ts', '+++ b/src/b.ts', '@@ -1,2 +1,2 @@', ' old', ' ctx'].join('\n');
 const diffFiles = splitDiffByFile(DIFF);
@@ -131,10 +133,16 @@ test('v2 答卷:文件级项不带 line 键;转 issue 规则与 v1 一致', () =
   assert.ok(ANSWER_SCHEMA.properties.findings.items.required.includes('severity'));
 });
 
-test('v2 答卷:severity 不是 P0/P1 的不发布;v1 项仍按 body 前缀判级', () => {
-  const checked = validate([{ ...v2(), severity: 'P2' }, { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 旧格式', deferredTo: null }]);
+test('v2 答卷:severity 不是 P0/P1/P2 的不发布;v1 项仍按 body 前缀判级', () => {
+  const checked = validate([{ ...v2(), severity: 'P3' }, { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 旧格式', deferredTo: null }]);
   assert.equal(checked.findings.length, 1);
   assert.deepEqual(checked.findings[0], { path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P1] 旧格式' });
+  const p2 = validate([{ ...v2(), severity: 'P2', title: '局部缺陷' }]);
+  assert.equal(p2.findings.length, 1);
+  assert.equal(p2.findings[0].severity, 'P2');
+  const v1p2 = validate([{ path: 'src/a.ts', line: 11, side: 'RIGHT', body: '[P2] v1 缺陷' }]);
+  assert.equal(v1p2.findings.length, 1);
+  assert.equal(v1p2.findings[0].body, '[P2] v1 缺陷');
 });
 
 test('最终报告:PR 之前就存在的问题单列,结论仍是 pass;报告头带 skill/spec 短 hash;收敛节与裁定节在 Rule coverage 前', () => {
@@ -143,7 +151,7 @@ test('最终报告:PR 之前就存在的问题单列,结论仍是 pass;报告头
     convergenceLines: ['## 收敛提示', '', '- x', ''], pr: 1, url: 'https://github.com/o/r/pull/1', head: 'a'.repeat(40), base: 'b'.repeat(40), diffHash: 'c'.repeat(64),
     tier: 'standard', scope: { mode: 'full', reason: '首次' }, skillSha: '3333333333336789', specDigest: '444444444444cdef' });
   assert.match(report, /档位 standard · skill `3333333` · spec `4444444`/);
-  assert.match(report, /## Overall\npass —— 没有阻断的 P0\/P1。另有 1 条 PR 之前就存在的 P1，不阻断本 PR。/);
+  assert.match(report, /## Overall\npass —— 没有阻断的 P0\/P1\/P2。另有 1 条 PR 之前就存在的 P1\/P2，不阻断本 PR。/);
   const coverage = report.indexOf('## Rule coverage');
   for (const section of [PREEXISTING_SECTION, RULED_KEPT_SECTION, '## 收敛提示']) assert.ok(report.indexOf(section) > 0 && report.indexOf(section) < coverage, section);
   assert.ok(report.includes('- `src/b.ts:2` · [P1] 旧问题 · 建议另开 issue 跟进'));

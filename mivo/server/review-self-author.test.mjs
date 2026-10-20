@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const LIB_DIR = join(SERVER_DIR, '..', 'lib');
 const SHA = 'a'.repeat(40);
-const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1。'].join('\n');
+const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
 const DIFF = ['diff --git a/src/a.ts b/src/a.ts', 'index 1..2 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,1 +1,2 @@', ' keep', '+added'].join('\n');
 
 const AUTHOR = { code: 'independent-approval-required', reason: '当前 viewer 是 PR 作者，未核验到另一位维护者的有效 Approve，不能自批' };
@@ -172,13 +172,13 @@ test('prepare 时没有待办门、publish 时实时读到未 resolve 的讨论(
     assert.equal(result.outcome, 'merge-blocked');
     assert.equal(result.reviewClean, false, 'Mini 不能把这个 head 记成审查通过');
     assert.equal(result.approval.code, 'gates-pending');
-    assert.match(result.reason, /代码审查没有 P0\/P1,但还不能放行:.*仍有 conversation 未 resolve/);
+    assert.match(result.reason, /代码审查没有 P0\/P1\/P2,但还不能放行:.*仍有 conversation 未 resolve/);
     assert.doesNotMatch(result.reason, /不能自批/, '作者自批不是用户要补齐的东西,不列进待办');
     assert.deepEqual(result.mivo.advisory.blockers, [THREADS.reason]);
     assert.notEqual(result.retry, true, '讨论没 resolve 是确定的拦截,等人处理');
     const [comment] = reportComments(calls);
     assert.equal(comment.event, 'COMMENT');
-    assert.match(comment.body, /^> \*\*代码审查没有发现 P0\/P1,但这个 PR 还不能放行\*\*/);
+    assert.match(comment.body, /^> \*\*代码审查没有发现 P0\/P1\/P2,但这个 PR 还不能放行\*\*/);
     assert.match(comment.body, new RegExp(`<!-- mivo-review:advisory head=${SHA} -->$`));
     assert.doesNotMatch(comment.body, /mivo-review:report/, '不带干净报告标记,盯梢不会当成放行');
     const last = checkBodies(calls).at(-1);

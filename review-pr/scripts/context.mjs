@@ -1550,7 +1550,8 @@ try {
     tier,
     heavyReasons,
     docOnly,
-    note: "tier=light → 不起审查 agent:主 agent 自己通读 diff(纯文档/文案),按 P0/P1 口径判,security.softHits 顺带定性;tier=standard → 独立审查 agent 按 rule-map 审,不跑 security-scan;tier=heavy → 独立审查 agent + 恶意代码与数据外发专项 + security-scan.mjs(heavyReasons 是原因清单)。分档只决定审查深度,不影响维护者确认门与合并前提",
+    // [MIVO-PATCH p2-blocking] light 档也按 P0/P1/P2 口径判(P2 报告并阻断,P3 不报)
+    note: "tier=light → 不起审查 agent:主 agent 自己通读 diff(纯文档/文案),按 P0/P1/P2 口径判,security.softHits 顺带定性;tier=standard → 独立审查 agent 按 rule-map 审,不跑 security-scan;tier=heavy → 独立审查 agent + 恶意代码与数据外发专项 + security-scan.mjs(heavyReasons 是原因清单)。分档只决定审查深度,不影响维护者确认门与合并前提",
   };
 
   // ── 展示标签(status:* / touches:*,判定见 lib.mjs computeDisplayLabels)──

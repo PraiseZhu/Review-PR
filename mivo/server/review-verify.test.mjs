@@ -50,11 +50,11 @@ test('features:开关文件不进 specDigest,也不在 prompt.mjs 里出现;load
   assert.equal(calls(codexSection), 1);
 });
 
-test('选择与模型:只核 P1(P0 永不核),超出上限的不核;配置模型与主审相同时换模型,再相同就不核', () => {
+test('选择与模型:只核 P1/P2(P0 永不核),P1 优先;超出上限的不核;配置模型与主审相同时换模型,再相同就不核', () => {
   const f = (severity, key) => ({ severity, key });
-  const { selected, overflow } = selectForVerification([f('P1', 'a'), f('P0', 'b'), f('P1', 'c'), f('P1', 'd')], { maxFindings: 2 });
-  assert.deepEqual(selected.map((x) => x.key), ['a', 'c']);
-  assert.deepEqual(overflow.map((x) => x.key), ['d']);
+  const { selected, overflow } = selectForVerification([f('P2', 'p2a'), f('P1', 'a'), f('P0', 'b'), f('P1', 'c'), f('P2', 'p2b'), f('P1', 'd')], { maxFindings: 3 });
+  assert.deepEqual(selected.map((x) => x.key), ['a', 'c', 'd']);
+  assert.deepEqual(overflow.map((x) => x.key), ['p2a', 'p2b']);
   const configured = { model: 'openai/gpt-6.1-sol', effort: 'medium' };
   const primary = { model: 'openai/gpt-6-luna', effort: 'max' };
   assert.deepEqual(pickVerifierModel({ configured, answeredBy: 'openai/gpt-6-luna', primary }), configured);
@@ -62,6 +62,8 @@ test('选择与模型:只核 P1(P0 永不核),超出上限的不核;配置模型
   assert.equal(pickVerifierModel({ configured, answeredBy: 'openai/gpt-6.1-sol', primary: { model: 'openai/gpt-6.1-sol' } }), null);
   assert.doesNotMatch(JSON.stringify(VERIFY_SCHEMA), /maxLength|minItems|maxItems/);
   assert.deepEqual(VERIFY_SCHEMA.properties.verdict.enum, ['confirmed', 'refuted', 'downgraded', 'unknown']);
+  assert.deepEqual(VERIFY_SCHEMA.required, ['verdict', 'evidence', 'note', 'severity']);
+  assert.deepEqual(VERIFY_SCHEMA.properties.severity.enum, ['P1', 'P2', 'P3', null]);
   const prompt = buildVerifyPrompt({ finding: { severity: 'P1', title: '空指针', path: 'a.ts', line: 3, trigger: 't', behavior: 'b', impact: 'i', evidence: [{ path: 'a.ts', line: 3 }] }, workdir: '/w' });
   assert.match(prompt, /## 核对任务/);
   assert.match(prompt, /尝试驳倒/);
@@ -97,7 +99,7 @@ test('enforce 下 refuted 要有真实证据、downgraded 要有理由才生效;
   const answers = [
     { verdict: 'refuted', evidence: [{ path: 'src/a.ts', line: 1 }], note: '调用方已判空' },
     { verdict: 'refuted', evidence: [], note: '凭印象' },
-    { verdict: 'downgraded', evidence: [], note: '只影响提示文案,没有数据后果' },
+    { verdict: 'downgraded', evidence: [], note: '只影响提示文案,没有数据后果', severity: 'P3' },
   ];
   const run = (config, checkEvidence = null) => runVerification({ findings: P1S, config, ...same, remainingMs: () => 90 * MIN, checkEvidence,
     runOne: async (finding, index) => ok(answers[index], 1000) });
@@ -131,7 +133,7 @@ test('applyVerification:按单条 finding 的 uid 应用;推翻/降级的 P1 移
     { severity: 'P1', key: 'e', uid: 'ue', path: 'e.ts', title: '没核到' },
     { severity: 'P1', key: 'f', path: 'f.ts', title: '没有 uid' },
   ];
-  const item = (uid, applied, extra = {}) => ({ key: uid.slice(1), uid, ok: true, applied, verdict: applied ?? 'confirmed', evidence: [{ path: 'x.ts', line: 3 }], note: '依据', ...extra });
+  const item = (uid, applied, extra = {}) => ({ key: uid.slice(1), uid, ok: true, applied, verdict: applied === 'downgraded' ? 'downgraded' : (applied ?? 'confirmed'), evidence: [{ path: 'x.ts', line: 3 }], note: '依据', ...(applied === 'downgraded' ? { verifiedSeverity: 'P3' } : {}), ...extra });
   const verification = { mode: 'enforce', items: [item('ua', 'refuted'), item('ub', 'downgraded'), item('uc', null), { key: 'd', uid: 'ud', ok: false, applied: null, error: 'x' }, item('uf', 'refuted', { key: 'f' })],
     skipped: [{ key: 'e', uid: 'ue', reason: 'budget' }, { key: 'a', uid: 'ua2', reason: 'max-findings' }] };
   const out = applyVerification({ findings, verification });
@@ -143,17 +145,17 @@ test('applyVerification:按单条 finding 的 uid 应用;推翻/降级的 P1 移
 });
 
 test('报告:核对员推翻/降级各单列一节(公开标题与证据/理由);全部卡点被推翻/降级时提示人工看一眼', () => {
-  const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 2 条 P0/P1'].join('\n');
+  const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 2 条 P0/P1/P2/P2'].join('\n');
   const args = { report: REPORT, pr: 1, url: 'https://github.com/o/r/pull/1', head: 'a'.repeat(40), base: 'b'.repeat(40), tier: 'standard', scope: { mode: 'full', reason: '首次' } };
   const refuted = [{ severity: 'P1', title: '空指针', path: 'src/a.ts', line: 2, evidence: [{ path: 'src/b.ts', line: 9 }], note: '调用方已判空' }];
   const downgraded = [{ severity: 'P1', title: '提示文案', path: 'src/c.ts', line: null, note: '只影响文案' }];
   const all = finalizeReport({ ...args, findings: [], verifierRefuted: refuted, verifierDowngraded: downgraded });
-  assert.match(all, /## Overall\npass —— 没有阻断的 P0\/P1。核对员推翻\/降级了全部卡点（2 条），请人工看一眼再合。/);
+  assert.match(all, /## Overall\npass —— 没有阻断的 P0\/P1\/P2。核对员推翻\/降级了全部卡点（2 条），请人工看一眼再合。/);
   assert.ok(all.includes(`${VERIFIER_REFUTED_SECTION}\n\n- \`src/a.ts:2\` · [P1] 空指针 · 推翻证据：\`src/b.ts:9\` · 依据：调用方已判空`));
   assert.ok(all.includes(`${VERIFIER_DOWNGRADED_SECTION}\n\n- \`src/c.ts\` · [P1] 提示文案 · 降级理由：只影响文案`));
   assert.ok(all.indexOf(VERIFIER_REFUTED_SECTION) < all.indexOf('## Rule coverage'));
   const partial = finalizeReport({ ...args, findings: [{ path: 'src/d.ts', line: 1, body: '[P1] 还在' }], verifierRefuted: refuted });
-  assert.match(partial, /changes-requested —— 1 条 P0\/P1，已在对应位置开 review thread。另有 1 条 P1 被核对员推翻\/降级，不阻断。/);
+  assert.match(partial, /changes-requested —— 1 条 P0\/P1\/P2，已在对应位置开 review thread。另有 1 条 P1\/P2 被核对员推翻\/降级，不阻断。/);
   const none = finalizeReport({ ...args, findings: [] });
   assert.ok(!none.includes(VERIFIER_REFUTED_SECTION) && !none.includes('核对员'));
 });
@@ -208,15 +210,15 @@ const GIT_ENV = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e', GIT_COMMITTER_N
   GIT_AUTHOR_DATE: '2026-10-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-10-01T00:00:00Z' };
 const SENTINEL = 'MAIN-ANSWER-SENTINEL';
 const FAKE_KEY = 'sk-test-FAKEKEY-0123456789abcdef'; // 假的网关凭据,只给假 codex 脚本用
-const REPORT = ['## Findings', SENTINEL, '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 2 条 P0/P1'].join('\n');
+const REPORT = ['## Findings', SENTINEL, '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 2 条 P0/P1/P2'].join('\n');
 const DIFF = ['diff --git a/src/a.ts b/src/a.ts', 'index 1..2 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,1 +1,2 @@', ' keep', '+added'].join('\n');
 const finding = (over = {}) => ({ severity: 'P1', title: '空指针', trigger: '未登录', behavior: '抛错', impact: '白屏', fix: '判空', verify: '补测',
   evidence: [{ path: 'src/a.ts', line: 2 }], origin: 'introduced', bugClass: 'null-deref', instances: [], supersedes: null,
   path: 'src/a.ts', line: 2, side: 'RIGHT', deferredTo: null, ...over });
 const TWO_P1 = { report: REPORT, findings: [finding(), finding({ title: '另一个问题', bugClass: 'race', line: null })] };
-const REFUTED = { verdict: 'refuted', evidence: [{ path: 'src/a.ts', line: 1 }], note: '调用方已判空' };
-const DOWNGRADED = { verdict: 'downgraded', evidence: [], note: '只影响提示文案,没有数据后果' };
-const CONFIRMED = { verdict: 'confirmed', evidence: [{ path: 'src/a.ts', line: 2 }], note: '成立' };
+const REFUTED = { verdict: 'refuted', evidence: [{ path: 'src/a.ts', line: 1 }], note: '调用方已判空', severity: null };
+const DOWNGRADED = { verdict: 'downgraded', evidence: [], note: '只影响提示文案,没有数据后果', severity: 'P3' };
+const CONFIRMED = { verdict: 'confirmed', evidence: [{ path: 'src/a.ts', line: 2 }], note: '成立', severity: 'P1' };
 
 // 假 codex:按 --output-schema 文件里有没有 verdict 区分主审和核对员;每次调用写一行日志(带 --model);
 // 核对员运行时扫描 WORK 目录,磁盘上只要还有主审的哨兵就记 leak;verify-seq 是按调用次序消费的核对员行为('fail' 表示 exit 3);
@@ -369,7 +371,7 @@ test('enforce:confirmed / 核对员出错 / 推翻没有证据 → 照原样卡;
   assert.equal(mixed.comments.length, 1, '只剩被确认的那条');
   assert.match(mixed.comments[0].body, /^\[P1\] 另一个问题/);
   assert.ok(mixed.report.includes('## 核对员认为不成立（不阻断本 PR）'));
-  assert.match(mixed.report, /changes-requested —— 1 条 P0\/P1.*另有 1 条 P1 被核对员推翻\/降级，不阻断。/);
+  assert.match(mixed.report, /changes-requested —— 1 条 P0\/P1\/P2.*另有 1 条 P1\/P2 被核对员推翻\/降级，不阻断。/);
   assert.equal(mixed.result.reviewClean, false);
   const failing = runCase({ seq: ['fail'], mode: 'dry-run' });
   assert.equal(failing.result.outcome, 'findings');
@@ -382,7 +384,7 @@ test('enforce:confirmed / 核对员出错 / 推翻没有证据 → 照原样卡;
   assert.equal(notOnHead.result.mivo.findings.length, 2, '证据在 head 上不存在,推翻不生效');
 });
 
-test('enforce:P0 不核、永远卡;只有 P1 进核对员', { skip }, () => {
+test('enforce:P0 不核、永远卡;只有 P1/P2 进核对员', { skip }, () => {
   const r = runCase({ main: { report: REPORT, findings: [finding({ severity: 'P0', title: '严重事故' }), finding({ title: '普通 P1', bugClass: 'race', line: null })] }, seq: [REFUTED], mode: 'dry-run' });
   assert.deepEqual(r.calls.map((c) => c.split(' ')[0]), ['main', 'verify'], '只核了一条 P1');
   assert.equal(r.result.outcome, 'findings');
@@ -432,7 +434,7 @@ test('核对员自己的运行产物清不掉:只记告警,核对结论照常采
 });
 
 test('原本就零 P1 的 PR:不起核对员,行为不变', { skip }, () => {
-  const r = runCase({ main: { report: REPORT.replace('changes-requested —— 2 条 P0/P1', 'pass —— 没有 P0/P1。'), findings: [] }, mode: 'dry-run' });
+  const r = runCase({ main: { report: REPORT.replace('changes-requested —— 2 条 P0/P1/P2', 'pass —— 没有 P0/P1/P2。'), findings: [] }, mode: 'dry-run' });
   assert.deepEqual(r.calls, ['main openai/gpt-6-luna']);
   assert.equal(r.result.outcome, 'approval');
   assert.equal(r.result.reviewClean, true);
@@ -546,7 +548,7 @@ test('10-19 复现:marker 标 sol 降级 → 核对员整体跳过,不调用 sol
   assert.ok(r.result.warnings.some((w) => /核对员/.test(w) && /sol gateway timeout/.test(w)), r.result.warnings.join('|'));
   assert.match(r.report, /核对员未运行/);
   assert.match(r.report, /2 条 P1/);
-  assert.match(r.report, /changes-requested —— 2 条 P0\/P1/, '结论与阻断判定不变');
+  assert.match(r.report, /changes-requested —— 2 条 P0\/P1\/P2/, '结论与阻断判定不变');
 });
 
 test('10-19 复现:marker 没有降级字段,sol 挂住 → 第一次超时后熔断,本轮不再核剩下的;P1 照旧阻断', { skip }, () => {
@@ -576,4 +578,40 @@ test('主审失败 + marker 标备用降级 → 不再尝试备用,失败原因�
   assert.match(r.result.reason, /备用模型.*不可用.*已跳过/);
   assert.equal(r.result.mivo.codex.attempts.length, 1);
   assert.ok(r.result.warnings.some((w) => /备用模型/.test(w)), r.result.warnings.join('|'));
+});
+
+test('旧 downgraded 未标明 P3 不移出阻断;P1 改判 P2 仍阻断', () => {
+  const findings = [
+    { severity: 'P1', key: 'a', uid: 'ua', path: 'a.ts', line: 1, title: '旧降级', body: '[P1] 旧降级' },
+    { severity: 'P1', key: 'b', uid: 'ub', path: 'b.ts', line: 2, title: '改判 P2', body: '[P1] 改判 P2\\n正文仍写 P1' },
+    { severity: 'P2', key: 'c', uid: 'uc', path: 'c.ts', line: 3, title: '明确 P3', body: '[P2] 明确 P3' },
+  ];
+  const verification = { mode: 'enforce', items: [
+    { key: 'a', uid: 'ua', ok: true, applied: 'downgraded', verdict: 'downgraded', note: '旧语义' },
+    { key: 'b', uid: 'ub', ok: true, applied: 'reclassified', verdict: 'confirmed', verifiedSeverity: 'P2', note: '局部缺陷' },
+    { key: 'c', uid: 'uc', ok: true, applied: 'downgraded', verdict: 'downgraded', verifiedSeverity: 'P3', note: '只是风格' },
+  ] };
+  const out = applyVerification({ findings, verification });
+  assert.deepEqual(out.findings.map((f) => [f.uid, f.severity]), [['ua', 'P1'], ['ub', 'P2']]);
+  assert.ok(out.findings[1].body.startsWith('[P2] 改判 P2'));
+  assert.ok(out.findings[1].body.includes('正文仍写 P1'));
+  assert.deepEqual(out.downgraded.map((f) => f.uid), ['uc']);
+  assert.equal(out.refuted.length, 0);
+});
+
+test('runVerification:缺 P3 的 downgraded 不生效;confirmed P1→P2 记 reclassified', async () => {
+  const findings = [
+    { severity: 'P1', key: 'a', uid: 'ua' },
+    { severity: 'P1', key: 'b', uid: 'ub' },
+  ];
+  const answers = [
+    { verdict: 'downgraded', evidence: [], note: '旧式降级' },
+    { verdict: 'confirmed', evidence: [], note: '仍是缺陷但只是局部', severity: 'P2' },
+  ];
+  const result = await runVerification({ findings, config: CFG, ...same, remainingMs: () => 90 * MIN,
+    runOne: async (finding, index) => ok(answers[index], 1000) });
+  assert.equal(result.items[0].applied, null);
+  assert.match(result.items[0].rejected, /未明确降至 P3/);
+  assert.equal(result.items[1].applied, 'reclassified');
+  assert.equal(result.items[1].verifiedSeverity, 'P2');
 });

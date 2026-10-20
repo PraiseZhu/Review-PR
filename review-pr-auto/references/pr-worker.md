@@ -143,14 +143,16 @@ P0/P1/P2 口径与报告要求均读取 [review-pr 第 5 节](../../review-pr/SK
 
 核验共享符号/调用方、错误与回滚路径、权限边界和必要测试；最终逐项对照 PR 描述、完整 diff
 及讨论 issue 的要求。验证日志完整落盘并保留命令自身退出码，未运行不能写通过。
-只报告本 PR 可证实的 P0/P1，不以 P2 或猜测阻断。完成后 `reviewed=true`，单独保存
-`reviewClean=<是否 0 P0/P1>`、`reviewEvidence={head,base,baseRefName,diffHash}` 与报告路径。
+<!-- [MIVO-PATCH p2-blocking] -->
+只报告本 PR 可证实的 P0/P1/P2，不以 P3 或猜测阻断。完成后 `reviewed=true`，单独保存
+`reviewClean=<是否 0 P0/P1/P2>`、`reviewEvidence={head,base,baseRefName,diffHash}` 与报告路径。
 干净审查进入 Approve 前就写 progress 中的 `approval={status:'pending',reason:'干净审查已完成，待执行 guarded finish'}`，
 避免进程中断吞掉尚未完成的审批。reviewed 本身不能冒充干净结论。
 
 ## 4. 有问题：创建真实 review thread
 
-每条 P0/P1 写清事实、影响、修复建议和验证方式，绑定实际 diff 的 `path` 与 `line/side`。
+<!-- [MIVO-PATCH p2-blocking] -->
+每条 P0/P1/P2 写清事实、影响、修复建议和验证方式，绑定实际 diff 的 `path` 与 `line/side`。
 将报告写入 `--body-file`，问题数组写入 `--comments-file`：
 
 ```json
@@ -176,7 +178,8 @@ GitHub viewer 就是作者时，使用同一脚本的 `--comment-only`，以 COM
 
 ## 5. 无问题：同轮 Approve 与合并
 
-确认 0 P0/P1 并保存报告后，使用已有完整收尾脚本（不是裸 `gh pr review/merge`）：
+<!-- [MIVO-PATCH p2-blocking] -->
+确认 0 P0/P1/P2 并保存报告后，使用已有完整收尾脚本（不是裸 `gh pr review/merge`）：
 
 ```text
 node "<SCRIPTS>/finish-reviewed-pr.mjs" <N> --mode <auto|review-only> --review-clean
@@ -226,7 +229,7 @@ head/authority 已变化时结束为状态变化，不用旧证据派修复任�
 写结果前用 `review-round.mjs` 的
 `createFixHandoffRequest({mode, selfFix, head, outcome, merged, fixCause, fixEvidence, base})`
 判定跟进。`base` 用任务里的 base SHA（冲突指纹要带上，main 往前走才能再投）。
-`auto + selfFix=true` 的凭证/格式/P0-P1/未解决 thread/CI 失败/冲突/rebase/
+`auto + selfFix=true` 的凭证/格式/P0-P1-P2/未解决 thread/CI 失败/冲突/rebase/
 作者侧 Request Changes 返回请求；维护门、依赖、权限、等待 CI/bot、review-only 返回 null。
 合并前新出现的作者侧卡点按第 5 节有证据的 fixCause 判定，不把全部 merge-blocked 都送去修复。
 请求非空时，保存自包含修复说明到 `<roundDir>/fix-request-pr-<N>.md`，列明 PR URL、

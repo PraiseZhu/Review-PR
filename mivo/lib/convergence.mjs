@@ -1,11 +1,11 @@
 // convergence.mjs — 审查收敛:同一问题跨轮用同一个 key,连续多轮没修好时提醒回头看方案,带 key 的维护者裁定自动复核。纯函数。
-// 只提示、不改结论:同一条 P0/P1 连续 3 轮(含)以上报出,报告插一节「收敛提示」,阻断与否不变;不停审、不放行。
+// 只提示、不改结论:同一条 P0/P1/P2 连续 3 轮(含)以上报出,报告插一节「收敛提示」,阻断与否不变;不停审、不放行。
 // 裁定复核:维护者对某个 key 裁定不改的 P1,模型本轮仍报了就移出阻断(单列在报告里);P0 永不移出阻断。
 import { createHash } from 'node:crypto';
 import { findingKeyOf, findingMarker, parseFindingMarker, renderFindingBody, titleOfBody } from './finding.mjs';
 
 export const STUCK_ROUNDS = 3;
-const FINDING_RE = /^\s*\[(P0|P1)\]/;
+const FINDING_RE = /^\s*\[(P[012])\]/;
 const HEX_KEY_RE = /^[0-9a-f]{12}$/;
 const lower = (login) => String(login ?? '').toLowerCase();
 const commentsOf = (thread) => (Array.isArray(thread?.comments) ? thread.comments : thread?.comments?.nodes ?? []);
@@ -55,7 +55,7 @@ const severityOf = (item) => item.severity ?? item.body?.match(FINDING_RE)?.[1] 
 
 /**
  * 给三类问题(阻断 / PR 之前就存在 / 转 issue)分配 key,算连续轮数,加上 mivo-finding marker;
- * 阻断问题里命中维护者裁定的 P1 移入 ruledKept。
+ * 阻断问题里命中维护者裁定的 P1/P2 移入 ruledKept。
  * @param {object} p
  * @param {object[]} p.findings 阻断问题 @param {object[]} p.preexisting @param {object[]} p.deferred
  * @param {object} p.scope computeReviewScope 的结果 @param {number|null} p.roundIndex
@@ -104,13 +104,13 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
   for (const item of findings.map(keyed)) {
     const ruling = rulings.find((r) => r.key && r.key === item.key);
     if (ruling) rulingViolations += 1;
-    if (ruling && item.severity === 'P1') {
+    if (ruling && ['P1', 'P2'].includes(item.severity)) {
       ruledKept.push({ key: item.key, severity: item.severity, path: item.path, line: item.line ?? null, title: item.title ?? titleOfBody(item.body), rulingBy: ruling.by });
       continue;
     }
     blocking.push(item);
   }
-  const stuck = blocking.filter((f) => ['P0', 'P1'].includes(f.severity) && f.seenRounds >= STUCK_ROUNDS)
+  const stuck = blocking.filter((f) => ['P0', 'P1', 'P2'].includes(f.severity) && f.seenRounds >= STUCK_ROUNDS)
     .map((f) => ({ key: f.key, severity: f.severity, title: f.title ?? titleOfBody(f.body), path: f.path, line: f.line ?? null, seenRounds: f.seenRounds, threadUrl: hist.threadUrlByKey.get(f.key) ?? null }));
   const convergence = {
     roundIndex, repeatCount: blocking.filter((f) => f.seenRounds >= 2).length, lateCount: blocking.filter((f) => f.late).length,
@@ -124,7 +124,7 @@ export function renderConvergenceSection(convergence, stuck = []) {
   if (!convergence?.rethink || !stuck.length) return [];
   return [
     '## 收敛提示', '',
-    `下列 P0/P1 问题已连续 ${STUCK_ROUNDS} 轮或以上报出，本轮核对仍未修好。建议先回头看实现方案是否要调整，再逐条修；认为不成立的，在对应 thread 按作者申辩写明依据。`, '',
+    `下列 P0/P1/P2 问题已连续 ${STUCK_ROUNDS} 轮或以上报出，本轮核对仍未修好。建议先回头看实现方案是否要调整，再逐条修；认为不成立的，在对应 thread 按作者申辩写明依据。`, '',
     ...stuck.map((s) => `- [${s.severity}] ${s.title}（已连续 ${s.seenRounds} 轮）${s.threadUrl ? ` · [thread](${s.threadUrl})` : ` · \`${s.line ? `${s.path}:${s.line}` : s.path}\``}`),
     '',
   ];
