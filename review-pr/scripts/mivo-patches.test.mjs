@@ -1474,3 +1474,17 @@ test('handoff-lines: 改动行数不算本 PR 自己的交接文件,别的 PR �
   assert.equal(countDiffLines(files, '12'), 9);
   assert.equal(countDiffLines([], 12), 0);
 });
+
+test('handoff-gate-kind: Mivo 判门发出的每种打回 kind 都能生成并识别 gate review 标记', async () => {
+  const { gateReviewMarker, selectGateReviewsToDismiss } = await import('./review-markers.mjs');
+  const gatesSrc = readFileSync(new URL('../../mivo/lib/gates.mjs', import.meta.url), 'utf8');
+  const kinds = [...new Set([...gatesSrc.matchAll(/gateKind: '([a-z]+)'/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(kinds, ['format', 'handoff', 'security']);
+  const head = 'a'.repeat(40);
+  const old = 'b'.repeat(40);
+  for (const kind of kinds) {
+    const reviews = [{ id: 1, state: 'CHANGES_REQUESTED', user: { login: 'bot' }, commit_id: old, body: `x\n\n${gateReviewMarker(kind, old)}` }];
+    assert.deepEqual(selectGateReviewsToDismiss(reviews, 'bot', head).map((r) => r.id), [1], kind);
+  }
+  assert.throws(() => gateReviewMarker('other', head), /gate kind/);
+});

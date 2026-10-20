@@ -56,6 +56,26 @@ test('handoff: 只认 PR Handoff workflow 的 pull_request_target 运行,PR 分�
   assert.match(unreadable.readError, /403/);
 });
 
+test('handoff: 更晚的冒充记录不遮住已有的可信失败', () => {
+  const trusted = { id: 7, name: 'pr-handoff-gate', head_sha: HEAD, app: { slug: 'github-actions' }, status: 'completed', conclusion: 'failure', check_suite: { id: 99 } };
+  const forged = { ...trusted, id: 8, conclusion: 'success', check_suite: { id: 100 } };
+  const calls = [];
+  const gh = (args) => {
+    const path = args[1];
+    calls.push(path);
+    if (path.includes('/check-runs?check_name=')) return { ok: true, stdout: JSON.stringify({ check_runs: [trusted, forged] }) };
+    if (path.includes('check_suite_id=100')) return { ok: true, stdout: JSON.stringify({ workflow_runs: [{ path: '.github/workflows/forged.yml', event: 'pull_request' }] }) };
+    if (path.includes('check_suite_id=99')) return { ok: true, stdout: JSON.stringify({ workflow_runs: [{ path: HANDOFF_WORKFLOW_PATH, event: 'pull_request_target' }] }) };
+    if (path.endsWith('/check-runs/7/annotations?per_page=100')) return { ok: true, stdout: JSON.stringify([{ annotation_level: 'notice', message: '[MODE] enforce' }, { annotation_level: 'failure', message: '[HANDOFF_MISSING] 缺少 docs/pr/12/qa.md' }]) };
+    return { ok: false, stderr: `unexpected ${path}` };
+  };
+  const facts = readHandoffFacts({ repo: 'o/r', head: HEAD, ghFn: gh });
+  assert.equal(facts.present, true);
+  assert.deepEqual(facts.errors.map((e) => e.code), ['HANDOFF_MISSING']);
+  assert.ok(calls.some((p) => p.includes('check_suite_id=100')), '先看了更新的那条');
+  assert.equal(toHandoffPending({ featureMode: 'enforce', facts }).length, 1);
+});
+
 test('handoff: 只有开关与 Mivo 门都是 enforce 才需要打回;首次送审时过期也算', () => {
   assert.deepEqual(toHandoffPending({ featureMode: 'observe', facts: enforceFacts() }), []);
   assert.deepEqual(toHandoffPending({ featureMode: 'enforce', facts: enforceFacts({ mode: 'observe' }) }), []);
