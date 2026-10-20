@@ -49,6 +49,7 @@ try {
   const expectedBaseRef = argValue('--expected-base-ref');
   const expectedAuthorityDigest = argValue('--expected-authority-digest');
   const bodyFile = argValue('--body-file');
+  // [MIVO-PATCH p2-blocking] 默认通过正文按 P0/P1/P2 口径写
   const body = bodyFile ? readFileSync(bodyFile === '-' ? 0 : bodyFile, 'utf8').trim()
     : '代码重审通过：当前 head 未发现 P0/P1/P2，全部 conversation 已 resolve。';
   // [MIVO-PATCH self-review] 交互式重审通过、操作者当面同意后才带它:只放行审查账号上指名的那一条人工
