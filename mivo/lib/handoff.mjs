@@ -57,28 +57,28 @@ export function toHandoffFacts({ checkRun = null, annotations = [] } = {}) {
 }
 
 /**
- * 读 head 上的 `pr-handoff-gate`:只认 GitHub Actions 写的、来自 pull_request_target 运行的 PR Handoff workflow 的那条,
- * 防止 PR 分支自带一个同名 job 冒充;冒充的记录跳过,继续找更早的可信记录(最多看最新 5 条)。任何一步读不到 → present:false 并带 readError(不打回、不挡,只少一份线索)。
+ * 读 head 上的 `pr-handoff-gate`:从 PR Handoff workflow(`HANDOFF_WORKFLOW_PATH`)自己在这个 head 上的 pull_request_target 运行出发,
+ * 取最新一次运行的 check suite,再读该 suite 里的这个检查。PR 分支自带的同名 job 不在这个 workflow 的运行里,
+ * 数量再多也挤不掉可信记录。任何一步读不到 → present:false 并带 readError(不打回、不挡,只少一份线索)。
  * ghFn(args) → {ok, stdout, stderr}。
  */
 export function readHandoffFacts({ repo, head, ghFn }) {
   const fail = (readError) => ({ ...NONE, readError });
+  const workflowFile = HANDOFF_WORKFLOW_PATH.split('/').pop();
   try {
-    const listed = ghFn(['api', `repos/${repo}/commits/${head}/check-runs?check_name=${HANDOFF_CHECK}&per_page=100`]);
-    if (!listed.ok) return fail(`check-runs 读取失败:${String(listed.stderr || listed.stdout).trim().slice(0, 160)}`);
-    const runs = (JSON.parse(listed.stdout || '{}').check_runs ?? [])
-      .filter((c) => c?.name === HANDOFF_CHECK && c.head_sha === head && c.app?.slug === 'github-actions' && c.status === 'completed')
-      .sort((a, b) => b.id - a.id);
+    const listed = ghFn(['api', `repos/${repo}/actions/workflows/${workflowFile}/runs?head_sha=${head}&event=pull_request_target&per_page=20`]);
+    if (!listed.ok) return fail(`workflow 运行读取失败:${String(listed.stderr || listed.stdout).trim().slice(0, 160)}`);
+    const runs = (JSON.parse(listed.stdout || '{}').workflow_runs ?? [])
+      .filter((r) => r?.path === HANDOFF_WORKFLOW_PATH && r.event === 'pull_request_target' && r.head_sha === head && r.status === 'completed' && Number.isSafeInteger(r.check_suite_id))
+      .sort((x, y) => y.id - x.id);
     if (!runs.length) return { ...NONE };
-    // 从新到旧找第一条来源可信的;不可信的跳过,不能让一条更晚的冒充记录遮住已有的可信结果
-    let checkRun = null;
-    for (const candidate of runs.slice(0, 5)) {
-      const suite = ghFn(['api', `repos/${repo}/actions/runs?check_suite_id=${candidate.check_suite?.id}&per_page=5`]);
-      if (!suite.ok) return fail(`workflow 运行读取失败:${String(suite.stderr || suite.stdout).trim().slice(0, 160)}`);
-      const workflowRun = (JSON.parse(suite.stdout || '{}').workflow_runs ?? [])[0];
-      if (workflowRun?.path === HANDOFF_WORKFLOW_PATH && workflowRun.event === 'pull_request_target') { checkRun = candidate; break; }
-    }
-    if (!checkRun) return fail(`${HANDOFF_CHECK} 没有来自 ${HANDOFF_WORKFLOW_PATH} 的 pull_request_target 运行,不采用`);
+    const suiteId = runs[0].check_suite_id;
+    const checks = ghFn(['api', `repos/${repo}/check-suites/${suiteId}/check-runs?check_name=${HANDOFF_CHECK}&per_page=100`]);
+    if (!checks.ok) return fail(`check-runs 读取失败:${String(checks.stderr || checks.stdout).trim().slice(0, 160)}`);
+    const checkRun = (JSON.parse(checks.stdout || '{}').check_runs ?? [])
+      .filter((c) => c?.name === HANDOFF_CHECK && c.head_sha === head && c.app?.slug === 'github-actions' && c.status === 'completed' && c.check_suite?.id === suiteId)
+      .sort((x, y) => y.id - x.id)[0];
+    if (!checkRun) return fail(`${HANDOFF_WORKFLOW_PATH} 最新一次运行里没有已完成的 ${HANDOFF_CHECK}`);
     const notes = ghFn(['api', `repos/${repo}/check-runs/${checkRun.id}/annotations?per_page=100`]);
     if (!notes.ok) return fail(`注解读取失败:${String(notes.stderr || notes.stdout).trim().slice(0, 160)}`);
     return toHandoffFacts({ checkRun, annotations: JSON.parse(notes.stdout || '[]') });

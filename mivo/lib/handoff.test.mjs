@@ -36,44 +36,48 @@ test('handoff: 注解解析出模式、错误(含观察期降级的)、提醒与
   assert.equal(toHandoffFacts({ checkRun: null }).present, false);
 });
 
-test('handoff: 只认 PR Handoff workflow 的 pull_request_target 运行,PR 分支自带的同名 job 不采用', () => {
-  const check = { id: 7, name: 'pr-handoff-gate', head_sha: HEAD, app: { slug: 'github-actions' }, status: 'completed', conclusion: 'failure', check_suite: { id: 99 } };
-  const gh = (run) => (args) => {
+// 模拟 GitHub:workflows/<file>/runs 只返回该 workflow 文件自己的运行,check-suites/<id>/check-runs 只返回该 suite 的检查。
+const fakeGitHub = ({ trustedRuns, checks, annotations = {} }) => {
+  const calls = [];
+  const ghFn = (args) => {
     const path = args[1];
-    if (path.includes('/check-runs?check_name=')) return { ok: true, stdout: JSON.stringify({ check_runs: [check, { ...check, id: 8, app: { slug: 'someone' } }] }) };
-    if (path.includes('actions/runs?check_suite_id=99')) return { ok: true, stdout: JSON.stringify({ workflow_runs: [run] }) };
-    if (path.endsWith('/check-runs/7/annotations?per_page=100')) return { ok: true, stdout: JSON.stringify([{ annotation_level: 'notice', message: '[MODE] enforce' }, { annotation_level: 'failure', message: '[FIELD_EMPTY] R1 有字段没填：触发' }]) };
+    calls.push(path);
+    const wf = /\/actions\/workflows\/([^/]+)\/runs\?head_sha=([0-9a-f]+)&event=([a-z_]+)/.exec(path);
+    if (wf) return { ok: true, stdout: JSON.stringify({ workflow_runs: trustedRuns.filter((r) => r.path.endsWith(`/${wf[1]}`) && r.head_sha === wf[2] && r.event === wf[3]) }) };
+    const cs = /\/check-suites\/(\d+)\/check-runs\?check_name=([^&]+)/.exec(path);
+    if (cs) return { ok: true, stdout: JSON.stringify({ check_runs: checks.filter((c) => c.check_suite.id === Number(cs[1]) && c.name === cs[2]) }) };
+    const an = /\/check-runs\/(\d+)\/annotations/.exec(path);
+    if (an) return { ok: true, stdout: JSON.stringify(annotations[an[1]] ?? []) };
     return { ok: false, stderr: `unexpected ${path}` };
   };
-  const ok = readHandoffFacts({ repo: 'o/r', head: HEAD, ghFn: gh({ path: HANDOFF_WORKFLOW_PATH, event: 'pull_request_target' }) });
+  return { ghFn, calls };
+};
+const trustedRun = { id: 500, path: HANDOFF_WORKFLOW_PATH, event: 'pull_request_target', head_sha: HEAD, status: 'completed', check_suite_id: 99 };
+const check = (id, suite, conclusion) => ({ id, name: 'pr-handoff-gate', head_sha: HEAD, app: { slug: 'github-actions' }, status: 'completed', conclusion, check_suite: { id: suite } });
+const failedNotes = { 7: [{ annotation_level: 'notice', message: '[MODE] enforce' }, { annotation_level: 'failure', message: '[HANDOFF_MISSING] 缺少 docs/pr/12/qa.md' }] };
+
+test('handoff: 只认 PR Handoff workflow 的 pull_request_target 运行;没有这个运行时不采用别的同名检查', () => {
+  const ok = readHandoffFacts({ repo: 'o/r', head: HEAD, ...fakeGitHub({ trustedRuns: [trustedRun], checks: [check(7, 99, 'failure')], annotations: failedNotes }) });
   assert.equal(ok.mode, 'enforce');
-  assert.deepEqual(ok.errors.map((e) => e.code), ['FIELD_EMPTY']);
-  const forged = readHandoffFacts({ repo: 'o/r', head: HEAD, ghFn: gh({ path: HANDOFF_WORKFLOW_PATH, event: 'pull_request' }) });
-  assert.equal(forged.present, false);
-  assert.match(forged.readError, /不采用/);
+  assert.deepEqual(ok.errors.map((e) => e.code), ['HANDOFF_MISSING']);
+  // 只有 PR 分支自带的同名 job:可信 workflow 没有运行 → 当作没有交接结果
+  const onlyForged = readHandoffFacts({ repo: 'o/r', head: HEAD, ...fakeGitHub({ trustedRuns: [{ ...trustedRun, path: '.github/workflows/forged.yml', event: 'pull_request' }], checks: [check(8, 100, 'success')] }) });
+  assert.equal(onlyForged.present, false);
   const unreadable = readHandoffFacts({ repo: 'o/r', head: HEAD, ghFn: () => ({ ok: false, stderr: 'HTTP 403' }) });
   assert.equal(unreadable.present, false);
   assert.match(unreadable.readError, /403/);
 });
 
-test('handoff: 更晚的冒充记录不遮住已有的可信失败', () => {
-  const trusted = { id: 7, name: 'pr-handoff-gate', head_sha: HEAD, app: { slug: 'github-actions' }, status: 'completed', conclusion: 'failure', check_suite: { id: 99 } };
-  const forged = { ...trusted, id: 8, conclusion: 'success', check_suite: { id: 100 } };
-  const calls = [];
-  const gh = (args) => {
-    const path = args[1];
-    calls.push(path);
-    if (path.includes('/check-runs?check_name=')) return { ok: true, stdout: JSON.stringify({ check_runs: [trusted, forged] }) };
-    if (path.includes('check_suite_id=100')) return { ok: true, stdout: JSON.stringify({ workflow_runs: [{ path: '.github/workflows/forged.yml', event: 'pull_request' }] }) };
-    if (path.includes('check_suite_id=99')) return { ok: true, stdout: JSON.stringify({ workflow_runs: [{ path: HANDOFF_WORKFLOW_PATH, event: 'pull_request_target' }] }) };
-    if (path.endsWith('/check-runs/7/annotations?per_page=100')) return { ok: true, stdout: JSON.stringify([{ annotation_level: 'notice', message: '[MODE] enforce' }, { annotation_level: 'failure', message: '[HANDOFF_MISSING] 缺少 docs/pr/12/qa.md' }]) };
-    return { ok: false, stderr: `unexpected ${path}` };
-  };
-  const facts = readHandoffFacts({ repo: 'o/r', head: HEAD, ghFn: gh });
-  assert.equal(facts.present, true);
-  assert.deepEqual(facts.errors.map((e) => e.code), ['HANDOFF_MISSING']);
-  assert.ok(calls.some((p) => p.includes('check_suite_id=100')), '先看了更新的那条');
-  assert.equal(toHandoffPending({ featureMode: 'enforce', facts }).length, 1);
+test('handoff: 再多更晚的冒充同名检查也遮不住可信失败', () => {
+  for (const forgedCount of [1, 5, 6, 150]) {
+    const forged = Array.from({ length: forgedCount }, (_, i) => check(8 + i, 100 + (i % 7), 'success'));
+    const { ghFn, calls } = fakeGitHub({ trustedRuns: [trustedRun], checks: [check(7, 99, 'failure'), ...forged], annotations: failedNotes });
+    const facts = readHandoffFacts({ repo: 'o/r', head: HEAD, ghFn });
+    assert.equal(facts.present, true, `forged=${forgedCount}`);
+    assert.deepEqual(facts.errors.map((e) => e.code), ['HANDOFF_MISSING']);
+    assert.equal(toHandoffPending({ featureMode: 'enforce', facts }).length, 1);
+    assert.equal(calls.length, 3, '请求次数与冒充数量无关');
+  }
 });
 
 test('handoff: 只有开关与 Mivo 门都是 enforce 才需要打回;首次送审时过期也算', () => {

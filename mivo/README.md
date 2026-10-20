@@ -173,7 +173,7 @@ Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功�
 
 Mivo 仓 2026-10-19 起要求每个 PR 附 `docs/pr/<PR号>/review.md`（给审查）与 `qa.md`（给测试），写法见 Mivo 仓 `docs/pr/README.md`。
 Mivo 的 `PR Handoff` workflow（`pull_request_target`）在 head 上写检查 `pr-handoff-gate`，问题写成注解：`[MODE] observe|enforce|exempt` 一条，其余 `[错误码] 说明`。
-审查机不重新校验内容，只读这些注解（`lib/handoff.mjs`；只认 `.github/workflows/pr-handoff.yml` 的 `pull_request_target` 运行，PR 分支自带的同名 job 不采用）。
+审查机不重新校验内容，只读这些注解（`lib/handoff.mjs`；从 `.github/workflows/pr-handoff.yml` 在当前 head 上的 `pull_request_target` 运行出发，只读最新一次运行所在 check suite 里的检查。PR 分支自带的同名 job 不在这个 workflow 的运行里，数量再多也挤不掉可信结果）。
 
 开关 `config/review-features.json` 的 `handoff.mode`：
 
