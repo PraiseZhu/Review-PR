@@ -61,6 +61,12 @@ function loadConfig() {
       && (typeof config.viewerLogin !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.viewerLogin))) {
     throw new Error(`viewerLogin 不是合法的 GitHub 登录名:${JSON.stringify(config.viewerLogin)}`);
   }
+  // [MIVO-PATCH branch-protection-cache] 分支保护读取的缓存时长(毫秒)。分支保护要 Administration 读,App 令牌读不了,
+  // 每轮重读都记在 PraiseZhu 额度上;规则很少变,配 600000(10 分钟)即可。不配=每次都读。
+  if (config.branchProtectionCacheMs !== undefined
+      && (!Number.isInteger(config.branchProtectionCacheMs) || config.branchProtectionCacheMs < 0 || config.branchProtectionCacheMs > 3_600_000)) {
+    throw new Error(`branchProtectionCacheMs 须是 0–3600000 的整数毫秒:${JSON.stringify(config.branchProtectionCacheMs)}`);
+  }
   return config;
 }
 
@@ -105,6 +111,9 @@ function setupEnv(config) {
   if (config.viewerLogin) env.REVIEW_PR_VIEWER_LOGIN = String(config.viewerLogin);
   else delete env.REVIEW_PR_VIEWER_LOGIN;
   env.REVIEW_PR_SNAPSHOT_FORK_NAME = '0';
+  // 不从 launchd 环境继承:只认配置文件里的值。
+  if (config.branchProtectionCacheMs > 0) env.REVIEW_PR_BRANCH_PROTECTION_CACHE_MS = String(config.branchProtectionCacheMs);
+  else delete env.REVIEW_PR_BRANCH_PROTECTION_CACHE_MS;
   if (config.mode === 'dry-run') {
     // dry-run:Cindy 脚本里的任何 GitHub 写入都被垫片拦下;只放行派发 dry-run 服务器审查。
     const realGh = run('/bin/sh', ['-c', 'command -v gh']).stdout.trim();

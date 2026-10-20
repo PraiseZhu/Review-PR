@@ -43,3 +43,19 @@ test('viewerLogin 格式不对时启动即报错', () => {
   }
   assert.equal(loadConfig(base).viewerLogin, undefined);
 });
+
+test('配了 branchProtectionCacheMs:脚本环境带缓存时长;没配不从 launchd 环境继承', () => {
+  assert.equal(setupEnv({ ...base, branchProtectionCacheMs: 600000 }).REVIEW_PR_BRANCH_PROTECTION_CACHE_MS, '600000');
+  const none = setupEnv(base, { REVIEW_PR_BRANCH_PROTECTION_CACHE_MS: '999' });
+  assert.equal(Object.hasOwn(none, 'REVIEW_PR_BRANCH_PROTECTION_CACHE_MS'), false);
+  const zero = setupEnv({ ...base, branchProtectionCacheMs: 0 }, { REVIEW_PR_BRANCH_PROTECTION_CACHE_MS: '999' });
+  assert.equal(Object.hasOwn(zero, 'REVIEW_PR_BRANCH_PROTECTION_CACHE_MS'), false);
+});
+
+test('branchProtectionCacheMs 不是 0–3600000 的整数时启动即报错', () => {
+  assert.equal(loadConfig({ ...base, branchProtectionCacheMs: 600000 }).branchProtectionCacheMs, 600000);
+  for (const bad of [-1, 1.5, '600000', 3_600_001, null]) {
+    assert.throws(() => loadConfig({ ...base, branchProtectionCacheMs: bad }), /branchProtectionCacheMs/);
+  }
+  assert.equal(loadConfig(base).branchProtectionCacheMs, undefined);
+});
