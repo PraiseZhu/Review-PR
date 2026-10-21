@@ -113,7 +113,7 @@ test('specDigest:只改实现代码不变;必读或命中的规则变了就变;�
 // 增量轮专属的固定指令也是任务书:只改它也要让 digest 变,否则同 head 的旧干净报告会被沿用、新指令整轮不执行。
 test('specDigest:固定模板盖到每个分支(全量/增量范围、上一轮问题、转 issue 一节的空与非空)', () => {
   const { template } = manifest();
-  assert.deepEqual(Object.keys(template).sort(), ['full', 'fullWithPrevious', 'incremental']);
+  assert.deepEqual(Object.keys(template).sort(), ['finalFullWithPrevious', 'full', 'fullWithPrevious', 'incremental']);
   const all = Object.values(template).join('\n');
   for (const phrase of ['**全量审查**', '**增量复审**', '**优先规则**', '本轮是增量复审', '上一轮的问题(逐条核对)', '标了「已转 #N」的',
     '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)', '## 维护者裁定不改的问题(服务器已核验)', '## 写明的产品意图不算缺陷', '## 作者对以前问题的申辩(逐条核对)']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
@@ -270,4 +270,21 @@ test('specDigest:fullWithPrevious 模板覆盖「文件已移出」分支', () =
   const { template } = manifest();
   assert.ok(template.fullWithPrevious.includes('(文件已不在本 PR diff)'));
   assert.ok(template.incremental.includes('**不要**写进 `findings`'));
+});
+
+test('收口全量(purpose=final-full):任务书写明放行前全盘核对,保留旧问题逐条核对和 outOfDiff 要求;普通全量不带这句', () => {
+  const prev = [{ path: 'src/a.ts', line: 12, body: '[P1] 仍在 diff', key: 'aaaaaaaaaaaa' },
+    { path: 'src/gone.ts', line: 3, body: '[P1] 文件已移出', key: 'cccccccccccc', outOfDiff: true }];
+  const text = prompt('standard', { scope: { mode: 'full', purpose: 'final-full', reason: '放行前收口', previousFindings: prev } });
+  assert.match(text, /\*\*收口全量审查\*\*:放行前收口。这是放行前的全盘核对:审完整 diff/);
+  assert.match(text, /同时逐条核对下方「上一轮的问题」/);
+  assert.ok(text.includes('(文件已不在本 PR diff)'));
+  assert.doesNotMatch(prompt('standard', { scope: { mode: 'full', reason: 'r' } }), /收口全量审查/);
+});
+
+test('specDigest:收口全量模板进 digest(finalFullWithPrevious),且与普通全量不同', () => {
+  const { template } = manifest();
+  assert.ok(template.finalFullWithPrevious.includes('**收口全量审查**'));
+  assert.ok(template.finalFullWithPrevious.includes('(文件已不在本 PR diff)'));
+  assert.ok(!template.fullWithPrevious.includes('收口全量审查'));
 });
