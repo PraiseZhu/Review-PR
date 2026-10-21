@@ -2462,16 +2462,31 @@ function isCleanBaseMerge(commit, { baseSha, gitFn }) {
 
 const BASE_ONLY_CHAIN_LIMIT = 10;
 
+function reviewersOf(cfg) {
+  return (cfg?.reviewers ?? DEFAULT_BOT_REVIEWERS).map((s) => String(s).toLowerCase());
+}
+
+// 重建上一 head 时只认「已表态」(pending 空且非超时),不要求当前 quietMinutes 已满。
+function stanceFromSettle(result, cfg) {
+  if (!result || result.timedOut) return null;
+  const reviewers = reviewersOf(cfg);
+  if (reviewers.length === 0) return null;
+  const responded = (result.responded ?? []).map((s) => String(s).toLowerCase());
+  if ((result.pending ?? []).length > 0 || !reviewers.every((r) => responded.includes(r))) return null;
+  return { ...result, settled: true, timedOut: false, responded: reviewers };
+}
+
 // 沿用只认结构证明:从新 head 沿 parent[0] 走一段干净合 main 链回到已表态 SHA。
 // 每一步必须是两 parent 合并、第二 parent 在当前 base 上,且 merge-tree 的 tree 与该提交相同。
 // 同一 SHA 已验证过的表态可重复使用。普通单 parent 追加提交、祖先关系、指纹相同都不算。
-// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。链超过 10 段或任一步证明不了就失败。
+// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。最多 10 段(11 个节点);超了或任一步证明不了就失败。
 export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, baseSha, gitFn = git }) {
   if (!previousHeadSha || !headSha || !baseSha) return false;
   let current = headSha;
   const seen = new Set();
-  for (let i = 0; i < BASE_ONLY_CHAIN_LIMIT; i += 1) {
+  for (let hops = 0; hops <= BASE_ONLY_CHAIN_LIMIT; hops += 1) {
     if (sameSha(current, previousHeadSha)) return true;
+    if (hops === BASE_ONLY_CHAIN_LIMIT) return false;
     const key = String(current).toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
@@ -2604,7 +2619,7 @@ export function previousSettleFromLocalMerge({
   if (!headSha || !baseSha) return null;
   let current = headSha;
   const seen = new Set();
-  for (let i = 0; i < BASE_ONLY_CHAIN_LIMIT; i += 1) {
+  for (let hops = 0; hops <= BASE_ONLY_CHAIN_LIMIT; hops += 1) {
     const key = String(current).toLowerCase();
     if (seen.has(key)) return null;
     seen.add(key);
@@ -2614,17 +2629,15 @@ export function previousSettleFromLocalMerge({
     const headCommittedDate = String(prevDate.stdout ?? '').trim();
     let stance = null;
     if (headCommittedDate && Number.isFinite(Date.parse(headCommittedDate))) {
-      const first = evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg });
-      if (first.settled && !first.timedOut) stance = first;
+      stance = stanceFromSettle(evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg }), cfg);
       if (!stance && slug) {
         let checkRuns;
         try { checkRuns = fetchCheckRuns(slug, current); } catch { checkRuns = null; }
         if (Array.isArray(checkRuns)) {
-          const prior = evaluateBotSettle({
+          stance = stanceFromSettle(evaluateBotSettle({
             headCommittedDate, nowIso,
             activity: [...activity, ...botCheckActivity(checkRuns, cfg)], cfg,
-          });
-          if (prior.settled && !prior.timedOut) stance = prior;
+          }), cfg);
         }
       }
     }
@@ -2637,6 +2650,7 @@ export function previousSettleFromLocalMerge({
       const previousHashes = prevDiff.ok ? filePatchHashesFromDiff(prevDiff.stdout) : (currentHashes ?? {});
       return { ...stance, filePatchHashes: previousHashes, headCommittedDate, headSha: current, baseOnlyProven: true };
     }
+    if (hops === BASE_ONLY_CHAIN_LIMIT) return null;
     if (!isCleanBaseMerge(commit, { baseSha, gitFn })) return null;
     current = commit.parents[0];
   }
