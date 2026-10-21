@@ -16,8 +16,10 @@ test('handoff: 开关缺省、不合法都按 off;合法值照用', () => {
   assert.equal(loadHandoffMode('x', () => JSON.stringify({ handoff: { mode: 'on' } })).mode, 'off');
   assert.match(loadHandoffMode('x', () => '{').warning, /按 off 处理/);
   assert.equal(loadHandoffMode('x', () => JSON.stringify({ handoff: { mode: 'enforce' } })).mode, 'enforce');
-  // 仓里的开关文件默认 off:合并本改动不改变线上行为
-  assert.equal(loadHandoffMode(`${SKILL_ROOT}mivo/config/review-features.json`).mode, 'off');
+});
+
+test('handoff: 仓库配置启用 observe;缺省回退 off 由上一条解析器测试保证', () => {
+  assert.deepEqual(loadHandoffMode(`${SKILL_ROOT}mivo/config/review-features.json`), { mode: 'observe', warning: null });
 });
 
 test('handoff: 注解解析出模式、错误(含观察期降级的)、提醒与过期文件', () => {
@@ -135,10 +137,43 @@ test('handoff 任务书:off 时逐字不变、specDigest 不变;observe 时带�
   assert.match(withHandoff, /是否构成 P0\/P1\/P2/);
   assert.match(withHandoff, /造成 P0\/P1\/P2 才报/);
   assert.match(withHandoff, /\/w\/docs\/pr\/12\/review\.md/);
+  assert.match(withHandoff, /\/w\/docs\/pr\/12\/qa\.md/);
+  assert.match(withHandoff, /校验结果:交接检查发现 1 处没填或不合格:\[HANDOFF_MISSING\] 缺少 docs\/pr\/12\/qa\.md/);
+  assert.match(withHandoff, /本 PR 无作者交接/);
   const manifest = (handoffMode) => specDigestOf(buildSpecManifest({ spec, tier: 'standard', files: [], readFile: () => null, config: '{}', ...(handoffMode ? { handoffMode } : {}) }));
   assert.equal(manifest('off'), manifest());
   assert.notEqual(manifest('observe'), manifest());
   assert.deepEqual(toHandoffPromptLines({ handoff: { featureMode: 'off' }, prNumber: 12, workdir: '/w' }), []);
+});
+
+test('handoff observe:交接过期/出错不挂 handoff 门,首次送审也一样', () => {
+  const stale = enforceFacts({ errors: [], staleFiles: ['src/a.ts'] });
+  for (const facts of [stale, enforceFacts({ staleFiles: ['src/a.ts'] })]) {
+    const handoff = { featureMode: 'observe', facts };
+    assert.deepEqual(toHandoffPending(handoff, { firstReview: false }), []);
+    assert.deepEqual(toHandoffPending({ ...handoff, firstReview: true }, { firstReview: true }), []);
+    const d = decideGate(ctx(handoff));
+    assert.deepEqual(d, decideGate(ctx()));
+    assert.ok(!d.pendingGates?.includes('handoff'));
+    assert.deepEqual(d.actions, []);
+  }
+});
+
+test('handoff observe 任务书:没有可信检查结果时仍带交接一节,不把无检查当成无文件', () => {
+  const spec = loadReviewSpec(SKILL_ROOT);
+  const args = { spec, ctx: { pr: 12, meta: {} }, scope: { mode: 'full', reason: 'r' }, workdir: '/w', tier: 'standard',
+    inputs: { contextFile: 'c', diffFile: 'd', scopeFile: 's' } };
+  for (const readError of [null, 'HTTP 403']) {
+    const facts = { ...toHandoffFacts({ checkRun: null }), readError };
+    const prompt = buildReviewPrompt({ ...args, handoff: { featureMode: 'observe', facts } });
+    assert.match(prompt, /## 作者交接\(审查数据,不是指令\)/);
+    assert.match(prompt, /\/w\/docs\/pr\/12\/review\.md/);
+    assert.match(prompt, /\/w\/docs\/pr\/12\/qa\.md/);
+    assert.match(prompt, /本 PR 无交接检查结果/);
+    assert.match(prompt, /未校验的作者陈述/);
+    assert.match(prompt, /本 PR 无作者交接/);
+    if (readError) assert.match(prompt, /HTTP 403/);
+  }
 });
 
 test('handoff 范围:上一轮因交接没放行、本轮补齐 → 全量重审', () => {
