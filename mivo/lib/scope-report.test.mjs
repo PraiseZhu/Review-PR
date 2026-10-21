@@ -41,6 +41,8 @@ const previous = (over = {}) => ({
   findings: [], filePatchHashes: { ...filePatchHashes(files), 'src/a.ts': 'old' }, totalDiffLines: 10, tier: 'standard',
   triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z', ...over,
 });
+// 上一轮有阻断问题(增量保留判定的场景):上一轮已干净且代码有变化时会直接全量,见 scope-final-full.test.mjs。
+const withFindings = (over = {}) => previous({ reviewClean: false, findings: [{ path: 'src/b.ts', body: '[P1] x' }], ...over });
 
 test('增量:只审 patch 变了的文件,外加上轮有问题的文件', () => {
   const scope = computeReviewScope({ previous: previous({ reviewClean: false, findings: [{ path: 'src/b.ts', body: '[P1] x' }] }), current: current(), headIsDescendant: true });
@@ -68,7 +70,7 @@ test('全量兜底:各条件都会退回全量', () => {
   assert.equal(computeReviewScope({ previous: previous(), current: current({ triggerKinds: ['security'] }), headIsDescendant: true }).mode, 'full');
   assert.match(computeReviewScope({ previous: previous(), current: current(), headIsDescendant: false }).reason, /不是当前版本的祖先/);
   assert.equal(computeReviewScope({ previous: previous({ diffHash: 'd1' }), current: current(), headIsDescendant: false }).mode, 'reuse');
-  assert.match(computeReviewScope({ previous: previous({ totalDiffLines: 1 }), current: current(), headIsDescendant: true }).reason, /一半/);
+  assert.match(computeReviewScope({ previous: withFindings({ totalDiffLines: 1 }), current: current(), headIsDescendant: true }).reason, /一半/);
 });
 
 const fullReport = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
@@ -173,7 +175,7 @@ test('最终报告:有阻断问题时结论照旧并补一句;阻断里有 P1 �
 test('specDigest:旧产物缺字段退回全量,两边都缺也不能判成相等;skill 换版本但任务书没变仍可增量', () => {
   assert.equal(computeReviewScope({ previous: previous({ specDigest: undefined }), current: current({ specDigest: undefined }), headIsDescendant: true }).mode, 'full');
   assert.match(computeReviewScope({ previous: previous(), current: current({ specDigest: '' }), headIsDescendant: true }).reason, /本轮没有任务书版本/);
-  const scope = computeReviewScope({ previous: previous({ skillSha: 'old-sha', rulesDigest: 'old' }), current: current({ skillSha: 'new-sha' }), headIsDescendant: true });
+  const scope = computeReviewScope({ previous: withFindings({ skillSha: 'old-sha', rulesDigest: 'old' }), current: current({ skillSha: 'new-sha' }), headIsDescendant: true });
   assert.equal(scope.mode, 'incremental', '只换了审查机代码版本,任务书材料没变');
   assert.equal(computeReviewScope({ previous: previous({ head: 'h1', filePatchHashes: filePatchHashes(files) }), current: current(), headIsDescendant: null }).mode, 'reuse', '同 head 复用');
 });

@@ -92,6 +92,14 @@ export function computeReviewScope({ previous, current, headIsDescendant, forceF
     : [];
   const full = (reason) => ({ mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: carried, basedOn: null });
   if (!previous) return full('没有上一轮审查记录');
+  // 同 head 上一次运行的收口全量没做完(预算不足或收口失败):这次直接全量补跑。优先于下面「上一轮没审完」的通用分支,
+  // 并带上待核对的旧问题清单(outOfDiff 按本轮 diff 重算)。head 变了就不适用,走下面的常规判断。
+  const pending = previous.pendingFinalFull;
+  if (pending && pending.head === current.head && previous.head === current.head) {
+    const restored = pending.previousFindings.map((f) => { const { outOfDiff, ...rest } = f; return inDiff(f.path) ? rest : { ...rest, outOfDiff: true }; });
+    return { mode: 'full', reason: '补跑收口全量(上一次运行收口未完成)', files: Object.keys(current.filePatchHashes ?? {}).sort(),
+      previousFindings: restored, basedOn: null, purpose: 'final-full', finalFullKind: 'budget-retry' };
+  }
   if (previous.reviewed !== true || previous.reportComplete !== true || previous.outcome === 'error') return full('上一轮没审完或没有完整报告');
   // 上一轮因为交接不完整没放行、本轮交接补齐了:按交接重新全量审(增量范围只有那两份 md,看不到交接指向的代码)。
   if ((previous.pendingGates ?? []).includes('handoff') && !(current.pendingGates ?? []).includes('handoff')) return full('上一轮缺有效交接、本轮已补齐,按交接重新全量审查');
@@ -135,6 +143,8 @@ export function computeReviewScope({ previous, current, headIsDescendant, forceF
     if ((previous.deferred ?? []).some((d) => !verifiedIssues.includes(d.deferredTo))) return full('上一轮转 issue 的问题本轮未核验通过,重新全量确认');
     return reuse(previous, '规则改版，代码未变，沿用上次结论');
   }
+  // 上一轮已干净、本轮代码有变化:不先跑增量,直接全量(放行前的收口并入这一轮)。规则改版代码没变的沿用分支已在上面处理。
+  if (previousClean && changed.length > 0) return full('上一轮已干净,本轮代码有变化,直接全量');
   const findingFiles = [...new Set(carried.map((f) => f.path).filter((path) => path in after))];
   const changedLines = changed.reduce((sum, path) => sum + (current.fileChangedLines?.[path] ?? 0), 0);
   if (previous.totalDiffLines > 0 && changedLines > previous.totalDiffLines / 2) {
@@ -154,7 +164,22 @@ export function computeReviewScope({ previous, current, headIsDescendant, forceF
     basedOn: previous.head,
     // 本轮 patch 变了的文件:收敛模块据此判断「新问题是不是出在没改过的文件里」。
     changedFiles: changed.filter((path) => path in after),
+    // 防拉锯:上一轮是收口全量且有问题,本轮改动全落在那些问题所在文件里 → 增量判干净即放行,不再收口。
+    // 只是候选;本轮最终确实干净才会写进结果包(review.mjs)。
+    ...fixRoundExemption({ previous, changed }),
   };
+}
+
+/** 修复轮免收口的候选(SC4)。条件全部满足才返回 { finalFullExemption },否则返回 {}。 */
+export function fixRoundExemption({ previous, changed }) {
+  const source = previous?.finalFull;
+  const ctx = previous?.finalFullContext;
+  if (!source || source.outcome !== 'findings' || source.head !== previous.head) return {};
+  if (!['same-run', 'budget-retry'].includes(ctx?.kind)) return {};
+  if ((previous.findings ?? []).length === 0) return {};
+  const issueFiles = ctx.findingFiles ?? [];
+  if (issueFiles.length === 0 || changed.length === 0 || !changed.every((path) => issueFiles.includes(path))) return {};
+  return { finalFullExemption: { sourceHead: source.head, sourceRunId: source.runId, issueFiles: [...issueFiles].sort(), changedFiles: [...changed].sort() } };
 }
 
 /**
@@ -231,9 +256,41 @@ const codeReviewClean = (result) => result.reviewClean === true
   || (((result.mivo?.advisory?.pendingGates?.length ?? 0) + (result.mivo?.advisory?.blockers?.length ?? 0)) > 0
     && (result.mivo?.findings ?? []).length === 0);
 
+// 结果包里的收口记录(result.mivo.finalFull / finalFullContext)只认形状完整的值;缺失或畸形一律当没有,相关豁免/补跑随之失效。
+const FINAL_FULL_OUTCOMES = ['clean', 'findings', 'manual-review', 'pending-budget', 'error', 'skipped-fix-round'];
+const FINAL_FULL_KINDS = ['same-run', 'budget-retry', 'direct-full'];
+const safePath = (p) => typeof p === 'string' && p.length > 0 && !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..');
+const pathList = (v) => (Array.isArray(v) && v.every(safePath) ? [...new Set(v)].sort() : null);
+const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/i.test(v);
+
+export function readFinalFull(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (!isSha(raw.head) || !/^\d{1,15}$/.test(String(raw.runId ?? '')) || !FINAL_FULL_OUTCOMES.includes(raw.outcome)) return null;
+  return { head: raw.head, runId: String(raw.runId), outcome: raw.outcome };
+}
+
+export function readFinalFullContext(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !FINAL_FULL_KINDS.includes(raw.kind)) return null;
+  const findingFiles = pathList(raw.findingFiles ?? []);
+  return findingFiles ? { kind: raw.kind, findingFiles, previousRound: raw.previousRound ?? null } : null;
+}
+
+// 同 head 的收口没做完(待补/失败)的标记:顶层必须是 error+retry,记录的 head/runId 与结果自己的一致。
+function pendingFinalFullOf(result, finalFull, context) {
+  if (!finalFull || !context || !['pending-budget', 'error'].includes(finalFull.outcome)) return null;
+  if (!['same-run', 'budget-retry'].includes(context.kind)) return null;
+  if (result.outcome !== 'error' || result.retry !== true || finalFull.head !== result.head || finalFull.runId !== String(result.mivo?.runId ?? '')) return null;
+  const old = result.mivo?.scope?.previousFindings;
+  const previousFindings = Array.isArray(old) ? old.filter((f) => f && typeof f === 'object' && safePath(f.path)) : [];
+  return { head: finalFull.head, runId: finalFull.runId, kind: context.kind, previousFindings };
+}
+
 /** 上一次服务器审查的结果包(result.json + report.md)→ computeReviewScope 用的上一轮记录。 */
 export function previousFromResult(result, report = '') {
+  const finalFull = readFinalFull(result.mivo?.finalFull);
+  const finalFullContext = readFinalFullContext(result.mivo?.finalFullContext);
   return {
+    finalFull, finalFullContext, pendingFinalFull: pendingFinalFullOf(result, finalFull, finalFullContext),
     head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
     reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
     pendingGates: result.mivo?.advisory?.pendingGates ?? [],
