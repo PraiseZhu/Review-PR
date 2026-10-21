@@ -2,8 +2,8 @@
 // resolve-fixed-threads.mjs — 发布本轮结论之后,代 resolve 已修好的旧 thread(Review-PR #115)。
 // 共享的 resolve-threads.mjs 只负责「回复 + resolve」,不校验锁、head、账号权限,所以这里在每一条调用前补这些检查,
 // 并只处理 thread-resolution.mjs 选出来的 thread;共享脚本本身不改。
-// 失败只返回 warning,不让整轮审查失败。残余窗口:共享脚本内部「再读 threads → 回复 → resolve」之间 head 仍可能变化,
-// 这里只能在每条调用前复核,不能逐 mutation 原子校验。
+// 失败只返回 warning,不让整轮审查失败。每条 thread 动手前单独现查并重算清单(批次中途出现的新裁定 / 新评论不会被旧清单覆盖)。
+// 残余窗口:共享脚本内部「再读 threads → 回复 → resolve」之间 head / thread 仍可能变化,这里只能在每条调用前复核,不能逐 mutation 原子校验。
 //
 // 用法:node resolve-fixed-threads.mjs < request.json(cwd 必须是目标仓检出目录;令牌只走环境变量,不进请求)
 // request: { binding:{targetRepo,pr,head,base,baseRefName,reviewer,lockToken,authorityDigest,runUrl,mode}, round, contextFile, excludedKeys }
@@ -68,6 +68,21 @@ export function resolveFixedThreads(request, deps) {
       if (stopped || remaining < MIN_ITEM_MS) {
         items.push({ ...entry, status: 'skipped', reason: stopped ? 'stopped-after-failure' : 'budget-exhausted' });
         if (!stopped) { warnings.push('代 resolve 预算用完,剩余 thread 留给下一轮'); stopped = true; }
+        continue;
+      }
+      // 每条动手前单独现查:处理前面几条期间,这一条可能新增维护者裁定 / 作者申辩 / 被 resolve / unresolve,
+      // 旧清单不能当授权。用同一个纯选择器重算,这条不在新清单里(或回复正文变了)就跳过。
+      const live = deps.fetchThreads();
+      if (!live?.verified) {
+        items.push({ ...entry, status: 'skipped', reason: 'threads-unverified' });
+        warnings.push(`代 resolve 停止:处理前重新读取 thread 不完整(${clip((live?.errors ?? []).join('; '))})`);
+        stopped = true;
+        continue;
+      }
+      const current = buildThreadResolutionPlan({ ...base, liveThreads: live.threads, threadsVerified: true, maintainers }).threads.find((t) => t.id === thread.id);
+      if (!current || current.reply !== thread.reply) {
+        items.push({ ...entry, status: 'skipped', reason: 'changed-since-plan' });
+        warnings.push(`代 resolve 跳过(${thread.key}):处理前现查发现该 thread 已变化(新裁定 / 新评论 / 已 resolve / head 变化),留给下一轮`);
         continue;
       }
       try {

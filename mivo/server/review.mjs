@@ -988,7 +988,8 @@ async function publishFindings(state, result, reportFile, findings, { reusedRevi
     result.mivo.review = { id: posted.reviewId, url: posted.reviewUrl, action: posted.action };
     removeMergeReady(state, result);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, conclusionCheck);
-    return posted.ok === true && posted.reviewId ? { published: true, kind: 'review', id: posted.reviewId } : null;
+    // alreadySubmitted=true 是命中同 head 旧 review(本轮没有新写),缺字段按保守处理:都不算本轮新发布,不触发代 resolve。
+    return posted.ok === true && posted.reviewId && posted.alreadySubmitted === false ? { published: true, kind: 'review', id: posted.reviewId } : null;
   }
   const reason = posted.reason || posted.error || 'Request Changes 未提交';
   if (/head 已变化|state=/.test(reason)) Object.assign(result, { outcome: 'state-changed', reason: `发布前 PR 已变化:${reason}`, retry: true });

@@ -54,7 +54,7 @@ test('SC1/SC4 候选逐条:先核对绑定、再 fresh 读取、再逐条核对�
   const out = resolveFixedThreads(request({ excludedKeys: [K2] }), deps);
   assert.equal(out.status, 'completed');
   assert.equal(out.resolvedCount, 1);
-  assert.deepEqual(deps.log, ['binding', 'fetch', 'binding', 'resolve:T1']);
+  assert.deepEqual(deps.log, ['binding', 'fetch', 'fetch', 'binding', 'resolve:T1']);
   assert.equal(sent.length, 1);
   assert.ok(sent[0].reply.includes(HEAD) && sent[0].reply.includes(RUN) && sent[0].reply.includes(K1));
 });
@@ -98,6 +98,61 @@ test('逐条复核:第二条前 head 变了 → 第二条起停止,已完成的�
   assert.equal(out.resolvedCount, 1);
   assert.deepEqual(out.items.map((i) => i.status), ['resolved', 'skipped']);
   assert.deepEqual(deps.log.filter((e) => e.startsWith('resolve:')), ['resolve:T1']);
+});
+
+// 每条 thread 动手前单独现查(F1):处理 T1 期间 T2 发生的变化,T2 必须被跳过并记 warning。
+function liveDuringBatch(mutateT2) {
+  const reviewed = [thread('T1', K1), thread('T2', K2)];
+  const live = [thread('T1', K1), thread('T2', K2)];
+  const deps = makeDeps({ reviewed, live });
+  const original = deps.resolveOne;
+  deps.resolveOne = (item, opts) => {
+    const receipt = original(item, opts);
+    if (item.id === 'T1') mutateT2(live);
+    return receipt;
+  };
+  return { deps, out: resolveFixedThreads(request(), deps) };
+}
+const resolvedIds = (deps) => deps.log.filter((e) => e.startsWith('resolve:'));
+
+test('F1 处理 T1 期间 T2 新增维护者裁定 → T2 不 resolve,记 warning', () => {
+  const { deps, out } = liveDuringBatch((live) => live[1].comments.push({ id: 'r-new', author: { login: 'maint' }, body: '维护者裁定不改:产品意图' }));
+  assert.deepEqual(resolvedIds(deps), ['resolve:T1']);
+  assert.deepEqual(out.items.map((i) => i.status), ['resolved', 'skipped']);
+  assert.equal(out.items[1].reason, 'changed-since-plan');
+  assert.ok(out.warnings.some((w) => w.includes(K2)));
+});
+
+test('F1 处理 T1 期间 T2 有了作者申辩 / 评论被改 → T2 不 resolve', () => {
+  const reply = liveDuringBatch((live) => live[1].comments.push({ id: 'n', author: { login: 'author' }, body: '我不同意' }));
+  assert.deepEqual(resolvedIds(reply.deps), ['resolve:T1']);
+  assert.equal(reply.out.items[1].reason, 'changed-since-plan');
+  const edited = liveDuringBatch((live) => { live[1].comments[0].body += ' (edited)'; });
+  assert.deepEqual(resolvedIds(edited.deps), ['resolve:T1']);
+});
+
+test('F1 处理 T1 期间 T2 被人 resolve 或维护者在同 key 的另一条 thread 上裁定 → T2 不再 resolve', () => {
+  const resolved = liveDuringBatch((live) => { live[1].isResolved = true; });
+  assert.deepEqual(resolvedIds(resolved.deps), ['resolve:T1']);
+  const sameKey = liveDuringBatch((live) => live.push(thread('T9', K2, { replies: [{ id: 'r9', author: { login: 'maint' }, body: '维护者裁定不改:产品意图' }] })));
+  assert.deepEqual(resolvedIds(sameKey.deps), ['resolve:T1']);
+});
+
+test('F1 处理 T1 期间 T2 又被 unresolve 过(出现 triage 标记)→ T2 不 resolve', () => {
+  const { deps } = liveDuringBatch((live) => live[1].comments.push({ id: 'tr', author: { login: REVIEWER }, body: '<!-- review-pr:thread-triage -->' }));
+  assert.deepEqual(resolvedIds(deps), ['resolve:T1']);
+});
+
+test('F1 处理 T1 期间重新读取 thread 不完整 → 该条及之后不 resolve,记 warning', () => {
+  const reviewed = [thread('T1', K1), thread('T2', K2)];
+  const deps = makeDeps({ reviewed });
+  let fetches = 0;
+  const fetchThreads = deps.fetchThreads;
+  deps.fetchThreads = () => { fetches += 1; return fetches >= 3 ? { threads: [], verified: false, errors: ['分页失败'] } : fetchThreads(); };
+  const out = resolveFixedThreads(request(), deps);
+  assert.deepEqual(resolvedIds(deps), ['resolve:T1']);
+  assert.equal(out.status, 'partial');
+  assert.ok(out.warnings.some((w) => w.includes('分页失败')));
 });
 
 test('发布后重新读取 thread 不完整 → 零写', () => {

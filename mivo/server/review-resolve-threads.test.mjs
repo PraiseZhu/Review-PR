@@ -186,3 +186,46 @@ test('已核验 Approve:只有本轮新提交的(alreadyApproved=false)才算本
     });
   }
 });
+
+// F2:request-changes 回执 alreadySubmitted=true 表示命中同 head 旧 review、本轮没有新写,不能当本轮新发布去代 resolve。
+function runWithRequestChanges(receipt, check) {
+  const env = setup({ threads: [oldThread()] });
+  try {
+    const { root, work } = env;
+    const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', ...args], { cwd: join(work, 'repo'), encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    git('init', '-q');
+    mkdirSync(join(work, 'repo', 'src'));
+    writeFileSync(join(work, 'repo', 'src', 'a.ts'), 'keep\nadded\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'head');
+    const head = git('rev-parse', 'HEAD');
+    const state = JSON.parse(readFileSync(join(work, 'state.json'), 'utf8'));
+    state.input.head = head; state.input.base = head;
+    state.context.evidence = { ...state.context.evidence, head, base: head };
+    state.context.viewerIsAuthor = false;
+    writeFileSync(join(work, 'state.json'), JSON.stringify(state));
+    const finding = { severity: 'P1', title: '空指针', trigger: '未登录', behavior: '抛错', impact: '白屏', fix: '判空', verify: '补测',
+      evidence: [{ path: 'src/a.ts', line: 2 }], origin: 'introduced', bugClass: 'null-deref', instances: [], supersedes: null,
+      path: 'src/a.ts', line: 2, side: 'RIGHT', deferredTo: null };
+    writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT.replace('无', '见下'), findings: [finding] }));
+    writeFileSync(join(root, 'review-pr', 'scripts', 'request-changes-reviewed-pr.mjs'), `console.log(JSON.stringify(${JSON.stringify(receipt)}));\n`);
+    check(publish(env, fakeGh(work)));
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
+}
+const REVIEW_RECEIPT = { ok: true, submitted: true, reviewId: 77, reviewUrl: 'https://github.com/o/r/pull/7#pullrequestreview-77', action: 'REQUEST_CHANGES', threadUrls: [] };
+
+test('F2 request-changes 本轮确实新发布(alreadySubmitted=false)→ 调用 runner', () => {
+  runWithRequestChanges({ ...REVIEW_RECEIPT, alreadySubmitted: false }, ({ result, runnerCalls }) => {
+    assert.equal(result.outcome, 'findings');
+    assert.equal(runnerCalls.length, 1);
+  });
+});
+
+test('F2 request-changes 命中同 head 旧 review(alreadySubmitted=true)或回执缺该字段 → 不调用 runner', () => {
+  for (const extra of [{ alreadySubmitted: true }, {}]) {
+    runWithRequestChanges({ ...REVIEW_RECEIPT, ...extra }, ({ result, runnerCalls }) => {
+      assert.equal(result.outcome, 'findings');
+      assert.equal(runnerCalls.length, 0, JSON.stringify(extra));
+    });
+  }
+});
