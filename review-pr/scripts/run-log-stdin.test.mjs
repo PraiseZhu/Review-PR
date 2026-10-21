@@ -59,8 +59,9 @@ raise SystemExit(proc.returncode or 0)
 }
 
 function runLogOnEmptyNonblockingPipe({ repoRoot, stateRoot }) {
-  // 写端一直开着、不写字节:子进程立刻 read 到 EAGAIN。这是 Mini Node 26 上
-  // spawnSync input 管道偶尔晚到时的确定性复现,不依赖调度延迟。
+  // 写端先开着不写:子进程立刻 EAGAIN。50ms 后再关写端给 EOF。
+  // 修前:第一次 readFileSync 就因 EAGAIN 退出,等不到 EOF。
+  // 修后:EAGAIN 重试,EOF 后按空 stdin 报 JSON 错,不再带 EAGAIN。
   const feeder = `
 import fcntl, os, subprocess, sys, time
 node, script = sys.argv[1], sys.argv[2]
@@ -70,8 +71,8 @@ fcntl.fcntl(r, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 proc = subprocess.Popen([node, script], stdin=r, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 os.close(r)
 time.sleep(0.05)
-out, err = proc.communicate(timeout=5)
 os.close(w)
+out, err = proc.communicate(timeout=5)
 sys.stdout.buffer.write(out)
 sys.stderr.buffer.write(err)
 raise SystemExit(proc.returncode or 0)

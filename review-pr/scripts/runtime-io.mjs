@@ -1,6 +1,6 @@
 // Shared persistence and process-result contracts. No GitHub mutations here.
 import {
-  openSync, writeFileSync, fsyncSync, closeSync, renameSync, unlinkSync, mkdirSync,
+  openSync, writeFileSync, fsyncSync, closeSync, renameSync, unlinkSync, mkdirSync, readSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -26,6 +26,34 @@ export function atomicWriteJson(file, value) {
   const data = `${JSON.stringify(value, null, 2)}\n`;
   JSON.parse(data);
   atomicWriteText(file, data);
+}
+
+/**
+ * 读一个 fd 直到 EOF。spawnSync / 非阻塞管道上 readFileSync 会把 EAGAIN 直接抛出
+ * (Mini 前置审查 finalize → run-log 的 stdin)。EAGAIN/EWOULDBLOCK 短等后重试。
+ */
+export function readFdSync(fd, { encoding = 'utf8', retryMs = 20, maxWaitMs = 30_000 } = {}) {
+  const chunks = [];
+  const buf = Buffer.alloc(64 * 1024);
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    try {
+      const n = readSync(fd, buf, 0, buf.length, null);
+      if (n === 0) break;
+      chunks.push(Buffer.from(buf.subarray(0, n)));
+    } catch (error) {
+      if (error.code === 'EAGAIN' || error.code === 'EWOULDBLOCK') {
+        if (Date.now() >= deadline) {
+          throw new Error(`stdin 读取超时(${maxWaitMs}ms):${error.message}`);
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retryMs);
+        continue;
+      }
+      throw error;
+    }
+  }
+  const bytes = Buffer.concat(chunks);
+  return encoding === null ? bytes : bytes.toString(encoding);
 }
 
 export function parseApiJson(raw, source = 'GitHub API') {
