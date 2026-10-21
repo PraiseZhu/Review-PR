@@ -1038,6 +1038,46 @@ test('结构证明:链中间某段 merge 夹带改动则不能沿用', () => {
   }
 });
 
+test('结构证明:无快照时静默未满仍继承已表态,只等剩余 quietMinutes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-quiet-rebuild-'));
+  try {
+    const r = setupPolicyPr(dir);
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only.txt'), 'base\n');
+    r.commitAt('main advances', '2026-10-21T05:30:00Z');
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', 'main', '-m', 'merge main 1'], {
+      env: { GIT_AUTHOR_DATE: '2026-10-21T05:40:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:40:00Z' },
+    });
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only-2.txt'), 'again\n');
+    r.commitAt('main advances again', '2026-10-21T05:42:00Z');
+    const baseSha = r.must(['rev-parse', 'HEAD']);
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', 'main', '-m', 'merge main 2'], {
+      env: { GIT_AUTHOR_DATE: '2026-10-21T05:44:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:44:00Z' },
+    });
+    const headSha = r.must(['rev-parse', 'HEAD']);
+    const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${baseSha}...${headSha}`]));
+    const nowIso = '2026-10-21T05:28:00Z';
+    const activity = [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }];
+    const rebuilt = previousSettleFromLocalMerge({
+      headSha, baseSha, currentHashes, gitFn: r.gitFn, nowIso, activity, cfg: READY_CFG,
+    });
+    assert.equal(rebuilt?.headSha, r.oldHead, '静默未满也要找到原始已表态 head,不能整条丢掉');
+    assert.deepEqual(rebuilt?.responded, ['greptile-apps']);
+    const got = evaluateBotSettle({
+      headCommittedDate: '2026-10-21T05:44:00Z', nowIso, activity, cfg: READY_CFG,
+      filePatchHashes: currentHashes, previousSettle: rebuilt,
+    });
+    assert.equal(got.settled, false);
+    assert.deepEqual(got.pending, [], '应继承已表态,不能从 merge head 重等 30 分钟');
+    assert.equal(got.quietSinceMinutes < 5, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLocalMerge / evaluateBotSettle 判定', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bot-settle-e2e-'));
   const env = {
