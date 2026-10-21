@@ -21,6 +21,7 @@ import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake
 import { inBusinessWindow } from '../lib/health.mjs';
 import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
+import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
@@ -1170,7 +1171,8 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
     log('retry-held', { pr: task.pr, head: task.head, attempt, reason: retry.reason });
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: retry.reason, retry: true });
   }
-  const prevRunId = record.lastCompleteRunId ?? '';
+  // 同 head 上一次运行的收口全量没做完(预算不足/收口失败):prev_run_id 指向那次运行,服务器下载后直接全量补跑;否则沿用最近一次完整结果。
+  const prevRunId = previousRunIdFor(record, task.head);
   const dispatchId = randomUUID().slice(0, 8);
   const inputs = {
     target_repo: CONFIG.targetRepo, pr: String(task.pr), head_sha: task.head, base_sha: task.base, tier,
@@ -1484,12 +1486,36 @@ function collectServerRun(ctx, entry) {
     // 这次收回的是一次完成的审查(不是失败、不是健康/限额退回):累计这个 head 的已完成次数,toRetryDecision 据此封顶。
     ...(completedRun ? { completedRuns: toCompletedRunsRecord(loadStore().prs[task.pr]?.completedRuns, task.head) } : {}),
     ...(server.reviewed && server.mivo?.reportComplete ? { lastCompleteRunId: entry.runId } : {}),
+    ...finalFullStorePatch({ server, head: task.head, record: loadStore().prs[task.pr] ?? {}, runId: entry.runId }),
     ...(server.reviewClean && ['review-only', 'approval'].includes(server.outcome) ? { cleanHead: task.head } : {}),
     // 服务器评估的代码扫描三态:wakeCodeScanPrs 的对照基线。
     ...toCodeScanRecord({ codeScan: server.mivo?.codeScan, head: task.head, base: task.baseRefName, completed: completedRun, at: nowIso() }),
   });
   log('collected', { pr: task.pr, runId: entry.runId, head: task.head, outcome: server.outcome, reviewClean: server.reviewClean });
   return true;
+}
+
+// 收口全量的补跑游标(store.prs[pr].pendingFinalFull = { head, runId }):
+// 同 head 的待补/收口失败包 → 记下那次运行(服务器按 prev_run_id 下载后直接全量),并清掉这个 head 的 cleanHead,旧的干净缓存不能抑制补跑;
+// 同 head 的收口/全量真的做完了(clean / findings / manual-review,且顶层不是 error)→ 清游标;
+// 其余(普通失败、取消、没有结果包)不动游标,不能被后一次失败覆盖。待补不更新 lastCompleteRunId(那里只认完整结果)。
+function finalFullStorePatch({ server, head, record, runId }) {
+  const pending = previousFromResult(server).pendingFinalFull;
+  if (pending && pending.head === head && server.head === head) {
+    return { pendingFinalFull: { head, runId: String(pending.runId) }, ...(record?.cleanHead === head ? { cleanHead: null } : {}) };
+  }
+  const done = server.mivo?.finalFull;
+  const completed = server.outcome !== 'error' && done && done.head === head && server.head === head && String(done.runId) === String(server.mivo?.runId)
+    && ['clean', 'findings', 'manual-review'].includes(done.outcome);
+  if (completed && record?.pendingFinalFull) return { pendingFinalFull: null };
+  return {};
+}
+
+// 派发时的 prev_run_id:同 head 有待补游标就用它,否则用最近一次完整结果。新 head 永远不消费旧 head 的游标。
+function previousRunIdFor(record, head) {
+  const pending = record?.pendingFinalFull;
+  if (pending && pending.head === head && /^\d{1,15}$/.test(String(pending.runId ?? ''))) return String(pending.runId);
+  return record?.lastCompleteRunId ?? '';
 }
 
 function bumpStore(task, patch) {
