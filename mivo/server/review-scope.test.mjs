@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { previousFromResult } from '../lib/scope.mjs';
+import { previousFromResult, loadSpecChangePolicy } from '../lib/scope.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SHA = 'a'.repeat(40);
@@ -75,3 +75,54 @@ test('head fallback warns in result:规则文件回退到 head 时,结果包带 
     assert.equal(result.mivo.convergence.roundIndex, null, '有上一轮但数不出轮次,不猜');
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
+
+const OLD_FINDING = { path: 'src/a.ts', line: 2, side: 'RIGHT', body: '[P1] 旧问题\n细节', key: 'aaaaaaaaaaaa', uid: 'u1', severity: 'P1', seenRounds: 2 };
+const OLD_REPORT = ['## Findings', '[P1] src/a.ts:2 — 旧问题', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 1 条 P0/P1/P2'].join('\n');
+
+// 规则改版、代码没变 → 沿用:带问题的上一轮包原样往返(key/轮次/lastFullReviewAt 不动,result 用新 specDigest),
+// head 或 diff 变了的旧阻断项转文件级;loader 的 warning 进结果包。
+for (const [name, evidence, prevHead, anchored] of [
+  ['同 head 同 diff 保留原行号', { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, SHA, true],
+  ['head 变了转文件级', { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, 'b'.repeat(40), false],
+  ['diffHash 变了转文件级', { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd2' }, SHA, false],
+]) {
+  test(`规则改版沿用带问题的上一轮:${name}`, () => {
+    const work = mkdtempSync(join(tmpdir(), 'mivo-review-spec-reuse-'));
+    try {
+      for (const dir of ['input', 'out', 'repo', 'prev']) mkdirSync(join(work, dir), { recursive: true });
+      writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: {} }));
+      writeFileSync(join(work, 'input', 'pr.diff'), DIFF);
+      const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: SHA, base: SHA, tier: 'standard', prevRunId: '41',
+        roundId: 'round-12345678', attempt: 1, mode: 'dry-run', action: 'review', skillSha: SHA, runId: '42', runUrl: '' };
+      const policy = loadSpecChangePolicy(() => '{"specChange":{"forceFull":"yes"}}');
+      assert.equal(policy.forceFull, false);
+      const scope = { mode: 'reuse', reason: '规则改版，代码未变，沿用上次结论', files: [], previousFindings: [OLD_FINDING], basedOn: prevHead };
+      writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [policy.warning], errors: [],
+        context: { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'https://github.com/o/r/pull/7',
+          evidence, baseRefName: 'main', viewerIsAuthor: false },
+        current: { specDigest: 'spec-new', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
+        previous: { head: prevHead, runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' },
+        scope, deferrals: { verified: [], rejected: [] }, codex: { attempts: [] } }));
+      writeFileSync(join(work, 'prev', 'result.json'), JSON.stringify({ head: prevHead, reviewEvidence: { diffHash: 'd1', baseRefName: 'main' },
+        mivo: { findings: [OLD_FINDING], deferred: [], specDigest: 'spec-old', lastFullReviewAt: '2026-10-10T12:00:00Z' } }));
+      writeFileSync(join(work, 'prev', 'report.md'), OLD_REPORT);
+      const r = spawnSync(process.execPath, [REVIEW, 'publish'], { env: { ...process.env, MIVO_REVIEW_WORK: work, GH_TOKEN: '', CHECKS_TOKEN: '' }, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      const result = JSON.parse(readFileSync(join(work, 'out', 'result.json'), 'utf8'));
+      assert.equal(result.outcome, 'findings', JSON.stringify(result));
+      assert.equal(result.mivo.scope.mode, 'reuse');
+      assert.equal(result.mivo.specDigest, 'spec-new');
+      assert.equal(result.mivo.lastFullReviewAt, '2026-10-10T12:00:00Z');
+      assert.ok(result.warnings.includes(policy.warning), 'specChange 配置警告进结果包');
+      const [stored] = result.mivo.findings;
+      assert.equal(stored.key, 'aaaaaaaaaaaa');
+      assert.equal(stored.seenRounds, 2);
+      if (anchored) assert.deepEqual([stored.line, stored.side, stored.subject_type], [2, 'RIGHT', undefined]);
+      else { assert.equal(stored.subject_type, 'file'); assert.equal('line' in stored, false); assert.equal('side' in stored, false); }
+      assert.ok(readFileSync(join(work, 'out', 'report.md'), 'utf8').includes('旧问题'));
+      const back = previousFromResult(result, readFileSync(join(work, 'out', 'report.md'), 'utf8'));
+      assert.equal(back.specDigest, 'spec-new');
+      assert.equal(back.findings[0].key, 'aaaaaaaaaaaa');
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+}
