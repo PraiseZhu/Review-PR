@@ -2446,26 +2446,38 @@ function mergeTreeOid(text) {
   return /^[0-9a-f]{40,}$/i.test(line) ? line.toLowerCase() : '';
 }
 
-// 沿用只认结构证明:新 head 是合 main 的 merge(第一 parent=已表态 SHA,第二 parent 在 base 上),
-// 且 merge-tree(parent0, parent1) 的 tree 与 head tree 完全相同(没有夹带改动)。
-// 同一 SHA 已验证过的表态可重复使用。普通单 parent 追加提交、祖先关系、指纹相同都不算。
-// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。任何一步证明不了就失败。
-export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, baseSha, gitFn = git }) {
-  if (!previousHeadSha || !headSha || !baseSha) return false;
-  if (sameSha(previousHeadSha, headSha)) return true;
-  const head = readCommitGraph(gitFn, headSha);
-  if (!head || head.parents.length !== 2) return false;
-  if (!sameSha(head.parents[0], previousHeadSha)) return false;
-  const onBase = sameSha(head.parents[1], baseSha)
-    || gitFn(['merge-base', '--is-ancestor', head.parents[1], baseSha], { allowFail: true }).ok;
+function isCleanBaseMerge(commit, { baseSha, gitFn }) {
+  if (!commit || commit.parents.length !== 2) return false;
+  const onBase = sameSha(commit.parents[1], baseSha)
+    || gitFn(['merge-base', '--is-ancestor', commit.parents[1], baseSha], { allowFail: true }).ok;
   if (!onBase) return false;
   const merged = gitFn(
-    ['merge-tree', '--write-tree', head.parents[0], head.parents[1]],
+    ['merge-tree', '--write-tree', commit.parents[0], commit.parents[1]],
     { allowFail: true, timeoutMs: 30_000 },
   );
   if (!merged.ok) return false;
   const mergedTree = mergeTreeOid(merged.stdout);
-  return Boolean(mergedTree) && mergedTree === head.tree.toLowerCase();
+  return Boolean(mergedTree) && mergedTree === commit.tree.toLowerCase();
+}
+
+// 沿用只认结构证明:从新 head 沿 parent[0] 走一段干净合 main 链回到已表态 SHA。
+// 每一步必须是两 parent 合并、第二 parent 在当前 base 上,且 merge-tree 的 tree 与该提交相同。
+// 同一 SHA 已验证过的表态可重复使用。普通单 parent 追加提交、祖先关系、指纹相同都不算。
+// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。链过长或任一步证明不了就失败。
+export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, baseSha, gitFn = git }) {
+  if (!previousHeadSha || !headSha || !baseSha) return false;
+  let current = headSha;
+  const seen = new Set();
+  for (let i = 0; i < 32; i += 1) {
+    if (sameSha(current, previousHeadSha)) return true;
+    const key = String(current).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const commit = readCommitGraph(gitFn, current);
+    if (!isCleanBaseMerge(commit, { baseSha, gitFn })) return false;
+    current = commit.parents[0];
+  }
+  return false;
 }
 
 export function evaluateBotSettle({
