@@ -10,7 +10,7 @@ import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reanchorReusedFindings, reusableReview } from '../lib/scope.mjs';
+import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
@@ -654,12 +654,9 @@ async function publish() {
     let reusedReview = null;
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
-      // 同一 head 上一轮已发过 review:沿用时不再发。reusedReport 改写了正文,review 标记(head+正文+comments 摘要)对不上,
-      // 会在同一 head 再开一遍同样的行内 thread。跨 head 的沿用照常发(与增量轮对未修好问题在新 head 重发一致)。
-      reusedReview = reusableReview(previous, input.head);
-      // 规则改版沿用可以跨 head/diff:旧行号在新版本上不一定有效,发布器不会重定位,head 或 diff 变了就转文件级评论(key/轮次不动)。
-      findings = reanchorReusedFindings(previous.mivo?.findings ?? [], { previousHead: previous.head, previousDiffHash: previous.reviewEvidence?.diffHash,
-        head: input.head, diffHash: state.context.evidence?.diffHash });
+      // 同一 head 上一轮已发过 review:沿用时不再发,findings 原样保留(PR 上仍是原来的行级 thread,行号不能丢)。
+      // 要发新 review(跨 head,或上一轮没发过)时,旧行号在新版本上不一定有效,发布器不会重定位,head 或 diff 变了就转文件级评论(key/轮次不动)。
+      ({ findings, reusedReview } = reuseFindings(previous, { head: input.head, diffHash: state.context.evidence?.diffHash }));
       deferred = previous.mivo?.deferred ?? [];
       // 沿用上一轮结论:不重算 key 与轮次。
       preexisting = previous.mivo?.preexisting ?? [];

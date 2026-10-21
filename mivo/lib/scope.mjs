@@ -176,6 +176,21 @@ export function reanchorReusedFindings(findings, { previousHead, previousDiffHas
 }
 
 /**
+ * 规则改版沿用时的 findings 与 review:同一 head 上一轮已发过 review 就整体沿用(findings 原样、不重发),
+ * 否则要发新 review,这时才按 head/diff 重定位(转文件级)。
+ * 沿用不重发时 PR 上仍是原来的行级 thread,结果包里的 findings 必须和它一致:base 前移导致 diffHash 变了也不能抹行号,
+ * 否则后续轮次任务书里的旧问题丢了原位置。
+ * @returns {{findings: object[], reusedReview: {review: object, threadUrls: string[]}|null}}
+ */
+export function reuseFindings(previous, { head, diffHash }) {
+  const reusedReview = reusableReview(previous, head);
+  const findings = reusedReview
+    ? (previous?.mivo?.findings ?? []).map((f) => ({ ...f }))
+    : reanchorReusedFindings(previous?.mivo?.findings ?? [], { previousHead: previous?.head, previousDiffHash: previous?.reviewEvidence?.diffHash, head, diffHash });
+  return { findings, reusedReview };
+}
+
+/**
  * review-features.json 的 specChange 策略。readText 由调用方注入(读不到就抛)。
  * 缺块/缺字段=默认 false 且不告警(旧配置兼容);读不到、解析失败、类型不对=false + 固定 warning(不回显配置原文)。
  * @returns {{forceFull:boolean, warning:string|null}}

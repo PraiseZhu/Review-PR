@@ -1,7 +1,7 @@
 // 规则改版(specDigest 变)的范围判定、全量轮携带上一轮问题、specChange 配置读取、沿用时的锚点处理。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reanchorReusedFindings, reusableReview } from './scope.mjs';
+import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reanchorReusedFindings, reusableReview, reuseFindings } from './scope.mjs';
 import { applyConvergence } from './convergence.mjs';
 
 const diff = ['diff --git a/src/a.ts b/src/a.ts', 'index 111..222 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -10,3 +10,4 @@', ' keep', '+added', ' tail'].join('\n');
@@ -168,4 +168,21 @@ test('reusableReview:同 head 且上一轮发过 review 才沿用;跨 head 或�
   assert.equal(reusableReview({ head: 'h1', mivo: {} }, 'h1'), null);
   assert.equal(reusableReview(null, 'h1'), null);
   assert.deepEqual(reusableReview({ head: 'h1', mivo: { review } }, 'h1').threadUrls, []);
+});
+
+test('reuseFindings:同 head 已发过 review 即使 diffHash 变了也保留行号且不重发;跨 head 转文件级并重发', () => {
+  const review = { id: 1, url: 'https://x/r/1', action: 'request-changes' };
+  const prev = { head: 'h1', reviewEvidence: { diffHash: 'd1' }, threadUrls: ['https://x/t/1'], mivo: { review, findings: [{ ...F1, position: 3 }] } };
+  const frozen = structuredClone(prev);
+  const sameHead = reuseFindings(prev, { head: 'h1', diffHash: 'd2' });
+  assert.deepEqual(sameHead.findings, [{ ...F1, position: 3 }], '行号、位置原样保留');
+  assert.deepEqual(sameHead.reusedReview, { review, threadUrls: ['https://x/t/1'] });
+  const crossHead = reuseFindings(prev, { head: 'h2', diffHash: 'd2' });
+  assert.equal(crossHead.reusedReview, null);
+  assert.equal(crossHead.findings[0].subject_type, 'file');
+  for (const k of ['line', 'side', 'position']) assert.equal(k in crossHead.findings[0], false, k);
+  const unposted = reuseFindings({ ...prev, mivo: { findings: [F1] } }, { head: 'h1', diffHash: 'd2' });
+  assert.equal(unposted.reusedReview, null, '上一轮没发过 review 照常发布');
+  assert.equal(unposted.findings[0].subject_type, 'file');
+  assert.deepEqual(prev, frozen, '不改输入');
 });
