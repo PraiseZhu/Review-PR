@@ -1078,6 +1078,106 @@ test('结构证明:无快照时静默未满仍继承已表态,只等剩余 quiet
   }
 });
 
+function twoCleanMerges(dir) {
+  const r = setupPolicyPr(dir);
+  r.must(['checkout', 'main']);
+  writeFileSync(join(dir, 'base-only.txt'), 'base\n');
+  r.commitAt('main advances', '2026-10-21T05:30:00Z');
+  r.must(['checkout', 'pr']);
+  r.must(['merge', '--no-ff', 'main', '-m', 'merge main 1'], {
+    env: { GIT_AUTHOR_DATE: '2026-10-21T05:40:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:40:00Z' },
+  });
+  const mid = r.must(['rev-parse', 'HEAD']);
+  r.must(['checkout', 'main']);
+  writeFileSync(join(dir, 'base-only-2.txt'), 'again\n');
+  r.commitAt('main advances again', '2026-10-21T05:42:00Z');
+  const baseSha = r.must(['rev-parse', 'HEAD']);
+  r.must(['checkout', 'pr']);
+  r.must(['merge', '--no-ff', 'main', '-m', 'merge main 2'], {
+    env: { GIT_AUTHOR_DATE: '2026-10-21T05:44:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:44:00Z' },
+  });
+  const headSha = r.must(['rev-parse', 'HEAD']);
+  const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${baseSha}...${headSha}`]));
+  return { ...r, mid, baseSha, headSha, currentHashes };
+}
+
+const GREPTILE_CHECK = (at) => ({ name: 'Greptile Review', status: 'COMPLETED', completedAt: at });
+
+test('结构证明:沿链中间 merge 上较新的 Greptile check 必须计入静默,05:50 不能放行', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-chain-quiet-'));
+  try {
+    const r = twoCleanMerges(dir);
+    const nowIso = '2026-10-21T05:50:00Z';
+    const activity = [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }];
+    const prior = previousSettleFromLocalMerge({
+      headSha: r.headSha, baseSha: r.baseSha, currentHashes: r.currentHashes,
+      gitFn: r.gitFn, nowIso, activity, cfg: READY_CFG, slug: 'audit/fixture',
+      fetchCheckRuns: (_slug, sha) => {
+        if (sha === r.mid) return [GREPTILE_CHECK('2026-10-21T05:49:00Z')];
+        if (sha === r.oldHead) return [GREPTILE_CHECK('2026-10-21T05:25:00Z')];
+        return [];
+      },
+    });
+    const got = evaluateBotSettle({
+      headCommittedDate: '2026-10-21T05:44:00Z', nowIso, activity, cfg: READY_CFG,
+      filePatchHashes: r.currentHashes, previousSettle: prior,
+    });
+    assert.equal(got.settled, false, '中间 merge 05:49 的 check 只静默 1 分钟,不能按原始 05:25 放行');
+    assert.equal(got.quietSinceMinutes != null && got.quietSinceMinutes < 5, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('结构证明:只有 check 没有 review 时,沿链较新 check 也必须计入静默', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-chain-check-only-'));
+  try {
+    const r = twoCleanMerges(dir);
+    const nowIso = '2026-10-21T05:50:00Z';
+    const prior = previousSettleFromLocalMerge({
+      headSha: r.headSha, baseSha: r.baseSha, currentHashes: r.currentHashes,
+      gitFn: r.gitFn, nowIso, activity: [], cfg: READY_CFG, slug: 'audit/fixture',
+      fetchCheckRuns: (_slug, sha) => {
+        if (sha === r.mid) return [GREPTILE_CHECK('2026-10-21T05:49:00Z')];
+        if (sha === r.oldHead) return [GREPTILE_CHECK('2026-10-21T05:25:00Z')];
+        return [];
+      },
+    });
+    const got = evaluateBotSettle({
+      headCommittedDate: '2026-10-21T05:44:00Z', nowIso, activity: [], cfg: READY_CFG,
+      filePatchHashes: r.currentHashes, previousSettle: prior,
+    });
+    assert.equal(got.settled, false, '只有 check 时丢掉中间 05:49 会让 quietSinceMinutes=null 而放行');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('结构证明:中间段 check-runs 读失败(503)必须整条等待,不能跳过继续回溯', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-chain-503-'));
+  try {
+    const r = twoCleanMerges(dir);
+    const nowIso = '2026-10-21T05:50:00Z';
+    const activity = [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }];
+    const prior = previousSettleFromLocalMerge({
+      headSha: r.headSha, baseSha: r.baseSha, currentHashes: r.currentHashes,
+      gitFn: r.gitFn, nowIso, activity, cfg: READY_CFG, slug: 'audit/fixture',
+      fetchCheckRuns: (_slug, sha) => {
+        if (sha === r.mid) throw new Error('HTTP 503');
+        return [];
+      },
+    });
+    assert.equal(prior, null, '中间段 503 不能继续回溯到原始 head 放行');
+    const got = evaluateBotSettle({
+      headCommittedDate: '2026-10-21T05:44:00Z', nowIso, activity, cfg: READY_CFG,
+      filePatchHashes: r.currentHashes, previousSettle: prior,
+    });
+    assert.equal(got.settled, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLocalMerge / evaluateBotSettle 判定', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bot-settle-e2e-'));
   const env = {
