@@ -35,6 +35,7 @@ import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlC
 import { viewerLoginOverride } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
 import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
+import { filePatchHashesFromDiff, loadBotSettleSnapshot, saveBotSettleSnapshot, previousSettleFromLocalMerge } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -1357,13 +1358,27 @@ try {
   ].filter((a) => a.author && a.at);
   // [MIVO-PATCH bot-settle-ready] 超时从 max(提交, 推送, 转 Ready) 起算:推送时间用 head 上最早的检查开始时间估(rollup 已拿到,零请求);
   // 转 Ready 只有按这个起点算已超时才读一次 REST 事件(见 lib.mjs),常规路径不多打请求。
+  // [MIVO-PATCH bot-settle-base-only] patch 哈希用本轮已扫的 diff;上一 head 表态先读本机快照,
+  // 没有再试本地合 main 提交(服务器 checkout 了 PR head 时),都不另打 GraphQL。
+  const filePatchHashes = filePatchHashesFromDiff(scannedDiff ?? '');
+  const nowIso = new Date().toISOString();
+  const previousSettle = loadBotSettleSnapshot({ owner, repo, pr })
+    ?? previousSettleFromLocalMerge({
+      headSha: meta.headRefOid, baseSha: meta.baseRefOid, currentHashes: filePatchHashes,
+      activity: botActivityForSettle, cfg: BOT_SETTLE_RULES, nowIso,
+    });
   const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate: latestCommitDate,
     headPushedAt: toHeadPushedAt(rawRollupContexts),
-    nowIso: new Date().toISOString(),
+    nowIso,
     activity: botActivityForSettle,
     cfg: BOT_SETTLE_RULES,
+    filePatchHashes,
+    previousSettle,
   }, () => fetchRestPages(`repos/${slug}/issues/${pr}/events`));
+  if (botSettle.settled && !botSettle.timedOut) {
+    saveBotSettleSnapshot({ owner, repo, pr, settle: botSettle, filePatchHashes, headCommittedDate: latestCommitDate });
+  }
   if (!botSettle.settled) blockers.push(`机器人静默期未过:${botSettle.reason}`);
 
   // ── stale-rebase: behind_by > 0 且 merge base 距今超过阈值 → 需要 rebase ──

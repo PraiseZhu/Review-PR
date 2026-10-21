@@ -47,6 +47,9 @@ import { createPrWriteGuard } from './pr-write-guard.mjs';
 const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mjs');
 // code-scan-gate 新增的导出,同样动态取。
 const { fetchCodeScanRules, toCodeScanCheckFacts } = await import('./lib.mjs');
+const {
+  filePatchHashesFromDiff, filePatchHashesFromPullFiles, sameFilePatchHashes, previousSettleFromLocalMerge,
+} = await import('./lib.mjs');
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
 const bad = (message) => ({ ok: false, stdout: '', stderr: message, status: 1 });
@@ -474,6 +477,8 @@ test('静默期:只合 main 且 PR 自身 patch 不变时,沿用上一 head 已�
   assert.equal(r.reused, true);
   assert.deepEqual(r.responded, ['greptile-apps']);
   assert.match(r.reason, /沿用|patch 不变|base 前移/);
+  const never = () => { throw new Error('不应该读事件'); };
+  assert.deepEqual(evaluateBotSettleSinceReady(BASE_ONLY_NEW_HEAD, never), r);
 });
 
 test('静默期:新 head 改了 PR 自身文件时,即使上一 head 已静默满也重新等', () => {
@@ -520,19 +525,57 @@ test('静默期:patch 哈希或上一 head 表态读不到时退回原规则(等
   }
 });
 
+test('filePatchHashesFromDiff:只计 +/- 行,行号漂移不算变;缺 patch 的 /files 返回空', () => {
+  const left = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -1,3 +1,4 @@\n {\n+  "x": 1\n }\n');
+  const drifted = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -10,3 +10,4 @@\n {\n+  "x": 1\n }\n');
+  const changed = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -1,3 +1,4 @@\n {\n+  "x": 2\n }\n');
+  assert.equal(sameFilePatchHashes(left, drifted), true);
+  assert.equal(sameFilePatchHashes(left, changed), false);
+  assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json', patch: '+  "x": 1\n' }])['public/changelog.json'],
+    filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n')['public/changelog.json']);
+  assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json' }]), {});
+  assert.equal(sameFilePatchHashes({}, {}), false);
+});
+
+test('previousSettleFromLocalMerge:当前 HEAD 是两 parent 合 main 且 patch 不变时,按上一 head 重算静默期', () => {
+  const prevHead = 'a'.repeat(40);
+  const headSha = 'b'.repeat(40);
+  const baseSha = 'c'.repeat(40);
+  const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
+  const currentHashes = filePatchHashesFromDiff(diff);
+  const gitFn = (args) => {
+    const joined = args.join(' ');
+    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
+    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: '2026-10-21T05:20:00Z\n' };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+  const r = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+  });
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(sameFilePatchHashes(r.filePatchHashes, currentHashes), true);
+  assert.equal(previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn: () => ({ ok: false, stdout: '' }), nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG,
+  }), null);
+});
+
 test('静默期接线:context 与 pre-merge-check 把已有 diff/files 的 patch 哈希和上一 head 表态传给静默期,不另打 GraphQL', () => {
   for (const file of ['context.mjs', 'pre-merge-check.mjs']) {
     const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
-    assert.ok(/filePatchHashes:/.test(source), `${file} 把 patch 哈希传给静默期`);
-    assert.ok(/previousSettle:/.test(source), `${file} 把上一 head 已满足的静默期结果传给静默期`);
+    assert.ok(/\bfilePatchHashes,/.test(source), `${file} 把 patch 哈希传给静默期`);
+    assert.ok(/\bpreviousSettle,/.test(source), `${file} 把上一 head 已满足的静默期结果传给静默期`);
     assert.ok(!/timelineItems/.test(source), `${file} 不增加 GraphQL`);
   }
   const context = readFileSync(fileURLToPath(new URL('./context.mjs', import.meta.url)), 'utf8');
   assert.ok(/filePatchHashesFromDiff\(/.test(context), 'context 用本轮已扫的 diff 算哈希,不另拉');
   const preMerge = readFileSync(fileURLToPath(new URL('./pre-merge-check.mjs', import.meta.url)), 'utf8');
   assert.ok(/filePatchHashesFromPullFiles\(/.test(preMerge), 'pre-merge-check 用已有 REST /files 的 patch 算哈希');
-  const filesCall = preMerge.indexOf("repos/${slug}/pulls/${pr}/files");
-  const settleCall = preMerge.indexOf('evaluateBotSettleSinceReady');
+  const filesCall = preMerge.search(/pulls\/\$\{pr\}\/files/);
+  const settleCall = preMerge.search(/const botSettle = evaluateBotSettleSinceReady/);
   assert.ok(filesCall >= 0 && settleCall > filesCall, 'pre-merge-check 先读 /files 再判静默期,不另打 GraphQL');
 });
 
