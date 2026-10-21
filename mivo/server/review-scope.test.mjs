@@ -30,6 +30,8 @@ for (const mode of ['full', 'incremental', 'reuse']) {
           evidence: { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, baseRefName: 'main', viewerIsAuthor: false },
         current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
         previous: mode === 'full' ? null : { head: 'h0', runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' },
+        // 增量轮放行必须有本 head 的收口记录:这里模拟 codex 阶段已接完收口全量(publish 把 error 记号改成真实结论)。
+        ...(mode === 'incremental' ? { finalFull: { head: SHA, runId: '42', outcome: 'error' }, finalFullContext: { kind: 'same-run', findingFiles: [], previousRound: null } } : {}),
         scope, deferrals: { verified: [], rejected: [] }, codex: { attempts: [{ ok: true }] } }));
       writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT, findings: [] }));
       writeFileSync(join(work, 'prev', 'result.json'), JSON.stringify({ mivo: { findings: [], deferred: [], lastFullReviewAt: '2026-10-10T12:00:00Z' } }));
@@ -64,6 +66,7 @@ test('head fallback warns in result:规则文件回退到 head 时,结果包带 
       current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
       previousRound: { roundIndex: null, findings: [], keys: [] }, previous: { head: 'h0', runId: '41' },
       scope: { mode: 'incremental', reason: '增量(基于 h0,本轮审 1 个文件)', files: ['src/a.ts'], previousFindings: [{ path: 'src/a.ts', body: '[P1] 旧问题' }], changedFiles: ['src/a.ts'] },
+      finalFull: { head: SHA, runId: '42', outcome: 'skipped-fix-round', basedOn: { head: 'h0', runId: '41' }, files: ['src/a.ts'], issueFiles: ['src/a.ts'] },
       deferrals: { verified: [], rejected: [] }, codex: { attempts: [{ ok: true }] } }));
     writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT, findings: [] }));
     const r = spawnSync(process.execPath, [REVIEW, 'publish'], { env: { ...process.env, MIVO_REVIEW_WORK: work, GH_TOKEN: '', CHECKS_TOKEN: '' }, encoding: 'utf8' });
