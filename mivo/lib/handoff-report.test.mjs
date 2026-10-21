@@ -97,6 +97,16 @@ test('SC6 报告:服务端生成唯一的「作者交接核对」与「交接之
   assert.match(incomplete, /关联记录不完整，不用于趋势比较/);
 });
 
+test('SC6 报告:模型写了多个「作者交接核对」小节时全部去掉,只留服务端那一节', () => {
+  const twice = REPORT.replace('### 改动地图核对', '### 作者交接核对\n\n交接之外的发现:88 条\n\n### 改动地图核对');
+  const text = finalizeReport({ report: twice, findings: [], pr: 77, url: 'u', head: 'h'.repeat(40), base: 'b'.repeat(40), diffHash: 'd', tier: 'standard', scope: { mode: 'full', reason: 'r' },
+    handoff: { review, coverage: [], meta: {}, stats: { reviewAvailable: true, complete: true, outside: 0 } } });
+  assert.equal(text.split(HANDOFF_SECTION).length, 2);
+  assert.equal(text.match(/交接之外的发现[:：]/g).length, 1);
+  assert.ok(!text.includes('88 条') && !text.includes('99 条'));
+  assert.match(text, /### 改动地图核对\n\n- M1 保持/);
+});
+
 test('SC6 交接不可用时报告不动模型原文', () => {
   const text = finalizeReport({ report: REPORT, findings: [], pr: 77, url: 'u', head: 'h'.repeat(40), base: 'b'.repeat(40), diffHash: 'd', tier: 'standard', scope: { mode: 'full', reason: 'r' },
     handoff: { review: { status: 'missing' }, coverage: [], meta: {}, stats: null } });

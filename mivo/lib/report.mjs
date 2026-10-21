@@ -186,9 +186,9 @@ function applyHandoffSection(lines, section) {
   if (start < 0) return lines;
   let end = start + 1;
   while (end < lines.length && !/^## /.test(lines[end])) end += 1;
-  const own = lines.slice(start + 1, end).findIndex((line) => line.startsWith(HANDOFF_SECTION));
   let body = lines.slice(start + 1, end);
-  if (own >= 0) {
+  // 模型可能写了不止一个同名小节:全部去掉,否则旧计数会和服务端的计数并存。
+  for (let own = body.findIndex((line) => line.startsWith(HANDOFF_SECTION)); own >= 0; own = body.findIndex((line) => line.startsWith(HANDOFF_SECTION))) {
     let stop = own + 1;
     while (stop < body.length && !/^#{2,3} /.test(body[stop])) stop += 1;
     body = [...body.slice(0, own), ...body.slice(stop)];
