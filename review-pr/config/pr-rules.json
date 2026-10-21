@@ -213,7 +213,7 @@
     "maxDaysBehind": 3
   },
   "botReviewSettle": {
-    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态(提交 review、行内评论,或它在当前 head 上的 check 跑完——checkNames)后再静默 5 分钟,从 head 的提交、推送、转 Ready 三个时间里最晚的一个起,最多等 30 分钟(实测中位 27.5 分钟)。推送时间用该 head 上最早的检查开始时间估,转 Ready 时间在按前两者算已超时时才读一次 REST 事件。作者只合 main、能证明新 head 只同步 base、且 PR 自身指纹(含文件操作类型)不变时,沿用上一 head 的曾表态,仍按最新 bot 活动重验静默分钟数(#1150);证明不了、指纹对不上或上一表态读不到仍按原规则等。",
+    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态(提交 review、行内评论,或它在当前 head 上的 check 跑完——checkNames)后再静默 5 分钟,从 head 的提交、推送、转 Ready 三个时间里最晚的一个起,最多等 30 分钟(实测中位 27.5 分钟)。推送时间用该 head 上最早的检查开始时间估,转 Ready 时间在按前两者算已超时时才读一次 REST 事件。作者只合 main、且能用 merge-tree 证明新 head 相对上一已表态 SHA 没有夹带改动时,沿用上一 head 的曾表态,仍按最新 bot 活动重验静默分钟数(#1150);普通追加提交、证明不了或上一表态读不到仍按原规则等。",
     "enabled": true,
     "reviewers": [
       "greptile-apps"

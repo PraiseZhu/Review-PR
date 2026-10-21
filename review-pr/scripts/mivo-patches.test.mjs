@@ -496,14 +496,13 @@ test('静默期:沿用只继承曾表态,快照后若最新 bot 活动未静默�
   assert.equal(r.quietSinceMinutes < 5, true);
 });
 
-test('静默期:新 head 改了 PR 自身文件时,即使上一 head 已静默满也重新等', () => {
+test('静默期:已结构证明只合 main 时,evaluateBotSettle 不再靠指纹拦沿用', () => {
   const r = evaluateBotSettle({
     ...BASE_ONLY_NEW_HEAD,
     filePatchHashes: { 'public/changelog.json': '1150-changelog-changed' },
   });
-  assert.equal(r.settled, false);
-  assert.equal(r.reused, undefined);
-  assert.deepEqual(r.pending, ['greptile-apps']);
+  assert.equal(r.settled, true, '指纹比较已两轮没守住;沿用只看 baseOnlyProven');
+  assert.equal(r.reused, true);
 });
 
 test('静默期:上一 head 上 Greptile 没表态(超时放行)时,即使 patch 不变也按原规则等', () => {
@@ -518,14 +517,11 @@ test('静默期:上一 head 上 Greptile 没表态(超时放行)时,即使 patch
   assert.deepEqual(r.pending, ['greptile-apps']);
 });
 
-test('静默期:patch 哈希或上一 head 表态读不到时退回原规则(等),不放宽', () => {
+test('静默期:上一 head 表态读不到或未证明只合 main 时退回原规则(等),不放宽', () => {
   const never = () => { throw new Error('不应该读事件'); };
   for (const extra of [
     {},
     { filePatchHashes: BASE_ONLY_HASHES },
-    { previousSettle: BASE_ONLY_PREVIOUS },
-    { filePatchHashes: {}, previousSettle: BASE_ONLY_PREVIOUS },
-    { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, filePatchHashes: {} } },
     { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, baseOnlyProven: false } },
     { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, baseOnlyProven: undefined } },
   ]) {
@@ -568,19 +564,29 @@ test('filePatchHashesFromDiff:删除文件与改成空文件的增删行都是 -
   );
 });
 
+function mergeProofGitFn({ prevHead, headSha, baseSha, diff, committedDate = '2026-10-21T05:20:00Z' }) {
+  const parent1 = 'd'.repeat(40);
+  const tree = 'e'.repeat(40);
+  return (args) => {
+    const joined = args.join(' ');
+    if (joined === `log -1 --format=%H%n%P%n%T ${headSha}`) {
+      return { ok: true, stdout: `${headSha}\n${prevHead} ${parent1}\n${tree}\n` };
+    }
+    if (joined === `merge-tree --write-tree ${prevHead} ${parent1}`) return { ok: true, stdout: `${tree}\n` };
+    if (joined === `merge-base --is-ancestor ${parent1} ${baseSha}`) return { ok: true, stdout: '' };
+    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: `${committedDate}\n` };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+}
+
 test('previousSettleFromLocalMerge:当前 HEAD 是两 parent 合 main 且 patch 不变时,按上一 head 重算静默期', () => {
   const prevHead = 'a'.repeat(40);
   const headSha = 'b'.repeat(40);
   const baseSha = 'c'.repeat(40);
   const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
   const currentHashes = filePatchHashesFromDiff(diff);
-  const gitFn = (args) => {
-    const joined = args.join(' ');
-    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
-    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
-    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: '2026-10-21T05:20:00Z\n' };
-    return { ok: false, stdout: '', stderr: joined };
-  };
+  const gitFn = mergeProofGitFn({ prevHead, headSha, baseSha, diff });
   const r = previousSettleFromLocalMerge({
     headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
     activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
@@ -600,13 +606,7 @@ test('previousSettleFromLocalMerge:现有 activity 没有上一 head 的 check �
   const baseSha = 'c'.repeat(40);
   const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
   const currentHashes = filePatchHashesFromDiff(diff);
-  const gitFn = (args) => {
-    const joined = args.join(' ');
-    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
-    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
-    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: '2026-10-21T05:20:00Z\n' };
-    return { ok: false, stdout: '', stderr: joined };
-  };
+  const gitFn = mergeProofGitFn({ prevHead, headSha, baseSha, diff });
   let fetched = 0;
   const fetchCheckRuns = (slug, sha) => {
     fetched += 1;
@@ -640,13 +640,7 @@ test('previousSettleFromLocalMerge: git %cI 带正负时区时与 API UTC 按瞬
   const baseSha = 'c'.repeat(40);
   const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
   const currentHashes = filePatchHashesFromDiff(diff);
-  const gitFn = (committedDate) => (args) => {
-    const joined = args.join(' ');
-    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
-    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
-    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: `${committedDate}\n` };
-    return { ok: false, stdout: '', stderr: joined };
-  };
+  const gitFn = (committedDate) => mergeProofGitFn({ prevHead, headSha, baseSha, diff, committedDate });
   const plus = previousSettleFromLocalMerge({
     headSha, baseSha, currentHashes, gitFn: gitFn('2026-10-21T13:20:00+08:00'),
     nowIso: '2026-10-21T05:45:00Z',
@@ -665,16 +659,12 @@ test('previousSettleFromLocalMerge: git %cI 带正负时区时与 API UTC 按瞬
 test('proveBaseOnlyHeadRelation: 按 PR head SHA 查 parent,不要求当前 HEAD 就是该 PR', () => {
   const prevHead = 'a'.repeat(40);
   const headSha = 'b'.repeat(40);
-  const otherHead = 'e'.repeat(40);
-  const gitFn = (args) => {
-    const joined = args.join(' ');
-    if (joined === `log -1 --format=%H%n%P HEAD`) return { ok: true, stdout: `${otherHead}\n${'f'.repeat(40)}\n` };
-    if (joined === `log -1 --format=%H%n%P ${headSha}`) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
-    if (joined.startsWith('merge-base --is-ancestor')) return { ok: false, stdout: '' };
-    return { ok: false, stdout: '', stderr: joined };
-  };
-  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, gitFn }), true);
-  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha: otherHead, gitFn }), false);
+  const baseSha = 'c'.repeat(40);
+  const otherHead = 'f'.repeat(40);
+  const gitFn = mergeProofGitFn({ prevHead, headSha, baseSha, diff: '' });
+  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, baseSha, gitFn }), true);
+  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha: otherHead, baseSha, gitFn }), false);
+  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, gitFn }), false, '缺 baseSha 不能证明');
 });
 
 const POLICY_CODE = `export function allowRead() {
@@ -944,7 +934,7 @@ test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLo
     assert.equal(local?.timedOut, false);
     assert.equal(local?.baseOnlyProven, true);
     assert.equal(local?.headSha, prevHead);
-    assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, gitFn }), true);
+    assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, baseSha, gitFn }), true);
     const reused = evaluateBotSettle({
       headCommittedDate: '2026-10-21T05:44:00Z',
       nowIso: '2026-10-21T05:50:00Z',

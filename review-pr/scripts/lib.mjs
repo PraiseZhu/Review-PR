@@ -2387,15 +2387,25 @@ export function loadBotSettleSnapshot({ owner, repo, pr }) {
 }
 
 export function saveBotSettleSnapshot({ owner, repo, pr, settle, filePatchHashes, headCommittedDate, headSha }) {
-  if (!settle?.settled || settle.timedOut || !headSha || !sameFilePatchHashes(filePatchHashes, filePatchHashes)) return false;
+  if (!settle?.settled || settle.timedOut || !headSha) return false;
+  const existing = loadBotSettleSnapshot({ owner, repo, pr });
+  const stanceHeadSha = settle.reused
+    ? (settle.stanceHeadSha || existing?.headSha || headSha)
+    : headSha;
+  const hashesToSave = settle.reused
+    ? (settle.filePatchHashes || existing?.filePatchHashes || filePatchHashes)
+    : filePatchHashes;
+  if (!sameFilePatchHashes(hashesToSave, hashesToSave)) return false;
   atomicWriteJson(botSettleSnapshotPath({ owner, repo, pr }), {
     settled: true,
     timedOut: false,
     reused: Boolean(settle.reused),
     responded: settle.responded ?? [],
-    filePatchHashes,
-    headCommittedDate: headCommittedDate ?? '',
-    headSha,
+    filePatchHashes: hashesToSave,
+    headCommittedDate: settle.reused
+      ? (settle.stanceCommittedDate || existing?.headCommittedDate || headCommittedDate || '')
+      : (headCommittedDate ?? ''),
+    headSha: stanceHeadSha,
     savedAt: new Date().toISOString(),
   });
   return true;
@@ -2419,20 +2429,43 @@ function latestTimestamp(times) {
   return best;
 }
 
-// 快照绑定上一 head SHA 后,新 head 必须是「以上一 head 为第一 parent 的合 main」,
-// 或 git 能证明上一 head 是新 head 祖先。按 SHA 查对象,不要求当前 HEAD 就是该 PR
-// (Mini context --scan-all 一次看很多 PR,工作区 HEAD 通常不是目标 PR)。对象不在本地就失败。
-export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, gitFn = git }) {
-  if (!previousHeadSha || !headSha) return false;
-  if (String(previousHeadSha).toLowerCase() === String(headSha).toLowerCase()) return false;
-  const head = gitFn(['log', '-1', '--format=%H%n%P', headSha], { allowFail: true });
-  if (!head.ok) return false;
-  const [sha, parentsLine] = String(head.stdout ?? '').trim().split('\n');
-  if (String(sha).toLowerCase() !== String(headSha).toLowerCase()) return false;
-  const parents = String(parentsLine ?? '').trim().split(/\s+/).filter(Boolean);
-  if (parents.length === 2 && String(parents[0]).toLowerCase() === String(previousHeadSha).toLowerCase()) return true;
-  const ancestor = gitFn(['merge-base', '--is-ancestor', previousHeadSha, headSha], { allowFail: true });
-  return Boolean(ancestor.ok);
+function sameSha(left, right) {
+  return Boolean(left) && Boolean(right) && String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function readCommitGraph(gitFn, sha) {
+  const head = gitFn(['log', '-1', '--format=%H%n%P%n%T', sha], { allowFail: true });
+  if (!head.ok) return null;
+  const [id, parentsLine, tree] = String(head.stdout ?? '').trim().split('\n');
+  if (!sameSha(id, sha) || !tree) return null;
+  return { sha: id, parents: String(parentsLine ?? '').trim().split(/\s+/).filter(Boolean), tree };
+}
+
+function mergeTreeOid(text) {
+  const line = String(text ?? '').trim().split('\n')[0]?.trim() ?? '';
+  return /^[0-9a-f]{40,}$/i.test(line) ? line.toLowerCase() : '';
+}
+
+// 沿用只认结构证明:新 head 是合 main 的 merge(第一 parent=已表态 SHA,第二 parent 在 base 上),
+// 且 merge-tree(parent0, parent1) 的 tree 与 head tree 完全相同(没有夹带改动)。
+// 同一 SHA 已验证过的表态可重复使用。普通单 parent 追加提交、祖先关系、指纹相同都不算。
+// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。任何一步证明不了就失败。
+export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, baseSha, gitFn = git }) {
+  if (!previousHeadSha || !headSha || !baseSha) return false;
+  if (sameSha(previousHeadSha, headSha)) return true;
+  const head = readCommitGraph(gitFn, headSha);
+  if (!head || head.parents.length !== 2) return false;
+  if (!sameSha(head.parents[0], previousHeadSha)) return false;
+  const onBase = sameSha(head.parents[1], baseSha)
+    || gitFn(['merge-base', '--is-ancestor', head.parents[1], baseSha], { allowFail: true }).ok;
+  if (!onBase) return false;
+  const merged = gitFn(
+    ['merge-tree', '--write-tree', head.parents[0], head.parents[1]],
+    { allowFail: true, timeoutMs: 30_000 },
+  );
+  if (!merged.ok) return false;
+  const mergedTree = mergeTreeOid(merged.stdout);
+  return Boolean(mergedTree) && mergedTree === head.tree.toLowerCase();
 }
 
 export function evaluateBotSettle({
@@ -2463,7 +2496,6 @@ export function evaluateBotSettle({
   const norm = (s) => String(s ?? '').toLowerCase().replace(/\[bot\]$/, '');
   const reuseStance = previousSettle?.settled === true && previousSettle?.timedOut === false
     && previousSettle?.baseOnlyProven === true
-    && sameFilePatchHashes(filePatchHashes, previousHashes)
     && reviewers.every((r) => previousResponded.includes(r));
   const responded = reuseStance
     ? reviewers
@@ -2525,6 +2557,11 @@ export function evaluateBotSettle({
     reason: reuseStance
       ? `只有 base 前移,PR 自身 patch 不变,沿用上一 head 已静默满的机器人表态(${reviewers.join(' / ')})`
       : `全部 ${responded.length} 个机器人已对当前 head 表态${quietMinutes > 0 ? `,且已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})` : ''}`,
+    ...(reuseStance ? {
+      stanceHeadSha: previousSettle.headSha,
+      stanceCommittedDate: previousSettle.headCommittedDate,
+      filePatchHashes: previousHashes,
+    } : {}),
   };
 }
 
@@ -2545,28 +2582,22 @@ export function evaluateBotSettleSinceReady(input, readEvents) {
 }
 
 // [MIVO-PATCH bot-settle-base-only] 服务器每 job 一份 STATE_DIR,看不到 Mini 的快照。
-// PR head 已 checkout 且最新提交是两 parent 的合 main 时,用本地 git 比 base...上一 head 与当前 patch 哈希;
-// 哈希相同再按上一 head 重算静默期。git 没有这些对象就退回 null,不另打 GraphQL。
+// 与 Mini 快照共用 proveBaseOnlyHeadRelation:两 parent 干净合 main 才重建上一 head 表态。
 export function previousSettleFromLocalMerge({
   headSha, baseSha, currentHashes, activity = [], cfg = {}, nowIso, gitFn = git,
   slug = '', fetchCheckRuns = fetchCheckRunsWithApps,
 }) {
-  if (!headSha || !baseSha || !sameFilePatchHashes(currentHashes, currentHashes)) return null;
-  const head = gitFn(['log', '-1', '--format=%H%n%P', 'HEAD'], { allowFail: true });
-  if (!head.ok) return null;
-  const [sha, parentsLine] = String(head.stdout ?? '').trim().split('\n');
-  if (String(sha).toLowerCase() !== String(headSha).toLowerCase()) return null;
-  const parents = String(parentsLine ?? '').trim().split(/\s+/).filter(Boolean);
-  if (parents.length !== 2) return null;
-  const prevHead = parents[0];
+  if (!headSha || !baseSha) return null;
+  const head = readCommitGraph(gitFn, headSha);
+  if (!head || head.parents.length !== 2) return null;
+  const prevHead = head.parents[0];
+  if (!proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, baseSha, gitFn })) return null;
   const prevDiff = gitFn(
     ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
       '--no-relative', '--no-renames', '--unified=3', `${baseSha}...${prevHead}`, '--'],
     { allowFail: true, timeoutMs: 120_000 },
   );
-  if (!prevDiff.ok) return null;
-  const previousHashes = filePatchHashesFromDiff(prevDiff.stdout);
-  if (!sameFilePatchHashes(previousHashes, currentHashes)) return null;
+  const previousHashes = prevDiff.ok ? filePatchHashesFromDiff(prevDiff.stdout) : (currentHashes ?? {});
   const prevDate = gitFn(['log', '-1', '--format=%cI', prevHead], { allowFail: true });
   const headCommittedDate = String(prevDate.stdout ?? '').trim();
   if (!headCommittedDate || !Number.isFinite(Date.parse(headCommittedDate))) return null;
@@ -2588,11 +2619,7 @@ export function toPreviousSettleForHead({
   gitFn, fetchCheckRuns,
 }) {
   const snap = loadBotSettleSnapshot({ owner, repo, pr });
-  if (
-    snap
-    && sameFilePatchHashes(currentHashes, snap.filePatchHashes)
-    && proveBaseOnlyHeadRelation({ previousHeadSha: snap.headSha, headSha, gitFn })
-  ) {
+  if (snap && proveBaseOnlyHeadRelation({ previousHeadSha: snap.headSha, headSha, baseSha, gitFn })) {
     return { ...snap, baseOnlyProven: true };
   }
   return previousSettleFromLocalMerge({
