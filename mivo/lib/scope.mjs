@@ -75,7 +75,12 @@ export const filePatchHashes = (files) => Object.fromEntries(Object.entries(file
 export function computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
   // 上一轮有完整结果时,全量轮也带着它的问题(含转 issue 的),任务书据此逐条核对;顺序原样,legacy-N 编号依赖它。
   const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
-  const carried = trusted ? [...(previous.findings ?? []), ...(previous.deferred ?? [])] : [];
+  // 条目的文件已不在本轮 PR 改动里的标 outOfDiff:任务书据此要求只在 Verification 写结论、不进 findings
+  // (答卷校验要求 finding 的文件必须在 diff 里,写了整轮会被判答卷不合格)。拿不到本轮指纹时不标。
+  const inDiff = current.filePatchHashes ? (path) => path in current.filePatchHashes : () => true;
+  const carried = trusted
+    ? [...(previous.findings ?? []), ...(previous.deferred ?? [])].map((f) => (inDiff(f.path) ? f : { ...f, outOfDiff: true }))
+    : [];
   const full = (reason) => ({ mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: carried, basedOn: null });
   if (!previous) return full('没有上一轮审查记录');
   if (previous.reviewed !== true || previous.reportComplete !== true || previous.outcome === 'error') return full('上一轮没审完或没有完整报告');
@@ -138,6 +143,18 @@ export function computeReviewScope({ previous, current, headIsDescendant, forceF
     // 本轮 patch 变了的文件:收敛模块据此判断「新问题是不是出在没改过的文件里」。
     changedFiles: changed.filter((path) => path in after),
   };
+}
+
+/**
+ * 规则改版沿用带问题的上一轮时,同一 head 上一轮已发过的 review 直接沿用、不再发:
+ * reusedReport 改写了正文,发布器的 review 标记(head+正文+comments 摘要)对不上,会在同一 head 再开一遍同样的行内 thread。
+ * 跨 head 或上一轮没发过 review(dry-run、发布失败)返回 null,照常发布。
+ * @param {object} previous 上一轮 result.json
+ * @param {string} head 本轮 head
+ */
+export function reusableReview(previous, head) {
+  if (!previous?.head || previous.head !== head || !previous.mivo?.review) return null;
+  return { review: previous.mivo.review, threadUrls: previous.threadUrls ?? [] };
 }
 
 function reuse(previous, reason) {

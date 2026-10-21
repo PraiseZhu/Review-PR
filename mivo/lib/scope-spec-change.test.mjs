@@ -1,7 +1,7 @@
 // 规则改版(specDigest 变)的范围判定、全量轮携带上一轮问题、specChange 配置读取、沿用时的锚点处理。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reanchorReusedFindings } from './scope.mjs';
+import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reanchorReusedFindings, reusableReview } from './scope.mjs';
 import { applyConvergence } from './convergence.mjs';
 
 const diff = ['diff --git a/src/a.ts b/src/a.ts', 'index 111..222 100644', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -10,3 +10,4 @@', ' keep', '+added', ' tail'].join('\n');
@@ -101,7 +101,7 @@ test('SC1:全量轮携带上一轮完整结果的问题(含已不在 diff 的、
   const frozen = structuredClone(trusted);
   const scope = scopeOf(trusted);
   assert.equal(scope.mode, 'full');
-  assert.deepEqual(scope.previousFindings, [F1, F2, D1], '顺序:findings 后 deferred,原样');
+  assert.deepEqual(scope.previousFindings, [F1, { ...F2, outOfDiff: true }, D1], '顺序:findings 后 deferred,原样;已不在 diff 的标 outOfDiff');
   assert.deepEqual(trusted, frozen, '不改输入');
   assert.deepEqual(scopeOf(null).previousFindings, []);
   assert.deepEqual(scopeOf(previous({ reportComplete: false, findings: [F1] })).previousFindings, []);
@@ -148,4 +148,24 @@ test('SC5:specChange 配置读取,坏值一律 false 且带 warning(不回显原
     assert.match(r.warning, /读不到或不合法，specChange\.forceFull 按 false 处理/);
     assert.doesNotMatch(r.warning, /SECRET|ENOENT|secret/);
   }
+});
+
+test('携带的旧问题:文件已不在本轮 PR 改动里的标 outOfDiff,其余不动', () => {
+  const gone = { path: 'src/gone.ts', line: 3, body: '[P1] x', key: 'cccccccccccc' };
+  const kept = { path: 'src/a.ts', line: 11, body: '[P1] y', key: 'dddddddddddd' };
+  const scope = computeReviewScope({ previous: previous({ reviewClean: false, findings: [gone, kept], head: 'h0' }), current: current({ head: 'h1', filePatchHashes: { ...hashes, 'src/a.ts': 'changed' }, specDigest: 'spec-new' }), headIsDescendant: true });
+  assert.equal(scope.mode, 'full');
+  assert.equal(scope.previousFindings.find((f) => f.key === 'cccccccccccc').outOfDiff, true);
+  assert.equal('outOfDiff' in scope.previousFindings.find((f) => f.key === 'dddddddddddd'), false);
+  assert.equal('outOfDiff' in gone, false, '不改上一轮原对象');
+});
+
+test('reusableReview:同 head 且上一轮发过 review 才沿用;跨 head 或没发过返回 null', () => {
+  const review = { id: 1, url: 'https://x/r/1', action: 'request-changes' };
+  const prev = { head: 'h1', threadUrls: ['https://x/t/1'], mivo: { review } };
+  assert.deepEqual(reusableReview(prev, 'h1'), { review, threadUrls: ['https://x/t/1'] });
+  assert.equal(reusableReview(prev, 'h2'), null);
+  assert.equal(reusableReview({ head: 'h1', mivo: {} }, 'h1'), null);
+  assert.equal(reusableReview(null, 'h1'), null);
+  assert.deepEqual(reusableReview({ head: 'h1', mivo: { review } }, 'h1').threadUrls, []);
 });

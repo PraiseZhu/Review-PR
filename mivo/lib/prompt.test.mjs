@@ -251,3 +251,23 @@ test('specDigest:fullWithPrevious 模板进 digest,只改它的固定文案会�
   const tweaked = { ...manifest(), template: { ...template, fullWithPrevious: template.fullWithPrevious.replace('逐条核对要求', '逐条核对要求(改)') } };
   assert.notEqual(specDigestOf(tweaked), specDigestOf(manifest()));
 });
+
+// 文件已不在本 PR diff 的旧问题(#106 评审):标注并要求只在 Verification 写结论、不进 findings。
+test('旧问题的文件已移出本 PR:列表标注,任务书要求不进 findings、只在 Verification 写结论', () => {
+  const prev = [{ path: 'src/a.ts', line: 12, body: '[P1] 仍在 diff', key: 'aaaaaaaaaaaa' },
+    { path: 'src/gone.ts', line: 3, body: '[P1] 文件已移出', key: 'cccccccccccc', outOfDiff: true }];
+  const text = prompt('standard', { scope: { mode: 'full', reason: '规则变了', previousFindings: prev } });
+  assert.ok(text.includes('- `src/gone.ts:3`(文件已不在本 PR diff) [P1] 文件已移出 · key=cccccccccccc'));
+  assert.ok(text.includes('- `src/a.ts:12` [P1] 仍在 diff · key=aaaaaaaaaaaa'));
+  assert.match(text, /\*\*不要\*\*写进 `findings`/);
+  assert.match(text, /文件已移出本 PR 改动，不再报/);
+  assert.ok(!text.includes('文件不在本轮 diff 里也不自动算修好'));
+  const none = prompt('standard', { scope: { mode: 'full', reason: 'r', previousFindings: [prev[0]] } });
+  assert.ok(!none.includes('**不要**写进 `findings`'));
+});
+
+test('specDigest:fullWithPrevious 模板覆盖「文件已移出」分支', () => {
+  const { template } = manifest();
+  assert.ok(template.fullWithPrevious.includes('(文件已不在本 PR diff)'));
+  assert.ok(template.incremental.includes('**不要**写进 `findings`'));
+});

@@ -123,12 +123,15 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
   const previous = previousFindings.length
     ? [
       '上一轮的问题(逐条核对):',
-      ...previousFindings.map((f, i) => `- \`${f.path}${f.line ? `:${f.line}` : ''}\`${f.deferredTo ? `(已转 #${f.deferredTo})` : ''} ${String(f.body).split('\n')[0]} · key=${f.key ?? `legacy-${i + 1}`}`),
+      ...previousFindings.map((f, i) => `- \`${f.path}${f.line ? `:${f.line}` : ''}\`${f.deferredTo ? `(已转 #${f.deferredTo})` : ''}${f.outOfDiff ? '(文件已不在本 PR diff)' : ''} ${String(f.body).split('\n')[0]} · key=${f.key ?? `legacy-${i + 1}`}`),
       ...(previousFindings.some((f) => f.deferredTo)
         ? ['标了「已转 #N」的:#N 仍在下方「转 issue 跟进的问题」核验通过的列表里、且还是同一问题时,继续填 `deferredTo`;不在列表里(issue 已关闭或撤了登记)就照常报、照常阻断。']
         : []),
-      '逐条核对要求:每一条都要检查是否**真的修好**(thread 被 resolve 不算证据,文件不在本轮 diff 里也不自动算修好);没修好的照常写进 `findings`,`supersedes` 填该条的 key;',
-      '修好了、仍有效的转 issue、维护者裁定不改、作者申辩成立的,不再报,但必须在 report 的 Verification 一段里逐 key 写出核对结论(见「交卷格式」)。不能既不再报、又不解释。',
+      '逐条核对要求:每一条都要检查是否**真的修好**(thread 被 resolve 不算证据,文件在本 PR diff 里但本轮没改动也不自动算修好);没修好的照常写进 `findings`,`supersedes` 填该条的 key;',
+      ...(previousFindings.some((f) => f.outOfDiff)
+        ? ['标了「文件已不在本 PR diff」的:文件已移出本 PR 改动,**不要**写进 `findings`(服务器要求 finding 的文件必须在本 PR diff 里,写了整份答卷会被拒收);只在 Verification 里写「文件已移出本 PR 改动，不再报」。']
+        : []),
+      '修好了、仍有效的转 issue、维护者裁定不改、作者申辩成立、文件已移出本 PR 改动的,不再报,但必须在 report 的 Verification 一段里逐 key 写出核对结论(见「交卷格式」)。不能既不再报、又不解释。',
     ].join('\n')
     : '';
   return [
@@ -201,7 +204,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '  - Verification:实际运行的命令与退出码、结果;没运行的写明「未执行 + 原因」。',
     ...(previousFindings.length
       ? ['    上面列了「上一轮的问题」时,Verification 里还必须逐个 key 写一行「核对结论 + 证据/理由」,每个 key 都要有,例如:',
-        '    `- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚`;结论可以是已修复、仍未修复(并在 findings 里用 supersedes 再报)、仍转 issue、裁定不改、申辩成立。']
+        '    `- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚`;结论可以是已修复、仍未修复(并在 findings 里用 supersedes 再报)、仍转 issue、裁定不改、申辩成立、文件已移出本 PR 改动。']
       : []),
     '  - Overall:第一行只能是 `pass —— 没有 P0/P1/P2。` 或 `changes-requested —— N 条 P0/P1/P2…`。',
     '- `findings`:每条 P0/P1/P2 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。',
@@ -258,6 +261,7 @@ const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>',
 // 固定模板要盖到每个分支:全量/增量两种范围说明,上一轮问题与「已转 #N」提示,转 issue 一节的空与非空两种写法。
 // 只取全量模板时,只改增量专属指令的 skill 升级算不出任务书变化,同 head 的旧干净报告会被直接沿用。
 const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1, key: '<key>' };
+const TEMPLATE_FINDING_OUT = { path: '<removed-path>', line: 1, body: '<finding>', key: '<key2>', outOfDiff: true };
 const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
 const TEMPLATE_RULING = { path: '<path>', line: 1, finding: '<finding>', by: '<maintainer>', reason: '<reason>', key: '<key>' };
 const TEMPLATE_REBUTTAL = { path: '<path>', line: 1, severity: 'P1', finding: '<finding>', reply: '<reply>' };
@@ -318,8 +322,8 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
     template: {
       full: toTemplate({ mode: 'full', reason: '<reason>' }, [], [], [], '<rules-base>'),
       // 全量轮带着上一轮问题:任务书多出逐条核对的要求,单独进 digest。
-      fullWithPrevious: toTemplate({ mode: 'full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
-      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
+      fullWithPrevious: toTemplate({ mode: 'full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
+      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),

@@ -266,3 +266,11 @@ test('最终报告:Verification 里逐 key 的核对结论(已修复/仍未修�
   for (const line of lines) assert.ok(report.includes(line), line);
   assert.match(report, /## Overall\nchanges-requested —— 1 条 P0\/P1\/P2/);
 });
+
+test('遵照任务书写的答卷:旧问题的文件已移出 PR 时只在 Verification 写结论、findings 不含它,validateAnswer 通过', () => {
+  const report = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification',
+    '- key=cccccccccccc · 文件已移出本 PR 改动，不再报', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
+  assert.equal(validateAnswer({ report, findings: [] }, { diffFiles: files }).ok, true);
+  // 反例:把已移出的文件写进 findings 会被整份拒收——任务书因此必须禁止这样写。
+  assert.equal(validateAnswer({ report, findings: [{ path: 'src/gone.ts', line: 3, side: 'RIGHT', body: '[P1] x' }] }, { diffFiles: files }).ok, false);
+});
