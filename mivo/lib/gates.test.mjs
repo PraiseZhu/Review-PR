@@ -349,6 +349,88 @@ test('只剩机器人 thread:照样送审,带 pendingGates;有人留的 thread �
   assert.equal(decideGate(ctx()).pendingGates, undefined, '全部通过时没有 pendingGates');
 });
 
+// 2026-10-22 #114:只剩审查机自己(首评作者 = approvalPolicy.viewer)带 mivo-finding 标记的 thread 时同样送审、不放行。
+const MARKER = '<!-- mivo-finding key=abc123 round=1 head=deadbeef -->';
+const reviewerThread = (id, { login = 'PraiseZhu', body = `**P2** 问题描述\n${MARKER}`, comments } = {}) =>
+  ({ id, isBot: false, author: login, comments: comments ?? [{ author: { login, __typename: 'User' }, body }] });
+const withViewer = (viewer, gate, extra = {}) => ctx({ approvalPolicy: { authorIsMaintainer: false, viewer }, gate, ...extra });
+
+test('只剩审查机自己带标记的 thread:送审不放行(login 不分大小写)', () => {
+  const d = decideGate(withViewer('praisezhu', { unresolvedThreads: [reviewerThread('t1'), reviewerThread('t2')] }));
+  assert.equal(d.stage, 'review');
+  assert.equal(d.outcome, null);
+  assert.deepEqual(d.pendingGates, ['reviewer-threads']);
+  assert.match(d.reason, /只剩 2 条审查机自己/);
+});
+
+test('审查机 thread:首评没有标记 / 标记只在后续回复 / 首评是别人 → 照旧硬拦', () => {
+  const noMarker = reviewerThread('t1', { body: '普通评论' });
+  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [noMarker] })).outcome, 'threads-unresolved');
+  const markerInReply = reviewerThread('t2', { comments: [
+    { author: { login: 'PraiseZhu' }, body: '普通评论' }, { author: { login: 'PraiseZhu' }, body: MARKER }] });
+  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [markerInReply] })).outcome, 'threads-unresolved');
+  // thread.author 伪装成 viewer,但首评是别人粘贴的标记:以首评为准。
+  const spoof = { ...reviewerThread('t3', { login: 'someone' }), author: 'PraiseZhu' };
+  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [spoof] })).outcome, 'threads-unresolved');
+});
+
+test('审查机 thread 混有人的 thread → 照旧硬拦', () => {
+  const d = decideGate(withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t1'), humanThread('t2')] }));
+  assert.equal(d.outcome, 'threads-unresolved');
+  assert.equal(d.stage, 'threads');
+});
+
+test('机器人 thread + 审查机 thread:送审不放行,两个原因固定顺序', () => {
+  const forward = decideGate(withViewer('PraiseZhu', { unresolvedThreads: [botThread('t1'), reviewerThread('t2')] }));
+  const backward = decideGate(withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t2'), botThread('t1')] }));
+  for (const d of [forward, backward]) {
+    assert.equal(d.stage, 'review');
+    assert.deepEqual(d.pendingGates, ['bot-threads', 'reviewer-threads']);
+    assert.match(d.reason, /机器人或审查机自己/);
+  }
+});
+
+test('审查机 thread:viewer 为空/缺失时不放宽;全是机器人 thread 不受影响', () => {
+  for (const viewer of [undefined, null, '', '   ']) {
+    assert.equal(decideGate(withViewer(viewer, { unresolvedThreads: [reviewerThread('t1')] })).outcome, 'threads-unresolved', `viewer=${JSON.stringify(viewer)}`);
+    assert.deepEqual(decideGate(withViewer(viewer, { unresolvedThreads: [botThread('t1')] })).pendingGates, ['bot-threads']);
+  }
+});
+
+test('审查机 thread:首评缺作者/正文、comments 缺失、明细缺失 → 不抛异常,照旧硬拦', () => {
+  const broken = [
+    { id: 'a', isBot: false, author: 'PraiseZhu' },
+    { id: 'b', isBot: false, author: 'PraiseZhu', comments: [] },
+    { id: 'c', isBot: false, author: 'PraiseZhu', comments: [{ body: MARKER }] },
+    { id: 'd', isBot: false, author: 'PraiseZhu', comments: [{ author: { login: 'PraiseZhu' } }] },
+    { id: 'e', isBot: false, author: 'PraiseZhu', comments: [{ author: { login: 'PraiseZhu' }, body: 42 }] },
+  ];
+  for (const t of broken) assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [t] })).outcome, 'threads-unresolved', t.id);
+  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: undefined, unresolvedThreadCount: 1 })).outcome, 'threads-unresolved');
+});
+
+test('审查机 thread:其他前置门没过仍硬拦;缺界面证据时与 ui-evidence 组合', () => {
+  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t1')], ci: { status: 'failed' } }, { auto: { action: 'skip-gate', reason: 'x' } })).outcome, 'threads-unresolved');
+  const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
+  const gate = { gatePass: false, blockers: ['1 条 conversation 未 resolve(不分作者)'], unresolvedThreads: [reviewerThread('t1')] };
+  const both = decideGate(withViewer('PraiseZhu', gate, { format: evidence, auto: { action: 'pushback-format' } }));
+  assert.equal(both.stage, 'review');
+  assert.deepEqual(both.pendingGates, ['ui-evidence', 'reviewer-threads']);
+  assert.deepEqual(both.actions, [{ script: 'request-changes', gateKind: 'format' }]);
+  // 另有 CR 之类的 blocker:不送审。
+  const cr = decideGate(withViewer('PraiseZhu', { ...gate, blockers: ['1 条 conversation 未 resolve(不分作者)', '他人 Request Changes'] }, { format: evidence, auto: { action: 'pushback-format' } }));
+  assert.equal(cr.outcome, 'threads-unresolved');
+});
+
+test('审查机 thread:判门不改输入,PENDING_GATE_TEXT 有对应说明', async () => {
+  const input = withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t1')] });
+  const snapshot = structuredClone(input);
+  decideGate(input);
+  assert.deepEqual(input, snapshot);
+  const { PENDING_GATE_TEXT } = await import('./gates.mjs');
+  assert.ok(PENDING_GATE_TEXT['reviewer-threads']);
+});
+
 test('只缺界面证据、其他门都过:打回要证据,同时送审代码', () => {
   const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
   const first = decideGate(ctx({ format: evidence, gate: { gatePass: true }, auto: { action: 'pushback-format' } }));

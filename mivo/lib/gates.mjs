@@ -216,12 +216,14 @@ export function decideGate(ctx) {
   }
 
   // 2. 未解决 thread。只剩机器人(Greptile 等)留的 thread 时照样送审,但不放行(2026-10-15 #927:
-  //    3 条 Greptile thread 没关,审查机一次没审,PR 被强合)。合并仍由组织规则要求 thread 全部 resolve。
+  //    3 条 Greptile thread 没关,审查机一次没审,PR 被强合)。审查机自己带标记的旧 thread 同口径(#114)。
+//    合并仍由组织规则要求 thread 全部 resolve。
   const unresolved = gate.unresolvedThreads?.length ?? gate.unresolvedThreadCount ?? 0;
   const threadsResult = { stage: 'threads', outcome: 'threads-unresolved', reason: `${unresolved} 条 conversation 未 resolve`, actions: signoffActions };
-  const botThreadsOnly = isBotThreadsOnly(gate, unresolved);
-  if (unresolved > 0 && !botThreadsOnly) return threadsResult;
-  const pendingGates = botThreadsOnly ? ['bot-threads'] : [];
+  const threadPendingGates = toPendingThreadGates(gate, unresolved, ctx.approvalPolicy?.viewer);
+  if (unresolved > 0 && threadPendingGates === null) return threadsResult;
+  const pendingGates = threadPendingGates ?? [];
+  const reviewableThreadsOnly = pendingGates.length > 0;
 
   // 3. 受保护路径 / 格式 / CI / 其他前置门(沿用 context.auto 的确定性分流)
   const withSignoff = (decision) => ({ ...decision, actions: [...signoffActions, ...(decision.actions ?? [])] });
@@ -229,7 +231,7 @@ export function decideGate(ctx) {
   const reason = auto.action === 'signoff-gate' ? auto.fallback?.reason : auto.reason;
   // 只缺界面证据、其他前置门都过时:照样打回要证据,同时送审代码(2026-10-15 #926/#935 因缺截图零审查被强合)。
   // 审查没有 P0/P1 也不 Approve,等证据补上后重审放行。
-  const evidenceOnly = ['pushback-format', 'skip-stale-pushback'].includes(action) && isEvidenceOnly(ctx) && otherGatesClear(gate, botThreadsOnly);
+  const evidenceOnly = ['pushback-format', 'skip-stale-pushback'].includes(action) && isEvidenceOnly(ctx) && otherGatesClear(gate, reviewableThreadsOnly);
   // [handoff] 交接文件不完整(只在 review-features.json handoff.mode=enforce 且 Mivo 门为 enforce 时成立):同样照审 + 打回 + 不放行。
   const handoffReasons = toHandoffPending(ctx.mivoHandoff);
   const handoffUntold = ctx.meta?.reviewDecision !== 'CHANGES_REQUESTED';
@@ -239,7 +241,7 @@ export function decideGate(ctx) {
       actions: evidenceUntold ? [{ script: 'request-changes', gateKind: 'format' }] : [],
       tier: ctx.review?.tier ?? 'standard', pendingGates: ['ui-evidence', ...(handoffReasons.length ? ['handoff'] : []), ...pendingGates] });
   }
-  if (botThreadsOnly && action !== 'review') return threadsResult;
+  if (reviewableThreadsOnly && action !== 'review') return threadsResult;
   switch (action) {
     case 'skip-protected-path':
       // 自动放行不发「转人工审核」提醒;作者提醒回执由 round 用 toAutoReleaseNotice 补。
@@ -277,17 +279,48 @@ export function decideGate(ctx) {
       }
       return withSignoff({ stage: 'review', outcome: null, actions: [], tier: ctx.review?.tier ?? 'standard',
         ...(pendingGates.length
-          ? { reason: `只剩 ${unresolved} 条机器人留的 conversation 未 resolve;代码照审,resolve 前不放行`, pendingGates }
+          ? { reason: `只剩 ${unresolved} 条${threadAuthorText(pendingGates)}留的 conversation 未 resolve;代码照审,resolve 前不放行`, pendingGates }
           : { reason: '前置门全部通过,送服务器审查' }) });
     default:
       return withSignoff({ stage: 'error', outcome: 'error', reason: `未知的 auto.action:${action ?? '(empty)'}`, actions: [] });
   }
 }
 
-// 未 resolve 的 thread 全是机器人发起的(context.mjs 的 isBot 判首条评论作者)。读不到明细时按有人的算。
-function isBotThreadsOnly(gate, unresolved) {
+// 审查机自己留的 thread 首条评论里的标记前缀(finding.mjs 写入;这里只认字面前缀,不要求完整 key/round/head)。
+const REVIEWER_FINDING_MARKER = '<!-- mivo-finding key=';
+
+const normLogin = (v) => (typeof v === 'string' && v.trim() ? v.trim().toLowerCase() : null);
+
+/**
+ * 未 resolve 的 thread 能否只作「送审但不放行」处理。
+ * 返回 null:有人/未知/不合格的 thread,照旧硬拦;[]:没有未 resolve 的 thread;
+ * 非空数组:全部 thread 都属于可送审的两类,按固定顺序给出挂起原因。
+ *  - bot-threads:首条评论作者是 Bot(context.mjs 的 isBot)。
+ *  - reviewer-threads:首条评论作者就是本轮审查账号(approvalPolicy.viewer),且首条正文带 mivo-finding 标记。
+ * 读不到明细、数量对不上、viewer 为空、首评缺作者/正文,一律按有人的算。
+ */
+function toPendingThreadGates(gate, unresolved, viewer) {
+  if (unresolved <= 0) return [];
   const threads = gate.unresolvedThreads;
-  return unresolved > 0 && Array.isArray(threads) && threads.length === unresolved && threads.every((t) => t?.isBot === true);
+  if (!Array.isArray(threads) || threads.length !== unresolved) return null;
+  const me = normLogin(viewer);
+  let bot = false;
+  let reviewer = false;
+  for (const t of threads) {
+    if (t?.isBot === true) { bot = true; continue; }
+    const first = Array.isArray(t?.comments) ? t.comments[0] : null;
+    const author = normLogin(first?.author?.login);
+    if (me && author === me && typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER)) { reviewer = true; continue; }
+    return null;
+  }
+  return [...(bot ? ['bot-threads'] : []), ...(reviewer ? ['reviewer-threads'] : [])];
+}
+
+function threadAuthorText(pendingGates) {
+  const bot = pendingGates.includes('bot-threads');
+  const reviewer = pendingGates.includes('reviewer-threads');
+  if (bot && reviewer) return '机器人或审查机自己';
+  return reviewer ? '审查机自己' : '机器人';
 }
 
 // 格式门唯一的问题是缺界面证据(与 buildGatePushback 的 evidenceOnly 同口径)。
@@ -295,12 +328,12 @@ function isEvidenceOnly(ctx) {
   return ctx.format?.formatPass === false && ctx.format?.uiEvidenceRequired === true && (ctx.format?.formatIssues ?? []).length === 1;
 }
 
-// 格式门之外的前置门(冲突、CI、他人 CR、bot 静默期、rebase 等)都过了;只剩机器人 thread 的不算卡。
+// 格式门之外的前置门(冲突、CI、他人 CR、bot 静默期、rebase 等)都过了;只剩机器人/审查机自己 thread 的不算卡。
 const THREAD_BLOCKER_RE = /条 conversation 未 resolve/;
-function otherGatesClear(gate, botThreadsOnly) {
+function otherGatesClear(gate, reviewableThreadsOnly) {
   if (gate.gatePass === true) return true;
   const blockers = gate.blockers ?? [];
-  return botThreadsOnly && blockers.length > 0 && blockers.every((b) => THREAD_BLOCKER_RE.test(String(b)));
+  return reviewableThreadsOnly && blockers.length > 0 && blockers.every((b) => THREAD_BLOCKER_RE.test(String(b)));
 }
 
 /** 送审但不能放行的前置门 → 给作者看的说明。 */
@@ -308,6 +341,7 @@ export const PENDING_GATE_TEXT = {
   'ui-evidence': 'PR 描述里还缺改动后的界面证据(截图/录屏或 HTML)',
   handoff: 'PR 还缺有效的交接文件(docs/pr/<PR号>/review.md 与 qa.md)',
   'bot-threads': '还有机器人(如 Greptile)留的讨论没有 resolve',
+  'reviewer-threads': '还有审查机自己留的讨论没有 resolve',
 };
 
 const AUTHOR_SELF_APPROVAL_CODE = 'independent-approval-required';
