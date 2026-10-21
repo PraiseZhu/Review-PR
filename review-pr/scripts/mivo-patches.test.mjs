@@ -662,6 +662,21 @@ test('previousSettleFromLocalMerge: git %cI 带正负时区时与 API UTC 按瞬
   assert.equal(minus, null, '-04:00(=05:20Z) 之前 05:15Z 的表态不能算; 字符串比较会把 05:15Z 当成晚于 01:20-04:00');
 });
 
+test('proveBaseOnlyHeadRelation: 按 PR head SHA 查 parent,不要求当前 HEAD 就是该 PR', () => {
+  const prevHead = 'a'.repeat(40);
+  const headSha = 'b'.repeat(40);
+  const otherHead = 'e'.repeat(40);
+  const gitFn = (args) => {
+    const joined = args.join(' ');
+    if (joined === `log -1 --format=%H%n%P HEAD`) return { ok: true, stdout: `${otherHead}\n${'f'.repeat(40)}\n` };
+    if (joined === `log -1 --format=%H%n%P ${headSha}`) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
+    if (joined.startsWith('merge-base --is-ancestor')) return { ok: false, stdout: '' };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, gitFn }), true);
+  assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha: otherHead, gitFn }), false);
+});
+
 test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLocalMerge / evaluateBotSettle 判定', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bot-settle-e2e-'));
   const env = {

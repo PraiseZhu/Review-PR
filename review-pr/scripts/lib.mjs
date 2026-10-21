@@ -2420,11 +2420,12 @@ function latestTimestamp(times) {
 }
 
 // 快照绑定上一 head SHA 后,新 head 必须是「以上一 head 为第一 parent 的合 main」,
-// 或 git 能证明上一 head 是新 head 祖先。证明不了就不能沿用。
+// 或 git 能证明上一 head 是新 head 祖先。按 SHA 查对象,不要求当前 HEAD 就是该 PR
+// (Mini context --scan-all 一次看很多 PR,工作区 HEAD 通常不是目标 PR)。对象不在本地就失败。
 export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, gitFn = git }) {
   if (!previousHeadSha || !headSha) return false;
   if (String(previousHeadSha).toLowerCase() === String(headSha).toLowerCase()) return false;
-  const head = gitFn(['log', '-1', '--format=%H%n%P', 'HEAD'], { allowFail: true });
+  const head = gitFn(['log', '-1', '--format=%H%n%P', headSha], { allowFail: true });
   if (!head.ok) return false;
   const [sha, parentsLine] = String(head.stdout ?? '').trim().split('\n');
   if (String(sha).toLowerCase() !== String(headSha).toLowerCase()) return false;
