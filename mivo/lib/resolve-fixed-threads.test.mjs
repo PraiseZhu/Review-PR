@@ -45,7 +45,7 @@ function makeDeps({ reviewed, live = reviewed, verified = true, receipts = {}, b
   };
 }
 
-test('SC1/SC4 候选逐条:先核对绑定、再 fresh 读取、再逐条核对后调用共享脚本,回复含 head/run/key', () => {
+test('SC1/SC4 候选逐条:先核对绑定、再 fresh 读取;逐条先核对绑定、最后一次重读后立即调用共享脚本,回复含 head/run/key', () => {
   const threads = [thread('T1', K1), thread('T2', K2)];
   const deps = makeDeps({ reviewed: threads });
   const sent = [];
@@ -54,7 +54,7 @@ test('SC1/SC4 候选逐条:先核对绑定、再 fresh 读取、再逐条核对�
   const out = resolveFixedThreads(request({ excludedKeys: [K2] }), deps);
   assert.equal(out.status, 'completed');
   assert.equal(out.resolvedCount, 1);
-  assert.deepEqual(deps.log, ['binding', 'fetch', 'fetch', 'binding', 'resolve:T1']);
+  assert.deepEqual(deps.log, ['binding', 'fetch', 'binding', 'fetch', 'resolve:T1']);
   assert.equal(sent.length, 1);
   assert.ok(sent[0].reply.includes(HEAD) && sent[0].reply.includes(RUN) && sent[0].reply.includes(K1));
 });
@@ -153,6 +153,26 @@ test('F1 处理 T1 期间重新读取 thread 不完整 → 该条及之后不 re
   assert.deepEqual(resolvedIds(deps), ['resolve:T1']);
   assert.equal(out.status, 'partial');
   assert.ok(out.warnings.some((w) => w.includes('分页失败')));
+});
+
+test('F3 逐条绑定检查(多次网络查询)期间该条新增维护者裁定 → 不 resolve,重读紧贴写操作', () => {
+  const reviewed = [thread('T1', K1), thread('T2', K2)];
+  const live = [thread('T1', K1), thread('T2', K2)];
+  const deps = makeDeps({ reviewed, live });
+  const binding = deps.assertBinding;
+  let calls = 0;
+  deps.assertBinding = () => {
+    const result = binding();
+    calls += 1;
+    if (calls === 3) live[1].comments.push({ id: 'r-new', author: { login: 'maint' }, body: '维护者裁定不改:产品意图' });
+    return result;
+  };
+  const out = resolveFixedThreads(request(), deps);
+  assert.deepEqual(resolvedIds(deps), ['resolve:T1']);
+  assert.equal(out.items[1].reason, 'changed-since-plan');
+  assert.ok(out.warnings.some((w) => w.includes(K2)));
+  // 每次共享脚本调用前最近一条日志必须是 fetch:重读与调用之间不得插入别的网络请求。
+  deps.log.forEach((entry, i) => { if (entry.startsWith('resolve:')) assert.equal(deps.log[i - 1], 'fetch'); });
 });
 
 test('发布后重新读取 thread 不完整 → 零写', () => {

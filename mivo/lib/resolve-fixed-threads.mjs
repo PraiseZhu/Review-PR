@@ -3,7 +3,8 @@
 // 共享的 resolve-threads.mjs 只负责「回复 + resolve」,不校验锁、head、账号权限,所以这里在每一条调用前补这些检查,
 // 并只处理 thread-resolution.mjs 选出来的 thread;共享脚本本身不改。
 // 失败只返回 warning,不让整轮审查失败。每条 thread 动手前单独现查并重算清单(批次中途出现的新裁定 / 新评论不会被旧清单覆盖)。
-// 残余窗口:共享脚本内部「再读 threads → 回复 → resolve」之间 head / thread 仍可能变化,这里只能在每条调用前复核,不能逐 mutation 原子校验。
+// 每条顺序:绑定检查(锁 / 账号 / 权限 / head)→ 重读该 thread 并重算清单 → 立即调用共享脚本,重读与调用之间不插别的网络请求。
+// 残余窗口:只剩共享脚本内部「再读 threads → 回复 → resolve」之间 head / thread 仍可能变化,不能逐 mutation 原子校验。
 //
 // 用法:node resolve-fixed-threads.mjs < request.json(cwd 必须是目标仓检出目录;令牌只走环境变量,不进请求)
 // request: { binding:{targetRepo,pr,head,base,baseRefName,reviewer,lockToken,authorityDigest,runUrl,mode}, round, contextFile, excludedKeys }
@@ -70,8 +71,18 @@ export function resolveFixedThreads(request, deps) {
         if (!stopped) { warnings.push('代 resolve 预算用完,剩余 thread 留给下一轮'); stopped = true; }
         continue;
       }
-      // 每条动手前单独现查:处理前面几条期间,这一条可能新增维护者裁定 / 作者申辩 / 被 resolve / unresolve,
+      // 每条先核对锁 / 账号 / 权限 / head(多次网络查询),变了就停。
+      try {
+        deps.assertBinding(binding);
+      } catch (error) {
+        items.push({ ...entry, status: 'skipped', reason: 'binding-changed' });
+        warnings.push(`代 resolve 停止:${clip(error.message)}`);
+        stopped = true;
+        continue;
+      }
+      // 再单独现查并重算清单:处理前面几条、以及上面的绑定查询期间,这一条可能新增维护者裁定 / 作者申辩 / 被 resolve / unresolve,
       // 旧清单不能当授权。用同一个纯选择器重算,这条不在新清单里(或回复正文变了)就跳过。
+      // 这次重读必须是调用共享脚本前的最后一个网络请求,中间不再插入别的查询。
       const live = deps.fetchThreads();
       if (!live?.verified) {
         items.push({ ...entry, status: 'skipped', reason: 'threads-unverified' });
@@ -83,14 +94,6 @@ export function resolveFixedThreads(request, deps) {
       if (!current || current.reply !== thread.reply) {
         items.push({ ...entry, status: 'skipped', reason: 'changed-since-plan' });
         warnings.push(`代 resolve 跳过(${thread.key}):处理前现查发现该 thread 已变化(新裁定 / 新评论 / 已 resolve / head 变化),留给下一轮`);
-        continue;
-      }
-      try {
-        deps.assertBinding(binding); // 每条前重新核对锁 / 账号 / head,变了就停
-      } catch (error) {
-        items.push({ ...entry, status: 'skipped', reason: 'binding-changed' });
-        warnings.push(`代 resolve 停止:${clip(error.message)}`);
-        stopped = true;
         continue;
       }
       let receipt;
