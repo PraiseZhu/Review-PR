@@ -875,6 +875,42 @@ test('同一已证明 head 第二轮仍可沿用,快照不得用 merge SHA 盖�
   }
 });
 
+test('结构证明:第二次干净 Update branch 仍沿用原始表态 SHA(证明链)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-second-update-'));
+  try {
+    const r = setupPolicyPr(dir);
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only.txt'), 'base\n');
+    r.commitAt('main advances', '2026-10-21T05:30:00Z');
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', 'main', '-m', 'merge main 1'], {
+      env: { GIT_AUTHOR_DATE: '2026-10-21T05:40:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:40:00Z' },
+    });
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only-2.txt'), 'again\n');
+    r.commitAt('main advances again', '2026-10-21T05:42:00Z');
+    const baseSha = r.must(['rev-parse', 'HEAD']);
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', 'main', '-m', 'merge main 2'], {
+      env: { GIT_AUTHOR_DATE: '2026-10-21T05:44:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:44:00Z' },
+    });
+    const headSha = r.must(['rev-parse', 'HEAD']);
+    const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${baseSha}...${headSha}`]));
+    const previousSettle = {
+      settled: true, timedOut: false, responded: ['greptile-apps'],
+      filePatchHashes: r.oldHashes, headCommittedDate: '2026-10-21T05:20:00Z',
+      headSha: r.oldHead, baseOnlyProven: proveBaseOnlyHeadRelation({
+        previousHeadSha: r.oldHead, headSha, gitFn: r.gitFn, baseSha,
+      }),
+    };
+    const got = settleFrom(r, headSha, baseSha, currentHashes, previousSettle);
+    assert.equal(got.reused, true, '第二次干净合 main 应沿 parent[0] 证明链回到原始表态 SHA');
+    assert.equal(got.settled, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLocalMerge / evaluateBotSettle 判定', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bot-settle-e2e-'));
   const env = {
