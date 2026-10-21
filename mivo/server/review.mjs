@@ -8,6 +8,7 @@
 // 输入全部来自环境变量 INPUT_*(workflow_dispatch 的 inputs),工作目录 MIVO_REVIEW_WORK。
 import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope } from '../lib/scope.mjs';
@@ -17,6 +18,7 @@ import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, rul
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
+import { buildThreadResolutionPlan } from '../lib/thread-resolution.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
@@ -697,7 +699,7 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
     history, rulings: state.rulings?.verified ?? [], head: state.input.head });
-  return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100 } };
+  return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100, preexisting: checked.preexisting.length > 100 } };
 }
 
 // 核对结果进结果包:只留结论、耗时、模型和证据/理由(模型文本过一遍脱敏),供遥测脚本统计。
@@ -768,6 +770,8 @@ async function publish() {
     let verifierOverruled = [];
     let hadBlockers = false;
     let reusedReview = null;
+    // 代 resolve 旧 thread 用:本轮报出/分类过的 key 全集,与「分类没有被截断」。reuse 不重算,不参与。
+    let resolutionKeys = null;
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
       // 同一 head 上一轮已发过 review:沿用时不再发,findings 原样保留(PR 上仍是原来的行级 thread,行号不能丢)。
@@ -829,6 +833,7 @@ async function publish() {
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
+      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, verifierOverruled, rulings: state.rulings?.verified });
       convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
         rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
       // 因核对员模型不可用没核的 P1/P2(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
@@ -870,10 +875,13 @@ async function publish() {
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
     } });
 
-    if (findings.length > 0) await publishFindings(state, result, reportFile, findings, { reusedReview });
-    else if (state.pendingGates?.length) await publishAdvisory(state, result, reportFile);
-    else if (allOverruled) await publishOverruled(state, result, reportFile);
-    else await publishClean(state, result, reportFile);
+    let receipt;
+    if (findings.length > 0) receipt = await publishFindings(state, result, reportFile, findings, { reusedReview });
+    else if (state.pendingGates?.length) receipt = await publishAdvisory(state, result, reportFile);
+    else if (allOverruled) receipt = await publishOverruled(state, result, reportFile);
+    else receipt = await publishClean(state, result, reportFile);
+    // 本轮结论已经发到 PR 上,才代 resolve 已修好的旧 thread;任何失败只记 warning,不改本轮结论。
+    resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKeys });
     return writeResult(result);
   } catch (error) {
     result.errors.push(`publish 异常:${error.message}`);
@@ -980,7 +988,7 @@ async function publishFindings(state, result, reportFile, findings, { reusedRevi
     result.mivo.review = { id: posted.reviewId, url: posted.reviewUrl, action: posted.action };
     removeMergeReady(state, result);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, conclusionCheck);
-    return;
+    return posted.ok === true && posted.reviewId ? { published: true, kind: 'review', id: posted.reviewId } : null;
   }
   const reason = posted.reason || posted.error || 'Request Changes 未提交';
   if (/head 已变化|state=/.test(reason)) Object.assign(result, { outcome: 'state-changed', reason: `发布前 PR 已变化:${reason}`, retry: true });
@@ -1013,14 +1021,16 @@ async function publishClean(state, result, reportFile) {
     attachMergeReady(state, result, toMergeReadyGateBlockers(receipt.preMerge));
     recordCodeScan(result, receipt.preMerge);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
-    return;
+    // 只有这一轮新提交、已核验的 Approve 才算本轮结论已发布;已有的 Approve / 恢复旧写入不算。
+    const fresh = receipt.approvalResult;
+    return fresh?.ok === true && fresh.approved === true && fresh.alreadyApproved === false && fresh.reconciled === false
+      ? { published: true, kind: 'approval', id: result.approval.reviewId ?? fresh.approval?.reviewId ?? 'approve' } : null;
   }
   if (receipt?.stage === 'reviewed-only' && result.approval.status === 'exempt') {
     recordCodeScan(result, receipt.preMerge);
     const gates = toMergeReadyGateBlockers(receipt.preMerge);
     if (gates.blockers.length) {
-      await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
-      return;
+      return await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
     }
     const comment = postReportComment(state, reportFile);
     Object.assign(result, {
@@ -1035,7 +1045,7 @@ async function publishClean(state, result, reportFile) {
     }
     attachMergeReady(state, result, gates);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
-    return;
+    return commentReceipt(comment);
   }
   if (result.approval.status === 'blocked' && result.approval.code === 'independent-approval-required' && state.context.viewerIsAuthor) {
     // 旧回执/非维护者作者自审兼容:不能自批,改用 COMMENT 发报告。维护者作者现行路径是 exempt,不再走这里。
@@ -1043,8 +1053,7 @@ async function publishClean(state, result, reportFile) {
     // 还有未 resolve 的讨论等别的拦截时,与「送审但不放行」一致(2026-10-17 #1081)。
     const self = toAuthorSelfApproval((receipt ?? finish)?.approvalResult);
     if (!self.authorOnly) {
-      await publishAdvisory(state, result, reportFile, { blockers: self.others.map((other) => other.reason), retry: self.retry });
-      return;
+      return await publishAdvisory(state, result, reportFile, { blockers: self.others.map((other) => other.reason), retry: self.retry });
     }
     // approve 脚本当场读的只有身份、权限、head/base、讨论和 review,不含 CI、冲突:prepare 之后才变坏的这里补跑 pre-merge-check 复核。
     // 必须先于发报告评论——评论带干净报告标记,盯梢会当成放行。
@@ -1052,8 +1061,7 @@ async function publishClean(state, result, reportFile) {
     recordCodeScan(result, preMerge);
     const gates = toMergeReadyGateBlockers(preMerge);
     if (gates.blockers.length) {
-      await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
-      return;
+      return await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
     }
     const comment = postReportComment(state, reportFile);
     Object.assign(result, { outcome: 'approval', reason: `审查通过,${clean};作者是审查账号本人,以评论发布报告,需另一位维护者 Approve` });
@@ -1061,11 +1069,11 @@ async function publishClean(state, result, reportFile) {
     if (comment.ok) {
       addMergeReady(state, result);
       result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
-    } else {
-      result.errors.push(`报告评论发布失败:${comment.error}`);
-      result.retry = true;
+      return commentReceipt(comment);
     }
-    return;
+    result.errors.push(`报告评论发布失败:${comment.error}`);
+    result.retry = true;
+    return null;
   }
   if (result.approval.status === 'pending') {
     Object.assign(result, { outcome: 'approval-pending', reason: `审查通过,Approve 尚待确认:${result.approval.reason}`, retry: true });
@@ -1116,6 +1124,7 @@ async function publishAdvisory(state, result, reportFile, { blockers = [], retry
   removeMergeReady(state, result);
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: null,
     title: `代码审查没有 P0/P1/P2(${state.tier}),等补齐后放行`, summary: `${why}。${state.scope.reason}` });
+  return commentReceipt(comment);
 }
 
 // 原本有 P1/P2 卡点,被核对员全部推翻/降级:代码审查没有留下阻断问题,但这个结论来自模型核对员而不是人。
@@ -1138,6 +1147,55 @@ async function publishOverruled(state, result, reportFile) {
   removeMergeReady(state, result);
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: 'success', title: `核对员推翻/降级了全部卡点(${state.tier}),请人工看一眼`,
     summary: `主审的 ${count} 条 P1/P2 都被核对员推翻或降级。${why}。${state.scope.reason}` });
+  return commentReceipt(comment);
+}
+
+// 本轮新发的报告评论才算「结论已发布」;按 head 标记去重的评论没有绑定本轮正文,不算。
+function commentReceipt(comment) {
+  return comment?.ok === true && comment.deduplicated !== true && comment.id ? { published: true, kind: 'comment', id: comment.id } : null;
+}
+
+// ── 已修旧 thread 代 resolve(#115)──────────────────────────────────────────────
+// 本轮报出 / 分类 / 裁定过的 key 全集;分类被截断、缺 key 时返回 complete=false,调用方不得据此代 resolve。
+function resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, verifierOverruled, rulings }) {
+  const items = [...(checked.findings ?? []), ...findings, ...deferred, ...preexisting, ...ruledKept, ...verifierOverruled, ...(rulings ?? [])];
+  const keys = new Set();
+  let complete = !Object.values(checked.truncated ?? {}).some(Boolean);
+  for (const item of items) {
+    if (/^[0-9a-f]{12}$/.test(String(item?.key ?? ''))) keys.add(item.key);
+    else if (item && !(rulings ?? []).includes(item)) complete = false; // 裁定条目可以没有 key(老 thread),其余条目缺 key 就不能确认集合完整
+  }
+  return { keys: [...keys], complete };
+}
+
+const RESOLVE_RUNNER = fileURLToPath(new URL('../lib/resolve-fixed-threads.mjs', import.meta.url));
+
+// 失败只记 warning:不写 errors、不改 outcome / retry / reviewClean / approval / check。
+function resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKeys }) {
+  const input = state.input;
+  try {
+    if (input.mode !== 'live' || !receipt?.published || !resolutionKeys || state.scope.mode === 'reuse') return;
+    if (result.errors.length > 0 || !['findings', 'review-only', 'approval', 'merge-blocked', 'format'].includes(result.outcome)) return;
+    const reviewer = ctx.approvalPolicy?.viewer ?? state.context.viewer;
+    const round = { mode: input.mode, reviewed: result.reviewed === true, reportComplete: result.mivo.reportComplete === true,
+      outcome: result.outcome, scopeMode: state.scope.mode, finalFullOutcome: result.mivo.finalFull?.outcome ?? state.finalFull?.outcome ?? null,
+      sourceComplete: resolutionKeys.complete, published: true };
+    const excludedKeys = resolutionKeys.keys;
+    // 先用 prepare 快照预筛:没有旧 thread 候选就不起子进程、不访问网络。
+    const pre = buildThreadResolutionPlan({ round, head: input.head, reviewer, runUrl: input.runUrl, reviewedThreads: ctx.history?.reviewThreads ?? [],
+      liveThreads: ctx.history?.reviewThreads ?? [], threadsVerified: true, excludedKeys, maintainers: [] });
+    if (!pre.threads.length) return;
+    const request = { binding: { targetRepo: input.targetRepo, pr: input.pr, head: input.head, base: input.base, baseRefName: state.context.baseRefName,
+      reviewer, lockToken: state.lockToken, authorityDigest: state.authorityDigest, runUrl: input.runUrl, mode: input.mode },
+    round, contextFile: state.context.file, excludedKeys };
+    const out = runScript(RESOLVE_RUNNER, [], { cwd: REPO_DIR, env: scriptEnv(), input: JSON.stringify(request), timeoutMs: 190_000 });
+    result.mivo.threadResolution = out.ok === true ? { status: out.status, skippedReason: out.skippedReason, plannedCount: out.plannedCount,
+      resolvedCount: out.resolvedCount, alreadyResolvedCount: out.alreadyResolvedCount, items: out.items } : { status: 'failed', error: scrubSecrets(String(out.error ?? '').slice(0, 300)).text };
+    if (out.ok !== true) result.warnings.push(`旧 thread 代 resolve 没有完成:${result.mivo.threadResolution.error}`);
+    for (const warning of out.warnings ?? []) result.warnings.push(scrubSecrets(String(warning).slice(0, 300)).text);
+  } catch (error) {
+    result.warnings.push(`旧 thread 代 resolve 异常:${scrubSecrets(String(error?.message ?? error).slice(0, 300)).text}`);
+  }
 }
 
 function postReportComment(state, reportFile, { marker = `<!-- mivo-review:report head=${state.input.head} -->`, prefix = '' } = {}) {
