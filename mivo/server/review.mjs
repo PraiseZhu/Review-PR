@@ -545,8 +545,11 @@ async function codex() {
         writeJson(scopeFile, finalScope);
         const finalPrompt = promptFor(finalScope, scopeFile);
         writeText(join(INPUT_DIR, 'final-full-prompt.md'), finalPrompt);
-        // 第二段主模型的上限按总预算的余额收紧(不是重新给一份 120 分钟)。
-        const secondPrimary = () => ({ ...tierCfg, timeoutMs: Math.max(0, Math.min(tierCfg.timeoutMs, budget.budgetMs - (Date.now() - budgetAt) - FALLBACK_RESERVE_MS - 2 * SETTLE_MS)) });
+        // 第二段主模型的上限按总预算的余额收紧(不是重新给一份 120 分钟)。只在本段开始时算一次:
+        // 主模型失败后 nextAttempt 还要用这份配置算备用的上限,备用的余额由 nextAttempt 按共享时钟(elapsedFrom)实时算;
+        // 若每次都重算,备用预留(FALLBACK_RESERVE_MS + 收尾)会被再扣一遍,备用拿到过小甚至 0 的 timeout。
+        const secondPrimaryCfg = { ...tierCfg, timeoutMs: Math.max(0, Math.min(tierCfg.timeoutMs, budget.budgetMs - (Date.now() - budgetAt) - FALLBACK_RESERVE_MS - 2 * SETTLE_MS)) };
+        const secondPrimary = () => secondPrimaryCfg;
         const secondStartedAt = Date.now();
         const second = await runPass({ pass: 'final-full', text: finalPrompt, labelPrefix: 'final-full-', primary: secondPrimary, elapsedFrom: budgetAt });
         state.codex.passes.push(passRecord('final-full', second, secondStartedAt));

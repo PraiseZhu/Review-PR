@@ -48,6 +48,12 @@ const prompt = argv[argv.length - 1];
 fs.appendFileSync(path.join(ctl, 'calls.log'), 'main ' + at('--model') + ' ' + (prompt.includes('收口全量审查') ? 'final-full' : 'plain') + '\\n');
 const answers = JSON.parse(fs.readFileSync(path.join(ctl, 'main-answers.json'), 'utf8'));
 const step = answers[Math.min(index, answers.length - 1)];
+const advancePath = path.join(ctl, 'advance.json');
+if (fs.existsSync(advancePath)) { // 时间推进:这次调用「耗时」多少分钟,写进假时钟文件,review.mjs 的 Date.now 预加载会读
+  const minutes = JSON.parse(fs.readFileSync(advancePath, 'utf8'))[index] ?? 0;
+  const clock = path.join(ctl, 'clock-offset-ms');
+  fs.writeFileSync(clock, String((Number(fs.existsSync(clock) ? fs.readFileSync(clock, 'utf8') : 0) || 0) + minutes * 60000));
+}
 if (step === 'fail') { process.stderr.write('model exploded'); process.exit(1); }
 fs.writeFileSync(at('--output-last-message'), JSON.stringify(step));
 console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }));
@@ -56,7 +62,7 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, o
   return bin;
 }
 
-function setup({ scope, answers = [CLEAN_1], startedAgoMin = 30, mode = 'dry-run', stateExtra = {}, runCodex = true, currentHead = null }) {
+function setup({ scope, answers = [CLEAN_1], startedAgoMin = 30, mode = 'dry-run', stateExtra = {}, runCodex = true, currentHead = null, advanceMin = null, extraEnv = {} }) {
   const work = mkdtempSync(join(tmpdir(), 'mivo-final-full-'));
   const ctl = mkdtempSync(join(tmpdir(), 'mivo-final-full-ctl-'));
   for (const dir of ['input', 'out', 'repo']) mkdirSync(join(work, dir), { recursive: true });
@@ -80,6 +86,15 @@ process.stdout.write(JSON.stringify({ id: 5 }));
 `);
   chmodSync(join(ctl, 'bin', 'gh'), 0o755);
   writeFileSync(join(ctl, 'calls.log'), '');
+  if (advanceMin) {
+    writeFileSync(join(ctl, 'advance.json'), JSON.stringify(advanceMin));
+    // 只给 review.mjs 本进程装假时钟(子进程不装):Date.now 加上 clock-offset-ms 文件里的毫秒数
+    writeFileSync(join(ctl, 'clock.cjs'), `if (/review\\.mjs$/.test(process.argv[1] || '')) {
+  const fs = require('node:fs'); const real = Date.now.bind(Date); const file = ${JSON.stringify(join(ctl, 'clock-offset-ms'))};
+  Date.now = () => real() + (fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) || 0 : 0);
+}
+`);
+  }
   writeFileSync(join(ctl, 'main-answers.json'), JSON.stringify(answers));
   writeFileSync(join(ctl, 'features.json'), JSON.stringify({ verify: { ...DEFAULT_FEATURES.verify, mode: 'off' } }));
   writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: { title: 't' } }));
@@ -97,6 +112,7 @@ process.stdout.write(JSON.stringify({ id: 5 }));
     scope, checkRunId: 99, pendingGates: [], deferrals: { verified: [], rejected: [] }, ...stateExtra }));
   const env = { ...process.env, MIVO_REVIEW_WORK: work, MIVO_REVIEW_HEALTH_MARKER: join(work, 'no-marker'), MIVO_REVIEW_FEATURES_FILE: join(ctl, 'features.json'),
     LITELLM_CREDENTIALS_JSON: JSON.stringify({ api_key: FAKE_KEY, base_url: 'https://gw.example.com/v1' }), CODEX_BIN: writeFakeCodex(ctl),
+    ...(advanceMin ? { NODE_OPTIONS: `--require=${join(ctl, 'clock.cjs')}` } : {}), ...extraEnv,
     GH_TOKEN: 'x', CHECKS_TOKEN: 'y', PATH: `${join(ctl, 'bin')}${delimiter}${process.env.PATH}` };
   const phases = runCodex ? ['codex', 'publish'] : ['publish'];
   for (const phase of phases) {
@@ -279,4 +295,19 @@ test('沿用(reuse)不重跑收口:来源的收口记录原样带过去', () => 
     assert.equal(result.outcome, 'approval', JSON.stringify(result));
     assert.deepEqual(result.mivo.finalFull, finalFull);
   } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+// F1:收口主模型超时/失败后的备用,按共享时钟的余额拿时间,不能再被「主模型上限」的预留重复扣掉(曾得到 timeoutMs=0)。
+// 时间推进:总预算 120 分钟 → 增量「耗时」50 → 收口主模型「耗时」47 后失败 → 此时余额约 23 分钟,备用应拿到约 21 分钟。
+test('F1 收口主模型耗时后失败:备用拿到按余额算的正数 timeout(不是 0),且收口答卷被采用', { skip }, () => {
+  const r = setup({ scope: INCREMENTAL, answers: [CLEAN_1, 'fail', CLEAN_2], startedAgoMin: 0, advanceMin: [50, 47, 0],
+    extraEnv: { MIVO_REVIEW_JOB_TIMEOUT_MIN: '130' } });
+  assert.ok(Math.abs(r.state.codex.budget.budgetMs - 120 * MIN) < 5_000, `总预算约 120 分钟:${r.state.codex.budget.budgetMs}`);
+  assert.equal(r.calls.length, 3, '初段 + 收口主模型 + 收口备用');
+  const [initial, primary, fallback] = r.state.codex.attempts;
+  assert.deepEqual([initial.pass, primary.pass, fallback.pass], ['initial', 'final-full', 'final-full']);
+  assert.ok(primary.timeoutMs <= 48 * MIN && primary.timeoutMs > 40 * MIN, `收口主模型上限按余额收紧:${primary.timeoutMs}`);
+  assert.ok(fallback.timeoutMs >= 15 * MIN && fallback.timeoutMs <= 22 * MIN, `备用拿到按余额算的时间(约 21 分钟),实际 ${fallback.timeoutMs}`);
+  assert.equal(r.result.outcome, 'approval', JSON.stringify(r.result));
+  assert.deepEqual(r.result.mivo.finalFull, { head: r.head, runId: '42', outcome: 'clean' });
 });
