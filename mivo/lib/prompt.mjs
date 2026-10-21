@@ -112,7 +112,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
   const scopeText = incremental
     ? [
       `**增量复审**:${scope.reason}。`,
-      `本轮的审查范围是:本轮变化的文件(${scope.files.map((f) => `\`${f}\``).join('、')})、上一轮提过的问题、以及这些改动直接影响到的共享状态、协议、持久化、错误和回滚路径。`,
+      `本轮的审查范围是:${(scope.handoffPlan ?? []).length ? '本轮审查文件(本轮 patch 变了的文件、上一轮问题所在文件,加上作者交接里被牵连的风险所涉及的文件)' : '本轮变化的文件'}(${scope.files.map((f) => `\`${f}\``).join('、')})、上一轮提过的问题、以及这些改动直接影响到的共享状态、协议、持久化、错误和回滚路径。`,
       '**优先规则**:下文规范原文里的「完整 diff」「本 PR 改动」「最终逐项对照」「最终复核」等说法,本轮一律按上面这个范围理解;'
         + '上一轮已经对完整 diff 做过审查和最终复核,本轮不再对完整 diff 逐项复核。完整 diff 文件只用来定位上下文。',
       '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报;下方「维护者裁定不改」列出的除外,「作者申辩」核对成立的也不再报。',
@@ -194,11 +194,11 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     ...(rulings.length ? ['', rulingSection(rulings)] : []),
     ...(rebuttals.length ? ['', rebuttalSection(rebuttals)] : []),
     // 作者交接一节:开关 off 时为空,任务书与改动前逐字一致(specDigest 不变)。
-    ...((lines) => (lines.length ? ['', ...lines] : []))(toHandoffPromptLines({ handoff, prNumber: ctx.pr, workdir })),
+    ...((lines) => (lines.length ? ['', ...lines] : []))(toHandoffPromptLines({ handoff, prNumber: ctx.pr, workdir, scope })),
     '',
     '## 交卷格式',
     '',
-    '只交一个 JSON 对象:`{"report": "<Markdown 报告>", "findings": [ ... ]}`。',
+    '只交一个 JSON 对象:`{"report": "<Markdown 报告>", "findings": [ ... ], "handoffCoverage": [ ... ]}`。`handoffCoverage` 见上面「作者交接」一节;没有作者交接(或没有 R)就填 `[]`。',
     '',
     '- `report` 必须依次包含四段,标题一字不差:`## Findings`、`## Rule coverage`、`## Verification`、`## Overall`。',
     '  - Findings:每条 `[P0|P1|P2] path:line — 事实(触发条件与错误行为,附证据);影响;建议修复;验证方式`;没有就写「无」。',
@@ -209,7 +209,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
         '    `- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚`;结论可以是已修复、仍未修复(并在 findings 里用 supersedes 再报)、仍转 issue、裁定不改、申辩成立、文件已移出本 PR 改动。']
       : []),
     '  - Overall:第一行只能是 `pass —— 没有 P0/P1/P2。` 或 `changes-requested —— N 条 P0/P1/P2…`。',
-    '- `findings`:每条 P0/P1/P2 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。',
+    '- `findings`:每条 P0/P1/P2 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。另外每项还有 `handoffRiskIds`(字符串数组):与哪几条作者交接 R 是同一个风险就写 R 编号,没有对应的写 `[]`。',
     '  - `severity` 写 `P0`、`P1` 或 `P2`;`title` 一句话不超过 120 字;`trigger`(触发条件)、`behavior`(错误行为)、`impact`(实际影响)、`fix`(建议修复)、`verify`(验证方式)各不超过 800 字;`bugClass` 写问题类型短标签(不超过 60 字)。服务器会截断超长内容。',
     '  - `evidence`:1–8 项 `{path, line}`,写 PR head 上真实存在的仓内相对路径和行号;证据不全服务器照常阻断,但会记入警告。',
     '  - `path` 必须是本 PR diff 里的文件(PR 之前就存在的问题也一样);`line` 是新版本(RIGHT)的行号,而且必须落在 diff 的改动或上下文行上;拿不准准确行号就写 `null`(会发成文件级评论),不要编。',
@@ -266,6 +266,16 @@ const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredT
 const TEMPLATE_FINDING_OUT = { path: '<removed-path>', line: 1, body: '<finding>', key: '<key2>', outOfDiff: true };
 const TEMPLATE_DEFERRAL = { issue: 1, title: '<issue-title>', text: '<issue-text>' };
 const TEMPLATE_RULING = { path: '<path>', line: 1, finding: '<finding>', by: '<maintainer>', reason: '<reason>', key: '<key>' };
+// 作者交接(review.md)的固定合成材料:覆盖增量(重核 + 沿用)、全量/收口(地图 + 全部 R)三种文案分支;不含任何真实 PR 内容。
+const TEMPLATE_REVIEW = {
+  version: 1, status: 'parsed', files: ['<file-1>', '<file-2>'], fileStates: {}, warnings: [],
+  changeMap: [{ id: 'M1', trigger: '<trigger>', change: '<change>', downstream: '<downstream>', invariant: '<invariant>', files: ['<file-1>'], complete: true }],
+  risks: [1, 2].map((n) => ({ id: `R${n}`, title: `<title-${n}>`, fields: { trigger: '<trigger>', failure: '<failure>', defense: '<defense>', disprove: '<disprove>', tests: '<tests>' },
+    contentHash: 'h'.repeat(64), files: [`<file-${n}>`], locations: [], complete: true, ambiguous: false })),
+};
+const TEMPLATE_PLAN_RECHECK = TEMPLATE_REVIEW.risks.map((r) => ({ id: r.id, contentHash: r.contentHash, files: r.files, action: 'recheck', reason: '<reason>', previousCoverage: null, previousCoverageMeta: null }));
+const TEMPLATE_PLAN_MIXED = [TEMPLATE_PLAN_RECHECK[0],
+  { ...TEMPLATE_PLAN_RECHECK[1], action: 'reuse', reason: '<reason>', previousCoverage: { id: 'R2', verdict: '成立', evidence: [{ path: '<file-2>', line: 1 }], note: '<note>' }, previousCoverageMeta: { sourceHead: '<head>' } }];
 const TEMPLATE_REBUTTAL = { path: '<path>', line: 1, severity: 'P1', finding: '<finding>', reply: '<reply>' };
 
 /** 本 PR 要读的规则文件:rule-map 要求所有 PR 必读的,加上按改动路径命中的;去重排序。 */
@@ -316,18 +326,19 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
     .flatMap((row) => row.files))].sort();
   const read = (path) => { const text = readFile(path); return typeof text === 'string' ? text : null; };
   // 规则文件 base 版本一节:全量模板按「有 rules-base」写,增量模板按「head 读取」写,两种写法都进 digest。
-  const handoff = handoffMode === 'off' ? null : { featureMode: handoffMode, facts: null };
+  const handoff = handoffMode === 'off' ? null : { featureMode: handoffMode, facts: null, review: TEMPLATE_REVIEW };
+  const withPlan = (scope, plan) => (handoffMode === 'off' ? scope : { ...scope, handoffFiles: TEMPLATE_REVIEW.files, handoffPlan: plan });
   const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir } });
   return {
     version: 1,
     template: {
-      full: toTemplate({ mode: 'full', reason: '<reason>' }, [], [], [], '<rules-base>'),
+      full: toTemplate(withPlan({ mode: 'full', reason: '<reason>' }, TEMPLATE_PLAN_RECHECK), [], [], [], '<rules-base>'),
       // 全量轮带着上一轮问题:任务书多出逐条核对的要求,单独进 digest。
-      fullWithPrevious: toTemplate({ mode: 'full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
+      fullWithPrevious: toTemplate(withPlan({ mode: 'full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_RECHECK), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
       // 放行前收口全量:说法与普通全量不同,模板变化要进 digest。
-      finalFullWithPrevious: toTemplate({ mode: 'full', purpose: 'final-full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
-      incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
+      finalFullWithPrevious: toTemplate(withPlan({ mode: 'full', purpose: 'final-full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_RECHECK), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
+      incremental: toTemplate(withPlan({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_MIXED), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),

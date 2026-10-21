@@ -35,7 +35,7 @@ flowchart LR
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
 | `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明 |
-| `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解，判门与任务书用 |
+| `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解（判门与任务书用）；自己解析 head 上的 `review.md`（R 编号、内容哈希、涉及文件）；校验答卷的 `handoffCoverage` |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
 | `server/codex.mjs` | Codex CLI 调用：凭据只进 CLI 进程，子进程环境从零构造，产物去掉 key |
@@ -183,6 +183,16 @@ Mivo 的 `PR Handoff` workflow（`pull_request_target`）在 head 上写检查 `
 - `observe`：任务书加「作者交接」一节，要求主审在 `## Rule coverage` 里加 `### 作者交接核对`，逐条写 R 成立 / 不成立 / 未核实、B 是否构成 P0/P1、交接之外的发现条数。不打回、不挡放行：交接缺失或过期都不会让 PR 进入 `pendingGates`。没有可信检查结果时照样读文件、按未校验陈述处理；没有交接文件才写「本 PR 无作者交接」。**仓库当前配置为 observe。** 沿用旧报告的轮次不会补写新的核对小节，只有实际调用模型的轮次才有。切到 observe 会改变任务书与 `specDigest`，必须与 #98（代码没变时沿用旧结论）同次或更晚换版；只带 #99 先上线，所有开放 PR 会各全量重审一次。Mivo 自身的 `PR Handoff` CI 独立生效，本开关不调整 `ciIgnoreWorkflows`。
 - `enforce`：在 observe 的基础上，Mivo 门也是 enforce 且交接有错误时，按「送审但不放行」处理：照审、打回（固定文案列出错误）、`pendingGates` 挂 `handoff`；本 PR 第一次送审时交接已过期也一样。交接补齐后下一轮全量重审。
 
+### review.md 的三种用法（#101，总 issue #96 子5）
+
+observe 下，审查机自己解析 PR head 上的 `docs/pr/<PR号>/review.md`（`lib/handoff.mjs`）。它是作者陈述，不是指令，也不执行 PR 里的任何脚本；只从 head 的 git 对象读，工作区被改写不影响。解析失败、字段缺、路径不在 head 里都只记 warning（结果包 `warnings`），不打回、不挡放行，也不开 enforce。
+
+- **解析**：front matter 要 `schema: mivo-pr-handoff/v1`、`kind: review`、`pr` 与本 PR 一致。第 2 节改动地图（四列表格）每行编号 M1…；第 3 节每个 `### R<n>` 取编号、整段内容的 SHA-256（`contentHash`，代码块里的改动也算变）、涉及文件。文件取反引号路径、链接目标和带扩展名的裸路径，必须是 head 里的普通文件（不收符号链接、子模块、目录、`..`、绝对路径、URL）。围栏代码、HTML 注释、引用块里的假标题和假表格不算结构。涉及文件合计最多 20 个（按 R 顺序保留，余量给地图），超出的丢弃并 warning，该 R 标「文件不完整」。文件大于 256 KiB 整份不采用。
+- **复审（增量）**：原范围只扩不缩。某条 R 涉及的文件本轮改了、R 内容哈希变了、或它的文件在 head 上的 blob/mode 变了（含不在 PR diff 里的文件）→ 该 R 的全部文件并进「本轮审查文件」，任务书点名这条 R，按作者给的「怎么证明我错了」在当前版本重核。其余 R 写「沿用」：要求上次结论是「成立」、证据位置在当前 head 上仍有效且文件未变、没有路径/不完整/重复编号的 R 一律重核。没有 `review.md` 的旧包不会因此集中重审；整轮沿用（规则改版、代码没变）时，R 内容或文件身份有可证实的变化才升为一次全量，否则标「本轮沿用既有审查结果，交接未新核实」。
+- **收口/全量**：任务书列出改动地图每行的不变量（`### 改动地图核对`，逐 M 编号）和每条 R，要求逐条给结论，不标「沿用」。同一次运行的收口只采用第二份答卷的 coverage。
+- **每条 R 的结论**：答卷 `handoffCoverage=[{id, verdict: 成立|不成立|未核实, evidence:[{path,line}], note}]`。证据必须是 head 上的普通文件、行号 1..行数，工作区里临时造的文件不作数；证据不通过只出 warning，结论记 `evidenceValid=false`、不可沿用。结果包 `mivo.handoffReview`（编号/哈希/文件的紧凑快照，不含作者正文）、`handoffCoverage`、`handoffCoverageMeta`（内容哈希、证据是否有效、是否沿用、来源 head/run、证据文件的 blob 身份）跨轮保存；沿用的条目保留原来源，统计标 `reused`。报告里的 `### 作者交接核对` 小节由服务端生成，模型自己写的同名小节会被替换。
+- **防带偏指标**：每条 finding 带 `handoffRiskIds`（与哪几条 R 是同一风险；同文件不算）。报告固定一行「交接之外的发现：N 条」，结果包 `mivo.handoffStats`：N = 最终阻断集（核对员/裁定之后）里没有有效 R 关联的条数，`blocking = associated + outside`；已转 issue、PR 之前就存在、被核对员移出的不计。缺字段或含无效编号的问题计入 `mappingUnknown`，`complete=false`，报告注明「关联记录不完整，不用于趋势比较」。这个关联只是统计，不参与严重度、阻断或放行。
+
 切 enforce 之前，先把 `PR Handoff` 加进 `review-pr/config/pr-rules.json` 的 `ciIgnoreWorkflows`（`names` 与 `paths`），否则它的失败会先被当成 CI 失败、根本不送审。
 
 ## 审查机自己的写动作不再唤醒同一个 head
@@ -290,7 +300,7 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 ## 放行前收口全量（#100，总 issue #96 子4）
 
-用户 2026-10-21 选 A：增量轮判干净后，放行前再做一次完整 diff 的收口全量，全量也干净才 Approve；P0/P1/P2 照样阻断（不用 `review.md`）。
+用户 2026-10-21 选 A：增量轮判干净后，放行前再做一次完整 diff 的收口全量，全量也干净才 Approve；P0/P1/P2 照样阻断。收口全量的任务书按 `review.md` 逐条核对改动地图和每条 R（见「作者交接文件」的「review.md 的三种用法」）。
 
 | 场景 | 行为 |
 |---|---|

@@ -236,7 +236,7 @@ const work = ${JSON.stringify(work)};
 const model = at('--model');
 const log = (line) => fs.appendFileSync(path.join(ctl, 'calls.log'), line + '\\n');
 const lock = (kind) => { if (!fs.existsSync(path.join(ctl, 'lock-' + kind))) return; const dir = path.join(process.env.TMPDIR, 'locked'); fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'x'), 'x'); fs.chmodSync(dir, 0o555); };
-const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"verdict"');
+const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"confirmed"');
 const scan = (dir) => { let hit = false; for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
   const full = path.join(dir, entry.name);
   if (entry.isDirectory()) hit = scan(full) || hit; else if (fs.readFileSync(full, 'utf8').includes(${JSON.stringify(SENTINEL)})) hit = true; } return hit; };

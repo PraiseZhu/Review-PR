@@ -23,7 +23,7 @@ const LOCATION_ITEM = {
 export const FINDING_ITEM_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['severity', 'title', 'trigger', 'behavior', 'impact', 'fix', 'verify', 'evidence', 'origin', 'bugClass', 'instances', 'supersedes', 'path', 'line', 'side', 'deferredTo'],
+  required: ['severity', 'title', 'trigger', 'behavior', 'impact', 'fix', 'verify', 'evidence', 'origin', 'bugClass', 'instances', 'supersedes', 'path', 'line', 'side', 'deferredTo', 'handoffRiskIds'],
   properties: {
     severity: { type: 'string', enum: SEVERITIES },
     title: { type: 'string', description: '一句话标题,不超过 120 字' },
@@ -40,6 +40,7 @@ export const FINDING_ITEM_SCHEMA = {
     path: { type: 'string', description: '问题所在文件,必须是本 PR diff 里的文件(PR 之前就存在的问题也一样)' },
     line: { type: ['integer', 'null'], description: 'RIGHT 侧行号;没有准确行号写 null' },
     side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
+    handoffRiskIds: { type: 'array', items: { type: 'string' }, description: '本问题与作者交接 review.md 里哪几条 R 描述的是同一个风险/根因(写 R 编号如 R1);同文件不算;没有对应的 R 写空数组' },
     deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1/P2,且必须在任务书核验通过的列表里);其他一律 null' },
   },
 };
@@ -70,6 +71,22 @@ const normalizeLocations = (list, limit, label, notes) => {
     line: Number.isInteger(item?.line) && item.line > 0 ? item.line : null,
   })).filter((item) => item.path);
 };
+
+/**
+ * 答卷里的 handoffRiskIds → {ids, complete}。ids 只留 validIds 里的、去重;
+ * complete=false 表示字段缺失/类型不对/含无效编号(统计里计入「关联记录不完整」)。
+ */
+export function readHandoffRiskIds(raw, validIds) {
+  if (!Array.isArray(raw)) return { ids: [], complete: false };
+  const ids = [];
+  let complete = true;
+  for (const value of raw) {
+    const id = typeof value === 'string' ? value.trim() : '';
+    if (!validIds.has(id)) complete = false;
+    else if (!ids.includes(id)) ids.push(id);
+  }
+  return { ids, complete };
+}
 
 /** 截断超长字段、多余条目并记 note;不改变语义。 */
 export function normalizeFinding(raw) {

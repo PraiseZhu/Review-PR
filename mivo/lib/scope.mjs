@@ -81,7 +81,11 @@ export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(fi
  * @param {boolean} [p.forceFullOnSpecChange] 维护者开关(review-features.json 的 specChange.forceFull):规则改版时即使代码没变也全量;只认 true
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
-export function computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
+export function computeReviewScope(args) {
+  return withHandoffScope({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current });
+}
+
+function computeBaseReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
   // 上一轮有完整结果时,全量轮也带着它的问题(含转 issue 的),任务书据此逐条核对;顺序原样,legacy-N 编号依赖它。
   const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
   // 条目的文件已不在本轮 PR 改动里的标 outOfDiff:任务书据此要求只在 Verification 写结论、不进 findings
@@ -168,6 +172,99 @@ export function computeReviewScope({ previous, current, headIsDescendant, forceF
     // 只是候选;本轮最终确实干净才会写进结果包(review.mjs)。
     ...fixRoundExemption({ previous, changed }),
   };
+}
+
+// 上一轮的问题清单(含转 issue 的)带进本轮;文件已不在本轮 diff 的标 outOfDiff。上一轮不可信时为空。
+function carriedFindings(previous, current) {
+  const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
+  const inDiff = current.filePatchHashes ? (path) => path in current.filePatchHashes : () => true;
+  return trusted
+    ? [...(previous.findings ?? []), ...(previous.deferred ?? [])].map((f) => { const { outOfDiff, ...rest } = f; return inDiff(f.path) ? rest : { ...rest, outOfDiff: true }; })
+    : [];
+}
+
+// ── 作者交接(review.md)对范围的影响 ─────────────────────────────────────────────
+// 只扩不缩:原范围一个文件都不删,只把受牵连的 R 涉及文件并进来;决策真值表见 buildHandoffPlan。
+const sameList = (a = [], b = []) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+const sameState = (a, b) => Boolean(a) && Boolean(b) && a.oid === b.oid && a.mode === b.mode;
+
+/**
+ * 逐条 R 决定本轮是重核(recheck)、沿用(reuse)还是本轮不新核(deferred)。纯函数。
+ * @param {object} p
+ * @param {object} p.review 本轮 ReviewHandoff(parsed)
+ * @param {object|null} p.previous previousFromResult() 的结果(取 handoffReview 快照与 coverage)
+ * @param {Iterable<string>} [p.changedFiles] 本轮 PR patch 变了的文件
+ * @param {object} [p.evidenceCheck] checkPreviousHandoffCoverage() 的结果 {Rn:{valid,unchanged}}
+ * @param {boolean} [p.recheckAll] 全量/收口:全部重核
+ * @returns {{items: object[], substantive: string[]}} substantive:相对上一轮快照有「可证实的实质变化」的 R(新增/内容变/文件身份变/有歧义)
+ */
+export function buildHandoffPlan({ review, previous = null, changedFiles = [], evidenceCheck = {}, recheckAll = false }) {
+  const changed = new Set(changedFiles);
+  const snapshot = previous?.handoffReview?.status === 'parsed' ? previous.handoffReview : null;
+  const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
+  const coverage = new Map((Array.isArray(previous?.handoffCoverage) ? previous.handoffCoverage : []).map((c) => [c?.id, c]));
+  const substantive = [];
+  const items = (review.risks ?? []).map((risk) => {
+    const base = { id: risk.id, contentHash: risk.contentHash, files: risk.files, previousCoverage: null, previousCoverageMeta: null };
+    if (recheckAll) return { ...base, action: 'recheck', reason: '全量/收口:逐条重核' };
+    const before = snapshot?.risks?.find((r) => r.id === risk.id) ?? null;
+    let change = null;
+    // 歧义只在「相对上一轮快照出现或消失」时才算实质变化;没有快照、或两轮都歧义且其余没变,无法证明 R 变了(只扩不缩:仍点名重核,见下)。
+    if (before && Boolean(before.ambiguous) !== Boolean(risk.ambiguous)) change = '编号重复,有歧义';
+    else if (snapshot && !before) change = '本轮新增';
+    else if (before && before.contentHash !== risk.contentHash) change = '内容变了';
+    else if (before && (!sameList(before.files, risk.files) || risk.files.some((p) => !sameState(snapshot.fileStates?.[p], review.fileStates?.[p])))) change = '涉及文件在 head 上变了';
+    if (change) substantive.push(risk.id);
+    const touched = risk.files.find((p) => changed.has(p));
+    const cov = coverage.get(risk.id);
+    const meta = previous?.handoffCoverageMeta?.[risk.id];
+    const check = evidenceCheck?.[risk.id];
+    let reason = change ?? (touched ? `涉及文件 ${touched} 本轮改了` : null);
+    if (!reason && (!before)) reason = '上一轮没有这条 R 的记录';
+    if (!reason && risk.ambiguous) reason = '编号重复,有歧义,不能沿用上一轮结论';
+    if (!reason && (!risk.complete || !risk.files.length)) reason = '涉及文件不完整或没有路径,不能证明未受影响';
+    if (!reason && !(trusted && cov?.verdict === '成立' && meta?.contentHash === risk.contentHash && meta?.evidenceValid === true)) reason = '上一轮没有可信的「成立」结论';
+    if (!reason && !(check?.valid === true && check?.unchanged === true)) reason = '上一轮的证据位置在 head 上已失效或变了';
+    if (reason) return { ...base, action: 'recheck', reason, ...(change || touched ? { affected: true } : {}) };
+    return { ...base, action: 'reuse', reason: '上一轮已核实成立,涉及文件与内容都没变', previousCoverage: cov, previousCoverageMeta: meta };
+  });
+  return { items, substantive };
+}
+
+/**
+ * 统一后处理:所有基础范围的返回口都要过这里(含 reuse 的三条提前返回)。无交接/off/解析失败时原样返回。
+ * 增量:files = 原范围 ∪ 重核 R 的文件;全量/收口:files 不变,逐条 R 全部重核;
+ * 基础范围是 reuse 但交接风险有实质变化:升为单次全量,不先造空增量。
+ */
+export function withHandoffScope({ scope, previous, current }) {
+  const review = current?.handoffReview;
+  if (!review || review.status !== 'parsed') return scope;
+  const handoffFiles = review.files ?? [];
+  if (scope.mode === 'full') {
+    return { ...scope, handoffFiles, handoffPlan: buildHandoffPlan({ review, recheckAll: true }).items };
+  }
+  const plan = buildHandoffPlan({ review, previous, changedFiles: scope.changedFiles ?? [], evidenceCheck: current.handoffEvidenceCheck });
+  if (scope.mode === 'reuse') {
+    if (plan.substantive.length) {
+      return { mode: 'full', reason: `交接风险发生实质变化(${plan.substantive.join('、')}),不沿用上一轮结论,全量复审`,
+        files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: carriedFindings(previous, current), basedOn: null,
+        handoffFiles, handoffPlan: buildHandoffPlan({ review, recheckAll: true }).items };
+    }
+    return { ...scope, handoffFiles, handoffPlan: plan.items.map((i) => (i.action === 'reuse' ? i : { ...i, action: 'deferred', reason: `本轮沿用既有审查结果,这条交接未新核实(${i.reason})` })) };
+  }
+  // incremental
+  const expansion = plan.items.filter((i) => i.action === 'recheck').flatMap((i) => i.files);
+  const files = [...new Set([...scope.files, ...expansion])].sort();
+  let { finalFullExemption } = scope;
+  // 上一轮没有交接快照(旧结果包、过渡期)时没有文件身份可比,无法证明变了:不取消免收口。
+  if (finalFullExemption && previous?.handoffReview?.status === 'parsed') {
+    // 引用文件的 head 版本变了、又不在上次收口问题所在文件里:已不是「只改上次问题文件」,取消免收口。
+    const before = previous.handoffReview.fileStates ?? {};
+    const moved = expansion.filter((p) => !sameState(before[p], review.fileStates?.[p]) && !finalFullExemption.issueFiles.includes(p) && !(scope.changedFiles ?? []).includes(p));
+    if (moved.length) finalFullExemption = undefined;
+  }
+  const { finalFullExemption: _drop, ...rest } = scope;
+  return { ...rest, ...(finalFullExemption ? { finalFullExemption } : {}), files, handoffFiles, handoffPlan: plan.items };
 }
 
 /** 修复轮免收口的候选(SC4)。条件全部满足才返回 { finalFullExemption },否则返回 {}。 */
@@ -285,6 +382,13 @@ function pendingFinalFullOf(result, finalFull, context) {
   return { head: finalFull.head, runId: finalFull.runId, kind: context.kind, previousFindings };
 }
 
+const isRecord = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+function readHandoffSnapshot(raw) {
+  if (!isRecord(raw) || raw.version !== 1 || raw.status !== 'parsed' || !Array.isArray(raw.risks)) return null;
+  const risks = raw.risks.filter((r) => isRecord(r) && /^R[1-9]\d*$/.test(r.id) && /^[0-9a-f]{64}$/.test(r.contentHash ?? '') && Array.isArray(r.files));
+  return { version: 1, status: 'parsed', source: raw.source ?? null, risks, fileStates: isRecord(raw.fileStates) ? raw.fileStates : {} };
+}
+
 /** 上一次服务器审查的结果包(result.json + report.md)→ computeReviewScope 用的上一轮记录。 */
 export function previousFromResult(result, report = '') {
   const finalFull = readFinalFull(result.mivo?.finalFull);
@@ -298,6 +402,11 @@ export function previousFromResult(result, report = '') {
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, filePatchHashesV2: result.mivo?.filePatchHashesV2 ?? null, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,
+    // 交接(review.md)跨轮记录:缺字段/形状不对一律当没有,不触发集中重审。
+    handoffReview: readHandoffSnapshot(result.mivo?.handoffReview),
+    handoffCoverage: Array.isArray(result.mivo?.handoffCoverage) ? result.mivo.handoffCoverage : [],
+    handoffCoverageMeta: isRecord(result.mivo?.handoffCoverageMeta) ? result.mivo.handoffCoverageMeta : {},
+    handoffStats: isRecord(result.mivo?.handoffStats) ? result.mivo.handoffStats : null,
     // 全部卡点被核对员推翻/降级、等人工复核。没有显式标记时按形状认:没有阻断问题、有被推翻/降级的问题、而且上一轮没有放行。
     manualReview: result.mivo?.verifierOverruledAll === true || (result.reviewClean !== true && (result.mivo?.findings ?? []).length === 0
       && (result.mivo?.deferred ?? []).length === 0 && (result.mivo?.verifierOverruled ?? []).length > 0),
