@@ -9,7 +9,7 @@
     "budgetMin": 20
   },
   "handoff": {
-    "mode": "off"
+    "mode": "observe"
   },
   "specChange": {
     "forceFull": false

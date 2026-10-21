@@ -34,7 +34,7 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），默认 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明 |
+| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明 |
 | `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解，判门与任务书用 |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
@@ -179,8 +179,8 @@ Mivo 的 `PR Handoff` workflow（`pull_request_target`）在 head 上写检查 `
 
 开关 `config/review-features.json` 的 `handoff.mode`：
 
-- `off`（默认）：不读交接，判门、任务书与 `specDigest` 和没有这个功能时逐字一致。
-- `observe`：任务书加「作者交接」一节，要求主审在 `## Rule coverage` 里加 `### 作者交接核对`，逐条写 R 成立 / 不成立 / 未核实、B 是否构成 P0/P1、交接之外的发现条数。不打回、不挡放行。切到 observe 会改变任务书，已审 PR 下一轮全量重审一次。
+- `off`（配置缺失或非法时的回退）：不读交接，判门、任务书与 `specDigest` 和没有这个功能时逐字一致。
+- `observe`：任务书加「作者交接」一节，要求主审在 `## Rule coverage` 里加 `### 作者交接核对`，逐条写 R 成立 / 不成立 / 未核实、B 是否构成 P0/P1、交接之外的发现条数。不打回、不挡放行：交接缺失或过期都不会让 PR 进入 `pendingGates`。没有可信检查结果时照样读文件、按未校验陈述处理；没有交接文件才写「本 PR 无作者交接」。**仓库当前配置为 observe。** 沿用旧报告的轮次不会补写新的核对小节，只有实际调用模型的轮次才有。切到 observe 会改变任务书与 `specDigest`，必须与 #98（代码没变时沿用旧结论）同次或更晚换版；只带 #99 先上线，所有开放 PR 会各全量重审一次。Mivo 自身的 `PR Handoff` CI 独立生效，本开关不调整 `ciIgnoreWorkflows`。
 - `enforce`：在 observe 的基础上，Mivo 门也是 enforce 且交接有错误时，按「送审但不放行」处理：照审、打回（固定文案列出错误）、`pendingGates` 挂 `handoff`；本 PR 第一次送审时交接已过期也一样。交接补齐后下一轮全量重审。
 
 切 enforce 之前，先把 `PR Handoff` 加进 `review-pr/config/pr-rules.json` 的 `ciIgnoreWorkflows`（`names` 与 `paths`），否则它的失败会先被当成 CI 失败、根本不送审。
