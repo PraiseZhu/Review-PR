@@ -2485,6 +2485,7 @@ export function evaluateBotSettleSinceReady(input, readEvents) {
 // 哈希相同再按上一 head 重算静默期。git 没有这些对象就退回 null,不另打 GraphQL。
 export function previousSettleFromLocalMerge({
   headSha, baseSha, currentHashes, activity = [], cfg = {}, nowIso, gitFn = git,
+  slug = '', fetchCheckRuns = fetchCheckRunsWithApps,
 }) {
   if (!headSha || !baseSha || !sameFilePatchHashes(currentHashes, currentHashes)) return null;
   const head = gitFn(['log', '-1', '--format=%H%n%P', 'HEAD'], { allowFail: true });
@@ -2505,7 +2506,14 @@ export function previousSettleFromLocalMerge({
   const prevDate = gitFn(['log', '-1', '--format=%cI', prevHead], { allowFail: true });
   const headCommittedDate = String(prevDate.stdout ?? '').trim();
   if (!headCommittedDate || !Number.isFinite(Date.parse(headCommittedDate))) return null;
-  const prior = evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg });
+  const first = evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg });
+  if (first.settled && !first.timedOut) return { ...first, filePatchHashes: previousHashes, headCommittedDate };
+  if (!slug) return null;
+  let checkRuns;
+  try { checkRuns = fetchCheckRuns(slug, prevHead); } catch { return null; }
+  if (!Array.isArray(checkRuns)) return null;
+  const priorActivity = [...activity, ...botCheckActivity(checkRuns, cfg)];
+  const prior = evaluateBotSettle({ headCommittedDate, nowIso, activity: priorActivity, cfg });
   if (!prior.settled || prior.timedOut) return null;
   return { ...prior, filePatchHashes: previousHashes, headCommittedDate };
 }

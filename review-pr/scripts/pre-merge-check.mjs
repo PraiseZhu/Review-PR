@@ -292,7 +292,7 @@ try {
   const previousSettle = loadBotSettleSnapshot({ owner, repo, pr })
     ?? previousSettleFromLocalMerge({
       headSha: m.headRefOid, baseSha: m.baseRefOid, currentHashes: filePatchHashes,
-      activity: botActivity, cfg: rules.botReviewSettle ?? {}, nowIso,
+      activity: botActivity, cfg: rules.botReviewSettle ?? {}, nowIso, slug,
     });
   const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate,

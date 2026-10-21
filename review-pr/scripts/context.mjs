@@ -1365,7 +1365,7 @@ try {
   const previousSettle = loadBotSettleSnapshot({ owner, repo, pr })
     ?? previousSettleFromLocalMerge({
       headSha: meta.headRefOid, baseSha: meta.baseRefOid, currentHashes: filePatchHashes,
-      activity: botActivityForSettle, cfg: BOT_SETTLE_RULES, nowIso,
+      activity: botActivityForSettle, cfg: BOT_SETTLE_RULES, nowIso, slug,
     });
   const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate: latestCommitDate,

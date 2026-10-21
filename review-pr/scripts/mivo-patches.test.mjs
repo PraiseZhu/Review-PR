@@ -563,6 +563,46 @@ test('previousSettleFromLocalMerge:当前 HEAD 是两 parent 合 main 且 patch 
   }), null);
 });
 
+test('previousSettleFromLocalMerge:现有 activity 没有上一 head 的 check 时,REST 读上一 SHA 的 check-runs 再重算', () => {
+  const prevHead = 'a'.repeat(40);
+  const headSha = 'b'.repeat(40);
+  const baseSha = 'c'.repeat(40);
+  const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
+  const currentHashes = filePatchHashesFromDiff(diff);
+  const gitFn = (args) => {
+    const joined = args.join(' ');
+    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
+    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: '2026-10-21T05:20:00Z\n' };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+  let fetched = 0;
+  const fetchCheckRuns = (slug, sha) => {
+    fetched += 1;
+    assert.equal(slug, 'xindong/mivo-canvas-plugin');
+    assert.equal(sha, prevHead);
+    return [{ name: 'Greptile Review', status: 'COMPLETED', completedAt: '2026-10-21T05:25:00Z' }];
+  };
+  const missing = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG,
+  });
+  assert.equal(missing, null, '对照:不读上一 SHA check 时,干净合 main 的 activity 认不出 Greptile 已表态');
+  const r = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG, slug: 'xindong/mivo-canvas-plugin', fetchCheckRuns,
+  });
+  assert.equal(fetched, 1);
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, false);
+  assert.deepEqual(r.responded, ['greptile-apps']);
+  const failed = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG, slug: 'xindong/mivo-canvas-plugin', fetchCheckRuns: () => null,
+  });
+  assert.equal(failed, null, '上一 SHA check 读不到退回原规则,不放宽');
+});
+
 test('静默期接线:context 与 pre-merge-check 把已有 diff/files 的 patch 哈希和上一 head 表态传给静默期,不另打 GraphQL', () => {
   for (const file of ['context.mjs', 'pre-merge-check.mjs']) {
     const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
