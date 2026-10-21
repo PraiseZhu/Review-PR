@@ -10,7 +10,7 @@ import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings } from '../lib/scope.mjs';
+import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
@@ -186,7 +186,7 @@ async function prepare() {
       config: readFileSync(process.env.MIVO_REVIEW_RULES_FILE || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'), 'utf8') }));
     const current = {
       head: input.head, baseRefName: ctx.meta.baseRefName, diffHash: ctx.evidence?.diffHash,
-      filePatchHashes: filePatchHashes(diffFiles),
+      filePatchHashes: filePatchHashes(diffFiles), filePatchHashesV2: filePatchHashesV2(diffFiles),
       fileChangedLines: Object.fromEntries(Object.entries(diffFiles).map(([p, f]) => [p, f.changedLines])),
       totalDiffLines: ctx.totalDiffLines, tier, triggerKinds: (ctx.signoff?.triggers ?? []).map((t) => t.kind).sort(),
       skillSha: input.skillSha, specDigest, now: Date.now(), pendingGates: [...state.pendingGates],
@@ -758,7 +758,7 @@ function baseResult(state) {
     mivo: {
       targetRepo: input.targetRepo, serverMode: input.mode, runId: input.runId, runUrl: input.runUrl, attempt: input.attempt,
       tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
-      filePatchHashes: current.filePatchHashes, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
+      filePatchHashes: current.filePatchHashes, filePatchHashesV2: current.filePatchHashesV2, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },

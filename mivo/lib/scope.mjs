@@ -15,13 +15,16 @@ export function splitDiffByFile(diffText) {
   const finish = () => {
     if (!current) return;
     current.hash = createHash('sha256').update(current.body.join('\n')).digest('hex');
+    // v2:v1 的内容 + 新内容 blob 编号前 7 位 + mode 行。挪位置/只改权限/换二进制(Binary files 行不变)在 v1 里看不出,v2 能区分。
+    current.hashV2 = createHash('sha256').update(['v2', ...current.meta, ...current.body].join('\n')).digest('hex');
     delete current.body;
+    delete current.meta;
   };
   for (const raw of String(diffText ?? '').split('\n')) {
     if (raw.startsWith('diff --git ')) {
       finish();
       const m = raw.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      current = { path: m ? m[2] : raw, body: [], changedLines: 0, rightLines: new Set(), addedLines: new Set() };
+      current = { path: m ? m[2] : raw, body: [], meta: [], changedLines: 0, rightLines: new Set(), addedLines: new Set() };
       files[current.path] = current;
       continue;
     }
@@ -34,6 +37,11 @@ export function splitDiffByFile(diffText) {
         files[path] = current;
       }
       continue;
+    }
+    if (raw.startsWith('old mode') || raw.startsWith('new mode') || raw.startsWith('new file mode')) current.meta.push(raw);
+    else if (raw.startsWith('index ')) {
+      const blob = raw.match(/\.\.(\S+)/);
+      if (blob) current.meta.push(`index ..${blob[1].slice(0, 7)}`);
     }
     if (raw.startsWith('--- ') || raw.startsWith('index ') || raw.startsWith('new file') || raw.startsWith('deleted file') ||
         raw.startsWith('similarity ') || raw.startsWith('rename ') || raw.startsWith('old mode') || raw.startsWith('new mode') ||
@@ -63,6 +71,7 @@ export function splitDiffByFile(diffText) {
 }
 
 export const filePatchHashes = (files) => Object.fromEntries(Object.entries(files).map(([path, f]) => [path, f.hash]).sort());
+export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(files).map(([path, f]) => [path, f.hashV2]).sort());
 
 /**
  * @param {object} p
@@ -111,8 +120,11 @@ export function computeReviewScope({ previous, current, headIsDescendant, forceF
     return full('上次审过的版本不是当前版本的祖先(强制推送或 rebase)');
   }
 
-  const before = previous.filePatchHashes ?? {};
-  const after = current.filePatchHashes ?? {};
+  // 过渡期:双方都有 v2(非空对象)才按 v2 比;上一轮只有 v1 时按 v1 比,避免 v1/v2 混比导致全部文件都算变。
+  const isFilled = (o) => o && typeof o === 'object' && Object.keys(o).length > 0;
+  const useV2 = isFilled(previous.filePatchHashesV2) && isFilled(current.filePatchHashesV2);
+  const before = (useV2 ? previous.filePatchHashesV2 : previous.filePatchHashes) ?? {};
+  const after = (useV2 ? current.filePatchHashesV2 : current.filePatchHashes) ?? {};
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((path) => before[path] !== after[path]).sort();
   if (specChanged) {
@@ -226,7 +238,7 @@ export function previousFromResult(result, report = '') {
     reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
     pendingGates: result.mivo?.advisory?.pendingGates ?? [],
     reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
-    filePatchHashes: result.mivo?.filePatchHashes ?? {}, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
+    filePatchHashes: result.mivo?.filePatchHashes ?? {}, filePatchHashesV2: result.mivo?.filePatchHashesV2 ?? null, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,
     // 全部卡点被核对员推翻/降级、等人工复核。没有显式标记时按形状认:没有阻断问题、有被推翻/降级的问题、而且上一轮没有放行。
