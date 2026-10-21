@@ -1447,7 +1447,7 @@ function collectServerRun(ctx, entry) {
   if (existsSync(join(dir, 'finish.json'))) copyFileSync(join(dir, 'finish.json'), join(ctx.roundDir, `finish-pr-${task.pr}.json`));
   result.errors = [...(entry.gateResult?.errors ?? []), ...(server.errors ?? [])];
   result.warnings = [...(entry.gateResult?.warnings ?? []), ...(server.warnings ?? [])];
-  result.mivo = { ...server.mivo, filePatchHashes: undefined, findings: (server.mivo?.findings ?? []).length, deferred: (server.mivo?.deferred ?? []).length };
+  result.mivo = { ...server.mivo, filePatchHashes: undefined, filePatchHashesV2: undefined, findings: (server.mivo?.findings ?? []).length, deferred: (server.mivo?.deferred ?? []).length };
   writeTaskResult(ctx, task, result, { raw: true });
   if (server.mivo?.quota) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
