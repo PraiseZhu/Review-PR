@@ -10,11 +10,11 @@ import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings } from '../lib/scope.mjs';
-import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets, pendingFinalFullReport } from '../lib/report.mjs';
+import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope } from '../lib/scope.mjs';
+import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
-import { loadHandoffMode, readHandoffFacts, toHandoffPending } from '../lib/handoff.mjs';
+import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
@@ -145,6 +145,11 @@ async function prepare() {
     ctx.mivoHandoff = { featureMode: handoffMode.mode,
       facts: handoffMode.mode === 'off' ? null : readHandoffFacts({ repo: input.targetRepo, head: input.head, ghFn: (args) => gh(args, { allowFail: true }) }) };
     if (ctx.mivoHandoff.facts?.readError) state.warnings.push(`交接事实读不到:${ctx.mivoHandoff.facts.readError}`);
+    // review.md 结构化解析:从 PR head 的 git 对象读,不执行 PR 里的任何脚本;读不到/格式不对只记 warning。
+    if (handoffMode.mode !== 'off') {
+      ctx.mivoHandoff.review = readHandoffReview({ prNumber: input.pr, head: input.head, gitFn: (args) => git(args, { allowFail: true, timeoutMs: 120_000 }) });
+      for (const w of ctx.mivoHandoff.review.warnings.slice(0, 20)) state.warnings.push(`交接 review.md:${w.message}`);
+    }
     state.handoff = ctx.mivoHandoff;
     // 规则改版时是否强制全量(维护者开关,默认 false):读不到或不合法按 false 处理并写进结果包 warnings。
     const specChange = loadSpecChangePolicy(() => readFileSync(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'), 'utf8'));
@@ -195,6 +200,12 @@ async function prepare() {
       totalDiffLines: ctx.totalDiffLines, tier, triggerKinds: (ctx.signoff?.triggers ?? []).map((t) => t.kind).sort(),
       skillSha: input.skillSha, specDigest, now: Date.now(), pendingGates: [...state.pendingGates],
     };
+    // 交接:本轮解析结果;上一轮的 coverage 证据在当前 head 上是否还站得住(决定能不能沿用,见 lib/scope.mjs buildHandoffPlan)。
+    if (state.handoff?.review?.status === 'parsed') {
+      current.handoffReview = state.handoff.review;
+      current.handoffEvidenceCheck = previous
+        ? checkPreviousHandoffCoverage({ coverage: previous.handoffCoverage, meta: previous.handoffCoverageMeta, headReader: handoffHeadReaderFor(input.head) }) : {};
+    }
     // 规则改版沿用转 issue 的问题前,要本轮仍核验通过(collectDeferrals 已在上面跑过,这里不再请求网络)。
     current.verifiedDeferralIssues = (state.deferrals?.verified ?? []).map((d) => d.issue);
     let headIsDescendant = null;
@@ -540,8 +551,9 @@ async function codex() {
         }
         state.finalFull = { ...mark, outcome: 'error' }; // 收口开始了;publish 拿到合法答卷并分类后才改成真实结论
         const scopeFile = join(INPUT_DIR, 'final-full-scope.json');
-        const finalScope = { mode: 'full', purpose: 'final-full', finalFullKind: 'same-run', reason: '放行前收口全量(增量审查判干净后,同一次运行接着审完整 diff)',
+        const baseFinalScope = { mode: 'full', purpose: 'final-full', finalFullKind: 'same-run', reason: '放行前收口全量(增量审查判干净后,同一次运行接着审完整 diff)',
           files: Object.keys(splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'))).sort(), previousFindings: state.scope.previousFindings ?? [], basedOn: null };
+        const finalScope = withHandoffScope({ scope: baseFinalScope, previous: null, current: state.current ?? {} });
         writeJson(scopeFile, finalScope);
         const finalPrompt = promptFor(finalScope, scopeFile);
         writeText(join(INPUT_DIR, 'final-full-prompt.md'), finalPrompt);
@@ -645,9 +657,40 @@ function headReaderFor(head) {
   };
 }
 
+// 交接证据按 head 的 git 对象核对:tree 只读一次,文件按 blob 读行数;工作区文件(审查模型能写)不作数。永不抛错。
+const handoffReaders = new Map();
+function handoffHeadReaderFor(head) {
+  if (handoffReaders.has(head)) return handoffReaders.get(head);
+  const git0 = (args) => run('git', args, { cwd: REPO_DIR, allowFail: true, timeoutMs: 60_000 });
+  let tree = null;
+  const cache = new Map();
+  const reader = (path) => {
+    if (cache.has(path)) return cache.get(path);
+    if (!tree) { const listed = git0(['--no-replace-objects', 'ls-tree', '-r', '-z', head]); tree = listed.ok ? parseLsTree(listed.stdout) : new Map(); }
+    const entry = tree.get(path);
+    let read = { exists: false, regularFile: false, lineCount: 0, oid: null, mode: null };
+    if (entry) {
+      const regularFile = entry.type === 'blob' && ['100644', '100755'].includes(entry.mode);
+      let lineCount = 0;
+      if (regularFile) {
+        const blob = git0(['--no-replace-objects', 'cat-file', '-p', entry.oid]);
+        const text = blob.ok ? blob.stdout : '';
+        lineCount = text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0;
+      }
+      read = { exists: true, regularFile, lineCount, oid: entry.oid, mode: entry.mode };
+    }
+    cache.set(path, read);
+    return read;
+  };
+  handoffReaders.set(head, reader);
+  return reader;
+}
+
 function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? state.scope) {
   const diffFiles = splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'));
-  const checked = validateAnswer(answer, { diffFiles, deferrals: state.deferrals?.verified ?? [], headReader: headReaderFor(state.input.head) });
+  const handoff = state.handoff?.review?.status === 'parsed'
+    ? { review: state.handoff.review, plan: scope.handoffPlan ?? [], headReader: handoffHeadReaderFor(state.input.head), source: { head: state.input.head, runId: state.input.runId } } : null;
+  const checked = validateAnswer(answer, { diffFiles, deferrals: state.deferrals?.verified ?? [], headReader: headReaderFor(state.input.head), handoff });
   if (!checked.ok) return checked;
   const history = collectMarkerHistory({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer ?? state.context.viewer, currentHead: state.input.head });
   const roundIndex = roundIndexOf({ previousRound: state.previousRound ?? null, hasPrevious: Boolean(state.previous), history });
@@ -668,7 +711,7 @@ function toStoredVerification(verification) {
 
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
 function toStoredFinding(finding) {
-  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes'];
+  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete'];
   const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
   return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
 }
@@ -740,6 +783,9 @@ async function publish() {
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
       // 沿用不重跑收口:来源的收口记录原样带过去(head/runId 还是原来那次的),不改写成本轮。
       for (const key of ['finalFull', 'finalFullContext']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
+      // 交接记录同样原样带过去:沿用的 coverage/统计保留来源 head/runId,统计标 reused,不当本轮独立发现。
+      for (const key of ['handoffReview', 'handoffCoverage', 'handoffCoverageMeta']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
+      if (previous.mivo?.handoffStats) result.mivo.handoffStats = { ...previous.mivo.handoffStats, reused: true };
     } else {
       if (state.healthHold) return holdReview(state, result, state.healthHold);
       if (state.finalFull?.outcome === 'pending-budget') return publishFinalFullPending(state, result, {});
@@ -788,13 +834,20 @@ async function publish() {
       // 因核对员模型不可用没核的 P1/P2(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
       const unverifiedUids = new Set((state.verification?.skipped ?? []).filter((s) => s.reason === 'model-unavailable' && s.uid).map((s) => s.uid));
       const unverifiedCount = findings.filter((f) => ['P1', 'P2'].includes(f.severity) && unverifiedUids.has(f.uid)).length;
+      // 交接:统计只数最终阻断集(核对员/裁定之后);note 进结果包前脱敏。
+      const handoffReview = state.handoff?.review ?? null;
+      const handoffCoverage = (checked.handoffCoverage ?? []).map((c) => ({ ...c, note: scrubSecrets(c.note ?? '').text }));
+      const handoffStats = state.handoff && state.handoff.featureMode !== 'off'
+        ? computeHandoffStats({ review: handoffReview, coverage: handoffCoverage, meta: checked.handoffCoverageMeta ?? {}, findings, head: input.head, runId: input.runId }) : null;
+      if (handoffReview) Object.assign(result.mivo, { handoffReview: toHandoffSnapshot(handoffReview), handoffCoverage, handoffCoverageMeta: checked.handoffCoverageMeta ?? {}, ...(handoffStats ? { handoffStats } : {}) });
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
         preexisting, ruledKept, verifierRefuted, verifierDowngraded,
         verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier,
         skillSha: input.skillSha, specDigest: state.current?.specDigest, finalFull: result.mivo.finalFull ?? null, finalFullKind: result.mivo.finalFullContext?.kind ?? null,
-        scope: state.effectiveScope ?? state.scope });
+        scope: state.effectiveScope ?? state.scope,
+        handoff: handoffReview?.status === 'parsed' ? { review: handoffReview, coverage: handoffCoverage, meta: checked.handoffCoverageMeta ?? {}, stats: handoffStats } : null });
       result.mivo.lastFullReviewAt = (state.effectiveScope ?? state.scope).mode === 'full' ? nowIso() : state.previous?.lastFullReviewAt;
     }
     const scrubbed = scrubSecrets(report);
@@ -891,6 +944,7 @@ function baseResult(state) {
       tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
       filePatchHashes: current.filePatchHashes, filePatchHashesV2: current.filePatchHashesV2, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
+      ...(state.handoff?.review ? { handoffReview: toHandoffSnapshot(state.handoff.review) } : {}),
       codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },
   };

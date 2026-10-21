@@ -35,7 +35,7 @@ if (argv[0] === '--version') { console.log('fake-codex 0.0.0'); process.exit(0);
 const at = (flag) => argv[argv.indexOf(flag) + 1];
 const ctl = ${JSON.stringify(ctl)};
 const key = process.env.CODEX_API_KEY === ${JSON.stringify(PRIMARY_KEY)} ? 'primary' : process.env.CODEX_API_KEY === ${JSON.stringify(BACKUP_KEY)} ? 'backup' : 'unknown';
-const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"verdict"');
+const verify = fs.readFileSync(at('--output-schema'), 'utf8').includes('"confirmed"');
 const mode = fs.readFileSync(path.join(ctl, 'mode-' + key), 'utf8').trim();
 fs.appendFileSync(path.join(ctl, 'calls.log'), (verify ? 'verify ' : 'main ') + at('--model') + ' ' + at('-c').replace('model_reasoning_effort=', '') + ' ' + key + '\\n');
 const fail401 = () => {
