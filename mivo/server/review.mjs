@@ -11,13 +11,13 @@ import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings } from '../lib/scope.mjs';
-import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
+import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets, pendingFinalFullReport } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
-import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
+import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, toUnavailableModels, VERIFY_SCHEMA } from '../lib/verify.mjs';
@@ -36,6 +36,10 @@ const REPO_DIR = join(WORK, 'repo');
 const INPUT_DIR = join(WORK, 'input');
 const CHECK_NAME = 'review-pr';
 const MERGE_READY_LABEL = 'review:merge-ready';
+// 同一次运行里增量判干净后再接收口全量,要求的最低剩余模型预算:主审 45 分钟(56 次 full workflow 的 p90,含 workflow 开销,按保守窗口用)
+// + 备用预留 20 分钟 + 两段收尾余量。低于这个数不启动收口,结果标「收口待补」,Mini 下一次对同一 head 直接派全量。
+const FINAL_FULL_MAIN_MS = 45 * 60_000;
+export const FINAL_FULL_MIN_MS = FINAL_FULL_MAIN_MS + FALLBACK_RESERVE_MS + 2 * SETTLE_MS;
 
 function inputs() {
   const env = process.env;
@@ -285,7 +289,13 @@ function downloadPrevious(input, state) {
   // 上一轮的问题 key 与轮次(state 要落盘成 JSON,Set 存成数组)。旧结果没有这些字段时是空值。
   const previousRound = toPreviousRound(result);
   state.previousRound = { ...previousRound, keys: [...previousRound.keys] };
-  return previousFromResult(result, existsSync(join(dir, 'report.md')) ? readFileSync(join(dir, 'report.md'), 'utf8') : '');
+  const previous = previousFromResult(result, existsSync(join(dir, 'report.md')) ? readFileSync(join(dir, 'report.md'), 'utf8') : '');
+  // 收口待补的包:它自己没有完整的收敛记录,补跑全量要用待补时保存的真实前轮(轮次、旧问题 key),不能把半份增量当前轮。
+  const saved = previous.pendingFinalFull ? previous.finalFullContext?.previousRound : null;
+  if (saved && typeof saved === 'object' && Array.isArray(saved.keys) && Array.isArray(saved.findings) && (saved.roundIndex === null || Number.isInteger(saved.roundIndex))) {
+    state.previousRound = { roundIndex: saved.roundIndex, findings: saved.findings, keys: saved.keys.filter((k) => typeof k === 'string') };
+  }
+  return previous;
 }
 
 function createCheckRun(input, { status, title, summary }) {
@@ -422,15 +432,16 @@ async function codex() {
   const degraded = state.health?.codex?.degraded ?? null;
   const ring = toKeyRing(process.env);
   state.warnings.push(...roleWarnings(process.env), ...ring.warnings);
-  const prompt = buildReviewPrompt({
-    spec: loadReviewSpec(SKILL_ROOT), ctx, scope: state.scope, workdir: REPO_DIR, tier: state.tier,
-    inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile: join(INPUT_DIR, 'scope.json'),
+  const promptFor = (scope, scopeFile) => buildReviewPrompt({
+    spec: loadReviewSpec(SKILL_ROOT), ctx, scope, workdir: REPO_DIR, tier: state.tier,
+    inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile,
       securityScanFile: state.securityScan?.file, rulesBaseDir: state.rulesBaseDir ?? null },
     deferrals: state.deferrals?.verified ?? [],
     rulings: state.rulings?.verified ?? [],
     rebuttals: state.rebuttals ?? [],
     handoff: state.handoff ?? null,
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
+  const prompt = promptFor(state.scope, join(INPUT_DIR, 'scope.json'));
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
   // 只有真要调用模型的审查才取 CLI 版本;取不到是 null,不影响审查。
   state.codexVersion = readCodexVersion(codexBin());
@@ -460,37 +471,99 @@ async function codex() {
     noteKeyResult(ring, 'backup', second, phase);
     return { result: second, label: retryLabel, credential: 'backup', keySwitch, left };
   };
-  // 主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
-  for (let next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: 0, budgetMs: budget.budgetMs, fallback: fallbackCfg, degraded }); next;
-    next = nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg, degraded })) {
-    const { result, label, credential, keySwitch, left } = await callModel({ label: `${attempts.length + 1}`, model: next.model, effort: next.effort,
-      timeoutMs: next.timeoutMs, prompt, schema: ANSWER_SCHEMA, minRetryMs: MIN_FALLBACK_MS,
-      remainingMs: () => budget.budgetMs - (Date.now() - startedAt) - SETTLE_MS });
-    // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
-    // 换了 key 但时间不够没重跑:备用 key 还没试过,不按额度类处理(不让 Mini 暂停),主 key 的报错照实记在 keySwitch。
-    // 最后一次是 key 本身的错误(备用 key 也坏,或没有备用)也算额度类:旧的 QUOTA_RE 认不出「key is blocked」之类的报错。
-    attempts.push({ model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
-      quota: keySwitch && !keySwitch.retried ? false : result.quota || Boolean(result.keyFailure), keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
-      timedOut: result.timedOut, idleKilled: result.idleKilled,
-      firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
-      maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}),
-      ...(keySwitch ? { keySwitch } : {}) });
-    answer = result.ok ? result.answer : null;
-    cleanupLeft.push(...left, ...await clearRunArtifacts(state, label));
-  }
+  // 一段主审:主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
+  // 同一次运行最多两段(初段 + 增量干净后的收口全量):每段有自己的尝试记录(nextAttempt 只看本段),但共用同一条总预算时钟
+  // (elapsedFrom 是总预算的起点,第二段不会重新得到 120 分钟)和同一套 key。
+  const runPass = async ({ pass, text, labelPrefix = '', primary, elapsedFrom }) => {
+    const passAttempts = [];
+    let passAnswer = null;
+    const elapsed = () => Date.now() - elapsedFrom;
+    const upcoming = () => nextAttempt({ primary: primary(), attempts: passAttempts, elapsedMs: elapsed(), budgetMs: budget.budgetMs, fallback: fallbackCfg, degraded });
+    for (let next = upcoming(); next; next = upcoming()) {
+      const { result, label, credential, keySwitch, left } = await callModel({ label: `${labelPrefix}${passAttempts.length + 1}`, model: next.model, effort: next.effort,
+        timeoutMs: next.timeoutMs, prompt: text, schema: ANSWER_SCHEMA, minRetryMs: MIN_FALLBACK_MS,
+        remainingMs: () => budget.budgetMs - elapsed() - SETTLE_MS });
+      // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
+      // 换了 key 但时间不够没重跑:备用 key 还没试过,不按额度类处理(不让 Mini 暂停),主 key 的报错照实记在 keySwitch。
+      // 最后一次是 key 本身的错误(备用 key 也坏,或没有备用)也算额度类:旧的 QUOTA_RE 认不出「key is blocked」之类的报错。
+      const record = { pass, model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
+        quota: keySwitch && !keySwitch.retried ? false : result.quota || Boolean(result.keyFailure), keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
+        timedOut: result.timedOut, idleKilled: result.idleKilled,
+        firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
+        maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}),
+        ...(keySwitch ? { keySwitch } : {}) };
+      passAttempts.push(record);
+      attempts.push(record);
+      passAnswer = result.ok ? result.answer : null;
+      cleanupLeft.push(...left, ...await clearRunArtifacts(state, label));
+    }
+    return { attempts: passAttempts, answer: passAnswer, last: passAttempts.at(-1) };
+  };
+  const passStartedAt = Date.now();
+  const first = await runPass({ pass: 'initial', text: prompt, primary: () => tierCfg, elapsedFrom: startedAt });
+  answer = first.answer;
   // 只有「不是降级的话本来会换备用」时才记为被降级跳过(额度类、预算不够、备用与主审同模型本来就不换)。
   let fallbackSkipped = null;
-  if (degraded && attempts.length === 1 && !attempts[0].ok
-    && nextAttempt({ primary: tierCfg, attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg }) && isDegraded(degraded, fallbackCfg.model)) {
+  if (degraded && first.attempts.length === 1 && !first.attempts[0].ok
+    && nextAttempt({ primary: tierCfg, attempts: first.attempts, elapsedMs: Date.now() - startedAt, budgetMs: budget.budgetMs, fallback: fallbackCfg }) && isDegraded(degraded, fallbackCfg.model)) {
     fallbackSkipped = { model: fallbackCfg.model, reason: degraded.reason };
     state.warnings.push(`备用模型 ${fallbackCfg.model} 被 healthy.marker 标为不可用${degraded.reason ? `(${degraded.reason})` : ''},主审失败后已跳过备用尝试`);
   }
+  const passRecord = (pass, run, startedMs) => ({ pass, mode: pass === 'initial' ? state.scope.mode : 'full', startedAt: new Date(startedMs).toISOString(), completedAt: nowIso(),
+    durationMs: Date.now() - startedMs, ok: Boolean(run.last?.ok && run.answer), attempts: run.attempts.length, budgetMs: budget.budgetMs });
   state.codex = { attempts, model: attempts.at(-1)?.model, effort: attempts.at(-1)?.effort, budget, credential: toCredentialSummary(ring),
+    passes: [passRecord('initial', first, passStartedAt)],
     ...(fallbackSkipped ? { fallbackSkipped } : {}),
     ...(attempts.length ? {} : { skipped: 'budget-exhausted' }) };
   saveState(state);
-  const last = attempts.at(-1);
+  let last = first.last;
   if (!(last?.ok && answer)) return;
+  // 放行前收口全量:增量轮判干净时,不能直接放行——同一次运行里接着对完整 diff 再审一遍,全量也干净才放行。
+  // 例外(防拉锯):上一轮是收口且有问题,本轮改动全落在那些问题所在文件里,增量干净即放行(scope.finalFullExemption)。
+  // 收口失败/预算不足都不回退用增量的干净答卷:不写 answer.json,publish 把本轮标成未完成,Mini 在同一 head 上直接派全量。
+  if (state.scope.mode === 'incremental') {
+    const initial = classifyAnswer(state, ctx, answer, state.scope);
+    if (initial.ok && initial.findings.length === 0) {
+      const mark = { head: input.head, runId: input.runId };
+      const exemption = state.scope.finalFullExemption;
+      if (exemption) {
+        state.finalFull = { ...mark, outcome: 'skipped-fix-round', basedOn: { head: exemption.sourceHead, runId: exemption.sourceRunId },
+          files: exemption.changedFiles, issueFiles: exemption.issueFiles };
+      } else {
+        const remainingMs = budget.budgetMs - (Date.now() - budgetAt);
+        state.finalFullContext = { kind: 'same-run', findingFiles: [], previousRound: state.previousRound ?? null };
+        state.codex.finalFullBudget = { requiredMs: FINAL_FULL_MIN_MS, remainingMs, estimateSource: 'full-workflow-p90-2026-10-20' };
+        if (remainingMs < FINAL_FULL_MIN_MS) {
+          state.finalFull = { ...mark, outcome: 'pending-budget' };
+          saveState(state);
+          return;
+        }
+        state.finalFull = { ...mark, outcome: 'error' }; // 收口开始了;publish 拿到合法答卷并分类后才改成真实结论
+        const scopeFile = join(INPUT_DIR, 'final-full-scope.json');
+        const finalScope = { mode: 'full', purpose: 'final-full', finalFullKind: 'same-run', reason: '放行前收口全量(增量审查判干净后,同一次运行接着审完整 diff)',
+          files: Object.keys(splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'))).sort(), previousFindings: state.scope.previousFindings ?? [], basedOn: null };
+        writeJson(scopeFile, finalScope);
+        const finalPrompt = promptFor(finalScope, scopeFile);
+        writeText(join(INPUT_DIR, 'final-full-prompt.md'), finalPrompt);
+        // 第二段主模型的上限按总预算的余额收紧(不是重新给一份 120 分钟)。只在本段开始时算一次:
+        // 主模型失败后 nextAttempt 还要用这份配置算备用的上限,备用的余额由 nextAttempt 按共享时钟(elapsedFrom)实时算;
+        // 若每次都重算,备用预留(FALLBACK_RESERVE_MS + 收尾)会被再扣一遍,备用拿到过小甚至 0 的 timeout。
+        const secondPrimaryCfg = { ...tierCfg, timeoutMs: Math.max(0, Math.min(tierCfg.timeoutMs, budget.budgetMs - (Date.now() - budgetAt) - FALLBACK_RESERVE_MS - 2 * SETTLE_MS)) };
+        const secondPrimary = () => secondPrimaryCfg;
+        const secondStartedAt = Date.now();
+        const second = await runPass({ pass: 'final-full', text: finalPrompt, labelPrefix: 'final-full-', primary: secondPrimary, elapsedFrom: budgetAt });
+        state.codex.passes.push(passRecord('final-full', second, secondStartedAt));
+        state.codex.attempts = attempts;
+        state.codex.model = attempts.at(-1)?.model;
+        state.codex.effort = attempts.at(-1)?.effort;
+        if (!(second.last?.ok && second.answer)) { state.codex.credential = toCredentialSummary(ring); saveState(state); return; }
+        answer = second.answer;
+        last = second.last;
+        state.effectiveScope = finalScope;
+        saveState(state);
+      }
+    }
+  }
   try {
     // 逐条核对员(lib/verify.mjs):off 不动;shadow 只记录;enforce 由 publish 把被推翻/降级的 P1/P2 移出阻断。整段在这里吞掉异常——
     // 入口的 catch 会把异常变成 finishEarly(error),那样核对员出错就让整轮审查作废了;出错的条目照常阻断。核对调用不写进 state.codex.attempts。
@@ -572,14 +645,14 @@ function headReaderFor(head) {
   };
 }
 
-function classifyAnswer(state, ctx, answer) {
+function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? state.scope) {
   const diffFiles = splitDiffByFile(readFileSync(state.context.diffFile, 'utf8'));
   const checked = validateAnswer(answer, { diffFiles, deferrals: state.deferrals?.verified ?? [], headReader: headReaderFor(state.input.head) });
   if (!checked.ok) return checked;
   const history = collectMarkerHistory({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer ?? state.context.viewer, currentHead: state.input.head });
   const roundIndex = roundIndexOf({ previousRound: state.previousRound ?? null, hasPrevious: Boolean(state.previous), history });
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
-    deferred: checked.deferred.slice(0, 100), scope: state.scope, roundIndex, previousRound: state.previousRound ?? null,
+    deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
     history, rulings: state.rulings?.verified ?? [], head: state.input.head });
   return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100 } };
 }
@@ -665,8 +738,11 @@ async function publish() {
       verifierOverruled = previous.mivo?.verifierOverruled ?? [];
       report = reusedReport({ previousReport: readFileSync(join(WORK, 'prev', 'report.md'), 'utf8'), scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
+      // 沿用不重跑收口:来源的收口记录原样带过去(head/runId 还是原来那次的),不改写成本轮。
+      for (const key of ['finalFull', 'finalFullContext']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
     } else {
       if (state.healthHold) return holdReview(state, result, state.healthHold);
+      if (state.finalFull?.outcome === 'pending-budget') return publishFinalFullPending(state, result, {});
       const answerFile = join(WORK, 'answer.json');
       if (!existsSync(answerFile)) {
         const last = state.codex?.attempts?.at(-1);
@@ -695,6 +771,14 @@ async function publish() {
       }
       const stuck = checked.stuck.filter((item) => findings.some((f) => f.key === item.key))
         .map((item) => ({ ...item, severity: severityByKey.get(item.key) ?? item.severity }));
+      // 放行前收口全量的记录(SC1/SC4/SC6):head/runId 一律取被审的 input,不用当前 PR head。
+      const overruledAll = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
+      const finalFull = finalFullRecord(state, findings, overruledAll);
+      // 增量判干净的放行必须有本 head 的完整收口记录(或修复轮免收口记录):缺了不 Approve,不管 answer.json 是怎么来的。
+      if (findings.length === 0 && !overruledAll && state.scope.mode === 'incremental' && !['clean', 'skipped-fix-round'].includes(finalFull.record?.outcome)) {
+        return publishFinalFullPending(state, result, { missing: true });
+      }
+      Object.assign(result.mivo, finalFull.record ? { finalFull: finalFull.record } : {}, finalFull.context ? { finalFullContext: finalFull.context } : {});
       deferred = checked.deferred;
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
@@ -708,9 +792,10 @@ async function publish() {
         preexisting, ruledKept, verifierRefuted, verifierDowngraded,
         verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
-        base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier, scope: state.scope,
-        skillSha: input.skillSha, specDigest: state.current?.specDigest });
-      result.mivo.lastFullReviewAt = state.scope.mode === 'full' ? nowIso() : state.previous?.lastFullReviewAt;
+        base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier,
+        skillSha: input.skillSha, specDigest: state.current?.specDigest, finalFull: result.mivo.finalFull ?? null, finalFullKind: result.mivo.finalFullContext?.kind ?? null,
+        scope: state.effectiveScope ?? state.scope });
+      result.mivo.lastFullReviewAt = (state.effectiveScope ?? state.scope).mode === 'full' ? nowIso() : state.previous?.lastFullReviewAt;
     }
     const scrubbed = scrubSecrets(report);
     let secretHits = scrubbed.hits;
@@ -744,6 +829,52 @@ async function publish() {
   } finally {
     if (state.lockToken) runScript('release-lock.mjs', ['--token', state.lockToken], { cwd: existsSync(REPO_DIR) ? REPO_DIR : WORK, env: scriptEnv() });
   }
+}
+
+// ── 放行前收口全量的记录与待补 ─────────────────────────────────────────────────
+// 结果包 mivo.finalFull = { head, runId, outcome }:被审 head(input.head,不是当前 PR head)、GitHub run id、收口结论。
+// finalFullContext = { kind, findingFiles }:kind 区分同一次运行收口(same-run)、Mini 补跑(budget-retry)、直接全量(direct-full);
+// findingFiles 是收口仍阻断的问题位置(含 instances),下一轮的修复轮免收口据此判断。
+const safeRel = (p) => typeof p === 'string' && p.length > 0 && !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..');
+function finalFullRecord(state, findings, overruledAll) {
+  const input = state.input;
+  const entry = state.scope;
+  const none = { record: null, context: null };
+  if (state.finalFull?.outcome === 'skipped-fix-round') return findings.length ? none : { record: state.finalFull, context: null };
+  let kind;
+  if (entry.mode === 'incremental') {
+    if (!state.finalFull) return none; // 增量里已有阻断问题,没进收口
+    kind = 'same-run';
+  } else kind = entry.purpose === 'final-full' ? 'budget-retry' : 'direct-full';
+  const outcome = findings.length > 0 ? 'findings' : overruledAll ? 'manual-review' : 'clean';
+  const findingFiles = [...new Set(findings.flatMap((f) => [f.path, ...(f.instances ?? []).map((i) => i?.path)]).filter(safeRel))].sort();
+  return { record: { head: input.head, runId: input.runId, outcome }, context: { kind, findingFiles, previousRound: null } };
+}
+
+// 收口没做完(剩余预算不足,或结果包缺本 head 的收口记录):不放行,不是代码问题。顶层沿用 error+retry(共享 review-round 只认现有 outcome),
+// 子状态 mivo.finalFull.outcome=pending-budget 让 Mini 在同一 head 上直接派全量。只写 report.md 与进行中的 check,不发 review、不发评论。
+async function publishFinalFullPending(state, result, { missing = false } = {}) {
+  const input = state.input;
+  const budgetInfo = state.codex?.finalFullBudget ?? null;
+  const reason = missing ? '收口待补:缺少本 head 的收口全量记录,不放行,Mini 将按现有退避自动补跑全量'
+    : '收口待补:剩余模型预算不足,不放行,Mini 将按现有退避自动补跑全量';
+  const reportFile = join(OUT, 'report.md');
+  writeText(reportFile, pendingFinalFullReport({ pr: input.pr, url: state.context.url, head: input.head, base: input.base, diffHash: state.context.evidence?.diffHash,
+    tier: state.tier, scope: state.scope, remainingMs: budgetInfo?.remainingMs, requiredMs: budgetInfo?.requiredMs ?? FINAL_FULL_MIN_MS, skillSha: input.skillSha, specDigest: state.current?.specDigest }));
+  Object.assign(result, { enteredReview: true, reviewed: false, reviewClean: false, outcome: 'error', reason, retry: true, reportFile: 'report.md' });
+  Object.assign(result.mivo, { reportComplete: false, finalFull: { head: input.head, runId: input.runId, outcome: 'pending-budget' },
+    finalFullContext: state.finalFullContext ?? { kind: 'same-run', findingFiles: [], previousRound: state.previousRound ?? null },
+    ...(budgetInfo ? { finalFullBudget: budgetInfo } : {}) });
+  result.warnings.push(reason);
+  if (input.mode === 'dry-run') return writeResult(result);
+  result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: null, title: '收口待补,尚未放行', summary: `${reason}。${state.scope.reason}` });
+  // 摘 merge-ready 标签前先看 PR 当前 head:head 已变就不碰新 head 的标签,结果记 state-changed(check 始终写在被审的 head 上)。
+  const meta = gh(['api', `repos/${input.targetRepo}/pulls/${input.pr}`], { allowFail: true });
+  let currentHead = null;
+  try { currentHead = meta.ok ? JSON.parse(meta.stdout).head?.sha ?? null : null; } catch { currentHead = null; }
+  if (currentHead && currentHead !== input.head) Object.assign(result, { outcome: 'state-changed', reason: `${reason};PR head 已变化,下一轮重新采集` });
+  else removeMergeReady(state, result);
+  return writeResult(result);
 }
 
 function baseResult(state) {
@@ -991,6 +1122,8 @@ function failReview(state, result, reason, { quota = false } = {}) {
   Object.assign(result, { outcome: 'error', reason, retry: true, enteredReview: true, reviewed: false });
   result.errors.push(reason);
   result.mivo.quota = quota;
+  // 收口已开始但没有拿到合法答卷:带上收口未完成的记录,Mini 在同一 head 上直接派全量,不回到增量。
+  if (state.finalFull?.outcome === 'error') Object.assign(result.mivo, { finalFull: state.finalFull, finalFullContext: state.finalFullContext });
   const final = input.attempt >= 2;
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, final
     ? { conclusion: 'failure', title: '审查两次未完成,需要人工处理', summary: reason }

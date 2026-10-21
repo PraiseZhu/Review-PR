@@ -117,7 +117,9 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
         + '上一轮已经对完整 diff 做过审查和最终复核,本轮不再对完整 diff 逐项复核。完整 diff 文件只用来定位上下文。',
       '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报;下方「维护者裁定不改」列出的除外,「作者申辩」核对成立的也不再报。',
     ].join('\n')
-    : `**全量审查**:${scope.reason}。审完整 diff。`
+    : (scope.purpose === 'final-full'
+      ? `**收口全量审查**:${scope.reason}。这是放行前的全盘核对:审完整 diff,不沿用任何增量范围限制,也不因为之前某一轮已审过就省略。`
+      : `**全量审查**:${scope.reason}。审完整 diff。`)
       + ((scope.previousFindings ?? []).length ? '同时逐条核对下方「上一轮的问题」,不因为是全量轮就省略旧问题。' : '');
   const previousFindings = scope.previousFindings ?? [];
   const previous = previousFindings.length
@@ -323,6 +325,8 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
       full: toTemplate({ mode: 'full', reason: '<reason>' }, [], [], [], '<rules-base>'),
       // 全量轮带着上一轮问题:任务书多出逐条核对的要求,单独进 digest。
       fullWithPrevious: toTemplate({ mode: 'full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
+      // 放行前收口全量:说法与普通全量不同,模板变化要进 digest。
+      finalFullWithPrevious: toTemplate({ mode: 'full', purpose: 'final-full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
       incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),

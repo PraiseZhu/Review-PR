@@ -81,7 +81,8 @@ const mkCurrent = (diffText, over = {}) => {
 const mkPrevious = (diffText, over = {}) => {
   const files = splitDiffByFile(diffText);
   return {
-    head: 'h0', baseRefName: 'main', diffHash: 'd0', reviewed: true, reportComplete: true, outcome: 'review-only', reviewClean: true, findings: [],
+    head: 'h0', baseRefName: 'main', diffHash: 'd0', reviewed: true, reportComplete: true, outcome: 'review-only', reviewClean: false,
+    findings: [{ path: 'src/a.ts', body: '[P1] x' }],
     filePatchHashes: filePatchHashes(files), filePatchHashesV2: scope.filePatchHashesV2?.(files), totalDiffLines: 100,
     tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z', ...over,
   };
@@ -96,13 +97,14 @@ test('范围:双方都有 v2 → 按 v2 比,只挪位置的文件进入增量范
 });
 
 test('SC5 过渡:上一轮只有 v1 → 按 v1 比较,结果与改动前一致,不会因 v2 缺失全文件算变', () => {
-  const prevV1Only = mkPrevious(two('aaaaaaa'), { filePatchHashesV2: undefined });
+  const clean = { reviewClean: true, findings: [] };
+  const prevV1Only = mkPrevious(two('aaaaaaa'), { filePatchHashesV2: undefined, ...clean });
   const same = computeReviewScope({ previous: prevV1Only, current: mkCurrent(two('bbbbbbb')), headIsDescendant: true });
   assert.equal(same.mode, 'reuse', 'v1 看不出变化,按 v1 比就是沿用');
-  const changed = computeReviewScope({ previous: prevV1Only, current: mkCurrent(two('aaaaaaa').replace('+added', '+changed')), headIsDescendant: true });
+  const changed = computeReviewScope({ previous: { ...prevV1Only, reviewClean: false, findings: [{ path: 'src/a.ts', body: '[P1] x' }] }, current: mkCurrent(two('aaaaaaa').replace('+added', '+changed')), headIsDescendant: true });
   assert.equal(changed.mode, 'incremental');
   assert.deepEqual(changed.files, ['src/a.ts']);
-  const emptyV2 = computeReviewScope({ previous: mkPrevious(two('aaaaaaa'), { filePatchHashesV2: {} }), current: mkCurrent(two('aaaaaaa')), headIsDescendant: true });
+  const emptyV2 = computeReviewScope({ previous: mkPrevious(two('aaaaaaa'), { filePatchHashesV2: {}, ...clean }), current: mkCurrent(two('aaaaaaa')), headIsDescendant: true });
   assert.equal(emptyV2.mode, 'reuse', '上一轮 v2 为空对象也按 v1');
 });
 

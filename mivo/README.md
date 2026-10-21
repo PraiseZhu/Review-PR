@@ -25,7 +25,7 @@ flowchart LR
 | 目录 | 内容 |
 |---|---|
 | `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。确认门这一步先看是否改了受保护路径：改了就任何作者（含豁免名单）都走受保护路径确认 issue；没改，豁免作者开通知 issue 但不拦，非豁免作者走普通确认门（见「维护者确认 issue 的三种模式」）。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
-| `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底。全量轮也带上一轮（完整结果）的问题，任务书要求逐条核对（文件已不在本 PR 改动里的旧问题标 `outOfDiff`，任务书要求只在 Verification 写结论、不进 findings，否则答卷校验会拒收）；任务书版本（`specDigest`）变了、PR 改动指纹和 base 分支都没变时沿用上次结论（原因「规则改版，代码未变，沿用上次结论」），代码也变了或 `specChange.forceFull=true` 才因「规则变了」全量；7 天、档位升级、新确认门、人工复核等独立兜底照常保留，审查机代码换版本不算 |
+| `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底。全量轮也带上一轮（完整结果）的问题，任务书要求逐条核对（文件已不在本 PR 改动里的旧问题标 `outOfDiff`，任务书要求只在 Verification 写结论、不进 findings，否则答卷校验会拒收）；任务书版本（`specDigest`）变了、PR 改动指纹和 base 分支都没变时沿用上次结论（原因「规则改版，代码未变，沿用上次结论」），代码也变了或 `specChange.forceFull=true` 才因「规则变了」全量；7 天、档位升级、新确认门、人工复核等独立兜底照常保留，审查机代码换版本不算；放行前收口：上一轮干净且本轮代码变了直接全量，上一轮是收口且有问题、本轮改动全在问题文件里的修复轮免收口，同 head 收口待补时直接补跑全量（见「放行前收口全量」） |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
 | `lib/code-scan.mjs` | 挂 `review:merge-ready` 之前的代码扫描 / 代码质量门：读目标分支生效的 `code_scanning` / `code_quality` 规则（`rules/branches/<base>`，Mini 侧按 base 缓存 30 分钟）和 head 上的 check run，规则要求 CodeQL 时它必须是明确的 success；Mini 摘标签只认稳定不通过（见「`review:merge-ready` 的补充规则」末尾） |
@@ -287,6 +287,25 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - 作业上限是 `review-pr.yml` 的 `timeout-minutes`（160），codex 步骤用环境变量 `MIVO_REVIEW_JOB_TIMEOUT_MIN` 传进来；没传时按旧 workflow 的 110 分钟算。
 - 结果包 `mivo` 里记 `runnerName`（审查位，来自 `RUNNER_NAME`）和 `codexVersion`（调模型前取一次 `codex --version` 的第一行；没调模型的审查、CLI 不存在或命令超时都是 `null`，取不到不影响审查），排查失败不用再去查 jobs 接口和服务器升级日志。
 - 每次模型调用在结果包的 `mivo.codex.attempts[]` 里按 JSONL 事件留下记录：`firstEventSec`、`lastEventSec`、`eventCount`、`maxGapSec`（含开始到第一个事件、最后一个事件到退出两段空白）、`usage`（取 `turn.completed`，没有记 null）；失败时另记脱敏后最后 50 行、最多 8 KB 的 `stderrTail`。这些只进结果包，不进 PR 评论，也不能单独当作「变慢原因」的证据。
+
+## 放行前收口全量（#100，总 issue #96 子4）
+
+用户 2026-10-21 选 A：增量轮判干净后，放行前再做一次完整 diff 的收口全量，全量也干净才 Approve；P0/P1/P2 照样阻断（不用 `review.md`）。
+
+| 场景 | 行为 |
+|---|---|
+| 增量轮判干净 | 同一次运行里接着跑收口全量（任务书 `purpose: final-full`，第二次主审调用，`input/final-full-*` 与 CLI label `final-full-N`）；只发布收口那份答卷。收口查出问题 → 照现有格式 Request Changes，不回退用增量的干净答卷 |
+| 上一轮干净、本轮改了代码 | `computeReviewScope` 直接全量，不先跑增量（规则改版且代码没变仍按「沿用上次结论」，不触发收口） |
+| 防拉锯：上一轮是收口且有问题，本轮改动全落在那些问题所在文件里 | 增量判干净即放行，不再收口；结果包 `mivo.finalFull = { head, runId, outcome: 'skipped-fix-round', basedOn: { head, runId }, files, issueFiles }`，不伪造干净全量；报告写「本轮是修复轮…未再收口」。改动超出问题文件、超半数、7 天、新确认门等兜底照常先于豁免 |
+| 剩余模型预算不足收口 | 低于 67 分钟（45 分钟主审 + 20 分钟备用预留 + 2×收尾余量；45 分钟取自 56 次 full workflow 的 p90，含 workflow 开销，作保守窗口）不 Approve，结果顶层 `error` + `retry`，`mivo.finalFull.outcome = 'pending-budget'`，报告 Overall 写 `pending —— 收口待补，尚未放行`；check 保持进行中，不发 review/评论，同 head 摘掉 `review:merge-ready`（PR head 已变则记 `state-changed` 不碰新 head 的标签） |
+| 收口开始后失败 | 同样不回退增量答卷；`finalFull.outcome = 'error'` 并保留真实前轮，Mini 下一次对同 head 直接全量 |
+
+- 总预算只有一份：两段主审、备用 key/模型、核对员共用同一个 `budgetAt` 起算的余额，第二段主模型上限按余额收紧，不会重新得到 120 分钟。
+- 结果包 `mivo.finalFull = { head, runId, outcome }`（`head` 是被审 head、`runId` 是 GitHub run id，`outcome` 为 `clean` / `findings` / `manual-review` / `pending-budget` / `error` / `skipped-fix-round`），`mivo.finalFullContext = { kind: 'same-run' | 'budget-retry' | 'direct-full', findingFiles, previousRound }`。`findingFiles` 取收口仍阻断问题的位置（含 `instances`）。沿用上一轮结论时原样带过去。
+- 放行门：增量范围的干净结论没有 `clean` / `skipped-fix-round` 记录就不 Approve（含 advisory、人工复核以外的所有放行路径），直接标收口待补。
+- 结论与 head 绑定：模型阶段用 prepare 固定的 `input.head`，check、报告头和证据都写被审 head；收口期间 PR 前进时由 guarded finish / Request Changes 的 expected-head 拒绝，结果 `state-changed`。
+- Mini 侧（`round.mjs`）：待补/收口失败包记 `store.prs[pr].pendingFinalFull = { head, runId }`（同时清该 head 的 `cleanHead`），不更新 `lastCompleteRunId`，按现有失败退避重试；下一次派发 `prev_run_id` 指向待补那次运行，服务器下载后据 `finalFull` 标记直接全量并恢复真实前轮；同 head 的收口/全量做完（clean/findings/manual-review，顶层非 error）才清游标；新 head 不消费旧游标。无新 workflow 输入、无新定时器。
+- 合入顺序：#97-#99 换版并线上验证后才合入本改动；换版后观察一周，增量轮放行的 PR 在同一 head 上都应有 `finalFull`（修复轮记 `skipped-fix-round` 及依据），放行轮耗时 p50 增量不超过 20 分钟。
 
 ## 换审查模型（Mini 上的三个 Cindy 自动化）
 

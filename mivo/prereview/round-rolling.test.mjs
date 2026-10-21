@@ -37,6 +37,7 @@ const codeScan = await load('mivo/lib/code-scan.mjs');
 const retry = await load('mivo/lib/retry.mjs');
 const health = await load('mivo/lib/health.mjs');
 const handoff = await load('mivo/lib/handoff.mjs');
+const scope = await load('mivo/lib/scope.mjs');
 const source = process.env.ROUND_FIXTURE_SOURCE_REV
   ? execFileSync('git', ['show', `${process.env.ROUND_FIXTURE_SOURCE_REV}:mivo/prereview/round.mjs`], { cwd: REPO_ROOT, encoding: 'utf8' })
   : readFileSync(join(REPO_ROOT, 'mivo/prereview/round.mjs'), 'utf8');
@@ -166,7 +167,7 @@ function makeFixture(scenario) {
     constructor(...args) { super(...(args.length ? args : [clockMs])); }
     static now() { return clockMs; }
   }
-  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff,
+  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, previousFromResult: scope.previousFromResult,
     dirname, join, resolve, randomUUID, Date: FixtureDate,
     inBusinessWindow: () => health.inBusinessWindow(new Date(clockMs)),
     nowIso: () => new Date(clockMs).toISOString(), readJson, writeJson,
@@ -269,6 +270,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     protectedAuthors: new Set(), noticeFailures: 0, noticeCalls: [],
     // 带 review:merge-ready 的 PR 集合、按 PR 覆盖 context 的字段(meta 浅合并)、被摘标签的 DELETE 路径记录
     labeled: new Set(), contextPatch: new Map(), labelDeletes: [],
+    // 收口全量:第一次结果为「收口待补」的 PR 集合(用掉一次);带 finalFull 的完整结果的 PR 集合
+    finalFullPending: new Set(), finalFullDone: new Set(),
     // 目标分支的 code_scanning 规则(rules/branches 的返回)与按 head 给的 check run(摘标签的代码扫描判据)、读规则的次数
     rulesPayload: [], codeScanChecks: {}, rulesReads: 0 };
   const clone = (value) => structuredClone(value);
@@ -495,7 +498,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         const id = String(w.nextRunId++);
         w.runs.set(id, { id, pr, head: inputs.head_sha, roundId: inputs.round_id, dispatchId: inputs.dispatch_id,
           title: `review-pr #${pr} ${inputs.dispatch_id}`, createdMs: w.now, durationMs: spec.durationMs, queueMs: spec.queueMs });
-        w.dispatches.push({ at: w.now, pr, head: inputs.head_sha, dispatchId: inputs.dispatch_id, runId: id, attempt: inputs.attempt });
+        w.dispatches.push({ at: w.now, pr, head: inputs.head_sha, dispatchId: inputs.dispatch_id, runId: id, attempt: inputs.attempt, prev: inputs.prev_run_id });
       }
       return failure ? fail('HTTP 502: Bad Gateway') : ok();
     }
@@ -519,8 +522,14 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       const same = w.prs.get(r.pr).head === r.head;
       const dir = argOf(args, '-D');
       const limited = w.rateLimited.has(r.pr);
+      const pendingFinalFull = w.finalFullPending.delete(r.pr);
       const limitedReason = `context 读取失败:gh pr view ${r.pr} --repo o/target --json headRefOid,baseRefOid,baseRefName 退出码 1: GraphQL: API rate limit already exceeded for user ID 1.`;
-      w.files.set(`${dir}/result.json`, w.protectedAuthors.has(r.pr)
+      w.files.set(`${dir}/result.json`, pendingFinalFull
+        ? { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [], enteredReview: true, reviewed: false, reviewClean: false,
+          outcome: 'error', reason: '收口待补:剩余模型预算不足,不放行,Mini 将按现有退避自动补跑全量', retry: true, errors: [], warnings: [],
+          mivo: { runId: r.id, reportComplete: false, finalFull: { head: r.head, runId: r.id, outcome: 'pending-budget' },
+            finalFullContext: { kind: 'same-run', findingFiles: [], previousRound: null } } }
+        : w.protectedAuthors.has(r.pr)
         ? { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [], enteredReview: false, reviewed: false, reviewClean: false,
           outcome: 'protected', reason: '受保护路径:作者为维护者,自动放行', authorNotice: gates.toAutoReleaseNotice({ head: r.head, by: 'praisezhu' }),
           errors: [], warnings: [], mivo: { reportComplete: false } }
@@ -530,7 +539,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
           mivo: { reportComplete: false, ...(w.rateLimitedAfterModel ? { codex: { attempts: [{ model: 'm', ok: true }] } } : {}) } }
         : { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [],
           enteredReview: same, reviewed: same, reviewClean: same, outcome: same ? 'approval' : 'state-changed', reason: same ? '审查通过' : '发布前 PR 已变化',
-          retry: !same, errors: [], warnings: [], mivo: { reportComplete: same } });
+          retry: !same, errors: [], warnings: [],
+          mivo: { reportComplete: same, runId: r.id, ...(w.finalFullDone.has(r.pr) ? { finalFull: { head: r.head, runId: r.id, outcome: 'clean' }, finalFullContext: { kind: 'budget-retry', findingFiles: [], previousRound: null } } : {}) } });
       w.files.set(`${dir}/report.md`, 'report');
       return ok();
     }
@@ -543,7 +553,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       constructor(...args) { super(...(args.length ? args : [w.now])); }
       static now() { return w.now; }
     }
-    const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, dirname, join, resolve, randomUUID, Date: FixtureDate,
+    const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, previousFromResult: scope.previousFromResult, dirname, join, resolve, randomUUID, Date: FixtureDate,
       inBusinessWindow: () => health.inBusinessWindow(new Date(w.now)), nowIso: () => iso(w.now),
       readJson: (file, fallback) => {
         if (w.files.has(file)) return clone(w.files.get(file));
@@ -1360,6 +1370,61 @@ test('世界:同一个提交连续撞限额,退回尝试最多 3 次;第 4 次�
   assert.equal(store.rateLimitRefunds.h1, 3);
   assert.equal(store.failures.h1.count, 1, '第 4 次起记失败,进入退避');
   assert.equal(store.attempts.h1, 1, '第 4 次的尝试次数不再退回');
+});
+
+// 结果包里的 head 是 40 位 SHA(服务器 SHA_RE),收口记录的校验同口径,所以这两个用例不用 'h1' 这种短名。
+const H1 = 'a1'.repeat(20);
+const H2 = 'b2'.repeat(20);
+test('世界:收口待补(#100)——不更新 lastCompleteRunId、记游标;退避后同 head 的 prev_run_id 指向待补那次运行;全量做完清游标', async () => {
+  const w = makeWorld();
+  w.openPr(1, H1);
+  w.finalFullPending.add(1);
+  w.finalFullDone.add(1);
+  // launchd 每 3 分钟拉起一个新进程:一个进程收完这个提交的结果就退出,下一个进程再派发(退避 10 分钟内不派)。
+  for (let i = 0; i < 8 && w.logged('collected').length < 2; i += 1) {
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled, { maxMs: 300 * MIN }), `第 ${i + 1} 个进程结束`);
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+    if (w.logged('collected').length === 1 && !w.pendingChecked) {
+      w.pendingChecked = true;
+      const store = w.read(w.state('reviews.json')).prs[1];
+      assert.deepEqual(store.pendingFinalFull, { head: H1, runId: w.dispatchesOf(1)[0].runId }, '记游标');
+      assert.equal(store.lastCompleteRunId, undefined, '待补不算完整结果');
+      assert.equal(store.failures[H1].count, 1, '按现有失败节奏退避');
+      assert.equal(store.cleanHead, undefined);
+      assert.equal(w.read(`${w.roundDir('R1')}/results/pr-1.json`).outcome, 'error');
+    }
+    w.now += 3 * MIN;
+  }
+  assert.equal(w.logged('collected').length, 2, '同一个 head 派发了 2 次');
+  const [first, second] = w.dispatchesOf(1);
+  assert.equal(first.prev, '', '第一次没有上一轮');
+  assert.equal(second.prev, first.runId, '补跑的 prev_run_id 指向待补那次运行,而不是最近的完整结果');
+  assert.ok(second.at - first.at >= 10 * MIN, '退避不被绕过');
+  const store = w.read(w.state('reviews.json')).prs[1];
+  assert.equal(store.pendingFinalFull, null, '全量做完清游标');
+  assert.equal(store.lastCompleteRunId, second.runId);
+  assert.equal(store.cleanHead, H1);
+  assert.equal(store.failures?.[H1], undefined, '成功一次失败记录清零');
+});
+
+test('世界:新 head 不消费旧 head 的待补游标', async () => {
+  const w = makeWorld();
+  w.openPr(1, H1);
+  w.finalFullPending.add(1);
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 300 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  const stale = w.read(w.state('reviews.json')).prs[1].pendingFinalFull;
+  assert.equal(stale.head, H1);
+  w.push(1, H2);
+  w.now += 3 * MIN;
+  const next = w.start();
+  assert.ok(await w.runUntil(() => next.settled, { maxMs: 300 * MIN }));
+  assert.equal(next.failure, null, String(next.failure?.stack));
+  const second = w.dispatchesOf(1).find((d) => d.head === H2);
+  assert.ok(second, '新 head 被派发了');
+  assert.equal(second.prev, '', '新 head 的 prev_run_id 不指向旧 head 的待补运行');
 });
 
 test('世界:正常审过的结果不会被误当成限额', async () => {

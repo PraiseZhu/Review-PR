@@ -215,8 +215,36 @@ function replaceFindingsSection(lines, findings) {
   return [...lines.slice(0, start + 1), "", ...body, "", ...lines.slice(end)];
 }
 
+/**
+ * 放行前收口全量的状态说明(Verification 下一行)。outcome 来自结果包 mivo.finalFull.outcome,kind 来自 finalFullContext.kind。
+ * 没有收口记录(沿用旧结论等)返回 null。
+ */
+export function finalFullLine({ finalFull = null, kind = null } = {}) {
+  if (!finalFull) return null;
+  if (finalFull.outcome === 'skipped-fix-round') return '收口全量:本轮是修复轮,改动只落在上次收口问题所在文件,未再收口。';
+  if (finalFull.outcome === 'pending-budget') return '收口全量:收口待补——本轮只完成增量,剩余模型预算不足以再做收口,尚未放行;审查机会在同一 head 上自动补跑全量。';
+  if (finalFull.outcome === 'error') return '收口全量:收口未完成(模型调用失败),尚未放行;审查机会在同一 head 上自动补跑全量。';
+  if (kind === 'same-run') return '收口全量:本轮增量判干净后,同一次运行接着对完整 diff 做了放行前收口全量,以下结论以收口为准。';
+  if (kind === 'budget-retry') return '收口全量:补跑(上一次运行的收口没做完),本轮对完整 diff 做收口全量。';
+  return '全量审查:本轮已审完整 diff,不需要再做收口。';
+}
+
+/** 收口待补的报告:只完成增量,不是通过。Overall 写 pending,不能留下 pass。 */
+export function pendingFinalFullReport({ pr, url, head, base, diffHash, tier, scope, remainingMs, requiredMs, skillSha = '', specDigest = '' }) {
+  const min = (ms) => Math.max(0, Math.floor((Number(ms) || 0) / 60_000));
+  const versions = `${skillSha ? ` · skill \`${String(skillSha).slice(0, 7)}\`` : ''}${specDigest ? ` · spec \`${String(specDigest).slice(0, 7)}\`` : ''}`;
+  return [
+    `> ${REPORT_HEADER} · [PR](${url}) · head \`${String(head).slice(0, 12)}\` · base \`${String(base).slice(0, 12)}\` · diffHash \`${String(diffHash ?? '').slice(0, 12)}\` · 档位 ${tier}${versions}`,
+    '', '## Findings', '', '本轮增量审查没有发现阻断问题,但放行前的收口全量还没做,所以这不是最终结论。', '',
+    '## Rule coverage', '', '收口全量完成后给出。', '',
+    '## Verification', '', `审查范围:${scope?.reason ?? '增量'}`, '',
+    `只完成增量;本轮未完成收口。作业剩余模型预算约 ${min(remainingMs)} 分钟,收口全量至少需要 ${min(requiredMs)} 分钟。审查机会在同一 head 上自动补跑全量,补跑完成前不会 Approve。`, '',
+    '## Overall', '', 'pending —— 收口待补，尚未放行。', '',
+  ].join('\n');
+}
+
 export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
-  pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '' }) {
+  pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '', finalFull = null, finalFullKind = null }) {
   const summary = toDeferredSummary(deferred);
   const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
@@ -242,7 +270,8 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
     ? `审查范围:${scope.reason}`
     : `审查范围:全量(${scope?.reason ?? '首次审查'})`;
   if (verificationIndex >= 0 && !lines.slice(verificationIndex + 1, verificationIndex + 3).some((line) => line.startsWith('审查范围'))) {
-    lines.splice(verificationIndex + 1, 0, '', scopeLine);
+    const stateLine = finalFullLine({ finalFull, kind: finalFullKind });
+    lines.splice(verificationIndex + 1, 0, '', scopeLine, ...(stateLine ? ['', stateLine] : []));
   }
   // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
   const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting),
