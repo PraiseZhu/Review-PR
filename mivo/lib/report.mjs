@@ -3,7 +3,8 @@
 // 只报 P0/P1/P2。Mivo 加一行「Mivo 自动审查」区分 PraiseZhu 本人的评论(两者同一账号发出)。
 // 作者转 issue 跟进的 P1/P2(见 deferrals.mjs)单列成「已转 issue 跟进的问题」,不阻断、不开 thread。
 import { toDeferredSummary } from './deferrals.mjs';
-import { FINDING_ITEM_SCHEMA, SEVERITIES, normalizeFinding, classifyOrigin, checkEvidence, renderFindingBody, titleOfBody } from './finding.mjs';
+import { normalizeHandoffCoverage } from './handoff.mjs';
+import { FINDING_ITEM_SCHEMA, SEVERITIES, normalizeFinding, readHandoffRiskIds, escapeModelText, classifyOrigin, checkEvidence, renderFindingBody, titleOfBody } from './finding.mjs';
 
 export const REPORT_SECTIONS = ['## Findings', '## Rule coverage', '## Verification', '## Overall'];
 export const REPORT_HEADER = 'Mivo 自动审查';
@@ -19,10 +20,26 @@ const SEVERITY_RE = /^\s*\[(P[012])\]/;
 export const ANSWER_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['report', 'findings'],
+  required: ['report', 'findings', 'handoffCoverage'],
   properties: {
     report: { type: 'string', description: '完整 Markdown 审查报告,含四段骨架' },
     findings: { type: 'array', items: FINDING_ITEM_SCHEMA },
+    handoffCoverage: {
+      type: 'array',
+      description: '作者交接 review.md 第 3 节每条 R 的核对结论,每条当前 R 一项;没有交接或没有 R 填空数组',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'verdict', 'evidence', 'note'],
+        properties: {
+          id: { type: 'string', description: 'R 编号,如 R1' },
+          verdict: { type: 'string', enum: ['成立', '不成立', '未核实'] },
+          evidence: { type: 'array', description: '证据位置,最多 8 项;每项必须是 PR head 上真实存在的文件和行号',
+            items: { type: 'object', additionalProperties: false, required: ['path', 'line'], properties: { path: { type: 'string' }, line: { type: 'integer' } } } },
+          note: { type: 'string', description: '核对依据,不超过 800 字;未核实要写原因' },
+        },
+      },
+    },
   },
 };
 
@@ -34,7 +51,7 @@ export const ANSWER_SCHEMA = {
  *   findings 是阻断问题;deferred 是转 issue 跟进的 P1/P2(带 deferredTo,不阻断);preexisting 是 PR 之前就存在的 P1/P2(不阻断)
  *   没有 severity 字段的 v1 项保持原来的判级与输出形状;v2 项带 severity/title/证据/来源等元数据。
  */
-export function validateAnswer(answer, { diffFiles, deferrals = [], headReader = null }) {
+export function validateAnswer(answer, { diffFiles, deferrals = [], headReader = null, handoff = null }) {
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return { ok: false, error: '答卷不是 JSON 对象' };
   if (typeof answer.report !== 'string' || !answer.report.trim()) return { ok: false, error: '答卷缺少 report' };
   if (!Array.isArray(answer.findings)) return { ok: false, error: '答卷缺少 findings 数组' };
@@ -46,6 +63,9 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
   const preexisting = [];
   let evidenceIncomplete = 0;
   const verifiedIssues = new Set((deferrals ?? []).map((d) => d.issue));
+  // 作者交接:只有解析出合法 review 才收 handoffCoverage / handoffRiskIds;出错只记 notes,不影响 ok。
+  const handoffOn = handoff?.review?.status === 'parsed';
+  const riskIds = new Set(handoffOn ? handoff.review.risks.filter((r) => !r.ambiguous).map((r) => r.id) : []);
   for (const [index, raw] of answer.findings.entries()) {
     const v2 = typeof raw?.severity === 'string';
     const path = String(raw?.path ?? '').trim();
@@ -87,6 +107,11 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
       item = { ...item, body, severity, title: meta.title, trigger: meta.trigger, behavior: meta.behavior, impact: meta.impact, fix: meta.fix,
         verify: meta.verify, evidence: meta.evidence, instances: meta.instances, origin: meta.origin, bugClass: meta.bugClass,
         supersedes: meta.supersedes, evidenceComplete };
+      if (handoffOn) {
+        const linked = readHandoffRiskIds(raw.handoffRiskIds, riskIds);
+        if (!linked.complete) notes.push(`第 ${index + 1} 条问题的 handoffRiskIds 缺失或含无效编号,不计入交接关联`);
+        item = { ...item, handoffRiskIds: linked.ids, handoffMappingComplete: linked.complete };
+      }
     }
     // PR 之前就存在的 P1/P2 不阻断本 PR;P0 不论来源都阻断。
     const place = (target) => ((v2 && ['P1', 'P2'].includes(severity) && target.origin === 'pre-existing') ? preexisting : findings).push(target);
@@ -107,7 +132,69 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
       deferred.push({ ...item, deferredTo: target });
     }
   }
-  return { ok: true, report: answer.report.trim(), findings, deferred, preexisting, notes, evidenceIncomplete };
+  const coverage = handoffOn ? normalizeHandoffCoverage({ raw: answer.handoffCoverage, review: handoff.review, plan: handoff.plan ?? [], headReader: handoff.headReader, source: handoff.source })
+    : { coverage: [], meta: {}, warnings: [] };
+  notes.push(...coverage.warnings);
+  return { ok: true, report: answer.report.trim(), findings, deferred, preexisting, notes, evidenceIncomplete,
+    handoffCoverage: coverage.coverage, handoffCoverageMeta: coverage.meta };
+}
+
+// ── 作者交接核对:统计与报告小节 ─────────────────────────────────────────────────
+export const HANDOFF_SECTION = '### 作者交接核对';
+
+/**
+ * 防带偏指标。findings 必须是 publish 阶段最终的阻断问题数组(核对员/裁定之后)。
+ * blocking = associated + outside;outside 就是「交接之外的发现」:没有有效 R 关联声明的阻断问题。
+ * deferred / preexisting / 被核对员移除的都不在 findings 里,不计。
+ */
+export function computeHandoffStats({ review, coverage = [], meta = {}, findings = [], head = null, runId = null }) {
+  const blocking = findings.length;
+  if (review?.status !== 'parsed') {
+    return { version: 1, measuredHead: head, measuredRunId: runId, reused: false, reviewAvailable: false, complete: false,
+      risks: 0, coverageVerified: 0, coverageReused: 0, blocking, associated: 0, outside: blocking, mappingUnknown: 0 };
+  }
+  const associated = findings.filter((f) => (f.handoffRiskIds ?? []).length > 0).length;
+  const mappingUnknown = findings.filter((f) => f.handoffMappingComplete !== true).length;
+  const verified = coverage.filter((c) => ['成立', '不成立'].includes(c.verdict) && meta[c.id]?.evidenceValid === true);
+  return { version: 1, measuredHead: head, measuredRunId: runId, reused: false, reviewAvailable: true, complete: mappingUnknown === 0,
+    risks: new Set(review.risks.map((r) => r.id)).size, coverageVerified: verified.length, coverageReused: verified.filter((c) => meta[c.id]?.reused === true).length,
+    blocking, associated, outside: blocking - associated, mappingUnknown };
+}
+
+const oneLineText = (text, max = 300) => escapeModelText(String(text ?? '').replace(/[\r\n]+/g, ' ').replace(/`/g, "'").trim()).slice(0, max);
+
+/** 服务端生成的「作者交接核对」小节(逐 R 结论 + 固定一行「交接之外的发现：N 条」)。 */
+export function renderHandoffCoverageSection({ coverage = [], meta = {}, stats = null } = {}) {
+  const lines = [HANDOFF_SECTION, ''];
+  if (!coverage.length) lines.push('- 本 PR 的作者交接没有风险条目（R）。');
+  for (const c of coverage) {
+    const m = meta[c.id] ?? {};
+    const evidence = (c.evidence ?? []).map((e) => `\`${oneLineText(e.line ? `${e.path}:${e.line}` : e.path, 120)}\``).join('、') || '(无)';
+    const marks = [m.reused ? `沿用（来源 head \`${String(m.sourceHead ?? '').slice(0, 7)}\`）` : '', m.evidenceValid === false && c.verdict !== '未核实' ? '证据未通过检查' : ''].filter(Boolean);
+    lines.push(`- ${c.id} · ${c.verdict} · 证据 ${evidence}${marks.length ? ` · ${marks.join('；')}` : ''}${c.note ? ` · ${oneLineText(c.note)}` : ''}`);
+  }
+  if (stats) {
+    lines.push('', `交接之外的发现：${stats.outside} 条${stats.reviewAvailable === false || stats.complete === false ? '（关联记录不完整，不用于趋势比较）' : ''}`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/** 把服务端生成的小节放进 Rule coverage 末尾;模型自己写的同名小节先去掉,避免两个计数并存。 */
+function applyHandoffSection(lines, section) {
+  const start = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
+  if (start < 0) return lines;
+  let end = start + 1;
+  while (end < lines.length && !/^## /.test(lines[end])) end += 1;
+  const own = lines.slice(start + 1, end).findIndex((line) => line.startsWith(HANDOFF_SECTION));
+  let body = lines.slice(start + 1, end);
+  if (own >= 0) {
+    let stop = own + 1;
+    while (stop < body.length && !/^#{2,3} /.test(body[stop])) stop += 1;
+    body = [...body.slice(0, own), ...body.slice(stop)];
+  }
+  while (body.length && !body.at(-1).trim()) body.pop();
+  return [...lines.slice(0, start + 1), ...body, '', ...section, ...lines.slice(end)];
 }
 
 /** 报告里「已转 issue 跟进的问题」一节;没有转 issue 的问题、也没有未采用的登记时返回空数组。 */
@@ -244,7 +331,7 @@ export function pendingFinalFullReport({ pr, url, head, base, diffHash, tier, sc
 }
 
 export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
-  pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '', finalFull = null, finalFullKind = null }) {
+  pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '', finalFull = null, finalFullKind = null, handoff = null }) {
   const summary = toDeferredSummary(deferred);
   const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
@@ -255,7 +342,8 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
   // 核对员推翻/降级的 P1/P2:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
   if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
   else if (overruled) conclusion += `另有 ${overruled} 条 P1/P2 被核对员推翻/降级，不阻断。`;
-  const lines = replaceFindingsSection(String(report).trim().split('\n'), findings);
+  let lines = replaceFindingsSection(String(report).trim().split('\n'), findings);
+  if (handoff?.review?.status === 'parsed') lines = applyHandoffSection(lines, renderHandoffCoverageSection(handoff));
   const overallIndex = lines.findIndex((line) => /^## Overall\s*$/.test(line));
   if (overallIndex >= 0) {
     let next = overallIndex + 1;
