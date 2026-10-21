@@ -2511,7 +2511,9 @@ export function evaluateBotSettle({
   const reviewers = (cfg.reviewers ?? DEFAULT_BOT_REVIEWERS).map((s) => String(s).toLowerCase());
   const quietBots = [...new Set([...reviewers, ...(cfg.quietExtraBots ?? []).map((s) => String(s).toLowerCase())])];
   const base = { enabled: cfg.enabled !== false, maxWaitMinutes, quietMinutes, pending: [], responded: [], timedOut: false };
-  if (cfg.enabled === false || reviewers.length === 0) {
+  // reviewers 为空只表示没有必等对象;quietExtraBots 仍要在有活动时静默。
+  // 两者都空、或关掉开关,才是「静默期未启用」(Cindy 把 greptile 放 quietExtraBots 就靠这条)。
+  if (cfg.enabled === false || (reviewers.length === 0 && quietBots.length === 0)) {
     return { ...base, settled: true, waitedMinutes: null, reason: '机器人静默期未启用' };
   }
   // head commit 时间读不到 → 无法判等了多久。不拦(避免把「查不到」变成永久阻断),如实说明。
@@ -2587,7 +2589,11 @@ export function evaluateBotSettle({
     ...(reuseStance ? { reused: true } : {}),
     reason: reuseStance
       ? `只有 base 前移,PR 自身 patch 不变,沿用上一 head 已静默满的机器人表态(${reviewers.join(' / ')})`
-      : `全部 ${responded.length} 个机器人已对当前 head 表态${quietMinutes > 0 ? `,且已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})` : ''}`,
+      : reviewers.length === 0
+        ? (lastBotAt
+          ? `无必等机器人,quietExtraBots 已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})`
+          : '无必等机器人,quietExtraBots 无新动静')
+        : `全部 ${responded.length} 个机器人已对当前 head 表态${quietMinutes > 0 ? `,且已静默 ${quietSinceMinutes == null ? '' : quietSinceMinutes.toFixed(1)} 分钟(≥${quietMinutes})` : ''}`,
     ...(reuseStance ? {
       stanceHeadSha: previousSettle.headSha,
       stanceCommittedDate: previousSettle.headCommittedDate,

@@ -295,11 +295,12 @@ test('静默期:reviewers 为空时 Greptile 不回也不必等,CI 绿后立即 
   assert.doesNotMatch(r.reason, /未启用/);
   const checkOnly = botCheckActivity([
     { name: 'Greptile Review', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: at(0.5) },
-  ], { ...GREPTILE_QUIET_CFG, checkNames: { 'greptile-apps': 'Greptile Review' } });
+  ], GREPTILE_QUIET_CFG);
+  assert.deepEqual(checkOnly, [], '生产配置不配 checkNames,check 跑完不会进 activity');
   const afterCheck = evaluateBotSettle({
     headCommittedDate: HEAD, nowIso: at(1), activity: checkOnly, cfg: GREPTILE_QUIET_CFG,
   });
-  assert.equal(afterCheck.settled, true, '生产配置不配 checkNames:check 跑完不能当成必等表态,也不该挡 5 分钟');
+  assert.equal(afterCheck.settled, true);
 });
 
 test('静默期:Greptile 在当前 head 上发了评论后,从最新活动再静默 5 分钟', () => {
@@ -333,7 +334,8 @@ test('静默期:Greptile 持续活动时总上限 15 分钟封顶,计时从 head
   assert.equal(capped.timedOut, true);
   assert.equal(capped.maxWaitMinutes, 15);
   const fromReady = evaluateBotSettle({
-    headCommittedDate: HEAD, readyForReviewAt: at(10), nowIso: at(20), activity: chatter, cfg: GREPTILE_QUIET_CFG,
+    headCommittedDate: HEAD, readyForReviewAt: at(10), nowIso: at(20),
+    activity: [{ author: 'greptile-apps', at: at(19.5) }], cfg: GREPTILE_QUIET_CFG,
   });
   assert.equal(fromReady.settled, false, '转 Ready 才 10 分钟,总上限从转 Ready 起算尚未满 15');
   assert.equal(fromReady.waitAnchor, 'ready');
@@ -1398,6 +1400,17 @@ test('Mivo 生产配置:产品/UI 门关闭,admin 以外的作者缺界面证据
   assert.equal(rules.signoffGate.product.requireUiEvidence, 'non-admin');
   assert.equal(uiEvidenceNeedsAdminLookup(rules), true);
   assert.ok(rules.signoffGate.product.uiPaths.includes('src/'));
+});
+
+test('Mivo 生产配置:Greptile 只进 quietExtraBots,不设必等 reviewers,上限 15 分钟', () => {
+  const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  const settle = rules.botReviewSettle;
+  assert.deepEqual(settle.reviewers, []);
+  assert.deepEqual(settle.quietExtraBots, ['greptile-apps']);
+  assert.equal(settle.quietMinutes, 5);
+  assert.equal(settle.maxWaitMinutes, 15);
+  assert.equal(settle.checkNames, undefined);
+  assert.doesNotMatch(settle._comment, /27\.5/);
 });
 
 test('「效果展示」第一行写「不涉及」:配了 acceptNotApplicable 就不再要求界面证据', () => {
