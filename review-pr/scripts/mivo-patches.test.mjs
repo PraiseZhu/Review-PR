@@ -49,7 +49,7 @@ const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mj
 const { fetchCodeScanRules, toCodeScanCheckFacts } = await import('./lib.mjs');
 const {
   filePatchHashesFromDiff, filePatchHashesFromPullFiles, sameFilePatchHashes, previousSettleFromLocalMerge,
-  toPreviousSettleForHead, proveBaseOnlyHeadRelation,
+  toPreviousSettleForHead, proveBaseOnlyHeadRelation, saveBotSettleSnapshot,
 } = await import('./lib.mjs');
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
@@ -675,6 +675,214 @@ test('proveBaseOnlyHeadRelation: 按 PR head SHA 查 parent,不要求当前 HEAD
   };
   assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, gitFn }), true);
   assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha: otherHead, gitFn }), false);
+});
+
+const POLICY_CODE = `export function allowRead() {
+  return true;
+}
+// separator one
+// separator two
+// separator three
+// separator four
+// separator five
+export function allowWrite() {
+  return true;
+}
+`;
+const POLICY_READ_FALSE = POLICY_CODE.replace('  return true;', '  return false;');
+const POLICY_WRITE_FALSE = POLICY_CODE.replace(
+  'export function allowWrite() {\n  return true;',
+  'export function allowWrite() {\n  return false;',
+);
+
+function gitRepo(dir) {
+  const env = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com',
+  };
+  const gitFn = (args, extra = {}) => {
+    const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8', env: { ...env, ...extra.env } });
+    return { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+  };
+  const must = (args, extra) => {
+    const r = gitFn(args, extra);
+    assert.equal(r.ok, true, r.stderr);
+    return r.stdout.trim();
+  };
+  const commitAt = (message, iso) => {
+    must(['add', '.']);
+    return must(['commit', '-m', message], { env: { GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso } });
+  };
+  return { env, gitFn, must, commitAt };
+}
+
+function setupPolicyPr(dir) {
+  mkdirSync(dir, { recursive: true });
+  const r = gitRepo(dir);
+  assert.equal(spawnSync('git', ['init', '-b', 'main'], { cwd: dir, encoding: 'utf8', env: r.env }).status, 0);
+  spawnSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir, env: r.env });
+  spawnSync('git', ['config', 'user.name', 't'], { cwd: dir, env: r.env });
+  writeFileSync(join(dir, 'policy.mjs'), POLICY_CODE);
+  writeFileSync(join(dir, 'config.json'), '{}\n');
+  r.commitAt('base', '2026-10-21T05:00:00Z');
+  const originBase = r.must(['rev-parse', 'HEAD']);
+  r.must(['checkout', '-b', 'pr']);
+  writeFileSync(join(dir, 'policy.mjs'), POLICY_READ_FALSE);
+  r.commitAt('reviewed change to allowRead', '2026-10-21T05:20:00Z');
+  const oldHead = r.must(['rev-parse', 'HEAD']);
+  const oldHashes = filePatchHashesFromDiff(r.must(['diff', `${originBase}...${oldHead}`]));
+  return { ...r, originBase, oldHead, oldHashes };
+}
+
+function settleFrom(r, headSha, baseSha, currentHashes, previousSettle) {
+  const snap = previousSettle ?? toPreviousSettleForHead({
+    owner: 'x', repo: 'y', pr: 1081, headSha, baseSha, currentHashes, gitFn: r.gitFn,
+    nowIso: '2026-10-21T05:50:00Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+  });
+  return evaluateBotSettle({
+    headCommittedDate: '2026-10-21T05:44:00Z',
+    nowIso: '2026-10-21T05:50:00Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }],
+    cfg: READY_CFG,
+    filePatchHashes: currentHashes,
+    previousSettle: snap,
+  });
+}
+
+test('结构证明:普通追加提交即使指纹相同也不能沿用(同文件不同位置相同增删行)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-linear-'));
+  try {
+    const r = setupPolicyPr(dir);
+    writeFileSync(join(dir, 'policy.mjs'), POLICY_WRITE_FALSE);
+    r.commitAt('move change from read to write', '2026-10-21T05:44:00Z');
+    const headSha = r.must(['rev-parse', 'HEAD']);
+    const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${r.originBase}...${headSha}`]));
+    assert.equal(sameFilePatchHashes(r.oldHashes, currentHashes), true, '对照:指纹仍撞车');
+    const previousSettle = {
+      settled: true, timedOut: false, responded: ['greptile-apps'],
+      filePatchHashes: r.oldHashes, headCommittedDate: '2026-10-21T05:20:00Z',
+      headSha: r.oldHead, baseOnlyProven: proveBaseOnlyHeadRelation({
+        previousHeadSha: r.oldHead, headSha, gitFn: r.gitFn, baseSha: r.originBase,
+      }),
+    };
+    const got = settleFrom(r, headSha, r.originBase, currentHashes, previousSettle);
+    assert.equal(got.reused, undefined, '单 parent 追加提交不能沿用,即使祖先关系和指纹都相同');
+    assert.equal(got.settled, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('结构证明:合 main 的 merge 若夹带 PR 自身改动不能沿用', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-merge-dirty-'));
+  try {
+    const r = setupPolicyPr(dir);
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only.txt'), 'base\n');
+    r.commitAt('main advances', '2026-10-21T05:30:00Z');
+    const baseSha = r.must(['rev-parse', 'HEAD']);
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', '--no-commit', 'main']);
+    writeFileSync(join(dir, 'policy.mjs'), POLICY_WRITE_FALSE);
+    r.commitAt('merge main with extra PR change', '2026-10-21T05:44:00Z');
+    const headSha = r.must(['rev-parse', 'HEAD']);
+    const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${baseSha}...${headSha}`]));
+    const previousSettle = {
+      settled: true, timedOut: false, responded: ['greptile-apps'],
+      filePatchHashes: r.oldHashes, headCommittedDate: '2026-10-21T05:20:00Z',
+      headSha: r.oldHead, baseOnlyProven: proveBaseOnlyHeadRelation({
+        previousHeadSha: r.oldHead, headSha, gitFn: r.gitFn, baseSha,
+      }),
+    };
+    const got = settleFrom(r, headSha, baseSha, currentHashes, previousSettle);
+    const rebuilt = previousSettleFromLocalMerge({
+      headSha, baseSha, currentHashes, gitFn: r.gitFn, nowIso: '2026-10-21T05:50:00Z',
+      activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+    });
+    assert.equal(got.reused, undefined, 'merge 夹带改动不能沿用');
+    assert.equal(got.settled, false);
+    assert.equal(rebuilt, null, '服务器本地重建也不能把夹带改动的 merge 当成只合 main');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('结构证明:纯合 main 后再追加同指纹改动不能沿用', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-merge-extra-'));
+  try {
+    const r = setupPolicyPr(dir);
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only.txt'), 'base\n');
+    r.commitAt('main advances', '2026-10-21T05:30:00Z');
+    const baseSha = r.must(['rev-parse', 'HEAD']);
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', 'main', '-m', 'merge main'], {
+      env: { GIT_AUTHOR_DATE: '2026-10-21T05:40:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:40:00Z' },
+    });
+    writeFileSync(join(dir, 'policy.mjs'), POLICY_WRITE_FALSE);
+    r.commitAt('change semantics after merge', '2026-10-21T05:44:00Z');
+    const headSha = r.must(['rev-parse', 'HEAD']);
+    const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${baseSha}...${headSha}`]));
+    const previousSettle = {
+      settled: true, timedOut: false, responded: ['greptile-apps'],
+      filePatchHashes: r.oldHashes, headCommittedDate: '2026-10-21T05:20:00Z',
+      headSha: r.oldHead, baseOnlyProven: proveBaseOnlyHeadRelation({
+        previousHeadSha: r.oldHead, headSha, gitFn: r.gitFn, baseSha,
+      }),
+    };
+    const got = settleFrom(r, headSha, baseSha, currentHashes, previousSettle);
+    assert.equal(got.reused, undefined, '合 main 后再追加提交不能沿用');
+    assert.equal(got.settled, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('同一已证明 head 第二轮仍可沿用,快照不得用 merge SHA 盖掉原始表态 head', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-same-head-'));
+  try {
+    const r = setupPolicyPr(dir);
+    r.must(['checkout', 'main']);
+    writeFileSync(join(dir, 'base-only.txt'), 'base\n');
+    r.commitAt('main advances', '2026-10-21T05:30:00Z');
+    const baseSha = r.must(['rev-parse', 'HEAD']);
+    r.must(['checkout', 'pr']);
+    r.must(['merge', '--no-ff', 'main', '-m', 'merge main'], {
+      env: { GIT_AUTHOR_DATE: '2026-10-21T05:44:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:44:00Z' },
+    });
+    const headSha = r.must(['rev-parse', 'HEAD']);
+    const currentHashes = filePatchHashesFromDiff(r.must(['diff', `${baseSha}...${headSha}`]));
+    assert.equal(saveBotSettleSnapshot({
+      owner: 'audit', repo: 'same-head', pr: 1150,
+      settle: { settled: true, timedOut: false, responded: ['greptile-apps'] },
+      filePatchHashes: r.oldHashes, headCommittedDate: '2026-10-21T05:20:00Z', headSha: r.oldHead,
+    }), true);
+    r.must(['checkout', 'main']);
+    const first = toPreviousSettleForHead({
+      owner: 'audit', repo: 'same-head', pr: 1150, headSha, baseSha, currentHashes, gitFn: r.gitFn,
+      nowIso: '2026-10-21T05:50:00Z',
+      activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+    });
+    const firstSettle = settleFrom(r, headSha, baseSha, currentHashes, first);
+    assert.equal(firstSettle.reused, true, '纯合 main 第一轮应沿用');
+    saveBotSettleSnapshot({
+      owner: 'audit', repo: 'same-head', pr: 1150, settle: firstSettle,
+      filePatchHashes: currentHashes, headCommittedDate: '2026-10-21T05:44:00Z', headSha,
+    });
+    const second = toPreviousSettleForHead({
+      owner: 'audit', repo: 'same-head', pr: 1150, headSha, baseSha, currentHashes, gitFn: r.gitFn,
+      nowIso: '2026-10-21T05:50:00Z',
+      activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+    });
+    const secondSettle = settleFrom(r, headSha, baseSha, currentHashes, second);
+    assert.equal(secondSettle.reused, true, '同 head 第二轮 Mini 不在 PR checkout 上仍应沿用,不能因快照被写成 merge SHA 而重等');
+    assert.equal(secondSettle.settled, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLocalMerge / evaluateBotSettle 判定', () => {
