@@ -117,7 +117,8 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
         + '上一轮已经对完整 diff 做过审查和最终复核,本轮不再对完整 diff 逐项复核。完整 diff 文件只用来定位上下文。',
       '上一轮提过的问题要逐条核对是否**真的修好**(thread 被 resolve 不算证据),没修好的照常再报;下方「维护者裁定不改」列出的除外,「作者申辩」核对成立的也不再报。',
     ].join('\n')
-    : `**全量审查**:${scope.reason}。审完整 diff。`;
+    : `**全量审查**:${scope.reason}。审完整 diff。`
+      + ((scope.previousFindings ?? []).length ? '同时逐条核对下方「上一轮的问题」,不因为是全量轮就省略旧问题。' : '');
   const previousFindings = scope.previousFindings ?? [];
   const previous = previousFindings.length
     ? [
@@ -126,6 +127,8 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
       ...(previousFindings.some((f) => f.deferredTo)
         ? ['标了「已转 #N」的:#N 仍在下方「转 issue 跟进的问题」核验通过的列表里、且还是同一问题时,继续填 `deferredTo`;不在列表里(issue 已关闭或撤了登记)就照常报、照常阻断。']
         : []),
+      '逐条核对要求:每一条都要检查是否**真的修好**(thread 被 resolve 不算证据,文件不在本轮 diff 里也不自动算修好);没修好的照常写进 `findings`,`supersedes` 填该条的 key;',
+      '修好了、仍有效的转 issue、维护者裁定不改、作者申辩成立的,不再报,但必须在 report 的 Verification 一段里逐 key 写出核对结论(见「交卷格式」)。不能既不再报、又不解释。',
     ].join('\n')
     : '';
   return [
@@ -196,6 +199,10 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '  - Findings:每条 `[P0|P1|P2] path:line — 事实(触发条件与错误行为,附证据);影响;建议修复;验证方式`;没有就写「无」。',
     '  - Rule coverage:读了哪些规则文件、逐项结论;文件在 base 上不存在就如实写。',
     '  - Verification:实际运行的命令与退出码、结果;没运行的写明「未执行 + 原因」。',
+    ...(previousFindings.length
+      ? ['    上面列了「上一轮的问题」时,Verification 里还必须逐个 key 写一行「核对结论 + 证据/理由」,每个 key 都要有,例如:',
+        '    `- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚`;结论可以是已修复、仍未修复(并在 findings 里用 supersedes 再报)、仍转 issue、裁定不改、申辩成立。']
+      : []),
     '  - Overall:第一行只能是 `pass —— 没有 P0/P1/P2。` 或 `changes-requested —— N 条 P0/P1/P2…`。',
     '- `findings`:每条 P0/P1/P2 一项 `{severity, title, trigger, behavior, impact, fix, verify, evidence, origin, bugClass, instances, supersedes, path, line, side, deferredTo}`,全部必填。',
     '  - `severity` 写 `P0`、`P1` 或 `P2`;`title` 一句话不超过 120 字;`trigger`(触发条件)、`behavior`(错误行为)、`impact`(实际影响)、`fix`(建议修复)、`verify`(验证方式)各不超过 800 字;`bugClass` 写问题类型短标签(不超过 60 字)。服务器会截断超长内容。',
@@ -310,6 +317,8 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
     version: 1,
     template: {
       full: toTemplate({ mode: 'full', reason: '<reason>' }, [], [], [], '<rules-base>'),
+      // 全量轮带着上一轮问题:任务书多出逐条核对的要求,单独进 digest。
+      fullWithPrevious: toTemplate({ mode: 'full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
       incremental: toTemplate({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING] }, [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),

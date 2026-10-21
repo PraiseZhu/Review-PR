@@ -253,3 +253,16 @@ test('上一轮「核对员推翻了全部卡点、等人工复核」的状态�
   assert.equal(unmarked.manualReview, true, '没有显式标记时按形状认(没有阻断问题、有被推翻的问题、没放行)');
   assert.equal(previousFromResult({ ...result, reviewClean: true, mivo: { ...result.mivo, verifierOverruledAll: undefined, verifierOverruled: [] } }, '').manualReview, false);
 });
+
+test('最终报告:Verification 里逐 key 的核对结论(已修复/仍未修复/仍转 issue)原样保留,结论与阻断问题一致', () => {
+  const lines = [
+    '- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚',
+    '- key=bbbbbbbbbbbb · 仍未修复 · 已在 Findings 再报',
+    '- key=cccccccccccc · 仍转 issue · #1001 仍 OPEN',
+  ];
+  const answer = ['## Findings', '[P1] src/a.ts:11 — 仍未修复', '## Rule coverage', 'AGENTS.md', '## Verification', ...lines, '## Overall', 'changes-requested —— 1 条 P0/P1/P2'].join('\n');
+  const report = finalizeReport({ report: answer, findings: [{ path: 'src/a.ts', line: 11, body: '[P1] 仍未修复' }], pr: 1, url: 'https://github.com/o/r/pull/1',
+    head: 'a'.repeat(40), base: 'b'.repeat(40), diffHash: 'c'.repeat(64), tier: 'standard', scope: { mode: 'full', reason: '规则变了' } });
+  for (const line of lines) assert.ok(report.includes(line), line);
+  assert.match(report, /## Overall\nchanges-requested —— 1 条 P0\/P1\/P2/);
+});
