@@ -443,6 +443,99 @@ test('静默期接线:context.mjs 与 pre-merge-check.mjs 用 evaluateBotSettleS
   }
 });
 
+// [MIVO-PATCH bot-settle-base-only] #1150:作者只点 Update branch 合 main,PR 自身 patch 不变,
+// Greptile 不会对这个新 head 再表态。旧代码从新 head 起再等满 30 分钟;新代码沿用上一 head 已静默满的表态。
+const BASE_ONLY_HASHES = { 'public/changelog.json': '1150-changelog-patch' };
+const BASE_ONLY_PREVIOUS = {
+  settled: true, timedOut: false, responded: ['greptile-apps'],
+  filePatchHashes: BASE_ONLY_HASHES, headCommittedDate: '2026-10-21T05:20:00Z',
+};
+const BASE_ONLY_NEW_HEAD = {
+  headCommittedDate: '2026-10-21T05:44:00Z',
+  nowIso: '2026-10-21T05:45:00Z',
+  activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }],
+  cfg: READY_CFG,
+  filePatchHashes: BASE_ONLY_HASHES,
+  previousSettle: BASE_ONLY_PREVIOUS,
+};
+
+test('静默期:只合 main 且 PR 自身 patch 不变时,沿用上一 head 已静默满的表态(#1150)', () => {
+  const oldCode = evaluateBotSettle({
+    headCommittedDate: BASE_ONLY_NEW_HEAD.headCommittedDate,
+    nowIso: BASE_ONLY_NEW_HEAD.nowIso,
+    activity: BASE_ONLY_NEW_HEAD.activity,
+    cfg: READY_CFG,
+  });
+  assert.equal(oldCode.settled, false, '对照:旧代码从新 head 起重新等,Greptile 表态早于新提交不算');
+  assert.deepEqual(oldCode.pending, ['greptile-apps']);
+  const r = evaluateBotSettle(BASE_ONLY_NEW_HEAD);
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(r.reused, true);
+  assert.deepEqual(r.responded, ['greptile-apps']);
+  assert.match(r.reason, /沿用|patch 不变|base 前移/);
+});
+
+test('静默期:新 head 改了 PR 自身文件时,即使上一 head 已静默满也重新等', () => {
+  const r = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    filePatchHashes: { 'public/changelog.json': '1150-changelog-changed' },
+  });
+  assert.equal(r.settled, false);
+  assert.equal(r.reused, undefined);
+  assert.deepEqual(r.pending, ['greptile-apps']);
+});
+
+test('静默期:上一 head 上 Greptile 没表态(超时放行)时,即使 patch 不变也按原规则等', () => {
+  const r = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    previousSettle: {
+      settled: true, timedOut: true, responded: [], pending: ['greptile-apps'],
+      filePatchHashes: BASE_ONLY_HASHES, headCommittedDate: '2026-10-21T05:20:00Z',
+    },
+  });
+  assert.equal(r.settled, false, '上一 head 是超时放行,不能当成已表态沿用');
+  assert.deepEqual(r.pending, ['greptile-apps']);
+});
+
+test('静默期:patch 哈希或上一 head 表态读不到时退回原规则(等),不放宽', () => {
+  const never = () => { throw new Error('不应该读事件'); };
+  for (const extra of [
+    {},
+    { filePatchHashes: BASE_ONLY_HASHES },
+    { previousSettle: BASE_ONLY_PREVIOUS },
+    { filePatchHashes: {}, previousSettle: BASE_ONLY_PREVIOUS },
+    { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, filePatchHashes: {} } },
+  ]) {
+    const input = {
+      headCommittedDate: BASE_ONLY_NEW_HEAD.headCommittedDate,
+      nowIso: BASE_ONLY_NEW_HEAD.nowIso,
+      activity: BASE_ONLY_NEW_HEAD.activity,
+      cfg: READY_CFG,
+      ...extra,
+    };
+    const r = evaluateBotSettle(input);
+    assert.equal(r.settled, false, JSON.stringify(extra));
+    assert.deepEqual(evaluateBotSettleSinceReady(input, never), r);
+  }
+});
+
+test('静默期接线:context 与 pre-merge-check 把已有 diff/files 的 patch 哈希和上一 head 表态传给静默期,不另打 GraphQL', () => {
+  for (const file of ['context.mjs', 'pre-merge-check.mjs']) {
+    const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
+    assert.ok(/filePatchHashes:/.test(source), `${file} 把 patch 哈希传给静默期`);
+    assert.ok(/previousSettle:/.test(source), `${file} 把上一 head 已满足的静默期结果传给静默期`);
+    assert.ok(!/timelineItems/.test(source), `${file} 不增加 GraphQL`);
+  }
+  const context = readFileSync(fileURLToPath(new URL('./context.mjs', import.meta.url)), 'utf8');
+  assert.ok(/filePatchHashesFromDiff\(/.test(context), 'context 用本轮已扫的 diff 算哈希,不另拉');
+  const preMerge = readFileSync(fileURLToPath(new URL('./pre-merge-check.mjs', import.meta.url)), 'utf8');
+  assert.ok(/filePatchHashesFromPullFiles\(/.test(preMerge), 'pre-merge-check 用已有 REST /files 的 patch 算哈希');
+  const filesCall = preMerge.indexOf("repos/${slug}/pulls/${pr}/files");
+  const settleCall = preMerge.indexOf('evaluateBotSettleSinceReady');
+  assert.ok(filesCall >= 0 && settleCall > filesCall, 'pre-merge-check 先读 /files 再判静默期,不另打 GraphQL');
+});
+
 test('改界面不进维护者确认门,按 requireUiEvidence 要求附界面证据', () => {
   assert.equal(isProductSignoffEnabled({ signoffGate: { product: { enabled: false } } }), false);
   assert.equal(isProductSignoffEnabled({ signoffGate: { product: {} } }), true); // 上游缺省:照常触发
