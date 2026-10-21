@@ -11,8 +11,17 @@ export function canWaitForApproval(check, approval) {
   // Only a fully read, same-review receipt proves our own CR was superseded.
   // Another reviewer's CR, or an unverified snapshot, remains a real blocker.
   if (check.reviewDecision === 'CHANGES_REQUESTED') return isOwnApprovalRefresh(check, approval);
-  return check.blockedAwaitingApproval || check.mergeableUnknown ||
+  const awaiting = check.approvalPolicy?.approvalRequired !== false && check.blockedAwaitingApproval;
+  return awaiting || check.mergeableUnknown ||
     check.mergeStateStatus === 'UNKNOWN' || check.blockClass === 'structural-check';
+}
+
+function bindExemptApproval(approval, approvalResult, { head, authorityDigest }) {
+  const policy = approvalResult?.approvalPolicy;
+  if (approvalResult?.approved === true || policy?.authorIsMaintainer !== true || policy?.approvalRequired !== false) {
+    throw new Error('免审批回执与 live policy 不符');
+  }
+  return validateApprovalDisposition(approval, { head, authorityDigest, author: policy.author });
 }
 
 export async function finishReviewedPr(options, { run, sleep, checkpoint = () => {}, now = Date.now }) {
@@ -36,17 +45,28 @@ export async function finishReviewedPr(options, { run, sleep, checkpoint = () =>
   try { approvalResult = await run('approve-reviewed-pr.mjs', [...binding, '--review-clean', ...(bodyFile ? ['--body-file', bodyFile] : [])]); }
   catch (error) { approvalResult = { ok: false, error: error.message }; }
   let approval;
-  try { approval = validateApprovalDisposition(approvalResult?.approval, { head }); }
-  catch { approval = pendingApproval('Approve 子进程未返回可核验回执，恢复时先只读回查', 'approval-result-unverified'); }
-  if (approval.status !== 'verified') {
-    return save(approval.status === 'pending' ? 'approval-pending' : 'approval-blocked', {
-      ok: approvalResult?.ok !== false, reason: approval.reason, approval, approvalResult, retry: approval.status === 'pending' });
+  try {
+    approval = approvalResult?.approval?.status === 'exempt'
+      ? bindExemptApproval(approvalResult.approval, approvalResult, { head, authorityDigest })
+      : validateApprovalDisposition(approvalResult?.approval, { head });
+  } catch { approval = pendingApproval('Approve 子进程未返回可核验回执，恢复时先只读回查', 'approval-result-unverified'); }
+  if (approval.status === 'exempt') {
+    if (approvalResult?.ok === false) {
+      return save('approval-checkpoint-failed', { ok: false, approved: false, approval, approvalResult, retry: true,
+        reason: approvalResult?.error || '免审批已核验，但子进程未完整完成收尾' });
+    }
+    save('approval-exempt', { approved: false, approvalSatisfied: true, approval, approvalResult });
+  } else {
+    if (approval.status !== 'verified') {
+      return save(approval.status === 'pending' ? 'approval-pending' : 'approval-blocked', {
+        ok: approvalResult?.ok !== false, reason: approval.reason, approval, approvalResult, retry: approval.status === 'pending' });
+    }
+    if (approvalResult?.ok === false || approvalResult?.approved !== true) {
+      return save('approval-checkpoint-failed', { ok: false, approved: true, approval, approvalResult, retry: true,
+        reason: approvalResult?.error || 'Approve 已核验，但子进程未完整完成收尾' });
+    }
+    save('approved', { approved: true, approval, approvalResult });
   }
-  if (approvalResult?.ok === false || approvalResult?.approved !== true) {
-    return save('approval-checkpoint-failed', { ok: false, approved: true, approval, approvalResult, retry: true,
-      reason: approvalResult?.error || 'Approve 已核验，但子进程未完整完成收尾' });
-  }
-  save('approved', { approved: true, approval, approvalResult });
 
   // An old awaiting-discussion label must not strand an already approved PR until the next scan.
   const release = await run('signoff-release.mjs', [...binding, '--labels-only', '--close-issue']);

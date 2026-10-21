@@ -39,6 +39,22 @@ check('配置不含 legacy maintainers',
 check('配置不含 legacy approvalExemptAuthors',
   !Object.prototype.hasOwnProperty.call(config, 'approvalExemptAuthors'));
 eq('补充维护者白名单保持精确名单', config.maintainerAllowlist, ['fmfsaisai']);
+{
+  const liveRules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  eq('真实配置维护者四人名单', liveRules.maintainerAllowlist, ['PraiseZhu', 'kirozeng', 'aj0928', 'zhongxingtian-ai']);
+  const four = {
+    teamMembers: [],
+    allowlistedMembers: ['praisezhu', 'kirozeng', 'aj0928', 'zhongxingtian-ai'],
+    members: ['praisezhu', 'kirozeng', 'aj0928', 'zhongxingtian-ai'],
+    codeowners: { teamHandle: null },
+    digest: `sha256:${'c'.repeat(64)}`,
+  };
+  for (const login of four.members) {
+    const policy = evaluateApprovalExemption({ authorLogin: login, authority: four });
+    check(`四人维护者 ${login} 免独立 Approve`, policy.exempt && policy.authorIsMaintainer);
+  }
+  check('第五个非维护者仍需 Approve', !evaluateApprovalExemption({ authorLogin: 'outsider', authority: four }).exempt);
+}
 eq('selfFixAuthors 保持精确名单', config.selfFixAuthors, ['magiclizi']);
 check('三个 CODEOWNERS 生效位置全部受保护',
   ['.github/', 'CODEOWNERS', 'docs/CODEOWNERS'].every((path) => config.protectedPaths.paths.includes(path)));
@@ -55,14 +71,14 @@ const AUTHORITY = {
 };
 {
   const member = evaluateApprovalExemption({ authorLogin: ' ALICE ', authority: AUTHORITY });
-  check('动态 Team 成员作者不再免 Approve', !member.exempt && member.authorIsMaintainer);
+  check('动态 Team 成员作者免 Approve', member.exempt && member.authorIsMaintainer);
   check('成员判断大小写与空白规范化', member.author === 'alice');
   check('exemption 绑定 authority 来源',
     member.source === 'codeowners-root-team' &&
     member.teamHandle === AUTHORITY.codeowners.teamHandle &&
     member.authorityDigest === AUTHORITY.digest);
-  check('另一个动态 Team 成员作者也不免 Approve',
-    !evaluateApprovalExemption({ authorLogin: 'DASHHUANG', authority: AUTHORITY }).exempt);
+  check('另一个动态 Team 成员作者也免 Approve',
+    evaluateApprovalExemption({ authorLogin: 'DASHHUANG', authority: AUTHORITY }).exempt);
   check('成员从最新 authority 移除后立即不豁免',
     !evaluateApprovalExemption({
       authorLogin: 'alice',
@@ -88,7 +104,7 @@ const AUTHORITY = {
     members: ['dashhuang', 'fmfsaisai'],
   };
   const member = evaluateApprovalExemption({ authorLogin: 'FMFSAISAI', authority });
-  check('补充白名单作者不再免 Approve', !member.exempt && member.authorIsMaintainer);
+  check('补充白名单作者免 Approve', member.exempt && member.authorIsMaintainer);
   check('补充白名单来源可审计', member.source === 'maintainer-allowlist');
 }
 
@@ -201,8 +217,9 @@ const ADMIN_BASE = {
   branchRulesVerified: true,
   ciStatus: 'pass',
 };
-check('最终维护者集合成员且只差 approval → admin route 可用',
-  evaluateApprovalExemptAdminMerge(ADMIN_BASE).available);
+check('最终维护者集合成员且只差 approval → admin route 仍禁用',
+  !evaluateApprovalExemptAdminMerge(ADMIN_BASE).available &&
+  evaluateApprovalExemptAdminMerge(ADMIN_BASE).failedChecks.includes('maintainer-author exemption never authorizes admin merge'));
 check('null reviewDecision 标记 empty 但拒绝 admin',
   !evaluateApprovalExemptAdminMerge({ ...ADMIN_BASE, reviewDecision: null }).available &&
   evaluateApprovalExemptAdminMerge({ ...ADMIN_BASE, reviewDecision: null }).reviewDecisionWasEmpty);

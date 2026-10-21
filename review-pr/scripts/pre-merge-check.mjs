@@ -23,7 +23,7 @@
 //     --expected-authority-digest <digest>
 // 所有作者都必须传已审查 head SHA 与 authority digest;任一缺失/变化时所有 merge route 都不可用。
 
-import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
+import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, onlyOwnRequiredChecksPending, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
 import { filePatchHashesFromPullFiles, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
 import { filterIgnoredCiContexts, ciMergeStateIgnoring } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
@@ -198,7 +198,7 @@ try {
     if (m.reviewDecision === 'CHANGES_REQUESTED') {
       blockers.push(REVIEW_CHANGES_REQUESTED_BLOCKER);
       blockClass = 'review-changes-requested';
-    } else if (isApprovalPendingReviewDecision(m.reviewDecision)) {
+    } else if (isApprovalPendingReviewDecision(m.reviewDecision) && approvalPolicy.approvalRequired) {
       // 缺 approval(含空 reviewDecision、刚 approve-reviewed-pr 完 GitHub 还在重算 mergeStateStatus)→ 不视为硬 blocker,
       // 提交 / 覆盖成 APPROVE 后状态会变 CLEAN;重算窗口由 mergeableUnknown 兜住(canMerge 要求非 UNKNOWN)。
       // ⚠️ 此分支不代表 CI 没问题 —— CI 由下面的 CI 总门独立押,别在这里提前放行。
@@ -220,6 +220,14 @@ try {
       // CI 状态读取不完整时不得往 structural-check 推 —— 那条路通向 admin bypass。
       blockers.push(`mergeStateStatus=BLOCKED 且 ${ci.reason}`);
       blockClass = 'ci-unknown';
+    } else if (isApprovalPendingReviewDecision(m.reviewDecision) && !approvalPolicy.approvalRequired) {
+      const ownCheckProbe = structuralBlock ?? probeBranchProtection(slug, m.baseRefName, { fresh: true });
+      if (onlyOwnRequiredChecksPending({ probe: ownCheckProbe, rollupContexts, rules })) {
+        if (blockClass === 'none') blockClass = 'none';
+      } else {
+        blockClass = 'github-rule-blocked';
+        blockers.push('mergeStateStatus=BLOCKED(GitHub 仍拒绝合并，原因不是缺维护者 Approve；按 2026-10-21 维护者决定不因此要求另一位维护者批准，也不走 admin bypass)');
+      }
     } else {
       // APPROVED + 线程已 resolve + CI 全绿(双源确认)仍 BLOCKED → 永不上报结果的必需检查门
       // (code_scanning/code_quality 等)→ 普通 merge 过不了,但 canBypass 时可走 admin bypass
@@ -242,7 +250,7 @@ try {
   const CI_CLASSES = new Set(['ci-failed', 'ci-pending', 'workflow-awaiting', 'ci-unknown']);
   if (ci.status !== 'pass' && !CI_CLASSES.has(blockClass)) {
     blockers.push(`CI 未全过:${ci.reason}`);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') {
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') {
       blockClass = ci.status === 'failed' ? 'ci-failed'
         : ci.status === 'pending' ? 'ci-pending'
           : ci.status === 'awaiting' ? 'workflow-awaiting'
@@ -252,7 +260,7 @@ try {
   if (unresolved.length) blockers.push(`${unresolved.length} 条 conversation 未 resolve`);
   if (!threadResult.verified) {
     blockers.push(`review thread 状态未完整读取:${threadResult.errors.join(' / ')}`);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') blockClass = 'threads-unknown';
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') blockClass = 'threads-unknown';
   }
 
   // ── 维护者确认门防线(defense-in-depth):新标签或旧标签还挂着 = 现在仍需维护者确认。──
@@ -313,7 +321,7 @@ try {
   if (!botSettleVerified) {
     const errors = [reviewActivity.error, commentActivity.error].filter(Boolean).join(' / ');
     blockers.push(`机器人静默期输入未完整验证:${!headCommittedDate ? 'head commit 时间为空' : errors}`);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') blockClass = 'bot-settle-unknown';
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') blockClass = 'bot-settle-unknown';
   }
   if (!botSettle.settled) {
     blockers.push(`机器人静默期未过:${botSettle.reason}`);
@@ -328,11 +336,11 @@ try {
   const behindBy = staleRebase.behindBy;
   if (!staleRebaseChecked) {
     blockers.push(staleRebase.reason);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') blockClass = 'stale-rebase-unknown';
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') blockClass = 'stale-rebase-unknown';
   }
   if (staleRebase.blocking) {
     blockers.push(`需要 rebase:${staleRebase.reason}`);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') blockClass = 'needs-rebase';
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') blockClass = 'needs-rebase';
   }
   const protectedFiles = matchPathPatterns(
     changedFiles.items.map((f) => f.filename),
@@ -362,11 +370,8 @@ try {
     !!structuralBlock?.canBypass &&
     structuralBlock.canBypass !== 'never';
 
-  // 旧版维护者作者 approval-exempt admin route 保留只读输出兼容，但现行策略的
-  // approvalExemption.exempt 恒为 false，因此缺 Approve 不能再靠 --admin 绕过。
-  const approvalBranchProbe = approvalExemption.exempt
-    ? (structuralBlock ?? probeBranchProtection(slug, m.baseRefName, { fresh: true }))
-    : null;
+  // 2026-10-21 维护者决定：exempt 从不激活 approval-exempt admin route，也不为它探测 branch rules。
+  const approvalBranchProbe = null;
   const approvalBranchRules = evaluateAdminBranchRules({
     probe: approvalBranchProbe,
     rollupContexts,
@@ -403,7 +408,7 @@ try {
   });
   const authorityVerified = !authorityError && Boolean(maintainerAuthority);
   const finalCanMerge = authorityVerified && headVerified && baseVerified && (approvalExemption.exempt
-    ? normalMergeAvailable || approvalExemptAdminMergeAvailable
+    ? normalMergeAvailable
     : canMerge);
 
   print({
@@ -426,7 +431,7 @@ try {
     structuralBypassAvailable,
     ci,
     ciRuns,
-    blockedAwaitingApproval: blockClass === 'awaiting-approval' || blockClass === 'awaiting-team-approval',
+    blockedAwaitingApproval: approvalPolicy.approvalRequired === true && (blockClass === 'awaiting-approval' || blockClass === 'awaiting-team-approval'),
     maintainerAuthority: maintainerAuthority ? {
       verified: authorityVerified,
       teamHandle: maintainerAuthority.codeowners.teamHandle,
@@ -467,7 +472,7 @@ try {
       checksError: checkRunsWithApps ? null : 'head 上的 check-runs 读取失败',
     },
     canMerge: finalCanMerge,
-    note: '所有作者都必须先由另一位最终维护者集合成员通过 approve-reviewed-pr.mjs 提交 Approve，再重跑本脚本；维护者作者不再走 approval-exempt admin route。所有 merge route 都必须绑定 expectedHead 与 expectedAuthorityDigest。authority 读取失败/变化、head 变化、维护者 Approve 缺失、CI 非 pass、thread 未 resolve、机器人静默期未过、stale rebase、受保护路径或 branch rules 未验证都不得 bypass。selfFixAuthors 只影响代修,不提供 self-merge 权限。',
+    note: '2026-10-21 维护者决定：维护者作者免另一位维护者独立 Approve，不启用 approval-exempt admin route。非维护者仍须先由另一位最终维护者集合成员通过 approve-reviewed-pr.mjs 提交 Approve。所有 merge route 都必须绑定 expectedHead 与 expectedAuthorityDigest。authority 读取失败/变化、head 变化、CI 非 pass、thread 未 resolve、机器人静默期未过、stale rebase、受保护路径或 GitHub 规则阻塞都不得 bypass。selfFixAuthors 只影响代修,不提供 self-merge 权限。',
   });
   process.exit(finalCanMerge ? 0 : 2);
 } catch (e) {

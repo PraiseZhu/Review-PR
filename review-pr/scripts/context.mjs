@@ -60,8 +60,8 @@ const REDLINE_PATH_RE = new RegExp(prRules.redlinePaths.join('|'));
 const CI_SENSITIVE_RE = prRules.ciSensitivePaths?.length ? new RegExp(prRules.ciSensitivePaths.join('|')) : null;
 // ── 维护者确认门(signoff gate):六类触发、一套机制。prepare 每轮从目标仓库默认分支
 // CODEOWNERS 的唯一 `* @org/team` 根规则实时抓 Team 成员，再与 maintainerAllowlist 取并集；
-// context 只消费与当前 review 锁绑定的 fresh snapshot。所有作者最终都要由另一位
-// 维护者 Approve；维护者作者不在审查前重复 hold，但不再免最终 Approve。Team 读取失败时白名单不得兜底。──
+// context 只消费与当前 review 锁绑定的 fresh snapshot。2026-10-21 维护者决定：维护者作者
+// 免另一位维护者独立 Approve，也不在审查前重复 hold；非维护者仍需维护者 Approve。Team 读取失败时白名单不得兜底。──
 // 受保护路径(.github/** 等,pr-rules.json protectedPaths.paths):命中即不自动合并,
 // 交人工处理——不看 diff 大小、不看作者、不看标题类型。
 const PROTECTED_PATHS = (prRules.protectedPaths?.paths) ?? [];
@@ -639,7 +639,7 @@ try {
     authority: maintainerAuthority,
   });
   const isSelfFixAuthor = SELF_FIX_AUTHORS.includes(authorLogin.toLowerCase());
-  // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;代码审查、最终 Approve 照常。
+  // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;2026-10-21 起最终独立 Approve 由 approvalPolicy.authorIsMaintainer 豁免。
   const authorSignoffExempt = approvalPolicy.authorIsMaintainer || isSignoffExemptAuthor(authorLogin, prRules);
   // [MIVO-PATCH ui-evidence] 改界面不等维护者确认,改为要求附界面证据:按 requireUiEvidence 缺证据进格式门(打回补证据)。
   const uiEvidenceDeclaredNotApplicable = declaresNoUiChange(body);
@@ -1151,7 +1151,7 @@ try {
       stale: hasSignoffLabel !== signoffBlocking || legacyGateLabels.length > 0,
       legacyToRemove: legacyGateLabels,
     },
-    note: '维护者讨论门:六类触发共用 CODEOWNERS 唯一 `* @org/team` 根 Team active 成员与 maintainerAllowlist 的并集。authorIsMaintainer=true 时不在审查前重复 hold，由本轮独立代码审查完成后自动走 guarded Approve；它不再豁免最终 Approve。普通评论、旧 hold 记录和摘标签不构成通过;waitingForAuthor=true 表示当前 head 被维护者 Request Changes。released 只认最终维护者集合成员的 GitHub Approve,或 `by` 仍在最终集合的 signoff-release 手动标记;缺 by / 非成员标记列在 untrustedReleaseMarks,绝不放行。Approve 仍按现行策略持久有效,但审批人从 Team 和白名单都移除后其旧 Approve 不再算维护者确认。authority.digest 必须一路带到 guarded approve / dismiss / pre-merge,任何变化都重新启动 review。标签 awaiting-discussion 只同步外部状态,失败不改变内部判定但必须进异常汇总;汇总写 currentBlocker,不写 held.kind',
+    note: '维护者讨论门:六类触发共用 CODEOWNERS 唯一 `* @org/team` 根 Team active 成员与 maintainerAllowlist 的并集。authorIsMaintainer=true 时不在审查前重复 hold；按 2026-10-21 维护者决定，审查通过后免另一位维护者独立 Approve，仍不能自批、不启用 admin bypass。普通评论、旧 hold 记录和摘标签不构成通过;waitingForAuthor=true 表示当前 head 被维护者 Request Changes。released 只认最终维护者集合成员的 GitHub Approve,或 `by` 仍在最终集合的 signoff-release 手动标记;缺 by / 非成员标记列在 untrustedReleaseMarks,绝不放行。Approve 仍按现行策略持久有效,但审批人从 Team 和白名单都移除后其旧 Approve 不再算维护者确认。authority.digest 必须一路带到 guarded approve / dismiss / pre-merge,任何变化都重新启动 review。标签 awaiting-discussion 只同步外部状态,失败不改变内部判定但必须进异常汇总;汇总写 currentBlocker,不写 held.kind',
   };
   // ── 1.6.5.1 CI 总门(2026-08-04 起本脚本**直接读 CI**,不再只靠 meta.mergeStateStatus 间接体现)──
   // 旧口径的洞:GitHub 只把 required check 失败算进 BLOCKED,非 required 的红 CI 给的是
@@ -1252,9 +1252,9 @@ try {
         }
         blockClass = 'review-changes-requested';
       }
-    } else if (isApprovalPendingReviewDecision(reviewDecision)) {
+    } else if (isApprovalPendingReviewDecision(reviewDecision) && approvalPolicy.approvalRequired) {
       // 缺 approval(含空 reviewDecision、刚 approve 完 GitHub 还在重算)→ 不视硬 blocker。
-      // 所有作者审查通过后都走 approve-reviewed-pr；维护者作者也不再免 Approve。
+      // 非维护者作者审查通过后走 approve-reviewed-pr。
       blockClass = 'awaiting-approval';
     } else if (unresolvedThreads.length > 0) {
       // reviewDecision=APPROVED 但仍有 thread 没 resolve → BLOCKED 很可能来自 ruleset 的
@@ -1276,6 +1276,17 @@ try {
       // CI 状态读取不完整 → 不得往 structural-check 推(那条路通向 admin bypass),如实押 blocker。
       blockers.push(`mergeStateStatus=BLOCKED 且 ${ci.reason}`);
       blockClass = 'ci-unknown';
+    } else if (isApprovalPendingReviewDecision(reviewDecision) && !approvalPolicy.approvalRequired) {
+      // 维护者作者:GitHub 仍 BLOCKED,但不是缺另一位维护者 Approve。先排除只差本流程自己的必需检查。
+      structuralBlock = probeBranchProtection(slug, meta.baseRefName);
+      if (onlyOwnRequiredChecksPending({ probe: structuralBlock, rollupContexts: rawRollupContexts, rules: prRules })) {
+        blockClass = 'none';
+        structuralBlock = null;
+      } else {
+        blockClass = 'github-rule-blocked';
+        structuralBlock = null;
+        blockers.push('mergeStateStatus=BLOCKED(GitHub 仍拒绝合并，原因不是缺维护者 Approve；按 2026-10-21 维护者决定不因此要求另一位维护者批准，也不走 admin bypass)');
+      }
     } else {
       // review 满足(APPROVED)+ 线程已 resolve + CI 全绿(双源确认),但仍 BLOCKED
       // → 残留的是「永不上报结果的必需检查门」:典型 org ruleset 的 code_scanning(CodeQL)/
@@ -1305,7 +1316,7 @@ try {
   // CHANGES_REQUESTED,人工 CR 仍有效,同样硬拦,不能进审查后再用 Approve 盖掉它。
   if (standingHumanChangesRequest) {
     blockers.push(STANDING_HUMAN_CR_BLOCKER);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'self-resolvable') {
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked' || blockClass === 'self-resolvable') {
       blockClass = 'review-changes-requested';
     }
   }
@@ -1322,7 +1333,7 @@ try {
     } else {
       blockers.push(`CI 未全过:${ci.reason}`);
     }
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') {
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') {
       blockClass = ci.status === 'failed' ? 'ci-failed'
         : ci.status === 'pending' ? 'ci-pending'
           : ci.status === 'awaiting' ? 'workflow-awaiting'
@@ -1387,7 +1398,7 @@ try {
     headSha: meta.headRefOid, cfg: prRules.staleRebase ?? {} });
   if (!staleRebase.verified) {
     blockers.push(staleRebase.reason);
-    if (blockClass === 'none' || blockClass === 'awaiting-approval') blockClass = 'stale-rebase-unknown';
+    if (blockClass === 'none' || blockClass === 'awaiting-approval' || blockClass === 'github-rule-blocked') blockClass = 'stale-rebase-unknown';
   }
   if (staleRebase.blocking) blockers.push(`需要 rebase:${staleRebase.reason}`);
 
@@ -1776,7 +1787,7 @@ try {
       structuralBlock,
       ci,
       ciRuns,
-      blockedAwaitingApproval: blockClass === 'awaiting-approval',
+      blockedAwaitingApproval: approvalPolicy.approvalRequired === true && blockClass === 'awaiting-approval',
       workflowsAwaitingApproval,
       prTouchesCiFiles,
       ciFiles,
@@ -1784,7 +1795,7 @@ try {
       staleRebase,
       botSettle,
       gatePass,
-      note: 'gatePass=false → 1.7 必须卡 gate;softFlags 里的项由 LLM 读内容定性,别无脑放行。**ci 是合并硬前提**(evaluateCiStatus 双源判定,required 与非 required 一视同仁):ci.status=pass 才可合并;failed → 不合并并把 ci.failed 名单如实提示用户/作者;pending → 等跑完;awaiting → 走 approve-workflows;unknown → CI 状态读取不完整,不得视为通过。blockClass 是阻断成因分档:conflict / workflow-awaiting(fork 待批 CI)/ review-changes-requested(reviewDecision=CHANGES_REQUESTED,真要作者改)/ self-resolvable(仅 viewer 自己的 CR、thread 全 resolve)/ awaiting-approval(缺 approve 且 CI 全绿;所有作者都走 approve-reviewed-pr,维护者作者也不再免 Approve)/ threads-unresolved / ci-failed(CI 真失败,含非 required 与外部 CI)/ ci-pending(还在跑)/ ci-unknown(状态读取不完整,不得视为通过)/ structural-check(review+CI 双源全绿、仍 BLOCKED——永不上报的必需检查门 code_scanning/code_quality 等,需 admin bypass 合或修门,非作者可处理)。structuralBlock(仅 structural-check 时非空):{requiredCheckRules, canBypass, rulesetIds},canBypass=always/pull_requests 表示当前账号可 admin bypass。ciRuns(actions/runs,null=读不到):{failed,pending,awaiting,all};ci 综合了它与 statusCheckRollup。workflowsAwaitingApproval=ciRuns.awaiting(fork 待批 workflow)。与 blockedAwaitingApproval(缺 reviewer approval)是两回事。botSettle = 机器人静默期(见 lib.mjs evaluateBotSettle):settled=false 即本轮不审不合(blockers 里已押),原因是外部 review 机器人还没对当前 head 表态 —— 本流程从「作者推最后一个 commit」到「合并完」实测只要 3.2 分钟,而 Copilot 要 6~11 分钟,不等就会把未审代码合进主干(实锤 PR #716:合并后 3 分钟 Copilot 提 1 条、7.7 分钟 Codex 提 4 条,5 条全是真 P1)。timedOut=true = 等到上限仍有机器人没表态、已通过,汇总必须写明 pending 里那几个的意见可能在合并后才到',
+      note: 'gatePass=false → 1.7 必须卡 gate;softFlags 里的项由 LLM 读内容定性,别无脑放行。**ci 是合并硬前提**(evaluateCiStatus 双源判定,required 与非 required 一视同仁):ci.status=pass 才可合并;failed → 不合并并把 ci.failed 名单如实提示用户/作者;pending → 等跑完;awaiting → 走 approve-workflows;unknown → CI 状态读取不完整,不得视为通过。blockClass 是阻断成因分档:conflict / workflow-awaiting(fork 待批 CI)/ review-changes-requested(reviewDecision=CHANGES_REQUESTED,真要作者改)/ self-resolvable(仅 viewer 自己的 CR、thread 全 resolve)/ awaiting-approval(缺 approve 且 CI 全绿;仅非维护者作者需要另一位维护者 Approve。2026-10-21 维护者决定:维护者作者免独立 Approve)/ github-rule-blocked(维护者作者时 GitHub 仍 BLOCKED 且不是缺 Approve,拒绝合并也不走 admin)/ threads-unresolved / ci-failed(CI 真失败,含非 required 与外部 CI)/ ci-pending(还在跑)/ ci-unknown(状态读取不完整,不得视为通过)/ structural-check(review+CI 双源全绿、仍 BLOCKED——永不上报的必需检查门 code_scanning/code_quality 等,需 admin bypass 合或修门,非作者可处理)。structuralBlock(仅 structural-check 时非空):{requiredCheckRules, canBypass, rulesetIds},canBypass=always/pull_requests 表示当前账号可 admin bypass。ciRuns(actions/runs,null=读不到):{failed,pending,awaiting,all};ci 综合了它与 statusCheckRollup。workflowsAwaitingApproval=ciRuns.awaiting(fork 待批 workflow)。与 blockedAwaitingApproval(缺 reviewer approval)是两回事。botSettle = 机器人静默期(见 lib.mjs evaluateBotSettle):settled=false 即本轮不审不合(blockers 里已押),原因是外部 review 机器人还没对当前 head 表态 —— 本流程从「作者推最后一个 commit」到「合并完」实测只要 3.2 分钟,而 Copilot 要 6~11 分钟,不等就会把未审代码合进主干(实锤 PR #716:合并后 3 分钟 Copilot 提 1 条、7.7 分钟 Codex 提 4 条,5 条全是真 P1)。timedOut=true = 等到上限仍有机器人没表态、已通过,汇总必须写明 pending 里那几个的意见可能在合并后才到',
     },
     auto,
   });

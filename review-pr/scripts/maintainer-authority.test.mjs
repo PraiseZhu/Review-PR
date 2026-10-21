@@ -401,12 +401,12 @@ throws('expected digest 变化拒绝', () => validateMaintainerAuthoritySnapshot
 const memberPolicy = evaluateMaintainerApprovalPolicy({
   authorLogin: 'ALICE', viewerLogin: 'Bob', authority: snapshot,
 });
-check('维护者作者仍需 Approve', memberPolicy.authorIsMaintainer && memberPolicy.approvalRequired);
+check('维护者作者免独立 Approve', memberPolicy.authorIsMaintainer && memberPolicy.approvalRequired === false);
 check('另一位维护者 viewer 可 Approve', memberPolicy.viewerCanApprove && !memberPolicy.viewerIsAuthor);
 check('非维护者作者需要 Approve', evaluateMaintainerApprovalPolicy({
-  authorLogin: 'carol', authority: snapshot,
+  authorLogin: 'outsider', authority: snapshot,
 }).approvalRequired);
-check('维护者作者不再获得 approval exemption', !evaluateApprovalExemption({
+check('维护者作者获得 approval exemption', evaluateApprovalExemption({
   authorLogin: 'alice', authority: snapshot,
 }).exempt);
 const allowlistAuthority = {
@@ -417,7 +417,7 @@ const allowlistAuthority = {
 const allowlistPolicy = evaluateMaintainerApprovalPolicy({
   authorLogin: 'fmfsaisai', viewerLogin: 'fmfsaisai', authority: allowlistAuthority,
 });
-check('补充白名单作者仍需 Approve', allowlistPolicy.authorIsMaintainer && allowlistPolicy.approvalRequired);
+check('补充白名单作者免独立 Approve', allowlistPolicy.authorIsMaintainer && allowlistPolicy.approvalRequired === false);
 check('viewer=作者时不得自批', allowlistPolicy.viewerIsMaintainer &&
   allowlistPolicy.viewerIsAuthor && !allowlistPolicy.viewerCanApprove);
 const crossMaintainerPolicy = evaluateMaintainerApprovalPolicy({

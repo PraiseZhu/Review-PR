@@ -1015,8 +1015,30 @@ async function publishClean(state, result, reportFile) {
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
     return;
   }
+  if (receipt?.stage === 'reviewed-only' && result.approval.status === 'exempt') {
+    recordCodeScan(result, receipt.preMerge);
+    const gates = toMergeReadyGateBlockers(receipt.preMerge);
+    if (gates.blockers.length) {
+      await publishAdvisory(state, result, reportFile, { blockers: gates.blockers.map((blocker) => blocker.reason), retry: gates.retry });
+      return;
+    }
+    const comment = postReportComment(state, reportFile);
+    Object.assign(result, {
+      outcome: 'review-only',
+      reason: `维护者作者免独立 Approve，review-only 不合并${deferredSummary ? `(${deferredSummary.text})` : ''}`,
+    });
+    result.mivo.reportComment = comment;
+    if (!comment.ok) {
+      result.errors.push(`报告评论发布失败:${comment.error}`);
+      result.retry = true;
+      return;
+    }
+    attachMergeReady(state, result, gates);
+    result.mivo.checkRun = completeCheckRun(input, state.checkRunId, check);
+    return;
+  }
   if (result.approval.status === 'blocked' && result.approval.code === 'independent-approval-required' && state.context.viewerIsAuthor) {
-    // 作者就是审查账号(PraiseZhu 自己的 PR):不能自批,改用 COMMENT 发同样的报告(同 Cindy --comment-only)。
+    // 旧回执/非维护者作者自审兼容:不能自批,改用 COMMENT 发报告。维护者作者现行路径是 exempt,不再走这里。
     // approval.code 只是第一个拦截项;「除了不能自批其它全部通过」才能挂标签、写 success。
     // 还有未 resolve 的讨论等别的拦截时,与「送审但不放行」一致(2026-10-17 #1081)。
     const self = toAuthorSelfApproval((receipt ?? finish)?.approvalResult);

@@ -5,9 +5,30 @@ const sha = (value) => typeof value === 'string' && /^[0-9a-f]{40}(?:[0-9a-f]{24
 const reviewId = (value) => (typeof value === 'string' && /^[1-9]\d*$/.test(value)) ||
   (Number.isSafeInteger(value) && value > 0);
 
-export function validateApprovalDisposition(approval, { head } = {}) {
-  if (!approval || !['verified', 'blocked', 'pending'].includes(approval.status)) {
+const digest = (value) => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/i.test(value);
+
+export function validateApprovalDisposition(approval, { head, authorityDigest, author } = {}) {
+  if (!approval || !['verified', 'blocked', 'pending', 'exempt'].includes(approval.status)) {
     throw new Error('缺少明确的 Approve 回执或阻塞状态');
+  }
+  if (approval.status === 'exempt') {
+    if (approval.reviewId !== undefined) {
+      throw new Error('免审批回执不得携带 review ID');
+    }
+    if (!nonempty(approval.author) || !sha(approval.head) || !digest(approval.authorityDigest) ||
+        !nonempty(approval.source) || !nonempty(approval.reason) ||
+        (head !== undefined && (!sha(head) || approval.head.toLowerCase() !== head.toLowerCase())) ||
+        (author !== undefined && (!nonempty(author) || approval.author.trim().toLowerCase() !== author.trim().toLowerCase())) ||
+        (authorityDigest !== undefined && approval.authorityDigest !== authorityDigest)) {
+      throw new Error('免审批回执缺少作者、同 head、authority digest、来源或原因');
+    }
+    return {
+      ...approval,
+      author: approval.author.trim(),
+      head: approval.head.toLowerCase(),
+      reason: approval.reason.trim(),
+      source: approval.source.trim(),
+    };
   }
   if (approval.status === 'verified') {
     if (!reviewId(approval.reviewId) || !nonempty(approval.reviewer) || !sha(approval.head) ||

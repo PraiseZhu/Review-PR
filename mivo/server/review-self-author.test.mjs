@@ -83,7 +83,7 @@ process.stdout.write(JSON.stringify({ id: 5, updated_at: new Date().toISOString(
 }
 
 // receipt:finish 回执里 approval-blocked 的样子;failures 为 undefined 时模拟旧回执(没有逐项明细)。
-function setup({ failures, verified = false, preMerge = PASS_GATES, premergeRaw = null }) {
+function setup({ failures, verified = false, exempt = false, preMerge = PASS_GATES, premergeRaw = null }) {
   const root = makeRoot();
   const work = join(root, 'work');
   for (const dir of ['input', 'out', 'repo']) mkdirSync(join(work, dir), { recursive: true });
@@ -104,7 +104,14 @@ function setup({ failures, verified = false, preMerge = PASS_GATES, premergeRaw 
     failedChecks: (failures ?? [AUTHOR]).map((f) => f.reason), reason: approval.reason, ...(failures ? { failures } : {}) };
   // 已 Approve 路径:finish 回 reviewed-only + 已核验的 Approve,preMerge 是它实时读到的门禁(preMerge=null 表示回执里没有;不能用 undefined,会触发默认参数)
   const verifiedApproval = { status: 'verified', reviewId: '9', reviewer: 'reviewer-bot', head: SHA, verifiedAt: new Date().toISOString() };
-  const receipt = verified
+  const exemptApproval = {
+    status: 'exempt', author: 'praisezhu', head: SHA, authorityDigest: `sha256:${'a'.repeat(64)}`,
+    source: 'maintainer-allowlist', reason: '按 2026-10-21 维护者决定免另一位维护者独立 Approve',
+  };
+  const receipt = exempt
+    ? { stage: 'reviewed-only', ok: true, approval: exemptApproval, approvalResult: { ok: true, approved: false, approval: exemptApproval },
+      ...(preMerge === null ? {} : { preMerge }), retry: false }
+    : verified
     ? { stage: 'reviewed-only', ok: true, approval: verifiedApproval, approvalResult: { ok: true, approved: true, approval: verifiedApproval },
       ...(preMerge === null ? {} : { preMerge }), retry: false }
     : { stage: 'approval-blocked', ok: true, reason: approval.reason, approval, approvalResult, retry: false };
@@ -427,4 +434,22 @@ test('服务器结果带 mivo.codeScan 三态:已 Approve 路径与作者自批�
     const gh = fakeGh(env.work);
     try { assert.equal(publish(env, gh).mivo.codeScan, undefined); } finally { rmSync(env.root, { recursive: true, force: true }); }
   }
+});
+
+test('维护者作者 exempt:评论发报告、不自批、不合并、不再等另一人 Approve', () => {
+  const env = setup({ exempt: true });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh);
+    const calls = gh.calls();
+    assert.equal(result.outcome, 'review-only');
+    assert.equal(result.approval.status, 'exempt');
+    assert.match(result.reason, /维护者作者免独立 Approve/);
+    assert.ok(addedLabel(calls));
+    assert.equal(checkBodies(calls).at(-1).conclusion, 'success');
+    const comments = reportComments(calls);
+    assert.ok(comments.some((c) => c.event === 'COMMENT'));
+    assert.equal(comments.some((c) => c.event === 'APPROVE'), false);
+    assert.equal(premergeCalls(env.work).length, 0, 'exempt 用 finish 带回的 preMerge');
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
 });

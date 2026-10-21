@@ -298,7 +298,7 @@ function validateSummary(repo, summary) {
 function projectApproval(value) {
   if (!plainObject(value)) return value;
   const projected = {};
-  for (const key of ['status', 'reviewId', 'reviewer', 'head', 'reviewHead', 'source', 'verifiedAt', 'url', 'reason', 'code']) {
+  for (const key of ['status', 'reviewId', 'reviewer', 'head', 'reviewHead', 'source', 'verifiedAt', 'url', 'reason', 'code', 'author', 'authorityDigest', 'teamHandle']) {
     if (hasOwn(value, key)) projected[key] = projectText(value[key]);
   }
   return projected;
@@ -306,10 +306,15 @@ function projectApproval(value) {
 
 function validateApproval(value, pr) {
   try { validateApprovalDisposition(value); } catch { throw new Error(`round-state PR #${pr} approval 回执或阻塞状态无效`); }
-  if (!plainObject(value) || !['verified', 'blocked', 'pending'].includes(value.status)) {
+  if (!plainObject(value) || !['verified', 'blocked', 'pending', 'exempt'].includes(value.status)) {
     throw new Error(`round-state PR #${pr} approval 无效`);
   }
-  if (value.status === 'verified') {
+  if (value.status === 'exempt') {
+    if (hasOwn(value, 'reviewId') || !nonempty(value.author) || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(value.head ?? '') ||
+        !/^sha256:[0-9a-f]{64}$/i.test(value.authorityDigest ?? '') || !nonempty(value.source) || !nonempty(value.reason)) {
+      throw new Error(`round-state PR #${pr} 免审批回执无效`);
+    }
+  } else if (value.status === 'verified') {
     const reviewId = (typeof value.reviewId === 'string' && /^[1-9]\d*$/.test(value.reviewId)) ||
       (Number.isSafeInteger(value.reviewId) && value.reviewId > 0);
     if (!reviewId || !nonempty(value.reviewer) || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(value.head ?? '') ||

@@ -122,17 +122,25 @@ test('allowlist digest 绑定成员与权限,篡改任一项都会被识别', ()
     { owner: 'xindong', repo: 'mivo', lockToken: 'token-12345678' }));
 });
 
-test('豁免名单只免前置确认门,不给放行权', () => {
-  const rules = { signoffGate: { exemptAuthors: ['PraiseZhu', 'zhongxingtian-ai'] } };
+test('豁免名单只免前置确认门;完整维护者才有放行权', () => {
+  const rules = { signoffGate: { exemptAuthors: ['PraiseZhu', 'zhongxingtian-ai', 'signoff-only'] } };
   assert.equal(isSignoffExemptAuthor('zhongxingtian-ai', rules), true);
   assert.equal(isSignoffExemptAuthor('ZHONGXINGTIAN-AI', rules), true);
   assert.equal(isSignoffExemptAuthor('outsider', rules), false);
   assert.equal(isSignoffExemptAuthor('', rules), false);
   assert.equal(evaluateSignoffBlocking({ enabled: true, authorIsMaintainer: true }), false);
-  // 豁免作者自己的 Approve 不构成放行:evaluateMaintainerReview 只认维护者,且排除作者本人。
-  const review = evaluateMaintainerReview({
+  // 2026-10-21:zhongxingtian-ai 已是完整维护者,给别人 Approve 构成放行。
+  const four = evaluateMaintainerReview({
     reviews: [{ author: { login: 'zhongxingtian-ai' }, state: 'APPROVED', submittedAt: '2026-10-11T01:00:00Z' }],
-    maintainers: ['praisezhu'], authorLogin: 'someone', latestCommitDate: '2026-10-11T00:00:00Z',
+    maintainers: ['praisezhu', 'kirozeng', 'aj0928', 'zhongxingtian-ai'], authorLogin: 'someone',
+    latestCommitDate: '2026-10-11T00:00:00Z',
+  });
+  assert.equal(four.released?.by, 'zhongxingtian-ai');
+  // 仅 signoff 豁免、不在维护者集合的第五人给别人 Approve 仍不构成放行。
+  const review = evaluateMaintainerReview({
+    reviews: [{ author: { login: 'signoff-only' }, state: 'APPROVED', submittedAt: '2026-10-11T01:00:00Z' }],
+    maintainers: ['praisezhu', 'kirozeng', 'aj0928', 'zhongxingtian-ai'], authorLogin: 'someone',
+    latestCommitDate: '2026-10-11T00:00:00Z',
   });
   assert.equal(review.released, null);
 });
@@ -197,7 +205,9 @@ test('Slack 放行:只认同步 bot 发出、署名是维护者且不是 PR 作�
   assert.equal(forgedPoster.release, null);
   assert.equal(forgedPoster.rejected[0].reason, 'poster-not-sync-bot');
 
-  const notMaintainer = selectTrustedSlackReleases({ ...base, comments: [botComment('zhongxingtian-ai', '同意放行')] });
+  const four = selectTrustedSlackReleases({ ...base, maintainers: [...base.maintainers, 'zhongxingtian-ai'], comments: [botComment('zhongxingtian-ai', '同意放行')] });
+  assert.equal(four.release?.by, 'zhongxingtian-ai');
+  const notMaintainer = selectTrustedSlackReleases({ ...base, comments: [botComment('signoff-only', '同意放行')] });
   assert.equal(notMaintainer.release, null);
   assert.equal(notMaintainer.rejected[0].reason, 'signer-not-maintainer');
 
@@ -1882,7 +1892,7 @@ test('pr-write-guard:hold 对豁免作者仍拒绝;通知 issue 只给免确认�
       {
         assertActiveReviewLock: () => {},
         fetchMaintainerAuthority: () => ({ digest: 'digest' }),
-        evaluateMaintainerApprovalPolicy: ({ authorLogin }) => ({ viewerIsMaintainer: true, authorIsMaintainer: MAINTAINERS.includes(String(authorLogin).toLowerCase()) && authorLogin !== 'zhongxingtian-ai' }),
+        evaluateMaintainerApprovalPolicy: ({ authorLogin }) => ({ viewerIsMaintainer: true, authorIsMaintainer: MAINTAINERS.includes(String(authorLogin).toLowerCase()) }),
         isSignoffExemptAuthor: (login) => ['zhongxingtian-ai'].includes(String(login).toLowerCase()),
         gh: (args, options) => { calls.push(args); return args[0] === 'api' ? { ok: true, stdout: 'praisezhu\n' } : { ok: true, stdout: '' }; },
         ghJson: () => ({ state: 'OPEN', isDraft: false, headRefOid: SHA, author: { login: author } }),
@@ -1890,8 +1900,8 @@ test('pr-write-guard:hold 对豁免作者仍拒绝;通知 issue 只给免确认�
     );
     return { guard, calls };
   };
-  // hold:豁免作者(zhongxingtian-ai)与维护者作者(kirozeng)仍拒绝
-  assert.throws(() => run('hold', 'zhongxingtian-ai').guard(['issue', 'create']), /豁免名单作者免前置确认门/);
+  // hold:2026-10-21 起 zhongxingtian-ai 也是完整维护者,与 kirozeng 一样拒绝 hold
+  assert.throws(() => run('hold', 'zhongxingtian-ai').guard(['issue', 'create']), /维护者作者免前置确认门/);
   assert.throws(() => run('hold', 'kirozeng').guard(['issue', 'create']), /维护者作者免前置确认门/);
   // 通知:豁免作者 / 维护者作者放行,普通作者拒绝
   for (const author of ['zhongxingtian-ai', 'kirozeng']) {
@@ -2179,20 +2189,20 @@ test('受保护路径放行:作者是维护者/豁免名单时直接放行(via=a
   // 非豁免作者:无 authorExempt 时一切照旧(作者本人 Approve 不算、没人表态不放行)
   assert.equal(evaluateProtectedPathRelease({ ...protectedBase, authorExempt: false }).released, null);
   assert.equal(evaluateProtectedPathRelease({ ...protectedBase, reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] }).released, null);
-  // 豁免作者不是放行人:放行名单(maintainerAllowlist 三人)之外的 zhongxingtian-ai 给别人 PR 的 Approve 不算
-  const releasers = ['praisezhu', 'kirozeng', 'aj0928'];
-  const other = evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] });
+  // 2026-10-21:四人都是放行人;第五个非维护者的 Approve 仍不算。
+  const releasers = ['praisezhu', 'kirozeng', 'aj0928', 'zhongxingtian-ai'];
+  const other = evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('signoff-only', 'APPROVED', '2026-10-15T01:00:00Z')] });
   assert.equal(other.released, null);
+  assert.equal(evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('zhongxingtian-ai', 'APPROVED', '2026-10-15T01:00:00Z')] }).released?.by, 'zhongxingtian-ai');
   assert.equal(evaluateProtectedPathRelease({ ...protectedBase, maintainers: releasers, authorLogin: 'outsider', reviews: [protectedReview('kirozeng', 'APPROVED', '2026-10-15T01:00:00Z')] }).released?.by, 'kirozeng');
 });
 
-test('放行权名单固定:exemptAuthors 含 zhongxingtian-ai,但 maintainerAllowlist 不含,且 exemptAuthors 是 allowlist 的超集', () => {
+test('2026-10-21 四人完整维护者:allowlist 含 zhongxingtian-ai,且都在 exemptAuthors', () => {
   const rules = JSON.parse(readFileSync(fileURLToPath(new URL('../config/pr-rules.json', import.meta.url)), 'utf8'));
   const allow = rules.maintainerAllowlist.map((x) => x.toLowerCase());
   const exempt = rules.signoffGate.exemptAuthors.map((x) => x.toLowerCase());
-  assert.deepEqual(allow.slice().sort(), ['aj0928', 'kirozeng', 'praisezhu']);
+  assert.deepEqual(allow.slice().sort(), ['aj0928', 'kirozeng', 'praisezhu', 'zhongxingtian-ai']);
   assert.ok(exempt.includes('zhongxingtian-ai'));
-  assert.ok(!allow.includes('zhongxingtian-ai'));
   for (const login of allow) assert.ok(exempt.includes(login), `${login} 在 exemptAuthors`);
 });
 
