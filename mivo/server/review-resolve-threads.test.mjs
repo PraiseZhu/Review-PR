@@ -12,7 +12,7 @@ const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const LIB_DIR = join(SERVER_DIR, '..', 'lib');
 const SHA = 'a'.repeat(40);
 const OLD = '1'.repeat(12);
-const KEY = '123456789abc';
+const FINDING_ID = '123456789abc';
 const RUN_URL = 'https://github.com/o/r/actions/runs/42';
 const REVIEWER = 'reviewer-bot';
 const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
@@ -23,7 +23,7 @@ const PASS_GATES = { ok: true, headVerified: true, baseVerified: true, threadsVe
   mergeStateStatus: 'BLOCKED', mergeable: 'MERGEABLE', canMerge: false, codeScanning: { rules: [], rulesError: null, checks: [] } };
 
 const oldThread = (patch = {}) => ({ id: 'PRRT_1', isResolved: false, path: 'src/a.ts',
-  comments: [{ id: 'c1', author: { login: REVIEWER }, body: `[P1] 旧问题\n\n<!-- mivo-finding key=${KEY} round=1 head=${OLD} -->` }], ...patch });
+  comments: [{ id: 'c1', author: { login: REVIEWER }, body: `[P1] 旧问题\n\n<!-- mivo-finding key=${FINDING_ID} round=1 head=${OLD} -->` }], ...patch });
 
 function makeRoot({ runnerSummary }) {
   const root = mkdtempSync(join(tmpdir(), 'mivo-resolve-publish-'));
@@ -68,7 +68,7 @@ process.stdout.write(JSON.stringify({ id: 5, updated_at: new Date().toISOString(
 }
 
 // 默认场景:作者是审查账号 + 还有未 resolve 的讨论 → 走 advisory 评论(本轮新发的报告评论,id=5)。
-function setup({ threads = [oldThread()], mode = 'live', scopeMode = 'full', runnerSummary = { ok: true, status: 'completed', plannedCount: 1, resolvedCount: 1, alreadyResolvedCount: 0, items: [{ id: 'PRRT_1', key: KEY, status: 'resolved' }], warnings: [] },
+function setup({ threads = [oldThread()], mode = 'live', scopeMode = 'full', runnerSummary = { ok: true, status: 'completed', plannedCount: 1, resolvedCount: 1, alreadyResolvedCount: 0, items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'resolved' }], warnings: [] },
   receipt = null, pendingGates = [] } = {}) {
   const root = makeRoot({ runnerSummary });
   const work = join(root, 'work');
@@ -146,7 +146,7 @@ test('SC4 dry-run:不调用 runner', () => {
 test('没有旧 thread 候选(prepare 快照里没有 / 已 resolve / 别人发的 / 当前 head 上发的)→ 不调用 runner', () => {
   const other = oldThread(); other.comments[0].author.login = 'someone';
   const resolved = oldThread({ isResolved: true });
-  const sameHead = oldThread(); sameHead.comments[0].body = `[P1] x\n\n<!-- mivo-finding key=${KEY} round=1 head=${SHA.slice(0, 12)} -->`;
+  const sameHead = oldThread(); sameHead.comments[0].body = `[P1] x\n\n<!-- mivo-finding key=${FINDING_ID} round=1 head=${SHA.slice(0, 12)} -->`;
   run({ threads: [] }, ({ runnerCalls }) => assert.equal(runnerCalls.length, 0));
   run({ threads: [other, resolved, sameHead] }, ({ runnerCalls }) => assert.equal(runnerCalls.length, 0));
 });
@@ -163,7 +163,7 @@ test('SC4 runner 崩溃 / 返回非 JSON → 只加 warning,本轮结论不变�
 
 test('runner 的逐条 warning 进结果 warnings,状态进 mivo.threadResolution', () => {
   const summary = { ok: true, status: 'partial', skippedReason: null, plannedCount: 1, resolvedCount: 0, alreadyResolvedCount: 0,
-    items: [{ id: 'PRRT_1', key: KEY, status: 'failed', reason: '回复失败' }], warnings: ['代 resolve 未完成(123456789abc):回复失败'] };
+    items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'failed', reason: '回复失败' }], warnings: ['代 resolve 未完成(123456789abc):回复失败'] };
   run({ runnerSummary: summary }, ({ result }) => {
     assert.ok(result.warnings.includes(summary.warnings[0]));
     assert.equal(result.mivo.threadResolution.status, 'partial');
