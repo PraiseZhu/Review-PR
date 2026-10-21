@@ -152,7 +152,7 @@ Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功�
 
 1. 开 issue：写清是哪个问题、现在有什么风险、打算怎么修；标题或正文提到本 PR（`#<PR 号>` 或 PR 链接）。issue 由 PR 作者或维护者开，保持 OPEN。
 2. 在 PR 说明里加一节，标题一字不差：`## 转 issue 跟进的审查问题`（`##` 到 `####` 都行）。每个问题一行，写 issue 引用和一句说明，例如 `- #1001 旧 ghost 列表静默漏列`。只认本仓 issue，最多 10 项。
-3. 在审查机原来那条讨论里回复 issue 链接，然后 resolve。前置门要求讨论全部 resolve 才送审；只剩审查机自己的 Request Changes、讨论都已 resolve 时，Mini 会对当前 head 重审。
+3. 在审查机原来那条讨论里回复 issue 链接，然后 resolve。前置门要求有人留的讨论全部 resolve 才送审（只剩机器人或审查机自己带标记的讨论时照审，见「送审但不放行」）；只剩审查机自己的 Request Changes、讨论都已 resolve 时，Mini 会对当前 head 重审。
 
 审查机怎么判：
 
@@ -168,8 +168,9 @@ Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功�
 
 - **只缺界面证据**：格式门照样打回要证据，同时送审代码。
 - **只剩机器人留的 thread 没 resolve**（首条评论作者是 Bot，如 Greptile）：照样送审。有人留的 thread 没关，照旧不送审。
+- **只剩审查机自己留的 thread 没 resolve**（2026-10-22 #114）：首条评论作者就是本轮审查账号（`approvalPolicy.viewer`，login 不分大小写），且首条正文带 `<!-- mivo-finding key=` 标记，两个条件同时成立才算；挂起原因记 `reviewer-threads`，与机器人 thread 混合时两项都记（`bot-threads` 在前）。混有人的 thread、首条评论没有标记（标记只在后续回复里也不算）、审查账号读不到（viewer 为空）、首评缺作者或正文，一律照旧 `threads-unresolved` 不送审。豁免只管 thread：还有别的前置门没过（如仍有效的 Request Changes、CI、冲突）时照旧不送审。
 
-两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`（给 Mini 看的「还没放行」；结果里同时有 `mivo.advisory.pendingGates`）。作者补齐后下一轮重审；代码没变时沿用这次结论（`previousFromResult` 把「有挂起的门、没有问题条目」的 advisory 记成代码层面干净，不会因为 `reviewClean=false` 退回全量重审），Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
+两种情况下，审查出 P0/P1 照常打回、开 thread。没有 P0/P1 时不 Approve：报告以评论发出（开头写明还差什么，末尾标记 `<!-- mivo-review:advisory head=… -->`，不是 `mivo-review:report`，盯梢不会当成放行），不挂 `review:merge-ready`，check `review-pr` 留在进行中。结果记 `format`（缺证据）或 `merge-blocked`（只剩机器人或审查机自己的 thread；`threads-unresolved` 专指没进审查），`reviewClean=false`（给 Mini 看的「还没放行」；结果里同时有 `mivo.advisory.pendingGates`）。作者补齐后下一轮重审；代码没变时沿用这次结论（`previousFromResult` 把「有挂起的门、没有问题条目」的 advisory 记成代码层面干净，不会因为 `reviewClean=false` 退回全量重审），Approve 并写 success。合并仍要求所有 thread resolve，这一层不受影响。
 
 ## 作者交接文件
 

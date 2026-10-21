@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { collectRoundResults } from '../../review-pr/scripts/review-round.mjs';
 import { previousFromResult, computeReviewScope } from '../lib/scope.mjs';
+import { decideGate } from '../lib/gates.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SHA = 'a'.repeat(40);
@@ -85,6 +86,50 @@ test('缺界面证据但代码干净:评论发报告、不 Approve、check 留�
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
 
+// #114:只剩审查机自己带标记的 thread(gate 给出 reviewer-threads)同样走 advisory:评论发报告、不 Approve、不挂 merge-ready。
+test('只剩审查机自己的 thread(含与机器人 thread 混合):merge-blocked,不 Approve、不挂标签', () => {
+  for (const pendingGates of [['reviewer-threads'], ['bot-threads', 'reviewer-threads']]) {
+    const work = setup({ mode: 'live', pendingGates });
+    const gh = fakeGh(work);
+    try {
+      const result = publish(work, gh);
+      assert.equal(result.outcome, 'merge-blocked');
+      assert.equal(result.reviewed, true);
+      assert.equal(result.reviewClean, false);
+      assert.equal(result.approval.code, 'gates-pending');
+      assert.deepEqual(result.mivo.advisory.pendingGates, pendingGates);
+      assert.match(result.reason, /审查机自己留的讨论没有 resolve/);
+      const calls = gh.calls();
+      const review = calls.find((c) => c.args.includes('repos/o/r/pulls/7/reviews') && c.args.includes('POST'));
+      const body = JSON.parse(review.input);
+      assert.equal(body.event, 'COMMENT');
+      assert.match(body.body, new RegExp(`<!-- mivo-review:advisory head=${SHA} -->$`));
+      assert.doesNotMatch(body.body, /mivo-review:report/);
+      assert.ok(!calls.some((c) => c.args.some((a) => /finish-reviewed-pr|APPROVE/.test(a)) || c.input.includes('"APPROVE"')));
+      assert.ok(!calls.some((c) => c.args.includes('labels[]=review:merge-ready')), '不挂 merge-ready');
+      const checkBody = JSON.parse(calls.find((c) => c.args.includes('repos/o/r/check-runs/99')).input);
+      assert.equal(checkBody.status, 'in_progress');
+      assert.equal(checkBody.conclusion, undefined);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+});
+
+test('gate 判出的 reviewer-threads 原样走到发布:decideGate → publish', () => {
+  const marker = '<!-- mivo-finding key=k1 round=1 head=abc -->';
+  const decision = decideGate({
+    ok: true, pr: 7, meta: { title: 't', author: 'outsider', mergeStateStatus: 'BLOCKED' }, files: [], approvalPolicy: { viewer: 'reviewer-bot' },
+    signoff: { triggers: [], labels: {} }, security: { hardHitCount: 0 }, format: { formatPass: true, formatIssues: [] },
+    gate: { unresolvedThreads: [{ id: 't1', isBot: false, comments: [{ author: { login: 'Reviewer-Bot' }, body: `x\n${marker}` }] }], botSettle: { settled: true } },
+    auto: { action: 'review' }, review: { tier: 'standard' } });
+  assert.deepEqual(decision.pendingGates, ['reviewer-threads']);
+  const work = setup({ mode: 'dry-run', pendingGates: decision.pendingGates });
+  try {
+    const result = publish(work, fakeGh(work));
+    assert.equal(result.outcome, 'merge-blocked');
+    assert.deepEqual(result.mivo.advisory.pendingGates, ['reviewer-threads']);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
 test('只剩机器人 thread 时 outcome 是 merge-blocked;有 P0/P1 照常打回', () => {
   const clean = setup({ mode: 'dry-run', pendingGates: ['bot-threads'] });
   const dirty = setup({ mode: 'dry-run', pendingGates: ['bot-threads'], findings: [{ path: 'src/a.ts', line: 2, side: 'RIGHT', body: '[P1] 事实 / 影响 / 建议修复 / 验证方式', deferredTo: null }] });
@@ -99,7 +144,7 @@ test('只剩机器人 thread 时 outcome 是 merge-blocked;有 P0/P1 照常打�
 
 // 轮次汇总(finalize)要能收下这两种结果:进了审查、没放行、不是「前置门没过」的结论。
 test('送审不放行的结果能通过轮次汇总的校验', () => {
-  for (const pendingGates of [['ui-evidence'], ['bot-threads'], ['ui-evidence', 'bot-threads']]) {
+  for (const pendingGates of [['ui-evidence'], ['bot-threads'], ['ui-evidence', 'bot-threads'], ['reviewer-threads'], ['bot-threads', 'reviewer-threads'], ['ui-evidence', 'reviewer-threads'], ['ui-evidence', 'bot-threads', 'reviewer-threads']]) {
     const work = setup({ mode: 'dry-run', pendingGates });
     try {
       const result = publish(work, fakeGh(work));
@@ -115,7 +160,7 @@ test('送审不放行的结果能通过轮次汇总的校验', () => {
 // #1081(2026-10-17):前置门没过的 advisory 结果被当成「上一轮有问题」,同一 head 代码没变也做了第二次完整审查。
 // 「门没过」和「代码审查不干净」要分开:advisory 的 reviewClean 仍是 false(Mini 不能当它已放行),但下一轮的范围判定看到的是代码干净。
 test('advisory 之后同一 head 沿用结论,不再重审;Mini 看到的 reviewClean 仍是 false', () => {
-  for (const pendingGates of [['bot-threads'], ['ui-evidence']]) {
+  for (const pendingGates of [['bot-threads'], ['ui-evidence'], ['reviewer-threads'], ['bot-threads', 'reviewer-threads']]) {
     const work = setup({ mode: 'dry-run', pendingGates });
     try {
       const result = publish(work, fakeGh(work));

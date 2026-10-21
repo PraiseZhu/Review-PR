@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+import { decideGate } from '../lib/gates.mjs';
+
 const { computeMaintainerAuthorityDigest, MAINTAINER_AUTHORITY_VERSION } = await import('../../review-pr/scripts/lib.mjs');
 const CONTEXT = fileURLToPath(new URL('../../review-pr/scripts/context.mjs', import.meta.url));
 const LIB_URL = new URL('../../review-pr/scripts/lib.mjs', import.meta.url).href;
@@ -199,4 +201,56 @@ test('REVIEW_PR_IDENTITY_TOKEN:分支保护三类调用用身份令牌,其余调
     else assert.equal(c.seen, null, JSON.stringify(c.args));
   }
   assert.deepEqual([...seenIdentity].sort(), [...identityEndpoints].sort());
+}));
+
+// #114:真实 context 输出(首评原始形状 + approvalPolicy.viewer)→ decideGate,只剩审查机自己带标记的 thread 时送审不放行。
+const MARKER = '<!-- mivo-finding key=k1 round=1 head=abcdef -->';
+const rawThread = (id, login, body, typename = 'User') => ({
+  id, isResolved: false, isOutdated: false, path: 'fixture.txt', line: 1,
+  comments: { pageInfo: { hasNextPage: false, endCursor: null },
+    nodes: [{ author: { login, __typename: typename }, body, createdAt: '2026-01-01T00:00:00Z', url: 'https://github.com/o/r/pull/1#discussion_r1' }] },
+});
+const onlyThreadsServer = (threads, extra = {}) => {
+  const server = makeServer({ threads, ...extra });
+  server.meta.reviewDecision = 'REVIEW_REQUIRED';
+  return server;
+};
+
+test('thread 链路:viewer 来自 REVIEW_PR_VIEWER_LOGIN 或 GraphQL;只剩审查机带标记的 thread → review + reviewer-threads', () => withFixture((run) => {
+  const threads = [rawThread('T1', 'Maintainer', `[P2] 问题\n${MARKER}`)];
+  for (const [server, env] of [[onlyThreadsServer(threads), { REVIEW_PR_VIEWER_LOGIN: 'maintainer' }], [onlyThreadsServer(threads, { viewer: 'maintainer' }), {}]]) {
+    const r = run(server, env);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.json.approvalPolicy.viewer, 'maintainer');
+    assert.equal(r.json.auto.action, 'review');
+    assert.equal(r.json.gate.unresolvedThreads.length, 1);
+    assert.ok(r.json.gate.unresolvedThreads[0].comments[0].body.includes('<!-- mivo-finding key='), '首评正文未被截断');
+    const d = decideGate(r.json);
+    assert.equal(d.stage, 'review');
+    assert.deepEqual(d.pendingGates, ['reviewer-threads']);
+  }
+}));
+
+test('thread 链路:无标记 / 别人的 thread 混入 / 机器人+审查机混合 / viewer 不是首评作者', () => withFixture((run) => {
+  const own = rawThread('T1', 'maintainer', `[P2] 问题\n${MARKER}`);
+  const env = { REVIEW_PR_VIEWER_LOGIN: 'maintainer' };
+  const noMarker = run(onlyThreadsServer([rawThread('T1', 'maintainer', '普通评论')]), env);
+  assert.equal(decideGate(noMarker.json).outcome, 'threads-unresolved');
+  const human = run(onlyThreadsServer([own, rawThread('T2', 'contributor', '请改一下')]), env);
+  assert.equal(decideGate(human.json).outcome, 'threads-unresolved');
+  const mixed = run(onlyThreadsServer([own, rawThread('T3', 'greptile-apps', 'bot 意见', 'Bot')]), env);
+  assert.deepEqual(decideGate(mixed.json).pendingGates, ['bot-threads', 'reviewer-threads']);
+  const other = run(onlyThreadsServer([own], { viewer: 'someone-else' }));
+  assert.equal(decideGate(other.json).outcome, 'threads-unresolved');
+}));
+
+test('thread 链路:审查账号读不到时 context 直接报错,不会走到豁免;审查机自己的 CR 仍硬拦', () => withFixture((run) => {
+  const own = rawThread('T1', 'maintainer', `[P2] 问题\n${MARKER}`);
+  const noViewer = run(onlyThreadsServer([own]));
+  assert.equal(noViewer.status, 1);
+  assert.match(noViewer.json.error, /PR 或 viewer 元数据未完整读取/);
+  const server = makeServer({ threads: [own], reviews: [reviewFixture('maintainer')] });
+  const cr = run(server, { REVIEW_PR_VIEWER_LOGIN: 'maintainer' });
+  assert.equal(cr.status, 0, cr.stdout + cr.stderr);
+  assert.notEqual(decideGate(cr.json).stage, 'review', '仍有效的 CR 不因 thread 豁免而放行送审');
 }));
