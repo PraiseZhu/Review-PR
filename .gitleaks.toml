@@ -7,3 +7,9 @@ description = "lizi 上游 maintainer-authority 测试的假 review 锁 token"
 condition = "AND"
 paths = ['''^review-pr/scripts/maintainer-authority\.test\.mjs$''']
 regexes = ['''12345678-abcd''']
+
+[[allowlists]]
+description = "mivo 代 resolve 测试的假 finding key(12 位十六进制问题编号,不是凭证)"
+condition = "AND"
+paths = ['''^mivo/server/review-resolve-threads\.test\.mjs$''']
+regexes = ['''123456789abc''']
