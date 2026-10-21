@@ -13,14 +13,14 @@
 // 跑:node <skill-root>/scripts/run-log.mjs   # JSON 走 stdin(pipe 或 --body-file 风格)
 
 import { existsSync, readFileSync } from 'node:fs';
-import { atomicWriteJson, atomicWriteText } from './runtime-io.mjs';
+import { atomicWriteJson, atomicWriteText, readFdSync } from './runtime-io.mjs';
 import { stateFile, print, fail } from './lib.mjs';
 import { applyReviewedEntries, loadReviewState, saveReviewedState } from './review-state.mjs';
 import { buildReviewSummary, formatReviewCard } from './review-summary.mjs';
 import { formatLocalIso } from './local-time.mjs';
 
 try {
-  const raw = readFileSync(0, 'utf8');
+  const raw = readFdSync(0);
   let data;
   try {
     data = JSON.parse(raw);
