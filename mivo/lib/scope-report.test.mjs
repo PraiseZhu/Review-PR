@@ -253,3 +253,24 @@ test('上一轮「核对员推翻了全部卡点、等人工复核」的状态�
   assert.equal(unmarked.manualReview, true, '没有显式标记时按形状认(没有阻断问题、有被推翻的问题、没放行)');
   assert.equal(previousFromResult({ ...result, reviewClean: true, mivo: { ...result.mivo, verifierOverruledAll: undefined, verifierOverruled: [] } }, '').manualReview, false);
 });
+
+test('最终报告:Verification 里逐 key 的核对结论(已修复/仍未修复/仍转 issue)原样保留,结论与阻断问题一致', () => {
+  const lines = [
+    '- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚',
+    '- key=bbbbbbbbbbbb · 仍未修复 · 已在 Findings 再报',
+    '- key=cccccccccccc · 仍转 issue · #1001 仍 OPEN',
+  ];
+  const answer = ['## Findings', '[P1] src/a.ts:11 — 仍未修复', '## Rule coverage', 'AGENTS.md', '## Verification', ...lines, '## Overall', 'changes-requested —— 1 条 P0/P1/P2'].join('\n');
+  const report = finalizeReport({ report: answer, findings: [{ path: 'src/a.ts', line: 11, body: '[P1] 仍未修复' }], pr: 1, url: 'https://github.com/o/r/pull/1',
+    head: 'a'.repeat(40), base: 'b'.repeat(40), diffHash: 'c'.repeat(64), tier: 'standard', scope: { mode: 'full', reason: '规则变了' } });
+  for (const line of lines) assert.ok(report.includes(line), line);
+  assert.match(report, /## Overall\nchanges-requested —— 1 条 P0\/P1\/P2/);
+});
+
+test('遵照任务书写的答卷:旧问题的文件已移出 PR 时只在 Verification 写结论、findings 不含它,validateAnswer 通过', () => {
+  const report = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification',
+    '- key=cccccccccccc · 文件已移出本 PR 改动，不再报', '## Overall', 'pass —— 没有 P0/P1/P2。'].join('\n');
+  assert.equal(validateAnswer({ report, findings: [] }, { diffFiles: files }).ok, true);
+  // 反例:把已移出的文件写进 findings 会被整份拒收——任务书因此必须禁止这样写。
+  assert.equal(validateAnswer({ report, findings: [{ path: 'src/gone.ts', line: 3, side: 'RIGHT', body: '[P1] x' }] }, { diffFiles: files }).ok, false);
+});

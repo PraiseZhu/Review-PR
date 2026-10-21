@@ -1,6 +1,7 @@
 // scope.mjs — 增量复审的范围计算(Mivo 特有,方案第 8 节)。纯函数。
 // 对比上次审过的版本 H0 与这次的 H1:逐文件比较 PR patch,只审 patch 变了的文件,
 // 外加上一轮有问题的文件(逐条核对是否真修好)。任一兜底条件命中就退回全量。
+// 本模块是纯函数:配置文件由调用方读取后注入(loadSpecChangePolicy 只解析注入的读取函数)。
 import { createHash } from 'node:crypto';
 
 export const FULL_REVIEW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -77,10 +78,19 @@ export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(fi
  * @param {object|null} p.previous 上一次服务器审查结果(含 head/baseRefName/diffHash/filePatchHashes/findings/deferred/...)
  * @param {object} p.current 本次 {head, baseRefName, diffHash, filePatchHashes, totalDiffLines, tier, triggerKinds, specDigest, now}
  * @param {boolean|null} p.headIsDescendant H0 是否是 H1 的祖先(git merge-base --is-ancestor);null=未知
+ * @param {boolean} [p.forceFullOnSpecChange] 维护者开关(review-features.json 的 specChange.forceFull):规则改版时即使代码没变也全量;只认 true
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
-export function computeReviewScope({ previous, current, headIsDescendant }) {
-  const full = (reason) => ({ mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: [], basedOn: null });
+export function computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
+  // 上一轮有完整结果时,全量轮也带着它的问题(含转 issue 的),任务书据此逐条核对;顺序原样,legacy-N 编号依赖它。
+  const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
+  // 条目的文件已不在本轮 PR 改动里的标 outOfDiff:任务书据此要求只在 Verification 写结论、不进 findings
+  // (答卷校验要求 finding 的文件必须在 diff 里,写了整轮会被判答卷不合格)。拿不到本轮指纹时不标。
+  const inDiff = current.filePatchHashes ? (path) => path in current.filePatchHashes : () => true;
+  const carried = trusted
+    ? [...(previous.findings ?? []), ...(previous.deferred ?? [])].map((f) => (inDiff(f.path) ? f : { ...f, outOfDiff: true }))
+    : [];
+  const full = (reason) => ({ mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(), previousFindings: carried, basedOn: null });
   if (!previous) return full('没有上一轮审查记录');
   if (previous.reviewed !== true || previous.reportComplete !== true || previous.outcome === 'error') return full('上一轮没审完或没有完整报告');
   // 上一轮因为交接不完整没放行、本轮交接补齐了:按交接重新全量审(增量范围只有那两份 md,看不到交接指向的代码)。
@@ -96,16 +106,17 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   // 先显式判断字段存在:旧结果没有这个字段时退回全量,不能让两个 undefined 判成相等。
   if (!previous.specDigest) return full('上一轮没有任务书版本记录');
   if (!current.specDigest) return full('本轮没有任务书版本');
-  if (previous.specDigest !== current.specDigest) return full('审查任务书或规则变了');
+  // 规则改版本身不触发全量:先比 PR 改动,代码没变就沿用上次结论(下面 specChanged 分支);forceFull=true 才一变就全量。
+  const specChanged = previous.specDigest !== current.specDigest;
+  if (specChanged && forceFullOnSpecChange === true) return full('审查任务书或规则变了');
   const lastFull = Date.parse(previous.lastFullReviewAt ?? '');
   if (!Number.isFinite(lastFull) || current.now - lastFull > FULL_REVIEW_MAX_AGE_MS) return full('距上次完整审查超过 7 天');
 
   const sameDiff = previous.diffHash && previous.diffHash === current.diffHash;
   // 上一轮转 issue 跟进的问题(deferred)也不算干净:issue 可能已关闭或撤了登记,每轮都重新核验,不沿用结论。
-  const carried = [...(previous.findings ?? []), ...(previous.deferred ?? [])];
   const previousClean = carried.length === 0 && previous.reviewClean === true;
   if (previous.head !== current.head && headIsDescendant !== true) {
-    if (sameDiff && previousClean) return reuse(previous, '强制推送/rebase,但 diff 完全相同,沿用上次结论');
+    if (!specChanged && sameDiff && previousClean) return reuse(previous, '强制推送/rebase,但 diff 完全相同,沿用上次结论');
     return full('上次审过的版本不是当前版本的祖先(强制推送或 rebase)');
   }
 
@@ -116,6 +127,14 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   const after = (useV2 ? current.filePatchHashesV2 : current.filePatchHashes) ?? {};
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((path) => before[path] !== after[path]).sort();
+  if (specChanged) {
+    if (changed.length > 0) return full('审查任务书或规则变了');
+    if (!previousClean && carried.length === 0) return full('上一轮未放行且没有可沿用的问题条目,重新全量确认');
+    // 转 issue 的问题要本轮仍核验通过才能沿用;issue 关了或撤了登记,不是「只有规则变」,重新全量。
+    const verifiedIssues = current.verifiedDeferralIssues ?? [];
+    if ((previous.deferred ?? []).some((d) => !verifiedIssues.includes(d.deferredTo))) return full('上一轮转 issue 的问题本轮未核验通过,重新全量确认');
+    return reuse(previous, '规则改版，代码未变，沿用上次结论');
+  }
   const findingFiles = [...new Set(carried.map((f) => f.path).filter((path) => path in after))];
   const changedLines = changed.reduce((sum, path) => sum + (current.fileChangedLines?.[path] ?? 0), 0);
   if (previous.totalDiffLines > 0 && changedLines > previous.totalDiffLines / 2) {
@@ -138,8 +157,70 @@ export function computeReviewScope({ previous, current, headIsDescendant }) {
   };
 }
 
+/**
+ * 规则改版沿用带问题的上一轮时,同一 head 上一轮已发过的 review 直接沿用、不再发:
+ * reusedReport 改写了正文,发布器的 review 标记(head+正文+comments 摘要)对不上,会在同一 head 再开一遍同样的行内 thread。
+ * 跨 head 或上一轮没发过 review(dry-run、发布失败)返回 null,照常发布。
+ * @param {object} previous 上一轮 result.json
+ * @param {string} head 本轮 head
+ */
+export function reusableReview(previous, head) {
+  if (!previous?.head || previous.head !== head || !previous.mivo?.review) return null;
+  return { review: previous.mivo.review, threadUrls: previous.threadUrls ?? [] };
+}
+
 function reuse(previous, reason) {
-  return { mode: 'reuse', reason, files: [], previousFindings: previous.findings ?? [], basedOn: previous.head };
+  return { mode: 'reuse', reason, files: [], previousFindings: [...(previous.findings ?? []), ...(previous.deferred ?? [])], basedOn: previous.head };
+}
+
+/**
+ * 沿用上一轮阻断问题时的锚点处理:head 或 diff 变了(规则改版沿用可以跨 head),旧行号在新版本上不一定有效,
+ * 发布器不会按 diff 重定位。这时改成文件级评论,key/轮次/正文不动。head 与 diffHash 都确认相同才保留原行号。
+ * @returns {object[]} 新数组,不改输入
+ */
+export function reanchorReusedFindings(findings, { previousHead, previousDiffHash, head, diffHash }) {
+  const sameAnchor = Boolean(previousHead) && previousHead === head && Boolean(previousDiffHash) && previousDiffHash === diffHash;
+  if (sameAnchor) return (findings ?? []).map((f) => ({ ...f }));
+  return (findings ?? []).map((f) => {
+    const { line, side, position, start_line, start_side, ...rest } = f;
+    return { ...rest, subject_type: 'file' };
+  });
+}
+
+/**
+ * 规则改版沿用时的 findings 与 review:同一 head 上一轮已发过 review 就整体沿用(findings 原样、不重发),
+ * 否则要发新 review,这时才按 head/diff 重定位(转文件级)。
+ * 沿用不重发时 PR 上仍是原来的行级 thread,结果包里的 findings 必须和它一致:base 前移导致 diffHash 变了也不能抹行号,
+ * 否则后续轮次任务书里的旧问题丢了原位置。
+ * @returns {{findings: object[], reusedReview: {review: object, threadUrls: string[]}|null}}
+ */
+export function reuseFindings(previous, { head, diffHash }) {
+  const reusedReview = reusableReview(previous, head);
+  const findings = reusedReview
+    ? (previous?.mivo?.findings ?? []).map((f) => ({ ...f }))
+    : reanchorReusedFindings(previous?.mivo?.findings ?? [], { previousHead: previous?.head, previousDiffHash: previous?.reviewEvidence?.diffHash, head, diffHash });
+  return { findings, reusedReview };
+}
+
+/**
+ * review-features.json 的 specChange 策略。readText 由调用方注入(读不到就抛)。
+ * 缺块/缺字段=默认 false 且不告警(旧配置兼容);读不到、解析失败、类型不对=false + 固定 warning(不回显配置原文)。
+ * @returns {{forceFull:boolean, warning:string|null}}
+ */
+export function loadSpecChangePolicy(readText) {
+  const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  let raw;
+  try { raw = JSON.parse(readText()); } catch {
+    return { forceFull: false, warning: 'review-features.json 读不到或不合法，specChange.forceFull 按 false 处理' };
+  }
+  const bad = { forceFull: false, warning: 'review-features.json 的 specChange.forceFull 配置不合法，按 false 处理' };
+  if (!isObject(raw)) return { forceFull: false, warning: 'review-features.json 读不到或不合法，specChange.forceFull 按 false 处理' };
+  if (raw.specChange === undefined) return { forceFull: false, warning: null };
+  if (!isObject(raw.specChange)) return bad;
+  const value = raw.specChange.forceFull;
+  if (value === undefined) return { forceFull: false, warning: null };
+  if (typeof value !== 'boolean') return bad;
+  return { forceFull: value, warning: null };
 }
 
 // advisory(review.mjs 的 publishAdvisory):代码没有 P0/P1,只是前置门没过。result.reviewClean 记 false 是给 Mini 看的「还没放行」,

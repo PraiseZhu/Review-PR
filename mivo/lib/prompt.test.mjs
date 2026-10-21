@@ -113,7 +113,7 @@ test('specDigest:只改实现代码不变;必读或命中的规则变了就变;�
 // 增量轮专属的固定指令也是任务书:只改它也要让 digest 变,否则同 head 的旧干净报告会被沿用、新指令整轮不执行。
 test('specDigest:固定模板盖到每个分支(全量/增量范围、上一轮问题、转 issue 一节的空与非空)', () => {
   const { template } = manifest();
-  assert.deepEqual(Object.keys(template).sort(), ['full', 'incremental']);
+  assert.deepEqual(Object.keys(template).sort(), ['full', 'fullWithPrevious', 'incremental']);
   const all = Object.values(template).join('\n');
   for (const phrase of ['**全量审查**', '**增量复审**', '**优先规则**', '本轮是增量复审', '上一轮的问题(逐条核对)', '标了「已转 #N」的',
     '本 PR 没有核验通过的转 issue 条目', '## 转 issue 跟进的问题(服务器已核验)', '## 维护者裁定不改的问题(服务器已核验)', '## 写明的产品意图不算缺陷', '## 作者对以前问题的申辩(逐条核对)']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
@@ -204,4 +204,70 @@ test('固定模板盖到 rules-base 两种写法', () => {
   const { template } = manifest();
   assert.ok(template.full.includes('规则文件 base 版本'));
   assert.ok(template.incremental.includes('本轮规则按 head 读取'));
+});
+
+// 全量轮携带上一轮问题(#98):任务书列出每条的 key/位置/首行并要求逐条核对,Verification 里逐 key 写结论。
+const PREV = [
+  { path: 'src/a.ts', line: 12, body: '[P1] 第一条\n第二行不应出现', key: 'aaaaaaaaaaaa' },
+  { path: 'src/b.ts', body: '[P2] 没有 key 的旧条目' },
+  { path: 'src/c.ts', line: 3, body: '[P2] 已转的条目', deferredTo: 9, key: 'bbbbbbbbbbbb' },
+];
+
+test('全量轮带上一轮问题:逐条列出 key/位置/首行,要求逐条核对并在 Verification 逐 key 写结论', () => {
+  const text = prompt('standard', { scope: { mode: 'full', reason: '规则变了', previousFindings: PREV } });
+  assert.match(text, /\*\*全量审查\*\*:规则变了。审完整 diff。同时逐条核对下方「上一轮的问题」/);
+  assert.ok(text.includes('上一轮的问题(逐条核对):'));
+  assert.ok(text.includes('- `src/a.ts:12` [P1] 第一条 · key=aaaaaaaaaaaa'));
+  assert.ok(text.includes('- `src/b.ts` [P2] 没有 key 的旧条目 · key=legacy-2'));
+  assert.ok(text.includes('- `src/c.ts:3`(已转 #9) [P2] 已转的条目 · key=bbbbbbbbbbbb'));
+  assert.ok(!text.includes('第二行不应出现'));
+  assert.match(text, /逐条核对要求:每一条都要检查是否\*\*真的修好\*\*\(thread 被 resolve 不算证据/);
+  assert.match(text, /没修好的照常写进 `findings`,`supersedes` 填该条的 key/);
+  assert.match(text, /Verification 里还必须逐个 key 写一行「核对结论 \+ 证据\/理由」/);
+  assert.match(text, /不能既不再报、又不解释/);
+});
+
+test('全量轮没有上一轮问题:不生成空清单,也不加逐条核对要求', () => {
+  const text = prompt('standard', { scope: { mode: 'full', reason: '没有上一轮审查记录', previousFindings: [] } });
+  assert.ok(!text.includes('上一轮的问题(逐条核对)'));
+  assert.ok(!text.includes('逐条核对要求'));
+  assert.ok(!text.includes('逐个 key 写一行'));
+  assert.ok(text.includes('**全量审查**:没有上一轮审查记录。审完整 diff。'));
+  assert.ok(!text.includes('同时逐条核对'));
+});
+
+test('增量轮保留优先规则,并共享逐条核对要求', () => {
+  const text = prompt('standard', { scope: { mode: 'incremental', reason: '增量', files: ['src/a.ts'], previousFindings: PREV } });
+  assert.ok(text.includes('**优先规则**'));
+  assert.ok(text.includes('逐条核对要求'));
+  assert.match(text, /Verification 里还必须逐个 key 写一行/);
+});
+
+test('specDigest:fullWithPrevious 模板进 digest,只改它的固定文案会让 digest 变', () => {
+  const { template } = manifest();
+  assert.ok(template.fullWithPrevious.includes('逐条核对要求'));
+  assert.ok(template.fullWithPrevious.includes('**全量审查**'));
+  assert.ok(template.fullWithPrevious.includes('规则文件 base 版本'));
+  const tweaked = { ...manifest(), template: { ...template, fullWithPrevious: template.fullWithPrevious.replace('逐条核对要求', '逐条核对要求(改)') } };
+  assert.notEqual(specDigestOf(tweaked), specDigestOf(manifest()));
+});
+
+// 文件已不在本 PR diff 的旧问题(#106 评审):标注并要求只在 Verification 写结论、不进 findings。
+test('旧问题的文件已移出本 PR:列表标注,任务书要求不进 findings、只在 Verification 写结论', () => {
+  const prev = [{ path: 'src/a.ts', line: 12, body: '[P1] 仍在 diff', key: 'aaaaaaaaaaaa' },
+    { path: 'src/gone.ts', line: 3, body: '[P1] 文件已移出', key: 'cccccccccccc', outOfDiff: true }];
+  const text = prompt('standard', { scope: { mode: 'full', reason: '规则变了', previousFindings: prev } });
+  assert.ok(text.includes('- `src/gone.ts:3`(文件已不在本 PR diff) [P1] 文件已移出 · key=cccccccccccc'));
+  assert.ok(text.includes('- `src/a.ts:12` [P1] 仍在 diff · key=aaaaaaaaaaaa'));
+  assert.match(text, /\*\*不要\*\*写进 `findings`/);
+  assert.match(text, /文件已移出本 PR 改动，不再报/);
+  assert.ok(!text.includes('文件不在本轮 diff 里也不自动算修好'));
+  const none = prompt('standard', { scope: { mode: 'full', reason: 'r', previousFindings: [prev[0]] } });
+  assert.ok(!none.includes('**不要**写进 `findings`'));
+});
+
+test('specDigest:fullWithPrevious 模板覆盖「文件已移出」分支', () => {
+  const { template } = manifest();
+  assert.ok(template.fullWithPrevious.includes('(文件已不在本 PR diff)'));
+  assert.ok(template.incremental.includes('**不要**写进 `findings`'));
 });

@@ -10,7 +10,7 @@ import { existsSync, readFileSync, mkdirSync, copyFileSync, rmSync } from 'node:
 import { join } from 'node:path';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult } from '../lib/scope.mjs';
+import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
@@ -142,6 +142,10 @@ async function prepare() {
       facts: handoffMode.mode === 'off' ? null : readHandoffFacts({ repo: input.targetRepo, head: input.head, ghFn: (args) => gh(args, { allowFail: true }) }) };
     if (ctx.mivoHandoff.facts?.readError) state.warnings.push(`交接事实读不到:${ctx.mivoHandoff.facts.readError}`);
     state.handoff = ctx.mivoHandoff;
+    // 规则改版时是否强制全量(维护者开关,默认 false):读不到或不合法按 false 处理并写进结果包 warnings。
+    const specChange = loadSpecChangePolicy(() => readFileSync(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'), 'utf8'));
+    if (specChange.warning) state.warnings.push(specChange.warning);
+    state.specChange = { forceFull: specChange.forceFull };
     const gate = decideGate(ctx);
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
@@ -187,13 +191,15 @@ async function prepare() {
       totalDiffLines: ctx.totalDiffLines, tier, triggerKinds: (ctx.signoff?.triggers ?? []).map((t) => t.kind).sort(),
       skillSha: input.skillSha, specDigest, now: Date.now(), pendingGates: [...state.pendingGates],
     };
+    // 规则改版沿用转 issue 的问题前,要本轮仍核验通过(collectDeferrals 已在上面跑过,这里不再请求网络)。
+    current.verifiedDeferralIssues = (state.deferrals?.verified ?? []).map((d) => d.issue);
     let headIsDescendant = null;
     if (previous?.head && previous.head !== input.head) {
       run('git', [...gitAuth, 'fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', previous.head], { cwd: REPO_DIR, allowFail: true });
       headIsDescendant = run('git', ['merge-base', '--is-ancestor', previous.head, input.head], { cwd: REPO_DIR, allowFail: true }).status === 0;
       if (headIsDescendant) git(['diff', '--numstat', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 }); // 同上:增量复审离线要用
     }
-    const scope = computeReviewScope({ previous, current, headIsDescendant });
+    const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull });
     state.scope = scope;
     // 本 PR 第一次送审(没有上一轮结果)时交接已过期:enforce 下同样挂 handoff,代码照审、不放行。
     state.handoff.firstReview = !previous;
@@ -645,9 +651,12 @@ async function publish() {
     let verifierDowngraded = [];
     let verifierOverruled = [];
     let hadBlockers = false;
+    let reusedReview = null;
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
-      findings = previous.mivo?.findings ?? [];
+      // 同一 head 上一轮已发过 review:沿用时不再发,findings 原样保留(PR 上仍是原来的行级 thread,行号不能丢)。
+      // 要发新 review(跨 head,或上一轮没发过)时,旧行号在新版本上不一定有效,发布器不会重定位,head 或 diff 变了就转文件级评论(key/轮次不动)。
+      ({ findings, reusedReview } = reuseFindings(previous, { head: input.head, diffHash: state.context.evidence?.diffHash }));
       deferred = previous.mivo?.deferred ?? [];
       // 沿用上一轮结论:不重算 key 与轮次。
       preexisting = previous.mivo?.preexisting ?? [];
@@ -723,7 +732,7 @@ async function publish() {
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
     } });
 
-    if (findings.length > 0) await publishFindings(state, result, reportFile, findings);
+    if (findings.length > 0) await publishFindings(state, result, reportFile, findings, { reusedReview });
     else if (state.pendingGates?.length) await publishAdvisory(state, result, reportFile);
     else if (allOverruled) await publishOverruled(state, result, reportFile);
     else await publishClean(state, result, reportFile);
@@ -756,7 +765,7 @@ function baseResult(state) {
   };
 }
 
-async function publishFindings(state, result, reportFile, findings) {
+async function publishFindings(state, result, reportFile, findings, { reusedReview = null } = {}) {
   const input = state.input;
   result.outcome = 'findings';
   result.reason = `发现 ${findings.length} 条 P0/P1/P2`;
@@ -766,6 +775,13 @@ async function publishFindings(state, result, reportFile, findings) {
     summary: `档位 ${state.tier}。问题已在 PR 上开 review thread,修复并 resolve 后自动重审。${deferHint}${deferredSummary ? `另有 ${deferredSummary.text},不阻断。` : ''}` };
   if (input.mode === 'dry-run') {
     result.reason += '(dry-run:没有写入 GitHub)';
+    return;
+  }
+  if (reusedReview) {
+    result.threadUrls = reusedReview.threadUrls;
+    result.mivo.review = reusedReview.review;
+    removeMergeReady(state, result);
+    result.mivo.checkRun = completeCheckRun(input, state.checkRunId, conclusionCheck);
     return;
   }
   const commentsFile = join(WORK, 'comments.json');
