@@ -2526,6 +2526,7 @@ export function evaluateBotSettle({
   const reuseStance = previousSettle?.settled === true && previousSettle?.timedOut === false
     && previousSettle?.baseOnlyProven === true
     && reviewers.every((r) => previousResponded.includes(r));
+  const settleActivity = [...(activity ?? []), ...(previousSettle?.chainActivity ?? [])];
   const responded = reuseStance
     ? reviewers
     : reviewers.filter((r) => activity.some((a) => norm(a.author) === r && laterThan(a.at, headCommittedDate)));
@@ -2562,7 +2563,7 @@ export function evaluateBotSettle({
   }
   // 必等机器人都表态了 → 再看静默窗口(按瞬时,不按带时区的字符串排序)
   const lastBotAt = latestTimestamp(
-    activity.filter((a) => quietBots.includes(norm(a.author))).map((a) => a.at),
+    settleActivity.filter((a) => quietBots.includes(norm(a.author))).map((a) => a.at),
   );
   const quietMs = lastBotAt ? Date.parse(nowIso) - Date.parse(lastBotAt) : null;
   const quietSinceMinutes = quietMs == null || Number.isNaN(quietMs) ? null : quietMs / 60_000;
@@ -2612,34 +2613,36 @@ export function evaluateBotSettleSinceReady(input, readEvents) {
 
 // [MIVO-PATCH bot-settle-base-only] 服务器每 job 一份 STATE_DIR,看不到 Mini 的快照。
 // 与 Mini 快照共用证明:沿 parent[0] 走干净合 main 链,在真正有表态的提交上重建,不停在中间 merge。
-export function previousSettleFromLocalMerge({
+// 沿链读到的 check 活动全部累积,给调用方重验 quietMinutes;任一候选 check-runs 读失败则整条等待。
+function walkBaseOnlyChain({
   headSha, baseSha, currentHashes, activity = [], cfg = {}, nowIso, gitFn = git,
   slug = '', fetchCheckRuns = fetchCheckRunsWithApps,
 }) {
-  if (!headSha || !baseSha) return null;
+  if (!headSha || !baseSha) return { failed: true };
   let current = headSha;
   const seen = new Set();
+  const chainActivity = [];
   for (let hops = 0; hops <= BASE_ONLY_CHAIN_LIMIT; hops += 1) {
     const key = String(current).toLowerCase();
-    if (seen.has(key)) return null;
+    if (seen.has(key)) return { failed: true };
     seen.add(key);
     const commit = readCommitGraph(gitFn, current);
-    if (!commit) return null;
+    if (!commit) return { failed: true };
     const prevDate = gitFn(['log', '-1', '--format=%cI', current], { allowFail: true });
     const headCommittedDate = String(prevDate.stdout ?? '').trim();
+    let localChecks = [];
+    if (slug) {
+      let checkRuns;
+      try { checkRuns = fetchCheckRuns(slug, current); } catch { return { failed: true }; }
+      if (!Array.isArray(checkRuns)) return { failed: true };
+      localChecks = botCheckActivity(checkRuns, cfg);
+      chainActivity.push(...localChecks);
+    }
     let stance = null;
     if (headCommittedDate && Number.isFinite(Date.parse(headCommittedDate))) {
-      stance = stanceFromSettle(evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg }), cfg);
-      if (!stance && slug) {
-        let checkRuns;
-        try { checkRuns = fetchCheckRuns(slug, current); } catch { checkRuns = null; }
-        if (Array.isArray(checkRuns)) {
-          stance = stanceFromSettle(evaluateBotSettle({
-            headCommittedDate, nowIso,
-            activity: [...activity, ...botCheckActivity(checkRuns, cfg)], cfg,
-          }), cfg);
-        }
-      }
+      stance = stanceFromSettle(evaluateBotSettle({
+        headCommittedDate, nowIso, activity: [...activity, ...localChecks], cfg,
+      }), cfg);
     }
     if (stance) {
       const prevDiff = gitFn(
@@ -2648,13 +2651,28 @@ export function previousSettleFromLocalMerge({
         { allowFail: true, timeoutMs: 120_000 },
       );
       const previousHashes = prevDiff.ok ? filePatchHashesFromDiff(prevDiff.stdout) : (currentHashes ?? {});
-      return { ...stance, filePatchHashes: previousHashes, headCommittedDate, headSha: current, baseOnlyProven: true };
+      return {
+        settle: {
+          ...stance,
+          filePatchHashes: previousHashes,
+          headCommittedDate,
+          headSha: current,
+          baseOnlyProven: true,
+          chainActivity,
+        },
+      };
     }
-    if (hops === BASE_ONLY_CHAIN_LIMIT) return null;
-    if (!isCleanBaseMerge(commit, { baseSha, gitFn })) return null;
+    if (hops === BASE_ONLY_CHAIN_LIMIT) return { chainActivity };
+    if (!isCleanBaseMerge(commit, { baseSha, gitFn })) return { chainActivity };
     current = commit.parents[0];
   }
-  return null;
+  return { chainActivity };
+}
+
+export function previousSettleFromLocalMerge(input) {
+  const walked = walkBaseOnlyChain(input);
+  if (walked.failed) return null;
+  return walked.settle ?? null;
 }
 
 export function toPreviousSettleForHead({
@@ -2662,12 +2680,14 @@ export function toPreviousSettleForHead({
   gitFn, fetchCheckRuns,
 }) {
   const snap = loadBotSettleSnapshot({ owner, repo, pr });
-  if (snap && proveBaseOnlyHeadRelation({ previousHeadSha: snap.headSha, headSha, baseSha, gitFn })) {
-    return { ...snap, baseOnlyProven: true };
-  }
-  return previousSettleFromLocalMerge({
+  const walked = walkBaseOnlyChain({
     headSha, baseSha, currentHashes, activity, cfg, nowIso, gitFn, slug, fetchCheckRuns,
   });
+  if (walked.failed) return null;
+  if (snap && proveBaseOnlyHeadRelation({ previousHeadSha: snap.headSha, headSha, baseSha, gitFn })) {
+    return { ...snap, baseOnlyProven: true, chainActivity: walked.settle?.chainActivity ?? walked.chainActivity ?? [] };
+  }
+  return walked.settle ?? null;
 }
 
 // ── 待维护者讨论标签(维护者讨论门在 GitHub 侧的筛选入口)──
