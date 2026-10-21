@@ -179,3 +179,22 @@ test('F3 非字段续行里的全角冒号不被改写', () => {
   const h = (v) => parse(reviewDoc({ disprove: v })).risks[0].contentHash;
   assert.notEqual(h('说明：先读 `a`'), h('说明:先读 `a`'));
 });
+
+test('F4 跨行的 <!-- … -->(行内代码里的 <!-- 或正文 A --> B)不吃掉中间行的路径', () => {
+  const head = files('src/alpha.ts', 'src/beta.ts', 'src/gamma.ts');
+  // 行内代码里的 `<!--` 不开启注释,后面行的 `A --> B` 不是注释结尾
+  const a = extractPathTokens('用 `<!--` 标注\n检查 `src/beta.ts` 的入口\n流程 A --> B');
+  assert.deepEqual(a.map((t) => t.path), ['src/beta.ts']);
+  // 未闭合的 <!-- 不剥,后面行的 --> 也不能让它跨行生效
+  const b = extractPathTokens('<!-- 没写完\n`src/beta.ts`\n结束 -->');
+  assert.deepEqual(b.map((t) => t.path), ['src/beta.ts']);
+  // 走完整解析:中间行的路径进入范围
+  const r = parse(reviewDoc({ trigger: '用 `<!--` 开头的标记' }, '- 说明: 看 `src/beta.ts` 的分支\n- 流程: 入口 A --> B 再到 `src/gamma.ts`'), head);
+  assert.ok(r.risks[0].files.includes('src/beta.ts'));
+  assert.ok(r.risks[0].files.includes('src/gamma.ts'));
+});
+
+test('F4 同行闭合注释仍不参与提取;注释之后同行的真实路径仍收', () => {
+  const t = extractPathTokens('前 <!-- 示例 `src/example.ts` --> 后 `src/real.ts`');
+  assert.deepEqual(t.map((x) => x.path), ['src/real.ts']);
+});

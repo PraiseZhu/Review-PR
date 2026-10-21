@@ -255,10 +255,33 @@ export function splitTableRow(line) {
   return cells;
 }
 
+/**
+ * 剥掉同一行内闭合的 HTML 注释。行内代码里的 `<!--` 不开启注释;没在同行闭合的 `<!--` 原样保留,
+ * 不会和后面某行的 `-->` 配对而吃掉中间行。
+ */
+function stripInlineComments(text) {
+  return text.split('\n').map((line) => {
+    let out = '';
+    let i = 0;
+    while (i < line.length) {
+      if (line[i] === '`') {
+        const end = line.indexOf('`', i + 1);
+        if (end >= 0) { out += line.slice(i, end + 1); i = end + 1; continue; }
+      } else if (line.startsWith('<!--', i)) {
+        const end = line.indexOf('-->', i + 4);
+        if (end >= 0) { out += ' '; i = end + 3; continue; }
+      }
+      out += line[i];
+      i += 1;
+    }
+    return out;
+  }).join('\n');
+}
+
 /** 一段文字里明确的文件 token(反引号路径、链接目标、带斜杠或常见扩展名的裸路径),保持出现顺序。 */
 export function extractPathTokens(text) {
   const found = [];
-  text = String(text).replace(/<!--[\s\S]*?-->/g, ' ');
+  text = stripInlineComments(String(text));
   const push = (raw, strict) => {
     let token = String(raw).trim();
     const hash = token.indexOf('#');
