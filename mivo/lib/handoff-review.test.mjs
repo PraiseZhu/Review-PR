@@ -136,3 +136,46 @@ test('readHandoffReview:只经注入的 gitFn 读固定 head 的 blob;缺文件=
   const broken = readHandoffReview({ prNumber: 77, head: 'h', gitFn: () => ({ ok: false, stdout: '', stderr: 'boom' }) });
   assert.equal(broken.status, 'unreadable');
 });
+
+// ---- 退回修改 F1/F2/F3:先写在旧实现上会失败的用例 ----
+const reviewDoc = (fields, extra = '') => ['---', 'schema: mivo-pr-handoff/v1', 'kind: review', 'pr: 77', '---', '## 3. 风险', '### R1: 输入解析',
+  `- 触发: ${fields.trigger ?? '`src/alpha.ts`'}`, '- 会坏成什么样: 参数失配', `- 现在靠什么挡住: ${fields.defense ?? '校验'}`,
+  '- 怎么证明我错了:', fields.disprove ?? '`a`', '- 测试: 合成样本', extra].join('\n');
+
+test('F1 反引号/链接明确引用的无扩展名真实脚本也进范围;不存在的不报警', () => {
+  const head = new Map([...files('src/alpha.ts'), ['tools/run-check', { mode: '100755', type: 'blob', oid: 'b'.repeat(40) }]]);
+  const r = parse(reviewDoc({ trigger: '`src/alpha.ts` 与 `tools/run-check`,另见 `docs/notes` 和 [脚本](tools/missing-script)' }), head);
+  assert.deepEqual(r.risks[0].files, ['src/alpha.ts', 'tools/run-check']);
+  assert.equal(r.risks[0].complete, true);
+  assert.deepEqual(r.warnings.filter((w) => w.code === 'path-not-in-head'), []);
+  assert.ok(r.fileStates['tools/run-check']);
+});
+
+test('F1 无扩展名且不带斜杠、或不是普通文件,都不收', () => {
+  const head = new Map([...files('src/alpha.ts'), ['Makefile', entry(9)], ['bin/link', { mode: '120000', type: 'blob', oid: 'c'.repeat(40) }]]);
+  const r = parse(reviewDoc({ trigger: '`src/alpha.ts` `Makefile` `bin/link`' }), head);
+  assert.deepEqual(r.risks[0].files, ['src/alpha.ts']);
+});
+
+test('F2 同行闭合 HTML 注释里的示例路径不占 20 文件预算', () => {
+  const ex = Array.from({ length: 20 }, (_, i) => `src/example${i}.ts`);
+  const head = files(...ex, 'src/real.ts');
+  const comment = `<!-- 示例: ${ex.map((p) => `\`${p}\``).join(' ')} -->`;
+  const r = parse(reviewDoc({ trigger: `连续保存 ${comment}`, defense: '`src/real.ts` 的队列' }), head);
+  assert.deepEqual(r.risks[0].files, ['src/real.ts']);
+  assert.equal(r.risks[0].complete, true);
+  assert.deepEqual(r.warnings.filter((w) => w.code === 'file-budget'), []);
+});
+
+test('F3 行内代码里的全角冒号变半角,内容哈希必须变', () => {
+  const h = (v) => parse(reviewDoc({ disprove: v })).risks[0].contentHash;
+  assert.notEqual(h('`key：value`'), h('`key:value`'));
+  // 字段标签的全角冒号仍视为同一内容
+  const a = parse(reviewDoc({}).replace('- 触发:', '- 触发：')).risks[0].contentHash;
+  assert.equal(a, parse(reviewDoc({})).risks[0].contentHash);
+});
+
+test('F3 非字段续行里的全角冒号不被改写', () => {
+  const h = (v) => parse(reviewDoc({ disprove: v })).risks[0].contentHash;
+  assert.notEqual(h('说明：先读 `a`'), h('说明:先读 `a`'));
+});

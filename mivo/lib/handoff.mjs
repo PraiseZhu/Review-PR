@@ -180,6 +180,8 @@ export const REVIEW_SCHEMA = 'mivo-pr-handoff/v1';
 export const REVIEW_MAX_FILES = 20;
 export const REVIEW_MAX_BYTES = 256 * 1024;
 const R_FIELDS = [['trigger', '触发'], ['failure', '会坏成什么样'], ['defense', '现在靠什么挡住'], ['disprove', '怎么证明我错了'], ['tests', '测试']];
+// 只把已知字段标签(和 R 标题)后的全角冒号当作排版变体;其余位置的冒号保持原样,避免吞掉行内代码的改动
+const FIELD_COLON_RE = new RegExp(`^(\\s*(?:[-*+]\\s+)?(?:\\*\\*)?\\s*(?:${R_FIELDS.map(([, l]) => l).join('|')}|###\\s*R\\s*\\d+)\\s*(?:\\*\\*)?\\s*)：`);
 const CODE_EXT = 'ts|tsx|js|jsx|mjs|cjs|mts|cts|json|md|yml|yaml|css|scss|html|py|sh|sql|toml|svg|vue';
 const REGULAR_MODES = ['100644', '100755'];
 
@@ -256,6 +258,7 @@ export function splitTableRow(line) {
 /** 一段文字里明确的文件 token(反引号路径、链接目标、带斜杠或常见扩展名的裸路径),保持出现顺序。 */
 export function extractPathTokens(text) {
   const found = [];
+  text = String(text).replace(/<!--[\s\S]*?-->/g, ' ');
   const push = (raw, strict) => {
     let token = String(raw).trim();
     const hash = token.indexOf('#');
@@ -265,7 +268,11 @@ export function extractPathTokens(text) {
     const path = normalizeRepoPath(token);
     if (!path) return;
     const hasExt = new RegExp(`\\.(?:${CODE_EXT})$`, 'i').test(path);
-    if (!hasExt && !(strict && /\.[A-Za-z0-9]{1,8}$/.test(path))) return;
+    if (!hasExt && !(strict && /\.[A-Za-z0-9]{1,8}$/.test(path))) {
+      // 无扩展名的真实脚本:只收明确引用(反引号/链接)且带目录的,是否存在交给 head 校验,不存在就静默忽略
+      if (strict && path.includes('/') && !/\.[A-Za-z0-9]{1,8}$/.test(path)) found.push({ path, symbol: symbol || null, optional: true });
+      return;
+    }
     if (!path.includes('/') && !hasExt) return;
     found.push({ path, symbol: symbol || null });
   };
@@ -276,7 +283,7 @@ export function extractPathTokens(text) {
 }
 
 function canonicalRisk(infos) {
-  const lines = infos.map((i) => (i.code ? i.line : i.line.replace(/\s+$/, '').replace(/^(\s*(?:[-*+]\s+)?(?:\*\*)?[^:：|]{1,12}?)：/, '$1:')));
+  const lines = infos.map((i) => (i.code ? i.line : i.line.replace(/\s+$/, '').replace(FIELD_COLON_RE, '$1:')));
   while (lines.length && !lines[0].trim()) lines.shift();
   while (lines.length && !lines.at(-1).trim()) lines.pop();
   return lines.join('\n');
@@ -386,10 +393,11 @@ export function parseReviewHandoff(text, { prNumber, headFiles, maxFiles = REVIE
     const locations = [];
     let complete = !e.ambiguous;
     for (const t of e.tokens) {
+      if (t.optional && !isRegularBlob(headFiles?.get(t.path))) continue;
       const status = accept(t.path, e.id);
       if (status === 'ok') {
         if (!files.includes(t.path)) files.push(t.path);
-        if (!locations.some((l) => l.path === t.path && l.symbol === t.symbol)) locations.push(t);
+        if (!locations.some((l) => l.path === t.path && l.symbol === t.symbol)) locations.push({ path: t.path, symbol: t.symbol });
       } else {
         complete = false;
         if (status === 'budget') warn(warnings, 'file-budget', `${e.id} 的 ${t.path} 超出 ${maxFiles} 个文件上限,未纳入`, { id: e.id, path: t.path });
@@ -406,6 +414,7 @@ export function parseReviewHandoff(text, { prNumber, headFiles, maxFiles = REVIE
   // 地图里的明确文件:R 之后用剩余额度补
   for (const row of result.changeMap) {
     for (const t of row._tokens) {
+      if (t.optional && !isRegularBlob(headFiles?.get(t.path))) continue;
       const status = accept(t.path, row.id);
       if (status === 'ok' && !row.files.includes(t.path)) row.files.push(t.path);
       else if (status === 'budget') { row.complete = false; warn(warnings, 'file-budget', `${row.id} 的 ${t.path} 超出 ${maxFiles} 个文件上限,未纳入`, { id: row.id, path: t.path }); }
