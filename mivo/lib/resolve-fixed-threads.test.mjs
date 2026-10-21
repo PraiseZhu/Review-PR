@@ -6,8 +6,12 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync, mkdirSync,
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { resolveFixedThreads } from './resolve-fixed-threads.mjs';
-import { runScript } from './common.mjs';
+import { pathToFileURL } from 'node:url';
+import * as runner from './resolve-fixed-threads.mjs';
+import { runScript, SCRIPTS } from './common.mjs';
+
+const { resolveFixedThreads } = runner;
+const lib = await import(pathToFileURL(join(SCRIPTS, 'lib.mjs')).href);
 
 const HEAD = 'b'.repeat(40);
 const BASE = 'c'.repeat(40);
@@ -173,6 +177,121 @@ test('F3 逐条绑定检查(多次网络查询)期间该条新增维护者裁定
   assert.ok(out.warnings.some((w) => w.includes(K2)));
   // 每次共享脚本调用前最近一条日志必须是 fetch:重读与调用之间不得插入别的网络请求。
   deps.log.forEach((entry, i) => { if (entry.startsWith('resolve:')) assert.equal(deps.log[i - 1], 'fetch'); });
+});
+
+// ── F4:head 与 thread 来自同一次 GraphQL 响应 ────────────────────────────────────
+// 假 GraphQL 服务:只在查询里带了 headRefOid 等字段时才回它们,所以包装器没注入就等于「读不到 head」。
+const NEW_HEAD = 'd'.repeat(40);
+function fakeWorld(pages, over = {}) {
+  const world = { head: HEAD, base: BASE, baseRefName: 'main', state: 'OPEN', isDraft: false, pages, calls: 0, onCall: null, omitMeta: false, ...over };
+  const meta = (query) => (query.includes('headRefOid') && !world.omitMeta
+    ? { state: world.state, isDraft: world.isDraft, headRefOid: world.head, baseRefOid: world.base, baseRefName: world.baseRefName } : {});
+  world.graphql = (query, vars) => {
+    world.calls += 1;
+    world.onCall?.(world.calls, query, vars);
+    if (query.includes('reviewThreads(')) {
+      const idx = vars.cursor ? Number(vars.cursor) : 0;
+      const nodes = world.pages[idx].map((t) => ({
+        id: t.id, isResolved: t.isResolved,
+        comments: { pageInfo: { hasNextPage: Boolean(t.pagedComments), endCursor: t.pagedComments ? 'cc' : null }, nodes: t.pagedComments ? t.comments.slice(0, 1) : t.comments },
+      }));
+      return { data: { repository: { pullRequest: { ...meta(query), reviewThreads: { pageInfo: { hasNextPage: idx + 1 < world.pages.length, endCursor: String(idx + 1) }, nodes } } } } };
+    }
+    const t = world.pages.flat().find((x) => x.id === vars.id);
+    const second = Boolean(vars.cursor);
+    const m = meta(query);
+    return { data: { node: { ...(m.headRefOid || m.state ? { pullRequest: m } : {}),
+      comments: { pageInfo: { hasNextPage: !second, endCursor: second ? null : 'c2' }, nodes: second ? t.comments.slice(1) : t.comments.slice(0, 1) } } } };
+  };
+  return world;
+}
+const bind = (world, binding = BINDING) => runner.bindGraphqlToPr(binding, world.graphql);
+const readThreads = (graphql) => lib.fetchAllReviewThreads('o', 'r', 7, { includeComments: true, ghGraphqlFn: graphql });
+
+test('F4 包装器:thread 分页与评论分页的每一次响应都带并校验 head/base/state', () => {
+  const t1 = { ...thread('T1', K1), pagedComments: true };
+  const world = fakeWorld([[t1], [thread('T2', K2)]]);
+  const queries = [];
+  const seen = world.graphql;
+  world.graphql = (query, vars) => { queries.push(query); return seen(query, vars); };
+  const out = readThreads(bind(world));
+  assert.equal(out.verified, true, out.errors.join(';'));
+  assert.deepEqual(out.threads.map((t) => t.id), ['T1', 'T2']);
+  assert.equal(queries.length, 4); // thread 第 1 页、T1 评论第 1 / 2 页、thread 第 2 页
+  assert.ok(queries.every((q) => q.includes('headRefOid') && q.includes('baseRefOid') && q.includes('isDraft')));
+});
+
+test('F4 包装器:任何一页里 head / base / baseRefName / state / draft 与绑定不符,或响应缺这些字段 → 读取未验证', () => {
+  const cases = [
+    ['head', (w) => { w.head = NEW_HEAD; }], ['base', (w) => { w.base = NEW_HEAD; }], ['baseRefName', (w) => { w.baseRefName = 'other'; }],
+    ['state', (w) => { w.state = 'CLOSED'; }], ['draft', (w) => { w.isDraft = true; }], ['缺字段', (w) => { w.omitMeta = true; }],
+  ];
+  for (const [name, mutate] of cases) {
+    for (const when of [1, 2, 3, 4]) { // thread 第 1 页 / 评论第 1 页 / 评论第 2 页 / thread 第 2 页
+      const world = fakeWorld([[{ ...thread('T1', K1), pagedComments: true }], [thread('T2', K2)]]);
+      world.onCall = (n) => { if (n === when) mutate(world); };
+      const out = readThreads(bind(world));
+      assert.equal(out.verified, false, `${name}@${when} 应当未验证`);
+    }
+  }
+});
+
+test('F4 包装器:没有注入点的查询直接拒绝(不放行未绑定的读取)', () => {
+  const graphql = runner.bindGraphqlToPr(BINDING, () => { throw new Error('不应走到底层'); });
+  assert.throws(() => graphql('query { viewer { login } }', {}), /绑定/);
+});
+
+test('F4 真实依赖的 thread 读取走 bindGraphqlToPr(接线守卫)', () => {
+  const source = readFileSync(new URL('./resolve-fixed-threads.mjs', import.meta.url), 'utf8');
+  assert.match(source, /fetchAllReviewThreads\([^\n]*ghGraphqlFn: bindGraphqlToPr\(binding, lib\.ghGraphql\)/);
+});
+
+test('F4 重读 thread 期间 PR head 变化(含回退到 marker 的旧 head)→ 不回复、不 resolve,记 warning', () => {
+  for (const moved of [NEW_HEAD, 'a'.repeat(40)]) {
+    const world = fakeWorld([[thread('T1', K1)]]);
+    const deps = makeDeps({ reviewed: [thread('T1', K1)] });
+    let fetches = 0;
+    deps.fetchThreads = () => { fetches += 1; deps.log.push('fetch'); return readThreads(bind(world)); };
+    world.onCall = (n) => { if (n === 2) world.head = moved; }; // 第 2 次 thread 读取(逐条重读)时 head 变化
+    const out = resolveFixedThreads(request(), deps);
+    assert.deepEqual(resolvedIds(deps), [], `moved=${moved.slice(0, 4)}`);
+    assert.equal(fetches, 2);
+    assert.equal(out.resolvedCount, 0);
+    assert.ok(out.warnings.some((w) => /head/.test(w)), out.warnings.join('|'));
+  }
+});
+
+test('F4 + F3 多页:head 不变但绑定检查期间 T2 新增裁定 → 只 resolve T1;T2 所在第 2 页读取时 head 变化 → 一条都不再写', () => {
+  const build = () => {
+    const world = fakeWorld([[{ ...thread('T1', K1), pagedComments: true }], [thread('T2', K2)]]);
+    const deps = makeDeps({ reviewed: [thread('T1', K1), thread('T2', K2)] });
+    deps.fetchThreads = () => { deps.log.push('fetch'); return readThreads(bind(world)); };
+    return { world, deps };
+  };
+  // F3:裁定出现在 world 里,head 不变 → 分页读取都通过,T2 因 changed-since-plan 被跳过。
+  const f3 = build();
+  const binding = f3.deps.assertBinding;
+  let bindings = 0;
+  f3.deps.assertBinding = () => {
+    const result = binding();
+    bindings += 1;
+    if (bindings === 3) f3.world.pages[1][0].comments.push({ id: 'r-new', author: { login: 'maint' }, body: '维护者裁定不改:产品意图' });
+    return result;
+  };
+  const f3out = resolveFixedThreads(request(), f3.deps);
+  assert.deepEqual(resolvedIds(f3.deps), ['resolve:T1']);
+  assert.equal(f3out.items[1].reason, 'changed-since-plan');
+  // F4:T1 处理完后,读 T2 前的 thread 读取里(第 2 页)head 变化 → T2 不写。
+  const f4 = build();
+  const original = f4.deps.resolveOne;
+  let armed = false;
+  f4.deps.resolveOne = (item, opts) => { const r = original(item, opts); if (item.id === 'T1') armed = true; return r; };
+  f4.world.onCall = (n, query, vars) => { if (armed && vars.cursor === '1') f4.world.head = NEW_HEAD; };
+  const f4out = resolveFixedThreads(request(), f4.deps);
+  assert.deepEqual(resolvedIds(f4.deps), ['resolve:T1']);
+  assert.equal(f4out.items[1].status, 'skipped');
+  assert.equal(f4out.items[1].reason, 'threads-unverified');
+  assert.ok(f4out.warnings.some((w) => /head/.test(w)), f4out.warnings.join('|'));
 });
 
 test('发布后重新读取 thread 不完整 → 零写', () => {

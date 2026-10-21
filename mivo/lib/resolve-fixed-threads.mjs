@@ -4,7 +4,9 @@
 // 并只处理 thread-resolution.mjs 选出来的 thread;共享脚本本身不改。
 // 失败只返回 warning,不让整轮审查失败。每条 thread 动手前单独现查并重算清单(批次中途出现的新裁定 / 新评论不会被旧清单覆盖)。
 // 每条顺序:绑定检查(锁 / 账号 / 权限 / head)→ 重读该 thread 并重算清单 → 立即调用共享脚本,重读与调用之间不插别的网络请求。
-// 残余窗口:只剩共享脚本内部「再读 threads → 回复 → resolve」之间 head / thread 仍可能变化,不能逐 mutation 原子校验。
+// 重读 thread 的每一次 GraphQL 响应(thread 分页、评论分页)同时带回并校验 PR 的 head / base / state(bindGraphqlToPr),
+// 所以重读期间 head 变化会让读取未验证、该条跳过;校验不到(缺字段 / 不符)一律保守停止。
+// 残余窗口:从最后一次已验证的重读响应到共享脚本里「再读 threads → 回复 → resolve」之间,head / thread 仍可能变化,不能逐 mutation 原子校验。
 //
 // 用法:node resolve-fixed-threads.mjs < request.json(cwd 必须是目标仓检出目录;令牌只走环境变量,不进请求)
 // request: { binding:{targetRepo,pr,head,base,baseRefName,reviewer,lockToken,authorityDigest,runUrl,mode}, round, contextFile, excludedKeys }
@@ -17,6 +19,38 @@ import { buildThreadResolutionPlan } from './thread-resolution.mjs';
 const TOTAL_BUDGET_MS = 180_000;
 const ITEM_TIMEOUT_MS = 60_000;
 const MIN_ITEM_MS = 5_000;
+
+const PR_FIELDS = 'state isDraft headRefOid baseRefOid baseRefName';
+
+/**
+ * 包装 fetchAllReviewThreads 的 ghGraphqlFn 注入点:往每个查询里加 PR 的 state / isDraft / headRefOid / baseRefOid / baseRefName,
+ * 并校验同一次响应里的值和 binding 一致。thread 页查询从 pullRequest 取,评论翻页查询从 thread.pullRequest 取。
+ * 查询没有注入点、响应缺字段、或任一字段不符都抛错,让读取器返回 verified=false(调用方记 warning、不写)。
+ */
+export function bindGraphqlToPr(binding, ghGraphqlFn) {
+  return (query, vars, opts) => {
+    let kind = null;
+    let bound = String(query);
+    if (/pullRequest\(number:\$num\)\s*\{/.test(bound)) {
+      kind = 'page';
+      bound = bound.replace(/(pullRequest\(number:\$num\)\s*\{)/, `$1 ${PR_FIELDS}`);
+    } else if (/\.\.\.\s*on\s+PullRequestReviewThread\s*\{/.test(bound)) {
+      kind = 'comments';
+      bound = bound.replace(/(\.\.\.\s*on\s+PullRequestReviewThread\s*\{)/, `$1 pullRequest{ ${PR_FIELDS} }`);
+    }
+    if (!kind) throw new Error('无法把 PR head / base 绑定进这次读取,保守停止');
+    const result = ghGraphqlFn(bound, vars, opts);
+    if (result?.errors?.length) return result; // 读取器对 errors 一律判未验证
+    const pr = kind === 'page' ? result?.data?.repository?.pullRequest : result?.data?.node?.pullRequest;
+    if (!pr || [pr.state, pr.headRefOid, pr.baseRefOid, pr.baseRefName].some((v) => typeof v !== 'string' || !v) || typeof pr.isDraft !== 'boolean') {
+      throw new Error('读取 thread 的响应缺少 PR state / head / base,无法确认绑定,保守停止');
+    }
+    if (pr.state !== 'OPEN' || pr.isDraft) throw new Error('读取 thread 期间 PR 已不是 OPEN 非 Draft');
+    if (pr.headRefOid !== binding.head) throw new Error(`读取 thread 期间 PR head 已变化(响应 ${String(pr.headRefOid).slice(0, 12)},绑定 ${String(binding.head).slice(0, 12)})`);
+    if (pr.baseRefOid !== binding.base || pr.baseRefName !== binding.baseRefName) throw new Error('读取 thread 期间 PR base 已变化');
+    return result;
+  };
+}
 
 const clip = (text, max = 240) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const summary = (status, skippedReason, items = [], warnings = []) => ({
@@ -154,7 +188,7 @@ async function realDeps({ binding }) {
   return {
     readContext: (file) => readJson(file),
     assertBinding,
-    fetchThreads: () => lib.fetchAllReviewThreads(owner, repo, Number(binding.pr), { includeComments: true }),
+    fetchThreads: () => lib.fetchAllReviewThreads(owner, repo, Number(binding.pr), { includeComments: true, ghGraphqlFn: bindGraphqlToPr(binding, lib.ghGraphql) }),
     resolveOne: (thread, { timeoutMs }) => runScript('resolve-threads.mjs', [String(binding.pr), '--payload-file', '-'],
       { cwd: process.cwd(), env: process.env, input: JSON.stringify({ threads: [thread] }), timeoutMs }),
   };

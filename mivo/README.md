@@ -268,9 +268,9 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - **什么时候做**：本轮结论已经发到 PR 上之后（新发的 Request Changes / COMMENT review、新发的报告评论、本轮新提交的已核验 Approve），在写结果文件和释放锁之前。已有的 Approve、恢复旧写入、按 head 标记去重的旧评论都不算本轮已发布，不做。
 - **哪些 thread 进清单**（`lib/thread-resolution.mjs`，纯函数）：审查账号开的；首条评论带 `<!-- mivo-finding key=K head=H0 -->` 且 H0 不是当前 head 的前缀；key 不在本轮报出的阻断、转 issue、pre-existing、裁定不改、核对员推翻的名单里（服务端核验过的裁定 key 也算，不管模型有没有再报）；prepare 之后评论没有变化；没有被代 resolve 过（带 triage 标记的永久留人工）。
 - **哪些轮次不做**：`reuse`、出错 / state-changed / approval-pending、报告不完整、收口待补、`dry-run` / `sandbox`，以及问题分类被截断（超过 100 条）时清单为空。
-- **怎么做**：`lib/resolve-fixed-threads.mjs` 发布后重新完整读取 thread，**每条 thread 动手前再单独现查一次并用同一个选择器重算**（处理前面几条期间新增的维护者裁定、作者回复、评论编辑、被 resolve/unresolve，或同 key 另一条 thread 上的新裁定，都会让这一条被跳过并记 warning），再复核审查锁、写账号、维护者名单摘要、PR 仍 OPEN 非 Draft 且 head/base 没变，再调用现有 `resolve-threads.mjs`（先回复、后 resolve，被人 unresolve 过的不再碰）。回复固定模板，带完整 head、本次运行链接和 key。总预算 180 秒，每条最多 60 秒。
+- **怎么做**：`lib/resolve-fixed-threads.mjs` 发布后重新完整读取 thread，**每条 thread 动手前再单独现查一次并用同一个选择器重算**（处理前面几条期间新增的维护者裁定、作者回复、评论编辑、被 resolve/unresolve，或同 key 另一条 thread 上的新裁定，都会让这一条被跳过并记 warning），再调用现有 `resolve-threads.mjs`（先回复、后 resolve，被人 unresolve 过的不再碰）。每条之前先复核审查锁、写账号、维护者名单摘要、PR 仍 OPEN 非 Draft 且 head/base 没变。回复固定模板，带完整 head、本次运行链接和 key。总预算 180 秒，每条最多 60 秒。
 - **失败怎么办**：只记 warning 和 `mivo.threadResolution`，不改本轮 outcome / approval / check，不让整轮失败；同一轮不会因为 resolve 成功而改成放行，下一轮按实时门禁重判。
-- **残余窗口**：每条的顺序是「绑定检查（锁 / 账号 / 权限 / head）→ 重读该 thread 并重算清单 → 立即调用共享脚本」，最后一次 thread 重读紧贴写操作，中间不插别的网络请求。只剩共享脚本内部「读 thread → 回复 → resolve」之间 head 或评论仍可能变化，不是逐次写操作的原子校验。
+- **残余窗口**：每条的顺序是「绑定检查（锁 / 账号 / 权限 / head）→ 重读该 thread 并重算清单 → 立即调用共享脚本」，最后一次 thread 重读紧贴写操作，中间不插别的网络请求。重读的每一次 GraphQL 响应（thread 分页和评论分页，`bindGraphqlToPr` 包装读取器的注入点）同时带回 PR 的 state / isDraft / head / base，并与本轮绑定核对：重读期间 head 变化（包括回退到旧提交）、base 变化、PR 不再 OPEN 非 Draft，或响应缺这些字段，都按「读取未验证」处理，该条及之后不回复、不 resolve，只记 warning。**仍不是原子的**：从最后一次已验证的重读响应到 mutation 之间，只剩共享脚本 `resolve-threads.mjs` 内部「再读 threads → 回复 → resolve」这一段，head 或评论仍可能变化；共享脚本本轮不改，所以这一段按已知窗口接受。
 - **只认本轮新发布**：Request Changes 回执 `alreadySubmitted=true`（命中同 head 旧 review，本轮没有新写）或缺该字段，不触发代 resolve。
 - **和 #114 的关系**：旧 thread 拦送审的门在 `lib/gates.mjs`（#114）。两个 PR 要一起换版，才能做到「旧 thread 不拦送审、并在复核后收口」；本功能不改 `gates.mjs`。
 - 换版后要在真实 PR 上观察到一例代 resolve（回复链接、被审 head、run 链接对得上）才算验收完（#115 SC7）。
