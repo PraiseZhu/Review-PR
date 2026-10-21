@@ -24,6 +24,7 @@
 // 所有作者都必须传已审查 head SHA 与 authority digest;任一缺失/变化时所有 merge route 都不可用。
 
 import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
+import { filePatchHashesFromPullFiles, loadBotSettleSnapshot, saveBotSettleSnapshot, previousSettleFromLocalMerge } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
 import { filterIgnoredCiContexts, ciMergeStateIgnoring } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
 import { fetchCodeScanRules, toCodeScanCheckFacts } from './lib.mjs'; // [MIVO-PATCH code-scan-gate]
@@ -269,6 +270,13 @@ try {
     if (blockClass === 'none') blockClass = 'signoff-pending';
   }
 
+  // ── 受保护路径(.github/** 等,pr-rules.json protectedPaths.paths):合并前第二道防线 ──
+  // 命中即不合并,交人工处理。这里独立复核:即使 context 的 skip 被绕过 / 合并路径走了
+  // admin bypass,只要改到受保护路径就一律 block。
+  // [MIVO-PATCH bot-settle-base-only] /files 前移到静默期之前,用已有 REST patch 算哈希,不另打 GraphQL。
+  const changedFiles = fetchRestPages(`repos/${slug}/pulls/${pr}/files`);
+  if (!changedFiles.verified) blockers.push(`改动文件未完整读取:${changedFiles.error}`);
+
   // ── 机器人静默期(见 lib.mjs evaluateBotSettle):合并不能跑在外部 review 机器人前面 ──
   // 判据用「当前 head commit 之后有没有发言」,所以把 review 与 thread 评论都算进 activity。
   const commentActivity = fetchRestPages(`repos/${slug}/pulls/${pr}/comments`);
@@ -279,17 +287,29 @@ try {
     ...botCheckActivity(rollupContexts, rules.botReviewSettle ?? {}), // [MIVO-PATCH bot-check-settle]
   ].filter((activity) => activity.author && activity.at);
   // [MIVO-PATCH bot-settle-ready] 与 context.mjs 同口径:超时从 max(提交, 推送, 转 Ready) 起算,推送时间用 head 上最早的检查开始时间估。
+  const filePatchHashes = changedFiles.verified ? filePatchHashesFromPullFiles(changedFiles.items) : {};
+  const nowIso = new Date().toISOString();
+  const previousSettle = loadBotSettleSnapshot({ owner, repo, pr })
+    ?? previousSettleFromLocalMerge({
+      headSha: m.headRefOid, baseSha: m.baseRefOid, currentHashes: filePatchHashes,
+      activity: botActivity, cfg: rules.botReviewSettle ?? {}, nowIso, slug,
+    });
   const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate,
     headPushedAt: toHeadPushedAt(rollupContexts),
-    nowIso: new Date().toISOString(),
+    nowIso,
     activity: botActivity,
     cfg: rules.botReviewSettle ?? {},
+    filePatchHashes,
+    previousSettle,
   }, () => {
     const events = fetchRestPages(`repos/${slug}/issues/${pr}/events`);
     if (!events.verified) throw new Error(events.error);
     return events.items;
   });
+  if (botSettle.settled && !botSettle.timedOut) {
+    saveBotSettleSnapshot({ owner, repo, pr, settle: botSettle, filePatchHashes, headCommittedDate });
+  }
   const botSettleVerified = botSettle.enabled === false || (Boolean(headCommittedDate) && botActivityVerified);
   if (!botSettleVerified) {
     const errors = [reviewActivity.error, commentActivity.error].filter(Boolean).join(' / ');
@@ -315,12 +335,6 @@ try {
     blockers.push(`需要 rebase:${staleRebase.reason}`);
     if (blockClass === 'none' || blockClass === 'awaiting-approval') blockClass = 'needs-rebase';
   }
-
-  // ── 受保护路径(.github/** 等,pr-rules.json protectedPaths.paths):合并前第二道防线 ──
-  // 命中即不合并,交人工处理。这里独立复核:即使 context 的 skip 被绕过 / 合并路径走了
-  // admin bypass,只要改到受保护路径就一律 block。
-  const changedFiles = fetchRestPages(`repos/${slug}/pulls/${pr}/files`);
-  if (!changedFiles.verified) blockers.push(`改动文件未完整读取:${changedFiles.error}`);
   const protectedFiles = matchPathPatterns(
     changedFiles.items.map((f) => f.filename),
     (rules.protectedPaths?.paths) ?? [],

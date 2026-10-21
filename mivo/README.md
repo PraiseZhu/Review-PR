@@ -25,7 +25,7 @@ flowchart LR
 | 目录 | 内容 |
 |---|---|
 | `lib/gates.mjs` | 判门顺序（照 pr-worker：凭证 → 维护者确认门 → thread → 受保护路径/格式/CI/冲突/bot/rebase → 送审）与确认 issue 文案。确认门这一步先看是否改了受保护路径：改了就任何作者（含豁免名单）都走受保护路径确认 issue；没改，豁免作者开通知 issue 但不拦，非豁免作者走普通确认门（见「维护者确认 issue 的三种模式」）。改界面不进维护者确认门；缺界面证据（截图/录屏或 HTML）由 context 记进格式门打回；「效果展示」第一行写「不涉及」也算过。只缺界面证据、或只剩机器人留的 thread 没 resolve 时照样送审，但不放行（见「送审但不放行」） |
-| `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底；任务书版本（`specDigest`）变了才因「规则变了」退回全量，审查机代码换版本不算 |
+| `lib/scope.mjs` | 增量复审范围（方案第 8 节）：逐文件比较 PR patch，带全量兜底。全量轮也带上一轮（完整结果）的问题，任务书要求逐条核对（文件已不在本 PR 改动里的旧问题标 `outOfDiff`，任务书要求只在 Verification 写结论、不进 findings，否则答卷校验会拒收）；任务书版本（`specDigest`）变了、PR 改动指纹和 base 分支都没变时沿用上次结论（原因「规则改版，代码未变，沿用上次结论」），代码也变了或 `specChange.forceFull=true` 才因「规则变了」全量；7 天、档位升级、新确认门、人工复核等独立兜底照常保留，审查机代码换版本不算 |
 | `lib/report.mjs` | 答卷校验、最终报告、发布前脱敏 |
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
 | `lib/code-scan.mjs` | 挂 `review:merge-ready` 之前的代码扫描 / 代码质量门：读目标分支生效的 `code_scanning` / `code_quality` 规则（`rules/branches/<base>`，Mini 侧按 base 缓存 30 分钟）和 head 上的 check run，规则要求 CodeQL 时它必须是明确的 success；Mini 摘标签只认稳定不通过（见「`review:merge-ready` 的补充规则」末尾） |
@@ -34,7 +34,7 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off |
+| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明 |
 | `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解，判门与任务书用 |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
@@ -205,6 +205,7 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 - **作者就是审查账号**（自己的 PR，Approve 必被拒）：只有「除了不能自批，其它拦截项全部通过」才以评论发报告、挂标签、写 success。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。
 - **门禁失效也摘标签**，不只在 head 变化时：Mini 每轮判门后，与 base 冲突，或判门停在稳定卡点（冲突、人工讨论未 resolve、他人 Request Changes、维护者确认门、凭证、格式、CI 失败、rebase、retarget）时摘。只用判门已经拿到的 context，不多打 API。CI 在跑、机器人没说完、读失败这类瞬态，以及 GitHub 的 `BLOCKED`（多半只是等维护者 Approve）不摘，避免反复加摘；摘掉后标签不在，下一轮不会重复 DELETE。门禁重新全过回到送审，服务器沿用结论再加回。
 - **机器人静默期的超时从推送 / 转 Ready 起算**：取 head 的提交时间、推送时间、转 Ready 时间里最晚的一个。先当很久 Draft 的 PR 不会一转 Ready 就按「已等满 30 分钟」放行，先本地提交、很久以后才推送的新 head 也不会被提交时间吃掉窗口。推送时间用该 head 上最早的检查开始时间估（已有的 statusCheckRollup，零额外请求）；转 Ready 的时间只在按前两者算已超时时才用 REST 读一次（`issues/<n>/events`），不碰 GraphQL；读失败退回。Draft 期间机器人对当前 head 已有的表态仍算数。
+- **只合 main、PR 自身没改时沿用上一 head 的表态**（2026-10-21 #1150）：作者点 Update branch 产生纯合 main 提交时，Greptile 不会再对这个新 head 表态。新 head 与上一已静默满（真表态、非超时）的 head 相比，PR 自身 patch 哈希不变就立即放行，不再从新 head 重等 30 分钟。哈希只计 `+`/`-` 行（与增量复审 `filePatchHashes` 同口径），用本轮已有的 diff / REST `/files`，不另打 GraphQL；上一表态先读本机快照，没有且当前 HEAD 就是该 PR 时用本地 git 重建，必要时再 REST 读上一 SHA 的 check-runs 补 Greptile check。哈希或上一表态读不到、新 head 改了 PR 自身文件、上一 head 只是超时放行，都按原规则等。
 
 补审后追加（2026-10-18，对已合并的前三条再审、再测的 P2）：
 
@@ -487,4 +488,4 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 手动跑上面的脚本换版本或回滚前，先暂停这个任务；`main` 也改成想要的版本（例如 revert 掉有问题的提交、CI 全绿）后再恢复。不暂停的话，第二天 06:30 它会把 `main` 换回来。两次换版本撞上时，后到的那次拿不到锁、不动前置审查状态和线上 tuple，只留本次运行日志。
 - 要马上换，点「立即运行」：白天也用 hold 停点，在途审查收完前新 PR 要排队。
 - 任务跑的是线上那一版的 `auto-update.mjs`（`~/mivo-prereview/skill/mivo/deploy/`）。回滚到没有这个目录的旧版本后，前置检查会失败，要先暂停任务。
-- 审查任务书（`specDigest`）变了的版本，开放 PR 下次送审时按新任务书全量重审；只改代码不算，见 `lib/scope.mjs`。
+- 审查任务书（`specDigest`）变了的版本，开放 PR 下次送审时：代码（逐文件 patch 指纹）和 base 分支都没变的，沿用上次结论并采用新 `specDigest`（沿用的问题与转 issue 的问题照旧；转 issue 的需本轮仍核验通过，要发新 review 时 head 或 diff 变了的阻断项转文件级评论；同一 head 上一轮已发过 review 的不再重发，直接沿用其 review、thread 链接与原行号（base 前移也不改））；代码也变了的才按新任务书全量重审。维护者想让规则改版一律重审，把 `config/review-features.json` 的 `specChange.forceFull` 设为 true。只改代码不算规则改版，见 `lib/scope.mjs`。
