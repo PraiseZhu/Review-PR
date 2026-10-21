@@ -23,7 +23,7 @@ const base = (files, over = {}) => ({
 });
 const FINDING = { path: 'src/b.ts', line: 1, body: '[P1] 问题', key: 'k1', severity: 'P1' };
 const closing = (over = {}) => base(filesOf('+added', '+b2'), {
-  reviewClean: false, findings: [FINDING],
+  reviewClean: false, findings: [FINDING], totalDiffLines: 10,
   finalFull: { head: SHA0, runId: '41', outcome: 'findings' }, finalFullContext: { kind: 'same-run', findingFiles: ['src/b.ts'], previousRound: null }, ...over,
 });
 
