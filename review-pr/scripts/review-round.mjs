@@ -459,7 +459,7 @@ export function validateReviewCompletion(result, item) {
   } else if (result.merged || ['approval', 'approval-pending', 'review-only', 'merge-queued'].includes(result.outcome)) {
     throw new Error(`PR #${item.pr} 未完成干净审查却记录审批或合并结论`);
   }
-  if (result.merged && result.approval?.status !== 'verified') throw new Error(`PR #${item.pr} 合并缺少可核验 Approve 回执`);
+  if (result.merged && !['verified', 'exempt'].includes(result.approval?.status)) throw new Error(`PR #${item.pr} 合并缺少可核验 Approve 回执`);
   if (result.approval?.status === 'pending' && result.outcome !== 'approval-pending' && result.outcome !== 'error') {
     throw new Error(`PR #${item.pr} 待确认 Approve 不得冒充正常等待或完成`);
   }

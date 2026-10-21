@@ -253,4 +253,45 @@ async function runCase(options, results) {
   assert.equal(only.calls.includes('merge-reviewed-pr.mjs'), false);
 }
 
+{
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const exempt = {
+    ok: true, approved: false, approvalSatisfied: true,
+    approval: {
+      status: 'exempt', author: 'praisezhu', head: base.head, authorityDigest: digest,
+      source: 'maintainer-allowlist', reason: '按 2026-10-21 维护者决定免另一位维护者独立 Approve',
+    },
+    approvalPolicy: { author: 'praisezhu', authorIsMaintainer: true, approvalRequired: false, authorityDigest: digest },
+  };
+  const { result, calls } = await runCase({ ...base, authorityDigest: digest, mode: 'review-only' }, {
+    'approve-reviewed-pr.mjs': exempt, 'signoff-release.mjs': release, 'pre-merge-check.mjs': pass,
+    'merge-reviewed-pr.mjs': { ok: true, merged: true },
+  });
+  assert.equal(result.stage, 'reviewed-only');
+  assert.equal(result.approved, false);
+  assert.equal(result.approvalSatisfied, true);
+  assert.equal(result.approval.status, 'exempt');
+  assert.equal(calls.includes('merge-reviewed-pr.mjs'), false);
+
+  const merged = await runCase({ ...base, authorityDigest: digest }, {
+    'approve-reviewed-pr.mjs': exempt, 'signoff-release.mjs': release, 'pre-merge-check.mjs': pass,
+    'merge-reviewed-pr.mjs': { ok: true, merged: true },
+  });
+  assert.equal(merged.result.stage, 'merged');
+  assert.equal(merged.result.approved, false);
+  assert.equal(merged.result.approval.status, 'exempt');
+
+  const mismatch = await runCase({ ...base, authorityDigest: digest }, {
+    'approve-reviewed-pr.mjs': { ...exempt, approvalPolicy: { ...exempt.approvalPolicy, approvalRequired: true } },
+  });
+  assert.equal(mismatch.result.approval.status, 'pending');
+  assert.equal(mismatch.calls.length, 1);
+
+  const fakeApproved = await runCase({ ...base, authorityDigest: digest }, {
+    'approve-reviewed-pr.mjs': { ...exempt, approved: true },
+  });
+  assert.equal(fakeApproved.result.approval.status, 'pending');
+}
+
 console.log('finish-flow.test.mjs: 全部通过');
+

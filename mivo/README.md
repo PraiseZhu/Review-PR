@@ -97,7 +97,7 @@ flowchart LR
 |---|---|---|---|---|
 | 普通确认门 | 非豁免作者命中确认门（产品/架构/安全/冷更/规则文档/插件基座） | 无 | 挂 `awaiting-discussion` | 现有流程，放行后关 issue |
 | 受保护路径 | 改了受保护路径（`.github/**` 等），**非维护者作者**（不在豁免名单 4 人内） | `<!-- review-pr:signoff-mode=protected -->` | 挂 | 服务器把 `review-pr` 写成通过，Mini 看到后关 issue |
-| 通知 | 豁免名单作者（维护者 3 人 + zhongxingtian-ai，即 `authorSignoffExempt`）命中确认门；或**改了受保护路径**（此时标题、正文写明「作者为维护者，自动放行」） | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭；确认门的 PR 同一轮照常送审，受保护路径的 PR 自动放行（见下） |
+| 通知 | 豁免名单作者（2026-10-21 起维护者 4 人：PraiseZhu、kirozeng、aj0928、zhongxingtian-ai，即 `authorSignoffExempt`）命中确认门；或**改了受保护路径**（此时标题、正文写明「作者为维护者，自动放行」） | `<!-- review-pr:signoff-mode=notice -->` | 不挂 | 无：创建后立即关闭；确认门的 PR 同一轮照常送审，受保护路径的 PR 自动放行（见下） |
 
 放行有三条路，**批一次一直有效**，不绑提交：
 
@@ -107,7 +107,7 @@ flowchart LR
 
 **issue 必须属于本 PR**：issue 标题里的 PR 号和 footer 里的「关联 PR:#n」都要等于本 PR，否则这个 issue 上的任何放行都不采用。PR 评论里的去重标记任何人都能发，不校验这一条，作者就能把标记指向别的 PR 已经放行的 issue 借走放行。通知 issue 上的「同意放行」同样不算放行。
 
-2026-10-17 维护者拍板的规则：**维护者自己的 PR 照样在 GitHub 开 issue、在 Slack 通报，但自动放行，不等任何人；只有非维护者才需要维护者放行。** 「维护者」指 `authorSignoffExempt`：`maintainerAllowlist` 成员（PraiseZhu、kirozeng、aj0928）加 `signoffGate.exemptAuthors`（再多一个 zhongxingtian-ai）。这条只放宽「谁的 PR 自动放行」；「谁能给别人的 PR 放行」仍然只有 `maintainerAllowlist` 三人，zhongxingtian-ai 的 Approve 或「同意放行」放行不了别人。agent 也用 PraiseZhu 账号开 PR，所以 agent 开的受保护路径 PR 同样自动放行，这是已知后果。
+2026-10-17 维护者拍板、2026-10-21 维护者决定补充：**维护者自己的 PR 照样在 GitHub 开 issue、在 Slack 通报，但自动放行，不等任何人；只有非维护者才需要维护者放行。** 「维护者」现为 `maintainerAllowlist` 四人：PraiseZhu、kirozeng、aj0928、zhongxingtian-ai。四人的本人 PR 免其他人 Approve（含受保护路径自动放行），也都能给别人 Approve / 「同意放行」。这不豁免 CI、讨论、人工 CR 或 GitHub 规则，不启用 admin bypass。agent 也用 PraiseZhu 账号开 PR，所以 agent 开的受保护路径 PR 同样自动放行，这是已知后果。
 
 | 作者 | 受保护路径 | 普通确认门 |
 |---|---|---|
@@ -212,14 +212,14 @@ pre-check 指纹里有 `updatedAt`，用来发现作者改说明、别人留评�
 
 `review:merge-ready` 的补充规则（2026-10-17，#1081 带着未 resolve 的讨论拿到标签、#978 冲突了标签还在；同日补审后又加三条，见末尾）：
 
-- **作者就是审查账号**（自己的 PR，Approve 必被拒）：只有「除了不能自批，其它拦截项全部通过」才以评论发报告、挂标签、写 success。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。
+- **作者就是审查账号**（自己的 PR）：2026-10-21 起维护者作者走 `approval.status=exempt`，以评论发报告、挂标签、写 success，不再等另一位维护者 Approve。非维护者作者 Approve 仍被拒；只有「除了不能自批，其它拦截项全部通过」才以评论发报告。approve 回执的逐项 `failures` 里还有别的拦截项（未 resolve 的讨论、别人的 Request Changes 等）时，与上面的「不放行」一致；其中有读取不确定的项（`threads-unverified` 等）标 `retry`，读不到逐项明细也按「还有别的拦截项」处理。这不豁免 CI、讨论、人工 CR 或 GitHub 规则，不启用 admin bypass。
 - **门禁失效也摘标签**，不只在 head 变化时：Mini 每轮判门后，与 base 冲突，或判门停在稳定卡点（冲突、人工讨论未 resolve、他人 Request Changes、维护者确认门、凭证、格式、CI 失败、rebase、retarget）时摘。只用判门已经拿到的 context，不多打 API。CI 在跑、机器人没说完、读失败这类瞬态，以及 GitHub 的 `BLOCKED`（多半只是等维护者 Approve）不摘，避免反复加摘；摘掉后标签不在，下一轮不会重复 DELETE。门禁重新全过回到送审，服务器沿用结论再加回。
 - **机器人静默期的超时从推送 / 转 Ready 起算**：取 head 的提交时间、推送时间、转 Ready 时间里最晚的一个。先当很久 Draft 的 PR 不会一转 Ready 就按「已等满 30 分钟」放行，先本地提交、很久以后才推送的新 head 也不会被提交时间吃掉窗口。推送时间用该 head 上最早的检查开始时间估（已有的 statusCheckRollup，零额外请求）；转 Ready 的时间只在按前两者算已超时时才用 REST 读一次（`issues/<n>/events`），不碰 GraphQL；读失败退回。Draft 期间机器人对当前 head 已有的表态仍算数。
 - **只合 main、PR 自身没改时沿用上一 head 的表态**（2026-10-21 #1150）：作者点 Update branch 产生纯合 main 提交时，Greptile 不会再对这个新 head 表态。沿用只认结构证明：从新 head 沿第一 parent 走最多 10 段干净合 main 链回到真正有表态的原始 SHA。每一步必须是两 parent 合并，第二 parent 在当前 base 上，且 `git merge-tree --write-tree` 得到的 tree 与该提交完全相同。服务器无快照时同样沿链找表态，不停在中间 merge。同一 SHA 已验证过的表态可重复使用。普通追加提交、祖先关系、指纹相同都不算。沿用只继承「曾表态」，仍按当前最新 bot 活动重验静默分钟数。快照保存原始表态 head SHA，不得被沿用结果覆盖。git `%cI` 与 API 时间按瞬时比较。用本轮已有的 diff / REST `/files`，不另打 GraphQL；上一表态先读本机快照，没有再用本地 git 按同一证明函数重建，必要时再 REST 读上一 SHA 的 check-runs 补 Greptile check。证明不了、上一表态读不到、上一 head 只是超时放行，都按原规则等。
 
 补审后追加（2026-10-18，对已合并的前三条再审、再测的 P2）：
 
-- **挂标签前按实时门禁复核 CI / 讨论 / 冲突**：审查账号不是作者、Approve 已发出时，用 finish 带回的 `preMerge`（`finish` 对 review-only 无条件返回 `reviewed-only`，`canMerge` 只是附带信息，`canMerge=false` 是「等维护者 Approve」的常态，不拦）；作者就是审查账号时，approve 脚本当场只读身份、权限、head/base、讨论和 review，不含 CI 和冲突，所以补跑一次 `pre-merge-check.mjs`。CI 失败、讨论未 resolve、与 base 冲突、head/base 复核时已变就不挂标签、摘掉已有的：已 Approve 路径 check 仍写 success（Approve 已发出，原因记在 `mivo.labelWithheld` 与 warnings），作者自批路径走「送审但不放行」（先复核、后发评论，所以不会先发出带干净报告标记的评论）。CI 在跑、awaiting、unknown 这类瞬态不拦；复核结果缺失或读不全拦下并标 `retry`。门禁恢复后 Mini 重新送审，同 head 沿用结论再把标签加回。
+- **挂标签前按实时门禁复核 CI / 讨论 / 冲突**：审查账号不是作者、Approve 已发出时，用 finish 带回的 `preMerge`（`finish` 对 review-only 无条件返回 `reviewed-only`，`canMerge` 只是附带信息；维护者作者 exempt 后 `canMerge=false` 不再表示「等维护者 Approve」）；作者就是审查账号且仍走旧自批拦截时，approve 脚本当场只读身份、权限、head/base、讨论和 review，不含 CI 和冲突，所以补跑一次 `pre-merge-check.mjs`。CI 失败、讨论未 resolve、与 base 冲突、head/base 复核时已变就不挂标签、摘掉已有的：已 Approve 路径 check 仍写 success（Approve 已发出，原因记在 `mivo.labelWithheld` 与 warnings），作者自批路径走「送审但不放行」（先复核、后发评论，所以不会先发出带干净报告标记的评论）。CI 在跑、awaiting、unknown 这类瞬态不拦；复核结果缺失或读不全拦下并标 `retry`。门禁恢复后 Mini 重新送审，同 head 沿用结论再把标签加回。
 - **作者自批之外的拦截项（`advisory.blockers`）也算代码干净**：同 head 沿用上一轮结论，不再多跑一轮完整审查。
 - **摘标签后能加回来**：见上文失败重试一节，`attempt` 不再累计成功的派发，旧记录里累计到 9 的 head 自动解开。
 

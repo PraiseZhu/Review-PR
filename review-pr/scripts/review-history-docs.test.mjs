@@ -52,3 +52,24 @@ test('internal gates mirrors the history fallback and publication gate', () => {
     '历史成功推送是 finalize 完成和 queue close 的前置条件',
   ]);
 });
+
+const skill = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
+const mivoReadme = readFileSync(fileURLToPath(new URL('../../mivo/README.md', import.meta.url)), 'utf8');
+const patches = readFileSync(fileURLToPath(new URL('../../MIVO-PATCHES.md', import.meta.url)), 'utf8');
+const worker = readFileSync(fileURLToPath(new URL('../../review-pr-auto/references/pr-worker.md', import.meta.url)), 'utf8');
+
+test('2026-10-21 维护者决定:免独立 Approve、无 admin、四人完整维护者', () => {
+  for (const [name, body] of [['SKILL', skill], ['internal-gates', gates], ['auto-skill', autoSkill],
+    ['mivo-readme', mivoReadme], ['patches', patches], ['pr-worker', worker]]) {
+    assert.equal(body.includes('2026-10-21'), true, `${name} 应写明 2026-10-21`);
+  }
+  includesAll(skill, ['免另一位维护者独立 Approve', '不启用 admin bypass', 'approval.status=exempt']);
+  includesAll(gates, ['不启用 admin bypass', 'approval.status=exempt']);
+  includesAll(autoSkill, ['zhongxingtian-ai', '不启用 admin bypass']);
+  includesAll(mivoReadme, ['zhongxingtian-ai', '免其他人 Approve']);
+  includesAll(patches, ['maintainer-author-exempt', 'zhongxingtian-ai']);
+  includesAll(worker, ["status:'exempt'", 'approved=false']);
+  for (const stale of ['维护者作者也不例外', '维护者作者也不再免 Approve', '放行权不扩大:给别人 PR 放行仍只认']) {
+    assert.equal(skill.includes(stale) || gates.includes(stale) || patches.includes(stale), false, `stale rule remains: ${stale}`);
+  }
+});

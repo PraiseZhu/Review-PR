@@ -190,8 +190,9 @@ node "<SCRIPTS>/finish-reviewed-pr.mjs" <N> --mode <auto|review-only> --review-c
 ```
 
 它 guarded Approve → 清确认标签 → 重新 pre-merge → 满足条件立即 guarded Merge。
-保存真实 `approval={status:'verified',reviewId,reviewer,head,verifiedAt}`，不能仅凭脚本 exit 0 或
-`approved=true` 宣告批准。POST 连接中断时脚本先分页回查；不明写入至少等 10 分钟，
+保存真实 `approval={status:'verified',reviewId,reviewer,head,verifiedAt}`，或维护者作者的
+`approval={status:'exempt',author,head,authorityDigest,source,reason}`（2026-10-21 维护者决定）。
+不能仅凭脚本 exit 0、`approved=true` 或虚构 review ID 宣告批准。exempt 时 `approved=false`。POST 连接中断时脚本先分页回查；不明写入至少等 10 分钟，
 再次完整回查与全部 fresh guard 通过后才允许一次有界重投，仍不明则保留
 `approval-manual-reconciliation-required`，汇总明确需要人工核验。纯读取失败或明确限流拒写
 可后续安全重试，不消耗不明写入的重投额度。不能直接重跑裸 POST。
@@ -208,7 +209,7 @@ GitHub 汇总状态，都先在本轮有限恢复。内层重试必须有 `merge
 且没有其他有效 Request Changes 时允许短暂刷新；不得据此覆盖别人或新出现的修改要求。
 真实的 CI/thread/head/base/authority/
 stale-rebase/权限阻塞不等待掩盖，按原因返回。`review-only` 使用显式 mode，不执行 Merge。
-viewer=作者且当前 head 尚无另一位维护者的有效 Approve，记 `approval`；若已有独立 Approve，复用真实回执直接进入 guarded finish。维护者作者不需要再询问是否 Approve。
+非维护者且 viewer=作者、当前 head 尚无另一位维护者的有效 Approve，记 `approval`；若已有独立 Approve，复用真实回执直接进入 guarded finish。2026-10-21 维护者决定：维护者作者走 exempt，不需要再询问是否 Approve，也不因此启用 admin bypass。
 structural admin route 仅在核心既有条件满足时使用 `--allow-structural-bypass`，不能跳过审查。
 
 Approve/pre-merge/Merge 阶段新出现作者侧问题时，保留 `enteredReview=true` 和
@@ -269,9 +270,9 @@ head/分支/base、具体卡点与证据、验证命令及 thread 链接（不�
 `enteredReview=false, reviewed=false`；审查未完成的异常 `reviewed=false`；完成审查发现问题
 可记 reviewed，但不能据此合并。合并前新到 thread 属 `merge-blocked`，原因写明线程，不能
 伪造为“审查前 thread 拦截”。失败不自动重做同一个外部写入，保留工具证据供主 session 判断。
-`reviewClean=true` 时必须附 reportFile、reviewEvidence 和 approval 的 verified/blocked/pending
-明确状态；merged 必须有 verified 回执。不能只写 `outcome=approval` 来掩盖漏掉的 Approve。
-verified Approve 还须有真实 finish 终态；中途退出写 `outcome=error, retry=true`，交主 session
+`reviewClean=true` 时必须附 reportFile、reviewEvidence 和 approval 的 verified/exempt/blocked/pending
+明确状态；merged 必须有 verified 或已绑定的 exempt 回执，且都要有真实 finish 终态。不能只写 `outcome=approval` 来掩盖漏掉的 Approve，也不能给 exempt 捏造 review ID。
+中途退出写 `outcome=error, retry=true`，交主 session
 在本轮恢复。只有可核验的合并/排队、review-only 或明确阻塞/执行失败才能通过终态校验。
 `outcome=rebase`（或 `merge-blocked + fixCause=rebase`）必须按第 3 节附带可核验的
 `authorNotice`；提醒失败必须 `retry=true`，不能静默缓存该卡点。

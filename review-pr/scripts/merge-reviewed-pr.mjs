@@ -137,9 +137,7 @@ try {
 
   const routeAvailable = admin
     ? Boolean(check.structuralBypassAvailable)
-    : Boolean(check.normalMergeAvailable || (
-      check.canMerge && check.approvalPolicy?.approvalRequired === true
-    ));
+    : Boolean(check.normalMergeAvailable || check.canMerge);
   if (!routeAvailable) {
     stop(pr, [
       admin

@@ -680,26 +680,27 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
     viewerCanApprove: viewerIsMaintainer && !viewerIsAuthor,
     authorAuthoritySource: authoritySource(author, authorIsMaintainer),
     viewerAuthoritySource: authoritySource(viewer, viewerIsMaintainer),
-    approvalRequired: true,
+    approvalRequired: !authorIsMaintainer,
     teamHandle: authority?.codeowners?.teamHandle ?? null,
     authorityDigest: authority?.digest ?? null,
   };
 }
 
-/** 兼容现有 route 输出：现行策略不再按作者维护者身份豁免独立 Approve。 */
+/** 兼容现有 route 输出：2026-10-21 维护者决定，可信维护者作者免另一位维护者独立 Approve。 */
 export function evaluateApprovalExemption({ authorLogin = '', authority = null } = {}) {
   const policy = evaluateMaintainerApprovalPolicy({ authorLogin, authority });
+  const exempt = policy.approvalRequired === false;
   return {
-    exempt: false,
+    exempt,
     authorIsMaintainer: policy.authorIsMaintainer,
     author: policy.author,
     source: policy.authorAuthoritySource ?? 'combined-maintainer-authority',
     teamHandle: policy.teamHandle,
     authorityDigest: policy.authorityDigest,
-    reason: policy.authorIsMaintainer
+    reason: exempt
       ? (policy.authorAuthoritySource === 'maintainer-allowlist'
-        ? `作者 ${policy.author} 在 maintainerAllowlist 补充白名单中，但仍需另一位维护者独立 Approve`
-        : `作者 ${policy.author} 是 ${policy.teamHandle ?? '维护者 Team'} 当前成员，但仍需另一位维护者独立 Approve`)
+        ? `作者 ${policy.author} 在 maintainerAllowlist 补充白名单中，按 2026-10-21 维护者决定免另一位维护者独立 Approve`
+        : `作者 ${policy.author} 是 ${policy.teamHandle ?? '维护者 Team'} 当前成员，按 2026-10-21 维护者决定免另一位维护者独立 Approve`)
       : policy.author
         ? `作者 ${policy.author} 不是维护者，仍需维护者 Approve`
         : '作者身份为空，仍需维护者 Approve',
@@ -713,7 +714,7 @@ export function isApprovalPendingReviewDecision(reviewDecision) {
   return normalized === '' || normalized === 'REVIEW_REQUIRED';
 }
 
-/** 六类维护者确认门的审查前 blocking 公式；维护者作者改在最终审查后独立 Approve。 */
+/** 六类维护者确认门的审查前 blocking 公式；维护者作者不走审查前确认门，普通审批豁免见 2026-10-21 维护者决定。 */
 export function evaluateSignoffBlocking({
   enabled = false,
   authorIsMaintainer = false,
@@ -1639,9 +1640,8 @@ export function evaluateNormalMergeAvailable({
 }
 
 /**
- * 纯函数:维护者作者的 PR 是否只因缺 approval 而需要 admin merge。
- * --admin 会绕过整套 branch protection,所以每个本地硬门都显式 fail closed;
- * blockers 是调用方已经汇总的其它机械 blocker 数量,必须为 0。
+ * 纯函数:旧版维护者作者缺 approval 时的 admin merge 诊断。
+ * 2026-10-21 维护者决定后该 route 永远不可用;failedChecks 仍保留各硬门诊断。
  */
 export function evaluateApprovalExemptAdminMerge({
   approvalExempt = false,
@@ -1684,8 +1684,9 @@ export function evaluateApprovalExemptAdminMerge({
   if (Number(protectedFileCount) !== 0) failedChecks.push(`命中 ${Number(protectedFileCount) || 0} 个受保护路径`);
   if (!branchRulesVerified) failedChecks.push('approval 之外的 branch/ruleset 门未完整验证');
   if (ciStatus !== 'pass') failedChecks.push(`CI status=${ciStatus}(非 pass)`);
+  failedChecks.unshift('maintainer-author exemption never authorizes admin merge');
   return {
-    available: failedChecks.length === 0,
+    available: false,
     failedChecks,
     route: 'approval-exempt-admin',
     reviewDecisionWasEmpty: reviewDecision == null || String(reviewDecision).trim() === '',

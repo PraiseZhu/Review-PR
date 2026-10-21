@@ -4,7 +4,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseRepo, parsePR, gh, ghJson, fetchAllReviewThreads, fetchMaintainerAuthority,
-  evaluateMaintainerApprovalPolicy, latestSubstantiveReviews, selectStandingViewerHumanChangesRequest,
+  evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, latestSubstantiveReviews, selectStandingViewerHumanChangesRequest,
   assertActiveReviewLock, stateFile, print } from './lib.mjs';
 import { atomicWriteJson } from './runtime-io.mjs';
 import { approvalReceiptFromReview, existingMaintainerApprovalReceipt, pendingApproval, APPROVAL_REPOST_AFTER_MS } from './approval-state.mjs';
@@ -95,7 +95,7 @@ try {
     }
     if (!viewer) reject('viewer-unverified', '当前 GitHub viewer 身份未完整读取');
     if (authority && viewer && !policy.viewerIsMaintainer) reject('viewer-not-maintainer', '当前 viewer 不在最终维护者集合中');
-    if (policy.viewerIsAuthor && reviews.verified && !independentReceipt) {
+    if (policy.approvalRequired && policy.viewerIsAuthor && reviews.verified && !independentReceipt) {
       reject('independent-approval-required', '当前 viewer 是 PR 作者，未核验到另一位维护者的有效 Approve，不能自批');
     }
     if (!threads.verified) reject('threads-unverified', 'review thread 状态未完整读取');
@@ -146,6 +146,29 @@ try {
   // before either accepting an existing approval or posting a new one.
   const fresh = collect();
   stop(fresh, same(fresh.viewer, initial.viewer) ? [] : [{ code: 'viewer-changed', reason: '写操作前 GitHub viewer 已变化' }]);
+  const emitExempt = fresh.policy.approvalRequired === false && !fresh.receipt &&
+    !(fresh.overriddenOwnCr && fresh.policy.viewerCanApprove);
+  if (emitExempt) {
+    const exemption = evaluateApprovalExemption({ authorLogin: fresh.policy.author, authority: fresh.authority });
+    print({
+      ok: true, pr, approved: false, approvalSatisfied: true, dryRun: false,
+      approval: {
+        status: 'exempt',
+        author: fresh.policy.author,
+        head: expectedHead.toLowerCase(),
+        authorityDigest: fresh.policy.authorityDigest,
+        source: exemption.source,
+        teamHandle: exemption.teamHandle,
+        reason: exemption.reason,
+      },
+      approvalPolicy: fresh.policy,
+      viewer: fresh.viewer, expectedHead,
+      ...(expectedBase ? { expectedBase } : {}),
+      ...(expectedBaseRef ? { expectedBaseRef } : {}),
+      authority: { digest: fresh.authority.digest, teamHandle: fresh.authority.codeowners.teamHandle, memberCount: fresh.authority.memberCount },
+    });
+    process.exit(0);
+  }
   const key = createHash('sha256').update(`${fresh.viewer.toLowerCase()}|${expectedHead.toLowerCase()}`).digest('hex').slice(0, 24);
   const journalFile = stateFile(`approval-${pr}-${key}.json`);
   let journal = { uncertainWrite: false, attemptedAt: null, repostCount: 0 };

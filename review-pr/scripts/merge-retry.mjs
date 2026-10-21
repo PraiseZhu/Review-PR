@@ -3,7 +3,7 @@
 export const MERGE_RETRY_VERSION = 2;
 export const REVIEW_CHANGES_REQUESTED_BLOCKER = 'mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)';
 const same = (a, b) => typeof a === 'string' && a.length > 0 && a.toLowerCase() === String(b ?? '').toLowerCase();
-const IN_PROGRESS_STAGES = new Set(['approving', 'approved', 'checking', 'merging', 'merge-retry-pending']);
+const IN_PROGRESS_STAGES = new Set(['approving', 'approved', 'approval-exempt', 'checking', 'merging', 'merge-retry-pending']);
 export const isFinishInProgress = (receipt) => IN_PROGRESS_STAGES.has(receipt?.stage);
 
 function clearMergePrerequisites(check) {
@@ -29,9 +29,19 @@ export function isOwnApprovalRefresh(check, approval) {
     String(review.reviewId) === String(approval.reviewId) && same(review.head, approval.head));
 }
 
+function boundExempt(check, approval) {
+  const policy = check?.approvalPolicy;
+  return approval?.status === 'exempt' &&
+    policy?.approvalRequired === false && policy?.authorIsMaintainer === true &&
+    typeof approval.author === 'string' && approval.author.toLowerCase() === String(policy.author ?? '').toLowerCase() &&
+    typeof approval.head === 'string' && approval.head.toLowerCase() === String(check.actualHead ?? '').toLowerCase() &&
+    approval.authorityDigest === policy.authorityDigest;
+}
+
 export function isTransientMergeCheck(check, approval) {
   if (isOwnApprovalRefresh(check, approval)) return true;
-  return clearMergePrerequisites(check) && check.reviewDecision === 'APPROVED' && !check.blockers?.length &&
+  const decisionOk = check?.reviewDecision === 'APPROVED' || boundExempt(check, approval);
+  return clearMergePrerequisites(check) && decisionOk && !check.blockers?.length &&
     (!check.blockClass || check.blockClass === 'none') &&
     check.mergeable !== 'CONFLICTING' && check.mergeStateStatus !== 'DIRTY' &&
     (check.mergeable === 'UNKNOWN' || check.mergeableUnknown === true || check.mergeStateStatus === 'UNKNOWN');
@@ -45,7 +55,7 @@ export function canRetryMergeBeforeWrite(merge, approval) {
 export function needsFinishContinuation(result, receipt) {
   if (!result?.reviewClean || result.merged) return false;
   if (result.approval?.status === 'pending') return true;
-  if (result.approval?.status !== 'verified' || !receipt) return false;
+  if (!['verified', 'exempt'].includes(result.approval?.status) || !receipt) return false;
   if (isFinishInProgress(receipt)) return true;
   if (receipt.stage === 'approval-checkpoint-failed') return true;
   if (['label-sync-blocked', 'check-failed'].includes(receipt.stage) && receipt.retry === true) return true;

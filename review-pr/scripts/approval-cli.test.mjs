@@ -179,8 +179,15 @@ syncBuiltinESMExports();
     assert.equal(run().approval.status, 'verified');
     assert.equal(readFixture().posts, 1);
 
+    run = scenario({ ...basic(), meta: { ...basic().meta, author: { login: 'maintainer' } } });
+    result = run();
+    assert.equal(result.approval.status, 'exempt');
+    assert.equal(result.approved, false);
+    assert.equal(result.approvalSatisfied, true);
+    assert.match(result.approval.reason, /2026-10-21/);
+    assert.equal(result.approval.author, 'maintainer');
+    assert.equal(readFixture().posts, 0);
     for (const update of [
-      { meta: { ...basic().meta, author: { login: 'maintainer' } } },
       { meta: { ...basic().meta, baseRefOid: 'c'.repeat(40) } },
       { threads: [{ id: 't1', isResolved: false }] },
       { reviews: [{ id: 11, user: { login: 'other' }, state: 'CHANGES_REQUESTED', submitted_at: '2026-09-08T00:00:00Z' }] },
@@ -195,12 +202,15 @@ syncBuiltinESMExports();
     const authorViewer = { ...basic(), meta: { ...basic().meta, author: { login: 'maintainer' } } };
     run = scenario(authorViewer);
     result = run();
-    assert.equal(result.approval.code, 'independent-approval-required');
-    assert.deepEqual(result.failures.map((item) => item.code), ['independent-approval-required']);
+    assert.equal(result.approval.status, 'exempt');
+    assert.equal(result.approved, false);
+    assert.equal(result.approvalSatisfied, true);
+    assert.equal(readFixture().posts, 0);
     run = scenario({ ...authorViewer, threads: [{ id: 't1', isResolved: false }] });
     result = run();
-    assert.equal(result.approval.code, 'independent-approval-required', '第一个 code 仍是作者自批,别的拦截项靠 failures 才看得见');
-    assert.deepEqual(result.failures.map((item) => item.code), ['independent-approval-required', 'threads-unresolved']);
+    assert.equal(result.approval.status, 'blocked');
+    assert.equal(result.approval.code, 'threads-unresolved');
+    assert.deepEqual(result.failures.map((item) => item.code), ['threads-unresolved']);
     assert.equal(result.failures.at(-1).reason, '仍有 conversation 未 resolve');
     assert.equal(readFixture().posts, 0);
 

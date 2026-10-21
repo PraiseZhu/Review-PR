@@ -45,3 +45,25 @@ test('an existing independent maintainer approval satisfies an author viewer wit
     author: 'MagicLizi', maintainers: ['MagicLizi', 'zqchris'], reviewDecision: 'APPROVED', head: currentHead,
   }), null);
 });
+
+test('exempt receipts bind author/head/digest and never carry a review ID', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const receipt = validateApprovalDisposition({
+    status: 'exempt', author: ' PraiseZhu ', head, authorityDigest: digest,
+    source: 'maintainer-allowlist', reason: '按 2026-10-21 维护者决定免另一位维护者独立 Approve',
+  }, { head, authorityDigest: digest, author: 'praisezhu' });
+  assert.equal(receipt.author, 'PraiseZhu');
+  assert.equal(receipt.head, head);
+  assert.throws(() => validateApprovalDisposition({
+    status: 'exempt', author: 'PraiseZhu', head, authorityDigest: digest,
+    source: 'maintainer-allowlist', reason: 'ok', reviewId: '1',
+  }, { head }), /review ID/);
+  assert.throws(() => validateApprovalDisposition({
+    status: 'exempt', author: 'PraiseZhu', head, authorityDigest: digest,
+    source: 'maintainer-allowlist', reason: 'ok',
+  }, { head: 'b'.repeat(40) }), /免审批/);
+  assert.throws(() => validateApprovalDisposition({
+    status: 'exempt', author: 'other', head, authorityDigest: digest,
+    source: 'maintainer-allowlist', reason: 'ok',
+  }, { head, author: 'PraiseZhu' }), /免审批/);
+});

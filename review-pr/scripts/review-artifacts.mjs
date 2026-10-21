@@ -17,12 +17,19 @@ export function verifyReviewArtifacts(planFile, plan, result, { allowIncomplete 
   if (typeof report === 'string' && isAbsolute(report) && existsSync(report)) rel = relative(directory, realpathSync(report));
   if (rel.startsWith('..') || isAbsolute(rel) || /^worktrees[\\/]/i.test(rel) ||
       !readFileSync(report, 'utf8').trim()) throw new Error(`PR #${result.pr} 的审查报告必须实际保存在 roundDir、worktree 之外`);
-  if (result.approval.status === 'verified') {
+  if (result.approval.status === 'verified' || result.approval.status === 'exempt') {
     const receipt = JSON.parse(readFileSync(join(directory, `finish-pr-${result.pr}.json`), 'utf8'));
     if (receipt.runId !== plan.runId || receipt.pr !== result.pr || receipt.head !== result.head ||
-        receipt.mode !== plan.mode || receipt.approval?.status !== 'verified' ||
+        receipt.mode !== plan.mode || receipt.approval?.status !== result.approval.status) {
+      throw new Error(`PR #${result.pr} 的 Approve 结论与 guarded finish 的实际回执不一致`);
+    }
+    if (result.approval.status === 'verified' &&
         ['reviewId', 'reviewer', 'head'].some((key) => String(receipt.approval[key]) !== String(result.approval[key]))) {
       throw new Error(`PR #${result.pr} 的 Approve 结论与 guarded finish 的实际回执不一致`);
+    }
+    if (result.approval.status === 'exempt' &&
+        ['author', 'authorityDigest', 'source', 'head'].some((key) => String(receipt.approval[key]) !== String(result.approval[key]))) {
+      throw new Error(`PR #${result.pr} 的免审批结论与 guarded finish 的实际回执不一致`);
     }
     if (!result.merged && needsMergeRetry(receipt) && result.retry !== true) {
       throw new Error(`PR #${result.pr} 的 guarded finish 临时异常必须保留 retry=true，不能缓存为普通 merge-blocked`);
