@@ -481,6 +481,19 @@ test('静默期:只合 main 且 PR 自身 patch 不变时,沿用上一 head 已�
   assert.deepEqual(evaluateBotSettleSinceReady(BASE_ONLY_NEW_HEAD, never), r);
 });
 
+test('静默期:沿用只继承曾表态,快照后若最新 bot 活动未静默满 quietMinutes 则不能放行', () => {
+  const r = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    activity: [
+      { author: 'greptile-apps', at: '2026-10-21T05:25:00Z' },
+      { author: 'greptile-apps', at: '2026-10-21T05:43:00Z' },
+    ],
+  });
+  assert.equal(r.settled, false, '快照后又有新活动: 旧口径只看新 head 之后有没有活动,未满 5 分钟静默也会沿用');
+  assert.equal(r.reused, undefined);
+  assert.equal(r.quietSinceMinutes < 5, true);
+});
+
 test('静默期:新 head 改了 PR 自身文件时,即使上一 head 已静默满也重新等', () => {
   const r = evaluateBotSettle({
     ...BASE_ONLY_NEW_HEAD,
@@ -535,6 +548,20 @@ test('filePatchHashesFromDiff:只计 +/- 行,行号漂移不算变;缺 patch 的
     filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n')['public/changelog.json']);
   assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json' }]), {});
   assert.equal(sameFilePatchHashes({}, {}), false);
+});
+
+test('filePatchHashesFromDiff:删除文件与改成空文件的增删行都是 -{} 时不能判成同一指纹', () => {
+  const deleted = filePatchHashesFromDiff(
+    'diff --git a/config.json b/config.json\ndeleted file mode 100644\n--- a/config.json\n+++ /dev/null\n@@ -1 +0,0 @@\n-{}\n',
+  );
+  const emptied = filePatchHashesFromDiff(
+    'diff --git a/config.json b/config.json\n--- a/config.json\n+++ b/config.json\n@@ -1 +0,0 @@\n-{}\n',
+  );
+  assert.equal(
+    sameFilePatchHashes(deleted, emptied),
+    false,
+    '删除 vs 空文件: 旧口径只哈希 +/- 行,两种都是 -{} 会错误沿用',
+  );
 });
 
 test('previousSettleFromLocalMerge:当前 HEAD 是两 parent 合 main 且 patch 不变时,按上一 head 重算静默期', () => {
@@ -601,6 +628,34 @@ test('previousSettleFromLocalMerge:现有 activity 没有上一 head 的 check �
     activity: [], cfg: READY_CFG, slug: 'xindong/mivo-canvas-plugin', fetchCheckRuns: () => null,
   });
   assert.equal(failed, null, '上一 SHA check 读不到退回原规则,不放宽');
+});
+
+test('previousSettleFromLocalMerge: git %cI 带正负时区时与 API UTC 按瞬时比较,不按字符串', () => {
+  const prevHead = 'a'.repeat(40);
+  const headSha = 'b'.repeat(40);
+  const baseSha = 'c'.repeat(40);
+  const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
+  const currentHashes = filePatchHashesFromDiff(diff);
+  const gitFn = (committedDate) => (args) => {
+    const joined = args.join(' ');
+    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
+    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: `${committedDate}\n` };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+  const plus = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn: gitFn('2026-10-21T13:20:00+08:00'),
+    nowIso: '2026-10-21T05:45:00Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+  });
+  assert.equal(plus?.settled, true, '+08:00(=05:20Z) 之后 05:25Z 的表态应算已表态; 字符串比较会把 05:25Z 当成早于 13:20+08:00');
+  assert.equal(plus?.timedOut, false);
+  const minus = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn: gitFn('2026-10-21T01:20:00-04:00'),
+    nowIso: '2026-10-21T05:45:00Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:15:00Z' }], cfg: READY_CFG,
+  });
+  assert.equal(minus, null, '-04:00(=05:20Z) 之前 05:15Z 的表态不能算; 字符串比较会把 05:15Z 当成晚于 01:20-04:00');
 });
 
 test('静默期接线:context 与 pre-merge-check 把已有 diff/files 的 patch 哈希和上一 head 表态传给静默期,不另打 GraphQL', () => {
