@@ -567,14 +567,20 @@ test('filePatchHashesFromDiff:删除文件与改成空文件的增删行都是 -
 function mergeProofGitFn({ prevHead, headSha, baseSha, diff, committedDate = '2026-10-21T05:20:00Z' }) {
   const parent1 = 'd'.repeat(40);
   const tree = 'e'.repeat(40);
+  const prevTree = '1'.repeat(40);
+  const prevParent = '0'.repeat(40);
   return (args) => {
     const joined = args.join(' ');
     if (joined === `log -1 --format=%H%n%P%n%T ${headSha}`) {
       return { ok: true, stdout: `${headSha}\n${prevHead} ${parent1}\n${tree}\n` };
     }
+    if (joined === `log -1 --format=%H%n%P%n%T ${prevHead}`) {
+      return { ok: true, stdout: `${prevHead}\n${prevParent}\n${prevTree}\n` };
+    }
     if (joined === `merge-tree --write-tree ${prevHead} ${parent1}`) return { ok: true, stdout: `${tree}\n` };
     if (joined === `merge-base --is-ancestor ${parent1} ${baseSha}`) return { ok: true, stdout: '' };
     if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${headSha}`)) return { ok: true, stdout: '2026-10-21T05:44:00Z\n' };
     if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: `${committedDate}\n` };
     return { ok: false, stdout: '', stderr: joined };
   };
@@ -611,6 +617,7 @@ test('previousSettleFromLocalMerge:现有 activity 没有上一 head 的 check �
   const fetchCheckRuns = (slug, sha) => {
     fetched += 1;
     assert.equal(slug, 'xindong/mivo-canvas-plugin');
+    if (sha === headSha) return [];
     assert.equal(sha, prevHead);
     return [{ name: 'Greptile Review', status: 'COMPLETED', completedAt: '2026-10-21T05:25:00Z' }];
   };
@@ -623,7 +630,7 @@ test('previousSettleFromLocalMerge:现有 activity 没有上一 head 的 check �
     headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
     activity: [], cfg: READY_CFG, slug: 'xindong/mivo-canvas-plugin', fetchCheckRuns,
   });
-  assert.equal(fetched, 1);
+  assert.equal(fetched, 2, '先查 merge head 没有表态,再查原始 head');
   assert.equal(r.settled, true);
   assert.equal(r.timedOut, false);
   assert.deepEqual(r.responded, ['greptile-apps']);

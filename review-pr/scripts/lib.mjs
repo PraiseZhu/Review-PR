@@ -2460,15 +2460,17 @@ function isCleanBaseMerge(commit, { baseSha, gitFn }) {
   return Boolean(mergedTree) && mergedTree === commit.tree.toLowerCase();
 }
 
+const BASE_ONLY_CHAIN_LIMIT = 10;
+
 // 沿用只认结构证明:从新 head 沿 parent[0] 走一段干净合 main 链回到已表态 SHA。
 // 每一步必须是两 parent 合并、第二 parent 在当前 base 上,且 merge-tree 的 tree 与该提交相同。
 // 同一 SHA 已验证过的表态可重复使用。普通单 parent 追加提交、祖先关系、指纹相同都不算。
-// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。链过长或任一步证明不了就失败。
+// 按 SHA 查对象,不要求当前 HEAD 就是该 PR。链超过 10 段或任一步证明不了就失败。
 export function proveBaseOnlyHeadRelation({ previousHeadSha, headSha, baseSha, gitFn = git }) {
   if (!previousHeadSha || !headSha || !baseSha) return false;
   let current = headSha;
   const seen = new Set();
-  for (let i = 0; i < 32; i += 1) {
+  for (let i = 0; i < BASE_ONLY_CHAIN_LIMIT; i += 1) {
     if (sameSha(current, previousHeadSha)) return true;
     const key = String(current).toLowerCase();
     if (seen.has(key)) return false;
@@ -2594,36 +2596,51 @@ export function evaluateBotSettleSinceReady(input, readEvents) {
 }
 
 // [MIVO-PATCH bot-settle-base-only] 服务器每 job 一份 STATE_DIR,看不到 Mini 的快照。
-// 与 Mini 快照共用 proveBaseOnlyHeadRelation:两 parent 干净合 main 才重建上一 head 表态。
+// 与 Mini 快照共用证明:沿 parent[0] 走干净合 main 链,在真正有表态的提交上重建,不停在中间 merge。
 export function previousSettleFromLocalMerge({
   headSha, baseSha, currentHashes, activity = [], cfg = {}, nowIso, gitFn = git,
   slug = '', fetchCheckRuns = fetchCheckRunsWithApps,
 }) {
   if (!headSha || !baseSha) return null;
-  const head = readCommitGraph(gitFn, headSha);
-  if (!head || head.parents.length !== 2) return null;
-  const prevHead = head.parents[0];
-  if (!proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, baseSha, gitFn })) return null;
-  const prevDiff = gitFn(
-    ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
-      '--no-relative', '--no-renames', '--unified=3', `${baseSha}...${prevHead}`, '--'],
-    { allowFail: true, timeoutMs: 120_000 },
-  );
-  const previousHashes = prevDiff.ok ? filePatchHashesFromDiff(prevDiff.stdout) : (currentHashes ?? {});
-  const prevDate = gitFn(['log', '-1', '--format=%cI', prevHead], { allowFail: true });
-  const headCommittedDate = String(prevDate.stdout ?? '').trim();
-  if (!headCommittedDate || !Number.isFinite(Date.parse(headCommittedDate))) return null;
-  const first = evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg });
-  const proven = { filePatchHashes: previousHashes, headCommittedDate, headSha: prevHead, baseOnlyProven: true };
-  if (first.settled && !first.timedOut) return { ...first, ...proven };
-  if (!slug) return null;
-  let checkRuns;
-  try { checkRuns = fetchCheckRuns(slug, prevHead); } catch { return null; }
-  if (!Array.isArray(checkRuns)) return null;
-  const priorActivity = [...activity, ...botCheckActivity(checkRuns, cfg)];
-  const prior = evaluateBotSettle({ headCommittedDate, nowIso, activity: priorActivity, cfg });
-  if (!prior.settled || prior.timedOut) return null;
-  return { ...prior, ...proven };
+  let current = headSha;
+  const seen = new Set();
+  for (let i = 0; i < BASE_ONLY_CHAIN_LIMIT; i += 1) {
+    const key = String(current).toLowerCase();
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const commit = readCommitGraph(gitFn, current);
+    if (!commit) return null;
+    const prevDate = gitFn(['log', '-1', '--format=%cI', current], { allowFail: true });
+    const headCommittedDate = String(prevDate.stdout ?? '').trim();
+    let stance = null;
+    if (headCommittedDate && Number.isFinite(Date.parse(headCommittedDate))) {
+      const first = evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg });
+      if (first.settled && !first.timedOut) stance = first;
+      if (!stance && slug) {
+        let checkRuns;
+        try { checkRuns = fetchCheckRuns(slug, current); } catch { checkRuns = null; }
+        if (Array.isArray(checkRuns)) {
+          const prior = evaluateBotSettle({
+            headCommittedDate, nowIso,
+            activity: [...activity, ...botCheckActivity(checkRuns, cfg)], cfg,
+          });
+          if (prior.settled && !prior.timedOut) stance = prior;
+        }
+      }
+    }
+    if (stance) {
+      const prevDiff = gitFn(
+        ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
+          '--no-relative', '--no-renames', '--unified=3', `${baseSha}...${current}`, '--'],
+        { allowFail: true, timeoutMs: 120_000 },
+      );
+      const previousHashes = prevDiff.ok ? filePatchHashesFromDiff(prevDiff.stdout) : (currentHashes ?? {});
+      return { ...stance, filePatchHashes: previousHashes, headCommittedDate, headSha: current, baseOnlyProven: true };
+    }
+    if (!isCleanBaseMerge(commit, { baseSha, gitFn })) return null;
+    current = commit.parents[0];
+  }
+  return null;
 }
 
 export function toPreviousSettleForHead({
