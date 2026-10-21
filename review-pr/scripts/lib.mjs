@@ -2272,7 +2272,104 @@ export function toHeadPushedAt(rollupContexts) {
   return times.sort()[0] ?? '';
 }
 
-export function evaluateBotSettle({ headCommittedDate, headPushedAt = '', readyForReviewAt = '', nowIso, activity = [], cfg = {} }) {
+// [MIVO-PATCH bot-settle-base-only] PR 自身改动指纹:只哈希 + / - 行,行号和上下文漂移不算变。
+// 口径与 mivo/lib/scope.mjs splitDiffByFile 相同,这样「只合 main」与增量复审 reuse 认的是同一件事。
+function hashPatchLines(text) {
+  const body = [];
+  for (const raw of String(text ?? '').split('\n')) {
+    if (raw.startsWith('+++ ') || raw.startsWith('--- ')) continue;
+    if (raw.startsWith('+') || raw.startsWith('-') || raw.startsWith('Binary files')) body.push(raw);
+  }
+  return createHash('sha256').update(body.join('\n')).digest('hex');
+}
+
+export function filePatchHashesFromDiff(diffText) {
+  const files = {};
+  let current = null;
+  const finish = () => {
+    if (!current) return;
+    files[current.path] = hashPatchLines(current.body.join('\n'));
+  };
+  for (const raw of String(diffText ?? '').split('\n')) {
+    if (raw.startsWith('diff --git ')) {
+      finish();
+      const m = raw.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      current = { path: m ? m[2] : raw, body: [] };
+      continue;
+    }
+    if (!current) continue;
+    if (raw.startsWith('+++ ')) {
+      const path = raw.slice(4).replace(/^b\//, '').trim();
+      if (path !== '/dev/null') current.path = path;
+      continue;
+    }
+    if (raw.startsWith('--- ') || raw.startsWith('index ') || raw.startsWith('new file') || raw.startsWith('deleted file') ||
+        raw.startsWith('similarity ') || raw.startsWith('rename ') || raw.startsWith('old mode') || raw.startsWith('new mode') ||
+        raw.startsWith('Binary files')) {
+      if (raw.startsWith('Binary files')) current.body.push(raw);
+      continue;
+    }
+    if (raw.startsWith('@@ ')) continue;
+    if (raw.startsWith('+') || raw.startsWith('-')) current.body.push(raw);
+  }
+  finish();
+  return files;
+}
+
+export function filePatchHashesFromPullFiles(files) {
+  const out = {};
+  if (!Array.isArray(files) || files.length === 0) return {};
+  for (const file of files) {
+    const path = file?.filename ?? file?.path;
+    if (!path || typeof file.patch !== 'string') return {};
+    out[path] = hashPatchLines(file.patch);
+  }
+  return out;
+}
+
+export function sameFilePatchHashes(left, right) {
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const keys = Object.keys(left).sort();
+  if (keys.length === 0) return false;
+  const other = Object.keys(right).sort();
+  if (keys.length !== other.length) return false;
+  return keys.every((key, i) => key === other[i] && left[key] && left[key] === right[key]);
+}
+
+function botSettleSnapshotPath({ owner, repo, pr }) {
+  const slug = `${owner}/${repo}`.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+  return stateFile(`bot-settle-${slug}-${Number(pr)}.json`);
+}
+
+export function loadBotSettleSnapshot({ owner, repo, pr }) {
+  try {
+    const value = JSON.parse(readFileSync(botSettleSnapshotPath({ owner, repo, pr }), 'utf8'));
+    if (value?.settled !== true || value?.timedOut !== false) return null;
+    if (!value.filePatchHashes || typeof value.filePatchHashes !== 'object') return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+export function saveBotSettleSnapshot({ owner, repo, pr, settle, filePatchHashes, headCommittedDate }) {
+  if (!settle?.settled || settle.timedOut || !sameFilePatchHashes(filePatchHashes, filePatchHashes)) return false;
+  atomicWriteJson(botSettleSnapshotPath({ owner, repo, pr }), {
+    settled: true,
+    timedOut: false,
+    reused: Boolean(settle.reused),
+    responded: settle.responded ?? [],
+    filePatchHashes,
+    headCommittedDate: headCommittedDate ?? '',
+    savedAt: new Date().toISOString(),
+  });
+  return true;
+}
+
+export function evaluateBotSettle({
+  headCommittedDate, headPushedAt = '', readyForReviewAt = '', nowIso, activity = [], cfg = {},
+  filePatchHashes = null, previousSettle = null,
+}) {
   const maxWaitMinutes = Number(cfg.maxWaitMinutes ?? 20);
   // 静默窗口(维护者 2026-07-30 定的节奏):必等机器人都表态之后,还要「最近 quietMinutes
   // 分钟内所有 quiet 名单机器人都没有新动静」才放行 —— 防止我们的审查/合并跟一波还在
@@ -2289,7 +2386,24 @@ export function evaluateBotSettle({ headCommittedDate, headPushedAt = '', readyF
   if (!headCommittedDate) {
     return { ...base, settled: true, waitedMinutes: null, reason: 'head commit 时间读不到,跳过静默期判定(未证明机器人已表态)' };
   }
+  // [MIVO-PATCH bot-settle-base-only] 新 head 只是合 main、PR 自身 patch 哈希与上一已静默满的 head 相同 → 沿用。
+  // previousSettle 必须是真表态(settled 且非超时);哈希读不到或对不上退回下面的原规则,不放宽。
+  const previousHashes = previousSettle?.filePatchHashes;
+  const previousResponded = (previousSettle?.responded ?? []).map((s) => String(s).toLowerCase());
   const norm = (s) => String(s ?? '').toLowerCase().replace(/\[bot\]$/, '');
+  const activityAfterHead = (activity ?? []).some((a) => reviewers.includes(norm(a.author)) && a.at > headCommittedDate);
+  if (
+    previousSettle?.settled === true && previousSettle?.timedOut === false &&
+    sameFilePatchHashes(filePatchHashes, previousHashes) &&
+    reviewers.every((r) => previousResponded.includes(r)) &&
+    !activityAfterHead
+  ) {
+    return {
+      ...base, settled: true, responded: reviewers, pending: [], waitedMinutes: 0, timedOut: false, reused: true,
+      waitStartedAt: previousSettle.headCommittedDate || headCommittedDate, waitAnchor: 'commit',
+      reason: `只有 base 前移,PR 自身 patch 不变,沿用上一 head 已静默满的机器人表态(${reviewers.join(' / ')})`,
+    };
+  }
   const responded = reviewers.filter((r) => activity.some((a) => norm(a.author) === r && a.at > headCommittedDate));
   const pending = reviewers.filter((r) => !responded.includes(r));
   // [MIVO-PATCH bot-settle-ready] 超时计时的起点 = head 提交时间、head 推送时间、转 Ready 时间里最晚的一个。
@@ -2364,6 +2478,44 @@ export function evaluateBotSettleSinceReady(input, readEvents) {
   const readyForReviewAt = toReadyForReviewAt(events);
   if (!readyForReviewAt) return { ...first, readyLookup: 'none' };
   return { ...evaluateBotSettle({ ...input, readyForReviewAt }), readyLookup: 'found' };
+}
+
+// [MIVO-PATCH bot-settle-base-only] 服务器每 job 一份 STATE_DIR,看不到 Mini 的快照。
+// PR head 已 checkout 且最新提交是两 parent 的合 main 时,用本地 git 比 base...上一 head 与当前 patch 哈希;
+// 哈希相同再按上一 head 重算静默期。git 没有这些对象就退回 null,不另打 GraphQL。
+export function previousSettleFromLocalMerge({
+  headSha, baseSha, currentHashes, activity = [], cfg = {}, nowIso, gitFn = git,
+  slug = '', fetchCheckRuns = fetchCheckRunsWithApps,
+}) {
+  if (!headSha || !baseSha || !sameFilePatchHashes(currentHashes, currentHashes)) return null;
+  const head = gitFn(['log', '-1', '--format=%H%n%P', 'HEAD'], { allowFail: true });
+  if (!head.ok) return null;
+  const [sha, parentsLine] = String(head.stdout ?? '').trim().split('\n');
+  if (String(sha).toLowerCase() !== String(headSha).toLowerCase()) return null;
+  const parents = String(parentsLine ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parents.length !== 2) return null;
+  const prevHead = parents[0];
+  const prevDiff = gitFn(
+    ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
+      '--no-relative', '--no-renames', '--unified=3', `${baseSha}...${prevHead}`, '--'],
+    { allowFail: true, timeoutMs: 120_000 },
+  );
+  if (!prevDiff.ok) return null;
+  const previousHashes = filePatchHashesFromDiff(prevDiff.stdout);
+  if (!sameFilePatchHashes(previousHashes, currentHashes)) return null;
+  const prevDate = gitFn(['log', '-1', '--format=%cI', prevHead], { allowFail: true });
+  const headCommittedDate = String(prevDate.stdout ?? '').trim();
+  if (!headCommittedDate || !Number.isFinite(Date.parse(headCommittedDate))) return null;
+  const first = evaluateBotSettle({ headCommittedDate, nowIso, activity, cfg });
+  if (first.settled && !first.timedOut) return { ...first, filePatchHashes: previousHashes, headCommittedDate };
+  if (!slug) return null;
+  let checkRuns;
+  try { checkRuns = fetchCheckRuns(slug, prevHead); } catch { return null; }
+  if (!Array.isArray(checkRuns)) return null;
+  const priorActivity = [...activity, ...botCheckActivity(checkRuns, cfg)];
+  const prior = evaluateBotSettle({ headCommittedDate, nowIso, activity: priorActivity, cfg });
+  if (!prior.settled || prior.timedOut) return null;
+  return { ...prior, filePatchHashes: previousHashes, headCommittedDate };
 }
 
 // ── 待维护者讨论标签(维护者讨论门在 GitHub 侧的筛选入口)──

@@ -47,6 +47,9 @@ import { createPrWriteGuard } from './pr-write-guard.mjs';
 const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mjs');
 // code-scan-gate 新增的导出,同样动态取。
 const { fetchCodeScanRules, toCodeScanCheckFacts } = await import('./lib.mjs');
+const {
+  filePatchHashesFromDiff, filePatchHashesFromPullFiles, sameFilePatchHashes, previousSettleFromLocalMerge,
+} = await import('./lib.mjs');
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
 const bad = (message) => ({ ok: false, stdout: '', stderr: message, status: 1 });
@@ -441,6 +444,179 @@ test('静默期接线:context.mjs 与 pre-merge-check.mjs 用 evaluateBotSettleS
     assert.ok(!/timelineItems/.test(source), `${file} 的 GraphQL 查询不加转 Ready 连接(不增加 GraphQL 消耗,也不会因它让整条查询失败)`);
     assert.ok(!/=\s*evaluateBotSettle\(/.test(source), `${file} 不再直接用 evaluateBotSettle 判静默期`);
   }
+});
+
+// [MIVO-PATCH bot-settle-base-only] #1150:作者只点 Update branch 合 main,PR 自身 patch 不变,
+// Greptile 不会对这个新 head 再表态。旧代码从新 head 起再等满 30 分钟;新代码沿用上一 head 已静默满的表态。
+const BASE_ONLY_HASHES = { 'public/changelog.json': '1150-changelog-patch' };
+const BASE_ONLY_PREVIOUS = {
+  settled: true, timedOut: false, responded: ['greptile-apps'],
+  filePatchHashes: BASE_ONLY_HASHES, headCommittedDate: '2026-10-21T05:20:00Z',
+};
+const BASE_ONLY_NEW_HEAD = {
+  headCommittedDate: '2026-10-21T05:44:00Z',
+  nowIso: '2026-10-21T05:45:00Z',
+  activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }],
+  cfg: READY_CFG,
+  filePatchHashes: BASE_ONLY_HASHES,
+  previousSettle: BASE_ONLY_PREVIOUS,
+};
+
+test('静默期:只合 main 且 PR 自身 patch 不变时,沿用上一 head 已静默满的表态(#1150)', () => {
+  const oldCode = evaluateBotSettle({
+    headCommittedDate: BASE_ONLY_NEW_HEAD.headCommittedDate,
+    nowIso: BASE_ONLY_NEW_HEAD.nowIso,
+    activity: BASE_ONLY_NEW_HEAD.activity,
+    cfg: READY_CFG,
+  });
+  assert.equal(oldCode.settled, false, '对照:旧代码从新 head 起重新等,Greptile 表态早于新提交不算');
+  assert.deepEqual(oldCode.pending, ['greptile-apps']);
+  const r = evaluateBotSettle(BASE_ONLY_NEW_HEAD);
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(r.reused, true);
+  assert.deepEqual(r.responded, ['greptile-apps']);
+  assert.match(r.reason, /沿用|patch 不变|base 前移/);
+  const never = () => { throw new Error('不应该读事件'); };
+  assert.deepEqual(evaluateBotSettleSinceReady(BASE_ONLY_NEW_HEAD, never), r);
+});
+
+test('静默期:新 head 改了 PR 自身文件时,即使上一 head 已静默满也重新等', () => {
+  const r = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    filePatchHashes: { 'public/changelog.json': '1150-changelog-changed' },
+  });
+  assert.equal(r.settled, false);
+  assert.equal(r.reused, undefined);
+  assert.deepEqual(r.pending, ['greptile-apps']);
+});
+
+test('静默期:上一 head 上 Greptile 没表态(超时放行)时,即使 patch 不变也按原规则等', () => {
+  const r = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    previousSettle: {
+      settled: true, timedOut: true, responded: [], pending: ['greptile-apps'],
+      filePatchHashes: BASE_ONLY_HASHES, headCommittedDate: '2026-10-21T05:20:00Z',
+    },
+  });
+  assert.equal(r.settled, false, '上一 head 是超时放行,不能当成已表态沿用');
+  assert.deepEqual(r.pending, ['greptile-apps']);
+});
+
+test('静默期:patch 哈希或上一 head 表态读不到时退回原规则(等),不放宽', () => {
+  const never = () => { throw new Error('不应该读事件'); };
+  for (const extra of [
+    {},
+    { filePatchHashes: BASE_ONLY_HASHES },
+    { previousSettle: BASE_ONLY_PREVIOUS },
+    { filePatchHashes: {}, previousSettle: BASE_ONLY_PREVIOUS },
+    { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, filePatchHashes: {} } },
+  ]) {
+    const input = {
+      headCommittedDate: BASE_ONLY_NEW_HEAD.headCommittedDate,
+      nowIso: BASE_ONLY_NEW_HEAD.nowIso,
+      activity: BASE_ONLY_NEW_HEAD.activity,
+      cfg: READY_CFG,
+      ...extra,
+    };
+    const r = evaluateBotSettle(input);
+    assert.equal(r.settled, false, JSON.stringify(extra));
+    assert.deepEqual(evaluateBotSettleSinceReady(input, never), r);
+  }
+});
+
+test('filePatchHashesFromDiff:只计 +/- 行,行号漂移不算变;缺 patch 的 /files 返回空', () => {
+  const left = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -1,3 +1,4 @@\n {\n+  "x": 1\n }\n');
+  const drifted = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -10,3 +10,4 @@\n {\n+  "x": 1\n }\n');
+  const changed = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -1,3 +1,4 @@\n {\n+  "x": 2\n }\n');
+  assert.equal(sameFilePatchHashes(left, drifted), true);
+  assert.equal(sameFilePatchHashes(left, changed), false);
+  assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json', patch: '+  "x": 1\n' }])['public/changelog.json'],
+    filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n')['public/changelog.json']);
+  assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json' }]), {});
+  assert.equal(sameFilePatchHashes({}, {}), false);
+});
+
+test('previousSettleFromLocalMerge:当前 HEAD 是两 parent 合 main 且 patch 不变时,按上一 head 重算静默期', () => {
+  const prevHead = 'a'.repeat(40);
+  const headSha = 'b'.repeat(40);
+  const baseSha = 'c'.repeat(40);
+  const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
+  const currentHashes = filePatchHashesFromDiff(diff);
+  const gitFn = (args) => {
+    const joined = args.join(' ');
+    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
+    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: '2026-10-21T05:20:00Z\n' };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+  const r = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+  });
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(sameFilePatchHashes(r.filePatchHashes, currentHashes), true);
+  assert.equal(previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn: () => ({ ok: false, stdout: '' }), nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG,
+  }), null);
+});
+
+test('previousSettleFromLocalMerge:现有 activity 没有上一 head 的 check 时,REST 读上一 SHA 的 check-runs 再重算', () => {
+  const prevHead = 'a'.repeat(40);
+  const headSha = 'b'.repeat(40);
+  const baseSha = 'c'.repeat(40);
+  const diff = 'diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n';
+  const currentHashes = filePatchHashesFromDiff(diff);
+  const gitFn = (args) => {
+    const joined = args.join(' ');
+    if (joined.startsWith('log -1 --format=%H%n%P HEAD')) return { ok: true, stdout: `${headSha}\n${prevHead} ${'d'.repeat(40)}\n` };
+    if (joined.includes(`${baseSha}...${prevHead}`)) return { ok: true, stdout: diff };
+    if (joined.startsWith(`log -1 --format=%cI ${prevHead}`)) return { ok: true, stdout: '2026-10-21T05:20:00Z\n' };
+    return { ok: false, stdout: '', stderr: joined };
+  };
+  let fetched = 0;
+  const fetchCheckRuns = (slug, sha) => {
+    fetched += 1;
+    assert.equal(slug, 'xindong/mivo-canvas-plugin');
+    assert.equal(sha, prevHead);
+    return [{ name: 'Greptile Review', status: 'COMPLETED', completedAt: '2026-10-21T05:25:00Z' }];
+  };
+  const missing = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG,
+  });
+  assert.equal(missing, null, '对照:不读上一 SHA check 时,干净合 main 的 activity 认不出 Greptile 已表态');
+  const r = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG, slug: 'xindong/mivo-canvas-plugin', fetchCheckRuns,
+  });
+  assert.equal(fetched, 1);
+  assert.equal(r.settled, true);
+  assert.equal(r.timedOut, false);
+  assert.deepEqual(r.responded, ['greptile-apps']);
+  const failed = previousSettleFromLocalMerge({
+    headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:45:00Z',
+    activity: [], cfg: READY_CFG, slug: 'xindong/mivo-canvas-plugin', fetchCheckRuns: () => null,
+  });
+  assert.equal(failed, null, '上一 SHA check 读不到退回原规则,不放宽');
+});
+
+test('静默期接线:context 与 pre-merge-check 把已有 diff/files 的 patch 哈希和上一 head 表态传给静默期,不另打 GraphQL', () => {
+  for (const file of ['context.mjs', 'pre-merge-check.mjs']) {
+    const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
+    assert.ok(/\bfilePatchHashes,/.test(source), `${file} 把 patch 哈希传给静默期`);
+    assert.ok(/\bpreviousSettle,/.test(source), `${file} 把上一 head 已满足的静默期结果传给静默期`);
+    assert.ok(!/timelineItems/.test(source), `${file} 不增加 GraphQL`);
+  }
+  const context = readFileSync(fileURLToPath(new URL('./context.mjs', import.meta.url)), 'utf8');
+  assert.ok(/filePatchHashesFromDiff\(/.test(context), 'context 用本轮已扫的 diff 算哈希,不另拉');
+  const preMerge = readFileSync(fileURLToPath(new URL('./pre-merge-check.mjs', import.meta.url)), 'utf8');
+  assert.ok(/filePatchHashesFromPullFiles\(/.test(preMerge), 'pre-merge-check 用已有 REST /files 的 patch 算哈希');
+  const filesCall = preMerge.search(/pulls\/\$\{pr\}\/files/);
+  const settleCall = preMerge.search(/const botSettle = evaluateBotSettleSinceReady/);
+  assert.ok(filesCall >= 0 && settleCall > filesCall, 'pre-merge-check 先读 /files 再判静默期,不另打 GraphQL');
 });
 
 test('改界面不进维护者确认门,按 requireUiEvidence 要求附界面证据', () => {
