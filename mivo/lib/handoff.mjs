@@ -399,3 +399,94 @@ export function readHandoffReview({ prNumber, head, gitFn }) {
     return bad('unreadable', 'review-unreadable', `review.md 解析异常:${String(error?.message ?? error).slice(0, 120)}`);
   }
 }
+
+// ── 答卷 handoffCoverage:逐条 R 的结论与证据 ───────────────────────────────────
+// 答卷形状 [{id, verdict: 成立|不成立|未核实, evidence:[{path,line}], note}]。校验失败只出 warning:
+// 缺项补「未核实」、证据无效标 evidenceValid=false,都不改变审查结论、不打回、不放行。
+export const COVERAGE_VERDICTS = ['成立', '不成立', '未核实'];
+const COVERAGE_LIMITS = { note: 800, evidence: 8 };
+
+/** headReader(path) → {exists, regularFile, lineCount, oid, mode};证据必须是 head 里的普通文件、行号在 1..lineCount。 */
+export function checkEvidenceItem(item, headReader) {
+  const path = normalizeRepoPath(item?.path);
+  if (!path || !Number.isInteger(item?.line) || item.line < 1) return { ok: false, path: path ?? String(item?.path ?? ''), reason: '路径或行号无效' };
+  const read = headReader(path);
+  if (!read?.exists || read.regularFile !== true) return { ok: false, path, reason: '不是 head 上的普通文件' };
+  if (!(read.lineCount >= 1) || item.line > read.lineCount) return { ok: false, path, reason: `行号 ${item.line} 超出文件范围` };
+  return { ok: true, path, state: { oid: read.oid ?? null, mode: read.mode ?? null } };
+}
+
+const cleanEvidence = (raw) => (Array.isArray(raw) ? raw : []).filter((e) => e && typeof e === 'object')
+  .slice(0, COVERAGE_LIMITS.evidence).map((e) => ({ path: String(e.path ?? '').trim(), line: Number.isInteger(e.line) ? e.line : null }));
+
+/**
+ * 上一轮的 coverage 在当前 head 上是否还站得住:证据位置仍有效(valid),且证据文件的 blob/mode 没变(unchanged)。
+ * 读不到历史身份就不算 unchanged。返回 {Rn: {valid, unchanged}}。
+ */
+export function checkPreviousHandoffCoverage({ coverage, meta, headReader }) {
+  const out = {};
+  for (const c of Array.isArray(coverage) ? coverage : []) {
+    const m = meta?.[c?.id];
+    if (!c?.id || !m || !Array.isArray(c.evidence) || !c.evidence.length) { if (c?.id) out[c.id] = { valid: false, unchanged: false }; continue; }
+    const checks = c.evidence.map((e) => checkEvidenceItem(e, headReader));
+    const valid = checks.every((x) => x.ok);
+    const unchanged = valid && checks.every((x) => { const before = m.evidenceFileStates?.[x.path]; return Boolean(before) && before.oid === x.state.oid && before.mode === x.state.mode; });
+    out[c.id] = { valid, unchanged };
+  }
+  return out;
+}
+
+/**
+ * 模型答卷里的 handoffCoverage → 规范化 coverage(按当前 R 顺序)+ 服务端生成的 meta + warnings。
+ * @param {{raw:unknown, review:object, plan:object[], headReader:Function, source:{head:string, runId:string}}} p
+ */
+export function normalizeHandoffCoverage({ raw, review, plan = [], headReader, source }) {
+  const warnings = [];
+  const coverage = [];
+  const meta = {};
+  if (review?.status !== 'parsed') {
+    if (Array.isArray(raw) && raw.length) warnings.push('作者交接不可用,答卷里的 handoffCoverage 没有采用');
+    return { coverage, meta, warnings };
+  }
+  const known = new Set(review.risks.map((r) => r.id));
+  const answers = new Map();
+  if (!Array.isArray(raw)) {
+    warnings.push('答卷缺 handoffCoverage 数组,按「未核实」补齐');
+  } else {
+    for (const item of raw) {
+      const id = typeof item?.id === 'string' ? item.id.trim() : '';
+      if (!known.has(id)) { warnings.push(`handoffCoverage 里的 ${id || '(空)'} 不是本 PR 交接里的 R,已丢弃`); continue; }
+      answers.set(id, answers.has(id) ? 'duplicate' : item);
+    }
+  }
+  for (const risk of review.risks) {
+    const item = plan.find((p) => p.id === risk.id);
+    const given = answers.get(risk.id);
+    const previous = item?.action === 'reuse' ? item.previousCoverage : null;
+    const previousMeta = item?.action === 'reuse' ? item.previousCoverageMeta : null;
+    const done = (entry, m) => { coverage.push(entry); meta[risk.id] = m; };
+    const evidence = given && given !== 'duplicate' ? cleanEvidence(given.evidence) : [];
+    const sameAsPrevious = previous && given && given !== 'duplicate' && given.verdict === previous.verdict
+      && JSON.stringify(evidence.map((e) => `${e.path}:${e.line}`).sort()) === JSON.stringify((previous.evidence ?? []).map((e) => `${e.path}:${e.line}`).sort());
+    // 安全沿用:计划明确 reuse,且答卷缺这一项或与旧条目一致 → 保留旧条目与旧来源,不冒充本轮重新核实。
+    if (previous && previousMeta && (!given || sameAsPrevious)) {
+      done({ id: risk.id, verdict: previous.verdict, evidence: previous.evidence, note: previous.note ?? '' }, { ...previousMeta, contentHash: risk.contentHash, reused: true });
+      continue;
+    }
+    if (given === 'duplicate') { warnings.push(`${risk.id} 在答卷里重复回答,按「未核实」处理`); }
+    else if (!given && Array.isArray(raw)) warnings.push(`${risk.id} 答卷没有给出结论,按「未核实」补齐`);
+    let verdict = given && given !== 'duplicate' ? given.verdict : null;
+    if (given && given !== 'duplicate' && !COVERAGE_VERDICTS.includes(verdict)) { warnings.push(`${risk.id} 的 verdict「${String(verdict).slice(0, 20)}」不合法,按「未核实」处理`); verdict = null; }
+    const note = given && given !== 'duplicate' && typeof given.note === 'string' ? given.note.slice(0, COVERAGE_LIMITS.note) : '';
+    const states = {};
+    const checks = evidence.map((e) => checkEvidenceItem(e, headReader));
+    checks.forEach((c) => { if (c.ok) states[c.path] = c.state; });
+    const evidenceValid = evidence.length > 0 && checks.every((c) => c.ok);
+    if (verdict && verdict !== '未核实' && !evidenceValid) {
+      warnings.push(`${risk.id} 的证据没有通过检查(${checks.filter((c) => !c.ok).map((c) => `${c.path || '(空)'}:${c.reason}`).slice(0, 3).join(';') || '没有给出证据'}),不作为可沿用的结论`);
+    }
+    done({ id: risk.id, verdict: verdict ?? '未核实', evidence, note: verdict ? note : (note || '答卷没有给出有效结论') },
+      { contentHash: risk.contentHash, evidenceValid, reused: false, sourceHead: source?.head ?? null, sourceRunId: source?.runId ?? null, evidenceFileStates: states });
+  }
+  return { coverage, meta, warnings };
+}
