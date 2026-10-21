@@ -35,7 +35,7 @@ import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlC
 import { viewerLoginOverride } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
 import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
-import { filePatchHashesFromDiff, loadBotSettleSnapshot, saveBotSettleSnapshot, previousSettleFromLocalMerge } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
+import { filePatchHashesFromDiff, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
 import { fileURLToPath } from 'node:url';
@@ -1362,11 +1362,10 @@ try {
   // 没有再试本地合 main 提交(服务器 checkout 了 PR head 时),都不另打 GraphQL。
   const filePatchHashes = filePatchHashesFromDiff(scannedDiff ?? '');
   const nowIso = new Date().toISOString();
-  const previousSettle = loadBotSettleSnapshot({ owner, repo, pr })
-    ?? previousSettleFromLocalMerge({
-      headSha: meta.headRefOid, baseSha: meta.baseRefOid, currentHashes: filePatchHashes,
-      activity: botActivityForSettle, cfg: BOT_SETTLE_RULES, nowIso, slug,
-    });
+  const previousSettle = toPreviousSettleForHead({
+    owner, repo, pr, headSha: meta.headRefOid, baseSha: meta.baseRefOid,
+    currentHashes: filePatchHashes, activity: botActivityForSettle, cfg: BOT_SETTLE_RULES, nowIso, slug,
+  });
   const botSettle = evaluateBotSettleSinceReady({
     headCommittedDate: latestCommitDate,
     headPushedAt: toHeadPushedAt(rawRollupContexts),
@@ -1377,7 +1376,7 @@ try {
     previousSettle,
   }, () => fetchRestPages(`repos/${slug}/issues/${pr}/events`));
   if (botSettle.settled && !botSettle.timedOut) {
-    saveBotSettleSnapshot({ owner, repo, pr, settle: botSettle, filePatchHashes, headCommittedDate: latestCommitDate });
+    saveBotSettleSnapshot({ owner, repo, pr, settle: botSettle, filePatchHashes, headCommittedDate: latestCommitDate, headSha: meta.headRefOid });
   }
   if (!botSettle.settled) blockers.push(`机器人静默期未过:${botSettle.reason}`);
 
