@@ -1,7 +1,7 @@
 // review.md 对审查范围的影响:只扩不缩、受牵连的 R 重核、其余沿用;所有提前返回口都要过装饰。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, buildHandoffPlan } from './scope.mjs';
+import { splitDiffByFile, filePatchHashes, computeReviewScope, previousFromResult, buildHandoffPlan, withHandoffScope } from './scope.mjs';
 import { toHandoffSnapshot, checkPreviousHandoffCoverage, normalizeHandoffCoverage } from './handoff.mjs';
 
 const diffOf = (...paths) => paths.map((p) => ['diff --git a/' + p + ' b/' + p, 'index 111..222 100644', '--- a/' + p, '+++ b/' + p, '@@ -1,1 +1,2 @@', ' keep', '+added ' + p].join('\n')).join('\n');
@@ -183,4 +183,60 @@ test('SC5 checkPreviousHandoffCoverage:证据位置失效或文件身份变了 �
   assert.deepEqual(checkPreviousHandoffCoverage({ coverage, meta, headReader: reader({ oid: state(2).oid }) }).R1, { valid: true, unchanged: false });
   assert.deepEqual(checkPreviousHandoffCoverage({ coverage, meta, headReader: reader({ lineCount: 2 }) }).R1, { valid: false, unchanged: false });
   assert.deepEqual(checkPreviousHandoffCoverage({ coverage, meta: {}, headReader: reader() }).R1, { valid: false, unchanged: false });
+});
+
+// ── 缺上一轮快照 / 歧义 R 的保守处理:无法证明 R 变化,不清豁免、不升全量(只扩不缩) ──
+const exemptScope = () => ({ mode: 'incremental', reason: '增量', files: ['src/a.ts'], changedFiles: ['src/a.ts'], previousFindings: [], basedOn: 'h0',
+  finalFullExemption: { sourceHead: 'h0', sourceRunId: '1', issueFiles: ['src/a.ts'], changedFiles: ['src/a.ts'] } });
+const legacyPrevious = (over = {}) => ({ head: 'h0', baseRefName: 'main', diffHash: 'd1', reviewed: true, reportComplete: true, outcome: 'findings', reviewClean: true, findings: [], deferred: [],
+  filePatchHashes: hashesOf('src/a.ts'), totalDiffLines: 1, tier: 'standard', triggerKinds: [], specDigest: 'spec', lastFullReviewAt: '2026-10-10T12:00:00Z', ...over });
+
+test('防拉锯豁免:上一轮没有交接快照(旧结果包)→ 无法证明文件身份变了,保留豁免,R 文件照样并进范围', () => {
+  const rev = review([risk('R1', ['src/r.ts'])]);
+  const s = withHandoffScope({ scope: exemptScope(), previous: legacyPrevious(), current: current({ handoffReview: rev, handoffEvidenceCheck: okCheck(rev) }) });
+  assert.ok(s.finalFullExemption, '旧包无快照不是身份变化');
+  assert.deepEqual(s.files, ['src/a.ts', 'src/r.ts']);
+  assert.equal(s.handoffPlan[0].action, 'recheck');
+});
+
+test('防拉锯豁免:上一轮有快照且引用文件 blob 变了(又不在问题文件/改动文件里)→ 取消豁免', () => {
+  const before = review([risk('R1', ['src/r.ts'], H(1))], { 'src/r.ts': state(1) });
+  const after = review([risk('R1', ['src/r.ts'], H(1))], { 'src/r.ts': state(7) });
+  const prev = previousOf(before, legacyPrevious());
+  const s = withHandoffScope({ scope: exemptScope(), previous: prev, current: current({ handoffReview: after, handoffEvidenceCheck: okCheck(after) }) });
+  assert.equal(s.finalFullExemption, undefined);
+  assert.deepEqual(s.files, ['src/a.ts', 'src/r.ts']);
+  // 对照:blob 没变 → 保留
+  const kept = withHandoffScope({ scope: exemptScope(), previous: prev, current: current({ handoffReview: before, handoffEvidenceCheck: okCheck(before) }) });
+  assert.ok(kept.finalFullExemption);
+});
+
+test('歧义 R:上一轮没有快照 → 不算实质变化,不升全量;沿用既有审查结果,这条交接标 deferred', () => {
+  const rev = review([risk('R1', ['src/r.ts'], H(1), { ambiguous: true, complete: false })]);
+  const s = scopeOf(legacyPrevious({ diffHash: 'd1', head: 'h1' }), current({ handoffReview: rev, handoffEvidenceCheck: okCheck(rev) }));
+  assert.equal(s.mode, 'reuse');
+  assert.equal(s.handoffPlan[0].action, 'deferred');
+  assert.deepEqual(buildHandoffPlan({ review: rev, previous: legacyPrevious() }).substantive, []);
+});
+
+test('歧义 R:歧义本身没变(两轮都歧义,哈希/文件/blob 相同)→ 不升全量,但不沿用,点名重核', () => {
+  const rev = review([risk('R1', ['src/r.ts'], H(1), { ambiguous: true, complete: false })]);
+  const prev = previousOf(rev, { head: 'h1', diffHash: 'd1' });
+  const s = scopeOf(prev, current({ handoffReview: rev, handoffEvidenceCheck: okCheck(rev) }));
+  assert.equal(s.mode, 'reuse');
+  const plan = buildHandoffPlan({ review: rev, previous: prev, evidenceCheck: okCheck(rev) });
+  assert.deepEqual(plan.substantive, []);
+  assert.equal(plan.items[0].action, 'recheck');
+  assert.match(plan.items[0].reason, /歧义/);
+});
+
+test('歧义 R:歧义相对上一轮快照出现或消失 → 仍是实质变化,升全量', () => {
+  const plain = review([risk('R1', ['src/r.ts'], H(1))]);
+  const dup = review([risk('R1', ['src/r.ts'], H(1), { ambiguous: true, complete: false })]);
+  const appear = buildHandoffPlan({ review: dup, previous: previousOf(plain), evidenceCheck: okCheck(dup) });
+  assert.deepEqual(appear.substantive, ['R1']);
+  const vanish = buildHandoffPlan({ review: plain, previous: previousOf(dup), evidenceCheck: okCheck(plain) });
+  assert.deepEqual(vanish.substantive, ['R1']);
+  const up = scopeOf(previousOf(plain, { head: 'h1', diffHash: 'd1' }), current({ handoffReview: dup, handoffEvidenceCheck: okCheck(dup) }));
+  assert.equal(up.mode, 'full');
 });

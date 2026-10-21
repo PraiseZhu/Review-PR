@@ -209,7 +209,8 @@ export function buildHandoffPlan({ review, previous = null, changedFiles = [], e
     if (recheckAll) return { ...base, action: 'recheck', reason: '全量/收口:逐条重核' };
     const before = snapshot?.risks?.find((r) => r.id === risk.id) ?? null;
     let change = null;
-    if (risk.ambiguous || before?.ambiguous) change = '编号重复,有歧义';
+    // 歧义只在「相对上一轮快照出现或消失」时才算实质变化;没有快照、或两轮都歧义且其余没变,无法证明 R 变了(只扩不缩:仍点名重核,见下)。
+    if (before && Boolean(before.ambiguous) !== Boolean(risk.ambiguous)) change = '编号重复,有歧义';
     else if (snapshot && !before) change = '本轮新增';
     else if (before && before.contentHash !== risk.contentHash) change = '内容变了';
     else if (before && (!sameList(before.files, risk.files) || risk.files.some((p) => !sameState(snapshot.fileStates?.[p], review.fileStates?.[p])))) change = '涉及文件在 head 上变了';
@@ -220,6 +221,7 @@ export function buildHandoffPlan({ review, previous = null, changedFiles = [], e
     const check = evidenceCheck?.[risk.id];
     let reason = change ?? (touched ? `涉及文件 ${touched} 本轮改了` : null);
     if (!reason && (!before)) reason = '上一轮没有这条 R 的记录';
+    if (!reason && risk.ambiguous) reason = '编号重复,有歧义,不能沿用上一轮结论';
     if (!reason && (!risk.complete || !risk.files.length)) reason = '涉及文件不完整或没有路径,不能证明未受影响';
     if (!reason && !(trusted && cov?.verdict === '成立' && meta?.contentHash === risk.contentHash && meta?.evidenceValid === true)) reason = '上一轮没有可信的「成立」结论';
     if (!reason && !(check?.valid === true && check?.unchanged === true)) reason = '上一轮的证据位置在 head 上已失效或变了';
@@ -254,9 +256,10 @@ export function withHandoffScope({ scope, previous, current }) {
   const expansion = plan.items.filter((i) => i.action === 'recheck').flatMap((i) => i.files);
   const files = [...new Set([...scope.files, ...expansion])].sort();
   let { finalFullExemption } = scope;
-  if (finalFullExemption) {
+  // 上一轮没有交接快照(旧结果包、过渡期)时没有文件身份可比,无法证明变了:不取消免收口。
+  if (finalFullExemption && previous?.handoffReview?.status === 'parsed') {
     // 引用文件的 head 版本变了、又不在上次收口问题所在文件里:已不是「只改上次问题文件」,取消免收口。
-    const before = previous?.handoffReview?.fileStates ?? {};
+    const before = previous.handoffReview.fileStates ?? {};
     const moved = expansion.filter((p) => !sameState(before[p], review.fileStates?.[p]) && !finalFullExemption.issueFiles.includes(p) && !(scope.changedFiles ?? []).includes(p));
     if (moved.length) finalFullExemption = undefined;
   }
