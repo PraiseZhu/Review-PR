@@ -241,9 +241,39 @@ test('F4 包装器:没有注入点的查询直接拒绝(不放行未绑定的读
   assert.throws(() => graphql('query { viewer { login } }', {}), /绑定/);
 });
 
-test('F4 真实依赖的 thread 读取走 bindGraphqlToPr(接线守卫)', () => {
+test('F4/F5 真实依赖的 thread 读取走 fetchSingleSnapshot(接线守卫)', () => {
   const source = readFileSync(new URL('./resolve-fixed-threads.mjs', import.meta.url), 'utf8');
-  assert.match(source, /fetchAllReviewThreads\([^\n]*ghGraphqlFn: bindGraphqlToPr\(binding, lib\.ghGraphql\)/);
+  assert.match(source, /fetchThreads: \(\) => fetchSingleSnapshot\(\{[^\n]*ghGraphqlFn: lib\.ghGraphql, fetchAllReviewThreads: lib\.fetchAllReviewThreads \}\)/);
+});
+
+const snapshot = (world) => runner.fetchSingleSnapshot({ owner: 'o', repo: 'r', pr: 7, binding: BINDING, ghGraphqlFn: world.graphql, fetchAllReviewThreads: lib.fetchAllReviewThreads });
+
+test('F5 一次响应读完的快照照常可用,且仍校验 head', () => {
+  const ok = snapshot(fakeWorld([[thread('T1', K1), thread('T2', K2)]]));
+  assert.equal(ok.verified, true, ok.errors?.join(';'));
+  assert.deepEqual(ok.threads.map((t) => t.id), ['T1', 'T2']);
+  const moved = fakeWorld([[thread('T1', K1)]], { head: NEW_HEAD });
+  assert.equal(snapshot(moved).verified, false);
+});
+
+test('F5 thread 要翻页或评论要翻页 → 快照未验证(各页不是同一时刻)', () => {
+  for (const pages of [[[thread('T1', K1)], [thread('T2', K2)]], [[{ ...thread('T1', K1), pagedComments: true }]]]) {
+    const out = snapshot(fakeWorld(pages));
+    assert.equal(out.verified, false);
+    assert.deepEqual(out.threads, []);
+    assert.match(out.errors.join(';'), /翻页/);
+  }
+});
+
+test('F5 T1 在第 1 页、第 2 页请求期间维护者给 T1 加裁定 → 不回复、不 resolve,记 warning', () => {
+  const world = fakeWorld([[thread('T1', K1)], [thread('T2', K2)]]);
+  const deps = makeDeps({ reviewed: [thread('T1', K1)] });
+  deps.fetchThreads = () => { deps.log.push('fetch'); return snapshot(world); };
+  world.onCall = (n, query, vars) => { if (vars.cursor === '1') world.pages[0][0].comments.push({ id: 'r-new', author: { login: 'maint' }, body: '维护者裁定不改:产品意图' }); };
+  const out = resolveFixedThreads(request(), deps);
+  assert.deepEqual(resolvedIds(deps), []);
+  assert.equal(out.resolvedCount, 0);
+  assert.ok(out.warnings.some((w) => /翻页/.test(w)), out.warnings.join('|'));
 });
 
 test('F4 重读 thread 期间 PR head 变化(含回退到 marker 的旧 head)→ 不回复、不 resolve,记 warning', () => {

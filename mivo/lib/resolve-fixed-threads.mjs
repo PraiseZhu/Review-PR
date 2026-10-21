@@ -6,6 +6,7 @@
 // 每条顺序:绑定检查(锁 / 账号 / 权限 / head)→ 重读该 thread 并重算清单 → 立即调用共享脚本,重读与调用之间不插别的网络请求。
 // 重读 thread 的每一次 GraphQL 响应(thread 分页、评论分页)同时带回并校验 PR 的 head / base / state(bindGraphqlToPr),
 // 所以重读期间 head 变化会让读取未验证、该条跳过;校验不到(缺字段 / 不符)一律保守停止。
+// thread 快照必须一次响应读完(fetchSingleSnapshot):要翻页(thread 超过 100 条或单条评论超过 100 条)时各页不是同一时刻,本轮不代 resolve。
 // 残余窗口:从最后一次已验证的重读响应到共享脚本里「再读 threads → 回复 → resolve」之间,head / thread 仍可能变化,不能逐 mutation 原子校验。
 //
 // 用法:node resolve-fixed-threads.mjs < request.json(cwd 必须是目标仓检出目录;令牌只走环境变量,不进请求)
@@ -50,6 +51,21 @@ export function bindGraphqlToPr(binding, ghGraphqlFn) {
     if (pr.baseRefOid !== binding.base || pr.baseRefName !== binding.baseRefName) throw new Error('读取 thread 期间 PR base 已变化');
     return result;
   };
+}
+
+/**
+ * 用一次 GraphQL 响应读完 thread 快照:thread 超过一页、或某条 thread 的评论要翻页时,各页来自不同时刻,
+ * 前一页里的 thread 在后一页请求期间新增的裁定看不到。这种情况整份快照按「未验证」处理,本轮不代 resolve(留给人)。
+ * 每次响应仍经 bindGraphqlToPr 校验 PR head / base / state。
+ */
+export function fetchSingleSnapshot({ owner, repo, pr, binding, ghGraphqlFn, fetchAllReviewThreads }) {
+  let responses = 0;
+  const bound = bindGraphqlToPr(binding, (...args) => { responses += 1; return ghGraphqlFn(...args); });
+  const result = fetchAllReviewThreads(owner, repo, pr, { includeComments: true, ghGraphqlFn: bound });
+  if (result?.verified && responses !== 1) {
+    return { threads: [], verified: false, errors: [`thread 快照需要翻页(${responses} 次请求),各页不是同一时刻,本轮不代 resolve`] };
+  }
+  return result;
 }
 
 const clip = (text, max = 240) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -188,7 +204,7 @@ async function realDeps({ binding }) {
   return {
     readContext: (file) => readJson(file),
     assertBinding,
-    fetchThreads: () => lib.fetchAllReviewThreads(owner, repo, Number(binding.pr), { includeComments: true, ghGraphqlFn: bindGraphqlToPr(binding, lib.ghGraphql) }),
+    fetchThreads: () => fetchSingleSnapshot({ owner, repo, pr: Number(binding.pr), binding, ghGraphqlFn: lib.ghGraphql, fetchAllReviewThreads: lib.fetchAllReviewThreads }),
     resolveOne: (thread, { timeoutMs }) => runScript('resolve-threads.mjs', [String(binding.pr), '--payload-file', '-'],
       { cwd: process.cwd(), env: process.env, input: JSON.stringify({ threads: [thread] }), timeoutMs }),
   };
