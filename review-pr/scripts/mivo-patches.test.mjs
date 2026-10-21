@@ -49,6 +49,7 @@ const { toNoticeCloseComment, toDiscussIssueCloseBody } = await import('./lib.mj
 const { fetchCodeScanRules, toCodeScanCheckFacts } = await import('./lib.mjs');
 const {
   filePatchHashesFromDiff, filePatchHashesFromPullFiles, sameFilePatchHashes, previousSettleFromLocalMerge,
+  toPreviousSettleForHead, proveBaseOnlyHeadRelation,
 } = await import('./lib.mjs');
 
 const ok = (value) => ({ ok: true, stdout: JSON.stringify(value), stderr: '', status: 0 });
@@ -452,6 +453,7 @@ const BASE_ONLY_HASHES = { 'public/changelog.json': '1150-changelog-patch' };
 const BASE_ONLY_PREVIOUS = {
   settled: true, timedOut: false, responded: ['greptile-apps'],
   filePatchHashes: BASE_ONLY_HASHES, headCommittedDate: '2026-10-21T05:20:00Z',
+  headSha: 'a'.repeat(40), baseOnlyProven: true,
 };
 const BASE_ONLY_NEW_HEAD = {
   headCommittedDate: '2026-10-21T05:44:00Z',
@@ -524,6 +526,8 @@ test('静默期:patch 哈希或上一 head 表态读不到时退回原规则(等
     { previousSettle: BASE_ONLY_PREVIOUS },
     { filePatchHashes: {}, previousSettle: BASE_ONLY_PREVIOUS },
     { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, filePatchHashes: {} } },
+    { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, baseOnlyProven: false } },
+    { filePatchHashes: BASE_ONLY_HASHES, previousSettle: { ...BASE_ONLY_PREVIOUS, baseOnlyProven: undefined } },
   ]) {
     const input = {
       headCommittedDate: BASE_ONLY_NEW_HEAD.headCommittedDate,
@@ -544,7 +548,7 @@ test('filePatchHashesFromDiff:只计 +/- 行,行号漂移不算变;缺 patch 的
   const changed = filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n--- a/public/changelog.json\n+++ b/public/changelog.json\n@@ -1,3 +1,4 @@\n {\n+  "x": 2\n }\n');
   assert.equal(sameFilePatchHashes(left, drifted), true);
   assert.equal(sameFilePatchHashes(left, changed), false);
-  assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json', patch: '+  "x": 1\n' }])['public/changelog.json'],
+  assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json', status: 'modified', patch: '+  "x": 1\n' }])['public/changelog.json'],
     filePatchHashesFromDiff('diff --git a/public/changelog.json b/public/changelog.json\n+++ b/public/changelog.json\n+  "x": 1\n')['public/changelog.json']);
   assert.deepEqual(filePatchHashesFromPullFiles([{ filename: 'public/changelog.json' }]), {});
   assert.equal(sameFilePatchHashes({}, {}), false);
@@ -656,6 +660,100 @@ test('previousSettleFromLocalMerge: git %cI 带正负时区时与 API UTC 按瞬
     activity: [{ author: 'greptile-apps', at: '2026-10-21T05:15:00Z' }], cfg: READY_CFG,
   });
   assert.equal(minus, null, '-04:00(=05:20Z) 之前 05:15Z 的表态不能算; 字符串比较会把 05:15Z 当成晚于 01:20-04:00');
+});
+
+test('e2e: 真实 git merge main 生成两 parent 提交后 previousSettleFromLocalMerge / evaluateBotSettle 判定', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-settle-e2e-'));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com',
+  };
+  const commitAt = (message, iso) => {
+    const r = spawnSync('git', ['commit', '-m', message], {
+      cwd: dir, encoding: 'utf8',
+      env: { ...env, GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso },
+    });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const gitFn = (args) => {
+    const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8', env });
+    return { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+  };
+  try {
+    assert.equal(spawnSync('git', ['init', '-b', 'main'], { cwd: dir, encoding: 'utf8', env }).status, 0);
+    spawnSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir, env });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: dir, env });
+    writeFileSync(join(dir, 'README.md'), 'hi\n');
+    spawnSync('git', ['add', 'README.md'], { cwd: dir, env });
+    commitAt('init', '2026-10-21T05:00:00Z');
+    spawnSync('git', ['checkout', '-b', 'pr'], { cwd: dir, env });
+    mkdirSync(join(dir, 'public'));
+    writeFileSync(join(dir, 'public/changelog.json'), '{}\n');
+    spawnSync('git', ['add', 'public/changelog.json'], { cwd: dir, env });
+    commitAt('pr change', '2026-10-21T05:20:00Z');
+    const prevHead = gitFn(['rev-parse', 'HEAD']).stdout.trim();
+    spawnSync('git', ['checkout', 'main'], { cwd: dir, env });
+    writeFileSync(join(dir, 'main-only.txt'), 'base\n');
+    spawnSync('git', ['add', 'main-only.txt'], { cwd: dir, env });
+    commitAt('main moves', '2026-10-21T05:30:00Z');
+    const baseSha = gitFn(['rev-parse', 'HEAD']).stdout.trim();
+    spawnSync('git', ['checkout', 'pr'], { cwd: dir, env });
+    const merge = spawnSync('git', ['merge', '--no-ff', 'main', '-m', 'merge main'], {
+      cwd: dir, encoding: 'utf8',
+      env: { ...env, GIT_AUTHOR_DATE: '2026-10-21T05:44:00Z', GIT_COMMITTER_DATE: '2026-10-21T05:44:00Z' },
+    });
+    assert.equal(merge.status, 0, merge.stderr);
+    const headSha = gitFn(['rev-parse', 'HEAD']).stdout.trim();
+    const parents = gitFn(['log', '-1', '--format=%P', 'HEAD']).stdout.trim().split(/\s+/);
+    assert.equal(parents.length, 2, '真实 merge 必须是两 parent');
+    assert.equal(parents[0], prevHead);
+    const currentDiff = gitFn([
+      '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
+      '--no-relative', '--no-renames', '--unified=3', `${baseSha}...${headSha}`, '--',
+    ]);
+    const currentHashes = filePatchHashesFromDiff(currentDiff.stdout);
+    const local = previousSettleFromLocalMerge({
+      headSha, baseSha, currentHashes, gitFn, nowIso: '2026-10-21T05:50:00Z',
+      activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+    });
+    assert.equal(local?.settled, true);
+    assert.equal(local?.timedOut, false);
+    assert.equal(local?.baseOnlyProven, true);
+    assert.equal(local?.headSha, prevHead);
+    assert.equal(proveBaseOnlyHeadRelation({ previousHeadSha: prevHead, headSha, gitFn }), true);
+    const reused = evaluateBotSettle({
+      headCommittedDate: '2026-10-21T05:44:00Z',
+      nowIso: '2026-10-21T05:50:00Z',
+      activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }],
+      cfg: READY_CFG,
+      filePatchHashes: currentHashes,
+      previousSettle: local,
+    });
+    assert.equal(reused.settled, true);
+    assert.equal(reused.reused, true);
+    const noisy = evaluateBotSettle({
+      headCommittedDate: '2026-10-21T05:44:00Z',
+      nowIso: '2026-10-21T05:45:00Z',
+      activity: [
+        { author: 'greptile-apps', at: '2026-10-21T05:25:00Z' },
+        { author: 'greptile-apps', at: '2026-10-21T05:43:00Z' },
+      ],
+      cfg: READY_CFG,
+      filePatchHashes: currentHashes,
+      previousSettle: local,
+    });
+    assert.equal(noisy.settled, false, '沿用表态后仍要按最新 bot 活动重验静默');
+    assert.equal(noisy.reused, undefined);
+    const viaHead = toPreviousSettleForHead({
+      owner: 'x', repo: 'y', pr: 1, headSha, baseSha, currentHashes, gitFn,
+      nowIso: '2026-10-21T05:50:00Z',
+      activity: [{ author: 'greptile-apps', at: '2026-10-21T05:25:00Z' }], cfg: READY_CFG,
+    });
+    assert.equal(viaHead?.baseOnlyProven, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('静默期接线:context 与 pre-merge-check 把已有 diff/files 的 patch 哈希和上一 head 表态传给静默期,不另打 GraphQL', () => {
