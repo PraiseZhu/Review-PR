@@ -13,8 +13,7 @@ review-pr(交互)与 review-pr-auto(批处理)共用本文件。
 
 - `maintainerAuthority`:每个实际启动的 review 轮次由 `prepare.mjs` 从目标仓库默认分支
   CODEOWNERS 的唯一全仓根规则 `* @org/team-slug` 实时读取 active Team 成员,再与配置里的
-  `maintainerAllowlist` 取并集。两类成员都有维护者 Approve 权限；所有作者都需要另一位成员
-  独立 Approve。维护者作者不在审查前重复 hold，但最终也不豁免。Team 必须可见且对仓库至少有 write 权限；读取失败、根规则不唯一、分页不完整或
+  `maintainerAllowlist` 取并集。两类成员都有维护者 Approve 权限。2026-10-21 维护者决定：维护者作者免另一位成员独立 Approve，也不在审查前重复 hold；非维护者仍需。这不豁免 CI、讨论、人工 CR 或 GitHub 规则，不启用 admin bypass。Team 必须可见且对仓库至少有 write 权限；读取失败、根规则不唯一、分页不完整或
   Team 为空都从严停止,补充白名单不兜底。本轮快照绑定 lock token,所有 context 子进程共用；
   Approve、dismiss 和 pre-merge 前再实时复核 digest;
 - `signoffGate`:`label`(唯一维护者确认标签)+ 六类触发的检测输入——
@@ -293,12 +292,8 @@ bot 意见本身则由 thread 机制保证被处理:未 resolve 的 bot thread �
 
 ## 作者侧与仓库侧
 
-- 所有作者最终重审通过后,只能由另一位最终维护者集合 viewer 用
-  `approve-reviewed-pr.mjs --review-clean --lock-token <token> --expected-head <SHA>
-  --expected-authority-digest <digest>` 提交 Approve；脚本写前重拉 Team 与白名单,并拒绝非成员 viewer、
-  viewer=作者、head/authority 变化、别人的 CR 与未 resolve thread。维护者作者在审查通过后
-  自动执行，不再单独确认；禁止裸跑 `gh pr review --approve`。缺 Approve 不再使用
-  approval-exempt admin merge 绕过。
+- 最终重审通过后都跑 `approve-reviewed-pr.mjs --review-clean --lock-token <token> --expected-head <SHA>
+  --expected-authority-digest <digest>`。2026-10-21 维护者决定：维护者作者得到 `approval.status=exempt`（不是虚构 review ID，`approved=false`）；非维护者只能由另一位最终维护者集合 viewer 提交真实 Approve。脚本写前重拉 Team 与白名单,并拒绝非成员 viewer、head/authority 变化、别人的 CR 与未 resolve thread。禁止裸跑 `gh pr review --approve`。exempt 不启用 approval-exempt admin merge。
 - `selfFixAuthors` 的 PR 在自动批次中沿用统一审查和问题 thread，作者侧卡点另投递独立
   fix-handoff session；review-only 不投递。该配置不提供 Approve、作者豁免或 self-merge。
 - fork workflow 待批:未改 `.github/workflows|actions` 才可 auto approve;改过的

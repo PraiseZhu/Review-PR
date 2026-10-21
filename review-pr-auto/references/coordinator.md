@@ -36,9 +36,9 @@ node "<Q>" bind --plan <plan.json> --lock-token <token> --pr <N> --agent-id <真
    若停在 merging 但只读回查确认同 head 的 PR 已 MERGED 且 mergedAt 有效，将该实际查询
    回执补入 finish.merge（merged=true、reconciled=true），同步 finish 的 merged 终态后再记结果；
    不能只把 result 改成 merged，也不能为补回执重新发送合并请求。
-   若已经干净审查但没有确认 Approve，写 `reviewClean=true, approval.status=pending,
+   若已经干净审查但没有确认 Approve 且不是维护者作者 exempt，写 `reviewClean=true, approval.status=pending,
     outcome=approval-pending`，说明中断原因并保留报告，不改成普通 approval 等待。
-   若 Approve 已确认但 finish 停在 `approved/checking/merging/merge-retry-pending`，
+   若 Approve 已确认或维护者作者 exempt 但 finish 停在 `approved/approval-exempt/checking/merging/merge-retry-pending`，
    记 `outcome=error, retry=true` 并保留 checkpoint；清理后仍需本轮 continuation 收尾。
 3. 若存在 fixHandoff 请求，按共享 handoff 流程串行投递、去重或交回
    `needs-human`，写入真实终态。
@@ -78,7 +78,7 @@ node "<Q>" reconcile --plan <plan.json> --lock-token <token>
 每条最多补一次，剩余 pending 如实进入未合并原因，round-state 强制下轮重试；
 不明 POST 的恢复由 Approve 脚本控制：至少等待 10 分钟、完整回查与 fresh guards 后最多一次
 重投，仍不明就明确需要人工核验；模型不能自行循环提交。
-viewer=作者等真实 blocked 不反复补批。已经 verified 且符合合并门的 PR 应在 reviewer 内同轮合并。
+viewer=作者等真实 blocked 不反复补批。已经 verified 或合法 exempt 且符合合并门的 PR 应在 reviewer 内同轮合并。
 finalize 会验证 finish 的实际合并终态或阻塞证据，不能把非终态 checkpoint 当作完成；
 恢复仍失败时保留具体异常，不编造 blocker、不将可合并 PR 静默缓存为状态未变。
 

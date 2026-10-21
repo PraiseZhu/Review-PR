@@ -24,9 +24,10 @@ description: >
 
 ## 0. 安全边界
 
-- 维护者作者的 PR 在本轮独立审查通过后，由另一位维护者 viewer 自动提交 Approve；
-  用户发起本次 review 即视为授权，不再单独确认。若 viewer 就是作者，先完整回查当前
-  head 上已有的另一位维护者 Approve；已核验到就直接进入合并，缺少才停止等待，绝不让作者自批。
+- 2026-10-21 维护者决定：可信维护者作者无需其他人 Approve；非维护者仍按现有审批/确认规则。
+  这不豁免 CI、讨论、人工 CR 或 GitHub 规则，不启用 admin bypass，也绝不让作者自批。
+  维护者作者审查通过后由 `approve-reviewed-pr.mjs` 产出 `approval.status=exempt` 回执（不是虚构 review ID）。
+  若 viewer 就是作者且作者不是维护者，先完整回查当前 head 上已有的另一位维护者 Approve；已核验到就直接进入合并，缺少才停止等待。
   其它 review、发表评论、合并、推送默认分支、关闭或删除远程分支、代 resolve thread
   之前,仍须逐项向用户确认。
 - 不使用 `git reset --hard`、`git checkout --`、强制删除用户分支或自动 stash。
@@ -53,8 +54,8 @@ description: >
 路径和阈值默认读取 `<SKILL_ROOT>/config/pr-rules.json`(`REVIEW_PR_RULES_FILE` 可覆盖)。
 最终维护者集合是两部分的并集:每次 `prepare.mjs` 真正拿到本轮锁后,从目标仓库默认分支
 CODEOWNERS 的唯一全仓根规则 `* @org/team-slug` 实时读取的 active Team 成员,以及配置里的
-`maintainerAllowlist`。两类成员都可以 Approve；所有作者都需要另一位成员的独立 Approve，
-维护者作者也不例外。CODEOWNERS / Team
+`maintainerAllowlist`（PraiseZhu、kirozeng、aj0928、zhongxingtian-ai）。两类成员都可以 Approve，也都可以给别人放行。
+2026-10-21 维护者决定：作者在最终维护者集合中时免另一位维护者独立 Approve；非维护者仍需。CODEOWNERS / Team
 读取不完整、根规则不唯一、Team 不可见、对仓库无 write 以上权限或 Team 为空时从严停止;
 补充白名单不作为故障兜底。`selfFixAuthors` 只决定自动代修,不提供审批权限。锁与本轮
 authority 快照写系统临时目录(按仓库哈希隔离,`REVIEW_PR_STATE_DIR` 可覆盖,
@@ -155,8 +156,8 @@ node "<SKILL_ROOT>/scripts/dismiss-stale-reviews.mjs" <N> --gate-clean \
 
 - `blocking=false` → 进入审查(作者在本轮最终维护者集合中时不在审查前重复 hold，
   或已由集合成员 `released`)。维护者作者的 trigger、代码审查和
-  security/coldUpdate/pluginBase 等专项检查仍完整保留；最终审查通过后仍须由另一位
-  维护者自动提交 guarded Approve。
+  security/coldUpdate/pluginBase 等专项检查仍完整保留；最终审查通过后按 2026-10-21 维护者决定免独立 Approve，
+  仍不能自批、不启用 admin bypass。
 - `blocking=true` → 逐触发处理。此时 `auto.action` 会被包成 `signoff-gate`,但原本应执行的
   格式 / gate / 审查走向完整保存在 `auto.fallback`。对允许语义豁免的类别判定为“不该 hold”
   后,**必须执行 `auto.fallback.action`**,不得只摘标签后停下,也不得继续创建讨论 issue:
@@ -199,8 +200,7 @@ node "<SKILL_ROOT>/scripts/dismiss-stale-reviews.mjs" <N> --gate-clean \
   `release-marker` 是维护者明确指示通过时的手动兜底。
   普通评论 / Slack 留言 / 摘标签不构成通过:`maintainerComments` 等只是信息位。非维护者
   作者的 PR 中,最终维护者集合成员表过态但没 Approve 的,提醒用户请对方去 PR 上 Approve;
-  `approvalPolicy.authorIsMaintainer=true` 时不在审查前制造额外 hold，但最终仍需另一位维护者
-  Approve。审批人从 Team 和
+  `approvalPolicy.authorIsMaintainer=true` 时不在审查前制造额外 hold，按 2026-10-21 维护者决定也免独立 Approve。审批人从 Team 和
   `maintainerAllowlist` 都移除后,其旧 review 不再算维护者确认。手动 release marker 只有
   评论作者、marker 的 `by` 和最终维护者集合成员三者是同一人时才可信,否则只列入
   `untrustedReleaseMarks`。
@@ -453,7 +453,7 @@ node "<SKILL_ROOT>/scripts/pre-merge-check.mjs" <N> \
 
 逐项确认后按 `approvalPolicy` 分流:
 
-- **所有作者**:最终重审通过后,先完整回查是否已有另一位最终维护者集合成员对当前 PR 的有效 Approve；已有就复用该真实回执并进入合并，缺少才由另一位 viewer 运行受保护的 Approve 脚本,不得裸跑
+- **维护者作者**:最终重审通过后跑同一受保护脚本；`approval.status=exempt` 表示免独立 Approve（`approved=false`，不得捏造 review ID），然后进入 finish。非维护者：先完整回查是否已有另一位最终维护者集合成员对当前 PR 的有效 Approve；已有就复用该真实回执并进入合并，缺少才由另一位 viewer 运行受保护的 Approve 脚本,不得裸跑
   `gh pr review --approve`:
 
   ```bash
@@ -464,8 +464,8 @@ node "<SKILL_ROOT>/scripts/pre-merge-check.mjs" <N> \
     --body-file -
   ```
 
-  脚本绑定 head/authority、实时确认 viewer 仍在最终维护者集合且不是 PR 作者，并拒绝覆盖别人的
-  Request Changes。维护者作者由本轮 review 自动执行这一步，不再单独询问；viewer=author
+  脚本绑定 head/authority、实时确认 viewer 仍在最终维护者集合；维护者作者可走 exempt，非维护者 viewer 不得是 PR 作者，并拒绝覆盖别人的
+  Request Changes。维护者作者由本轮 review 自动执行这一步，不再单独询问；非维护者且 viewer=author
   且没有已核验的独立 Approve 时停止，等待另一位维护者。已有独立 Approve 时复用其真实回执，
   直接进入同一轮
   finish flow：清理确认标签、重跑 `pre-merge-check`，只为 GitHub 刚提交 Approve 后的短暂
@@ -567,9 +567,8 @@ REQUEST_CHANGES(422),第 2 条走不通,照实说明并改问「要开跟进会�
 - 修复量在本轮能改完、能验证的范围内。接近重写、或涉及要用户拍板的产品取舍,回 6.2;
 - base 分支没被保护到推不上去(被拒就放弃并报告,**绝不 force push**)。
 
-作者在最终维护者集合中时**照样可以走**,但同样必须先由另一位最终维护者集合成员通过
-`approve-reviewed-pr.mjs` Approve，再按 6.1 的 `normalMergeAvailable` 路径合并；
-`selfFixAuthors` 不提供自合并绕过。
+作者在最终维护者集合中时**照样可以走**,按 2026-10-21 维护者决定免独立 Approve，再按 6.1 的 `normalMergeAvailable` 路径合并；
+`selfFixAuthors` 不提供自合并绕过，也不启用 admin bypass。
 
 流程:
 
