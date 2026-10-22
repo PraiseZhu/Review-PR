@@ -34,7 +34,7 @@ import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlC
 // [MIVO-PATCH identity-env]
 import { viewerLoginOverride } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
-import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest } from './lib.mjs';
+import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead } from './lib.mjs';
 import { filePatchHashesFromDiff, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
@@ -1198,6 +1198,8 @@ try {
     meta.reviewDecision === 'CHANGES_REQUESTED' &&
     allChangesRequestedBySelf &&
     unresolvedThreads.length === 0;
+  // [MIVO-PATCH self-findings] 作者即审查账号时,审查机在当前 head 已发过的问题清单(代替发不了的 CR),见 lib.mjs。
+  const selfFindingsAtHead = selectSelfFindingsAtHead(prReviews, { viewerLogin, authorLogin, headSha: meta.headRefOid });
   const STANDING_HUMAN_CR_BLOCKER = '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审';
 
   // ── 1.6.5.3 评论类:bot 总结评论 + reviewer 历史打回(issue comment 形式)──
@@ -1792,6 +1794,7 @@ try {
       prTouchesCiFiles,
       ciFiles,
       selfBlockedResolvable,
+      selfFindingsAtHead,
       staleRebase,
       botSettle,
       gatePass,
