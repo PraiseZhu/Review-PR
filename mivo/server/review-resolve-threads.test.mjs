@@ -27,9 +27,11 @@ const oldThread = (patch = {}) => ({ id: 'PRRT_1', isResolved: false, path: 'src
 
 function makeRoot({ runnerSummary }) {
   const root = mkdtempSync(join(tmpdir(), 'mivo-resolve-publish-'));
-  for (const dir of [['mivo', 'lib'], ['mivo', 'server'], ['review-pr', 'scripts', 'vendor']]) mkdirSync(join(root, ...dir), { recursive: true });
+  for (const dir of [['mivo', 'lib'], ['mivo', 'server'], ['mivo', 'config'], ['review-pr', 'scripts', 'vendor']]) mkdirSync(join(root, ...dir), { recursive: true });
   for (const file of readdirSync(LIB_DIR).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))) copyFileSync(join(LIB_DIR, file), join(root, 'mivo', 'lib', file));
   for (const file of ['review.mjs', 'codex.mjs', 'keys.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
+  // prompt.mjs 加载时读统一分级(单一来源 mivo/config/severity.md)。
+  copyFileSync(join(LIB_DIR, '..', 'config', 'severity.md'), join(root, 'mivo', 'config', 'severity.md'));
   const scripts = join(SERVER_DIR, '..', '..', 'review-pr', 'scripts');
   for (const file of ['self-write-receipts.mjs', 'gh-read-route.mjs']) copyFileSync(join(scripts, file), join(root, 'review-pr', 'scripts', file));
   copyFileSync(join(scripts, 'vendor', 'gh-app-classify.mjs'), join(root, 'review-pr', 'scripts', 'vendor', 'gh-app-classify.mjs'));

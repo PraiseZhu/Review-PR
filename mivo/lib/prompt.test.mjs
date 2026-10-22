@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY, PRODUCT_INTENT, toRuleMapPlan, matchesRulePath, buildSpecManifest, specDigestOf } from './prompt.mjs';
+import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY, SEVERITY_FILE, SEVERITY_VERSION, severityVersionOf, PRODUCT_INTENT, toRuleMapPlan, matchesRulePath, buildSpecManifest, specDigestOf } from './prompt.mjs';
+import { buildVerifyPrompt } from './verify.mjs';
 import { SKILL_ROOT } from './common.mjs';
 
 const prompt = (tier = 'standard', over = {}) => buildReviewPrompt({
@@ -28,7 +29,7 @@ test('统一分级的关键约束写进任务书', () => {
   assert.match(SEVERITY, /P2 一般缺陷 .*\| 报 \|/);
   assert.match(SEVERITY, /P3 改进建议 .*\| 不报 \|/);
   assert.match(SEVERITY, /触发条件、错误行为、实际影响、证据/);
-  assert.match(SEVERITY, /违反通用规范、单纯缺测试,都\*\*不能单独\*\*把问题升到 P1/);
+  assert.match(SEVERITY, /违反通用规范、单纯缺测试,都\*\*不能单独\*\*构成 P2,也不能单独把问题升到 P1/);
   assert.match(SEVERITY, /「记 P1」「按 P1 打回」的具体条款/);
   const text = prompt();
   assert.match(text, /\[P0\|P1\|P2\]/);
@@ -36,6 +37,31 @@ test('统一分级的关键约束写进任务书', () => {
   assert.doesNotMatch(text, /P2、P3、风格、猜测一律不报/);
   assert.doesNotMatch(text, /达到 P1 定义才报,否则不报/);
   assert.match(text, /仅 P3 不报/);
+});
+
+// #122/#123:审查机、核对员、盯梢修复会话与裁决席读同一个文件,两边口径不再各写各的。
+test('统一分级只有一个来源:mivo/config/severity.md,任务书和核对员都用它的全文', () => {
+  assert.ok(SEVERITY_FILE.endsWith(join('mivo', 'config', 'severity.md')), SEVERITY_FILE);
+  assert.equal(SEVERITY, readFileSync(SEVERITY_FILE, 'utf8').trim());
+  assert.ok(prompt().includes(SEVERITY), '任务书缺分级文件全文');
+  const verify = buildVerifyPrompt({ finding: { severity: 'P2', title: 't', path: 'a.ts', line: 1 }, workdir: '/w' });
+  assert.ok(verify.includes(SEVERITY), '核对员提示词缺分级文件全文');
+});
+
+test('P2 按「是否误导」划线:三类必修,泛泛缺测试与措辞问题不报', () => {
+  assert.match(SEVERITY, /误导性的测试:PR 新增或改动的测试没有真正验证它声称的行为/);
+  assert.match(SEVERITY, /自己定的验收没达成/);
+  assert.match(SEVERITY, /声称做过的验证实际没做/);
+  assert.match(SEVERITY, /生产行为已经正确、PR 也没有声称覆盖的「可以再加测试」或覆盖率建议/);
+  assert.match(SEVERITY, /不影响结论的措辞、时态、格式问题/);
+  for (const text of [SEVERITY, prompt()]) assert.doesNotMatch(text, /规范违反或必要测试缺口/);
+});
+
+test('标准版本号是文件原始内容的 sha256 前 12 位,内容一变版本号就变', () => {
+  const raw = readFileSync(SEVERITY_FILE, 'utf8');
+  assert.match(SEVERITY_VERSION, /^[0-9a-f]{12}$/);
+  assert.equal(SEVERITY_VERSION, severityVersionOf(raw));
+  assert.notEqual(severityVersionOf(`${raw}\n- 新增一条`), SEVERITY_VERSION);
 });
 
 test('转 issue 跟进:列出核验通过的条目和判定规则;没有条目时 deferredTo 一律 null', () => {

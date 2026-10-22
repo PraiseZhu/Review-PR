@@ -1,10 +1,11 @@
 // prompt.mjs — 服务器审查 agent 的任务书。审查规范原文取自 review-pr/SKILL.md 第 5 节、
 // review-pr-auto/references/pr-worker.md 第 3 节与 references/rule-map.md(都在同一份钉住的 skill 里),
 // 不在这里改写规则;这里只拼「审哪个 PR、看哪些材料、按什么格式交卷」。
-// 唯一例外是严重度:按仓库维护者 2026-10-12 的决定,改用下方 SEVERITY 的统一分级,覆盖规范原文的「严重度」段。
+// 唯一例外是严重度:按仓库维护者 2026-10-12 的决定,改用下方 SEVERITY 的统一分级(mivo/config/severity.md),覆盖规范原文的「严重度」段。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { SKILL_ROOT } from './common.mjs';
 import { ANSWER_SCHEMA } from './report.mjs';
 import { rulingSection, rebuttalSection } from './rulings.mjs';
 import { toHandoffPromptLines } from './handoff.mjs';
@@ -30,24 +31,14 @@ export function loadReviewSpec(skillRoot) {
   };
 }
 
-// 维护者统一分级(2026-10-12 决定):只报确认成立的 P0/P1/P2,规范原文里「记 P1」的条款按实际影响重判。
-export const SEVERITY = [
-  '## 分级(Mivo 统一口径,覆盖规范原文的「严重度」段)',
-  '',
-  '| 等级 | 定义 | 处理 |',
-  '|---|---|---|',
-  '| P0 紧急严重事故 | 正在发生或正常使用即可确定触发的大范围灾难性影响,例如严重泄露、批量不可逆数据损坏、系统性不可用,且缺乏有效隔离 | 报 |',
-  '| P1 严重缺陷 | 在受支持场景中存在可信、可达的触发路径,导致核心流程失效、严重数据错误或安全/隐私边界被突破 | 报 |',
-  '| P2 一般缺陷 | 本 PR 引入或改动范围内已证实的真实缺陷、规范违反或必要测试缺口;问题真实,但影响局部、程度有限,未达到 P1;可能有可接受的绕行办法 | 报 |',
-  '| P3 改进建议 | 没有已证实功能或安全影响的风格、命名、整理、视觉润色、通用行数/覆盖率建议,以及没有实际收益证据的优化 | 不报 |',
-  '',
-  '- 每条 P0/P1/P2 必须写清:触发条件、错误行为、实际影响、证据。证据不足时先在工作目录里做必要的验证;仍证实不了的不报,',
-  '  在 Rule coverage 里单列「待核实」并写明缺什么证据。不要凭猜测升到 P1,也不要为了少报而降级。',
-  '- 多数票、重复意见、工具分数、修复便宜、违反通用规范、单纯缺测试,都**不能单独**把问题升到 P1。',
-  '- 规范原文里「记 P1」「按 P1 打回」的具体条款(设计规范、平台或界面证据、PR 描述与 diff 不符、夹带改动、缺必要测试、',
-  '  讨论里的要求未落实等)一律按上表的实际影响重新判:按实际影响判 P0/P1/P2,达到任一报告定义则报;仅 P3 不报。确认的 P2 不得因未达 P1 而舍弃。',
-  '- 真实凭证或个人数据进了 diff、恶意代码、越权或数据外发,按实际影响判 P0/P1/P2。',
-].join('\n');
+// 维护者统一分级(2026-10-12 决定统一分级,2026-10-22 定按「是否误导」划 P2/P3 线,#122)。
+// 单一来源是 mivo/config/severity.md:审查机任务书、核对员、Mini 盯梢修复会话与裁决席读同一个文件,改它就是改标准。
+export const SEVERITY_FILE = join(SKILL_ROOT, 'mivo', 'config', 'severity.md');
+const SEVERITY_RAW = readFileSync(SEVERITY_FILE, 'utf8');
+export const SEVERITY = SEVERITY_RAW.trim();
+/** 标准版本号:文件原始内容的 sha256 前 12 位。盯梢与裁决记录带同一个版本号,审查机据此核对裁决用的是不是当前标准。 */
+export const severityVersionOf = (text) => createHash('sha256').update(String(text ?? '')).digest('hex').slice(0, 12);
+export const SEVERITY_VERSION = severityVersionOf(SEVERITY_RAW);
 
 // 写明的产品意图不算缺陷(维护者 2026-10-15 决定):#926/#927/#935 上有 6 条 P1 要是照改,会推翻 PR 正文或维护者裁定写明的设计。
 export const PRODUCT_INTENT = [
