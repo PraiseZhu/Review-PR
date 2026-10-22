@@ -11,6 +11,7 @@ export const REPORT_HEADER = 'Mivo 自动审查';
 export const DEFERRED_SECTION = '## 已转 issue 跟进的问题（不阻断本 PR）';
 export const PREEXISTING_SECTION = '## PR 之前就存在的问题（不阻断本 PR）';
 export const RULED_KEPT_SECTION = '## 维护者已裁定不改、审查机本轮仍报了（未阻断）';
+export const ADJUDICATED_SECTION = '## 已采信的盯梢裁决（服务器已核验，不阻断本 PR）';
 export const VERIFIER_REFUTED_SECTION = '## 核对员认为不成立（不阻断本 PR）';
 export const VERIFIER_DOWNGRADED_SECTION = '## 核对员降级（不阻断本 PR）';
 // 打回且有阻断的 P1/P2 时附在结论行后:告诉作者本 PR 修不了的 P1/P2 可以怎么转 issue 跟进。
@@ -237,6 +238,16 @@ export function renderRuledKeptSection(list = []) {
   return [RULED_KEPT_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 裁定:@${f.rulingBy ?? ''}`), ''];
 }
 
+/** 报告里「已采信的盯梢裁决」一节:裁决席按统一分级判不成立或够不上必修,服务器核过是同一条问题、代码没改、标准相同。 */
+export function renderAdjudicatedSection(list = []) {
+  if (!list.length) return [];
+  const verdictText = (v) => (v === 'p3' ? '够不上必修(P3)' : '不成立');
+  return [ADJUDICATED_SECTION, '',
+    '盯梢修复会话与下面的意见各执一词,裁决席按统一分级终审。服务器已核对:是同一条问题、裁决之后相关文件没改、用的是当前分级标准。',
+    '',
+    ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P2'}] ${titleOf(f)} · 裁决:${verdictText(f.verdict)}${f.by ? ` · 裁决者 ${f.by}` : ''}${f.url ? ` · [裁决回帖](${f.url})` : ''}`), ''];
+}
+
 const locations = (list) => (list ?? []).map((e) => `\`${whereOf(e)}\``).join('、') || '(未给出)';
 const oneLine = (text, max = 300) => { const t = String(text ?? '').replace(/\s+/g, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
 
@@ -330,15 +341,16 @@ export function pendingFinalFullReport({ pr, url, head, base, diffHash, tier, sc
   ].join('\n');
 }
 
-export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
+export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], adjudicatedKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
   pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '', finalFull = null, finalFullKind = null, handoff = null }) {
   const summary = toDeferredSummary(deferred);
   const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
-    ? (summary ? `pass —— 没有阻断的 P0/P1/P2；${summary.text}，不阻断本 PR。` : (preexisting.length || overruled ? 'pass —— 没有阻断的 P0/P1/P2。' : 'pass —— 没有 P0/P1/P2。'))
+    ? (summary ? `pass —— 没有阻断的 P0/P1/P2；${summary.text}，不阻断本 PR。` : (preexisting.length || overruled || adjudicatedKept.length ? 'pass —— 没有阻断的 P0/P1/P2。' : 'pass —— 没有 P0/P1/P2。'))
     : `changes-requested —— ${findings.length} 条 P0/P1/P2，已在对应位置开 review thread。`;
   if (findings.length && summary) conclusion += `另有 ${summary.text}，不阻断。`;
   if (!findings.length && preexisting.length) conclusion += `另有 ${preexisting.length} 条 PR 之前就存在的 P1/P2，不阻断本 PR。`;
+  if (adjudicatedKept.length) conclusion += `另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`;
   // 核对员推翻/降级的 P1/P2:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
   if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
   else if (overruled) conclusion += `另有 ${overruled} 条 P1/P2 被核对员推翻/降级，不阻断。`;
@@ -363,7 +375,7 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
   }
   // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
   const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting),
-    ...renderRuledKeptSection(ruledKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...renderVerifierUnavailableSection(verifierUnavailable ?? {}), ...convergenceLines];
+    ...renderRuledKeptSection(ruledKept), ...renderAdjudicatedSection(adjudicatedKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...renderVerifierUnavailableSection(verifierUnavailable ?? {}), ...convergenceLines];
   if (extraLines.length) {
     const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
     if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...extraLines);
@@ -382,6 +394,29 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
 export function reusedReport({ previousReport, scope }) {
   const note = `> 本轮沿用上一轮审查结论(${scope.reason};上一轮 head \`${String(scope.basedOn ?? '').slice(0, 12)}\`)。`;
   return `${note}\n\n${String(previousReport ?? '').trim()}\n`;
+}
+
+/**
+ * 沿用上一轮结论、其中的阻断问题有被采信的盯梢裁决覆盖时(#124):Findings 与 Overall 按剩下的问题重写,
+ * 在 Rule coverage 前单列采信的裁决,避免同一条报告前面写「已采信」、结论还写「打回」。
+ */
+export function adjudicatedReuseReport({ previousReport, scope, findings = [], adjudicatedKept = [] }) {
+  const lines = replaceFindingsSection(String(previousReport ?? '').trim().split('\n'), findings);
+  const conclusion = findings.length
+    ? `changes-requested —— ${findings.length} 条 P0/P1/P2，已在对应位置开 review thread。另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`
+    : `pass —— 没有阻断的 P0/P1/P2。另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`;
+  const overallIndex = lines.findIndex((line) => /^## Overall\s*$/.test(line));
+  if (overallIndex >= 0) {
+    let next = overallIndex + 1;
+    while (next < lines.length && !lines[next].trim()) next += 1;
+    if (next < lines.length && /^(pass|changes-requested)\b/.test(lines[next].trim())) lines[next] = conclusion;
+    else lines.splice(overallIndex + 1, 0, '', conclusion);
+  } else lines.push('', '## Overall', '', conclusion);
+  const section = renderAdjudicatedSection(adjudicatedKept);
+  const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
+  if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...section);
+  else lines.push('', ...section);
+  return reusedReport({ previousReport: lines.join('\n'), scope });
 }
 
 // 发布前最后一道:报告和问题里出现高置信凭证格式就替换掉。审查 agent 读得到 runner 上的文件,
