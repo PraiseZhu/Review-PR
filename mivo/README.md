@@ -437,7 +437,7 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - 取消请求失败或迟迟不生效：每次轮询确认 run 还没结束后，距上次发送满 3 分钟就再发一次，直到 run 结束。进程重启后有取消意图的 run 先补发一次。
 - 「head 已变、旧 run 已确认结束」的 PR 可以提前释放；同 HEAD 的 `ci-pending`／`bot-pending` 也在本机任务收尾后提前释放，但必须没有派发意图、在途审查或结果错误（轮次目录 `mivo-released.json`，`pr-released`）。2026-10-22 起，判门停在等作者的 `conflict`／`changes-requested`／`ci-unknown`／`retarget`／`merge-blocked`／`threads-unresolved` 也提前释放，前提是判门没有执行任何动作（提醒、重跑 CI、确认 issue 重判会重复执行，有动作的仍留在原轮次）；之前这些 PR 要等同轮别的 PR 的服务器审查跑完才能重判，状态标签晚摘 9～31 分钟。
 - 判门停在 `ci-pending`／`bot-pending` 时，轮次收尾记 5 分钟后重判（`retryAt`）。2026-10-22 起 `ci-pending` 也记：只在 Actions 列表里看得到的检查（如 Code Quality）跑完时，指纹里的 ci 聚合和 `mergeStateStatus` 都可能不变，不定时重判就一直算「没变化」被跳过（#1173 新提交因此卡住）。
-- 已关闭／合并的 PR 不再进轮次，合并前挂的 `status:*` 没人摘（2026-10-22 统计 16 个）。前置审查每 10 分钟最多搜一次「已关闭且带受管 status 标签」的 PR 并删掉这些标签（`closed-label-sweep`），只在 live 模式、只删 status 组，失败只记日志。新一轮重新采集并执行全部门禁，不等同轮其它 PR。暂缓结果只在候选查询中请求重判，旧轮仅保留历史结果、不再覆盖该 PR 的共享当前状态；超时取消、未决派发、清理未完成及其他结果不提前释放。
+- 已关闭／合并的 PR 不再进轮次，合并前挂的 `status:*` 没人摘（2026-10-22 统计 16 个）。前置审查每 10 分钟最多查一次「已关闭且带受管 status 标签」的 PR（每个标签读一次 REST issues 列表；不用搜索接口，Mini 的读请求走 GitHub App，上线首轮用搜索没查到）并删掉这些标签（`closed-label-sweep`），只在 live 模式、只删 status 组，失败只记日志。新一轮重新采集并执行全部门禁，不等同轮其它 PR。暂缓结果只在候选查询中请求重判，旧轮仅保留历史结果、不再覆盖该 PR 的共享当前状态；超时取消、未决派发、清理未完成及其他结果不提前释放。
 - `reviews.json` 每个 PR 记 `ownerRoundId`（最近一次接走它的轮次）；旧轮晚收尾时不写回已转给新轮的 PR（`store-skip`）。轮次状态的写回保护在 `review-pr/scripts/review-round.mjs`（MIVO-PATCHES 的 round-owner）。
 - `collected` 日志带 `head`。
 
