@@ -120,7 +120,7 @@ const previous = (over = {}) => ({ head: 'h1', baseRefName: 'main', diffHash: 'd
   findings: [{ path: 'src/a.ts', line: 11, body: '[P2] A', key: KEY, severity: 'P2' }], deferred: [], filePatchHashes: hashes, totalDiffLines: 1,
   tier: 'standard', triggerKinds: [], specDigest: 'spec', lastFullReviewAt: '2026-10-22T10:00:00Z', ...over });
 const scopeOf = (prev, cur) => computeReviewScope({ previous: prev, current: cur, headIsDescendant: true });
-const SETTLED = '同一版本的问题都已裁决,不再跑模型,按裁决出结论';
+const SETTLED = '同一版本的问题都已裁决或转 issue,不再跑模型,按裁决与转 issue 出结论';
 
 test('同一版本、代码没变、上一轮阻断问题全被采信裁决覆盖:不跑模型,沿用并按裁决出结论', () => {
   const scope = scopeOf(previous(), current({ settledKeys: [KEY] }));

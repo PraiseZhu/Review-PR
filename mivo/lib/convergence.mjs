@@ -2,6 +2,7 @@
 // 只提示、不改结论:同一条 P0/P1/P2 连续 3 轮(含)以上报出,报告插一节「收敛提示」,阻断与否不变;不停审、不放行。
 // 裁定复核:维护者对某个 key 裁定不改的 P1,模型本轮仍报了就移出阻断(单列在报告里);P0 永不移出阻断。
 // 裁决复核(#124):盯梢裁决席判不成立/P3、服务器核验通过的 P1/P2,模型本轮仍报了同样移出阻断(adjudicatedKept)。
+// 按 key 转 issue(#127):核验通过的转 issue 里带问题 key 标记的 P1/P2,不靠模型判断,直接移到已转 issue(deferred)。
 import { createHash } from 'node:crypto';
 import { findingKeyOf, findingMarker, parseFindingMarker, renderFindingBody, titleOfBody } from './finding.mjs';
 import { matchAdjudication } from './rulings.mjs';
@@ -64,8 +65,9 @@ const severityOf = (item) => item.severity ?? item.body?.match(FINDING_RE)?.[1] 
  * @param {{roundIndex,findings,keys}|null} p.previousRound @param {object} p.history collectMarkerHistory 的结果
  * @param {{key?:string, by:string}[]} p.rulings 服务器核验通过的裁定 @param {string} p.head
  * @param {object[]} [p.adjudications] 服务器核验通过、代码也没改过的盯梢裁决(rulings.mjs confirmAdjudications)
+ * @param {object[]} [p.keyDeferrals] 核验通过的转 issue 里按 key 登记的问题(deferrals.mjs keyedDeferrals)
  */
-export function applyConvergence({ findings = [], preexisting = [], deferred = [], scope = null, roundIndex = null, previousRound = null, history, rulings = [], adjudications = [], head }) {
+export function applyConvergence({ findings = [], preexisting = [], deferred = [], scope = null, roundIndex = null, previousRound = null, history, rulings = [], adjudications = [], keyDeferrals = [], head }) {
   const hist = history ?? collectMarkerHistory({});
   const rulingKeys = new Set(rulings.map((r) => r.key).filter(Boolean));
   const known = new Set([...(previousRound?.keys ?? []), ...hist.byKey.keys(), ...rulingKeys, ...adjudications.map((a) => a.key).filter(Boolean)]);
@@ -103,6 +105,7 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
 
   const ruledKept = [];
   const adjudicatedKept = [];
+  const deferredByKey = [];
   let rulingViolations = 0;
   const blocking = [];
   for (const item of findings.map(keyed)) {
@@ -117,6 +120,11 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
       adjudicatedKept.push(toAdjudicatedKept(item, adjudication));
       continue;
     }
+    const deferral = matchAdjudication(keyDeferrals, item);
+    if (deferral) {
+      deferredByKey.push({ ...item, deferredTo: deferral.issue });
+      continue;
+    }
     blocking.push(item);
   }
   const stuck = blocking.filter((f) => ['P0', 'P1', 'P2'].includes(f.severity) && f.seenRounds >= STUCK_ROUNDS)
@@ -125,7 +133,7 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
     roundIndex, repeatCount: blocking.filter((f) => f.seenRounds >= 2).length, lateCount: blocking.filter((f) => f.late).length,
     rulingViolations, rethink: stuck.length > 0, stuckKeys: stuck.map((s) => s.key),
   };
-  return { findings: blocking, preexisting: preexisting.map(keyed), deferred: deferred.map(keyed), ruledKept, adjudicatedKept, stuck, convergence };
+  return { findings: blocking, preexisting: preexisting.map(keyed), deferred: [...deferred.map(keyed), ...deferredByKey], ruledKept, adjudicatedKept, stuck, convergence };
 }
 
 /** 被采信裁决移出阻断的问题:结果包与报告只留定位、标题和裁决出处。 */
@@ -134,16 +142,19 @@ export function toAdjudicatedKept(finding, adjudication) {
     verdict: adjudication.verdict, by: adjudication.by ?? null, url: adjudication.url ?? null, rulingHead: adjudication.head };
 }
 
-/** 沿用上一轮结论时同样按已采信裁决重判阻断(不重算 key)。 */
-export function splitAdjudicated(findings = [], adjudications = []) {
+/** 沿用上一轮结论时同样按已采信裁决、按 key 转的 issue 重判阻断(不重算 key)。 */
+export function splitAdjudicated(findings = [], adjudications = [], keyDeferrals = []) {
   const blocking = [];
   const adjudicatedKept = [];
+  const deferred = [];
   for (const finding of findings) {
     const adjudication = matchAdjudication(adjudications, finding);
+    const deferral = adjudication ? null : matchAdjudication(keyDeferrals, finding);
     if (adjudication) adjudicatedKept.push(toAdjudicatedKept(finding, adjudication));
+    else if (deferral) deferred.push({ ...finding, deferredTo: deferral.issue });
     else blocking.push(finding);
   }
-  return { findings: blocking, adjudicatedKept };
+  return { findings: blocking, adjudicatedKept, deferred };
 }
 
 /** 报告里的「收敛提示」一节;不需要提示时返回空数组。 */

@@ -99,7 +99,7 @@ test('核验:同时满足全部条件才采用,不满足的写明原因', () => 
     1012: { ok: true, issue: issue({ title: '无关', body: `见 ${prUrl}#discussion_r1` }) },
   });
   assert.deepEqual(verified.map((v) => v.issue), [1001, 1002, 1012]);
-  assert.deepEqual(verified[0], { issue: 1001, title: '旧 ghost 列表静默漏列', url: `https://github.com/${repo}/issues/1001`, opener: 'Alice', text: '#1001 说明' });
+  assert.deepEqual(verified[0], { issue: 1001, title: '旧 ghost 列表静默漏列', url: `https://github.com/${repo}/issues/1001`, opener: 'Alice', text: '#1001 说明', keys: [] });
   const reasons = Object.fromEntries(rejected.map((r) => [r.issue, r.reason]));
   assert.equal(reasons[1003], 'issue 不存在');
   assert.equal(reasons[1004], '读取失败:timeout');

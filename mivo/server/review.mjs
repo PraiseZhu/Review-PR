@@ -16,7 +16,7 @@ import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicate
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
-import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
+import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary, keyedDeferrals } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudications } from '../lib/rulings.mjs';
 import { buildThreadResolutionPlan } from '../lib/thread-resolution.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
@@ -216,8 +216,8 @@ async function prepare() {
     }
     // 规则改版沿用转 issue 的问题前,要本轮仍核验通过(collectDeferrals 已在上面跑过,这里不再请求网络)。
     current.verifiedDeferralIssues = (state.deferrals?.verified ?? []).map((d) => d.issue);
-    // 同一版本的阻断问题都已被采信裁决覆盖时不再跑模型(lib/scope.mjs settledByAdjudication)。
-    current.settledKeys = (state.adjudications?.verified ?? []).map((a) => a.key);
+    // 同一版本的阻断问题都已被采信裁决或按 key 转 issue 覆盖时不再跑模型(lib/scope.mjs settledByAdjudication)。
+    current.settledKeys = [...(state.adjudications?.verified ?? []).map((a) => a.key), ...keyedDeferrals(state.deferrals?.verified ?? []).map((d) => d.key)];
     let headIsDescendant = null;
     if (previous?.head && previous.head !== input.head) {
       run('git', [...gitAuth, 'fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', previous.head], { cwd: REPO_DIR, allowFail: true });
@@ -717,7 +717,7 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
   const roundIndex = roundIndexOf({ previousRound: state.previousRound ?? null, hasPrevious: Boolean(state.previous), history });
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
-    history, rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], head: state.input.head });
+    history, rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], keyDeferrals: keyedDeferrals(state.deferrals?.verified ?? []), head: state.input.head });
   return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100, preexisting: checked.preexisting.length > 100 } };
 }
 
@@ -803,11 +803,16 @@ async function publish() {
       ruledKept = previous.mivo?.ruledKept ?? [];
       convergence = previous.mivo?.convergence ?? null;
       verifierOverruled = previous.mivo?.verifierOverruled ?? [];
-      // 沿用的阻断问题被采信的盯梢裁决覆盖时按裁决重判(#124),报告的 Findings/Overall 跟着改写;没有覆盖就原样沿用。
-      ({ findings, adjudicatedKept } = splitAdjudicated(findings, state.adjudications?.verified ?? []));
+      // 沿用的阻断问题被采信的盯梢裁决(#124)或按 key 转的 issue(#127)覆盖时重判,报告的 Findings/Overall 跟着改写;
+      // 没有覆盖就原样沿用。
+      let movedDeferred;
+      ({ findings, adjudicatedKept, deferred: movedDeferred } = splitAdjudicated(findings, state.adjudications?.verified ?? [],
+        keyedDeferrals(state.deferrals?.verified ?? [])));
+      deferred = [...deferred, ...movedDeferred];
       const previousReport = readFileSync(join(WORK, 'prev', 'report.md'), 'utf8');
-      report = adjudicatedKept.length
-        ? adjudicatedReuseReport({ previousReport, scope: state.scope, findings, adjudicatedKept })
+      report = adjudicatedKept.length || movedDeferred.length
+        ? adjudicatedReuseReport({ previousReport, scope: state.scope, findings, adjudicatedKept, deferred,
+          deferralsRejected: state.deferrals?.rejected ?? [] })
         : reusedReport({ previousReport, scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
       // 沿用不重跑收口:来源的收口记录原样带过去(head/runId 还是原来那次的),不改写成本轮。
