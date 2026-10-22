@@ -40,6 +40,7 @@ import {
   isAutomatedViewerReview,
   latestSubstantiveReviews,
   selectStandingViewerHumanChangesRequest,
+  selectSelfFindingsAtHead,
 } from './lib.mjs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
 
@@ -1486,6 +1487,43 @@ const reviews941 = [
   viewerReview(5506920945, 'CHANGES_REQUESTED', HUMAN_CR_BODY, '2026-10-13T16:40:00Z'),
   viewerReview(5512930585, 'CHANGES_REQUESTED', AUTO_CR_HEADER, '2026-10-14T04:05:00Z'),
 ];
+
+// [self-findings] #1191:作者就是审查账号,审查机只能发 COMMENTED;同一 head 已发过问题清单要认得出来。
+const HEAD_1191 = '3223858cf2d5171a67cb5adee3a7d80ceafe52d0';
+const findingsBody = (head) => `> Mivo 自动审查 · PR\n[P2] 问题\n<!-- review-pr:findings head=${head} digest=${'a'.repeat(64)} -->`;
+const restReview = (id, login, body, at) => ({ id, user: { login }, state: 'COMMENTED', body, submitted_at: at });
+
+test('self-findings:作者即审查账号、当前 head 有问题清单 → 取最新一条;REST / context 两种形状都认', () => {
+  const reviews = [
+    restReview(1, 'greptile-apps[bot]', findingsBody(HEAD_1191), '2026-10-22T01:13:46Z'),
+    restReview(2, 'PraiseZhu', findingsBody(HEAD_1191), '2026-10-22T01:46:41Z'),
+    restReview(3, 'PraiseZhu', findingsBody(HEAD_1191.toUpperCase()), '2026-10-22T04:38:45Z'),
+  ];
+  const opts = { viewerLogin: 'praisezhu', authorLogin: 'PraiseZhu', headSha: HEAD_1191 };
+  assert.deepEqual(selectSelfFindingsAtHead(reviews, opts), { id: 3, submittedAt: '2026-10-22T04:38:45Z' });
+  const gqlShape = reviews.map(({ user, submitted_at, ...rest }) => ({ ...rest, author: { login: user.login }, submittedAt: submitted_at }));
+  assert.equal(selectSelfFindingsAtHead(gqlShape, opts)?.id, 3);
+});
+
+test('self-findings:旧 head / 别人发的 / 作者不是审查账号 / 参数缺失 → null', () => {
+  const opts = { viewerLogin: 'PraiseZhu', authorLogin: 'PraiseZhu', headSha: HEAD_1191 };
+  const oldHead = [restReview(1, 'PraiseZhu', findingsBody('6aadfcd87'.padEnd(40, '0')), '2026-10-22T01:20:00Z')];
+  assert.equal(selectSelfFindingsAtHead(oldHead, opts), null, '旧 head 的问题清单不算');
+  assert.equal(selectSelfFindingsAtHead([restReview(1, 'someone', findingsBody(HEAD_1191), 'x')], opts), null, '别人贴的标记不算');
+  assert.equal(selectSelfFindingsAtHead([restReview(1, 'PraiseZhu', '> Mivo 自动审查\n没有标记', 'x')], opts), null);
+  const mine = [restReview(1, 'PraiseZhu', findingsBody(HEAD_1191), 'x')];
+  assert.equal(selectSelfFindingsAtHead(mine, { ...opts, authorLogin: 'outsider' }), null, '他人 PR 走 CR 路径,不归这里管');
+  for (const bad of [{ viewerLogin: '' }, { viewerLogin: undefined }, { headSha: '' }, { headSha: 'abc' }]) {
+    assert.equal(selectSelfFindingsAtHead(mine, { ...opts, ...bad }), null, JSON.stringify(bad));
+  }
+  assert.equal(selectSelfFindingsAtHead(undefined, opts), null);
+});
+
+test('self-findings:context 把结果交给判门(gate.selfFindingsAtHead)', () => {
+  const src = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  assert.match(src, /selectSelfFindingsAtHead\(prReviews, \{ viewerLogin, authorLogin, headSha: meta\.headRefOid \}\)/);
+  assert.match(src, /selfBlockedResolvable,\n\s+selfFindingsAtHead,/);
+});
 
 test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖不掉,context 不自解、approve 拒绝', () => {
   const viewer = 'PraiseZhu';

@@ -431,6 +431,32 @@ test('审查机 thread:判门不改输入,PENDING_GATE_TEXT 有对应说明', as
   assert.ok(PENDING_GATE_TEXT['reviewer-threads']);
 });
 
+// 2026-10-22 #120:作者即审查账号时审查机发不了 Request Changes。已在当前 head 发过问题清单、
+// 自己的 thread 还没 resolve → 不再送审(#1191 同一 head 送审 16 次);thread 全 resolve 后照常重审。
+const SELF_FINDINGS = { id: 3, submittedAt: '2026-10-22T04:38:45Z' };
+
+test('self-findings:当前 head 已发问题清单、只剩审查机/机器人 thread → 按 thread 卡住,不重复送审', () => {
+  for (const threads of [[reviewerThread('t1')], [reviewerThread('t1'), reviewerThread('t2'), botThread('t3')]]) {
+    const d = decideGate(withViewer('PraiseZhu', { unresolvedThreads: threads, selfFindingsAtHead: SELF_FINDINGS }));
+    assert.equal(d.stage, 'threads');
+    assert.equal(d.outcome, 'threads-unresolved');
+    assert.equal(d.pendingGates, undefined);
+    assert.match(d.reason, /当前 head 发过问题清单.*不重复送审/);
+  }
+});
+
+test('self-findings 不扩大:没有当前 head 的问题清单 / 只剩机器人 thread / 没有 thread → 照旧送审', () => {
+  const noFindings = decideGate(withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t1')], selfFindingsAtHead: null }));
+  assert.equal(noFindings.stage, 'review');
+  assert.deepEqual(noFindings.pendingGates, ['reviewer-threads']);
+  const botOnly = decideGate(withViewer('PraiseZhu', { unresolvedThreads: [botThread('t1')], selfFindingsAtHead: SELF_FINDINGS }));
+  assert.equal(botOnly.stage, 'review');
+  assert.deepEqual(botOnly.pendingGates, ['bot-threads']);
+  const resolved = decideGate(withViewer('PraiseZhu', { unresolvedThreads: [], selfFindingsAtHead: SELF_FINDINGS }));
+  assert.equal(resolved.stage, 'review');
+  assert.equal(resolved.reason, '前置门全部通过,送服务器审查');
+});
+
 test('只缺界面证据、其他门都过:打回要证据,同时送审代码', () => {
   const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
   const first = decideGate(ctx({ format: evidence, gate: { gatePass: true }, auto: { action: 'pushback-format' } }));

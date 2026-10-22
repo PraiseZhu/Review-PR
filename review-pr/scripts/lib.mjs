@@ -3708,6 +3708,30 @@ export function isAutomatedViewerReview(review, viewerLogin) {
 }
 
 /**
+ * [MIVO-PATCH self-findings] 作者就是审查账号时,审查机在当前 head 上已发过的问题清单 review。
+ * GitHub 不许对自己的 PR 发 Request Changes,审查机只能发 COMMENTED,PR 永远没有 CHANGES_REQUESTED;
+ * 每次审查又新开 thread、刷新 updatedAt,前置审查会当成「状态变化」反复送审同一 head(#1191 同一 head 16 次)。
+ * 这里认出「已在当前 head 打回」的事实:viewer 本人提交、作者也是 viewer、正文带
+ * `<!-- review-pr:findings head=<当前 head>`。没有就返回 null。兼容 REST 与 context 两种字段形态。
+ */
+const FINDINGS_HEAD_RE = /<!--\s*review-pr:findings\s+head=([0-9a-f]{40})\b/i;
+export function selectSelfFindingsAtHead(reviews, { viewerLogin, authorLogin, headSha } = {}) {
+  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  const author = String(authorLogin ?? '').trim().toLowerCase();
+  const head = String(headSha ?? '').trim().toLowerCase();
+  if (!viewer || author !== viewer || !/^[0-9a-f]{40}$/.test(head)) return null;
+  let latest = null;
+  for (const review of Array.isArray(reviews) ? reviews : []) {
+    const login = String(review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
+    const marked = FINDINGS_HEAD_RE.exec(String(review?.body ?? ''))?.[1]?.toLowerCase();
+    if (login !== viewer || marked !== head) continue;
+    const submittedAt = String(review?.submittedAt ?? review?.submitted_at ?? '');
+    if (!latest || submittedAt > latest.submittedAt) latest = { id: review?.id ?? null, submittedAt };
+  }
+  return latest;
+}
+
+/**
  * [MIVO-PATCH self-review] 审查账号上维护者本人仍有效的 Request Changes。
  * GitHub 与 latestSubstantiveReviews 都按登录名只留最后一条实质 review,审查机后发的
  * CR / Approve 会盖掉更早的人工 CR(#941:人工 CR 5506920945 被审查机 CR 5512930585 盖掉)。

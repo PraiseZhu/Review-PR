@@ -224,6 +224,13 @@ export function decideGate(ctx) {
   if (unresolved > 0 && threadPendingGates === null) return threadsResult;
   const pendingGates = threadPendingGates ?? [];
   const reviewableThreadsOnly = pendingGates.length > 0;
+  // [self-findings] 作者就是审查账号、审查机已在当前 head 发过问题清单、自己留的 thread 还没 resolve:
+  // 再审只会得到同样结论、再开一条 thread、再触发下一轮(#1191 同一 head 送审 16 次)。按 thread 卡住,
+  // 等作者推新提交;审查机的 thread 全部 resolve 后照常重审,与他人 PR「viewer 自己的 CR + thread 全 resolve → 重审」同口径。
+  if (pendingGates.includes('reviewer-threads') && gate.selfFindingsAtHead) {
+    return { ...threadsResult,
+      reason: `审查机已在当前 head 发过问题清单(作者即审查账号,发不了 Request Changes),${unresolved} 条 conversation 未 resolve;等作者推新提交,不重复送审` };
+  }
 
   // 3. 受保护路径 / 格式 / CI / 其他前置门(沿用 context.auto 的确定性分流)
   const withSignoff = (decision) => ({ ...decision, actions: [...signoffActions, ...(decision.actions ?? [])] });
