@@ -19,7 +19,7 @@ test('长轮中没有自写证据的说明或普通评论变化必须唤醒同�
   const rows = snapshot(2).map((pr) => ({ ...pr, updatedAt: new Date(startedAt).toISOString() }));
   const manifest = createCandidateList({ repo: 'o/r', snapshot: rows, now: startedAt });
   const plan = makeReviewPlan(manifest, contexts(rows));
-  const results = plan.groups.flatMap((group) => group.prs.map((item) => result(plan, item, 'ci-pending')));
+  const results = plan.groups.flatMap((group) => group.prs.map((item) => result(plan, item, 'merge-blocked')));
   const payload = collectRoundResults(plan, results);
   const state = nextRoundState(plan, payload, {}, now);
   const changedAt = new Date(startedAt + 30 * 60 * 1000).toISOString();
@@ -34,7 +34,7 @@ for (const unresolved of [0, 3]) {
     const rows = snapshot(1).map((pr) => ({ ...pr, unresolved: 2, updatedAt: new Date(startedAt).toISOString() }));
     const manifest = createCandidateList({ repo: 'o/r', snapshot: rows, now: startedAt });
     const plan = makeReviewPlan(manifest, contexts(rows));
-    const payload = collectRoundResults(plan, [result(plan, plan.groups[0].prs[0], 'ci-pending')]);
+    const payload = collectRoundResults(plan, [result(plan, plan.groups[0].prs[0], 'merge-blocked')]);
     const state = nextRoundState(plan, payload, {}, now);
     const changed = [{ ...rows[0], unresolved, updatedAt: new Date(now - 5000).toISOString() }];
     const selected = createCandidateList({ repo: 'o/r', snapshot: changed, state, now: now + 1000 });
@@ -49,7 +49,7 @@ test('审查机自己的写动作只改 updatedAt 时不再选中同一个 head;
   const rows = snapshot(1).map((p) => ({ ...p, updatedAt: new Date(before).toISOString() }));
   const manifest = createCandidateList({ repo: 'o/r', snapshot: rows, now: before });
   const plan = makeReviewPlan(manifest, contexts(rows));
-  const payload = collectRoundResults(plan, [{ ...result(plan, plan.groups[0].prs[0], 'ci-pending'),
+  const payload = collectRoundResults(plan, [{ ...result(plan, plan.groups[0].prs[0], 'merge-blocked'),
     selfWriteReceipts: [{ repo: 'o/r', pr: 1, head: rows[0].head,
       beforeUpdatedAt: rows[0].updatedAt, updatedAt: new Date(now - 5000).toISOString() }] }]);
   const state = nextRoundState(plan, payload, {}, now);

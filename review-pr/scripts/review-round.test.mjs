@@ -45,7 +45,7 @@ test('preflight wakes on status-only changes and failed attempts', () => {
   const rows = snapshot(1);
   const manifest = createCandidateList({ repo: 'o/r', snapshot: rows, now });
   const plan = makeReviewPlan(manifest, contexts(rows));
-  const payload = collectRoundResults(plan, [result(plan, plan.groups[0].prs[0], 'ci-pending')]);
+  const payload = collectRoundResults(plan, [result(plan, plan.groups[0].prs[0], 'merge-blocked')]);
   const state = nextRoundState(plan, payload, {}, now);
   const select = (data = rows, time = now + 1, saved = state, mode = 'auto') => createCandidateList({ repo: 'o/r', snapshot: data, state: saved, now: time, mode });
   assert.equal(select().candidates.length, 0);
@@ -59,6 +59,9 @@ test('preflight wakes on status-only changes and failed attempts', () => {
   const bot = nextRoundState(plan, collectRoundResults(plan, [result(plan, plan.groups[0].prs[0], 'bot-pending')]), {}, now);
   assert.equal(select(rows, now + 299_999, bot).candidates.length, 0);
   assert.equal(select(rows, now + 300_000, bot).candidates.length, 1);
+  const ci = nextRoundState(plan, collectRoundResults(plan, [result(plan, plan.groups[0].prs[0], 'ci-pending')]), {}, now);
+  assert.equal(select(rows, now + 299_999, ci).candidates.length, 0);
+  assert.equal(select(rows, now + 300_000, ci).candidates.length, 1);
   assert.equal(createCandidateList({ repo: 'o/r', snapshot: [{ ...rows[0], isDraft: true }], now }).candidates.length, 0);
   assert.equal(createCandidateList({ repo: 'o/r', snapshot: [], now }).candidates.length, 0);
 });
