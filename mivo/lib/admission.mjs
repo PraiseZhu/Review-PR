@@ -51,12 +51,19 @@ export function toBusyPrs(plans = []) {
   return busy;
 }
 
+// 判门已收尾、没进服务器审查的 PR 提前从轮次释放,不再等同轮别的 PR 的服务器审查跑完(状态标签曾因此晚摘 9~31 分钟)。
+// 等 CI / 等机器人:照旧释放。等作者或等别的状态(冲突、要改、讨论未 resolve 等):只在判门没有执行任何动作时释放,
+// 释放后下一轮会重判一次,有动作的结果(提醒、重跑 CI、确认 issue)重判会重复执行,所以留在原轮次。
+const DEFERRED_GATE_OUTCOMES = new Set(['ci-pending', 'bot-pending']);
+const IDLE_GATE_OUTCOMES = new Set(['conflict', 'changes-requested', 'ci-unknown', 'retarget', 'merge-blocked', 'threads-unresolved']);
+
 export function canReleaseDeferredGate({ task, result, roundId, dispatchIntent = null }) {
+  const releasable = DEFERRED_GATE_OUTCOMES.has(result?.outcome)
+    || (IDLE_GATE_OUTCOMES.has(result?.outcome) && Array.isArray(result.gate?.actions) && result.gate.actions.length === 0);
   return task?.phase === 'complete' && String(task.agentId ?? '').startsWith(`mini-gate:${task.pr}:`)
     && dispatchIntent === null && result?.runId === roundId && result.pr === task.pr
     && result.head === task.head && result.base === task.base && result.mode === 'review-only'
-    && result.enteredReview === false && result.reviewed === false
-    && ['ci-pending', 'bot-pending'].includes(result.outcome)
+    && result.enteredReview === false && result.reviewed === false && releasable
     && Array.isArray(result.errors) && result.errors.length === 0 && result.retry !== true;
 }
 

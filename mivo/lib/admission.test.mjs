@@ -85,6 +85,21 @@ test('暂缓判门只释放已收尾、绑定正确且无服务器派发的等�
   assert.equal(canReleaseDeferredGate({ ...input, result: null }), false);
 });
 
+test('等作者的判门结果没有执行动作时也提前释放,有动作就留在原轮次', () => {
+  const task = { pr: 1148, head: 'head', base: 'base', phase: 'complete', agentId: 'mini-gate:1148:done' };
+  const result = { pr: 1148, head: 'head', base: 'base', runId: 'round', mode: 'review-only',
+    enteredReview: false, reviewed: false, errors: [], gate: { stage: 'threads', actions: [] } };
+  for (const outcome of ['conflict', 'changes-requested', 'ci-unknown', 'retarget', 'merge-blocked', 'threads-unresolved']) {
+    assert.equal(canReleaseDeferredGate({ task, result: { ...result, outcome }, roundId: 'round' }), true, outcome);
+    assert.equal(canReleaseDeferredGate({ task, result: { ...result, outcome, gate: { actions: [{ script: 'signoff-hold' }] } }, roundId: 'round' }), false, outcome);
+    assert.equal(canReleaseDeferredGate({ task, result: { ...result, outcome, gate: undefined }, roundId: 'round' }), false, outcome);
+    assert.equal(canReleaseDeferredGate({ task, result: { ...result, outcome, retry: true }, roundId: 'round' }), false, outcome);
+  }
+  for (const outcome of ['ci-failed', 'protected', 'security', 'format', 'rebase', 'maintainer-signoff', 'error']) {
+    assert.equal(canReleaseDeferredGate({ task, result: { ...result, outcome }, roundId: 'round' }), false, outcome);
+  }
+});
+
 test('已释放暂缓结果只在候选查询中请求重判,不修改共享状态或覆盖更新轮次', () => {
   const state = { version: 1, mode: 'review-only', prs: { 1025: { retry: false },
     1071: { retry: false, roundCreatedAt: '2026-10-18T02:00:00Z' } } };

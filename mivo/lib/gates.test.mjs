@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch, toSignoffReleaseArgs } from './gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, isProtectedPathHit, toProtectedDispatch, toSignoffReleaseArgs, STATUS_LABELS, toClosedStatusLabelRemovals } from './gates.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { toProtectedHoldWake } from './admission.mjs';
@@ -833,4 +833,27 @@ test('代码扫描三态随服务器结果回传(Mini 用它做唤醒基线):通
   assert.deepEqual(watch([CODEQL], { rules: null, rulesError: 'HTTP 502' }), { required: true, state: 'transient' });
   assert.equal(toCodeScanWatch({ ...PASS, codeScanning: { rules: [], rulesError: null, checks: [] } }), null);
   for (const bad of [null, undefined, 'x', { ok: false, error: 'boom' }]) assert.equal(toCodeScanWatch(bad), null, JSON.stringify(bad));
+});
+
+test('STATUS_LABELS 与 review-pr DISPLAY_LABELS 的 status 组一致', () => {
+  const lib = readFileSync(new URL('../../review-pr/scripts/lib.mjs', import.meta.url), 'utf8');
+  const names = [...lib.matchAll(/'(status:[a-z-]+)': \{ group: 'status'/g)].map((m) => m[1]);
+  assert.deepEqual([...STATUS_LABELS].sort(), names.sort());
+});
+
+test('已关闭 PR 只删受管 status 标签,开放 PR、issue 和别的标签不碰', () => {
+  const items = [
+    { number: 1161, state: 'closed', pull_request: {}, labels: [{ name: 'status:awaiting-bot-review' }, { name: 'touches:rules' }, { name: 'review:merge-ready' }] },
+    { number: 731, state: 'closed', pull_request: {}, labels: [{ name: 'status:conflict' }] },
+    { number: 1209, state: 'open', pull_request: {}, labels: [{ name: 'status:threads-open' }] },
+    { number: 900, state: 'closed', labels: [{ name: 'status:conflict' }] },
+    { number: 901, state: 'closed', pull_request: {}, labels: [{ name: 'touches:core' }] },
+    { number: 'x', state: 'closed', pull_request: {}, labels: [{ name: 'status:conflict' }] },
+    null,
+  ];
+  assert.deepEqual(toClosedStatusLabelRemovals(items), [
+    { pr: 1161, labels: ['status:awaiting-bot-review'] },
+    { pr: 731, labels: ['status:conflict'] },
+  ]);
+  assert.deepEqual(toClosedStatusLabelRemovals(undefined), []);
 });
