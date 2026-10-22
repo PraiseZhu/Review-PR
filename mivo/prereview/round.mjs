@@ -413,18 +413,24 @@ function wakeCiFailedPrs(openIssues, busy = new Set()) {
 
 // ── 已关闭 / 合并的 PR 摘掉 status 标签 ─────────────────────────────────────
 // 关闭的 PR 不再进轮次,合并前挂上的 status:* 没人摘(2026-10-22 统计 16 个,多数是 awaiting-bot-review)。
-// 每 10 分钟最多搜一次「已关闭且带受管 status 标签」的 PR,逐个删。只在 live 模式;只删 status 组;任何失败只记日志,不影响接单。
+// 每 10 分钟最多查一次:每个受管 status 标签读一次 REST issues 列表(state=closed,只读第一页 100 条),逐个删。
+// 不用搜索接口:Mini 的读请求走 GitHub App,上线首轮用 search/issues 没查到任何 PR。
+// 只在 live 模式;只删 status 组;任何失败只记日志,不影响接单。
 function sweepClosedPrLabels() {
   if (CONFIG.mode !== 'live' || FENCED) return;
   try {
     const file = stateFile('closed-label-sweep.json');
     if (Date.now() - (Date.parse(readJson(file, {})?.at) || 0) < CLOSED_LABEL_SWEEP_EVERY_MS) return;
-    const q = `repo:${CONFIG.targetRepo} is:pr is:closed label:${STATUS_LABELS.map((name) => `"${name}"`).join(',')}`;
-    const found = ghRead(['api', '--method', 'GET', 'search/issues', '-f', `q=${q}`, '-f', 'per_page=100'], { allowFail: true });
-    if (!found.ok) { log('closed-label-sweep-skip', { reason: found.stderr.trim().slice(0, 200) }); return; }
+    const items = new Map();
+    const readErrors = [];
+    for (const label of STATUS_LABELS) {
+      const found = ghRead(['api', '--method', 'GET', `repos/${CONFIG.targetRepo}/issues`, '-f', 'state=closed', '-f', `labels=${label}`, '-f', 'per_page=100'], { allowFail: true });
+      if (!found.ok) { readErrors.push(`${label}:${found.stderr.trim().slice(0, 120)}`); continue; }
+      for (const item of JSON.parse(found.stdout)) items.set(item?.number, item);
+    }
     const removed = [];
-    const failed = [];
-    for (const { pr, labels } of toClosedStatusLabelRemovals(JSON.parse(found.stdout).items)) {
+    const failed = [...readErrors];
+    for (const { pr, labels } of toClosedStatusLabelRemovals([...items.values()])) {
       for (const label of labels) {
         const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${pr}/labels/${encodeURIComponent(label)}`],
           { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
@@ -432,8 +438,8 @@ function sweepClosedPrLabels() {
         else failed.push(`${pr}:${label}:${r.stderr.trim().slice(0, 120)}`);
       }
     }
-    writeJson(file, { at: nowIso(), removed, failed });
-    if (removed.length || failed.length) log('closed-label-sweep', { removed, failed });
+    writeJson(file, { at: nowIso(), scanned: items.size, removed, failed });
+    if (removed.length || failed.length) log('closed-label-sweep', { scanned: items.size, removed, failed });
   } catch (error) {
     log('closed-label-sweep-skip', { reason: String(error?.message ?? error).slice(0, 200) });
   }
