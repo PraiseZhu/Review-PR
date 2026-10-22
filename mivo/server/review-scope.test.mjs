@@ -129,3 +129,49 @@ for (const [name, evidence, prevHead, anchored] of [
     } finally { rmSync(work, { recursive: true, force: true }); }
   });
 }
+
+// #124:同一版本的问题都已被采信的盯梢裁决覆盖 → prepare 判沿用(不跑模型),publish 按裁决重判阻断后放行;对不上的照旧打回。
+for (const [name, adjudicatedKey, expected] of [
+  ['裁决覆盖了全部问题:放行,报告单列裁决', 'aaaaaaaaaaaa', 'approval'],
+  ['裁决对不上这条问题:照旧打回', 'cccccccccccc', 'findings'],
+]) {
+  test(`沿用 + 盯梢裁决:${name}`, () => {
+    const work = mkdtempSync(join(tmpdir(), 'mivo-review-adjudicated-'));
+    try {
+      for (const dir of ['input', 'out', 'repo', 'prev']) mkdirSync(join(work, dir), { recursive: true });
+      writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: {} }));
+      writeFileSync(join(work, 'input', 'pr.diff'), DIFF);
+      const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: SHA, base: SHA, tier: 'standard', prevRunId: '41',
+        roundId: 'round-12345678', attempt: 1, mode: 'dry-run', action: 'review', skillSha: SHA, runId: '42', runUrl: '' };
+      const scope = { mode: 'reuse', reason: '同一版本的问题都已裁决,不再跑模型,按裁决出结论', files: [], previousFindings: [OLD_FINDING], basedOn: SHA };
+      const adjudication = { threadId: 'T1', key: adjudicatedKey, path: 'src/other.ts', line: 40, bugClass: null, severity: 'P1', head: SHA,
+        verdict: 'invalid', std: 'eced0deeeaa8', by: 'codex/gpt-6-astra', url: 'https://github.com/o/r/pull/7#discussion_r1' };
+      writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [], errors: [],
+        context: { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'https://github.com/o/r/pull/7',
+          evidence: { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, baseRefName: 'main', viewerIsAuthor: false },
+        current: { specDigest: 'spec-new', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [], settledKeys: [adjudicatedKey] },
+        previous: { head: SHA, runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' },
+        scope, deferrals: { verified: [], rejected: [] }, adjudications: { verified: [adjudication], rejected: [] }, codex: { attempts: [] } }));
+      writeFileSync(join(work, 'prev', 'result.json'), JSON.stringify({ head: SHA, reviewEvidence: { diffHash: 'd1', baseRefName: 'main' },
+        mivo: { findings: [OLD_FINDING], deferred: [], specDigest: 'spec-new', lastFullReviewAt: '2026-10-10T12:00:00Z' } }));
+      writeFileSync(join(work, 'prev', 'report.md'), OLD_REPORT);
+      const r = spawnSync(process.execPath, [REVIEW, 'publish'], { env: { ...process.env, MIVO_REVIEW_WORK: work, GH_TOKEN: '', CHECKS_TOKEN: '' }, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      const result = JSON.parse(readFileSync(join(work, 'out', 'result.json'), 'utf8'));
+      const report = readFileSync(join(work, 'out', 'report.md'), 'utf8');
+      assert.equal(result.outcome, expected, JSON.stringify(result));
+      if (expected === 'approval') {
+        assert.equal(result.reviewClean, true);
+        assert.deepEqual(result.mivo.findings, []);
+        assert.deepEqual(result.mivo.adjudicatedKept.map((f) => [f.key, f.verdict, f.url]), [['aaaaaaaaaaaa', 'invalid', adjudication.url]]);
+        assert.match(report, /已采信的盯梢裁决/);
+        assert.match(report, /pass —— 没有阻断的 P0\/P1\/P2。另有 1 条/);
+        assert.doesNotMatch(report, /changes-requested/);
+      } else {
+        assert.deepEqual(result.mivo.findings.map((f) => f.key), ['aaaaaaaaaaaa']);
+        assert.deepEqual(result.mivo.adjudicatedKept, []);
+        assert.doesNotMatch(report, /已采信的盯梢裁决/);
+      }
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+}

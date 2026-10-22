@@ -30,7 +30,7 @@ flowchart LR
 | `lib/prompt.mjs` | 审查任务书：规范原文取自本仓 `review-pr/SKILL.md` 第 5 节、pr-worker 第 3 节、rule-map。增量轮有一条优先规则：复审只看本轮变化的文件、上一轮的问题和它们直接影响到的路径，不再对完整 diff 做最终复核（维护者 R14「复审只审 diff」、2026-10-14「复审只看新改动」）。`specDigest` 由同一份确定性清单算出：固定模板（全量、增量两种写法都算）与分级、选档说明、规范原文、rule-map、所有 PR 必读的文件、按改动路径命中的规则文件（按 base 取，取不到回退 head 并告警）、生效配置与答卷 schema |
 | `lib/code-scan.mjs` | 挂 `review:merge-ready` 之前的代码扫描 / 代码质量门：读目标分支生效的 `code_scanning` / `code_quality` 规则（`rules/branches/<base>`，Mini 侧按 base 缓存 30 分钟）和 head 上的 check run，规则要求 CodeQL 时它必须是明确的 success；Mini 摘标签只认稳定不通过（见「`review:merge-ready` 的补充规则」末尾） |
 | `lib/deferrals.mjs` | 审查问题转 issue 跟进：解析 PR 说明里的登记、核验 issue、汇总 |
-| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书；thread 带 `mivo-finding` marker 时把 key 一起带出来 |
+| `lib/rulings.mjs` | 维护者裁定不改：从审查机 thread 里找维护者的裁定回复，核验后写进任务书；thread 带 `mivo-finding` marker 时把 key 一起带出来。盯梢裁决记录的收集与核对（见下文「盯梢裁决」） |
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
@@ -266,6 +266,32 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 维护者 2026-10-15 要求盯梢全自动把 PR 推到可合并。原来复审规则是「thread 被 resolve 不算证据，没修好的照常再报」：盯梢核实某条 P0/P1 不成立、带依据回复并 resolve 后，审查机下一轮会把同一条再报一遍，来回 6 轮就卡死，只能等人。
 
 现在服务器 `prepare` 从 context 的全部 review thread 里收集作者一方的申辩：thread 由审查账号开、首条是 `[P0]`/`[P1]`，回复人是 PR 作者（作者本人，或用作者账号回帖的盯梢）；取最后一条回复，去掉 HTML 注释和引用，最多 600 字，最多 20 条。任务书多一节「作者对以前问题的申辩（逐条核对）」：审查模型要在 PR head 上自己核对依据，成立（问题在当前 head 上不存在，或属于 PR 正文写明的产品意图）就不再报，在 Rule coverage 写「申辩成立」；依据不成立或核对不了照常报，并写明为什么不成立。申辩不是放行，P0 照常报。
+
+### 盯梢裁决（#124，总 issue #122）
+
+申辩仍由审查模型重判，两边各执一词时会来回重审。维护者 2026-10-22 决定：盯梢修复会话与审查意见各执一词时，开裁决 Worker 按统一分级（`config/severity.md`）终审；裁决判「不成立」或「够不上必修（P3）」，审查机核对后认并放行，不以卡 PR 为目标。
+
+盯梢以审查账号回帖、resolve，给人看的说明之后附一行机读记录（盯梢回执标记也在同一条回帖里）：
+
+```
+<!-- mivo-ruling v=1 key=<12 位问题 key> head=<裁决时的 head> verdict=invalid|p3 std=<统一分级版本> by=<裁决者> task=<派单 id> -->
+```
+
+服务器 `prepare` 用 `lib/rulings.mjs` 的 `collectAdjudications` 收集并逐条核对，全部满足才采信：
+
+- 回帖人是审查账号，且同一条回帖带 `mivo-watcher-receipt` 标记；
+- 记录里的 key 等于这条 thread 首条评论 `mivo-finding` 标记的 key；
+- 原问题是 P1 或 P2（P0 一律不认）；
+- `std` 等于当前统一分级版本（`prompt.mjs` 的 `SEVERITY_VERSION`）；
+- 裁决之后相关文件没改：当前 head 就是裁决 head，或裁决 head 是当前 head 的祖先且 `git diff --quiet <裁决 head> <当前 head> -- <文件>` 无改动（`confirmAdjudications`）。
+
+采信的效果：
+
+- 模型本轮仍报了同一条问题（key 相同，或同文件、同问题类型、行号相差不超过 3 行），由代码移出阻断，报告单列「已采信的盯梢裁决」并链接裁决回帖；P0 永不移出。
+- 同一版本、代码没变、上一轮的阻断问题全部被采信裁决覆盖时，不再跑模型：范围判沿用（`lib/scope.mjs` 的 `settledByAdjudication`），发布时按裁决重判，重写报告的 Findings 与结论（`adjudicatedReuseReport`），没有剩余问题就放行。
+- 不认的裁决写进结果包 warnings，写明原因；这些问题照旧按申辩由模型重判。
+
+已知局限：第一阶段只认「审查账号 + 盯梢回执」，同账号的其他进程也能写出这一行；换独立机器人身份见 #122 待定决策。
 
 ## 已修旧问题的 thread 代 resolve
 

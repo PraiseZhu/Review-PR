@@ -12,12 +12,12 @@ import { fileURLToPath } from 'node:url';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope } from '../lib/scope.mjs';
-import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats } from '../lib/report.mjs';
-import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection } from '../lib/convergence.mjs';
-import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources } from '../lib/prompt.mjs';
+import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats } from '../lib/report.mjs';
+import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
+import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary } from '../lib/deferrals.mjs';
-import { collectRulings, collectRebuttals } from '../lib/rulings.mjs';
+import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudications } from '../lib/rulings.mjs';
 import { buildThreadResolutionPlan } from '../lib/thread-resolution.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
@@ -175,6 +175,12 @@ async function prepare() {
     for (const r of state.rulings.rejected) state.warnings.push(`裁定不改没有采用(${r.path ?? r.threadId}):${r.reason}`);
     // 3d. 作者申辩:作者一方在审查机 thread 里说明不成立的依据,任务书要求逐条核对(见 lib/rulings.mjs)。
     state.rebuttals = collectRebuttals({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, author: ctx.meta?.author });
+    // 3e. 盯梢裁决(见 lib/rulings.mjs):先核对记录本身,再用 git 核对裁决之后相关文件有没有改过;核验通过的 P1/P2 不再阻断。
+    const adjudications = collectAdjudications({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, standardVersion: SEVERITY_VERSION });
+    const confirmed = confirmAdjudications({ verified: adjudications.verified, head: input.head,
+      codeState: (rulingHead, path) => adjudicationCodeState(rulingHead, path, input.head) });
+    state.adjudications = { verified: confirmed.verified, rejected: [...adjudications.rejected, ...confirmed.rejected] };
+    for (const r of state.adjudications.rejected) state.warnings.push(`盯梢裁决没有采信(${r.path ?? r.threadId}):${r.reason}`);
 
     // 4. 审查范围(增量复审,方案第 8 节)。上一轮结果来自上一次 run 的 artifact。
     const diffText = readFileSync(diffFile, 'utf8');
@@ -210,6 +216,8 @@ async function prepare() {
     }
     // 规则改版沿用转 issue 的问题前,要本轮仍核验通过(collectDeferrals 已在上面跑过,这里不再请求网络)。
     current.verifiedDeferralIssues = (state.deferrals?.verified ?? []).map((d) => d.issue);
+    // 同一版本的阻断问题都已被采信裁决覆盖时不再跑模型(lib/scope.mjs settledByAdjudication)。
+    current.settledKeys = (state.adjudications?.verified ?? []).map((a) => a.key);
     let headIsDescendant = null;
     if (previous?.head && previous.head !== input.head) {
       run('git', [...gitAuth, 'fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', previous.head], { cwd: REPO_DIR, allowFail: true });
@@ -252,6 +260,17 @@ function readJobStart(input) {
   const view = api(`repos/${input.workflowRepo}/actions/runs/${input.runId}`);
   return pickJobStart({ runJson: parse(view) }) ??
     { at: null, from: null, error: `读不到作业开始时间:${(view.stderr || jobs.stderr || '').trim().slice(0, 200) || '返回内容没有时间字段'}` };
+}
+
+// 裁决 head 到当前 head 之间,相关文件有没有改过。裁决 head 不是当前 head 的祖先(rebase/强推)按改过算;git 读失败按核对不了。
+function adjudicationCodeState(rulingHead, path, head) {
+  if (!path) return 'unknown';
+  git(['fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', rulingHead], { allowFail: true, timeoutMs: 120_000 });
+  const ancestor = git(['merge-base', '--is-ancestor', rulingHead, head], { allowFail: true, timeoutMs: 60_000 });
+  if (ancestor.status === 1) return 'changed';
+  if (ancestor.status !== 0) return 'unknown';
+  const diff = git(['diff', '--quiet', rulingHead, head, '--', path], { allowFail: true, timeoutMs: 120_000 });
+  return diff.status === 0 ? 'unchanged' : diff.status === 1 ? 'changed' : 'unknown';
 }
 
 function prepareProtectedApprove(state, ctx) {
@@ -698,7 +717,7 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
   const roundIndex = roundIndexOf({ previousRound: state.previousRound ?? null, hasPrevious: Boolean(state.previous), history });
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
-    history, rulings: state.rulings?.verified ?? [], head: state.input.head });
+    history, rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], head: state.input.head });
   return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100, preexisting: checked.preexisting.length > 100 } };
 }
 
@@ -764,6 +783,7 @@ async function publish() {
     let deferred = [];
     let preexisting = [];
     let ruledKept = [];
+    let adjudicatedKept = [];
     let convergence = null;
     let verifierRefuted = [];
     let verifierDowngraded = [];
@@ -783,7 +803,12 @@ async function publish() {
       ruledKept = previous.mivo?.ruledKept ?? [];
       convergence = previous.mivo?.convergence ?? null;
       verifierOverruled = previous.mivo?.verifierOverruled ?? [];
-      report = reusedReport({ previousReport: readFileSync(join(WORK, 'prev', 'report.md'), 'utf8'), scope: state.scope });
+      // 沿用的阻断问题被采信的盯梢裁决覆盖时按裁决重判(#124),报告的 Findings/Overall 跟着改写;没有覆盖就原样沿用。
+      ({ findings, adjudicatedKept } = splitAdjudicated(findings, state.adjudications?.verified ?? []));
+      const previousReport = readFileSync(join(WORK, 'prev', 'report.md'), 'utf8');
+      report = adjudicatedKept.length
+        ? adjudicatedReuseReport({ previousReport, scope: state.scope, findings, adjudicatedKept })
+        : reusedReport({ previousReport, scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
       // 沿用不重跑收口:来源的收口记录原样带过去(head/runId 还是原来那次的),不改写成本轮。
       for (const key of ['finalFull', 'finalFullContext']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
@@ -833,7 +858,8 @@ async function publish() {
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
-      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, verifierOverruled, rulings: state.rulings?.verified });
+      adjudicatedKept = (checked.adjudicatedKept ?? []).map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
+      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, adjudicatedKept, verifierOverruled, rulings: state.rulings?.verified });
       convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
         rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
       // 因核对员模型不可用没核的 P1/P2(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
@@ -846,7 +872,7 @@ async function publish() {
         ? computeHandoffStats({ review: handoffReview, coverage: handoffCoverage, meta: checked.handoffCoverageMeta ?? {}, findings, head: input.head, runId: input.runId }) : null;
       if (handoffReview) Object.assign(result.mivo, { handoffReview: toHandoffSnapshot(handoffReview), handoffCoverage, handoffCoverageMeta: checked.handoffCoverageMeta ?? {}, ...(handoffStats ? { handoffStats } : {}) });
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
-        preexisting, ruledKept, verifierRefuted, verifierDowngraded,
+        preexisting, ruledKept, adjudicatedKept, verifierRefuted, verifierDowngraded,
         verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier,
@@ -869,7 +895,7 @@ async function publish() {
     const allOverruled = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
-    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, convergence,
+    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, adjudicatedKept, convergence,
       rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, verifierOverruledAll: allOverruled, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
@@ -953,7 +979,7 @@ function baseResult(state) {
       filePatchHashes: current.filePatchHashes, filePatchHashesV2: current.filePatchHashesV2, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       ...(state.handoff?.review ? { handoffReview: toHandoffSnapshot(state.handoff.review) } : {}),
-      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], convergence: null, verifierOverruled: [], completedAt: null,
+      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], adjudicatedKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },
   };
 }
@@ -1158,8 +1184,8 @@ function commentReceipt(comment) {
 
 // ── 已修旧 thread 代 resolve(#115)──────────────────────────────────────────────
 // 本轮报出 / 分类 / 裁定过的 key 全集;分类被截断、缺 key 时返回 complete=false,调用方不得据此代 resolve。
-function resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, verifierOverruled, rulings }) {
-  const items = [...(checked.findings ?? []), ...findings, ...deferred, ...preexisting, ...ruledKept, ...verifierOverruled, ...(rulings ?? [])];
+function resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, adjudicatedKept = [], verifierOverruled, rulings }) {
+  const items = [...(checked.findings ?? []), ...findings, ...deferred, ...preexisting, ...ruledKept, ...adjudicatedKept, ...verifierOverruled, ...(rulings ?? [])];
   const keys = new Set();
   let complete = !Object.values(checked.truncated ?? {}).some(Boolean);
   for (const item of items) {

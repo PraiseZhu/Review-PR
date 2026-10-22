@@ -1,8 +1,10 @@
 // convergence.mjs — 审查收敛:同一问题跨轮用同一个 key,连续多轮没修好时提醒回头看方案,带 key 的维护者裁定自动复核。纯函数。
 // 只提示、不改结论:同一条 P0/P1/P2 连续 3 轮(含)以上报出,报告插一节「收敛提示」,阻断与否不变;不停审、不放行。
 // 裁定复核:维护者对某个 key 裁定不改的 P1,模型本轮仍报了就移出阻断(单列在报告里);P0 永不移出阻断。
+// 裁决复核(#124):盯梢裁决席判不成立/P3、服务器核验通过的 P1/P2,模型本轮仍报了同样移出阻断(adjudicatedKept)。
 import { createHash } from 'node:crypto';
 import { findingKeyOf, findingMarker, parseFindingMarker, renderFindingBody, titleOfBody } from './finding.mjs';
+import { matchAdjudication } from './rulings.mjs';
 
 export const STUCK_ROUNDS = 3;
 const FINDING_RE = /^\s*\[(P[012])\]/;
@@ -61,11 +63,12 @@ const severityOf = (item) => item.severity ?? item.body?.match(FINDING_RE)?.[1] 
  * @param {object} p.scope computeReviewScope 的结果 @param {number|null} p.roundIndex
  * @param {{roundIndex,findings,keys}|null} p.previousRound @param {object} p.history collectMarkerHistory 的结果
  * @param {{key?:string, by:string}[]} p.rulings 服务器核验通过的裁定 @param {string} p.head
+ * @param {object[]} [p.adjudications] 服务器核验通过、代码也没改过的盯梢裁决(rulings.mjs confirmAdjudications)
  */
-export function applyConvergence({ findings = [], preexisting = [], deferred = [], scope = null, roundIndex = null, previousRound = null, history, rulings = [], head }) {
+export function applyConvergence({ findings = [], preexisting = [], deferred = [], scope = null, roundIndex = null, previousRound = null, history, rulings = [], adjudications = [], head }) {
   const hist = history ?? collectMarkerHistory({});
   const rulingKeys = new Set(rulings.map((r) => r.key).filter(Boolean));
-  const known = new Set([...(previousRound?.keys ?? []), ...hist.byKey.keys(), ...rulingKeys]);
+  const known = new Set([...(previousRound?.keys ?? []), ...hist.byKey.keys(), ...rulingKeys, ...adjudications.map((a) => a.key).filter(Boolean)]);
   const previousBlocking = new Map((previousRound?.findings ?? []).map((f) => [f.key, f.seenRounds]));
   const legacyCount = (scope?.previousFindings ?? []).length;
   // uid:本轮单条 finding 的身份(内容摘要 + 内容完全相同时的出现次序)。key 是跨轮的稳定标识,不同位置的同名问题会共用一个 key,
@@ -99,6 +102,7 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
   };
 
   const ruledKept = [];
+  const adjudicatedKept = [];
   let rulingViolations = 0;
   const blocking = [];
   for (const item of findings.map(keyed)) {
@@ -106,6 +110,11 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
     if (ruling) rulingViolations += 1;
     if (ruling && ['P1', 'P2'].includes(item.severity)) {
       ruledKept.push({ key: item.key, severity: item.severity, path: item.path, line: item.line ?? null, title: item.title ?? titleOfBody(item.body), rulingBy: ruling.by });
+      continue;
+    }
+    const adjudication = matchAdjudication(adjudications, item);
+    if (adjudication) {
+      adjudicatedKept.push(toAdjudicatedKept(item, adjudication));
       continue;
     }
     blocking.push(item);
@@ -116,7 +125,25 @@ export function applyConvergence({ findings = [], preexisting = [], deferred = [
     roundIndex, repeatCount: blocking.filter((f) => f.seenRounds >= 2).length, lateCount: blocking.filter((f) => f.late).length,
     rulingViolations, rethink: stuck.length > 0, stuckKeys: stuck.map((s) => s.key),
   };
-  return { findings: blocking, preexisting: preexisting.map(keyed), deferred: deferred.map(keyed), ruledKept, stuck, convergence };
+  return { findings: blocking, preexisting: preexisting.map(keyed), deferred: deferred.map(keyed), ruledKept, adjudicatedKept, stuck, convergence };
+}
+
+/** 被采信裁决移出阻断的问题:结果包与报告只留定位、标题和裁决出处。 */
+export function toAdjudicatedKept(finding, adjudication) {
+  return { key: finding.key, severity: finding.severity, path: finding.path, line: finding.line ?? null, title: finding.title ?? titleOfBody(finding.body),
+    verdict: adjudication.verdict, by: adjudication.by ?? null, url: adjudication.url ?? null, rulingHead: adjudication.head };
+}
+
+/** 沿用上一轮结论时同样按已采信裁决重判阻断(不重算 key)。 */
+export function splitAdjudicated(findings = [], adjudications = []) {
+  const blocking = [];
+  const adjudicatedKept = [];
+  for (const finding of findings) {
+    const adjudication = matchAdjudication(adjudications, finding);
+    if (adjudication) adjudicatedKept.push(toAdjudicatedKept(finding, adjudication));
+    else blocking.push(finding);
+  }
+  return { findings: blocking, adjudicatedKept };
 }
 
 /** 报告里的「收敛提示」一节;不需要提示时返回空数组。 */
