@@ -273,6 +273,74 @@ test('机器人在当前 head 上的 check 跑完算表态', () => {
   assert.deepEqual(botCheckActivity(null, cfg), []);
 });
 
+// 2026-10-22:Greptile 不再必等。Cindy 把 greptile 放 quietExtraBots;Mivo 没有 Copilot/Codex
+// 必等对象,reviewers 为空。check 跑完不算「评论/review」,不启动 5 分钟静默。
+const GREPTILE_QUIET_CFG = {
+  enabled: true,
+  reviewers: [],
+  quietMinutes: 5,
+  quietExtraBots: ['greptile-apps'],
+  maxWaitMinutes: 15,
+};
+
+test('静默期:reviewers 为空时 Greptile 不回也不必等,CI 绿后立即 settled', () => {
+  const HEAD = '2026-10-22T00:00:00Z';
+  const at = (min) => new Date(Date.parse(HEAD) + min * 60_000).toISOString();
+  const r = evaluateBotSettle({
+    headCommittedDate: HEAD, nowIso: at(1), activity: [], cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(r.settled, true, `不应再等 Greptile 表态 -> ${r.reason}`);
+  assert.equal(r.timedOut, false);
+  assert.deepEqual(r.pending, []);
+  assert.doesNotMatch(r.reason, /未启用/);
+  const checkOnly = botCheckActivity([
+    { name: 'Greptile Review', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: at(0.5) },
+  ], GREPTILE_QUIET_CFG);
+  assert.deepEqual(checkOnly, [], '生产配置不配 checkNames,check 跑完不会进 activity');
+  const afterCheck = evaluateBotSettle({
+    headCommittedDate: HEAD, nowIso: at(1), activity: checkOnly, cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(afterCheck.settled, true);
+});
+
+test('静默期:Greptile 在当前 head 上发了评论后,从最新活动再静默 5 分钟', () => {
+  const HEAD = '2026-10-22T00:00:00Z';
+  const at = (min) => new Date(Date.parse(HEAD) + min * 60_000).toISOString();
+  const activity = [{ author: 'greptile-apps[bot]', at: at(2) }];
+  const waiting = evaluateBotSettle({
+    headCommittedDate: HEAD, nowIso: at(4), activity, cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(waiting.settled, false, `评论后未满 5 分钟应等 -> ${waiting.reason}`);
+  assert.match(waiting.reason, /静默/);
+  const ready = evaluateBotSettle({
+    headCommittedDate: HEAD, nowIso: at(7.1), activity, cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(ready.settled, true);
+  assert.equal(ready.timedOut, false);
+});
+
+test('静默期:Greptile 持续活动时总上限 15 分钟封顶,计时从 head/推送/转 Ready 最晚者起', () => {
+  const HEAD = '2026-10-22T00:00:00Z';
+  const at = (min) => new Date(Date.parse(HEAD) + min * 60_000).toISOString();
+  const chatter = [{ author: 'greptile-apps', at: at(14.8) }];
+  const stillQuiet = evaluateBotSettle({
+    headCommittedDate: HEAD, nowIso: at(14.9), activity: chatter, cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(stillQuiet.settled, false, '14.9 分钟静默未满且未到上限');
+  const capped = evaluateBotSettle({
+    headCommittedDate: HEAD, nowIso: at(15.1), activity: chatter, cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(capped.settled, true);
+  assert.equal(capped.timedOut, true);
+  assert.equal(capped.maxWaitMinutes, 15);
+  const fromReady = evaluateBotSettle({
+    headCommittedDate: HEAD, readyForReviewAt: at(10), nowIso: at(20),
+    activity: [{ author: 'greptile-apps', at: at(19.5) }], cfg: GREPTILE_QUIET_CFG,
+  });
+  assert.equal(fromReady.settled, false, '转 Ready 才 10 分钟,总上限从转 Ready 起算尚未满 15');
+  assert.equal(fromReady.waitAnchor, 'ready');
+});
+
 // [MIVO-PATCH bot-settle-ready] 静默期上限从「转 Ready 的时间」和 head 提交时间里较晚的一个起算。
 // 2026-10-17 #1081:先当 74 分钟 Draft,转 Ready 时距 head 提交已超 30 分钟上限,第一轮就按「超时」放行,Greptile 2 分钟后才到。
 const READY_CFG = { reviewers: ['greptile-apps'], quietMinutes: 5, maxWaitMinutes: 30, checkNames: { 'greptile-apps': 'Greptile Review' } };
@@ -525,6 +593,22 @@ test('静默期:上一 head 上 Greptile 没表态(超时放行)时,即使 patch
   });
   assert.equal(r.settled, false, '上一 head 是超时放行,不能当成已表态沿用');
   assert.deepEqual(r.pending, ['greptile-apps']);
+});
+
+test('静默期:新口径下只合 main 仍立即放行,Greptile 事后评论仍要静默 5 分钟(#1150)', () => {
+  const r = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    cfg: GREPTILE_QUIET_CFG,
+    previousSettle: undefined,
+  });
+  assert.equal(r.settled, true, '不必等 Greptile 对合 main 的新 head 再表态');
+  assert.equal(r.timedOut, false);
+  const noisy = evaluateBotSettle({
+    ...BASE_ONLY_NEW_HEAD,
+    cfg: GREPTILE_QUIET_CFG,
+    activity: [{ author: 'greptile-apps', at: '2026-10-21T05:44:30Z' }],
+  });
+  assert.equal(noisy.settled, false, '合 main 后 Greptile 又评论:仍要 5 分钟静默');
 });
 
 test('静默期:上一 head 表态读不到或未证明只合 main 时退回原规则(等),不放宽', () => {
@@ -1316,6 +1400,17 @@ test('Mivo 生产配置:产品/UI 门关闭,admin 以外的作者缺界面证据
   assert.equal(rules.signoffGate.product.requireUiEvidence, 'non-admin');
   assert.equal(uiEvidenceNeedsAdminLookup(rules), true);
   assert.ok(rules.signoffGate.product.uiPaths.includes('src/'));
+});
+
+test('Mivo 生产配置:Greptile 只进 quietExtraBots,不设必等 reviewers,上限 15 分钟', () => {
+  const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  const settle = rules.botReviewSettle;
+  assert.deepEqual(settle.reviewers, []);
+  assert.deepEqual(settle.quietExtraBots, ['greptile-apps']);
+  assert.equal(settle.quietMinutes, 5);
+  assert.equal(settle.maxWaitMinutes, 15);
+  assert.equal(settle.checkNames, undefined);
+  assert.doesNotMatch(settle._comment, /27\.5/);
 });
 
 test('「效果展示」第一行写「不涉及」:配了 acceptNotApplicable 就不再要求界面证据', () => {

@@ -206,17 +206,14 @@
     "maxDaysBehind": 3
   },
   "botReviewSettle": {
-    "_comment": "Mivo 上 Copilot / Codex bot 基本不出结果,只等 greptile:表态(提交 review、行内评论,或它在当前 head 上的 check 跑完——checkNames)后再静默 5 分钟,从 head push 起最多等 30 分钟(实测中位 27.5 分钟)。",
+    "_comment": "Mivo 上 Copilot / Codex 基本不出结果,不设必等机器人。Greptile 与 Cindy 一样只进 quietExtraBots:不回就不等;发了评论/review 后从最新活动再静默 5 分钟。从 head 的提交、推送、转 Ready 三个时间里最晚的一个起,最多等 15 分钟。",
     "enabled": true,
-    "reviewers": [
+    "reviewers": [],
+    "quietMinutes": 5,
+    "quietExtraBots": [
       "greptile-apps"
     ],
-    "quietMinutes": 5,
-    "quietExtraBots": [],
-    "checkNames": {
-      "greptile-apps": "Greptile Review"
-    },
-    "maxWaitMinutes": 30
+    "maxWaitMinutes": 15
   },
   "securityScan": {
     "semgrepConfigs": [
