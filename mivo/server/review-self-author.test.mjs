@@ -38,8 +38,11 @@ function makeRoot() {
   mkdirSync(join(root, 'mivo', 'lib'), { recursive: true });
   mkdirSync(join(root, 'mivo', 'server'), { recursive: true });
   mkdirSync(join(root, 'review-pr', 'scripts'), { recursive: true });
+  mkdirSync(join(root, 'mivo', 'config'), { recursive: true });
   for (const file of readdirSync(LIB_DIR).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))) copyFileSync(join(LIB_DIR, file), join(root, 'mivo', 'lib', file));
   for (const file of ['review.mjs', 'codex.mjs', 'keys.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
+  // prompt.mjs 加载时读统一分级(单一来源 mivo/config/severity.md)。
+  copyFileSync(join(LIB_DIR, '..', 'config', 'severity.md'), join(root, 'mivo', 'config', 'severity.md'));
   copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'self-write-receipts.mjs'),
     join(root, 'review-pr', 'scripts', 'self-write-receipts.mjs'));
   // review.mjs 读分流日志汇总用的 gh-read-route.mjs(及它搬运的分类器)。

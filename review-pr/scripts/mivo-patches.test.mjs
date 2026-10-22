@@ -2500,3 +2500,13 @@ test('p2-blocking: 三个新增上游文件已登记,口径不再写 P2 不报',
   assert.match(ruleMap, /\[MIVO-PATCH p2-blocking\]/);
   assert.match(worker, /P0\/P1\/P2/);
 });
+
+test('severity-standard: 第 5 节 P2 一句指向统一分级,不再写「规范违反或必要测试缺口」', () => {
+  const root = new URL('../../', import.meta.url);
+  const skill = readFileSync(new URL('review-pr/SKILL.md', root), 'utf8');
+  assert.doesNotMatch(skill, /规范违反或必要测试缺口/);
+  assert.match(skill, /误导性的测试、自己定的验收没达成、声称做过的验证实际没做/);
+  assert.match(skill, /`mivo\/config\/severity\.md`/);
+  assert.match(skill, /\[MIVO-PATCH severity-standard\]/);
+  assert.ok(readFileSync(new URL('mivo/config/severity.md', root), 'utf8').includes('P2 必修的三类'));
+});
