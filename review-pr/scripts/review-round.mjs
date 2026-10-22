@@ -558,7 +558,9 @@ export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
       reviewClean: result.reviewClean === true,
       ...(result.approval ? { approval: result.approval } : {}),
       retry: result.retry === true || ['error', 'state-changed', 'merge-queued', 'approval-pending'].includes(result.outcome) || result.approval?.status === 'pending' || Boolean(result.errors?.length) || result.fixHandoff?.status === 'stale' || result.authorNotice?.status === 'failed' || result.targetBranchNotice?.status === 'failed',
-      retryAt: result.outcome === 'bot-pending' ? formatLocalIso(now + 5 * 60 * 1000) : null,
+      // 等 CI 也要定时重判:只读 Actions 才看得到的检查(如 Code Quality)跑完时,指纹里的 ci 聚合和 mergeStateStatus 都可能不变,
+      // 不定时就一直算「没变化」被跳过(2026-10-22 #1173)。
+      retryAt: ['bot-pending', 'ci-pending'].includes(result.outcome) ? formatLocalIso(now + 5 * 60 * 1000) : null,
       ...(roundCreatedAt ? { roundRunId: plan.runId, roundCreatedAt } : {}) };
   }
   // A skipped unchanged PR was still observed this round.  Refresh its
