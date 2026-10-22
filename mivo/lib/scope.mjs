@@ -139,10 +139,10 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
   const after = (useV2 ? current.filePatchHashesV2 : current.filePatchHashes) ?? {};
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((path) => before[path] !== after[path]).sort();
-  // 同一版本上审查机的阻断问题都已被核验通过的盯梢裁决覆盖(#124):再跑模型只会换个说法重报,
+  // 同一版本上审查机的阻断问题都已被核验通过的盯梢裁决(#124)或按 key 转的 issue(#127)覆盖:再跑模型只会换个说法重报,
   // 沿用上一轮,由发布阶段按裁决重判阻断(review.mjs);P0 不算覆盖。
   if (previous.head === current.head && changed.length === 0 && settledByAdjudication(previous, current)) {
-    return reuse(previous, '同一版本的问题都已裁决,不再跑模型,按裁决出结论');
+    return reuse(previous, '同一版本的问题都已裁决或转 issue,不再跑模型,按裁决与转 issue 出结论');
   }
   if (specChanged) {
     if (changed.length > 0) return full('审查任务书或规则变了');
@@ -300,7 +300,8 @@ function reuse(previous, reason) {
   return { mode: 'reuse', reason, files: [], previousFindings: [...(previous.findings ?? []), ...(previous.deferred ?? [])], basedOn: previous.head };
 }
 
-// current.settledKeys:本轮核验通过、代码也没改过的盯梢裁决覆盖的问题 key(review.mjs 在 prepare 里算)。
+// current.settledKeys:本轮核验通过、代码也没改过的盯梢裁决,以及核验通过的转 issue 里按 key 登记的问题(#127);
+// review.mjs 在 prepare 里算。
 // 上一轮每条阻断问题都要被覆盖;转 issue 的问题本轮仍须核验通过。
 function settledByAdjudication(previous, current) {
   const settled = new Set(current.settledKeys ?? []);

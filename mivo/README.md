@@ -163,6 +163,7 @@ Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功�
 
 - 服务器 `prepare` 逐条读 issue，只采用同时满足这些条件的：在本仓（没被转移）、是 issue 不是 PR、OPEN、开 issue 的人是 PR 作者或维护者、标题或正文提到本 PR。没采用的写进报告并说明原因。
 - 任务书只列采用的 issue。审查模型只能把和它们是同一问题（同一根因、同一触发路径）的 P1 标成 `deferredTo`；对不上或拿不准的照常阻断。`publish` 再核一遍：P0、或 issue 不在采用名单里的，照常阻断。
+- 按问题 key 转（#127）：采用的 issue 正文里有 `<!-- mivo-defer key=<12 位> class=… path=… -->` 时，key 对得上的 P1/P2 直接记为转到这个 issue，不靠模型判断；P0 照常阻断。盯梢的裁决 Worker 开不成时就是这样把审查账号的 P1/P2 转出去的。同一 head、代码没变、上一轮阻断问题都被盯梢裁决或按 key 转 issue 覆盖时，不再跑模型，沿用上一轮结论并按这两者重判阻断。
 - 转 issue 的 P1 不开 thread、不阻断。没有其他 P0/P1 时照常 Approve、check `review-pr` 写 success、挂 `review:merge-ready`。报告单列「已转 issue 跟进的问题（不阻断本 PR）」，check 标题写明几条 P1 已转 issue。这不是免审：问题照样写在报告里。
 - 打回时，只要阻断问题里有 P1，报告结论下面会附上这套做法。
 - issue 关闭或从 PR 说明里删掉登记后就不再算。上一轮有转 issue 的问题时不沿用上一轮结论，每次重审都重新核验；已经发出的 Approve 要等下一次重审才会变。放行后加 `review:merge-ready` 标签只会让 PR 的 `updatedAt` 前移，不再单独触发重审（见下面「审查机自己的写动作」）。

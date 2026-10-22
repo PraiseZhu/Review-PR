@@ -143,7 +143,7 @@ for (const [name, adjudicatedKey, expected] of [
       writeFileSync(join(work, 'input', 'pr.diff'), DIFF);
       const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: SHA, base: SHA, tier: 'standard', prevRunId: '41',
         roundId: 'round-12345678', attempt: 1, mode: 'dry-run', action: 'review', skillSha: SHA, runId: '42', runUrl: '' };
-      const scope = { mode: 'reuse', reason: '同一版本的问题都已裁决,不再跑模型,按裁决出结论', files: [], previousFindings: [OLD_FINDING], basedOn: SHA };
+      const scope = { mode: 'reuse', reason: '同一版本的问题都已裁决或转 issue,不再跑模型,按裁决与转 issue 出结论', files: [], previousFindings: [OLD_FINDING], basedOn: SHA };
       const adjudication = { threadId: 'T1', key: adjudicatedKey, path: 'src/other.ts', line: 40, bugClass: null, severity: 'P1', head: SHA,
         verdict: 'invalid', std: 'eced0deeeaa8', by: 'codex/gpt-6-astra', url: 'https://github.com/o/r/pull/7#discussion_r1' };
       writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [], errors: [],
@@ -175,3 +175,37 @@ for (const [name, adjudicatedKey, expected] of [
     } finally { rmSync(work, { recursive: true, force: true }); }
   });
 }
+
+// #127:同一版本的问题都被按 key 转的 issue 覆盖 → publish 移到已转 issue,放行;报告单列已转 issue。
+test('沿用 + 按 key 转 issue:放行,问题记为已转 issue', () => {
+  const work = mkdtempSync(join(tmpdir(), 'mivo-review-keydefer-'));
+  try {
+    for (const dir of ['input', 'out', 'repo', 'prev']) mkdirSync(join(work, dir), { recursive: true });
+    writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: {} }));
+    writeFileSync(join(work, 'input', 'pr.diff'), DIFF);
+    const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: SHA, base: SHA, tier: 'standard', prevRunId: '41',
+      roundId: 'round-12345678', attempt: 1, mode: 'dry-run', action: 'review', skillSha: SHA, runId: '42', runUrl: '' };
+    const scope = { mode: 'reuse', reason: '同一版本的问题都已裁决或转 issue,不再跑模型,按裁决与转 issue 出结论', files: [], previousFindings: [OLD_FINDING], basedOn: SHA };
+    const deferral = { issue: 55, title: '转 issue 跟进 #7', url: 'https://github.com/o/r/issues/55', opener: 'a', text: '#55',
+      keys: [{ key: 'aaaaaaaaaaaa', bugClass: null, line: null, path: 'src/a.ts' }] };
+    writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [], errors: [],
+      context: { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'https://github.com/o/r/pull/7',
+        evidence: { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, baseRefName: 'main', viewerIsAuthor: false },
+      current: { specDigest: 'spec-new', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [], settledKeys: ['aaaaaaaaaaaa'] },
+      previous: { head: SHA, runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' },
+      scope, deferrals: { verified: [deferral], rejected: [] }, adjudications: { verified: [], rejected: [] }, codex: { attempts: [] } }));
+    writeFileSync(join(work, 'prev', 'result.json'), JSON.stringify({ head: SHA, reviewEvidence: { diffHash: 'd1', baseRefName: 'main' },
+      mivo: { findings: [OLD_FINDING], deferred: [], specDigest: 'spec-new', lastFullReviewAt: '2026-10-10T12:00:00Z' } }));
+    writeFileSync(join(work, 'prev', 'report.md'), OLD_REPORT);
+    const r = spawnSync(process.execPath, [REVIEW, 'publish'], { env: { ...process.env, MIVO_REVIEW_WORK: work, GH_TOKEN: '', CHECKS_TOKEN: '' }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const result = JSON.parse(readFileSync(join(work, 'out', 'result.json'), 'utf8'));
+    const report = readFileSync(join(work, 'out', 'report.md'), 'utf8');
+    assert.equal(result.outcome, 'approval', JSON.stringify(result));
+    assert.deepEqual(result.mivo.findings, []);
+    assert.deepEqual(result.mivo.deferred.map((f) => [f.key, f.deferredTo]), [['aaaaaaaaaaaa', 55]]);
+    assert.match(report, /已转 issue 跟进的问题/);
+    assert.match(report, /pass —— 没有阻断的 P0\/P1\/P2。另有 1 条 P1\/P2 已转 issue 跟进\(#55\)/);
+    assert.doesNotMatch(report, /changes-requested/);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

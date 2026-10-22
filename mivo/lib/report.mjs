@@ -397,14 +397,21 @@ export function reusedReport({ previousReport, scope }) {
 }
 
 /**
- * 沿用上一轮结论、其中的阻断问题有被采信的盯梢裁决覆盖时(#124):Findings 与 Overall 按剩下的问题重写,
- * 在 Rule coverage 前单列采信的裁决,避免同一条报告前面写「已采信」、结论还写「打回」。
+ * 沿用上一轮结论、其中的阻断问题有被采信的盯梢裁决(#124)或按 key 转的 issue(#127)覆盖时:Findings 与 Overall 按剩下的问题重写,
+ * 在 Rule coverage 前单列采信的裁决与已转 issue 的问题(旧报告里的「已转 issue」一节先去掉,不重复),
+ * 避免同一条报告前面写「已采信」、结论还写「打回」。
  */
-export function adjudicatedReuseReport({ previousReport, scope, findings = [], adjudicatedKept = [] }) {
-  const lines = replaceFindingsSection(String(previousReport ?? '').trim().split('\n'), findings);
+export function adjudicatedReuseReport({ previousReport, scope, findings = [], adjudicatedKept = [], deferred = [], deferralsRejected = [] }) {
+  let lines = replaceFindingsSection(String(previousReport ?? '').trim().split('\n'), findings);
+  lines = dropSection(lines, DEFERRED_SECTION);
+  const summary = toDeferredSummary(deferred);
+  const extras = [
+    ...(summary ? [`另有 ${summary.text}，不阻断。`] : []),
+    ...(adjudicatedKept.length ? [`另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`] : []),
+  ].join('');
   const conclusion = findings.length
-    ? `changes-requested —— ${findings.length} 条 P0/P1/P2，已在对应位置开 review thread。另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`
-    : `pass —— 没有阻断的 P0/P1/P2。另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`;
+    ? `changes-requested —— ${findings.length} 条 P0/P1/P2，已在对应位置开 review thread。${extras}`
+    : `pass —— 没有阻断的 P0/P1/P2。${extras}`;
   const overallIndex = lines.findIndex((line) => /^## Overall\s*$/.test(line));
   if (overallIndex >= 0) {
     let next = overallIndex + 1;
@@ -412,11 +419,20 @@ export function adjudicatedReuseReport({ previousReport, scope, findings = [], a
     if (next < lines.length && /^(pass|changes-requested)\b/.test(lines[next].trim())) lines[next] = conclusion;
     else lines.splice(overallIndex + 1, 0, '', conclusion);
   } else lines.push('', '## Overall', '', conclusion);
-  const section = renderAdjudicatedSection(adjudicatedKept);
+  const section = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderAdjudicatedSection(adjudicatedKept)];
   const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
   if (coverageIndex >= 0) lines.splice(coverageIndex, 0, ...(lines[coverageIndex - 1]?.trim() ? [''] : []), ...section);
   else lines.push('', ...section);
   return reusedReport({ previousReport: lines.join('\n'), scope });
+}
+
+// 去掉某个二级标题开头的一节(到下一个二级标题为止);没有就原样返回。
+function dropSection(lines, heading) {
+  const start = lines.findIndex((line) => line.trim() === heading);
+  if (start < 0) return lines;
+  let end = start + 1;
+  while (end < lines.length && !/^## /.test(lines[end])) end += 1;
+  return [...lines.slice(0, start), ...lines.slice(end)];
 }
 
 // 发布前最后一道:报告和问题里出现高置信凭证格式就替换掉。审查 agent 读得到 runner 上的文件,

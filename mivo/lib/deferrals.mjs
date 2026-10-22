@@ -103,9 +103,32 @@ export function verifyDeferrals({ entries, repo, pr, prUrl, author, maintainers,
       reject(`issue 标题和正文都没有提到本 PR(#${pr} 或 PR 链接)`);
       continue;
     }
-    verified.push({ issue: entry.issue, title: clip(issue.title, 200), url: String(issue.html_url ?? ''), opener, text: entry.text });
+    verified.push({ issue: entry.issue, title: clip(issue.title, 200), url: String(issue.html_url ?? ''), opener, text: entry.text,
+      keys: parseDeferralKeys(issue.body) });
   }
   return { verified, rejected };
+}
+
+// 盯梢裁决开不成时转的 issue(#127)正文带问题 key 标记,审查机按 key 认,不靠模型判断「是不是同一问题」。
+// 只读核验通过的 issue;同一 issue 可登记多条。
+const DEFER_KEY_RE = /<!--\s*mivo-defer\s+key=([0-9a-f]{12})(?:\s+class=([A-Za-z0-9_-]{1,60}))?(?:\s+line=(\d{1,7}))?(?:\s+path=(\S{1,300}?))?\s*-->/g;
+export const MAX_DEFERRAL_KEYS = 20;
+
+/** issue 正文里的问题 key 标记:{key, bugClass, line, path}[],去重,最多 20 条。 */
+export function parseDeferralKeys(body) {
+  const seen = new Set();
+  const keys = [];
+  for (const m of String(body ?? '').matchAll(DEFER_KEY_RE)) {
+    if (seen.has(m[1]) || keys.length >= MAX_DEFERRAL_KEYS) continue;
+    seen.add(m[1]);
+    keys.push({ key: m[1], bugClass: m[2] ?? null, line: m[3] ? Number(m[3]) : null, path: m[4] ?? null });
+  }
+  return keys;
+}
+
+/** 核验通过的转 issue 里按 key 登记的问题,展开成可匹配的条目(带 issue 号)。 */
+export function keyedDeferrals(verified = []) {
+  return verified.flatMap((d) => (d.keys ?? []).map((k) => ({ ...k, issue: d.issue })));
 }
 
 /** 把 `gh api repos/<repo>/issues/<n>` 的 run() 结果转成 readIssue 的返回值。 */
