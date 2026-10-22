@@ -16,7 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
-import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason } from '../lib/gates.mjs';
+import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason, STATUS_LABELS, toClosedStatusLabelRemovals } from '../lib/gates.mjs';
 import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord } from '../lib/code-scan.mjs';
 import { inBusinessWindow } from '../lib/health.mjs';
 import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
@@ -42,6 +42,7 @@ const KEY_STATUS_VARIABLE = 'MIVO_REVIEW_KEY_STATUS';
 const PRIMARY_SECRET = 'LITELLM_CREDENTIALS_JSON';
 // 代码扫描状态对照:每隔 10 分钟对开放 PR 里服务器记过三态的各读一次 head 的 check run(REST),最多看 30 个。
 const CODE_SCAN_SWEEP_EVERY_MS = 10 * 60_000;
+const CLOSED_LABEL_SWEEP_EVERY_MS = 10 * 60_000;
 const CODE_SCAN_MAX_WATCHED = 30;
 // 仓库副本每周手动 gc 一次(后台 gc 已关,见 setupEnv)。
 const REPO_GC_EVERY_MS = 7 * 24 * 60 * 60_000;
@@ -410,6 +411,34 @@ function wakeCiFailedPrs(openIssues, busy = new Set()) {
   }
 }
 
+// ── 已关闭 / 合并的 PR 摘掉 status 标签 ─────────────────────────────────────
+// 关闭的 PR 不再进轮次,合并前挂上的 status:* 没人摘(2026-10-22 统计 16 个,多数是 awaiting-bot-review)。
+// 每 10 分钟最多搜一次「已关闭且带受管 status 标签」的 PR,逐个删。只在 live 模式;只删 status 组;任何失败只记日志,不影响接单。
+function sweepClosedPrLabels() {
+  if (CONFIG.mode !== 'live' || FENCED) return;
+  try {
+    const file = stateFile('closed-label-sweep.json');
+    if (Date.now() - (Date.parse(readJson(file, {})?.at) || 0) < CLOSED_LABEL_SWEEP_EVERY_MS) return;
+    const q = `repo:${CONFIG.targetRepo} is:pr is:closed label:${STATUS_LABELS.map((name) => `"${name}"`).join(',')}`;
+    const found = ghRead(['api', '--method', 'GET', 'search/issues', '-f', `q=${q}`, '-f', 'per_page=100'], { allowFail: true });
+    if (!found.ok) { log('closed-label-sweep-skip', { reason: found.stderr.trim().slice(0, 200) }); return; }
+    const removed = [];
+    const failed = [];
+    for (const { pr, labels } of toClosedStatusLabelRemovals(JSON.parse(found.stdout).items)) {
+      for (const label of labels) {
+        const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${pr}/labels/${encodeURIComponent(label)}`],
+          { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
+        if (r.ok || /404/.test(r.stderr)) removed.push(`${pr}:${label}`);
+        else failed.push(`${pr}:${label}:${r.stderr.trim().slice(0, 120)}`);
+      }
+    }
+    writeJson(file, { at: nowIso(), removed, failed });
+    if (removed.length || failed.length) log('closed-label-sweep', { removed, failed });
+  } catch (error) {
+    log('closed-label-sweep-skip', { reason: String(error?.message ?? error).slice(0, 200) });
+  }
+}
+
 // ── 绕过必需检查合入、又没写原因的 PR:提醒一次 ─────────────────────────────────
 // 子脚本 bypass-reason.mjs 自己限流(一小时最多真正扫一次)、自己记账、自己只读 GitHub 后才发评论;这里只管调用。
 // 失败、超时、抛异常都只记日志,绝不影响本轮接单。只在 live 模式调用,沙箱和干跑不碰真实仓库的评论。
@@ -483,6 +512,7 @@ async function main() {
   }
   if (busyAtStart) wakeHeldPrs(busyAtStart);
   sweepBypassReminders();
+  sweepClosedPrLabels();
   for (const markerName of ['protected-hold-wake.json', 'protected-author-release-wake.json']) {
     try { wakeProtectedHoldOnce(markerName); } catch (error) {
       log('wake-protected-hold-skip', { marker: markerName, reason: error.message.slice(0, 200) });
@@ -629,6 +659,7 @@ async function admitLoop(token, digest, drives) {
     try {
       if (!refreshLock(token)) continue;
       writeHeartbeat();
+      sweepClosedPrLabels();
       // Mini 上检出了新 SHA:不再用内存里的旧代码开新轮,手上的跑完退出,launchd 用新代码拉起。
       if (!ADMISSION_CLOSED && skillHead() !== SKILL_HEAD) closeAdmission('skill-updated');
       const hold = Boolean(deployHold());

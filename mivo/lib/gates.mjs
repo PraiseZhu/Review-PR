@@ -441,6 +441,20 @@ const STALE_MERGE_READY_OUTCOMES = new Set([
  * GitHub 的 BLOCKED 多半只是「等维护者 Approve」,是带标签 PR 的常态,不算失效。
  * @returns {string|null} 失效原因;null = 不摘。
  */
+// 受管的 status 组展示标签,与 review-pr/scripts/lib.mjs DISPLAY_LABELS 里 group=status 的名字一致(gates.test.mjs 核对)。
+export const STATUS_LABELS = ['status:awaiting-author', 'status:conflict', 'status:ci-failed', 'status:threads-open', 'status:blocked-by-pr',
+  'status:needs-human', 'status:auto-fixing', 'status:awaiting-bot-review', 'status:ci-running'];
+
+/** 已关闭 / 合并 PR 的搜索结果 → 要删掉的 status 标签。只看受管 status 组,别的标签(touches、人工标签)不碰。 */
+export function toClosedStatusLabelRemovals(items = [], managed = STATUS_LABELS) {
+  const allowed = new Set(managed);
+  return (items ?? []).flatMap((item) => {
+    if (!item?.pull_request || item.state !== 'closed' || !Number.isSafeInteger(item.number)) return [];
+    const labels = (item.labels ?? []).map((label) => label?.name).filter((name) => allowed.has(name));
+    return labels.length ? [{ pr: item.number, labels }] : [];
+  });
+}
+
 export function toStaleMergeReadyReason({ decision, meta, codeScan = null } = {}) {
   if (meta?.mergeStateStatus === 'DIRTY' || meta?.mergeable === 'CONFLICTING') {
     return `与 base 有冲突(mergeStateStatus=${meta.mergeStateStatus ?? '?'},mergeable=${meta.mergeable ?? '?'})`;
