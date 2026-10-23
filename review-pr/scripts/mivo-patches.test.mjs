@@ -2510,3 +2510,22 @@ test('severity-standard: 第 5 节 P2 一句指向统一分级,不再写「规�
   assert.match(skill, /\[MIVO-PATCH severity-standard\]/);
   assert.ok(readFileSync(new URL('mivo/config/severity.md', root), 'utf8').includes('P2 必修的三类'));
 });
+
+test('severity-standard: 第 5 节严重度段不把缺必要测试、权威规范违反直接列为 P1,并指向统一分级重判(2026-10-23)', () => {
+  const root = new URL('../../', import.meta.url);
+  const skill = readFileSync(new URL('review-pr/SKILL.md', root), 'utf8');
+  const sec = skill.slice(skill.indexOf('## 5. 分档审查'), skill.indexOf('\n## 6.'));
+  const direct = /必要测试缺口|缺必要测试|违反适用(权威)?规范|权威规范违反/;
+  const qualifier = /不单独|不能单独|不凭|不直接|不自动|重新判|重判|实际影响/;
+  const bad = sec.split('\n').filter((l) => direct.test(l) && /P[012]/.test(l) && !qualifier.test(l));
+  assert.deepEqual(bad, []);
+  assert.doesNotMatch(sec, /P1 = 明显 bug、权威规范违反/);
+  assert.match(sec, /「记 P1」[\s\S]{0,120}按实际影响重新判/);
+  assert.match(sec, /`mivo\/config\/severity\.md`/);
+  assert.match(skill, /\[MIVO-PATCH severity-standard-2\]/);
+  assert.doesNotMatch(sec, /P0 = [^\n]*(恶意代码|越权)/);
+  assert.match(sec, /真实凭证或个人数据进 diff、恶意代码、越权、来路不明 install 钩子或数据外发,按实际影响判 P0\/P1\/P2/);
+  const patches = readFileSync(new URL('MIVO-PATCHES.md', root), 'utf8');
+  assert.match(patches, /2026-10-23/);
+  assert.match(patches, /severity-standard/);
+});
