@@ -2522,6 +2522,9 @@ test('severity-standard: 第 5 节严重度段不把缺必要测试、权威规�
   assert.doesNotMatch(sec, /P1 = 明显 bug、权威规范违反/);
   assert.match(sec, /「记 P1」[\s\S]{0,120}按实际影响重新判/);
   assert.match(sec, /`mivo\/config\/severity\.md`/);
+  assert.match(skill, /\[MIVO-PATCH severity-standard-2\]/);
+  assert.doesNotMatch(sec, /P0 = [^\n]*(恶意代码|越权)/);
+  assert.match(sec, /真实凭证或个人数据进 diff、恶意代码、越权、来路不明 install 钩子或数据外发,按实际影响判 P0\/P1\/P2/);
   const patches = readFileSync(new URL('MIVO-PATCHES.md', root), 'utf8');
   assert.match(patches, /2026-10-23/);
   assert.match(patches, /severity-standard/);
