@@ -41,9 +41,9 @@ test('统一分级的关键约束写进任务书', () => {
 
 // 2026-10-23:任务书各处不得把「缺必要测试 / 违反适用规范」直接等同于 P0/P1/P2(与 severity.md 第 28-29 行矛盾)。
 // 逐行查:同一行既点名这类情形又写了 P0/P1/P2 档位,必须同时带「不单独 / 重新判」之类的限定。
-export const DIRECT_GRADE_RE = /必要测试缺口|缺必要测试|违反适用(权威)?规范|权威规范违反/;
-export const GRADE_QUALIFIER_RE = /不单独|不能单独|不凭|不直接|不自动|重新判|重判|实际影响/;
-export const directGradeLines = (text) => String(text).split('\n')
+const DIRECT_GRADE_RE = /必要测试缺口|缺必要测试|违反适用(权威)?规范|权威规范违反/;
+const GRADE_QUALIFIER_RE = /不单独|不能单独|不凭|不直接|不自动|重新判|重判|实际影响/;
+const directGradeLines = (text) => String(text).split('\n')
   .filter((l) => DIRECT_GRADE_RE.test(l) && /P[012]/.test(l) && !GRADE_QUALIFIER_RE.test(l));
 
 test('任务书不把缺必要测试或违反适用规范直接定为 P0/P1/P2(各档、全量与增量)', () => {

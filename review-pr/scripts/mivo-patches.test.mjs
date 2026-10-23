@@ -2520,7 +2520,7 @@ test('severity-standard: 第 5 节严重度段不把缺必要测试、权威规�
   const bad = sec.split('\n').filter((l) => direct.test(l) && /P[012]/.test(l) && !qualifier.test(l));
   assert.deepEqual(bad, []);
   assert.doesNotMatch(sec, /P1 = 明显 bug、权威规范违反/);
-  assert.match(sec, /「记 P1」[^\n]*(按实际影响重判|重新判)/);
+  assert.match(sec, /「记 P1」[\s\S]{0,120}按实际影响重新判/);
   assert.match(sec, /`mivo\/config\/severity\.md`/);
   const patches = readFileSync(new URL('MIVO-PATCHES.md', root), 'utf8');
   assert.match(patches, /2026-10-23/);
