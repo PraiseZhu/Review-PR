@@ -39,6 +39,31 @@ test('统一分级的关键约束写进任务书', () => {
   assert.match(text, /仅 P3 不报/);
 });
 
+// 2026-10-23:任务书各处不得把「缺必要测试 / 违反适用规范」直接等同于 P0/P1/P2(与 severity.md 第 28-29 行矛盾)。
+// 逐行查:同一行既点名这类情形又写了 P0/P1/P2 档位,必须同时带「不单独 / 重新判」之类的限定。
+export const DIRECT_GRADE_RE = /必要测试缺口|缺必要测试|违反适用(权威)?规范|权威规范违反/;
+export const GRADE_QUALIFIER_RE = /不单独|不能单独|不凭|不直接|不自动|重新判|重判|实际影响/;
+export const directGradeLines = (text) => String(text).split('\n')
+  .filter((l) => DIRECT_GRADE_RE.test(l) && /P[012]/.test(l) && !GRADE_QUALIFIER_RE.test(l));
+
+test('任务书不把缺必要测试或违反适用规范直接定为 P0/P1/P2(各档、全量与增量)', () => {
+  const scopes = {
+    full: { mode: 'full', reason: '没有上一轮审查记录' },
+    incremental: { mode: 'incremental', reason: '增量', files: ['a.ts'], previousFindings: [] },
+    finalFull: { mode: 'full', purpose: 'final-full', reason: '放行前收口', previousFindings: [] },
+  };
+  for (const tier of ['light', 'standard', 'heavy']) {
+    for (const [name, scope] of Object.entries(scopes)) {
+      assert.deepEqual(directGradeLines(prompt(tier, { scope })), [], `${tier}/${name} 仍把缺测试或规范违反直接定级`);
+    }
+  }
+  assert.deepEqual(directGradeLines(PRODUCT_INTENT), []);
+  const text = prompt();
+  assert.doesNotMatch(text, /违反适用规范或缺必要测试可构成 P2/);
+  assert.doesNotMatch(text, /已核实违反适用权威规范、存在实际缺陷或必要测试缺口的,按 P0\/P1\/P2 报告/);
+  assert.match(text, /单纯缺测试、违反规范不单独构成 P2/);
+});
+
 // #122/#123:审查机、核对员、盯梢修复会话与裁决席读同一个文件,两边口径不再各写各的。
 test('统一分级只有一个来源:mivo/config/severity.md,任务书和核对员都用它的全文', () => {
   assert.ok(SEVERITY_FILE.endsWith(join('mivo', 'config', 'severity.md')), SEVERITY_FILE);
