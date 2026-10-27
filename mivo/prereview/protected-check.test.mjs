@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { checkNameFor } from '../../review-pr/scripts/gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 
 const source = readFileSync(new URL('./round.mjs', import.meta.url), 'utf8');
 const declaration = /^function protectedCheckDone\(task\) \{[\s\S]*?^\}/m.exec(source)?.[0];
 assert.ok(declaration);
+// [MIVO-PATCH gate-bases] 检查名取自真实的 reviewCheckName 源码 + 真实的 checkNameFor(门禁配置固定为 integration/*)。
+const nameDeclaration = /^function reviewCheckName\(task\) \{[\s\S]*?^\}/m.exec(source)?.[0];
+assert.ok(nameDeclaration);
 const repository = 'xindong/mivo-canvas-plugin';
 const head = '7f9b0b1ad91032936ab1e160cd765fff5aa085e0';
 const runUrl = `https://github.com/${repository}/actions/runs/39062858448`;
@@ -19,10 +23,11 @@ const formalRun = {
   head_sha: 'main-workflow-not-pr-head', status: 'completed', conclusion: 'success',
 };
 
-function inspect(checks, { workflow = formalRun, checkResponse, runResponse } = {}) {
+function inspect(checks, { workflow = formalRun, checkResponse, runResponse, baseRefName } = {}) {
   const calls = [];
   const sandbox = {
     CONFIG: { targetRepo: repository, workflowRepo: repository, workflowRef: 'main' },
+    checkNameFor, gateBases: () => ['integration/*'],
     ghRead(args) {
       calls.push(args);
       if (args[1].includes('/check-runs?')) {
@@ -32,8 +37,8 @@ function inspect(checks, { workflow = formalRun, checkResponse, runResponse } = 
       return runResponse ?? { ok: true, stdout: JSON.stringify(workflow) };
     },
   };
-  vm.runInNewContext(`${declaration}\nglobalThis.inspect = protectedCheckDone;`, sandbox);
-  return { done: sandbox.inspect({ head }), calls };
+  vm.runInNewContext(`${nameDeclaration}\n${declaration}\nglobalThis.inspect = protectedCheckDone;`, sandbox);
+  return { done: sandbox.inspect({ head, ...(baseRefName ? { baseRefName } : {}) }), calls };
 }
 
 test('同名 dry-run job 的 success 不能抑制正式派发（#1086）', () => {
@@ -104,4 +109,33 @@ for (const response of [{ ok: false, stdout: '' }, { ok: true, stdout: '{broken'
 
 test('无检查时继续派发', () => {
   assert.equal(inspect([{ check_runs: [] }]).done, false);
+});
+
+// ---- gate-bases: 检查名按任务的目标分支取 ----
+const GATE_NAME = 'review-pr (integration)';
+
+test('门禁分支任务读 review-pr (integration),URL 编码 check_name,默认名的 success 不能放行', () => {
+  const gateCheck = { ...formalCheck, name: GATE_NAME };
+  const ok = inspect([{ check_runs: [gateCheck] }], { baseRefName: 'integration/a' });
+  assert.equal(ok.done, true);
+  assert.match(ok.calls[0][1], /check_name=review-pr%20\(integration\)&per_page=100/);
+  const wrongName = inspect([{ check_runs: [formalCheck] }], { baseRefName: 'integration/a' });
+  assert.equal(wrongName.done, false, '只有 review-pr 的 success 不算门禁分支的检查');
+  assert.equal(wrongName.calls.length, 1);
+});
+
+test('非门禁分支(main、release、integration/a/b、未给)仍读 review-pr,门禁名的检查不算数', () => {
+  for (const baseRefName of ['main', 'release/1.2', 'integration/a/b', undefined]) {
+    const ok = inspect([{ check_runs: [formalCheck] }], { baseRefName });
+    assert.equal(ok.done, true, String(baseRefName));
+    assert.match(ok.calls[0][1], /check_name=review-pr&per_page=100/);
+    assert.equal(inspect([{ check_runs: [{ ...formalCheck, name: GATE_NAME }] }], { baseRefName }).done, false, String(baseRefName));
+  }
+});
+
+test('门禁分支任务:来源校验(App、external_id、workflow)照旧全部生效', () => {
+  for (const change of [{ app: null }, { head_sha: 'old-head' }, { external_id: null }, { status: 'in_progress', conclusion: null }]) {
+    assert.equal(inspect([{ check_runs: [{ ...formalCheck, name: GATE_NAME, ...change }] }], { baseRefName: 'integration/a' }).done, false);
+  }
+  assert.equal(inspect([{ check_runs: [{ ...formalCheck, name: GATE_NAME }] }], { baseRefName: 'integration/a', workflow: { ...formalRun, event: 'push' } }).done, false);
 });

@@ -107,13 +107,22 @@ export function toExcludedPrs({ busyPrs = new Set(), roundState = {}, mode = 're
  * #68 上线前 round-state 里 outcome=protected 的 PR 指纹没变,下一轮会被当成 unchanged 跳过。
  * 只给这些记录标 retry=true 一次;不清空缓存,也不改其它 outcome。alreadyDone 后不再动。
  */
-export function toProtectedHoldWake({ roundState, alreadyDone = false } = {}) {
+export function toProtectedHoldWake(args = {}) {
+  return toOutcomeWake({ ...args, outcomes: ['protected'] });
+}
+
+/**
+ * [MIVO-PATCH gate-bases] 通用一次性唤醒:round-state 里 outcome 命中 outcomes 的行标 retry=true 一次(不改入参)。
+ * 已有 retry、编号不是正整数的行跳过;alreadyDone 后不再动。toProtectedHoldWake 是它的固定 outcomes 包装。
+ */
+export function toOutcomeWake({ roundState, alreadyDone = false, outcomes = [] } = {}) {
   if (alreadyDone) return { done: true, wake: [], next: roundState };
+  const wanted = new Set(outcomes);
   const prs = roundState?.prs && typeof roundState.prs === 'object' ? roundState.prs : {};
   const nextPrs = { ...prs };
   const wake = [];
   for (const [pr, row] of Object.entries(prs)) {
-    if (row?.outcome !== 'protected' || row.retry === true) continue;
+    if (!wanted.has(row?.outcome) || row.retry === true) continue;
     const n = Number(pr);
     if (!Number.isSafeInteger(n) || n <= 0) continue;
     nextPrs[pr] = { ...row, retry: true };
@@ -121,6 +130,14 @@ export function toProtectedHoldWake({ roundState, alreadyDone = false } = {}) {
   }
   wake.sort((a, b) => a - b);
   return { done: true, wake, next: { ...roundState, prs: nextPrs } };
+}
+
+/**
+ * [MIVO-PATCH gate-bases] 门禁分支上线时,原先因叠放判定停在 dependency/retarget 的 PR 指纹没变,会被当成 unchanged。
+ * 只给这些行标 retry 一次(其它 outcome、protected 的两次唤醒都不动)。
+ */
+export function toGateBaseWake(args = {}) {
+  return toOutcomeWake({ ...args, outcomes: ['dependency', 'retarget'] });
 }
 
 export function toHeldWake({ issues = [], seen = {}, busyPrs = new Set() }) {
