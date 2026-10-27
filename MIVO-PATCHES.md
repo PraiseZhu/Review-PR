@@ -62,6 +62,7 @@
 | p2-blocking | P0/P1/P2 均报告并阻断合并，P3 不报；交互版/auto 口径与服务器一致 | `review-pr/SKILL.md`、`review-pr/references/rule-map.md`、`review-pr/references/fix-handoff.md`、`review-pr-auto/references/pr-worker.md`、`review-pr/scripts/context.mjs`、`review-pr/scripts/approve-reviewed-pr.mjs`、`review-pr/scripts/dismiss-own-review.mjs`；测试在 `review-pr/scripts/mivo-patches.test.mjs` | 本 fork 把真实 P2 当阻断项，不再按风格忽略 |
 | severity-standard | 第 5 节「严重度」的 P2 一句改为指向统一分级（`mivo/config/severity.md`）：P2 含误导性的测试、自己定的验收没达成、声称做过的验证实际没做三类；P3 加上生产行为已正确的泛泛补测试建议、不影响结论的措辞问题。服务器任务书、核对员、Mini 盯梢修复会话与裁决席读同一个文件 | `review-pr/SKILL.md`；测试在 `review-pr/scripts/mivo-patches.test.mjs`；统一分级本体是 `mivo/config/severity.md`（`mivo/lib/prompt.mjs` 读取） | 2026-10-22 #122：审查机（P2 含「规范违反或必要测试缺口」）与盯梢（缺测试不单独构成 P2）口径不一，66 次裁决里 54 次只争 P2 还是 P3，同一提交反复重审；服务器任务书里嵌着第 5 节原文，只改统一分级一节会出现两种 P2 定义 |
 | severity-standard-2 | 第 5 节「严重度」段不再把缺必要测试、权威规范违反等直接列为 P1：P0/P1 改为统一分级摘要，写明规范原文「记 P1」「按 P1 打回」条款按实际影响重判、单纯缺测试和违反规范不单独构成 P2，出处指向 `mivo/config/severity.md`。任务书里「违反适用规范或缺必要测试可构成 P2」「违反适用权威规范、存在实际缺陷或必要测试缺口的,按 P0/P1/P2 报告」两句同步改成与统一分级一致 | `review-pr/SKILL.md`、`mivo/lib/prompt.mjs`；测试在 `mivo/lib/prompt.test.mjs`、`review-pr/scripts/mivo-patches.test.mjs`；`mivo/config/severity.md` 本身不改 | 2026-10-23：用户定本地、审查机、测试三处 PR 分级以审查机统一分级为准；上一轮（#122）只改了 P2 一句，任务书与第 5 节还留着与 severity.md 第 28-29 行矛盾的说法 |
+| gate-bases | 门禁分支:配置 `gateBases`(fnmatch,按短分支名匹配,`*` 不跨 `/`、区分大小写、不剥前缀;现为 `integration/*`)。命中的目标分支的 PR 不按叠放 PR 处理:`applyGateBase` 清空 `basePr`/`needsRetarget`、组 PR 另存 `gateGroupPr`,`collectDependencyRefs` 丢弃指向组 PR(开着/已关闭/已合并)的显式依赖,兄弟 PR 与别仓依赖照旧;检查名按目标分支取(门禁分支 `review-pr (integration)`,其余 `review-pr`),服务器写检查与 Mini 读检查同一个 `checkNameFor`,目标分支取不到时不写检查并记 `base-unknown`;目标分支不是默认分支、`release/x.y`、门禁分支的 PR 在候选阶段给 `base-not-gated` 且不送审(`fetchDefaultBranch`,仅配了 `gateBases` 才读,读不到按失败);上线后第一轮用 `gate-base-wake.json` 一次性把 `dependency`/`retarget` 的 round-state 行标 retry | `review-pr/config/pr-rules.json`、`mivo/config/sandbox-pr-rules.json`、`scripts/gate-bases.mjs`(新增)、`scripts/review-dependencies.mjs`、`scripts/context.mjs`、`scripts/plan-review-round.mjs`、`scripts/review-round.mjs`、`scripts/pre-check.mjs`、`scripts/lib.mjs`、`mivo/server/review.mjs`、`mivo/prereview/round.mjs`、`mivo/prereview/admit-candidates.mjs`、`mivo/lib/admission.mjs` | 要给 `integration/*` 单独建规则集、要求检查 `review-pr (integration)`;原先 `integration/x` 被当叠放 PR 卡在 dependency/retarget。`pr-rules.json` 文本进 specDigest,改它会让任务书版本变(开放 PR 里代码变了的各做一次全量重审)。名单外的叠放 PR 今后不再收到「改指 main」提醒 |
 
 只改配置、不改代码的部分：Git 历史推送只对 `makecindy/cindy` 生效，对 Mivo 天然不触发；飞书卡片只生成不发送。bot 静默期见 `bot-check-settle` / `evaluateBotSettle`：Greptile 进 `quietExtraBots`、不设必等 `reviewers`，有评论再静默 5 分钟，最多 15 分钟（`reviewers` 为空仍看 quietExtraBots，不是关掉静默期）。
 
@@ -77,6 +78,8 @@
 | 文件 | 作用 |
 |---|---|
 | `review-pr/scripts/mivo-patches.test.mjs` | 上面补丁的回归测试 |
+| `review-pr/scripts/gate-bases.mjs` | 门禁分支识别与按目标分支取检查名的纯函数(`gate-bases` 补丁) |
+| `mivo/server/review-gate-check-name.test.mjs`、`mivo/prereview/gate-base-wake.test.mjs` | `gate-bases` 的服务器写检查名、一次性重判回归测试 |
 | `tools/sync-lizi.mjs`、`tools/sync-lizi.test.mjs`、`tools/lizi-sync.json` | 上游同步与差异核对 |
 | `tools/fixtures/upstream-pr-rules.json` | 上游配置夹具（群 ID 换成占位值），只给上游测试用 |
 | `mivo/` | Mivo 的拆分运行胶水：Mini 前置审查、服务器后置审查。见 `mivo/README.md` |
