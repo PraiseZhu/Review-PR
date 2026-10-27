@@ -240,8 +240,8 @@ async function prepare() {
     // 5. check:审查中(live 审本仓时直接写;sandbox 审沙箱仓时派发沙箱的检查镜像,见 lib/checks.mjs)。
     const pendingCheck = { status: 'in_progress', title: '审查中', summary: `${scope.mode === 'reuse' ? '沿用上一轮结论' : `档位 ${tier},${scope.reason}`}` };
     if (checkTarget(input) === 'direct') {
-      // [MIVO-PATCH gate-bases] 刚读到的 context 里的目标分支决定检查名(早于任何检查写入)。
-      input.checkName = checkNameFor(ctx.meta.baseRefName, gateBases());
+      // [MIVO-PATCH gate-bases] 刚读到的 context 里的目标分支决定检查名(早于任何检查写入);context 没带目标分支时不猜默认名,交给 checkNameForInput 读 PR。
+      if (ctx.meta.baseRefName) input.checkName = checkNameFor(ctx.meta.baseRefName, gateBases());
       state.checkRunId = createCheckRun(input, pendingCheck);
       if (input.checkNameUnavailable) state.warnings.push(`目标分支未知,没有写 review-pr 检查(${input.checkNameUnavailable})`);
     }

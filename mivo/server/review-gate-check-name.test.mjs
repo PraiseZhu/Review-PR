@@ -1,6 +1,6 @@
 // [MIVO-PATCH gate-bases] 服务器写的检查名按目标分支取:门禁分支(integration/*)写 review-pr (integration),其余写 review-pr。
 // 这里跑真实的 review.mjs publish(最小复制根 + PATH 上的 gh 替身,记录每个请求的 body.name),逐条写检查的路径验证;
-// prepare 的创建路径用真实函数源码在 vm 里执行。目标分支取不到时不写检查并记原因。
+// prepare 的创建路径用 review.mjs 里的真实源码(prepare 的建检查段 + createCheckRun 等)在 vm 里执行,命名函数用真实的 gate-bases.mjs。目标分支取不到时不写检查并记原因。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { join, delimiter, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { checkNameFor } from '../../review-pr/scripts/gate-bases.mjs';
+import { checkTarget } from '../lib/checks.mjs';
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const LIB_DIR = join(SERVER_DIR, '..', 'lib');
@@ -187,7 +189,7 @@ test('检查名:publish 以 state.context 为准,不被 prepare 缓存的旧检�
   } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
 
-test('检查名:dry-run 与沙箱镜像不写直连检查,也不为命名多读 PR', () => {
+test('检查名:dry-run 不写直连检查,也不为命名多读 PR', () => {
   const env = setup({ withContext: false, input: { mode: 'dry-run', action: 'protected-approve' },
     state: { protectedApproval: { by: 'kirozeng', via: 'github-approve', at: null, fingerprint: 'fp' } } });
   const gh = fakeGh(env.work);
@@ -198,51 +200,190 @@ test('检查名:dry-run 与沙箱镜像不写直连检查,也不为命名多读 
   } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
 
-// prepare 的创建路径:真实的 checkNameForInput / createCheckRun / completeCheckRun 源码放进 vm,
-// 注入记录请求的 run / gh,验证 POST body.name、取不到 base 的跳过原因,以及 create 返回 null 时记下原因。
-function loadCheckFunctions({ baseRef, gateBases = ['integration/*'], token = 'y' }) {
-  const source = readFileSync(join(SERVER_DIR, 'review.mjs'), 'utf8');
-  const start = source.indexOf('// [MIVO-PATCH gate-bases] 检查名解析');
-  const end = source.indexOf('// 派发沙箱仓的检查镜像要审查账号身份');
-  assert.ok(start > 0 && end > start, '找不到检查函数源码');
-  const posts = [];
-  const checkNameFor = (name, list) => (list.some((p) => new RegExp(`^${p.replace('*', '[^/]*')}$`).test(name)) ? GATE : 'review-pr');
-  const context = {
-    WORK: '/work', process: { env: { CHECKS_TOKEN: token } }, JSON, nowIso: () => 'now',
-    checkTarget: () => 'direct', dispatchSandboxCheck: () => ({ ok: true }), gateBases: () => gateBases, checkNameFor,
-    gh: (args, options) => { posts.push({ gh: args, cwd: options.cwd }); return baseRef ? { ok: true, stdout: JSON.stringify({ base: { ref: baseRef } }) } : { ok: false, stdout: '', stderr: 'HTTP 404' }; },
-    run: (cmd, args, options) => { posts.push({ run: args, body: JSON.parse(options.input) }); return { ok: true, stdout: JSON.stringify({ id: 5 }) }; },
-  };
-  vm.runInNewContext(`${source.slice(start, end)}; globalThis.fns = { createCheckRun, completeCheckRun, checkNameForInput };`, context);
-  return { ...context.fns, posts };
-}
-
-test('检查名:prepare 创建检查时按 context 的 base 取名;取不到 base 返回 null 并留下原因', () => {
-  const input = { targetRepo: 'o/r', pr: 7, head: SHA, runUrl: '', checkName: GATE };
-  const known = loadCheckFunctions({ baseRef: null });
-  known.createCheckRun(input, { status: 'in_progress', title: 't', summary: 's' });
-  assert.equal(known.posts.at(-1).body.name, GATE);
-  assert.equal(known.posts.filter((p) => p.gh).length, 0, '已有检查名不读 PR');
-  const unknown = loadCheckFunctions({ baseRef: null });
-  const bare = { targetRepo: 'o/r', pr: 7, head: SHA, runUrl: '' };
-  assert.equal(unknown.createCheckRun(bare, { status: 'in_progress', title: 't', summary: 's' }), null);
-  assert.equal(bare.checkNameUnavailable, 'base-unknown');
-  assert.equal(unknown.posts.filter((p) => p.body).length, 0);
-  assert.equal(JSON.stringify(unknown.completeCheckRun(bare, null, { conclusion: 'failure', title: 't', summary: 's' })), JSON.stringify({ skipped: true, reason: 'base-unknown' }));
-  assert.equal(unknown.posts.filter((p) => p.gh).length, 1, '失败后不重复读');
-  const rest = loadCheckFunctions({ baseRef: 'integration/a' });
-  const viaRest = { targetRepo: 'o/r', pr: 7, head: SHA, runUrl: '' };
-  rest.createCheckRun(viaRest, { status: 'in_progress', title: 't', summary: 's' });
-  assert.equal(rest.posts.at(-1).body.name, GATE);
-  assert.equal(rest.posts.find((p) => p.gh).cwd, '/work');
+// 沙箱镜像:mode=sandbox 且审查对象不是本仓。走受保护路径放行的 publish,不写直连检查、不为命名读 PR,改为派发沙箱仓的检查镜像 workflow。
+test('检查名:沙箱镜像不写直连检查、不读 PR,只派发沙箱仓的检查镜像', () => {
+  const env = setup({ withContext: false, input: { mode: 'sandbox', targetRepo: 'o/sbx', workflowRepo: 'o/r', action: 'protected-approve' },
+    state: { protectedApproval: { by: 'kirozeng', via: 'github-approve', at: null, fingerprint: 'fp' } } });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh, { GB_BASE_REF: 'integration/a' });
+    const calls = gh.calls();
+    assert.deepEqual(checkWrites(calls), [], '没有任何 check-runs 的 POST/PATCH');
+    assert.deepEqual(calls.filter((c) => c.args.some((a) => /\/check-runs/.test(a))), []);
+    assert.deepEqual(calls.filter((c) => c.args.some((a) => /pulls\/7$/.test(a))), [], '不为命名读 PR');
+    const dispatch = calls.filter((c) => c.args[0] === 'workflow' && c.args[1] === 'run' && c.args[2] === 'review-pr.yml');
+    assert.equal(dispatch.length, 1, '派发一次检查镜像');
+    assert.deepEqual(dispatch[0].args.slice(3, 5), ['-R', 'o/sbx']);
+    assert.ok(dispatch[0].args.includes('conclusion=success'));
+    assert.deepEqual(result.mivo.checkRun, { ok: true, mirrored: true });
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
 
-test('检查名:prepare 先按 context 定名再创建检查,未知原因写进 warnings;所有检查写入都经 createCheckRun/completeCheckRun', () => {
-  const source = readFileSync(join(SERVER_DIR, 'review.mjs'), 'utf8');
-  const prepare = source.slice(source.indexOf("if (checkTarget(input) === 'direct') {"), source.indexOf("if (checkTarget(input) === 'sandbox-mirror') {\n      const mirrored"));
-  assert.ok(prepare.indexOf('input.checkName = checkNameFor(ctx.meta.baseRefName, gateBases())') < prepare.indexOf('createCheckRun(input, pendingCheck)'));
-  assert.match(prepare, /input\.checkNameUnavailable\) state\.warnings\.push/);
-  assert.equal(source.match(/\/check-runs/g).length, 3, '只有创建、完成(带 id / 不带 id)的路径拼接');
-  assert.doesNotMatch(source, /CHECK_NAME/);
-  assert.equal(source.match(/completeCheckRun\(/g).length, 14, '13 个调用点 + 函数定义');
+// ── publishFindings / publishOverruled 的写检查路径(真实 publish)─────────────────────────────────────
+const BASES = [['main', 'review-pr'], ['release/1.2', 'review-pr'], ['integration/a', GATE], ['integration/a/b', 'review-pr']];
+const FINDING = { severity: 'P1', title: '空指针', trigger: '未登录', behavior: '抛错', impact: '白屏', fix: '判空', verify: '补测',
+  evidence: [{ path: 'src/a.ts', line: 2 }], origin: 'introduced', bugClass: 'null-deref', instances: [], supersedes: null,
+  path: 'src/a.ts', line: 2, side: 'RIGHT', deferredTo: null };
+const OLD_FINDING = { path: 'src/a.ts', line: 2, side: 'RIGHT', body: '[P1] 旧问题\n细节', key: 'aaaaaaaaaaaa', uid: 'u1', severity: 'P1', seenRounds: 1 };
+const OLD_REPORT = ['## Findings', '[P1] src/a.ts:2 — 旧问题', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 1 条 P0/P1/P2'].join('\n');
+const SUBMITTED = { ok: true, submitted: true, reviewId: 77, reviewUrl: 'https://github.com/o/r/pull/7#pullrequestreview-77', action: 'REQUEST_CHANGES', threadUrls: [], alreadySubmitted: false };
+
+// kind: 'submitted'(新发 Request Changes)| 'overruled'(核对员全部推翻)| 'reuse'(沿用上一轮已发的 review)。
+function findingsSetup({ baseRefName, kind, verification = null }) {
+  const env = setup({ baseRefName });
+  const { root, work } = env;
+  const statePath = join(work, 'state.json');
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  state.context.viewerIsAuthor = false;
+  if (kind === 'reuse') {
+    mkdirSync(join(work, 'prev'), { recursive: true });
+    state.scope = { mode: 'reuse', reason: '同一版本已审过,沿用上次结论', files: [], previousFindings: [OLD_FINDING], basedOn: SHA };
+    state.previous = { head: SHA, runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' };
+    writeFileSync(join(work, 'prev', 'result.json'), JSON.stringify({ head: SHA, threadUrls: [], reviewEvidence: { diffHash: 'd1', baseRefName },
+      mivo: { findings: [OLD_FINDING], deferred: [], review: { id: 3, url: 'https://github.com/o/r/pull/7#pullrequestreview-3', action: 'REQUEST_CHANGES' }, lastFullReviewAt: '2026-10-10T12:00:00Z' } }));
+    writeFileSync(join(work, 'prev', 'report.md'), OLD_REPORT);
+  } else {
+    // 答卷里的问题要在 head 上找得到证据:放一个真实的 git 仓。
+    const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', ...args], { cwd: join(work, 'repo'), encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    git('init', '-q');
+    mkdirSync(join(work, 'repo', 'src'));
+    writeFileSync(join(work, 'repo', 'src', 'a.ts'), 'keep\nadded\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'head');
+    const head = git('rev-parse', 'HEAD');
+    state.input.head = head; state.input.base = head;
+    state.context.evidence = { ...state.context.evidence, head, base: head };
+    if (verification) state.verification = verification;
+    writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT.replace('无', '见下'), findings: [FINDING] }));
+    writeFileSync(join(root, 'review-pr', 'scripts', 'request-changes-reviewed-pr.mjs'), `console.log(JSON.stringify(${JSON.stringify(SUBMITTED)}));\n`);
+  }
+  writeFileSync(statePath, JSON.stringify(state));
+  return env;
+}
+
+for (const [label, kind, conclusion, outcome] of [
+  ['publishFindings 新发 Request Changes(posted.submitted)', 'submitted', 'failure', 'findings'],
+  ['publishFindings 沿用上一轮已发的 review(reusedReview)', 'reuse', 'failure', 'findings'],
+]) {
+  test(`检查名:${label}按目标分支取名`, () => {
+    for (const [base, expected] of BASES) {
+      const env = findingsSetup({ baseRefName: base, kind });
+      const gh = fakeGh(env.work);
+      try {
+        const result = publish(env, gh);
+        assert.equal(result.outcome, outcome, `${base}: ${JSON.stringify(result.errors)}`);
+        const writes = checkWrites(gh.calls());
+        assert.ok(writes.length >= 1, `${base} 应该写了检查`);
+        for (const write of writes) assert.equal(write.name, expected, `${label} @ ${base}`);
+        assert.equal(writes.at(-1).conclusion, conclusion);
+        assert.equal(writes.at(-1).method, 'PATCH', '完成已创建的检查(checkRunId=99)');
+      } finally { rmSync(env.root, { recursive: true, force: true }); }
+    }
+  });
+}
+
+test('检查名:publishOverruled(核对员全部推翻)按目标分支取名', () => {
+  // 第一轮不带核对结论,取出真实流水线给这条问题算的 uid;第二轮带上"推翻"的核对结论。
+  const probe = findingsSetup({ baseRefName: 'main', kind: 'overruled' });
+  let uid;
+  try { uid = publish(probe, fakeGh(probe.work)).mivo.findings[0].uid; } finally { rmSync(probe.root, { recursive: true, force: true }); }
+  assert.ok(uid, '拿到 finding 的 uid');
+  const verification = { mode: 'enforce', skipped: [], items: [{ key: 'k', uid, ok: true, applied: 'refuted', verdict: 'refuted', severity: 'P1',
+    evidence: [{ path: 'src/a.ts', line: 1 }], note: '调用方已判空' }] };
+  for (const [base, expected] of BASES) {
+    const env = findingsSetup({ baseRefName: base, kind: 'overruled', verification });
+    const gh = fakeGh(env.work);
+    try {
+      const result = publish(env, gh);
+      assert.equal(result.mivo.verifierOverruledAll, true, `${base}: 走到 publishOverruled`);
+      assert.equal(result.outcome, 'merge-blocked');
+      const writes = checkWrites(gh.calls());
+      assert.ok(writes.length >= 1, `${base} 应该写了检查`);
+      for (const write of writes) assert.equal(write.name, expected, `publishOverruled @ ${base}`);
+      assert.equal(writes.at(-1).conclusion, 'success');
+    } finally { rmSync(env.root, { recursive: true, force: true }); }
+  }
+});
+
+// ── prepare 的建检查段:review.mjs 里的真实源码在 vm 里执行 ───────────────────────────────────────────────
+// 抽取 prepare 里 `const pendingCheck = …` 到沙箱镜像分支之前那一段,连同真实的 checkNameForInput / createCheckRun / completeCheckRun,
+// 命名函数用 import 来的真实 gate-bases.mjs;run 是记录 POST body 的替身,gh 是读 PR base.ref 的替身。
+const REVIEW_SOURCE = readFileSync(join(SERVER_DIR, 'review.mjs'), 'utf8');
+const PREPARE_ASSIGN = 'input.checkName = checkNameFor(ctx.meta.baseRefName, gateBases());';
+
+function loadPrepare({ source = REVIEW_SOURCE, restBaseRef = null, gateBasesList = ['integration/*'] } = {}) {
+  const fnStart = source.indexOf('// [MIVO-PATCH gate-bases] 检查名解析');
+  const fnEnd = source.indexOf('// 派发沙箱仓的检查镜像要审查账号身份');
+  const prepStart = source.indexOf('const pendingCheck = ');
+  const prepEnd = source.indexOf("if (checkTarget(input) === 'sandbox-mirror') {\n      const mirrored");
+  assert.ok(fnStart > 0 && fnEnd > fnStart, '找不到检查函数源码');
+  assert.ok(prepStart > 0 && prepEnd > prepStart, '找不到 prepare 的建检查段');
+  const log = [];
+  const sandbox = {
+    WORK: '/work', process: { env: { CHECKS_TOKEN: 'y' } }, nowIso: () => 'now',
+    checkTarget, checkNameFor, gateBases: () => gateBasesList, dispatchSandboxCheck: () => { throw new Error('direct 模式不该派发镜像'); },
+    gh: (args, options) => { log.push({ gh: args, cwd: options.cwd }); return restBaseRef ? { ok: true, stdout: JSON.stringify({ base: { ref: restBaseRef } }) } : { ok: false, stdout: '', stderr: 'HTTP 404' }; },
+    run: (cmd, args, options) => { log.push({ run: args, body: JSON.parse(options.input) }); return { ok: true, stdout: JSON.stringify({ id: 5 }) }; },
+  };
+  vm.runInNewContext(`${source.slice(fnStart, fnEnd)}
+    globalThis.fns = { createCheckRun, completeCheckRun,
+      prepareCheck(input, state, ctx, scope, tier) {\n${source.slice(prepStart, prepEnd)}\n} };`, sandbox);
+  const posts = () => log.filter((entry) => entry.body);
+  return { ...sandbox.fns, log, posts };
+}
+
+const prepareInput = () => ({ targetRepo: 'o/r', workflowRepo: 'o/r', mode: 'live', pr: 7, head: SHA, runUrl: '' });
+const SCOPE = { mode: 'full', reason: '没有上一轮审查记录' };
+
+// 对一份 review.mjs 源码跑 4 个 base 的 prepare 建检查段,返回 [base, 期望名, 实际 POST 名] 里对不上的项。
+function prepareNameMismatches(source) {
+  const mismatches = [];
+  for (const [base, expected] of [['main', 'review-pr'], ['release/1.2', 'review-pr'], ['integration/a', GATE], ['integration/a/b', 'review-pr']]) {
+    const h = loadPrepare({ source });
+    const state = { warnings: [], checkRunId: null };
+    h.prepareCheck(prepareInput(), state, { meta: { baseRefName: base } }, SCOPE, 'standard');
+    assert.equal(h.posts().length, 1, base);
+    assert.equal(h.posts()[0].body.status, 'in_progress');
+    assert.equal(state.checkRunId, 5);
+    assert.deepEqual(state.warnings, []);
+    assert.equal(h.log.filter((entry) => entry.gh).length, 0, 'context 里有 base 就不再读 PR');
+    if (h.posts()[0].body.name !== expected) mismatches.push([base, expected, h.posts()[0].body.name]);
+  }
+  return mismatches;
+}
+
+test('检查名:prepare 的建检查段按 context 的 base 取名(真实源码 + 真实 gate-bases)', () => {
+  assert.deepEqual(prepareNameMismatches(REVIEW_SOURCE), []);
+});
+
+test('检查名:prepare 的 context 没有 base 时读 PR 的 base.ref;还取不到就不写检查并在 warnings 记 base-unknown', () => {
+  const viaRest = loadPrepare({ restBaseRef: 'integration/a' });
+  const input = prepareInput();
+  viaRest.prepareCheck(input, { warnings: [], checkRunId: null }, { meta: {} }, SCOPE, 'standard');
+  assert.equal(viaRest.posts().at(-1).body.name, GATE);
+  assert.equal(viaRest.log.find((entry) => entry.gh).cwd, '/work');
+
+  const unknown = loadPrepare({ restBaseRef: null });
+  const bare = prepareInput();
+  const state = { warnings: [], checkRunId: null };
+  unknown.prepareCheck(bare, state, { meta: {} }, SCOPE, 'standard');
+  assert.equal(unknown.posts().length, 0, '没有 POST');
+  assert.equal(state.checkRunId, null);
+  assert.equal(bare.checkNameUnavailable, 'base-unknown');
+  assert.ok(state.warnings.some((w) => /base-unknown/.test(w)), JSON.stringify(state.warnings));
+  assert.deepEqual(JSON.parse(JSON.stringify(unknown.completeCheckRun(bare, null, { conclusion: 'failure', title: 't', summary: 's' }))), { skipped: true, reason: 'base-unknown' }); // vm 里的对象跨 realm,先过一遍 JSON
+  assert.equal(unknown.log.filter((entry) => entry.gh).length, 1, '失败后不重复读');
+});
+
+test('检查名(变异守卫):把 prepare 的命名赋值改成固定 review-pr,上面的 prepare 命名测试会失败', () => {
+  assert.equal(REVIEW_SOURCE.split(PREPARE_ASSIGN).length - 1, 1, '赋值行在 review.mjs 里恰好出现一次');
+  const mutated = REVIEW_SOURCE.replace(PREPARE_ASSIGN, "input.checkName = 'review-pr';");
+  assert.notEqual(mutated, REVIEW_SOURCE, '替换必须命中');
+  assert.deepEqual(prepareNameMismatches(mutated), [['integration/a', GATE, 'review-pr']], '变异后只有 integration/a 写错,命名测试能看出来');
+});
+
+test('检查名:所有检查写入都经 createCheckRun/completeCheckRun,源码里没有旧的固定检查名常量', () => {
+  assert.equal(REVIEW_SOURCE.match(/\/check-runs/g).length, 3, '只有创建、完成(带 id / 不带 id)的路径拼接');
+  assert.doesNotMatch(REVIEW_SOURCE, /CHECK_NAME/);
+  assert.equal(REVIEW_SOURCE.match(/completeCheckRun\(/g).length, 14, '13 个调用点 + 函数定义');
 });
