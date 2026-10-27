@@ -2529,3 +2529,96 @@ test('severity-standard: 第 5 节严重度段不把缺必要测试、权威规�
   assert.match(patches, /2026-10-23/);
   assert.match(patches, /severity-standard/);
 });
+
+// ---- gate-bases: 门禁分支识别、配置 ----
+// [MIVO-PATCH gate-bases] 纯函数用显式 gateBases,不依赖 REVIEW_PR_RULES_FILE。
+const GB = await import('./gate-bases.mjs');
+
+test('gate-bases: integration/* 只命中单段短分支名,区分大小写、不剥前缀', () => {
+  const gate = ['integration/*'];
+  for (const name of ['integration/a', 'integration/a-b', 'integration/1.2']) assert.equal(GB.isGateBase(name, gate), true, name);
+  for (const name of ['integration/a/b', 'refs/heads/integration/a', 'Integration/a', 'integration', 'main', 'release/1.2', '', undefined, null, 5]) {
+    assert.equal(GB.isGateBase(name, gate), false, String(name));
+  }
+});
+
+test('gate-bases: ? 匹配单个非 / 字符,正则特殊字符按字面', () => {
+  assert.equal(GB.matchesBasePattern('rel?', 'rela'), true);
+  assert.equal(GB.matchesBasePattern('rel?', 'rel/'), false);
+  assert.equal(GB.matchesBasePattern('a.b', 'axb'), false);
+  assert.equal(GB.matchesBasePattern('a.b', 'a.b'), true);
+  assert.equal(GB.matchesBasePattern('a*', 'a/b'), false);
+  assert.equal(GB.isGateBase('integration/a', []), false);
+  assert.equal(GB.isGateBase('integration/a'), false);
+});
+
+test('gate-bases: isReleaseBase 只认 release/<数字>.<数字>', () => {
+  assert.equal(GB.isReleaseBase('release/1.2'), true);
+  assert.equal(GB.isReleaseBase('release/1.2.3'), false);
+  assert.equal(GB.isReleaseBase('release/x'), false);
+  assert.equal(GB.isReleaseBase('Release/1.2'), false);
+});
+
+test('gate-bases: classifyBase 优先级 default > gate > release > other', () => {
+  const gateBases = ['integration/*'];
+  const c = (baseRefName, defaultBranch = 'main') => GB.classifyBase({ baseRefName, defaultBranch, gateBases });
+  assert.equal(c('main'), 'default');
+  assert.equal(c('integration/a'), 'gate');
+  assert.equal(c('release/1.2'), 'release');
+  assert.equal(c('feature/x'), 'other');
+  assert.equal(c('integration/a/b'), 'other');
+  // 默认分支恰好被门禁模式覆盖时仍是 default
+  assert.equal(GB.classifyBase({ baseRefName: 'integration/a', defaultBranch: 'integration/a', gateBases }), 'default');
+});
+
+test('gate-bases: checkNameFor 门禁分支用 review-pr (integration),其余含未知用 review-pr', () => {
+  const gateBases = ['integration/*'];
+  assert.equal(GB.GATE_CHECK_NAME, 'review-pr (integration)');
+  assert.equal(GB.DEFAULT_CHECK_NAME, 'review-pr');
+  assert.equal(GB.checkNameFor('integration/a', gateBases), 'review-pr (integration)');
+  for (const name of ['main', 'release/1.2', 'integration/a/b', undefined]) assert.equal(GB.checkNameFor(name, gateBases), 'review-pr', String(name));
+});
+
+test('gate-bases: toGateBases 缺省为空,非法输入显式报错且不打印整个对象', () => {
+  assert.deepEqual(GB.toGateBases(undefined), []);
+  assert.deepEqual(GB.toGateBases(null), []);
+  assert.deepEqual(GB.toGateBases([]), []);
+  assert.deepEqual(GB.toGateBases(['integration/*']), ['integration/*']);
+  for (const bad of ['integration/*', {}, [1], [''], ['a b'], ['a/**'], ['a;b'], [' integration/*']]) {
+    assert.throws(() => GB.toGateBases(bad), /gateBases 不合法/, JSON.stringify(bad));
+  }
+  assert.throws(() => GB.toGateBases([{ secret: 'token-123' }]), (error) => !/token-123/.test(error.message));
+});
+
+test('gate-bases: 两份生产配置声明 gateBases 与 ciIgnoreContexts,直接读文件不经 REVIEW_PR_RULES_FILE', () => {
+  for (const file of ['../config/pr-rules.json', '../../mivo/config/sandbox-pr-rules.json']) {
+    const rules = JSON.parse(readFileSync(new URL(file, import.meta.url), 'utf8'));
+    assert.deepEqual(rules.gateBases, ['integration/*'], file);
+    assert.ok(rules.ciIgnoreContexts.includes('review-pr'), file);
+    assert.ok(rules.ciIgnoreContexts.includes('review-pr (integration)'), file);
+    assert.match(rules._comment, /\[MIVO-PATCH gate-bases\]/, file);
+    assert.deepEqual(GB.toGateBases(rules.gateBases), ['integration/*']);
+  }
+});
+
+test('gate-bases: loadGateBases 读规则文件;配置缺省为空', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gate-bases-'));
+  try {
+    const file = join(dir, 'rules.json');
+    writeFileSync(file, JSON.stringify({ gateBases: ['integration/*'] }));
+    assert.deepEqual(GB.loadGateBases(file), ['integration/*']);
+    writeFileSync(file, JSON.stringify({}));
+    assert.deepEqual(GB.loadGateBases(file), []);
+    writeFileSync(file, JSON.stringify({ gateBases: ['a**'] }));
+    assert.throws(() => GB.loadGateBases(file), /gateBases 不合法/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('gate-bases: review-pr (integration) 被 CI 忽略;它是唯一未过的必需检查时视为只剩自己的检查', () => {
+  const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  const contexts = [{ name: 'review-pr (integration)', conclusion: 'FAILURE' }, { name: 'build', conclusion: 'SUCCESS' }];
+  assert.deepEqual(filterIgnoredCiContexts(contexts, rules).map((c) => c.name), ['build']);
+  const probe = { requiredStatusChecks: ['review-pr (integration)', 'build'] };
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [{ name: 'build', conclusion: 'SUCCESS' }], rules }), true);
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [{ name: 'build', conclusion: 'FAILURE' }], rules }), false);
+});
