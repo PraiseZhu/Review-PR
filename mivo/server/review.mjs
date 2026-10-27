@@ -28,6 +28,7 @@ import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
 import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
 import { recordSelfWrite, readSelfWrites } from '../../review-pr/scripts/self-write-receipts.mjs';
 import { summarizeRouteLog } from '../../review-pr/scripts/gh-read-route.mjs';
+import { checkNameFor, loadGateBases } from '../../review-pr/scripts/gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 
 const WORK = process.env.MIVO_REVIEW_WORK || '';
 const STATE_FILE = join(WORK, 'state.json');
@@ -36,7 +37,10 @@ const OUT = join(WORK, 'out');
 const ROUTE_LOG = join(OUT, 'gh-routes.jsonl');
 const REPO_DIR = join(WORK, 'repo');
 const INPUT_DIR = join(WORK, 'input');
-const CHECK_NAME = 'review-pr';
+// [MIVO-PATCH gate-bases] 检查名按目标分支取:门禁分支(gateBases)写 review-pr (integration),其余写 review-pr。
+const RULES_FILE = process.env.MIVO_REVIEW_RULES_FILE || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json');
+let gateBasesCache = null;
+const gateBases = () => (gateBasesCache ??= loadGateBases(RULES_FILE));
 const MERGE_READY_LABEL = 'review:merge-ready';
 // 同一次运行里增量判干净后再接收口全量,要求的最低剩余模型预算:主审 45 分钟(56 次 full workflow 的 p90,含 workflow 开销,按保守窗口用)
 // + 备用预留 20 分钟 + 两段收尾余量。低于这个数不启动收口,结果标「收口待补」,Mini 下一次对同一 head 直接派全量。
@@ -200,7 +204,7 @@ async function prepare() {
     }
     const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
       readFile: (path) => rules.files[path] ?? null,
-      config: readFileSync(process.env.MIVO_REVIEW_RULES_FILE || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'), 'utf8') }));
+      config: readFileSync(RULES_FILE, 'utf8') }));
     const current = {
       head: input.head, baseRefName: ctx.meta.baseRefName, diffHash: ctx.evidence?.diffHash,
       filePatchHashes: filePatchHashes(diffFiles), filePatchHashesV2: filePatchHashesV2(diffFiles),
@@ -235,7 +239,12 @@ async function prepare() {
 
     // 5. check:审查中(live 审本仓时直接写;sandbox 审沙箱仓时派发沙箱的检查镜像,见 lib/checks.mjs)。
     const pendingCheck = { status: 'in_progress', title: '审查中', summary: `${scope.mode === 'reuse' ? '沿用上一轮结论' : `档位 ${tier},${scope.reason}`}` };
-    if (checkTarget(input) === 'direct') state.checkRunId = createCheckRun(input, pendingCheck);
+    if (checkTarget(input) === 'direct') {
+      // [MIVO-PATCH gate-bases] 刚读到的 context 里的目标分支决定检查名(早于任何检查写入)。
+      input.checkName = checkNameFor(ctx.meta.baseRefName, gateBases());
+      state.checkRunId = createCheckRun(input, pendingCheck);
+      if (input.checkNameUnavailable) state.warnings.push(`目标分支未知,没有写 review-pr 检查(${input.checkNameUnavailable})`);
+    }
     if (checkTarget(input) === 'sandbox-mirror') {
       const mirrored = dispatchSandboxCheck(input, pendingCheck);
       if (!mirrored.ok) state.warnings.push(`沙箱检查镜像派发失败:${mirrored.error}`);
@@ -330,12 +339,27 @@ function downloadPrevious(input, state) {
   return previous;
 }
 
+// [MIVO-PATCH gate-bases] 检查名解析:已有名字直接用;否则从 WORK 目录(repo 目录可能还没建)读一次 PR 的 base.ref。
+// 取不到就返回 null 并记 checkNameUnavailable——宁可缺检查也不写错名字。
+function checkNameForInput(input) {
+  if (input.checkName) return input.checkName;
+  if (input.checkNameUnavailable) return null;
+  const r = gh(['api', '--method', 'GET', `repos/${input.targetRepo}/pulls/${input.pr}`], { cwd: WORK, allowFail: true, timeoutMs: 30_000 });
+  let base = null;
+  if (r.ok) { try { base = JSON.parse(r.stdout)?.base?.ref; } catch { base = null; } }
+  if (typeof base !== 'string' || !base) { input.checkNameUnavailable = 'base-unknown'; return null; }
+  input.checkName = checkNameFor(base, gateBases());
+  return input.checkName;
+}
+
 function createCheckRun(input, { status, title, summary }) {
   const token = process.env.CHECKS_TOKEN;
   if (!token) return null;
+  const name = checkNameForInput(input);
+  if (!name) return null;
   // GitHub 会把 Actions 写的检查的 details_url 改成检查页面,只有 external_id 原样保留;
   // 盯梢与交付脚本按 external_id 找到写检查的这次 review-pr.yml run。
-  const body = { name: CHECK_NAME, head_sha: input.head, status, external_id: input.runUrl || undefined, details_url: input.runUrl || undefined,
+  const body = { name, head_sha: input.head, status, external_id: input.runUrl || undefined, details_url: input.runUrl || undefined,
     output: { title, summary } };
   const r = run('gh', ['api', '--method', 'POST', `repos/${input.targetRepo}/check-runs`, '--input', '-'],
     { cwd: WORK, env: { ...process.env, GH_TOKEN: token }, input: JSON.stringify(body), allowFail: true });
@@ -346,9 +370,11 @@ function completeCheckRun(input, checkRunId, { conclusion, title, summary }) {
   if (checkTarget(input) === 'sandbox-mirror') return dispatchSandboxCheck(input, { conclusion, title, summary });
   const token = process.env.CHECKS_TOKEN;
   if (!token || checkTarget(input) !== 'direct') return { skipped: true };
+  const name = checkNameForInput(input);
+  if (!name) return { skipped: true, reason: input.checkNameUnavailable };
   const body = conclusion
-    ? { name: CHECK_NAME, head_sha: input.head, status: 'completed', conclusion, completed_at: nowIso(), external_id: input.runUrl || undefined, details_url: input.runUrl || undefined, output: { title, summary } }
-    : { name: CHECK_NAME, head_sha: input.head, status: 'in_progress', external_id: input.runUrl || undefined, details_url: input.runUrl || undefined, output: { title, summary } };
+    ? { name, head_sha: input.head, status: 'completed', conclusion, completed_at: nowIso(), external_id: input.runUrl || undefined, details_url: input.runUrl || undefined, output: { title, summary } }
+    : { name, head_sha: input.head, status: 'in_progress', external_id: input.runUrl || undefined, details_url: input.runUrl || undefined, output: { title, summary } };
   const path = checkRunId ? `repos/${input.targetRepo}/check-runs/${checkRunId}` : `repos/${input.targetRepo}/check-runs`;
   const r = run('gh', ['api', '--method', checkRunId ? 'PATCH' : 'POST', path, '--input', '-'],
     { cwd: WORK, env: { ...process.env, GH_TOKEN: token }, input: JSON.stringify(body), allowFail: true });
@@ -744,6 +770,8 @@ async function publish() {
   const input = state.input;
   const result = baseResult(state);
   try {
+    // [MIVO-PATCH gate-bases] 任务书绑定的目标分支(state.context)优先于 prepare 缓存的检查名;没有 context 时由 checkNameForInput 补读。
+    if (checkTarget(input) === 'direct' && state.context?.baseRefName) input.checkName = checkNameFor(state.context.baseRefName, gateBases());
     if (state.phase === 'done-early') {
       Object.assign(result, { outcome: state.early.outcome, reason: state.early.reason, retry: state.early.retry === true });
       if (state.early.health) {

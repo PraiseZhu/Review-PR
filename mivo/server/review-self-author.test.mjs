@@ -45,6 +45,10 @@ function makeRoot() {
   copyFileSync(join(LIB_DIR, '..', 'config', 'severity.md'), join(root, 'mivo', 'config', 'severity.md'));
   copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'self-write-receipts.mjs'),
     join(root, 'review-pr', 'scripts', 'self-write-receipts.mjs'));
+  // [MIVO-PATCH gate-bases] review.mjs 按目标分支取检查名:要 gate-bases.mjs 与规则配置(gateBases)。
+  copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'gate-bases.mjs'), join(root, 'review-pr', 'scripts', 'gate-bases.mjs'));
+  mkdirSync(join(root, 'review-pr', 'config'), { recursive: true });
+  copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'config', 'pr-rules.json'), join(root, 'review-pr', 'config', 'pr-rules.json'));
   // review.mjs 读分流日志汇总用的 gh-read-route.mjs(及它搬运的分类器)。
   mkdirSync(join(root, 'review-pr', 'scripts', 'vendor'), { recursive: true });
   copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'scripts', 'gh-read-route.mjs'), join(root, 'review-pr', 'scripts', 'gh-read-route.mjs'));
