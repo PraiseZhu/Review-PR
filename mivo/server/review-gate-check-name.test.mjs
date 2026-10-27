@@ -76,7 +76,7 @@ const checkWrites = (calls) => calls.filter((c) => c.args.some((a) => /^repos\/o
 });
 
 function setup({ baseRefName = 'integration/a', input: inputPatch = {}, state: statePatch = {}, withContext = true, answer = true, repoDir = true,
-  failures, verified = false, exempt = false, premerge = PASS_GATES } = {}) {
+  failures, verified = false, exempt = false, premerge = PASS_GATES, viewerIsAuthor, blockedCode } = {}) {
   const root = makeRoot();
   const work = join(root, 'work');
   for (const dir of ['input', 'out', ...(repoDir ? ['repo'] : [])]) mkdirSync(join(work, dir), { recursive: true });
@@ -85,14 +85,14 @@ function setup({ baseRefName = 'integration/a', input: inputPatch = {}, state: s
   const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: SHA, base: SHA, tier: 'standard', prevRunId: '',
     roundId: 'round-12345678', attempt: 1, mode: 'live', action: 'review', skillSha: SHA, runId: '42', runUrl: '', ...inputPatch };
   const context = { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'https://github.com/o/r/pull/7',
-    evidence: { head: SHA, base: SHA, baseRefName, diffHash: 'd1' }, baseRefName, viewerIsAuthor: !verified, protectedFiles: true };
+    evidence: { head: SHA, base: SHA, baseRefName, diffHash: 'd1' }, baseRefName, viewerIsAuthor: viewerIsAuthor ?? !verified, protectedFiles: true };
   writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [], errors: [],
     lockToken: 'lock-token', authorityDigest: 'digest', ...(withContext ? { context } : {}),
     current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
     scope: { mode: 'full', reason: '没有上一轮审查记录', files: ['src/a.ts'], previousFindings: [] }, checkRunId: 99, pendingGates: [],
     deferrals: { verified: [], rejected: [] }, codex: { attempts: [{ ok: true }] }, ...statePatch }));
   if (answer) writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT, findings: [] }));
-  const approval = { status: 'blocked', code: AUTHOR.code, reason: (failures ?? [AUTHOR]).map((f) => f.reason).join('; ') };
+  const approval = { status: 'blocked', code: blockedCode ?? AUTHOR.code, reason: (failures ?? [AUTHOR]).map((f) => f.reason).join('; ') };
   const approvalResult = { ok: true, pr: 7, approved: false, approval, retry: false,
     failedChecks: (failures ?? [AUTHOR]).map((f) => f.reason), reason: approval.reason, ...(failures ? { failures } : {}) };
   const verifiedApproval = { status: 'verified', reviewId: '9', reviewer: 'reviewer-bot', head: SHA, verifiedAt: new Date().toISOString() };
@@ -130,6 +130,8 @@ const PATHS = [
   ['reviewed-only + 豁免(success)', { exempt: true }, 'success'],
   ['作者自批是唯一拦截项(success)', { failures: [AUTHOR] }, 'success'],
   ['审批被其它项拦住(PATCH)', { failures: [THREADS] }, null],
+  // viewer 不是作者、Approve 被非"自批"原因拦住:走 publishClean 末尾 `approval.status === 'blocked'` 且未 headMoved 那一处(原先没有用例到达)。
+  ['Approve 被非自批原因拦住且 viewer 不是作者(success)', { failures: [THREADS], viewerIsAuthor: false, blockedCode: THREADS.code }, 'success'],
   ['前置门未过的 advisory(进行中)', { failures: [AUTHOR, THREADS] }, null],
 ];
 
