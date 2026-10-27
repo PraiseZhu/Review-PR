@@ -28,7 +28,8 @@ try {
   if (process.platform !== 'win32') process.env.PATH = [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(delimiter);
   // lib.mjs 在 import 时按环境变量定状态目录:先设好环境,再 import(同 pre-check.mjs)。
   const load = (name) => import(pathToFileURL(join(SCRIPTS, name)).href);
-  const { STATE_DIR, stateFile, parseRepo, fetchOpenPrSnapshot, fetchMaintainerAuthority } = await load('lib.mjs');
+  const { STATE_DIR, stateFile, parseRepo, fetchOpenPrSnapshot, fetchMaintainerAuthority, fetchDefaultBranch, loadRules } = await load('lib.mjs');
+  const { toGateBases } = await load('gate-bases.mjs');
   const { createCandidateList } = await load('review-round.mjs');
   const { findIncompleteRounds } = await load('review-queue.mjs');
   const { atomicWriteJson } = await load('runtime-io.mjs');
@@ -49,8 +50,11 @@ try {
   const state = withDeferredGateRetries(readState(stateFile('round-state.json')), plans);
   const busy = toBusyPrs(plans);
   const excluded = toExcludedPrs({ busyPrs: busy, roundState: state, mode });
+  // 配了 gateBases 才读默认分支(名单外分支不送审);读不到按失败,不放行。
+  const gateBases = toGateBases(loadRules().gateBases);
+  const defaultBranch = gateBases.length > 0 ? fetchDefaultBranch({ owner, repo, timeoutMs: 30_000 }) : undefined;
   const snapshot = fetchOpenPrSnapshot({ owner, repo, timeoutMs: 30_000 }).filter((pr) => !excluded.has(pr.number));
-  const manifest = createCandidateList({ repo: repository, snapshot, mode, state, fixSessions: readState(stateFile('fix-sessions.json')) });
+  const manifest = createCandidateList({ repo: repository, snapshot, mode, state, defaultBranch, gateBases, fixSessions: readState(stateFile('fix-sessions.json')) });
   const candidateList = stateFile('admit-candidates.json');
   // 空名单也写:免得上一次的名单被当成这一次的用。
   atomicWriteJson(candidateList, manifest);

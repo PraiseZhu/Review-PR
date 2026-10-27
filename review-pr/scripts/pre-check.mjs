@@ -21,7 +21,7 @@ try {
   process.env.REVIEW_PR_REPO_ROOT = repoRoot;
   process.chdir(repoRoot);
   if (process.platform !== 'win32') process.env.PATH = [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(delimiter);
-  const { LOCK_FILE, STATE_DIR, stateFile, parseRepo, fetchOpenPrSnapshot, skillRepoPull } = await import('./lib.mjs');
+  const { LOCK_FILE, STATE_DIR, stateFile, parseRepo, fetchOpenPrSnapshot, skillRepoPull, fetchDefaultBranch, loadRules } = await import('./lib.mjs');
   const lock = readState(LOCK_FILE);
   if (Date.now() - Date.parse(lock.startedAt) < 60 * 60 * 1000) {
     process.stdout.write(JSON.stringify({ decision: 'skip', reason: 'lock-held' }) + '\n');
@@ -62,8 +62,12 @@ try {
       resumePlan: unfinished[0], incompleteRoundCount: unfinished.length, skillSync, historyRestore }) + '\n');
     process.exit(0);
   }
+  // [MIVO-PATCH gate-bases] 配了 gateBases 才读默认分支(名单外分支不送审);读不到按失败,不放行。
+  const { toGateBases } = await import('./gate-bases.mjs');
+  const gateBases = toGateBases(loadRules().gateBases);
+  const defaultBranch = gateBases.length > 0 ? fetchDefaultBranch({ owner, repo, timeoutMs: 30_000 }) : undefined;
   const snapshot = fetchOpenPrSnapshot({ owner, repo, timeoutMs: 30_000 });
-  const manifest = createCandidateList({ repo: repository, snapshot, mode, skillSync, historyRestore,
+  const manifest = createCandidateList({ repo: repository, snapshot, mode, skillSync, historyRestore, defaultBranch, gateBases,
     state: readState(stateFile('round-state.json')),
     fixSessions: readState(stateFile('fix-sessions.json')) });
   const candidateList = resolve(arg('--output') || stateFile('review-candidates.json'));
