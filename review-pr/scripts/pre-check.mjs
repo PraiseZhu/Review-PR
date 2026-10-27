@@ -21,7 +21,7 @@ try {
   process.env.REVIEW_PR_REPO_ROOT = repoRoot;
   process.chdir(repoRoot);
   if (process.platform !== 'win32') process.env.PATH = [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(delimiter);
-  const { LOCK_FILE, STATE_DIR, stateFile, parseRepo, fetchOpenPrSnapshot, skillRepoPull, fetchDefaultBranch, loadRules } = await import('./lib.mjs');
+  const { LOCK_FILE, STATE_DIR, stateFile, parseRepo, fetchOpenPrSnapshot, skillRepoPull, fetchDefaultBranch, loadRules } = await import('./lib.mjs'); // [MIVO-PATCH gate-bases] fetchDefaultBranch、loadRules
   const lock = readState(LOCK_FILE);
   if (Date.now() - Date.parse(lock.startedAt) < 60 * 60 * 1000) {
     process.stdout.write(JSON.stringify({ decision: 'skip', reason: 'lock-held' }) + '\n');
@@ -67,7 +67,7 @@ try {
   const gateBases = toGateBases(loadRules().gateBases);
   const defaultBranch = gateBases.length > 0 ? fetchDefaultBranch({ owner, repo, timeoutMs: 30_000 }) : undefined;
   const snapshot = fetchOpenPrSnapshot({ owner, repo, timeoutMs: 30_000 });
-  const manifest = createCandidateList({ repo: repository, snapshot, mode, skillSync, historyRestore, defaultBranch, gateBases,
+  const manifest = createCandidateList({ repo: repository, snapshot, mode, skillSync, historyRestore, defaultBranch, gateBases, // [MIVO-PATCH gate-bases]
     state: readState(stateFile('round-state.json')),
     fixSessions: readState(stateFile('fix-sessions.json')) });
   const candidateList = resolve(arg('--output') || stateFile('review-candidates.json'));

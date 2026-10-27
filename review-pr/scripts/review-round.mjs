@@ -20,7 +20,7 @@ export const OUTCOMES = {
   approval: '等待另一位维护者 Approve', 'merge-blocked': '合并条件未满足',
   'approval-pending': 'Approve 尚待确认，将继续补齐',
   'merge-queued': '已进入合并队列，尚未合并', 'review-only': '仅审核模式',
-  unchanged: '自上轮处理后状态未变化', 'base-not-gated': '目标分支不在审查范围', 'state-changed': '本轮期间 PR 状态已变化', error: '执行异常',
+  unchanged: '自上轮处理后状态未变化', 'base-not-gated': '目标分支不在审查范围', 'state-changed': '本轮期间 PR 状态已变化', error: '执行异常', // [MIVO-PATCH gate-bases]
 };
 // Thread 卡点沿用 skip-gate，避免 findings→threads-unresolved 换路由后重复投递。
 // CI 失败和冲突必须分开；冲突再带当时的 base，main 往前走时能重新投递。
@@ -344,7 +344,7 @@ function fixWatchdogDue(pr, { mode, now, fixSessions }) {
   return decision.shouldDispatch === true && Boolean(decision.watchdog);
 }
 
-export function createCandidateList({ repo, snapshot, state = {}, mode = 'auto', now = Date.now(), runId = randomUUID(), skillSync, historyRestore, fixSessions = {}, defaultBranch, gateBases = [] }) {
+export function createCandidateList({ repo, snapshot, state = {}, mode = 'auto', now = Date.now(), runId = randomUUID(), skillSync, historyRestore, fixSessions = {}, defaultBranch, gateBases = [] }) { // [MIVO-PATCH gate-bases] defaultBranch、gateBases
   if (!['auto', 'review-only'].includes(mode)) throw new Error('无效模式');
   if (!Array.isArray(snapshot) || new Set(snapshot.map((p) => p.number)).size !== snapshot.length ||
       snapshot.some((p) => !Number.isSafeInteger(p.number) || p.number <= 0 || !p.head)) throw new Error('候选快照不完整');
@@ -520,7 +520,7 @@ export function collectRoundResults(plan, results) {
     ...(p.lastFixHandoff ? { fixHandoff: p.lastFixHandoff } : {}),
     notEnteredReason: OUTCOMES.unchanged, enteredReview: false, reviewed: false, merged: false }));
   for (const item of plan.skipped) validateTargetBranchNotice(item);
-  const all = [...processed, ...plan.skipped, ...unchanged, ...notGated];
+  const all = [...processed, ...plan.skipped, ...unchanged, ...notGated]; // [MIVO-PATCH gate-bases]
   const scope = plan.manifest.snapshot.filter((p) => !p.isDraft).map((p) => p.number);
   if (all.length !== scope.length || new Set(all.map((p) => p.pr)).size !== scope.length || all.some((p) => !scope.includes(p.pr))) {
     throw new Error('本轮记录没有完整覆盖冻结名单');

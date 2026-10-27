@@ -100,7 +100,7 @@ export function classifyBasePrLookup({ repo, pr, baseRefName, defaultBranch, pul
       url: picked.html_url ?? null, headRepository: repositoryOf(picked.head.repo), headRefName: picked.head.ref } };
 }
 
-export function collectDependencyRefs({ repo, candidate, snapshot, meta, gateBases = [] }) {
+export function collectDependencyRefs({ repo, candidate, snapshot, meta, gateBases = [] }) { // [MIVO-PATCH gate-bases]
   if (!meta?.defaultBranch || !meta.baseRefName) throw new Error('默认分支或 base 分支未完整读取');
   if (meta.baseRefName !== meta.defaultBranch && meta.basePrLookup?.verified !== true) {
     throw new Error(`非默认 base 的依赖查询失败：${meta.basePrLookup?.error || '未取得完整查询证据'}`);
@@ -117,9 +117,9 @@ export function collectDependencyRefs({ repo, candidate, snapshot, meta, gateBas
   // Keep snapshot-open prerequisites even if a parent merges or the child is
   // retargeted while full contexts are collected. They re-enter next round.
   for (const parent of stackedBaseDependencies({ repo, pr: candidate.number,
-    baseRefName: candidate.baseRefName, defaultBranch: meta.defaultBranch, snapshot, gateBases })) {
+    baseRefName: candidate.baseRefName, defaultBranch: meta.defaultBranch, snapshot, gateBases })) { // [MIVO-PATCH gate-bases]
     refs.add(`${canonicalRepo(repo)}#${parent.number}`);
   }
-  if (!gate && meta.baseRefName !== meta.defaultBranch && meta.basePr) refs.add(`${canonicalRepo(repo)}#${meta.basePr.number}`);
+  if (!gate && meta.baseRefName !== meta.defaultBranch && meta.basePr) refs.add(`${canonicalRepo(repo)}#${meta.basePr.number}`); // [MIVO-PATCH gate-bases]
   return [...refs];
 }

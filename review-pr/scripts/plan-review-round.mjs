@@ -49,7 +49,7 @@ try {
         [String(candidate.number), '--compact', '--lock-token', token, '--diff-output', diffFile], { timeoutMs: 300_000 });
       if (!context?.ok) return { pr: candidate.number, ok: false, error: context?.error || 'context 读取失败' };
       const dependencies = [];
-      const refs = collectDependencyRefs({ repo: slug, candidate, snapshot: manifest.snapshot, meta: context.meta, gateBases });
+      const refs = collectDependencyRefs({ repo: slug, candidate, snapshot: manifest.snapshot, meta: context.meta, gateBases }); // [MIVO-PATCH gate-bases]
       for (const ref of refs) {
         heartbeat.assertHealthy();
         const [depRepo, rawNumber] = ref.split('#');
