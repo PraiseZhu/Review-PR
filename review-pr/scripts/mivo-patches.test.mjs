@@ -2622,3 +2622,186 @@ test('gate-bases: review-pr (integration) 被 CI 忽略;它是唯一未过的必
   assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [{ name: 'build', conclusion: 'SUCCESS' }], rules }), true);
   assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [{ name: 'build', conclusion: 'FAILURE' }], rules }), false);
 });
+
+// ---- gate-bases: 门禁分支不按叠放 PR 处理 ----
+const GBDEP = await import('./review-dependencies.mjs');
+const GBROUND = await import('./review-round.mjs');
+const GBLIB = await import('./lib.mjs');
+const GATE = ['integration/*'];
+const GROUP = 100;
+const gbSlug = 'o/r';
+
+const gbPull = (state, number = GROUP, ref = 'integration/a') => ({
+  number, state: state === 'MERGED' ? 'closed' : state.toLowerCase(), merged_at: state === 'MERGED' ? '2026-10-26T00:00:00Z' : null,
+  html_url: `https://github.com/o/r/pull/${number}`, head: { ref, repo: { full_name: 'o/r' } },
+});
+const gbLookup = (state, baseRefName = 'integration/a') => GBDEP.classifyBasePrLookup({
+  repo: gbSlug, pr: 7, baseRefName, defaultBranch: 'main', pulls: state ? [gbPull(state, GROUP, baseRefName)] : [] });
+const gbMeta = (state, { body = '', baseRefName = 'integration/a', gateBases = GATE } = {}) => {
+  const lookup = gbLookup(state, baseRefName);
+  return { defaultBranch: 'main', baseRefName, body, basePrLookup: { verified: lookup.verified, reason: lookup.reason },
+    ...GBDEP.applyGateBase({ lookup, baseRefName, defaultBranch: 'main', gateBases }) };
+};
+const gbSnap = (extra = []) => [
+  { number: 7, head: 'h7', baseRefName: 'integration/a', headRefName: 'feature/x', headRepository: { nameWithOwner: 'o/r' } },
+  ...extra,
+];
+const gbDeps = ({ state, body = '', snapshot = gbSnap(), gateBases = GATE, baseRefName = 'integration/a' }) => GBDEP.collectDependencyRefs({
+  repo: gbSlug, candidate: snapshot[0], snapshot, meta: gbMeta(state, { body, baseRefName, gateBases }), gateBases });
+
+test('gate-bases: applyGateBase 门禁分支清空 basePr/needsRetarget 并保留组 PR,非门禁与默认分支原样', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const lookup = gbLookup(state);
+    const applied = GBDEP.applyGateBase({ lookup, baseRefName: 'integration/a', defaultBranch: 'main', gateBases: GATE });
+    assert.equal(applied.gateBase, true, state);
+    assert.equal(applied.basePr, null, state);
+    assert.equal(applied.needsRetarget, false, state);
+    assert.equal(applied.gateGroupPr.number, GROUP, state);
+    assert.equal(applied.gateGroupPr.state, state, state);
+  }
+  const stacked = gbLookup('MERGED', 'feature/p');
+  assert.equal(stacked.needsRetarget, true);
+  assert.deepEqual(GBDEP.applyGateBase({ lookup: stacked, baseRefName: 'feature/p', defaultBranch: 'main', gateBases: GATE }),
+    { gateBase: false, basePr: stacked.basePr, gateGroupPr: null, needsRetarget: true });
+  const dflt = GBDEP.classifyBasePrLookup({ repo: gbSlug, pr: 7, baseRefName: 'main', defaultBranch: 'main', pulls: [] });
+  assert.deepEqual(GBDEP.applyGateBase({ lookup: dflt, baseRefName: 'main', defaultBranch: 'main', gateBases: ['main'] }),
+    { gateBase: false, basePr: null, gateGroupPr: null, needsRetarget: false });
+});
+
+test('gate-bases: 门禁分支组 PR 开着/已关闭/已合并都不产生依赖,正文 Depends on 组 PR 被忽略', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const snapshot = state === 'OPEN'
+      ? gbSnap([{ number: GROUP, head: 'hg', baseRefName: 'main', headRefName: 'integration/a', headRepository: { nameWithOwner: 'o/r' } }])
+      : gbSnap();
+    assert.deepEqual(gbDeps({ state, snapshot }), [], state);
+    assert.deepEqual(gbDeps({ state, snapshot, body: `Depends on #${GROUP}` }), [], `${state} 正文依赖组 PR`);
+    assert.deepEqual(gbDeps({ state, snapshot, body: `Depends on o/r#${GROUP}` }), [], `${state} 带仓库名`);
+  }
+});
+
+test('gate-bases: 门禁分支下显式依赖兄弟 PR 与别仓依赖照常生效', () => {
+  const sibling = { number: 8, head: 'h8', baseRefName: 'integration/a', headRefName: 'feature/y', headRepository: { nameWithOwner: 'o/r' } };
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const deps = gbDeps({ state, snapshot: gbSnap([sibling]), body: `Depends on #${GROUP}, #8 and x/y#${GROUP}` });
+    assert.deepEqual(deps.sort(), ['o/r#8', 'x/y#100'], state);
+  }
+});
+
+test('gate-bases: 不传 gateBases 或非门禁分支保持旧行为(main/release/叠放)', () => {
+  const stackedSnap = [{ number: 7, head: 'h7', baseRefName: 'feature/p', headRefName: 'feature/x', headRepository: { nameWithOwner: 'o/r' } },
+    { number: 50, head: 'h50', baseRefName: 'main', headRefName: 'feature/p', headRepository: { nameWithOwner: 'o/r' } }];
+  const stacked = GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: stackedSnap[0], snapshot: stackedSnap,
+    meta: { defaultBranch: 'main', baseRefName: 'feature/p', body: '', basePrLookup: { verified: true },
+      basePr: { number: 50, state: 'OPEN' }, needsRetarget: false }, gateBases: GATE });
+  assert.deepEqual(stacked, ['o/r#50']);
+  // 门禁模式写在 feature/* 之外,integration 分支不传 gateBases 时回到旧的叠放行为
+  const open = gbSnap([{ number: GROUP, head: 'hg', baseRefName: 'main', headRefName: 'integration/a', headRepository: { nameWithOwner: 'o/r' } }]);
+  const lookup = gbLookup('OPEN');
+  const legacy = GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: open[0], snapshot: open,
+    meta: { defaultBranch: 'main', baseRefName: 'integration/a', body: '', basePrLookup: { verified: true }, basePr: lookup.basePr, needsRetarget: false } });
+  assert.deepEqual(legacy, [`o/r#${GROUP}`]);
+  const release = GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: { number: 7, baseRefName: 'release/1.2' }, snapshot: [],
+    meta: { defaultBranch: 'main', baseRefName: 'release/1.2', body: '', basePrLookup: { verified: true }, basePr: null, needsRetarget: false }, gateBases: GATE });
+  assert.deepEqual(release, []);
+  // 默认分支 PR 的 Depends on 照旧
+  assert.deepEqual(GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: { number: 7, baseRefName: 'main' }, snapshot: [],
+    meta: { defaultBranch: 'main', baseRefName: 'main', body: 'Depends on #9', basePrLookup: { verified: true }, basePr: null }, gateBases: GATE }), ['o/r#9']);
+});
+
+test('gate-bases: 门禁分支仍要求 lookup 已验证,读不到时抛错而不是当作无依赖', () => {
+  const meta = { ...gbMeta('OPEN'), basePrLookup: { verified: false, reason: 'lookup-failed', error: 'boom' } };
+  assert.throws(() => GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: gbSnap()[0], snapshot: gbSnap(), meta, gateBases: GATE }), /boom/);
+});
+
+test('gate-bases: 同号别仓与 fork 同名分支不被当作组 PR', () => {
+  const snapshot = gbSnap([
+    { number: 60, head: 'hf', baseRefName: 'main', headRefName: 'integration/a', headRepository: { nameWithOwner: 'fork/r' } },
+  ]);
+  assert.deepEqual(gbDeps({ state: null, snapshot, body: 'Depends on #60, other/r#7' }).sort(), ['o/r#60', 'other/r#7']);
+});
+
+test('gate-bases: 门禁分支子 PR 在三种组 PR 状态下进 eligible,不产生 dependency/retarget,也无作者提醒', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const meta = { ...gbMeta(state), state: 'OPEN', isDraft: false, headRefOid: 'h7', baseRefOid: 'b', baseRefName: 'integration/a' };
+    const manifest = { repo: gbSlug, runId: 'run-1', mode: 'auto', candidates: [{ number: 7, head: 'h7', title: 't', createdAt: '2026-10-26T00:00:00Z' }] };
+    const refs = gbDeps({ state, body: `Depends on #${GROUP}` });
+    const plan = GBROUND.makeReviewPlan(manifest, [{ pr: 7, ok: true, meta,
+      dependencies: refs.map((ref) => ({ repo: gbSlug, number: Number(ref.split('#')[1]), state: 'OPEN' })) }]);
+    assert.equal(plan.groups.flatMap((g) => g.prs).length, 1, state);
+    assert.deepEqual(plan.skipped, [], state);
+    assert.equal(plan.groups[0].prs[0].basePr, null, state);
+  }
+});
+
+test('gate-bases: 门禁分支下兄弟依赖(未合并)→ dependency,但不触发「改指 main」提醒;非门禁叠放仍提醒', () => {
+  const meta = { ...gbMeta('OPEN'), state: 'OPEN', isDraft: false, headRefOid: 'h7', baseRefOid: 'b', baseRefName: 'integration/a' };
+  const manifest = { repo: gbSlug, runId: 'run-1', mode: 'auto', candidates: [{ number: 7, head: 'h7', title: 't', createdAt: '2026-10-26T00:00:00Z' }] };
+  const plan = GBROUND.makeReviewPlan(manifest, [{ pr: 7, ok: true, meta, dependencies: [{ repo: gbSlug, number: 8, state: 'OPEN' }] }]);
+  assert.equal(plan.skipped[0].outcome, 'dependency');
+  assert.equal(GBROUND.needsTargetBranchNotice(plan.skipped[0]), false);
+  const lookup = gbLookup('OPEN', 'feature/p');
+  const stackedMeta = { state: 'OPEN', isDraft: false, headRefOid: 'h7', baseRefOid: 'b', baseRefName: 'feature/p', defaultBranch: 'main',
+    ...GBDEP.applyGateBase({ lookup, baseRefName: 'feature/p', defaultBranch: 'main', gateBases: GATE }) };
+  const stacked = GBROUND.makeReviewPlan(manifest, [{ pr: 7, ok: true, meta: stackedMeta, dependencies: [{ repo: gbSlug, number: GROUP, state: 'OPEN' }] }]);
+  assert.equal(stacked.skipped[0].outcome, 'dependency');
+  assert.equal(GBROUND.needsTargetBranchNotice(stacked.skipped[0]), true);
+});
+
+test('gate-bases: 门禁分支组 PR 状态不会让 computeDisplayLabels 挂 blocked-by-pr', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const m = gbMeta(state);
+    const labels = GBLIB.computeDisplayLabels({ needsRetarget: m.needsRetarget, basePrOpen: Boolean(m.basePr) && m.basePr.state === 'OPEN' });
+    assert.notEqual(labels.status, 'status:blocked-by-pr', state);
+  }
+  const lookup = gbLookup('OPEN', 'feature/p');
+  assert.equal(GBLIB.computeDisplayLabels({ needsRetarget: lookup.needsRetarget, basePrOpen: lookup.basePr.state === 'OPEN' }).status, 'status:blocked-by-pr');
+});
+
+test('gate-bases: context.mjs 的 base 查询片段在三种组 PR 状态下得到 gateBase=true/basePr=null/needsRetarget=false,默认分支不查列表', async () => {
+  const vm = await import('node:vm');
+  const src = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  const start = src.indexOf('const defaultBranch = gqlData.repository');
+  const end = src.indexOf('const authorLogin = meta.author?.login');
+  assert.ok(start > 0 && end > start, '找不到 base 查询片段');
+  const snippet = src.slice(start, end);
+  const run = ({ baseRefName, pulls, fail = false, defaultBranch = 'main' }) => {
+    const urls = [];
+    const fetchRestPages = (url) => { urls.push(url); if (fail) throw new Error('rest down'); return pulls; };
+    const out = vm.runInNewContext(`(() => { ${snippet}; return { defaultBranch, basePr, needsRetarget, gateBase, gateGroupPr, basePrLookup }; })()`, {
+      gqlData: { repository: { defaultBranchRef: { name: defaultBranch } } }, meta: { baseRefName }, slug: 'o/r', owner: 'o', pr: 7,
+      gateBases: GATE, fetchRestPages, classifyBasePrLookup: GBDEP.classifyBasePrLookup, applyGateBase: GBDEP.applyGateBase,
+    });
+    return { ...out, urls };
+  };
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const r = run({ baseRefName: 'integration/a', pulls: [gbPull(state)] });
+    assert.equal(r.gateBase, true, state);
+    assert.equal(r.basePr, null, state);
+    assert.equal(r.needsRetarget, false, state);
+    assert.equal(r.gateGroupPr.number, GROUP, state);
+    assert.equal(r.basePrLookup.verified, true, state);
+    assert.deepEqual(r.urls, ['repos/o/r/pulls?state=all&head=o%3Aintegration%2Fa'], state);
+  }
+  const merged = run({ baseRefName: 'feature/p', pulls: [gbPull('MERGED', 55, 'feature/p')] });
+  assert.equal(merged.needsRetarget, true);
+  assert.equal(merged.gateBase, false);
+  assert.equal(merged.basePr.number, 55);
+  const dflt = run({ baseRefName: 'main', pulls: [] });
+  assert.deepEqual(dflt.urls, []);
+  assert.equal(dflt.gateBase, false);
+  const failed = run({ baseRefName: 'integration/a', pulls: [], fail: true });
+  assert.equal(failed.basePrLookup.verified, false);
+  assert.match(failed.basePrLookup.error, /rest down/);
+  assert.throws(() => GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: gbSnap()[0], snapshot: gbSnap(),
+    meta: { defaultBranch: 'main', baseRefName: 'integration/a', body: '', basePrLookup: failed.basePrLookup }, gateBases: GATE }), /rest down/);
+});
+
+test('gate-bases: context.mjs 与 plan-review-round.mjs 把 gateBases 接进去,scan/full 两处输出带 gateBase/gateGroupPr', () => {
+  const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  assert.match(context, /const gateBases = toGateBases\(prRules\.gateBases\)/);
+  assert.equal(context.match(/gateBase, \/\/ \[MIVO-PATCH gate-bases\]/g)?.length, 2);
+  assert.equal(context.match(/gateGroupPr, \/\/ \[MIVO-PATCH gate-bases\]/g)?.length, 2);
+  const plan = readFileSync(new URL('./plan-review-round.mjs', import.meta.url), 'utf8');
+  assert.match(plan, /const gateBases = toGateBases\(loadRules\(\)\.gateBases\)/);
+  assert.match(plan, /meta: context\.meta, gateBases \}/);
+});
