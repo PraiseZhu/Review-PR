@@ -8,6 +8,7 @@ import { parseRepo, stateFile, mapPool, spawnScriptJson, loadMaintainerAuthority
 import { atomicWriteJson } from './runtime-io.mjs';
 import { validateCandidateList, makeReviewPlan } from './review-round.mjs';
 import { collectDependencyRefs } from './review-dependencies.mjs';
+import { toGateBases } from './gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 import { loadCachedCode } from './context-cache.mjs';
 import { readPrState } from './gh-read.mjs';
 import { startReviewHeartbeat } from './review-heartbeat.mjs';
@@ -21,6 +22,7 @@ const arg = (name) => {
 try {
   const { owner, repo } = parseRepo();
   const slug = `${owner}/${repo}`;
+  const gateBases = toGateBases(loadRules().gateBases); // [MIVO-PATCH gate-bases] 配置不合法走 fail,在建 roundDir 之前
   const token = arg('--lock-token');
   const authority = loadMaintainerAuthoritySnapshot({ owner, repo, lockToken: token });
   const manifest = validateCandidateList(JSON.parse(readFileSync(arg('--candidate-list') || stateFile('review-candidates.json'), 'utf8')), { repo: slug });
@@ -47,7 +49,7 @@ try {
         [String(candidate.number), '--compact', '--lock-token', token, '--diff-output', diffFile], { timeoutMs: 300_000 });
       if (!context?.ok) return { pr: candidate.number, ok: false, error: context?.error || 'context 读取失败' };
       const dependencies = [];
-      const refs = collectDependencyRefs({ repo: slug, candidate, snapshot: manifest.snapshot, meta: context.meta });
+      const refs = collectDependencyRefs({ repo: slug, candidate, snapshot: manifest.snapshot, meta: context.meta, gateBases }); // [MIVO-PATCH gate-bases]
       for (const ref of refs) {
         heartbeat.assertHealthy();
         const [depRepo, rawNumber] = ref.split('#');

@@ -1,4 +1,5 @@
 // Explicit merge prerequisites and repository-qualified stacked branch evidence.
+import { isGateBase } from './gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 const canonicalRepo = (repo) => String(repo ?? '').trim().toLowerCase();
 const repositoryOf = (value) => typeof value === 'string' ? value : value?.nameWithOwner ?? value?.full_name ?? null;
 
@@ -53,10 +54,25 @@ export function explicitDependencies(body, repo) {
   return [...found];
 }
 
-export function stackedBaseDependencies({ repo, pr, baseRefName, defaultBranch, snapshot = [] }) {
-  if (!defaultBranch || !baseRefName || baseRefName === defaultBranch) return [];
-  return snapshot.filter((parent) => parent.number !== pr && parent.headRefName === baseRefName &&
+// [MIVO-PATCH gate-bases] 快照里同仓、head 分支为 branch 的其它 PR;叠放判定与门禁组 PR 识别共用。
+export function headBranchPrs({ repo, pr, branch, snapshot = [] }) {
+  return snapshot.filter((parent) => parent.number !== pr && parent.headRefName === branch &&
     canonicalRepo(repositoryOf(parent.headRepository)) === canonicalRepo(repo));
+}
+
+export function stackedBaseDependencies({ repo, pr, baseRefName, defaultBranch, snapshot = [], gateBases = [] }) {
+  if (!defaultBranch || !baseRefName || baseRefName === defaultBranch) return [];
+  // [MIVO-PATCH gate-bases] 门禁分支(如 integration/*)的 PR 不按叠放处理。
+  if (isGateBase(baseRefName, gateBases)) return [];
+  return headBranchPrs({ repo, pr, branch: baseRefName, snapshot });
+}
+
+// [MIVO-PATCH gate-bases] 门禁分支:basePr 置空、不 retarget,组 PR 另存 gateGroupPr(只用来丢弃指向它的显式依赖)。
+// 非门禁分支与默认分支原样返回。
+export function applyGateBase({ lookup, baseRefName, defaultBranch, gateBases = [] }) {
+  const gateBase = Boolean(defaultBranch) && baseRefName !== defaultBranch && isGateBase(baseRefName, gateBases);
+  if (!gateBase) return { gateBase: false, basePr: lookup.basePr, gateGroupPr: null, needsRetarget: lookup.needsRetarget };
+  return { gateBase: true, basePr: null, gateGroupPr: lookup.basePr ?? null, needsRetarget: false };
 }
 
 // Rows are the complete REST pull-request listing for the target owner:branch.
@@ -84,18 +100,26 @@ export function classifyBasePrLookup({ repo, pr, baseRefName, defaultBranch, pul
       url: picked.html_url ?? null, headRepository: repositoryOf(picked.head.repo), headRefName: picked.head.ref } };
 }
 
-export function collectDependencyRefs({ repo, candidate, snapshot, meta }) {
+export function collectDependencyRefs({ repo, candidate, snapshot, meta, gateBases = [] }) { // [MIVO-PATCH gate-bases]
   if (!meta?.defaultBranch || !meta.baseRefName) throw new Error('默认分支或 base 分支未完整读取');
   if (meta.baseRefName !== meta.defaultBranch && meta.basePrLookup?.verified !== true) {
     throw new Error(`非默认 base 的依赖查询失败：${meta.basePrLookup?.error || '未取得完整查询证据'}`);
   }
-  const refs = new Set(explicitDependencies(meta.body, repo));
+  // [MIVO-PATCH gate-bases] 门禁分支:丢弃指向组 PR(开着/已关闭/已合并)的显式依赖,兄弟 PR 与别仓依赖照旧。
+  const gate = meta.baseRefName !== meta.defaultBranch && isGateBase(meta.baseRefName, gateBases);
+  const groupRefs = new Set();
+  if (gate) {
+    const groupNumbers = [...headBranchPrs({ repo, pr: candidate.number, branch: meta.baseRefName, snapshot }).map((p) => p.number),
+      meta.gateGroupPr?.number, meta.basePr?.number];
+    for (const number of groupNumbers) if (Number.isSafeInteger(number)) groupRefs.add(`${canonicalRepo(repo)}#${number}`);
+  }
+  const refs = new Set(explicitDependencies(meta.body, repo).filter((ref) => !groupRefs.has(ref)));
   // Keep snapshot-open prerequisites even if a parent merges or the child is
   // retargeted while full contexts are collected. They re-enter next round.
   for (const parent of stackedBaseDependencies({ repo, pr: candidate.number,
-    baseRefName: candidate.baseRefName, defaultBranch: meta.defaultBranch, snapshot })) {
+    baseRefName: candidate.baseRefName, defaultBranch: meta.defaultBranch, snapshot, gateBases })) { // [MIVO-PATCH gate-bases]
     refs.add(`${canonicalRepo(repo)}#${parent.number}`);
   }
-  if (meta.baseRefName !== meta.defaultBranch && meta.basePr) refs.add(`${canonicalRepo(repo)}#${meta.basePr.number}`);
+  if (!gate && meta.baseRefName !== meta.defaultBranch && meta.basePr) refs.add(`${canonicalRepo(repo)}#${meta.basePr.number}`); // [MIVO-PATCH gate-bases]
   return [...refs];
 }

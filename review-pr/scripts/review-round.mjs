@@ -5,6 +5,7 @@ import { MERGE_RETRY_VERSION, legacyMergeRetryDue } from './merge-retry.mjs';
 import { formatLocalIso } from './local-time.mjs';
 import { evaluateFixDispatch, FIX_WATCHDOG_MS } from './fix-session-state.mjs';
 import { writeSecond, selfWriteChainMatches } from './self-write-receipts.mjs';
+import { classifyBase } from './gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 export { explicitDependencies } from './review-dependencies.mjs';
 export { FIX_WATCHDOG_MS };
 
@@ -19,7 +20,7 @@ export const OUTCOMES = {
   approval: '等待另一位维护者 Approve', 'merge-blocked': '合并条件未满足',
   'approval-pending': 'Approve 尚待确认，将继续补齐',
   'merge-queued': '已进入合并队列，尚未合并', 'review-only': '仅审核模式',
-  unchanged: '自上轮处理后状态未变化', 'state-changed': '本轮期间 PR 状态已变化', error: '执行异常',
+  unchanged: '自上轮处理后状态未变化', 'base-not-gated': '目标分支不在审查范围', 'state-changed': '本轮期间 PR 状态已变化', error: '执行异常', // [MIVO-PATCH gate-bases]
 };
 // Thread 卡点沿用 skip-gate，避免 findings→threads-unresolved 换路由后重复投递。
 // CI 失败和冲突必须分开；冲突再带当时的 base，main 往前走时能重新投递。
@@ -343,7 +344,7 @@ function fixWatchdogDue(pr, { mode, now, fixSessions }) {
   return decision.shouldDispatch === true && Boolean(decision.watchdog);
 }
 
-export function createCandidateList({ repo, snapshot, state = {}, mode = 'auto', now = Date.now(), runId = randomUUID(), skillSync, historyRestore, fixSessions = {} }) {
+export function createCandidateList({ repo, snapshot, state = {}, mode = 'auto', now = Date.now(), runId = randomUUID(), skillSync, historyRestore, fixSessions = {}, defaultBranch, gateBases = [] }) { // [MIVO-PATCH gate-bases] defaultBranch、gateBases
   if (!['auto', 'review-only'].includes(mode)) throw new Error('无效模式');
   if (!Array.isArray(snapshot) || new Set(snapshot.map((p) => p.number)).size !== snapshot.length ||
       snapshot.some((p) => !Number.isSafeInteger(p.number) || p.number <= 0 || !p.head)) throw new Error('候选快照不完整');
@@ -351,6 +352,12 @@ export function createCandidateList({ repo, snapshot, state = {}, mode = 'auto',
   const skipped = [];
   for (const pr of [...snapshot].sort(byAge)) {
     if (pr.isDraft) { skipped.push({ ...pr, outcome: 'draft', reason: '作者尚未标记 Ready' }); continue; }
+    // [MIVO-PATCH gate-bases] 目标分支不是默认分支、release/x.y、门禁分支的 PR 不送审(须在读 previous/retry 之前)。
+    // 没传 defaultBranch 的上游调用不过滤;指纹字段不含 baseRefName。
+    if (defaultBranch && pr.baseRefName && classifyBase({ baseRefName: pr.baseRefName, defaultBranch, gateBases }) === 'other') {
+      skipped.push({ ...pr, outcome: 'base-not-gated', reason: `目标分支不在审查范围，改指 ${defaultBranch} 后再审` });
+      continue;
+    }
     const previous = state?.version === 1 && state.mode === mode ? state.prs?.[pr.number] : null;
     const dependencyPrs = previous?.dependencyPrs ?? [];
     const observation = observeCandidateFingerprint(pr, snapshot, previous, dependencyPrs);
@@ -504,13 +511,16 @@ export function collectRoundResults(plan, results) {
       errors: [...(result.errors ?? []), `修复 session 投递失败：${handoff.reason}`],
     } : {}) };
   });
-  const unchanged = plan.manifest.skipped.filter((p) => !p.isDraft).map((p) => ({ ...p, pr: p.number,
+  // [MIVO-PATCH gate-bases] base-not-gated 保留自己的 outcome 与原因,不并入 unchanged,也不沿用上轮结论。
+  const notGated = plan.manifest.skipped.filter((p) => !p.isDraft && p.outcome === 'base-not-gated').map((p) => ({ ...p, pr: p.number,
+    outcome: 'base-not-gated', notEnteredReason: p.reason, enteredReview: false, reviewed: false, merged: false }));
+  const unchanged = plan.manifest.skipped.filter((p) => !p.isDraft && p.outcome !== 'base-not-gated').map((p) => ({ ...p, pr: p.number,
     outcome: OUTCOMES[p.lastOutcome] && p.lastOutcome !== 'merged' ? p.lastOutcome : 'unchanged',
     reason: p.lastReason ? `${p.lastReason}（状态未变化，沿用上轮结论）` : p.reason,
     ...(p.lastFixHandoff ? { fixHandoff: p.lastFixHandoff } : {}),
     notEnteredReason: OUTCOMES.unchanged, enteredReview: false, reviewed: false, merged: false }));
   for (const item of plan.skipped) validateTargetBranchNotice(item);
-  const all = [...processed, ...plan.skipped, ...unchanged];
+  const all = [...processed, ...plan.skipped, ...unchanged, ...notGated]; // [MIVO-PATCH gate-bases]
   const scope = plan.manifest.snapshot.filter((p) => !p.isDraft).map((p) => p.number);
   if (all.length !== scope.length || new Set(all.map((p) => p.pr)).size !== scope.length || all.some((p) => !scope.includes(p.pr))) {
     throw new Error('本轮记录没有完整覆盖冻结名单');

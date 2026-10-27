@@ -912,6 +912,21 @@ export function gh(args, opts = {}) {
   return r;
 }
 
+/**
+ * [MIVO-PATCH gate-bases] 读仓库默认分支(REST GET repos/<o>/<r>)。读不到、JSON 非法或缺 default_branch 都抛错,
+ * 不静默回退为 main:名单外分支过滤依赖它,读不到时候选阶段必须失败而不是放行。
+ */
+export function fetchDefaultBranch({ owner, repo, ghFn = gh, timeoutMs = 30_000 } = {}) {
+  const endpoint = `repos/${owner}/${repo}`;
+  const r = ghFn(['api', '--method', 'GET', endpoint], { allowFail: true, timeoutMs });
+  if (!r?.ok) throw new Error(`读取 ${owner}/${repo} 默认分支失败: ${String(r?.stderr ?? '').trim().split('\n')[0].slice(0, 200) || `退出码 ${r?.status}`}`);
+  let parsed;
+  try { parsed = parseApiJson(r.stdout, `GET ${endpoint}`); } catch (error) { throw new Error(`读取 ${owner}/${repo} 默认分支失败: ${error.message}`); }
+  const name = parsed?.default_branch;
+  if (typeof name !== 'string' || !name.trim()) throw new Error(`读取 ${owner}/${repo} 默认分支失败: 响应缺少 default_branch`);
+  return name;
+}
+
 /** gh 命令 + JSON.parse(stdout)。 */
 export function ghJson(args, opts = {}) {
   return parseApiJson(gh(args, opts).stdout, `gh ${args.slice(0, 3).join(' ')}`);

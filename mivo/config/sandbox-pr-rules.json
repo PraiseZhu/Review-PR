@@ -1,5 +1,5 @@
 {
-  "_comment": "E1 沙箱仓(xindong/mivo-review-sandbox)用的配置:与 Mivo 生产配置相同,只改两处——维护者只有 PraiseZhu(沙箱仓里只有这个账号有写权限);不设豁免名单;bot 静默期与生产一致(组织级 greptile 也会审沙箱仓)。只在 target_repo 不是 Mivo 本仓时由 review-pr.yml 与沙箱前置审查使用。",
+  "_comment": "E1 沙箱仓(xindong/mivo-review-sandbox)用的配置:与 Mivo 生产配置相同,只改两处——维护者只有 PraiseZhu(沙箱仓里只有这个账号有写权限);不设豁免名单;bot 静默期与生产一致(组织级 greptile 也会审沙箱仓)。只在 target_repo 不是 Mivo 本仓时由 review-pr.yml 与沙箱前置审查使用。 [MIVO-PATCH gate-bases] gateBases:目标分支名按 fnmatch 匹配(* 不跨 /、区分大小写、不剥 refs/heads 前缀),命中的分支是门禁分支,其 PR 不按叠放 PR 处理(不产生 dependency/retarget),检查名为 review-pr (integration),不是默认分支/release/x.y/门禁分支的目标分支不进候选(base-not-gated);见 MIVO-PATCHES gate-bases。",
   "maintainerSource": "allowlist",
   "titleTypes": [
     "feat",
@@ -46,8 +46,12 @@
     "\\.github/workflows/",
     "\\.github/actions/"
   ],
+  "gateBases": [
+    "integration/*"
+  ],
   "ciIgnoreContexts": [
-    "review-pr"
+    "review-pr",
+    "review-pr (integration)"
   ],
   "ciIgnoreBotChecks": [
     "Greptile Review"

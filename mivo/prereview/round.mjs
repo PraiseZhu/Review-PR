@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { checkNameFor, loadGateBases } from '../../review-pr/scripts/gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason, STATUS_LABELS, toClosedStatusLabelRemovals } from '../lib/gates.mjs';
 import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord } from '../lib/code-scan.mjs';
@@ -23,7 +24,7 @@ import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toProtectedHoldWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -475,19 +476,21 @@ function isGithubRateLimited(server) {
 // 只给这些 PR 标 retry 一次,不清空缓存、不让全部 PR 重审。标记写在 Mini 本机 mivo 状态目录。
 // 「作者为维护者自动放行」上线时同理:已 hold 住的维护者受保护路径 PR 指纹没变,要再唤醒一次,
 // 用独立的标记文件,不和 #68 那次互相挡。
-function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json') {
+// [MIVO-PATCH gate-bases] 第三个标记 gate-base-wake.json:门禁分支上线时,停在 dependency/retarget 的行同样要再判一次。
+function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json', { outcomes = ['protected'], event = 'wake-protected-hold' } = {}) {
   const markerFile = stateFile(markerName);
   const already = readJson(markerFile, { done: false });
   const rsPath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
   const rs = readJson(rsPath, null);
-  const result = toProtectedHoldWake({ roundState: rs, alreadyDone: already.done === true });
+  const result = toOutcomeWake({ roundState: rs, alreadyDone: already.done === true, outcomes });
   if (result.wake.length && rs?.prs) writeJson(rsPath, result.next);
-  if (result.wake.length) log('wake-protected-hold', { prs: result.wake });
+  if (result.wake.length) log(event, { prs: result.wake });
   writeJson(markerFile, { done: true, at: nowIso(), wake: result.wake });
 }
 
 // Cindy 的状态目录按目标仓库 git common-dir 的哈希分子目录;用 lib 的同一算法定位。
 let STATE_KEY = null;
+let GATE_BASES = null; // [MIVO-PATCH gate-bases]
 function roundStateKey() {
   if (STATE_KEY) return STATE_KEY;
   const r = run(process.execPath, ['-e', `import(${JSON.stringify(join(SCRIPTS, 'lib.mjs'))}).then((m) => console.log(m.STATE_DIR))`],
@@ -519,8 +522,9 @@ async function main() {
   if (busyAtStart) wakeHeldPrs(busyAtStart);
   sweepBypassReminders();
   sweepClosedPrLabels();
-  for (const markerName of ['protected-hold-wake.json', 'protected-author-release-wake.json']) {
-    try { wakeProtectedHoldOnce(markerName); } catch (error) {
+  for (const [markerName, options] of [['protected-hold-wake.json', {}], ['protected-author-release-wake.json', {}],
+    ['gate-base-wake.json', { outcomes: ['dependency', 'retarget'], event: 'wake-gate-base' }]]) {
+    try { wakeProtectedHoldOnce(markerName, options); } catch (error) {
       log('wake-protected-hold-skip', { marker: markerName, reason: error.message.slice(0, 200) });
     }
   }
@@ -1158,13 +1162,23 @@ function readCodeScanGate(task) {
 
 // 受保护路径:当前 head 的 review-pr check 是否已经写成 success。放行信号本身由 context 的 protectedPath 给出。
 // check 读不到按「没写成功」处理:最多多派一次服务器复核,服务器写 check 是幂等的。
+// [MIVO-PATCH gate-bases] 检查名按任务的目标分支取(门禁分支为 review-pr (integration)),与服务器写检查同一个函数。
+function gateBases() {
+  GATE_BASES ??= loadGateBases(CONFIG.rulesFile || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json'));
+  return GATE_BASES;
+}
+function reviewCheckName(task) {
+  return checkNameFor(task.baseRefName, gateBases());
+}
+
 function protectedCheckDone(task) {
   try {
-    const checks = ghRead(['api', `repos/${CONFIG.targetRepo}/commits/${task.head}/check-runs?check_name=review-pr&per_page=100`, '--paginate', '--slurp'], { allowFail: true });
+    const name = reviewCheckName(task);
+    const checks = ghRead(['api', `repos/${CONFIG.targetRepo}/commits/${task.head}/check-runs?check_name=${encodeURIComponent(name)}&per_page=100`, '--paginate', '--slurp'], { allowFail: true });
     if (!checks.ok) return false;
     const prefix = `https://github.com/${CONFIG.workflowRepo}/actions/runs/`;
     const formal = JSON.parse(checks.stdout).flatMap((page) => page.check_runs ?? [])
-      .filter((check) => check.name === 'review-pr' && check.head_sha === task.head
+      .filter((check) => check.name === name && check.head_sha === task.head
         && check.app?.slug === 'github-actions' && typeof check.external_id === 'string'
         && check.external_id.startsWith(prefix) && /^[1-9]\d*$/.test(check.external_id.slice(prefix.length)))
       .sort((left, right) => right.id - left.id)[0];

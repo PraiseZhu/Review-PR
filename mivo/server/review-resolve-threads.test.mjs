@@ -33,7 +33,10 @@ function makeRoot({ runnerSummary }) {
   // prompt.mjs 加载时读统一分级(单一来源 mivo/config/severity.md)。
   copyFileSync(join(LIB_DIR, '..', 'config', 'severity.md'), join(root, 'mivo', 'config', 'severity.md'));
   const scripts = join(SERVER_DIR, '..', '..', 'review-pr', 'scripts');
-  for (const file of ['self-write-receipts.mjs', 'gh-read-route.mjs']) copyFileSync(join(scripts, file), join(root, 'review-pr', 'scripts', file));
+  for (const file of ['self-write-receipts.mjs', 'gh-read-route.mjs', 'gate-bases.mjs']) copyFileSync(join(scripts, file), join(root, 'review-pr', 'scripts', file));
+  // [MIVO-PATCH gate-bases] review.mjs 按目标分支取检查名:要规则配置里的 gateBases。
+  mkdirSync(join(root, 'review-pr', 'config'), { recursive: true });
+  copyFileSync(join(SERVER_DIR, '..', '..', 'review-pr', 'config', 'pr-rules.json'), join(root, 'review-pr', 'config', 'pr-rules.json'));
   copyFileSync(join(scripts, 'vendor', 'gh-app-classify.mjs'), join(root, 'review-pr', 'scripts', 'vendor', 'gh-app-classify.mjs'));
   writeFileSync(join(root, 'review-pr', 'scripts', 'finish-reviewed-pr.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';
 const out = JSON.parse(readFileSync(process.env.STUB_FINISH, 'utf8'));

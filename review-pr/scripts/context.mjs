@@ -37,7 +37,8 @@ import { viewerLoginOverride } from './lib.mjs';
 import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead } from './lib.mjs';
 import { filePatchHashesFromDiff, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { loadReviewState, reviewSelection } from './review-state.mjs';
-import { classifyBasePrLookup } from './review-dependencies.mjs';
+import { classifyBasePrLookup, applyGateBase } from './review-dependencies.mjs';
+import { toGateBases } from './gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 import { fileURLToPath } from 'node:url';
 import { createContextEvidence, loadCachedCode, sameCodeRevision, writeDiffFile } from './context-cache.mjs';
 import { readPrDiff } from './pr-diff.mjs';
@@ -49,6 +50,8 @@ import { FIX_WATCHDOG_MS } from './fix-session-state.mjs';
 // titleTypes 无模板锚点,单一真相源就是那个 json 自己;
 // lightTypes / redlinePaths / serverPaths 也只在那个 json(供本脚本判定,PR 模板无对应)。
 const prRules = loadRules();
+// [MIVO-PATCH gate-bases] 配置不合法让 context 直接失败,不吞成空名单。
+const gateBases = toGateBases(prRules.gateBases);
 const lockTokenIndex = process.argv.indexOf('--lock-token');
 const REVIEW_LOCK_TOKEN = lockTokenIndex >= 0 ? String(process.argv[lockTokenIndex + 1] ?? '').trim() : '';
 const TITLE_TYPE_RE = new RegExp(`^(${prRules.titleTypes.join('|')})(\\([^)]+\\))?!?: .+`);
@@ -617,6 +620,8 @@ try {
   const defaultBranch = gqlData.repository?.defaultBranchRef?.name ?? null;
   let basePr = null;
   let needsRetarget = false;
+  let gateBase = false; // [MIVO-PATCH gate-bases]
+  let gateGroupPr = null; // [MIVO-PATCH gate-bases]
   let basePrLookup;
   try {
     // REST head=user:ref filters the source owner; classify also checks its full
@@ -625,7 +630,9 @@ try {
       ? fetchRestPages(`repos/${slug}/pulls?state=all&head=${encodeURIComponent(`${owner}:${meta.baseRefName}`)}`)
       : [];
     const lookup = classifyBasePrLookup({ repo: slug, pr, baseRefName: meta.baseRefName, defaultBranch, pulls });
-    ({ basePr, needsRetarget } = lookup);
+    // [MIVO-PATCH gate-bases] 目标分支是门禁分支(如 integration/*)时,组 PR 不是前置依赖:
+    // basePr 置空、不 retarget(否则会触发 status:blocked-by-pr 与「改指 main」提醒),组 PR 另存 gateGroupPr。
+    ({ basePr, needsRetarget, gateBase, gateGroupPr } = applyGateBase({ lookup, baseRefName: meta.baseRefName, defaultBranch, gateBases }));
     basePrLookup = { verified: lookup.verified, reason: lookup.reason };
   } catch (error) {
     // A verified empty list is a normal long-lived base. A failed query remains
@@ -1350,6 +1357,7 @@ try {
   if (THREAD_BLOCKER) blockers.push(THREAD_BLOCKER);
   // 堆叠 PR:base PR 已合并但 GitHub 还没 retarget → 当前 diff / mergeable 是对旧 base 算的,
   // 拿它当基线会审错(#526)。先 skip,等 retarget 完成、CI 在新 base 上重跑再进审查。
+  // [MIVO-PATCH gate-bases] 门禁分支的 needsRetarget 恒为 false,不会进这里。
   if (needsRetarget) {
     blockers.push(
       `base 分支 ${meta.baseRefName} 对应的 PR #${basePr?.number} 已合并,GitHub 尚未把本 PR retarget 到 ${defaultBranch}(先等 retarget 再审,见 SKILL 前置检查)`,
@@ -1684,6 +1692,8 @@ try {
         defaultBranch,
         needsRetarget,
         basePr,
+        gateBase, // [MIVO-PATCH gate-bases]
+        gateGroupPr, // [MIVO-PATCH gate-bases]
         basePrLookup,
         headRefOid: meta.headRefOid,
         url: meta.url,
@@ -1737,6 +1747,8 @@ try {
       // 先等 retarget、重拉元数据与 CI(见 SKILL 前置检查)。basePr 是被依赖的那条 PR。
       needsRetarget,
       basePr,
+      gateBase, // [MIVO-PATCH gate-bases]
+      gateGroupPr, // [MIVO-PATCH gate-bases]
       basePrLookup,
       url: meta.url,
       mergeable: meta.mergeable,

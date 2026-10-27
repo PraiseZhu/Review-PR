@@ -1,7 +1,7 @@
 // mivo-patches.test.mjs — Mivo 补丁的回归(登记见仓库根 MIVO-PATCHES.md)。
 // 只测补丁自己的纯函数与权限读取;上游行为由上游自带测试覆盖。
 import test from 'node:test';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2528,4 +2528,517 @@ test('severity-standard: 第 5 节严重度段不把缺必要测试、权威规�
   const patches = readFileSync(new URL('MIVO-PATCHES.md', root), 'utf8');
   assert.match(patches, /2026-10-23/);
   assert.match(patches, /severity-standard/);
+});
+
+// ---- gate-bases: 门禁分支识别、配置 ----
+// [MIVO-PATCH gate-bases] 纯函数用显式 gateBases,不依赖 REVIEW_PR_RULES_FILE。
+const GB = await import('./gate-bases.mjs');
+
+test('gate-bases: integration/* 只命中单段短分支名,区分大小写、不剥前缀', () => {
+  const gate = ['integration/*'];
+  for (const name of ['integration/a', 'integration/a-b', 'integration/1.2']) assert.equal(GB.isGateBase(name, gate), true, name);
+  for (const name of ['integration/a/b', 'refs/heads/integration/a', 'Integration/a', 'integration', 'main', 'release/1.2', '', undefined, null, 5]) {
+    assert.equal(GB.isGateBase(name, gate), false, String(name));
+  }
+});
+
+test('gate-bases: ? 匹配单个非 / 字符,正则特殊字符按字面', () => {
+  assert.equal(GB.matchesBasePattern('rel?', 'rela'), true);
+  assert.equal(GB.matchesBasePattern('rel?', 'rel/'), false);
+  assert.equal(GB.matchesBasePattern('a.b', 'axb'), false);
+  assert.equal(GB.matchesBasePattern('a.b', 'a.b'), true);
+  assert.equal(GB.matchesBasePattern('a*', 'a/b'), false);
+  assert.equal(GB.isGateBase('integration/a', []), false);
+  assert.equal(GB.isGateBase('integration/a'), false);
+});
+
+test('gate-bases: isReleaseBase 只认 release/<数字>.<数字>', () => {
+  assert.equal(GB.isReleaseBase('release/1.2'), true);
+  assert.equal(GB.isReleaseBase('release/1.2.3'), false);
+  assert.equal(GB.isReleaseBase('release/x'), false);
+  assert.equal(GB.isReleaseBase('Release/1.2'), false);
+});
+
+test('gate-bases: classifyBase 优先级 default > gate > release > other', () => {
+  const gateBases = ['integration/*'];
+  const c = (baseRefName, defaultBranch = 'main') => GB.classifyBase({ baseRefName, defaultBranch, gateBases });
+  assert.equal(c('main'), 'default');
+  assert.equal(c('integration/a'), 'gate');
+  assert.equal(c('release/1.2'), 'release');
+  assert.equal(c('feature/x'), 'other');
+  assert.equal(c('integration/a/b'), 'other');
+  // 默认分支恰好被门禁模式覆盖时仍是 default
+  assert.equal(GB.classifyBase({ baseRefName: 'integration/a', defaultBranch: 'integration/a', gateBases }), 'default');
+});
+
+test('gate-bases: checkNameFor 门禁分支用 review-pr (integration),其余含未知用 review-pr', () => {
+  const gateBases = ['integration/*'];
+  assert.equal(GB.GATE_CHECK_NAME, 'review-pr (integration)');
+  assert.equal(GB.DEFAULT_CHECK_NAME, 'review-pr');
+  assert.equal(GB.checkNameFor('integration/a', gateBases), 'review-pr (integration)');
+  for (const name of ['main', 'release/1.2', 'integration/a/b', undefined]) assert.equal(GB.checkNameFor(name, gateBases), 'review-pr', String(name));
+});
+
+test('gate-bases: toGateBases 缺省为空,非法输入显式报错且不打印整个对象', () => {
+  assert.deepEqual(GB.toGateBases(undefined), []);
+  assert.deepEqual(GB.toGateBases(null), []);
+  assert.deepEqual(GB.toGateBases([]), []);
+  assert.deepEqual(GB.toGateBases(['integration/*']), ['integration/*']);
+  for (const bad of ['integration/*', {}, [1], [''], ['a b'], ['a/**'], ['a;b'], [' integration/*']]) {
+    assert.throws(() => GB.toGateBases(bad), /gateBases 不合法/, JSON.stringify(bad));
+  }
+  assert.throws(() => GB.toGateBases([{ secret: 'token-123' }]), (error) => !/token-123/.test(error.message));
+});
+
+test('gate-bases: 两份生产配置声明 gateBases 与 ciIgnoreContexts,直接读文件不经 REVIEW_PR_RULES_FILE', () => {
+  for (const file of ['../config/pr-rules.json', '../../mivo/config/sandbox-pr-rules.json']) {
+    const rules = JSON.parse(readFileSync(new URL(file, import.meta.url), 'utf8'));
+    assert.deepEqual(rules.gateBases, ['integration/*'], file);
+    assert.ok(rules.ciIgnoreContexts.includes('review-pr'), file);
+    assert.ok(rules.ciIgnoreContexts.includes('review-pr (integration)'), file);
+    assert.match(rules._comment, /\[MIVO-PATCH gate-bases\]/, file);
+    assert.deepEqual(GB.toGateBases(rules.gateBases), ['integration/*']);
+  }
+});
+
+test('gate-bases: loadGateBases 读规则文件;配置缺省为空', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gate-bases-'));
+  try {
+    const file = join(dir, 'rules.json');
+    writeFileSync(file, JSON.stringify({ gateBases: ['integration/*'] }));
+    assert.deepEqual(GB.loadGateBases(file), ['integration/*']);
+    writeFileSync(file, JSON.stringify({}));
+    assert.deepEqual(GB.loadGateBases(file), []);
+    writeFileSync(file, JSON.stringify({ gateBases: ['a**'] }));
+    assert.throws(() => GB.loadGateBases(file), /gateBases 不合法/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('gate-bases: review-pr (integration) 被 CI 忽略;它是唯一未过的必需检查时视为只剩自己的检查', () => {
+  const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
+  const contexts = [{ name: 'review-pr (integration)', conclusion: 'FAILURE' }, { name: 'build', conclusion: 'SUCCESS' }];
+  assert.deepEqual(filterIgnoredCiContexts(contexts, rules).map((c) => c.name), ['build']);
+  const probe = { requiredStatusChecks: ['review-pr (integration)', 'build'] };
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [{ name: 'build', conclusion: 'SUCCESS' }], rules }), true);
+  assert.equal(onlyOwnRequiredChecksPending({ probe, rollupContexts: [{ name: 'build', conclusion: 'FAILURE' }], rules }), false);
+});
+
+// ---- gate-bases: 门禁分支不按叠放 PR 处理 ----
+const GBDEP = await import('./review-dependencies.mjs');
+const GBROUND = await import('./review-round.mjs');
+const GBLIB = await import('./lib.mjs');
+const GATE = ['integration/*'];
+const GROUP = 100;
+const gbSlug = 'o/r';
+
+const gbPull = (state, number = GROUP, ref = 'integration/a') => ({
+  number, state: state === 'MERGED' ? 'closed' : state.toLowerCase(), merged_at: state === 'MERGED' ? '2026-10-26T00:00:00Z' : null,
+  html_url: `https://github.com/o/r/pull/${number}`, head: { ref, repo: { full_name: 'o/r' } },
+});
+const gbLookup = (state, baseRefName = 'integration/a') => GBDEP.classifyBasePrLookup({
+  repo: gbSlug, pr: 7, baseRefName, defaultBranch: 'main', pulls: state ? [gbPull(state, GROUP, baseRefName)] : [] });
+const gbMeta = (state, { body = '', baseRefName = 'integration/a', gateBases = GATE } = {}) => {
+  const lookup = gbLookup(state, baseRefName);
+  return { defaultBranch: 'main', baseRefName, body, basePrLookup: { verified: lookup.verified, reason: lookup.reason },
+    ...GBDEP.applyGateBase({ lookup, baseRefName, defaultBranch: 'main', gateBases }) };
+};
+const gbSnap = (extra = []) => [
+  { number: 7, head: 'h7', baseRefName: 'integration/a', headRefName: 'feature/x', headRepository: { nameWithOwner: 'o/r' } },
+  ...extra,
+];
+const gbDeps = ({ state, body = '', snapshot = gbSnap(), gateBases = GATE, baseRefName = 'integration/a' }) => GBDEP.collectDependencyRefs({
+  repo: gbSlug, candidate: snapshot[0], snapshot, meta: gbMeta(state, { body, baseRefName, gateBases }), gateBases });
+
+test('gate-bases: applyGateBase 门禁分支清空 basePr/needsRetarget 并保留组 PR,非门禁与默认分支原样', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const lookup = gbLookup(state);
+    const applied = GBDEP.applyGateBase({ lookup, baseRefName: 'integration/a', defaultBranch: 'main', gateBases: GATE });
+    assert.equal(applied.gateBase, true, state);
+    assert.equal(applied.basePr, null, state);
+    assert.equal(applied.needsRetarget, false, state);
+    assert.equal(applied.gateGroupPr.number, GROUP, state);
+    assert.equal(applied.gateGroupPr.state, state, state);
+  }
+  const stacked = gbLookup('MERGED', 'feature/p');
+  assert.equal(stacked.needsRetarget, true);
+  assert.deepEqual(GBDEP.applyGateBase({ lookup: stacked, baseRefName: 'feature/p', defaultBranch: 'main', gateBases: GATE }),
+    { gateBase: false, basePr: stacked.basePr, gateGroupPr: null, needsRetarget: true });
+  const dflt = GBDEP.classifyBasePrLookup({ repo: gbSlug, pr: 7, baseRefName: 'main', defaultBranch: 'main', pulls: [] });
+  assert.deepEqual(GBDEP.applyGateBase({ lookup: dflt, baseRefName: 'main', defaultBranch: 'main', gateBases: ['main'] }),
+    { gateBase: false, basePr: null, gateGroupPr: null, needsRetarget: false });
+});
+
+test('gate-bases: 门禁分支组 PR 开着/已关闭/已合并都不产生依赖,正文 Depends on 组 PR 被忽略', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const snapshot = state === 'OPEN'
+      ? gbSnap([{ number: GROUP, head: 'hg', baseRefName: 'main', headRefName: 'integration/a', headRepository: { nameWithOwner: 'o/r' } }])
+      : gbSnap();
+    assert.deepEqual(gbDeps({ state, snapshot }), [], state);
+    assert.deepEqual(gbDeps({ state, snapshot, body: `Depends on #${GROUP}` }), [], `${state} 正文依赖组 PR`);
+    assert.deepEqual(gbDeps({ state, snapshot, body: `Depends on o/r#${GROUP}` }), [], `${state} 带仓库名`);
+  }
+});
+
+test('gate-bases: 门禁分支下显式依赖兄弟 PR 与别仓依赖照常生效', () => {
+  const sibling = { number: 8, head: 'h8', baseRefName: 'integration/a', headRefName: 'feature/y', headRepository: { nameWithOwner: 'o/r' } };
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const deps = gbDeps({ state, snapshot: gbSnap([sibling]), body: `Depends on #${GROUP}, #8 and x/y#${GROUP}` });
+    assert.deepEqual(deps.sort(), ['o/r#8', 'x/y#100'], state);
+  }
+});
+
+test('gate-bases: 不传 gateBases 或非门禁分支保持旧行为(main/release/叠放)', () => {
+  const stackedSnap = [{ number: 7, head: 'h7', baseRefName: 'feature/p', headRefName: 'feature/x', headRepository: { nameWithOwner: 'o/r' } },
+    { number: 50, head: 'h50', baseRefName: 'main', headRefName: 'feature/p', headRepository: { nameWithOwner: 'o/r' } }];
+  const stacked = GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: stackedSnap[0], snapshot: stackedSnap,
+    meta: { defaultBranch: 'main', baseRefName: 'feature/p', body: '', basePrLookup: { verified: true },
+      basePr: { number: 50, state: 'OPEN' }, needsRetarget: false }, gateBases: GATE });
+  assert.deepEqual(stacked, ['o/r#50']);
+  // 门禁模式写在 feature/* 之外,integration 分支不传 gateBases 时回到旧的叠放行为
+  const open = gbSnap([{ number: GROUP, head: 'hg', baseRefName: 'main', headRefName: 'integration/a', headRepository: { nameWithOwner: 'o/r' } }]);
+  const lookup = gbLookup('OPEN');
+  const legacy = GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: open[0], snapshot: open,
+    meta: { defaultBranch: 'main', baseRefName: 'integration/a', body: '', basePrLookup: { verified: true }, basePr: lookup.basePr, needsRetarget: false } });
+  assert.deepEqual(legacy, [`o/r#${GROUP}`]);
+  const release = GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: { number: 7, baseRefName: 'release/1.2' }, snapshot: [],
+    meta: { defaultBranch: 'main', baseRefName: 'release/1.2', body: '', basePrLookup: { verified: true }, basePr: null, needsRetarget: false }, gateBases: GATE });
+  assert.deepEqual(release, []);
+  // 默认分支 PR 的 Depends on 照旧
+  assert.deepEqual(GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: { number: 7, baseRefName: 'main' }, snapshot: [],
+    meta: { defaultBranch: 'main', baseRefName: 'main', body: 'Depends on #9', basePrLookup: { verified: true }, basePr: null }, gateBases: GATE }), ['o/r#9']);
+});
+
+test('gate-bases: 门禁分支仍要求 lookup 已验证,读不到时抛错而不是当作无依赖', () => {
+  const meta = { ...gbMeta('OPEN'), basePrLookup: { verified: false, reason: 'lookup-failed', error: 'boom' } };
+  assert.throws(() => GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: gbSnap()[0], snapshot: gbSnap(), meta, gateBases: GATE }), /boom/);
+});
+
+test('gate-bases: 同号别仓与 fork 同名分支不被当作组 PR', () => {
+  const snapshot = gbSnap([
+    { number: 60, head: 'hf', baseRefName: 'main', headRefName: 'integration/a', headRepository: { nameWithOwner: 'fork/r' } },
+  ]);
+  assert.deepEqual(gbDeps({ state: null, snapshot, body: 'Depends on #60, other/r#7' }).sort(), ['o/r#60', 'other/r#7']);
+});
+
+test('gate-bases: 门禁分支子 PR 在三种组 PR 状态下进 eligible,不产生 dependency/retarget,也无作者提醒', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const meta = { ...gbMeta(state), state: 'OPEN', isDraft: false, headRefOid: 'h7', baseRefOid: 'b', baseRefName: 'integration/a' };
+    const manifest = { repo: gbSlug, runId: 'run-1', mode: 'auto', candidates: [{ number: 7, head: 'h7', title: 't', createdAt: '2026-10-26T00:00:00Z' }] };
+    const refs = gbDeps({ state, body: `Depends on #${GROUP}` });
+    const plan = GBROUND.makeReviewPlan(manifest, [{ pr: 7, ok: true, meta,
+      dependencies: refs.map((ref) => ({ repo: gbSlug, number: Number(ref.split('#')[1]), state: 'OPEN' })) }]);
+    assert.equal(plan.groups.flatMap((g) => g.prs).length, 1, state);
+    assert.deepEqual(plan.skipped, [], state);
+    assert.equal(plan.groups[0].prs[0].basePr, null, state);
+  }
+});
+
+test('gate-bases: 门禁分支下兄弟依赖(未合并)→ dependency,但不触发「改指 main」提醒;非门禁叠放仍提醒', () => {
+  const meta = { ...gbMeta('OPEN'), state: 'OPEN', isDraft: false, headRefOid: 'h7', baseRefOid: 'b', baseRefName: 'integration/a' };
+  const manifest = { repo: gbSlug, runId: 'run-1', mode: 'auto', candidates: [{ number: 7, head: 'h7', title: 't', createdAt: '2026-10-26T00:00:00Z' }] };
+  const plan = GBROUND.makeReviewPlan(manifest, [{ pr: 7, ok: true, meta, dependencies: [{ repo: gbSlug, number: 8, state: 'OPEN' }] }]);
+  assert.equal(plan.skipped[0].outcome, 'dependency');
+  assert.equal(GBROUND.needsTargetBranchNotice(plan.skipped[0]), false);
+  const lookup = gbLookup('OPEN', 'feature/p');
+  const stackedMeta = { state: 'OPEN', isDraft: false, headRefOid: 'h7', baseRefOid: 'b', baseRefName: 'feature/p', defaultBranch: 'main',
+    ...GBDEP.applyGateBase({ lookup, baseRefName: 'feature/p', defaultBranch: 'main', gateBases: GATE }) };
+  const stacked = GBROUND.makeReviewPlan(manifest, [{ pr: 7, ok: true, meta: stackedMeta, dependencies: [{ repo: gbSlug, number: GROUP, state: 'OPEN' }] }]);
+  assert.equal(stacked.skipped[0].outcome, 'dependency');
+  assert.equal(GBROUND.needsTargetBranchNotice(stacked.skipped[0]), true);
+});
+
+test('gate-bases: 门禁分支组 PR 状态不会让 computeDisplayLabels 挂 blocked-by-pr', () => {
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const m = gbMeta(state);
+    const labels = GBLIB.computeDisplayLabels({ needsRetarget: m.needsRetarget, basePrOpen: Boolean(m.basePr) && m.basePr.state === 'OPEN' });
+    assert.notEqual(labels.status, 'status:blocked-by-pr', state);
+  }
+  const lookup = gbLookup('OPEN', 'feature/p');
+  assert.equal(GBLIB.computeDisplayLabels({ needsRetarget: lookup.needsRetarget, basePrOpen: lookup.basePr.state === 'OPEN' }).status, 'status:blocked-by-pr');
+});
+
+test('gate-bases: context.mjs 的 base 查询片段在三种组 PR 状态下得到 gateBase=true/basePr=null/needsRetarget=false,默认分支不查列表', async () => {
+  const vm = await import('node:vm');
+  const src = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  const start = src.indexOf('const defaultBranch = gqlData.repository');
+  const end = src.indexOf('const authorLogin = meta.author?.login');
+  assert.ok(start > 0 && end > start, '找不到 base 查询片段');
+  const snippet = src.slice(start, end);
+  const run = ({ baseRefName, pulls, fail = false, defaultBranch = 'main' }) => {
+    const urls = [];
+    const fetchRestPages = (url) => { urls.push(url); if (fail) throw new Error('rest down'); return pulls; };
+    const out = vm.runInNewContext(`(() => { ${snippet}; return { defaultBranch, basePr, needsRetarget, gateBase, gateGroupPr, basePrLookup }; })()`, {
+      gqlData: { repository: { defaultBranchRef: { name: defaultBranch } } }, meta: { baseRefName }, slug: 'o/r', owner: 'o', pr: 7,
+      gateBases: GATE, fetchRestPages, classifyBasePrLookup: GBDEP.classifyBasePrLookup, applyGateBase: GBDEP.applyGateBase,
+    });
+    return { ...out, urls };
+  };
+  for (const state of ['OPEN', 'CLOSED', 'MERGED']) {
+    const r = run({ baseRefName: 'integration/a', pulls: [gbPull(state)] });
+    assert.equal(r.gateBase, true, state);
+    assert.equal(r.basePr, null, state);
+    assert.equal(r.needsRetarget, false, state);
+    assert.equal(r.gateGroupPr.number, GROUP, state);
+    assert.equal(r.basePrLookup.verified, true, state);
+    assert.deepEqual(r.urls, ['repos/o/r/pulls?state=all&head=o%3Aintegration%2Fa'], state);
+  }
+  const merged = run({ baseRefName: 'feature/p', pulls: [gbPull('MERGED', 55, 'feature/p')] });
+  assert.equal(merged.needsRetarget, true);
+  assert.equal(merged.gateBase, false);
+  assert.equal(merged.basePr.number, 55);
+  const dflt = run({ baseRefName: 'main', pulls: [] });
+  assert.deepEqual(dflt.urls, []);
+  assert.equal(dflt.gateBase, false);
+  const failed = run({ baseRefName: 'integration/a', pulls: [], fail: true });
+  assert.equal(failed.basePrLookup.verified, false);
+  assert.match(failed.basePrLookup.error, /rest down/);
+  assert.throws(() => GBDEP.collectDependencyRefs({ repo: gbSlug, candidate: gbSnap()[0], snapshot: gbSnap(),
+    meta: { defaultBranch: 'main', baseRefName: 'integration/a', body: '', basePrLookup: failed.basePrLookup }, gateBases: GATE }), /rest down/);
+});
+
+test('gate-bases: context.mjs 与 plan-review-round.mjs 把 gateBases 接进去,scan/full 两处输出带 gateBase/gateGroupPr', () => {
+  const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  assert.match(context, /const gateBases = toGateBases\(prRules\.gateBases\)/);
+  assert.equal(context.match(/gateBase, \/\/ \[MIVO-PATCH gate-bases\]/g)?.length, 2);
+  assert.equal(context.match(/gateGroupPr, \/\/ \[MIVO-PATCH gate-bases\]/g)?.length, 2);
+  const plan = readFileSync(new URL('./plan-review-round.mjs', import.meta.url), 'utf8');
+  assert.match(plan, /const gateBases = toGateBases\(loadRules\(\)\.gateBases\)/);
+  assert.match(plan, /meta: context\.meta, gateBases \}/);
+});
+
+// ---- gate-bases: 名单外分支不送审(候选阶段) ----
+const GBSUM = await import('./review-summary.mjs');
+const gbNow = Date.parse('2026-10-27T00:00:00Z');
+const gbRow = (number, baseRefName, extra = {}) => ({ number, title: `t${number}`, url: `https://github.com/o/r/pull/${number}`,
+  createdAt: new Date(gbNow + number).toISOString(), head: number.toString(16).padStart(40, '0'), headRefName: `pr-${number}`,
+  baseRefName, base: 'a'.repeat(40), updatedAt: new Date(gbNow).toISOString(), isDraft: false, unresolved: 0, ci: 'SUCCESS',
+  mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: 'REVIEW_REQUIRED', ...extra });
+const gbCandidates = (snapshot, opts = {}) => GBROUND.createCandidateList({ repo: 'o/r', snapshot, now: gbNow, mode: 'review-only',
+  defaultBranch: 'main', gateBases: GATE, ...opts });
+
+test('gate-bases: createCandidateList 名单外目标分支得到 base-not-gated,default/release/gate 正常进候选', () => {
+  const rows = [gbRow(1, 'main'), gbRow(2, 'release/1.2'), gbRow(3, 'integration/a'), gbRow(4, 'feature/x'), gbRow(5, 'integration/a/b'), gbRow(6, 'release/1.2.3')];
+  const manifest = gbCandidates(rows);
+  assert.deepEqual(manifest.candidates.map((c) => c.number), [1, 2, 3]);
+  const notGated = manifest.skipped.filter((s) => s.outcome === 'base-not-gated');
+  assert.deepEqual(notGated.map((s) => s.number), [4, 5, 6]);
+  for (const row of notGated) assert.equal(row.reason, '目标分支不在审查范围，改指 main 后再审');
+  assert.equal(manifest.candidateDiagnostics.unchangedCount, 0);
+});
+
+test('gate-bases: 没传 defaultBranch 的上游调用不过滤;名单外判断先于 previous.retry', () => {
+  const rows = [gbRow(4, 'feature/x')];
+  assert.equal(GBROUND.createCandidateList({ repo: 'o/r', snapshot: rows, now: gbNow, mode: 'review-only' }).candidates.length, 1);
+  assert.equal(gbCandidates(rows, { defaultBranch: undefined }).candidates.length, 1);
+  const state = { version: 1, mode: 'review-only', prs: { 4: { outcome: 'dependency', retry: true, fingerprint: 'x', dependencyPrs: [] } } };
+  const manifest = gbCandidates(rows, { state });
+  assert.equal(manifest.candidates.length, 0);
+  assert.equal(manifest.skipped[0].outcome, 'base-not-gated');
+  // 草稿 PR 仍是 draft,不因目标分支改名
+  assert.equal(gbCandidates([gbRow(8, 'feature/x', { isDraft: true })]).skipped[0].outcome, 'draft');
+});
+
+test('gate-bases: 指纹字段集合不含 baseRefName,同一 PR 改指 main 后指纹字段不变', () => {
+  const [a] = gbCandidates([gbRow(1, 'main')]).candidates;
+  const [b] = gbCandidates([gbRow(1, 'integration/a')]).candidates;
+  assert.deepEqual(Object.keys(a.fingerprintFields).sort(), Object.keys(b.fingerprintFields).sort());
+  assert.ok(!('baseRefName' in a.fingerprintFields));
+  assert.equal(a.fingerprint, b.fingerprint);
+});
+
+test('gate-bases: base-not-gated 经 plan → 汇总 → 下轮 state 保持自己的 outcome 与原因,范围覆盖完整,不新增 state 行', () => {
+  const rows = [gbRow(1, 'main'), gbRow(2, 'feature/x'), gbRow(3, 'main', { isDraft: true })];
+  const manifest = gbCandidates(rows);
+  assert.deepEqual(manifest.candidates.map((c) => c.number), [1]);
+  const plan = GBROUND.makeReviewPlan(manifest, [{ pr: 1, ok: true, meta: { state: 'OPEN', headRefOid: rows[0].head }, dependencies: [] }]);
+  assert.equal(plan.groups.flatMap((g) => g.prs).length, 1, '名单外 PR 没有 worker task');
+  const item = plan.groups[0].prs[0];
+  const result = { runId: plan.runId, mode: plan.mode, pr: 1, head: item.head, enteredReview: true, reviewed: true, reviewClean: true,
+    approval: { status: 'verified', reviewId: 1, reviewer: 'm', head: item.head, verifiedAt: new Date(gbNow).toISOString() },
+    reportFile: 'r.md', merged: false, outcome: 'review-only', reason: '已执行' };
+  const payload = GBROUND.collectRoundResults(plan, [result]);
+  const gated = payload.processed.find((p) => p.pr === 2);
+  assert.equal(gated.outcome, 'base-not-gated');
+  assert.equal(gated.reason, '目标分支不在审查范围，改指 main 后再审');
+  assert.equal(gated.notEnteredReason, gated.reason);
+  assert.equal(gated.enteredReview, false);
+  assert.equal(payload.review.unchangedCount, 0);
+  assert.equal(payload.review.draftCount, 1);
+  assert.deepEqual(payload.scope, [1, 2]);
+  assert.equal(payload.processed.length, 2);
+  const shown = payload.review.notEntered.find((p) => p.pr === 2);
+  assert.equal(shown.reason, gated.reason);
+  const summary = GBSUM.buildReviewSummary({ ...payload, mode: 'review-only' });
+  const group = summary.merge.notMergedGroups.find((g) => g.key === 'base-not-gated');
+  assert.ok(group, '汇总有 base-not-gated 分组');
+  assert.equal(group.label, '目标分支不在审查范围');
+  assert.equal(summary.merge.notMergedGroups.find((g) => g.key === 'merge-blocked')?.items.some((i) => i.pr === 2) ?? false, false);
+  const next = GBROUND.nextRoundState(plan, payload, {}, gbNow);
+  assert.deepEqual(Object.keys(next.prs), ['1']);
+  // 已有历史行不被清空、不被冒充成新结论
+  const previous = { version: 1, mode: 'review-only', prs: { 2: { outcome: 'dependency', retry: false, fingerprint: 'old', dependencyPrs: [9] } } };
+  const kept = GBROUND.nextRoundState(plan, payload, previous, gbNow);
+  assert.equal(kept.prs[2].outcome, 'dependency');
+  assert.deepEqual(kept.prs[2].dependencyPrs, [9]);
+});
+
+test('gate-bases: unchanged 的 manifest 行仍照旧并入 unchanged 计数,与 base-not-gated 并存', () => {
+  const rows = [gbRow(1, 'main'), gbRow(2, 'feature/x')];
+  const first = gbCandidates(rows);
+  const plan1 = GBROUND.makeReviewPlan(first, [{ pr: 1, ok: true, meta: { state: 'OPEN', headRefOid: rows[0].head }, dependencies: [] }]);
+  const item = plan1.groups[0].prs[0];
+  const done = { runId: plan1.runId, mode: plan1.mode, pr: 1, head: item.head, enteredReview: true, reviewed: true, reviewClean: false,
+    merged: false, outcome: 'findings', reason: '有发现' };
+  const state = GBROUND.nextRoundState(plan1, GBROUND.collectRoundResults(plan1, [done]), {}, gbNow);
+  const second = gbCandidates(rows, { state, now: gbNow + 1 });
+  assert.equal(second.candidates.length, 0);
+  assert.deepEqual(second.skipped.map((s) => [s.number, s.outcome]).sort(), [[1, 'unchanged'], [2, 'base-not-gated']]);
+  const plan2 = GBROUND.makeReviewPlan(second, []);
+  const payload = GBROUND.collectRoundResults(plan2, []);
+  assert.equal(payload.review.unchangedCount, 1);
+  assert.equal(payload.processed.find((p) => p.pr === 2).outcome, 'base-not-gated');
+  assert.equal(payload.processed.find((p) => p.pr === 1).outcome, 'findings');
+});
+
+test('gate-bases: fetchDefaultBranch 用 GET repos/<o>/<r>,失败/坏响应一律抛错', () => {
+  const calls = [];
+  const gh = (body) => (args, opts) => { calls.push({ args, opts }); return body; };
+  assert.equal(GBLIB.fetchDefaultBranch({ owner: 'o', repo: 'r', ghFn: gh({ ok: true, stdout: '{"default_branch":"main"}' }) }), 'main');
+  assert.deepEqual(calls[0].args, ['api', '--method', 'GET', 'repos/o/r']);
+  assert.equal(calls[0].opts.allowFail, true);
+  assert.equal(calls[0].opts.timeoutMs, 30_000);
+  for (const bad of [
+    { ok: false, stdout: '', stderr: 'HTTP 502', status: 1 },
+    { ok: true, stdout: 'not json' },
+    { ok: true, stdout: '' },
+    { ok: true, stdout: 'null' },
+    { ok: true, stdout: '[]' },
+    { ok: true, stdout: '{}' },
+    { ok: true, stdout: '{"default_branch":"  "}' },
+    { ok: true, stdout: '{"default_branch":5}' },
+  ]) assert.throws(() => GBLIB.fetchDefaultBranch({ owner: 'o', repo: 'r', ghFn: gh(bad) }), /o\/r 默认分支失败/, JSON.stringify(bad));
+});
+
+// 两个候选 CLI:独立 git 仓、独立 state 目录、fake gh(只认默认分支 REST 与快照 GraphQL,其余立即失败)。
+function gbCliFixture() {
+  const directory = mkdtempSync(join(tmpdir(), 'gate-bases-cli-'));
+  const repoRoot = join(directory, 'repo');
+  const remote = join(directory, 'o', 'r.git').replaceAll('\\', '/');
+  mkdirSync(repoRoot);
+  mkdirSync(join(directory, 'o'), { recursive: true });
+  for (const args of [['init', '--bare', '--quiet', remote], ['init', '--quiet'], ['remote', 'add', 'origin', remote]]) {
+    const git = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
+    assert.equal(git.status, 0, git.stderr);
+  }
+  const snapshotFile = join(directory, 'snapshot.json');
+  const logFile = join(directory, 'gh.log');
+  writeFileSync(logFile, '');
+  const mock = join(directory, 'mock-gh.mjs');
+  writeFileSync(mock, `import {appendFileSync} from 'node:fs';
+import {readFileSync} from 'node:fs';
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+const original=childProcess.spawnSync;
+childProcess.spawnSync=(command,args,options)=>{
+  const response=(status,stdout,stderr='')=>({status,signal:null,stdout,stderr,output:[null,stdout,stderr]});
+  if (command === 'git' && args[0] === 'pull') return response(0,'');
+  if (command !== 'gh') return original(command,args,options);
+  appendFileSync(process.env.GB_LOG, JSON.stringify(args)+'\\n');
+  if (args[0]==='api' && args.includes('GET') && args.at(-1)==='repos/o/r') {
+    if (process.env.GB_DEFAULT==='FAIL') return response(1,'','HTTP 502');
+    return response(0,JSON.stringify({default_branch:process.env.GB_DEFAULT||'main'}));
+  }
+  if (args[0] !== 'api' || args[1] !== 'graphql' || !JSON.parse(options.input).query.includes('pullRequests')) throw new Error('unexpected mock gh call: '+args.join(' '));
+  const raw=JSON.parse(readFileSync(process.env.GB_SNAPSHOT,'utf8'));
+  const nodes=raw.map(p=>({...p,headRepository:p.headRepository ? {nameWithOwner:p.headRepository} : null,headRefOid:p.head,baseRefOid:p.base,author:{login:'author'},reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},commits:{nodes:[{commit:{statusCheckRollup:{state:p.ci}}}]}}));
+  return response(0,JSON.stringify({data:{repository:{pullRequests:{totalCount:nodes.length,pageInfo:{hasNextPage:false,endCursor:null},nodes}}}}));
+};
+syncBuiltinESMExports();
+`);
+  const stateRoot = join(directory, 'state');
+  const env = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(mock).href}`].filter(Boolean).join(' '),
+    REVIEW_PR_REPO_ROOT: repoRoot, REVIEW_PR_STATE_DIR: stateRoot, GB_LOG: logFile, GB_SNAPSHOT: snapshotFile, GB_DEFAULT: 'main',
+    REVIEW_PR_PREFLIGHT_SKILL_SYNC: JSON.stringify({ ok: true, action: 'inherited' }), REVIEW_PR_NO_CRED_FALLBACK: '1' };
+  delete env.REVIEW_PR_RULES_FILE;
+  const snap = (rows) => writeFileSync(snapshotFile, JSON.stringify(rows.map((r) => ({ ...r, base: r.base, headRepository: 'o/r', ci: 'SUCCESS' }))));
+  const run = (script, args = [], overrides = {}) => spawnSync(process.execPath,
+    [fileURLToPath(new URL(script, import.meta.url)), ...args], { cwd: repoRoot, env: { ...env, ...overrides }, encoding: 'utf8', windowsHide: true });
+  const repoReads = () => readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((a) => a.at(-1) === 'repos/o/r').length;
+  return { directory, repoRoot, snap, run, repoReads, stateRoot, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+}
+const gbSnapRows = () => [gbRow(1, 'main'), gbRow(2, 'feature/x'), gbRow(3, 'integration/a')];
+const gbUpstreamRules = fileURLToPath(new URL('../../tools/fixtures/upstream-pr-rules.json', import.meta.url));
+
+for (const [label, script, args, parse] of [
+  ['pre-check', './pre-check.mjs', (root) => ['--repo-root', root], (r) => ({ out: r.stdout ? JSON.parse(r.stdout) : null, error: r.stderr })],
+  ['admit-candidates', '../../mivo/prereview/admit-candidates.mjs', (root) => ['--repo-root', root], (r) => ({ out: r.stdout ? JSON.parse(r.stdout) : null, error: r.stdout })],
+]) {
+  test(`gate-bases: ${label} 配了 gateBases 时读一次默认分支并排除名单外 PR`, () => {
+    const fx = gbCliFixture();
+    try {
+      fx.snap(gbSnapRows());
+      const r = fx.run(script, args(fx.repoRoot));
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      const { out } = parse(r);
+      const manifest = JSON.parse(readFileSync(out.candidateList, 'utf8'));
+      assert.ok(out.candidateList.startsWith(fx.stateRoot), '名单落在测试 state 目录');
+      assert.deepEqual(manifest.candidates.map((c) => c.number), [1, 3]);
+      assert.deepEqual(manifest.skipped.map((s) => [s.number, s.outcome]), [[2, 'base-not-gated']]);
+      assert.equal(fx.repoReads(), 1);
+    } finally { fx.cleanup(); }
+  });
+
+  test(`gate-bases: ${label} 读不到默认分支按失败(退出码 1),不写新候选名单`, () => {
+    const fx = gbCliFixture();
+    try {
+      fx.snap(gbSnapRows());
+      // 先正常跑一次,拿到名单实际路径,再删掉;失败那次不得把它写回来。
+      const first = fx.run(script, args(fx.repoRoot));
+      assert.equal(first.status, 0, first.stdout + first.stderr);
+      const listFile = parse(first).out.candidateList;
+      rmSync(listFile);
+      const r = fx.run(script, args(fx.repoRoot), { GB_DEFAULT: 'FAIL' });
+      assert.equal(r.status, 1, r.stdout + r.stderr);
+      assert.match(parse(r).error, /默认分支失败/);
+      assert.equal(existsSync(listFile), false);
+    } finally { fx.cleanup(); }
+  });
+
+  test(`gate-bases: ${label} 候选全是名单外 PR 时退出码 2,新名单为空`, () => {
+    const fx = gbCliFixture();
+    try {
+      fx.snap([gbRow(2, 'feature/x')]);
+      const r = fx.run(script, args(fx.repoRoot));
+      assert.equal(r.status, 2, r.stdout + r.stderr);
+      const manifest = JSON.parse(readFileSync(parse(r).out.candidateList, 'utf8'));
+      assert.deepEqual(manifest.candidates, []);
+      assert.equal(manifest.skipped[0].outcome, 'base-not-gated');
+    } finally { fx.cleanup(); }
+  });
+
+  test(`gate-bases: ${label} 规则没有 gateBases 时零次默认分支读取,行为不变`, () => {
+    const fx = gbCliFixture();
+    try {
+      fx.snap(gbSnapRows());
+      const r = fx.run(script, args(fx.repoRoot), { REVIEW_PR_RULES_FILE: gbUpstreamRules });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      const manifest = JSON.parse(readFileSync(parse(r).out.candidateList, 'utf8'));
+      assert.deepEqual(manifest.candidates.map((c) => c.number), [1, 2, 3]);
+      assert.equal(fx.repoReads(), 0);
+    } finally { fx.cleanup(); }
+  });
+}
+
+test('gate-bases: admit-candidates 的 --incomplete-only 不读默认分支;--authority-only 的早退在默认分支读取之前', () => {
+  const fx = gbCliFixture();
+  try {
+    fx.snap(gbSnapRows());
+    const r = fx.run('../../mivo/prereview/admit-candidates.mjs', ['--repo-root', fx.repoRoot, '--incomplete-only']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(JSON.parse(r.stdout).ok, true);
+    assert.equal(fx.repoReads(), 0);
+  } finally { fx.cleanup(); }
+  const src = readFileSync(new URL('../../mivo/prereview/admit-candidates.mjs', import.meta.url), 'utf8');
+  assert.ok(src.indexOf("args.includes('--authority-only')") < src.indexOf('fetchDefaultBranch({'));
+  assert.ok(src.indexOf("args.includes('--incomplete-only')") < src.indexOf('fetchDefaultBranch({'));
 });

@@ -241,3 +241,37 @@ test('旧受保护记录只标 retry 一次,不清空缓存、不碰其它 PR', 
   assert.deepEqual(again.wake, []);
   assert.equal(again.next, first.next);
 });
+
+// ---- [MIVO-PATCH gate-bases] 通用一次性唤醒 ----
+import { toOutcomeWake, toGateBaseWake } from './admission.mjs';
+
+test('toGateBaseWake 只把 dependency/retarget 的行标 retry,其它 outcome(含 protected)不动', () => {
+  const roundState = { version: 1, mode: 'review-only', prs: {
+    11: { outcome: 'dependency', head: 'h' }, 12: { outcome: 'retarget', head: 'h' }, 13: { outcome: 'protected', head: 'h' },
+    14: { outcome: 'findings', head: 'h' }, 15: { outcome: 'unchanged', head: 'h' }, 16: { outcome: 'dependency', retry: true, head: 'h' } } };
+  const before = JSON.stringify(roundState);
+  const result = toGateBaseWake({ roundState });
+  assert.deepEqual(result.wake, [11, 12]);
+  assert.equal(result.done, true);
+  assert.equal(result.next.prs[11].retry, true);
+  assert.equal(result.next.prs[12].retry, true);
+  for (const pr of [13, 14, 15, 16]) assert.deepEqual(result.next.prs[pr], roundState.prs[pr], String(pr));
+  assert.equal(JSON.stringify(roundState), before, '不改入参');
+  assert.equal(result.next.mode, 'review-only');
+});
+
+test('toOutcomeWake:alreadyDone 不唤醒、非法编号跳过、空输入安全、wake 升序', () => {
+  const roundState = { prs: { 30: { outcome: 'dependency' }, 5: { outcome: 'dependency' }, abc: { outcome: 'dependency' }, '-3': { outcome: 'dependency' }, 0: { outcome: 'dependency' } } };
+  const done = toOutcomeWake({ roundState, alreadyDone: true, outcomes: ['dependency'] });
+  assert.deepEqual(done, { done: true, wake: [], next: roundState });
+  assert.deepEqual(toOutcomeWake({ roundState, outcomes: ['dependency'] }).wake, [5, 30]);
+  assert.deepEqual(toOutcomeWake({ roundState, outcomes: [] }).wake, []);
+  assert.deepEqual(toOutcomeWake({ roundState: null, outcomes: ['dependency'] }).wake, []);
+  assert.deepEqual(toOutcomeWake({}).wake, []);
+  assert.deepEqual(toOutcomeWake().wake, []);
+});
+
+test('toProtectedHoldWake 与 toOutcomeWake(protected) 结果一致', () => {
+  const roundState = { prs: { 1: { outcome: 'protected' }, 2: { outcome: 'dependency' } } };
+  assert.deepEqual(toProtectedHoldWake({ roundState }), toOutcomeWake({ roundState, outcomes: ['protected'] }));
+});
