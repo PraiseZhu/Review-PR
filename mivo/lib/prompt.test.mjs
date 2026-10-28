@@ -24,6 +24,18 @@ test('任务书用维护者统一分级,覆盖规范原文的严重度段', () =
   }
 });
 
+test('任务书写明不要用 rm -f / rm -rf,临时目录用 mktemp -d 且不用清理(各档、全量与增量)', () => {
+  const incremental = { mode: 'incremental', reason: 'r', files: ['a.ts'] };
+  for (const tier of ['light', 'standard', 'heavy']) {
+    for (const scope of [undefined, incremental]) {
+      const text = prompt(tier, scope ? { scope } : {});
+      assert.match(text, /不要用 `rm -f` 或 `rm -rf`:沙箱会把含它们的整条命令拒掉/, `${tier} 档缺 rm 限制`);
+      assert.match(text, /不带路径的 `mktemp -d`.*用完不用清理/, `${tier} 档缺临时目录说明`);
+      assert.ok(text.indexOf('不要用 `rm -f`') < text.indexOf('## 审查对象'), 'rm 限制应在开头的运行约束里');
+    }
+  }
+});
+
 test('统一分级的关键约束写进任务书', () => {
   assert.match(SEVERITY, /P1 严重缺陷 \| 在受支持场景中存在可信、可达的触发路径/);
   assert.match(SEVERITY, /P2 一般缺陷 .*\| 报 \|/);
