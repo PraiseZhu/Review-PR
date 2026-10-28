@@ -2,21 +2,24 @@
 // 主模型失败(非额度类)时换备用模型重试一次。
 // 用户 2026-10-11 决定:主力 gpt-6-luna / max,备用 gpt-6.1-sol / medium。
 // 用户 2026-10-14 决定大 PR 审得深:heavy 主模型最多 98 分钟,备用实足 20 分钟以上,作业上限 160 分钟。
+// 用户 2026-10-28 决定:模型总预算 120 → 145 分钟(不动作业上限 160 分钟);heavy 不再给备用预留 20 分钟,主模型最多 143 分钟。
+//   依据:heavy 备用从头审 3 次全部超时(21/21/95 分钟),同一版代码主模型顺利时 89.9 分钟审完,98 分钟上限只剩 8 分钟余量。
+//   heavy 主模型超时后不再有备用(余额不足 MIN_FALLBACK_MS);主模型早早失败时备用照样接手剩余时间。
 // 用户 2026-10-15 决定小 PR 上限 1 小时;2026-10-16 起 standard 也改为 60(45 分钟上限截断了正在输出的审查)。
 //
 // 时间一律按毫秒算。主备共用一个预算 budgetMs:review.mjs 在调模型前按本 job 的真实开始时间算
-// 「作业截止 − 现在 − 发布预留」,再与 120 分钟取小(codexBudgetMs)。非模型阶段用时长了,预算跟着收缩,
+// 「作业截止 − 现在 − 发布预留」,再与 145 分钟取小(codexBudgetMs)。非模型阶段用时长了,预算跟着收缩,
 // 发布(含产物上传)始终留 10 分钟。
 
 const MIN = 60_000;
 export const TIER_DEFAULTS = {
   light: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 60 },
   standard: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 60 },
-  heavy: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 100 },
+  heavy: { model: 'openai/gpt-6-luna', effort: 'max', timeoutMin: 143 },
 };
 export const FALLBACK = { model: 'openai/gpt-6.1-sol', effort: 'medium' };
-export const CODEX_BUDGET_MS = 120 * MIN; // 一次审查里模型调用合计的上限
-export const FALLBACK_RESERVE_MS = 20 * MIN; // 主模型上限扣掉这一段,留给备用
+export const CODEX_BUDGET_MS = 145 * MIN; // 一次审查里模型调用合计的上限
+export const FALLBACK_RESERVE_MS = 20 * MIN; // light / standard 主模型上限扣掉这一段,留给备用(heavy 不扣,见文件头 2026-10-28)
 export const SETTLE_MS = MIN; // 每次调用被终止后的收尾余量(看门狗 15 秒一查,SIGKILL 再等 10 秒)
 export const PUBLISH_RESERVE_MS = 10 * MIN; // 模型之后发布 review、写 check、上传结果包
 export const MIN_FALLBACK_MS = 15 * MIN;
@@ -77,7 +80,7 @@ export function tierConfig(tier, env = process.env, { budgetMs = CODEX_BUDGET_MS
   return {
     model: env[`MIVO_REVIEW_MODEL_${key}`] || role?.model || defaults.model,
     effort: env[`MIVO_REVIEW_EFFORT_${key}`] || role?.effort || defaults.effort,
-    timeoutMs: Math.max(0, Math.min(timeoutMin * MIN, budgetMs - FALLBACK_RESERVE_MS - 2 * SETTLE_MS)),
+    timeoutMs: Math.max(0, Math.min(timeoutMin * MIN, budgetMs - (tier === 'heavy' ? 0 : FALLBACK_RESERVE_MS) - 2 * SETTLE_MS)),
   };
 }
 
@@ -94,7 +97,7 @@ export function pickJobStart({ jobsJson = null, runJson = null, runnerName = '' 
   return null;
 }
 
-/** 这次审查的模型预算:min(120 分钟, 作业截止 − 现在 − 发布预留)。 */
+/** 这次审查的模型预算:min(145 分钟, 作业截止 − 现在 − 发布预留)。 */
 export function codexBudgetMs({ jobStartMs, jobTimeoutMin, nowMs }) {
   return Math.min(CODEX_BUDGET_MS, jobStartMs + jobTimeoutMin * MIN - nowMs - PUBLISH_RESERVE_MS);
 }

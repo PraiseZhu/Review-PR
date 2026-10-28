@@ -14,31 +14,33 @@ test('三档同一个主模型与思考强度,只有超时不同', () => {
 
 test('仓库变量可以覆盖某一档', () => {
   const cfg = tierConfig('heavy', { MIVO_REVIEW_MODEL_HEAVY: 'openai/gpt-6-sol', MIVO_REVIEW_EFFORT_HEAVY: 'high' });
-  assert.deepEqual(cfg, { model: 'openai/gpt-6-sol', effort: 'high', timeoutMs: 98 * MIN });
+  assert.deepEqual(cfg, { model: 'openai/gpt-6-sol', effort: 'high', timeoutMs: 143 * MIN });
   assert.deepEqual(tierConfig('light', {}), { model: 'openai/gpt-6-luna', effort: 'max', timeoutMs: 60 * MIN });
   assert.throws(() => tierConfig('huge', {}), /档位不合法/);
 });
 
-test('heavy 主模型上限 98 分钟;主模型在 98 分 6 秒被终止后备用实足 20 分钟以上', () => {
+test('heavy 主模型上限 143 分钟,不给备用预留;主模型超时后不再跑备用,早早失败时备用接手剩余时间', () => {
+  // 用户 2026-10-28 决定:模型总预算 145 分钟,heavy 不再预留 20 分钟给备用(备用从头审 3 次全部超时)。
+  assert.equal(CODEX_BUDGET_MS, 145 * MIN);
   const heavy = tierConfig('heavy', {});
-  assert.equal(heavy.timeoutMs, 98 * MIN);
-  const fallback = nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: 98 * MIN + 6_000 });
-  assert.equal(fallback.model, FALLBACK.model);
-  assert.equal(fallback.timeoutMs, 20 * MIN + 54_000);
-  assert.ok(fallback.timeoutMs >= 20 * MIN);
-  assert.ok(98 * MIN + 6_000 + fallback.timeoutMs + SETTLE_MS <= CODEX_BUDGET_MS, '主备加收尾不超过模型预算');
+  assert.equal(heavy.timeoutMs, 143 * MIN);
+  assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false, timedOut: true }], elapsedMs: 143 * MIN + 6_000 }), null, '145 − 143.1 − 1 不足 15 分钟');
+  const early = nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: 24 * MIN });
+  assert.equal(early.model, FALLBACK.model);
+  assert.equal(early.timeoutMs, 120 * MIN, '主模型 24 分钟就失败:备用 = min(143, 145 − 24 − 1)');
+  assert.ok(24 * MIN + early.timeoutMs + SETTLE_MS <= CODEX_BUDGET_MS, '主备加收尾不超过模型预算');
 });
 
-test('light、standard 主模型上限 60 分钟;主模型用满 61 分钟(含收尾)后备用 58 分钟', () => {
+test('light、standard 主模型上限 60 分钟;主模型用满 61 分钟(含收尾)后备用 60 分钟', () => {
   for (const tier of ['light', 'standard']) {
     const primary = tierConfig(tier, {});
     assert.equal(primary.timeoutMs, 60 * MIN, tier);
-    // 预算 120 分钟,主模型用满 60 分钟 + 1 分钟收尾:备用 = min(60, 120 − 61 − 1) = 58 分钟
+    // 预算 145 分钟,主模型用满 60 分钟 + 1 分钟收尾:备用 = min(60, 145 − 61 − 1) = 60 分钟
     const fallback = nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 61 * MIN });
     assert.equal(fallback.model, FALLBACK.model, tier);
-    assert.equal(fallback.timeoutMs, 58 * MIN, tier);
-    // 剩余不足 15 分钟时不启动备用(120 − 105 − 1 = 14)
-    assert.equal(nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 105 * MIN }), null, tier);
+    assert.equal(fallback.timeoutMs, 60 * MIN, tier);
+    // 剩余不足 15 分钟时不启动备用(145 − 130 − 1 = 14)
+    assert.equal(nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: 130 * MIN }), null, tier);
   }
 });
 
@@ -54,35 +56,37 @@ test('主模型一次;非额度类失败换备用一次;额度类失败或成功
 
 test('非模型阶段超过 30 分钟:预算按真实 job 开始时间收缩,发布前留 10 分钟,主备共用', () => {
   const jobStartMs = Date.parse('2026-10-14T10:00:00Z');
-  assert.equal(codexBudgetMs({ jobStartMs, jobTimeoutMin: 160, nowMs: jobStartMs + 20 * MIN }), CODEX_BUDGET_MS, '30 分钟以内不收缩');
+  assert.equal(codexBudgetMs({ jobStartMs, jobTimeoutMin: 160, nowMs: jobStartMs + 5 * MIN }), CODEX_BUDGET_MS, '5 分钟以内不收缩');
   const nowMs = jobStartMs + 35 * MIN; // 装依赖 15 + 扫描 10 + 装 semgrep 10
   const budgetMs = codexBudgetMs({ jobStartMs, jobTimeoutMin: 160, nowMs });
   assert.equal(budgetMs, 115 * MIN);
   const heavy = tierConfig('heavy', {}, { budgetMs });
-  assert.equal(heavy.timeoutMs, 93 * MIN);
+  assert.equal(heavy.timeoutMs, 113 * MIN);
   const primaryRan = heavy.timeoutMs + 6_000;
-  const fallback = nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: primaryRan, budgetMs });
-  assert.ok(fallback.timeoutMs >= 20 * MIN);
-  const codexDoneMs = nowMs + primaryRan + fallback.timeoutMs + SETTLE_MS;
+  assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: primaryRan, budgetMs }), null, 'heavy 主模型超时后余额不足,不跑备用');
+  const codexDoneMs = nowMs + primaryRan + SETTLE_MS;
   assert.ok(codexDoneMs <= jobStartMs + 160 * MIN - PUBLISH_RESERVE_MS, '模型跑完时发布(含产物上传)还剩 10 分钟');
 });
 
-test('每一档「模型上限 + 备用 + 发布预留」都不超过作业上限 160 分钟(非模型阶段 30 分钟以内)', () => {
-  for (const tier of ['light', 'standard', 'heavy']) {
-    const primary = tierConfig(tier, {});
+test('每一档「模型上限 + 备用 + 发布预留」都不超过作业上限 160 分钟(非模型阶段 0–30 分钟,预算按 codexBudgetMs 收缩)', () => {
+  const jobStartMs = Date.parse('2026-10-28T10:00:00Z');
+  for (const tier of ['light', 'standard', 'heavy']) for (const prepMin of [0, 2, 5, 15, 30]) {
+    const budgetMs = codexBudgetMs({ jobStartMs, jobTimeoutMin: 160, nowMs: jobStartMs + prepMin * MIN });
+    const primary = tierConfig(tier, {}, { budgetMs });
     const primaryRan = primary.timeoutMs + SETTLE_MS;
-    const fallback = nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: primaryRan });
-    const total = 30 * MIN + primaryRan + (fallback?.timeoutMs ?? 0) + SETTLE_MS + PUBLISH_RESERVE_MS;
+    const fallback = nextAttempt({ primary, attempts: [{ ok: false }], elapsedMs: primaryRan, budgetMs });
+    const total = prepMin * MIN + primaryRan + (fallback ? fallback.timeoutMs + SETTLE_MS : 0) + PUBLISH_RESERVE_MS;
     assert.ok(total <= 160 * MIN, `${tier}:${total / MIN} 分钟`);
   }
 });
 
 test('预算不够时不启动模型;备用可用时间不足 15 分钟时不再试;备用与主模型相同不再试', () => {
-  const tiny = tierConfig('heavy', {}, { budgetMs: 20 * MIN });
+  const tiny = tierConfig('heavy', {}, { budgetMs: 2 * MIN });
   assert.equal(tiny.timeoutMs, 0);
-  assert.equal(nextAttempt({ primary: tiny, attempts: [], elapsedMs: 0, budgetMs: 20 * MIN }), null);
+  assert.equal(nextAttempt({ primary: tiny, attempts: [], elapsedMs: 0, budgetMs: 2 * MIN }), null);
+  assert.equal(tierConfig('standard', {}, { budgetMs: 20 * MIN }).timeoutMs, 0, 'light / standard 仍给备用预留 20 分钟');
   const heavy = tierConfig('heavy', {});
-  assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: 105 * MIN }), null, '120 − 105 − 1 = 14 分钟');
+  assert.equal(nextAttempt({ primary: heavy, attempts: [{ ok: false }], elapsedMs: 130 * MIN }), null, '145 − 130 − 1 = 14 分钟');
   const fallbackAsPrimary = { ...FALLBACK, timeoutMs: 60 * MIN };
   assert.equal(nextAttempt({ primary: fallbackAsPrimary, attempts: [{ ok: false }], elapsedMs: MIN }), null);
 });
