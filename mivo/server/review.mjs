@@ -471,7 +471,7 @@ async function codex() {
   if (!checkHealth(state, 'codex')) return;
   const input = state.input;
   const ctx = readJson(state.context.file);
-  // 模型预算(lib/models.mjs):作业截止 = 开始 + 作业上限;预算 = min(120 分钟, 截止 − 现在 − 发布预留),主备共用。
+  // 模型预算(lib/models.mjs):作业截止 = 开始 + 作业上限;预算 = min(145 分钟, 截止 − 现在 − 发布预留),主备共用。
   const jobTimeoutMin = Number(process.env.MIVO_REVIEW_JOB_TIMEOUT_MIN) || DEFAULT_JOB_TIMEOUT_MIN;
   const jobStartMs = Date.parse(state.jobStart?.at ?? '');
   const budget = { jobStartAt: state.jobStart?.at ?? null, jobStartFrom: state.jobStart?.from ?? null, jobTimeoutMin };
@@ -531,7 +531,7 @@ async function codex() {
   };
   // 一段主审:主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
   // 同一次运行最多两段(初段 + 增量干净后的收口全量):每段有自己的尝试记录(nextAttempt 只看本段),但共用同一条总预算时钟
-  // (elapsedFrom 是总预算的起点,第二段不会重新得到 120 分钟)和同一套 key。
+  // (elapsedFrom 是总预算的起点,第二段不会重新得到 145 分钟)和同一套 key。
   const runPass = async ({ pass, text, labelPrefix = '', primary, elapsedFrom }) => {
     const passAttempts = [];
     let passAnswer = null;
@@ -604,7 +604,7 @@ async function codex() {
         writeJson(scopeFile, finalScope);
         const finalPrompt = promptFor(finalScope, scopeFile);
         writeText(join(INPUT_DIR, 'final-full-prompt.md'), finalPrompt);
-        // 第二段主模型的上限按总预算的余额收紧(不是重新给一份 120 分钟)。只在本段开始时算一次:
+        // 第二段主模型的上限按总预算的余额收紧(不是重新给一份 145 分钟)。只在本段开始时算一次:
         // 主模型失败后 nextAttempt 还要用这份配置算备用的上限,备用的余额由 nextAttempt 按共享时钟(elapsedFrom)实时算;
         // 若每次都重算,备用预留(FALLBACK_RESERVE_MS + 收尾)会被再扣一遍,备用拿到过小甚至 0 的 timeout。
         const secondPrimaryCfg = { ...tierCfg, timeoutMs: Math.max(0, Math.min(tierCfg.timeoutMs, budget.budgetMs - (Date.now() - budgetAt) - FALLBACK_RESERVE_MS - 2 * SETTLE_MS)) };

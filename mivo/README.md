@@ -69,7 +69,7 @@ flowchart LR
    - 开关文件读不到或任一项不合法时按 off 并写 warning。开关文件只在 codex 阶段读，不进任务书，所以改开关**不会**触发全量重审。
    - **只核 P1/P2（P1 优先），P0 永远不核、永远阻断**；每次最多核 `maxFindings`（默认 3）条，超出的照原样卡。核对结论按单条 finding（`uid`）生效，不按跨轮的 `key`：同名问题共用 key，一条被推翻不会带走另一条。同类合并的问题（`instances`）把全部位置交给核对员，全部位置都不成立才能推翻；任一位置落在本 PR 新增行上，整组都不按「PR 之前就存在」免责。每次核对是一个新的 Codex CLI 进程（独立 `CODEX_HOME` 与临时目录、`--ephemeral`），只拿这一条问题的标题、位置、触发条件、错误行为、影响和证据，不给主审的完整报告与推理。
    - 核对员模型必须不同于主审**实际使用**的模型：默认 `openai/gpt-6.1-sol`（medium）；主审 fallback 到了 sol，核对员就改用 `openai/gpt-6-luna`；找不到不同的模型就不核，该条照常阻断。
-   - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 120 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
+   - 全部核完才发布，GitHub 上只发一次最终结论。时间预算沿用 `budgetMin`（默认 20 分钟）、`perCallTimeoutMin`（默认 15 分钟），并受 145 分钟模型总时间约束；发布阶段的 10 分钟预留不被核对挤掉。
    - **全部卡点都被推翻/降级时不 Approve**：只发一条普通 COMMENT 评论（报告开头写明「核对员推翻/降级了全部卡点，请人工看一眼再合」），check 为绿，不挂 `review:merge-ready`，`result.json` 记 `outcome=merge-blocked`、`approval.code=verifier-overruled`、`reviewClean=false`（同一 head 再来也不会被沿用成通过）。这个状态跨轮保留（`verifierOverruledAll`）：下一轮不论改了什么，都因「上一轮核对员推翻/降级了全部卡点」退回全量重审，得出新结论之前不会 Approve。原本就没有 P0/P1/P2 的 PR 行为不变。
    - `result.json` 的 `mivo.verification` 记每条核对的结论、`applied`（实际生效的是 refuted 还是 downgraded）、模型、耗时和证据/理由；`mivo.verifierOverruled` 记被推翻/降级的问题（紧凑形状）。
    - **核对员模型不可用时不白等**：核对员要用的模型被 marker 标为降级（见「每天的运维」），或这一轮主审已经在这个模型上超时/卡住/网关类失败时，整个核对员跳过，`mivo.verification.skipped` 记 `model-unavailable`，一次都不调用。marker 没标、但核对员第一次调用就超时/卡住/网关类失败（5xx、断流、网关拒绝 key/额度类错误）时，熔断：本轮剩下的 P1 也不核（同样记 `model-unavailable`）。答卷不合格和普通非零退出不熔断。没核到的 P1/P2 照原样阻断，P0 本来就不核；`warnings` 写一条「核对员未运行」，报告里在有 P1/P2 因此没核时多一节「核对员未运行（不影响结论）」，结论行和阻断判定不变。
@@ -332,15 +332,15 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 ## 审查时长与超时
 
-维护者 2026-10-14 决定大 PR 审得深；2026-10-15 决定小 PR 上限 1 小时；2026-10-16 起 standard 也改为 60 分钟，因为 45 分钟上限截断了还在输出的审查（`lib/models.mjs`）：
+维护者 2026-10-14 决定大 PR 审得深；2026-10-15 决定小 PR 上限 1 小时；2026-10-16 起 standard 也改为 60 分钟，因为 45 分钟上限截断了还在输出的审查；2026-10-28 模型总预算 120 → 145 分钟，heavy 不再给备用预留 20 分钟（备用从头审 3 次全部超时，主模型 98 分钟上限只剩 8 分钟余量）（`lib/models.mjs`）：
 
 | 档位 | 主模型上限 | 备用模型 | 说明 |
 |---|---|---|---|
-| light | 60 分钟 | 最长 60 分钟，预算 120 分钟下主模型用满（含 1 分钟收尾）后实际 58 分钟 | 剩余不足 15 分钟不启动备用；最坏一次审查约 2 小时，仍在作业 160 分钟以内 |
+| light | 60 分钟 | 最长 60 分钟，预算 145 分钟下主模型用满（含 1 分钟收尾）后仍有 60 分钟 | 剩余不足 15 分钟不启动备用；最坏一次审查约 2 小时，仍在作业 160 分钟以内 |
 | standard | 60 分钟 | 同 light | 同 light |
-| heavy | 98 分钟 | 实足 20 分钟以上 | 主模型在 98 分 6 秒被终止时，备用还有 20 分 54 秒 |
+| heavy | 143 分钟 | 只在主模型早早失败时接手剩余时间 | 主模型超时（143 分钟）后余额不足 15 分钟，不跑备用，本次记 error 由 Mini 重试；主模型 24 分钟就失败时备用有 120 分钟 |
 
-- 主备共用一个预算：调模型前按本 job 的真实开始时间（jobs 接口的 `started_at`，读不到就用 run 的 `created_at`）算「作业截止 − 现在 − 10 分钟发布预留」，再与 120 分钟取小。装依赖、扫描、装 semgrep 累计超过 30 分钟时，预算跟着收缩，发布（含产物上传）始终有 10 分钟。两个时间都读不到就不启动模型，本次记 error，由 Mini 按下一节的规则重试。
+- 主备共用一个预算：调模型前按本 job 的真实开始时间（jobs 接口的 `started_at`，读不到就用 run 的 `created_at`）算「作业截止 − 现在 − 10 分钟发布预留」，再与 145 分钟取小。非模型阶段超过约 5 分钟时，预算跟着收缩，发布（含产物上传）始终有 10 分钟。两个时间都读不到就不启动模型，本次记 error，由 Mini 按下一节的规则重试。
 - 作业上限是 `review-pr.yml` 的 `timeout-minutes`（160），codex 步骤用环境变量 `MIVO_REVIEW_JOB_TIMEOUT_MIN` 传进来；没传时按旧 workflow 的 110 分钟算。
 - 结果包 `mivo` 里记 `runnerName`（审查位，来自 `RUNNER_NAME`）和 `codexVersion`（调模型前取一次 `codex --version` 的第一行；没调模型的审查、CLI 不存在或命令超时都是 `null`，取不到不影响审查），排查失败不用再去查 jobs 接口和服务器升级日志。
 - 每次模型调用在结果包的 `mivo.codex.attempts[]` 里按 JSONL 事件留下记录：`firstEventSec`、`lastEventSec`、`eventCount`、`maxGapSec`（含开始到第一个事件、最后一个事件到退出两段空白）、`usage`（取 `turn.completed`，没有记 null）；失败时另记脱敏后最后 50 行、最多 8 KB 的 `stderrTail`。这些只进结果包，不进 PR 评论，也不能单独当作「变慢原因」的证据。
@@ -357,7 +357,7 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 | 剩余模型预算不足收口 | 低于 67 分钟（45 分钟主审 + 20 分钟备用预留 + 2×收尾余量；45 分钟取自 56 次 full workflow 的 p90，含 workflow 开销，作保守窗口）不 Approve，结果顶层 `error` + `retry`，`mivo.finalFull.outcome = 'pending-budget'`，报告 Overall 写 `pending —— 收口待补，尚未放行`；check 保持进行中，不发 review/评论，同 head 摘掉 `review:merge-ready`（PR head 已变则记 `state-changed` 不碰新 head 的标签） |
 | 收口开始后失败 | 同样不回退增量答卷；`finalFull.outcome = 'error'` 并保留真实前轮，Mini 下一次对同 head 直接全量 |
 
-- 总预算只有一份：两段主审、备用 key/模型、核对员共用同一个 `budgetAt` 起算的余额，第二段主模型上限按余额收紧，不会重新得到 120 分钟。
+- 总预算只有一份：两段主审、备用 key/模型、核对员共用同一个 `budgetAt` 起算的余额，第二段主模型上限按余额收紧，不会重新得到 145 分钟。
 - 结果包 `mivo.finalFull = { head, runId, outcome }`（`head` 是被审 head、`runId` 是 GitHub run id，`outcome` 为 `clean` / `findings` / `manual-review` / `pending-budget` / `error` / `skipped-fix-round`），`mivo.finalFullContext = { kind: 'same-run' | 'budget-retry' | 'direct-full', findingFiles, previousRound }`。`findingFiles` 取收口仍阻断问题的位置（含 `instances`）。沿用上一轮结论时原样带过去。
 - 放行门：增量范围的干净结论没有 `clean` / `skipped-fix-round` 记录就不 Approve（含 advisory、人工复核以外的所有放行路径），直接标收口待补。
 - 结论与 head 绑定：模型阶段用 prepare 固定的 `input.head`，check、报告头和证据都写被审 head；收口期间 PR 前进时由 guarded finish / Request Changes 的 expected-head 拒绝，结果 `state-changed`。
