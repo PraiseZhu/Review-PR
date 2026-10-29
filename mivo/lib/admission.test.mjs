@@ -173,8 +173,10 @@ test('提前释放的 PR(作者推了新提交、旧 run 已确认结束)不再�
 });
 
 const MIN = 60_000;
-const runAt = (createdMin, { startedMin = null, status = 'in_progress' } = {}) => ({ status, createdAt: new Date(T0 + createdMin * MIN).toISOString(),
-  jobs: [{ status: startedMin === null ? 'queued' : status, startedAt: startedMin === null ? '0001-01-01T00:00:00Z' : new Date(T0 + startedMin * MIN).toISOString() }] });
+// REST workflow run 的 run 级字段:排队中 updated_at 也会变(创建时),只有 in_progress 才把它当开始执行的时刻。
+const runAt = (createdMin, { startedMin = null } = {}) => ({ status: startedMin === null ? 'queued' : 'in_progress',
+  created_at: new Date(T0 + createdMin * MIN).toISOString(), run_started_at: new Date(T0 + createdMin * MIN).toISOString(),
+  updated_at: new Date(T0 + (startedMin ?? createdMin) * MIN).toISOString() });
 
 test('取消线:排队和执行分开计时;排队 40 分钟加执行 160 分钟不取消', () => {
   assert.equal(MAX_EXEC_MINUTES, 170);
@@ -187,15 +189,15 @@ test('取消线:排队和执行分开计时;排队 40 分钟加执行 160 分钟
   assert.equal(toRunTiming({ nowMs: T0 + 169 * MIN, run: runAt(0, { startedMin: 0 }) }).cancel, null);
 });
 
-test('排队超过 30 分钟记慢,超过 120 分钟才取消;排队中的 job 不用它的 started_at', () => {
+test('排队超过 30 分钟记慢,超过 120 分钟才取消;排队中的 run 不用 updated_at / run_started_at', () => {
   const slow = toRunTiming({ nowMs: T0 + 31 * MIN, run: runAt(0) });
   assert.deepEqual([slow.phase, slow.slow, slow.cancel], ['queued', true, null]);
   assert.equal(toRunTiming({ nowMs: T0 + 29 * MIN, run: runAt(0) }).slow, false);
   assert.equal(toRunTiming({ nowMs: T0 + 121 * MIN, run: runAt(0) }).cancel, 'queue');
-  const queuedJobWithTime = { status: 'queued', createdAt: new Date(T0).toISOString(), jobs: [{ status: 'queued', startedAt: new Date(T0).toISOString() }] };
-  assert.equal(toRunTiming({ nowMs: T0 + 171 * MIN, run: queuedJobWithTime }).cancel, 'queue', '排队的 job 按排队算');
-  assert.equal(toRunTiming({ nowMs: T0 + 5 * MIN, run: { status: 'queued', createdAt: new Date(T0).toISOString(), jobs: [] } }).phase, 'queued', '还没有 job');
-  assert.equal(toRunTiming({ nowMs: T0, run: { status: 'queued', jobs: [] } }).cancel, null, '读不到时间不取消');
+  const queuedUpdated = { status: 'queued', created_at: new Date(T0).toISOString(), updated_at: new Date(T0 + 100 * MIN).toISOString() };
+  assert.equal(toRunTiming({ nowMs: T0 + 171 * MIN, run: queuedUpdated }).cancel, 'queue', '排队中的 run 按排队算');
+  assert.equal(toRunTiming({ nowMs: T0 + 5 * MIN, run: { status: 'in_progress', created_at: new Date(T0).toISOString() } }).phase, 'queued', '执行中但读不到 updated_at 时按排队算');
+  assert.equal(toRunTiming({ nowMs: T0, run: { status: 'queued' } }).cancel, null, '读不到时间不取消');
 });
 
 test('派发失败:只有带错误内容的 HTTP 4xx 算明确被拒;超时、断线、5xx 都按不知道有没有派出', () => {

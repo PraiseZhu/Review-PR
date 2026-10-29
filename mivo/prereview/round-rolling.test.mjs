@@ -153,6 +153,11 @@ function makeFixture(scenario) {
   const run = (command, args) => {
     const output = (stdout) => ({ ok: true, status: 0, stdout, stderr: '' });
     if (command === 'git' || command === 'gh' && args[0] === 'variable') return output('fixture-sha\n');
+    // 派发后按 dispatch_id 找 run、进度列表都读 review-pr.yml 的 runs 列表(REST 形态)。
+    if (command === 'gh' && args[0] === 'api' && args.some((arg) => arg.includes('/actions/workflows/review-pr.yml/runs'))) {
+      const runs = [...remoteRuns].map(([id, row]) => ({ id: Number(id), display_title: row.displayTitle, status: 'in_progress' }));
+      return output(JSON.stringify([{ total_count: runs.length, workflow_runs: runs }]));
+    }
     if (command === 'gh' && args[0] === 'api') return output('[]');
     if (command === 'gh' && args[0] === 'workflow' && args[1] === 'run') {
       const inputs = Object.fromEntries(args.filter((_, index) => args[index - 1] === '-f').map((arg) => arg.split('=')));
@@ -276,7 +281,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 收口全量:第一次结果为「收口待补」的 PR 集合(用掉一次);带 finalFull 的完整结果的 PR 集合
     finalFullPending: new Set(), finalFullDone: new Set(),
     // 目标分支的 code_scanning 规则(rules/branches 的返回)与按 head 给的 check run(摘标签的代码扫描判据)、读规则的次数
-    rulesPayload: [], codeScanChecks: {}, rulesReads: 0 };
+    rulesPayload: [], codeScanChecks: {}, rulesReads: 0,
+    // 所有 gh 调用(参数数组),用来数一轮进度检查发了多少个 GitHub 请求
+    ghCalls: [], sleeps: 0,
+    // >0 时新派出的 run 在这么多毫秒内查不到(模拟 GitHub 列表延迟)
+    hideNewRunsMs: 0 };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
@@ -445,15 +454,16 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     let endMs = startMs + r.durationMs;
     let conclusion = 'success';
     if (r.cancelMs !== undefined && r.cancelMs + w.cancelDelayMs < endMs) { endMs = r.cancelMs + w.cancelDelayMs; conclusion = 'cancelled'; }
-    const base = { createdAt: iso(r.createdMs) };
-    if (w.now >= endMs) return { ...base, status: 'completed', conclusion, jobs: startMs < endMs ? [{ status: 'completed', startedAt: iso(startMs) }] : [] };
-    if (w.now >= startMs) return { ...base, status: 'in_progress', conclusion: null, jobs: [{ status: 'in_progress', startedAt: iso(startMs) }] };
-    return { ...base, status: 'queued', conclusion: null, jobs: [{ status: 'queued', startedAt: '0001-01-01T00:00:00Z' }] };
+    // REST workflow run 的形态;run_started_at 对第一次尝试等于 created_at,开始执行后 updated_at 停在开始时刻。
+    const base = { id: Number(r.id), display_title: r.title, created_at: iso(r.createdMs), run_started_at: iso(r.createdMs) };
+    if (w.now >= endMs) return { ...base, status: 'completed', conclusion, updated_at: iso(endMs) };
+    if (w.now >= startMs) return { ...base, status: 'in_progress', conclusion: null, updated_at: iso(startMs) };
+    return { ...base, status: 'queued', conclusion: null, updated_at: iso(r.createdMs) };
   };
   const ok = (stdout = '') => ({ ok: true, status: 0, stdout: typeof stdout === 'string' ? stdout : JSON.stringify(stdout), stderr: '', error: null });
   const fail = (stderr) => ({ ok: false, status: 1, stdout: '', stderr, error: null });
   const run = (command, args) => {
-    if (command === 'sleep') { w.now += Number(args[0]) * 1000; return ok(); }
+    if (command === 'sleep') { w.sleeps += 1; w.now += Number(args[0]) * 1000; return ok(); }
     if (command === 'git') {
       w.gitCalls.push([...args]); // 复制成本测试的数组,deepStrictEqual 才不比较到 vm 里的原型
       if (args.includes('count-objects')) return ok(`count: 0\nsize: 0\nin-pack: 100\npacks: ${w.packs}\n`);
@@ -466,6 +476,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     }
     if (args[0] === '-c' && String(args[1]).includes('command -v gh')) return ok('gh-real\n');
     if (command !== 'gh') throw new Error(`Unexpected external command: ${command}`);
+    w.ghCalls.push([...args]);
     const path = args.find((a) => /^repos\//.test(a)) ?? '';
     if (args[0] === 'variable' && args[1] === 'get') return w.pinFails ? fail('HTTP 502: Bad Gateway') : ok(`${w.pinned ?? w.skillSha}\n`);
     if (args[0] === 'variable' && args[1] === 'set') { w.heartbeats.push({ at: w.now, value: argOf(args, '--body') }); return ok(); }
@@ -485,6 +496,15 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
       return ok([[...w.prs].filter(([, p]) => p.open).map(([number, p]) => ({ number, head: { sha: p.head } }))]);
     }
+    if (args[0] === 'api' && /^repos\/o\/wf\/actions\/runs\/\d+$/.test(path)) {
+      const r = w.runs.get(path.split('/').pop());
+      return r ? ok(runView(r)) : fail('gh: Not Found (HTTP 404)');
+    }
+    if (args[0] === 'api' && path.includes('/actions/workflows/review-pr.yml/runs?status=')) {
+      const status = path.match(/status=([^&]+)/)[1];
+      const list = [...w.runs.values()].filter((r) => !((w.hiddenUntil.get(r.dispatchId) ?? 0) > w.now)).map(runView).filter((v) => v.status === status);
+      return ok([{ total_count: list.length, workflow_runs: list }]);
+    }
     if (args[0] === 'api' && path.includes('/actions/workflows/review-pr.yml/runs')) {
       const since = Date.parse(path.match(/created=>=([^&]+)/)[1]);
       const list = [...w.runs.values()].filter((r) => r.createdMs >= since && !((w.hiddenUntil.get(r.dispatchId) ?? 0) > w.now))
@@ -502,6 +522,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         w.runs.set(id, { id, pr, head: inputs.head_sha, roundId: inputs.round_id, dispatchId: inputs.dispatch_id,
           title: `review-pr #${pr} ${inputs.dispatch_id}`, createdMs: w.now, durationMs: spec.durationMs, queueMs: spec.queueMs });
         w.dispatches.push({ at: w.now, pr, head: inputs.head_sha, dispatchId: inputs.dispatch_id, runId: id, attempt: inputs.attempt, prev: inputs.prev_run_id });
+        if (w.hideNewRunsMs) w.hiddenUntil.set(inputs.dispatch_id, w.now + w.hideNewRunsMs);
       }
       return failure ? fail('HTTP 502: Bad Gateway') : ok();
     }
@@ -1620,4 +1641,83 @@ test('世界:同 head 已完成审查满 20 次就停,记原因、不派发;推�
   assert.ok(await w.runUntil(() => next.settled, { maxMs: 6 * 60 * MIN }));
   assert.equal(next.failure, null, String(next.failure?.stack));
   assert.equal(w.dispatchesOf(1).filter((d) => d.head === 'h2').length, 1);
+});
+
+// ── #140:进度检查批量化、派发后不在主线程等待 ──
+// 一次进度检查里和 run 进度有关的 GitHub 请求:runs 列表、单个 run、gh run view。
+const progressCalls = (w) => w.ghCalls.filter((args) => (args[0] === 'run' && args[1] === 'view')
+  || args.some((arg) => /actions\/(runs\/|workflows\/review-pr\.yml\/runs\?status=)/.test(arg)));
+
+test('世界:进度检查的 GitHub 请求数与在审 run 数无关:1 个和 40 个在审时相同,不再逐个 gh run view', async () => {
+  const count = async (n) => {
+    const w = makeWorld();
+    const tasks = [];
+    for (let i = 0; i < n; i += 1) {
+      const pr = 100 + i;
+      w.openPr(pr, `h${pr}`);
+      const runId = w.seedRun(pr, `h${pr}`, 'R0', `seed${pr}`, { createdMs: w.now - MIN, durationMs: 120 * MIN });
+      tasks.push({ pr, head: `h${pr}`, phase: 'running', attempts: 1, agentId: `gha:${runId}:seed${pr}` });
+    }
+    w.seedRound('R0', tasks);
+    const proc = w.start();
+    await w.runUntil(() => false, { maxMs: 10 * MIN });
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+    assert.equal(w.ghCalls.filter((args) => args[0] === 'run' && args[1] === 'view').length, 0, '不再 gh run view');
+    return progressCalls(w).length;
+  };
+  const one = await count(1);
+  const forty = await count(40);
+  assert.ok(one > 0, '确实做了进度检查');
+  assert.equal(forty, one, `1 个在审 ${one} 次请求,40 个在审 ${forty} 次`);
+});
+
+test('世界:在审 run 结束时只单查这一个,其余时间只读排队中、执行中两个列表', async () => {
+  const w = makeWorld();
+  w.openPr(7, 'h7', { durationMs: 10 * MIN, queueMs: 2 * MIN });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 30 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.ok(w.logged('collected').some((e) => e.pr === 7 && e.outcome === 'approval'));
+  const singles = w.ghCalls.filter((args) => args.some((arg) => /actions\/runs\/\d+$/.test(arg)));
+  assert.equal(singles.length, 1, '只有结束后不在排队/执行列表里的那一次单查');
+});
+
+test('世界:派发后第一次查不到 run 不在主线程等待:不 sleep,交给 settleDispatch,刚派出的下一次轮询就查到并绑定', async () => {
+  const w = makeWorld();
+  w.hideNewRunsMs = 45_000;
+  w.openPr(7, 'h7', { durationMs: 10 * MIN });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => w.logged('dispatch-found').some((e) => e.pr === 7), { maxMs: 10 * MIN }));
+  assert.equal(w.sleeps, 0, '派发后不再 sleep 5 秒重查');
+  assert.ok(w.logged('dispatch-unknown').some((e) => e.pr === 7), '第一次查不到先记未知、占槽');
+  const waited = Date.parse(w.logged('dispatch-found').find((e) => e.pr === 7).at) - w.dispatchesOf(7)[0].at;
+  assert.ok(waited <= 2 * MIN, `刚派出的派发每次轮询都查,${waited / 1000} 秒才找到`);
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 30 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.dispatchesOf(7).length, 1, '不重发');
+  assert.ok(w.logged('collected').some((e) => e.pr === 7 && e.outcome === 'approval'));
+});
+
+test('世界:40 个在审同时结束:每个结束的 run 一生只单查一次(随后本来就要逐个下载结果包),排队中/执行中列表每次轮询仍是固定两组', async () => {
+  const w = makeWorld();
+  const tasks = [];
+  for (let i = 0; i < 40; i += 1) {
+    const pr = 200 + i;
+    w.openPr(pr, `h${pr}`);
+    const runId = w.seedRun(pr, `h${pr}`, 'R0', `done${pr}`, { createdMs: w.now - MIN, durationMs: 5 * MIN });
+    tasks.push({ pr, head: `h${pr}`, phase: 'running', attempts: 1, agentId: `gha:${runId}:done${pr}` });
+  }
+  w.seedRound('R0', tasks);
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.logged('collected').length, 40);
+  const singles = w.ghCalls.filter((args) => args.some((arg) => /actions\/runs\/\d+$/.test(arg)))
+    .map((args) => args.find((arg) => /actions\/runs\/\d+$/.test(arg)));
+  assert.equal(singles.length, 40, '40 个 run 各单查一次');
+  assert.equal(new Set(singles).size, 40, '没有哪个 run 被单查两次');
+  const lists = w.ghCalls.filter((args) => args.some((arg) => /review-pr\.yml\/runs\?status=/.test(arg)));
+  const downloads = w.ghCalls.filter((args) => args[0] === 'run' && args[1] === 'download');
+  assert.equal(downloads.length, 40, '结果包本来就逐个下载');
+  assert.equal(lists.length % 2, 0, '每次轮询读排队中、执行中两组列表');
 });
