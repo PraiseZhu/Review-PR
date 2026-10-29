@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun,
+import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, GATE_SKIP_MAX_MS,
   MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
@@ -276,4 +276,35 @@ test('toOutcomeWake:alreadyDone 不唤醒、非法编号跳过、空输入安全
 test('toProtectedHoldWake 与 toOutcomeWake(protected) 结果一致', () => {
   const roundState = { prs: { 1: { outcome: 'protected' }, 2: { outcome: 'dependency' } } };
   assert.deepEqual(toProtectedHoldWake({ roundState }), toOutcomeWake({ roundState, outcomes: ['protected'] }));
+});
+
+test('toGateSkip(#141):只有 updatedAt 变了、上轮是等讨论/等 CI 且没有 retry、30 分钟内真判过门,才沿用上轮结论', () => {
+  const now = Date.parse('2026-10-29T12:00:00Z');
+  const candidate = (reasonCodes, changedFields = []) => ({ number: 7, head: 'h7', selectionDiagnostics: { reasonCodes, changedFields } });
+  const previous = { head: 'h7', outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false };
+  const lastGate = { head: 'h7', atMs: now - 10 * 60_000 };
+  assert.deepEqual(toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate, nowMs: now }),
+    { outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false });
+  assert.deepEqual(toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous: { ...previous, outcome: 'ci-pending' }, lastGate, nowMs: now }),
+    { outcome: 'ci-pending', reason: '1 条 conversation 未 resolve', retry: false });
+  // 要判门的情况
+  for (const [label, args] of [
+    ['ci 也变了', { candidate: candidate(['fingerprint-changed'], ['ci', 'updatedAt']) }],
+    ['没有基线', { candidate: candidate(['no-baseline']) }],
+    ['重试窗口到了', { candidate: candidate(['retry', 'retry-window-expired']) }],
+    ['只因 retry 被选中(上轮动作失败要重试,单审 P2)', { candidate: candidate(['retry']), previous: { ...previous, retry: true } }],
+    ['只有 updatedAt 变了但上轮标了 retry', { previous: { ...previous, retry: true } }],
+    ['指纹变了且也带 retry', { candidate: candidate(['fingerprint-changed', 'retry'], ['updatedAt']) }],
+    ['指纹变了但说不出哪项', { candidate: candidate(['fingerprint-changed', 'fingerprint-mismatch-unattributed']) }],
+    ['上轮是 bot-pending(和时间有关)', { previous: { ...previous, outcome: 'bot-pending' } }],
+    ['上轮是 protected', { previous: { ...previous, outcome: 'protected' } }],
+    ['round-state 的 head 不同', { previous: { ...previous, head: 'old' } }],
+    ['从没真判过门', { lastGate: undefined }],
+    ['上次真判门是别的 head', { lastGate: { ...lastGate, head: 'old' } }],
+    ['距上次真判门满 30 分钟', { lastGate: { ...lastGate, atMs: now - GATE_SKIP_MAX_MS } }],
+    ['时钟倒退', { lastGate: { ...lastGate, atMs: now + 60_000 } }],
+  ]) {
+    assert.equal(toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate, nowMs: now, ...args }), null, label);
+  }
+  assert.equal(isGateSkipCandidate(undefined), false, '候选名单里找不到这一项');
 });

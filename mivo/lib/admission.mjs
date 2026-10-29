@@ -239,3 +239,34 @@ export function findDispatchRun(pages, { pr, dispatchId }) {
   const total = Number(list[0]?.total_count);
   return { runId: null, complete: list.length > 0 && Number.isFinite(total) && runs.length >= total };
 }
+
+/**
+ * 判门要不要跳过(#141):这次被选中只是因为更新时间变了(打标签、留言),head、CI、讨论状态都没变,
+ * 而上轮的结论只有 head、CI 或讨论状态变了才会解开时,不重判、沿用上轮结论。2026-10-29 Mini 上 24 小时 295 次判门里
+ * 83 次是只有 updatedAt 变了。上轮标了 retry(动作失败、提醒没发出去等)的一律照常重判,失败的动作要重试(单审 P2)。
+ * 只认两种结论:threads-unresolved(等作者 resolve,未解决数变了才解开)、ci-pending(等 CI,ci 变了才解开;retryAt 到了
+ * 会带 retry-window-expired 重新判)。和时间有关的(bot-pending、维护者确认、受保护路径、出错重试)照常每轮重判。
+ * 兜底:同一 head 距上次真正判门满 GATE_SKIP_MAX_MS 就重判。
+ * candidate 是候选名单里的这一项(带 selectionDiagnostics),previous 是 round-state 里这个 PR 的行,
+ * lastGate 是上次真正判门的 {head, atMs}。返回 {outcome, reason, retry} 或 null(要判门)。
+ */
+export const GATE_SKIP_OUTCOMES = Object.freeze(['threads-unresolved', 'ci-pending']);
+export const GATE_SKIP_MAX_MS = 30 * 60_000;
+/** 只看候选名单这一项能不能跳过(不读 round-state):被选中的原因只有「指纹变了,且只有 updatedAt 变了」。 */
+export function isGateSkipCandidate(candidate) {
+  const diagnostics = candidate?.selectionDiagnostics;
+  const codes = diagnostics?.reasonCodes ?? [];
+  if (codes.length !== 1 || codes[0] !== 'fingerprint-changed') return false;
+  const fields = diagnostics.changedFields ?? [];
+  return fields.length === 1 && fields[0] === 'updatedAt';
+}
+
+export function toGateSkip({ candidate, previous, lastGate, nowMs }) {
+  if (!isGateSkipCandidate(candidate)) return null;
+  if (!candidate.head || previous?.head !== candidate.head || !GATE_SKIP_OUTCOMES.includes(previous.outcome)) return null;
+  if (previous.retry === true) return null;
+  const age = nowMs - Number(lastGate?.atMs);
+  if (lastGate?.head !== candidate.head || !(age >= 0 && age < GATE_SKIP_MAX_MS)) return null;
+  return { outcome: previous.outcome, reason: String(previous.reason || previous.outcome), retry: false };
+}
+

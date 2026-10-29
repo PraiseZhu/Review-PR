@@ -22,6 +22,8 @@
 // 跑:node <skill-root>/scripts/approve-workflows.mjs <PR> [--dry-run] [--allow-ci-changes]
 //   --dry-run:只检测并打印待批 run / 是否改了 CI 配置,不真 approve(供 SKILL 探测 + 交互展示)。
 //   --allow-ci-changes:覆盖安全门,允许对「改了 CI 配置」的 PR 真批(需上层已人工确认)。
+//   --expected-head <sha>:[MIVO-PATCH approve-expected-head] 只批这个 head 的 run;PR 当前 head 不是它就不批(退 2,refused)。
+//     调用方判门时看的是这个 head,作者之后推的新 head 没判过门,不能替它放行 CI。
 
 import { parseRepo, parsePR, gh, ghJson, print, fail, loadRules } from './lib.mjs';
 
@@ -34,6 +36,9 @@ try {
   const pr = parsePR(process.argv[2]);
   const dryRun = process.argv.includes('--dry-run');
   const allowCiChanges = process.argv.includes('--allow-ci-changes');
+  const expectedAt = process.argv.indexOf('--expected-head');
+  const expectedHead = expectedAt >= 0 ? String(process.argv[expectedAt + 1] ?? '') : null;
+  if (expectedHead !== null && !/^[0-9a-f]{7,40}$/i.test(expectedHead)) fail('--expected-head 需要提交 SHA');
   const slug = `${owner}/${repo}`;
 
   // PR 元数据:head SHA(定位 workflow run)+ 是否跨仓库(action_required 只对 fork 出现)+ 文件清单(算 CI 改动)
@@ -42,6 +47,12 @@ try {
     '--json', 'headRefOid,isCrossRepository,author,files',
   ]);
   const headSha = meta.headRefOid ?? '';
+  // [MIVO-PATCH approve-expected-head] head 已变:不查也不批。下面按 head_sha 查待批 run,所以通过这里之后只会批 expectedHead 的 run。
+  if (expectedHead !== null && headSha.toLowerCase() !== expectedHead.toLowerCase()) {
+    print({ ok: false, pr, headSha, expectedHead, approved: [], refused: true, headChanged: true,
+      error: `PR head 已变为 ${headSha.slice(0, 12) || '(空)'},与判门时的 ${expectedHead.slice(0, 12)} 不同,不批准 workflow` });
+    process.exit(2);
+  }
   const files = (meta.files ?? []).map((f) => f.path);
   const ciFiles = (prRules.ciSensitivePaths?.length ? files.filter((p) => CI_SENSITIVE_RE.test(p)) : []);
   const touchesCiFiles = ciFiles.length > 0;
