@@ -164,9 +164,13 @@ const script = (name, args, options = {}) => runScript(name, args, { cwd: CONFIG
 const scriptAsync = (name, args, options = {}) => runScriptAsync(name, args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 // 门禁动作脚本(发提醒、改标签、开关 issue、重跑 CI)在进程内排队、一次只跑一个(#141 单审 P2):有的脚本读改写共享状态,
 // 例如 notify-author-resolve.mjs 的 reminded.json 去重表,并发会互相覆盖。判门里最慢的 context.mjs 照常并行。
+// 排在后面的动作开跑前再查一次锁(单审 P1):排队期间可能已经丢锁,而 approve-workflows、close-product-issue 这类脚本自己不核对锁。
 let GATE_ACTION_CHAIN = Promise.resolve();
 const gateActionScript = (name, args, options = {}) => {
-  const next = GATE_ACTION_CHAIN.then(() => scriptAsync(name, args, options));
+  const next = GATE_ACTION_CHAIN.then(() => {
+    assertNotFenced();
+    return scriptAsync(name, args, options);
+  });
   GATE_ACTION_CHAIN = next.catch(() => {});
   return next;
 };

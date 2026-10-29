@@ -1836,3 +1836,20 @@ test('世界:门禁动作脚本一次只跑一个(共享 reminded.json 等状态
   assert.ok(w.gatingPeak > 1, `context 判门并行峰值 ${w.gatingPeak}`);
   assert.equal(w.actionPeak, 1, `动作脚本同时在跑峰值 ${w.actionPeak}`);
 });
+
+test('世界:排队中的门禁动作在丢锁后不再开跑(单审 P1)', async () => {
+  const w = makeWorld({ maxParallel: 10, gateParallel: 8, instance: 'mivo', mode: 'live' });
+  w.planDelayMs = 5 * MIN; // 每个动作脚本(也包括 plan)跑 5 分钟,丢锁时后面的动作还在排队
+  for (let i = 0; i < 4; i += 1) {
+    w.openPr(70 + i, `h${i}`);
+    w.protectedAuthors.add(70 + i);
+  }
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => w.actionNow >= 1, { maxMs: 30 * MIN }));
+  w.lock = { token: 'other-process', refreshedAt: w.now };
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(w.logged('lock-lost').length, 1);
+  assert.ok(w.noticeCalls.length <= 1, `丢锁后又跑了 ${w.noticeCalls.length - 1} 个排队中的动作`);
+  assert.equal(w.dispatches.length, 0);
+});
+
