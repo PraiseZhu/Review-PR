@@ -72,10 +72,10 @@
     "review-pr/scripts/gh-read-route.test.mjs",
     "review-pr/scripts/mivo-patches.test.mjs",
     "review-pr/scripts/notify-author-resolve.test.mjs",
-    "review-pr/scripts/permission-cache.test.mjs",
     "review-pr/scripts/run-log-stdin.test.mjs",
     "review-pr/scripts/self-write-receipts.mjs",
     "review-pr/scripts/self-write-receipts.test.mjs",
+    "review-pr/scripts/semgrep-limits.test.mjs",
     "review-pr/scripts/signoff-release.hold-gap.test.mjs",
     "review-pr/scripts/vendor/gh-app-classify.mjs"
   ]
