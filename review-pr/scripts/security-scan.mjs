@@ -182,7 +182,9 @@ function runSemgrep() {
   if (!baseSha) {
     return { available: false, reason: '未传 --base <base-sha>,无法只报新增问题(不退化成全仓扫描:存量告警会淹没本 PR 的问题)' };
   }
-  const args = ['scan', '--json', '--quiet', '--baseline-commit', baseSha, '--metrics', 'off'];
+  // [MIVO-PATCH semgrep-limits] 审查服务器 192 核、几十个审查同时跑:每个 semgrep 默认按核数开并行,会把 CPU 超订;
+  // 限 4 路并行、单进程 2G 内存。
+  const args = ['scan', '--json', '--quiet', '--baseline-commit', baseSha, '--metrics', 'off', '--jobs', '4', '--max-memory', '2048'];
   for (const c of SEMGREP_CONFIGS) args.push('--config', c);
   const r = run('semgrep', args, { allowFail: true, timeoutMs: SEMGREP_TIMEOUT_MS, cwd: REPO_ROOT });
   const raw = (r.stdout || '').trim();

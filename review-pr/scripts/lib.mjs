@@ -341,6 +341,44 @@ function fetchPaginatedRestItems(endpoint, { ghFn = gh, fields = [] } = {}) {
   return pages.flat();
 }
 
+// [MIVO-PATCH permission-cache] 设了 REVIEW_PR_PERMISSION_CACHE_MS(毫秒)时,按「仓+登录名」缓存白名单维护者的仓库权限,
+// 只缓存 write 及以上的成功结果;读失败、权限不够照常每次实时读并从严停止。一次审查里 prepare、写前复核、发布
+// 各读一遍维护者权限,每次每人一个请求,都走 PraiseZhu 额度。默认不设=每次都读。默认分支 commit 的读取和复核不缓存,
+// 摘要绑定的基线照常实时取。
+function readMaintainerPermission(repository, login, { ghFn, env, now, cacheFile }) {
+  const ttl = permissionCacheMs(env);
+  const file = ttl > 0 ? cacheFile ?? stateFile('permission-cache.json') : null;
+  const key = `${repository.toLowerCase()}#${login.toLowerCase()}`;
+  const at = now();
+  const cache = file ? readCacheFile(file) : {};
+  const hit = cache[key];
+  if (hit && Number.isFinite(hit.at) && at >= hit.at && at - hit.at < ttl && hit.value) return hit.value;
+  const permission = parseJsonResult(
+    ghFn(['api', '--method', 'GET', `repos/${repository}/collaborators/${login}/permission`], {
+      allowFail: true,
+      timeoutMs: 20_000,
+    }),
+    `读取 ${login} 对 ${repository} 的权限`,
+  );
+  const role = String(permission?.role_name ?? permission?.permission ?? '').trim().toLowerCase();
+  const mapped = role === 'admin' ? 'admin' : role === 'maintain' ? 'maintain'
+    : (role === 'write' || role === 'push') ? 'push' : null;
+  if (!mapped) {
+    throw authorityError(`maintainerAllowlist 成员 ${login} 对 ${repository} 没有 write 及以上权限(当前 ${role || 'none'})`);
+  }
+  if (!file) return mapped;
+  const next = {};
+  for (const [k, v] of Object.entries(cache)) if (v && Number.isFinite(v.at) && at >= v.at && at - v.at < ttl) next[k] = v;
+  next[key] = { at, value: mapped };
+  try { atomicWriteJson(file, next); } catch { /* 缓存写失败只是下次重读 */ }
+  return mapped;
+}
+
+/** REVIEW_PR_PERMISSION_CACHE_MS 去空白后的毫秒数;没设返回 0(不缓存)。设了但不是 0–3600000 的整数直接抛错。 */
+export function permissionCacheMs(env = process.env) {
+  return cacheMsFromEnv(env, 'REVIEW_PR_PERMISSION_CACHE_MS');
+}
+
 /**
  * 从目标仓库默认分支的 CODEOWNERS 根 Team 实时解析成员，再与 Skill 的补充白名单取并集。
  * Team 仍是必需信任锚；任何不完整输入均抛错，白名单不得充当读取失败时的兜底。
@@ -352,6 +390,9 @@ export function fetchMaintainerAuthority({
   nowIso = new Date().toISOString(),
   maintainerAllowlist = loadRules().maintainerAllowlist,
   maintainerSource = loadRules().maintainerSource,
+  env = process.env,
+  now = Date.now,
+  permissionCacheFile,
 } = {}) {
   const normalizedOwner = String(owner ?? '').trim();
   const normalizedRepo = String(repo ?? '').trim();
@@ -382,20 +423,7 @@ export function fetchMaintainerAuthority({
     if (allowlistedMembers.length === 0) throw authorityError('maintainerSource=allowlist 但 maintainerAllowlist 为空');
     const memberPermissions = {};
     for (const login of allowlistedMembers) {
-      const permission = parseJsonResult(
-        ghFn(['api', '--method', 'GET', `repos/${repository}/collaborators/${login}/permission`], {
-          allowFail: true,
-          timeoutMs: 20_000,
-        }),
-        `读取 ${login} 对 ${repository} 的权限`,
-      );
-      const role = String(permission?.role_name ?? permission?.permission ?? '').trim().toLowerCase();
-      const mapped = role === 'admin' ? 'admin' : role === 'maintain' ? 'maintain'
-        : (role === 'write' || role === 'push') ? 'push' : null;
-      if (!mapped) {
-        throw authorityError(`maintainerAllowlist 成员 ${login} 对 ${repository} 没有 write 及以上权限(当前 ${role || 'none'})`);
-      }
-      memberPermissions[login] = mapped;
+      memberPermissions[login] = readMaintainerPermission(repository, login, { ghFn, env, now, cacheFile: permissionCacheFile });
     }
     const finalBase = parseJsonResult(
       ghFn(['api', '--method', 'GET', `repos/${repository}/commits/${encodeURIComponent(baseRef)}`], {
@@ -1163,7 +1191,7 @@ export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.e
   const file = cacheFile ?? stateFile('branch-protection-cache.json');
   const key = `${String(slug).toLowerCase()}#${branch}`;
   const at = now();
-  const cache = readBranchProtectionCache(file);
+  const cache = readCacheFile(file);
   const hit = cache[key];
   if (!fresh && hit && Number.isFinite(hit.at) && at >= hit.at && at - hit.at < ttl && hit.value) return hit.value;
   const value = probeBranchProtectionUncached(slug, branch, { ghFn, env });
@@ -1177,16 +1205,20 @@ export function probeBranchProtection(slug, branch, { ghFn = gh, env = process.e
 
 /** REVIEW_PR_BRANCH_PROTECTION_CACHE_MS 去空白后的毫秒数;没设返回 0(不缓存)。设了但不是 0–3600000 的整数直接抛错,不悄悄退回不缓存。 */
 export function branchProtectionCacheMs(env = process.env) {
-  const raw = String(env.REVIEW_PR_BRANCH_PROTECTION_CACHE_MS ?? '').trim();
+  return cacheMsFromEnv(env, 'REVIEW_PR_BRANCH_PROTECTION_CACHE_MS');
+}
+
+function cacheMsFromEnv(env, name) {
+  const raw = String(env[name] ?? '').trim();
   if (!raw) return 0;
   const ms = Number(raw);
   if (!Number.isInteger(ms) || ms < 0 || ms > 3_600_000) {
-    throw new Error(`REVIEW_PR_BRANCH_PROTECTION_CACHE_MS 不合法(期望 0–3600000 的整数毫秒,实际 ${JSON.stringify(raw.slice(0, 20))})`);
+    throw new Error(`${name} 不合法(期望 0–3600000 的整数毫秒,实际 ${JSON.stringify(raw.slice(0, 20))})`);
   }
   return ms;
 }
 
-function readBranchProtectionCache(file) {
+function readCacheFile(file) {
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
