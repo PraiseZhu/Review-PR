@@ -268,6 +268,9 @@ export function toGateSkip({ candidate, previous, lastGate, nowMs }) {
   if (previous.retry === true) return null;
   const age = nowMs - Number(lastGate?.atMs);
   if (lastGate?.head !== candidate.head || !(age >= 0 && age < GATE_SKIP_MAX_MS)) return null;
-  return { outcome: previous.outcome, reason: String(previous.reason || previous.outcome), retry: false };
+  // 上次真判门确认没有执行动作(gate-last 记了 actions: 0)时才写空的 gate.actions,和没有动作的真判门一样可以提前释放;
+  // 有动作或旧记录没写 actions 的不带 gate,留在原轮次,不让释放后的重判把提醒、确认 issue 这类动作再做一遍(#155)。
+  return { outcome: previous.outcome, reason: String(previous.reason || previous.outcome), retry: false,
+    ...(lastGate.actions === 0 ? { gate: { actions: [] } } : {}) };
 }
 

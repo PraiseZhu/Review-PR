@@ -1838,22 +1838,45 @@ test('世界:SC2 反例——ci 也变了、上轮是 bot-pending、上轮动作
   }
 });
 
-test('世界:跳过判门的等讨论结果和没有动作的真判门一样,同轮别的 PR 还在审时提前释放(#155)', async () => {
+for (const [actions, released] of [[0, true], [1, false], [undefined, false]]) {
+  test(`世界:跳过判门的等讨论结果,上次真判门动作数 ${actions}:${released ? '和没有动作的真判门一样提前释放' : '留在原轮次,不提前释放'}(#155)`, async () => {
+    const w = makeWorld();
+    w.openPr(1071, 'long', { durationMs: 90 * MIN });
+    w.openPr(7, 'h7');
+    w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
+      prs: { 7: { fingerprintFields: { head: 'h7' }, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(w.now - 10 * MIN) } } });
+    w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: w.now - 5 * MIN, ...(actions === undefined ? {} : { actions }) } });
+    w.selection.set(7, { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] });
+    w.start();
+    assert.ok(await w.runUntil(() => w.logged('gate-skipped').some((e) => e.pr === 7) && w.dispatchesOf(1071).length === 1, { maxMs: 10 * MIN }));
+    await w.runUntil(() => false, { maxMs: 10 * MIN });
+    assert.equal(w.logged('pr-released').some((e) => e.pr === 7), released);
+    // 假世界的候选规则不模拟释放后的 retry 选中原因,释放后可能再跳过几次;生产上会带 retry 照常重判。
+    assert.ok(w.logged('gate-skipped').some((e) => e.pr === 7));
+    assert.equal(w.contextCalls.some((c) => c.pr === 7), false, '跳过期间不判门,也就不会重做上次的动作');
+    const result = w.read(`${w.roundDir('R1')}/results/pr-7.json`);
+    assert.equal(result.gateSkipped, true);
+    assert.deepEqual(result.gate, released ? { actions: [] } : undefined);
+  });
+}
+
+test('世界:真判门把执行了几个动作记进 gate-last(受保护路径建确认 issue 算 1 个,派发了记 null)(#155)', async () => {
   const w = makeWorld();
-  w.openPr(1071, 'long', { durationMs: 90 * MIN });
-  w.openPr(7, 'h7');
-  w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
-    prs: { 7: { fingerprintFields: { head: 'h7' }, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(w.now - 10 * MIN) } } });
-  w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: w.now - 5 * MIN } });
-  w.selection.set(7, { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] });
-  w.start();
-  assert.ok(await w.runUntil(() => w.logged('pr-released').some((e) => e.pr === 7), { maxMs: 10 * MIN }), '跳过后提前释放');
-  assert.equal(w.logged('gate-skipped').filter((e) => e.pr === 7).length, 1);
-  assert.equal(w.contextCalls.some((c) => c.pr === 7), false);
-  assert.equal(w.dispatchesOf(1071).length, 1, '另一个 PR 还在审');
-  const result = w.read(`${w.roundDir('R1')}/results/pr-7.json`);
-  assert.equal(result.gateSkipped, true);
-  assert.deepEqual(result.gate, { actions: [] });
+  w.openPr(1, 'h1');
+  w.openPr(2, 'h2');
+  w.protectedAuthors.add(1);
+  w.contextPatch.set(1, { gate: { unresolvedThreads: [{ isBot: false }] } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  const result = w.read(`${w.roundDir('R1')}/results/pr-1.json`);
+  assert.equal(result.outcome, 'threads-unresolved');
+  assert.equal(result.gate.actions.length, 1, JSON.stringify(result.gate.actions));
+  assert.equal(w.noticeCalls.length, 1);
+  const last = w.read(w.state('gate-last.json'));
+  assert.equal(last[1].head, 'h1');
+  assert.equal(last[1].actions, 1);
+  assert.equal(last[2].actions, null);
 });
 
 test('世界:门禁动作脚本一次只跑一个(共享 reminded.json 等状态),context 判门照常并行', async () => {

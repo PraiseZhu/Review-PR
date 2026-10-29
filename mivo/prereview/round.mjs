@@ -846,8 +846,7 @@ async function runQueue(ctx) {
       bumpStore(task, { ownerRoundId: round.runId });
       const skipped = gateSkipFor(ctx, task);
       if (skipped) {
-        // gate.actions 为空:和没有动作的真判门一样,可以提前从轮次释放(canReleaseDeferredGate,#155)。
-        writeTaskResult(ctx, task, { ...skipped, reason: `${skipped.reason}(head、CI、讨论状态都没变,沿用上次判门结论)`, gateSkipped: true, gate: { actions: [] } });
+        writeTaskResult(ctx, task, { ...skipped, reason: `${skipped.reason}(head、CI、讨论状态都没变,沿用上次判门结论)`, gateSkipped: true });
         log('gate-skipped', { pr: task.pr, head: task.head, outcome: skipped.outcome });
         completeGate(ctx, task);
         continue;
@@ -926,10 +925,12 @@ function completeGate(ctx, task) {
   completeTask(ctx.queue, task.pr, agentId);
 }
 
-// 上次真正判门的 head 和时间(进程间保留),toGateSkip 的兜底:同一 head 满 30 分钟照样重判。
+// 上次真正判门的 head、时间和执行了几个动作(进程间保留),toGateSkip 的兜底:同一 head 满 30 分钟照样重判;
+// actions 决定跳过结果能不能提前释放(#155)。派发了的还没有结果文件,记 null。
 function recordLastGate(task) {
+  const actions = readJson(task.resultFile, null)?.gate?.actions;
   const file = stateFile('gate-last.json');
-  writeJson(file, { ...readJson(file, {}), [task.pr]: { head: task.head, atMs: Date.now() } });
+  writeJson(file, { ...readJson(file, {}), [task.pr]: { head: task.head, atMs: Date.now(), actions: Array.isArray(actions) ? actions.length : null } });
 }
 
 function gateSkipFor(ctx, task) {

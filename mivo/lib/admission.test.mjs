@@ -307,6 +307,12 @@ test('toGateSkip(#141):只有 updatedAt 变了、上轮是等讨论/等 CI 且�
   ]) {
     assert.equal(toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate, nowMs: now, ...args }), null, label);
   }
+  // #155:上次真判门确认没有动作才带空 gate.actions(可提前释放);有动作、旧记录没写 actions 的不带
+  const skip = (actions) => toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate: { ...lastGate, actions }, nowMs: now });
+  assert.deepEqual(skip(0).gate, { actions: [] });
+  assert.equal('gate' in skip(1), false);
+  assert.equal('gate' in skip(null), false);
+  assert.equal('gate' in skip(undefined), false);
   assert.equal(isGateSkipCandidate(undefined), false, '候选名单里找不到这一项');
 });
 
