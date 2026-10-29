@@ -162,6 +162,14 @@ function logOnce(key, event, detail = {}) {
 const script = (name, args, options = {}) => runScript(name, args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 // 判门里的脚本用异步版:子进程跑着时事件循环照常走,别的判门、进度轮询不被挡住。
 const scriptAsync = (name, args, options = {}) => runScriptAsync(name, args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
+// 门禁动作脚本(发提醒、改标签、开关 issue、重跑 CI)在进程内排队、一次只跑一个(#141 单审 P2):有的脚本读改写共享状态,
+// 例如 notify-author-resolve.mjs 的 reminded.json 去重表,并发会互相覆盖。判门里最慢的 context.mjs 照常并行。
+let GATE_ACTION_CHAIN = Promise.resolve();
+const gateActionScript = (name, args, options = {}) => {
+  const next = GATE_ACTION_CHAIN.then(() => scriptAsync(name, args, options));
+  GATE_ACTION_CHAIN = next.catch(() => {});
+  return next;
+};
 const ghRead = (args, options = {}) => run('gh', args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 const stateFile = (name) => join(CONFIG.stateDir, 'mivo', name);
 
@@ -1076,8 +1084,8 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
       const args = action.mode === 'labels-only'
         ? [pr, '--labels-only', '--kind', action.kind, ...modeArgs, ...bindings]
         : [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings];
-      let out = await scriptAsync('signoff-hold.mjs', args);
-      if (out.needsFreshHold || out.reason === 'missing-payload') out = await scriptAsync('signoff-hold.mjs', [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings]);
+      let out = await gateActionScript('signoff-hold.mjs', args);
+      if (out.needsFreshHold || out.reason === 'missing-payload') out = await gateActionScript('signoff-hold.mjs', [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings]);
       if (out.issueError) result.errors.push(`确认 issue 创建失败:${out.issueError}`);
       if (out.commentError) result.errors.push(`确认首评发布失败:${out.commentError}`);
       if (action.issueMode === 'notice') {
@@ -1099,11 +1107,11 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
       }
       const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings, payloadFile });
       if (warning) result.warnings.push(`signoffRelease:${warning}`);
-      record('signoffRelease', await scriptAsync('signoff-release.mjs', args));
+      record('signoffRelease', await gateActionScript('signoff-release.mjs', args));
       break;
     }
     case 'close-product-issue':
-      record('closeProductIssue', await scriptAsync('close-product-issue.mjs', [pr, '--no-longer-required']));
+      record('closeProductIssue', await gateActionScript('close-product-issue.mjs', [pr, '--no-longer-required']));
       break;
     case 'request-changes': {
       const pushback = buildGatePushback(live, action.gateKind);
@@ -1121,20 +1129,20 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
         args.push('--comments-file', commentsFile);
       }
       if (own) args.push('--comment-only');
-      const out = await scriptAsync('request-changes-reviewed-pr.mjs', args, { timeoutMs: 180_000 });
+      const out = await gateActionScript('request-changes-reviewed-pr.mjs', args, { timeoutMs: 180_000 });
       record('pushback', out);
       if (out.submitted) result.threadUrls = out.threadUrls ?? [];
       else result.retry = true;
       break;
     }
     case 'notify-protected': {
-      const out = await scriptAsync('notify-author-resolve.mjs', [pr, '--protected-path', ...bindings]);
+      const out = await gateActionScript('notify-author-resolve.mjs', [pr, '--protected-path', ...bindings]);
       result.authorNotice = noticeFrom('protected-path', out, task.head);
       if (result.authorNotice.status === 'failed') result.retry = true;
       break;
     }
     case 'notify-rebase': {
-      const out = await scriptAsync('notify-author-resolve.mjs', [pr, '--stale-rebase', ...bindings]);
+      const out = await gateActionScript('notify-author-resolve.mjs', [pr, '--stale-rebase', ...bindings]);
       if (out.ok && !out.posted && out.reason !== 'already-commented') {
         // 脚本重查发现卡点已消失:改记状态变化,交下一轮重新采集(pr-worker 第 3 节)。
         result.outcome = 'state-changed';
@@ -1146,11 +1154,11 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
       break;
     }
     case 'approve-workflows':
-      record('approveWorkflows', await scriptAsync('approve-workflows.mjs', [pr]));
+      record('approveWorkflows', await gateActionScript('approve-workflows.mjs', [pr]));
       result.retry = true;
       break;
     case 'retry-ci': {
-      const out = await scriptAsync('retry-ci.mjs', [pr, ...bindings]);
+      const out = await gateActionScript('retry-ci.mjs', [pr, ...bindings]);
       record('retryCi', out);
       if (['rerun-requested', 'already-requested', 'reconciled', 'pending-reconciliation'].includes(out.action)) {
         result.outcome = 'ci-pending';

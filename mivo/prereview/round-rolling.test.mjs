@@ -287,6 +287,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     ghCalls: [], sleeps: 0,
     // 判门(#141):context.mjs 一次耗时(同步版推进虚拟时钟、异步版等这么久)、调用次数、同时在跑的峰值;按 PR 给的候选选中原因
     contextDelayMs: 0, contextCalls: [], gatingNow: 0, gatingPeak: 0, selection: new Map(),
+    // 门禁动作脚本(异步调用、不是 context.mjs / plan)同时在跑的数量与峰值
+    actionNow: 0, actionPeak: 0,
     // >0 时新派出的 run 在这么多毫秒内查不到(模拟 GitHub 列表延迟)
     hideNewRunsMs: 0 };
   const clone = (value) => structuredClone(value);
@@ -309,7 +311,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     const rows = admission.withDeferredGateRetries(w.files.get('/w/state/round-state.json') ?? {},
       w.incomplete().map((file) => ({ ...w.files.get(file), released: w.files.get(`${dirname(file)}/mivo-released.json`) ?? {} }))).prs;
     const taken = busy();
-    return [...w.prs].filter(([n, p]) => p.open && !taken.has(n) && (!rows[n] || rows[n].head !== p.head || rows[n].retry))
+    // w.selection 里给了选中原因的 PR 每轮都当候选(模拟 pre-check 因 updatedAt 变化选中它)。
+    return [...w.prs].filter(([n, p]) => p.open && !taken.has(n) && (!rows[n] || rows[n].head !== p.head || rows[n].retry || w.selection.has(n)))
       .map(([n, p]) => ({ number: n, head: p.head }));
   };
   w.seedRound = (name, tasks, { createdMs = w.now - MIN } = {}) => {
@@ -595,7 +598,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       writeText: (file, value) => { w.files.set(file, value); },
       run, runScript,
       runScriptAsync: (file, args) => {
-        if (basename(file) !== 'context.mjs') return new Promise((done) => vSetTimeout(() => done(runScript(file, args)), w.planDelayMs));
+        if (basename(file) !== 'context.mjs') {
+          const action = basename(file) !== 'plan-review-round.mjs';
+          if (action) { w.actionNow += 1; w.actionPeak = Math.max(w.actionPeak, w.actionNow); }
+          return new Promise((done) => vSetTimeout(() => { if (action) w.actionNow -= 1; done(runScript(file, args)); }, w.planDelayMs));
+        }
         w.gatingNow += 1;
         w.gatingPeak = Math.max(w.gatingPeak, w.gatingNow);
         return new Promise((done) => vSetTimeout(() => { w.gatingNow -= 1; done(runScript(file, args)); }, w.contextDelayMs));
@@ -1775,9 +1782,9 @@ test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再�
   const t0 = w.now;
   w.openPr(7, 'h7');
   w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
-    prs: { 7: { head: 'h7', outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: true, roundCreatedAt: iso(t0 - 10 * MIN) } } });
+    prs: { 7: { head: 'h7', outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(t0 - 10 * MIN) } } });
   w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: t0 - 5 * MIN } });
-  w.selection.set(7, { reasonCodes: ['fingerprint-changed', 'retry'], changedFields: ['updatedAt'] });
+  w.selection.set(7, { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] });
   // launchd 每 3 分钟拉起一次:上一个进程退出后再起一个,直到 40 分钟。
   let proc = w.start();
   while (w.now - t0 < 40 * MIN && !w.contextCalls.some((c) => c.pr === 7)) {
@@ -1795,15 +1802,16 @@ test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再�
   assert.ok(first.at - (t0 - 5 * MIN) >= 30 * MIN, `满 30 分钟才兜底重判(实际 ${(first.at - (t0 - 5 * MIN)) / MIN} 分钟)`);
 });
 
-test('世界:SC2 反例——ci 也变了,或上轮是 bot-pending,照常判门', async () => {
-  for (const [selection, outcome] of [
-    [{ reasonCodes: ['fingerprint-changed'], changedFields: ['ci', 'updatedAt'] }, 'threads-unresolved'],
-    [{ reasonCodes: ['fingerprint-changed', 'retry'], changedFields: ['updatedAt'] }, 'bot-pending'],
+test('世界:SC2 反例——ci 也变了、上轮是 bot-pending、上轮动作失败标了 retry,照常判门', async () => {
+  for (const [selection, outcome, retry] of [
+    [{ reasonCodes: ['fingerprint-changed'], changedFields: ['ci', 'updatedAt'] }, 'threads-unresolved', false],
+    [{ reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] }, 'bot-pending', false],
+    [{ reasonCodes: ['retry'], changedFields: [] }, 'threads-unresolved', true],
   ]) {
     const w = makeWorld();
     w.openPr(7, 'h7');
     w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
-      prs: { 7: { head: 'h7', outcome, retry: true, roundCreatedAt: iso(w.now - 10 * MIN) } } });
+      prs: { 7: { head: 'h7', outcome, retry, roundCreatedAt: iso(w.now - 10 * MIN) } } });
     w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: w.now - 5 * MIN } });
     w.selection.set(7, selection);
     w.start();
@@ -1811,4 +1819,20 @@ test('世界:SC2 反例——ci 也变了,或上轮是 bot-pending,照常判门'
     assert.ok(w.contextCalls.some((c) => c.pr === 7), JSON.stringify(selection) + outcome);
     assert.equal(w.logged('gate-skipped').length, 0);
   }
+});
+
+test('世界:门禁动作脚本一次只跑一个(共享 reminded.json 等状态),context 判门照常并行', async () => {
+  const w = makeWorld({ maxParallel: 10, gateParallel: 8 });
+  w.contextDelayMs = 20_000;
+  // 维护者作者改了受保护路径:每个 PR 判门都要跑 signoff-hold(建通知 issue)这个动作脚本
+  for (let i = 0; i < 6; i += 1) {
+    w.openPr(60 + i, `h${i}`);
+    w.protectedAuthors.add(60 + i);
+  }
+  const proc = w.start();
+  await w.runUntil(() => w.noticeCalls.length >= 6, { maxMs: 30 * MIN });
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.noticeCalls.length, 6, '6 个 PR 的动作都跑了');
+  assert.ok(w.gatingPeak > 1, `context 判门并行峰值 ${w.gatingPeak}`);
+  assert.equal(w.actionPeak, 1, `动作脚本同时在跑峰值 ${w.actionPeak}`);
 });
