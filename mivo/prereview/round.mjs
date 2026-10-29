@@ -1118,7 +1118,13 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
       break;
     }
     case 'close-product-issue':
-      record('closeProductIssue', await gateActionScript('close-product-issue.mjs', [pr, '--no-longer-required']));
+      // close-product-issue.mjs 不核对 head:排队期间推了新提交,新 head 可能又要确认,不按旧判门结论关讨论 issue。
+      record('closeProductIssue', await gateActionScript('close-product-issue.mjs', [pr, '--no-longer-required'], {}, () => {
+        const head = readLiveHead(task.pr);
+        if (head === task.head) return null;
+        return { ok: false, error: head ? `判门后 head 已变为 ${head.slice(0, 12)},不关讨论 issue` : '读不到当前 head,不关讨论 issue' };
+      }));
+      if (result.gate.closeProductIssue?.ok === false) result.retry = true;
       break;
     case 'request-changes': {
       const pushback = buildGatePushback(live, action.gateKind);
@@ -1161,13 +1167,9 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
       break;
     }
     case 'approve-workflows':
-      // approve-workflows.mjs 批准的是 PR 当前 head 的 workflow,自己不核对 head:排队期间作者推了新提交,
-      // 就不能替没判过门的新 head 批准(单审 P1)。读不到当前 head 也不批准。
-      record('approveWorkflows', await gateActionScript('approve-workflows.mjs', [pr], {}, () => {
-        const head = readLiveHead(task.pr);
-        if (head === task.head) return null;
-        return { ok: false, error: head ? `判门后 head 已变为 ${head.slice(0, 12)},不批准 workflow` : '读不到当前 head,不批准 workflow' };
-      }));
+      // 只批判门时那个 head 的 workflow(--expected-head,脚本里按 head_sha 查 run):排队期间作者推了新提交,
+      // 不能替没判过门的新 head 放行 CI(单审 P1)。
+      record('approveWorkflows', await gateActionScript('approve-workflows.mjs', [pr, '--expected-head', task.head]));
       result.retry = true;
       break;
     case 'retry-ci': {

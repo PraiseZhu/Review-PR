@@ -32,6 +32,7 @@
     "review-pr/scripts/approval-state.mjs",
     "review-pr/scripts/approval-state.test.mjs",
     "review-pr/scripts/approve-reviewed-pr.mjs",
+    "review-pr/scripts/approve-workflows.mjs",
     "review-pr/scripts/ci-status.test.mjs",
     "review-pr/scripts/context.mjs",
     "review-pr/scripts/dismiss-own-review.mjs",
@@ -66,6 +67,7 @@
     "review-pr/scripts/signoff-release.mjs"
   ],
   "added": [
+    "review-pr/scripts/approve-workflows-expected-head.test.mjs",
     "review-pr/scripts/branch-protection-cache.test.mjs",
     "review-pr/scripts/gate-bases.mjs",
     "review-pr/scripts/gh-read-route.mjs",

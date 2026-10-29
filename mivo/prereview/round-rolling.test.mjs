@@ -452,7 +452,14 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         w.lock = null;
         return { ok: true, released: true };
       case 'close-product-issue.mjs': return { ok: true, closedCount: 0 };
-      case 'approve-workflows.mjs': (w.approvals ??= []).push({ at: w.now, pr: Number(args[0]), head: w.prs.get(Number(args[0])).head }); return { ok: true, approved: 1 };
+      case 'approve-workflows.mjs': {
+        // 与真实脚本一致:带 --expected-head 时 PR 当前 head 不同就拒批(真实脚本的行为见 approve-workflows-expected-head.test.mjs)
+        const current = w.prs.get(Number(args[0])).head;
+        const expected = args.includes('--expected-head') ? argOf(args, '--expected-head') : null;
+        if (expected !== null && expected !== current) return { ok: false, refused: true, headChanged: true, error: `PR head 已变为 ${current}` };
+        (w.approvals ??= []).push({ at: w.now, pr: Number(args[0]), head: current });
+        return { ok: true, approved: 1 };
+      }
       case 'bypass-reason.mjs':
         w.scriptOrder.push('bypass-reason');
         w.bypassCalls.push([...args]);
