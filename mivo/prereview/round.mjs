@@ -24,7 +24,7 @@ import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -62,6 +62,11 @@ function loadConfig() {
   config.maxParallel = Math.max(1, Math.min(10, Number(config.maxParallel) || 3));
   config.dailyCap = Number(config.dailyCap) || 30;
   config.pollSeconds = Number(config.pollSeconds) || 30;
+  // 判门并行数(#141):每次判门要跑 context.mjs 等脚本约 20–30 秒,串行时每小时最多派一百个左右。
+  if (config.gateParallel === undefined) config.gateParallel = 8;
+  if (!Number.isInteger(config.gateParallel) || config.gateParallel < 1 || config.gateParallel > 16) {
+    throw new Error(`gateParallel 须是 1–16 的整数:${JSON.stringify(config.gateParallel)}`);
+  }
   if (config.viewerLogin !== undefined
       && (typeof config.viewerLogin !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.viewerLogin))) {
     throw new Error(`viewerLogin 不是合法的 GitHub 登录名:${JSON.stringify(config.viewerLogin)}`);
@@ -102,6 +107,8 @@ class RoundQuiesced extends Error {}
 let FENCED = false;
 // 看到部署暂停文件的时间:不开新轮、不领取、不派发;在审 run 归零(只剩未决派发也算,意图留给新版本接着找)后完成停机握手。
 let QUIESCING = null;
+// 正在判门的任务数(全进程):判门改成异步后最多 CONFIG.gateParallel 路并行;判门中的任务也算占槽(roundLoads)。
+let GATING = 0;
 // PR 当前 head 的缓存(作者推新提交时取消旧审查用):最多 3 分钟查一次全部开着的 PR。
 const HEADS = { atMs: 0, map: null };
 // 同一件事只记一次日志(未决派发、排队过慢、无效的人工解除记录、归属已转走)。
@@ -153,6 +160,8 @@ function logOnce(key, event, detail = {}) {
 }
 
 const script = (name, args, options = {}) => runScript(name, args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
+// 判门里的脚本用异步版:子进程跑着时事件循环照常走,别的判门、进度轮询不被挡住。
+const scriptAsync = (name, args, options = {}) => runScriptAsync(name, args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 const ghRead = (args, options = {}) => run('gh', args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 const stateFile = (name) => join(CONFIG.stateDir, 'mivo', name);
 
@@ -270,7 +279,8 @@ function heartbeatPaused() {
 }
 
 // ── 滚动接单的小工具 ────────────────────────────────────────────────────────
-const roundLoads = () => ROUNDS.map((r) => ({ finished: r.finished, queued: r.queued, inflight: r.inflight.size }));
+// 判门中的任务也算占槽:判门是异步的,判完可能马上派发,不算进去别的轮次会把这个槽当空槽再领一个。
+const roundLoads = () => ROUNDS.map((r) => ({ finished: r.finished, queued: r.queued, inflight: r.inflight.size + (r.gating ?? 0) }));
 const freeSlots = () => toFreeSlots({ rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
 const busyPrs = () => toBusyPrs(ROUNDS.filter((r) => !r.completed).map((r) => ({ ...r.plan, released: r.released })));
 const admitScript = (args) => script(join(HERE, 'admit-candidates.mjs'), ['--repo-root', CONFIG.repoRoot, ...args], { timeoutMs: 120_000 });
@@ -759,12 +769,13 @@ async function drive(round, token, authorityDigest) {
     log('watch-restart', { runId: plan.runId, exitCode: watch.exitCode, signal: watch.signalCode });
     watch = spawnWatch();
   };
-  const ctx = { round, plan, planFile, roundDir, token, authorityDigest, queue, inflight, ensureWatch };
+  const ctx = { round, plan, planFile, roundDir, token, authorityDigest, queue, inflight, ensureWatch, gates: new Set(), gateError: null, wake: null };
   try {
     resumeInflight(ctx, inflight, queue);
     await RESUME_BARRIER;
     for (let pass = 0; pass < 2; pass += 1) {
-      await runQueue(ctx);
+      // 本轮还在判门的任务先等它们结束(中止、停机握手也一样),不在后台留下没人收尾的判门。
+      try { await runQueue(ctx); } finally { await Promise.allSettled([...ctx.gates]); }
       const reconcile = queue('reconcile');
       if (!reconcile.ok) throw new Error(`reconcile 失败:${reconcile.error}`);
       log('reconcile', { runId: plan.runId, reopened: reconcile.reopened, allComplete: reconcile.allComplete });
@@ -807,8 +818,10 @@ async function runQueue(ctx) {
     ctx.ensureWatch();
     queue('status');
     releaseDeferredGates(ctx);
-    // 全进程在审数满了就不领取;部署暂停后也不领取。claim → 判门 → 派发 → 登记在途之间没有 await,别的轮次看不到过时的空槽。
-    while (!QUIESCING && freeSlots() > 0) {
+    if (ctx.gateError) throw ctx.gateError;
+    // 全进程在审数满了就不领取;部署暂停后也不领取。判门异步、最多 gateParallel 路并行(#141);判门中的任务从领取起就算占槽
+    // (round.gating),判完派发后先登记在途再释放,别的轮次看不到过时的空槽。
+    while (!QUIESCING && freeSlots() > 0 && GATING < CONFIG.gateParallel) {
       assertNotFenced();
       const claim = queue('claim');
       if (!claim.ok) throw new Error(`claim 失败:${claim.error}`);
@@ -816,25 +829,14 @@ async function runQueue(ctx) {
       const task = claim.task;
       // 归属:最近一次接走这个 PR 的轮次。旧轮晚收尾时,归属已经转走的 PR 不写回本机记录。
       bumpStore(task, { ownerRoundId: round.runId });
-      try {
-        const outcome = handleTask(ctx, task);
-        if (outcome.dispatched) {
-          // 找到 run 才绑定;还不知道有没有派出的,先占槽,之后按 dispatch_id 找回或等人工解除。
-          if (outcome.runId) bind(queue, task.pr, outcome.agentId);
-          inflight.set(task.pr, { ...outcome, task });
-        } else {
-          const agentId = `mini-gate:${task.pr}:${randomUUID().slice(0, 8)}`;
-          bind(queue, task.pr, agentId);
-          completeTask(queue, task.pr, agentId);
-        }
-      } catch (error) {
-        if (error instanceof RoundAborted) throw error;
-        log('task-error', { pr: task.pr, error: error.message });
-        writeTaskResult(ctx, task, { outcome: 'error', reason: `前置审查异常:${error.message}`, retry: true, errors: [error.message] });
-        const agentId = `mini-gate:${task.pr}:${randomUUID().slice(0, 8)}`;
-        bind(queue, task.pr, agentId);
-        completeTask(queue, task.pr, agentId);
+      const skipped = gateSkipFor(ctx, task);
+      if (skipped) {
+        writeTaskResult(ctx, task, { ...skipped, reason: `${skipped.reason}(head、CI、讨论状态都没变,沿用上次判门结论)`, gateSkipped: true });
+        log('gate-skipped', { pr: task.pr, head: task.head, outcome: skipped.outcome });
+        completeGate(ctx, task);
+        continue;
       }
+      startGate(ctx, task);
     }
     // 进度和未绑定派发各查一次(各是一组分页调用),请求数与在审数无关;每个在审 run 不再单独 `gh run view`。
     const lookup = dispatchLookup(inflight);
@@ -862,14 +864,64 @@ async function runQueue(ctx) {
     round.queued = status.queued?.length ?? 0;
     if (!inflight.size && round.queued === 0 && (status.active?.length ?? 0) === 0) return;
     // 在审的只剩还不知道有没有派出的派发(runId 为 null):它们可能一直查不清,这一轮也就一直结束不了。
-    const onlyUnresolved = inflight.size > 0 && [...inflight.values()].every((entry) => !entry.runId);
+    const onlyUnresolved = inflight.size > 0 && !round.gating && [...inflight.values()].every((entry) => !entry.runId);
     // 部署暂停:这一轮已没有在审 run(或只剩未决派发),停下;还没领取的任务和派发意图留在轮次目录里给新版本。
-    if (QUIESCING && (!inflight.size || onlyUnresolved)) throw new RoundQuiesced('deploy-hold');
+    if (QUIESCING && !round.gating && (!inflight.size || onlyUnresolved)) throw new RoundQuiesced('deploy-hold');
     // 已停止接单(维护窗口、24 小时上限、换版本、维护者名单变化等),又只剩未决派发、领不到新任务时不再空等:
     // 这一轮停下,进程才能退出,launchd 拉起的新进程带着这个占位接着找,并照常接单。
     if (ADMISSION_CLOSED && onlyUnresolved && (round.queued === 0 || freeSlots() === 0)) throw new RoundQuiesced('unresolved-only');
-    await new Promise((r) => setTimeout(r, CONFIG.pollSeconds * 1000));
+    // 有判门结束就提前醒来,接着领取下一个,不等满一个轮询间隔。
+    await new Promise((r) => {
+      const timer = setTimeout(r, CONFIG.pollSeconds * 1000);
+      ctx.wake = () => { clearTimeout(timer); r(); };
+    });
+    ctx.wake = null;
   }
+}
+
+// 判门在后台跑:结束后派出的登记在途,没派的收尾;判门中的任务一直算占槽,登记完才释放。
+function startGate(ctx, task) {
+  GATING += 1;
+  ctx.round.gating = (ctx.round.gating ?? 0) + 1;
+  const gate = handleTask(ctx, task).then((outcome) => {
+    recordLastGate(task);
+    if (outcome.dispatched) {
+      // 找到 run 才绑定;还不知道有没有派出的,先占槽,之后按 dispatch_id 找回或等人工解除。
+      if (outcome.runId) bind(ctx.queue, task.pr, outcome.agentId);
+      ctx.inflight.set(task.pr, { ...outcome, task });
+    } else completeGate(ctx, task);
+  }, (error) => {
+    if (error instanceof RoundAborted) throw error;
+    log('task-error', { pr: task.pr, error: error.message });
+    writeTaskResult(ctx, task, { outcome: 'error', reason: `前置审查异常:${error.message}`, retry: true, errors: [error.message] });
+    completeGate(ctx, task);
+  }).catch((error) => { ctx.gateError ??= error; }).finally(() => {
+    GATING -= 1;
+    ctx.round.gating -= 1;
+    ctx.gates.delete(gate);
+    ctx.wake?.();
+  });
+  ctx.gates.add(gate);
+}
+
+function completeGate(ctx, task) {
+  const agentId = `mini-gate:${task.pr}:${randomUUID().slice(0, 8)}`;
+  bind(ctx.queue, task.pr, agentId);
+  completeTask(ctx.queue, task.pr, agentId);
+}
+
+// 上次真正判门的 head 和时间(进程间保留),toGateSkip 的兜底:同一 head 满 30 分钟照样重判。
+function recordLastGate(task) {
+  const file = stateFile('gate-last.json');
+  writeJson(file, { ...readJson(file, {}), [task.pr]: { head: task.head, atMs: Date.now() } });
+}
+
+function gateSkipFor(ctx, task) {
+  const candidate = (ctx.plan.manifest?.candidates ?? []).find((item) => item.number === task.pr);
+  // 多数任务在这一步就排除,不读 round-state(roundStateKey 第一次要起一个子进程)。
+  if (!isGateSkipCandidate(candidate)) return null;
+  const previous = readJson(join(CONFIG.stateDir, roundStateKey(), 'round-state.json'), null)?.prs?.[task.pr];
+  return toGateSkip({ candidate, previous, lastGate: readJson(stateFile('gate-last.json'), {})[task.pr], nowMs: Date.now() });
 }
 
 function bind(queue, pr, agentId) {
@@ -951,10 +1003,10 @@ function resumeInflight(ctx, inflight, queue) {
 }
 
 // ── 单个 PR:判门(本机) ─────────────────────────────────────────────────────
-function handleTask(ctx, task) {
+async function handleTask(ctx, task) {
   const { roundDir, token, authorityDigest } = ctx;
   const liveFile = join(roundDir, `pr-${task.pr}-live.json`);
-  const live = script('context.mjs', [String(task.pr), '--lock-token', token, '--cached-context', task.contextFile,
+  const live = await scriptAsync('context.mjs', [String(task.pr), '--lock-token', token, '--cached-context', task.contextFile,
     '--diff-output', join(roundDir, `pr-${task.pr}-live.diff`)], { timeoutMs: 300_000 });
   writeJson(liveFile, live);
   if (!live.ok) return finishGate(ctx, task, { outcome: 'error', reason: `context 读取失败:${live.error}`, retry: true, errors: [live.error] });
@@ -974,7 +1026,7 @@ function handleTask(ctx, task) {
   const dry = CONFIG.mode === 'dry-run';
   if (dry && decision.actions.length) result.dryRunActions = decision.actions.map((a) => `${a.script}${a.mode ? `:${a.mode}` : ''}${a.kind ? `:${a.kind}` : ''}${a.issueMode ? `:${a.issueMode}` : ''}${a.gateKind ? `:${a.gateKind}` : ''}`);
 
-  for (const action of dry ? [] : decision.actions) executeGateAction({ action, live, task, bindings, result, roundDir });
+  for (const action of dry ? [] : decision.actions) await executeGateAction({ action, live, task, bindings, result, roundDir });
   if (dry) {
     // dry-run 不发作者提醒;受保护路径 / rebase 终态按 Cindy 规则必须带提醒回执,如实记「没发」并下轮重试。
     for (const action of decision.actions) {
@@ -996,7 +1048,7 @@ function handleTask(ctx, task) {
     const protectedPath = live.protectedPath;
     const next = toProtectedDispatch({ decision, protectedPath, checkDone: protectedCheckDone(task) });
     if (next.closeIssue && !dry) {
-      executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
+      await executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
     }
     if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result);
   }
@@ -1007,7 +1059,7 @@ function handleTask(ctx, task) {
   return dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result);
 }
 
-function executeGateAction({ action, live, task, bindings, result, roundDir }) {
+async function executeGateAction({ action, live, task, bindings, result, roundDir }) {
   assertNotFenced();
   const pr = String(task.pr);
   const record = (name, out) => {
@@ -1024,8 +1076,8 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
       const args = action.mode === 'labels-only'
         ? [pr, '--labels-only', '--kind', action.kind, ...modeArgs, ...bindings]
         : [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings];
-      let out = script('signoff-hold.mjs', args);
-      if (out.needsFreshHold || out.reason === 'missing-payload') out = script('signoff-hold.mjs', [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings]);
+      let out = await scriptAsync('signoff-hold.mjs', args);
+      if (out.needsFreshHold || out.reason === 'missing-payload') out = await scriptAsync('signoff-hold.mjs', [pr, '--kind', action.kind, ...modeArgs, '--payload-file', payloadFile, ...bindings]);
       if (out.issueError) result.errors.push(`确认 issue 创建失败:${out.issueError}`);
       if (out.commentError) result.errors.push(`确认首评发布失败:${out.commentError}`);
       if (action.issueMode === 'notice') {
@@ -1047,11 +1099,11 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
       }
       const { args, warning } = toSignoffReleaseArgs({ action, pr, held: live.signoff?.held, heldIssue: live.signoff?.heldIssue, bindings, payloadFile });
       if (warning) result.warnings.push(`signoffRelease:${warning}`);
-      record('signoffRelease', script('signoff-release.mjs', args));
+      record('signoffRelease', await scriptAsync('signoff-release.mjs', args));
       break;
     }
     case 'close-product-issue':
-      record('closeProductIssue', script('close-product-issue.mjs', [pr, '--no-longer-required']));
+      record('closeProductIssue', await scriptAsync('close-product-issue.mjs', [pr, '--no-longer-required']));
       break;
     case 'request-changes': {
       const pushback = buildGatePushback(live, action.gateKind);
@@ -1069,20 +1121,20 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
         args.push('--comments-file', commentsFile);
       }
       if (own) args.push('--comment-only');
-      const out = script('request-changes-reviewed-pr.mjs', args, { timeoutMs: 180_000 });
+      const out = await scriptAsync('request-changes-reviewed-pr.mjs', args, { timeoutMs: 180_000 });
       record('pushback', out);
       if (out.submitted) result.threadUrls = out.threadUrls ?? [];
       else result.retry = true;
       break;
     }
     case 'notify-protected': {
-      const out = script('notify-author-resolve.mjs', [pr, '--protected-path', ...bindings]);
+      const out = await scriptAsync('notify-author-resolve.mjs', [pr, '--protected-path', ...bindings]);
       result.authorNotice = noticeFrom('protected-path', out, task.head);
       if (result.authorNotice.status === 'failed') result.retry = true;
       break;
     }
     case 'notify-rebase': {
-      const out = script('notify-author-resolve.mjs', [pr, '--stale-rebase', ...bindings]);
+      const out = await scriptAsync('notify-author-resolve.mjs', [pr, '--stale-rebase', ...bindings]);
       if (out.ok && !out.posted && out.reason !== 'already-commented') {
         // 脚本重查发现卡点已消失:改记状态变化,交下一轮重新采集(pr-worker 第 3 节)。
         result.outcome = 'state-changed';
@@ -1094,11 +1146,11 @@ function executeGateAction({ action, live, task, bindings, result, roundDir }) {
       break;
     }
     case 'approve-workflows':
-      record('approveWorkflows', script('approve-workflows.mjs', [pr]));
+      record('approveWorkflows', await scriptAsync('approve-workflows.mjs', [pr]));
       result.retry = true;
       break;
     case 'retry-ci': {
-      const out = script('retry-ci.mjs', [pr, ...bindings]);
+      const out = await scriptAsync('retry-ci.mjs', [pr, ...bindings]);
       record('retryCi', out);
       if (['rerun-requested', 'already-requested', 'reconciled', 'pending-reconciliation'].includes(out.action)) {
         result.outcome = 'ci-pending';

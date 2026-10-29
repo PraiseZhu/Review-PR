@@ -180,7 +180,8 @@ function makeFixture(scenario) {
     inBusinessWindow: () => health.inBusinessWindow(new Date(clockMs)),
     nowIso: () => new Date(clockMs).toISOString(), readJson, writeJson,
     writeText: (file, value) => files.set(file, value), run, runScript,
-    runScriptAsync: async (...args) => { throw new Error(`Unexpected async script: ${args[0]}`); },
+    // 判门(context.mjs 等)走异步脚本(#141):同样由假脚本立即回答。
+    runScriptAsync: async (file, args) => runScript(file, args),
     mkdirSync() {}, appendFileSync(file, text) { logs.push(text); },
     existsSync: (file) => files.has(file),
     spawn: () => ({ exitCode: null, signalCode: null, kill() {} }),
@@ -266,7 +267,7 @@ const WORLD_SOURCE = (() => {
   return `${prefix}\n${functions}\nglobalThis.fixtureAPI = { start: () => main() };`;
 })();
 
-function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance = 'sandbox', mode = 'sandbox' } = {}) {
+function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance = 'sandbox', mode = 'sandbox', gateParallel } = {}) {
   const w = { now: Date.parse(start), files: new Map(), logs: [], procs: [], events: [], prs: new Map(), runs: new Map(), nextRunId: 5000,
     lock: null, nextToken: 1, authorityDigest: 'digest-1', skillSha: 'skill-1', dispatches: [], cancels: [], heartbeats: [], releases: [],
     dispatchFailures: [], hiddenUntil: new Map(), cancelFails: new Set(), noArtifact: new Set(), roundNo: 0, planDelayMs: 15_000, cancelDelayMs: 30_000,
@@ -284,11 +285,13 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     rulesPayload: [], codeScanChecks: {}, rulesReads: 0,
     // 所有 gh 调用(参数数组),用来数一轮进度检查发了多少个 GitHub 请求
     ghCalls: [], sleeps: 0,
+    // 判门(#141):context.mjs 一次耗时(同步版推进虚拟时钟、异步版等这么久)、调用次数、同时在跑的峰值;按 PR 给的候选选中原因
+    contextDelayMs: 0, contextCalls: [], gatingNow: 0, gatingPeak: 0, selection: new Map(),
     // >0 时新派出的 run 在这么多毫秒内查不到(模拟 GitHub 列表延迟)
     hideNewRunsMs: 0 };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
-    workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30 });
+    workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30, ...(gateParallel ? { gateParallel } : {}) });
   w.state = (name) => `/w/state/mivo/${name}`;
   w.read = (file) => (w.files.has(file) ? clone(w.files.get(file)) : undefined);
   w.openPr = (number, head, { durationMs = 10 * MIN, queueMs = 4_000 } = {}) => w.prs.set(number, { head, open: true, durationMs, queueMs });
@@ -328,7 +331,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     const dir = w.roundDir(name);
     const prs = list.map((c) => ({ pr: c.number, head: c.head, base: 'base', baseRefName: 'main', contextFile: `${dir}/context-${c.number}.json` }));
     w.files.set(`${dir}/plan.json`, { runId: name, mode: 'review-only', repo: 'o/target', roundDir: dir, createdMs: w.now,
-      manifest: { createdAt: iso(w.now), candidates: list.map((c) => ({ number: c.number })) }, groups: [{ id: 1, prs }], execution: { worktreeCleanupRequired: true } });
+      manifest: { createdAt: iso(w.now), candidates: list.map((c) => ({ number: c.number, head: c.head, ...(w.selection.has(c.number) ? { selectionDiagnostics: w.selection.get(c.number) } : {}) })) },
+      groups: [{ id: 1, prs }], execution: { worktreeCleanupRequired: true } });
     return { ok: true, runId: name, planFile: `${dir}/plan.json`, groups: [{ prs: prs.map((p) => ({ pr: p.pr })) }], skipped: [] };
   };
   const argOf = (args, name) => args[args.indexOf(name) + 1];
@@ -413,6 +417,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       case 'plan-review-round.mjs': return makePlan(w.files.get(argOf(args, '--candidate-list')).candidates);
       case 'review-queue.mjs': return queueCommand(args);
       case 'context.mjs': {
+        w.contextCalls.push({ at: w.now, pr: Number(args[0]) });
         const pr = w.prs.get(Number(args[0]));
         const author = w.protectedAuthors.has(Number(args[0]));
         const context = { ok: true, meta: { state: pr.open ? 'OPEN' : 'CLOSED', isDraft: false, headRefOid: pr.head, baseRefOid: 'base', baseRefName: 'main',
@@ -475,6 +480,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       return ok(`${w.skillSha}\n`);
     }
     if (args[0] === '-c' && String(args[1]).includes('command -v gh')) return ok('gh-real\n');
+    // roundStateKey():lib 的 STATE_DIR 末段。夹具的 round-state 直接放在 /w/state 下,末段给空串。
+    if (args[0] === '-e' && String(args[1]).includes('STATE_DIR')) return ok('/w/state/\n');
     if (command !== 'gh') throw new Error(`Unexpected external command: ${command}`);
     w.ghCalls.push([...args]);
     const path = args.find((a) => /^repos\//.test(a)) ?? '';
@@ -587,7 +594,14 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       writeJson: (file, value) => { w.files.set(file, clone(value)); },
       writeText: (file, value) => { w.files.set(file, value); },
       run, runScript,
-      runScriptAsync: (file, args) => new Promise((done) => vSetTimeout(() => done(runScript(file, args)), w.planDelayMs)),
+      runScriptAsync: (file, args) => {
+        if (basename(file) !== 'context.mjs') return new Promise((done) => vSetTimeout(() => done(runScript(file, args)), w.planDelayMs));
+        w.gatingNow += 1;
+        w.gatingPeak = Math.max(w.gatingPeak, w.gatingNow);
+        return new Promise((done) => vSetTimeout(() => { w.gatingNow -= 1; done(runScript(file, args)); }, w.contextDelayMs));
+      },
+      // 改动前判门是同步的:context.mjs 按同样耗时推进虚拟时钟(这段时间整个进程都卡住),基准测试据此对比。
+      runScript: (file, args) => { if (basename(file) === 'context.mjs') w.now += w.contextDelayMs; return runScript(file, args); },
       mkdirSync() {}, copyFileSync: (from, to) => { w.files.set(to, w.files.get(from)); }, unlinkSync: (file) => { w.files.delete(file); },
       appendFileSync(file, text) { w.logs.push({ ...JSON.parse(text), proc: proc.no }); },
       existsSync: (file) => w.files.has(file),
@@ -1720,4 +1734,81 @@ test('世界:40 个在审同时结束:每个结束的 run 一生只单查一次(
   const downloads = w.ghCalls.filter((args) => args[0] === 'run' && args[1] === 'download');
   assert.equal(downloads.length, 40, '结果包本来就逐个下载');
   assert.equal(lists.length % 2, 0, '每次轮询读排队中、执行中两组列表');
+});
+
+// ── #141:判门异步并行、没变不重判、判门中也占槽 ──
+test('世界:SC1 基准——每次判门 20 秒、8 路并行,模拟 1 小时派发不少于 140 个', async () => {
+  const w = makeWorld({ maxParallel: 10, gateParallel: 8 });
+  w.contextDelayMs = 20_000;
+  for (let i = 0; i < 400; i += 1) w.openPr(1000 + i, `h${i}`, { durationMs: 60_000, queueMs: 4_000 });
+  const t0 = w.now;
+  w.start();
+  await w.runUntil(() => w.now - t0 >= 60 * MIN, { maxMs: 61 * MIN });
+  const dispatched = w.dispatches.filter((d) => d.at - t0 <= 60 * MIN).length;
+  if (process.env.ROUND_BENCH_PRINT) console.log(`BENCH dispatched=${dispatched} gatingPeak=${w.gatingPeak}`);
+  assert.ok(dispatched >= 140, `1 小时只派发了 ${dispatched} 个`);
+  assert.ok(w.gatingPeak > 1 && w.gatingPeak <= 8, `判门并行峰值 ${w.gatingPeak}`);
+});
+
+test('世界:SC3 判门中的任务也算占槽:上限 2 时,判门中加在审始终不超过 2', async () => {
+  const w = makeWorld({ maxParallel: 2, gateParallel: 8 });
+  w.contextDelayMs = 60_000;
+  for (let i = 0; i < 6; i += 1) w.openPr(50 + i, `h${i}`, { durationMs: 5 * MIN });
+  const samples = [];
+  const live = () => [...w.runs.values()].filter((r) => {
+    const start = r.createdMs;
+    const end = r.createdMs + r.queueMs + r.durationMs;
+    return w.now >= start && w.now < end;
+  }).length;
+  const proc = w.start();
+  while (!proc.settled && w.now - Date.parse('2026-10-14T02:00:00Z') < 120 * MIN) {
+    if (!(await w.step())) break;
+    samples.push(w.gatingNow + live());
+  }
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.ok(Math.max(...samples) <= 2, `判门中 + 在审峰值 ${Math.max(...samples)}`);
+  assert.equal(new Set(w.dispatches.map((d) => d.pr)).size, 6, '6 个 PR 最终都派发了');
+});
+
+test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再调 context 判门,沿用上轮结论;满 30 分钟兜底重判', async () => {
+  const w = makeWorld();
+  const t0 = w.now;
+  w.openPr(7, 'h7');
+  w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
+    prs: { 7: { head: 'h7', outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: true, roundCreatedAt: iso(t0 - 10 * MIN) } } });
+  w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: t0 - 5 * MIN } });
+  w.selection.set(7, { reasonCodes: ['fingerprint-changed', 'retry'], changedFields: ['updatedAt'] });
+  // launchd 每 3 分钟拉起一次:上一个进程退出后再起一个,直到 40 分钟。
+  let proc = w.start();
+  while (w.now - t0 < 40 * MIN && !w.contextCalls.some((c) => c.pr === 7)) {
+    await w.runUntil(() => proc.settled, { maxMs: 10 * MIN });
+    assert.equal(proc.failure, null, String(proc.failure?.stack));
+    w.now += 3 * MIN;
+    proc = w.start();
+  }
+  const skips = w.logged('gate-skipped').filter((e) => e.pr === 7 && e.outcome === 'threads-unresolved');
+  assert.ok(skips.length >= 2, `跳过了 ${skips.length} 次`);
+  assert.ok(skips.every((e) => Date.parse(e.at) - (t0 - 5 * MIN) < 30 * MIN), '跳过只发生在距上次真判门 30 分钟内');
+  const first = w.contextCalls.find((c) => c.pr === 7);
+  assert.ok(first, '40 分钟内要有一次真判门');
+  assert.ok(w.dispatchesOf(7).every((d) => d.at >= first.at), '跳过判门期间不派发');
+  assert.ok(first.at - (t0 - 5 * MIN) >= 30 * MIN, `满 30 分钟才兜底重判(实际 ${(first.at - (t0 - 5 * MIN)) / MIN} 分钟)`);
+});
+
+test('世界:SC2 反例——ci 也变了,或上轮是 bot-pending,照常判门', async () => {
+  for (const [selection, outcome] of [
+    [{ reasonCodes: ['fingerprint-changed'], changedFields: ['ci', 'updatedAt'] }, 'threads-unresolved'],
+    [{ reasonCodes: ['fingerprint-changed', 'retry'], changedFields: ['updatedAt'] }, 'bot-pending'],
+  ]) {
+    const w = makeWorld();
+    w.openPr(7, 'h7');
+    w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
+      prs: { 7: { head: 'h7', outcome, retry: true, roundCreatedAt: iso(w.now - 10 * MIN) } } });
+    w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: w.now - 5 * MIN } });
+    w.selection.set(7, selection);
+    w.start();
+    await w.runUntil(() => w.contextCalls.some((c) => c.pr === 7), { maxMs: 10 * MIN });
+    assert.ok(w.contextCalls.some((c) => c.pr === 7), JSON.stringify(selection) + outcome);
+    assert.equal(w.logged('gate-skipped').length, 0);
+  }
 });
