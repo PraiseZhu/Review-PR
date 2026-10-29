@@ -1697,3 +1697,27 @@ test('世界:派发后第一次查不到 run 不在主线程等待:不 sleep,交
   assert.equal(w.dispatchesOf(7).length, 1, '不重发');
   assert.ok(w.logged('collected').some((e) => e.pr === 7 && e.outcome === 'approval'));
 });
+
+test('世界:40 个在审同时结束:每个结束的 run 一生只单查一次(随后本来就要逐个下载结果包),排队中/执行中列表每次轮询仍是固定两组', async () => {
+  const w = makeWorld();
+  const tasks = [];
+  for (let i = 0; i < 40; i += 1) {
+    const pr = 200 + i;
+    w.openPr(pr, `h${pr}`);
+    const runId = w.seedRun(pr, `h${pr}`, 'R0', `done${pr}`, { createdMs: w.now - MIN, durationMs: 5 * MIN });
+    tasks.push({ pr, head: `h${pr}`, phase: 'running', attempts: 1, agentId: `gha:${runId}:done${pr}` });
+  }
+  w.seedRound('R0', tasks);
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.logged('collected').length, 40);
+  const singles = w.ghCalls.filter((args) => args.some((arg) => /actions\/runs\/\d+$/.test(arg)))
+    .map((args) => args.find((arg) => /actions\/runs\/\d+$/.test(arg)));
+  assert.equal(singles.length, 40, '40 个 run 各单查一次');
+  assert.equal(new Set(singles).size, 40, '没有哪个 run 被单查两次');
+  const lists = w.ghCalls.filter((args) => args.some((arg) => /review-pr\.yml\/runs\?status=/.test(arg)));
+  const downloads = w.ghCalls.filter((args) => args[0] === 'run' && args[1] === 'download');
+  assert.equal(downloads.length, 40, '结果包本来就逐个下载');
+  assert.equal(lists.length % 2, 0, '每次轮询读排队中、执行中两组列表');
+});
