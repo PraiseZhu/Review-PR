@@ -281,7 +281,7 @@ test('toProtectedHoldWake 与 toOutcomeWake(protected) 结果一致', () => {
 test('toGateSkip(#141):只有 updatedAt 变了、上轮是等讨论/等 CI 且没有 retry、30 分钟内真判过门,才沿用上轮结论', () => {
   const now = Date.parse('2026-10-29T12:00:00Z');
   const candidate = (reasonCodes, changedFields = []) => ({ number: 7, head: 'h7', selectionDiagnostics: { reasonCodes, changedFields } });
-  const previous = { head: 'h7', outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false };
+  const previous = { fingerprintFields: { head: 'h7' }, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false };
   const lastGate = { head: 'h7', atMs: now - 10 * 60_000 };
   assert.deepEqual(toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate, nowMs: now }),
     { outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false });
@@ -298,7 +298,8 @@ test('toGateSkip(#141):只有 updatedAt 变了、上轮是等讨论/等 CI 且�
     ['指纹变了但说不出哪项', { candidate: candidate(['fingerprint-changed', 'fingerprint-mismatch-unattributed']) }],
     ['上轮是 bot-pending(和时间有关)', { previous: { ...previous, outcome: 'bot-pending' } }],
     ['上轮是 protected', { previous: { ...previous, outcome: 'protected' } }],
-    ['round-state 的 head 不同', { previous: { ...previous, head: 'old' } }],
+    ['round-state 的 head 不同', { previous: { ...previous, fingerprintFields: { head: 'old' } } }],
+    ['round-state 行只有顶层 head(生产不写这个字段)', { previous: { ...previous, fingerprintFields: undefined, head: 'h7' } }],
     ['从没真判过门', { lastGate: undefined }],
     ['上次真判门是别的 head', { lastGate: { ...lastGate, head: 'old' } }],
     ['距上次真判门满 30 分钟', { lastGate: { ...lastGate, atMs: now - GATE_SKIP_MAX_MS } }],
@@ -306,5 +307,40 @@ test('toGateSkip(#141):只有 updatedAt 变了、上轮是等讨论/等 CI 且�
   ]) {
     assert.equal(toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate, nowMs: now, ...args }), null, label);
   }
+  // #155:上次真判门确认没有动作才带空 gate.actions(可提前释放);有动作、旧记录没写 actions 的不带
+  const skip = (actions) => toGateSkip({ candidate: candidate(['fingerprint-changed'], ['updatedAt']), previous, lastGate: { ...lastGate, actions }, nowMs: now });
+  assert.deepEqual(skip(0).gate, { actions: [] });
+  assert.equal('gate' in skip(1), false);
+  assert.equal('gate' in skip(null), false);
+  assert.equal('gate' in skip(undefined), false);
   assert.equal(isGateSkipCandidate(undefined), false, '候选名单里找不到这一项');
+});
+
+test('toGateSkip(#155):用生产 nextRoundState 写出的行,下一轮只有 updatedAt 变了时跳过', async () => {
+  const ROUND = await import('../../review-pr/scripts/review-round.mjs');
+  const now = Date.parse('2026-10-30T00:00:00Z');
+  const row = (updatedAt) => ({ number: 7, title: 't7', url: 'https://github.com/o/r/pull/7', createdAt: new Date(now - 3_600_000).toISOString(),
+    head: '7'.repeat(40), headRefName: 'pr-7', baseRefName: 'main', base: 'a'.repeat(40), updatedAt, isDraft: false, unresolved: 1,
+    ci: 'SUCCESS', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' });
+  const first = ROUND.createCandidateList({ repo: 'o/r', snapshot: [row(new Date(now).toISOString())], now, mode: 'review-only' });
+  const plan = ROUND.makeReviewPlan(first, [{ pr: 7, ok: true, meta: { state: 'OPEN', headRefOid: '7'.repeat(40) }, dependencies: [] }]);
+  const item = plan.groups[0].prs[0];
+  const result = { runId: plan.runId, mode: plan.mode, pr: 7, head: item.head, base: item.base, enteredReview: false, reviewed: false,
+    reviewClean: false, merged: false, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', errors: [], gate: { actions: [] } };
+  const state = ROUND.nextRoundState(plan, ROUND.collectRoundResults(plan, [result]), {}, now);
+  assert.equal(state.prs[7].head, undefined, '生产行没有顶层 head');
+  const second = ROUND.createCandidateList({ repo: 'o/r', snapshot: [row(new Date(now + 60_000).toISOString())], state, now: now + 60_000, mode: 'review-only' });
+  const [candidate] = second.candidates;
+  assert.deepEqual(candidate.selectionDiagnostics.reasonCodes, ['fingerprint-changed']);
+  assert.deepEqual(candidate.selectionDiagnostics.changedFields, ['updatedAt']);
+  assert.deepEqual(toGateSkip({ candidate, previous: state.prs[7], lastGate: { head: candidate.head, atMs: now }, nowMs: now + 60_000 }),
+    { outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false });
+});
+
+test('canReleaseDeferredGate(#155):跳过判门写出的等讨论结果(gate.actions 为空)可以提前释放', () => {
+  const task = { pr: 7, head: 'h7', base: 'b', phase: 'complete', agentId: 'mini-gate:7:x' };
+  const skipped = { runId: 'R1', mode: 'review-only', pr: 7, head: 'h7', base: 'b', enteredReview: false, reviewed: false,
+    outcome: 'threads-unresolved', reason: 'x', retry: false, errors: [], gateSkipped: true, gate: { actions: [] } };
+  assert.equal(canReleaseDeferredGate({ task, result: skipped, roundId: 'R1' }), true);
+  assert.equal(canReleaseDeferredGate({ task, result: { ...skipped, gate: undefined }, roundId: 'R1' }), false, '不带 gate 的旧写法不能释放');
 });
