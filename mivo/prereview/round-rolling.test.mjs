@@ -315,7 +315,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       w.incomplete().map((file) => ({ ...w.files.get(file), released: w.files.get(`${dirname(file)}/mivo-released.json`) ?? {} }))).prs;
     const taken = busy();
     // w.selection 里给了选中原因的 PR 每轮都当候选(模拟 pre-check 因 updatedAt 变化选中它)。
-    return [...w.prs].filter(([n, p]) => p.open && !taken.has(n) && (!rows[n] || rows[n].head !== p.head || rows[n].retry || w.selection.has(n)))
+    return [...w.prs].filter(([n, p]) => p.open && !taken.has(n) && (!rows[n] || rows[n].fingerprintFields?.head !== p.head || rows[n].retry || w.selection.has(n)))
       .map(([n, p]) => ({ number: n, head: p.head }));
   };
   w.seedRound = (name, tasks, { createdMs = w.now - MIN } = {}) => {
@@ -390,7 +390,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       if (w.files.get(`${dir}/mivo-released.json`)?.[p.pr]?.reason === 'gate-deferred') continue;
       // 与 review-round.mjs 的 round-owner 补丁同一规则:更新的轮次写过的行不写回。
       if (Date.parse(state.prs[p.pr]?.roundCreatedAt ?? '') > plan.createdMs) continue;
-      state.prs[p.pr] = { head: result.head, outcome: result.outcome, roundCreatedAt: plan.manifest.createdAt,
+      // 与生产 nextRoundState 同结构:head 只在 fingerprintFields 里,没有顶层 head(#155)。
+      state.prs[p.pr] = { fingerprintFields: { head: result.head }, outcome: result.outcome, roundCreatedAt: plan.manifest.createdAt,
         retry: result.retry === true || ['error', 'state-changed'].includes(result.outcome) };
     }
     w.files.set('/w/state/round-state.json', state);
@@ -1169,7 +1170,7 @@ test('世界:作者推新提交(A→B→C):取消旧审查,state-changed 不计�
   assert.equal(w.read(w.state('dispatch-ledger.json')).filter((e) => e.pr === 1).length, 3, '派发账本保留');
   assert.deepEqual([2, 3].map((pr) => w.dispatchesOf(pr).length), [1, 1], '同 head 的 PR 不被重选');
   assert.deepEqual(Object.keys(w.read(`${w.roundDir('R1')}/mivo-released.json`)), ['1'], '只有换了 head 的 PR 提前释放');
-  assert.equal(w.read('/w/state/round-state.json').prs[1].head, 'C', '旧轮晚收尾不把新 head 写回成旧的');
+  assert.equal(w.read('/w/state/round-state.json').prs[1].fingerprintFields.head, 'C', '旧轮晚收尾不把新 head 写回成旧的');
 });
 
 test('世界:取消意图写下后被杀,恢复时补发取消并收尾;旧 run 确认结束前仍占槽', async () => {
@@ -1798,7 +1799,7 @@ test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再�
   const t0 = w.now;
   w.openPr(7, 'h7');
   w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
-    prs: { 7: { head: 'h7', outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(t0 - 10 * MIN) } } });
+    prs: { 7: { fingerprintFields: { head: 'h7' }, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(t0 - 10 * MIN) } } });
   w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: t0 - 5 * MIN } });
   w.selection.set(7, { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] });
   // launchd 每 3 分钟拉起一次:上一个进程退出后再起一个,直到 40 分钟。
@@ -1827,7 +1828,7 @@ test('世界:SC2 反例——ci 也变了、上轮是 bot-pending、上轮动作
     const w = makeWorld();
     w.openPr(7, 'h7');
     w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
-      prs: { 7: { head: 'h7', outcome, retry, roundCreatedAt: iso(w.now - 10 * MIN) } } });
+      prs: { 7: { fingerprintFields: { head: 'h7' }, outcome, retry, roundCreatedAt: iso(w.now - 10 * MIN) } } });
     w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: w.now - 5 * MIN } });
     w.selection.set(7, selection);
     w.start();
@@ -1835,6 +1836,24 @@ test('世界:SC2 反例——ci 也变了、上轮是 bot-pending、上轮动作
     assert.ok(w.contextCalls.some((c) => c.pr === 7), JSON.stringify(selection) + outcome);
     assert.equal(w.logged('gate-skipped').length, 0);
   }
+});
+
+test('世界:跳过判门的等讨论结果和没有动作的真判门一样,同轮别的 PR 还在审时提前释放(#155)', async () => {
+  const w = makeWorld();
+  w.openPr(1071, 'long', { durationMs: 90 * MIN });
+  w.openPr(7, 'h7');
+  w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
+    prs: { 7: { fingerprintFields: { head: 'h7' }, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(w.now - 10 * MIN) } } });
+  w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: w.now - 5 * MIN } });
+  w.selection.set(7, { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] });
+  w.start();
+  assert.ok(await w.runUntil(() => w.logged('pr-released').some((e) => e.pr === 7), { maxMs: 10 * MIN }), '跳过后提前释放');
+  assert.equal(w.logged('gate-skipped').filter((e) => e.pr === 7).length, 1);
+  assert.equal(w.contextCalls.some((c) => c.pr === 7), false);
+  assert.equal(w.dispatchesOf(1071).length, 1, '另一个 PR 还在审');
+  const result = w.read(`${w.roundDir('R1')}/results/pr-7.json`);
+  assert.equal(result.gateSkipped, true);
+  assert.deepEqual(result.gate, { actions: [] });
 });
 
 test('世界:门禁动作脚本一次只跑一个(共享 reminded.json 等状态),context 判门照常并行', async () => {

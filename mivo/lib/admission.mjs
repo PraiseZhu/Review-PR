@@ -263,7 +263,8 @@ export function isGateSkipCandidate(candidate) {
 
 export function toGateSkip({ candidate, previous, lastGate, nowMs }) {
   if (!isGateSkipCandidate(candidate)) return null;
-  if (!candidate.head || previous?.head !== candidate.head || !GATE_SKIP_OUTCOMES.includes(previous.outcome)) return null;
+  // round-state 的行(review-round.mjs nextRoundState)没有顶层 head,head 在 fingerprintFields 里(#155)。
+  if (!candidate.head || previous?.fingerprintFields?.head !== candidate.head || !GATE_SKIP_OUTCOMES.includes(previous.outcome)) return null;
   if (previous.retry === true) return null;
   const age = nowMs - Number(lastGate?.atMs);
   if (lastGate?.head !== candidate.head || !(age >= 0 && age < GATE_SKIP_MAX_MS)) return null;

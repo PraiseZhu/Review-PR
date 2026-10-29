@@ -846,7 +846,8 @@ async function runQueue(ctx) {
       bumpStore(task, { ownerRoundId: round.runId });
       const skipped = gateSkipFor(ctx, task);
       if (skipped) {
-        writeTaskResult(ctx, task, { ...skipped, reason: `${skipped.reason}(head、CI、讨论状态都没变,沿用上次判门结论)`, gateSkipped: true });
+        // gate.actions 为空:和没有动作的真判门一样,可以提前从轮次释放(canReleaseDeferredGate,#155)。
+        writeTaskResult(ctx, task, { ...skipped, reason: `${skipped.reason}(head、CI、讨论状态都没变,沿用上次判门结论)`, gateSkipped: true, gate: { actions: [] } });
         log('gate-skipped', { pr: task.pr, head: task.head, outcome: skipped.outcome });
         completeGate(ctx, task);
         continue;
