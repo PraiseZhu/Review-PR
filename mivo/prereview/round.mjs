@@ -166,9 +166,12 @@ const scriptAsync = (name, args, options = {}) => runScriptAsync(name, args, { c
 // 例如 notify-author-resolve.mjs 的 reminded.json 去重表,并发会互相覆盖。判门里最慢的 context.mjs 照常并行。
 // 排在后面的动作开跑前再查一次锁(单审 P1):排队期间可能已经丢锁,而 approve-workflows、close-product-issue 这类脚本自己不核对锁。
 let GATE_ACTION_CHAIN = Promise.resolve();
-const gateActionScript = (name, args, options = {}) => {
+// precheck:开跑前的额外核对,返回一个结果就不跑脚本、直接用它(例如 head 已变不批准 workflow)。
+const gateActionScript = (name, args, options = {}, precheck = null) => {
   const next = GATE_ACTION_CHAIN.then(() => {
     assertNotFenced();
+    const blocked = precheck?.();
+    if (blocked) return blocked;
     return scriptAsync(name, args, options);
   });
   GATE_ACTION_CHAIN = next.catch(() => {});
@@ -1158,7 +1161,13 @@ async function executeGateAction({ action, live, task, bindings, result, roundDi
       break;
     }
     case 'approve-workflows':
-      record('approveWorkflows', await gateActionScript('approve-workflows.mjs', [pr]));
+      // approve-workflows.mjs 批准的是 PR 当前 head 的 workflow,自己不核对 head:排队期间作者推了新提交,
+      // 就不能替没判过门的新 head 批准(单审 P1)。读不到当前 head 也不批准。
+      record('approveWorkflows', await gateActionScript('approve-workflows.mjs', [pr], {}, () => {
+        const head = readLiveHead(task.pr);
+        if (head === task.head) return null;
+        return { ok: false, error: head ? `判门后 head 已变为 ${head.slice(0, 12)},不批准 workflow` : '读不到当前 head,不批准 workflow' };
+      }));
       result.retry = true;
       break;
     case 'retry-ci': {
@@ -1266,7 +1275,21 @@ function protectedCheckDone(task) {
 // ── 派发服务器审查 ──────────────────────────────────────────────────────────
 // 派发分四个落盘状态,写在轮次目录的 dispatch-intent-<pr>.json:prepared(生成了 dispatch_id、还没外发)→
 // dispatching(调 gh workflow run 之前)→ sent(gh 返回成功)→ bound(找到 runId)。恢复时只有 prepared 能证明没外发。
+// PR 当前 head(一次 REST 读)。判门是异步的,context 返回后到派发、批准 workflow 之间作者可能推了新提交。读不到返回 null。
+function readLiveHead(pr) {
+  const r = ghRead(['api', `repos/${CONFIG.targetRepo}/pulls/${pr}`, '--jq', '.head.sha'], { allowFail: true, timeoutMs: 30_000 });
+  const head = r.ok ? r.stdout.trim() : '';
+  return head && !/\s/.test(head) ? head : null;
+}
+
 function dispatchReview(ctx, task, { tier, action }, gateResult) {
+  // 判门期间作者推了新提交:不派旧 head 的审查,按状态变化收尾,下一轮按新 head 重判(单审 P1)。读不到 head 照常派,
+  // 服务器发布前还会核对 head。
+  const liveHead = readLiveHead(task.pr);
+  if (liveHead && liveHead !== task.head) {
+    log('dispatch-head-moved', { pr: task.pr, head: task.head, liveHead });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'state-changed', reason: `判门期间 PR 推了新提交(${liveHead.slice(0, 12)}),这次不派发,下一轮重判` });
+  }
   if (!inBusinessWindow()) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true });
   }

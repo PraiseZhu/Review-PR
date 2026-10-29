@@ -158,6 +158,9 @@ function makeFixture(scenario) {
       const runs = [...remoteRuns].map(([id, row]) => ({ id: Number(id), display_title: row.displayTitle, status: 'in_progress' }));
       return output(JSON.stringify([{ total_count: runs.length, workflow_runs: runs }]));
     }
+    // 派发前现读 PR 当前 head(#141):这个夹具里 head 不会变
+    const pullPath = args.find((arg) => /^repos\/fixture\/target\/pulls\/\d+$/.test(arg));
+    if (command === 'gh' && args[0] === 'api' && pullPath) return output(`head-${pullPath.split('/').pop()}\n`);
     if (command === 'gh' && args[0] === 'api') return output('[]');
     if (command === 'gh' && args[0] === 'workflow' && args[1] === 'run') {
       const inputs = Object.fromEntries(args.filter((_, index) => args[index - 1] === '-f').map((arg) => arg.split('=')));
@@ -449,6 +452,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         w.lock = null;
         return { ok: true, released: true };
       case 'close-product-issue.mjs': return { ok: true, closedCount: 0 };
+      case 'approve-workflows.mjs': (w.approvals ??= []).push({ at: w.now, pr: Number(args[0]), head: w.prs.get(Number(args[0])).head }); return { ok: true, approved: 1 };
       case 'bypass-reason.mjs':
         w.scriptOrder.push('bypass-reason');
         w.bypassCalls.push([...args]);
@@ -503,6 +507,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       return ok({ total_count: runs.length, check_runs: runs });
     }
     if (args[0] === 'api' && path.includes('/check-runs')) return ok({ check_runs: [] });
+    // 派发、批准 workflow 前现读 PR 当前 head(#141 单审 P1)
+    if (args[0] === 'api' && /^repos\/o\/target\/pulls\/\d+$/.test(path)) {
+      const pr = w.prs.get(Number(path.split('/').pop()));
+      return pr ? ok(`${pr.head}\n`) : fail('gh: Not Found (HTTP 404)');
+    }
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
       return ok([[...w.prs].filter(([, p]) => p.open).map(([number, p]) => ({ number, head: { sha: p.head } }))]);
     }
@@ -1851,5 +1860,38 @@ test('世界:排队中的门禁动作在丢锁后不再开跑(单审 P1)', async
   assert.equal(w.logged('lock-lost').length, 1);
   assert.ok(w.noticeCalls.length <= 1, `丢锁后又跑了 ${w.noticeCalls.length - 1} 个排队中的动作`);
   assert.equal(w.dispatches.length, 0);
+});
+
+test('世界:判门期间作者推了新提交:不派旧 head 的审查,也不替新 head 批准 workflow(单审 P1)', async () => {
+  const w = makeWorld({ gateParallel: 8 });
+  w.contextDelayMs = 60_000;
+  w.openPr(80, 'a80');
+  w.openPr(81, 'a81');
+  // context 读到的是推送前的 head(快照),返回后才发现 PR 已经是新 head
+  w.contextPatch.set(80, { meta: { headRefOid: 'a80' } });
+  w.contextPatch.set(81, { meta: { headRefOid: 'a81' }, auto: { action: 'approve-workflows' } });
+  const t0 = w.now;
+  w.schedule(t0 + 40_000, () => { w.push(80, 'b80'); w.push(81, 'b81'); });
+  const proc = w.start();
+  await w.runUntil(() => w.logged('dispatch-head-moved').some((e) => e.pr === 80)
+    && w.files.has(`${w.roundDir('R1')}/results/pr-81.json`), { maxMs: 10 * MIN });
+  assert.equal(w.dispatches.filter((d) => d.pr === 80).length, 0, '不派旧 head');
+  assert.ok(w.logged('dispatch-head-moved').some((e) => e.pr === 80 && e.liveHead === 'b80'));
+  assert.equal(w.read(`${w.roundDir('R1')}/results/pr-80.json`).outcome, 'state-changed');
+  assert.equal((w.approvals ?? []).length, 0, '不替新 head 批准 workflow');
+  const r81 = w.read(`${w.roundDir('R1')}/results/pr-81.json`);
+  assert.equal(r81.retry, true);
+  assert.ok(r81.errors.some((e) => e.includes('head 已变为 b81')), JSON.stringify(r81.errors));
+  proc.stop();
+});
+
+test('世界:判门后 head 没变:照常批准 workflow', async () => {
+  const w = makeWorld({ gateParallel: 8 });
+  w.openPr(81, 'a81');
+  w.contextPatch.set(81, { auto: { action: 'approve-workflows' } });
+  const proc = w.start();
+  await w.runUntil(() => (w.approvals ?? []).length > 0, { maxMs: 10 * MIN });
+  assert.deepEqual(w.approvals.map((a) => [a.pr, a.head]), [[81, 'a81']]);
+  proc.stop();
 });
 
