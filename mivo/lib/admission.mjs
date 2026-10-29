@@ -198,17 +198,19 @@ export function toCiWake({ watched = [], observed = {}, seen = {}, busyPrs = new
 }
 
 /**
- * 还没结束的服务器 run 怎么办:排队和执行分开计时。run 是 `gh run view --json status,createdAt,jobs` 的结果。
- * 只有已经开始执行的 job 才用它的 startedAt;排队中的 job 按 run 的 createdAt 算排队时间。
+ * 还没结束的服务器 run 怎么办:排队和执行分开计时。run 是 REST 的 workflow run(runs 列表里的一项或 `actions/runs/<id>`),
+ * 只用 run 级字段,不再逐个查 jobs。review-pr.yml 只有一个 job:run 变成 in_progress 就是 job 开始执行,
+ * 这时 updated_at 停在开始执行的时刻(2026-10-29 实测与 job started_at 相差 1 秒内),执行时间从它算;
+ * run_started_at 对第一次尝试等于 created_at,不能用。排队中的 run 按 created_at 算排队时间。
  * 返回 {phase, execMin?, queueMin?, cancel: 'exec'|'queue'|null, slow}。
  */
 export function toRunTiming({ nowMs, run }) {
-  const started = (run?.jobs ?? []).find((job) => ['in_progress', 'completed'].includes(job?.status) && Date.parse(job?.startedAt) > 0);
-  if (started) {
-    const execMin = (nowMs - Date.parse(started.startedAt)) / 60_000;
+  const startedMs = run?.status === 'in_progress' ? Date.parse(run?.updated_at) : NaN;
+  if (startedMs > 0) {
+    const execMin = (nowMs - startedMs) / 60_000;
     return { phase: 'running', execMin, cancel: execMin > MAX_EXEC_MINUTES ? 'exec' : null, slow: false };
   }
-  const queueMin = (nowMs - Date.parse(run?.createdAt)) / 60_000;
+  const queueMin = (nowMs - Date.parse(run?.created_at)) / 60_000;
   if (!Number.isFinite(queueMin)) return { phase: 'unknown', cancel: null, slow: false };
   return { phase: 'queued', queueMin, cancel: queueMin > MAX_QUEUE_MINUTES ? 'queue' : null, slow: queueMin > QUEUE_SLOW_MINUTES };
 }

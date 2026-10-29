@@ -33,6 +33,8 @@ const HEALTH_PAUSE_MS = 30 * 60_000;
 // 派发后从意图时间起 60 分钟还找不到 run:记 dispatch-unresolved,并停写心跳,让 Mini 之外的看门狗发 Slack 等人核对;
 // 占槽和未决记录都保留,不重派。停止接单之后在审的只剩这种派发时,这一轮按停机握手停下,下次启动接着找。
 const DISPATCH_UNRESOLVED_MS = 60 * 60_000;
+// 派发后 5 分钟内还没找到 run 的,每次轮询都查一次(所有未绑定的派发共用一组分页调用),之后回到 3 分钟一次。
+const FRESH_DISPATCH_MS = 5 * 60_000;
 const HEARTBEAT_EVERY_MS = 15 * 60_000;
 const HEARTBEAT_VARIABLE = 'MIVO_PREREVIEW_HEARTBEAT';
 // 主 key / 备用 key(维护者 2026-10-18,服务器规则见 server/keys.mjs):主 key 审到一半才报 key 错误时,之后 60 分钟新派的审查直接用备用 key;
@@ -834,10 +836,13 @@ async function runQueue(ctx) {
         completeTask(queue, task.pr, agentId);
       }
     }
+    // 进度和未绑定派发各查一次(各是一组分页调用),请求数与在审数无关;每个在审 run 不再单独 `gh run view`。
+    const lookup = dispatchLookup(inflight);
+    const active = [...inflight.values()].some((entry) => entry.runId) ? listActiveRuns() : null;
     for (const [pr, entry] of inflight) {
       if (ABORTED) break;
       if (!entry.runId) {
-        const settled = settleDispatch(ctx, entry);
+        const settled = settleDispatch(ctx, entry, lookup);
         if (settled === 'not-submitted') {
           completeUnstarted(queue, pr);
           inflight.delete(pr);
@@ -846,7 +851,7 @@ async function runQueue(ctx) {
         if (settled !== 'bound') continue;
       }
       cancelIfSuperseded(ctx, entry);
-      const done = collectServerRun(ctx, entry);
+      const done = collectServerRun(ctx, entry, active);
       if (!done) continue;
       completeTask(queue, pr, entry.agentId);
       inflight.delete(pr);
@@ -1245,11 +1250,13 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   }
   if (fired.ok) saveIntent(ctx, { ...intent, state: 'sent', sentAt: nowIso() });
   recordDispatch({ at: nowIso(), pr: task.pr, head: task.head, dispatchId, action, ...(fired.ok ? {} : { uncertain: true }) });
-  // 超时、断线、5xx 都按「不知道有没有派出」:不重发,先占槽,按 dispatch_id 找回。gh 返回成功也可能一时找不到 run。
-  const found = fired.ok ? lookupDispatchedRun(task.pr, dispatchId, intent.intentAt, { tries: 12 }) : { runId: null };
+  // 超时、断线、5xx 都按「不知道有没有派出」:不重发,先占槽,按 dispatch_id 找回。gh 返回成功也可能一时找不到 run:
+  // 只查一次、不等待,没找到的交给 settleDispatch(刚派出的每次轮询都查),主线程不在这里空等。
+  const found = fired.ok ? lookupDispatchedRun(task.pr, dispatchId, intent.intentAt) : { runId: null };
   log('dispatched', { pr: task.pr, head: task.head, tier, action, runId: found.runId, dispatchId, prevRunId, attempt,
     ...(fired.ok ? {} : { uncertain: stderr || String(fired.error ?? '').slice(0, 200) }) });
-  const entry = { dispatched: true, dispatchId, intentAt: intent.intentAt, attempt, dispatchedAt: nowIso(), gateResult, runId: null, agentId: null };
+  const entry = { dispatched: true, dispatchId, intentAt: intent.intentAt, attempt, dispatchedAt: nowIso(), gateResult, runId: null, agentId: null,
+    ...(fired.ok ? { lookedUpAt: Date.now() } : {}) };
   if (!found.runId) {
     log('dispatch-unknown', { pr: task.pr, head: task.head, dispatchId, sent: fired.ok });
     return entry;
@@ -1275,36 +1282,44 @@ function markBound(ctx, task, entry, runId) {
 }
 
 // 按 dispatch_id 在意图时间前后分页找自己派的 run(不只看最近 30 条)。查询失败、列表不完整都算「未知」。
-function lookupDispatchedRun(pr, dispatchId, intentAt, { tries = 1 } = {}) {
-  const since = new Date(Date.parse(intentAt) - 5 * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-  for (let i = 0; i < tries; i += 1) {
-    if (i > 0) run('sleep', ['5']);
-    const r = run('gh', ['api', '--paginate', '--slurp',
-      `repos/${CONFIG.workflowRepo}/actions/workflows/review-pr.yml/runs?event=workflow_dispatch&created=>=${since}&per_page=100`],
-    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 120_000 });
-    if (!r.ok) continue;
-    let pages;
-    try { pages = JSON.parse(r.stdout); } catch { continue; }
-    const hit = findDispatchRun(pages, { pr, dispatchId });
-    if (hit.runId) return hit;
-  }
-  return { runId: null };
+function lookupDispatchedRun(pr, dispatchId, intentAt) {
+  const pages = fetchDispatchPages(Date.parse(intentAt));
+  return pages ? findDispatchRun(pages, { pr, dispatchId }) : { runId: null };
+}
+
+// 意图时间前 5 分钟起派出的 review-pr run,一组分页调用;失败或读不懂返回 null。
+function fetchDispatchPages(intentMs) {
+  const since = new Date(intentMs - 5 * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const r = run('gh', ['api', '--paginate', '--slurp',
+    `repos/${CONFIG.workflowRepo}/actions/workflows/review-pr.yml/runs?event=workflow_dispatch&created=>=${since}&per_page=100`],
+  { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 120_000 });
+  if (!r.ok) return null;
+  try { return JSON.parse(r.stdout); } catch { return null; }
+}
+
+// 这次轮询要找 run 的未绑定派发:刚派出 5 分钟内每次轮询都查,之后 3 分钟一次。到期的共用一组分页调用,从其中最早的意图时间查起。
+function dispatchLookup(inflight) {
+  const now = Date.now();
+  const due = [...inflight.values()].filter((entry) => !entry.runId && (!entry.lookedUpAt
+    || now - entry.lookedUpAt >= (now - Date.parse(entry.intentAt) < FRESH_DISPATCH_MS ? CONFIG.pollSeconds * 1000 : ADMIT_INTERVAL_MS)));
+  if (!due.length) return { due: new Set(), pages: null };
+  return { due: new Set(due.map((entry) => entry.dispatchId)), pages: fetchDispatchPages(Math.min(...due.map((entry) => Date.parse(entry.intentAt)))) };
 }
 
 // 还不知道有没有派出的派发(runId 为 null):不自动重发。先看人工解除记录,再按 dispatch_id 找 run;
 // 都没有就继续占槽,从意图时间起满 60 分钟记 dispatch-unresolved,并登记停写心跳,由看门狗报到 Slack。
 // 作者推了新提交不算解除的证据:这个 PR 还在本轮,新 head 要等解除后才派。
-function settleDispatch(ctx, entry) {
+function settleDispatch(ctx, entry, lookup) {
   const { task } = entry;
   const resolution = readJson(resolutionFile(entry.dispatchId), null);
   if (resolution) {
     const outcome = applyResolution(ctx, entry, resolution);
     if (outcome) return outcome;
   }
-  // 按 dispatch_id 找 run 最多 3 分钟一次(每次是一组分页调用);人工解除记录每次轮询都看。
-  if (!entry.lookedUpAt || Date.now() - entry.lookedUpAt >= ADMIT_INTERVAL_MS) {
+  // 按 dispatch_id 找 run 按 dispatchLookup 的节奏(查到期的才查,结果共用);人工解除记录每次轮询都看。
+  if (lookup?.due.has(entry.dispatchId)) {
     entry.lookedUpAt = Date.now();
-    const found = lookupDispatchedRun(task.pr, entry.dispatchId, entry.intentAt);
+    const found = lookup.pages ? findDispatchRun(lookup.pages, { pr: task.pr, dispatchId: entry.dispatchId }) : { runId: null };
     if (found.runId) {
       markBound(ctx, task, entry, found.runId);
       bind(ctx.queue, task.pr, entry.agentId);
@@ -1433,13 +1448,34 @@ function releaseDeferredGates(ctx) {
   }
 }
 
+// 排队中、执行中的 review-pr run(两组分页调用),按 run id 索引;任一失败返回 null,这次轮询不收结果。
+// 先列排队中再列执行中:两次调用之间开始执行的 run 会出现在第二个列表里;两次之间结束的不在列表里,由 readServerRun 单查。
+function listActiveRuns() {
+  const runs = new Map();
+  for (const status of ['queued', 'in_progress']) {
+    const r = run('gh', ['api', '--paginate', '--slurp', `repos/${CONFIG.workflowRepo}/actions/workflows/review-pr.yml/runs?status=${status}&per_page=100`],
+      { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+    if (!r.ok) return null;
+    try { for (const item of JSON.parse(r.stdout).flatMap((page) => page?.workflow_runs ?? [])) runs.set(String(item.id), item); } catch { return null; }
+  }
+  return runs;
+}
+
+// 一个在审 run 的当前状态:在 listActiveRuns 的列表里就直接用;不在列表里(多半刚结束)才单查一次;列表没取到返回 null。
+function readServerRun(runId, active) {
+  if (!active) return null;
+  if (active.has(String(runId))) return active.get(String(runId));
+  const r = run('gh', ['api', `repos/${CONFIG.workflowRepo}/actions/runs/${runId}`], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
+  if (!r.ok) return null;
+  try { return JSON.parse(r.stdout); } catch { return null; }
+}
+
 // 服务器 run 结束后取回结果包,写进本轮目录;没结束返回 false。排队和执行分开计时(lib/admission.mjs 的 toRunTiming)。
-function collectServerRun(ctx, entry) {
+// active 是这次轮询 listActiveRuns 的结果,所有在审 run 共用。
+function collectServerRun(ctx, entry, active) {
   const { task } = entry;
-  const view = run('gh', ['run', 'view', entry.runId, '-R', CONFIG.workflowRepo, '--json', 'status,conclusion,createdAt,jobs'],
-    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
-  if (!view.ok) return false;
-  const info = JSON.parse(view.stdout);
+  const info = readServerRun(entry.runId, active);
+  if (!info) return false;
   if (info.status !== 'completed') {
     const timing = toRunTiming({ nowMs: Date.now(), run: info });
     if (timing.slow) logOnce(`queue-slow:${entry.runId}`, 'queue-slow', { pr: task.pr, runId: entry.runId, queueMin: Math.round(timing.queueMin) });
