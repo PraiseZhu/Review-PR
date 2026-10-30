@@ -236,15 +236,23 @@ function setRepoVariable(name, body, event) {
 }
 
 // 服务器结果收回后调用:审到一半主 key 报 key 错误 → 写冷却期;key 状态变了 → 写状态变量(本机记一份,没变不重写)。
-function noteKeyState(server, { pr, runId, intentAt = null }) {
+// 维护者换主 key 之前就派出的审查(#143):它的成败说的是旧 key,不写额度暂停、不写冷却期、也不改 key 状态。
+// 只在结果里有 key 问题(或额度类)时才读一次 Secret 的更新时间;读不到就当不是旧结果,照常处理。
+function isStaleKeyResult(server, { pr, runId, intentAt = null }) {
+  const credential = server.mivo?.codex?.credential;
+  const attempts = server.mivo?.codex?.attempts ?? [];
+  const keyTrouble = server.mivo?.quota || credential?.primaryFailedMidRun || credential?.switched || credential?.down || attempts.some((a) => a?.keyFailure);
+  if (!keyTrouble || !Number.isFinite(Date.parse(intentAt ?? ''))) return false;
+  const rotatedAt = primaryRotatedAt();
+  if (!(Date.parse(intentAt) < rotatedAt)) return false;
+  log('key-state-stale', { pr, runId, intentAt, rotatedAt: new Date(rotatedAt).toISOString() });
+  return true;
+}
+
+function noteKeyState(server, { pr, runId }) {
   const credential = server.mivo?.codex?.credential;
   if (!credential || !isKeyWriter()) return;
   const attempts = server.mivo?.codex?.attempts ?? [];
-  // 维护者换主 key 之前就派出的审查(#143):它的成败说的是旧 key,不写冷却期也不改 key 状态。只在结果里有 key 问题时
-  // 才读一次 Secret 的更新时间;读不到就照常处理。
-  const keyTrouble = credential.primaryFailedMidRun || credential.switched || credential.down || attempts.some((a) => a?.keyFailure);
-  const rotatedAt = keyTrouble ? primaryRotatedAt() : NaN;
-  if (Date.parse(intentAt ?? '') < rotatedAt) { log('key-state-stale', { pr, runId, intentAt, rotatedAt: new Date(rotatedAt).toISOString() }); return; }
   // 冷却期已经生效时不再顺延(#143):40 路并发时每个中途失败的结果都顺延 60 分钟,主 key 好了也一直用不回来。
   const cooling = Date.parse(readJson(stateFile('key-prefer-backup.json'), null)?.until ?? '') > Date.now();
   if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling) {
@@ -1689,11 +1697,12 @@ function collectServerRun(ctx, entry, active) {
   result.warnings = [...(entry.gateResult?.warnings ?? []), ...(server.warnings ?? [])];
   result.mivo = { ...server.mivo, filePatchHashes: undefined, filePatchHashesV2: undefined, findings: (server.mivo?.findings ?? []).length, deferred: (server.mivo?.deferred ?? []).length };
   writeTaskResult(ctx, task, result, { raw: true });
-  if (server.mivo?.quota) {
+  const staleKey = isStaleKeyResult(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt ?? entry.dispatchedAt ?? null });
+  if (server.mivo?.quota && !staleKey) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
-  noteKeyState(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt ?? entry.dispatchedAt ?? null });
+  if (!staleKey) noteKeyState(server, { pr: task.pr, runId: entry.runId });
   const health = server.mivo?.health;
   let completedRun = false;
   if (health && health.ok === false) {

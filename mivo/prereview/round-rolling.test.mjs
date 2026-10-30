@@ -1934,6 +1934,35 @@ test('世界:SC3 Mini 重启后接着收的审查,派出时间早于换主 key �
   assert.equal(w.logged('key-state-stale').length, 1);
 });
 
+test('世界:换主 key 之前派出的审查,收回额度类结果也不写派发暂停(#143 复审 P2)', async () => {
+  const w = makeWorld({ maxParallel: 1, instance: 'mivo', mode: 'live' });
+  w.openPr(1, 'h1', { durationMs: 20 * MIN });
+  w.openPr(2, 'h2', { durationMs: 5 * MIN });
+  w.serverMivo.set(1, { quota: true, codex: { credential: { backupConfigured: true, active: 'backup', startedOn: 'primary',
+    switched: { kind: 'budget', status: 429, midRun: false }, primaryOk: false, down: { kind: 'budget', status: 429, credential: 'backup', phase: 'review' }, warnings: [] },
+    attempts: [{ credential: 'backup', ok: false, keyFailure: { kind: 'budget', status: 429 } }] } });
+  let proc = w.start();
+  assert.ok(await w.runUntil(() => w.dispatchesOf(1).length === 1, { maxMs: 10 * MIN }));
+  w.secretUpdatedAt = iso(w.now + MIN);
+  const t0 = w.now;
+  while (w.now - t0 < 60 * MIN && !w.dispatchesOf(2).length) {
+    if (proc.settled) { assert.equal(proc.failure, null, String(proc.failure?.stack)); w.now += 3 * MIN; proc = w.start(); continue; }
+    if (!(await w.step())) break;
+  }
+  assert.equal(w.logged('key-state-stale').length, 1);
+  assert.equal(w.logged('quota-pause').length, 0);
+  assert.equal(w.files.has(w.state('pause.json')), false);
+  assert.equal(w.dispatchesOf(2).length, 1, '后面的 PR 照常派发');
+  // 同样的结果不是旧 key 的(Secret 早就更新过):照旧暂停
+  const fresh = makeWorld({ maxParallel: 1, instance: 'mivo', mode: 'live' });
+  fresh.openPr(1, 'h1', { durationMs: 5 * MIN });
+  fresh.serverMivo.set(1, w.serverMivo.get(1));
+  const p2 = fresh.start();
+  assert.ok(await fresh.runUntil(() => fresh.logged('quota-pause').length === 1, { maxMs: 30 * MIN }));
+  assert.equal(fresh.logged('key-state-stale').length, 0);
+  assert.ok(p2);
+});
+
 test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再调 context 判门,沿用上轮结论;满 30 分钟兜底重判', async () => {
   const w = makeWorld();
   const t0 = w.now;
