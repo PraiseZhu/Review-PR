@@ -8,7 +8,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const given = (value) => value !== undefined && value !== null && value !== '';
+// 命令行没给是空串(install-mini.sh 的默认值);null 算给了,按非法值报错。
+const given = (value) => value !== undefined && value !== '';
 const toCount = (name, value, max, rule) => {
   const n = typeof value === 'string' ? Number(value) : value;
   if (!Number.isInteger(n) || n < 1 || n > max) throw new Error(`${name} 须是${rule}:${JSON.stringify(value)}`);
@@ -23,9 +24,9 @@ export function toInstallConfig(existing, args) {
     workflowRepo: 'xindong/mivo-canvas-plugin', workflowRef: args.ref, logDir: args.logDir,
     rulesFile: given(args.rules) ? args.rules : base.rulesFile ?? null,
     maxParallel: given(args.maxParallel) ? toCount('--max-parallel', args.maxParallel, 40, '1–40 的整数')
-      : toCount('已有配置的 maxParallel', base.maxParallel ?? 3, 40, '1–40 的整数'),
+      : toCount('已有配置的 maxParallel', Object.hasOwn(base, 'maxParallel') ? base.maxParallel : 3, 40, '1–40 的整数'),
     dailyCap: given(args.dailyCap) ? toCount('--daily-cap', args.dailyCap, Number.MAX_SAFE_INTEGER, '正整数')
-      : toCount('已有配置的 dailyCap', base.dailyCap ?? 30, Number.MAX_SAFE_INTEGER, '正整数'),
+      : toCount('已有配置的 dailyCap', Object.hasOwn(base, 'dailyCap') ? base.dailyCap : 30, Number.MAX_SAFE_INTEGER, '正整数'),
     pollSeconds: base.pollSeconds ?? 30 };
 }
 

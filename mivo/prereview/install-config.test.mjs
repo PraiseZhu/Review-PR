@@ -59,4 +59,9 @@ test('新装没有配置文件:maxParallel / dailyCap 用默认 3 / 30;非法值
   assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', dailyCap: '9007199254740993' }), /--daily-cap/);
   assert.throws(() => toInstallConfig({ ...live, maxParallel: 41 }, { ...args, instance: 'mivo' }), /已有配置的 maxParallel/);
   assert.throws(() => toInstallConfig({ ...live, dailyCap: 0 }, { ...args, instance: 'mivo' }), /已有配置的 dailyCap/);
+  // null 不当「没给」:已有配置里的 null、显式传 null 都报错,不悄悄改成默认值(复审 P2)
+  assert.throws(() => toInstallConfig({ ...live, maxParallel: null }, { ...args, instance: 'mivo' }), /已有配置的 maxParallel/);
+  assert.throws(() => toInstallConfig({ ...live, dailyCap: null }, { ...args, instance: 'mivo' }), /已有配置的 dailyCap/);
+  assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', maxParallel: null }), /--max-parallel/);
+  assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', dailyCap: null }), /--daily-cap/);
 });
