@@ -236,11 +236,26 @@ function setRepoVariable(name, body, event) {
 }
 
 // 服务器结果收回后调用:审到一半主 key 报 key 错误 → 写冷却期;key 状态变了 → 写状态变量(本机记一份,没变不重写)。
+// 维护者换主 key 之前就派出的审查(#143):它的成败说的是旧 key,不写额度暂停、不写冷却期、也不改 key 状态。
+// 只在结果里有 key 问题(或额度类)时才读一次 Secret 的更新时间;读不到就当不是旧结果,照常处理。
+function isStaleKeyResult(server, { pr, runId, intentAt = null }) {
+  const credential = server.mivo?.codex?.credential;
+  const attempts = server.mivo?.codex?.attempts ?? [];
+  const keyTrouble = server.mivo?.quota || credential?.primaryFailedMidRun || credential?.switched || credential?.down || attempts.some((a) => a?.keyFailure);
+  if (!keyTrouble || !Number.isFinite(Date.parse(intentAt ?? ''))) return false;
+  const rotatedAt = primaryRotatedAt();
+  if (!(Date.parse(intentAt) < rotatedAt)) return false;
+  log('key-state-stale', { pr, runId, intentAt, rotatedAt: new Date(rotatedAt).toISOString() });
+  return true;
+}
+
 function noteKeyState(server, { pr, runId }) {
   const credential = server.mivo?.codex?.credential;
   if (!credential || !isKeyWriter()) return;
   const attempts = server.mivo?.codex?.attempts ?? [];
-  if (credential.primaryFailedMidRun && credential.backupConfigured) {
+  // 冷却期已经生效时不再顺延(#143):40 路并发时每个中途失败的结果都顺延 60 分钟,主 key 好了也一直用不回来。
+  const cooling = Date.parse(readJson(stateFile('key-prefer-backup.json'), null)?.until ?? '') > Date.now();
+  if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling) {
     const until = new Date(Date.now() + PREFER_BACKUP_MS).toISOString();
     if (setRepoVariable(PREFER_BACKUP_VARIABLE, until, 'key-prefer-backup')) {
       writeJson(stateFile('key-prefer-backup.json'), { until, setAt: nowIso(), pr, runId });
@@ -262,15 +277,19 @@ function resetPreferBackupIfRotated() {
   const local = readJson(stateFile('key-prefer-backup.json'), null);
   if (!local) return;
   if (!(Date.parse(local.until) > Date.now())) { rmQuiet(stateFile('key-prefer-backup.json')); return; }
-  const r = run('gh', ['api', `repos/${CONFIG.workflowRepo}/actions/secrets/${PRIMARY_SECRET}`, '--jq', '.updated_at'],
-    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
-  const rotatedAt = Date.parse(String(r.stdout ?? '').trim());
-  if (!r.ok || !Number.isFinite(rotatedAt) || rotatedAt <= Date.parse(local.setAt)) return;
+  const rotatedAt = primaryRotatedAt();
+  if (!Number.isFinite(rotatedAt) || rotatedAt <= Date.parse(local.setAt)) return;
   const del = run('gh', ['variable', 'delete', PREFER_BACKUP_VARIABLE, '-R', CONFIG.workflowRepo],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
   if (!del.ok) { log('key-prefer-backup-reset-error', { error: String(del.stderr || del.error || '').trim().slice(0, 200) }); return; }
   rmQuiet(stateFile('key-prefer-backup.json'));
   log('key-prefer-backup-reset', { rotatedAt: new Date(rotatedAt).toISOString() });
+}
+// 主 key Secret 最近一次更新的时间(毫秒);读不到(权限不够、网络)返回 NaN。
+function primaryRotatedAt() {
+  const r = run('gh', ['api', `repos/${CONFIG.workflowRepo}/actions/secrets/${PRIMARY_SECRET}`, '--jq', '.updated_at'],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  return r.ok ? Date.parse(String(r.stdout ?? '').trim()) : NaN;
 }
 function rmQuiet(file) { try { unlinkSync(file); } catch { /* 已经没有了 */ } }
 
@@ -876,7 +895,8 @@ async function runQueue(ctx) {
     if (ctx.gateError) throw ctx.gateError;
     // 全进程在审数满了就不领取;部署暂停后也不领取。判门异步、最多 gateParallel 路并行(#141);判门中的任务从领取起就算占槽
     // (round.gating),判完派发后先登记在途再释放,别的轮次看不到过时的空槽。
-    while (!QUIESCING && freeSlots() > 0 && GATING < CONFIG.gateParallel) {
+    // 派发暂停(pause.json,额度类报错或工具链不健康)生效期间也不领取(#143)。
+    while (!QUIESCING && !pausedUntil() && freeSlots() > 0 && GATING < CONFIG.gateParallel) {
       assertNotFenced();
       const claim = queue('claim');
       if (!claim.ok) throw new Error(`claim 失败:${claim.error}`);
@@ -1025,7 +1045,9 @@ function resumeInflight(ctx, inflight, queue) {
     const intent = readIntent(ctx, task.pr);
     if (m && task.phase === 'running') {
       // 前置判门的状态(errors / retry / authorNotice)随派发意图落盘;只认 dispatch_id 对得上的那份。
+      // intentAt:派发时间,noteKeyState 据此判断这次审查是不是维护者换主 key 之前派出的(#143);意图文件对不上时用绑定时间。
       const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt,
+        intentAt: intent?.dispatchId === m[2] && intent.intentAt ? intent.intentAt : task.boundAt,
         gateResult: intent?.dispatchId === m[2] ? intent.gateResult ?? {} : {} };
       if (cancelIntent?.runId === m[1]) Object.assign(entry, { cancelIntent, cancelResend: true });
       finishResolution(intent);
@@ -1336,6 +1358,12 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   }
   if (!inBusinessWindow()) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true });
+  }
+  // 判门期间别的结果写了派发暂停(额度类报错 / 工具链不健康):不派发,下一轮重判(#143)。
+  const pause = pausedUntil();
+  if (pause) {
+    log('dispatch-held', { pr: task.pr, head: task.head, reason: 'paused', until: pause.until });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发暂停到 ${pause.until},本次没有派发服务器审查`, retry: true });
   }
   // 部署暂停:不派发,也不算失败;上线后的新版本重审。
   if (QUIESCING || deployHold()) {
@@ -1669,11 +1697,12 @@ function collectServerRun(ctx, entry, active) {
   result.warnings = [...(entry.gateResult?.warnings ?? []), ...(server.warnings ?? [])];
   result.mivo = { ...server.mivo, filePatchHashes: undefined, filePatchHashesV2: undefined, findings: (server.mivo?.findings ?? []).length, deferred: (server.mivo?.deferred ?? []).length };
   writeTaskResult(ctx, task, result, { raw: true });
-  if (server.mivo?.quota) {
+  const staleKey = isStaleKeyResult(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt ?? entry.dispatchedAt ?? null });
+  if (server.mivo?.quota && !staleKey) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
-  noteKeyState(server, { pr: task.pr, runId: entry.runId });
+  if (!staleKey) noteKeyState(server, { pr: task.pr, runId: entry.runId });
   const health = server.mivo?.health;
   let completedRun = false;
   if (health && health.ok === false) {

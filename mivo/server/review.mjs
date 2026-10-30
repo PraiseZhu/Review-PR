@@ -25,7 +25,7 @@ import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, toUnavailableModels, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
-import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary } from './keys.mjs';
+import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary, toRateLimitRetry } from './keys.mjs';
 import { recordSelfWrite, readSelfWrites } from '../../review-pr/scripts/self-write-receipts.mjs';
 import { summarizeRouteLog } from '../../review-pr/scripts/gh-read-route.mjs';
 import { checkNameFor, loadGateBases } from '../../review-pr/scripts/gate-bases.mjs'; // [MIVO-PATCH gate-bases]
@@ -515,8 +515,24 @@ async function codex() {
   const callModel = async ({ label, model, effort, timeoutMs, prompt: text, schema, minRetryMs, remainingMs, phase = 'review' }) => {
     const once = (runLabel, ms) => runCodex({ codexBin: codexBin(), workdir: REPO_DIR, prompt: text, schema, model, effort, timeoutMs: ms,
       credentials: activeCredentials(ring, process.env), redactKeys: keyTexts(ring), tmpRoot: join(WORK, 'codex'), label: runLabel });
+    // 限流(#143):同一把 key 等 Retry-After(没有就 60 秒)后重试,最多 3 次、总等待 5 分钟,等的时间计入预算。
+    // 主 key 和换上的备用 key 都这样;rateLimit 跨两把 key 累计,等待总额和次数共用。
+    const rateLimit = [];
+    const waited = () => rateLimit.reduce((sum, r) => sum + r.waitMs, 0);
+    const onceWithRateLimit = async (runLabel, ms) => {
+      let result = await once(runLabel, ms);
+      for (let retry = toRateLimitRetry({ result, retries: rateLimit.length, waitedMs: waited(), remainingMs: remainingMs(), minRetryMs }); retry;
+        retry = toRateLimitRetry({ result, retries: rateLimit.length, waitedMs: waited(), remainingMs: remainingMs(), minRetryMs })) {
+        rateLimit.push({ waitMs: retry.waitMs, error: result.error, durationMs: result.durationMs });
+        await new Promise((resolve) => setTimeout(resolve, retry.waitMs));
+        await clearRunArtifacts(state, runLabel);
+        result = await once(runLabel, Math.min(ms, remainingMs()));
+      }
+      return result;
+    };
+    const withRetries = (result) => (rateLimit.length ? { ...result, rateLimitRetries: [...rateLimit] } : result);
     const credential = ring.active;
-    const first = await once(label, timeoutMs);
+    const first = withRetries(await onceWithRateLimit(label, timeoutMs));
     const change = toKeySwitch(ring, first);
     if (!change) { noteKeyResult(ring, credential, first, phase); return { result: first, label, credential, keySwitch: null, left: [] }; }
     switchToBackup(ring, change, { model, label });
@@ -525,7 +541,8 @@ async function codex() {
     if (!keySwitch.retried) return { result: first, label, credential, keySwitch, left: [] };
     const left = await clearRunArtifacts(state, label);
     const retryLabel = `${label}-backup`;
-    const second = await once(retryLabel, retryMs);
+    // 换 key 之前和之后的限流等待都带上,核对员预算按它们算时长(#143 复审 P2)。
+    const second = withRetries(await onceWithRateLimit(retryLabel, retryMs));
     noteKeyResult(ring, 'backup', second, phase);
     return { result: second, label: retryLabel, credential: 'backup', keySwitch, left };
   };
@@ -543,13 +560,13 @@ async function codex() {
         remainingMs: () => budget.budgetMs - elapsed() - SETTLE_MS });
       // 每次调用按事件留下时长记录(codex.mjs):只是记录,不能单独当作变慢原因的证据;stderrTail 只在失败时有。
       // 换了 key 但时间不够没重跑:备用 key 还没试过,不按额度类处理(不让 Mini 暂停),主 key 的报错照实记在 keySwitch。
-      // 最后一次是 key 本身的错误(备用 key 也坏,或没有备用)也算额度类:旧的 QUOTA_RE 认不出「key is blocked」之类的报错。
+      // 额度类只认 runCodex 按最终错误判出的 key 问题(认证、预算、权限;限流不算,#143)。
       const record = { pass, model: next.model, effort: next.effort, timeoutMs: next.timeoutMs, ok: result.ok, error: result.error,
-        quota: keySwitch && !keySwitch.retried ? false : result.quota || Boolean(result.keyFailure), keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
+        quota: keySwitch && !keySwitch.retried ? false : result.quota, keyFailure: result.keyFailure ?? null, credential, durationMs: result.durationMs, exitCode: result.exitCode,
         timedOut: result.timedOut, idleKilled: result.idleKilled,
         firstEventSec: result.firstEventSec ?? null, lastEventSec: result.lastEventSec ?? null, eventCount: result.eventCount ?? 0,
         maxGapSec: result.maxGapSec ?? null, usage: result.usage ?? null, ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}),
-        ...(keySwitch ? { keySwitch } : {}) };
+        ...(keySwitch ? { keySwitch } : {}), ...(result.rateLimitRetries ? { rateLimitRetries: result.rateLimitRetries } : {}) };
       passAttempts.push(record);
       attempts.push(record);
       passAnswer = result.ok ? result.answer : null;
@@ -654,8 +671,9 @@ async function codex() {
               prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
               schema: VERIFY_SCHEMA, minRetryMs: perCallMs, phase: 'verify', remainingMs: () => budget.budgetMs - (Date.now() - budgetAt) - SETTLE_MS });
             await clearRunArtifacts(state, run1.label);
-            // 换 key 重跑时,被换掉的那次也花了时间:一起算进核对员预算,不然预算会少算。
-            const spent = run1.keySwitch?.retried ? (run1.keySwitch.durationMs ?? 0) : 0;
+            // 换 key 重跑时被换掉的那次、限流等待和限流失败的那几次也花了时间:一起算进核对员预算,不然预算会少算(#143)。
+            const spent = (run1.keySwitch?.retried ? (run1.keySwitch.durationMs ?? 0) : 0)
+              + (run1.result.rateLimitRetries ?? []).reduce((sum, r) => sum + (r.waitMs ?? 0) + (r.durationMs ?? 0), 0);
             return spent ? { ...run1.result, durationMs: (run1.result.durationMs ?? 0) + spent } : run1.result;
           } })
         : { mode: cfg.mode, items: [], skipped: [] };
