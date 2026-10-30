@@ -35,6 +35,13 @@ test('SC6 已有配置时重跑 install-mini:原有字段的值不变,命令行�
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('SC6 sandbox 已有规则文件时重跑不带 --rules:rulesFile 保留;带了才改(#142 独立审查 P2)', () => {
+  const sandbox = { ...live, instance: 'sandbox', mode: 'sandbox', rulesFile: '/m/skill/mivo/config/sandbox-pr-rules.json' };
+  assert.equal(toInstallConfig(sandbox, { ...args, instance: 'sandbox', mode: 'sandbox' }).rulesFile, sandbox.rulesFile);
+  assert.equal(toInstallConfig(sandbox, { ...args, instance: 'sandbox', mode: 'sandbox', rules: '/other.json' }).rulesFile, '/other.json');
+  assert.equal(toInstallConfig(null, { ...args, instance: 'sandbox' }).rulesFile, null);
+});
+
 test('新装没有配置文件:maxParallel / dailyCap 用默认 3 / 30;非法值报错', () => {
   const fresh = toInstallConfig(null, { ...args, instance: 'sandbox' });
   assert.equal(fresh.maxParallel, 3);
@@ -42,9 +49,14 @@ test('新装没有配置文件:maxParallel / dailyCap 用默认 3 / 30;非法值
   assert.equal(fresh.pollSeconds, 30);
   assert.equal(fresh.rulesFile, null);
   assert.deepEqual(toInstallConfig(null, { ...args, instance: 'x', maxParallel: '40', dailyCap: '400' }).maxParallel, 40);
-  for (const bad of ['0', '-1', 'abc', '2.5']) {
+  for (const bad of ['0', '-1', 'abc', '2.5', 0, -1]) {
     assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', maxParallel: bad }), /--max-parallel/);
     assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', dailyCap: bad }), /--daily-cap/);
   }
   assert.throws(() => toInstallConfig([], { ...args, instance: 'x' }), /JSON 对象/);
+  // 和 round.mjs 启动校验同一范围:写出的配置一定能启动
+  assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', maxParallel: '41' }), /--max-parallel 须是1–40 的整数:"41"/);
+  assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', dailyCap: '9007199254740993' }), /--daily-cap/);
+  assert.throws(() => toInstallConfig({ ...live, maxParallel: 41 }, { ...args, instance: 'mivo' }), /已有配置的 maxParallel/);
+  assert.throws(() => toInstallConfig({ ...live, dailyCap: 0 }, { ...args, instance: 'mivo' }), /已有配置的 dailyCap/);
 });

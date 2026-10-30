@@ -8,7 +8,7 @@
 #   skill/                    PraiseZhu/Review-PR,detached 在 --sha
 #   repos/<instance>/         审查对象仓库的独立 clone(只给 Cindy 脚本读 remote、建临时 worktree)
 #   state/<instance>/         Cindy 状态目录(锁、轮次、round-state)
-#   config/<instance>.json    round.mjs 的配置;重跑时合并写入(install-config.mjs):--max-parallel / --daily-cap 不给就保留原值
+#   config/<instance>.json    round.mjs 的配置;重跑时合并写入(install-config.mjs):--max-parallel / --daily-cap / --rules 不给就保留原值
 #                             (新文件默认 3 / 30,maxParallel 上限 40),viewerLogin 等手工加的字段不动
 #   ~/Library/Logs/mivo-prereview/<instance>/   运行日志
 # launchd 标签:com.mivo.prereview.<instance>
