@@ -54,12 +54,12 @@ export const RATE_LIMIT_RETRIES = 3;
 export const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000;
 export const RATE_LIMIT_MAX_WAIT_MS = 5 * 60_000;
 
-/** 限流报错里的 Retry-After(秒,或带 ms 单位);认不出时按 60 秒。 */
+/** 限流报错里的 Retry-After(秒,或带 ms 单位);认不出时按 60 秒。不截断:要求等得比上限还久的,toRateLimitRetry 直接不等。 */
 export function toRateLimitWait(message) {
   const m = String(message ?? '').match(/retry[-_ ]?after\D{0,5}(\d+(?:\.\d+)?)\s*(ms|milliseconds?)?/i);
   if (!m) return RATE_LIMIT_DEFAULT_WAIT_MS;
   const ms = m[2] ? Number(m[1]) : Number(m[1]) * 1000;
-  return Number.isFinite(ms) ? Math.min(Math.max(0, Math.round(ms)), RATE_LIMIT_MAX_WAIT_MS) : RATE_LIMIT_DEFAULT_WAIT_MS;
+  return Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : RATE_LIMIT_DEFAULT_WAIT_MS;
 }
 
 /**
@@ -70,6 +70,7 @@ export function toRateLimitRetry({ result, retries, waitedMs, remainingMs, minRe
   if (result?.ok || result?.keyFailure?.kind !== 'rate-limit') return null;
   if (retries >= RATE_LIMIT_RETRIES) return null;
   const waitMs = toRateLimitWait(result.finalError);
+  // 网关要求等的比剩下的等待额度还久:提前重试多半还是限流,不等,按普通失败走(e2e 发现)。
   if (waitedMs + waitMs > RATE_LIMIT_MAX_WAIT_MS) return null;
   if (remainingMs - waitMs < minRetryMs) return null;
   return { waitMs };

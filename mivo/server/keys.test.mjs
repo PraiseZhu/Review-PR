@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary, noteKeyResult, toRateLimitWait, toRateLimitRetry,
-  RATE_LIMIT_DEFAULT_WAIT_MS, RATE_LIMIT_MAX_WAIT_MS } from './keys.mjs';
+  RATE_LIMIT_DEFAULT_WAIT_MS } from './keys.mjs';
 
 const PRIMARY = JSON.stringify({ api_key: 'sk-primary-AAAAAAAA', base_url: 'https://gw.example.com/v1' });
 const NOW = Date.parse('2026-10-18T03:00:00Z');
@@ -90,7 +90,7 @@ test('限流等待(#143):按 Retry-After,没有就 60 秒;最多重试 3 次、�
   assert.equal(toRateLimitWait('unexpected status 429 Too Many Requests: Rate limit reached. Please retry after 7 seconds'), 7000);
   assert.equal(toRateLimitWait('429 ... Retry-After: 30'), 30_000);
   assert.equal(toRateLimitWait('429 retry_after=250ms'), 250);
-  assert.equal(toRateLimitWait('429 retry after 9999 seconds'), RATE_LIMIT_MAX_WAIT_MS);
+  assert.equal(toRateLimitWait('429 retry after 400 seconds'), 400_000, '不截断');
   assert.equal(toRateLimitWait('unexpected status 429 Too Many Requests: Crossed TPM / RPM'), RATE_LIMIT_DEFAULT_WAIT_MS);
   assert.equal(toRateLimitWait(null), RATE_LIMIT_DEFAULT_WAIT_MS);
   const limited = { ok: false, keyFailure: { kind: 'rate-limit', status: 429 }, finalError: '429 Crossed TPM / RPM' };
@@ -99,6 +99,9 @@ test('限流等待(#143):按 Retry-After,没有就 60 秒;最多重试 3 次、�
   assert.deepEqual(toRateLimitRetry({ ...base, retries: 2, waitedMs: 120_000 }), { waitMs: 60_000 });
   assert.equal(toRateLimitRetry({ ...base, retries: 3, waitedMs: 180_000 }), null, '最多 3 次');
   assert.equal(toRateLimitRetry({ ...base, retries: 1, waitedMs: 250_000 }), null, '总等待超过 5 分钟');
+  assert.equal(toRateLimitRetry({ ...base, result: { ...limited, finalError: '429 retry after 400 seconds' } }), null,
+    'Retry-After 超过 5 分钟:不等(等 5 分钟就重试多半还是限流)');
+  assert.deepEqual(toRateLimitRetry({ ...base, result: { ...limited, finalError: '429 retry after 300 seconds' } }), { waitMs: 300_000 });
   assert.equal(toRateLimitRetry({ ...base, remainingMs: 15.5 * 60_000 }), null, '等完剩余时间不够跑一次');
   assert.equal(toRateLimitRetry({ ...base, result: { ...limited, keyFailure: { kind: 'budget', status: 429 } } }), null, '预算用完不等');
   assert.equal(toRateLimitRetry({ ...base, result: { ok: true } }), null);
