@@ -240,11 +240,14 @@ function noteKeyState(server, { pr, runId, intentAt = null }) {
   const credential = server.mivo?.codex?.credential;
   if (!credential || !isKeyWriter()) return;
   const attempts = server.mivo?.codex?.attempts ?? [];
+  // 维护者换主 key 之前就派出的审查(#143):它的成败说的是旧 key,不写冷却期也不改 key 状态。只在结果里有 key 问题时
+  // 才读一次 Secret 的更新时间;读不到就照常处理。
+  const keyTrouble = credential.primaryFailedMidRun || credential.switched || credential.down || attempts.some((a) => a?.keyFailure);
+  const rotatedAt = keyTrouble ? primaryRotatedAt() : NaN;
+  if (Date.parse(intentAt ?? '') < rotatedAt) { log('key-state-stale', { pr, runId, intentAt, rotatedAt: new Date(rotatedAt).toISOString() }); return; }
   // 冷却期已经生效时不再顺延(#143):40 路并发时每个中途失败的结果都顺延 60 分钟,主 key 好了也一直用不回来。
-  // 维护者换了主 key(resetPreferBackupIfRotated 提前结束冷却)之前就派出的审查,失败说的是旧 key,也不重开冷却。
   const cooling = Date.parse(readJson(stateFile('key-prefer-backup.json'), null)?.until ?? '') > Date.now();
-  const beforeRotation = Date.parse(intentAt ?? '') < Date.parse(readJson(stateFile('key-rotated.json'), null)?.rotatedAt ?? '');
-  if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling && !beforeRotation) {
+  if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling) {
     const until = new Date(Date.now() + PREFER_BACKUP_MS).toISOString();
     if (setRepoVariable(PREFER_BACKUP_VARIABLE, until, 'key-prefer-backup')) {
       writeJson(stateFile('key-prefer-backup.json'), { until, setAt: nowIso(), pr, runId });
@@ -266,16 +269,19 @@ function resetPreferBackupIfRotated() {
   const local = readJson(stateFile('key-prefer-backup.json'), null);
   if (!local) return;
   if (!(Date.parse(local.until) > Date.now())) { rmQuiet(stateFile('key-prefer-backup.json')); return; }
-  const r = run('gh', ['api', `repos/${CONFIG.workflowRepo}/actions/secrets/${PRIMARY_SECRET}`, '--jq', '.updated_at'],
-    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
-  const rotatedAt = Date.parse(String(r.stdout ?? '').trim());
-  if (!r.ok || !Number.isFinite(rotatedAt) || rotatedAt <= Date.parse(local.setAt)) return;
+  const rotatedAt = primaryRotatedAt();
+  if (!Number.isFinite(rotatedAt) || rotatedAt <= Date.parse(local.setAt)) return;
   const del = run('gh', ['variable', 'delete', PREFER_BACKUP_VARIABLE, '-R', CONFIG.workflowRepo],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
   if (!del.ok) { log('key-prefer-backup-reset-error', { error: String(del.stderr || del.error || '').trim().slice(0, 200) }); return; }
   rmQuiet(stateFile('key-prefer-backup.json'));
-  writeJson(stateFile('key-rotated.json'), { rotatedAt: new Date(rotatedAt).toISOString() });
   log('key-prefer-backup-reset', { rotatedAt: new Date(rotatedAt).toISOString() });
+}
+// 主 key Secret 最近一次更新的时间(毫秒);读不到(权限不够、网络)返回 NaN。
+function primaryRotatedAt() {
+  const r = run('gh', ['api', `repos/${CONFIG.workflowRepo}/actions/secrets/${PRIMARY_SECRET}`, '--jq', '.updated_at'],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  return r.ok ? Date.parse(String(r.stdout ?? '').trim()) : NaN;
 }
 function rmQuiet(file) { try { unlinkSync(file); } catch { /* 已经没有了 */ } }
 

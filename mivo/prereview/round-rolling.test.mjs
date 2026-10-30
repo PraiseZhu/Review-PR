@@ -298,7 +298,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 在线 runner(#142):在线数、带的标签、读失败注入、读的次数
     runnersOnline: 40, runnerLabel: 'mivo-review', runnersFail: false, runnerReads: 0,
     // 按 PR 合进服务器结果 mivo 字段的内容(#143:quota、codex.credential);写仓库变量的记录 [{ at, name, value }]
-    serverMivo: new Map(), variableSets: [] };
+    serverMivo: new Map(), variableSets: [], secretUpdatedAt: '2026-01-01T00:00:00Z', secretReads: 0 };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30, ...(gateParallel ? { gateParallel } : {}) });
@@ -519,7 +519,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       return ok(args.includes('DELETE') ? '' : '[]');
     }
     // 主 key Secret 的更新时间(冷却期内维护者换没换 key):夹具里一直是很早以前
-    if (args[0] === 'api' && path.startsWith('repos/o/wf/actions/secrets/')) return ok('2026-01-01T00:00:00Z\n');
+    if (args[0] === 'api' && path.startsWith('repos/o/wf/actions/secrets/')) { w.secretReads += 1; return ok(`${w.secretUpdatedAt}\n`); }
     if (args[0] === 'api' && path.startsWith('repos/o/wf/actions/runners')) {
       w.runnerReads += 1;
       if (w.runnersFail) return fail('HTTP 403: Resource not accessible by integration');
@@ -1904,7 +1904,8 @@ test('世界:SC3 维护者换了主 key 之前派出的审查,晚到的中途失
   w.serverMivo.set(1, midRun);
   let proc = w.start();
   assert.ok(await w.runUntil(() => w.dispatchesOf(1).length === 1, { maxMs: 10 * MIN }));
-  w.files.set(w.state('key-rotated.json'), { rotatedAt: iso(w.now + MIN) });
+  // 没有冷却期时维护者换了主 key(原先只有冷却期里才发现换 key,复审 P2)
+  w.secretUpdatedAt = iso(w.now + MIN);
   const t0 = w.now;
   while (w.now - t0 < 40 * MIN) {
     if (proc.settled) { assert.equal(proc.failure, null, String(proc.failure?.stack)); w.now += 3 * MIN; proc = w.start(); continue; }
@@ -1912,6 +1913,8 @@ test('世界:SC3 维护者换了主 key 之前派出的审查,晚到的中途失
   }
   assert.ok(w.logged('collected').some((e) => e.pr === 1), '结果已收回');
   assert.equal(w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL').length, 0);
+  assert.equal(w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_STATUS').length, 0, '旧 key 的结果也不改 key 状态');
+  assert.equal(w.logged('key-state-stale').length, 1);
 });
 
 test('世界:SC3 Mini 重启后接着收的审查,派出时间早于换主 key 时,中途失败结果也不重开冷却期(#143 复审 P2)', async () => {
@@ -1919,7 +1922,7 @@ test('世界:SC3 Mini 重启后接着收的审查,派出时间早于换主 key �
   w.openPr(1, 'h1');
   const runId = w.seedRun(1, 'h1', 'R0', 'existing', { durationMs: 15 * MIN });
   w.seedRound('R0', [{ pr: 1, head: 'h1', phase: 'running', agentId: `gha:${runId}:existing` }], { createdMs: w.now - 2 * MIN });
-  w.files.set(w.state('key-rotated.json'), { rotatedAt: iso(w.now) });
+  w.secretUpdatedAt = iso(w.now);
   w.serverMivo.set(1, { codex: { credential: { backupConfigured: true, primaryFailedMidRun: true, active: 'backup', startedOn: 'primary',
     switched: { kind: 'auth', status: 401, midRun: true }, primaryOk: false, down: null, warnings: [] }, attempts: [] } });
   const proc = w.start();
@@ -1927,6 +1930,8 @@ test('世界:SC3 Mini 重启后接着收的审查,派出时间早于换主 key �
   assert.equal(proc.failure, null, String(proc.failure?.stack));
   assert.ok(w.logged('collected').some((e) => e.pr === 1), '结果已收回');
   assert.equal(w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL').length, 0);
+  assert.equal(w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_STATUS').length, 0, '旧 key 的结果也不改 key 状态');
+  assert.equal(w.logged('key-state-stale').length, 1);
 });
 
 test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再调 context 判门,沿用上轮结论;满 30 分钟兜底重判', async () => {

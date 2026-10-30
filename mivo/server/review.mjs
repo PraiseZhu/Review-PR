@@ -515,19 +515,24 @@ async function codex() {
   const callModel = async ({ label, model, effort, timeoutMs, prompt: text, schema, minRetryMs, remainingMs, phase = 'review' }) => {
     const once = (runLabel, ms) => runCodex({ codexBin: codexBin(), workdir: REPO_DIR, prompt: text, schema, model, effort, timeoutMs: ms,
       credentials: activeCredentials(ring, process.env), redactKeys: keyTexts(ring), tmpRoot: join(WORK, 'codex'), label: runLabel });
-    const credential = ring.active;
-    let first = await once(label, timeoutMs);
     // 限流(#143):同一把 key 等 Retry-After(没有就 60 秒)后重试,最多 3 次、总等待 5 分钟,等的时间计入预算。
+    // 主 key 和换上的备用 key 都这样;rateLimit 跨两把 key 累计,等待总额和次数共用。
     const rateLimit = [];
     const waited = () => rateLimit.reduce((sum, r) => sum + r.waitMs, 0);
-    for (let retry = toRateLimitRetry({ result: first, retries: 0, waitedMs: 0, remainingMs: remainingMs(), minRetryMs }); retry;
-      retry = toRateLimitRetry({ result: first, retries: rateLimit.length, waitedMs: waited(), remainingMs: remainingMs(), minRetryMs })) {
-      rateLimit.push({ waitMs: retry.waitMs, error: first.error, durationMs: first.durationMs });
-      await new Promise((resolve) => setTimeout(resolve, retry.waitMs));
-      await clearRunArtifacts(state, label);
-      first = await once(label, Math.min(timeoutMs, remainingMs()));
-    }
-    if (rateLimit.length) first = { ...first, rateLimitRetries: rateLimit };
+    const onceWithRateLimit = async (runLabel, ms) => {
+      let result = await once(runLabel, ms);
+      for (let retry = toRateLimitRetry({ result, retries: rateLimit.length, waitedMs: waited(), remainingMs: remainingMs(), minRetryMs }); retry;
+        retry = toRateLimitRetry({ result, retries: rateLimit.length, waitedMs: waited(), remainingMs: remainingMs(), minRetryMs })) {
+        rateLimit.push({ waitMs: retry.waitMs, error: result.error, durationMs: result.durationMs });
+        await new Promise((resolve) => setTimeout(resolve, retry.waitMs));
+        await clearRunArtifacts(state, runLabel);
+        result = await once(runLabel, Math.min(ms, remainingMs()));
+      }
+      return result;
+    };
+    const withRetries = (result) => (rateLimit.length ? { ...result, rateLimitRetries: [...rateLimit] } : result);
+    const credential = ring.active;
+    const first = withRetries(await onceWithRateLimit(label, timeoutMs));
     const change = toKeySwitch(ring, first);
     if (!change) { noteKeyResult(ring, credential, first, phase); return { result: first, label, credential, keySwitch: null, left: [] }; }
     switchToBackup(ring, change, { model, label });
@@ -536,10 +541,10 @@ async function codex() {
     if (!keySwitch.retried) return { result: first, label, credential, keySwitch, left: [] };
     const left = await clearRunArtifacts(state, label);
     const retryLabel = `${label}-backup`;
-    const second = await once(retryLabel, retryMs);
+    // 换 key 之前和之后的限流等待都带上,核对员预算按它们算时长(#143 复审 P2)。
+    const second = withRetries(await onceWithRateLimit(retryLabel, retryMs));
     noteKeyResult(ring, 'backup', second, phase);
-    // 换 key 之前的限流等待和失败调用也带上,核对员预算按它们算时长(#143 复审 P2)。
-    return { result: first.rateLimitRetries ? { ...second, rateLimitRetries: first.rateLimitRetries } : second, label: retryLabel, credential: 'backup', keySwitch, left };
+    return { result: second, label: retryLabel, credential: 'backup', keySwitch, left };
   };
   // 一段主审:主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
   // 同一次运行最多两段(初段 + 增量干净后的收口全量):每段有自己的尝试记录(nextAttempt 只看本段),但共用同一条总预算时钟

@@ -263,6 +263,9 @@ test('SC1 限流重试 3 次仍限流:不换 key、不算额度类,当普通失�
   const r = runCodexPhase({ primary: '429:99' });
   assert.equal(r.calls.filter((c) => c === 'main openai/gpt-6-luna max primary').length, 4, '首次 + 重试 3 次');
   assert.ok(r.calls.every((c) => c.endsWith(' primary')), '始终用主 key');
+  assert.equal(r.codex.attempts.length, 2, '主模型用完限流重试后换备用模型(复审 P2:原先没断言)');
+  assert.equal(r.codex.attempts[1].model, 'openai/gpt-6.1-sol');
+  assert.ok(r.calls.slice(4).every((c) => c.startsWith('main openai/gpt-6.1-sol ')), JSON.stringify(r.calls));
   const [first] = r.codex.attempts;
   assert.equal(first.ok, false);
   assert.equal(first.quota, false);
@@ -297,4 +300,14 @@ test('核对员先限流、再报 401 换备用 key 成功:换 key 前的限流�
   assert.equal(r.verification.items[0].ok, true);
   // 限流等 1 秒 + 401 那次 0.4 秒
   assert.ok(r.verification.items[0].durationMs >= 1400, `durationMs=${r.verification.items[0].durationMs}`);
+});
+
+test('SC1 换到备用 key 后遇到 429(无 budget):在备用 key 上等待重试,不降级到备用模型(#143 复审 P2)', { skip }, () => {
+  const r = runCodexPhase({ primary: '401', backup: '429:1' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'main openai/gpt-6-luna max backup', 'main openai/gpt-6-luna max backup']);
+  assert.equal(r.codex.attempts.length, 1);
+  assert.equal(r.codex.attempts[0].ok, true);
+  assert.equal(r.codex.attempts[0].credential, 'backup');
+  assert.equal(r.codex.attempts[0].rateLimitRetries.length, 1);
+  assert.equal(r.codex.attempts[0].quota, false);
 });
