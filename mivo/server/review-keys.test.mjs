@@ -52,6 +52,14 @@ if (mode === 'mid401') { console.log(JSON.stringify({ type: 'item.completed', it
 if (mode === 'blocked') { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'Authentication Error, Key is blocked. Update via /key/unblock' } })); process.exit(1); }
 if (mode === '500') { console.log(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } })); console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 500 Internal Server Error: rate limit exceeded upstream' } })); process.exit(1); }
 if (mode === 'explode') { process.stderr.write('primary exploded'); process.exit(1); }
+// 429:N 前 N 次限流(带 Retry-After 1 秒)之后成功;429budget 网关预算用完(#143)
+if (mode.startsWith('429:')) {
+  const counter = path.join(ctl, 'count-' + key);
+  const seen = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+  fs.writeFileSync(counter, String(seen + 1));
+  if (seen < Number(mode.slice(4))) { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 429 Too Many Requests: Rate limit reached. Please retry after 1 seconds' } })); process.exit(1); }
+}
+if (mode === '429budget') { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 429 Too Many Requests: {"error":{"type":"budget_exceeded","message":"ExceededBudget"}}' } })); process.exit(1); }
 fs.writeFileSync(at('--output-last-message'), fs.readFileSync(path.join(ctl, verify ? 'verify-answer.json' : 'main-answer.json'), 'utf8'));
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }));
 console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }));
@@ -197,10 +205,13 @@ test('两把 key 都报没有状态码的 key 错误(key is blocked):也按额�
   assert.equal(r.codex.attempts[0].quota, true);
 });
 
-test('网关 5xx 即使正文带 rate limit 也不换 key、不进冷却期(是否换备用模型照旧由 QUOTA_RE 决定)', { skip }, () => {
+test('SC6 网关 5xx 即使正文带 rate limit 也不换 key、不进冷却期、不算额度类,照常换备用模型(#143)', { skip }, () => {
   const r = runCodexPhase({ primary: '500' });
-  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary']);
+  assert.equal(r.calls[0], 'main openai/gpt-6-luna max primary');
+  assert.equal(r.calls.length, 2, '换备用模型再试一次(原先被 QUOTA_RE 当成额度类,不换)');
+  assert.match(r.calls[1], / primary$/);
   assert.equal(r.codex.attempts[0].keyFailure, null);
+  assert.equal(r.codex.attempts[0].quota, false);
   assert.equal(r.codex.credential.switched, null);
   assert.equal(r.codex.credential.primaryFailedMidRun, false);
 });
@@ -225,4 +236,40 @@ test('核对员换 key 重跑:被换掉的那次时长也算进核对员预算',
   assert.ok(r.verification.items[0].durationMs >= 400, `durationMs=${r.verification.items[0].durationMs}`);
   assert.equal(r.codex.credential.down, null);
   assert.equal(toKeyStatus(r.codex.credential, r.codex.attempts), 'backup');
+});
+
+test('SC1 429 限流(正文没有 budget):同一把 key 等 Retry-After 后重试,不换备用 key、不算额度类(#143)', { skip }, () => {
+  const r = runCodexPhase({ primary: '429:2' });
+  assert.deepEqual(r.calls, Array(3).fill('main openai/gpt-6-luna max primary'));
+  assert.equal(r.codex.attempts.length, 1);
+  const [attempt] = r.codex.attempts;
+  assert.equal(attempt.ok, true);
+  assert.equal(attempt.credential, 'primary');
+  assert.equal(attempt.quota, false);
+  assert.equal(attempt.rateLimitRetries.length, 2);
+  assert.ok(attempt.rateLimitRetries.every((x) => x.waitMs === 1000));
+  assert.equal(r.codex.credential.switched, null);
+  assert.equal(r.codex.credential.active, 'primary');
+});
+
+test('SC1 限流重试 3 次仍限流:不换 key、不算额度类,当普通失败换备用模型(#143)', { skip }, () => {
+  const r = runCodexPhase({ primary: '429:99' });
+  assert.equal(r.calls.filter((c) => c === 'main openai/gpt-6-luna max primary').length, 4, '首次 + 重试 3 次');
+  assert.ok(r.calls.every((c) => c.endsWith(' primary')), '始终用主 key');
+  const [first] = r.codex.attempts;
+  assert.equal(first.ok, false);
+  assert.equal(first.quota, false);
+  assert.deepEqual(first.keyFailure, { kind: 'rate-limit', status: 429 });
+  assert.equal(first.rateLimitRetries.length, 3);
+  assert.equal(r.codex.credential.switched, null);
+  assert.equal(r.codex.credential.down, null);
+});
+
+test('SC2 正文含 budget_exceeded 的 429:切备用 key;备用也失败按额度类(Mini 写 pause.json)(#143)', { skip }, () => {
+  const r = runCodexPhase({ primary: '429budget', backup: '429budget' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'main openai/gpt-6-luna max backup']);
+  assert.equal(r.codex.attempts.length, 1);
+  assert.equal(r.codex.attempts[0].quota, true);
+  assert.equal(r.codex.attempts[0].keySwitch.kind, 'budget');
+  assert.equal(r.codex.attempts[0].rateLimitRetries, undefined, '预算用完不等待重试');
 });

@@ -240,7 +240,9 @@ function noteKeyState(server, { pr, runId }) {
   const credential = server.mivo?.codex?.credential;
   if (!credential || !isKeyWriter()) return;
   const attempts = server.mivo?.codex?.attempts ?? [];
-  if (credential.primaryFailedMidRun && credential.backupConfigured) {
+  // 冷却期已经生效时不再顺延(#143):40 路并发时每个中途失败的结果都顺延 60 分钟,主 key 好了也一直用不回来。
+  const cooling = Date.parse(readJson(stateFile('key-prefer-backup.json'), null)?.until ?? '') > Date.now();
+  if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling) {
     const until = new Date(Date.now() + PREFER_BACKUP_MS).toISOString();
     if (setRepoVariable(PREFER_BACKUP_VARIABLE, until, 'key-prefer-backup')) {
       writeJson(stateFile('key-prefer-backup.json'), { until, setAt: nowIso(), pr, runId });
@@ -876,7 +878,8 @@ async function runQueue(ctx) {
     if (ctx.gateError) throw ctx.gateError;
     // 全进程在审数满了就不领取;部署暂停后也不领取。判门异步、最多 gateParallel 路并行(#141);判门中的任务从领取起就算占槽
     // (round.gating),判完派发后先登记在途再释放,别的轮次看不到过时的空槽。
-    while (!QUIESCING && freeSlots() > 0 && GATING < CONFIG.gateParallel) {
+    // 派发暂停(pause.json,额度类报错或工具链不健康)生效期间也不领取(#143)。
+    while (!QUIESCING && !pausedUntil() && freeSlots() > 0 && GATING < CONFIG.gateParallel) {
       assertNotFenced();
       const claim = queue('claim');
       if (!claim.ok) throw new Error(`claim 失败:${claim.error}`);
@@ -1336,6 +1339,12 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   }
   if (!inBusinessWindow()) {
     return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true });
+  }
+  // 判门期间别的结果写了派发暂停(额度类报错 / 工具链不健康):不派发,下一轮重判(#143)。
+  const pause = pausedUntil();
+  if (pause) {
+    log('dispatch-held', { pr: task.pr, head: task.head, reason: 'paused', until: pause.until });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发暂停到 ${pause.until},本次没有派发服务器审查`, retry: true });
   }
   // 部署暂停:不派发,也不算失败;上线后的新版本重审。
   if (QUIESCING || deployHold()) {

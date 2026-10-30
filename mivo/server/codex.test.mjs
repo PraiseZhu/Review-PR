@@ -210,3 +210,50 @@ process.exit(1);
     assert.doesNotMatch(r.stderrTail, /AAAAAAAA|BBBBBBBB/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// #143:额度类(quota,Mini 据此暂停派发)只认最终错误判出的认证、预算、权限问题;限流和 5xx、超时都不算
+async function runFake(body, extra = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'mivo-codex-quota-'));
+  try {
+    const bin = join(root, 'codex');
+    writeFileSync(bin, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
+    mkdirSync(join(root, 'work'));
+    return await runCodex({ codexBin: bin, workdir: join(root, 'work'), prompt: 'p', schema: {}, model: 'openai/m', effort: 'low', timeoutMs: 60_000,
+      credentials: { apiKey: 'sk-primary-AAAAAAAAAAAA', baseUrl: 'https://gw.example.com/v1' }, tmpRoot: root, label: 'q', ...extra });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+const line = (event) => `console.log(${JSON.stringify(JSON.stringify(event))});`;
+const RATE = 'unexpected status 429 Too Many Requests: LiteLLM Rate Limit Handler for rate limit type = key. Crossed TPM / RPM. Please retry after 7 seconds';
+
+test('runCodex(#143):429 限流是 rate-limit、不是额度类,带回最终错误给重试读 Retry-After', async () => {
+  const r = await runFake(`${line({ type: 'turn.failed', error: { message: RATE } })}\nprocess.exit(1);`);
+  assert.deepEqual(r.keyFailure, { kind: 'rate-limit', status: 429 });
+  assert.equal(r.quota, false);
+  assert.match(r.finalError, /retry after 7 seconds/);
+});
+
+test('runCodex(#143):正文带 budget 的 429 是额度类', async () => {
+  const r = await runFake(`${line({ type: 'turn.failed', error: { message: 'unexpected status 429 Too Many Requests: {"error":{"type":"budget_exceeded"}}' } })}\nprocess.exit(1);`);
+  assert.deepEqual(r.keyFailure, { kind: 'budget', status: 429 });
+  assert.equal(r.quota, true);
+});
+
+test('SC6 runCodex(#143):5xx 退出,即使 stderr 和重连事件里出现 429、rate limit,也不算额度类', async () => {
+  const r = await runFake([
+    line({ type: 'error', message: `Reconnecting... 1/5 (${RATE})` }),
+    line({ type: 'turn.failed', error: { message: 'unexpected status 502 Bad Gateway: upstream rate limit exceeded' } }),
+    "process.stderr.write('429 Too Many Requests rate limit insufficient_quota\\n');",
+    'process.exit(1);'].join('\n'));
+  assert.equal(r.keyFailure, null);
+  assert.equal(r.quota, false);
+});
+
+test('SC6 runCodex(#143):先有 429 重连、最后超时退出的调用不算额度类', async () => {
+  const r = await runFake([
+    line({ type: 'error', message: `Reconnecting... 1/5 (${RATE})` }),
+    "process.stderr.write('429 Too Many Requests\\n');",
+    'setTimeout(() => {}, 120_000);'].join('\n'), { timeoutMs: 1000 });
+  assert.equal(r.timedOut, true);
+  assert.equal(r.keyFailure, null);
+  assert.equal(r.quota, false);
+});

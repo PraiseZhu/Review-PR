@@ -32,6 +32,7 @@ const REPO_ROOT = process.env.ROUND_FIXTURE_REPO_ROOT || fileURLToPath(new URL('
 const load = (file) => import(pathToFileURL(join(REPO_ROOT, file)).href);
 const common = await load('mivo/lib/common.mjs');
 const admission = await load('mivo/lib/admission.mjs');
+const keyStatus = await load('mivo/lib/key-status.mjs');
 const gates = await load('mivo/lib/gates.mjs');
 const codeScan = await load('mivo/lib/code-scan.mjs');
 const retry = await load('mivo/lib/retry.mjs');
@@ -295,7 +296,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // >0 时新派出的 run 在这么多毫秒内查不到(模拟 GitHub 列表延迟)
     hideNewRunsMs: 0,
     // 在线 runner(#142):在线数、带的标签、读失败注入、读的次数
-    runnersOnline: 40, runnerLabel: 'mivo-review', runnersFail: false, runnerReads: 0 };
+    runnersOnline: 40, runnerLabel: 'mivo-review', runnersFail: false, runnerReads: 0,
+    // 按 PR 合进服务器结果 mivo 字段的内容(#143:quota、codex.credential);写仓库变量的记录 [{ at, name, value }]
+    serverMivo: new Map(), variableSets: [] };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30, ...(gateParallel ? { gateParallel } : {}) });
@@ -503,7 +506,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     w.ghCalls.push([...args]);
     const path = args.find((a) => /^repos\//.test(a)) ?? '';
     if (args[0] === 'variable' && args[1] === 'get') return w.pinFails ? fail('HTTP 502: Bad Gateway') : ok(`${w.pinned ?? w.skillSha}\n`);
-    if (args[0] === 'variable' && args[1] === 'set') { w.heartbeats.push({ at: w.now, value: argOf(args, '--body') }); return ok(); }
+    if (args[0] === 'variable' && args[1] === 'set') {
+      w.variableSets.push({ at: w.now, name: args[2], value: argOf(args, '--body') });
+      if (args[2] === 'MIVO_REVIEW_PRE_HEARTBEAT' || !/KEY/.test(args[2])) w.heartbeats.push({ at: w.now, value: argOf(args, '--body') });
+      return ok();
+    }
     if (args[0] === 'api' && path.startsWith('repos/o/target/issues')) {
       if (args.includes('DELETE') && path.includes('/labels/')) {
         w.labelDeletes.push(path);
@@ -511,6 +518,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       }
       return ok(args.includes('DELETE') ? '' : '[]');
     }
+    // 主 key Secret 的更新时间(冷却期内维护者换没换 key):夹具里一直是很早以前
+    if (args[0] === 'api' && path.startsWith('repos/o/wf/actions/secrets/')) return ok('2026-01-01T00:00:00Z\n');
     if (args[0] === 'api' && path.startsWith('repos/o/wf/actions/runners')) {
       w.runnerReads += 1;
       if (w.runnersFail) return fail('HTTP 403: Resource not accessible by integration');
@@ -599,7 +608,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         : { runId: r.roundId, mode: 'review-only', pr: r.pr, head: r.head, base: 'base', merged: false, threadUrls: [],
           enteredReview: same, reviewed: same, reviewClean: same, outcome: same ? 'approval' : 'state-changed', reason: same ? '审查通过' : '发布前 PR 已变化',
           retry: !same, errors: [], warnings: [],
-          mivo: { reportComplete: same, runId: r.id, ...(w.finalFullDone.has(r.pr) ? { finalFull: { head: r.head, runId: r.id, outcome: 'clean' }, finalFullContext: { kind: 'budget-retry', findingFiles: [], previousRound: null } } : {}) } });
+          mivo: { reportComplete: same, runId: r.id, ...(w.finalFullDone.has(r.pr) ? { finalFull: { head: r.head, runId: r.id, outcome: 'clean' }, finalFullContext: { kind: 'budget-retry', findingFiles: [], previousRound: null } } : {}),
+            ...(w.serverMivo.get(r.pr) ?? {}) } });
       w.files.set(`${dir}/report.md`, 'report');
       return ok();
     }
@@ -612,7 +622,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       constructor(...args) { super(...(args.length ? args : [w.now])); }
       static now() { return w.now; }
     }
-    const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, previousFromResult: scope.previousFromResult, dirname, join, resolve, randomUUID, Date: FixtureDate,
+    const sandbox = { ...common, ...admission, ...keyStatus, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, previousFromResult: scope.previousFromResult, dirname, join, resolve, randomUUID, Date: FixtureDate,
       inBusinessWindow: () => health.inBusinessWindow(new Date(w.now)), nowIso: () => iso(w.now),
       readJson: (file, fallback) => {
         if (w.files.has(file)) return clone(w.files.get(file));
@@ -1851,6 +1861,39 @@ test('世界:SC7 读不到在线 runner 时按配置值和上一次成功读数�
   fresh.runnersFail = true;
   assert.equal(await runnerPeak(fresh, 6), 2);
   assert.equal(fresh.logged('runners-read-failed')[0].limit, 2);
+});
+
+test('世界:SC4 一个结果写了额度暂停后,同轮还没领取的 PR 不再领取派发,暂停到期才派(#143)', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  for (const pr of [1, 2, 3]) w.openPr(pr, `h${pr}`, { durationMs: 5 * MIN });
+  w.serverMivo.set(1, { quota: true });
+  const t0 = w.now;
+  let proc = w.start();
+  assert.ok(await w.runUntil(() => w.logged('quota-pause').length === 1, { maxMs: 30 * MIN }));
+  const pausedAt = w.now;
+  while (w.now - t0 < 50 * MIN) {
+    if (proc.settled) { assert.equal(proc.failure, null, String(proc.failure?.stack)); w.now += 3 * MIN; proc = w.start(); continue; }
+    if (!(await w.step())) break;
+  }
+  const during = w.dispatches.filter((d) => d.at > pausedAt && d.at < pausedAt + 60 * MIN && d.pr !== 1);
+  assert.deepEqual(during.map((d) => d.pr), [], '暂停期间不派发别的 PR');
+  assert.equal(w.read(w.state('pause.json')).reason !== undefined, true);
+});
+
+test('世界:SC3 冷却期已经生效时,新的中途失败结果不再顺延 MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL(#143)', async () => {
+  const w = makeWorld({ maxParallel: 2, instance: 'mivo', mode: 'live' });
+  const midRun = { codex: { credential: { backupConfigured: true, primaryFailedMidRun: true, active: 'backup', startedOn: 'primary',
+    switched: { kind: 'auth', status: 401, midRun: true }, primaryOk: false, down: null, warnings: [] }, attempts: [] } };
+  for (const pr of [1, 2, 3]) { w.openPr(pr, `h${pr}`, { durationMs: (2 + pr * 3) * MIN }); w.serverMivo.set(pr, midRun); }
+  let proc = w.start();
+  const t0 = w.now;
+  while (w.now - t0 < 40 * MIN) {
+    if (proc.settled) { assert.equal(proc.failure, null, String(proc.failure?.stack)); w.now += 3 * MIN; proc = w.start(); continue; }
+    if (!(await w.step())) break;
+  }
+  assert.equal(w.logged('collected').length >= 3 || w.dispatches.length >= 3, true, '三个 PR 都审完收回');
+  const sets = w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL');
+  assert.equal(sets.length, 1, `写了 ${sets.length} 次冷却期:${JSON.stringify(sets)}`);
 });
 
 test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再调 context 判门,沿用上轮结论;满 30 分钟兜底重判', async () => {

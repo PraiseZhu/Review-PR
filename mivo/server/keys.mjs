@@ -1,6 +1,8 @@
 // keys.mjs — 模型网关的主 key 与备用 key(维护者 2026-10-18 定的规则):
 //   - 每轮都从主 key(LITELLM_CREDENTIALS_JSON)开始。只有「确定是 key 本身的问题」(codex.mjs 的 toKeyFailure:认证失败、
-//     额度/预算用完、没有该模型权限、限流)才换备用 key,同模型同档位原地重跑一次;不占备用模型那一次机会。
+//     额度/预算用完、没有该模型权限)才换备用 key,同模型同档位原地重跑一次;不占备用模型那一次机会。
+//   - 限流(429 且正文没有 budget 字样,#143)不换 key:按 Retry-After(没有就 60 秒)等待后用同一把 key 重试,最多 3 次、
+//     总等待不超过 5 分钟,等待时间计入模型预算;重试用完仍限流就当普通失败(可换备用模型),不算额度类、不让 Mini 暂停。
 //   - 超时、卡住、5xx、断网、参数错、模型不存在、答卷不合格都不换 key,照旧走「换备用模型 / 暂停」。
 //   - 一轮里只换一次、不换回:之后的调用(备用模型、核对员)都用备用 key。两把都报 key 错误时 quota 为真,Mini 照旧暂停 60 分钟。
 //   - 主 key 审到一半(模型已经产出过条目)才报 key 错误:剩余时间够就同样换备用 key 重跑,并记 primaryFailedMidRun,
@@ -48,6 +50,31 @@ export function toKeyRing(env, nowMs = Date.now()) {
   };
 }
 
+export const RATE_LIMIT_RETRIES = 3;
+export const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000;
+export const RATE_LIMIT_MAX_WAIT_MS = 5 * 60_000;
+
+/** 限流报错里的 Retry-After(秒,或带 ms 单位);认不出时按 60 秒。 */
+export function toRateLimitWait(message) {
+  const m = String(message ?? '').match(/retry[-_ ]?after\D{0,5}(\d+(?:\.\d+)?)\s*(ms|milliseconds?)?/i);
+  if (!m) return RATE_LIMIT_DEFAULT_WAIT_MS;
+  const ms = m[2] ? Number(m[1]) : Number(m[1]) * 1000;
+  return Number.isFinite(ms) ? Math.min(Math.max(0, Math.round(ms)), RATE_LIMIT_MAX_WAIT_MS) : RATE_LIMIT_DEFAULT_WAIT_MS;
+}
+
+/**
+ * 一次调用限流失败后要不要同 key 重试:返回 { waitMs } 或 null。retries 是已经重试的次数,waitedMs 是已经等过的总时长,
+ * remainingMs 是这段剩余的模型预算,minRetryMs 是重试至少要留的运行时间。
+ */
+export function toRateLimitRetry({ result, retries, waitedMs, remainingMs, minRetryMs }) {
+  if (result?.ok || result?.keyFailure?.kind !== 'rate-limit') return null;
+  if (retries >= RATE_LIMIT_RETRIES) return null;
+  const waitMs = toRateLimitWait(result.finalError);
+  if (waitedMs + waitMs > RATE_LIMIT_MAX_WAIT_MS) return null;
+  if (remainingMs - waitMs < minRetryMs) return null;
+  return { waitMs };
+}
+
 /** 两把 key 原文,给 runCodex 的 redactKeys:产物里任何一把都不能出现。 */
 export const keyTexts = (ring) => [ring.primary?.apiKey, ring.backup?.apiKey].filter(Boolean);
 
@@ -63,6 +90,7 @@ export function toKeySwitch(ring, result) {
   if (ring.active !== 'primary') return null;
   if (!result.keyFailure && (result.ok || result.outputStarted)) ring.primaryOk = true;
   if (result.ok || !result.keyFailure) return null;
+  if (result.keyFailure.kind === 'rate-limit') return null; // 限流不换 key(#143)
   if (!ring.backup) return null;
   return { kind: result.keyFailure.kind, status: result.keyFailure.status ?? null, midRun: result.outputStarted === true };
 }
@@ -75,6 +103,7 @@ export function noteKeyResult(ring, credential, result, phase) {
   const last = credential === 'backup' || !ring.backup;
   // 同一把 key 后面又成功了(例如备用 key 没有主审模型的权限,备用模型却能用):它不是 down。
   if (!result?.keyFailure) { if (last && (result?.ok || result?.outputStarted)) ring.down = null; return; }
+  if (result.keyFailure.kind === 'rate-limit') return; // 限流是短暂的,不说明 key 坏了(#143)
   if (last) {
     ring.down = { kind: result.keyFailure.kind, status: result.keyFailure.status ?? null, credential, phase };
   }

@@ -10,7 +10,6 @@ import { scrubSecrets } from '../lib/report.mjs';
 
 const PROVIDER_ID = 'company-litellm';
 const SHELL_ENV_EXCLUDE = ['CODEX_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GH_TOKEN', 'GITHUB_TOKEN'];
-export const QUOTA_RE = /\b(?:401|403|429)\b|insufficient_quota|budget|quota|rate.?limit|Unauthorized|Forbidden/i;
 
 /**
  * 一次失败调用的最终错误:取最后一个 turn.failed 的 error.message;没有就取最后一个不是「Reconnecting...」的顶层 error 事件。
@@ -30,9 +29,11 @@ export function toFinalError(stdout) {
 }
 
 /**
- * 最终错误是不是「key 本身的问题」(维护者 2026-10-18 定的换备用 key 条件):认证失败(401、key 无效/过期/被封)、
- * 额度或预算用完、没有该模型的权限(403)、限流(429,CLI 自己已经退避重试过 5 次)。其余(5xx、断网、参数错、
- * 模型不存在、答卷不合格、超时、卡住)返回 null,不换 key。网关是 LiteLLM:401 样本见 codex.test.mjs(2026-10-18 实测)。
+ * 最终错误是不是「key 本身的问题」(维护者 2026-10-18 定的条件):认证失败(401、key 无效/过期/被封)、
+ * 额度或预算用完、没有该模型的权限(403)、限流(429)。其余(5xx、断网、参数错、模型不存在、答卷不合格、超时、卡住)
+ * 返回 null。网关是 LiteLLM:401 样本见 codex.test.mjs(2026-10-18 实测)。
+ * 限流(kind=rate-limit)是短暂的(#143):review.mjs 用同一把 key 等一会儿重试,不换备用 key、不算额度类。
+ * 网关预算用完也回 429,但正文带 budget 字样,先判成 budget。
  */
 export function toKeyFailure(message) {
   const text = String(message ?? '');
@@ -269,8 +270,11 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
   const stdout = readFileSync(stdoutFile, 'utf8');
   const rawAnswer = readFileSync(answerFile, 'utf8').trim();
   const errorEvents = stdout.split('\n').filter((line) => /"type"\s*:\s*"(?:error|turn\.failed)"/.test(line)).join('\n');
-  const quota = QUOTA_RE.test(`${stderr.slice(-4000)}\n${errorEvents.slice(-4000)}`) && exitCode !== 0;
-  const keyFailure = exitCode !== 0 && !timedOut && !idleKilled ? toKeyFailure(toFinalError(stdout)) : null;
+  const finalError = exitCode !== 0 && !timedOut && !idleKilled ? toFinalError(stdout) : null;
+  const keyFailure = finalError ? toKeyFailure(finalError) : null;
+  // 额度类(Mini 据此暂停派发)只认最终错误判出的 key 问题,而且不含限流(#143):原先用 QUOTA_RE 扫 stderr 和所有 error 事件,
+  // 5xx 正文里的「rate limit」、先有一次 429 重连最后超时退出的调用都会被当成额度问题暂停 60 分钟。
+  const quota = Boolean(keyFailure) && keyFailure.kind !== 'rate-limit';
   const outputStarted = events.outputItems > 0;
   let answer = null;
   if (rawAnswer) {
@@ -279,7 +283,7 @@ export async function runCodex({ codexBin, workdir, prompt, schema, model, effor
       try { answer = fenced ? JSON.parse(fenced[1]) : null; } catch { answer = null; }
     }
   }
-  const base = { exitCode, timedOut, idleKilled, quota, keyFailure, outputStarted, durationMs: Date.now() - started, model, effort, stdoutFile, stderrFile, answerFile, ...events };
+  const base = { exitCode, timedOut, idleKilled, quota, keyFailure, finalError: finalError ? finalError.slice(0, 1000) : null, outputStarted, durationMs: Date.now() - started, model, effort, stdoutFile, stderrFile, answerFile, ...events };
   const failed = (extra) => ({ ...base, ok: false, stderrTail: toStderrTail(stderr, secrets), ...extra });
   if (timedOut) return failed({ answer: null, error: `审查超时(${Math.round(timeoutMs / 60000)} 分钟)` });
   if (idleKilled) return failed({ answer: null, error: `审查 ${Math.round(idleMs / 60000)} 分钟没有任何输出,判定卡住` });

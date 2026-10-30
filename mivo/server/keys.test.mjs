@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary, noteKeyResult } from './keys.mjs';
+import { toKeyRing, toKeySwitch, switchToBackup, activeCredentials, keyTexts, toCredentialSummary, noteKeyResult, toRateLimitWait, toRateLimitRetry,
+  RATE_LIMIT_DEFAULT_WAIT_MS, RATE_LIMIT_MAX_WAIT_MS } from './keys.mjs';
 
 const PRIMARY = JSON.stringify({ api_key: 'sk-primary-AAAAAAAA', base_url: 'https://gw.example.com/v1' });
 const NOW = Date.parse('2026-10-18T03:00:00Z');
@@ -71,4 +72,34 @@ test('down:最后能用的那把 key 报 key 错误才记;同一把后来又成�
   const noBackup = toKeyRing({ LITELLM_CREDENTIALS_JSON: PRIMARY }, NOW);
   noteKeyResult(noBackup, 'primary', { ok: false, keyFailure: { kind: 'budget', status: null } }, 'review');
   assert.equal(noBackup.down.credential, 'primary');
+});
+
+test('限流(#143):不换备用 key、不记 down', () => {
+  const ring = toKeyRing(env(), NOW);
+  const limited = { ok: false, keyFailure: { kind: 'rate-limit', status: 429 }, outputStarted: false };
+  assert.equal(toKeySwitch(ring, limited), null);
+  assert.equal(ring.active, 'primary');
+  const noBackup = toKeyRing({ LITELLM_CREDENTIALS_JSON: PRIMARY }, NOW);
+  noteKeyResult(noBackup, 'primary', limited, 'review');
+  assert.equal(noBackup.down, null, '限流不说明 key 坏了');
+  // 预算用完的 429 照旧换 key
+  assert.deepEqual(toKeySwitch(ring, { ok: false, keyFailure: { kind: 'budget', status: 429 }, outputStarted: false }), { kind: 'budget', status: 429, midRun: false });
+});
+
+test('限流等待(#143):按 Retry-After,没有就 60 秒;最多重试 3 次、总等待不超过 5 分钟、要留够运行时间', () => {
+  assert.equal(toRateLimitWait('unexpected status 429 Too Many Requests: Rate limit reached. Please retry after 7 seconds'), 7000);
+  assert.equal(toRateLimitWait('429 ... Retry-After: 30'), 30_000);
+  assert.equal(toRateLimitWait('429 retry_after=250ms'), 250);
+  assert.equal(toRateLimitWait('429 retry after 9999 seconds'), RATE_LIMIT_MAX_WAIT_MS);
+  assert.equal(toRateLimitWait('unexpected status 429 Too Many Requests: Crossed TPM / RPM'), RATE_LIMIT_DEFAULT_WAIT_MS);
+  assert.equal(toRateLimitWait(null), RATE_LIMIT_DEFAULT_WAIT_MS);
+  const limited = { ok: false, keyFailure: { kind: 'rate-limit', status: 429 }, finalError: '429 Crossed TPM / RPM' };
+  const base = { result: limited, retries: 0, waitedMs: 0, remainingMs: 100 * 60_000, minRetryMs: 15 * 60_000 };
+  assert.deepEqual(toRateLimitRetry(base), { waitMs: 60_000 });
+  assert.deepEqual(toRateLimitRetry({ ...base, retries: 2, waitedMs: 120_000 }), { waitMs: 60_000 });
+  assert.equal(toRateLimitRetry({ ...base, retries: 3, waitedMs: 180_000 }), null, '最多 3 次');
+  assert.equal(toRateLimitRetry({ ...base, retries: 1, waitedMs: 250_000 }), null, '总等待超过 5 分钟');
+  assert.equal(toRateLimitRetry({ ...base, remainingMs: 15.5 * 60_000 }), null, '等完剩余时间不够跑一次');
+  assert.equal(toRateLimitRetry({ ...base, result: { ...limited, keyFailure: { kind: 'budget', status: 429 } } }), null, '预算用完不等');
+  assert.equal(toRateLimitRetry({ ...base, result: { ok: true } }), null);
 });
