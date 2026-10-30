@@ -665,8 +665,9 @@ async function codex() {
               prompt: buildVerifyPrompt({ finding, meta: { number: ctx.pr, title: ctx.meta?.title }, workdir: REPO_DIR, rulesBaseDir: state.rulesBaseDir ?? null }),
               schema: VERIFY_SCHEMA, minRetryMs: perCallMs, phase: 'verify', remainingMs: () => budget.budgetMs - (Date.now() - budgetAt) - SETTLE_MS });
             await clearRunArtifacts(state, run1.label);
-            // 换 key 重跑时,被换掉的那次也花了时间:一起算进核对员预算,不然预算会少算。
-            const spent = run1.keySwitch?.retried ? (run1.keySwitch.durationMs ?? 0) : 0;
+            // 换 key 重跑时被换掉的那次、限流等待和限流失败的那几次也花了时间:一起算进核对员预算,不然预算会少算(#143)。
+            const spent = (run1.keySwitch?.retried ? (run1.keySwitch.durationMs ?? 0) : 0)
+              + (run1.result.rateLimitRetries ?? []).reduce((sum, r) => sum + (r.waitMs ?? 0) + (r.durationMs ?? 0), 0);
             return spent ? { ...run1.result, durationMs: (run1.result.durationMs ?? 0) + spent } : run1.result;
           } })
         : { mode: cfg.mode, items: [], skipped: [] };

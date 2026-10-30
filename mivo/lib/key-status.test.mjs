@@ -30,3 +30,10 @@ test('key 状态:结果包记了 down(核对员也报 key 错误)就是 down,哪
   const noBackup = { ...credential, backupConfigured: false, switched: null, down: { kind: 'budget', status: null, credential: 'primary', phase: 'review' } };
   assert.match(toKeyStatusReason('down', noBackup, []), /主 key 报 key 错误:额度或预算用完,没有配置备用 key/);
 });
+
+test('key 状态(#143):最后一次是限流(重试用完)不报 down;没有备用 key 或在备用 key 上都一样', () => {
+  const limited = { credential: 'primary', ok: false, keyFailure: { kind: 'rate-limit', status: 429 } };
+  assert.notEqual(toKeyStatus({ backupConfigured: false, startedOn: 'primary', primaryOk: false }, [limited]), 'down');
+  assert.notEqual(toKeyStatus({ backupConfigured: true, startedOn: 'backup', preferBackup: true }, [{ ...limited, credential: 'backup' }]), 'down');
+  assert.equal(toKeyStatus({ backupConfigured: false, startedOn: 'primary' }, [{ ...limited, keyFailure: { kind: 'budget', status: 429 } }]), 'down', '预算用完照旧 down');
+});

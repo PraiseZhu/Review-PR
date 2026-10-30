@@ -12,7 +12,8 @@ export function toKeyStatus(credential, attempts = []) {
   if (!credential || typeof credential !== 'object') return null;
   const last = Array.isArray(attempts) ? attempts.at(-1) : null;
   if (credential.down) return 'down';
-  if (last?.keyFailure && (last.credential === 'backup' || !credential.backupConfigured)) return 'down';
+  // 限流是短暂的(#143),不说明 key 坏了:不报 down,免得看门狗误发「两把都不能用」。
+  if (last?.keyFailure && last.keyFailure.kind !== 'rate-limit' && (last.credential === 'backup' || !credential.backupConfigured)) return 'down';
   if (credential.switched || (credential.startedOn === 'backup' && !credential.preferBackup)) return 'backup';
   if (credential.primaryOk) return 'primary';
   return null;

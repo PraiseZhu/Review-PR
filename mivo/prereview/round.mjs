@@ -236,13 +236,15 @@ function setRepoVariable(name, body, event) {
 }
 
 // 服务器结果收回后调用:审到一半主 key 报 key 错误 → 写冷却期;key 状态变了 → 写状态变量(本机记一份,没变不重写)。
-function noteKeyState(server, { pr, runId }) {
+function noteKeyState(server, { pr, runId, intentAt = null }) {
   const credential = server.mivo?.codex?.credential;
   if (!credential || !isKeyWriter()) return;
   const attempts = server.mivo?.codex?.attempts ?? [];
   // 冷却期已经生效时不再顺延(#143):40 路并发时每个中途失败的结果都顺延 60 分钟,主 key 好了也一直用不回来。
+  // 维护者换了主 key(resetPreferBackupIfRotated 提前结束冷却)之前就派出的审查,失败说的是旧 key,也不重开冷却。
   const cooling = Date.parse(readJson(stateFile('key-prefer-backup.json'), null)?.until ?? '') > Date.now();
-  if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling) {
+  const beforeRotation = Date.parse(intentAt ?? '') < Date.parse(readJson(stateFile('key-rotated.json'), null)?.rotatedAt ?? '');
+  if (credential.primaryFailedMidRun && credential.backupConfigured && !cooling && !beforeRotation) {
     const until = new Date(Date.now() + PREFER_BACKUP_MS).toISOString();
     if (setRepoVariable(PREFER_BACKUP_VARIABLE, until, 'key-prefer-backup')) {
       writeJson(stateFile('key-prefer-backup.json'), { until, setAt: nowIso(), pr, runId });
@@ -272,6 +274,7 @@ function resetPreferBackupIfRotated() {
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
   if (!del.ok) { log('key-prefer-backup-reset-error', { error: String(del.stderr || del.error || '').trim().slice(0, 200) }); return; }
   rmQuiet(stateFile('key-prefer-backup.json'));
+  writeJson(stateFile('key-rotated.json'), { rotatedAt: new Date(rotatedAt).toISOString() });
   log('key-prefer-backup-reset', { rotatedAt: new Date(rotatedAt).toISOString() });
 }
 function rmQuiet(file) { try { unlinkSync(file); } catch { /* 已经没有了 */ } }
@@ -1682,7 +1685,7 @@ function collectServerRun(ctx, entry, active) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
-  noteKeyState(server, { pr: task.pr, runId: entry.runId });
+  noteKeyState(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt });
   const health = server.mivo?.health;
   let completedRun = false;
   if (health && health.ok === false) {
