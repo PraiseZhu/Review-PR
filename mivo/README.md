@@ -409,7 +409,9 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 ## 并发与滚动接单
 
-- 全进程「在审」（已派发、还没收回结果的服务器 run，GitHub 上 queued 或 in_progress 都算；还不知道有没有派出的派发也算；正在判门的任务也算）不超过配置的 `maxParallel`（上限 10）。每次领取任务前都先查全局在审数，满了就不领取。
+- 全进程「在审」（已派发、还没收回结果的服务器 run，GitHub 上 queued 或 in_progress 都算；还不知道有没有派出的派发也算；正在判门的任务也算）不超过配置的 `maxParallel`（上限 40）和在线 runner 数中较小的一个（#142）。每次领取任务前都先查全局在审数，满了就不领取。
+- 在线 runner 数：每 3 分钟读一次 `repos/<workflowRepo>/actions/runners`，只数带 `runnerLabel`（默认 `mivo-review`）且在线的，记在状态目录 `runners.json`，launchd 拉起的各进程共用。读这个接口要仓库 admin 读权限。读失败时按配置值和上一次成功读数中较小的一个，并记日志 `runners-read-failed`；在线数少于配置值时记 `runners-short`。Mini 巡检按这两个事件告警。
+- `maxParallel`、`dailyCap` 不填用默认 3 / 30；填了必须是正整数（`maxParallel` 不超过 40），0、负数、非数字启动即报错，不再悄悄回落。
 - 判门是异步的，全进程最多 `gateParallel` 路同时判（配置 JSON 字段，1–16 的整数，不配按 8；#141）。判门要跑 `context.mjs` 等脚本，一次约 20–30 秒；门禁动作脚本（发提醒、改标签、开关 issue、重跑 CI）在进程内排队、一次只跑一个，因为有的脚本读改写共享状态（如 `notify-author-resolve.mjs` 的 `reminded.json`）；子进程跑着时，别的判门、进度轮询、接单照常进行。判门从领取起就算占槽，判完派发的先登记成在审、再释放判门名额，别的轮次看不到过时的空槽。判门期间作者可能推了新提交：派发前、关讨论 issue 前各现读一次 PR 当前 head，变了就不派旧 head（记 `state-changed`、日志 `dispatch-head-moved`）、不关 issue；批准 workflow 时把判门的 head 交给 `approve-workflows.mjs --expected-head`，只批这个 head 的 run；排队中的动作开跑前再查一次锁，丢锁就不跑。任何一个判门结束都会叫醒本轮，马上领取下一个，不等满轮询间隔。
 - 没变就不重判（#141）：候选名单里这个 PR 被选中只因为更新时间变了（打标签、留言），head、CI、讨论状态都没变，而 round-state 里上轮结论是 `threads-unresolved`（等作者 resolve）或 `ci-pending`（等 CI）、上轮没有标 retry（动作失败、提醒没发出去的要重试，照常判门），且同一 head 距上次真正判门不到 30 分钟（状态目录 `gate-last.json`）时，不调 `context.mjs`，沿用上轮结论写结果（带 `gateSkipped: true`，日志 `gate-skipped`）。和时间有关的结论（bot-pending、维护者确认、受保护路径、出错重试）照常每轮重判；满 30 分钟兜底重判一次。
 - 已有轮次在等服务器审查时，每 3 分钟检查一次：先续锁、写心跳、看部署暂停，再判断要不要另开一轮。同时满足下面几条才另开一轮：没有部署暂停、不在 06:00–07:00 维护窗口、没有暂停（`pause.json`）、没有轮次还积压着未领取的任务、有空槽。轮次重叠多久都照常接单（用户 2026-10-14：白天不停接单）。

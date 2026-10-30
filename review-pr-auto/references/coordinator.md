@@ -8,7 +8,7 @@ queue 只准备任务、保存状态和清理 worktree，不会调用宿主的 s
 ## 开始与领取
 
 ```text
-node "<Q>" init --plan <plan.json> --lock-token <token> --concurrency <实际可用子 agent 数，1..10>
+node "<Q>" init --plan <plan.json> --lock-token <token> --concurrency <实际可用子 agent 数，1..40>
 node "<Q>" watch --plan <plan.json> --lock-token <token>
 node "<Q>" claim --plan <plan.json> --lock-token <token>
 ```

@@ -2,19 +2,20 @@
 # install-mini.sh — 在 Mini 上部署或升级一个前置审查实例(launchd 每 180 秒跑一轮)。
 #
 #   bash install-mini.sh --sha <Review-PR 提交> --instance <名字> --target-repo <owner/repo> \
-#        --mode <dry-run|sandbox|live> --workflow-ref <分支> [--rules <sandbox>] [--max-parallel 3] [--daily-cap 30] [--no-load]
+#        --mode <dry-run|sandbox|live> --workflow-ref <分支> [--rules <sandbox>] [--max-parallel N] [--daily-cap N] [--no-load]
 #
 # 全部落在 ~/mivo-prereview/ 下,不碰任何已有仓库和已有 launchd 任务:
 #   skill/                    PraiseZhu/Review-PR,detached 在 --sha
 #   repos/<instance>/         审查对象仓库的独立 clone(只给 Cindy 脚本读 remote、建临时 worktree)
 #   state/<instance>/         Cindy 状态目录(锁、轮次、round-state)
-#   config/<instance>.json    round.mjs 的配置
+#   config/<instance>.json    round.mjs 的配置;重跑时合并写入(install-config.mjs):--max-parallel / --daily-cap / --rules 不给就保留原值
+#                             (新文件默认 3 / 30,maxParallel 上限 40),viewerLogin 等手工加的字段不动
 #   ~/Library/Logs/mivo-prereview/<instance>/   运行日志
 # launchd 标签:com.mivo.prereview.<instance>
 set -euo pipefail
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 
-SHA="" INSTANCE="" TARGET="" MODE="" REF="" RULES="" MAX_PARALLEL=3 DAILY_CAP=30 LOAD=1
+SHA="" INSTANCE="" TARGET="" MODE="" REF="" RULES="" MAX_PARALLEL="" DAILY_CAP="" LOAD=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha) SHA="$2"; shift 2 ;;
@@ -62,13 +63,10 @@ if [ "$RULES" = "sandbox" ]; then RULES_FILE="$ROOT/skill/mivo/config/sandbox-pr
 
 # 3. 配置
 CONFIG="$ROOT/config/${INSTANCE}.json"
-node -e '
-const [file, repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap] = process.argv.slice(1);
-const config = { instance: file.split("/").pop().replace(/\.json$/, ""), repoRoot, stateDir, targetRepo: target, mode,
-  workflowRepo: "xindong/mivo-canvas-plugin", workflowRef: ref, logDir, rulesFile: rules || null,
-  maxParallel: Number(maxParallel), dailyCap: Number(dailyCap), pollSeconds: 30 };
-require("node:fs").writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
-' "$CONFIG" "$REPO" "$ROOT/state/$INSTANCE" "$TARGET" "$MODE" "$REF" "$LOGS" "$RULES_FILE" "$MAX_PARALLEL" "$DAILY_CAP"
+node "$ROOT/skill/mivo/prereview/install-config.mjs" "$CONFIG" "$(node -e '
+const [repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap] = process.argv.slice(1);
+console.log(JSON.stringify({ repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap }));
+' "$REPO" "$ROOT/state/$INSTANCE" "$TARGET" "$MODE" "$REF" "$LOGS" "$RULES_FILE" "$MAX_PARALLEL" "$DAILY_CAP")"
 
 # 4. launchd 任务(StartInterval 180;上一轮没跑完时 launchd 不会再起第二个)。
 NODE_BIN="$(command -v node)"

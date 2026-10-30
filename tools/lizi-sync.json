@@ -58,6 +58,7 @@
     "review-pr/scripts/review-history.mjs",
     "review-pr/scripts/review-markers.mjs",
     "review-pr/scripts/review-queue.mjs",
+    "review-pr/scripts/review-queue.test.mjs",
     "review-pr/scripts/review-round.mjs",
     "review-pr/scripts/review-round.test.mjs",
     "review-pr/scripts/run-log.mjs",

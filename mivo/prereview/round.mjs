@@ -4,7 +4,7 @@
 // 不同点(D1):每个 PR 的「子 agent」拆成两段——判门在本机用 Cindy 脚本做完(不调模型),
 // 需要代码审查时派发服务器上的 review-pr.yml,服务器审完把结果包回传,这里写进本轮目录。
 // 滚动接单:一个进程可以同时推进多轮。已有轮次在等服务器审查时,每 3 分钟检查一次新候选,有空槽就另开一轮;
-// 全进程在审(已派发、还没收回结果的服务器 run,以及还不知道有没有派出的派发)不超过 maxParallel。
+// 全进程在审(已派发、还没收回结果的服务器 run,以及还不知道有没有派出的派发)不超过 maxParallel 和在线 runner 数中较小的一个。
 // 所有轮次结束时进程退出,launchd 再拉起;进入 06:00 维护窗口、检出新 SHA、维护者名单变化、部署暂停时不再开新轮,
 // 运行满 24 小时是保险上限。不再开新轮之后,在审只剩查不清的派发的轮次按停机握手停下,进程照样退出。规则见 lib/admission.mjs。
 //
@@ -24,7 +24,7 @@ import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -59,8 +59,16 @@ function loadConfig() {
   for (const key of ['repoRoot', 'stateDir', 'workflowRepo', 'workflowRef', 'logDir', 'targetRepo']) {
     if (!config[key]) throw new Error(`配置缺少 ${key}`);
   }
-  config.maxParallel = Math.max(1, Math.min(10, Number(config.maxParallel) || 3));
-  config.dailyCap = Number(config.dailyCap) || 30;
+  // 不填用默认值;填了就必须是正整数,0、负数、非数字启动即报错(#142:原先 dailyCap 填 0 会悄悄回落成 30)。
+  // maxParallel 上限 40,实际同时在审数还要再和在线 runner 数取小(parallelLimit)。
+  for (const [key, fallback, max, rule] of [['maxParallel', 3, 40, '1–40 的整数'], ['dailyCap', 30, Number.MAX_SAFE_INTEGER, '正整数']]) {
+    if (config[key] === undefined) { config[key] = fallback; continue; }
+    if (!Number.isInteger(config[key]) || config[key] < 1 || config[key] > max) throw new Error(`${key} 须是${rule}:${JSON.stringify(config[key])}`);
+  }
+  if (config.runnerLabel === undefined) config.runnerLabel = 'mivo-review';
+  if (typeof config.runnerLabel !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(config.runnerLabel)) {
+    throw new Error(`runnerLabel 不是合法的 runner 标签:${JSON.stringify(config.runnerLabel)}`);
+  }
   config.pollSeconds = Number(config.pollSeconds) || 30;
   // 判门并行数(#141):每次判门要跑 context.mjs 等脚本约 20–30 秒,串行时每小时最多派一百个左右。
   if (config.gateParallel === undefined) config.gateParallel = 8;
@@ -296,7 +304,37 @@ function heartbeatPaused() {
 // ── 滚动接单的小工具 ────────────────────────────────────────────────────────
 // 判门中的任务也算占槽:判门是异步的,判完可能马上派发,不算进去别的轮次会把这个槽当空槽再领一个。
 const roundLoads = () => ROUNDS.map((r) => ({ finished: r.finished, queued: r.queued, inflight: r.inflight.size + (r.gating ?? 0) }));
-const freeSlots = () => toFreeSlots({ rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
+const freeSlots = () => toFreeSlots({ rounds: roundLoads(), maxParallel: PARALLEL_LIMIT });
+
+// 在线槽位(#142):每 3 分钟读一次带 runnerLabel 的在线 runner 数,记在 runners.json(launchd 每 3 分钟拉起的进程共用,
+// 不每个进程都读一次)。读失败用上一次成功读数和配置值中较小的一个,并记 runners-read-failed;在线数少于配置值记
+// runners-short。Mini 的巡检按这两个事件告警。读 actions/runners 要仓库 admin 读权限。
+let PARALLEL_LIMIT = 0;
+function refreshParallelLimit() {
+  const file = stateFile('runners.json');
+  const saved = readJson(file, {}) ?? {};
+  let online = null;
+  let error = null;
+  if (Number.isInteger(saved.online) && Date.now() - Number(saved.readAtMs) >= 0 && Date.now() - Number(saved.readAtMs) < RUNNER_READ_EVERY_MS) {
+    online = saved.online;
+  } else {
+    try {
+      const r = ghRead(['api', `repos/${CONFIG.workflowRepo}/actions/runners?per_page=100`], { allowFail: true, timeoutMs: 60_000 });
+      if (!r.ok) error = String(r.stderr || r.error || 'gh 失败').slice(0, 200);
+      else {
+        online = toOnlineRunners(JSON.parse(r.stdout), CONFIG.runnerLabel);
+        if (online === null) error = '返回不完整';
+      }
+    } catch (e) { error = e.message.slice(0, 200); }
+    if (online !== null) writeJson(file, { online, readAtMs: Date.now(), label: CONFIG.runnerLabel });
+  }
+  const result = toParallelLimit({ maxParallel: CONFIG.maxParallel, online, lastOnline: saved.online });
+  if (result.readFailed) log('runners-read-failed', { error, lastOnline: result.online, maxParallel: CONFIG.maxParallel, limit: result.limit });
+  if (result.short) logOnce(`runners-short:${result.online}:${CONFIG.maxParallel}`, 'runners-short',
+    { online: result.online, maxParallel: CONFIG.maxParallel, label: CONFIG.runnerLabel });
+  if (result.limit !== PARALLEL_LIMIT) log('parallel-limit', { limit: result.limit, online: result.online, maxParallel: CONFIG.maxParallel });
+  PARALLEL_LIMIT = result.limit;
+}
 const busyPrs = () => toBusyPrs(ROUNDS.filter((r) => !r.completed).map((r) => ({ ...r.plan, released: r.released })));
 const admitScript = (args) => script(join(HERE, 'admit-candidates.mjs'), ['--repo-root', CONFIG.repoRoot, ...args], { timeoutMs: 120_000 });
 const skillHead = () => run('git', ['-C', SKILL_ROOT, 'rev-parse', 'HEAD'], { allowFail: true }).stdout.trim();
@@ -566,6 +604,7 @@ async function main() {
   if (!prep.maintainerAuthority?.verified) throw new Error(`维护者权限未核实:${prep.error}`);
   const token = prep.lock.token;
   const digest = prep.maintainerAuthority.digest;
+  refreshParallelLimit();
   let lockHandled = false;
   try {
     let planFiles;
@@ -696,16 +735,17 @@ async function admitLoop(token, digest, drives) {
     try {
       if (!refreshLock(token)) continue;
       writeHeartbeat();
+      refreshParallelLimit();
       sweepClosedPrLabels();
       // Mini 上检出了新 SHA:不再用内存里的旧代码开新轮,手上的跑完退出,launchd 用新代码拉起。
       if (!ADMISSION_CLOSED && skillHead() !== SKILL_HEAD) closeAdmission('skill-updated');
       const hold = Boolean(deployHold());
       if (hold) startQuiescing();
       const decision = toAdmissionDecision({ nowMs: Date.now(), startedAtMs: STARTED_AT, closedReason: ADMISSION_CLOSED, deployHold: hold,
-        paused: Boolean(pausedUntil()), inWindow: inBusinessWindow(), rounds: roundLoads(), maxParallel: CONFIG.maxParallel });
+        paused: Boolean(pausedUntil()), inWindow: inBusinessWindow(), rounds: roundLoads(), maxParallel: PARALLEL_LIMIT });
       if (decision.close) closeAdmission(decision.reason);
       if (!decision.admit) {
-        if (decision.reason !== lastSkip) log('admit-skip', { reason: decision.reason, inflight: CONFIG.maxParallel - freeSlots() });
+        if (decision.reason !== lastSkip) log('admit-skip', { reason: decision.reason, inflight: PARALLEL_LIMIT - freeSlots() });
         lastSkip = decision.reason;
         continue;
       }

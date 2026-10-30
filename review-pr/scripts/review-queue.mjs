@@ -56,7 +56,8 @@ export async function runQueueCommand(options, dependencies = {}) {
     if (!queue) {
       if (action !== 'init') throw new Error('先 init 队列，再调度 agent');
       const concurrency = Number(options.concurrency);
-      if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 10) throw new Error('concurrency 必须为 1..10 的宿主实际可用子 agent 名额');
+      // [MIVO-PATCH concurrency-40] Mivo 审查机最多 40 个服务器槽位(#142),上游是 1..10。
+      if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 40) throw new Error('concurrency 必须为 1..40 的宿主实际可用子 agent 名额');
       queue = { version: 1, runId: plan.runId, repo: plan.repo, concurrency, reconciled: false,
         tasks: planned.map((p) => ({ pr: p.pr, head: p.head, group: p.group, phase: 'queued', attempts: 0, reconciliationAttempts: 0 })) };
     }
