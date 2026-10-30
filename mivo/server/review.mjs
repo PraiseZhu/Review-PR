@@ -538,7 +538,8 @@ async function codex() {
     const retryLabel = `${label}-backup`;
     const second = await once(retryLabel, retryMs);
     noteKeyResult(ring, 'backup', second, phase);
-    return { result: second, label: retryLabel, credential: 'backup', keySwitch, left };
+    // 换 key 之前的限流等待和失败调用也带上,核对员预算按它们算时长(#143 复审 P2)。
+    return { result: first.rateLimitRetries ? { ...second, rateLimitRetries: first.rateLimitRetries } : second, label: retryLabel, credential: 'backup', keySwitch, left };
   };
   // 一段主审:主模型一次;非额度类失败再换备用模型一次(额度类报错不换,交给 Mini 暂停新系统)。换备用 key 重跑不算一次尝试。
   // 同一次运行最多两段(初段 + 增量干净后的收口全量):每段有自己的尝试记录(nextAttempt 只看本段),但共用同一条总预算时钟

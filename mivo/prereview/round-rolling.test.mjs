@@ -1914,6 +1914,21 @@ test('世界:SC3 维护者换了主 key 之前派出的审查,晚到的中途失
   assert.equal(w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL').length, 0);
 });
 
+test('世界:SC3 Mini 重启后接着收的审查,派出时间早于换主 key 时,中途失败结果也不重开冷却期(#143 复审 P2)', async () => {
+  const w = makeWorld({ maxParallel: 1, instance: 'mivo', mode: 'live' });
+  w.openPr(1, 'h1');
+  const runId = w.seedRun(1, 'h1', 'R0', 'existing', { durationMs: 15 * MIN });
+  w.seedRound('R0', [{ pr: 1, head: 'h1', phase: 'running', agentId: `gha:${runId}:existing` }], { createdMs: w.now - 2 * MIN });
+  w.files.set(w.state('key-rotated.json'), { rotatedAt: iso(w.now) });
+  w.serverMivo.set(1, { codex: { credential: { backupConfigured: true, primaryFailedMidRun: true, active: 'backup', startedOn: 'primary',
+    switched: { kind: 'auth', status: 401, midRun: true }, primaryOk: false, down: null, warnings: [] }, attempts: [] } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.ok(w.logged('collected').some((e) => e.pr === 1), '结果已收回');
+  assert.equal(w.variableSets.filter((v) => v.name === 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL').length, 0);
+});
+
 test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再调 context 判门,沿用上轮结论;满 30 分钟兜底重判', async () => {
   const w = makeWorld();
   const t0 = w.now;

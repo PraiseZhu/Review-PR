@@ -53,11 +53,12 @@ if (mode === 'blocked') { console.log(JSON.stringify({ type: 'turn.failed', erro
 if (mode === '500') { console.log(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } })); console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 500 Internal Server Error: rate limit exceeded upstream' } })); process.exit(1); }
 if (mode === 'explode') { process.stderr.write('primary exploded'); process.exit(1); }
 // 429:N 前 N 次限流(带 Retry-After 1 秒)之后成功;429budget 网关预算用完(#143)
-if (mode.startsWith('verify429:') && verify) {
+if ((mode.startsWith('verify429:') || mode.startsWith('verify429then401:')) && verify) {
   const counter = path.join(ctl, 'vcount-' + key);
   const seen = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
   fs.writeFileSync(counter, String(seen + 1));
-  if (seen < Number(mode.slice(10))) { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 429 Too Many Requests: Rate limit reached. Please retry after 1 seconds' } })); process.exit(1); }
+  if (seen < Number(mode.split(':')[1])) { console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unexpected status 429 Too Many Requests: Rate limit reached. Please retry after 1 seconds' } })); process.exit(1); }
+  if (mode.startsWith('verify429then401:')) fail401();
 }
 if (mode.startsWith('429:')) {
   const counter = path.join(ctl, 'count-' + key);
@@ -287,4 +288,13 @@ test('核对员限流后重试成功:限流等待和失败的那次时长都算�
   assert.equal(r.verification.items[0].ok, true);
   assert.ok(r.verification.items[0].durationMs >= 1000, `durationMs=${r.verification.items[0].durationMs}`);
   assert.equal(r.codex.credential.switched, null);
+});
+
+test('核对员先限流、再报 401 换备用 key 成功:换 key 前的限流等待也算进核对员预算(#143 复审 P2)', { skip }, () => {
+  const r = runCodexPhase({ primary: 'verify429then401:1', backup: 'ok', main: ONE_P1, verifyMode: 'enforce' });
+  assert.deepEqual(r.calls, ['main openai/gpt-6-luna max primary', 'verify openai/gpt-6.1-sol medium primary',
+    'verify openai/gpt-6.1-sol medium primary', 'verify openai/gpt-6.1-sol medium backup']);
+  assert.equal(r.verification.items[0].ok, true);
+  // 限流等 1 秒 + 401 那次 0.4 秒
+  assert.ok(r.verification.items[0].durationMs >= 1400, `durationMs=${r.verification.items[0].durationMs}`);
 });

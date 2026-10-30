@@ -1031,7 +1031,9 @@ function resumeInflight(ctx, inflight, queue) {
     const intent = readIntent(ctx, task.pr);
     if (m && task.phase === 'running') {
       // 前置判门的状态(errors / retry / authorNotice)随派发意图落盘;只认 dispatch_id 对得上的那份。
+      // intentAt:派发时间,noteKeyState 据此判断这次审查是不是维护者换主 key 之前派出的(#143);意图文件对不上时用绑定时间。
       const entry = { dispatched: true, agentId: task.agentId, runId: m[1], dispatchId: m[2], task: item, dispatchedAt: task.boundAt,
+        intentAt: intent?.dispatchId === m[2] && intent.intentAt ? intent.intentAt : task.boundAt,
         gateResult: intent?.dispatchId === m[2] ? intent.gateResult ?? {} : {} };
       if (cancelIntent?.runId === m[1]) Object.assign(entry, { cancelIntent, cancelResend: true });
       finishResolution(intent);
@@ -1685,7 +1687,7 @@ function collectServerRun(ctx, entry, active) {
     writeJson(stateFile('pause.json'), { until: new Date(Date.now() + QUOTA_PAUSE_MS).toISOString(), reason: server.reason, runId: entry.runId });
     log('quota-pause', { pr: task.pr, reason: server.reason });
   }
-  noteKeyState(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt });
+  noteKeyState(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt ?? entry.dispatchedAt ?? null });
   const health = server.mivo?.health;
   let completedRun = false;
   if (health && health.ok === false) {
