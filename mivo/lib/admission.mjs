@@ -17,6 +17,25 @@ export const MAX_QUEUE_MINUTES = 120;
 export const QUEUE_SLOW_MINUTES = 30;
 
 /** 全进程还剩几个服务器审查槽位。rounds[i].inflight 是该轮已派发未收回的 run 数;已结束、失败的轮次也算。 */
+// 同时在审的上限(#142):配置的 maxParallel 和在线 runner 数中较小的一个。Mini 派得比服务器槽位多,多出来的会在
+// GitHub 上排队,排满 120 分钟就被取消重派。在线数每 3 分钟读一次;读不到时用上一次成功读数(没有就用配置值),并告警。
+export const RUNNER_READ_EVERY_MS = 3 * 60_000;
+
+/** 带 label 的在线 runner 数;返回不完整(分页没读全、字段不对)时返回 null,按读失败处理。 */
+export function toOnlineRunners(payload, label) {
+  const runners = payload?.runners;
+  if (!Array.isArray(runners) || !Number.isInteger(payload.total_count) || runners.length < payload.total_count) return null;
+  return runners.filter((r) => r?.status === 'online' && (r.labels ?? []).some((l) => l?.name === label)).length;
+}
+
+/** {limit, online, readFailed, short}:online 是这次读到的在线数(读失败传 null),lastOnline 是上一次成功读数。 */
+export function toParallelLimit({ maxParallel, online = null, lastOnline = null }) {
+  const readFailed = !Number.isInteger(online);
+  const known = readFailed ? (Number.isInteger(lastOnline) ? lastOnline : null) : online;
+  return { limit: known === null ? maxParallel : Math.min(maxParallel, known), online: known, readFailed,
+    short: known !== null && known < maxParallel };
+}
+
 export function toFreeSlots({ rounds = [], maxParallel }) {
   const inflight = rounds.reduce((sum, r) => sum + (Number(r?.inflight) || 0), 0);
   return Math.max(0, maxParallel - inflight);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, GATE_SKIP_MAX_MS,
+import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, GATE_SKIP_MAX_MS, toOnlineRunners, toParallelLimit,
   MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
 
 const T0 = Date.parse('2026-10-14T10:00:00Z');
@@ -343,4 +343,24 @@ test('canReleaseDeferredGate(#155):跳过判门写出的等讨论结果(gate.act
     outcome: 'threads-unresolved', reason: 'x', retry: false, errors: [], gateSkipped: true, gate: { actions: [] } };
   assert.equal(canReleaseDeferredGate({ task, result: skipped, roundId: 'R1' }), true);
   assert.equal(canReleaseDeferredGate({ task, result: { ...skipped, gate: undefined }, roundId: 'R1' }), false, '不带 gate 的旧写法不能释放');
+});
+
+test('toParallelLimit(#142):上限取配置值和在线 runner 数中较小的一个;读失败用上一次成功读数', () => {
+  assert.deepEqual(toParallelLimit({ maxParallel: 40, online: 40 }), { limit: 40, online: 40, readFailed: false, short: false });
+  assert.deepEqual(toParallelLimit({ maxParallel: 40, online: 35 }), { limit: 35, online: 35, readFailed: false, short: true });
+  assert.deepEqual(toParallelLimit({ maxParallel: 10, online: 40 }), { limit: 10, online: 40, readFailed: false, short: false });
+  assert.equal(toParallelLimit({ maxParallel: 40, online: 0 }).limit, 0, '一个都不在线就不派');
+  // SC7:读失败
+  assert.deepEqual(toParallelLimit({ maxParallel: 40, online: null, lastOnline: 30 }), { limit: 30, online: 30, readFailed: true, short: true });
+  assert.deepEqual(toParallelLimit({ maxParallel: 20, online: null, lastOnline: 30 }), { limit: 20, online: 30, readFailed: true, short: false });
+  assert.deepEqual(toParallelLimit({ maxParallel: 40, online: null }), { limit: 40, online: null, readFailed: true, short: false });
+});
+
+test('toOnlineRunners(#142):只数带标签且在线的 runner;返回不完整按读失败', () => {
+  const runner = (status, ...labels) => ({ status, labels: labels.map((name) => ({ name })) });
+  const payload = { total_count: 4, runners: [runner('online', 'self-hosted', 'mivo-review'), runner('online', 'mivo-review'),
+    runner('offline', 'mivo-review'), runner('online', 'other')] };
+  assert.equal(toOnlineRunners(payload, 'mivo-review'), 2);
+  assert.equal(toOnlineRunners({ ...payload, total_count: 150 }, 'mivo-review'), null, '分页没读全');
+  for (const bad of [null, [], {}, { runners: [] }, { total_count: 1 }]) assert.equal(toOnlineRunners(bad, 'mivo-review'), null);
 });

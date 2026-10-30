@@ -59,3 +59,18 @@ test('branchProtectionCacheMs 不是 0–3600000 的整数时启动即报错', (
   }
   assert.equal(loadConfig(base).branchProtectionCacheMs, undefined);
 });
+
+test('maxParallel / dailyCap(#142):不填用默认;0、负数、非数字、小数启动即报错并写出字段名;maxParallel 上限 40', () => {
+  const loaded = loadConfig(base);
+  assert.equal(loaded.maxParallel, 3);
+  assert.equal(loaded.dailyCap, 30);
+  assert.equal(loaded.runnerLabel, 'mivo-review');
+  assert.equal(loadConfig({ ...base, maxParallel: 40, dailyCap: 400 }).maxParallel, 40);
+  for (const key of ['maxParallel', 'dailyCap']) {
+    for (const bad of [0, -1, 'abc', '5', 2.5, null]) {
+      assert.throws(() => loadConfig({ ...base, [key]: bad }), new RegExp(key), `${key}=${JSON.stringify(bad)}`);
+    }
+  }
+  assert.throws(() => loadConfig({ ...base, maxParallel: 41 }), /maxParallel 须是1–40 的整数:41/);
+  assert.throws(() => loadConfig({ ...base, runnerLabel: 'a b' }), /runnerLabel/);
+});

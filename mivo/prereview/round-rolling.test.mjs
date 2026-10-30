@@ -293,7 +293,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     // 门禁动作脚本(异步调用、不是 context.mjs / plan)同时在跑的数量与峰值
     actionNow: 0, actionPeak: 0,
     // >0 时新派出的 run 在这么多毫秒内查不到(模拟 GitHub 列表延迟)
-    hideNewRunsMs: 0 };
+    hideNewRunsMs: 0,
+    // 在线 runner(#142):在线数、带的标签、读失败注入、读的次数
+    runnersOnline: 40, runnerLabel: 'mivo-review', runnersFail: false, runnerReads: 0 };
   const clone = (value) => structuredClone(value);
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30, ...(gateParallel ? { gateParallel } : {}) });
@@ -508,6 +510,12 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
         w.labeled.delete(Number(path.match(/issues\/(\d+)\//)[1]));
       }
       return ok(args.includes('DELETE') ? '' : '[]');
+    }
+    if (args[0] === 'api' && path.startsWith('repos/o/wf/actions/runners')) {
+      w.runnerReads += 1;
+      if (w.runnersFail) return fail('HTTP 403: Resource not accessible by integration');
+      const runners = Array.from({ length: w.runnersOnline }, (_, i) => ({ id: i, status: 'online', labels: [{ name: 'self-hosted' }, { name: w.runnerLabel }] }));
+      return ok(JSON.stringify({ total_count: runners.length + 1, runners: [...runners, { id: 999, status: 'offline', labels: [{ name: w.runnerLabel }] }] }));
     }
     if (args[0] === 'api' && path.includes('/rules/branches/')) { w.rulesReads += 1; return ok(w.rulesPayload); }
     if (args[0] === 'api' && path.includes('/check-runs') && !path.includes('check_name=')) {
@@ -1792,6 +1800,57 @@ test('世界:SC3 判门中的任务也算占槽:上限 2 时,判门中加在审�
   assert.equal(proc.failure, null, String(proc.failure?.stack));
   assert.ok(Math.max(...samples) <= 2, `判门中 + 在审峰值 ${Math.max(...samples)}`);
   assert.equal(new Set(w.dispatches.map((d) => d.pr)).size, 6, '6 个 PR 最终都派发了');
+});
+
+// #142:同时在审数 = 配置的 maxParallel 和在线 runner 数中较小的一个
+async function runnerPeak(w, prs) {
+  for (let i = 0; i < prs; i += 1) w.openPr(300 + i, `r${i}`, { durationMs: 20 * MIN });
+  const live = () => [...w.runs.values()].filter((r) => w.now >= r.createdMs && w.now < r.createdMs + r.queueMs + r.durationMs).length;
+  const samples = [];
+  const t0 = w.now;
+  let proc = w.start();
+  while (w.now - t0 < 90 * MIN) {
+    if (proc.settled) { assert.equal(proc.failure, null, String(proc.failure?.stack)); w.now += 3 * MIN; proc = w.start(); continue; }
+    if (!(await w.step())) break;
+    samples.push(live());
+  }
+  return Math.max(...samples);
+}
+
+test('世界:SC1 在线 runner 少于配置值时,同时在审不超过在线数,并记 runners-short(#142)', async () => {
+  const w = makeWorld({ maxParallel: 10 });
+  w.runnersOnline = 4;
+  const peak = await runnerPeak(w, 12);
+  assert.equal(peak, 4, `在审峰值 ${peak}`);
+  const short = w.logged('runners-short');
+  assert.ok(short.length >= 1);
+  assert.deepEqual({ online: short[0].online, maxParallel: short[0].maxParallel }, { online: 4, maxParallel: 10 });
+  assert.equal(w.logged('runners-read-failed').length, 0);
+  assert.ok(w.runnerReads <= 90 / 3 + 1, `90 分钟读了 ${w.runnerReads} 次在线 runner(每 3 分钟最多一次)`);
+  assert.equal(w.read(w.state('runners.json')).online, 4);
+});
+
+test('世界:SC1 在线 runner 多于配置值时按配置值,不记 runners-short(#142)', async () => {
+  const w = makeWorld({ maxParallel: 3 });
+  w.runnersOnline = 40;
+  assert.equal(await runnerPeak(w, 8), 3);
+  assert.equal(w.logged('runners-short').length, 0);
+});
+
+test('世界:SC7 读不到在线 runner 时按配置值和上一次成功读数中较小的一个,并记 runners-read-failed(#142)', async () => {
+  const w = makeWorld({ maxParallel: 10 });
+  w.runnersFail = true;
+  w.files.set(w.state('runners.json'), { online: 3, readAtMs: w.now - 60 * MIN, label: 'mivo-review' });
+  assert.equal(await runnerPeak(w, 8), 3);
+  const failed = w.logged('runners-read-failed');
+  assert.ok(failed.length >= 1);
+  assert.equal(failed[0].limit, 3);
+  assert.match(failed[0].error, /403/);
+  // 从没成功读过:按配置值
+  const fresh = makeWorld({ maxParallel: 2 });
+  fresh.runnersFail = true;
+  assert.equal(await runnerPeak(fresh, 6), 2);
+  assert.equal(fresh.logged('runners-read-failed')[0].limit, 2);
 });
 
 test('世界:SC2 只有更新时间变了、上轮是 threads-unresolved:不再调 context 判门,沿用上轮结论;满 30 分钟兜底重判', async () => {

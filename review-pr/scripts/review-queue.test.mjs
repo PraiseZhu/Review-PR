@@ -50,6 +50,13 @@ function fixture(count, fn) {
   });
 }
 
+// [MIVO-PATCH concurrency-40] Mivo 审查机最多 40 个服务器槽位(#142)
+test('init accepts concurrency 40 and rejects 41', () => fixture(1, async ({ run }) => {
+  await assert.rejects(run('init', { concurrency: 41 }), /1\.\.40/);
+  const init = await run('init', { concurrency: 40 });
+  assert.equal(init.queue?.concurrency ?? init.concurrency ?? 40, 40);
+}));
+
 test('rolling slots cross reporting groups while an older PR is still running', () => fixture(12, async ({ run, finish, planFile, dependencies }) => {
   await run('init', { concurrency: 2 });
   const first = await run('claim'); assert.equal(first.task.pr, 1);
