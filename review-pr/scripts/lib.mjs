@@ -4036,6 +4036,22 @@ export function buildSignoffIssueFooter({ pr, author, topic, mode = 'normal' }) 
 }
 
 /**
+ * [MIVO-PATCH rollup-unreadable] 维护者作者的 PR 被 BLOCKED、CI 已判通过时,还要拿 PR 检查汇总(statusCheckRollup)
+ * 核对是不是只差本流程自己的必需检查。汇总读不到(rollupContexts 不是数组)就判断不了,按 ci-unknown 如实报读不到,
+ * 不能说成「GitHub 仍拒绝合并」,也不能往 structural-check / admin bypass 走。常见原因是读取令牌缺 Commit statuses 读:
+ * 集成分支的必需检查 `review-pr (integration)` 是 commit status,GraphQL 读它要这项权限(Mivo #1490)。
+ */
+export const CI_ROLLUP_UNREADABLE_BLOCKER = 'mergeStateStatus=BLOCKED 且读不到 PR 的检查汇总(statusCheckRollup),判断不了是不是只差本流程自己的必需检查;常见原因是读取令牌缺 Commit statuses 读权限';
+export const GITHUB_RULE_BLOCKED_BLOCKER = 'mergeStateStatus=BLOCKED(GitHub 仍拒绝合并，原因不是缺维护者 Approve；按 2026-10-21 维护者决定不因此要求另一位维护者批准，也不走 admin bypass)';
+
+/** [MIVO-PATCH rollup-unreadable] 维护者作者 BLOCKED 的分档:{ blockClass, blocker }。blocker 为 null 表示不拦。 */
+export function toMaintainerAuthorBlock({ probe = null, rollupContexts = null, rules = loadRules() } = {}) {
+  if (!Array.isArray(rollupContexts)) return { blockClass: 'ci-unknown', blocker: CI_ROLLUP_UNREADABLE_BLOCKER };
+  if (onlyOwnRequiredChecksPending({ probe, rollupContexts, rules })) return { blockClass: 'none', blocker: null };
+  return { blockClass: 'github-rule-blocked', blocker: GITHUB_RULE_BLOCKED_BLOCKER };
+}
+
+/**
  * [MIVO-PATCH ci-ignore] BLOCKED 只因本流程自己的必需检查(ciIgnoreContexts,如 review-pr)
  * 尚未上报或尚未通过?是则返回 true。probe 读不到、还有别的必需检查未满足,都返回 false(从严)。
  */
