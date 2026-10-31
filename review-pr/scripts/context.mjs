@@ -34,7 +34,7 @@ import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlC
 // [MIVO-PATCH identity-env]
 import { viewerLoginOverride } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
-import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead } from './lib.mjs';
+import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, toMaintainerAuthorBlock, CI_ROLLUP_UNREADABLE_BLOCKER, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead } from './lib.mjs';
 import { filePatchHashesFromDiff, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup, applyGateBase } from './review-dependencies.mjs';
@@ -1285,17 +1285,17 @@ try {
       // CI 状态读取不完整 → 不得往 structural-check 推(那条路通向 admin bypass),如实押 blocker。
       blockers.push(`mergeStateStatus=BLOCKED 且 ${ci.reason}`);
       blockClass = 'ci-unknown';
+    } else if (!Array.isArray(rawRollupContexts)) {
+      // [MIVO-PATCH rollup-unreadable] 检查汇总读不到时判断不了「是不是只差本流程自己的检查」,
+      // 如实报读不到,不说成 GitHub 拒绝合并,也不进 structural-check(那条路通向 admin bypass)。
+      blockers.push(CI_ROLLUP_UNREADABLE_BLOCKER);
+      blockClass = 'ci-unknown';
     } else if (isApprovalPendingReviewDecision(reviewDecision) && !approvalPolicy.approvalRequired) {
       // 维护者作者:GitHub 仍 BLOCKED,但不是缺另一位维护者 Approve。先排除只差本流程自己的必需检查。
-      structuralBlock = probeBranchProtection(slug, meta.baseRefName);
-      if (onlyOwnRequiredChecksPending({ probe: structuralBlock, rollupContexts: rawRollupContexts, rules: prRules })) {
-        blockClass = 'none';
-        structuralBlock = null;
-      } else {
-        blockClass = 'github-rule-blocked';
-        structuralBlock = null;
-        blockers.push('mergeStateStatus=BLOCKED(GitHub 仍拒绝合并，原因不是缺维护者 Approve；按 2026-10-21 维护者决定不因此要求另一位维护者批准，也不走 admin bypass)');
-      }
+      const decided = toMaintainerAuthorBlock({ probe: probeBranchProtection(slug, meta.baseRefName), rollupContexts: rawRollupContexts, rules: prRules });
+      blockClass = decided.blockClass;
+      structuralBlock = null;
+      if (decided.blocker) blockers.push(decided.blocker);
     } else {
       // review 满足(APPROVED)+ 线程已 resolve + CI 全绿(双源确认),但仍 BLOCKED
       // → 残留的是「永不上报结果的必需检查门」:典型 org ruleset 的 code_scanning(CodeQL)/

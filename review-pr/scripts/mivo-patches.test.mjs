@@ -37,6 +37,9 @@ import {
   parseSignoffMode,
   parseLastHoldMarker,
   onlyOwnRequiredChecksPending,
+  toMaintainerAuthorBlock,
+  CI_ROLLUP_UNREADABLE_BLOCKER,
+  GITHUB_RULE_BLOCKED_BLOCKER,
   isAutomatedViewerReview,
   latestSubstantiveReviews,
   selectStandingViewerHumanChangesRequest,
@@ -243,6 +246,33 @@ test('Slack 放行接入维护者确认门后按标记口径持久有效', () =>
   });
   assert.equal(changes.waitingForAuthor, true);
   assert.equal(changes.released, null);
+});
+
+// [MIVO-PATCH rollup-unreadable] Mivo #1490:读取令牌缺 statuses 读时 statusCheckRollup 整次读不到,
+// 旧代码把它报成「GitHub 仍拒绝合并」,原因被藏住,集成分支 PR 一直进不了审查。
+test('维护者作者 BLOCKED:检查汇总读不到报 ci-unknown 和真实原因,读得到才分只差自己 / GitHub 拒绝', () => {
+  const rules = { ciIgnoreContexts: ['review-pr (integration)'] };
+  const probe = { requiredStatusChecks: [{ context: 'verify' }, { context: 'review-pr (integration)' }] };
+  const unreadable = toMaintainerAuthorBlock({ probe, rollupContexts: null, rules });
+  assert.equal(unreadable.blockClass, 'ci-unknown');
+  assert.equal(unreadable.blocker, CI_ROLLUP_UNREADABLE_BLOCKER);
+  assert.match(unreadable.blocker, /读不到 PR 的检查汇总/);
+  assert.doesNotMatch(unreadable.blocker, /GitHub 仍拒绝合并/);
+  assert.deepEqual(toMaintainerAuthorBlock({ probe, rollupContexts: [{ name: 'verify', conclusion: 'SUCCESS' }], rules }), { blockClass: 'none', blocker: null });
+  assert.deepEqual(toMaintainerAuthorBlock({ probe, rollupContexts: [{ name: 'verify', conclusion: 'FAILURE' }], rules }), { blockClass: 'github-rule-blocked', blocker: GITHUB_RULE_BLOCKED_BLOCKER });
+});
+
+test('rollup-unreadable 接线:context 与 pre-merge-check 在维护者分支和 structural-check 之前先判检查汇总读不到', () => {
+  for (const [file, variable] of [['context.mjs', 'rawRollupContexts'], ['pre-merge-check.mjs', 'rollupContexts']]) {
+    const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), 'utf8');
+    const guard = source.indexOf(`} else if (!Array.isArray(${variable})) {`);
+    const maintainer = source.search(/\} else if \(isApprovalPendingReviewDecision\([^)]*\) && !approvalPolicy\.approvalRequired\) \{/);
+    const structural = source.indexOf("blockClass = 'structural-check';");
+    assert.ok(guard > 0 && guard < maintainer && maintainer < structural, `${file} 的读不到分支要排在维护者分支和 structural-check 前面`);
+    assert.ok(source.slice(guard, maintainer).includes('blockers.push(CI_ROLLUP_UNREADABLE_BLOCKER);'), file);
+    assert.ok(source.slice(guard, maintainer).includes("blockClass = 'ci-unknown';"), file);
+    assert.ok(!source.includes('GitHub 仍拒绝合并'), `${file} 的拦截文案统一取 lib.mjs 常量`);
+  }
 });
 
 test('只差本流程自己的必需检查时不算结构性卡点,其余缺失从严', () => {
