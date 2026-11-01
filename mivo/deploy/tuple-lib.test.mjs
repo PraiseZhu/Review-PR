@@ -11,6 +11,7 @@ import {
   toLockKeep, toLockBlockedText, toLinkLockScript, toReleaseLockScript, finalizeDeployError,
   RELEASE_LOCK_RETRIES, toReleaseLockResult,
   shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck, toMergedPrNumbers, toBehindMainNote,
+  toDispatchOnlyProblem, toWorkflowRegistrationProblem, toRulesProblem, toReviewModeProblem, toDispatchProblems,
 } from './tuple-lib.mjs';
 
 const A = 'a'.repeat(40);
@@ -445,4 +446,110 @@ test('toLatestChecks: a queued rerun without a start time is newer than an old S
       assert.equal(latest[0].status, 'QUEUED', `${startedAt} ${order}`);
     }
   }
+});
+
+// 派发前提(PraiseZhu/Review-PR#163)
+const DISPATCH_YML = [
+  'name: review-pr',
+  '# - 只接受 workflow_dispatch;下面这行注释里的事件不算触发器',
+  '#   pull_request:',
+  'run-name: "review-pr #${{ inputs.pr }}"',
+  '',
+  'on:',
+  '  # push:',
+  '  workflow_dispatch:',
+  '    inputs:',
+  '      pr:',
+  '        required: true',
+  '      mode:',
+  '        default: dry-run',
+  '',
+  'jobs:',
+  '  prepare:',
+  '    runs-on: ubuntu-latest',
+  '',
+].join('\n');
+
+test('派发前提·只有 workflow_dispatch:真实形态(带注释、inputs、jobs)通过', () => {
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML), null);
+});
+
+test('派发前提·多出任何事件触发器、缺少 workflow_dispatch、写成行内形式、空内容、超大,都报问题', () => {
+  const withEvent = (event) => DISPATCH_YML.replace('  workflow_dispatch:', `  workflow_dispatch:\n  ${event}:`);
+  for (const event of ['pull_request', 'pull_request_target', 'push', 'schedule', 'workflow_run', 'issue_comment', 'workflow_call']) {
+    assert.match(toDispatchOnlyProblem(withEvent(event)), /不是只有 workflow_dispatch/, event);
+  }
+  assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', '  schedule:')), /不是只有 workflow_dispatch/);
+  // 旧正则只拦 [a-z_]+: 形式的事件键,这些写法旧版会漏过(PraiseZhu/Review-PR#163 e2e 发现),现在一律按不通过
+  // YAML 的 tag / anchor / 转义写法同样是合法 GitHub workflow 的事件键(审查员用 actionlint 确认),必须一并拦住
+  const tricky = ['!!str pull_request: {}', '!!str "pull_request": {}', "!!str 'pull_request': {}", '!!str pull_request : {}', '!<tag:yaml.org,2002:str> pull_request: {}',
+    '&a pull_request: {}', '&a "pull_request": {}', '"\\u0070ull_request": {}', '"\\x70ull_request": {}', '"pull\\u005frequest": {}', '"\\u0070ull_request" : {}'];
+  for (const key of tricky) {
+    assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', `  workflow_dispatch:\n  ${key}`)), /不是只有 workflow_dispatch/, key);
+  }
+  for (const key of ["'pull_request':", '"pull_request":', 'pull_request :', '? pull_request', "'push' :", 'push :']) {
+    assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', `  workflow_dispatch:\n  ${key}`)), /不是只有 workflow_dispatch/, key);
+  }
+  assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', '  workflow_dispatch :')), /不是只有 workflow_dispatch/, 'workflow_dispatch 后带空格也认不出,按不通过');
+  assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('on:', "'on':")), /不是只有 workflow_dispatch/);
+  assert.match(toDispatchOnlyProblem('name: x\non: workflow_dispatch\n'), /不是只有 workflow_dispatch/, '认不出的写法一律按不通过');
+  assert.match(toDispatchOnlyProblem('name: x\njobs: {}\n'), /不是只有 workflow_dispatch/);
+  assert.match(toDispatchOnlyProblem(''), /大小不对\(0 字节\)/);
+  assert.match(toDispatchOnlyProblem(`${DISPATCH_YML}${'#'.repeat(1024 * 1024)}\n`), /大小不对/);
+  assert.match(toDispatchOnlyProblem(null), /读不到/);
+});
+
+test('派发前提·多行引号标量里列 0 的 on: 行不是触发器块,不误拦(actionlint 认为合法)', () => {
+  const withMultiline = (field) => DISPATCH_YML.replace('name: review-pr', field);
+  assert.equal(toDispatchOnlyProblem(withMultiline('name: "foo\non: bar"')), null);
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace('        required: true', '        description: "foo\non: bar"\n        required: true')), null);
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace('    runs-on: ubuntu-latest', '    runs-on: ubuntu-latest\n    steps:\n      - run: "echo foo\non: bar"')), null);
+});
+
+test('派发前提·合法的 workflow 换成 CRLF 换行、或末尾没有换行,仍然通过(不误拦)', () => {
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace(/\n/g, '\r\n')), null);
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace(/\n$/, '')), null);
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace(/\n$/, '').replace(/\n/g, '\r\n')), null);
+  assert.equal(toDispatchOnlyProblem('name: x\non:\n  workflow_dispatch:'), null, 'on: 块在文件最后一行且没有换行');
+});
+
+test('派发前提·workflow 在 Actions 里登记:路径对且 active 才通过', () => {
+  assert.equal(toWorkflowRegistrationProblem({ id: 1, path: '.github/workflows/review-pr.yml', state: 'active' }), null);
+  assert.match(toWorkflowRegistrationProblem({ path: '.github/workflows/review-pr.yml', state: 'disabled_manually' }), /状态是 disabled_manually,不是 active/);
+  assert.match(toWorkflowRegistrationProblem({ path: '.github/workflows/code-review.yml', state: 'active' }), /路径是 \.github\/workflows\/code-review\.yml/);
+  assert.match(toWorkflowRegistrationProblem(null), /读不到/);
+});
+
+test('派发前提·pr-rules.json:可读的 base64 文件且是 JSON 对象才通过', () => {
+  const file = (text) => ({ type: 'file', encoding: 'base64', content: Buffer.from(text).toString('base64') });
+  assert.equal(toRulesProblem(file('{"version":1}')), null);
+  assert.match(toRulesProblem(file('{oops')), /不是合法 JSON/);
+  assert.match(toRulesProblem(file('[1,2]')), /不是 JSON 对象/);
+  assert.match(toRulesProblem(file('null')), /不是 JSON 对象/);
+  assert.match(toRulesProblem(file('"字符串"')), /不是 JSON 对象/);
+  assert.match(toRulesProblem({ type: 'dir', encoding: 'base64', content: '' }), /不是可读的文件/);
+  assert.match(toRulesProblem({ type: 'file', content: 'e30=' }), /不是可读的文件/);
+  assert.match(toRulesProblem(null), /读不到/);
+});
+
+test('派发前提·MIVO_REVIEW_MODE 必须是 live', () => {
+  assert.equal(toReviewModeProblem('live'), null);
+  assert.equal(toReviewModeProblem('live\n'), null);
+  assert.match(toReviewModeProblem('dry-run'), /是 "dry-run",不是 live/);
+  assert.match(toReviewModeProblem('sandbox'), /不是 live/);
+  assert.match(toReviewModeProblem(''), /不是 live/);
+  assert.match(toReviewModeProblem(null), /读不到/);
+});
+
+test('派发前提·汇总:全满足是空数组,不满足的每项各占一条', () => {
+  const good = {
+    workflowText: DISPATCH_YML,
+    registration: { path: '.github/workflows/review-pr.yml', state: 'active' },
+    rules: { type: 'file', encoding: 'base64', content: Buffer.from('{}').toString('base64') },
+    mode: 'live',
+  };
+  assert.deepEqual(toDispatchProblems(good), []);
+  const bad = toDispatchProblems({ ...good, mode: 'dry-run', registration: { path: good.registration.path, state: 'disabled_manually' } });
+  assert.equal(bad.length, 2);
+  assert.equal(toDispatchProblems({ workflowText: null, registration: null, rules: null, mode: null }).length, 4);
 });
