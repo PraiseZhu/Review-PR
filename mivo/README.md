@@ -543,7 +543,7 @@ Mini 的 `gh` 经 GitHub App 分流（`~/mivo-gh-router/praisebuild`）。查询
 - 本仓提交：Mivo 仓库变量 `MIVO_REVIEW_SKILL_SHA`、Mini `~/mivo-prereview/skill` 的检出；
 - Mivo `main` 上 `.github/workflows/review-pr.yml` 的 sha256：只比对（要等于 `--new-wf`），不写进任何地方。
 
-只有 Mini 需要连得上，Pro、Air 在不在线都不影响换版本。各机的 `~/.claude/state/approve-exec/mivo-review-trust.json` 自 approve-exec 删掉旧入口（2026-10-29，`4c3fda0`）起没有任何程序读取，脚本不读、不写、不核对它，文件留在原处不用管；2026-11-01 之前的版本曾要求三台 trust 一起切，Air 离线或 `prereq-check.mjs` 找不到已删除的 `release-mivo-pr.mjs` 时换版本必然失败（PraiseZhu/Review-PR#161）。
+只有 Mini 需要连得上，Pro、Air 在不在线都不影响换版本。各机的 `~/.claude/state/approve-exec/mivo-review-trust.json` 自 approve-exec 删掉旧入口（2026-10-29，`4c3fda0`）起没有任何程序读取（本次修改之前线上的旧版 `deploy-tuple.mjs` 除外），现在的脚本不读、不写、不核对它，文件留在原处不用管；2026-11-01 之前的版本曾要求三台 trust 一起切，Air 离线或 `prereq-check.mjs` 找不到已删除的 `release-mivo-pr.mjs` 时换版本必然失败（PraiseZhu/Review-PR#161）。
 
 脚本在本仓 `mivo/deploy/`：`deploy-tuple.mjs` 换版本；`auto-update.mjs` 每天自动换（见下一节）。在 Pro 或 Mini 上跑，`--on` 写本机是哪台：本机的命令直接执行，Mini 不是本机时经 ssh（`~/.ssh/config` 里的别名 `Praise-Mini`）。
 
