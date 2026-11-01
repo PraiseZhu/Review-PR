@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { setupFixture, WORKFLOW_NEW, WORKFLOW_OLD, WF_NEW, WF_OLD } from './deploy-tuple.fixture.mjs';
 
 const STATE = 'mivo-prereview/state/mivo/mivo';
@@ -62,5 +63,34 @@ test('预检时仓库变量已被别人改了:什么都不切,不留停点', (t)
   assert.deepEqual(f.ghState().sets, []);
   assert.equal(f.checkoutHead(), f.oldSkill);
   assert.equal(f.exists(`${STATE}/deploy-hold.json`), false);
+  assert.equal(f.exists(`${STATE}/deploy-tuple.lock`), false);
+});
+
+test('部署锁被别人占着:不切、不写停点、不动别人的锁,exit 1', (t) => {
+  const f = setupFixture(t);
+  const lockPath = path.join(f.home, STATE, 'deploy-tuple.lock');
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const theirs = `${JSON.stringify({ owner: 'deploy-tuple:pro', pid: 4242, host: 'Praise-MacBook', at: new Date().toISOString(), target: f.newSkill, expiresAt: new Date(Date.now() + 3_600_000).toISOString() })}\n`;
+  fs.writeFileSync(lockPath, theirs);
+  const r = f.deploy();
+  assert.equal(r.status, 1, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /部署锁被 deploy-tuple:pro\(pid 4242\) 占用/);
+  assert.deepEqual(f.ghState().sets, []);
+  assert.equal(f.checkoutHead(), f.oldSkill);
+  assert.equal(f.exists(`${STATE}/deploy-hold.json`), false, '没拿到锁就不写停点');
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), theirs, '别人的锁原样保留');
+  assert.deepEqual(f.records(), [], '没拿到锁不写部署记录');
+});
+
+test('先比对旧值再写:预检之后仓库变量被别人改了,切换第一步就拒绝写,保持停止,exit 2', (t) => {
+  // 读变量依次是:预检(旧,对)→ 切换前比对(别人改成了别的值)→ 失败后核对旧 tuple(还是别的值)。
+  const f = setupFixture(t, { variableSeq: ({ oldSkill }) => [oldSkill, 'e'.repeat(40)] });
+  const r = f.deploy();
+  assert.equal(r.status, 2, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`仓库变量现在是 e{40},不是 ${f.oldSkill}`));
+  assert.match(r.stdout, /保持停止/);
+  assert.deepEqual(f.ghState().sets, [], '比对不过就一个字都不写');
+  assert.equal(f.checkoutHead(), f.oldSkill);
+  assert.equal(f.exists(`${STATE}/deploy-hold.json`), true, '变量不是旧值,tuple 不一致,停点留给人工');
   assert.equal(f.exists(`${STATE}/deploy-tuple.lock`), false);
 });

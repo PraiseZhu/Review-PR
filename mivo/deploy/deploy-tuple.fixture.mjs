@@ -17,7 +17,8 @@ export const WORKFLOW_OLD = 'name: review-pr\non: [workflow_dispatch, push]\n';
 export const WF_NEW = sha256(WORKFLOW_NEW);
 export const WF_OLD = sha256(WORKFLOW_OLD);
 
-// gh 替身:状态放在 state.json。variable get/set 读写 variable;读 review-pr.yml 时按 workflows 依次回答(最后一项重复)。
+// gh 替身:状态放在 state.json。variable get/set 读写 variable(给了 variableSeq 就按它依次回答 get,最后一项重复);
+// 读 review-pr.yml 时按 workflows 依次回答(最后一项重复)。
 const FAKE_GH = `#!/usr/bin/env node
 const fs = require('node:fs');
 const file = process.env.FAKE_GH_STATE;
@@ -26,7 +27,9 @@ const args = process.argv.slice(2);
 const a = args.join(' ');
 const out = (v) => process.stdout.write(String(v) + '\\n');
 const save = () => fs.writeFileSync(file, JSON.stringify(s));
-if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin')) out(s.variable);
+if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin')) {
+  if (s.variableSeq) { out(s.variableSeq[Math.min(s.variableReads, s.variableSeq.length - 1)]); s.variableReads += 1; save(); } else out(s.variable);
+}
 else if (a.startsWith('variable set MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin --body ')) { s.variable = args[args.length - 1]; s.sets.push(s.variable); save(); }
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/commits/') && a.endsWith('--jq .sha')) out(s.newSkill);
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/compare/')) out(JSON.stringify({ status: 'identical', aheadBy: 0, messages: [] }));
@@ -48,7 +51,7 @@ const FAKE_LAUNCHCTL = `#!/bin/sh
 exit 1
 `;
 
-export function setupFixture(t, { variable, workflows = [WORKFLOW_NEW] } = {}) {
+export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_NEW] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-deploy-tuple-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home');
@@ -69,7 +72,7 @@ export function setupFixture(t, { variable, workflows = [WORKFLOW_NEW] } = {}) {
     fs.writeFileSync(path.join(bin, name), text, { mode: 0o755 });
   }
   const statePath = path.join(root, 'gh-state.json');
-  fs.writeFileSync(statePath, JSON.stringify({ variable: variable ?? oldSkill, newSkill, workflows, contentReads: 0, sets: [] }));
+  fs.writeFileSync(statePath, JSON.stringify({ variable: variable ?? oldSkill, variableSeq: variableSeq?.({ oldSkill, newSkill }), variableReads: 0, newSkill, workflows, contentReads: 0, sets: [] }));
   const sshLog = path.join(root, 'ssh.log');
   const recordDir = path.join(root, 'records');
   const env = { ...process.env, HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GH_STATE: statePath, FAKE_SSH_LOG: sshLog };
