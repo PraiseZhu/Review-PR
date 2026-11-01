@@ -284,10 +284,10 @@ const WORKFLOW_MAX_BYTES = 1024 * 1024;
 
 // review-pr.yml 只能由 workflow_dispatch 触发:任何事件触发器都会让 PR 内容绕过 Mini 前置审查直接启动服务器审查。
 // 统一换行、补上末尾换行、去掉整行注释后取顶层 on: 块;块里必须有二级缩进的 workflow_dispatch:,
-// 二级缩进上不能再有别的事件键——除了旧检查拦的 pull_request: 形式,带引号的键('pull_request':)、键名与冒号间有空格、
-// 显式 key(? pull_request)也算(Review-PR#163 的 e2e 发现旧正则会放过带引号的键)。认不出的写法(行内、flow)一律按不通过。
-// 不做完整 YAML 解析,所以多行引号标量的续行恰好缩进 2 格且长得像事件键时会误拦(失败方向是拦下换版本,不是放过)。
-const OTHER_EVENT_KEY = /^  (?!workflow_dispatch:)(?:\?\s|['"]?[a-z_]+['"]?[ \t]*:)/m;
+// 且二级缩进(恰好 2 个空格)上不能再有任何别的内容——事件键在 on: 块里只可能出现在这一层,所以带引号的键、键名与冒号间有空格、
+// 显式 key(? x)、tag(!!str x)、anchor(&a x)、转义写法("\u0070ull_request")都会被一并拦住。认不出的写法(行内、flow)按不通过。
+// 不做完整 YAML 解析:多行引号标量的续行恰好缩进 2 格时会误拦(方向是拦下换版本,不是放过),改成块标量或换缩进即可。
+// 旧 dispatchPrerequisites 的正则只拦 [a-z_]+: 形式的键,上面这些写法都会漏过(Review-PR#163 的审查与 e2e 发现)。
 export function toDispatchOnlyProblem(text) {
   if (typeof text !== 'string') return `读不到 ${WF_PATH} 的内容`;
   const bytes = Buffer.byteLength(text);
@@ -295,7 +295,7 @@ export function toDispatchOnlyProblem(text) {
   const normalized = text.replace(/\r\n?/g, '\n');
   const stripped = (normalized.endsWith('\n') ? normalized : `${normalized}\n`).replace(/^[ \t]*#.*$/gm, '');
   const triggers = stripped.match(/^on:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? '';
-  if (!/^  workflow_dispatch:/m.test(triggers) || OTHER_EVENT_KEY.test(triggers)) {
+  if (!/^  workflow_dispatch:/m.test(triggers) || /^  (?!workflow_dispatch:)\S/m.test(triggers)) {
     return `${WF_PATH} 的触发器不是只有 workflow_dispatch`;
   }
   return null;

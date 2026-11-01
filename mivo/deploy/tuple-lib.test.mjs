@@ -481,6 +481,12 @@ test('派发前提·多出任何事件触发器、缺少 workflow_dispatch、写
   }
   assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', '  schedule:')), /不是只有 workflow_dispatch/);
   // 旧正则只拦 [a-z_]+: 形式的事件键,这些写法旧版会漏过(PraiseZhu/Review-PR#163 e2e 发现),现在一律按不通过
+  // YAML 的 tag / anchor / 转义写法同样是合法 GitHub workflow 的事件键(审查员用 actionlint 确认),必须一并拦住
+  const tricky = ['!!str pull_request: {}', '!!str "pull_request": {}', "!!str 'pull_request': {}", '!!str pull_request : {}', '!<tag:yaml.org,2002:str> pull_request: {}',
+    '&a pull_request: {}', '&a "pull_request": {}', '"\\u0070ull_request": {}', '"\\x70ull_request": {}', '"pull\\u005frequest": {}', '"\\u0070ull_request" : {}'];
+  for (const key of tricky) {
+    assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', `  workflow_dispatch:\n  ${key}`)), /不是只有 workflow_dispatch/, key);
+  }
   for (const key of ["'pull_request':", '"pull_request":', 'pull_request :', '? pull_request', "'push' :", 'push :']) {
     assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', `  workflow_dispatch:\n  ${key}`)), /不是只有 workflow_dispatch/, key);
   }
