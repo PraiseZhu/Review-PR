@@ -1,14 +1,16 @@
 // 新审查机整组上线 / 整组回滚。在 Pro 或 Mini 上跑(--on 写本机是哪台):本机命令直接执行,其余经 ssh。
 // 每天自动换版本由 Mini 上的 Cindy 定时任务经 auto-update.mjs 调用;手动换版本、回滚也用它。
 //
-// tuple = Review-PR 提交(仓库变量 MIVO_REVIEW_SKILL_SHA、Mini ~/mivo-prereview/skill 检出、三台 trust 的 skillSha)
-//       + Mivo main 上 review-pr.yml 的 sha256(三台 trust 的 workflowSha256 与 sourceManifest 同一项)。
+// tuple = Review-PR 提交(仓库变量 MIVO_REVIEW_SKILL_SHA、Mini ~/mivo-prereview/skill 检出)
+//       + Mivo main 上 review-pr.yml 的 sha256(只比对,不写进任何地方)。
+// 只有 Mini 需要连得上:Pro、Air 上的 ~/.claude/state/approve-exec/mivo-review-trust.json 自 approve-exec 删掉旧入口
+// (2026-10-29,4c3fda0)起没有任何程序读取,本脚本不读不写它。
 //
 // 用法:
 //   node deploy-tuple.mjs --on pro|mini --old-skill <sha> --new-skill <sha> --old-wf <sha256> --new-wf <sha256>
 //        [--pr <Mivo PR 号> --pr-head <sha>] [--stop pause|hold] [--max-wait-min 180] [--record-dir <目录>] [--preview]
-//   --on 本机是哪台(pro、mini、air):本机的命令直接执行,另外两台经 ssh(三台互相用同一组 ssh 别名)。
-//   --record-dir 部署记录与 trust 快照放哪,默认 ~/Library/Logs/mivo-prereview/deploy。
+//   --on 本机是哪台(pro、mini、air):本机的命令直接执行,Mini 不是本机时经 ssh(别名 Praise-Mini)。
+//   --record-dir 部署记录放哪,默认 ~/Library/Logs/mivo-prereview/deploy。
 //   --preview 只读核对并打印新旧 tuple,不动 Mini 和线上状态,也不 git fetch;新提交 Mini 还没有时只报告「Mini 尚未取到该提交」。
 //   --stop pause:首次上线(线上旧代码不认 deploy-hold):写 pause.json 只抬高 until、保留其它字段,被旧进程改写就提回;
 //                收尾时恢复成原内容与最近一次运行暂停里 until 最晚、还没到期的那份,都到期才删除。
@@ -27,22 +29,17 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import {
-  WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toStopReady, isOwnHold,
   toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
   toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
   toMergedPrNumbers, toBehindMainNote, toLatestChecks,
 } from './tuple-lib.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-// 从 Mini 的 skill 检出里跑时,切换检出后同目录的文件已是新版本:prereq-check.mjs 在启动时就读进来。
-const PREREQ_SOURCE = fs.readFileSync(path.join(HERE, 'prereq-check.mjs'), 'utf8');
 const REPO = 'xindong/mivo-canvas-plugin';
 const SKILL_REPO = 'PraiseZhu/Review-PR';
 const LABEL = 'com.mivo.prereview.mivo';
 const HOST_KEYS = Object.keys(HOSTS);
-const TRUST_REL = '.claude/state/approve-exec/mivo-review-trust.json';
 const STATE_REL = 'mivo-prereview/state/mivo/mivo';
 const PAUSE_REL = `${STATE_REL}/pause.json`;
 const HOLD_REL = `${STATE_REL}/deploy-hold.json`;
@@ -103,8 +100,6 @@ function casRemote(host, rel, expected, next) {
   const r = remote(host, script, { input: next ?? '' });
   if (!r.ok) throw new Error(`改 ${host}:${rel} 失败(${r.status === 3 ? '内容已被别人改过' : `exit ${r.status}`}):${r.stderr.slice(0, 200)}`);
 }
-const readTrust = (host) => readRemote(host, TRUST_REL);
-const casTrust = (host, expected, next) => casRemote(host, TRUST_REL, expected, next);
 function mainWorkflowSha(ref = 'main') {
   const raw = must(run('gh', ['api', `repos/${REPO}/contents/${WF_PATH}?ref=${ref}`, '--jq', '.content']), `读 ${ref} 上的 ${WF_PATH}`);
   return sha256(Buffer.from(raw.replace(/\s/g, ''), 'base64'));
@@ -147,7 +142,6 @@ if (process.argv.includes('--selftest')) {
   expectFail(() => casRemote('mini', rel, sha256(v1.text), null), '用过期旧值删除');
   casRemote('mini', rel, sha256('{"v":2}\n'), null);
   results.push(!readRemote('mini', rel).exists ? 'ok 删除' : '!! 删除后文件还在');
-  for (const host of HOST_KEYS) results.push(readTrust(host).exists ? `ok ${host} 读得到 trust` : `!! ${host} 没有 trust 文件`);
   results.push(`launchd state=${launchState()},锁=${JSON.stringify(lockHeld())}`);
   console.log(results.join('\n'));
   process.exit(results.some((r) => r.startsWith('!!')) ? 1 : 0);
@@ -217,20 +211,11 @@ function preflight() {
   } else if (mainWf !== NEW_WF) {
     throw new Error(`不合 PR 时 main 上 ${WF_PATH} 必须已经是新值 ${NEW_WF},现在是 ${mainWf}`);
   }
-  for (const host of HOST_KEYS) {
-    const t = readTrust(host);
-    if (!t.exists) throw new Error(`${host} 上没有 trust 文件`);
-    const cur = trustTuple(t.text);
-    if (cur.skill !== OLD_SKILL || cur.wf !== OLD_WF || cur.manifest !== OLD_WF) {
-      throw new Error(`${host} 的 trust 不是旧 tuple:skillSha=${cur.skill} workflowSha256=${cur.wf} manifest=${cur.manifest}`);
-    }
-    record.originals[`trust:${host}`] = { sha256: sha256(t.text) };
-  }
   console.log([
     '新旧 tuple:',
     `  Review-PR    ${OLD_SKILL} → ${NEW_SKILL}`,
     `  review-pr.yml ${OLD_WF} → ${NEW_WF}${PR ? `(合并 #${PR} @ ${PR_HEAD.slice(0, 9)})` : ''}`,
-    `  仓库变量、Mini 检出、三台 trust(skillSha/workflowSha256/sourceManifest)都是旧值;停点方式 ${STOP};在 ${SELF} 上跑`,
+    `  仓库变量、Mini 检出都是旧值;停点方式 ${STOP};在 ${SELF} 上跑`,
   ].join('\n'));
 }
 
@@ -344,20 +329,9 @@ function switchVariable(from, to) {
 function switchCheckout(from, to) {
   must(remote('mini', `test "$(git -C ${SKILL_REL} rev-parse HEAD)" = ${from} && git -C ${SKILL_REL} -c advice.detachedHead=false checkout --quiet --detach ${to} && test "$(git -C ${SKILL_REL} rev-parse HEAD)" = ${to}`), `Mini 检出 ${from.slice(0, 7)} → ${to.slice(0, 7)}`);
 }
-function switchTrust(host, from, to) {
-  const t = readTrust(host);
-  const cur = trustTuple(t.text);
-  if (cur.skill !== from.skill || cur.wf !== from.wf || cur.manifest !== from.wf) throw new Error(`${host} 的 trust 不是预期的 ${from.skill.slice(0, 7)}/${from.wf.slice(0, 12)}`);
-  casTrust(host, sha256(t.text), toTrustText(t.text, to));
-  const after = trustTuple(readTrust(host).text);
-  if (after.skill !== to.skill || after.wf !== to.wf || after.manifest !== to.wf) throw new Error(`${host} 的 trust 写完不对`);
-}
-const OLD = () => ({ skill: OLD_SKILL, wf: OLD_WF });
-const NEW = () => ({ skill: NEW_SKILL, wf: NEW_WF });
 const STEPS = [
   { name: 'variable', go: () => switchVariable(OLD_SKILL, NEW_SKILL), back: () => switchVariable(NEW_SKILL, OLD_SKILL) },
   { name: 'checkout', go: () => switchCheckout(OLD_SKILL, NEW_SKILL), back: () => switchCheckout(NEW_SKILL, OLD_SKILL) },
-  ...HOST_KEYS.map((host) => ({ name: `trust:${host}`, go: () => switchTrust(host, OLD(), NEW()), back: () => switchTrust(host, NEW(), OLD()) })),
 ];
 function switchTuple() {
   for (const step of STEPS) {
@@ -382,7 +356,7 @@ function revertSwitched() {
   }
   return failed;
 }
-// 失败后撤销停点之前核对:main 上的 workflow、仓库变量、Mini 检出、三台 trust 必须整组都是旧值。
+// 失败后撤销停点之前核对:main 上的 workflow、仓库变量、Mini 检出必须整组都是旧值。
 // 不带 --pr 跨 workflow 时 main 上已经是新 workflow,其余部分退回后整组并不一致;读不到也按不一致算。
 function oldTupleMismatch() {
   const problems = [];
@@ -393,31 +367,21 @@ function oldTupleMismatch() {
     if (variable !== OLD_SKILL) problems.push(`仓库变量是 ${variable}`);
     const head = must(remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`), '读 Mini 检出').trim();
     if (head !== OLD_SKILL) problems.push(`Mini 检出是 ${head}`);
-    for (const host of HOST_KEYS) {
-      const cur = trustTuple(readTrust(host).text);
-      if (cur.skill !== OLD_SKILL || cur.wf !== OLD_WF || cur.manifest !== OLD_WF) problems.push(`${host} 的 trust 不是旧 tuple`);
-    }
   } catch (error) {
     problems.push(`核对不了:${error.message}`);
   }
   return problems;
 }
 
-// 5. prerequisites(只读,approve-exec 原函数;用启动时读进来的 prereq-check.mjs)
-function prerequisites() {
-  const dir = path.join(RECORD_DIR, `trust-snap-${NEW_SKILL.slice(0, 7)}`);
-  fs.mkdirSync(dir, { recursive: true });
-  const files = HOST_KEYS.map((host) => {
-    const file = path.join(dir, `${host}.json`);
-    fs.writeFileSync(file, readTrust(host).text);
-    return file;
-  });
-  const checker = path.join(dir, 'prereq-check.mjs');
-  fs.writeFileSync(checker, PREREQ_SOURCE);
-  const r = run(process.execPath, [checker, ...files]);
-  console.log(r.stdout.trim());
-  if (!r.ok) throw new Error(`prerequisites 没全部通过:${r.stderr.slice(0, 300)}`);
-  phase('prerequisites 三台全部通过');
+// 5. 切换后核对(只读):仓库变量、Mini 检出、main 上的 workflow 都必须是新值,否则按切换失败退回。
+function verifyTuple() {
+  const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
+  if (variable !== NEW_SKILL) throw new Error(`核对失败:仓库变量是 ${variable},不是 ${NEW_SKILL}`);
+  const head = must(remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`), '读 Mini 检出').trim();
+  if (head !== NEW_SKILL) throw new Error(`核对失败:Mini 检出是 ${head},不是 ${NEW_SKILL}`);
+  const wf = mainWorkflowSha();
+  if (wf !== NEW_WF) throw new Error(`核对失败:main 上 ${WF_PATH} 是 ${wf},不是 ${NEW_WF}`);
+  phase('tuple 核对通过(仓库变量、Mini 检出、main 上的 workflow 都是新值)');
 }
 
 // 6. 收尾:撤销暂停覆盖、删停点标记,再 bootstrap。只撤本次写过的:停点前就失败(例如别人的维护标记还在)时,
@@ -519,7 +483,7 @@ try {
   if (PR) mergePr();
   try {
     switchTuple();
-    prerequisites();
+    verifyTuple();
   } catch (error) {
     say(`切换或核对失败:${error.message}`);
     const failed = revertSwitched();

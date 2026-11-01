@@ -1,10 +1,10 @@
 // 换版本脚本共用的纯函数(deploy-tuple.mjs、auto-update.mjs 用,离线测试覆盖)。
 //
-// tuple = 本仓提交(Mivo 仓库变量 MIVO_REVIEW_SKILL_SHA、Mini ~/mivo-prereview/skill 检出、三台 trust 的 skillSha)
-//       + Mivo main 上 review-pr.yml 的 sha256(三台 trust 的 workflowSha256 与 sourceManifest 同一项)。
+// tuple = 本仓提交(Mivo 仓库变量 MIVO_REVIEW_SKILL_SHA、Mini ~/mivo-prereview/skill 检出)
+//       + Mivo main 上 review-pr.yml 的 sha256(只比对,不写进任何地方)。
 
 export const WF_PATH = '.github/workflows/review-pr.yml';
-// 三台机器在彼此 ~/.ssh/config 里用同一组别名。
+// 三台机器在彼此 ~/.ssh/config 里用同一组别名;换版本只会经 ssh 连 Mini(--on 不是 mini 时)。
 export const HOSTS = { pro: 'Praise-MacBook', mini: 'Praise-Mini', air: 'Praise-MacAir' };
 // Mini 上的换版本互斥锁:普通文件,不是目录,也不叫 lock.json(避免被前置 lockHeld 误认)。
 // 先把完整内容写进同目录临时文件,再 ln 硬链接到这个名字;目标已存在就失败。
@@ -23,20 +23,6 @@ export function toHostCommand(host, self, script) {
   return host === self
     ? ['sh', ['-c', body]]
     : ['ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', HOSTS[host], body]];
-}
-
-// trust 只换 skillSha、workflowSha256、sourceManifest 里 review-pr.yml 那一项,其它字段原样。
-export function toTrustText(text, { skill, wf }) {
-  const j = JSON.parse(text);
-  j.skillSha = skill;
-  j.workflowSha256 = wf;
-  j.sourceManifest = { ...j.sourceManifest, [WF_PATH]: wf };
-  return `${JSON.stringify(j, null, 2)}\n`;
-}
-
-export function trustTuple(text) {
-  const j = JSON.parse(text);
-  return { skill: j.skillSha, wf: j.workflowSha256, manifest: j.sourceManifest?.[WF_PATH] };
 }
 
 // 停点到没到。state 是 launchd 里前置任务的状态('running'、'not running'、'absent',读不到是 'unknown'),
