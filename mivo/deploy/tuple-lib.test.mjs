@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  HOSTS, WF_PATH, DEPLOY_LOCK_REL, DEPLOY_LOCK_PATH, DEPLOY_LOCK_SLACK_MS, toHostCommand, toTrustText, trustTuple, toStopReady, isOwnHold,
+  HOSTS, DEPLOY_LOCK_REL, DEPLOY_LOCK_PATH, DEPLOY_LOCK_SLACK_MS, toHostCommand, toStopReady, isOwnHold,
   toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
   toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock, toLockExpiresAt,
   toLockKeep, toLockBlockedText, toLinkLockScript, toReleaseLockScript, finalizeDeployError,
@@ -25,22 +25,6 @@ test('本机直接用 sh 执行,其它机器经 ssh,都先 cd 到 $HOME', () => 
   assert.equal(toHostCommand('pro', 'mini', 'x')[1][4], 'Praise-MacBook');
   assert.equal(toHostCommand('mini', 'pro', 'x')[1][4], 'Praise-Mini');
   assert.throws(() => toHostCommand('constructor', 'mini', 'x'), /不认识的机器/);
-});
-
-test('trust 只换 skillSha、workflowSha256 和 review-pr.yml 那一项,其它字段原样', () => {
-  const text = JSON.stringify({
-    protocol: 'dispatch-review-v1', skillSha: A, workflowSha256: 'old', workflowId: 381252611,
-    sourceManifest: { [WF_PATH]: 'old', 'other.yml': 'keep' },
-  });
-  const next = toTrustText(text, { skill: B, wf: WF });
-  const j = JSON.parse(next);
-  assert.equal(j.skillSha, B);
-  assert.equal(j.workflowSha256, WF);
-  assert.deepEqual(j.sourceManifest, { [WF_PATH]: WF, 'other.yml': 'keep' });
-  assert.equal(j.protocol, 'dispatch-review-v1');
-  assert.equal(j.workflowId, 381252611);
-  assert.ok(next.endsWith('\n'));
-  assert.deepEqual(trustTuple(next), { skill: B, wf: WF, manifest: WF });
 });
 
 test('停点:进程在跑、状态读不到、锁还在或读不到锁,都不算到', () => {
