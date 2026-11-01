@@ -480,11 +480,25 @@ test('派发前提·多出任何事件触发器、缺少 workflow_dispatch、写
     assert.match(toDispatchOnlyProblem(withEvent(event)), /不是只有 workflow_dispatch/, event);
   }
   assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', '  schedule:')), /不是只有 workflow_dispatch/);
+  // 旧正则只拦 [a-z_]+: 形式的事件键,这些写法旧版会漏过(PraiseZhu/Review-PR#163 e2e 发现),现在一律按不通过
+  for (const key of ["'pull_request':", '"pull_request":', 'pull_request :', '? pull_request', '<<: *common', 'push :']) {
+    assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', `  workflow_dispatch:\n  ${key}`)), /不是只有 workflow_dispatch/, key);
+  }
+  assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('  workflow_dispatch:', '  workflow_dispatch :')), /不是只有 workflow_dispatch/, 'workflow_dispatch 后带空格也认不出,按不通过');
+  assert.match(toDispatchOnlyProblem(`${DISPATCH_YML}on:\n  pull_request:\n`), /不是只有 workflow_dispatch/, '出现第二个顶层 on: 块');
+  assert.match(toDispatchOnlyProblem(DISPATCH_YML.replace('on:', "'on':")), /不是只有 workflow_dispatch/);
   assert.match(toDispatchOnlyProblem('name: x\non: workflow_dispatch\n'), /不是只有 workflow_dispatch/, '认不出的写法一律按不通过');
   assert.match(toDispatchOnlyProblem('name: x\njobs: {}\n'), /不是只有 workflow_dispatch/);
   assert.match(toDispatchOnlyProblem(''), /大小不对\(0 字节\)/);
   assert.match(toDispatchOnlyProblem(`${DISPATCH_YML}${'#'.repeat(1024 * 1024)}\n`), /大小不对/);
   assert.match(toDispatchOnlyProblem(null), /读不到/);
+});
+
+test('派发前提·合法的 workflow 换成 CRLF 换行、或末尾没有换行,仍然通过(不误拦)', () => {
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace(/\n/g, '\r\n')), null);
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace(/\n$/, '')), null);
+  assert.equal(toDispatchOnlyProblem(DISPATCH_YML.replace(/\n$/, '').replace(/\n/g, '\r\n')), null);
+  assert.equal(toDispatchOnlyProblem('name: x\non:\n  workflow_dispatch:'), null, 'on: 块在文件最后一行且没有换行');
 });
 
 test('派发前提·workflow 在 Actions 里登记:路径对且 active 才通过', () => {

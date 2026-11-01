@@ -75,13 +75,13 @@ test('切换后 verifyTuple 再查一次:MIVO_REVIEW_MODE 在切换中途被改�
 
 test('带 --pr:预检的触发器检查看 PR head 上的 workflow(合并前把关),不是 main 上现在的', (t) => {
   const prArgs = ['--pr', PR_NUMBER, '--pr-head', PR_HEAD, '--preview'];
-  // 读 workflow 依次是:main(旧,合法)→ PR head(多了 pull_request 触发器)。只有看 PR head 的那份才会发现。
-  const bad = setupFixture(t, { workflows: [WORKFLOW_OLD, WITH_PULL_REQUEST] });
+  // main 上的 workflow 是旧的、合法的;PR head 上的多了 pull_request 触发器。夹具按 ?ref= 回答:读 main 拿旧的,读 PR head 才拿到坏的。
+  const bad = setupFixture(t, { workflows: [WORKFLOW_OLD], prHeadWorkflow: WITH_PULL_REQUEST });
   const b = bad.deploy({ oldWf: WF_OLD, newWf: sha256(WITH_PULL_REQUEST), extra: prArgs });
   assert.equal(b.status, 1, `${b.stdout}\n${b.stderr}`);
   assert.match(b.stdout + b.stderr, /触发器不是只有 workflow_dispatch/);
   // 对照:PR head 上的 workflow 合法时同样的命令通过。
-  const good = setupFixture(t, { workflows: [WORKFLOW_OLD, WORKFLOW_NEW] });
+  const good = setupFixture(t, { workflows: [WORKFLOW_OLD], prHeadWorkflow: WORKFLOW_NEW });
   const g = good.deploy({ oldWf: WF_OLD, newWf: WF_NEW, extra: prArgs });
   assert.equal(g.status, 0, `${g.stdout}\n${g.stderr}`);
 });
