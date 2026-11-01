@@ -276,3 +276,55 @@ export function toLatestChecks(rollup) {
   }
   return [...latest.values()];
 }
+
+// 派发前提:#161 之前由 approve-exec 的 dispatchPrerequisites 一并检查、与 trust 无关的 4 项(PraiseZhu/Review-PR#163)。
+// 每个函数返回问题说明,没有问题返回 null;输入是 null / undefined 表示没读到,同样算问题。
+export const RULES_PATH = 'agent-use/docs/pr-rules.json';
+const WORKFLOW_MAX_BYTES = 1024 * 1024;
+
+// review-pr.yml 只能由 workflow_dispatch 触发:任何事件触发器都会让 PR 内容绕过 Mini 前置审查直接启动服务器审查。
+// 先去掉整行注释,再取顶层 on: 块;块里必须有二级缩进的 workflow_dispatch:,不能有别的二级事件键。
+export function toDispatchOnlyProblem(text) {
+  if (typeof text !== 'string') return `读不到 ${WF_PATH} 的内容`;
+  const bytes = Buffer.byteLength(text);
+  if (!(bytes > 0 && bytes < WORKFLOW_MAX_BYTES)) return `${WF_PATH} 大小不对(${bytes} 字节)`;
+  const triggers = text.replace(/^[ \t]*#.*$/gm, '').match(/^on:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? '';
+  if (!/^  workflow_dispatch:/m.test(triggers) || /^  (?!workflow_dispatch:)[a-z_]+:/m.test(triggers)) {
+    return `${WF_PATH} 的触发器不是只有 workflow_dispatch`;
+  }
+  return null;
+}
+
+// api 是 GET repos/<repo>/actions/workflows/review-pr.yml 的返回。
+export function toWorkflowRegistrationProblem(api) {
+  if (api == null || typeof api !== 'object') return `读不到 ${WF_PATH} 在 GitHub Actions 里的登记`;
+  if (api.path !== WF_PATH) return `GitHub Actions 里登记的 workflow 路径是 ${api.path},不是 ${WF_PATH}`;
+  if (api.state !== 'active') return `${WF_PATH} 在 GitHub Actions 里的状态是 ${api.state},不是 active`;
+  return null;
+}
+
+// api 是 GET repos/<repo>/contents/agent-use/docs/pr-rules.json?ref=main 的返回。
+export function toRulesProblem(api) {
+  if (api == null || typeof api !== 'object') return `读不到 main 上的 ${RULES_PATH}`;
+  if (api.type !== 'file' || api.encoding !== 'base64' || typeof api.content !== 'string') return `main 上的 ${RULES_PATH} 不是可读的文件`;
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(api.content, 'base64').toString('utf8'));
+  } catch {
+    return `main 上的 ${RULES_PATH} 不是合法 JSON`;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return `main 上的 ${RULES_PATH} 不是 JSON 对象`;
+  return null;
+}
+
+// value 是仓库变量 MIVO_REVIEW_MODE 的值。
+export function toReviewModeProblem(value) {
+  if (value == null) return '读不到仓库变量 MIVO_REVIEW_MODE';
+  const mode = String(value).trim();
+  return mode === 'live' ? null : `仓库变量 MIVO_REVIEW_MODE 是 ${JSON.stringify(mode)},不是 live`;
+}
+
+export function toDispatchProblems({ workflowText, registration, rules, mode }) {
+  return [toDispatchOnlyProblem(workflowText), toWorkflowRegistrationProblem(registration), toRulesProblem(rules), toReviewModeProblem(mode)]
+    .filter(Boolean);
+}

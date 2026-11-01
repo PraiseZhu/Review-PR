@@ -12,13 +12,18 @@ import { fileURLToPath } from 'node:url';
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SCRIPT = path.join(HERE, 'deploy-tuple.mjs');
 export const sha256 = (text) => createHash('sha256').update(text).digest('hex');
-export const WORKFLOW_NEW = 'name: review-pr\non: workflow_dispatch\n';
-export const WORKFLOW_OLD = 'name: review-pr\non: [workflow_dispatch, push]\n';
+// 只有 workflow_dispatch 触发的最小 workflow(两份内容不同,哈希不同)。
+export const WORKFLOW_NEW = 'name: review-pr\n# 触发器\non:\n  workflow_dispatch:\n    inputs:\n      pr:\n        required: true\n';
+export const WORKFLOW_OLD = 'name: review-pr\non:\n  workflow_dispatch:\n    inputs:\n      pr:\n        required: false\n';
+export const WF_PATH = '.github/workflows/review-pr.yml';
+export const PR_NUMBER = '5';
+export const PR_HEAD = 'b'.repeat(40);
 export const WF_NEW = sha256(WORKFLOW_NEW);
 export const WF_OLD = sha256(WORKFLOW_OLD);
 
-// gh 替身:状态放在 state.json。variable get/set 读写 variable(给了 variableSeq 就按它依次回答 get,最后一项重复);
-// 读 review-pr.yml 时按 workflows 依次回答(最后一项重复)。
+// gh 替身:状态放在 state.json。variable get/set 读写 MIVO_REVIEW_SKILL_SHA(给了 variableSeq 就按它依次回答 get,最后一项重复);
+// 读 review-pr.yml 时按 workflows 依次回答(最后一项重复);MIVO_REVIEW_MODE 按 modeSeq 依次回答;
+// workflowApi、rules 为 null 表示那个接口 404。
 const FAKE_GH = `#!/usr/bin/env node
 const fs = require('node:fs');
 const file = process.env.FAKE_GH_STATE;
@@ -31,6 +36,18 @@ if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plug
   if (s.variableSeq) { out(s.variableSeq[Math.min(s.variableReads, s.variableSeq.length - 1)]); s.variableReads += 1; save(); } else out(s.variable);
 }
 else if (a.startsWith('variable set MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin --body ')) { s.variable = args[args.length - 1]; s.sets.push(s.variable); save(); }
+else if (a.startsWith('variable get MIVO_REVIEW_MODE -R xindong/mivo-canvas-plugin')) {
+  out(s.modeSeq[Math.min(s.modeReads, s.modeSeq.length - 1)]); s.modeReads += 1; save();
+}
+else if (a === 'api repos/xindong/mivo-canvas-plugin/actions/workflows/review-pr.yml') {
+  if (s.workflowApi === null) { process.stderr.write('gh: Not Found (HTTP 404)'); process.exit(1); }
+  out(JSON.stringify(s.workflowApi));
+}
+else if (a === 'api repos/xindong/mivo-canvas-plugin/contents/agent-use/docs/pr-rules.json?ref=main') {
+  if (s.rules === null) { process.stderr.write('gh: Not Found (HTTP 404)'); process.exit(1); }
+  out(JSON.stringify(s.rules));
+}
+else if (a.startsWith('pr view ')) out(JSON.stringify(s.pr));
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/commits/') && a.endsWith('--jq .sha')) out(s.newSkill);
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/compare/')) out(JSON.stringify({ status: 'identical', aheadBy: 0, messages: [] }));
 else if (a.includes('contents/.github/workflows/review-pr.yml')) {
@@ -51,7 +68,10 @@ const FAKE_LAUNCHCTL = `#!/bin/sh
 exit 1
 `;
 
-export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_NEW] } = {}) {
+const PR_RULES = { type: 'file', encoding: 'base64', content: Buffer.from('{"version":1}').toString('base64') };
+const WORKFLOW_API = { id: 381252611, path: WF_PATH, state: 'active' };
+
+export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_NEW], mode = ['live'], workflowApi = WORKFLOW_API, rules = PR_RULES } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-deploy-tuple-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home');
@@ -72,7 +92,9 @@ export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_N
     fs.writeFileSync(path.join(bin, name), text, { mode: 0o755 });
   }
   const statePath = path.join(root, 'gh-state.json');
-  fs.writeFileSync(statePath, JSON.stringify({ variable: variable ?? oldSkill, variableSeq: variableSeq?.({ oldSkill, newSkill }), variableReads: 0, newSkill, workflows, contentReads: 0, sets: [] }));
+  fs.writeFileSync(statePath, JSON.stringify({ variable: variable ?? oldSkill, variableSeq: variableSeq?.({ oldSkill, newSkill }), variableReads: 0, newSkill, workflows, contentReads: 0, sets: [],
+    modeSeq: Array.isArray(mode) ? mode : [mode], modeReads: 0, workflowApi, rules,
+    pr: { state: 'OPEN', headRefOid: PR_HEAD, statusCheckRollup: [] } }));
   const sshLog = path.join(root, 'ssh.log');
   const recordDir = path.join(root, 'records');
   const env = { ...process.env, HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GH_STATE: statePath, FAKE_SSH_LOG: sshLog };

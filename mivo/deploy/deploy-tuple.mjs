@@ -3,6 +3,8 @@
 //
 // tuple = Review-PR 提交(仓库变量 MIVO_REVIEW_SKILL_SHA、Mini ~/mivo-prereview/skill 检出)
 //       + Mivo main 上 review-pr.yml 的 sha256(只比对,不写进任何地方)。
+// 预检(--preview 同样)和切换后的核对都会检查派发前提:MIVO_REVIEW_MODE=live、review-pr.yml 已登记且 active、
+// 只有 workflow_dispatch 触发(带 --pr 时预检看 PR head 上的文件)、main 上的 agent-use/docs/pr-rules.json 可读(PraiseZhu/Review-PR#163)。
 // 只有 Mini 需要连得上:Pro、Air 上的 ~/.claude/state/approve-exec/mivo-review-trust.json 自 approve-exec 删掉旧入口
 // (2026-10-29,4c3fda0)起没有任何程序读取,本脚本不读不写它。
 //
@@ -33,7 +35,7 @@ import {
   WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toStopReady, isOwnHold,
   toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
   toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
-  toMergedPrNumbers, toBehindMainNote, toLatestChecks,
+  toMergedPrNumbers, toBehindMainNote, toLatestChecks, RULES_PATH, toDispatchProblems,
 } from './tuple-lib.mjs';
 
 const REPO = 'xindong/mivo-canvas-plugin';
@@ -100,9 +102,28 @@ function casRemote(host, rel, expected, next) {
   const r = remote(host, script, { input: next ?? '' });
   if (!r.ok) throw new Error(`改 ${host}:${rel} 失败(${r.status === 3 ? '内容已被别人改过' : `exit ${r.status}`}):${r.stderr.slice(0, 200)}`);
 }
-function mainWorkflowSha(ref = 'main') {
+function readWorkflow(ref = 'main') {
   const raw = must(run('gh', ['api', `repos/${REPO}/contents/${WF_PATH}?ref=${ref}`, '--jq', '.content']), `读 ${ref} 上的 ${WF_PATH}`);
-  return sha256(Buffer.from(raw.replace(/\s/g, ''), 'base64'));
+  const bytes = Buffer.from(raw.replace(/\s/g, ''), 'base64');
+  return { text: bytes.toString('utf8'), sha: sha256(bytes) };
+}
+const mainWorkflowSha = (ref = 'main') => readWorkflow(ref).sha;
+// 派发前提(PraiseZhu/Review-PR#163):MIVO_REVIEW_MODE=live、review-pr.yml 已登记且 active、只有 workflow_dispatch 触发、
+// main 上的 pr-rules.json 可读。workflowText 是要检查的那份 workflow 内容;不满足就抛错,说明是哪几项。
+function assertDispatchReady(workflowText) {
+  const gh = (args) => run('gh', args);
+  const json = (args) => {
+    const r = gh(args);
+    try { return r.ok ? JSON.parse(r.stdout) : null; } catch { return null; }
+  };
+  const mode = gh(['variable', 'get', 'MIVO_REVIEW_MODE', '-R', REPO]);
+  const problems = toDispatchProblems({
+    workflowText,
+    registration: json(['api', `repos/${REPO}/actions/workflows/review-pr.yml`]),
+    rules: json(['api', `repos/${REPO}/contents/${RULES_PATH}?ref=main`]),
+    mode: mode.ok ? mode.stdout : null,
+  });
+  if (problems.length) throw new Error(`派发前提不满足:${problems.join(';')}`);
 }
 const launchState = () => {
   const r = remote('mini', `launchctl print gui/$(id -u)/${LABEL} 2>/dev/null | grep -m1 -E '^[[:space:]]*state = ' | sed 's/.*= //'`);
@@ -197,7 +218,9 @@ function preflight() {
   const commitCheck = toNewCommitCheck({ preview: PREVIEW, hasCommit });
   if (commitCheck.action === 'missing') throw new Error(commitCheck.message);
   record.needFetch = commitCheck.action === 'fetch';
-  const mainWf = mainWorkflowSha();
+  const main = readWorkflow();
+  const mainWf = main.sha;
+  let checkedText = main.text;
   if (PR) {
     if (mainWf !== OLD_WF) throw new Error(`main 上 ${WF_PATH} 的 sha256 是 ${mainWf},不是旧值 ${OLD_WF}`);
     const pr = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', REPO, '--json', 'state,headRefOid,statusCheckRollup']), `读 PR #${PR}`));
@@ -206,11 +229,13 @@ function preflight() {
     const checkResult = (c) => c.conclusion || c.state || c.status;
     const bad = toLatestChecks(pr.statusCheckRollup).filter((c) => checkName(c) !== 'review-pr' && !['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(checkResult(c)));
     if (bad.length) throw new Error(`PR #${PR} 还有没通过的检查:${bad.map((c) => `${checkName(c)}=${checkResult(c)}`).join(', ')}`);
-    const prWf = mainWorkflowSha(PR_HEAD);
-    if (prWf !== NEW_WF) throw new Error(`PR #${PR} 上 ${WF_PATH} 的 sha256 是 ${prWf},不是新值 ${NEW_WF}`);
+    const prWorkflow = readWorkflow(PR_HEAD);
+    if (prWorkflow.sha !== NEW_WF) throw new Error(`PR #${PR} 上 ${WF_PATH} 的 sha256 是 ${prWorkflow.sha},不是新值 ${NEW_WF}`);
+    checkedText = prWorkflow.text;
   } else if (mainWf !== NEW_WF) {
     throw new Error(`不合 PR 时 main 上 ${WF_PATH} 必须已经是新值 ${NEW_WF},现在是 ${mainWf}`);
   }
+  assertDispatchReady(checkedText);
   console.log([
     '新旧 tuple:',
     `  Review-PR    ${OLD_SKILL} → ${NEW_SKILL}`,
@@ -379,9 +404,10 @@ function verifyTuple() {
   if (variable !== NEW_SKILL) throw new Error(`核对失败:仓库变量是 ${variable},不是 ${NEW_SKILL}`);
   const head = must(remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`), '读 Mini 检出').trim();
   if (head !== NEW_SKILL) throw new Error(`核对失败:Mini 检出是 ${head},不是 ${NEW_SKILL}`);
-  const wf = mainWorkflowSha();
-  if (wf !== NEW_WF) throw new Error(`核对失败:main 上 ${WF_PATH} 是 ${wf},不是 ${NEW_WF}`);
-  phase('tuple 核对通过(仓库变量、Mini 检出、main 上的 workflow 都是新值)');
+  const wf = readWorkflow();
+  if (wf.sha !== NEW_WF) throw new Error(`核对失败:main 上 ${WF_PATH} 是 ${wf.sha},不是 ${NEW_WF}`);
+  assertDispatchReady(wf.text);
+  phase('tuple 核对通过(仓库变量、Mini 检出、main 上的 workflow 都是新值,派发前提满足)');
 }
 
 // 6. 收尾:撤销暂停覆盖、删停点标记,再 bootstrap。只撤本次写过的:停点前就失败(例如别人的维护标记还在)时,
