@@ -15,7 +15,7 @@ export const OUTCOMES = {
   findings: '审查发现问题', security: '凭证或隐私问题', format: 'PR 格式问题',
   dependency: '等待依赖 PR 合并', retarget: '等待调整 base 分支',
   'ci-failed': 'CI 失败', 'ci-pending': '等待 CI', 'ci-unknown': 'CI 状态不完整',
-  'bot-pending': '等待 bot 审查完成', 'changes-requested': '等待作者处理其他审查意见',
+  'bot-pending': '等待 bot 审查完成', 'mergeable-pending': '等待 GitHub 算完能否合并', 'changes-requested': '等待作者处理其他审查意见',
   conflict: '存在合并冲突', rebase: '需要 rebase', protected: '受保护路径需人工处理',
   approval: '等待另一位维护者 Approve', 'merge-blocked': '合并条件未满足',
   'approval-pending': 'Approve 尚待确认，将继续补齐',
@@ -567,7 +567,7 @@ export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
         result.outcome === 'dependency' && !needsTargetBranchNotice(result) ? { targetBranchNotice: { status: 'not-needed' } } : {}),
       reviewClean: result.reviewClean === true,
       ...(result.approval ? { approval: result.approval } : {}),
-      retry: result.retry === true || ['error', 'state-changed', 'merge-queued', 'approval-pending'].includes(result.outcome) || result.approval?.status === 'pending' || Boolean(result.errors?.length) || result.fixHandoff?.status === 'stale' || result.authorNotice?.status === 'failed' || result.targetBranchNotice?.status === 'failed',
+      retry: result.retry === true || ['error', 'state-changed', 'merge-queued', 'approval-pending', 'mergeable-pending'].includes(result.outcome) || result.approval?.status === 'pending' || Boolean(result.errors?.length) || result.fixHandoff?.status === 'stale' || result.authorNotice?.status === 'failed' || result.targetBranchNotice?.status === 'failed',
       // 等 CI 也要定时重判:只读 Actions 才看得到的检查(如 Code Quality)跑完时,指纹里的 ci 聚合和 mergeStateStatus 都可能不变,
       // 不定时就一直算「没变化」被跳过(2026-10-22 #1173)。
       retryAt: ['bot-pending', 'ci-pending'].includes(result.outcome) ? formatLocalIso(now + 5 * 60 * 1000) : null,

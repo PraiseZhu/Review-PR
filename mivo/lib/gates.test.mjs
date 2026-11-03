@@ -926,7 +926,9 @@ test('#171 没有机器人 thread 的普通送审同样在 UNKNOWN 时先不派�
   const plain = decideGate(ctx({ meta: { ...ctx().meta, mergeStateStatus: 'UNKNOWN' } }));
   assert.equal(plain.outcome, 'mergeable-pending');
   const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
-  const d = decideGate(ctx({ meta: { ...ctx().meta, mergeStateStatus: 'UNKNOWN' }, format: evidence, auto: { action: 'pushback-format' } }));
+  const evidenceCtx = (mergeStateStatus) => ctx({ meta: { ...ctx().meta, mergeStateStatus }, format: evidence, gate: { gatePass: true }, auto: { action: 'pushback-format' } });
+  assert.deepEqual(decideGate(evidenceCtx('BLOCKED')).actions, [{ script: 'request-changes', gateKind: 'format' }]);
+  const d = decideGate(evidenceCtx('UNKNOWN'));
   assert.equal(d.outcome, 'mergeable-pending');
   assert.ok(!d.actions.some((a) => a.script === 'request-changes'));
 });
