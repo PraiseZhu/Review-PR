@@ -932,3 +932,19 @@ test('#171 没有机器人 thread 的普通送审同样在 UNKNOWN 时先不派�
   assert.equal(d.outcome, 'mergeable-pending');
   assert.ok(!d.actions.some((a) => a.script === 'request-changes'));
 });
+
+test('#171 UNKNOWN 时保留确认门的动作,只去掉送审路径的 request-changes;DIRTY 同样', () => {
+  const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
+  const withSignoff = (mergeStateStatus) => ctx({ meta: { ...ctx().meta, mergeStateStatus }, format: evidence, gate: { gatePass: true },
+    signoff: { triggers: [productTrigger({ blocking: false, released: { via: 'slack-release' } })], labels: { hasAnyLabel: true }, held: { issueNumber: 9 } },
+    auto: { action: 'pushback-format' } });
+  const open = decideGate(withSignoff('BLOCKED'));
+  assert.equal(open.stage, 'review');
+  assert.deepEqual(open.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }, { script: 'request-changes', gateKind: 'format' }]);
+  const pending = decideGate(withSignoff('UNKNOWN'));
+  assert.equal(pending.outcome, 'mergeable-pending');
+  assert.deepEqual(pending.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }]);
+  const conflict = decideGate(withSignoff('DIRTY'));
+  assert.equal(conflict.outcome, 'conflict');
+  assert.deepEqual(conflict.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }]);
+});
