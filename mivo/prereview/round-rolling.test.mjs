@@ -2115,3 +2115,76 @@ test('世界:判门后 head 没变:照常批准 workflow', async () => {
   proc.stop();
 });
 
+
+// ── #168:判门没派审时,当天轮次日志写一行 gate 事件 ──
+const GATE_CASES = [
+  { pr: 1, outcome: 'threads-unresolved', patch: { gate: { unresolvedThreads: [{ isBot: false }], blockers: ['1 条 conversation 未 resolve'] } } },
+  { pr: 2, outcome: 'bot-pending', patch: { auto: { action: 'skip-gate' }, gate: { botSettle: { settled: false }, blockers: ['机器人静默期没过'] } } },
+  { pr: 3, outcome: 'ci-pending', patch: { auto: { action: 'skip-gate' }, gate: { ci: { status: 'pending' }, blockers: ['CI 在跑'] } } },
+  { pr: 4, outcome: 'format', patch: { auto: { action: 'skip-stale-pushback' }, format: { formatPass: false, formatIssues: ['缺界面证据'] }, gate: { blockers: ['格式门未通过'] } } },
+];
+
+test('世界:#168 判门停在 threads-unresolved / bot-pending / ci-pending / format 时,日志各写一行 gate 事件,没有派发', async () => {
+  const w = makeWorld();
+  for (const c of GATE_CASES) { w.openPr(c.pr, `h${c.pr}`); w.contextPatch.set(c.pr, c.patch); }
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  for (const c of GATE_CASES) {
+    const events = w.logged('gate').filter((e) => e.pr === c.pr);
+    assert.equal(events.length, 1, `#${c.pr} ${c.outcome}`);
+    const [event] = events;
+    assert.equal(event.head, `h${c.pr}`);
+    assert.equal(event.outcome, c.outcome);
+    assert.equal(typeof event.stage, 'string');
+    assert.ok(event.reason.length > 0, '原因非空');
+    assert.equal(typeof event.retry, 'boolean');
+    assert.equal(typeof event.actions, 'number');
+    assert.deepEqual(event.blockers, c.patch.gate.blockers);
+    assert.equal(w.dispatchesOf(c.pr).length, 0, `#${c.pr} 判门没过不派发`);
+  }
+});
+
+test('世界:#168 判门通过、成功派发服务器审查的 PR,不写 gate 事件', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1', { durationMs: 5 * MIN });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.dispatchesOf(1).length, 1);
+  assert.equal(w.logged('gate').filter((e) => e.pr === 1).length, 0);
+});
+
+test('世界:#168 跳过判门(#141 gate-skipped)只写 gate-skipped,不写 gate', async () => {
+  const w = makeWorld();
+  const t0 = w.now;
+  w.openPr(7, 'h7');
+  w.files.set('/w/state/round-state.json', { version: 1, mode: 'review-only',
+    prs: { 7: { fingerprintFields: { head: 'h7' }, outcome: 'threads-unresolved', reason: '1 条 conversation 未 resolve', retry: false, roundCreatedAt: iso(t0 - 10 * MIN) } } });
+  w.files.set(w.state('gate-last.json'), { 7: { head: 'h7', atMs: t0 - 5 * MIN } });
+  w.selection.set(7, { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => w.logged('gate-skipped').some((e) => e.pr === 7), { maxMs: 10 * MIN }));
+  await w.runUntil(() => proc.settled, { maxMs: 10 * MIN });
+  assert.equal(w.contextCalls.some((c) => c.pr === 7), false, '确实跳过了判门');
+  assert.equal(w.logged('gate').filter((e) => e.pr === 7).length, 0);
+});
+
+test('世界:#168 gate 事件 reason 超 200 字截到 200;blockers 7 条只留前 5 条、每条截到 120 字', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  const blockers = Array.from({ length: 7 }, (_, i) => `卡点${i}:${'长'.repeat(300)}`);
+  w.contextPatch.set(1, { auto: { action: 'skip-gate', reason: '因'.repeat(500) }, gate: { ci: { status: 'pending' }, blockers } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 6 * 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  const [event] = w.logged('gate').filter((e) => e.pr === 1);
+  assert.ok(event, '写了 gate 事件');
+  assert.equal(event.reason.length, 200);
+  assert.equal(event.blockers.length, 5);
+  assert.ok(event.blockers.every((b) => b.length === 120));
+  assert.deepEqual(event.blockers.map((b) => b.slice(0, 4)), ['卡点0:', '卡点1:', '卡点2:', '卡点3:', '卡点4:'], '留的是前 5 条');
+  assert.equal(w.dispatchesOf(1).length, 0);
+  // 结果文件不带 blockers:只进日志
+  assert.equal('blockers' in w.read(`${w.roundDir('R1')}/results/pr-1.json`), false);
+});

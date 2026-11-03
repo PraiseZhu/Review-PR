@@ -529,6 +529,8 @@ bash ~/mivo-prereview/skill/mivo/prereview/install-mini.sh --sha <SHA> --instanc
 
 日志在 `~/Library/Logs/mivo-prereview/<实例>/round-<UTC 日期>.jsonl`，每个事件一行 JSON。
 
+判门结论也在这个日志里：每次真正判门、但没有派服务器审查时，写一行 `gate` 事件（字段 `pr`、`head`、`outcome`、`stage`、`reason`、`retry`、`actions`、`blockers`；`reason` 最多 200 字，`blockers` 最多 5 条、每条最多 120 字）。排查「为什么没派审」，查当天这一个文件的 `gate` 事件就够，不用翻轮次目录。跳过判门（#141）的 PR 只写 `gate-skipped`，不写 `gate`；成功派发的也不写。
+
 Mini 的 `gh` 经 GitHub App 分流（`~/mivo-gh-router/praisebuild`）。查询里带 `viewer` 或 `headRepository` 的读请求会整条交给 PraiseZhu，所以：
 
 - 配置 JSON 可加 `"viewerLogin": "PraiseZhu"`（必须是 `gh` 登录的账号）：`round.mjs` 给脚本设 `REVIEW_PR_VIEWER_LOGIN`，context 不再查 `viewer`（见上节 identity-env）。不填时行为不变。

@@ -1093,7 +1093,7 @@ async function handleTask(ctx, task) {
   if (!live.ok) return finishGate(ctx, task, { outcome: 'error', reason: `context 读取失败:${live.error}`, retry: true, errors: [live.error] });
   if (live.meta.state !== 'OPEN' || live.meta.isDraft || live.meta.headRefOid !== task.head ||
       live.meta.baseRefOid !== task.base || live.meta.baseRefName !== task.baseRefName) {
-    return finishGate(ctx, task, { outcome: 'state-changed', reason: '名单生成后 PR 已关闭、转 draft,或 head/base 已变化;下轮重新采集' });
+    return finishGate(ctx, task, { outcome: 'state-changed', reason: '名单生成后 PR 已关闭、转 draft,或 head/base 已变化;下轮重新采集' }, toLiveBlockers(live));
   }
   const bindings = ['--lock-token', token, '--expected-head', task.head, '--expected-authority-digest', authorityDigest];
   // 作者交接(lib/handoff.mjs):开关 off 时不读,判门与改动前完全一致。
@@ -1131,13 +1131,13 @@ async function handleTask(ctx, task) {
     if (next.closeIssue && !dry) {
       await executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
     }
-    if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result);
+    if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result, toLiveBlockers(live));
   }
   if (decision.stage !== 'review') {
     if (decision.retry) result.retry = true;
-    return finishGate(ctx, task, result);
+    return finishGate(ctx, task, result, toLiveBlockers(live));
   }
-  return dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result);
+  return dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result, toLiveBlockers(live));
 }
 
 async function executeGateAction({ action, live, task, bindings, result, roundDir }) {
@@ -1350,33 +1350,33 @@ function readLiveHead(pr) {
   return head && !/\s/.test(head) ? head : null;
 }
 
-function dispatchReview(ctx, task, { tier, action }, gateResult) {
+function dispatchReview(ctx, task, { tier, action }, gateResult, gateBlockers = []) {
   // 判门期间作者推了新提交:不派旧 head 的审查,按状态变化收尾,下一轮按新 head 重判(单审 P1)。读不到 head 照常派,
   // 服务器发布前还会核对 head。
   const liveHead = readLiveHead(task.pr);
   if (liveHead && liveHead !== task.head) {
     log('dispatch-head-moved', { pr: task.pr, head: task.head, liveHead });
-    return finishGate(ctx, task, { ...gateResult, outcome: 'state-changed', reason: `判门期间 PR 推了新提交(${liveHead.slice(0, 12)}),这次不派发,下一轮重判` });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'state-changed', reason: `判门期间 PR 推了新提交(${liveHead.slice(0, 12)}),这次不派发,下一轮重判` }, gateBlockers);
   }
   if (!inBusinessWindow()) {
-    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '维护窗口(06:00–07:00 Asia/Shanghai)不派服务器审查,07:00 后继续', retry: true }, gateBlockers);
   }
   // 判门期间别的结果写了派发暂停(额度类报错 / 工具链不健康):不派发,下一轮重判(#143)。
   const pause = pausedUntil();
   if (pause) {
     log('dispatch-held', { pr: task.pr, head: task.head, reason: 'paused', until: pause.until });
-    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发暂停到 ${pause.until},本次没有派发服务器审查`, retry: true });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发暂停到 ${pause.until},本次没有派发服务器审查`, retry: true }, gateBlockers);
   }
   // 部署暂停:不派发,也不算失败;上线后的新版本重审。
   if (QUIESCING || deployHold()) {
     log('dispatch-held', { pr: task.pr, head: task.head, reason: 'deploy-hold' });
-    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '部署暂停,本次没有派发服务器审查,上线后自动重审', retry: true });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: '部署暂停,本次没有派发服务器审查,上线后自动重审', retry: true }, gateBlockers);
   }
   assertNotFenced();
   const store = loadStore();
   const record = store.prs[task.pr] ?? {};
   if (dispatchesToday() >= CONFIG.dailyCap) {
-    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `今日服务器审查已达上限 ${CONFIG.dailyCap} 次,明天继续`, retry: true });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `今日服务器审查已达上限 ${CONFIG.dailyCap} 次,明天继续`, retry: true }, gateBlockers);
   }
   // attempt = 连续失败数 + 1(服务器据此升级模型、判定最终失败,review-pr.yml 的守卫只收 1–9)。不再累计成功的派发:
   // 摘标签后门禁恢复要再派发一次才能把标签加回,同 head 累计派发满 9 次就加不回来(2026-10-17 补审)。
@@ -1386,7 +1386,7 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   const retry = toRetryDecision({ failure, attempt, completedRuns: record.completedRuns?.[task.head] ?? 0 });
   if (!retry.dispatch) {
     log('retry-held', { pr: task.pr, head: task.head, attempt, reason: retry.reason });
-    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: retry.reason, retry: true });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: retry.reason, retry: true }, gateBlockers);
   }
   // 同 head 上一次运行的收口全量没做完(预算不足/收口失败):prev_run_id 指向那次运行,服务器下载后直接全量补跑;否则沿用最近一次完整结果。
   const prevRunId = previousRunIdFor(record, task.head);
@@ -1407,7 +1407,7 @@ function dispatchReview(ctx, task, { tier, action }, gateResult) {
   if (!fired.ok && toDispatchFailure({ stderr: fired.stderr, error: fired.error }) === 'rejected') {
     // 明确被拒(HTTP 4xx 且有错误内容):没有派出,按失败重试。
     saveIntent(ctx, { ...intent, state: 'rejected', error: stderr });
-    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发服务器审查被拒:${stderr.slice(0, 200)}`, retry: true });
+    return finishGate(ctx, task, { ...gateResult, outcome: 'error', reason: `派发服务器审查被拒:${stderr.slice(0, 200)}`, retry: true }, gateBlockers);
   }
   if (fired.ok) saveIntent(ctx, { ...intent, state: 'sent', sentAt: nowIso() });
   recordDispatch({ at: nowIso(), pr: task.pr, head: task.head, dispatchId, action, ...(fired.ok ? {} : { uncertain: true }) });
@@ -1789,7 +1789,24 @@ function recordFailure(ctx, task, failed) {
   bumpOwned(ctx, task, { failures: toFailureRecord(record.failures, task.head, failed, nowIso()) });
 }
 
-function finishGate(ctx, task, result) {
+// 判门没有派审时往当天日志记一行 gate 事件:排查「为什么没派审」查这一个文件就够。
+// blockers 取 context 的判门卡点快照(不进结果文件);reason 截 200 字,blockers 最多 5 条、每条 120 字。
+function toLiveBlockers(live) {
+  return Array.isArray(live?.gate?.blockers) ? live.gate.blockers : [];
+}
+function toGateEvent(task, result, gateBlockers) {
+  return {
+    pr: task.pr, head: task.head,
+    outcome: result.outcome ?? 'error',
+    stage: result.gate?.stage ?? 'error',
+    reason: String(result.reason || result.outcome || '未知').slice(0, 200),
+    retry: result.retry === true || (result.outcome ?? 'error') === 'error',
+    actions: Array.isArray(result.gate?.actions) ? result.gate.actions.length : 0,
+    blockers: Array.isArray(gateBlockers) ? gateBlockers.filter((item) => typeof item === 'string').slice(0, 5).map((item) => item.slice(0, 120)) : [],
+  };
+}
+function finishGate(ctx, task, result, gateBlockers = []) {
+  log('gate', toGateEvent(task, result, gateBlockers));
   writeTaskResult(ctx, task, result);
   return { dispatched: false };
 }
