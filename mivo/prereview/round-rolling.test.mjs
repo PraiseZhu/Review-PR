@@ -303,6 +303,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30, ...(gateParallel ? { gateParallel } : {}) });
   w.state = (name) => `/w/state/mivo/${name}`;
+  // #167 的一次性唤醒视为已跑过:世界用例预置的 threads-unresolved 行不该被它标 retry。
+  w.files.set(w.state('threads-unresolved-wake.json'), { done: true });
   w.read = (file) => (w.files.has(file) ? clone(w.files.get(file)) : undefined);
   w.openPr = (number, head, { durationMs = 10 * MIN, queueMs = 4_000 } = {}) => w.prs.set(number, { head, open: true, durationMs, queueMs });
   w.push = (number, head) => { w.prs.get(number).head = head; };

@@ -344,8 +344,8 @@ test('只剩机器人 thread:照样送审,带 pendingGates;有人留的 thread �
   assert.match(bot.reason, /只剩 2 条机器人/);
   assert.equal(decideGate(ctx({ gate: { unresolvedThreads: [botThread('t1'), humanThread('t2')] } })).outcome, 'threads-unresolved');
   assert.equal(decideGate(ctx({ gate: { unresolvedThreads: undefined, unresolvedThreadCount: 2 } })).outcome, 'threads-unresolved', '读不到明细按有人的算');
-  // 机器人 thread 之外还有别的卡点(context 走 skip-gate):照旧按 thread 卡住,不送审。
-  assert.equal(decideGate(ctx({ gate: { unresolvedThreads: [botThread('t1')], ci: { status: 'failed' } }, auto: { action: 'skip-gate', reason: 'x' } })).outcome, 'threads-unresolved');
+  // 机器人 thread 之外还有别的卡点(context 走 skip-gate):不送审,按真实卡点给结论(见下方「只剩机器人 thread + 别的卡点」)。
+  assert.equal(decideGate(ctx({ gate: { unresolvedThreads: [botThread('t1')], ci: { status: 'failed' } }, auto: { action: 'skip-gate', reason: 'x' } })).outcome, 'ci-failed');
   assert.equal(decideGate(ctx()).pendingGates, undefined, '全部通过时没有 pendingGates');
 });
 
@@ -409,8 +409,48 @@ test('审查机 thread:首评缺作者/正文、comments 缺失、明细缺失 �
   assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: undefined, unresolvedThreadCount: 1 })).outcome, 'threads-unresolved');
 });
 
+// 2026-11-03 #167:只剩机器人 thread、机器人静默期没过时,context 走 skip-gate(blockers 里有 bot 静默期和 thread 两条)。
+// 以前这里直接返回 threads-unresolved,被 round 记成不重试的结果,静默期结束后 PR 不再被重判;现在按真实卡点给结论。
+const botGate = (extra = {}) => ({ unresolvedThreads: [botThread('t1')], blockClass: 'threads-unresolved',
+  ci: { status: 'pass' }, botSettle: { settled: false }, ...extra });
+const skipGate = { action: 'skip-gate', reason: '前置门未通过' };
+
+test('只剩机器人 thread + 静默期没过 + CI 通过:判 bot-pending,不记 threads-unresolved', () => {
+  const d = decideGate(ctx({ gate: botGate(), auto: skipGate }));
+  assert.equal(d.outcome, 'bot-pending');
+  assert.equal(d.stage, 'gate');
+  assert.deepEqual(d.actions, []);
+  assert.equal(d.pendingGates, undefined);
+  // 审查机自己带标记的 thread 同口径。
+  const reviewer = decideGate(withViewer('PraiseZhu', botGate({ unresolvedThreads: [reviewerThread('t1')] }), { auto: skipGate }));
+  assert.equal(reviewer.outcome, 'bot-pending');
+});
+
+test('只剩机器人 thread:静默期已过、其它门全过仍送审带 pendingGates;有人留的 thread 仍是 threads-unresolved', () => {
+  const settled = decideGate(ctx({ gate: botGate({ botSettle: { settled: true } }) }));
+  assert.equal(settled.stage, 'review');
+  assert.deepEqual(settled.pendingGates, ['bot-threads']);
+  const human = decideGate(ctx({ gate: botGate({ unresolvedThreads: [humanThread('t1')] }), auto: skipGate }));
+  assert.equal(human.outcome, 'threads-unresolved');
+  const mixed = decideGate(ctx({ gate: botGate({ unresolvedThreads: [botThread('t1'), humanThread('t2')] }), auto: skipGate }));
+  assert.equal(mixed.outcome, 'threads-unresolved');
+});
+
+test('只剩机器人 thread + 别的卡点:结论同没有这条 thread 时一样(冲突 / CI 失败)', () => {
+  const conflictBase = { gate: { unresolvedThreads: [], blockClass: 'conflict', ci: { status: 'pass' }, botSettle: { settled: false } }, auto: skipGate };
+  const withBot = decideGate(ctx({ ...conflictBase, gate: botGate({ blockClass: 'conflict' }) }));
+  assert.equal(withBot.outcome, 'conflict');
+  assert.deepEqual(withBot, decideGate(ctx(conflictBase)));
+  const failedBase = { gate: { unresolvedThreads: [], blockClass: 'ci-failed', ci: { status: 'failed' }, botSettle: { settled: false } }, auto: skipGate };
+  const failed = decideGate(ctx({ ...failedBase, gate: botGate({ blockClass: 'ci-failed', ci: { status: 'failed' } }) }));
+  assert.equal(failed.outcome, 'ci-failed');
+  assert.ok(failed.actions.some((a) => a.script === 'retry-ci'));
+  assert.deepEqual(failed, decideGate(ctx(failedBase)));
+});
+
 test('审查机 thread:其他前置门没过仍硬拦;缺界面证据时与 ui-evidence 组合', () => {
-  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t1')], ci: { status: 'failed' } }, { auto: { action: 'skip-gate', reason: 'x' } })).outcome, 'threads-unresolved');
+  // 别的卡点走 classifyGateBlock:不送审,按真实卡点给结论(同没有这条 thread 时一样)。
+  assert.equal(decideGate(withViewer('PraiseZhu', { unresolvedThreads: [reviewerThread('t1')], ci: { status: 'failed' } }, { auto: { action: 'skip-gate', reason: 'x' } })).outcome, 'ci-failed');
   const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
   const gate = { gatePass: false, blockers: ['1 条 conversation 未 resolve(不分作者)'], unresolvedThreads: [reviewerThread('t1')] };
   const both = decideGate(withViewer('PraiseZhu', gate, { format: evidence, auto: { action: 'pushback-format' } }));

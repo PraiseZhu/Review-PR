@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { decideGate } from './gates.mjs';
 import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, GATE_SKIP_MAX_MS, toOnlineRunners, toParallelLimit,
   MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
 
@@ -83,6 +84,22 @@ test('暂缓判门只释放已收尾、绑定正确且无服务器派发的等�
     assert.equal(canReleaseDeferredGate({ ...input, dispatchIntent: { state } }), false);
   }
   assert.equal(canReleaseDeferredGate({ ...input, result: null }), false);
+});
+
+test('只剩机器人 thread、静默期没过的判门结果:无动作的 bot-pending 提前释放,下一轮带 retry 重判', () => {
+  const gate = decideGate({ ok: true, pr: 1148, meta: { author: 'outsider', mergeStateStatus: 'BLOCKED' }, files: [], approvalPolicy: { authorIsMaintainer: false },
+    signoff: { triggers: [], held: null, labels: { hasAnyLabel: false } }, security: { hardHitCount: 0, hardHits: [] }, format: { formatPass: true, formatIssues: [] },
+    gate: { unresolvedThreads: [{ id: 't1', isBot: true }], blockClass: 'threads-unresolved', ci: { status: 'pass' }, botSettle: { settled: false }, reviewerPushbacks: [] },
+    auto: { action: 'skip-gate', reason: '前置门未通过' }, review: { tier: 'standard' } });
+  assert.equal(gate.outcome, 'bot-pending');
+  assert.deepEqual(gate.actions, []);
+  const task = { pr: 1148, head: 'head', base: 'base', phase: 'complete', agentId: 'mini-gate:1148:done' };
+  const result = { pr: 1148, head: 'head', base: 'base', runId: 'round', mode: 'review-only', outcome: gate.outcome,
+    enteredReview: false, reviewed: false, errors: [], gate };
+  assert.equal(canReleaseDeferredGate({ task, result, roundId: 'round' }), true);
+  const next = withDeferredGateRetries({ version: 1, mode: 'review-only', prs: { 1148: { outcome: 'bot-pending', retry: false } } },
+    [{ runId: 'round', manifest: { createdAt: '2026-11-03T01:00:00Z' }, released: { 1148: { reason: 'gate-deferred', roundId: 'round' } } }]);
+  assert.equal(next.prs[1148].retry, true);
 });
 
 test('等作者的判门结果没有执行动作时也提前释放,有动作就留在原轮次', () => {

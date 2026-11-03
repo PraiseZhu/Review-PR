@@ -248,7 +248,9 @@ export function decideGate(ctx) {
       actions: evidenceUntold ? [{ script: 'request-changes', gateKind: 'format' }] : [],
       tier: ctx.review?.tier ?? 'standard', pendingGates: ['ui-evidence', ...(handoffReasons.length ? ['handoff'] : []), ...pendingGates] });
   }
-  if (reviewableThreadsOnly && action !== 'review') return threadsResult;
+  // 只剩可送审的 thread、但还有别的卡点:走 classifyGateBlock 的按真实卡点给结论(冲突、CI、机器人静默期没过=bot-pending 等),
+  // 与没有这些 thread 时一样。以前这里一律记 threads-unresolved(不重试),静默期结束后 PR 不再被重判(#167)。
+  if (reviewableThreadsOnly && action !== 'review' && !GATE_BLOCK_ACTIONS.has(action)) return threadsResult;
   switch (action) {
     case 'skip-protected-path':
       // 自动放行不发「转人工审核」提醒;作者提醒回执由 round 用 toAutoReleaseNotice 补。
@@ -292,6 +294,9 @@ export function decideGate(ctx) {
       return withSignoff({ stage: 'error', outcome: 'error', reason: `未知的 auto.action:${action ?? '(empty)'}`, actions: [] });
   }
 }
+
+// decideGate 里交给 classifyGateBlock 的 auto.action。
+const GATE_BLOCK_ACTIONS = new Set(['skip-gate', 'skip-structural-block', 'bypass-structural-block']);
 
 // 审查机自己留的 thread 首条评论里的标记前缀(finding.mjs 写入;这里只认字面前缀,不要求完整 key/round/head)。
 const REVIEWER_FINDING_MARKER = '<!-- mivo-finding key=';
