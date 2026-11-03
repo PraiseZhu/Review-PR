@@ -561,6 +561,7 @@ function isGithubRateLimited(server) {
 // 「作者为维护者自动放行」上线时同理:已 hold 住的维护者受保护路径 PR 指纹没变,要再唤醒一次,
 // 用独立的标记文件,不和 #68 那次互相挡。
 // [MIVO-PATCH gate-bases] 第三个标记 gate-base-wake.json:门禁分支上线时,停在 dependency/retarget 的行同样要再判一次。
+// 第四个标记 threads-unresolved-wake.json(#167):只剩机器人 thread、静默期没过时现在判 bot-pending;上线前记成 threads-unresolved 的行要再判一次。
 function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json', { outcomes = ['protected'], event = 'wake-protected-hold' } = {}) {
   const markerFile = stateFile(markerName);
   const already = readJson(markerFile, { done: false });
@@ -607,7 +608,8 @@ async function main() {
   sweepBypassReminders();
   sweepClosedPrLabels();
   for (const [markerName, options] of [['protected-hold-wake.json', {}], ['protected-author-release-wake.json', {}],
-    ['gate-base-wake.json', { outcomes: ['dependency', 'retarget'], event: 'wake-gate-base' }]]) {
+    ['gate-base-wake.json', { outcomes: ['dependency', 'retarget'], event: 'wake-gate-base' }],
+    ['threads-unresolved-wake.json', { outcomes: ['threads-unresolved'], event: 'wake-threads-unresolved' }]]) {
     try { wakeProtectedHoldOnce(markerName, options); } catch (error) {
       log('wake-protected-hold-skip', { marker: markerName, reason: error.message.slice(0, 200) });
     }
