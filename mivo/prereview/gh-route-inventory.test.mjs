@@ -803,6 +803,40 @@ test('F3:SC11 真的复算旧 vendor:把全部 legacyServerRoute 改成 user 必
   assert.match(checkServerRoutes(lying, routeModules.decideNew, routeModules.decideLegacy).join('\n'), /legacyServerRoute/);
 });
 
+test('N1:转发封装在转发前改了形参(args.push)不再算纯转发,清单必须红', () => {
+  const copy = new Map(sources);
+  const text = copy.get('review-pr/scripts/lib.mjs');
+  const from = "export function ghJson(args, opts = {}) {\n";
+  assert.ok(text.includes(from));
+  copy.set('review-pr/scripts/lib.mjs', text.replace(from, `${from}  if (args[0] === 'pr' && args[1] === 'view') {\n    args.push('--json', 'mergeStateStatus');\n  }\n`));
+  const changed = scanGhTemplates(copy);
+  assert.deepEqual(changed.unresolved, []);
+  assert.match(validateInventory(changed.templates, inventory).join('\n'), /没登记|forwarder/);
+  const fwd = (body) => scanGhTemplates(new Map([[SYNTH_FILE, `export function w(args, opts) { ${body} }`]])).templates[0].forwarder;
+  assert.ok(fwd('return gh(args, opts);'), '纯转发仍是 forwarder');
+  assert.ok(!fwd("args.push('--json', 'x'); return gh(args, opts);"), 'push 之后不是纯转发');
+  assert.ok(!fwd("args = [...args, '--json', 'x']; return gh(args, opts);"), '重新赋值不是纯转发');
+  assert.ok(!fwd("args[3] = 'x'; return gh(args, opts);"), '下标赋值不是纯转发');
+  assert.ok(!fwd("tweak(args); return gh(args, opts);"), '传给别的函数不是纯转发');
+});
+
+test('N2:依赖按词法作用域找,其它函数里的同名声明不得抢走外层的 endpoint', () => {
+  const sig = (route) => scanGhTemplates(new Map([[SYNTH_FILE, `export function f(slug) {
+  const endpoint = \`repos/\${slug}/${route}\`;
+  function other() {
+    const endpoint = 'unused';
+    return endpoint;
+  }
+  return gh(['api', endpoint]);
+}`]])).templates[0];
+  const a = sig('pulls');
+  assert.notEqual(a.sig, sig('rules/branches/main').sig, '改外层端点指纹必须变');
+  assert.ok(!a.deps.some((d) => d.includes("'unused'")), '其它函数里的同名声明不得参与');
+  // 同一作用域层有两处同名声明(块级遮蔽)→ unresolved
+  const shadow = scanGhTemplates(new Map([[SYNTH_FILE, "export function f(slug) { const endpoint = `repos/${slug}`; if (slug) { const endpoint = 'x'; return gh(['api', endpoint]); } }"]]));
+  assert.match(JSON.stringify(shadow.unresolved), /endpoint/);
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
