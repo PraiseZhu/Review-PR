@@ -85,6 +85,7 @@
     "review-pr/scripts/reviewer-app-guard.test.mjs",
     "review-pr/scripts/reviewer-app-policy.test.mjs",
     "review-pr/scripts/reviewer-app-pre-merge.test.mjs",
+    "review-pr/scripts/reviewer-app-request-changes.test.mjs",
     "review-pr/scripts/reviewer-app-signoff-cli.test.mjs",
     "review-pr/scripts/reviewer-app-signoff.test.mjs",
     "review-pr/scripts/reviewer-identity.mjs",
