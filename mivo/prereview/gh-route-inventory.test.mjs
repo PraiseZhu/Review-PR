@@ -22,7 +22,8 @@ import { decideReadRoute } from '../../review-pr/scripts/gh-read-route.mjs';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const INVENTORY_PATH = join(REPO_ROOT, 'mivo/prereview/gh-route-inventory.json');
 const ROOTS = ['review-pr/scripts', 'mivo/prereview', 'mivo/lib'];
-const POLICY_ISSUE_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/;
+// flipsIn 只允许指向真正会让这条调用改走 App 的后续 issue:读侧、身份读取、受限写。
+const ALLOWED_FLIPS = ['xindong/mivo-canvas-plugin#1751', 'PraiseZhu/Review-PR#176', 'xindong/mivo-canvas-plugin#1752'];
 const KEEP_CATEGORIES = ['pr-merge-approve', 'unreachable-under-config', 'interactive-skill'];
 const FLOWS = ['mini', 'server', 'interactive'];
 
@@ -270,7 +271,7 @@ export function listSourceFiles(root = REPO_ROOT) {
 
 // ── 入口归属 ───────────────────────────────────────────────────────────────
 // mini = 从 mivo/prereview/round.mjs 出发的引用闭包;server = 从 mivo/server/review.mjs 出发的闭包;都不在 = interactive。
-// 引用 = 去掉注释后的源码里出现的 `*.mjs` 名字(import 路径或 spawn 的脚本名)。多算只会让 server 检查更严,不会放过。
+// 引用 = 去掉注释后的源码里「整段字符串就是 *.mjs 路径」的写法(import 路径或 spawn 的脚本名)。没有调用方的入口脚本归 interactive。
 const FLOW_ENTRIES = { mini: ['mivo/prereview/round.mjs', 'mivo/prereview/admit-candidates.mjs'], server: ['mivo/server/review.mjs'] };
 const BARE_SEARCH_DIRS = ['review-pr/scripts', 'mivo/prereview', 'mivo/lib'];
 
@@ -285,7 +286,8 @@ export function computeFlows(sourceMap, entries = FLOW_ENTRIES) {
   const refs = new Map();
   for (const [file, src] of sourceMap) {
     const { masked } = analyze(src);
-    refs.set(file, new Set([...masked.matchAll(/(?:\.{1,2}\/)*[\w./-]*[\w-]+\.mjs/g)].map((m) => resolve(file, m[0])).filter(Boolean)));
+    // 只认整段字符串就是脚本路径的写法(import 路径、runScript('x.mjs'));提示词/说明文字里顺带提到脚本名不算调用。
+    refs.set(file, new Set([...masked.matchAll(/['"]((?:\.{1,2}\/)*[\w./-]*[\w-]+\.mjs)['"]/g)].map((m) => resolve(file, m[1])).filter(Boolean)));
   }
   const closure = (roots) => {
     const seen = new Set();
@@ -347,7 +349,7 @@ export function validateInventory(templates, inventory) {
 
 // ── 路由校验 ───────────────────────────────────────────────────────────────
 
-const ROUTING_REPOS = ['xindong/mivo-canvas-plugin', 'praisezhu/review-pr'];
+const ROUTING_REPOS = ['xindong/mivo-canvas-plugin'];
 const NO_FILES = (path) => { throw new Error(`清单 case 不允许读宿主文件: ${path}`); };
 
 export function routeOf(c, classifyFn = classify, repos = ROUTING_REPOS) {
@@ -378,10 +380,12 @@ export function classifyInventory(inventory, classifyFn = classify, rules = {}) 
       try { got = routeOf(c, classifyFn); } catch (error) { diagnostics.push(`${label}: ${error.message}`); continue; }
       if (got.route !== c.expected) diagnostics.push(`${label}: 期望 ${c.expected},分类器给 ${got.route}(${got.reason})`);
       if (c.expected !== 'user') continue;
-      const hasFlip = typeof c.flipsIn === 'string' && POLICY_ISSUE_RE.test(c.flipsIn);
+      if ('ownerPending' in c) diagnostics.push(`${label}: 不允许 ownerPending 字段,先把归属定到真实后续 issue`);
+      const hasFlip = ALLOWED_FLIPS.includes(c.flipsIn);
+      if (c.flipsIn !== undefined && !hasFlip) diagnostics.push(`${label}: flipsIn ${JSON.stringify(c.flipsIn)} 不在允许范围 ${ALLOWED_FLIPS.join(' / ')}`);
       const keep = c.keep;
       const hasKeep = keep && KEEP_CATEGORIES.includes(keep.category) && typeof keep.reason === 'string' && keep.reason.length >= 12;
-      if (hasFlip === Boolean(hasKeep)) diagnostics.push(`${label}: expected=user 必须二选一:flipsIn(owner/repo#N)或 keep{category,reason}`);
+      if (hasFlip === Boolean(hasKeep)) diagnostics.push(`${label}: expected=user 必须二选一:flipsIn(见 ALLOWED_FLIPS)或 keep{category,reason}`);
       if (keep && !hasKeep) diagnostics.push(`${label}: keep 的 category 只能是 ${KEEP_CATEGORIES.join('/')} 且 reason 要具体`);
       if (hasKeep && keep.category === 'interactive-skill' && !(e.flows.length === 1 && e.flows[0] === 'interactive')) diagnostics.push(`${label}: interactive-skill 的条目 flows 只能是 ["interactive"]`);
       if (hasKeep && keep.category === 'unreachable-under-config' && rules.allowlistOk !== true) diagnostics.push(`${label}: unreachable-under-config 要求 pr-rules.json 与 sandbox-pr-rules.json 的 maintainerSource 都是 allowlist`);
@@ -479,6 +483,22 @@ test('守卫对真实源码的变化敏感:改 GraphQL 常量里的字段、改 
   assert.match(mutate('review-pr/scripts/lib.mjs', '{repository(owner:$owner,name:$name){defaultBranchRef{name}}}', '{repository(owner:$owner,name:$name){defaultBranchRef{name} viewerPermission}}'), /没登记/);
 });
 
+test('清单里没有 ownerPending,也没有指向 #173 的 flipsIn', () => {
+  const text = JSON.stringify(inventory);
+  assert.ok(!text.includes('ownerPending'));
+  assert.ok(!text.includes('Review-PR#173'));
+});
+
+test('扫描根之外的服务器调用也登记:mivo/server/review.mjs 的 Prepare 直接用 GH_TOKEN 读仓库元数据', () => {
+  assert.ok(inventory.outOfScanRoots.length >= 1);
+  for (const item of inventory.outOfScanRoots) {
+    const text = readFileSync(join(REPO_ROOT, item.file), 'utf8');
+    assert.ok(text.includes(item.snippet), `${item.file} 里找不到登记的调用 ${item.snippet}`);
+    assert.deepEqual(item.flows, ['server']);
+    assert.equal(item.tokenFlipsIn, 'xindong/mivo-canvas-plugin#1757');
+  }
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
@@ -545,6 +565,12 @@ test('守卫负例:转发封装(参数是形参)标成 forwarder;expected=user �
   assert.match(classifyInventory(mk({ flipsIn: '' })).join('\n'), /二选一/);
   assert.match(classifyInventory(mk({ flipsIn: 'not-an-issue' })).join('\n'), /二选一/);
   assert.deepEqual(classifyInventory(mk({ flipsIn: 'PraiseZhu/Review-PR#176' })), []);
+  assert.deepEqual(classifyInventory(mk({ flipsIn: 'xindong/mivo-canvas-plugin#1751' })), []);
+  assert.deepEqual(classifyInventory(mk({ flipsIn: 'xindong/mivo-canvas-plugin#1752' })), []);
+  // 总 issue #173 或其它 issue 不能当 flipsIn;ownerPending 字段一律红
+  assert.match(classifyInventory(mk({ flipsIn: 'PraiseZhu/Review-PR#173' })).join('\n'), /不在允许范围/);
+  assert.match(classifyInventory(mk({ flipsIn: 'xindong/mivo-canvas-plugin#1757' })).join('\n'), /不在允许范围/);
+  assert.match(classifyInventory(mk({ flipsIn: 'PraiseZhu/Review-PR#176', ownerPending: '待定' })).join('\n'), /ownerPending/);
   assert.match(classifyInventory(mk({ keep: { category: 'legacy', reason: '历史遗留不用管了反正' } })).join('\n'), /category 只能是/);
   assert.match(classifyInventory(mk({ keep: { category: 'interactive-skill', reason: '只在交互式 skill 里跑,不在自动链上' } })).join('\n'), /flows 只能是/);
   assert.deepEqual(classifyInventory(mk({ keep: { category: 'interactive-skill', reason: '只在交互式 skill 里跑,不在自动链上' } }, ['interactive'])), []);

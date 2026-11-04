@@ -16,15 +16,27 @@
  },
  "routingContext": {
   "repos": [
-   "xindong/mivo-canvas-plugin",
-   "praisezhu/review-pr"
-  ],
-  "serverRepos": [
    "xindong/mivo-canvas-plugin"
   ],
   "stdoutIsTTY": false,
   "env": {}
  },
+ "outOfScanRoots": [
+  {
+   "id": "server-review.prepare-repo-meta",
+   "file": "mivo/server/review.mjs",
+   "flows": [
+    "server"
+   ],
+   "snippet": "gh(['api', `repos/${input.targetRepo}`], { cwd: WORK })",
+   "argv": [
+    "api",
+    "repos/xindong/mivo-canvas-plugin"
+   ],
+   "note": "服务器 Prepare 步骤直接用 GH_TOKEN 经 common.run 读仓库元数据取 default_branch,不经 lib.gh / decideReadRoute;Mivo#1757 把该令牌换成 praisebuild 令牌后自然走 App,本 PR 不改 review.mjs",
+   "tokenFlipsIn": "xindong/mivo-canvas-plugin#1757"
+  }
+ ],
  "entries": [
   {
    "id": "code-scan.ghFn.372019a60f",
@@ -363,11 +375,10 @@
      "name": "sample",
      "argv": [
       "api",
-      "repos/PraiseZhu/Review-PR/actions/runners?per_page=100"
+      "repos/xindong/mivo-canvas-plugin/actions/runners?per_page=100"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "未归类的 user 原因 endpoint_not_allowlisted"
+     "flipsIn": "xindong/mivo-canvas-plugin#1751"
     }
    ]
   },
@@ -465,7 +476,7 @@
       "get",
       "MIVO_REVIEW_SKILL_SHA",
       "-R",
-      "PraiseZhu/Review-PR"
+      "xindong/mivo-canvas-plugin"
      ],
      "expected": "app"
     }
@@ -511,7 +522,7 @@
      "name": "sample",
      "argv": [
       "api",
-      "repos/PraiseZhu/Review-PR/actions/runs/x"
+      "repos/xindong/mivo-canvas-plugin/actions/runs/x"
      ],
      "expected": "app"
     }
@@ -602,15 +613,14 @@
      "argv": [
       "variable",
       "set",
-      "x",
+      "MIVO_PREREVIEW_HEARTBEAT",
       "-R",
-      "PraiseZhu/Review-PR",
+      "xindong/mivo-canvas-plugin",
       "--body",
       "x"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
@@ -627,19 +637,18 @@
    ],
    "cases": [
     {
-     "name": "sample",
+     "name": "variable-set-key-status",
      "argv": [
       "variable",
       "set",
-      "review-pr",
+      "MIVO_REVIEW_KEY_STATUS",
       "-R",
-      "PraiseZhu/Review-PR",
+      "xindong/mivo-canvas-plugin",
       "--body",
-      "x"
+      "{}"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
@@ -660,13 +669,12 @@
      "argv": [
       "variable",
       "delete",
-      "x",
+      "MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL",
       "-R",
-      "PraiseZhu/Review-PR"
+      "xindong/mivo-canvas-plugin"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
@@ -686,13 +694,12 @@
      "name": "sample",
      "argv": [
       "api",
-      "repos/PraiseZhu/Review-PR/actions/secrets/x",
+      "repos/xindong/mivo-canvas-plugin/actions/secrets/LITELLM_CREDENTIALS_JSON",
       "--jq",
       ".updated_at"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "未归类的 user 原因 admin_endpoint"
+     "flipsIn": "xindong/mivo-canvas-plugin#1751"
     }
    ]
   },
@@ -765,15 +772,14 @@
       "run",
       "review-pr.yml",
       "-R",
-      "PraiseZhu/Review-PR",
+      "xindong/mivo-canvas-plugin",
       "-f",
       "pr=7",
       "-f",
       "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
@@ -795,7 +801,7 @@
       "api",
       "--paginate",
       "--slurp",
-      "repos/PraiseZhu/Review-PR/actions/workflows/review-pr.yml/runs?event=workflow_dispatch&created=>=2026-11-01&per_page=100"
+      "repos/xindong/mivo-canvas-plugin/actions/workflows/review-pr.yml/runs?event=workflow_dispatch&created=>=2026-11-01&per_page=100"
      ],
      "expected": "app"
     }
@@ -820,7 +826,7 @@
       "view",
       "7",
       "-R",
-      "PraiseZhu/Review-PR",
+      "xindong/mivo-canvas-plugin",
       "--json",
       "displayTitle"
      ],
@@ -847,11 +853,10 @@
       "cancel",
       "7",
       "-R",
-      "PraiseZhu/Review-PR"
+      "xindong/mivo-canvas-plugin"
      ],
      "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
@@ -873,7 +878,7 @@
       "api",
       "--paginate",
       "--slurp",
-      "repos/PraiseZhu/Review-PR/actions/workflows/review-pr.yml/runs?status=in_progress&per_page=100"
+      "repos/xindong/mivo-canvas-plugin/actions/workflows/review-pr.yml/runs?status=in_progress&per_page=100"
      ],
      "expected": "app"
     }
@@ -895,7 +900,7 @@
      "name": "sample",
      "argv": [
       "api",
-      "repos/PraiseZhu/Review-PR/actions/runs/7"
+      "repos/xindong/mivo-canvas-plugin/actions/runs/7"
      ],
      "expected": "app"
     }
@@ -920,7 +925,7 @@
       "download",
       "7",
       "-R",
-      "PraiseZhu/Review-PR",
+      "xindong/mivo-canvas-plugin",
       "-n",
       "review-pr-7",
       "-D",
@@ -939,7 +944,6 @@
     "count": 1
    },
    "flows": [
-    "mini",
     "server"
    ],
    "cases": [
@@ -970,7 +974,6 @@
     "count": 1
    },
    "flows": [
-    "mini",
     "server"
    ],
    "cases": [
@@ -1000,7 +1003,6 @@
     "count": 1
    },
    "flows": [
-    "mini",
     "server"
    ],
    "cases": [
@@ -1028,7 +1030,6 @@
     "count": 1
    },
    "flows": [
-    "mini",
     "server"
    ],
    "cases": [
@@ -1062,8 +1063,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -1077,9 +1077,7 @@
       "--json",
       "headRefOid,isCrossRepository,author,files"
      ],
-     "expected": "app",
-     "serverRoute": "app",
-     "legacyServerRoute": "app"
+     "expected": "app"
     }
    ]
   },
@@ -1092,8 +1090,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -1102,9 +1099,7 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/actions/runs?head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&per_page=100"
      ],
-     "expected": "app",
-     "serverRoute": "app",
-     "legacyServerRoute": "app"
+     "expected": "app"
     }
    ]
   },
@@ -1117,8 +1112,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -1130,8 +1124,6 @@
       "repos/xindong/mivo-canvas-plugin/actions/runs/7/approve"
      ],
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
@@ -1145,7 +1137,7 @@
     "count": 1
    },
    "flows": [
-    "server"
+    "interactive"
    ],
    "cases": [
     {
@@ -1160,10 +1152,10 @@
       "main"
      ],
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "keep": {
+      "category": "interactive-skill",
+      "reason": "review-pr/scripts/checkout.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
+     }
     }
    ]
   },
@@ -3093,8 +3085,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#173",
-     "ownerPending": "没有对应的后续 issue 明确覆盖这类调用(工作流仓变量/派发/取消、本地 checkout、label 读取),待主控指定归属"
+     "flipsIn": "xindong/mivo-canvas-plugin#1751"
     }
    ]
   },
@@ -4480,8 +4471,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4495,9 +4485,7 @@
       "--json",
       "number,state,mergedAt,author,url,comments,labels,headRefOid"
      ],
-     "expected": "app",
-     "serverRoute": "app",
-     "legacyServerRoute": "app"
+     "expected": "app"
     }
    ]
   },
@@ -4510,8 +4498,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4523,8 +4510,6 @@
       ".login"
      ],
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "PraiseZhu/Review-PR#176"
     }
    ]
@@ -4538,8 +4523,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4553,9 +4537,7 @@
       "--json",
       "state,body"
      ],
-     "expected": "app",
-     "serverRoute": "app",
-     "legacyServerRoute": "app"
+     "expected": "app"
     }
    ]
   },
@@ -4568,8 +4550,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4584,8 +4565,6 @@
       "-"
      ],
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
@@ -4599,8 +4578,7 @@
     "count": 2
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4616,8 +4594,6 @@
       "-"
      ],
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
@@ -4631,8 +4607,7 @@
     "count": 2
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4647,8 +4622,6 @@
       "-"
      ],
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
@@ -4781,8 +4754,7 @@
     "count": 1
    },
    "flows": [
-    "mini",
-    "server"
+    "mini"
    ],
    "cases": [
     {
@@ -4796,9 +4768,7 @@
       "--json",
       "labels"
      ],
-     "expected": "app",
-     "serverRoute": "app",
-     "legacyServerRoute": "app"
+     "expected": "app"
     }
    ]
   },
