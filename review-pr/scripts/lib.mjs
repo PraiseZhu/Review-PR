@@ -127,7 +127,30 @@ export function loadRules() {
     );
   }
   rules.maintainerAllowlist = normalizeMaintainerAllowlist(rules.maintainerAllowlist);
+  // [MIVO-PATCH reviewer-app] 审查 App 名单:只给「可发审查」能力,不进维护者名单。缺省 [],旧配置行为不变。
+  rules.reviewerApps = normalizeReviewerApps(rules.reviewerApps);
   return rules;
+}
+
+/**
+ * [MIVO-PATCH reviewer-app] reviewerApps 配置校验(无 I/O)。缺省返回 [];必须是带 [bot] 后缀的合法登录名数组,
+ * 返回 canonical key(小写、去重)。配置异常直接抛错并写出字段、下标、期望与实际值,不静默丢项。
+ */
+export function normalizeReviewerApps(value, field = 'reviewerApps') {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} 必须是审查 App 登录名数组(期望 ["name[bot]"],实际 ${value === null ? 'null' : typeof value})`);
+  }
+  const keys = [];
+  value.forEach((item, index) => {
+    const login = validateViewerLogin(item, `${field}[${index}]`);
+    const actor = normalizeReviewActor(login);
+    if (!actor?.isBot) {
+      throw new Error(`${field}[${index}] 必须是带 [bot] 后缀的 GitHub App 登录名(实际 ${JSON.stringify(login)})`);
+    }
+    if (!keys.includes(actor.key)) keys.push(actor.key);
+  });
+  return keys;
 }
 
 function normalizeLoginList(value) {
@@ -666,15 +689,22 @@ export function loadMaintainerAuthoritySnapshot({
 }
 
 /** 当前 viewer/作者相对于 Team + maintainerAllowlist 最终维护者集合的统一审批策略。 */
-export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null } = {}) {
+export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null, reviewerApps = [] } = {}) {
   const members = new Set(normalizeLoginList(authority?.members));
   const teamMembers = new Set(normalizeLoginList(authority?.teamMembers));
   const allowlistedMembers = new Set(normalizeLoginList(authority?.allowlistedMembers));
-  const author = String(authorLogin ?? '').trim().toLowerCase();
-  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
-  const authorIsMaintainer = author !== '' && members.has(author);
-  const viewerIsMaintainer = viewer !== '' && members.has(viewer);
-  // 自批排除按「作者 ∈ 审查身份集合」判;没传身份集合就是旧的单账号比较。集合只回答归属,
+  // [MIVO-PATCH reviewer-app] 作者/viewer 用带类型的 canonical key:Bot 写法(app/x、{login,__typename:Bot}、x[bot])归一成同一个 x[bot],
+  // 且 Bot 永远不是维护者(authority.members 只放真人,同名裸 slug 不能让 Bot 借到维护者身份)。
+  const authorActor = normalizeReviewActor(authorLogin);
+  const viewerActor = normalizeReviewActor(viewerLogin);
+  const author = authorActor?.key ?? '';
+  const viewer = viewerActor?.key ?? '';
+  const authorIsMaintainer = author !== '' && !authorActor.isBot && members.has(author);
+  const viewerIsMaintainer = viewer !== '' && !viewerActor.isBot && members.has(viewer);
+  // 审查 App:配置里点名的 Bot 才有。它只能发审查(含 Approve),不是维护者,也不满足「需要维护者独立 Approve」。
+  const appKeys = new Set((Array.isArray(reviewerApps) ? reviewerApps : []).map((app) => normalizeReviewActor(app)?.key).filter(Boolean));
+  const viewerIsReviewerApp = Boolean(viewerActor?.isBot) && appKeys.has(viewer);
+  // 自批排除按「作者 ∈ 审查身份集合」判;没传身份集合就是单账号比较。集合只回答归属,
   // 维护者资格(viewerIsMaintainer)仍只看真实 viewer,不因 aliases 变化。
   const viewerIsAuthor = author !== '' && viewer !== '' &&
     (author === viewer || Boolean(reviewerIdentity) && isReviewIdentity(authorLogin, reviewerIdentity));
@@ -689,8 +719,9 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
     viewer,
     authorIsMaintainer,
     viewerIsMaintainer,
+    viewerIsReviewerApp,
     viewerIsAuthor,
-    viewerCanApprove: viewerIsMaintainer && !viewerIsAuthor,
+    viewerCanApprove: (viewerIsMaintainer || viewerIsReviewerApp) && !viewerIsAuthor,
     authorAuthoritySource: authoritySource(author, authorIsMaintainer),
     viewerAuthoritySource: authoritySource(viewer, viewerIsMaintainer),
     approvalRequired: !authorIsMaintainer,
