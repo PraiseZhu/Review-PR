@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SCRIPTS, readJson, runScript } from './common.mjs';
 import { buildThreadResolutionPlan } from './thread-resolution.mjs';
+import { scrubSecrets } from '../../review-pr/scripts/secret-scrub.mjs';
 
 const TOTAL_BUDGET_MS = 180_000;
 const ITEM_TIMEOUT_MS = 60_000;
@@ -97,7 +98,7 @@ export function resolveFixedThreads(request, deps) {
     const context = deps.readContext(contextFile);
     const reviewedThreads = context?.history?.reviewThreads;
     if (!Array.isArray(reviewedThreads)) return summary('skipped', 'no-reviewed-threads');
-    const base = { round, head: binding.head, reviewer: binding.reviewer, runUrl: binding.runUrl, reviewedThreads, excludedKeys };
+    const base = { round, head: binding.head, reviewer: binding.reviewer, reviewerIdentity: binding.reviewerIdentity, runUrl: binding.runUrl, reviewedThreads, excludedKeys };
     // 先用 prepare 快照预筛:没有候选就不访问网络。
     const pre = buildThreadResolutionPlan({ ...base, liveThreads: reviewedThreads, threadsVerified: true, maintainers: [] });
     if (!pre.threads.length) return summary('skipped', pre.skippedReason);
@@ -164,7 +165,10 @@ export function resolveFixedThreads(request, deps) {
       else if (result.done === true && /already-resolved/.test(result.reason ?? '')) items.push({ ...entry, status: 'already-resolved' });
       else if (/reopened-after-triage/.test(result.reason ?? '')) items.push({ ...entry, status: 'skipped', reason: 'reopened-after-triage' });
       else {
-        const reason = clip(result.replyError ?? result.resolveError ?? result.reason ?? 'unresolved');
+        // 分阶段写明期望与实际(令牌已抹掉):reply 阶段与 resolve 阶段分开,便于判断是权限还是 GraphQL 问题。
+        const reason = result.replyError ? clip(`reply 阶段失败:期望回复成功,实际 ${scrubSecrets(result.replyError)}`)
+          : result.resolveError ? clip(`resolve 阶段失败:期望 resolve 成功,实际 ${scrubSecrets(result.resolveError)}`)
+            : clip(scrubSecrets(result.reason ?? 'unresolved'));
         items.push({ ...entry, status: 'failed', reason });
         warnings.push(`代 resolve 未完成(${thread.key}):${reason}`);
       }
@@ -177,32 +181,42 @@ export function resolveFixedThreads(request, deps) {
   }
 }
 
+/**
+ * 写前绑定检查(每条 resolve 前都跑)。lib 注入以便测试:锁、写账号与绑定的审查账号完全一致(精确比较,不用别名集合)、
+ * 维护者 authority digest、PR 状态/head/base 都不能变。执行资格:写账号是最终维护者,或是配置的审查 App(reviewerApps);
+ * 审查 App 只获得这里的 resolve 资格,不是维护者。
+ */
+export function createAssertBinding({ lib, owner, repo }) {
+  return (b) => {
+    for (const field of ['targetRepo', 'pr', 'head', 'base', 'baseRefName', 'reviewer', 'lockToken', 'authorityDigest']) {
+      if (!b?.[field]) throw new Error(`缺少绑定字段 ${field}`);
+    }
+    lib.assertActiveReviewLock(b.lockToken);
+    const identity = lib.readReviewIdentityOrEmpty();
+    const viewer = identity.viewerLogin;
+    if (!viewer || !lib.sameReviewActor(viewer, b.reviewer)) throw new Error(`当前写账号不是本轮审查账号(期望 ${b.reviewer},实际 ${viewer || '(empty)'})`);
+    const authority = lib.fetchMaintainerAuthority({ owner, repo });
+    const meta = lib.ghJson(['pr', 'view', String(b.pr), '--repo', b.targetRepo, '--json', 'state,isDraft,headRefOid,baseRefOid,baseRefName,author']);
+    const policy = lib.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority, reviewerIdentity: identity,
+      reviewerApps: lib.loadRules().reviewerApps ?? [] });
+    if (authority.digest !== b.authorityDigest || !(policy.viewerIsMaintainer || policy.viewerIsReviewerApp)) {
+      throw new Error(`维护者名单已变化或写账号既不是维护者也不是配置的审查 App(authority 期望 ${b.authorityDigest} 实际 ${authority.digest};写账号 ${viewer})`);
+    }
+    if (meta.state !== 'OPEN' || meta.isDraft || meta.headRefOid !== b.head || meta.baseRefOid !== b.base || meta.baseRefName !== b.baseRefName) {
+      throw new Error(`PR 状态、head 或 base 已变化(期望 OPEN/${b.head}/${b.base}/${b.baseRefName},实际 ${meta.state}${meta.isDraft ? '(draft)' : ''}/${meta.headRefOid}/${meta.baseRefOid}/${meta.baseRefName})`);
+    }
+    lib.assertActiveReviewLock(b.lockToken);
+    return { maintainers: authority.members ?? [] };
+  };
+}
+
 // ── 真实依赖(只在 CLI 里用;测试注入替身)────────────────────────────────────
 async function realDeps({ binding }) {
   const lib = await import(pathToFileURL(join(SCRIPTS, 'lib.mjs')).href);
   const [owner, repo] = String(binding.targetRepo).split('/');
   const parsed = lib.parseRepo();
   if (`${parsed.owner}/${parsed.repo}`.toLowerCase() !== String(binding.targetRepo).toLowerCase()) throw new Error('cwd 的 git remote 与目标仓不一致');
-  const lower = (v) => String(v ?? '').toLowerCase();
-  const assertBinding = (b) => {
-    for (const field of ['targetRepo', 'pr', 'head', 'base', 'baseRefName', 'reviewer', 'lockToken', 'authorityDigest']) {
-      if (!b?.[field]) throw new Error(`缺少绑定字段 ${field}`);
-    }
-    lib.assertActiveReviewLock(b.lockToken);
-    // 写前绑定:当前实际写入账号必须就是本轮审查账号(精确比较,不用别名集合)。
-    const identity = lib.readReviewIdentityOrEmpty();
-    const viewer = identity.viewerLogin;
-    if (!viewer || !lib.sameReviewActor(viewer, b.reviewer)) throw new Error('当前写账号不是本轮审查账号');
-    const authority = lib.fetchMaintainerAuthority({ owner, repo });
-    const meta = lib.ghJson(['pr', 'view', String(b.pr), '--repo', b.targetRepo, '--json', 'state,isDraft,headRefOid,baseRefOid,baseRefName,author']);
-    const policy = lib.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority, reviewerIdentity: identity });
-    if (authority.digest !== b.authorityDigest || !policy.viewerIsMaintainer) throw new Error('维护者名单已变化或写账号不是维护者');
-    if (meta.state !== 'OPEN' || meta.isDraft || meta.headRefOid !== b.head || meta.baseRefOid !== b.base || meta.baseRefName !== b.baseRefName) {
-      throw new Error('PR 状态、head 或 base 已变化');
-    }
-    lib.assertActiveReviewLock(b.lockToken);
-    return { maintainers: authority.members ?? [] };
-  };
+  const assertBinding = createAssertBinding({ lib, owner, repo });
   return {
     readContext: (file) => readJson(file),
     assertBinding,

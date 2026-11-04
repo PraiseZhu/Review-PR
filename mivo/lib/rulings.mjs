@@ -4,6 +4,8 @@
 // 因为这类问题以后也不打算修(维护者 2026-10-15 决定)。只认维护者名单里的人;P0 不能裁定不改。
 
 import { parseFindingMarker } from './finding.mjs';
+import { hasReviewer, toReviewerMatcher } from './reviewer-match.mjs';
+import { normalizeReviewActor } from '../../review-pr/scripts/reviewer-identity.mjs';
 
 export const RULING_PHRASE = '维护者裁定不改';
 export const MAX_RULINGS = 20;
@@ -36,15 +38,16 @@ export function parseRulingReason(body) {
  * @param {string[]} p.maintainers 维护者名单(context.signoff.maintainers)
  * @returns {{verified:{threadId, path, line, severity, finding, by, reason}[], rejected:{threadId, path, by, reason}[]}}
  */
-export function collectRulings({ threads = [], reviewer, maintainers = [] }) {
+export function collectRulings({ threads = [], reviewer, reviewerIdentity, maintainers = [] }) {
   const team = new Set(maintainers.map(lower));
   const verified = [];
   const rejected = [];
-  if (!reviewer) return { verified, rejected };
+  if (!hasReviewer(reviewer, reviewerIdentity)) return { verified, rejected };
+  const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   for (const thread of threads) {
     const comments = Array.isArray(thread?.comments) ? thread.comments : thread?.comments?.nodes ?? [];
     const [first, ...replies] = comments;
-    if (lower(first?.author?.login) !== lower(reviewer)) continue;
+    if (!isReviewer(first?.author)) continue;
     const severity = String(first?.body ?? '').match(FINDING_RE)?.[1];
     if (!severity) continue;
     // 取最后一条裁定回复:维护者后来改口时以最新的为准。
@@ -54,6 +57,8 @@ export function collectRulings({ threads = [], reviewer, maintainers = [] }) {
     if (!ruling) continue;
     const by = ruling.c?.author?.login ?? '';
     const base = { threadId: thread.id, path: thread.path ?? null, by };
+    // Bot(含审查 App)不能裁定不改:维护者名单里恰好有同名裸 slug 也不行。
+    if (normalizeReviewActor(ruling.c?.author)?.isBot) { rejected.push({ ...base, reason: `${by || '未知账号'} 是 Bot,不能裁定不改` }); continue; }
     if (!team.has(lower(by))) { rejected.push({ ...base, reason: `${by || '未知账号'} 不在维护者名单里` }); continue; }
     if (severity === 'P0') { rejected.push({ ...base, reason: 'P0 不能裁定不改' }); continue; }
     if (!ruling.reason) { rejected.push({ ...base, reason: '裁定没有写理由' }); continue; }
@@ -102,13 +107,14 @@ function stripReply(body) {
  * @param {string} p.author PR 作者
  * @returns {{threadId, path, line, severity, finding, reply}[]}
  */
-export function collectRebuttals({ threads = [], reviewer, author }) {
+export function collectRebuttals({ threads = [], reviewer, reviewerIdentity, author }) {
   const out = [];
-  if (!reviewer || !author) return out;
+  if (!hasReviewer(reviewer, reviewerIdentity) || !author) return out;
+  const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   for (const thread of threads) {
     const comments = Array.isArray(thread?.comments) ? thread.comments : thread?.comments?.nodes ?? [];
     const [first, ...replies] = comments;
-    if (lower(first?.author?.login) !== lower(reviewer)) continue;
+    if (!isReviewer(first?.author)) continue;
     const severity = String(first?.body ?? '').match(FINDING_RE)?.[1];
     if (!severity) continue;
     const reply = replies.filter((c) => lower(c?.author?.login) === lower(author)).map((c) => stripReply(c?.body)).filter(Boolean).at(-1);
@@ -165,14 +171,15 @@ export function parseRulingRecord(body) {
  * @param {string} p.standardVersion 当前统一分级版本(prompt.mjs 的 SEVERITY_VERSION)
  * @returns {{verified: object[], rejected: {threadId, path, line, url, reason}[]}}
  */
-export function collectAdjudications({ threads = [], reviewer, standardVersion }) {
+export function collectAdjudications({ threads = [], reviewer, reviewerIdentity, standardVersion }) {
   const verified = [];
   const rejected = [];
-  if (!reviewer) return { verified, rejected };
+  if (!hasReviewer(reviewer, reviewerIdentity)) return { verified, rejected };
+  const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   for (const thread of threads) {
     const comments = Array.isArray(thread?.comments) ? thread.comments : thread?.comments?.nodes ?? [];
     const [first, ...replies] = comments;
-    if (lower(first?.author?.login) !== lower(reviewer)) continue;
+    if (!isReviewer(first?.author)) continue;
     const severity = String(first?.body ?? '').match(FINDING_RE)?.[1];
     if (!severity) continue;
     // 取最后一条带裁决记录的回帖:同一条问题后来又裁过,以最新的为准。
@@ -182,7 +189,7 @@ export function collectAdjudications({ threads = [], reviewer, standardVersion }
     const marker = parseFindingMarker(first.body);
     const base = { threadId: thread.id, path: thread.path ?? null, line: thread.line ?? null, url: reply.url ?? first.url ?? null };
     const reject = (reason) => rejected.push({ ...base, reason });
-    if (lower(reply.author?.login) !== lower(reviewer) || !WATCHER_RECEIPT_RE.test(String(reply.body))) { reject('不是盯梢以审查账号发的回帖'); continue; }
+    if (!isReviewer(reply.author) || !WATCHER_RECEIPT_RE.test(String(reply.body))) { reject('不是盯梢以审查账号发的回帖'); continue; }
     if (!marker) { reject('原问题没有 mivo-finding 标记,对不上是哪一条'); continue; }
     if (record.key !== marker.key) { reject(`裁决记录的问题 key ${record.key} 和这条讨论的问题 ${marker.key} 对不上`); continue; }
     if (severity === 'P0') { reject('P0 不按裁决放行'); continue; }
