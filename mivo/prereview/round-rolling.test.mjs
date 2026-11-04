@@ -921,6 +921,28 @@ test('世界:派发查不清时先登记停写心跳,列表后来拿全:自动�
   assert.equal(w.logged('heartbeat-resumed').length, 1);
 });
 
+test('世界:自动收尾写完意图、记 dispatch-auto-resolved 之前被杀:重启后补记事件、去掉心跳登记、放槽、不计失败', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  const t0 = w.now - 40 * MIN;
+  w.openPr(7, 'h7');
+  w.openPr(8, 'h8');
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }, { pr: 8, head: 'h8' }]);
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'auto0104', attempt: 1, claimAttempt: 1, intentAt: iso(t0),
+    state: 'not-submitted', auto: true, resolution: { kind: 'not-submitted', auto: true, at: iso(w.now - MIN) } });
+  w.files.set(w.state('heartbeat-pause.json'), { dispatches: { auto0104: { pr: 7, intentAt: iso(t0), intentFile: `${dir}/dispatch-intent-7.json` } } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.deepEqual(w.logged('dispatch-auto-resolved').map((e) => [e.pr, e.dispatchId, e.intentAt]), [[7, 'auto0104', iso(t0)]], '重启后补记');
+  assert.equal(w.files.has(w.state('heartbeat-pause.json')), false, '心跳登记去掉');
+  assert.equal(w.read(`${dir}/results/pr-7.json`).retry, true);
+  assert.match(w.read(`${dir}/results/pr-7.json`).reason, /自动核实/);
+  assert.deepEqual(w.read(w.state('reviews.json')).prs[7]?.failures ?? {}, {}, '不计失败次数');
+  assert.equal(w.dispatchesOf(7).length, 0, '本轮不重发');
+  assert.equal(w.dispatchesOf(8).length, 1, '槽已放开');
+  assert.equal(w.logged('dispatch-resolved').length, 0, '不是人工解除');
+});
+
 test('世界:查询列表失败:30 分钟后仍占槽、不自动收尾;60 分钟照旧记 dispatch-unresolved', async () => {
   const w = makeWorld({ maxParallel: 1 });
   const t0 = w.now;
