@@ -1219,6 +1219,49 @@ mutate('13a', '别名数组:新增 const same = args; same.push(...)', f("const 
 mutate('13b', '别名数组:已有别名,再改别名的 push 内容', f("const args = ['api', 'repos/o/r/pulls']; const same = args; same.push('--jq', '.x'); return gh(args);"), f("const args = ['api', 'repos/o/r/pulls']; const same = args; same.push('-X', 'DELETE'); return gh(args);"), { beforeArgv: ['api', 'repos/o/r/pulls', '--jq', '.x'], afterArgv: ['api', 'repos/o/r/pulls', '-X', 'DELETE'] });
 mutate('13c', '别名的别名(两层)', f("const args = ['api', 'repos/o/r/pulls']; const a1 = args; const a2 = a1; a2.push('--jq', '.x'); return gh(args);"), f("const args = ['api', 'repos/o/r/pulls']; const a1 = args; const a2 = a1; a2.push('-X', 'DELETE'); return gh(args);"), { beforeArgv: ['api', 'repos/o/r/pulls', '--jq', '.x'], afterArgv: ['api', 'repos/o/r/pulls', '-X', 'DELETE'], expectBlocked: false });
 
+// N4:变异场景的夹具必须真能跑——真执行 before/after 源码(gh 用捕获请求的替身),拿到真实发出的请求
+const SLUG_REAL = 'xindong/mivo-canvas-plugin';
+export function executeFixture(source, { call = [SLUG_REAL], failFirst = false, preamble = '' } = {}) {
+  const files = typeof source === 'string' ? [[MUT_FILE, source]] : Object.entries(source);
+  const order = [...files.filter(([n]) => n !== MUT_FILE), ...files.filter(([n]) => n === MUT_FILE)];
+  const text = order.map(([name, src]) => (name === MUT_FILE ? src.replace(/^import .*$/gm, '') : src).replace(/^export /gm, '')).join('\n').replace(/\bo\/r\b/g, SLUG_REAL);
+  const calls = [];
+  const record = (argv, opts) => {
+    calls.push({ argv: [...argv], opts: opts ?? {} });
+    if (failFirst && calls.length === 1) throw new Error('第一次 gh 调用失败(夹具故意让它抛错)');
+    return { ok: true, stdout: '{}', stderr: '', status: 0 };
+  };
+  const stubs = {
+    gh: (argv, opts) => record(argv, opts),
+    ghJson: (argv, opts) => record(argv, opts),
+    ghFn: (argv, opts) => record(argv, opts),
+    ghGraphql: (query, vars, opts) => record(['api', 'graphql', '--input', '-'], { ...opts, input: JSON.stringify({ query, variables: vars }) }),
+    addFlags: (argv) => { argv.push('-X', 'DELETE'); },
+  };
+  try {
+    const fn = new Function(...Object.keys(stubs), `${text}\n${preamble}\nreturn f;`)(...Object.values(stubs));
+    fn(...call);
+    return { calls, error: null };
+  } catch (error) {
+    return { calls, error: String(error?.message ?? error) };
+  }
+}
+
+test('N4:变异夹具必须真能执行并至少调用一次 gh(1a/1b/11a 的 base 和 after 都要捕获到实际 argv)', () => {
+  const sources = {
+    '1a': [base1(''), base1("args = args.concat(['-X', 'DELETE']);")],
+    '1b': [base1(''), base1("args = [...args, '-X', 'DELETE'];")],
+    '11a': [base1(''), base1("args = args.map((a) => (a === 'GET' ? 'DELETE' : a));")],
+  };
+  for (const [id, pair] of Object.entries(sources)) {
+    for (const [i, src] of pair.entries()) {
+      const r = executeFixture(src);
+      assert.equal(r.error, null, `${id} ${i === 0 ? 'before' : 'after'} 执行抛错: ${r.error}`);
+      assert.ok(r.calls.length >= 1, `${id} ${i === 0 ? 'before' : 'after'}: gh 一次都没调用`);
+    }
+  }
+});
+
 test('变异场景汇总:被挡住/已知边界的数量固定,路由真的变了的场景都被挡住', () => {
   if (process.env.GH_ROUTE_MUTATION_REPORT) writeFileSync(process.env.GH_ROUTE_MUTATION_REPORT, JSON.stringify(rows, null, 1));
   const routeChanged = rows.filter((r) => r.routeBefore && r.routeAfter && r.routeBefore !== r.routeAfter);
