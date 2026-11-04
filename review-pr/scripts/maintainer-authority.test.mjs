@@ -259,7 +259,7 @@ throws('高优先级 CODEOWNERS 非 404 失败时不降级到下一位置', () =
 throws('默认分支缺失拒绝', () => {
   const { ghFn } = makeGh({ repoMeta: {} });
   fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });
-}, /没有可验证的默认分支/);
+}, /读取 Acme\/Widget 默认分支失败/);
 throws('默认分支 GraphQL 读不到仓库拒绝', () => {
   const { ghFn } = makeGh({ repoMeta: null });
   fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });

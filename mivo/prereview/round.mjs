@@ -1345,7 +1345,8 @@ function protectedCheckDone(task) {
 // dispatching(调 gh workflow run 之前)→ sent(gh 返回成功)→ bound(找到 runId)。恢复时只有 prepared 能证明没外发。
 // PR 当前 head(一次 REST 读)。判门是异步的,context 返回后到派发、批准 workflow 之间作者可能推了新提交。读不到返回 null。
 function readLiveHead(pr) {
-  const r = ghRead(['api', `repos/${CONFIG.targetRepo}/pulls/${pr}`, '--jq', '.head.sha'], { allowFail: true, timeoutMs: 30_000 });
+  // [MIVO-PATCH prereview-app-readable] pr view --json headRefOid:App 令牌可读(单 PR REST 端点含 mergeStateStatus,分类器判给个人账号)。
+  const r = ghRead(['pr', 'view', String(pr), '--repo', CONFIG.targetRepo, '--json', 'headRefOid', '--jq', '.headRefOid'], { allowFail: true, timeoutMs: 30_000 });
   const head = r.ok ? r.stdout.trim() : '';
   return head && !/\s/.test(head) ? head : null;
 }
