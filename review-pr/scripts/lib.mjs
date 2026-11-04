@@ -1849,11 +1849,17 @@ export function evaluateOwnReviewDismissal({
   expectedHead = '',
   actualHead = '',
   reviewerIdentity = null,
+  reviewerApp = false,
 } = {}) {
   const failedChecks = [];
   const viewer = String(typeof viewerLogin === 'string' ? viewerLogin : viewerLogin?.viewerLogin ?? '').trim().toLowerCase();
   const identity = toReviewIdentity(reviewerIdentity ?? viewerLogin);
-  const isOwn = (review) => isReviewIdentity(reviewRecordActor(review), identity);
+  // [MIVO-PATCH reviewer-app] 审查 App 资格:只清「当前实际 App 账号」自己的 CR(精确比较,不按别名集合),别名里人工 CR 一律挡住;
+  // 不要求 BLOCKED / reviewDecision 聚合(REST 里的 bot CR 才是事实),其余门(review-clean、threads、head)照旧。
+  const viewerKey = normalizeReviewActor(typeof viewerLogin === 'string' ? viewerLogin : viewerLogin?.viewerLogin)?.key ?? identity.logins[0] ?? '';
+  const isOwn = reviewerApp
+    ? (review) => sameReviewActor(reviewRecordActor(review), viewerKey)
+    : (review) => isReviewIdentity(reviewRecordActor(review), identity);
   const changesRequested = latestSubstantiveReviews(reviews)
     .filter((review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED');
   const ownReviews = changesRequested.filter(isOwn);
@@ -1864,14 +1870,14 @@ export function evaluateOwnReviewDismissal({
     .map((review) => Number(review?.id))
     .filter((id) => Number.isInteger(id) && id > 0);
 
-  if (!approvalExempt) failedChecks.push('作者不在最终维护者集合中');
+  if (!approvalExempt && !reviewerApp) failedChecks.push('作者不在最终维护者集合中');
   if (!reviewClean) failedChecks.push('调用方未确认最终代码重审通过(--review-clean)');
   if (state !== 'OPEN') failedChecks.push(`PR state=${state || '(empty)'}(非 OPEN)`);
-  if (mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
-  if (reviewDecision !== 'CHANGES_REQUESTED') failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(非 CHANGES_REQUESTED)`);
+  if (!reviewerApp && mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
+  if (!reviewerApp && reviewDecision !== 'CHANGES_REQUESTED') failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(非 CHANGES_REQUESTED)`);
   if (!viewer || identity.logins.length === 0) failedChecks.push('viewer 身份为空');
   if (changesRequested.length === 0) failedChecks.push('没有任何 CHANGES_REQUESTED review');
-  if (changesRequested.length > ownReviews.length) failedChecks.push('存在别人留下的 CHANGES_REQUESTED review');
+  if (changesRequested.length > ownReviews.length) failedChecks.push(reviewerApp ? '存在别人或其它身份(含别名里的人工账号)留下的 CHANGES_REQUESTED review' : '存在别人留下的 CHANGES_REQUESTED review');
   if (allOwnReviews.length !== reviewIds.length) failedChecks.push('viewer 自己的 review 缺少 REST numeric id');
   if (!threadsVerified) failedChecks.push('review thread 状态未完整验证');
   if (Number(unresolvedCount) !== 0) failedChecks.push(`仍有 ${Number(unresolvedCount) || 0} 条未 resolve thread`);
