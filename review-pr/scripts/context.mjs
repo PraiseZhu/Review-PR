@@ -1210,13 +1210,12 @@ try {
     unresolvedThreads.length === 0;
   // [MIVO-PATCH self-cr-machine-threads] 同上,但没 resolve 的 thread 全是机器人(Greptile 等)或审查机自己带标记的 thread:
   // 这些 thread 只是「送审但不放行」(mivo/lib/gates.mjs 的 toPendingThreadGates),不该让审查账号自己的旧 CR 把 PR 判成 changes-requested 停住。
-  // 有人类 thread、别人的 CR、维护者本人的人工 CR 时不命中。判据与 gates.mjs 同口径(机器人看 isBot;审查机看首评作者 == viewer 且带 mivo-finding 标记)。
+  // 有人类 thread、别人的 CR、维护者本人的人工 CR 时不命中。判据与 gates.mjs 同口径(机器人看 isBot;审查机看首评作者在审查身份集合里且带 mivo-finding 标记)。
   const REVIEWER_FINDING_MARKER = '<!-- mivo-finding key=';
   const isMachineThread = (t) => {
-    if (t.isBot === true) return true;
     const first = t.comments?.[0];
-    return viewerLower !== '' && (first?.author?.login ?? '').toLowerCase() === viewerLower &&
-      typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER);
+    if (isReviewIdentity(first?.author, reviewerIdentity) && typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER)) return true;
+    return t.isBot === true;
   };
   const selfBlockedMachineThreadsOnly =
     meta.mergeStateStatus === 'BLOCKED' &&

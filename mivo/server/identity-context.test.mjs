@@ -108,7 +108,7 @@ function withFixture(fn) {
     const env = { ...process.env, GH_TOKEN: FAKE_INT, GITHUB_TOKEN: FAKE_INT, REVIEW_PR_REPO_ROOT: repoRoot, REVIEW_PR_STATE_DIR: join(directory, 'state'),
       NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(mockFile).href}`].filter(Boolean).join(' '),
       CONTEXT_FIXTURE: fixture, CONTEXT_CALLS: callsFile };
-    for (const key of ['REVIEW_PR_VIEWER_LOGIN', 'REVIEW_PR_IDENTITY_TOKEN', 'REVIEW_PR_NO_CRED_FALLBACK']) delete env[key];
+    for (const key of ['REVIEW_PR_VIEWER_LOGIN', 'REVIEW_PR_VIEWER_ALIASES', 'REVIEW_PR_IDENTITY_TOKEN', 'REVIEW_PR_NO_CRED_FALLBACK']) delete env[key];
     const state = spawnSync(process.execPath, ['--input-type=module', '-e',
       `import {STATE_DIR} from ${JSON.stringify(LIB_URL)};process.stdout.write(STATE_DIR);`], { cwd: repoRoot, env, encoding: 'utf8', windowsHide: true });
     assert.equal(state.status, 0, state.stderr);
@@ -306,6 +306,24 @@ test('另一个 reviewer 的 CR 或维护者本人的人工 CR:带机器人 thre
   const overridden = run(crServer(threads, [humanCr('maintainer', 1, '2025-12-31T00:00:00Z'), reviewFixture('maintainer')].map((r, i) => ({ ...r, id: i + 1 }))), viewerEnv);
   assert.equal(overridden.status, 0, overridden.stdout + overridden.stderr);
   assert.equal(decideGate(overridden.json).outcome, 'changes-requested');
+}));
+
+// #179 身份集合:审查账号换成 bot、旧账号记在 REVIEW_PR_VIEWER_ALIASES 时,别名账号留下的自动 CR 与带标记 thread 仍算审查机自己的。
+test('审查身份含别名:别名账号的旧 CR + 别名账号开的带标记 thread + Greptile thread 送审不放行;非审查身份的人类 thread 仍卡', () => withFixture((run) => {
+  const aliasEnv = { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]', REVIEW_PR_VIEWER_ALIASES: '["maintainer"]' };
+  const r = run(crServer([reviewerThread, greptileThread]), aliasEnv);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.json.approvalPolicy.viewer, 'praisebuild[bot]');
+  const d = decideGate(r.json);
+  assert.equal(d.stage, 'review', JSON.stringify(d));
+  assert.deepEqual(d.pendingGates, ['bot-threads', 'reviewer-threads']);
+  // 对照:同一份夹具没配别名时,maintainer 不在身份集合里,旧 CR 与带标记 thread 都不是审查机的
+  const noAlias = run(crServer([reviewerThread, greptileThread]), { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]' });
+  assert.equal(noAlias.status, 0, noAlias.stdout + noAlias.stderr);
+  assert.notEqual(decideGate(noAlias.json).stage, 'review');
+  const human = run(crServer([reviewerThread, greptileThread, rawThread('T3', 'contributor', '请改一下')]), aliasEnv);
+  assert.equal(human.status, 0, human.stdout + human.stderr);
+  assert.equal(decideGate(human.json).outcome, 'threads-unresolved');
 }));
 
 // SC4:夹具和服务器开审前复核走同一条路——review.mjs 的 prepare 用同样的参数跑 context.mjs,紧接着按 decideGate(ctx) 的 stage !== 'review' 提前结束。
