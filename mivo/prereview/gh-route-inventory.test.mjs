@@ -159,49 +159,238 @@ const CALLEES = ['gh', 'ghJson', 'ghFn', 'ghRead', 'writeGh', 'ghGraphql', 'ghGr
 const SPAWNERS = ['run', 'spawnSync', 'spawn', 'execFileSync', 'execFile'];
 const GH_SHAPED_FIRST = ['api', 'pr', 'issue', 'repo', 'label', 'run', 'variable', 'workflow', 'auth', 'search', 'release'];
 
-/** 解析 a0 里引用的标识符:局部 const/let(含 push 追加)、模块级大写常量;参数形参标成 forwarder;都找不到记 unresolved。 */
-function resolveDeps(ctx, callAt, exprFrom, exprTo, scanTo = exprTo) {
-  const deps = [];
-  const expr = ctx.masked.slice(exprFrom, exprTo);
-  const wholeCall = ctx.masked.slice(exprFrom, scanTo); // 选项对象里引用的大写常量(如 input 里的 GraphQL 查询)也算依赖
-  let forwarder = null;
-  const unresolved = [];
-  const first = expr.trim();
-  const bareIdent = /^[A-Za-z_$][\w$]*$/.test(first) ? first : null;
-  const names = new Set(wholeCall.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? []);
-  if (bareIdent) names.add(bareIdent);
-  for (const name of names) {
-    const declRe = new RegExp(`(?:const|let|var)\\s+${name.replace(/\$/g, '\\$')}\\s*=`, 'g');
-    let declAt = -1;
-    for (const m of ctx.masked.matchAll(declRe)) if (m.index < callAt && ctx.code[m.index]) declAt = m.index;
-    if (declAt < 0 && /^[A-Z]/.test(name)) { // 模块级常量也可能声明在调用之后(函数内引用)
-      for (const m of ctx.masked.matchAll(declRe)) if (ctx.code[m.index]) { declAt = m.index; break; }
+// ── 依赖解析 ───────────────────────────────────────────────────────────────
+// 调用的参数(数组、选项对象)里出现的每个标识符,都要能在作用域内找到来源:
+//   形参 → 不进指纹(调用方决定值);const/let/var/function 声明或赋值/push → 声明表达式并入指纹(递归 3 层);
+//   import 进来的名字和 JS 内建 → 外部,不进指纹;都不是 → unresolved(测试红)。
+const JS_WORDS = new Set(['const', 'let', 'var', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'try', 'catch', 'finally', 'throw', 'class', 'extends', 'import', 'export', 'default', 'true', 'false', 'null', 'undefined', 'this', 'new', 'typeof', 'void', 'await', 'async', 'function', 'return', 'of', 'in', 'instanceof',
+  'String', 'Number', 'Boolean', 'Array', 'Object', 'JSON', 'Math', 'Date', 'Set', 'Map', 'RegExp', 'Error', 'Buffer', 'Symbol', 'Promise', 'Infinity', 'NaN',
+  'encodeURIComponent', 'decodeURIComponent', 'parseInt', 'parseFloat', 'isNaN', 'process', 'console', 'globalThis', 'require']);
+
+function importedNames(ctx) {
+  const names = new Set();
+  for (const m of ctx.masked.matchAll(/\bimport\s+([^'"]*?)\s+from\s*['"]/g)) {
+    if (!ctx.code[m.index]) continue;
+    for (const n of m[1].matchAll(/([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?/g)) names.add(n[2] ?? n[1]);
+  }
+  return names;
+}
+
+function stripDefault(t) {
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    else if (c === '=' && depth === 0 && t[i + 1] !== '>' && t[i + 1] !== '=') return t.slice(0, i).trim();
+  }
+  return t.trim();
+}
+
+function patternNames(text) {
+  const names = [];
+  const walk = (piece) => {
+    let t = piece.trim().replace(/^\.\.\./, '');
+    if (!t) return;
+    t = stripDefault(t);
+    if (t.startsWith('{') || t.startsWith('[')) {
+      const inner = t.slice(1, t.lastIndexOf(t[0] === '{' ? '}' : ']'));
+      for (const part of splitTop(inner, ',')) walk(part.includes(':') && t[0] === '{' ? part.slice(part.indexOf(':') + 1) : part);
+      return;
     }
-    const paramRe = /(?:function\s*[\w$]*\s*\(([^()]*)\)\s*\{|\(([^()]*)\)\s*=>|([A-Za-z_$][\w$]*)\s*=>)/g;
-    let paramAt = -1;
-    for (const m of ctx.masked.slice(0, callAt).matchAll(paramRe)) {
-      const list = m[1] ?? m[2] ?? m[3] ?? '';
-      if (new RegExp(`(?:^|[\\s,({=])${name.replace(/\$/g, '\\$')}(?:$|[\\s,)}=:])`).test(list)) paramAt = m.index;
+    if (/^[A-Za-z_$][\w$]*$/.test(t)) names.push(t);
+  };
+  for (const part of splitTop(text, ',')) walk(part);
+  return names;
+}
+
+// 嵌套括号安全的顶层逗号切分(给参数形参和对象/数组模式用)
+function splitTop(text, sep) {
+  const parts = [];
+  let depth = 0, cur = '', q = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { cur += c; if (c === '\\') cur += text[++i] ?? ''; else if (c === q) q = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { q = c; cur += c; continue; }
+    if ('([{'.includes(c)) depth++;
+    if (')]}'.includes(c)) depth--;
+    if (c === sep && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  if (cur.trim()) parts.push(cur);
+  return parts;
+}
+
+/** 文件里所有函数的形参表:{ names, listEnd, bodyEnd }。 */
+function functionScopes(ctx) {
+  if (ctx.scopes) return ctx.scopes;
+  const out = [];
+  const m = ctx.masked;
+  const bodyEndFrom = (at) => {
+    let i = at;
+    while (i < m.length && /\s/.test(m[i])) i++;
+    if (m[i] === '{') { const c = findClose(ctx, i); return c < 0 ? m.length : c; }
+    let depth = 0;
+    for (; i < m.length; i++) {
+      if (!ctx.code[i]) continue;
+      const c = m[i];
+      if (c in OPEN) depth++;
+      else if (c === ')' || c === ']' || c === '}') { if (--depth < 0) return i; }
+      else if ((c === ',' || c === ';') && depth === 0) return i;
     }
-    if (declAt >= 0 && declAt > paramAt) {
-      const eq = ctx.masked.indexOf('=', declAt);
-      const end = statementEnd(ctx, eq);
-      deps.push(canon(ctx, declAt, end));
-      const mut = new RegExp(`\\b${name.replace(/\$/g, '\\$')}(?:\\.(?:push|unshift|splice|concat)\\(|\\s*\\+?=[^=])`, 'g');
-      for (const m of ctx.masked.slice(end, callAt).matchAll(mut)) {
-        if (!ctx.code[end + m.index]) continue;
-        let stmtEnd = statementEnd(ctx, end + m.index);
-        const open = ctx.masked.indexOf('(', end + m.index);
-        if (m[0].includes('(') && open >= 0) stmtEnd = Math.min(stmtEnd, findClose(ctx, open) + 1);
-        deps.push(canon(ctx, end + m.index, stmtEnd));
-      }
-    } else if (paramAt >= 0) {
-      if (name === bareIdent) forwarder = name;
-    } else if (name === bareIdent) {
-      unresolved.push(name);
+    return m.length;
+  };
+  for (const f of m.matchAll(/\bfunction\s*\*?\s*[\w$]*\s*\(/g)) {
+    if (!ctx.code[f.index]) continue;
+    const open = f.index + f[0].length - 1;
+    const close = findClose(ctx, open);
+    if (close < 0) continue;
+    const brace = m.indexOf('{', close);
+    out.push({ names: patternNames(m.slice(open + 1, close)), listEnd: close, bodyEnd: brace < 0 ? m.length : bodyEndFrom(brace) });
+  }
+  for (const a of m.matchAll(/=>/g)) {
+    if (!ctx.code[a.index]) continue;
+    let k = a.index - 1;
+    while (k >= 0 && /\s/.test(m[k])) k--;
+    let names = [];
+    let listEnd = k;
+    if (m[k] === ')') {
+      let depth = 0, j = k;
+      for (; j >= 0; j--) { if (!ctx.code[j]) continue; if (m[j] === ')') depth++; else if (m[j] === '(' && --depth === 0) break; }
+      if (j < 0) continue;
+      names = patternNames(m.slice(j + 1, k));
+    } else {
+      const id = /[A-Za-z_$][\w$]*$/.exec(m.slice(Math.max(0, k - 80), k + 1));
+      if (!id) continue;
+      names = [id[0]];
+    }
+    out.push({ names, listEnd, bodyEnd: bodyEndFrom(a.index + 2) });
+  }
+  for (const c of m.matchAll(/\bcatch\s*\(([^)]*)\)\s*\{/g)) {
+    if (!ctx.code[c.index]) continue;
+    const open = c.index + c[0].length - 1;
+    out.push({ names: patternNames(c[1]), listEnd: c.index, bodyEnd: findClose(ctx, open) });
+  }
+  ctx.scopes = out;
+  return out;
+}
+
+function findParam(ctx, name, at) {
+  let best = -1;
+  for (const sc of functionScopes(ctx)) if (sc.listEnd < at && at <= sc.bodyEnd && sc.names.includes(name)) best = Math.max(best, sc.listEnd);
+  return best;
+}
+
+function findDecl(ctx, name, at) {
+  const esc = name.replace(/\$/g, '\\$');
+  const patterns = [
+    new RegExp(`(?:const|let|var)\\s+${esc}(?![\\w$])`, 'g'),
+    new RegExp(`(?:const|let|var)\\s*[{\\[][^;]*?(?<![\\w$])${esc}(?![\\w$])[^;]*?[}\\]]\\s*(?:=(?!=)|(?=of\\b|in\\b))`, 'g'),
+    new RegExp(`\\bfunction\\s*\\*?\\s+${esc}\\s*\\(`, 'g'),
+  ];
+  let before = -1, any = -1, kind = null, anyKind = null;
+  for (const [idx, re] of patterns.entries()) {
+    for (const m of ctx.masked.matchAll(re)) {
+      if (!ctx.code[m.index]) continue;
+      if (m.index < at) { if (m.index > before) { before = m.index; kind = idx; } }
+      else if (any < 0) { any = m.index; anyKind = idx; }
     }
   }
-  return { deps, forwarder, unresolved };
+  return before >= 0 ? { at: before, kind, later: false } : any >= 0 ? { at: any, kind: anyKind, later: true } : null;
+}
+
+function declText(ctx, decl) {
+  const m = ctx.masked;
+  if (decl.kind === 2) { // 函数声明:签名 + 函数体
+    const open = m.indexOf('(', decl.at);
+    const close = findClose(ctx, open);
+    const brace = m.indexOf('{', close);
+    return { text: canon(ctx, decl.at, findClose(ctx, brace) + 1), from: decl.at, to: findClose(ctx, brace) + 1, isFunction: true };
+  }
+  const semi = statementEnd(ctx, decl.at);
+  const eqRaw = m.indexOf('=', decl.at);
+  const eqAt = eqRaw >= 0 && eqRaw < semi ? eqRaw : -1; // let x; 没有初始值:赋值散落在后面,下面按"整个文件里的赋值"收
+  const forHeader = /^(?:const|let|var)\s+(?:[\w$]+\s+|[{\[][^=;]*[}\]]\s*)(?:of|in)\b/.test(m.slice(decl.at, decl.at + 80));
+  if (forHeader) {
+    let depth = 0, i = decl.at;
+    for (; i < m.length; i++) { if (!ctx.code[i]) continue; if (m[i] in OPEN) depth++; else if (')]}'.includes(m[i]) && --depth < 0) break; }
+    return { text: canon(ctx, decl.at, i), from: decl.at, to: i, isFunction: false };
+  }
+  if (eqAt < 0) return { text: canon(ctx, decl.at, semi), from: decl.at, to: semi, isFunction: false, uninitialized: true };
+  const end = statementEnd(ctx, eqAt);
+  const isFn = /^\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|^\s*(?:async\s+)?function\b/.test(m.slice(eqAt + 1, eqAt + 200));
+  return { text: canon(ctx, decl.at, end), from: decl.at, to: end, isFunction: isFn };
+}
+
+/** 参数范围 [exprFrom, scanTo] 里出现的标识符(只算代码、不算属性名/对象键/参数范围内自己声明的)。 */
+function identifiersIn(ctx, from, to) {
+  const m = ctx.masked;
+  const local = new Set();
+  const range = m.slice(from, to);
+  for (const a of range.matchAll(/\(([^()]*)\)\s*=>|([A-Za-z_$][\w$]*)\s*=>/g)) for (const n of patternNames(a[1] ?? a[2])) local.add(n);
+  for (const d of range.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) local.add(d[1]);
+  for (const d of range.matchAll(/catch\s*\(([^)]*)\)/g)) for (const n of patternNames(d[1])) local.add(n);
+  for (const d of range.matchAll(/(?:const|let|var)\s*([{\[][^=;]*[}\]])\s*=/g)) for (const n of patternNames(d[1])) local.add(n);
+  const found = [];
+  for (const id of range.matchAll(/(?<![\w$])[A-Za-z_$][\w$]*/g)) {
+    const at = from + id.index;
+    if (!ctx.code[at]) continue;
+    if (at > 0 && m[at - 1] === '/' && !ctx.code[at - 1]) continue; // 正则字面量后面的 flags(如 /x/m)
+    const name = id[0];
+    if (JS_WORDS.has(name) || local.has(name)) continue;
+    let p = at - 1;
+    while (p >= 0 && /\s/.test(m[p])) p--;
+    if (m[p] === '.' && m.slice(p - 2, p + 1) !== '...') continue; // 属性访问
+    let n = at + name.length;
+    while (n < m.length && /\s/.test(m[n])) n++;
+    if (m[n] === ':' && (m[p] === '{' || m[p] === ',')) continue; // 对象键
+    if (m[n] === '(' && found.length === 0 && false) continue;
+    found.push({ name, at, isCall: m[n] === '(' });
+  }
+  return found;
+}
+
+function resolveDeps(ctx, callAt, exprFrom, exprTo, scanTo = exprTo) {
+  const deps = [];
+  const unresolved = [];
+  let forwarder = null;
+  const imports = importedNames(ctx);
+  const seen = new Set();
+  const first = ctx.masked.slice(exprFrom, exprTo).trim().replace(/^\.\.\./, '');
+  const bareIdent = /^[A-Za-z_$][\w$]*$/.test(first) ? first : null;
+  const visit = (id, at, depth) => {
+    const { name } = id;
+    const key = `${name}@${depth === 0 ? 'top' : 'dep'}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (imports.has(name)) return;
+    const decl = findDecl(ctx, name, at);
+    const paramEnd = findParam(ctx, name, at);
+    if (decl && !(decl.later && paramEnd >= 0) && decl.at > paramEnd) {
+      const info = declText(ctx, decl);
+      if (!deps.includes(info.text)) deps.push(info.text);
+      if (!info.isFunction) {
+        const end = info.to;
+        const mut = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?:\\.(?:push|unshift|splice|concat)\\(|\\s*\\+?=[^=])`, 'g');
+        for (const m of ctx.masked.slice(end, info.uninitialized ? ctx.masked.length : at).matchAll(mut)) {
+          if (!ctx.code[end + m.index]) continue;
+          let stmtEnd = statementEnd(ctx, end + m.index);
+          const open = ctx.masked.indexOf('(', end + m.index);
+          if (m[0].includes('(') && open >= 0) stmtEnd = Math.min(stmtEnd, findClose(ctx, open) + 1);
+          const text = canon(ctx, end + m.index, stmtEnd);
+          if (!deps.includes(text)) deps.push(text);
+          if (depth < 3) for (const sub of identifiersIn(ctx, end + m.index, stmtEnd)) visit(sub, end + m.index, depth + 1);
+        }
+        if (depth < 3) for (const sub of identifiersIn(ctx, info.from, info.to)) if (sub.name !== name) visit(sub, info.from, depth + 1);
+      }
+    } else if (paramEnd >= 0) {
+      if (depth === 0 && name === bareIdent) forwarder = name;
+    } else {
+      unresolved.push(name);
+    }
+  };
+  for (const id of identifiersIn(ctx, exprFrom, scanTo)) visit(id, callAt, 0);
+  return { deps, forwarder, unresolved: [...new Set(unresolved)] };
 }
 
 /** 扫一个文件:返回调用模板列表和无法解析的位置。 */
@@ -229,7 +418,7 @@ export function scanFile(file, src) {
     const target = parts[argIndex];
     if (!target) { unresolved.push({ file, callee, why: '缺少参数' }); return; }
     const dep = resolveDeps(ctx, openAt, target[0], target[1], close);
-    for (const name of dep.unresolved) unresolved.push({ file, callee, why: `参数 ${name} 找不到声明` });
+    for (const name of dep.unresolved) unresolved.push({ file, callee, line: src.slice(0, openAt).split('\n').length, why: `参数 ${name} 找不到声明` });
     const line = src.slice(0, openAt).split('\n').length;
     const body = { callee, args: argsText, deps: dep.deps };
     const sig = createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 10);

@@ -90,11 +90,11 @@
    ]
   },
   {
-   "id": "handoff.ghFn.62658e9481",
+   "id": "handoff.ghFn.b6fa31bdb9",
    "source": {
     "file": "mivo/lib/handoff.mjs",
     "callee": "ghFn",
-    "sig": "62658e9481",
+    "sig": "b6fa31bdb9",
     "count": 1
    },
    "flows": [
@@ -115,11 +115,11 @@
    ]
   },
   {
-   "id": "handoff.ghFn.cd9bccfdd3",
+   "id": "handoff.ghFn.71bc10388e",
    "source": {
     "file": "mivo/lib/handoff.mjs",
     "callee": "ghFn",
-    "sig": "cd9bccfdd3",
+    "sig": "71bc10388e",
     "count": 1
    },
    "flows": [
@@ -140,11 +140,11 @@
    ]
   },
   {
-   "id": "handoff.ghFn.807c1478c5",
+   "id": "handoff.ghFn.45d50833eb",
    "source": {
     "file": "mivo/lib/handoff.mjs",
     "callee": "ghFn",
-    "sig": "807c1478c5",
+    "sig": "45d50833eb",
     "count": 1
    },
    "flows": [
@@ -165,19 +165,32 @@
    ]
   },
   {
-   "id": "resolve-fixed-threads.ghGraphqlFn.967ec2b47d",
+   "id": "resolve-fixed-threads.ghGraphqlFn.0addd877a0",
    "source": {
     "file": "mivo/lib/resolve-fixed-threads.mjs",
     "callee": "ghGraphqlFn",
-    "sig": "967ec2b47d",
+    "sig": "0addd877a0",
     "count": 1
    },
    "flows": [
     "server"
    ],
-   "forwarder": {
-    "note": "GraphQL 绑定封装,调用点的 mutation 在 resolve-threads.mjs 登记"
-   }
+   "cases": [
+    {
+     "name": "bound-resolve-thread-mutation",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"mutation($tid:ID!){ resolveReviewThread(input:{threadId:$tid}){ thread{ isResolved } } }\",\"variables\":{\"tid\":\"PRRT_x\"}}",
+     "expected": "user",
+     "serverRoute": "user",
+     "legacyServerRoute": "user",
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+    }
+   ]
   },
   {
    "id": "resolve-fixed-threads.ghGraphqlFn.a62064a814",
@@ -191,7 +204,7 @@
     "server"
    ],
    "forwarder": {
-    "note": "GraphQL 绑定封装,调用点的 mutation 在 resolve-threads.mjs 登记"
+    "note": "参数由调用方传入(ghGraphqlFn 封装),各调用点的具体 argv 在调用点所在文件登记"
    }
   },
   {
@@ -320,11 +333,11 @@
    ]
   },
   {
-   "id": "bypass-reason.gh.8974e8928e",
+   "id": "bypass-reason.gh.31ec3d5dfa",
    "source": {
     "file": "mivo/prereview/bypass-reason.mjs",
     "callee": "gh",
-    "sig": "8974e8928e",
+    "sig": "31ec3d5dfa",
     "count": 1
    },
    "flows": [
@@ -360,11 +373,11 @@
    }
   },
   {
-   "id": "round.ghRead.d0dba94d4a",
+   "id": "round.ghRead.88cc65fa02",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "d0dba94d4a",
+    "sig": "88cc65fa02",
     "count": 1
    },
    "flows": [
@@ -383,11 +396,11 @@
    ]
   },
   {
-   "id": "round.ghRead.e1d0d9e422",
+   "id": "round.ghRead.15f9cf9070",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "e1d0d9e422",
+    "sig": "15f9cf9070",
     "count": 1
    },
    "flows": [
@@ -428,11 +441,11 @@
    }
   },
   {
-   "id": "round.ghRead.7e3c73a71e",
+   "id": "round.ghRead.1fba20a197",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "7e3c73a71e",
+    "sig": "1fba20a197",
     "count": 1
    },
    "flows": [
@@ -458,11 +471,11 @@
    ]
   },
   {
-   "id": "round.ghRead.462c4421b7",
+   "id": "round.ghRead.ac2395e533",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "462c4421b7",
+    "sig": "ac2395e533",
     "count": 1
    },
    "flows": [
@@ -483,11 +496,11 @@
    ]
   },
   {
-   "id": "round.ghRead.0ec7fec1c1",
+   "id": "round.ghRead.b3bb283a1b",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "0ec7fec1c1",
+    "sig": "b3bb283a1b",
     "count": 1
    },
    "flows": [
@@ -507,11 +520,11 @@
    ]
   },
   {
-   "id": "round.ghRead.e7f6bb61de",
+   "id": "round.ghRead.a046f00383",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "e7f6bb61de",
+    "sig": "a046f00383",
     "count": 1
    },
    "flows": [
@@ -529,11 +542,11 @@
    ]
   },
   {
-   "id": "round.ghRead.7bf3c3baac",
+   "id": "round.ghRead.9f4162d7fd",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "7bf3c3baac",
+    "sig": "9f4162d7fd",
     "count": 1
    },
    "flows": [
@@ -558,11 +571,11 @@
    ]
   },
   {
-   "id": "round.ghRead.e39a621073",
+   "id": "round.ghRead.c067cf191f",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "e39a621073",
+    "sig": "c067cf191f",
     "count": 1
    },
    "flows": [
@@ -582,11 +595,11 @@
    ]
   },
   {
-   "id": "round.run_gh.03bc475bf7",
+   "id": "round.run_gh.a09e642ea2",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "03bc475bf7",
+    "sig": "a09e642ea2",
     "count": 1
    },
    "flows": [
@@ -597,11 +610,11 @@
    }
   },
   {
-   "id": "round.run_gh.c3ac1b2a85",
+   "id": "round.run_gh.4e3dcaa194",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "c3ac1b2a85",
+    "sig": "4e3dcaa194",
     "count": 1
    },
    "flows": [
@@ -625,11 +638,11 @@
    ]
   },
   {
-   "id": "round.run_gh.1b0d469163",
+   "id": "round.run_gh.a3cbcc04b4",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "1b0d469163",
+    "sig": "a3cbcc04b4",
     "count": 1
    },
    "flows": [
@@ -653,11 +666,11 @@
    ]
   },
   {
-   "id": "round.run_gh.649c00b116",
+   "id": "round.run_gh.b5f3f4cb85",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "649c00b116",
+    "sig": "b5f3f4cb85",
     "count": 1
    },
    "flows": [
@@ -679,11 +692,11 @@
    ]
   },
   {
-   "id": "round.run_gh.d8a0fbdf2d",
+   "id": "round.run_gh.bcbbc5babc",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "d8a0fbdf2d",
+    "sig": "bcbbc5babc",
     "count": 1
    },
    "flows": [
@@ -704,11 +717,11 @@
    ]
   },
   {
-   "id": "round.run_gh.9de91cffc6",
+   "id": "round.run_gh.1125b6e76b",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "9de91cffc6",
+    "sig": "1125b6e76b",
     "count": 1
    },
    "flows": [
@@ -729,11 +742,11 @@
    ]
   },
   {
-   "id": "round.run_gh.4bed709e12",
+   "id": "round.run_gh.8333b8ac45",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "4bed709e12",
+    "sig": "8333b8ac45",
     "count": 1
    },
    "flows": [
@@ -754,11 +767,11 @@
    ]
   },
   {
-   "id": "round.run_gh.d8e4c4d1eb",
+   "id": "round.run_gh.4c1b3ba87f",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "d8e4c4d1eb",
+    "sig": "4c1b3ba87f",
     "count": 1
    },
    "flows": [
@@ -784,11 +797,11 @@
    ]
   },
   {
-   "id": "round.run_gh.206ca4d026",
+   "id": "round.run_gh.a5e576bf81",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "206ca4d026",
+    "sig": "a5e576bf81",
     "count": 1
    },
    "flows": [
@@ -808,11 +821,11 @@
    ]
   },
   {
-   "id": "round.run_gh.de17031b2c",
+   "id": "round.run_gh.96f07fc1ac",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "de17031b2c",
+    "sig": "96f07fc1ac",
     "count": 1
    },
    "flows": [
@@ -835,11 +848,11 @@
    ]
   },
   {
-   "id": "round.run_gh.d69b0989ed",
+   "id": "round.run_gh.7394c1f336",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "d69b0989ed",
+    "sig": "7394c1f336",
     "count": 1
    },
    "flows": [
@@ -861,11 +874,11 @@
    ]
   },
   {
-   "id": "round.run_gh.1b7909f447",
+   "id": "round.run_gh.0585904651",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "1b7909f447",
+    "sig": "0585904651",
     "count": 1
    },
    "flows": [
@@ -885,11 +898,11 @@
    ]
   },
   {
-   "id": "round.run_gh.2dbb20a8cd",
+   "id": "round.run_gh.6d73c375a1",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "2dbb20a8cd",
+    "sig": "6d73c375a1",
     "count": 1
    },
    "flows": [
@@ -907,11 +920,11 @@
    ]
   },
   {
-   "id": "round.run_gh.51ae8125d0",
+   "id": "round.run_gh.0be303389f",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "51ae8125d0",
+    "sig": "0be303389f",
     "count": 1
    },
    "flows": [
@@ -966,11 +979,11 @@
    ]
   },
   {
-   "id": "approve-reviewed-pr.ghJson.f88a3f0d7e",
+   "id": "approve-reviewed-pr.ghJson.d403ca49b7",
    "source": {
     "file": "review-pr/scripts/approve-reviewed-pr.mjs",
     "callee": "ghJson",
-    "sig": "f88a3f0d7e",
+    "sig": "d403ca49b7",
     "count": 1
    },
    "flows": [
@@ -1022,11 +1035,11 @@
    ]
   },
   {
-   "id": "approve-reviewed-pr.gh.5ac9338071",
+   "id": "approve-reviewed-pr.gh.0bc6f7f1bc",
    "source": {
     "file": "review-pr/scripts/approve-reviewed-pr.mjs",
     "callee": "gh",
-    "sig": "5ac9338071",
+    "sig": "0bc6f7f1bc",
     "count": 1
    },
    "flows": [
@@ -1055,11 +1068,11 @@
    ]
   },
   {
-   "id": "approve-workflows.ghJson.ff97008709",
+   "id": "approve-workflows.ghJson.b94000bd90",
    "source": {
     "file": "review-pr/scripts/approve-workflows.mjs",
     "callee": "ghJson",
-    "sig": "ff97008709",
+    "sig": "b94000bd90",
     "count": 1
    },
    "flows": [
@@ -1082,11 +1095,11 @@
    ]
   },
   {
-   "id": "approve-workflows.gh.e45b5df2f9",
+   "id": "approve-workflows.gh.74be039e98",
    "source": {
     "file": "review-pr/scripts/approve-workflows.mjs",
     "callee": "gh",
-    "sig": "e45b5df2f9",
+    "sig": "74be039e98",
     "count": 1
    },
    "flows": [
@@ -1104,11 +1117,11 @@
    ]
   },
   {
-   "id": "approve-workflows.gh.9e2f21114e",
+   "id": "approve-workflows.gh.0c349d72d0",
    "source": {
     "file": "review-pr/scripts/approve-workflows.mjs",
     "callee": "gh",
-    "sig": "9e2f21114e",
+    "sig": "0c349d72d0",
     "count": 1
    },
    "flows": [
@@ -1129,11 +1142,11 @@
    ]
   },
   {
-   "id": "checkout.gh.8bf315f00e",
+   "id": "checkout.gh.02e6856bb0",
    "source": {
     "file": "review-pr/scripts/checkout.mjs",
     "callee": "gh",
-    "sig": "8bf315f00e",
+    "sig": "02e6856bb0",
     "count": 1
    },
    "flows": [
@@ -1214,11 +1227,11 @@
    ]
   },
   {
-   "id": "close-product-issue.ghJson.1977b762bf",
+   "id": "close-product-issue.ghJson.94a4be45a1",
    "source": {
     "file": "review-pr/scripts/close-product-issue.mjs",
     "callee": "ghJson",
-    "sig": "1977b762bf",
+    "sig": "94a4be45a1",
     "count": 1
    },
    "flows": [
@@ -1241,11 +1254,11 @@
    ]
   },
   {
-   "id": "close-product-issue.ghJson.5509f988b1",
+   "id": "close-product-issue.ghJson.126fdbf31b",
    "source": {
     "file": "review-pr/scripts/close-product-issue.mjs",
     "callee": "ghJson",
-    "sig": "5509f988b1",
+    "sig": "126fdbf31b",
     "count": 1
    },
    "flows": [
@@ -1271,11 +1284,11 @@
    ]
   },
   {
-   "id": "close-product-issue.gh.4ffa14484b",
+   "id": "close-product-issue.gh.e84558eb0f",
    "source": {
     "file": "review-pr/scripts/close-product-issue.mjs",
     "callee": "gh",
-    "sig": "4ffa14484b",
+    "sig": "e84558eb0f",
     "count": 1
    },
    "flows": [
@@ -1298,11 +1311,11 @@
    ]
   },
   {
-   "id": "close-product-issue.ghJson.2d7cd20735",
+   "id": "close-product-issue.ghJson.db0814ce0e",
    "source": {
     "file": "review-pr/scripts/close-product-issue.mjs",
     "callee": "ghJson",
-    "sig": "2d7cd20735",
+    "sig": "db0814ce0e",
     "count": 2
    },
    "flows": [
@@ -1325,11 +1338,11 @@
    ]
   },
   {
-   "id": "context.ghJson.25482255c1",
+   "id": "context.ghJson.a7c89cab5e",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghJson",
-    "sig": "25482255c1",
+    "sig": "a7c89cab5e",
     "count": 1
    },
    "flows": [
@@ -1356,11 +1369,11 @@
    ]
   },
   {
-   "id": "context.fetchRestPages.8542c284bf",
+   "id": "context.fetchRestPages.53cc53914d",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "fetchRestPages",
-    "sig": "8542c284bf",
+    "sig": "53cc53914d",
     "count": 1
    },
    "flows": [
@@ -1387,11 +1400,11 @@
    ]
   },
   {
-   "id": "context.fetchRestPages.0465d0ebe2",
+   "id": "context.fetchRestPages.be0c8a5573",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "fetchRestPages",
-    "sig": "0465d0ebe2",
+    "sig": "be0c8a5573",
     "count": 1
    },
    "flows": [
@@ -1418,11 +1431,11 @@
    ]
   },
   {
-   "id": "context.ghGraphql.2d84814682",
+   "id": "context.ghGraphql.ceee25fe2c",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghGraphql",
-    "sig": "2d84814682",
+    "sig": "ceee25fe2c",
     "count": 1
    },
    "flows": [
@@ -1460,11 +1473,11 @@
    ]
   },
   {
-   "id": "context.fetchRestPages.00a8b31378",
+   "id": "context.fetchRestPages.3a0e50587d",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "fetchRestPages",
-    "sig": "00a8b31378",
+    "sig": "3a0e50587d",
     "count": 1
    },
    "flows": [
@@ -1491,11 +1504,11 @@
    ]
   },
   {
-   "id": "context.fetchRestPages.b293603d28",
+   "id": "context.fetchRestPages.6096c50b7f",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "fetchRestPages",
-    "sig": "b293603d28",
+    "sig": "6096c50b7f",
     "count": 1
    },
    "flows": [
@@ -1522,11 +1535,11 @@
    ]
   },
   {
-   "id": "context.fetchRestPages.26ae45c1f6",
+   "id": "context.fetchRestPages.2adc5774e3",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "fetchRestPages",
-    "sig": "26ae45c1f6",
+    "sig": "2adc5774e3",
     "count": 1
    },
    "flows": [
@@ -1553,11 +1566,11 @@
    ]
   },
   {
-   "id": "context.gh.bb96f25d9b",
+   "id": "context.gh.cd20566477",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "gh",
-    "sig": "bb96f25d9b",
+    "sig": "cd20566477",
     "count": 1
    },
    "flows": [
@@ -1581,11 +1594,11 @@
    ]
   },
   {
-   "id": "context.ghJson.2def3a17eb",
+   "id": "context.ghJson.2d840e2cd5",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghJson",
-    "sig": "2def3a17eb",
+    "sig": "2d840e2cd5",
     "count": 1
    },
    "flows": [
@@ -1611,11 +1624,11 @@
    ]
   },
   {
-   "id": "context.fetchRestPages.c274b8855d",
+   "id": "context.fetchRestPages.d00dd0e9b7",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "fetchRestPages",
-    "sig": "c274b8855d",
+    "sig": "d00dd0e9b7",
     "count": 1
    },
    "flows": [
@@ -1642,11 +1655,11 @@
    ]
   },
   {
-   "id": "context.ghJson.de9ac76de6",
+   "id": "context.ghJson.147ffcf821",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghJson",
-    "sig": "de9ac76de6",
+    "sig": "147ffcf821",
     "count": 1
    },
    "flows": [
@@ -1672,11 +1685,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.ghJson.2c4cba8e72",
+   "id": "dismiss-own-review.ghJson.7c002abe92",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "ghJson",
-    "sig": "2c4cba8e72",
+    "sig": "7c002abe92",
     "count": 1
    },
    "flows": [
@@ -1731,11 +1744,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.ghJson.ad252ddd4f",
+   "id": "dismiss-own-review.ghJson.3242d8f594",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "ghJson",
-    "sig": "ad252ddd4f",
+    "sig": "3242d8f594",
     "count": 1
    },
    "flows": [
@@ -1759,11 +1772,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.ghJson.87b9241570",
+   "id": "dismiss-own-review.ghJson.d1a1fa3b1a",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "ghJson",
-    "sig": "87b9241570",
+    "sig": "d1a1fa3b1a",
     "count": 1
    },
    "flows": [
@@ -1786,11 +1799,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.ghJson.f2454c1511",
+   "id": "dismiss-own-review.ghJson.037be03e74",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "ghJson",
-    "sig": "f2454c1511",
+    "sig": "037be03e74",
     "count": 2
    },
    "flows": [
@@ -1813,11 +1826,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.gh.39f1cbabf4",
+   "id": "dismiss-own-review.gh.0fed377c41",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "gh",
-    "sig": "39f1cbabf4",
+    "sig": "0fed377c41",
     "count": 1
    },
    "flows": [
@@ -1843,11 +1856,11 @@
    ]
   },
   {
-   "id": "dismiss-stale-reviews.ghJson.662b2b5f98",
+   "id": "dismiss-stale-reviews.ghJson.11f5328f8c",
    "source": {
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "ghJson",
-    "sig": "662b2b5f98",
+    "sig": "11f5328f8c",
     "count": 1
    },
    "flows": [
@@ -1870,11 +1883,11 @@
    ]
   },
   {
-   "id": "dismiss-stale-reviews.ghJson.ad252ddd4f",
+   "id": "dismiss-stale-reviews.ghJson.3242d8f594",
    "source": {
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "ghJson",
-    "sig": "ad252ddd4f",
+    "sig": "3242d8f594",
     "count": 1
    },
    "flows": [
@@ -1926,11 +1939,11 @@
    ]
   },
   {
-   "id": "dismiss-stale-reviews.ghJson.d7cdedcb76",
+   "id": "dismiss-stale-reviews.ghJson.0c9225b8ef",
    "source": {
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "ghJson",
-    "sig": "d7cdedcb76",
+    "sig": "0c9225b8ef",
     "count": 1
    },
    "flows": [
@@ -1953,11 +1966,11 @@
    ]
   },
   {
-   "id": "dismiss-stale-reviews.gh.730c7d0875",
+   "id": "dismiss-stale-reviews.gh.ced6752de5",
    "source": {
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "gh",
-    "sig": "730c7d0875",
+    "sig": "ced6752de5",
     "count": 1
    },
    "flows": [
@@ -1983,11 +1996,11 @@
    ]
   },
   {
-   "id": "fix-worktree-cleanup.gh.16c099ea80",
+   "id": "fix-worktree-cleanup.gh.bfb30e907c",
    "source": {
     "file": "review-pr/scripts/fix-worktree-cleanup.mjs",
     "callee": "gh",
-    "sig": "16c099ea80",
+    "sig": "bfb30e907c",
     "count": 1
    },
    "flows": [
@@ -2015,11 +2028,11 @@
    ]
   },
   {
-   "id": "fix-worktree-cleanup.gh.ccd70bf0fa",
+   "id": "fix-worktree-cleanup.gh.8cb3d86727",
    "source": {
     "file": "review-pr/scripts/fix-worktree-cleanup.mjs",
     "callee": "gh",
-    "sig": "ccd70bf0fa",
+    "sig": "8cb3d86727",
     "count": 1
    },
    "flows": [
@@ -2045,11 +2058,11 @@
    ]
   },
   {
-   "id": "fix-worktree-cleanup.gh.3eb27dc217",
+   "id": "fix-worktree-cleanup.gh.f699f5fcc9",
    "source": {
     "file": "review-pr/scripts/fix-worktree-cleanup.mjs",
     "callee": "gh",
-    "sig": "3eb27dc217",
+    "sig": "f699f5fcc9",
     "count": 1
    },
    "flows": [
@@ -2072,11 +2085,11 @@
    ]
   },
   {
-   "id": "fix-worktree-cleanup.gh.82a4ac15e5",
+   "id": "fix-worktree-cleanup.gh.ef745e65aa",
    "source": {
     "file": "review-pr/scripts/fix-worktree-cleanup.mjs",
     "callee": "gh",
-    "sig": "82a4ac15e5",
+    "sig": "ef745e65aa",
     "count": 1
    },
    "flows": [
@@ -2099,11 +2112,11 @@
    ]
   },
   {
-   "id": "gh-read.ghJson.80ea286adf",
+   "id": "gh-read.ghJson.2f3b55a0b5",
    "source": {
     "file": "review-pr/scripts/gh-read.mjs",
     "callee": "ghJson",
-    "sig": "80ea286adf",
+    "sig": "2f3b55a0b5",
     "count": 1
    },
    "flows": [
@@ -2126,11 +2139,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.75fea0c7a8",
+   "id": "lib.ghFn.edb5eb491a",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "75fea0c7a8",
+    "sig": "edb5eb491a",
     "count": 1
    },
    "flows": [
@@ -2157,11 +2170,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.0bb045bd98",
+   "id": "lib.ghFn.61e15bf9a7",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "0bb045bd98",
+    "sig": "61e15bf9a7",
     "count": 1
    },
    "flows": [
@@ -2221,11 +2234,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.9ab1b41c63",
+   "id": "lib.ghFn.29e38c5442",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "9ab1b41c63",
+    "sig": "29e38c5442",
     "count": 1
    },
    "flows": [
@@ -2256,11 +2269,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.5665b6d1ef",
+   "id": "lib.ghFn.c21571a37f",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "5665b6d1ef",
+    "sig": "c21571a37f",
     "count": 3
    },
    "flows": [
@@ -2283,11 +2296,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.d577a83e8f",
+   "id": "lib.ghFn.dff0f0ecc3",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "d577a83e8f",
+    "sig": "dff0f0ecc3",
     "count": 1
    },
    "flows": [
@@ -2311,11 +2324,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.85fd1dd84a",
+   "id": "lib.ghFn.3a9e3f988b",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "85fd1dd84a",
+    "sig": "3a9e3f988b",
     "count": 1
    },
    "flows": [
@@ -2340,11 +2353,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.81a91dd366",
+   "id": "lib.ghFn.7da0604c55",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "81a91dd366",
+    "sig": "7da0604c55",
     "count": 1
    },
    "flows": [
@@ -2371,11 +2384,11 @@
    ]
   },
   {
-   "id": "lib.fetchPaginatedRestItems.bd66257220",
+   "id": "lib.fetchPaginatedRestItems.f3583f536f",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "fetchPaginatedRestItems",
-    "sig": "bd66257220",
+    "sig": "f3583f536f",
     "count": 1
    },
    "flows": [
@@ -2507,27 +2520,39 @@
    }
   },
   {
-   "id": "lib.gh.a03473656c",
+   "id": "lib.gh.5e816f0030",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "gh",
-    "sig": "a03473656c",
+    "sig": "5e816f0030",
     "count": 1
    },
    "flows": [
     "mini",
     "server"
    ],
-   "forwarder": {
-    "note": "ghGraphql 传输封装,query 由各调用点登记"
-   }
+   "cases": [
+    {
+     "name": "transport-read-sample",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\"}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
   },
   {
-   "id": "lib.ghGraphqlFn.3f1907cff5",
+   "id": "lib.ghGraphqlFn.831159a332",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghGraphqlFn",
-    "sig": "3f1907cff5",
+    "sig": "831159a332",
     "count": 1
    },
    "flows": [
@@ -2570,11 +2595,11 @@
    ]
   },
   {
-   "id": "lib.ghGraphqlFn.0347b9f03e",
+   "id": "lib.ghGraphqlFn.610f4c15e3",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghGraphqlFn",
-    "sig": "0347b9f03e",
+    "sig": "610f4c15e3",
     "count": 1
    },
    "flows": [
@@ -2598,11 +2623,11 @@
    ]
   },
   {
-   "id": "lib.fetchGraphqlConnection.bb2a44530a",
+   "id": "lib.fetchGraphqlConnection.0ae53d7438",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "fetchGraphqlConnection",
-    "sig": "bb2a44530a",
+    "sig": "0ae53d7438",
     "count": 1
    },
    "flows": [
@@ -2651,11 +2676,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.bd021c179b",
+   "id": "lib.ghFn.182eb9b1fa",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "bd021c179b",
+    "sig": "182eb9b1fa",
     "count": 1
    },
    "flows": [
@@ -2677,11 +2702,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.d96d341433",
+   "id": "lib.ghFn.5afb123571",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "d96d341433",
+    "sig": "5afb123571",
     "count": 1
    },
    "flows": [
@@ -2703,11 +2728,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.0b4f2eb5b9",
+   "id": "lib.ghFn.e0f8dad167",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "0b4f2eb5b9",
+    "sig": "e0f8dad167",
     "count": 1
    },
    "flows": [
@@ -2729,11 +2754,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.87e1be5df6",
+   "id": "lib.ghFn.918c528ae6",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "87e1be5df6",
+    "sig": "918c528ae6",
     "count": 1
    },
    "flows": [
@@ -2838,11 +2863,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.6a132359d0",
+   "id": "lib.ghFn.718e5092c2",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "6a132359d0",
+    "sig": "718e5092c2",
     "count": 1
    },
    "flows": [
@@ -2863,11 +2888,11 @@
    ]
   },
   {
-   "id": "lib.gh.96cd00b3e2",
+   "id": "lib.gh.feebbd1ec6",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "gh",
-    "sig": "96cd00b3e2",
+    "sig": "feebbd1ec6",
     "count": 1
    },
    "flows": [
@@ -2950,11 +2975,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.90cf3657c0",
+   "id": "lib.ghFn.444d0d2703",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "90cf3657c0",
+    "sig": "444d0d2703",
     "count": 1
    },
    "flows": [
@@ -2994,11 +3019,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.8494195319",
+   "id": "lib.ghFn.fb2b3a6c1a",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "8494195319",
+    "sig": "fb2b3a6c1a",
     "count": 1
    },
    "flows": [
@@ -3027,11 +3052,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.1f37d840f1",
+   "id": "lib.ghFn.43eb2d8041",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "1f37d840f1",
+    "sig": "43eb2d8041",
     "count": 1
    },
    "flows": [
@@ -3058,11 +3083,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.23e5a79811",
+   "id": "lib.ghFn.ef985755e1",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "23e5a79811",
+    "sig": "ef985755e1",
     "count": 1
    },
    "flows": [
@@ -3090,11 +3115,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.7736b4869b",
+   "id": "lib.ghFn.03835ec1cd",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "7736b4869b",
+    "sig": "03835ec1cd",
     "count": 1
    },
    "flows": [
@@ -3123,11 +3148,11 @@
    ]
   },
   {
-   "id": "lib.ghFn.1fcde5cd99",
+   "id": "lib.ghFn.590f7a7aed",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "ghFn",
-    "sig": "1fcde5cd99",
+    "sig": "590f7a7aed",
     "count": 1
    },
    "flows": [
@@ -3199,11 +3224,11 @@
    ]
   },
   {
-   "id": "lib.run_gh.96e404753f",
+   "id": "lib.run_gh.2a2205ddc2",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "run:gh",
-    "sig": "96e404753f",
+    "sig": "2a2205ddc2",
     "count": 1
    },
    "flows": [
@@ -3245,11 +3270,11 @@
    ]
   },
   {
-   "id": "merge-reviewed-pr.ghJson.06178d380f",
+   "id": "merge-reviewed-pr.ghJson.d3b878c6bb",
    "source": {
     "file": "review-pr/scripts/merge-reviewed-pr.mjs",
     "callee": "ghJson",
-    "sig": "06178d380f",
+    "sig": "d3b878c6bb",
     "count": 1
    },
    "flows": [
@@ -3274,11 +3299,11 @@
    ]
   },
   {
-   "id": "merge-reviewed-pr.ghJson.4ca30ec623",
+   "id": "merge-reviewed-pr.ghJson.dc6541df0a",
    "source": {
     "file": "review-pr/scripts/merge-reviewed-pr.mjs",
     "callee": "ghJson",
-    "sig": "4ca30ec623",
+    "sig": "dc6541df0a",
     "count": 1
    },
    "flows": [
@@ -3330,11 +3355,11 @@
    ]
   },
   {
-   "id": "merge-reviewed-pr.ghJson.e2036af33b",
+   "id": "merge-reviewed-pr.ghJson.9dc43a4187",
    "source": {
     "file": "review-pr/scripts/merge-reviewed-pr.mjs",
     "callee": "ghJson",
-    "sig": "e2036af33b",
+    "sig": "9dc43a4187",
     "count": 1
    },
    "flows": [
@@ -3360,11 +3385,11 @@
    ]
   },
   {
-   "id": "merge-reviewed-pr.gh.7802e8e583",
+   "id": "merge-reviewed-pr.gh.a9f14c1fa6",
    "source": {
     "file": "review-pr/scripts/merge-reviewed-pr.mjs",
     "callee": "gh",
-    "sig": "7802e8e583",
+    "sig": "a9f14c1fa6",
     "count": 1
    },
    "flows": [
@@ -3394,11 +3419,11 @@
    ]
   },
   {
-   "id": "merge-reviewed-pr.ghJson.9814f6aa9c",
+   "id": "merge-reviewed-pr.ghJson.acb6d174c0",
    "source": {
     "file": "review-pr/scripts/merge-reviewed-pr.mjs",
     "callee": "ghJson",
-    "sig": "9814f6aa9c",
+    "sig": "acb6d174c0",
     "count": 1
    },
    "flows": [
@@ -3451,11 +3476,11 @@
    ]
   },
   {
-   "id": "notify-author-resolve.ghJson.a277f239a5",
+   "id": "notify-author-resolve.ghJson.fa1c1fc318",
    "source": {
     "file": "review-pr/scripts/notify-author-resolve.mjs",
     "callee": "ghJson",
-    "sig": "a277f239a5",
+    "sig": "fa1c1fc318",
     "count": 1
    },
    "flows": [
@@ -3501,11 +3526,11 @@
    ]
   },
   {
-   "id": "notify-author-resolve.fetchRestPages.316e50c534",
+   "id": "notify-author-resolve.fetchRestPages.a32794355b",
    "source": {
     "file": "review-pr/scripts/notify-author-resolve.mjs",
     "callee": "fetchRestPages",
-    "sig": "316e50c534",
+    "sig": "a32794355b",
     "count": 1
    },
    "flows": [
@@ -3529,11 +3554,11 @@
    ]
   },
   {
-   "id": "notify-author-resolve.ghJson.d85009fae1",
+   "id": "notify-author-resolve.ghJson.f6db41db1e",
    "source": {
     "file": "review-pr/scripts/notify-author-resolve.mjs",
     "callee": "ghJson",
-    "sig": "d85009fae1",
+    "sig": "f6db41db1e",
     "count": 1
    },
    "flows": [
@@ -3556,11 +3581,11 @@
    ]
   },
   {
-   "id": "notify-author-resolve.ghJson.c7f2b87b34",
+   "id": "notify-author-resolve.ghJson.300ee7788f",
    "source": {
     "file": "review-pr/scripts/notify-author-resolve.mjs",
     "callee": "ghJson",
-    "sig": "c7f2b87b34",
+    "sig": "300ee7788f",
     "count": 1
    },
    "flows": [
@@ -3583,11 +3608,11 @@
    ]
   },
   {
-   "id": "notify-author-resolve.ghGraphql.79a61d7895",
+   "id": "notify-author-resolve.ghGraphql.df54e5e0fa",
    "source": {
     "file": "review-pr/scripts/notify-author-resolve.mjs",
     "callee": "ghGraphql",
-    "sig": "79a61d7895",
+    "sig": "df54e5e0fa",
     "count": 1
    },
    "flows": [
@@ -3608,11 +3633,11 @@
    ]
   },
   {
-   "id": "notify-author-resolve.writeGh.4485610d23",
+   "id": "notify-author-resolve.writeGh.28f8de33b9",
    "source": {
     "file": "review-pr/scripts/notify-author-resolve.mjs",
     "callee": "writeGh",
-    "sig": "4485610d23",
+    "sig": "28f8de33b9",
     "count": 1
    },
    "flows": [
@@ -3636,11 +3661,11 @@
    ]
   },
   {
-   "id": "pick.gh.723907e043",
+   "id": "pick.gh.27bd357a93",
    "source": {
     "file": "review-pr/scripts/pick.mjs",
     "callee": "gh",
-    "sig": "723907e043",
+    "sig": "27bd357a93",
     "count": 1
    },
    "flows": [
@@ -3666,11 +3691,11 @@
    ]
   },
   {
-   "id": "post-merge-sweep.gh.4b40352c64",
+   "id": "post-merge-sweep.gh.6f907dcc63",
    "source": {
     "file": "review-pr/scripts/post-merge-sweep.mjs",
     "callee": "gh",
-    "sig": "4b40352c64",
+    "sig": "6f907dcc63",
     "count": 1
    },
    "flows": [
@@ -3702,11 +3727,11 @@
    ]
   },
   {
-   "id": "post-merge-sweep.ghGraphql.972ae84ef5",
+   "id": "post-merge-sweep.ghGraphql.6da8de5370",
    "source": {
     "file": "review-pr/scripts/post-merge-sweep.mjs",
     "callee": "ghGraphql",
-    "sig": "972ae84ef5",
+    "sig": "6da8de5370",
     "count": 1
    },
    "flows": [
@@ -3727,11 +3752,11 @@
    ]
   },
   {
-   "id": "post-merge-sweep.gh.0098377763",
+   "id": "post-merge-sweep.gh.ea85fdb849",
    "source": {
     "file": "review-pr/scripts/post-merge-sweep.mjs",
     "callee": "gh",
-    "sig": "0098377763",
+    "sig": "ea85fdb849",
     "count": 1
    },
    "flows": [
@@ -3814,11 +3839,11 @@
    ]
   },
   {
-   "id": "pr-write-guard.api_ghJson.df6910a302",
+   "id": "pr-write-guard.api_ghJson.cd80e60c89",
    "source": {
     "file": "review-pr/scripts/pr-write-guard.mjs",
     "callee": "api.ghJson",
-    "sig": "df6910a302",
+    "sig": "cd80e60c89",
     "count": 1
    },
    "flows": [
@@ -3890,11 +3915,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.ghJson.22c0998585",
+   "id": "pre-merge-check.ghJson.11d7d7ddeb",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "ghJson",
-    "sig": "22c0998585",
+    "sig": "11d7d7ddeb",
     "count": 1
    },
    "flows": [
@@ -3920,11 +3945,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.ghGraphql.4944e5da99",
+   "id": "pre-merge-check.ghGraphql.ec1c37eca3",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "ghGraphql",
-    "sig": "4944e5da99",
+    "sig": "ec1c37eca3",
     "count": 1
    },
    "flows": [
@@ -3948,11 +3973,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.fetchRestPages.0465d0ebe2",
+   "id": "pre-merge-check.fetchRestPages.be0c8a5573",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "fetchRestPages",
-    "sig": "0465d0ebe2",
+    "sig": "be0c8a5573",
     "count": 1
    },
    "flows": [
@@ -3978,11 +4003,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.fetchRestPages.8542c284bf",
+   "id": "pre-merge-check.fetchRestPages.53cc53914d",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "fetchRestPages",
-    "sig": "8542c284bf",
+    "sig": "53cc53914d",
     "count": 1
    },
    "flows": [
@@ -4008,11 +4033,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.fetchRestPages.66a94252f2",
+   "id": "pre-merge-check.fetchRestPages.a36e5da2f1",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "fetchRestPages",
-    "sig": "66a94252f2",
+    "sig": "a36e5da2f1",
     "count": 1
    },
    "flows": [
@@ -4038,11 +4063,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.fetchRestPages.c274b8855d",
+   "id": "pre-merge-check.fetchRestPages.d00dd0e9b7",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "fetchRestPages",
-    "sig": "c274b8855d",
+    "sig": "d00dd0e9b7",
     "count": 1
    },
    "flows": [
@@ -4096,11 +4121,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.ghJson.542484f29b",
+   "id": "request-changes-reviewed-pr.ghJson.c67f89ee78",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "ghJson",
-    "sig": "542484f29b",
+    "sig": "c67f89ee78",
     "count": 2
    },
    "flows": [
@@ -4126,11 +4151,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.fetchRestPages.0465d0ebe2",
+   "id": "request-changes-reviewed-pr.fetchRestPages.be0c8a5573",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "fetchRestPages",
-    "sig": "0465d0ebe2",
+    "sig": "be0c8a5573",
     "count": 1
    },
    "flows": [
@@ -4157,11 +4182,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.write.523b52d229",
+   "id": "request-changes-reviewed-pr.write.511e5a6a94",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "write",
-    "sig": "523b52d229",
+    "sig": "511e5a6a94",
     "count": 1
    },
    "flows": [
@@ -4188,11 +4213,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.fetchRestPages.66a94252f2",
+   "id": "request-changes-reviewed-pr.fetchRestPages.a36e5da2f1",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "fetchRestPages",
-    "sig": "66a94252f2",
+    "sig": "a36e5da2f1",
     "count": 1
    },
    "flows": [
@@ -4219,11 +4244,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.write.91255bff04",
+   "id": "request-changes-reviewed-pr.write.6375367b94",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "write",
-    "sig": "91255bff04",
+    "sig": "6375367b94",
     "count": 1
    },
    "flows": [
@@ -4249,11 +4274,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.fetchRestPages.4c0ad5490a",
+   "id": "request-changes-reviewed-pr.fetchRestPages.a1cc9368c9",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "fetchRestPages",
-    "sig": "4c0ad5490a",
+    "sig": "a1cc9368c9",
     "count": 1
    },
    "flows": [
@@ -4280,11 +4305,11 @@
    ]
   },
   {
-   "id": "resolve-threads.ghGraphql.423872dd94",
+   "id": "resolve-threads.ghGraphql.8de05a9f6f",
    "source": {
     "file": "review-pr/scripts/resolve-threads.mjs",
     "callee": "ghGraphql",
-    "sig": "423872dd94",
+    "sig": "8de05a9f6f",
     "count": 1
    },
    "flows": [
@@ -4303,16 +4328,16 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
   {
-   "id": "resolve-threads.ghGraphql.17591f4837",
+   "id": "resolve-threads.ghGraphql.c014b245cb",
    "source": {
     "file": "review-pr/scripts/resolve-threads.mjs",
     "callee": "ghGraphql",
-    "sig": "17591f4837",
+    "sig": "c014b245cb",
     "count": 1
    },
    "flows": [
@@ -4331,7 +4356,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
   },
@@ -4411,11 +4436,11 @@
    ]
   },
   {
-   "id": "retry-ci.ghJson.25e0533591",
+   "id": "retry-ci.ghJson.fb87cca67f",
    "source": {
     "file": "review-pr/scripts/retry-ci.mjs",
     "callee": "ghJson",
-    "sig": "25e0533591",
+    "sig": "fb87cca67f",
     "count": 2
    },
    "flows": [
@@ -4438,11 +4463,11 @@
    ]
   },
   {
-   "id": "retry-ci.gh.6d1d2bfc22",
+   "id": "retry-ci.gh.8938789e4f",
    "source": {
     "file": "review-pr/scripts/retry-ci.mjs",
     "callee": "gh",
-    "sig": "6d1d2bfc22",
+    "sig": "8938789e4f",
     "count": 1
    },
    "flows": [
@@ -4463,11 +4488,11 @@
    ]
   },
   {
-   "id": "signoff-hold.ghJson.406d7a8350",
+   "id": "signoff-hold.ghJson.10f2ba5de7",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "ghJson",
-    "sig": "406d7a8350",
+    "sig": "10f2ba5de7",
     "count": 1
    },
    "flows": [
@@ -4515,11 +4540,11 @@
    ]
   },
   {
-   "id": "signoff-hold.gh.d6d778adc1",
+   "id": "signoff-hold.gh.948b4f42dc",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "gh",
-    "sig": "d6d778adc1",
+    "sig": "948b4f42dc",
     "count": 1
    },
    "flows": [
@@ -4542,11 +4567,11 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.78fabc076c",
+   "id": "signoff-hold.writeGh.7da03cd258",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "78fabc076c",
+    "sig": "7da03cd258",
     "count": 1
    },
    "flows": [
@@ -4570,12 +4595,12 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.b99796fa13",
+   "id": "signoff-hold.writeGh.1f39ef877e",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "b99796fa13",
-    "count": 2
+    "sig": "1f39ef877e",
+    "count": 1
    },
    "flows": [
     "mini"
@@ -4599,12 +4624,12 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.a1a9f4f405",
+   "id": "signoff-hold.writeGh.347f4f6fda",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "a1a9f4f405",
-    "count": 2
+    "sig": "347f4f6fda",
+    "count": 1
    },
    "flows": [
     "mini"
@@ -4627,11 +4652,68 @@
    ]
   },
   {
-   "id": "signoff-release.ghJson.fea7102fa1",
+   "id": "signoff-hold.writeGh.4be2d49a03",
+   "source": {
+    "file": "review-pr/scripts/signoff-hold.mjs",
+    "callee": "writeGh",
+    "sig": "4be2d49a03",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "issue",
+      "create",
+      "--repo",
+      "xindong/mivo-canvas-plugin",
+      "--title",
+      "x",
+      "--body-file",
+      "-"
+     ],
+     "expected": "user",
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+    }
+   ]
+  },
+  {
+   "id": "signoff-hold.writeGh.2ef854ef23",
+   "source": {
+    "file": "review-pr/scripts/signoff-hold.mjs",
+    "callee": "writeGh",
+    "sig": "2ef854ef23",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "pr",
+      "comment",
+      "7",
+      "--repo",
+      "xindong/mivo-canvas-plugin",
+      "--body-file",
+      "-"
+     ],
+     "expected": "user",
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+    }
+   ]
+  },
+  {
+   "id": "signoff-release.ghJson.f93caa01fb",
    "source": {
     "file": "review-pr/scripts/signoff-release.mjs",
     "callee": "ghJson",
-    "sig": "fea7102fa1",
+    "sig": "f93caa01fb",
     "count": 1
    },
    "flows": [
@@ -4685,11 +4767,11 @@
    ]
   },
   {
-   "id": "signoff-release.ghJson.7444ced253",
+   "id": "signoff-release.ghJson.2e2c44fb0f",
    "source": {
     "file": "review-pr/scripts/signoff-release.mjs",
     "callee": "ghJson",
-    "sig": "7444ced253",
+    "sig": "2e2c44fb0f",
     "count": 1
    },
    "flows": [
@@ -4715,11 +4797,11 @@
    ]
   },
   {
-   "id": "signoff-release.writeGh.21d68b552e",
+   "id": "signoff-release.writeGh.7267f84407",
    "source": {
     "file": "review-pr/scripts/signoff-release.mjs",
     "callee": "writeGh",
-    "sig": "21d68b552e",
+    "sig": "7267f84407",
     "count": 1
    },
    "flows": [
@@ -4746,11 +4828,11 @@
    ]
   },
   {
-   "id": "sync-status-labels.ghJson.fc248bbf10",
+   "id": "sync-status-labels.ghJson.6ae9e52dc9",
    "source": {
     "file": "review-pr/scripts/sync-status-labels.mjs",
     "callee": "ghJson",
-    "sig": "fc248bbf10",
+    "sig": "6ae9e52dc9",
     "count": 1
    },
    "flows": [
@@ -4773,11 +4855,11 @@
    ]
   },
   {
-   "id": "target-branch-reminder.api_ghJson.a9fed014f4",
+   "id": "target-branch-reminder.api_ghJson.fe2fe859a2",
    "source": {
     "file": "review-pr/scripts/target-branch-reminder.mjs",
     "callee": "api.ghJson",
-    "sig": "a9fed014f4",
+    "sig": "fe2fe859a2",
     "count": 1
    },
    "flows": [
@@ -4800,11 +4882,11 @@
    ]
   },
   {
-   "id": "target-branch-reminder.api_fetchRestPages.ef996da667",
+   "id": "target-branch-reminder.api_fetchRestPages.7381ab4033",
    "source": {
     "file": "review-pr/scripts/target-branch-reminder.mjs",
     "callee": "api.fetchRestPages",
-    "sig": "ef996da667",
+    "sig": "7381ab4033",
     "count": 1
    },
    "flows": [
@@ -4851,11 +4933,11 @@
    ]
   },
   {
-   "id": "target-branch-reminder.api_fetchRestPages.eb1ccc4fd7",
+   "id": "target-branch-reminder.api_fetchRestPages.c338b5750e",
    "source": {
     "file": "review-pr/scripts/target-branch-reminder.mjs",
     "callee": "api.fetchRestPages",
-    "sig": "eb1ccc4fd7",
+    "sig": "c338b5750e",
     "count": 1
    },
    "flows": [
@@ -4879,11 +4961,11 @@
    ]
   },
   {
-   "id": "target-branch-reminder.api_writeGh.643d5f6c33",
+   "id": "target-branch-reminder.api_writeGh.83d9a605b1",
    "source": {
     "file": "review-pr/scripts/target-branch-reminder.mjs",
     "callee": "api.writeGh",
-    "sig": "643d5f6c33",
+    "sig": "83d9a605b1",
     "count": 1
    },
    "flows": [
