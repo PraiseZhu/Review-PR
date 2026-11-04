@@ -21,6 +21,7 @@ import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudica
 import { buildThreadResolutionPlan } from '../lib/thread-resolution.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
+import { toDefaultBranchRequest, parseDefaultBranch } from '../lib/default-branch.mjs'; // [MIVO-PATCH reviewer-app]
 import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, toUnavailableModels, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
@@ -103,8 +104,9 @@ async function prepare() {
   saveState(state);
   try {
     // 1. 检出 PR head(detached),只取需要的对象。
-    const repoMeta = JSON.parse(gh(['api', `repos/${input.targetRepo}`], { cwd: WORK }).stdout);
-    const defaultBranch = repoMeta.default_branch;
+    // [MIVO-PATCH reviewer-app] 默认分支走 GraphQL defaultBranchRef(App 令牌可读);不读 repos/<o>/<r> 根 REST。
+    const branchRequest = toDefaultBranchRequest(input.targetRepo);
+    const defaultBranch = parseDefaultBranch(gh(branchRequest.args, { cwd: WORK, input: branchRequest.input }).stdout, input.targetRepo);
     run('git', ['init', '-q', REPO_DIR]);
     git(['remote', 'add', 'origin', `https://github.com/${input.targetRepo}.git`]);
     git(['fetch', '-q', '--filter=blob:none', '--no-tags', 'origin',
