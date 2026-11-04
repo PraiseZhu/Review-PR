@@ -1054,6 +1054,74 @@ test('N2:依赖按词法作用域找,其它函数里的同名声明不得抢走�
   assert.match(JSON.stringify(dup.unresolved), /endpoint/);
 });
 
+// ── 包装/回退调用的样本:执行真实函数,捕获 gh 的实际请求 ──────────────────────────
+// 这类调用(bindGraphqlToPr 改写查询、Team 权限的 media type 回退)的 argv/stdin 是函数里拼出来的,手写样本会和真实请求对不上,
+// 所以:跑真实函数 + 记录 gh 替身收到的请求,清单样本必须和捕获结果一致。
+const stateDirForLib = mkdtempSync(join(tmpdir(), 'gh-route-state-'));
+test.after(() => rmSync(stateDirForLib, { recursive: true, force: true }));
+async function importLib() {
+  process.env.REVIEW_PR_STATE_DIR ??= stateDirForLib; // lib.mjs 加载时会建状态目录
+  return import('../../review-pr/scripts/lib.mjs');
+}
+const okResult = (v) => ({ ok: true, stdout: typeof v === 'string' ? v : JSON.stringify(v), stderr: '', status: 0 });
+const requestKey = (argv, stdin) => `${argv.join('\u0000')}\u0001${stdin ?? ''}`;
+
+/** bindGraphqlToPr + 真实 fetchAllReviewThreads(resolve-fixed-threads 的生产调用路径)实际发出的 GraphQL 请求。 */
+export async function captureBoundThreadRequests() {
+  const lib = await importLib();
+  const { fetchSingleSnapshot } = await import('../lib/resolve-fixed-threads.mjs');
+  const binding = { head: 'a'.repeat(40), base: 'b'.repeat(40), baseRefName: 'main' };
+  const calls = [];
+  const ghGraphqlFn = (query, vars) => {
+    calls.push({ argv: ['api', 'graphql', '--input', '-'], stdin: JSON.stringify({ query, variables: vars }) });
+    return { data: { repository: { pullRequest: { state: 'OPEN', isDraft: false, headRefOid: binding.head, baseRefOid: binding.base, baseRefName: 'main', reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
+  };
+  fetchSingleSnapshot({ owner: 'xindong', repo: 'mivo-canvas-plugin', pr: 7, binding, ghGraphqlFn, fetchAllReviewThreads: lib.fetchAllReviewThreads });
+  return calls;
+}
+
+/** Team 模式的 fetchMaintainerAuthority(含权限 204 → media type 回退 → Team 仓库列表回退)实际发出的 gh 请求。 */
+export async function captureTeamAuthorityRequests() {
+  const lib = await importLib();
+  const calls = [];
+  const ghFn = (args, options = {}) => {
+    calls.push({ argv: [...args], stdin: options.input ?? null });
+    if (args[1] === 'graphql') return okResult({ data: { repository: { defaultBranchRef: { name: 'main' } } } });
+    const endpoint = args.find((a) => /^(?:repos|orgs)\//.test(a)) ?? '';
+    if (endpoint === 'repos/xindong/mivo-canvas-plugin/commits/main') return okResult({ sha: 'a'.repeat(40) });
+    if (endpoint.startsWith('repos/xindong/mivo-canvas-plugin/contents/')) return okResult({ type: 'file', encoding: 'base64', sha: 'blob', content: Buffer.from('* @xindong/maintainers\n').toString('base64') });
+    if (endpoint === 'orgs/xindong/teams/maintainers') return okResult({ privacy: 'closed' });
+    if (endpoint === 'orgs/xindong/teams/maintainers/repos/xindong/mivo-canvas-plugin') return okResult(''); // 204:要走 media type 回退
+    if (endpoint === 'orgs/xindong/teams/maintainers/repos') return okResult([[{ full_name: 'xindong/mivo-canvas-plugin', permissions: { push: true } }]]);
+    if (endpoint === 'orgs/xindong/teams/maintainers/members') return okResult([[{ login: 'alice' }]]);
+    return { ok: false, stdout: '', stderr: `unexpected ${args.join(' ')}`, status: 1 };
+  };
+  lib.fetchMaintainerAuthority({ owner: 'xindong', repo: 'mivo-canvas-plugin', ghFn, maintainerAllowlist: [], maintainerSource: 'team', nowIso: '2026-11-04T00:00:00.000Z' });
+  return calls;
+}
+
+test('N3a:resolve-fixed-threads 的样本是 bindGraphqlToPr 包装后的真实线程读取,不是 mutation', async () => {
+  const captured = await captureBoundThreadRequests();
+  assert.ok(captured.length >= 1);
+  const entries = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.cases?.some((c) => c.argv[1] === 'graphql'));
+  assert.ok(entries.length >= 1, '清单里没有 resolve-fixed-threads 的 GraphQL 条目');
+  const have = new Set(entries.flatMap((e) => e.cases.map((c) => requestKey(c.argv, c.stdin))));
+  for (const call of captured) assert.ok(have.has(requestKey(call.argv, call.stdin)), `清单样本与真实请求不一致: ${call.stdin.slice(0, 120)}`);
+  for (const e of entries) for (const c of e.cases) assert.ok(!/mutation/.test(c.stdin ?? ''), `${e.id}: bindGraphqlToPr 会拒绝没有注入点的 mutation,不能当样本`);
+});
+
+test('N3b:Team 权限回退请求的样本来自真实 fetchMaintainerAuthority,且归 maintainer-team guard', async () => {
+  const captured = await captureTeamAuthorityRequests();
+  const libCases = inventory.entries.filter((e) => e.source.file === 'review-pr/scripts/lib.mjs').flatMap((e) => (e.cases ?? []).map((c) => [e, c]));
+  const have = new Set(libCases.map(([, c]) => requestKey(c.argv, c.stdin)));
+  for (const call of captured) assert.ok(have.has(requestKey(call.argv, call.stdin)), `清单里没有和真实请求一致的样本: ${call.argv.join(' ')}`);
+  const media = captured.find((c) => c.argv.some((a) => String(a).startsWith('Accept:application/vnd.github.v3.repository')));
+  assert.ok(media, '没有捕获到 media type 回退请求');
+  const hit = libCases.find(([, c]) => requestKey(c.argv, c.stdin) === requestKey(media.argv, media.stdin));
+  assert.equal(hit[1].expected, 'user');
+  assert.equal(hit[1].guard, 'maintainer-team');
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
