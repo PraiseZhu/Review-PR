@@ -133,7 +133,7 @@
      "name": "sample",
      "argv": [
       "api",
-      "repos/xindong/mivo-canvas-plugin/check-suites/x/check-runs?check_name=x&per_page=100"
+      "repos/xindong/mivo-canvas-plugin/check-suites/x/check-runs?check_name=pr-handoff-gate&per_page=100"
      ],
      "expected": "app",
      "serverRoute": "app",
@@ -179,18 +179,17 @@
    ],
    "cases": [
     {
-     "name": "bound-resolve-thread-mutation",
+     "name": "bound-review-threads-page",
      "argv": [
       "api",
       "graphql",
       "--input",
       "-"
      ],
-     "stdin": "{\"query\":\"mutation($tid:ID!){ resolveReviewThread(input:{threadId:$tid}){ thread{ isResolved } } }\",\"variables\":{\"tid\":\"PRRT_x\"}}",
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "stdin": "{\"query\":\"\\n  query($owner:String!,$repo:String!,$num:Int!,$cursor:String){\\n    repository(owner:$owner,name:$repo){\\n      pullRequest(number:$num){ state isDraft headRefOid baseRefOid baseRefName\\n        reviewThreads(first:100,after:$cursor){\\n          pageInfo{ hasNextPage endCursor }\\n          nodes{\\n            id isResolved isOutdated path line\\n            comments(first:100){ pageInfo{ hasNextPage endCursor } nodes{ id author{ login __typename } body createdAt updatedAt url } }\\n          }\\n        }\\n      }\\n    }\\n  }\",\"variables\":{\"owner\":\"xindong\",\"repo\":\"mivo-canvas-plugin\",\"num\":7}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
     }
    ]
   },
@@ -2154,7 +2153,7 @@
    ],
    "cases": [
     {
-     "name": "team-repo-permission",
+     "name": "sample",
      "argv": [
       "api",
       "--method",
@@ -2191,13 +2190,18 @@
       "api",
       "--method",
       "GET",
-      "repos/xindong/mivo-canvas-plugin/pulls/7/reviews",
+      "orgs/xindong/teams/maintainers/repos/xindong/mivo-canvas-plugin",
       "-H",
-      "Accept:x"
+      "Accept:application/vnd.github.v3.repository+json"
      ],
-     "expected": "app",
-     "serverRoute": "app",
-     "legacyServerRoute": "app"
+     "expected": "user",
+     "serverRoute": "user",
+     "legacyServerRoute": "user",
+     "guard": "maintainer-team",
+     "keep": {
+      "category": "unreachable-under-config",
+      "reason": "Team 成员/权限读取只在 maintainerSource=team(CODEOWNERS 根 Team)时走;Mivo 配置固定为 allowlist"
+     }
     }
    ]
   },
@@ -2222,7 +2226,7 @@
       "GET",
       "--paginate",
       "--slurp",
-      "orgs/xindong/teams/x/repos",
+      "orgs/xindong/teams/maintainers/repos",
       "-f",
       "per_page=100"
      ],
@@ -2347,7 +2351,7 @@
       "api",
       "--method",
       "GET",
-      "repos/xindong/mivo-canvas-plugin/contents/CODEOWNERS",
+      "repos/xindong/mivo-canvas-plugin/contents/.github/CODEOWNERS",
       "-f",
       "ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
      ],
@@ -2376,7 +2380,7 @@
       "api",
       "--method",
       "GET",
-      "orgs/x/teams/x"
+      "orgs/xindong/teams/maintainers"
      ],
      "expected": "user",
      "serverRoute": "user",
@@ -2410,7 +2414,9 @@
       "GET",
       "--paginate",
       "--slurp",
-      "orgs/x/teams/x/members",
+      "orgs/xindong/teams/maintainers/members",
+      "-f",
+      "role=all",
       "-f",
       "per_page=100"
      ],
