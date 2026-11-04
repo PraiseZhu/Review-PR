@@ -1495,7 +1495,7 @@ test('审查账号自动提交的 review 不算维护者确认,维护者本人�
   // 接线:context.mjs 用排除后的 review 评确认门。
   const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
   assert.match(context, /evaluateMaintainerReview\(\{\n\s+reviews: signoffReviews,/);
-  assert.match(context, /const signoffReviews = prReviews\.filter\(\(r\) => !isAutomatedViewerReview\(r, viewerLower\)\);/);
+  assert.match(context, /const signoffReviews = prReviews\.filter\(\(r\) => !isAutomatedViewerReview\(r, reviewerIdentity\)\);/);
 });
 
 const viewerReview = (id, state, body, at, extra = {}) => ({
@@ -1551,7 +1551,7 @@ test('self-findings:旧 head / 别人发的 / 作者不是审查账号 / 参数�
 
 test('self-findings:context 把结果交给判门(gate.selfFindingsAtHead)', () => {
   const src = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
-  assert.match(src, /selectSelfFindingsAtHead\(prReviews, \{ viewerLogin, authorLogin, headSha: meta\.headRefOid \}\)/);
+  assert.match(src, /selectSelfFindingsAtHead\(prReviews, \{ reviewerIdentity, authorLogin, headSha: meta\.headRefOid \}\)/);
   assert.match(src, /selfBlockedResolvable,\n\s+selfFindingsAtHead,/);
 });
 
@@ -1596,7 +1596,7 @@ test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖�
     '空正文仍是人工 CR');
 
   const context = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
-  assert.match(context, /selectStandingViewerHumanChangesRequest\(prReviews, viewerLogin\)/);
+  assert.match(context, /selectStandingViewerHumanChangesRequest\(prReviews, reviewerIdentity\)/);
   assert.match(context, /!standingHumanChangesRequest/);
   assert.match(context, new RegExp(HUMAN_CR_BLOCKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   const approve = readFileSync(new URL('./approve-reviewed-pr.mjs', import.meta.url), 'utf8');

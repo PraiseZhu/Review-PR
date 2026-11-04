@@ -32,7 +32,7 @@ import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiR
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH identity-env]
-import { viewerLoginOverride } from './lib.mjs';
+import { viewerLoginOverride, readReviewIdentity, isReviewIdentity } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
 import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, toMaintainerAuthorBlock, CI_ROLLUP_UNREADABLE_BLOCKER, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead } from './lib.mjs';
 import { filePatchHashesFromDiff, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
@@ -608,7 +608,10 @@ try {
   };
   // [MIVO-PATCH identity-env] 审查账号唯一来源:hold 标记认人、审查机 review 排除、viewerIsAuthor、评论过滤、
   // 自解死锁,以及服务器 review.mjs 用 approvalPolicy.viewer 认裁定/申辩 thread,全部从这里取。
-  const viewerLogin = viewerOverride || (gqlData.viewer?.login ?? '');
+  // 身份集合 = 当前写入账号 ∪ REVIEW_PR_VIEWER_ALIASES(没配别名就只有自己)。「这是不是审查账号写的」全部按集合判;
+  // 集合只回答归属,维护者资格仍只看真实 viewer(approvalPolicy)。已经读到 viewer 时不再请求 /user。
+  const reviewerIdentity = readReviewIdentity({ fallbackViewer: gqlData.viewer?.login });
+  const viewerLogin = reviewerIdentity.viewerLogin;
   // ── 堆叠 PR(stacked)的 retarget 信号 ──
   // 非默认 base 可能是 stacked PR,也可能是正常的 release 等长期分支。
   // 只有同仓库、同 head ref 的 PR 才构成分支依赖;fork 同名分支不是这个 base。
@@ -644,6 +647,7 @@ try {
     authorLogin,
     viewerLogin,
     authority: maintainerAuthority,
+    reviewerIdentity,
   });
   const isSelfFixAuthor = SELF_FIX_AUTHORS.includes(authorLogin.toLowerCase());
   // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;2026-10-21 起最终独立 Approve 由 approvalPolicy.authorIsMaintainer 豁免。
@@ -718,7 +722,7 @@ try {
   // 当前 head 的 Approve / Request Changes 由流程自己按时间判断,不依赖仓库是否开启
   // dismiss stale approvals:Approve 只通过当时的 head;Request Changes 后先摘标签交给作者,
   // 作者新 push 且仍命中触发时重新挂标签等待维护者。
-  const holdMarker = parseLastHoldMarker(rawComments.map((c) => ({ body: c.body, createdAt: c.createdAt, author: c.author })), { viewerLogin });
+  const holdMarker = parseLastHoldMarker(rawComments.map((c) => ({ body: c.body, createdAt: c.createdAt, author: c.author })), { viewerLogin: reviewerIdentity });
   const inMaintainers = (login) => MAINTAINERS.includes((login ?? '').toLowerCase());
   const releaseEvents = parseSignoffReleaseEvents(
     rawComments.map((c) => ({ body: c.body, createdAt: c.createdAt, author: c.author })),
@@ -727,9 +731,8 @@ try {
     trusted: releaseMarks,
     untrusted: untrustedReleaseMarks,
   } = selectTrustedSignoffReleases(releaseEvents, MAINTAINERS);
-  const viewerLower = viewerLogin.toLowerCase();
   // [MIVO-PATCH self-review] 确认门只看维护者本人的表态:审查账号自动提交的 review(带本流程标记)不计入。
-  const signoffReviews = prReviews.filter((r) => !isAutomatedViewerReview(r, viewerLower));
+  const signoffReviews = prReviews.filter((r) => !isAutomatedViewerReview(r, reviewerIdentity));
   // maintainers 成员的 GitHub review(信息位;通过判定在 evalSignoffKind 里按「每人最新实质
   // review」另算):非 viewer 的成员任意 state 都列;viewer(本流程自动化账号)只列
   // APPROVED——自动化自己会以 viewer 身份发 REQUEST_CHANGES(打回),不能当维护者确认信号;
@@ -738,7 +741,7 @@ try {
     .filter((r) => {
       const login = (r.author?.login ?? '').toLowerCase();
       if (!inMaintainers(login)) return false;
-      return login !== viewerLower || r.state === 'APPROVED';
+      return !isReviewIdentity(r.author, reviewerIdentity) || r.state === 'APPROVED';
     })
     .map((r) => ({ author: r.author?.login ?? '', state: r.state, submittedAt: r.submittedAt }));
   const maintainerApprovals = maintainerReviews.filter((r) => r.state === 'APPROVED');
@@ -881,7 +884,7 @@ try {
     return rawComments
       .filter((c) => {
         const login = (c.author?.login ?? '').toLowerCase();
-        if (!maintainerFn(login) || login === viewerLower) return false;
+        if (!maintainerFn(login) || isReviewIdentity(c.author, reviewerIdentity)) return false;
         return !(c.body ?? '').includes('<!-- review-pr:');
       })
       .map((c) => ({ author: c.author?.login ?? '', createdAt: c.createdAt, url: c.url, body: clip(c.body, 600) }));
@@ -1102,7 +1105,7 @@ try {
         .map((c) => ({
           from: 'pr-comment',
           author: c.author?.login ?? '',
-          viaViewerAccount: (c.author?.login ?? '').toLowerCase() === viewerLower,
+          viaViewerAccount: isReviewIdentity(c.author, reviewerIdentity),
           createdAt: c.createdAt,
           url: c.url,
           body: clip(c.body, 600),
@@ -1194,11 +1197,11 @@ try {
   // 就不命中 → 照旧硬拦,绝不替别人撤 review。
   // [MIVO-PATCH self-review] GitHub 按登录名只认最后一条实质 review,审查机后发的 CR 会把
   // 同一账号更早的人工 CR 从 latestSubstantiveReviews 里盖掉。人工 CR 仍有效时不能自解。
-  const standingHumanChangesRequest = selectStandingViewerHumanChangesRequest(prReviews, viewerLogin);
+  const standingHumanChangesRequest = selectStandingViewerHumanChangesRequest(prReviews, reviewerIdentity);
   const allChangesRequestedBySelf =
-    hasChangesRequested && viewerLogin !== '' &&
+    hasChangesRequested && reviewerIdentity.logins.length > 0 &&
     // [MIVO-PATCH identity-env] 按小写比:REVIEW_PR_VIEWER_LOGIN 的大小写可能和 GitHub 返回的不同。GitHub 登录名不分大小写,没设变量时结果不变。
-    changesRequestedReviews.every((r) => (r.author?.login ?? '').toLowerCase() === viewerLower) &&
+    changesRequestedReviews.every((r) => isReviewIdentity(r.author, reviewerIdentity)) &&
     !standingHumanChangesRequest;
   const selfBlockedResolvable =
     meta.mergeStateStatus === 'BLOCKED' &&
@@ -1206,7 +1209,7 @@ try {
     allChangesRequestedBySelf &&
     unresolvedThreads.length === 0;
   // [MIVO-PATCH self-findings] 作者即审查账号时,审查机在当前 head 已发过的问题清单(代替发不了的 CR),见 lib.mjs。
-  const selfFindingsAtHead = selectSelfFindingsAtHead(prReviews, { viewerLogin, authorLogin, headSha: meta.headRefOid });
+  const selfFindingsAtHead = selectSelfFindingsAtHead(prReviews, { reviewerIdentity, authorLogin, headSha: meta.headRefOid });
   const STANDING_HUMAN_CR_BLOCKER = '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审';
 
   // ── 1.6.5.3 评论类:bot 总结评论 + reviewer 历史打回(issue comment 形式)──
@@ -1704,6 +1707,7 @@ try {
       totalDiffLines,
       maintainerAuthority: signoff.authority,
       approvalPolicy,
+      reviewerIdentity,
       signoff,
       protectedPath,
       statusLabels,
@@ -1761,6 +1765,7 @@ try {
     totalDiffLines,
     maintainerAuthority: signoff.authority,
     approvalPolicy,
+    reviewerIdentity,
     signoff,
     protectedPath,
     statusLabels,

@@ -16,6 +16,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { checkNameFor, loadGateBases } from '../../review-pr/scripts/gate-bases.mjs'; // [MIVO-PATCH gate-bases]
+import { validateViewerLogin, parseViewerAliases } from '../../review-pr/scripts/reviewer-identity.mjs'; // [MIVO-PATCH identity-set]
 import { SKILL_ROOT, SCRIPTS, MODES, run, runScript, runScriptAsync, readJson, writeJson, writeText, nowIso } from '../lib/common.mjs';
 import { decideGate, buildSignoffPayload, buildGatePushback, toProtectedDispatch, withProtectedAuthorNotice, toSignoffReleaseArgs, toAutoReleaseNotice, toAutoReleaseCloseComment, dropStaleProtectedNotice, withProtectedGateRetry, toStaleMergeReadyReason, STATUS_LABELS, toClosedStatusLabelRemovals } from '../lib/gates.mjs';
 import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake, toCodeScanSweepSet, toCodeScanRecord } from '../lib/code-scan.mjs';
@@ -75,9 +76,17 @@ function loadConfig() {
   if (!Number.isInteger(config.gateParallel) || config.gateParallel < 1 || config.gateParallel > 16) {
     throw new Error(`gateParallel 须是 1–16 的整数:${JSON.stringify(config.gateParallel)}`);
   }
-  if (config.viewerLogin !== undefined
-      && (typeof config.viewerLogin !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.viewerLogin))) {
-    throw new Error(`viewerLogin 不是合法的 GitHub 登录名:${JSON.stringify(config.viewerLogin)}`);
+  // [MIVO-PATCH identity-set] viewerLogin 是当前写入账号(bot 写成 REST 形态 praisebuild[bot]);
+  // viewerAliases 是同一审查身份的历史/并行账号,只扩「谁写的留痕算自己的」,不赋权。
+  if (config.viewerLogin !== undefined) config.viewerLogin = validateViewerLogin(config.viewerLogin, 'viewerLogin');
+  if (config.viewerAliases !== undefined) {
+    if (!Array.isArray(config.viewerAliases)) {
+      throw new Error(`viewerAliases 须是登录名数组:${JSON.stringify(config.viewerAliases)}`);
+    }
+    config.viewerAliases = parseViewerAliases(config.viewerAliases, 'viewerAliases');
+    if (config.viewerAliases.length && !config.viewerLogin) {
+      throw new Error('配了 viewerAliases 就必须同时配 viewerLogin(别名只扩归属,不能单独当审查身份)');
+    }
   }
   // [MIVO-PATCH branch-protection-cache] 分支保护读取的缓存时长(毫秒)。分支保护要 Administration 读,App 令牌读不了,
   // 每轮重读都记在 PraiseZhu 额度上;规则很少变,配 600000(10 分钟)即可。不配=每次都读。
@@ -130,6 +139,8 @@ function setupEnv(config) {
   // viewerLogin(审查账号,即 gh 登录的账号)让 context 不再查 viewer;open PR 快照不读 fork 名(MIVO-PATCH app-readable-snapshot)。
   if (config.viewerLogin) env.REVIEW_PR_VIEWER_LOGIN = String(config.viewerLogin);
   else delete env.REVIEW_PR_VIEWER_LOGIN;
+  if (config.viewerAliases?.length) env.REVIEW_PR_VIEWER_ALIASES = JSON.stringify(config.viewerAliases);
+  else delete env.REVIEW_PR_VIEWER_ALIASES;
   env.REVIEW_PR_SNAPSHOT_FORK_NAME = '0';
   // 不从 launchd 环境继承:只认配置文件里的值。
   if (config.branchProtectionCacheMs > 0) env.REVIEW_PR_BRANCH_PROTECTION_CACHE_MS = String(config.branchProtectionCacheMs);

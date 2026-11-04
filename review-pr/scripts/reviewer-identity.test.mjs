@@ -18,7 +18,13 @@ const {
   normalizeReviewActor, validateViewerLogin, parseViewerAliases, createReviewIdentity,
   isReviewIdentity, sameReviewActor, toReviewIdentity,
 } = await import('./reviewer-identity.mjs');
-const { readReviewIdentity } = await import('./lib.mjs');
+const {
+  readReviewIdentity, evaluateMaintainerApprovalPolicy, parseLastHoldMarker, isTrustedHoldMarkerAuthor, isAutomatedViewerReview,
+  selectSelfFindingsAtHead, selectStandingViewerHumanChangesRequest, evaluateOwnReviewDismissal,
+} = await import('./lib.mjs');
+const { hasTrustedRebaseReminder, rebaseReminderFingerprint, rebaseReminderMarker } = await import('./rebase-reminder.mjs');
+const { selectGateReviewsToDismiss } = await import('./review-markers.mjs');
+const { notifyTargetBranch, targetBranchFingerprint, targetBranchMarker } = await import('./target-branch-reminder.mjs');
 
 const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 const THREE = createReviewIdentity({
@@ -267,4 +273,131 @@ test('人类身份不会被 bot 拒绝挡住 (SC6 反例)', () => {
     assert.notEqual(out?.code, 'bot-identity-forbidden', child.stdout);
     assert.notEqual(out?.approval?.code, 'bot-identity-forbidden', child.stdout);
   }
+});
+
+// 三身份参数化:同一份留痕由 PraiseZhu(旧)/ praisebuild[bot] / praise-reviewer[bot](GraphQL 或 REST 形态)写出,结论一致 (SC3/SC4)
+const HEAD = 'a'.repeat(40);
+const WRITERS = [
+  ['PraiseZhu', { login: 'PraiseZhu', __typename: 'User' }, { login: 'PraiseZhu', type: 'User' }],
+  ['praisebuild[bot]', { login: 'praisebuild', __typename: 'Bot' }, { login: 'praisebuild[bot]', type: 'Bot' }],
+  ['praise-reviewer[bot]', { login: 'praise-reviewer', __typename: 'Bot' }, { login: 'praise-reviewer[bot]', type: 'Bot' }],
+];
+const OUTSIDERS = [
+  { login: 'praisebuild-evil', __typename: 'Bot' }, { login: 'praisebuild', __typename: 'User' },
+  { login: 'someone-else', __typename: 'User' }, { login: 'github-actions', __typename: 'Bot' },
+];
+const HOLD_BODY = '<!-- review-pr:product-gate kind=product issue=https://github.com/o/r/issues/9 -->';
+
+for (const [name, graphql, rest] of WRITERS) {
+  test(`hold marker: ${name} 写的被信任 (SC3)`, () => {
+    for (const author of [graphql, rest]) {
+      const hold = parseLastHoldMarker([{ body: HOLD_BODY, createdAt: '2026-11-04T00:00:00Z', author }], { viewerLogin: THREE });
+      assert.equal(hold?.issueNumber, 9, JSON.stringify(author));
+    }
+    const fromRest = parseLastHoldMarker([{ body: HOLD_BODY, user: rest }], { viewerLogin: THREE });
+    assert.equal(fromRest?.issueNumber, 9, 'REST comment 形状 user.login');
+  });
+  test(`维护者自批排除: PR 作者是 ${name} → viewerIsAuthor (SC4)`, () => {
+    const authority = { members: ['kirozeng'], teamMembers: [], allowlistedMembers: [], digest: 'd' };
+    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: rest.login, viewerLogin: 'praisebuild[bot]', authority, reviewerIdentity: THREE });
+    assert.equal(policy.viewerIsAuthor, true);
+    assert.equal(policy.viewerIsMaintainer, false, '集合不赋予维护者资格');
+    assert.equal(policy.viewerCanApprove, false);
+  });
+  test(`自己的 findings review / 旧 CR 判断: ${name} (SC4)`, () => {
+    const review = { id: 1, state: 'COMMENTED', author: graphql, submittedAt: '2026-11-04T01:00:00Z', body: `x <!-- review-pr:findings head=${HEAD} digest=d -->` };
+    assert.equal(selectSelfFindingsAtHead([review], { reviewerIdentity: THREE, authorLogin: rest.login, headSha: HEAD })?.id, 1);
+    assert.equal(selectSelfFindingsAtHead([{ ...review, author: undefined, user: rest }], { reviewerIdentity: THREE, authorLogin: rest.login, headSha: HEAD })?.id, 1);
+    const auto = { ...review, body: '> Mivo 自动审查 · x' };
+    assert.equal(isAutomatedViewerReview(auto, THREE), true);
+    const humanCr = { id: 2, state: 'CHANGES_REQUESTED', author: graphql, submittedAt: '2026-11-04T01:00:00Z', body: '改一下' };
+    const standing = selectStandingViewerHumanChangesRequest([humanCr], THREE);
+    assert.equal(Boolean(standing), name === 'PraiseZhu', 'bot 没有「维护者本人的人工 CR」含义');
+  });
+  test(`reminded 去重: ${name} 发过的提醒算已提醒 (SC4)`, () => {
+    const fingerprint = rebaseReminderFingerprint('2026-10-01T00:00:00Z');
+    const comment = { user: rest, body: `提醒\n${rebaseReminderMarker(fingerprint)}` };
+    assert.equal(hasTrustedRebaseReminder([comment], { viewer: THREE, fingerprint, mergeBaseDate: '2026-10-01T00:00:00Z' }), true);
+    assert.equal(hasTrustedRebaseReminder([comment], { viewer: 'someone', fingerprint, mergeBaseDate: '2026-10-01T00:00:00Z' }), false);
+  });
+  test(`dismiss 门禁打回: ${name} 留的打回算自己的 (SC4)`, () => {
+    const marker = `<!-- review-pr:gate-review kind=format head=${'b'.repeat(40)} -->`;
+    const review = { id: 5, state: 'CHANGES_REQUESTED', user: rest, commit_id: 'b'.repeat(40), body: marker };
+    assert.equal(selectGateReviewsToDismiss([review], THREE, HEAD).length, 1);
+    assert.equal(selectGateReviewsToDismiss([review], 'someone', HEAD).length, 0);
+  });
+}
+
+for (const author of OUTSIDERS) {
+  test(`集合外作者不被信任: ${JSON.stringify(author)} (SC3)`, () => {
+    assert.equal(isTrustedHoldMarkerAuthor({ body: HOLD_BODY, author }, THREE), false);
+    assert.equal(parseLastHoldMarker([{ body: HOLD_BODY, author }], { viewerLogin: THREE }), null);
+    assert.equal(selectSelfFindingsAtHead([{ id: 1, author, body: `<!-- review-pr:findings head=${HEAD} -->` }],
+      { reviewerIdentity: THREE, authorLogin: 'PraiseZhu', headSha: HEAD }), null);
+  });
+}
+
+test('hold marker: 没带 viewerLogin 选项仍是旧的纯解析(不看作者);空身份 fail closed (SC3)', () => {
+  assert.equal(parseLastHoldMarker([HOLD_BODY])?.issueNumber, 9);
+  assert.equal(parseLastHoldMarker([{ body: HOLD_BODY, author: { login: 'PraiseZhu' } }], { viewerLogin: '' }), null);
+  assert.equal(parseLastHoldMarker([{ body: HOLD_BODY, author: { login: 'PraiseZhu' } }], { viewerLogin: createReviewIdentity() }), null);
+  // 旧调用方传字符串:行为同改前。
+  assert.equal(parseLastHoldMarker([{ body: HOLD_BODY, author: { login: 'praisezhu' } }], { viewerLogin: 'PraiseZhu' })?.issueNumber, 9);
+});
+
+test('不分账号的覆盖: 另一个身份后发 Approve 盖不掉 PraiseZhu 仍有效的人工 CR (SC4)', () => {
+  const reviews = [
+    { id: 1, state: 'CHANGES_REQUESTED', author: { login: 'PraiseZhu' }, submittedAt: '2026-11-04T01:00:00Z', body: '人工打回' },
+    { id: 2, state: 'APPROVED', author: { login: 'praisebuild', __typename: 'Bot' }, submittedAt: '2026-11-04T02:00:00Z', body: '' },
+  ];
+  assert.equal(selectStandingViewerHumanChangesRequest(reviews, THREE)?.id, 1);
+});
+
+test('evaluateOwnReviewDismissal: 集合内任一身份的 CR 都算自己的,别人的 CR 仍拦 (SC4)', () => {
+  const base = { approvalExempt: true, reviewClean: true, state: 'OPEN', mergeStateStatus: 'BLOCKED', reviewDecision: 'CHANGES_REQUESTED',
+    unresolvedCount: 0, threadsVerified: true, expectedHead: HEAD, actualHead: HEAD, reviewerIdentity: THREE, viewerLogin: 'praisebuild[bot]' };
+  const own = [{ id: 11, state: 'CHANGES_REQUESTED', user: { login: 'PraiseZhu' }, submitted_at: '2026-11-04T01:00:00Z' }];
+  assert.equal(evaluateOwnReviewDismissal({ ...base, reviews: own }).available, true);
+  const mixed = [...own, { id: 12, state: 'CHANGES_REQUESTED', user: { login: 'kirozeng' }, submitted_at: '2026-11-04T01:30:00Z' }];
+  assert.equal(evaluateOwnReviewDismissal({ ...base, reviews: mixed }).available, false);
+});
+
+test('target-branch 提醒去重: 三个身份写的提醒都算已提醒 (SC4)', () => {
+  for (const [name, , rest] of WRITERS) {
+    const head = 'c'.repeat(40);
+    const parent = { number: 7, state: 'closed', merged_at: '2026-10-01T00:00:00Z', head: { ref: 'dev', repo: { full_name: 'o/r' } } };
+    const fingerprint = targetBranchFingerprint({ baseRefName: 'dev', defaultBranch: 'main', basePr: { number: 7, state: 'MERGED', mergedAt: '2026-10-01T00:00:00Z' } });
+    const comments = [{ user: rest, body: `x\n${targetBranchMarker(fingerprint)}`, html_url: 'u' }];
+    const api = {
+      readReviewIdentity: () => THREE,
+      ghJson: (args) => args[0] === 'pr' ? { state: 'OPEN', isDraft: false, author: { login: 'a' }, headRefOid: head, baseRefName: 'dev' }
+        : { defaultBranchRef: { name: 'main' } },
+      fetchRestPages: (endpoint) => endpoint.includes('/pulls?') ? [parent] : comments,
+      writeGh: () => { throw new Error(`${name}: 不应再发提醒`); },
+    };
+    const result = notifyTargetBranch({ owner: 'o', repo: 'r', pr: 1, expectedHead: head, expectedBaseRef: 'dev' }, api);
+    assert.equal(result.reason, 'already-commented', name);
+  }
+});
+
+test('pr-write-guard: 写前身份绑定精确比较,集合内换成另一个账号也拒绝 (SC4)', async () => {
+  const { createPrWriteGuard } = await import('./pr-write-guard.mjs');
+  const made = (viewerLogin, expectedViewer) => {
+    const calls = [];
+    const write = createPrWriteGuard({ owner: 'o', repo: 'r', pr: 1, lockToken: 't', expectedHead: HEAD, expectedAuthorityDigest: 'd', expectedViewer }, {
+      assertActiveReviewLock: () => {},
+      readReviewIdentity: () => createReviewIdentity({ viewerLogin, viewerAliases: ['PraiseZhu', 'praisebuild[bot]', 'praise-reviewer[bot]'] }),
+      fetchMaintainerAuthority: () => ({ digest: 'd', members: [viewerLogin.toLowerCase()] }),
+      ghJson: () => ({ state: 'OPEN', isDraft: false, headRefOid: HEAD, author: { login: 'author' }, updatedAt: 'x' }),
+      gh: (args) => { calls.push(args); return { ok: true, stdout: '' }; },
+      recordSelfWrite: () => {},
+    });
+    return { write, calls };
+  };
+  const same = made('PraiseZhu', 'praisezhu');
+  same.write(['api', 'x']);
+  assert.equal(same.calls.length, 1);
+  const drifted = made('praisebuild[bot]', 'PraiseZhu');
+  assert.throws(() => drifted.write(['api', 'x']), /viewer/);
+  assert.equal(drifted.calls.length, 0);
 });
