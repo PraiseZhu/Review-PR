@@ -253,7 +253,7 @@ test('派发自动收尾:列表完整、没找到、距意图满 30 分钟三条
   assert.equal(decide({ runId: null }, at(300)), null, '没有 complete 字段(查询失败)');
   assert.equal(decide(null, at(300)), null);
   assert.equal(decide({ runId: null, complete: true }, at(300), 'not-a-date'), null, '意图时间读不懂不自动收尾');
-  assert.equal(decide({ runId: null, complete: true }, at(300), undefined), null);
+  assert.equal(decide({ runId: null, complete: true }, at(300), null), null);
 });
 
 test('旧受保护记录只标 retry 一次,不清空缓存、不碰其它 PR', () => {

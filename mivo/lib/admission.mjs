@@ -260,6 +260,20 @@ export function findDispatchRun(pages, { pr, dispatchId }) {
 }
 
 /**
+ * 派发结果不明(runId 为 null)时能不能自动按「没派出去」收尾:查找结果完整(complete=true,列表拿全了)、里面没有这次派发
+ * (runId 为 null)、距意图时间 intentAt 已满 30 分钟,三条都成立才返回 'not-submitted',否则 null(继续找)。
+ * workflow_dispatch 的运行通常几秒内就出现在列表里,30 分钟后完整列表里还没有就当没派出去。查询失败、列表没拿全、
+ * intentAt 读不懂都返回 null,仍走原来的 60 分钟 dispatch-unresolved 报警和人工解除。
+ */
+export const DISPATCH_AUTO_RESOLVE_MS = 30 * 60_000;
+export function toDispatchAutoResolution({ found, intentAt, nowMs }) {
+  if (!found || found.runId || found.complete !== true) return null;
+  const intentMs = Date.parse(intentAt);
+  if (!Number.isFinite(intentMs) || !Number.isFinite(nowMs)) return null;
+  return nowMs - intentMs >= DISPATCH_AUTO_RESOLVE_MS ? 'not-submitted' : null;
+}
+
+/**
  * 判门要不要跳过(#141):这次被选中只是因为更新时间变了(打标签、留言),head、CI、讨论状态都没变,
  * 而上轮的结论只有 head、CI 或讨论状态变了才会解开时,不重判、沿用上轮结论。2026-10-29 Mini 上 24 小时 295 次判门里
  * 83 次是只有 updatedAt 变了。上轮标了 retry(动作失败、提醒没发出去等)的一律照常重判,失败的动作要重试(单审 P2)。
