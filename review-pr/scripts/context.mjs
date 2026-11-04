@@ -28,7 +28,7 @@
 // --diff-output <absolute-file>:原子保存本次实际扫描的 diff，供 roundDir 内材料复用。
 // --cached-context <file>:仅复用同 head/base 且 hash 一致的 diff/files；其余资料实时重取。
 
-import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, botCheckActivity, evaluateBotSettleSinceReady, toHeadPushedAt, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, ghGraphql, classifyHeadChecks, fetchCiRollup, classifyRollupContexts, evaluateCiStatus, probeBranchProtection, loadOrgRosters, parseRosterLine, print, fail, fetchOpenPrSnapshot, computePrSetFingerprint, SCAN_STATE_FILE, spawnScriptJson, mapPool, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS, parseFingerprintGuard, matchPathPatterns, loadRules, loadMaintainerAuthoritySnapshot, evaluateMaintainerApprovalPolicy, isApprovalPendingReviewDecision, evaluateSignoffBlocking, botCheckActivity, evaluateBotSettleSinceReady, toHeadPushedAt, evaluateMaintainerReview, latestSubstantiveReviews, RISKY_HARD_BASE_PATTERNS, RISKY_SOFT_BASE_PATTERNS, REMOVED_GUARD_RE, COMMENT_ONLY_RE, scanBoundaryLine, matchNewDependency, loadDisplayLabelConfig, computeDisplayLabels, stateFile, isUiTestPath, fetchPrCommentsWithAuthorType, isBotComment } from './lib.mjs';
 import { readFileSync } from 'node:fs';
 import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlConnection, fetchRestPages } from './lib.mjs';
 // [MIVO-PATCH identity-env]
@@ -765,7 +765,9 @@ try {
     const issueNum = holdMarker?.issueNumber ?? null;
     if (issueNum) {
       try {
-        const issueMeta = ghJson(['issue', 'view', String(issueNum), '--repo', slug, '--json', 'state,comments,updatedAt,title,body']);
+        // [MIVO-PATCH reviewer-app] 评论走带作者类型的分页 REST(gh issue view --json comments 对 bot 只给裸 login,认不出是不是 bot);issue 元数据单独读。
+        const issueMeta = ghJson(['issue', 'view', String(issueNum), '--repo', slug, '--json', 'state,updatedAt,title,body']);
+        issueMeta.comments = fetchPrCommentsWithAuthorType(slug, issueNum);
         // 维护者留言两个来源:① 维护者成员本人直接评论;② Slack 同步 bot 代发的评论——
         // GitHub 作者是 bot,真实发言人在正文「发送者:<名字>」里,拿名字去 org 名录反查
         // GitHub 账号(要求唯一命中)再对维护者。名录只在真的碰到 bot 评论时才加载(省 IO)。
@@ -775,7 +777,8 @@ try {
         let orgRosterCache = null;
         for (const c of issueMeta.comments ?? []) {
           const login = c.author?.login ?? '';
-          if (maintainerFn(login)) {
+          // Bot(含审查 App)的留言不是维护者留言,即使 login 恰好在维护者集合里。
+          if (!isBotComment(c) && maintainerFn(login)) {
             maintainerComments.push({ author: login, createdAt: c.createdAt, body: clip(c.body, 600) });
             continue;
           }

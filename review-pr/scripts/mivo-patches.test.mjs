@@ -2098,7 +2098,9 @@ test('接线:context 用 signoffReviews 与统一的 issueRelease 评放行并�
   assert.match(context, /const markerRelease = releaseMarks\.get\(kind\) \?\? issueRelease \?\? null;/);
   assert.match(context, /const issueRelease = latestIssueRelease\(slackRelease, issueCommentRelease\);/);
   assert.equal(context.match(/\n\s+protectedPath,\n/g)?.length, 2, 'scan 与完整输出都带 protectedPath');
-  assert.match(context, /'state,comments,updatedAt,title,body'/);
+  // [MIVO-PATCH reviewer-app] 评论改读带作者类型的分页 REST,issue 元数据单独读(见 bot-comment-source.test.mjs)。
+  assert.match(context, /'state,updatedAt,title,body'/);
+  assert.match(context, /fetchPrCommentsWithAuthorType\(slug, issueNum\)/);
   assert.match(context, /commentEnabled: SG\.issueCommentRelease\?\.enabled === true/);
   const rules = JSON.parse(readFileSync(new URL('../config/pr-rules.json', import.meta.url), 'utf8'));
   assert.equal(rules.signoffGate.issueCommentRelease.enabled, true, '默认开启,现网无需另改仓库变量');

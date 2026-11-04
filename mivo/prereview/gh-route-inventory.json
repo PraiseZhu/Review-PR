@@ -1543,11 +1543,11 @@
    ]
   },
   {
-   "id": "context.ghJson.ce557a0dbe",
+   "id": "context.ghJson.e3eff06b75",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghJson",
-    "sig": "ce557a0dbe",
+    "sig": "e3eff06b75",
     "count": 1
    },
    "flows": [
@@ -1564,7 +1564,7 @@
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--json",
-      "state,comments,updatedAt,title,body"
+      "state,updatedAt,title,body"
      ],
      "expected": "app",
      "serverRoute": "app",

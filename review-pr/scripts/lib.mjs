@@ -1097,6 +1097,11 @@ export function fetchRestPages(endpoint, { ghFn = gh, timeoutMs = 30_000 } = {})
   return pages.flat();
 }
 
+/** [MIVO-PATCH reviewer-app] 评论是不是 Bot 写的:只认带类型的来源(REST user.type / GraphQL __typename)或 login 的 [bot] 后缀;裸 login 无类型认不出。 */
+export function isBotComment(comment) {
+  return Boolean(normalizeReviewActor(reviewRecordActor(comment))?.isBot);
+}
+
 /**
  * PR 主讨论区评论,作者带类型(REST 的 user.type → __typename)。
  * `gh pr view --json comments` 对 bot 只给裸 login(github-actions、praisebuild,没有 [bot] 也没有类型),
