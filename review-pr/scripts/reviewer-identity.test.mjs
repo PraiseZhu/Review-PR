@@ -370,8 +370,11 @@ test('target-branch 提醒去重: 三个身份写的提醒都算已提醒 (SC4)'
     const comments = [{ user: rest, body: `x\n${targetBranchMarker(fingerprint)}`, html_url: 'u' }];
     const api = {
       readReviewIdentity: () => THREE,
-      ghJson: (args) => args[0] === 'pr' ? { state: 'OPEN', isDraft: false, author: { login: 'a' }, headRefOid: head, baseRefName: 'dev' }
-        : { defaultBranchRef: { name: 'main' } },
+      ghJson: (args) => {
+        if (args[0] === 'pr') return { state: 'OPEN', isDraft: false, author: { login: 'a' }, headRefOid: head, baseRefName: 'dev' };
+        throw new Error('Unexpected GitHub read'); // 默认分支只能经注入的 fetchDefaultBranch(#174/#181),身份只能经 readReviewIdentity
+      },
+      fetchDefaultBranch: () => 'main',
       fetchRestPages: (endpoint) => endpoint.includes('/pulls?') ? [parent] : comments,
       writeGh: () => { throw new Error(`${name}: 不应再发提醒`); },
     };
