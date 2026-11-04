@@ -715,6 +715,30 @@ test('F1:数组里的标识符既不是形参也找不到声明 → unresolved(�
   assert.deepEqual(ok.unresolved, []);
 });
 
+test('F2:unreachable-under-config 绑定具体调用:真实可达的 rules/branches 读不能用它豁免', () => {
+  const entry = structuredClone(inventory.entries.find((e) => e.source.file === 'mivo/lib/code-scan.mjs' && e.cases?.some((c) => c.argv.join(' ').includes('rules/branches'))));
+  assert.ok(entry, '找不到 code-scan 的 rules/branches 条目');
+  const c = entry.cases.find((x) => x.argv.join(' ').includes('rules/branches'));
+  delete c.flipsIn;
+  c.keep = { category: 'unreachable-under-config', reason: '配置固定 allowlist 时这里不可达,测试应拒绝这条实际可达请求' };
+  assert.notDeepEqual(classifyInventory({ entries: [entry] }, classify, { allowlistOk: true }), [], 'rules/branches 读被 unreachable-under-config 豁免了');
+  c.guard = 'maintainer-team';
+  assert.notDeepEqual(classifyInventory({ entries: [entry] }, classify, { allowlistOk: true }), [], '带 guard 也必须匹配该情形的调用形状');
+});
+
+test('F2:unreachable-under-config 的 case 必须带 guard,且 argv 匹配 guard 的形状、文件匹配', () => {
+  const kept = inventory.entries.flatMap((e) => (e.cases ?? []).filter((c) => c.keep?.category === 'unreachable-under-config').map((c) => [e, c]));
+  assert.ok(kept.length >= 6);
+  for (const [e, c] of kept) {
+    assert.ok(['maintainer-team', 'auth-status-without-viewer'].includes(c.guard), `${e.id}/${c.name}: 缺 guard`);
+    assert.equal(e.source.file, 'review-pr/scripts/lib.mjs');
+  }
+  // guard 与调用形状不符
+  const team = structuredClone(kept.find(([, c]) => c.guard === 'maintainer-team')[0]);
+  team.cases[0].guard = 'auth-status-without-viewer';
+  assert.match(classifyInventory({ entries: [team] }, classify, { allowlistOk: true }).join('\n'), /guard/);
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
