@@ -44,7 +44,7 @@ export function targetBranchBody({ author, baseRefName, defaultBranch, basePr, r
   return `${opening}\n\n${action}\n\n${ending}\n\n${targetBranchMarker(targetBranchFingerprint({ baseRefName, defaultBranch, basePr }))}`;
 }
 
-// Inject the GitHub boundary for offline behavioral tests. This reads all comment
+// Inject the GitHub boundary for offline behavioral tests (fetchDefaultBranch is lib's GraphQL read; not imported here because lib creates state dirs on load). This reads all comment
 // pages rather than relying on machine-local state, so restarts retain deduplication.
 export function notifyTargetBranch({ owner, repo, pr, expectedHead, expectedBaseRef, reviewOnly = false, dryRun = false }, api) {
   const slug = `${owner}/${repo}`;
@@ -53,7 +53,7 @@ export function notifyTargetBranch({ owner, repo, pr, expectedHead, expectedBase
     if (!meta?.state || !meta.headRefOid || !meta.baseRefName || typeof meta.isDraft !== 'boolean') throw new Error('PR 元数据不完整');
     if (meta.state !== 'OPEN' || meta.isDraft || (expectedHead && meta.headRefOid !== expectedHead) ||
         (expectedBaseRef && meta.baseRefName !== expectedBaseRef)) return null;
-    const defaultBranch = api.ghJson(['repo', 'view', slug, '--json', 'defaultBranchRef'])?.defaultBranchRef?.name;
+    const defaultBranch = api.fetchDefaultBranch({ owner, repo });
     if (!defaultBranch) throw new Error('默认分支未完整读取');
     if (meta.baseRefName === defaultBranch) return null;
     const pulls = api.fetchRestPages(`repos/${slug}/pulls?state=all&head=${encodeURIComponent(`${owner}:${meta.baseRefName}`)}`);

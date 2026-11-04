@@ -25,7 +25,7 @@ import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -1072,7 +1072,12 @@ function resumeInflight(ctx, inflight, queue) {
         dispatchedAt: intent.intentAt, gateResult: intent.gateResult ?? {}, runId: null, agentId: null, task: item };
       if (intent.state === 'not-submitted') {
         finishResolution(intent);
-        if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: '人工核实这次派发没有发出,下一轮重新送审', retry: true });
+        if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: `${intent.auto ? '自动核实' : '人工核实'}这次派发没有发出,下一轮重新送审`, retry: true });
+        // 自动收尾写完意图、记事件之前被杀:补去心跳登记、补记 dispatch-auto-resolved(事件已记过时会再记一次,不会漏记)。
+        if (intent.auto) {
+          resumeHeartbeatFor(entry);
+          log('dispatch-auto-resolved', { pr: task.pr, dispatchId: intent.dispatchId, intentAt: intent.intentAt, resumed: true });
+        }
         completeUnstarted(queue, task.pr);
         log('resume-dispatch', { pr: task.pr, dispatchId: intent.dispatchId, state: intent.state });
         continue;
@@ -1356,7 +1361,8 @@ function protectedCheckDone(task) {
 // dispatching(调 gh workflow run 之前)→ sent(gh 返回成功)→ bound(找到 runId)。恢复时只有 prepared 能证明没外发。
 // PR 当前 head(一次 REST 读)。判门是异步的,context 返回后到派发、批准 workflow 之间作者可能推了新提交。读不到返回 null。
 function readLiveHead(pr) {
-  const r = ghRead(['api', `repos/${CONFIG.targetRepo}/pulls/${pr}`, '--jq', '.head.sha'], { allowFail: true, timeoutMs: 30_000 });
+  // [MIVO-PATCH prereview-app-readable] pr view --json headRefOid:App 令牌可读(单 PR REST 端点含 mergeStateStatus,分类器判给个人账号)。
+  const r = ghRead(['pr', 'view', String(pr), '--repo', CONFIG.targetRepo, '--json', 'headRefOid', '--jq', '.headRefOid'], { allowFail: true, timeoutMs: 30_000 });
   const head = r.ok ? r.stdout.trim() : '';
   return head && !/\s/.test(head) ? head : null;
 }
@@ -1498,12 +1504,39 @@ function settleDispatch(ctx, entry, lookup) {
       log('dispatch-found', { pr: task.pr, dispatchId: entry.dispatchId, runId: entry.runId });
       return 'bound';
     }
+    // 完整列表里确实没有、又满 30 分钟:自动按没派出去收尾。查询失败(pages=null)、列表没拿全都不走这里。
+    if (lookup.pages && toDispatchAutoResolution({ found, intentAt: entry.intentAt, nowMs: Date.now() }) === 'not-submitted') {
+      return applyAutoResolution(ctx, entry);
+    }
   }
   if (Date.now() - Date.parse(entry.intentAt) > DISPATCH_UNRESOLVED_MS) {
     logOnce(`unresolved:${entry.dispatchId}`, 'dispatch-unresolved', { pr: task.pr, head: task.head, dispatchId: entry.dispatchId, intentAt: entry.intentAt });
     pauseHeartbeatFor(ctx, entry);
   }
   return 'pending';
+}
+
+// 自动收尾(完整列表里没有、满 30 分钟):和人工 not-submitted 同一套收尾,意图文件带 auto:true,不计失败(retry),
+// 从停写心跳的登记里去掉,记 dispatch-auto-resolved。没有解除记录文件,所以不走 finishResolution / dispatch-resolved。
+function applyAutoResolution(ctx, entry) {
+  const { task } = entry;
+  const intent = readIntent(ctx, task.pr) ?? { pr: task.pr, head: task.head, dispatchId: entry.dispatchId, intentAt: entry.intentAt };
+  saveIntent(ctx, { ...intent, state: 'not-submitted', auto: true, resolution: { kind: 'not-submitted', auto: true, at: nowIso() } });
+  writeTaskResult(ctx, task, { ...entry.gateResult, outcome: 'error', reason: '自动核实:GitHub 完整运行列表里没有这次派发,按没派出收尾,下一轮重新送审', retry: true });
+  resumeHeartbeatFor(entry);
+  log('dispatch-auto-resolved', { pr: task.pr, dispatchId: entry.dispatchId, intentAt: entry.intentAt });
+  return 'not-submitted';
+}
+
+// 把这个派发从停写心跳的登记里去掉;去光了删登记并记 heartbeat-resumed(和 heartbeatPaused 一致)。没登记过什么也不做。
+function resumeHeartbeatFor(entry) {
+  const file = stateFile('heartbeat-pause.json');
+  const pause = readJson(file, null);
+  if (!pause?.dispatches?.[entry.dispatchId]) return;
+  const { [entry.dispatchId]: _removed, ...kept } = pause.dispatches;
+  if (Object.keys(kept).length) { writeJson(file, { dispatches: kept }); return; }
+  try { unlinkSync(file); } catch { /* 已被删,结果相同 */ }
+  log('heartbeat-resumed', { dispatches: Object.keys(pause.dispatches) });
 }
 
 // 登记停写心跳(见 heartbeatPaused);已登记的不重复写。

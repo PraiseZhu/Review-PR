@@ -29,7 +29,10 @@ function fixtureGh(args, options, fixture) {
     return ok('');
   }
   if (args[0] === 'api' && args[1] === 'user') return ok(fixture.viewer);
-  if (endpoint === 'repos/o/r') return ok({ default_branch: 'main' });
+  // 默认分支只认 GraphQL defaultBranchRef(App 可读写法);旧的 repos/o/r 根 REST 不再接受。
+  if (args[0] === 'api' && args[1] === 'graphql' && /defaultBranchRef\{name\}/.test(JSON.parse(options?.input ?? '{}').query ?? '')) {
+    return ok({ data: { repository: { defaultBranchRef: { name: 'main' } } } });
+  }
   if (endpoint === 'repos/o/r/commits/main') return ok({ sha: fixture.base });
   if (endpoint === 'repos/o/r/contents/.github/CODEOWNERS') return ok({ type: 'file', encoding: 'base64', sha: 'blob',
     content: Buffer.from('* @o/maintainers\n').toString('base64') });

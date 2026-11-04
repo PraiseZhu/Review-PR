@@ -366,11 +366,13 @@ export function fetchMaintainerAuthority({
   if (!normalizedOwner || !normalizedRepo) throw authorityError('缺少目标仓库 owner/repo');
   const repository = `${normalizedOwner}/${normalizedRepo}`;
 
-  const repoMeta = parseJsonResult(
-    ghFn(['api', `repos/${repository}`], { allowFail: true, timeoutMs: 20_000 }),
-    `读取仓库 ${repository}`,
-  );
-  const baseRef = String(repoMeta?.default_branch ?? '').trim();
+  // [MIVO-PATCH prereview-app-readable] 默认分支走 GraphQL defaultBranchRef(与身份无关,App 令牌可读);失败仍按权限材料不可用抛错。
+  let baseRef = '';
+  try {
+    baseRef = fetchDefaultBranch({ owner: normalizedOwner, repo: normalizedRepo, ghFn, timeoutMs: 20_000 }).trim();
+  } catch (error) {
+    throw authorityError(error.message);
+  }
   if (!baseRef) throw authorityError(`仓库 ${repository} 没有可验证的默认分支`);
   const commitMeta = parseJsonResult(
     ghFn(['api', '--method', 'GET', `repos/${repository}/commits/${encodeURIComponent(baseRef)}`], {
@@ -874,16 +876,29 @@ export function identityTokenOptions(env = process.env) {
 }
 
 /** prepare 的 gh 登录检查。没设 REVIEW_PR_VIEWER_LOGIN:照旧 `gh auth status`。
- *  设了:integration 令牌没有 /user,`gh auth status` 会误报未登录,改为读一次目标仓库元数据核实令牌可用。 */
+ *  设了:integration 令牌没有 /user,`gh auth status` 会误报未登录,改为 GraphQL 读一次目标仓库 nameWithOwner 核实令牌可用
+ *  (不读 repos/<o>/<r> 根 REST:分类器把它判给个人账号,App 令牌读不了)。 */
+const AUTH_PROBE_QUERY = 'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}';
 export function probeGhAuth({ owner, repo }, { ghFn = gh, env = process.env } = {}) {
   if (!viewerLoginOverride(env)) return { ok: ghFn(['auth', 'status'], { allowFail: true }).ok, via: 'auth-status' };
   const slug = `${owner}/${repo}`;
-  const r = ghFn(['api', '--method', 'GET', `repos/${slug}`], { allowFail: true, timeoutMs: 20_000 });
-  let fullName = '';
-  try { fullName = String(JSON.parse(r.stdout || '{}').full_name ?? ''); } catch { /* 读不出按失败处理 */ }
-  const ok = r.ok && fullName.toLowerCase() === slug.toLowerCase();
+  const r = ghFn(['api', 'graphql', '--input', '-'], {
+    input: JSON.stringify({ query: AUTH_PROBE_QUERY, variables: { owner, name: repo } }),
+    allowFail: true,
+    readOnly: true,
+    timeoutMs: 20_000,
+  });
+  let nameWithOwner = '';
+  let hasErrors = false;
+  try {
+    const parsed = JSON.parse(r.stdout || '{}');
+    hasErrors = Array.isArray(parsed?.errors) ? parsed.errors.length > 0 : parsed?.errors != null;
+    const value = parsed?.data?.repository?.nameWithOwner;
+    if (typeof value === 'string') nameWithOwner = value;
+  } catch { /* 读不出按失败处理 */ }
+  const ok = r.ok && !hasErrors && nameWithOwner.toLowerCase() === slug.toLowerCase();
   if (ok) return { ok, via: 'repo-read' };
-  const error = r.ok ? `full_name=${JSON.stringify(fullName.slice(0, 120))}` : String(r.stderr ?? '').trim().split('\n')[0].slice(0, 200);
+  const error = r.ok ? `nameWithOwner=${JSON.stringify(nameWithOwner.slice(0, 120))}${hasErrors ? ' (GraphQL errors)' : ''}` : String(r.stderr ?? '').trim().split('\n')[0].slice(0, 200);
   return { ok, via: 'repo-read', error };
 }
 
@@ -951,17 +966,27 @@ export function gh(args, opts = {}) {
 }
 
 /**
- * [MIVO-PATCH gate-bases] 读仓库默认分支(REST GET repos/<o>/<r>)。读不到、JSON 非法或缺 default_branch 都抛错,
- * 不静默回退为 main:名单外分支过滤依赖它,读不到时候选阶段必须失败而不是放行。
+ * [MIVO-PATCH gate-bases] 读仓库默认分支(GraphQL repository.defaultBranchRef.name)。读不到、JSON 非法、errors 非空
+ * 或缺 name 都抛错,不静默回退为 main:名单外分支过滤依赖它,读不到时候选阶段必须失败而不是放行。
+ * [MIVO-PATCH prereview-app-readable] 不读 repos/<o>/<r> 根 REST:该端点按调用者身份返回 permissions 等字段,
+ * 分类器把它判给个人账号;defaultBranchRef 与身份无关,GitHub App 只读令牌可读。
  */
+const DEFAULT_BRANCH_QUERY = 'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){defaultBranchRef{name}}}';
 export function fetchDefaultBranch({ owner, repo, ghFn = gh, timeoutMs = 30_000 } = {}) {
-  const endpoint = `repos/${owner}/${repo}`;
-  const r = ghFn(['api', '--method', 'GET', endpoint], { allowFail: true, timeoutMs });
+  const r = ghFn(['api', 'graphql', '--input', '-'], {
+    input: JSON.stringify({ query: DEFAULT_BRANCH_QUERY, variables: { owner, name: repo } }),
+    allowFail: true,
+    readOnly: true,
+    timeoutMs,
+  });
   if (!r?.ok) throw new Error(`读取 ${owner}/${repo} 默认分支失败: ${String(r?.stderr ?? '').trim().split('\n')[0].slice(0, 200) || `退出码 ${r?.status}`}`);
   let parsed;
-  try { parsed = parseApiJson(r.stdout, `GET ${endpoint}`); } catch (error) { throw new Error(`读取 ${owner}/${repo} 默认分支失败: ${error.message}`); }
-  const name = parsed?.default_branch;
-  if (typeof name !== 'string' || !name.trim()) throw new Error(`读取 ${owner}/${repo} 默认分支失败: 响应缺少 default_branch`);
+  try { parsed = parseApiJson(r.stdout, `graphql defaultBranchRef ${owner}/${repo}`); } catch (error) { throw new Error(`读取 ${owner}/${repo} 默认分支失败: ${error.message}`); }
+  if (Array.isArray(parsed?.errors) ? parsed.errors.length > 0 : parsed?.errors != null) {
+    throw new Error(`读取 ${owner}/${repo} 默认分支失败: GraphQL errors ${JSON.stringify(parsed.errors).slice(0, 200)}`);
+  }
+  const name = parsed?.data?.repository?.defaultBranchRef?.name;
+  if (typeof name !== 'string' || !name.trim()) throw new Error(`读取 ${owner}/${repo} 默认分支失败: 响应缺少 defaultBranchRef.name`);
   return name;
 }
 
