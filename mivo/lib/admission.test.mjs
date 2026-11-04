@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as admission from './admission.mjs';
 import { decideGate } from './gates.mjs';
 import { toFreeSlots, toAdmissionDecision, toBusyPrs, canReleaseDeferredGate, withDeferredGateRetries, toExcludedPrs, toHeldWake, toProtectedHoldWake, toRunTiming, toDispatchFailure, findDispatchRun, toGateSkip, isGateSkipCandidate, GATE_SKIP_MAX_MS, toOnlineRunners, toParallelLimit,
   MAX_ADMIT_MS, ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES } from './admission.mjs';
@@ -237,6 +238,22 @@ test('按 dispatch_id 找 run:分页结果里按 run 名找;列表不完整时�
   assert.deepEqual(findDispatchRun([pages[0]], { pr: 950, dispatchId: 'dddd4444' }), { runId: null, complete: false }, '只拿到第一页');
   assert.deepEqual(findDispatchRun(null, { pr: 950, dispatchId: 'x' }), { runId: null, complete: false });
   assert.deepEqual(findDispatchRun(pages, { pr: 95, dispatchId: 'aaaa1111' }), { runId: null, complete: true }, 'PR 号要完全对上');
+});
+
+test('派发自动收尾:列表完整、没找到、距意图满 30 分钟三条都成立才返回 not-submitted', () => {
+  const intentAt = '2026-10-14T10:00:00Z';
+  const at = (min) => Date.parse(intentAt) + min * 60_000;
+  const decide = (found, nowMs, at0 = intentAt) => admission.toDispatchAutoResolution({ found, intentAt: at0, nowMs });
+  assert.equal(admission.DISPATCH_AUTO_RESOLVE_MS, 30 * 60_000);
+  assert.equal(decide({ runId: null, complete: true }, at(30)), 'not-submitted', '恰好 30 分钟');
+  assert.equal(decide({ runId: null, complete: true }, at(300)), 'not-submitted');
+  assert.equal(decide({ runId: null, complete: true }, at(30) - 1), null, '差 1 毫秒不满 30 分钟');
+  assert.equal(decide({ runId: null, complete: false }, at(300)), null, '列表没拿全不能当没派出');
+  assert.equal(decide({ runId: '123', complete: true }, at(300)), null, '找到了 run');
+  assert.equal(decide({ runId: null }, at(300)), null, '没有 complete 字段(查询失败)');
+  assert.equal(decide(null, at(300)), null);
+  assert.equal(decide({ runId: null, complete: true }, at(300), 'not-a-date'), null, '意图时间读不懂不自动收尾');
+  assert.equal(decide({ runId: null, complete: true }, at(300), undefined), null);
 });
 
 test('旧受保护记录只标 retry 一次,不清空缓存、不碰其它 PR', () => {
