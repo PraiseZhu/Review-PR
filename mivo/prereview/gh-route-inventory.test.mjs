@@ -26,6 +26,19 @@ const ROOTS = ['review-pr/scripts', 'mivo/prereview', 'mivo/lib'];
 const ALLOWED_FLIPS = ['xindong/mivo-canvas-plugin#1751', 'PraiseZhu/Review-PR#176', 'xindong/mivo-canvas-plugin#1752'];
 const KEEP_CATEGORIES = ['pr-merge-approve', 'unreachable-under-config', 'interactive-skill'];
 const FLOWS = ['mini', 'server', 'interactive'];
+// unreachable-under-config 只能豁免这两种具体调用(每个 case 的 guard 字段指向其中一种,argv 必须匹配形状):
+//   maintainer-team:CODEOWNERS 根 Team 的成员/权限读取(maintainerSource=allowlist 时不走);
+//   auth-status-without-viewer:没设 REVIEW_PR_VIEWER_LOGIN 时的 `gh auth status` 兼容分支(线上审查身份已设)。
+const UNREACHABLE_GUARDS = {
+  'maintainer-team': {
+    files: ['review-pr/scripts/lib.mjs'],
+    matches: (argv) => argv[0] === 'api' && argv.some((a) => /^(?:orgs\/[^/]+\/)?teams\/[^/?]+(?:\/(?:members|repos)(?:\/[^?]*)?)?(?:\?.*)?$/.test(String(a))),
+  },
+  'auth-status-without-viewer': {
+    files: ['review-pr/scripts/lib.mjs'],
+    matches: (argv) => argv.length === 2 && argv[0] === 'auth' && argv[1] === 'status',
+  },
+};
 
 // ── lexer ──────────────────────────────────────────────────────────────────
 // analyze(src) → { masked, code }:masked 是把注释换成空格后的同长文本;code[i]=1 表示该字符是代码
@@ -577,7 +590,12 @@ export function classifyInventory(inventory, classifyFn = classify, rules = {}) 
       if (hasFlip === Boolean(hasKeep)) diagnostics.push(`${label}: expected=user 必须二选一:flipsIn(见 ALLOWED_FLIPS)或 keep{category,reason}`);
       if (keep && !hasKeep) diagnostics.push(`${label}: keep 的 category 只能是 ${KEEP_CATEGORIES.join('/')} 且 reason 要具体`);
       if (hasKeep && keep.category === 'interactive-skill' && !(e.flows.length === 1 && e.flows[0] === 'interactive')) diagnostics.push(`${label}: interactive-skill 的条目 flows 只能是 ["interactive"]`);
-      if (hasKeep && keep.category === 'unreachable-under-config' && rules.allowlistOk !== true) diagnostics.push(`${label}: unreachable-under-config 要求 pr-rules.json 与 sandbox-pr-rules.json 的 maintainerSource 都是 allowlist`);
+      if (hasKeep && keep.category === 'unreachable-under-config') {
+        if (rules.allowlistOk !== true) diagnostics.push(`${label}: unreachable-under-config 要求 pr-rules.json 与 sandbox-pr-rules.json 的 maintainerSource 都是 allowlist`);
+        const guard = UNREACHABLE_GUARDS[c.guard];
+        if (!guard) diagnostics.push(`${label}: unreachable-under-config 必须带 guard(${Object.keys(UNREACHABLE_GUARDS).join(' / ')}),实际 ${JSON.stringify(c.guard)}`);
+        else if (!guard.files.includes(e.source.file) || !guard.matches(c.argv)) diagnostics.push(`${label}: guard ${c.guard} 与这个调用的文件/argv 形状不符,不能用 unreachable-under-config 豁免`);
+      }
       if (hasKeep && keep.category === 'pr-merge-approve' && !((c.argv[0] === 'pr' && c.argv[1] === 'merge') || (c.argv.includes('POST') && c.argv.some((a) => /pulls\/[^/]+\/reviews$/.test(String(a))) && /"event"\s*:\s*"APPROVE"/.test(c.stdin ?? '')))) diagnostics.push(`${label}: pr-merge-approve 只能是 pr merge 或 event=APPROVE 的 POST reviews`);
     }
   }
@@ -816,6 +834,7 @@ test('守卫负例:转发封装(参数是形参)标成 forwarder;expected=user �
   assert.deepEqual(classifyInventory(mk({ keep: { category: 'interactive-skill', reason: '只在交互式 skill 里跑,不在自动链上' } }, ['interactive'])), []);
   assert.match(classifyInventory(mk({ expected: 'app' })).join('\n'), /期望 app,分类器给 user/);
   assert.match(classifyInventory(mk({ keep: { category: 'unreachable-under-config', reason: '配置固定 allowlist 时走不到这里' } })).join('\n'), /maintainerSource/);
+  assert.match(classifyInventory(mk({ keep: { category: 'unreachable-under-config', reason: '配置固定 allowlist 时走不到这里' } }), classify, { allowlistOk: true }).join('\n'), /必须带 guard/);
   assert.match(classifyInventory(mk({ keep: { category: 'pr-merge-approve', reason: '总 issue 明确不做 merge 与 Approve' } })).join('\n'), /pr-merge-approve 只能是/);
 });
 

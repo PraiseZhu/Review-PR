@@ -2162,6 +2162,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
+     "guard": "maintainer-team",
      "keep": {
       "category": "unreachable-under-config",
       "reason": "Team 成员/权限读取只在 maintainerSource=team(CODEOWNERS 根 Team)时走;Mivo 配置固定为 allowlist"
@@ -2226,6 +2227,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
+     "guard": "maintainer-team",
      "keep": {
       "category": "unreachable-under-config",
       "reason": "Team 成员/权限读取只在 maintainerSource=team(CODEOWNERS 根 Team)时走;Mivo 配置固定为 allowlist"
@@ -2261,6 +2263,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
+     "guard": "maintainer-team",
      "keep": {
       "category": "unreachable-under-config",
       "reason": "Team 成员/权限读取只在 maintainerSource=team(CODEOWNERS 根 Team)时走;Mivo 配置固定为 allowlist"
@@ -2376,6 +2379,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
+     "guard": "maintainer-team",
      "keep": {
       "category": "unreachable-under-config",
       "reason": "Team 成员/权限读取只在 maintainerSource=team(CODEOWNERS 根 Team)时走;Mivo 配置固定为 allowlist"
@@ -2411,6 +2415,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
+     "guard": "maintainer-team",
      "keep": {
       "category": "unreachable-under-config",
       "reason": "Team 成员/权限读取只在 maintainerSource=team(CODEOWNERS 根 Team)时走;Mivo 配置固定为 allowlist"
@@ -2440,6 +2445,7 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
+     "guard": "auth-status-without-viewer",
      "keep": {
       "category": "unreachable-under-config",
       "reason": "只在没设 REVIEW_PR_VIEWER_LOGIN 时走;线上审查身份已设,走 GraphQL nameWithOwner 探针(probeGhAuth)"
