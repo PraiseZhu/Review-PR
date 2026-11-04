@@ -1062,6 +1062,11 @@ function resumeInflight(ctx, inflight, queue) {
       if (intent.state === 'not-submitted') {
         finishResolution(intent);
         if (!existsSync(item.resultFile)) writeTaskResult(ctx, item, { outcome: 'error', reason: `${intent.auto ? '自动核实' : '人工核实'}这次派发没有发出,下一轮重新送审`, retry: true });
+        // 自动收尾写完意图、记事件之前被杀:补去心跳登记、补记 dispatch-auto-resolved(事件已记过时会再记一次,不会漏记)。
+        if (intent.auto) {
+          resumeHeartbeatFor(entry);
+          log('dispatch-auto-resolved', { pr: task.pr, dispatchId: intent.dispatchId, intentAt: intent.intentAt, resumed: true });
+        }
         completeUnstarted(queue, task.pr);
         log('resume-dispatch', { pr: task.pr, dispatchId: intent.dispatchId, state: intent.state });
         continue;
