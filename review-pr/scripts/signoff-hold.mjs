@@ -117,7 +117,7 @@ try {
 
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'number,state,mergedAt,author,url,comments,labels,headRefOid',
+    '--json', 'number,state,mergedAt,author,url,labels,headRefOid', // 评论不在这里要:下面用带作者类型的 REST 读一次
   ]);
   const author = meta.author?.login ?? '';
   const currentLabels = (meta.labels ?? []).map((l) => l.name);

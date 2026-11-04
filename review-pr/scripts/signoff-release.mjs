@@ -68,7 +68,7 @@ try {
 
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'number,state,mergedAt,author,url,comments,labels',
+    '--json', 'number,state,mergedAt,author,url,labels', // 评论不在这里要:下面用带作者类型的 REST 读一次
   ]);
   // 读不到身份就中止(同改动前:gh api user 失败直接抛错),不能拿空身份集合继续摘标签 / 写放行。
   const reviewerIdentity = readReviewIdentity();
