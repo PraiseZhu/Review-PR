@@ -563,6 +563,13 @@ function resolveDeps(ctx, callRange, target, files) {
       if (depth < 3) for (const sub of identifiersIn(ctx, s, e)) visit(sub, depth + 1);
     }
   };
+  // const same = args; 之类的别名:别名的所有提及也并入(再改它等于改 args)
+  const absorbAliases = (name, stmts, lo, hi, depth) => {
+    for (const [s0, e0] of stmts) {
+      const alias = new RegExp(`^(?:const|let|var)\\s*([\\w$]+)=${name.replace(/\$/g, '\\$')};?$`).exec(canon(ctx, s0, e0))?.[1];
+      if (alias) absorb(mentionStatements(ctx, alias, lo, hi, { strict: true, skip: null }), depth + 1);
+    }
+  };
   const visit = (id, depth) => {
     const { name, at } = id;
     const r = resolveName(ctx, name, at);
@@ -575,10 +582,11 @@ function resolveDeps(ctx, callRange, target, files) {
       if (seen.has(key)) return;
       seen.add(key);
       const body = [r.scope.listEnd + 1, r.scope.bodyEnd];
-      const stmts = mentionStatements(ctx, name, body[0], strict ? body[1] : Math.min(body[1], closeAt), { strict, skip, same: (a) => { const x = resolveName(ctx, name, a); return x.type === 'param' && x.scope.start === r.scope.start; } });
+      const stmts = mentionStatements(ctx, name, body[0], body[1], { strict, skip, same: (a) => { const x = resolveName(ctx, name, a); return x.type === 'param' && x.scope.start === r.scope.start; } });
       if (strict && stmts.length) impure = true;
       if (top && name === bareIdent && strict && !stmts.length) forwarder = name;
       absorb(stmts, depth);
+      absorbAliases(name, stmts, body[0], body[1], depth);
       return;
     }
     if (r.type === 'decl') {
@@ -593,8 +601,10 @@ function resolveDeps(ctx, callRange, target, files) {
       }
       const scope = functionScopes(ctx).find((s) => s.start === r.level);
       const levelEnd = scope ? scope.bodyEnd : ctx.masked.length;
-      const hi = strict || info.uninitialized ? levelEnd : Math.min(levelEnd, closeAt);
-      absorb(mentionStatements(ctx, name, info.to, hi, { strict, skip, container: /^(?:const|let|var)\s*[\w$]+=\s*[\[{]/.test(info.text), same: (a) => { const x = resolveName(ctx, name, a); return x.type === 'decl' && x.decl.at === r.decl.at; } }), depth);
+      const hi = levelEnd; // 循环里调用之后才改动的也算(下一轮迭代会带着改动再调用)
+      const declStmts = mentionStatements(ctx, name, info.to, hi, { strict, skip, container: /^(?:const|let|var)\s*[\w$]+=\s*[\[{]/.test(info.text), same: (a) => { const x = resolveName(ctx, name, a); return x.type === 'decl' && x.decl.at === r.decl.at; } });
+      absorb(declStmts, depth);
+      absorbAliases(name, declStmts, info.to, hi, depth);
       if (depth < 3) for (const sub of identifiersIn(ctx, info.from, info.to)) if (sub.name !== name) visit(sub, depth + 1);
       return;
     }
@@ -1120,6 +1130,102 @@ test('N3b:Team 权限回退请求的样本来自真实 fetchMaintainerAuthority,
   const hit = libCases.find(([, c]) => requestKey(c.argv, c.stdin) === requestKey(media.argv, media.stdin));
   assert.equal(hit[1].expected, 'user');
   assert.equal(hit[1].guard, 'maintainer-team');
+});
+
+// ── 自我对抗:12 类变异场景 ─────────────────────────────────────────────────────
+// 每个场景:改动前/后的合成源码(都是能直接跑的 JS)、改动前/后实际发给 gh 的 argv(用 vendor 分类器得到真实路由)、
+// 以及守卫有没有挡住(以「改动前的扫描结果当清单」去核对「改动后的源码」:有诊断或 unresolved 就是挡住)。
+// expectBlocked=false 的是已知边界(写在 README「已知边界」里),测试固定住这个事实,避免以后悄悄改变而没人知道。
+const MUT_FILE = 'review-pr/scripts/mutation.mjs';
+const rows = [];
+const classifyArgv = (argv, stdin) => {
+  const r = classify(argv.map((a) => String(a).replace(/\bo\/r\b/, 'xindong/mivo-canvas-plugin')), { repos: ROUTING_REPOS, env: {}, stdoutIsTTY: false, stdinText: stdin ?? null, readFile: () => { throw new Error('no files'); } });
+  return r.route;
+};
+const mutationInventory = (templates) => ({ entries: templates.map((t, i) => ({ id: `m${i}`, source: { file: t.file, callee: t.callee, sig: t.sig, count: 1 }, flows: ['mini'], forwarder: t.forwarder ? { note: 'x' } : undefined })) });
+function mutate(id, title, before, after, { beforeArgv, afterArgv, beforeStdin, afterStdin, expectBlocked = true } = {}) {
+  const asMap = (src) => (typeof src === 'string' ? new Map([[MUT_FILE, src]]) : new Map(Object.entries(src)));
+  const b = scanGhTemplates(asMap(before));
+  const a = scanGhTemplates(asMap(after));
+  const diagnostics = validateInventory(a.templates, mutationInventory(b.templates));
+  const blocked = diagnostics.length > 0 || a.unresolved.length > 0;
+  const routeBefore = beforeArgv ? classifyArgv(beforeArgv, beforeStdin) : null;
+  const routeAfter = afterArgv ? classifyArgv(afterArgv, afterStdin) : null;
+  rows.push({ id, title, blocked, expectBlocked, routeBefore, routeAfter, sigBefore: b.templates.map((t) => t.sig).join(','), sigAfter: a.templates.map((t) => t.sig).join(','), unresolved: a.unresolved.length, diagnostics: diagnostics.length });
+  test(`变异 ${id} ${title}: ${expectBlocked ? '守卫必须挡住' : '已知边界(挡不住,README 已写)'}`, () => {
+    assert.equal(blocked, expectBlocked, `${id}: blocked=${blocked}\n${diagnostics.join('\n')}\n${JSON.stringify(a.unresolved)}`);
+    if (expectBlocked && routeBefore && routeAfter) assert.ok(true);
+  });
+}
+const R = '/pulls';
+const f = (body, params = 'slug') => `export function f(${params}) { ${body} }`;
+const GET = (e) => ['api', '--method', 'GET', e];
+// 1 args 数组被 concat/spread/unshift/splice/下标赋值/函数改动
+const base1 = (extra) => f(`const args = ['api', '--method', 'GET', \`repos/\${slug}/pulls\`]; ${extra} return gh(args);`);
+const argv1 = GET('repos/o/r/pulls');
+mutate('1a', 'args = args.concat(...)', base1(''), base1("args = args.concat(['-X', 'DELETE']);"), { beforeArgv: argv1, afterArgv: [...argv1, '-X', 'DELETE'] });
+mutate('1b', 'args = [...args, ...]', base1(''), base1("args = [...args, '-X', 'DELETE'];"), { beforeArgv: argv1, afterArgv: [...argv1, '-X', 'DELETE'] });
+mutate('1c', 'args.unshift(...)', base1(''), base1("args.unshift('--hostname', 'x');"), { beforeArgv: argv1, afterArgv: ['--hostname', 'x', ...argv1] });
+mutate('1d', 'args.splice(...)', base1(''), base1("args.splice(1, 2, '--method', 'DELETE');"), { beforeArgv: argv1, afterArgv: ['api', '--method', 'DELETE', 'repos/o/r/pulls'] });
+mutate('1e', 'args[1] = ...', base1(''), base1("args[2] = 'DELETE';"), { beforeArgv: argv1, afterArgv: ['api', '--method', 'DELETE', 'repos/o/r/pulls'] });
+mutate('1f', '传给别的函数 addFlags(args)', base1(''), base1('addFlags(args);'), { beforeArgv: argv1 }) ;
+mutate('1g', '循环里调用之后才 push(展开进新数组,非裸实参)', f("const args = ['repos/o/r/pulls']; for (const p of slug) { gh(['api', ...args]); args.push(p); }"), f("const args = ['repos/o/r/pulls']; for (const p of slug) { gh(['api', ...args]); args.push('-X'); }"), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r/pulls', '-X', 'DELETE'] });
+// 2 选项对象 env/input/timeout 被改
+const opt = (extra) => f(`const opts = { allowFail: true }; ${extra} return gh(['api', 'graphql', '--input', '-'], opts);`);
+mutate('2a', 'opts.input = ...', opt(''), opt("opts.input = JSON.stringify({ query: 'mutation{x}' });"), { beforeArgv: ['api', 'graphql', '--input', '-'], beforeStdin: '{"query":"query{viewer{login}}"}', afterStdin: '{"query":"mutation{x}"}', afterArgv: ['api', 'graphql', '--input', '-'] });
+mutate('2b', 'opts.env = ...', opt(''), opt('opts.env = { GH_TOKEN: process.env.OTHER };'), { beforeArgv: ['api', 'graphql', '--input', '-'] });
+mutate('2c', 'Object.assign(opts, ...)', opt(''), opt('Object.assign(opts, { timeoutMs: 1 });'), { beforeArgv: ['api', 'graphql', '--input', '-'] });
+mutate('2d', '内联选项对象里改 timeout', f("return gh(['api', 'x'], { allowFail: true, timeoutMs: 20_000 });"), f("return gh(['api', 'x'], { allowFail: true, timeoutMs: 1 });"), { beforeArgv: ['api', 'x'] });
+// 3 块级遮蔽
+const shadow = (outer, inner) => f(`const endpoint = '${outer}'; if (slug) { const endpoint = '${inner}'; return gh(['api', endpoint]); }`);
+mutate('3a', '改遮蔽内层的 endpoint', shadow('repos/o/r/pulls', 'repos/o/r/commits'), shadow('repos/o/r/pulls', 'repos/o/r'), { beforeArgv: ['api', 'repos/o/r/commits'], afterArgv: ['api', 'repos/o/r'] });
+mutate('3b', '改被遮蔽的外层 endpoint(不是实际绑定,路由不变)', shadow('repos/o/r/pulls', 'repos/o/r/commits'), shadow('repos/o/r', 'repos/o/r/commits'), { beforeArgv: ['api', 'repos/o/r/commits'], afterArgv: ['api', 'repos/o/r/commits'], expectBlocked: false });
+// 4 不同函数里的同名常量
+const twoFns = (outer) => `export function f(slug) { const endpoint = '${outer}'; return gh(['api', endpoint]); }\nexport function other() { const endpoint = 'unused'; return endpoint; }`;
+mutate('4a', '改 f 的 endpoint(other 里有同名常量)', twoFns('repos/o/r/pulls'), twoFns('repos/o/r'), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r'] });
+mutate('4b', '改 other 里的同名常量(与 f 无关,路由不变)', twoFns('repos/o/r/pulls'), twoFns('repos/o/r/pulls').replace("'unused'", "'changed'"), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r/pulls'], expectBlocked: false });
+// 5 + 拼接
+mutate('5', "'repos/' + slug + '/pulls' 改后缀", f("return gh(['api', 'repos/' + slug + '/pulls']);"), f("return gh(['api', 'repos/' + slug + '/rules/branches/main']);"), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r/rules/branches/main'] });
+// 6 三元 / 逻辑表达式
+mutate('6a', '三元的一支改了', f("return gh(['api', slug ? `repos/${slug}/pulls` : `repos/${slug}/commits`]);"), f("return gh(['api', slug ? `repos/${slug}/pulls` : `repos/${slug}`]);"), { beforeArgv: ['api', 'repos/o/r/commits'], afterArgv: ['api', 'repos/o/r'] });
+mutate('6b', '逻辑 || 的兜底改了', f("const path = slug || 'repos/o/r/pulls'; return gh(['api', path]);"), f("const path = slug || 'repos/o/r'; return gh(['api', path]);"), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r'] });
+// 7 端点由本文件另一个 helper 返回
+const helper = (tail) => `function buildEndpoint(slug) { return \`repos/\${slug}${tail}\`; }\nexport function f(slug) { return gh(['api', buildEndpoint(slug)]); }`;
+mutate('7a', 'buildEndpoint(slug) 的返回值改了', helper('/pulls'), helper(''), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r'] });
+const helper2 = (tail) => `const SUFFIX = '${tail}';\nfunction buildEndpoint(slug) { return \`repos/\${slug}\${SUFFIX}\`; }\nexport function f(slug) { return gh(['api', buildEndpoint(slug)]); }`;
+mutate('7b', 'helper 再引用模块常量,常量改了', helper2('/pulls'), helper2(''), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r'] });
+// 8 gh 别名转手
+mutate('8a', 'const g = gh; g([...]) 新增一次调用', f('return 1;'), f("const g = gh; return g(['api', 'repos/o/r']);"), { afterArgv: ['api', 'repos/o/r'] });
+mutate('8b', "import { gh as g } 重命名后调用", `import { gh as g } from './lib.mjs';\nexport function f() { return 1; }`, `import { gh as g } from './lib.mjs';\nexport function f() { return g(['api', 'repos/o/r']); }`, { afterArgv: ['api', 'repos/o/r'] });
+mutate('8c', 'const { gh: g } = lib 解构重命名后调用', "export function f(lib) { return 1; }", "export function f(lib) { const { gh: g } = lib; return g(['api', 'repos/o/r']); }", { afterArgv: ['api', 'repos/o/r'] });
+// 9 动态属性取 gh
+mutate('9a', "api['gh']([...])", "export function f(api) { return 1; }", "export function f(api) { return api['gh'](['api', 'repos/o/r']); }", { afterArgv: ['api', 'repos/o/r'] });
+mutate('9b', 'api[name]([...]) 变量名取属性', "export function f(api, name) { return 1; }", "export function f(api, name) { return api[name](['api', 'repos/o/r']); }", { afterArgv: ['api', 'repos/o/r'], expectBlocked: false });
+// 10 GraphQL 查询在另一个模块的常量里 import
+const q = (field) => ({ 'review-pr/scripts/queries.mjs': `export const READ_QUERY = 'query{repository(owner:"o",name:"r"){${field}}}';`, [MUT_FILE]: `import { READ_QUERY } from './queries.mjs';\nexport function f() { return ghGraphql(READ_QUERY, {}); }` });
+mutate('10a', '被 import 的常量里加敏感字段', q('nameWithOwner'), q('pullRequest(number:1){mergeStateStatus}'), { beforeArgv: ['api', 'graphql', '--input', '-'], beforeStdin: '{"query":"query{repository(owner:\\"o\\",name:\\"r\\"){nameWithOwner}}"}', afterArgv: ['api', 'graphql', '--input', '-'], afterStdin: '{"query":"query{repository(owner:\\"o\\",name:\\"r\\"){pullRequest(number:1){mergeStateStatus}}}"}' });
+const q2 = (field) => ({ 'review-pr/scripts/queries.mjs': `const FIELD = '${field}';\nexport const READ_QUERY = \`query{repository(owner:"o",name:"r"){\${FIELD}}}\`;`, [MUT_FILE]: `import { READ_QUERY } from './queries.mjs';\nexport function f() { return ghGraphql(READ_QUERY, {}); }` });
+mutate('10b', '被 import 的常量引用了第二个常量,第二个常量改了(不跨模块递归)', q2('nameWithOwner'), q2('pullRequest(number:1){mergeStateStatus}'), { expectBlocked: false });
+// 11 调用前对 args 做 map/filter/join
+mutate('11a', 'args = args.map(...)', base1(''), base1("args = args.map((a) => (a === 'GET' ? 'DELETE' : a));"), { beforeArgv: argv1, afterArgv: ['api', '--method', 'DELETE', 'repos/o/r/pulls'] });
+mutate('11b', 'const final = args.filter(...); gh(final)', f("const args = ['api', 'repos/o/r']; const final = args.filter((a) => a !== 'x'); return gh(final);"), f("const args = ['api', 'repos/o/r']; const final = args.filter((a) => a === 'api'); return gh(final);"), { beforeArgv: ['api', 'repos/o/r'], afterArgv: ['api'] });
+mutate('11c', "gh(args.join(' ').split(' '))", f("const args = ['api', 'repos/o/r']; return gh(args.join(' ').split(' '));"), f("const args = ['api', 'repos/o/r/pulls']; return gh(args.join(' ').split(' '));"), { beforeArgv: ['api', 'repos/o/r'], afterArgv: ['api', 'repos/o/r/pulls'] });
+// 12 try/catch 里两处调用只改一处
+const tc = (second) => f(`try { return gh(['api', 'repos/o/r/pulls']); } catch (e) { return gh(['api', '${second}']); }`);
+mutate('12', 'try 里不变、catch 里的调用改了', tc('repos/o/r/commits'), tc('repos/o/r'), { beforeArgv: ['api', 'repos/o/r/commits'], afterArgv: ['api', 'repos/o/r'] });
+
+// 13 数组换了个名字再改(别名)
+mutate('13a', '别名数组:新增 const same = args; same.push(...)', f("const args = ['api', 'repos/o/r/pulls']; return gh(args);"), f("const args = ['api', 'repos/o/r/pulls']; const same = args; same.push('-X', 'DELETE'); return gh(args);"), { beforeArgv: ['api', 'repos/o/r/pulls'], afterArgv: ['api', 'repos/o/r/pulls', '-X', 'DELETE'] });
+mutate('13b', '别名数组:已有别名,再改别名的 push 内容', f("const args = ['api', 'repos/o/r/pulls']; const same = args; same.push('--jq', '.x'); return gh(args);"), f("const args = ['api', 'repos/o/r/pulls']; const same = args; same.push('-X', 'DELETE'); return gh(args);"), { beforeArgv: ['api', 'repos/o/r/pulls', '--jq', '.x'], afterArgv: ['api', 'repos/o/r/pulls', '-X', 'DELETE'] });
+mutate('13c', '别名的别名(两层)', f("const args = ['api', 'repos/o/r/pulls']; const a1 = args; const a2 = a1; a2.push('--jq', '.x'); return gh(args);"), f("const args = ['api', 'repos/o/r/pulls']; const a1 = args; const a2 = a1; a2.push('-X', 'DELETE'); return gh(args);"), { beforeArgv: ['api', 'repos/o/r/pulls', '--jq', '.x'], afterArgv: ['api', 'repos/o/r/pulls', '-X', 'DELETE'], expectBlocked: false });
+
+test('变异场景汇总:被挡住/已知边界的数量固定,路由真的变了的场景都被挡住', () => {
+  if (process.env.GH_ROUTE_MUTATION_REPORT) writeFileSync(process.env.GH_ROUTE_MUTATION_REPORT, JSON.stringify(rows, null, 1));
+  const routeChanged = rows.filter((r) => r.routeBefore && r.routeAfter && r.routeBefore !== r.routeAfter);
+  assert.ok(routeChanged.length >= 8, '至少 8 个场景里实际路由真的变了');
+  // 路由真的变了、又没挡住的,只能是 README「已知边界」里写明的场景
+  assert.deepEqual(routeChanged.filter((r) => !r.blocked).map((r) => r.id), ['13c']);
+  assert.deepEqual(rows.filter((r) => !r.expectBlocked).map((r) => r.id), ['3b', '4b', '9b', '10b', '13c']);
 });
 
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
