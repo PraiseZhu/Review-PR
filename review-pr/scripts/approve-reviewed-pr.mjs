@@ -3,7 +3,7 @@
 // A pending attempt is reconciled by reads only; it is never blindly POSTed again.
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { parseRepo, parsePR, gh, ghJson, fetchAllReviewThreads, fetchMaintainerAuthority,
+import { parseRepo, parsePR, gh, ghJson, fetchAllReviewThreads, fetchMaintainerAuthority, loadRules, normalizeReviewActor, reviewRecordActor,
   evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, readReviewIdentityOrEmpty, isReviewIdentity, sameReviewActor, latestSubstantiveReviews, selectStandingViewerHumanChangesRequest,
   assertActiveReviewLock, stateFile, print } from './lib.mjs';
 import { atomicWriteJson } from './runtime-io.mjs';
@@ -57,9 +57,13 @@ try {
   const overrideRequested = process.argv.includes('--allow-override-own-cr');
   const overrideOwnCr = overrideRequested ? argValue('--allow-override-own-cr') : '';
 
-  // bot 身份(GitHub App 等)只做审查和留痕,不提交 Approve:读到 bot 立刻拒绝,在任何锁、授权读取和写入之前。
+  // [MIVO-PATCH reviewer-app] 配置里点名的审查 App(reviewerApps)可以提交 Approve,但它不是维护者:
+  // Approve 只算「审查已发布」,不算独立维护者批准。没配 reviewerApps 时与改动前完全一致。
+  const reviewerApps = loadRules().reviewerApps ?? [];
+  // bot 身份(GitHub App 等)只做审查和留痕,不提交 Approve:读到未配置的 bot 立刻拒绝,在任何锁、授权读取和写入之前。
   const refuseBot = (identity) => {
     if (!identity.isBot) return;
+    if (reviewerApps.includes(normalizeReviewActor(identity.viewerLogin)?.key)) return;
     const reason = `当前审查身份 ${identity.viewerLogin} 是 bot,不能提交 Approve(审批只能由维护者本人账号执行)`;
     print({ ok: true, pr, approved: false, dryRun, expectedHead, viewer: identity.viewerLogin,
       approval: { status: 'blocked', code: 'bot-identity-forbidden', reason },
@@ -79,7 +83,7 @@ try {
     let authority = null;
     let authorityError;
     try { authority = fetchMaintainerAuthority({ owner, repo }); } catch (error) { authorityError = error.message; }
-    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login ?? '', viewerLogin: viewer, authority, reviewerIdentity: identity });
+    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: reviewRecordActor({ author: meta.author }), viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps });
     const threads = fetchAllReviewThreads(owner, repo, pr);
     const reviews = readReviewPages(slug, pr);
     const substantive = latestSubstantiveReviews(reviews.reviews);
@@ -107,7 +111,7 @@ try {
       reject('authority-changed', `维护者权限未验证或已变化${authorityError ? `：${authorityError}` : ''}`);
     }
     if (!viewer) reject('viewer-unverified', '当前 GitHub viewer 身份未完整读取');
-    if (authority && viewer && !policy.viewerIsMaintainer) reject('viewer-not-maintainer', '当前 viewer 不在最终维护者集合中');
+    if (authority && viewer && !policy.viewerIsMaintainer && !policy.viewerIsReviewerApp) reject('viewer-not-maintainer', '当前 viewer 不在最终维护者集合中');
     if (policy.approvalRequired && policy.viewerIsAuthor && reviews.verified && !independentReceipt) {
       reject('independent-approval-required', '当前 viewer 是 PR 作者，未核验到另一位维护者的有效 Approve，不能自批');
     }
@@ -130,7 +134,9 @@ try {
       reject('reviews-unverified', 'reviewDecision=CHANGES_REQUESTED，但未读取到对应 review');
     }
     return { meta, beforeObservedAt, viewer, identity, authority, policy, failures, overriddenOwnCr: standingOwnCr ? String(standingOwnCr.id) : null,
-      receipt: independentReceipt ?? existingReceipt(reviews, viewer, expectedHead) };
+      // 审查 App 的回执只认它自己同 head 的 Approve;维护者已有的独立 Approve 不能顶替它发布自己的审查。
+      receipt: policy.viewerIsReviewerApp ? existingReceipt(reviews, viewer, expectedHead)
+        : independentReceipt ?? existingReceipt(reviews, viewer, expectedHead) };
   };
   const stop = (snapshot, extraFailures = []) => {
     const failures = [...snapshot.failures, ...extraFailures];
@@ -159,8 +165,10 @@ try {
   // before either accepting an existing approval or posting a new one.
   const fresh = collect();
   stop(fresh, sameReviewActor(fresh.viewer, initial.viewer) ? [] : [{ code: 'viewer-changed', reason: '写操作前 GitHub viewer 已变化' }]);
+  // 审查 App 要发布自己的审查:作者是维护者也不返回 exempt;作者在身份集合内时 viewerCanApprove=false,仍走 exempt(服务器据此改发 COMMENT)。
   const emitExempt = fresh.policy.approvalRequired === false && !fresh.receipt &&
-    !(fresh.overriddenOwnCr && fresh.policy.viewerCanApprove);
+    !(fresh.overriddenOwnCr && fresh.policy.viewerCanApprove) &&
+    !(fresh.policy.viewerIsReviewerApp && fresh.policy.viewerCanApprove);
   if (emitExempt) {
     const exemption = evaluateApprovalExemption({ authorLogin: fresh.policy.author, authority: fresh.authority });
     print({
