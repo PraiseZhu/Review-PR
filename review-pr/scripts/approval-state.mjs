@@ -63,6 +63,8 @@ export function approvalReceiptFromReview(review, { viewer, head, now = Date.now
 // effective; keep its real commit separate from the head reviewed this round.
 export function existingMaintainerApprovalReceipt(review, { author, maintainers = [], reviewDecision, head, now } = {}) {
   const reviewer = String(review?.user?.login ?? '').trim();
+  // [MIVO-PATCH reviewer-app] Bot(含审查 App)的 Approve 只是已发布的审查,不是独立维护者批准。
+  if (review?.user?.type === 'Bot' || review?.user?.__typename === 'Bot' || /\[bot\]$/i.test(reviewer)) return null;
   if (reviewDecision !== 'APPROVED' || !nonempty(author) || !sha(head) ||
       reviewer.toLowerCase() === author.trim().toLowerCase() ||
       !maintainers.some((login) => String(login).trim().toLowerCase() === reviewer.toLowerCase())) return null;

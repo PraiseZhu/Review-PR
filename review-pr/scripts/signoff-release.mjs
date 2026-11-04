@@ -31,7 +31,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, readReviewIdentity, fetchPrCommentsWithAuthorType, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, readReviewIdentity, normalizeReviewActor, fetchPrCommentsWithAuthorType, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
 
 const VALID_KINDS = new Set(['product', 'arch', 'security', 'coldUpdate', 'rules', 'pluginBase']);
 
@@ -75,6 +75,14 @@ try {
   const viewerLogin = reviewerIdentity.viewerLogin;
   const confirmedBy = viewerLogin;
   const author = meta.author?.login ?? '';
+  // [MIVO-PATCH reviewer-app] 审查 App 不是维护者:viewer 是 Bot,或 --by 指向 Bot / 审查 App 同 slug(含不带 [bot] 的写法),
+  // 都不能写放行标记。--labels-only 不写标记、只同步外部标签,不受影响。
+  const appSlugs = new Set((loadRules().reviewerApps ?? []).map((app) => normalizeReviewActor(app)?.login).filter(Boolean));
+  const isAppIdentity = (login) => {
+    const actor = normalizeReviewActor(login);
+    return Boolean(actor) && (actor.isBot || appSlugs.has(actor.login));
+  };
+  const appRelease = !labelsOnly && (reviewerIdentity.isBot || (by !== '' && isAppIdentity(by)));
   const currentLabels = (meta.labels ?? []).map((l) => l.name);
   // 评论读 REST:gh pr view 对 bot 只给裸 login,认不出 praisebuild[bot] 自己写的 hold 标记。
   const commentObjs = fetchPrCommentsWithAuthorType(slug, pr).map((c) => ({
@@ -105,7 +113,7 @@ try {
   let authority = null;
   let authorityFailure = null;
   let confirmerPolicy = null;
-  if (!labelsOnly && gates.length > 0) {
+  if (!labelsOnly && !appRelease && gates.length > 0) {
     try {
       authority = fetchMaintainerAuthority({ owner, repo });
       confirmerPolicy = evaluateMaintainerApprovalPolicy({ authorLogin: confirmedBy, authority });
@@ -149,6 +157,9 @@ try {
     const labels = clearLabels();
     const issueClose = tryCloseIssue();
     printOut({ ok: true, pr, author, labelsOnly: true, released: false, labels, ...issueClose });
+  } else if (appRelease) {
+    print({ ok: false, pr, author, released: false, reason: 'reviewer-app-not-maintainer',
+      error: `审查 App 不是维护者,不能写签核放行标记(期望 viewer 与 --by 都是维护者本人账号,实际 viewer=${confirmedBy}${by ? ` --by=${by}` : ''})` });
   } else if (gates.length === 0) {
     print({ ok: false, pr, author, released: false, reason: 'no-gates', hint: '--gates 必填,取值 product/arch/security/coldUpdate/rules/pluginBase(逗号分隔),只传维护者明确确认通过 / Approve 已通过待固化的类别' });
   } else if (authorityFailure) {

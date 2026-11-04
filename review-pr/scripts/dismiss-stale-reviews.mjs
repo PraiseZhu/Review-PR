@@ -27,10 +27,17 @@ import {
   latestSubstantiveReviews,
   readReviewIdentity,
   isReviewIdentity,
+  sameReviewActor,
+  reviewRecordActor,
+  normalizeReviewActor,
+  readReviewIdentityOrEmpty,
+  loadRules,
   assertActiveReviewLock,
   print,
   fail,
 } from './lib.mjs';
+import { putDismissal } from './dismiss-review.mjs';
+import { scrubSecrets } from './secret-scrub.mjs';
 import { selectGateReviewsToDismiss } from './review-markers.mjs';
 
 try {
@@ -124,13 +131,33 @@ try {
     '自动 dismiss 旧的 CHANGES_REQUESTED 以解除合并阻塞。';
 
   const dismissed = [];
+  const alreadyDismissed = [];
   const errors = [];
+  // [MIVO-PATCH reviewer-app] viewer 是配置的审查 App 时:每个 PUT 前重读 viewer 与完整 reviews,写入走 putDismissal(403 不回落、422 回读幂等),
+  // 有失败就 ok:false 并非 0 退出,不假装清理完成。人类路径保持原样。
+  const appViewer = (loadRules().reviewerApps ?? []).includes(normalizeReviewActor(viewerLogin)?.key);
   assertActiveReviewLock(lockToken);
   for (const r of ownCRs) {
     try {
       assertActiveReviewLock(lockToken);
       const fresh = ghJson(['pr', 'view', String(pr), '--repo', slug, '--json', 'state,headRefOid']);
-      if (fresh.state !== 'OPEN' || fresh.headRefOid !== meta.headRefOid) throw new Error('dismiss 前 head/state 已变化，停止清理');
+      if (fresh.state !== 'OPEN' || fresh.headRefOid !== meta.headRefOid) throw new Error(`dismiss 前 head/state 已变化,停止清理(期望 OPEN/${meta.headRefOid},实际 ${fresh.state}/${fresh.headRefOid})`);
+      if (appViewer) {
+        const nowViewer = readReviewIdentityOrEmpty().viewerLogin;
+        if (!sameReviewActor(nowViewer, viewerLogin)) throw new Error(`dismiss 前 GitHub viewer 已变化:期望 ${viewerLogin} 实际 ${nowViewer || '(empty)'}`);
+        const pagesNow = ghJson(['api', '--method', 'GET', '--paginate', '--slurp', `repos/${slug}/pulls/${pr}/reviews`, '-f', 'per_page=100']);
+        const target = (Array.isArray(pagesNow) ? pagesNow : []).flat().find((review) => Number(review?.id) === Number(r.id));
+        const state = String(target?.state ?? '').toUpperCase();
+        if (state === 'DISMISSED') { alreadyDismissed.push(r.id); continue; }
+        if (state !== 'CHANGES_REQUESTED' || !sameReviewActor(reviewRecordActor(target), viewerLogin)) {
+          throw new Error(`dismiss 前 review ${r.id} 不再是 ${viewerLogin} 的 CHANGES_REQUESTED(期望 CHANGES_REQUESTED,实际 ${state || '(找不到)'})`);
+        }
+        const written = putDismissal({ slug, pr, reviewId: r.id, message });
+        if (written.status === 'failed') throw new Error(written.error);
+        if (written.status === 'already-dismissed') alreadyDismissed.push(r.id);
+        else dismissed.push({ id: r.id, author: r.user?.login ?? r.author?.login, submittedAt: r.submittedAt });
+        continue;
+      }
       gh([
         'api',
         '--method', 'PUT',
@@ -147,6 +174,11 @@ try {
     }
   }
 
+  if (appViewer && errors.length > 0) {
+    print({ ok: false, pr, dismissed: false, partial: dismissed.length > 0, dismissedCount: dismissed.length, alreadyDismissed,
+      errorCount: errors.length, dismissed, errors, message });
+    process.exit(2);
+  }
   if (errors.length > 0) {
     print({
       ok: true, pr,
@@ -169,5 +201,5 @@ try {
   }
   process.exit(0);
 } catch (e) {
-  fail(e);
+  fail(new Error(scrubSecrets(e?.message ?? e)));
 }

@@ -24,10 +24,15 @@ import {
   evaluateMaintainerApprovalPolicy,
   evaluateOwnReviewDismissal,
   readReviewIdentityOrEmpty,
+  sameReviewActor,
+  reviewRecordActor,
+  loadRules,
   assertActiveReviewLock,
   print,
   fail,
 } from './lib.mjs';
+import { putDismissal } from './dismiss-review.mjs';
+import { scrubSecrets } from './secret-scrub.mjs';
 
 try {
   const { owner, repo } = parseRepo();
@@ -71,13 +76,18 @@ try {
   } catch (error) {
     authorityError = String(error?.message ?? error);
   }
+  // [MIVO-PATCH reviewer-app] 配置的审查 App 可以清「自己」发出的 CR(见 evaluateOwnReviewDismissal 的 reviewerApp);人类路径不变。
+  const reviewerApps = loadRules().reviewerApps ?? [];
   const approvalPolicy = evaluateMaintainerApprovalPolicy({
-    authorLogin: meta.author?.login ?? '',
+    authorLogin: reviewRecordActor({ author: meta.author }),
     viewerLogin,
     authority,
     reviewerIdentity: identity,
+    reviewerApps,
   });
+  const reviewerApp = approvalPolicy.viewerIsReviewerApp === true;
   const policy = evaluateOwnReviewDismissal({
+    reviewerApp,
     approvalExempt: approvalPolicy.authorIsMaintainer && !authorityError,
     reviewClean,
     state: meta.state,
@@ -134,11 +144,13 @@ try {
     'pr', 'view', String(pr), '--repo', slug, '--json', 'author,headRefOid',
   ]);
   const freshAuthority = fetchMaintainerAuthority({ owner, repo });
+  const freshIdentity = readReviewIdentityOrEmpty();
   const freshPolicy = evaluateMaintainerApprovalPolicy({
-    authorLogin: freshMeta.author?.login ?? '',
+    authorLogin: reviewRecordActor({ author: freshMeta.author }),
     viewerLogin,
     authority: freshAuthority,
     reviewerIdentity: identity,
+    reviewerApps,
   });
   const writeFailures = [];
   if (String(freshMeta.headRefOid ?? '').toLowerCase() !== expectedHead.toLowerCase()) {
@@ -147,7 +159,10 @@ try {
   if (freshAuthority.digest !== expectedAuthorityDigest) {
     writeFailures.push(`写操作前维护者权限已变化:${expectedAuthorityDigest} → ${freshAuthority.digest}`);
   }
-  if (!freshPolicy.authorIsMaintainer) writeFailures.push('写操作前作者已不在最终维护者集合中');
+  if (reviewerApp) {
+    if (!sameReviewActor(freshIdentity.viewerLogin, viewerLogin)) writeFailures.push(`写操作前 GitHub viewer 已变化:${viewerLogin} → ${freshIdentity.viewerLogin || '(empty)'}`);
+    if (!freshPolicy.viewerIsReviewerApp) writeFailures.push('写操作前 viewer 已不是配置的审查 App');
+  } else if (!freshPolicy.authorIsMaintainer) writeFailures.push('写操作前作者已不在最终维护者集合中');
   if (writeFailures.length > 0) {
     print({
       ok: true,
@@ -161,7 +176,12 @@ try {
   }
 
   const dismissed = [];
+  const alreadyDismissed = [];
   const errors = [];
+  const readReviews = () => {
+    const pages = ghJson(['api', '--method', 'GET', '--paginate', '--slurp', `repos/${slug}/pulls/${pr}/reviews`, '-f', 'per_page=100']);
+    return (Array.isArray(pages) ? pages : []).flatMap((page) => (Array.isArray(page) ? page : []));
+  };
   for (const reviewId of policy.reviewIds) {
     const currentMeta = ghJson([
       'pr', 'view', String(pr), '--repo', slug, '--json', 'headRefOid',
@@ -174,6 +194,28 @@ try {
       break;
     }
     assertActiveReviewLock(lockToken);
+    if (reviewerApp) {
+      // 每个 PUT 前重读真实 viewer 与完整 reviews:viewer 必须仍是同一个 App;目标 review 仍须是该 App 的 CR,
+      // 已是 DISMISSED 就不再写(幂等)。
+      const nowIdentity = readReviewIdentityOrEmpty();
+      if (!sameReviewActor(nowIdentity.viewerLogin, viewerLogin)) {
+        errors.push({ reviewId, error: `dismiss 前 GitHub viewer 已变化:期望 ${viewerLogin} 实际 ${nowIdentity.viewerLogin || '(empty)'}` });
+        break;
+      }
+      const target = readReviews().find((review) => Number(review?.id) === reviewId);
+      if (!target) { errors.push({ reviewId, error: `dismiss 前完整重读找不到 review ${reviewId}` }); continue; }
+      const state = String(target.state ?? '').toUpperCase();
+      if (state === 'DISMISSED') { alreadyDismissed.push(reviewId); continue; }
+      if (state !== 'CHANGES_REQUESTED' || !sameReviewActor(reviewRecordActor(target), viewerLogin)) {
+        errors.push({ reviewId, error: `dismiss 前 review ${reviewId} 不再是 ${viewerLogin} 的 CHANGES_REQUESTED(期望 CHANGES_REQUESTED,实际 ${state || '(empty)'},作者 ${reviewRecordActor(target).login || '(empty)'})` });
+        continue;
+      }
+      const written = putDismissal({ slug, pr, reviewId, message });
+      if (written.status === 'dismissed') dismissed.push(reviewId);
+      else if (written.status === 'already-dismissed') alreadyDismissed.push(reviewId);
+      else errors.push({ reviewId, error: written.error });
+      continue;
+    }
     const result = gh([
       'api', '--method', 'PUT',
       `repos/${slug}/pulls/${pr}/reviews/${reviewId}/dismissals`,
@@ -203,6 +245,7 @@ try {
     dismissed: errors.length === 0,
     dismissedCount: dismissed.length,
     dismissed,
+    ...(reviewerApp ? { alreadyDismissed } : {}),
     errors,
     approvalPolicy,
     viewer: policy.viewer,
@@ -210,5 +253,5 @@ try {
   });
   process.exit(errors.length === 0 ? 0 : 2);
 } catch (error) {
-  fail(error);
+  fail(new Error(scrubSecrets(error?.message ?? error)));
 }

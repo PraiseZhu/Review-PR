@@ -127,7 +127,30 @@ export function loadRules() {
     );
   }
   rules.maintainerAllowlist = normalizeMaintainerAllowlist(rules.maintainerAllowlist);
+  // [MIVO-PATCH reviewer-app] 审查 App 名单:只给「可发审查」能力,不进维护者名单。缺省 [],旧配置行为不变。
+  rules.reviewerApps = normalizeReviewerApps(rules.reviewerApps);
   return rules;
+}
+
+/**
+ * [MIVO-PATCH reviewer-app] reviewerApps 配置校验(无 I/O)。缺省返回 [];必须是带 [bot] 后缀的合法登录名数组,
+ * 返回 canonical key(小写、去重)。配置异常直接抛错并写出字段、下标、期望与实际值,不静默丢项。
+ */
+export function normalizeReviewerApps(value, field = 'reviewerApps') {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} 必须是审查 App 登录名数组(期望 ["name[bot]"],实际 ${value === null ? 'null' : typeof value})`);
+  }
+  const keys = [];
+  value.forEach((item, index) => {
+    const login = validateViewerLogin(item, `${field}[${index}]`);
+    const actor = normalizeReviewActor(login);
+    if (!actor?.isBot) {
+      throw new Error(`${field}[${index}] 必须是带 [bot] 后缀的 GitHub App 登录名(实际 ${JSON.stringify(login)})`);
+    }
+    if (!keys.includes(actor.key)) keys.push(actor.key);
+  });
+  return keys;
 }
 
 function normalizeLoginList(value) {
@@ -666,15 +689,22 @@ export function loadMaintainerAuthoritySnapshot({
 }
 
 /** 当前 viewer/作者相对于 Team + maintainerAllowlist 最终维护者集合的统一审批策略。 */
-export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null } = {}) {
+export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null, reviewerApps = [] } = {}) {
   const members = new Set(normalizeLoginList(authority?.members));
   const teamMembers = new Set(normalizeLoginList(authority?.teamMembers));
   const allowlistedMembers = new Set(normalizeLoginList(authority?.allowlistedMembers));
-  const author = String(authorLogin ?? '').trim().toLowerCase();
-  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
-  const authorIsMaintainer = author !== '' && members.has(author);
-  const viewerIsMaintainer = viewer !== '' && members.has(viewer);
-  // 自批排除按「作者 ∈ 审查身份集合」判;没传身份集合就是旧的单账号比较。集合只回答归属,
+  // [MIVO-PATCH reviewer-app] 作者/viewer 用带类型的 canonical key:Bot 写法(app/x、{login,__typename:Bot}、x[bot])归一成同一个 x[bot],
+  // 且 Bot 永远不是维护者(authority.members 只放真人,同名裸 slug 不能让 Bot 借到维护者身份)。
+  const authorActor = normalizeReviewActor(authorLogin);
+  const viewerActor = normalizeReviewActor(viewerLogin);
+  const author = authorActor?.key ?? '';
+  const viewer = viewerActor?.key ?? '';
+  const authorIsMaintainer = author !== '' && !authorActor.isBot && members.has(author);
+  const viewerIsMaintainer = viewer !== '' && !viewerActor.isBot && members.has(viewer);
+  // 审查 App:配置里点名的 Bot 才有。它只能发审查(含 Approve),不是维护者,也不满足「需要维护者独立 Approve」。
+  const appKeys = new Set((Array.isArray(reviewerApps) ? reviewerApps : []).map((app) => normalizeReviewActor(app)?.key).filter(Boolean));
+  const viewerIsReviewerApp = Boolean(viewerActor?.isBot) && appKeys.has(viewer);
+  // 自批排除按「作者 ∈ 审查身份集合」判;没传身份集合就是单账号比较。集合只回答归属,
   // 维护者资格(viewerIsMaintainer)仍只看真实 viewer,不因 aliases 变化。
   const viewerIsAuthor = author !== '' && viewer !== '' &&
     (author === viewer || Boolean(reviewerIdentity) && isReviewIdentity(authorLogin, reviewerIdentity));
@@ -689,8 +719,9 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
     viewer,
     authorIsMaintainer,
     viewerIsMaintainer,
+    viewerIsReviewerApp,
     viewerIsAuthor,
-    viewerCanApprove: viewerIsMaintainer && !viewerIsAuthor,
+    viewerCanApprove: (viewerIsMaintainer || viewerIsReviewerApp) && !viewerIsAuthor,
     authorAuthoritySource: authoritySource(author, authorIsMaintainer),
     viewerAuthoritySource: authoritySource(viewer, viewerIsMaintainer),
     approvalRequired: !authorIsMaintainer,
@@ -1064,6 +1095,11 @@ export function fetchRestPages(endpoint, { ghFn = gh, timeoutMs = 30_000 } = {})
     throw new Error(`GET ${endpoint}: REST 分页结果形状异常`);
   }
   return pages.flat();
+}
+
+/** [MIVO-PATCH reviewer-app] 评论是不是 Bot 写的:只认带类型的来源(REST user.type / GraphQL __typename)或 login 的 [bot] 后缀;裸 login 无类型认不出。 */
+export function isBotComment(comment) {
+  return Boolean(normalizeReviewActor(reviewRecordActor(comment))?.isBot);
 }
 
 /**
@@ -1818,11 +1854,17 @@ export function evaluateOwnReviewDismissal({
   expectedHead = '',
   actualHead = '',
   reviewerIdentity = null,
+  reviewerApp = false,
 } = {}) {
   const failedChecks = [];
   const viewer = String(typeof viewerLogin === 'string' ? viewerLogin : viewerLogin?.viewerLogin ?? '').trim().toLowerCase();
   const identity = toReviewIdentity(reviewerIdentity ?? viewerLogin);
-  const isOwn = (review) => isReviewIdentity(reviewRecordActor(review), identity);
+  // [MIVO-PATCH reviewer-app] 审查 App 资格:只清「当前实际 App 账号」自己的 CR(精确比较,不按别名集合),别名里人工 CR 一律挡住;
+  // 不要求 BLOCKED / reviewDecision 聚合(REST 里的 bot CR 才是事实),其余门(review-clean、threads、head)照旧。
+  const viewerKey = normalizeReviewActor(typeof viewerLogin === 'string' ? viewerLogin : viewerLogin?.viewerLogin)?.key ?? identity.logins[0] ?? '';
+  const isOwn = reviewerApp
+    ? (review) => sameReviewActor(reviewRecordActor(review), viewerKey)
+    : (review) => isReviewIdentity(reviewRecordActor(review), identity);
   const changesRequested = latestSubstantiveReviews(reviews)
     .filter((review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED');
   const ownReviews = changesRequested.filter(isOwn);
@@ -1833,14 +1875,14 @@ export function evaluateOwnReviewDismissal({
     .map((review) => Number(review?.id))
     .filter((id) => Number.isInteger(id) && id > 0);
 
-  if (!approvalExempt) failedChecks.push('作者不在最终维护者集合中');
+  if (!approvalExempt && !reviewerApp) failedChecks.push('作者不在最终维护者集合中');
   if (!reviewClean) failedChecks.push('调用方未确认最终代码重审通过(--review-clean)');
   if (state !== 'OPEN') failedChecks.push(`PR state=${state || '(empty)'}(非 OPEN)`);
-  if (mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
-  if (reviewDecision !== 'CHANGES_REQUESTED') failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(非 CHANGES_REQUESTED)`);
+  if (!reviewerApp && mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
+  if (!reviewerApp && reviewDecision !== 'CHANGES_REQUESTED') failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(非 CHANGES_REQUESTED)`);
   if (!viewer || identity.logins.length === 0) failedChecks.push('viewer 身份为空');
   if (changesRequested.length === 0) failedChecks.push('没有任何 CHANGES_REQUESTED review');
-  if (changesRequested.length > ownReviews.length) failedChecks.push('存在别人留下的 CHANGES_REQUESTED review');
+  if (changesRequested.length > ownReviews.length) failedChecks.push(reviewerApp ? '存在别人或其它身份(含别名里的人工账号)留下的 CHANGES_REQUESTED review' : '存在别人留下的 CHANGES_REQUESTED review');
   if (allOwnReviews.length !== reviewIds.length) failedChecks.push('viewer 自己的 review 缺少 REST numeric id');
   if (!threadsVerified) failedChecks.push('review thread 状态未完整验证');
   if (Number(unresolvedCount) !== 0) failedChecks.push(`仍有 ${Number(unresolvedCount) || 0} 条未 resolve thread`);
@@ -2125,12 +2167,15 @@ export function parseSignoffReleaseEvents(comments) {
     const commentAuthor = typeof c === 'string'
       ? null
       : String(c?.author?.login ?? c?.author ?? '').trim() || null;
+    // [MIVO-PATCH reviewer-app] 评论作者类型(REST user.type / GraphQL __typename):Bot 写的放行标记不可信。无类型来源时为 ''。
+    const commentAuthorType = typeof c === 'string' ? '' : reviewRecordActor(c).__typename;
     for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
       for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
         events.push({
           kind,
           by: m[2] ?? null,
           commentAuthor,
+          commentAuthorType,
           at: createdAt,
           via: 'release-marker',
         });
@@ -2147,14 +2192,22 @@ export function parseSignoffReleases(comments) {
 }
 
 /** 先验证 marker 的 GitHub 评论作者与最终维护者集合身份，再按 kind 取最后一条可信事件。 */
-export function selectTrustedSignoffReleases(events, maintainers) {
+export function selectTrustedSignoffReleases(events, maintainers, reviewerApps = loadRules().reviewerApps) {
   const members = new Set(normalizeLoginList(maintainers));
   const trusted = new Map();
   const untrusted = [];
+  // [MIVO-PATCH reviewer-app] 审查 App 只有审查能力,不是维护者:Bot 写的评论、by 指向 Bot,或 by 与审查 App 同 slug(含不带 [bot] 的写法)一律不可信,
+  // 即使维护者集合里恰好有同名裸 slug。
+  const appSlugs = new Set((reviewerApps ?? []).map((app) => normalizeReviewActor(app)?.login).filter(Boolean));
+  const isAppIdentity = (login, typename = '') => {
+    const actor = normalizeReviewActor({ login, __typename: typename });
+    return Boolean(actor) && (actor.isBot || appSlugs.has(actor.login));
+  };
   for (const event of events ?? []) {
     const by = String(event?.by ?? '').trim().toLowerCase();
     const commentAuthor = String(event?.commentAuthor ?? '').trim().toLowerCase();
-    if (by && by === commentAuthor && members.has(by)) trusted.set(event.kind, event);
+    const fromApp = isAppIdentity(by) || isAppIdentity(commentAuthor, event?.commentAuthorType ?? '');
+    if (!fromApp && by && by === commentAuthor && members.has(by)) trusted.set(event.kind, event);
     else untrusted.push(event);
   }
   return { trusted, untrusted };
@@ -2178,6 +2231,8 @@ export function evaluateMaintainerReview({
   for (const review of reviews) {
     const login = String(review?.login ?? review?.author?.login ?? '').toLowerCase();
     if (!allowed.has(login) || (author && login === author)) continue;
+    // [MIVO-PATCH reviewer-app] Bot(含审查 App)的 review 不是维护者确认,即使 login 恰好在维护者集合里。
+    if (normalizeReviewActor(reviewRecordActor(review))?.isBot) continue;
     if (review?.state !== 'APPROVED' && review?.state !== 'CHANGES_REQUESTED' && review?.state !== 'DISMISSED') continue;
     const normalized = {
       ...review,

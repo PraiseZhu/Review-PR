@@ -4,6 +4,8 @@
 // 拿不准一律不选:宁可留给下一轮,不错放。
 import { parseFindingMarker } from './finding.mjs';
 import { collectRulings } from './rulings.mjs';
+import { hasReviewer, toReviewerMatcher } from './reviewer-match.mjs';
+import { normalizeReviewActor } from '../../review-pr/scripts/reviewer-identity.mjs';
 
 export const TRIAGE_MARKER = '<!-- review-pr:thread-triage -->';
 const HEAD_RE = /^[0-9a-f]{40}$/;
@@ -14,7 +16,8 @@ const PUBLISHED_OUTCOMES = new Set(['findings', 'review-only', 'approval', 'merg
 const lower = (value) => String(value ?? '').toLowerCase();
 const commentsOf = (thread) => (Array.isArray(thread?.comments) ? thread.comments : thread?.comments?.nodes ?? []);
 // 评论内容指纹:id + 作者 + 正文。新增、删除、编辑评论都会改变它。
-const fingerprint = (thread) => JSON.stringify(commentsOf(thread).map((c) => [c?.id ?? null, lower(c?.author?.login), String(c?.body ?? '')]));
+// 作者用规范 key:同一个 Bot 的 REST(x[bot])与 GraphQL(x + Bot)写法不产生假变更,同名 User 则不同。
+const fingerprint = (thread) => JSON.stringify(commentsOf(thread).map((c) => [c?.id ?? null, normalizeReviewActor(c?.author)?.key ?? '', String(c?.body ?? '')]));
 
 const skip = (skippedReason) => ({ skippedReason, threads: [] });
 
@@ -26,7 +29,7 @@ export function renderResolveReply({ head, runUrl, key }) {
 /**
  * @returns {{skippedReason: string|null, threads: {id:string, key:string, oldHead:string, reply:string}[]}}
  */
-export function buildThreadResolutionPlan({ round = {}, head, reviewer, runUrl, reviewedThreads, liveThreads, threadsVerified, excludedKeys, maintainers } = {}) {
+export function buildThreadResolutionPlan({ round = {}, head, reviewer, reviewerIdentity, runUrl, reviewedThreads, liveThreads, threadsVerified, excludedKeys, maintainers } = {}) {
   if (round.mode !== 'live') return skip('not-live');
   if (round.published !== true) return skip('not-published');
   if (round.reviewed !== true || round.reportComplete !== true) return skip('report-incomplete');
@@ -35,7 +38,8 @@ export function buildThreadResolutionPlan({ round = {}, head, reviewer, runUrl, 
   if (!PUBLISHED_OUTCOMES.has(round.outcome)) return skip('outcome-not-eligible');
   if (['pending-budget', 'error'].includes(round.finalFullOutcome)) return skip('final-full-pending');
   if (!HEAD_RE.test(String(head ?? ''))) return skip('bad-head');
-  if (!String(reviewer ?? '').trim()) return skip('no-reviewer');
+  if (!hasReviewer(reviewer, reviewerIdentity)) return skip('no-reviewer');
+  const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   if (!RUN_URL_RE.test(String(runUrl ?? ''))) return skip('bad-run-url');
   if (threadsVerified !== true) return skip('threads-unverified');
   if (!Array.isArray(reviewedThreads) || !Array.isArray(liveThreads) || !Array.isArray(maintainers)) return skip('threads-unavailable');
@@ -44,7 +48,7 @@ export function buildThreadResolutionPlan({ round = {}, head, reviewer, runUrl, 
   // 排除集合 = 本轮报出/分类的 key + 全部 live thread 上维护者的裁定 key(逐条 collect,避开 20 条上限;不管 thread 是否已 resolve)。
   const excluded = new Set(excludedKeys);
   for (const thread of liveThreads) {
-    for (const ruling of collectRulings({ threads: [thread], reviewer, maintainers }).verified) if (ruling.key) excluded.add(ruling.key);
+    for (const ruling of collectRulings({ threads: [thread], reviewer, reviewerIdentity, maintainers }).verified) if (ruling.key) excluded.add(ruling.key);
   }
 
   const reviewedById = new Map();
@@ -58,7 +62,7 @@ export function buildThreadResolutionPlan({ round = {}, head, reviewer, runUrl, 
     if (!id || idCount.get(id) !== 1 || thread.isResolved !== false) continue;
     const comments = commentsOf(thread);
     const first = comments[0];
-    if (!first?.id || lower(first.author?.login) !== lower(reviewer)) continue;
+    if (!first?.id || !isReviewer(first.author)) continue;
     const marker = parseFindingMarker(first.body);
     if (!marker || !KEY_RE.test(marker.key)) continue;
     // marker 的 head 可能是 7–40 位前缀:当前 head 以它开头就是同一提交上发的,不算旧 thread。

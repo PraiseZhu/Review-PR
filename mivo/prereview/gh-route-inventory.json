@@ -30,12 +30,14 @@
    "flows": [
     "server"
    ],
-   "snippet": "gh(['api', `repos/${input.targetRepo}`], { cwd: WORK })",
+   "snippet": "gh(branchRequest.args, { cwd: WORK, input: branchRequest.input })",
    "argv": [
     "api",
-    "repos/xindong/mivo-canvas-plugin"
+    "graphql",
+    "--input",
+    "-"
    ],
-   "note": "服务器 Prepare 步骤直接用 GH_TOKEN 经 common.run 读仓库元数据取 default_branch,不经 lib.gh / decideReadRoute;Mivo#1757 把该令牌换成 praisebuild 令牌后自然走 App,本 PR 不改 review.mjs",
+   "note": "服务器 Prepare 步骤直接用 GH_TOKEN 经 common.run 以 GraphQL defaultBranchRef 读默认分支(mivo/lib/default-branch.mjs 生成请求),不经 lib.gh / decideReadRoute;不再读 repos/<o>/<r> 根 REST(分类器把它判给个人账号),Mivo#1757 把该令牌换成 praisebuild 令牌后即走 App",
    "tokenFlipsIn": "xindong/mivo-canvas-plugin#1757"
   }
  ],
@@ -1541,11 +1543,11 @@
    ]
   },
   {
-   "id": "context.ghJson.ce557a0dbe",
+   "id": "context.ghJson.e3eff06b75",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghJson",
-    "sig": "ce557a0dbe",
+    "sig": "e3eff06b75",
     "count": 1
    },
    "flows": [
@@ -1562,7 +1564,7 @@
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--json",
-      "state,comments,updatedAt,title,body"
+      "state,updatedAt,title,body"
      ],
      "expected": "app",
      "serverRoute": "app",
@@ -1668,7 +1670,7 @@
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "ghJson",
     "sig": "52d4503aef",
-    "count": 1
+    "count": 2
    },
    "flows": [
     "interactive"
@@ -1745,11 +1747,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.gh.e81f67b1f9",
+   "id": "dismiss-own-review.gh.39a96b6774",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "gh",
-    "sig": "e81f67b1f9",
+    "sig": "39a96b6774",
     "count": 1
    },
    "flows": [
@@ -1807,7 +1809,7 @@
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "ghJson",
     "sig": "52d4503aef",
-    "count": 1
+    "count": 2
    },
    "flows": [
     "interactive"
@@ -3779,11 +3781,11 @@
    ]
   },
   {
-   "id": "pr-write-guard.api_gh.6aafdcc65e",
+   "id": "pr-write-guard.api_gh.ea714239ba",
    "source": {
     "file": "review-pr/scripts/pr-write-guard.mjs",
     "callee": "api.gh",
-    "sig": "6aafdcc65e",
+    "sig": "ea714239ba",
     "count": 1
    },
    "flows": [
@@ -3870,11 +3872,11 @@
    ]
   },
   {
-   "id": "pre-merge-check.ghGraphql.35ce6cb11d",
+   "id": "pre-merge-check.ghGraphql.f553726ad5",
    "source": {
     "file": "review-pr/scripts/pre-merge-check.mjs",
     "callee": "ghGraphql",
-    "sig": "35ce6cb11d",
+    "sig": "f553726ad5",
     "count": 1
    },
    "flows": [
@@ -3882,18 +3884,31 @@
    ],
    "cases": [
     {
-     "name": "query",
+     "name": "query-with-viewer",
      "argv": [
       "api",
       "graphql",
       "--input",
       "-"
      ],
-     "stdin": "{\"query\":\"\\n  query($owner:String!,$repo:String!,$num:Int!){\\n    viewer{ login }\\n    repository(owner:$owner,name:$repo){\\n      pullRequest(number:$num){\\n        author{ login }\\n        commits(last:1){ nodes{ commit{ committedDate } } }\\n      }\\n    }\\n  }\",\"variables\":{\"owner\":\"xindong\",\"repo\":\"mivo-canvas-plugin\",\"num\":7}}",
+     "stdin": "{\"query\":\"\\n  query($owner:String!,$repo:String!,$num:Int!){\\n    viewer{ login }\\n    repository(owner:$owner,name:$repo){\\n      pullRequest(number:$num){\\n        author{ login __typename }\\n        commits(last:1){ nodes{ commit{ committedDate } } }\\n      }\\n    }\\n  }\",\"variables\":{\"owner\":\"xindong\",\"repo\":\"mivo-canvas-plugin\",\"num\":7}}",
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
      "flipsIn": "PraiseZhu/Review-PR#176"
+    },
+    {
+     "name": "query-no-viewer",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"\\n  query($owner:String!,$repo:String!,$num:Int!){\\n    \\n    repository(owner:$owner,name:$repo){\\n      pullRequest(number:$num){\\n        author{ login __typename }\\n        commits(last:1){ nodes{ commit{ committedDate } } }\\n      }\\n    }\\n  }\",\"variables\":{\"owner\":\"xindong\",\"repo\":\"mivo-canvas-plugin\",\"num\":7}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
     }
    ]
   },
@@ -4171,11 +4186,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.fetchRestPages.181295f229",
+   "id": "request-changes-reviewed-pr.fetchRestPages.f9e8731016",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "fetchRestPages",
-    "sig": "181295f229",
+    "sig": "f9e8731016",
     "count": 1
    },
    "flows": [
@@ -4439,11 +4454,11 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.fd0688b5be",
+   "id": "signoff-hold.writeGh.d15170608a",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "fd0688b5be",
+    "sig": "d15170608a",
     "count": 1
    },
    "flows": [
@@ -4806,6 +4821,60 @@
      ],
      "expected": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
+    }
+   ]
+  },
+  {
+   "id": "dismiss-review.ghFn.a491648a3f",
+   "source": {
+    "file": "review-pr/scripts/dismiss-review.mjs",
+    "callee": "ghFn",
+    "sig": "a491648a3f",
+    "count": 1
+   },
+   "flows": [
+    "interactive"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "--method",
+      "PUT",
+      "repos/xindong/mivo-canvas-plugin/pulls/7/reviews/7/dismissals",
+      "--input",
+      "-"
+     ],
+     "expected": "user",
+     "keep": {
+      "category": "interactive-skill",
+      "reason": "review-pr/scripts/dismiss-review.mjs 只被 dismiss-own-review / dismiss-stale-reviews(维护者手动运行的 skill 流程)调用,不在 round.mjs / review.mjs 调用链上"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dismiss-review.ghFn.54e9ea8e76",
+   "source": {
+    "file": "review-pr/scripts/dismiss-review.mjs",
+    "callee": "ghFn",
+    "sig": "54e9ea8e76",
+    "count": 1
+   },
+   "flows": [
+    "interactive"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "--method",
+      "GET",
+      "repos/xindong/mivo-canvas-plugin/pulls/7/reviews/7"
+     ],
+     "expected": "app"
     }
    ]
   }

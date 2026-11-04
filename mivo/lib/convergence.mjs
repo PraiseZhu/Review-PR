@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { findingKeyOf, findingMarker, parseFindingMarker, renderFindingBody, titleOfBody } from './finding.mjs';
 import { matchAdjudication } from './rulings.mjs';
+import { hasReviewer, toReviewerMatcher } from './reviewer-match.mjs';
 
 export const STUCK_ROUNDS = 3;
 const FINDING_RE = /^\s*\[(P[012])\]/;
@@ -17,13 +18,14 @@ const commentsOf = (thread) => (Array.isArray(thread?.comments) ? thread.comment
  * 从 reviewer 开的 [P0]/[P1] thread 里读 mivo-finding marker。
  * 本轮 head 的 marker 不计:同一 head 重试(attempt 2)时,上一次尝试已经发出去的 marker 不能算成「又一轮」。
  */
-export function collectMarkerHistory({ threads = [], reviewer, currentHead }) {
+export function collectMarkerHistory({ threads = [], reviewer, reviewerIdentity, currentHead }) {
   const current = String(currentHead ?? '').slice(0, 12);
   const history = { byKey: new Map(), heads: new Set(), threadUrlByKey: new Map(), reviewerThreads: 0, legacyThreads: 0 };
-  if (!reviewer) return history;
+  if (!hasReviewer(reviewer, reviewerIdentity)) return history;
+  const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   for (const thread of threads) {
     const [first] = commentsOf(thread);
-    if (lower(first?.author?.login) !== lower(reviewer) || !FINDING_RE.test(String(first?.body ?? ''))) continue;
+    if (!isReviewer(first?.author) || !FINDING_RE.test(String(first?.body ?? ''))) continue;
     const marker = parseFindingMarker(first.body);
     if (marker && marker.head.slice(0, 12) === current) continue;
     history.reviewerThreads += 1;

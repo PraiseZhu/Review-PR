@@ -76,6 +76,9 @@
     "extraHardPatterns": [],
     "extraSoftPatterns": []
   },
+  "reviewerApps": [
+    "praisebuild[bot]"
+  ],
   "maintainerAllowlist": [
     "PraiseZhu",
     "kirozeng",

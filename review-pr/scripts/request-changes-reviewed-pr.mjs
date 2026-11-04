@@ -16,11 +16,13 @@ import {
   ghJson,
   fetchMaintainerAuthority,
   evaluateMaintainerApprovalPolicy,
+  reviewRecordActor,
   readReviewIdentityOrEmpty,
   isReviewIdentity,
   sameReviewActor,
   assertActiveReviewLock,
   fetchRestPages,
+  loadRules,
   print,
   fail,
 } from './lib.mjs';
@@ -28,6 +30,23 @@ import {
 function argValue(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? String(process.argv[index + 1] ?? '').trim() : '';
+}
+
+// [MIVO-PATCH reviewer-app] 失败信息不得带令牌:先抹掉环境里的令牌原值,再抹 GitHub 令牌格式与 Bearer 头。
+function scrubSecrets(text) {
+  let out = String(text ?? '');
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'REVIEW_PR_IDENTITY_TOKEN', 'REVIEW_PR_READ_TOKEN', 'CHECKS_TOKEN']) {
+    const value = String(process.env[key] ?? '').trim();
+    if (value.length >= 8) out = out.split(value).join('[redacted]');
+  }
+  return out.replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}\b/g, '[redacted]').replace(/(Bearer\s+)\S+/gi, '$1[redacted]');
+}
+
+// 写入失败写清动作、期望与实际 HTTP 状态(不含令牌),不回落到别的凭证。
+function toWriteError(action, error) {
+  const detail = scrubSecrets(error?.message ?? error);
+  const status = /HTTP (\d{3})/.exec(detail)?.[1] ?? '(无状态码)';
+  return new Error(`${action}失败:期望 GitHub 返回 2xx,实际 HTTP ${status}(${detail.slice(0, 300)})`);
 }
 
 function stop(pr, failedChecks, extra = {}) {
@@ -67,22 +86,25 @@ try {
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug, '--json', 'state,author,headRefOid',
   ]);
+  const reviewerApps = loadRules().reviewerApps ?? [];
   const policy = evaluateMaintainerApprovalPolicy({
-    authorLogin: meta.author?.login ?? '',
+    authorLogin: reviewRecordActor({ author: meta.author }),
     viewerLogin,
     authority,
     reviewerIdentity: identity,
+    reviewerApps,
   });
   const failedChecks = [];
   if (authority.digest !== expectedAuthorityDigest) {
     failedChecks.push(`维护者权限已变化:${expectedAuthorityDigest} → ${authority.digest}`);
   }
-  if (!policy.viewerIsMaintainer) failedChecks.push(`当前 viewer ${viewerLogin || '(empty)'} 不在最终维护者集合中`);
+  // 审查 App(reviewerApps)可以发审查;它不是维护者,其它放行动作不在这里。
+  if (!policy.viewerIsMaintainer && !policy.viewerIsReviewerApp) failedChecks.push(`当前 viewer ${viewerLogin || '(empty)'} 不在最终维护者集合中`);
   if (meta.state !== 'OPEN') failedChecks.push(`PR state=${meta.state || '(empty)'}`);
   if (String(meta.headRefOid ?? '').toLowerCase() !== expectedHead.toLowerCase()) {
     failedChecks.push(`当前 head 已变化:${expectedHead} → ${meta.headRefOid ?? '(empty)'}`);
   }
-  if (policy.author === policy.viewer && !commentOnly) failedChecks.push('GitHub 不允许给自己的 PR 提 Request Changes；问题 thread 可显式用 --comment-only');
+  if (policy.viewerIsAuthor && !commentOnly) failedChecks.push('GitHub 不允许给自己的 PR 提 Request Changes；问题 thread 可显式用 --comment-only');
   if (commentOnly && !comments.length) failedChecks.push('--comment-only 必须附带实际问题 thread');
   if (failedChecks.length) stop(pr, failedChecks, { approvalPolicy: policy });
 
@@ -99,24 +121,25 @@ try {
     'pr', 'view', String(pr), '--repo', slug, '--json', 'state,author,headRefOid',
   ]);
   const freshPolicy = evaluateMaintainerApprovalPolicy({
-    authorLogin: freshMeta.author?.login ?? '',
+    authorLogin: reviewRecordActor({ author: freshMeta.author }),
     viewerLogin: freshViewer,
     authority: freshAuthority,
     reviewerIdentity: freshIdentity,
+    reviewerApps,
   });
   const finalFailures = [];
   if (!sameReviewActor(freshViewer, viewerLogin)) finalFailures.push(`GitHub viewer 已变化:${viewerLogin} → ${freshViewer}`);
   if (freshAuthority.digest !== expectedAuthorityDigest) finalFailures.push(`写操作前维护者权限已变化:${expectedAuthorityDigest} → ${freshAuthority.digest}`);
-  if (!freshPolicy.viewerIsMaintainer) finalFailures.push('写操作前 viewer 已不在最终维护者集合中');
+  if (!freshPolicy.viewerIsMaintainer && !freshPolicy.viewerIsReviewerApp) finalFailures.push('写操作前 viewer 已不在最终维护者集合中');
   if (freshMeta.state !== 'OPEN') finalFailures.push(`写操作前 PR state=${freshMeta.state || '(empty)'}`);
   if (String(freshMeta.headRefOid ?? '').toLowerCase() !== expectedHead.toLowerCase()) {
     finalFailures.push(`写操作前 head 已变化:${expectedHead} → ${freshMeta.headRefOid ?? '(empty)'}`);
   }
-  if (freshPolicy.author === freshPolicy.viewer && !commentOnly) finalFailures.push('写操作前变成自己的 PR');
+  if (freshPolicy.viewerIsAuthor && !commentOnly) finalFailures.push('写操作前变成自己的 PR');
   if (finalFailures.length) stop(pr, finalFailures, { approvalPolicy: freshPolicy });
 
   assertActiveReviewLock(lockToken);
-  const write = createPrWriteGuard({ owner, repo, pr, lockToken, expectedHead, expectedAuthorityDigest, expectedViewer: freshViewer });
+  const write = createPrWriteGuard({ owner, repo, pr, lockToken, expectedHead, expectedAuthorityDigest, expectedViewer: freshViewer, purpose: 'review', reviewerApps });
   const event = commentOnly ? 'COMMENT' : 'REQUEST_CHANGES';
   const existing = marker ? fetchRestPages(`repos/${slug}/pulls/${pr}/reviews`).find((review) =>
     review.body?.includes(marker) && review.commit_id === expectedHead &&
@@ -124,10 +147,14 @@ try {
   const lineComments = comments.filter((comment) => comment.subject_type !== 'file');
   let review = existing;
   if (!review) {
-    review = JSON.parse(write([
-      'api', '--method', 'POST', `repos/${slug}/pulls/${pr}/reviews`, '--input', '-',
-    ], { input: JSON.stringify({ event, commit_id: expectedHead, body, ...(lineComments.length ? { comments: lineComments } : {}) }),
-      noCredFallback: true, timeoutMs: 60_000 }).stdout);
+    try {
+      review = JSON.parse(write([
+        'api', '--method', 'POST', `repos/${slug}/pulls/${pr}/reviews`, '--input', '-',
+      ], { input: JSON.stringify({ event, commit_id: expectedHead, body, ...(lineComments.length ? { comments: lineComments } : {}) }),
+        noCredFallback: true, timeoutMs: 60_000 }).stdout);
+    } catch (error) {
+      throw toWriteError(`提交 ${event} review`, error);
+    }
   }
   const threadUrls = [];
   // GitHub's create-review schema supports line comments; file-level threads use
@@ -143,7 +170,7 @@ try {
           input: JSON.stringify({ ...comment, commit_id: expectedHead, body: `${comment.body}\n\n${fileMarker}` }), timeoutMs: 60_000,
         }).stdout);
       } catch (error) {
-        stop(pr, [error.message], { reviewId: review.id, partial: true, threadUrls });
+        stop(pr, [toWriteError('提交文件级 thread', error).message], { reviewId: review.id, partial: true, threadUrls });
       }
     }
     if (posted.html_url) threadUrls.push(posted.html_url);
@@ -157,5 +184,5 @@ try {
     expectedHead, reviewId: review.id, reviewUrl: review.html_url, threadUrls, approvalPolicy: freshPolicy });
   process.exit(0);
 } catch (error) {
-  fail(error);
+  fail(new Error(scrubSecrets(error?.message ?? error)));
 }

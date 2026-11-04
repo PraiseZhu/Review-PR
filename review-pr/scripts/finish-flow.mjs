@@ -68,9 +68,14 @@ export async function finishReviewedPr(options, { run, sleep, checkpoint = () =>
     save('approved', { approved: true, approval, approvalResult });
   }
 
+  // [MIVO-PATCH reviewer-app] 审查 App 只发审查,不是维护者:它的 Approve 不构成维护者确认,也不能释放签核标签、关待确认 issue。
+  // 是否 App 取自 approve 子进程回执里的 live policy;旧回执没有该字段时按原路径。
+  const reviewerApp = approvalResult?.approvalPolicy?.viewerIsReviewerApp === true;
   // An old awaiting-discussion label must not strand an already approved PR until the next scan.
-  const release = await run('signoff-release.mjs', [...binding, '--labels-only', '--close-issue']);
-  if (!release.ok || release.labels?.errors?.length || release.labelWarning) {
+  const release = reviewerApp
+    ? { skipped: true, reason: 'reviewer-app-not-maintainer' }
+    : await run('signoff-release.mjs', [...binding, '--labels-only', '--close-issue']);
+  if (!reviewerApp && (!release.ok || release.labels?.errors?.length || release.labelWarning)) {
     return save('label-sync-blocked', { ok: false, retry: true, release, reason: release.labelWarning || release.error || '维护者确认标签同步失败' });
   }
   save('checking', { release });
@@ -88,7 +93,8 @@ export async function finishReviewedPr(options, { run, sleep, checkpoint = () =>
     // retry or merge receipt across a newly discovered real blocker.
     save('checking', { preMerge: check, checks: state.checks + 1, merge: undefined, retry: false });
     if (!check.ok) return save('check-failed', { ok: false, retry: true, reason: check.error || check.reason });
-    if (!check.canMerge && !check.normalMergeAvailable && canWaitForApproval(check, approval) && await waitOnce()) continue;
+    // 审查 App 的 Approve 不会让「等维护者批准」自己消失,不为它空等。
+    if (!check.canMerge && !check.normalMergeAvailable && !reviewerApp && canWaitForApproval(check, approval) && await waitOnce()) continue;
     if (mode === 'review-only') {
       return save('reviewed-only', { ok: true, canMerge: Boolean(check.canMerge || check.structuralBypassAvailable), reason: '已审核通过，review-only 不执行合并' });
     }

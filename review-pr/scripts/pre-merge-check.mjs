@@ -23,18 +23,20 @@
 //     --expected-authority-digest <digest>
 // 所有作者都必须传已审查 head SHA 与 authority digest;任一缺失/变化时所有 merge route 都不可用。
 
-import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, toMaintainerAuthorBlock, CI_ROLLUP_UNREADABLE_BLOCKER, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
+import { parseRepo, parsePR, ghJson, ghGraphql, gh, classifyHeadChecks, fetchCiRollup, fetchCheckRunsWithApps, classifyRollupContexts, evaluateCiStatus, fetchStaleRebase, probeBranchProtection, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, evaluateMaintainerReview, isApprovalPendingReviewDecision, evaluateNormalMergeAvailable, evaluateApprovalExemptAdminMerge, evaluateAdminBranchRules, fetchAllReviewThreads, latestSubstantiveReviews, print, fail, evaluateBotSettleSinceReady, toHeadPushedAt, botCheckActivity, matchPathPatterns, toMaintainerAuthorBlock, viewerLoginOverride, normalizeReviewActor, CI_ROLLUP_UNREADABLE_BLOCKER, SIGNOFF_LABEL_DEFAULT, LEGACY_GATE_LABELS } from './lib.mjs';
 import { filePatchHashesFromPullFiles, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { REVIEW_CHANGES_REQUESTED_BLOCKER } from './merge-retry.mjs';
 import { filterIgnoredCiContexts, ciMergeStateIgnoring } from './lib.mjs'; // [MIVO-PATCH ci-ignore]
 import { fetchCodeScanRules, toCodeScanCheckFacts } from './lib.mjs'; // [MIVO-PATCH code-scan-gate]
 
-const META_QUERY = `
+// [MIVO-PATCH reviewer-app] author 带 __typename:Bot 作者的 GraphQL login 不带 [bot],不取类型就认不出是 Bot。
+// 设了 REVIEW_PR_VIEWER_LOGIN(App 安装令牌没有 viewer)时不查 viewer,身份取该变量。
+const metaQuery = (withViewer) => `
   query($owner:String!,$repo:String!,$num:Int!){
-    viewer{ login }
+    ${withViewer ? 'viewer{ login }' : ''}
     repository(owner:$owner,name:$repo){
       pullRequest(number:$num){
-        author{ login }
+        author{ login __typename }
         commits(last:1){ nodes{ commit{ committedDate } } }
       }
     }
@@ -86,10 +88,14 @@ try {
   // 每个 reviewer 的「最新」review 算 —— approve-reviewed-pr 覆盖掉自己旧的 CHANGES_REQUESTED 后会变
   // APPROVED,不会被历史那条残留 CR 误判成「仍有未解决 CR」而反复拦死)。
 
-  const data = ghGraphql(META_QUERY, { owner, repo, num: pr });
-  const viewerLogin = data?.data?.viewer?.login ?? '';
+  const viewerOverride = viewerLoginOverride();
+  const data = ghGraphql(metaQuery(!viewerOverride), { owner, repo, num: pr });
+  const viewerLogin = viewerOverride || (data?.data?.viewer?.login ?? '');
   const prNode = data?.data?.repository?.pullRequest;
-  const prAuthor = prNode?.author?.login ?? '';
+  // 作者按带类型的 actor 判断;Bot 作者归一成 login[bot](app/x、{login,__typename:Bot}、x[bot] 三种写法同一结果),人类作者保持原 login。
+  const prAuthorActor = { login: prNode?.author?.login ?? '', __typename: prNode?.author?.__typename ?? '' };
+  const prAuthorKey = normalizeReviewActor(prAuthorActor);
+  const prAuthor = prAuthorKey?.isBot ? prAuthorKey.key : prAuthorActor.login;
   const headCommittedDate = prNode?.commits?.nodes?.[0]?.commit?.committedDate ?? '';
 
   let maintainerAuthority = null;
@@ -105,12 +111,13 @@ try {
     authorityError = String(error?.message ?? error);
   }
   const approvalPolicy = evaluateMaintainerApprovalPolicy({
-    authorLogin: prAuthor,
+    authorLogin: prAuthorActor,
     viewerLogin,
     authority: maintainerAuthority,
+    reviewerApps: rules.reviewerApps,
   });
   const approvalExemption = evaluateApprovalExemption({
-    authorLogin: prAuthor,
+    authorLogin: prAuthorActor,
     authority: maintainerAuthority,
   });
   const reviewActivity = fetchRestPages(`repos/${slug}/pulls/${pr}/reviews`);
@@ -121,6 +128,7 @@ try {
     ? evaluateMaintainerReview({
       reviews: reviewActivity.items.map((review) => ({
         login: review.user?.login ?? '',
+        author: { login: review.user?.login ?? '', __typename: review.user?.type ?? '' }, // [MIVO-PATCH reviewer-app] 保留类型:Bot 的 review 不是维护者确认
         state: review.state,
         at: review.submitted_at ?? '',
       })),

@@ -21,6 +21,7 @@ import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudica
 import { buildThreadResolutionPlan } from '../lib/thread-resolution.mjs';
 import { TIER_DEFAULTS, DEFAULT_JOB_TIMEOUT_MIN, MIN_FALLBACK_MS, SETTLE_MS, FALLBACK_RESERVE_MS, tierConfig, roleModel, roleWarnings, nextAttempt, isDegraded, codexBudgetMs, pickJobStart } from '../lib/models.mjs';
 import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
+import { toDefaultBranchRequest, parseDefaultBranch } from '../lib/default-branch.mjs'; // [MIVO-PATCH reviewer-app]
 import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, toUnavailableModels, VERIFY_SCHEMA } from '../lib/verify.mjs';
 import { checkEvidence } from '../lib/finding.mjs';
@@ -103,8 +104,9 @@ async function prepare() {
   saveState(state);
   try {
     // 1. 检出 PR head(detached),只取需要的对象。
-    const repoMeta = JSON.parse(gh(['api', `repos/${input.targetRepo}`], { cwd: WORK }).stdout);
-    const defaultBranch = repoMeta.default_branch;
+    // [MIVO-PATCH reviewer-app] 默认分支走 GraphQL defaultBranchRef(App 令牌可读);不读 repos/<o>/<r> 根 REST。
+    const branchRequest = toDefaultBranchRequest(input.targetRepo);
+    const defaultBranch = parseDefaultBranch(gh(branchRequest.args, { cwd: WORK, input: branchRequest.input }).stdout, input.targetRepo);
     run('git', ['init', '-q', REPO_DIR]);
     git(['remote', 'add', 'origin', `https://github.com/${input.targetRepo}.git`]);
     git(['fetch', '-q', '--filter=blob:none', '--no-tags', 'origin',
@@ -175,12 +177,12 @@ async function prepare() {
     state.deferrals = collectDeferrals(input, ctx, state);
     writeJson(join(INPUT_DIR, 'deferrals.json'), state.deferrals);
     // 3c. 维护者裁定不改(见 lib/rulings.mjs):只认维护者在审查机 thread 里的裁定回复。
-    state.rulings = collectRulings({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, maintainers: ctx.signoff?.maintainers ?? [] });
+    state.rulings = collectRulings({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, reviewerIdentity: ctx.reviewerIdentity, maintainers: ctx.signoff?.maintainers ?? [] });
     for (const r of state.rulings.rejected) state.warnings.push(`裁定不改没有采用(${r.path ?? r.threadId}):${r.reason}`);
     // 3d. 作者申辩:作者一方在审查机 thread 里说明不成立的依据,任务书要求逐条核对(见 lib/rulings.mjs)。
-    state.rebuttals = collectRebuttals({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, author: ctx.meta?.author });
+    state.rebuttals = collectRebuttals({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, reviewerIdentity: ctx.reviewerIdentity, author: ctx.meta?.author });
     // 3e. 盯梢裁决(见 lib/rulings.mjs):先核对记录本身,再用 git 核对裁决之后相关文件有没有改过;核验通过的 P1/P2 不再阻断。
-    const adjudications = collectAdjudications({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, standardVersion: SEVERITY_VERSION });
+    const adjudications = collectAdjudications({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, reviewerIdentity: ctx.reviewerIdentity, standardVersion: SEVERITY_VERSION });
     const confirmed = confirmAdjudications({ verified: adjudications.verified, head: input.head,
       codeState: (rulingHead, path) => adjudicationCodeState(rulingHead, path, input.head) });
     state.adjudications = { verified: confirmed.verified, rejected: [...adjudications.rejected, ...confirmed.rejected] };
@@ -757,7 +759,7 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
     ? { review: state.handoff.review, plan: scope.handoffPlan ?? [], headReader: handoffHeadReaderFor(state.input.head), source: { head: state.input.head, runId: state.input.runId } } : null;
   const checked = validateAnswer(answer, { diffFiles, deferrals: state.deferrals?.verified ?? [], headReader: headReaderFor(state.input.head), handoff });
   if (!checked.ok) return checked;
-  const history = collectMarkerHistory({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer ?? state.context.viewer, currentHead: state.input.head });
+  const history = collectMarkerHistory({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer ?? state.context.viewer, reviewerIdentity: ctx.reviewerIdentity, currentHead: state.input.head });
   const roundIndex = roundIndexOf({ previousRound: state.previousRound ?? null, hasPrevious: Boolean(state.previous), history });
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
@@ -1260,11 +1262,11 @@ function resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKey
       sourceComplete: resolutionKeys.complete, published: true };
     const excludedKeys = resolutionKeys.keys;
     // 先用 prepare 快照预筛:没有旧 thread 候选就不起子进程、不访问网络。
-    const pre = buildThreadResolutionPlan({ round, head: input.head, reviewer, runUrl: input.runUrl, reviewedThreads: ctx.history?.reviewThreads ?? [],
+    const pre = buildThreadResolutionPlan({ round, head: input.head, reviewer, reviewerIdentity: ctx.reviewerIdentity, runUrl: input.runUrl, reviewedThreads: ctx.history?.reviewThreads ?? [],
       liveThreads: ctx.history?.reviewThreads ?? [], threadsVerified: true, excludedKeys, maintainers: [] });
     if (!pre.threads.length) return;
     const request = { binding: { targetRepo: input.targetRepo, pr: input.pr, head: input.head, base: input.base, baseRefName: state.context.baseRefName,
-      reviewer, lockToken: state.lockToken, authorityDigest: state.authorityDigest, runUrl: input.runUrl, mode: input.mode },
+      reviewer, reviewerIdentity: ctx.reviewerIdentity, lockToken: state.lockToken, authorityDigest: state.authorityDigest, runUrl: input.runUrl, mode: input.mode },
     round, contextFile: state.context.file, excludedKeys };
     const out = runScript(RESOLVE_RUNNER, [], { cwd: REPO_DIR, env: scriptEnv(), input: JSON.stringify(request), timeoutMs: 190_000 });
     result.mivo.threadResolution = out.ok === true ? { status: out.status, skippedReason: out.skippedReason, plannedCount: out.plannedCount,
