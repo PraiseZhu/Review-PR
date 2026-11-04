@@ -499,6 +499,33 @@ test('扫描根之外的服务器调用也登记:mivo/server/review.mjs 的 Prep
   }
 });
 
+test('F1:数组里的小写局部变量(endpoint)改形,指纹必须变,清单必须红', () => {
+  const mutate = (file, from, to) => {
+    const copy = new Map(sources);
+    const text = copy.get(file);
+    assert.ok(text.includes(from), `${file} 里找不到 ${from}`);
+    copy.set(file, text.replace(from, to));
+    return scanGhTemplates(copy);
+  };
+  // 真实源码:fetchStaleRebase 的 compare 端点(App 可读)改成仓库根(user)
+  const changed = mutate('review-pr/scripts/lib.mjs', 'const endpoint = `repos/${slug}/compare/${encodeURIComponent(baseRef)}...${headSha}`;', 'const endpoint = `repos/${slug}`;');
+  assert.deepEqual(changed.unresolved, []);
+  assert.match(validateInventory(changed.templates, inventory).join('\n'), /没登记/);
+  // 合成夹具:局部变量被改,指纹变
+  const synth = (endpoint) => scanGhTemplates(new Map([[SYNTH_FILE, `export function a(slug, ghFn) { const endpoint = ${endpoint}; return ghFn(['api', endpoint], { allowFail: true }); }`]])).templates[0].sig;
+  assert.notEqual(synth('`repos/${slug}/compare/main...x`'), synth('`repos/${slug}`'));
+  // 间接依赖(局部变量引用另一个局部变量)也要进指纹
+  const indirect = (base) => scanGhTemplates(new Map([[SYNTH_FILE, `export function a(slug, ghFn) { const base = ${base}; const endpoint = \`\${base}/compare\`; return ghFn(['api', endpoint]); }`]])).templates[0].sig;
+  assert.notEqual(indirect('`repos/${slug}`'), indirect('`orgs/${slug}`'));
+});
+
+test('F1:数组里的标识符既不是形参也找不到声明 → unresolved(红)', () => {
+  const r = scanGhTemplates(new Map([[SYNTH_FILE, "export function a(ghFn) { return ghFn(['api', mystery]); }"]]));
+  assert.match(JSON.stringify(r.unresolved), /mystery/);
+  const ok = scanGhTemplates(new Map([[SYNTH_FILE, "export function a(ghFn, endpoint) { return ghFn(['api', endpoint]); }"]]));
+  assert.deepEqual(ok.unresolved, []);
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
