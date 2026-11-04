@@ -1,5 +1,5 @@
 // [MIVO-PATCH app-read-route] 原样搬运,不要在这里改逻辑。
-// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ 077a4bb56(原文件 sha256 12dd0e7f9f7082d1c650424f66d40ca972c9e575d5a7771178d533110cb09245)。
+// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ cc2fd4c6f618d7de1f825a1fefca272f455ae4ca(原文件 sha256 828e52f6cbbdaadc05210ebfc53b73d725e5f7706c31c48c5e8185e0590f77c0)。
 // Mini 上的 gh 分流器用同一份规则;服务器发布步骤用它判断「这条 gh 请求能不能改用 App 只读令牌」。
 // 规则要改,先改插件仓那份,再整份重新搬运,并更新 gh-read-route.test.mjs 里的 sha256。
 // gh 命令分类器（纯函数，不碰文件系统；readFile 由调用方注入）。
@@ -49,7 +49,8 @@ const NODE_REPO_TYPES = new Set([
   'Workflow', 'WorkflowRun', 'Deployment', 'DeploymentStatus', 'Label', 'Milestone', 'Release', 'Ref', 'Tag', 'Tree', 'Blob',
   'Discussion', 'DiscussionComment', 'PullRequestCommit',
 ])
-const NODE_IDENTITY_CONNECTIONS = /\b(?:repositories|repositoriesContributedTo|organizations|starredRepositories|watching|pinnedItems|pinnableItems|gists|packages|sponsoring|sponsors|contributionsCollection)\b/
+// pullRequests / issues：User 上也有这两个连接（经 assignees、author 等直接落到 User，不需要 `on User`），按可见性返回子集；仓库自己的同名连接一并保守判给 PraiseZhu（QA #1084）。
+const NODE_IDENTITY_CONNECTIONS = /\b(?:repositories|repositoriesContributedTo|organizations|starredRepositories|watching|pinnedItems|pinnableItems|gists|packages|sponsoring|sponsors|contributionsCollection|pullRequests|issues)\b/
 function hasNonRepoTypeCondition(text) {
   const toks = lexGraphql(text)
   for (let i = 0; i < toks.length; i += 1) {
@@ -207,7 +208,8 @@ const READ_COMMANDS = {
 }
 
 // headRepository / headRepositoryOwner 指向 fork 仓：App 看不到时 GitHub 照样成功、字段缺失，不会回落，所以交给 PraiseZhu。
-const SENSITIVE_JSON_FIELDS = new Set(['reviewrequests', 'projectcards', 'projectitems', 'headrepository', 'headrepositoryowner'])
+// mergeStateStatus 按调用者算：只读 App 看到的总是 BLOCKED，GitHub 照样成功，不会回落。
+const SENSITIVE_JSON_FIELDS = new Set(['reviewrequests', 'projectcards', 'projectitems', 'headrepository', 'headrepositoryowner', 'mergestatestatus'])
 
 // graphql
 function lexGraphql(text) {
@@ -437,6 +439,7 @@ function classifyGraphql(parsed, ctx, cmd) {
 
   // 在原文（含字符串和注释）上做保守检查，宁可多判给 user。
   if (/viewer/i.test(queryText)) return toUser('graphql_viewer', cmd)
+  if (/mergeStateStatus/i.test(queryText)) return toUser('graphql_merge_state', cmd) // 按调用者算，见 SENSITIVE_JSON_FIELDS
   if (/\b(mutation|subscription)\b/.test(queryText)) return toUser('graphql_mutation', cmd)
   if (/@me\b/i.test(queryText)) return toUser('at_me', cmd)
   if (/protection|ruleset|collaborator|team|member|permission|reviewRequest|requestedReviewer|project/i.test(queryText)
@@ -501,6 +504,8 @@ function classifyApi(argv, ctx) {
   let endpoint = normalizeEndpoint(parsed.positionals[0])
   if (endpoint.includes('://')) return toUser('foreign_url', cmd)
   endpoint = endpoint.replace(/^\/+/, '')
+  // 片段不发给 API，但 gh 会按字面拼路径：`pulls/1#x` 绕过单个 PR 对象的判断，一律判给 PraiseZhu。
+  if (endpoint.includes('#')) return toUser('unsafe_path', cmd)
   if (endpoint === 'graphql') return classifyGraphql(parsed, ctx, 'api graphql')
 
   const fields = parsed.ordered.filter((f) => f.long === 'raw-field' || f.long === 'field')
@@ -519,7 +524,7 @@ function classifyApi(argv, ctx) {
     if (seg === '' || seg === '.' || seg === '..') return toUser('unsafe_path', cmd)
     let decoded
     try { decoded = decodeURIComponent(seg) } catch { return toUser('unsafe_path', cmd) }
-    if (decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')) return toUser('unsafe_path', cmd)
+    if (decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\') || decoded.includes('#')) return toUser('unsafe_path', cmd)
     segs.push(decoded.toLowerCase())
   }
   if (segs[0] === 'user') return toUser('identity_endpoint', cmd)
@@ -527,6 +532,8 @@ function classifyApi(argv, ctx) {
   if (segs.length < 3) return toUser('unsafe_path', cmd)
   if (!ctx.repoSet.has(`${segs[1]}/${segs[2]}`)) return toUser('repo_not_allowlisted', cmd)
   if (segs.length === 3) return toUser('identity_endpoint', cmd) // 仓库对象带随调用者变化的 permissions
+  // 单个 PR 对象带按调用者算的 mergeable_state（App 看到 blocked）；列表接口不带这个字段，仍走 App。
+  if (segs.length === 5 && segs[3] === 'pulls' && /^\d+$/.test(segs[4])) return toUser('merge_state_endpoint', cmd)
   if (segs.slice(3).some((s) => DENY_SEGMENTS.has(s))) return toUser('admin_endpoint', cmd)
   if (!REST_ALLOWED.has(segs[3])) return toUser('endpoint_not_allowlisted', cmd)
   if (segs[3] === 'actions' && !ACTIONS_ALLOWED.has(segs[4])) return toUser('endpoint_not_allowlisted', cmd)
@@ -554,8 +561,9 @@ function classifyRead(key, argv, ctx) {
   }
   const json = lastValue(parsed, 'json')
   if (def.needJson && json === undefined) return toUser('human_output', cmd)
-  if (json !== undefined) {
-    for (const field of json.split(',')) {
+  // --json 可以重复，gh 会把多个值合并到同一个查询里，所以每个出现过的值都要检查。
+  for (const value of parsed.values.get('json') ?? []) {
+    for (const field of value.split(',')) {
       if (SENSITIVE_JSON_FIELDS.has(field.trim().toLowerCase())) return toUser('sensitive_json_field', cmd)
     }
   }
