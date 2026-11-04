@@ -1670,7 +1670,7 @@
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "ghJson",
     "sig": "52d4503aef",
-    "count": 1
+    "count": 2
    },
    "flows": [
     "interactive"
@@ -1747,11 +1747,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.gh.f643f2b35b",
+   "id": "dismiss-own-review.gh.39a96b6774",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "gh",
-    "sig": "f643f2b35b",
+    "sig": "39a96b6774",
     "count": 1
    },
    "flows": [
@@ -1809,7 +1809,7 @@
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "ghJson",
     "sig": "52d4503aef",
-    "count": 1
+    "count": 2
    },
    "flows": [
     "interactive"
@@ -4821,6 +4821,60 @@
      ],
      "expected": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
+    }
+   ]
+  },
+  {
+   "id": "dismiss-review.ghFn.a491648a3f",
+   "source": {
+    "file": "review-pr/scripts/dismiss-review.mjs",
+    "callee": "ghFn",
+    "sig": "a491648a3f",
+    "count": 1
+   },
+   "flows": [
+    "interactive"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "--method",
+      "PUT",
+      "repos/xindong/mivo-canvas-plugin/pulls/7/reviews/7/dismissals",
+      "--input",
+      "-"
+     ],
+     "expected": "user",
+     "keep": {
+      "category": "interactive-skill",
+      "reason": "review-pr/scripts/dismiss-review.mjs 只被 dismiss-own-review / dismiss-stale-reviews(维护者手动运行的 skill 流程)调用,不在 round.mjs / review.mjs 调用链上"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dismiss-review.ghFn.54e9ea8e76",
+   "source": {
+    "file": "review-pr/scripts/dismiss-review.mjs",
+    "callee": "ghFn",
+    "sig": "54e9ea8e76",
+    "count": 1
+   },
+   "flows": [
+    "interactive"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "--method",
+      "GET",
+      "repos/xindong/mivo-canvas-plugin/pulls/7/reviews/7"
+     ],
+     "expected": "app"
     }
    ]
   }
