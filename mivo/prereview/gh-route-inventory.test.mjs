@@ -782,6 +782,13 @@ test('F4:forwarder 资格由扫描器判定:把具体调用标成 forwarder 并�
   assert.ok(!scanGhTemplates(new Map([[SYNTH_FILE, "export function w(slug) { return gh(['api', `repos/${slug}`]); }"]])).templates[0].forwarder);
 });
 
+test('F3:SC11 真的复算旧 vendor:把全部 legacyServerRoute 改成 user 必须红', () => {
+  assert.equal(typeof checkServerRoutes, 'function', '守卫里没有「旧 vendor + 新 vendor 双边复算」');
+  const lying = structuredClone(inventory);
+  for (const e of lying.entries) for (const c of e.cases ?? []) if (c.legacyServerRoute) c.legacyServerRoute = 'user';
+  assert.match(checkServerRoutes(lying, routeModules.decideNew, routeModules.decideLegacy).join('\n'), /legacyServerRoute/);
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
