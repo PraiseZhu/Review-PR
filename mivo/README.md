@@ -530,6 +530,7 @@ Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这
 | 变量 | 作用 |
 |---|---|
 | `REVIEW_PR_VIEWER_LOGIN` | 审查账号登录名，填 `PraiseZhu`。context 用它代替 GraphQL 的 `viewer{login}`，查询里不再要 viewer：hold 标记认人、排除审查机自己的 review、`viewerIsAuthor`、评论过滤、自解死锁、服务器认裁定和申辩 thread 都用它。prepare 的登录检查改为读一次目标仓库（integration 令牌没有 `/user`，`gh auth status` 会误报）。必须和发布用的 `MIVO_REVIEW_BOT_TOKEN` 是同一个账号，代码不核对。格式不对直接报错。 |
+| `REVIEW_PR_VIEWER_ALIASES` | 可选，JSON 数组字符串，例如 `["PraiseZhu"]`（审查账号换成 `praisebuild[bot]` 后，PraiseZhu 的旧留痕仍然认）。审查身份集合 = `REVIEW_PR_VIEWER_LOGIN` ∪ 别名；「这是不是审查账号写的」（hold 标记、审查机自己的 review 与 thread、旧打回、提醒去重、自批排除）都按集合判，所以切到新账号后 PraiseZhu 写的旧留痕仍然认。**集合只回答归属，不赋权**：维护者名单、写前身份绑定、确认放行都不看它。bot 一律写 REST 形态 `praisebuild[bot]`（GraphQL 里是登录名 `praisebuild` 加 Bot 类型，两种都认；同名的普通用户 `praisebuild` 不算）。没配时集合只有 `REVIEW_PR_VIEWER_LOGIN` 一个账号，行为和改动前相同。不是 JSON 数组、元素不是合法登录名直接报错并写出字段名。身份是 bot 时 `approve-reviewed-pr.mjs`、`merge-reviewed-pr.mjs` 退出码 2、错误码 `bot-identity-forbidden`，不写任何东西。 |
 | `REVIEW_PR_IDENTITY_TOKEN` | 要审查账号身份或 Administration 读权限的调用改用它：`branches/<base>/protection`、`.../required_signatures`、`rulesets/<id>` 的 `current_user_can_bypass`、沙箱检查镜像的跨仓派发。其余调用仍用 `GH_TOKEN`。这几个调用失败时不换凭证重试。 |
 | `REVIEW_PR_NO_CRED_FALLBACK` | 设为 `1` 时关掉「403 Resource not accessible 时摘掉 GH_TOKEN 重试」。用 integration 令牌时必须设：runner 上没有别的凭证，重试只会把原始报错盖掉。 |
 
@@ -547,7 +548,7 @@ Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这
    ```
 
 3. workflow 的 `permissions:` 补 `issues: read`（讨论 issue、转 issue 登记）和 `statuses: read`（statusCheckRollup 里的 commit status）。少了它们，context 读不全，CI 会判成 unknown 或直接报错。现有的 `contents: read`、`pull-requests: read`、`actions: read`、`checks: write` 保留。
-4. publish 步骤不动：写入和写前复核（`gh api user`）仍是 PraiseZhu。
+4. publish 步骤不动：写入和写前复核仍是 PraiseZhu。写前复核现在读统一的身份入口（`readReviewIdentity`）：配了 `REVIEW_PR_VIEWER_LOGIN` 就用它，没配才回落读一次 `gh api user`。
 5. `review-pr.yml` 要和本仓提交在同一个停点一起生效：先让本仓带这个改动的提交通过「每天自动换版本」上线（那时变量都没设，行为不变），再开 Mivo PR 改 `review-pr.yml`，用 `deploy-tuple.mjs --pr <PR> --pr-head <head>` 整组换，不能只改 workflow 单文件。
 6. 切 live 之前先在 dry-run 跑同一批 PR，对比两种令牌下 context 的 `meta.mergeStateStatus`、`gate.blockClass`、`gate.ci.status`、`approvalPolicy`，一致再切。`mergeStateStatus` 是否随调用身份变化、`collaborators/<login>/permission` 在 integration 令牌下是否可读，都还没有实测；读不到时 prepare 会报错并重试，不会放行。
 7. `github.token` 的 REST 限额是每仓每小时 1000 次（企业版 15000），按每天 `MIVO_REVIEW_DAILY_CAP` 次估算应当够用；每次 prepare 的实际请求数未实测。
@@ -565,7 +566,8 @@ bash ~/mivo-prereview/skill/mivo/prereview/install-mini.sh --sha <SHA> --instanc
 
 Mini 的 `gh` 经 GitHub App 分流（`~/mivo-gh-router/praisebuild`）。查询里带 `viewer` 或 `headRepository` 的读请求会整条交给 PraiseZhu，所以：
 
-- 配置 JSON 可加 `"viewerLogin": "PraiseZhu"`（必须是 `gh` 登录的账号）：`round.mjs` 给脚本设 `REVIEW_PR_VIEWER_LOGIN`，context 不再查 `viewer`（见上节 identity-env）。不填时行为不变。
+- 配置 JSON 可加 `"viewerLogin": "PraiseZhu"`（必须是 `gh` 登录的账号）：`round.mjs` 给脚本设 `REVIEW_PR_VIEWER_LOGIN`，context 不再查 `viewer`（见上节 identity-env）。不填时行为不变。`viewerLogin` 可写 bot 的 REST 形态（例如 `praisebuild[bot]`）。
+- 配置 JSON 可加 `"viewerAliases": ["PraiseZhu"]`：`round.mjs` 给脚本设 `REVIEW_PR_VIEWER_ALIASES`（JSON 数组），不填就不设，也不从 launchd 环境继承。必须是登录名数组，且必须同时配 `viewerLogin`，否则启动即报错（错误里写出字段名）。完整示例（只作示例，不是线上配置）：`{"viewerLogin":"praisebuild[bot]","viewerAliases":["PraiseZhu"]}`。服务器 `review.mjs` 只透传环境变量；`rulings`、`convergence`、`thread-resolution` 等服务器侧按单值认审查账号的判断仍待 #177。
 - `round.mjs` 固定设 `REVIEW_PR_SNAPSHOT_FORK_NAME=0`：每轮的 open PR 快照不读 fork 名，只读 `isCrossRepository`（MIVO-PATCH app-readable-snapshot）。
 - 配置 JSON 可加 `"gateParallel": 8`（1–16 的整数，不配按 8）：同时判门的上限，见「滚动接单」一节。
 - 配置 JSON 可加 `"branchProtectionCacheMs": 600000`（0–3600000 整数毫秒）：`round.mjs` 给脚本设 `REVIEW_PR_BRANCH_PROTECTION_CACHE_MS`，分支保护读取按「仓+分支」缓存 10 分钟（MIVO-PATCH branch-protection-cache）。不配=每次都读。

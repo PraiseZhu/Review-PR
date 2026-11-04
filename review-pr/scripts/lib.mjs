@@ -18,7 +18,15 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { atomicWriteJson, parseApiJson, parseScriptResult } from './runtime-io.mjs';
 import { readRouteConfig, decideReadRoute, appReadEnv, shouldFallbackToUser, recordRoute } from './gh-read-route.mjs';
+import {
+  normalizeReviewActor, validateViewerLogin, parseViewerAliases, createReviewIdentity,
+  isReviewIdentity, sameReviewActor, toReviewIdentity, reviewRecordActor,
+} from './reviewer-identity.mjs';
 export { atomicWriteJson, parseApiJson } from './runtime-io.mjs';
+export {
+  normalizeReviewActor, validateViewerLogin, parseViewerAliases, createReviewIdentity,
+  isReviewIdentity, sameReviewActor, toReviewIdentity, reviewRecordActor,
+} from './reviewer-identity.mjs';
 
 const isWin = process.platform === 'win32';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -658,7 +666,7 @@ export function loadMaintainerAuthoritySnapshot({
 }
 
 /** 当前 viewer/作者相对于 Team + maintainerAllowlist 最终维护者集合的统一审批策略。 */
-export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null } = {}) {
+export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null } = {}) {
   const members = new Set(normalizeLoginList(authority?.members));
   const teamMembers = new Set(normalizeLoginList(authority?.teamMembers));
   const allowlistedMembers = new Set(normalizeLoginList(authority?.allowlistedMembers));
@@ -666,7 +674,10 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
   const viewer = String(viewerLogin ?? '').trim().toLowerCase();
   const authorIsMaintainer = author !== '' && members.has(author);
   const viewerIsMaintainer = viewer !== '' && members.has(viewer);
-  const viewerIsAuthor = author !== '' && viewer !== '' && author === viewer;
+  // 自批排除按「作者 ∈ 审查身份集合」判;没传身份集合就是旧的单账号比较。集合只回答归属,
+  // 维护者资格(viewerIsMaintainer)仍只看真实 viewer,不因 aliases 变化。
+  const viewerIsAuthor = author !== '' && viewer !== '' &&
+    (author === viewer || Boolean(reviewerIdentity) && isReviewIdentity(authorLogin, reviewerIdentity));
   const authoritySource = (login, isMaintainer) => {
     if (!isMaintainer) return null;
     if (teamMembers.has(login)) return 'codeowners-root-team';
@@ -818,16 +829,43 @@ export function credFallbackStats() {
 //   REVIEW_PR_VIEWER_LOGIN       审查账号登录名,代替 GraphQL viewer{login}(context.mjs)
 //   REVIEW_PR_IDENTITY_TOKEN     要审查账号身份或 Administration 读的调用改用它(分支保护、ruleset bypass)
 //   REVIEW_PR_NO_CRED_FALLBACK=1 见上方 credFallbackPlan;integration 令牌下必须设
-const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-
-/** REVIEW_PR_VIEWER_LOGIN 去空白后的值;没设或为空返回 ''。设了但不是合法 GitHub 登录名直接抛错,不退回 GraphQL viewer。 */
+/** REVIEW_PR_VIEWER_LOGIN 去空白后的值;没设或为空返回 ''。设了但不是合法 GitHub 登录名(bot 可带 [bot] 后缀)直接抛错,不退回 GraphQL viewer。 */
 export function viewerLoginOverride(env = process.env) {
-  const login = String(env.REVIEW_PR_VIEWER_LOGIN ?? '').trim();
-  if (!login) return '';
-  if (!GITHUB_LOGIN_RE.test(login)) {
-    throw new Error(`REVIEW_PR_VIEWER_LOGIN 不是合法的 GitHub 登录名(期望字母、数字、连字符,最长 39 位,实际 ${JSON.stringify(login.slice(0, 60))})`);
+  if (!String(env.REVIEW_PR_VIEWER_LOGIN ?? '').trim()) return '';
+  return validateViewerLogin(env.REVIEW_PR_VIEWER_LOGIN, 'REVIEW_PR_VIEWER_LOGIN');
+}
+
+/**
+ * 当前审查身份的统一读取入口。优先级:REVIEW_PR_VIEWER_LOGIN → 调用方已读到的 fallbackViewer
+ * (context 的 GraphQL viewer,可带 __typename)→ 一次 `gh api user`(只有没配身份时才走)。
+ * REVIEW_PR_VIEWER_ALIASES(JSON 数组)只扩归属集合,不改变「当前写入账号」;非法值在发任何请求前就抛。
+ * 读不到身份抛 REVIEW_IDENTITY_UNAVAILABLE,不静默放行。每次写前各自调用,不跨写缓存。
+ * 返回 createReviewIdentity 的结果:viewerLogin 是当前写入账号,logins 是归属集合。
+ */
+export function readReviewIdentity({ env = process.env, ghFn = gh, fallbackViewer } = {}) {
+  const override = viewerLoginOverride(env);
+  const viewerAliases = parseViewerAliases(env.REVIEW_PR_VIEWER_ALIASES);
+  let viewer = override;
+  if (!viewer && normalizeReviewActor(fallbackViewer)) viewer = fallbackViewer;
+  if (!viewer) {
+    const result = ghFn(['api', 'user', '--jq', '.login'], { noCredFallback: true, allowFail: true });
+    const login = String(result?.stdout ?? '').trim();
+    if (result?.ok === false || !normalizeReviewActor(login)) {
+      throw new Error(`REVIEW_IDENTITY_UNAVAILABLE: 读不到当前 GitHub 审查身份(gh api user ${result?.ok === false ? '失败' : '返回为空'})`);
+    }
+    viewer = login;
   }
-  return login;
+  return createReviewIdentity({ viewerLogin: viewer, viewerAliases });
+}
+
+/** readReviewIdentity 的宽松版:读不到身份(REVIEW_IDENTITY_UNAVAILABLE)返回空集合,由调用方走原有的「viewer 未核验」分支;配置写错(别名非法等)仍然抛错。 */
+export function readReviewIdentityOrEmpty(options = {}) {
+  try {
+    return readReviewIdentity(options);
+  } catch (error) {
+    if (String(error?.message ?? '').startsWith('REVIEW_IDENTITY_UNAVAILABLE')) return createReviewIdentity();
+    throw error;
+  }
 }
 
 /** 要审查账号身份的单次 gh 调用的额外选项。没设(或为空)返回 {}(调用与改动前相同);
@@ -1026,6 +1064,18 @@ export function fetchRestPages(endpoint, { ghFn = gh, timeoutMs = 30_000 } = {})
     throw new Error(`GET ${endpoint}: REST 分页结果形状异常`);
   }
   return pages.flat();
+}
+
+/**
+ * PR 主讨论区评论,作者带类型(REST 的 user.type → __typename)。
+ * `gh pr view --json comments` 对 bot 只给裸 login(github-actions、praisebuild,没有 [bot] 也没有类型),
+ * 认「是不是审查 bot 写的」会认不出;要比较作者身份就读这个。形状同 context.mjs 里的 comments 节点。
+ */
+export function fetchPrCommentsWithAuthorType(slug, pr, options = {}) {
+  return fetchRestPages(`repos/${slug}/issues/${pr}/comments`, options).map((c) => ({
+    body: c.body, createdAt: c.created_at, updatedAt: c.updated_at, url: c.html_url,
+    author: { login: c.user?.login, __typename: c.user?.type },
+  }));
 }
 
 const REVIEW_THREADS_PAGE_QUERY = `
@@ -1767,17 +1817,17 @@ export function evaluateOwnReviewDismissal({
   threadsVerified = false,
   expectedHead = '',
   actualHead = '',
+  reviewerIdentity = null,
 } = {}) {
   const failedChecks = [];
-  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
+  const viewer = String(typeof viewerLogin === 'string' ? viewerLogin : viewerLogin?.viewerLogin ?? '').trim().toLowerCase();
+  const identity = toReviewIdentity(reviewerIdentity ?? viewerLogin);
+  const isOwn = (review) => isReviewIdentity(reviewRecordActor(review), identity);
   const changesRequested = latestSubstantiveReviews(reviews)
     .filter((review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED');
-  const ownReviews = changesRequested.filter((review) =>
-    String(review?.user?.login ?? review?.author?.login ?? '').trim().toLowerCase() === viewer
-  );
+  const ownReviews = changesRequested.filter(isOwn);
   const allOwnReviews = (Array.isArray(reviews) ? reviews : []).filter((review) =>
-    String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED' &&
-    String(review?.user?.login ?? review?.author?.login ?? '').trim().toLowerCase() === viewer
+    String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED' && isOwn(review)
   );
   const reviewIds = allOwnReviews
     .map((review) => Number(review?.id))
@@ -1788,7 +1838,7 @@ export function evaluateOwnReviewDismissal({
   if (state !== 'OPEN') failedChecks.push(`PR state=${state || '(empty)'}(非 OPEN)`);
   if (mergeStateStatus !== 'BLOCKED') failedChecks.push(`mergeStateStatus=${mergeStateStatus || '(empty)'}(非 BLOCKED)`);
   if (reviewDecision !== 'CHANGES_REQUESTED') failedChecks.push(`reviewDecision=${reviewDecision || '(empty)'}(非 CHANGES_REQUESTED)`);
-  if (!viewer) failedChecks.push('viewer 身份为空');
+  if (!viewer || identity.logins.length === 0) failedChecks.push('viewer 身份为空');
   if (changesRequested.length === 0) failedChecks.push('没有任何 CHANGES_REQUESTED review');
   if (changesRequested.length > ownReviews.length) failedChecks.push('存在别人留下的 CHANGES_REQUESTED review');
   if (allOwnReviews.length !== reviewIds.length) failedChecks.push('viewer 自己的 review 缺少 REST numeric id');
@@ -1965,9 +2015,8 @@ export const LEGACY_SIGNOFF_LABEL = 'need-whitelist';
  */
 export function commentAuthorLogin(comment) {
   if (typeof comment === 'string' || comment == null) return { login: '', typename: '' };
-  const login = String(comment?.author?.login ?? (typeof comment?.author === 'string' ? comment.author : '') ?? comment?.user?.login ?? '').trim();
-  const typename = String(comment?.author?.__typename ?? comment?.user?.type ?? '').trim();
-  return { login, typename };
+  const { login, __typename } = reviewRecordActor(comment);
+  return { login, typename: __typename };
 }
 
 /** github-actions bot:同仓 PR workflow 可以这个身份发评论,不能当审查账号。REST 是 github-actions[bot],GraphQL 是 github-actions + Bot。 */
@@ -1979,11 +2028,11 @@ export function isGithubActionsBot(login, typename = '') {
 
 /** [MIVO-PATCH hold-viewer] hold 标记只认当前审查账号(不认 github-actions bot)。viewerLogin 为空时 fail-closed。 */
 export function isTrustedHoldMarkerAuthor(comment, viewerLogin) {
-  const viewer = String(viewerLogin ?? '').trim();
-  if (!viewer) return false;
+  const identity = toReviewIdentity(typeof viewerLogin === 'string' ? viewerLogin.trim() : viewerLogin);
+  if (identity.logins.length === 0) return false;
   const { login, typename } = commentAuthorLogin(comment);
   if (!login || isGithubActionsBot(login, typename)) return false;
-  return login.toLowerCase() === viewer.toLowerCase();
+  return isReviewIdentity({ login, __typename: typename }, identity);
 }
 
 /**
@@ -3741,10 +3790,8 @@ export function isAdminPermission(permission) {
 const AUTOMATED_REPORT_HEADER_RE = /^>\s*Mivo 自动审查/m;
 const AUTOMATED_FLOW_MARKER_RE = /<!--\s*(?:review-pr|mivo-review):(?!findings\b)/;
 export function isAutomatedViewerReview(review, viewerLogin) {
-  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
-  const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
   const body = String(review?.body ?? '');
-  return viewer !== '' && login === viewer && (AUTOMATED_REPORT_HEADER_RE.test(body) || AUTOMATED_FLOW_MARKER_RE.test(body));
+  return isReviewIdentity(reviewRecordActor(review), viewerLogin) && (AUTOMATED_REPORT_HEADER_RE.test(body) || AUTOMATED_FLOW_MARKER_RE.test(body));
 }
 
 /**
@@ -3755,16 +3802,14 @@ export function isAutomatedViewerReview(review, viewerLogin) {
  * `<!-- review-pr:findings head=<当前 head>`。没有就返回 null。兼容 REST 与 context 两种字段形态。
  */
 const FINDINGS_HEAD_RE = /<!--\s*review-pr:findings\s+head=([0-9a-f]{40})\b/i;
-export function selectSelfFindingsAtHead(reviews, { viewerLogin, authorLogin, headSha } = {}) {
-  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
-  const author = String(authorLogin ?? '').trim().toLowerCase();
+export function selectSelfFindingsAtHead(reviews, { viewerLogin, authorLogin, headSha, reviewerIdentity } = {}) {
+  const identity = toReviewIdentity(reviewerIdentity ?? viewerLogin);
   const head = String(headSha ?? '').trim().toLowerCase();
-  if (!viewer || author !== viewer || !/^[0-9a-f]{40}$/.test(head)) return null;
+  if (!isReviewIdentity(authorLogin, identity) || !/^[0-9a-f]{40}$/.test(head)) return null;
   let latest = null;
   for (const review of Array.isArray(reviews) ? reviews : []) {
-    const login = String(review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
     const marked = FINDINGS_HEAD_RE.exec(String(review?.body ?? ''))?.[1]?.toLowerCase();
-    if (login !== viewer || marked !== head) continue;
+    if (!isReviewIdentity(reviewRecordActor(review), identity) || marked !== head) continue;
     const submittedAt = String(review?.submittedAt ?? review?.submitted_at ?? '');
     if (!latest || submittedAt > latest.submittedAt) latest = { id: review?.id ?? null, submittedAt };
   }
@@ -3781,23 +3826,27 @@ export function selectSelfFindingsAtHead(reviews, { viewerLogin, authorLogin, he
  * 兼容 REST(user.login, submitted_at)与 context(author.login, submittedAt)。
  */
 export function selectStandingViewerHumanChangesRequest(reviews, viewerLogin) {
-  const viewer = String(viewerLogin ?? '').trim().toLowerCase();
-  if (!viewer) return null;
-  let latest = null;
-  let latestAt = '';
+  const identity = toReviewIdentity(viewerLogin);
+  if (identity.logins.length === 0) return null;
+  // 按账号分开取最后一条实质 review:别名账号后发的 Approve 不能盖掉另一个账号仍有效的人工 CR。
+  // 集合里的 bot 没有「维护者本人」含义,不参与。
+  const latestByActor = new Map();
   for (const review of Array.isArray(reviews) ? reviews : []) {
-    const login = String(review?.login ?? review?.author?.login ?? review?.user?.login ?? '').trim().toLowerCase();
-    if (login !== viewer) continue;
-    if (isAutomatedViewerReview(review, viewer)) continue;
+    const actor = normalizeReviewActor(reviewRecordActor(review));
+    if (!actor || actor.isBot || !identity.logins.includes(actor.key)) continue;
+    if (isAutomatedViewerReview(review, identity)) continue;
     const state = String(review?.state ?? '').toUpperCase();
     if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED' && state !== 'DISMISSED') continue;
     const at = String(review?.submitted_at ?? review?.submittedAt ?? review?.at ?? '');
-    if (!latest || at >= latestAt) {
-      latest = review;
-      latestAt = at;
-    }
+    const previous = latestByActor.get(actor.key);
+    if (!previous || at >= previous.at) latestByActor.set(actor.key, { review, at });
   }
-  return String(latest?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED' ? latest : null;
+  let standing = null;
+  for (const entry of latestByActor.values()) {
+    if (String(entry.review?.state ?? '').toUpperCase() !== 'CHANGES_REQUESTED') continue;
+    if (!standing || entry.at >= standing.at) standing = entry;
+  }
+  return standing?.review ?? null;
 }
 
 /**

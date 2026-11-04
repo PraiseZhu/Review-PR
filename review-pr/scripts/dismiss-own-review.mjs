@@ -23,6 +23,7 @@ import {
   fetchMaintainerAuthority,
   evaluateMaintainerApprovalPolicy,
   evaluateOwnReviewDismissal,
+  readReviewIdentityOrEmpty,
   assertActiveReviewLock,
   print,
   fail,
@@ -48,7 +49,8 @@ try {
     'pr', 'view', String(pr), '--repo', slug,
     '--json', 'state,mergeStateStatus,reviewDecision,author,headRefOid',
   ]);
-  const viewerLogin = (gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const identity = readReviewIdentityOrEmpty();
+  const viewerLogin = identity.viewerLogin;
   const threadResult = fetchAllReviewThreads(owner, repo, pr);
   const unresolvedCount = threadResult.threads.filter((thread) => !thread.isResolved).length;
 
@@ -73,6 +75,7 @@ try {
     authorLogin: meta.author?.login ?? '',
     viewerLogin,
     authority,
+    reviewerIdentity: identity,
   });
   const policy = evaluateOwnReviewDismissal({
     approvalExempt: approvalPolicy.authorIsMaintainer && !authorityError,
@@ -81,6 +84,7 @@ try {
     mergeStateStatus: meta.mergeStateStatus,
     reviewDecision: meta.reviewDecision,
     viewerLogin,
+    reviewerIdentity: identity,
     reviews,
     unresolvedCount,
     threadsVerified: threadResult.verified,
@@ -134,6 +138,7 @@ try {
     authorLogin: freshMeta.author?.login ?? '',
     viewerLogin,
     authority: freshAuthority,
+    reviewerIdentity: identity,
   });
   const writeFailures = [];
   if (String(freshMeta.headRefOid ?? '').toLowerCase() !== expectedHead.toLowerCase()) {

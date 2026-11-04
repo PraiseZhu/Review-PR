@@ -16,6 +16,9 @@ import {
   ghJson,
   fetchMaintainerAuthority,
   evaluateMaintainerApprovalPolicy,
+  readReviewIdentityOrEmpty,
+  isReviewIdentity,
+  sameReviewActor,
   assertActiveReviewLock,
   fetchRestPages,
   print,
@@ -58,7 +61,8 @@ try {
   if (marker) body += `\n\n${marker}`;
   assertActiveReviewLock(lockToken);
 
-  const viewerLogin = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const identity = readReviewIdentityOrEmpty();
+  const viewerLogin = identity.viewerLogin;
   const authority = fetchMaintainerAuthority({ owner, repo });
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug, '--json', 'state,author,headRefOid',
@@ -67,6 +71,7 @@ try {
     authorLogin: meta.author?.login ?? '',
     viewerLogin,
     authority,
+    reviewerIdentity: identity,
   });
   const failedChecks = [];
   if (authority.digest !== expectedAuthorityDigest) {
@@ -87,7 +92,8 @@ try {
   }
 
   assertActiveReviewLock(lockToken);
-  const freshViewer = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const freshIdentity = readReviewIdentityOrEmpty();
+  const freshViewer = freshIdentity.viewerLogin;
   const freshAuthority = fetchMaintainerAuthority({ owner, repo });
   const freshMeta = ghJson([
     'pr', 'view', String(pr), '--repo', slug, '--json', 'state,author,headRefOid',
@@ -96,9 +102,10 @@ try {
     authorLogin: freshMeta.author?.login ?? '',
     viewerLogin: freshViewer,
     authority: freshAuthority,
+    reviewerIdentity: freshIdentity,
   });
   const finalFailures = [];
-  if (freshViewer.toLowerCase() !== viewerLogin.toLowerCase()) finalFailures.push(`GitHub viewer 已变化:${viewerLogin} → ${freshViewer}`);
+  if (!sameReviewActor(freshViewer, viewerLogin)) finalFailures.push(`GitHub viewer 已变化:${viewerLogin} → ${freshViewer}`);
   if (freshAuthority.digest !== expectedAuthorityDigest) finalFailures.push(`写操作前维护者权限已变化:${expectedAuthorityDigest} → ${freshAuthority.digest}`);
   if (!freshPolicy.viewerIsMaintainer) finalFailures.push('写操作前 viewer 已不在最终维护者集合中');
   if (freshMeta.state !== 'OPEN') finalFailures.push(`写操作前 PR state=${freshMeta.state || '(empty)'}`);
@@ -113,7 +120,7 @@ try {
   const event = commentOnly ? 'COMMENT' : 'REQUEST_CHANGES';
   const existing = marker ? fetchRestPages(`repos/${slug}/pulls/${pr}/reviews`).find((review) =>
     review.body?.includes(marker) && review.commit_id === expectedHead &&
-    review.user?.login?.toLowerCase() === freshViewer.toLowerCase() && ['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED'].includes(review.state)) : null;
+    isReviewIdentity(review.user, freshIdentity) && ['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED'].includes(review.state)) : null;
   const lineComments = comments.filter((comment) => comment.subject_type !== 'file');
   let review = existing;
   if (!review) {
@@ -129,7 +136,7 @@ try {
   const priorComments = fileComments.length ? fetchRestPages(`repos/${slug}/pulls/${pr}/comments`) : [];
   for (const [i, comment] of fileComments.entries()) {
     const fileMarker = `${marker}\n<!-- review-pr:file-finding index=${i} -->`;
-    let posted = priorComments.find((item) => item.body?.includes(fileMarker) && item.user?.login?.toLowerCase() === freshViewer.toLowerCase());
+    let posted = priorComments.find((item) => item.body?.includes(fileMarker) && isReviewIdentity(item.user, freshIdentity));
     if (!posted) {
       try {
         posted = JSON.parse(write(['api', '--method', 'POST', `repos/${slug}/pulls/${pr}/comments`, '--input', '-'], {

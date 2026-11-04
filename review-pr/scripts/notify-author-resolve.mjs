@@ -48,7 +48,7 @@
 
 import { parseRepo, parsePR, gh, ghJson, ghGraphql, print, fail, spawnScriptJson, mapPool, stateFile, loadRules, matchPathPatterns, fetchRestPages } from './lib.mjs';
 import { readFileSync } from 'node:fs';
-import { fetchStaleRebase, fetchAllReviewThreads, atomicWriteJson, fetchDefaultBranch } from './lib.mjs';
+import { fetchStaleRebase, fetchAllReviewThreads, atomicWriteJson, fetchDefaultBranch, readReviewIdentity } from './lib.mjs';
 import { fileURLToPath } from 'node:url';
 import { hasTrustedRebaseReminder, rebaseReminderFingerprint, rebaseReminderMarker } from './rebase-reminder.mjs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
@@ -130,7 +130,7 @@ try {
   // This prerequisite has no self-fix handoff: all authors receive the same
   // actionable notice, including selfFixAuthors. No retarget or merge is performed.
   if (process.argv.includes('--target-branch')) {
-    const result = notifyTargetBranch({ ...binding, reviewOnly, dryRun }, { ghJson, fetchRestPages, fetchDefaultBranch, writeGh });
+    const result = notifyTargetBranch({ ...binding, reviewOnly, dryRun }, { ghJson, fetchRestPages, fetchDefaultBranch, writeGh, readReviewIdentity: () => readReviewIdentity() });
     print(result);
     process.exit(result.ok ? 0 : 1);
   }
@@ -168,7 +168,7 @@ try {
           alreadyCommented = true;
         }
         if (!alreadyCommented) {
-          const viewer = ghJson(['api', 'user'])?.login ?? '';
+          const viewer = readReviewIdentity();
           const comments = fetchRestPages(`repos/${slug}/issues/${prKey}/comments`);
           alreadyCommented = hasTrustedRebaseReminder(comments, {
             viewer, fingerprint, mergeBaseDate: staleRebase.mergeBaseDate,

@@ -31,7 +31,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, readReviewIdentity, fetchPrCommentsWithAuthorType, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
 
 const VALID_KINDS = new Set(['product', 'arch', 'security', 'coldUpdate', 'rules', 'pluginBase']);
 
@@ -68,18 +68,21 @@ try {
 
   const meta = ghJson([
     'pr', 'view', String(pr), '--repo', slug,
-    '--json', 'number,state,mergedAt,author,url,comments,labels',
+    '--json', 'number,state,mergedAt,author,url,labels', // 评论不在这里要:下面用带作者类型的 REST 读一次
   ]);
-  const viewerLogin = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  // 读不到身份就中止(同改动前:gh api user 失败直接抛错),不能拿空身份集合继续摘标签 / 写放行。
+  const reviewerIdentity = readReviewIdentity();
+  const viewerLogin = reviewerIdentity.viewerLogin;
   const confirmedBy = viewerLogin;
   const author = meta.author?.login ?? '';
   const currentLabels = (meta.labels ?? []).map((l) => l.name);
-  const commentObjs = (meta.comments ?? []).map((c) => ({
+  // 评论读 REST:gh pr view 对 bot 只给裸 login,认不出 praisebuild[bot] 自己写的 hold 标记。
+  const commentObjs = fetchPrCommentsWithAuthorType(slug, pr).map((c) => ({
     body: c.body,
     createdAt: c.createdAt,
     author: c.author,
   }));
-  const holdMarker = parseLastHoldMarker(commentObjs, { viewerLogin });
+  const holdMarker = parseLastHoldMarker(commentObjs, { viewerLogin: reviewerIdentity });
   const releaseEvents = parseSignoffReleaseEvents(commentObjs);
   const already = new Map();
   let newGates = gates.slice();

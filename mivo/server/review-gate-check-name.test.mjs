@@ -30,7 +30,7 @@ function makeRoot() {
   for (const file of readdirSync(LIB_DIR).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))) copyFileSync(join(LIB_DIR, file), join(root, 'mivo', 'lib', file));
   for (const file of ['review.mjs', 'codex.mjs', 'keys.mjs']) copyFileSync(join(SERVER_DIR, file), join(root, 'mivo', 'server', file));
   copyFileSync(join(LIB_DIR, '..', 'config', 'severity.md'), join(root, 'mivo', 'config', 'severity.md'));
-  for (const file of ['self-write-receipts.mjs', 'gh-read-route.mjs', 'gate-bases.mjs']) copyFileSync(join(SCRIPTS, file), join(root, 'review-pr', 'scripts', file));
+  for (const file of ['self-write-receipts.mjs', 'gh-read-route.mjs', 'gate-bases.mjs', 'reviewer-identity.mjs']) copyFileSync(join(SCRIPTS, file), join(root, 'review-pr', 'scripts', file));
   copyFileSync(join(SCRIPTS, 'vendor', 'gh-app-classify.mjs'), join(root, 'review-pr', 'scripts', 'vendor', 'gh-app-classify.mjs'));
   copyFileSync(join(SCRIPTS, '..', 'config', 'pr-rules.json'), join(root, 'review-pr', 'config', 'pr-rules.json'));
   writeFileSync(join(root, 'review-pr', 'scripts', 'finish-reviewed-pr.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';

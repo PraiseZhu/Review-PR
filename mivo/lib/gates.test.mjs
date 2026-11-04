@@ -948,3 +948,41 @@ test('#171 UNKNOWN 时保留确认门的动作,只去掉送审路径的 request-
   assert.equal(conflict.outcome, 'conflict');
   assert.deepEqual(conflict.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }]);
 });
+
+// #176 审查身份集合:同一条审查机 thread 由三个身份中的任一个写出,判门结论一致;集合外的作者不命中。
+import { createReviewIdentity } from '../../review-pr/scripts/reviewer-identity.mjs';
+const THREE_IDENTITY = createReviewIdentity({ viewerLogin: 'praisebuild[bot]', viewerAliases: ['PraiseZhu', 'praise-reviewer[bot]'] });
+const withIdentity = (gate, extra = {}) => ctx({ reviewerIdentity: THREE_IDENTITY, approvalPolicy: { authorIsMaintainer: false, viewer: 'praisebuild[bot]' }, gate, ...extra });
+const identityThread = (id, author, { isBot = false } = {}) => ({ id, isBot, author: author.login, comments: [{ author, body: `**P2** 问题\n${MARKER}` }] });
+const AUTHORS_IN_SET = [
+  ['旧留痕 PraiseZhu', { login: 'PraiseZhu', __typename: 'User' }, false],
+  ['REST 形态 praisebuild[bot]', { login: 'praisebuild[bot]' }, true],
+  ['GraphQL 形态 praisebuild(Bot)', { login: 'praisebuild', __typename: 'Bot' }, true],
+  ['praise-reviewer[bot]', { login: 'praise-reviewer[bot]' }, true],
+  ['GraphQL 形态 praise-reviewer(Bot)', { login: 'praise-reviewer', __typename: 'Bot' }, true],
+];
+
+for (const [name, author, isBot] of AUTHORS_IN_SET) {
+  test(`身份集合:${name} 写的带标记 thread → reviewer-threads,同 head 已发清单时不重复送审`, () => {
+    const threads = [identityThread('t1', author, { isBot })];
+    const d = decideGate(withIdentity({ unresolvedThreads: threads }));
+    assert.equal(d.stage, 'review');
+    assert.deepEqual(d.pendingGates, ['reviewer-threads']);
+    const again = decideGate(withIdentity({ unresolvedThreads: threads, selfFindingsAtHead: SELF_FINDINGS }));
+    assert.equal(again.stage, 'threads');
+    assert.equal(again.outcome, 'threads-unresolved');
+  });
+}
+
+test('身份集合:普通 bot(Greptile)仍是 bot-threads;集合外的相近名字 / 同名 User 不命中', () => {
+  const greptile = decideGate(withIdentity({ unresolvedThreads: [botThread('t1')] }));
+  assert.deepEqual(greptile.pendingGates, ['bot-threads']);
+  for (const author of [{ login: 'praisebuild-evil[bot]' }, { login: 'praisebuild', __typename: 'User' }, { login: 'praisezhu2', __typename: 'User' }]) {
+    const d = decideGate(withIdentity({ unresolvedThreads: [identityThread('t1', author)] }));
+    assert.equal(d.outcome, 'threads-unresolved', JSON.stringify(author));
+  }
+  // 旧 context 没有 reviewerIdentity:退回 approvalPolicy.viewer 单账号,行为同改前。
+  const legacy = decideGate(ctx({ approvalPolicy: { authorIsMaintainer: false, viewer: 'PraiseZhu' },
+    gate: { unresolvedThreads: [identityThread('t1', { login: 'praisezhu' })] } }));
+  assert.deepEqual(legacy.pendingGates, ['reviewer-threads']);
+});
