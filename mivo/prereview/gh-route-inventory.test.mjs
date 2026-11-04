@@ -174,20 +174,23 @@ const SPAWNERS = ['run', 'spawnSync', 'spawn', 'execFileSync', 'execFile'];
 const GH_SHAPED_FIRST = ['api', 'pr', 'issue', 'repo', 'label', 'run', 'variable', 'workflow', 'auth', 'search', 'release'];
 
 // ── 依赖解析 ───────────────────────────────────────────────────────────────
-// 调用的参数(数组、选项对象)里出现的每个标识符,都要能在作用域内找到来源:
-//   形参 → 不进指纹(调用方决定值);const/let/var/function 声明或赋值/push → 声明表达式并入指纹(递归 3 层);
-//   import 进来的名字和 JS 内建 → 外部,不进指纹;都不是 → unresolved(测试红)。
-const JS_WORDS = new Set(['const', 'let', 'var', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'try', 'catch', 'finally', 'throw', 'class', 'extends', 'import', 'export', 'default', 'true', 'false', 'null', 'undefined', 'this', 'new', 'typeof', 'void', 'await', 'async', 'function', 'return', 'of', 'in', 'instanceof',
+// 调用的参数(数组、选项对象)里出现的每个标识符,都按「调用点所在函数 → 外层各函数 → 模块顶层」的词法作用域链找来源:
+//   形参 → 不进指纹(调用方决定值),但函数体里其它改动它的语句要并入;
+//   const/let/var/function 声明 → 声明表达式并入指纹(递归 3 层),声明之后改动它的语句也并入;
+//   import 进来的名字:相对路径且在扫描根内 → 并入被引用模块里的声明;其它(node:、内建)视为外部;
+//   同一作用域层可见的同名声明不止一个(块级遮蔽)、或哪一层都找不到 → unresolved(测试红)。
+// 「纯转发」= 调用的某个实参是形参本身(args / ...rest),且函数体里没有任何其它语句提到它;否则不是转发封装,必须有 case。
+const JS_WORDS = new Set(['const', 'let', 'var', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'try', 'catch', 'finally', 'throw', 'class', 'extends', 'import', 'export', 'default', 'true', 'false', 'null', 'undefined', 'this', 'new', 'typeof', 'void', 'await', 'async', 'function', 'return', 'of', 'in', 'instanceof', 'delete',
   'String', 'Number', 'Boolean', 'Array', 'Object', 'JSON', 'Math', 'Date', 'Set', 'Map', 'RegExp', 'Error', 'Buffer', 'Symbol', 'Promise', 'Infinity', 'NaN',
-  'encodeURIComponent', 'decodeURIComponent', 'parseInt', 'parseFloat', 'isNaN', 'process', 'console', 'globalThis', 'require']);
+  'encodeURIComponent', 'decodeURIComponent', 'parseInt', 'parseFloat', 'isNaN', 'process', 'console', 'globalThis', 'require', 'setTimeout', 'clearTimeout', 'URL', 'Atomics', 'Int32Array', 'SharedArrayBuffer']);
+const PURE_CALLEES = /^(?:String|Number|Boolean|encodeURIComponent|decodeURIComponent|parseInt|parseFloat|isNaN|Array\.isArray|Object\.keys|Object\.values|Object\.entries|JSON\.stringify|Math\.\w+|typeof)$/;
+const MUTATING_METHODS = 'push|unshift|splice|concat|pop|shift|reverse|sort|fill|set|add|assign|copyWithin|delete|clear|append';
 
-function importedNames(ctx) {
-  const names = new Set();
-  for (const m of ctx.masked.matchAll(/\bimport\s+([^'"]*?)\s+from\s*['"]/g)) {
-    if (!ctx.code[m.index]) continue;
-    for (const n of m[1].matchAll(/([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?/g)) names.add(n[2] ?? n[1]);
-  }
-  return names;
+const ANALYZE_CACHE = new Map();
+function analyzeCached(src) {
+  let c = ANALYZE_CACHE.get(src);
+  if (!c) { c = analyze(src); ANALYZE_CACHE.set(src, c); }
+  return c;
 }
 
 function stripDefault(t) {
@@ -235,7 +238,7 @@ function splitTop(text, sep) {
   return parts;
 }
 
-/** 文件里所有函数的形参表:{ names, listEnd, bodyEnd }。 */
+/** 文件里所有函数(含箭头函数、catch 块)的形参表:{ start, names, listEnd, bodyEnd }。 */
 function functionScopes(ctx) {
   if (ctx.scopes) return ctx.scopes;
   const out = [];
@@ -260,57 +263,122 @@ function functionScopes(ctx) {
     const close = findClose(ctx, open);
     if (close < 0) continue;
     const brace = m.indexOf('{', close);
-    out.push({ names: patternNames(m.slice(open + 1, close)), listEnd: close, bodyEnd: brace < 0 ? m.length : bodyEndFrom(brace) });
+    out.push({ start: f.index, names: patternNames(m.slice(open + 1, close)), listEnd: close, bodyEnd: brace < 0 ? m.length : bodyEndFrom(brace) });
   }
   for (const a of m.matchAll(/=>/g)) {
     if (!ctx.code[a.index]) continue;
     let k = a.index - 1;
     while (k >= 0 && /\s/.test(m[k])) k--;
     let names = [];
-    let listEnd = k;
+    let start = k;
     if (m[k] === ')') {
       let depth = 0, j = k;
       for (; j >= 0; j--) { if (!ctx.code[j]) continue; if (m[j] === ')') depth++; else if (m[j] === '(' && --depth === 0) break; }
       if (j < 0) continue;
       names = patternNames(m.slice(j + 1, k));
+      start = j;
     } else {
       const id = /[A-Za-z_$][\w$]*$/.exec(m.slice(Math.max(0, k - 80), k + 1));
       if (!id) continue;
       names = [id[0]];
+      start = k - id[0].length + 1;
     }
-    out.push({ names, listEnd, bodyEnd: bodyEndFrom(a.index + 2) });
+    out.push({ start, names, listEnd: k, bodyEnd: bodyEndFrom(a.index + 2) });
   }
   for (const c of m.matchAll(/\bcatch\s*\(([^)]*)\)\s*\{/g)) {
     if (!ctx.code[c.index]) continue;
     const open = c.index + c[0].length - 1;
-    out.push({ names: patternNames(c[1]), listEnd: c.index, bodyEnd: findClose(ctx, open) });
+    out.push({ start: c.index, names: patternNames(c[1]), listEnd: c.index + 5, bodyEnd: findClose(ctx, open) });
   }
   ctx.scopes = out;
   return out;
 }
 
-function findParam(ctx, name, at) {
-  let best = -1;
-  for (const sc of functionScopes(ctx)) if (sc.listEnd < at && at <= sc.bodyEnd && sc.names.includes(name)) best = Math.max(best, sc.listEnd);
+/** 包含 pos 的函数/catch 作用域,最内层在前。 */
+function scopeChain(ctx, pos) {
+  return functionScopes(ctx).filter((s) => s.start < pos && pos <= s.bodyEnd).sort((a, b) => b.start - a.start);
+}
+
+function blockPairs(ctx) {
+  if (ctx.blocks) return ctx.blocks;
+  const out = [];
+  const stack = [];
+  for (let i = 0; i < ctx.masked.length; i++) {
+    if (!ctx.code[i]) continue;
+    if (ctx.masked[i] === '{') stack.push(i);
+    else if (ctx.masked[i] === '}') { const o = stack.pop(); if (o !== undefined) out.push({ open: o, close: i }); }
+  }
+  ctx.blocks = out;
+  return out;
+}
+function innermostBlock(ctx, pos) {
+  let best = null;
+  for (const b of blockPairs(ctx)) if (b.open < pos && pos < b.close && (!best || b.open > best.open)) best = b;
   return best;
 }
 
-function findDecl(ctx, name, at) {
-  const esc = name.replace(/\$/g, '\\$');
-  const patterns = [
-    new RegExp(`(?:const|let|var)\\s+${esc}(?![\\w$])`, 'g'),
-    new RegExp(`(?:const|let|var)\\s*[{\\[][^;]*?(?<![\\w$])${esc}(?![\\w$])[^;]*?[}\\]]\\s*(?:=(?!=)|(?=of\\b|in\\b))`, 'g'),
-    new RegExp(`\\bfunction\\s*\\*?\\s+${esc}\\s*\\(`, 'g'),
-  ];
-  let before = -1, any = -1, kind = null, anyKind = null;
-  for (const [idx, re] of patterns.entries()) {
-    for (const m of ctx.masked.matchAll(re)) {
-      if (!ctx.code[m.index]) continue;
-      if (m.index < at) { if (m.index > before) { before = m.index; kind = idx; } }
-      else if (any < 0) { any = m.index; anyKind = idx; }
+/** for (const x of ...) 的声明只在这条 for 语句里可见。 */
+function forStatementRange(ctx, pos) {
+  const m = ctx.masked;
+  let depth = 0;
+  for (let j = pos - 1; j >= 0; j--) {
+    if (!ctx.code[j]) continue;
+    if (m[j] === ')') depth++;
+    else if (m[j] === '(') {
+      if (depth === 0) {
+        if (!/\bfor\s*(?:await\s*)?$/.test(m.slice(Math.max(0, j - 12), j))) return null;
+        const close = findClose(ctx, j);
+        let k = close + 1;
+        while (k < m.length && /\s/.test(m[k])) k++;
+        return { open: j, close: m[k] === '{' ? findClose(ctx, k) : statementEnd(ctx, k) };
+      }
+      depth--;
     }
   }
-  return before >= 0 ? { at: before, kind, later: false } : any >= 0 ? { at: any, kind: anyKind, later: true } : null;
+  return null;
+}
+
+/** name 在本文件里的全部声明:{ at, kind, level, block }。level = 声明所在函数的 start(模块顶层 -1)。 */
+function declsOf(ctx, name) {
+  ctx.declCache ??= new Map();
+  if (ctx.declCache.has(name)) return ctx.declCache.get(name);
+  const esc = name.replace(/\$/g, '\\$');
+  const out = [];
+  const add = (at, kind, isVar) => {
+    const scope = scopeChain(ctx, at)[0];
+    const block = isVar ? null : (forStatementRange(ctx, at) ?? innermostBlock(ctx, at));
+    out.push({ at, kind, level: scope ? scope.start : -1, block });
+  };
+  for (const mt of ctx.masked.matchAll(new RegExp(`(?<![\\w$])(?:const|let|var)\\s+${esc}(?![\\w$])`, 'g'))) {
+    if (ctx.code[mt.index]) add(mt.index, 0, /^var\b/.test(mt[0]));
+  }
+  for (const mt of ctx.masked.matchAll(/(?<![\w$])(?:const|let|var)\s*([{\[])/g)) { // 解构声明
+    if (!ctx.code[mt.index]) continue;
+    const open = mt.index + mt[0].length - 1;
+    const close = findClose(ctx, open);
+    if (close < 0 || !patternNames(ctx.masked.slice(open, close + 1)).includes(name)) continue;
+    if (/^\s*(?:=(?!=)|of\b|in\b)/.test(ctx.masked.slice(close + 1, close + 8))) add(mt.index, 1, /^var\b/.test(mt[0]));
+  }
+  for (const mt of ctx.masked.matchAll(new RegExp(`(?<![\\w$])function\\s*\\*?\\s+${esc}\\s*\\(`, 'g'))) {
+    if (ctx.code[mt.index]) add(mt.index, 2, true);
+  }
+  ctx.declCache.set(name, out);
+  return out;
+}
+
+/** 词法作用域里 name 在 at 处指向什么:{ type: 'decl'|'param'|'ambiguous'|null, ... }。 */
+function resolveName(ctx, name, at) {
+  for (const sc of [...scopeChain(ctx, at), null]) {
+    const level = sc ? sc.start : -1;
+    const ds = declsOf(ctx, name).filter((d) => d.level === level && (d.block === null || (d.block.open < at && at < d.block.close)));
+    // 块级遮蔽:可见的同名声明里,块最内层的那个才是实际绑定(lib.mjs 的 allowlistedMembers 就是这样);同一个块里有两处同名声明才算说不清。
+    const innermost = ds.length > 1 ? Math.max(...ds.map((d) => (d.block ? d.block.open : -1))) : null;
+    const bound = ds.length > 1 ? ds.filter((d) => (d.block ? d.block.open : -1) === innermost) : ds;
+    if (bound.length > 1) return { type: 'ambiguous' };
+    if (bound.length === 1) return { type: 'decl', decl: bound[0], level };
+    if (sc && sc.names.includes(name)) return { type: 'param', scope: sc };
+  }
+  return { type: null };
 }
 
 function declText(ctx, decl) {
@@ -319,24 +387,25 @@ function declText(ctx, decl) {
     const open = m.indexOf('(', decl.at);
     const close = findClose(ctx, open);
     const brace = m.indexOf('{', close);
-    return { text: canon(ctx, decl.at, findClose(ctx, brace) + 1), from: decl.at, to: findClose(ctx, brace) + 1, isFunction: true };
+    const end = findClose(ctx, brace) + 1;
+    return { text: canon(ctx, decl.at, end), from: decl.at, to: end, isFunction: true };
   }
   const semi = statementEnd(ctx, decl.at);
-  const eqRaw = m.indexOf('=', decl.at);
-  const eqAt = eqRaw >= 0 && eqRaw < semi ? eqRaw : -1; // let x; 没有初始值:赋值散落在后面,下面按"整个文件里的赋值"收
   const forHeader = /^(?:const|let|var)\s+(?:[\w$]+\s+|[{\[][^=;]*[}\]]\s*)(?:of|in)\b/.test(m.slice(decl.at, decl.at + 80));
   if (forHeader) {
     let depth = 0, i = decl.at;
     for (; i < m.length; i++) { if (!ctx.code[i]) continue; if (m[i] in OPEN) depth++; else if (')]}'.includes(m[i]) && --depth < 0) break; }
     return { text: canon(ctx, decl.at, i), from: decl.at, to: i, isFunction: false };
   }
+  const eqRaw = m.indexOf('=', decl.at);
+  const eqAt = eqRaw >= 0 && eqRaw < semi ? eqRaw : -1; // let x; 没有初始值:赋值散落在后面
   if (eqAt < 0) return { text: canon(ctx, decl.at, semi), from: decl.at, to: semi, isFunction: false, uninitialized: true };
   const end = statementEnd(ctx, eqAt);
   const isFn = /^\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|^\s*(?:async\s+)?function\b/.test(m.slice(eqAt + 1, eqAt + 200));
   return { text: canon(ctx, decl.at, end), from: decl.at, to: end, isFunction: isFn };
 }
 
-/** 参数范围 [exprFrom, scanTo] 里出现的标识符(只算代码、不算属性名/对象键/参数范围内自己声明的)。 */
+/** [from, to] 里出现的标识符(只算代码、不算属性名/对象键/范围内自己声明的):{ name, at, isCall }。 */
 function identifiersIn(ctx, from, to) {
   const m = ctx.masked;
   const local = new Set();
@@ -358,64 +427,204 @@ function identifiersIn(ctx, from, to) {
     let n = at + name.length;
     while (n < m.length && /\s/.test(m[n])) n++;
     if (m[n] === ':' && (m[p] === '{' || m[p] === ',')) continue; // 对象键
-    if (m[n] === '(' && found.length === 0 && false) continue;
     found.push({ name, at, isCall: m[n] === '(' });
   }
   return found;
 }
 
-function resolveDeps(ctx, callAt, exprFrom, exprTo, scanTo = exprTo) {
+/** pos 所在语句的 [start, end)。 */
+function statementRange(ctx, pos, lo, hi) {
+  const m = ctx.masked;
+  let start = lo;
+  let depth = 0;
+  for (let j = pos - 1; j >= lo; j--) {
+    if (!ctx.code[j]) continue;
+    const c = m[j];
+    if (c === ')' || c === ']') depth++;
+    else if (c === '(' || c === '[') { if (depth === 0) { start = j + 1; break; } depth--; }
+    else if (c === '}') { if (depth === 0) { start = j + 1; break; } depth++; }
+    else if (c === '{') { if (depth === 0) { start = j + 1; break; } depth--; }
+    else if (c === ';' && depth === 0) { start = j + 1; break; }
+  }
+  let end = hi;
+  depth = 0;
+  for (let j = pos; j < hi; j++) {
+    if (!ctx.code[j]) continue;
+    const c = m[j];
+    if (c in OPEN) depth++;
+    else if (c === ')' || c === ']' || c === '}') { if (--depth < 0) { end = j; break; } }
+    else if (c === ';' && depth === 0) { end = j + 1; break; }
+  }
+  return [start, end];
+}
+
+function calleeBefore(ctx, pos) { // pos 是裸实参的位置:找包着它的那个调用的函数名
+  const m = ctx.masked;
+  let depth = 0;
+  for (let j = pos - 1; j >= 0; j--) {
+    if (!ctx.code[j]) continue;
+    if (m[j] === ')' || m[j] === ']' || m[j] === '}') depth++;
+    else if (m[j] === '(' || m[j] === '[' || m[j] === '{') { if (depth === 0) return /([\w$.]+)\s*$/.exec(m.slice(Math.max(0, j - 60), j))?.[1] ?? ''; depth--; }
+  }
+  return '';
+}
+
+/** 一处提到 name 的位置算不算「会改动它」:赋值、下标赋值、自增、改动型方法、当作裸实参传给别的函数。 */
+function isMutationMention(ctx, at, name, container) {
+  const m = ctx.masked;
+  const after = m.slice(at + name.length, at + name.length + 80);
+  const before = m.slice(Math.max(0, at - 6), at);
+  if (/^\s*(?:\+|-|\*|\/|\?\?|\|\||&&)?=(?![=>])/.test(after)) return true;
+  if (/^\s*\[[^\]]*\]\s*(?:\+|\?\?)?=(?!=)/.test(after)) return true;
+  if (/^\s*(?:\+\+|--)/.test(after) || /(?:\+\+|--)\s*$/.test(before)) return true;
+  if (new RegExp(`^\\s*\\.\\s*(?:${MUTATING_METHODS})\\s*\\(`).test(after)) return true;
+  if (container && /(?:\(|,)\s*$/.test(before) && /^\s*[,)]/.test(after)) return !PURE_CALLEES.test(calleeBefore(ctx, at)); // 数组/对象当作裸实参传给别的函数(可能被改动)
+  if (/\.\.\.\s*$/.test(before) && /^\s*[,)\]]/.test(after)) return false; // 展开进别的数组/调用:读,不改动
+  return false;
+}
+
+/** [lo, hi) 里提到 name 的语句(去重),strict=true 时任何一处提到都算,否则只算会改动它的。skip 是要排除的区间(调用本身)。 */
+function mentionStatements(ctx, name, lo, hi, { strict, skip, container, same }) {
+  const m = ctx.masked;
+  const found = [];
+  const re = new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`, 'g');
+  const slice = m.slice(lo, hi);
+  for (const mt of slice.matchAll(re)) {
+    const at = lo + mt.index;
+    if (!ctx.code[at]) continue;
+    let p = at - 1;
+    while (p >= lo && /\s/.test(m[p])) p--;
+    if (m[p] === '.' && m.slice(p - 2, p + 1) !== '...') continue;
+    let n = at + name.length;
+    while (n < hi && /\s/.test(m[n])) n++;
+    if (m[n] === ':' && (m[p] === '{' || m[p] === ',')) continue;
+    if (skip && at >= skip[0] && at <= skip[1]) continue;
+    if (same && !same(at)) continue; // 其它作用域里的同名变量不是它
+    if (!strict && !isMutationMention(ctx, at, name, container)) continue;
+    const [s, e] = statementRange(ctx, at, lo, hi);
+    if (!found.some(([a, b]) => a === s && b === e)) found.push([s, e]);
+  }
+  return found;
+}
+
+function importMap(ctx) {
+  if (ctx.imports) return ctx.imports;
+  const map = new Map();
+  for (const mt of ctx.masked.matchAll(/\bimport\s+([^'"]*?)\s+from\s*['"]([^'"]+)['"]/g)) {
+    if (!ctx.code[mt.index]) continue;
+    const clause = mt[1];
+    const braces = /\{([^}]*)\}/.exec(clause);
+    const def = clause.replace(/\{[^}]*\}/, '').replace(/,/g, ' ').trim().split(/\s+/).filter(Boolean)[0];
+    if (def && !def.startsWith('*')) map.set(def, { imported: 'default', spec: mt[2] });
+    for (const part of (braces?.[1] ?? '').split(',')) {
+      const [imp, local] = part.trim().split(/\s+as\s+/);
+      if (imp) map.set(local ?? imp, { imported: imp, spec: mt[2] });
+    }
+    const ns = /\*\s+as\s+([\w$]+)/.exec(clause);
+    if (ns) map.set(ns[1], { imported: '*', spec: mt[2] });
+  }
+  ctx.imports = map;
+  return map;
+}
+
+/** 相对 import 且指向扫描根内的文件:返回被引用的声明文本;其它 import(node:、内建、扫描根外)返回 null。 */
+function importedDeclText(ctx, name, files) {
+  const info = importMap(ctx).get(name);
+  if (!info || !files || !info.spec.startsWith('.') || info.imported === '*' || info.imported === 'default') return null;
+  const dir = ctx.file.split('/').slice(0, -1).join('/');
+  const target = join(dir, info.spec).split(sep).join('/');
+  const src = files.get(target);
+  if (src === undefined) return null;
+  const mctx = analyzeCached(src);
+  mctx.file = target;
+  const decl = declsOf(mctx, info.imported).find((d) => d.level === -1);
+  return decl ? declText(mctx, decl).text : null;
+}
+
+export const __ctx = (src) => analyzeCached(src);
+export const __declsOf = declsOf;
+function resolveDeps(ctx, callRange, target, files) {
+  const { open: openAt, close: closeAt } = callRange;
+  const [exprFrom, exprTo] = target;
   const deps = [];
   const unresolved = [];
+  let impure = false;
   let forwarder = null;
-  const imports = importedNames(ctx);
   const seen = new Set();
   const first = ctx.masked.slice(exprFrom, exprTo).trim().replace(/^\.\.\./, '');
   const bareIdent = /^[A-Za-z_$][\w$]*$/.test(first) ? first : null;
-  const visit = (id, at, depth) => {
-    const { name } = id;
-    const key = `${name}@${depth === 0 ? 'top' : 'dep'}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    if (imports.has(name)) return;
-    const decl = findDecl(ctx, name, at);
-    const paramEnd = findParam(ctx, name, at);
-    if (decl && !(decl.later && paramEnd >= 0) && decl.at > paramEnd) {
-      const info = declText(ctx, decl);
-      if (!deps.includes(info.text)) deps.push(info.text);
-      if (!info.isFunction) {
-        const end = info.to;
-        const mut = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?:\\.(?:push|unshift|splice|concat)\\(|\\s*\\+?=[^=])`, 'g');
-        for (const m of ctx.masked.slice(end, info.uninitialized ? ctx.masked.length : at).matchAll(mut)) {
-          if (!ctx.code[end + m.index]) continue;
-          let stmtEnd = statementEnd(ctx, end + m.index);
-          const open = ctx.masked.indexOf('(', end + m.index);
-          if (m[0].includes('(') && open >= 0) stmtEnd = Math.min(stmtEnd, findClose(ctx, open) + 1);
-          const text = canon(ctx, end + m.index, stmtEnd);
-          if (!deps.includes(text)) deps.push(text);
-          if (depth < 3) for (const sub of identifiersIn(ctx, end + m.index, stmtEnd)) visit(sub, end + m.index, depth + 1);
-        }
-        if (depth < 3) for (const sub of identifiersIn(ctx, info.from, info.to)) if (sub.name !== name) visit(sub, info.from, depth + 1);
-      }
-    } else if (paramEnd >= 0) {
-      if (depth === 0 && name === bareIdent) forwarder = name;
-    } else {
-      unresolved.push(name);
+  const strictNames = new Set(splitTopLevel(ctx, openAt + 1, closeAt)
+    .map(([a, b]) => ctx.masked.slice(a, b).trim().replace(/^\.\.\./, ''))
+    .filter((t) => /^[A-Za-z_$][\w$]*$/.test(t)));
+  const push = (text) => { if (!deps.includes(text)) deps.push(text); };
+  const absorb = (stmts, depth) => {
+    for (const [s, e] of stmts) {
+      push(canon(ctx, s, e));
+      if (depth < 3) for (const sub of identifiersIn(ctx, s, e)) visit(sub, depth + 1);
     }
   };
-  for (const id of identifiersIn(ctx, exprFrom, scanTo)) visit(id, callAt, 0);
-  return { deps, forwarder, unresolved: [...new Set(unresolved)] };
+  const visit = (id, depth) => {
+    const { name, at } = id;
+    const r = resolveName(ctx, name, at);
+    const top = depth === 0;
+    const strict = top && strictNames.has(name);
+    const skip = top ? [openAt, closeAt] : null;
+    if (r.type === 'ambiguous') { unresolved.push(`${name}(同一作用域层有多处同名声明,无法确定指哪一个)`); return; }
+    if (r.type === 'param') {
+      const key = `param:${r.scope.start}:${name}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const body = [r.scope.listEnd + 1, r.scope.bodyEnd];
+      const stmts = mentionStatements(ctx, name, body[0], strict ? body[1] : Math.min(body[1], closeAt), { strict, skip, same: (a) => { const x = resolveName(ctx, name, a); return x.type === 'param' && x.scope.start === r.scope.start; } });
+      if (strict && stmts.length) impure = true;
+      if (top && name === bareIdent && strict && !stmts.length) forwarder = name;
+      absorb(stmts, depth);
+      return;
+    }
+    if (r.type === 'decl') {
+      const key = `decl:${r.decl.at}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const info = declText(ctx, r.decl);
+      push(info.text);
+      if (info.isFunction) {
+        if (depth < 2) for (const sub of identifiersIn(ctx, info.from, info.to)) if (sub.name !== name) visit(sub, depth + 1);
+        return;
+      }
+      const scope = functionScopes(ctx).find((s) => s.start === r.level);
+      const levelEnd = scope ? scope.bodyEnd : ctx.masked.length;
+      const hi = strict || info.uninitialized ? levelEnd : Math.min(levelEnd, closeAt);
+      absorb(mentionStatements(ctx, name, info.to, hi, { strict, skip, container: /^(?:const|let|var)\s*[\w$]+=\s*[\[{]/.test(info.text), same: (a) => { const x = resolveName(ctx, name, a); return x.type === 'decl' && x.decl.at === r.decl.at; } }), depth);
+      if (depth < 3) for (const sub of identifiersIn(ctx, info.from, info.to)) if (sub.name !== name) visit(sub, depth + 1);
+      return;
+    }
+    // 没找到:import / 内建 / 找不到
+    const key = `import:${name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (importMap(ctx).has(name)) {
+      const text = importedDeclText(ctx, name, files);
+      if (text) push(text);
+      return;
+    }
+    unresolved.push(name);
+  };
+  for (const id of identifiersIn(ctx, exprFrom, closeAt)) visit(id, 0);
+  return { deps, forwarder: impure ? null : forwarder, unresolved: [...new Set(unresolved)] };
 }
 
 /** 扫一个文件:返回调用模板列表和无法解析的位置。 */
-export function scanFile(file, src) {
-  const ctx = analyze(src);
+export function scanFile(file, src, files = null) {
+  const ctx = analyzeCached(src);
+  ctx.file = file;
   const templates = [];
   const unresolved = [];
   const aliases = [
     ...ctx.masked.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:ghFn\s*\?\?\s*)?gh(?![\w$])/g),
     ...ctx.masked.matchAll(/(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*createPrWriteGuard\s*\(/g),
-  ].map((m) => m[1]).filter((a) => a !== 'gh');
+    ...ctx.masked.matchAll(new RegExp(`(?<![\\w$])(?:${CALLEES.join('|')})\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*[,}=]`, 'g')), // const { gh: g } = lib
+  ].map((m) => m[1]).filter((a) => !CALLEES.includes(a));
+  for (const [local, info] of importMap(ctx)) if (CALLEES.includes(info.imported) && local !== info.imported) aliases.push(local); // import { gh as g }
   const names = [...CALLEES, ...aliases];
   const callRe = new RegExp(`(?<![\\w$])((?:(?:api|lib)\\.)?(?:${names.join('|')}))\\s*\\(`, 'g');
   const spawnRe = new RegExp(`(?<![\\w$.])(${SPAWNERS.join('|')})\\s*\\(\\s*['"]gh['"]`, 'g');
@@ -431,7 +640,7 @@ export function scanFile(file, src) {
     const argsText = canon(ctx, openAt + 1, close);
     const target = parts[argIndex];
     if (!target) { unresolved.push({ file, callee, why: '缺少参数' }); return; }
-    const dep = resolveDeps(ctx, openAt, target[0], target[1], close);
+    const dep = resolveDeps(ctx, { open: openAt, close }, target, files);
     for (const name of dep.unresolved) unresolved.push({ file, callee, line: src.slice(0, openAt).split('\n').length, why: `参数 ${name} 找不到声明` });
     const line = src.slice(0, openAt).split('\n').length;
     const body = { callee, args: argsText, deps: dep.deps };
@@ -446,6 +655,11 @@ export function scanFile(file, src) {
     if (!ctx.code[m.index]) continue;
     const open = ctx.masked.indexOf('(', m.index);
     record('spawn', `${m[1]}:gh`, open, 1);
+  }
+  // 动态属性取 gh:api['gh'](...) —— 参数没法静态对应到调用名,直接 unresolved
+  for (const m of ctx.masked.matchAll(new RegExp(`\\[\\s*['"](?:${CALLEES.join('|')})['"]\\s*\\]\\s*\\(`, 'g'))) {
+    if (!ctx.code[m.index]) continue;
+    unresolved.push({ file, callee: 'dynamic-property', line: src.slice(0, m.index).split('\n').length, why: '用下标/动态属性取 gh 调用,扫描器无法对应调用名' });
   }
   // 未知写法:调用名不在已知集合,但第一个参数长得像 gh 子命令数组 → 不静默放过
   const shapedRe = new RegExp(`(?<![\\w$])([\\w$.]+)\\s*\\(\\s*\\[\\s*['"](${GH_SHAPED_FIRST.join('|')})['"]`, 'g');
@@ -518,7 +732,7 @@ export function scanGhTemplates(files) {
   const templates = [];
   const unresolved = [];
   for (const [file, src] of files) {
-    const r = scanFile(file, src);
+    const r = scanFile(file, src, files);
     templates.push(...r.templates);
     unresolved.push(...r.unresolved);
   }
@@ -832,9 +1046,12 @@ test('N2:依赖按词法作用域找,其它函数里的同名声明不得抢走�
   const a = sig('pulls');
   assert.notEqual(a.sig, sig('rules/branches/main').sig, '改外层端点指纹必须变');
   assert.ok(!a.deps.some((d) => d.includes("'unused'")), '其它函数里的同名声明不得参与');
-  // 同一作用域层有两处同名声明(块级遮蔽)→ unresolved
-  const shadow = scanGhTemplates(new Map([[SYNTH_FILE, "export function f(slug) { const endpoint = `repos/${slug}`; if (slug) { const endpoint = 'x'; return gh(['api', endpoint]); } }"]]));
-  assert.match(JSON.stringify(shadow.unresolved), /endpoint/);
+  // 块级遮蔽:内层块的声明才是实际绑定,指纹跟着它走;同一个块里有两处同名声明 → unresolved
+  const shadow = (outer, inner) => scanGhTemplates(new Map([[SYNTH_FILE, `export function f(slug) { const endpoint = \`repos/\${slug}/${outer}\`; if (slug) { const endpoint = '${inner}'; return gh(['api', endpoint]); } }`]])).templates[0].sig;
+  assert.notEqual(shadow('a', 'x'), shadow('a', 'y'), '遮蔽时改内层声明指纹必须变');
+  assert.equal(shadow('a', 'x'), shadow('b', 'x'), '遮蔽时外层声明不是实际绑定,不参与');
+  const dup = scanGhTemplates(new Map([[SYNTH_FILE, "export function f(slug) { var endpoint = 'a'; var endpoint = 'b'; return gh(['api', endpoint]); }"]]));
+  assert.match(JSON.stringify(dup.unresolved), /endpoint/);
 });
 
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
