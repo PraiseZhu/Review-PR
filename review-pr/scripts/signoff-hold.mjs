@@ -60,7 +60,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, readReviewIdentityOrEmpty, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, toNoticeCloseComment } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, readReviewIdentity, fetchPrCommentsWithAuthorType, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, toNoticeCloseComment } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -139,8 +139,11 @@ try {
   const printOut = (out) => print(withLabelWarning(out));
 
   // [MIVO-PATCH hold-viewer] 只认审查账号写的 hold 标记;github-actions bot 永不采信。
-  const reviewerIdentity = readReviewIdentityOrEmpty();
-  const holdMarker = parseLastHoldMarker(meta.comments ?? [], { viewerLogin: reviewerIdentity });
+  // 读不到身份就中止(同改动前:gh api user 失败直接抛错),不能拿空身份集合继续开 issue / 评论 / 打标签。
+  // 评论读 REST:gh pr view 对 bot 只给裸 login,认不出 praisebuild[bot] 自己写的标记。
+  const reviewerIdentity = readReviewIdentity();
+  const prComments = fetchPrCommentsWithAuthorType(slug, pr);
+  const holdMarker = parseLastHoldMarker(prComments, { viewerLogin: reviewerIdentity });
   const alreadyHeld = holdMarker != null;
   const priorIssueUrl = holdMarker?.issueUrl ?? null;
   // ── 旧讨论 issue 复用/新开判定(decideIssueReuse,见 lib.mjs;signoff-policy.test.mjs 覆盖)──
@@ -195,7 +198,7 @@ try {
   // headSha 拿不到时**宁可不发**:去重键为空 → 标记写成 head= 解析不回来 → 每轮都重复回帖,
   // 那比漏一条更糟(提醒变刷屏,最后被当噪音)。这种情况在输出里如实写 no-head-sha。
   const labelWasAbsent = !currentLabels.includes(SIGNOFF_LABEL);
-  const noticedHeads = parseSignoffRenotices(meta.comments ?? []);
+  const noticedHeads = parseSignoffRenotices(prComments);
   const renoticeDone = noticedHeads.has(headSha);
   // 回帖里的讨论链接用 reuse.reuseUrl:旧 issue 已关闭时不回帖 —— 不能把作者引进一个
   // 已关闭的讨论;完整模式新开 issue 时那条带标记的评论本身就是完整通知,不需要回帖叠加。

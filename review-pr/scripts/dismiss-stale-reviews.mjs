@@ -25,7 +25,7 @@ import {
   gh,
   ghJson,
   latestSubstantiveReviews,
-  readReviewIdentityOrEmpty,
+  readReviewIdentity,
   isReviewIdentity,
   assertActiveReviewLock,
   print,
@@ -70,7 +70,8 @@ try {
   }
 
   // 获取 viewer 身份
-  const identity = readReviewIdentityOrEmpty();
+  // 读不到身份就报错(同改动前),不要用空身份把「读不到」伪装成「没有自己的 CR」。
+  const identity = readReviewIdentity();
   const viewerLogin = identity.viewerLogin;
   const isOwn = (r) => isReviewIdentity(r.user ?? r.author, identity);
 

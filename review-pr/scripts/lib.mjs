@@ -1041,6 +1041,18 @@ export function fetchRestPages(endpoint, { ghFn = gh, timeoutMs = 30_000 } = {})
   return pages.flat();
 }
 
+/**
+ * PR 主讨论区评论,作者带类型(REST 的 user.type → __typename)。
+ * `gh pr view --json comments` 对 bot 只给裸 login(github-actions、praisebuild,没有 [bot] 也没有类型),
+ * 认「是不是审查 bot 写的」会认不出;要比较作者身份就读这个。形状同 context.mjs 里的 comments 节点。
+ */
+export function fetchPrCommentsWithAuthorType(slug, pr, options = {}) {
+  return fetchRestPages(`repos/${slug}/issues/${pr}/comments`, options).map((c) => ({
+    body: c.body, createdAt: c.created_at, updatedAt: c.updated_at, url: c.html_url,
+    author: { login: c.user?.login, __typename: c.user?.type },
+  }));
+}
+
 const REVIEW_THREADS_PAGE_QUERY = `
   query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){

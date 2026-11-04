@@ -15,6 +15,7 @@ import {
   ghJson,
   fetchMaintainerAuthority,
   evaluateMaintainerApprovalPolicy,
+  readReviewIdentity,
   readReviewIdentityOrEmpty,
   evaluateMaintainerReview,
   evaluateFinalMergeAuthorization,
@@ -156,7 +157,8 @@ try {
   }
 
   // 跟 pre-merge 绑定当前 viewer；否则 auth switch 后会拿旧账号的 bypass 结论给新账号用。
-  const identity = readReviewIdentityOrEmpty();
+  // 写前复读:读不到身份就中止(同改动前:gh api user 失败直接抛错)。
+  const identity = readReviewIdentity();
   refuseBot(identity);
   const viewerLogin = identity.viewerLogin;
   // 写入前最后一次完整 authority + PR 绑定。任何 Team/成员/权限/CODEOWNERS 变化都重新 review。

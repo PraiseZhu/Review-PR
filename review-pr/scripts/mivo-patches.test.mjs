@@ -1973,9 +1973,15 @@ test('P1 接线:context / signoff-hold / signoff-release 取 hold 标记时传�
   assert.match(context, /pr', 'view'[\s\S]{0,400}createdAt/);
   assert.match(context, /prCreatedAt:\s*meta\.createdAt/);
   assert.match(hold, /parseLastHoldMarker\([\s\S]{0,160}viewerLogin/);
-  // 审查身份统一从 readReviewIdentityOrEmpty 来(不再直读 /user);别名集合也能识别旧留痕。
-  assert.match(hold, /readReviewIdentityOrEmpty\(\)/);
+  // 审查身份统一从 readReviewIdentity 来(不再直读 /user;读不到就中止,不降级成空集合);别名集合也能识别旧留痕。
+  assert.match(hold, /readReviewIdentity\(\)/);
+  assert.doesNotMatch(hold, /readReviewIdentityOrEmpty/);
   assert.doesNotMatch(hold, /\['api', 'user'/);
+  // 评论读带作者类型的 REST:gh pr view 对 bot 只给裸 login,认不出 praisebuild[bot] 写的标记(见 signoff-identity.test.mjs)。
+  assert.match(hold, /fetchPrCommentsWithAuthorType\(slug, pr\)/);
+  assert.match(release, /readReviewIdentity\(\)/);
+  assert.doesNotMatch(release, /readReviewIdentityOrEmpty/);
+  assert.match(release, /fetchPrCommentsWithAuthorType\(slug, pr\)/);
   assert.match(release, /parseLastHoldMarker\([\s\S]{0,80}viewerLogin/);
 });
 
@@ -2109,6 +2115,12 @@ function holdFixtureGh(args, options, fixture) {
   if (args[0] === 'issue' && args[1] === 'close') {
     fixture.issues[args[2]].state = 'CLOSED';
     return done('');
+  }
+  // REST 评论端点(带 user.type):signoff-hold / signoff-release 读它认 bot 自己写的标记;fixture.pr.comments 是 gh pr view 的形状,这里映射过来。
+  if (args[0] === 'api' && args.some((a) => /\/issues\/\d+\/comments$/.test(a))) {
+    const rest = (fixture.pr.comments ?? []).map((c) => ({ body: c.body, created_at: c.createdAt ?? null, updated_at: c.createdAt ?? null,
+      html_url: c.url ?? '', user: { login: c.author?.login, type: c.author?.__typename ?? c.author?.type ?? 'User' } }));
+    return done(JSON.stringify([rest]));
   }
   return done('');
 }
