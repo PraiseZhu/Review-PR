@@ -262,7 +262,7 @@ test('thread 链路:审查账号读不到时 context 直接报错,不会走到�
 const reviewerThread = rawThread('T1', 'maintainer', `[P2] 问题\n${MARKER}`);
 const greptileThread = rawThread('T2', 'greptile-apps', 'bot 意见', 'Bot');
 const viewerEnv = { REVIEW_PR_VIEWER_LOGIN: 'maintainer' };
-const humanCr = (login, id = 2) => ({ id, user: { login, type: 'User' }, state: 'CHANGES_REQUESTED', commit_id: head, submitted_at: '2026-01-02T00:00:00Z', body: '请先改掉这个问题' });
+const humanCr = (login, id = 2, submittedAt = '2026-01-02T00:00:00Z') => ({ id, user: { login, type: 'User' }, state: 'CHANGES_REQUESTED', commit_id: head, submitted_at: submittedAt, body: '请先改掉这个问题' });
 const crServer = (threads, reviews = [reviewFixture('maintainer')]) => makeServer({ threads, reviews });
 
 test('自己的旧 CR + 审查机带标记 thread + Greptile thread:送审但不放行(stage=review,带 pendingGates)', () => withFixture((run) => {
@@ -302,4 +302,20 @@ test('另一个 reviewer 的 CR 或维护者本人的人工 CR:带机器人 thre
   const humanOwn = run(crServer(threads, [humanCr('maintainer', 1)]), viewerEnv);
   assert.equal(humanOwn.status, 0, humanOwn.stdout + humanOwn.stderr);
   assert.equal(decideGate(humanOwn.json).outcome, 'changes-requested');
+  // #941 的覆盖情形:维护者本人的人工 CR 在前、审查机自动 CR 在后(GitHub 按登录名只留最后一条),人工 CR 仍有效
+  const overridden = run(crServer(threads, [humanCr('maintainer', 1, '2025-12-31T00:00:00Z'), reviewFixture('maintainer')].map((r, i) => ({ ...r, id: i + 1 }))), viewerEnv);
+  assert.equal(overridden.status, 0, overridden.stdout + overridden.stderr);
+  assert.equal(decideGate(overridden.json).outcome, 'changes-requested');
 }));
+
+// SC4:夹具和服务器开审前复核走同一条路——review.mjs 的 prepare 用同样的参数跑 context.mjs,紧接着按 decideGate(ctx) 的 stage !== 'review' 提前结束。
+test('服务器 prepare 的进场复核:源码里 context.mjs 的调用参数与 decideGate 的 finishEarly 判据与本夹具一致', () => {
+  const src = readFileSync(fileURLToPath(new URL('./review.mjs', import.meta.url)), 'utf8');
+  assert.ok(src.includes("runScript('context.mjs', [String(input.pr), '--lock-token', state.lockToken, '--diff-output', diffFile]"),
+    'review.mjs 改了 context.mjs 的调用参数,identity-context 夹具要跟着改');
+  assert.match(src, /const gate = decideGate\(ctx\);\s*if \(gate\.stage !== 'review'\) \{\s*return finishEarly\(/,
+    'review.mjs 不再按 decideGate(ctx).stage !== \'review\' 提前结束,夹具的结论不再代表服务器复核');
+  // 夹具的参数:pr 号、--lock-token、--diff-output(见 withFixture 的 run)
+  const fixtureSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  assert.ok(fixtureSrc.includes("[CONTEXT, '1', '--lock-token', token, '--diff-output', join(stateDir, 'pr.diff')]"));
+});
