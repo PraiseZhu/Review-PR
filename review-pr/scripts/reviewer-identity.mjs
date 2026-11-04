@@ -1,7 +1,7 @@
 // reviewer-identity.mjs — 审查身份集合(纯函数,无 I/O)。
 //
 // 「这是不是审查账号写的」统一走这里:身份集合 = viewerLogin ∪ viewerAliases。
-// 没配 aliases 时集合只有 viewer 自己;三个名字(PraiseZhu / praisebuild[bot] / praise-reviewer[bot])
+// 没配 aliases 时集合只有 viewer 自己;名字(如 PraiseZhu / praisebuild[bot])
 // 只出现在示例和测试里,不内置。集合只回答「归属」,不赋予任何权限:维护者名单、
 // 写前身份绑定、bot 禁止审批合并都不看集合成员关系。
 //
