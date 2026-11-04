@@ -30,7 +30,10 @@ export function createPrWriteGuard(binding, dependencies = {}) {
     const fields = `state,isDraft,headRefOid,author,updatedAt${binding.expectedBaseRef ? ',baseRefName' : ''}`;
     const beforeObservedAt = Date.now();
     const meta = api.ghJson(['pr', 'view', String(pr), '--repo', `${owner}/${repo}`, '--json', fields]);
-    const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: reviewRecordActor({ author: meta.author }), viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps });
+    // 人类作者仍按 login 字符串传(旧调用方与注入的 policy 都按字符串);Bot 作者传带类型的 actor,三种写法才能归一。
+    const authorActor = reviewRecordActor({ author: meta.author });
+    const authorInput = normalizeReviewActor(authorActor)?.isBot ? authorActor : meta.author?.login;
+    const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: authorInput, viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps });
     // 审查 App 只在 purpose='review' 且写的是精确端点时算有权限;其余目的仍要求维护者。
     const reviewAppAllowed = purpose === 'review' && policy.viewerIsReviewerApp && !policy.viewerIsMaintainer;
     if (reviewAppAllowed && !isReviewWrite(args, { owner, repo, pr })) {

@@ -245,7 +245,10 @@ function runCli(script, { viewer, env = {} }) {
 const noWrites = (calls) => calls.filter((args) => args.includes('POST') || args[0] === 'pr' && args[1] === 'merge');
 
 for (const [name, setup] of [
-  ['配置里的 bot', { env: { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]', REVIEW_PR_VIEWER_ALIASES: '["PraiseZhu"]' } }],
+  // [MIVO-PATCH reviewer-app] 生产配置现在把 praisebuild[bot] 声明为审查 App,Approve 对它放行(见 reviewer-app-cli.test.mjs);
+  // 这里保持「没有 reviewerApps 配置时 bot 一律被拒」的回归,所以指向不含 reviewerApps 的上游配置夹具。
+  ['配置里的 bot', { env: { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]', REVIEW_PR_VIEWER_ALIASES: '["PraiseZhu"]',
+    REVIEW_PR_RULES_FILE: fileURLToPath(new URL('../../tools/fixtures/upstream-pr-rules.json', import.meta.url)) } }],
   ['/user 读到 REST bot 后缀', { viewer: 'praise-reviewer[bot]' }],
 ]) {
   test(`approve-reviewed-pr 在 bot 身份下拒绝执行 (${name}) (SC6)`, () => {
