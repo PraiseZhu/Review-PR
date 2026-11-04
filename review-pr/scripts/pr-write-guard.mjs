@@ -1,20 +1,23 @@
 // Bind each write in a multi-step action to the same lock, viewer, authority and head.
-import { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, stateFile } from './lib.mjs';
+import { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, stateFile,
+  readReviewIdentity, normalizeReviewActor } from './lib.mjs';
 import { recordSelfWrite } from './self-write-receipts.mjs';
 
 export function createPrWriteGuard(binding, dependencies = {}) {
-  const api = { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, recordSelfWrite, ...dependencies };
+  const api = { gh, ghJson, assertActiveReviewLock, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, isSignoffExemptAuthor, recordSelfWrite, readReviewIdentity, ...dependencies };
   const { owner, repo, pr, lockToken, expectedHead, expectedAuthorityDigest, purpose } = binding;
   if (!lockToken || !expectedHead || !expectedAuthorityDigest) throw new Error('写操作缺少 lock/head/authority 绑定');
-  let boundViewer = String(binding.expectedViewer ?? '').trim().toLowerCase() || null;
+  // 写前身份绑定按「当前实际写入账号」精确比较,不用别名集合:同一集合里换成另一个账号也算身份漂移。
+  let boundViewer = normalizeReviewActor(binding.expectedViewer)?.key ?? null;
   return (args, options = {}) => {
     api.assertActiveReviewLock(lockToken);
-    const viewer = String(api.gh(['api', 'user', '--jq', '.login']).stdout).trim().toLowerCase();
+    const identity = api.readReviewIdentity({ ghFn: api.gh });
+    const viewer = normalizeReviewActor(identity.viewerLogin)?.key ?? '';
     const authority = api.fetchMaintainerAuthority({ owner, repo });
     const fields = `state,isDraft,headRefOid,author,updatedAt${binding.expectedBaseRef ? ',baseRefName' : ''}`;
     const beforeObservedAt = Date.now();
     const meta = api.ghJson(['pr', 'view', String(pr), '--repo', `${owner}/${repo}`, '--json', fields]);
-    const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority });
+    const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority, reviewerIdentity: identity });
     if (meta.state !== 'OPEN' || meta.isDraft || meta.headRefOid !== expectedHead || authority.digest !== expectedAuthorityDigest ||
         !policy.viewerIsMaintainer || (boundViewer && boundViewer !== viewer) ||
         (binding.expectedBaseRef && meta.baseRefName !== binding.expectedBaseRef)) throw new Error('写操作前 PR/head/base/viewer/authority 已变化或权限不足');

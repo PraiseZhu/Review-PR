@@ -1973,7 +1973,9 @@ test('P1 接线:context / signoff-hold / signoff-release 取 hold 标记时传�
   assert.match(context, /pr', 'view'[\s\S]{0,400}createdAt/);
   assert.match(context, /prCreatedAt:\s*meta\.createdAt/);
   assert.match(hold, /parseLastHoldMarker\([\s\S]{0,160}viewerLogin/);
-  assert.match(hold, /\['api', 'user'/);
+  // 审查身份统一从 readReviewIdentityOrEmpty 来(不再直读 /user);别名集合也能识别旧留痕。
+  assert.match(hold, /readReviewIdentityOrEmpty\(\)/);
+  assert.doesNotMatch(hold, /\['api', 'user'/);
   assert.match(release, /parseLastHoldMarker\([\s\S]{0,80}viewerLogin/);
 });
 

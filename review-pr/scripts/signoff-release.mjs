@@ -31,7 +31,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, parseLastHoldMarker, readReviewIdentityOrEmpty, parseSignoffReleaseEvents, selectTrustedSignoffReleases, renderIssueUrl, SIGNOFF_RELEASE_MARKER_PREFIX, loadRules, fetchMaintainerAuthority, evaluateMaintainerApprovalPolicy, assertActiveReviewLock, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, closeDiscussIssue, toDiscussIssueCloseBody } from './lib.mjs';
 
 const VALID_KINDS = new Set(['product', 'arch', 'security', 'coldUpdate', 'rules', 'pluginBase']);
 
@@ -70,7 +70,8 @@ try {
     'pr', 'view', String(pr), '--repo', slug,
     '--json', 'number,state,mergedAt,author,url,comments,labels',
   ]);
-  const viewerLogin = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const reviewerIdentity = readReviewIdentityOrEmpty();
+  const viewerLogin = reviewerIdentity.viewerLogin;
   const confirmedBy = viewerLogin;
   const author = meta.author?.login ?? '';
   const currentLabels = (meta.labels ?? []).map((l) => l.name);
@@ -79,7 +80,7 @@ try {
     createdAt: c.createdAt,
     author: c.author,
   }));
-  const holdMarker = parseLastHoldMarker(commentObjs, { viewerLogin });
+  const holdMarker = parseLastHoldMarker(commentObjs, { viewerLogin: reviewerIdentity });
   const releaseEvents = parseSignoffReleaseEvents(commentObjs);
   const already = new Map();
   let newGates = gates.slice();

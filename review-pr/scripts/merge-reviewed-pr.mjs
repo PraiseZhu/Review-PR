@@ -15,6 +15,7 @@ import {
   ghJson,
   fetchMaintainerAuthority,
   evaluateMaintainerApprovalPolicy,
+  readReviewIdentityOrEmpty,
   evaluateMaintainerReview,
   evaluateFinalMergeAuthorization,
   assertActiveReviewLock,
@@ -84,6 +85,13 @@ try {
   if (!expectedAuthorityDigest) initialFailures.push('缺少 --expected-authority-digest');
   if (!['squash', 'merge', 'rebase'].includes(method)) initialFailures.push('--method 必须是 squash / merge / rebase');
   if (initialFailures.length) stop(pr, initialFailures);
+  // bot 身份只做审查和留痕,不合并:在占 base 锁、跑 pre-merge-check 和任何写入之前就拒绝。
+  const refuseBot = (identity) => {
+    if (!identity.isBot) return;
+    stop(pr, [`当前审查身份 ${identity.viewerLogin} 是 bot,不能合并 PR(合并只能由维护者本人账号执行)`],
+      { code: 'bot-identity-forbidden', viewer: identity.viewerLogin });
+  };
+  refuseBot(readReviewIdentityOrEmpty());
   assertActiveReviewLock(lockToken);
 
   // Approve and code review run outside this short lock. This guarded entrypoint
@@ -148,7 +156,9 @@ try {
   }
 
   // 跟 pre-merge 绑定当前 viewer；否则 auth switch 后会拿旧账号的 bypass 结论给新账号用。
-  const viewerLogin = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const identity = readReviewIdentityOrEmpty();
+  refuseBot(identity);
+  const viewerLogin = identity.viewerLogin;
   // 写入前最后一次完整 authority + PR 绑定。任何 Team/成员/权限/CODEOWNERS 变化都重新 review。
   const authority = fetchMaintainerAuthority({ owner, repo });
   const meta = ghJson([
@@ -162,6 +172,7 @@ try {
     authorLogin: meta.author?.login ?? '',
     viewerLogin,
     authority,
+    reviewerIdentity: identity,
   });
   const latestCommitDate = (meta.commits ?? []).reduce(
     (latest, commit) => String(commit?.committedDate ?? '') > latest ? String(commit.committedDate) : latest,

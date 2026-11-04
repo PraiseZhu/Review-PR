@@ -5,7 +5,7 @@
 // 只出现在示例和测试里,不内置。集合只回答「归属」,不赋予任何权限:维护者名单、
 // 写前身份绑定、bot 禁止审批合并都不看集合成员关系。
 //
-// 本模块禁止 import lib.mjs(它顶层会建状态目录)、禁止读 process.env / 文件 / gh;
+// 本模块禁止 import lib.mjs(它顶层会建状态目录)、禁止读环境变量、文件和 gh;
 // 读环境和 gh 回落的包装是 lib.mjs 的 readReviewIdentity。
 
 // 登录名比较的 canonical key:小写;bot 一律写成 `base[bot]`。
@@ -27,12 +27,32 @@ export function normalizeReviewActor(value) {
   let login = rawLogin.trim().toLowerCase();
   if (!login) return null;
   let isBot = /^bot$/i.test(typed);
+  // `gh pr view --json` 把 GitHub App 写成 app/<slug>。
+  if (login.startsWith('app/')) {
+    login = login.slice(4);
+    isBot = true;
+  }
   if (login.endsWith(BOT_SUFFIX)) {
     login = login.slice(0, -BOT_SUFFIX.length);
     isBot = true;
   }
   if (!login) return null;
   return { login, isBot, key: isBot ? `${login}${BOT_SUFFIX}` : login };
+}
+
+/**
+ * 评论 / review 记录的作者,兼容 GraphQL(author.login + __typename)、REST(user.login + type)、
+ * 字符串 author 和顶层 login。不读记录顶层 __typename(那是记录自己的类型,不是作者类型)。
+ * 返回 {login, __typename},可直接交给 normalizeReviewActor;没有作者时 login 为 ''。
+ */
+export function reviewRecordActor(record) {
+  if (!record || typeof record !== 'object') return { login: '', __typename: '' };
+  const { author, user } = record;
+  const authorLogin = typeof author === 'string' ? author : typeof author?.login === 'string' ? author.login : '';
+  const login = String(record.login || authorLogin || user?.login || '').trim();
+  const typename = author?.is_bot === true ? 'Bot'
+    : String(author?.__typename ?? author?.type ?? user?.__typename ?? user?.type ?? '').trim();
+  return { login, __typename: typename };
 }
 
 /** 配置里的审查账号登录名(viewerLogin / REVIEW_PR_VIEWER_LOGIN)。合法返回去空白后的原拼写,非法抛错并写出字段名。 */

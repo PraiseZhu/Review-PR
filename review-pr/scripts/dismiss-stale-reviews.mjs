@@ -25,6 +25,8 @@ import {
   gh,
   ghJson,
   latestSubstantiveReviews,
+  readReviewIdentityOrEmpty,
+  isReviewIdentity,
   assertActiveReviewLock,
   print,
   fail,
@@ -68,13 +70,13 @@ try {
   }
 
   // 获取 viewer 身份
-  const viewerLogin = (gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
+  const identity = readReviewIdentityOrEmpty();
+  const viewerLogin = identity.viewerLogin;
+  const isOwn = (r) => isReviewIdentity(r.user ?? r.author, identity);
 
   // 先用每个 reviewer 的最新实质 review 判断当前 blocker；确认只有 viewer 有效 CR 后，
   // dismiss viewer 的全部历史 CR，避免 dismiss 最新一条后更早 CR 又重新浮上来。
-  const effectiveOwnCRs = changesRequestedReviews.filter(
-    (r) => (r.user?.login ?? r.author?.login ?? '') === viewerLogin,
-  );
+  const effectiveOwnCRs = changesRequestedReviews.filter(isOwn);
   if (effectiveOwnCRs.length === 0) {
     print({
       ok: true, pr, dismissed: false,
@@ -83,10 +85,8 @@ try {
     process.exit(0);
   }
 
-  const otherCRs = changesRequestedReviews.filter(
-    (r) => (r.user?.login ?? r.author?.login ?? '') !== viewerLogin,
-  );
-  const ownCRs = selectGateReviewsToDismiss(allReviews, viewerLogin, meta.headRefOid);
+  const otherCRs = changesRequestedReviews.filter((r) => !isOwn(r));
+  const ownCRs = selectGateReviewsToDismiss(allReviews, identity, meta.headRefOid);
   if (otherCRs.length > 0) {
     print({
       ok: true, pr, dismissed: false,

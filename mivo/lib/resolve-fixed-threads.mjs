@@ -189,11 +189,13 @@ async function realDeps({ binding }) {
       if (!b?.[field]) throw new Error(`缺少绑定字段 ${field}`);
     }
     lib.assertActiveReviewLock(b.lockToken);
-    const viewer = String(lib.gh(['api', 'user', '--jq', '.login'], { noCredFallback: true }).stdout).trim();
-    if (!viewer || lower(viewer) !== lower(b.reviewer)) throw new Error('当前写账号不是本轮审查账号');
+    // 写前绑定:当前实际写入账号必须就是本轮审查账号(精确比较,不用别名集合)。
+    const identity = lib.readReviewIdentityOrEmpty();
+    const viewer = identity.viewerLogin;
+    if (!viewer || !lib.sameReviewActor(viewer, b.reviewer)) throw new Error('当前写账号不是本轮审查账号');
     const authority = lib.fetchMaintainerAuthority({ owner, repo });
     const meta = lib.ghJson(['pr', 'view', String(b.pr), '--repo', b.targetRepo, '--json', 'state,isDraft,headRefOid,baseRefOid,baseRefName,author']);
-    const policy = lib.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority });
+    const policy = lib.evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login, viewerLogin: viewer, authority, reviewerIdentity: identity });
     if (authority.digest !== b.authorityDigest || !policy.viewerIsMaintainer) throw new Error('维护者名单已变化或写账号不是维护者');
     if (meta.state !== 'OPEN' || meta.isDraft || meta.headRefOid !== b.head || meta.baseRefOid !== b.base || meta.baseRefName !== b.baseRefName) {
       throw new Error('PR 状态、head 或 base 已变化');

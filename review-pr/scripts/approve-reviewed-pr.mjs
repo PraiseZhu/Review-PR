@@ -4,7 +4,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseRepo, parsePR, gh, ghJson, fetchAllReviewThreads, fetchMaintainerAuthority,
-  evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, latestSubstantiveReviews, selectStandingViewerHumanChangesRequest,
+  evaluateMaintainerApprovalPolicy, evaluateApprovalExemption, readReviewIdentityOrEmpty, isReviewIdentity, sameReviewActor, latestSubstantiveReviews, selectStandingViewerHumanChangesRequest,
   assertActiveReviewLock, stateFile, print } from './lib.mjs';
 import { atomicWriteJson } from './runtime-io.mjs';
 import { approvalReceiptFromReview, existingMaintainerApprovalReceipt, pendingApproval, APPROVAL_REPOST_AFTER_MS } from './approval-state.mjs';
@@ -57,16 +57,29 @@ try {
   const overrideRequested = process.argv.includes('--allow-override-own-cr');
   const overrideOwnCr = overrideRequested ? argValue('--allow-override-own-cr') : '';
 
+  // bot 身份(GitHub App 等)只做审查和留痕,不提交 Approve:读到 bot 立刻拒绝,在任何锁、授权读取和写入之前。
+  const refuseBot = (identity) => {
+    if (!identity.isBot) return;
+    const reason = `当前审查身份 ${identity.viewerLogin} 是 bot,不能提交 Approve(审批只能由维护者本人账号执行)`;
+    print({ ok: true, pr, approved: false, dryRun, expectedHead, viewer: identity.viewerLogin,
+      approval: { status: 'blocked', code: 'bot-identity-forbidden', reason },
+      failures: [{ code: 'bot-identity-forbidden', reason }], failedChecks: [reason], reason });
+    process.exit(2);
+  };
+  refuseBot(readReviewIdentityOrEmpty());
+
   const collect = () => {
     assertActiveReviewLock(lockToken);
     const beforeObservedAt = Date.now();
     const meta = ghJson(['pr', 'view', String(pr), '--repo', slug,
       '--json', 'state,isDraft,reviewDecision,author,headRefOid,baseRefName,baseRefOid,updatedAt']);
-    const viewer = String(gh(['api', 'user', '--jq', '.login'], { noCredFallback: true }).stdout ?? '').trim();
+    const identity = readReviewIdentityOrEmpty();
+    refuseBot(identity);
+    const viewer = identity.viewerLogin;
     let authority = null;
     let authorityError;
     try { authority = fetchMaintainerAuthority({ owner, repo }); } catch (error) { authorityError = error.message; }
-    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login ?? '', viewerLogin: viewer, authority });
+    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: meta.author?.login ?? '', viewerLogin: viewer, authority, reviewerIdentity: identity });
     const threads = fetchAllReviewThreads(owner, repo, pr);
     const reviews = readReviewPages(slug, pr);
     const substantive = latestSubstantiveReviews(reviews.reviews);
@@ -101,12 +114,12 @@ try {
     if (!threads.verified) reject('threads-unverified', 'review thread 状态未完整读取');
     else if (threads.threads.some((thread) => !thread.isResolved)) reject('threads-unresolved', '仍有 conversation 未 resolve');
     if (!reviews.verified) reject('reviews-unverified', reviews.error);
-    if (changes.some((review) => !same(review.user?.login, viewer))) {
+    if (changes.some((review) => !isReviewIdentity(review.user, identity))) {
       reject('other-changes-requested', '存在别人的有效 CHANGES_REQUESTED，不能靠本次 Approve 覆盖');
     }
     // [MIVO-PATCH self-review] 同一账号上维护者本人的人工 CR 仍有效时,不能靠审查机 Approve 覆盖;
     // 只有 --allow-override-own-cr 指名的正是这一条时放行,其它检查照旧。
-    const standingOwnCr = selectStandingViewerHumanChangesRequest(reviews.reviews, viewer);
+    const standingOwnCr = selectStandingViewerHumanChangesRequest(reviews.reviews, identity);
     if (overrideRequested && !/^\d{1,20}$/.test(overrideOwnCr)) {
       reject('override-id-invalid', `--allow-override-own-cr 需要一条 review id，收到「${overrideOwnCr.slice(0, 40)}」`);
     }
@@ -116,7 +129,7 @@ try {
     if (meta.reviewDecision === 'CHANGES_REQUESTED' && !changes.length) {
       reject('reviews-unverified', 'reviewDecision=CHANGES_REQUESTED，但未读取到对应 review');
     }
-    return { meta, beforeObservedAt, viewer, authority, policy, failures, overriddenOwnCr: standingOwnCr ? String(standingOwnCr.id) : null,
+    return { meta, beforeObservedAt, viewer, identity, authority, policy, failures, overriddenOwnCr: standingOwnCr ? String(standingOwnCr.id) : null,
       receipt: independentReceipt ?? existingReceipt(reviews, viewer, expectedHead) };
   };
   const stop = (snapshot, extraFailures = []) => {
@@ -145,7 +158,7 @@ try {
   // Repeat live authority/viewer/head/base/threads/other-review checks immediately
   // before either accepting an existing approval or posting a new one.
   const fresh = collect();
-  stop(fresh, same(fresh.viewer, initial.viewer) ? [] : [{ code: 'viewer-changed', reason: '写操作前 GitHub viewer 已变化' }]);
+  stop(fresh, sameReviewActor(fresh.viewer, initial.viewer) ? [] : [{ code: 'viewer-changed', reason: '写操作前 GitHub viewer 已变化' }]);
   const emitExempt = fresh.policy.approvalRequired === false && !fresh.receipt &&
     !(fresh.overriddenOwnCr && fresh.policy.viewerCanApprove);
   if (emitExempt) {

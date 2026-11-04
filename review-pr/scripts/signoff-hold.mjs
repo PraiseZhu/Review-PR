@@ -60,7 +60,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
-import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, toNoticeCloseComment } from './lib.mjs';
+import { parseRepo, parsePR, gh, ghJson, print, fail, renderIssueUrl, closeDiscussIssue, parseSignoffMode, buildSignoffIssueFooter, parseLastHoldMarker, readReviewIdentityOrEmpty, PRODUCT_GATE_MARKER_PREFIX, SIGNOFF_RENOTICE_MARKER_PREFIX, parseSignoffRenotices, loadRules, syncSignoffLabel, SIGNOFF_LABEL_DEFAULT, removeLegacyGateLabels, issueNumberFromUrl, decideIssueReuse, toNoticeCloseComment } from './lib.mjs';
 
 // 隐藏去重标记:HTML 注释,GitHub 渲染不可见,但 API 返回的 body 里查得到。
 // 前缀沿用 review-pr:product-gate(lib.mjs 常量,parseLastHoldMarker 共用)——存量被 hold
@@ -139,8 +139,8 @@ try {
   const printOut = (out) => print(withLabelWarning(out));
 
   // [MIVO-PATCH hold-viewer] 只认审查账号写的 hold 标记;github-actions bot 永不采信。
-  const viewerLogin = String(gh(['api', 'user', '--jq', '.login']).stdout ?? '').trim();
-  const holdMarker = parseLastHoldMarker(meta.comments ?? [], { viewerLogin });
+  const reviewerIdentity = readReviewIdentityOrEmpty();
+  const holdMarker = parseLastHoldMarker(meta.comments ?? [], { viewerLogin: reviewerIdentity });
   const alreadyHeld = holdMarker != null;
   const priorIssueUrl = holdMarker?.issueUrl ?? null;
   // ── 旧讨论 issue 复用/新开判定(decideIssueReuse,见 lib.mjs;signoff-policy.test.mjs 覆盖)──

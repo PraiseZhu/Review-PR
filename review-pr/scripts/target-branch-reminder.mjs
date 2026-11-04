@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { classifyBasePrLookup } from './review-dependencies.mjs';
+import { isReviewIdentity } from './reviewer-identity.mjs';
 
 export function targetBranchFingerprint({ baseRefName, defaultBranch, basePr }) {
   if (!baseRefName || !defaultBranch || baseRefName === defaultBranch ||
@@ -65,10 +66,10 @@ export function notifyTargetBranch({ owner, repo, pr, expectedHead, expectedBase
   if (!current) return { ...base, reason: 'state-changed' };
   const fingerprint = targetBranchFingerprint(current);
   const receipt = { ...base, head: current.head, baseRefName: current.baseRefName, defaultBranch: current.defaultBranch, fingerprint };
-  const viewer = String(api.ghJson(['api', 'user'])?.login ?? '').toLowerCase();
-  if (!viewer) throw new Error('评论账号未完整读取');
+  const identity = api.readReviewIdentity();
+  if (!identity?.logins?.length) throw new Error('评论账号未完整读取');
   const comments = api.fetchRestPages(`repos/${slug}/issues/${pr}/comments`);
-  const prior = comments.find((comment) => String(comment?.user?.login ?? '').toLowerCase() === viewer &&
+  const prior = comments.find((comment) => isReviewIdentity(comment?.user, identity) &&
     String(comment.body ?? '').includes(targetBranchMarker(fingerprint)));
   if (prior) return { ...receipt, reason: 'already-commented', url: prior.html_url };
   const body = targetBranchBody({ ...current, reviewOnly });

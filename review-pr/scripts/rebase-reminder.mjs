@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { toReviewIdentity, isReviewIdentity } from './reviewer-identity.mjs';
 
 export function rebaseReminderFingerprint(mergeBaseDate) {
   const value = String(mergeBaseDate ?? '').trim();
@@ -11,13 +12,14 @@ export function rebaseReminderMarker(fingerprint) {
   return `<!-- review-pr:stale-rebase fingerprint=${String(fingerprint).toLowerCase()} -->`;
 }
 
+// viewer 可以是登录名字符串,也可以是审查身份对象(集合内任一账号发过的提醒都算已提醒)。
 export function hasTrustedRebaseReminder(comments, { viewer, fingerprint, mergeBaseDate }) {
-  const login = String(viewer ?? '').trim().toLowerCase();
-  if (!login || !Array.isArray(comments)) return false;
+  const identity = toReviewIdentity(typeof viewer === 'string' ? viewer.trim() : viewer);
+  if (identity.logins.length === 0 || !Array.isArray(comments)) return false;
   const marker = rebaseReminderMarker(fingerprint);
   const mergeBaseMs = Date.parse(String(mergeBaseDate ?? ''));
   return comments.some((comment) => {
-    if (String(comment?.user?.login ?? '').trim().toLowerCase() !== login) return false;
+    if (!isReviewIdentity(comment?.user, identity)) return false;
     const body = String(comment?.body ?? '');
     if (body.includes(marker)) return true;
     // 兼容旧版无 marker 评论：只认当前 viewer 在本次 merge-base 之后发出的固定提醒文案。
