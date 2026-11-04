@@ -82,6 +82,7 @@
     "review-pr/scripts/notify-author-resolve.test.mjs",
     "review-pr/scripts/reviewer-app-cli.test.mjs",
     "review-pr/scripts/reviewer-app-finish.test.mjs",
+    "review-pr/scripts/reviewer-app-guard.test.mjs",
     "review-pr/scripts/reviewer-app-policy.test.mjs",
     "review-pr/scripts/reviewer-app-pre-merge.test.mjs",
     "review-pr/scripts/reviewer-app-signoff-cli.test.mjs",
