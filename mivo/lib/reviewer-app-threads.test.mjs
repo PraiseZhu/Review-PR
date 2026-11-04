@@ -116,9 +116,11 @@ test('assertBinding:配置的审查 App 是写账号且绑定一致 → 通过;�
 
 test('assertBinding:写账号与绑定不一致、head/base/authority 漂移 → 拒绝,信息含期望与实际', async () => {
   const lib = await realLib();
+  const driftLib = await realLib({ metaPatch: { headRefOid: 'd'.repeat(40) } });
+  const digestLib = await realLib({ digest: 'other' });
   assert.throws(() => createAssertBinding({ lib, owner: 'o', repo: 'r' })({ ...BINDING, reviewer: 'someone-else' }), /当前写账号不是本轮审查账号.*someone-else.*praisebuild\[bot\]/);
-  assert.throws(() => createAssertBinding({ lib: await realLib({ metaPatch: { headRefOid: 'd'.repeat(40) } }), owner: 'o', repo: 'r' })(BINDING), /head.*d{12}.*b{12}|期望.*实际/);
-  assert.throws(() => createAssertBinding({ lib: await realLib({ digest: 'other' }), owner: 'o', repo: 'r' })(BINDING), /维护者名单已变化/);
+  assert.throws(() => createAssertBinding({ lib: driftLib, owner: 'o', repo: 'r' })(BINDING), /head.*d{12}.*b{12}|期望.*实际/);
+  assert.throws(() => createAssertBinding({ lib: digestLib, owner: 'o', repo: 'r' })(BINDING), /维护者名单已变化/);
   assert.throws(() => createAssertBinding({ lib, owner: 'o', repo: 'r' })({ ...BINDING, pr: 0 }), /缺少绑定字段 pr/);
 });
 
