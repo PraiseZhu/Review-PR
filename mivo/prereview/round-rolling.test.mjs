@@ -274,6 +274,8 @@ const WORLD_SOURCE = (() => {
 function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance = 'sandbox', mode = 'sandbox', gateParallel } = {}) {
   const w = { now: Date.parse(start), files: new Map(), logs: [], procs: [], events: [], prs: new Map(), runs: new Map(), nextRunId: 5000,
     lock: null, nextToken: 1, authorityDigest: 'digest-1', skillSha: 'skill-1', dispatches: [], cancels: [], heartbeats: [], releases: [],
+    // 按 dispatch_id 找 run 的列表查询:runsListFails=查询失败,runsListIncomplete=列表没拿全
+    runsListFails: false, runsListIncomplete: false,
     dispatchFailures: [], hiddenUntil: new Map(), cancelFails: new Set(), noArtifact: new Set(), roundNo: 0, planDelayMs: 15_000, cancelDelayMs: 30_000,
     // 仓库副本 gc、钉住的 skill 版本、pre-check 的故障注入
     gitCalls: [], packs: 49, gcFails: false, pinned: null, pinFails: false, precheckFail: null,
@@ -553,9 +555,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     }
     if (args[0] === 'api' && path.includes('/actions/workflows/review-pr.yml/runs')) {
       const since = Date.parse(path.match(/created=>=([^&]+)/)[1]);
+      if (w.runsListFails) return fail('HTTP 502: Bad Gateway');
       const list = [...w.runs.values()].filter((r) => r.createdMs >= since && !((w.hiddenUntil.get(r.dispatchId) ?? 0) > w.now))
         .map((r) => ({ id: Number(r.id), display_title: r.title }));
-      return ok([{ total_count: list.length, workflow_runs: list }]);
+      // runsListIncomplete:total_count 比拿到的多 1,模拟「列表没拿全」(findDispatchRun 的 complete=false)
+      return ok([{ total_count: list.length + (w.runsListIncomplete ? 1 : 0), workflow_runs: list }]);
     }
     if (args[0] === 'workflow' && args[1] === 'run') {
       const inputs = Object.fromEntries(args.filter((_, i) => args[i - 1] === '-f').map((a) => [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)]));
@@ -828,6 +832,7 @@ test('世界:60 分钟还找不到 run:记 dispatch-unresolved,占槽、不重�
   w.openPr(7, 'h7');
   w.openPr(8, 'h8');
   const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }, { pr: 8, head: 'h8' }]);
+  w.runsListIncomplete = true; // 这条测试表达「列表一直拿不全」,不是「完整列表里没有」
   w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0004', attempt: 1, claimAttempt: 1, intentAt: iso(t0), state: 'sent' });
   w.schedule(t0 + 70 * MIN, () => w.push(7, 'h7b'));
   const proc = w.start();
@@ -847,6 +852,114 @@ test('世界:60 分钟还找不到 run:记 dispatch-unresolved,占槽、不重�
   assert.ok(await w.runUntil(() => next.settled, { maxMs: 60 * MIN }));
   assert.deepEqual(w.dispatchesOf(7).map((d) => d.head), ['h7b'], 'PR 回到候选,新 head 才派');
   assert.deepEqual(w.read(w.state('reviews.json')).prs[7].failures ?? {}, {}, '不计失败次数');
+});
+
+test('世界:完整列表里 30 分钟还没有这次派发:自动按没派出去收尾(auto、retry、不计失败、放槽),下一轮同 head 重派', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  const t0 = w.now;
+  w.openPr(7, 'h7');
+  w.openPr(8, 'h8');
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }, { pr: 8, head: 'h8' }]);
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'auto0101', attempt: 1, claimAttempt: 1, intentAt: iso(t0), state: 'sent' });
+  const proc = w.start();
+  await w.runUntil(() => false, { maxMs: 25 * MIN });
+  assert.equal(w.logged('dispatch-auto-resolved').length, 0, '不满 30 分钟继续等');
+  assert.equal(w.dispatches.length, 0, '#7 占着槽,#8 派不了');
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 90 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  const auto = w.logged('dispatch-auto-resolved');
+  assert.deepEqual(auto.map((e) => [e.pr, e.dispatchId, e.intentAt]), [[7, 'auto0101', iso(t0)]]);
+  assert.ok(Date.parse(auto[0].at ?? iso(w.now)) >= t0 + 30 * MIN);
+  const intent = w.read(`${dir}/dispatch-intent-7.json`);
+  assert.equal(intent.state, 'not-submitted');
+  assert.equal(intent.auto, true);
+  assert.equal(intent.resolution.auto, true);
+  const r7 = w.read(`${dir}/results/pr-7.json`);
+  assert.equal(r7.outcome, 'error');
+  assert.equal(r7.retry, true);
+  assert.deepEqual(w.read(w.state('reviews.json')).prs[7]?.failures ?? {}, {}, '不计失败次数');
+  assert.equal(w.logged('dispatch-unresolved').length, 0);
+  assert.equal(w.dispatchesOf(7).length, 0, '本轮不重发');
+  assert.equal(w.dispatchesOf(8).length, 1, '槽放开后 #8 才能派');
+  assert.ok(w.dispatchesOf(8)[0].at >= t0 + 30 * MIN, '30 分钟之后才放槽');
+  const next = w.start();
+  assert.ok(await w.runUntil(() => next.settled, { maxMs: 60 * MIN }));
+  assert.equal(next.failure, null, String(next.failure?.stack));
+  assert.deepEqual(w.dispatchesOf(7).map((d) => d.head), ['h7'], '下一轮同一个 head 重新派审');
+});
+
+test('世界:派发时 gh 返回 5xx、GitHub 上确实没有这次运行:30 分钟后自动收尾,不再停写心跳、不等人手放解除文件', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  w.openPr(7, 'h7');
+  w.dispatchFailures.push('lost');
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => w.logged('dispatch-unknown').length === 1, { maxMs: 10 * MIN }));
+  const intentAt = w.now;
+  assert.ok(await w.runUntil(() => proc.settled || w.logged('dispatch-auto-resolved').length === 1, { maxMs: 90 * MIN }));
+  assert.ok(w.now >= intentAt + 29 * MIN, '满 30 分钟才收尾');
+  assert.equal(w.logged('dispatch-unresolved').length, 0);
+  assert.equal(w.logged('dispatch-auto-resolved').length, 1);
+});
+
+test('世界:派发查不清时先登记停写心跳,列表后来拿全:自动收尾同时去掉登记并记 heartbeat-resumed', async () => {
+  const w = makeWorld({ maxParallel: 2, instance: 'mivo', mode: 'live' });
+  const t0 = w.now;
+  w.openPr(7, 'h7');
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
+  w.runsListIncomplete = true;
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'auto0102', attempt: 1, claimAttempt: 1, intentAt: iso(t0), state: 'sent' });
+  const proc = w.start();
+  await w.runUntil(() => false, { maxMs: 65 * MIN });
+  assert.equal(w.logged('dispatch-unresolved').length, 1, '列表一直不完整:60 分钟照旧报警');
+  assert.equal(w.logged('dispatch-auto-resolved').length, 0, '列表不完整不自动收尾');
+  assert.deepEqual(Object.keys(w.read(w.state('heartbeat-pause.json')).dispatches), ['auto0102']);
+  w.runsListIncomplete = false;
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 30 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.logged('dispatch-auto-resolved').length, 1);
+  assert.equal(w.files.has(w.state('heartbeat-pause.json')), false, '自动收尾把登记去掉');
+  assert.equal(w.logged('heartbeat-resumed').length, 1);
+});
+
+test('世界:自动收尾写完意图、记 dispatch-auto-resolved 之前被杀:重启后补记事件、去掉心跳登记、放槽、不计失败', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  const t0 = w.now - 40 * MIN;
+  w.openPr(7, 'h7');
+  w.openPr(8, 'h8');
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }, { pr: 8, head: 'h8' }]);
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'auto0104', attempt: 1, claimAttempt: 1, intentAt: iso(t0),
+    state: 'not-submitted', auto: true, resolution: { kind: 'not-submitted', auto: true, at: iso(w.now - MIN) } });
+  w.files.set(w.state('heartbeat-pause.json'), { dispatches: { auto0104: { pr: 7, intentAt: iso(t0), intentFile: `${dir}/dispatch-intent-7.json` } } });
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 60 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.deepEqual(w.logged('dispatch-auto-resolved').map((e) => [e.pr, e.dispatchId, e.intentAt]), [[7, 'auto0104', iso(t0)]], '重启后补记');
+  assert.equal(w.files.has(w.state('heartbeat-pause.json')), false, '心跳登记去掉');
+  assert.equal(w.read(`${dir}/results/pr-7.json`).retry, true);
+  assert.match(w.read(`${dir}/results/pr-7.json`).reason, /自动核实/);
+  assert.deepEqual(w.read(w.state('reviews.json')).prs[7]?.failures ?? {}, {}, '不计失败次数');
+  assert.equal(w.dispatchesOf(7).length, 0, '本轮不重发');
+  assert.equal(w.dispatchesOf(8).length, 1, '槽已放开');
+  assert.equal(w.logged('dispatch-resolved').length, 0, '不是人工解除');
+});
+
+test('世界:查询列表失败:30 分钟后仍占槽、不自动收尾;60 分钟照旧记 dispatch-unresolved', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  const t0 = w.now;
+  w.openPr(7, 'h7');
+  w.openPr(8, 'h8');
+  w.runsListFails = true;
+  const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }, { pr: 8, head: 'h8' }]);
+  w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'auto0103', attempt: 1, claimAttempt: 1, intentAt: iso(t0), state: 'sent' });
+  const proc = w.start();
+  await w.runUntil(() => false, { maxMs: 45 * MIN });
+  assert.equal(w.logged('dispatch-auto-resolved').length, 0, '查询失败不自动收尾');
+  assert.equal(proc.settled, false);
+  assert.equal(w.read(`${dir}/dispatch-intent-7.json`).state, 'sent');
+  await w.runUntil(() => false, { maxMs: 25 * MIN });
+  assert.equal(w.logged('dispatch-unresolved').length, 1);
+  assert.equal(w.logged('dispatch-auto-resolved').length, 0);
+  assert.equal(w.dispatches.length, 0, '槽一直占着');
 });
 
 test('世界:人工解除 found:runId 对不上就忽略;对上了只把未知变成已知 run,run 结束才释放槽', async () => {
@@ -945,6 +1058,7 @@ test('世界:部署暂停时只剩未决派发:照样握手退出,意图留着;�
   const w = makeWorld({ maxParallel: 2 });
   w.openPr(7, 'h7');
   const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
+  w.runsListIncomplete = true; // 这条测试表达「列表一直拿不全」,不是「完整列表里没有」
   w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0007', attempt: 1, claimAttempt: 1, intentAt: iso(w.now), state: 'dispatching' });
   const proc = w.start();
   await w.runUntil(() => false, { maxMs: 2 * MIN });
@@ -972,6 +1086,7 @@ test('世界:06:00 停止接单后只剩未决派发:这一轮停下、放锁退
   const w = makeWorld({ start: '2026-10-14T21:00:00Z', maxParallel: 2 }); // 北京 05:00
   w.openPr(7, 'h7');
   const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
+  w.runsListIncomplete = true; // 这条测试表达「列表一直拿不全」,不是「完整列表里没有」
   w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0011', attempt: 1, claimAttempt: 1, intentAt: iso(w.now - 10 * MIN), state: 'sent' });
   const proc = w.start();
   assert.ok(await w.runUntil(() => proc.settled, { maxMs: 90 * MIN }), '停止接单后不再空等');
@@ -996,6 +1111,7 @@ test('世界:未决派发满 60 分钟就停写心跳,跨进程保留(维护窗�
   w.openPr(7, 'h7');
   const dir = w.seedRound('R0', [{ pr: 7, head: 'h7', phase: 'ready', attempts: 1 }]);
   const intentAt = w.now - 10 * MIN;
+  w.runsListIncomplete = true; // 这条测试表达「列表一直拿不全」,不是「完整列表里没有」
   w.files.set(`${dir}/dispatch-intent-7.json`, { pr: 7, head: 'h7', dispatchId: 'lost0012', attempt: 1, claimAttempt: 1, intentAt: iso(intentAt), state: 'sent' });
   const proc = w.start();
   assert.ok(await w.runUntil(() => proc.settled, { maxMs: 90 * MIN }));
