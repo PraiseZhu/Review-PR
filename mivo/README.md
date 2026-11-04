@@ -530,7 +530,7 @@ Mini 之外的看门狗（Mivo `review-watchdog.yml`）每 30 分钟读一次这
 | 变量 | 作用 |
 |---|---|
 | `REVIEW_PR_VIEWER_LOGIN` | 审查账号登录名，填 `PraiseZhu`。context 用它代替 GraphQL 的 `viewer{login}`，查询里不再要 viewer：hold 标记认人、排除审查机自己的 review、`viewerIsAuthor`、评论过滤、自解死锁、服务器认裁定和申辩 thread 都用它。prepare 的登录检查改为读一次目标仓库（integration 令牌没有 `/user`，`gh auth status` 会误报）。必须和发布用的 `MIVO_REVIEW_BOT_TOKEN` 是同一个账号，代码不核对。格式不对直接报错。 |
-| `REVIEW_PR_VIEWER_ALIASES` | 可选，JSON 数组字符串，例如 `["PraiseZhu"]`（审查账号换成 `praisebuild[bot]` 后，PraiseZhu 的旧留痕仍然认）。审查身份集合 = `REVIEW_PR_VIEWER_LOGIN` ∪ 别名；「这是不是审查账号写的」（hold 标记、审查机自己的 review 与 thread、旧打回、提醒去重、自批排除）都按集合判，所以切到新账号后 PraiseZhu 写的旧留痕仍然认。**集合只回答归属，不赋权**：维护者名单、写前身份绑定、确认放行都不看它。bot 一律写 REST 形态 `praisebuild[bot]`（GraphQL 里是登录名 `praisebuild` 加 Bot 类型，两种都认；同名的普通用户 `praisebuild` 不算）。没配时集合只有 `REVIEW_PR_VIEWER_LOGIN` 一个账号，行为和改动前相同。不是 JSON 数组、元素不是合法登录名直接报错并写出字段名。身份是 bot 时 `approve-reviewed-pr.mjs`、`merge-reviewed-pr.mjs` 退出码 2、错误码 `bot-identity-forbidden`，不写任何东西。 |
+| `REVIEW_PR_VIEWER_ALIASES` | 可选，JSON 数组字符串，例如 `["PraiseZhu"]`（审查账号换成 `praisebuild[bot]` 后，PraiseZhu 的旧留痕仍然认）。审查身份集合 = `REVIEW_PR_VIEWER_LOGIN` ∪ 别名；「这是不是审查账号写的」（hold 标记、审查机自己的 review 与 thread、旧打回、提醒去重、自批排除）都按集合判，所以切到新账号后 PraiseZhu 写的旧留痕仍然认。**集合只回答归属，不赋权**：维护者名单、写前身份绑定、确认放行都不看它。bot 一律写 REST 形态 `praisebuild[bot]`（GraphQL 里是登录名 `praisebuild` 加 Bot 类型，两种都认；同名的普通用户 `praisebuild` 不算）。没配时集合只有 `REVIEW_PR_VIEWER_LOGIN` 一个账号，行为和改动前相同。不是 JSON 数组、元素不是合法登录名直接报错并写出字段名。身份是 bot 时 `merge-reviewed-pr.mjs` 退出码 2、错误码 `bot-identity-forbidden`，不写任何东西；`approve-reviewed-pr.mjs` 只放行配置里点名的审查 App（见下「审查 App」），其它 bot 同样 `bot-identity-forbidden`。 |
 | `REVIEW_PR_IDENTITY_TOKEN` | 要审查账号身份或 Administration 读权限的调用改用它：`branches/<base>/protection`、`.../required_signatures`、`rulesets/<id>` 的 `current_user_can_bypass`、沙箱检查镜像的跨仓派发。其余调用仍用 `GH_TOKEN`。这几个调用失败时不换凭证重试。 |
 | `REVIEW_PR_NO_CRED_FALLBACK` | 设为 `1` 时关掉「403 Resource not accessible 时摘掉 GH_TOKEN 重试」。用 integration 令牌时必须设：runner 上没有别的凭证，重试只会把原始报错盖掉。 |
 
@@ -614,3 +614,15 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 要马上换，点「立即运行」：白天也用 hold 停点，在途审查收完前新 PR 要排队。
 - 任务跑的是线上那一版的 `auto-update.mjs`（`~/mivo-prereview/skill/mivo/deploy/`）。回滚到没有这个目录的旧版本后，前置检查会失败，要先暂停任务。
 - 审查任务书（`specDigest`）变了的版本，开放 PR 下次送审时：代码（逐文件 patch 指纹）和 base 分支都没变的，沿用上次结论并采用新 `specDigest`（沿用的问题与转 issue 的问题照旧；转 issue 的需本轮仍核验通过，要发新 review 时 head 或 diff 变了的阻断项转文件级评论；同一 head 上一轮已发过 review 的不再重发，直接沿用其 review、thread 链接与原行号（base 前移也不改））；代码也变了的才按新任务书全量重审。维护者想让规则改版一律重审，把 `config/review-features.json` 的 `specChange.forceFull` 设为 true。只改代码不算规则改版，见 `lib/scope.mjs`。
+
+### 审查 App（reviewerApps，PraiseZhu/Review-PR#177）
+
+`review-pr/config/pr-rules.json` 与 `mivo/config/sandbox-pr-rules.json` 的 `reviewerApps: ["praisebuild[bot]"]` 声明哪个 GitHub App 可以以审查身份发布。**审查身份与维护者分开**：
+
+- App 可以发 Approve / Request Changes / COMMENT、处理自己的已修 thread；`approvalPolicy` 里 `viewerIsReviewerApp=true`、`viewerIsMaintainer=false`。
+- App 的 Approve 只是「审查已发布」，**不算独立维护者批准**：不进「独立 Approve」判断，不满足 `approvalRequired`（非维护者作者的 PR 仍要维护者手动 Approve）；App 发审查后收尾**不**释放签核标签、不关待确认 issue；`signoff-release` 对 bot viewer 或指向审查 App 的 `--by`（`praisebuild[bot]` / `praisebuild` 两种写法）拒绝写放行标记；`merge-reviewed-pr.mjs` 仍拒绝 bot。bot 不在 `maintainerAllowlist` / Team / 签核名单里。
+- 自批排除：作者在审查身份集合内（含 `REVIEW_PR_VIEWER_ALIASES`）时 App 不 Approve，服务器降级为 COMMENT。生产配了含 PraiseZhu 的别名期间，作者是 PraiseZhu 的 PR 只发 COMMENT；不配该别名时由 App Approve。
+- 写前 guard：App 只在 `purpose=review` 下写当前 PR 的 `POST pulls/<pr>/reviews` 与 `POST pulls/<pr>/comments`；签核评论、改标签、关 issue、合并、GraphQL 写一律拒绝。写失败不回落到个人凭证，错误含期望与实际 HTTP 状态且不含令牌。
+- 服务器 prepare 默认分支读 GraphQL `defaultBranchRef`，不再读 `repos/<o>/<r>` 根 REST；`pre-merge-check.mjs` 的作者带 `__typename`，Bot 作者三种写法归一为同一个 `login[bot]`。
+- 没配 `reviewerApps` 时所有行为与改动前相同。**未完成 / 未验证**：沙箱 prepare→publish 的 github-live 验证（依赖 xindong/mivo-canvas-plugin#1757）未执行；App 清理自己的旧 Request Changes（dismiss）、服务器 thread resolve 的 App 身份判断、`gh pr view --json comments` 裸 login 判 bot 的读取改造仍待后续。
+- 回滚：去掉 `reviewerApps` 配置即回到旧人类路径。
