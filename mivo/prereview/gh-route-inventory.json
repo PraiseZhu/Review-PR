@@ -30,12 +30,14 @@
    "flows": [
     "server"
    ],
-   "snippet": "gh(['api', `repos/${input.targetRepo}`], { cwd: WORK })",
+   "snippet": "gh(branchRequest.args, { cwd: WORK, input: branchRequest.input })",
    "argv": [
     "api",
-    "repos/xindong/mivo-canvas-plugin"
+    "graphql",
+    "--input",
+    "-"
    ],
-   "note": "服务器 Prepare 步骤直接用 GH_TOKEN 经 common.run 读仓库元数据取 default_branch,不经 lib.gh / decideReadRoute;Mivo#1757 把该令牌换成 praisebuild 令牌后自然走 App,本 PR 不改 review.mjs",
+   "note": "服务器 Prepare 步骤直接用 GH_TOKEN 经 common.run 以 GraphQL defaultBranchRef 读默认分支(mivo/lib/default-branch.mjs 生成请求),不经 lib.gh / decideReadRoute;不再读 repos/<o>/<r> 根 REST(分类器把它判给个人账号),Mivo#1757 把该令牌换成 praisebuild 令牌后即走 App",
    "tokenFlipsIn": "xindong/mivo-canvas-plugin#1757"
   }
  ],
@@ -1745,11 +1747,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.gh.e81f67b1f9",
+   "id": "dismiss-own-review.gh.f643f2b35b",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "gh",
-    "sig": "e81f67b1f9",
+    "sig": "f643f2b35b",
     "count": 1
    },
    "flows": [
@@ -3779,11 +3781,11 @@
    ]
   },
   {
-   "id": "pr-write-guard.api_gh.6aafdcc65e",
+   "id": "pr-write-guard.api_gh.b54b457afb",
    "source": {
     "file": "review-pr/scripts/pr-write-guard.mjs",
     "callee": "api.gh",
-    "sig": "6aafdcc65e",
+    "sig": "b54b457afb",
     "count": 1
    },
    "flows": [
@@ -4439,11 +4441,11 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.fd0688b5be",
+   "id": "signoff-hold.writeGh.d15170608a",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "fd0688b5be",
+    "sig": "d15170608a",
     "count": 1
    },
    "flows": [
