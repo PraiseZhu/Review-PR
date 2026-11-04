@@ -254,3 +254,50 @@ test('thread 链路:审查账号读不到时 context 直接报错,不会走到�
   assert.equal(cr.status, 0, cr.stdout + cr.stderr);
   assert.notEqual(decideGate(cr.json).stage, 'review', '仍有效的 CR 不因 thread 豁免而放行送审');
 }));
+
+// #182:PR 上唯一的 Request Changes 是审查账号自己的旧 review、未 resolve 的 thread 全是机器人或审查机自己带标记的 thread 时,
+// 真实 context 输出 → decideGate 照常送审(不放行),不再判 changes-requested 停住;服务器开审前复核(prepare)读同一份 context 走同一个 decideGate。
+const reviewerThread = rawThread('T1', 'maintainer', `[P2] 问题\n${MARKER}`);
+const greptileThread = rawThread('T2', 'greptile-apps', 'bot 意见', 'Bot');
+const viewerEnv = { REVIEW_PR_VIEWER_LOGIN: 'maintainer' };
+const humanCr = (login, id = 2) => ({ id, user: { login, type: 'User' }, state: 'CHANGES_REQUESTED', commit_id: head, submitted_at: '2026-01-02T00:00:00Z', body: '请先改掉这个问题' });
+const crServer = (threads, reviews = [reviewFixture('maintainer')]) => makeServer({ threads, reviews });
+
+test('自己的旧 CR + 审查机带标记 thread + Greptile thread:送审但不放行(stage=review,带 pendingGates)', () => withFixture((run) => {
+  const r = run(crServer([reviewerThread, greptileThread]), viewerEnv);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.json.meta.mergeStateStatus, 'BLOCKED');
+  assert.equal(r.json.meta.reviewDecision, 'CHANGES_REQUESTED');
+  assert.equal(r.json.gate.ci.status, 'pass');
+  const d = decideGate(r.json);
+  assert.equal(d.stage, 'review', JSON.stringify(d));
+  assert.deepEqual(d.pendingGates, ['bot-threads', 'reviewer-threads']);
+  // 服务器 prepare 读到的是写盘后的同一份 JSON,同参数结论一致
+  assert.deepEqual(decideGate(JSON.parse(JSON.stringify(r.json))), d);
+}));
+
+test('自己的旧 CR + 只剩一类机器人 thread:同样送审不放行', () => withFixture((run) => {
+  for (const [threads, gates] of [[[reviewerThread], ['reviewer-threads']], [[greptileThread], ['bot-threads']]]) {
+    const d = decideGate(run(crServer(threads), viewerEnv).json);
+    assert.equal(d.stage, 'review', JSON.stringify(d));
+    assert.deepEqual(d.pendingGates, gates);
+  }
+}));
+
+test('自己的旧 CR + 混入人类 thread:仍不送审', () => withFixture((run) => {
+  const r = run(crServer([reviewerThread, greptileThread, rawThread('T3', 'contributor', '请改一下')]), viewerEnv);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const d = decideGate(r.json);
+  assert.notEqual(d.stage, 'review');
+  assert.equal(d.outcome, 'threads-unresolved');
+}));
+
+test('另一个 reviewer 的 CR 或维护者本人的人工 CR:带机器人 thread 也仍不送审', () => withFixture((run) => {
+  const threads = [reviewerThread, greptileThread];
+  const otherReviewer = run(crServer(threads, [reviewFixture('maintainer'), humanCr('someone-else')]), viewerEnv);
+  assert.equal(otherReviewer.status, 0, otherReviewer.stdout + otherReviewer.stderr);
+  assert.equal(decideGate(otherReviewer.json).outcome, 'changes-requested');
+  const humanOwn = run(crServer(threads, [humanCr('maintainer', 1)]), viewerEnv);
+  assert.equal(humanOwn.status, 0, humanOwn.stdout + humanOwn.stderr);
+  assert.equal(decideGate(humanOwn.json).outcome, 'changes-requested');
+}));
