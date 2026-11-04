@@ -530,7 +530,11 @@ const keyOf = (t) => `${t.file}#${t.callee}#${t.sig}`;
 export function validateInventory(templates, inventory) {
   const diagnostics = [];
   const scanned = new Map();
-  for (const t of templates) scanned.set(keyOf(t), { count: (scanned.get(keyOf(t))?.count ?? 0) + 1, sample: scanned.get(keyOf(t))?.sample ?? t });
+  // forwarder 资格只来自扫描器:同一模板的所有出现处都是「参数就是函数形参本身」才算
+  for (const t of templates) {
+    const prev = scanned.get(keyOf(t));
+    scanned.set(keyOf(t), { count: (prev?.count ?? 0) + 1, sample: prev?.sample ?? t, forwarder: (prev?.forwarder ?? true) && Boolean(t.forwarder) });
+  }
   const listed = new Map();
   const seenIds = new Set();
   for (const e of inventory.entries) {
@@ -544,6 +548,7 @@ export function validateInventory(templates, inventory) {
     const e = listed.get(key);
     if (!e) diagnostics.push(`源码有 gh 调用没登记: ${key} 参数=${s.sample.args.slice(0, 160)}`);
     else if (e.source.count !== s.count) diagnostics.push(`调用次数不符: ${key} 清单=${e.source.count} 源码=${s.count}`);
+    if (e && Boolean(e.forwarder) !== s.forwarder) diagnostics.push(`forwarder 判定不一致: ${key} 清单${e.forwarder ? '标了' : '没标'} forwarder,扫描器${s.forwarder ? '判为转发封装(参数是函数形参)' : '判为具体调用,必须有 case'}`);
   }
   for (const [key] of listed) if (!scanned.has(key)) diagnostics.push(`清单有陈旧条目(源码里已没有这个调用): ${key}`);
   return diagnostics;
