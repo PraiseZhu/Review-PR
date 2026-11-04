@@ -757,6 +757,26 @@ test('F2:unreachable-under-config 的 case 必须带 guard,且 argv 匹配 guard
   assert.match(classifyInventory({ entries: [team] }, classify, { allowlistOk: true }).join('\n'), /guard/);
 });
 
+test('F4:forwarder 资格由扫描器判定:把具体调用标成 forwarder 并删掉 cases 必须红;真转发封装漏标也红', () => {
+  const fake = structuredClone(inventory);
+  const entry = fake.entries.find((e) => e.source.file === 'mivo/lib/code-scan.mjs' && e.cases?.length);
+  entry.forwarder = { note: '故意将具体调用冒充转发封装' };
+  delete entry.cases;
+  assert.match(validateInventory(scan.templates, fake).join('\n'), /forwarder/);
+  const missing = structuredClone(inventory);
+  const real = missing.entries.find((e) => e.forwarder);
+  delete real.forwarder;
+  real.cases = [{ name: 'x', argv: ['api', 'user'], expected: 'user', flipsIn: 'PraiseZhu/Review-PR#176' }];
+  assert.match(validateInventory(scan.templates, missing).join('\n'), /forwarder/);
+  // 具体调用不带 case 也红(没标 forwarder 时)
+  const bare = structuredClone(inventory);
+  delete bare.entries.find((e) => e.source.file === 'mivo/lib/code-scan.mjs' && e.cases?.length).cases;
+  assert.match(classifyInventory(bare, classify, {}).join('\n'), /没有 case/);
+  // 合成夹具:形参转发是 forwarder,具体 argv 不是
+  assert.ok(scanGhTemplates(new Map([[SYNTH_FILE, 'export function w(args) { return gh(args, {}); }']])).templates[0].forwarder);
+  assert.ok(!scanGhTemplates(new Map([[SYNTH_FILE, "export function w(slug) { return gh(['api', `repos/${slug}`]); }"]])).templates[0].forwarder);
+});
+
 // ── 守卫自身的负例(全部内存里做,不写仓库文件、不调用 gh) ─────────────────────
 
 const SYNTH_FILE = 'review-pr/scripts/synthetic.mjs';
