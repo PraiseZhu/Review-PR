@@ -2156,12 +2156,15 @@ export function parseSignoffReleaseEvents(comments) {
     const commentAuthor = typeof c === 'string'
       ? null
       : String(c?.author?.login ?? c?.author ?? '').trim() || null;
+    // [MIVO-PATCH reviewer-app] 评论作者类型(REST user.type / GraphQL __typename):Bot 写的放行标记不可信。无类型来源时为 ''。
+    const commentAuthorType = typeof c === 'string' ? '' : reviewRecordActor(c).__typename;
     for (const m of body.matchAll(/<!--\s*review-pr:signoff-release\s+gates=([a-zA-Z,]+)(?:\s+by=(\S+?))?\s*-->/g)) {
       for (const kind of m[1].split(',').map((s) => s.trim()).filter(Boolean)) {
         events.push({
           kind,
           by: m[2] ?? null,
           commentAuthor,
+          commentAuthorType,
           at: createdAt,
           via: 'release-marker',
         });
@@ -2178,14 +2181,22 @@ export function parseSignoffReleases(comments) {
 }
 
 /** 先验证 marker 的 GitHub 评论作者与最终维护者集合身份，再按 kind 取最后一条可信事件。 */
-export function selectTrustedSignoffReleases(events, maintainers) {
+export function selectTrustedSignoffReleases(events, maintainers, reviewerApps = loadRules().reviewerApps) {
   const members = new Set(normalizeLoginList(maintainers));
   const trusted = new Map();
   const untrusted = [];
+  // [MIVO-PATCH reviewer-app] 审查 App 只有审查能力,不是维护者:Bot 写的评论、by 指向 Bot,或 by 与审查 App 同 slug(含不带 [bot] 的写法)一律不可信,
+  // 即使维护者集合里恰好有同名裸 slug。
+  const appSlugs = new Set((reviewerApps ?? []).map((app) => normalizeReviewActor(app)?.login).filter(Boolean));
+  const isAppIdentity = (login, typename = '') => {
+    const actor = normalizeReviewActor({ login, __typename: typename });
+    return Boolean(actor) && (actor.isBot || appSlugs.has(actor.login));
+  };
   for (const event of events ?? []) {
     const by = String(event?.by ?? '').trim().toLowerCase();
     const commentAuthor = String(event?.commentAuthor ?? '').trim().toLowerCase();
-    if (by && by === commentAuthor && members.has(by)) trusted.set(event.kind, event);
+    const fromApp = isAppIdentity(by) || isAppIdentity(commentAuthor, event?.commentAuthorType ?? '');
+    if (!fromApp && by && by === commentAuthor && members.has(by)) trusted.set(event.kind, event);
     else untrusted.push(event);
   }
   return { trusted, untrusted };
@@ -2209,6 +2220,8 @@ export function evaluateMaintainerReview({
   for (const review of reviews) {
     const login = String(review?.login ?? review?.author?.login ?? '').toLowerCase();
     if (!allowed.has(login) || (author && login === author)) continue;
+    // [MIVO-PATCH reviewer-app] Bot(含审查 App)的 review 不是维护者确认,即使 login 恰好在维护者集合里。
+    if (normalizeReviewActor(reviewRecordActor(review))?.isBot) continue;
     if (review?.state !== 'APPROVED' && review?.state !== 'CHANGES_REQUESTED' && review?.state !== 'DISMISSED') continue;
     const normalized = {
       ...review,
