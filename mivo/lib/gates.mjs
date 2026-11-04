@@ -113,6 +113,29 @@ export function toAutoReleaseCloseComment({ pr, url, by } = {}) {
  * }}
  */
 export function decideGate(ctx) {
+  return toMergeStateGate(ctx, decideGatePrerequisites(ctx));
+}
+
+// 要送审的结论(stage=review)先看 GitHub 算没算完这个 PR 能不能合并(#171):
+// mergeStateStatus 或 mergeable 是 UNKNOWN 时先不派服务器审查,记 mergeable-pending(判门后提前释放,下一轮带 retry 重判);
+// 算完有冲突(DIRTY / CONFLICTING)判 conflict;其余(含 BLOCKED)照常送审。其他结论不动。
+// 动作:只保留确认门的动作(signoff-hold / signoff-release / close-product-issue 等),去掉送审路径的 request-changes
+// (缺证据 / 交接文件不完整的打回),下一轮重判时按同一状态重新算出,不会丢。
+export function toMergeStateGate(ctx, decision) {
+  if (decision?.stage !== 'review') return decision;
+  const meta = ctx?.meta ?? {};
+  const actions = (decision.actions ?? []).filter((action) => action?.script !== 'request-changes');
+  if (meta.mergeStateStatus === 'DIRTY' || meta.mergeable === 'CONFLICTING') {
+    return { stage: 'gate', outcome: 'conflict', reason: `与 base 有冲突(mergeStateStatus=${meta.mergeStateStatus ?? '?'},mergeable=${meta.mergeable ?? '?'})`, actions };
+  }
+  if (meta.mergeStateStatus === 'UNKNOWN' || meta.mergeable === 'UNKNOWN') {
+    return { stage: 'gate', outcome: 'mergeable-pending',
+      reason: `GitHub 还没算完能否合并(mergeStateStatus=${meta.mergeStateStatus ?? '?'},mergeable=${meta.mergeable ?? '?'}),先不送审,下一轮重判`, actions };
+  }
+  return decision;
+}
+
+function decideGatePrerequisites(ctx) {
   if (!ctx?.ok) return { stage: 'error', outcome: 'error', reason: ctx?.error || 'context 读取失败', actions: [] };
   const signoff = ctx.signoff ?? {};
   const gate = ctx.gate ?? {};

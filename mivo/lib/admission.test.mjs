@@ -381,3 +381,17 @@ test('toOnlineRunners(#142):只数带标签且在线的 runner;返回不完整�
   assert.equal(toOnlineRunners({ ...payload, total_count: 150 }, 'mivo-review'), null, '分页没读全');
   for (const bad of [null, [], {}, { runners: [] }, { total_count: 1 }]) assert.equal(toOnlineRunners(bad, 'mivo-review'), null);
 });
+
+// 2026-11-03 #171:GitHub 还没算完能否合并时判 mergeable-pending,和 bot-pending 一样提前释放、下一轮带 retry 重判;不走「没变就不重判」。
+test('#171 mergeable-pending 提前释放,下一轮带 retry 重判,toGateSkip 不沿用', () => {
+  const task = { pr: 1171, head: 'head', base: 'base', phase: 'complete', agentId: 'mini-gate:1171:done' };
+  const result = { pr: 1171, head: 'head', base: 'base', runId: 'round', mode: 'review-only', outcome: 'mergeable-pending',
+    enteredReview: false, reviewed: false, errors: [], gate: { stage: 'gate', actions: [] } };
+  assert.equal(canReleaseDeferredGate({ task, result, roundId: 'round' }), true);
+  const next = withDeferredGateRetries({ version: 1, mode: 'review-only', prs: { 1171: { outcome: 'mergeable-pending', retry: false } } },
+    [{ runId: 'round', manifest: { createdAt: '2026-11-03T01:00:00Z' }, released: { 1171: { reason: 'gate-deferred', roundId: 'round' } } }]);
+  assert.equal(next.prs[1171].retry, true);
+  const candidate = { number: 1171, head: 'h', selectionDiagnostics: { reasonCodes: ['fingerprint-changed'], changedFields: ['updatedAt'] } };
+  assert.equal(toGateSkip({ candidate, previous: { fingerprintFields: { head: 'h' }, outcome: 'mergeable-pending', reason: 'x', retry: false },
+    lastGate: { head: 'h', atMs: 1_000_000 }, nowMs: 1_000_000 + 60_000 }), null);
+});

@@ -897,3 +897,54 @@ test('已关闭 PR 只删受管 status 标签,开放 PR、issue 和别的标签�
   ]);
   assert.deepEqual(toClosedStatusLabelRemovals(undefined), []);
 });
+
+// 2026-11-03 #171:GitHub 还没算完这个 PR 能不能合并(mergeStateStatus / mergeable 是 UNKNOWN)时,本来要送审的这一轮先不派审,
+// 记 mergeable-pending,下一轮重判;算完后按真实结论走(冲突 → conflict,没有卡点 → 送审)。
+const mergeStateCtx = (meta = {}, overrides = {}) => ctx({ meta: { ...ctx().meta, ...meta },
+  gate: botGate({ botSettle: { settled: true } }), ...overrides });
+
+test('#171 mergeStateStatus=UNKNOWN、只剩机器人 thread、静默期已过:不送审,记 mergeable-pending 且不打回', () => {
+  const d = decideGate(mergeStateCtx({ mergeStateStatus: 'UNKNOWN' }));
+  assert.equal(d.outcome, 'mergeable-pending');
+  assert.equal(d.stage, 'gate');
+  assert.ok(!d.actions.some((a) => a.script === 'request-changes'));
+  assert.deepEqual(d.actions, []);
+});
+
+test('#171 同一夹具:BLOCKED 仍送审,DIRTY 判冲突,CLEAN + mergeable=UNKNOWN 记 mergeable-pending', () => {
+  const blocked = decideGate(mergeStateCtx({ mergeStateStatus: 'BLOCKED' }));
+  assert.equal(blocked.stage, 'review');
+  assert.equal(blocked.outcome, null);
+  assert.equal(decideGate(mergeStateCtx({ mergeStateStatus: 'DIRTY' })).outcome, 'conflict');
+  assert.equal(decideGate(mergeStateCtx({ mergeStateStatus: 'CLEAN', mergeable: 'CONFLICTING' })).outcome, 'conflict');
+  const pending = decideGate(mergeStateCtx({ mergeStateStatus: 'CLEAN', mergeable: 'UNKNOWN' }));
+  assert.equal(pending.outcome, 'mergeable-pending');
+  assert.equal(decideGate(mergeStateCtx({ mergeStateStatus: 'CLEAN', mergeable: 'MERGEABLE' })).stage, 'review');
+});
+
+test('#171 没有机器人 thread 的普通送审同样在 UNKNOWN 时先不派审;缺界面证据的打回也不在 UNKNOWN 时发', () => {
+  const plain = decideGate(ctx({ meta: { ...ctx().meta, mergeStateStatus: 'UNKNOWN' } }));
+  assert.equal(plain.outcome, 'mergeable-pending');
+  const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
+  const evidenceCtx = (mergeStateStatus) => ctx({ meta: { ...ctx().meta, mergeStateStatus }, format: evidence, gate: { gatePass: true }, auto: { action: 'pushback-format' } });
+  assert.deepEqual(decideGate(evidenceCtx('BLOCKED')).actions, [{ script: 'request-changes', gateKind: 'format' }]);
+  const d = decideGate(evidenceCtx('UNKNOWN'));
+  assert.equal(d.outcome, 'mergeable-pending');
+  assert.ok(!d.actions.some((a) => a.script === 'request-changes'));
+});
+
+test('#171 UNKNOWN 时保留确认门的动作,只去掉送审路径的 request-changes;DIRTY 同样', () => {
+  const evidence = { formatPass: false, formatIssues: ['缺界面证据'], uiEvidenceRequired: true };
+  const withSignoff = (mergeStateStatus) => ctx({ meta: { ...ctx().meta, mergeStateStatus }, format: evidence, gate: { gatePass: true },
+    signoff: { triggers: [productTrigger({ blocking: false, released: { via: 'slack-release' } })], labels: { hasAnyLabel: true }, held: { issueNumber: 9 } },
+    auto: { action: 'pushback-format' } });
+  const open = decideGate(withSignoff('BLOCKED'));
+  assert.equal(open.stage, 'review');
+  assert.deepEqual(open.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }, { script: 'request-changes', gateKind: 'format' }]);
+  const pending = decideGate(withSignoff('UNKNOWN'));
+  assert.equal(pending.outcome, 'mergeable-pending');
+  assert.deepEqual(pending.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }]);
+  const conflict = decideGate(withSignoff('DIRTY'));
+  assert.equal(conflict.outcome, 'conflict');
+  assert.deepEqual(conflict.actions, [{ script: 'signoff-release', mode: 'labels-only-close-issue' }]);
+});

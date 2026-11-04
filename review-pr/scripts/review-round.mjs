@@ -20,6 +20,7 @@ export const OUTCOMES = {
   approval: '等待另一位维护者 Approve', 'merge-blocked': '合并条件未满足',
   'approval-pending': 'Approve 尚待确认，将继续补齐',
   'merge-queued': '已进入合并队列，尚未合并', 'review-only': '仅审核模式',
+  'mergeable-pending': '等待 GitHub 算完能否合并', // [MIVO-PATCH mergeable-pending]
   unchanged: '自上轮处理后状态未变化', 'base-not-gated': '目标分支不在审查范围', 'state-changed': '本轮期间 PR 状态已变化', error: '执行异常', // [MIVO-PATCH gate-bases]
 };
 // Thread 卡点沿用 skip-gate，避免 findings→threads-unresolved 换路由后重复投递。
@@ -570,7 +571,8 @@ export function nextRoundState(plan, payload, previous = {}, now = Date.now()) {
       retry: result.retry === true || ['error', 'state-changed', 'merge-queued', 'approval-pending'].includes(result.outcome) || result.approval?.status === 'pending' || Boolean(result.errors?.length) || result.fixHandoff?.status === 'stale' || result.authorNotice?.status === 'failed' || result.targetBranchNotice?.status === 'failed',
       // 等 CI 也要定时重判:只读 Actions 才看得到的检查(如 Code Quality)跑完时,指纹里的 ci 聚合和 mergeStateStatus 都可能不变,
       // 不定时就一直算「没变化」被跳过(2026-10-22 #1173)。
-      retryAt: ['bot-pending', 'ci-pending'].includes(result.outcome) ? formatLocalIso(now + 5 * 60 * 1000) : null,
+      // [MIVO-PATCH mergeable-pending] GitHub 还没算完能否合并:和等 CI / 等机器人一样 5 分钟后定时重判(提前释放时下一轮另带 retry)。
+      retryAt: ['bot-pending', 'ci-pending', 'mergeable-pending'].includes(result.outcome) ? formatLocalIso(now + 5 * 60 * 1000) : null,
       ...(roundCreatedAt ? { roundRunId: plan.runId, roundCreatedAt } : {}) };
   }
   // A skipped unchanged PR was still observed this round.  Refresh its
