@@ -1205,6 +1205,22 @@ try {
     meta.reviewDecision === 'CHANGES_REQUESTED' &&
     allChangesRequestedBySelf &&
     unresolvedThreads.length === 0;
+  // [MIVO-PATCH self-cr-machine-threads] 同上,但没 resolve 的 thread 全是机器人(Greptile 等)或审查机自己带标记的 thread:
+  // 这些 thread 只是「送审但不放行」(mivo/lib/gates.mjs 的 toPendingThreadGates),不该让审查账号自己的旧 CR 把 PR 判成 changes-requested 停住。
+  // 有人类 thread、别人的 CR、维护者本人的人工 CR 时不命中。判据与 gates.mjs 同口径(机器人看 isBot;审查机看首评作者 == viewer 且带 mivo-finding 标记)。
+  const REVIEWER_FINDING_MARKER = '<!-- mivo-finding key=';
+  const isMachineThread = (t) => {
+    if (t.isBot === true) return true;
+    const first = t.comments?.[0];
+    return viewerLower !== '' && (first?.author?.login ?? '').toLowerCase() === viewerLower &&
+      typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER);
+  };
+  const selfBlockedMachineThreadsOnly =
+    meta.mergeStateStatus === 'BLOCKED' &&
+    meta.reviewDecision === 'CHANGES_REQUESTED' &&
+    allChangesRequestedBySelf &&
+    unresolvedThreads.length > 0 &&
+    unresolvedThreads.every(isMachineThread);
   // [MIVO-PATCH self-findings] 作者即审查账号时,审查机在当前 head 已发过的问题清单(代替发不了的 CR),见 lib.mjs。
   const selfFindingsAtHead = selectSelfFindingsAtHead(prReviews, { viewerLogin, authorLogin, headSha: meta.headRefOid });
   const STANDING_HUMAN_CR_BLOCKER = '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审';
@@ -1255,6 +1271,9 @@ try {
         // 死锁:仅 viewer 自己挂的 CR、且 thread 全 resolve。不计硬 blocker——走重审核实问题真被改了,
         // 再由合并阶段 approve-reviewed-pr 解锁(见 selfBlockedResolvable 注释)。
         blockClass = 'self-resolvable';
+      } else if (selfBlockedMachineThreadsOnly) {
+        // [MIVO-PATCH self-cr-machine-threads] 旧 CR 不计硬 blocker;thread 由下面 THREAD_BLOCKER 统一押,Mivo 判门按「送审但不放行」处理。
+        blockClass = 'threads-unresolved';
       } else {
         if (!standingHumanChangesRequest) {
           blockers.push('mergeStateStatus=BLOCKED(reviewDecision=CHANGES_REQUESTED,仍有 reviewer 要求修改)');

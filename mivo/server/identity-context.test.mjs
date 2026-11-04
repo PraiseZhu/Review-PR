@@ -244,7 +244,7 @@ test('thread 链路:无标记 / 别人的 thread 混入 / 机器人+审查机混
   assert.equal(decideGate(other.json).outcome, 'threads-unresolved');
 }));
 
-test('thread 链路:审查账号读不到时 context 直接报错,不会走到豁免;审查机自己的 CR 仍硬拦', () => withFixture((run) => {
+test('thread 链路:审查账号读不到时 context 直接报错,不会走到豁免;审查机自己的旧 CR + 自己的标记 thread 送审不放行(#182)', () => withFixture((run) => {
   const own = rawThread('T1', 'maintainer', `[P2] 问题\n${MARKER}`);
   const noViewer = run(onlyThreadsServer([own]));
   assert.equal(noViewer.status, 1);
@@ -252,7 +252,9 @@ test('thread 链路:审查账号读不到时 context 直接报错,不会走到�
   const server = makeServer({ threads: [own], reviews: [reviewFixture('maintainer')] });
   const cr = run(server, { REVIEW_PR_VIEWER_LOGIN: 'maintainer' });
   assert.equal(cr.status, 0, cr.stdout + cr.stderr);
-  assert.notEqual(decideGate(cr.json).stage, 'review', '仍有效的 CR 不因 thread 豁免而放行送审');
+  const d = decideGate(cr.json);
+  assert.equal(d.stage, 'review', JSON.stringify(d));
+  assert.deepEqual(d.pendingGates, ['reviewer-threads']);
 }));
 
 // #182:PR 上唯一的 Request Changes 是审查账号自己的旧 review、未 resolve 的 thread 全是机器人或审查机自己带标记的 thread 时,
