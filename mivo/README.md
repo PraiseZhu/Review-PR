@@ -399,6 +399,20 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
 
+## gh 调用清单（App 可读写法与路由守卫，#174，总 issue #173）
+
+前置审查和服务器 publish 的 GitHub 读请求要尽量走 PraiseBuild App 的只读令牌（不占 PraiseZhu 的 5000/小时额度）。能不能走 App 由 `review-pr/scripts/vendor/gh-app-classify.mjs` 判（与 Mivo 仓 `scripts/ops/gh-app-router/classify.mjs` 逐字节同一份）；`mivo/prereview/gh-route-inventory.json` 逐条登记三个目录（`review-pr/scripts`、`mivo/prereview`、`mivo/lib`）里全部非测试 `.mjs` 的 gh 调用，`mivo/prereview/gh-route-inventory.test.mjs` 守住它：
+
+- **源码与清单双向相等**：测试用内置词法扫描（不执行被扫文件）找出全部 gh 调用模板，按「文件 + 调用名 + 参数指纹」做多重集合比较。新增、删除、改动任一调用（包括 GraphQL 查询常量里的字段、`args.push` 的字段）而没改清单都会红，失败信息指出缺哪个调用；只改行号、空行、注释、尾逗号不会红。认不出来的写法（未知调用名收到 gh 形态的参数数组、参数找不到声明）直接红，不静默放过。
+- **路由等于期望**：每个 case 的 `argv`/`stdin` 经 vendor 分类器（非 TTY、干净 env、`xindong/mivo-canvas-plugin` 与 `praisezhu/review-pr` 在白名单里）得到的路由必须等于 `expected`。
+- **user 要有去向**：`expected=user` 的 case 必须二选一：`flipsIn`（`owner/repo#N`，哪个后续 issue 会让它改走 App：读侧 `xindong/mivo-canvas-plugin#1751`、身份读取 `PraiseZhu/Review-PR#176`、受限写 `xindong/mivo-canvas-plugin#1752`），或 `keep`。`keep` 只允许三类，都能机器校验：`pr-merge-approve`（总 issue 明确不做：`pr merge` 与 `event=APPROVE` 的 POST reviews）、`unreachable-under-config`（测试断言 `pr-rules.json` 与 `sandbox-pr-rules.json` 的 `maintainerSource` 都是 `allowlist`；含没设 `REVIEW_PR_VIEWER_LOGIN` 时的 `gh auth status` 兼容分支）、`interactive-skill`（该文件不在 `round.mjs` / `review.mjs` 的引用链上）。`ownerPending` 表示还没有后续 issue 覆盖，要主控指定归属。
+- **入口归属 `flows`**：每个条目写 `mini` / `server` / `interactive` 的子集，测试从 `mivo/prereview/round.mjs`、`mivo/server/review.mjs` 出发算引用闭包并断言一致。
+- **服务器路由不变差**：`flows` 含 `server` 的 case 记录 `legacyServerRoute`（同步前 vendor `077a4bb56`）和 `serverRoute`（同步后），测试用 `gh-read-route.mjs` 的 `decideReadRoute`（只开 `xindong/mivo-canvas-plugin`）重算 `serverRoute`，并断言没有 `app → user`。
+
+改了 gh 调用后：跑 `node --test mivo/prereview/gh-route-inventory.test.mjs`，按失败信息在清单里补/改条目（`sig` 取失败信息里的值，`argv`/`stdin` 写一个能代表该调用的具体样本，`expected` 写分类器给的路由，`user` 的写 `flipsIn` 或 `keep`），再跑一遍。静态分类只证明「请求形状 App 能读」，不证明线上 App 对该仓有权限。
+
+升级 vendor 分类器：先改 Mivo 仓的 `classify.mjs`，再整份搬过来（保留前 4 行来源说明，更新其中的提交与 sha256），同步 `gh-read-route.test.mjs` 与清单里的 `classifier.sha256`，然后跑上面的清单测试看有没有条目路由变化。
+
 ## 绕过必需检查合入没写原因时的提醒
 
 规则在 Mivo `docs/loops/review-pr-setup.md`「紧急强合」：强合前要在 PR 上写一条评论，说明为什么紧急、跳过哪几项检查或条件、谁决定的。只靠文档不够（#964 写进文档之后仍有 PR 没写），所以 Mini 每轮在 wake-held 之后、pre-check 之前调一次 `prereview/bypass-reason.mjs --sweep`（只在 `live` 模式；失败、超时、抛异常都只记日志，不影响本轮接单）。
