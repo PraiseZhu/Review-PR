@@ -63,10 +63,15 @@ const SHA = 'a'.repeat(40);
 function allowlistGh({ permissions = {}, baseShas = [SHA, SHA] } = {}) {
   const calls = [];
   let commitReads = 0;
-  const ghFn = (args) => {
+  const ghFn = (args, options = {}) => {
     calls.push(args.join(' '));
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      const body = JSON.parse(options.input ?? '{}');
+      return /defaultBranchRef\{name\}/.test(body.query ?? '') && body.variables?.owner === 'xindong' && body.variables?.name === 'mivo'
+        ? ok({ data: { repository: { defaultBranchRef: { name: 'main' } } } })
+        : bad(`unexpected graphql ${String(body.query).slice(0, 80)}`);
+    }
     const endpoint = args.find((arg) => arg.startsWith('repos/'));
-    if (endpoint === 'repos/xindong/mivo') return ok({ default_branch: 'main' });
     if (endpoint === 'repos/xindong/mivo/commits/main') return ok({ sha: baseShas[Math.min(commitReads++, baseShas.length - 1)] });
     const perm = endpoint?.match(/^repos\/xindong\/mivo\/collaborators\/([^/]+)\/permission$/);
     if (perm) {
@@ -1625,7 +1630,9 @@ function ownCrFixtureGh(args, options, fixture) {
   const endpoint = args.find((arg) => typeof arg === 'string' && /^(?:repos|orgs)\//.test(arg));
   if (args[0] === 'pr' && args[1] === 'view') return ok(fixture.meta);
   if (args[0] === 'api' && args[1] === 'user') return ok(fixture.viewer);
-  if (endpoint === 'repos/o/r') return ok({ default_branch: 'main' });
+  if (args[0] === 'api' && args[1] === 'graphql' && /defaultBranchRef\{name\}/.test(JSON.parse(options?.input ?? '{}').query ?? '')) {
+    return ok({ data: { repository: { defaultBranchRef: { name: 'main' } } } });
+  }
   if (endpoint === 'repos/o/r/commits/main') return ok({ sha: fixture.base });
   if (endpoint === 'repos/o/r/contents/.github/CODEOWNERS') return ok({ type: 'file', encoding: 'base64', sha: 'blob',
     content: Buffer.from('* @o/maintainers\n').toString('base64') });
@@ -2930,13 +2937,19 @@ test('gate-bases: unchanged 的 manifest 行仍照旧并入 unchanged 计数,与
   assert.equal(payload.processed.find((p) => p.pr === 1).outcome, 'findings');
 });
 
-test('gate-bases: fetchDefaultBranch 用 GET repos/<o>/<r>,失败/坏响应一律抛错', () => {
+test('gate-bases: fetchDefaultBranch 用 GraphQL defaultBranchRef,失败/坏响应/errors 一律抛错', () => {
   const calls = [];
   const gh = (body) => (args, opts) => { calls.push({ args, opts }); return body; };
-  assert.equal(GBLIB.fetchDefaultBranch({ owner: 'o', repo: 'r', ghFn: gh({ ok: true, stdout: '{"default_branch":"main"}' }) }), 'main');
-  assert.deepEqual(calls[0].args, ['api', '--method', 'GET', 'repos/o/r']);
+  const gql = (data, extra = {}) => ({ ok: true, stdout: JSON.stringify({ data, ...extra }) });
+  const repoWith = (ref) => ({ repository: { defaultBranchRef: ref } });
+  assert.equal(GBLIB.fetchDefaultBranch({ owner: 'o', repo: 'r', ghFn: gh(gql(repoWith({ name: 'trunk' }))) }), 'trunk');
+  assert.deepEqual(calls[0].args, ['api', 'graphql', '--input', '-']);
   assert.equal(calls[0].opts.allowFail, true);
+  assert.equal(calls[0].opts.readOnly, true);
   assert.equal(calls[0].opts.timeoutMs, 30_000);
+  const sent = JSON.parse(calls[0].opts.input);
+  assert.match(sent.query, /defaultBranchRef\{name\}/);
+  assert.deepEqual(sent.variables, { owner: 'o', name: 'r' });
   for (const bad of [
     { ok: false, stdout: '', stderr: 'HTTP 502', status: 1 },
     { ok: true, stdout: 'not json' },
@@ -2944,8 +2957,13 @@ test('gate-bases: fetchDefaultBranch 用 GET repos/<o>/<r>,失败/坏响应一�
     { ok: true, stdout: 'null' },
     { ok: true, stdout: '[]' },
     { ok: true, stdout: '{}' },
-    { ok: true, stdout: '{"default_branch":"  "}' },
-    { ok: true, stdout: '{"default_branch":5}' },
+    gql(null),
+    gql({ repository: null }),
+    gql(repoWith(null)),
+    gql(repoWith({})),
+    gql(repoWith({ name: '  ' })),
+    gql(repoWith({ name: 5 })),
+    gql(repoWith({ name: 'main' }), { errors: [{ message: 'partial' }] }),
   ]) assert.throws(() => GBLIB.fetchDefaultBranch({ owner: 'o', repo: 'r', ghFn: gh(bad) }), /o\/r 默认分支失败/, JSON.stringify(bad));
 });
 
@@ -2973,12 +2991,14 @@ childProcess.spawnSync=(command,args,options)=>{
   const response=(status,stdout,stderr='')=>({status,signal:null,stdout,stderr,output:[null,stdout,stderr]});
   if (command === 'git' && args[0] === 'pull') return response(0,'');
   if (command !== 'gh') return original(command,args,options);
-  appendFileSync(process.env.GB_LOG, JSON.stringify(args)+'\\n');
-  if (args[0]==='api' && args.includes('GET') && args.at(-1)==='repos/o/r') {
+  appendFileSync(process.env.GB_LOG, JSON.stringify([...args, (options.input||'').includes('defaultBranchRef') ? 'defaultBranchRef' : 'other'])+'\\n');
+  if (args[0] !== 'api' || args[1] !== 'graphql') throw new Error('unexpected mock gh call: '+args.join(' '));
+  const sent=JSON.parse(options.input);
+  if (sent.query.includes('defaultBranchRef')) {
     if (process.env.GB_DEFAULT==='FAIL') return response(1,'','HTTP 502');
-    return response(0,JSON.stringify({default_branch:process.env.GB_DEFAULT||'main'}));
+    return response(0,JSON.stringify({data:{repository:{defaultBranchRef:{name:process.env.GB_DEFAULT||'main'}}}}));
   }
-  if (args[0] !== 'api' || args[1] !== 'graphql' || !JSON.parse(options.input).query.includes('pullRequests')) throw new Error('unexpected mock gh call: '+args.join(' '));
+  if (!sent.query.includes('pullRequests')) throw new Error('unexpected mock gh call: '+args.join(' '));
   const raw=JSON.parse(readFileSync(process.env.GB_SNAPSHOT,'utf8'));
   const nodes=raw.map(p=>({...p,headRepository:p.headRepository ? {nameWithOwner:p.headRepository} : null,headRefOid:p.head,baseRefOid:p.base,author:{login:'author'},reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},commits:{nodes:[{commit:{statusCheckRollup:{state:p.ci}}}]}}));
   return response(0,JSON.stringify({data:{repository:{pullRequests:{totalCount:nodes.length,pageInfo:{hasNextPage:false,endCursor:null},nodes}}}}));
@@ -2993,7 +3013,7 @@ syncBuiltinESMExports();
   const snap = (rows) => writeFileSync(snapshotFile, JSON.stringify(rows.map((r) => ({ ...r, base: r.base, headRepository: 'o/r', ci: 'SUCCESS' }))));
   const run = (script, args = [], overrides = {}) => spawnSync(process.execPath,
     [fileURLToPath(new URL(script, import.meta.url)), ...args], { cwd: repoRoot, env: { ...env, ...overrides }, encoding: 'utf8', windowsHide: true });
-  const repoReads = () => readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((a) => a.at(-1) === 'repos/o/r').length;
+  const repoReads = () => readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((a) => a.at(-1) === 'defaultBranchRef').length;
   return { directory, repoRoot, snap, run, repoReads, stateRoot, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
 }
 const gbSnapRows = () => [gbRow(1, 'main'), gbRow(2, 'feature/x'), gbRow(3, 'integration/a')];

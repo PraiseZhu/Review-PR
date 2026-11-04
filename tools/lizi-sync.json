@@ -65,7 +65,9 @@
     "review-pr/scripts/runtime-io.mjs",
     "review-pr/scripts/security-scan.mjs",
     "review-pr/scripts/signoff-hold.mjs",
-    "review-pr/scripts/signoff-release.mjs"
+    "review-pr/scripts/signoff-release.mjs",
+    "review-pr/scripts/target-branch-reminder.mjs",
+    "review-pr/scripts/target-branch-reminder.test.mjs"
   ],
   "added": [
     "review-pr/scripts/approve-workflows-expected-head.test.mjs",

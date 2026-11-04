@@ -399,6 +399,36 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 要在不推新提交的情况下重新审：在 Mini 上把该 PR 在 `state/<实例>/mivo/reviews.json` 里的 `failures` 删掉（或删掉对应 head 那一项），下一轮就会派发。
 
+## gh 调用清单（App 可读写法与路由守卫，#174，总 issue #173）
+
+前置审查和服务器 publish 的 GitHub 读请求要尽量走 PraiseBuild App 的只读令牌（不占 PraiseZhu 的 5000/小时额度）。能不能走 App 由 `review-pr/scripts/vendor/gh-app-classify.mjs` 判（与 Mivo 仓 `scripts/ops/gh-app-router/classify.mjs` 逐字节同一份）；`mivo/prereview/gh-route-inventory.json` 逐条登记三个目录（`review-pr/scripts`、`mivo/prereview`、`mivo/lib`）里全部非测试 `.mjs` 的 gh 调用，`mivo/prereview/gh-route-inventory.test.mjs` 守住它：
+
+- **源码与清单双向相等**：测试用内置词法扫描（不执行被扫文件）找出全部 gh 调用模板，按「文件 + 调用名 + 参数指纹」做多重集合比较。新增、删除、改动任一调用（包括 GraphQL 查询常量里的字段、`args.push` 的字段）而没改清单都会红，失败信息指出缺哪个调用；只改行号、空行、注释、尾逗号不会红。认不出来的写法（未知调用名收到 gh 形态的参数数组、参数数组或选项对象里的标识符既不是形参也找不到声明）直接红，不静默放过；参数里引用的局部变量（小写也算）的声明表达式并入指纹。
+- **路由等于期望**：每个 case 的 `argv`/`stdin` 经 vendor 分类器（非 TTY、干净 env、白名单只有 `xindong/mivo-canvas-plugin`；Review-PR 只是代码仓，前置审查对它没有 gh 调用）得到的路由必须等于 `expected`。
+- **user 要有去向**：`expected=user` 的 case 必须二选一：`flipsIn`（哪个后续 issue 会让它改走 App，测试只允许这三个：读侧 `xindong/mivo-canvas-plugin#1751`、身份读取 `PraiseZhu/Review-PR#176`、受限写 `xindong/mivo-canvas-plugin#1752`；指向总 issue #173 或带 `ownerPending` 字段都会红），或 `keep`。`keep` 只允许三类，都能机器校验：`pr-merge-approve`（总 issue 明确不做：`pr merge` 与 `event=APPROVE` 的 POST reviews）、`unreachable-under-config`（测试断言 `pr-rules.json` 与 `sandbox-pr-rules.json` 的 `maintainerSource` 都是 `allowlist`，并且每个 case 必须带 `guard`，只允许两种具体调用：`maintainer-team`＝`lib.mjs` 里 Team/orgs 的成员与权限读取，`auth-status-without-viewer`＝没设 `REVIEW_PR_VIEWER_LOGIN` 时的 `gh auth status`；argv 形状不符就红，`rules/branches`、`commits`、`pulls` 这类读不能用它豁免）、`interactive-skill`（该文件不在 `round.mjs` / `review.mjs` 的引用链上）。
+- **扫描根之外**：`mivo/server/review.mjs` 的 Prepare 步骤直接用 `GH_TOKEN` 读 `repos/<targetRepo>`，不经 `lib.gh`，登记在清单的 `outOfScanRoots`（Mivo#1757 把该令牌换成 praisebuild 令牌后自然走 App），测试断言源码里仍有这段调用。
+- **入口归属 `flows`**：每个条目写 `mini` / `server` / `interactive` 的子集，测试从 `mivo/prereview/round.mjs`、`mivo/server/review.mjs` 出发算引用闭包（只认整段字符串就是 `*.mjs` 路径的写法，提示词里顺带提到脚本名不算）并断言一致；没有调用方的入口脚本（如 `checkout.mjs`）归 `interactive`。
+- **服务器路由不变差**：`flows` 含 `server` 的 case 记录 `legacyServerRoute`（同步前 vendor `077a4bb56`）和 `serverRoute`（同步后）。清单的 `classifier.legacyBody` 以 base64 存着同步前 vendor 的正文（sha256 必须等于 `previousSha256`），测试把它写进系统临时目录、配当前 `gh-read-route.mjs` 动态加载，旧/新 `decideReadRoute`（只开 `xindong/mivo-canvas-plugin`）各算一遍，与记录比对，并断言没有 `app → user`；测试结束清理临时目录。
+- **forwarder**：只有扫描器判定「调用的参数就是函数形参本身」的传输封装才能标 `forwarder`（不带 case）；标注与扫描器不一致就红，具体调用必须有 case。
+
+改了 gh 调用后：跑 `node --test mivo/prereview/gh-route-inventory.test.mjs`，按失败信息在清单里补/改条目（`sig` 取失败信息里的值，`argv`/`stdin` 写一个能代表该调用的具体样本，`expected` 写分类器给的路由，`user` 的写 `flipsIn` 或 `keep`），再跑一遍。静态分类只证明「请求形状 App 能读」，不证明线上 App 对该仓有权限。
+
+升级 vendor 分类器：先改 Mivo 仓的 `classify.mjs`，再整份搬过来（保留前 4 行来源说明，更新其中的提交与 sha256），同步 `gh-read-route.test.mjs` 与清单里的 `classifier.sha256`，然后跑上面的清单测试看有没有条目路由变化。
+
+### gh 调用清单的已知边界
+
+扫描器是**启发式的词法扫描**，不是完整的 JS 解析：它认注释、字符串、模板、正则字面量，按括号配对找调用，按「函数 → 外层函数 → 模块顶层」的词法作用域链找参数里标识符的来源。下面是 `gh-route-inventory.test.mjs` 里 13 类、共 34 个变异场景（`变异 1a … 变异 13c`）的结论。每个场景的改动前/后夹具都会被**真执行**（gh 换成捕获请求的替身），路由取自真实捕获的最后一次请求（`decideReadRoute`，白名单只有 `xindong/mivo-canvas-plugin`），夹具抛错或没调用 gh 测试直接红；测试把每个场景的「挡住 / 挡不住」和真实路由变化固定下来：
+
+- **挡住的**（改动前后指纹变、或 unresolved、或清单对不上就红）：args 数组被 `concat` / 展开 / `unshift` / `splice` / 下标赋值 / 传给别的函数改动（含循环里调用之后才改）；选项对象的 `input` / `env` / `timeout` 被改；块级遮蔽（取最内层的实际绑定；同一个块里重复声明 → unresolved）；不同函数里的同名常量（互不串）；`+` 拼接、三元、`||` 兜底；端点由本文件的 helper 函数返回（含 helper 再引用模块常量）；`const g = gh`、`import { gh as g }`、`const { gh: g } = lib` 的别名调用；`api['gh'](...)` 字面量下标取 gh（直接 unresolved）；GraphQL 查询放在别的模块的常量里（被 import 的那条声明并入指纹）；调用前对 args 做 `map` / `filter` / `join`；try/catch 里两处调用只改一处。
+- **有意不拦的**：被遮蔽的外层声明（场景 3b）、别的函数里互不相干的同名常量（4b）——它们不决定实际请求，改了路由不变。
+- **已知挡不住的**（真实风险，别当成已覆盖）：
+  - `api[name](...)`，下标是变量而不是字面量（9b）：扫描器看不出它在调 gh（真执行证明它确实会发出一次 app 请求）。
+  - 被 import 的常量如果又引用了第二个常量，第二个常量改了（10b，真执行捕获到路由 app→user）：跨模块只并入被引用的那一条声明，不递归。
+  - 数组赋给别名再通过别名改：一层别名（`const same = args; same.push(...)`，场景 13a、13b）会被跟踪；别名的别名（场景 13c，真执行捕获到路由 app→user）不跟踪。
+  - 所有运行时才有的东西：环境变量、配置文件、调用方传进来的形参值。转发封装和形参只登记「参数由调用方决定」，每个调用点各自登记；一个调用点的多种取值只登记了有代表性的样本（动态分支要手工补 case）。
+  - `eval`、`new Function`、`.call` / `.apply`、类方法和对象方法简写（不当作函数作用域）、`mivo/server/review.mjs` 这类扫描根之外的直接 `run('gh')`（后者登记在 `outOfScanRoots`，不走 `decideReadRoute`）。
+- 静态路由只说明「请求形状 App 令牌能读」，不证明线上 App 对该仓有权限；清单是防止「悄悄把读调用改回个人账号」的栅栏，不是权限测试。
+
 ## 绕过必需检查合入没写原因时的提醒
 
 规则在 Mivo `docs/loops/review-pr-setup.md`「紧急强合」：强合前要在 PR 上写一条评论，说明为什么紧急、跳过哪几项检查或条件、谁决定的。只靠文档不够（#964 写进文档之后仍有 PR 没写），所以 Mini 每轮在 wake-held 之后、pre-check 之前调一次 `prereview/bypass-reason.mjs --sweep`（只在 `live` 模式；失败、超时、抛异常都只记日志，不影响本轮接单）。

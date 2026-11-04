@@ -53,7 +53,7 @@ const READ_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner
 test('搬运的分类器与插件仓原文一致(去掉 4 行来源说明后的 sha256)', () => {
   const file = fileURLToPath(new URL('./vendor/gh-app-classify.mjs', import.meta.url));
   const body = readFileSync(file, 'utf8').split('\n').slice(4).join('\n');
-  assert.equal(createHash('sha256').update(body).digest('hex'), '12dd0e7f9f7082d1c650424f66d40ca972c9e575d5a7771178d533110cb09245');
+  assert.equal(createHash('sha256').update(body).digest('hex'), '828e52f6cbbdaadc05210ebfc53b73d725e5f7706c31c48c5e8185e0590f77c0');
 });
 
 test('readRouteConfig:令牌和仓名单缺一项都不分流;仓名不合法抛错', () => {
@@ -84,24 +84,50 @@ test('decideReadRoute:读走 App,写/身份/管理/没写仓/不在名单走原�
   assert.equal(decide(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: 'query{viewer{login}}' }) }), 'user');
   assert.equal(decide(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: 'mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}', variables: { id: 'x' } }) }), 'user');
   assert.equal(decide(['api', 'graphql', '--input', '-']), 'user', '拿不到 stdin 就不分流');
-  assert.equal(decide(['api', 'repos/o/r/pulls/5'], { explicitEnv: true }), 'user', '调用方显式给了 env(身份令牌)');
-  assert.equal(decide(['api', 'repos/o/r/pulls/5'], { noCredFallback: true }), 'user');
-  assert.equal(route.decideReadRoute(['api', 'repos/o/r/pulls/5'], { config: null }).route, 'user');
+  assert.equal(decide(['api', 'repos/o/r/pulls/5/reviews'], { explicitEnv: true }), 'user', '调用方显式给了 env(身份令牌)');
+  assert.equal(decide(['api', 'repos/o/r/pulls/5/reviews'], { noCredFallback: true }), 'user');
+  assert.equal(route.decideReadRoute(['api', 'repos/o/r/pulls/5/reviews'], { config: null }).route, 'user');
 });
 
 test('decideReadRoute:带 mergeStateStatus / viewer* 等随身份变化字段的读一律走原令牌', () => {
   const config = { token: 't', repos: ['o/r'], logFile: '' };
   const decide = (args, input) => route.decideReadRoute(args, { config, env: {}, input });
-  assert.deepEqual(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus']), { route: 'user', reason: 'identity_field' });
-  assert.deepEqual(decide(['pr', 'list', '--repo', 'o/r', '--json', 'number,mergeStateStatus']), { route: 'user', reason: 'identity_field' });
+  // 路由必须是 user;reason 可能来自分类器(sensitive_json_field / graphql_merge_state),也可能来自本地二次保护(identity_field),不把内部 reason 当公共接口。
+  const IDENTITY_REASONS = ['identity_field', 'sensitive_json_field', 'graphql_merge_state'];
+  const userWithIdentityReason = (d) => { assert.equal(d.route, 'user'); assert.ok(IDENTITY_REASONS.includes(d.reason), d.reason); };
+  userWithIdentityReason(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus']));
+  userWithIdentityReason(decide(['pr', 'list', '--repo', 'o/r', '--json', 'number,mergeStateStatus']));
   const gql = (fields) => JSON.stringify({ query: `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){number ${fields}}}}`, variables: { owner: 'o', name: 'r', n: 5 } });
-  assert.equal(decide(['api', 'graphql', '--input', '-'], gql('mergeStateStatus')).reason, 'identity_field');
+  userWithIdentityReason(decide(['api', 'graphql', '--input', '-'], gql('mergeStateStatus')));
   // viewer* 在分类器里本来就被判给个人账号(原因 graphql_viewer);这里只要求不走 App。
   assert.equal(decide(['api', 'graphql', '--input', '-'], gql('viewerCanMergeAsAdmin')).route, 'user');
   assert.equal(decide(['api', 'graphql', '--input', '-'], gql('viewerLatestReview{state}')).route, 'user');
   // 不带这些字段的照旧走 App
   assert.equal(decide(['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeable,reviewDecision,headRefOid']).route, 'app');
   assert.equal(decide(['api', 'graphql', '--input', '-'], gql('state')).route, 'app');
+});
+
+// 风险矩阵:四个新读法走 App;身份相关、单 PR REST、写一律原令牌。白名单只放 o/r,别的仓不分流。
+test('decideReadRoute 风险矩阵:新读法 app,身份字段 / 单 PR REST / 写 / 白名单外 user', () => {
+  const config = { token: 't', repos: ['o/r'], logFile: '' };
+  const gql = (query, variables) => ({ args: ['api', 'graphql', '--input', '-'], input: JSON.stringify({ query, variables }) });
+  const rows = [
+    ['默认分支 defaultBranchRef', gql('query($owner:String!,$name:String!){repository(owner:$owner,name:$name){defaultBranchRef{name}}}', { owner: 'o', name: 'r' }), 'app'],
+    ['认证探针 nameWithOwner', gql('query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}', { owner: 'o', name: 'r' }), 'app'],
+    ['readLiveHead pr view headRefOid', { args: ['pr', 'view', '7', '--repo', 'o/r', '--json', 'headRefOid', '--jq', '.headRefOid'] }, 'app'],
+    ['reviews 列表 REST', { args: ['api', '--method', 'GET', 'repos/o/r/pulls/7/reviews'] }, 'app'],
+    ['单 PR REST 读(mergeStateStatus 随身份变化)', { args: ['api', '--method', 'GET', 'repos/o/r/pulls/7'] }, 'user'],
+    ['pr view 带 mergeStateStatus', { args: ['pr', 'view', '7', '--repo', 'o/r', '--json', 'state,mergeStateStatus'] }, 'user'],
+    ['重复 --json,敏感字段在前', { args: ['pr', 'view', '7', '--repo', 'o/r', '--json', 'reviewRequests', '--json', 'mergeStateStatus'] }, 'user'],
+    ['旧写法 repo view defaultBranchRef', { args: ['repo', 'view', 'o/r', '--json', 'defaultBranchRef'] }, 'user'],
+    ['旧写法 repos/<o>/<r> 根 REST', { args: ['api', '--method', 'GET', 'repos/o/r'] }, 'user'],
+    ['GraphQL mutation', gql('mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}', { id: 'x' }), 'user'],
+    ['REST POST', { args: ['api', '--method', 'POST', 'repos/o/r/pulls/7/reviews', '--input', '-'], input: '{}' }, 'user'],
+    ['白名单外的仓', { args: ['pr', 'view', '7', '--repo', 'x/y', '--json', 'headRefOid'] }, 'user'],
+  ];
+  for (const [name, call, want] of rows) {
+    assert.equal(route.decideReadRoute(call.args, { config, env: {}, input: call.input }).route, want, name);
+  }
 });
 
 test('shouldFallbackToUser:只认权限/不存在/令牌失效', () => {
@@ -128,7 +154,7 @@ test('appReadEnv:摘掉调用方的令牌,只留 App 令牌', () => {
 
 test('gh():没设开关 → 所有调用都用原令牌,不写分流日志', () => {
   setup();
-  gh(['api', '--method', 'GET', 'repos/o/r/pulls/5']);
+  gh(['api', '--method', 'GET', 'repos/o/r/pulls/5/reviews']);
   gh(['api', '--method', 'POST', 'repos/o/r/pulls/5/reviews', '--input', '-'], { input: '{}' });
   assert.deepEqual(calls().map((c) => c.token), ['user-token', 'user-token']);
   assert.equal(existsSync(ROUTE_LOG), false);
@@ -136,7 +162,7 @@ test('gh():没设开关 → 所有调用都用原令牌,不写分流日志', () 
 
 test('gh():设了开关 → 读用 App 令牌(且看不到原令牌),写和身份用原令牌', () => {
   setup(ENABLED);
-  const read = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5']);
+  const read = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5/reviews']);
   gh(['api', '--method', 'POST', 'repos/o/r/pulls/5/reviews', '--input', '-'], { input: '{}' });
   gh(['api', 'user', '--jq', '.login']);
   gh(['api', 'repos/o/r/rules/branches/main']);
@@ -151,7 +177,7 @@ test('gh():设了开关 → 读用 App 令牌(且看不到原令牌),写和身�
 
 test('gh():调用方显式给了 env(身份令牌)时不分流', () => {
   setup(ENABLED);
-  gh(['api', 'repos/o/r/pulls/5'], { env: { ...process.env, GH_TOKEN: 'identity-token' } });
+  gh(['api', 'repos/o/r/pulls/5/reviews'], { env: { ...process.env, GH_TOKEN: 'identity-token' } });
   assert.deepEqual(calls().map((c) => c.token), ['identity-token']);
 });
 
@@ -167,7 +193,7 @@ test('gh():GraphQL 只读查询走 App;带 viewer 或 mutation 走原令牌', ()
 test('gh():App 返回 403/404 → 换原令牌重试一次并记为 app-fallback', () => {
   for (const mode of ['403', '404']) {
     setup({ ...ENABLED, FAKE_APP_MODE: mode });
-    const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5']);
+    const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5/reviews']);
     assert.equal(r.ok, true);
     assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token']);
     assert.equal(JSON.parse(r.stdout).by, 'user-token');
@@ -180,7 +206,7 @@ test('gh():App 被拒后改用原令牌那次遇到 503,照常做瞬时错误重
   const flaky = join(WORK, 'flaky-count');
   rmSync(flaky, { force: true });
   setup({ ...ENABLED, FAKE_APP_MODE: '403', FAKE_USER_FLAKY_FILE: flaky });
-  const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5']);
+  const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5/reviews']);
   assert.equal(r.ok, true);
   assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token', 'user-token']);
   assert.equal(JSON.parse(r.stdout).by, 'user-token');
@@ -188,7 +214,7 @@ test('gh():App 被拒后改用原令牌那次遇到 503,照常做瞬时错误重
 
 test('gh():App 返回 500 → 不换原令牌,失败原样交给调用方', () => {
   setup({ ...ENABLED, FAKE_APP_MODE: '500' });
-  const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5'], { allowFail: true });
+  const r = gh(['api', '--method', 'GET', 'repos/o/r/pulls/5/reviews'], { allowFail: true });
   assert.equal(r.ok, false);
   assert.deepEqual(calls().map((c) => c.token), ['app-token']);
 });

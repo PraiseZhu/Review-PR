@@ -1,13 +1,15 @@
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { notifyTargetBranch, targetBranchFingerprint, targetBranchMarker } from './target-branch-reminder.mjs';
 import { createCandidateList, makeReviewPlan, collectRoundResults, nextRoundState } from './review-round.mjs';
 
 const head = 'a'.repeat(40);
 const input = { owner: 'o', repo: 'r', pr: 4351, expectedHead: head, expectedBaseRef: 'dash/token-speed-panel' };
-function fixture({ parentState = 'MERGED', comments = [], metaChange, failPost = false } = {}) {
+function fixture({ parentState = 'MERGED', comments = [], metaChange, failPost = false, defaultBranch = () => 'main' } = {}) {
   let reads = 0;
   const writes = [];
+  const defaultBranchCalls = [];
   const parent = { number: 4271, state: parentState === 'OPEN' ? 'open' : 'closed',
     merged_at: parentState === 'MERGED' ? '2026-09-16T15:51:20Z' : null,
     head: { ref: input.expectedBaseRef, repo: { full_name: 'o/r' } } };
@@ -15,9 +17,13 @@ function fixture({ parentState = 'MERGED', comments = [], metaChange, failPost =
   const api = {
     ghJson(args) {
       if (args[0] === 'pr') { reads++; return { ...meta, ...(metaChange?.(reads) ?? {}) }; }
-      if (args[0] === 'repo') return { defaultBranchRef: { name: 'main' } };
       if (args[0] === 'api' && args[1] === 'user') return { login: 'Maintainer' };
       throw new Error('Unexpected GitHub read');
+    },
+    // 默认分支只能经注入的 helper 读取(lib.fetchDefaultBranch → GraphQL);ghJson 收到 repo view 会按"未知读取"抛错。
+    fetchDefaultBranch(target) {
+      defaultBranchCalls.push(target);
+      return defaultBranch(defaultBranchCalls.length);
     },
     fetchRestPages(endpoint) {
       if (endpoint.includes('/pulls?')) return [parent];
@@ -32,7 +38,7 @@ function fixture({ parentState = 'MERGED', comments = [], metaChange, failPost =
       return { ok: true, stdout: comments.at(-1).html_url };
     },
   };
-  return { api, writes, comments, parent, meta };
+  return { api, writes, comments, parent, meta, defaultBranchCalls };
 }
 
 test('merged parent asks for main and deduplicates across process restarts and ordinary pushes', () => {
@@ -101,6 +107,35 @@ test('unknown or unrelated base evidence never posts; review-only and dry-run re
   assert.match(preview.body, /该模式不会主动合并/);
   assert.equal(preview.reason, 'dry-run');
   assert.equal(f.writes.length, 0);
+});
+
+test('默认分支经注入的 fetchDefaultBranch 读取:首次读和发送前复读各一次,参数是 owner/repo', () => {
+  const f = fixture();
+  assert.equal(notifyTargetBranch(input, f.api).posted, true);
+  assert.deepEqual(f.defaultBranchCalls, [{ owner: 'o', repo: 'r' }, { owner: 'o', repo: 'r' }]);
+});
+
+test('默认分支读失败或为空时不评论,也不回退为 main', () => {
+  const failing = fixture({ defaultBranch: () => { throw new Error('读取 o/r 默认分支失败: HTTP 502'); } });
+  assert.throws(() => notifyTargetBranch(input, failing.api), /默认分支失败/);
+  assert.equal(failing.writes.length, 0);
+  for (const empty of ['', undefined, null]) {
+    const f = fixture({ defaultBranch: () => empty });
+    assert.throws(() => notifyTargetBranch(input, f.api), /默认分支未完整读取/);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('发送前复读时默认分支变了,旧提醒不发', () => {
+  const f = fixture({ defaultBranch: (n) => (n === 1 ? 'main' : 'release') });
+  assert.equal(notifyTargetBranch(input, f.api).reason, 'state-changed');
+  assert.equal(f.writes.length, 0);
+});
+
+test('notify-author-resolve 的 --target-branch 接线把 fetchDefaultBranch 传给 notifyTargetBranch', () => {
+  const source = readFileSync(new URL('./notify-author-resolve.mjs', import.meta.url), 'utf8');
+  assert.match(source, /notifyTargetBranch\([^)]*\{[^}]*\bfetchDefaultBranch\b[^}]*\}\)/s);
+  assert.match(source, /import \{[^}]*\bfetchDefaultBranch\b[^}]*\} from '\.\/lib\.mjs'/s);
 });
 
 function round({ outcome = 'retarget', baseRefName = input.expectedBaseRef } = {}) {

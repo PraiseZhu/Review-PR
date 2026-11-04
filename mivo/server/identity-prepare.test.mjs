@@ -22,9 +22,15 @@ if (args[0] === 'auth') {
   if (process.env.AUTH_STATUS === 'ok') { process.stdout.write('ok'); process.exit(0); }
   fail('You are not logged into any GitHub hosts');
 }
-if (endpoint === 'repos/o/r') {
+if (args[0] === 'api' && args[1] === 'graphql') {
+  // 只认两种仓库读:认证探针(nameWithOwner)和默认分支(defaultBranchRef);旧的 repos/o/r 根 REST 不再接受。
+  const body = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+  const query = String(body.query ?? '');
+  if (body.variables?.owner !== 'o' || body.variables?.name !== 'r') fail('Unexpected graphql variables: ' + JSON.stringify(body.variables));
   if (process.env.REPO_STATUS === 'forbidden') fail('HTTP 403: Resource not accessible by integration');
-  out({ default_branch: 'main', full_name: 'o/r' });
+  if (/nameWithOwner/.test(query)) out({ data: { repository: { nameWithOwner: 'o/r' } } });
+  if (/defaultBranchRef\\{name\\}/.test(query)) out({ data: { repository: { defaultBranchRef: { name: 'main' } } } });
+  fail('Unexpected graphql query: ' + query.slice(0, 80));
 }
 if (endpoint === 'repos/o/r/commits/main') out({ sha: '${SHA}' });
 if (endpoint === 'repos/o/r/collaborators/maintainer/permission') out({ permission: 'admin', role_name: 'admin' });
