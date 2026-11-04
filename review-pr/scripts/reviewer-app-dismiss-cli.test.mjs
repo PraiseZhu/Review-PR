@@ -90,17 +90,17 @@ const appCr = (extra = {}) => ({ id: 11, state: 'CHANGES_REQUESTED', commit_id: 
 test('dismiss-own-review:App 自己的 CR,作者是非维护者,重审通过后用 App 令牌 PUT dismissals 清掉', () => {
   const r = run('dismiss-own-review.mjs', { author: 'outsider', reviews: [appCr()] }, { extra: ['--review-clean'] });
   assert.equal(r.status, 0, JSON.stringify(r.out));
-  assert.equal(r.out.dismissed, true);
-  assert.deepEqual(r.out.dismissed === true && r.out.dismissedCount, 1);
+  assert.equal(r.out.ok, true);
+  assert.equal(r.out.dismissedCount, 1);
+  assert.deepEqual(r.out.dismissed, [11]);
   assert.equal(r.fixture.puts.length, 1);
-  assert.equal(r.fixture.puts[0].noCredFallback, true);
 });
 
 test('dismiss-own-review:403 → 非 0 退出、ok=false、错误含期望与实际、不含令牌、只试一次', () => {
   const r = run('dismiss-own-review.mjs', { author: 'outsider', reviews: [appCr()], putMode: 'forbidden' }, { extra: ['--review-clean'] });
   assert.equal(r.status, 2);
   assert.equal(r.out.ok, false);
-  assert.equal(r.out.dismissed, false);
+  assert.equal(r.out.dismissedCount, 0);
   assert.match(r.out.errors[0].error, /期望 HTTP 2xx 或 review 已是 DISMISSED,实际 HTTP 403/);
   assert.equal(r.fixture.puts.length, 1);
 });
@@ -141,11 +141,13 @@ test('未配置 reviewerApps:非维护者作者仍不能被 bot 清 CR(回归)',
   assert.equal((r.fixture.puts ?? []).length, 0);
 });
 
-const gateCr = () => appCr({ body: '<!-- review-pr:format-gate head=' + 'd'.repeat(40) + ' -->\n格式门未过' });
+const gateCr = () => appCr({ commit_id: 'd'.repeat(40), body: '格式门未过\n\n<!-- review-pr:gate-review kind=format head=' + 'd'.repeat(40) + ' -->' });
 
 test('dismiss-stale-reviews:App 的旧门禁 CR 清理成功;403 时 ok=false 且非 0 退出(不假装清理完成)', () => {
   const okRun = run('dismiss-stale-reviews.mjs', { author: 'outsider', reviews: [gateCr()] }, { extra: ['--gate-clean'] });
   assert.equal(okRun.status, 0, JSON.stringify(okRun.out));
+  assert.equal(okRun.out.dismissedCount, 1, JSON.stringify(okRun.out));
+  assert.equal(okRun.fixture.puts.length, 1);
   const bad = run('dismiss-stale-reviews.mjs', { author: 'outsider', reviews: [gateCr()], putMode: 'forbidden' }, { extra: ['--gate-clean'] });
   assert.notEqual(bad.status, 0);
   assert.equal(bad.out.ok, false);
