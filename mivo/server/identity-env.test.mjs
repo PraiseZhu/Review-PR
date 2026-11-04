@@ -201,16 +201,34 @@ test('probeGhAuth:没设 REVIEW_PR_VIEWER_LOGIN 只调 gh auth status', () => {
   assert.deepEqual(calls, [{ args: ['auth', 'status'], opts: { allowFail: true } }]);
 });
 
-test('probeGhAuth:设了 REVIEW_PR_VIEWER_LOGIN 改读仓库,不调 auth;full_name 大小写不敏感', () => {
+test('probeGhAuth:设了 REVIEW_PR_VIEWER_LOGIN 改探 GraphQL nameWithOwner,不调 auth;大小写不敏感', () => {
   const env = { REVIEW_PR_VIEWER_LOGIN: 'PraiseZhu' };
   const calls = [];
-  const okGh = (args) => { calls.push(args); return { ok: true, stdout: JSON.stringify({ full_name: 'O/R' }), stderr: '' }; };
+  const reply = (nameWithOwner) => ({ ok: true, stdout: JSON.stringify({ data: { repository: { nameWithOwner } } }), stderr: '' });
+  const okGh = (args, opts) => { calls.push({ args, opts }); return reply('O/R'); };
   assert.deepEqual(probeGhAuth({ owner: 'o', repo: 'r' }, { ghFn: okGh, env }), { ok: true, via: 'repo-read' });
-  assert.deepEqual(calls, [['api', '--method', 'GET', 'repos/o/r']]);
+  assert.deepEqual(calls[0].args, ['api', 'graphql', '--input', '-']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].opts.allowFail, true);
+  assert.equal(calls[0].opts.readOnly, true);
+  assert.equal(calls[0].opts.timeoutMs, 20_000);
+  const sent = JSON.parse(calls[0].opts.input);
+  assert.match(sent.query, /nameWithOwner/);
+  assert.deepEqual(sent.variables, { owner: 'o', name: 'r' });
 
-  const wrong = probeGhAuth({ owner: 'o', repo: 'r' }, { env, ghFn: () => ({ ok: true, stdout: JSON.stringify({ full_name: 'x/y' }), stderr: '' }) });
+  const wrong = probeGhAuth({ owner: 'o', repo: 'r' }, { env, ghFn: () => reply('x/y') });
   assert.equal(wrong.ok, false);
-  assert.match(wrong.error, /full_name/);
+  assert.match(wrong.error, /nameWithOwner/);
+
+  // 读不到仓库、缺字段、非字符串、坏 JSON、errors 非空都判失败
+  for (const stdout of [
+    JSON.stringify({ data: { repository: null } }),
+    JSON.stringify({ data: {} }),
+    JSON.stringify({ data: { repository: { nameWithOwner: 5 } } }),
+    JSON.stringify({ data: { repository: { nameWithOwner: 'o/r' } }, errors: [{ message: 'partial' }] }),
+    'not json',
+    '',
+  ]) assert.equal(probeGhAuth({ owner: 'o', repo: 'r' }, { env, ghFn: () => ({ ok: true, stdout, stderr: '' }) }).ok, false, stdout);
 
   const failed = probeGhAuth({ owner: 'o', repo: 'r' }, { env, ghFn: () => ({ ok: false, stdout: '', stderr: 'HTTP 403: nope\nsecond line' }) });
   assert.deepEqual(failed, { ok: false, via: 'repo-read', error: 'HTTP 403: nope' });

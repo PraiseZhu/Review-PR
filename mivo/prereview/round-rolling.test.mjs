@@ -160,8 +160,12 @@ function makeFixture(scenario) {
       return output(JSON.stringify([{ total_count: runs.length, workflow_runs: runs }]));
     }
     // 派发前现读 PR 当前 head(#141):这个夹具里 head 不会变
-    const pullPath = args.find((arg) => /^repos\/fixture\/target\/pulls\/\d+$/.test(arg));
-    if (command === 'gh' && args[0] === 'api' && pullPath) return output(`head-${pullPath.split('/').pop()}\n`);
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'view' && args.slice(3).join(' ') === '--repo fixture/target --json headRefOid --jq .headRefOid') {
+      return output(`head-${args[2]}\n`);
+    }
+    if (command === 'gh' && args[0] === 'api' && args.some((arg) => /^repos\/fixture\/target\/pulls\/\d+$/.test(arg))) {
+      throw new Error(`读 head 不得再走 REST 单 PR 端点: ${args.join(' ')}`);
+    }
     if (command === 'gh' && args[0] === 'api') return output('[]');
     if (command === 'gh' && args[0] === 'workflow' && args[1] === 'run') {
       const inputs = Object.fromEntries(args.filter((_, index) => args[index - 1] === '-f').map((arg) => arg.split('=')));
@@ -535,10 +539,11 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     }
     if (args[0] === 'api' && path.includes('/check-runs')) return ok({ check_runs: [] });
     // 派发、批准 workflow 前现读 PR 当前 head(#141 单审 P1)
-    if (args[0] === 'api' && /^repos\/o\/target\/pulls\/\d+$/.test(path)) {
-      const pr = w.prs.get(Number(path.split('/').pop()));
+    if (args[0] === 'pr' && args[1] === 'view' && args.slice(3).join(' ') === '--repo o/target --json headRefOid --jq .headRefOid') {
+      const pr = w.prs.get(Number(args[2]));
       return pr ? ok(`${pr.head}\n`) : fail('gh: Not Found (HTTP 404)');
     }
+    if (args[0] === 'api' && /^repos\/o\/target\/pulls\/\d+$/.test(path)) throw new Error(`读 head 不得再走 REST 单 PR 端点: ${args.join(' ')}`);
     if (args[0] === 'api' && path.startsWith('repos/o/target/pulls?state=open')) {
       return ok([[...w.prs].filter(([, p]) => p.open).map(([number, p]) => ({ number, head: { sha: p.head } }))]);
     }
@@ -2187,4 +2192,18 @@ test('世界:#168 gate 事件 reason 超 200 字截到 200;blockers 7 条只留�
   assert.equal(w.dispatchesOf(1).length, 0);
   // 结果文件不带 blockers:只进日志
   assert.equal('blockers' in w.read(`${w.roundDir('R1')}/results/pr-1.json`), false);
+});
+
+// readLiveHead:argv 固定为 pr view --json headRefOid --jq .headRefOid(App 可读、不碰 mergeStateStatus);失败路径行为不变。
+test('readLiveHead:用 pr view headRefOid 读 head,读不到返回 null', () => {
+  const calls = [];
+  const build = (result) => new Function('CONFIG', 'ghRead', `${extractFunction('readLiveHead')}\nreturn readLiveHead;`)(
+    { targetRepo: 'o/target' }, (args, options) => { calls.push({ args, options }); return result; });
+  assert.equal(build({ ok: true, stdout: ' h-7\n' })(7), 'h-7');
+  assert.deepEqual(calls[0].args, ['pr', 'view', '7', '--repo', 'o/target', '--json', 'headRefOid', '--jq', '.headRefOid']);
+  assert.equal(calls[0].options.allowFail, true);
+  assert.equal(calls[0].options.timeoutMs, 30_000);
+  for (const result of [{ ok: false, stdout: '', stderr: 'HTTP 502' }, { ok: true, stdout: '' }, { ok: true, stdout: '  \n' }, { ok: true, stdout: 'a b' }]) {
+    assert.equal(build(result)(7), null, JSON.stringify(result));
+  }
 });

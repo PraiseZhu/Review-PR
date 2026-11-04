@@ -60,12 +60,21 @@ function makeGh({
   contentsOverrides = {},
 } = {}) {
   const calls = [];
-  const ghFn = (args) => {
+  const ghFn = (args, options = {}) => {
     calls.push(args.slice());
+    if (args[0] === 'api' && args[1] === 'graphql') {
+      // 默认分支只能走 GraphQL defaultBranchRef;repoMeta.default_branch 是测试里"仓库默认分支"的唯一来源。
+      const body = JSON.parse(options.input ?? '{}');
+      if (!/defaultBranchRef\{name\}/.test(body.query ?? '') || body.variables?.owner !== 'Acme' || body.variables?.name !== 'Widget') {
+        return bad(`unexpected graphql ${String(body.query).slice(0, 80)}`);
+      }
+      if (repoMeta === null) return ok({ data: { repository: null } });
+      const name = repoMeta.default_branch;
+      return ok({ data: { repository: { defaultBranchRef: name === undefined ? null : { name } } } });
+    }
     const endpoint = args.find((arg) => typeof arg === 'string' && (
       arg.startsWith('repos/') || arg.startsWith('orgs/')
     ));
-    if (endpoint === 'repos/Acme/Widget') return ok(repoMeta);
     if (endpoint === 'repos/Acme/Widget/commits/main') return ok(commitMeta);
     if (endpoint?.startsWith('repos/Acme/Widget/contents/')) {
       const path = endpoint.slice('repos/Acme/Widget/contents/'.length);
@@ -132,6 +141,8 @@ throws('近似根模式不算根规则', () => parseMaintainerTeamFromCodeowners
   check('记录默认分支 SHA', authority.base.sha === 'a'.repeat(40));
   check('记录首个 CODEOWNERS 路径', authority.codeowners.path === '.github/CODEOWNERS');
   check('contents 固定到 SHA', calls.some((args) => args.includes(`ref=${'a'.repeat(40)}`)));
+  check('默认分支走 GraphQL defaultBranchRef', calls.some((args) => args[0] === 'api' && args[1] === 'graphql'));
+  check('不再读 repos/<o>/<r> 根 REST', !calls.some((args) => args.includes('repos/Acme/Widget')));
   check('Team API 使用完整分页', calls.some((args) =>
     args.includes('--paginate') && args.includes('--slurp') && args.includes('role=all') && args.includes('per_page=100')));
   check('digest 有前缀', /^sha256:[0-9a-f]{64}$/.test(authority.digest));
@@ -249,6 +260,28 @@ throws('默认分支缺失拒绝', () => {
   const { ghFn } = makeGh({ repoMeta: {} });
   fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });
 }, /没有可验证的默认分支/);
+throws('默认分支 GraphQL 读不到仓库拒绝', () => {
+  const { ghFn } = makeGh({ repoMeta: null });
+  fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });
+}, /默认分支/);
+throws('默认分支 GraphQL 带 errors 即使有 data 也拒绝', () => {
+  const { ghFn: inner } = makeGh();
+  const ghFn = (args, options) => (args[1] === 'graphql'
+    ? ok({ data: { repository: { defaultBranchRef: { name: 'main' } } }, errors: [{ message: 'partial' }] })
+    : inner(args, options));
+  fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });
+}, /默认分支/);
+{
+  // 错误码必须保留:上游靠 MAINTAINER_AUTHORITY_UNAVAILABLE 区分"权限材料读不到"和别的异常。
+  const { ghFn: inner } = makeGh();
+  const ghFn = (args, options) => (args[1] === 'graphql' ? bad('HTTP 502') : inner(args, options));
+  try {
+    fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });
+    check('默认分支读失败保留错误码', false, '没有抛错');
+  } catch (error) {
+    check('默认分支读失败保留错误码', error.code === 'MAINTAINER_AUTHORITY_UNAVAILABLE', String(error?.code));
+  }
+}
 throws('commit SHA 异常拒绝', () => {
   const { ghFn } = makeGh({ commitMeta: { sha: 'short' } });
   fetchMaintainerAuthority({ owner: 'Acme', repo: 'Widget', ghFn });
