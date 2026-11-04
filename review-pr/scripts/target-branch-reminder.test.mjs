@@ -1,6 +1,7 @@
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { createReviewIdentity } from './reviewer-identity.mjs';
 import { notifyTargetBranch, targetBranchFingerprint, targetBranchMarker } from './target-branch-reminder.mjs';
 import { createCandidateList, makeReviewPlan, collectRoundResults, nextRoundState } from './review-round.mjs';
 
@@ -15,9 +16,9 @@ function fixture({ parentState = 'MERGED', comments = [], metaChange, failPost =
     head: { ref: input.expectedBaseRef, repo: { full_name: 'o/r' } } };
   const meta = { state: 'OPEN', isDraft: false, author: { login: 'author' }, headRefOid: head, baseRefName: input.expectedBaseRef };
   const api = {
+    readReviewIdentity: () => createReviewIdentity({ viewerLogin: 'Maintainer' }),
     ghJson(args) {
       if (args[0] === 'pr') { reads++; return { ...meta, ...(metaChange?.(reads) ?? {}) }; }
-      if (args[0] === 'api' && args[1] === 'user') return { login: 'Maintainer' };
       throw new Error('Unexpected GitHub read');
     },
     // 默认分支只能经注入的 helper 读取(lib.fetchDefaultBranch → GraphQL);ghJson 收到 repo view 会按"未知读取"抛错。

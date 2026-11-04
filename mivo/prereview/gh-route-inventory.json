@@ -209,33 +209,6 @@
    }
   },
   {
-   "id": "resolve-fixed-threads.lib_gh.1b5490440a",
-   "source": {
-    "file": "mivo/lib/resolve-fixed-threads.mjs",
-    "callee": "lib.gh",
-    "sig": "1b5490440a",
-    "count": 1
-   },
-   "flows": [
-    "server"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
-    }
-   ]
-  },
-  {
    "id": "resolve-fixed-threads.lib_ghJson.25e98e4235",
    "source": {
     "file": "mivo/lib/resolve-fixed-threads.mjs",
@@ -374,11 +347,11 @@
    }
   },
   {
-   "id": "round.ghRead.717907d775",
+   "id": "round.ghRead.e526942497",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "717907d775",
+    "sig": "e526942497",
     "count": 1
    },
    "flows": [
@@ -397,11 +370,11 @@
    ]
   },
   {
-   "id": "round.ghRead.322b74fdb0",
+   "id": "round.ghRead.8974906f9a",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "322b74fdb0",
+    "sig": "8974906f9a",
     "count": 1
    },
    "flows": [
@@ -442,11 +415,11 @@
    }
   },
   {
-   "id": "round.ghRead.1ba823e04c",
+   "id": "round.ghRead.20dcbf0a75",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "1ba823e04c",
+    "sig": "20dcbf0a75",
     "count": 1
    },
    "flows": [
@@ -472,11 +445,11 @@
    ]
   },
   {
-   "id": "round.ghRead.d0477182f4",
+   "id": "round.ghRead.dc4761b903",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "d0477182f4",
+    "sig": "dc4761b903",
     "count": 1
    },
    "flows": [
@@ -497,11 +470,11 @@
    ]
   },
   {
-   "id": "round.ghRead.fefe26de70",
+   "id": "round.ghRead.446b93e8b3",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "fefe26de70",
+    "sig": "446b93e8b3",
     "count": 1
    },
    "flows": [
@@ -521,11 +494,11 @@
    ]
   },
   {
-   "id": "round.ghRead.068370f8c8",
+   "id": "round.ghRead.59f52943c6",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "068370f8c8",
+    "sig": "59f52943c6",
     "count": 1
    },
    "flows": [
@@ -543,11 +516,11 @@
    ]
   },
   {
-   "id": "round.ghRead.23b8713d0f",
+   "id": "round.ghRead.df043f98e7",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "23b8713d0f",
+    "sig": "df043f98e7",
     "count": 1
    },
    "flows": [
@@ -572,11 +545,11 @@
    ]
   },
   {
-   "id": "round.ghRead.c9ab444cb9",
+   "id": "round.ghRead.e8d3a33ad6",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "c9ab444cb9",
+    "sig": "e8d3a33ad6",
     "count": 1
    },
    "flows": [
@@ -596,11 +569,11 @@
    ]
   },
   {
-   "id": "round.run_gh.756fb9cf15",
+   "id": "round.run_gh.c6319d7e15",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "756fb9cf15",
+    "sig": "c6319d7e15",
     "count": 1
    },
    "flows": [
@@ -611,11 +584,11 @@
    }
   },
   {
-   "id": "round.run_gh.dce812940c",
+   "id": "round.run_gh.0497c184ab",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "dce812940c",
+    "sig": "0497c184ab",
     "count": 1
    },
    "flows": [
@@ -639,11 +612,11 @@
    ]
   },
   {
-   "id": "round.run_gh.5f6b68cb82",
+   "id": "round.run_gh.59398a57ea",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "5f6b68cb82",
+    "sig": "59398a57ea",
     "count": 1
    },
    "flows": [
@@ -667,11 +640,11 @@
    ]
   },
   {
-   "id": "round.run_gh.7c578c59e3",
+   "id": "round.run_gh.742e21c7f4",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "7c578c59e3",
+    "sig": "742e21c7f4",
     "count": 1
    },
    "flows": [
@@ -693,11 +666,11 @@
    ]
   },
   {
-   "id": "round.run_gh.553878276b",
+   "id": "round.run_gh.a707605965",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "553878276b",
+    "sig": "a707605965",
     "count": 1
    },
    "flows": [
@@ -718,11 +691,11 @@
    ]
   },
   {
-   "id": "round.run_gh.38c6b1e9aa",
+   "id": "round.run_gh.6daafa4b76",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "38c6b1e9aa",
+    "sig": "6daafa4b76",
     "count": 1
    },
    "flows": [
@@ -743,11 +716,11 @@
    ]
   },
   {
-   "id": "round.run_gh.5883a5fd79",
+   "id": "round.run_gh.ff1da62fed",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "5883a5fd79",
+    "sig": "ff1da62fed",
     "count": 1
    },
    "flows": [
@@ -768,11 +741,11 @@
    ]
   },
   {
-   "id": "round.run_gh.77e6f6b12a",
+   "id": "round.run_gh.80c034b02c",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "77e6f6b12a",
+    "sig": "80c034b02c",
     "count": 1
    },
    "flows": [
@@ -798,11 +771,11 @@
    ]
   },
   {
-   "id": "round.run_gh.ac07153d24",
+   "id": "round.run_gh.db70b66f3a",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "ac07153d24",
+    "sig": "db70b66f3a",
     "count": 1
    },
    "flows": [
@@ -822,11 +795,11 @@
    ]
   },
   {
-   "id": "round.run_gh.67e7642ded",
+   "id": "round.run_gh.c8a886b421",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "67e7642ded",
+    "sig": "c8a886b421",
     "count": 1
    },
    "flows": [
@@ -849,11 +822,11 @@
    ]
   },
   {
-   "id": "round.run_gh.ddb1f81f00",
+   "id": "round.run_gh.b4c7c21a06",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "ddb1f81f00",
+    "sig": "b4c7c21a06",
     "count": 1
    },
    "flows": [
@@ -875,11 +848,11 @@
    ]
   },
   {
-   "id": "round.run_gh.94c545bd4b",
+   "id": "round.run_gh.5783f881a1",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "94c545bd4b",
+    "sig": "5783f881a1",
     "count": 1
    },
    "flows": [
@@ -899,11 +872,11 @@
    ]
   },
   {
-   "id": "round.run_gh.e1e818c9c5",
+   "id": "round.run_gh.17cd1b5419",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "e1e818c9c5",
+    "sig": "17cd1b5419",
     "count": 1
    },
    "flows": [
@@ -921,11 +894,11 @@
    ]
   },
   {
-   "id": "round.run_gh.45d2c172d2",
+   "id": "round.run_gh.c421d6e733",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "45d2c172d2",
+    "sig": "c421d6e733",
     "count": 1
    },
    "flows": [
@@ -1005,33 +978,6 @@
      "expected": "app",
      "serverRoute": "app",
      "legacyServerRoute": "app"
-    }
-   ]
-  },
-  {
-   "id": "approve-reviewed-pr.gh.efe8a924ba",
-   "source": {
-    "file": "review-pr/scripts/approve-reviewed-pr.mjs",
-    "callee": "gh",
-    "sig": "efe8a924ba",
-    "count": 1
-   },
-   "flows": [
-    "server"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
     }
    ]
   },
@@ -1432,11 +1378,11 @@
    ]
   },
   {
-   "id": "context.ghGraphql.b3de150945",
+   "id": "context.ghGraphql.3c1a361405",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghGraphql",
-    "sig": "b3de150945",
+    "sig": "3c1a361405",
     "count": 1
    },
    "flows": [
@@ -1595,11 +1541,11 @@
    ]
   },
   {
-   "id": "context.ghJson.bbbe380045",
+   "id": "context.ghJson.ce557a0dbe",
    "source": {
     "file": "review-pr/scripts/context.mjs",
     "callee": "ghJson",
-    "sig": "bbbe380045",
+    "sig": "ce557a0dbe",
     "count": 1
    },
    "flows": [
@@ -1717,34 +1663,6 @@
    ]
   },
   {
-   "id": "dismiss-own-review.gh.b8f3425d0f",
-   "source": {
-    "file": "review-pr/scripts/dismiss-own-review.mjs",
-    "callee": "gh",
-    "sig": "b8f3425d0f",
-    "count": 1
-   },
-   "flows": [
-    "interactive"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "keep": {
-      "category": "interactive-skill",
-      "reason": "review-pr/scripts/dismiss-own-review.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
-     }
-    }
-   ]
-  },
-  {
    "id": "dismiss-own-review.ghJson.52d4503aef",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
@@ -1827,11 +1745,11 @@
    ]
   },
   {
-   "id": "dismiss-own-review.gh.c99d428d2d",
+   "id": "dismiss-own-review.gh.e81f67b1f9",
    "source": {
     "file": "review-pr/scripts/dismiss-own-review.mjs",
     "callee": "gh",
-    "sig": "c99d428d2d",
+    "sig": "e81f67b1f9",
     "count": 1
    },
    "flows": [
@@ -1912,34 +1830,6 @@
    ]
   },
   {
-   "id": "dismiss-stale-reviews.gh.b8f3425d0f",
-   "source": {
-    "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
-    "callee": "gh",
-    "sig": "b8f3425d0f",
-    "count": 1
-   },
-   "flows": [
-    "interactive"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "keep": {
-      "category": "interactive-skill",
-      "reason": "review-pr/scripts/dismiss-stale-reviews.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
-     }
-    }
-   ]
-  },
-  {
    "id": "dismiss-stale-reviews.ghJson.42ce974b84",
    "source": {
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
@@ -1967,11 +1857,11 @@
    ]
   },
   {
-   "id": "dismiss-stale-reviews.gh.2fd94e4472",
+   "id": "dismiss-stale-reviews.gh.e54349f214",
    "source": {
     "file": "review-pr/scripts/dismiss-stale-reviews.mjs",
     "callee": "gh",
-    "sig": "2fd94e4472",
+    "sig": "e54349f214",
     "count": 1
    },
    "flows": [
@@ -2432,6 +2322,34 @@
    ]
   },
   {
+   "id": "lib.ghFn.dd6d9ce6a6",
+   "source": {
+    "file": "review-pr/scripts/lib.mjs",
+    "callee": "ghFn",
+    "sig": "dd6d9ce6a6",
+    "count": 1
+   },
+   "flows": [
+    "mini",
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "user",
+      "--jq",
+      ".login"
+     ],
+     "expected": "user",
+     "serverRoute": "user",
+     "legacyServerRoute": "user",
+     "flipsIn": "PraiseZhu/Review-PR#176"
+    }
+   ]
+  },
+  {
    "id": "lib.ghFn.194571ebec",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
@@ -2613,6 +2531,37 @@
       "--paginate",
       "--slurp",
       "repos/xindong/mivo-canvas-plugin/pulls/7/reviews",
+      "-f",
+      "per_page=100"
+     ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "lib.fetchRestPages.73eb40d4d2",
+   "source": {
+    "file": "review-pr/scripts/lib.mjs",
+    "callee": "fetchRestPages",
+    "sig": "73eb40d4d2",
+    "count": 1
+   },
+   "flows": [
+    "mini",
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "--method",
+      "GET",
+      "--paginate",
+      "--slurp",
+      "repos/xindong/mivo-canvas-plugin/issues/7/comments",
       "-f",
       "per_page=100"
      ],
@@ -3367,33 +3316,6 @@
    ]
   },
   {
-   "id": "merge-reviewed-pr.gh.b8f3425d0f",
-   "source": {
-    "file": "review-pr/scripts/merge-reviewed-pr.mjs",
-    "callee": "gh",
-    "sig": "b8f3425d0f",
-    "count": 1
-   },
-   "flows": [
-    "server"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
-    }
-   ]
-  },
-  {
    "id": "merge-reviewed-pr.ghJson.3d4b6e25ce",
    "source": {
     "file": "review-pr/scripts/merge-reviewed-pr.mjs",
@@ -3538,29 +3460,6 @@
       "author,headRefOid,headRefName,baseRefName"
      ],
      "expected": "app"
-    }
-   ]
-  },
-  {
-   "id": "notify-author-resolve.ghJson.ff4216ca3e",
-   "source": {
-    "file": "review-pr/scripts/notify-author-resolve.mjs",
-    "callee": "ghJson",
-    "sig": "ff4216ca3e",
-    "count": 1
-   },
-   "flows": [
-    "mini"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user"
-     ],
-     "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
     }
    ]
   },
@@ -3850,37 +3749,6 @@
    ]
   },
   {
-   "id": "pr-write-guard.api_gh.d980d35859",
-   "source": {
-    "file": "review-pr/scripts/pr-write-guard.mjs",
-    "callee": "api.gh",
-    "sig": "d980d35859",
-    "count": 1
-   },
-   "flows": [
-    "mini",
-    "server"
-   ],
-   "cases": [
-    {
-     "name": "guarded-write-sample",
-     "argv": [
-      "pr",
-      "comment",
-      "7",
-      "--repo",
-      "xindong/mivo-canvas-plugin",
-      "--body-file",
-      "-"
-     ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
-    }
-   ]
-  },
-  {
    "id": "pr-write-guard.api_ghJson.cd80e60c89",
    "source": {
     "file": "review-pr/scripts/pr-write-guard.mjs",
@@ -3911,11 +3779,11 @@
    ]
   },
   {
-   "id": "pr-write-guard.api_gh.dd414fa59d",
+   "id": "pr-write-guard.api_gh.6aafdcc65e",
    "source": {
     "file": "review-pr/scripts/pr-write-guard.mjs",
     "callee": "api.gh",
-    "sig": "dd414fa59d",
+    "sig": "6aafdcc65e",
     "count": 1
    },
    "flows": [
@@ -4150,34 +4018,6 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.gh.b8f3425d0f",
-   "source": {
-    "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
-    "callee": "gh",
-    "sig": "b8f3425d0f",
-    "count": 2
-   },
-   "flows": [
-    "mini",
-    "server"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
-    }
-   ]
-  },
-  {
    "id": "request-changes-reviewed-pr.ghJson.9e35bb978e",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
@@ -4331,11 +4171,11 @@
    ]
   },
   {
-   "id": "request-changes-reviewed-pr.fetchRestPages.b71f86e87b",
+   "id": "request-changes-reviewed-pr.fetchRestPages.181295f229",
    "source": {
     "file": "review-pr/scripts/request-changes-reviewed-pr.mjs",
     "callee": "fetchRestPages",
-    "sig": "b71f86e87b",
+    "sig": "181295f229",
     "count": 1
    },
    "flows": [
@@ -4545,11 +4385,11 @@
    ]
   },
   {
-   "id": "signoff-hold.ghJson.701c2b8309",
+   "id": "signoff-hold.ghJson.a770500e4a",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "ghJson",
-    "sig": "701c2b8309",
+    "sig": "a770500e4a",
     "count": 1
    },
    "flows": [
@@ -4565,43 +4405,18 @@
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--json",
-      "number,state,mergedAt,author,url,comments,labels,headRefOid"
+      "number,state,mergedAt,author,url,labels,headRefOid"
      ],
      "expected": "app"
     }
    ]
   },
   {
-   "id": "signoff-hold.gh.b8f3425d0f",
+   "id": "signoff-hold.gh.8abd9789bf",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "gh",
-    "sig": "b8f3425d0f",
-    "count": 1
-   },
-   "flows": [
-    "mini"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
-    }
-   ]
-  },
-  {
-   "id": "signoff-hold.gh.f77253e63c",
-   "source": {
-    "file": "review-pr/scripts/signoff-hold.mjs",
-    "callee": "gh",
-    "sig": "f77253e63c",
+    "sig": "8abd9789bf",
     "count": 1
    },
    "flows": [
@@ -4624,11 +4439,11 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.fbb5e07f9a",
+   "id": "signoff-hold.writeGh.fd0688b5be",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "fbb5e07f9a",
+    "sig": "fd0688b5be",
     "count": 1
    },
    "flows": [
@@ -4652,11 +4467,11 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.aae8bfadff",
+   "id": "signoff-hold.writeGh.0fb43c4119",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "aae8bfadff",
+    "sig": "0fb43c4119",
     "count": 1
    },
    "flows": [
@@ -4709,11 +4524,11 @@
    ]
   },
   {
-   "id": "signoff-hold.writeGh.e1c0ec10e1",
+   "id": "signoff-hold.writeGh.8b317badea",
    "source": {
     "file": "review-pr/scripts/signoff-hold.mjs",
     "callee": "writeGh",
-    "sig": "e1c0ec10e1",
+    "sig": "8b317badea",
     "count": 1
    },
    "flows": [
@@ -4766,11 +4581,11 @@
    ]
   },
   {
-   "id": "signoff-release.ghJson.8da2eec415",
+   "id": "signoff-release.ghJson.1e5dbbdb0f",
    "source": {
     "file": "review-pr/scripts/signoff-release.mjs",
     "callee": "ghJson",
-    "sig": "8da2eec415",
+    "sig": "1e5dbbdb0f",
     "count": 1
    },
    "flows": [
@@ -4787,7 +4602,7 @@
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--json",
-      "number,state,mergedAt,author,url,comments,labels"
+      "number,state,mergedAt,author,url,labels"
      ],
      "expected": "app",
      "serverRoute": "app",
@@ -4796,39 +4611,11 @@
    ]
   },
   {
-   "id": "signoff-release.gh.b8f3425d0f",
-   "source": {
-    "file": "review-pr/scripts/signoff-release.mjs",
-    "callee": "gh",
-    "sig": "b8f3425d0f",
-    "count": 1
-   },
-   "flows": [
-    "mini",
-    "server"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user",
-      "--jq",
-      ".login"
-     ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
-    }
-   ]
-  },
-  {
-   "id": "signoff-release.ghJson.581928bc47",
+   "id": "signoff-release.ghJson.9db7dbca87",
    "source": {
     "file": "review-pr/scripts/signoff-release.mjs",
     "callee": "ghJson",
-    "sig": "581928bc47",
+    "sig": "9db7dbca87",
     "count": 1
    },
    "flows": [
@@ -4854,11 +4641,11 @@
    ]
   },
   {
-   "id": "signoff-release.writeGh.d7f8db4e03",
+   "id": "signoff-release.writeGh.c94ee6dc60",
    "source": {
     "file": "review-pr/scripts/signoff-release.mjs",
     "callee": "writeGh",
-    "sig": "d7f8db4e03",
+    "sig": "c94ee6dc60",
     "count": 1
    },
    "flows": [
@@ -4963,29 +4750,6 @@
       "per_page=100"
      ],
      "expected": "app"
-    }
-   ]
-  },
-  {
-   "id": "target-branch-reminder.api_ghJson.37e7e871c5",
-   "source": {
-    "file": "review-pr/scripts/target-branch-reminder.mjs",
-    "callee": "api.ghJson",
-    "sig": "37e7e871c5",
-    "count": 1
-   },
-   "flows": [
-    "mini"
-   ],
-   "cases": [
-    {
-     "name": "sample",
-     "argv": [
-      "api",
-      "user"
-     ],
-     "expected": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
     }
    ]
   },

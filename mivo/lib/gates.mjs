@@ -5,6 +5,7 @@
 // 输入是 context.mjs 的完整输出;输出是「下一步动作」,真正的 GitHub 写入由调用方用 Cindy 脚本执行。
 import { toCodeScanGate, toCodeScanWakeState, toStaleCodeScanReason } from './code-scan.mjs';
 import { toHandoffPending } from './handoff.mjs';
+import { toReviewIdentity, isReviewIdentity } from '../../review-pr/scripts/reviewer-identity.mjs';
 
 export const KIND_TOPICS = {
   product: '产品 / UI 变更',
@@ -243,7 +244,7 @@ function decideGatePrerequisites(ctx) {
 //    合并仍由组织规则要求 thread 全部 resolve。
   const unresolved = gate.unresolvedThreads?.length ?? gate.unresolvedThreadCount ?? 0;
   const threadsResult = { stage: 'threads', outcome: 'threads-unresolved', reason: `${unresolved} 条 conversation 未 resolve`, actions: signoffActions };
-  const threadPendingGates = toPendingThreadGates(gate, unresolved, ctx.approvalPolicy?.viewer);
+  const threadPendingGates = toPendingThreadGates(gate, unresolved, ctx.reviewerIdentity ?? ctx.approvalPolicy?.viewer);
   if (unresolved > 0 && threadPendingGates === null) return threadsResult;
   const pendingGates = threadPendingGates ?? [];
   const reviewableThreadsOnly = pendingGates.length > 0;
@@ -324,28 +325,26 @@ const GATE_BLOCK_ACTIONS = new Set(['skip-gate', 'skip-structural-block', 'bypas
 // 审查机自己留的 thread 首条评论里的标记前缀(finding.mjs 写入;这里只认字面前缀,不要求完整 key/round/head)。
 const REVIEWER_FINDING_MARKER = '<!-- mivo-finding key=';
 
-const normLogin = (v) => (typeof v === 'string' && v.trim() ? v.trim().toLowerCase() : null);
-
 /**
  * 未 resolve 的 thread 能否只作「送审但不放行」处理。
  * 返回 null:有人/未知/不合格的 thread,照旧硬拦;[]:没有未 resolve 的 thread;
  * 非空数组:全部 thread 都属于可送审的两类,按固定顺序给出挂起原因。
- *  - bot-threads:首条评论作者是 Bot(context.mjs 的 isBot)。
- *  - reviewer-threads:首条评论作者就是本轮审查账号(approvalPolicy.viewer),且首条正文带 mivo-finding 标记。
- * 读不到明细、数量对不上、viewer 为空、首评缺作者/正文,一律按有人的算。
+ *  - bot-threads:首条评论作者是 Bot(context.mjs 的 isBot),且不是审查身份。
+ *  - reviewer-threads:首条评论作者在审查身份集合里(context.reviewerIdentity;旧 context 只有 approvalPolicy.viewer 就是单账号集合),
+ *    且首条正文带 mivo-finding 标记。审查账号换成 bot 后也是 Bot,所以这条要先于普通 bot 判。
+ * 读不到明细、数量对不上、身份集合为空、首评缺作者/正文,一律按有人的算。
  */
 function toPendingThreadGates(gate, unresolved, viewer) {
   if (unresolved <= 0) return [];
   const threads = gate.unresolvedThreads;
   if (!Array.isArray(threads) || threads.length !== unresolved) return null;
-  const me = normLogin(viewer);
+  const identity = toReviewIdentity(viewer);
   let bot = false;
   let reviewer = false;
   for (const t of threads) {
-    if (t?.isBot === true) { bot = true; continue; }
     const first = Array.isArray(t?.comments) ? t.comments[0] : null;
-    const author = normLogin(first?.author?.login);
-    if (me && author === me && typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER)) { reviewer = true; continue; }
+    if (isReviewIdentity(first?.author, identity) && typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER)) { reviewer = true; continue; }
+    if (t?.isBot === true) { bot = true; continue; }
     return null;
   }
   return [...(bot ? ['bot-threads'] : []), ...(reviewer ? ['reviewer-threads'] : [])];

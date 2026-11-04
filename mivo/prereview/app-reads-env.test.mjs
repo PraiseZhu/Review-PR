@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { validateViewerLogin, parseViewerAliases } from '../../review-pr/scripts/reviewer-identity.mjs';
 
 const source = readFileSync(new URL('./round.mjs', import.meta.url), 'utf8');
 const extract = (name) => {
@@ -19,7 +20,7 @@ function setupEnv(config, env = {}) {
   return sandbox.result;
 }
 function loadConfig(config) {
-  const sandbox = { process: { argv: ['node', 'round.mjs', '--config', 'x.json'] }, readJson: () => ({ ...config }), resolve: (p) => p, MODES: ['dry-run', 'sandbox', 'live'] };
+  const sandbox = { process: { argv: ['node', 'round.mjs', '--config', 'x.json'] }, readJson: () => ({ ...config }), resolve: (p) => p, validateViewerLogin, parseViewerAliases, MODES: ['dry-run', 'sandbox', 'live'] };
   vm.runInNewContext(`${extract('loadConfig')}\nglobalThis.load = loadConfig;`, sandbox);
   return sandbox.load();
 }
@@ -73,4 +74,30 @@ test('maxParallel / dailyCap(#142):不填用默认;0、负数、非数字、小�
   }
   assert.throws(() => loadConfig({ ...base, maxParallel: 41 }), /maxParallel 须是1–40 的整数:41/);
   assert.throws(() => loadConfig({ ...base, runnerLabel: 'a b' }), /runnerLabel/);
+});
+
+test('viewerLogin 可以写 bot 的 REST 形态 praisebuild[bot];viewerAliases 同样接受', () => {
+  const loaded = loadConfig({ ...base, viewerLogin: 'praisebuild[bot]', viewerAliases: ['PraiseZhu', 'praise-reviewer[bot]'] });
+  assert.equal(loaded.viewerLogin, 'praisebuild[bot]');
+  assert.deepEqual(loaded.viewerAliases, ['PraiseZhu', 'praise-reviewer[bot]']);
+});
+
+test('viewerAliases 非数组或含非法登录名时启动即报错并写出字段名;缺 viewerLogin 时两个字段名都写出', () => {
+  for (const bad of ['PraiseZhu', {}, 7, null]) {
+    assert.throws(() => loadConfig({ ...base, viewerLogin: 'x', viewerAliases: bad }), /viewerAliases/, JSON.stringify(bad));
+  }
+  assert.throws(() => loadConfig({ ...base, viewerLogin: 'x', viewerAliases: ['ok', 'bad name'] }), /viewerAliases\[1\]/);
+  assert.throws(() => loadConfig({ ...base, viewerLogin: 'x', viewerAliases: [3] }), /viewerAliases\[0\]/);
+  assert.throws(() => loadConfig({ ...base, viewerAliases: ['PraiseZhu'] }), (error) => /viewerAliases/.test(error.message) && /viewerLogin/.test(error.message));
+  assert.deepEqual(loadConfig({ ...base, viewerAliases: [] }).viewerAliases, []);
+  assert.equal(loadConfig(base).viewerAliases, undefined);
+});
+
+test('配了 viewerAliases:脚本环境带 JSON 数组;没配或为空不从 launchd 环境继承', () => {
+  const env = setupEnv({ ...base, viewerLogin: 'praisebuild[bot]', viewerAliases: ['PraiseZhu'] });
+  assert.equal(env.REVIEW_PR_VIEWER_ALIASES, '["PraiseZhu"]');
+  for (const config of [base, { ...base, viewerAliases: [] }]) {
+    const none = setupEnv(config, { REVIEW_PR_VIEWER_ALIASES: '["Inherited"]' });
+    assert.equal(Object.hasOwn(none, 'REVIEW_PR_VIEWER_ALIASES'), false);
+  }
 });
