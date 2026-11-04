@@ -2,7 +2,7 @@
 // 纯函数测试,不读 GitHub、不写任何东西。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -143,5 +143,14 @@ test('loadRules:没写 reviewerApps 得 [];写了就规范化;非法值阻断', 
   } finally {
     if (previous === undefined) delete process.env.REVIEW_PR_RULES_FILE; else process.env.REVIEW_PR_RULES_FILE = previous;
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Mivo 生产与沙箱配置:只有 praisebuild[bot] 是审查 App,且没有进任何维护者/签核名单', () => {
+  for (const file of ['../config/pr-rules.json', '../../mivo/config/sandbox-pr-rules.json']) {
+    const config = JSON.parse(readFileSync(new URL(file, import.meta.url), 'utf8'));
+    assert.deepEqual(config.reviewerApps, ['praisebuild[bot]'], file);
+    const text = JSON.stringify({ ...config, reviewerApps: undefined }).toLowerCase();
+    assert.equal(text.includes('praisebuild'), false, `${file} 的其它字段不得出现 praisebuild`);
   }
 });
