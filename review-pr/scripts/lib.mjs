@@ -18,7 +18,15 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { atomicWriteJson, parseApiJson, parseScriptResult } from './runtime-io.mjs';
 import { readRouteConfig, decideReadRoute, appReadEnv, shouldFallbackToUser, recordRoute } from './gh-read-route.mjs';
+import {
+  normalizeReviewActor, validateViewerLogin, parseViewerAliases, createReviewIdentity,
+  isReviewIdentity, sameReviewActor, toReviewIdentity,
+} from './reviewer-identity.mjs';
 export { atomicWriteJson, parseApiJson } from './runtime-io.mjs';
+export {
+  normalizeReviewActor, validateViewerLogin, parseViewerAliases, createReviewIdentity,
+  isReviewIdentity, sameReviewActor, toReviewIdentity,
+} from './reviewer-identity.mjs';
 
 const isWin = process.platform === 'win32';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -816,16 +824,33 @@ export function credFallbackStats() {
 //   REVIEW_PR_VIEWER_LOGIN       审查账号登录名,代替 GraphQL viewer{login}(context.mjs)
 //   REVIEW_PR_IDENTITY_TOKEN     要审查账号身份或 Administration 读的调用改用它(分支保护、ruleset bypass)
 //   REVIEW_PR_NO_CRED_FALLBACK=1 见上方 credFallbackPlan;integration 令牌下必须设
-const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-
-/** REVIEW_PR_VIEWER_LOGIN 去空白后的值;没设或为空返回 ''。设了但不是合法 GitHub 登录名直接抛错,不退回 GraphQL viewer。 */
+/** REVIEW_PR_VIEWER_LOGIN 去空白后的值;没设或为空返回 ''。设了但不是合法 GitHub 登录名(bot 可带 [bot] 后缀)直接抛错,不退回 GraphQL viewer。 */
 export function viewerLoginOverride(env = process.env) {
-  const login = String(env.REVIEW_PR_VIEWER_LOGIN ?? '').trim();
-  if (!login) return '';
-  if (!GITHUB_LOGIN_RE.test(login)) {
-    throw new Error(`REVIEW_PR_VIEWER_LOGIN 不是合法的 GitHub 登录名(期望字母、数字、连字符,最长 39 位,实际 ${JSON.stringify(login.slice(0, 60))})`);
+  if (!String(env.REVIEW_PR_VIEWER_LOGIN ?? '').trim()) return '';
+  return validateViewerLogin(env.REVIEW_PR_VIEWER_LOGIN, 'REVIEW_PR_VIEWER_LOGIN');
+}
+
+/**
+ * 当前审查身份的统一读取入口。优先级:REVIEW_PR_VIEWER_LOGIN → 调用方已读到的 fallbackViewer
+ * (context 的 GraphQL viewer,可带 __typename)→ 一次 `gh api user`(只有没配身份时才走)。
+ * REVIEW_PR_VIEWER_ALIASES(JSON 数组)只扩归属集合,不改变「当前写入账号」;非法值在发任何请求前就抛。
+ * 读不到身份抛 REVIEW_IDENTITY_UNAVAILABLE,不静默放行。每次写前各自调用,不跨写缓存。
+ * 返回 createReviewIdentity 的结果:viewerLogin 是当前写入账号,logins 是归属集合。
+ */
+export function readReviewIdentity({ env = process.env, ghFn = gh, fallbackViewer } = {}) {
+  const override = viewerLoginOverride(env);
+  const viewerAliases = parseViewerAliases(env.REVIEW_PR_VIEWER_ALIASES);
+  let viewer = override;
+  if (!viewer && normalizeReviewActor(fallbackViewer)) viewer = fallbackViewer;
+  if (!viewer) {
+    const result = ghFn(['api', 'user', '--jq', '.login'], { noCredFallback: true, allowFail: true });
+    const login = String(result?.stdout ?? '').trim();
+    if (result?.ok === false || !normalizeReviewActor(login)) {
+      throw new Error(`REVIEW_IDENTITY_UNAVAILABLE: 读不到当前 GitHub 审查身份(gh api user ${result?.ok === false ? '失败' : '返回为空'})`);
+    }
+    viewer = login;
   }
-  return login;
+  return createReviewIdentity({ viewerLogin: viewer, viewerAliases });
 }
 
 /** 要审查账号身份的单次 gh 调用的额外选项。没设(或为空)返回 {}(调用与改动前相同);
