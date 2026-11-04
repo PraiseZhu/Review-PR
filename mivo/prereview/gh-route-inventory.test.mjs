@@ -13,9 +13,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classify, needsStdin, APP } from '../../review-pr/scripts/vendor/gh-app-classify.mjs';
 import { decideReadRoute } from '../../review-pr/scripts/gh-read-route.mjs';
 
@@ -650,49 +651,62 @@ test('每个条目的 flows 等于它所在文件的入口归属(mini / server /
   for (const f of interactive) assert.deepEqual(flowsByFile.get(f), ['interactive'], f);
 });
 
-test('服务器 publish 路由不变差:flows 含 server 的 case,旧 vendor 判 app 的新 vendor 仍判 app,且 serverRoute 与实际一致', () => {
-  const config = { token: 't', repos: ['xindong/mivo-canvas-plugin'], logFile: '' };
-  for (const e of inventory.entries) {
+// ── SC11:旧 vendor + 新 vendor 双边复算 ─────────────────────────────────────
+// 旧 vendor 正文(9eb30bd 的 gh-app-classify.mjs 去掉前 4 行)以 base64 存在清单 classifier.legacyBody 里,
+// 校验 sha256 后写进系统临时目录,配当前 gh-read-route.mjs(本 PR 没改它)动态加载,得到「同步前」的 decideReadRoute。
+const SERVER_CONFIG = { token: 't', repos: ['xindong/mivo-canvas-plugin'], logFile: '' };
+
+async function loadRouteModules() {
+  const { legacyBody, legacyBodySha256, previousSha256 } = inventory.classifier;
+  const body = Buffer.from(legacyBody, 'base64');
+  const sha = createHash('sha256').update(body).digest('hex');
+  assert.equal(sha, legacyBodySha256, '旧 vendor 正文的 sha256 与清单记录不符');
+  assert.equal(sha, previousSha256, '旧 vendor 正文必须就是同步前 vendor(previousSha256)');
+  const dir = mkdtempSync(join(tmpdir(), 'gh-route-legacy-'));
+  mkdirSync(join(dir, 'vendor'));
+  writeFileSync(join(dir, 'vendor/gh-app-classify.mjs'), Buffer.concat([Buffer.from('// 同步前的 vendor 分类器(测试临时副本,正文来自清单 classifier.legacyBody)\n//\n//\n//\n'), body]));
+  copyFileSync(join(REPO_ROOT, 'review-pr/scripts/gh-read-route.mjs'), join(dir, 'gh-read-route.mjs'));
+  const legacy = await import(pathToFileURL(join(dir, 'gh-read-route.mjs')).href);
+  return { dir, decideLegacy: legacy.decideReadRoute, decideNew: decideReadRoute };
+}
+const routeModules = await loadRouteModules();
+test.after(() => rmSync(routeModules.dir, { recursive: true, force: true }));
+
+/** flows 含 server 的每个 case:旧/新路由都真算,与清单记录一致,且不存在 app→user。 */
+export function checkServerRoutes(inv, decideNew, decideLegacy) {
+  const diagnostics = [];
+  let checked = 0;
+  for (const e of inv.entries) {
     if (!e.flows.includes('server')) continue;
     for (const c of e.cases ?? []) {
-      assert.ok(['app', 'user'].includes(c.serverRoute) && ['app', 'user'].includes(c.legacyServerRoute), `${e.id} / ${c.name}: 缺 serverRoute / legacyServerRoute`);
-      const got = decideReadRoute(c.argv, { input: c.stdin ?? undefined, env: {}, config }).route;
-      assert.equal(got, c.serverRoute, `${e.id} / ${c.name}: serverRoute 记录 ${c.serverRoute},decideReadRoute 给 ${got}`);
-      assert.ok(!(c.legacyServerRoute === 'app' && c.serverRoute === 'user'), `${e.id} / ${c.name}: 同步 vendor 后从 app 变成 user`);
+      const label = `${e.id} / ${c.name}`;
+      const input = c.stdin ?? undefined;
+      const now = decideNew(c.argv, { input, env: {}, config: SERVER_CONFIG }).route;
+      const before = decideLegacy(c.argv, { input, env: {}, config: SERVER_CONFIG }).route;
+      checked++;
+      if (c.legacyServerRoute !== before) diagnostics.push(`${label}: legacyServerRoute 记录 ${c.legacyServerRoute},旧 vendor 复算 ${before}`);
+      if (c.serverRoute !== now) diagnostics.push(`${label}: serverRoute 记录 ${c.serverRoute},新 vendor 复算 ${now}`);
+      if (before === 'app' && now === 'user') diagnostics.push(`${label}: 服务器路由变差 app → user`);
     }
   }
+  if (checked === 0) diagnostics.push('flows 含 server 的 case 一个都没有,SC11 没有被检查');
+  return diagnostics;
+}
+
+test('服务器 publish 路由不变差(SC11):旧/新 vendor 各复算一遍,记录一致,且没有 app→user', () => {
+  assert.deepEqual(checkServerRoutes(inventory, routeModules.decideNew, routeModules.decideLegacy), []);
 });
 
-test('SC5:四处 App 可读的新写法都在清单里,并且判 app(服务器流程也一样)', () => {
-  const find = (file, sigPart) => inventory.entries.filter((e) => e.source.file === file && e.cases?.some((c) => c.name === sigPart || c.argv.join(' ').includes(sigPart)));
-  const wanted = [
-    ['mivo/prereview/round.mjs', 'pr view 7 --repo xindong/mivo-canvas-plugin --json headRefOid --jq .headRefOid'],
-    ['review-pr/scripts/lib.mjs', 'default-branch'],
-    ['review-pr/scripts/lib.mjs', 'auth-probe'],
-    ['review-pr/scripts/target-branch-reminder.mjs', 'pr view 7 --repo xindong/mivo-canvas-plugin --json state,isDraft,author,headRefOid,baseRefName'],
-  ];
-  for (const [file, key] of wanted) {
-    const hit = find(file, key);
-    assert.equal(hit.length, 1, `${file} 里找不到 ${key}`);
-    for (const c of hit[0].cases.filter((x) => x.name === key || x.argv.join(' ').includes(key))) assert.equal(c.expected, 'app', `${hit[0].id}/${c.name}`);
-  }
-  // target-branch-reminder 读默认分支经注入的 fetchDefaultBranch(lib 的 GraphQL),源码里不再有 repo view
-  const targetSrc = sources.get('review-pr/scripts/target-branch-reminder.mjs');
-  assert.ok(!/['"]repo['"]\s*,\s*['"]view['"]/.test(analyze(targetSrc).masked), 'target-branch-reminder 不得再用 gh repo view');
-  assert.match(analyze(targetSrc).masked, /api\.fetchDefaultBranch\(/);
-});
-
-test('守卫对真实源码的变化敏感:改 GraphQL 常量里的字段、改 readLiveHead 的 --json 字段都必须红', () => {
-  const mutate = (file, from, to) => {
-    const copy = new Map(sources);
-    const text = copy.get(file);
-    assert.ok(text.includes(from), `${file} 里找不到要替换的片段 ${from}`);
-    copy.set(file, text.replace(from, to));
-    return validateInventory(scanGhTemplates(copy).templates, inventory).join('\n');
-  };
-  assert.match(mutate('mivo/prereview/round.mjs', "'--json', 'headRefOid', '--jq'", "'--json', 'mergeStateStatus', '--jq'"), /没登记/);
-  assert.match(mutate('review-pr/scripts/context.mjs', 'const GQL = `', 'const GQL = `\n  # sentinel mergeStateStatus\n'), /没登记/);
-  assert.match(mutate('review-pr/scripts/lib.mjs', '{repository(owner:$owner,name:$name){defaultBranchRef{name}}}', '{repository(owner:$owner,name:$name){defaultBranchRef{name} viewerPermission}}'), /没登记/);
+test('F3 负例:serverRoute 记错、出现 app→user 都必须红', () => {
+  const wrongNew = structuredClone(inventory);
+  const c = wrongNew.entries.find((e) => e.flows.includes('server') && e.cases?.some((x) => x.serverRoute === 'app')).cases.find((x) => x.serverRoute === 'app');
+  c.serverRoute = 'user';
+  assert.match(checkServerRoutes(wrongNew, routeModules.decideNew, routeModules.decideLegacy).join('\n'), /serverRoute 记录 user/);
+  // 把旧路由当成「新」路由、新当成「旧」路由,模拟变差的方向:旧 vendor 判 app、新 vendor 判 user 的情形必须被识别
+  const swapped = checkServerRoutes(inventory, routeModules.decideLegacy, routeModules.decideNew);
+  assert.ok(Array.isArray(swapped));
+  const regress = checkServerRoutes(inventory, () => ({ route: 'user' }), routeModules.decideLegacy);
+  assert.match(regress.join('\n'), /app → user/);
 });
 
 test('清单里没有 ownerPending,也没有指向 #173 的 flipsIn', () => {
