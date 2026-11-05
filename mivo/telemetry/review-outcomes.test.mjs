@@ -159,6 +159,13 @@ test('漏报:提过同一 SC 记已提前发现;没提记漏报;反查不到 PR 
   assert.equal(loose.caught, 1);
 });
 
+test('漏报:合并之后才发的 finding 不算已提前发现', () => {
+  const late = northStar.prs.map((p) => (p.number === 11 ? { ...p, threads: p.threads.map((t) => ({ ...t, comments: [{ ...t.comments[0], createdAt: '2026-10-04T00:00:00Z' }] })) } : p));
+  const out = missedStats([northStar.corrections[0]], late, { reviewer: 'mivo-bot', repo: 'o/r' });
+  assert.equal(out.caught, 0, '#201:PR 11 合并于 10-03,提到 SC2 的 finding 发于 10-04');
+  assert.equal(out.missed, 1);
+});
+
 test('噪音 = ruled-keep + rebutted', () => {
   assert.equal(noiseOf({ 'ruled-keep': 2, rebutted: 3, deferred: 9 }), 5);
   assert.equal(noiseOf(analysis.buckets), analysis.buckets['ruled-keep'] + analysis.buckets.rebutted);
@@ -172,6 +179,7 @@ test('CLI:夹具带 runs 与 corrections 时输出耗时、漏报、噪音;不�
   assert.deepEqual(json.durations, { count: 5, p50: 30, p90: 100 });
   assert.equal(json.missed.caught, 1);
   assert.equal(json.missed.missed, 1);
+  assert.deepEqual(json.truncated, { nested: 0, runs: false, corrections: false });
   assert.equal(json.noise, noiseOf(json.analysis.buckets));
   const md = run.read('outcomes.md');
   assert.match(md, /## 审查耗时/);

@@ -118,22 +118,33 @@ function ghJson(args, what) {
   }
 }
 
-/** workflow 在时间段内创建的运行 → {startedAt, updatedAt, conclusion};最多 10 页。 */
+/** workflow 在时间段内创建的运行 → {runs: [{startedAt, updatedAt, conclusion}], truncated};最多 10 页,读不全时 truncated=true。 */
 function fetchRuns({ repo, workflow, since, until }) {
   const runs = [];
+  let total = 0;
   for (let page = 1; page <= 10; page += 1) {
     const data = ghJson(['api', `repos/${repo}/actions/workflows/${workflow}/runs?created=${since}..${until}&per_page=100&page=${page}`], 'workflow runs');
     const list = data.workflow_runs ?? [];
+    total = Math.max(total, data.total_count ?? 0);
     runs.push(...list.map((r) => ({ startedAt: r.run_started_at ?? r.created_at ?? null, updatedAt: r.updated_at ?? null, conclusion: r.conclusion ?? null })));
     if (list.length < 100) break;
   }
-  return runs;
+  return { runs, truncated: total > runs.length };
 }
 
-/** 时间段内创建、正文像验收机修正 issue 的 issue → {number, body, createdAt};只保留能解析出修正标记的。 */
+/** 时间段内创建、正文像验收机修正 issue 的 issue → {corrections: [{number, body, createdAt}], truncated};只保留能解析出修正标记的。 */
 function fetchCorrections({ repo, since, until }) {
-  const data = ghJson(['api', '-X', 'GET', 'search/issues', '-f', `q=repo:${repo} is:issue in:body 验收机 修正 created:${since}..${until}`, '-f', 'per_page=100'], 'search issues');
-  return (data.items ?? []).map((i) => ({ number: i.number, body: i.body ?? '', createdAt: i.created_at ?? null })).filter((i) => parseCorrectionMarker(i.body));
+  const items = [];
+  let total = 0;
+  for (let page = 1; page <= 10; page += 1) {
+    const data = ghJson(['api', '-X', 'GET', 'search/issues', '-f', `q=repo:${repo} is:issue in:body 验收机 修正 created:${since}..${until}`, '-f', 'per_page=100', '-f', `page=${page}`], 'search issues');
+    const list = data.items ?? [];
+    total = Math.max(total, data.total_count ?? 0);
+    items.push(...list);
+    if (list.length < 100) break;
+  }
+  const corrections = items.map((i) => ({ number: i.number, body: i.body ?? '', createdAt: i.created_at ?? null })).filter((i) => parseCorrectionMarker(i.body));
+  return { corrections, truncated: total > items.length };
 }
 
 // ── 报告与分桶 ──────────────────────────────────────────────────────────────
@@ -284,7 +295,7 @@ export function taskIssueOf(body, defaultRepo) {
 }
 
 /**
- * 每条修正 issue 反查「写了同一任务 issue、在修正 issue 创建前合并」的 PR;这些 PR 上审查机 finding thread 首帖提到同一 SC<k>
+ * 每条修正 issue 反查「写了同一任务 issue、在修正 issue 创建前合并」的 PR;这些 PR 上审查机在合并前发的 finding thread 首帖提到同一 SC<k>
  * 记为已提前发现,否则记为漏报。找不到对应 PR 的单列 unmatched。代理指标:#134 之前审查不提 SC,基线的已提前发现预计为 0。
  */
 export function missedStats(corrections, prs, { reviewer, repo }) {
@@ -298,7 +309,7 @@ export function missedStats(corrections, prs, { reviewer, repo }) {
       && ((ref) => ref && ref.repo.toLowerCase() === marker.itemRepo.toLowerCase() && ref.issue === marker.itemIssue)(taskIssueOf(pr.body, repo)));
     if (!owners.length) { out.unmatched += 1; out.items.push({ correction: issue.number, item: `${marker.itemRepo}#${marker.itemIssue}`, sc: marker.sc, prs: [], result: 'unmatched' }); continue; }
     const scRe = new RegExp(`(?<![A-Za-z0-9])SC${marker.sc}(?!\\d)`);
-    const caught = owners.some((pr) => pr.threads.some((t) => { const info = toFindingThread(t, reviewer); return info && scRe.test(info.first.body ?? ''); }));
+    const caught = owners.some((pr) => pr.threads.some((t) => { const info = toFindingThread(t, reviewer); return info && info.createdAt <= time(pr.mergedAt) && scRe.test(info.first.body ?? ''); }));
     out[caught ? 'caught' : 'missed'] += 1;
     out.items.push({ correction: issue.number, item: `${marker.itemRepo}#${marker.itemIssue}`, sc: marker.sc, prs: owners.map((p) => p.number), result: caught ? 'caught' : 'missed' });
   }
@@ -366,10 +377,12 @@ export function renderMarkdown(report) {
     '## 作者反应分桶(代理指标)', '', '| 桶 | thread 数 |', '|---|---|',
     ...BUCKETS.map((b) => `| ${b}(代理指标) | ${a.buckets[b]} |`), '',
     `噪音(代理指标) = ruled-keep + rebutted = ${noiseOf(a.buckets)}`, '',
-    ...(report.durations ? ['## 审查耗时', '', `- ${window.workflow ?? 'review-pr.yml'} 成功运行 ${report.durations.count} 次:p50 ${report.durations.p50 ?? '无'} 分钟,p90 ${report.durations.p90 ?? '无'} 分钟(从开始运行到结束,含排队后的执行)`, ''] : []),
+    ...(report.durations ? ['## 审查耗时', '', `- ${window.workflow ?? 'review-pr.yml'} 成功运行 ${report.durations.count} 次:p50 ${report.durations.p50 ?? '无'} 分钟,p90 ${report.durations.p90 ?? '无'} 分钟(从开始运行到结束,含排队后的执行)`,
+      ...(report.truncated.runs ? ['- 警告:运行没读全(GitHub 一次最多给 1000 条),只统计了读到的部分。'] : []), ''] : []),
     ...(report.missed ? ['## 漏报(北极星,代理指标)', '',
       `- 验收机修正 issue ${report.missed.corrections} 条:审查机合并前已提过同一 SC ${report.missed.caught} 条,漏报 ${report.missed.missed} 条,反查不到对应 PR ${report.missed.unmatched} 条`,
-      '- 只认验收机修正 issue;「已提前发现」看审查机 finding thread 首帖是否提到同一 SC<k>。', ''] : []),
+      '- 只认验收机修正 issue;「已提前发现」看审查机在合并前发的 finding thread 首帖是否提到同一 SC<k>。',
+      ...(report.truncated.corrections ? ['- 警告:修正 issue 没读全(GitHub 一次最多给 1000 条),只统计了读到的部分。'] : []), ''] : []),
     '## rounds-to-pass', '',
     `- 一轮通过:${frac(a.roundsToPass.onePass)}(分母是最终通过的 PR 数)`,
     `- 五轮及以上才通过:${frac(a.roundsToPass.fivePlus)}`,
@@ -395,10 +408,15 @@ export function main(argv = process.argv.slice(2)) {
   try {
     if (options.fixture) {
       const fixture = JSON.parse(readFileSync(options.fixture, 'utf8'));
-      data = { prs: fixture.prs ?? [], truncated: { nested: 0 }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null };
+      data = { prs: fixture.prs ?? [], truncated: { nested: 0, runs: false, corrections: false }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null };
     } else {
-      data = { ...fetchPrs(options), runs: fetchRuns(options), corrections: fetchCorrections(options) };
+      const { prs, truncated } = fetchPrs(options);
+      const runs = fetchRuns(options);
+      const corrections = fetchCorrections(options);
+      data = { prs, truncated: { ...truncated, runs: runs.truncated, corrections: corrections.truncated }, runs: runs.runs, corrections: corrections.corrections };
     }
+    if (data.truncated.runs) console.error('警告:workflow 运行没读全(GitHub 一次最多给 1000 条),耗时只按读到的部分统计');
+    if (data.truncated.corrections) console.error('警告:验收机修正 issue 没读全(GitHub 一次最多给 1000 条),漏报只按读到的部分统计');
   } catch (error) {
     console.error(error.message);
     return error.code === 3 ? 3 : 1;
