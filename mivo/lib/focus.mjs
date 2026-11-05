@@ -11,7 +11,11 @@ export function loadFocusConfig(file, read = readFileSync) {
   try { raw = JSON.parse(read(file, 'utf8')); } catch (error) {
     return { ciCovered: [], warning: `review-features.json 读不到或不合法(${String(error.message).slice(0, 120)}),focus.ciCovered 按空清单处理` };
   }
-  const list = raw?.focus?.ciCovered;
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!isObject(raw) || (raw.focus !== undefined && !isObject(raw.focus))) {
+    return { ciCovered: [], warning: 'review-features.json 的顶层或 focus 块不是对象,focus.ciCovered 按空清单处理' };
+  }
+  const list = raw.focus?.ciCovered;
   if (list === undefined) return { ciCovered: [], warning: null };
   if (!Array.isArray(list) || !list.every((item) => typeof item === 'string' && item.trim() && item.length <= 200)) {
     return { ciCovered: [], warning: 'review-features.json 的 focus.ciCovered 不是字符串数组,按空清单处理' };

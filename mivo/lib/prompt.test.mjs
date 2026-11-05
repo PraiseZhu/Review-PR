@@ -402,6 +402,12 @@ test('loadFocusConfig:没有 focus 块为空且不告警;不合法为空并告�
     assert.deepEqual(out.ciCovered, []);
     assert.match(out.warning, /focus\.ciCovered 不是字符串数组/);
   }
+  for (const bad of ['[]', 'null', '"bad"', '{"focus":[]}', '{"focus":"bad"}', '{"focus":null}']) {
+    const out = loadFocusConfig('f', read(bad));
+    assert.deepEqual(out.ciCovered, []);
+    assert.match(out.warning, /顶层或 focus 块不是对象/, bad);
+  }
+  assert.deepEqual(loadFocusConfig('f', read('{"focus":{}}')), { ciCovered: [], warning: null });
   const broken = loadFocusConfig('f', () => { throw new Error('ENOENT'); });
   assert.deepEqual(broken.ciCovered, []);
   assert.match(broken.warning, /读不到或不合法.*按空清单处理/);
