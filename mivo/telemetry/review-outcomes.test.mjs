@@ -179,7 +179,7 @@ test('CLI:夹具带 runs 与 corrections 时输出耗时、漏报、噪音;不�
   assert.deepEqual(json.durations, { count: 5, p50: 30, p90: 100 });
   assert.equal(json.missed.caught, 1);
   assert.equal(json.missed.missed, 1);
-  assert.deepEqual(json.truncated, { nested: 0, runs: false, corrections: false });
+  assert.deepEqual(json.truncated, { nested: 0, prs: false, runs: false, corrections: false });
   assert.equal(json.noise, noiseOf(json.analysis.buckets));
   const md = run.read('outcomes.md');
   assert.match(md, /## 审查耗时/);

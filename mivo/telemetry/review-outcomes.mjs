@@ -94,13 +94,16 @@ function ghGraphql(variables) {
 function fetchPrs({ repo, since, until, maxPrs }) {
   const nodes = [];
   let after = null;
+  let more = false;
   for (;;) {
     const page = ghGraphql({ q: `repo:${repo} is:pr updated:${since}..${until}`, after });
     nodes.push(...(page.nodes ?? []));
-    if (nodes.length >= maxPrs || !page.pageInfo?.hasNextPage) break;
+    if (nodes.length >= maxPrs) { more = nodes.length > maxPrs || page.pageInfo?.hasNextPage === true; break; }
+    if (!page.pageInfo?.hasNextPage) break;
     after = page.pageInfo.endCursor;
   }
-  return normalizePrs(nodes.slice(0, maxPrs));
+  const { prs, truncated } = normalizePrs(nodes.slice(0, maxPrs));
+  return { prs, truncated: { ...truncated, prs: more } };
 }
 
 function ghJson(args, what) {
@@ -373,7 +376,8 @@ export function renderMarkdown(report) {
   const lines = [
     `# 审查机结果遥测 · ${window.repo} · ${window.since} ~ ${window.until}`, '',
     `> ${NOTE}。下面每个桶都是代理指标。`, '',
-    `审查过的 PR:${a.reviewedPrs} 个(审查账号 @${window.reviewer});有 ${report.truncated.nested} 个 PR 的评审或 thread 超过一页,只算了第一页。`, '',
+    `审查过的 PR:${a.reviewedPrs} 个(审查账号 @${window.reviewer});有 ${report.truncated.nested} 个 PR 的评审或 thread 超过一页,只算了第一页。`,
+    ...(report.truncated.prs ? [`警告:窗口内 PR 超过 --max-prs ${window.maxPrs},只统计了前 ${window.maxPrs} 个;漏报的 unmatched 可能偏多。`] : []), '',
     '## 作者反应分桶(代理指标)', '', '| 桶 | thread 数 |', '|---|---|',
     ...BUCKETS.map((b) => `| ${b}(代理指标) | ${a.buckets[b]} |`), '',
     `噪音(代理指标) = ruled-keep + rebutted = ${noiseOf(a.buckets)}`, '',
@@ -408,13 +412,14 @@ export function main(argv = process.argv.slice(2)) {
   try {
     if (options.fixture) {
       const fixture = JSON.parse(readFileSync(options.fixture, 'utf8'));
-      data = { prs: fixture.prs ?? [], truncated: { nested: 0, runs: false, corrections: false }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null };
+      data = { prs: fixture.prs ?? [], truncated: { nested: 0, prs: false, runs: false, corrections: false }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null };
     } else {
       const { prs, truncated } = fetchPrs(options);
       const runs = fetchRuns(options);
       const corrections = fetchCorrections(options);
       data = { prs, truncated: { ...truncated, runs: runs.truncated, corrections: corrections.truncated }, runs: runs.runs, corrections: corrections.corrections };
     }
+    if (data.truncated.prs) console.error(`警告:窗口内 PR 超过 --max-prs ${options.maxPrs},只统计了前 ${options.maxPrs} 个;漏报的 unmatched 可能偏多`);
     if (data.truncated.runs) console.error('警告:workflow 运行没读全(GitHub 一次最多给 1000 条),耗时只按读到的部分统计');
     if (data.truncated.corrections) console.error('警告:验收机修正 issue 没读全(GitHub 一次最多给 1000 条),漏报只按读到的部分统计');
   } catch (error) {
