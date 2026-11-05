@@ -5,9 +5,11 @@
 //   1. 词法扫描源码(不 import、不执行被扫模块),与清单按"文件 + 调用名 + 规范化参数指纹"做多重集合双向比较:
 //      新增、删除、修改任一调用(含查询字符串里的敏感字段、args.push 的字段)而没更新清单都会失败;改行号、注释、空白不会。
 //   2. 清单里每个 case 的 argv/stdin 经 vendor 分类器(与 Mivo gh 分流器同一份)得到的路由必须等于 expected;
-//      分类上下文按 praisebuild 实际打开的读开关构造(ROUTING_ROUTES:adminRead、secretsRead)。
-//   3. expected=user 的 case 必须说明去向:flipsIn(还没做的后续 issue:受限写、身份读取)或 keep(只允许四类可机器校验的理由,
-//      其中 praisezhu-exception 是总 issue #173「待用户同意保留的 PraiseZhu 例外」)。读侧 #1751 已落地,不再有 flipsIn 指向它。
+//      分类上下文按 praisebuild 实际打开的开关构造(ROUTING_ROUTES:adminRead、secretsRead、writes)。
+//   3. expected 取 user / app / app-write:app-write 是 #1752 写白名单内的写(四类权限只来自分类器返回的 category);
+//      expected=user 的 case 必须带 keep(只允许五类可机器校验的理由,其中 praisezhu-exception 是总 issue #173
+//      「待用户同意保留的 PraiseZhu 例外」,write-not-allowlisted 是 #1752 白名单外的写)。读侧 #1751、身份读取 #176、
+//      写侧 #1752 都已落地,清单里不再有 flipsIn(ALLOWED_FLIPS 为空,出现任何 flipsIn 都红)。
 // 另外对 flows 含 server 的 case,用 gh-read-route 的 decideReadRoute 分别算旧 vendor 和新 vendor 的路由,不允许 app→user。
 //
 // 清单怎么更新:改了 gh 调用后跑 `node --test mivo/prereview/gh-route-inventory.test.mjs`,失败信息会指出缺哪个调用;
@@ -19,21 +21,35 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { classify, needsStdin, APP, ROUTE_SWITCHES } from '../../review-pr/scripts/vendor/gh-app-classify.mjs';
-import { decideReadRoute } from '../../review-pr/scripts/gh-read-route.mjs';
+import { classify, needsStdin, APP, APP_WRITE, ROUTE_SWITCHES } from '../../review-pr/scripts/vendor/gh-app-classify.mjs';
+import { decideReadRoute, READ_ROUTE_SWITCHES } from '../../review-pr/scripts/gh-read-route.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const INVENTORY_PATH = join(REPO_ROOT, 'mivo/prereview/gh-route-inventory.json');
 const ROOTS = ['review-pr/scripts', 'mivo/prereview', 'mivo/lib'];
-// flipsIn 只允许指向真正会让这条调用改走 App 的、还没做的后续 issue:身份读取、受限写。
-// 读侧 xindong/mivo-canvas-plugin#1751 已落地(分流器放行 + vendor 同步),指向它的 flipsIn 一律红。
-const ALLOWED_FLIPS = ['PraiseZhu/Review-PR#176', 'xindong/mivo-canvas-plugin#1752'];
-const KEEP_CATEGORIES = ['pr-merge-approve', 'unreachable-under-config', 'interactive-skill', 'praisezhu-exception'];
+// flipsIn 没有允许值:读侧 xindong/mivo-canvas-plugin#1751、身份读取 PraiseZhu/Review-PR#176(改为 identity-endpoint 保留)、
+// 写侧 xindong/mivo-canvas-plugin#1752 都已落地(分流器放行 + vendor 同步),清单里出现任何 flipsIn 都红。
+const ALLOWED_FLIPS = [];
+const KEEP_CATEGORIES = ['pr-merge-approve', 'unreachable-under-config', 'interactive-skill', 'praisezhu-exception', 'write-not-allowlisted'];
+// #1752 写白名单的四类权限(分类器 app-write 结果的 category):expected=app-write 的 case 只能落在这四类里。
+const APP_WRITE_CATEGORIES = ['actions', 'actions_variables', 'issues', 'pull_requests'];
+// write-not-allowlisted:写请求没进 #1752 的写白名单,分类器仍判 PraiseZhu。guard 要求分类器给的 reason 属于写类,
+// keep.reason 点名 #1752 并写清为什么不在白名单(读请求或不点名 #1752 都不能用这个类别)。
+const WRITE_ISSUE = 'xindong/mivo-canvas-plugin#1752';
+const USER_WRITE_REASONS = ['write_method', 'fields_without_get', 'graphql_mutation', 'write_command'];
 // 总 issue #173「待用户同意保留的 PraiseZhu 例外」:GitHub 按调用者身份给不同结果(且不报错、回落接不住)的读,继续走 PraiseZhu。
 // 每个 case 的 exception 字段指向其中一种,argv/stdin 必须匹配形状;keep.reason 必须点名 #173 和这一节标题。
 const EXCEPTION_ISSUE = 'PraiseZhu/Review-PR#173';
 const EXCEPTION_SECTION = '待用户同意保留的 PraiseZhu 例外';
+const IDENTITY_REASON = '接口返回调用者身份，分流器判 identity_endpoint，必须用 PraiseZhu';
 const PRAISEZHU_EXCEPTIONS = {
+  // api user(及 user/ 下的端点)与 GraphQL viewer{login}:接口本来就返回调用者身份,只有 PraiseZhu 才读得到 PraiseZhu。
+  // 分类器对前者给 identity_endpoint、对后者给 graphql_viewer;keep.reason 必须带上面这句话(#173 里有对应行)。
+  'identity-endpoint': {
+    matches: (argv, stdin) => argv[0] === 'api' && (argv.slice(1).some((a) => /^\/?user(?:[/?].*)?$/i.test(String(a))) || (argv.includes('graphql') && /\bviewer\s*\{\s*login\b/.test(stdin ?? ''))),
+    classifierReasons: ['identity_endpoint', 'graphql_viewer'],
+    reasonIncludes: IDENTITY_REASON,
+  },
   // mergeStateStatus / mergeable_state 按调用者算;分流器不设开关,gh-read-route 的 IDENTITY_FIELD_RE 也兜底。
   'merge-state': { matches: (argv, stdin) => /mergeStateStatus|mergeable_state/.test(`${argv.join(' ')}\n${stdin ?? ''}`) },
   // 单个规则集 rulesets/<id> 带 current_user_can_bypass;rulesets/rule-suites 不是(分流器 adminRead 放行它)。
@@ -802,14 +818,16 @@ export function validateInventory(templates, inventory) {
 // ── 路由校验 ───────────────────────────────────────────────────────────────
 
 const ROUTING_REPOS = ['xindong/mivo-canvas-plugin'];
-// praisebuild 实际打开的读开关(2026-11-06 部署:adminRead、secretsRead;mergeState 已取消)。守卫的分类上下文按它构造,
-// 清单 routingContext.routes 要与它一致;REVIEW_PR_READ_ROUTES 里的其它词服务器会忽略(见 gh-read-route.test.mjs)。
-const ROUTING_ROUTES = { adminRead: true, secretsRead: true };
+// praisebuild 实际打开的开关(2026-11-06 部署:adminRead、secretsRead、writes;writePermissions 未写即四类写全开;mergeState 已取消)。
+// 守卫的分类上下文按它构造,清单 routingContext.routes 要与它一致。
+const ROUTING_ROUTES = { adminRead: true, secretsRead: true, writes: true };
+// 服务器 publish 的读 wrapper(gh-read-route.mjs)只认读开关,不消费 writes:app-write 在它那里就是 user,不构成 app→user。
+const SERVER_READ_ROUTES = { adminRead: true, secretsRead: true };
 const NO_FILES = (path) => { throw new Error(`清单 case 不允许读宿主文件: ${path}`); };
 
 export function routeOf(c, classifyFn = classify, repos = ROUTING_REPOS, routes = ROUTING_ROUTES) {
   const stdinText = c.stdin ?? null;
-  if (needsStdin(c.argv) && stdinText === null) throw new Error(`case ${c.name} 的 argv 需要 stdin 但没给 stdin`);
+  if (needsStdin(c.argv, { writes: routes.writes === true }) && stdinText === null) throw new Error(`case ${c.name} 的 argv 需要 stdin 但没给 stdin`);
   const readFile = (path) => {
     const files = c.files ?? {};
     if (!(path in files)) return NO_FILES(path);
@@ -837,15 +855,19 @@ export function classifyInventory(inventory, classifyFn = classify, rules = {}) 
       if (c.expected !== 'user') {
         const leftovers = ['flipsIn', 'keep', 'exception', 'guard'].filter((key) => key in c);
         if (leftovers.length) diagnostics.push(`${label}: expected=${c.expected} 的 case 不该再带 ${leftovers.join('/')}(迁移完成后要清掉)`);
+        if (c.expected === APP_WRITE && !APP_WRITE_CATEGORIES.includes(got.category)) diagnostics.push(`${label}: app-write 的权限类别只能是 ${APP_WRITE_CATEGORIES.join('/')},分类器给 ${JSON.stringify(got.category)}`);
         continue;
       }
       if ('ownerPending' in c) diagnostics.push(`${label}: 不允许 ownerPending 字段,先把归属定到真实后续 issue`);
-      const hasFlip = ALLOWED_FLIPS.includes(c.flipsIn);
-      if (c.flipsIn !== undefined && !hasFlip) diagnostics.push(`${label}: flipsIn ${JSON.stringify(c.flipsIn)} 不在允许范围 ${ALLOWED_FLIPS.join(' / ')}`);
+      if (c.flipsIn !== undefined) diagnostics.push(`${label}: flipsIn ${JSON.stringify(c.flipsIn)} 不在允许范围(ALLOWED_FLIPS 为空:读侧 #1751、身份读取 #176、写侧 #1752 都已落地)`);
       const keep = c.keep;
       const hasKeep = keep && KEEP_CATEGORIES.includes(keep.category) && typeof keep.reason === 'string' && keep.reason.length >= 12;
-      if (hasFlip === Boolean(hasKeep)) diagnostics.push(`${label}: expected=user 必须二选一:flipsIn(见 ALLOWED_FLIPS)或 keep{category,reason}`);
+      if (!hasKeep) diagnostics.push(`${label}: expected=user 必须带 keep{category,reason}(flipsIn 已无允许值)`);
       if (keep && !hasKeep) diagnostics.push(`${label}: keep 的 category 只能是 ${KEEP_CATEGORIES.join('/')} 且 reason 要具体`);
+      if (hasKeep && keep.category === 'write-not-allowlisted') {
+        if (!USER_WRITE_REASONS.includes(got.reason)) diagnostics.push(`${label}: write-not-allowlisted 只能用于分类器判成写的请求(${USER_WRITE_REASONS.join('/')}),实际 ${got.reason}`);
+        if (!keep.reason.includes(WRITE_ISSUE)) diagnostics.push(`${label}: write-not-allowlisted 的 reason 必须点名 ${WRITE_ISSUE} 并写清为什么不在写白名单`);
+      }
       if (hasKeep && keep.category === 'interactive-skill' && !(e.flows.length === 1 && e.flows[0] === 'interactive')) diagnostics.push(`${label}: interactive-skill 的条目 flows 只能是 ["interactive"]`);
       if (hasKeep && keep.category === 'unreachable-under-config') {
         if (rules.allowlistOk !== true) diagnostics.push(`${label}: unreachable-under-config 要求 pr-rules.json 与 sandbox-pr-rules.json 的 maintainerSource 都是 allowlist`);
@@ -858,6 +880,8 @@ export function classifyInventory(inventory, classifyFn = classify, rules = {}) 
         if (!exception) diagnostics.push(`${label}: praisezhu-exception 必须带 exception(${Object.keys(PRAISEZHU_EXCEPTIONS).join(' / ')}),实际 ${JSON.stringify(c.exception)}`);
         else if (!exception.matches(c.argv, c.stdin)) diagnostics.push(`${label}: exception ${c.exception} 与这个调用的 argv/stdin 形状不符,不能用 praisezhu-exception 豁免`);
         if (!keep.reason.includes(EXCEPTION_ISSUE) || !keep.reason.includes(EXCEPTION_SECTION)) diagnostics.push(`${label}: praisezhu-exception 的 reason 必须点名 ${EXCEPTION_ISSUE}「${EXCEPTION_SECTION}」`);
+        if (exception?.classifierReasons && !exception.classifierReasons.includes(got.reason)) diagnostics.push(`${label}: exception ${c.exception} 要求分类器给 ${exception.classifierReasons.join('/')},实际 ${got.reason}`);
+        if (exception?.reasonIncludes && !keep.reason.includes(exception.reasonIncludes)) diagnostics.push(`${label}: exception ${c.exception} 的 reason 必须写「${exception.reasonIncludes}」`);
       } else if (c.exception !== undefined) diagnostics.push(`${label}: 只有 praisezhu-exception 的 case 才能带 exception 字段`);
       if (hasKeep && keep.category === 'pr-merge-approve' && !((c.argv[0] === 'pr' && c.argv[1] === 'merge') || (c.argv.includes('POST') && c.argv.some((a) => /pulls\/[^/]+\/reviews$/.test(String(a))) && /"event"\s*:\s*"APPROVE"/.test(c.stdin ?? '')))) diagnostics.push(`${label}: pr-merge-approve 只能是 pr merge 或 event=APPROVE 的 POST reviews`);
     }
@@ -883,8 +907,14 @@ test('清单 schema:三个扫描根、分类器来源 hash、路由上下文', (
   assert.equal(createHash('sha256').update(body).digest('hex'), inventory.classifier.sha256, '清单记录的分类器 sha256 要与 vendor 一致');
   assert.match(inventory.classifier.commit, /^[0-9a-f]{40}$/);
   assert.deepEqual(inventory.routingContext.repos, ROUTING_REPOS);
-  assert.deepEqual(inventory.routingContext.routes, ROUTING_ROUTES, '清单记录的读开关要与守卫构造分类上下文用的一致');
+  assert.deepEqual(inventory.routingContext.routes, ROUTING_ROUTES, '清单记录的开关要与守卫构造分类上下文用的一致');
   assert.deepEqual(Object.keys(ROUTING_ROUTES), ROUTE_SWITCHES, 'vendor 的开关集合变了:先决定服务器 REVIEW_PR_READ_ROUTES 认不认新开关,再改守卫');
+  // 服务器读 wrapper 只认读开关:writes 不在其中,守卫算 serverRoute 用的开关也只给这两个
+  assert.deepEqual(Object.keys(SERVER_READ_ROUTES), READ_ROUTE_SWITCHES);
+  assert.ok(READ_ROUTE_SWITCHES.every((key) => ROUTE_SWITCHES.includes(key)) && !READ_ROUTE_SWITCHES.includes('writes'));
+  // 清单记录的分类器提交要与 vendor 文件头写的来源一致(搬运基准 #1752 合入提交 6a533e3d9)
+  const header = readFileSync(join(REPO_ROOT, 'review-pr/scripts/vendor/gh-app-classify.mjs'), 'utf8').split('\n')[1];
+  assert.ok(header.includes(`@ ${inventory.classifier.commit}`) && header.includes(`sha256 ${inventory.classifier.sha256}`), `vendor 文件头要写清单记录的提交和 sha256: ${header}`);
 });
 
 test('vendor 目录不扫描的前提:只有分类器一个文件,且它是纯函数(不 import 子进程、不 spawn)', () => {
@@ -921,7 +951,7 @@ test('每个条目的 flows 等于它所在文件的入口归属(mini / server /
 // ── SC11:旧 vendor + 新 vendor 双边复算 ─────────────────────────────────────
 // 旧 vendor 正文(9eb30bd 的 gh-app-classify.mjs 去掉前 4 行)以 base64 存在清单 classifier.legacyBody 里,
 // 校验 sha256 后写进系统临时目录,配当前 gh-read-route.mjs(本 PR 没改它)动态加载,得到「同步前」的 decideReadRoute。
-const SERVER_CONFIG = { token: 't', repos: ['xindong/mivo-canvas-plugin'], routes: ROUTING_ROUTES, logFile: '' };
+const SERVER_CONFIG = { token: 't', repos: ['xindong/mivo-canvas-plugin'], routes: SERVER_READ_ROUTES, logFile: '' };
 
 async function loadRouteModules() {
   const { legacyBody, legacyBodySha256, previousSha256 } = inventory.classifier;
@@ -976,19 +1006,78 @@ test('F3 负例:serverRoute 记错、出现 app→user 都必须红', () => {
   assert.match(regress.join('\n'), /app → user/);
 });
 
-test('清单里没有 ownerPending,没有读侧 #1751 的 flipsIn,也没有指向 #173 的 flipsIn;#173 只出现在 praisezhu-exception 的 reason 里', () => {
-  const cases = inventory.entries.flatMap((e) => (e.cases ?? []).map((c) => [e, c]));
+const allCases = inventory.entries.flatMap((e) => (e.cases ?? []).map((c) => [e, c]));
+const byName = (id, name) => inventory.entries.find((e) => e.id === id).cases.find((c) => c.name === name);
+
+test('清单里没有 ownerPending、没有任何 flipsIn(读侧 #1751、身份读取 #176、写侧 #1752 都已落地);#173 只出现在 praisezhu-exception 的 reason 里', () => {
   assert.ok(!JSON.stringify(inventory).includes('ownerPending'));
-  assert.deepEqual(cases.filter(([, c]) => String(c.flipsIn ?? '').includes('#1751') || String(c.flipsIn ?? '').includes('#173')).map(([e, c]) => `${e.id}/${c.name}`), []);
-  // 剩下的 flipsIn 都是还没做的后续 issue(受限写、身份读取),不是读侧
-  for (const [e, c] of cases.filter(([, c]) => c.flipsIn !== undefined)) assert.ok(ALLOWED_FLIPS.includes(c.flipsIn), `${e.id}/${c.name}: ${c.flipsIn}`);
-  const mentions = cases.filter(([, c]) => JSON.stringify(c).includes('Review-PR#173'));
+  assert.deepEqual(ALLOWED_FLIPS, [], 'flipsIn 没有允许值');
+  assert.ok(!JSON.stringify(inventory.entries).includes('flipsIn'), '清单条目里不能再有 flipsIn 字段');
+  assert.deepEqual(allCases.filter(([, c]) => 'flipsIn' in c).map(([e, c]) => `${e.id}/${c.name}`), []);
+  const mentions = allCases.filter(([, c]) => JSON.stringify(c).includes('Review-PR#173'));
   assert.ok(mentions.length > 0);
   for (const [e, c] of mentions) assert.equal(c.keep?.category, 'praisezhu-exception', `${e.id}/${c.name}: #173 只能出现在 praisezhu-exception 的 reason 里`);
 });
 
-test('SC2:读侧 #1751 落地后的清单——身份相关的读保留 PraiseZhu,其余读都翻成 app', () => {
-  const byName = (id, name) => inventory.entries.find((e) => e.id === id).cases.find((c) => c.name === name);
+// 白名单外、分类器仍判 PraiseZhu 的 4 个写:原因要写进 reason(见 keep 的 reason 字段)。
+const WRITE_NOT_ALLOWLISTED = [
+  ['bypass-reason.gh.7d66324b2a', 'sample', 'fields_without_get', /隐式 POST/],
+  ['request-changes-reviewed-pr.write.9215adc842', 'sample', 'write_method', /pulls\/<N>\/comments/],
+  ['resolve-threads.ghGraphql.8de05a9f6f', 'mutation', 'graphql_mutation', /GraphQL mutation/],
+  ['resolve-threads.ghGraphql.c014b245cb', 'mutation', 'graphql_mutation', /resolveReviewThread.*PraiseZhu\/vigil#336.*PraiseZhu\/Review-PR#185/],
+];
+
+test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 4 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
+  const appWrites = allCases.filter(([, c]) => c.expected === APP_WRITE);
+  assert.equal(appWrites.length, 34);
+  // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
+  const categories = new Set();
+  for (const [e, c] of appWrites) {
+    const got = routeOf(c);
+    assert.equal(got.route, APP_WRITE, `${e.id}/${c.name}`);
+    categories.add(got.category);
+    // 服务器读 wrapper 不消费 writes:同一条请求在那里是 user,不构成 app→user
+    if (e.flows.includes('server')) assert.deepEqual([c.serverRoute, c.legacyServerRoute], ['user', 'user'], `${e.id}/${c.name}`);
+  }
+  assert.deepEqual([...categories].sort(), [...APP_WRITE_CATEGORIES].sort());
+  // 代表性:variable / workflow run / issue 评论与标签 / pr comment / review / dismissal 各一条
+  for (const [id, name] of [['round.run_gh.0497c184ab', 'sample'], ['round.run_gh.80c034b02c', 'workflow-run'], ['retry-ci.gh.fec055339a', 'sample'], ['close-product-issue.gh.ef632f0405', 'sample'], ['lib.ghFn.444d0d2703', 'label-add'], ['notify-author-resolve.writeGh.0b290ee368', 'sample'], ['request-changes-reviewed-pr.write.753522cf29', 'sample'], ['dismiss-review.ghFn.a491648a3f', 'sample'], ['post-merge-sweep.gh.a1909783dd', 'sample']]) {
+    const c = byName(id, name);
+    assert.equal(c.expected, APP_WRITE, `${id}/${name}`);
+    assert.deepEqual(['flipsIn', 'keep', 'exception', 'guard'].filter((key) => key in c), [], `${id}/${name}`);
+  }
+  // 需要 --input - 的白名单写端点样本带代表性 stdin(needsStdin 在 writes 开着时要求)
+  for (const id of ['dismiss-own-review.gh.39a96b6774', 'dismiss-stale-reviews.gh.e54349f214', 'dismiss-review.ghFn.a491648a3f']) assert.equal(JSON.parse(byName(id, 'sample').stdin).event, 'DISMISS', id);
+  // 白名单外的写:expected 仍是 user,标 write-not-allowlisted,分类器给的 reason 属于写类,reason 点名 #1752
+  const notAllowlisted = allCases.filter(([, c]) => c.keep?.category === 'write-not-allowlisted');
+  assert.deepEqual(notAllowlisted.map(([e, c]) => `${e.id}/${c.name}`).sort(), WRITE_NOT_ALLOWLISTED.map(([id, name]) => `${id}/${name}`).sort());
+  for (const [id, name, classifierReason, why] of WRITE_NOT_ALLOWLISTED) {
+    const c = byName(id, name);
+    assert.equal(c.expected, 'user', `${id}/${name}`);
+    assert.equal(routeOf(c).reason, classifierReason, `${id}/${name}`);
+    assert.ok(c.keep.reason.includes(WRITE_ISSUE) && why.test(c.keep.reason), `${id}/${name}: ${c.keep.reason}`);
+    assert.equal(c.exception, undefined);
+  }
+});
+
+test('SC2:api user / viewer{login} 三条保留 PraiseZhu——praisezhu-exception 的 identity-endpoint,reason 写明身份接口并点名 #173', () => {
+  const identity = [['lib.ghFn.dd6d9ce6a6', 'sample', 'identity_endpoint'], ['context.ghGraphql.3c1a361405', 'with-viewer', 'graphql_viewer'], ['pre-merge-check.ghGraphql.f553726ad5', 'query-with-viewer', 'graphql_viewer']];
+  for (const [id, name, classifierReason] of identity) {
+    const c = byName(id, name);
+    assert.equal(c.expected, 'user', `${id}/${name}`);
+    assert.equal(c.exception, 'identity-endpoint', `${id}/${name}`);
+    assert.equal(c.keep.category, 'praisezhu-exception', `${id}/${name}`);
+    assert.ok(c.keep.reason.includes('接口返回调用者身份，分流器判 identity_endpoint，必须用 PraiseZhu'), `${id}/${name}: ${c.keep.reason}`);
+    assert.ok(c.keep.reason.includes(EXCEPTION_ISSUE) && c.keep.reason.includes(EXCEPTION_SECTION), `${id}/${name}`);
+    assert.equal(routeOf(c).reason, classifierReason, `${id}/${name}`);
+    assert.equal(c.flipsIn, undefined);
+    assert.deepEqual([c.serverRoute, c.legacyServerRoute], ['user', 'user'], `${id}/${name}`);
+  }
+  // 清单里只有这三条属于 identity-endpoint
+  assert.equal(allCases.filter(([, c]) => c.exception === 'identity-endpoint').length, identity.length);
+});
+
+test('读侧 #1751 落地后的清单——身份相关的读保留 PraiseZhu,其余读都翻成 app', () => {
   // 翻成 app 的读(只列有代表性的):管理类读在 adminRead 下、secrets 读在 secretsRead 下、元数据读本来就放行
   for (const [id, name] of [['lib.ghFn.5afb123571', 'sample'], ['lib.ghFn.e0f8dad167', 'sample'], ['bypass-reason.gh.b6f86b3d66', 'sample'], ['round.ghRead.e526942497', 'sample'], ['round.run_gh.a707605965', 'sample'], ['lib.ghFn.182eb9b1fa', 'sample'], ['lib.ghFn.ef985755e1', 'sample']]) {
     const c = byName(id, name);
@@ -996,9 +1085,9 @@ test('SC2:读侧 #1751 落地后的清单——身份相关的读保留 PraiseZh
     assert.equal(c.flipsIn, undefined);
     assert.equal(c.keep, undefined);
   }
-  // 保留 PraiseZhu 的读:mergeStateStatus / rulesets/<id> / 含 %2F 的分支保护,reason 指向 #173
+  // 保留 PraiseZhu 的读:mergeStateStatus / rulesets/<id> / 含 %2F 的分支保护 / 调用者身份接口,reason 指向 #173
   const kept = inventory.entries.flatMap((e) => (e.cases ?? []).filter((c) => c.keep?.category === 'praisezhu-exception').map((c) => [e, c]));
-  assert.deepEqual([...new Set(kept.map(([, c]) => c.exception))].sort(), ['branch-protection-encoded-ref', 'merge-state', 'ruleset-by-id']);
+  assert.deepEqual([...new Set(kept.map(([, c]) => c.exception))].sort(), ['branch-protection-encoded-ref', 'identity-endpoint', 'merge-state', 'ruleset-by-id']);
   for (const [e, c] of kept) {
     assert.equal(c.expected, 'user', `${e.id}/${c.name}`);
     assert.ok(c.keep.reason.includes(EXCEPTION_ISSUE) && c.keep.reason.includes(EXCEPTION_SECTION), `${e.id}/${c.name}`);
@@ -1435,16 +1524,16 @@ test('守卫负例:转发封装(参数是形参)标成 forwarder;expected=user �
   const fwd = scanGhTemplates(new Map([[SYNTH_FILE, 'export function w(args, opts) { return gh(args, opts); }']]));
   assert.equal(fwd.templates[0].forwarder, 'args');
   const mk = (c, flows = ['mini']) => ({ entries: [{ id: 'e', source: { file: 'f', callee: 'gh', sig: 's', count: 1 }, flows, cases: [{ name: 'c', argv: ['api', 'user'], expected: 'user', ...c }] }] });
-  assert.match(classifyInventory(mk({})).join('\n'), /二选一/);
-  assert.match(classifyInventory(mk({ flipsIn: '' })).join('\n'), /二选一/);
-  assert.match(classifyInventory(mk({ flipsIn: 'not-an-issue' })).join('\n'), /二选一/);
-  assert.deepEqual(classifyInventory(mk({ flipsIn: 'PraiseZhu/Review-PR#176' })), []);
-  // 读侧 #1751 已落地:指向它的 flipsIn 不再允许(迁移要么翻成 app,要么写 keep)
-  assert.match(classifyInventory(mk({ flipsIn: 'xindong/mivo-canvas-plugin#1751' })).join('\n'), /不在允许范围/);
-  assert.deepEqual(classifyInventory(mk({ flipsIn: 'xindong/mivo-canvas-plugin#1752' })), []);
-  // 总 issue #173 或其它 issue 不能当 flipsIn;ownerPending 字段一律红
-  assert.match(classifyInventory(mk({ flipsIn: 'PraiseZhu/Review-PR#173' })).join('\n'), /不在允许范围/);
-  assert.match(classifyInventory(mk({ flipsIn: 'xindong/mivo-canvas-plugin#1757' })).join('\n'), /不在允许范围/);
+  assert.match(classifyInventory(mk({})).join('\n'), /必须带 keep/);
+  assert.match(classifyInventory(mk({ flipsIn: '' })).join('\n'), /必须带 keep/);
+  assert.match(classifyInventory(mk({ flipsIn: 'not-an-issue' })).join('\n'), /必须带 keep/);
+  // flipsIn 没有允许值:读侧 #1751、身份读取 #176、写侧 #1752 都已落地,指向它们(或任何 issue)的 flipsIn 一律红,即便同时带了合法 keep
+  const identityKeep = { exception: 'identity-endpoint', keep: { category: 'praisezhu-exception', reason: `${IDENTITY_REASON}(${EXCEPTION_SECTION},总 issue ${EXCEPTION_ISSUE})` } };
+  assert.deepEqual(classifyInventory(mk(identityKeep)), []);
+  for (const flipsIn of ['PraiseZhu/Review-PR#176', 'xindong/mivo-canvas-plugin#1751', 'xindong/mivo-canvas-plugin#1752', 'PraiseZhu/Review-PR#173', 'xindong/mivo-canvas-plugin#1757']) {
+    assert.match(classifyInventory(mk({ flipsIn })).join('\n'), /flipsIn .*不在允许范围/, `flipsIn ${flipsIn} 单独出现`);
+    assert.match(classifyInventory(mk({ ...identityKeep, flipsIn })).join('\n'), /flipsIn .*不在允许范围/, `flipsIn ${flipsIn} 带合法 keep`);
+  }
   assert.match(classifyInventory(mk({ flipsIn: 'PraiseZhu/Review-PR#176', ownerPending: '待定' })).join('\n'), /ownerPending/);
   assert.match(classifyInventory(mk({ keep: { category: 'legacy', reason: '历史遗留不用管了反正' } })).join('\n'), /category 只能是/);
   assert.match(classifyInventory(mk({ keep: { category: 'interactive-skill', reason: '只在交互式 skill 里跑,不在自动链上' } })).join('\n'), /flows 只能是/);
@@ -1463,12 +1552,46 @@ test('守卫负例:转发封装(参数是形参)标成 forwarder;expected=user �
   assert.match(classifyInventory(mk({ ...ruleset, keep: { category: 'praisezhu-exception', reason: '历史遗留,保持原样不动,以后再说吧' } })).join('\n'), /必须点名/);
   assert.match(classifyInventory(mk({ ...ruleset, keep: { category: 'praisezhu-exception', reason: reason.replace(EXCEPTION_ISSUE, 'PraiseZhu/Review-PR#999') } })).join('\n'), /必须点名/);
   assert.match(classifyInventory(mk({ ...ruleset, keep: { category: 'interactive-skill', reason: '只在交互式 skill 里跑,不在自动链上' } }, ['interactive'])).join('\n'), /只有 praisezhu-exception 的 case 才能带 exception/);
-  assert.match(classifyInventory(mk({ ...ruleset, flipsIn: 'PraiseZhu/Review-PR#176' })).join('\n'), /二选一/);
+  assert.match(classifyInventory(mk({ ...ruleset, flipsIn: 'PraiseZhu/Review-PR#176' })).join('\n'), /不在允许范围/);
   assert.match(classifyInventory(mk({ argv: ['api', 'repos/xindong/mivo-canvas-plugin/rulesets/rule-suites'], exception: 'ruleset-by-id', keep: ruleset.keep })).join('\n'), /期望 user,分类器给 app/, 'rulesets/rule-suites 在 adminRead 下是 app,不能当 rulesets/<id> 豁免');
   assert.match(classifyInventory(mk({ expected: 'app', argv: ['api', 'repos/xindong/mivo-canvas-plugin/actions/runners'], flipsIn: 'xindong/mivo-canvas-plugin#1751' })).join('\n'), /不该再带 flipsIn/);
   assert.match(classifyInventory(mk({ expected: 'app', argv: ['api', 'repos/xindong/mivo-canvas-plugin/actions/runners'], keep: ruleset.keep })).join('\n'), /不该再带 keep/);
+  // identity-endpoint:形状要对、分类器 reason 要对、reason 要写明身份接口那句话(三者缺一都红)
+  const viewerStdin = '{"query":"query{ viewer{ login } repository(owner:\\"o\\",name:\\"r\\"){ id } }"}';
+  const viewer = { argv: ['api', 'graphql', '--input', '-'], stdin: viewerStdin, exception: 'identity-endpoint', keep: identityKeep.keep };
+  assert.deepEqual(classifyInventory(mk(viewer)), []);
+  assert.match(classifyInventory(mk({ ...identityKeep, keep: { category: 'praisezhu-exception', reason: reason } })).join('\n'), /identity-endpoint 的 reason 必须写/);
+  assert.match(classifyInventory(mk({ ...viewer, keep: { category: 'praisezhu-exception', reason: reason } })).join('\n'), /identity-endpoint 的 reason 必须写/);
+  assert.match(classifyInventory(mk({ ...ruleset, exception: 'identity-endpoint', keep: identityKeep.keep })).join('\n'), /形状不符/);
+  assert.match(classifyInventory(mk({ argv: ['api', 'repos/xindong/mivo-canvas-plugin/branches/main/protection'], expected: 'app', exception: 'identity-endpoint', keep: identityKeep.keep })).join('\n'), /不该再带/);
+  assert.match(classifyInventory(mk({ ...identityKeep, argv: ['api', 'users/PraiseZhu'] })).join('\n'), /形状不符/);
+  // 分类器给的 reason 不是身份类(stdin 里没有 query,分类器判 graphql_shape):即使文本里带 viewer{ login } 形状也红
+  assert.match(classifyInventory(mk({ ...identityKeep, argv: ['api', 'graphql', '--input', '-'], stdin: '{"variables":{"x":"viewer{ login }"}}' })).join('\n'), /要求分类器给 identity_endpoint\/graphql_viewer/);
+  // write-not-allowlisted:写请求才能用;reason 必须点名 #1752;白名单内的写必须判 app-write,不能躲进 keep
+  const writeKeep = { category: 'write-not-allowlisted', reason: `${WRITE_ISSUE} 的写白名单不含 pulls/<N>/comments,分流器仍判 PraiseZhu` };
+  const prComment = { argv: ['api', '--method', 'POST', 'repos/xindong/mivo-canvas-plugin/pulls/7/comments', '--input', '-'], stdin: '{"body":"x"}', keep: writeKeep };
+  assert.deepEqual(classifyInventory(mk(prComment)), []);
+  assert.match(classifyInventory(mk({ ...prComment, keep: { category: 'write-not-allowlisted', reason: '这个写不在白名单里,分流器仍判 PraiseZhu' } })).join('\n'), /必须点名 xindong\/mivo-canvas-plugin#1752/);
+  assert.match(classifyInventory(mk({ ...prComment, keep: { category: 'write-not-allowlisted', reason: '#1752 白名单不含这个写(没写仓名)' } })).join('\n'), /必须点名 xindong\/mivo-canvas-plugin#1752/);
+  assert.match(classifyInventory(mk({ argv: ['api', 'repos/xindong/mivo-canvas-plugin/rulesets/7'], keep: writeKeep })).join('\n'), /write-not-allowlisted 只能用于分类器判成写的请求/, '读请求不能用 write-not-allowlisted');
+  assert.match(classifyInventory(mk({ argv: ['pr', 'view', '7', '--repo', 'xindong/mivo-canvas-plugin', '--json', 'mergeStateStatus'], keep: writeKeep })).join('\n'), /write-not-allowlisted 只能用于分类器判成写的请求/);
+  assert.match(classifyInventory(mk({ argv: ['pr', 'comment', '7', '--repo', 'xindong/mivo-canvas-plugin', '--body-file', '-'], stdin: 'x', keep: writeKeep })).join('\n'), /期望 user,分类器给 app-write/, '白名单内的写判 app-write,不能标 keep');
+  // app-write:期望对得上分类器,不能带 flipsIn/keep 残留
+  const comment = { argv: ['pr', 'comment', '7', '--repo', 'xindong/mivo-canvas-plugin', '--body-file', '-'], stdin: 'x', expected: 'app-write' };
+  assert.deepEqual(classifyInventory(mk(comment)), []);
+  assert.match(classifyInventory(mk({ ...comment, keep: writeKeep })).join('\n'), /不该再带 keep/);
+  assert.match(classifyInventory(mk({ ...comment, flipsIn: WRITE_ISSUE })).join('\n'), /不该再带 flipsIn/);
+  assert.match(classifyInventory(mk({ ...comment, expected: 'app' })).join('\n'), /期望 app,分类器给 app-write/);
+  assert.match(classifyInventory(mk({ ...comment, expected: 'app-write', argv: ['pr', 'view', '7', '--repo', 'xindong/mivo-canvas-plugin', '--json', 'headRefOid'] })).join('\n'), /期望 app-write,分类器给 app/);
+  assert.match(classifyInventory(mk({ ...comment, expected: 'app-write', argv: ['api', '--method', 'POST', 'repos/xindong/mivo-canvas-plugin/pulls/7/comments', '--input', '-'], stdin: '{"body":"x"}' })).join('\n'), /期望 app-write,分类器给 user/);
   // 三种保留形状的匹配器本身
   const shape = (name, argv, stdin) => PRAISEZHU_EXCEPTIONS[name].matches(argv, stdin);
+  assert.ok(shape('identity-endpoint', ['api', 'user', '--jq', '.login']));
+  assert.ok(shape('identity-endpoint', ['api', 'user/emails']));
+  assert.ok(shape('identity-endpoint', ['api', 'graphql', '--input', '-'], viewerStdin));
+  assert.ok(!shape('identity-endpoint', ['api', 'users/PraiseZhu']));
+  assert.ok(!shape('identity-endpoint', ['api', 'graphql', '--input', '-'], '{"query":"query{ repository(owner:\\"o\\",name:\\"r\\"){ id } }"}'));
+  assert.ok(!shape('identity-endpoint', ['pr', 'view', '7', '--json', 'author']));
   assert.ok(shape('merge-state', ['pr', 'view', '7', '--json', 'state,mergeStateStatus']));
   assert.ok(shape('merge-state', ['api', 'graphql', '--input', '-'], '{"query":"{repository(owner:\\"o\\",name:\\"r\\"){pullRequest(number:1){mergeStateStatus}}}"}'));
   assert.ok(!shape('merge-state', ['pr', 'view', '7', '--json', 'state,headRefOid']));
@@ -1483,4 +1606,10 @@ test('路由上下文隔离:白名单外的仓仍是 user;GraphQL 需要 stdin �
   assert.equal(routeOf({ name: 'x', argv: ['pr', 'view', '1', '--repo', 'other/repo', '--json', 'headRefOid'] }).route, 'user');
   assert.equal(routeOf({ name: 'x', argv: ['pr', 'view', '1', '--repo', 'xindong/mivo-canvas-plugin', '--json', 'headRefOid'] }).route, APP);
   assert.throws(() => routeOf({ name: 'g', argv: ['api', 'graphql', '--input', '-'] }), /需要 stdin/);
+  // writes 开着:白名单里 --input - 的写端点也要 stdin(分类要看 body);writes 关着时与以前一样不要求
+  const dismissal = ['api', '--method', 'PUT', 'repos/xindong/mivo-canvas-plugin/pulls/7/reviews/7/dismissals', '--input', '-'];
+  assert.throws(() => routeOf({ name: 'd', argv: dismissal }), /需要 stdin/);
+  assert.equal(routeOf({ name: 'd', argv: dismissal, stdin: '{"message":"x","event":"DISMISS"}' }).route, APP_WRITE);
+  assert.equal(routeOf({ name: 'd', argv: dismissal }, classify, ROUTING_REPOS, SERVER_READ_ROUTES).route, 'user', '服务器读开关下写一律 user');
+  assert.equal(routeOf({ name: 'd', argv: dismissal, stdin: '{"message":"x","event":"APPROVE"}' }).route, 'user', 'body 形状不对的写不放');
 });

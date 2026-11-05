@@ -1,7 +1,8 @@
 // gh-read-route.test.mjs — app-read-route 补丁:服务器 publish 的读请求改用 App 只读令牌。
 // 默认(没设 REVIEW_PR_READ_TOKEN / REVIEW_PR_READ_REPOS)必须与之前完全一致;设了以后:
 //   只读且目标仓在名单里 → App 令牌;写、身份、管理端点、看不懂的 → 原令牌;App 因权限失败 → 原令牌重试一次。
-// REVIEW_PR_READ_ROUTES 只认 adminRead、secretsRead:打开后管理类 / secrets 的只读形状才走 App,其它词忽略;身份字段永远走原令牌。
+// REVIEW_PR_READ_ROUTES 只认 adminRead、secretsRead:打开后管理类 / secrets 的只读形状才走 App,其它词忽略(含 vendor 分类器多出来的 writes:
+// 白名单内的写走 App 写令牌是 Mini 分流器的事,服务器读 wrapper 不消费它,写在这里一律原令牌);身份字段永远走原令牌。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -51,9 +52,9 @@ function setup(extra = {}) {
 const ENABLED = { REVIEW_PR_READ_TOKEN: 'app-token', REVIEW_PR_READ_REPOS: 'o/r', REVIEW_PR_GH_ROUTE_LOG: ROUTE_LOG };
 const READ_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){number}}}';
 
-// 搬运基准:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ adede3eb1(#1751 合入提交)。
-const VENDOR_COMMIT = 'adede3eb103c3e26a1d85efbc25c447819552c51';
-const VENDOR_SHA256 = '66e466eb7d38eb3f110105ebf0c685466aecbc2220b15e1d94d4a25ee43a6656';
+// 搬运基准:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ 6a533e3d9(#1752 合入提交,PR #1860)。
+const VENDOR_COMMIT = '6a533e3d9120991ec66b6af35a068a058891fe99';
+const VENDOR_SHA256 = '1bd43941c4d4e9ceecdd1bc9231b61b0871f3d634528186ad16c09e9d999846e';
 test('搬运的分类器与插件仓原文一致(去掉 4 行来源说明后的 sha256),来源说明写的提交和 sha256 同步', () => {
   const file = fileURLToPath(new URL('./vendor/gh-app-classify.mjs', import.meta.url));
   const lines = readFileSync(file, 'utf8').split('\n');
@@ -62,10 +63,13 @@ test('搬运的分类器与插件仓原文一致(去掉 4 行来源说明后的 
   assert.ok(lines[1].includes(`@ ${VENDOR_COMMIT}`) && lines[1].includes(`sha256 ${VENDOR_SHA256}`), `来源说明要写 ${VENDOR_COMMIT} 和原文 sha256: ${lines[1]}`);
 });
 
-test('服务器认的开关与 vendor 分类器的 routes 开关集合一致:vendor 多出新开关时要先决定服务器认不认', async () => {
+test('服务器认的开关是 vendor 分类器 routes 开关里的读开关子集:vendor 多出新开关时要先决定服务器认不认,writes 不认', async () => {
   const { ROUTE_SWITCHES } = await import('./vendor/gh-app-classify.mjs');
-  assert.deepEqual([...route.READ_ROUTE_SWITCHES], ROUTE_SWITCHES);
-  assert.deepEqual(Object.keys(route.toReadRoutes('adminRead')), ROUTE_SWITCHES);
+  assert.deepEqual([...route.READ_ROUTE_SWITCHES], ['adminRead', 'secretsRead']);
+  assert.deepEqual(ROUTE_SWITCHES, ['adminRead', 'secretsRead', 'writes'], 'vendor 开关集合变了:先决定服务器认不认新开关,再改本测试');
+  assert.ok(route.READ_ROUTE_SWITCHES.every((key) => ROUTE_SWITCHES.includes(key)), '服务器认的开关必须是 vendor 认的开关');
+  assert.ok(!route.READ_ROUTE_SWITCHES.includes('writes'), '服务器读 wrapper 不消费 writes');
+  assert.deepEqual(Object.keys(route.toReadRoutes('adminRead,writes')), [...route.READ_ROUTE_SWITCHES]);
 });
 
 test('readRouteConfig:令牌和仓名单缺一项都不分流;仓名不合法抛错', () => {
@@ -93,6 +97,9 @@ test('readRouteConfig:REVIEW_PR_READ_ROUTES 只认 adminRead、secretsRead,其�
   assert.deepEqual(routesOf('mergeState'), OFF);
   assert.deepEqual(routesOf('mergeState,adminRead'), { adminRead: true, secretsRead: false }, 'review-pr.yml 现在传的就是这一串');
   assert.deepEqual(routesOf('merge_state,admin,Secrets,adminread,ADMINREAD,all,*,true'), OFF, '区分大小写,不做模糊匹配');
+  // vendor 分类器认的 writes 开关服务器不认:写走 App 是 Mini 分流器的事,这里忽略,不放行任何东西
+  assert.deepEqual(routesOf('writes'), OFF);
+  assert.deepEqual(routesOf('writes,adminRead'), { adminRead: true, secretsRead: false });
   assert.deepEqual(Object.keys(routesOf('adminRead,whatever')).sort(), ['adminRead', 'secretsRead'], '结果里只有这两个键');
   // 令牌或仓名单缺一项仍然不分流,与是否配了 routes 无关
   assert.equal(route.readRouteConfig({ REVIEW_PR_READ_REPOS: 'o/r', REVIEW_PR_READ_ROUTES: 'adminRead' }), null);
@@ -190,6 +197,11 @@ const SWITCH_ROWS = [
   ['写方法 DELETE protection', ['api', '--method', 'DELETE', 'repos/o/r/branches/main/protection'], 'user', 'user', 'user', 'user'],
   ['写方法 PUT secrets', ['api', '--method', 'PUT', 'repos/o/r/actions/secrets/X'], 'user', 'user', 'user', 'user'],
   ['白名单外的仓', ['api', 'repos/x/y/branches/main/protection'], 'user', 'user', 'user', 'user'],
+  // #1752 写白名单内的写:Mini 分流器判 app-write,服务器读 wrapper 不消费 writes,任何读开关下都是原令牌
+  ['issue comment(白名单写)', ['issue', 'comment', '5', '--repo', 'o/r', '--body-file', '-'], 'user', 'user', 'user', 'user'],
+  ['variable set(白名单写)', ['variable', 'set', 'MIVO_REVIEW_KEY_STATUS', '-R', 'o/r', '--body', '{}'], 'user', 'user', 'user', 'user'],
+  ['api POST issues/<N>/labels --input -(白名单写)', { args: ['api', '--method', 'POST', 'repos/o/r/issues/5/labels', '--input', '-'], input: '{"labels":["review-pr"]}' }, 'user', 'user', 'user', 'user'],
+  ['api PUT dismissals --input -(白名单写)', { args: ['api', '--method', 'PUT', 'repos/o/r/pulls/5/reviews/7/dismissals', '--input', '-'], input: '{"message":"x","event":"DISMISS"}' }, 'user', 'user', 'user', 'user'],
   // 身份字段:任何开关下都走原令牌
   ['单个 PR REST(mergeable_state)', ['api', 'repos/o/r/pulls/5'], 'user', 'user', 'user', 'user'],
   ['pr view 带 mergeStateStatus', ['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus'], 'user', 'user', 'user', 'user'],
@@ -210,6 +222,21 @@ const decideWith = (routesValue, call) => {
 test('decideReadRoute 开关矩阵:adminRead / secretsRead 只放行各自的只读形状,rulesets/<id>、%2F 分支保护、写、身份字段永远 user', () => {
   for (const [name, call, ...want] of SWITCH_ROWS) {
     ROUTE_VALUES.forEach((value, i) => assert.equal(decideWith(value, call).route, want[i], `${name} [REVIEW_PR_READ_ROUTES=${value || '(空)'}]`));
+  }
+});
+
+test('decideReadRoute:vendor 把白名单内的写判成 app-write,读 wrapper 仍只在 route=app 时换令牌——即便 config.routes 里混进 writes 也不会把写送给 App 读令牌', async () => {
+  const { classify, APP_WRITE } = await import('./vendor/gh-app-classify.mjs');
+  const writeRows = SWITCH_ROWS.filter(([name]) => name.includes('白名单写'));
+  assert.equal(writeRows.length, 4);
+  for (const [name, call] of writeRows) {
+    const { args, input } = rowCall(call);
+    // 分类器本身(writes 开着)判 app-write;服务器读 wrapper 里同一条请求是 user,不是 app,也就不构成 app→user
+    assert.equal(classify(args, { repos: ['o/r'], routes: { adminRead: true, secretsRead: true, writes: true }, env: {}, stdinText: input ?? null }).route, APP_WRITE, name);
+    for (const routes of [{ adminRead: true, secretsRead: true }, { adminRead: true, secretsRead: true, writes: true }]) {
+      const d = route.decideReadRoute(args, { config: { token: 't', repos: ['o/r'], routes, logFile: '' }, env: {}, input });
+      assert.equal(d.route, 'user', `${name} routes=${JSON.stringify(routes)}`);
+    }
   }
 });
 

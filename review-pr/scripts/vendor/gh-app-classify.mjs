@@ -1,16 +1,19 @@
 // [MIVO-PATCH app-read-route] 原样搬运,不要在这里改逻辑。
-// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ adede3eb103c3e26a1d85efbc25c447819552c51(原文件 sha256 66e466eb7d38eb3f110105ebf0c685466aecbc2220b15e1d94d4a25ee43a6656)。
+// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ 6a533e3d9120991ec66b6af35a068a058891fe99(#1752 合入提交;原文件 sha256 1bd43941c4d4e9ceecdd1bc9231b61b0871f3d634528186ad16c09e9d999846e)。
 // Mini 上的 gh 分流器用同一份规则;服务器发布步骤用它判断「这条 gh 请求能不能改用 App 只读令牌」。
 // 规则要改,先改插件仓那份,再整份重新搬运,并更新 gh-read-route.test.mjs 里的 sha256。
 // gh 命令分类器（纯函数，不碰文件系统；readFile 由调用方注入）。
 //
 // 默认走 PraiseZhu（user）。只有同时满足「只读、不依赖身份、目标仓在白名单」的请求
 // 才走 GitHub App（app）；看不懂的一律 user。分类出错的后果由「App 令牌只有只读权限」兜底。
+// 写请求默认也全是 user；routes.writes 打开后，白名单内的写才判 app-write（带类别，见下面的 APP_WRITE），
+// 此时兜底是「写令牌按类别只申请对应的一项权限」（app-token.mjs）。
 //
 // 本目录会被整份拷到 Mini 部署，只能 import node 内置模块，不能 import 仓库其它文件。
 
 export const APP = 'app'
 export const USER = 'user'
+export const APP_WRITE = 'app-write'
 
 // config.json 的 routes：按目录打开的放行开关，默认全关。关着时分类结果与没有这些开关时逐条一致。
 // 「结果随调用者身份变化」的读**不设开关**：mergeStateStatus / mergeable_state / current_user_can_bypass / permissions /
@@ -19,12 +22,14 @@ export const USER = 'user'
 // 按调用者算的字段」的读，权限没授到时 403 回落即可：
 //   adminRead   ：branches/<ref>/protection 等 Administration 读（App 要先在 GitHub 上授权 administration: read）；rulesets/<id> 不在范围内，见 switchedRestReason
 //   secretsRead ：actions/secrets/<name>（App 要先授权 secrets: read）
-export const ROUTE_SWITCHES = ['adminRead', 'secretsRead']
+//   writes      ：白名单内的写命令 / 写端点改用 App 写令牌（见下面「app writes」；App 要先授权对应类别的 write 权限）
+export const ROUTE_SWITCHES = ['adminRead', 'secretsRead', 'writes']
 const toRouteSwitches = (routes) => Object.fromEntries(ROUTE_SWITCHES.map((key) => [key, routes?.[key] === true]))
 
 // helpers
 const toUser = (reason, cmd) => ({ route: USER, reason, cmd })
 const toApp = (reason, cmd) => ({ route: APP, reason, cmd })
+const toAppWrite = (reason, cmd, category) => ({ route: APP_WRITE, reason, cmd, category })
 
 const GITHUB_HOST = 'github.com'
 
@@ -591,16 +596,36 @@ function isGraphqlEndpoint(endpoint) {
   return endpoint.replace(/^\/+/, '') === 'graphql'
 }
 
-export function needsStdin(argv) {
+// writes 为 true（routes.writes 开着且没有 WRITES_DISABLED）时，白名单里按 --input 带 JSON 的三个写端点也要先读 stdin：
+// 分类要看 body（event / 键 / 类型），读到的字节之后原样转发给 gh。writes 关着时行为与没有这个参数时完全一致。
+export function needsStdin(argv, { writes = false } = {}) {
   argv = normalizeRootFlags(argv)
   if (argv[0] !== 'api') return false
   const { spec, shortHelp } = commandFlags(argv)
   const parsed = parseFlags(argv.slice(1), spec, { shortHelp })
   // help 不发请求，别为它去读 stdin（`api graphql --input - --help` 在终端里会把包装器卡住）。
   if (parsed.unknown || parsed.bools.has('help') || parsed.implicitHelp || parsed.positionals.length !== 1) return false
-  if (!isGraphqlEndpoint(normalizeEndpoint(parsed.positionals[0]))) return false
+  const endpoint = normalizeEndpoint(parsed.positionals[0])
+  if (!isGraphqlEndpoint(endpoint)) return writes && isStdinWriteInput(parsed, endpoint)
   if (lastValue(parsed, 'input') === '-') return true
   return parsed.ordered.some((f) => (f.long === 'raw-field' || f.long === 'field') && f.value === 'query=@-')
+}
+
+// REST 路径切段：每段解码并转小写；`%2F` 解出来的 `/` 记在 slashAt（原文已按 `/` 切开，只能来自 %2F）。
+// 空段、`.` / `..`、反斜杠、片段、占位符一律看不清，返回 {reason}。读（GET）和写（app 写白名单）共用这一份。
+function parseRestSegments(path) {
+  if (path.includes('{')) return { reason: 'placeholder' }
+  const segs = []
+  const slashAt = []
+  for (const seg of path.split('/')) {
+    if (seg === '' || seg === '.' || seg === '..') return { reason: 'unsafe_path' }
+    let decoded
+    try { decoded = decodeURIComponent(seg) } catch { return { reason: 'unsafe_path' } }
+    if (decoded === '.' || decoded === '..' || decoded.includes('\\') || decoded.includes('#')) return { reason: 'unsafe_path' }
+    if (decoded.includes('/')) slashAt.push(segs.length)
+    segs.push(decoded.toLowerCase())
+  }
+  return { segs, slashAt }
 }
 
 // 分支名带 `/` 时 gh 会把它编成 %2F。只有 commits/<ref>、rules/branches/<ref>、branches/<ref> 的最后一段认这种写法：
@@ -660,23 +685,17 @@ function classifyApi(argv, ctx) {
   const hasInput = parsed.values.has('input')
   const explicit = lastValue(parsed, 'method')
   const method = (explicit ?? (fields.length > 0 || hasInput ? 'POST' : 'GET')).toUpperCase()
-  if (method !== 'GET') return toUser(explicit === undefined ? 'fields_without_get' : 'write_method', cmd)
+  if (method !== 'GET') {
+    // 写必须显式写出方法：`-f` 隐含的 POST 不放；白名单对不上就回到原来的 user 原因。
+    const write = explicit !== undefined && ctx.routes.writes ? classifyApiWrite(method, parsed, endpoint, ctx) : null
+    return write ?? toUser(explicit === undefined ? 'fields_without_get' : 'write_method', cmd)
+  }
   if (hasInput) return toUser('input_body', cmd)
   if (fields.some((f) => f.value.slice(f.value.indexOf('=') + 1).startsWith('@'))) return toUser('field_from_file', cmd)
 
-  const path = endpoint.split('?')[0]
-  if (path.includes('{')) return toUser('placeholder', cmd)
-  const raw = path.split('/')
-  const segs = []
-  const slashAt = []
-  for (const seg of raw) {
-    if (seg === '' || seg === '.' || seg === '..') return toUser('unsafe_path', cmd)
-    let decoded
-    try { decoded = decodeURIComponent(seg) } catch { return toUser('unsafe_path', cmd) }
-    if (decoded === '.' || decoded === '..' || decoded.includes('\\') || decoded.includes('#')) return toUser('unsafe_path', cmd)
-    if (decoded.includes('/')) slashAt.push(segs.length) // 原文里没有 `/`（已按 `/` 切开），只能来自 %2F
-    segs.push(decoded.toLowerCase())
-  }
+  const split = parseRestSegments(endpoint.split('?')[0])
+  if (split.reason) return toUser(split.reason, cmd)
+  const { segs, slashAt } = split
   if (slashAt.length > 0 && !isRefSlashPath(segs, slashAt)) return toUser('unsafe_path', cmd)
   if (segs[0] === 'user') return toUser('identity_endpoint', cmd)
   if (segs[0] !== 'repos') return toUser('non_repo_endpoint', cmd)
@@ -695,6 +714,230 @@ function classifyApi(argv, ctx) {
   if (!REST_ALLOWED.has(segs[3])) return toUser('endpoint_not_allowlisted', cmd)
   if (segs[3] === 'actions' && !ACTIONS_ALLOWED.has(segs[4])) return toUser('endpoint_not_allowlisted', cmd)
   return toApp('rest_get', cmd)
+}
+
+// app writes
+// routes.writes 打开后，下面这张白名单里的写才判 app-write，并带上类别（actions / actions_variables / issues / pull_requests）：
+// 路由层按类别只给 App 写令牌申请对应的一项权限（app-token.mjs）。白名单对不上的写仍是 user，原因沿用原来的
+// （write_command / write_method / fields_without_get），所以开关关着和白名单未命中时的分类结果逐条一致。
+// 永远不在白名单里（因此永远 user）：pr merge、APPROVE 评审（api 与 GraphQL）、repo、release、secret、workflow enable|disable、
+// 白名单外的变量名、review-pr.yml 以外的 workflow、GraphQL mutation（含 resolveReviewThread）、非白名单仓、body 任意的 --input。
+// App 写失败不回落 PraiseZhu（路由层保证），所以这里宁严勿松：任何一处看不清都返回 null。
+const APP_WRITE_WORKFLOW = 'review-pr.yml'
+const APP_WRITE_VARIABLES = new Set(['MIVO_PREREVIEW_HEARTBEAT', 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL', 'MIVO_REVIEW_KEY_STATUS'])
+const MANAGED_LABELS = new Set(['review-pr', 'review-pr-signoff'])
+const REVIEW_EVENTS = new Set(['REQUEST_CHANGES', 'COMMENT'])
+const NUMBER_ARG = /^[1-9]\d{0,18}$/
+
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const hasOnlyKeys = (keys, allowed) => [...keys].every((key) => allowed.includes(key))
+
+// 非 api 写命令：spec 只登记允许的选项，其余选项解析成 unknown → 回到 user。目标仓必须显式给出（-R 或 GH_REPO），号码只认纯数字。
+const FIELD_OPTIONS = ['raw-field:f', 'field:F']
+const hasNumberArg = (parsed) => parsed.positionals.length === 1 && NUMBER_ARG.test(parsed.positionals[0])
+const hasNamedArg = (allowed) => (parsed) => parsed.positionals.length === 1 && allowed.has(parsed.positionals[0])
+// -f/-F 的 key=value 里值以 @ 开头会读文件 / stdin，内容看不见，一律不放。
+const workflowFieldsAreLiteral = (parsed) => [...(parsed.values.get('raw-field') ?? []), ...(parsed.values.get('field') ?? [])]
+  .every((value) => value.includes('=') && !value.slice(value.indexOf('=') + 1).startsWith('@'))
+
+const COMMENT_SPEC = makeSpec({ value: [...REPO_FLAG, 'body:b', 'body-file:F'] })
+const LABEL_SPEC = makeSpec({ value: [...REPO_FLAG, 'color:c', 'description:d'] })
+const WRITE_COMMAND_DEFS = {
+  'workflow run': {
+    reason: 'workflow_run', category: 'actions',
+    spec: makeSpec({ value: [...REPO_FLAG, 'ref:r', ...FIELD_OPTIONS] }),
+    check: (parsed) => hasNamedArg(new Set([APP_WRITE_WORKFLOW]))(parsed) && workflowFieldsAreLiteral(parsed),
+  },
+  'run cancel': { reason: 'run_cancel', category: 'actions', spec: makeSpec({ value: REPO_FLAG }), check: hasNumberArg },
+  'run rerun': { reason: 'run_rerun', category: 'actions', spec: makeSpec({ value: REPO_FLAG, bool: ['failed'] }), check: hasNumberArg },
+  'variable set': {
+    reason: 'variable_set', category: 'actions_variables',
+    spec: makeSpec({ value: [...REPO_FLAG, 'body:b'] }), check: hasNamedArg(APP_WRITE_VARIABLES),
+  },
+  'variable delete': { reason: 'variable_delete', category: 'actions_variables', spec: makeSpec({ value: REPO_FLAG }), check: hasNamedArg(APP_WRITE_VARIABLES) },
+  'issue create': {
+    reason: 'issue_create', category: 'issues',
+    spec: makeSpec({ value: [...REPO_FLAG, 'title:t', 'body:b', 'body-file:F', 'label:l'] }),
+    check: (parsed) => parsed.positionals.length === 0,
+  },
+  'issue comment': { reason: 'issue_comment', category: 'issues', spec: COMMENT_SPEC, check: hasNumberArg },
+  'issue close': { reason: 'issue_close', category: 'issues', spec: makeSpec({ value: [...REPO_FLAG, 'comment:c', 'reason:r'] }), check: hasNumberArg },
+  'label create': { reason: 'label_create', category: 'issues', spec: LABEL_SPEC, check: hasNamedArg(MANAGED_LABELS) },
+  'label edit': { reason: 'label_edit', category: 'issues', spec: LABEL_SPEC, check: hasNamedArg(MANAGED_LABELS) },
+  'pr comment': { reason: 'pr_comment', category: 'pull_requests', spec: COMMENT_SPEC, check: hasNumberArg },
+}
+
+// 非 api 写命令的出口：开关关着、不在白名单、参数对不上都回到原来的 write_command。
+function classifyWriteCommand(key, argv, ctx) {
+  const rejected = toUser('write_command', key)
+  if (!ctx.routes.writes || !Object.hasOwn(WRITE_COMMAND_DEFS, key)) return rejected
+  const def = WRITE_COMMAND_DEFS[key]
+  // 全局 `--help` 是 root 的 persistent flag（命令前的写法被 normalizeRootFlags 挪到了命令之后）：`--help=false` 等于没写，真 help 不发请求。
+  const parsed = parseFlags(argv.slice(2), { long: new Map([...def.spec.long, ['help', 'bool']]), short: def.spec.short })
+  if (parsed.unknown || parsed.bools.has('help')) return rejected
+  const repoFlags = parsed.values.get('repo')
+  if (repoFlags !== undefined && repoFlags.length !== 1) return rejected
+  const rawRepo = repoFlags === undefined ? ctx.env.GH_REPO : repoFlags[0]
+  if (!rawRepo) return rejected // 靠 cwd 推断目标仓的写不放
+  const candidate = toRepoCandidate(rawRepo)
+  if (!candidate.repo || !ctx.repoSet.has(candidate.repo)) return rejected
+  if (!def.check(parsed)) return rejected
+  return toAppWrite(def.reason, key, def.category)
+}
+
+// gh api 写白名单：tail 是 repos/<o>/<r>/ 之后的段（已解码、转小写），号码只认纯数字（写不接受 GitHub 对 `1.5` 取前导整数那种写法）。
+// body 指 body 的校验类型：none = 不许带任何 body；其余见 API_WRITE_JSON_SHAPES / API_WRITE_FIELD_SHAPES。
+function matchApiWriteEndpoint(method, tail) {
+  const [a, b, c, d, e] = tail
+  if (a === 'actions' && b === 'runs' && tail.length === 4 && NUMBER_ARG.test(c) && method === 'POST') {
+    if (d === 'approve') return { reason: 'run_approve', category: 'actions', body: 'none' }
+    if (d === 'rerun') return { reason: 'run_rerun', category: 'actions', body: 'none' }
+  }
+  if (a === 'issues' && tail.length === 3 && NUMBER_ARG.test(b)) {
+    if (c === 'labels' && method === 'POST') return { reason: 'issue_labels_add', category: 'issues', body: 'labels' }
+    if (c === 'comments' && method === 'POST') return { reason: 'issue_comment_api', category: 'issues', body: 'comment' }
+  }
+  // 只放「去掉一个受管标签」：`DELETE issues/<N>/labels`（不带名字）会清空该 issue 的全部标签，前置审查不用，判给 PraiseZhu。
+  if (a === 'issues' && tail.length === 4 && NUMBER_ARG.test(b) && c === 'labels' && method === 'DELETE' && MANAGED_LABELS.has(d)) {
+    return { reason: 'issue_label_remove', category: 'issues', body: 'none' }
+  }
+  if (a === 'pulls' && NUMBER_ARG.test(b)) {
+    if (tail.length === 3 && c === 'reviews' && method === 'POST') return { reason: 'pr_review_api', category: 'pull_requests', body: 'review' }
+    if (tail.length === 5 && c === 'reviews' && NUMBER_ARG.test(d) && e === 'dismissals' && method === 'PUT') {
+      return { reason: 'pr_review_dismiss', category: 'pull_requests', body: 'dismissal' }
+    }
+  }
+  return null
+}
+
+// --input 的 JSON 里同一个对象出现重复键时，不同解析器取第一个还是最后一个并不统一：校验看到的 event 未必是 GitHub 看到的。
+// 所以有重复键的 body 一律不放。调用前文本已经 JSON.parse 成功，这里只做扫描（键按 JSON 字符串解码后比较，`event` 也认得出）。
+function hasDuplicateJsonKeys(text) {
+  const stack = []
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === '"') {
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1
+      if (j >= text.length) return true
+      const top = stack.at(-1)
+      if (top?.keys && top.expectKey) {
+        const key = JSON.parse(text.slice(i, j + 1))
+        if (top.keys.has(key)) return true
+        top.keys.add(key)
+        top.expectKey = false
+      }
+      i = j + 1
+      continue
+    }
+    if (ch === '{') stack.push({ keys: new Set(), expectKey: true })
+    else if (ch === '[') stack.push({ keys: null, expectKey: false })
+    else if (ch === '}' || ch === ']') stack.pop()
+    else if (ch === ',' && stack.at(-1)?.keys) stack.at(-1).expectKey = true
+    i += 1
+  }
+  return false
+}
+
+// 读 --input 的 JSON（`-` 读 stdin，其它读文件）；读不到、不是 JSON、有重复键都返回 undefined。
+function readJsonInput(parsed, ctx) {
+  const source = lastValue(parsed, 'input')
+  let raw
+  try { raw = source === '-' ? ctx.stdinText : ctx.readFile(source) } catch { return undefined }
+  if (typeof raw !== 'string') return undefined
+  let body
+  try { body = JSON.parse(raw) } catch { return undefined }
+  return hasDuplicateJsonKeys(raw) ? undefined : body
+}
+
+const API_WRITE_JSON_SHAPES = {
+  labels: (body) => {
+    const list = Array.isArray(body) ? body : (isPlainObject(body) && hasOnlyKeys(Object.keys(body), ['labels']) ? body.labels : null)
+    return Array.isArray(list) && list.length > 0 && list.every((label) => typeof label === 'string' && label !== '')
+  },
+  dismissal: (body) => isPlainObject(body) && hasOnlyKeys(Object.keys(body), ['message', 'event'])
+    && typeof body.message === 'string' && (body.event === undefined || body.event === 'DISMISS'),
+  review: (body) => isPlainObject(body) && hasOnlyKeys(Object.keys(body), ['event', 'body', 'commit_id', 'comments'])
+    && REVIEW_EVENTS.has(body.event)
+    && (body.body === undefined || typeof body.body === 'string')
+    && (body.commit_id === undefined || typeof body.commit_id === 'string')
+    && (body.comments === undefined || Array.isArray(body.comments)),
+}
+
+// -f/-F 写法：[key, value] 列表；值以 @ 开头（读文件 / stdin）、没有 `=`、空键都看不清，返回 null。
+function toFieldEntries(parsed) {
+  const entries = []
+  for (const { long, value } of parsed.ordered) {
+    if (long !== 'raw-field' && long !== 'field') continue
+    const eq = value.indexOf('=')
+    if (eq <= 0 || value.slice(eq + 1).startsWith('@')) return null
+    entries.push([value.slice(0, eq), value.slice(eq + 1)])
+  }
+  return entries
+}
+
+// 同一个键出现两次时 gh 取最后一个，校验却可能只看到第一个：重复键不放。
+function toUniqueFields(entries) {
+  const map = new Map()
+  for (const [key, value] of entries) {
+    if (map.has(key)) return null
+    map.set(key, value)
+  }
+  return map
+}
+
+const API_WRITE_FIELD_SHAPES = {
+  labels: (entries) => entries.length > 0 && entries.every(([key, value]) => key === 'labels[]' && value !== ''),
+  comment: (entries) => entries.length === 1 && entries[0][0] === 'body',
+  dismissal: (entries) => {
+    const fields = toUniqueFields(entries)
+    return fields !== null && hasOnlyKeys(fields.keys(), ['message', 'event']) && fields.has('message')
+      && (!fields.has('event') || fields.get('event') === 'DISMISS')
+  },
+  review: (entries) => {
+    const fields = toUniqueFields(entries)
+    return fields !== null && hasOnlyKeys(fields.keys(), ['event', 'body', 'commit_id']) && REVIEW_EVENTS.has(fields.get('event'))
+  },
+}
+
+function apiWriteBodyOk(kind, parsed, ctx) {
+  const hasFields = parsed.ordered.some((f) => f.long === 'raw-field' || f.long === 'field')
+  const inputs = parsed.values.get('input') ?? []
+  if (kind === 'none') return !hasFields && inputs.length === 0
+  if (inputs.length > 0) {
+    if (hasFields || inputs.length !== 1 || !Object.hasOwn(API_WRITE_JSON_SHAPES, kind)) return false
+    const body = readJsonInput(parsed, ctx)
+    return body !== undefined && API_WRITE_JSON_SHAPES[kind](body)
+  }
+  const entries = toFieldEntries(parsed)
+  return entries !== null && API_WRITE_FIELD_SHAPES[kind](entries)
+}
+
+function classifyApiWrite(method, parsed, endpoint, ctx) {
+  if (endpoint.includes('?')) return null
+  const split = parseRestSegments(endpoint)
+  if (split.reason || split.slashAt.length > 0) return null
+  const { segs } = split
+  if (segs[0] !== 'repos' || segs.length < 4 || !ctx.repoSet.has(`${segs[1]}/${segs[2]}`)) return null
+  const hit = matchApiWriteEndpoint(method, segs.slice(3))
+  if (!hit) return null
+  // 分页 / 缓存 / 预览头对写没有意义，出现就是看不懂。
+  if (parsed.bools.has('paginate') || parsed.bools.has('slurp') || parsed.values.has('cache') || parsed.values.has('preview')) return null
+  if (!apiWriteBodyOk(hit.body, parsed, ctx)) return null
+  return toAppWrite(hit.reason, 'api', hit.category)
+}
+
+// needsStdin 用：这条 api 是不是白名单里「--input - 带 JSON」的写端点（要先读 stdin 才能分类）。不查目标仓：多读一次 stdin 无害，gh 照样收到原字节。
+function isStdinWriteInput(parsed, endpoint) {
+  const method = lastValue(parsed, 'method')
+  if (method === undefined || lastValue(parsed, 'input') !== '-') return false
+  const path = endpoint.replace(/^\/+/, '')
+  if (path.includes('?')) return false
+  const split = parseRestSegments(path)
+  if (split.reason || split.slashAt.length > 0 || split.segs[0] !== 'repos' || split.segs.length < 4) return false
+  const hit = matchApiWriteEndpoint(method.toUpperCase(), split.segs.slice(3))
+  return hit !== null && Object.hasOwn(API_WRITE_JSON_SHAPES, hit.body)
 }
 
 // non-api read commands
@@ -778,7 +1021,7 @@ export function classify(argv, { repos = [], routes = {}, env = {}, stdinText = 
   if (argv[0] === 'api') return classifyApi(argv, ctx)
   const key = commandKey(argv)
   if (Object.hasOwn(READ_COMMANDS, key)) return classifyRead(key, argv, ctx)
-  if (WRITE_COMMANDS.has(key) || argv[0] === 'label') return toUser('write_command', key)
+  if (WRITE_COMMANDS.has(key) || argv[0] === 'label') return classifyWriteCommand(key, argv, ctx)
   if (argv[0] === 'auth') return toUser('auth', 'auth')
   if (key === 'run watch') return toUser('streaming', key)
   return toUser('unknown_command', 'other')
