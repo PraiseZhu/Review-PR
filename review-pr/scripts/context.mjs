@@ -1220,10 +1220,16 @@ try {
     if (isReviewIdentity(first?.author, reviewerIdentity) && typeof first?.body === 'string' && first.body.includes(REVIEWER_FINDING_MARKER)) return true;
     return t.isBot === true;
   };
+  // [MIVO-PATCH self-cr-machine-threads] #197:只有「旧」CR 才送审。审查身份的 CR 落在当前 head 上(review 的 commit id == meta.headRefOid)时,
+  // 它就是对这一版代码已经发过的结论,再送审只会在同一个 head 上重发 CR(#1704 同一 head 派审 20 次),
+  // 这时不命中,走下面 review-changes-requested(changes-requested),等作者推新提交。按小写比。
+  const headOid = String(meta.headRefOid ?? '').toLowerCase();
+  const noChangesRequestedAtHead = changesRequestedReviews.every((r) => String(r.commit?.oid ?? '').toLowerCase() !== headOid);
   const selfBlockedMachineThreadsOnly =
     meta.mergeStateStatus === 'BLOCKED' &&
     meta.reviewDecision === 'CHANGES_REQUESTED' &&
     allChangesRequestedBySelf &&
+    noChangesRequestedAtHead &&
     unresolvedThreads.length > 0 &&
     unresolvedThreads.every(isMachineThread);
   // [MIVO-PATCH self-findings] 作者即审查账号时,审查机在当前 head 已发过的问题清单(代替发不了的 CR),见 lib.mjs。
