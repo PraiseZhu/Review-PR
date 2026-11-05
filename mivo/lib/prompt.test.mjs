@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { buildReviewPrompt, loadReviewSpec, deferralSection, SEVERITY, SEVERITY_FILE, SEVERITY_VERSION, severityVersionOf, PRODUCT_INTENT, toRuleMapPlan, matchesRulePath, buildSpecManifest, specDigestOf } from './prompt.mjs';
 import { buildVerifyPrompt } from './verify.mjs';
 import { SKILL_ROOT } from './common.mjs';
+import { loadFocusConfig, toFocusLines } from './focus.mjs';
 
 const prompt = (tier = 'standard', over = {}) => buildReviewPrompt({
   spec: loadReviewSpec(SKILL_ROOT),
@@ -350,4 +351,80 @@ test('specDigest:收口全量模板进 digest(finalFullWithPrevious),且与普�
   assert.ok(template.finalFullWithPrevious.includes('**收口全量审查**'));
   assert.ok(template.finalFullWithPrevious.includes('(文件已不在本 PR diff)'));
   assert.ok(!template.fullWithPrevious.includes('收口全量审查'));
+});
+
+// ── 审查重点与不重做(#188) ──────────────────────────────────────────────
+const CI_COVERED = ['npx tsc -b', 'npm run lint', 'npm run test:unit'];
+const withCi = (status) => ({ pr: 7, meta: { title: 't', author: 'a', url: 'u', headRefOid: 'h', baseRefName: 'main', baseRefOid: 'b' }, ...(status ? { gate: { ci: { status } } } : {}) });
+
+test('审查重点一节:在本轮范围之后、规范原文之前,写明 ①②③④ 顺序且不缩小范围(各档、全量与增量)', () => {
+  const incremental = { mode: 'incremental', reason: 'r', files: ['a.ts'] };
+  for (const tier of ['light', 'standard', 'heavy']) {
+    for (const scope of [undefined, incremental]) {
+      const text = prompt(tier, scope ? { scope } : {});
+      const at = text.indexOf('## 审查重点与不重做');
+      assert.ok(at > text.indexOf('## 本轮范围'), `${tier} 档:应在本轮范围之后`);
+      assert.ok(at < text.indexOf('## 审查规范(原文,来自 review-pr skill)'), `${tier} 档:应在规范原文之前`);
+      for (const step of ['① 本 PR 要做成什么', '② 作者交接的风险', '③ 改动地图', '④ 其余 diff']) assert.ok(text.includes(step), `${tier} 档缺 ${step}`);
+      assert.match(text, /\*\*不缩小审查范围\*\*:④ 仍要覆盖「本轮范围」的全部内容/);
+      assert.match(text, /「所有 PR」必读的文档只核对与本 diff 相关的条款,Rule coverage 每份文档写一行/);
+    }
+  }
+});
+
+test('CI 已覆盖清单:只在 gate.ci.status=pass 且配置有清单时出现', () => {
+  const pass = prompt('standard', { ctx: withCi('pass'), focus: { ciCovered: CI_COVERED } });
+  assert.match(pass, /CI 已覆盖、不要重跑/);
+  for (const command of CI_COVERED) assert.ok(pass.includes(`- \`${command}\``), `缺 ${command}`);
+  assert.match(pass, /Verification 写「CI 已覆盖:<命令>」,这不算「未执行」/);
+  for (const status of ['failed', 'pending', 'unknown', 'awaiting', null]) {
+    const text = prompt('standard', { ctx: withCi(status), focus: { ciCovered: CI_COVERED } });
+    assert.doesNotMatch(text, /CI 已覆盖、不要重跑/, `ci=${status} 不应出现清单`);
+  }
+  assert.doesNotMatch(prompt('standard', { ctx: withCi('pass'), focus: { ciCovered: [] } }), /CI 已覆盖、不要重跑/, '空清单不出现');
+  assert.doesNotMatch(prompt('standard', { ctx: withCi('pass') }), /CI 已覆盖、不要重跑/, '没有 focus 不出现');
+});
+
+test('standard 档提示与交卷格式:必读文档只核对相关条款;Verification 认「CI 已覆盖」', () => {
+  const text = prompt('standard');
+  assert.match(text, /本 PR 是 standard 档:按下方「审查重点与不重做」的顺序审;rule-map 按改动路径命中的规则原文逐条审,「所有 PR」必读文档只核对与本 diff 相关的条款/);
+  assert.doesNotMatch(text, /按 rule-map 选规则原文逐条审,追查/, '旧的「逐条审全部」说法不再出现');
+  assert.match(text, /Rule coverage:读了哪些规则文件、逐项结论;「所有 PR」必读的文档每份一行/);
+  assert.match(text, /Verification:实际运行的命令与退出码、结果;「审查重点与不重做」列为 CI 已覆盖的命令写「CI 已覆盖:<命令>」,不算未执行/);
+});
+
+test('loadFocusConfig:没有 focus 块为空且不告警;不合法为空并告警;合法时去重、去空白', () => {
+  const read = (text) => () => text;
+  assert.deepEqual(loadFocusConfig('f', read('{"verify":{}}')), { ciCovered: [], warning: null });
+  assert.deepEqual(loadFocusConfig('f', read('{"focus":{"ciCovered":[" npx tsc -b ","npx tsc -b","npm run lint"]}}')), { ciCovered: ['npx tsc -b', 'npm run lint'], warning: null });
+  for (const bad of ['{"focus":{"ciCovered":"npx tsc -b"}}', '{"focus":{"ciCovered":[1]}}', '{"focus":{"ciCovered":[""]}}']) {
+    const out = loadFocusConfig('f', read(bad));
+    assert.deepEqual(out.ciCovered, []);
+    assert.match(out.warning, /focus\.ciCovered 不是字符串数组/);
+  }
+  const broken = loadFocusConfig('f', () => { throw new Error('ENOENT'); });
+  assert.deepEqual(broken.ciCovered, []);
+  assert.match(broken.warning, /读不到或不合法.*按空清单处理/);
+});
+
+test('仓库配置 focus.ciCovered 合法,且含 tsc、lint、全量单测', () => {
+  const { ciCovered, warning } = loadFocusConfig(join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+  assert.equal(warning, null);
+  for (const command of ['npx tsc -b', 'npm run lint', 'npm run test:unit']) assert.ok(ciCovered.includes(command), `缺 ${command}`);
+});
+
+test('toFocusLines:清单为空或 CI 非全绿时只有顺序与规则两部分', () => {
+  const base = toFocusLines({ ciStatus: 'failed', ciCovered: CI_COVERED });
+  assert.deepEqual(base, toFocusLines({}));
+  assert.ok(toFocusLines({ ciStatus: 'pass', ciCovered: CI_COVERED }).length > base.length);
+});
+
+test('specDigest:审查重点一节与 CI 已覆盖清单进 digest,清单变了 digest 就变', () => {
+  const m = (ciCovered) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: ['cindyplugin/src/panel.tsx'],
+    readFile: (path) => MATERIAL[path] ?? null, config: '{}', ciCovered });
+  const all = Object.values(m(CI_COVERED).template).join('\n');
+  for (const phrase of ['## 审查重点与不重做', 'CI 已覆盖、不要重跑', '- `npx tsc -b`']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
+  assert.notEqual(specDigestOf(m(CI_COVERED)), specDigestOf(m([...CI_COVERED, 'npm run verify:design'])), '清单多一条');
+  assert.notEqual(specDigestOf(m(CI_COVERED)), specDigestOf(m([])), '清单清空');
+  assert.equal(specDigestOf(m(CI_COVERED)), specDigestOf(m([...CI_COVERED])), '同样清单同样 digest');
 });
