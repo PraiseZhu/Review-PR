@@ -34,7 +34,8 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明 |
+| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警 |
+| `lib/focus.mjs` | 任务书「审查重点与不重做」一节（#188）：读 `config/review-features.json` 的 `focus.ciCovered`，生成审查顺序 ①②③④、规则只核相关条款、CI 全绿时的「CI 已覆盖、不要重跑」清单（见「审查重点与不重做」） |
 | `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解（判门与任务书用）；自己解析 head 上的 `review.md`（R 编号、内容哈希、涉及文件）；校验答卷的 `handoffCoverage` |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选、噪音、审查耗时、漏报（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
@@ -249,6 +250,15 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 - **去重按 workflow run id**：`classifyRollupContexts` 同名去重不再把刷新过的 `startedAt` 当「最新」。同名一组里每条都取到 run id 才按 run id 排（越大越新）；只认 `workflowName` 非空且 `detailsUrl` 路径为 `/<owner>/<repo>/actions/runs/<id>` 的 Actions CheckRun，外部 CI、check-run 链接、StatusContext 不用 run id，按 `startedAt`/`createdAt`/`completedAt`。只要有一条取不到，整组回退 `startedAt`（退 `createdAt` / `completedAt`）。最新一次事件的 run 失败仍判失败。`fetchCiRollup` 只透传 CheckRun 的 `detailsUrl`。
 - **CI 红→绿唤醒一次**：指纹里的 `ci` 是 `statusCheckRollup` 的聚合 state；`ci-failed` 不带 `retry`。判门红、聚合一直绿、PR 没改动时下一轮会当成 unchanged。`wakeHeldPrs` 复用已读的开放 issue 列表和 round-state 里上次快照的聚合 `ci`（**不另打 GraphQL**）：上轮 `outcome=ci-failed` 且聚合 `ci=SUCCESS` 时把该 PR 标 `retry` 重判门；聚合仍红不唤醒；同一 head+ci 不重复唤醒，避免每 3 分钟重派。在审的 PR 先推迟。重判通过后按原标签逻辑摘掉 `status:ci-failed`。
+
+## 审查重点与不重做（#188，总 issue #132）
+
+任务书在「本轮范围」之后、规范原文之前加一节「审查重点与不重做」（`lib/prompt.mjs` `toFocusLines`），借鉴 makecindy/cindy `REVIEW.md` §3「不要重复机器门禁」、§4「重点看机器查不到的部分」：
+
+- **审查顺序**：① 本 PR 要做成什么（子 issue 与产品规则，#187/#134 接入前写「跳过 ①」）→ ② 作者交接 review.md 第 3 节的 R 先动手证伪 → ③ 改动地图的不变量与直接下游 → ④ 其余 diff。顺序只决定在哪里多花时间，不缩小审查范围。
+- **规则文档**：rule-map「所有 PR」必读的文档只核对与本 diff 相关的条款，Rule coverage 每份一行；按改动路径命中的规则仍逐条审。
+- **CI 已覆盖、不要重跑**：context 的 `gate.ci.status` 为 `pass` 时，列出 `config/review-features.json` 的 `focus.ciCovered`，要求不重跑这些全量命令，Verification 写「CI 已覆盖：<命令>」。context 只有 CI 总状态、没有通过检查的名单，所以清单放配置；来源是 Mivo `.github/workflows/ci.yml` 在每个 head 上跑的 job（`build-and-test`、`linux-unit-tests`、`windows-unit-tests`、`design-verification`、`structure-guard`、`gitleaks`）。Mivo CI 增删 job 时同步改这份清单。CI 非全绿、读不到或清单为空时整段不出。
+- **上线影响**：任务书与清单都进 `specDigest`。按「规则改版，代码未变，沿用上次结论」，开放 PR 代码没变的沿用上次结论，不集中重审；代码变了的按新任务书审。
 
 ## 写明的产品意图与维护者裁定不改
 

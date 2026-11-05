@@ -9,6 +9,7 @@ import { SKILL_ROOT } from './common.mjs';
 import { ANSWER_SCHEMA } from './report.mjs';
 import { rulingSection, rebuttalSection } from './rulings.mjs';
 import { toHandoffPromptLines } from './handoff.mjs';
+import { toFocusLines } from './focus.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -82,7 +83,7 @@ export function deferralSection(deferrals) {
 
 const TIER_HINT = {
   light: '本 PR 是 light 档(纯文档/文案、零触发):通读 diff,按 P0/P1/P2 口径判;security.softHits 顺带定性。',
-  standard: '本 PR 是 standard 档:按 rule-map 选规则原文逐条审,追查共享符号与调用方,做最终复核。',
+  standard: '本 PR 是 standard 档:按下方「审查重点与不重做」的顺序审;rule-map 按改动路径命中的规则原文逐条审,「所有 PR」必读文档只核对与本 diff 相关的条款;追查共享符号与调用方,做最终复核。',
   heavy: '本 PR 是 heavy 档:standard 的全部内容,加上第 5 节第 6 条的恶意代码与数据外发专项;security-scan 结果在材料里,工具没跑成必须在 Verification 如实写「未执行 + 原因」。',
 };
 
@@ -94,8 +95,9 @@ const TIER_HINT = {
  * @param {string} p.workdir PR head 检出目录(审查 agent 的 cwd)
  * @param {object} p.inputs 材料文件的绝对路径 {contextFile, diffFile, scopeFile, securityScanFile?}
  * @param {object[]} [p.deferrals] 服务器核验通过的转 issue 条目 {issue, title, text}
+ * @param {{ciCovered?: string[]}|null} [p.focus] 审查重点配置(lib/focus.mjs loadFocusConfig 读出的 CI 已覆盖命令)
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null }) {
+export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null }) {
   const rulesBaseDir = inputs.rulesBaseDir ?? null;
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
@@ -163,6 +165,8 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     scopeText,
     ...(previous ? ['', previous] : []),
     '',
+    ...toFocusLines({ ciStatus: ctx.gate?.ci?.status ?? null, ciCovered: focus?.ciCovered ?? [] }),
+    '',
     '## 审查规范(原文,来自 review-pr skill)',
     '',
     '下文是 Cindy 仓的规范原文。凡是 Cindy 专有的路径或文件(如 `DESIGN.md`、`docs/design-rules/cindy-design-system.md`、',
@@ -197,8 +201,8 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     '',
     '- `report` 必须依次包含四段,标题一字不差:`## Findings`、`## Rule coverage`、`## Verification`、`## Overall`。',
     '  - Findings:每条 `[P0|P1|P2] path:line — 事实(触发条件与错误行为,附证据);影响;建议修复;验证方式`;没有就写「无」。',
-    '  - Rule coverage:读了哪些规则文件、逐项结论;文件在 base 上不存在就如实写。',
-    '  - Verification:实际运行的命令与退出码、结果;没运行的写明「未执行 + 原因」。',
+    '  - Rule coverage:读了哪些规则文件、逐项结论;「所有 PR」必读的文档每份一行(相关条款结论或「与本 diff 无关」);文件在 base 上不存在就如实写。',
+    '  - Verification:实际运行的命令与退出码、结果;「审查重点与不重做」列为 CI 已覆盖的命令写「CI 已覆盖:<命令>」,不算未执行;其余没运行的写明「未执行 + 原因」。',
     ...(previousFindings.length
       ? ['    上面列了「上一轮的问题」时,Verification 里还必须逐个 key 写一行「核对结论 + 证据/理由」,每个 key 都要有,例如:',
         '    `- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚`;结论可以是已修复、仍未修复(并在 findings 里用 supersedes 再报)、仍转 issue、裁定不改、申辩成立、文件已移出本 PR 改动。']
@@ -255,6 +259,7 @@ export function matchesRulePath(pattern, file) {
 }
 
 const TEMPLATE_CTX = { pr: '<pr>', meta: { title: '<title>', author: '<author>', url: '<url>', headRefOid: '<head>', baseRefName: '<base-ref>', baseRefOid: '<base>' } };
+const TEMPLATE_CTX_CI_PASS = { ...TEMPLATE_CTX, gate: { ci: { status: 'pass' } } };
 // 固定模板要盖到每个分支:全量/增量两种范围说明,上一轮问题与「已转 #N」提示,转 issue 一节的空与非空两种写法。
 // 只取全量模板时,只改增量专属指令的 skill 升级算不出任务书变化,同 head 的旧干净报告会被直接沿用。
 const TEMPLATE_FINDING = { path: '<path>', line: 1, body: '<finding>', deferredTo: 1, key: '<key>' };
@@ -315,7 +320,7 @@ export function readRuleSources({ paths = [], base, head, git }) {
  * @param {(path:string)=>string|null} p.readFile 按审查实际读的版本取文件内容,取不到返回 null
  * @param {string} p.config 生效的 pr-rules 配置原文
  */
-export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off' }) {
+export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [] }) {
   const plan = toRuleMapPlan(spec.ruleMap);
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
@@ -323,7 +328,9 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
   // 规则文件 base 版本一节:全量模板按「有 rules-base」写,增量模板按「head 读取」写,两种写法都进 digest。
   const handoff = handoffMode === 'off' ? null : { featureMode: handoffMode, facts: null, review: TEMPLATE_REVIEW };
   const withPlan = (scope, plan) => (handoffMode === 'off' ? scope : { ...scope, handoffFiles: TEMPLATE_REVIEW.files, handoffPlan: plan });
-  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
+  // 模板 ctx 带 CI 全绿:「CI 已覆盖」清单随 focus.ciCovered 进 digest;CI 非全绿时这一段整段不出,不另做模板。
+  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
+    focus: { ciCovered },
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir } });
   return {
     version: 1,
