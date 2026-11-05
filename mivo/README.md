@@ -296,19 +296,22 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 已知局限：第一阶段只认「审查账号 + 盯梢回执」，同账号的其他进程也能写出这一行；换独立机器人身份见 #122 待定决策。
 
-## 已修旧问题的 thread 代 resolve
+## 已修旧问题的 thread 回复与盯梢关闭
 
-审查机自己以前开的 thread，新一轮完整模型审查确认问题已修好时，由审查机在那条 thread 里回复依据并代 resolve（#115，总 issue #113），不再等作者手动点。
+审查机自己以前开的 thread，新一轮完整模型审查确认问题已修好时，由审查机在那条 thread 里回复一条带机器可读标记的说明，**不自己关**；关闭由 Mini 盯梢用 GitHub App 身份做（#115，总 issue #113；#185 起改为只回复，总 issue #173）。服务器换令牌只申请 Contents 读，没有关 thread 的权限，旧做法每次都以 `Resource not accessible by integration` 失败，回复里「现由审查机代为 resolve」也与事实不符。
 
 - **什么时候做**：本轮结论已经发到 PR 上之后（新发的 Request Changes / COMMENT review、新发的报告评论、本轮新提交的已核验 Approve），在写结果文件和释放锁之前。已有的 Approve、恢复旧写入、按 head 标记去重的旧评论都不算本轮已发布，不做。
-- **哪些 thread 进清单**（`lib/thread-resolution.mjs`，纯函数）：审查账号开的；首条评论带 `<!-- mivo-finding key=K head=H0 -->` 且 H0 不是当前 head 的前缀；key 不在本轮报出的阻断、转 issue、pre-existing、裁定不改、核对员推翻的名单里（服务端核验过的裁定 key 也算，不管模型有没有再报）；prepare 之后评论没有变化；没有被代 resolve 过（带 triage 标记的永久留人工）。
+- **哪些 thread 进清单**（`lib/thread-resolution.mjs`，纯函数）：审查账号开的；首条评论带 `<!-- mivo-finding key=K head=H0 -->` 且 H0 不是当前 head 的前缀；key 不在本轮报出的阻断、转 issue、pre-existing、裁定不改、核对员推翻的名单里（服务端核验过的裁定 key 也算，不管模型有没有再报）；prepare 之后评论没有变化；没有 triage 标记（旧版代 resolve 过又被人 unresolve 的永久留人工）；同一个 key + 同一个完整 head 审查身份还没回复过。
 - **哪些轮次不做**：`reuse`、出错 / state-changed / approval-pending、报告不完整、收口待补、`dry-run` / `sandbox`，以及问题分类被截断（超过 100 条）时清单为空。
-- **怎么做**：`lib/resolve-fixed-threads.mjs` 发布后重新完整读取 thread，**每条 thread 动手前再单独现查一次并用同一个选择器重算**（处理前面几条期间新增的维护者裁定、作者回复、评论编辑、被 resolve/unresolve，或同 key 另一条 thread 上的新裁定，都会让这一条被跳过并记 warning），再调用现有 `resolve-threads.mjs`（先回复、后 resolve，被人 unresolve 过的不再碰）。每条之前先复核审查锁、写账号、维护者名单摘要、PR 仍 OPEN 非 Draft 且 head/base 没变。回复固定模板，带完整 head、本次运行链接和 key。总预算 180 秒，每条最多 60 秒。
-- **失败怎么办**：只记 warning 和 `mivo.threadResolution`，不改本轮 outcome / approval / check，不让整轮失败；同一轮不会因为 resolve 成功而改成放行，下一轮按实时门禁重判。
-- **残余窗口**：每条的顺序是「绑定检查（锁 / 账号 / 权限 / head）→ 重读该 thread 并重算清单 → 立即调用共享脚本」，最后一次 thread 重读紧贴写操作，中间不插别的网络请求。重读的每一次 GraphQL 响应（thread 分页和评论分页，`bindGraphqlToPr` 包装读取器的注入点）同时带回 PR 的 state / isDraft / head / base，并与本轮绑定核对：重读期间 head 变化（包括回退到旧提交）、base 变化、PR 不再 OPEN 非 Draft，或响应缺这些字段，都按「读取未验证」处理，该条及之后不回复、不 resolve，只记 warning。thread 快照必须**一次响应读完**（`fetchSingleSnapshot`）：thread 超过 100 条、或某条 thread 的评论超过 100 条需要翻页时，各页不是同一时刻，前一页的 thread 在后一页请求期间新增的裁定看不到，所以这种 PR 本轮不代 resolve（只记 warning，留给人）。**仍不是原子的**：从最后一次已验证的重读响应到 mutation 之间，只剩共享脚本 `resolve-threads.mjs` 内部「再读 threads → 回复 → resolve」这一段，head 或评论仍可能变化；共享脚本本轮不改，所以这一段按已知窗口接受。
-- **只认本轮新发布**：Request Changes 回执 `alreadySubmitted=true`（命中同 head 旧 review，本轮没有新写）或缺该字段，不触发代 resolve。
-- **和 #114 的关系**：旧 thread 拦送审的门在 `lib/gates.mjs`（#114）。两个 PR 要一起换版，才能做到「旧 thread 不拦送审、并在复核后收口」；本功能不改 `gates.mjs`。
-- 换版后要在真实 PR 上观察到一例代 resolve（回复链接、被审 head、run 链接对得上）才算验收完（#115 SC7）。
+- **怎么做**：`lib/resolve-fixed-threads.mjs` 发布后重新完整读取 thread，**每条 thread 动手前再单独现查一次并用同一个选择器重算**（处理前面几条期间新增的维护者裁定、作者回复、评论编辑、被 resolve/unresolve，或同 key 另一条 thread 上的新裁定，都会让这一条被跳过并记 warning），然后只发一个 mutation：`addPullRequestReviewThreadReply`（经 `lib.ghGraphql`，沿用当前进程令牌）。服务器路径不再调用共享的 `review-pr/scripts/resolve-threads.mjs`，也不发 `resolveReviewThread`；那个脚本只留给交互式 review-pr，行为不变。每条之前先复核审查锁、写账号、维护者名单摘要、PR 仍 OPEN 非 Draft 且 head/base 没变。总预算 180 秒，每条最多 60 秒。
+- **回复长什么样**：固定模板，不拼模型自由文本——「本轮在提交 `<完整 head>` 完成复核:本轮复核未再发现该问题(key=`<key>`)。已修复，由盯梢关闭；如仍有异议，可在此回复。审查运行:`<run 链接>`。」，空一行后以 `<!-- mivo-review:thread-fixed key=<key> head=<完整 head> -->` 结尾。本改动依赖的盯梢侧约定（PraiseZhu/vigil 的姊妹 issue 实现）：最后一条评论是审查身份发的、标记里的 key 和 head 与当前一致、其后没有别人评论，才关这条 thread，所以有人在回复之后再评论的 thread 不会被关。
+- **去重**：同一 key + 同一完整 head 审查身份已经回复过，不重复发（盯梢还没来得及关时，下一次同 head 复核不会刷屏）；换了 head 重新复核通过，会再发一条带新 head 的回复；回复之后有人跟评，也不补发。triage 标记（旧版代 resolve 的痕迹）仍永久跳过。
+- **失败怎么办**：只记 warning 和 `mivo.threadResolution`（`status` / `skippedReason` / `plannedCount` / `repliedCount` / `items`，`repliedCount` 只数这一轮真正拿到 comment id 的回复），不改本轮 outcome / approval / check，不让整轮失败。回复报错、超时、回执缺 comment id 都算失败：停止这一批后面的 thread，不重试（写结果未知时重试可能重复回复），下一轮从实时评论去重。
+- **放行不变**：回复不等于关闭，也不等于放行。审查机自己开的 thread 在盯梢关掉之前仍是 `merge-blocked`；盯梢关掉后，下一轮按「同一版本已审过，沿用上次结论」放行。
+- **残余窗口**：每条的顺序是「绑定检查（锁 / 账号 / 权限 / head）→ 重读该 thread 并重算清单 → 立即回复」，最后一次 thread 重读紧贴写操作，中间不插别的网络请求。重读的每一次 GraphQL 响应（thread 分页和评论分页，`bindGraphqlToPr` 包装读取器的注入点）同时带回 PR 的 state / isDraft / head / base，并与本轮绑定核对：重读期间 head 变化（包括回退到旧提交）、base 变化、PR 不再 OPEN 非 Draft，或响应缺这些字段，都按「读取未验证」处理，该条及之后不回复，只记 warning。thread 快照必须**一次响应读完**（`fetchSingleSnapshot`）：thread 超过 100 条、或某条 thread 的评论超过 100 条需要翻页时，各页不是同一时刻，前一页的 thread 在后一页请求期间新增的裁定看不到，所以这种 PR 本轮不回复（只记 warning，留给人）。**仍不是原子的**：从最后一次已验证的重读响应到那一次回复 mutation 之间，head 或评论仍可能变化，按已知窗口接受；按上述约定，盯梢关闭前会再核对当前 head 和最后一条评论，过期的标记不会被采信。
+- **只认本轮新发布**：Request Changes 回执 `alreadySubmitted=true`（命中同 head 旧 review，本轮没有新写）或缺该字段，不触发回复。
+- **和 #114 的关系**：旧 thread 拦送审的门在 `lib/gates.mjs`（#114）。本功能不改 `gates.mjs`。
+- **上线顺序与验收**：盯梢侧（PraiseZhu/vigil 的姊妹 issue）先合并、先部署到 Mini，本改动再合，之后由每天 06:30 的自动换版上线。换版后要在真实 PR 上观察到一例：线上一次复核修好的 thread 里出现带 `mivo-review:thread-fixed` 标记的回复（回复链接、key、当前完整 head、run 链接对得上），并由盯梢关闭，才算验收完（#185 SC5，github-live 人工手测；取代 #115 SC7 的旧说法）。
 
 ## 每天的运维
 
@@ -625,7 +628,7 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 写前 guard：App 只在 `purpose=review` 下写当前 PR 的 `POST pulls/<pr>/reviews` 与 `POST pulls/<pr>/comments`；签核评论、改标签、关 issue、合并、GraphQL 写一律拒绝。写失败不回落到个人凭证，错误含期望与实际 HTTP 状态且不含令牌。
 - 服务器 prepare 默认分支读 GraphQL `defaultBranchRef`，不再读 `repos/<o>/<r>` 根 REST；`pre-merge-check.mjs` 的作者带 `__typename`，Bot 作者三种写法归一为同一个 `login[bot]`。
 - 清理自己的旧 Request Changes（dismiss）：`dismiss-own-review.mjs` 对配置的 App 开放「只清当前实际 App 账号自己的 CR」（精确比较，不按别名；别名里 PraiseZhu 的人工 CR 与他人 CR 一律挡住，仍要 `--review-clean`、thread 全 resolve、head 一致）；`dismiss-stale-reviews.mjs` 对 App 同样按旧门禁 marker 清理。两者每个 `PUT .../reviews/<id>/dismissals` 前重读 head、viewer 与完整 reviews；403 失败（错误含「期望 HTTP 2xx 或 review 已是 DISMISSED，实际 HTTP 403」、不含令牌、不回落个人凭证）；422 时回读确认 `DISMISSED` 才算幂等成功；App 分支有失败时 `ok:false` 且退出码 2。人类路径不变。
-- 服务器 thread：`mivo/lib` 的 `rulings` / `convergence` / `thread-resolution` / `resolve-fixed-threads` 按审查身份集合认首帖作者（可选 `reviewerIdentity`，缺省沿用 `reviewer` 字符串；GraphQL 的 Bot 登录名不带 `[bot]`，靠 `__typename` 与同名 User 区分）；「维护者裁定不改」的回复作者必须是非 Bot 的维护者；resolve 的执行资格允许当前写账号是维护者或配置的审查 App（仍要求写账号与绑定的审查账号一致、锁、authority、head/base 绑定）；失败分 reply / resolve 阶段写明期望与实际且抹掉令牌。
+- 服务器 thread：`mivo/lib` 的 `rulings` / `convergence` / `thread-resolution` / `resolve-fixed-threads` 按审查身份集合认首帖作者（可选 `reviewerIdentity`，缺省沿用 `reviewer` 字符串；GraphQL 的 Bot 登录名不带 `[bot]`，靠 `__typename` 与同名 User 区分）；「维护者裁定不改」的回复作者必须是非 Bot 的维护者；回复旧 thread 的执行资格允许当前写账号是维护者或配置的审查 App（仍要求写账号与绑定的审查账号一致、锁、authority、head/base 绑定）；回复失败写明原因且抹掉令牌。
 - 认 bot 的评论读取：`context.readDiscussionIssue` 的评论改读带 `user.type` 的分页 REST（`gh issue view --json comments` 对 bot 只给裸 login）；`bot-comment-source.test.mjs` 静态扫描生产 `.mjs`，禁止「`gh --json ...comments` 返回 + 取作者判身份」的用法（只读 body marker 的 `close-product-issue.mjs` 不算）。Bot 的留言不算维护者留言。
 - 没配 `reviewerApps` 时所有行为与改动前相同。**未执行的验证**：沙箱 prepare→publish 的 github-live 验证（依赖 xindong/mivo-canvas-plugin#1757）未执行；App 的真实权限、真实 thread resolve、真实 dismissal 没有 live 证据。
 - 回滚：去掉 `reviewerApps` 配置即回到旧人类路径。
