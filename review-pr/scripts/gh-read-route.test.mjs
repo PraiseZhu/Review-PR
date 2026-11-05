@@ -167,6 +167,93 @@ test('decideReadRoute 风险矩阵:新读法 app,身份字段 / 单 PR REST / �
   }
 });
 
+// 开关矩阵:每行 [名字, 调用, 全关, 只开 adminRead, 只开 secretsRead, 两个都开]。开关经 readRouteConfig 从 REVIEW_PR_READ_ROUTES 解析,
+// 与服务器真实走法一致。管理类读只有对应开关打开才走 App;rulesets/<id>、含 %2F 的分支保护、branches/<ref>、写方法、身份字段在任何开关下都是 user。
+const ROUTE_VALUES = ['', 'adminRead', 'secretsRead', 'adminRead,secretsRead'];
+const gqlInput = (fields) => JSON.stringify({ query: `query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){number ${fields}}}}`, variables: { owner: 'o', name: 'r', n: 5 } });
+const SWITCH_ROWS = [
+  ['branches/<ref>/protection', ['api', 'repos/o/r/branches/main/protection'], 'user', 'app', 'user', 'app'],
+  ['…/protection/required_signatures', ['api', '--method', 'GET', 'repos/o/r/branches/main/protection/required_signatures'], 'user', 'app', 'user', 'app'],
+  ['rulesets/rule-suites', ['api', 'repos/o/r/rulesets/rule-suites?ref=refs/heads/main&per_page=100'], 'user', 'app', 'user', 'app'],
+  ['actions/runners', ['api', 'repos/o/r/actions/runners?per_page=100'], 'user', 'app', 'user', 'app'],
+  ['actions/secrets/<name>', ['api', 'repos/o/r/actions/secrets/LITELLM_CREDENTIALS_JSON', '--jq', '.updated_at'], 'user', 'user', 'app', 'app'],
+  // 开关也放不进来的:单个规则集(current_user_can_bypass 按调用者算)、含 %2F 的分支保护、分支对象、其它子资源、列表
+  ['rulesets/<id>', ['api', 'repos/o/r/rulesets/7'], 'user', 'user', 'user', 'user'],
+  ['rulesets 列表', ['api', 'repos/o/r/rulesets'], 'user', 'user', 'user', 'user'],
+  ['branches/<含 %2F 的 ref>/protection', ['api', 'repos/o/r/branches/release%2F1.0/protection'], 'user', 'user', 'user', 'user'],
+  ['branches/<含 %2F 的 ref>/protection/required_signatures', ['api', 'repos/o/r/branches/release%2F1.0/protection/required_signatures'], 'user', 'user', 'user', 'user'],
+  ['branches/<ref> 分支对象', ['api', 'repos/o/r/branches/main'], 'user', 'user', 'user', 'user'],
+  ['branches 列表', ['api', 'repos/o/r/branches'], 'user', 'user', 'user', 'user'],
+  ['protection 的其它子资源', ['api', 'repos/o/r/branches/main/protection/enforce_admins'], 'user', 'user', 'user', 'user'],
+  ['actions/secrets 列表', ['api', 'repos/o/r/actions/secrets'], 'user', 'user', 'user', 'user'],
+  ['actions/runners/<id>', ['api', 'repos/o/r/actions/runners/5'], 'user', 'user', 'user', 'user'],
+  ['写方法 DELETE protection', ['api', '--method', 'DELETE', 'repos/o/r/branches/main/protection'], 'user', 'user', 'user', 'user'],
+  ['写方法 PUT secrets', ['api', '--method', 'PUT', 'repos/o/r/actions/secrets/X'], 'user', 'user', 'user', 'user'],
+  ['白名单外的仓', ['api', 'repos/x/y/branches/main/protection'], 'user', 'user', 'user', 'user'],
+  // 身份字段:任何开关下都走原令牌
+  ['单个 PR REST(mergeable_state)', ['api', 'repos/o/r/pulls/5'], 'user', 'user', 'user', 'user'],
+  ['pr view 带 mergeStateStatus', ['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus'], 'user', 'user', 'user', 'user'],
+  ['GraphQL 带 mergeStateStatus', { args: ['api', 'graphql', '--input', '-'], input: gqlInput('mergeStateStatus') }, 'user', 'user', 'user', 'user'],
+  ['jq 表达式里带 viewerCan*(本地二次保护)', ['api', 'repos/o/r/pulls/5/reviews', '--jq', '.[] | .viewerCanReact'], 'user', 'user', 'user', 'user'],
+  // 不受开关影响的读
+  ['reviews 列表', ['api', 'repos/o/r/pulls/5/reviews'], 'app', 'app', 'app', 'app'],
+  ['pr view headRefOid', ['pr', 'view', '5', '--repo', 'o/r', '--json', 'headRefOid'], 'app', 'app', 'app', 'app'],
+  ['rules/branches/<含 %2F 的 ref>', ['api', 'repos/o/r/rules/branches/release%2F1.0?per_page=100'], 'app', 'app', 'app', 'app'],
+];
+const rowCall = (call) => (Array.isArray(call) ? { args: call } : call);
+const decideWith = (routesValue, call) => {
+  const config = route.readRouteConfig({ REVIEW_PR_READ_TOKEN: 't', REVIEW_PR_READ_REPOS: 'o/r', ...(routesValue ? { REVIEW_PR_READ_ROUTES: routesValue } : {}) });
+  const { args, input } = rowCall(call);
+  return route.decideReadRoute(args, { config, env: {}, input });
+};
+
+test('decideReadRoute 开关矩阵:adminRead / secretsRead 只放行各自的只读形状,rulesets/<id>、%2F 分支保护、写、身份字段永远 user', () => {
+  for (const [name, call, ...want] of SWITCH_ROWS) {
+    ROUTE_VALUES.forEach((value, i) => assert.equal(decideWith(value, call).route, want[i], `${name} [REVIEW_PR_READ_ROUTES=${value || '(空)'}]`));
+  }
+});
+
+test('decideReadRoute:REVIEW_PR_READ_ROUTES 里的未知词(含 mergeState)不放行任何东西,也不影响已认的开关', () => {
+  for (const [name, call] of SWITCH_ROWS) {
+    const off = decideWith('', call);
+    for (const junk of ['mergeState', 'merge_state,all,*', 'adminread,ADMINREAD,Admin']) assert.deepEqual(decideWith(junk, call), off, `${name} [${junk}]`);
+    assert.deepEqual(decideWith('mergeState,adminRead', call), decideWith('adminRead', call), `${name} [review-pr.yml 现在传的 mergeState,adminRead]`);
+  }
+  // mergeState 被忽略后,带 mergeStateStatus 的读仍判 user,且 reason 是身份字段(分类器的 sensitive/graphql_merge_state 或本地的 identity_field)
+  const IDENTITY_REASONS = ['identity_field', 'sensitive_json_field', 'graphql_merge_state'];
+  for (const call of [['pr', 'view', '5', '--repo', 'o/r', '--json', 'state,mergeStateStatus'], ['pr', 'list', '--repo', 'o/r', '--json', 'number,mergeStateStatus'], { args: ['api', 'graphql', '--input', '-'], input: gqlInput('mergeStateStatus') }]) {
+    const d = decideWith('mergeState,adminRead,secretsRead', call);
+    assert.equal(d.route, 'user');
+    assert.ok(IDENTITY_REASONS.includes(d.reason), d.reason);
+  }
+  // 单个 PR REST 读(mergeable_state)同样 user
+  assert.equal(decideWith('mergeState,adminRead', ['api', 'repos/o/r/pulls/5']).route, 'user');
+  assert.equal(decideWith('mergeState,adminRead', ['api', 'repos/o/r/pulls/5.']).route, 'user');
+});
+
+test('decideReadRoute:没配 REVIEW_PR_READ_ROUTES 时,config 里没有 routes(老写法)、routes 全 false、只有未知词,三者逐条一致', () => {
+  const bare = { token: 't', repos: ['o/r'], logFile: '' };
+  for (const [name, call] of SWITCH_ROWS) {
+    const { args, input } = rowCall(call);
+    const old = route.decideReadRoute(args, { config: bare, env: {}, input });
+    assert.deepEqual(route.decideReadRoute(args, { config: { ...bare, routes: { adminRead: false, secretsRead: false } }, env: {}, input }), old, name);
+    assert.deepEqual(decideWith('', call), old, name);
+    assert.deepEqual(decideWith('mergeState', call), old, name);
+  }
+});
+
+test('decideReadRoute:IDENTITY_FIELD_RE 在开关全开时仍拦住 viewer* 与 mergeStateStatus 的各种出现位置', () => {
+  const on = (call) => decideWith('adminRead,secretsRead', call);
+  for (const field of ['viewerCanMergeAsAdmin', 'viewerDidAuthor', 'viewerHasStarred', 'viewerIsAuthor', 'viewerLatestReview', 'viewerPermission', 'viewerSubscription', 'viewerThumbsUp', 'mergeStateStatus', 'MERGESTATESTATUS']) {
+    const d = on(['api', 'repos/o/r/pulls/5/reviews', '--jq', `.[] | .${field}`]);
+    assert.deepEqual({ route: d.route, reason: d.reason }, { route: 'user', reason: 'identity_field' }, field);
+  }
+  // 管理类读的 jq 里带身份字段也走原令牌:开关放行的是端点形状,不是身份字段
+  const d = on(['api', 'repos/o/r/branches/main/protection', '--jq', '.viewerPermission']);
+  assert.equal(d.route, 'user');
+  assert.equal(on(['api', 'repos/o/r/branches/main/protection', '--jq', '.required_status_checks']).route, 'app');
+});
+
 test('shouldFallbackToUser:只认权限/不存在/令牌失效', () => {
   const bad = (stderr, extra = {}) => ({ ok: false, stdout: '', stderr, status: 1, ...extra });
   assert.equal(route.shouldFallbackToUser({ ok: true, stdout: '', stderr: '', status: 0 }), false);
@@ -247,6 +334,36 @@ test('gh():App 被拒后改用原令牌那次遇到 503,照常做瞬时错误重
   assert.equal(r.ok, true);
   assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token', 'user-token']);
   assert.equal(JSON.parse(r.stdout).by, 'user-token');
+});
+
+test('gh():REVIEW_PR_READ_ROUTES=adminRead → 分支保护读走 App 令牌;没配或只配 secretsRead 走原令牌;rulesets/<id> 永远原令牌', () => {
+  const protection = ['api', 'repos/o/r/branches/main/protection'];
+  setup(ENABLED);
+  gh(protection);
+  setup({ ...ENABLED, REVIEW_PR_READ_ROUTES: 'secretsRead' });
+  gh(protection);
+  setup({ ...ENABLED, REVIEW_PR_READ_ROUTES: 'mergeState,adminRead' });
+  const read = gh(protection);
+  gh(['api', 'repos/o/r/rulesets/7']);
+  gh(['api', 'repos/o/r/pulls/5']);
+  assert.equal(JSON.parse(read.stdout).by, 'app-token');
+  assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token', 'user-token']);
+  assert.deepEqual(route.routeMetrics(), { app: 1, appFallback: 0, user: 2 });
+  assert.equal(route.summarizeRouteLog(ROUTE_LOG).reasons['app:rest_admin_read'], 1, '分流日志里记 rest_admin_read');
+});
+
+test('gh():adminRead 打开的读被 App 拒(401/403/404:权限没授到)→ 原令牌重试一次;5xx 不重试', () => {
+  for (const mode of ['403', '404']) {
+    setup({ ...ENABLED, REVIEW_PR_READ_ROUTES: 'adminRead', FAKE_APP_MODE: mode });
+    const r = gh(['api', 'repos/o/r/branches/main/protection']);
+    assert.deepEqual(calls().map((c) => c.token), ['app-token', 'user-token'], mode);
+    assert.equal(JSON.parse(r.stdout).by, 'user-token');
+    assert.deepEqual(route.routeMetrics(), { app: 0, appFallback: 1, user: 0 });
+  }
+  setup({ ...ENABLED, REVIEW_PR_READ_ROUTES: 'adminRead', FAKE_APP_MODE: '500' });
+  const r = gh(['api', 'repos/o/r/branches/main/protection'], { allowFail: true });
+  assert.equal(r.ok, false);
+  assert.deepEqual(calls().map((c) => c.token), ['app-token']);
 });
 
 test('gh():App 返回 500 → 不换原令牌,失败原样交给调用方', () => {
