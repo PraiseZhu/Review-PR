@@ -108,3 +108,42 @@ test('readHealth 读到带降级字段的真实 marker', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── 测试用时钟注入:MIVO_REVIEW_HEALTH_NOW ─────────────────────────────────────
+// 子进程里的 review.mjs 没法传参,集成测试靠这个环境变量固定「现在」;不设就是 new Date()。
+const CLOCK_ENV = 'MIVO_REVIEW_HEALTH_NOW';
+const NO_MARKER = join(tmpdir(), `mivo-health-clock-no-marker-${process.pid}`);
+function withClockEnv(value, run) {
+  const saved = process.env[CLOCK_ENV];
+  if (value === undefined) delete process.env[CLOCK_ENV]; else process.env[CLOCK_ENV] = value;
+  try { return run(); } finally { if (saved === undefined) delete process.env[CLOCK_ENV]; else process.env[CLOCK_ENV] = saved; }
+}
+const readAt = (value, options = {}) => withClockEnv(value, () => readHealth({ markerPath: NO_MARKER, ...options }));
+
+test('readHealth:MIVO_REVIEW_HEALTH_NOW 注入固定时钟——06:30 关门、12:00 开门,UTC 写法等价,显式传 now 优先', () => {
+  const closed = readAt('2026-10-12T06:30:00+08:00');
+  assert.deepEqual([closed.ok, closed.window, closed.reason], [false, false, 'outside-business-window']);
+  const open = readAt('2026-10-12T12:00:00+08:00');
+  assert.deepEqual([open.ok, open.window, open.reason], [true, true, 'ok-no-marker']);
+  assert.equal(readAt('2026-10-11T22:30:00Z').window, false, 'UTC 22:30 = 上海 06:30');
+  assert.equal(readAt('2026-10-12T06:30:00+08:00', { now: at('2026-10-12T12:00:00+08:00') }).window, true, '显式 now 优先于环境变量');
+});
+
+test('readHealth:没注入时缺省 now 仍是当前时钟(new Date());空串、纯空白等于没设', (t) => {
+  for (const [wall, expected] of [['2026-10-12T06:30:00+08:00', false], ['2026-10-12T12:00:00+08:00', true]]) {
+    t.mock.timers.enable({ apis: ['Date'], now: at(wall) });
+    for (const value of [undefined, '', '   ']) assert.equal(readAt(value).window, expected, `${wall} ${JSON.stringify(value)}`);
+    t.mock.timers.reset();
+  }
+});
+
+test('readHealth:MIVO_REVIEW_HEALTH_NOW 不合法就显式报错,写明期望格式和实际值,不静默退回墙上时钟', () => {
+  for (const bad of ['tomorrow', '2026-10-12', '2026-10-12T06:30:00', '2026-13-45T06:30:00+08:00', '1760221800000']) {
+    assert.throws(() => readAt(bad), (error) => {
+      assert.match(error.message, /MIVO_REVIEW_HEALTH_NOW/);
+      assert.match(error.message, /带时区的 ISO 8601/);
+      assert.ok(error.message.includes(bad), error.message);
+      return true;
+    }, bad);
+  }
+});
