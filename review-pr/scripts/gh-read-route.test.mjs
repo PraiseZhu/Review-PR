@@ -66,6 +66,28 @@ test('readRouteConfig:令牌和仓名单缺一项都不分流;仓名不合法抛
   assert.throws(() => route.readRouteConfig({ REVIEW_PR_READ_TOKEN: 't', REVIEW_PR_READ_REPOS: 'o/r,not a repo' }), /REVIEW_PR_READ_REPOS/);
 });
 
+test('readRouteConfig:REVIEW_PR_READ_ROUTES 只认 adminRead、secretsRead,其它词忽略且不报错', () => {
+  const base = { REVIEW_PR_READ_TOKEN: 't', REVIEW_PR_READ_REPOS: 'o/r' };
+  const routesOf = (value) => route.readRouteConfig(value === undefined ? base : { ...base, REVIEW_PR_READ_ROUTES: value }).routes;
+  const OFF = { adminRead: false, secretsRead: false };
+  assert.deepEqual(routesOf(undefined), OFF, '没设=全关');
+  assert.deepEqual(routesOf(''), OFF);
+  assert.deepEqual(routesOf(' , ,'), OFF);
+  assert.deepEqual(routesOf('adminRead'), { adminRead: true, secretsRead: false });
+  assert.deepEqual(routesOf('secretsRead'), { adminRead: false, secretsRead: true });
+  assert.deepEqual(routesOf(' secretsRead , adminRead '), { adminRead: true, secretsRead: true }, '空白和顺序不影响');
+  assert.deepEqual(routesOf('adminRead,adminRead'), { adminRead: true, secretsRead: false }, '重复无副作用');
+  // 已取消的 mergeState 与任何未知词:忽略,不抛错,也不放行任何东西
+  assert.deepEqual(routesOf('mergeState'), OFF);
+  assert.deepEqual(routesOf('mergeState,adminRead'), { adminRead: true, secretsRead: false }, 'review-pr.yml 现在传的就是这一串');
+  assert.deepEqual(routesOf('merge_state,admin,Secrets,adminread,ADMINREAD,all,*,true'), OFF, '区分大小写,不做模糊匹配');
+  assert.deepEqual(Object.keys(routesOf('adminRead,whatever')).sort(), ['adminRead', 'secretsRead'], '结果里只有这两个键');
+  // 令牌或仓名单缺一项仍然不分流,与是否配了 routes 无关
+  assert.equal(route.readRouteConfig({ REVIEW_PR_READ_REPOS: 'o/r', REVIEW_PR_READ_ROUTES: 'adminRead' }), null);
+  assert.equal(route.readRouteConfig({ REVIEW_PR_READ_TOKEN: 't', REVIEW_PR_READ_ROUTES: 'adminRead' }), null);
+  assert.deepEqual(route.toReadRoutes(undefined), OFF);
+});
+
 test('decideReadRoute:读走 App,写/身份/管理/没写仓/不在名单走原令牌', () => {
   const config = { token: 't', repos: ['o/r'], logFile: '' };
   const decide = (args, extra = {}) => route.decideReadRoute(args, { config, env: {}, ...extra }).route;

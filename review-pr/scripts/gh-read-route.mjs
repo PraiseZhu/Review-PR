@@ -7,6 +7,8 @@
 // 开关(都可选;没设令牌或没设仓名单时本模块什么都不改,行为与之前完全一致):
 //   REVIEW_PR_READ_TOKEN      App 只读令牌(workflow 在 publish 前现取,有效期 1 小时)
 //   REVIEW_PR_READ_REPOS      允许走 App 的仓,逗号分隔(owner/name);只有这些仓下的读请求会分流
+//   REVIEW_PR_READ_ROUTES     可选:逗号分隔的放行开关,只认 adminRead、secretsRead(与 vendor 分类器的 routes 同名);
+//                             其它词(例如已取消的 mergeState)静默忽略,不报错也不放行任何东西;不设=全关
 //   REVIEW_PR_GH_ROUTE_LOG    可选:每次分流判断追加一行 JSON(只有命令前两个词、原因、结果,不含令牌和参数正文)
 //
 // 分类规则单一来源是 vendor/gh-app-classify.mjs(与 Mini 的 gh 分流器同一份),这里不自己判断。
@@ -14,6 +16,9 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { classify, needsStdin, APP } from './vendor/gh-app-classify.mjs';
 
 export const READ_TOKEN_ENV = 'REVIEW_PR_READ_TOKEN';
+export const READ_ROUTES_ENV = 'REVIEW_PR_READ_ROUTES';
+// 服务器认的开关固定写在这里,不跟着 vendor 的 ROUTE_SWITCHES 走:vendor 以后多出的开关要先决定服务器认不认(有测试盯着)。
+export const READ_ROUTE_SWITCHES = ['adminRead', 'secretsRead'];
 const TOKEN_KEYS = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'];
 const REPO_RE = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
 // 随调用者身份变化的字段:合并状态(含 admin / bypass 视角)、viewer* 系列。
@@ -23,6 +28,12 @@ const METRICS = { app: 0, appFallback: 0, user: 0 };
 export function routeMetrics() { return { ...METRICS }; }
 export function resetRouteMetrics() { METRICS.app = 0; METRICS.appFallback = 0; METRICS.user = 0; }
 
+/** 纯函数:REVIEW_PR_READ_ROUTES 的值 → { adminRead, secretsRead } 布尔。按逗号拆、去空白,只认 READ_ROUTE_SWITCHES(区分大小写);其它词忽略。 */
+export function toReadRoutes(value) {
+  const named = new Set(String(value ?? '').split(',').map((token) => token.trim()));
+  return Object.fromEntries(READ_ROUTE_SWITCHES.map((key) => [key, named.has(key)]));
+}
+
 /** 读开关。令牌和仓名单任缺一项返回 null(不分流);仓名单里有不合法的项直接抛错,不悄悄放宽。 */
 export function readRouteConfig(env = process.env) {
   const token = String(env[READ_TOKEN_ENV] ?? '').trim();
@@ -31,7 +42,7 @@ export function readRouteConfig(env = process.env) {
   if (repos.length === 0) return null;
   const bad = repos.find((r) => !REPO_RE.test(r));
   if (bad) throw new Error(`REVIEW_PR_READ_REPOS 里有不合法的仓名(期望 owner/name,实际 ${JSON.stringify(bad.slice(0, 80))})`);
-  return { token, repos, logFile: String(env.REVIEW_PR_GH_ROUTE_LOG ?? '').trim() };
+  return { token, repos, routes: toReadRoutes(env[READ_ROUTES_ENV]), logFile: String(env.REVIEW_PR_GH_ROUTE_LOG ?? '').trim() };
 }
 
 /** 纯函数:这条 gh 调用走 App 还是原令牌。caller 显式给了 env(身份令牌那类调用)或要求不换凭证的,一律原令牌。 */
@@ -44,7 +55,7 @@ export function decideReadRoute(args, { input, env = process.env, config, explic
     if (typeof input !== 'string') return { route: 'user', reason: 'stdin_missing' };
     stdinText = input;
   }
-  const d = classify(args, { repos: config.repos, env, stdinText, readFile: (path) => readFileSync(path, 'utf8') });
+  const d = classify(args, { repos: config.repos, routes: config.routes ?? {}, env, stdinText, readFile: (path) => readFileSync(path, 'utf8') });
   if (d.route !== APP) return { route: 'user', reason: d.reason };
   // 本地补一道:GitHub 按「谁在读」返回不同值的字段一律用原令牌。实测(2026-10-20,xindong/mivo-canvas-plugin):
   // PraiseZhu 作者的 PR 上 mergeStateStatus 个人令牌读到 CLEAN、App 读到 BLOCKED;审查机对「作者就是审查账号」的 PR
