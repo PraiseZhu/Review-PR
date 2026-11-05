@@ -711,9 +711,13 @@
       "api",
       "--method",
       "DELETE",
-      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review-pr-signoff"
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/status%3Aci-failed"
      ],
-     "expected": "app-write"
+     "expected": "user",
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;round.mjs 清扫已关闭 PR 的 status:* 标签,DELETE issues/<N>/labels/<status:*> 分类器判 write_method,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -735,9 +739,13 @@
       "api",
       "--method",
       "DELETE",
-      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review-pr-signoff"
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review%3Amerge-ready"
      ],
-     "expected": "app-write"
+     "expected": "user",
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;round.mjs 摘 review:merge-ready,DELETE issues/<N>/labels/review:merge-ready 分类器判 write_method,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -3011,13 +3019,17 @@
      "name": "label-remove",
      "argv": [
       "api",
-      "--method",
+      "-X",
       "DELETE",
-      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review-pr"
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/awaiting-discussion"
      ],
-     "expected": "app-write",
+     "expected": "user",
      "serverRoute": "user",
-     "legacyServerRoute": "user"
+     "legacyServerRoute": "user",
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs ghIssueLabel 摘维护者确认标签 awaiting-discussion(pr-rules.json signoffGate.label),分类器判 write_method,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -3039,17 +3051,21 @@
      "argv": [
       "label",
       "create",
-      "review-pr-signoff",
+      "awaiting-discussion",
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--description",
       "等待维护者讨论(review-pr)",
       "--color",
-      "review-pr-signoff"
+      "7057FF"
      ],
-     "expected": "app-write",
+     "expected": "user",
      "serverRoute": "user",
-     "legacyServerRoute": "user"
+     "legacyServerRoute": "user",
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs 建维护者确认标签 awaiting-discussion,分类器判 write_command,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -3132,7 +3148,7 @@
      "argv": [
       "label",
       "create",
-      "review-pr",
+      "status:ci-failed",
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--color",
@@ -3140,9 +3156,13 @@
       "--description",
       "x"
      ],
-     "expected": "app-write",
+     "expected": "user",
      "serverRoute": "user",
-     "legacyServerRoute": "user"
+     "legacyServerRoute": "user",
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs 按标签注册表补建 status:* / touches:* 等标签,分类器判 write_command,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -3164,7 +3184,7 @@
      "argv": [
       "label",
       "edit",
-      "review-pr",
+      "touches:security",
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--color",
@@ -3172,9 +3192,13 @@
       "--description",
       "x"
      ],
-     "expected": "app-write",
+     "expected": "user",
      "serverRoute": "user",
-     "legacyServerRoute": "user"
+     "legacyServerRoute": "user",
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs 按标签注册表改 touches:* / status:* 等标签的颜色与说明,分类器判 write_command,所以仍走 PraiseZhu"
+     }
     }
    ]
   },

@@ -1019,17 +1019,26 @@ test('清单里没有 ownerPending、没有任何 flipsIn(读侧 #1751、身份�
   for (const [e, c] of mentions) assert.equal(c.keep?.category, 'praisezhu-exception', `${e.id}/${c.name}: #173 只能出现在 praisezhu-exception 的 reason 里`);
 });
 
-// 白名单外、分类器仍判 PraiseZhu 的 4 个写:原因要写进 reason(见 keep 的 reason 字段)。
+// 白名单外、分类器仍判 PraiseZhu 的 10 个写:原因要写进 reason(见 keep 的 reason 字段)。
+const LABEL_NOT_MANAGED = /只有 review-pr \/ review-pr-signoff.*status:\* \/ review:merge-ready \/ awaiting-discussion \/ touches:\*/;
 const WRITE_NOT_ALLOWLISTED = [
   ['bypass-reason.gh.7d66324b2a', 'sample', 'fields_without_get', /隐式 POST/],
   ['request-changes-reviewed-pr.write.9215adc842', 'sample', 'write_method', /pulls\/<N>\/comments/],
   ['resolve-threads.ghGraphql.8de05a9f6f', 'mutation', 'graphql_mutation', /GraphQL mutation/],
   ['resolve-threads.ghGraphql.c014b245cb', 'mutation', 'graphql_mutation', /resolveReviewThread.*PraiseZhu\/vigil#336.*PraiseZhu\/Review-PR#185/],
+  // #1752 的 MANAGED_LABELS 只有 review-pr / review-pr-signoff,xindong/mivo-canvas-plugin 里没有这两个标签;
+  // 前置审查真实增删改的是 status:* / review:merge-ready / awaiting-discussion / touches:*,删、建、改都判 user(加标签 POST 不查名字,是 app-write)
+  ['round.run_gh.6daafa4b76', 'sample', 'write_method', LABEL_NOT_MANAGED],
+  ['round.run_gh.ff1da62fed', 'sample', 'write_method', LABEL_NOT_MANAGED],
+  ['lib.ghFn.444d0d2703', 'label-remove', 'write_method', LABEL_NOT_MANAGED],
+  ['lib.ghFn.fb2b3a6c1a', 'sample', 'write_command', LABEL_NOT_MANAGED],
+  ['lib.ghFn.0f9646b182', 'sample', 'write_command', LABEL_NOT_MANAGED],
+  ['lib.ghFn.031d975f12', 'sample', 'write_command', LABEL_NOT_MANAGED],
 ];
 
-test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 4 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
+test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 10 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
   const appWrites = allCases.filter(([, c]) => c.expected === APP_WRITE);
-  assert.equal(appWrites.length, 34);
+  assert.equal(appWrites.length, 28);
   // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
   const categories = new Set();
   for (const [e, c] of appWrites) {
