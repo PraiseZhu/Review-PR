@@ -123,3 +123,69 @@ test('核对员计数默认只输出数字:不含 finding 正文;--include-text 
   assert.equal(lines.length, 5);
   assert.ok(lines.every((l) => l.text.includes(SENTINEL)));
 });
+
+// ── 耗时、漏报、噪音(#189) ─────────────────────────────────────────────
+import { percentile, durationStats, parseCorrectionMarker, taskIssueOf, missedStats, noiseOf } from './review-outcomes.mjs';
+
+const NORTH_STAR = fileURLToPath(new URL('./fixtures/north-star.json', import.meta.url));
+const northStar = JSON.parse(readFileSync(NORTH_STAR, 'utf8'));
+
+test('耗时:只算成功的运行,nearest-rank 的 p50/p90 与手算一致', () => {
+  assert.equal(percentile([], 0.5), null);
+  assert.equal(percentile([3, 1, 2], 0.5), 2);
+  // 成功的 5 次:10、20、30、40、100 分钟;p50 = 第 ceil(2.5)=3 个 = 30,p90 = 第 ceil(4.5)=5 个 = 100;失败的 540 分钟不算
+  assert.deepEqual(durationStats(northStar.runs), { count: 5, p50: 30, p90: 100 });
+  assert.deepEqual(durationStats([{ startedAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:12:20Z', conclusion: 'success' }]), { count: 1, p50: 12.3, p90: 12.3 });
+  assert.deepEqual(durationStats([]), { count: 0, p50: null, p90: null });
+});
+
+test('修正标记与任务 issue 行:解析出总 issue、项与 SC;同仓写法用默认仓', () => {
+  assert.deepEqual(parseCorrectionMarker(northStar.corrections[0].body), { parent: 'o/r#100', itemRepo: 'o/r', itemIssue: 101, sc: 2 });
+  assert.equal(parseCorrectionMarker('普通 issue'), null);
+  assert.deepEqual(taskIssueOf('任务 issue：o/r#101', 'o/r'), { repo: 'o/r', issue: 101 });
+  assert.deepEqual(taskIssueOf('任务 issue：#102', 'o/r'), { repo: 'o/r', issue: 102 });
+  assert.equal(taskIssueOf('没有这一行', 'o/r'), null);
+});
+
+test('漏报:提过同一 SC 记已提前发现;没提记漏报;反查不到 PR 或 PR 在修正之后才合并记 unmatched;别的仓不算', () => {
+  const out = missedStats(northStar.corrections, northStar.prs, { reviewer: 'mivo-bot', repo: 'o/r' });
+  assert.equal(out.corrections, 4, '别的仓的修正 issue 不算');
+  assert.equal(out.caught, 1, '#201:PR 11 的 finding 提到 SC2');
+  assert.equal(out.missed, 1, '#202:PR 12 只提到 SC10,不算 SC1');
+  assert.equal(out.unmatched, 2, '#203 没有对应 PR;#205 的 PR 在修正 issue 之后才合并');
+  assert.deepEqual(out.items.find((i) => i.correction === 201), { correction: 201, item: 'o/r#101', sc: 2, prs: [11], result: 'caught' });
+  // 对照:同一条 #202,首帖改成提到 SC1 后记为已提前发现(区分只靠「首帖是否提到同一 SC」)
+  const loose = missedStats([northStar.corrections[1]], northStar.prs.map((p) => ({ ...p, threads: p.threads.map((t) => ({ ...t, comments: [{ ...t.comments[0], body: '[P2] x — SC1' }] })) })), { reviewer: 'mivo-bot', repo: 'o/r' });
+  assert.equal(loose.caught, 1);
+});
+
+test('噪音 = ruled-keep + rebutted', () => {
+  assert.equal(noiseOf({ 'ruled-keep': 2, rebutted: 3, deferred: 9 }), 5);
+  assert.equal(noiseOf(analysis.buckets), analysis.buckets['ruled-keep'] + analysis.buckets.rebutted);
+});
+
+test('CLI:夹具带 runs 与 corrections 时输出耗时、漏报、噪音;不含 finding 正文与 PR 标题;--workflow 格式校验', () => {
+  const base = (out) => ['--fixture', NORTH_STAR, '--repo', 'o/r', '--since', '2026-10-01', '--until', '2026-10-08', '--reviewer', 'mivo-bot', '--out', out];
+  const run = runCli(base);
+  assert.equal(run.r.status, 0, run.r.stderr);
+  const json = JSON.parse(run.read('outcomes.json'));
+  assert.deepEqual(json.durations, { count: 5, p50: 30, p90: 100 });
+  assert.equal(json.missed.caught, 1);
+  assert.equal(json.missed.missed, 1);
+  assert.equal(json.noise, noiseOf(json.analysis.buckets));
+  const md = run.read('outcomes.md');
+  assert.match(md, /## 审查耗时/);
+  assert.match(md, /p50 30 分钟,p90 100 分钟/);
+  assert.match(md, /## 漏报\(北极星,代理指标\)/);
+  assert.match(md, /噪音\(代理指标\) = ruled-keep \+ rebutted = \d+/);
+  for (const name of ['outcomes.json', 'outcomes.md']) {
+    assert.ok(!run.read(name).includes('没达成 #101 SC2 的提示要求'), `${name} 不该含 finding 正文`);
+    assert.ok(!run.read(name).includes('"t11"'), `${name} 不该含 PR 标题`);
+  }
+  assert.match(parseArgs(['--repo', 'o/r', '--since', '2026-10-01', '--until', '2026-10-08', '--reviewer', 'b', '--out', '/x', '--workflow', '../evil']).error, /--workflow 要写成 workflow 文件名/);
+  const old = runCli((out) => ['--fixture', FIXTURE, ...base(out).slice(2)]);
+  assert.equal(old.r.status, 0, old.r.stderr);
+  const oldJson = JSON.parse(old.read('outcomes.json'));
+  assert.equal(oldJson.durations, null, '旧夹具没有 runs:不输出耗时');
+  assert.equal(oldJson.missed, null, '旧夹具没有 corrections:不输出漏报');
+});

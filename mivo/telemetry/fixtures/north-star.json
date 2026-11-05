@@ -1,0 +1,151 @@
+{
+  "prs": [
+    {
+      "number": 11,
+      "title": "t11",
+      "body": "任务 issue：o/r#101\n\n正文",
+      "state": "MERGED",
+      "merged": true,
+      "mergedAt": "2026-10-03T00:00:00Z",
+      "createdAt": "2026-10-01T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-02T00:00:00Z",
+          "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": "> Mivo 自动审查 · head `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` · 档位 standard\n## Findings\n\n无\n\n## Overall\npass —— 没有 P0/P1/P2。"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": true,
+          "path": "src/a.ts",
+          "line": 1,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P2] src/a.ts:1 — 没达成 #101 SC2 的提示要求",
+              "createdAt": "2026-10-02T00:00:00Z",
+              "url": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 12,
+      "title": "t12",
+      "body": "任务 issue：#102",
+      "state": "MERGED",
+      "merged": true,
+      "mergedAt": "2026-10-03T00:00:00Z",
+      "createdAt": "2026-10-01T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-02T00:00:00Z",
+          "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": "> Mivo 自动审查 · head `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` · 档位 standard\n## Findings\n\n无\n\n## Overall\npass —— 没有 P0/P1/P2。"
+        }
+      ],
+      "threads": [
+        {
+          "isResolved": true,
+          "path": "src/a.ts",
+          "line": 1,
+          "comments": [
+            {
+              "author": "mivo-bot",
+              "body": "[P2] src/b.ts:3 — 与本 issue 验收无关的另一个问题 SC10",
+              "createdAt": "2026-10-02T00:00:00Z",
+              "url": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "number": 13,
+      "title": "t13",
+      "body": "任务 issue：o/r#104",
+      "state": "MERGED",
+      "merged": true,
+      "mergedAt": "2026-10-09T00:00:00Z",
+      "createdAt": "2026-10-01T00:00:00Z",
+      "author": "alice",
+      "reviews": [
+        {
+          "author": "mivo-bot",
+          "state": "COMMENTED",
+          "submittedAt": "2026-10-02T00:00:00Z",
+          "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": "> Mivo 自动审查 · head `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` · 档位 standard\n## Findings\n\n无\n\n## Overall\npass —— 没有 P0/P1/P2。"
+        }
+      ],
+      "threads": []
+    }
+  ],
+  "runs": [
+    {
+      "startedAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-01T00:10:00Z",
+      "conclusion": "success"
+    },
+    {
+      "startedAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-01T00:20:00Z",
+      "conclusion": "success"
+    },
+    {
+      "startedAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-01T00:30:00Z",
+      "conclusion": "success"
+    },
+    {
+      "startedAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-01T00:40:00Z",
+      "conclusion": "success"
+    },
+    {
+      "startedAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-01T01:40:00Z",
+      "conclusion": "success"
+    },
+    {
+      "startedAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-01T09:00:00Z",
+      "conclusion": "failure"
+    }
+  ],
+  "corrections": [
+    {
+      "number": 201,
+      "createdAt": "2026-10-05T00:00:00Z",
+      "body": "> 修正子 issue\n\n[验收机] 修正 · 总 o/r#100 · 项 o/r#101 SC2 · 第 1 轮"
+    },
+    {
+      "number": 202,
+      "createdAt": "2026-10-05T00:00:00Z",
+      "body": "[验收机] 修正 · 总 o/r#100 · 项 o/r#102 SC1 · 第 1 轮"
+    },
+    {
+      "number": 203,
+      "createdAt": "2026-10-05T00:00:00Z",
+      "body": "[验收机] 修正 · 总 o/r#100 · 项 o/r#103 SC1 · 第 1 轮"
+    },
+    {
+      "number": 204,
+      "createdAt": "2026-10-05T00:00:00Z",
+      "body": "[验收机] 修正 · 总 x/y#1 · 项 x/y#2 SC1 · 第 1 轮"
+    },
+    {
+      "number": 205,
+      "createdAt": "2026-10-05T00:00:00Z",
+      "body": "[验收机] 修正 · 总 o/r#100 · 项 o/r#104 SC1 · 第 1 轮"
+    }
+  ]
+}

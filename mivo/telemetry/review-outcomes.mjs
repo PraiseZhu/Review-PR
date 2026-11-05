@@ -4,8 +4,10 @@
 // 只读 GitHub(gh api graphql),不写任何 GitHub 数据;默认输出不含 finding 正文、首行、代码片段和 PR 标题。
 // 作者反应分桶是代理指标,不是事实真伪:没回复不等于认同,resolve 不等于真的修好。
 //
+// #189 起还算:review-pr.yml 成功运行的耗时 p50/p90;漏报(验收机修正 issue 反查到的 PR,审查机是否提前报过同一 SC);噪音 = ruled-keep + rebutted。
+//
 //   node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>
-//        [--max-prs 200] [--fixture <file>] [--include-text]
+//        [--max-prs 200] [--workflow review-pr.yml] [--fixture <file>] [--include-text]
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -25,8 +27,8 @@ const time = (value) => { const t = Date.parse(value ?? ''); return Number.isFin
 
 // ── 参数 ───────────────────────────────────────────────────────────────────
 export function parseArgs(argv) {
-  const out = { maxPrs: 200, includeText: false, fixture: null };
-  const values = { '--repo': 'repo', '--since': 'since', '--until': 'until', '--reviewer': 'reviewer', '--out': 'out', '--max-prs': 'maxPrs', '--fixture': 'fixture' };
+  const out = { maxPrs: 200, includeText: false, fixture: null, workflow: 'review-pr.yml' };
+  const values = { '--repo': 'repo', '--since': 'since', '--until': 'until', '--reviewer': 'reviewer', '--out': 'out', '--max-prs': 'maxPrs', '--fixture': 'fixture', '--workflow': 'workflow' };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--include-text') { out.includeText = true; continue; }
@@ -41,6 +43,7 @@ export function parseArgs(argv) {
   }
   if (!REPO_RE.test(out.repo)) return { error: `--repo 格式不对:${out.repo}` };
   for (const key of ['since', 'until']) if (!DATE_RE.test(out[key])) return { error: `--${key} 要写成 YYYY-MM-DD:${out[key]}` };
+  if (!/^[\w.-]+\.ya?ml$/.test(out.workflow)) return { error: `--workflow 要写成 workflow 文件名(如 review-pr.yml):${out.workflow}` };
   out.maxPrs = Number(out.maxPrs);
   if (!Number.isInteger(out.maxPrs) || out.maxPrs < 1 || out.maxPrs > 2000) return { error: '--max-prs 要在 1–2000 之间' };
   return { options: out };
@@ -98,6 +101,39 @@ function fetchPrs({ repo, since, until, maxPrs }) {
     after = page.pageInfo.endCursor;
   }
   return normalizePrs(nodes.slice(0, maxPrs));
+}
+
+function ghJson(args, what) {
+  const r = spawnSync('gh', args, { encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0 || r.error) {
+    const status = /HTTP (\d{3})/.exec(r.stderr ?? '')?.[1] ?? '?';
+    const failure = new Error(`GitHub 读取失败(${what}, HTTP ${status})`);
+    failure.code = 3;
+    throw failure;
+  }
+  try { return JSON.parse(r.stdout); } catch {
+    const failure = new Error(`GitHub 读取失败(${what}, 返回不是 JSON)`);
+    failure.code = 3;
+    throw failure;
+  }
+}
+
+/** workflow 在时间段内创建的运行 → {startedAt, updatedAt, conclusion};最多 10 页。 */
+function fetchRuns({ repo, workflow, since, until }) {
+  const runs = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const data = ghJson(['api', `repos/${repo}/actions/workflows/${workflow}/runs?created=${since}..${until}&per_page=100&page=${page}`], 'workflow runs');
+    const list = data.workflow_runs ?? [];
+    runs.push(...list.map((r) => ({ startedAt: r.run_started_at ?? r.created_at ?? null, updatedAt: r.updated_at ?? null, conclusion: r.conclusion ?? null })));
+    if (list.length < 100) break;
+  }
+  return runs;
+}
+
+/** 时间段内创建、正文像验收机修正 issue 的 issue → {number, body, createdAt};只保留能解析出修正标记的。 */
+function fetchCorrections({ repo, since, until }) {
+  const data = ghJson(['api', '-X', 'GET', 'search/issues', '-f', `q=repo:${repo} is:issue in:body 验收机 修正 created:${since}..${until}`, '-f', 'per_page=100'], 'search issues');
+  return (data.items ?? []).map((i) => ({ number: i.number, body: i.body ?? '', createdAt: i.created_at ?? null })).filter((i) => parseCorrectionMarker(i.body));
 }
 
 // ── 报告与分桶 ──────────────────────────────────────────────────────────────
@@ -211,6 +247,64 @@ export function findReverts(prs, reviewer) {
   return out;
 }
 
+// ── 审查耗时(#189) ─────────────────────────────────────────────────────────
+/** 第 q 分位(nearest-rank:排序后取第 ceil(q·n) 个);空数组返回 null。 */
+export function percentile(values, q) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length, Math.max(1, Math.ceil(q * sorted.length))) - 1];
+}
+
+/** 成功的 workflow run → 时长(分钟,从 run_started_at 到 updated_at)的 p50 / p90,保留一位小数。 */
+export function durationStats(runs) {
+  const minutes = (runs ?? []).filter((r) => r?.conclusion === 'success')
+    .map((r) => (time(r.updatedAt) - time(r.startedAt)) / 60_000)
+    .filter((m) => Number.isFinite(m) && m >= 0);
+  const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
+  return { count: minutes.length, p50: round1(percentile(minutes, 0.5)), p90: round1(percentile(minutes, 0.9)) };
+}
+
+// ── 漏报(#189,照 makecindy/cindy Review 北极星:合并后才发现的必改问题里,审查机提前发现了几成) ──
+// 只认验收机的修正 issue(PraiseZhu/vigil docs/acceptance-session.md「修正标记与复用」);
+// Ready 之后人或机器人的必改意见没有可靠信号判断「随后被修了」,不统计。
+const CORRECTION_RE = /\[验收机\]\s*修正\s*·\s*总\s*([\w.-]+\/[\w.-]+)#(\d+)\s*·\s*项\s*([\w.-]+\/[\w.-]+)#(\d+)\s*SC(\d+)/;
+const TASK_ISSUE_RE = /任务\s*issue[：:]\s*`?(?:([\w.-]+\/[\w.-]+))?#(\d+)/;
+
+/** 修正 issue 正文 → {parent, itemRepo, itemIssue, sc};不是修正 issue 返回 null。 */
+export function parseCorrectionMarker(body) {
+  const m = CORRECTION_RE.exec(String(body ?? ''));
+  if (!m) return null;
+  return { parent: `${m[1]}#${m[2]}`, itemRepo: m[3], itemIssue: Number(m[4]), sc: Number(m[5]) };
+}
+
+/** PR 正文的「任务 issue：」行 → {repo, issue};同仓写法 repo 用默认仓。 */
+export function taskIssueOf(body, defaultRepo) {
+  const m = TASK_ISSUE_RE.exec(String(body ?? ''));
+  return m ? { repo: m[1] ?? defaultRepo, issue: Number(m[2]) } : null;
+}
+
+/**
+ * 每条修正 issue 反查「写了同一任务 issue、在修正 issue 创建前合并」的 PR;这些 PR 上审查机 finding thread 首帖提到同一 SC<k>
+ * 记为已提前发现,否则记为漏报。找不到对应 PR 的单列 unmatched。代理指标:#134 之前审查不提 SC,基线的已提前发现预计为 0。
+ */
+export function missedStats(corrections, prs, { reviewer, repo }) {
+  const out = { corrections: 0, caught: 0, missed: 0, unmatched: 0, items: [] };
+  for (const issue of corrections ?? []) {
+    const marker = parseCorrectionMarker(issue.body);
+    if (!marker || marker.itemRepo.toLowerCase() !== String(repo).toLowerCase()) continue;
+    out.corrections += 1;
+    const created = time(issue.createdAt);
+    const owners = prs.filter((pr) => pr.merged && time(pr.mergedAt) <= created
+      && ((ref) => ref && ref.repo.toLowerCase() === marker.itemRepo.toLowerCase() && ref.issue === marker.itemIssue)(taskIssueOf(pr.body, repo)));
+    if (!owners.length) { out.unmatched += 1; out.items.push({ correction: issue.number, item: `${marker.itemRepo}#${marker.itemIssue}`, sc: marker.sc, prs: [], result: 'unmatched' }); continue; }
+    const scRe = new RegExp(`(?<![A-Za-z0-9])SC${marker.sc}(?!\\d)`);
+    const caught = owners.some((pr) => pr.threads.some((t) => { const info = toFindingThread(t, reviewer); return info && scRe.test(info.first.body ?? ''); }));
+    out[caught ? 'caught' : 'missed'] += 1;
+    out.items.push({ correction: issue.number, item: `${marker.itemRepo}#${marker.itemIssue}`, sc: marker.sc, prs: owners.map((p) => p.number), result: caught ? 'caught' : 'missed' });
+  }
+  return out;
+}
+
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 export function analyze(prs, { reviewer, repo, includeText = false }) {
   const buckets = Object.fromEntries(BUCKETS.map((b) => [b, 0]));
@@ -259,6 +353,9 @@ export function analyze(prs, { reviewer, repo, includeText = false }) {
   };
 }
 
+/** 噪音代理:维护者裁定不改 + 作者申辩。 */
+export const noiseOf = (buckets) => (buckets?.['ruled-keep'] ?? 0) + (buckets?.rebutted ?? 0);
+
 export function renderMarkdown(report) {
   const { window, analysis: a } = report;
   const frac = (x) => `${x.numerator}/${x.denominator}`;
@@ -268,6 +365,11 @@ export function renderMarkdown(report) {
     `审查过的 PR:${a.reviewedPrs} 个(审查账号 @${window.reviewer});有 ${report.truncated.nested} 个 PR 的评审或 thread 超过一页,只算了第一页。`, '',
     '## 作者反应分桶(代理指标)', '', '| 桶 | thread 数 |', '|---|---|',
     ...BUCKETS.map((b) => `| ${b}(代理指标) | ${a.buckets[b]} |`), '',
+    `噪音(代理指标) = ruled-keep + rebutted = ${noiseOf(a.buckets)}`, '',
+    ...(report.durations ? ['## 审查耗时', '', `- ${window.workflow ?? 'review-pr.yml'} 成功运行 ${report.durations.count} 次:p50 ${report.durations.p50 ?? '无'} 分钟,p90 ${report.durations.p90 ?? '无'} 分钟(从开始运行到结束,含排队后的执行)`, ''] : []),
+    ...(report.missed ? ['## 漏报(北极星,代理指标)', '',
+      `- 验收机修正 issue ${report.missed.corrections} 条:审查机合并前已提过同一 SC ${report.missed.caught} 条,漏报 ${report.missed.missed} 条,反查不到对应 PR ${report.missed.unmatched} 条`,
+      '- 只认验收机修正 issue;「已提前发现」看审查机 finding thread 首帖是否提到同一 SC<k>。', ''] : []),
     '## rounds-to-pass', '',
     `- 一轮通过:${frac(a.roundsToPass.onePass)}(分母是最终通过的 PR 数)`,
     `- 五轮及以上才通过:${frac(a.roundsToPass.fivePlus)}`,
@@ -291,14 +393,21 @@ export function main(argv = process.argv.slice(2)) {
   const { options } = parsed;
   let data;
   try {
-    data = options.fixture ? { prs: JSON.parse(readFileSync(options.fixture, 'utf8')).prs ?? [], truncated: { nested: 0 } } : fetchPrs(options);
+    if (options.fixture) {
+      const fixture = JSON.parse(readFileSync(options.fixture, 'utf8'));
+      data = { prs: fixture.prs ?? [], truncated: { nested: 0 }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null };
+    } else {
+      data = { ...fetchPrs(options), runs: fetchRuns(options), corrections: fetchCorrections(options) };
+    }
   } catch (error) {
     console.error(error.message);
     return error.code === 3 ? 3 : 1;
   }
   const analysis = analyze(data.prs, { reviewer: options.reviewer, repo: options.repo, includeText: options.includeText });
-  const report = { note: NOTE, window: { repo: options.repo, since: options.since, until: options.until, reviewer: options.reviewer, maxPrs: options.maxPrs },
-    prsRead: data.prs.length, truncated: data.truncated, analysis };
+  const report = { note: NOTE, window: { repo: options.repo, since: options.since, until: options.until, reviewer: options.reviewer, maxPrs: options.maxPrs, workflow: options.workflow },
+    prsRead: data.prs.length, truncated: data.truncated, analysis, noise: noiseOf(analysis.buckets),
+    durations: data.runs ? durationStats(data.runs) : null,
+    missed: data.corrections ? missedStats(data.corrections, data.prs, { reviewer: options.reviewer, repo: options.repo }) : null };
   mkdirSync(options.out, { recursive: true });
   writeFileSync(join(options.out, 'outcomes.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(options.out, 'outcomes.md'), renderMarkdown(report));
