@@ -1,5 +1,5 @@
 // [MIVO-PATCH app-read-route] 原样搬运,不要在这里改逻辑。
-// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ cc2fd4c6f618d7de1f825a1fefca272f455ae4ca(原文件 sha256 828e52f6cbbdaadc05210ebfc53b73d725e5f7706c31c48c5e8185e0590f77c0)。
+// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ adede3eb103c3e26a1d85efbc25c447819552c51(原文件 sha256 66e466eb7d38eb3f110105ebf0c685466aecbc2220b15e1d94d4a25ee43a6656)。
 // Mini 上的 gh 分流器用同一份规则;服务器发布步骤用它判断「这条 gh 请求能不能改用 App 只读令牌」。
 // 规则要改,先改插件仓那份,再整份重新搬运,并更新 gh-read-route.test.mjs 里的 sha256。
 // gh 命令分类器（纯函数，不碰文件系统；readFile 由调用方注入）。
@@ -11,6 +11,16 @@
 
 export const APP = 'app'
 export const USER = 'user'
+
+// config.json 的 routes：按目录打开的放行开关，默认全关。关着时分类结果与没有这些开关时逐条一致。
+// 「结果随调用者身份变化」的读**不设开关**：mergeStateStatus / mergeable_state / current_user_can_bypass / permissions /
+// viewer* / @me 等永远走 PraiseZhu（见 SENSITIVE_JSON_FIELDS 与 switchedRestReason），因为 App 读到的值可能和 PraiseZhu
+// 不同又不报错（#1714 现网：同一 PR，App 读 blocked、PraiseZhu 读 clean），回落接不住。开关只留给「要额外权限、但不含
+// 按调用者算的字段」的读，权限没授到时 403 回落即可：
+//   adminRead   ：branches/<ref>/protection 等 Administration 读（App 要先在 GitHub 上授权 administration: read）；rulesets/<id> 不在范围内，见 switchedRestReason
+//   secretsRead ：actions/secrets/<name>（App 要先授权 secrets: read）
+export const ROUTE_SWITCHES = ['adminRead', 'secretsRead']
+const toRouteSwitches = (routes) => Object.fromEntries(ROUTE_SWITCHES.map((key) => [key, routes?.[key] === true]))
 
 // helpers
 const toUser = (reason, cmd) => ({ route: USER, reason, cmd })
@@ -76,9 +86,23 @@ function makeSpec({ value = [], bool = [] }) {
   return { long, short }
 }
 
-// 支持 --long=v、--long v、-x v、-xv、-x=v、`--` 之后全是位置参数；合并短参数或未知参数 → unknown。
-export function parseFlags(args, spec) {
-  const out = { ordered: [], values: new Map(), bools: new Set(), positionals: [], unknown: false }
+// pflag 的布尔选项也接受 `=value` 等号写法（`--include=true`、`-i=false`），值只认 strconv.ParseBool 的那几种。
+// pflag 对同一个选项是最后一次赋值生效：显式关掉（=false/0/f）等价于没写，同时要清掉前面 `--watch` / `--help`
+// 那种裸写法留下的记录，否则 `--watch --watch=false` 仍被当成已设置（绕过并发槽、丢掉只读重试资格）。
+// 其它写法 gh 自己会报错，这里按看不清处理（unknown）。`-iH` 这类合并短参数同样看不清。
+const BOOL_TRUE = /^(?:1|t|true)$/i
+const BOOL_FALSE = /^(?:0|f|false)$/i
+function applyBoolValue(out, name, raw) {
+  if (BOOL_TRUE.test(raw)) { out.bools.add(name); return true }
+  if (BOOL_FALSE.test(raw)) { out.bools.delete(name); return true }
+  return false
+}
+
+// 支持 --long=v、--long v、-x v、-xv、-x=v、布尔 `=true|false`、`--` 之后全是位置参数；合并短参数或未知参数 → unknown。
+// `shortHelp` 打开时，没注册成选项的 `-h…`（`-h`、`-h=false`、`-hfoo`）记 `implicitHelp`：pflag 对未注册的 `-h`
+// 直接按 help 处理（gh 2.92 实测 `gh api user -h=false` 打 help），它不是请求，也不是「看不懂的参数」。
+export function parseFlags(args, spec, { shortHelp = false } = {}) {
+  const out = { ordered: [], values: new Map(), bools: new Set(), positionals: [], unknown: false, implicitHelp: false }
   const addValue = (long, value) => {
     out.ordered.push({ long, value })
     const list = out.values.get(long) ?? []
@@ -97,8 +121,8 @@ export function parseFlags(args, spec) {
       const kind = spec.long.get(name)
       if (!kind) { out.unknown = true; continue }
       if (kind === 'bool') {
-        if (eq !== -1) out.unknown = true
-        else out.bools.add(name)
+        if (eq === -1) out.bools.add(name)
+        else if (!applyBoolValue(out, name, arg.slice(eq + 1))) out.unknown = true
         continue
       }
       if (eq !== -1) { addValue(name, arg.slice(eq + 1)); continue }
@@ -109,10 +133,14 @@ export function parseFlags(args, spec) {
     }
     if (arg.length > 1 && arg.startsWith('-')) {
       const name = spec.short.get(arg[1])
-      if (!name) { out.unknown = true; continue }
+      if (!name) {
+        if (shortHelp && arg[1] === 'h') { out.implicitHelp = true; continue }
+        out.unknown = true; continue
+      }
       if (spec.long.get(name) === 'bool') {
-        if (arg.length > 2) out.unknown = true
-        else out.bools.add(name)
+        const attached = arg.slice(2)
+        if (attached === '') out.bools.add(name)
+        else if (!(attached.startsWith('=') && applyBoolValue(out, name, attached.slice(1)))) out.unknown = true
         continue
       }
       let rest = arg.slice(2)
@@ -139,6 +167,7 @@ const API_SPEC = makeSpec({
 })
 
 const REPO_FLAG = ['repo:R']
+const LABEL_JSON_FIELDS = new Set(['name', 'color', 'description', 'id'])
 
 // 非 api 只读命令：deny 命中 → user，needJson 表示必须带 --json（默认人读输出会顺带查 reviewRequests 等身份相关字段）。
 const READ_COMMANDS = {
@@ -197,6 +226,15 @@ const READ_COMMANDS = {
     reason: 'run_read', needJson: false, deny: {},
     spec: makeSpec({ value: [...REPO_FLAG, 'dir:D', 'name:n', 'pattern:p'] }),
   },
+  // label list 只读仓库的标签；--json 字段限定在 LABEL_JSON_FIELDS（见 classifyRead），其它 label 子命令仍是写命令。
+  'label list': {
+    reason: 'label_read', needJson: true, deny: { web: 'web', search: 'search' },
+    jsonFields: LABEL_JSON_FIELDS,
+    spec: makeSpec({
+      value: [...REPO_FLAG, 'jq:q', 'json', 'limit:L', 'order', 'search:S', 'sort', 'template:t'],
+      bool: ['web:w'],
+    }),
+  },
   'variable get': {
     reason: 'variable_read', needJson: false, deny: { org: 'org_or_env', env: 'org_or_env' },
     spec: makeSpec({ value: [...REPO_FLAG, 'jq:q', 'json', 'template:t', 'env:e', 'org:o'] }),
@@ -207,8 +245,74 @@ const READ_COMMANDS = {
   },
 }
 
+// gh 里 `ls` 是 list 子命令的短别名（gh 2.92：`pr|issue|run|variable ls` 都能跑）。别名和规范命令是同一个请求，
+// 所以分流、只读判定和 spec 查找都按规范 key 查表，别名不会漏进「未知命令」那条路。
+// 只登记 READ_COMMANDS 里有的这四个组：其它 `ls`（label、repo、secret…）本来就不在这张表里，照旧走未知命令，不改分流。
+const LIST_ALIAS_GROUPS = new Set(['pr', 'issue', 'run', 'variable'])
+
+function commandKey(argv) {
+  const group = argv[0] ?? ''
+  const sub = argv[1] ?? ''
+  return sub === 'ls' && LIST_ALIAS_GROUPS.has(group) ? `${group} list` : `${group} ${sub}`
+}
+
+// gh 的 root persistent flag：`--help`（`-h` 是 pflag 对未注册简写的 help 处理）。cobra 允许它出现在命令前
+// （`gh --help=false api user`）、命令与子命令之间（`gh pr --help=false view 1`），也允许和子命令后的写法混用，
+// 取值按 pflag 的「最后一次赋值生效」（`--help --help=false` 是真实请求；`gh --help=false api user` 实测发请求）。
+// 下面几处判定都按位置切片（`argv[0]` / `argv[1]` 是命令、`argv.slice(2)` 是参数），前置写法会让切片错位：
+// 真实请求被当成 unknown_command 或 help，丢掉只读限流重试、绕过并发槽。
+// 所以入口处先把「命令位置之前」的 help 写法剥掉，按 last-value-wins 只留最终值，再以 canonical
+// `--help` / `--help=false` 放回命令（有子命令时放回子命令）之后：`commandKey` 看到真实命令，
+// `parseFlags` 仍按位置解析剩下的参数，子命令后面那个 help 写法照旧覆盖这里放回的值。
+// 命令前没有 help 写法时原样返回（绝大多数调用，不重建数组）。
+const ROOT_HELP_EQ = '--help='
+
+// 单个 token 的 help 取值：true / false / 'invalid'（`--help=yes`，gh 自己会报 invalid argument）/ null（不是 root help）。
+// `-h…` 一律算 help：pflag 对没注册的 `-h` 直接按 help 处理（gh 2.92 实测 `gh -h=false version` 也打 usage）。
+function rootHelpState(arg) {
+  if (arg === '--help' || (arg.startsWith('-h') && !arg.startsWith('--'))) return true
+  if (!arg.startsWith(ROOT_HELP_EQ)) return null
+  const raw = arg.slice(ROOT_HELP_EQ.length)
+  if (BOOL_TRUE.test(raw)) return true
+  if (BOOL_FALSE.test(raw)) return false
+  return 'invalid'
+}
+
+function normalizeRootFlags(argv) {
+  let help = null
+  let i = 0
+  for (; i < argv.length; i += 1) {
+    const state = rootHelpState(argv[i])
+    if (state === null) break
+    if (state === 'invalid') return argv // 看不懂的布尔值：交给 parseFlags 的 unknown 兜底，不改写 argv
+    help = state
+  }
+  const group = argv[i]
+  if (group === undefined) return argv
+  // 命令与子命令之间：这里能出现的同样只有 root persistent flag。
+  let j = i + 1
+  for (; j < argv.length; j += 1) {
+    const state = rootHelpState(argv[j])
+    if (state === null) break
+    if (state === 'invalid') return argv
+    help = state
+  }
+  if (help === null) return argv
+  // 子命令 = 命令后第一个不是 root help 的 token；以 '-' 开头时它是命令自己的选项（`api -X GET`），
+  // 结构前缀只有命令一个 token，canonical help 紧跟命令，不会被任何带值选项当成自己的值。
+  const sub = argv[j] !== undefined && !argv[j].startsWith('-') ? argv[j] : undefined
+  const mark = sub === undefined ? j : j + 1
+  return [group, ...(sub === undefined ? [] : [sub]), help ? '--help' : '--help=false', ...argv.slice(mark)]
+}
+
+// deny 的原因分两类：只影响分流的（search、org_or_env——请求本身仍是纯读，可以安全重放）和可能影响重试安全的。
+// 只有前者列在这里；其它 reason（web 会开浏览器、streaming 是长流）以及以后新增的 reason 一律按不能重试处理。
+const RETRY_SAFE_DENY_REASONS = new Set(['search', 'org_or_env'])
+
 // headRepository / headRepositoryOwner 指向 fork 仓：App 看不到时 GitHub 照样成功、字段缺失，不会回落，所以交给 PraiseZhu。
-// mergeStateStatus 按调用者算：只读 App 看到的总是 BLOCKED，GitHub 照样成功，不会回落。
+// mergestatestatus（mergeStateStatus / GET 单个 PR 的 mergeable_state）按调用者算：App 的只读身份不参与 can-merge，
+// GitHub 照样返回 200、不触发回落（#1714：同一 PR，App BLOCKED、PraiseZhu CLEAN），所以不管哪个目录、哪个开关都交给
+// PraiseZhu。这条不设开关——身份相关的读一旦放给 App，调用方就会把可合并的 PR 当成卡住。
 const SENSITIVE_JSON_FIELDS = new Set(['reviewrequests', 'projectcards', 'projectitems', 'headrepository', 'headrepositoryowner', 'mergestatestatus'])
 
 // graphql
@@ -381,10 +485,8 @@ function scanGraphqlRoot(text, variables) {
   return { roots: scannedRoots, nestedRepository: repositoryTokenCount > rootRepositoryCount }
 }
 
-function classifyGraphql(parsed, ctx, cmd) {
-  const method = lastValue(parsed, 'method')
-  if (method !== undefined && method.toUpperCase() !== 'POST') return toUser('graphql_method', cmd)
-
+// 取出 GraphQL 请求的查询文本和变量（--input 的 JSON，或 -f/-F query=…）；取不到返回 {reason}（reason 即分流用的原因）。
+function readGraphqlRequest(parsed, ctx) {
   const input = lastValue(parsed, 'input')
   let queryText
   let variables = {}
@@ -394,16 +496,16 @@ function classifyGraphql(parsed, ctx, cmd) {
   }
   try {
     if (input !== undefined) {
-      if (parsed.ordered.some((f) => f.long === 'raw-field' || f.long === 'field')) return toUser('graphql_shape', cmd)
+      if (parsed.ordered.some((f) => f.long === 'raw-field' || f.long === 'field')) return { reason: 'graphql_shape' }
       const raw = readText(input)
-      if (typeof raw !== 'string') return toUser('graphql_unparsed', cmd)
+      if (typeof raw !== 'string') return { reason: 'graphql_unparsed' }
       let body
-      try { body = JSON.parse(raw) } catch { return toUser('graphql_unparsed', cmd) }
+      try { body = JSON.parse(raw) } catch { return { reason: 'graphql_unparsed' } }
       if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.query !== 'string') {
-        return toUser('graphql_unparsed', cmd)
+        return { reason: 'graphql_unparsed' }
       }
       if (body.variables !== undefined && (body.variables === null || typeof body.variables !== 'object' || Array.isArray(body.variables))) {
-        return toUser('graphql_unparsed', cmd)
+        return { reason: 'graphql_unparsed' }
       }
       queryText = body.query
       variables = body.variables ?? {}
@@ -411,14 +513,14 @@ function classifyGraphql(parsed, ctx, cmd) {
       for (const { long, value } of parsed.ordered) {
         if (long !== 'raw-field' && long !== 'field') continue
         const eq = value.indexOf('=')
-        if (eq === -1) return toUser('graphql_shape', cmd)
+        if (eq === -1) return { reason: 'graphql_shape' }
         const key = value.slice(0, eq)
         const val = value.slice(eq + 1)
         if (key === 'operationName') continue
         if (key === 'query') {
           if (val.startsWith('@')) {
             const raw = readText(val.slice(1))
-            if (typeof raw !== 'string') return toUser('graphql_unparsed', cmd)
+            if (typeof raw !== 'string') return { reason: 'graphql_unparsed' }
             queryText = raw
           } else {
             queryText = val
@@ -426,20 +528,30 @@ function classifyGraphql(parsed, ctx, cmd) {
           continue
         }
         if (long === 'field') {
-          if (val.startsWith('@')) return toUser('field_from_file', cmd)
+          if (val.startsWith('@')) return { reason: 'field_from_file' }
           if (/^(true|false|null|-?\d+(\.\d+)?)$/.test(val)) continue // 非字符串，不能当仓库名
         }
         variables[key] = val
       }
     }
   } catch {
-    return toUser('graphql_unreadable', cmd)
+    return { reason: 'graphql_unreadable' }
   }
-  if (typeof queryText !== 'string' || queryText.trim() === '') return toUser('graphql_shape', cmd)
+  if (typeof queryText !== 'string' || queryText.trim() === '') return { reason: 'graphql_shape' }
+  return { queryText, variables }
+}
+
+function classifyGraphql(parsed, ctx, cmd) {
+  const method = lastValue(parsed, 'method')
+  if (method !== undefined && method.toUpperCase() !== 'POST') return toUser('graphql_method', cmd)
+
+  const request = readGraphqlRequest(parsed, ctx)
+  if (request.reason) return toUser(request.reason, cmd)
+  const { queryText, variables } = request
 
   // 在原文（含字符串和注释）上做保守检查，宁可多判给 user。
   if (/viewer/i.test(queryText)) return toUser('graphql_viewer', cmd)
-  if (/mergeStateStatus/i.test(queryText)) return toUser('graphql_merge_state', cmd) // 按调用者算，见 SENSITIVE_JSON_FIELDS
+  if (/mergeStateStatus/i.test(queryText)) return toUser('graphql_merge_state', cmd) // 按调用者算，永远走 PraiseZhu，见 SENSITIVE_JSON_FIELDS
   if (/\b(mutation|subscription)\b/.test(queryText)) return toUser('graphql_mutation', cmd)
   if (/@me\b/i.test(queryText)) return toUser('at_me', cmd)
   if (/protection|ruleset|collaborator|team|member|permission|reviewRequest|requestedReviewer|project/i.test(queryText)
@@ -480,16 +592,52 @@ function isGraphqlEndpoint(endpoint) {
 }
 
 export function needsStdin(argv) {
+  argv = normalizeRootFlags(argv)
   if (argv[0] !== 'api') return false
-  const parsed = parseFlags(argv.slice(1), API_SPEC)
-  if (parsed.unknown || parsed.positionals.length !== 1) return false
+  const { spec, shortHelp } = commandFlags(argv)
+  const parsed = parseFlags(argv.slice(1), spec, { shortHelp })
+  // help 不发请求，别为它去读 stdin（`api graphql --input - --help` 在终端里会把包装器卡住）。
+  if (parsed.unknown || parsed.bools.has('help') || parsed.implicitHelp || parsed.positionals.length !== 1) return false
   if (!isGraphqlEndpoint(normalizeEndpoint(parsed.positionals[0]))) return false
   if (lastValue(parsed, 'input') === '-') return true
   return parsed.ordered.some((f) => (f.long === 'raw-field' || f.long === 'field') && f.value === 'query=@-')
 }
 
+// 分支名带 `/` 时 gh 会把它编成 %2F。只有 commits/<ref>、rules/branches/<ref>、branches/<ref> 的最后一段认这种写法：
+// 别的位置的 %2F 会把一个路径段变成多个，绕过下面按段数做的判断。
+const REF_PARENTS = new Set(['commits', 'rules/branches', 'branches'])
+function isRefSlashPath(segs, slashAt) {
+  const last = segs.length - 1
+  if (slashAt.length !== 1 || slashAt[0] !== last || segs[0] !== 'repos' || last < 4) return false
+  if (!REF_PARENTS.has(segs.slice(3, last).join('/'))) return false
+  return segs[last].split('/').every((part) => part !== '' && part !== '.' && part !== '..')
+}
+
+// Metadata 读：结果与调用者身份无关，只要 App 有 Metadata 读权限（所有 App 都有）。段数必须恰好，其余子路径仍按 DENY_SEGMENTS 走 PraiseZhu。
+const GITHUB_LOGIN = /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/
+function isMetadataRead(tail) {
+  if (tail.length !== 3) return false
+  if (tail[0] === 'collaborators') return tail[2] === 'permission' && GITHUB_LOGIN.test(tail[1])
+  return tail[0] === 'rules' && tail[1] === 'branches'
+}
+
+// 开关打开才放行的读：段数和形状都要恰好，开关关着（或授权没到位而回落）时仍走 PraiseZhu。
+function switchedRestReason(tail, routes) {
+  if (routes.adminRead) {
+    const [head, second, third, fourth] = tail
+    if (head === 'branches' && third === 'protection' && (tail.length === 3 || (tail.length === 4 && fourth === 'required_signatures'))) return 'rest_admin_read'
+    // rulesets/<id> 单个规则集带 current_user_can_bypass（按调用者算：App 没有 bypass 能力），放行后「当前账号能不能 admin bypass」会变成错的，
+    // 所以它不在 adminRead 里、永远走 PraiseZhu；rulesets/rule-suites 是历史评估结果，与调用者无关，仍放行。
+    if (head === 'rulesets' && tail.length === 2 && second === 'rule-suites') return 'rest_admin_read'
+    if (head === 'actions' && second === 'runners' && tail.length === 2) return 'rest_admin_read'
+  }
+  if (routes.secretsRead && tail.length === 3 && tail[0] === 'actions' && tail[1] === 'secrets') return 'rest_secrets_read'
+  return null
+}
+
 function classifyApi(argv, ctx) {
-  const parsed = parseFlags(argv.slice(1), API_SPEC)
+  const { spec, shortHelp } = commandFlags(argv)
+  const parsed = parseFlags(argv.slice(1), spec, { shortHelp })
   let cmd = 'api'
   if (parsed.unknown) return toUser('unsupported_flag', cmd)
   if (parsed.positionals.length !== 1) return toUser('api_shape', cmd)
@@ -520,20 +668,29 @@ function classifyApi(argv, ctx) {
   if (path.includes('{')) return toUser('placeholder', cmd)
   const raw = path.split('/')
   const segs = []
+  const slashAt = []
   for (const seg of raw) {
     if (seg === '' || seg === '.' || seg === '..') return toUser('unsafe_path', cmd)
     let decoded
     try { decoded = decodeURIComponent(seg) } catch { return toUser('unsafe_path', cmd) }
-    if (decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\') || decoded.includes('#')) return toUser('unsafe_path', cmd)
+    if (decoded === '.' || decoded === '..' || decoded.includes('\\') || decoded.includes('#')) return toUser('unsafe_path', cmd)
+    if (decoded.includes('/')) slashAt.push(segs.length) // 原文里没有 `/`（已按 `/` 切开），只能来自 %2F
     segs.push(decoded.toLowerCase())
   }
+  if (slashAt.length > 0 && !isRefSlashPath(segs, slashAt)) return toUser('unsafe_path', cmd)
   if (segs[0] === 'user') return toUser('identity_endpoint', cmd)
   if (segs[0] !== 'repos') return toUser('non_repo_endpoint', cmd)
   if (segs.length < 3) return toUser('unsafe_path', cmd)
   if (!ctx.repoSet.has(`${segs[1]}/${segs[2]}`)) return toUser('repo_not_allowlisted', cmd)
   if (segs.length === 3) return toUser('identity_endpoint', cmd) // 仓库对象带随调用者变化的 permissions
-  // 单个 PR 对象带按调用者算的 mergeable_state（App 看到 blocked）；列表接口不带这个字段，仍走 App。
-  if (segs.length === 5 && segs[3] === 'pulls' && /^\d+$/.test(segs[4])) return toUser('merge_state_endpoint', cmd)
+  if (isMetadataRead(segs.slice(3))) return toApp('rest_metadata', cmd)
+  const switched = switchedRestReason(segs.slice(3), ctx.routes)
+  if (switched) return toApp(switched, cmd)
+  // 单个 PR 对象带按调用者算的 mergeable_state（App 看到 blocked，且 GitHub 返回 200、不会回落），永远走 PraiseZhu；
+  // 列表接口不带这个字段，仍走 App。
+  // 段号不能只认 ^\d+$：GitHub 对 `:number` 取前导整数，`pulls/1.`、`pulls/1.5`、`pulls/1e0`、`pulls/1abc`
+  // 都返回 PR 1 的完整对象（2026-11-05 现网实测，均 200 + mergeable_state），所以 pulls/<任意写法> 一律走 user。
+  if (segs.length === 5 && segs[3] === 'pulls') return toUser('merge_state_endpoint', cmd)
   if (segs.slice(3).some((s) => DENY_SEGMENTS.has(s))) return toUser('admin_endpoint', cmd)
   if (!REST_ALLOWED.has(segs[3])) return toUser('endpoint_not_allowlisted', cmd)
   if (segs[3] === 'actions' && !ACTIONS_ALLOWED.has(segs[4])) return toUser('endpoint_not_allowlisted', cmd)
@@ -554,7 +711,8 @@ const PR_URL = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:pull|issues|act
 function classifyRead(key, argv, ctx) {
   const def = READ_COMMANDS[key]
   const cmd = key
-  const parsed = parseFlags(argv.slice(2), def.spec)
+  const { spec, shortHelp } = commandFlags(argv)
+  const parsed = parseFlags(argv.slice(2), spec, { shortHelp })
   if (parsed.unknown) return toUser('unsupported_flag', cmd)
   for (const [flag, reason] of Object.entries(def.deny)) {
     if (parsed.bools.has(flag) || parsed.values.has(flag)) return toUser(reason, cmd)
@@ -562,9 +720,16 @@ function classifyRead(key, argv, ctx) {
   const json = lastValue(parsed, 'json')
   if (def.needJson && json === undefined) return toUser('human_output', cmd)
   // --json 可以重复，gh 会把多个值合并到同一个查询里，所以每个出现过的值都要检查。
+  // SENSITIVE_JSON_FIELDS 里的字段按调用者算或随身份可见性变化，任何命令、任何开关下都判 PraiseZhu。
   for (const value of parsed.values.get('json') ?? []) {
     for (const field of value.split(',')) {
       if (SENSITIVE_JSON_FIELDS.has(field.trim().toLowerCase())) return toUser('sensitive_json_field', cmd)
+    }
+  }
+
+  if (def.jsonFields) {
+    for (const value of parsed.values.get('json') ?? []) {
+      if (!value.split(',').every((field) => def.jsonFields.has(field.trim().toLowerCase()))) return toUser('json_field_not_allowlisted', cmd)
     }
   }
 
@@ -595,24 +760,128 @@ function classifyRead(key, argv, ctx) {
 // entry
 const HELP_FIRST = new Set(['--version', '-v', 'version', 'help', '--help', '-h'])
 
-export function classify(argv, { repos = [], env = {}, stdinText = null, readFile, stdoutIsTTY = false } = {}) {
+export function classify(argv, { repos = [], routes = {}, env = {}, stdinText = null, readFile, stdoutIsTTY = false } = {}) {
+  argv = normalizeRootFlags(argv)
   const ctx = {
     repoSet: new Set(repos.map((r) => r.toLowerCase())),
+    routes: toRouteSwitches(routes),
     env,
     stdinText,
     readFile: readFile ?? (() => { throw new Error('readFile unavailable') }),
   }
   if (argv.length === 0) return toUser('no_command', 'other')
-  if (HELP_FIRST.has(argv[0]) || argv.includes('--help') || argv.includes('-h')) return toUser('help', 'other')
+  if (HELP_FIRST.has(argv[0]) || helpRequested(argv)) return toUser('help', 'other')
   if (env.GH_HOST && env.GH_HOST.toLowerCase() !== GITHUB_HOST) return toUser('not_github_host', 'other')
   if (env.GH_DEBUG) return toUser('debug_output', 'other')
   if (stdoutIsTTY) return toUser('interactive', 'other')
   if (argv.some((a) => /@me\b/i.test(a))) return toUser('at_me', 'other')
   if (argv[0] === 'api') return classifyApi(argv, ctx)
-  const key = `${argv[0]} ${argv[1] ?? ''}`
+  const key = commandKey(argv)
   if (Object.hasOwn(READ_COMMANDS, key)) return classifyRead(key, argv, ctx)
   if (WRITE_COMMANDS.has(key) || argv[0] === 'label') return toUser('write_command', key)
   if (argv[0] === 'auth') return toUser('auth', 'auth')
   if (key === 'run watch') return toUser('streaming', key)
   return toUser('unknown_command', 'other')
+}
+
+// retry eligibility
+// 限流重试的资格，独立于身份分流：只看「请求会不会改东西」。拿不准一律 false——误判成只读会让写请求被重放。
+// 只在 PraiseZhu 出口用；不改 classify 的任何分流结果。
+export function isReadOnly(argv, { stdinText = null, readFile } = {}) {
+  argv = normalizeRootFlags(argv)
+  if (argv.length === 0) return false
+  const { key, spec, shortHelp } = commandFlags(argv)
+  if (argv[0] === 'api') {
+    const parsed = parseFlags(argv.slice(1), spec, { shortHelp })
+    if (parsed.unknown || parsed.positionals.length !== 1) return false
+    if (parsed.bools.has('help') || parsed.implicitHelp) return false // help 不发请求，也没有可重放的东西
+    for (const header of parsed.values.get('header') ?? []) {
+      const name = header.split(':')[0].trim().toLowerCase()
+      if (name !== 'accept' && name !== 'x-github-api-version') return false // 可能带 X-HTTP-Method-Override 之类
+    }
+    const endpoint = normalizeEndpoint(parsed.positionals[0])
+    const method = lastValue(parsed, 'method')
+    if (isGraphqlEndpoint(endpoint)) {
+      if (method !== undefined && method.toUpperCase() !== 'POST') return false
+      const ctx = { stdinText, readFile: readFile ?? (() => { throw new Error('readFile unavailable') }) }
+      const request = readGraphqlRequest(parsed, ctx)
+      if (request.reason) return false
+      return !/\b(mutation|subscription)\b/.test(request.queryText)
+    }
+    const fields = parsed.ordered.filter((f) => f.long === 'raw-field' || f.long === 'field')
+    if (parsed.values.has('input')) return false
+    if (fields.some((f) => f.value.slice(f.value.indexOf('=') + 1).startsWith('@'))) return false // 可能读 stdin 或文件，重放不了
+    return (method ?? (fields.length > 0 ? 'POST' : 'GET')).toUpperCase() === 'GET'
+  }
+  if (!Object.hasOwn(READ_COMMANDS, key)) return false
+  const def = READ_COMMANDS[key]
+  const parsed = parseFlags(argv.slice(2), spec, { shortHelp })
+  if (parsed.unknown) return false
+  if (parsed.bools.has('help') || parsed.implicitHelp) return false // 同上：help 不是请求
+  // 只按「能不能安全重放」判：deny 里纯属路由限制的选项（--search、--env、--org）仍是只读。
+  return !Object.entries(def.deny).some(([flag, reason]) => !RETRY_SAFE_DENY_REASONS.has(reason)
+    && (parsed.bools.has(flag) || parsed.values.has(flag)))
+}
+
+// 没有专用 spec 的命令（pr comment / pr create 等写命令、repo、release 等）：只登记各命令里含义一致的带值选项。
+// 其它选项在解析里记为 unknown，hasBareExemptOption 遇到 unknown 保守地不豁免。
+const FALLBACK_SPEC = makeSpec({ value: [...REPO_FLAG, 'body:b', 'body-file:F', 'title:t', 'jq:q', 'json', 'template'] })
+
+// 短 `-h` 在这些命令里是带值选项，不是 help：`repo create|edit -h <homepage>`、`config get|list|set -h <host>`
+// （gh 2.92 全量命令树里只有这几类；`auth *` 的 `-h` 也是值选项，但整条 `auth` 本来就不占槽）。
+// 它们走 FALLBACK_SPEC，不在这里排除时 hasBareExemptOption 会把 `-h` 当 help，真实的 PATCH 就绕过并发槽。
+// gh 升级后新增了把 `-h` 当值的命令时，这里要补。
+const H_VALUE_COMMANDS = new Set(['repo create', 'repo edit', 'config get', 'config list', 'config set'])
+
+// 每个命令实际生效的 flag spec：命令自己的 spec 加上 gh 的全局布尔 `--help`。
+// `--help` 是 root 的 persistent flag，任何子命令都认，也吃 `=true|false` 并按 pflag 的「最后一次赋值生效」；
+// `--version` 只在命令位置（`gh api --version` 是 unknown flag），所以不进 spec。
+// 短 `-h` 只对把 `-h` 注册成带值选项的命令（H_VALUE_COMMANDS）不算 help；其余命令的 `-h…` 由 pflag 直接按 help
+// 处理（`-h=false` 也打 help，gh 2.92 实测），交给 `parseFlags` 的 `shortHelp`。
+function commandFlags(argv) {
+  const key = commandKey(argv)
+  let spec = FALLBACK_SPEC
+  if (argv[0] === 'api') spec = API_SPEC
+  else if (Object.hasOwn(READ_COMMANDS, key)) spec = READ_COMMANDS[key].spec
+  const long = new Map(spec.long)
+  long.set('help', 'bool')
+  return { key, spec: { long, short: spec.short }, shortHelp: !spec.short.has('h') && !H_VALUE_COMMANDS.has(key) }
+}
+
+// 这条 argv 是不是 help 请求。认不出的选项说明 argv 本身不合法（gh 自己会报 unknown flag 退出），
+// 按 help 处理没有意义：交给后面的分流兜底（保守地判给 PraiseZhu）。
+function helpRequested(argv) {
+  const { spec, shortHelp } = commandFlags(argv)
+  const parsed = parseFlags(argv.slice(1), spec, { shortHelp })
+  if (parsed.unknown) return false
+  return parsed.bools.has('help') || parsed.implicitHelp
+}
+
+// 命令行里有没有真正的布尔 `-h` / `--help` / `--watch`（api 还认 `--verbose`）。
+// 三个消费点（`classify` 的 help、`isReadOnly` 的只读资格、`hasBareExemptOption` 的豁免）都经 `commandFlags` 取 spec，
+// 全局 `--help` 与 `-h` 的归属只在这一处定义，免得某一处漏掉同一个全局选项又得出不同结论；
+// 命令前 / 命令与子命令之间的写法由 `normalizeRootFlags` 统一规范化（四个公开入口都先做这一步）。
+// 按命令的 spec 解析（READ_COMMANDS、API_SPEC，其余用 FALLBACK_SPEC），所以带值选项吃掉的下一个参数
+// （`--body -h`、`-q --watch`）和 `--` 之后的位置参数都不算；把 `-h` 当值的命令（H_VALUE_COMMANDS）也不认 help。
+// 出现 spec 里没有的选项就看不清哪个参数是它的值：保守地不豁免。
+function hasBareExemptOption(argv) {
+  const { spec, shortHelp } = commandFlags(argv)
+  const parsed = parseFlags(argv, {
+    long: new Map([...spec.long, ['watch', 'bool']]),
+    short: spec.short,
+  }, { shortHelp })
+  if (parsed.unknown) return false
+  return parsed.bools.has('help') || parsed.implicitHelp || parsed.bools.has('watch')
+    || (argv[0] === 'api' && parsed.bools.has('verbose'))
+}
+
+// 不占并发槽的调用：不发 API 请求（help、auth）、人在终端里的、调试输出、长时间流式的命令。
+// 单独看 argv 和环境，不依赖 classify 的 reason（reason 会被 @me、GH_HOST 等更早的判断遮住）。
+export function isGateExempt(argv, { env = {}, stdoutIsTTY = false } = {}) {
+  argv = normalizeRootFlags(argv)
+  if (argv.length === 0 || HELP_FIRST.has(argv[0])) return true
+  if (stdoutIsTTY || env.GH_DEBUG) return true
+  if (argv[0] === 'auth') return true
+  if (argv[0] === 'run' && argv[1] === 'watch') return true
+  return hasBareExemptOption(argv)
 }
