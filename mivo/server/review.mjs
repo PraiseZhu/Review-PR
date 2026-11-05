@@ -838,7 +838,7 @@ async function publish() {
     let verifierOverruled = [];
     let hadBlockers = false;
     let reusedReview = null;
-    // 代 resolve 旧 thread 用:本轮报出/分类过的 key 全集,与「分类没有被截断」。reuse 不重算,不参与。
+    // 回复旧 thread 修复说明用:本轮报出/分类过的 key 全集,与「分类没有被截断」。reuse 不重算,不参与。
     let resolutionKeys = null;
     if (state.scope.mode === 'reuse') {
       const previous = readJson(join(WORK, 'prev', 'result.json'));
@@ -959,7 +959,7 @@ async function publish() {
     else if (state.pendingGates?.length) receipt = await publishAdvisory(state, result, reportFile);
     else if (allOverruled) receipt = await publishOverruled(state, result, reportFile);
     else receipt = await publishClean(state, result, reportFile);
-    // 本轮结论已经发到 PR 上,才代 resolve 已修好的旧 thread;任何失败只记 warning,不改本轮结论。
+    // 本轮结论已经发到 PR 上,才在已修好的旧 thread 里回复说明(盯梢来关);任何失败只记 warning,不改本轮结论。
     resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKeys });
     return writeResult(result);
   } catch (error) {
@@ -1067,7 +1067,7 @@ async function publishFindings(state, result, reportFile, findings, { reusedRevi
     result.mivo.review = { id: posted.reviewId, url: posted.reviewUrl, action: posted.action };
     removeMergeReady(state, result);
     result.mivo.checkRun = completeCheckRun(input, state.checkRunId, conclusionCheck);
-    // alreadySubmitted=true 是命中同 head 旧 review(本轮没有新写),缺字段按保守处理:都不算本轮新发布,不触发代 resolve。
+    // alreadySubmitted=true 是命中同 head 旧 review(本轮没有新写),缺字段按保守处理:都不算本轮新发布,不触发修复说明回复。
     return posted.ok === true && posted.reviewId && posted.alreadySubmitted === false ? { published: true, kind: 'review', id: posted.reviewId } : null;
   }
   const reason = posted.reason || posted.error || 'Request Changes 未提交';
@@ -1235,8 +1235,8 @@ function commentReceipt(comment) {
   return comment?.ok === true && comment.deduplicated !== true && comment.id ? { published: true, kind: 'comment', id: comment.id } : null;
 }
 
-// ── 已修旧 thread 代 resolve(#115)──────────────────────────────────────────────
-// 本轮报出 / 分类 / 裁定过的 key 全集;分类被截断、缺 key 时返回 complete=false,调用方不得据此代 resolve。
+// ── 已修旧 thread 回复说明(#115;#185 起只回复、不关闭,关闭交给 Mini 盯梢)────────────────────
+// 本轮报出 / 分类 / 裁定过的 key 全集;分类被截断、缺 key 时返回 complete=false,调用方不得据此回复「已修复」。
 function resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, adjudicatedKept = [], verifierOverruled, rulings }) {
   const items = [...(checked.findings ?? []), ...findings, ...deferred, ...preexisting, ...ruledKept, ...adjudicatedKept, ...verifierOverruled, ...(rulings ?? [])];
   const keys = new Set();
@@ -1250,6 +1250,7 @@ function resolutionExcludedKeys({ checked, findings, deferred, preexisting, rule
 
 const RESOLVE_RUNNER = fileURLToPath(new URL('../lib/resolve-fixed-threads.mjs', import.meta.url));
 
+// 只在旧 thread 里留一条带 thread-fixed 标记的回复,不 resolve:thread 没关之前放行判断照旧,本函数不改它。
 // 失败只记 warning:不写 errors、不改 outcome / retry / reviewClean / approval / check。
 function resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKeys }) {
   const input = state.input;
@@ -1270,11 +1271,11 @@ function resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKey
     round, contextFile: state.context.file, excludedKeys };
     const out = runScript(RESOLVE_RUNNER, [], { cwd: REPO_DIR, env: scriptEnv(), input: JSON.stringify(request), timeoutMs: 190_000 });
     result.mivo.threadResolution = out.ok === true ? { status: out.status, skippedReason: out.skippedReason, plannedCount: out.plannedCount,
-      resolvedCount: out.resolvedCount, alreadyResolvedCount: out.alreadyResolvedCount, items: out.items } : { status: 'failed', error: scrubSecrets(String(out.error ?? '').slice(0, 300)).text };
-    if (out.ok !== true) result.warnings.push(`旧 thread 代 resolve 没有完成:${result.mivo.threadResolution.error}`);
+      repliedCount: out.repliedCount, items: out.items } : { status: 'failed', error: scrubSecrets(String(out.error ?? '').slice(0, 300)).text };
+    if (out.ok !== true) result.warnings.push(`旧 thread 修复说明回复没有完成:${result.mivo.threadResolution.error}`);
     for (const warning of out.warnings ?? []) result.warnings.push(scrubSecrets(String(warning).slice(0, 300)).text);
   } catch (error) {
-    result.warnings.push(`旧 thread 代 resolve 异常:${scrubSecrets(String(error?.message ?? error).slice(0, 300)).text}`);
+    result.warnings.push(`旧 thread 修复说明回复异常:${scrubSecrets(String(error?.message ?? error).slice(0, 300)).text}`);
   }
 }
 

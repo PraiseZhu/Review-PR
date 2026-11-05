@@ -211,6 +211,34 @@
    }
   },
   {
+   "id": "resolve-fixed-threads.lib_ghGraphql.2791d62851",
+   "source": {
+    "file": "mivo/lib/resolve-fixed-threads.mjs",
+    "callee": "lib.ghGraphql",
+    "sig": "2791d62851",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "mutation",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"mutation($tid:ID!,$body:String!){\\n  addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid, body:$body}){ comment{ id } }\\n}\",\"variables\":{\"tid\":\"PRRT_x\",\"body\":\"ok\"}}",
+     "expected": "user",
+     "serverRoute": "user",
+     "legacyServerRoute": "user",
+     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+    }
+   ]
+  },
+  {
    "id": "resolve-fixed-threads.lib_ghJson.25e98e4235",
    "source": {
     "file": "mivo/lib/resolve-fixed-threads.mjs",
@@ -4225,7 +4253,7 @@
     "count": 1
    },
    "flows": [
-    "server"
+    "interactive"
    ],
    "cases": [
     {
@@ -4238,8 +4266,6 @@
      ],
      "stdin": "{\"query\":\"mutation($tid:ID!,$body:String!){\\n          addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid, body:$body}){ comment{ id } }\\n        }\",\"variables\":{\"tid\":\"PRRT_x\",\"body\":\"ok\"}}",
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]
@@ -4253,7 +4279,7 @@
     "count": 1
    },
    "flows": [
-    "server"
+    "interactive"
    ],
    "cases": [
     {
@@ -4266,8 +4292,6 @@
      ],
      "stdin": "{\"query\":\"mutation($tid:ID!){ resolveReviewThread(input:{threadId:$tid}){ thread{ isResolved } } }\",\"variables\":{\"tid\":\"PRRT_x\",\"body\":\"ok\"}}",
      "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
      "flipsIn": "xindong/mivo-canvas-plugin#1752"
     }
    ]

@@ -1,4 +1,4 @@
-// [MIVO-PATCH reviewer-app] 服务器侧 thread 选择器按「审查身份集合」认首帖作者,resolve 的执行资格允许配置的审查 App。纯函数 + 注入依赖,无 GitHub 调用。
+// [MIVO-PATCH reviewer-app] 服务器侧 thread 选择器按「审查身份集合」认首帖作者,回复(thread-fixed 说明)的执行资格允许配置的审查 App。纯函数 + 注入依赖,无 GitHub 调用。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collectRulings, collectRebuttals, collectAdjudications } from './rulings.mjs';
@@ -83,7 +83,7 @@ test('buildThreadResolutionPlan:维护者对这条 thread 的新裁定、新评�
   assert.equal(plan([ruled], identity).threads.length, 0);
 });
 
-// ── resolve 的执行资格 ──
+// ── 回复的执行资格 ──
 const authority = { digest: 'd', members: ['maintainer'], teamMembers: [], allowlistedMembers: ['maintainer'], codeowners: { teamHandle: null } };
 const BINDING = { targetRepo: 'o/r', pr: 7, head: HEAD, base: 'c'.repeat(40), baseRefName: 'main', reviewer: APP, lockToken: 'tok', authorityDigest: 'd', runUrl: RUN, mode: 'live' };
 function fakeLib({ viewer = APP, metaPatch = {}, reviewerApps = [APP], digest = 'd' } = {}) {
@@ -124,30 +124,40 @@ test('assertBinding:写账号与绑定不一致、head/base/authority 漂移 →
   assert.throws(() => createAssertBinding({ lib, owner: 'o', repo: 'r' })({ ...BINDING, pr: 0 }), /缺少绑定字段 pr/);
 });
 
-// ── reply / resolve 两阶段失败 ──
-function deps(receipt) {
+// ── 回复回执:成功 / 失败 ──
+const replyReceipt = (id) => ({ data: { addPullRequestReviewThreadReply: { comment: { id } } } });
+function deps(replyOne) {
   const reviewed = [thread('T1', botAuthor)];
   return { readContext: () => ({ history: { reviewThreads: reviewed } }), assertBinding: () => ({ maintainers: ['maintainer'] }),
-    fetchThreads: () => ({ threads: reviewed, verified: true, errors: [] }), resolveOne: () => receipt };
+    fetchThreads: () => ({ threads: reviewed, verified: true, errors: [] }), replyOne };
 }
 const request = { binding: BINDING, round: ROUND, contextFile: 'c.json', excludedKeys: [] };
+const withIdentity = { ...request, binding: { ...BINDING, reviewerIdentity: identity } };
 
-test('Bot 首帖旧 thread:reply→resolve 成功', () => {
-  const out = resolveFixedThreads({ ...request, binding: { ...BINDING, reviewerIdentity: identity } }, deps({ ok: true, results: [{ id: 'T1', done: true, replied: true, resolved: true }] }));
+test('Bot 首帖旧 thread:回复成功 → replied,只计回复条数', () => {
+  const out = resolveFixedThreads(withIdentity, deps(() => replyReceipt('reply-1')));
   assert.equal(out.status, 'completed');
-  assert.equal(out.resolvedCount, 1);
+  assert.equal(out.repliedCount, 1);
+  assert.deepEqual(out.items, [{ id: 'T1', key: K1, status: 'replied', commentId: 'reply-1' }]);
 });
 
-test('403 分阶段:reply 阶段失败与 resolve 阶段失败各自写明期望与实际,不含令牌', () => {
+test('403 与缺 comment id:回复失败写明原因,不含令牌,也没有「代 resolve」字样', () => {
+  const saved = process.env.GH_TOKEN;
   process.env.GH_TOKEN = 'ghs_SENTINEL_TOKEN_DO_NOT_LEAK';
   try {
-    const replyFail = resolveFixedThreads({ ...request, binding: { ...BINDING, reviewerIdentity: identity } },
-      deps({ ok: true, results: [{ id: 'T1', done: false, replyError: `HTTP 403: Resource not accessible (${process.env.GH_TOKEN})` }] }));
-    assert.equal(replyFail.items[0].status, 'failed');
-    assert.match(replyFail.items[0].reason, /reply 阶段失败:期望回复成功,实际 HTTP 403/);
-    const resolveFail = resolveFixedThreads({ ...request, binding: { ...BINDING, reviewerIdentity: identity } },
-      deps({ ok: true, results: [{ id: 'T1', done: false, replied: true, resolveError: 'HTTP 403: Resource not accessible' }] }));
-    assert.match(resolveFail.items[0].reason, /resolve 阶段失败:期望 resolve 成功,实际 HTTP 403/);
-    for (const out of [replyFail, resolveFail]) assert.equal(JSON.stringify(out).includes('ghs_SENTINEL'), false);
-  } finally { delete process.env.GH_TOKEN; }
+    const forbidden = resolveFixedThreads(withIdentity, deps(() => { throw new Error(`GraphQL mutation 未完成:HTTP 403: Resource not accessible (${process.env.GH_TOKEN})`); }));
+    assert.equal(forbidden.items[0].status, 'failed');
+    assert.match(forbidden.items[0].reason, /HTTP 403/);
+    assert.equal(forbidden.warnings[0], `旧 thread 修复说明回复失败(${K1}):${forbidden.items[0].reason}`);
+    const noId = resolveFixedThreads(withIdentity, deps(() => ({ data: { addPullRequestReviewThreadReply: { comment: {} } } })));
+    assert.equal(noId.items[0].status, 'failed');
+    assert.match(noId.items[0].reason, /回复未返回 comment id/);
+    for (const out of [forbidden, noId]) {
+      assert.equal(out.repliedCount, 0);
+      assert.equal(JSON.stringify(out).includes('ghs_SENTINEL'), false);
+      assert.equal(JSON.stringify(out).includes('代 resolve'), false);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = saved;
+  }
 });

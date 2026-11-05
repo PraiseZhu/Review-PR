@@ -1,5 +1,5 @@
-// publish 之后代 resolve 旧 thread 的编排契约(Review-PR #115):什么时候调用 runner、传什么、失败怎么办。
-// runner 用替身(记录 stdin 请求、回放预设回执);runner 自己和真实 resolve-threads.mjs 的行为见 lib/resolve-fixed-threads.test.mjs。
+// publish 之后在旧 thread 里回复「已修复,由盯梢关闭」的编排契约(Review-PR #115,#185 起只回复、不关闭):什么时候调用 runner、传什么、失败怎么办。
+// runner 用替身(记录 stdin 请求、回放预设回执);runner 自己和生产写入路径的行为见 lib/resolve-fixed-threads.test.mjs。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync, chmodSync, existsSync } from 'node:fs';
@@ -73,7 +73,7 @@ process.stdout.write(JSON.stringify({ id: 5, updated_at: new Date().toISOString(
 }
 
 // 默认场景:作者是审查账号 + 还有未 resolve 的讨论 → 走 advisory 评论(本轮新发的报告评论,id=5)。
-function setup({ threads = [oldThread()], mode = 'live', scopeMode = 'full', runnerSummary = { ok: true, status: 'completed', plannedCount: 1, resolvedCount: 1, alreadyResolvedCount: 0, items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'resolved' }], warnings: [] },
+function setup({ threads = [oldThread()], mode = 'live', scopeMode = 'full', runnerSummary = { ok: true, status: 'completed', skippedReason: null, plannedCount: 1, repliedCount: 1, items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'replied', commentId: 'reply-PRRT_1' }], warnings: [] },
   receipt = null, pendingGates = [] } = {}) {
   const root = makeRoot({ runnerSummary });
   const work = join(root, 'work');
@@ -128,12 +128,15 @@ test('SC1/SC4 本轮结论(报告评论)已发布 → 调用 runner,请求带绑
     assert.equal(request.round.published, true);
     assert.deepEqual(request.excludedKeys, []);
     assert.match(request.contextFile, /context\.json$/);
-    assert.equal(result.mivo.threadResolution.resolvedCount, 1);
+    // result.json:记录已回复的条数,不再有关闭 / 已关闭的计数;thread 没关,放行判断照旧(merge-blocked)。
+    assert.deepEqual(result.mivo.threadResolution, { status: 'completed', skippedReason: null, plannedCount: 1, repliedCount: 1,
+      items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'replied', commentId: 'reply-PRRT_1' }] });
+    assert.deepEqual(result.warnings.filter((w) => /resolve|修复说明回复/.test(w)), [], JSON.stringify(result.warnings));
     assert.ok(!JSON.stringify(request).includes('"x"'), '令牌不进请求');
   });
 });
 
-test('SC4 代 resolve 不改本轮结论:outcome / reviewClean / approval / retry / errors 与不调 runner 时一致', () => {
+test('SC4 回复修复说明不改本轮结论:outcome / reviewClean / approval / retry / errors 与不调 runner 时一致', () => {
   let withRunner;
   run({}, ({ result }) => { withRunner = result; });
   run({ threads: [] }, ({ result, runnerCalls }) => {
@@ -142,6 +145,23 @@ test('SC4 代 resolve 不改本轮结论:outcome / reviewClean / approval / retr
     assert.deepEqual(withRunner.approval, result.approval);
     assert.deepEqual(withRunner.errors, result.errors);
   });
+});
+
+// #185 SC4:放行判断不变。审查机自己开的 thread 没关之前,不管回复发没发、发成功没有,结论逐字是改动前的 merge-blocked
+// (下面的期望值是改动前同一用例的实测输出,逐字保留),也没有 Approve / 合并相关的结论变化。
+const MERGE_BLOCKED = {
+  outcome: 'merge-blocked', reason: '代码审查没有 P0/P1/P2,但还不能放行:仍有 conversation 未 resolve', reviewClean: false, retry: false,
+  approval: { status: 'blocked', code: 'gates-pending', reason: '仍有 conversation 未 resolve' }, errors: [],
+};
+test('SC4(#185) 审查机自己的旧 thread 未关:runner 成功 / 部分失败 / 崩溃 / 不调用,结论逐字是 merge-blocked', () => {
+  const failed = { ok: true, status: 'partial', skippedReason: null, plannedCount: 1, repliedCount: 0,
+    items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'failed', reason: '回复未返回 comment id' }], warnings: [`旧 thread 修复说明回复失败(${FINDING_ID}):回复未返回 comment id`] };
+  for (const options of [{}, { runnerSummary: failed }, { runnerSummary: 'CRASH' }, { threads: [] }]) {
+    run(options, ({ result }) => {
+      const { outcome, reason, reviewClean, retry, approval, errors } = result;
+      assert.deepEqual({ outcome, reason, reviewClean, retry, approval, errors }, MERGE_BLOCKED, JSON.stringify(Object.keys(options)));
+    });
+  }
 });
 
 test('SC4 dry-run:不调用 runner', () => {
@@ -161,17 +181,20 @@ test('SC4 runner 崩溃 / 返回非 JSON → 只加 warning,本轮结论不变�
     assert.equal(runnerCalls.length, 1);
     assert.equal(result.outcome, 'merge-blocked');
     assert.deepEqual(result.errors, []);
-    assert.ok(result.warnings.some((w) => w.includes('旧 thread 代 resolve 没有完成')));
+    assert.ok(result.warnings.some((w) => w.includes('旧 thread 修复说明回复没有完成')));
+    assert.ok(!result.warnings.some((w) => w.includes('代 resolve')), '不再有「代 resolve 未完成」');
     assert.equal(result.mivo.threadResolution.status, 'failed');
   });
 });
 
-test('runner 的逐条 warning 进结果 warnings,状态进 mivo.threadResolution', () => {
-  const summary = { ok: true, status: 'partial', skippedReason: null, plannedCount: 1, resolvedCount: 0, alreadyResolvedCount: 0,
-    items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'failed', reason: '回复失败' }], warnings: ['代 resolve 未完成(123456789abc):回复失败'] };
+test('runner 的逐条 warning 进结果 warnings,状态进 mivo.threadResolution;回复失败时 repliedCount 为 0', () => {
+  const summary = { ok: true, status: 'partial', skippedReason: null, plannedCount: 1, repliedCount: 0,
+    items: [{ id: 'PRRT_1', key: FINDING_ID, status: 'failed', reason: '回复未返回 comment id' }], warnings: ['旧 thread 修复说明回复失败(123456789abc):回复未返回 comment id'] };
   run({ runnerSummary: summary }, ({ result }) => {
     assert.ok(result.warnings.includes(summary.warnings[0]));
     assert.equal(result.mivo.threadResolution.status, 'partial');
+    assert.equal(result.mivo.threadResolution.repliedCount, 0);
+    assert.ok(!('resolvedCount' in result.mivo.threadResolution) && !('alreadyResolvedCount' in result.mivo.threadResolution));
     assert.equal(result.outcome, 'merge-blocked');
   });
 });
@@ -192,7 +215,7 @@ test('已核验 Approve:只有本轮新提交的(alreadyApproved=false)才算本
   }
 });
 
-// F2:request-changes 回执 alreadySubmitted=true 表示命中同 head 旧 review、本轮没有新写,不能当本轮新发布去代 resolve。
+// F2:request-changes 回执 alreadySubmitted=true 表示命中同 head 旧 review、本轮没有新写,不能当本轮新发布去回复修复说明。
 function runWithRequestChanges(receipt, check) {
   const env = setup({ threads: [oldThread()] });
   try {

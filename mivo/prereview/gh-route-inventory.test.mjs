@@ -1113,11 +1113,29 @@ export async function captureTeamAuthorityRequests() {
 test('N3a:resolve-fixed-threads 的样本是 bindGraphqlToPr 包装后的真实线程读取,不是 mutation', async () => {
   const captured = await captureBoundThreadRequests();
   assert.ok(captured.length >= 1);
-  const entries = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.cases?.some((c) => c.argv[1] === 'graphql'));
+  // 只看 bindGraphqlToPr 包装的读取器(ghGraphqlFn);回复 mutation 直接走 lib.ghGraphql,不经过包装器,样本由下一条测试核对。
+  const entries = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.source.callee === 'ghGraphqlFn' && e.cases?.some((c) => c.argv[1] === 'graphql'));
   assert.ok(entries.length >= 1, '清单里没有 resolve-fixed-threads 的 GraphQL 条目');
   const have = new Set(entries.flatMap((e) => e.cases.map((c) => requestKey(c.argv, c.stdin))));
   for (const call of captured) assert.ok(have.has(requestKey(call.argv, call.stdin)), `清单样本与真实请求不一致: ${call.stdin.slice(0, 120)}`);
   for (const e of entries) for (const c of e.cases) assert.ok(!/mutation/.test(c.stdin ?? ''), `${e.id}: bindGraphqlToPr 会拒绝没有注入点的 mutation,不能当样本`);
+});
+
+test('N3c(#185):resolve-fixed-threads 服务器路径只有一个 mutation——回复;样本与源码里的 REPLY_MUTATION 一致,共享 resolve-threads.mjs 只归 interactive', () => {
+  const source = readFileSync(join(REPO_ROOT, 'mivo/lib/resolve-fixed-threads.mjs'), 'utf8');
+  const query = source.match(/const REPLY_MUTATION = `([^`]*)`/)?.[1];
+  assert.ok(query, '源码里找不到 REPLY_MUTATION');
+  assert.match(query, /addPullRequestReviewThreadReply/);
+  assert.doesNotMatch(query, /resolveReviewThread/);
+  const mutations = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.cases?.some((c) => /mutation/.test(c.stdin ?? '')));
+  assert.equal(mutations.length, 1, '服务器路径(resolve-fixed-threads)上只能登记一个 mutation');
+  const [entry] = mutations;
+  assert.deepEqual(entry.flows, ['server']);
+  assert.equal(entry.source.callee, 'lib.ghGraphql');
+  assert.deepEqual(entry.cases.map((c) => JSON.parse(c.stdin).query), [query]);
+  const shared = inventory.entries.filter((e) => e.source.file === 'review-pr/scripts/resolve-threads.mjs');
+  assert.equal(shared.length, 2);
+  for (const e of shared) assert.deepEqual(e.flows, ['interactive'], `${e.id}: 共享 resolve-threads.mjs 不再在服务器路径上`);
 });
 
 test('N3b:Team 权限回退请求的样本来自真实 fetchMaintainerAuthority,且归 maintainer-team guard', async () => {
