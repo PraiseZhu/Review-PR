@@ -17,6 +17,7 @@ const FAKE_INT = 'fixture-int';
 const FAKE_ID = 'fixture-id';
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
+const oldHead = 'c'.repeat(40);
 const diff = 'diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -0,0 +1 @@\n+hello\n';
 const PROTECTION = {
   'rules/branches/main': [{ type: 'required_status_checks', ruleset_id: 9,
@@ -26,9 +27,12 @@ const PROTECTION = {
   'rulesets/9': { current_user_can_bypass: 'always' },
 };
 
-function reviewFixture(login, state = 'CHANGES_REQUESTED') {
-  return { id: 1, user: { login, type: 'User' }, state, commit_id: head, submitted_at: '2026-01-01T00:00:00Z', body: '> Mivo 自动审查 · fixture' };
+function reviewFixture(login, state = 'CHANGES_REQUESTED', commit = head, type = 'User') {
+  return { id: 1, user: { login, type }, state, commit_id: commit, submitted_at: '2026-01-01T00:00:00Z', body: '> Mivo 自动审查 · fixture' };
 }
+
+// 旧 CR = 落在旧 head 上的审查账号 CR(之后作者又推了新提交,#182);当前 head 上的 CR 见 #197 的用例。
+const staleReview = (login, type = 'User') => reviewFixture(login, 'CHANGES_REQUESTED', oldHead, type);
 
 function makeServer(overrides = {}) {
   return {
@@ -249,7 +253,7 @@ test('thread 链路:审查账号读不到时 context 直接报错,不会走到�
   const noViewer = run(onlyThreadsServer([own]));
   assert.equal(noViewer.status, 1);
   assert.match(noViewer.json.error, /PR 或 viewer 元数据未完整读取/);
-  const server = makeServer({ threads: [own], reviews: [reviewFixture('maintainer')] });
+  const server = makeServer({ threads: [own], reviews: [staleReview('maintainer')] });
   const cr = run(server, { REVIEW_PR_VIEWER_LOGIN: 'maintainer' });
   assert.equal(cr.status, 0, cr.stdout + cr.stderr);
   const d = decideGate(cr.json);
@@ -263,7 +267,7 @@ const reviewerThread = rawThread('T1', 'maintainer', `[P2] 问题\n${MARKER}`);
 const greptileThread = rawThread('T2', 'greptile-apps', 'bot 意见', 'Bot');
 const viewerEnv = { REVIEW_PR_VIEWER_LOGIN: 'maintainer' };
 const humanCr = (login, id = 2, submittedAt = '2026-01-02T00:00:00Z') => ({ id, user: { login, type: 'User' }, state: 'CHANGES_REQUESTED', commit_id: head, submitted_at: submittedAt, body: '请先改掉这个问题' });
-const crServer = (threads, reviews = [reviewFixture('maintainer')]) => makeServer({ threads, reviews });
+const crServer = (threads, reviews = [staleReview('maintainer')]) => makeServer({ threads, reviews });
 
 test('自己的旧 CR + 审查机带标记 thread + Greptile thread:送审但不放行(stage=review,带 pendingGates)', () => withFixture((run) => {
   const r = run(crServer([reviewerThread, greptileThread]), viewerEnv);
@@ -296,14 +300,14 @@ test('自己的旧 CR + 混入人类 thread:仍不送审', () => withFixture((ru
 
 test('另一个 reviewer 的 CR 或维护者本人的人工 CR:带机器人 thread 也仍不送审', () => withFixture((run) => {
   const threads = [reviewerThread, greptileThread];
-  const otherReviewer = run(crServer(threads, [reviewFixture('maintainer'), humanCr('someone-else')]), viewerEnv);
+  const otherReviewer = run(crServer(threads, [staleReview('maintainer'), humanCr('someone-else')]), viewerEnv);
   assert.equal(otherReviewer.status, 0, otherReviewer.stdout + otherReviewer.stderr);
   assert.equal(decideGate(otherReviewer.json).outcome, 'changes-requested');
   const humanOwn = run(crServer(threads, [humanCr('maintainer', 1)]), viewerEnv);
   assert.equal(humanOwn.status, 0, humanOwn.stdout + humanOwn.stderr);
   assert.equal(decideGate(humanOwn.json).outcome, 'changes-requested');
   // #941 的覆盖情形:维护者本人的人工 CR 在前、审查机自动 CR 在后(GitHub 按登录名只留最后一条),人工 CR 仍有效
-  const overridden = run(crServer(threads, [humanCr('maintainer', 1, '2025-12-31T00:00:00Z'), reviewFixture('maintainer')].map((r, i) => ({ ...r, id: i + 1 }))), viewerEnv);
+  const overridden = run(crServer(threads, [humanCr('maintainer', 1, '2025-12-31T00:00:00Z'), staleReview('maintainer')].map((r, i) => ({ ...r, id: i + 1 }))), viewerEnv);
   assert.equal(overridden.status, 0, overridden.stdout + overridden.stderr);
   assert.equal(decideGate(overridden.json).outcome, 'changes-requested');
 }));
@@ -324,6 +328,70 @@ test('审查身份含别名:别名账号的旧 CR + 别名账号开的带标记 
   const human = run(crServer([reviewerThread, greptileThread, rawThread('T3', 'contributor', '请改一下')]), aliasEnv);
   assert.equal(human.status, 0, human.stdout + human.stderr);
   assert.equal(decideGate(human.json).outcome, 'threads-unresolved');
+}));
+
+// #197(#1704 同一 head 派审 20 次):审查身份自己的 CR 在**当前 head** 上时,就是对这一版代码已经发过的结论,
+// 不能再按「旧 CR」送审——同一个 head 重审只会再发一条 CR,永远循环。判门结论是 changes-requested,等作者推新提交。
+// 身份形态:REST 的 bot 登录名带 [bot] 后缀、type=Bot;GraphQL 的 bot 登录名不带后缀、__typename=Bot;人类账号两边一致。
+const BOT = { login: 'praisebuild', restLogin: 'praisebuild[bot]', type: 'Bot' };
+const HUMAN = { login: 'PraiseZhu', restLogin: 'PraiseZhu', type: 'User' };
+const selfCases = [
+  { name: 'bot 账号当审查账号', actor: BOT, env: { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]' } },
+  { name: '人类账号当审查账号', actor: HUMAN, env: { REVIEW_PR_VIEWER_LOGIN: 'PraiseZhu' } },
+  { name: 'viewer 是 bot、PraiseZhu 在 viewerAliases', actor: HUMAN, env: { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]', REVIEW_PR_VIEWER_ALIASES: '["PraiseZhu"]' } },
+  { name: 'viewer 是 PraiseZhu、bot 在 viewerAliases', actor: BOT, env: { REVIEW_PR_VIEWER_LOGIN: 'PraiseZhu', REVIEW_PR_VIEWER_ALIASES: '["praisebuild[bot]"]' } },
+];
+const selfThreads = ({ actor }) => [
+  rawThread('T1', actor.login, `[P2] 问题\n${MARKER}`, actor.type),
+  rawThread('T2', 'greptile-apps', 'bot 意见', 'Bot'),
+];
+
+for (const c of selfCases) {
+  test(`#197 ${c.name}:CR 在当前 head 上 + 全是机器 thread → 不送审(changes-requested);同一夹具的 CR 在旧 head 上 → 送审不放行`, () => withFixture((run) => {
+    const threads = selfThreads(c);
+    const atHead = run(crServer(threads, [reviewFixture(c.actor.restLogin, 'CHANGES_REQUESTED', head, c.actor.type)]), c.env);
+    assert.equal(atHead.status, 0, atHead.stdout + atHead.stderr);
+    assert.equal(atHead.json.meta.reviewDecision, 'CHANGES_REQUESTED');
+    assert.equal(atHead.json.gate.unresolvedThreads.length, 2);
+    const blocked = decideGate(atHead.json);
+    assert.notEqual(blocked.stage, 'review', JSON.stringify(blocked));
+    assert.equal(blocked.outcome, 'changes-requested', JSON.stringify(blocked));
+    assert.equal(atHead.json.gate.blockClass, 'review-changes-requested');
+    assert.equal(atHead.json.auto.action, 'skip-gate');
+    // 对照:CR 换成旧 head,其余一字不动 → 证明夹具能区分
+    const stale = run(crServer(threads, [reviewFixture(c.actor.restLogin, 'CHANGES_REQUESTED', oldHead, c.actor.type)]), c.env);
+    assert.equal(stale.status, 0, stale.stdout + stale.stderr);
+    const d = decideGate(stale.json);
+    assert.equal(d.stage, 'review', JSON.stringify(d));
+    assert.deepEqual(d.pendingGates, ['bot-threads', 'reviewer-threads']);
+  }));
+}
+
+test('#197 只剩一类机器 thread、CR 在当前 head 上:同样不送审', () => withFixture((run) => {
+  const env = selfCases[0].env;
+  const cr = [reviewFixture(BOT.restLogin, 'CHANGES_REQUESTED', head, BOT.type)];
+  for (const threads of [[rawThread('T1', BOT.login, `[P2] 问题\n${MARKER}`, BOT.type)], [rawThread('T2', 'greptile-apps', 'bot 意见', 'Bot')]]) {
+    const d = decideGate(run(crServer(threads, cr), env).json);
+    assert.notEqual(d.stage, 'review', JSON.stringify(d));
+    assert.equal(d.outcome, 'changes-requested');
+  }
+}));
+
+// 条件只看审查身份自己的 CR 落在哪个 head:人类的 CR / 人类 thread 不受影响,当前 head 上照旧挡住;
+// 自己的 CR 在旧 head、别人的 CR 在当前 head 时,别人的 CR 让整体仍是 changes-requested(不是靠本条件)。
+test('#197 当前 head 上有人类的 CR 或人类 thread:照旧不送审', () => withFixture((run) => {
+  const env = selfCases[0].env;
+  const threads = selfThreads(selfCases[0]);
+  const ownAtHead = reviewFixture(BOT.restLogin, 'CHANGES_REQUESTED', head, BOT.type);
+  const humanCrAtHead = run(crServer(threads, [staleReview(BOT.restLogin, BOT.type), humanCr('someone-else')]), env);
+  assert.equal(humanCrAtHead.status, 0, humanCrAtHead.stdout + humanCrAtHead.stderr);
+  assert.equal(decideGate(humanCrAtHead.json).outcome, 'changes-requested');
+  const humanThread = run(crServer([...threads, rawThread('T3', 'contributor', '请改一下')], [ownAtHead]), env);
+  assert.equal(humanThread.status, 0, humanThread.stdout + humanThread.stderr);
+  assert.notEqual(decideGate(humanThread.json).stage, 'review');
+  const humanThreadStale = run(crServer([...threads, rawThread('T3', 'contributor', '请改一下')], [staleReview(BOT.restLogin, BOT.type)]), env);
+  assert.equal(humanThreadStale.status, 0, humanThreadStale.stdout + humanThreadStale.stderr);
+  assert.equal(decideGate(humanThreadStale.json).outcome, 'threads-unresolved');
 }));
 
 // SC4:夹具和服务器开审前复核走同一条路——review.mjs 的 prepare 用同样的参数跑 context.mjs,紧接着按 decideGate(ctx) 的 stage !== 'review' 提前结束。
