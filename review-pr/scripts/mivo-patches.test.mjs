@@ -44,6 +44,7 @@ import {
   latestSubstantiveReviews,
   selectStandingViewerHumanChangesRequest,
   selectSelfFindingsAtHead,
+  selectOverruledAtHead,
 } from './lib.mjs';
 import { createPrWriteGuard } from './pr-write-guard.mjs';
 
@@ -1558,6 +1559,43 @@ test('self-findings:context 把结果交给判门(gate.selfFindingsAtHead)', () 
   const src = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
   assert.match(src, /selectSelfFindingsAtHead\(prReviews, \{ reviewerIdentity, authorLogin, headSha: meta\.headRefOid \}\)/);
   assert.match(src, /selfBlockedResolvable,\n\s+selfFindingsAtHead,/);
+});
+
+// [verdict-overruled-at-head] #217:当前 head 已发过「核对员推翻全部卡点,不 Approve」的结论,自解死锁的重审不再送审。
+const overruledBody = (head, kind = 'verifier-overruled') => `> **主审报了 1 条 P1/P2,核对员全部推翻或降级**\n<!-- mivo-review:${kind} head=${head} -->`;
+
+test('verdict-overruled-at-head:审查身份在当前 head 的推翻结论 → 取最新一条;REST / context 两种形状、大小写都认', () => {
+  const reviews = [
+    restReview(1, 'greptile-apps[bot]', overruledBody(HEAD_1191), '2026-10-22T01:13:46Z'),
+    restReview(2, 'PraiseZhu', overruledBody(HEAD_1191), '2026-10-22T01:46:41Z'),
+    restReview(3, 'PraiseZhu', overruledBody(HEAD_1191.toUpperCase()), '2026-10-22T04:38:45Z'),
+  ];
+  const opts = { viewerLogin: 'praisezhu', headSha: HEAD_1191 };
+  assert.deepEqual(selectOverruledAtHead(reviews, opts), { id: 3, submittedAt: '2026-10-22T04:38:45Z' });
+  const gqlShape = reviews.map(({ user, submitted_at, ...rest }) => ({ ...rest, author: { login: user.login }, submittedAt: submitted_at }));
+  assert.equal(selectOverruledAtHead(gqlShape, opts)?.id, 3);
+});
+
+test('verdict-overruled-at-head:旧 head / 别人发的 / 别的报告种类 / 早于 notBefore / 参数缺失 → null', () => {
+  const opts = { viewerLogin: 'PraiseZhu', headSha: HEAD_1191 };
+  const mine = [restReview(1, 'PraiseZhu', overruledBody(HEAD_1191), '2026-10-22T04:00:00Z')];
+  assert.equal(selectOverruledAtHead(mine, opts)?.id, 1);
+  assert.equal(selectOverruledAtHead([restReview(1, 'PraiseZhu', overruledBody('6aadfcd87'.padEnd(40, '0')), 'x')], opts), null, '旧 head 的结论不算');
+  assert.equal(selectOverruledAtHead([restReview(1, 'someone', overruledBody(HEAD_1191), 'x')], opts), null, '别人贴的标记不算');
+  assert.equal(selectOverruledAtHead([restReview(1, 'PraiseZhu', overruledBody(HEAD_1191, 'advisory'), 'x')], opts), null, 'advisory 补齐后要重审,不算');
+  assert.equal(selectOverruledAtHead([restReview(1, 'PraiseZhu', '> Mivo 自动审查\n没有标记', 'x')], opts), null);
+  assert.equal(selectOverruledAtHead(mine, { ...opts, notBefore: '2026-10-22T05:00:00Z' }), null, '结论早于仍有效的 CR:最新结论不是「推翻」');
+  assert.equal(selectOverruledAtHead(mine, { ...opts, notBefore: '2026-10-22T04:00:00Z' })?.id, 1, '同一时刻算不早于');
+  for (const bad of [{ viewerLogin: '' }, { viewerLogin: undefined }, { headSha: '' }, { headSha: 'abc' }]) {
+    assert.equal(selectOverruledAtHead(mine, { ...opts, ...bad }), null, JSON.stringify(bad));
+  }
+  assert.equal(selectOverruledAtHead(undefined, opts), null);
+});
+
+test('verdict-overruled-at-head:context 把结果交给判门(gate.overruledAtHead),notBefore 取审查身份仍有效的 CR 的最晚提交时间', () => {
+  const src = readFileSync(new URL('./context.mjs', import.meta.url), 'utf8');
+  assert.match(src, /selectOverruledAtHead\(prReviews, \{ reviewerIdentity, headSha: meta\.headRefOid, notBefore: newestChangesRequestAt \}\)/);
+  assert.match(src, /selfFindingsAtHead,\n\s+overruledAtHead,/);
 });
 
 test('同一账号上人工 Request Changes 仍有效:审查机后发的 CR 盖不掉,context 不自解、approve 拒绝', () => {

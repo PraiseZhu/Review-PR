@@ -3872,6 +3872,30 @@ export function selectSelfFindingsAtHead(reviews, { viewerLogin, authorLogin, he
 }
 
 /**
+ * [MIVO-PATCH verdict-overruled-at-head] 审查身份在当前 head 上已发过「核对员推翻了全部卡点,不 Approve」的结论 review。
+ * 服务器遇到这种结论只发一条 COMMENTED review(正文带 `<!-- mivo-review:verifier-overruled head=<head> -->`),不 Approve、不动旧 CR;
+ * 审查身份自己的旧 CR + conversation 全 resolve 的重审条件因此一直成立,同一 head 被反复送审(#1920 同一 head 3 次)。
+ * 只认这一种结论:advisory(还有门没过,补齐后要重审)等报告不算。认审查身份集合里的人发的、marker 的 head 等于当前 head;
+ * `notBefore` 给出时,结论必须不早于它(通常是审查身份仍然有效的 CR 的提交时间),否则最新的结论是别的而不是「推翻」。
+ * 兼容 REST 与 context 两种字段形态;没有就返回 null。
+ */
+const OVERRULED_HEAD_RE = /<!--\s*mivo-review:verifier-overruled\s+head=([0-9a-f]{40})\b/i;
+export function selectOverruledAtHead(reviews, { headSha, reviewerIdentity, viewerLogin, notBefore = '' } = {}) {
+  const identity = toReviewIdentity(reviewerIdentity ?? viewerLogin);
+  const head = String(headSha ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(head)) return null;
+  let latest = null;
+  for (const review of Array.isArray(reviews) ? reviews : []) {
+    const marked = OVERRULED_HEAD_RE.exec(String(review?.body ?? ''))?.[1]?.toLowerCase();
+    if (marked !== head || !isReviewIdentity(reviewRecordActor(review), identity)) continue;
+    const submittedAt = String(review?.submittedAt ?? review?.submitted_at ?? '');
+    if (notBefore && submittedAt < notBefore) continue;
+    if (!latest || submittedAt > latest.submittedAt) latest = { id: review?.id ?? null, submittedAt };
+  }
+  return latest;
+}
+
+/**
  * [MIVO-PATCH self-review] 审查账号上维护者本人仍有效的 Request Changes。
  * GitHub 与 latestSubstantiveReviews 都按登录名只留最后一条实质 review,审查机后发的
  * CR / Approve 会盖掉更早的人工 CR(#941:人工 CR 5506920945 被审查机 CR 5512930585 盖掉)。
