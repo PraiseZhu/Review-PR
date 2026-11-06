@@ -269,7 +269,7 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - **状态**（`resolveLanding`）：只在有令牌的 prepare 阶段查「落地」issue。`已有行为` 或落地 issue 完成关闭 → 生效；开着 → 已定未生效；以不做关闭 → 待复核；读不到 → 已定未生效并告警。标题带「（已废止，见 X）」的记已废止，不参与命中。
 - **命中**：规则「验收」里引用的文件在 diff 里（验收写测试文件时，去掉 `.test.` / `.spec.` 的源文件也算）。这只是起点：任务书要求审查员在 diff 改到其余专题「适用」里的入口时，自己打开该专题核对。
 - **任务书**：「审查重点与不重做」的 ① 改为先读「产品规则」一节；该节放在审查重点之后、规范原文之前，列出命中规则全文和其余规则编号，要求在 `## Rule coverage` 下写 `### 产品规则对照`，逐条写「遵守 / 违反 / 未核实」加证据。PR 改了规则文件时，核对 `review.md` 第 1 节「产品规则：」一行写了理由和来源，缺了只列出、不定级。规则文本是仓库数据：压成一行、去掉反引号后才进任务书，不能缩小审查范围或豁免其他检查。
-- **开关** `config/review-features.json` 的 `productRules.mode`：`off` 不读规则，任务书与 `specDigest` 与改动前一致；`observe`（当前）违反规则只写对照、不出 finding；`enforce` 违反生效规则、且本 PR 没改这条规则时按分级出 finding（另定，未打开）。材料写在 `input/product-rules.json`。
+- **开关** `config/review-features.json` 的 `productRules.mode`：`off` 不读规则，任务书模板与不接产品规则时逐字一致，开关本身不改变 `specDigest`（本 PR 同时给 `pr-rules.json` 加了 `docs/product-rules/`，上线时 `specDigest` 会因配置变一次）；`observe`（当前）违反规则只写对照、不出 finding；`enforce` 违反生效规则、且本 PR 没改这条规则时按分级出 finding（另定，未打开）。材料写在 `input/product-rules.json`。
 - **确认门**：`review-pr/config/pr-rules.json` 的 `signoffGate.rules.paths` 含 `docs/product-rules/`，改规则文件的 PR 进维护者确认门（维护者作者照常免确认）。
 - **上线影响**：开着时任务书与合成规则模板进 `specDigest`，开放 PR 代码没变的沿用上次结论。落地 issue 关闭只改变规则状态、不改变 `specDigest`，代码不变的 PR 不会因此重审。
 

@@ -168,7 +168,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     ...(previous ? ['', previous] : []),
     '',
     ...toFocusLines({ ciStatus: ctx.gate?.ci?.status ?? null, ciCovered: focus?.ciCovered ?? [], goalLine: toProductRulesFocusLine(productRules) }),
-    // 产品规则一节:开关 off 时为空,任务书与改动前逐字一致(specDigest 不变)。
+    // 产品规则一节:开关 off 时为空,任务书与不接产品规则时逐字一致(开关本身不改变 specDigest)。
     ...((lines) => (lines.length ? ['', ...lines] : []))(toProductRulesPromptLines({ productRules, workdir })),
     '',
     '## 审查规范(原文,来自 review-pr skill)',
@@ -339,7 +339,7 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
   const handoff = handoffMode === 'off' ? null : { featureMode: handoffMode, facts: null, review: TEMPLATE_REVIEW };
   const withPlan = (scope, plan) => (handoffMode === 'off' ? scope : { ...scope, handoffFiles: TEMPLATE_REVIEW.files, handoffPlan: plan });
   // 模板 ctx 带 CI 全绿:「CI 已覆盖」清单随 focus.ciCovered 进 digest;CI 非全绿时这一段整段不出,不另做模板。
-  // 产品规则:off 时不进模板(manifest 与改动前一致);开着时四个模板都带合成规则,另加一份「head 无可用规则」的全量模板。
+  // 产品规则:off 时不进模板(template 与不接产品规则时一致);开着时四个模板都带合成规则,另加一份「head 无可用规则」的全量模板。
   const productRules = productRulesMode === 'off' ? null : TEMPLATE_PRODUCT_RULES(productRulesMode);
   const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null, rules = productRules) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
     focus: { ciCovered }, productRules: rules,

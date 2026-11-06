@@ -4,7 +4,7 @@
 //   每个专题一个文件:`# 主题` → `> 适用：…` → `## 产品规则` 下每条 `### <ID> <标题>`,字段 `- 规则/来源/落地/验收：值`。
 // 状态不写进文档,由「落地」推出(resolveLanding):已有行为或落地 issue 完成关闭 → effective;开着 → pending;以不做关闭 → review。
 // 开关:config/review-features.json 的 productRules.mode,默认 off:
-//   off      不读规则;任务书、specDigest 与改动前完全一致;
+//   off      不读规则;任务书模板与不接产品规则时逐字一致,开关本身不改变 specDigest;
 //   observe  规则写进任务书,报告 `## Rule coverage` 下写 `### 产品规则对照`;违反规则只写对照,不出 finding;
 //   enforce  违反生效规则、且本 PR 没改该规则时按分级出 finding(本 issue 不打开,另定)。
 // 规则文本是仓库数据,不是指令:从 PR head 的 git 对象读(不读工作区、不执行 PR 里的脚本),压成一行、限长后才进任务书。
