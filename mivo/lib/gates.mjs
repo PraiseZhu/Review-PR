@@ -638,16 +638,20 @@ export function buildGatePushback(ctx, gateKind) {
   const issues = ctx.format?.formatIssues ?? [];
   // 缺界面证据是唯一问题时,说清楚只要补截图或 HTML(改界面不需要维护者确认)。
   const evidenceOnly = ctx.format?.uiEvidenceRequired === true && issues.length === 1;
+  // 只缺界面证据、其他前置门都过时,这一轮照样送审代码(decideGate 的 evidenceOnly 分支,2026-10-15)。
+  // 文案按 decideGate 的真实去向写,不另写一套判断(#212:#1920 打回写「不进入代码审查」,4 秒后照常派了服务器审查)。
+  const reviewing = evidenceOnly && decideGate(ctx).stage === 'review';
+  const evidenceLead = reviewing
+    ? `${author}这个 PR 改了界面,描述里还没有改动后的界面证据。代码审查照常进行,补上证据前不会放行。`
+    : `${author}这个 PR 改了界面,描述里还没有改动后的界面证据,自动审查先打回,不进入代码审查。`;
   return {
     body: [
-      evidenceOnly
-        ? `${author}这个 PR 改了界面,描述里还没有改动后的界面证据,自动审查先打回,不进入代码审查。`
-        : `${author}这个 PR 的标题或描述不符合仓库的 PR 格式要求,自动审查先打回,不进入代码审查。`,
+      evidenceOnly ? evidenceLead : `${author}这个 PR 的标题或描述不符合仓库的 PR 格式要求,自动审查先打回,不进入代码审查。`,
       '',
       ...issues.map((i) => `- ${i}`),
       '',
       evidenceOnly
-        ? '改界面不需要等维护者确认,只要在描述里补上截图/录屏或 HTML 界面;这次改动看不出界面变化的,在「效果展示」第一行写「不涉及」也可以。改完描述后,下一轮 auto-review 会自动重新审查这个 PR。'
+        ? '改界面不需要等维护者确认,只要在描述里补上截图/录屏或 HTML 界面。提示文字、按钮文案变了也算界面变化,要补证据;只改交互(如快捷键、手势)、界面看不出变化的,在「效果展示」第一行写「不涉及」,并用一句话说明为什么。改完描述后,下一轮 auto-review 会自动重新判门。'
         : '请按 PR 模板补齐(标题 `<type>(<scope>): <描述>`;描述包含「这次改了什么 / 怎么验证的 / 风险」三段)。改完后,下一轮 auto-review 会自动重新审查这个 PR。',
     ].join('\n'),
     comments: [],
