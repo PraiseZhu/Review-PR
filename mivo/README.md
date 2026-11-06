@@ -632,7 +632,9 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - **自动撤销**：`round.mjs` 每次启动看到停点，以及 `auto-update.mjs` 执行模式开头，都调 `deploy/orphan-hold.mjs` 的 `reconcileOrphanHold`。同时满足下面全部条件才撤，撤掉停点（含握手回执）、巡检暂停（原因必须是本次写的「新审查机整组上线 <前 7 位>」）和部署锁，并记一条 `orphan-hold-revoked` 事件（auto-update 写进收尾那句话）：
   - 锁写的主机是 Mini，且 `ps -p <pid>` 确认进程不存在，或 pid 还在但命令行不是 `deploy-tuple`（pid 被复用）；
   - 在 `~/Library/Logs/mivo-prereview/deploy/` 找得到 `lockText` 和锁原文逐字相同的部署记录，记录里 `switched` 是空数组；
-  - 记录里没有 `merged`、没有「已 bootout」阶段、没写过 `pause.json`。
+  - 记录里没有 `merged`、没写过 `pause.json`，并且明确写着 `bootout: "none"`（`deploy-tuple` 在 `launchctl bootout` 之前先把 `bootout` 记成 `pending` 并落盘，成功后记 `done`；bootout 成功到「已 bootout」阶段落盘之间进程死掉的窗口，记录里是 `pending`，不撤）；旧版本写的记录没有这个字段，同样不撤。
+  - 记录里有巡检暂停的原文 `monitorPauseText`，巡检的 `pause-until.json` 内容和它逐字相同才撤（不按原因里的提交前 7 位认）。
+- **回收者之间、回收者和新部署之间的互斥**：回收者先给 `deploy-tuple.lock` 建硬链接 `deploy-tuple.lock.reclaim` 占住（已存在则报警，说明另一个回收者在处理；确认没有回收进程在跑后手动删掉），**占住之后**才读锁、停点、部署记录。占住期间锁文件名一直被这把死锁占着，新部署的 `ln` 拿不到锁、写不了新停点，所以撤销过程中看到的状态不会被别人改；锁放在最后撤，只撤被占住的那个 inode。
 - **只报警不撤**：`switched` 非空（已切一部分，退出码 2 的情况）、找不到部署记录、进程查不了（锁写的是 Pro、`ps` 出错）、已合并 PR、已 bootout、`--stop pause`。事件是 `orphan-hold-alert`，原因写在 `reason` 里。持有进程还在时什么都不做。停点只撤本次写的（内容和记录里的 `holdText` 相同）。
 - **停点超过 60 分钟必须有人知道**：无论上面怎么判，`round.mjs` 看到的停点 `at` 超过 60 分钟（或读不懂）时记 `deploy-hold-stale`，并且**不再写心跳**，Mini 之外的看门狗据此报警。60 分钟内心跳照写，不影响正常换版本（`auto-update` 停点最多等 40 分钟）；手动换版本默认最多等 180 分钟，超过 60 分钟也会触发，这是有意的。
 - **巡检脚本还要人工改**（不在本仓，`~/mivo-prereview/monitor/scripts/schedule-checks/mivo.mjs`）：在「计划内维护」`pause-until.json` 早退之前先查停点，让巡检暂停静音不了它：

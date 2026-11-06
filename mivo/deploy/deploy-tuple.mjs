@@ -187,7 +187,8 @@ if (PR && !(/^\d+$/.test(PR) && /^[0-9a-f]{40}$/.test(PR_HEAD ?? ''))) throw new
 if (!['pause', 'hold'].includes(STOP)) throw new Error(`--stop 只能是 pause 或 hold:${STOP}`);
 if (!(MAX_WAIT_MS > 0)) throw new Error(`--max-wait-min 要是正数:${arg('max-wait-min')}`);
 const RECORD_FILE = path.join(RECORD_DIR, `deploy-${NEW_SKILL.slice(0, 7)}-${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}.record.json`);
-const record = { startedAt: nowIso(), on: SELF, argv: process.argv.slice(2), phases: [], originals: {}, switched: [] };
+// bootout:'none' 没动过 launchd,'pending' 即将 bootout(落盘后才执行),'done' 已 bootout。孤儿停点回收(orphan-hold.mjs)只认 'none'。
+const record = { startedAt: nowIso(), on: SELF, argv: process.argv.slice(2), phases: [], originals: {}, switched: [], bootout: 'none' };
 // 拿锁成功之前不落盘:锁被占用时不动 Mini 和线上状态,也不写本次部署记录。
 let mayWriteRecord = false;
 const save = () => {
@@ -268,6 +269,8 @@ function stopPoint() {
   if (marker.exists) throw new Error(`巡检已有维护标记 ${MONITOR_PAUSE_REL}(${marker.text.trim().slice(0, 200)}),先弄清是谁的`);
   monitorPauseText = `${JSON.stringify({ from: nowIso(), until: deployUntil, reason: `新审查机整组上线 ${NEW_SKILL.slice(0, 7)}` })}\n`;
   // 第一次写停点之前就落盘:远端已写成功但 ssh 回执丢了时,失败收尾也要先核对整组 tuple。
+  // 巡检暂停的原文也先落盘:进程死掉后,回收者按原文认出这份是本次写的。
+  record.monitorPauseText = monitorPauseText;
   record.stopStarted = true;
   save();
   casRemote('mini', MONITOR_PAUSE_REL, 'none', monitorPauseText);
@@ -303,7 +306,13 @@ function stopPoint() {
     const lock = lockHeld();
     const stop = toStopReady({ stop: STOP, state, lock, quiesced: STOP === 'hold' ? readQuiesced() : null });
     if (stop.ready) {
-      if (state !== 'absent') must(remote('mini', `launchctl bootout gui/$(id -u)/${LABEL}`), 'bootout');
+      if (state !== 'absent') {
+        // bootout 成功到下面 phase() 落盘之间进程可能死掉:先落盘 pending,回收者看到就不会撤停点(Review-PR#205)。
+        record.bootout = 'pending';
+        save();
+        must(remote('mini', `launchctl bootout gui/$(id -u)/${LABEL}`), 'bootout');
+        record.bootout = 'done';
+      }
       if (launchState() !== 'absent') throw new Error('bootout 之后 launchd 里还有这个任务');
       if (lockHeld() !== '') throw new Error('bootout 之后出现了锁文件');
       record.stopVia = stop.via;
@@ -550,7 +559,7 @@ try {
       }
       try {
         releaseStop();
-        if (record.phases.some((p) => p.name.includes('已 bootout'))) resumePrereview();
+        if (record.bootout !== 'none' || record.phases.some((p) => p.name.includes('已 bootout'))) resumePrereview();
         say('什么都没切,已撤销停点');
       } catch (undo) {
         say(`撤销停点也失败了:${undo.message},请人工核对 Mini 的 pause.json、deploy-hold.json、维护标记和 launchd`);

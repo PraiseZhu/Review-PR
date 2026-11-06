@@ -12,7 +12,9 @@ const LOCK = { owner: 'deploy-tuple:mini', pid: 51201, host: HOSTS.mini, at: '20
 const LOCK_TEXT = toDeployLockText(LOCK);
 const HOLD_TEXT = `${JSON.stringify({ at: '2026-11-06T07:44:00.000Z', reason: '整组上线 c1d089d' })}\n`;
 const MONITOR_REASON = '新审查机整组上线 c1d089d';
-const recordOf = (extra = {}) => ({ lockText: LOCK_TEXT, holdText: HOLD_TEXT, monitorPause: true, switched: [], phases: [{ name: '停点:暂停已写,等前置审查退出' }], ...extra });
+const MONITOR_TEXT = `${JSON.stringify({ from: '2026-11-06T07:43:00.000Z', until: '2026-11-06T11:43:00.000Z', reason: MONITOR_REASON })}\n`;
+const recordOf = (extra = {}) => ({ lockText: LOCK_TEXT, holdText: HOLD_TEXT, monitorPause: true, monitorPauseText: MONITOR_TEXT, stopStarted: true, bootout: 'none',
+  switched: [], phases: [{ name: '停点:暂停已写,等前置审查退出' }], ...extra });
 const decide = (over = {}) => toOrphanDecision({ lock: LOCK, lockText: LOCK_TEXT, hold: { exists: true, text: HOLD_TEXT }, alive: false, record: recordOf(), ...over });
 
 test('SC1 持有进程已不在、switched 为空:撤停点、握手回执、巡检暂停和锁', () => {
@@ -44,9 +46,21 @@ test('只要不能证明什么都没切就不撤:无记录、记录对不上锁�
     { record: recordOf({ switched: undefined }) },
     { record: recordOf({ merged: 'abc' }) },
     { record: recordOf({ phases: [{ name: '停点:前置审查已退出、锁已释放,已 bootout(停机握手)' }] }) },
+    { record: recordOf({ bootout: 'done' }) },
     { record: recordOf({ pauseWritten: true }) },
+    { record: recordOf({ monitorPauseText: undefined }) },
   ]) {
     assert.equal(decide(over).action, 'alert', JSON.stringify(over));
+  }
+});
+
+test('bootout 崩溃窗口:bootout 成功但「已 bootout」阶段还没落盘时,记录里是 pending(或旧版本记录没有这个字段),一律不撤', () => {
+  const crashed = recordOf({ bootout: 'pending' }); // phases 里还没有「已 bootout」
+  assert.ok(!crashed.phases.some((p) => p.name.includes('已 bootout')));
+  for (const record of [crashed, recordOf({ bootout: undefined })]) {
+    const d = decide({ record });
+    assert.equal(d.action, 'alert');
+    assert.match(d.reason, /bootout/);
   }
 });
 
@@ -83,7 +97,7 @@ test('进程判活:锁写的不是 Mini、pid 不合法、ps 出错都是 null;p
 });
 
 // 临时 HOME 里放线上同样的目录结构。
-function setup(t, { lock = LOCK_TEXT, hold = HOLD_TEXT, record = recordOf(), monitorPause = { from: '2026-11-06T07:43:00Z', until: '2026-11-06T11:43:00Z', reason: MONITOR_REASON } } = {}) {
+function setup(t, { lock = LOCK_TEXT, hold = HOLD_TEXT, record = recordOf(), monitorPause = MONITOR_TEXT } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-orphan-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const dir = path.join(home, path.dirname(DEPLOY_LOCK_REL));
@@ -92,7 +106,7 @@ function setup(t, { lock = LOCK_TEXT, hold = HOLD_TEXT, record = recordOf(), mon
   if (hold != null) put(path.join(dir, 'deploy-hold.json'), hold);
   put(path.join(dir, 'quiesced.json'), '{"lockReleased":true}\n');
   if (record) put(path.join(home, RECORD_DIR_REL, 'deploy-c1d089d-20261106T0743.record.json'), JSON.stringify(record));
-  if (monitorPause) put(path.join(home, MONITOR_PAUSE_REL), JSON.stringify(monitorPause));
+  if (monitorPause) put(path.join(home, MONITOR_PAUSE_REL), monitorPause);
   const exists = (rel) => fs.existsSync(path.join(home, rel));
   const files = () => ({
     lock: exists(DEPLOY_LOCK_REL), hold: fs.existsSync(path.join(dir, 'deploy-hold.json')),
@@ -131,10 +145,73 @@ test('回收:找不到部署记录时不撤', (t) => {
   assert.deepEqual(w.files(), ALL);
 });
 
-test('回收:巡检暂停不是本次写的(原因对不上)就留着,其余照撤', (t) => {
-  const w = setup(t, { monitorPause: { from: 'x', until: 'y', reason: '维护者手写的计划内维护' } });
+test('回收:巡检暂停不是本次写的就留着,其余照撤;同提交前 7 位、同原因、别次部署写的也留着', (t) => {
+  const other = `${JSON.stringify({ from: '2026-11-06T09:00:00.000Z', until: '2026-11-06T13:00:00.000Z', reason: MONITOR_REASON })}\n`;
+  const w = setup(t, { monitorPause: other });
   assert.equal(w.run(() => false).action, 'revoke');
   assert.deepEqual(w.files(), { lock: false, hold: false, quiesced: false, monitorPause: true });
+});
+
+test('bootout 崩溃窗口(回收):记录是 pending 时四个文件都留着,锁也留着', (t) => {
+  const w = setup(t, { record: recordOf({ bootout: 'pending' }) });
+  const r = w.run(() => false);
+  assert.equal(r.action, 'alert');
+  assert.match(r.reason, /bootout/);
+  assert.deepEqual(w.files(), ALL);
+});
+
+test('并发回收:A 占住锁之后,B 不能同时回收,新部署也拿不到锁、写不了新停点;A 做完才放开', (t) => {
+  const w = setup(t);
+  const lockFile = path.join(w.home, DEPLOY_LOCK_REL);
+  const events = {};
+  fs.writeFileSync(path.join(w.dir, 'new-lock.tmp'), toDeployLockText({ ...LOCK, pid: 60001, at: '2026-11-06T09:30:00.000Z' })); // 新部署先写好的临时锁
+  const r = w.run(() => {
+    // A 正在判活:这时另一个回收者 B 和一个新部署同时来了。
+    events.b = w.run(() => false);
+    try {
+      fs.linkSync(path.join(w.dir, 'new-lock.tmp'), lockFile);
+      events.newDeploy = 'got-lock';
+    } catch (error) {
+      events.newDeploy = error.code;
+    }
+    events.filesWhileA = w.files();
+    return false;
+  });
+  assert.equal(r.action, 'revoke');
+  assert.equal(events.b.action, 'alert', 'B 看到占位,不动手');
+  assert.match(events.b.reason, /另一个回收者/);
+  assert.equal(events.newDeploy, 'EEXIST', '新部署拿不到锁(ln 目标已存在)');
+  assert.deepEqual(events.filesWhileA, ALL, 'A 做完之前什么都没被别人动');
+  assert.deepEqual(w.files(), { lock: false, hold: false, quiesced: false, monitorPause: false });
+  assert.equal(fs.existsSync(`${path.join(w.home, DEPLOY_LOCK_REL)}.reclaim`), false, '占位已放掉');
+});
+
+test('并发回收:别人已经回收完、新部署拿了新锁写了新停点,再来的回收者读到的是新锁:持有者还在就什么都不删', (t) => {
+  const w = setup(t);
+  assert.equal(w.run(() => false).action, 'revoke');
+  // 新部署:新锁、新停点、新握手回执、同原因(同提交前 7 位)的新巡检暂停。
+  const newLock = toDeployLockText({ ...LOCK, pid: 60001, at: '2026-11-06T09:30:00.000Z' });
+  const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+  put(path.join(w.home, DEPLOY_LOCK_REL), newLock);
+  put(path.join(w.dir, 'deploy-hold.json'), '{"at":"2026-11-06T09:31:00.000Z","reason":"整组上线 c1d089d"}\n');
+  put(path.join(w.dir, 'quiesced.json'), '{"lockReleased":true}\n');
+  put(path.join(w.home, MONITOR_PAUSE_REL), JSON.stringify({ from: '2026-11-06T09:30:00.000Z', until: '2026-11-06T13:30:00.000Z', reason: MONITOR_REASON }));
+  // 上一次部署的记录仍在(lockText 是旧锁),A 拿旧快照来回收:不能按旧记录删新部署的东西。
+  const r = w.run((lock) => lock.pid === 60001 ? true : false);
+  assert.equal(r.action, 'keep');
+  assert.deepEqual(w.files(), ALL);
+});
+
+test('并发回收:新锁的持有者已死但它的记录还没落盘:找不到记录,不撤新部署的任何东西', (t) => {
+  const w = setup(t);
+  assert.equal(w.run(() => false).action, 'revoke');
+  const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+  put(path.join(w.home, DEPLOY_LOCK_REL), toDeployLockText({ ...LOCK, pid: 60001, at: '2026-11-06T09:30:00.000Z' }));
+  put(path.join(w.dir, 'deploy-hold.json'), '{"at":"2026-11-06T09:31:00.000Z","reason":"整组上线 c1d089d"}\n');
+  const r = w.run(() => false);
+  assert.equal(r.action, 'alert');
+  assert.equal(fs.existsSync(path.join(w.dir, 'deploy-hold.json')), true);
+  assert.equal(fs.existsSync(path.join(w.home, DEPLOY_LOCK_REL)), true);
 });
 
 test('回收:不是线上状态目录就不碰', (t) => {

@@ -158,7 +158,7 @@ export function toLockBlockedText(decision, { lockPath = DEPLOY_LOCK_PATH } = {}
 // 孤儿停点判定(PraiseZhu/Review-PR#205):换版本进程在「已写停点、还没切任何东西」时死掉,会留下 deploy-hold.json、
 // deploy-tuple.lock、巡检 pause-until.json 三个文件,没人回收。只有同时满足下面全部条件才撤,其余一律不动:
 //   锁持有进程确认已不存在(alive === false;查不了是 null,不撤)、找得到这次部署的记录且 switched 是空数组、
-//   没合并过 PR、没 bootout 过前置、没动过 pause.json(那几种要人工核对,只报警)。
+//   没合并过 PR、记录明确写着没 bootout 过前置、没动过 pause.json(那几种要人工核对,只报警)。
 // lock 是解析后的锁内容(读不懂是 null),lockText 是锁原文,hold 是 { exists, text },alive 是 true / false / null,
 // record 是这次部署的记录(找不到是 null)。返回 { action: none|keep|alert|revoke, reason };
 // revoke 时 remove 写明要撤哪几样(停点只撤本次写的,巡检暂停只撤本次写的)。
@@ -173,13 +173,19 @@ export function toOrphanDecision({ lock, lockText, hold, alive, record }) {
   if (!Array.isArray(record.switched)) return refuse('部署记录里 switched 读不懂');
   if (record.switched.length) return refuse(`已经切了 ${record.switched.join('、')}(switched 非空)`);
   if (record.merged) return refuse(`已合并 PR(${record.merged})`);
-  if ((record.phases ?? []).some((p) => String(p?.name ?? '').includes('已 bootout'))) return refuse('已经 bootout 过前置审查,要补 bootstrap');
+  // bootout 成功到「已 bootout」阶段落盘之间进程可能死掉,所以 deploy-tuple 在 bootout 之前先把 bootout 记成 pending 并落盘。
+  // 只有明确是 'none' 才算没动过 launchd;pending、done、字段不存在(旧版本的记录)都不撤,前置审查任务可能已经停用,要人工补 bootstrap。
+  if (record.bootout !== 'none' || (record.phases ?? []).some((p) => String(p?.name ?? '').includes('已 bootout'))) {
+    return refuse(`可能已经 bootout 过前置审查(记录里 bootout=${JSON.stringify(record.bootout ?? null)}),要核对 launchd 并补 bootstrap`);
+  }
   if (record.pauseWritten === true) return refuse('写过 pause.json(--stop pause)');
+  // 巡检暂停按原文认(含 from 时间戳),不按原因里的提交前 7 位认;旧版本的记录没有原文,不撤。
+  if (record.stopStarted === true && typeof record.monitorPauseText !== 'string') return refuse('部署记录里没有巡检暂停的原文');
   const removeHold = Boolean(record.holdText) && isOwnHold(hold ?? {}, record.holdText);
   return {
     action: 'revoke',
     reason: `部署锁持有进程已不在:${who},部署记录显示 switched 为空`,
-    remove: { hold: removeHold, quiesced: removeHold, monitorPause: record.monitorPause === true, lock: true },
+    remove: { hold: removeHold, quiesced: removeHold, monitorPause: typeof record.monitorPauseText === 'string', lock: true },
   };
 }
 

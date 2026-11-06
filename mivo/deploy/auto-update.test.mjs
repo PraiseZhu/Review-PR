@@ -123,7 +123,7 @@ function plantOrphan(root, { switched }) {
   const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
   put(path.join(home, DEPLOY_LOCK_REL), lockText);
   put(path.join(home, path.dirname(DEPLOY_LOCK_REL), 'deploy-hold.json'), holdText);
-  put(path.join(home, RECORD_DIR_REL, 'deploy-bbbbbbb-20261106T0743.record.json'), JSON.stringify({ lockText, holdText, switched, phases: [] }));
+  put(path.join(home, RECORD_DIR_REL, 'deploy-bbbbbbb-20261106T0743.record.json'), JSON.stringify({ lockText, holdText, switched, phases: [], bootout: 'none' }));
   return { lock: path.join(home, DEPLOY_LOCK_REL), hold: path.join(home, path.dirname(DEPLOY_LOCK_REL), 'deploy-hold.json') };
 }
 
