@@ -37,8 +37,9 @@ review-pr(交互)与 review-pr-auto(批处理)共用本文件。
 - `slackSyncBots` / `slackSenderAliases` / `orgMappingRepos`:讨论 issue
   留言归属(Slack 同步评论的发送者 → GitHub 账号,不涉及任何飞书发送);
 - `feishuNotify.summaryChat`:auto 每轮汇总卡片要发到的飞书群(`name` + `chatId`)。
-  这是全流程**唯一**的飞书发送出口——hold 群通知、确认 @ 维护者、停滞飞书私聊
-  催办均已下线(2026-07-31 拍板:除汇总卡片外不再往飞书发任何内容);
+  hold 群通知、确认 @ 维护者、停滞飞书私聊催办均已下线(2026-07-31 拍板);
+  [MIVO-PATCH fuse-feishu-notify] Mivo 另有一个出口:审查熔断时用飞书「Mivo」机器人私聊 PR 作者
+  (`convergeFuse.notify`,PraiseZhu/Review-PR#210,用户 2026-11-07 定,见 `mivo/README.md`「审查熔断」);
 - `securityScan`:重档审查的扫描配置。
 
 不要在 SKILL.md 中写死人名、群名、阈值或路径;配置变化先检查 JSON 再跑 review。
