@@ -228,7 +228,7 @@ export function toProductRulesFocusLine(productRules) {
   return '- ① 本 PR 要做成什么:先读下文「产品规则」一节,本 diff 碰到的生效规则逐条核对是否保持;已定未生效的规则当作产品意图,用来判断改动方向。本轮没有子 issue 材料。';
 }
 
-/** 审查任务书的「产品规则」一节;off 时返回 [](任务书与改动前完全一致)。 */
+/** 审查任务书的「产品规则」一节;off 时返回 [](任务书与不接产品规则时逐字一致)。 */
 export function toProductRulesPromptLines({ productRules, workdir }) {
   const pr = productRules;
   if (!pr || !PRODUCT_RULES_MODES.includes(pr.featureMode) || pr.featureMode === 'off') return [];
