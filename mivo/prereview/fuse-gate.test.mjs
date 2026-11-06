@@ -18,7 +18,7 @@ assert.match(source, /if \(next\.dispatch\) return holdForFuse\(ctx, task, live,
 const CONFIG_FUSE = { enabled: true, maxVersions: 10, resumeLine: '继续审', maintainers: ['praisezhu', 'aj0928'] };
 const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${prefix}${i}`, head: `${prefix}${i}`, at: `2026-11-07T0${i}:00:00.000Z` }));
 
-function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true } = {}) {
+function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [] } = {}) {
   const store = { prs: { 1704: structuredClone(record) } };
   const calls = [];
   const finished = [];
@@ -27,7 +27,7 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true 
   const runGh = (cmd, args) => {
     calls.push(args);
     if (args[0] === 'issue' && args[1] === 'create') return createOk ? { ok: true, stdout: `https://github.com/o/r/issues/${++issueNo}\n` } : { ok: false, stderr: 'HTTP 403' };
-    if (args[0] === 'issue' && args[1] === 'close') return { ok: true, stdout: '' };
+    if (args[0] === 'issue' && args[1] === 'close') return closeOk ? { ok: true, stdout: '' } : { ok: false, stderr: 'HTTP 502' };
     return { ok: false, stderr: `unexpected ${args.join(' ')}` };
   };
   const sandbox = {
@@ -41,7 +41,11 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true 
     run: runGh,
     ghRead: (args) => {
       calls.push(args);
-      return { ok: true, stdout: JSON.stringify({ data: { repository: { issue: { comments: { nodes: comments } } } } }) };
+      if (args.includes('graphql')) {
+        return commentsOk ? { ok: true, stdout: JSON.stringify({ data: { repository: { issue: { comments: { nodes: comments } } } } }) } : { ok: false, stderr: 'HTTP 502' };
+      }
+      if (args.includes('repos/o/r/issues')) return listOk ? { ok: true, stdout: JSON.stringify([openIssues]) } : { ok: false, stderr: 'HTTP 502' };
+      return { ok: false, stderr: `unexpected ${args.join(' ')}` };
     },
     log: (event, detail) => logs.push({ event, ...detail }),
     assertNotFenced: () => {},
@@ -133,4 +137,53 @@ test('熔断关闭时不读 store、不拦', () => {
   const sandbox = { fuseConfig: () => ({ enabled: false }), loadStore: () => { throw new Error('不该读'); } };
   vm.runInNewContext(`${section}\nglobalThis.hold = holdForFuse;`, sandbox);
   assert.equal(sandbox.hold({}, { pr: 1, head: 'h' }, {}, {}), null);
+});
+
+// #211 单审的三条 P2:评论读不到要 retry;开 issue 前查重、沿用已开的;恢复时先关 issue,关失败不清熔断。
+const TRIP = { issue: 901, at: '2026-11-07T11:00:00.000Z', count: 10, head: 'h9' };
+const RESUME = [{ author: { login: 'aj0928' }, body: '继续审', createdAt: '2026-11-07T11:30:00Z', isMinimized: false, databaseId: 6 }];
+
+test('评论读不到:照旧停审,记 retry(同一条「继续审」只唤醒一次,不 retry 就会一直停着)', () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: RESUME, commentsOk: false });
+  const { out, result } = world.gate('h9');
+  assert.deepEqual(out, { dispatched: false });
+  assert.equal(result.retry, true);
+  assert.match(result.warnings.at(-1), /评论读不到,照旧停审,下一轮再读/);
+  assert.deepEqual(world.store.prs[1704].fuse.trip, TRIP);
+});
+
+test('开 issue 前查重:开着的 issue 里已有这个 PR 的熔断 issue(上一轮开成功、本机没记上)就沿用,不重开', () => {
+  const marker = (pr) => `<!-- mivo-fuse pr=${pr} -->\n正文`;
+  const openIssues = [
+    { number: 950, title: '审查熔断 · PR #17040：审到第 10 版还没放行', body: marker(17040) },
+    { number: 951, title: '审查熔断 · PR #1704：审到第 10 版还没放行', body: marker(1704), pull_request: { url: 'x' } },
+    { number: 952, title: '审查熔断 · PR #1704：审到第 10 版还没放行', body: marker(1704) },
+  ];
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, openIssues });
+  const { result } = world.gate('h9');
+  assert.equal(world.calls.filter((args) => args[0] === 'issue' && args[1] === 'create').length, 0);
+  assert.equal(world.store.prs[1704].fuse.trip.issue, 952);
+  assert.equal(result.gate.fuse.issue, 952);
+});
+
+test('开 issue 前读不到开着的 issue 列表:不开、记 error 并 retry,不写熔断记录', () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, listOk: false });
+  const { out, result } = world.gate('h9');
+  assert.deepEqual(out, { dispatched: false }, '照旧停审');
+  assert.equal(world.calls.filter((args) => args[0] === 'issue').length, 0);
+  assert.equal(result.retry, true);
+  assert.match(result.errors[0], /读不到开着的 issue 列表/);
+  assert.equal(world.store.prs[1704].fuse.trip, undefined);
+});
+
+test('恢复时关 issue 失败:不清熔断、不派审,记 error 并 retry;下一轮关成功才恢复', () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: RESUME, closeOk: false });
+  const first = world.gate('h9');
+  assert.deepEqual(first.out, { dispatched: false });
+  assert.equal(first.result.retry, true);
+  assert.match(first.result.errors[0], /没关掉,先不恢复送审/);
+  assert.deepEqual(world.store.prs[1704].fuse.trip, TRIP);
+  const retried = makeWorld({ record: structuredClone(world.store.prs[1704]), comments: RESUME });
+  assert.equal(retried.gate('h9').out, null);
+  assert.equal(retried.store.prs[1704].fuse.trip, null);
 });

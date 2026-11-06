@@ -102,8 +102,9 @@ export function shouldWakeForFuse({ record, reviewClean, maxVersions }) {
 }
 
 /**
- * 熔断 issue 下第一条有效的「继续审」。有效:没被折叠;不是流程评论(不含 HTML 注释标记);有一整行恰好是 resumeLine
- * (允许行尾标点);全文没有否定说法;评论人是维护者或 PR 作者;发在熔断之后。comments 是 GraphQL 的 issue 评论节点。
+ * 熔断 issue 下第一条有效的「继续审」。有效:没被折叠;不是流程评论(不含 HTML 注释标记);评论人是维护者或 PR 作者;发在熔断之后;
+ * 全文只有一行提到 resumeLine,且那一行恰好就是它(允许行尾标点)——「别继续审 / 不建议继续审」再另起一行「继续审」这类
+ * 自相矛盾的写法按结构直接不算,不靠逐个补否定词(#211 单审);常见否定说法另有一道兜底。comments 是 GraphQL 的 issue 评论节点。
  */
 export function findResumeComment({ comments = [], maintainers = [], author = '', resumeLine, since = null }) {
   const allowed = new Set([...maintainers.map((login) => String(login).toLowerCase()), String(author ?? '').toLowerCase()].filter(Boolean));
@@ -114,7 +115,8 @@ export function findResumeComment({ comments = [], maintainers = [], author = ''
     if (comment?.isMinimized || !login || !allowed.has(login) || body.includes('<!--')) continue;
     if (since && !(Date.parse(comment.createdAt) >= Date.parse(since))) continue;
     if (RESUME_NEGATION_RE.test(body)) continue;
-    if (!body.split(/\r?\n/).some((line) => line.trim().replace(TRAILING_PUNCT_RE, '') === resumeLine)) continue;
+    const mentions = body.split(/\r?\n/).filter((line) => line.includes(resumeLine));
+    if (mentions.length !== 1 || mentions[0].trim().replace(TRAILING_PUNCT_RE, '') !== resumeLine) continue;
     return { login: comment.author.login, at: comment.createdAt, id: comment.databaseId ?? null };
   }
   return null;
@@ -142,6 +144,18 @@ export function toFuseIssue({ pr, title = '', url = '', author = '', count, maxV
     `「${resumeLine}」要本人回复，agent 不得代写。`,
   ];
   return { title: `${FUSE_ISSUE_PREFIX}${pr}：审到第 ${count} 版还没放行`, body: `${lines.join('\n')}\n` };
+}
+
+/**
+ * 开着的 issue 里有没有这个 PR 的熔断 issue(标题前缀 + 正文首行标记都对上)。开 issue 前先查一次:上一轮开成功、本机记录没写上
+ * (进程崩溃、写盘失败)时沿用那一个,不重开。issues 是 REST issues 列表(--slurp 的分页数组或扁平数组都行),返回编号最小的那个或 null。
+ */
+export function selectOpenFuseIssue(issues, pr) {
+  const list = (Array.isArray(issues) ? issues : []).flat();
+  const hits = list.filter((issue) => !issue?.pull_request && issue?.state !== 'closed'
+    && String(issue?.title ?? '').startsWith(`${FUSE_ISSUE_PREFIX}${pr}：`)
+    && String(issue?.body ?? '').match(FUSE_MARKER_RE)?.[1] === String(pr));
+  return hits.length ? hits.reduce((a, b) => (a.number < b.number ? a : b)).number : null;
 }
 
 /** 恢复送审时关熔断 issue 留的一句话。 */

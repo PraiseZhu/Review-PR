@@ -96,6 +96,9 @@ test('SC5「继续审」不算的情况:否定、被折叠、流程评论、路�
     comment('stranger', '继续审', 12),
     comment('praisezhu', '继续审', 9),
     comment('praisezhu', '可以继续审了', 12),
+    comment('praisezhu', '别继续审\n继续审', 12),
+    comment('praisezhu', '不建议继续审\n继续审', 12),
+    comment('praisezhu', '继续审\n继续审', 12),
     comment('', '继续审', 12),
   ];
   for (const c of rejects) assert.equal(findResumeComment({ ...base, comments: [c] }), null, JSON.stringify(c));

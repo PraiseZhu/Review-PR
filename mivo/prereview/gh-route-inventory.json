@@ -5042,6 +5042,36 @@
      "expected": "app-write"
     }
    ]
+  },
+  {
+   "id": "round.ghRead.6238f13d53",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "6238f13d53",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "fuse-open-issues",
+     "argv": [
+      "api",
+      "--method",
+      "GET",
+      "--paginate",
+      "--slurp",
+      "repos/xindong/mivo-canvas-plugin/issues",
+      "-f",
+      "state=open",
+      "-f",
+      "per_page=100"
+     ],
+     "expected": "app"
+    }
+   ]
   }
  ]
 }

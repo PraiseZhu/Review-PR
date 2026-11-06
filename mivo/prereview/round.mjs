@@ -27,7 +27,7 @@ import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
-import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment } from '../lib/fuse.mjs';
+import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment, selectOpenFuseIssue } from '../lib/fuse.mjs';
 import { toHoldAlert } from '../deploy/tuple-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1216,7 +1216,9 @@ async function handleTask(ctx, task) {
 // 判门要派审时先问一句:这个 PR 从上次「继续审」起审过的代码版本数到没到上限、当前 head 是不是审查通过的 head。
 // 到了就不派审,结果记 maintainer-signoff(等人处理;共享 review-round.mjs 的结果名单里没有专门的熔断结果,不为此改共享脚本),
 // gate.fuse 记版本数和 issue 号;不放行,review-pr 不写成通过。第一次熔断时开「审查熔断 · PR #<n>」issue。
-// 已经熔断的 PR 每次判门读一次那个 issue 的评论:有效的「继续审」→ 清掉熔断、记 resumedAt、关 issue,这一轮照常派审。
+// 已经熔断的 PR 每次判门读一次那个 issue 的评论:有效的「继续审」→ 先关 issue,关成功才清掉熔断、记 resumedAt,这一轮照常派审;
+// 关失败或评论读不到都记 retry,下一轮再试(同一条评论只唤醒一次,不 retry 就会一直停着)。
+// 开 issue 前先查开着的 issue 里有没有这个 PR 的熔断 issue(上一轮开成功、本机记录没写上时沿用),查不到列表就不开、retry。
 // 开 issue 失败记 error 并 retry,下一轮再开;dry-run 只记 dryRunActions,不写 GitHub,也不写本机熔断记录。
 function holdForFuse(ctx, task, live, result) {
   const config = fuseConfig();
@@ -1225,11 +1227,10 @@ function holdForFuse(ctx, task, live, result) {
   let record = loadStore().prs[task.pr] ?? {};
   if (record.fuse?.trip?.issue) {
     const resume = readFuseResume(record.fuse.trip, live, config, result);
-    if (resume) {
-      if (!dry) {
-        bumpOwned(ctx, task, { fuse: { ...record.fuse, trip: null, resumedAt: resume.at } });
-        closeFuseIssue(record.fuse.trip.issue, toFuseResumeComment({ login: resume.login, resumeLine: config.resumeLine }), result);
-      } else result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-resume:#${record.fuse.trip.issue}`];
+    const closed = resume && (dry || closeFuseIssue(record.fuse.trip.issue, toFuseResumeComment({ login: resume.login, resumeLine: config.resumeLine }), result));
+    if (closed) {
+      if (dry) result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-resume:#${record.fuse.trip.issue}`];
+      else bumpOwned(ctx, task, { fuse: { ...record.fuse, trip: null, resumedAt: resume.at } });
       log('fuse-resumed', { pr: task.pr, head: task.head, issue: record.fuse.trip.issue, by: resume.login });
       record = { ...record, fuse: { ...record.fuse, trip: null, resumedAt: resume.at } };
     }
@@ -1251,6 +1252,22 @@ function openFuseIssue(ctx, task, live, record, count, result, dry) {
     count, maxVersions: config.maxVersions, findings: record.fuse?.lastFindings ?? null, resumeLine: config.resumeLine });
   if (dry) {
     result.dryRunActions = [...(result.dryRunActions ?? []), 'fuse-issue:create'];
+    return;
+  }
+  const listed = ghRead(['api', '--method', 'GET', '--paginate', '--slurp', `repos/${CONFIG.targetRepo}/issues`, '-f', 'state=open', '-f', 'per_page=100'],
+    { allowFail: true, timeoutMs: 60_000 });
+  let openIssues = null;
+  try { openIssues = listed.ok ? JSON.parse(listed.stdout) : null; } catch { openIssues = null; }
+  if (!Array.isArray(openIssues)) {
+    result.errors = [...(result.errors ?? []), `开熔断 issue 前读不到开着的 issue 列表,这一轮不开:${String(listed.stderr ?? '').trim().slice(0, 120)}`];
+    result.retry = true;
+    return;
+  }
+  const existing = selectOpenFuseIssue(openIssues, task.pr);
+  if (existing) {
+    bumpOwned(ctx, task, { fuse: { ...(record.fuse ?? {}), trip: { issue: existing, at: nowIso(), count, head: task.head } } });
+    result.gate.fuse.issue = existing;
+    log('fuse-issue-adopted', { pr: task.pr, issue: existing });
     return;
   }
   assertNotFenced();
@@ -1277,17 +1294,22 @@ function readFuseResume(trip, live, config, result) {
   let comments = null;
   try { comments = r.ok ? JSON.parse(r.stdout)?.data?.repository?.issue?.comments?.nodes : null; } catch { comments = null; }
   if (!Array.isArray(comments)) {
-    result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 的评论读不到,照旧停审:${String(r.stderr ?? '').trim().slice(0, 120)}`];
+    result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 的评论读不到,照旧停审,下一轮再读:${String(r.stderr ?? '').trim().slice(0, 120)}`];
+    result.retry = true;
     return null;
   }
   return findResumeComment({ comments, maintainers: config.maintainers, author: live.meta?.author ?? '', resumeLine: config.resumeLine, since: trip.at });
 }
 
+// 关成功返回 true;关失败记 error 并 retry,熔断记录保留,下一轮读到同一条「继续审」再关。
 function closeFuseIssue(number, comment, result) {
   assertNotFenced();
   const closed = run('gh', ['issue', 'close', String(number), '-R', CONFIG.targetRepo, '--comment', comment],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
-  if (!closed.ok) result.warnings = [...(result.warnings ?? []), `熔断 issue #${number} 没关掉:${String(closed.stderr ?? '').trim().slice(0, 120)}`];
+  if (closed.ok) return true;
+  result.errors = [...(result.errors ?? []), `熔断 issue #${number} 没关掉,先不恢复送审,下一轮再试:${String(closed.stderr ?? '').trim().slice(0, 120)}`];
+  result.retry = true;
+  return false;
 }
 
 async function executeGateAction({ action, live, task, bindings, result, roundDir }) {
