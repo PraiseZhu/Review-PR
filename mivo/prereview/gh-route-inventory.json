@@ -9,8 +9,8 @@
  "classifier": {
   "repo": "xindong/mivo-canvas-plugin",
   "path": "scripts/ops/gh-app-router/classify.mjs",
-  "commit": "6a533e3d9120991ec66b6af35a068a058891fe99",
-  "sha256": "1bd43941c4d4e9ceecdd1bc9231b61b0871f3d634528186ad16c09e9d999846e",
+  "commit": "e1b1f040fabf90ac6c8d134b133904463a4a6214",
+  "sha256": "e2b7ab94747656fd96c0745ab3f08b3196f86efba1ba1f52e99842685ee3a114",
   "previousCommit": "077a4bb56",
   "previousSha256": "12dd0e7f9f7082d1c650424f66d40ca972c9e575d5a7771178d533110cb09245",
   "legacyBodySha256": "12dd0e7f9f7082d1c650424f66d40ca972c9e575d5a7771178d533110cb09245",
@@ -713,11 +713,7 @@
       "DELETE",
       "repos/xindong/mivo-canvas-plugin/issues/7/labels/status%3Aci-failed"
      ],
-     "expected": "user",
-     "keep": {
-      "category": "write-not-allowlisted",
-      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;round.mjs 清扫已关闭 PR 的 status:* 标签,DELETE issues/<N>/labels/<status:*> 分类器判 write_method,所以仍走 PraiseZhu"
-     }
+     "expected": "app-write"
     }
    ]
   },
@@ -741,11 +737,7 @@
       "DELETE",
       "repos/xindong/mivo-canvas-plugin/issues/7/labels/review%3Amerge-ready"
      ],
-     "expected": "user",
-     "keep": {
-      "category": "write-not-allowlisted",
-      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;round.mjs 摘 review:merge-ready,DELETE issues/<N>/labels/review:merge-ready 分类器判 write_method,所以仍走 PraiseZhu"
-     }
+     "expected": "app-write"
     }
    ]
   },
@@ -3023,13 +3015,9 @@
       "DELETE",
       "repos/xindong/mivo-canvas-plugin/issues/7/labels/awaiting-discussion"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "keep": {
-      "category": "write-not-allowlisted",
-      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs ghIssueLabel 摘维护者确认标签 awaiting-discussion(pr-rules.json signoffGate.label),分类器判 write_method,所以仍走 PraiseZhu"
-     }
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3059,13 +3047,9 @@
       "--color",
       "7057FF"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "keep": {
-      "category": "write-not-allowlisted",
-      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs 建维护者确认标签 awaiting-discussion,分类器判 write_command,所以仍走 PraiseZhu"
-     }
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3156,13 +3140,9 @@
       "--description",
       "x"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "keep": {
-      "category": "write-not-allowlisted",
-      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs 按标签注册表补建 status:* / touches:* 等标签,分类器判 write_command,所以仍走 PraiseZhu"
-     }
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3192,13 +3172,9 @@
       "--description",
       "x"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "keep": {
-      "category": "write-not-allowlisted",
-      "reason": "xindong/mivo-canvas-plugin#1752 的受管标签(MANAGED_LABELS)只有 review-pr / review-pr-signoff,前置审查真实用的 status:* / review:merge-ready / awaiting-discussion / touches:* 不在里面;lib.mjs 按标签注册表改 touches:* / status:* 等标签的颜色与说明,分类器判 write_command,所以仍走 PraiseZhu"
-     }
+     "legacyServerRoute": "user"
     }
    ]
   },

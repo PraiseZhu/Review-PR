@@ -912,7 +912,7 @@ test('清单 schema:三个扫描根、分类器来源 hash、路由上下文', (
   // 服务器读 wrapper 只认读开关:writes 不在其中,守卫算 serverRoute 用的开关也只给这两个
   assert.deepEqual(Object.keys(SERVER_READ_ROUTES), READ_ROUTE_SWITCHES);
   assert.ok(READ_ROUTE_SWITCHES.every((key) => ROUTE_SWITCHES.includes(key)) && !READ_ROUTE_SWITCHES.includes('writes'));
-  // 清单记录的分类器提交要与 vendor 文件头写的来源一致(搬运基准 #1752 合入提交 6a533e3d9)
+  // 清单记录的分类器提交要与 vendor 文件头写的来源一致(搬运基准 #1867 合入提交 e1b1f040f)
   const header = readFileSync(join(REPO_ROOT, 'review-pr/scripts/vendor/gh-app-classify.mjs'), 'utf8').split('\n')[1];
   assert.ok(header.includes(`@ ${inventory.classifier.commit}`) && header.includes(`sha256 ${inventory.classifier.sha256}`), `vendor 文件头要写清单记录的提交和 sha256: ${header}`);
 });
@@ -1019,26 +1019,27 @@ test('清单里没有 ownerPending、没有任何 flipsIn(读侧 #1751、身份�
   for (const [e, c] of mentions) assert.equal(c.keep?.category, 'praisezhu-exception', `${e.id}/${c.name}: #173 只能出现在 praisezhu-exception 的 reason 里`);
 });
 
-// 白名单外、分类器仍判 PraiseZhu 的 10 个写:原因要写进 reason(见 keep 的 reason 字段)。
-const LABEL_NOT_MANAGED = /只有 review-pr \/ review-pr-signoff.*status:\* \/ review:merge-ready \/ awaiting-discussion \/ touches:\*/;
+// 白名单外、分类器仍判 PraiseZhu 的 4 个写:原因要写进 reason(见 keep 的 reason 字段)。
 const WRITE_NOT_ALLOWLISTED = [
   ['bypass-reason.gh.7d66324b2a', 'sample', 'fields_without_get', /隐式 POST/],
   ['request-changes-reviewed-pr.write.9215adc842', 'sample', 'write_method', /pulls\/<N>\/comments/],
   ['resolve-threads.ghGraphql.8de05a9f6f', 'mutation', 'graphql_mutation', /GraphQL mutation/],
   ['resolve-threads.ghGraphql.c014b245cb', 'mutation', 'graphql_mutation', /resolveReviewThread.*PraiseZhu\/vigil#336.*PraiseZhu\/Review-PR#185/],
-  // #1752 的 MANAGED_LABELS 只有 review-pr / review-pr-signoff,xindong/mivo-canvas-plugin 里没有这两个标签;
-  // 前置审查真实增删改的是 status:* / review:merge-ready / awaiting-discussion / touches:*,删、建、改都判 user(加标签 POST 不查名字,是 app-write)
-  ['round.run_gh.6daafa4b76', 'sample', 'write_method', LABEL_NOT_MANAGED],
-  ['round.run_gh.ff1da62fed', 'sample', 'write_method', LABEL_NOT_MANAGED],
-  ['lib.ghFn.444d0d2703', 'label-remove', 'write_method', LABEL_NOT_MANAGED],
-  ['lib.ghFn.fb2b3a6c1a', 'sample', 'write_command', LABEL_NOT_MANAGED],
-  ['lib.ghFn.0f9646b182', 'sample', 'write_command', LABEL_NOT_MANAGED],
-  ['lib.ghFn.031d975f12', 'sample', 'write_command', LABEL_NOT_MANAGED],
+];
+// #1867(Mivo e1b1f040f)把标签建/改/删放进写白名单:受管标签 = review:merge-ready / awaiting-discussion / status:<x> / touches:<x>,
+// 前置审查真实增删改的就是这批。下面六条是 e1b1f040f 之前判 user 的标签写,现在判 app-write/issues,清单里不再带 keep。
+const MANAGED_LABEL_WRITES = [
+  ['round.run_gh.6daafa4b76', 'sample', 'issue_label_remove'],
+  ['round.run_gh.ff1da62fed', 'sample', 'issue_label_remove'],
+  ['lib.ghFn.444d0d2703', 'label-remove', 'issue_label_remove'],
+  ['lib.ghFn.fb2b3a6c1a', 'sample', 'label_create'],
+  ['lib.ghFn.0f9646b182', 'sample', 'label_create'],
+  ['lib.ghFn.031d975f12', 'sample', 'label_edit'],
 ];
 
-test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 10 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
+test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 4 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
   const appWrites = allCases.filter(([, c]) => c.expected === APP_WRITE);
-  assert.equal(appWrites.length, 28);
+  assert.equal(appWrites.length, 34);
   // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
   const categories = new Set();
   for (const [e, c] of appWrites) {
@@ -1055,6 +1056,21 @@ test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限�
     assert.equal(c.expected, APP_WRITE, `${id}/${name}`);
     assert.deepEqual(['flipsIn', 'keep', 'exception', 'guard'].filter((key) => key in c), [], `${id}/${name}`);
   }
+  // 受管标签的建/改/删:分类器判 app-write/issues,清单不带 keep、不带 exception;服务器读 wrapper 里同一请求仍是 user
+  for (const [id, name, classifierReason] of MANAGED_LABEL_WRITES) {
+    const c = byName(id, name);
+    const got = routeOf(c);
+    assert.deepEqual([c.expected, got.route, got.category, got.reason], [APP_WRITE, APP_WRITE, 'issues', classifierReason], `${id}/${name}`);
+    assert.deepEqual(['flipsIn', 'keep', 'exception', 'guard'].filter((key) => key in c), [], `${id}/${name}`);
+  }
+  // 受管名单是精确匹配:名字不在名单里(含大写)的标签写仍判 user,不能因为标签写整体放开而被清单当成 app-write
+  const labelWrite = (argv) => routeOf({ name: 'probe', argv });
+  const unmanaged = [
+    [['label', 'create', 'foo-bar', '--repo', 'xindong/mivo-canvas-plugin', '--color', 'x', '--description', 'x'], 'write_command'],
+    [['label', 'edit', 'touches:Security', '--repo', 'xindong/mivo-canvas-plugin', '--color', 'x', '--description', 'x'], 'write_command'],
+    [['api', '--method', 'DELETE', 'repos/xindong/mivo-canvas-plugin/issues/7/labels/foo-bar'], 'write_method'],
+  ];
+  for (const [argv, classifierReason] of unmanaged) assert.deepEqual([labelWrite(argv).route, labelWrite(argv).reason], ['user', classifierReason], argv.join(' '));
   // 需要 --input - 的白名单写端点样本带代表性 stdin(needsStdin 在 writes 开着时要求)
   for (const id of ['dismiss-own-review.gh.39a96b6774', 'dismiss-stale-reviews.gh.e54349f214', 'dismiss-review.ghFn.a491648a3f']) assert.equal(JSON.parse(byName(id, 'sample').stdin).event, 'DISMISS', id);
   // 白名单外的写:expected 仍是 user,标 write-not-allowlisted,分类器给的 reason 属于写类,reason 点名 #1752
