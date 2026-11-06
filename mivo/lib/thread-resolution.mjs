@@ -1,6 +1,7 @@
-// thread-resolution.mjs — 已修旧 thread 的代 resolve 清单(Review-PR #115)。纯函数:不读文件、不访问网络、不改入参。
+// thread-resolution.mjs — 已修旧 thread 的回复清单(Review-PR #115,#185 改为只回复、不关闭)。纯函数:不读文件、不访问网络、不改入参。
 // 条件:本轮完整模型审查已发布;审查机自己发的、带 mivo-finding marker 且 marker 的 head 不是当前 head 的 thread;
 // 本轮没有再报(也不在转 issue / pre-existing / 裁定不改 / 核对员推翻的名单里);prepare 之后内容没有变化。
+// 选中的 thread 只留一条带 mivo-review:thread-fixed 标记(key + head)的说明,关闭由 Mini 盯梢做;同一 key + head 不重复回复。
 // 拿不准一律不选:宁可留给下一轮,不错放。
 import { parseFindingMarker } from './finding.mjs';
 import { collectRulings } from './rulings.mjs';
@@ -8,6 +9,8 @@ import { hasReviewer, toReviewerMatcher } from './reviewer-match.mjs';
 import { normalizeReviewActor } from '../../review-pr/scripts/reviewer-identity.mjs';
 
 export const TRIAGE_MARKER = '<!-- review-pr:thread-triage -->';
+/** 「已修复,由盯梢关闭」回复末尾的机器可读标记:盯梢按 key + 完整 head + 作者认它。 */
+export const renderThreadFixedMarker = ({ key, head }) => `<!-- mivo-review:thread-fixed key=${key} head=${head} -->`;
 const HEAD_RE = /^[0-9a-f]{40}$/;
 const KEY_RE = /^[0-9a-f]{12}$/;
 const RUN_URL_RE = /^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/actions\/runs\/\d+$/;
@@ -21,9 +24,9 @@ const fingerprint = (thread) => JSON.stringify(commentsOf(thread).map((c) => [c?
 
 const skip = (skippedReason) => ({ skippedReason, threads: [] });
 
-/** 本轮代 resolve 的回复正文:固定中文模板,不拼接模型自由文本。 */
+/** 本轮「已修复」的回复正文:固定中文模板,末尾是 thread-fixed 标记,不拼接模型自由文本。 */
 export function renderResolveReply({ head, runUrl, key }) {
-  return `本轮在提交 ${head} 完成复核:本轮复核未再发现该问题(key=${key})。审查运行:${runUrl}。现由审查机代为 resolve;如仍有异议,可 unresolve 让审查机重看。`;
+  return `本轮在提交 ${head} 完成复核:本轮复核未再发现该问题(key=${key})。已修复，由盯梢关闭；如仍有异议，可在此回复。审查运行:${runUrl}。\n\n${renderThreadFixedMarker({ key, head })}`;
 }
 
 /**
@@ -69,7 +72,10 @@ export function buildThreadResolutionPlan({ round = {}, head, reviewer, reviewer
     if (head.startsWith(lower(marker.head))) continue;
     if (excluded.has(marker.key)) continue;
     if (comments.some((c) => String(c?.body ?? '').includes(TRIAGE_MARKER))) continue;
-    // prepare 时必须见过这条 thread,且明确未 resolve、内容没变:模型没审过的东西不代 resolve。
+    // 同一 key + 同一完整 head 审查身份已经回复过:不重复发。换了 head 重新复核,可以再发一条(盯梢要的是当前 head)。
+    const fixedMarker = renderThreadFixedMarker({ key: marker.key, head });
+    if (comments.some((c) => isReviewer(c?.author) && String(c?.body ?? '').includes(fixedMarker))) continue;
+    // prepare 时必须见过这条 thread,且明确未 resolve、内容没变:模型没审过的东西不回复。
     const reviewed = reviewedById.get(id);
     if (!reviewed || reviewed.isResolved !== false || fingerprint(reviewed) !== fingerprint(thread)) continue;
     picked.push({ id, key: marker.key, oldHead: marker.head, reply: renderResolveReply({ head, runUrl, key: marker.key }) });

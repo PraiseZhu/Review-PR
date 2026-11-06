@@ -1025,6 +1025,7 @@ const WRITE_NOT_ALLOWLISTED = [
   ['request-changes-reviewed-pr.write.9215adc842', 'sample', 'write_method', /pulls\/<N>\/comments/],
   ['resolve-threads.ghGraphql.8de05a9f6f', 'mutation', 'graphql_mutation', /GraphQL mutation/],
   ['resolve-threads.ghGraphql.c014b245cb', 'mutation', 'graphql_mutation', /resolveReviewThread.*PraiseZhu\/vigil#336.*PraiseZhu\/Review-PR#185/],
+  ['resolve-fixed-threads.lib_ghGraphql.2791d62851', 'mutation', 'graphql_mutation', /addPullRequestReviewThreadReply.*不 resolve.*PraiseZhu\/Review-PR#185/],
 ];
 // #1867(Mivo e1b1f040f)把标签建/改/删放进写白名单:受管标签 = review:merge-ready / awaiting-discussion / status:<x> / touches:<x>,
 // 前置审查真实增删改的就是这批。下面六条是 e1b1f040f 之前判 user 的标签写,现在判 app-write/issues,清单里不再带 keep。
@@ -1037,7 +1038,7 @@ const MANAGED_LABEL_WRITES = [
   ['lib.ghFn.031d975f12', 'sample', 'label_edit'],
 ];
 
-test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 4 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
+test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 5 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
   const appWrites = allCases.filter(([, c]) => c.expected === APP_WRITE);
   assert.equal(appWrites.length, 34);
   // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
@@ -1308,11 +1309,29 @@ export async function captureTeamAuthorityRequests() {
 test('N3a:resolve-fixed-threads 的样本是 bindGraphqlToPr 包装后的真实线程读取,不是 mutation', async () => {
   const captured = await captureBoundThreadRequests();
   assert.ok(captured.length >= 1);
-  const entries = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.cases?.some((c) => c.argv[1] === 'graphql'));
+  // 只看 bindGraphqlToPr 包装的读取器(ghGraphqlFn);回复 mutation 直接走 lib.ghGraphql,不经过包装器,样本由下一条测试核对。
+  const entries = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.source.callee === 'ghGraphqlFn' && e.cases?.some((c) => c.argv[1] === 'graphql'));
   assert.ok(entries.length >= 1, '清单里没有 resolve-fixed-threads 的 GraphQL 条目');
   const have = new Set(entries.flatMap((e) => e.cases.map((c) => requestKey(c.argv, c.stdin))));
   for (const call of captured) assert.ok(have.has(requestKey(call.argv, call.stdin)), `清单样本与真实请求不一致: ${call.stdin.slice(0, 120)}`);
   for (const e of entries) for (const c of e.cases) assert.ok(!/mutation/.test(c.stdin ?? ''), `${e.id}: bindGraphqlToPr 会拒绝没有注入点的 mutation,不能当样本`);
+});
+
+test('N3c(#185):resolve-fixed-threads 服务器路径只有一个 mutation——回复;样本与源码里的 REPLY_MUTATION 一致,共享 resolve-threads.mjs 只归 interactive', () => {
+  const source = readFileSync(join(REPO_ROOT, 'mivo/lib/resolve-fixed-threads.mjs'), 'utf8');
+  const query = source.match(/const REPLY_MUTATION = `([^`]*)`/)?.[1];
+  assert.ok(query, '源码里找不到 REPLY_MUTATION');
+  assert.match(query, /addPullRequestReviewThreadReply/);
+  assert.doesNotMatch(query, /resolveReviewThread/);
+  const mutations = inventory.entries.filter((e) => e.source.file === 'mivo/lib/resolve-fixed-threads.mjs' && e.cases?.some((c) => /mutation/.test(c.stdin ?? '')));
+  assert.equal(mutations.length, 1, '服务器路径(resolve-fixed-threads)上只能登记一个 mutation');
+  const [entry] = mutations;
+  assert.deepEqual(entry.flows, ['server']);
+  assert.equal(entry.source.callee, 'lib.ghGraphql');
+  assert.deepEqual(entry.cases.map((c) => JSON.parse(c.stdin).query), [query]);
+  const shared = inventory.entries.filter((e) => e.source.file === 'review-pr/scripts/resolve-threads.mjs');
+  assert.equal(shared.length, 2);
+  for (const e of shared) assert.deepEqual(e.flows, ['interactive'], `${e.id}: 共享 resolve-threads.mjs 不再在服务器路径上`);
 });
 
 test('N3b:Team 权限回退请求的样本来自真实 fetchMaintainerAuthority,且归 maintainer-team guard', async () => {

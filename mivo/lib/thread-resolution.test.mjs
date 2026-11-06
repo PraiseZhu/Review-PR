@@ -1,7 +1,8 @@
-// thread-resolution.mjs 的单测:选择器只看输入,覆盖 #115 的 SC1/SC2/SC3/SC5。
+// thread-resolution.mjs 的单测:选择器只看输入,覆盖 #115 的 SC1/SC2/SC3/SC5,以及 #185 的回复文案与 thread-fixed 去重。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildThreadResolutionPlan, renderResolveReply, TRIAGE_MARKER } from './thread-resolution.mjs';
+import { buildThreadResolutionPlan, renderResolveReply, renderThreadFixedMarker, TRIAGE_MARKER } from './thread-resolution.mjs';
+import { createReviewIdentity } from '../../review-pr/scripts/reviewer-identity.mjs';
 
 const HEAD = 'b'.repeat(40);
 const OLD = 'a'.repeat(12);
@@ -141,4 +142,59 @@ test('SC4 回复含完整 head、run 链接、key,且不含 triage marker', () =
   assert.equal(item.reply, renderResolveReply({ head: HEAD, runUrl: RUN, key: K1 }));
   for (const part of [HEAD, RUN, K1]) assert.ok(item.reply.includes(part));
   assert.ok(!item.reply.includes(TRIAGE_MARKER));
+});
+
+// ── #185:只回复、不关闭;回复末尾带 thread-fixed 标记 ──
+const FIXED = (key, head = HEAD) => `<!-- mivo-review:thread-fixed key=${key} head=${head} -->`;
+const fixedReply = (key, head = HEAD, author = { login: REVIEWER }) => ({ id: `fx-${key}-${head.slice(0, 4)}`, author, body: `已修复,由盯梢关闭\n\n${FIXED(key, head)}` });
+
+test('#185 SC2 回复正文逐字:人话「已修复，由盯梢关闭」、完整 head、run 链接,末尾恰是 thread-fixed 标记', () => {
+  const [item] = plan([thread('T1', K1)]).threads;
+  assert.equal(item.reply, `本轮在提交 ${HEAD} 完成复核:本轮复核未再发现该问题(key=${K1})。已修复，由盯梢关闭；如仍有异议，可在此回复。审查运行:${RUN}。\n\n${FIXED(K1)}`);
+  assert.ok(item.reply.endsWith(FIXED(K1)), '标记必须在末尾');
+  assert.equal(item.reply.match(/mivo-review:thread-fixed/g).length, 1);
+  assert.ok(!item.reply.includes('resolve'), '不再宣称由审查机代为 resolve');
+  assert.equal(renderThreadFixedMarker({ key: K1, head: HEAD }), FIXED(K1));
+});
+
+test('#185 同 key + 同完整 head 审查身份已回复过 → 不重复选;换了 head 才再选', () => {
+  const done = thread('T1', K1, { replies: [fixedReply(K1)] });
+  assert.deepEqual(plan([done]).threads, []);
+  const older = thread('T2', K1, { replies: [fixedReply(K1, 'c'.repeat(40))] });
+  assert.deepEqual(plan([older]).threads.map((t) => t.id), ['T2'], '旧 head 的 thread-fixed 不阻止本 head 回复');
+});
+
+test('#185 thread-fixed 去重只认审查身份、精确 key 与完整 head', () => {
+  const stranger = thread('T1', K1, { replies: [fixedReply(K1, HEAD, { login: 'someone-else' })] });
+  const wrongKey = thread('T2', K2, { replies: [fixedReply(K1)] });
+  const shortHead = thread('T3', K3, { replies: [{ id: 'sh', author: { login: REVIEWER }, body: `x\n\n<!-- mivo-review:thread-fixed key=${K3} head=${HEAD.slice(0, 12)} -->` }] });
+  const garbled = thread('T4', K1, { replies: [{ id: 'g', author: { login: REVIEWER }, body: `<!-- mivo-review:thread-fixed key=${K1} head=${HEAD.slice(0, 39)} -->` }] });
+  assert.deepEqual(plan([stranger, wrongKey, shortHead, garbled]).threads.map((t) => t.id), ['T1', 'T2', 'T3', 'T4']);
+});
+
+test('#185 thread-fixed 去重:审查身份别名、Bot 与同名 User 区分', () => {
+  const identity = createReviewIdentity({ viewerLogin: 'praisebuild[bot]', viewerAliases: ['PraiseZhu'] });
+  const bot = (patch) => ({ ...thread('T1', K1, patch), comments: [{ id: 'c-T1', author: { login: 'praisebuild', __typename: 'Bot' }, body: `[P1] x\n\n${marker(K1)}` }, ...(patch.replies ?? [])] });
+  const run = (threads) => plan(threads, { reviewer: 'praisebuild[bot]', reviewerIdentity: identity });
+  assert.deepEqual(run([bot({ replies: [fixedReply(K1, HEAD, { login: 'praisebuild', __typename: 'Bot' })] })]).threads, [], 'GraphQL Bot 写法');
+  assert.deepEqual(run([bot({ replies: [fixedReply(K1, HEAD, { login: 'praisebuild[bot]', __typename: 'Bot' })] })]).threads, [], 'REST Bot 写法');
+  assert.deepEqual(run([bot({ replies: [fixedReply(K1, HEAD, { login: 'PraiseZhu' })] })]).threads, [], '旧账号别名');
+  assert.equal(run([bot({ replies: [fixedReply(K1, HEAD, { login: 'praisebuild', __typename: 'User' })] })]).threads.length, 1, '同名 User 不算审查机');
+});
+
+test('#185 已有同 head thread-fixed 后又有人回复:不补发;triage 标记仍永久跳过,即使换 head', () => {
+  const objected = thread('T1', K1, { replies: [fixedReply(K1), { id: 'obj', author: { login: 'author' }, body: '我不同意' }] });
+  assert.deepEqual(plan([objected]).threads, []);
+  const triaged = thread('T2', K2, { replies: [fixedReply(K2, 'c'.repeat(40)), { id: 'tr', author: { login: REVIEWER }, body: `回复\n\n${TRIAGE_MARKER}` }] });
+  assert.deepEqual(plan([triaged]).threads, []);
+});
+
+test('#185 thread-fixed 去重对 {nodes} 形状同样生效;每个 thread 各自去重;入参不被修改', () => {
+  const done = thread('T1', K1, { replies: [fixedReply(K1)] });
+  const asNodes = { ...done, comments: { nodes: done.comments } };
+  const fresh = thread('T2', K1);
+  const threads = [asNodes, fresh];
+  const snapshot = JSON.stringify(threads);
+  assert.deepEqual(plan(threads).threads.map((t) => t.id), ['T2'], '同 key 的另一个 thread 不受影响');
+  assert.equal(JSON.stringify(threads), snapshot);
 });

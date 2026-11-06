@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-// resolve-fixed-threads.mjs — 发布本轮结论之后,代 resolve 已修好的旧 thread(Review-PR #115)。
-// 共享的 resolve-threads.mjs 只负责「回复 + resolve」,不校验锁、head、账号权限,所以这里在每一条调用前补这些检查,
-// 并只处理 thread-resolution.mjs 选出来的 thread;共享脚本本身不改。
+// resolve-fixed-threads.mjs — 发布本轮结论之后,在已修好的旧 thread 里回复一条带 thread-fixed 标记的说明(Review-PR #115,#185 改为只回复)。
+// 服务器不关 thread:关闭交给 Mini 盯梢(用 App 身份,按标记里的 key + head 认)。这里只发 addPullRequestReviewThreadReply 一个 mutation,
+// 不再调用共享的 resolve-threads.mjs(那个脚本是交互式 review-pr 的「回复 + resolve」,保持原样),也不发 resolveReviewThread。
+// 回复前在每一条补上锁、head、账号权限检查,并只处理 thread-resolution.mjs 选出来的 thread。
 // 失败只返回 warning,不让整轮审查失败。每条 thread 动手前单独现查并重算清单(批次中途出现的新裁定 / 新评论不会被旧清单覆盖)。
-// 每条顺序:绑定检查(锁 / 账号 / 权限 / head)→ 重读该 thread 并重算清单 → 立即调用共享脚本,重读与调用之间不插别的网络请求。
+// 每条顺序:绑定检查(锁 / 账号 / 权限 / head)→ 重读该 thread 并重算清单 → 立即回复,重读与回复之间不插别的网络请求。
 // 重读 thread 的每一次 GraphQL 响应(thread 分页、评论分页)同时带回并校验 PR 的 head / base / state(bindGraphqlToPr),
 // 所以重读期间 head 变化会让读取未验证、该条跳过;校验不到(缺字段 / 不符)一律保守停止。
-// thread 快照必须一次响应读完(fetchSingleSnapshot):要翻页(thread 超过 100 条或单条评论超过 100 条)时各页不是同一时刻,本轮不代 resolve。
-// 残余窗口:从最后一次已验证的重读响应到共享脚本里「再读 threads → 回复 → resolve」之间,head / thread 仍可能变化,不能逐 mutation 原子校验。
+// thread 快照必须一次响应读完(fetchSingleSnapshot):要翻页(thread 超过 100 条或单条评论超过 100 条)时各页不是同一时刻,本轮不回复。
+// 残余窗口:从最后一次已验证的重读响应到那一次回复 mutation 之间,head / thread 仍可能变化,不能逐 mutation 原子校验。
 //
 // 用法:node resolve-fixed-threads.mjs < request.json(cwd 必须是目标仓检出目录;令牌只走环境变量,不进请求)
 // request: { binding:{targetRepo,pr,head,base,baseRefName,reviewer,lockToken,authorityDigest,runUrl,mode}, round, contextFile, excludedKeys }
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { SCRIPTS, readJson, runScript } from './common.mjs';
+import { SCRIPTS, readJson } from './common.mjs';
 import { buildThreadResolutionPlan } from './thread-resolution.mjs';
 import { scrubSecrets } from '../../review-pr/scripts/secret-scrub.mjs';
 
@@ -56,7 +57,7 @@ export function bindGraphqlToPr(binding, ghGraphqlFn) {
 
 /**
  * 用一次 GraphQL 响应读完 thread 快照:thread 超过一页、或某条 thread 的评论要翻页时,各页来自不同时刻,
- * 前一页里的 thread 在后一页请求期间新增的裁定看不到。这种情况整份快照按「未验证」处理,本轮不代 resolve(留给人)。
+ * 前一页里的 thread 在后一页请求期间新增的裁定看不到。这种情况整份快照按「未验证」处理,本轮不回复(留给人)。
  * 每次响应仍经 bindGraphqlToPr 校验 PR head / base / state。
  */
 export function fetchSingleSnapshot({ owner, repo, pr, binding, ghGraphqlFn, fetchAllReviewThreads }) {
@@ -64,7 +65,7 @@ export function fetchSingleSnapshot({ owner, repo, pr, binding, ghGraphqlFn, fet
   const bound = bindGraphqlToPr(binding, (...args) => { responses += 1; return ghGraphqlFn(...args); });
   const result = fetchAllReviewThreads(owner, repo, pr, { includeComments: true, ghGraphqlFn: bound });
   if (result?.verified && responses !== 1) {
-    return { threads: [], verified: false, errors: [`thread 快照需要翻页(${responses} 次请求),各页不是同一时刻,本轮不代 resolve`] };
+    return { threads: [], verified: false, errors: [`thread 快照需要翻页(${responses} 次请求),各页不是同一时刻,本轮不回复`] };
   }
   return result;
 }
@@ -73,10 +74,13 @@ const clip = (text, max = 240) => String(text ?? '').replace(/\s+/g, ' ').trim()
 const summary = (status, skippedReason, items = [], warnings = []) => ({
   ok: true, status, skippedReason: skippedReason ?? null,
   plannedCount: items.length,
-  resolvedCount: items.filter((i) => i.status === 'resolved').length,
-  alreadyResolvedCount: items.filter((i) => i.status === 'already-resolved').length,
+  repliedCount: items.filter((i) => i.status === 'replied').length,
   items, warnings,
 });
+// 只发回复,不 resolve:thread 的关闭由盯梢做。
+const REPLY_MUTATION = `mutation($tid:ID!,$body:String!){
+  addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid, body:$body}){ comment{ id } }
+}`;
 
 /**
  * @param {object} request 见文件头
@@ -84,7 +88,7 @@ const summary = (status, skippedReason, items = [], warnings = []) => ({
  *   readContext(file) → prepare 的 context.json
  *   assertBinding(binding) → {maintainers:string[]};锁、写账号、权限、authority、PR 状态/head/base 任一不符就抛错
  *   fetchThreads() → {threads, verified, errors}   发布后重新完整分页读取
- *   resolveOne({id, reply}, {timeoutMs}) → 共享 resolve-threads.mjs 对这一条的回执(ok/results/rejected)
+ *   replyOne({id, reply}, {timeoutMs}) → addPullRequestReviewThreadReply 的 GraphQL 回执;失败可以抛错
  *   now() → 毫秒时间戳
  */
 export function resolveFixedThreads(request, deps) {
@@ -106,7 +110,7 @@ export function resolveFixedThreads(request, deps) {
     const { maintainers } = deps.assertBinding(binding);
     const fresh = deps.fetchThreads();
     if (!fresh?.verified) {
-      warnings.push(`代 resolve 跳过:发布后重新读取 thread 不完整(${clip((fresh?.errors ?? []).join('; '))})`);
+      warnings.push(`旧 thread 修复说明回复跳过:发布后重新读取 thread 不完整(${clip((fresh?.errors ?? []).join('; '))})`);
       return summary('skipped', 'threads-unverified', [], warnings);
     }
     const plan = buildThreadResolutionPlan({ ...base, liveThreads: fresh.threads, threadsVerified: true, maintainers });
@@ -119,7 +123,7 @@ export function resolveFixedThreads(request, deps) {
       const remaining = TOTAL_BUDGET_MS - (now() - startedAt);
       if (stopped || remaining < MIN_ITEM_MS) {
         items.push({ ...entry, status: 'skipped', reason: stopped ? 'stopped-after-failure' : 'budget-exhausted' });
-        if (!stopped) { warnings.push('代 resolve 预算用完,剩余 thread 留给下一轮'); stopped = true; }
+        if (!stopped) { warnings.push('旧 thread 修复说明回复预算用完,剩余 thread 留给下一轮'); stopped = true; }
         continue;
       }
       // 每条先核对锁 / 账号 / 权限 / head(多次网络查询),变了就停。
@@ -127,64 +131,61 @@ export function resolveFixedThreads(request, deps) {
         deps.assertBinding(binding);
       } catch (error) {
         items.push({ ...entry, status: 'skipped', reason: 'binding-changed' });
-        warnings.push(`代 resolve 停止:${clip(error.message)}`);
+        warnings.push(`旧 thread 修复说明回复停止:${clip(scrubSecrets(error.message))}`);
         stopped = true;
         continue;
       }
       // 再单独现查并重算清单:处理前面几条、以及上面的绑定查询期间,这一条可能新增维护者裁定 / 作者申辩 / 被 resolve / unresolve,
       // 旧清单不能当授权。用同一个纯选择器重算,这条不在新清单里(或回复正文变了)就跳过。
-      // 这次重读必须是调用共享脚本前的最后一个网络请求,中间不再插入别的查询。
+      // 这次重读必须是回复前的最后一个网络请求,中间不再插入别的查询。
       const live = deps.fetchThreads();
       if (!live?.verified) {
         items.push({ ...entry, status: 'skipped', reason: 'threads-unverified' });
-        warnings.push(`代 resolve 停止:处理前重新读取 thread 不完整(${clip((live?.errors ?? []).join('; '))})`);
+        warnings.push(`旧 thread 修复说明回复停止:处理前重新读取 thread 不完整(${clip((live?.errors ?? []).join('; '))})`);
         stopped = true;
         continue;
       }
       const current = buildThreadResolutionPlan({ ...base, liveThreads: live.threads, threadsVerified: true, maintainers }).threads.find((t) => t.id === thread.id);
       if (!current || current.reply !== thread.reply) {
         items.push({ ...entry, status: 'skipped', reason: 'changed-since-plan' });
-        warnings.push(`代 resolve 跳过(${thread.key}):处理前现查发现该 thread 已变化(新裁定 / 新评论 / 已 resolve / head 变化),留给下一轮`);
+        warnings.push(`旧 thread 修复说明回复跳过(${thread.key}):处理前现查发现该 thread 已变化(新裁定 / 新评论 / 已 resolve / head 变化),留给下一轮`);
         continue;
       }
       let receipt;
       try {
-        receipt = deps.resolveOne({ id: thread.id, reply: thread.reply }, { timeoutMs: Math.min(ITEM_TIMEOUT_MS, remaining) });
+        receipt = deps.replyOne({ id: thread.id, reply: thread.reply }, { timeoutMs: Math.min(ITEM_TIMEOUT_MS, remaining) });
       } catch (error) {
-        items.push({ ...entry, status: 'failed', reason: clip(error.message) });
-        warnings.push(`代 resolve 失败(${thread.key}):${clip(error.message)}`);
-        stopped = true;
+        const reason = clip(scrubSecrets(error?.message ?? error));
+        items.push({ ...entry, status: 'failed', reason });
+        warnings.push(`旧 thread 修复说明回复失败(${thread.key}):${reason}`);
+        stopped = true; // 写结果未知(含超时)不重试,也不再碰后面的
         continue;
       }
-      const result = (receipt?.results ?? []).find((r) => r?.id === thread.id);
-      if (!receipt?.ok || !result || (receipt.results ?? []).length !== 1) {
-        items.push({ ...entry, status: 'failed', reason: clip(receipt?.error ?? 'resolve-threads 回执不完整') });
-        warnings.push(`代 resolve 回执异常(${thread.key}),停止后续`);
-        stopped = true; // 未知写结果不重试,也不再碰后面的
-      } else if (result.resolved === true) items.push({ ...entry, status: 'resolved' });
-      else if (result.done === true && /already-resolved/.test(result.reason ?? '')) items.push({ ...entry, status: 'already-resolved' });
-      else if (/reopened-after-triage/.test(result.reason ?? '')) items.push({ ...entry, status: 'skipped', reason: 'reopened-after-triage' });
-      else {
-        // 分阶段写明期望与实际(令牌已抹掉):reply 阶段与 resolve 阶段分开,便于判断是权限还是 GraphQL 问题。
-        const reason = result.replyError ? clip(`reply 阶段失败:期望回复成功,实际 ${scrubSecrets(result.replyError)}`)
-          : result.resolveError ? clip(`resolve 阶段失败:期望 resolve 成功,实际 ${scrubSecrets(result.resolveError)}`)
-            : clip(scrubSecrets(result.reason ?? 'unresolved'));
+      // 只有没有 errors、且回执里有非空 comment id 才算回复成功;缺 data / 缺 id / errors 伴随部分 data 都按失败,不计入 repliedCount。
+      const commentId = receipt?.data?.addPullRequestReviewThreadReply?.comment?.id;
+      if (receipt?.errors?.length || typeof commentId !== 'string' || !commentId) {
+        const reason = receipt?.errors?.length
+          ? clip(scrubSecrets(`GraphQL errors:${receipt.errors.map((e) => e?.message ?? '').join('; ')}`))
+          : '回复未返回 comment id';
         items.push({ ...entry, status: 'failed', reason });
-        warnings.push(`代 resolve 未完成(${thread.key}):${reason}`);
+        warnings.push(`旧 thread 修复说明回复失败(${thread.key}):${reason}`);
+        stopped = true; // 未知写结果不重试,也不再碰后面的
+        continue;
       }
+      items.push({ ...entry, status: 'replied', commentId });
     }
     const failed = items.some((i) => i.status === 'failed') || stopped;
     return summary(failed ? 'partial' : 'completed', null, items, warnings);
   } catch (error) {
-    warnings.push(`代 resolve 跳过:${clip(error.message)}`);
+    warnings.push(`旧 thread 修复说明回复跳过:${clip(scrubSecrets(error.message))}`);
     return summary('skipped', 'error', [], warnings);
   }
 }
 
 /**
- * 写前绑定检查(每条 resolve 前都跑)。lib 注入以便测试:锁、写账号与绑定的审查账号完全一致(精确比较,不用别名集合)、
+ * 写前绑定检查(每条回复前都跑)。lib 注入以便测试:锁、写账号与绑定的审查账号完全一致(精确比较,不用别名集合)、
  * 维护者 authority digest、PR 状态/head/base 都不能变。执行资格:写账号是最终维护者,或是配置的审查 App(reviewerApps);
- * 审查 App 只获得这里的 resolve 资格,不是维护者。
+ * 审查 App 只获得这里的回复资格,不是维护者。
  */
 export function createAssertBinding({ lib, owner, repo }) {
   return (b) => {
@@ -210,8 +211,8 @@ export function createAssertBinding({ lib, owner, repo }) {
   };
 }
 
-// ── 真实依赖(只在 CLI 里用;测试注入替身)────────────────────────────────────
-async function realDeps({ binding }) {
+// ── 真实依赖(只在 CLI 里用;导出是为了让测试走生产写入路径,不是注入协议)────────────────
+export async function realDeps({ binding }) {
   const lib = await import(pathToFileURL(join(SCRIPTS, 'lib.mjs')).href);
   const [owner, repo] = String(binding.targetRepo).split('/');
   const parsed = lib.parseRepo();
@@ -221,8 +222,7 @@ async function realDeps({ binding }) {
     readContext: (file) => readJson(file),
     assertBinding,
     fetchThreads: () => fetchSingleSnapshot({ owner, repo, pr: Number(binding.pr), binding, ghGraphqlFn: lib.ghGraphql, fetchAllReviewThreads: lib.fetchAllReviewThreads }),
-    resolveOne: (thread, { timeoutMs }) => runScript('resolve-threads.mjs', [String(binding.pr), '--payload-file', '-'],
-      { cwd: process.cwd(), env: process.env, input: JSON.stringify({ threads: [thread] }), timeoutMs }),
+    replyOne: (thread, { timeoutMs }) => lib.ghGraphql(REPLY_MUTATION, { tid: thread.id, body: thread.reply }, { timeoutMs }),
   };
 }
 
@@ -231,7 +231,7 @@ async function main() {
   try { request = JSON.parse(readFileSync(0, 'utf8')); } catch { console.log(JSON.stringify(summary('skipped', 'bad-request', [], ['请求不是合法 JSON']))); return; }
   let deps;
   try { deps = await realDeps(request); } catch (error) {
-    console.log(JSON.stringify(summary('skipped', 'deps-unavailable', [], [`代 resolve 跳过:${clip(error.message)}`])));
+    console.log(JSON.stringify(summary('skipped', 'deps-unavailable', [], [`旧 thread 修复说明回复跳过:${clip(scrubSecrets(error.message))}`])));
     return;
   }
   console.log(JSON.stringify(resolveFixedThreads(request, deps)));
