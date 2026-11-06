@@ -259,14 +259,20 @@ export function toReleaseLockScript(rel) {
     `  if [ "$n" -ge 50 ]; then echo "$claim 一直被占着,不释放" >&2; exit 3; fi`,
     `  sleep 0.1`,
     `done`,
+    // 放掉占位的返回值也要传出去:锁已删而占位没删掉(退出码 4)不是释放成功,残留的占位会让之后的释放一直拿不到占位。
+    `drop_claim() {`,
+    `  rm -f "$claim" && return 0`,
+    `  echo "占位 $claim 删除失败,残留,到 Mini 手动删" >&2`,
+    `  return 1`,
+    `}`,
     `if cmp -s "$f" -; then`,
     `  rc=0`,
     `  rm -f "$f" || rc=3`,
-    `  rm -f "$claim"`,
+    `  drop_claim || { [ "$rc" -ne 0 ] || rc=4; }`,
     `  exit "$rc"`,
     `fi`,
-    `rm -f "$claim"`,
     `echo "部署锁已不是本次的,不删" >&2`,
+    `drop_claim || exit 4`,
     `exit 0`,
   ].join('\n');
 }
@@ -278,7 +284,10 @@ export const RELEASE_LOCK_RETRIES = 1;
 export function toReleaseLockResult({ status, stderr }) {
   const text = String(stderr ?? '').trim();
   if (status === 0) return { ok: true, message: text };
-  if (status === 3) return { ok: false, message: `释放失败，锁文件还在 ${DEPLOY_LOCK_PATH}` };
+  if (status === 3) return { ok: false, message: `释放失败，锁文件还在 ${DEPLOY_LOCK_PATH}${text ? `(${text})` : ''}` };
+  if (status === 4) {
+    return { ok: false, message: `部署锁已处理,但占位 ${DEPLOY_LOCK_PATH}${DEPLOY_LOCK_CLAIM_SUFFIX} 没删掉,残留:到 Mini 手动删掉它,否则之后的释放和回收都拿不到占位` };
+  }
   if (status === 255) {
     return { ok: false, message: `释放部署锁结果未知(ssh 断线,不重发):到 Mini 看 ${DEPLOY_LOCK_PATH},内容还是本次的就删掉` };
   }

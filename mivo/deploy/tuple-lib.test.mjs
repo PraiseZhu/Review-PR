@@ -9,7 +9,7 @@ import {
   toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs,
   toFinalizeFailure, toAutoUpdateFinish, toLockAcquire, toDeployLockText, isOwnLock, toLockExpiresAt,
   toLockKeep, toLockBlockedText, toLinkLockScript, toReleaseLockScript, finalizeDeployError,
-  RELEASE_LOCK_RETRIES, toReleaseLockResult,
+  RELEASE_LOCK_RETRIES, toReleaseLockResult, DEPLOY_LOCK_CLAIM_SUFFIX,
   shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck, toMergedPrNumbers, toBehindMainNote,
   toDispatchOnlyProblem, toWorkflowRegistrationProblem, toRulesProblem, toReviewModeProblem, toDispatchProblems,
 } from './tuple-lib.mjs';
@@ -357,6 +357,66 @@ test('释放锁 rm 失败用专门退出码,报锁文件还在', () => {
   assert.match(fail.message, /释放失败/);
   assert.match(fail.message, /锁文件还在/);
   assert.ok(fail.message.includes(DEPLOY_LOCK_PATH), fail.message);
+});
+
+// rm 故障注入:PATH 最前面放一个假 rm,只对 .reclaim 结尾的参数失败(返回 1),其它参数交给真 rm。
+function releaseWithBrokenClaimRm({ lockOnDisk, input }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-rel-rm-'));
+  try {
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    fs.writeFileSync(lockFile, lockOnDisk);
+    const bin = path.join(root, 'fakebin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'rm'), '#!/bin/sh\nfor a in "$@"; do case "$a" in *.reclaim) exit 1 ;; esac; done\nexec /bin/rm "$@"\n', { mode: 0o755 });
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toReleaseLockScript(DEPLOY_LOCK_REL)}`],
+      { encoding: 'utf8', input, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+    return { r, lockExists: fs.existsSync(lockFile), claimExists: fs.existsSync(`${lockFile}${DEPLOY_LOCK_CLAIM_SUFFIX}`) };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('释放锁:锁删掉了但占位没删掉,退出码 4,结果不是成功,并说明残留的是占位', () => {
+  const mine = toDeployLockText({ owner: 'A', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+  const { r, lockExists, claimExists } = releaseWithBrokenClaimRm({ lockOnDisk: mine, input: mine });
+  assert.equal(r.status, 4, r.stderr);
+  assert.equal(lockExists, false, '锁已删');
+  assert.equal(claimExists, true, '占位残留');
+  const result = toReleaseLockResult({ status: r.status, stderr: r.stderr });
+  assert.equal(result.ok, false);
+  assert.match(result.message, /占位.*\.reclaim.*没删掉/);
+});
+
+test('释放锁:锁不是本次的、占位又没删掉,同样退出码 4,锁不动', () => {
+  const mine = toDeployLockText({ owner: 'A', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+  const other = toDeployLockText({ owner: 'B', pid: 2, host: HOSTS.pro, at: '2026-10-16T06:01:00.000Z', target: B, expiresAt: '2026-10-16T12:00:00.000Z' });
+  const { r, lockExists, claimExists } = releaseWithBrokenClaimRm({ lockOnDisk: other, input: mine });
+  assert.equal(r.status, 4, r.stderr);
+  assert.equal(lockExists, true);
+  assert.equal(claimExists, true);
+  assert.equal(toReleaseLockResult({ status: r.status, stderr: r.stderr }).ok, false);
+});
+
+test('释放锁:锁和占位都没删掉,仍是退出码 3(锁文件还在),并带上占位残留的说明', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-lock-rel-both-'));
+  try {
+    const lockFile = path.join(root, DEPLOY_LOCK_REL);
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    const mine = toDeployLockText({ owner: 'A', pid: 1, host: HOSTS.mini, at: '2026-10-16T06:00:00.000Z', target: A, expiresAt: '2026-10-16T12:00:00.000Z' });
+    fs.writeFileSync(lockFile, mine);
+    const bin = path.join(root, 'fakebin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'rm'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const r = spawnSync('sh', ['-c', `cd ${JSON.stringify(root)}\n${toReleaseLockScript(DEPLOY_LOCK_REL)}`],
+      { encoding: 'utf8', input: mine, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+    assert.equal(r.status, 3, r.stderr);
+    const result = toReleaseLockResult({ status: r.status, stderr: r.stderr });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /锁文件还在.*占位.*残留/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('save 抛 ENOSPC 时仍释放自己的锁', () => {
