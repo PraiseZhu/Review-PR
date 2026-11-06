@@ -6,7 +6,8 @@
 import { parseRosterLine } from '../../review-pr/scripts/lib.mjs';
 
 const FEISHU_API = 'https://open.feishu.cn/open-apis';
-export const FEISHU_STEP_TIMEOUT_MS = 10_000; // 取 token、查人、发消息各一次,合计不超过 30 秒
+export const FEISHU_STEP_TIMEOUT_MS = 10_000; // 每个请求的上限
+export const FEISHU_TOTAL_TIMEOUT_MS = 30_000; // 整个发送过程(取 token、查作者、查兜底人、发消息)的硬上限(#210 SC4)
 
 /** 规则文件里的 convergeFuse.notify。没配或 enabled 不是 true 就不发;配了就必须完整,填错启动即报错。 */
 export function toFuseNotifyConfig(rules) {
@@ -76,12 +77,12 @@ export function toFuseRecipients({ rosterTexts, author, fallbackLogin }) {
   return out;
 }
 
-async function postJson(fetchFn, url, body, token) {
+async function postJson(fetchFn, url, body, token, total) {
   const res = await fetchFn(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(FEISHU_STEP_TIMEOUT_MS),
+    signal: AbortSignal.any([AbortSignal.timeout(FEISHU_STEP_TIMEOUT_MS), total]),
   });
   const data = await res.json().catch(() => ({}));
   return { status: res.status, data };
@@ -91,20 +92,21 @@ async function postJson(fetchFn, url, body, token) {
  * 取 token → 按邮箱查 open_id → 发纯文本私聊。recipients 依次尝试:作者查不到 open_id 时换兜底人,兜底人收到的正文带转发说明。
  * 返回 { status: 'sent', to, forwarded } 或 { status: 'failed', code }。code 是固定原因码,不含凭证、邮箱或飞书返回原文。
  */
-export async function sendFuseNotice({ fetchFn = fetch, appId, appSecret, recipients, message }) {
+export async function sendFuseNotice({ fetchFn = fetch, appId, appSecret, recipients, message, totalTimeoutMs = FEISHU_TOTAL_TIMEOUT_MS }) {
   if (!appSecret) return { status: 'failed', code: 'no-credential' };
   if (!recipients?.length) return { status: 'failed', code: 'no-recipient' };
+  const total = AbortSignal.timeout(totalTimeoutMs);
   try {
-    const auth = await postJson(fetchFn, `${FEISHU_API}/auth/v3/tenant_access_token/internal`, { app_id: appId, app_secret: appSecret });
+    const auth = await postJson(fetchFn, `${FEISHU_API}/auth/v3/tenant_access_token/internal`, { app_id: appId, app_secret: appSecret }, null, total);
     const token = auth.data?.tenant_access_token;
     if (auth.data?.code !== 0 || !token) return { status: 'failed', code: `token-${auth.data?.code ?? auth.status}` };
     for (const recipient of recipients) {
-      const found = await postJson(fetchFn, `${FEISHU_API}/contact/v3/users/batch_get_id?user_id_type=open_id`, { emails: [recipient.email] }, token);
+      const found = await postJson(fetchFn, `${FEISHU_API}/contact/v3/users/batch_get_id?user_id_type=open_id`, { emails: [recipient.email] }, token, total);
       const openId = found.data?.code === 0 ? found.data?.data?.user_list?.[0]?.user_id : null;
       if (!openId) continue;
       const text = message({ forwardedFrom: recipient.forwardedFrom });
       const sent = await postJson(fetchFn, `${FEISHU_API}/im/v1/messages?receive_id_type=open_id`,
-        { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) }, token);
+        { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) }, token, total);
       if (sent.data?.code !== 0) return { status: 'failed', code: `send-${sent.data?.code ?? sent.status}` };
       return { status: 'sent', to: recipient.login, forwarded: Boolean(recipient.forwardedFrom), reason: recipient.reason };
     }

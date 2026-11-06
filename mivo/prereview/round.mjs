@@ -1331,11 +1331,14 @@ function readFuseResume(trip, live, config, result) {
 
 // 熔断时用飞书 Mivo 机器人私聊 PR 作者(#210)。接收人按组织名册对到真人,对不上转给兜底人;应用密钥从 Mini 本机钥匙串读。
 // 结果(sent / failed + 原因码,不含邮箱和凭证)记进 fuse.trip.notify,一次熔断只发一次;失败在熔断 issue 下留一行说明,不循环重发。
+// 发送前先记 status=sending:发出后、记结果前进程崩溃时,下一轮看到 notify 已存在就不补发(宁可漏一次也不重复私聊,#214 单审)。
 async function notifyFuse(ctx, task, live, trip, record, result) {
   const notify = fuseConfig().notify;
   const rosters = loadOrgRosters(notify.rosterRepos);
   const recipients = toFuseRecipients({ rosterTexts: rosters.rosters.map((r) => r.text), author: live.meta?.author ?? '', fallbackLogin: notify.fallbackLogin });
   const secret = run('security', ['find-generic-password', '-a', notify.keychainAccount, '-s', notify.keychainService, '-w'], { allowFail: true, timeoutMs: 15_000 });
+  const pending = loadStore().prs[task.pr]?.fuse ?? record.fuse ?? {};
+  bumpOwned(ctx, task, { fuse: { ...pending, trip: { ...(pending.trip ?? trip), notify: { status: 'sending', at: nowIso() } } } });
   const findings = record.fuse?.lastFindings;
   const open = findings ? (findings.P0 ?? 0) + (findings.P1 ?? 0) + (findings.P2 ?? 0) : null;
   const sent = rosters.rosters.length === 0 ? { status: 'failed', code: 'roster-unavailable' } : await sendFuseNotice({

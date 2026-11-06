@@ -22,7 +22,7 @@ const ROSTER = '| GitHub | Name | Email | Role |\n|---|---|---|---|\n| [@aj0928]
 const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${prefix}${i}`, head: `${prefix}${i}`, at: `2026-11-07T0${i}:00:00.000Z` }));
 
 function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100,
-  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true } = {}) {
+  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false } = {}) {
   const sends = [];
   const store = { prs: { 1704: structuredClone(record) } };
   const calls = [];
@@ -43,7 +43,7 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
     fuseConfig: () => (notify ? { ...CONFIG_FUSE, notify } : CONFIG_FUSE),
     toFuseRecipients, toFuseNotifyText,
     loadOrgRosters: () => (rosterOk ? { rosters: [{ repo: 'xindong/org', text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }),
-    sendFuseNotice: async (args) => { sends.push({ ...args, text: args.message({ forwardedFrom: args.recipients[0]?.forwardedFrom ?? null }) }); return sendResult; },
+    sendFuseNotice: async (args) => { sends.push({ ...args, text: args.message({ forwardedFrom: args.recipients[0]?.forwardedFrom ?? null }) }); if (sendCrash) throw new Error('进程在记结果前退出'); return sendResult; },
     loadStore: () => structuredClone(store),
     bumpOwned: (ctx, task, patch) => { store.prs[task.pr] = { ...(store.prs[task.pr] ?? {}), ...structuredClone(patch) }; },
     finishGate: (ctx, task, result) => { finished.push(structuredClone(result)); return { dispatched: false }; },
@@ -299,4 +299,23 @@ test('沙箱配置关闭通知:熔断照常,不发私聊', async () => {
   await world.gate('h9');
   assert.equal(world.sends.length, 0);
   assert.equal(world.store.prs[1704].fuse.trip.notify, undefined);
+});
+
+test('SC3 发出去以后、记结果之前进程崩溃:本机已记「正在发」,重启后不补发,不会重复私聊', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY, sendCrash: true });
+  await assert.rejects(world.gate('h9'), /进程在记结果前退出/);
+  assert.equal(world.sends.length, 1);
+  assert.equal(world.store.prs[1704].fuse.trip.notify.status, 'sending');
+  const restarted = makeWorld({ record: structuredClone(world.store.prs[1704]), notify: NOTIFY });
+  await restarted.gate('h9');
+  assert.equal(restarted.sends.length, 0);
+  assert.equal(restarted.calls.filter((args) => args[0] === 'issue').length, 0, '也不重开 issue、不留言');
+});
+
+test('SC2 转发时私聊只用确认文案的转发说明,具体原因码记在本机记录里', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'feishu-user-not-found' } });
+  await world.gate('h9');
+  assert.deepEqual(JSON.parse(JSON.stringify(world.store.prs[1704].fuse.trip.notify)).reason, 'feishu-user-not-found');
+  assert.equal(world.store.prs[1704].fuse.trip.notify.forwarded, true);
 });

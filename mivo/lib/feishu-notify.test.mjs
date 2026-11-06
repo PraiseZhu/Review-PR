@@ -1,7 +1,7 @@
 // feishu-notify.test.mjs — 熔断飞书私聊(PraiseZhu/Review-PR#210):确认文案逐字、按名册选接收人、发送流程与失败原因码。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFuseNotifyConfig, toFuseNotifyText, selectRosterEmail, toFuseRecipients, sendFuseNotice } from './feishu-notify.mjs';
+import { toFuseNotifyConfig, toFuseNotifyText, selectRosterEmail, toFuseRecipients, sendFuseNotice, FEISHU_TOTAL_TIMEOUT_MS, FEISHU_STEP_TIMEOUT_MS } from './feishu-notify.mjs';
 
 // #210「确认文案」(用户 2026-11-07 确认「语气柔和一点」版),占位符按 #1704 的例子填。
 const CONFIRMED = `PR #1704「对话出图判定」已经改到第 10 版了，辛苦啦。我先把自动审查暂停一下，想请你来看看。
@@ -121,4 +121,22 @@ test('配置:没配或 enabled 不是 true 就不发;配了缺项启动即报错
   assert.deepEqual(toFuseNotifyConfig({ convergeFuse: { notify: ok } }), ok);
   assert.throws(() => toFuseNotifyConfig({ convergeFuse: { notify: { ...ok, appId: '' } } }), /appId/);
   assert.throws(() => toFuseNotifyConfig({ convergeFuse: { notify: { ...ok, rosterRepos: ['bad'] } } }), /rosterRepos/);
+});
+
+test('SC4 整个发送过程有总时限:每步都没到 10 秒上限,但合计超时也会中断并记 timeout', async () => {
+  assert.equal(FEISHU_TOTAL_TIMEOUT_MS, 30_000);
+  assert.equal(FEISHU_STEP_TIMEOUT_MS, 10_000);
+  // 每个请求都要 40ms 才回,单步远低于 10 秒;总时限设成 100ms,第三步之前就该被打断
+  const calls = [];
+  const slowFetch = (url, init) => new Promise((resolve, reject) => {
+    calls.push(url);
+    const timer = setTimeout(() => resolve({ status: 200, json: async () => (url.includes('tenant_access_token')
+      ? { code: 0, tenant_access_token: 't' } : { code: 0, data: { user_list: [{ user_id: null }] } }) }), 40);
+    init.signal.addEventListener('abort', () => { clearTimeout(timer); reject(init.signal.reason); }, { once: true });
+  });
+  const startedAt = Date.now();
+  const out = await sendFuseNotice({ fetchFn: slowFetch, appId: 'a', appSecret: 's', recipients: RECIPIENTS, message, totalTimeoutMs: 100 });
+  assert.deepEqual(out, { status: 'failed', code: 'timeout' });
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.ok(calls.length >= 2 && calls.length <= 3, `被总时限打断前发了 ${calls.length} 个请求`);
 });
