@@ -177,3 +177,12 @@ test('deploy-tuple 合法参数不变:--preview 带全部带值选项照常通�
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, /只读预检通过/);
 });
+
+test('deploy-tuple 合法参数不变:--on mini --selftest 照常在临时文件上演练并通过', (t) => {
+  const f = setupFixture(t);
+  const r = f.run('--on', 'mini', '--selftest');
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /ok 新建/);
+  assert.doesNotMatch(r.stdout, /^!!/m);
+  assert.equal(f.exists('mivo-prereview/_deploy-selftest.json'), false, '演练结束删掉临时文件');
+});
