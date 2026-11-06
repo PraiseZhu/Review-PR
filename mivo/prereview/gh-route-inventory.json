@@ -1,6 +1,6 @@
 {
  "schemaVersion": 1,
- "_comment": "前置审查全部 gh 调用清单(PraiseZhu/Review-PR#174)。由 gh-route-inventory.test.mjs 守卫:源码与本清单按\"文件+调用名+指纹\"多重集合双向相等;每个 case 的路由等于 expected;server 流的 case 记录旧/新 vendor 的 App 路由,不允许 app→user。更新方法见 mivo/README.md「gh 调用清单」。",
+ "_comment": "前置审查全部 gh 调用清单(PraiseZhu/Review-PR#174)。由 gh-route-inventory.test.mjs 守卫:源码与本清单按\"文件+调用名+指纹\"多重集合双向相等;每个 case 的路由等于 expected(user / app / app-write;分类上下文按 praisebuild 开关 adminRead、secretsRead、writes 构造,expected=user 必带 keep,清单里没有 flipsIn);server 流的 case 记录旧/新 vendor 在服务器读 wrapper(只认 adminRead、secretsRead)里的路由,不允许 app→user;app-write 在那里是 user。更新方法见 mivo/README.md「gh 调用清单」。",
  "roots": [
   "review-pr/scripts",
   "mivo/prereview",
@@ -9,8 +9,8 @@
  "classifier": {
   "repo": "xindong/mivo-canvas-plugin",
   "path": "scripts/ops/gh-app-router/classify.mjs",
-  "commit": "cc2fd4c6f618d7de1f825a1fefca272f455ae4ca",
-  "sha256": "828e52f6cbbdaadc05210ebfc53b73d725e5f7706c31c48c5e8185e0590f77c0",
+  "commit": "e1b1f040fabf90ac6c8d134b133904463a4a6214",
+  "sha256": "e2b7ab94747656fd96c0745ab3f08b3196f86efba1ba1f52e99842685ee3a114",
   "previousCommit": "077a4bb56",
   "previousSha256": "12dd0e7f9f7082d1c650424f66d40ca972c9e575d5a7771178d533110cb09245",
   "legacyBodySha256": "12dd0e7f9f7082d1c650424f66d40ca972c9e575d5a7771178d533110cb09245",
@@ -20,6 +20,11 @@
   "repos": [
    "xindong/mivo-canvas-plugin"
   ],
+  "routes": {
+   "adminRead": true,
+   "secretsRead": true,
+   "writes": true
+  },
   "stdoutIsTTY": false,
   "env": {}
  },
@@ -61,10 +66,9 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/rules/branches/main?per_page=100"
      ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -234,7 +238,10 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "GraphQL mutation(addPullRequestReviewThreadReply)不在 xindong/mivo-canvas-plugin#1752 的写白名单:白名单只认 gh 写命令和 REST 写端点,GraphQL mutation 一律判 graphql_mutation,所以仍走 PraiseZhu;这是服务器复核修好时唯一的写(只回复带 thread-fixed 标记的说明、不 resolve,PraiseZhu/Review-PR#185)"
+     }
     }
    ]
   },
@@ -285,8 +292,7 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/rulesets/rule-suites?ref=refs/heads/main&rule_suite_result=bypass&time_period=week&per_page=100"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app"
     }
    ]
   },
@@ -357,7 +363,10 @@
       "body=x"
      ],
      "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "隐式 POST 未显式 --method:bypass-reason.mjs 用 gh api <issues/N/comments> -f body=… 没写 --method,分类器判 fields_without_get;xindong/mivo-canvas-plugin#1752 的写白名单只认显式 --method 的写,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -394,8 +403,7 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/actions/runners?per_page=100"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app"
     }
    ]
   },
@@ -636,8 +644,7 @@
       "--body",
       "x"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -664,8 +671,7 @@
       "--body",
       "{}"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -690,8 +696,7 @@
       "-R",
       "xindong/mivo-canvas-plugin"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -715,8 +720,7 @@
       "--jq",
       ".updated_at"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app"
     }
    ]
   },
@@ -738,10 +742,9 @@
       "api",
       "--method",
       "DELETE",
-      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review-pr-signoff"
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/status%3Aci-failed"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -763,10 +766,9 @@
       "api",
       "--method",
       "DELETE",
-      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review-pr-signoff"
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review%3Amerge-ready"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -795,8 +797,7 @@
       "-f",
       "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -872,8 +873,7 @@
       "-R",
       "xindong/mivo-canvas-plugin"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -1113,8 +1113,7 @@
       "POST",
       "repos/xindong/mivo-canvas-plugin/actions/runs/7/approve"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -1172,8 +1171,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -1198,8 +1196,7 @@
       "--repo",
       "xindong/mivo-canvas-plugin"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -1341,7 +1338,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "exception": "merge-state",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):pr view --json 读 mergeStateStatus / mergeable_state,这个值按调用者算(含 admin / bypass 视角),App 与 PraiseZhu 读到的值可能不同且 GitHub 不报错(2026-10-20 实测同一 PR:PraiseZhu 读 CLEAN、App 读 BLOCKED),403 回落接不住;分流器 xindong/mivo-canvas-plugin#1751 不设 mergeState 开关,gh-read-route 的 IDENTITY_FIELD_RE 也兜底,所以继续走 PraiseZhu"
+     }
     }
    ]
   },
@@ -1432,7 +1433,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
+     "exception": "identity-endpoint",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):接口返回调用者身份，分流器判 identity_endpoint，必须用 PraiseZhu;context.mjs 的查询带 viewer{ login } 读当前账号,与 api user 同理(分类器给 graphql_viewer),换成 App 令牌会读到 App 身份"
+     }
     },
     {
      "name": "without-viewer",
@@ -1563,10 +1568,9 @@
       "GET",
       "repos/xindong/mivo-canvas-plugin/collaborators/alice/permission"
      ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -1687,7 +1691,7 @@
      "expected": "user",
      "keep": {
       "category": "interactive-skill",
-      "reason": "review-pr/scripts/dismiss-own-review.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
+      "reason": "交互式 skill，用户本人身份，不属前置审查"
      }
     }
    ]
@@ -1796,11 +1800,8 @@
       "--input",
       "-"
      ],
-     "expected": "user",
-     "keep": {
-      "category": "interactive-skill",
-      "reason": "review-pr/scripts/dismiss-own-review.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
-     }
+     "stdin": "{\"message\":\"x\",\"event\":\"DISMISS\"}",
+     "expected": "app-write"
     }
    ]
   },
@@ -1908,11 +1909,8 @@
       "--input",
       "-"
      ],
-     "expected": "user",
-     "keep": {
-      "category": "interactive-skill",
-      "reason": "review-pr/scripts/dismiss-stale-reviews.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
-     }
+     "stdin": "{\"message\":\"x\",\"event\":\"DISMISS\"}",
+     "expected": "app-write"
     }
    ]
   },
@@ -2245,10 +2243,9 @@
       "GET",
       "repos/xindong/mivo-canvas-plugin/collaborators/alice/permission"
      ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -2375,7 +2372,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
+     "exception": "identity-endpoint",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):接口返回调用者身份，分流器判 identity_endpoint，必须用 PraiseZhu;lib.mjs 的 api user 返回调用者本人(登录名),只有 PraiseZhu 才读得到 PraiseZhu,换成 App 令牌会读到 App 身份"
+     }
     }
    ]
   },
@@ -2466,11 +2467,11 @@
    ]
   },
   {
-   "id": "lib.gh.1578f16ef5",
+   "id": "lib.gh.9f0239d07f",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "gh",
-    "sig": "1578f16ef5",
+    "sig": "9f0239d07f",
     "count": 1
    },
    "flows": [
@@ -2701,10 +2702,9 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/rules/branches/main"
      ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -2727,10 +2727,24 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/branches/main/protection"
      ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
+    },
+    {
+     "name": "encoded-ref",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/branches/release%2F1.0/protection"
+     ],
      "expected": "user",
+     "exception": "branch-protection-encoded-ref",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):base 分支名含 \"/\"(如 release/1.0)时 lib.mjs 用 encodeURIComponent 拼出 branches/release%2F1.0/protection,分流器对带 %2F 的 branches 路径按 unsafe_path 判 user(只对 rules/branches/<ref> 放行编码斜杠),adminRead 打开后也只放行不含斜杠的分支名(如 main),含斜杠的分支继续走 PraiseZhu"
+     },
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -2753,10 +2767,24 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/branches/main/protection/required_signatures"
      ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
+    },
+    {
+     "name": "encoded-ref",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/branches/release%2F1.0/protection/required_signatures"
+     ],
      "expected": "user",
+     "exception": "branch-protection-encoded-ref",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):base 分支名含 \"/\"(如 release/1.0)时 lib.mjs 用 encodeURIComponent 拼出 branches/release%2F1.0/protection/required_signatures,分流器对带 %2F 的 branches 路径按 unsafe_path 判 user(只对 rules/branches/<ref> 放行编码斜杠),adminRead 打开后也只放行不含斜杠的分支名(如 main),含斜杠的分支继续走 PraiseZhu"
+     },
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -2782,7 +2810,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "exception": "ruleset-by-id",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):lib.mjs 读单个规则集 rulesets/<id>,返回里带 current_user_can_bypass,按调用者算(App 没有 bypass 能力),放行后「当前账号能不能 admin bypass」会读错且不报错;分流器 adminRead 只放行 rulesets/rule-suites(与调用者无关),不放行 rulesets/<id>,所以继续走 PraiseZhu"
+     }
     }
    ]
   },
@@ -2862,10 +2894,9 @@
       "api",
       "repos/xindong/mivo-canvas-plugin/rules/branches/main?per_page=100"
      ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -2945,10 +2976,9 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -2974,10 +3004,9 @@
       "--repo",
       "xindong/mivo-canvas-plugin"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3005,23 +3034,21 @@
       "-"
      ],
      "stdin": "{\"labels\":[\"review-pr\"]}",
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     },
     {
      "name": "label-remove",
      "argv": [
       "api",
-      "--method",
+      "-X",
       "DELETE",
-      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review-pr"
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/awaiting-discussion"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3043,18 +3070,17 @@
      "argv": [
       "label",
       "create",
-      "review-pr-signoff",
+      "awaiting-discussion",
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--description",
       "等待维护者讨论(review-pr)",
       "--color",
-      "review-pr-signoff"
+      "7057FF"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3082,10 +3108,9 @@
       "-"
      ],
      "stdin": "{\"labels\":[\"review-pr\"]}",
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3114,10 +3139,9 @@
       "--json",
       "name,color,description"
      ],
-     "expected": "user",
-     "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3139,7 +3163,7 @@
      "argv": [
       "label",
       "create",
-      "review-pr",
+      "status:ci-failed",
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--color",
@@ -3147,10 +3171,9 @@
       "--description",
       "x"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3172,7 +3195,7 @@
      "argv": [
       "label",
       "edit",
-      "review-pr",
+      "touches:security",
       "--repo",
       "xindong/mivo-canvas-plugin",
       "--color",
@@ -3180,10 +3203,9 @@
       "--description",
       "x"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3212,7 +3234,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "exception": "merge-state",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):GraphQL 快照查询 读 mergeStateStatus / mergeable_state,这个值按调用者算(含 admin / bypass 视角),App 与 PraiseZhu 读到的值可能不同且 GitHub 不报错(2026-10-20 实测同一 PR:PraiseZhu 读 CLEAN、App 读 BLOCKED),403 回落接不住;分流器 xindong/mivo-canvas-plugin#1751 不设 mergeState 开关,gh-read-route 的 IDENTITY_FIELD_RE 也兜底,所以继续走 PraiseZhu"
+     }
     },
     {
      "name": "snapshot-no-fork-name",
@@ -3226,16 +3252,20 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "exception": "merge-state",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):GraphQL 快照查询 读 mergeStateStatus / mergeable_state,这个值按调用者算(含 admin / bypass 视角),App 与 PraiseZhu 读到的值可能不同且 GitHub 不报错(2026-10-20 实测同一 PR:PraiseZhu 读 CLEAN、App 读 BLOCKED),403 回落接不住;分流器 xindong/mivo-canvas-plugin#1751 不设 mergeState 开关,gh-read-route 的 IDENTITY_FIELD_RE 也兜底,所以继续走 PraiseZhu"
+     }
     }
    ]
   },
   {
-   "id": "lib.run_gh.22ed53dee5",
+   "id": "lib.run_gh.5ee79fc6f7",
    "source": {
     "file": "review-pr/scripts/lib.mjs",
     "callee": "run:gh",
-    "sig": "22ed53dee5",
+    "sig": "5ee79fc6f7",
     "count": 1
    },
    "flows": [
@@ -3371,7 +3401,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "exception": "merge-state",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):pr view --json 读 mergeStateStatus / mergeable_state,这个值按调用者算(含 admin / bypass 视角),App 与 PraiseZhu 读到的值可能不同且 GitHub 不报错(2026-10-20 实测同一 PR:PraiseZhu 读 CLEAN、App 读 BLOCKED),403 回落接不住;分流器 xindong/mivo-canvas-plugin#1751 不设 mergeState 开关,gh-read-route 的 IDENTITY_FIELD_RE 也兜底,所以继续走 PraiseZhu"
+     }
     }
    ]
   },
@@ -3461,8 +3495,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -3623,8 +3656,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -3742,11 +3774,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "keep": {
-      "category": "interactive-skill",
-      "reason": "review-pr/scripts/post-merge-sweep.mjs 只在维护者手动运行的 skill 流程里调用,不在 round.mjs / review.mjs 调用链上"
-     }
+     "expected": "app-write"
     }
    ]
   },
@@ -3832,10 +3860,9 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -3895,7 +3922,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1751"
+     "exception": "merge-state",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):pr view --json 读 mergeStateStatus / mergeable_state,这个值按调用者算(含 admin / bypass 视角),App 与 PraiseZhu 读到的值可能不同且 GitHub 不报错(2026-10-20 实测同一 PR:PraiseZhu 读 CLEAN、App 读 BLOCKED),403 回落接不住;分流器 xindong/mivo-canvas-plugin#1751 不设 mergeState 开关,gh-read-route 的 IDENTITY_FIELD_RE 也兜底,所以继续走 PraiseZhu"
+     }
     }
    ]
   },
@@ -3923,7 +3954,11 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "PraiseZhu/Review-PR#176"
+     "exception": "identity-endpoint",
+     "keep": {
+      "category": "praisezhu-exception",
+      "reason": "待用户同意保留的 PraiseZhu 例外(总 issue PraiseZhu/Review-PR#173):接口返回调用者身份，分流器判 identity_endpoint，必须用 PraiseZhu;pre-merge-check.mjs 的查询带 viewer{ login } 读当前账号,与 api user 同理(分类器给 graphql_viewer),换成 App 令牌会读到 App 身份"
+     }
     },
     {
      "name": "query-no-viewer",
@@ -4144,11 +4179,10 @@
       "--input",
       "-"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "stdin": "{\"event\":\"REQUEST_CHANGES\",\"commit_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":\"x\"}",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "stdin": "{\"event\":\"REQUEST_CHANGES\",\"commit_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":\"x\"}"
     }
    ]
   },
@@ -4209,7 +4243,10 @@
      "expected": "user",
      "serverRoute": "user",
      "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "pulls/<N>/comments 不在 xindong/mivo-canvas-plugin#1752 的写白名单(白名单只有 Actions 运行与变量、issue 评论与标签、PR 评论 / 评审 / dismissal,没有 pulls/<N>/comments 行内评论),分类器判 write_method,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -4266,7 +4303,10 @@
      ],
      "stdin": "{\"query\":\"mutation($tid:ID!,$body:String!){\\n          addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid, body:$body}){ comment{ id } }\\n        }\",\"variables\":{\"tid\":\"PRRT_x\",\"body\":\"ok\"}}",
      "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "GraphQL mutation(addPullRequestReviewThreadReply)不在 xindong/mivo-canvas-plugin#1752 的写白名单:白名单只认 gh 写命令和 REST 写端点,GraphQL mutation 一律判 graphql_mutation,所以仍走 PraiseZhu"
+     }
     }
    ]
   },
@@ -4292,7 +4332,10 @@
      ],
      "stdin": "{\"query\":\"mutation($tid:ID!){ resolveReviewThread(input:{threadId:$tid}){ thread{ isResolved } } }\",\"variables\":{\"tid\":\"PRRT_x\",\"body\":\"ok\"}}",
      "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "keep": {
+      "category": "write-not-allowlisted",
+      "reason": "GraphQL mutation(resolveReviewThread)不在 xindong/mivo-canvas-plugin#1752 的写白名单,分类器判 graphql_mutation,所以仍走 PraiseZhu;关讨论串的方案由 PraiseZhu/vigil#336 与 PraiseZhu/Review-PR#185 另行处理"
+     }
     }
    ]
   },
@@ -4418,8 +4461,7 @@
       "POST",
       "repos/xindong/mivo-canvas-plugin/actions/runs/7/rerun"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4500,8 +4542,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4529,8 +4570,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4557,8 +4597,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4586,8 +4625,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4614,8 +4652,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4703,10 +4740,9 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
+     "expected": "app-write",
      "serverRoute": "user",
-     "legacyServerRoute": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "legacyServerRoute": "user"
     }
    ]
   },
@@ -4843,8 +4879,7 @@
       "--body-file",
       "-"
      ],
-     "expected": "user",
-     "flipsIn": "xindong/mivo-canvas-plugin#1752"
+     "expected": "app-write"
     }
    ]
   },
@@ -4870,11 +4905,8 @@
       "--input",
       "-"
      ],
-     "expected": "user",
-     "keep": {
-      "category": "interactive-skill",
-      "reason": "review-pr/scripts/dismiss-review.mjs 只被 dismiss-own-review / dismiss-stale-reviews(维护者手动运行的 skill 流程)调用,不在 round.mjs / review.mjs 调用链上"
-     }
+     "stdin": "{\"message\":\"x\",\"event\":\"DISMISS\"}",
+     "expected": "app-write"
     }
    ]
   },

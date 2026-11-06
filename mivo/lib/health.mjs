@@ -97,7 +97,22 @@ export function toHealthVerdict({ now = new Date(), fields = null, unreadable = 
   };
 }
 
-export function readHealth({ now = new Date(), markerPath = process.env.MIVO_REVIEW_HEALTH_MARKER || DEFAULT_MARKER } = {}) {
+// 测试用时钟注入:子进程里的 review.mjs 没法传 now,集成测试靠这个环境变量固定「现在」(只影响 readHealth 的缺省 now)。
+// 没设或空串 = new Date(),与加这个注入点之前逐字一致;设了但不是带时区的 ISO 8601 就显式报错,不静默退回墙上时钟。
+export const HEALTH_NOW_ENV = 'MIVO_REVIEW_HEALTH_NOW';
+const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+export function parseHealthNow(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return new Date();
+  const parsed = ISO_WITH_ZONE.test(text) ? new Date(text) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    throw new Error(`${HEALTH_NOW_ENV} 必须是带时区的 ISO 8601 时间(例如 2026-10-12T06:30:00+08:00),实际是 ${JSON.stringify(text.slice(0, 80))}`);
+  }
+  return parsed;
+}
+
+export function readHealth({ now = parseHealthNow(process.env[HEALTH_NOW_ENV]), markerPath = process.env.MIVO_REVIEW_HEALTH_MARKER || DEFAULT_MARKER } = {}) {
   let fields = null;
   let unreadable = false;
   try {

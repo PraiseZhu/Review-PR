@@ -13,5 +13,19 @@
   },
   "specChange": {
     "forceFull": false
+  },
+  "focus": {
+    "ciCovered": [
+      "npx tsc -b",
+      "npm run lint",
+      "npm run test:unit",
+      "npm run test:server-pg",
+      "npm run verify:logging",
+      "npm run verify:i18n",
+      "npm run verify:design",
+      "node scripts/ci/structure-guard.mjs",
+      "node scripts/ci/cycle-guard.mjs",
+      "gitleaks"
+    ]
   }
 }

@@ -15,6 +15,7 @@ import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
+import { loadFocusConfig } from '../lib/focus.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary, keyedDeferrals } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudications } from '../lib/rulings.mjs';
@@ -163,6 +164,10 @@ async function prepare() {
     const specChange = loadSpecChangePolicy(() => readFileSync(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'), 'utf8'));
     if (specChange.warning) state.warnings.push(specChange.warning);
     state.specChange = { forceFull: specChange.forceFull };
+    // 审查重点(lib/prompt.mjs toFocusLines):CI 已覆盖的全量命令清单;读不到或不合法按空清单处理并告警。
+    const focus = loadFocusConfig(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+    if (focus.warning) state.warnings.push(focus.warning);
+    state.focus = { ciCovered: focus.ciCovered };
     const gate = decideGate(ctx);
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
@@ -205,6 +210,7 @@ async function prepare() {
       state.rulesBaseDir = dir;
     }
     const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
+      ciCovered: state.focus?.ciCovered ?? [],
       readFile: (path) => rules.files[path] ?? null,
       config: readFileSync(RULES_FILE, 'utf8') }));
     const current = {
@@ -500,6 +506,7 @@ async function codex() {
     rulings: state.rulings?.verified ?? [],
     rebuttals: state.rebuttals ?? [],
     handoff: state.handoff ?? null,
+    focus: state.focus ?? null,
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   const prompt = promptFor(state.scope, join(INPUT_DIR, 'scope.json'));
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
