@@ -1032,6 +1032,7 @@ const WRITE_NOT_ALLOWLISTED = [
 const MANAGED_LABEL_WRITES = [
   ['round.run_gh.6daafa4b76', 'sample', 'issue_label_remove'],
   ['round.run_gh.ff1da62fed', 'sample', 'issue_label_remove'],
+  ['round.run_gh.ac36c77317', 'sample', 'issue_label_remove'],
   ['lib.ghFn.444d0d2703', 'label-remove', 'issue_label_remove'],
   ['lib.ghFn.fb2b3a6c1a', 'sample', 'label_create'],
   ['lib.ghFn.0f9646b182', 'sample', 'label_create'],
@@ -1041,7 +1042,8 @@ const MANAGED_LABEL_WRITES = [
 test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 5 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
   const appWrites = allCases.filter(([, c]) => c.expected === APP_WRITE);
   // 34 + 审查熔断(PraiseZhu/Review-PR#209)开 / 关「审查熔断」issue 的 2 个 issues 类写 + 飞书通知未送达时在熔断 issue 留言(#210)1 个
-  assert.equal(appWrites.length, 37);
+  // + 草稿 PR 摘 review:merge-ready(PraiseZhu/Review-PR#215)的 1 个 issues 类写
+  assert.equal(appWrites.length, 38);
   // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
   const categories = new Set();
   for (const [e, c] of appWrites) {

@@ -61,7 +61,7 @@ try {
   const candidateCount = manifest.candidates.length;
   print({ ok: true, decision: candidateCount ? 'run' : 'skip', reason: candidateCount ? 'candidates-ready' : 'no-review-candidates',
     runId: manifest.runId, mode, candidateList, candidateCount, skippedCount: manifest.skipped.length,
-    busyPrs: sorted(busy), excludedPrs: sorted(excluded), incompletePlans });
+    busyPrs: sorted(busy), excludedPrs: sorted(excluded), draftPrs: sorted(new Set(snapshot.filter((pr) => pr.isDraft).map((pr) => pr.number))), incompletePlans });
   process.exitCode = candidateCount ? 0 : 2;
 } catch (error) {
   // 查询失败不等于没有候选:报失败,调用方下个检查点再试。

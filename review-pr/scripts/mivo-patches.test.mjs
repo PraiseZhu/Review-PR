@@ -3095,6 +3095,18 @@ for (const [label, script, args, parse] of [
   });
 }
 
+test('草稿摘标签(Review-PR#215):admit-candidates 输出 draftPrs,草稿不进候选名单', () => {
+  const fx = gbCliFixture();
+  try {
+    fx.snap([gbRow(1, 'main'), gbRow(3, 'main', { isDraft: true }), gbRow(2, 'main', { isDraft: true })]);
+    const r = fx.run('../../mivo/prereview/admit-candidates.mjs', ['--repo-root', fx.repoRoot]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(out.draftPrs, [2, 3]);
+    assert.deepEqual(JSON.parse(readFileSync(out.candidateList, 'utf8')).candidates.map((c) => c.number), [1]);
+  } finally { fx.cleanup(); }
+});
+
 test('gate-bases: admit-candidates 的 --incomplete-only 不读默认分支;--authority-only 的早退在默认分支读取之前', () => {
   const fx = gbCliFixture();
   try {

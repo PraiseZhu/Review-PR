@@ -25,7 +25,7 @@ import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
-import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
+import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit, toDraftMergeReadyPrs } from '../lib/admission.mjs';
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
 import { toFuseRecipients, toFuseNotifyText, sendFuseNotice } from '../lib/feishu-notify.mjs';
 import { loadOrgRosters } from '../../review-pr/scripts/lib.mjs';
@@ -446,6 +446,7 @@ function wakeHeldPrs(busy = new Set()) {
   writeJson(seenFile, next);
   wakeCodeScanPrs(openIssues, busy);
   wakeCiFailedPrs(openIssues, busy);
+  return openIssues;
 }
 
 // ── 代码扫描状态变了(CodeQL success ⇄ neutral)时唤醒对应 PR ────────────────────
@@ -644,7 +645,7 @@ async function main() {
   try { busyAtStart = toBusyPrs(incompletePlanFiles().map((file) => ({ ...readJson(file), released: readJson(join(dirname(file), 'mivo-released.json'), {}) }))); } catch (error) {
     log('wake-held-skip', { reason: error.message.slice(0, 200) });
   }
-  if (busyAtStart) wakeHeldPrs(busyAtStart);
+  const openIssues = busyAtStart ? wakeHeldPrs(busyAtStart) : undefined;
   sweepBypassReminders();
   sweepClosedPrLabels();
   for (const [markerName, options] of [['protected-hold-wake.json', {}], ['protected-author-release-wake.json', {}],
@@ -656,6 +657,8 @@ async function main() {
   }
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
+  // 没有候选(退出码 2)时 admitLoop 不会跑:草稿上不成立的 review:merge-ready 在这里摘(Review-PR#215)。
+  dropDraftMergeReady(openIssues, readDraftPrs(pre.candidateList));
   if (pre.exitCode === 2) { writeHeartbeat(); log('no-candidates', { reason: pre.reason }); return; }
   if (pre.exitCode !== 0 || !pre.decision) throw new Error(`pre-check 失败:${pre.error || pre.reason || `exit ${pre.exitCode}`}`);
   writeHeartbeat();
@@ -821,7 +824,7 @@ async function admitLoop(token, digest, drives) {
 }
 
 async function admitRound(token, digest, drives, slots) {
-  wakeHeldPrs(busyPrs());
+  const openIssues = wakeHeldPrs(busyPrs());
   // 维护者名单只读比对一次(不写快照:快照按锁 token 命名、同一个锁只能写一次)。变了就停止接单,
   // 手上的轮次跑完退出,launchd 重启时 prepare 写新快照。
   const authority = admitScript(['--authority-only']);
@@ -832,6 +835,7 @@ async function admitRound(token, digest, drives, slots) {
     return;
   }
   const admit = admitScript([]);
+  dropDraftMergeReady(openIssues, admit.draftPrs);
   if (admit.exitCode === 2) { log('admit-none', { excluded: admit.excludedPrs }); return; }
   // 采集只读、没有副作用:失败记日志,下个检查点再试。
   if (admit.exitCode !== 0 || !admit.ok) { log('admit-error', { error: admit.error || `exit ${admit.exitCode}` }); return; }
@@ -1520,6 +1524,32 @@ function dropStaleMergeReady(live, task, result, decision) {
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
   if (!r.ok && !/404/.test(r.stderr)) result.warnings.push(`review:merge-ready 没摘掉:${r.stderr.trim().slice(0, 200)}`);
   else if (r.ok) log('merge-ready-dropped', { pr: task.pr, head: task.head, reason: gateReason ?? 'head-changed' });
+}
+
+// 草稿 PR 上不再成立的 review:merge-ready(2026-11-06 xindong/mivo-canvas-plugin#1927 转草稿后标签挂了 1 小时 24 分)。
+// 草稿不进送审名单、不会走 dropStaleMergeReady,只能在名单阶段摘:每次启动 pre-check 之后(没有候选时进程随即退出),
+// 以及接单(admitRound)时各摘一次。零额外请求:标签来自 wakeHeldPrs 已读的开放 issue 列表,
+// 草稿编号来自 pre-check 候选名单的 skipped / admit-candidates 已读的快照(draftPrs)。摘成功后下一轮 issue 列表里就没有该标签,不会重复 DELETE;
+// 404 视为已摘;其它失败只记 merge-ready-drop-failed,不影响别的 PR 和接单。只在 live 模式。
+function dropDraftMergeReady(openIssues, draftPrs) {
+  if (CONFIG.mode !== 'live' || FENCED) return;
+  try {
+    for (const pr of toDraftMergeReadyPrs({ issues: openIssues, draftPrs, label: MERGE_READY_LABEL })) {
+      const r = run('gh', ['api', '--method', 'DELETE', `repos/${CONFIG.targetRepo}/issues/${pr}/labels/${encodeURIComponent(MERGE_READY_LABEL)}`],
+        { cwd: CONFIG.repoRoot, env: ENV, allowFail: true });
+      if (r.ok) log('merge-ready-dropped', { pr, reason: 'draft' });
+      else if (!/404/.test(r.stderr)) log('merge-ready-drop-failed', { pr, reason: 'draft', error: r.stderr.trim().slice(0, 200) });
+    }
+  } catch (error) {
+    log('merge-ready-drop-failed', { reason: 'draft', error: String(error?.message ?? error).slice(0, 200) });
+  }
+}
+
+// pre-check 写的候选名单里,草稿都在 skipped(outcome=draft):取出编号,不另读 GitHub。名单读不到 / 不是预期形状返回 undefined(不摘)。
+function readDraftPrs(candidateList) {
+  const manifest = candidateList ? readJson(candidateList, null) : null;
+  if (!Array.isArray(manifest?.skipped)) return undefined;
+  return manifest.skipped.filter((item) => item?.outcome === 'draft').map((item) => item.number);
 }
 
 // 代码扫描门的事实:规则按 base 缓存在本机状态目录(code-scan-rules.json),读不到时 toCodeScanGate 给出 unverified,调用方不摘。
