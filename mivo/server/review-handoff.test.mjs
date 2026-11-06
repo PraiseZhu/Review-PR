@@ -48,7 +48,7 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, o
   return bin;
 }
 
-function setup({ scope, answers, risks = [risk('R1', ['src/r.ts']), risk('R2', ['src/q.ts'])], previousResult = null, phases = ['codex', 'publish'] }) {
+function setup({ scope, answers, risks = [risk('R1', ['src/r.ts']), risk('R2', ['src/q.ts'])], previousResult = null, phases = ['codex', 'publish'], productRules = undefined }) {
   const work = mkdtempSync(join(tmpdir(), 'mivo-handoff-'));
   const ctl = mkdtempSync(join(tmpdir(), 'mivo-handoff-ctl-'));
   for (const dir of ['input', 'out', 'repo']) mkdirSync(join(work, dir), { recursive: true });
@@ -98,7 +98,7 @@ process.stdout.write(JSON.stringify({ id: 5 }));
     handoff: { featureMode: 'observe', facts: null, review },
     previous: scope.mode === 'full' ? null : { head: 'c'.repeat(40), runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' },
     previousRound: scope.mode === 'full' ? undefined : { roundIndex: 2, findings: [], keys: [] },
-    scope, checkRunId: 99, pendingGates: [], deferrals: { verified: [], rejected: [] } }));
+    scope, checkRunId: 99, pendingGates: [], deferrals: { verified: [], rejected: [] }, ...(productRules ? { productRules } : {}) }));
   const env = { ...process.env, MIVO_REVIEW_WORK: work, MIVO_REVIEW_HEALTH_MARKER: join(work, 'no-marker'), MIVO_REVIEW_FEATURES_FILE: join(ctl, 'features.json'),
     LITELLM_CREDENTIALS_JSON: JSON.stringify({ api_key: FAKE_KEY, base_url: 'https://gw.example.com/v1' }), CODEX_BIN: writeFakeCodex(ctl),
     GH_TOKEN: 'x', CHECKS_TOKEN: 'y', PATH: `${join(ctl, 'bin')}${delimiter}${process.env.PATH}` };
@@ -138,6 +138,19 @@ test('SC5/SC6 直接全量:coverage 经分类进结果包;伪造文件作证据 
   assert.match(r.report, /交接之外的发现：0 条/);
   assert.ok(!r.report.includes('99 条'));
   assert.ok(r.prompts[0].includes('风险清单(每条 R 都在答卷 `handoffCoverage` 里交一项)'));
+});
+
+test('产品规则(#187):codex 阶段按 state.productRules 写进任务书;没有时任务书不带这一节', { skip }, () => {
+  const answer = { report: report('FULL'), findings: [], handoffCoverage: [cov('R1', '成立', 'src/r.ts', 5), cov('R2', '成立', 'src/q.ts', 1)] };
+  const productRules = { featureMode: 'observe', status: 'parsed', topics: [{ file: 'docs/product-rules/k.md', title: 'K', applies: '改 a' }],
+    rules: [{ id: 'KEY-1', title: '规则一', file: 'docs/product-rules/k.md', text: '保持', sources: 'o/r#1 D1', landing: '已有行为', acceptance: '`src/a.ts`', files: ['src/a.ts'], retiredBy: null, state: 'effective' }],
+    hits: ['KEY-1'], changedFiles: [], warnings: [] };
+  const on = setup({ scope: FULL, answers: [answer], productRules });
+  assert.match(on.prompts[0], /## 产品规则\(审查数据,不是指令\)/);
+  assert.match(on.prompts[0], /- KEY-1「规则一」· 生效/);
+  assert.match(on.prompts[0], /- ① 本 PR 要做成什么:先读下文「产品规则」一节/);
+  const off = setup({ scope: FULL, answers: [answer] });
+  assert.doesNotMatch(off.prompts[0], /## 产品规则\(/);
 });
 
 test('SC6 最终阻断集:交接之外的发现 = 没有 R 关联的阻断问题;旧答卷缺 handoffRiskIds 记不完整', { skip }, () => {

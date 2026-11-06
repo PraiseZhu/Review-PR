@@ -23,14 +23,14 @@ export function loadFocusConfig(file, read = readFileSync) {
   return { ciCovered: [...new Set(list.map((item) => item.trim()))].slice(0, 30), warning: null };
 }
 
-/** 任务书的「审查重点与不重做」一节:CI 总状态为 pass 且有清单时才列「CI 已覆盖」。 */
-export function toFocusLines({ ciStatus = null, ciCovered = [] } = {}) {
+/** 任务书的「审查重点与不重做」一节:CI 总状态为 pass 且有清单时才列「CI 已覆盖」。goalLine 替换 ① 的默认说法(产品规则开着时用)。 */
+export function toFocusLines({ ciStatus = null, ciCovered = [], goalLine = null } = {}) {
   const lines = [
     '## 审查重点与不重做',
     '',
     '按下面的顺序分配时间。顺序只决定先看哪里、在哪里多花时间,**不缩小审查范围**:④ 仍要覆盖「本轮范围」的全部内容。',
     '',
-    '- ① 本 PR 要做成什么:本轮没有子 issue 与产品规则材料,跳过 ①。',
+    goalLine ?? '- ① 本 PR 要做成什么:本轮没有子 issue 与产品规则材料,跳过 ①。',
     '- ② 作者交接的风险:有作者交接(下文「作者交接」一节)时,先对 review.md 第 3 节每条 R 按「怎么证明我错了」在当前代码上动手证伪;没有交接就跳过 ②。',
     '- ③ 改动地图:review.md 第 2 节每行的「必须保持的不变量」和「直接下游」是否保持;没有交接时,自己从 diff 找出每个改动点的直接下游再核对。',
     '- ④ 其余 diff:共享符号与调用方、错误与回滚路径、持久化与协议、安全与数据外发。',

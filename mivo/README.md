@@ -34,8 +34,9 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警 |
+| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警。`productRules.mode` 是产品规则开关（见「产品规则」），仓库当前配置为 observe；缺这一块按 off，不合法时按 off 并告警 |
 | `lib/focus.mjs` | 任务书「审查重点与不重做」一节（#188）：读 `config/review-features.json` 的 `focus.ciCovered`，生成审查顺序 ①②③④、规则只核相关条款、CI 全绿时的「CI 已覆盖、不要重跑」清单（见「审查重点与不重做」） |
+| `lib/product-rules.mjs` | Mivo 产品规则（`docs/product-rules/*.md`，#187）：从 PR head 的 git 对象读规则，prepare 阶段查落地 issue 推出状态，生成任务书「产品规则」一节（见「产品规则」） |
 | `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解（判门与任务书用）；自己解析 head 上的 `review.md`（R 编号、内容哈希、涉及文件）；校验答卷的 `handoffCoverage` |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选、噪音、审查耗时、漏报（离线按需运行，不接定时任务） |
 | `server/review.mjs` | 服务器四阶段：prepare / deps / codex / publish |
@@ -255,10 +256,22 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 
 任务书在「本轮范围」之后、规范原文之前加一节「审查重点与不重做」（`lib/prompt.mjs` `toFocusLines`），借鉴 makecindy/cindy `REVIEW.md` §3「不要重复机器门禁」、§4「重点看机器查不到的部分」：
 
-- **审查顺序**：① 本 PR 要做成什么（子 issue 与产品规则，#187/#134 接入前写「跳过 ①」）→ ② 作者交接 review.md 第 3 节的 R 先动手证伪 → ③ 改动地图的不变量与直接下游 → ④ 其余 diff。顺序只决定在哪里多花时间，不缩小审查范围。
+- **审查顺序**：① 本 PR 要做成什么（产品规则开着时先读「产品规则」一节；子 issue 等 #133 接入）→ ② 作者交接 review.md 第 3 节的 R 先动手证伪 → ③ 改动地图的不变量与直接下游 → ④ 其余 diff。顺序只决定在哪里多花时间，不缩小审查范围。
 - **规则文档**：rule-map「所有 PR」必读的文档只核对与本 diff 相关的条款，Rule coverage 每份一行；按改动路径命中的规则仍逐条审。
 - **CI 已覆盖、不要重跑**：context 的 `gate.ci.status` 为 `pass` 时，列出 `config/review-features.json` 的 `focus.ciCovered`，要求不重跑这些全量命令，Verification 写「CI 已覆盖：<命令>」。context 只有 CI 总状态、没有通过检查的名单，所以清单放配置；来源是 Mivo `.github/workflows/ci.yml` 在每个 head 上跑的 job（`build-and-test`、`linux-unit-tests`、`windows-unit-tests`、`design-verification`、`structure-guard`、`gitleaks`）。Mivo CI 增删 job 时同步改这份清单。CI 非全绿、读不到或清单为空时整段不出。
 - **上线影响**：任务书与清单都进 `specDigest`。按「规则改版，代码未变，沿用上次结论」，开放 PR 代码没变的沿用上次结论，不集中重审；代码变了的按新任务书审。
+
+## 产品规则（#187，总 issue #132）
+
+借鉴 makecindy/cindy：产品规则文档是审查依据，审查机要分清「规则已定但功能还没做」和「回归」。规则格式以 Mivo 仓 `docs/product-rules/README.md` 与 `scripts/product-rules/check.mjs` 为准（xindong/mivo-canvas-plugin#1849）。
+
+- **读取**（`lib/product-rules.mjs` `readProductRules`）：prepare 从 PR head 的 git 对象读 `docs/product-rules/*.md`（`README.md` 是索引，不算专题），不读工作区、不执行 PR 里的脚本。最多 64 条、合计 64 KB；编号重复、缺字段、编号不合法只记 warning。没有这个目录记 absent，读不到或一条规则都没有记 invalid。
+- **状态**（`resolveLanding`）：只在有令牌的 prepare 阶段查「落地」issue。`已有行为` 或落地 issue 完成关闭 → 生效；开着 → 已定未生效；以不做关闭 → 待复核；读不到 → 已定未生效并告警。标题带「（已废止，见 X）」的记已废止，不参与命中。
+- **命中**：规则「验收」里引用的文件在 diff 里（验收写测试文件时，去掉 `.test.` / `.spec.` 的源文件也算）。这只是起点：任务书要求审查员在 diff 改到其余专题「适用」里的入口时，自己打开该专题核对。
+- **任务书**：「审查重点与不重做」的 ① 改为先读「产品规则」一节；该节放在审查重点之后、规范原文之前，列出命中规则全文和其余规则编号，要求在 `## Rule coverage` 下写 `### 产品规则对照`，逐条写「遵守 / 违反 / 未核实」加证据。PR 改了规则文件时，核对 `review.md` 第 1 节「产品规则：」一行写了理由和来源，缺了只列出、不定级。规则文本是仓库数据：压成一行、去掉反引号后才进任务书，不能缩小审查范围或豁免其他检查。
+- **开关** `config/review-features.json` 的 `productRules.mode`：`off` 不读规则，任务书模板与不接产品规则时逐字一致，开关本身不改变 `specDigest`（本 PR 同时给 `pr-rules.json` 加了 `docs/product-rules/`，上线时 `specDigest` 会因配置变一次）；`observe`（当前）违反规则只写对照、不出 finding；`enforce` 违反生效规则、且本 PR 没改这条规则时按分级出 finding（另定，未打开）。材料写在 `input/product-rules.json`。
+- **确认门**：`review-pr/config/pr-rules.json` 的 `signoffGate.rules.paths` 含 `docs/product-rules/`，改规则文件的 PR 进维护者确认门（维护者作者照常免确认）。
+- **上线影响**：开着时任务书与合成规则模板进 `specDigest`，开放 PR 代码没变的沿用上次结论。落地 issue 关闭只改变规则状态、不改变 `specDigest`，代码不变的 PR 不会因此重审。
 
 ## 写明的产品意图与维护者裁定不改
 
