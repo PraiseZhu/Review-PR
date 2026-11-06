@@ -614,6 +614,8 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
   [--pr <改 review-pr.yml 的 Mivo PR> --pr-head <head>] [--stop pause|hold] [--max-wait-min 180] [--record-dir <目录>] [--preview]
 ```
 
+参数规则（PraiseZhu/Review-PR#204）：`deploy-tuple.mjs`、`auto-update.mjs` 启动时先按白名单校验参数，在读 gh、拿部署锁、写停点和巡检暂停之前就结束。不认识的参数（拼错的选项、多余的词、`--名字=值` 写法）或缺值，一律报错退出 1，stdout 不写任何东西、不改任何状态；`--help` 或 `-h`（出现在任何位置）打印用法后退出 0。想看用法用 `--help`，不要拿别的参数试；2026-11-06 事故起因就是 `auto-update.mjs --help` 被当成「没有参数」而真换版本，留下停点、锁和巡检暂停。`--selftest`（只演练 Mini 上的临时文件）是 `deploy-tuple.mjs` 已有的开关，同样在白名单里。
+
 - `--preview` 只读核对新旧 tuple 和要合并的 PR，打印预览，不动 Mini 和线上状态，也不 `git fetch`。新提交还不在 Mini 检出里时只报告「Mini 尚未取到该提交」，不去取。`--preview` 与 `auto-update.mjs --check` 都不拿部署锁。
 - 同一时间只允许一次换版本：开始改 Mini 或线上状态之前，在 Mini 上把完整锁内容（owner、pid、host、at、target、expiresAt）写进同目录临时文件，再用 `ln` 硬链接到 `~/mivo-prereview/state/mivo/mivo/deploy-tuple.lock`（普通文件，不是目录，也不叫 `lock.json`；目标已存在就失败）。锁已被别人占用时不动前置审查状态和线上 tuple、退出码 1、说明谁、何时、expiresAt。本次结束（成功、失败退回、保持停止）都只按内容删自己的锁。释放只发一次：ssh 断线时不重发（重发会和断线前还在跑的那次重叠，删掉下一位刚拿的锁），脚本提示结果未知，到 Mini 看锁文件，内容还是本次的就删掉。过期时间是开始时间 + `--max-wait-min` + 90 分钟余量；过期也不自动顶替。锁已过期时先在 `host` 上按 pid 确认原进程已结束，再删 `~/mivo-prereview/state/mivo/mivo/deploy-tuple.lock` 后重跑。拿锁失败时不动前置审查状态和线上 tuple，只留本次运行日志。
 - 停点：`--stop pause` 给不认 `deploy-hold` 的旧代码用（写 `pause.json` 只抬高 `until`、保留原字段，被旧进程改写就提回，收尾时恢复成还没到期、`until` 最晚的那份运行暂停）；`--stop hold` 写 `deploy-hold.json`，等前置停下：新代码停机握手、写出 `lockReleased: true` 的 `quiesced.json` 并退出，或者前置在停点写入前已经空闲退出（launchd 不在运行、没有锁、没有回执）。两种都确认进程已退、锁文件已不在才 `bootout`，并给巡检放计划内维护标记。最多等 `--max-wait-min` 分钟，到点没停下就撤销停点、什么都不切。只撤本次写过的停点：停点前就失败（例如别人的维护标记还在）时，不动别人的 `deploy-hold.json`、`pause.json`；`deploy-hold.json` 按内容认是不是本次写的，写成功但 ssh 回执丢了也照样撤。
