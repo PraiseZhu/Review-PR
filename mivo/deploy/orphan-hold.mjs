@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { HOSTS, DEPLOY_LOCK_REL, parseDeployLock, toOrphanDecision } from './tuple-lib.mjs';
+import { HOSTS, DEPLOY_LOCK_REL, DEPLOY_LOCK_CLAIM_SUFFIX, parseDeployLock, toOrphanDecision } from './tuple-lib.mjs';
 
 export const RECORD_DIR_REL = 'Library/Logs/mivo-prereview/deploy';
 export const MONITOR_PAUSE_REL = 'mivo-prereview/monitor/scripts/schedule-checks/pause-until.json';
@@ -58,19 +58,17 @@ function findRecord(recordDir, lockText) {
 }
 
 // 并发协议(部署获取、部署释放、回收三方):
-// - 部署只有两种动作:`ln` 新建锁(目标已存在则失败)和释放(内容和自己写的逐字相同才删)。锁文件名被一把锁占着的时候,
-//   别的部署拿不到锁,也就不会写停点、握手回执、巡检暂停。
-// - 回收者先给锁文件建硬链接 deploy-tuple.lock.reclaim,记下被钉住的 inode:同一时刻只有一个回收者(已存在则报警)。
-//   硬链接只钉住 inode,拦不住部署释放(释放是 rm 路径),所以光占位不够。
-// - 死锁判定之后(判活返回「已不在」),**再核对锁文件名下仍是被钉住的那个 inode**,通过之后才读停点和部署记录、才删东西:
-//   进程已不在,它不会再释放或改任何文件;锁文件名仍被它的锁占着,别的部署拿不到锁、写不了新状态;别的回收者被占位挡着。
-//   所以这之后读到的和要删的都是这次判定的那次部署留下的。判活期间锁被正常释放(或又被新部署拿走)的,inode 对不上,
-//   一个文件都不动。核对放在判活之后、读取和删除之前,而不是删除之后。
+// - 部署获取:`ln` 新建锁(目标已存在则失败)。锁文件名被一把锁占着的时候,别的部署拿不到锁,也就不会写停点、握手回执、巡检暂停。
+// - 占位:锁文件名加 .reclaim 的硬链接,`ln` 建立、已存在则失败,同一时刻只有一方持有。回收者和部署的释放命令(toReleaseLockScript)
+//   都要先拿它,拿到之后才读、才删。部署父进程被强杀后,它启动的释放命令可能还活着;回收者查进程只能确认父进程不在,
+//   看不到这条命令,所以只靠「按路径检查 inode 再按路径删」挡不住它(检查和删除之间有窗口)。让释放命令也走占位,
+//   两方就不会同时在手:回收者先到,释放命令等;释放命令先到,回收者看到占位报警、不动手。
+// - 回收者拿到占位后记下被钉住的 inode。死锁判定之后(判活返回「已不在」),再核对锁文件名下仍是被钉住的那个 inode,
+//   通过之后才读停点和部署记录、才删东西。判活期间锁被正常释放(或又被新部署拿走)的,inode 对不上,一个文件都不动。
 // - 删除过程中每一步之前都再核对一次 inode;锁最后撤。
-// 占位在 finally 里一定放掉;进程被强杀才会残留,残留时下次回收报警,手动删。
-const CLAIM_SUFFIX = '.reclaim';
+// 占位在 finally 里一定放掉;释放命令或回收者进程被强杀才会残留,残留时下次回收报警,手动删。
 function claimLock(lockFile) {
-  const claim = `${lockFile}${CLAIM_SUFFIX}`;
+  const claim = `${lockFile}${DEPLOY_LOCK_CLAIM_SUFFIX}`;
   try {
     fs.linkSync(lockFile, claim);
   } catch (error) {

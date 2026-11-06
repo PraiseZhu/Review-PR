@@ -349,7 +349,8 @@ test('释放锁只发一次:ssh 断线不重试,报结果未知并给人工核�
 
 test('释放锁 rm 失败用专门退出码,报锁文件还在', () => {
   const script = toReleaseLockScript(DEPLOY_LOCK_REL);
-  assert.match(script, /rm -f "\$f" \|\| exit 3/);
+  assert.match(script, /rm -f "\$f" \|\| rc=3/);
+  assert.match(script, /exit "\$rc"/);
   assert.equal(RELEASE_LOCK_RETRIES, 1);
   const fail = toReleaseLockResult({ status: 3, stderr: '' });
   assert.equal(fail.ok, false);

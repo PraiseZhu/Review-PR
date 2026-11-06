@@ -240,12 +240,32 @@ export function toLinkLockScript(rel) {
   ].join('\n');
 }
 
-// 释放:读锁内容,与 stdin 逐字相同才 rm;不同就不删、只告警。
+// 回收者和释放命令共用的占位:锁文件名加这个后缀的硬链接,`ln` 建立,已存在就失败,同一时刻只有一方能持有。
+export const DEPLOY_LOCK_CLAIM_SUFFIX = '.reclaim';
+
+// 释放:先拿占位(和孤儿回收者同一个),占位在手再读锁内容,与 stdin 逐字相同才 rm,最后放掉占位;不同就不删、只告警。
+// 为什么要占位:部署父进程被强杀后,它启动的这条释放命令可能还活着(已 cmp、还没 rm)。回收者只能确认父进程不在,
+// 看不到这条命令;按路径检查再按路径 rm 之间有窗口,窗口里新部署拿到新锁,就会被误删。释放命令也走占位,
+// 两方不能同时在手:回收者先到,释放命令等占位放掉(等不到就以退出码 3 报「锁文件还在」);释放命令先到,回收者看到占位报警,不动手。
 export function toReleaseLockScript(rel) {
   return [
     `f=${shQuote(rel)}`,
+    `claim="$f${DEPLOY_LOCK_CLAIM_SUFFIX}"`,
     `if [ ! -e "$f" ]; then exit 0; fi`,
-    `if cmp -s "$f" -; then rm -f "$f" || exit 3; exit 0; fi`,
+    `n=0`,
+    `until ln "$f" "$claim" 2>/dev/null; do`,
+    `  if [ ! -e "$f" ]; then exit 0; fi`,
+    `  n=$((n + 1))`,
+    `  if [ "$n" -ge 50 ]; then echo "$claim 一直被占着,不释放" >&2; exit 3; fi`,
+    `  sleep 0.1`,
+    `done`,
+    `if cmp -s "$f" -; then`,
+    `  rc=0`,
+    `  rm -f "$f" || rc=3`,
+    `  rm -f "$claim"`,
+    `  exit "$rc"`,
+    `fi`,
+    `rm -f "$claim"`,
     `echo "部署锁已不是本次的,不删" >&2`,
     `exit 0`,
   ].join('\n');
