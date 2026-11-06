@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEPLOY_LOCK_REL, HOSTS, HOLD_STALE_MIN, toDeployLockText, toOrphanDecision, toHoldAlert } from './tuple-lib.mjs';
+import { spawnSync } from 'node:child_process';
+import { DEPLOY_LOCK_REL, HOSTS, HOLD_STALE_MIN, toDeployLockText, toOrphanDecision, toHoldAlert, toReleaseLockScript, toLinkLockScript } from './tuple-lib.mjs';
 import { MONITOR_PAUSE_REL, RECORD_DIR_REL, isLockHolderAlive, reconcileOrphanHold } from './orphan-hold.mjs';
 
 const TARGET = 'c1d089d23cded598785a4bb5e2e6f4dc8c9766b5';
@@ -212,6 +213,38 @@ test('并发回收:新锁的持有者已死但它的记录还没落盘:找不到
   assert.equal(r.action, 'alert');
   assert.equal(fs.existsSync(path.join(w.dir, 'deploy-hold.json')), true);
   assert.equal(fs.existsSync(path.join(w.home, DEPLOY_LOCK_REL)), true);
+});
+
+test('判活期间原部署正常收尾、新部署随即拿锁写停点(两个独立进程用真实的释放和拿锁脚本):回收者不删新部署的任何东西', (t) => {
+  const w = setup(t);
+  const newLockText = toDeployLockText({ ...LOCK, pid: 60001, at: '2026-11-06T09:30:00.000Z' });
+  const newHold = '{"at":"2026-11-06T09:31:00.000Z","reason":"整组上线 c1d089d"}\n';
+  const newPause = `${JSON.stringify({ from: '2026-11-06T09:30:00.000Z', until: '2026-11-06T13:30:00.000Z', reason: MONITOR_REASON })}\n`;
+  const sh = (script, input) => {
+    const r = spawnSync('sh', ['-c', `cd "$HOME" || exit 9\n${script}`], { input, encoding: 'utf8', env: { ...process.env, HOME: w.home } });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const r = w.run(() => {
+    // 回收者 A 正在判活(它已经占住了原部署 D 的锁)。同一时刻:
+    // 进程 1,D 走正常收尾——撤自己的停点和握手回执、巡检暂停,再用 toReleaseLockScript 释放锁;
+    fs.rmSync(path.join(w.dir, 'deploy-hold.json'));
+    fs.rmSync(path.join(w.dir, 'quiesced.json'));
+    fs.rmSync(path.join(w.home, MONITOR_PAUSE_REL));
+    sh(toReleaseLockScript(DEPLOY_LOCK_REL), LOCK_TEXT);
+    // 进程 2,新部署 E 用 toLinkLockScript 拿到新锁,写新停点、握手回执、同原因的巡检暂停。
+    sh(toLinkLockScript(DEPLOY_LOCK_REL), newLockText);
+    fs.writeFileSync(path.join(w.dir, 'deploy-hold.json'), newHold);
+    fs.writeFileSync(path.join(w.dir, 'quiesced.json'), '{"lockReleased":true}\n');
+    fs.writeFileSync(path.join(w.home, MONITOR_PAUSE_REL), newPause);
+    return false; // D 已经退出,ps 查不到它。
+  });
+  assert.notEqual(r.action, 'revoke');
+  assert.deepEqual(r.removed ?? [], []);
+  assert.equal(fs.readFileSync(path.join(w.home, DEPLOY_LOCK_REL), 'utf8'), newLockText, '新部署的锁还在');
+  assert.equal(fs.readFileSync(path.join(w.dir, 'deploy-hold.json'), 'utf8'), newHold, '新停点还在');
+  assert.equal(fs.existsSync(path.join(w.dir, 'quiesced.json')), true, '新握手回执还在');
+  assert.equal(fs.readFileSync(path.join(w.home, MONITOR_PAUSE_REL), 'utf8'), newPause, '新巡检暂停还在');
+  assert.equal(fs.existsSync(`${path.join(w.home, DEPLOY_LOCK_REL)}.reclaim`), false, '占位已放掉');
 });
 
 test('回收:不是线上状态目录就不碰', (t) => {

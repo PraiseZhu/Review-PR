@@ -57,11 +57,17 @@ function findRecord(recordDir, lockText) {
   return null;
 }
 
-// 回收者先「占住」部署锁:给锁文件建一个硬链接 deploy-tuple.lock.reclaim(目标已存在则失败,所以同一时刻只有一个回收者)。
-// 占住期间锁文件名一直被这把死锁占着,新的换版本拿不到锁、写不了新停点(deploy-tuple 只用 ln 新建锁、从不覆盖);
-// 所以占住之后读到的锁、停点、部署记录不会再被别人改,整个撤销过程都在这个所有权下完成。
-// 一定要占住之后才读状态:占住前读的快照可能已经被别的回收者处理、新部署换了新锁,按旧快照动手会删掉新部署的停点。
-// 占住的是当时锁文件名下的那个 inode;那把锁不是死锁(持有者还在、读不懂)就只放掉占位,什么都不删。
+// 并发协议(部署获取、部署释放、回收三方):
+// - 部署只有两种动作:`ln` 新建锁(目标已存在则失败)和释放(内容和自己写的逐字相同才删)。锁文件名被一把锁占着的时候,
+//   别的部署拿不到锁,也就不会写停点、握手回执、巡检暂停。
+// - 回收者先给锁文件建硬链接 deploy-tuple.lock.reclaim,记下被钉住的 inode:同一时刻只有一个回收者(已存在则报警)。
+//   硬链接只钉住 inode,拦不住部署释放(释放是 rm 路径),所以光占位不够。
+// - 死锁判定之后(判活返回「已不在」),**再核对锁文件名下仍是被钉住的那个 inode**,通过之后才读停点和部署记录、才删东西:
+//   进程已不在,它不会再释放或改任何文件;锁文件名仍被它的锁占着,别的部署拿不到锁、写不了新状态;别的回收者被占位挡着。
+//   所以这之后读到的和要删的都是这次判定的那次部署留下的。判活期间锁被正常释放(或又被新部署拿走)的,inode 对不上,
+//   一个文件都不动。核对放在判活之后、读取和删除之前,而不是删除之后。
+// - 删除过程中每一步之前都再核对一次 inode;锁最后撤。
+// 占位在 finally 里一定放掉;进程被强杀才会残留,残留时下次回收报警,手动删。
 const CLAIM_SUFFIX = '.reclaim';
 function claimLock(lockFile) {
   const claim = `${lockFile}${CLAIM_SUFFIX}`;
@@ -74,9 +80,17 @@ function claimLock(lockFile) {
   }
   return { status: 'claimed', claim };
 }
+const identityOf = (file) => {
+  try {
+    const st = fs.statSync(file);
+    return `${st.dev}:${st.ino}`;
+  } catch {
+    return null;
+  }
+};
 
 // dir 是 <stateDir>/mivo(放 deploy-hold.json、deploy-tuple.lock 的目录)。返回 { action, reason, removed? }:
-// none(没有锁)、keep(持有者还在)、alert(不能自动撤,reason 写明原因)、revoke(已撤,removed 列出撤掉的文件)。
+// none(没有锁、判活期间锁换了人)、keep(持有者还在)、alert(不能自动撤,reason 写明原因)、revoke(已撤,removed 列出撤掉的文件)。
 export function reconcileOrphanHold({ dir, home = os.homedir(), isAlive = isLockHolderAlive, recordDir = path.join(home, RECORD_DIR_REL) }) {
   // 只处理线上那一套状态目录,测试、沙盒实例的目录不碰。
   if (path.resolve(dir) !== path.resolve(home, path.dirname(DEPLOY_LOCK_REL))) return { action: 'none', reason: '不是线上状态目录' };
@@ -87,17 +101,26 @@ export function reconcileOrphanHold({ dir, home = os.homedir(), isAlive = isLock
     return { action: 'alert', reason: `${path.basename(claimed.claim)} 已存在:另一个回收者正在处理;如果确认没有回收进程在跑,手动删掉它` };
   }
   try {
+    const pinned = identityOf(claimed.claim);
+    const owned = () => pinned != null && identityOf(lockFile) === pinned;
     const lockText = readText(claimed.claim);
     const lock = lockText == null ? null : parseDeployLock(lockText);
+    const alive = lock ? isAlive(lock) : null;
+    // 持有者还在、查不了、锁读不懂:不用读停点和记录,判定不会走到撤销。
+    if (alive !== false) return toOrphanDecision({ lock, lockText, hold: { exists: false, text: null }, alive, record: null });
+    // 判活期间持有者可能正常收尾(释放了锁)、新部署又拿了锁:锁文件名下不是被钉住的那把,就一个文件都不动。
+    if (!owned()) return { action: 'none', reason: '判活期间部署锁已被释放或换了人,不动' };
+
     const holdFile = path.join(dir, HOLD_NAME);
     const holdText = readText(holdFile);
     const hold = { exists: holdText != null, text: holdText };
-    const record = lock ? findRecord(recordDir, lockText) : null;
-    const decision = toOrphanDecision({ lock, lockText, hold, alive: lock ? isAlive(lock) : null, record });
+    const record = findRecord(recordDir, lockText);
+    const decision = toOrphanDecision({ lock, lockText, hold, alive, record });
     if (decision.action !== 'revoke') return decision;
 
     const removed = [];
     const remove = (file) => {
+      if (!owned()) throw new Error(`撤销过程中部署锁换了人,已撤 ${removed.length} 个文件,停止`);
       fs.rmSync(file, { force: true });
       removed.push(file);
     };
@@ -108,8 +131,8 @@ export function reconcileOrphanHold({ dir, home = os.homedir(), isAlive = isLock
       const pauseFile = path.join(home, MONITOR_PAUSE_REL);
       if (readText(pauseFile) === record.monitorPauseText) remove(pauseFile);
     }
-    // 锁最后撤:前面任何一步抛错,锁还在,下次还会再进来收拾。锁文件名下必须还是被占住的那个 inode。
-    if (fs.statSync(lockFile).ino === fs.statSync(claimed.claim).ino) remove(lockFile);
+    // 锁最后撤:前面任何一步抛错,锁还在,下次还会再进来收拾。
+    if (decision.remove.lock) remove(lockFile);
     return { ...decision, removed };
   } finally {
     fs.rmSync(claimed.claim, { force: true });

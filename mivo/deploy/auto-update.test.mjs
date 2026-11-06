@@ -148,3 +148,14 @@ test('孤儿停点:switched 非空时一个文件都不撤,只在结果里报警
   assert.equal(run('--check').status, 2);
   assert.equal(fs.existsSync(planted.hold), true);
 });
+
+test('孤儿停点:不认识的参数和 --help 在回收之前就结束,一个文件都不动', (t) => {
+  let planted;
+  const run = setup(t, (head) => ({ variable: head, main: head }), (r) => { planted = plantOrphan(r, { switched: [] }); });
+  const bad = run('--cindy-scrpit');
+  assert.equal(bad.status, 1);
+  const help = run('--help');
+  assert.equal(help.status, 0);
+  assert.equal(fs.existsSync(planted.hold), true);
+  assert.equal(fs.existsSync(planted.lock), true);
+});
