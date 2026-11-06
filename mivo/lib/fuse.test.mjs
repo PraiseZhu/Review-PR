@@ -129,6 +129,6 @@ test('配置:没配或 enabled 不是 true 时关闭;配错直接报错;两份�
   const dir = mkdtempSync(join(tmpdir(), 'fuse-config-'));
   try {
     writeFileSync(join(dir, 'rules.json'), JSON.stringify({ maintainerAllowlist: ['A'], convergeFuse: { enabled: true, maxVersions: 3, resumeLine: '继续审' } }));
-    assert.deepEqual(loadFuseConfig(join(dir, 'rules.json')), { enabled: true, maxVersions: 3, resumeLine: '继续审', maintainers: ['a'] });
+    assert.deepEqual(loadFuseConfig(join(dir, 'rules.json')), { enabled: true, maxVersions: 3, resumeLine: '继续审', maintainers: ['a'], notify: { enabled: false } });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
