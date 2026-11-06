@@ -773,6 +773,30 @@
    ]
   },
   {
+   "id": "round.run_gh.ac36c77317",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "ac36c77317",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "--method",
+      "DELETE",
+      "repos/xindong/mivo-canvas-plugin/issues/7/labels/review%3Amerge-ready"
+     ],
+     "expected": "app-write"
+    }
+   ]
+  },
+  {
    "id": "round.run_gh.ff1da62fed",
    "source": {
     "file": "mivo/prereview/round.mjs",

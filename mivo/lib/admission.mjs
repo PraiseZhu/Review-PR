@@ -98,6 +98,19 @@ export function withDeferredGateRetries(state, plans = []) {
   return { ...state, version: 1, mode: 'review-only', prs };
 }
 
+/**
+ * 草稿 PR 上要摘的标签:开放 issue 列表(REST,带 labels 和 pull_request)里挂着 label 的草稿 PR 编号,升序。
+ * draftPrs 是 admit-candidates 快照里 isDraft 的编号;任一输入缺失或形状不对都返回空数组(读不到不摘)。
+ */
+export function toDraftMergeReadyPrs({ issues, draftPrs, label }) {
+  if (!Array.isArray(issues) || !Array.isArray(draftPrs) || !label) return [];
+  const drafts = new Set(draftPrs.map(Number));
+  return issues
+    .filter((issue) => issue?.pull_request && drafts.has(issue.number) && (issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l?.name) === label))
+    .map((issue) => issue.number)
+    .sort((a, b) => a - b);
+}
+
 /** 新一轮要从快照里去掉的 PR:在审 PR,加上 round-state 里(传递地)依赖它们的 PR。 */
 export function toExcludedPrs({ busyPrs = new Set(), roundState = {}, mode = 'review-only' }) {
   const excluded = new Set([...busyPrs].map(Number));
