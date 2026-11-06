@@ -6,6 +6,7 @@
 //   node auto-update.mjs [--cindy-script]  要换就调 deploy-tuple.mjs --on mini --stop hold 整组换上(停点最多等 40 分钟);
 //                                         --cindy-script 时 stdout 只有一行 cindy-script/1 收尾帧,过程写日志。
 //   [--log-dir <目录>]                     日志与部署记录目录,默认 ~/Library/Logs/mivo-prereview/deploy。
+//   --help                                打印用法后退出 0。不认识的参数(拼错的选项、多余的词)报错退出 1,什么都不做、不读 gh。
 // 执行模式在判断要不要换之前,先回收上一个换版本进程死后留下的孤儿停点和部署锁(PraiseZhu/Review-PR#205,规则见 orphan-hold.mjs)。
 // 执行模式退出码:0 换好了、已是最新或今天先不换;1 不能自动换(要人看),或没换成但线上仍是旧版本、前置照常;
 // 2 换失败且前置保持停止(含新版本已上),要人工处理。--check 不调 deploy-tuple,不拿锁。
@@ -15,7 +16,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { WF_PATH, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs, toAutoUpdateFinish } from './tuple-lib.mjs';
+import { WF_PATH, toCliArgs, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs, toAutoUpdateFinish } from './tuple-lib.mjs';
 import { reconcileOrphanHold } from './orphan-hold.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -23,15 +24,19 @@ const REPO = 'xindong/mivo-canvas-plugin';
 const SKILL_REPO = 'PraiseZhu/Review-PR';
 const SKILL_DIR = path.join(os.homedir(), 'mivo-prereview/skill');
 const MAX_WAIT_MIN = 40;
-const CHECK = process.argv.includes('--check');
-const CINDY = process.argv.includes('--cindy-script');
-const LOG_DIR = arg('log-dir', path.join(os.homedir(), 'Library/Logs/mivo-prereview/deploy'));
+const USAGE = `用法:node auto-update.mjs [--check | --cindy-script] [--log-dir <目录>]
+  --check            只读判断要不要换(exit 0 要换或要人看,2 跳过本轮,1 查不了);完整成功时最后打印 CINDY_PRECHECK_OK
+  --cindy-script     执行换版本,stdout 只有一行 cindy-script/1 收尾帧,过程写日志
+  --log-dir <目录>   日志与部署记录目录,默认 ~/Library/Logs/mivo-prereview/deploy
+  --help             打印本用法后退出 0
+不带 --check 和 --cindy-script 直接执行换版本。不认识的参数报错退出 1,不做任何事。
+`;
+const CLI = toCliArgs(process.argv.slice(2), { flags: ['check', 'cindy-script'], values: ['log-dir'] });
+const CHECK = CLI.flags.has('check');
+const CINDY = CLI.flags.has('cindy-script');
+const LOG_DIR = CLI.values.get('log-dir') ?? path.join(os.homedir(), 'Library/Logs/mivo-prereview/deploy');
 
 // helpers
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i < 0 ? fallback : process.argv[i + 1];
-}
 function run(cmd, args) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
   return { ok: r.status === 0, status: r.status, stdout: r.stdout ?? '', stderr: String(r.stderr || r.error || '').trim() };
@@ -110,4 +115,12 @@ function main() {
   return finish(done.code, note(done.text));
 }
 
-main();
+// 参数先校验:--help 和报错都在读 gh、拿锁、写停点之前结束。只设退出码、不调 process.exit(理由同 finish)。
+if (CLI.help) {
+  process.stdout.write(USAGE);
+} else if (CLI.error) {
+  process.stderr.write(`${CLI.error}\n${USAGE}`);
+  process.exitCode = 1;
+} else {
+  main();
+}

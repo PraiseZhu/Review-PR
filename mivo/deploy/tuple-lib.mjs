@@ -25,6 +25,30 @@ export function toHostCommand(host, self, script) {
     : ['ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', HOSTS[host], body]];
 }
 
+// 命令行参数白名单解析(auto-update.mjs、deploy-tuple.mjs 共用)。flags 是不带值的开关,values 是后面跟一个值的选项,名字都不带 --。
+// --help / -h 出现在任何位置都只返回 help: true。不认识的参数、位置参数、--name=值 写法、缺值(后面没有值或紧跟另一个 --选项)
+// 返回 error,调用方必须在做任何事之前报错退出(PraiseZhu/Review-PR#204:--help 曾被当成「没有参数」而真换版本)。
+// 同一个带值选项出现多次时第一次生效。
+export function toCliArgs(argv, { flags = [], values = [] } = {}) {
+  const result = { help: false, error: null, flags: new Set(), values: new Map() };
+  if (argv.some((token) => token === '--help' || token === '-h')) return { ...result, help: true };
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    const name = token.startsWith('--') ? token.slice(2) : null;
+    if (name !== null && flags.includes(name)) {
+      result.flags.add(name);
+    } else if (name !== null && values.includes(name)) {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) return { ...result, error: `${token} 缺少值` };
+      if (!result.values.has(name)) result.values.set(name, value);
+      i += 1;
+    } else {
+      return { ...result, error: `不认识的参数:${token}` };
+    }
+  }
+  return result;
+}
+
 // 停点到没到。state 是 launchd 里前置任务的状态('running'、'not running'、'absent',读不到是 'unknown'),
 // lock 是锁文件路径(没有是 '',读不到是 null),quiesced 是停机握手回执(没有是 null)。
 // 进程不在跑、锁也不在才可能到。hold 模式有回执就要 lockReleased: true;没有回执说明前置在停点写入前

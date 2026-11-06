@@ -20,6 +20,8 @@
 //                quiesced.json 并退出;或者前置在停点写入前已经空闲退出(launchd 不在运行、没有锁、没有回执),
 //                之后拉起的进程看到停点直接返回、不拿锁。
 //   --pr:到停点后用 Art Support 绕过合并这个 PR(维护者已授权),合并后 main 上 review-pr.yml 必须等于 --new-wf。
+//   --selftest 只在 Mini 的临时文件上演练读写与比对。--help 打印用法后退出 0。
+//   参数先校验:不认识的参数(拼错的选项、多余的词)、缺值一律报错退出 1,在读 gh、拿锁、写停点之前结束(PraiseZhu/Review-PR#204)。
 //   回滚:新旧参数对调,--stop hold,不带 --pr(workflow 另行 revert)。不带 --pr 时 main 上必须已经是 --new-wf;
 //        workflow 先变、其余还没切的这段时间 tuple 不一致,要紧接着运行;这时切换失败,退回后整组仍不一致,保持停止。
 // 不对还在跑的进程 bootout(SIGTERM 不走 finally,会留下 60 分钟的锁),也不删不知道归属的锁。
@@ -32,7 +34,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
-  WF_PATH, HOSTS, DEPLOY_LOCK_REL, toHostCommand, toStopReady, isOwnHold,
+  WF_PATH, HOSTS, DEPLOY_LOCK_REL, toCliArgs, toHostCommand, toStopReady, isOwnHold,
   toFinalizeFailure, toLockAcquire, toDeployLockText, toLockExpiresAt, toLinkLockScript, toLockKeep,
   toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
   toMergedPrNumbers, toBehindMainNote, toLatestChecks, RULES_PATH, toDispatchProblems,
@@ -55,10 +57,31 @@ const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 const nowIso = () => new Date().toISOString();
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const say = (line) => console.log(`${new Date().toLocaleTimeString('zh-CN', { hour12: false })} ${line}`);
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i < 0 ? fallback : process.argv[i + 1];
+const USAGE = `用法:node deploy-tuple.mjs --on pro|mini|air --old-skill <sha> --new-skill <sha> --old-wf <sha256> --new-wf <sha256>
+       [--pr <Mivo PR 号> --pr-head <sha>] [--stop pause|hold] [--max-wait-min 180] [--record-dir <目录>] [--preview]
+       node deploy-tuple.mjs --on pro|mini|air --selftest
+  --on <机器>          本机是哪台(pro、mini、air)
+  --old-skill/--new-skill  旧、新 Review-PR 提交(40 位)
+  --old-wf/--new-wf    旧、新 review-pr.yml 的 sha256(64 位)
+  --pr/--pr-head       要合并的 Mivo workflow PR 及其 head
+  --stop pause|hold    停点方式,默认 pause
+  --max-wait-min <分钟>  等前置停下的上限,默认 180
+  --record-dir <目录>  部署记录目录,默认 ~/Library/Logs/mivo-prereview/deploy
+  --preview            只读预检,不动 Mini 和线上状态
+  --selftest           在 Mini 的临时文件上演练读写与比对
+  --help               打印本用法后退出 0
+不认识的参数报错退出 1,不做任何事。
+`;
+const CLI = toCliArgs(process.argv.slice(2), {
+  flags: ['preview', 'selftest'],
+  values: ['on', 'old-skill', 'new-skill', 'old-wf', 'new-wf', 'pr', 'pr-head', 'stop', 'max-wait-min', 'record-dir'],
+});
+// 参数先校验,在任何读写之前结束。用同步写再退出:管道上 process.exit 会丢掉异步写的内容。
+if (CLI.help || CLI.error) {
+  fs.writeSync(CLI.help ? 1 : 2, CLI.help ? USAGE : `${CLI.error}\n${USAGE}`);
+  process.exit(CLI.help ? 0 : 1);
 }
+const arg = (name, fallback) => CLI.values.get(name) ?? fallback;
 function run(cmd, args, { input, timeoutMs = 120_000 } = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', input, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 });
   return { ok: r.status === 0, status: r.status, stdout: r.stdout ?? '', stderr: String(r.stderr || r.error || '').trim() };
@@ -148,7 +171,7 @@ function readQuiesced() {
 }
 
 // 自检:只在 Mini 的临时文件上演练读写与比对,不碰线上文件。
-if (process.argv.includes('--selftest')) {
+if (CLI.flags.has('selftest')) {
   const rel = 'mivo-prereview/_deploy-selftest.json';
   const results = [];
   const expectFail = (fn, what) => { try { fn(); results.push(`!! ${what} 应该失败却成功了`); } catch { results.push(`ok ${what} 按预期失败`); } };
@@ -178,7 +201,7 @@ const PR_HEAD = arg('pr-head');
 const STOP = arg('stop', 'pause');
 const MAX_WAIT_MS = Number(arg('max-wait-min', '180')) * MIN;
 const RECORD_DIR = arg('record-dir', path.join(os.homedir(), 'Library/Logs/mivo-prereview/deploy'));
-const PREVIEW = process.argv.includes('--preview');
+const PREVIEW = CLI.flags.has('preview');
 for (const [name, value, re] of [['new-skill', NEW_SKILL, /^[0-9a-f]{40}$/], ['old-skill', OLD_SKILL, /^[0-9a-f]{40}$/],
   ['new-wf', NEW_WF, /^[0-9a-f]{64}$/], ['old-wf', OLD_WF, /^[0-9a-f]{64}$/]]) {
   if (!re.test(value ?? '')) throw new Error(`--${name} 格式不对:${value}`);
