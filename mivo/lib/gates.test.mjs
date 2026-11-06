@@ -321,6 +321,25 @@ test('只缺界面证据:打回正文说清楚补截图或 HTML,不提维护者�
   assert.match(mixed.body, /不符合仓库的 PR 格式要求/);
 });
 
+test('只缺界面证据的打回文案按这一轮真实去向写:送审了就说照常审,还有别的卡点才说不进入代码审查(#212)', () => {
+  const evidence = { formatPass: false, formatIssues: ['缺界面证据:改了界面(src/canvas/MivoCanvas.tsx)'], uiEvidenceRequired: true };
+  const reviewingCtx = ctx({ format: evidence, gate: { gatePass: true }, auto: { action: 'pushback-format' } });
+  assert.equal(decideGate(reviewingCtx).stage, 'review', '夹具与「只缺界面证据、其他门都过」同形');
+  const reviewing = buildGatePushback(reviewingCtx, 'format');
+  assert.match(reviewing.body, /代码审查照常进行,补上证据前不会放行/);
+  assert.doesNotMatch(reviewing.body, /不进入代码审查/);
+  // 提示里写清交互改动与文案改动的区别
+  assert.match(reviewing.body, /提示文字、按钮文案变了也算界面变化,要补证据/);
+  assert.match(reviewing.body, /只改交互\(如快捷键、手势\)、界面看不出变化的,在「效果展示」第一行写「不涉及」,并用一句话说明为什么/);
+  // 还有别的前置门没过:这一轮不送审,照旧说不进入代码审查
+  const blockedCtx = ctx({ format: evidence, gate: { gatePass: false, blockers: ['CI 未全过:x'] }, auto: { action: 'pushback-format' } });
+  assert.notEqual(decideGate(blockedCtx).stage, 'review');
+  assert.match(buildGatePushback(blockedCtx, 'format').body, /自动审查先打回,不进入代码审查/);
+  // 格式还有别的问题:正文不变
+  const mixedCtx = ctx({ format: { ...evidence, formatIssues: ['标题格式不对', ...evidence.formatIssues] }, gate: { gatePass: true }, auto: { action: 'pushback-format' } });
+  assert.match(buildGatePushback(mixedCtx, 'format').body, /不符合仓库的 PR 格式要求,自动审查先打回,不进入代码审查/);
+});
+
 test('缺界面证据但只有评论形式的旧打回:打回一次;已有生效的 Request Changes 就不重复', () => {
   const meta = (reviewDecision) => ({ title: 'docs(canvas): x', author: 'outsider', url: 'u', mergeStateStatus: 'BLOCKED', reviewDecision });
   const format = { formatPass: false, uiEvidenceRequired: true, formatIssues: ['缺界面证据:改了界面(src/a.tsx)'] };
