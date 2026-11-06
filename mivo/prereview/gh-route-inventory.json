@@ -4957,6 +4957,91 @@
      "expected": "app"
     }
    ]
+  },
+  {
+   "id": "round.ghRead.37d605cee3",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "37d605cee3",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "fuse-issue-comments",
+     "argv": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(last:100){nodes{databaseId author{login} body createdAt isMinimized}}}}}",
+      "-f",
+      "owner=xindong",
+      "-f",
+      "name=mivo-canvas-plugin",
+      "-F",
+      "number=1900"
+     ],
+     "expected": "app"
+    }
+   ]
+  },
+  {
+   "id": "round.run_gh.78ae021d53",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "78ae021d53",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "fuse-issue-create",
+     "argv": [
+      "issue",
+      "create",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--title",
+      "审查熔断 · PR #1704：审到第 10 版还没放行",
+      "--body-file",
+      "/tmp/fuse-issue-pr-1704.md"
+     ],
+     "expected": "app-write"
+    }
+   ]
+  },
+  {
+   "id": "round.run_gh.b9d5899445",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "b9d5899445",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "fuse-issue-close",
+     "argv": [
+      "issue",
+      "close",
+      "1900",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--comment",
+      "收到 @aj0928 的「继续审」，恢复自动送审，版本数从 0 重新算。"
+     ],
+     "expected": "app-write"
+    }
+   ]
   }
  ]
 }

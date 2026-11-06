@@ -43,6 +43,9 @@ const tupleLib = await load('mivo/deploy/tuple-lib.mjs');
 // [MIVO-PATCH gate-bases] round.mjs 的检查名取自 gate-bases.mjs;沙箱里没有 import,显式注入真实 checkNameFor 与固定的 fixture 门禁配置(不读线上配置)。
 const gateBaseModule = await load('review-pr/scripts/gate-bases.mjs');
 const gateBaseInjection = { checkNameFor: gateBaseModule.checkNameFor, loadGateBases: () => ['integration/*'] };
+// 审查熔断(#209):沙箱里没有 import,注入真实的熔断纯函数;世界里不读线上规则文件,熔断按「没配」关闭(判门与派发行为不变)。
+const fuseModule = await load('mivo/lib/fuse.mjs');
+const fuseInjection = { ...fuseModule, loadFuseConfig: () => fuseModule.toFuseConfig({}) };
 const source = process.env.ROUND_FIXTURE_SOURCE_REV
   ? execFileSync('git', ['show', `${process.env.ROUND_FIXTURE_SOURCE_REV}:mivo/prereview/round.mjs`], { cwd: REPO_ROOT, encoding: 'utf8' })
   : readFileSync(join(REPO_ROOT, 'mivo/prereview/round.mjs'), 'utf8');
@@ -184,7 +187,7 @@ function makeFixture(scenario) {
     constructor(...args) { super(...(args.length ? args : [clockMs])); }
     static now() { return clockMs; }
   }
-  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, previousFromResult: scope.previousFromResult,
+  const sandbox = { ...common, ...admission, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, ...fuseInjection, previousFromResult: scope.previousFromResult,
     dirname, join, resolve, randomUUID, Date: FixtureDate,
     inBusinessWindow: () => health.inBusinessWindow(new Date(clockMs)),
     nowIso: () => new Date(clockMs).toISOString(), readJson, writeJson,
@@ -647,7 +650,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       static now() { return w.now; }
     }
     // 孤儿停点(Review-PR#205):撤销动作在 deploy/orphan-hold.test.mjs 里测;这里只验证 round.mjs 怎么接结果,reconcileOrphanHold 由世界注入。
-    const sandbox = { ...common, ...admission, ...keyStatus, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, previousFromResult: scope.previousFromResult, dirname, join, resolve, randomUUID, Date: FixtureDate,
+    const sandbox = { ...common, ...admission, ...keyStatus, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, ...fuseInjection, previousFromResult: scope.previousFromResult, dirname, join, resolve, randomUUID, Date: FixtureDate,
       toHoldAlert: tupleLib.toHoldAlert, reconcileOrphanHold: (options) => w.reconcileOrphanHold(options),
       inBusinessWindow: () => health.inBusinessWindow(new Date(w.now)), nowIso: () => iso(w.now),
       readJson: (file, fallback) => {
