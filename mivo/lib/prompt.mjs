@@ -10,6 +10,7 @@ import { ANSWER_SCHEMA } from './report.mjs';
 import { rulingSection, rebuttalSection } from './rulings.mjs';
 import { toHandoffPromptLines } from './handoff.mjs';
 import { toFocusLines } from './focus.mjs';
+import { toProductRulesPromptLines, toProductRulesFocusLine } from './product-rules.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -96,8 +97,9 @@ const TIER_HINT = {
  * @param {object} p.inputs 材料文件的绝对路径 {contextFile, diffFile, scopeFile, securityScanFile?}
  * @param {object[]} [p.deferrals] 服务器核验通过的转 issue 条目 {issue, title, text}
  * @param {{ciCovered?: string[]}|null} [p.focus] 审查重点配置(lib/focus.mjs loadFocusConfig 读出的 CI 已覆盖命令)
+ * @param {object|null} [p.productRules] 产品规则(lib/product-rules.mjs toProductRulesState 的结果);off 或 null 时任务书不变
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null }) {
+export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null, productRules = null }) {
   const rulesBaseDir = inputs.rulesBaseDir ?? null;
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
@@ -165,7 +167,9 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     scopeText,
     ...(previous ? ['', previous] : []),
     '',
-    ...toFocusLines({ ciStatus: ctx.gate?.ci?.status ?? null, ciCovered: focus?.ciCovered ?? [] }),
+    ...toFocusLines({ ciStatus: ctx.gate?.ci?.status ?? null, ciCovered: focus?.ciCovered ?? [], goalLine: toProductRulesFocusLine(productRules) }),
+    // 产品规则一节:开关 off 时为空,任务书与改动前逐字一致(specDigest 不变)。
+    ...((lines) => (lines.length ? ['', ...lines] : []))(toProductRulesPromptLines({ productRules, workdir })),
     '',
     '## 审查规范(原文,来自 review-pr skill)',
     '',
@@ -277,6 +281,12 @@ const TEMPLATE_PLAN_RECHECK = TEMPLATE_REVIEW.risks.map((r) => ({ id: r.id, cont
 const TEMPLATE_PLAN_MIXED = [TEMPLATE_PLAN_RECHECK[0],
   { ...TEMPLATE_PLAN_RECHECK[1], action: 'reuse', reason: '<reason>', previousCoverage: { id: 'R2', verdict: '成立', evidence: [{ path: '<file-2>', line: 1 }], note: '<note>' }, previousCoverageMeta: { sourceHead: '<head>' } }];
 const TEMPLATE_REBUTTAL = { path: '<path>', line: 1, severity: 'P1', finding: '<finding>', reply: '<reply>' };
+// 产品规则的固定合成材料:命中的生效 / 已定未生效 / 待复核三种状态、未命中专题、本 PR 改了规则文件,都进任务书;不含任何真实规则内容。
+const TEMPLATE_RULE = (id, state, file = '<topic-1>') => ({ id, title: `<rule-${id}>`, file, text: '<rule>', sources: '<source>', landing: '<landing>', acceptance: '<acceptance>', files: ['<file>'], retiredBy: null, state });
+const TEMPLATE_PRODUCT_RULES = (mode, status = 'parsed') => ({ featureMode: mode, status,
+  topics: [{ file: '<topic-1>', title: '<topic-title-1>', applies: '<applies-1>' }, { file: '<topic-2>', title: '<topic-title-2>', applies: '<applies-2>' }],
+  rules: [TEMPLATE_RULE('A-1', 'effective'), TEMPLATE_RULE('A-2', 'pending'), TEMPLATE_RULE('A-3', 'review'), TEMPLATE_RULE('B-1', 'effective', '<topic-2>')],
+  hits: ['A-1', 'A-2', 'A-3'], changedFiles: ['<rule-file>'], warnings: [] });
 
 /** 本 PR 要读的规则文件:rule-map 要求所有 PR 必读的,加上按改动路径命中的;去重排序。 */
 export function ruleFilesFor({ spec, files = [] }) {
@@ -320,7 +330,7 @@ export function readRuleSources({ paths = [], base, head, git }) {
  * @param {(path:string)=>string|null} p.readFile 按审查实际读的版本取文件内容,取不到返回 null
  * @param {string} p.config 生效的 pr-rules 配置原文
  */
-export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [] }) {
+export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [], productRulesMode = 'off' }) {
   const plan = toRuleMapPlan(spec.ruleMap);
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
@@ -329,8 +339,10 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
   const handoff = handoffMode === 'off' ? null : { featureMode: handoffMode, facts: null, review: TEMPLATE_REVIEW };
   const withPlan = (scope, plan) => (handoffMode === 'off' ? scope : { ...scope, handoffFiles: TEMPLATE_REVIEW.files, handoffPlan: plan });
   // 模板 ctx 带 CI 全绿:「CI 已覆盖」清单随 focus.ciCovered 进 digest;CI 非全绿时这一段整段不出,不另做模板。
-  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
-    focus: { ciCovered },
+  // 产品规则:off 时不进模板(manifest 与改动前一致);开着时四个模板都带合成规则,另加一份「head 无可用规则」的全量模板。
+  const productRules = productRulesMode === 'off' ? null : TEMPLATE_PRODUCT_RULES(productRulesMode);
+  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null, rules = productRules) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
+    focus: { ciCovered }, productRules: rules,
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir } });
   return {
     version: 1,
@@ -341,6 +353,7 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
       // 放行前收口全量:说法与普通全量不同,模板变化要进 digest。
       finalFullWithPrevious: toTemplate(withPlan({ mode: 'full', purpose: 'final-full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_RECHECK), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
       incremental: toTemplate(withPlan({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_MIXED), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
+      ...(productRules ? { productRulesAbsent: toTemplate(withPlan({ mode: 'full', reason: '<reason>' }, TEMPLATE_PLAN_RECHECK), [], [], [], '<rules-base>', TEMPLATE_PRODUCT_RULES(productRulesMode, 'absent')) } : {}),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),

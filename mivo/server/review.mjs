@@ -16,6 +16,7 @@ import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicate
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
 import { loadFocusConfig } from '../lib/focus.mjs';
+import { loadProductRulesMode, readProductRules, resolveLanding, toProductRulesState } from '../lib/product-rules.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary, keyedDeferrals } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudications } from '../lib/rulings.mjs';
@@ -168,6 +169,9 @@ async function prepare() {
     const focus = loadFocusConfig(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     if (focus.warning) state.warnings.push(focus.warning);
     state.focus = { ciCovered: focus.ciCovered };
+    // 产品规则开关(lib/product-rules.mjs):读不到或不合法按 off 处理并告警;规则本身在下面拿到 diff 文件后再读。
+    const productRulesMode = loadProductRulesMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+    if (productRulesMode.warning) state.warnings.push(productRulesMode.warning);
     const gate = decideGate(ctx);
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
@@ -197,6 +201,14 @@ async function prepare() {
     const diffText = readFileSync(diffFile, 'utf8');
     const diffFiles = splitDiffByFile(diffText);
     const previous = input.prevRunId ? downloadPrevious(input, state) : null;
+    // 4a. 产品规则:从 PR head 的 git 对象读 docs/product-rules/,落地 issue 的状态只在这里(有令牌)查;codex 阶段只用 state.productRules。
+    if (productRulesMode.mode !== 'off') {
+      const read = readProductRules({ head: input.head, gitFn: (args) => git(args, { allowFail: true, timeoutMs: 120_000 }) });
+      const landing = read.status === 'parsed' ? resolveLanding({ rules: read.rules, ghFn: (args) => gh(args, { allowFail: true, timeoutMs: 60_000 }) }) : null;
+      state.productRules = toProductRulesState({ mode: productRulesMode.mode, read, landing, files: Object.keys(diffFiles) });
+      for (const w of state.productRules.warnings.slice(0, 20)) state.warnings.push(`产品规则:${w.message}`);
+      writeJson(join(INPUT_DIR, 'product-rules.json'), state.productRules);
+    }
     // 任务书版本:规则文件按 base 读(PR 改规则文件本身是被审对象,不能用它放宽审查),base 取不到回退 head 并告警(lib/prompt.mjs)。
     const spec = loadReviewSpec(SKILL_ROOT);
     const rules = readRuleSources({ paths: ruleFilesFor({ spec, files: Object.keys(diffFiles) }), base: input.base, head: input.head,
@@ -210,7 +222,7 @@ async function prepare() {
       state.rulesBaseDir = dir;
     }
     const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
-      ciCovered: state.focus?.ciCovered ?? [],
+      ciCovered: state.focus?.ciCovered ?? [], productRulesMode: state.productRules?.featureMode ?? 'off',
       readFile: (path) => rules.files[path] ?? null,
       config: readFileSync(RULES_FILE, 'utf8') }));
     const current = {
@@ -507,6 +519,7 @@ async function codex() {
     rebuttals: state.rebuttals ?? [],
     handoff: state.handoff ?? null,
     focus: state.focus ?? null,
+    productRules: state.productRules ?? null,
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   const prompt = promptFor(state.scope, join(INPUT_DIR, 'scope.json'));
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
