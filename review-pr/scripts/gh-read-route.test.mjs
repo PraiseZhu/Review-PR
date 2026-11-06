@@ -52,9 +52,9 @@ function setup(extra = {}) {
 const ENABLED = { REVIEW_PR_READ_TOKEN: 'app-token', REVIEW_PR_READ_REPOS: 'o/r', REVIEW_PR_GH_ROUTE_LOG: ROUTE_LOG };
 const READ_QUERY = 'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){number}}}';
 
-// 搬运基准:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ 6a533e3d9(#1752 合入提交,PR #1860)。
-const VENDOR_COMMIT = '6a533e3d9120991ec66b6af35a068a058891fe99';
-const VENDOR_SHA256 = '1bd43941c4d4e9ceecdd1bc9231b61b0871f3d634528186ad16c09e9d999846e';
+// 搬运基准:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ e1b1f040f(#1867 合入提交,PR #1868)。
+const VENDOR_COMMIT = 'e1b1f040fabf90ac6c8d134b133904463a4a6214';
+const VENDOR_SHA256 = 'e2b7ab94747656fd96c0745ab3f08b3196f86efba1ba1f52e99842685ee3a114';
 test('搬运的分类器与插件仓原文一致(去掉 4 行来源说明后的 sha256),来源说明写的提交和 sha256 同步', () => {
   const file = fileURLToPath(new URL('./vendor/gh-app-classify.mjs', import.meta.url));
   const lines = readFileSync(file, 'utf8').split('\n');

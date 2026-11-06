@@ -1,5 +1,5 @@
 // [MIVO-PATCH app-read-route] 原样搬运,不要在这里改逻辑。
-// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ 6a533e3d9120991ec66b6af35a068a058891fe99(#1752 合入提交;原文件 sha256 1bd43941c4d4e9ceecdd1bc9231b61b0871f3d634528186ad16c09e9d999846e)。
+// 来源:xindong/mivo-canvas-plugin scripts/ops/gh-app-router/classify.mjs @ e1b1f040fabf90ac6c8d134b133904463a4a6214(#1867 合入提交,PR #1868;原文件 sha256 e2b7ab94747656fd96c0745ab3f08b3196f86efba1ba1f52e99842685ee3a114)。
 // Mini 上的 gh 分流器用同一份规则;服务器发布步骤用它判断「这条 gh 请求能不能改用 App 只读令牌」。
 // 规则要改,先改插件仓那份,再整份重新搬运,并更新 gh-read-route.test.mjs 里的 sha256。
 // gh 命令分类器（纯函数，不碰文件系统；readFile 由调用方注入）。
@@ -612,10 +612,12 @@ export function needsStdin(argv, { writes = false } = {}) {
 }
 
 // REST 路径切段：每段解码并转小写；`%2F` 解出来的 `/` 记在 slashAt（原文已按 `/` 切开，只能来自 %2F）。
+// rawSegs 是同一批段解码后、没转小写的版本：仓库名与端点大小写不敏感，标签名区分大小写，只有标签校验用它。
 // 空段、`.` / `..`、反斜杠、片段、占位符一律看不清，返回 {reason}。读（GET）和写（app 写白名单）共用这一份。
 function parseRestSegments(path) {
   if (path.includes('{')) return { reason: 'placeholder' }
   const segs = []
+  const rawSegs = []
   const slashAt = []
   for (const seg of path.split('/')) {
     if (seg === '' || seg === '.' || seg === '..') return { reason: 'unsafe_path' }
@@ -624,8 +626,9 @@ function parseRestSegments(path) {
     if (decoded === '.' || decoded === '..' || decoded.includes('\\') || decoded.includes('#')) return { reason: 'unsafe_path' }
     if (decoded.includes('/')) slashAt.push(segs.length)
     segs.push(decoded.toLowerCase())
+    rawSegs.push(decoded)
   }
-  return { segs, slashAt }
+  return { segs, rawSegs, slashAt }
 }
 
 // 分支名带 `/` 时 gh 会把它编成 %2F。只有 commits/<ref>、rules/branches/<ref>、branches/<ref> 的最后一段认这种写法：
@@ -725,7 +728,22 @@ function classifyApi(argv, ctx) {
 // App 写失败不回落 PraiseZhu（路由层保证），所以这里宁严勿松：任何一处看不清都返回 null。
 const APP_WRITE_WORKFLOW = 'review-pr.yml'
 const APP_WRITE_VARIABLES = new Set(['MIVO_PREREVIEW_HEARTBEAT', 'MIVO_REVIEW_KEY_PREFER_BACKUP_UNTIL', 'MIVO_REVIEW_KEY_STATUS'])
-const MANAGED_LABELS = new Set(['review-pr', 'review-pr-signoff'])
+// 标签名（精确、区分大小写，不 trim、不转小写）。受管标签是前置审查真实在读写的那批（来源见 classify.test.mjs 的 PRE_REVIEW_MANAGED_LABELS）：
+// 精确名 + `status:<x>` / `touches:<x>`，<x> 非空且只含小写字母、数字、连字符。可建改（label create|edit）也可删（DELETE issues/<N>/labels/<名>）。
+// 旧门禁标签是 Review-PR 迁移时还在清理的历史标签，只放行删除；建、改、加都判 user。
+const MANAGED_LABEL_NAMES = new Set(['review:merge-ready', 'awaiting-discussion'])
+const MANAGED_LABEL_PATTERN = /^(?:status|touches):[a-z0-9-]+$/
+const LEGACY_GATE_NAMES = new Set(['awaiting-maintainer-discussion', 'needs-maintainer-approval', 'need-whitelist'])
+const LEGACY_GATE_PATTERN = /^need-whitelist:[a-z0-9-]+$/
+const isManagedLabel = (name) => MANAGED_LABEL_NAMES.has(name) || MANAGED_LABEL_PATTERN.test(name)
+const isLegacyGateLabel = (name) => LEGACY_GATE_NAMES.has(name) || LEGACY_GATE_PATTERN.test(name)
+const isDeletableLabel = (name) => isManagedLabel(name) || isLegacyGateLabel(name)
+// 加标签（POST issues/<N>/labels）的黑名单比删除的白名单宽：GitHub 按不区分大小写的名字找标签，`Need-Whitelist` 一样会加上旧门禁标签，
+// 所以这里 trim + 转小写，且 `need-whitelist:` 开头的任何后缀都算，不要求后缀合法。
+const isLegacyGateLabelForAdd = (name) => {
+  const folded = name.trim().toLowerCase()
+  return LEGACY_GATE_NAMES.has(folded) || folded.startsWith('need-whitelist:')
+}
 const REVIEW_EVENTS = new Set(['REQUEST_CHANGES', 'COMMENT'])
 const NUMBER_ARG = /^[1-9]\d{0,18}$/
 
@@ -736,6 +754,8 @@ const hasOnlyKeys = (keys, allowed) => [...keys].every((key) => allowed.includes
 const FIELD_OPTIONS = ['raw-field:f', 'field:F']
 const hasNumberArg = (parsed) => parsed.positionals.length === 1 && NUMBER_ARG.test(parsed.positionals[0])
 const hasNamedArg = (allowed) => (parsed) => parsed.positionals.length === 1 && allowed.has(parsed.positionals[0])
+// label create|edit 只认受管标签（旧门禁标签不在内：它们只许删）。
+const hasManagedLabelArg = (parsed) => parsed.positionals.length === 1 && isManagedLabel(parsed.positionals[0])
 // -f/-F 的 key=value 里值以 @ 开头会读文件 / stdin，内容看不见，一律不放。
 const workflowFieldsAreLiteral = (parsed) => [...(parsed.values.get('raw-field') ?? []), ...(parsed.values.get('field') ?? [])]
   .every((value) => value.includes('=') && !value.slice(value.indexOf('=') + 1).startsWith('@'))
@@ -762,8 +782,8 @@ const WRITE_COMMAND_DEFS = {
   },
   'issue comment': { reason: 'issue_comment', category: 'issues', spec: COMMENT_SPEC, check: hasNumberArg },
   'issue close': { reason: 'issue_close', category: 'issues', spec: makeSpec({ value: [...REPO_FLAG, 'comment:c', 'reason:r'] }), check: hasNumberArg },
-  'label create': { reason: 'label_create', category: 'issues', spec: LABEL_SPEC, check: hasNamedArg(MANAGED_LABELS) },
-  'label edit': { reason: 'label_edit', category: 'issues', spec: LABEL_SPEC, check: hasNamedArg(MANAGED_LABELS) },
+  'label create': { reason: 'label_create', category: 'issues', spec: LABEL_SPEC, check: hasManagedLabelArg },
+  'label edit': { reason: 'label_edit', category: 'issues', spec: LABEL_SPEC, check: hasManagedLabelArg },
   'pr comment': { reason: 'pr_comment', category: 'pull_requests', spec: COMMENT_SPEC, check: hasNumberArg },
 }
 
@@ -786,8 +806,9 @@ function classifyWriteCommand(key, argv, ctx) {
 }
 
 // gh api 写白名单：tail 是 repos/<o>/<r>/ 之后的段（已解码、转小写），号码只认纯数字（写不接受 GitHub 对 `1.5` 取前导整数那种写法）。
+// rawTail 是同样的段、解码后没转小写，只给标签名校验用（标签名区分大小写）。
 // body 指 body 的校验类型：none = 不许带任何 body；其余见 API_WRITE_JSON_SHAPES / API_WRITE_FIELD_SHAPES。
-function matchApiWriteEndpoint(method, tail) {
+function matchApiWriteEndpoint(method, tail, rawTail = tail) {
   const [a, b, c, d, e] = tail
   if (a === 'actions' && b === 'runs' && tail.length === 4 && NUMBER_ARG.test(c) && method === 'POST') {
     if (d === 'approve') return { reason: 'run_approve', category: 'actions', body: 'none' }
@@ -797,8 +818,8 @@ function matchApiWriteEndpoint(method, tail) {
     if (c === 'labels' && method === 'POST') return { reason: 'issue_labels_add', category: 'issues', body: 'labels' }
     if (c === 'comments' && method === 'POST') return { reason: 'issue_comment_api', category: 'issues', body: 'comment' }
   }
-  // 只放「去掉一个受管标签」：`DELETE issues/<N>/labels`（不带名字）会清空该 issue 的全部标签，前置审查不用，判给 PraiseZhu。
-  if (a === 'issues' && tail.length === 4 && NUMBER_ARG.test(b) && c === 'labels' && method === 'DELETE' && MANAGED_LABELS.has(d)) {
+  // 只放「去掉一个受管标签（或旧门禁标签）」：`DELETE issues/<N>/labels`（不带名字）会清空该 issue 的全部标签，前置审查不用，判给 PraiseZhu。
+  if (a === 'issues' && tail.length === 4 && NUMBER_ARG.test(b) && c === 'labels' && method === 'DELETE' && isDeletableLabel(rawTail[3])) {
     return { reason: 'issue_label_remove', category: 'issues', body: 'none' }
   }
   if (a === 'pulls' && NUMBER_ARG.test(b)) {
@@ -854,7 +875,8 @@ function readJsonInput(parsed, ctx) {
 const API_WRITE_JSON_SHAPES = {
   labels: (body) => {
     const list = Array.isArray(body) ? body : (isPlainObject(body) && hasOnlyKeys(Object.keys(body), ['labels']) ? body.labels : null)
-    return Array.isArray(list) && list.length > 0 && list.every((label) => typeof label === 'string' && label !== '')
+    return Array.isArray(list) && list.length > 0
+      && list.every((label) => typeof label === 'string' && label !== '' && !isLegacyGateLabelForAdd(label))
   },
   dismissal: (body) => isPlainObject(body) && hasOnlyKeys(Object.keys(body), ['message', 'event'])
     && typeof body.message === 'string' && (body.event === undefined || body.event === 'DISMISS'),
@@ -888,7 +910,8 @@ function toUniqueFields(entries) {
 }
 
 const API_WRITE_FIELD_SHAPES = {
-  labels: (entries) => entries.length > 0 && entries.every(([key, value]) => key === 'labels[]' && value !== ''),
+  labels: (entries) => entries.length > 0
+    && entries.every(([key, value]) => key === 'labels[]' && value !== '' && !isLegacyGateLabelForAdd(value)),
   comment: (entries) => entries.length === 1 && entries[0][0] === 'body',
   dismissal: (entries) => {
     const fields = toUniqueFields(entries)
@@ -918,9 +941,9 @@ function classifyApiWrite(method, parsed, endpoint, ctx) {
   if (endpoint.includes('?')) return null
   const split = parseRestSegments(endpoint)
   if (split.reason || split.slashAt.length > 0) return null
-  const { segs } = split
+  const { segs, rawSegs } = split
   if (segs[0] !== 'repos' || segs.length < 4 || !ctx.repoSet.has(`${segs[1]}/${segs[2]}`)) return null
-  const hit = matchApiWriteEndpoint(method, segs.slice(3))
+  const hit = matchApiWriteEndpoint(method, segs.slice(3), rawSegs.slice(3))
   if (!hit) return null
   // 分页 / 缓存 / 预览头对写没有意义，出现就是看不懂。
   if (parsed.bools.has('paginate') || parsed.bools.has('slurp') || parsed.values.has('cache') || parsed.values.has('preview')) return null
@@ -936,7 +959,7 @@ function isStdinWriteInput(parsed, endpoint) {
   if (path.includes('?')) return false
   const split = parseRestSegments(path)
   if (split.reason || split.slashAt.length > 0 || split.segs[0] !== 'repos' || split.segs.length < 4) return false
-  const hit = matchApiWriteEndpoint(method.toUpperCase(), split.segs.slice(3))
+  const hit = matchApiWriteEndpoint(method.toUpperCase(), split.segs.slice(3), split.rawSegs.slice(3))
   return hit !== null && Object.hasOwn(API_WRITE_JSON_SHAPES, hit.body)
 }
 
