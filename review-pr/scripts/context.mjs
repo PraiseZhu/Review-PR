@@ -34,7 +34,7 @@ import { atomicWriteJson, fetchStaleRebase, fetchAllReviewThreads, fetchGraphqlC
 // [MIVO-PATCH identity-env]
 import { viewerLoginOverride, readReviewIdentity, isReviewIdentity } from './lib.mjs';
 // [MIVO-PATCH exempt-authors / slack-release / issue-comment-release / issue-binding / protected-signoff / ci-ignore / ui-evidence / self-review]
-import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, toMaintainerAuthorBlock, CI_ROLLUP_UNREADABLE_BLOCKER, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead } from './lib.mjs';
+import { countDiffLines, isSignoffExemptAuthor, selectDiscussionIssueReleases, latestIssueRelease, evaluateProtectedPathRelease, filterIgnoredCiContexts, ciMergeStateIgnoring, onlyOwnRequiredChecksPending, toMaintainerAuthorBlock, CI_ROLLUP_UNREADABLE_BLOCKER, isProductSignoffEnabled, isUiEvidenceRequired, uiEvidenceNeedsAdminLookup, isAdminPermission, declaresNoUiChange, isAutomatedViewerReview, selectStandingViewerHumanChangesRequest, selectSelfFindingsAtHead, selectOverruledAtHead } from './lib.mjs';
 import { filePatchHashesFromDiff, saveBotSettleSnapshot, toPreviousSettleForHead } from './lib.mjs'; // [MIVO-PATCH bot-settle-base-only]
 import { loadReviewState, reviewSelection } from './review-state.mjs';
 import { classifyBasePrLookup, applyGateBase } from './review-dependencies.mjs';
@@ -1234,6 +1234,10 @@ try {
     unresolvedThreads.every(isMachineThread);
   // [MIVO-PATCH self-findings] 作者即审查账号时,审查机在当前 head 已发过的问题清单(代替发不了的 CR),见 lib.mjs。
   const selfFindingsAtHead = selectSelfFindingsAtHead(prReviews, { reviewerIdentity, authorLogin, headSha: meta.headRefOid });
+  // [MIVO-PATCH verdict-overruled-at-head] #217:当前 head 已发过「核对员推翻全部卡点,不 Approve」的结论、且它不早于审查身份仍有效的 CR 时,
+  // 自解死锁的重审不会放行(服务器不 Approve,旧 CR 还在),判门据此不再送审(mivo/lib/gates.mjs)。新 head 上没有这个结论,照常重审。
+  const newestChangesRequestAt = changesRequestedReviews.reduce((latest, r) => (String(r.submittedAt ?? '') > latest ? String(r.submittedAt ?? '') : latest), '');
+  const overruledAtHead = selectOverruledAtHead(prReviews, { reviewerIdentity, headSha: meta.headRefOid, notBefore: newestChangesRequestAt });
   const STANDING_HUMAN_CR_BLOCKER = '审查账号上有维护者本人的 Request Changes，需本人 Approve 或 dismiss 后再审';
 
   // ── 1.6.5.3 评论类:bot 总结评论 + reviewer 历史打回(issue comment 形式)──
@@ -1839,6 +1843,7 @@ try {
       ciFiles,
       selfBlockedResolvable,
       selfFindingsAtHead,
+      overruledAtHead,
       staleRebase,
       botSettle,
       gatePass,

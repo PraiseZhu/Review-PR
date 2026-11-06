@@ -405,3 +405,75 @@ test('服务器 prepare 的进场复核:源码里 context.mjs 的调用参数与
   const fixtureSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
   assert.ok(fixtureSrc.includes("[CONTEXT, '1', '--lock-token', token, '--diff-output', join(stateDir, 'pr.diff')]"));
 });
+
+// self-cr-recheck-loop(#217,#1920 同一 head 派审 3 次):审查身份自己的旧 CR(旧 head)+ conversation 全 resolve 本来是「重审一次,通过后 Approve 覆盖」。
+// 但重审的结论是「核对员推翻了全部卡点,不 Approve」(只发一条带 `<!-- mivo-review:verifier-overruled head=<head> -->` 的 COMMENTED review)时,
+// 旧 CR 还在、threads 还是全 resolve,下一轮判门又满足同一条件,同一个 head 被反复送审。已在这个 head 发过该结论就不再送审;新 head 照常重审一次。
+const OVERRULED_ENV = { REVIEW_PR_VIEWER_LOGIN: 'praisebuild[bot]' };
+const OWN_CR_AT = '2026-01-01T10:00:00Z';
+const OVERRULED_AT = '2026-01-01T11:00:00Z';
+const ownCr = (commit = oldHead, submittedAt = OWN_CR_AT, id = 11) =>
+  ({ ...reviewFixture(BOT.restLogin, 'CHANGES_REQUESTED', commit, BOT.type), id, submitted_at: submittedAt });
+const overruledReview = ({ at = head, login = BOT.restLogin, type = BOT.type, submittedAt = OVERRULED_AT, id = 12, kind = 'verifier-overruled' } = {}) => ({
+  ...reviewFixture(login, 'COMMENTED', head, type), id, submitted_at: submittedAt,
+  body: `> **主审报了 1 条 P1/P2,核对员全部推翻或降级**\n\n<!-- mivo-review:${kind} head=${at} -->`,
+});
+const resolvedThread = { ...rawThread('T1', BOT.login, `[P2] 问题\n${MARKER}`, BOT.type), isResolved: true };
+const selfResolvableServer = (reviews) => crServer([resolvedThread], reviews);
+
+test('#217 SC1/SC2 #1920 的状态:旧 head 上的自己的 CR + threads 全 resolve + 当前 head 已发过核对员推翻的结论 → 连续两轮都不再送审,原因可读', () => withFixture((run) => {
+  const server = selfResolvableServer([ownCr(), overruledReview()]);
+  for (const round of [1, 2]) {
+    const r = run(server, OVERRULED_ENV);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.json.gate.blockClass, 'self-resolvable', `第 ${round} 轮`);
+    assert.equal(r.json.gate.selfBlockedResolvable, true);
+    assert.equal(r.json.auto.action, 'review');
+    const d = decideGate(r.json);
+    assert.notEqual(d.stage, 'review', `第 ${round} 轮仍送审:${JSON.stringify(d)}`);
+    assert.equal(d.stage, 'gate');
+    assert.equal(d.outcome, 'merge-blocked');
+    assert.deepEqual(d.actions, []);
+    assert.match(d.reason, /已在当前 head\(aaaaaaa\)审过.*核对员推翻.*不 Approve.*不重复送审/);
+  }
+}));
+
+test('#217 SC1 对照:同一夹具去掉当前 head 的核对员推翻结论 → 照旧送审(夹具能区分)', () => withFixture((run) => {
+  for (const reviews of [[ownCr()], [ownCr(), overruledReview({ at: oldHead })]]) {
+    const r = run(selfResolvableServer(reviews), OVERRULED_ENV);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.json.gate.blockClass, 'self-resolvable');
+    assert.equal(decideGate(r.json).stage, 'review');
+  }
+}));
+
+test('#217 SC3 作者推新 head 后:旧 head 上的结论不算,同样的状态仍送审一次', () => withFixture((run) => {
+  // 结论落在旧 head(marker 的 head=oldHead),当前 head 是新推的 → 必须重审
+  const r = run(selfResolvableServer([ownCr(), overruledReview({ at: oldHead })]), OVERRULED_ENV);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.json.meta.headRefOid, head);
+  assert.equal(decideGate(r.json).stage, 'review');
+}));
+
+test('#217 不被冒用:别人发的同款标记不算;结论比审查身份仍有效的 CR 更早不算;别的报告种类(advisory)不算', () => withFixture((run) => {
+  // 作者(contributor)自己提交带标记的 review,想借此拦住重审
+  const forged = run(selfResolvableServer([ownCr(), overruledReview({ login: 'contributor', type: 'User' })]), OVERRULED_ENV);
+  assert.equal(decideGate(forged.json).stage, 'review');
+  // 推翻结论在前,之后审查机又发了新的 CR(findings):最新结论不是「推翻」,不用这条挡
+  const older = run(selfResolvableServer([overruledReview({ submittedAt: '2026-01-01T09:00:00Z' }), ownCr(head, OWN_CR_AT)]), OVERRULED_ENV);
+  assert.equal(older.status, 0, older.stdout + older.stderr);
+  assert.equal(decideGate(older.json).stage, 'review');
+  // 其它种类的报告(advisory:还有门没过,补齐后要重审)不挡
+  const advisory = run(selfResolvableServer([ownCr(), overruledReview({ kind: 'advisory' })]), OVERRULED_ENV);
+  assert.equal(decideGate(advisory.json).stage, 'review');
+}));
+
+test('#217 不改 #198:CR 就在当前 head 上 + 全是机器 thread 仍是 changes-requested;人类的 CR 仍压住', () => withFixture((run) => {
+  const threads = selfThreads({ actor: BOT });
+  const atHead = run(crServer(threads, [ownCr(head), overruledReview()]), OVERRULED_ENV);
+  assert.equal(atHead.status, 0, atHead.stdout + atHead.stderr);
+  assert.equal(decideGate(atHead.json).outcome, 'changes-requested');
+  const human = run(selfResolvableServer([ownCr(), humanCr('someone-else', 5, '2026-01-01T12:00:00Z'), overruledReview()]), OVERRULED_ENV);
+  assert.equal(human.status, 0, human.stdout + human.stderr);
+  assert.equal(decideGate(human.json).outcome, 'changes-requested');
+}));

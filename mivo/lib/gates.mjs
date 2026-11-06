@@ -305,6 +305,12 @@ function decideGatePrerequisites(ctx) {
     case 'bypass-structural-block':
       return withSignoff(classifyGateBlock(ctx, reason));
     case 'review':
+      // [verdict-overruled-at-head] 这次送审只是为了放行审查身份自己的旧 CR(自解死锁),而当前 head 已经审过、结论是「核对员推翻了全部卡点,不 Approve」:
+      // 服务器对同一份代码不会换结论,重审只会再发一条评论、旧 CR 还在,下一轮又送审(#1920 同一 head 3 次)。等作者推新提交,或维护者 Approve / dismiss 旧 CR。
+      if (gate.selfBlockedResolvable === true && gate.overruledAtHead) {
+        return withSignoff({ stage: 'gate', outcome: 'merge-blocked', actions: [],
+          reason: `审查机已在当前 head(${String(ctx.meta?.headRefOid ?? '').slice(0, 7)})审过:核对员推翻了全部卡点,按规则不 Approve,审查身份的旧 Request Changes 还在;等作者推新提交,或维护者 Approve / dismiss,不重复送审` });
+      }
       if (handoffReasons.length) {
         return withSignoff({ stage: 'review', outcome: null, tier: ctx.review?.tier ?? 'standard',
           reason: `交接文件不完整(${handoffReasons.length} 处);代码照审,补齐前不放行`,
