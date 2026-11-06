@@ -103,3 +103,31 @@ test('接线:admitRound 在 admit-candidates 返回后(含 admit-none 的退出�
   await sandbox.api.admitRound('token', 'd1', [], 5);
   assert.deepEqual(calls, [[[1927], [1927]], 'admit-none']);
 });
+
+test('空闲路径(Review-PR#215 审查 P2):pre-check 没有候选时也摘——main 在 no-candidates 返回前,用启动时读到的 issue 列表和候选名单里 outcome=draft 的编号调 dropDraftMergeReady', () => {
+  const body = extractFunction('main');
+  const at = (text) => { const i = body.indexOf(text); assert.ok(i >= 0, `main 里找不到 ${text}`); return i; };
+  assert.ok(at("const openIssues = busyAtStart ? wakeHeldPrs(busyAtStart) : undefined;") < at("runScript('pre-check.mjs'"));
+  assert.ok(at("runScript('pre-check.mjs'") < at('dropDraftMergeReady(openIssues, readDraftPrs(pre.candidateList))'));
+  assert.ok(at('dropDraftMergeReady(openIssues, readDraftPrs(pre.candidateList))') < at("log('no-candidates'"), '必须在 no-candidates 早退之前');
+});
+
+test('readDraftPrs:只取候选名单 skipped 里 outcome=draft 的编号;名单缺失 / 形状不对返回 undefined(不摘)', () => {
+  const files = new Map([['/s/list.json', { candidates: [], skipped: [{ number: 1927, outcome: 'draft' }, { number: 7, outcome: 'base-not-gated' }, { number: 1858, outcome: 'draft' }] }], ['/s/bad.json', { skipped: 'x' }]]);
+  const sandbox = { readJson: (file, fallback) => (files.has(file) ? structuredClone(files.get(file)) : fallback) };
+  vm.runInNewContext(`${extractFunction('readDraftPrs')}\nglobalThis.api = { readDraftPrs };`, sandbox);
+  assert.deepEqual(sandbox.api.readDraftPrs('/s/list.json'), [1927, 1858]);
+  for (const input of [undefined, '/s/missing.json', '/s/bad.json']) assert.equal(sandbox.api.readDraftPrs(input), undefined, String(input));
+});
+
+test('端到端形状:pre-check 候选名单(createCandidateList 真实产物)里的草稿 → readDraftPrs → toDraftMergeReadyPrs 只挑出带标签的草稿', async () => {
+  const { createCandidateList } = await import('../../review-pr/scripts/review-round.mjs');
+  const row = (number, isDraft) => ({ number, title: `t${number}`, url: '', createdAt: '2026-11-06T00:00:00Z', author: 'a', baseRefName: 'main', headRefName: `b${number}`, headRepository: 'o/r',
+    base: 'a'.repeat(40), head: number.toString(16).padStart(40, '0'), updatedAt: '2026-11-06T00:00:00Z', isDraft, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: null, unresolved: 0, ci: 'SUCCESS' });
+  const manifest = createCandidateList({ repo: 'o/r', snapshot: [row(1927, true), row(1920, false), row(1858, true)], mode: 'review-only', now: Date.parse('2026-11-06T18:00:00Z') });
+  const sandbox = { readJson: () => structuredClone(manifest) };
+  vm.runInNewContext(`${extractFunction('readDraftPrs')}\nglobalThis.api = { readDraftPrs };`, sandbox);
+  const drafts = sandbox.api.readDraftPrs('/s/list.json');
+  assert.deepEqual(drafts.sort(), [1858, 1927]);
+  assert.deepEqual(toDraftMergeReadyPrs({ issues: [issue(1927), issue(1920), issue(1858, [])], draftPrs: drafts, label: LABEL }), [1927]);
+});
