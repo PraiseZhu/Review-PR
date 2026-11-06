@@ -5090,6 +5090,33 @@
      "expected": "app"
     }
    ]
+  },
+  {
+   "id": "round.run_gh.0736760a33",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "0736760a33",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "fuse-notify-failed-comment",
+     "argv": [
+      "issue",
+      "comment",
+      "1900",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--body",
+      "飞书通知未送达：timeout"
+     ],
+     "expected": "app-write"
+    }
+   ]
   }
  ]
 }

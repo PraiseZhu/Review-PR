@@ -27,6 +27,8 @@ import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
+import { toFuseRecipients, toFuseNotifyText, sendFuseNotice } from '../lib/feishu-notify.mjs';
+import { loadOrgRosters } from '../../review-pr/scripts/lib.mjs';
 import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment, selectOpenFuseIssue } from '../lib/fuse.mjs';
 import { toHoldAlert } from '../deploy/tuple-lib.mjs';
 
@@ -1203,13 +1205,13 @@ async function handleTask(ctx, task) {
     if (next.closeIssue && !dry) {
       await executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
     }
-    if (next.dispatch) return holdForFuse(ctx, task, live, result) ?? dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result, toLiveBlockers(live));
+    if (next.dispatch) return (await holdForFuse(ctx, task, live, result)) ?? dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result, toLiveBlockers(live));
   }
   if (decision.stage !== 'review') {
     if (decision.retry) result.retry = true;
     return finishGate(ctx, task, result, toLiveBlockers(live));
   }
-  return holdForFuse(ctx, task, live, result) ?? dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result, toLiveBlockers(live));
+  return (await holdForFuse(ctx, task, live, result)) ?? dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result, toLiveBlockers(live));
 }
 
 // ── 审查熔断(#209)────────────────────────────────────────────────────────────
@@ -1220,7 +1222,7 @@ async function handleTask(ctx, task) {
 // 关失败或评论读不到都记 retry,下一轮再试(同一条评论只唤醒一次,不 retry 就会一直停着)。
 // 开 issue 前先查开着的 issue 里有没有这个 PR 的熔断 issue(上一轮开成功、本机记录没写上时沿用),查不到列表就不开、retry。
 // 开 issue 失败记 error 并 retry,下一轮再开;dry-run 只记 dryRunActions,不写 GitHub,也不写本机熔断记录。
-function holdForFuse(ctx, task, live, result) {
+async function holdForFuse(ctx, task, live, result) {
   const config = fuseConfig();
   if (!config.enabled) return null;
   const dry = CONFIG.mode === 'dry-run';
@@ -1244,6 +1246,13 @@ function holdForFuse(ctx, task, live, result) {
   result.gate = { ...(result.gate ?? {}), fuse: { count: decision.count, maxVersions: config.maxVersions, issue: decision.trip?.issue ?? null } };
   if (!decision.trip) openFuseIssue(ctx, task, live, record, decision.count, result, dry);
   const issue = result.gate.fuse.issue;
+  // 熔断 issue 有了就发一次飞书私聊(#210);发过(成功或失败)记在 fuse.trip.notify,不重发。
+  if (config.notify?.enabled && (issue || dry)) {
+    const trip = loadStore().prs[task.pr]?.fuse?.trip;
+    if (dry) {
+      if (!decision.trip?.notify) result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-notify:feishu:@${live.meta?.author ?? 'unknown'}`];
+    } else if (trip?.issue === issue && !trip.notify) await notifyFuse(ctx, task, live, trip, record, result);
+  }
   result.reason = `已审过 ${decision.count} 个代码版本仍未放行,审查熔断停审${issue ? `,等人在 #${issue} 回「${config.resumeLine}」` : ''}`;
   log('fuse-hold', { pr: task.pr, head: task.head, count: decision.count, issue });
   return finishGate(ctx, task, result, toLiveBlockers(live));
@@ -1318,6 +1327,38 @@ function readFuseResume(trip, live, config, result) {
     if (page === FUSE_COMMENT_PAGES - 1) result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 评论超过 ${FUSE_COMMENT_PAGES} 页,只看了前 ${comments.length} 条`];
   }
   return { state, resume: findResumeComment({ comments, maintainers: config.maintainers, author: live.meta?.author ?? '', resumeLine: config.resumeLine, since: trip.at }) };
+}
+
+// 熔断时用飞书 Mivo 机器人私聊 PR 作者(#210)。接收人按组织名册对到真人,对不上转给兜底人;应用密钥从 Mini 本机钥匙串读。
+// 结果(sent / failed + 原因码,不含邮箱和凭证)记进 fuse.trip.notify,一次熔断只发一次;失败在熔断 issue 下留一行说明,不循环重发。
+// 发送前先记 status=sending:发出后、记结果前进程崩溃时,下一轮看到 notify 已存在就不补发(宁可漏一次也不重复私聊,#214 单审)。
+async function notifyFuse(ctx, task, live, trip, record, result) {
+  const notify = fuseConfig().notify;
+  const rosters = loadOrgRosters(notify.rosterRepos);
+  const recipients = toFuseRecipients({ rosterTexts: rosters.rosters.map((r) => r.text), author: live.meta?.author ?? '', fallbackLogin: notify.fallbackLogin });
+  const secret = run('security', ['find-generic-password', '-a', notify.keychainAccount, '-s', notify.keychainService, '-w'], { allowFail: true, timeoutMs: 15_000 });
+  const pending = loadStore().prs[task.pr]?.fuse ?? record.fuse ?? {};
+  bumpOwned(ctx, task, { fuse: { ...pending, trip: { ...(pending.trip ?? trip), notify: { status: 'sending', at: nowIso() } } } });
+  const findings = record.fuse?.lastFindings;
+  const open = findings ? (findings.P0 ?? 0) + (findings.P1 ?? 0) + (findings.P2 ?? 0) : null;
+  const sent = rosters.rosters.length === 0 ? { status: 'failed', code: 'roster-unavailable' } : await sendFuseNotice({
+    appId: notify.appId, appSecret: secret.ok ? secret.stdout.trim() : '', recipients,
+    message: ({ forwardedFrom }) => toFuseNotifyText({ pr: task.pr, title: live.meta?.title ?? '', count: trip.count, open,
+      prUrl: live.meta?.url ?? `https://github.com/${CONFIG.targetRepo}/pull/${task.pr}`,
+      issueUrl: `https://github.com/${CONFIG.targetRepo}/issues/${trip.issue}`, forwardedFrom }),
+  });
+  const outcome = sent.status === 'sent'
+    ? { status: 'sent', at: nowIso(), to: sent.to, forwarded: sent.forwarded, reason: sent.reason ?? null }
+    : { status: 'failed', at: nowIso(), code: sent.code };
+  const latest = loadStore().prs[task.pr]?.fuse ?? record.fuse ?? {};
+  bumpOwned(ctx, task, { fuse: { ...latest, trip: { ...(latest.trip ?? trip), notify: outcome } } });
+  log('fuse-notify', { pr: task.pr, issue: trip.issue, ...outcome });
+  if (outcome.status === 'sent') return;
+  result.warnings = [...(result.warnings ?? []), `熔断飞书通知未送达:${outcome.code}`];
+  assertNotFenced();
+  const commented = run('gh', ['issue', 'comment', String(trip.issue), '-R', CONFIG.targetRepo, '--body', `飞书通知未送达：${outcome.code}`],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  if (!commented.ok) result.warnings.push(`熔断 issue #${trip.issue} 留「飞书通知未送达」说明失败:${String(commented.stderr ?? '').trim().slice(0, 120)}`);
 }
 
 // 关成功返回 true;关失败记 error 并 retry,熔断记录保留,下一轮读到同一条「继续审」再关。

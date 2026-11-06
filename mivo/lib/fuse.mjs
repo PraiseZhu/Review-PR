@@ -8,6 +8,7 @@
 // 纯函数,无 I/O;读写 GitHub 与 reviews.json 在 mivo/prereview/round.mjs。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { toFuseNotifyConfig } from './feishu-notify.mjs';
 
 export const FUSE_ISSUE_PREFIX = '审查熔断 · PR #';
 export const FUSE_MARKER_RE = /<!-- mivo-fuse pr=(\d+) -->/;
@@ -27,13 +28,14 @@ export function loadFuseConfig(rulesFile) {
 export function toFuseConfig(rules) {
   const fuse = rules?.convergeFuse;
   const maintainers = (Array.isArray(rules?.maintainerAllowlist) ? rules.maintainerAllowlist : []).map((login) => String(login).toLowerCase());
-  if (!fuse || fuse.enabled !== true) return { enabled: false, maxVersions: null, resumeLine: null, maintainers };
+  if (!fuse || fuse.enabled !== true) return { enabled: false, maxVersions: null, resumeLine: null, maintainers, notify: { enabled: false } };
   if (!Number.isInteger(fuse.maxVersions) || fuse.maxVersions < 2 || fuse.maxVersions > 100) {
     throw new Error(`convergeFuse.maxVersions 须是 2–100 的整数:${JSON.stringify(fuse.maxVersions)}`);
   }
   const resumeLine = String(fuse.resumeLine ?? '').trim();
   if (!resumeLine) throw new Error('convergeFuse.resumeLine 不能为空');
-  return { enabled: true, maxVersions: fuse.maxVersions, resumeLine, maintainers };
+  // 熔断时的飞书私聊(#210):convergeFuse.notify,没配就不发。
+  return { enabled: true, maxVersions: fuse.maxVersions, resumeLine, maintainers, notify: toFuseNotifyConfig(rules) };
 }
 
 const isFilled = (value) => value && typeof value === 'object' && Object.keys(value).length > 0;

@@ -1040,8 +1040,8 @@ const MANAGED_LABEL_WRITES = [
 
 test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限都有),白名单外的 5 个写标 write-not-allowlisted,服务器读 wrapper 里仍是 user', () => {
   const appWrites = allCases.filter(([, c]) => c.expected === APP_WRITE);
-  // 34 + 审查熔断(PraiseZhu/Review-PR#209)开 / 关「审查熔断」issue 的 2 个 issues 类写
-  assert.equal(appWrites.length, 36);
+  // 34 + 审查熔断(PraiseZhu/Review-PR#209)开 / 关「审查熔断」issue 的 2 个 issues 类写 + 飞书通知未送达时在熔断 issue 留言(#210)1 个
+  assert.equal(appWrites.length, 37);
   // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
   const categories = new Set();
   for (const [e, c] of appWrites) {

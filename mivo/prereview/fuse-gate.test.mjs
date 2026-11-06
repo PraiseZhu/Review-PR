@@ -7,18 +7,23 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import * as fuse from '../lib/fuse.mjs';
+import { toFuseRecipients, toFuseNotifyText } from '../lib/feishu-notify.mjs';
 
 const source = readFileSync(new URL('./round.mjs', import.meta.url), 'utf8');
 const section = /^\/\/ ── 审查熔断\(#209\)[\s\S]*?(?=^async function executeGateAction)/m.exec(source)?.[0];
 assert.ok(section, '找不到 round.mjs 的审查熔断段');
-assert.match(source, /return holdForFuse\(ctx, task, live, result\) \?\? dispatchReview\(ctx, task, \{ tier: decision\.tier, action: 'review' \}/,
+assert.match(source, /return \(await holdForFuse\(ctx, task, live, result\)\) \?\? dispatchReview\(ctx, task, \{ tier: decision\.tier, action: 'review' \}/,
   '判门送审前必须先过 holdForFuse');
-assert.match(source, /if \(next\.dispatch\) return holdForFuse\(ctx, task, live, result\) \?\? dispatchReview\(/, '受保护路径复核派审前也要过 holdForFuse');
+assert.match(source, /if \(next\.dispatch\) return \(await holdForFuse\(ctx, task, live, result\)\) \?\? dispatchReview\(/, '受保护路径复核派审前也要过 holdForFuse');
 
-const CONFIG_FUSE = { enabled: true, maxVersions: 10, resumeLine: '继续审', maintainers: ['praisezhu', 'aj0928'] };
+const CONFIG_FUSE = { enabled: true, maxVersions: 10, resumeLine: '继续审', maintainers: ['praisezhu', 'aj0928'], notify: { enabled: false } };
+const NOTIFY = { enabled: true, appId: 'cli_x', keychainService: 'svc', keychainAccount: 'acct', rosterRepos: ['xindong/org'], fallbackLogin: 'PraiseZhu' };
+const ROSTER = '| GitHub | Name | Email | Role |\n|---|---|---|---|\n| [@aj0928](https://github.com/aj0928) | 甲 | aj@example.com | dev |\n| [@PraiseZhu](https://github.com/PraiseZhu) | 乙 | praise@example.com | lead |';
 const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${prefix}${i}`, head: `${prefix}${i}`, at: `2026-11-07T0${i}:00:00.000Z` }));
 
-function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100 } = {}) {
+function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100,
+  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false } = {}) {
+  const sends = [];
   const store = { prs: { 1704: structuredClone(record) } };
   const calls = [];
   const finished = [];
@@ -28,12 +33,17 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
     calls.push(args);
     if (args[0] === 'issue' && args[1] === 'create') return createOk ? { ok: true, stdout: `https://github.com/o/r/issues/${++issueNo}\n` } : { ok: false, stderr: 'HTTP 403' };
     if (args[0] === 'issue' && args[1] === 'close') return closeOk ? { ok: true, stdout: '' } : { ok: false, stderr: 'HTTP 502' };
+    if (args[0] === 'issue' && args[1] === 'comment') return { ok: true, stdout: '' };
+    if (cmd === 'security') return secretOk ? { ok: true, stdout: 'app-secret\n' } : { ok: false, stderr: 'not found' };
     return { ok: false, stderr: `unexpected ${args.join(' ')}` };
   };
   const sandbox = {
     CONFIG: { mode, targetRepo: 'o/r', repoRoot: '/repo' }, ENV: {}, join,
     ...fuse,
-    fuseConfig: () => CONFIG_FUSE,
+    fuseConfig: () => (notify ? { ...CONFIG_FUSE, notify } : CONFIG_FUSE),
+    toFuseRecipients, toFuseNotifyText,
+    loadOrgRosters: () => (rosterOk ? { rosters: [{ repo: 'xindong/org', text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }),
+    sendFuseNotice: async (args) => { sends.push({ ...args, text: args.message({ forwardedFrom: args.recipients[0]?.forwardedFrom ?? null }) }); if (sendCrash) throw new Error('进程在记结果前退出'); return sendResult; },
     loadStore: () => structuredClone(store),
     bumpOwned: (ctx, task, patch) => { store.prs[task.pr] = { ...(store.prs[task.pr] ?? {}), ...structuredClone(patch) }; },
     finishGate: (ctx, task, result) => { finished.push(structuredClone(result)); return { dispatched: false }; },
@@ -61,35 +71,35 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
   };
   vm.runInNewContext(`${section}\nglobalThis.hold = holdForFuse;`, sandbox);
   const live = { meta: { title: '对话出图判定', url: 'https://github.com/o/r/pull/1704', author: 'aj0928' } };
-  const gate = (head) => {
+  const gate = async (head) => {
     const result = { outcome: 'review', reason: '', errors: [], warnings: [], gate: { stage: 'review', actions: [] } };
-    const out = sandbox.hold({ roundDir: '/round' }, { pr: 1704, head }, live, result);
+    const out = await sandbox.hold({ roundDir: '/round' }, { pr: 1704, head }, live, result);
     return { out, result };
   };
-  return { gate, store, calls, finished, logs, comments };
+  return { gate, store, calls, finished, logs, comments, sends };
 }
 
-test('SC3 满 10 版:判门不派审,记 maintainer-signoff + gate.fuse;作者再推 3 个提交仍不派审', () => {
+test('SC3 满 10 版:判门不派审,记 maintainer-signoff + gate.fuse;作者再推 3 个提交仍不派审', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions() } } });
-  const first = world.gate('h9');
+  const first = await world.gate('h9');
   assert.deepEqual(first.out, { dispatched: false }, '返回非 null 即不调 dispatchReview');
   assert.equal(first.result.outcome, 'maintainer-signoff');
   assert.equal(first.result.gate.fuse.count, 10);
-  for (const head of ['n1', 'n2', 'n3']) assert.deepEqual(world.gate(head).out, { dispatched: false }, head);
+  for (const head of ['n1', 'n2', 'n3']) assert.deepEqual((await world.gate(head)).out, { dispatched: false }, head);
   assert.equal(world.finished.length, 4);
   assert.ok(world.finished.every((r) => r.outcome === 'maintainer-signoff' && r.reviewClean !== true));
 });
 
-test('没满 10 版或当前 head 已审查通过:不拦,照常派审', () => {
-  assert.equal(makeWorld({ record: { fuse: { versions: tenVersions().slice(0, 9) } } }).gate('h9').out, null);
-  assert.equal(makeWorld({ record: { fuse: { versions: tenVersions() }, cleanHead: 'h9' } }).gate('h9').out, null);
+test('没满 10 版或当前 head 已审查通过:不拦,照常派审', async () => {
+  assert.equal((await makeWorld({ record: { fuse: { versions: tenVersions().slice(0, 9) } } }).gate('h9')).out, null);
+  assert.equal((await makeWorld({ record: { fuse: { versions: tenVersions() }, cleanHead: 'h9' } }).gate('h9')).out, null);
 });
 
-test('SC4 熔断 issue 只开一次:标题前缀与标记正确,issue 号记进本机记录;作者 aj0928 是维护者也照样熔断', () => {
+test('SC4 熔断 issue 只开一次:标题前缀与标记正确,issue 号记进本机记录;作者 aj0928 是维护者也照样熔断', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), lastFindings: { P0: 0, P1: 0, P2: 5 } } } });
-  world.gate('h9');
-  world.gate('h9');
-  world.gate('n1');
+  await world.gate('h9');
+  await world.gate('h9');
+  await world.gate('n1');
   const creates = world.calls.filter((args) => args[0] === 'issue' && args[1] === 'create');
   assert.equal(creates.length, 1);
   assert.ok(creates[0][creates[0].indexOf('--title') + 1].startsWith('审查熔断 · PR #1704'));
@@ -98,22 +108,22 @@ test('SC4 熔断 issue 只开一次:标题前缀与标记正确,issue 号记进�
   assert.match(world.finished.at(-1).reason, /#901 回「继续审」/);
 });
 
-test('开 issue 失败:记 error 并 retry,不写熔断记录,下一轮再开', () => {
+test('开 issue 失败:记 error 并 retry,不写熔断记录,下一轮再开', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, createOk: false });
-  const { result } = world.gate('h9');
+  const { result } = await world.gate('h9');
   assert.equal(result.retry, true);
   assert.match(result.errors[0], /熔断 issue 没开出来/);
   assert.equal(world.store.prs[1704].fuse.trip, undefined);
 });
 
-test('SC5「继续审」:有效评论 → 清熔断、记 resumedAt、关 issue,这一轮照常派审;版本数从 0 重新算', () => {
+test('SC5「继续审」:有效评论 → 清熔断、记 resumedAt、关 issue,这一轮照常派审;版本数从 0 重新算', async () => {
   const trip = { issue: 901, at: '2026-11-07T11:00:00.000Z', count: 10, head: 'h9' };
   const world = makeWorld({
     record: { fuse: { versions: tenVersions(), trip } },
     comments: [{ author: { login: 'kirozeng' }, body: '继续审', createdAt: '2026-11-07T11:05:00Z', isMinimized: false, databaseId: 5 },
       { author: { login: 'aj0928' }, body: '继续审', createdAt: '2026-11-07T11:30:00Z', isMinimized: false, databaseId: 6 }],
   });
-  const { out } = world.gate('h9');
+  const { out } = await world.gate('h9');
   assert.equal(out, null, '恢复后这一轮照常派审');
   assert.equal(world.store.prs[1704].fuse.trip, null);
   assert.equal(world.store.prs[1704].fuse.resumedAt, '2026-11-07T11:30:00Z', '作者本人(也是维护者)那条有效;kirozeng 不在本测试的维护者名单里');
@@ -124,42 +134,42 @@ test('SC5「继续审」:有效评论 → 清熔断、记 resumedAt、关 issue,
   assert.equal(fuse.toFuseCount(world.store.prs[1704].fuse), 0);
 });
 
-test('SC5 没有有效「继续审」:照旧停审,不关 issue,不重开 issue', () => {
+test('SC5 没有有效「继续审」:照旧停审,不关 issue,不重开 issue', async () => {
   const trip = { issue: 901, at: '2026-11-07T11:00:00.000Z', count: 10, head: 'h9' };
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip } },
     comments: [{ author: { login: 'aj0928' }, body: '先别继续审', createdAt: '2026-11-07T11:05:00Z', isMinimized: false }] });
-  assert.deepEqual(world.gate('n1').out, { dispatched: false });
+  assert.deepEqual((await world.gate('n1')).out, { dispatched: false });
   assert.equal(world.calls.filter((args) => args[0] === 'issue').length, 0);
 });
 
-test('SC6 dry-run:熔断只记 dryRunActions,不写 GitHub、不写本机熔断记录', () => {
+test('SC6 dry-run:熔断只记 dryRunActions,不写 GitHub、不写本机熔断记录', async () => {
   const world = makeWorld({ mode: 'dry-run', record: { fuse: { versions: tenVersions() } } });
-  const { result } = world.gate('h9');
+  const { result } = await world.gate('h9');
   assert.deepEqual(JSON.parse(JSON.stringify(result.dryRunActions)), ['fuse-issue:create']);
   assert.equal(world.calls.length, 0);
   assert.equal(world.store.prs[1704].fuse.trip, undefined);
 });
 
-test('熔断关闭时不读 store、不拦', () => {
+test('熔断关闭时不读 store、不拦', async () => {
   const sandbox = { fuseConfig: () => ({ enabled: false }), loadStore: () => { throw new Error('不该读'); } };
   vm.runInNewContext(`${section}\nglobalThis.hold = holdForFuse;`, sandbox);
-  assert.equal(sandbox.hold({}, { pr: 1, head: 'h' }, {}, {}), null);
+  assert.equal(await sandbox.hold({}, { pr: 1, head: 'h' }, {}, {}), null);
 });
 
 // #211 单审的三条 P2:评论读不到要 retry;开 issue 前查重、沿用已开的;恢复时先关 issue,关失败不清熔断。
 const TRIP = { issue: 901, at: '2026-11-07T11:00:00.000Z', count: 10, head: 'h9' };
 const RESUME = [{ author: { login: 'aj0928' }, body: '继续审', createdAt: '2026-11-07T11:30:00Z', isMinimized: false, databaseId: 6 }];
 
-test('评论读不到:照旧停审,记 retry(同一条「继续审」只唤醒一次,不 retry 就会一直停着)', () => {
+test('评论读不到:照旧停审,记 retry(同一条「继续审」只唤醒一次,不 retry 就会一直停着)', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: RESUME, commentsOk: false });
-  const { out, result } = world.gate('h9');
+  const { out, result } = await world.gate('h9');
   assert.deepEqual(out, { dispatched: false });
   assert.equal(result.retry, true);
   assert.match(result.warnings.at(-1), /评论读不到,照旧停审,下一轮再读/);
   assert.deepEqual(world.store.prs[1704].fuse.trip, TRIP);
 });
 
-test('开 issue 前查重:开着的 issue 里已有这个 PR 的熔断 issue(上一轮开成功、本机没记上)就沿用,不重开', () => {
+test('开 issue 前查重:开着的 issue 里已有这个 PR 的熔断 issue(上一轮开成功、本机没记上)就沿用,不重开', async () => {
   const marker = (pr) => `<!-- mivo-fuse pr=${pr} -->\n正文`;
   const openIssues = [
     { number: 950, title: '审查熔断 · PR #17040：审到第 10 版还没放行', body: marker(17040) },
@@ -167,15 +177,15 @@ test('开 issue 前查重:开着的 issue 里已有这个 PR 的熔断 issue(上
     { number: 952, title: '审查熔断 · PR #1704：审到第 10 版还没放行', body: marker(1704) },
   ];
   const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, openIssues });
-  const { result } = world.gate('h9');
+  const { result } = await world.gate('h9');
   assert.equal(world.calls.filter((args) => args[0] === 'issue' && args[1] === 'create').length, 0);
   assert.equal(world.store.prs[1704].fuse.trip.issue, 952);
   assert.equal(result.gate.fuse.issue, 952);
 });
 
-test('开 issue 前读不到开着的 issue 列表:不开、记 error 并 retry,不写熔断记录', () => {
+test('开 issue 前读不到开着的 issue 列表:不开、记 error 并 retry,不写熔断记录', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, listOk: false });
-  const { out, result } = world.gate('h9');
+  const { out, result } = await world.gate('h9');
   assert.deepEqual(out, { dispatched: false }, '照旧停审');
   assert.equal(world.calls.filter((args) => args[0] === 'issue').length, 0);
   assert.equal(result.retry, true);
@@ -183,37 +193,129 @@ test('开 issue 前读不到开着的 issue 列表:不开、记 error 并 retry,
   assert.equal(world.store.prs[1704].fuse.trip, undefined);
 });
 
-test('恢复时关 issue 失败:不清熔断、不派审,记 error 并 retry;下一轮关成功才恢复', () => {
+test('恢复时关 issue 失败:不清熔断、不派审,记 error 并 retry;下一轮关成功才恢复', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: RESUME, closeOk: false });
-  const first = world.gate('h9');
+  const first = await world.gate('h9');
   assert.deepEqual(first.out, { dispatched: false });
   assert.equal(first.result.retry, true);
   assert.match(first.result.errors[0], /没关掉,先不恢复送审/);
   assert.deepEqual(world.store.prs[1704].fuse.trip, TRIP);
   const retried = makeWorld({ record: structuredClone(world.store.prs[1704]), comments: RESUME });
-  assert.equal(retried.gate('h9').out, null);
+  assert.equal((await retried.gate('h9')).out, null);
   assert.equal(retried.store.prs[1704].fuse.trip, null);
 });
 
 // #211 复审的两条 P2:评论按页读全(唤醒被推迟、期间又讨论了一百多条时不漏);issue 已关(上一轮关成功、本机没清记录)就不再关。
-test('「继续审」之后又有 150 条讨论:按页读全,仍能恢复', () => {
+test('「继续审」之后又有 150 条讨论:按页读全,仍能恢复', async () => {
   const chatter = Array.from({ length: 150 }, (_, i) => ({ author: { login: 'aj0928' }, body: `讨论 ${i}`, createdAt: `2026-11-07T11:${String(31 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`, isMinimized: false }));
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: [...RESUME, ...chatter] });
-  assert.equal(world.gate('h9').out, null, '恢复派审');
+  assert.equal((await world.gate('h9')).out, null, '恢复派审');
   assert.equal(world.calls.filter((args) => args.includes('graphql')).length, 2, '100 + 50 两页');
   assert.ok(world.calls.filter((args) => args.includes('graphql'))[1].includes('after=100'));
   assert.equal(world.store.prs[1704].fuse.trip, null);
 });
 
-test('issue 已经关了(上一轮关成功、本机清记录前崩溃):不再调用关闭,直接清熔断并恢复派审', () => {
+test('issue 已经关了(上一轮关成功、本机清记录前崩溃):不再调用关闭,直接清熔断并恢复派审', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: RESUME, issueState: 'CLOSED', closeOk: false });
-  assert.equal(world.gate('h9').out, null);
+  assert.equal((await world.gate('h9')).out, null);
   assert.equal(world.calls.filter((args) => args[0] === 'issue').length, 0, '不再关已关的 issue');
   assert.equal(world.store.prs[1704].fuse.trip, null);
 });
 
-test('issue 被人关了但没有有效「继续审」:照旧停审,不清熔断', () => {
+test('issue 被人关了但没有有效「继续审」:照旧停审,不清熔断', async () => {
   const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: [], issueState: 'CLOSED' });
-  assert.deepEqual(world.gate('h9').out, { dispatched: false });
+  assert.deepEqual((await world.gate('h9')).out, { dispatched: false });
   assert.deepEqual(world.store.prs[1704].fuse.trip, TRIP);
+});
+
+// #210 熔断时的飞书私聊:开出熔断 issue 后发一次,结果记进 fuse.trip.notify;失败在 issue 下留一行原因码;dry-run 只记动作。
+test('SC1/SC3 熔断开出 issue 后给作者发 1 次私聊,文案带 PR 链接与 issue 链接;之后每轮重判都不再发', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions(), lastFindings: { P0: 0, P1: 1, P2: 4 } } }, notify: NOTIFY });
+  await world.gate('h9');
+  await world.gate('h9');
+  await world.gate('n1');
+  assert.equal(world.sends.length, 1);
+  const [send] = world.sends;
+  assert.equal(send.appId, 'cli_x');
+  assert.equal(send.appSecret, 'app-secret');
+  assert.deepEqual(JSON.parse(JSON.stringify(send.recipients.map((r) => r.login))), ['aj0928', 'PraiseZhu']);
+  assert.equal(send.text, toFuseNotifyText({ pr: 1704, title: '对话出图判定', count: 10, open: 5, prUrl: 'https://github.com/o/r/pull/1704', issueUrl: 'https://github.com/o/r/issues/901' }));
+  assert.equal(world.store.prs[1704].fuse.trip.notify.status, 'sent');
+  assert.equal(world.store.prs[1704].fuse.trip.notify.to, 'aj0928');
+  assert.ok(!JSON.stringify(world.store.prs[1704].fuse.trip.notify).includes('@example.com'), '本机记录不写邮箱');
+  assert.ok(!JSON.stringify(world.logs).includes('@example.com') && !JSON.stringify(world.logs).includes('app-secret'), '日志不写邮箱和凭证');
+});
+
+test('SC3 Mini 重启后(本机记录已有 notify)不重发;「继续审」恢复后再次熔断是新的一次,会再发', async () => {
+  const sentTrip = { issue: 901, at: '2026-11-07T11:00:00.000Z', count: 10, head: 'h9', notify: { status: 'sent', at: 'x', to: 'aj0928' } };
+  const restarted = makeWorld({ record: { fuse: { versions: tenVersions(), trip: sentTrip } }, notify: NOTIFY });
+  await restarted.gate('n1');
+  assert.equal(restarted.sends.length, 0);
+  const resumedAt = '2026-11-07T11:30:00.000Z';
+  const later = Array.from({ length: 10 }, (_, i) => ({ fp: `patch:new${i}`, head: `m${i}`, at: `2026-11-07T12:0${i}:00.000Z` }));
+  const again = makeWorld({ record: { fuse: { versions: [...tenVersions(), ...later], trip: null, resumedAt } }, notify: NOTIFY });
+  await again.gate('m9');
+  assert.equal(again.sends.length, 1);
+});
+
+test('SC4 发送失败:记 warning、在熔断 issue 下留一行「飞书通知未送达:原因码」,熔断照常、不重发', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY, sendResult: { status: 'failed', code: 'timeout' } });
+  const first = await world.gate('h9');
+  assert.deepEqual(first.out, { dispatched: false }, '熔断照常');
+  assert.match(first.result.warnings.join('\n'), /熔断飞书通知未送达:timeout/);
+  const comment = world.calls.find((args) => args[0] === 'issue' && args[1] === 'comment');
+  assert.equal(comment[2], '901');
+  assert.equal(comment[comment.indexOf('--body') + 1], '飞书通知未送达：timeout');
+  assert.equal(world.store.prs[1704].fuse.trip.notify.status, 'failed');
+  await world.gate('h9');
+  assert.equal(world.sends.length, 1, '失败也不循环重发');
+  assert.equal(world.calls.filter((args) => args[1] === 'comment').length, 1);
+});
+
+test('SC4 名册读不到:不调用发送,直接记 roster-unavailable 并留说明', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY, rosterOk: false });
+  await world.gate('h9');
+  assert.equal(world.sends.length, 0);
+  assert.equal(world.store.prs[1704].fuse.trip.notify.code, 'roster-unavailable');
+});
+
+test('钥匙串里没有密钥:把空密钥交给发送函数(它返回 no-credential),不会读到别的地方', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY, secretOk: false, sendResult: { status: 'failed', code: 'no-credential' } });
+  await world.gate('h9');
+  assert.equal(world.sends[0].appSecret, '');
+  assert.equal(world.store.prs[1704].fuse.trip.notify.code, 'no-credential');
+});
+
+test('SC5 dry-run:不真发,只在 dryRunActions 记「发飞书私聊」与接收人', async () => {
+  const world = makeWorld({ mode: 'dry-run', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY });
+  const { result } = await world.gate('h9');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.dryRunActions)), ['fuse-issue:create', 'fuse-notify:feishu:@aj0928']);
+  assert.equal(world.sends.length, 0);
+  assert.equal(world.calls.length, 0);
+});
+
+test('沙箱配置关闭通知:熔断照常,不发私聊', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } } });
+  await world.gate('h9');
+  assert.equal(world.sends.length, 0);
+  assert.equal(world.store.prs[1704].fuse.trip.notify, undefined);
+});
+
+test('SC3 发出去以后、记结果之前进程崩溃:本机已记「正在发」,重启后不补发,不会重复私聊', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY, sendCrash: true });
+  await assert.rejects(world.gate('h9'), /进程在记结果前退出/);
+  assert.equal(world.sends.length, 1);
+  assert.equal(world.store.prs[1704].fuse.trip.notify.status, 'sending');
+  const restarted = makeWorld({ record: structuredClone(world.store.prs[1704]), notify: NOTIFY });
+  await restarted.gate('h9');
+  assert.equal(restarted.sends.length, 0);
+  assert.equal(restarted.calls.filter((args) => args[0] === 'issue').length, 0, '也不重开 issue、不留言');
+});
+
+test('SC2 转发时私聊只用确认文案的转发说明,具体原因码记在本机记录里', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'feishu-user-not-found' } });
+  await world.gate('h9');
+  assert.deepEqual(JSON.parse(JSON.stringify(world.store.prs[1704].fuse.trip.notify)).reason, 'feishu-user-not-found');
+  assert.equal(world.store.prs[1704].fuse.trip.notify.forwarded, true);
 });
