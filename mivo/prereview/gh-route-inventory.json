@@ -173,6 +173,30 @@
    ]
   },
   {
+   "id": "product-rules.ghFn.813a6a1563",
+   "source": {
+    "file": "mivo/lib/product-rules.mjs",
+    "callee": "ghFn",
+    "sig": "813a6a1563",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "sample",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/issues/1688"
+     ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
    "id": "resolve-fixed-threads.ghGraphqlFn.703db82905",
    "source": {
     "file": "mivo/lib/resolve-fixed-threads.mjs",

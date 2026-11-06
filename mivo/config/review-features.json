@@ -14,6 +14,9 @@
   "specChange": {
     "forceFull": false
   },
+  "productRules": {
+    "mode": "observe"
+  },
   "focus": {
     "ciCovered": [
       "npx tsc -b",
