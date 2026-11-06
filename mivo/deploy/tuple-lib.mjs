@@ -131,7 +131,7 @@ export function toLockExpiresAt(startMs, maxWaitMs, slackMs = DEPLOY_LOCK_SLACK_
   return new Date(startMs + maxWaitMs + slackMs).toISOString();
 }
 
-function parseDeployLock(text) {
+export function parseDeployLock(text) {
   try {
     const j = JSON.parse(text);
     if (!j || typeof j.owner !== 'string' || j.pid == null || typeof j.at !== 'string') return null;
@@ -179,6 +179,51 @@ export function toLockBlockedText(decision, { lockPath = DEPLOY_LOCK_PATH } = {}
   return text;
 }
 
+// 孤儿停点判定(PraiseZhu/Review-PR#205):换版本进程在「已写停点、还没切任何东西」时死掉,会留下 deploy-hold.json、
+// deploy-tuple.lock、巡检 pause-until.json 三个文件,没人回收。只有同时满足下面全部条件才撤,其余一律不动:
+//   锁持有进程确认已不存在(alive === false;查不了是 null,不撤)、找得到这次部署的记录且 switched 是空数组、
+//   没合并过 PR、记录明确写着没 bootout 过前置、没动过 pause.json(那几种要人工核对,只报警)。
+// lock 是解析后的锁内容(读不懂是 null),lockText 是锁原文,hold 是 { exists, text },alive 是 true / false / null,
+// record 是这次部署的记录(找不到是 null)。返回 { action: none|keep|alert|revoke, reason };
+// revoke 时 remove 写明要撤哪几样(停点只撤本次写的,巡检暂停只撤本次写的)。
+export function toOrphanDecision({ lock, lockText, hold, alive, record }) {
+  if (lockText == null) return { action: 'none', reason: '没有部署锁' };
+  if (!lock) return { action: 'alert', reason: '部署锁读不懂,不能判断持有者是否还在,不撤任何东西' };
+  const who = `${lock.owner}(pid ${lock.pid},${lockHost(lock)},at ${lock.at})`;
+  if (alive === true) return { action: 'keep', reason: `部署锁持有进程仍在运行:${who}` };
+  if (alive !== false) return { action: 'alert', reason: `查不到部署锁持有进程是否还在:${who},不撤任何东西` };
+  const refuse = (why) => ({ action: 'alert', reason: `部署锁持有进程已不在:${who},但${why},不自动撤,要人工核对` });
+  if (!record || record.lockText !== lockText) return refuse('找不到这次部署的记录,不能确认没有切过任何东西');
+  if (!Array.isArray(record.switched)) return refuse('部署记录里 switched 读不懂');
+  if (record.switched.length) return refuse(`已经切了 ${record.switched.join('、')}(switched 非空)`);
+  if (record.merged) return refuse(`已合并 PR(${record.merged})`);
+  // bootout 成功到「已 bootout」阶段落盘之间进程可能死掉,所以 deploy-tuple 在 bootout 之前先把 bootout 记成 pending 并落盘。
+  // 只有明确是 'none' 才算没动过 launchd;pending、done、字段不存在(旧版本的记录)都不撤,前置审查任务可能已经停用,要人工补 bootstrap。
+  if (record.bootout !== 'none' || (record.phases ?? []).some((p) => String(p?.name ?? '').includes('已 bootout'))) {
+    return refuse(`可能已经 bootout 过前置审查(记录里 bootout=${JSON.stringify(record.bootout ?? null)}),要核对 launchd 并补 bootstrap`);
+  }
+  if (record.pauseWritten === true) return refuse('写过 pause.json(--stop pause)');
+  // 巡检暂停按原文认(含 from 时间戳),不按原因里的提交前 7 位认;旧版本的记录没有原文,不撤。
+  if (record.stopStarted === true && typeof record.monitorPauseText !== 'string') return refuse('部署记录里没有巡检暂停的原文');
+  const removeHold = Boolean(record.holdText) && isOwnHold(hold ?? {}, record.holdText);
+  return {
+    action: 'revoke',
+    reason: `部署锁持有进程已不在:${who},部署记录显示 switched 为空`,
+    remove: { hold: removeHold, quiesced: removeHold, monitorPause: typeof record.monitorPauseText === 'string', lock: true },
+  };
+}
+
+// 停点挂了多久。holdAtMs 是 deploy-hold.json 里 at 的毫秒数(读不懂是 NaN)。超过 thresholdMin 分钟(默认 60)就是 stale,
+// 不论孤儿判定的结果。前置审查据此不再写心跳,让 Mini 之外的看门狗报警;巡检脚本用同一个函数报警(见 mivo/README.md「孤儿停点」)。
+export const HOLD_STALE_MIN = 60;
+export function toHoldAlert({ holdAtMs, now, thresholdMin = HOLD_STALE_MIN }) {
+  if (!Number.isFinite(holdAtMs)) return { stale: true, ageMin: null, text: '部署停点 deploy-hold.json 没有可读的 at,当作已超时' };
+  const ageMin = Math.floor((now - holdAtMs) / 60_000);
+  return ageMin > thresholdMin
+    ? { stale: true, ageMin, text: `部署停点已挂 ${ageMin} 分钟,超过 ${thresholdMin} 分钟,前置审查一直停着` }
+    : { stale: false, ageMin, text: '' };
+}
+
 // Mini 上一条 ln:先写同目录临时文件(已有完整内容),再硬链接到锁文件名。目标已存在则失败。
 export function toLinkLockScript(rel) {
   return [
@@ -195,13 +240,39 @@ export function toLinkLockScript(rel) {
   ].join('\n');
 }
 
-// 释放:读锁内容,与 stdin 逐字相同才 rm;不同就不删、只告警。
+// 回收者和释放命令共用的占位:锁文件名加这个后缀的硬链接,`ln` 建立,已存在就失败,同一时刻只有一方能持有。
+export const DEPLOY_LOCK_CLAIM_SUFFIX = '.reclaim';
+
+// 释放:先拿占位(和孤儿回收者同一个),占位在手再读锁内容,与 stdin 逐字相同才 rm,最后放掉占位;不同就不删、只告警。
+// 为什么要占位:部署父进程被强杀后,它启动的这条释放命令可能还活着(已 cmp、还没 rm)。回收者只能确认父进程不在,
+// 看不到这条命令;按路径检查再按路径 rm 之间有窗口,窗口里新部署拿到新锁,就会被误删。释放命令也走占位,
+// 两方不能同时在手:回收者先到,释放命令等占位放掉(等不到就以退出码 3 报「锁文件还在」);释放命令先到,回收者看到占位报警,不动手。
 export function toReleaseLockScript(rel) {
   return [
     `f=${shQuote(rel)}`,
+    `claim="$f${DEPLOY_LOCK_CLAIM_SUFFIX}"`,
     `if [ ! -e "$f" ]; then exit 0; fi`,
-    `if cmp -s "$f" -; then rm -f "$f" || exit 3; exit 0; fi`,
+    `n=0`,
+    `until ln "$f" "$claim" 2>/dev/null; do`,
+    `  if [ ! -e "$f" ]; then exit 0; fi`,
+    `  n=$((n + 1))`,
+    `  if [ "$n" -ge 50 ]; then echo "$claim 一直被占着,不释放" >&2; exit 3; fi`,
+    `  sleep 0.1`,
+    `done`,
+    // 放掉占位的返回值也要传出去:锁已删而占位没删掉(退出码 4)不是释放成功,残留的占位会让之后的释放一直拿不到占位。
+    `drop_claim() {`,
+    `  rm -f "$claim" && return 0`,
+    `  echo "占位 $claim 删除失败,残留,到 Mini 手动删" >&2`,
+    `  return 1`,
+    `}`,
+    `if cmp -s "$f" -; then`,
+    `  rc=0`,
+    `  rm -f "$f" || rc=3`,
+    `  drop_claim || { [ "$rc" -ne 0 ] || rc=4; }`,
+    `  exit "$rc"`,
+    `fi`,
     `echo "部署锁已不是本次的,不删" >&2`,
+    `drop_claim || exit 4`,
     `exit 0`,
   ].join('\n');
 }
@@ -213,7 +284,10 @@ export const RELEASE_LOCK_RETRIES = 1;
 export function toReleaseLockResult({ status, stderr }) {
   const text = String(stderr ?? '').trim();
   if (status === 0) return { ok: true, message: text };
-  if (status === 3) return { ok: false, message: `释放失败，锁文件还在 ${DEPLOY_LOCK_PATH}` };
+  if (status === 3) return { ok: false, message: `释放失败，锁文件还在 ${DEPLOY_LOCK_PATH}${text ? `(${text})` : ''}` };
+  if (status === 4) {
+    return { ok: false, message: `部署锁已处理,但占位 ${DEPLOY_LOCK_PATH}${DEPLOY_LOCK_CLAIM_SUFFIX} 没删掉,残留:到 Mini 手动删掉它,否则之后的释放和回收都拿不到占位` };
+  }
   if (status === 255) {
     return { ok: false, message: `释放部署锁结果未知(ssh 断线,不重发):到 Mini 看 ${DEPLOY_LOCK_PATH},内容还是本次的就删掉` };
   }

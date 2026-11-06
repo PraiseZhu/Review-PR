@@ -94,3 +94,26 @@ test('先比对旧值再写:预检之后仓库变量被别人改了,切换第一
   assert.equal(f.exists(`${STATE}/deploy-hold.json`), true, '变量不是旧值,tuple 不一致,停点留给人工');
   assert.equal(f.exists(`${STATE}/deploy-tuple.lock`), false);
 });
+
+test('bootout 之前部署记录已落盘 bootout=pending、巡检暂停原文;成功后是 done(孤儿停点回收靠它认出 bootout 崩溃窗口,Review-PR#205)', (t) => {
+  const f = setupFixture(t);
+  // launchctl 替身:前置审查「已加载、没在跑」;bootout 时把当时磁盘上的部署记录拷走并标记已卸载;bootstrap 标记重新加载。
+  const dir = path.join(f.root, 'launchd');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(f.root, 'bin/launchctl'), `#!/bin/sh
+case "$1" in
+  print) [ -e '${dir}/booted-out' ] && exit 1; printf '\\tstate = not running\\n'; exit 0 ;;
+  bootout) cat '${f.recordDir}'/*.record.json > '${dir}/at-bootout.json'; touch '${dir}/booted-out'; exit 0 ;;
+  bootstrap) rm -f '${dir}/booted-out'; touch '${dir}/bootstrapped'; exit 0 ;;
+esac
+exit 1
+`, { mode: 0o755 });
+  const r = f.deploy();
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const atBootout = JSON.parse(fs.readFileSync(path.join(dir, 'at-bootout.json'), 'utf8'));
+  assert.equal(atBootout.bootout, 'pending', 'bootout 执行时磁盘上已是 pending');
+  assert.ok(!atBootout.phases.some((p) => p.name.includes('已 bootout')), '这时「已 bootout」阶段还没写');
+  assert.match(atBootout.monitorPauseText, /新审查机整组上线/, '巡检暂停原文已落盘');
+  assert.equal(fs.existsSync(path.join(dir, 'bootstrapped')), true, '收尾重新加载了前置');
+  assert.equal(f.records()[0].bootout, 'done');
+});

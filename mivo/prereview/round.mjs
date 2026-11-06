@@ -26,6 +26,8 @@ import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
 import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
+import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
+import { toHoldAlert } from '../deploy/tuple-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MERGE_READY_LABEL = 'review:merge-ready';
@@ -220,6 +222,17 @@ function pausedUntil() {
 function deployHold() {
   const file = stateFile('deploy-hold.json');
   return existsSync(file) ? readJson(file, {}) : null;
+}
+// 换版本进程死在「已写停点、还没切任何东西」时,停点和部署锁没人回收(Review-PR#205):锁持有进程确认已不在、
+// 部署记录显示 switched 为空才撤,否则只写 orphan-hold-alert 事件。判定与撤销见 deploy/orphan-hold.mjs。
+function reclaimOrphanHold() {
+  try {
+    const r = reconcileOrphanHold({ dir: join(CONFIG.stateDir, 'mivo') });
+    if (r.action === 'revoke') log('orphan-hold-revoked', { reason: r.reason, removed: r.removed });
+    else if (r.action === 'alert') log('orphan-hold-alert', { reason: r.reason });
+  } catch (error) {
+    log('orphan-hold-error', { error: String(error?.message ?? error).slice(0, 200) });
+  }
 }
 
 // 心跳(Mini 之外的看门狗读):只有生产实例(instance=mivo 且 live)写,15 分钟内最多一次,隔离后不再写。
@@ -605,7 +618,16 @@ async function main() {
   // 不写就会被看门狗误判成停机);正常路径等 skill 版本核对和 pre-check 都过了再写。版本不一致、读不了 GitHub
   // 而每次整轮报错时不写,看门狗才报得出来。
   // 部署暂停:不拿锁直接退出。停机握手退出后到部署脚本 bootout 之间,launchd 再拉起的进程不会拿到锁。
-  if (deployHold()) { writeHeartbeat(); log('deploy-hold'); return; }
+  if (deployHold()) reclaimOrphanHold();
+  const hold = deployHold();
+  if (hold) {
+    // 停点挂超过 60 分钟(含换版本进程已死、撤不掉的):不再写心跳,让 Mini 之外的看门狗报警;心跳照写就没人看得出来(Review-PR#205)。
+    const alert = toHoldAlert({ holdAtMs: Date.parse(hold.at ?? ''), now: Date.now() });
+    if (alert.stale) log('deploy-hold-stale', { ageMin: alert.ageMin, text: alert.text });
+    else writeHeartbeat();
+    log('deploy-hold');
+    return;
+  }
   const pause = pausedUntil();
   if (pause) { writeHeartbeat(); log('paused', pause); return; }
   // 与老审查机同一个维护窗口:06:00–07:00(Asia/Shanghai)不开新一轮;07:00 后照常采集,窗口里来的 PR 自动补上。

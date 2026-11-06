@@ -39,6 +39,7 @@ const retry = await load('mivo/lib/retry.mjs');
 const health = await load('mivo/lib/health.mjs');
 const handoff = await load('mivo/lib/handoff.mjs');
 const scope = await load('mivo/lib/scope.mjs');
+const tupleLib = await load('mivo/deploy/tuple-lib.mjs');
 // [MIVO-PATCH gate-bases] round.mjs 的检查名取自 gate-bases.mjs;沙箱里没有 import,显式注入真实 checkNameFor 与固定的 fixture 门禁配置(不读线上配置)。
 const gateBaseModule = await load('review-pr/scripts/gate-bases.mjs');
 const gateBaseInjection = { checkNameFor: gateBaseModule.checkNameFor, loadGateBases: () => ['integration/*'] };
@@ -300,6 +301,8 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     contextDelayMs: 0, contextCalls: [], gatingNow: 0, gatingPeak: 0, selection: new Map(),
     // 门禁动作脚本(异步调用、不是 context.mjs / plan)同时在跑的数量与峰值
     actionNow: 0, actionPeak: 0,
+    // 孤儿停点回收:调用记录与注入的返回值(默认不撤)
+    reconcileCalls: [], reconcileResult: { action: 'none' },
     // >0 时新派出的 run 在这么多毫秒内查不到(模拟 GitHub 列表延迟)
     hideNewRunsMs: 0,
     // 在线 runner(#142):在线数、带的标签、读失败注入、读的次数
@@ -310,6 +313,7 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
   w.files.set('/w/config.json', { instance, mode, repoRoot: '/w/repo', stateDir: '/w/state', logDir: '/w/log', workflowRepo: 'o/wf',
     workflowRef: 'main', targetRepo: 'o/target', maxParallel, dailyCap: 1000, pollSeconds: 30, ...(gateParallel ? { gateParallel } : {}) });
   w.state = (name) => `/w/state/mivo/${name}`;
+  w.reconcileOrphanHold = (options) => { w.reconcileCalls.push(options); return typeof w.reconcileResult === 'function' ? w.reconcileResult() : w.reconcileResult; };
   // #167 的一次性唤醒视为已跑过:世界用例预置的 threads-unresolved 行不该被它标 retry。
   w.files.set(w.state('threads-unresolved-wake.json'), { done: true });
   w.read = (file) => (w.files.has(file) ? clone(w.files.get(file)) : undefined);
@@ -642,7 +646,9 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
       constructor(...args) { super(...(args.length ? args : [w.now])); }
       static now() { return w.now; }
     }
+    // 孤儿停点(Review-PR#205):撤销动作在 deploy/orphan-hold.test.mjs 里测;这里只验证 round.mjs 怎么接结果,reconcileOrphanHold 由世界注入。
     const sandbox = { ...common, ...admission, ...keyStatus, ...gates, ...codeScan, ...retry, ...handoff, ...gateBaseInjection, previousFromResult: scope.previousFromResult, dirname, join, resolve, randomUUID, Date: FixtureDate,
+      toHoldAlert: tupleLib.toHoldAlert, reconcileOrphanHold: (options) => w.reconcileOrphanHold(options),
       inBusinessWindow: () => health.inBusinessWindow(new Date(w.now)), nowIso: () => iso(w.now),
       readJson: (file, fallback) => {
         if (w.files.has(file)) return clone(w.files.get(file));
@@ -1082,6 +1088,49 @@ test('世界:部署暂停——在跑的进程不开新轮、不领取、不派�
   assert.ok(await w.runUntil(() => fresh.settled, { maxMs: 120 * MIN }));
   assert.equal(fresh.failure, null, String(fresh.failure?.stack));
   assert.deepEqual([2, 3].map((pr) => w.dispatchesOf(pr).length), [1, 1], '新版本立即拿到锁并恢复这些任务');
+});
+
+test('世界:孤儿停点——撤销成功后这一轮照常开工并记 orphan-hold-revoked;撤不掉只记 orphan-hold-alert,仍然停着', async () => {
+  const w = makeWorld();
+  w.openPr(1, 'h1');
+  w.files.set(w.state('deploy-hold.json'), { at: iso(w.now) });
+  w.reconcileResult = () => {
+    w.files.delete(w.state('deploy-hold.json'));
+    return { action: 'revoke', reason: '部署锁持有进程已不在', removed: ['/w/state/mivo/deploy-hold.json'] };
+  };
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 90 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.deepEqual(w.reconcileCalls.map((c) => c.dir), ['/w/state/mivo']);
+  assert.equal(w.logged('orphan-hold-revoked').length, 1);
+  assert.equal(w.logged('deploy-hold').length, 0, '撤掉之后不再按停点退出');
+  assert.equal(w.dispatchesOf(1).length, 1, '撤掉之后照常派发');
+
+  const stuck = makeWorld();
+  stuck.openPr(1, 'h1');
+  stuck.files.set(stuck.state('deploy-hold.json'), { at: iso(stuck.now) });
+  stuck.reconcileResult = { action: 'alert', reason: 'switched 非空' };
+  const held = stuck.start();
+  assert.ok(await stuck.runUntil(() => held.settled));
+  assert.deepEqual(stuck.logged('orphan-hold-alert').map((e) => e.reason), ['switched 非空']);
+  assert.equal(stuck.logged('deploy-hold').length, 1);
+  assert.equal(stuck.dispatches.length, 0);
+});
+
+test('世界:停点挂超过 60 分钟——记 deploy-hold-stale 并停写心跳;60 分钟内心跳照写', async () => {
+  for (const [ageMin, stale] of [[30, false], [61, true]]) {
+    const w = makeWorld({ instance: 'mivo', mode: 'live' });
+    w.files.set(w.state('deploy-hold.json'), { at: iso(w.now - ageMin * MIN) });
+    const proc = w.start();
+    assert.ok(await w.runUntil(() => proc.settled));
+    assert.equal(w.logged('deploy-hold-stale').length, stale ? 1 : 0, `${ageMin} 分钟`);
+    assert.equal(w.heartbeats.length, stale ? 0 : 1, `${ageMin} 分钟的心跳`);
+  }
+  const unreadable = makeWorld({ instance: 'mivo', mode: 'live' });
+  unreadable.files.set(unreadable.state('deploy-hold.json'), {});
+  const proc = unreadable.start();
+  assert.ok(await unreadable.runUntil(() => proc.settled));
+  assert.equal(unreadable.logged('deploy-hold-stale').length, 1, '读不懂 at 也按超时算');
 });
 
 test('世界:部署暂停时只剩未决派发:照样握手退出,意图留着;新版本接着按 dispatch_id 找、照样占槽,别的 PR 照常派', async () => {
