@@ -6,6 +6,7 @@
 //   node auto-update.mjs [--cindy-script]  要换就调 deploy-tuple.mjs --on mini --stop hold 整组换上(停点最多等 40 分钟);
 //                                         --cindy-script 时 stdout 只有一行 cindy-script/1 收尾帧,过程写日志。
 //   [--log-dir <目录>]                     日志与部署记录目录,默认 ~/Library/Logs/mivo-prereview/deploy。
+// 执行模式在判断要不要换之前,先回收上一个换版本进程死后留下的孤儿停点和部署锁(PraiseZhu/Review-PR#205,规则见 orphan-hold.mjs)。
 // 执行模式退出码:0 换好了、已是最新或今天先不换;1 不能自动换(要人看),或没换成但线上仍是旧版本、前置照常;
 // 2 换失败且前置保持停止(含新版本已上),要人工处理。--check 不调 deploy-tuple,不拿锁。
 import fs from 'node:fs';
@@ -15,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WF_PATH, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs, toAutoUpdateFinish } from './tuple-lib.mjs';
+import { reconcileOrphanHold } from './orphan-hold.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = 'xindong/mivo-canvas-plugin';
@@ -74,12 +76,26 @@ function deploy({ current, target }) {
   return { status: r.status ?? 1, log, tail: r.error ? `${r.error.message}\n${tail}` : tail };
 }
 
+// 孤儿停点:撤掉了或撤不掉都要让维护者看到,拼在收尾那句话前面。
+function reclaimOrphan() {
+  try {
+    const r = reconcileOrphanHold({ dir: path.join(os.homedir(), 'mivo-prereview/state/mivo/mivo') });
+    if (r.action === 'revoke') return `已撤掉孤儿停点:${r.reason}(撤掉 ${r.removed.map((f) => path.basename(f)).join('、')})。`;
+    if (r.action === 'alert') return `发现孤儿停点但不能自动撤:${r.reason}。`;
+  } catch (error) {
+    return `回收孤儿停点失败:${error.message}。`;
+  }
+  return '';
+}
+
 function main() {
+  const orphan = CHECK ? '' : reclaimOrphan();
+  const note = (text) => (orphan ? `${orphan}${text}` : text);
   let found;
   try {
     found = inspect();
   } catch (error) {
-    return finish(1, `查不了线上或 main 的状态:${error.message}`);
+    return finish(1, note(`查不了线上或 main 的状态:${error.message}`));
   }
   const { current, target, decision } = found;
   if (CHECK) {
@@ -87,11 +103,11 @@ function main() {
     process.exitCode = toCheckExit(decision);
     return;
   }
-  if (decision.action === 'blocked') return finish(1, `今天不自动换:${decision.reason}`);
-  if (decision.action !== 'update') return finish(0, `今天不换:${decision.reason}`);
+  if (decision.action === 'blocked') return finish(1, note(`今天不自动换:${decision.reason}`));
+  if (decision.action !== 'update') return finish(0, note(`今天不换:${decision.reason}`));
   const result = deploy({ current, target });
   const done = toAutoUpdateFinish(result.status ?? 1, { reason: decision.reason, current, log: result.log, tail: result.tail });
-  return finish(done.code, done.text);
+  return finish(done.code, note(done.text));
 }
 
 main();

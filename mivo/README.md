@@ -481,7 +481,7 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - 续锁（`refresh-lock.mjs`）返回不是 `refreshed: true`：锁已不属于本进程。记 `lock-lost`，所有轮次停下，之后不领取、不派发、不取消、不写评论和标签、不写心跳，也不释放锁（那是接管者的），进程非 0 退出，未完成轮次留给持锁者恢复。
 - 某一轮失败时，如果它手里还有已派发、没收回的服务器 run，这些槽位没人释放：其余轮次停下、不收尾，整个进程退出，launchd 重新拉起后一起恢复。失败的那一轮手里没有在途 run 时，只停止接新轮，其余轮次照常跑完。
 - 中断后下次启动，所有未完成的轮次一起接着跑：先把每一轮已派发的 run 都登记进在审数，再开始领取新任务。收尾时删审查 worktree 中途中断的任务（队列阶段 `cleanup-pending`）沿同一个 agent 再 complete 一次，不重新绑定、不重派（`resume-cleanup`）。
-- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admit-deferred`、`authority-changed`、`admission-closed`、`resume-rounds`、`resume-dispatch`、`round-failed`、`rounds-aborting`、`round-aborted`、`round-quiesced`（带 `reason`：`deploy-hold` 或 `unresolved-only`）、`resume-cleanup`、`watch-restart`、`wake-held-deferred`、`lock-lost`、`heartbeat-error`、`heartbeat-paused`、`heartbeat-resumed`、`repo-gc`、`repo-gc-error`；派发与收结果见下面几节。
+- 日志事件：`plan`（接单开的轮次带 `admitted: true`）、`admit-skip`、`admit-none`、`admit-error`、`admit-plan-error`、`admit-deferred`、`authority-changed`、`admission-closed`、`resume-rounds`、`resume-dispatch`、`round-failed`、`rounds-aborting`、`round-aborted`、`round-quiesced`（带 `reason`：`deploy-hold` 或 `unresolved-only`）、`resume-cleanup`、`watch-restart`、`wake-held-deferred`、`deploy-hold-stale`、`orphan-hold-revoked`、`orphan-hold-alert`、`orphan-hold-error`、`lock-lost`、`heartbeat-error`、`heartbeat-paused`、`heartbeat-resumed`、`repo-gc`、`repo-gc-error`；派发与收结果见下面几节。
 
 ## 派发落盘与未决派发
 
@@ -625,6 +625,31 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 拿锁成功后才在 `--record-dir`（默认 `~/Library/Logs/mivo-prereview/deploy/`）写 `deploy-<新提交前 7 位>-<时间>.record.json`。`--on <本机> --selftest` 只在 Mini 的临时文件上演练读写与比对，不碰线上文件。
 - 首次整组上线是 2026-10-15 00:27（`2f55cb8` + `review-pr.yml` `1624d62b…`）。2026-10-16 之前脚本放在 Pro 本机 `~/AI-Agent/Claude/projects/Project Mivo Canvas-Plugin/_tmp/r41/`（不进 git），那时的部署记录留在那里。
 
+### 孤儿停点（PraiseZhu/Review-PR#205）
+
+换版本进程在「已写停点、还没切任何东西」时死掉（例如 Cindy 暂停任务时被杀），会留下三个文件：`deploy-hold.json`（前置停点）、`deploy-tuple.lock`（部署锁，过期也不顶替）、巡检的 `pause-until.json`（巡检暂停）。2026-11-06 一次误触发让前置审查停了一小时、巡检被静音到 11:43Z。现在这样处理：
+
+- **自动撤销**：`round.mjs` 每次启动看到停点，以及 `auto-update.mjs` 执行模式开头，都调 `deploy/orphan-hold.mjs` 的 `reconcileOrphanHold`。同时满足下面全部条件才撤，撤掉停点（含握手回执）、巡检暂停（原因必须是本次写的「新审查机整组上线 <前 7 位>」）和部署锁，并记一条 `orphan-hold-revoked` 事件（auto-update 写进收尾那句话）：
+  - 锁写的主机是 Mini，且 `ps -p <pid>` 确认进程不存在，或 pid 还在但命令行不是 `deploy-tuple`（pid 被复用）；
+  - 在 `~/Library/Logs/mivo-prereview/deploy/` 找得到 `lockText` 和锁原文逐字相同的部署记录，记录里 `switched` 是空数组；
+  - 记录里没有 `merged`、没有「已 bootout」阶段、没写过 `pause.json`。
+- **只报警不撤**：`switched` 非空（已切一部分，退出码 2 的情况）、找不到部署记录、进程查不了（锁写的是 Pro、`ps` 出错）、已合并 PR、已 bootout、`--stop pause`。事件是 `orphan-hold-alert`，原因写在 `reason` 里。持有进程还在时什么都不做。停点只撤本次写的（内容和记录里的 `holdText` 相同）。
+- **停点超过 60 分钟必须有人知道**：无论上面怎么判，`round.mjs` 看到的停点 `at` 超过 60 分钟（或读不懂）时记 `deploy-hold-stale`，并且**不再写心跳**，Mini 之外的看门狗据此报警。60 分钟内心跳照写，不影响正常换版本（`auto-update` 停点最多等 40 分钟）；手动换版本默认最多等 180 分钟，超过 60 分钟也会触发，这是有意的。
+- **巡检脚本还要人工改**（不在本仓，`~/mivo-prereview/monitor/scripts/schedule-checks/mivo.mjs`）：在「计划内维护」`pause-until.json` 早退之前先查停点，让巡检暂停静音不了它：
+
+  ```js
+  const { toHoldAlert } = await import(join(homedir(), 'mivo-prereview/skill/mivo/deploy/tuple-lib.mjs'));
+  const holdFile = join(homedir(), 'mivo-prereview/state/mivo/mivo/deploy-hold.json');
+  if (existsSync(holdFile)) {
+    let at = NaN;
+    try { at = Date.parse(JSON.parse(readFileSync(holdFile, 'utf8')).at); } catch { /* 读不懂按超时 */ }
+    const alert = toHoldAlert({ holdAtMs: at, now });
+    if (alert.stale) add('deploy-hold-stale', alert.text); // 放在 pause-until.json 的 process.exit(2) 之前,并且命中时不走那次早退
+  }
+  ```
+
+  命中时不能走 `pause-until.json` 的早退（跳过整轮），否则巡检暂停还是会把它静音。
+
 ### 每天自动换版本
 
 本仓 `main` 合入、CI 全绿后，Mini 每天 06:30（Asia/Shanghai，维护窗口里，不接新审查）自动整组换上，不用手动跑上面的脚本。
@@ -634,7 +659,7 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 结果：换好了记成功；没换成记失败，退出码 1 表示线上仍是旧版本、前置照常（第二天 06:30 再试）；退出码 2 表示新版本可能已上或保持停止，要按日志人工处理，不再写成「线上仍是旧版、前置照常」。Cindy 每次执行完都会提醒，跳过的轮次不提醒。`~/Library/Logs/mivo-prereview/deploy/auto-update-<时间>.log` 是这次运行的诊断输出（等同 stdout），不算 Mini 状态。
 - 手动与每天自动换版本不会同时改：两边都走 `deploy-tuple.mjs` 的部署锁。拿锁失败时不动前置审查状态和线上 tuple，只留本次运行日志。
 - 停点最多等 40 分钟：06:00 前派出的长审查到 07:10 还没收完，今天就不换，撤销停点、什么都不切。只有 Mini 需要连得上，Pro、Air 离线不影响。
-- 要暂停，就在 Mini 的 Cindy 自动化里暂停这个任务。等正在跑的那一轮结束再暂停：Cindy 暂停时会立刻杀掉正在换版本的进程，可能留下 `deploy-hold.json`，前置就一直停着（心跳照写，看门狗看不出来）。
+- 要暂停，就在 Mini 的 Cindy 自动化里暂停这个任务。等正在跑的那一轮结束再暂停：Cindy 暂停时会立刻杀掉正在换版本的进程，可能留下 `deploy-hold.json`、`deploy-tuple.lock` 和巡检的 `pause-until.json`（孤儿停点，见下节；前置会自己回收，回收不了的 60 分钟后停写心跳）。
 - 手动跑上面的脚本换版本或回滚前，先暂停这个任务；`main` 也改成想要的版本（例如 revert 掉有问题的提交、CI 全绿）后再恢复。不暂停的话，第二天 06:30 它会把 `main` 换回来。两次换版本撞上时，后到的那次拿不到锁、不动前置审查状态和线上 tuple，只留本次运行日志。
 - 要马上换，点「立即运行」：白天也用 hold 停点，在途审查收完前新 PR 要排队。
 - 任务跑的是线上那一版的 `auto-update.mjs`（`~/mivo-prereview/skill/mivo/deploy/`）。回滚到没有这个目录的旧版本后，前置检查会失败，要先暂停任务。

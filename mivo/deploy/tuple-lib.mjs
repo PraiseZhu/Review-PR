@@ -107,7 +107,7 @@ export function toLockExpiresAt(startMs, maxWaitMs, slackMs = DEPLOY_LOCK_SLACK_
   return new Date(startMs + maxWaitMs + slackMs).toISOString();
 }
 
-function parseDeployLock(text) {
+export function parseDeployLock(text) {
   try {
     const j = JSON.parse(text);
     if (!j || typeof j.owner !== 'string' || j.pid == null || typeof j.at !== 'string') return null;
@@ -153,6 +153,45 @@ export function toLockBlockedText(decision, { lockPath = DEPLOY_LOCK_PATH } = {}
     text += `。锁已过期，先在 ${lockHost(decision.holder)} 上按 pid ${decision.holder.pid} 确认原进程已结束，再删 ${lockPath} 后重跑`;
   }
   return text;
+}
+
+// 孤儿停点判定(PraiseZhu/Review-PR#205):换版本进程在「已写停点、还没切任何东西」时死掉,会留下 deploy-hold.json、
+// deploy-tuple.lock、巡检 pause-until.json 三个文件,没人回收。只有同时满足下面全部条件才撤,其余一律不动:
+//   锁持有进程确认已不存在(alive === false;查不了是 null,不撤)、找得到这次部署的记录且 switched 是空数组、
+//   没合并过 PR、没 bootout 过前置、没动过 pause.json(那几种要人工核对,只报警)。
+// lock 是解析后的锁内容(读不懂是 null),lockText 是锁原文,hold 是 { exists, text },alive 是 true / false / null,
+// record 是这次部署的记录(找不到是 null)。返回 { action: none|keep|alert|revoke, reason };
+// revoke 时 remove 写明要撤哪几样(停点只撤本次写的,巡检暂停只撤本次写的)。
+export function toOrphanDecision({ lock, lockText, hold, alive, record }) {
+  if (lockText == null) return { action: 'none', reason: '没有部署锁' };
+  if (!lock) return { action: 'alert', reason: '部署锁读不懂,不能判断持有者是否还在,不撤任何东西' };
+  const who = `${lock.owner}(pid ${lock.pid},${lockHost(lock)},at ${lock.at})`;
+  if (alive === true) return { action: 'keep', reason: `部署锁持有进程仍在运行:${who}` };
+  if (alive !== false) return { action: 'alert', reason: `查不到部署锁持有进程是否还在:${who},不撤任何东西` };
+  const refuse = (why) => ({ action: 'alert', reason: `部署锁持有进程已不在:${who},但${why},不自动撤,要人工核对` });
+  if (!record || record.lockText !== lockText) return refuse('找不到这次部署的记录,不能确认没有切过任何东西');
+  if (!Array.isArray(record.switched)) return refuse('部署记录里 switched 读不懂');
+  if (record.switched.length) return refuse(`已经切了 ${record.switched.join('、')}(switched 非空)`);
+  if (record.merged) return refuse(`已合并 PR(${record.merged})`);
+  if ((record.phases ?? []).some((p) => String(p?.name ?? '').includes('已 bootout'))) return refuse('已经 bootout 过前置审查,要补 bootstrap');
+  if (record.pauseWritten === true) return refuse('写过 pause.json(--stop pause)');
+  const removeHold = Boolean(record.holdText) && isOwnHold(hold ?? {}, record.holdText);
+  return {
+    action: 'revoke',
+    reason: `部署锁持有进程已不在:${who},部署记录显示 switched 为空`,
+    remove: { hold: removeHold, quiesced: removeHold, monitorPause: record.monitorPause === true, lock: true },
+  };
+}
+
+// 停点挂了多久。holdAtMs 是 deploy-hold.json 里 at 的毫秒数(读不懂是 NaN)。超过 thresholdMin 分钟(默认 60)就是 stale,
+// 不论孤儿判定的结果。前置审查据此不再写心跳,让 Mini 之外的看门狗报警;巡检脚本用同一个函数报警(见 mivo/README.md「孤儿停点」)。
+export const HOLD_STALE_MIN = 60;
+export function toHoldAlert({ holdAtMs, now, thresholdMin = HOLD_STALE_MIN }) {
+  if (!Number.isFinite(holdAtMs)) return { stale: true, ageMin: null, text: '部署停点 deploy-hold.json 没有可读的 at,当作已超时' };
+  const ageMin = Math.floor((now - holdAtMs) / 60_000);
+  return ageMin > thresholdMin
+    ? { stale: true, ageMin, text: `部署停点已挂 ${ageMin} 分钟,超过 ${thresholdMin} 分钟,前置审查一直停着` }
+    : { stale: false, ageMin, text: '' };
 }
 
 // Mini 上一条 ln:先写同目录临时文件(已有完整内容),再硬链接到锁文件名。目标已存在则失败。
