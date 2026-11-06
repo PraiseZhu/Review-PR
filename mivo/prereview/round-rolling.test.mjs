@@ -278,6 +278,7 @@ const WORLD_SOURCE = (() => {
 function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance = 'sandbox', mode = 'sandbox', gateParallel } = {}) {
   const w = { now: Date.parse(start), files: new Map(), logs: [], procs: [], events: [], prs: new Map(), runs: new Map(), nextRunId: 5000,
     lock: null, nextToken: 1, authorityDigest: 'digest-1', skillSha: 'skill-1', dispatches: [], cancels: [], heartbeats: [], releases: [],
+    claimHeadChanged: false, claimHeadChangedDone: false,
     // 按 dispatch_id 找 run 的列表查询:runsListFails=查询失败,runsListIncomplete=列表没拿全
     runsListFails: false, runsListIncomplete: false,
     dispatchFailures: [], hiddenUntil: new Map(), cancelFails: new Set(), noArtifact: new Set(), roundNo: 0, planDelayMs: 15_000, cancelDelayMs: 30_000,
@@ -370,6 +371,14 @@ function makeWorld({ start = '2026-10-14T02:00:00Z', maxParallel = 10, instance 
     if (action === 'claim') {
       const next = queue.tasks.find((t) => t.phase === 'queued');
       if (!next) return { ...summary(), claimed: false };
+      if (w.claimHeadChanged && !w.claimHeadChangedDone) {
+        w.claimHeadChangedDone = true;
+        next.phase = 'cleanup-pending';
+        next.attempts += 1;
+        next.agentId = null;
+        next.error = 'refs/pull 的 head 已变化，拒绝创建旧名单 worktree';
+        return { ok: false, error: 'refs/pull 的 head 已变化，拒绝创建旧名单 worktree' };
+      }
       next.phase = 'ready';
       next.attempts += 1;
       next.agentId = null;
@@ -712,6 +721,22 @@ test('世界:轮次重叠满 61 分钟仍接单;在审 heavy 没结束时,后到
   assert.equal(proc.failure, null, String(proc.failure?.stack));
   assert.deepEqual([1, 2, 3].map((pr) => w.dispatchesOf(pr).length), [1, 1, 1], '没有重复派发');
   assert.equal(w.lock, null, '所有轮次结束后释放锁、进程退出');
+});
+
+test('世界:claim 期间 refs/pull head 变化时安全收尾,不让整轮失败并等待下一轮重采集', async () => {
+  const w = makeWorld({ maxParallel: 1 });
+  w.openPr(1, 'h1');
+  w.claimHeadChanged = true;
+  const proc = w.start();
+  assert.ok(await w.runUntil(() => proc.settled, { maxMs: 30 * MIN }));
+  assert.equal(proc.failure, null, String(proc.failure?.stack));
+  assert.equal(w.logged('claim-head-moved').length, 1);
+  const round = w.incomplete();
+  assert.equal(round.length, 0, '竞态任务应完成安全收尾');
+  const result = [...w.files.entries()].find(([file]) => /\/results\/pr-1\.json$/.test(file))?.[1];
+  assert.equal(result.outcome, 'state-changed');
+  assert.equal(result.retry, true);
+  assert.match(result.reason, /下一轮重新采集当前 head/);
 });
 
 test('世界:进入 06:00 维护窗口停止接单,手上的跑完就退出;空闲时照旧正常退出', async () => {

@@ -912,7 +912,13 @@ async function runQueue(ctx) {
     while (!QUIESCING && !pausedUntil() && freeSlots() > 0 && GATING < CONFIG.gateParallel) {
       assertNotFenced();
       const claim = queue('claim');
-      if (!claim.ok) throw new Error(`claim 失败:${claim.error}`);
+      if (!claim.ok) {
+        if (isClaimHeadChangedError(claim.error)) {
+          recoverClaimHeadChanged(ctx, queue, claim.error);
+          continue;
+        }
+        throw new Error(`claim 失败:${claim.error}`);
+      }
       if (!claim.claimed) break;
       const task = claim.task;
       // 归属:最近一次接走这个 PR 的轮次。旧轮晚收尾时,归属已经转走的 PR 不写回本机记录。
@@ -1025,6 +1031,29 @@ function completeTask(queue, pr, agentId) {
 function completeUnstarted(queue, pr) {
   const r = queue('complete', ['--pr', String(pr), '--no-agent-started', '--agent-exited']);
   if (!r.ok) throw new Error(`complete #${pr} 失败:${r.error}`);
+}
+
+function isClaimHeadChangedError(error) {
+  return String(error || '').includes('refs/pull 的 head 已变化');
+}
+
+function recoverClaimHeadChanged(ctx, queue, claimError) {
+  const status = queue('status');
+  if (!status.ok) throw new Error(`claim 失败:${claimError};无法读取队列状态:${status.error}`);
+  const task = status.active?.find((item) => item.phase === 'cleanup-pending' && !item.agentId && isClaimHeadChangedError(item.error));
+  if (!task) throw new Error(`claim 失败:${claimError};未找到可安全收尾的未启动任务`);
+  const planned = ctx.plan.groups.flatMap((group) => group.prs).find((item) => item.pr === task.pr);
+  if (!planned) throw new Error(`claim 失败:${claimError};任务不在冻结名单中`);
+  const item = { ...planned, ...task, resultFile: join(ctx.roundDir, 'results', `pr-${task.pr}.json`) };
+  writeTaskResult(ctx, item, {
+    outcome: 'state-changed',
+    reason: 'claim 期间 PR head 已变化，未创建旧 head worktree；下一轮重新采集当前 head',
+    retry: true,
+    errors: [claimError],
+  });
+  completeUnstarted(queue, task.pr);
+  log('claim-head-moved', { pr: task.pr, head: task.head, error: claimError });
+  return task.pr;
 }
 
 // 中断后恢复:队列里已绑定到服务器 run 的任务继续轮询;没绑定的看派发意图——只有 prepared(或没有意图)
