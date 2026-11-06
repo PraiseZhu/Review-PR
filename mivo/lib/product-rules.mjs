@@ -44,9 +44,32 @@ export function loadProductRulesMode(file, read = readFileSync) {
 const lines = (text) => String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
 const warn = (warnings, code, message, extra = {}) => warnings.push({ code, message, ...extra });
 
-/** 验收字段里反引号包住、带 `/`、不像网址的 token 当作仓内路径(与 Mivo check.mjs toEvidencePaths 同口径)。 */
-export const toEvidencePaths = (value) => [...String(value ?? '').matchAll(/`([^`\s]+)`/g)]
-  .map((m) => m[1]).filter((t) => t.includes('/') && !/^[a-z]+:\/\//i.test(t) && !t.includes('#'));
+/**
+ * 验收字段里反引号包住、带 `/`、不像网址的内容整个当作仓内路径(与 Mivo check.mjs toEvidencePaths 同口径):
+ * 路径可以带空格;`#L1` 这类锚点先去掉。
+ */
+export const toEvidencePaths = (value) => [...String(value ?? '').matchAll(/`([^`]+)`/g)]
+  .map((m) => m[1].trim())
+  .filter((t) => t && !/^[a-z][a-z0-9+.-]*:\/\//i.test(t))
+  .map((t) => t.split('#')[0].trim())
+  .filter((t) => t.includes('/'));
+
+/** 非围栏行(与 Mivo check.mjs scan 同口径):围栏代码块里的标题、字段只是示例,不算结构。 */
+function structureLines(text) {
+  const out = [];
+  let fence = null;
+  for (const line of lines(text)) {
+    if (fence) {
+      const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const open = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (open) { fence = open[1]; continue; }
+    out.push(line);
+  }
+  return out;
+}
 
 /** 落地字段 → {existing, refs:['owner/repo#n']}。 */
 export function toLandingRefs(value) {
@@ -56,7 +79,7 @@ export function toLandingRefs(value) {
 
 /** 一个专题文件 → {topic:{file,title,applies}, rules:[…]};字段缺失、编号不合法只给 warning。 */
 export function parseTopic(text, { file, warnings }) {
-  const all = lines(text);
+  const all = structureLines(text);
   const title = (all.find((l) => /^#\s+\S/.test(l)) ?? '').replace(/^#\s+/, '').trim() || file;
   const applies = (all.find((l) => /^>\s*适用\s*[：:]/.test(l)) ?? '').replace(/^>\s*适用\s*[：:]\s*/, '').trim();
   const rules = [];

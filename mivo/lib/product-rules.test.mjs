@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loadProductRulesMode, readProductRules, resolveLanding, toIssueState, toLandingRefs, toRuleHits, toProductRulesState,
-  toProductRulesPromptLines, toProductRulesFocusLine, MAX_RULES,
+  toProductRulesPromptLines, toProductRulesFocusLine, toEvidencePaths, parseTopic, MAX_RULES,
 } from './product-rules.mjs';
 
 const HEAD = 'h'.repeat(40);
@@ -132,6 +132,17 @@ test('readProductRules:超过 64 条截断并给 warning;没有目录 = absent;�
   assert.equal(broken.warnings[0].code, 'tree-unreadable');
   const empty = readProductRules({ head: HEAD, gitFn: fakeGit({ 'docs/product-rules/x.md': '# 空\n\n## 产品规则\n' }).gitFn });
   assert.equal(empty.status, 'invalid');
+});
+
+test('与 Mivo check.mjs 同口径:验收路径可带空格、去掉 #L 锚点;围栏代码块里的规则只是示例', () => {
+  assert.deepEqual(toEvidencePaths('`src/a b.test.ts#L10`、`https://x.y/z`、`setup.requires`、`cindyplugin/main.js`'), ['src/a b.test.ts', 'cindyplugin/main.js']);
+  const fenced = ['# 带示例', '', '> 适用：x', '', '## 产品规则', '', '```markdown', '### FAKE-1 示例', '- 规则：示例', '- 来源：o/r#1 D1', '- 落地：o/r#2', '- 验收：`src/x.ts`', '```', '',
+    '### REAL-1 真规则', '- 规则：r', '- 来源：o/r#1 D1', '- 落地：已有行为', '- 验收：`src/y.ts`', ''].join('\n');
+  const warnings = [];
+  assert.deepEqual(parseTopic(fenced, { file: 'docs/product-rules/f.md', warnings }).rules.map((r) => r.id), ['REAL-1']);
+  assert.deepEqual(warnings, []);
+  const fencedHeading = ['# 标题', '', '> 适用：x', '', '```', '## 产品规则', '### FAKE-2 x', '```', '', '## 产品规则', '', '### REAL-2 y', '- 规则：r', '- 来源：o/r#1 D1', '- 落地：已有行为', '- 验收：手测'].join('\n');
+  assert.deepEqual(parseTopic(fencedHeading, { file: 'f.md', warnings: [] }).rules.map((r) => r.id), ['REAL-2']);
 });
 
 test('resolveLanding:完成关闭 / 开着 / 不做关闭 / 读失败 / 已有行为 → effective / pending / review / pending+warning / effective', () => {
