@@ -4959,11 +4959,11 @@
    ]
   },
   {
-   "id": "round.ghRead.37d605cee3",
+   "id": "round.ghRead.d159de5ff3",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "ghRead",
-    "sig": "37d605cee3",
+    "sig": "d159de5ff3",
     "count": 1
    },
    "flows": [
@@ -4971,18 +4971,36 @@
    ],
    "cases": [
     {
-     "name": "fuse-issue-comments",
+     "name": "fuse-issue-comments-first-page",
      "argv": [
       "api",
       "graphql",
       "-f",
-      "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(last:100){nodes{databaseId author{login} body createdAt isMinimized}}}}}",
+      "query=query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){issue(number:$number){state comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{databaseId author{login} body createdAt isMinimized}}}}}",
       "-f",
       "owner=xindong",
       "-f",
       "name=mivo-canvas-plugin",
       "-F",
       "number=1900"
+     ],
+     "expected": "app"
+    },
+    {
+     "name": "fuse-issue-comments-next-page",
+     "argv": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){issue(number:$number){state comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{databaseId author{login} body createdAt isMinimized}}}}}",
+      "-f",
+      "owner=xindong",
+      "-f",
+      "name=mivo-canvas-plugin",
+      "-F",
+      "number=1900",
+      "-f",
+      "after=Y3Vyc29yOjEwMA=="
      ],
      "expected": "app"
     }

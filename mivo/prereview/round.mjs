@@ -1226,8 +1226,11 @@ function holdForFuse(ctx, task, live, result) {
   const dry = CONFIG.mode === 'dry-run';
   let record = loadStore().prs[task.pr] ?? {};
   if (record.fuse?.trip?.issue) {
-    const resume = readFuseResume(record.fuse.trip, live, config, result);
-    const closed = resume && (dry || closeFuseIssue(record.fuse.trip.issue, toFuseResumeComment({ login: resume.login, resumeLine: config.resumeLine }), result));
+    const read = readFuseResume(record.fuse.trip, live, config, result);
+    const resume = read?.resume ?? null;
+    // issue 已经关了(上一轮关成功、本机清记录前崩溃或写盘失败)就不再关,直接清熔断,免得反复关一个已关的 issue 卡住。
+    const closed = resume && (dry || read.state === 'CLOSED'
+      || closeFuseIssue(record.fuse.trip.issue, toFuseResumeComment({ login: resume.login, resumeLine: config.resumeLine }), result));
     if (closed) {
       if (dry) result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-resume:#${record.fuse.trip.issue}`];
       else bumpOwned(ctx, task, { fuse: { ...record.fuse, trip: null, resumedAt: resume.at } });
@@ -1285,20 +1288,36 @@ function openFuseIssue(ctx, task, live, record, count, result, dry) {
   result.gate.fuse.issue = number;
 }
 
-// 读熔断 issue 的评论(GraphQL:要 isMinimized),返回第一条有效的「继续审」或 null。读不到只记 warning,照旧停着。
-const FUSE_COMMENTS_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(last:100){nodes{databaseId author{login} body createdAt isMinimized}}}}}';
+// 读熔断 issue 的开关状态和全部评论(GraphQL:要 isMinimized;按页从旧到新读完,最多 FUSE_COMMENT_PAGES 页),
+// 返回 { resume: 第一条有效的「继续审」或 null, state } 或 null。只读最近一页会漏:PR 在审时唤醒被推迟,
+// 期间先回「继续审」又讨论了一百多条,唤醒时那条已不在窗口里(#211 复审)。读不到记 warning 并 retry,照旧停着。
+const FUSE_COMMENT_PAGES = 20;
+const FUSE_COMMENTS_QUERY = 'query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){issue(number:$number){state comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{databaseId author{login} body createdAt isMinimized}}}}}';
 function readFuseResume(trip, live, config, result) {
   const [owner, name] = CONFIG.targetRepo.split('/');
-  const r = ghRead(['api', 'graphql', '-f', `query=${FUSE_COMMENTS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${trip.issue}`],
-    { allowFail: true, timeoutMs: 30_000 });
-  let comments = null;
-  try { comments = r.ok ? JSON.parse(r.stdout)?.data?.repository?.issue?.comments?.nodes : null; } catch { comments = null; }
-  if (!Array.isArray(comments)) {
-    result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 的评论读不到,照旧停审,下一轮再读:${String(r.stderr ?? '').trim().slice(0, 120)}`];
-    result.retry = true;
-    return null;
+  const comments = [];
+  let state = null;
+  let cursor = null;
+  for (let page = 0; page < FUSE_COMMENT_PAGES; page += 1) {
+    const args = ['api', 'graphql', '-f', `query=${FUSE_COMMENTS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${trip.issue}`];
+    if (cursor) args.push('-f', `after=${cursor}`);
+    const r = ghRead(args, { allowFail: true, timeoutMs: 30_000 });
+    let issue = null;
+    try { issue = r.ok ? JSON.parse(r.stdout)?.data?.repository?.issue : null; } catch { issue = null; }
+    const nodes = issue?.comments?.nodes;
+    if (!Array.isArray(nodes)) {
+      result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 的评论读不到,照旧停审,下一轮再读:${String(r.stderr ?? '').trim().slice(0, 120)}`];
+      result.retry = true;
+      return null;
+    }
+    state = issue.state ?? state;
+    comments.push(...nodes);
+    const info = issue.comments.pageInfo ?? {};
+    if (!info.hasNextPage || !info.endCursor) break;
+    cursor = info.endCursor;
+    if (page === FUSE_COMMENT_PAGES - 1) result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 评论超过 ${FUSE_COMMENT_PAGES} 页,只看了前 ${comments.length} 条`];
   }
-  return findResumeComment({ comments, maintainers: config.maintainers, author: live.meta?.author ?? '', resumeLine: config.resumeLine, since: trip.at });
+  return { state, resume: findResumeComment({ comments, maintainers: config.maintainers, author: live.meta?.author ?? '', resumeLine: config.resumeLine, since: trip.at }) };
 }
 
 // 关成功返回 true;关失败记 error 并 retry,熔断记录保留,下一轮读到同一条「继续审」再关。

@@ -18,7 +18,7 @@ assert.match(source, /if \(next\.dispatch\) return holdForFuse\(ctx, task, live,
 const CONFIG_FUSE = { enabled: true, maxVersions: 10, resumeLine: '继续审', maintainers: ['praisezhu', 'aj0928'] };
 const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${prefix}${i}`, head: `${prefix}${i}`, at: `2026-11-07T0${i}:00:00.000Z` }));
 
-function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [] } = {}) {
+function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100 } = {}) {
   const store = { prs: { 1704: structuredClone(record) } };
   const calls = [];
   const finished = [];
@@ -42,7 +42,14 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
     ghRead: (args) => {
       calls.push(args);
       if (args.includes('graphql')) {
-        return commentsOk ? { ok: true, stdout: JSON.stringify({ data: { repository: { issue: { comments: { nodes: comments } } } } }) } : { ok: false, stderr: 'HTTP 502' };
+        if (!commentsOk) return { ok: false, stderr: 'HTTP 502' };
+        // 按页从旧到新:after=<下标> 是游标
+        const after = args.find((a) => String(a).startsWith('after='));
+        const start = after ? Number(after.slice(6)) : 0;
+        const nodes = comments.slice(start, start + pageSize);
+        const next = start + pageSize < comments.length;
+        return { ok: true, stdout: JSON.stringify({ data: { repository: { issue: { state: issueState,
+          comments: { pageInfo: { hasNextPage: next, endCursor: next ? String(start + pageSize) : null }, nodes } } } } }) };
       }
       if (args.includes('repos/o/r/issues')) return listOk ? { ok: true, stdout: JSON.stringify([openIssues]) } : { ok: false, stderr: 'HTTP 502' };
       return { ok: false, stderr: `unexpected ${args.join(' ')}` };
@@ -186,4 +193,27 @@ test('恢复时关 issue 失败:不清熔断、不派审,记 error 并 retry;下
   const retried = makeWorld({ record: structuredClone(world.store.prs[1704]), comments: RESUME });
   assert.equal(retried.gate('h9').out, null);
   assert.equal(retried.store.prs[1704].fuse.trip, null);
+});
+
+// #211 复审的两条 P2:评论按页读全(唤醒被推迟、期间又讨论了一百多条时不漏);issue 已关(上一轮关成功、本机没清记录)就不再关。
+test('「继续审」之后又有 150 条讨论:按页读全,仍能恢复', () => {
+  const chatter = Array.from({ length: 150 }, (_, i) => ({ author: { login: 'aj0928' }, body: `讨论 ${i}`, createdAt: `2026-11-07T11:${String(31 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`, isMinimized: false }));
+  const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: [...RESUME, ...chatter] });
+  assert.equal(world.gate('h9').out, null, '恢复派审');
+  assert.equal(world.calls.filter((args) => args.includes('graphql')).length, 2, '100 + 50 两页');
+  assert.ok(world.calls.filter((args) => args.includes('graphql'))[1].includes('after=100'));
+  assert.equal(world.store.prs[1704].fuse.trip, null);
+});
+
+test('issue 已经关了(上一轮关成功、本机清记录前崩溃):不再调用关闭,直接清熔断并恢复派审', () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: RESUME, issueState: 'CLOSED', closeOk: false });
+  assert.equal(world.gate('h9').out, null);
+  assert.equal(world.calls.filter((args) => args[0] === 'issue').length, 0, '不再关已关的 issue');
+  assert.equal(world.store.prs[1704].fuse.trip, null);
+});
+
+test('issue 被人关了但没有有效「继续审」:照旧停审,不清熔断', () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions(), trip: TRIP } }, comments: [], issueState: 'CLOSED' });
+  assert.deepEqual(world.gate('h9').out, { dispatched: false });
+  assert.deepEqual(world.store.prs[1704].fuse.trip, TRIP);
 });
