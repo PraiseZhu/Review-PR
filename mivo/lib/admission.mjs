@@ -165,7 +165,8 @@ export function toHeldWake({ issues = [], seen = {}, busyPrs = new Set() }) {
   const deferred = [];
   for (const issue of issues) {
     if (issue?.pull_request) continue;
-    const m = String(issue?.title ?? '').match(/^维护者确认 · PR #(\d+)/);
+    // 审查熔断 issue(#209)同样靠新评论(「继续审」)唤醒。
+    const m = String(issue?.title ?? '').match(/^(?:维护者确认|审查熔断) · PR #(\d+)/);
     if (!m) continue;
     const pr = Number(m[1]);
     const previous = seen[issue.number];

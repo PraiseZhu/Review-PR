@@ -184,6 +184,16 @@ test('held 唤醒:第一次见到的 issue 已有评论也唤醒(创建到被记
   assert.deepEqual(toHeldWake({ issues: [issues[0]], seen: r.next }).wake, []);
 });
 
+test('held 唤醒:审查熔断 issue(#209)有新评论(「继续审」)同样唤醒对应 PR;别的标题不认', () => {
+  const issues = [
+    { number: 990, title: '审查熔断 · PR #1704：审到第 10 版还没放行', updated_at: 't2', comments: 1 },
+    { number: 991, title: '讨论 · PR #1705', updated_at: 't2', comments: 1 },
+  ];
+  const r = toHeldWake({ issues, seen: { 990: { pr: 1704, updatedAt: 't1' } } });
+  assert.deepEqual(r.wake, [1704]);
+  assert.equal(r.next[991], undefined);
+});
+
 test('提前释放的 PR(作者推了新提交、旧 run 已确认结束)不再算忙,同轮其它 PR 照旧算', () => {
   const plans = [{ manifest: { candidates: [{ number: 941 }, { number: 950 }] }, groups: [{ prs: [{ pr: 941 }, { pr: 950 }] }],
     released: { 950: { at: '2026-10-14T10:00:00Z' } } }];

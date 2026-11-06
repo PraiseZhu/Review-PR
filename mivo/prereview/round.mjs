@@ -27,6 +27,7 @@ import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit } from '../lib/admission.mjs';
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
+import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment, selectOpenFuseIssue } from '../lib/fuse.mjs';
 import { toHoldAlert } from '../deploy/tuple-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -200,6 +201,9 @@ const gateActionScript = (name, args, options = {}, precheck = null) => {
 };
 const ghRead = (args, options = {}) => run('gh', args, { cwd: CONFIG.repoRoot, env: ENV, ...options });
 const stateFile = (name) => join(CONFIG.stateDir, 'mivo', name);
+// 审查熔断配置(#209):规则文件里的 convergeFuse;填错在启动时报错(main 里先读一次)。
+let FUSE_CONFIG = null;
+const fuseConfig = () => (FUSE_CONFIG ??= loadFuseConfig(CONFIG.rulesFile || join(SKILL_ROOT, 'review-pr', 'config', 'pr-rules.json')));
 
 // ── 本机记录:每个 PR 的服务器审查记录、每日派发账本、额度暂停、部署暂停 ─────
 function loadStore() { return readJson(stateFile('reviews.json'), { version: 1, prs: {} }); }
@@ -633,6 +637,7 @@ async function main() {
   // 与老审查机同一个维护窗口:06:00–07:00(Asia/Shanghai)不开新一轮;07:00 后照常采集,窗口里来的 PR 自动补上。
   if (!inBusinessWindow()) { writeHeartbeat(); weeklyRepoGc(); log('maintenance-window'); return; }
   verifySkillPin();
+  fuseConfig();
   let busyAtStart = null;
   try { busyAtStart = toBusyPrs(incompletePlanFiles().map((file) => ({ ...readJson(file), released: readJson(join(dirname(file), 'mivo-released.json'), {}) }))); } catch (error) {
     log('wake-held-skip', { reason: error.message.slice(0, 200) });
@@ -1198,13 +1203,132 @@ async function handleTask(ctx, task) {
     if (next.closeIssue && !dry) {
       await executeGateAction({ action: { script: 'signoff-release', mode: 'labels-only-close-issue', ...(decision.autoRelease ? { autoRelease: decision.autoRelease } : {}) }, live, task, bindings, result, roundDir });
     }
-    if (next.dispatch) return dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result, toLiveBlockers(live));
+    if (next.dispatch) return holdForFuse(ctx, task, live, result) ?? dispatchReview(ctx, task, { tier: live.review?.tier ?? 'standard', action: 'protected-approve' }, result, toLiveBlockers(live));
   }
   if (decision.stage !== 'review') {
     if (decision.retry) result.retry = true;
     return finishGate(ctx, task, result, toLiveBlockers(live));
   }
-  return dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result, toLiveBlockers(live));
+  return holdForFuse(ctx, task, live, result) ?? dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result, toLiveBlockers(live));
+}
+
+// ── 审查熔断(#209)────────────────────────────────────────────────────────────
+// 判门要派审时先问一句:这个 PR 从上次「继续审」起审过的代码版本数到没到上限、当前 head 是不是审查通过的 head。
+// 到了就不派审,结果记 maintainer-signoff(等人处理;共享 review-round.mjs 的结果名单里没有专门的熔断结果,不为此改共享脚本),
+// gate.fuse 记版本数和 issue 号;不放行,review-pr 不写成通过。第一次熔断时开「审查熔断 · PR #<n>」issue。
+// 已经熔断的 PR 每次判门读一次那个 issue 的评论:有效的「继续审」→ 先关 issue,关成功才清掉熔断、记 resumedAt,这一轮照常派审;
+// 关失败或评论读不到都记 retry,下一轮再试(同一条评论只唤醒一次,不 retry 就会一直停着)。
+// 开 issue 前先查开着的 issue 里有没有这个 PR 的熔断 issue(上一轮开成功、本机记录没写上时沿用),查不到列表就不开、retry。
+// 开 issue 失败记 error 并 retry,下一轮再开;dry-run 只记 dryRunActions,不写 GitHub,也不写本机熔断记录。
+function holdForFuse(ctx, task, live, result) {
+  const config = fuseConfig();
+  if (!config.enabled) return null;
+  const dry = CONFIG.mode === 'dry-run';
+  let record = loadStore().prs[task.pr] ?? {};
+  if (record.fuse?.trip?.issue) {
+    const read = readFuseResume(record.fuse.trip, live, config, result);
+    const resume = read?.resume ?? null;
+    // issue 已经关了(上一轮关成功、本机清记录前崩溃或写盘失败)就不再关,直接清熔断,免得反复关一个已关的 issue 卡住。
+    const closed = resume && (dry || read.state === 'CLOSED'
+      || closeFuseIssue(record.fuse.trip.issue, toFuseResumeComment({ login: resume.login, resumeLine: config.resumeLine }), result));
+    if (closed) {
+      if (dry) result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-resume:#${record.fuse.trip.issue}`];
+      else bumpOwned(ctx, task, { fuse: { ...record.fuse, trip: null, resumedAt: resume.at } });
+      log('fuse-resumed', { pr: task.pr, head: task.head, issue: record.fuse.trip.issue, by: resume.login });
+      record = { ...record, fuse: { ...record.fuse, trip: null, resumedAt: resume.at } };
+    }
+  }
+  const decision = toFuseDecision({ record, head: task.head, maxVersions: config.maxVersions });
+  if (!decision.tripped) return null;
+  result.outcome = 'maintainer-signoff';
+  result.gate = { ...(result.gate ?? {}), fuse: { count: decision.count, maxVersions: config.maxVersions, issue: decision.trip?.issue ?? null } };
+  if (!decision.trip) openFuseIssue(ctx, task, live, record, decision.count, result, dry);
+  const issue = result.gate.fuse.issue;
+  result.reason = `已审过 ${decision.count} 个代码版本仍未放行,审查熔断停审${issue ? `,等人在 #${issue} 回「${config.resumeLine}」` : ''}`;
+  log('fuse-hold', { pr: task.pr, head: task.head, count: decision.count, issue });
+  return finishGate(ctx, task, result, toLiveBlockers(live));
+}
+
+function openFuseIssue(ctx, task, live, record, count, result, dry) {
+  const config = fuseConfig();
+  const issue = toFuseIssue({ pr: task.pr, title: live.meta?.title ?? '', url: live.meta?.url ?? '', author: live.meta?.author ?? '',
+    count, maxVersions: config.maxVersions, findings: record.fuse?.lastFindings ?? null, resumeLine: config.resumeLine });
+  if (dry) {
+    result.dryRunActions = [...(result.dryRunActions ?? []), 'fuse-issue:create'];
+    return;
+  }
+  const listed = ghRead(['api', '--method', 'GET', '--paginate', '--slurp', `repos/${CONFIG.targetRepo}/issues`, '-f', 'state=open', '-f', 'per_page=100'],
+    { allowFail: true, timeoutMs: 60_000 });
+  let openIssues = null;
+  try { openIssues = listed.ok ? JSON.parse(listed.stdout) : null; } catch { openIssues = null; }
+  if (!Array.isArray(openIssues)) {
+    result.errors = [...(result.errors ?? []), `开熔断 issue 前读不到开着的 issue 列表,这一轮不开:${String(listed.stderr ?? '').trim().slice(0, 120)}`];
+    result.retry = true;
+    return;
+  }
+  const existing = selectOpenFuseIssue(openIssues, task.pr);
+  if (existing) {
+    bumpOwned(ctx, task, { fuse: { ...(record.fuse ?? {}), trip: { issue: existing, at: nowIso(), count, head: task.head } } });
+    result.gate.fuse.issue = existing;
+    log('fuse-issue-adopted', { pr: task.pr, issue: existing });
+    return;
+  }
+  assertNotFenced();
+  const bodyFile = join(ctx.roundDir, `fuse-issue-pr-${task.pr}.md`);
+  writeText(bodyFile, issue.body);
+  const created = run('gh', ['issue', 'create', '-R', CONFIG.targetRepo, '--title', issue.title, '--body-file', bodyFile],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  const number = Number(String(created.stdout ?? '').trim().match(/\/issues\/(\d+)\s*$/)?.[1]);
+  if (!created.ok || !Number.isSafeInteger(number)) {
+    result.errors = [...(result.errors ?? []), `熔断 issue 没开出来:${String(created.stderr || created.stdout || '').trim().slice(0, 200)}`];
+    result.retry = true;
+    return;
+  }
+  bumpOwned(ctx, task, { fuse: { ...(record.fuse ?? {}), trip: { issue: number, at: nowIso(), count, head: task.head } } });
+  result.gate.fuse.issue = number;
+}
+
+// 读熔断 issue 的开关状态和全部评论(GraphQL:要 isMinimized;按页从旧到新读完,最多 FUSE_COMMENT_PAGES 页),
+// 返回 { resume: 第一条有效的「继续审」或 null, state } 或 null。只读最近一页会漏:PR 在审时唤醒被推迟,
+// 期间先回「继续审」又讨论了一百多条,唤醒时那条已不在窗口里(#211 复审)。读不到记 warning 并 retry,照旧停着。
+const FUSE_COMMENT_PAGES = 20;
+const FUSE_COMMENTS_QUERY = 'query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){issue(number:$number){state comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{databaseId author{login} body createdAt isMinimized}}}}}';
+function readFuseResume(trip, live, config, result) {
+  const [owner, name] = CONFIG.targetRepo.split('/');
+  const comments = [];
+  let state = null;
+  let cursor = null;
+  for (let page = 0; page < FUSE_COMMENT_PAGES; page += 1) {
+    const args = ['api', 'graphql', '-f', `query=${FUSE_COMMENTS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${trip.issue}`];
+    if (cursor) args.push('-f', `after=${cursor}`);
+    const r = ghRead(args, { allowFail: true, timeoutMs: 30_000 });
+    let issue = null;
+    try { issue = r.ok ? JSON.parse(r.stdout)?.data?.repository?.issue : null; } catch { issue = null; }
+    const nodes = issue?.comments?.nodes;
+    if (!Array.isArray(nodes)) {
+      result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 的评论读不到,照旧停审,下一轮再读:${String(r.stderr ?? '').trim().slice(0, 120)}`];
+      result.retry = true;
+      return null;
+    }
+    state = issue.state ?? state;
+    comments.push(...nodes);
+    const info = issue.comments.pageInfo ?? {};
+    if (!info.hasNextPage || !info.endCursor) break;
+    cursor = info.endCursor;
+    if (page === FUSE_COMMENT_PAGES - 1) result.warnings = [...(result.warnings ?? []), `熔断 issue #${trip.issue} 评论超过 ${FUSE_COMMENT_PAGES} 页,只看了前 ${comments.length} 条`];
+  }
+  return { state, resume: findResumeComment({ comments, maintainers: config.maintainers, author: live.meta?.author ?? '', resumeLine: config.resumeLine, since: trip.at }) };
+}
+
+// 关成功返回 true;关失败记 error 并 retry,熔断记录保留,下一轮读到同一条「继续审」再关。
+function closeFuseIssue(number, comment, result) {
+  assertNotFenced();
+  const closed = run('gh', ['issue', 'close', String(number), '-R', CONFIG.targetRepo, '--comment', comment],
+    { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  if (closed.ok) return true;
+  result.errors = [...(result.errors ?? []), `熔断 issue #${number} 没关掉,先不恢复送审,下一轮再试:${String(closed.stderr ?? '').trim().slice(0, 120)}`];
+  result.retry = true;
+  return false;
 }
 
 async function executeGateAction({ action, live, task, bindings, result, roundDir }) {
@@ -1792,6 +1916,14 @@ function collectServerRun(ctx, entry, active) {
   if (existsSync(join(dir, 'finish.json'))) copyFileSync(join(dir, 'finish.json'), join(ctx.roundDir, `finish-pr-${task.pr}.json`));
   result.errors = [...(entry.gateResult?.errors ?? []), ...(server.errors ?? [])];
   result.warnings = [...(entry.gateResult?.warnings ?? []), ...(server.warnings ?? [])];
+  // 审查熔断(#209):真正审完的一版记进本机版本历史(指纹在下面被丢掉之前取);审到上限还没放行就标 retry,下一轮判门开熔断 issue。
+  const fusePatch = server.reviewed === true && fuseConfig().enabled
+    ? { fuse: withFuseVersion(loadStore().prs[task.pr] ?? {}, { fp: toVersionFingerprint(server), head: task.head, at: nowIso(), findings: toFindingCounts(server) }) }
+    : {};
+  if (fusePatch.fuse && shouldWakeForFuse({ record: { ...(loadStore().prs[task.pr] ?? {}), ...fusePatch }, reviewClean: server.reviewClean === true, maxVersions: fuseConfig().maxVersions })) {
+    result.retry = true;
+    log('fuse-wake', { pr: task.pr, head: task.head });
+  }
   result.mivo = { ...server.mivo, filePatchHashes: undefined, filePatchHashesV2: undefined, findings: (server.mivo?.findings ?? []).length, deferred: (server.mivo?.deferred ?? []).length };
   writeTaskResult(ctx, task, result, { raw: true });
   const staleKey = isStaleKeyResult(server, { pr: task.pr, runId: entry.runId, intentAt: entry.intentAt ?? entry.dispatchedAt ?? null });
@@ -1826,6 +1958,7 @@ function collectServerRun(ctx, entry, active) {
     completedRun = server.outcome !== 'error';
   }
   bumpOwned(ctx, task, {
+    ...fusePatch,
     lastRunId: entry.runId,
     // 这次收回的是一次完成的审查(不是失败、不是健康/限额退回):累计这个 head 的已完成次数,toRetryDecision 据此封顶。
     ...(completedRun ? { completedRuns: toCompletedRunsRecord(loadStore().prs[task.pr]?.completedRuns, task.head) } : {}),
