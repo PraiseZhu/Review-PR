@@ -5116,11 +5116,11 @@
    ]
   },
   {
-   "id": "round.run_gh.0736760a33",
+   "id": "round.run_gh.67411ccd0e",
    "source": {
     "file": "mivo/prereview/round.mjs",
     "callee": "run:gh",
-    "sig": "0736760a33",
+    "sig": "67411ccd0e",
     "count": 1
    },
    "flows": [
@@ -5137,6 +5137,19 @@
       "xindong/mivo-canvas-plugin",
       "--body",
       "飞书通知未送达：timeout"
+     ],
+     "expected": "app-write"
+    },
+    {
+     "name": "fuse-notify-forwarded-comment",
+     "argv": [
+      "issue",
+      "comment",
+      "1900",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--body",
+      "飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册里，请补 xindong/org 名册。"
      ],
      "expected": "app-write"
     }

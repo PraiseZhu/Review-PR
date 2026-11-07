@@ -240,12 +240,12 @@
     "maxVersions": 10,
     "resumeLine": "继续审",
     "notify": {
-      "_comment": "熔断时用飞书「Mivo」机器人私聊 PR 作者(PraiseZhu/Review-PR#210)。作者按 rosterRepos 名册对到公司邮箱再查飞书 open_id,对不上转给 fallbackLogin。应用密钥只放 Mini 本机钥匙串(security add-generic-password -a <keychainAccount> -s <keychainService> -U -w),不进 git。沙箱不发,免得私聊真人。",
+      "_comment": "熔断时用飞书「Mivo」机器人私聊 PR 作者(PraiseZhu/Review-PR#210)。作者按名册对到公司邮箱再查飞书 open_id,对不上转给 fallbackLogin 并在熔断 issue 下留一行补名册说明。名册仓默认取目标仓所属组织的 <owner>/org(#219),rosterRepos 只写要追加的其他名册仓,可为空。应用密钥只放 Mini 本机钥匙串(security add-generic-password -a <keychainAccount> -s <keychainService> -U -w),不进 git。沙箱不发,免得私聊真人。",
       "enabled": false,
       "appId": "cli_a9496e1ca2799bb3",
       "keychainService": "mivo-feishu-app",
       "keychainAccount": "mivo-review",
-      "rosterRepos": ["xindong/org"],
+      "rosterRepos": [],
       "fallbackLogin": "PraiseZhu"
     }
   },
