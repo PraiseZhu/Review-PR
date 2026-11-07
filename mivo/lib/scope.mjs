@@ -179,6 +179,22 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
   };
 }
 
+/**
+ * 「后来发现」分桶(#221)用:上一轮可信结果里审过、本轮补丁指纹没变的文件。纯函数。
+ * 指纹口径与 computeBaseReviewScope 相同:双方都有 v2 才按 v2 比,否则按 v1。
+ * 没有上一轮、上一轮没审完或出错时返回 null(调用方据此一律照常阻断,不当成「全部没改」)。
+ * @returns {string[]|null}
+ */
+export function unchangedReviewedFiles({ previous, current }) {
+  const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
+  if (!trusted) return null;
+  const isFilled = (o) => o && typeof o === 'object' && Object.keys(o).length > 0;
+  const useV2 = isFilled(previous.filePatchHashesV2) && isFilled(current?.filePatchHashesV2);
+  const before = (useV2 ? previous.filePatchHashesV2 : previous.filePatchHashes) ?? {};
+  const after = (useV2 ? current.filePatchHashesV2 : current?.filePatchHashes) ?? {};
+  return Object.keys(after).filter((path) => typeof before[path] === 'string' && before[path] === after[path]).sort();
+}
+
 // 上一轮的问题清单(含转 issue 的)带进本轮;文件已不在本轮 diff 的标 outOfDiff。上一轮不可信时为空。
 function carriedFindings(previous, current) {
   const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';

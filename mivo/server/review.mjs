@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope } from '../lib/scope.mjs';
-import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats } from '../lib/report.mjs';
+import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope, unchangedReviewedFiles } from '../lib/scope.mjs';
+import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats, loadLateFindingsMode, splitLateFindings } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
 import { loadFocusConfig } from '../lib/focus.mjs';
@@ -172,6 +172,9 @@ async function prepare() {
     // 产品规则开关(lib/product-rules.mjs):读不到或不合法按 off 处理并告警;规则本身在下面拿到 diff 文件后再读。
     const productRulesMode = loadProductRulesMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     if (productRulesMode.warning) state.warnings.push(productRulesMode.warning);
+    // 后来发现分桶开关(lib/report.mjs splitLateFindings):读不到或不合法按 off 处理并告警;未改动文件清单在下面算完范围后再定。
+    const lateMode = loadLateFindingsMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+    if (lateMode.warning) state.warnings.push(lateMode.warning);
     const gate = decideGate(ctx);
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
@@ -250,6 +253,8 @@ async function prepare() {
     }
     const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull });
     state.scope = scope;
+    // 后来发现:上一轮可信结果里审过、本轮补丁指纹没变的文件;没有可信的上一轮时为 null,新 P2 一律照常阻断。
+    state.lateFindings = { mode: lateMode.mode, unchangedFiles: lateMode.mode === 'enforce' ? unchangedReviewedFiles({ previous, current }) : null };
     // 本 PR 第一次送审(没有上一轮结果)时交接已过期:enforce 下同样挂 handoff,代码照审、不放行。
     state.handoff.firstReview = !previous;
     if (!previous && !state.pendingGates.includes('handoff') && toHandoffPending(state.handoff, { firstReview: true }).length) state.pendingGates.push('handoff');
@@ -784,7 +789,10 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
     history, rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], keyDeferrals: keyedDeferrals(state.deferrals?.verified ?? []), head: state.input.head });
-  return { ...checked, ...conv, truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100, preexisting: checked.preexisting.length > 100 } };
+  // 后来发现(#221):第 2 轮起落在没改动文件上的新 P2 移出阻断。codex 阶段(是否进收口、交给核对员的条目)与 publish 共用这一份分类。
+  const late = splitLateFindings({ findings: conv.findings, unchangedFiles: state.lateFindings?.unchangedFiles ?? null, mode: state.lateFindings?.mode ?? 'off' });
+  return { ...checked, ...conv, findings: late.findings, lateFindings: late.late,
+    truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100, preexisting: checked.preexisting.length > 100 } };
 }
 
 // 核对结果进结果包:只留结论、耗时、模型和证据/理由(模型文本过一遍脱敏),供遥测脚本统计。
@@ -850,6 +858,7 @@ async function publish() {
     let findings;
     let deferred = [];
     let preexisting = [];
+    let lateFindings = [];
     let ruledKept = [];
     let adjudicatedKept = [];
     let convergence = null;
@@ -868,6 +877,7 @@ async function publish() {
       deferred = previous.mivo?.deferred ?? [];
       // 沿用上一轮结论:不重算 key 与轮次。
       preexisting = previous.mivo?.preexisting ?? [];
+      lateFindings = previous.mivo?.lateFindings ?? [];
       ruledKept = previous.mivo?.ruledKept ?? [];
       convergence = previous.mivo?.convergence ?? null;
       verifierOverruled = previous.mivo?.verifierOverruled ?? [];
@@ -930,9 +940,10 @@ async function publish() {
       deferred = checked.deferred;
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
+      lateFindings = checked.lateFindings ?? [];
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
       adjudicatedKept = (checked.adjudicatedKept ?? []).map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
-      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, adjudicatedKept, verifierOverruled, rulings: state.rulings?.verified });
+      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, lateFindings, ruledKept, adjudicatedKept, verifierOverruled, rulings: state.rulings?.verified });
       convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
         rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
       // 因核对员模型不可用没核的 P1/P2(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
@@ -945,7 +956,7 @@ async function publish() {
         ? computeHandoffStats({ review: handoffReview, coverage: handoffCoverage, meta: checked.handoffCoverageMeta ?? {}, findings, head: input.head, runId: input.runId }) : null;
       if (handoffReview) Object.assign(result.mivo, { handoffReview: toHandoffSnapshot(handoffReview), handoffCoverage, handoffCoverageMeta: checked.handoffCoverageMeta ?? {}, ...(handoffStats ? { handoffStats } : {}) });
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
-        preexisting, ruledKept, adjudicatedKept, verifierRefuted, verifierDowngraded,
+        preexisting, late: lateFindings, ruledKept, adjudicatedKept, verifierRefuted, verifierDowngraded,
         verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier,
@@ -961,6 +972,7 @@ async function publish() {
     deferred = deferred.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return { ...finding, body: s.text }; });
     // 结果包只存紧凑形状:Mini 的 round.mjs 会把 server.mivo 整份带进轮次文件,正文以外的长文本不放进去。
     preexisting = preexisting.map((finding) => toStoredFinding(finding));
+    lateFindings = lateFindings.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return toStoredFinding({ ...finding, body: s.text }); });
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
@@ -968,7 +980,7 @@ async function publish() {
     const allOverruled = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
-    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, ruledKept, adjudicatedKept, convergence,
+    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, lateFindings, ruledKept, adjudicatedKept, convergence,
       rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, verifierOverruledAll: allOverruled, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
@@ -1052,7 +1064,7 @@ function baseResult(state) {
       filePatchHashes: current.filePatchHashes, filePatchHashesV2: current.filePatchHashesV2, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       ...(state.handoff?.review ? { handoffReview: toHandoffSnapshot(state.handoff.review) } : {}),
-      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], ruledKept: [], adjudicatedKept: [], convergence: null, verifierOverruled: [], completedAt: null,
+      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], lateFindings: [], ruledKept: [], adjudicatedKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },
   };
 }
@@ -1257,8 +1269,8 @@ function commentReceipt(comment) {
 
 // ── 已修旧 thread 回复说明(#115;#185 起只回复、不关闭,关闭交给 Mini 盯梢)────────────────────
 // 本轮报出 / 分类 / 裁定过的 key 全集;分类被截断、缺 key 时返回 complete=false,调用方不得据此回复「已修复」。
-function resolutionExcludedKeys({ checked, findings, deferred, preexisting, ruledKept, adjudicatedKept = [], verifierOverruled, rulings }) {
-  const items = [...(checked.findings ?? []), ...findings, ...deferred, ...preexisting, ...ruledKept, ...adjudicatedKept, ...verifierOverruled, ...(rulings ?? [])];
+function resolutionExcludedKeys({ checked, findings, deferred, preexisting, lateFindings = [], ruledKept, adjudicatedKept = [], verifierOverruled, rulings }) {
+  const items = [...(checked.findings ?? []), ...findings, ...deferred, ...preexisting, ...lateFindings, ...ruledKept, ...adjudicatedKept, ...verifierOverruled, ...(rulings ?? [])];
   const keys = new Set();
   let complete = !Object.values(checked.truncated ?? {}).some(Boolean);
   for (const item of items) {

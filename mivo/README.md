@@ -34,7 +34,7 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警。`productRules.mode` 是产品规则开关（见「产品规则」），仓库当前配置为 observe；缺这一块按 off，不合法时按 off 并告警 |
+| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警。`productRules.mode` 是产品规则开关（见「产品规则」），仓库当前配置为 observe；缺这一块按 off，不合法时按 off 并告警。`lateFindings.mode` 是「后来发现」分桶开关（`enforce` / `off`，见「后来发现」），仓库当前配置为 enforce，由 prepare 读取、不进 `specDigest`；缺这一块按 off，不合法时按 off 并告警 |
 | `lib/focus.mjs` | 任务书「审查重点与不重做」一节（#188）：读 `config/review-features.json` 的 `focus.ciCovered`，生成审查顺序 ①②③④、规则只核相关条款、CI 全绿时的「CI 已覆盖、不要重跑」清单（见「审查重点与不重做」） |
 | `lib/product-rules.mjs` | Mivo 产品规则（`docs/product-rules/*.md`，#187）：从 PR head 的 git 对象读规则，prepare 阶段查落地 issue 推出状态，生成任务书「产品规则」一节（见「产品规则」） |
 | `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解（判门与任务书用）；自己解析 head 上的 `review.md`（R 编号、内容哈希、涉及文件）；校验答卷的 `handoffCoverage` |
@@ -148,8 +148,18 @@ Mini 只认服务器正式写入、绑定当前 PR head 的 `review-pr` 成功�
 
 - P0、P1：大范围灾难性影响；受支持场景中可信可达的触发路径导致核心流程失效、严重数据错误或安全/隐私边界被突破。
 - P2（报并阻断）：本 PR 引入或改动范围内已证实的真实问题，影响局部；除功能缺陷外，含误导性的测试、自己定的验收没达成、声称做过的验证实际没做三类（2026-10-22 维护者按「是否误导」划线）。
-- P3（不报）：风格、命名、整理、视觉润色；生产行为已正确、PR 也没声称覆盖的「再加测试」或覆盖率建议；不影响结论的措辞、时态、格式问题；没有收益证据的优化。
+- P3（不报）：风格、命名、整理、视觉润色；生产行为已正确、PR 也没声称覆盖的「再加测试」或覆盖率建议；不影响结论的措辞、时态、格式问题；没有收益证据的优化；输入只有维护者能写、改动要过维护者确认门（如 `docs/product-rules/`、`AGENTS.md`）时，「故意写坏的输入能绕过检查或骗过校验器」（PR 正文、任务 issue 或工具文档明确承诺这项检查的除外，#221）。
 - 规范原文里「记 P1」的具体条款按实际影响重新分级。
+
+## 后来发现（#221）
+
+第 2 轮起才报出的新 P2，落在上一轮审过、本轮没改动的文件上时，不挡合并。来源：xindong/mivo-canvas-plugin#1858 审了 23 轮，大部分轮次是全量重审在没改的文件上冒出新问题。
+
+- 判定（`lib/report.mjs` 的 `splitLateFindings`，publish 与 codex 阶段共用 `classifyAnswer` 的同一份分类）：开关为 `enforce`；有上一轮可信结果（审完、报告完整、不是 error）；P2；`supersedes` 为 null；没转 issue；来源不是 pre-existing；不是连续报出（上一轮已阻断的同 key 问题照常阻断）；问题文件和同类位置（`instances`）的文件都在「未改动文件」清单里。条件全部满足才移出阻断。
+- 未改动文件（`lib/scope.mjs` 的 `unchangedReviewedFiles`）：上一轮结果包的补丁指纹与本轮相同的文件。双方都有 `filePatchHashesV2` 时按 v2 比，否则按 v1。prepare 算好写进 `state.lateFindings`。
+- 照常阻断：P0、P1；文件指纹变了或新加文件上的 P2；`supersedes` 指向上一轮问题的 P2；第一轮（没有上一轮结果）的任何 P2。收口全量何时触发不变。
+- 移出的 P2 不开 thread、不阻断，报告在 Rule coverage 前单列「后来发现（不阻断本 PR）」，结论行写明条数，结果包存 `mivo.lateFindings`。作者自己决定本 PR 修、另开 PR 修或转 issue 跟进；审查机不自动开 issue。增量轮只剩后来发现时，同一次运行照常接着做放行前收口全量。
+- `lateFindings.mode` 设为 `off` 时，分桶与阻断和改动前一致。
 
 ## 审查问题转 issue 跟进
 
