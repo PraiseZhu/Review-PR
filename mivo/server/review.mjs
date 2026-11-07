@@ -251,7 +251,7 @@ async function prepare() {
       headIsDescendant = run('git', ['merge-base', '--is-ancestor', previous.head, input.head], { cwd: REPO_DIR, allowFail: true }).status === 0;
       if (headIsDescendant) git(['diff', '--numstat', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 }); // 同上:增量复审离线要用
     }
-    const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull });
+    const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull, lateFindingsMode: lateMode.mode });
     state.scope = scope;
     // 后来发现:上一轮可信结果里审过、本轮补丁指纹没变的文件;没有可信的上一轮时为 null,新 P2 一律照常阻断。
     state.lateFindings = { mode: lateMode.mode, unchangedFiles: lateMode.mode === 'enforce' ? unchangedReviewedFiles({ previous, current }) : null };

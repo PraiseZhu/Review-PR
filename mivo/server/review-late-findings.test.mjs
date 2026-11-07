@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { previousFromResult, computeReviewScope } from '../lib/scope.mjs';
 
 const REVIEW = fileURLToPath(new URL('./review.mjs', import.meta.url));
 const SKILL_SHA = 'a'.repeat(40);
@@ -105,4 +106,38 @@ test('后来发现:文件改过(不在未改动清单)、第一轮(清单为 nul
       assert.match(report, /changes-requested —— 1 条 P0\/P1\/P2/);
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
+});
+
+// SC4 在沿用路径上也成立:enforce 下只有后来发现的干净结果,同 head 切 off 重跑,不能沿用成「不阻断」。
+test('后来发现:enforce 下产生只含后来发现的干净结果,同 head 切 off 重跑 → 不沿用、全量重审,那条 P2 阻断', () => {
+  const p2 = finding({ severity: 'P2', title: '后来才看到的问题', bugClass: 'late' });
+  const first = setup({ findings: [p2], ...enforce(['src/a.ts']) });
+  const second = setup({ findings: [p2] });
+  try {
+    const result = publish(first.work);
+    assert.equal(result.reviewClean, true);
+    assert.equal(result.mivo.lateFindings.length, 1);
+    const previous = previousFromResult(result, readFileSync(join(first.work, 'out', 'report.md'), 'utf8'));
+    const ev = result.reviewEvidence;
+    const current = { head: result.head, baseRefName: ev.baseRefName, diffHash: ev.diffHash, filePatchHashes: result.mivo.filePatchHashes,
+      filePatchHashesV2: result.mivo.filePatchHashesV2, totalDiffLines: 1, tier: 'standard', triggerKinds: [], specDigest: result.mivo.specDigest, now: Date.now() };
+    const args = { previous, current, headIsDescendant: true };
+    assert.equal(computeReviewScope({ ...args, lateFindingsMode: 'enforce' }).mode, 'reuse', 'enforce 下同 head 照常沿用');
+    const scope = computeReviewScope({ ...args, lateFindingsMode: 'off' });
+    assert.equal(scope.mode, 'full');
+    assert.match(scope.reason, /后来发现分桶已关闭/);
+    assert.deepEqual(scope.previousFindings.map((f) => f.key), [result.mivo.lateFindings[0].key], '后来发现放进待核对的旧问题清单');
+    // 第二轮:开关 off,按上面算出的范围发布;上一轮结果包放在 prev/,范围若仍是 reuse 会把那条 P2 原样沿用成不阻断。
+    mkdirSync(join(second.work, 'prev'), { recursive: true });
+    writeFileSync(join(second.work, 'prev', 'result.json'), JSON.stringify(result));
+    writeFileSync(join(second.work, 'prev', 'report.md'), readFileSync(join(first.work, 'out', 'report.md'), 'utf8'));
+    const statePath = join(second.work, 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    writeFileSync(statePath, JSON.stringify({ ...state, scope, lateFindings: { mode: 'off', unchangedFiles: null } }));
+    const again = publish(second.work);
+    assert.equal(again.reviewClean, false);
+    assert.equal(again.mivo.findings.length, 1);
+    assert.equal(again.mivo.findings[0].severity, 'P2');
+    assert.deepEqual(again.mivo.lateFindings, []);
+  } finally { rmSync(first.work, { recursive: true, force: true }); rmSync(second.work, { recursive: true, force: true }); }
 });

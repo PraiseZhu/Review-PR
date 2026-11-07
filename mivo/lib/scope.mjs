@@ -79,10 +79,21 @@ export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(fi
  * @param {object} p.current 本次 {head, baseRefName, diffHash, filePatchHashes, totalDiffLines, tier, triggerKinds, specDigest, now}
  * @param {boolean|null} p.headIsDescendant H0 是否是 H1 的祖先(git merge-base --is-ancestor);null=未知
  * @param {boolean} [p.forceFullOnSpecChange] 维护者开关(review-features.json 的 specChange.forceFull):规则改版时即使代码没变也全量;只认 true
+ * @param {string} [p.lateFindingsMode] 后来发现开关(review-features.json 的 lateFindings.mode);缺省按 off,只认 enforce
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
 export function computeReviewScope(args) {
-  return withHandoffScope({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current });
+  const scope = withLateFindingsPolicy({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current, mode: args.lateFindingsMode });
+  return withHandoffScope({ scope, previous: args.previous, current: args.current });
+}
+
+// 后来发现(#221)开关不是 enforce、上一轮却有后来发现的 P2:沿用或增量都会让这些 P2 继续不阻断(沿用原样带过来;增量不审没改的文件、
+// 旧问题清单也不带它们)。改为全量重审,并把它们放进待核对的旧问题清单,结果与开关一直是 off 时一致。
+function withLateFindingsPolicy({ scope, previous, current, mode = 'off' }) {
+  const late = Array.isArray(previous?.lateFindings) ? previous.lateFindings : [];
+  if (mode === 'enforce' || scope.mode === 'full' || late.length === 0) return scope;
+  return { mode: 'full', reason: '后来发现分桶已关闭,上一轮有后来发现的 P2,重新全量审查', files: Object.keys(current.filePatchHashes ?? {}).sort(),
+    previousFindings: carriedFindings({ ...previous, findings: [...(previous.findings ?? []), ...late] }, current), basedOn: null };
 }
 
 function computeBaseReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
@@ -431,6 +442,7 @@ export function previousFromResult(result, report = '') {
     reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
     pendingGates: result.mivo?.advisory?.pendingGates ?? [],
     reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
+    lateFindings: Array.isArray(result.mivo?.lateFindings) ? result.mivo.lateFindings : [],
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, filePatchHashesV2: result.mivo?.filePatchHashesV2 ?? null, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,
