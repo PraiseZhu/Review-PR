@@ -1,7 +1,8 @@
 // feishu-notify.test.mjs — 熔断飞书私聊(PraiseZhu/Review-PR#210):确认文案逐字、按名册选接收人、发送流程与失败原因码。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toFuseNotifyConfig, toFuseNotifyText, selectRosterEmail, toFuseRecipients, sendFuseNotice, FEISHU_TOTAL_TIMEOUT_MS, FEISHU_STEP_TIMEOUT_MS } from './feishu-notify.mjs';
+import { toFuseNotifyConfig, toFuseNotifyText, selectRosterEmail, toFuseRecipients, sendFuseNotice, FEISHU_TOTAL_TIMEOUT_MS, FEISHU_STEP_TIMEOUT_MS,
+  toFuseRosterRepos, isBotLogin, toFuseForwardNote, findFeishuUsers } from './feishu-notify.mjs';
 
 // #210「确认文案」(用户 2026-11-07 确认「语气柔和一点」版),占位符按 #1704 的例子填。
 const CONFIRMED = `PR #1704「对话出图判定」已经改到第 10 版了，辛苦啦。我先把自动审查暂停一下，想请你来看看。
@@ -121,6 +122,10 @@ test('配置:没配或 enabled 不是 true 就不发;配了缺项启动即报错
   assert.deepEqual(toFuseNotifyConfig({ convergeFuse: { notify: ok } }), ok);
   assert.throws(() => toFuseNotifyConfig({ convergeFuse: { notify: { ...ok, appId: '' } } }), /appId/);
   assert.throws(() => toFuseNotifyConfig({ convergeFuse: { notify: { ...ok, rosterRepos: ['bad'] } } }), /rosterRepos/);
+  // #219:rosterRepos 只是追加,可省略或为空
+  assert.deepEqual(toFuseNotifyConfig({ convergeFuse: { notify: { ...ok, rosterRepos: [] } } }).rosterRepos, []);
+  const { rosterRepos, ...noRepos } = ok;
+  assert.deepEqual(toFuseNotifyConfig({ convergeFuse: { notify: noRepos } }).rosterRepos, []);
 });
 
 test('SC4 整个发送过程有总时限:每步都没到 10 秒上限,但合计超时也会中断并记 timeout', async () => {
@@ -139,4 +144,43 @@ test('SC4 整个发送过程有总时限:每步都没到 10 秒上限,但合计�
   assert.deepEqual(out, { status: 'failed', code: 'timeout' });
   assert.ok(Date.now() - startedAt < 1_000);
   assert.ok(calls.length >= 2 && calls.length <= 3, `被总时限打断前发了 ${calls.length} 个请求`);
+});
+
+// #219 名册对照
+test('#219 SC1 名册仓:目标仓组织的 <owner>/org 在前,配置的 rosterRepos 追加、不分大小写去重;配置为空时只有 <owner>/org', () => {
+  assert.deepEqual(toFuseRosterRepos({ targetRepo: 'xindong/mivo-canvas-plugin', rosterRepos: [] }), ['xindong/org']);
+  assert.deepEqual(toFuseRosterRepos({ targetRepo: 'xindong/mivo-canvas-plugin' }), ['xindong/org']);
+  assert.deepEqual(toFuseRosterRepos({ targetRepo: 'xindong/mivo-canvas-plugin', rosterRepos: ['Xindong/Org', 'XDGame/org', 'xdgame/ORG'] }), ['xindong/org', 'XDGame/org']);
+  assert.deepEqual(toFuseRosterRepos({ targetRepo: 'PraiseZhu/sandbox', rosterRepos: ['xindong/org'] }), ['PraiseZhu/org', 'xindong/org']);
+});
+
+test('#219 SC2 机器人:app/<name>(gh 的 PR 作者写法)和 <name>[bot] 都算,转发原因记 bot-author;真人账号不算', () => {
+  for (const login of ['app/dependabot', 'app/praise-qa', 'App/Renovate', 'dependabot[bot]', '', null]) assert.equal(isBotLogin(login), true, String(login));
+  for (const login of ['aj0928', 'jackiezxt', 'appleseed', 'bot-maker']) assert.equal(isBotLogin(login), false, login);
+  // 名册里恰好有同名行也不当真人发
+  const withApp = `${ROSTER}\n| [@app/praise-qa](https://github.com/apps/praise-qa) | 机器人 | qa@example.com | bot |`;
+  for (const author of ['app/dependabot', 'app/praise-qa']) {
+    assert.deepEqual(toFuseRecipients({ rosterTexts: [withApp], author, fallbackLogin: 'PraiseZhu' }),
+      [{ login: 'PraiseZhu', email: 'praise@example.com', forwardedFrom: author, reason: 'bot-author' }]);
+  }
+});
+
+test('#219 SC3 转发说明:写明作者、原因、要补的名册仓;机器人和发给本人时没有说明', () => {
+  assert.equal(toFuseForwardNote({ author: 'jackiezxt', reason: 'not-in-roster', to: 'PraiseZhu', rosterRepo: 'xindong/org' }),
+    '飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册里，请补 xindong/org 名册。');
+  assert.equal(toFuseForwardNote({ author: 'aj0928', reason: 'feishu-user-not-found', to: 'PraiseZhu', rosterRepo: 'xindong/org' }),
+    '飞书通知已转给 @PraiseZhu：作者 @aj0928 在名册里的邮箱飞书查不到，请核对 xindong/org 名册。');
+  assert.equal(toFuseForwardNote({ author: 'app/dependabot', reason: 'bot-author', to: 'PraiseZhu', rosterRepo: 'xindong/org' }), null);
+  assert.equal(toFuseForwardNote({ author: 'aj0928', reason: null, to: 'aj0928', rosterRepo: 'xindong/org' }), null);
+});
+
+test('#219 只查不发:findFeishuUsers 只调取 token 与 batch_get_id,从不调发消息接口;失败给固定原因码', async () => {
+  const feishu = fakeFeishu({ users: { 'aj@example.com': 'ou_aj' } });
+  const out = await findFeishuUsers({ fetchFn: feishu.fetchFn, appId: 'a', appSecret: 's', emails: ['aj@example.com', 'nobody@example.com'] });
+  assert.deepEqual(out, { status: 'ok', found: { 'aj@example.com': true, 'nobody@example.com': false } });
+  assert.ok(feishu.calls.every((c) => !c.url.includes('/im/v1/messages')), '不调发消息接口');
+  assert.ok(feishu.calls.every((c) => c.hasSignal));
+  assert.deepEqual(await findFeishuUsers({ fetchFn: feishu.fetchFn, appId: 'a', appSecret: '', emails: ['x'] }), { status: 'failed', code: 'no-credential' });
+  assert.deepEqual(await findFeishuUsers({ fetchFn: fakeFeishu({ token: { code: 10014 } }).fetchFn, appId: 'a', appSecret: 's', emails: ['x'] }), { status: 'failed', code: 'token-10014' });
+  assert.deepEqual(await findFeishuUsers({ fetchFn: fakeFeishu({ throwName: 'TimeoutError' }).fetchFn, appId: 'a', appSecret: 's', emails: ['x'] }), { status: 'failed', code: 'timeout' });
 });

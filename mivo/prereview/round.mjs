@@ -27,7 +27,7 @@ import { previousFromResult } from '../lib/scope.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit, toDraftMergeReadyPrs } from '../lib/admission.mjs';
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
-import { toFuseRecipients, toFuseNotifyText, sendFuseNotice } from '../lib/feishu-notify.mjs';
+import { toFuseRecipients, toFuseNotifyText, sendFuseNotice, toFuseRosterRepos, toFuseForwardNote, isBotLogin, selectRosterEmail, findFeishuUsers } from '../lib/feishu-notify.mjs';
 import { loadOrgRosters } from '../../review-pr/scripts/lib.mjs';
 import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment, selectOpenFuseIssue } from '../lib/fuse.mjs';
 import { toHoldAlert } from '../deploy/tuple-lib.mjs';
@@ -1173,6 +1173,7 @@ async function handleTask(ctx, task) {
       live.meta.baseRefOid !== task.base || live.meta.baseRefName !== task.baseRefName) {
     return finishGate(ctx, task, { outcome: 'state-changed', reason: '名单生成后 PR 已关闭、转 draft,或 head/base 已变化;下轮重新采集' }, toLiveBlockers(live));
   }
+  try { await remindRosterGap(task, live); } catch (error) { log('roster-check-error', { pr: task.pr, error: String(error?.message ?? error).slice(0, 200) }); }
   const bindings = ['--lock-token', token, '--expected-head', task.head, '--expected-authority-digest', authorityDigest];
   // 作者交接(lib/handoff.mjs):开关 off 时不读,判门与改动前完全一致。
   const handoffMode = loadHandoffMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
@@ -1336,17 +1337,20 @@ function readFuseResume(trip, live, config, result) {
 // 熔断时用飞书 Mivo 机器人私聊 PR 作者(#210)。接收人按组织名册对到真人,对不上转给兜底人;应用密钥从 Mini 本机钥匙串读。
 // 结果(sent / failed + 原因码,不含邮箱和凭证)记进 fuse.trip.notify,一次熔断只发一次;失败在熔断 issue 下留一行说明,不循环重发。
 // 发送前先记 status=sending:发出后、记结果前进程崩溃时,下一轮看到 notify 已存在就不补发(宁可漏一次也不重复私聊,#214 单审)。
+// 名册仓按目标仓组织推导(<owner>/org 在前),配置的 rosterRepos 追加(#219)。转给兜底人时在熔断 issue 下留一行说明,让人补名册。
 async function notifyFuse(ctx, task, live, trip, record, result) {
   const notify = fuseConfig().notify;
-  const rosters = loadOrgRosters(notify.rosterRepos);
-  const recipients = toFuseRecipients({ rosterTexts: rosters.rosters.map((r) => r.text), author: live.meta?.author ?? '', fallbackLogin: notify.fallbackLogin });
-  const secret = run('security', ['find-generic-password', '-a', notify.keychainAccount, '-s', notify.keychainService, '-w'], { allowFail: true, timeoutMs: 15_000 });
+  const rosterRepos = toFuseRosterRepos({ targetRepo: CONFIG.targetRepo, rosterRepos: notify.rosterRepos });
+  const rosters = loadOrgRosters(rosterRepos);
+  const author = live.meta?.author ?? '';
+  const recipients = toFuseRecipients({ rosterTexts: rosters.rosters.map((r) => r.text), author, fallbackLogin: notify.fallbackLogin });
+  const secret = readFeishuSecret(notify);
   const pending = loadStore().prs[task.pr]?.fuse ?? record.fuse ?? {};
   bumpOwned(ctx, task, { fuse: { ...pending, trip: { ...(pending.trip ?? trip), notify: { status: 'sending', at: nowIso() } } } });
   const findings = record.fuse?.lastFindings;
   const open = findings ? (findings.P0 ?? 0) + (findings.P1 ?? 0) + (findings.P2 ?? 0) : null;
   const sent = rosters.rosters.length === 0 ? { status: 'failed', code: 'roster-unavailable' } : await sendFuseNotice({
-    appId: notify.appId, appSecret: secret.ok ? secret.stdout.trim() : '', recipients,
+    appId: notify.appId, appSecret: secret, recipients,
     message: ({ forwardedFrom }) => toFuseNotifyText({ pr: task.pr, title: live.meta?.title ?? '', count: trip.count, open,
       prUrl: live.meta?.url ?? `https://github.com/${CONFIG.targetRepo}/pull/${task.pr}`,
       issueUrl: `https://github.com/${CONFIG.targetRepo}/issues/${trip.issue}`, forwardedFrom }),
@@ -1357,12 +1361,58 @@ async function notifyFuse(ctx, task, live, trip, record, result) {
   const latest = loadStore().prs[task.pr]?.fuse ?? record.fuse ?? {};
   bumpOwned(ctx, task, { fuse: { ...latest, trip: { ...(latest.trip ?? trip), notify: outcome } } });
   log('fuse-notify', { pr: task.pr, issue: trip.issue, ...outcome });
-  if (outcome.status === 'sent') return;
-  result.warnings = [...(result.warnings ?? []), `熔断飞书通知未送达:${outcome.code}`];
+  const note = outcome.status === 'sent'
+    ? (outcome.forwarded ? toFuseForwardNote({ author, reason: outcome.reason, to: outcome.to, rosterRepo: rosterRepos[0] }) : null)
+    : `飞书通知未送达：${outcome.code}`;
+  if (outcome.status !== 'sent') result.warnings = [...(result.warnings ?? []), `熔断飞书通知未送达:${outcome.code}`];
+  if (!note) return;
+  if (outcome.status === 'sent') result.warnings = [...(result.warnings ?? []), `熔断飞书通知转给了 @${outcome.to}(${outcome.reason}),请补 ${rosterRepos[0]} 名册`];
   assertNotFenced();
-  const commented = run('gh', ['issue', 'comment', String(trip.issue), '-R', CONFIG.targetRepo, '--body', `飞书通知未送达：${outcome.code}`],
+  const commented = run('gh', ['issue', 'comment', String(trip.issue), '-R', CONFIG.targetRepo, '--body', note],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
-  if (!commented.ok) result.warnings.push(`熔断 issue #${trip.issue} 留「飞书通知未送达」说明失败:${String(commented.stderr ?? '').trim().slice(0, 120)}`);
+  if (!commented.ok) result.warnings.push(`熔断 issue #${trip.issue} 留飞书通知说明失败:${String(commented.stderr ?? '').trim().slice(0, 120)}`);
+}
+
+// 飞书应用密钥只从 Mini 本机钥匙串读;读不到返回空串(发送 / 查询函数据此返回 no-credential)。不写日志、不落盘。
+function readFeishuSecret(notify) {
+  const secret = run('security', ['find-generic-password', '-a', notify.keychainAccount, '-s', notify.keychainService, '-w'], { allowFail: true, timeoutMs: 15_000 });
+  return secret.ok ? secret.stdout.trim() : '';
+}
+
+// 名册缺人提前提醒(#219):判门时 PR 作者是真人、但不在名册(或名册里的邮箱飞书查不到),记一条 roster-missing 日志事件给巡检读,
+// 不等到熔断时才悄悄转给兜底人。核对过的账号(对得上的也记)写进状态目录 roster-check.json,同一账号只核对、只提醒一次。
+// 有名册仓读不到、飞书查询失败时这次不下结论、不记账,下次判门再查。只在 live 模式且熔断通知开着时做;不在 PR 上评论。
+const ROSTER_CACHE_MS = 30 * 60_000; // 名册每 30 分钟最多拉一次,不为每个 PR 都 git pull
+let ROSTER_CACHE = null;
+async function remindRosterGap(task, live) {
+  const notify = fuseConfig().notify;
+  const author = String(live.meta?.author ?? '');
+  if (CONFIG.mode !== 'live' || !notify?.enabled || isBotLogin(author)) return;
+  const key = author.toLowerCase();
+  const file = stateFile('roster-check.json');
+  if (readJson(file, { logins: {} }).logins?.[key]) return;
+  const repos = toFuseRosterRepos({ targetRepo: CONFIG.targetRepo, rosterRepos: notify.rosterRepos });
+  if (!ROSTER_CACHE || Date.now() - ROSTER_CACHE.atMs >= ROSTER_CACHE_MS) ROSTER_CACHE = { atMs: Date.now(), value: loadOrgRosters(repos) };
+  const rosters = ROSTER_CACHE.value;
+  if (rosters.fetchErrors.length || !rosters.rosters.length) {
+    logOnce('roster-check-skip:roster', 'roster-check-skip', { reason: 'roster-unavailable', repos: rosters.fetchErrors.map((e) => e.repo) });
+    return;
+  }
+  const email = selectRosterEmail(rosters.rosters.map((r) => r.text), author);
+  let reason = email ? null : 'not-in-roster';
+  if (email) {
+    const found = await findFeishuUsers({ appId: notify.appId, appSecret: readFeishuSecret(notify), emails: [email] });
+    if (found.status !== 'ok') {
+      logOnce(`roster-check-skip:${found.code}`, 'roster-check-skip', { reason: found.code });
+      return;
+    }
+    if (!found.found[email]) reason = 'feishu-user-not-found';
+  }
+  // 查飞书期间可能有别的判门写过这个文件:写前重读再合并
+  const latest = readJson(file, { version: 1, logins: {} });
+  if (latest.logins?.[key]) return;
+  writeJson(file, { version: 1, logins: { ...(latest.logins ?? {}), [key]: { at: nowIso(), pr: task.pr, status: reason ? 'missing' : 'ok', ...(reason ? { reason } : {}) } } });
+  if (reason) log('roster-missing', { pr: task.pr, author, reason, rosterRepo: repos[0] });
 }
 
 // 关成功返回 true;关失败记 error 并 retry,熔断记录保留,下一轮读到同一条「继续审」再关。

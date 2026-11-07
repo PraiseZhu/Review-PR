@@ -1,6 +1,7 @@
 // feishu-notify.mjs — 审查熔断时用飞书「Mivo」机器人私聊 PR 作者(PraiseZhu/Review-PR#210,总 issue #208)。
-// 接收人:作者的 GitHub 账号在组织名册(convergeFuse.notify.rosterRepos,现为 xindong/org)里对到真人,用名册里的公司邮箱查飞书 open_id;
-// 对不上(机器人账号、名册没有、名册读不到、飞书查不到)就转给 fallbackLogin,正文前加一行说明。不按 GitHub 昵称或资料页邮箱猜人。
+// 接收人:作者的 GitHub 账号在组织名册里对到真人,用名册里的公司邮箱查飞书 open_id。名册仓默认是目标仓所属组织的 <owner>/org,
+// convergeFuse.notify.rosterRepos 只作追加(#219);对不上(机器人账号、名册没有、名册读不到、飞书查不到)就转给 fallbackLogin,
+// 正文前加一行说明。不按 GitHub 昵称或资料页邮箱猜人。
 // 文案是用户 2026-11-07 确认的固定模板(#210「确认文案」),不调用模型。日志、结果包、issue 评论里不写邮箱和凭证。
 // 拼文案、选接收人是纯函数;sendFuseNotice 只做 HTTP(fetch 由调用方注入,测试用假的)。
 import { parseRosterLine } from '../../review-pr/scripts/lib.mjs';
@@ -16,11 +17,39 @@ export function toFuseNotifyConfig(rules) {
   for (const key of ['appId', 'keychainService', 'keychainAccount', 'fallbackLogin']) {
     if (typeof notify[key] !== 'string' || !notify[key].trim()) throw new Error(`convergeFuse.notify.${key} 不能为空`);
   }
-  if (!Array.isArray(notify.rosterRepos) || notify.rosterRepos.length === 0 || notify.rosterRepos.some((r) => !/^[\w.-]+\/[\w.-]+$/.test(String(r)))) {
+  // rosterRepos 可省略或为空:名册仓默认按目标仓组织推导(toFuseRosterRepos),这里只是追加的名册。
+  const rosterRepos = notify.rosterRepos ?? [];
+  if (!Array.isArray(rosterRepos) || rosterRepos.some((r) => !/^[\w.-]+\/[\w.-]+$/.test(String(r)))) {
     throw new Error(`convergeFuse.notify.rosterRepos 须是 owner/repo 数组:${JSON.stringify(notify.rosterRepos)}`);
   }
   return { enabled: true, appId: notify.appId.trim(), keychainService: notify.keychainService.trim(), keychainAccount: notify.keychainAccount.trim(),
-    rosterRepos: notify.rosterRepos.map(String), fallbackLogin: notify.fallbackLogin.trim() };
+    rosterRepos: rosterRepos.map(String), fallbackLogin: notify.fallbackLogin.trim() };
+}
+
+/** 要读的名册仓:目标仓所属组织的 <owner>/org 在前(缺名册时让人补的就是它),配置里的 rosterRepos 追加在后,不分大小写去重。 */
+export function toFuseRosterRepos({ targetRepo, rosterRepos = [] }) {
+  const owner = String(targetRepo ?? '').split('/')[0];
+  const seen = new Set();
+  const out = [];
+  for (const repo of [owner ? `${owner}/org` : null, ...rosterRepos]) {
+    if (!repo || seen.has(String(repo).toLowerCase())) continue;
+    seen.add(String(repo).toLowerCase());
+    out.push(String(repo));
+  }
+  return out;
+}
+
+/** 机器人账号:GitHub App 在 PR 作者里写成 app/<name>(gh 的返回),在评论等处写成 <name>[bot];没有账号也按机器人处理。 */
+export function isBotLogin(login) {
+  const text = String(login ?? '');
+  return !text || /\[bot\]$/i.test(text) || /^app\//i.test(text);
+}
+
+/** 熔断通知转给兜底人时在熔断 issue 下留的一行说明;发给作者本人或作者是机器人(没法补名册)时返回 null。 */
+export function toFuseForwardNote({ author, reason, to, rosterRepo }) {
+  if (reason === 'not-in-roster') return `飞书通知已转给 @${to}：作者 @${author} 不在名册里，请补 ${rosterRepo} 名册。`;
+  if (reason === 'feishu-user-not-found') return `飞书通知已转给 @${to}：作者 @${author} 在名册里的邮箱飞书查不到，请核对 ${rosterRepo} 名册。`;
+  return null;
 }
 
 /** 熔断私聊正文。open 是最近一版未解决的 P0/P1/P2 总数(null / 0 时改说「还没有放行」);forwardedFrom 是对不上真人的作者账号。 */
@@ -62,11 +91,11 @@ export function selectRosterEmail(rosterTexts, login) {
 }
 
 /**
- * 发给谁:作者能在名册里对到邮箱就发作者;机器人账号([bot] 结尾)或名册里没有就转给 fallbackLogin。
+ * 发给谁:作者能在名册里对到邮箱就发作者;机器人账号(app/ 开头或 [bot] 结尾)或名册里没有就转给 fallbackLogin。
  * 返回 [{ login, email, forwardedFrom, reason }],按尝试顺序排(作者在前,兜底在后;作者就是兜底人时只有一项)。
  */
 export function toFuseRecipients({ rosterTexts, author, fallbackLogin }) {
-  const isBot = /\[bot\]$/i.test(String(author ?? '')) || !author;
+  const isBot = isBotLogin(author);
   const authorEmail = isBot ? null : selectRosterEmail(rosterTexts, author);
   const fallbackEmail = selectRosterEmail(rosterTexts, fallbackLogin);
   const out = [];
@@ -88,6 +117,35 @@ async function postJson(fetchFn, url, body, token, total) {
   return { status: res.status, data };
 }
 
+async function fetchToken(fetchFn, appId, appSecret, total) {
+  const auth = await postJson(fetchFn, `${FEISHU_API}/auth/v3/tenant_access_token/internal`, { app_id: appId, app_secret: appSecret }, null, total);
+  const token = auth.data?.tenant_access_token;
+  return auth.data?.code === 0 && token ? { token } : { code: `token-${auth.data?.code ?? auth.status}` };
+}
+
+async function lookupOpenId(fetchFn, email, token, total) {
+  const found = await postJson(fetchFn, `${FEISHU_API}/contact/v3/users/batch_get_id?user_id_type=open_id`, { emails: [email] }, token, total);
+  return found.data?.code === 0 ? found.data?.data?.user_list?.[0]?.user_id ?? null : null;
+}
+
+/**
+ * 只查不发(#219 新作者提醒、只读回放用):这些邮箱在飞书能不能查到 open_id。
+ * 返回 { status: 'ok', found: { <email>: true|false } } 或 { status: 'failed', code }(原因码同 sendFuseNotice)。
+ */
+export async function findFeishuUsers({ fetchFn = fetch, appId, appSecret, emails, totalTimeoutMs = FEISHU_TOTAL_TIMEOUT_MS }) {
+  if (!appSecret) return { status: 'failed', code: 'no-credential' };
+  const total = AbortSignal.timeout(totalTimeoutMs);
+  try {
+    const auth = await fetchToken(fetchFn, appId, appSecret, total);
+    if (!auth.token) return { status: 'failed', code: auth.code };
+    const found = {};
+    for (const email of emails ?? []) found[email] = Boolean(await lookupOpenId(fetchFn, email, auth.token, total));
+    return { status: 'ok', found };
+  } catch (error) {
+    return { status: 'failed', code: error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network' };
+  }
+}
+
 /**
  * 取 token → 按邮箱查 open_id → 发纯文本私聊。recipients 依次尝试:作者查不到 open_id 时换兜底人,兜底人收到的正文带转发说明。
  * 返回 { status: 'sent', to, forwarded } 或 { status: 'failed', code }。code 是固定原因码,不含凭证、邮箱或飞书返回原文。
@@ -97,12 +155,11 @@ export async function sendFuseNotice({ fetchFn = fetch, appId, appSecret, recipi
   if (!recipients?.length) return { status: 'failed', code: 'no-recipient' };
   const total = AbortSignal.timeout(totalTimeoutMs);
   try {
-    const auth = await postJson(fetchFn, `${FEISHU_API}/auth/v3/tenant_access_token/internal`, { app_id: appId, app_secret: appSecret }, null, total);
-    const token = auth.data?.tenant_access_token;
-    if (auth.data?.code !== 0 || !token) return { status: 'failed', code: `token-${auth.data?.code ?? auth.status}` };
+    const auth = await fetchToken(fetchFn, appId, appSecret, total);
+    if (!auth.token) return { status: 'failed', code: auth.code };
+    const { token } = auth;
     for (const recipient of recipients) {
-      const found = await postJson(fetchFn, `${FEISHU_API}/contact/v3/users/batch_get_id?user_id_type=open_id`, { emails: [recipient.email] }, token, total);
-      const openId = found.data?.code === 0 ? found.data?.data?.user_list?.[0]?.user_id : null;
+      const openId = await lookupOpenId(fetchFn, recipient.email, token, total);
       if (!openId) continue;
       const text = message({ forwardedFrom: recipient.forwardedFrom });
       const sent = await postJson(fetchFn, `${FEISHU_API}/im/v1/messages?receive_id_type=open_id`,

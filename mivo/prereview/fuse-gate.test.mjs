@@ -7,13 +7,14 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import * as fuse from '../lib/fuse.mjs';
-import { toFuseRecipients, toFuseNotifyText } from '../lib/feishu-notify.mjs';
+import { toFuseRecipients, toFuseNotifyText, toFuseRosterRepos, toFuseForwardNote, isBotLogin, selectRosterEmail } from '../lib/feishu-notify.mjs';
 
 const source = readFileSync(new URL('./round.mjs', import.meta.url), 'utf8');
 const section = /^\/\/ ── 审查熔断\(#209\)[\s\S]*?(?=^async function executeGateAction)/m.exec(source)?.[0];
 assert.ok(section, '找不到 round.mjs 的审查熔断段');
 assert.match(source, /return \(await holdForFuse\(ctx, task, live, result\)\) \?\? dispatchReview\(ctx, task, \{ tier: decision\.tier, action: 'review' \}/,
   '判门送审前必须先过 holdForFuse');
+assert.match(source, /try \{ await remindRosterGap\(task, live\); \} catch \(error\) \{ log\('roster-check-error'/, '判门读完 context 后要先核对作者在不在名册,出错只记日志');
 assert.match(source, /if \(next\.dispatch\) return \(await holdForFuse\(ctx, task, live, result\)\) \?\? dispatchReview\(/, '受保护路径复核派审前也要过 holdForFuse');
 
 const CONFIG_FUSE = { enabled: true, maxVersions: 10, resumeLine: '继续审', maintainers: ['praisezhu', 'aj0928'], notify: { enabled: false } };
@@ -22,8 +23,11 @@ const ROSTER = '| GitHub | Name | Email | Role |\n|---|---|---|---|\n| [@aj0928]
 const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${prefix}${i}`, head: `${prefix}${i}`, at: `2026-11-07T0${i}:00:00.000Z` }));
 
 function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100,
-  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false } = {}) {
+  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false,
+  author = 'aj0928', targetRepo = 'o/r', findResult = (emails) => ({ status: 'ok', found: Object.fromEntries(emails.map((e) => [e, true])) }), stateFiles = {} } = {}) {
   const sends = [];
+  const rosterLoads = [];
+  const finds = [];
   const store = { prs: { 1704: structuredClone(record) } };
   const calls = [];
   const finished = [];
@@ -38,11 +42,15 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
     return { ok: false, stderr: `unexpected ${args.join(' ')}` };
   };
   const sandbox = {
-    CONFIG: { mode, targetRepo: 'o/r', repoRoot: '/repo' }, ENV: {}, join,
+    CONFIG: { mode, targetRepo, repoRoot: '/repo' }, ENV: {}, join,
     ...fuse,
     fuseConfig: () => (notify ? { ...CONFIG_FUSE, notify } : CONFIG_FUSE),
-    toFuseRecipients, toFuseNotifyText,
-    loadOrgRosters: () => (rosterOk ? { rosters: [{ repo: 'xindong/org', text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }),
+    toFuseRecipients, toFuseNotifyText, toFuseRosterRepos, toFuseForwardNote, isBotLogin, selectRosterEmail,
+    findFeishuUsers: async (args) => { finds.push(args); return findResult(args.emails); },
+    loadOrgRosters: (repos) => { rosterLoads.push(repos); return rosterOk ? { rosters: [{ repo: 'xindong/org', text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }; },
+    stateFile: (name) => `/state/mivo/${name}`,
+    readJson: (file, fallback) => (file in stateFiles ? structuredClone(stateFiles[file]) : fallback),
+    writeJson: (file, value) => { stateFiles[file] = structuredClone(value); },
     sendFuseNotice: async (args) => { sends.push({ ...args, text: args.message({ forwardedFrom: args.recipients[0]?.forwardedFrom ?? null }) }); if (sendCrash) throw new Error('进程在记结果前退出'); return sendResult; },
     loadStore: () => structuredClone(store),
     bumpOwned: (ctx, task, patch) => { store.prs[task.pr] = { ...(store.prs[task.pr] ?? {}), ...structuredClone(patch) }; },
@@ -61,22 +69,24 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
         return { ok: true, stdout: JSON.stringify({ data: { repository: { issue: { state: issueState,
           comments: { pageInfo: { hasNextPage: next, endCursor: next ? String(start + pageSize) : null }, nodes } } } } }) };
       }
-      if (args.includes('repos/o/r/issues')) return listOk ? { ok: true, stdout: JSON.stringify([openIssues]) } : { ok: false, stderr: 'HTTP 502' };
+      if (args.includes(`repos/${targetRepo}/issues`)) return listOk ? { ok: true, stdout: JSON.stringify([openIssues]) } : { ok: false, stderr: 'HTTP 502' };
       return { ok: false, stderr: `unexpected ${args.join(' ')}` };
     },
     log: (event, detail) => logs.push({ event, ...detail }),
+    logOnce: (key, event, detail) => logs.push({ event, ...detail }),
     assertNotFenced: () => {},
     writeText: () => {},
     nowIso: () => '2026-11-07T12:00:00.000Z',
   };
-  vm.runInNewContext(`${section}\nglobalThis.hold = holdForFuse;`, sandbox);
-  const live = { meta: { title: '对话出图判定', url: 'https://github.com/o/r/pull/1704', author: 'aj0928' } };
+  vm.runInNewContext(`${section}\nglobalThis.hold = holdForFuse;\nglobalThis.remind = remindRosterGap;`, sandbox);
+  const live = { meta: { title: '对话出图判定', url: 'https://github.com/o/r/pull/1704', author } };
+  const remind = (pr = 1704, who = author) => sandbox.remind({ pr }, { meta: { ...live.meta, author: who } });
   const gate = async (head) => {
     const result = { outcome: 'review', reason: '', errors: [], warnings: [], gate: { stage: 'review', actions: [] } };
     const out = await sandbox.hold({ roundDir: '/round' }, { pr: 1704, head }, live, result);
     return { out, result };
   };
-  return { gate, store, calls, finished, logs, comments, sends };
+  return { gate, remind, store, calls, finished, logs, comments, sends, rosterLoads, finds, stateFiles };
 }
 
 test('SC3 满 10 版:判门不派审,记 maintainer-signoff + gate.fuse;作者再推 3 个提交仍不派审', async () => {
@@ -318,4 +328,82 @@ test('SC2 转发时私聊只用确认文案的转发说明,具体原因码记在
   await world.gate('h9');
   assert.deepEqual(JSON.parse(JSON.stringify(world.store.prs[1704].fuse.trip.notify)).reason, 'feishu-user-not-found');
   assert.equal(world.store.prs[1704].fuse.trip.notify.forwarded, true);
+});
+
+// #219 名册对照:名册仓按目标仓组织推导;转给兜底人时在熔断 issue 下留一行说明;不在名册的新作者提前提醒一次。
+const forwardNotes = (world) => world.calls.filter((args) => args[0] === 'issue' && args[1] === 'comment').map((args) => args[args.indexOf('--body') + 1]);
+
+test('#219 SC1 熔断通知读的名册仓 = 目标仓组织的 <owner>/org + 配置追加(去重);配置为空也照样对照', async () => {
+  const world = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', record: { fuse: { versions: tenVersions() } }, notify: { ...NOTIFY, rosterRepos: ['XDGame/org', 'xindong/org'] } });
+  await world.gate('h9');
+  assert.deepEqual(JSON.parse(JSON.stringify(world.rosterLoads)), [['xindong/org', 'XDGame/org']]);
+  const empty = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', record: { fuse: { versions: tenVersions() } }, notify: { ...NOTIFY, rosterRepos: [] } });
+  await empty.gate('h9');
+  assert.deepEqual(JSON.parse(JSON.stringify(empty.rosterLoads)), [['xindong/org']]);
+  assert.equal(empty.sends.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(empty.sends[0].recipients.map((r) => r.login))), ['aj0928', 'PraiseZhu'], '配置为空也按推导出的名册对到作者');
+});
+
+test('#219 SC3 转给兜底人(作者不在名册 / 飞书查不到)时熔断 issue 下留一行说明:作者、原因、要补的名册仓;发给作者本人时不留', async () => {
+  const notInRoster = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', author: 'jackiezxt', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'not-in-roster' } });
+  const { result } = await notInRoster.gate('h9');
+  assert.deepEqual(forwardNotes(notInRoster), ['飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册里，请补 xindong/org 名册。']);
+  assert.match(result.warnings.join('\n'), /转给了 @PraiseZhu\(not-in-roster\),请补 xindong\/org 名册/);
+  const notFound = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'feishu-user-not-found' } });
+  await notFound.gate('h9');
+  assert.deepEqual(forwardNotes(notFound), ['飞书通知已转给 @PraiseZhu：作者 @aj0928 在名册里的邮箱飞书查不到，请核对 xindong/org 名册。']);
+  const direct = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY });
+  await direct.gate('h9');
+  assert.deepEqual(forwardNotes(direct), [], '发给作者本人不留说明');
+  const bot = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', author: 'app/dependabot', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'bot-author' } });
+  await bot.gate('h9');
+  assert.deepEqual(forwardNotes(bot), [], '机器人作者没法补名册,不留说明');
+  for (const w of [notInRoster, notFound]) assert.ok(!forwardNotes(w).join('').includes('@example.com'), '说明里不写邮箱');
+});
+
+test('#219 SC4 不在名册的真人作者第一次判门记一条 roster-missing,同一账号不再提醒;机器人作者、名册里对得上的不提醒', async () => {
+  const stateFiles = {};
+  const world = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', notify: NOTIFY, stateFiles });
+  await world.remind(1704, 'jackiezxt');
+  await world.remind(1705, 'JackieZXT');
+  await world.remind(1706, 'app/praise-qa');
+  await world.remind(1707, 'dependabot[bot]');
+  await world.remind(1708, 'aj0928');
+  await world.remind(1709, 'aj0928');
+  const missing = world.logs.filter((e) => e.event === 'roster-missing');
+  assert.deepEqual(JSON.parse(JSON.stringify(missing)), [{ event: 'roster-missing', pr: 1704, author: 'jackiezxt', reason: 'not-in-roster', rosterRepo: 'xindong/org' }]);
+  assert.equal(world.finds.length, 1, '名册里对得上的账号只查一次飞书,核对结果记账');
+  const logins = stateFiles['/state/mivo/roster-check.json'].logins;
+  assert.deepEqual(Object.keys(logins).sort(), ['aj0928', 'jackiezxt']);
+  assert.equal(logins.jackiezxt.status, 'missing');
+  assert.equal(logins.aj0928.status, 'ok');
+  assert.ok(!JSON.stringify(stateFiles).includes('@example.com') && !JSON.stringify(world.logs).includes('@example.com'), '状态文件和日志不写邮箱');
+  assert.equal(world.calls.filter((args) => args[0] === 'issue' || args[0] === 'pr').length, 0, '不在 PR 或 issue 上评论');
+  // Mini 重启:状态文件还在,不重复提醒
+  const restarted = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', notify: NOTIFY, stateFiles });
+  await restarted.remind(1710, 'jackiezxt');
+  assert.equal(restarted.logs.filter((e) => e.event === 'roster-missing').length, 0);
+});
+
+test('#219 SC4 名册里有邮箱但飞书查不到也提醒;名册读不到、飞书查询失败时不下结论、不记账,下次再查;dry-run 与通知关闭时不做', async () => {
+  const notFound = makeWorld({ notify: NOTIFY, findResult: (emails) => ({ status: 'ok', found: Object.fromEntries(emails.map((e) => [e, false])) }) });
+  await notFound.remind(1704, 'aj0928');
+  assert.deepEqual(notFound.logs.filter((e) => e.event === 'roster-missing').map((e) => e.reason), ['feishu-user-not-found']);
+  const stateFiles = {};
+  const down = makeWorld({ notify: NOTIFY, rosterOk: false, stateFiles });
+  await down.remind(1704, 'jackiezxt');
+  assert.deepEqual(down.logs.map((e) => e.event), ['roster-check-skip']);
+  assert.deepEqual(stateFiles, {}, '名册读不到不记账');
+  const feishuDown = makeWorld({ notify: NOTIFY, stateFiles, findResult: () => ({ status: 'failed', code: 'timeout' }) });
+  await feishuDown.remind(1704, 'aj0928');
+  assert.deepEqual(feishuDown.logs.map((e) => [e.event, e.reason]), [['roster-check-skip', 'timeout']]);
+  assert.deepEqual(stateFiles, {}, '飞书查询失败不记账');
+  for (const world of [makeWorld({ mode: 'dry-run', notify: NOTIFY }), makeWorld({})]) {
+    await world.remind(1704, 'jackiezxt');
+    assert.deepEqual(world.logs, []);
+    assert.deepEqual(world.rosterLoads, []);
+  }
 });
