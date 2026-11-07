@@ -45,8 +45,12 @@ export function isBotLogin(login) {
   return !text || /\[bot\]$/i.test(text) || /^app\//i.test(text);
 }
 
-/** 熔断通知转给兜底人时在熔断 issue 下留的一行说明;发给作者本人或作者是机器人(没法补名册)时返回 null。 */
-export function toFuseForwardNote({ author, reason, to, rosterRepo }) {
+/**
+ * 熔断通知转给兜底人时在熔断 issue 下留的一行说明;发给作者本人、作者是机器人(没法补名册)或飞书查询失败(不是名册问题)时返回 null。
+ * stale=true:名册这次没拉到最新(用的是旧副本),不能断定作者不在名册,改说「请核对」。
+ */
+export function toFuseForwardNote({ author, reason, to, rosterRepo, stale = false }) {
+  if (reason === 'not-in-roster' && stale) return `飞书通知已转给 @${to}：作者 @${author} 不在名册的本机旧副本里（这次没拉到最新名册），请核对 ${rosterRepo} 名册。`;
   if (reason === 'not-in-roster') return `飞书通知已转给 @${to}：作者 @${author} 不在名册里，请补 ${rosterRepo} 名册。`;
   if (reason === 'feishu-user-not-found') return `飞书通知已转给 @${to}：作者 @${author} 在名册里的邮箱飞书查不到，请核对 ${rosterRepo} 名册。`;
   return null;
@@ -123,9 +127,12 @@ async function fetchToken(fetchFn, appId, appSecret, total) {
   return auth.data?.code === 0 && token ? { token } : { code: `token-${auth.data?.code ?? auth.status}` };
 }
 
+// 返回 { openId }(查到)、{ openId: null }(飞书明确答复查不到)或 { code: 'lookup-<code>' }(查询本身失败:限流、权限、HTTP 错误)。
+// 查询失败不能当成「查不到」,否则新作者提醒会误报并永久记账(#219 自检)。
 async function lookupOpenId(fetchFn, email, token, total) {
   const found = await postJson(fetchFn, `${FEISHU_API}/contact/v3/users/batch_get_id?user_id_type=open_id`, { emails: [email] }, token, total);
-  return found.data?.code === 0 ? found.data?.data?.user_list?.[0]?.user_id ?? null : null;
+  if (found.data?.code !== 0) return { code: `lookup-${found.data?.code ?? found.status}` };
+  return { openId: found.data?.data?.user_list?.[0]?.user_id ?? null };
 }
 
 /**
@@ -139,7 +146,11 @@ export async function findFeishuUsers({ fetchFn = fetch, appId, appSecret, email
     const auth = await fetchToken(fetchFn, appId, appSecret, total);
     if (!auth.token) return { status: 'failed', code: auth.code };
     const found = {};
-    for (const email of emails ?? []) found[email] = Boolean(await lookupOpenId(fetchFn, email, auth.token, total));
+    for (const email of emails ?? []) {
+      const looked = await lookupOpenId(fetchFn, email, auth.token, total);
+      if (looked.code) return { status: 'failed', code: looked.code };
+      found[email] = Boolean(looked.openId);
+    }
     return { status: 'ok', found };
   } catch (error) {
     return { status: 'failed', code: error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network' };
@@ -158,16 +169,20 @@ export async function sendFuseNotice({ fetchFn = fetch, appId, appSecret, recipi
     const auth = await fetchToken(fetchFn, appId, appSecret, total);
     if (!auth.token) return { status: 'failed', code: auth.code };
     const { token } = auth;
+    let lookupError = null; // 前面的接收人查询失败(不是查不到)时,转发原因记这个原因码,不记 feishu-user-not-found
     for (const recipient of recipients) {
-      const openId = await lookupOpenId(fetchFn, recipient.email, token, total);
+      const looked = await lookupOpenId(fetchFn, recipient.email, token, total);
+      lookupError ??= looked.code ?? null;
+      const openId = looked.openId;
       if (!openId) continue;
       const text = message({ forwardedFrom: recipient.forwardedFrom });
       const sent = await postJson(fetchFn, `${FEISHU_API}/im/v1/messages?receive_id_type=open_id`,
         { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) }, token, total);
       if (sent.data?.code !== 0) return { status: 'failed', code: `send-${sent.data?.code ?? sent.status}` };
-      return { status: 'sent', to: recipient.login, forwarded: Boolean(recipient.forwardedFrom), reason: recipient.reason };
+      const reason = recipient.reason === 'feishu-user-not-found' && lookupError ? lookupError : recipient.reason;
+      return { status: 'sent', to: recipient.login, forwarded: Boolean(recipient.forwardedFrom), reason };
     }
-    return { status: 'failed', code: 'feishu-user-not-found' };
+    return { status: 'failed', code: lookupError ?? 'feishu-user-not-found' };
   } catch (error) {
     return { status: 'failed', code: error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network' };
   }

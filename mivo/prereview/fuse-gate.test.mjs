@@ -23,7 +23,7 @@ const ROSTER = '| GitHub | Name | Email | Role |\n|---|---|---|---|\n| [@aj0928]
 const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${prefix}${i}`, head: `${prefix}${i}`, at: `2026-11-07T0${i}:00:00.000Z` }));
 
 function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100,
-  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false,
+  notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false, rosterSource = 'local-clone',
   author = 'aj0928', targetRepo = 'o/r', findResult = (emails) => ({ status: 'ok', found: Object.fromEntries(emails.map((e) => [e, true])) }), stateFiles = {} } = {}) {
   const sends = [];
   const rosterLoads = [];
@@ -47,7 +47,7 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
     fuseConfig: () => (notify ? { ...CONFIG_FUSE, notify } : CONFIG_FUSE),
     toFuseRecipients, toFuseNotifyText, toFuseRosterRepos, toFuseForwardNote, isBotLogin, selectRosterEmail,
     findFeishuUsers: async (args) => { finds.push(args); return findResult(args.emails); },
-    loadOrgRosters: (repos) => { rosterLoads.push(repos); return rosterOk ? { rosters: [{ repo: 'xindong/org', text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }; },
+    loadOrgRosters: (repos) => { rosterLoads.push(repos); return rosterOk ? { rosters: [{ repo: 'xindong/org', source: rosterSource, text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }; },
     stateFile: (name) => `/state/mivo/${name}`,
     readJson: (file, fallback) => (file in stateFiles ? structuredClone(stateFiles[file]) : fallback),
     writeJson: (file, value) => { stateFiles[file] = structuredClone(value); },
@@ -349,7 +349,7 @@ test('#219 SC3 转给兜底人(作者不在名册 / 飞书查不到)时熔断 is
     sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'not-in-roster' } });
   const { result } = await notInRoster.gate('h9');
   assert.deepEqual(forwardNotes(notInRoster), ['飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册里，请补 xindong/org 名册。']);
-  assert.match(result.warnings.join('\n'), /转给了 @PraiseZhu\(not-in-roster\),请补 xindong\/org 名册/);
+  assert.match(result.warnings.join('\n'), /转给了 @PraiseZhu\(not-in-roster\),请核对 xindong\/org 名册/);
   const notFound = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
     sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'feishu-user-not-found' } });
   await notFound.gate('h9');
@@ -406,4 +406,24 @@ test('#219 SC4 名册里有邮箱但飞书查不到也提醒;名册读不到、�
     assert.deepEqual(world.logs, []);
     assert.deepEqual(world.rosterLoads, []);
   }
+});
+
+test('#219 自检 名册只拿到本机旧副本(pull 失败):新作者提醒不下结论、不记账;熔断转发说明改说「请核对」,不断定作者不在名册', async () => {
+  const stateFiles = {};
+  const stale = makeWorld({ notify: NOTIFY, stateFiles, rosterSource: 'local-clone(stale,本次 pull 失败)' });
+  await stale.remind(1704, 'jackiezxt');
+  assert.deepEqual(stale.logs.map((e) => [e.event, e.reason]), [['roster-check-skip', 'roster-unavailable']]);
+  assert.deepEqual(stateFiles, {}, '旧副本不记账');
+  const fused = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', author: 'jackiezxt', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    rosterSource: 'local-clone(stale,本次 pull 失败)', sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'not-in-roster' } });
+  await fused.gate('h9');
+  assert.deepEqual(forwardNotes(fused), ['飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册的本机旧副本里（这次没拉到最新名册），请核对 xindong/org 名册。']);
+});
+
+test('#219 自检 飞书查询本身失败(lookup-<code>)而转给兜底人时,不在熔断 issue 留「请补名册」', async () => {
+  const world = makeWorld({ record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
+    sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'lookup-99991400' } });
+  await world.gate('h9');
+  assert.deepEqual(forwardNotes(world), []);
+  assert.equal(world.store.prs[1704].fuse.trip.notify.reason, 'lookup-99991400');
 });

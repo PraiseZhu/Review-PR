@@ -67,14 +67,15 @@ test('SC2 接收人:作者在名册里先发作者,兜底在后;机器人账号�
 });
 
 // 假的飞书接口:按 URL 分派,记录请求。
-function fakeFeishu({ token = { code: 0, tenant_access_token: 't-1' }, users = {}, send = { code: 0 }, throwName = null } = {}) {
+function fakeFeishu({ token = { code: 0, tenant_access_token: 't-1' }, users = {}, send = { code: 0 }, throwName = null, lookupCode = {} } = {}) {
   const calls = [];
   const fetchFn = async (url, init) => {
     const body = JSON.parse(init.body);
     calls.push({ url, body, auth: init.headers.Authorization ?? null, hasSignal: Boolean(init.signal) });
     if (throwName) { const e = new Error('x'); e.name = throwName; throw e; }
     const json = url.includes('tenant_access_token') ? token
-      : url.includes('batch_get_id') ? { code: 0, data: { user_list: [{ email: body.emails[0], user_id: users[body.emails[0]] }] } }
+      : url.includes('batch_get_id') ? (body.emails[0] in lookupCode ? { code: lookupCode[body.emails[0]], msg: 'rate limited' }
+        : { code: 0, data: { user_list: [{ email: body.emails[0], user_id: users[body.emails[0]] }] } })
         : send;
     return { status: 200, json: async () => json };
   };
@@ -183,4 +184,15 @@ test('#219 只查不发:findFeishuUsers 只调取 token 与 batch_get_id,从不�
   assert.deepEqual(await findFeishuUsers({ fetchFn: feishu.fetchFn, appId: 'a', appSecret: '', emails: ['x'] }), { status: 'failed', code: 'no-credential' });
   assert.deepEqual(await findFeishuUsers({ fetchFn: fakeFeishu({ token: { code: 10014 } }).fetchFn, appId: 'a', appSecret: 's', emails: ['x'] }), { status: 'failed', code: 'token-10014' });
   assert.deepEqual(await findFeishuUsers({ fetchFn: fakeFeishu({ throwName: 'TimeoutError' }).fetchFn, appId: 'a', appSecret: 's', emails: ['x'] }), { status: 'failed', code: 'timeout' });
+});
+
+test('#219 自检 batch_get_id 返回非零 code(限流、权限)是查询失败,不是「查不到」', async () => {
+  const limited = fakeFeishu({ users: { 'praise@example.com': 'ou_praise' }, lookupCode: { 'aj@example.com': 99991400 } });
+  assert.deepEqual(await findFeishuUsers({ fetchFn: limited.fetchFn, appId: 'a', appSecret: 's', emails: ['aj@example.com'] }), { status: 'failed', code: 'lookup-99991400' });
+  // 发送时照旧转给兜底人(通知不能丢),但原因记查询失败码,不记 feishu-user-not-found
+  assert.deepEqual(await sendFuseNotice({ fetchFn: limited.fetchFn, appId: 'a', appSecret: 's', recipients: RECIPIENTS, message }),
+    { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'lookup-99991400' });
+  const allDown = fakeFeishu({ lookupCode: { 'aj@example.com': 99991400, 'praise@example.com': 99991400 } });
+  assert.deepEqual(await sendFuseNotice({ fetchFn: allDown.fetchFn, appId: 'a', appSecret: 's', recipients: RECIPIENTS, message }), { status: 'failed', code: 'lookup-99991400' });
+  assert.equal(toFuseForwardNote({ author: 'aj0928', reason: 'lookup-99991400', to: 'PraiseZhu', rosterRepo: 'xindong/org' }), null);
 });

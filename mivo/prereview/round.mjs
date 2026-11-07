@@ -1362,11 +1362,11 @@ async function notifyFuse(ctx, task, live, trip, record, result) {
   bumpOwned(ctx, task, { fuse: { ...latest, trip: { ...(latest.trip ?? trip), notify: outcome } } });
   log('fuse-notify', { pr: task.pr, issue: trip.issue, ...outcome });
   const note = outcome.status === 'sent'
-    ? (outcome.forwarded ? toFuseForwardNote({ author, reason: outcome.reason, to: outcome.to, rosterRepo: rosterRepos[0] }) : null)
+    ? (outcome.forwarded ? toFuseForwardNote({ author, reason: outcome.reason, to: outcome.to, rosterRepo: rosterRepos[0], stale: rosters.rosters.some(isStaleRoster) }) : null)
     : `飞书通知未送达：${outcome.code}`;
   if (outcome.status !== 'sent') result.warnings = [...(result.warnings ?? []), `熔断飞书通知未送达:${outcome.code}`];
   if (!note) return;
-  if (outcome.status === 'sent') result.warnings = [...(result.warnings ?? []), `熔断飞书通知转给了 @${outcome.to}(${outcome.reason}),请补 ${rosterRepos[0]} 名册`];
+  if (outcome.status === 'sent') result.warnings = [...(result.warnings ?? []), `熔断飞书通知转给了 @${outcome.to}(${outcome.reason}),请核对 ${rosterRepos[0]} 名册`];
   assertNotFenced();
   const commented = run('gh', ['issue', 'comment', String(trip.issue), '-R', CONFIG.targetRepo, '--body', note],
     { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
@@ -1379,9 +1379,12 @@ function readFeishuSecret(notify) {
   return secret.ok ? secret.stdout.trim() : '';
 }
 
+// loadOrgRosters 本地 clone 拉取失败时用旧副本,source 带 stale;旧副本里没有的人不能断定不在名册。
+const isStaleRoster = (roster) => /stale/.test(String(roster?.source ?? ''));
+
 // 名册缺人提前提醒(#219):判门时 PR 作者是真人、但不在名册(或名册里的邮箱飞书查不到),记一条 roster-missing 日志事件给巡检读,
 // 不等到熔断时才悄悄转给兜底人。核对过的账号(对得上的也记)写进状态目录 roster-check.json,同一账号只核对、只提醒一次。
-// 有名册仓读不到、飞书查询失败时这次不下结论、不记账,下次判门再查。只在 live 模式且熔断通知开着时做;不在 PR 上评论。
+// 有名册仓读不到或只拿到旧副本(pull 失败)、飞书查询失败时这次不下结论、不记账,下次判门再查。只在 live 模式且熔断通知开着时做;不在 PR 上评论。
 const ROSTER_CACHE_MS = 30 * 60_000; // 名册每 30 分钟最多拉一次,不为每个 PR 都 git pull
 let ROSTER_CACHE = null;
 async function remindRosterGap(task, live) {
@@ -1394,8 +1397,9 @@ async function remindRosterGap(task, live) {
   const repos = toFuseRosterRepos({ targetRepo: CONFIG.targetRepo, rosterRepos: notify.rosterRepos });
   if (!ROSTER_CACHE || Date.now() - ROSTER_CACHE.atMs >= ROSTER_CACHE_MS) ROSTER_CACHE = { atMs: Date.now(), value: loadOrgRosters(repos) };
   const rosters = ROSTER_CACHE.value;
-  if (rosters.fetchErrors.length || !rosters.rosters.length) {
-    logOnce('roster-check-skip:roster', 'roster-check-skip', { reason: 'roster-unavailable', repos: rosters.fetchErrors.map((e) => e.repo) });
+  if (rosters.fetchErrors.length || !rosters.rosters.length || rosters.rosters.some(isStaleRoster)) {
+    logOnce('roster-check-skip:roster', 'roster-check-skip', { reason: 'roster-unavailable',
+      repos: [...rosters.fetchErrors.map((e) => e.repo), ...rosters.rosters.filter(isStaleRoster).map((r) => r.repo)] });
     return;
   }
   const email = selectRosterEmail(rosters.rosters.map((r) => r.text), author);
