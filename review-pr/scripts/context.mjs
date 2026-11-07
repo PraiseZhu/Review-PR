@@ -648,6 +648,7 @@ try {
     viewerLogin,
     authority: maintainerAuthority,
     reviewerIdentity,
+    botAuthorAliases: prRules.botAuthorAliases, // [MIVO-PATCH bot-author-alias] 判断的是 PR 作者
   });
   const isSelfFixAuthor = SELF_FIX_AUTHORS.includes(authorLogin.toLowerCase());
   // [MIVO-PATCH exempt-authors] 豁免名单只免审查前的维护者确认门;2026-10-21 起最终独立 Approve 由 approvalPolicy.authorIsMaintainer 豁免。
@@ -656,8 +657,10 @@ try {
   const uiEvidenceDeclaredNotApplicable = declaresNoUiChange(body);
   // requireUiEvidence=non-admin:只在真缺证据时读一次作者的仓库权限;读不到按不是 admin(要证据),原因写进 uiEvidenceAuthorAdmin。
   let uiEvidenceAuthorAdmin = null;
-  if (uiEvidenceMissing && !uiEvidenceDeclaredNotApplicable && authorLogin && uiEvidenceNeedsAdminLookup(prRules)) {
-    const r = gh(['api', '--method', 'GET', `repos/${slug}/collaborators/${encodeURIComponent(authorLogin)}/permission`], { allowFail: true, timeoutMs: 20_000 });
+  // [MIVO-PATCH bot-author-alias] 别名 bot 作者按它代表的维护者查仓库权限(bot 自己查不到 collaborator 权限)。
+  const permissionLogin = approvalPolicy.authorActsAs ?? authorLogin;
+  if (uiEvidenceMissing && !uiEvidenceDeclaredNotApplicable && permissionLogin && uiEvidenceNeedsAdminLookup(prRules)) {
+    const r = gh(['api', '--method', 'GET', `repos/${slug}/collaborators/${encodeURIComponent(permissionLogin)}/permission`], { allowFail: true, timeoutMs: 20_000 });
     try {
       uiEvidenceAuthorAdmin = r.ok !== false ? { verified: true, admin: isAdminPermission(JSON.parse(r.stdout)) } : { verified: false, admin: false, error: String(r.stderr ?? '').slice(0, 200) };
     } catch (error) {

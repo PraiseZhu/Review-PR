@@ -60,6 +60,8 @@ try {
   // [MIVO-PATCH reviewer-app] 配置里点名的审查 App(reviewerApps)可以提交 Approve,但它不是维护者:
   // Approve 只算「审查已发布」,不算独立维护者批准。没配 reviewerApps 时与改动前完全一致。
   const reviewerApps = loadRules().reviewerApps ?? [];
+  // [MIVO-PATCH bot-author-alias] 判断 PR 作者时传入:别名 bot 作者按它代表的维护者算作者身份。
+  const botAuthorAliases = loadRules().botAuthorAliases;
   // bot 身份(GitHub App 等)只做审查和留痕,不提交 Approve:读到未配置的 bot 立刻拒绝,在任何锁、授权读取和写入之前。
   const refuseBot = (identity) => {
     if (!identity.isBot) return;
@@ -83,7 +85,7 @@ try {
     let authority = null;
     let authorityError;
     try { authority = fetchMaintainerAuthority({ owner, repo }); } catch (error) { authorityError = error.message; }
-    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: reviewRecordActor({ author: meta.author }), viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps });
+    const policy = evaluateMaintainerApprovalPolicy({ authorLogin: reviewRecordActor({ author: meta.author }), viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps, botAuthorAliases });
     const threads = fetchAllReviewThreads(owner, repo, pr);
     const reviews = readReviewPages(slug, pr);
     const substantive = latestSubstantiveReviews(reviews.reviews);
@@ -170,7 +172,7 @@ try {
     !(fresh.overriddenOwnCr && fresh.policy.viewerCanApprove) &&
     !(fresh.policy.viewerIsReviewerApp && fresh.policy.viewerCanApprove);
   if (emitExempt) {
-    const exemption = evaluateApprovalExemption({ authorLogin: fresh.policy.author, authority: fresh.authority });
+    const exemption = evaluateApprovalExemption({ authorLogin: fresh.policy.author, authority: fresh.authority, botAuthorAliases });
     print({
       ok: true, pr, approved: false, approvalSatisfied: true, dryRun: false,
       approval: {
