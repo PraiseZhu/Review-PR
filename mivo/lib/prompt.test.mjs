@@ -95,6 +95,14 @@ test('P2 按「是否误导」划线:三类必修,泛泛缺测试与措辞问题
   for (const text of [SEVERITY, prompt()]) assert.doesNotMatch(text, /规范违反或必要测试缺口/);
 });
 
+// #221:维护者专用、要过确认门的输入,「故意写坏能绕过检查」记 P3(#1858 第 18–23 轮的拉锯来源)。
+test('信任边界:维护者专用输入「故意写坏能绕过」记 P3,写进 P3 不报并进任务书', () => {
+  const line = '- 信任边界:输入只有维护者能写、且改动要过维护者确认门时(例如 `docs/product-rules/`、`AGENTS.md` 这类规则文档),「故意写坏的输入能绕过检查或骗过校验器」记 P3;PR 正文、任务 issue 或该工具文档明确承诺了这项检查的除外。';
+  const p3 = SEVERITY.slice(SEVERITY.indexOf('P3 不报:'), SEVERITY.indexOf('判定规则:'));
+  assert.ok(p3.includes(line), 'P3 不报一节缺信任边界一条');
+  for (const tier of ['light', 'standard', 'heavy']) assert.ok(prompt(tier).includes(line), `${tier} 档任务书缺信任边界一条`);
+});
+
 test('标准版本号是文件原始内容的 sha256 前 12 位,内容一变版本号就变', () => {
   const raw = readFileSync(SEVERITY_FILE, 'utf8');
   assert.match(SEVERITY_VERSION, /^[0-9a-f]{12}$/);
