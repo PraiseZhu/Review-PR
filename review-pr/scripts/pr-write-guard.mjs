@@ -22,6 +22,8 @@ export function createPrWriteGuard(binding, dependencies = {}) {
   // 写前身份绑定按「当前实际写入账号」精确比较,不用别名集合:同一集合里换成另一个账号也算身份漂移。
   let boundViewer = normalizeReviewActor(binding.expectedViewer)?.key ?? null;
   const reviewerApps = binding.reviewerApps ?? loadRules().reviewerApps ?? [];
+  // [MIVO-PATCH bot-author-alias] 判断 PR 作者(hold / signoff-notice 拒绝)时传入,与 context 同口径。
+  const botAuthorAliases = binding.botAuthorAliases ?? loadRules().botAuthorAliases;
   return (args, options = {}) => {
     api.assertActiveReviewLock(lockToken);
     const identity = api.readReviewIdentity({ ghFn: api.gh });
@@ -33,7 +35,7 @@ export function createPrWriteGuard(binding, dependencies = {}) {
     // 人类作者仍按 login 字符串传(旧调用方与注入的 policy 都按字符串);Bot 作者传带类型的 actor,三种写法才能归一。
     const authorActor = reviewRecordActor({ author: meta.author });
     const authorInput = normalizeReviewActor(authorActor)?.isBot ? authorActor : meta.author?.login;
-    const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: authorInput, viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps });
+    const policy = api.evaluateMaintainerApprovalPolicy({ authorLogin: authorInput, viewerLogin: viewer, authority, reviewerIdentity: identity, reviewerApps, botAuthorAliases });
     // 审查 App 只在 purpose='review' 且写的是精确端点时算有权限;其余目的仍要求维护者。
     const reviewAppAllowed = purpose === 'review' && policy.viewerIsReviewerApp && !policy.viewerIsMaintainer;
     if (reviewAppAllowed && !isReviewWrite(args, { owner, repo, pr })) {

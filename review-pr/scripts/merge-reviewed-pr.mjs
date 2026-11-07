@@ -15,6 +15,7 @@ import {
   ghJson,
   fetchMaintainerAuthority,
   evaluateMaintainerApprovalPolicy,
+  loadRules,
   readReviewIdentity,
   readReviewIdentityOrEmpty,
   evaluateMaintainerReview,
@@ -175,6 +176,7 @@ try {
     viewerLogin,
     authority,
     reviewerIdentity: identity,
+    botAuthorAliases: loadRules().botAuthorAliases, // [MIVO-PATCH bot-author-alias] 判断的是 PR 作者
   });
   const latestCommitDate = (meta.commits ?? []).reduce(
     (latest, commit) => String(commit?.committedDate ?? '') > latest ? String(commit.committedDate) : latest,

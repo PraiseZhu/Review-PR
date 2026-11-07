@@ -129,6 +129,8 @@ export function loadRules() {
   rules.maintainerAllowlist = normalizeMaintainerAllowlist(rules.maintainerAllowlist);
   // [MIVO-PATCH reviewer-app] 审查 App 名单:只给「可发审查」能力,不进维护者名单。缺省 [],旧配置行为不变。
   rules.reviewerApps = normalizeReviewerApps(rules.reviewerApps);
+  // [MIVO-PATCH bot-author-alias] bot 作者 → 它代表的维护者。只在判断 PR 作者时由调用方显式传入,缺省 {},旧配置行为不变。
+  rules.botAuthorAliases = Object.fromEntries(normalizeBotAuthorAliases(rules.botAuthorAliases));
   return rules;
 }
 
@@ -151,6 +153,38 @@ export function normalizeReviewerApps(value, field = 'reviewerApps') {
     if (!keys.includes(actor.key)) keys.push(actor.key);
   });
   return keys;
+}
+
+/**
+ * [MIVO-PATCH bot-author-alias] botAuthorAliases 配置校验(无 I/O)。键是 GitHub App 的 bot 登录名(`x[bot]` 或 `app/x`),
+ * 值是它代表的真人维护者登录名;`_comment` 键跳过。缺省返回空表;配置异常抛错并写出字段、键、期望与实际值。
+ * 返回 Map:bot canonical key(`x[bot]`)→ 真人 canonical key(小写)。已归一的对象再传一次结果不变。
+ */
+export function normalizeBotAuthorAliases(value, field = 'botAuthorAliases') {
+  const aliases = new Map();
+  if (value === undefined) return aliases;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    const actual = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    throw new Error(`${field} 必须是对象(期望 {"<app>[bot]": "<维护者登录名>"},实际 ${actual})`);
+  }
+  for (const [rawBot, rawHuman] of Object.entries(value)) {
+    if (rawBot === '_comment') continue;
+    const botText = String(rawBot).trim();
+    const botLogin = botText.toLowerCase().startsWith('app/') ? `${botText.slice(4)}[bot]` : botText;
+    const bot = normalizeReviewActor(validateViewerLogin(botLogin, `${field} 的键 ${JSON.stringify(rawBot)}`));
+    if (!bot?.isBot) {
+      throw new Error(`${field} 的键 ${JSON.stringify(rawBot)} 必须是 GitHub App 的 bot 登录名(期望 "<app>[bot]" 或 "app/<app>")`);
+    }
+    const human = normalizeReviewActor(validateViewerLogin(rawHuman, `${field}[${JSON.stringify(rawBot)}]`));
+    if (!human || human.isBot) {
+      throw new Error(`${field}[${JSON.stringify(rawBot)}] 必须是真人维护者登录名(实际 ${JSON.stringify(rawHuman)})`);
+    }
+    if (aliases.has(bot.key) && aliases.get(bot.key) !== human.key) {
+      throw new Error(`${field} 把 ${bot.key} 同时指向 ${aliases.get(bot.key)} 和 ${human.key}`);
+    }
+    aliases.set(bot.key, human.key);
+  }
+  return aliases;
 }
 
 function normalizeLoginList(value) {
@@ -689,7 +723,7 @@ export function loadMaintainerAuthoritySnapshot({
 }
 
 /** 当前 viewer/作者相对于 Team + maintainerAllowlist 最终维护者集合的统一审批策略。 */
-export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null, reviewerApps = [] } = {}) {
+export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin = '', authority = null, reviewerIdentity = null, reviewerApps = [], botAuthorAliases = undefined } = {}) {
   const members = new Set(normalizeLoginList(authority?.members));
   const teamMembers = new Set(normalizeLoginList(authority?.teamMembers));
   const allowlistedMembers = new Set(normalizeLoginList(authority?.allowlistedMembers));
@@ -699,7 +733,10 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
   const viewerActor = normalizeReviewActor(viewerLogin);
   const author = authorActor?.key ?? '';
   const viewer = viewerActor?.key ?? '';
-  const authorIsMaintainer = author !== '' && !authorActor.isBot && members.has(author);
+  // [MIVO-PATCH bot-author-alias] 判断 PR 作者的调用方显式传 botAuthorAliases 时,别名里的 bot 作者按它代表的维护者算作者身份
+  // (别名目标须在维护者集合内)。判断放行人、审查人的调用不传,bot 仍不是维护者;viewer 侧不看别名。
+  const authorActsAs = authorActor?.isBot ? normalizeBotAuthorAliases(botAuthorAliases).get(author) ?? null : null;
+  const authorIsMaintainer = author !== '' && (authorActor.isBot ? authorActsAs !== null && members.has(authorActsAs) : members.has(author));
   const viewerIsMaintainer = viewer !== '' && !viewerActor.isBot && members.has(viewer);
   // 审查 App:配置里点名的 Bot 才有。它只能发审查(含 Approve),不是维护者,也不满足「需要维护者独立 Approve」。
   const appKeys = new Set((Array.isArray(reviewerApps) ? reviewerApps : []).map((app) => normalizeReviewActor(app)?.key).filter(Boolean));
@@ -722,7 +759,8 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
     viewerIsReviewerApp,
     viewerIsAuthor,
     viewerCanApprove: (viewerIsMaintainer || viewerIsReviewerApp) && !viewerIsAuthor,
-    authorAuthoritySource: authoritySource(author, authorIsMaintainer),
+    authorAuthoritySource: authoritySource(authorActsAs ?? author, authorIsMaintainer),
+    ...(authorIsMaintainer && authorActsAs ? { authorActsAs } : {}),
     viewerAuthoritySource: authoritySource(viewer, viewerIsMaintainer),
     approvalRequired: !authorIsMaintainer,
     teamHandle: authority?.codeowners?.teamHandle ?? null,
@@ -731,18 +769,21 @@ export function evaluateMaintainerApprovalPolicy({ authorLogin = '', viewerLogin
 }
 
 /** 兼容现有 route 输出：2026-10-21 维护者决定，可信维护者作者免另一位维护者独立 Approve。 */
-export function evaluateApprovalExemption({ authorLogin = '', authority = null } = {}) {
-  const policy = evaluateMaintainerApprovalPolicy({ authorLogin, authority });
+export function evaluateApprovalExemption({ authorLogin = '', authority = null, botAuthorAliases = undefined } = {}) {
+  const policy = evaluateMaintainerApprovalPolicy({ authorLogin, authority, botAuthorAliases });
   const exempt = policy.approvalRequired === false;
   return {
     exempt,
     authorIsMaintainer: policy.authorIsMaintainer,
     author: policy.author,
+    ...(policy.authorActsAs ? { authorActsAs: policy.authorActsAs } : {}),
     source: policy.authorAuthoritySource ?? 'combined-maintainer-authority',
     teamHandle: policy.teamHandle,
     authorityDigest: policy.authorityDigest,
     reason: exempt
-      ? (policy.authorAuthoritySource === 'maintainer-allowlist'
+      ? policy.authorActsAs
+        ? `作者 ${policy.author} 按 botAuthorAliases 代表维护者 ${policy.authorActsAs}，与其本人作者同权，免另一位维护者独立 Approve`
+        : (policy.authorAuthoritySource === 'maintainer-allowlist'
         ? `作者 ${policy.author} 在 maintainerAllowlist 补充白名单中，按 2026-10-21 维护者决定免另一位维护者独立 Approve`
         : `作者 ${policy.author} 是 ${policy.teamHandle ?? '维护者 Team'} 当前成员，按 2026-10-21 维护者决定免另一位维护者独立 Approve`)
       : policy.author

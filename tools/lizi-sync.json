@@ -74,6 +74,7 @@
   ],
   "added": [
     "review-pr/scripts/approve-workflows-expected-head.test.mjs",
+    "review-pr/scripts/bot-author-alias.test.mjs",
     "review-pr/scripts/bot-comment-source.test.mjs",
     "review-pr/scripts/branch-protection-cache.test.mjs",
     "review-pr/scripts/dismiss-review.mjs",
