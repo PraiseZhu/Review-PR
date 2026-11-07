@@ -79,10 +79,35 @@ export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(fi
  * @param {object} p.current 本次 {head, baseRefName, diffHash, filePatchHashes, totalDiffLines, tier, triggerKinds, specDigest, now}
  * @param {boolean|null} p.headIsDescendant H0 是否是 H1 的祖先(git merge-base --is-ancestor);null=未知
  * @param {boolean} [p.forceFullOnSpecChange] 维护者开关(review-features.json 的 specChange.forceFull):规则改版时即使代码没变也全量;只认 true
+ * @param {string} [p.lateFindingsMode] 后来发现开关(review-features.json 的 lateFindings.mode);缺省按 off,只认 enforce
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
 export function computeReviewScope(args) {
-  return withHandoffScope({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current });
+  const scope = withLateFindingsPolicy({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current, mode: args.lateFindingsMode });
+  return withHandoffScope({ scope, previous: args.previous, current: args.current });
+}
+
+// 后来发现(#221)开关不是 enforce、上一轮却有后来发现的 P2:沿用或增量都会让这些 P2 继续不阻断(沿用原样带过来;增量不审没改的文件、
+// 旧问题清单也不带它们);基础范围本来就是全量时,旧问题清单同样不带它们,任务书不会要求逐条核对。
+// 这时不论基础范围是什么,都把它们按 key 去重并进待核对的旧问题清单(排在原清单之后,legacy-N 编号不变);沿用/增量改为全量重审,
+// 全量保留原 reason。结果与开关一直是 off 时一致。
+function withLateFindingsPolicy({ scope, previous, current, mode = 'off' }) {
+  const late = Array.isArray(previous?.lateFindings) ? previous.lateFindings : [];
+  if (mode === 'enforce' || late.length === 0) return scope;
+  const base = scope.mode === 'full' ? (scope.previousFindings ?? []) : carriedFindings(previous, current);
+  const seen = new Set(base.map((f) => f?.key).filter(Boolean));
+  const inDiff = current.filePatchHashes ? (path) => path in current.filePatchHashes : () => true;
+  const added = [];
+  for (const f of late) {
+    if (f?.key && seen.has(f.key)) continue;
+    if (f?.key) seen.add(f.key);
+    const { outOfDiff, ...rest } = f;
+    added.push(inDiff(f.path) ? rest : { ...rest, outOfDiff: true });
+  }
+  const previousFindings = [...base, ...added];
+  if (scope.mode === 'full') return { ...scope, previousFindings };
+  return { mode: 'full', reason: '后来发现分桶已关闭,上一轮有后来发现的 P2,重新全量审查', files: Object.keys(current.filePatchHashes ?? {}).sort(),
+    previousFindings, basedOn: null };
 }
 
 function computeBaseReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
@@ -177,6 +202,22 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
     // 只是候选;本轮最终确实干净才会写进结果包(review.mjs)。
     ...fixRoundExemption({ previous, changed }),
   };
+}
+
+/**
+ * 「后来发现」分桶(#221)用:上一轮可信结果里审过、本轮补丁指纹没变的文件。纯函数。
+ * 指纹口径与 computeBaseReviewScope 相同:双方都有 v2 才按 v2 比,否则按 v1。
+ * 没有上一轮、上一轮没审完或出错时返回 null(调用方据此一律照常阻断,不当成「全部没改」)。
+ * @returns {string[]|null}
+ */
+export function unchangedReviewedFiles({ previous, current }) {
+  const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
+  if (!trusted) return null;
+  const isFilled = (o) => o && typeof o === 'object' && Object.keys(o).length > 0;
+  const useV2 = isFilled(previous.filePatchHashesV2) && isFilled(current?.filePatchHashesV2);
+  const before = (useV2 ? previous.filePatchHashesV2 : previous.filePatchHashes) ?? {};
+  const after = (useV2 ? current.filePatchHashesV2 : current?.filePatchHashes) ?? {};
+  return Object.keys(after).filter((path) => typeof before[path] === 'string' && before[path] === after[path]).sort();
 }
 
 // 上一轮的问题清单(含转 issue 的)带进本轮;文件已不在本轮 diff 的标 outOfDiff。上一轮不可信时为空。
@@ -415,6 +456,7 @@ export function previousFromResult(result, report = '') {
     reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
     pendingGates: result.mivo?.advisory?.pendingGates ?? [],
     reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
+    lateFindings: Array.isArray(result.mivo?.lateFindings) ? result.mivo.lateFindings : [],
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, filePatchHashesV2: result.mivo?.filePatchHashesV2 ?? null, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,

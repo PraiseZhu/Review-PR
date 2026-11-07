@@ -17,6 +17,9 @@
   "productRules": {
     "mode": "observe"
   },
+  "lateFindings": {
+    "mode": "enforce"
+  },
   "focus": {
     "ciCovered": [
       "npx tsc -b",

@@ -2,6 +2,8 @@
 // 报告骨架与结论口径照搬 Cindy:## Findings / ## Rule coverage / ## Verification / ## Overall,
 // 只报 P0/P1/P2。Mivo 加一行「Mivo 自动审查」区分 PraiseZhu 本人的评论(两者同一账号发出)。
 // 作者转 issue 跟进的 P1/P2(见 deferrals.mjs)单列成「已转 issue 跟进的问题」,不阻断、不开 thread。
+// 第 2 轮起落在没改动文件上的新 P2(splitLateFindings)单列成「后来发现」,同样不阻断、不开 thread。
+import { readFileSync } from 'node:fs';
 import { toDeferredSummary } from './deferrals.mjs';
 import { normalizeHandoffCoverage } from './handoff.mjs';
 import { FINDING_ITEM_SCHEMA, SEVERITIES, normalizeFinding, readHandoffRiskIds, escapeModelText, classifyOrigin, checkEvidence, renderFindingBody, titleOfBody } from './finding.mjs';
@@ -232,6 +234,51 @@ export function renderPreexistingSection(list = []) {
   return [PREEXISTING_SECTION, '', ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P1'}] ${titleOf(f)} · 建议另开 issue 跟进`), ''];
 }
 
+// ── 后来发现(#221)──────────────────────────────────────────────────────────
+// 第 2 轮起才冒出、落在上一轮审过且本轮没改动的文件上的新 P2:不阻断,单列一节,作者自己决定修不修或转 issue 跟进。
+// 开关:config/review-features.json 的 lateFindings.mode:enforce 分桶;off(默认)与改动前完全一致。
+export const LATE_FINDINGS_MODES = ['off', 'enforce'];
+export const LATE_SECTION = '## 后来发现（不阻断本 PR）';
+
+/** 读开关;读不到、不合法 → off 并给 warning;没有 lateFindings 块 → off、不告警。 */
+export function loadLateFindingsMode(file, read = readFileSync) {
+  let raw;
+  try { raw = JSON.parse(read(file, 'utf8')); } catch (error) {
+    return { mode: 'off', warning: `review-features.json 读不到或不合法(${String(error.message).slice(0, 120)}),后来发现分桶按 off 处理` };
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { mode: 'off', warning: 'review-features.json 顶层不是对象,后来发现分桶按 off 处理' };
+  if (raw.lateFindings === undefined) return { mode: 'off', warning: null };
+  const mode = raw.lateFindings?.mode;
+  if (!LATE_FINDINGS_MODES.includes(mode)) return { mode: 'off', warning: `review-features.json 的 lateFindings.mode 不合法(${String(mode).slice(0, 40)}),后来发现分桶按 off 处理` };
+  return { mode, warning: null };
+}
+
+/**
+ * 把阻断问题里符合条件的新 P2 移进「后来发现」。纯函数,不改输入。条件全部满足才移:
+ * 开关 enforce;有上一轮可信结果(unchangedFiles 不是 null);P2;`supersedes` 为 null;没转 issue;来源不是 pre-existing;
+ * 不是连续报出(seenRounds ≤ 1,上一轮已阻断的同 key 问题照常阻断);问题文件和同类位置的文件都在 unchangedFiles 里。
+ * @param {{findings: object[], unchangedFiles: string[]|null, mode?: string}} p
+ * @returns {{findings: object[], late: object[]}}
+ */
+export function splitLateFindings({ findings = [], unchangedFiles = null, mode = 'off' }) {
+  if (mode !== 'enforce' || !Array.isArray(unchangedFiles)) return { findings: [...findings], late: [] };
+  const unchanged = new Set(unchangedFiles);
+  const isLate = (f) => f.severity === 'P2' && (f.supersedes ?? null) === null && (f.deferredTo ?? null) === null && f.origin !== 'pre-existing'
+    && (f.seenRounds ?? 1) <= 1 && [f.path, ...(f.instances ?? []).map((i) => i?.path)].filter(Boolean).every((p) => unchanged.has(p));
+  const blocking = [];
+  const late = [];
+  for (const f of findings) (isLate(f) ? late : blocking).push(f);
+  return { findings: blocking, late };
+}
+
+/** 报告里「后来发现」一节;没有时返回空数组。 */
+export function renderLateSection(list = []) {
+  if (!list.length) return [];
+  return [LATE_SECTION, '',
+    '下面的 P2 是第 2 轮起才报出的新问题,所在文件上一轮已审过、本轮没有改动,不阻断本 PR。作者自己决定本 PR 修、另开 PR 修或转 issue 跟进。', '',
+    ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P2'}] ${titleOf(f)}`), ''];
+}
+
 /** 报告里「维护者已裁定不改、审查机本轮仍报了」一节;这些 P1/P2 已从阻断问题里移出。 */
 export function renderRuledKeptSection(list = []) {
   if (!list.length) return [];
@@ -341,15 +388,16 @@ export function pendingFinalFullReport({ pr, url, head, base, diffHash, tier, sc
   ].join('\n');
 }
 
-export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], ruledKept = [], adjudicatedKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
+export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], late = [], ruledKept = [], adjudicatedKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
   pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '', finalFull = null, finalFullKind = null, handoff = null }) {
   const summary = toDeferredSummary(deferred);
   const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
-    ? (summary ? `pass —— 没有阻断的 P0/P1/P2；${summary.text}，不阻断本 PR。` : (preexisting.length || overruled || adjudicatedKept.length ? 'pass —— 没有阻断的 P0/P1/P2。' : 'pass —— 没有 P0/P1/P2。'))
+    ? (summary ? `pass —— 没有阻断的 P0/P1/P2；${summary.text}，不阻断本 PR。` : (preexisting.length || late.length || overruled || adjudicatedKept.length ? 'pass —— 没有阻断的 P0/P1/P2。' : 'pass —— 没有 P0/P1/P2。'))
     : `changes-requested —— ${findings.length} 条 P0/P1/P2，已在对应位置开 review thread。`;
   if (findings.length && summary) conclusion += `另有 ${summary.text}，不阻断。`;
   if (!findings.length && preexisting.length) conclusion += `另有 ${preexisting.length} 条 PR 之前就存在的 P1/P2，不阻断本 PR。`;
+  if (late.length) conclusion += `另有 ${late.length} 条后来发现的 P2（所在文件上一轮已审、本轮没改），不阻断本 PR。`;
   if (adjudicatedKept.length) conclusion += `另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`;
   // 核对员推翻/降级的 P1/P2:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
   if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
@@ -374,7 +422,7 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
     lines.splice(verificationIndex + 1, 0, '', scopeLine, ...(stateLine ? ['', stateLine] : []));
   }
   // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
-  const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting),
+  const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting), ...renderLateSection(late),
     ...renderRuledKeptSection(ruledKept), ...renderAdjudicatedSection(adjudicatedKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...renderVerifierUnavailableSection(verifierUnavailable ?? {}), ...convergenceLines];
   if (extraLines.length) {
     const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));
