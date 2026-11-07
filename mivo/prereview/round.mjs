@@ -1362,7 +1362,7 @@ async function notifyFuse(ctx, task, live, trip, record, result) {
   bumpOwned(ctx, task, { fuse: { ...latest, trip: { ...(latest.trip ?? trip), notify: outcome } } });
   log('fuse-notify', { pr: task.pr, issue: trip.issue, ...outcome });
   const note = outcome.status === 'sent'
-    ? (outcome.forwarded ? toFuseForwardNote({ author, reason: outcome.reason, to: outcome.to, rosterRepo: rosterRepos[0], stale: rosters.rosters.some(isStaleRoster) }) : null)
+    ? (outcome.forwarded ? toFuseForwardNote({ author, reason: outcome.reason, to: outcome.to, rosterRepo: rosterRepos[0], stale: rosters.fetchErrors.length > 0 || rosters.rosters.some(isStaleRoster) }) : null)
     : `飞书通知未送达：${outcome.code}`;
   if (outcome.status !== 'sent') result.warnings = [...(result.warnings ?? []), `熔断飞书通知未送达:${outcome.code}`];
   if (!note) return;

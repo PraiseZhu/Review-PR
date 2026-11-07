@@ -24,7 +24,7 @@ const tenVersions = (prefix = 'h') => Array.from({ length: 10 }, (_, i) => ({ fp
 
 function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true, closeOk = true, commentsOk = true, listOk = true, openIssues = [], issueState = 'OPEN', pageSize = 100,
   notify = null, sendResult = { status: 'sent', to: 'aj0928', forwarded: false, reason: null }, secretOk = true, rosterOk = true, sendCrash = false, rosterSource = 'local-clone',
-  author = 'aj0928', targetRepo = 'o/r', findResult = (emails) => ({ status: 'ok', found: Object.fromEntries(emails.map((e) => [e, true])) }), stateFiles = {} } = {}) {
+  author = 'aj0928', targetRepo = 'o/r', extraFetchErrors = [], findResult = (emails) => ({ status: 'ok', found: Object.fromEntries(emails.map((e) => [e, true])) }), stateFiles = {} } = {}) {
   const sends = [];
   const rosterLoads = [];
   const finds = [];
@@ -47,7 +47,7 @@ function makeWorld({ mode = 'live', record = {}, comments = [], createOk = true,
     fuseConfig: () => (notify ? { ...CONFIG_FUSE, notify } : CONFIG_FUSE),
     toFuseRecipients, toFuseNotifyText, toFuseRosterRepos, toFuseForwardNote, isBotLogin, selectRosterEmail,
     findFeishuUsers: async (args) => { finds.push(args); return findResult(args.emails); },
-    loadOrgRosters: (repos) => { rosterLoads.push(repos); return rosterOk ? { rosters: [{ repo: 'xindong/org', source: rosterSource, text: ROSTER }], fetchErrors: [] } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }; },
+    loadOrgRosters: (repos) => { rosterLoads.push(repos); return rosterOk ? { rosters: [{ repo: 'xindong/org', source: rosterSource, text: ROSTER }], fetchErrors: extraFetchErrors } : { rosters: [], fetchErrors: [{ repo: 'xindong/org', error: 'x' }] }; },
     stateFile: (name) => `/state/mivo/${name}`,
     readJson: (file, fallback) => (file in stateFiles ? structuredClone(stateFiles[file]) : fallback),
     writeJson: (file, value) => { stateFiles[file] = structuredClone(value); },
@@ -417,7 +417,7 @@ test('#219 自检 名册只拿到本机旧副本(pull 失败):新作者提醒不
   const fused = makeWorld({ targetRepo: 'xindong/mivo-canvas-plugin', author: 'jackiezxt', record: { fuse: { versions: tenVersions() } }, notify: NOTIFY,
     rosterSource: 'local-clone(stale,本次 pull 失败)', sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'not-in-roster' } });
   await fused.gate('h9');
-  assert.deepEqual(forwardNotes(fused), ['飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册的本机旧副本里（这次没拉到最新名册），请核对 xindong/org 名册。']);
+  assert.deepEqual(forwardNotes(fused), ['飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在这次读到的名册里（有名册没读到或没拉到最新），请核对 xindong/org 名册。']);
 });
 
 test('#219 自检 飞书查询本身失败(lookup-<code>)而转给兜底人时,不在熔断 issue 留「请补名册」', async () => {
@@ -426,4 +426,17 @@ test('#219 自检 飞书查询本身失败(lookup-<code>)而转给兜底人时,�
   await world.gate('h9');
   assert.deepEqual(forwardNotes(world), []);
   assert.equal(world.store.prs[1704].fuse.trip.notify.reason, 'lookup-99991400');
+});
+
+test('#219 自检 追加名册有一份读不到、另一份读到:熔断转发说明只说「请核对」,不断定作者不在名册;新作者提醒不下结论', async () => {
+  const partial = { extraFetchErrors: [{ repo: 'XDGame/org', error: 'x' }] };
+  const fused = makeWorld({ ...partial, targetRepo: 'xindong/mivo-canvas-plugin', author: 'jackiezxt', record: { fuse: { versions: tenVersions() } },
+    notify: { ...NOTIFY, rosterRepos: ['XDGame/org'] }, sendResult: { status: 'sent', to: 'PraiseZhu', forwarded: true, reason: 'not-in-roster' } });
+  await fused.gate('h9');
+  assert.deepEqual(forwardNotes(fused), ['飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在这次读到的名册里（有名册没读到或没拉到最新），请核对 xindong/org 名册。']);
+  const stateFiles = {};
+  const remind = makeWorld({ ...partial, notify: { ...NOTIFY, rosterRepos: ['XDGame/org'] }, stateFiles });
+  await remind.remind(1704, 'jackiezxt');
+  assert.deepEqual(remind.logs.map((e) => e.event), ['roster-check-skip']);
+  assert.deepEqual(stateFiles, {});
 });

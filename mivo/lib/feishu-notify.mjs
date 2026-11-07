@@ -47,10 +47,10 @@ export function isBotLogin(login) {
 
 /**
  * 熔断通知转给兜底人时在熔断 issue 下留的一行说明;发给作者本人、作者是机器人(没法补名册)或飞书查询失败(不是名册问题)时返回 null。
- * stale=true:名册这次没拉到最新(用的是旧副本),不能断定作者不在名册,改说「请核对」。
+ * stale=true:名册这次不完整(有名册仓读不到,或只拿到本机旧副本),不能断定作者不在名册,改说「请核对」。
  */
 export function toFuseForwardNote({ author, reason, to, rosterRepo, stale = false }) {
-  if (reason === 'not-in-roster' && stale) return `飞书通知已转给 @${to}：作者 @${author} 不在名册的本机旧副本里（这次没拉到最新名册），请核对 ${rosterRepo} 名册。`;
+  if (reason === 'not-in-roster' && stale) return `飞书通知已转给 @${to}：作者 @${author} 不在这次读到的名册里（有名册没读到或没拉到最新），请核对 ${rosterRepo} 名册。`;
   if (reason === 'not-in-roster') return `飞书通知已转给 @${to}：作者 @${author} 不在名册里，请补 ${rosterRepo} 名册。`;
   if (reason === 'feishu-user-not-found') return `飞书通知已转给 @${to}：作者 @${author} 在名册里的邮箱飞书查不到，请核对 ${rosterRepo} 名册。`;
   return null;
