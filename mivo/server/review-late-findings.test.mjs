@@ -141,3 +141,31 @@ test('后来发现:enforce 下产生只含后来发现的干净结果,同 head �
     assert.deepEqual(again.mivo.lateFindings, []);
   } finally { rmSync(first.work, { recursive: true, force: true }); rmSync(second.work, { recursive: true, force: true }); }
 });
+
+// 基础范围本来就是全量(上一轮干净、本轮改了另一个文件)时,关开关后历史后来发现也要并进待核对的旧问题清单。
+test('后来发现:enforce 下只含后来发现的干净结果,切 off 同时改了另一个文件 → 范围全量(原 reason),旧问题清单含那条 P2', () => {
+  const { work } = setup({ findings: [finding({ severity: 'P2', title: '后来才看到的问题', bugClass: 'late' })], ...enforce(['src/a.ts']) });
+  try {
+    const result = publish(work);
+    assert.equal(result.reviewClean, true);
+    const lateKey = result.mivo.lateFindings[0].key;
+    const previous = previousFromResult(result, readFileSync(join(work, 'out', 'report.md'), 'utf8'));
+    const ev = result.reviewEvidence;
+    const hashes = (h) => ({ ...h, 'src/b.ts': 'changed' });
+    const current = { head: 'c'.repeat(40), baseRefName: ev.baseRefName, diffHash: 'd2', filePatchHashes: hashes(result.mivo.filePatchHashes),
+      filePatchHashesV2: result.mivo.filePatchHashesV2 ? hashes(result.mivo.filePatchHashesV2) : null, fileChangedLines: { 'src/b.ts': 1 },
+      totalDiffLines: 2, tier: 'standard', triggerKinds: [], specDigest: result.mivo.specDigest, now: Date.now() };
+    const args = { previous, current, headIsDescendant: true };
+    const enforced = computeReviewScope({ ...args, lateFindingsMode: 'enforce' });
+    assert.equal(enforced.mode, 'full');
+    assert.match(enforced.reason, /上一轮已干净,本轮代码有变化,直接全量/);
+    assert.deepEqual(enforced.previousFindings, [], 'enforce 下旧问题清单不带后来发现');
+    const off = computeReviewScope({ ...args, lateFindingsMode: 'off' });
+    assert.equal(off.mode, 'full');
+    assert.equal(off.reason, enforced.reason, '基础范围是全量时保留原 reason');
+    assert.deepEqual(off.previousFindings.map((f) => f.key), [lateKey]);
+    // 上一轮阻断问题里已有同 key 的条目时按 key 去重
+    const dup = computeReviewScope({ ...args, previous: { ...previous, findings: [{ ...previous.lateFindings[0] }], reviewClean: false }, lateFindingsMode: 'off' });
+    assert.deepEqual(dup.previousFindings.map((f) => f.key), [lateKey]);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

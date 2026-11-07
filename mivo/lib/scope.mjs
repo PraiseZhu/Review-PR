@@ -88,12 +88,26 @@ export function computeReviewScope(args) {
 }
 
 // 后来发现(#221)开关不是 enforce、上一轮却有后来发现的 P2:沿用或增量都会让这些 P2 继续不阻断(沿用原样带过来;增量不审没改的文件、
-// 旧问题清单也不带它们)。改为全量重审,并把它们放进待核对的旧问题清单,结果与开关一直是 off 时一致。
+// 旧问题清单也不带它们);基础范围本来就是全量时,旧问题清单同样不带它们,任务书不会要求逐条核对。
+// 这时不论基础范围是什么,都把它们按 key 去重并进待核对的旧问题清单(排在原清单之后,legacy-N 编号不变);沿用/增量改为全量重审,
+// 全量保留原 reason。结果与开关一直是 off 时一致。
 function withLateFindingsPolicy({ scope, previous, current, mode = 'off' }) {
   const late = Array.isArray(previous?.lateFindings) ? previous.lateFindings : [];
-  if (mode === 'enforce' || scope.mode === 'full' || late.length === 0) return scope;
+  if (mode === 'enforce' || late.length === 0) return scope;
+  const base = scope.mode === 'full' ? (scope.previousFindings ?? []) : carriedFindings(previous, current);
+  const seen = new Set(base.map((f) => f?.key).filter(Boolean));
+  const inDiff = current.filePatchHashes ? (path) => path in current.filePatchHashes : () => true;
+  const added = [];
+  for (const f of late) {
+    if (f?.key && seen.has(f.key)) continue;
+    if (f?.key) seen.add(f.key);
+    const { outOfDiff, ...rest } = f;
+    added.push(inDiff(f.path) ? rest : { ...rest, outOfDiff: true });
+  }
+  const previousFindings = [...base, ...added];
+  if (scope.mode === 'full') return { ...scope, previousFindings };
   return { mode: 'full', reason: '后来发现分桶已关闭,上一轮有后来发现的 P2,重新全量审查', files: Object.keys(current.filePatchHashes ?? {}).sort(),
-    previousFindings: carriedFindings({ ...previous, findings: [...(previous.findings ?? []), ...late] }, current), basedOn: null };
+    previousFindings, basedOn: null };
 }
 
 function computeBaseReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
