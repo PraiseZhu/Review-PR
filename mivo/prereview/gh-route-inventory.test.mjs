@@ -1077,7 +1077,7 @@ test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限�
   ];
   for (const [argv, classifierReason] of unmanaged) assert.deepEqual([labelWrite(argv).route, labelWrite(argv).reason], ['user', classifierReason], argv.join(' '));
   // 需要 --input - 的白名单写端点样本带代表性 stdin(needsStdin 在 writes 开着时要求)
-  for (const id of ['dismiss-own-review.gh.39a96b6774', 'dismiss-stale-reviews.gh.e54349f214', 'dismiss-review.ghFn.a491648a3f']) assert.equal(JSON.parse(byName(id, 'sample').stdin).event, 'DISMISS', id);
+  for (const id of ['dismiss-own-review.gh.4b2bbc7a2c', 'dismiss-stale-reviews.gh.e54349f214', 'dismiss-review.ghFn.a491648a3f']) assert.equal(JSON.parse(byName(id, 'sample').stdin).event, 'DISMISS', id);
   // 白名单外的写:expected 仍是 user,标 write-not-allowlisted,分类器给的 reason 属于写类,reason 点名 #1752
   const notAllowlisted = allCases.filter(([, c]) => c.keep?.category === 'write-not-allowlisted');
   assert.deepEqual(notAllowlisted.map(([e, c]) => `${e.id}/${c.name}`).sort(), WRITE_NOT_ALLOWLISTED.map(([id, name]) => `${id}/${name}`).sort());

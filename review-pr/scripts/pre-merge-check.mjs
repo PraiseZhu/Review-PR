@@ -115,10 +115,12 @@ try {
     viewerLogin,
     authority: maintainerAuthority,
     reviewerApps: rules.reviewerApps,
+    botAuthorAliases: rules.botAuthorAliases, // [MIVO-PATCH bot-author-alias] 判断的是 PR 作者
   });
   const approvalExemption = evaluateApprovalExemption({
     authorLogin: prAuthorActor,
     authority: maintainerAuthority,
+    botAuthorAliases: rules.botAuthorAliases,
   });
   const reviewActivity = fetchRestPages(`repos/${slug}/pulls/${pr}/reviews`);
   const reviewSnapshot = { verified: reviewActivity.verified, latest: reviewActivity.verified

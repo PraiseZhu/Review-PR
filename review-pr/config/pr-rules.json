@@ -79,6 +79,10 @@
   "reviewerApps": [
     "praisebuild[bot]"
   ],
+  "botAuthorAliases": {
+    "_comment": "[MIVO-PATCH bot-author-alias] bot 作者 → 它代表的维护者(PraiseZhu/Review-PR#223)。名单里的 bot 开的 PR 与所代表维护者本人开的 PR 作者权限相同:免维护者确认门、改受保护路径按作者是维护者放行、免另一位维护者独立 Approve、界面证据门按其仓库权限判。只作用于 PR 作者;bot 的 Approve、「同意放行」等放行与审查判断不看本表,bot 仍不是维护者。别名目标不在维护者集合时不生效。2026-11-08 PraiseZhu 决定:praise-qa App 开的 PR 与本人账号同权。",
+    "praise-qa[bot]": "PraiseZhu"
+  },
   "maintainerAllowlist": [
     "PraiseZhu",
     "kirozeng",

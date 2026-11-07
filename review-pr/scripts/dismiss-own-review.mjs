@@ -78,12 +78,15 @@ try {
   }
   // [MIVO-PATCH reviewer-app] 配置的审查 App 可以清「自己」发出的 CR(见 evaluateOwnReviewDismissal 的 reviewerApp);人类路径不变。
   const reviewerApps = loadRules().reviewerApps ?? [];
+  // [MIVO-PATCH bot-author-alias] 判断 PR 作者时传入:别名 bot 作者按它代表的维护者算作者身份。
+  const botAuthorAliases = loadRules().botAuthorAliases;
   const approvalPolicy = evaluateMaintainerApprovalPolicy({
     authorLogin: reviewRecordActor({ author: meta.author }),
     viewerLogin,
     authority,
     reviewerIdentity: identity,
     reviewerApps,
+    botAuthorAliases,
   });
   const reviewerApp = approvalPolicy.viewerIsReviewerApp === true;
   const policy = evaluateOwnReviewDismissal({
@@ -151,6 +154,7 @@ try {
     authority: freshAuthority,
     reviewerIdentity: identity,
     reviewerApps,
+    botAuthorAliases,
   });
   const writeFailures = [];
   if (String(freshMeta.headRefOid ?? '').toLowerCase() !== expectedHead.toLowerCase()) {
