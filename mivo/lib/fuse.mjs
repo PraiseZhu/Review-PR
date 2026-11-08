@@ -86,15 +86,50 @@ export function toFuseCount({ versions = [], resumedAt = null }) {
 }
 
 /**
- * 判门要派审时问一句:这个 head 要不要熔断。审过的版本数达到上限、当前 head 也不是审查通过的 head 才熔断。
- * 已经熔断(fuse.trip 在)时,不管版本数,一直停到有人回「继续审」。
+ * 最近一次真正审完的那一版是不是审查通过的 head(cleanHead)。版本历史按审完的先后排,没有 fuse 记录时按 completedRuns 补的顺序。
+ * 审查通过之后只合了 main、或推了新提交还没审,这里仍是 true:这时该送审,不是「审到上限还没放行」(#225)。
+ */
+export function isLatestVersionClean(record) {
+  const latest = selectFuseVersions(record).at(-1);
+  return Boolean(record?.cleanHead) && latest?.head === record.cleanHead;
+}
+
+/**
+ * 判门要派审时问一句:这个 head 要不要熔断。审过的版本数达到上限、当前 head 不是审查通过的 head、最近审完的一版也没通过才熔断。
+ * 已经熔断(fuse.trip 在)时,不管版本数,一直停到有人回「继续审」;只有最近审完的一版其实已通过时是旧规则的误熔断,
+ * 返回 stale,判门关 issue 后照常派审(#225:旧规则只比 head,审查通过后合一次 main 就熔断)。
  */
 export function toFuseDecision({ record, head, maxVersions }) {
   const fuse = record?.fuse ?? {};
   const count = toFuseCount({ versions: selectFuseVersions(record), resumedAt: fuse.resumedAt ?? null });
-  if (fuse.trip) return { tripped: true, count, trip: fuse.trip };
-  const tripped = Number.isInteger(maxVersions) && count >= maxVersions && record?.cleanHead !== head;
+  const latestClean = isLatestVersionClean(record);
+  if (fuse.trip) return latestClean ? { tripped: false, count, trip: fuse.trip, stale: true } : { tripped: true, count, trip: fuse.trip };
+  const tripped = Number.isInteger(maxVersions) && count >= maxVersions && record?.cleanHead !== head && !latestClean;
   return { tripped, count, trip: null };
+}
+
+/**
+ * 上线时的一次性重判(#225):熔断中的 PR 停审后指纹不变,不会再进判门,误熔断等不到自动恢复、缺密钥的通知也等不到补发。
+ * 给 round-state 里本机有 fuse.trip 的行标一次 retry。records 是 reviews.json 的 prs;alreadyDone 时原样返回。
+ */
+export function toFuseTripWake({ roundState, records = {}, alreadyDone = false } = {}) {
+  if (alreadyDone) return { done: true, wake: [], next: roundState };
+  const prs = roundState?.prs && typeof roundState.prs === 'object' ? roundState.prs : {};
+  const nextPrs = { ...prs };
+  const wake = [];
+  for (const [pr, row] of Object.entries(prs)) {
+    const n = Number(pr);
+    if (!records[pr]?.fuse?.trip || row?.retry === true || !Number.isSafeInteger(n) || n <= 0) continue;
+    nextPrs[pr] = { ...row, retry: true };
+    wake.push(n);
+  }
+  wake.sort((a, b) => a - b);
+  return { done: true, wake, next: { ...roundState, prs: nextPrs } };
+}
+
+/** 误熔断自动恢复时关熔断 issue 留的一句话(#225)。 */
+export function toFuseStaleComment({ cleanHead }) {
+  return `审查机误熔断：最近审完的一版（\`${String(cleanHead ?? '').slice(0, 12)}\`）已经审查通过，之后只是合了 main 或推了新提交，不该熔断。已自动恢复送审，不需要回「继续审」。`;
 }
 
 /** 收回结果时:这一版审完就到上限且没放行,下一轮要重判一次,好让判门开熔断 issue(否则要等作者再推才看得到)。 */

@@ -440,3 +440,69 @@ test('#219 自检 追加名册有一份读不到、另一份读到:熔断转发�
   assert.deepEqual(remind.logs.map((e) => e.event), ['roster-check-skip']);
   assert.deepEqual(stateFiles, {});
 });
+
+// ── #225 误熔断自动恢复、缺密钥补发 ─────────────────────────────────────────
+const staleRecord = () => ({ fuse: { versions: tenVersions(), trip: { issue: 1963, at: '2026-11-07T01:50:58.403Z', count: 10, head: 'merge-main' } }, cleanHead: 'h9' });
+
+test('#225 SC2 误熔断(最近审完的一版已通过):关熔断 issue 并说明误熔断、清 trip、不记 resumedAt,这一轮照常派审', async () => {
+  const world = makeWorld({ record: staleRecord() });
+  const { out, result } = await world.gate('merge-main');
+  assert.equal(out, null, '返回 null 即照常派审');
+  assert.equal(world.store.prs[1704].fuse.trip, null);
+  assert.equal(world.store.prs[1704].fuse.resumedAt, undefined, '不是人回的「继续审」,版本数不清零');
+  const close = world.calls.find((args) => args[0] === 'issue' && args[1] === 'close');
+  assert.equal(close[2], '1963');
+  assert.match(close[close.indexOf('--comment') + 1], /误熔断/);
+  assert.ok(!world.calls.some((args) => args[0] === 'issue' && args[1] === 'create'), '不重开熔断 issue');
+  assert.equal(result.outcome, 'review');
+  assert.ok(world.logs.some((l) => l.event === 'fuse-stale-cleared' && l.issue === 1963));
+  // 下一轮:没有 trip、最近一版已通过 → 仍照常派审
+  assert.equal((await world.gate('merge-main-2')).out, null);
+});
+
+test('#225 SC2 误熔断但关 issue 失败:不清 trip、不派审,记 error 并 retry', async () => {
+  const world = makeWorld({ record: staleRecord(), closeOk: false });
+  const { out, result } = await world.gate('merge-main');
+  assert.deepEqual(out, { dispatched: false });
+  assert.equal(world.store.prs[1704].fuse.trip.issue, 1963);
+  assert.equal(result.retry, true);
+  assert.match(result.errors.join('\n'), /熔断 issue #1963 没关掉/);
+  assert.match(result.reason, /误熔断待恢复/);
+});
+
+test('#225 SC2 误熔断 dry-run:只记 dryRunActions,不关 issue、不改本机记录', async () => {
+  const world = makeWorld({ mode: 'dry-run', record: staleRecord() });
+  const { out, result } = await world.gate('merge-main');
+  assert.equal(out, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.dryRunActions)), ['fuse-stale:#1963']);
+  assert.ok(!world.calls.some((args) => args[0] === 'issue'));
+  assert.equal(world.store.prs[1704].fuse.trip.issue, 1963);
+});
+
+const noCredentialTrip = (code = 'no-credential') => ({ fuse: { versions: tenVersions(), lastFindings: { P0: 0, P1: 0, P2: 3 },
+  trip: { issue: 1951, at: '2026-11-06T23:02:57.570Z', count: 10, head: 'h9', notify: { status: 'failed', at: '2026-11-06T23:03:01.193Z', code } } } });
+
+test('#225 SC3 上次通知 no-credential、现在读得到密钥:熔断照常,补发 1 次私聊并改写 notify;之后不再发', async () => {
+  const world = makeWorld({ record: noCredentialTrip(), notify: NOTIFY });
+  const first = await world.gate('h9');
+  assert.deepEqual(first.out, { dispatched: false }, '熔断照常');
+  assert.equal(world.sends.length, 1);
+  assert.match(world.sends[0].text, /issues\/1951/);
+  assert.equal(world.store.prs[1704].fuse.trip.notify.status, 'sent');
+  await world.gate('h9');
+  assert.equal(world.sends.length, 1, '补发成功后不再发');
+});
+
+test('#225 SC3 上次 no-credential、现在仍读不到密钥:不发、不在 issue 下留言;其它失败码不补发', async () => {
+  const noSecret = makeWorld({ record: noCredentialTrip(), notify: NOTIFY, secretOk: false });
+  await noSecret.gate('h9');
+  await noSecret.gate('h9');
+  assert.equal(noSecret.sends.length, 0);
+  assert.ok(!noSecret.calls.some((args) => args[0] === 'issue' && args[1] === 'comment'), '每轮不刷 issue');
+  assert.equal(noSecret.store.prs[1704].fuse.trip.notify.code, 'no-credential');
+  for (const code of ['timeout', 'roster-unavailable', 'token-99991663']) {
+    const other = makeWorld({ record: noCredentialTrip(code), notify: NOTIFY });
+    await other.gate('h9');
+    assert.equal(other.sends.length, 0, code);
+  }
+});
