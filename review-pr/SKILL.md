@@ -118,8 +118,8 @@ node "<SKILL_ROOT>/scripts/context.mjs" <N> --lock-token <prepare.lock.token>
 
 ### 3.3 格式门
 
-严格按当前 PR 模板判:`format.formatIssues` 逐条展示,询问是否打回(格式问题是
-P1,不把文案风格偏好写成阻断)。`format.uiEvidenceMissing=true` 时把
+严格按当前 PR 模板判:`format.formatIssues` 逐条展示,询问是否打回(格式问题按格式门打回,不进 P 级;
+不把文案风格偏好写成阻断)。`format.uiEvidenceMissing=true` 时把
 `format.uiEvidenceNotice` 作为普通评论发给作者(带 `<!-- review-pr:ui-evidence-notice -->`
 去重标记,历史里已有就不重发)——**缺 UI 证据不阻断、不打回**。
 
