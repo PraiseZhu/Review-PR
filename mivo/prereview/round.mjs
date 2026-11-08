@@ -29,7 +29,7 @@ import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDeci
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
 import { toFuseRecipients, toFuseNotifyText, sendFuseNotice, toFuseRosterRepos, toFuseForwardNote, isBotLogin, selectRosterEmail, findFeishuUsers } from '../lib/feishu-notify.mjs';
 import { loadOrgRosters } from '../../review-pr/scripts/lib.mjs';
-import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment, selectOpenFuseIssue } from '../lib/fuse.mjs';
+import { loadFuseConfig, toVersionFingerprint, toFindingCounts, withFuseVersion, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment, toFuseStaleComment, toFuseTripWake, selectOpenFuseIssue } from '../lib/fuse.mjs';
 import { toHoldAlert } from '../deploy/tuple-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -604,6 +604,18 @@ function wakeProtectedHoldOnce(markerName = 'protected-hold-wake.json', { outcom
   writeJson(markerFile, { done: true, at: nowIso(), wake: result.wake });
 }
 
+// #225 上线时熔断中的 PR(本机 reviews.json 有 fuse.trip)再判一次:误熔断自动恢复、缺密钥时没发的通知补发。标记独立,只做一次。
+function wakeFuseTripsOnce(markerName = 'fuse-trip-wake.json') {
+  const markerFile = stateFile(markerName);
+  const already = readJson(markerFile, { done: false });
+  const rsPath = join(CONFIG.stateDir, roundStateKey(), 'round-state.json');
+  const rs = readJson(rsPath, null);
+  const result = toFuseTripWake({ roundState: rs, records: loadStore().prs ?? {}, alreadyDone: already.done === true });
+  if (result.wake.length && rs?.prs) writeJson(rsPath, result.next);
+  if (result.wake.length) log('wake-fuse-trip', { prs: result.wake });
+  writeJson(markerFile, { done: true, at: nowIso(), wake: result.wake });
+}
+
 // Cindy 的状态目录按目标仓库 git common-dir 的哈希分子目录;用 lib 的同一算法定位。
 let STATE_KEY = null;
 let GATE_BASES = null; // [MIVO-PATCH gate-bases]
@@ -655,6 +667,7 @@ async function main() {
       log('wake-protected-hold-skip', { marker: markerName, reason: error.message.slice(0, 200) });
     }
   }
+  try { wakeFuseTripsOnce(); } catch (error) { log('wake-fuse-trip-skip', { reason: error.message.slice(0, 200) }); }
 
   const pre = runScript('pre-check.mjs', ['--repo-root', CONFIG.repoRoot, '--review-only'], { cwd: CONFIG.repoRoot, env: ENV, timeoutMs: 120_000 });
   // 没有候选(退出码 2)时 admitLoop 不会跑:草稿上不成立的 review:merge-ready 在这里摘(Review-PR#215)。
@@ -1246,17 +1259,34 @@ async function holdForFuse(ctx, task, live, result) {
     }
   }
   const decision = toFuseDecision({ record, head: task.head, maxVersions: config.maxVersions });
+  // 误熔断(#225):最近审完的一版已审查通过,旧规则只因 head 变了(合 main / 新推)就熔断。关 issue 成功才清熔断,
+  // 不记 resumedAt(版本数照旧),这一轮照常派审;关失败记 error 并 retry,这一轮先不派审。
+  if (decision.stale) {
+    const staleIssue = decision.trip.issue;
+    const cleared = !staleIssue || dry || closeFuseIssue(staleIssue, toFuseStaleComment({ cleanHead: record.cleanHead }), result);
+    if (cleared) {
+      if (dry) result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-stale:#${staleIssue}`];
+      else bumpOwned(ctx, task, { fuse: { ...record.fuse, trip: null } });
+      log('fuse-stale-cleared', { pr: task.pr, head: task.head, issue: staleIssue, cleanHead: record.cleanHead });
+      return null;
+    }
+    result.outcome = 'maintainer-signoff';
+    result.gate = { ...(result.gate ?? {}), fuse: { count: decision.count, maxVersions: config.maxVersions, issue: staleIssue } };
+    result.reason = `误熔断待恢复:熔断 issue #${staleIssue} 没关掉,这一轮先不送审`;
+    return finishGate(ctx, task, result, toLiveBlockers(live));
+  }
   if (!decision.tripped) return null;
   result.outcome = 'maintainer-signoff';
   result.gate = { ...(result.gate ?? {}), fuse: { count: decision.count, maxVersions: config.maxVersions, issue: decision.trip?.issue ?? null } };
   if (!decision.trip) openFuseIssue(ctx, task, live, record, decision.count, result, dry);
   const issue = result.gate.fuse.issue;
   // 熔断 issue 有了就发一次飞书私聊(#210);发过(成功或失败)记在 fuse.trip.notify,不重发。
+  // 例外(#225):上次因钥匙串没有密钥记成 no-credential、现在读得到密钥时补发一次;还读不到就不发、不留言,免得每轮刷 issue。
   if (config.notify?.enabled && (issue || dry)) {
     const trip = loadStore().prs[task.pr]?.fuse?.trip;
     if (dry) {
       if (!decision.trip?.notify) result.dryRunActions = [...(result.dryRunActions ?? []), `fuse-notify:feishu:@${live.meta?.author ?? 'unknown'}`];
-    } else if (trip?.issue === issue && !trip.notify) await notifyFuse(ctx, task, live, trip, record, result);
+    } else if (trip?.issue === issue && (!trip.notify || isCredentialRetry(trip.notify, config.notify))) await notifyFuse(ctx, task, live, trip, record, result);
   }
   result.reason = `已审过 ${decision.count} 个代码版本仍未放行,审查熔断停审${issue ? `,等人在 #${issue} 回「${config.resumeLine}」` : ''}`;
   log('fuse-hold', { pr: task.pr, head: task.head, count: decision.count, issue });
@@ -1377,6 +1407,11 @@ async function notifyFuse(ctx, task, live, trip, record, result) {
 function readFeishuSecret(notify) {
   const secret = run('security', ['find-generic-password', '-a', notify.keychainAccount, '-s', notify.keychainService, '-w'], { allowFail: true, timeoutMs: 15_000 });
   return secret.ok ? secret.stdout.trim() : '';
+}
+
+// 上次通知因为钥匙串没有密钥没发出去(no-credential),现在读得到密钥:可以补发一次(#225)。其它失败原因不补发。
+function isCredentialRetry(notify, notifyConfig) {
+  return notify?.status === 'failed' && notify.code === 'no-credential' && Boolean(readFeishuSecret(notifyConfig));
 }
 
 // loadOrgRosters 本地 clone 拉取失败时用旧副本,source 带 stale;旧副本里没有的人不能断定不在名册。

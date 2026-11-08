@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   FUSE_ISSUE_PREFIX, FUSE_MARKER_RE, loadFuseConfig, toFuseConfig, toVersionFingerprint, toFindingCounts, selectFuseVersions,
   withFuseVersion, toFuseCount, toFuseDecision, shouldWakeForFuse, findResumeComment, toFuseIssue, toFuseResumeComment,
+  isLatestVersionClean, toFuseTripWake, toFuseStaleComment,
 } from './fuse.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -51,7 +52,8 @@ test('SC2 第 10 个计数版本仍没放行 → 熔断;第 10 版是审查通�
 test('已经熔断:不管版本数一直停到「继续审」;继续审后只数之后出现的新指纹', () => {
   const versions = Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${i}`, head: `h${i}`, at: at(i) }));
   const trip = { issue: 77, at: at(20), count: 10, head: 'h9' };
-  assert.equal(toFuseDecision({ record: { fuse: { versions, trip }, cleanHead: 'h9' }, head: 'h9', maxVersions: 10 }).tripped, true);
+  // 熔断前最近审完的一版没通过(审查通过的是更早的 h5):照旧一直停
+  assert.equal(toFuseDecision({ record: { fuse: { versions, trip }, cleanHead: 'h5' }, head: 'h9', maxVersions: 10 }).tripped, true);
   const resumed = { versions: [...versions, { fp: 'patch:9', head: 'h9', at: at(31) }, { fp: 'patch:0', head: 'h0b', at: at(32) }], resumedAt: at(30) };
   assert.equal(toFuseCount(resumed), 0, '恢复后重审同一版、或改回旧版本,都不算新版本');
   const more = { ...resumed, versions: [...resumed.versions, ...Array.from({ length: 10 }, (_, i) => ({ fp: `patch:new${i}`, head: `n${i}`, at: at(40 + i) }))] };
@@ -131,4 +133,44 @@ test('配置:没配或 enabled 不是 true 时关闭;配错直接报错;两份�
     writeFileSync(join(dir, 'rules.json'), JSON.stringify({ maintainerAllowlist: ['A'], convergeFuse: { enabled: true, maxVersions: 3, resumeLine: '继续审' } }));
     assert.deepEqual(loadFuseConfig(join(dir, 'rules.json')), { enabled: true, maxVersions: 3, resumeLine: '继续审', maintainers: ['a'], notify: { enabled: false } });
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#225 SC1 最近审完的一版审查通过后只合了 main / 推了新提交还没审:满 10 版也不熔断;最近一版没通过照旧熔断', () => {
+  const versions = Array.from({ length: 10 }, (_, i) => ({ fp: `patch:${i}`, head: `h${i}`, at: at(i) }));
+  // #1836 现场:第 11 版 5aaba671 审查通过,作者合 main 得到 3cafffc3,旧规则只比 head 就熔断
+  assert.equal(isLatestVersionClean({ fuse: { versions }, cleanHead: 'h9' }), true);
+  assert.deepEqual(toFuseDecision({ record: { fuse: { versions }, cleanHead: 'h9' }, head: 'merge-main', maxVersions: 10 }), { tripped: false, count: 10, trip: null });
+  assert.equal(toFuseDecision({ record: { fuse: { versions }, cleanHead: 'h5' }, head: 'merge-main', maxVersions: 10 }).tripped, true, '审查通过的是更早的版本,之后又审过没通过的版本');
+  assert.equal(toFuseDecision({ record: { fuse: { versions } }, head: 'merge-main', maxVersions: 10 }).tripped, true, '从没通过过');
+  // 上线前补的历史(completedRuns 的 head 顺序)同样适用
+  const seeded = { completedRuns: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`old${i}`, 2])), cleanHead: 'old10' };
+  assert.equal(toFuseDecision({ record: seeded, head: 'merge-main', maxVersions: 10 }).tripped, false);
+  assert.equal(toFuseDecision({ record: { ...seeded, cleanHead: 'old3' }, head: 'merge-main', maxVersions: 10 }).tripped, true);
+  assert.equal(isLatestVersionClean({ fuse: { versions: [] }, cleanHead: 'h9' }), false, '没有版本历史不算');
+});
+
+test('#225 SC2 已有熔断记录、最近审完的一版其实已通过:标 stale,不再拦;关 issue 的说明点名误熔断、不要求回「继续审」', () => {
+  const versions = Array.from({ length: 11 }, (_, i) => ({ fp: `patch:${i}`, head: `h${i}`, at: at(i) }));
+  const trip = { issue: 1963, at: at(30), count: 11, head: 'merge-main' };
+  assert.deepEqual(toFuseDecision({ record: { fuse: { versions, trip }, cleanHead: 'h10' }, head: 'merge-main', maxVersions: 10 }),
+    { tripped: false, count: 11, trip, stale: true });
+  const text = toFuseStaleComment({ cleanHead: '5aaba671e606c9819654c284597cd54e915ad479' });
+  assert.match(text, /误熔断/);
+  assert.match(text, /`5aaba671e606`/);
+  assert.match(text, /不需要回「继续审」/);
+});
+
+test('#225 SC4 上线一次性唤醒:只给本机有 fuse.trip 的行标 retry;已标 retry、编号不合法的不动;done 后不再唤醒', () => {
+  const roundState = { version: 1, prs: { 1704: { outcome: 'maintainer-signoff' }, 1805: { outcome: 'maintainer-signoff', retry: true },
+    1836: { outcome: 'maintainer-signoff' }, 1920: { outcome: 'findings' }, x: { outcome: 'maintainer-signoff' } } };
+  const records = { 1704: { fuse: { trip: { issue: 1951 } } }, 1805: { fuse: { trip: { issue: 1953 } } }, 1836: { fuse: { trip: { issue: 1963 } } },
+    1920: { fuse: { trip: null, resumedAt: at(1) } }, x: { fuse: { trip: { issue: 1 } } } };
+  const first = toFuseTripWake({ roundState, records });
+  assert.deepEqual(first.wake, [1704, 1836]);
+  assert.equal(first.next.prs[1704].retry, true);
+  assert.equal(first.next.prs[1920].retry, undefined);
+  assert.equal(first.next.version, 1);
+  assert.equal(roundState.prs[1704].retry, undefined, '不改入参');
+  assert.deepEqual(toFuseTripWake({ roundState, records, alreadyDone: true }), { done: true, wake: [], next: roundState });
+  assert.deepEqual(toFuseTripWake({ roundState: null, records }).wake, [], '没有 round-state 不报错');
 });
