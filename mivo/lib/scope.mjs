@@ -3,6 +3,7 @@
 // 外加上一轮有问题的文件(逐条核对是否真修好)。任一兜底条件命中就退回全量。
 // 本模块是纯函数:配置文件由调用方读取后注入(loadSpecChangePolicy 只解析注入的读取函数)。
 import { createHash } from 'node:crypto';
+import { hasReviewer, toReviewerMatcher } from './reviewer-match.mjs';
 
 export const FULL_REVIEW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const TIER_RANK = { light: 0, standard: 1, heavy: 2 };
@@ -180,8 +181,9 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
   // 同一版本、代码没变、上一轮有问题(#231):作者把审查机的 thread 标成已解决但没推新提交时,前置会再派一轮,
   // 这时再跑模型只会把同一问题再报一遍(2026-11-06~09 同版本「打回后又打回」57 次,从未翻成放行)。
   // 讨论输入(申辩、裁定、盯梢裁决、核验通过的转 issue)也没变才沿用;有新的申辩或裁定照旧交给模型。
+  // 整份 diff 指纹也要相同(base 前移让 diffHash 变了就不沿用,即使逐文件 patch 没变)。
   // 上一轮没有讨论摘要(换版前的旧结果)不沿用,行为与以前一致。
-  if (previous.head === current.head && changed.length === 0 && carried.length > 0 && !previousClean
+  if (previous.head === current.head && sameDiff && changed.length === 0 && carried.length > 0 && !previousClean
     && previous.discussionDigest && previous.discussionDigest === current.discussionDigest) {
     return reuse(previous, '同一版本代码没变,也没有新的申辩或裁定,沿用上次结论');
   }
@@ -349,24 +351,45 @@ function reuse(previous, reason) {
   return { mode: 'reuse', reason, files: [], previousFindings: [...(previous.findings ?? []), ...(previous.deferred ?? [])], basedOn: previous.head };
 }
 
-// current.settledKeys:本轮核验通过、代码也没改过的盯梢裁决,以及核验通过的转 issue 里按 key 登记的问题(#127);
-// review.mjs 在 prepare 里算。
-// 上一轮每条阻断问题都要被覆盖;转 issue 的问题本轮仍须核验通过。
 /**
- * 讨论输入摘要(#231):会改变模型结论的讨论材料——作者申辩(thread + 最新回复)、维护者裁定、采信的盯梢裁决、
- * 核验通过的转 issue。与顺序无关;任何一项新增、删除或改字都会变。纯函数。
+ * 作者一方在审查机 thread 里的回复指纹(#231):每条审查机开的 thread 一行 {threadId, digest},digest 取作者全部回复的原文,
+ * 不截断、不限条数(任务书里的申辩一节只摘 600 字、最多 20 条,不能拿它判断「有没有新申辩」)。新增、编辑、补充都会变。纯函数。
+ */
+export function rebuttalRowsOf({ threads = [], reviewer, reviewerIdentity, author } = {}) {
+  if (!hasReviewer(reviewer, reviewerIdentity) || !author) return [];
+  const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
+  const who = String(author).toLowerCase();
+  const rows = [];
+  for (const thread of threads ?? []) {
+    const comments = Array.isArray(thread?.comments) ? thread.comments : thread?.comments?.nodes ?? [];
+    const [first, ...replies] = comments;
+    if (!isReviewer(first?.author)) continue;
+    const bodies = replies.filter((c) => String(c?.author?.login ?? '').toLowerCase() === who).map((c) => String(c?.body ?? ''));
+    if (!bodies.length) continue;
+    rows.push({ threadId: thread?.id ?? null, digest: createHash('sha256').update(JSON.stringify(bodies)).digest('hex') });
+  }
+  return rows;
+}
+
+/**
+ * 讨论输入摘要(#231):会改变模型结论的讨论材料——作者申辩(rebuttalRowsOf 的原文指纹)、维护者裁定、采信的盯梢裁决、
+ * 核验通过的转 issue(含按 key 登记的问题)。与顺序无关;任何一项新增、删除或改字都会变。纯函数。
  * @returns {string} sha256 十六进制
  */
 export function discussionDigestOf({ rebuttals = [], rulings = [], adjudications = [], deferrals = [] } = {}) {
   const rows = (list, pick) => (list ?? []).map((item) => JSON.stringify(pick(item ?? {}))).sort();
   return createHash('sha256').update(JSON.stringify({
-    rebuttals: rows(rebuttals, (r) => [r.threadId ?? null, r.reply ?? null]),
+    rebuttals: rows(rebuttals, (r) => [r.threadId ?? null, r.digest ?? r.reply ?? null]),
     rulings: rows(rulings, (r) => [r.threadId ?? null, r.by ?? null, r.reason ?? null]),
     adjudications: rows(adjudications, (a) => [a.key ?? null, a.verdict ?? null, a.head ?? null]),
-    deferrals: rows(deferrals, (d) => [d.issue ?? null, d.text ?? null]),
+    deferrals: rows(deferrals, (d) => [d.issue ?? null, d.text ?? null,
+      (d.keys ?? []).map((k) => JSON.stringify([k?.key ?? null, k?.path ?? null, k?.line ?? null])).sort()]),
   })).digest('hex');
 }
 
+// current.settledKeys:本轮核验通过、代码也没改过的盯梢裁决,以及核验通过的转 issue 里按 key 登记的问题(#127);
+// review.mjs 在 prepare 里算。
+// 上一轮每条阻断问题都要被覆盖;转 issue 的问题本轮仍须核验通过。
 function settledByAdjudication(previous, current) {
   const settled = new Set(current.settledKeys ?? []);
   const blocking = previous.findings ?? [];

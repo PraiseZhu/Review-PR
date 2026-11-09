@@ -96,3 +96,55 @@ test('discussionDigestOf:与顺序无关,字段改动会变,空输入稳定', ()
   // 同一份文字放在不同类别里不能撞成同一个摘要
   assert.notEqual(discussionDigestOf({ rulings: [{ threadId: 'A', by: null, reason: 'x' }] }), discussionDigestOf({ rebuttals: [{ threadId: 'A', reply: 'x' }] }));
 });
+
+// ── 合并前单审(Astra,2026-11-10)指出的三处:长申辩末尾补证据、撤掉转 issue 的问题 key、base 前移改了 diffHash ──
+import { rebuttalRowsOf } from './scope.mjs';
+import { collectRebuttals } from './rulings.mjs';
+
+const reviewerThread = (id, replies) => ({ id, path: F.path, line: 205,
+  comments: [{ author: { login: 'mivo-bot' }, body: `[P2] 共享缩略图任务仍被首个候选的证明失败阻断\n<!-- mivo-finding key=${F.key} round=1 head=042e066082ad -->` }, ...replies] });
+const LONG = '旧实现'.repeat(250);
+
+test('F1:作者在长回复末尾补证据(前 600 字不变)→ 指纹变,不沿用;任务书摘取的申辩确实看不出差别', () => {
+  const before = [reviewerThread('PRRT_1', [{ author: { login: 'zhongxingtian-ai' }, body: `${LONG}。` }])];
+  const after = [reviewerThread('PRRT_1', [{ author: { login: 'zhongxingtian-ai' }, body: `${LONG}。新证据:第二个候选可以独立证明,见 libraryModel3dThumbnail.test.ts。` }])];
+  const who = { reviewer: 'mivo-bot', author: 'zhongxingtian-ai' };
+  // 任务书用的截断申辩相同(这正是不能拿它判断「有没有新申辩」的原因)
+  assert.deepEqual(collectRebuttals({ threads: before, ...who }).map((r) => r.reply), collectRebuttals({ threads: after, ...who }).map((r) => r.reply));
+  const d0 = discussionDigestOf({ rebuttals: rebuttalRowsOf({ threads: before, ...who }) });
+  const d1 = discussionDigestOf({ rebuttals: rebuttalRowsOf({ threads: after, ...who }) });
+  assert.notEqual(d0, d1);
+  assert.notEqual(scopeOf(previous({ discussionDigest: d0 }), current({ discussionDigest: d1 })).mode, 'reuse');
+  assert.equal(scopeOf(previous({ discussionDigest: d0 }), current({ discussionDigest: d0 })).mode, 'reuse');
+});
+
+test('F1:申辩指纹不截断、不限条数;审查机自己的回复和别人的回复不算作者申辩', () => {
+  const who = { reviewer: 'mivo-bot', author: 'zhongxingtian-ai' };
+  const many = Array.from({ length: 25 }, (_, i) => reviewerThread(`PRRT_${i}`, [{ author: { login: 'zhongxingtian-ai' }, body: `申辩 ${i}` }]));
+  assert.equal(rebuttalRowsOf({ threads: many, ...who }).length, 25, '超过任务书 20 条上限的也进指纹');
+  const base = [reviewerThread('PRRT_1', [{ author: { login: 'zhongxingtian-ai' }, body: '申辩' }])];
+  const withOthers = [reviewerThread('PRRT_1', [{ author: { login: 'zhongxingtian-ai' }, body: '申辩' }, { author: { login: 'mivo-bot' }, body: '审查机回复' }, { author: { login: 'greptile-apps' }, body: '别人' }])];
+  assert.deepEqual(rebuttalRowsOf({ threads: withOthers, ...who }), rebuttalRowsOf({ threads: base, ...who }));
+  const notReviewer = [{ id: 'X', comments: [{ author: { login: 'someone' }, body: '[P2] x' }, { author: { login: 'zhongxingtian-ai' }, body: '回复' }] }];
+  assert.deepEqual(rebuttalRowsOf({ threads: notReviewer, ...who }), [], '不是审查机开的 thread 不算');
+  assert.deepEqual(rebuttalRowsOf({ threads: base, reviewer: '', author: 'zhongxingtian-ai' }), [], '读不到审查账号时为空');
+});
+
+test('F2:转 issue 仍开着、登记行没变,但撤掉了某个问题 key → 摘要变,不沿用', () => {
+  const withKey = [{ issue: 2100, text: '转 issue 跟进', keys: [{ key: F.key, bugClass: 'x', path: F.path, line: 205 }] }];
+  const keyRemoved = [{ issue: 2100, text: '转 issue 跟进', keys: [] }];
+  const d0 = discussionDigestOf({ deferrals: withKey });
+  const d1 = discussionDigestOf({ deferrals: keyRemoved });
+  assert.notEqual(d0, d1);
+  const deferredOnly = previous({ findings: [], deferred: [{ ...F, key: F.key, deferredTo: 2100 }], discussionDigest: d0 });
+  assert.notEqual(scopeOf(deferredOnly, current({ discussionDigest: d1, verifiedDeferralIssues: [2100] })).mode, 'reuse');
+  // key 的顺序不影响
+  const two = (a, b) => [{ issue: 2100, text: 't', keys: [{ key: a }, { key: b }] }];
+  assert.equal(discussionDigestOf({ deferrals: two('a', 'b') }), discussionDigestOf({ deferrals: two('b', 'a') }));
+});
+
+test('同一 head、逐文件 patch 没变,但整份 diffHash 变了(base 前移)→ 不走新沿用分支', () => {
+  const scope = scopeOf(previous(), current({ diffHash: 'changed' }));
+  assert.notEqual(scope.reason, REASON);
+  assert.equal(scope.mode, 'incremental');
+});
