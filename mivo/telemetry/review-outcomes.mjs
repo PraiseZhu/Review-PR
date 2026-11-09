@@ -339,12 +339,17 @@ export const FINAL_FULL_RETRY_MARK = '收口全量:补跑';
 /**
  * 同一代码版本(commit)上审查机又发了一份要跑模型的报告。「本轮沿用」不跑模型,reportsOf 已排除。
  * 前后两份都是 Request Changes 记「打回后又打回」(白跑:代码没变、结论没变);其余记「放行类重复」。收口补跑不计入。
+ * 给了 since / until(YYYY-MM-DD,按 UTC 整天,与 PR 查询的 updated 口径一致)时,只数「后一份报告」提交时间落在窗口内的事件;
+ * 窗口之前同一版本的报告只作比较基准,不计数(PR 按 updated 选进来,但它的评审是整个生命周期的)。
  */
-export function sameHeadRepeatOf(prs, reviewer) {
+export function sameHeadRepeatOf(prs, reviewer, { since = null, until = null } = {}) {
+  const from = since ? Date.parse(`${since}T00:00:00Z`) : -Infinity;
+  const to = until ? Date.parse(`${until}T23:59:59.999Z`) : Infinity;
+  const inWindow = (r) => { const t = time(r.submittedAt); return t >= from && t <= to; };
   const out = { reports: 0, rejectAfterReject: 0, passLike: 0, excludedFinalFull: 0, prs: [] };
   for (const pr of prs ?? []) {
     const reports = reportsOf(pr, reviewer);
-    out.reports += reports.length;
+    out.reports += reports.filter(inWindow).length;
     const byHead = new Map();
     for (const r of reports) {
       const head = r.commitOid ?? headOfReport(r.body);
@@ -354,6 +359,7 @@ export function sameHeadRepeatOf(prs, reviewer) {
     let repeats = 0;
     for (const list of byHead.values()) {
       for (let i = 1; i < list.length; i += 1) {
+        if (!inWindow(list[i])) continue;
         if (String(list[i].body).includes(FINAL_FULL_RETRY_MARK)) { out.excludedFinalFull += 1; continue; }
         if (list[i - 1].state === 'CHANGES_REQUESTED' && list[i].state === 'CHANGES_REQUESTED') { out.rejectAfterReject += 1; repeats += 1; } else out.passLike += 1;
       }
@@ -404,7 +410,8 @@ export const GROUPS = ['withParent', 'withTask', 'noTask'];
 /**
  * 审查过的 PR 按「任务 issue：」行与该 issue 的父 issue 分三组,同一窗口内对照:
  * withParent = 任务 issue 挂在父 issue 下;withTask = 有任务 issue、没有父 issue(或读不到,计入 parentUnknown);noTask = 没写任务 issue。
- * 每组给 PR 数、平均轮数、五轮及以上占比、每个 PR 的报告数,以及按运行标题归到本组 PR 的成功运行耗时。
+ * 每组给 PR 数、平均轮数、五轮及以上占比、每个 PR 的报告数(这三项与 rounds-to-pass 一样按所选 PR 的整个生命周期算),
+ * 以及按运行标题归到本组 PR 的成功运行耗时(只含窗口内创建的运行)。
  */
 export function groupsOf(prs, { reviewer, repo, parents = {}, runs = [] }) {
   const runsByPr = new Map();
@@ -604,7 +611,7 @@ export function renderMarkdown(report) {
       ...(report.missed.notReviewer !== undefined ? [`- 不归审查机的(不进上面三项):审查机验不了的验证层(${NOT_REVIEWER_LAYERS.join(' / ')})${report.missed.notReviewer} 条;实现还在集成分支、验收时机不对 ${report.missed.acceptanceTiming} 条`] : []),
       ...(report.truncated.corrections ? ['- 警告:修正 issue 没读全(GitHub 一次最多给 1000 条),只统计了读到的部分。'] : []), ''] : []),
     ...(report.sameHeadRepeat ? ['## 同一版本重审', '',
-      `- 审查机跑过模型的报告 ${report.sameHeadRepeat.reports} 份;同一 commit 上「打回后又打回」${report.sameHeadRepeat.rejectAfterReject} 次(代码没变、结论没变),其余同版本重复 ${report.sameHeadRepeat.passLike} 次;收口补跑 ${report.sameHeadRepeat.excludedFinalFull} 次不计入`,
+      `- 窗口内审查机跑过模型的报告 ${report.sameHeadRepeat.reports} 份;窗口内同一 commit 上「打回后又打回」${report.sameHeadRepeat.rejectAfterReject} 次(代码没变、结论没变),其余同版本重复 ${report.sameHeadRepeat.passLike} 次;收口补跑 ${report.sameHeadRepeat.excludedFinalFull} 次不计入`,
       ...(report.sameHeadRepeat.prs.length ? [`- 最多的 PR:${report.sameHeadRepeat.prs.map((p) => `#${p.pr} ${p.rejectAfterReject} 次`).join('、')}`] : []), ''] : []),
     ...(report.phaseDurations ? ['## 分阶段耗时', '',
       `- 样本:最近 ${report.phaseDurations.sample} 次成功运行(上限 ${MAX_PHASE_RUNS})${report.phaseDurations.failed ? `,另有 ${report.phaseDurations.failed} 次读步骤失败` : ''};对照表外的步骤 ${report.phaseDurations.otherSteps} 个计入「其他」`,
@@ -677,7 +684,7 @@ export function main(argv = process.argv.slice(2)) {
     prsRead: data.prs.length, truncated: data.truncated, analysis, noise: noiseOf(analysis.buckets),
     durations: data.runs ? durationStats(data.runs) : null,
     missed: data.corrections ? missedStats(data.corrections, data.prs, { reviewer: options.reviewer, repo: options.repo }) : null,
-    sameHeadRepeat: sameHeadRepeatOf(data.prs, options.reviewer),
+    sameHeadRepeat: sameHeadRepeatOf(data.prs, options.reviewer, { since: options.since, until: options.until }),
     phaseDurations: data.runJobs ? { ...phaseDurationStats(data.runJobs.runJobs), failed: data.runJobs.failed } : null,
     groups: groupsOf(data.prs, { reviewer: options.reviewer, repo: options.repo, parents: data.parents ?? {}, runs: data.runs ?? [] }),
     ...(analysis.human ? { noiseHuman: analysis.human.invalid } : {}) };

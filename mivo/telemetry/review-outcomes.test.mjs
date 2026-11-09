@@ -333,3 +333,21 @@ test('#232 CLI:新夹具输出五项新统计;不传 --labels 时旧夹具的 bu
     assert.match(ok.read('outcomes.md'), /## 人工口径/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('#232 合并前单审 F3:同版本重审只数窗口内的事件;窗口之前的同版本报告只作基准', () => {
+  const cr = (at, head = 'a'.repeat(40)) => ({ author: 'mivo-bot', state: 'CHANGES_REQUESTED', submittedAt: at, commitOid: head, body: `> Mivo 自动审查 · head \`${head}\`\n## Overall\nchanges-requested —— 1 条 P0/P1/P2` });
+  // 11-09 才有更新、重复打回却发生在 11-05 的 PR(#1544/#1805/#1836 的形状)
+  const old = { number: 1, body: '', author: 'x', reviews: [cr('2026-11-05T01:00:00Z'), cr('2026-11-05T02:00:00Z'), cr('2026-11-05T03:00:00Z')], threads: [] };
+  // 跨窗口:基准在 11-08,重复在 11-09
+  const cross = { number: 2, body: '', author: 'x', reviews: [cr('2026-11-08T23:00:00Z', 'b'.repeat(40)), cr('2026-11-09T01:00:00Z', 'b'.repeat(40))], threads: [] };
+  const w = (since, until) => sameHeadRepeatOf([old, cross], 'mivo-bot', { since, until });
+  assert.equal(w('2026-11-09', '2026-11-09').rejectAfterReject, 1, '只有 #2 在 11-09 的那一次');
+  assert.deepEqual(w('2026-11-09', '2026-11-09').prs, [{ pr: 2, rejectAfterReject: 1 }]);
+  assert.equal(w('2026-11-09', '2026-11-09').reports, 1);
+  assert.equal(w('2026-11-08', '2026-11-08').rejectAfterReject, 0, '11-08 那份是第一份,不是重复');
+  assert.equal(w('2026-11-05', '2026-11-05').rejectAfterReject, 2);
+  assert.equal(sameHeadRepeatOf([old, cross], 'mivo-bot').rejectAfterReject, 3, '不给窗口时按整个生命周期');
+  // 夹具:窗口外(11-10)没有事件;CLI 窗口 11-06~11-09 内照旧 3 次
+  assert.equal(sameHeadRepeatOf(v232.prs, 'mivo-bot', { since: '2026-11-10', until: '2026-11-10' }).rejectAfterReject, 0);
+  assert.equal(sameHeadRepeatOf(v232.prs, 'mivo-bot', { since: '2026-11-06', until: '2026-11-09' }).rejectAfterReject, 3);
+});
