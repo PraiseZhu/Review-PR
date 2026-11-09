@@ -284,6 +284,20 @@ for (const [label, kind, conclusion, outcome] of [
   });
 }
 
+test('#231 SC4:同一 head 沿用带问题的上一轮,不新发 review、不新开 thread、不回复', () => {
+  const env = findingsSetup({ baseRefName: 'main', kind: 'reuse' });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh);
+    assert.equal(result.outcome, 'findings', JSON.stringify(result.errors));
+    assert.equal(result.mivo.review.id, 3, '沿用上一轮已发的 review');
+    assert.deepEqual(result.mivo.findings.map((f) => f.key), ['aaaaaaaaaaaa'], '原问题原样保留');
+    const posts = gh.calls().filter((c) => c.args.some((a) => /pulls\/7\/(reviews|comments)/.test(a))
+      || /addPullRequestReview|addPullRequestReviewThread/.test(`${c.input} ${c.args.join(' ')}`));
+    assert.deepEqual(posts, [], '不发新 review、不开新 thread、不回复旧 thread');
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
+});
+
 test('检查名:publishOverruled(核对员全部推翻)按目标分支取名', () => {
   // 第一轮不带核对结论,取出真实流水线给这条问题算的 uid;第二轮带上"推翻"的核对结论。
   const probe = findingsSetup({ baseRefName: 'main', kind: 'overruled' });

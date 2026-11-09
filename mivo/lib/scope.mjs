@@ -177,6 +177,14 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
     if ((previous.deferred ?? []).some((d) => !verifiedIssues.includes(d.deferredTo))) return full('上一轮转 issue 的问题本轮未核验通过,重新全量确认');
     return reuse(previous, '规则改版，代码未变，沿用上次结论');
   }
+  // 同一版本、代码没变、上一轮有问题(#231):作者把审查机的 thread 标成已解决但没推新提交时,前置会再派一轮,
+  // 这时再跑模型只会把同一问题再报一遍(2026-11-06~09 同版本「打回后又打回」57 次,从未翻成放行)。
+  // 讨论输入(申辩、裁定、盯梢裁决、核验通过的转 issue)也没变才沿用;有新的申辩或裁定照旧交给模型。
+  // 上一轮没有讨论摘要(换版前的旧结果)不沿用,行为与以前一致。
+  if (previous.head === current.head && changed.length === 0 && carried.length > 0 && !previousClean
+    && previous.discussionDigest && previous.discussionDigest === current.discussionDigest) {
+    return reuse(previous, '同一版本代码没变,也没有新的申辩或裁定,沿用上次结论');
+  }
   // 上一轮已干净、本轮代码有变化:不先跑增量,直接全量(放行前的收口并入这一轮)。规则改版代码没变的沿用分支已在上面处理。
   if (previousClean && changed.length > 0) return full('上一轮已干净,本轮代码有变化,直接全量');
   const findingFiles = [...new Set(carried.map((f) => f.path).filter((path) => path in after))];
@@ -344,6 +352,21 @@ function reuse(previous, reason) {
 // current.settledKeys:本轮核验通过、代码也没改过的盯梢裁决,以及核验通过的转 issue 里按 key 登记的问题(#127);
 // review.mjs 在 prepare 里算。
 // 上一轮每条阻断问题都要被覆盖;转 issue 的问题本轮仍须核验通过。
+/**
+ * 讨论输入摘要(#231):会改变模型结论的讨论材料——作者申辩(thread + 最新回复)、维护者裁定、采信的盯梢裁决、
+ * 核验通过的转 issue。与顺序无关;任何一项新增、删除或改字都会变。纯函数。
+ * @returns {string} sha256 十六进制
+ */
+export function discussionDigestOf({ rebuttals = [], rulings = [], adjudications = [], deferrals = [] } = {}) {
+  const rows = (list, pick) => (list ?? []).map((item) => JSON.stringify(pick(item ?? {}))).sort();
+  return createHash('sha256').update(JSON.stringify({
+    rebuttals: rows(rebuttals, (r) => [r.threadId ?? null, r.reply ?? null]),
+    rulings: rows(rulings, (r) => [r.threadId ?? null, r.by ?? null, r.reason ?? null]),
+    adjudications: rows(adjudications, (a) => [a.key ?? null, a.verdict ?? null, a.head ?? null]),
+    deferrals: rows(deferrals, (d) => [d.issue ?? null, d.text ?? null]),
+  })).digest('hex');
+}
+
 function settledByAdjudication(previous, current) {
   const settled = new Set(current.settledKeys ?? []);
   const blocking = previous.findings ?? [];
@@ -460,6 +483,8 @@ export function previousFromResult(result, report = '') {
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, filePatchHashesV2: result.mivo?.filePatchHashesV2 ?? null, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,
+    // 讨论输入摘要(#231):缺字段或不是字符串一律当没有,同版本不沿用。
+    discussionDigest: typeof result.mivo?.discussionDigest === 'string' && result.mivo.discussionDigest ? result.mivo.discussionDigest : null,
     // 交接(review.md)跨轮记录:缺字段/形状不对一律当没有,不触发集中重审。
     handoffReview: readHandoffSnapshot(result.mivo?.handoffReview),
     handoffCoverage: Array.isArray(result.mivo?.handoffCoverage) ? result.mivo.handoffCoverage : [],
