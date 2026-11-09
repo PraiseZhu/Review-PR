@@ -118,14 +118,14 @@ test('SC4 熔断 issue:标题前缀、首行标记、版本数、未解决问题
   assert.equal(toFuseResumeComment({ login: 'kirozeng', resumeLine: '继续审' }), '收到 @kirozeng 的「继续审」，恢复自动送审，版本数从 0 重新算。');
 });
 
-test('配置:没配或 enabled 不是 true 时关闭;配错直接报错;两份规则文件都开着、门槛 10', () => {
+test('配置:没配或 enabled 不是 true 时关闭;配错直接报错;两份规则文件都开着、门槛 20', () => {
   assert.equal(toFuseConfig({}).enabled, false);
   assert.equal(toFuseConfig({ convergeFuse: { enabled: false, maxVersions: 10, resumeLine: '继续审' } }).enabled, false);
   assert.throws(() => toFuseConfig({ convergeFuse: { enabled: true, maxVersions: 0, resumeLine: '继续审' } }), /maxVersions/);
   assert.throws(() => toFuseConfig({ convergeFuse: { enabled: true, maxVersions: 10, resumeLine: ' ' } }), /resumeLine/);
   for (const file of ['review-pr/config/pr-rules.json', 'mivo/config/sandbox-pr-rules.json']) {
     const config = loadFuseConfig(join(REPO_ROOT, file));
-    assert.deepEqual([config.enabled, config.maxVersions, config.resumeLine], [true, 10, '继续审'], file);
+    assert.deepEqual([config.enabled, config.maxVersions, config.resumeLine], [true, 20, '继续审'], file);
     assert.ok(config.maintainers.includes('praisezhu'), file);
   }
   const dir = mkdtempSync(join(tmpdir(), 'fuse-config-'));

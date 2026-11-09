@@ -250,7 +250,7 @@
   "convergeFuse": {
     "_comment": "审查熔断(PraiseZhu/Review-PR#209):PR 从上次「继续审」起被服务器审过 maxVersions 个代码版本(按 PR 自身改动指纹去重,同 head 重复审、只合 main 不计)、当前 head 仍未放行时,Mini 停止自动送审并开「审查熔断 · PR #<n>」issue;PR 作者或维护者在 issue 下回一整行 resumeLine 恢复,版本数从 0 重新算。只停审不放行。enabled 不是 true 时关闭。",
     "enabled": true,
-    "maxVersions": 10,
+    "maxVersions": 20,
     "resumeLine": "继续审",
     "notify": {
       "_comment": "熔断时用飞书「Mivo」机器人私聊 PR 作者(PraiseZhu/Review-PR#210)。作者按名册对到公司邮箱再查飞书 open_id,对不上转给 fallbackLogin 并在熔断 issue 下留一行补名册说明。名册仓默认取目标仓所属组织的 <owner>/org(#219),rosterRepos 只写要追加的其他名册仓,可为空。应用密钥只放 Mini 本机钥匙串(security add-generic-password -a <keychainAccount> -s <keychainService> -U -w),不进 git。",
