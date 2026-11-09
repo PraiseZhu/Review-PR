@@ -1,0 +1,367 @@
+{
+ "_note": "#232 夹具:结构取自 xindong/mivo-canvas-plugin 2026-11-06~09 的真实数据,正文已去掉。#2035 = 同一 commit 连续 4 次打回;#1858 = 4 条 thread、2 个问题 key;#1897 = #1632 SC6 的漏报;12 条修正 issue 取真实结构。",
+ "prs": [
+  {
+   "number": 2035,
+   "title": "t",
+   "body": "无任务 issue 行",
+   "state": "MERGED",
+   "merged": true,
+   "mergedAt": "2026-11-09T09:30:00Z",
+   "createdAt": "2026-11-08T19:23:17Z",
+   "author": "zhongxingtian-ai",
+   "reviews": [
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-09T04:44:27Z",
+     "commitOid": "042e066082ade602f1f0ada68acc929db7174596",
+     "body": "> Mivo 自动审查 · head `042e066082ade602f1f0ada68acc929db7174596` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-09T07:01:29Z",
+     "commitOid": "042e066082ade602f1f0ada68acc929db7174596",
+     "body": "> Mivo 自动审查 · head `042e066082ade602f1f0ada68acc929db7174596` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-09T07:17:03Z",
+     "commitOid": "042e066082ade602f1f0ada68acc929db7174596",
+     "body": "> Mivo 自动审查 · head `042e066082ade602f1f0ada68acc929db7174596` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-09T07:37:25Z",
+     "commitOid": "042e066082ade602f1f0ada68acc929db7174596",
+     "body": "> Mivo 自动审查 · head `042e066082ade602f1f0ada68acc929db7174596` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "COMMENTED",
+     "submittedAt": "2026-11-09T08:50:57Z",
+     "commitOid": "cccccccccccccccccccccccccccccccccccccccc",
+     "body": "> Mivo 自动审查 · head `cccccccccccccccccccccccccccccccccccccccc` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "APPROVED",
+     "submittedAt": "2026-11-09T08:55:57Z",
+     "commitOid": "cccccccccccccccccccccccccccccccccccccccc",
+     "body": "> 本轮沿用上一轮审查结论(同一版本已审过,沿用上次结论)。\n> Mivo 自动审查"
+    }
+   ],
+   "threads": []
+  },
+  {
+   "number": 9001,
+   "title": "t",
+   "body": "任务 issue：xindong/mivo-canvas-plugin#1926",
+   "state": "MERGED",
+   "merged": true,
+   "mergedAt": "2026-11-08T00:00:00Z",
+   "createdAt": "2026-11-07T00:00:00Z",
+   "author": "alice",
+   "reviews": [
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-07T01:00:00Z",
+     "commitOid": "dddddddddddddddddddddddddddddddddddddddd",
+     "body": "> Mivo 自动审查 · head `dddddddddddddddddddddddddddddddddddddddd` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-07T02:00:00Z",
+     "commitOid": "dddddddddddddddddddddddddddddddddddddddd",
+     "body": "> Mivo 自动审查 · head `dddddddddddddddddddddddddddddddddddddddd` · 档位 heavy\n收口全量:补跑(上一次运行的收口没做完),本轮对完整 diff 做收口全量。\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "APPROVED",
+     "submittedAt": "2026-11-07T03:00:00Z",
+     "commitOid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "body": "> Mivo 自动审查 · head `eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\npass —— 没有 P0/P1/P2。"
+    }
+   ],
+   "threads": []
+  },
+  {
+   "number": 1858,
+   "title": "t",
+   "body": "任务 issue：xindong/mivo-canvas-plugin#1848",
+   "state": "MERGED",
+   "merged": true,
+   "mergedAt": "2026-11-07T20:00:00Z",
+   "createdAt": "2026-11-05T00:00:00Z",
+   "author": "PraiseZhu",
+   "reviews": [
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-07T10:00:00Z",
+     "commitOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "body": "> Mivo 自动审查 · head `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "CHANGES_REQUESTED",
+     "submittedAt": "2026-11-07T12:00:00Z",
+     "commitOid": "ffffffffffffffffffffffffffffffffffffffff",
+     "body": "> Mivo 自动审查 · head `ffffffffffffffffffffffffffffffffffffffff` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\nchanges-requested —— 1 条 P0/P1/P2"
+    },
+    {
+     "author": "mivo-bot",
+     "state": "APPROVED",
+     "submittedAt": "2026-11-07T14:00:00Z",
+     "commitOid": "1111111111111111111111111111111111111111",
+     "body": "> Mivo 自动审查 · head `1111111111111111111111111111111111111111` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\npass —— 没有 P0/P1/P2。"
+    }
+   ],
+   "threads": [
+    {
+     "isResolved": false,
+     "path": "scripts/product-rules/check.mjs",
+     "line": 1,
+     "comments": [
+      {
+       "author": "mivo-bot",
+       "body": "[P2] 校验漏洞 575a\n<!-- mivo-finding key=575a77e458a1 round=1 head=bbbbbbbbbbbb -->",
+       "createdAt": "2026-11-07T10:00:00Z",
+       "url": ""
+      }
+     ]
+    },
+    {
+     "isResolved": false,
+     "path": "scripts/product-rules/check.mjs",
+     "line": 1,
+     "comments": [
+      {
+       "author": "mivo-bot",
+       "body": "[P2] 校验漏洞 f6f8\n<!-- mivo-finding key=f6f873e58753 round=1 head=bbbbbbbbbbbb -->",
+       "createdAt": "2026-11-07T10:00:01Z",
+       "url": ""
+      }
+     ]
+    },
+    {
+     "isResolved": false,
+     "path": "scripts/product-rules/check.mjs",
+     "line": 1,
+     "comments": [
+      {
+       "author": "mivo-bot",
+       "body": "[P2] 校验漏洞 575a\n<!-- mivo-finding key=575a77e458a1 round=1 head=ffffffffffff -->",
+       "createdAt": "2026-11-07T12:00:00Z",
+       "url": ""
+      }
+     ]
+    },
+    {
+     "isResolved": false,
+     "path": "scripts/product-rules/check.mjs",
+     "line": 1,
+     "comments": [
+      {
+       "author": "mivo-bot",
+       "body": "[P2] 校验漏洞 f6f8\n<!-- mivo-finding key=f6f873e58753 round=1 head=ffffffffffff -->",
+       "createdAt": "2026-11-07T12:00:01Z",
+       "url": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "number": 1897,
+   "title": "t",
+   "body": "任务 issue：xindong/mivo-canvas-plugin#1632",
+   "state": "MERGED",
+   "merged": true,
+   "mergedAt": "2026-11-06T10:00:00Z",
+   "createdAt": "2026-11-05T00:00:00Z",
+   "author": "bob",
+   "reviews": [
+    {
+     "author": "mivo-bot",
+     "state": "APPROVED",
+     "submittedAt": "2026-11-06T09:00:00Z",
+     "commitOid": "2222222222222222222222222222222222222222",
+     "body": "> Mivo 自动审查 · head `2222222222222222222222222222222222222222` · 档位 heavy\n## Findings\n\n[P2] x\n\n## Overall\npass —— 没有 P0/P1/P2。"
+    }
+   ],
+   "threads": [
+    {
+     "isResolved": true,
+     "path": "src/a.ts",
+     "line": 1,
+     "comments": [
+      {
+       "author": "mivo-bot",
+       "body": "[P2] 没提到验收项",
+       "createdAt": "2026-11-05T09:00:00Z",
+       "url": ""
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "parents": {
+  "xindong/mivo-canvas-plugin#1632": true,
+  "xindong/mivo-canvas-plugin#1848": true,
+  "xindong/mivo-canvas-plugin#1926": false
+ },
+ "runs": [
+  {
+   "id": 1,
+   "pr": 2035,
+   "startedAt": "2026-11-09T06:47:04Z",
+   "updatedAt": "2026-11-09T07:01:51Z",
+   "conclusion": "success"
+  },
+  {
+   "id": 2,
+   "pr": 1858,
+   "startedAt": "2026-11-07T10:00:00Z",
+   "updatedAt": "2026-11-07T10:20:00Z",
+   "conclusion": "success"
+  },
+  {
+   "id": 3,
+   "pr": 9001,
+   "startedAt": "2026-11-07T01:00:00Z",
+   "updatedAt": "2026-11-07T01:30:00Z",
+   "conclusion": "success"
+  }
+ ],
+ "runJobs": [
+  {
+   "runId": 42575159239,
+   "jobs": [
+    {
+     "name": "mirror pending review-pr (integration) status",
+     "steps": [
+      {
+       "name": "Write pending commit status",
+       "startedAt": "2026-11-09T06:46:56Z",
+       "completedAt": "2026-11-09T06:46:59Z"
+      }
+     ]
+    },
+    {
+     "name": "review-pr",
+     "steps": [
+      {
+       "name": "Set up job",
+       "startedAt": "2026-11-09T06:47:07Z",
+       "completedAt": "2026-11-09T06:47:12Z"
+      },
+      {
+       "name": "Prepare (GitHub token only)",
+       "startedAt": "2026-11-09T06:47:17Z",
+       "completedAt": "2026-11-09T06:48:00Z"
+      },
+      {
+       "name": "Dependencies and security scan (no credentials)",
+       "startedAt": "2026-11-09T06:48:00Z",
+       "completedAt": "2026-11-09T06:48:18Z"
+      },
+      {
+       "name": "Review with Codex (model gateway credentials only)",
+       "startedAt": "2026-11-09T06:48:18Z",
+       "completedAt": "2026-11-09T07:01:05Z"
+      },
+      {
+       "name": "Publish (GitHub token only)",
+       "startedAt": "2026-11-09T07:01:09Z",
+       "completedAt": "2026-11-09T07:01:33Z"
+      },
+      {
+       "name": "Upload result for the pre-review coordinator",
+       "startedAt": "2026-11-09T07:01:33Z",
+       "completedAt": "2026-11-09T07:01:38Z"
+      },
+      {
+       "name": "Clean up",
+       "startedAt": "2026-11-09T07:01:38Z",
+       "completedAt": "2026-11-09T07:01:39Z"
+      },
+      {
+       "name": "Broken step",
+       "startedAt": null,
+       "completedAt": "2026-11-09T07:01:39Z"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "corrections": [
+  {
+   "number": 2061,
+   "createdAt": "2026-11-09T09:19:09Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1668 SC2 重新验收通过：…（验证：manual）\n\n## 原因\n\n（略）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1668 · 项 xindong/mivo-canvas-plugin#1668 SC2 · 第 1 轮"
+  },
+  {
+   "number": 2043,
+   "createdAt": "2026-11-09T03:44:56Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC6 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC6 · 第 1 轮"
+  },
+  {
+   "number": 2045,
+   "createdAt": "2026-11-09T03:45:20Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC8 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC8 · 第 1 轮"
+  },
+  {
+   "number": 2044,
+   "createdAt": "2026-11-09T03:45:08Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC7 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC7 · 第 1 轮"
+  },
+  {
+   "number": 2042,
+   "createdAt": "2026-11-09T03:44:44Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC5 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC5 · 第 1 轮"
+  },
+  {
+   "number": 2041,
+   "createdAt": "2026-11-09T03:44:33Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC4 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC4 · 第 1 轮"
+  },
+  {
+   "number": 2039,
+   "createdAt": "2026-11-09T03:44:08Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC2 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC2 · 第 1 轮"
+  },
+  {
+   "number": 2060,
+   "createdAt": "2026-11-09T09:18:38Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1668 SC1 重新验收通过：…（验证：manual）\n\n## 原因\n\n（略）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1668 · 项 xindong/mivo-canvas-plugin#1668 SC1 · 第 1 轮"
+  },
+  {
+   "number": 2038,
+   "createdAt": "2026-11-09T03:43:53Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC1 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC1 · 第 1 轮"
+  },
+  {
+   "number": 2040,
+   "createdAt": "2026-11-09T03:44:21Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1912 SC3 重新验收通过：…（验证：unit）\n\n## 原因\n\n实现已在集成分支 integration/gpt-image-26-formats 的 PR #1974（…）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1912 · 项 xindong/mivo-canvas-plugin#1912 SC3 · 第 1 轮"
+  },
+  {
+   "number": 1869,
+   "createdAt": "2026-11-06T00:22:17Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1360 SC6 重新验收通过：…（验证：browser-fixture）\n\n## 原因\n\n（略）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1360 · 项 xindong/mivo-canvas-plugin#1360 SC6 · 第 1 轮"
+  },
+  {
+   "number": 1936,
+   "createdAt": "2026-11-06T19:46:39Z",
+   "body": "## 目标\n\n让验收没过的 xindong/mivo-canvas-plugin#1632 SC6 重新验收通过：…（验证：unit）\n\n## 原因\n\n（略）\n\n[验收机] 修正 · 总 xindong/mivo-canvas-plugin#1632 · 项 xindong/mivo-canvas-plugin#1632 SC6 · 第 1 轮"
+  }
+ ]
+}
