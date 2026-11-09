@@ -5,9 +5,11 @@
 // 作者反应分桶是代理指标,不是事实真伪:没回复不等于认同,resolve 不等于真的修好。
 //
 // #189 起还算:review-pr.yml 成功运行的耗时 p50/p90;漏报(验收机修正 issue 反查到的 PR,审查机是否提前报过同一 SC);噪音 = ruled-keep + rebutted。
+// #232 起还算:同一版本的重审次数;准备/模型/发布三段耗时;有总 issue、只有任务 issue、没有任务 issue 三组的同期对照;
+// 问题按 key 去重;修正 issue 按归属分类(审查机验不了 / 验收时机不对);--labels 读人工标签算人工口径的噪音。
 //
 //   node mivo/telemetry/review-outcomes.mjs --repo <o/r> --since YYYY-MM-DD --until YYYY-MM-DD --reviewer <login> --out <dir>
-//        [--max-prs 200] [--workflow review-pr.yml] [--fixture <file>] [--include-text]
+//        [--max-prs 200] [--workflow review-pr.yml] [--fixture <file>] [--include-text] [--labels <file>]
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,8 +29,8 @@ const time = (value) => { const t = Date.parse(value ?? ''); return Number.isFin
 
 // ── 参数 ───────────────────────────────────────────────────────────────────
 export function parseArgs(argv) {
-  const out = { maxPrs: 200, includeText: false, fixture: null, workflow: 'review-pr.yml' };
-  const values = { '--repo': 'repo', '--since': 'since', '--until': 'until', '--reviewer': 'reviewer', '--out': 'out', '--max-prs': 'maxPrs', '--fixture': 'fixture', '--workflow': 'workflow' };
+  const out = { maxPrs: 200, includeText: false, fixture: null, workflow: 'review-pr.yml', labels: null };
+  const values = { '--repo': 'repo', '--since': 'since', '--until': 'until', '--reviewer': 'reviewer', '--out': 'out', '--max-prs': 'maxPrs', '--fixture': 'fixture', '--workflow': 'workflow', '--labels': 'labels' };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--include-text') { out.includeText = true; continue; }
@@ -121,7 +123,10 @@ function ghJson(args, what) {
   }
 }
 
-/** workflow 在时间段内创建的运行 → {runs: [{startedAt, updatedAt, conclusion}], truncated};最多 10 页,读不全时 truncated=true。 */
+/** 运行标题「review-pr #2035 06deea80」里的 PR 号;认不出返回 null。 */
+export const prOfRunTitle = (title) => { const m = /#(\d+)\b/.exec(String(title ?? '')); return m ? Number(m[1]) : null; };
+
+/** workflow 在时间段内创建的运行 → {runs: [{id, pr, startedAt, updatedAt, conclusion}], truncated};最多 10 页,读不全时 truncated=true。 */
 function fetchRuns({ repo, workflow, since, until }) {
   const runs = [];
   let total = 0;
@@ -129,10 +134,58 @@ function fetchRuns({ repo, workflow, since, until }) {
     const data = ghJson(['api', `repos/${repo}/actions/workflows/${workflow}/runs?created=${since}..${until}&per_page=100&page=${page}`], 'workflow runs');
     const list = data.workflow_runs ?? [];
     total = Math.max(total, data.total_count ?? 0);
-    runs.push(...list.map((r) => ({ startedAt: r.run_started_at ?? r.created_at ?? null, updatedAt: r.updated_at ?? null, conclusion: r.conclusion ?? null })));
+    runs.push(...list.map((r) => ({ id: r.id ?? null, pr: prOfRunTitle(r.display_title), startedAt: r.run_started_at ?? r.created_at ?? null, updatedAt: r.updated_at ?? null, conclusion: r.conclusion ?? null })));
     if (list.length < 100) break;
   }
   return { runs, truncated: total > runs.length };
+}
+
+/** 分阶段耗时最多读这么多次运行的步骤(最近的优先,每次运行一次 REST 请求)。 */
+export const MAX_PHASE_RUNS = 200;
+
+/** 最近 MAX_PHASE_RUNS 次成功运行的 job steps → {runJobs: [{runId, jobs: [{name, steps: [{name, startedAt, completedAt}]}]}], failed};单次读失败只计数,不让整份统计失败。 */
+function fetchRunJobs({ repo, runs }) {
+  const picked = (runs ?? []).filter((r) => r.conclusion === 'success' && r.id).sort((a, b) => time(b.startedAt) - time(a.startedAt)).slice(0, MAX_PHASE_RUNS);
+  const runJobs = [];
+  let failed = 0;
+  for (const run of picked) {
+    try {
+      const data = ghJson(['api', `repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`], 'run jobs');
+      runJobs.push({ runId: run.id, jobs: (data.jobs ?? []).map((j) => ({ name: j.name ?? '',
+        steps: (j.steps ?? []).map((s) => ({ name: s.name ?? '', startedAt: s.started_at ?? null, completedAt: s.completed_at ?? null })) })) });
+    } catch { failed += 1; }
+  }
+  return { runJobs, failed };
+}
+
+/** 任务 issue 是否挂在父 issue 下 → {parents: {'owner/repo#n': true|false}, failed};按仓分批(每批 50 个)走 GraphQL,读失败的不写进结果(分组时记为未知)。 */
+function fetchParents(refs) {
+  const parents = {};
+  let failed = 0;
+  const byRepo = new Map();
+  for (const ref of refs ?? []) {
+    if (!REPO_RE.test(ref.repo)) continue;
+    const list = byRepo.get(ref.repo) ?? new Set();
+    list.add(ref.issue);
+    byRepo.set(ref.repo, list);
+  }
+  for (const [repo, set] of byRepo) {
+    const [owner, name] = repo.split('/');
+    const numbers = [...set];
+    for (let i = 0; i < numbers.length; i += 50) {
+      const batch = numbers.slice(i, i + 50);
+      const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${batch.map((n) => `i${n}: issue(number: ${n}) { parent { number } }`).join(' ')} } }`;
+      const r = spawnSync('gh', ['api', 'graphql', '-f', `query=${query}`], { encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+      let data = null;
+      try { data = r.status === 0 ? JSON.parse(r.stdout).data?.repository : null; } catch { data = null; }
+      for (const n of batch) {
+        const node = data?.[`i${n}`];
+        if (!data || node === undefined) { failed += 1; continue; }
+        parents[`${repo.toLowerCase()}#${n}`] = Boolean(node?.parent);
+      }
+    }
+  }
+  return { parents, failed };
 }
 
 /** 时间段内创建、正文像验收机修正 issue 的 issue → {corrections: [{number, body, createdAt}], truncated};只保留能解析出修正标记的。 */
@@ -274,8 +327,134 @@ export function durationStats(runs) {
   const minutes = (runs ?? []).filter((r) => r?.conclusion === 'success')
     .map((r) => (time(r.updatedAt) - time(r.startedAt)) / 60_000)
     .filter((m) => Number.isFinite(m) && m >= 0);
-  const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
   return { count: minutes.length, p50: round1(percentile(minutes, 0.5)), p90: round1(percentile(minutes, 0.9)) };
+}
+
+const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
+
+// ── 同版本重审(#232) ───────────────────────────────────────────────────────
+/** 收口补跑的报告:同一 head 上的合理重审,不算白跑。 */
+export const FINAL_FULL_RETRY_MARK = '收口全量:补跑';
+
+/**
+ * 同一代码版本(commit)上审查机又发了一份要跑模型的报告。「本轮沿用」不跑模型,reportsOf 已排除。
+ * 前后两份都是 Request Changes 记「打回后又打回」(白跑:代码没变、结论没变);其余记「放行类重复」。收口补跑不计入。
+ * 给了 since / until(YYYY-MM-DD,按 UTC 整天,与 PR 查询的 updated 口径一致)时,只数「后一份报告」提交时间落在窗口内的事件;
+ * 窗口之前同一版本的报告只作比较基准,不计数(PR 按 updated 选进来,但它的评审是整个生命周期的)。
+ */
+export function sameHeadRepeatOf(prs, reviewer, { since = null, until = null } = {}) {
+  const from = since ? Date.parse(`${since}T00:00:00Z`) : -Infinity;
+  const to = until ? Date.parse(`${until}T23:59:59.999Z`) : Infinity;
+  const inWindow = (r) => { const t = time(r.submittedAt); return t >= from && t <= to; };
+  const out = { reports: 0, rejectAfterReject: 0, passLike: 0, excludedFinalFull: 0, prs: [] };
+  for (const pr of prs ?? []) {
+    const reports = reportsOf(pr, reviewer);
+    out.reports += reports.filter(inWindow).length;
+    const byHead = new Map();
+    for (const r of reports) {
+      const head = r.commitOid ?? headOfReport(r.body);
+      if (!head) continue;
+      byHead.set(head, [...(byHead.get(head) ?? []), r]);
+    }
+    let repeats = 0;
+    for (const list of byHead.values()) {
+      for (let i = 1; i < list.length; i += 1) {
+        if (!inWindow(list[i])) continue;
+        if (String(list[i].body).includes(FINAL_FULL_RETRY_MARK)) { out.excludedFinalFull += 1; continue; }
+        if (list[i - 1].state === 'CHANGES_REQUESTED' && list[i].state === 'CHANGES_REQUESTED') { out.rejectAfterReject += 1; repeats += 1; } else out.passLike += 1;
+      }
+    }
+    if (repeats) out.prs.push({ pr: pr.number, rejectAfterReject: repeats });
+  }
+  out.prs = out.prs.sort((a, b) => b.rejectAfterReject - a.rejectAfterReject || a.pr - b.pr).slice(0, 10);
+  return out;
+}
+
+// ── 分阶段耗时(#232) ───────────────────────────────────────────────────────
+export const PHASES = ['prepare', 'model', 'publish', 'other'];
+
+/** review-pr.yml 的步骤名 → 阶段。对照表之外的步骤(准备 job、发令牌、镜像状态等)归 other。 */
+export function phaseOfStep(name) {
+  const n = String(name ?? '');
+  if (/^Prepare\b/.test(n) || /^Dependencies and security scan\b/.test(n)) return 'prepare';
+  if (/^Review with Codex\b/.test(n)) return 'model';
+  if (/^Publish\b/.test(n) || /^Upload result\b/.test(n)) return 'publish';
+  return 'other';
+}
+
+/** 每次运行按阶段累加步骤时长(分钟),再取各阶段的 p50 / p90。起止时间缺失或倒挂的步骤跳过。 */
+export function phaseDurationStats(runJobs) {
+  const per = Object.fromEntries(PHASES.map((p) => [p, []]));
+  let otherSteps = 0;
+  for (const run of runJobs ?? []) {
+    const sums = Object.fromEntries(PHASES.map((p) => [p, 0]));
+    for (const job of run.jobs ?? []) {
+      for (const step of job.steps ?? []) {
+        if (!step.startedAt || !step.completedAt) continue;
+        const ms = time(step.completedAt) - time(step.startedAt);
+        if (!(ms >= 0)) continue;
+        const phase = phaseOfStep(step.name);
+        if (phase === 'other') otherSteps += 1;
+        sums[phase] += ms / 60_000;
+      }
+    }
+    for (const p of PHASES) per[p].push(sums[p]);
+  }
+  return { sample: (runJobs ?? []).length, otherSteps,
+    ...Object.fromEntries(PHASES.map((p) => [p, { p50: round1(percentile(per[p], 0.5)), p90: round1(percentile(per[p], 0.9)) }])) };
+}
+
+// ── 同期分组(#232) ─────────────────────────────────────────────────────────
+export const GROUPS = ['withParent', 'withTask', 'noTask'];
+
+/**
+ * 审查过的 PR 按「任务 issue：」行与该 issue 的父 issue 分三组,同一窗口内对照:
+ * withParent = 任务 issue 挂在父 issue 下;withTask = 有任务 issue、没有父 issue(或读不到,计入 parentUnknown);noTask = 没写任务 issue。
+ * 每组给 PR 数、平均轮数、五轮及以上占比、每个 PR 的报告数(这三项与 rounds-to-pass 一样按所选 PR 的整个生命周期算),
+ * 以及按运行标题归到本组 PR 的成功运行耗时(只含窗口内创建的运行)。
+ */
+export function groupsOf(prs, { reviewer, repo, parents = {}, runs = [] }) {
+  const runsByPr = new Map();
+  for (const run of runs ?? []) if (run?.pr) runsByPr.set(run.pr, [...(runsByPr.get(run.pr) ?? []), run]);
+  const acc = Object.fromEntries(GROUPS.map((g) => [g, { prs: 0, rounds: [], reports: 0, runs: [], parentUnknown: 0 }]));
+  for (const pr of prs ?? []) {
+    const reports = reportsOf(pr, reviewer);
+    if (!reports.length) continue;
+    const ref = taskIssueOf(pr.body, repo);
+    const known = ref ? parents[`${String(ref.repo).toLowerCase()}#${ref.issue}`] : undefined;
+    const group = !ref ? 'noTask' : known === true ? 'withParent' : 'withTask';
+    const a = acc[group];
+    a.prs += 1;
+    a.rounds.push(roundsToPass(reports));
+    a.reports += reports.length;
+    a.runs.push(...(runsByPr.get(pr.number) ?? []));
+    if (ref && known === undefined) a.parentUnknown += 1;
+  }
+  return Object.fromEntries(GROUPS.map((g) => {
+    const a = acc[g];
+    const s = summarize(a.rounds);
+    return [g, { prs: a.prs, meanRounds: s.mean.value, fivePlus: s.fivePlus, reportsPerPr: a.prs ? Math.round((a.reports / a.prs) * 100) / 100 : null,
+      duration: durationStats(a.runs), ...(g === 'withTask' ? { parentUnknown: a.parentUnknown } : {}) }];
+  }));
+}
+
+// ── 人工标签(#232) ─────────────────────────────────────────────────────────
+export const LABEL_VERDICTS = ['valid', 'invalid', 'uncertain'];
+
+/** --labels 文件 → {labels} 或 {error}。每项 {pr, findingKey, verdict: valid|invalid|uncertain, reason?};同一 pr + key 后写的覆盖先写的。 */
+export function parseLabels(text) {
+  let raw;
+  try { raw = JSON.parse(text); } catch { return { error: '--labels 文件不是合法 JSON' }; }
+  if (!Array.isArray(raw)) return { error: '--labels 文件要是数组' };
+  const labels = new Map();
+  for (const [i, item] of raw.entries()) {
+    if (!item || typeof item !== 'object') return { error: `--labels 第 ${i + 1} 项不是对象` };
+    if (!Number.isInteger(item.pr) || item.pr < 1) return { error: `--labels 第 ${i + 1} 项的 pr 不是正整数` };
+    if (typeof item.findingKey !== 'string' || !item.findingKey.trim() || item.findingKey.length > 200) return { error: `--labels 第 ${i + 1} 项的 findingKey 不合法` };
+    if (!LABEL_VERDICTS.includes(item.verdict)) return { error: `--labels 第 ${i + 1} 项的 verdict 只能是 ${LABEL_VERDICTS.join(' / ')}` };
+    labels.set(`${item.pr}|${item.findingKey.trim()}`, item.verdict);
+  }
+  return { labels };
 }
 
 // ── 漏报(#189,照 makecindy/cindy Review 北极星:合并后才发现的必改问题里,审查机提前发现了几成) ──
@@ -301,12 +480,34 @@ export function taskIssueOf(body, defaultRepo) {
  * 每条修正 issue 反查「写了同一任务 issue、在修正 issue 创建前合并」的 PR;这些 PR 上审查机在合并前发的 finding thread 首帖提到同一 SC<k>
  * 记为已提前发现,否则记为漏报。找不到对应 PR 的单列 unmatched。代理指标:#134 之前审查不提 SC,基线的已提前发现预计为 0。
  */
+/** 审查机在服务器上验不了的验证层(要本人手测、真机或付费调用)。 */
+export const NOT_REVIEWER_LAYERS = ['manual', 'cindy-mac', 'cindy-windows', 'paid'];
+
+/**
+ * 修正 issue 的归属(#232):目标行写的验证层在 NOT_REVIEWER_LAYERS 里 → not-reviewer;
+ * 「## 原因」里写了集成分支 / integration/(实现还在阶段分支、没进 main 就验收)→ acceptance-timing;其余返回 null,走原来的匹配。
+ */
+export function correctionAttribution(body) {
+  const text = String(body ?? '');
+  const layer = /验证[：:]\s*([a-z][a-z-]*)/.exec(text)?.[1] ?? null;
+  if (layer && NOT_REVIEWER_LAYERS.includes(layer)) return 'not-reviewer';
+  const reason = /##\s*原因\s*\n([\s\S]*?)(?=\n##\s|\n\[验收机\]|$)/.exec(text)?.[1] ?? '';
+  if (/集成分支|integration\//.test(reason)) return 'acceptance-timing';
+  return null;
+}
+
 export function missedStats(corrections, prs, { reviewer, repo }) {
-  const out = { corrections: 0, caught: 0, missed: 0, unmatched: 0, items: [] };
+  const out = { corrections: 0, caught: 0, missed: 0, unmatched: 0, notReviewer: 0, acceptanceTiming: 0, items: [] };
   for (const issue of corrections ?? []) {
     const marker = parseCorrectionMarker(issue.body);
     if (!marker || marker.itemRepo.toLowerCase() !== String(repo).toLowerCase()) continue;
     out.corrections += 1;
+    const attribution = correctionAttribution(issue.body);
+    if (attribution) {
+      out[attribution === 'not-reviewer' ? 'notReviewer' : 'acceptanceTiming'] += 1;
+      out.items.push({ correction: issue.number, item: `${marker.itemRepo}#${marker.itemIssue}`, sc: marker.sc, prs: [], result: attribution });
+      continue;
+    }
     const created = time(issue.createdAt);
     const owners = prs.filter((pr) => pr.merged && time(pr.mergedAt) <= created
       && ((ref) => ref && ref.repo.toLowerCase() === marker.itemRepo.toLowerCase() && ref.issue === marker.itemIssue)(taskIssueOf(pr.body, repo)));
@@ -320,8 +521,12 @@ export function missedStats(corrections, prs, { reviewer, repo }) {
 }
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
-export function analyze(prs, { reviewer, repo, includeText = false }) {
+export function analyze(prs, { reviewer, repo, includeText = false, labels = null }) {
   const buckets = Object.fromEntries(BUCKETS.map((b) => [b, 0]));
+  // 去重(#232):同一 PR 里同一问题 key 跨轮重报只算一个问题;按桶各自去重(同一 key 可能先 re-raised 后 unknown)。
+  const dedup = { threads: 0, findingKeys: 0 };
+  const bucketKeys = Object.fromEntries(BUCKETS.map((b) => [b, new Set()]));
+  const seenKeys = new Set();
   const classes = new Map();
   const perPr = [];
   const texts = [];
@@ -350,6 +555,8 @@ export function analyze(prs, { reviewer, repo, includeText = false }) {
       const bucket = classifyThread(pr, info, { reviewer, laterThreads, laterReports, repo });
       counts[bucket] += 1;
       buckets[bucket] += 1;
+      bucketKeys[bucket].add(`${pr.number}|${info.keyOf}`);
+      seenKeys.add(`${pr.number}|${info.keyOf}`);
       const cls = classOf(info);
       const entry = classes.get(cls) ?? { class: cls, total: 0, ...Object.fromEntries(BUCKETS.map((b) => [b, 0])) };
       entry.total += 1;
@@ -357,10 +564,25 @@ export function analyze(prs, { reviewer, repo, includeText = false }) {
       classes.set(cls, entry);
       if (includeText) texts.push({ pr: pr.number, bucket, severity: info.severity, path: info.thread.path, class: cls, body: info.first.body, replies: info.replies.map((c) => ({ author: c.author, body: c.body })) });
     }
-    perPr.push({ pr: pr.number, reports: reports.length, roundsToPass: n, findingThreads: infos.length, buckets: counts, verifier: prVerifier });
+    const findingKeys = new Set(infos.map((info) => info.keyOf)).size;
+    dedup.threads += infos.length;
+    dedup.findingKeys += findingKeys;
+    perPr.push({ pr: pr.number, reports: reports.length, roundsToPass: n, findingThreads: infos.length, findingKeys, buckets: counts, verifier: prVerifier });
+  }
+  // 人工口径(#232):只数窗口里真的出现过的 pr + key;invalid 记为人工确认的噪音。
+  let human = null;
+  if (labels) {
+    human = { labeled: labels.size, matched: 0, valid: 0, invalid: 0, uncertain: 0 };
+    for (const [key, verdict] of labels) {
+      if (!seenKeys.has(key)) continue;
+      human.matched += 1;
+      human[verdict] += 1;
+    }
   }
   return {
     reviewedPrs: perPr.length, buckets, perPr, roundsToPass: summarize(rounds), verifier,
+    dedup: { ...dedup, bucketKeys: Object.fromEntries(BUCKETS.map((b) => [b, bucketKeys[b].size])) },
+    ...(human ? { human } : {}),
     reverts: findReverts(prs, reviewer),
     topClasses: [...classes.values()].sort((a, b) => b.total - a.total || a.class.localeCompare(b.class)).slice(0, 10),
     ...(includeText ? { threads: texts, verifierLines } : {}),
@@ -386,7 +608,24 @@ export function renderMarkdown(report) {
     ...(report.missed ? ['## 漏报(北极星,代理指标)', '',
       `- 验收机修正 issue ${report.missed.corrections} 条:审查机合并前已提过同一 SC ${report.missed.caught} 条,漏报 ${report.missed.missed} 条,反查不到对应 PR ${report.missed.unmatched} 条`,
       '- 只认验收机修正 issue;「已提前发现」看审查机在合并前发的 finding thread 首帖是否提到同一 SC<k>。',
+      ...(report.missed.notReviewer !== undefined ? [`- 不归审查机的(不进上面三项):审查机验不了的验证层(${NOT_REVIEWER_LAYERS.join(' / ')})${report.missed.notReviewer} 条;实现还在集成分支、验收时机不对 ${report.missed.acceptanceTiming} 条`] : []),
       ...(report.truncated.corrections ? ['- 警告:修正 issue 没读全(GitHub 一次最多给 1000 条),只统计了读到的部分。'] : []), ''] : []),
+    ...(report.sameHeadRepeat ? ['## 同一版本重审', '',
+      `- 窗口内审查机跑过模型的报告 ${report.sameHeadRepeat.reports} 份;窗口内同一 commit 上「打回后又打回」${report.sameHeadRepeat.rejectAfterReject} 次(代码没变、结论没变),其余同版本重复 ${report.sameHeadRepeat.passLike} 次;收口补跑 ${report.sameHeadRepeat.excludedFinalFull} 次不计入`,
+      ...(report.sameHeadRepeat.prs.length ? [`- 最多的 PR:${report.sameHeadRepeat.prs.map((p) => `#${p.pr} ${p.rejectAfterReject} 次`).join('、')}`] : []), ''] : []),
+    ...(report.phaseDurations ? ['## 分阶段耗时', '',
+      `- 样本:最近 ${report.phaseDurations.sample} 次成功运行(上限 ${MAX_PHASE_RUNS})${report.phaseDurations.failed ? `,另有 ${report.phaseDurations.failed} 次读步骤失败` : ''};对照表外的步骤 ${report.phaseDurations.otherSteps} 个计入「其他」`,
+      '| 阶段 | p50(分钟) | p90(分钟) |', '|---|---|---|',
+      ...PHASES.map((p) => `| ${{ prepare: '准备', model: '模型', publish: '发布', other: '其他' }[p]} | ${report.phaseDurations[p].p50 ?? '无'} | ${report.phaseDurations[p].p90 ?? '无'} |`), ''] : []),
+    ...(report.groups ? ['## 同期分组对照', '',
+      '| 组 | PR 数 | 平均轮数 | 五轮及以上 | 每个 PR 的报告数 | 单次耗时 p50(分钟) |', '|---|---|---|---|---|---|',
+      ...GROUPS.map((g) => { const x = report.groups[g]; return `| ${{ withParent: '有总 issue', withTask: '只有任务 issue', noTask: '没写任务 issue' }[g]} | ${x.prs} | ${x.meanRounds ?? '无'} | ${x.fivePlus.numerator}/${x.fivePlus.denominator} | ${x.reportsPerPr ?? '无'} | ${x.duration.p50 ?? '无'} |`; }),
+      ...(report.groups.withTask.parentUnknown ? [`- 「只有任务 issue」里有 ${report.groups.withTask.parentUnknown} 个 PR 的父 issue 没读到,按没有父 issue 计。`] : []), ''] : []),
+    ...(a.dedup ? ['## 按问题去重', '',
+      `- finding thread ${a.dedup.threads} 条,去重后 ${a.dedup.findingKeys} 个问题(同一 PR 同一 key 跨轮重报只算一个)`,
+      `- 各桶去重后:${BUCKETS.map((b) => `${b} ${a.dedup.bucketKeys[b]}`).join('、')}`, ''] : []),
+    ...(a.human ? ['## 人工口径(--labels)', '',
+      `- 标注 ${a.human.labeled} 条,窗口内对上 ${a.human.matched} 条:成立 ${a.human.valid}、不成立 ${a.human.invalid}(人工确认的噪音)、拿不准 ${a.human.uncertain}`, ''] : []),
     '## rounds-to-pass', '',
     `- 一轮通过:${frac(a.roundsToPass.onePass)}(分母是最终通过的 PR 数)`,
     `- 五轮及以上才通过:${frac(a.roundsToPass.fivePlus)}`,
@@ -408,16 +647,30 @@ export function main(argv = process.argv.slice(2)) {
   const parsed = parseArgs(argv);
   if (parsed.error) { console.error(parsed.error); return 2; }
   const { options } = parsed;
+  let labels = null;
+  if (options.labels) {
+    let text;
+    try { text = readFileSync(options.labels, 'utf8'); } catch (error) { console.error(`--labels 读不到:${String(error.message).slice(0, 120)}`); return 2; }
+    const read = parseLabels(text);
+    if (read.error) { console.error(read.error); return 2; }
+    labels = read.labels;
+  }
   let data;
   try {
     if (options.fixture) {
       const fixture = JSON.parse(readFileSync(options.fixture, 'utf8'));
-      data = { prs: fixture.prs ?? [], truncated: { nested: 0, prs: false, runs: false, corrections: false }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null };
+      data = { prs: fixture.prs ?? [], truncated: { nested: 0, prs: false, runs: false, corrections: false }, runs: fixture.runs ?? null, corrections: fixture.corrections ?? null,
+        runJobs: fixture.runJobs ? { runJobs: fixture.runJobs, failed: 0 } : null, parents: fixture.parents ?? {} };
     } else {
       const { prs, truncated } = fetchPrs(options);
       const runs = fetchRuns(options);
       const corrections = fetchCorrections(options);
-      data = { prs, truncated: { ...truncated, runs: runs.truncated, corrections: corrections.truncated }, runs: runs.runs, corrections: corrections.corrections };
+      const runJobs = fetchRunJobs({ repo: options.repo, runs: runs.runs });
+      const refs = prs.map((pr) => taskIssueOf(pr.body, options.repo)).filter(Boolean);
+      const parents = fetchParents(refs);
+      if (runJobs.failed) console.error(`警告:${runJobs.failed} 次运行的步骤没读到,分阶段耗时只按读到的部分统计`);
+      if (parents.failed) console.error(`警告:${parents.failed} 个任务 issue 的父 issue 没读到,分组时按没有父 issue 计`);
+      data = { prs, truncated: { ...truncated, runs: runs.truncated, corrections: corrections.truncated }, runs: runs.runs, corrections: corrections.corrections, runJobs, parents: parents.parents };
     }
     if (data.truncated.prs) console.error(`警告:窗口内 PR 超过 --max-prs ${options.maxPrs},只统计了前 ${options.maxPrs} 个;漏报的 unmatched 可能偏多`);
     if (data.truncated.runs) console.error('警告:workflow 运行没读全(GitHub 一次最多给 1000 条),耗时只按读到的部分统计');
@@ -426,11 +679,15 @@ export function main(argv = process.argv.slice(2)) {
     console.error(error.message);
     return error.code === 3 ? 3 : 1;
   }
-  const analysis = analyze(data.prs, { reviewer: options.reviewer, repo: options.repo, includeText: options.includeText });
+  const analysis = analyze(data.prs, { reviewer: options.reviewer, repo: options.repo, includeText: options.includeText, labels });
   const report = { note: NOTE, window: { repo: options.repo, since: options.since, until: options.until, reviewer: options.reviewer, maxPrs: options.maxPrs, workflow: options.workflow },
     prsRead: data.prs.length, truncated: data.truncated, analysis, noise: noiseOf(analysis.buckets),
     durations: data.runs ? durationStats(data.runs) : null,
-    missed: data.corrections ? missedStats(data.corrections, data.prs, { reviewer: options.reviewer, repo: options.repo }) : null };
+    missed: data.corrections ? missedStats(data.corrections, data.prs, { reviewer: options.reviewer, repo: options.repo }) : null,
+    sameHeadRepeat: sameHeadRepeatOf(data.prs, options.reviewer, { since: options.since, until: options.until }),
+    phaseDurations: data.runJobs ? { ...phaseDurationStats(data.runJobs.runJobs), failed: data.runJobs.failed } : null,
+    groups: groupsOf(data.prs, { reviewer: options.reviewer, repo: options.repo, parents: data.parents ?? {}, runs: data.runs ?? [] }),
+    ...(analysis.human ? { noiseHuman: analysis.human.invalid } : {}) };
   mkdirSync(options.out, { recursive: true });
   writeFileSync(join(options.out, 'outcomes.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(options.out, 'outcomes.md'), renderMarkdown(report));

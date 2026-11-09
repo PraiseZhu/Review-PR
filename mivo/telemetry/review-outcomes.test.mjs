@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -196,4 +196,158 @@ test('CLI:夹具带 runs 与 corrections 时输出耗时、漏报、噪音;不�
   const oldJson = JSON.parse(old.read('outcomes.json'));
   assert.equal(oldJson.durations, null, '旧夹具没有 runs:不输出耗时');
   assert.equal(oldJson.missed, null, '旧夹具没有 corrections:不输出漏报');
+});
+
+// ── #232:同版本重审、分阶段耗时、同期分组、按问题去重、修正归属、人工标签 ──
+import { sameHeadRepeatOf, phaseOfStep, phaseDurationStats, groupsOf, correctionAttribution, parseLabels, prOfRunTitle, NOT_REVIEWER_LAYERS } from './review-outcomes.mjs';
+
+const V232_FILE = fileURLToPath(new URL('./fixtures/v232.json', import.meta.url));
+const v232 = JSON.parse(readFileSync(V232_FILE, 'utf8'));
+const REPO = 'xindong/mivo-canvas-plugin';
+
+test('#232 SC1 同版本重审:#2035 同一 commit 连续 4 次打回 → 3 次「打回后又打回」;收口补跑与「本轮沿用」不计入', () => {
+  const out = sameHeadRepeatOf(v232.prs, 'mivo-bot');
+  assert.equal(out.rejectAfterReject, 3);
+  assert.equal(out.excludedFinalFull, 1, 'PR 9001 的收口补跑');
+  assert.equal(out.passLike, 0, '#2035 的「本轮沿用」不跑模型,不算重复');
+  assert.deepEqual(out.prs, [{ pr: 2035, rejectAfterReject: 3 }]);
+  // 去掉补跑标记,同一 commit 上的第二次打回就算白跑
+  const plain = v232.prs.map((p) => (p.number === 9001 ? { ...p, reviews: p.reviews.map((r) => ({ ...r, body: r.body.replace(/收口全量:补跑[^\n]*/, '') })) } : p));
+  assert.equal(sameHeadRepeatOf(plain, 'mivo-bot').rejectAfterReject, 4);
+});
+
+test('#232 SC2 分阶段耗时:准备 / 模型 / 发布按步骤名归类,表外步骤归其他并计数,缺起止时间的跳过', () => {
+  assert.equal(phaseOfStep('Prepare (GitHub token only)'), 'prepare');
+  assert.equal(phaseOfStep('Dependencies and security scan (no credentials)'), 'prepare');
+  assert.equal(phaseOfStep('Review with Codex (model gateway credentials only)'), 'model');
+  assert.equal(phaseOfStep('Publish (GitHub token only)'), 'publish');
+  assert.equal(phaseOfStep('Upload result for the pre-review coordinator'), 'publish');
+  assert.equal(phaseOfStep('Mint review publish token'), 'other');
+  const out = phaseDurationStats(v232.runJobs);
+  assert.equal(out.sample, 1);
+  assert.equal(out.prepare.p50, 1, '43 秒 + 18 秒');
+  assert.equal(out.model.p50, 12.8, '12 分 47 秒');
+  assert.equal(out.publish.p50, 0.5, '24 秒 + 5 秒');
+  assert.equal(out.otherSteps, 3, 'Write pending commit status、Set up job、Clean up;缺开始时间的 Broken step 跳过');
+  assert.equal(phaseDurationStats([]).sample, 0);
+  assert.equal(phaseDurationStats([]).model.p50, null);
+});
+
+test('#232 SC3 同期分组:按任务 issue 行与父 issue 分三组;没写任务 issue 的进 noTask;运行按标题归到 PR', () => {
+  assert.equal(prOfRunTitle('review-pr #2035 06deea80'), 2035);
+  assert.equal(prOfRunTitle('review-pr'), null);
+  const out = groupsOf(v232.prs, { reviewer: 'mivo-bot', repo: REPO, parents: v232.parents, runs: v232.runs });
+  assert.equal(out.noTask.prs, 1, '#2035');
+  assert.equal(out.withParent.prs, 2, '#1858(父 #1848)、#1897(父 #1632)');
+  assert.equal(out.withTask.prs, 1, 'PR 9001:#1926 没有父 issue');
+  assert.equal(out.withTask.parentUnknown, 0);
+  assert.equal(out.noTask.duration.count, 1);
+  assert.equal(out.withParent.meanRounds, 2, '#1858 第 3 轮通过,#1897 第 1 轮通过');
+  const unknown = groupsOf(v232.prs, { reviewer: 'mivo-bot', repo: REPO, parents: {}, runs: [] });
+  assert.equal(unknown.withTask.prs, 3, '父 issue 读不到时按没有父 issue 计');
+  assert.equal(unknown.withTask.parentUnknown, 3);
+});
+
+test('#232 SC4 按问题去重:#1858 的 4 条 thread 是 2 个问题 key', () => {
+  const out = analyze(v232.prs, { reviewer: 'mivo-bot', repo: REPO });
+  const pr = out.perPr.find((p) => p.pr === 1858);
+  assert.equal(pr.findingThreads, 4);
+  assert.equal(pr.findingKeys, 2);
+  assert.equal(out.dedup.threads, 5, '#1858 的 4 条 + #1897 的 1 条');
+  assert.equal(out.dedup.findingKeys, 3);
+  assert.equal(out.dedup.bucketKeys['re-raised'], 2, '同 key 第一轮的两条被后一轮重报');
+});
+
+test('#232 SC5 修正 issue 归属:#1912 的 8 条是验收时机不对,#2060/#2061 审查机验不了,#1936 仍是漏报', () => {
+  assert.deepEqual(NOT_REVIEWER_LAYERS, ['manual', 'cindy-mac', 'cindy-windows', 'paid']);
+  const out = missedStats(v232.corrections, v232.prs, { reviewer: 'mivo-bot', repo: REPO });
+  assert.equal(out.corrections, 12);
+  assert.equal(out.acceptanceTiming, 8);
+  assert.equal(out.notReviewer, 2);
+  assert.equal(out.missed, 1);
+  assert.equal(out.caught, 0);
+  assert.equal(out.unmatched, 1, '#1869:#1360 SC6 在窗口里反查不到 PR');
+  assert.deepEqual(out.items.filter((i) => i.result === 'acceptance-timing').map((i) => i.item), Array(8).fill(`${REPO}#1912`));
+  assert.deepEqual(out.items.find((i) => i.correction === 1936), { correction: 1936, item: `${REPO}#1632`, sc: 6, prs: [1897], result: 'missed' });
+  // 只看「## 原因」:目标行里出现 integration 不算
+  assert.equal(correctionAttribution('## 目标\n\n让…（验证：unit）integration/x\n\n## 原因\n\n（略）\n\n[验收机] 修正 · 总 o/r#1 · 项 o/r#1 SC1 · 第 1 轮'), null);
+  assert.equal(correctionAttribution('## 目标\n\n让…（验证：cindy-mac）'), 'not-reviewer');
+  assert.equal(correctionAttribution('## 目标\n\n让…（验证：browser-fixture）\n\n## 原因\n\n（略）'), null);
+});
+
+test('#232 SC6 人工标签:不传时 buckets 与 noise 不变;传入时多出人工口径;格式错退出 2', () => {
+  const plain = analyze(v232.prs, { reviewer: 'mivo-bot', repo: REPO });
+  const read = parseLabels(JSON.stringify([
+    { pr: 1858, findingKey: '575a77e458a1', verdict: 'invalid', reason: '维护者专用输入' },
+    { pr: 1858, findingKey: 'f6f873e58753', verdict: 'valid' },
+    { pr: 9999, findingKey: 'aaaaaaaaaaaa', verdict: 'invalid' },
+  ]));
+  assert.equal(read.error, undefined);
+  const labeled = analyze(v232.prs, { reviewer: 'mivo-bot', repo: REPO, labels: read.labels });
+  assert.deepEqual(labeled.buckets, plain.buckets);
+  assert.equal(plain.human, undefined);
+  assert.deepEqual(labeled.human, { labeled: 3, matched: 2, valid: 1, invalid: 1, uncertain: 0 });
+  assert.match(parseLabels('{').error, /不是合法 JSON/);
+  assert.match(parseLabels('{}').error, /要是数组/);
+  assert.match(parseLabels(JSON.stringify([{ pr: 1, findingKey: 'k', verdict: 'maybe' }])).error, /verdict 只能是/);
+  assert.match(parseLabels(JSON.stringify([{ pr: 0, findingKey: 'k', verdict: 'valid' }])).error, /pr 不是正整数/);
+});
+
+test('#232 CLI:新夹具输出五项新统计;不传 --labels 时旧夹具的 buckets、noise、耗时、漏报三项与原来一致;--labels 格式错退出 2', () => {
+  const args = (fixture, extra = []) => (out) => ['--fixture', fixture, '--repo', REPO, '--since', '2026-11-06', '--until', '2026-11-09', '--reviewer', 'mivo-bot', '--out', out, ...extra];
+  const run = runCli(args(V232_FILE));
+  assert.equal(run.r.status, 0, run.r.stderr);
+  const json = JSON.parse(run.read('outcomes.json'));
+  assert.equal(json.sameHeadRepeat.rejectAfterReject, 3);
+  assert.equal(json.phaseDurations.model.p50, 12.8);
+  assert.equal(json.groups.withParent.prs, 2);
+  assert.equal(json.analysis.dedup.findingKeys, 3);
+  assert.equal(json.missed.acceptanceTiming, 8);
+  assert.equal(json.noiseHuman, undefined);
+  const md = run.read('outcomes.md');
+  for (const heading of ['## 同一版本重审', '## 分阶段耗时', '## 同期分组对照', '## 按问题去重']) assert.ok(md.includes(heading), heading);
+  assert.match(md, /验收时机不对 8 条/);
+  assert.ok(!md.includes('## 人工口径'));
+  // 旧夹具:原有字段与原来一致
+  const old = runCli((out) => ['--fixture', NORTH_STAR, '--repo', 'o/r', '--since', '2026-10-01', '--until', '2026-10-08', '--reviewer', 'mivo-bot', '--out', out]);
+  assert.equal(old.r.status, 0, old.r.stderr);
+  const oldJson = JSON.parse(old.read('outcomes.json'));
+  assert.deepEqual(oldJson.durations, { count: 5, p50: 30, p90: 100 });
+  assert.equal(oldJson.noise, noiseOf(oldJson.analysis.buckets));
+  assert.equal(oldJson.missed.caught, 1);
+  assert.equal(oldJson.missed.notReviewer, 0);
+  assert.equal(oldJson.phaseDurations, null, '旧夹具没有 runJobs:不输出分阶段耗时');
+  // --labels 格式错
+  const dir = mkdtempSync(join(tmpdir(), 'mivo-labels-'));
+  try {
+    const bad = join(dir, 'labels.json');
+    writeFileSync(bad, '{"not":"array"}');
+    const r = runCli(args(V232_FILE, ['--labels', bad]));
+    assert.equal(r.r.status, 2);
+    assert.match(r.r.stderr, /要是数组/);
+    const good = join(dir, 'good.json');
+    writeFileSync(good, JSON.stringify([{ pr: 1858, findingKey: '575a77e458a1', verdict: 'invalid' }]));
+    const ok = runCli(args(V232_FILE, ['--labels', good]));
+    assert.equal(ok.r.status, 0, ok.r.stderr);
+    assert.equal(JSON.parse(ok.read('outcomes.json')).noiseHuman, 1);
+    assert.match(ok.read('outcomes.md'), /## 人工口径/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#232 合并前单审 F3:同版本重审只数窗口内的事件;窗口之前的同版本报告只作基准', () => {
+  const cr = (at, head = 'a'.repeat(40)) => ({ author: 'mivo-bot', state: 'CHANGES_REQUESTED', submittedAt: at, commitOid: head, body: `> Mivo 自动审查 · head \`${head}\`\n## Overall\nchanges-requested —— 1 条 P0/P1/P2` });
+  // 11-09 才有更新、重复打回却发生在 11-05 的 PR(#1544/#1805/#1836 的形状)
+  const old = { number: 1, body: '', author: 'x', reviews: [cr('2026-11-05T01:00:00Z'), cr('2026-11-05T02:00:00Z'), cr('2026-11-05T03:00:00Z')], threads: [] };
+  // 跨窗口:基准在 11-08,重复在 11-09
+  const cross = { number: 2, body: '', author: 'x', reviews: [cr('2026-11-08T23:00:00Z', 'b'.repeat(40)), cr('2026-11-09T01:00:00Z', 'b'.repeat(40))], threads: [] };
+  const w = (since, until) => sameHeadRepeatOf([old, cross], 'mivo-bot', { since, until });
+  assert.equal(w('2026-11-09', '2026-11-09').rejectAfterReject, 1, '只有 #2 在 11-09 的那一次');
+  assert.deepEqual(w('2026-11-09', '2026-11-09').prs, [{ pr: 2, rejectAfterReject: 1 }]);
+  assert.equal(w('2026-11-09', '2026-11-09').reports, 1);
+  assert.equal(w('2026-11-08', '2026-11-08').rejectAfterReject, 0, '11-08 那份是第一份,不是重复');
+  assert.equal(w('2026-11-05', '2026-11-05').rejectAfterReject, 2);
+  assert.equal(sameHeadRepeatOf([old, cross], 'mivo-bot').rejectAfterReject, 3, '不给窗口时按整个生命周期');
+  // 夹具:窗口外(11-10)没有事件;CLI 窗口 11-06~11-09 内照旧 3 次
+  assert.equal(sameHeadRepeatOf(v232.prs, 'mivo-bot', { since: '2026-11-10', until: '2026-11-10' }).rejectAfterReject, 0);
+  assert.equal(sameHeadRepeatOf(v232.prs, 'mivo-bot', { since: '2026-11-06', until: '2026-11-09' }).rejectAfterReject, 3);
 });
