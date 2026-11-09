@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope, unchangedReviewedFiles } from '../lib/scope.mjs';
+import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope, unchangedReviewedFiles, discussionDigestOf, rebuttalRowsOf } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats, loadLateFindingsMode, splitLateFindings } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
@@ -245,6 +245,11 @@ async function prepare() {
     current.verifiedDeferralIssues = (state.deferrals?.verified ?? []).map((d) => d.issue);
     // 同一版本的阻断问题都已被采信裁决或按 key 转 issue 覆盖时不再跑模型(lib/scope.mjs settledByAdjudication)。
     current.settledKeys = [...(state.adjudications?.verified ?? []).map((a) => a.key), ...keyedDeferrals(state.deferrals?.verified ?? []).map((d) => d.key)];
+    // 讨论输入摘要(#231):同一版本代码没变时,只有它变了(新的申辩、裁定、盯梢裁决、转 issue)才值得再跑模型。
+    // 申辩取 thread 原文指纹,不用任务书里截到 600 字、最多 20 条的 state.rebuttals(长回复末尾补证据也要算新输入)。
+    current.discussionDigest = discussionDigestOf({
+      rebuttals: rebuttalRowsOf({ threads: ctx.history?.reviewThreads ?? [], reviewer: ctx.approvalPolicy?.viewer, reviewerIdentity: ctx.reviewerIdentity, author: ctx.meta?.author }),
+      rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], deferrals: state.deferrals?.verified ?? [] });
     let headIsDescendant = null;
     if (previous?.head && previous.head !== input.head) {
       run('git', [...gitAuth, 'fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', previous.head], { cwd: REPO_DIR, allowFail: true });
@@ -1060,7 +1065,7 @@ function baseResult(state) {
       baseRefName: state.context.evidence.baseRefName, diffHash: state.context.evidence.diffHash } : undefined,
     mivo: {
       targetRepo: input.targetRepo, serverMode: input.mode, runId: input.runId, runUrl: input.runUrl, attempt: input.attempt,
-      tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest,
+      tier: state.tier, scope: state.scope, skillSha: input.skillSha, specDigest: current.specDigest, discussionDigest: current.discussionDigest ?? null,
       filePatchHashes: current.filePatchHashes, filePatchHashesV2: current.filePatchHashesV2, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       ...(state.handoff?.review ? { handoffReview: toHandoffSnapshot(state.handoff.review) } : {}),

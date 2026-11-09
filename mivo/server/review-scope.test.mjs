@@ -28,7 +28,7 @@ for (const mode of ['full', 'incremental', 'reuse']) {
       writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [], errors: [],
         context: { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'https://github.com/o/r/pull/7',
           evidence: { head: SHA, base: SHA, baseRefName: 'main', diffHash: 'd1' }, baseRefName: 'main', viewerIsAuthor: false },
-        current: { specDigest: 'spec-xyz', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
+        current: { specDigest: 'spec-xyz', discussionDigest: 'disc-abc', filePatchHashes: { 'src/a.ts': 'h' }, totalDiffLines: 1, triggerKinds: [] },
         previous: mode === 'full' ? null : { head: 'h0', runId: '41', lastFullReviewAt: '2026-10-10T12:00:00Z' },
         // 增量轮放行必须有本 head 的收口记录:这里模拟 codex 阶段已接完收口全量(publish 把 error 记号改成真实结论)。
         ...(mode === 'incremental' ? { finalFull: { head: SHA, runId: '42', outcome: 'error' }, finalFullContext: { kind: 'same-run', findingFiles: [], previousRound: null } } : {}),
@@ -44,6 +44,9 @@ for (const mode of ['full', 'incremental', 'reuse']) {
       assert.equal(result.mivo.scope.mode, mode);
       const back = previousFromResult(result, readFileSync(join(work, 'out', 'report.md'), 'utf8'));
       assert.equal(back.specDigest, 'spec-xyz');
+      // #231:讨论输入摘要随结果包往返,下一轮同版本据此判断能不能沿用。
+      assert.equal(result.mivo.discussionDigest, 'disc-abc');
+      assert.equal(back.discussionDigest, 'disc-abc');
       assert.equal(back.reportComplete, true);
       assert.ok(back.lastFullReviewAt);
     } finally { rmSync(work, { recursive: true, force: true }); }
