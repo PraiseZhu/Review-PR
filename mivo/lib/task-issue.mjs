@@ -36,8 +36,8 @@ const PARENT_LINE_RE = new RegExp(`总\\s*issue\\s*[：:]?\\s*${REF_TAIL}`, 'i')
 const ANY_REF_RE = new RegExp(`(?<![\\w/#&.:-])(?:(${REPO_PART}))?#(\\d{1,7})(?!\\d)`, 'g');
 const SC_RE = /^\s*[-*]\s+\[([ xX])\]\s+SC(\d+)\s+(.+?)\s*$/;
 const URL_REF_RE = new RegExp(`https?:\\/\\/github\\.com\\/(${REPO_PART})\\/(?:issues|pull)\\/(\\d{1,7})(?!\\d)`, 'g');
-// 裁定字样必须是首行开头(前面只允许空白、强调符号、引用符、括号和日期),正文里顺带提到的不算。
-const DECISION_HEAD_RE = new RegExp(`^[\\s>*#_（(]*(?:\\d{4}-\\d{2}-\\d{2}\\s*)?(?:${DECISION_MARKERS.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`);
+// 裁定字样必须是首行开头(前面只允许空白、强调符号、引用符、括号和日期,日期可带括号、加粗或逗号),正文里顺带提到的不算。
+const DECISION_HEAD_RE = new RegExp(`^[\\s>*#_（(]*(?:\\d{4}-\\d{2}-\\d{2}[\\s）)*_，,：:]*)?(?:${DECISION_MARKERS.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`);
 
 // GraphQL 查询(只读,App 只读令牌可读):不含 viewer*;不写嵌套的 repository{…}(仓库名从 url 解析),也不用 Issue.parent
 // (vendor 分流器把这两种都判给个人账号,总 issue 关系改走 REST issues/<号>/parent)。
@@ -110,10 +110,11 @@ export function parentRefFromBody(body, repo) {
 export function toSections(body, names) {
   const out = Object.fromEntries(names.map((n) => [n, null]));
   let current = null;
-  let fence = false;
+  let fence = null;
   for (const line of lines(String(body ?? '').replace(/<!--[\s\S]*?-->/g, ''))) {
-    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
-    const heading = fence ? null : /^(#{1,2})\s+(.+?)\s*#*\s*$/.exec(line);
+    const step = toFence(fence, line);
+    fence = step.open;
+    const heading = fence || step.fenceLine ? null : /^(#{1,2})\s+(.+?)\s*#*\s*$/.exec(line);
     if (heading) {
       current = heading[1].length === 2 ? names.find((n) => heading[2].startsWith(n) && out[n] === null) ?? null : null;
       if (current) out[current] = [];
@@ -139,10 +140,11 @@ function toBoundedScList(list) {
 /** 验收标准行 `- [ ] SC<n> <描述>。验证：<层次>（测试点：…）` → [{sc, description, layer, testPoint, checked}];层次不在词表时为 null;代码块里的示例不算。 */
 export function toScList(text) {
   const out = [];
-  let fence = false;
+  let fence = null;
   for (const line of lines(text)) {
-    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
-    if (fence) continue;
+    const step = toFence(fence, line);
+    fence = step.open;
+    if (fence || step.fenceLine) continue;
     const m = SC_RE.exec(line);
     if (!m) continue;
     const verify = /。?\s*验证\s*[：:]\s*(.*)$/.exec(m[3]);
@@ -462,7 +464,8 @@ export function readTaskIssue({ repo, pr, prBody, prCreatedAt, baseRefName, head
 
 /**
  * 超过 64 KB 时按固定顺序删减并记进 truncated:最旧的未写回正文的决定 → 第 20 个以后的兄弟子 issue → 流程类决定 → 已取代的决定 → 整体验收的文字;
- * 仍超就只留总 issue 的链接与摘要,再压子 issue 的段落与验收描述,最后只留验收编号。体积按 writeJson 实际落盘的格式(2 空格缩进加换行)算。
+ * 仍超就只留总 issue 的链接与摘要,再压子 issue 的段落、验收描述和路径列表,再只留验收编号,最后只留链接、可信度、摘要和计数。
+ * 体积按 writeJson 实际落盘的格式(2 空格缩进加换行)算。
  */
 export function toSizedMaterial(material, limit = LIMITS.fileBytes) {
   const size = () => bytes(`${JSON.stringify(material, null, 2)}\n`);
@@ -505,15 +508,47 @@ export function toSizedMaterial(material, limit = LIMITS.fileBytes) {
     if (issue.sections) issue.sections = Object.fromEntries(Object.entries(issue.sections).map(([k, v]) => [k, clipBytes(v, 1024)]));
     issue.raw = clipBytes(issue.raw, 4096);
     issue.scList = (issue.scList ?? []).map((sc) => ({ ...sc, description: clip(sc.description, 80), testPoint: sc.testPoint ? clip(sc.testPoint, 40) : sc.testPoint }));
-    if (material.derived) material.derived = { ...material.derived, scopeOutside: material.derived.scopeOutside?.slice(0, 50) ?? null, scopePatterns: material.derived.scopePatterns.slice(0, 50) };
-    material.truncated.push('子 issue 各段截到 1 KB、验收描述截到 80 字、路径列表截到 50 项');
+    if (material.derived) {
+      material.derived = { ...material.derived, scopeOutsideTotal: material.derived.scopeOutside?.length ?? null,
+        scopeOutside: material.derived.scopeOutside ? boundedList(material.derived.scopeOutside) : null, scopePatterns: boundedList(material.derived.scopePatterns) };
+    }
+    material.truncated.push('子 issue 各段截到 1 KB、验收描述截到 80 字、路径列表最多 50 项且合计 4 KB');
   }
   if (size() > limit && issue) {
     material.issue = { ref: issue.ref, url: issue.url, author: issue.author, trust: issue.trust, trustLabel: issue.trustLabel, trustNote: issue.trustNote,
       digest: issue.digest, structure: issue.structure, scList: (issue.scList ?? []).map((sc) => ({ sc: sc.sc, layer: sc.layer })), dropped: true };
     material.truncated.push('子 issue 只留链接、可信度、摘要与验收编号');
   }
+  if (size() > limit) {
+    // 最后一道:只留链接、可信度、摘要和计数,保证文件不超过上限。
+    const d = material.derived;
+    return {
+      version: material.version, mode: material.mode, status: material.status, ref: material.ref, via: material.via, note: material.note,
+      requests: material.requests, elapsedMs: material.elapsedMs, baseRef: material.baseRef, baseNote: material.baseNote,
+      warnings: boundedList(material.warnings, 10, 2048), gaps: boundedList(material.gaps, 10, 2048),
+      issue: material.issue ? { ref: material.issue.ref, trust: material.issue.trust, digest: material.issue.digest, scList: material.issue.scList ?? [], dropped: true } : null,
+      parent: material.parent ? { ref: material.parent.ref, via: material.parent.via, trust: material.parent.trust, digest: material.parent.digest, dropped: true } : null,
+      shared: material.shared ? { shared: material.shared.shared, prs: material.shared.prs, incomplete: material.shared.incomplete } : null,
+      deps: null, excluded: [],
+      derived: d ? { scopeOutside: null, scopeOutsideTotal: d.scopeOutsideTotal ?? d.scopeOutside?.length ?? null, scopeNote: '材料超过 64 KB,超出范围的文件没列出', scopePatterns: [],
+        blackboxSc: d.blackboxSc, depsOpen: boundedList(d.depsOpen) } : null,
+      truncated: [...boundedList(material.truncated, 20, 4096), '材料仍超 64 KB,只留链接、可信度、摘要和计数'],
+    };
+  }
   return material;
+}
+
+/** 列表按条数和合计字节截断(每项先截到 300 字),给超限兜底用。 */
+function boundedList(list, maxItems = 50, maxBytes = 4096) {
+  const out = [];
+  let used = 0;
+  for (const item of list ?? []) {
+    const value = clip(String(item), 300);
+    used += bytes(value) + 8;
+    if (out.length >= maxItems || used > maxBytes) break;
+    out.push(value);
+  }
+  return out;
 }
 
 /** 结果包里的一笔(mivo.taskIssue):不含正文,只留链接、摘要、可信度和 SC 编号。 */
@@ -596,13 +631,26 @@ function toDeferredIssues(body, repo, pr) {
   return keys;
 }
 
+/**
+ * 代码块围栏(CommonMark):``` 或 ~~~ 至少 3 个开块,用同一字符、不短于开头、后面不带说明的围栏才关块;块里更短或另一种字符的围栏只是内容。
+ * 返回 {open: 当前打开的围栏或 null, fenceLine: 这一行是否是开 / 关围栏}。
+ */
+function toFence(open, line) {
+  const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!m) return { open, fenceLine: false };
+  if (!open) return { open: { char: m[1][0], len: m[1].length }, fenceLine: true };
+  if (m[1][0] === open.char && m[1].length >= open.len && !m[2].trim()) return { open: null, fenceLine: true };
+  return { open, fenceLine: false };
+}
+
 /** 去掉 HTML 注释和代码块(模板示例里的链接不算)。 */
 function toPlainText(text) {
   const out = [];
-  let fence = false;
+  let fence = null;
   for (const line of lines(String(text ?? '').replace(/<!--[\s\S]*?-->/g, ''))) {
-    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
-    if (!fence) out.push(line);
+    const step = toFence(fence, line);
+    fence = step.open;
+    if (!fence && !step.fenceLine) out.push(line);
   }
   return out.join('\n');
 }

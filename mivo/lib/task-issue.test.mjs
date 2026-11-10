@@ -427,6 +427,35 @@ test('F10:跨仓的「转 issue 跟进」项也不当任务 issue', () => {
   assert.equal(picked.excluded[0].reason, '在「转 issue 跟进的审查问题」一节');
 });
 
+// ── PR #235 复审(Astra)的边界反例 ──
+test('R2-F1:改动文件路径很长时材料也不超过 64 KB;所有删减用完仍超就只留链接、摘要和计数', () => {
+  const files = Array.from({ length: 60 }, (_, i) => `src/${Array.from({ length: 15 }, () => 'a'.repeat(100)).join('/')}/f${i}.ts`);
+  const { material } = read({ files }, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ body: mini() }) } } }) });
+  assert.ok(persisted(material) <= LIMITS.fileBytes, `落盘 ${persisted(material)} 字节`);
+  assert.equal(material.derived.scopeOutsideTotal, 60, '保留超出范围的文件总数');
+  const noisy = { version: 1, truncated: [], warnings: Array.from({ length: 2000 }, (_, i) => `警告 ${i} ${'w'.repeat(200)}`), gaps: [], issue: null, parent: null, derived: null };
+  const sized = toSizedMaterial(noisy);
+  assert.ok(persisted(sized) <= LIMITS.fileBytes, `落盘 ${persisted(sized)} 字节`);
+  assert.match(sized.truncated.at(-1), /只留链接、可信度、摘要和计数/);
+});
+
+test('R2-F7:日期带括号或加粗的裁定也认', () => {
+  const c = (i, body) => ({ author: 'PraiseZhu', createdAt: `2026-11-10T00:00:0${i}Z`, body });
+  const picked = selectUndecided({ since: '2026-11-05T00:00:00Z', maintainers: MAINTAINERS, comments: [
+    c(0, '（2026-11-10）用户裁决：SC2 改为 8K。'), c(1, '(2026-11-10) 用户定：SC2 改为 8K。'), c(2, '**2026-11-10** 用户定：SC2 改为 8K。'),
+  ] });
+  assert.equal(picked.length, 3);
+});
+
+test('R2-F9:外层四个反引号里的三反引号块不提前关闭,示例 SC 仍不算', () => {
+  const tick = '`';
+  const sc = ['- [ ] SC1 实际验收。验证：unit', '示例：', `${tick.repeat(4)}markdown`, `${tick.repeat(3)}typescript`, '- [ ] SC99 示例。验证：paid', tick.repeat(3), tick.repeat(4),
+    '- [ ] SC2 块后的验收。验证：unit'].join('\n');
+  assert.deepEqual(toChildMaterial(mini({ sc })).scList.map((x) => x.sc), ['SC1', 'SC2']);
+  const tilde = ['- [ ] SC1 a。验证：unit', '~~~', '```', '- [ ] SC98 b。验证：unit', '~~~', '- [ ] SC3 c。验证：unit'].join('\n');
+  assert.deepEqual(toChildMaterial(mini({ sc: tilde })).scList.map((x) => x.sc), ['SC1', 'SC3'], '~~~ 块只能用 ~~~ 关');
+});
+
 // ── SC5 失败只记 warning ──
 test('SC5:issue 不存在、没权限或 gh 出错时只记 warning,不抛错', () => {
   const forbidden = collectTaskIssue({ repo: 'o/r', pr: 7, prBody: '任务 issue：#12', files: [], ghFn: fakeGh({ issue: () => ({ fail: 'HTTP 403: Resource not accessible by integration' }) }).fn });
