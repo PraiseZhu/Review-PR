@@ -140,32 +140,37 @@ export function toConsumerStepNote(r) {
   return `issue 评估的发布可能被拦:同步放行版本哈希的脚本退出码 ${r?.status}(${detail})。${how}`;
 }
 
-// 写一个独占的临时文件(不复用已有文件),权限显式设成 mode;写失败就删掉它再抛错。
-function writeTemp(file, data, mode, fchmod) {
+// 写一个独占的临时文件(不复用已有文件),权限显式设成 mode;设权限、写入、落盘、关闭任一步失败都删掉它再抛错。
+// 关闭只调一次:关闭报错时 fd 已释放,再关可能关到别处新开的同号 fd。
+function writeTemp(file, data, mode, { fchmod, close }) {
   const tmp = `${file}.${randomUUID()}.pending`;
   const fd = fs.openSync(tmp, 'wx', mode);
+  let open = true;
   try {
     fchmod(fd, mode);
     fs.writeFileSync(fd, data);
     fs.fsyncSync(fd);
+    open = false;
+    close(fd);
   } catch (error) {
-    fs.closeSync(fd);
+    if (open) {
+      try { close(fd); } catch { /* 抛出的是原错误,关不上不另报 */ }
+    }
     fs.rmSync(tmp, { force: true });
     throw error;
   }
-  fs.closeSync(fd);
   return tmp;
 }
 
 // 写文件:先全部写临时文件,再逐个改名,保留原权限。中途失败时删掉本次的临时文件,
 // 已经改名换上的配置换回原文,两份配置要么都是新哈希、要么都是原样;换不回时保留原文副本并在错误里给出路径。
-// rename、fchmod 可注入,测试用来造故障。
-export function writeConfigs(next, { rename = fs.renameSync, fchmod = fs.fchmodSync } = {}) {
+// rename、fchmod、close 可注入,测试用来造故障。
+export function writeConfigs(next, { rename = fs.renameSync, fchmod = fs.fchmodSync, close = fs.closeSync } = {}) {
   const staged = [];
   try {
     for (const { file, text } of next) {
       const mode = fs.statSync(file).mode & 0o777;
-      staged.push({ file, mode, original: fs.readFileSync(file), tmp: writeTemp(file, text, mode, fchmod) });
+      staged.push({ file, mode, original: fs.readFileSync(file), tmp: writeTemp(file, text, mode, { fchmod, close }) });
     }
   } catch (error) {
     for (const s of staged) fs.rmSync(s.tmp, { force: true });
@@ -183,7 +188,7 @@ export function writeConfigs(next, { rename = fs.renameSync, fchmod = fs.fchmodS
     for (const s of replaced) {
       let copy = null;
       try {
-        copy = writeTemp(s.file, s.original, s.mode, fchmod);
+        copy = writeTemp(s.file, s.original, s.mode, { fchmod, close });
         rename(copy, s.file);
       } catch {
         notRestored.push(`${path.basename(s.file)}(原文${copy ? `副本在 ${copy}` : '没能另存'})`);
@@ -194,7 +199,7 @@ export function writeConfigs(next, { rename = fs.renameSync, fchmod = fs.fchmodS
   }
 }
 
-export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, issueAgentDir = DEFAULT_ISSUE_AGENT_DIR, dryRun = false, importLib, rename, fchmod } = {}) {
+export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, issueAgentDir = DEFAULT_ISSUE_AGENT_DIR, dryRun = false, importLib, rename, fchmod, close } = {}) {
   const files = RUNTIME_NAMES.map((name) => path.join(issueAgentDir, name));
   let configs;
   try {
@@ -225,7 +230,7 @@ export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, is
   if (failures.length) return { failures };
   if (!dryRun) {
     try {
-      writeConfigs(plan.next, { rename, fchmod });
+      writeConfigs(plan.next, { rename, fchmod, close });
     } catch (error) {
       return { error: `写配置失败:${error.message}` };
     }

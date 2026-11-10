@@ -229,6 +229,23 @@ test('SC1 写配置:临时文件写到一半失败时删掉它,配置原样', as
   assert.deepEqual(fs.readdirSync(dir).sort(), [...RUNTIME_NAMES].sort());
 });
 
+test('SC1 写配置:关闭临时文件失败时也删掉它,配置原样', async (t) => {
+  const skill = setupSkillDir(t);
+  const { dir } = setupAgentDir(t, skill);
+  const before = readAll(dir);
+  let calls = 0;
+  const close = (fd) => {
+    calls += 1;
+    fs.closeSync(fd);
+    if (calls === 2) throw new Error('EIO: 注入的关闭失败');
+  };
+  const out = await syncIssueAgentConsumers({ skillDir: skill, issueAgentDir: dir, importLib: async () => realLib, close });
+  assert.match(out.error, /^写配置失败:EIO: 注入的关闭失败$/);
+  assert.equal(calls, 2, '关闭失败后不再重复关同一个 fd');
+  assert.deepEqual(readAll(dir), before);
+  assert.deepEqual(fs.readdirSync(dir).sort(), [...RUNTIME_NAMES].sort());
+});
+
 test('SC1 写配置:回滚也改名失败时,错误写明哪份没换回、原文副本在哪', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-write-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
