@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import * as realLib from '../../review-pr/scripts/lib.mjs';
 import {
   ISSUE_AGENT_MARKER, RUNTIME_NAMES, toSha256, toContractFailures, toConsumerPlan, toConsumerNote, toConsumerStepNote,
-  syncIssueAgentConsumers,
+  syncIssueAgentConsumers, writeConfigs,
 } from './issue-agent-consumers.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -155,6 +155,62 @@ test('SC1 同步:契约不通过、dry-run、配置缺一份,都不写任何文�
   const missing = await syncIssueAgentConsumers({ skillDir: skill, issueAgentDir: dir, importLib: async () => realLib });
   assert.match(missing.error, /读不了 issue-agent 配置/);
   assert.equal(fs.readFileSync(path.join(dir, RUNTIME_NAMES[0]), 'utf8'), before[0]);
+});
+
+test('SC1 同步:检出里的文件是指向检出外的符号链接时,按「检出之外」处理、不写', async (t) => {
+  const skill = setupSkillDir(t);
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-outside-'));
+  t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }));
+  const outside = path.join(outsideDir, 'lib.mjs');
+  fs.writeFileSync(outside, '// 检出外的文件\n');
+  const libPath = path.join(skill, 'review-pr/scripts/lib.mjs');
+  fs.rmSync(libPath);
+  fs.symlinkSync(outside, libPath);
+  const { dir } = setupAgentDir(t, skill);
+  const before = readAll(dir);
+  const out = await syncIssueAgentConsumers({ skillDir: skill, issueAgentDir: dir, importLib: async () => realLib });
+  assert.match(out.error, /指向检出之外的文件/);
+  assert.deepEqual(readAll(dir), before);
+});
+
+test('SC1 写配置:权限按原文件显式设置(含不常见的 640),不留临时文件', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-write-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const a = path.join(dir, 'runtime-primary.json');
+  const b = path.join(dir, 'runtime-fallback.json');
+  fs.writeFileSync(a, 'old-a\n', { mode: 0o640 });
+  fs.chmodSync(a, 0o640);
+  fs.writeFileSync(b, 'old-b\n', { mode: 0o600 });
+  const umask = process.umask(0o077);
+  try {
+    writeConfigs([{ file: a, text: 'new-a\n' }, { file: b, text: 'new-b\n' }]);
+  } finally {
+    process.umask(umask);
+  }
+  assert.equal(fs.readFileSync(a, 'utf8'), 'new-a\n');
+  assert.equal(fs.readFileSync(b, 'utf8'), 'new-b\n');
+  assert.equal(fs.statSync(a).mode & 0o777, 0o640);
+  assert.equal(fs.statSync(b).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['runtime-fallback.json', 'runtime-primary.json']);
+});
+
+test('SC1 写配置:第二个改名失败时,第一个换回原文、不留临时文件,同步返回写配置失败', async (t) => {
+  const skill = setupSkillDir(t);
+  const { dir } = setupAgentDir(t, skill);
+  const before = readAll(dir);
+  let calls = 0;
+  const rename = (from, to) => {
+    calls += 1;
+    if (calls === 2) throw new Error('EIO: 注入的改名失败');
+    fs.renameSync(from, to);
+  };
+  const out = await syncIssueAgentConsumers({ skillDir: skill, issueAgentDir: dir, importLib: async () => realLib, rename });
+  assert.match(out.error, /^写配置失败:EIO: 注入的改名失败;已换上的配置已换回原文$/);
+  assert.equal(calls, 2);
+  assert.deepEqual(readAll(dir), before);
+  assert.deepEqual(fs.readdirSync(dir).sort(), [...RUNTIME_NAMES].sort());
+  for (const name of RUNTIME_NAMES) assert.equal(fs.statSync(path.join(dir, name)).mode & 0o777, 0o600);
+  assert.match(toConsumerNote(out), /^issue 评估的发布被拦:issue-agent 的放行版本哈希没更新成\(写配置失败/);
 });
 
 test('SC2 换版结果:被拦写明原因和处理办法,更新成功写明文件,本来一致不多写', () => {

@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { toCliArgs } from './tuple-lib.mjs';
 
@@ -79,10 +79,11 @@ export function toContractFailures(lib) {
   return failures;
 }
 
-// 要改哪些哈希。configs: [{file, text}];hashOf(path) 返回文件现哈希(读不到抛错)。纯函数,不写文件。
+// 要改哪些哈希。configs: [{file, text}];hashOf(path) 返回文件现哈希(读不到抛错);realpathOf(path) 返回解开符号链接后的
+// 真实路径(调用方传 fs.realpathSync,读不到抛错),检出内的符号链接指向检出外也算「检出之外」。不写文件。
 // 返回 {error} 或 {changes:[{file, path, from, to}], next:[{file, text}]}(next 只含要改的配置)。
-export function toConsumerPlan({ configs, skillDir, hashOf }) {
-  const scriptsDir = path.join(skillDir, 'review-pr/scripts');
+export function toConsumerPlan({ configs, skillDir, hashOf, realpathOf = (p) => path.resolve(p) }) {
+  const scriptsDir = realpathOf(path.join(skillDir, 'review-pr/scripts'));
   const changes = [];
   const next = [];
   for (const { file, text } of configs) {
@@ -97,7 +98,7 @@ export function toConsumerPlan({ configs, skillDir, hashOf }) {
     let nextText = text;
     for (const item of consumers) {
       if (typeof item?.path !== 'string' || !HEX64.test(String(item?.hash))) return { error: `${file} 的 reviewConsumers 格式不对` };
-      if (!isInside(path.resolve(item.path), scriptsDir)) return { error: `${file} 的 reviewConsumers 指向检出之外的文件 ${item.path}` };
+      if (!isInside(realpathOf(item.path), scriptsDir)) return { error: `${file} 的 reviewConsumers 指向检出之外的文件 ${item.path}` };
       const to = hashOf(item.path);
       if (to === item.hash) continue;
       // 只替换这一处哈希串:同一个旧哈希在文件里出现不止一次就不动,交给人看。
@@ -139,17 +140,55 @@ export function toConsumerStepNote(r) {
   return `issue 评估的发布可能被拦:同步放行版本哈希的脚本退出码 ${r?.status}(${detail})。${how}`;
 }
 
-// 写文件:先全部写临时文件,再逐个改名,保留原权限。
-function writeAll(next) {
-  const staged = next.map(({ file, text }) => {
-    const tmp = `${file}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, text, { mode: fs.statSync(file).mode & 0o777 });
-    return { tmp, file };
-  });
-  for (const { tmp, file } of staged) fs.renameSync(tmp, file);
+// 写一个独占的临时文件(不复用已有文件),权限显式设成 mode。
+function writeTemp(file, data, mode) {
+  const tmp = `${file}.${randomUUID()}.pending`;
+  const fd = fs.openSync(tmp, 'wx', mode);
+  try {
+    fs.fchmodSync(fd, mode);
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return tmp;
 }
 
-export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, issueAgentDir = DEFAULT_ISSUE_AGENT_DIR, dryRun = false, importLib } = {}) {
+// 写文件:先全部写临时文件,再逐个改名,保留原权限。中途失败时删掉本次的临时文件,
+// 已经改名换上的配置换回原文,两份配置要么都是新哈希、要么都是原样。rename 可注入,测试用来造故障。
+export function writeConfigs(next, { rename = fs.renameSync } = {}) {
+  const staged = [];
+  try {
+    for (const { file, text } of next) {
+      const mode = fs.statSync(file).mode & 0o777;
+      staged.push({ file, mode, original: fs.readFileSync(file), tmp: writeTemp(file, text, mode) });
+    }
+  } catch (error) {
+    for (const s of staged) fs.rmSync(s.tmp, { force: true });
+    throw error;
+  }
+  const replaced = [];
+  try {
+    for (const s of staged) {
+      rename(s.tmp, s.file);
+      replaced.push(s);
+    }
+  } catch (error) {
+    for (const s of staged) if (!replaced.includes(s)) fs.rmSync(s.tmp, { force: true });
+    const notRestored = [];
+    for (const s of replaced) {
+      try {
+        fs.renameSync(writeTemp(s.file, s.original, s.mode), s.file);
+      } catch {
+        notRestored.push(path.basename(s.file));
+      }
+    }
+    if (notRestored.length) throw new Error(`${error.message};${notRestored.join('、')} 已换成新哈希、没能换回原文`);
+    throw new Error(`${error.message};已换上的配置已换回原文`);
+  }
+}
+
+export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, issueAgentDir = DEFAULT_ISSUE_AGENT_DIR, dryRun = false, importLib, rename } = {}) {
   const files = RUNTIME_NAMES.map((name) => path.join(issueAgentDir, name));
   let configs;
   try {
@@ -164,7 +203,7 @@ export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, is
   };
   let plan;
   try {
-    plan = toConsumerPlan({ configs, skillDir, hashOf });
+    plan = toConsumerPlan({ configs, skillDir, hashOf, realpathOf: fs.realpathSync });
   } catch (error) {
     return { error: `读不了审查机文件:${error.message}` };
   }
@@ -180,7 +219,7 @@ export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, is
   if (failures.length) return { failures };
   if (!dryRun) {
     try {
-      writeAll(plan.next);
+      writeConfigs(plan.next, { rename });
     } catch (error) {
       return { error: `写配置失败:${error.message}` };
     }
