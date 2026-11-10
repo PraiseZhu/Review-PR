@@ -559,6 +559,11 @@ test('#236 SC5:总 issue 子 issue 一节的勾选清单行和表格行一起读
   assert.deepEqual(multi.map((r) => r.line), ['| #1 | x |', '| #12 | y |'], '多张表各自去掉表头');
   const others = toChildRows(['| 子 issue | 内容 | 依赖 |', '|---|---|---|', '| #11 | 导出 | 等 #12 合入后开始 |', '', '- [ ] #11（依赖 #12）', '- [ ] [子3] #12 导出选区'].join('\n'), { repo: 'o/r', number: 12 }, 'o/r');
   assert.deepEqual(others.filter((r) => r.self).map((r) => r.line), ['- [ ] [子3] #12 导出选区'], '依赖、说明里顺带提到本子 issue 的别人的分工行不算(PR #237 单审 F1)');
+  const self12 = (text) => toChildRows(text, { repo: 'o/r', number: 12 }, 'o/r').filter((r) => r.self).length;
+  assert.equal(self12('- [ ] [当前任务](https://github.com/o/r/issues/12)'), 1, '清单用网址写也认(复审 R2-F1)');
+  assert.equal(self12(['| 子 issue | 内容 | 依赖 |', '|---|---|---|', '| #11、#12 | 两个子任务并行 | 等 #9 |'].join('\n')), 1, '主体格并列的引用都算(复审 R2-F2)');
+  assert.equal(self12('- [ ] #11、#12 两个子任务并行'), 1);
+  assert.equal(self12('- [ ] #11 导出，依赖 #12'), 0, '隔着说明文字的不算');
 });
 
 test('#236 SC6:总 issue 里没有本子 issue 分工行时 selfRowMissing 为 true 并写明;找到时为 false', () => {
