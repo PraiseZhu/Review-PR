@@ -268,8 +268,15 @@ export function toDecisions(text) {
 
 /**
  * 子 issue 一节:表格行(去掉表头和分隔线)和提到 #N 的列表行(勾选清单,后来追加的子 issue 常只写在这里,#236)按出现顺序一起读,
- * 标出本子 issue 那一行;代码块里的不算。最多 40 行,本子 issue 那一行总是保留。
+ * 标出本子 issue 那一行:只看这一行的主体引用(表格取第一个带引用的格子里的第一个引用,清单取行里第一个引用),
+ * 依赖、说明里顺带提到的不算(「| #11 | 等 #12 合入后 |」不是 #12 的分工行)。代码块里的不算。最多 40 行,本子 issue 那一行总是保留。
  */
+function rowSubjectOf(line, tableRow, repo) {
+  const cells = tableRow ? line.trim().replace(/^\||\|$/g, '').split('|') : [line];
+  for (const cell of cells) { const [first] = refsIn(cell, repo); if (first) return first; }
+  return null;
+}
+
 export function toChildRows(text, child, parentRepo) {
   const all = lines(text);
   const code = toCodeMask(all);
@@ -280,7 +287,7 @@ export function toChildRows(text, child, parentRepo) {
     const tableRow = /^\s*\|/.test(line);
     if (tableRow && SEPARATOR.test(all[i + 1] ?? '')) continue; // 表头
     if (!tableRow && !(/^\s*[-*]\s/.test(line) && line.includes('#'))) continue;
-    rows.push({ line: clip(line.trim(), 300), self: refsIn(line, parentRepo).some((r) => sameRef(r, child)) });
+    rows.push({ line: clip(line.trim(), 300), self: sameRef(rowSubjectOf(line, tableRow, parentRepo), child) });
   }
   return rows.filter((r, i) => i < LIMITS.childRows || r.self);
 }

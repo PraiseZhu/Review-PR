@@ -557,12 +557,14 @@ test('#236 SC5:总 issue 子 issue 一节的勾选清单行和表格行一起读
   assert.deepEqual(rows.filter((r) => r.self).map((r) => r.line), ['- [ ] #12（2026-11-08 追加：导出选区，指向 main）']);
   const multi = toChildRows(['| A | B |', '|---|---|', '| #1 | x |', '', '| C | D |', '|---|---|', '| #12 | y |'].join('\n'), { repo: 'o/r', number: 12 }, 'o/r');
   assert.deepEqual(multi.map((r) => r.line), ['| #1 | x |', '| #12 | y |'], '多张表各自去掉表头');
+  const others = toChildRows(['| 子 issue | 内容 | 依赖 |', '|---|---|---|', '| #11 | 导出 | 等 #12 合入后开始 |', '', '- [ ] #11（依赖 #12）', '- [ ] [子3] #12 导出选区'].join('\n'), { repo: 'o/r', number: 12 }, 'o/r');
+  assert.deepEqual(others.filter((r) => r.self).map((r) => r.line), ['- [ ] [子3] #12 导出选区'], '依赖、说明里顺带提到本子 issue 的别人的分工行不算(PR #237 单审 F1)');
 });
 
 test('#236 SC6:总 issue 里没有本子 issue 分工行时 selfRowMissing 为 true 并写明;找到时为 false', () => {
   const found = read();
   assert.deepEqual([found.material.parent.selfRowMissing, found.material.parent.selfRowNote], [false, null]);
-  const body = parentBody().replace('| #12 | 导出选区 | B |', '| #13 | 别的子 issue | B |');
+  const body = parentBody().replace('| #12 | 导出选区 | B |', '| #13 | 别的子 issue,等 #12 合入后开始 | B |');
   const missing = read({}, { parent: parentData({ body }) });
   assert.deepEqual([missing.material.parent.selfRowMissing, missing.material.parent.selfRowNote], [true, SELF_ROW_MISSING]);
 });
