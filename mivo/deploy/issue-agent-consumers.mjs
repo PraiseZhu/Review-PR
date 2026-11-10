@@ -140,28 +140,32 @@ export function toConsumerStepNote(r) {
   return `issue 评估的发布可能被拦:同步放行版本哈希的脚本退出码 ${r?.status}(${detail})。${how}`;
 }
 
-// 写一个独占的临时文件(不复用已有文件),权限显式设成 mode。
-function writeTemp(file, data, mode) {
+// 写一个独占的临时文件(不复用已有文件),权限显式设成 mode;写失败就删掉它再抛错。
+function writeTemp(file, data, mode, fchmod) {
   const tmp = `${file}.${randomUUID()}.pending`;
   const fd = fs.openSync(tmp, 'wx', mode);
   try {
-    fs.fchmodSync(fd, mode);
+    fchmod(fd, mode);
     fs.writeFileSync(fd, data);
     fs.fsyncSync(fd);
-  } finally {
+  } catch (error) {
     fs.closeSync(fd);
+    fs.rmSync(tmp, { force: true });
+    throw error;
   }
+  fs.closeSync(fd);
   return tmp;
 }
 
 // 写文件:先全部写临时文件,再逐个改名,保留原权限。中途失败时删掉本次的临时文件,
-// 已经改名换上的配置换回原文,两份配置要么都是新哈希、要么都是原样。rename 可注入,测试用来造故障。
-export function writeConfigs(next, { rename = fs.renameSync } = {}) {
+// 已经改名换上的配置换回原文,两份配置要么都是新哈希、要么都是原样;换不回时保留原文副本并在错误里给出路径。
+// rename、fchmod 可注入,测试用来造故障。
+export function writeConfigs(next, { rename = fs.renameSync, fchmod = fs.fchmodSync } = {}) {
   const staged = [];
   try {
     for (const { file, text } of next) {
       const mode = fs.statSync(file).mode & 0o777;
-      staged.push({ file, mode, original: fs.readFileSync(file), tmp: writeTemp(file, text, mode) });
+      staged.push({ file, mode, original: fs.readFileSync(file), tmp: writeTemp(file, text, mode, fchmod) });
     }
   } catch (error) {
     for (const s of staged) fs.rmSync(s.tmp, { force: true });
@@ -177,10 +181,12 @@ export function writeConfigs(next, { rename = fs.renameSync } = {}) {
     for (const s of staged) if (!replaced.includes(s)) fs.rmSync(s.tmp, { force: true });
     const notRestored = [];
     for (const s of replaced) {
+      let copy = null;
       try {
-        fs.renameSync(writeTemp(s.file, s.original, s.mode), s.file);
+        copy = writeTemp(s.file, s.original, s.mode, fchmod);
+        rename(copy, s.file);
       } catch {
-        notRestored.push(path.basename(s.file));
+        notRestored.push(`${path.basename(s.file)}(原文${copy ? `副本在 ${copy}` : '没能另存'})`);
       }
     }
     if (notRestored.length) throw new Error(`${error.message};${notRestored.join('、')} 已换成新哈希、没能换回原文`);
@@ -188,7 +194,7 @@ export function writeConfigs(next, { rename = fs.renameSync } = {}) {
   }
 }
 
-export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, issueAgentDir = DEFAULT_ISSUE_AGENT_DIR, dryRun = false, importLib, rename } = {}) {
+export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, issueAgentDir = DEFAULT_ISSUE_AGENT_DIR, dryRun = false, importLib, rename, fchmod } = {}) {
   const files = RUNTIME_NAMES.map((name) => path.join(issueAgentDir, name));
   let configs;
   try {
@@ -219,7 +225,7 @@ export async function syncIssueAgentConsumers({ skillDir = DEFAULT_SKILL_DIR, is
   if (failures.length) return { failures };
   if (!dryRun) {
     try {
-      writeConfigs(plan.next, { rename });
+      writeConfigs(plan.next, { rename, fchmod });
     } catch (error) {
       return { error: `写配置失败:${error.message}` };
     }

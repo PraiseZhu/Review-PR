@@ -206,11 +206,51 @@ test('SC1 写配置:第二个改名失败时,第一个换回原文、不留临�
   };
   const out = await syncIssueAgentConsumers({ skillDir: skill, issueAgentDir: dir, importLib: async () => realLib, rename });
   assert.match(out.error, /^写配置失败:EIO: 注入的改名失败;已换上的配置已换回原文$/);
-  assert.equal(calls, 2);
+  assert.equal(calls, 3, '换上第一份、第二份失败、把第一份换回原文');
   assert.deepEqual(readAll(dir), before);
   assert.deepEqual(fs.readdirSync(dir).sort(), [...RUNTIME_NAMES].sort());
   for (const name of RUNTIME_NAMES) assert.equal(fs.statSync(path.join(dir, name)).mode & 0o777, 0o600);
   assert.match(toConsumerNote(out), /^issue 评估的发布被拦:issue-agent 的放行版本哈希没更新成\(写配置失败/);
+});
+
+test('SC1 写配置:临时文件写到一半失败时删掉它,配置原样', async (t) => {
+  const skill = setupSkillDir(t);
+  const { dir } = setupAgentDir(t, skill);
+  const before = readAll(dir);
+  let calls = 0;
+  const fchmod = (fd, mode) => {
+    calls += 1;
+    if (calls === 2) throw new Error('EPERM: 注入的设权限失败');
+    fs.fchmodSync(fd, mode);
+  };
+  const out = await syncIssueAgentConsumers({ skillDir: skill, issueAgentDir: dir, importLib: async () => realLib, fchmod });
+  assert.match(out.error, /^写配置失败:EPERM: 注入的设权限失败$/);
+  assert.deepEqual(readAll(dir), before);
+  assert.deepEqual(fs.readdirSync(dir).sort(), [...RUNTIME_NAMES].sort());
+});
+
+test('SC1 写配置:回滚也改名失败时,错误写明哪份没换回、原文副本在哪', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-write-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const a = path.join(dir, 'runtime-primary.json');
+  const b = path.join(dir, 'runtime-fallback.json');
+  fs.writeFileSync(a, 'old-a\n', { mode: 0o600 });
+  fs.writeFileSync(b, 'old-b\n', { mode: 0o600 });
+  let calls = 0;
+  const rename = (from, to) => {
+    calls += 1;
+    if (calls >= 2) throw new Error('EIO: 注入的改名失败');
+    fs.renameSync(from, to);
+  };
+  assert.throws(() => writeConfigs([{ file: a, text: 'new-a\n' }, { file: b, text: 'new-b\n' }], { rename }), (error) => {
+    const m = /runtime-primary\.json\(原文副本在 (\S+\.pending)\) 已换成新哈希、没能换回原文$/.exec(error.message);
+    assert.ok(m, error.message);
+    assert.equal(fs.readFileSync(m[1], 'utf8'), 'old-a\n');
+    return true;
+  });
+  assert.equal(fs.readFileSync(a, 'utf8'), 'new-a\n');
+  assert.equal(fs.readFileSync(b, 'utf8'), 'old-b\n');
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.pending')).length, 1);
 });
 
 test('SC2 换版结果:被拦写明原因和处理办法,更新成功写明文件,本来一致不多写', () => {
