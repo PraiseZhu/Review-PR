@@ -12,6 +12,8 @@ const CHILD = readFileSync(new URL('./fixtures/task-issue/child-v1.md', import.m
 const MAINTAINERS = ['PraiseZhu', 'maint-b'];
 const PR_AT = '2026-11-05T00:00:00Z';
 const bytes = (v) => Buffer.byteLength(typeof v === 'string' ? v : JSON.stringify(v), 'utf8');
+// 与 mivo/lib/common.mjs writeJson 落盘格式一致:2 空格缩进加换行。
+const persisted = (v) => Buffer.byteLength(`${JSON.stringify(v, null, 2)}\n`, 'utf8');
 
 // ── 假 gh:按请求内容分派,记录每次调用(REST issues/<号>/parent 记为 pointer) ──
 const NO_PARENT = { fail: 'gh: No parent issue found (HTTP 404)', stdout: JSON.stringify({ message: 'No parent issue found', status: '404' }) };
@@ -285,8 +287,8 @@ test('SC14:超过 20 秒不再请求,返回部分材料并写明缺口', () => {
   const material = readTaskIssue({ repo: 'o/r', pr: 7, prBody: '任务 issue：#12', prCreatedAt: PR_AT, files: [], maintainers: MAINTAINERS, ghFn: gh.fn, now: () => clock });
   assert.equal(material.status, 'partial');
   assert.deepEqual(gh.calls.map((c) => c.kind), ['issue']);
-  assert.ok(material.gaps.some((g) => /依赖状态:已超过 20 秒/.test(g)));
-  assert.ok(material.gaps.some((g) => /总 issue o\/r#100:已超过 20 秒/.test(g)));
+  assert.ok(material.gaps.some((g) => /依赖状态:20 秒预算只剩 0 毫秒,没读/.test(g)));
+  assert.ok(material.gaps.some((g) => /总 issue o\/r#100:20 秒预算只剩 0 毫秒,没读/.test(g)));
   assert.ok(material.deps.items.every((d) => d.state === null), '没读到的依赖状态是 null,不当作关闭');
   assert.ok(gh.calls[0].timeoutMs <= 10_000 && gh.calls[0].allowFail === true);
 });
@@ -303,14 +305,126 @@ test('SC14:请求次数用满就停;64 KB 超限按固定顺序删减并记进 t
     undecided: undecided(3, '2026-11-02T00:00:0'), childRows: Array.from({ length: 30 }, (_, i) => ({ line: 'r'.repeat(200), self: i === 25 })),
     decisions: [{ id: 'D1', type: '流程', supersededBy: null, decision: 'p'.repeat(800) }, { id: 'D2', type: '产品', supersededBy: 'D3', decision: 's'.repeat(800) },
       { id: 'D3', type: '产品', supersededBy: null, decision: 'k'.repeat(800) }], overall: 'o'.repeat(800) } };
-  // 前两步共删约 7.8 KB、加上流程类决定约 8.6 KB:上限设在中间,只需要前三步。
-  const sized = toSizedMaterial(material, bytes(material) - 8200);
+  // 上限取「做完前三步」时的落盘大小:第二步之后仍超、第三步之后正好不超,所以只走前三步。
+  const afterThree = structuredClone(material);
+  afterThree.issue.undecided = [];
+  afterThree.parent.undecided = [];
+  afterThree.parent.childRows = afterThree.parent.childRows.filter((r, i) => i < 20 || r.self);
+  afterThree.parent.decisions = afterThree.parent.decisions.slice(1);
+  afterThree.truncated = ['最旧的未写回正文的决定(删 6 次)', '第 20 个以后的兄弟子 issue(删 1 次)', '流程类决定(删 1 次)'];
+  const limit = persisted(afterThree);
+  const before = persisted(material);
+  const sized = toSizedMaterial(material, limit);
   assert.deepEqual(sized.truncated.map((t) => t.replace(/\(.*\)$/, '')), ['最旧的未写回正文的决定', '第 20 个以后的兄弟子 issue', '流程类决定']);
   assert.equal(sized.issue.undecided.length + sized.parent.undecided.length, 0);
   assert.equal(sized.parent.childRows.length, 21, '保留前 20 行和本子 issue 那一行');
   assert.ok(sized.parent.childRows.some((r) => r.self));
   assert.deepEqual(sized.parent.decisions.map((d) => d.id), ['D2', 'D3'], '已取代的决定在流程类之后才删');
-  assert.ok(bytes(sized) <= bytes(material));
+  assert.ok(persisted(sized) <= limit && limit < before, `删减后 ${persisted(sized)} 字节,上限 ${limit},删减前 ${before}`);
+});
+
+// ── PR #235 合并前单审(Astra)的反例:F1–F10 ──
+const mini = ({ scope = '- `src/a.ts`', deps = '无', sc = '- [ ] SC1 功能可用。验证：unit', extra = '' } = {}) =>
+  `## 目标\n交付\n## 范围\n${scope}\n## 不做\n无\n## 依赖\n${deps}\n## 验收标准\n${sc}\n${extra}`;
+const NO_PARENT_ROUTES = { pointer: () => NO_PARENT };
+
+test('F1:验收标准很长的合法 issue,材料按落盘格式也不超过 64 KB', () => {
+  const sc = Array.from({ length: 95 }, (_, i) => `- [ ] SC${i + 1} ${'a'.repeat(600)}。验证：unit`).join('\n');
+  const body = mini({ sc });
+  assert.ok(body.length < 65536, 'GitHub 允许的正文长度');
+  const { material } = read({}, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ body }) } } }) });
+  assert.ok(persisted(material) <= LIMITS.fileBytes, `落盘 ${persisted(material)} 字节`);
+  assert.ok(material.truncated.some((t) => /验收标准超过 12 KB/.test(t)));
+  assert.equal(material.issue.scList[0].sc, 'SC1');
+  const huge = toSizedMaterial({ truncated: [], issue: { ref: 'o/r#12', sections: { 目标: 'x'.repeat(70_000) }, scList: [{ sc: 'SC1', layer: 'unit', description: 'd'.repeat(5000) }] },
+    derived: { scopeOutside: Array.from({ length: 3000 }, (_, i) => `src/f${i}.ts`), scopePatterns: [] } });
+  assert.ok(persisted(huge) <= LIMITS.fileBytes, '子 issue 材料本身超限时也压到上限以内');
+  assert.ok(huge.truncated.some((t) => /子 issue/.test(t)));
+});
+
+test('F2:每次请求的超时不超过剩余时间,剩余不足 1 秒就不发;读失败记缺口', () => {
+  let clock = 0;
+  const seen = [];
+  const gh = fakeGh({
+    issue: () => { clock += 9900; return { data: { repository: { issue: issueNode({ body: mini({ deps: '#99' }) }) } } }; },
+    deps: () => { clock += 9900; return depsData(['OPEN']); },
+    pointer: () => NO_PARENT,
+  });
+  const fn = (args, options) => { seen.push({ left: 20_000 - clock, timeoutMs: options.timeoutMs }); return gh.fn(args, options); };
+  const material = readTaskIssue({ repo: 'o/r', pr: 7, prBody: '任务 issue：#12', prCreatedAt: PR_AT, files: [], maintainers: MAINTAINERS, ghFn: fn, now: () => clock });
+  assert.deepEqual(gh.calls.map((c) => c.kind), ['issue', 'deps'], '只剩 200 毫秒时不再查总 issue 关系');
+  assert.ok(seen.every((c) => c.timeoutMs <= c.left), JSON.stringify(seen));
+  assert.equal(material.status, 'partial');
+  assert.ok(material.gaps.some((g) => /总 issue 关系:20 秒预算只剩 200 毫秒,没读/.test(g)));
+  const failed = read({}, { ...NO_PARENT_ROUTES, deps: () => ({ fail: 'HTTP 502' }) });
+  assert.equal(failed.material.status, 'partial');
+  assert.ok(failed.material.gaps.some((g) => /依赖状态:读取失败/.test(g)));
+});
+
+test('F3:正文超过 16 KB 时,范围路径仍按完整「范围」段算', () => {
+  const body = mini({ scope: `- \`src/a.ts\`\n${'范围解释。'.repeat(400)}\n- \`src/allowed-late.ts\``, extra: `## 参考\n${'参考。'.repeat(2000)}` });
+  assert.ok(bytes(body) > LIMITS.childBytes);
+  const { material } = read({ files: ['src/allowed-late.ts'] }, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ body }) } } }) });
+  assert.match(material.issue.sections.范围, /已截断/, '输出的范围段仍按上限截断');
+  assert.deepEqual(material.derived.scopeOutside, []);
+});
+
+test('F4:依赖写成 GitHub 网址也读状态', () => {
+  const { material } = read({}, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ body: mini({ deps: '先合 [前置任务](https://github.com/o/r/issues/99)。' }) }) } } }),
+    deps: () => depsData(['OPEN']) });
+  assert.deepEqual(material.derived.depsOpen, ['o/r#99']);
+});
+
+test('F5:已关闭未合并的旧 PR 不算共用;开着和已合并的算', () => {
+  const pr = (number, state) => ({ source: { __typename: 'PullRequest', number, body: '任务 issue：#12', url: `https://github.com/o/r/pull/${number}`, state } });
+  const shared = toShared({ timeline: { totalCount: 3, nodes: [pr(8, 'CLOSED'), pr(9, 'MERGED'), pr(10, 'OPEN')] }, prRepo: 'o/r', pr: 7, issueRef: { repo: 'o/r', number: 12 } });
+  assert.deepEqual(shared.prs, [9, 10]);
+});
+
+test('F6:子 issue 表超过 40 行时,本子 issue 那一行仍保留', () => {
+  const table = `| 子 issue | 内容 |\n|---|---|\n${Array.from({ length: 45 }, (_, i) => `| #${i + 1} | 任务 ${i + 1} |`).join('\n')}`;
+  const rows = toChildRows(table, { repo: 'o/r', number: 43 }, 'o/r');
+  assert.equal(rows.length, 41);
+  assert.deepEqual(rows.filter((r) => r.self).map((r) => r.line), ['| #43 | 任务 43 |']);
+});
+
+test('F7:验收 / 派发 / 归档日志正文里提到裁定字样也不算决定', () => {
+  const c = (createdAt, body) => ({ author: 'PraiseZhu', createdAt, body });
+  const picked = selectUndecided({ since: '2026-11-05T00:00:00Z', maintainers: MAINTAINERS, comments: [
+    c('2026-11-06T01:00:00Z', '验收记录：按用户定的 SC1-SC3 验证通过，issue 归档。'),
+    c('2026-11-06T02:00:00Z', '批准执行派发记录：依据主控裁定，已派给执行会话。'),
+    c('2026-11-06T03:00:00Z', '归档记录：维护者确认已合并，本会话归档。'),
+    c('2026-11-06T04:00:00Z', '**用户裁决（2026-11-06）：选区上限改为 8K。**'),
+  ] });
+  assert.deepEqual(picked.map((p) => p.at), ['2026-11-06T04:00:00Z']);
+});
+
+test('F8:编辑记录没取全且缺的可能在开 PR 之后,降为作者陈述并写明缺口', () => {
+  const edits = [{ editedAt: '2026-11-06T00:00:00Z', editor: { login: 'outsider' } },
+    ...Array.from({ length: 50 }, (_, i) => ({ editedAt: new Date(Date.UTC(2026, 10, 7, 0, i)).toISOString(), editor: { login: 'praiseautomation' } }))];
+  const node = issueNode({ userContentEdits: { totalCount: 51, nodes: edits.slice(-50) } });
+  const { material } = read({}, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: node } } }) });
+  assert.deepEqual([material.issue.trust, material.issue.trustNote], ['author', '编辑记录没取全,开 PR 后的编辑无法全部核对']);
+  assert.ok(material.gaps.some((g) => /子 issue 编辑记录超过 50 条,开 PR 后的编辑没取全/.test(g)));
+  const olderMissing = toTrust({ author: 'PraiseZhu', editsComplete: false, edits: [{ editor: 'PraiseZhu', at: '2026-11-01T00:00:00Z' }], prCreatedAt: PR_AT, maintainers: MAINTAINERS });
+  assert.equal(olderMissing.trust, 'plan', '取到的最早一条已在开 PR 之前,缺的只会更早,不影响');
+  const older = read({}, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ userContentEdits: { totalCount: 80,
+    nodes: [{ editedAt: '2026-11-02T00:00:00Z', editor: { login: 'PraiseZhu' } }] } }) } } }) });
+  assert.deepEqual([older.material.issue.trust, older.material.gaps.filter((g) => /编辑记录/.test(g))], ['plan', []], '缺的编辑都在开 PR 之前时不记缺口');
+  const noTotal = read({}, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ userContentEdits: { nodes: edits.slice(-50) } }) } } }) });
+  assert.equal(noTotal.material.issue.trust, 'author', '没返回总数、条数用满 50 条时也当作可能没取全');
+});
+
+test('F9:代码块里的示例 SC 不算验收标准', () => {
+  const child = toChildMaterial(mini({ sc: '- [ ] SC1 真正验收项。验证：unit\n\n示例：\n~~~markdown\n- [ ] SC99 示例项。验证：paid\n~~~' }));
+  assert.deepEqual(child.scList.map((s) => s.sc), ['SC1']);
+});
+
+test('F10:跨仓的「转 issue 跟进」项也不当任务 issue', () => {
+  const picked = selectTaskIssue({ body: 'Closes other/r#20\n\n## 转 issue 跟进的审查问题\n\n- other/r#20 留待后续修复', repo: 'o/r', pr: 7,
+    closing: [{ repo: 'other/r', number: 20, title: '后续问题' }] });
+  assert.deepEqual(picked.candidates, []);
+  assert.equal(picked.excluded[0].reason, '在「转 issue 跟进的审查问题」一节');
 });
 
 // ── SC5 失败只记 warning ──

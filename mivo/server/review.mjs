@@ -220,10 +220,10 @@ async function prepare() {
     if (taskIssueMode.mode !== 'off') {
       const { material, summary } = collectTaskIssue({ repo: input.targetRepo, pr: input.pr, prBody: ctx.meta?.body, prCreatedAt: ctx.meta?.createdAt,
         baseRefName: ctx.meta?.baseRefName, headRefName: ctx.meta?.headRefName, files: Object.keys(diffFiles), maintainers: ctx.signoff?.maintainers ?? [],
-        automation: taskIssueMode.automation, alwaysInScope: taskIssueMode.alwaysInScope, stageHeadPrefixes: taskIssueMode.stageHeadPrefixes, ghFn: gh });
+        automation: taskIssueMode.automation, alwaysInScope: taskIssueMode.alwaysInScope, stageHeadPrefixes: taskIssueMode.stageHeadPrefixes, mode: taskIssueMode.mode, ghFn: gh });
       for (const w of [...material.warnings, ...material.gaps].slice(0, 10)) state.warnings.push(`任务 issue:${w}`);
       const file = join(INPUT_DIR, TASK_ISSUE_FILE);
-      writeJson(file, { ...material, mode: taskIssueMode.mode });
+      writeJson(file, material);
       state.taskIssue = { mode: taskIssueMode.mode, file, summary };
     }
     // 任务书版本:规则文件按 base 读(PR 改规则文件本身是被审对象,不能用它放宽审查),base 取不到回退 head 并告警(lib/prompt.mjs)。

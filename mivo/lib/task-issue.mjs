@@ -19,28 +19,31 @@ export const LAYERS = ['static', 'unit', 'contract', 'browser-fixture', 'cindy-m
 export const BLACKBOX_LAYERS = ['cindy-mac', 'cindy-windows', 'paid', 'github-live'];
 export const DECISION_MARKERS = ['用户裁决', '用户定', '主控裁定', 'lead 裁决', '维护者确认', '取代', '改为'];
 export const BUDGET = { requests: 8, ms: 20_000 };
-export const LIMITS = { childBytes: 16 * 1024, fileBytes: 64 * 1024, comments: 3, commentBytes: 1024, shared: 10, deps: 10, siblings: 20, parentHeadBytes: 2048 };
+export const LIMITS = { childBytes: 16 * 1024, fileBytes: 64 * 1024, scListBytes: 12 * 1024, comments: 3, commentBytes: 1024, shared: 10, deps: 10, siblings: 20, childRows: 40, parentHeadBytes: 2048, minRequestMs: 1000 };
 export const BASE_NOTE = 'issue 关闭不代表代码已在本 base 分支,以 base 分支代码为准';
 export const DEFAULT_AUTOMATION = ['praiseautomation', 'github-actions'];
 export const DEFAULT_ALWAYS_IN_SCOPE = ['docs/pr/**'];
 export const DEFAULT_STAGE_HEAD_PREFIXES = ['integration/', 'sync/main-into-'];
+const UNVERIFIED_EDITS = '编辑记录没取全,开 PR 后的编辑无法全部核对';
 // 子 issue 超过 16 KB 时五段各自的上限(合计 16 KB),验收标准给得最多。
 const SECTION_CAPS = { 目标: 2048, 范围: 3072, 不做: 2048, 依赖: 2048, 验收标准: 7168 };
 const PARENT_SECTIONS = ['目标', '范围', '不做', '并行', '子 issue', '决策', '已定决策', '整体验收'];
 const PARENT_PART_BYTES = 3072;
-const MARKER_HEAD_CHARS = 300;
 const REPO_PART = '[A-Za-z0-9][A-Za-z0-9-]{0,38}\\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}';
 const REF_TAIL = `\`?(?:https?:\\/\\/github\\.com\\/(${REPO_PART})\\/issues\\/(\\d{1,7})|(${REPO_PART})?#(\\d{1,7}))(?!\\d)`;
 const TASK_LINE_RE = new RegExp(`任务\\s*issue\\s*[：:]\\s*${REF_TAIL}`, 'gi');
 const PARENT_LINE_RE = new RegExp(`总\\s*issue\\s*[：:]?\\s*${REF_TAIL}`, 'i');
 const ANY_REF_RE = new RegExp(`(?<![\\w/#&.:-])(?:(${REPO_PART}))?#(\\d{1,7})(?!\\d)`, 'g');
 const SC_RE = /^\s*[-*]\s+\[([ xX])\]\s+SC(\d+)\s+(.+?)\s*$/;
+const URL_REF_RE = new RegExp(`https?:\\/\\/github\\.com\\/(${REPO_PART})\\/(?:issues|pull)\\/(\\d{1,7})(?!\\d)`, 'g');
+// 裁定字样必须是首行开头(前面只允许空白、强调符号、引用符、括号和日期),正文里顺带提到的不算。
+const DECISION_HEAD_RE = new RegExp(`^[\\s>*#_（(]*(?:\\d{4}-\\d{2}-\\d{2}\\s*)?(?:${DECISION_MARKERS.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`);
 
 // GraphQL 查询(只读,App 只读令牌可读):不含 viewer*;不写嵌套的 repository{…}(仓库名从 url 解析),也不用 Issue.parent
 // (vendor 分流器把这两种都判给个人账号,总 issue 关系改走 REST issues/<号>/parent)。
 const CLOSING_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:10){nodes{number title url}}}}}';
-const ISSUE_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url}}}}}}}}';
-const PARENT_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}}}}}';
+const ISSUE_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url state}}}}}}}}';
+const PARENT_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}}}}}';
 const DEPS_QUERY = 'query($owner:String!,$name:String!,$n0:Int!,$n1:Int!,$n2:Int!,$n3:Int!,$n4:Int!,$n5:Int!,$n6:Int!,$n7:Int!,$n8:Int!,$n9:Int!){repository(owner:$owner,name:$name){d0:issueOrPullRequest(number:$n0){...S} d1:issueOrPullRequest(number:$n1){...S} d2:issueOrPullRequest(number:$n2){...S} d3:issueOrPullRequest(number:$n3){...S} d4:issueOrPullRequest(number:$n4){...S} d5:issueOrPullRequest(number:$n5){...S} d6:issueOrPullRequest(number:$n6){...S} d7:issueOrPullRequest(number:$n7){...S} d8:issueOrPullRequest(number:$n8){...S} d9:issueOrPullRequest(number:$n9){...S}}} fragment S on IssueOrPullRequest{__typename ... on Issue{number state} ... on PullRequest{number state}}';
 
 /** 读开关;读不到、不合法 → off 并给 warning;没有 taskIssue 块 → off、不告警。三个名单字段不合法时用默认值并告警。 */
@@ -87,7 +90,7 @@ export function selectTaskIssue({ body, repo, pr, closing = [] }) {
   const excluded = [];
   const candidates = [];
   for (const ref of source) {
-    if (sameRepo(ref.repo, repo) && deferred.has(ref.number)) { excluded.push({ ref: refText(ref), reason: '在「转 issue 跟进的审查问题」一节' }); continue; }
+    if (deferred.has(refKey(ref))) { excluded.push({ ref: refText(ref), reason: '在「转 issue 跟进的审查问题」一节' }); continue; }
     if (String(ref.title ?? '').startsWith(MAINTAINER_CONFIRM_PREFIX)) { excluded.push({ ref: refText(ref), reason: '维护者确认 issue' }); continue; }
     pushRef(candidates, ref.repo, ref.number);
   }
@@ -121,10 +124,25 @@ export function toSections(body, names) {
   return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v === null ? null : v.join('\n').trim()]));
 }
 
-/** 验收标准行 `- [ ] SC<n> <描述>。验证：<层次>（测试点：…）` → [{sc, description, layer, testPoint, checked}];层次不在词表时为 null。 */
+/** 验收标准列表不超过 12 KB:先把每条描述截到 160 字,还超就只留前面能放下的条目。 */
+function toBoundedScList(list) {
+  if (bytes(JSON.stringify(list)) <= LIMITS.scListBytes) return { scList: list, scListTruncated: null };
+  const short = list.map((s) => ({ ...s, description: clip(s.description, 160), testPoint: s.testPoint ? clip(s.testPoint, 80) : s.testPoint }));
+  const kept = [];
+  for (const s of short) {
+    if (bytes(JSON.stringify([...kept, s])) > LIMITS.scListBytes) break;
+    kept.push(s);
+  }
+  return { scList: kept, scListTruncated: `验收标准超过 12 KB:描述截到 160 字,保留 ${kept.length}/${list.length} 条` };
+}
+
+/** 验收标准行 `- [ ] SC<n> <描述>。验证：<层次>（测试点：…）` → [{sc, description, layer, testPoint, checked}];层次不在词表时为 null;代码块里的示例不算。 */
 export function toScList(text) {
   const out = [];
+  let fence = false;
   for (const line of lines(text)) {
+    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
     const m = SC_RE.exec(line);
     if (!m) continue;
     const verify = /。?\s*验证\s*[：:]\s*(.*)$/.exec(m[3]);
@@ -136,15 +154,20 @@ export function toScList(text) {
   return out;
 }
 
-/** 子 issue 正文 → 五段、验收标准与结构状态;超过 16 KB 只保留五段(各有上限),认不出结构时保留原文。 */
+/**
+ * 子 issue 正文 → 五段、验收标准与结构状态;超过 16 KB 只保留五段(各有上限),认不出结构时保留原文。
+ * 范围路径在截断前从完整「范围」段取(截断不让允许的文件变成超出范围);验收标准列表另有 12 KB 上限,超了先截描述再丢尾部条目。
+ */
 export function toChildMaterial(body) {
   const sections = toSections(body, CHILD_SECTIONS);
   const missing = CHILD_SECTIONS.filter((n) => sections[n] === null);
-  const scList = sections.验收标准 ? toScList(sections.验收标准) : [];
-  const recognized = !missing.length && scList.length > 0;
+  const parsedSc = sections.验收标准 ? toScList(sections.验收标准) : [];
+  const recognized = !missing.length && parsedSc.length > 0;
   const truncated = bytes(body) > LIMITS.childBytes;
+  const { scList, scListTruncated } = toBoundedScList(parsedSc);
   return {
-    structure: recognized ? 'parsed' : 'unrecognized', missingSections: missing, truncated, scList,
+    structure: recognized ? 'parsed' : 'unrecognized', missingSections: missing, truncated, scList, scListTruncated,
+    scopePatterns: recognized ? toScopePatterns(sections.范围) : [],
     sections: !recognized ? null : truncated ? Object.fromEntries(CHILD_SECTIONS.map((n) => [n, clipBytes(sections[n], SECTION_CAPS[n])])) : sections,
     raw: recognized ? null : clipBytes(String(body ?? ''), LIMITS.childBytes),
   };
@@ -156,7 +179,7 @@ export function toChildMaterial(body) {
  * 可信度(D16):issue 作者是维护者或自动化账号(验收机开的修正 issue)→ 计划方;否则作者陈述。开 PR 后的编辑都记下(谁、什么时候);
  * 维护者改的仍是计划方(「先改 issue 再改代码」是规定流程),非维护者改过的整份降为作者陈述;自动化账号的编辑不计。
  */
-export function toTrust({ author, edits = [], prCreatedAt, maintainers = [], automation = DEFAULT_AUTOMATION }) {
+export function toTrust({ author, edits = [], editsComplete = true, prCreatedAt, maintainers = [], automation = DEFAULT_AUTOMATION }) {
   const isMaintainer = (login) => maintainers.some((m) => loginKey(m) === loginKey(login));
   const prAt = Date.parse(prCreatedAt ?? '');
   const editedAfterPr = Number.isFinite(prAt) ? edits
@@ -164,9 +187,12 @@ export function toTrust({ author, edits = [], prCreatedAt, maintainers = [], aut
     .map((e) => ({ editor: e.editor ?? null, at: e.at, maintainer: isMaintainer(e.editor) })) : [];
   const planAuthor = isMaintainer(author) || isAutomation(author, automation);
   const outsiders = editedAfterPr.filter((e) => !e.maintainer);
-  const trust = planAuthor && !outsiders.length ? 'plan' : 'author';
+  // 编辑记录只取到最近 50 条:没取全、而且最早取到的一条已在开 PR 之后,缺的那部分可能有非维护者的编辑,不当作没改过。
+  const oldest = edits.map((e) => Date.parse(e.at)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+  const unverified = !editsComplete && Number.isFinite(prAt) && !(oldest <= prAt);
+  const trust = planAuthor && !outsiders.length && !unverified ? 'plan' : 'author';
   return { trust, trustLabel: trust === 'plan' ? '计划方验收标准' : '作者陈述', editedAfterPr,
-    trustNote: !planAuthor ? 'issue 作者不是维护者' : outsiders.length ? '开 PR 后非维护者改过' : null };
+    trustNote: !planAuthor ? 'issue 作者不是维护者' : outsiders.length ? '开 PR 后非维护者改过' : unverified ? UNVERIFIED_EDITS : null };
 }
 
 /** 正文最后一次实质编辑(自动化账号的不算)的时间;没有编辑记录时是创建时间。 */
@@ -176,16 +202,16 @@ export function lastBodyEditAt({ createdAt, edits = [], automation = DEFAULT_AUT
 }
 
 /**
- * 未写回正文的决定(D16):只取正文最后一次编辑之后、维护者发的、开头含裁定字样的评论,最多 3 条、每条截到 1 KB。
- * 派发 / 认领 / 归档日志、验收记录、正文备份、编辑之前的评论和非维护者评论都不读。
+ * 未写回正文的决定(D16):只取正文最后一次编辑之后、维护者发的、首行开头就是裁定字样的评论,最多 3 条、每条截到 1 KB。
+ * 派发 / 认领 / 归档日志、验收记录(正文里顺带提到裁定字样的也算)、正文备份、编辑之前的评论和非维护者评论都不读。
  */
 export function selectUndecided({ comments = [], since, maintainers = [] }) {
   const sinceAt = Date.parse(since ?? '') || 0;
   return comments
     .filter((c) => maintainers.some((m) => loginKey(m) === loginKey(c.author)) && Date.parse(c.createdAt) > sinceAt)
     .filter((c) => {
-      const head = String(c.body ?? '').slice(0, MARKER_HEAD_CHARS);
-      return DECISION_MARKERS.some((mark) => head.includes(mark)) && !head.split('\n', 1)[0].includes('正文备份');
+      const first = String(c.body ?? '').trimStart().split('\n', 1)[0];
+      return DECISION_HEAD_RE.test(first) && !first.includes('正文备份');
     })
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     .slice(-LIMITS.comments)
@@ -218,12 +244,13 @@ export function toDecisions(text) {
   return { decisions, unstructured: unstructured.slice(0, 30) };
 }
 
-/** 子 issue 表:表格行(去掉表头和分隔线),标出本子 issue 那一行;没有表格时取提到 #N 的列表行。 */
+/** 子 issue 表:表格行(去掉表头和分隔线),标出本子 issue 那一行;没有表格时取提到 #N 的列表行。最多 40 行,本子 issue 那一行总是保留。 */
 export function toChildRows(text, child, parentRepo) {
   const all = lines(text);
   const table = all.filter((l) => /^\s*\|/.test(l)).filter((l) => !/^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$/.test(l)).slice(1);
-  const rows = table.length ? table : all.filter((l) => /^\s*[-*]\s/.test(l) && l.includes('#'));
-  return rows.slice(0, 40).map((line) => ({ line: clip(line.trim(), 300), self: refsIn(line, parentRepo).some((r) => sameRef(r, child)) }));
+  const rows = (table.length ? table : all.filter((l) => /^\s*[-*]\s/.test(l) && l.includes('#')))
+    .map((line) => ({ line: clip(line.trim(), 300), self: refsIn(line, parentRepo).some((r) => sameRef(r, child)) }));
+  return rows.filter((r, i) => i < LIMITS.childRows || r.self);
 }
 
 /** 总 issue 正文 → 只取目标、不做、并行 / 串行原则、子 issue 表、决策表、整体验收;背景、变更记录、上线后验证不读。 */
@@ -267,13 +294,13 @@ function sourcesOfTest(file) {
  * 交接文件(alwaysInScope)、范围内源文件的测试不算超出;阶段合并 PR(head 分支带 stageHeadPrefixes 前缀)不算。
  */
 export function toDerived({ child, files = [], deps = null, headRefName = null, alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES }) {
-  const patterns = child?.sections?.范围 ? toScopePatterns(child.sections.范围) : [];
+  const patterns = child?.scopePatterns ?? (child?.sections?.范围 ? toScopePatterns(child.sections.范围) : []);
   const stage = Boolean(headRefName) && stageHeadPrefixes.some((p) => String(headRefName).startsWith(p));
   const inScope = (f) => [...patterns, ...alwaysInScope].some((p) => matchesScope(f, p))
     || sourcesOfTest(f).some((s) => patterns.some((p) => matchesScope(s, p)));
   const scopeNote = stage ? `阶段合并 PR(head ${clip(headRefName, 80)}):diff 含整个阶段的改动,不算超出范围的文件`
     : !child?.sections ? '结构未识别,没算超出范围的文件'
-      : !patterns.length ? '范围未列路径' : child.truncated ? '范围已截断,超出范围的文件可能多报' : null;
+      : !patterns.length ? '范围未列路径' : null;
   return {
     scopeOutside: !stage && patterns.length ? files.filter((f) => !inScope(f)).sort() : null,
     scopeNote, scopePatterns: patterns,
@@ -282,12 +309,12 @@ export function toDerived({ child, files = [], deps = null, headRefName = null, 
   };
 }
 
-/** 共用识别:issue 时间线里同仓、正文「任务 issue：」行指向这个 issue 的其它 PR(最多 10 个;时间线没取全时标不完整)。 */
+/** 共用识别:issue 时间线里同仓、开着或已合并、正文「任务 issue：」行指向这个 issue 的其它 PR(最多 10 个;时间线没取全时标不完整)。已关闭未合并的不算。 */
 export function toShared({ timeline, prRepo, pr, issueRef }) {
   const prs = [];
   for (const node of timeline?.nodes ?? []) {
     const source = node?.source;
-    if (source?.__typename !== 'PullRequest' || !sameRepo(repoFromUrl(source.url), prRepo) || source.number === pr) continue;
+    if (source?.__typename !== 'PullRequest' || !sameRepo(repoFromUrl(source.url), prRepo) || source.number === pr || source.state === 'CLOSED') continue;
     if (parseTaskLines(source.body, prRepo).some((r) => sameRef(r, issueRef)) && !prs.includes(source.number)) prs.push(source.number);
   }
   const incomplete = (timeline?.totalCount ?? 0) > (timeline?.nodes?.length ?? 0) || prs.length > LIMITS.shared;
@@ -319,17 +346,19 @@ export function toRestResult(out) {
  * 典型 4 次请求(任务 issue 连时间线、依赖状态、总 issue 关系、总 issue);没有「任务 issue：」行再加 1 次读 Closes。
  */
 export function readTaskIssue({ repo, pr, prBody, prCreatedAt, baseRefName, headRefName = null, files = [], maintainers = [], automation = DEFAULT_AUTOMATION,
-  alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES, ghFn, now = Date.now, budget = BUDGET }) {
+  alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES, mode = 'observe', ghFn, now = Date.now, budget = BUDGET }) {
   const started = now();
-  const material = { version: 1, status: 'read', ref: null, via: null, note: null, warnings: [], gaps: [], excluded: [], requests: 0, elapsedMs: 0,
+  const material = { version: 1, mode, status: 'read', ref: null, via: null, note: null, warnings: [], gaps: [], excluded: [], requests: 0, elapsedMs: 0,
     baseRef: baseRefName ?? null, baseNote: BASE_NOTE, issue: null, shared: null, deps: null, parent: null, derived: null, truncated: [] };
+  // 单次超时不超过剩余时间(最多 10 秒);剩余不足 1 秒就不再发请求。读失败(404 以外)也记缺口,材料按「部分」处理。
   const call = (label, send, parse = toGraphqlResult) => {
     if (material.requests >= budget.requests) { material.gaps.push(`${label}:已用满 ${budget.requests} 次请求,没读`); return null; }
     const left = budget.ms - (now() - started);
-    if (left <= 0) { material.gaps.push(`${label}:已超过 ${Math.round(budget.ms / 1000)} 秒,没读`); return null; }
+    if (left < LIMITS.minRequestMs) { material.gaps.push(`${label}:${Math.round(budget.ms / 1000)} 秒预算只剩 ${Math.max(0, left)} 毫秒,没读`); return null; }
     material.requests += 1;
-    const out = parse(send(Math.max(1000, Math.min(left, 10_000))));
+    const out = parse(send(Math.min(left, 10_000)));
     if (out.error) material.warnings.push(`${label}:${out.error}`);
+    if (out.error && !out.data) material.gaps.push(`${label}:读取失败`);
     return out.data;
   };
   const finish = () => {
@@ -371,14 +400,17 @@ export function readTaskIssue({ repo, pr, prBody, prCreatedAt, baseRefName, head
   // 子 issue 本身
   const issueRef = refFromText(material.ref);
   const edits = editsOf(node);
+  const editsComplete = editsCompleteOf(node);
   const child = toChildMaterial(node.body);
   if (child.truncated) material.truncated.push('子 issue 正文超过 16 KB,只保留五个必需段');
+  if (child.scListTruncated) material.truncated.push(child.scListTruncated);
   material.issue = {
     ref: material.ref, url: node.url ?? null, title: clip(node.title, 300), author: node.author?.login ?? null, createdAt: node.createdAt ?? null,
-    edits: edits.slice(-20), ...toTrust({ author: node.author?.login, edits, prCreatedAt, maintainers, automation }),
+    edits: edits.slice(-20), ...toTrust({ author: node.author?.login, edits, editsComplete, prCreatedAt, maintainers, automation }),
     digest: sha256(node.body), ...child,
     undecided: selectUndecided({ comments: commentsOf(node), since: lastBodyEditAt({ createdAt: node.createdAt, edits, automation }), maintainers }),
   };
+  if (material.issue.trustNote === UNVERIFIED_EDITS) material.gaps.push('子 issue 编辑记录超过 50 条,开 PR 后的编辑没取全,按作者陈述处理');
   material.shared = toShared({ timeline: node.timelineItems, prRepo: repo, pr, issueRef });
   if (material.shared.incomplete) material.gaps.push('共用识别:时间线没取全或超过 10 个,共用 PR 列表不完整');
 
@@ -414,7 +446,8 @@ export function readTaskIssue({ repo, pr, prBody, prCreatedAt, baseRefName, head
   }
   if (parentNode) {
     const parentEdits = editsOf(parentNode);
-    const trust = toTrust({ author: parentNode.author?.login, edits: parentEdits, prCreatedAt, maintainers, automation });
+    const trust = toTrust({ author: parentNode.author?.login, edits: parentEdits, editsComplete: editsCompleteOf(parentNode), prCreatedAt, maintainers, automation });
+    if (trust.trustNote === UNVERIFIED_EDITS) material.gaps.push('总 issue 编辑记录超过 50 条,开 PR 后的编辑没取全,按作者陈述处理');
     material.parent = {
       ref: refText(parentRef), via, conflict, url: parentNode.url ?? null, title: clip(parentNode.title, 300), author: parentNode.author?.login ?? null,
       notTotal: !String(parentNode.title ?? '').trim().startsWith('[总]'), trust: trust.trust, trustLabel: trust.trustLabel, trustNote: trust.trustNote,
@@ -427,9 +460,12 @@ export function readTaskIssue({ repo, pr, prBody, prCreatedAt, baseRefName, head
   return finish();
 }
 
-/** 超过 64 KB 时按固定顺序删减并记进 truncated:最旧的未写回正文的决定 → 第 20 个以后的兄弟子 issue → 流程类决定 → 已取代的决定 → 整体验收的文字。 */
+/**
+ * 超过 64 KB 时按固定顺序删减并记进 truncated:最旧的未写回正文的决定 → 第 20 个以后的兄弟子 issue → 流程类决定 → 已取代的决定 → 整体验收的文字;
+ * 仍超就只留总 issue 的链接与摘要,再压子 issue 的段落与验收描述,最后只留验收编号。体积按 writeJson 实际落盘的格式(2 空格缩进加换行)算。
+ */
 export function toSizedMaterial(material, limit = LIMITS.fileBytes) {
-  const size = () => bytes(JSON.stringify(material));
+  const size = () => bytes(`${JSON.stringify(material, null, 2)}\n`);
   const steps = [
     ['最旧的未写回正文的决定', () => {
       const pools = [material.issue?.undecided, material.parent?.undecided].filter((p) => p?.length);
@@ -464,6 +500,19 @@ export function toSizedMaterial(material, limit = LIMITS.fileBytes) {
     material.parent = { ref: material.parent.ref, via: material.parent.via, trust: material.parent.trust, digest: material.parent.digest, dropped: true };
     material.truncated.push('总 issue 材料整体删去,只留链接与摘要');
   }
+  const issue = material.issue;
+  if (size() > limit && issue) {
+    if (issue.sections) issue.sections = Object.fromEntries(Object.entries(issue.sections).map(([k, v]) => [k, clipBytes(v, 1024)]));
+    issue.raw = clipBytes(issue.raw, 4096);
+    issue.scList = (issue.scList ?? []).map((sc) => ({ ...sc, description: clip(sc.description, 80), testPoint: sc.testPoint ? clip(sc.testPoint, 40) : sc.testPoint }));
+    if (material.derived) material.derived = { ...material.derived, scopeOutside: material.derived.scopeOutside?.slice(0, 50) ?? null, scopePatterns: material.derived.scopePatterns.slice(0, 50) };
+    material.truncated.push('子 issue 各段截到 1 KB、验收描述截到 80 字、路径列表截到 50 项');
+  }
+  if (size() > limit && issue) {
+    material.issue = { ref: issue.ref, url: issue.url, author: issue.author, trust: issue.trust, trustLabel: issue.trustLabel, trustNote: issue.trustNote,
+      digest: issue.digest, structure: issue.structure, scList: (issue.scList ?? []).map((sc) => ({ sc: sc.sc, layer: sc.layer })), dropped: true };
+    material.truncated.push('子 issue 只留链接、可信度、摘要与验收编号');
+  }
   return material;
 }
 
@@ -481,7 +530,7 @@ export function toTaskIssueSummary(material) {
 export function collectTaskIssue(params) {
   let material;
   try { material = readTaskIssue(params); } catch (error) {
-    material = { version: 1, status: 'unreadable', ref: null, via: null, note: '任务 issue 读不到', warnings: [`读取异常:${clip(error.message, 200)}`], gaps: [], excluded: [],
+    material = { version: 1, mode: params?.mode ?? 'observe', status: 'unreadable', ref: null, via: null, note: '任务 issue 读不到', warnings: [`读取异常:${clip(error.message, 200)}`], gaps: [], excluded: [],
       requests: 0, elapsedMs: 0, baseRef: params?.baseRefName ?? null, baseNote: BASE_NOTE, issue: null, shared: null, deps: null, parent: null, derived: null, truncated: [] };
   }
   return { material, summary: toTaskIssueSummary(material) };
@@ -497,9 +546,16 @@ const isAutomation = (login, automation) => automation.some((a) => loginKey(a) =
 const sameRepo = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const sameRef = (a, b) => Boolean(a && b) && sameRepo(a.repo, b.repo) && Number(a.number) === Number(b.number);
 const refText = (ref) => `${ref.repo}#${ref.number}`;
+const refKey = (ref) => `${String(ref.repo).toLowerCase()}#${Number(ref.number)}`;
 const escapeRe = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ownerName = (repo) => { const [owner, name] = String(repo).split('/'); return { owner, name }; };
 const editsOf = (node) => (node?.userContentEdits?.nodes ?? []).filter((e) => e?.editedAt).map((e) => ({ editor: e.editor?.login ?? null, at: e.editedAt }));
+// 编辑记录是否取全:看 totalCount;没返回 totalCount 时,条数用满 50 条的窗口就当作可能没取全。
+const editsCompleteOf = (node) => {
+  const returned = node?.userContentEdits?.nodes?.length ?? 0;
+  const total = node?.userContentEdits?.totalCount;
+  return Number.isInteger(total) ? total <= returned : returned < 50;
+};
 const commentsOf = (node) => (node?.comments?.nodes ?? []).map((c) => ({ author: c?.author?.login ?? null, createdAt: c?.createdAt ?? null, body: c?.body ?? '' }));
 
 /** github.com 的 issue / PR 网址 → owner/repo;认不出为 null。 */
@@ -518,15 +574,26 @@ function pushRef(list, repo, number) {
   list.push({ repo, number });
 }
 
+/** 文本里的 issue / PR 引用:`#N`、`owner/repo#N` 和 GitHub 网址,按出现顺序去重。 */
 function refsIn(text, repo) {
   const refs = [];
-  for (const m of toPlainText(text).matchAll(ANY_REF_RE)) pushRef(refs, m[1] ?? repo, Number(m[2]));
+  const plain = toPlainText(text);
+  const found = [...plain.matchAll(URL_REF_RE)].map((m) => ({ at: m.index, repo: m[1], number: Number(m[2]) }))
+    .concat([...plain.replace(URL_REF_RE, (m) => ' '.repeat(m.length)).matchAll(ANY_REF_RE)].map((m) => ({ at: m.index, repo: m[1] ?? repo, number: Number(m[2]) })))
+    .sort((a, b) => a.at - b.at);
+  for (const r of found) pushRef(refs, r.repo, r.number);
   return refs;
 }
 
+/** 「转 issue 跟进的审查问题」一节列出的 issue → `owner/repo#N` 集合;跨仓的(parseDeferrals 拒收、issue 为空)按 ref 原文认。 */
 function toDeferredIssues(body, repo, pr) {
   const parsed = parseDeferrals(body, { repo, pr });
-  return new Set([...parsed.entries, ...parsed.rejected].map((e) => e.issue).filter((n) => Number.isInteger(n)));
+  const keys = new Set();
+  for (const e of [...parsed.entries, ...parsed.rejected]) {
+    if (Number.isInteger(e.issue)) keys.add(refKey({ repo, number: e.issue }));
+    for (const ref of refsIn(e.ref ?? '', repo)) keys.add(refKey(ref));
+  }
+  return keys;
 }
 
 /** 去掉 HTML 注释和代码块(模板示例里的链接不算)。 */
