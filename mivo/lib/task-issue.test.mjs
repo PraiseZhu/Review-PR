@@ -456,6 +456,14 @@ test('R2-F9:外层四个反引号里的三反引号块不提前关闭,示例 SC 
   assert.deepEqual(toChildMaterial(mini({ sc: tilde })).scList.map((x) => x.sc), ['SC1', 'SC3'], '~~~ 块只能用 ~~~ 关');
 });
 
+test('R3-F1:列表里缩进的代码块示例也不算(任务 issue 行和 SC 都是)', () => {
+  const tick = '`'.repeat(3);
+  const example = ['- 文档示例：', '', `    ${tick}markdown`, '    任务 issue：#999', `    ${tick}`, '', '任务 issue：#12'].join('\n');
+  assert.deepEqual(parseTaskLines(example, 'o/r'), [{ repo: 'o/r', number: 12 }]);
+  const sc = ['- [ ] SC1 真正验收。验证：unit', '', '- 文档示例：', '', `    ${tick}markdown`, '    - [ ] SC99 示例。验证：paid', `    ${tick}`, '- [ ] SC2 之后的验收。验证：unit'].join('\n');
+  assert.deepEqual(toChildMaterial(mini({ sc })).scList.map((x) => x.sc), ['SC1', 'SC2']);
+});
+
 // ── SC5 失败只记 warning ──
 test('SC5:issue 不存在、没权限或 gh 出错时只记 warning,不抛错', () => {
   const forbidden = collectTaskIssue({ repo: 'o/r', pr: 7, prBody: '任务 issue：#12', files: [], ghFn: fakeGh({ issue: () => ({ fail: 'HTTP 403: Resource not accessible by integration' }) }).fn });

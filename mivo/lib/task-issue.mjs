@@ -632,11 +632,12 @@ function toDeferredIssues(body, repo, pr) {
 }
 
 /**
- * 代码块围栏(CommonMark):``` 或 ~~~ 至少 3 个开块,用同一字符、不短于开头、后面不带说明的围栏才关块;块里更短或另一种字符的围栏只是内容。
+ * 代码块围栏(按 CommonMark 配对):``` 或 ~~~ 至少 3 个开块,用同一字符、不短于开头、后面不带说明的围栏才关块;块里更短或另一种字符的围栏只是内容。
+ * 围栏前的缩进不限:列表里的代码块缩进 4 个空格以上也算(不做列表容器解析,宁可把缩进的围栏当代码块,也不让示例里的链接和 SC 当真)。
  * 返回 {open: 当前打开的围栏或 null, fenceLine: 这一行是否是开 / 关围栏}。
  */
 function toFence(open, line) {
-  const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
   if (!m) return { open, fenceLine: false };
   if (!open) return { open: { char: m[1][0], len: m[1].length }, fenceLine: true };
   if (m[1][0] === open.char && m[1].length >= open.len && !m[2].trim()) return { open: null, fenceLine: true };
