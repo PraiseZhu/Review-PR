@@ -121,7 +121,8 @@ export function toSections(body, names) {
     }
     if (current) out[current].push(line);
   }
-  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v === null ? null : v.join('\n').trim()]));
+  // 只去掉段首段尾的空行,保留行首缩进:段首缩进 4 格的行是缩进代码块,去掉空格会把示例变成正文。
+  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v === null ? null : v.join('\n').replace(/^(?:[ \t]*\n)+/, '').replace(/\s+$/, '')]));
 }
 
 /** 验收标准列表不超过 12 KB:先把每条描述截到 160 字,还超就只留前面能放下的条目。 */
@@ -637,7 +638,7 @@ function toDeferredIssues(body, repo, pr) {
  * - 围栏:相对所在容器缩进 0–3 格、``` 或 ~~~ 至少 3 个开块;同一字符、不短于开头、不带说明、相对容器 0–3 格的围栏关块,
  *   块里更短或另一种字符的围栏只是内容;所在列表项结束时没关的围栏随之结束,顶层没关的围栏到正文末尾。
  * - 缩进代码块:不在围栏里、相对容器缩进 4 格以上、前一行不是段落(空行、标题、代码、围栏结束)的行;里面的 ``` 只是字面量。
- * - 懒惰续行:段落后面缩进不够、又不是新块开头的行仍属同一段落,不离开列表项。
+ * - 懒惰续行:段落后面缩进不够(或少了引用符)、又不是新块开头的行仍属同一段落,不离开列表项或引用块。
  * 不支持的极端写法(例如列表标记后跟 5 格以上空白)按普通文字处理。返回与输入等长的布尔数组。
  */
 export function toCodeMask(all) {
@@ -667,6 +668,8 @@ export function toCodeMask(all) {
     let line = raw;
     let depth = 0;
     for (let m = QUOTE.exec(line); m; m = QUOTE.exec(line)) { line = line.slice(m[0].length); depth += 1; }
+    // 引用段落的懒惰续行:引用层变浅、但上一行是段落、这一行又不是新块开头,仍是同一段落
+    if (depth < quote && prev === 'para' && line.trim() && !/^\s{0,3}(#{1,6}(\s|$)|`{3,}|~{3,}|([-*_])( *\3){2,} *$)/.test(line) && !(indentOf(line) <= 3 && LIST_ITEM.exec(line.trimStart()))) { mask.push(false); continue; }
     if (depth !== quote) { items = []; quote = depth; prev = 'blank'; }
     if (!line.trim()) { mask.push(false); prev = 'blank'; continue; }
     const ind = indentOf(line);

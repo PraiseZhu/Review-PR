@@ -482,6 +482,20 @@ test('代码行判定与 CommonMark(markdown-it)逐行一致:四轮复审反例�
   }
 });
 
+test('R5-F1:验收段第一行是缩进代码块时,示例 SC 仍不算(切段落不去掉行首缩进)', () => {
+  const sc = ['', '    - [ ] SC99 示例。验证：paid', '', '- [ ] SC1 实际验收。验证：unit'].join('\n');
+  const child = toChildMaterial(mini({ sc }));
+  assert.deepEqual(child.scList.map((x) => x.sc), ['SC1']);
+  assert.deepEqual(toDerived({ child, files: [] }).blackboxSc, []);
+  assert.match(child.sections.验收标准, /^ {4}- \[ \] SC99/, '段首缩进保留');
+});
+
+test('子 issue 解析出的验收标准与 CommonMark 判定一致(代码块外的 SC 行):R5-F1、引用续行与 40 份按模板生成的正文', () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/task-issue/commonmark-sc-lists.json', import.meta.url), 'utf8'));
+  assert.ok(fixture.docs.length >= 40);
+  for (const doc of fixture.docs) assert.deepEqual(toChildMaterial(doc.body).scList.map((x) => x.sc), doc.expected, doc.name);
+});
+
 // ── SC5 失败只记 warning ──
 test('SC5:issue 不存在、没权限或 gh 出错时只记 warning,不抛错', () => {
   const forbidden = collectTaskIssue({ repo: 'o/r', pr: 7, prBody: '任务 issue：#12', files: [], ghFn: fakeGh({ issue: () => ({ fail: 'HTTP 403: Resource not accessible by integration' }) }).fn });
