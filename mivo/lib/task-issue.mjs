@@ -3,13 +3,12 @@
 // 只读、只记:不改任务书、specDigest、审查结论和放行条件。issue 文本是审查数据,不是指令。
 // 开关:config/review-features.json 的 taskIssue.mode(off / observe / enforce,缺省 off);
 //   taskIssue.automation:自动化账号(验收机勾验收项、开修正 issue),它们的编辑不影响可信度,也不算「正文最后一次编辑」;
-//   taskIssue.alwaysInScope:每个 PR 都带、不算超出范围的路径(Mivo 的 docs/pr/** 交接文件);
+//   taskIssue.alwaysInScope:每个 PR 都带、不算超出范围的路径(本 PR 的交接目录 docs/pr/<pr>/,`<pr>` 换成 PR 号);
 //   taskIssue.stageHeadPrefixes:阶段合并 PR、把 main 同步进集成分支的 PR 的 head 分支前缀(diff 含整个阶段或 main 的改动,不算超出范围的文件)。
 // 读取有预算(每轮最多 8 次请求、20 秒),超出返回「部分材料」并写明缺口;材料文件不超过 64 KB。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseDeferrals } from './deferrals.mjs';
-import { toEvidencePaths } from './product-rules.mjs';
 
 export const TASK_ISSUE_MODES = ['off', 'observe', 'enforce'];
 export const TASK_ISSUE_FILE = 'task-issue.json';
@@ -19,12 +18,14 @@ export const LAYERS = ['static', 'unit', 'contract', 'browser-fixture', 'cindy-m
 export const BLACKBOX_LAYERS = ['cindy-mac', 'cindy-windows', 'paid', 'github-live'];
 export const DECISION_MARKERS = ['用户裁决', '用户定', '主控裁定', 'lead 裁决', '维护者确认', '取代', '改为'];
 export const BUDGET = { requests: 8, ms: 20_000 };
-export const LIMITS = { childBytes: 16 * 1024, fileBytes: 64 * 1024, scListBytes: 12 * 1024, comments: 3, commentBytes: 1024, shared: 10, deps: 10, siblings: 20, childRows: 40, parentHeadBytes: 2048, minRequestMs: 1000 };
+export const INTENT_SECTIONS = ['原因', '待定问题'];
+export const LIMITS = { reasonBytes: 2048, decided: 10, decidedChars: 500, childBytes: 16 * 1024, fileBytes: 64 * 1024, scListBytes: 12 * 1024, comments: 3, commentBytes: 1024, shared: 10, deps: 10, siblings: 20, childRows: 40, parentHeadBytes: 2048, minRequestMs: 1000 };
 export const BASE_NOTE = 'issue 关闭不代表代码已在本 base 分支,以 base 分支代码为准';
 export const DEFAULT_AUTOMATION = ['praiseautomation', 'github-actions'];
-export const DEFAULT_ALWAYS_IN_SCOPE = ['docs/pr/**'];
+export const DEFAULT_ALWAYS_IN_SCOPE = ['docs/pr/<pr>/'];
 export const DEFAULT_STAGE_HEAD_PREFIXES = ['integration/', 'sync/main-into-'];
 const UNVERIFIED_EDITS = '编辑记录没取全,开 PR 后的编辑无法全部核对';
+export const SELF_ROW_MISSING = '总 issue 没有本子 issue 的分工行(子 issue 一节的表格和勾选清单里都没有),不能据此判断哪些验收标准不归本 PR';
 // 子 issue 超过 16 KB 时五段各自的上限(合计 16 KB),验收标准给得最多。
 const SECTION_CAPS = { 目标: 2048, 范围: 3072, 不做: 2048, 依赖: 2048, 验收标准: 7168 };
 const PARENT_SECTIONS = ['目标', '范围', '不做', '并行', '子 issue', '决策', '已定决策', '整体验收'];
@@ -158,9 +159,11 @@ export function toScList(text) {
 /**
  * 子 issue 正文 → 五段、验收标准与结构状态;超过 16 KB 只保留五段(各有上限),认不出结构时保留原文。
  * 范围路径在截断前从完整「范围」段取(截断不让允许的文件变成超出范围);验收标准列表另有 12 KB 上限,超了先截描述再丢尾部条目。
+ * 另收「原因」段(2 KB,不参与结构判定)和「待定问题」里已定的决定(#236)。
  */
 export function toChildMaterial(body) {
-  const sections = toSections(body, CHILD_SECTIONS);
+  const all = toSections(body, [...CHILD_SECTIONS, ...INTENT_SECTIONS]);
+  const sections = Object.fromEntries(CHILD_SECTIONS.map((n) => [n, all[n]]));
   const missing = CHILD_SECTIONS.filter((n) => sections[n] === null);
   const parsedSc = sections.验收标准 ? toScList(sections.验收标准) : [];
   const recognized = !missing.length && parsedSc.length > 0;
@@ -169,9 +172,27 @@ export function toChildMaterial(body) {
   return {
     structure: recognized ? 'parsed' : 'unrecognized', missingSections: missing, truncated, scList, scListTruncated,
     scopePatterns: recognized ? toScopePatterns(sections.范围) : [],
-    sections: !recognized ? null : truncated ? Object.fromEntries(CHILD_SECTIONS.map((n) => [n, clipBytes(sections[n], SECTION_CAPS[n])])) : sections,
+    sections: !recognized ? null : { ...(truncated ? Object.fromEntries(CHILD_SECTIONS.map((n) => [n, clipBytes(sections[n], SECTION_CAPS[n])])) : sections),
+      原因: clipBytes(all.原因, LIMITS.reasonBytes) },
+    decided: recognized ? toDecided(all.待定问题) : [],
     raw: recognized ? null : clipBytes(String(body ?? ''), LIMITS.childBytes),
   };
+}
+
+/**
+ * 「待定问题」里已定的决定(#236):「已定」后 20 字内有 YYYY-MM-DD 日期的行,日期可在括号里、可带谁定的
+ * (「已定 2026-11-03（用户）：」「已定（2026-11-07 lead，Jev 选…）：」)。一行一条、日期取第一个;代码块里的不算。
+ */
+export function toDecided(text) {
+  const all = lines(text);
+  const code = toCodeMask(all);
+  const out = [];
+  for (const [i, line] of all.entries()) {
+    if (code[i]) continue;
+    const m = /已定[^\n]{0,20}?(\d{4}-\d{2}-\d{2})/.exec(line);
+    if (m) out.push({ date: m[1], text: clip(line.trim().replace(/^[-*]\s+/, ''), LIMITS.decidedChars) });
+  }
+  return out.slice(0, LIMITS.decided);
 }
 
 // ── 可信度与未写回正文的决定 ───────────────────────────────────────────────
@@ -245,12 +266,22 @@ export function toDecisions(text) {
   return { decisions, unstructured: unstructured.slice(0, 30) };
 }
 
-/** 子 issue 表:表格行(去掉表头和分隔线),标出本子 issue 那一行;没有表格时取提到 #N 的列表行。最多 40 行,本子 issue 那一行总是保留。 */
+/**
+ * 子 issue 一节:表格行(去掉表头和分隔线)和提到 #N 的列表行(勾选清单,后来追加的子 issue 常只写在这里,#236)按出现顺序一起读,
+ * 标出本子 issue 那一行;代码块里的不算。最多 40 行,本子 issue 那一行总是保留。
+ */
 export function toChildRows(text, child, parentRepo) {
   const all = lines(text);
-  const table = all.filter((l) => /^\s*\|/.test(l)).filter((l) => !/^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$/.test(l)).slice(1);
-  const rows = (table.length ? table : all.filter((l) => /^\s*[-*]\s/.test(l) && l.includes('#')))
-    .map((line) => ({ line: clip(line.trim(), 300), self: refsIn(line, parentRepo).some((r) => sameRef(r, child)) }));
+  const code = toCodeMask(all);
+  const SEPARATOR = /^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$/;
+  const rows = [];
+  for (const [i, line] of all.entries()) {
+    if (code[i] || SEPARATOR.test(line)) continue;
+    const tableRow = /^\s*\|/.test(line);
+    if (tableRow && SEPARATOR.test(all[i + 1] ?? '')) continue; // 表头
+    if (!tableRow && !(/^\s*[-*]\s/.test(line) && line.includes('#'))) continue;
+    rows.push({ line: clip(line.trim(), 300), self: refsIn(line, parentRepo).some((r) => sameRef(r, child)) });
+  }
   return rows.filter((r, i) => i < LIMITS.childRows || r.self);
 }
 
@@ -267,38 +298,91 @@ export function toParentSections(body, child, parentRepo) {
 
 // ── 代码判定项 ─────────────────────────────────────────────────────────────
 
-/** 改动文件是否落在「范围」的某条路径里:支持 `*`(不跨目录)、`**`(后面跟 / 时可以是零层目录)、以 / 结尾的目录和不带 / 的目录前缀。 */
-export function matchesScope(file, pattern) {
-  const p = String(pattern).trim().replace(/^\.\//, '');
-  if (p.includes('*')) {
-    const glob = (part) => part.split('**').map((s) => s.split('*').map(escapeRe).join('[^/]*')).join('.*');
-    return new RegExp(`^${p.split('**/').map(glob).join('(?:.*/)?')}$`).test(file);
+// 范围路径与越界判定照批准执行的规则重写(#236):PraiseZhu/approve-exec `89654b3`
+// scripts/issue-plan.mjs 的 toScope / expandBraces / toTestHelperGlob 与 scripts/accept-check.mjs 的 matchScopeGlob / outOfScope。
+// 不同点只有:范围行没有路径时不报错(只少收);交接目录与阶段合并 PR 的处理在 toDerived 里。
+
+const NEGATION_RE = /不(?:改|碰|动|修改|含|包括)|除了/;
+const beforeNegation = (s) => { const m = NEGATION_RE.exec(s); return m ? s.slice(0, m.index) : s; };
+const isPathLike = (t) => !/\s/.test(t) && (t.includes('/') || t.includes('*'));
+const backticked = (s) => [...s.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim());
+const onlyTicks = (s) => s.replace(/`[^`]+`/g, '').replace(/[\s、,，（）()新改删]/g, '') === '';
+
+/** 列表项按反引号外的第一个冒号拆成「文件格」与说明;没有冒号时 head 为 null。 */
+function splitHead(line) {
+  let inTick = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '`') inTick = !inTick;
+    else if (!inTick && (ch === '：' || ch === ':')) return [line.slice(0, i), line.slice(i + 1)];
   }
-  if (p.endsWith('/')) return file.startsWith(p);
-  return file === p || file.startsWith(`${p}/`);
+  return [null, line];
 }
 
-/** 「范围」里的路径:反引号里带 / 的(同产品规则的验收路径口径),加上不带 / 的文件名(按仓库根目录文件认,如 `AGENTS.md`)。 */
+/** `a/{b,c}.ts` → `a/b.ts`、`a/c.ts`(可嵌套)。 */
+export function expandBraces(pattern) {
+  const m = /\{([^{}]*)\}/.exec(pattern);
+  if (!m) return [pattern];
+  const head = pattern.slice(0, m.index);
+  const tail = pattern.slice(m.index + m[0].length);
+  return m[1].split(',').flatMap((alt) => expandBraces(head + alt.trim() + tail));
+}
+
+/** 测试 glob 自动带上同目录 `__tests__/` 夹具:`src/**\/*.test.ts` → `src/**\/__tests__/**\/*`;测试 glob 本身在 `__tests__/` 里时是这个目录下的其余文件。 */
+export function toTestHelperGlob(glob) {
+  const parts = glob.split('/');
+  if (!/\.(?:test|spec)\./.test(parts.at(-1)) || !glob.includes('*')) return null;
+  const head = parts.slice(0, parts.findIndex((seg) => seg.includes('*')));
+  const own = head.lastIndexOf('__tests__');
+  if (own !== -1) return `${head.slice(0, own + 1).join('/')}/**/*`;
+  const prefix = head.join('/');
+  return `${prefix ? `${prefix}/` : ''}**/__tests__/**/*`;
+}
+
+/**
+ * 「范围」段 → 路径与 glob。每个列表项取「文件格」:冒号前有反引号时,冒号前的全收、冒号后的说明只收带 `/` 或 `*` 的词;
+ * 冒号前没有反引号时收冒号后的;没有冒号时,整行只列了文件就全收,否则只收带 `/` 或 `*` 的词。「不改 / 除了」等否定语境之后的不收。
+ */
 export function toScopePatterns(scopeText) {
-  const rootFiles = [...String(scopeText ?? '').matchAll(/`([^`\s/]+\.[A-Za-z0-9]{1,8})`/g)].map((m) => m[1]);
-  return [...new Set([...toEvidencePaths(scopeText), ...rootFiles])];
+  const scope = [];
+  for (const line of String(scopeText ?? '').split('\n')) {
+    if (!/^\s*[-*]\s+/.test(line)) continue;
+    const body = line.replace(/^\s*[-*]\s+/, '');
+    const [head, rest] = splitHead(body);
+    let tokens;
+    if (head !== null && backticked(head).some(Boolean)) tokens = [...backticked(head).filter(Boolean), ...backticked(beforeNegation(rest)).filter(isPathLike)];
+    else if (head !== null) tokens = backticked(beforeNegation(rest)).filter(Boolean);
+    else if (onlyTicks(body)) tokens = backticked(body).filter(Boolean);
+    else tokens = backticked(beforeNegation(body)).filter(isPathLike);
+    for (const t of tokens.flatMap(expandBraces)) {
+      const p = t.replace(/^\.\//, '');
+      if (p.startsWith('/') || p.split('/').includes('..')) continue;
+      if (!scope.includes(p)) scope.push(p);
+    }
+  }
+  for (const helper of scope.map(toTestHelperGlob)) if (helper && !scope.includes(helper)) scope.push(helper);
+  return scope;
 }
 
-/** 测试文件对应的源文件:去掉 .test / .spec,再去掉 __tests__/ 这一层;不是测试文件时为空。 */
-function sourcesOfTest(file) {
-  const source = file.replace(/\.(test|spec)(\.[^./]+)$/, '$2');
-  return source === file ? [] : [...new Set([source, source.replace(/(^|\/)__tests__\//, '$1')])];
+/** 改动文件是否落在某条范围路径里:以 / 结尾是目录;以 /** 结尾是目录及其下全部;其余按 glob(`*` 不跨目录,`**\/` 可以是零层目录)。 */
+export function matchesScope(file, pattern) {
+  const f = String(file).replace(/^\.\//, '');
+  const p = String(pattern).replace(/\\/g, '/');
+  if (p.endsWith('/')) return f === p.slice(0, -1) || f.startsWith(p);
+  if (p.endsWith('/**')) { const root = p.slice(0, -3); return f === root || f.startsWith(`${root}/`); }
+  const body = p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '\0').replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*').replace(/\0/g, '(?:.*/)?');
+  return new RegExp(`^${body}$`).test(f);
 }
 
 /**
  * 准备阶段直接算好、不交给模型的几项(D16):超出范围的文件、黑盒验证层的 SC、还开着的依赖。
- * 交接文件(alwaysInScope)、范围内源文件的测试不算超出;阶段合并 PR(head 分支带 stageHeadPrefixes 前缀)不算。
+ * 超出范围按批准执行的越界检查判(#236);本 PR 的交接目录(alwaysInScope,`<pr>` 换成 PR 号)放行;阶段合并 PR(head 分支带 stageHeadPrefixes 前缀)不算。
  */
-export function toDerived({ child, files = [], deps = null, headRefName = null, alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES }) {
+export function toDerived({ child, files = [], deps = null, pr = null, headRefName = null, alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES }) {
   const patterns = child?.scopePatterns ?? (child?.sections?.范围 ? toScopePatterns(child.sections.范围) : []);
   const stage = Boolean(headRefName) && stageHeadPrefixes.some((p) => String(headRefName).startsWith(p));
-  const inScope = (f) => [...patterns, ...alwaysInScope].some((p) => matchesScope(f, p))
-    || sourcesOfTest(f).some((s) => patterns.some((p) => matchesScope(s, p)));
+  const handoff = alwaysInScope.filter((p) => pr !== null || !p.includes('<pr>')).map((p) => p.replaceAll('<pr>', String(pr)));
+  const inScope = (f) => f === 'node_modules' || f.startsWith('node_modules/') || [...patterns, ...handoff].some((p) => matchesScope(f, p));
   const scopeNote = stage ? `阶段合并 PR(head ${clip(headRefName, 80)}):diff 含整个阶段的改动,不算超出范围的文件`
     : !child?.sections ? '结构未识别,没算超出范围的文件'
       : !patterns.length ? '范围未列路径' : null;
@@ -456,8 +540,11 @@ export function readTaskIssue({ repo, pr, prBody, prCreatedAt, baseRefName, head
       undecided: selectUndecided({ comments: commentsOf(parentNode), since: lastBodyEditAt({ createdAt: parentNode.createdAt, edits: parentEdits, automation }), maintainers }),
     };
     if (material.parent.notTotal) material.warnings.push(`父 issue ${material.parent.ref} 不是总 issue(标题不以 [总] 开头),照读`);
+    // 没找到分工行不等于「不归本 PR」:明确写出来,不让后面把缺这一行当成分工依据(#236)。
+    material.parent.selfRowMissing = !material.parent.childRows.some((r) => r.self);
+    material.parent.selfRowNote = material.parent.selfRowMissing ? SELF_ROW_MISSING : null;
   }
-  material.derived = toDerived({ child: material.issue, files, deps: material.deps, headRefName, alwaysInScope, stageHeadPrefixes });
+  material.derived = toDerived({ child: material.issue, files, deps: material.deps, pr, headRefName, alwaysInScope, stageHeadPrefixes });
   return finish();
 }
 
@@ -507,11 +594,12 @@ export function toSizedMaterial(material, limit = LIMITS.fileBytes) {
     if (issue.sections) issue.sections = Object.fromEntries(Object.entries(issue.sections).map(([k, v]) => [k, clipBytes(v, 1024)]));
     issue.raw = clipBytes(issue.raw, 4096);
     issue.scList = (issue.scList ?? []).map((sc) => ({ ...sc, description: clip(sc.description, 80), testPoint: sc.testPoint ? clip(sc.testPoint, 40) : sc.testPoint }));
+    if (issue.decided) issue.decided = issue.decided.map((d) => ({ date: d.date, text: clip(d.text, 160) }));
     if (material.derived) {
       material.derived = { ...material.derived, scopeOutsideTotal: material.derived.scopeOutside?.length ?? null,
         scopeOutside: material.derived.scopeOutside ? boundedList(material.derived.scopeOutside) : null, scopePatterns: boundedList(material.derived.scopePatterns) };
     }
-    material.truncated.push('子 issue 各段截到 1 KB、验收描述截到 80 字、路径列表最多 50 项且合计 4 KB');
+    material.truncated.push('子 issue 各段截到 1 KB、验收描述截到 80 字、已定决定截到 160 字、路径列表最多 50 项且合计 4 KB');
   }
   if (size() > limit && issue) {
     material.issue = { ref: issue.ref, url: issue.url, author: issue.author, trust: issue.trust, trustLabel: issue.trustLabel, trustNote: issue.trustNote,
@@ -581,7 +669,6 @@ const sameRepo = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toL
 const sameRef = (a, b) => Boolean(a && b) && sameRepo(a.repo, b.repo) && Number(a.number) === Number(b.number);
 const refText = (ref) => `${ref.repo}#${ref.number}`;
 const refKey = (ref) => `${String(ref.repo).toLowerCase()}#${Number(ref.number)}`;
-const escapeRe = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ownerName = (repo) => { const [owner, name] = String(repo).split('/'); return { owner, name }; };
 const editsOf = (node) => (node?.userContentEdits?.nodes ?? []).filter((e) => e?.editedAt).map((e) => ({ editor: e.editor?.login ?? null, at: e.editedAt }));
 // 编辑记录是否取全:看 totalCount;没返回 totalCount 时,条数用满 50 条的窗口就当作可能没取全。

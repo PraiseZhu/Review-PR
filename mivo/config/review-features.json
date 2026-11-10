@@ -23,7 +23,7 @@
   "taskIssue": {
     "mode": "observe",
     "automation": ["praiseautomation", "github-actions"],
-    "alwaysInScope": ["docs/pr/**"],
+    "alwaysInScope": ["docs/pr/<pr>/"],
     "stageHeadPrefixes": ["integration/", "sync/main-into-"]
   },
   "focus": {

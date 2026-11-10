@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import {
   loadTaskIssueMode, parseTaskLines, selectTaskIssue, parentRefFromBody, toSections, toScList, toChildMaterial, toTrust,
   lastBodyEditAt, selectUndecided, toDecisions, toChildRows, toParentSections, matchesScope, toScopePatterns, toDerived, toShared,
-  toGraphqlResult, readTaskIssue, toSizedMaterial, toTaskIssueSummary, collectTaskIssue, toCodeMask, CHILD_SECTIONS, LIMITS, BASE_NOTE,
+  toGraphqlResult, readTaskIssue, toSizedMaterial, toTaskIssueSummary, collectTaskIssue, toCodeMask, toDecided, expandBraces, toTestHelperGlob,
+  CHILD_SECTIONS, LIMITS, BASE_NOTE, SELF_ROW_MISSING,
 } from './task-issue.mjs';
 
 const CHILD = readFileSync(new URL('./fixtures/task-issue/child-v1.md', import.meta.url), 'utf8');
@@ -108,7 +109,9 @@ test('SC2:多于 1 个只取第一个并告警;转 issue 跟进的 issue、维�
 test('SC3:五段和每条 SC 的编号、描述、验证层、测试点都解析正确;模板注释里的不算', () => {
   const child = toChildMaterial(CHILD);
   assert.equal(child.structure, 'parsed');
-  assert.deepEqual(Object.keys(child.sections), CHILD_SECTIONS);
+  assert.deepEqual(Object.keys(child.sections), [...CHILD_SECTIONS, '原因'], '五个必需段加「原因」(#236)');
+  assert.equal(child.sections.原因, '用户要把局部画面贴进周报。');
+  assert.deepEqual(child.decided, [], '待定问题写「无」时没有已定决定');
   assert.match(child.sections.范围, /regionPng/);
   assert.doesNotMatch(child.sections.范围, /check-pr|SC99/, 'HTML 注释去掉');
   assert.deepEqual(child.scList.map((s) => [s.sc, s.layer, s.checked]), [['SC1', 'unit', false], ['SC2', 'browser-fixture', true], ['SC3', 'cindy-mac', false], ['SC4', null, false], ['SC5', 'static', false]]);
@@ -251,23 +254,25 @@ test('SC13:记录 base 分支和依赖开关状态,写明 issue 关闭不代表�
 });
 
 // ── SC15 代码判定项 ──
-test('SC15:范围路径匹配:**/ 可以是零层目录,* 不跨目录,目录前缀', () => {
+test('SC15:范围路径匹配(批准执行同规则):**/ 可以是零层目录,* 不跨目录,/ 结尾是目录,/** 结尾是目录及其下全部', () => {
   assert.ok(matchesScope('src/a/__tests__/x.test.ts', 'src/**/__tests__/*.test.ts'));
   assert.ok(matchesScope('src/__tests__/x.test.ts', 'src/**/__tests__/*.test.ts'), '**/ 零层');
   assert.ok(!matchesScope('src/__tests__/deep/x.test.ts', 'src/**/__tests__/*.test.ts'), '* 不跨目录');
   assert.ok(matchesScope('src/export/panel/a.tsx', 'src/export/panel/'));
-  assert.ok(matchesScope('src/export/panel/a.tsx', 'src/export/panel'));
-  assert.ok(!matchesScope('src/export/panelx.tsx', 'src/export/panel'));
+  assert.ok(!matchesScope('src/export/panel/a.tsx', 'src/export/panel'), '不带 / 的写法只匹配这个文件本身');
+  assert.ok(matchesScope('scripts/fixtures/export/a/b.json', 'scripts/fixtures/export/**'));
+  assert.ok(matchesScope('scripts/fixtures/export', 'scripts/fixtures/export/**'));
   assert.ok(matchesScope('src/i18n/locales/en/export.json', 'src/i18n/locales/*/export.json'));
-  assert.deepEqual(toScopePatterns('- `AGENTS.md`、`docs/a.md`：改\n- `taskIssue.mode`(`off`)'), ['docs/a.md', 'AGENTS.md', 'taskIssue.mode']);
+  assert.deepEqual(toScopePatterns('- `AGENTS.md`、`docs/a.md`：改\n- `taskIssue.mode`(`off`)'), ['AGENTS.md', 'docs/a.md', 'taskIssue.mode', 'off'], '整行只列了文件时全收');
 });
 
-test('SC15:超出范围的文件、黑盒 SC、还开着的依赖由代码算;交接文件、范围内源文件的测试、根目录文件不算超出', () => {
+test('SC15:超出范围的文件(批准执行同规则)、黑盒 SC、还开着的依赖由代码算;本 PR 交接目录、测试 glob 的 __tests__ 夹具、根目录文件不算超出', () => {
   const child = toChildMaterial(CHILD);
-  const files = ['src/export/regionPng.ts', 'src/export/regionPng.test.ts', 'src/export/__tests__/regionPng.test.ts', 'src/export/panel/Button.tsx',
-    'docs/pr/7/review.md', 'docs/pr/7/after.png', 'CHANGELOG.md', 'src/store/other.ts', 'src/store/other.test.ts'];
-  const derived = toDerived({ child, files, deps: { items: [{ ref: 'o/r#10', state: 'CLOSED' }, { ref: 'o/r#11', state: 'OPEN' }] } });
-  assert.deepEqual(derived.scopeOutside, ['src/store/other.test.ts', 'src/store/other.ts']);
+  const files = ['src/export/regionPng.ts', 'src/export/regionPng.test.ts', 'src/export/__tests__/regionPng.test.ts', 'src/export/__tests__/helpers/fakeCanvas.ts',
+    'src/export/panel/Button.tsx', 'docs/pr/7/review.md', 'docs/pr/7/after.png', 'docs/pr/8/review.md', 'CHANGELOG.md', 'src/store/other.ts', 'src/store/other.test.ts'];
+  const derived = toDerived({ child, files, pr: 7, deps: { items: [{ ref: 'o/r#10', state: 'CLOSED' }, { ref: 'o/r#11', state: 'OPEN' }] } });
+  assert.deepEqual(derived.scopeOutside, ['docs/pr/8/review.md', 'src/export/regionPng.test.ts', 'src/store/other.test.ts', 'src/store/other.ts'],
+    '范围只写了 `src/**/__tests__/*.test.ts`,同目录的测试文件不在范围内;别的 PR 的交接目录不放行');
   assert.deepEqual(derived.blackboxSc, ['SC3']);
   assert.deepEqual(derived.depsOpen, ['o/r#11']);
   assert.equal(derived.scopeNote, null);
@@ -494,6 +499,83 @@ test('子 issue 解析出的验收标准与 CommonMark 判定一致(代码块外
   const fixture = JSON.parse(readFileSync(new URL('./fixtures/task-issue/commonmark-sc-lists.json', import.meta.url), 'utf8'));
   assert.ok(fixture.docs.length >= 40);
   for (const doc of fixture.docs) assert.deepEqual(toChildMaterial(doc.body).scList.map((x) => x.sc), doc.expected, doc.name);
+});
+
+// ── #236:原因与已定决定、越界判定对齐批准执行、总 issue 勾选清单行 ──
+const withIntent = ({ reason = '用户要把局部画面贴进周报。', pending = '无' } = {}) =>
+  CHILD.replace('## 原因\n\n用户要把局部画面贴进周报。', `## 原因\n\n${reason}`).replace('## 待定问题\n\n无', `## 待定问题\n\n${pending}`);
+
+test('#236 SC1:「原因」段收进材料,超过 2 KB 截断;没有这一段时为 null,结构仍按五个必需段判', () => {
+  const long = toChildMaterial(withIntent({ reason: '因为。'.repeat(1000) }));
+  assert.ok(bytes(long.sections.原因) <= LIMITS.reasonBytes);
+  assert.match(long.sections.原因, /已截断/);
+  const none = toChildMaterial(CHILD.replace(/## 原因\n\n[^\n]*\n\n/, ''));
+  assert.deepEqual([none.structure, none.sections.原因], ['parsed', null]);
+});
+
+test('#236 SC2:「待定问题」里已定的决定收进 decided,两种日期写法都认;没写「已定」或没日期的、代码块里的不收', () => {
+  const pending = [
+    '- 开关放哪：已定 2026-11-03（用户）：设置页只留总开关。',
+    '- 旧图怎么办。已定（2026-11-07 lead，Jev 选 A 置信度 0.98）：保留到改名完成再删',
+    '- 阈值取多少：还没定，开工后问。',
+    '- 已定，但没写日期',
+    '```',
+    '- 示例：已定 2026-01-01（示例）：不算',
+    '```',
+  ].join('\n');
+  const child = toChildMaterial(withIntent({ pending }));
+  assert.deepEqual(child.decided.map((d) => d.date), ['2026-11-03', '2026-11-07']);
+  assert.match(child.decided[1].text, /^旧图怎么办。已定（2026-11-07 lead/);
+  assert.equal(toDecided(Array.from({ length: 15 }, (_, i) => `- 已定 2026-11-${String(i + 1).padStart(2, '0')}：第 ${i} 条`).join('\n')).length, LIMITS.decided);
+  assert.ok(toDecided(`- 已定 2026-11-01：${'很长'.repeat(400)}`)[0].text.length <= LIMITS.decidedChars);
+});
+
+test('#236 SC3:范围解析与批准执行同规则:冒号前的文件格、冒号后只收路径词、否定语境之后不收、花括号展开、测试 glob 带 __tests__ 夹具', () => {
+  const scope = [
+    '- `src/a.ts`、`AGENTS.md`：改；顺带 `src/b/` 和 `TEST_FILES`',
+    '- 修改：`README.md`、`docs/x.md`',
+    '- 只改 `src/c.ts`，不改 `.github/`、`src/d.ts`',
+    '- `src/{e,f}.ts`：两个文件',
+    '- `tests/**/*.test.mjs`：相关测试',
+    '- 相关测试',
+  ].join('\n');
+  assert.deepEqual(toScopePatterns(scope), ['src/a.ts', 'AGENTS.md', 'src/b/', 'README.md', 'docs/x.md', 'src/c.ts', 'src/e.ts', 'src/f.ts', 'tests/**/*.test.mjs', 'tests/**/__tests__/**/*']);
+  assert.deepEqual(expandBraces('a/{b, c}.{ts,mjs}'), ['a/b.ts', 'a/b.mjs', 'a/c.ts', 'a/c.mjs']);
+  assert.equal(toTestHelperGlob('x/__tests__/*.test.ts'), 'x/__tests__/**/*');
+  assert.equal(toTestHelperGlob('src/a.ts'), null);
+  const child = toChildMaterial(mini({ scope: '- 相关测试' }));
+  const derived = toDerived({ child, files: ['src/a.ts'], pr: 7 });
+  assert.deepEqual([derived.scopeOutside, derived.scopeNote], [null, '范围未列路径'], '范围行没有路径时不报错');
+  assert.deepEqual(toDerived({ child: toChildMaterial(mini()), files: ['node_modules/x/y.js', 'src/a.ts'], pr: 7 }).scopeOutside, []);
+});
+
+test('#236 SC5:总 issue 子 issue 一节的勾选清单行和表格行一起读;本子 issue 只写在清单里也找得到', () => {
+  const section = ['| 子 issue | 内容 | 并行组 |', '|---|---|---|', '| #11 | 整图导出 | A |', '', '勾选清单：', '- [x] #11', '- [ ] #12（2026-11-08 追加：导出选区，指向 main）',
+    '', '```', '- [ ] #12 代码块里的示例', '```'].join('\n');
+  const rows = toChildRows(section, { repo: 'o/r', number: 12 }, 'o/r');
+  assert.deepEqual(rows.map((r) => r.line), ['| #11 | 整图导出 | A |', '- [x] #11', '- [ ] #12（2026-11-08 追加：导出选区，指向 main）']);
+  assert.deepEqual(rows.filter((r) => r.self).map((r) => r.line), ['- [ ] #12（2026-11-08 追加：导出选区，指向 main）']);
+  const multi = toChildRows(['| A | B |', '|---|---|', '| #1 | x |', '', '| C | D |', '|---|---|', '| #12 | y |'].join('\n'), { repo: 'o/r', number: 12 }, 'o/r');
+  assert.deepEqual(multi.map((r) => r.line), ['| #1 | x |', '| #12 | y |'], '多张表各自去掉表头');
+});
+
+test('#236 SC6:总 issue 里没有本子 issue 分工行时 selfRowMissing 为 true 并写明;找到时为 false', () => {
+  const found = read();
+  assert.deepEqual([found.material.parent.selfRowMissing, found.material.parent.selfRowNote], [false, null]);
+  const body = parentBody().replace('| #12 | 导出选区 | B |', '| #13 | 别的子 issue | B |');
+  const missing = read({}, { parent: parentData({ body }) });
+  assert.deepEqual([missing.material.parent.selfRowMissing, missing.material.parent.selfRowNote], [true, SELF_ROW_MISSING]);
+});
+
+test('#236 SC7:加上原因段与已定决定后,材料按落盘格式仍不超过 64 KB,删减记进 truncated', () => {
+  const pending = Array.from({ length: 10 }, (_, i) => `- 第 ${i} 问：已定 2026-11-0${(i % 9) + 1}（用户）：${'理由'.repeat(240)}`).join('\n');
+  const sc = Array.from({ length: 95 }, (_, i) => `- [ ] SC${i + 1} ${'a'.repeat(600)}。验证：unit`).join('\n');
+  const body = withIntent({ reason: '原因。'.repeat(1000), pending }).replace(/## 验收标准\n[\s\S]*$/, `## 验收标准\n\n${sc}\n`);
+  const files = Array.from({ length: 60 }, (_, i) => `src/${'d'.repeat(200)}/${'e'.repeat(200)}/f${i}.ts`);
+  const { material } = read({ files }, { ...NO_PARENT_ROUTES, issue: () => ({ data: { repository: { issue: issueNode({ body }) } } }) });
+  assert.ok(persisted(material) <= LIMITS.fileBytes, `落盘 ${persisted(material)} 字节`);
+  assert.equal(material.issue.decided?.length ?? 0, material.issue.dropped ? 0 : 10);
+  assert.ok(material.truncated.length > 0);
 });
 
 // ── SC5 失败只记 warning ──
