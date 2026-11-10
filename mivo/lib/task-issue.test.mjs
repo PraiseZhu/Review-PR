@@ -564,6 +564,11 @@ test('#236 SC5:总 issue 子 issue 一节的勾选清单行和表格行一起读
   assert.equal(self12(['| 子 issue | 内容 | 依赖 |', '|---|---|---|', '| #11、#12 | 两个子任务并行 | 等 #9 |'].join('\n')), 1, '主体格并列的引用都算(复审 R2-F2)');
   assert.equal(self12('- [ ] #11、#12 两个子任务并行'), 1);
   assert.equal(self12('- [ ] #11 导出，依赖 #12'), 0, '隔着说明文字的不算');
+  assert.equal(self12('- [ ] [子1](https://github.com/o/r/issues/11)、[子2](https://github.com/o/r/issues/12)'), 1, '整个 Markdown 链接算一个引用单元(复审 R3-F1)');
+  assert.equal(self12(['| 子 issue | 内容 |', '|---|---|', '| [子1](https://github.com/o/r/issues/11)、[子2](https://github.com/o/r/issues/12) | 并行 |'].join('\n')), 1);
+  assert.equal(self12(['- [ ] #11 导出任务', '- 参考资料：[背景讨论](https://github.com/o/r/issues/12)'].join('\n')), 0, '行首不是引用单元的列表行不是分工行(复审 R3-F2)');
+  assert.equal(self12('- [x] **子2** #12 选区'), 1, '加粗标签后的引用算');
+  assert.equal(self12('- [ ] 子2/10：#12 选区'), 1);
 });
 
 test('#236 SC6:总 issue 里没有本子 issue 分工行时 selfRowMissing 为 true 并写明;找到时为 false', () => {

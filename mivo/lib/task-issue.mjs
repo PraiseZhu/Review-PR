@@ -37,6 +37,7 @@ const PARENT_LINE_RE = new RegExp(`总\\s*issue\\s*[：:]?\\s*${REF_TAIL}`, 'i')
 const ANY_REF_RE = new RegExp(`(?<![\\w/#&.:-])(?:(${REPO_PART}))?#(\\d{1,7})(?!\\d)`, 'g');
 const SC_RE = /^\s*[-*]\s+\[([ xX])\]\s+SC(\d+)\s+(.+?)\s*$/;
 const URL_REF_RE = new RegExp(`https?:\\/\\/github\\.com\\/(${REPO_PART})\\/(?:issues|pull)\\/(\\d{1,7})(?!\\d)`, 'g');
+const MD_LINK_REF_RE = new RegExp(`\\[[^\\]\\n]*\\]\\(\\s*https?:\\/\\/github\\.com\\/(${REPO_PART})\\/(?:issues|pull)\\/(\\d{1,7})(?!\\d)[^)\\s]*\\s*\\)`, 'g');
 // 裁定字样必须是首行开头(前面只允许空白、强调符号、引用符、括号和日期,日期可带括号、加粗或逗号),正文里顺带提到的不算。
 const DECISION_HEAD_RE = new RegExp(`^[\\s>*#_（(]*(?:\\d{4}-\\d{2}-\\d{2}[\\s）)*_，,：:]*)?(?:${DECISION_MARKERS.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`);
 
@@ -268,28 +269,39 @@ export function toDecisions(text) {
 
 /**
  * 子 issue 一节:表格行(去掉表头和分隔线)和提到 #N 的列表行(勾选清单,后来追加的子 issue 常只写在这里,#236)按出现顺序一起读,
- * 标出本子 issue 那一行:只看这一行的主体引用(表格取第一个带引用的格子,清单取整行;主体是第一个引用加紧跟其后的并列引用,如「#11、#12」),
+ * 标出本子 issue 那一行,按封闭写法判(#236):引用单元是 `#N`、`owner/repo#N`、GitHub 网址或整个 Markdown 链接;表格行的主体在第一个带引用的格子里;
+ * 清单行去掉勾选框和可选标签后行首必须就是引用单元(「参考资料：[…](…)」不是分工行);主体是第一个引用单元加紧跟其后的并列引用单元(「#11、#12」),
  * 依赖、说明里顺带提到的不算(「| #11 | 等 #12 合入后 |」不是 #12 的分工行)。代码块里的不算。最多 40 行,本子 issue 那一行总是保留。
  */
 function rowSubjectsOf(line, tableRow, repo) {
-  const cells = tableRow ? line.trim().replace(/^\||\|$/g, '').split('|') : [line];
-  for (const cell of cells) {
-    const found = refsAt(cell, repo);
-    if (!found.length) continue;
-    // 主体 = 第一个引用,加上紧跟其后、只隔着顿号 / 逗号 / 「和」「及」/ 斜杠 / 空白的并列引用(「#11、#12」);依赖、说明里的不算
-    const subjects = [found[0]];
-    for (let i = 1; i < found.length && /^[\s、,，和及/]*$/.test(cell.slice(found[i - 1].end, found[i].at)); i += 1) subjects.push(found[i]);
-    return subjects;
+  if (tableRow) {
+    for (const cell of line.trim().replace(/^\||\|$/g, '').split('|')) {
+      const found = refsAt(cell, repo);
+      if (found.length) return parallelFrom(cell, found);
+    }
+    return [];
   }
-  return [];
+  // 清单行:去掉列表标记、勾选框和可选标签([子3]、子3、加粗)后,行首必须就是引用单元,否则不是分工行
+  const head = /^\s*[-*]\s+(?:\[[ xX]\]\s+)?(?:\*\*|__)?(?:\[[^\]]*\](?!\()\s*|子\s*\d+\s*[/／]?\s*\d*\s*[：:]?\s*)?(?:\*\*|__)?\s*/.exec(line)[0].length;
+  const found = refsAt(line, repo);
+  return found.length && found[0].at === head ? parallelFrom(line, found) : [];
 }
 
-/** 文本里的引用(`#N`、`owner/repo#N`、GitHub 网址)及其起止位置,按出现顺序。 */
+/** 主体 = 第一个引用单元,加紧跟其后、只隔着顿号 / 逗号 / 「和」「及」/ 斜杠 / 空白的并列引用单元;依赖、说明里的不算。 */
+function parallelFrom(text, found) {
+  const subjects = [found[0]];
+  for (let i = 1; i < found.length && /^[\s、,，和及/]*$/.test(text.slice(found[i - 1].end, found[i].at)); i += 1) subjects.push(found[i]);
+  return subjects;
+}
+
+/** 引用单元及其起止位置,按出现顺序:整个 Markdown 链接 `[文字](GitHub 网址)`、裸 GitHub 网址、`#N`、`owner/repo#N`。 */
 function refsAt(text, repo) {
-  const urls = [...text.matchAll(URL_REF_RE)].map((m) => ({ at: m.index, end: m.index + m[0].length, repo: m[1], number: Number(m[2]) }));
-  const masked = text.replace(URL_REF_RE, (m) => ' '.repeat(m.length));
-  const plain = [...masked.matchAll(ANY_REF_RE)].map((m) => ({ at: m.index, end: m.index + m[0].length, repo: m[1] ?? repo, number: Number(m[2]) }));
-  return [...urls, ...plain].sort((a, b) => a.at - b.at);
+  const units = [];
+  const mask = (s, re, toUnit) => s.replace(re, (...m) => { units.push(toUnit(m)); return ' '.repeat(m[0].length); });
+  let rest = mask(text, MD_LINK_REF_RE, (m) => ({ at: m.at(-2), end: m.at(-2) + m[0].length, repo: m[1], number: Number(m[2]) }));
+  rest = mask(rest, URL_REF_RE, (m) => ({ at: m.at(-2), end: m.at(-2) + m[0].length, repo: m[1], number: Number(m[2]) }));
+  for (const m of rest.matchAll(ANY_REF_RE)) units.push({ at: m.index, end: m.index + m[0].length, repo: m[1] ?? repo, number: Number(m[2]) });
+  return units.sort((a, b) => a.at - b.at);
 }
 
 export function toChildRows(text, child, parentRepo) {
