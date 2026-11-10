@@ -8,6 +8,7 @@
 //   [--log-dir <目录>]                     日志与部署记录目录,默认 ~/Library/Logs/mivo-prereview/deploy。
 //   --help                                打印用法后退出 0。不认识的参数(拼错的选项、多余的词)报错退出 1,什么都不做、不读 gh。
 // 执行模式在判断要不要换之前,先回收上一个换版本进程死后留下的孤儿停点和部署锁(PraiseZhu/Review-PR#205,规则见 orphan-hold.mjs)。
+// 整组换好后,跑新检出里的 issue-agent-consumers.mjs 同步 issue-agent 的放行版本哈希(PraiseZhu/Review-PR#165),结果写进收尾那句话。
 // 执行模式退出码:0 换好了、已是最新或今天先不换;1 不能自动换(要人看),或没换成但线上仍是旧版本、前置照常;
 // 2 换失败且前置保持停止(含新版本已上),要人工处理。--check 不调 deploy-tuple,不拿锁。
 import fs from 'node:fs';
@@ -18,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WF_PATH, toCliArgs, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs, toAutoUpdateFinish } from './tuple-lib.mjs';
 import { reconcileOrphanHold } from './orphan-hold.mjs';
+import { toConsumerStepNote } from './issue-agent-consumers.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = 'xindong/mivo-canvas-plugin';
@@ -81,6 +83,14 @@ function deploy({ current, target }) {
   return { status: r.status ?? 1, log, tail: r.error ? `${r.error.message}\n${tail}` : tail };
 }
 
+// 换好后同步 issue-agent 的放行版本哈希:跑新检出里的脚本(子进程,加载的是新版 lib.mjs)。
+// 新检出里没有这个脚本(换到了更早的版本)就不跑。
+function syncIssueAgentConsumers() {
+  const script = path.join(SKILL_DIR, 'mivo/deploy/issue-agent-consumers.mjs');
+  if (!fs.existsSync(script)) return '';
+  return toConsumerStepNote(spawnSync(process.execPath, [script, '--skill-dir', SKILL_DIR], { encoding: 'utf8', timeout: 60_000 }));
+}
+
 // 孤儿停点:撤掉了或撤不掉都要让维护者看到,拼在收尾那句话前面。
 function reclaimOrphan() {
   try {
@@ -112,7 +122,11 @@ function main() {
   if (decision.action !== 'update') return finish(0, note(`今天不换:${decision.reason}`));
   const result = deploy({ current, target });
   const done = toAutoUpdateFinish(result.status ?? 1, { reason: decision.reason, current, log: result.log, tail: result.tail });
-  return finish(done.code, note(done.text));
+  if (done.code !== 0) return finish(done.code, note(done.text));
+  // 被拦的提醒放最前面,收尾帧超长截断时也看得到。
+  const consumers = syncIssueAgentConsumers();
+  const text = consumers.startsWith('issue 评估的发布') ? `${consumers}\n${done.text}` : [done.text, consumers].filter(Boolean).join('\n');
+  return finish(done.code, note(text));
 }
 
 // 参数先校验:--help 和报错都在读 gh、拿锁、写停点之前结束。只设退出码、不调 process.exit(理由同 finish)。
