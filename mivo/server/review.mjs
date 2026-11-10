@@ -17,6 +17,7 @@ import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, 
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
 import { loadFocusConfig } from '../lib/focus.mjs';
 import { loadProductRulesMode, readProductRules, resolveLanding, toProductRulesState } from '../lib/product-rules.mjs';
+import { loadTaskIssueMode, collectTaskIssue, TASK_ISSUE_FILE } from '../lib/task-issue.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary, keyedDeferrals } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudications } from '../lib/rulings.mjs';
@@ -175,6 +176,9 @@ async function prepare() {
     // 后来发现分桶开关(lib/report.mjs splitLateFindings):读不到或不合法按 off 处理并告警;未改动文件清单在下面算完范围后再定。
     const lateMode = loadLateFindingsMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     if (lateMode.warning) state.warnings.push(lateMode.warning);
+    // 任务 issue 开关(lib/task-issue.mjs):读不到或不合法按 off 处理并告警;issue 本身在下面拿到 diff 文件后再读。
+    const taskIssueMode = loadTaskIssueMode(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
+    if (taskIssueMode.warning) state.warnings.push(taskIssueMode.warning);
     const gate = decideGate(ctx);
     if (gate.stage !== 'review') {
       return finishEarly(state, gate.outcome ?? 'state-changed', `进场复核未通过:${gate.reason}`, gate.outcome === 'error');
@@ -211,6 +215,16 @@ async function prepare() {
       state.productRules = toProductRulesState({ mode: productRulesMode.mode, read, landing, files: Object.keys(diffFiles) });
       for (const w of state.productRules.warnings.slice(0, 20)) state.warnings.push(`产品规则:${w.message}`);
       writeJson(join(INPUT_DIR, 'product-rules.json'), state.productRules);
+    }
+    // 4b. 任务 issue(#133):只读、只记,不进任务书和结论;GitHub 读取只在这里(有令牌),codex 阶段只有 task-issue.json。
+    if (taskIssueMode.mode !== 'off') {
+      const { material, summary } = collectTaskIssue({ repo: input.targetRepo, pr: input.pr, prBody: ctx.meta?.body, prCreatedAt: ctx.meta?.createdAt,
+        baseRefName: ctx.meta?.baseRefName, headRefName: ctx.meta?.headRefName, files: Object.keys(diffFiles), maintainers: ctx.signoff?.maintainers ?? [],
+        automation: taskIssueMode.automation, alwaysInScope: taskIssueMode.alwaysInScope, stageHeadPrefixes: taskIssueMode.stageHeadPrefixes, ghFn: gh });
+      for (const w of [...material.warnings, ...material.gaps].slice(0, 10)) state.warnings.push(`任务 issue:${w}`);
+      const file = join(INPUT_DIR, TASK_ISSUE_FILE);
+      writeJson(file, { ...material, mode: taskIssueMode.mode });
+      state.taskIssue = { mode: taskIssueMode.mode, file, summary };
     }
     // 任务书版本:规则文件按 base 读(PR 改规则文件本身是被审对象,不能用它放宽审查),base 取不到回退 head 并告警(lib/prompt.mjs)。
     const spec = loadReviewSpec(SKILL_ROOT);
@@ -1069,6 +1083,7 @@ function baseResult(state) {
       filePatchHashes: current.filePatchHashes, filePatchHashesV2: current.filePatchHashesV2, totalDiffLines: current.totalDiffLines, triggerKinds: current.triggerKinds,
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       ...(state.handoff?.review ? { handoffReview: toHandoffSnapshot(state.handoff.review) } : {}),
+      ...(state.taskIssue ? { taskIssue: state.taskIssue.summary } : {}),
       codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], lateFindings: [], ruledKept: [], adjudicatedKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },
   };

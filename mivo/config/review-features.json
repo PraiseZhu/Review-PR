@@ -20,6 +20,12 @@
   "lateFindings": {
     "mode": "enforce"
   },
+  "taskIssue": {
+    "mode": "observe",
+    "automation": ["praiseautomation", "github-actions"],
+    "alwaysInScope": ["docs/pr/**"],
+    "stageHeadPrefixes": ["integration/", "sync/main-into-"]
+  },
   "focus": {
     "ciCovered": [
       "npx tsc -b",

@@ -197,6 +197,138 @@
    ]
   },
   {
+   "id": "task-issue.ghFn.0a74d26d13",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "0a74d26d13",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "pr-closing-issues",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:10){nodes{number title url}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":7}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.5f96070e5b",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "5f96070e5b",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "task-issue-with-timeline",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url}}}}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":1696}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.b0af6e43df",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "b0af6e43df",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "dependency-states",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$n0:Int!,$n1:Int!,$n2:Int!,$n3:Int!,$n4:Int!,$n5:Int!,$n6:Int!,$n7:Int!,$n8:Int!,$n9:Int!){repository(owner:$owner,name:$name){d0:issueOrPullRequest(number:$n0){...S} d1:issueOrPullRequest(number:$n1){...S} d2:issueOrPullRequest(number:$n2){...S} d3:issueOrPullRequest(number:$n3){...S} d4:issueOrPullRequest(number:$n4){...S} d5:issueOrPullRequest(number:$n5){...S} d6:issueOrPullRequest(number:$n6){...S} d7:issueOrPullRequest(number:$n7){...S} d8:issueOrPullRequest(number:$n8){...S} d9:issueOrPullRequest(number:$n9){...S}}} fragment S on IssueOrPullRequest{__typename ... on Issue{number state} ... on PullRequest{number state}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"n0\":1687,\"n1\":1694,\"n2\":1695,\"n3\":1687,\"n4\":1687,\"n5\":1687,\"n6\":1687,\"n7\":1687,\"n8\":1687,\"n9\":1687}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.d3759cfefa",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "d3759cfefa",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "parent-pointer-rest",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/issues/1696/parent"
+     ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.2cca7741b7",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "2cca7741b7",
+    "count": 1
+   },
+   "flows": [
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "parent-issue",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":1687}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
    "id": "resolve-fixed-threads.ghGraphqlFn.703db82905",
    "source": {
     "file": "mivo/lib/resolve-fixed-threads.mjs",
