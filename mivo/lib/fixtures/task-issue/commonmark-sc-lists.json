@@ -1,0 +1,323 @@
+{
+ "_comment": "合成夹具:按子 issue 模板拼的正文与应解析出的验收标准(代码块外的 SC 行),由 markdown-it-py 4.2.0(commonmark 预设)判定代码块,不含真实仓库内容。task-issue.test.mjs 用它核对 toChildMaterial。",
+ "docs": [
+  {
+   "name": "R5-F1 验收段第一行是缩进代码块",
+   "body": "## 目标\n\n交付\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n无\n\n## 依赖\n\n无\n\n## 验收标准\n\n    - [ ] SC99 示例。验证：paid\n\n- [ ] SC1 实际验收。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "引用段落的懒惰续行",
+   "body": "## 目标\n\n交付\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n无\n\n## 依赖\n\n无\n\n## 验收标准\n\n> - [ ] SC94 引用里的。验证：unit\n    - [ ] SC93 续行。验证：paid\n\n- [ ] SC5 验收。验证：unit\n",
+   "expected": [
+    "SC93",
+    "SC5"
+   ]
+  },
+  {
+   "name": "随机 1",
+   "body": "## 目标\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n## 依赖\n\n\n## 验收标准\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 2",
+   "body": "## 目标\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n```\n- [ ] SC90 示例。验证：paid\n```\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 不做\n\n\n## 依赖\n\n- [ ] SC1 验收 1。验证：unit\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n\n    - [ ] SC92 示例。验证：paid\n",
+   "expected": [
+    "SC2",
+    "SC3",
+    "SC92"
+   ]
+  },
+  {
+   "name": "随机 3",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 依赖\n\n```\n- [ ] SC90 示例。验证：paid\n```\n\n## 验收标准\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 4",
+   "body": "## 目标\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n\n## 不做\n\n~~~md\n- [ ] SC90 示例。验证：paid\n~~~\n\n- [ ] SC2 验收 2。验证：unit\n\n## 依赖\n\n> - [ ] SC94 引用里的。验证：unit\n\n- [ ] SC3 验收 3。验证：unit\n- [ ] SC4 验收 4。验证：unit\n- [ ] SC5 验收 5。验证：unit\n\n## 验收标准\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC6 验收 6。验证：unit\n",
+   "expected": [
+    "SC6"
+   ]
+  },
+  {
+   "name": "随机 5",
+   "body": "## 目标\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 依赖\n\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n```md\n- [ ] SC90 示例。验证：paid\n```\n",
+   "expected": [
+    "SC95"
+   ]
+  },
+  {
+   "name": "随机 6",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n## 依赖\n\n\n## 验收标准\n\n说明文字 #12\n\n\n    - [ ] SC92 示例。验证：paid\n\n- [ ] SC3 验收 3。验证：unit\n",
+   "expected": [
+    "SC3"
+   ]
+  },
+  {
+   "name": "随机 7",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n> - [ ] SC94 引用里的。验证：unit\n\n说明文字 #12\n\n## 不做\n\n> - [ ] SC94 引用里的。验证：unit\n\n- [ ] SC3 验收 3。验证：unit\n\n## 依赖\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 验收标准\n\n说明文字 #12\n\n- [ ] SC4 验收 4。验证：unit\n",
+   "expected": [
+    "SC4"
+   ]
+  },
+  {
+   "name": "随机 8",
+   "body": "## 目标\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 范围\n\n- `src/a.ts`：改\n\n说明文字 #12\n\n## 不做\n\n\n## 依赖\n\n- [ ] SC1 验收 1。验证：unit\n\n## 验收标准\n\n说明文字 #12\n\n```md\n- [ ] SC90 示例。验证：paid\n```\n\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n",
+   "expected": [
+    "SC2",
+    "SC3"
+   ]
+  },
+  {
+   "name": "随机 9",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n```\n- [ ] SC90 示例。验证：paid\n```\n\n## 依赖\n\n\n## 验收标准\n\n说明文字 #12\n\n- [ ] SC2 验收 2。验证：unit\n",
+   "expected": [
+    "SC2"
+   ]
+  },
+  {
+   "name": "随机 10",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n    - [ ] SC93 示例。验证：paid\n\n## 依赖\n\n    - [ ] SC93 示例。验证：paid\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 验收标准\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n    - [ ] SC93 示例。验证：paid\n",
+   "expected": [
+    "SC1",
+    "SC2",
+    "SC93"
+   ]
+  },
+  {
+   "name": "随机 11",
+   "body": "## 目标\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 不做\n\n```md\n- [ ] SC90 示例。验证：paid\n```\n\n## 依赖\n\n\n## 验收标准\n\n说明文字 #12\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 12",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n- [ ] SC4 验收 4。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n~~~\n- [ ] SC90 示例。验证：paid\n~~~\n    - [ ] SC93 示例。验证：paid\n\n## 依赖\n\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC5 验收 5。验证：unit\n",
+   "expected": [
+    "SC5"
+   ]
+  },
+  {
+   "name": "随机 13",
+   "body": "## 目标\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 不做\n\n    - [ ] SC93 示例。验证：paid\n\n~~~md\n- [ ] SC90 示例。验证：paid\n~~~\n\n## 依赖\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 14",
+   "body": "## 目标\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 依赖\n\n> - [ ] SC94 引用里的。验证：unit\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC95",
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 15",
+   "body": "## 目标\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 范围\n\n- `src/a.ts`：改\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 不做\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n\n## 依赖\n\n- [ ] SC3 验收 3。验证：unit\n\n- [ ] SC4 验收 4。验证：unit\n- [ ] SC5 验收 5。验证：unit\n\n## 验收标准\n\n说明文字 #12\n\n~~~\n- [ ] SC90 示例。验证：paid\n~~~\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n",
+   "expected": [
+    "SC95"
+   ]
+  },
+  {
+   "name": "随机 16",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n- [ ] SC4 验收 4。验证：unit\n- [ ] SC5 验收 5。验证：unit\n\n## 不做\n\n\n## 依赖\n\n\n    - [ ] SC92 示例。验证：paid\n\n说明文字 #12\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC6 验收 6。验证：unit\n- [ ] SC7 验收 7。验证：unit\n- [ ] SC8 验收 8。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC93",
+    "SC6",
+    "SC7",
+    "SC8"
+   ]
+  },
+  {
+   "name": "随机 17",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n说明文字 #12\n\n## 不做\n\n\n## 依赖\n\n- [ ] SC3 验收 3。验证：unit\n- [ ] SC4 验收 4。验证：unit\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC5 验收 5。验证：unit\n- [ ] SC6 验收 6。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC5",
+    "SC6"
+   ]
+  },
+  {
+   "name": "随机 18",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n## 依赖\n\n- [ ] SC1 验收 1。验证：unit\n\n## 验收标准\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n- [ ] SC4 验收 4。验证：unit\n",
+   "expected": [
+    "SC2",
+    "SC3",
+    "SC4"
+   ]
+  },
+  {
+   "name": "随机 19",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n\n说明文字 #12\n\n## 范围\n\n- `src/a.ts`：改\n    - [ ] SC93 示例。验证：paid\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 不做\n\n- [ ] SC2 验收 2。验证：unit\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 依赖\n\n\n## 验收标准\n\n\n    - [ ] SC92 示例。验证：paid\n\n\n    - [ ] SC92 示例。验证：paid\n\n> - [ ] SC94 引用里的。验证：unit\n\n- [ ] SC3 验收 3。验证：unit\n",
+   "expected": [
+    "SC3"
+   ]
+  },
+  {
+   "name": "随机 20",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n    - [ ] SC93 示例。验证：paid\n\n## 依赖\n\n    - [ ] SC93 示例。验证：paid\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 21",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 范围\n\n- `src/a.ts`：改\n\n\n    - [ ] SC92 示例。验证：paid\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 不做\n\n    - [ ] SC93 示例。验证：paid\n\n~~~md\n- [ ] SC90 示例。验证：paid\n~~~\n\n## 依赖\n\n````md\n- [ ] SC90 示例。验证：paid\n````\n\n```md\n- [ ] SC90 示例。验证：paid\n```\n\n## 验收标准\n\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n> - [ ] SC94 引用里的。验证：unit\n",
+   "expected": [
+    "SC2",
+    "SC3",
+    "SC95"
+   ]
+  },
+  {
+   "name": "随机 22",
+   "body": "## 目标\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 范围\n\n- `src/a.ts`：改\n\n~~~\n- [ ] SC90 示例。验证：paid\n~~~\n\n## 不做\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n\n## 依赖\n\n- [ ] SC3 验收 3。验证：unit\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC4 验收 4。验证：unit\n",
+   "expected": [
+    "SC4"
+   ]
+  },
+  {
+   "name": "随机 23",
+   "body": "## 目标\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n    - [ ] SC93 示例。验证：paid\n\n## 范围\n\n- `src/a.ts`：改\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n## 不做\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 依赖\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC4 验收 4。验证：unit\n- [ ] SC5 验收 5。验证：unit\n",
+   "expected": [
+    "SC4",
+    "SC5"
+   ]
+  },
+  {
+   "name": "随机 24",
+   "body": "## 目标\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 不做\n\n\n## 依赖\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n> - [ ] SC94 引用里的。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 25",
+   "body": "## 目标\n\n说明文字 #12\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 不做\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC3 验收 3。验证：unit\n- [ ] SC4 验收 4。验证：unit\n\n## 依赖\n\n- [ ] SC5 验收 5。验证：unit\n\n## 验收标准\n\n- [ ] SC6 验收 6。验证：unit\n\n说明文字 #12\n",
+   "expected": [
+    "SC6"
+   ]
+  },
+  {
+   "name": "随机 26",
+   "body": "## 目标\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 范围\n\n- `src/a.ts`：改\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 不做\n\n\n## 依赖\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC1 验收 1。验证：unit\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n说明文字 #12\n\n- [ ] SC2 验收 2。验证：unit\n",
+   "expected": [
+    "SC2"
+   ]
+  },
+  {
+   "name": "随机 27",
+   "body": "## 目标\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n    - [ ] SC93 示例。验证：paid\n\n```\n- [ ] SC90 示例。验证：paid\n```\n\n## 不做\n\n- [ ] SC4 验收 4。验证：unit\n- [ ] SC5 验收 5。验证：unit\n- [ ] SC6 验收 6。验证：unit\n\n## 依赖\n\n说明文字 #12\n\n## 验收标准\n\n说明文字 #12\n\n- [ ] SC7 验收 7。验证：unit\n",
+   "expected": [
+    "SC7"
+   ]
+  },
+  {
+   "name": "随机 28",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n\n    - [ ] SC92 示例。验证：paid\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 不做\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 依赖\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 验收标准\n\n~~~md\n- [ ] SC90 示例。验证：paid\n~~~\n",
+   "expected": []
+  },
+  {
+   "name": "随机 29",
+   "body": "## 目标\n\n~~~\n- [ ] SC90 示例。验证：paid\n~~~\n\n- [ ] SC1 验收 1。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n````md\n- [ ] SC90 示例。验证：paid\n````\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 不做\n\n\n## 依赖\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC2 验收 2。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC2"
+   ]
+  },
+  {
+   "name": "随机 30",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 不做\n\n> - [ ] SC94 引用里的。验证：unit\n\n```md\n- [ ] SC90 示例。验证：paid\n```\n\n## 依赖\n\n    - [ ] SC93 示例。验证：paid\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n> - [ ] SC94 引用里的。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n",
+   "expected": [
+    "SC1",
+    "SC2"
+   ]
+  },
+  {
+   "name": "随机 31",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n> - [ ] SC94 引用里的。验证：unit\n\n````md\n- [ ] SC90 示例。验证：paid\n````\n\n## 依赖\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n\n    - [ ] SC92 示例。验证：paid\n\n## 验收标准\n\n\n    - [ ] SC92 示例。验证：paid\n\n\n    - [ ] SC92 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 32",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n## 依赖\n\n\n## 验收标准\n\n~~~\n- [ ] SC90 示例。验证：paid\n~~~\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 33",
+   "body": "## 目标\n\n    - [ ] SC93 示例。验证：paid\n\n~~~md\n- [ ] SC90 示例。验证：paid\n~~~\n\n## 范围\n\n- `src/a.ts`：改\n\n````md\n- [ ] SC90 示例。验证：paid\n````\n\n```md\n- [ ] SC90 示例。验证：paid\n```\n\n## 不做\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 依赖\n\n\n## 验收标准\n\n> - [ ] SC94 引用里的。验证：unit\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC93",
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 34",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n## 依赖\n\n\n## 验收标准\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 35",
+   "body": "## 目标\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 不做\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 依赖\n\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 36",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n> - [ ] SC94 引用里的。验证：unit\n\n说明文字 #12\n\n## 不做\n\n\n## 依赖\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 验收标准\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 37",
+   "body": "## 目标\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n\n    - [ ] SC92 示例。验证：paid\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n## 依赖\n\n说明文字 #12\n\n## 验收标准\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n- [ ] SC1 验收 1。验证：unit\n",
+   "expected": [
+    "SC1"
+   ]
+  },
+  {
+   "name": "随机 38",
+   "body": "## 目标\n\n> - [ ] SC94 引用里的。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n## 不做\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 依赖\n\n\n    - [ ] SC92 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n## 验收标准\n\n- 项\n  - [ ] SC95 嵌套。验证：unit\n\n- [ ] SC4 验收 4。验证：unit\n",
+   "expected": [
+    "SC95",
+    "SC4"
+   ]
+  },
+  {
+   "name": "随机 39",
+   "body": "## 目标\n\n> - [ ] SC94 引用里的。验证：unit\n\n- [ ] SC1 验收 1。验证：unit\n- [ ] SC2 验收 2。验证：unit\n- [ ] SC3 验收 3。验证：unit\n\n## 范围\n\n- `src/a.ts`：改\n\n说明文字 #12\n\n说明文字 #12\n\n## 不做\n\n    - [ ] SC93 示例。验证：paid\n    - [ ] SC93 示例。验证：paid\n\n## 依赖\n\n\n## 验收标准\n\n- [ ] SC4 验收 4。验证：unit\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n",
+   "expected": [
+    "SC4"
+   ]
+  },
+  {
+   "name": "随机 40",
+   "body": "## 目标\n\n\n## 范围\n\n- `src/a.ts`：改\n\n- 示例：\n\n    ```\n    - [ ] SC91 示例。验证：paid\n    ```\n\n## 不做\n\n\n## 依赖\n\n> - [ ] SC94 引用里的。验证：unit\n\n~~~md\n- [ ] SC90 示例。验证：paid\n~~~\n\n## 验收标准\n\n    - [ ] SC93 示例。验证：paid\n\n- [ ] SC1 验收 1。验证：unit\n\n说明文字 #12\n",
+   "expected": [
+    "SC1"
+   ]
+  }
+ ]
+}

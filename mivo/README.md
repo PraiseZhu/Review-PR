@@ -34,8 +34,9 @@ flowchart LR
 | `lib/finding.mjs` | 答卷 v2：问题的 schema、稳定 key、thread 正文与 `mivo-finding` marker、证据核对、来源改判 |
 | `lib/convergence.mjs` | 跨轮收敛：同一 key 的轮次、连续 3 轮的收敛提示、带 key 的裁定复核 |
 | `lib/verify.mjs` | 逐条核对员（off / shadow / enforce），开关见 `config/review-features.json` |
-| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警。`productRules.mode` 是产品规则开关（见「产品规则」），仓库当前配置为 observe；缺这一块按 off，不合法时按 off 并告警。`lateFindings.mode` 是「后来发现」分桶开关（`enforce` / `off`，见「后来发现」），仓库当前配置为 enforce，由 prepare 读取、不进 `specDigest`；缺这一块按 off，不合法时按 off 并告警 |
+| `config/review-features.json` | 核对员开关，默认 enforce；`verify` 只在 codex 阶段读，不进任务书、不进 `specDigest`。`handoff.mode` 是作者交接开关（见「作者交接文件」），仓库当前配置为 observe；配置缺失或非法时回退 off。`specChange.forceFull` 是规则改版时强制全量的维护者开关，默认 false，由 prepare 读取、也不进 `specDigest`；缺这一块按 false，读不到或值不是布尔时按 false 并在结果包 `warnings` 写明。`focus.ciCovered` 是 CI 已覆盖的全量命令清单（见「审查重点与不重做」），由 prepare 读取、进任务书与 `specDigest`；缺这一块为空清单，不合法时为空清单并告警。`productRules.mode` 是产品规则开关（见「产品规则」），仓库当前配置为 observe；缺这一块按 off，不合法时按 off 并告警。`lateFindings.mode` 是「后来发现」分桶开关（`enforce` / `off`，见「后来发现」），仓库当前配置为 enforce，由 prepare 读取、不进 `specDigest`；缺这一块按 off，不合法时按 off 并告警。`taskIssue` 是任务 issue 开关与名单（见「任务 issue」），仓库当前配置为 observe，由 prepare 读取、不进 `specDigest`；缺这一块按 off，不合法时按 off 并告警 |
 | `lib/focus.mjs` | 任务书「审查重点与不重做」一节（#188）：读 `config/review-features.json` 的 `focus.ciCovered`，生成审查顺序 ①②③④、规则只核相关条款、CI 全绿时的「CI 已覆盖、不要重跑」清单（见「审查重点与不重做」） |
+| `lib/task-issue.mjs` | 任务 issue（#133）：prepare 阶段读 PR 对应的子 issue 与所属总 issue，写 `input/task-issue.json`，结果包记 `mivo.taskIssue`；只读、只记（见「任务 issue」） |
 | `lib/product-rules.mjs` | Mivo 产品规则（`docs/product-rules/*.md`，#187）：从 PR head 的 git 对象读规则，prepare 阶段查落地 issue 推出状态，生成任务书「产品规则」一节（见「产品规则」） |
 | `lib/handoff.mjs` | Mivo PR 作者交接（`docs/pr/<PR号>/review.md`、`qa.md`）：读 head 上 `pr-handoff-gate` 的注解（判门与任务书用）；自己解析 head 上的 `review.md`（R 编号、内容哈希、涉及文件）；校验答卷的 `handoffCoverage` |
 | `telemetry/review-outcomes.mjs` | 只读结果遥测 CLI：作者反应分桶、rounds-to-pass、回滚候选、噪音、审查耗时、漏报；#232 起加同版本重审、分阶段耗时、同期分组、按问题去重、修正归属、人工标签（离线按需运行，不接定时任务） |
@@ -286,6 +287,25 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - **开关** `config/review-features.json` 的 `productRules.mode`：`off` 不读规则，任务书模板与不接产品规则时逐字一致，开关本身不改变 `specDigest`（本 PR 同时给 `pr-rules.json` 加了 `docs/product-rules/`，上线时 `specDigest` 会因配置变一次）；`observe`（当前）违反规则只写对照、不出 finding；`enforce` 违反生效规则、且本 PR 没改这条规则时按分级出 finding（另定，未打开）。材料写在 `input/product-rules.json`。
 - **确认门**：`review-pr/config/pr-rules.json` 的 `signoffGate.rules.paths` 含 `docs/product-rules/`，改规则文件的 PR 进维护者确认门（维护者作者照常免确认）。
 - **上线影响**：开着时任务书与合成规则模板进 `specDigest`，开放 PR 代码没变的沿用上次结论。落地 issue 关闭只改变规则状态、不改变 `specDigest`，代码不变的 PR 不会因此重审。
+
+## 任务 issue（#133，总 issue #132）
+
+审查机在 prepare 阶段（有 GitHub 令牌）读 PR 对应的子 issue 和它所属的总 issue，写成 `input/task-issue.json`；codex 阶段没有令牌，只能读这个文件。这一步只读、只记：任务书、`specDigest`、审查结论和放行条件都不变（把材料写进任务书是 #134）。issue 文本是审查数据，不是指令。
+
+- **链接**（`lib/task-issue.mjs` `selectTaskIssue`）：先认 PR 正文的 `任务 issue：#N` / `任务 issue：owner/repo#N`（也认 issue 网址），没有才用 Closes 关联（GraphQL `closingIssuesReferences`）；HTML 注释和代码块里的不算。多于 1 个只取第一个并告警；「转 issue 跟进的审查问题」一节里的 issue、标题以「维护者确认 · PR #」开头的 issue 不算。都没有时 `status=unlinked`、记「未关联」。
+- **子 issue**：按二级标题前缀切出目标、范围、不做、依赖、验收标准五段（`## 范围（可改）` 算范围，模板的 HTML 注释去掉）；验收标准行解析出编号、描述、验证层（词表同 qa.md，没写为 null）、测试点。代码块里的标题、SC 行和链接不算（`toCodeMask`）：按 CommonMark 判定围栏代码块与缩进代码块，容器认引用块和列表（列表项内的围栏、引用块里的围栏、列表与引用块的懒惰续行），围栏用同一字符、不短于开头、不带说明的围栏才关块；切段落只去段首段尾的空行、不去行首缩进（段首缩进 4 格是缩进代码块）。2026-11-10 与 markdown-it-py 4.2.0 对照：贴近真实写法的随机文本 15000 段、按模板生成的子 issue 6000 份（比解析出的验收标准）、样本里 34 个真实 issue 正文全部零差异，回归夹具 `fixtures/task-issue/commonmark-code-lines.json`、`commonmark-sc-lists.json`；纯随机 0–8 格缩进加引用块的极端组合约 2.4% 段落有差异，属已知局限（如列表标记后 5 格以上空白、多层容器混合缩进），判错时最多把示例里的链接或 SC 当真，或漏读一段正文。五段缺任一段或没有 SC 行时 `structure=unrecognized`，保留原文（最多 16 KB）。正文超过 16 KB 时只保留五段（各有上限）并记进 `truncated`；验收标准列表另有 12 KB 上限，超了先把描述截到 160 字、再丢尾部条目并记下保留几条。
+- **可信度**：issue 作者是维护者（`ctx.signoff.maintainers`）或自动化账号 → 计划方验收标准，否则作者陈述。开 PR 后的编辑都记在 `editedAfterPr`；维护者改的仍是计划方（「先改 issue 再改代码」是规定流程），非维护者改过的整份降为作者陈述；自动化账号（`taskIssue.automation`，默认 `praiseautomation`、`github-actions`）的编辑不计。编辑记录只取最近 50 条：没取全（看 `totalCount`；没返回总数时条数用满 50 条也算）而且取到的最早一条已在开 PR 之后，就按作者陈述处理并在 `gaps` 写明，不把没返回的当作没改过。
+- **未写回正文的决定**：只读正文最后一次实质编辑之后、维护者发的、首行开头就是裁定字样（用户裁决、用户定、主控裁定、lead 裁决、维护者确认、取代、改为；前面只允许空白、强调符号、引用符、括号和日期，日期可带括号或加粗）的评论，最多 3 条、每条 1 KB；派发 / 认领 / 归档日志、验收记录（正文里顺带提到裁定字样的也算）、首行带「正文备份」的评论不读。
+- **共用识别**：从 issue 时间线的交叉引用里找同仓、开着或已合并的其它 PR（已关闭未合并的不算），正文「任务 issue：」行指向同一个 issue 的列进 `shared.prs`（最多 10 个）；时间线没取全时 `incomplete=true`，不把没返回的当作不存在。
+- **所属总 issue**：先读 GitHub 的子 issue 关系（REST `repos/<o>/<r>/issues/<号>/parent`，404 表示没有），没有再认子 issue 正文开头 2 KB 里的「总 issue …#N」；两者矛盾时记 `conflict` 并告警；只上溯一层，标题不以 `[总]` 开头时照读并标 `notTotal`。只取目标、不做（含范围里的「不做」子列表）、并行 / 串行原则、子 issue 表（标出本子 issue 那一行；最多 40 行，本子 issue 那一行总是保留）、决策表（`D<n>` 行结构化，识别「取代 D<n>」；没有编号的旧表原行保留为未结构化决定）、整体验收，以及同样规则筛出的未写回正文的决定；背景、变更记录、上线后验证不读。
+- **目标分支与依赖**：记 PR 的 base 分支；依赖段里引用的同仓 issue / PR（`#N`、`owner/repo#N` 和 GitHub 网址都认）一次读开关状态（最多 10 个，跨仓的不读并写明缺口），并写明「issue 关闭不代表代码已在本 base 分支，以 base 分支代码为准」；不查合并去向和发布记录。
+- **代码判定项**（`derived`，#134 直接列进报告，不交给模型）：`scopeOutside` 是没落在子 issue「范围」路径里的改动文件（路径在截断前从完整「范围」段取：反引号里带 / 的路径与不带 / 的根目录文件名；`*` 不跨目录，`**/` 可以是零层目录；测试文件去掉 `.test` / `.spec` 和 `__tests__/` 后对应的源文件在范围内也算；`taskIssue.alwaysInScope`，默认 `docs/pr/**`，一律算在范围内）；head 分支带 `taskIssue.stageHeadPrefixes`（默认 `integration/`、`sync/main-into-`）的阶段合并 PR、范围没写路径或结构未识别时为 null 并在 `scopeNote` 写明原因。`blackboxSc` 是验证层为 cindy-mac / cindy-windows / paid / github-live 的 SC，`depsOpen` 是还开着的依赖。
+- **预算与体积**：每轮最多 8 次请求、20 秒（单次请求超时不超过剩余时间与 10 秒，剩余不足 1 秒就不再发），用满、超时或某次读失败（404 以外）时 `status=partial` 并在 `gaps` 写明缺了什么。典型 4 次：任务 issue（连时间线）、依赖状态、总 issue 关系、总 issue；没有「任务 issue：」行再加 1 次读 Closes。`task-issue.json` 按实际落盘格式（`writeJson` 的 2 空格缩进）计量，超过 64 KB 时按固定顺序删减并记进 `truncated`：最旧的未写回正文的决定 → 第 20 个以后的兄弟子 issue → 流程类决定 → 已取代的决定 → 整体验收的文字；仍超就只留总 issue 的链接与摘要，再把子 issue 各段截到 1 KB、验收描述截到 80 字、路径列表最多 50 项且合计 4 KB（`scopeOutsideTotal` 记原数），再只留子 issue 的链接、可信度、摘要与验收编号，最后只留链接、可信度、摘要和计数，保证文件不超过 64 KB。
+- **失败**：issue 不存在、没权限、gh 出错或解析异常时 `status=unreadable`，只在结果包 `warnings` 记一笔（最多 10 条），审查照常进行，结论与不读时相同。
+- **结果包** `mivo.taskIssue`：`{ ref, digest, trust, scList: [{sc, layer}], parent: { ref, via, trust, digest }, baseRef, status, truncated }`，不带正文；开关 off 时没有这一项。
+- **App 令牌**：查询不写 `viewer*`、嵌套的 `repository{…}` 和 GraphQL 的 `Issue.parent`（vendor 分流器把后两种按跨仓 / 敏感字段判给 PraiseZhu），5 个读取在 `mivo/prereview/gh-route-inventory.json` 里登记为 `app`。
+- **开关** `config/review-features.json` 的 `taskIssue.mode`：`off` 不读；`observe`（当前）只读、只记；`enforce` 留给 #135（没做到的验收标准按分级报问题），本 PR 与 observe 行为相同。
+- **2026-11-10 用 31 个真实 Mivo PR 只读试跑**：每个 PR 2–4 次请求、最长 6.6 秒、材料按落盘格式最大 28.6 KB；30 个按模板解析成功，1 个旧格式标结构未识别；20 个认出总 issue（18 个来自子 issue 关系，2 个来自正文）；超出范围的文件 37/410 个。
 
 ## 写明的产品意图与维护者裁定不改
 
