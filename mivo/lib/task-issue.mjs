@@ -110,11 +110,10 @@ export function parentRefFromBody(body, repo) {
 export function toSections(body, names) {
   const out = Object.fromEntries(names.map((n) => [n, null]));
   let current = null;
-  let fence = null;
-  for (const line of lines(String(body ?? '').replace(/<!--[\s\S]*?-->/g, ''))) {
-    const step = toFence(fence, line);
-    fence = step.open;
-    const heading = fence || step.fenceLine ? null : /^(#{1,2})\s+(.+?)\s*#*\s*$/.exec(line);
+  const all = lines(String(body ?? '').replace(/<!--[\s\S]*?-->/g, ''));
+  const code = toCodeMask(all);
+  for (const [i, line] of all.entries()) {
+    const heading = code[i] ? null : /^(#{1,2})\s+(.+?)\s*#*\s*$/.exec(line);
     if (heading) {
       current = heading[1].length === 2 ? names.find((n) => heading[2].startsWith(n) && out[n] === null) ?? null : null;
       if (current) out[current] = [];
@@ -140,11 +139,10 @@ function toBoundedScList(list) {
 /** 验收标准行 `- [ ] SC<n> <描述>。验证：<层次>（测试点：…）` → [{sc, description, layer, testPoint, checked}];层次不在词表时为 null;代码块里的示例不算。 */
 export function toScList(text) {
   const out = [];
-  let fence = null;
-  for (const line of lines(text)) {
-    const step = toFence(fence, line);
-    fence = step.open;
-    if (fence || step.fenceLine) continue;
+  const all = lines(text);
+  const code = toCodeMask(all);
+  for (const [i, line] of all.entries()) {
+    if (code[i]) continue;
     const m = SC_RE.exec(line);
     if (!m) continue;
     const verify = /。?\s*验证\s*[：:]\s*(.*)$/.exec(m[3]);
@@ -632,28 +630,82 @@ function toDeferredIssues(body, repo, pr) {
 }
 
 /**
- * 代码块围栏(按 CommonMark 配对):``` 或 ~~~ 至少 3 个开块,用同一字符、不短于开头、后面不带说明的围栏才关块;块里更短或另一种字符的围栏只是内容。
- * 围栏前的缩进不限:列表里的代码块缩进 4 个空格以上也算(不做列表容器解析,宁可把缩进的围栏当代码块,也不让示例里的链接和 SC 当真)。
- * 返回 {open: 当前打开的围栏或 null, fenceLine: 这一行是否是开 / 关围栏}。
+ * 逐行标出哪些行是代码(围栏代码块、缩进代码块),按 CommonMark 的主要规则,容器只认引用块和列表:
+ * - 引用块(`>`):围栏开在第几层引用里,就只在同层引用里延续;引用结束时没关的围栏随之结束。
+ * - 列表项(`-` `*` `+` `1.` `1)` 后跟空白)的内容列 = 标记前缩进 + 标记 + 后面 1–4 格空白;缩进小于内容列的非空行离开该列表项。
+ *   有序列表只有从 1 开始才能打断段落。
+ * - 围栏:相对所在容器缩进 0–3 格、``` 或 ~~~ 至少 3 个开块;同一字符、不短于开头、不带说明、相对容器 0–3 格的围栏关块,
+ *   块里更短或另一种字符的围栏只是内容;所在列表项结束时没关的围栏随之结束,顶层没关的围栏到正文末尾。
+ * - 缩进代码块:不在围栏里、相对容器缩进 4 格以上、前一行不是段落(空行、标题、代码、围栏结束)的行;里面的 ``` 只是字面量。
+ * - 懒惰续行:段落后面缩进不够、又不是新块开头的行仍属同一段落,不离开列表项。
+ * 不支持的极端写法(例如列表标记后跟 5 格以上空白)按普通文字处理。返回与输入等长的布尔数组。
  */
-function toFence(open, line) {
-  const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
-  if (!m) return { open, fenceLine: false };
-  if (!open) return { open: { char: m[1][0], len: m[1].length }, fenceLine: true };
-  if (m[1][0] === open.char && m[1].length >= open.len && !m[2].trim()) return { open: null, fenceLine: true };
-  return { open, fenceLine: false };
+export function toCodeMask(all) {
+  const FENCE = /^(`{3,}|~{3,})(.*)$/;
+  const LIST_ITEM = /^([-*+]|(\d{1,9})[.)])( {1,4}|\t|$)/;
+  const QUOTE = /^ {0,3}> ?/;
+  const indentOf = (line) => { let n = 0; for (const ch of line) { if (ch === ' ') n += 1; else if (ch === '\t') n += 4 - (n % 4); else break; } return n; };
+  const mask = [];
+  let items = [];
+  let quote = 0;
+  let open = null;
+  let prev = 'blank';
+  for (const raw of all) {
+    if (open) {
+      let line = raw;
+      let inside = true;
+      for (let k = 0; k < open.quote && inside; k += 1) { const m = QUOTE.exec(line); if (m) line = line.slice(m[0].length); else inside = false; }
+      const ind = indentOf(line);
+      if (inside && !(line.trim() && open.col > 0 && ind < open.col)) {
+        const m = FENCE.exec(line.trimStart());
+        if (m && ind - open.col <= 3 && m[1][0] === open.char && m[1].length >= open.len && !m[2].trim()) { open = null; prev = 'fence-close'; } else prev = 'code';
+        mask.push(true);
+        continue;
+      }
+      open = null; // 引用块或列表项结束,围栏随之结束,这一行按普通行处理
+    }
+    let line = raw;
+    let depth = 0;
+    for (let m = QUOTE.exec(line); m; m = QUOTE.exec(line)) { line = line.slice(m[0].length); depth += 1; }
+    if (depth !== quote) { items = []; quote = depth; prev = 'blank'; }
+    if (!line.trim()) { mask.push(false); prev = 'blank'; continue; }
+    const ind = indentOf(line);
+    const rest = line.trimStart();
+    const col = () => items.at(-1) ?? 0;
+    let item = ind - col() <= 3 ? LIST_ITEM.exec(rest) : null;
+    // 有序列表不从 1 开始时不能打断段落(顶层段落,或在列表项段落里往下嵌套);同一列表的兄弟项不受限
+    if (item && prev === 'para' && item[2] !== undefined && item[2] !== '1' && (!items.length || ind >= col())) item = null;
+    // 懒惰续行:段落后面缩进不够、又不是新块开头的行,仍是同一段落,不离开列表项
+    if (!item && prev === 'para' && ind < col() && !/^(#{1,6}(\s|$)|`{3,}|~{3,}|([-*_])( *\3){2,} *$)/.test(rest)) { mask.push(false); continue; }
+    if (!item) while (items.length && ind < col()) items.pop();
+    if (!item && ind - col() >= 4 && prev !== 'para') { mask.push(true); prev = 'code'; continue; }
+    let content = rest;
+    let fenceCol = col();
+    if (item) {
+      while (items.length && items.at(-1) > ind) items.pop();
+      const contentCol = ind + item[1].length + (item[3] ? item[3].replace('\t', '    ').length : 1);
+      items.push(contentCol);
+      content = rest.slice(item[0].length);
+      fenceCol = contentCol;
+    }
+    const m = item || ind - col() <= 3 ? FENCE.exec(content) : null;
+    if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+      open = { char: m[1][0], len: m[1].length, col: fenceCol, quote };
+      mask.push(true);
+      prev = 'code';
+      continue;
+    }
+    mask.push(false);
+    prev = !item && ind - col() <= 3 && /^#{1,6}(\s|$)/.test(rest) ? 'heading' : content.trim() ? 'para' : 'blank';
+  }
+  return mask;
 }
 
-/** 去掉 HTML 注释和代码块(模板示例里的链接不算)。 */
+/** 去掉 HTML 注释和代码(模板示例里的链接不算)。 */
 function toPlainText(text) {
-  const out = [];
-  let fence = null;
-  for (const line of lines(String(text ?? '').replace(/<!--[\s\S]*?-->/g, ''))) {
-    const step = toFence(fence, line);
-    fence = step.open;
-    if (!fence && !step.fenceLine) out.push(line);
-  }
-  return out.join('\n');
+  const all = lines(String(text ?? '').replace(/<!--[\s\S]*?-->/g, ''));
+  const code = toCodeMask(all);
+  return all.filter((_, i) => !code[i]).join('\n');
 }
 
 /** 「范围」里写的「不做」子列表(旧模板把不做写在范围下面)。 */

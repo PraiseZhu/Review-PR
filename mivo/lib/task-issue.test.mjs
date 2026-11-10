@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import {
   loadTaskIssueMode, parseTaskLines, selectTaskIssue, parentRefFromBody, toSections, toScList, toChildMaterial, toTrust,
   lastBodyEditAt, selectUndecided, toDecisions, toChildRows, toParentSections, matchesScope, toScopePatterns, toDerived, toShared,
-  toGraphqlResult, readTaskIssue, toSizedMaterial, toTaskIssueSummary, collectTaskIssue, CHILD_SECTIONS, LIMITS, BASE_NOTE,
+  toGraphqlResult, readTaskIssue, toSizedMaterial, toTaskIssueSummary, collectTaskIssue, toCodeMask, CHILD_SECTIONS, LIMITS, BASE_NOTE,
 } from './task-issue.mjs';
 
 const CHILD = readFileSync(new URL('./fixtures/task-issue/child-v1.md', import.meta.url), 'utf8');
@@ -462,6 +462,24 @@ test('R3-F1:列表里缩进的代码块示例也不算(任务 issue 行和 SC �
   assert.deepEqual(parseTaskLines(example, 'o/r'), [{ repo: 'o/r', number: 12 }]);
   const sc = ['- [ ] SC1 真正验收。验证：unit', '', '- 文档示例：', '', `    ${tick}markdown`, '    - [ ] SC99 示例。验证：paid', `    ${tick}`, '- [ ] SC2 之后的验收。验证：unit'].join('\n');
   assert.deepEqual(toChildMaterial(mini({ sc })).scList.map((x) => x.sc), ['SC1', 'SC2']);
+});
+
+test('R4-F1:普通缩进代码块里的 ``` 字面量不吞掉后面的任务 issue 行和标题', () => {
+  const tick = '`'.repeat(3);
+  assert.deepEqual(parseTaskLines(['围栏符号示例：', '', `    ${tick}`, '', '任务 issue：#12'].join('\n'), 'o/r'), [{ repo: 'o/r', number: 12 }]);
+  const body = ['## 目标', '实现代码围栏预览。', '', `    ${tick}`, '', '## 范围', '- `src/a.ts`', '## 不做', '无', '## 依赖', '无', '## 验收标准', '- [ ] SC1 预览正常。验证：unit'].join('\n');
+  const child = toChildMaterial(body);
+  assert.deepEqual([child.structure, child.scList.map((x) => x.sc)], ['parsed', ['SC1']]);
+});
+
+test('代码行判定与 CommonMark(markdown-it)逐行一致:四轮复审反例、容器写法与 60 段贴近真实写法的随机文本', () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/task-issue/commonmark-code-lines.json', import.meta.url), 'utf8'));
+  assert.ok(fixture.docs.length >= 70);
+  for (const doc of fixture.docs) {
+    const mine = toCodeMask(doc.lines);
+    const diff = doc.lines.map((line, i) => (line.trim() && mine[i] !== doc.code[i] ? `L${i + 1} 期望${doc.code[i] ? '代码' : '正文'} |${line}` : null)).filter(Boolean);
+    assert.deepEqual(diff, [], doc.name);
+  }
 });
 
 // ── SC5 失败只记 warning ──
