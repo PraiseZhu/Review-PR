@@ -292,7 +292,7 @@ const TEMPLATE_RULE = (id, state, file = '<topic-1>') => ({ id, title: `<rule-${
 // 任务 issue 模板材料(#242):覆盖整节的每一种写法(决定、总 issue、越界、黑盒、未关闭依赖、共用 PR、缺口),文字变了 digest 才会变。
 const TEMPLATE_TASK_ISSUE = (mode, trust = 'plan') => ({ mode, status: 'partial', note: null, gaps: ['<gap>'],
   issue: { ref: '<owner/repo#issue>', trust, trustLabel: trust === 'plan' ? '计划方验收标准' : '作者陈述', trustNote: trust === 'plan' ? null : '<trust-note>',
-    sections: { 目标: '<goal>', 不做: '<not-do>', 原因: '<reason>' },
+    sections: { 目标: '<goal>', 范围: '<scope>', 不做: '<not-do>', 原因: '<reason>' },
     scList: [{ sc: 'SC1', description: '<sc>', layer: 'unit' }, { sc: 'SC2', description: '<sc>', layer: 'github-live' }],
     decided: [{ date: '<date>', text: '<decided>' }] },
   parent: trust === 'plan' ? { ref: '<owner/repo#parent>', title: '<title>', trust: 'plan', trustLabel: '计划方验收标准', goal: '<goal>', notDo: '<not-do>',

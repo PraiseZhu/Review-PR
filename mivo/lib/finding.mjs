@@ -6,7 +6,10 @@ import { createHash } from 'node:crypto';
 
 export const SEVERITIES = ['P0', 'P1', 'P2'];
 export const ORIGINS = ['introduced', 'made-reachable', 'pre-existing'];
-export const LIMITS = { title: 120, text: 800, bugClass: 60, evidence: 8, instances: 20 };
+// 任务范围外的依据(#244):none=在任务范围内。模型的声明要过 classifyBeyondTask 才生效。
+export const BEYOND_TASK = ['none', 'not-do', 'other-work', 'accepted', 'no-worse'];
+export const BEYOND_TASK_QUOTE_MIN = 6;
+export const LIMITS = { title: 120, text: 800, bugClass: 60, evidence: 8, instances: 20, beyondTaskQuote: 200 };
 export const FINDING_MARKER_RE = /<!--\s*mivo-finding\s+key=([0-9a-f]{12})\s+round=(\d+|null)\s+head=([0-9a-f]{7,40})(?:\s+class=([^\s>]*))?\s*-->/g;
 export const SUPERSEDES_RE = /^(?:[0-9a-f]{12}|legacy-\d{1,3})$/;
 
@@ -23,7 +26,7 @@ const LOCATION_ITEM = {
 export const FINDING_ITEM_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['severity', 'title', 'trigger', 'behavior', 'impact', 'fix', 'verify', 'evidence', 'origin', 'bugClass', 'instances', 'supersedes', 'path', 'line', 'side', 'deferredTo', 'handoffRiskIds'],
+  required: ['severity', 'title', 'trigger', 'behavior', 'impact', 'fix', 'verify', 'evidence', 'origin', 'bugClass', 'instances', 'supersedes', 'path', 'line', 'side', 'deferredTo', 'handoffRiskIds', 'beyondTask', 'beyondTaskQuote'],
   properties: {
     severity: { type: 'string', enum: SEVERITIES },
     title: { type: 'string', description: '一句话标题,不超过 120 字' },
@@ -42,6 +45,8 @@ export const FINDING_ITEM_SCHEMA = {
     side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
     handoffRiskIds: { type: 'array', items: { type: 'string' }, description: '本问题与作者交接 review.md 里哪几条 R 描述的是同一个风险/根因(写 R 编号如 R1);同文件不算;没有对应的 R 写空数组' },
     deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1/P2,且必须在任务书核验通过的列表里);其他一律 null' },
+    beyondTask: { type: 'string', enum: BEYOND_TASK, description: '任务范围外的依据。任务书里没有「任务范围」规则、或问题在任务范围内,一律写 none;not-do=任务 issue 写明不做;other-work=总 issue 分给别的子 issue;accepted=计划方写明接受;no-worse=最坏结果不比合并前差且任务 issue 没要求(只限 P2)' },
+    beyondTaskQuote: { type: 'string', description: '逐字引用任务 issue 里支持这个依据的一句原文,6–200 字;beyondTask 为 none 或 no-worse 时写空字符串' },
   },
 };
 
@@ -109,7 +114,10 @@ export function normalizeFinding(raw) {
     supersedes = null;
   }
   const origin = ORIGINS.includes(raw?.origin) ? raw.origin : 'introduced';
-  return { item: { severity: raw?.severity, title, ...text, evidence, instances, origin, bugClass, supersedes }, notes };
+  // 没有这两个字段的旧答卷按「在任务范围内」处理。
+  const beyondTask = BEYOND_TASK.includes(raw?.beyondTask) ? raw.beyondTask : 'none';
+  const beyondTaskQuote = beyondTask === 'none' ? '' : clipText(collapse(raw?.beyondTaskQuote), LIMITS.beyondTaskQuote);
+  return { item: { severity: raw?.severity, title, ...text, evidence, instances, origin, bugClass, supersedes, beyondTask, beyondTaskQuote }, notes };
 }
 
 const where = ({ path, line }) => (line ? `${path}:${line}` : path);
@@ -183,4 +191,30 @@ export function classifyOrigin(item, { diffFiles }) {
   return hit
     ? { origin: 'introduced', note: '声称 PR 之前就存在,但落在本 PR 新增行上,按本 PR 引入处理' }
     : { origin: 'pre-existing', note: null };
+}
+
+// 比对引用时忽略空白、反引号和各种引号:任务书里的 issue 原文是压成一行、换掉反引号后的样子,模型照抄时这些地方会和原文不同。
+const squash = (text) => String(text ?? '').replace(/[\s`'"“”‘’「」『』]/g, '');
+
+/**
+ * 模型声称「任务范围外」的问题,由服务器核对后才不阻断(#244)。纯函数。
+ * 通过的条件:P1/P2;不是上一轮已经阻断过的问题(supersedes 为空、不是连续报出);
+ * not-do / other-work / accepted 三种依据要逐字引用计划方写的 issue 原文(至少 BEYOND_TASK_QUOTE_MIN 个字,在对应依据的原文里能找到);
+ * no-worse 只限 P2,不要求引用。其余一律照常阻断并给出原因。
+ * @param {object} item 带 severity / beyondTask / beyondTaskQuote / supersedes / seenRounds 的问题
+ * @param {{planText: {notDo:string, otherWork:string, accepted:string}}} p 计划方原文,按依据分开(task-issue.mjs toTaskIssuePlanText)
+ * @returns {{beyond:boolean, basis:string|null, note:string|null}}
+ */
+export function classifyBeyondTask(item, { planText }) {
+  const basis = BEYOND_TASK.includes(item?.beyondTask) ? item.beyondTask : 'none';
+  const keep = (note) => ({ beyond: false, basis: null, note });
+  if (basis === 'none') return keep(null);
+  if (!['P1', 'P2'].includes(item.severity)) return keep('声称任务范围外,但 P0 不论范围都阻断');
+  if ((item.supersedes ?? null) !== null || (item.seenRounds ?? 1) > 1) return keep('声称任务范围外,但上一轮已经阻断过这条问题,照常阻断');
+  if (basis === 'no-worse') return item.severity === 'P2' ? { beyond: true, basis, note: null } : keep('「不比合并前差」只适用于 P2,这条是 P1,照常阻断');
+  const quote = squash(item.beyondTaskQuote);
+  if ([...quote].length < BEYOND_TASK_QUOTE_MIN) return keep(`声称任务范围外,但引用的任务 issue 原文不足 ${BEYOND_TASK_QUOTE_MIN} 个字,照常阻断`);
+  const corpus = { 'not-do': planText?.notDo, 'other-work': planText?.otherWork, accepted: planText?.accepted }[basis];
+  if (!squash(corpus).includes(quote)) return keep('声称任务范围外,但引用的原文在计划方写的任务 issue 对应部分里找不到,照常阻断');
+  return { beyond: true, basis, note: null };
 }

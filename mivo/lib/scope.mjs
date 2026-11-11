@@ -81,10 +81,12 @@ export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(fi
  * @param {boolean|null} p.headIsDescendant H0 是否是 H1 的祖先(git merge-base --is-ancestor);null=未知
  * @param {boolean} [p.forceFullOnSpecChange] 维护者开关(review-features.json 的 specChange.forceFull):规则改版时即使代码没变也全量;只认 true
  * @param {string} [p.lateFindingsMode] 后来发现开关(review-features.json 的 lateFindings.mode);缺省按 off,只认 enforce
+ * @param {boolean} [p.taskBoundaryActive] 本轮任务范围是否起作用(task-issue.mjs isTaskBoundaryActive);缺省 false
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
 export function computeReviewScope(args) {
-  const scope = withLateFindingsPolicy({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current, mode: args.lateFindingsMode });
+  const late = withLateFindingsPolicy({ scope: computeBaseReviewScope(args), previous: args.previous, current: args.current, mode: args.lateFindingsMode });
+  const scope = withBeyondTaskPolicy({ scope: late, previous: args.previous, current: args.current, active: args.taskBoundaryActive === true });
   return withHandoffScope({ scope, previous: args.previous, current: args.current });
 }
 
@@ -95,11 +97,24 @@ export function computeReviewScope(args) {
 function withLateFindingsPolicy({ scope, previous, current, mode = 'off' }) {
   const late = Array.isArray(previous?.lateFindings) ? previous.lateFindings : [];
   if (mode === 'enforce' || late.length === 0) return scope;
+  return withReopenedFindings({ scope, previous, current, reopened: late, reason: '后来发现分桶已关闭,上一轮有后来发现的 P2,重新全量审查' });
+}
+
+// 任务范围(#244)本轮不起作用(开关改回 observe/off、任务 issue 读不到或降成作者陈述)、上一轮却有任务范围外的问题:
+// 同「后来发现」关开关的做法,把它们并回待核对的旧问题清单并全量重审,结果与任务范围一直不起作用时一致。
+function withBeyondTaskPolicy({ scope, previous, current, active = false }) {
+  const beyond = Array.isArray(previous?.beyondTask) ? previous.beyondTask : [];
+  if (active || beyond.length === 0) return scope;
+  return withReopenedFindings({ scope, previous, current, reopened: beyond, reason: '任务范围本轮不起作用,上一轮有任务范围外的问题,重新全量审查' });
+}
+
+/** 把上一轮不阻断的一桶问题按 key 去重并进待核对的旧问题清单(排在原清单之后);沿用/增量改为全量重审,全量保留原 reason。 */
+function withReopenedFindings({ scope, previous, current, reopened, reason }) {
   const base = scope.mode === 'full' ? (scope.previousFindings ?? []) : carriedFindings(previous, current);
   const seen = new Set(base.map((f) => f?.key).filter(Boolean));
   const inDiff = current.filePatchHashes ? (path) => path in current.filePatchHashes : () => true;
   const added = [];
-  for (const f of late) {
+  for (const f of reopened) {
     if (f?.key && seen.has(f.key)) continue;
     if (f?.key) seen.add(f.key);
     const { outOfDiff, ...rest } = f;
@@ -107,7 +122,7 @@ function withLateFindingsPolicy({ scope, previous, current, mode = 'off' }) {
   }
   const previousFindings = [...base, ...added];
   if (scope.mode === 'full') return { ...scope, previousFindings };
-  return { mode: 'full', reason: '后来发现分桶已关闭,上一轮有后来发现的 P2,重新全量审查', files: Object.keys(current.filePatchHashes ?? {}).sort(),
+  return { mode: 'full', reason, files: Object.keys(current.filePatchHashes ?? {}).sort(),
     previousFindings, basedOn: null };
 }
 
@@ -503,6 +518,7 @@ export function previousFromResult(result, report = '') {
     pendingGates: result.mivo?.advisory?.pendingGates ?? [],
     reportComplete: result.mivo?.reportComplete === true, findings: result.mivo?.findings ?? [], deferred: result.mivo?.deferred ?? [],
     lateFindings: Array.isArray(result.mivo?.lateFindings) ? result.mivo.lateFindings : [],
+    beyondTask: Array.isArray(result.mivo?.beyondTask) ? result.mivo.beyondTask : [],
     filePatchHashes: result.mivo?.filePatchHashes ?? {}, filePatchHashesV2: result.mivo?.filePatchHashesV2 ?? null, totalDiffLines: result.mivo?.totalDiffLines ?? 0,
     tier: result.mivo?.tier, triggerKinds: result.mivo?.triggerKinds ?? [], skillSha: result.mivo?.skillSha,
     specDigest: result.mivo?.specDigest, lastFullReviewAt: result.mivo?.lastFullReviewAt, report,

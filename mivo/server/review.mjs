@@ -12,12 +12,12 @@ import { fileURLToPath } from 'node:url';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
 import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope, unchangedReviewedFiles, discussionDigestOf, rebuttalRowsOf } from '../lib/scope.mjs';
-import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats, loadLateFindingsMode, splitLateFindings } from '../lib/report.mjs';
+import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats, loadLateFindingsMode, splitBeyondTask, splitLateFindings } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
 import { loadFocusConfig } from '../lib/focus.mjs';
 import { loadProductRulesMode, readProductRules, resolveLanding, toProductRulesState } from '../lib/product-rules.mjs';
-import { loadTaskIssueMode, collectTaskIssue, TASK_ISSUE_FILE } from '../lib/task-issue.mjs';
+import { loadTaskIssueMode, collectTaskIssue, TASK_ISSUE_FILE, isTaskBoundaryActive, toTaskIssuePlanText } from '../lib/task-issue.mjs';
 import { loadHandoffMode, readHandoffFacts, toHandoffPending, readHandoffReview, toHandoffSnapshot, checkPreviousHandoffCoverage, parseLsTree } from '../lib/handoff.mjs';
 import { parseDeferrals, verifyDeferrals, toIssueRead, toDeferredSummary, keyedDeferrals } from '../lib/deferrals.mjs';
 import { collectRulings, collectRebuttals, collectAdjudications, confirmAdjudications } from '../lib/rulings.mjs';
@@ -270,7 +270,8 @@ async function prepare() {
       headIsDescendant = run('git', ['merge-base', '--is-ancestor', previous.head, input.head], { cwd: REPO_DIR, allowFail: true }).status === 0;
       if (headIsDescendant) git(['diff', '--numstat', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 }); // 同上:增量复审离线要用
     }
-    const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull, lateFindingsMode: lateMode.mode });
+    const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull, lateFindingsMode: lateMode.mode,
+      taskBoundaryActive: taskBoundaryOf(state)?.active === true });
     state.scope = scope;
     // 后来发现:上一轮可信结果里审过、本轮补丁指纹没变的文件;没有可信的上一轮时为 null,新 P2 一律照常阻断。
     state.lateFindings = { mode: lateMode.mode, unchangedFiles: lateMode.mode === 'enforce' ? unchangedReviewedFiles({ previous, current }) : null };
@@ -810,9 +811,11 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
   const conv = applyConvergence({ findings: checked.findings.slice(0, 100), preexisting: checked.preexisting.slice(0, 100),
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
     history, rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], keyDeferrals: keyedDeferrals(state.deferrals?.verified ?? []), head: state.input.head });
+  // 任务范围外(#244):计划方任务 issue 划定范围之外、服务器核对通过的 P1/P2 移出阻断;与下面的后来发现一样,codex 阶段与 publish 共用这一份分类。
+  const beyond = splitBeyondTask({ findings: conv.findings, boundary: taskBoundaryOf(state) });
   // 后来发现(#221):第 2 轮起落在没改动文件上的新 P2 移出阻断。codex 阶段(是否进收口、交给核对员的条目)与 publish 共用这一份分类。
-  const late = splitLateFindings({ findings: conv.findings, unchangedFiles: state.lateFindings?.unchangedFiles ?? null, mode: state.lateFindings?.mode ?? 'off' });
-  return { ...checked, ...conv, findings: late.findings, lateFindings: late.late,
+  const late = splitLateFindings({ findings: beyond.findings, unchangedFiles: state.lateFindings?.unchangedFiles ?? null, mode: state.lateFindings?.mode ?? 'off' });
+  return { ...checked, ...conv, findings: late.findings, lateFindings: late.late, beyondTask: beyond.beyond, notes: [...checked.notes, ...beyond.notes],
     truncated: { findings: checked.findings.length > 100, deferred: checked.deferred.length > 100, preexisting: checked.preexisting.length > 100 } };
 }
 
@@ -825,9 +828,15 @@ function toStoredVerification(verification) {
     items: (verification.items ?? []).map((item) => ({ ...item, ...(item.note ? { note: clipScrub(item.note, 600) } : {}), ...(item.error ? { error: clipScrub(item.error, 300) } : {}) })) };
 }
 
+// 任务范围是否起作用、给核对引用用的计划方原文(#244)。材料文件只在本次运行里有;读不到按不起作用处理。
+function taskBoundaryOf(state) {
+  const material = state.taskIssue?.file ? readJson(state.taskIssue.file, null) : null;
+  return isTaskBoundaryActive(material) ? { active: true, planText: toTaskIssuePlanText(material) } : null;
+}
+
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
 function toStoredFinding(finding) {
-  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete'];
+  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete', 'beyondTask', 'beyondTaskQuote'];
   const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
   return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
 }
@@ -880,6 +889,7 @@ async function publish() {
     let deferred = [];
     let preexisting = [];
     let lateFindings = [];
+    let beyondTask = [];
     let ruledKept = [];
     let adjudicatedKept = [];
     let convergence = null;
@@ -899,6 +909,7 @@ async function publish() {
       // 沿用上一轮结论:不重算 key 与轮次。
       preexisting = previous.mivo?.preexisting ?? [];
       lateFindings = previous.mivo?.lateFindings ?? [];
+      beyondTask = previous.mivo?.beyondTask ?? [];
       ruledKept = previous.mivo?.ruledKept ?? [];
       convergence = previous.mivo?.convergence ?? null;
       verifierOverruled = previous.mivo?.verifierOverruled ?? [];
@@ -962,9 +973,10 @@ async function publish() {
       if (checked.truncated.deferred) result.warnings.push(`转 issue 跟进的问题超过 100 条,只记前 100 条`);
       preexisting = checked.preexisting;
       lateFindings = checked.lateFindings ?? [];
+      beyondTask = checked.beyondTask ?? [];
       ruledKept = checked.ruledKept.map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
       adjudicatedKept = (checked.adjudicatedKept ?? []).map((item) => ({ ...item, title: scrubSecrets(item.title).text }));
-      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, lateFindings, ruledKept, adjudicatedKept, verifierOverruled, rulings: state.rulings?.verified });
+      resolutionKeys = resolutionExcludedKeys({ checked, findings, deferred, preexisting, lateFindings: [...lateFindings, ...beyondTask], ruledKept, adjudicatedKept, verifierOverruled, rulings: state.rulings?.verified });
       convergence = { ...checked.convergence, repeatCount: findings.filter((f) => f.seenRounds >= 2).length, lateCount: findings.filter((f) => f.late).length,
         rethink: stuck.length > 0, stuckKeys: stuck.map((item) => item.key) };
       // 因核对员模型不可用没核的 P1/P2(仍在阻断里):报告里单列一节提示,不改结论和阻断判定。
@@ -977,7 +989,7 @@ async function publish() {
         ? computeHandoffStats({ review: handoffReview, coverage: handoffCoverage, meta: checked.handoffCoverageMeta ?? {}, findings, head: input.head, runId: input.runId }) : null;
       if (handoffReview) Object.assign(result.mivo, { handoffReview: toHandoffSnapshot(handoffReview), handoffCoverage, handoffCoverageMeta: checked.handoffCoverageMeta ?? {}, ...(handoffStats ? { handoffStats } : {}) });
       report = finalizeReport({ report: checked.report, findings, deferred, deferralsRejected: state.deferrals?.rejected ?? [],
-        preexisting, late: lateFindings, ruledKept, adjudicatedKept, verifierRefuted, verifierDowngraded,
+        preexisting, late: lateFindings, beyondTask, ruledKept, adjudicatedKept, verifierRefuted, verifierDowngraded,
         verifierUnavailable: unverifiedCount ? { count: unverifiedCount, reason: scrubSecrets(state.verification?.unavailable ?? '').text } : null, convergenceLines: renderConvergenceSection(convergence, stuck),
         pr: input.pr, url: state.context.url, head: input.head,
         base: input.base, diffHash: state.context.evidence?.diffHash, tier: state.tier,
@@ -994,6 +1006,7 @@ async function publish() {
     // 结果包只存紧凑形状:Mini 的 round.mjs 会把 server.mivo 整份带进轮次文件,正文以外的长文本不放进去。
     preexisting = preexisting.map((finding) => toStoredFinding(finding));
     lateFindings = lateFindings.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return toStoredFinding({ ...finding, body: s.text }); });
+    beyondTask = beyondTask.map((finding) => { const s = scrubSecrets(finding.body); secretHits += s.hits; return toStoredFinding({ ...finding, body: s.text, beyondTaskQuote: scrubSecrets(finding.beyondTaskQuote ?? '').text }); });
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
@@ -1001,7 +1014,7 @@ async function publish() {
     const allOverruled = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
     Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
-    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, lateFindings, ruledKept, adjudicatedKept, convergence,
+    Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, lateFindings, beyondTask, ruledKept, adjudicatedKept, convergence,
       rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, verifierOverruledAll: allOverruled, deferrals: {
       verified: (state.deferrals?.verified ?? []).map((d) => d.issue),
       rejected: (state.deferrals?.rejected ?? []).map((r) => ({ issue: r.issue, ref: r.ref, reason: r.reason })),
@@ -1086,7 +1099,7 @@ function baseResult(state) {
       runnerName: process.env.RUNNER_NAME || null, codexVersion: state.codexVersion ?? null,
       ...(state.handoff?.review ? { handoffReview: toHandoffSnapshot(state.handoff.review) } : {}),
       ...(state.taskIssue ? { taskIssue: state.taskIssue.summary } : {}),
-      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], lateFindings: [], ruledKept: [], adjudicatedKept: [], convergence: null, verifierOverruled: [], completedAt: null,
+      codex: state.codex, deps: state.deps, reportComplete: false, findings: [], deferred: [], preexisting: [], lateFindings: [], beyondTask: [], ruledKept: [], adjudicatedKept: [], convergence: null, verifierOverruled: [], completedAt: null,
     },
   };
 }

@@ -43,7 +43,7 @@ export function collectMarkerHistory({ threads = [], reviewer, reviewerIdentity,
 export function toPreviousRound(result) {
   const mivo = result?.mivo ?? {};
   const findings = (mivo.findings ?? []).filter((f) => f?.key).map((f) => ({ key: f.key, seenRounds: Number.isInteger(f.seenRounds) ? f.seenRounds : 1, severity: f.severity ?? null }));
-  const keys = new Set([...(mivo.findings ?? []), ...(mivo.deferred ?? []), ...(mivo.preexisting ?? []), ...(mivo.verifierOverruled ?? [])].map((f) => f?.key).filter(Boolean));
+  const keys = new Set([...(mivo.findings ?? []), ...(mivo.deferred ?? []), ...(mivo.preexisting ?? []), ...(mivo.beyondTask ?? []), ...(mivo.verifierOverruled ?? [])].map((f) => f?.key).filter(Boolean));
   const roundIndex = Number.isInteger(mivo.convergence?.roundIndex) ? mivo.convergence.roundIndex : null;
   return { roundIndex, findings, keys };
 }
