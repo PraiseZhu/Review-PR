@@ -21,7 +21,7 @@
     "mode": "enforce"
   },
   "taskIssue": {
-    "mode": "observe",
+    "mode": "enforce",
     "automation": ["praiseautomation", "github-actions"],
     "alwaysInScope": ["docs/pr/<pr>/"],
     "stageHeadPrefixes": ["integration/", "sync/main-into-"]

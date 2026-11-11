@@ -6,7 +6,11 @@ import { createHash } from 'node:crypto';
 
 export const SEVERITIES = ['P0', 'P1', 'P2'];
 export const ORIGINS = ['introduced', 'made-reachable', 'pre-existing'];
-export const LIMITS = { title: 120, text: 800, bugClass: 60, evidence: 8, instances: 20 };
+// 任务范围外的依据(#244):none=在任务范围内。模型的声明要过 classifyBeyondTask 才生效。
+export const BEYOND_TASK = ['none', 'not-do', 'other-work', 'accepted', 'no-worse'];
+export const BEYOND_TASK_QUOTE_MIN = 6;
+export const BEYOND_TASK_QUOTE_FULL = 10;
+export const LIMITS = { title: 120, text: 800, bugClass: 60, evidence: 8, instances: 20, beyondTaskQuote: 200 };
 export const FINDING_MARKER_RE = /<!--\s*mivo-finding\s+key=([0-9a-f]{12})\s+round=(\d+|null)\s+head=([0-9a-f]{7,40})(?:\s+class=([^\s>]*))?\s*-->/g;
 export const SUPERSEDES_RE = /^(?:[0-9a-f]{12}|legacy-\d{1,3})$/;
 
@@ -23,7 +27,7 @@ const LOCATION_ITEM = {
 export const FINDING_ITEM_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['severity', 'title', 'trigger', 'behavior', 'impact', 'fix', 'verify', 'evidence', 'origin', 'bugClass', 'instances', 'supersedes', 'path', 'line', 'side', 'deferredTo', 'handoffRiskIds'],
+  required: ['severity', 'title', 'trigger', 'behavior', 'impact', 'fix', 'verify', 'evidence', 'origin', 'bugClass', 'instances', 'supersedes', 'path', 'line', 'side', 'deferredTo', 'handoffRiskIds', 'beyondTask', 'beyondTaskQuote'],
   properties: {
     severity: { type: 'string', enum: SEVERITIES },
     title: { type: 'string', description: '一句话标题,不超过 120 字' },
@@ -42,6 +46,8 @@ export const FINDING_ITEM_SCHEMA = {
     side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
     handoffRiskIds: { type: 'array', items: { type: 'string' }, description: '本问题与作者交接 review.md 里哪几条 R 描述的是同一个风险/根因(写 R 编号如 R1);同文件不算;没有对应的 R 写空数组' },
     deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1/P2,且必须在任务书核验通过的列表里);其他一律 null' },
+    beyondTask: { type: 'string', enum: BEYOND_TASK, description: '任务范围外的依据。任务书里没有「任务范围」规则、或问题在任务范围内,一律写 none;not-do=任务 issue 写明不做;other-work=总 issue 分给别的子 issue;accepted=计划方写明接受;no-worse=最坏结果不比合并前差且任务 issue 没要求(只限 P2)' },
+    beyondTaskQuote: { type: 'string', description: '逐字引用任务 issue 里支持这个依据的一句原文,至少 10 个字、不超过 200 字(汉字逐个算,英文单词、标识符和路径各算一个,数字和标点不算;那一行不到 20 个字时引用整行);beyondTask 为 none 或 no-worse 时写空字符串' },
   },
 };
 
@@ -101,6 +107,8 @@ export function normalizeFinding(raw) {
   }
   const bugClass = clipText(collapse(raw?.bugClass), LIMITS.bugClass);
   const evidence = normalizeLocations(raw?.evidence, LIMITS.evidence, '证据', notes);
+  // 位置条数超上限被截断(#244):截掉的位置可能正好是上一轮问题所在的文件,这条问题不能再分到任务范围外。
+  const locationsTruncated = (Array.isArray(raw?.evidence) && raw.evidence.length > LIMITS.evidence) || (Array.isArray(raw?.instances) && raw.instances.length > LIMITS.instances);
   if (!evidence.length) notes.push('没有给出证据位置');
   const instances = normalizeLocations(raw?.instances, LIMITS.instances, '同类位置', notes);
   let supersedes = raw?.supersedes ?? null;
@@ -109,7 +117,10 @@ export function normalizeFinding(raw) {
     supersedes = null;
   }
   const origin = ORIGINS.includes(raw?.origin) ? raw.origin : 'introduced';
-  return { item: { severity: raw?.severity, title, ...text, evidence, instances, origin, bugClass, supersedes }, notes };
+  // 没有这两个字段的旧答卷按「在任务范围内」处理。
+  const beyondTask = BEYOND_TASK.includes(raw?.beyondTask) ? raw.beyondTask : 'none';
+  const beyondTaskQuote = beyondTask === 'none' ? '' : clipText(collapse(raw?.beyondTaskQuote), LIMITS.beyondTaskQuote);
+  return { item: { severity: raw?.severity, title, ...text, evidence, instances, origin, bugClass, supersedes, beyondTask, beyondTaskQuote, locationsTruncated }, notes };
 }
 
 const where = ({ path, line }) => (line ? `${path}:${line}` : path);
@@ -161,15 +172,18 @@ const pathIsSafe = (path) => {
  */
 export function checkEvidence(item, { headReader }) {
   const missing = [];
+  // regular:每个证据都是普通文件(headReader 给了 regularFile 才算;#244 任务范围外只认普通文件)。不影响 complete。
+  let regular = true;
   const evidence = item?.evidence ?? [];
   if (!evidence.length) missing.push({ path: null, line: null, reason: 'empty' });
   for (const { path, line } of evidence) {
     if (!pathIsSafe(path)) { missing.push({ path, line, reason: 'path-invalid' }); continue; }
     const read = headReader(path) ?? { exists: false, lineCount: 0 };
+    if (read.regularFile !== true) regular = false;
     if (!read.exists) missing.push({ path, line, reason: 'not-found' });
     else if (line && read.lineCount > 0 && line > read.lineCount) missing.push({ path, line, reason: 'line-out-of-range' });
   }
-  return { complete: missing.length === 0, missing };
+  return { complete: missing.length === 0, regular: regular && evidence.length > 0, missing };
 }
 
 /**
@@ -183,4 +197,77 @@ export function classifyOrigin(item, { diffFiles }) {
   return hit
     ? { origin: 'introduced', note: '声称 PR 之前就存在,但落在本 PR 新增行上,按本 PR 引入处理' }
     : { origin: 'pre-existing', note: null };
+}
+
+// 比对引用时忽略空白、反引号和各种引号:任务书里的 issue 原文是压成一行、换掉反引号后的样子,模型照抄时这些地方会和原文不同。
+const squash = (text) => String(text ?? '').replace(/[\s`'"“”‘’「」『』]/g, '');
+// 引用的长度按「字」算:汉字一个算一个;英文单词、代码标识符、路径各算一个(下划线、连字符、点、斜杠、冒号连着的不拆开);
+// 数字和标点不算。这样日期、编号、标点凑不出一句话,单独一个函数名、文件名或路径也不够。
+const unitCount = (text) => (String(text ?? '').match(/\p{Script=Han}|[^\p{Script=Han}\s，。、；：！？（）【】《》「」『』“”‘’,;!?()[\]{}<>|"'`]+/gu) ?? []).filter((token) => /\p{L}/u.test(token)).length;
+// 比较文件时去掉开头的 ./、合并重复的 /、忽略大小写:写法不同的同一个文件不能躲开修复轮的从严。
+export const toPathKey = (path) => String(path ?? '').trim().replace(/^(?:\.\/)+/, '').replace(/\/{2,}/g, '/').toLowerCase();
+
+/**
+ * 引用是否落在某一行原文里,而且够长。返回 'ok' / 'short'(对上了但太短)/ 'missing'。
+ * 够长 = 至少 BEYOND_TASK_QUOTE_FULL 个字;那一行不到两倍长度时至少引用一半,且不少于 BEYOND_TASK_QUOTE_MIN 个字。
+ * 只在同一行里匹配:不能把相邻两行的尾和头拼成一句。
+ */
+function matchPlanQuote(quote, lines) {
+  const q = squash(quote);
+  const n = unitCount(quote);
+  let short = false;
+  for (const line of lines ?? []) {
+    if (!squash(line).includes(q)) continue;
+    if (n >= Math.max(BEYOND_TASK_QUOTE_MIN, Math.min(BEYOND_TASK_QUOTE_FULL, Math.ceil(unitCount(line) / 2)))) return 'ok';
+    short = true;
+  }
+  return short ? 'short' : 'missing';
+}
+
+/**
+ * 模型声称「任务范围外」的问题,由服务器核对后才不阻断(#244)。纯函数。
+ * 通过的条件:
+ * - P1/P2;不是上一轮已经阻断过的问题(supersedes 为空、不是连续报出)。
+ * - 证据完整:证据不为空、每个位置在 head 上都找得到(evidenceComplete)且是普通文件(evidenceRegular)、位置条数没有超上限被截断(locationsTruncated)。
+ * - 修复轮按文件从严:previousOpen 是上一轮阻断、本轮没有按原 key 再报的问题(可能已修好,也可能换了说法重报——key 靠标题算,
+ *   服务器分不出来),每条带 files(它的位置、证据、同类位置所在的文件;splitBeyondTask 算好)。这条问题的位置、任一证据或任一同类位置
+ *   落在这些文件上时,一律照常阻断;files 为 null(旧记录没有完整的文件清单、或其中有文件在本轮版本上已不存在或不是普通文件)时也照常阻断。
+ *   previousUnknown(上一轮结果读不到、PR 上却已有审查机的 thread)时全部照常阻断。
+ * - not-do / other-work / accepted 三种依据要逐字引用计划方写的 issue 原文:落在对应依据那部分的同一行里,够长(matchPlanQuote)。
+ * - no-worse 只限 P2,不要求引用。
+ * 其余一律照常阻断并给出原因。
+ * @param {object} item 带 severity / beyondTask / beyondTaskQuote / supersedes / seenRounds / path / evidence / instances 的问题
+ * @param {{planText: {notDo:string[], otherWork:string[], accepted:string[]}, previousOpen?: object[], previousUnknown?: boolean}} p
+ *   planText 是计划方原文按依据分开的行(task-issue.mjs toTaskIssuePlanText)
+ * @returns {{beyond:boolean, basis:string|null, note:string|null}}
+ */
+export function classifyBeyondTask(item, { planText, previousOpen = [], previousUnknown = false }) {
+  const basis = BEYOND_TASK.includes(item?.beyondTask) ? item.beyondTask : 'none';
+  const keep = (note) => ({ beyond: false, basis: null, note });
+  if (basis === 'none') return keep(null);
+  if (!['P1', 'P2'].includes(item.severity)) return keep('声称任务范围外,但 P0 不论范围都阻断');
+  if ((item.supersedes ?? null) !== null || (item.seenRounds ?? 1) > 1) return keep('声称任务范围外,但上一轮已经阻断过这条问题,照常阻断');
+  if (previousUnknown) return keep('声称任务范围外,但上一轮的审查结果读不到,无法确认不是上一轮挡过的问题,照常阻断');
+  if (item.evidenceComplete !== true || item.evidenceRegular !== true || item.locationsTruncated === true) return keep('声称任务范围外,但证据不完整(证据为空、有位置在本轮版本上找不到或不是普通文件、或位置条数超上限被截断),照常阻断');
+  const touched = new Set([item.path, ...(item.evidence ?? []).map((e) => e?.path), ...(item.instances ?? []).map((i) => i?.path)].filter(Boolean).map(toPathKey));
+  if (previousOpen.some((p) => !Array.isArray(p?.files) || !p.files.length)) return keep('声称任务范围外,但上一轮有阻断问题本轮没有按原编号再报,而它的文件清单缺失或文件在本轮版本上已不存在、不再是普通文件(改名、删除或替换),修复轮从严,照常阻断');
+  if (previousOpen.some((p) => p.files.some((f) => touched.has(toPathKey(f))))) return keep('声称任务范围外,但上一轮这个文件有阻断问题、本轮没有按原编号再报,修复轮按文件从严,照常阻断');
+  if (basis === 'no-worse') return item.severity === 'P2' ? { beyond: true, basis, note: null } : keep('「不比合并前差」只适用于 P2,这条是 P1,照常阻断');
+  if (unitCount(item.beyondTaskQuote) < BEYOND_TASK_QUOTE_MIN) return keep(`声称任务范围外,但引用的任务 issue 原文不足 ${BEYOND_TASK_QUOTE_MIN} 个字(汉字逐个算,英文单词、标识符和路径各算一个,数字和标点不算),照常阻断`);
+  const lines = { 'not-do': planText?.notDo, 'other-work': planText?.otherWork, accepted: planText?.accepted }[basis];
+  const matched = matchPlanQuote(item.beyondTaskQuote, lines);
+  if (matched === 'missing') return keep('声称任务范围外,但引用的原文在计划方写的任务 issue 对应部分里找不到,照常阻断');
+  if (matched === 'short') return keep(`声称任务范围外,但引用太短:要引用那一行的一半以上或至少 ${BEYOND_TASK_QUOTE_FULL} 个字,照常阻断`);
+  return { beyond: true, basis, note: null };
+}
+
+/**
+ * 问题的位置、证据、同类位置所在的文件(#244 修复轮按文件从严用),写进结果包的 locationFiles。
+ * 只信本函数写过的 locationFiles(沿用时原样保留);别的字段名下的清单(如本 PR 早期版本写的 files,可能只有 path)一律不认。
+ * 没有证据数组(沿用的旧结果、v1 答卷)、或位置条数超上限被截断(locationsTruncated)时算不全,返回 null,不能拿部分位置冒充完整清单。
+ */
+export function toLocationFiles(finding) {
+  if (Array.isArray(finding?.locationFiles)) return finding.locationFiles;
+  if (!Array.isArray(finding?.evidence) || finding.locationsTruncated === true) return null;
+  return [...new Set([finding.path, ...finding.evidence.map((e) => e?.path), ...(finding.instances ?? []).map((i) => i?.path)].filter((p) => typeof p === 'string' && p))];
 }

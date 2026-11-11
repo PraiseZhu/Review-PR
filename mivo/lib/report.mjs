@@ -3,10 +3,11 @@
 // 只报 P0/P1/P2。Mivo 加一行「Mivo 自动审查」区分 PraiseZhu 本人的评论(两者同一账号发出)。
 // 作者转 issue 跟进的 P1/P2(见 deferrals.mjs)单列成「已转 issue 跟进的问题」,不阻断、不开 thread。
 // 第 2 轮起落在没改动文件上的新 P2(splitLateFindings)单列成「后来发现」,同样不阻断、不开 thread。
+// 计划方任务 issue 划定的范围之外的 P1/P2(splitBeyondTask,#244)单列成「任务范围外的问题」,同样不阻断、不开 thread。
 import { readFileSync } from 'node:fs';
 import { toDeferredSummary } from './deferrals.mjs';
 import { normalizeHandoffCoverage } from './handoff.mjs';
-import { FINDING_ITEM_SCHEMA, SEVERITIES, normalizeFinding, readHandoffRiskIds, escapeModelText, classifyOrigin, checkEvidence, renderFindingBody, titleOfBody } from './finding.mjs';
+import { FINDING_ITEM_SCHEMA, SEVERITIES, normalizeFinding, readHandoffRiskIds, escapeModelText, classifyOrigin, classifyBeyondTask, checkEvidence, renderFindingBody, titleOfBody } from './finding.mjs';
 
 export const REPORT_SECTIONS = ['## Findings', '## Rule coverage', '## Verification', '## Overall'];
 export const REPORT_HEADER = 'Mivo 自动审查';
@@ -97,9 +98,11 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
       if (origin.note) notes.push(`第 ${index + 1} 条问题:${origin.note}`);
       meta.origin = origin.origin;
       let evidenceComplete = meta.evidence.length > 0;
+      let evidenceRegular = false;
       if (headReader) {
         const checked = checkEvidence(meta, { headReader });
         evidenceComplete = checked.complete;
+        evidenceRegular = checked.regular === true;
         if (!checked.complete) {
           evidenceIncomplete += 1;
           const where = checked.missing.map((m) => (m.path ? `${m.path}${m.line ? `:${m.line}` : ''}` : '(无证据)')).join('、');
@@ -109,7 +112,7 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
       body = renderFindingBody(meta);
       item = { ...item, body, severity, title: meta.title, trigger: meta.trigger, behavior: meta.behavior, impact: meta.impact, fix: meta.fix,
         verify: meta.verify, evidence: meta.evidence, instances: meta.instances, origin: meta.origin, bugClass: meta.bugClass,
-        supersedes: meta.supersedes, evidenceComplete };
+        supersedes: meta.supersedes, evidenceComplete, beyondTask: meta.beyondTask, beyondTaskQuote: meta.beyondTaskQuote, locationsTruncated: meta.locationsTruncated, evidenceRegular };
       if (handoffOn) {
         const linked = readHandoffRiskIds(raw.handoffRiskIds, riskIds);
         if (!linked.complete) notes.push(`第 ${index + 1} 条问题的 handoffRiskIds 缺失或含无效编号,不计入交接关联`);
@@ -279,6 +282,53 @@ export function renderLateSection(list = []) {
     ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P2'}] ${titleOf(f)}`), ''];
 }
 
+// ── 任务范围外(#244,总 issue #132 D19)──────────────────────────────────────────
+// 计划方的任务 issue 写明不做、分给别的子 issue、写明接受,或最坏结果不比合并前差且 issue 没要求的 P1/P2:不阻断,单列一节。
+// 模型在答卷里声明(beyondTask / beyondTaskQuote),服务器按 finding.mjs classifyBeyondTask 核对后才移出阻断。
+// 开关:config/review-features.json 的 taskIssue.mode 为 enforce、子 issue 是计划方级别且已写进任务书(task-issue.mjs isTaskBoundaryActive)。
+export const BEYOND_TASK_SECTION = '## 任务范围外的问题（不阻断本 PR）';
+export const BEYOND_TASK_LABELS = { 'not-do': '任务 issue 写明不做', 'other-work': '总 issue 分给别的子 issue', accepted: '计划方写明接受', 'no-worse': '最坏结果不比合并前差，任务 issue 没要求' };
+
+/**
+ * 把阻断问题里核对通过的「任务范围外」P1/P2 移出。纯函数,不改输入。
+ * @param {object} p
+ * @param {object[]} p.findings 本轮阻断问题(已分配 key)
+ * @param {{active:boolean, planText:object}|null} p.boundary 为 null 或 active=false 时原样返回
+ * @param {object[]} [p.previousBlocking] 上一轮的阻断问题({key,path,locationFiles,...},convergence.mjs toPreviousRound)
+ * @param {(path:string)=>boolean} [p.fileExists] 文件在本轮 head 上是否是普通文件;受保护的文件不是(改名、删除、换成目录 / 符号链接 / 子模块)时这一轮从严
+ * @param {string[]} [p.reportedKeys] 本轮在别的桶里(转 issue、裁定不改、采信裁决等)出现的 key;连同 findings 的 key 一起算「本轮再报了」
+ * @param {boolean} [p.previousUnknown] 上一轮结果读不到、PR 上却已有审查机的 thread
+ * @returns {{findings: object[], beyond: object[], notes: string[]}} notes 是声明了但没通过核对的原因(进结果包 warnings)
+ */
+export function splitBeyondTask({ findings = [], boundary = null, previousBlocking = [], reportedKeys = [], previousUnknown = false, fileExists = () => true }) {
+  if (boundary?.active !== true) return { findings: [...findings], beyond: [], notes: [] };
+  const reported = new Set([...reportedKeys, ...findings.map((f) => f.key)].filter(Boolean));
+  // 受保护的文件:上一轮问题的位置、证据、同类位置所在文件(结果包的 locationFiles)。旧记录没有 locationFiles 时不拿 path 补位,记 null;
+  // 有文件已不在本轮 head 上或不是普通文件时也记 null。null 由 classifyBeyondTask 整轮从严。
+  const previousOpen = previousBlocking.filter((p) => p?.key && !reported.has(p.key)).map((p) => {
+    const files = Array.isArray(p.locationFiles) ? [...new Set([p.path, ...p.locationFiles].filter(Boolean))] : [];
+    return { ...p, files: files.length && files.every((f) => fileExists(f)) ? files : null };
+  });
+  const blocking = [];
+  const beyond = [];
+  const notes = [];
+  for (const f of findings) {
+    const checked = classifyBeyondTask(f, { planText: boundary.planText, previousOpen, previousUnknown });
+    if (checked.beyond) { beyond.push(f); continue; }
+    if (checked.note) notes.push(`「${titleOf(f)}」${checked.note}`);
+    blocking.push(f);
+  }
+  return { findings: blocking, beyond, notes };
+}
+
+/** 报告里「任务范围外的问题」一节;没有时返回空数组。 */
+export function renderBeyondTaskSection(list = []) {
+  if (!list.length) return [];
+  return [BEYOND_TASK_SECTION, '',
+    '下面的 P1/P2 不在计划方任务 issue 划定的范围内,不阻断本 PR,也没有开 thread。维护者决定另开 issue 跟进还是不处理;不建议在本 PR 里修。', '',
+    ...list.map((f) => `- \`${whereOf(f)}\` · [${f.severity ?? 'P2'}] ${titleOf(f)} · 依据:${BEYOND_TASK_LABELS[f.beyondTask] ?? f.beyondTask}${f.beyondTaskQuote ? `「${oneLineText(f.beyondTaskQuote, 200)}」` : ''}`), ''];
+}
+
 /** 报告里「维护者已裁定不改、审查机本轮仍报了」一节;这些 P1/P2 已从阻断问题里移出。 */
 export function renderRuledKeptSection(list = []) {
   if (!list.length) return [];
@@ -388,16 +438,17 @@ export function pendingFinalFullReport({ pr, url, head, base, diffHash, tier, sc
   ].join('\n');
 }
 
-export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], late = [], ruledKept = [], adjudicatedKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
+export function finalizeReport({ report, findings, deferred = [], deferralsRejected = [], preexisting = [], late = [], beyondTask = [], ruledKept = [], adjudicatedKept = [], convergenceLines = [], verifierRefuted = [], verifierDowngraded = [], verifierUnavailable = null,
   pr, url, head, base, diffHash, tier, scope, skillSha = '', specDigest = '', finalFull = null, finalFullKind = null, handoff = null }) {
   const summary = toDeferredSummary(deferred);
   const overruled = verifierRefuted.length + verifierDowngraded.length;
   let conclusion = findings.length === 0
-    ? (summary ? `pass —— 没有阻断的 P0/P1/P2；${summary.text}，不阻断本 PR。` : (preexisting.length || late.length || overruled || adjudicatedKept.length ? 'pass —— 没有阻断的 P0/P1/P2。' : 'pass —— 没有 P0/P1/P2。'))
+    ? (summary ? `pass —— 没有阻断的 P0/P1/P2；${summary.text}，不阻断本 PR。` : (preexisting.length || late.length || beyondTask.length || overruled || adjudicatedKept.length ? 'pass —— 没有阻断的 P0/P1/P2。' : 'pass —— 没有 P0/P1/P2。'))
     : `changes-requested —— ${findings.length} 条 P0/P1/P2，已在对应位置开 review thread。`;
   if (findings.length && summary) conclusion += `另有 ${summary.text}，不阻断。`;
   if (!findings.length && preexisting.length) conclusion += `另有 ${preexisting.length} 条 PR 之前就存在的 P1/P2，不阻断本 PR。`;
   if (late.length) conclusion += `另有 ${late.length} 条后来发现的 P2（所在文件上一轮已审、本轮没改），不阻断本 PR。`;
+  if (beyondTask.length) conclusion += `另有 ${beyondTask.length} 条任务范围外的 P1/P2（不在计划方任务 issue 划定的范围内），不阻断本 PR。`;
   if (adjudicatedKept.length) conclusion += `另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`;
   // 核对员推翻/降级的 P1/P2:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
   if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
@@ -422,7 +473,7 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
     lines.splice(verificationIndex + 1, 0, '', scopeLine, ...(stateLine ? ['', stateLine] : []));
   }
   // 单列的几节在 Rule coverage 前一次性插入,已转 issue 的在最前。
-  const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting), ...renderLateSection(late),
+  const extraLines = [...renderDeferredSection({ deferred, rejected: deferralsRejected }), ...renderPreexistingSection(preexisting), ...renderLateSection(late), ...renderBeyondTaskSection(beyondTask),
     ...renderRuledKeptSection(ruledKept), ...renderAdjudicatedSection(adjudicatedKept), ...renderVerifierRefutedSection(verifierRefuted), ...renderVerifierDowngradedSection(verifierDowngraded), ...renderVerifierUnavailableSection(verifierUnavailable ?? {}), ...convergenceLines];
   if (extraLines.length) {
     const coverageIndex = lines.findIndex((line) => /^## Rule coverage\s*$/.test(line));

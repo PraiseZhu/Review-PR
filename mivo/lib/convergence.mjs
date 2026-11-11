@@ -20,13 +20,15 @@ const commentsOf = (thread) => (Array.isArray(thread?.comments) ? thread.comment
  */
 export function collectMarkerHistory({ threads = [], reviewer, reviewerIdentity, currentHead }) {
   const current = String(currentHead ?? '').slice(0, 12);
-  const history = { byKey: new Map(), heads: new Set(), threadUrlByKey: new Map(), reviewerThreads: 0, legacyThreads: 0 };
+  // findingThreads 连本轮 head 的也数(#244:上一轮结果读不到时,只要 PR 上已有审查机开的问题 thread 就要从严)。
+  const history = { byKey: new Map(), heads: new Set(), threadUrlByKey: new Map(), reviewerThreads: 0, legacyThreads: 0, findingThreads: 0 };
   if (!hasReviewer(reviewer, reviewerIdentity)) return history;
   const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   for (const thread of threads) {
     const [first] = commentsOf(thread);
     if (!isReviewer(first?.author) || !FINDING_RE.test(String(first?.body ?? ''))) continue;
     const marker = parseFindingMarker(first.body);
+    history.findingThreads += 1;
     if (marker && marker.head.slice(0, 12) === current) continue;
     history.reviewerThreads += 1;
     if (!marker) { history.legacyThreads += 1; continue; }
@@ -42,8 +44,10 @@ export function collectMarkerHistory({ threads = [], reviewer, reviewerIdentity,
 /** 上一轮结果包 → 本轮要用的上一轮 key 清单。旧结果没有这些字段时都是空值,不报错。 */
 export function toPreviousRound(result) {
   const mivo = result?.mivo ?? {};
-  const findings = (mivo.findings ?? []).filter((f) => f?.key).map((f) => ({ key: f.key, seenRounds: Number.isInteger(f.seenRounds) ? f.seenRounds : 1, severity: f.severity ?? null }));
-  const keys = new Set([...(mivo.findings ?? []), ...(mivo.deferred ?? []), ...(mivo.preexisting ?? []), ...(mivo.verifierOverruled ?? [])].map((f) => f?.key).filter(Boolean));
+  const findings = (mivo.findings ?? []).filter((f) => f?.key).map((f) => ({ key: f.key, seenRounds: Number.isInteger(f.seenRounds) ? f.seenRounds : 1, severity: f.severity ?? null,
+    path: f.path ?? null, line: Number.isInteger(f.line) ? f.line : null, bugClass: f.bugClass ?? '', title: f.title ?? '',
+    locationFiles: Array.isArray(f.locationFiles) ? f.locationFiles.filter((x) => typeof x === 'string') : null }));
+  const keys = new Set([...(mivo.findings ?? []), ...(mivo.deferred ?? []), ...(mivo.preexisting ?? []), ...(mivo.beyondTask ?? []), ...(mivo.verifierOverruled ?? [])].map((f) => f?.key).filter(Boolean));
   const roundIndex = Number.isInteger(mivo.convergence?.roundIndex) ? mivo.convergence.roundIndex : null;
   return { roundIndex, findings, keys };
 }

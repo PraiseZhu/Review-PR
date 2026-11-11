@@ -68,7 +68,7 @@ test('开关:缺省 off;不合法按 off 告警;名单字段不合法时用默�
   assert.deepEqual(bad.stageHeadPrefixes, ['integration/', 'sync/main-into-']);
   assert.match(bad.warning, /stageHeadPrefixes/);
   const repoConfig = loadTaskIssueMode(new URL('../config/review-features.json', import.meta.url));
-  assert.equal(repoConfig.mode, 'observe', '本 PR 把 taskIssue.mode 设为 observe');
+  assert.equal(repoConfig.mode, 'enforce', '#244 把 taskIssue.mode 设为 enforce(任务范围起作用)');
 });
 
 // ── SC1、SC2 链接 ──
