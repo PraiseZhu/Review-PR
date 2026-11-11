@@ -11,6 +11,7 @@ import { rulingSection, rebuttalSection } from './rulings.mjs';
 import { toHandoffPromptLines } from './handoff.mjs';
 import { toFocusLines } from './focus.mjs';
 import { toProductRulesPromptLines, toProductRulesFocusLine } from './product-rules.mjs';
+import { toTaskIssuePromptLines, toTaskIssueFocusLine, isTaskIssueInPrompt, TASK_ISSUE_INTENT_NOTE } from './task-issue.mjs';
 
 export function extractSection(markdown, startMarker, endMarker) {
   const text = String(markdown ?? '');
@@ -98,8 +99,9 @@ const TIER_HINT = {
  * @param {object[]} [p.deferrals] 服务器核验通过的转 issue 条目 {issue, title, text}
  * @param {{ciCovered?: string[]}|null} [p.focus] 审查重点配置(lib/focus.mjs loadFocusConfig 读出的 CI 已覆盖命令)
  * @param {object|null} [p.productRules] 产品规则(lib/product-rules.mjs toProductRulesState 的结果);off 或 null 时任务书不变
+ * @param {object|null} [p.taskIssue] 任务 issue 材料(input/task-issue.json,#242);off 或 null 时任务书不变,材料路径取 inputs.taskIssueFile
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null, productRules = null }) {
+export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null, productRules = null, taskIssue = null }) {
   const rulesBaseDir = inputs.rulesBaseDir ?? null;
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
@@ -167,9 +169,12 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     scopeText,
     ...(previous ? ['', previous] : []),
     '',
-    ...toFocusLines({ ciStatus: ctx.gate?.ci?.status ?? null, ciCovered: focus?.ciCovered ?? [], goalLine: toProductRulesFocusLine(productRules) }),
+    ...toFocusLines({ ciStatus: ctx.gate?.ci?.status ?? null, ciCovered: focus?.ciCovered ?? [],
+      goalLine: toTaskIssueFocusLine(taskIssue, { productRules: Boolean(toProductRulesFocusLine(productRules)) }) ?? toProductRulesFocusLine(productRules) }),
     // 产品规则一节:开关 off 时为空,任务书与不接产品规则时逐字一致(开关本身不改变 specDigest)。
     ...((lines) => (lines.length ? ['', ...lines] : []))(toProductRulesPromptLines({ productRules, workdir })),
+    // 任务 issue 一节(#242):开关 off 或没有材料时为空,任务书与不接任务 issue 时逐字一致。
+    ...((lines) => (lines.length ? ['', ...lines] : []))(toTaskIssuePromptLines({ material: taskIssue, file: inputs.taskIssueFile ?? null })),
     '',
     '## 审查规范(原文,来自 review-pr skill)',
     '',
@@ -192,6 +197,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     SEVERITY,
     '',
     PRODUCT_INTENT,
+    ...(isTaskIssueInPrompt(taskIssue) ? [TASK_ISSUE_INTENT_NOTE] : []),
     '',
     deferralSection(deferrals),
     ...(rulings.length ? ['', rulingSection(rulings)] : []),
@@ -283,6 +289,16 @@ const TEMPLATE_PLAN_MIXED = [TEMPLATE_PLAN_RECHECK[0],
 const TEMPLATE_REBUTTAL = { path: '<path>', line: 1, severity: 'P1', finding: '<finding>', reply: '<reply>' };
 // 产品规则的固定合成材料:命中的生效 / 已定未生效 / 待复核三种状态、未命中专题、本 PR 改了规则文件,都进任务书;不含任何真实规则内容。
 const TEMPLATE_RULE = (id, state, file = '<topic-1>') => ({ id, title: `<rule-${id}>`, file, text: '<rule>', sources: '<source>', landing: '<landing>', acceptance: '<acceptance>', files: ['<file>'], retiredBy: null, state });
+// 任务 issue 模板材料(#242):覆盖整节的每一种写法(决定、总 issue、越界、黑盒、未关闭依赖、共用 PR、缺口),文字变了 digest 才会变。
+const TEMPLATE_TASK_ISSUE = (mode, trust = 'plan') => ({ mode, status: 'partial', note: null, gaps: ['<gap>'],
+  issue: { ref: '<owner/repo#issue>', trust, trustLabel: trust === 'plan' ? '计划方验收标准' : '作者陈述', trustNote: trust === 'plan' ? null : '<trust-note>',
+    sections: { 目标: '<goal>', 不做: '<not-do>', 原因: '<reason>' },
+    scList: [{ sc: 'SC1', description: '<sc>', layer: 'unit' }, { sc: 'SC2', description: '<sc>', layer: 'github-live' }],
+    decided: [{ date: '<date>', text: '<decided>' }] },
+  parent: trust === 'plan' ? { ref: '<owner/repo#parent>', title: '<title>', trust: 'plan', trustLabel: '计划方验收标准', goal: '<goal>', notDo: '<not-do>',
+    childRows: [{ line: '<row>', self: true }], decisions: [{ id: 'D1', date: '<date>', decision: '<decision>', supersededBy: null }], unstructuredDecisions: ['<decision>'] } : null,
+  shared: { shared: true, prs: [1], incomplete: true },
+  derived: { scopeOutside: ['<file>'], scopeNote: '<scope-note>', blackboxSc: ['SC2'], depsOpen: ['<dep>'] } });
 const TEMPLATE_PRODUCT_RULES = (mode, status = 'parsed') => ({ featureMode: mode, status,
   topics: [{ file: '<topic-1>', title: '<topic-title-1>', applies: '<applies-1>' }, { file: '<topic-2>', title: '<topic-title-2>', applies: '<applies-2>' }],
   rules: [TEMPLATE_RULE('A-1', 'effective'), TEMPLATE_RULE('A-2', 'pending'), TEMPLATE_RULE('A-3', 'review'), TEMPLATE_RULE('B-1', 'effective', '<topic-2>')],
@@ -330,7 +346,7 @@ export function readRuleSources({ paths = [], base, head, git }) {
  * @param {(path:string)=>string|null} p.readFile 按审查实际读的版本取文件内容,取不到返回 null
  * @param {string} p.config 生效的 pr-rules 配置原文
  */
-export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [], productRulesMode = 'off' }) {
+export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [], productRulesMode = 'off', taskIssueMode = 'off' }) {
   const plan = toRuleMapPlan(spec.ruleMap);
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
@@ -341,9 +357,12 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
   // 模板 ctx 带 CI 全绿:「CI 已覆盖」清单随 focus.ciCovered 进 digest;CI 非全绿时这一段整段不出,不另做模板。
   // 产品规则:off 时不进模板(template 与不接产品规则时一致);开着时四个模板都带合成规则,另加一份「head 无可用规则」的全量模板。
   const productRules = productRulesMode === 'off' ? null : TEMPLATE_PRODUCT_RULES(productRulesMode);
-  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null, rules = productRules) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
-    focus: { ciCovered }, productRules: rules,
-    inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir } });
+  // 任务 issue(#242):off 时不进模板;开着时四个模板都带合成材料,另加「作者陈述级别」与「没关联任务 issue」两份全量模板。
+  const taskIssue = taskIssueMode === 'off' ? null : TEMPLATE_TASK_ISSUE(taskIssueMode);
+  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null, rules = productRules, issue = taskIssue) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
+    focus: { ciCovered }, productRules: rules, taskIssue: issue,
+    inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir,
+      ...(issue ? { taskIssueFile: '<task-issue>' } : {}) } });
   return {
     version: 1,
     template: {
@@ -354,6 +373,10 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
       finalFullWithPrevious: toTemplate(withPlan({ mode: 'full', purpose: 'final-full', reason: '<reason>', previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_RECHECK), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL], '<rules-base>'),
       incremental: toTemplate(withPlan({ mode: 'incremental', reason: '<reason>', files: ['<file>'], previousFindings: [TEMPLATE_FINDING, TEMPLATE_FINDING_OUT] }, TEMPLATE_PLAN_MIXED), [TEMPLATE_DEFERRAL], [TEMPLATE_RULING], [TEMPLATE_REBUTTAL]),
       ...(productRules ? { productRulesAbsent: toTemplate(withPlan({ mode: 'full', reason: '<reason>' }, TEMPLATE_PLAN_RECHECK), [], [], [], '<rules-base>', TEMPLATE_PRODUCT_RULES(productRulesMode, 'absent')) } : {}),
+      ...(taskIssue ? {
+        taskIssueAuthor: toTemplate(withPlan({ mode: 'full', reason: '<reason>' }, TEMPLATE_PLAN_RECHECK), [], [], [], '<rules-base>', productRules, TEMPLATE_TASK_ISSUE(taskIssueMode, 'author')),
+        taskIssueUnlinked: toTemplate(withPlan({ mode: 'full', reason: '<reason>' }, TEMPLATE_PLAN_RECHECK), [], [], [], '<rules-base>', productRules, { mode: taskIssueMode, status: 'unlinked', issue: null }),
+      } : {}),
     },
     mustRead: Object.fromEntries(plan.mustRead.map((path) => [path, read(path)])),
     pathRules: Object.fromEntries(hitFiles.map((path) => [path, read(path)])),
