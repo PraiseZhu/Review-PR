@@ -189,7 +189,7 @@ test('SC4:上一轮挡过的问题换标题重报 → 照常阻断;上一轮结�
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     const f = round1.mivo.findings[0];
     writeFileSync(statePath, JSON.stringify({ ...state, previous: { head: 'x' }, previousRound: { roundIndex: 1, keys: [f.key],
-      findings: [{ key: f.key, seenRounds: 1, severity: f.severity, path: f.path, line: f.line ?? null, bugClass: f.bugClass, title: f.title, files: f.files }] } }));
+      findings: [{ key: f.key, seenRounds: 1, severity: f.severity, path: f.path, line: f.line ?? null, bugClass: f.bugClass, title: f.title, locationFiles: f.locationFiles }] } }));
     const round2 = publish(again.work);
     assert.equal(round2.reviewClean, false);
     assert.equal(round2.mivo.findings.length, 1);
@@ -224,10 +224,10 @@ test('SC4:上一轮结果读不到、PR 上有当前版本的审查机 thread �
 });
 
 // 第三轮复审(PR #245):文件改名后旧问题换到新文件名下重报;上一轮记录满 100 条;结果包记下受保护的文件。
-test('SC4:上一轮问题所在文件在本轮版本上已不存在 → 照常阻断;上一轮记录满 100 条 → 按读不到处理;结果包的问题带 files', () => {
+test('SC4:上一轮问题所在文件在本轮版本上已不存在 → 照常阻断;上一轮记录满 100 条 → 按读不到处理;结果包的问题带 locationFiles', () => {
   const cases = [
-    [[{ key: 'a'.repeat(12), seenRounds: 1, severity: 'P1', path: 'src/old.ts', files: ['src/old.ts'] }], /文件在本轮版本上已不存在/],
-    [Array.from({ length: 100 }, (_, n) => ({ key: n.toString(16).padStart(12, '0'), seenRounds: 1, severity: 'P2', path: 'src/z.ts', files: ['src/z.ts'] })), /上一轮的审查结果读不到/],
+    [[{ key: 'a'.repeat(12), seenRounds: 1, severity: 'P1', path: 'src/old.ts', locationFiles: ['src/old.ts'] }], /文件在本轮版本上已不存在/],
+    [Array.from({ length: 100 }, (_, n) => ({ key: n.toString(16).padStart(12, '0'), seenRounds: 1, severity: 'P2', path: 'src/z.ts', locationFiles: ['src/z.ts'] })), /上一轮的审查结果读不到/],
   ];
   for (const [findings, why] of cases) {
     const { work } = setup({ findings: [notDo()] });
@@ -238,7 +238,7 @@ test('SC4:上一轮问题所在文件在本轮版本上已不存在 → 照常�
       const result = publish(work);
       assert.deepEqual(result.mivo.beyondTask, []);
       assert.equal(result.mivo.findings.length, 1);
-      assert.deepEqual(result.mivo.findings[0].files, ['src/a.ts'], '结果包的问题记下它的位置所在文件,下一轮用来从严');
+      assert.deepEqual(result.mivo.findings[0].locationFiles, ['src/a.ts'], '结果包的问题记下它的位置所在文件,下一轮用来从严');
       assert.ok(result.warnings.some((w) => why.test(w)), JSON.stringify(result.warnings));
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
@@ -282,10 +282,32 @@ test('SC4:证据指向目录或符号链接 → 证据不完整照常阻断;受�
   for (const path of ['src/dir', 'src/link.ts', 'src/sub']) {
     const { work } = setup({ findings: [notDo()] });
     try {
-      prepare(work, { key: 'f'.repeat(12), seenRounds: 1, severity: 'P1', path, files: [path] });
+      prepare(work, { key: 'f'.repeat(12), seenRounds: 1, severity: 'P1', path, locationFiles: [path] });
       const result = publish(work);
       assert.deepEqual(result.mivo.beyondTask, [], path);
       assert.ok(result.warnings.some((w) => /不再是普通文件/.test(w)), `${path}:${JSON.stringify(result.warnings)}`);
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
+});
+
+// 第五轮复审(PR #245):本 PR 早期版本沿用旧结果时写过只含 path 的 files;两轮 publish 走一遍,确认它不被当成完整清单,
+// 而本版本写的 locationFiles 在沿用(reuse)后原样保留。
+test('SC4:旧字段 files 下的清单不认;本版本写的 locationFiles 经沿用仍保留', () => {
+  const { work } = setup({ findings: [finding({ path: 'src/a.ts', evidence: [{ path: 'src/a.ts', line: 2 }] })] });
+  try {
+    withTaskIssue(work, MATERIAL());
+    const round1 = publish(work);
+    assert.deepEqual(round1.mivo.findings[0].locationFiles, ['src/a.ts']);
+    assert.equal(round1.mivo.findings[0].files, undefined, '不再写旧字段');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+  const legacy = setup({ findings: [notDo()] });
+  try {
+    withTaskIssue(legacy.work, MATERIAL());
+    const statePath = join(legacy.work, 'state.json');
+    writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), previous: { head: 'x' },
+      previousRound: { roundIndex: 1, keys: ['f'.repeat(12)], findings: [{ key: 'f'.repeat(12), seenRounds: 1, severity: 'P1', path: 'src/zz.ts', files: ['src/zz.ts'] }] } }));
+    const result = publish(legacy.work);
+    assert.deepEqual(result.mivo.beyondTask, []);
+    assert.ok(result.warnings.some((w) => /文件清单缺失/.test(w)), JSON.stringify(result.warnings));
+  } finally { rmSync(legacy.work, { recursive: true, force: true }); }
 });

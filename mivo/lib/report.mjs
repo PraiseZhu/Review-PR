@@ -294,7 +294,7 @@ export const BEYOND_TASK_LABELS = { 'not-do': '任务 issue 写明不做', 'othe
  * @param {object} p
  * @param {object[]} p.findings 本轮阻断问题(已分配 key)
  * @param {{active:boolean, planText:object}|null} p.boundary 为 null 或 active=false 时原样返回
- * @param {object[]} [p.previousBlocking] 上一轮的阻断问题({key,path,files,...},convergence.mjs toPreviousRound)
+ * @param {object[]} [p.previousBlocking] 上一轮的阻断问题({key,path,locationFiles,...},convergence.mjs toPreviousRound)
  * @param {(path:string)=>boolean} [p.fileExists] 文件在本轮 head 上是否是普通文件;受保护的文件不是(改名、删除、换成目录 / 符号链接 / 子模块)时这一轮从严
  * @param {string[]} [p.reportedKeys] 本轮在别的桶里(转 issue、裁定不改、采信裁决等)出现的 key;连同 findings 的 key 一起算「本轮再报了」
  * @param {boolean} [p.previousUnknown] 上一轮结果读不到、PR 上却已有审查机的 thread
@@ -303,10 +303,10 @@ export const BEYOND_TASK_LABELS = { 'not-do': '任务 issue 写明不做', 'othe
 export function splitBeyondTask({ findings = [], boundary = null, previousBlocking = [], reportedKeys = [], previousUnknown = false, fileExists = () => true }) {
   if (boundary?.active !== true) return { findings: [...findings], beyond: [], notes: [] };
   const reported = new Set([...reportedKeys, ...findings.map((f) => f.key)].filter(Boolean));
-  // 受保护的文件:上一轮问题的位置、证据、同类位置所在文件(结果包的 files)。旧记录没有 files 时不拿 path 补位,记 null;
+  // 受保护的文件:上一轮问题的位置、证据、同类位置所在文件(结果包的 locationFiles)。旧记录没有 locationFiles 时不拿 path 补位,记 null;
   // 有文件已不在本轮 head 上或不是普通文件时也记 null。null 由 classifyBeyondTask 整轮从严。
   const previousOpen = previousBlocking.filter((p) => p?.key && !reported.has(p.key)).map((p) => {
-    const files = Array.isArray(p.files) ? [...new Set([p.path, ...p.files].filter(Boolean))] : [];
+    const files = Array.isArray(p.locationFiles) ? [...new Set([p.path, ...p.locationFiles].filter(Boolean))] : [];
     return { ...p, files: files.length && files.every((f) => fileExists(f)) ? files : null };
   });
   const blocking = [];

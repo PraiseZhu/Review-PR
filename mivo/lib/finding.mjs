@@ -262,11 +262,12 @@ export function classifyBeyondTask(item, { planText, previousOpen = [], previous
 }
 
 /**
- * 问题的位置、证据、同类位置所在的文件(#244 修复轮按文件从严用),写进结果包的 files。
- * 已经算好的原样保留;没有证据数组(沿用的旧结果、v1 答卷)时算不全,返回 null,不能只拿 path 冒充完整清单。
+ * 问题的位置、证据、同类位置所在的文件(#244 修复轮按文件从严用),写进结果包的 locationFiles。
+ * 只信本函数写过的 locationFiles(沿用时原样保留);别的字段名下的清单(如本 PR 早期版本写的 files,可能只有 path)一律不认。
+ * 没有证据数组(沿用的旧结果、v1 答卷)时算不全,返回 null,不能只拿 path 冒充完整清单。
  */
 export function toLocationFiles(finding) {
-  if (Array.isArray(finding?.files)) return finding.files;
+  if (Array.isArray(finding?.locationFiles)) return finding.locationFiles;
   if (!Array.isArray(finding?.evidence)) return null;
   return [...new Set([finding.path, ...finding.evidence.map((e) => e?.path), ...(finding.instances ?? []).map((i) => i?.path)].filter((p) => typeof p === 'string' && p))];
 }

@@ -843,10 +843,10 @@ function taskBoundaryOf(state) {
 
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
 function toStoredFinding(finding) {
-  // files:问题位置、证据、同类位置所在的文件(#244 修复轮按文件从严用)。算不全时不写,下一轮从严。
-  const files = toLocationFiles(finding);
-  finding = files ? { ...finding, files } : finding;
-  const keep = ['files', 'path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete', 'beyondTask', 'beyondTaskQuote'];
+  // locationFiles:问题位置、证据、同类位置所在的文件(#244 修复轮按文件从严用)。算不全时不写,下一轮从严。
+  const locationFiles = toLocationFiles(finding);
+  finding = locationFiles ? { ...finding, locationFiles } : finding;
+  const keep = ['locationFiles', 'path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete', 'beyondTask', 'beyondTaskQuote'];
   const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
   return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
 }

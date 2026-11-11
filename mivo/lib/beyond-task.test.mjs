@@ -190,7 +190,7 @@ test('SC5 跨轮:上一轮任务范围外的问题本轮再报,沿用同一个 k
 
 // 复审(PR #245)两轮确认的绕过:上一轮挡过的问题换标题、换类型、换行号、改主路径重报,key 对不上。相似度猜不准,改成按文件从严。
 test('SC4 修复轮按文件从严:上一轮某文件有阻断问题、本轮没按原编号再报时,落在这个文件上的 P1/P2 一律照常挡', () => {
-  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照', files: ['src/a.ts'] };
+  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照', locationFiles: ['src/a.ts'] };
   const boundary = { active: true, planText };
   const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
   const blocked = (out) => { assert.equal(out.beyond.length, 0); assert.match(out.notes[0], /修复轮(按文件)?从严,照常阻断/); };
@@ -228,9 +228,9 @@ test('SC4 审查机开过的问题 thread 连当前版本上的也数(上一轮�
 test('SC4 上一轮阻断问题的文件、行号、类型、标题随结果链带到本轮', async () => {
   const { toPreviousRound } = await import('./convergence.mjs');
   const round = toPreviousRound({ mivo: { findings: [{ key: 'a'.repeat(12), severity: 'P1', seenRounds: 2, path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题' }, { key: 'b'.repeat(12) }] } });
-  assert.deepEqual(round.findings, [{ key: 'a'.repeat(12), seenRounds: 2, severity: 'P1', path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题', files: null },
-    { key: 'b'.repeat(12), seenRounds: 1, severity: null, path: null, line: null, bugClass: '', title: '', files: null }]);
-  assert.deepEqual(toPreviousRound({ mivo: { findings: [{ key: 'a'.repeat(12), path: 'src/a.ts', files: ['src/a.ts', 'src/c.ts', 7] }] } }).findings[0].files, ['src/a.ts', 'src/c.ts']);
+  assert.deepEqual(round.findings, [{ key: 'a'.repeat(12), seenRounds: 2, severity: 'P1', path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题', locationFiles: null },
+    { key: 'b'.repeat(12), seenRounds: 1, severity: null, path: null, line: null, bugClass: '', title: '', locationFiles: null }]);
+  assert.deepEqual(toPreviousRound({ mivo: { findings: [{ key: 'a'.repeat(12), path: 'src/a.ts', locationFiles: ['src/a.ts', 'src/c.ts', 7] }] } }).findings[0].locationFiles, ['src/a.ts', 'src/c.ts']);
 });
 
 // 第三轮复审(PR #245)确认的绕过:证据为空 / 路径写法不同 / 旧文件被挤到位置上限之后;单个蛇形标识符凑字数;文件改名后换到新文件名下重报。
@@ -247,7 +247,7 @@ test('SC4 证据不完整的问题不能分到范围外:证据为空、有位置
 });
 
 test('SC4 受保护的文件:上一轮问题的全部位置所在文件,路径写法不同也认;有文件已不在本轮版本上时整轮从严', () => {
-  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', files: ['src/a.ts', 'src/c.ts'] };
+  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', locationFiles: ['src/a.ts', 'src/c.ts'] };
   const boundary = { active: true, planText };
   const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
   const at = (path, extra = {}) => item({ path: 'src/b.ts', evidence: [{ path: 'src/b.ts', line: 1 }], ...extra, instances: [{ path, line: null }] });
@@ -283,10 +283,15 @@ test('SC4 旧记录没有完整文件清单(只有 path)时整轮从严;沿用�
   const out = splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts' }) }], boundary, previousBlocking: [pathOnly] });
   assert.equal(out.beyond.length, 0);
   assert.match(out.notes[0], /文件清单缺失/);
-  assert.equal(splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts' }) }], boundary, previousBlocking: [{ ...pathOnly, files: ['src/a.ts', 'src/b.ts'] }] }).beyond.length, 1);
-  // 结果包的 files:新答卷按位置算;已有的原样保留;没有证据数组(沿用的旧结果、v1 答卷)不写
+  assert.equal(splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts' }) }], boundary, previousBlocking: [{ ...pathOnly, locationFiles: ['src/a.ts', 'src/b.ts'] }] }).beyond.length, 1);
+  // 结果包的 locationFiles:新答卷按位置算;已有的原样保留;没有证据数组(沿用的旧结果、v1 答卷)不写
   assert.deepEqual(toLocationFiles({ path: 'src/a.ts', evidence: [{ path: 'src/b.ts', line: 1 }, { path: 'src/a.ts', line: 2 }], instances: [{ path: 'src/c.ts', line: null }] }), ['src/a.ts', 'src/b.ts', 'src/c.ts']);
-  assert.deepEqual(toLocationFiles({ path: 'src/a.ts', files: ['src/a.ts', 'src/z.ts'] }), ['src/a.ts', 'src/z.ts']);
+  assert.deepEqual(toLocationFiles({ path: 'src/a.ts', locationFiles: ['src/a.ts', 'src/z.ts'] }), ['src/a.ts', 'src/z.ts']);
+  // 第五轮复审(PR #245):本 PR 早期版本在沿用时写过只含 path 的 files 数组,不能当完整清单
+  assert.equal(toLocationFiles({ path: 'src/a.ts', files: ['src/a.ts'] }), null);
+  const legacy = splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts', evidence: [{ path: 'src/b.ts', line: 1 }] }) }], boundary, previousBlocking: [{ ...pathOnly, files: ['src/a.ts'] }] });
+  assert.equal(legacy.beyond.length, 0);
+  assert.match(legacy.notes[0], /文件清单缺失/);
   assert.equal(toLocationFiles({ path: 'src/a.ts' }), null);
   assert.equal(toLocationFiles({ path: 'src/a.ts', body: '[P1] 旧' }), null);
 });
