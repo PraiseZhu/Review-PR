@@ -20,13 +20,15 @@ const commentsOf = (thread) => (Array.isArray(thread?.comments) ? thread.comment
  */
 export function collectMarkerHistory({ threads = [], reviewer, reviewerIdentity, currentHead }) {
   const current = String(currentHead ?? '').slice(0, 12);
-  const history = { byKey: new Map(), heads: new Set(), threadUrlByKey: new Map(), reviewerThreads: 0, legacyThreads: 0 };
+  // findingThreads 连本轮 head 的也数(#244:上一轮结果读不到时,只要 PR 上已有审查机开的问题 thread 就要从严)。
+  const history = { byKey: new Map(), heads: new Set(), threadUrlByKey: new Map(), reviewerThreads: 0, legacyThreads: 0, findingThreads: 0 };
   if (!hasReviewer(reviewer, reviewerIdentity)) return history;
   const isReviewer = toReviewerMatcher(reviewer, reviewerIdentity);
   for (const thread of threads) {
     const [first] = commentsOf(thread);
     if (!isReviewer(first?.author) || !FINDING_RE.test(String(first?.body ?? ''))) continue;
     const marker = parseFindingMarker(first.body);
+    history.findingThreads += 1;
     if (marker && marker.head.slice(0, 12) === current) continue;
     history.reviewerThreads += 1;
     if (!marker) { history.legacyThreads += 1; continue; }

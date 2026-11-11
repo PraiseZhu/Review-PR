@@ -52,7 +52,10 @@ test('SC4 核对不过的一律照常阻断并给原因', () => {
   // 只有数字、标点的引用不算;对上了但只是一小段的不算;不能把相邻两行拼成一句
   for (const quote of ['2026-11-08', '!!!!!!', '#13 | | M |', '(`persistRetryReplay.ts`)']) assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: quote }).beyond, false, quote);
   assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '删失败只记诊断' }).note, /引用太短/);
-  assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '下次 put 再删' }).note, /引用太短/);
+  assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '下次 put 再删' }).note, /不足 6 个字/);
+  // 单独一个函数名、文件名不够:标识符一个只算一个字
+  assert.match(classifyBeyondTask(item({ beyondTask: 'accepted', beyondTaskQuote: 'handleFlushRetryPut' }), { planText: { accepted: ['- `main.js`:`handleFlushRetryPut` 写完新快照后删除目录里比它旧的快照'] } }).note, /不足 6 个字/);
+  assert.match(check({ beyondTaskQuote: 'persistRetryReplay.ts 不动' }).note, /不足 6 个字/);
   assert.match(check({ beyondTaskQuote: '不动)- 不改快照内容与分片大小' }).note, /对应部分里找不到/);
   // 目标、原因段不算「计划方写明接受」;不做段里不带 issue 号的行不能当「别的子 issue」
   assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '保存连续失败时作品库不再变大' }).note, /对应部分里找不到/);
@@ -110,7 +113,8 @@ test('SC2 任务书:enforce 且计划方级别时写入任务范围规则和「�
   for (const basis of ['not-do', 'other-work', 'accepted', 'no-worse']) assert.ok(text.includes(`  - \`${basis}\`:`), basis);
   assert.match(text, /永远算范围内\(`beyondTask` 写 `none`\):P0;让合并前正常的行为变差的问题\(回归[^\n]*子 issue「目标」没做到,或 PR 验收对照里标为已达成的验收标准实际没达成;「分级」P2 必修的三类。拿不准一律算范围内。/);
   assert.ok(text.includes('上一轮已经阻断的问题不能改判成范围外'));
-  assert.ok(text.includes('至少 12 个字(只数文字,数字和标点不算);那一行不到 24 个字时引用整行'));
+  assert.ok(text.includes('至少 10 个字(汉字逐个算,英文单词和代码标识符各算一个,数字和标点不算);那一行不到 20 个字时引用整行'));
+  assert.ok(text.includes('服务器在修复轮按文件从严'));
   assert.ok(text.includes('目标、原因等其他段里的话不算'));
   assert.ok(text.includes('建议修复(`fix`)先给子 issue「范围」内的最小修法'));
   assert.ok(text.includes('不要直接建议扩大本 PR'));
@@ -182,34 +186,41 @@ test('SC5 跨轮:上一轮任务范围外的问题本轮再报,沿用同一个 k
   assert.match(out.notes[0], /上一轮已经阻断过这条问题/);
 });
 
-// 复审(PR #245)确认的绕过:上一轮挡过的问题换个标题重报,key 对不上,原来会被当成新问题改判成范围外。
-test('SC4 可能是上一轮问题换了说法:同一文件上一轮有阻断问题、本轮没按原编号再报时,P1 一律照常挡,P2 相近才挡', () => {
+// 复审(PR #245)两轮确认的绕过:上一轮挡过的问题换标题、换类型、换行号、改主路径重报,key 对不上。相似度猜不准,改成按文件从严。
+test('SC4 修复轮按文件从严:上一轮某文件有阻断问题、本轮没按原编号再报时,落在这个文件上的 P1/P2 一律照常挡', () => {
   const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照' };
   const boundary = { active: true, planText };
   const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
-  // P1:只要同一文件有没再报的旧阻断问题就挡,不看像不像
-  const p1 = split(item({ severity: 'P1', title: '完全不同的标题', bugClass: 'other' }));
-  assert.equal(p1.beyond.length, 0);
-  assert.match(p1.notes[0], /无法确认不是同一条换了说法,P1 照常阻断/);
-  // P2:问题类型相近、行号相同、标题相近,任一条成立就挡
-  for (const near of [{ bugClass: 'replay-ordering-bug', title: '另一种写法' }, { bugClass: 'zzz', title: '另一种写法', line: 40 }, { bugClass: 'zzz', title: '冷启重放仍按请求 id 选快照' }, { bugClass: '', title: '另一种写法' }]) {
-    const out = split(item({ line: 2, ...near }));
-    assert.equal(out.beyond.length, 0, JSON.stringify(near));
-    assert.match(out.notes[0], /可能是同一条换了说法/);
-  }
-  // P2:类型、行号、标题都不相近 → 当新问题,可以是范围外
-  assert.equal(split(item({ bugClass: 'orphaned-chunks', title: '读索引失败后分片残留', line: 2 })).beyond.length, 1);
-  // 别的文件上的旧问题不相干;旧问题本轮按原编号再报了(阻断里或别的桶里)也不相干
-  assert.equal(split(item({ severity: 'P1', path: 'src/b.ts' })).beyond.length, 1);
+  const blocked = (out) => { assert.equal(out.beyond.length, 0); assert.match(out.notes[0], /修复轮按文件从严,照常阻断/); };
+  // 同一文件:不看级别,也不看标题、类型、行号像不像
+  for (const severity of ['P1', 'P2']) blocked(split(item({ severity, title: '完全不同的标题', bugClass: 'other', line: 2 })));
+  // 主路径写成别的文件,但证据或同类位置还指着旧文件
+  blocked(split(item({ path: 'src/b.ts', evidence: [{ path: 'src/b.ts', line: 1 }, { path: 'src/a.ts', line: 40 }] })));
+  blocked(split(item({ path: 'src/b.ts', evidence: [{ path: 'src/b.ts', line: 1 }], instances: [{ path: 'src/a.ts', line: null }] })));
+  // 位置、证据、同类位置都在别的文件 → 是另一处的问题,可以是范围外
+  assert.equal(split(item({ path: 'src/b.ts', evidence: [{ path: 'src/b.ts', line: 1 }], instances: [{ path: 'src/c.ts', line: 3 }] })).beyond.length, 1);
+  // 旧问题本轮按原编号再报了(阻断里或别的桶里)→ 旧问题有着落,同文件的新问题照常分桶
   assert.equal(split(item({ severity: 'P1' }), { reportedKeys: [prev.key] }).beyond.length, 1);
   const both = splitBeyondTask({ findings: [{ ...item({ severity: 'P1', beyondTask: 'none' }), key: prev.key }, { ...item({ severity: 'P1', title: '新问题' }), key: 'c'.repeat(12) }], boundary, previousBlocking: [prev] });
   assert.equal(both.beyond.length, 1);
-  // 旧结果链里的问题没有文件信息:拿不准,P1、P2 都照常挡
-  for (const severity of ['P1', 'P2']) assert.equal(split(item({ severity, path: 'src/b.ts', bugClass: 'zzz', title: '另一种写法' }), { previousBlocking: [{ key: prev.key, seenRounds: 1, severity: 'P1' }] }).beyond.length, 0, severity);
+  // 旧结果链里的问题没有文件信息:拿不准,全部照常挡
+  for (const severity of ['P1', 'P2']) blocked(split(item({ severity, path: 'src/b.ts' }), { previousBlocking: [{ key: prev.key, seenRounds: 1, severity: 'P1' }] }));
   // 上一轮结果读不到、PR 上却有审查机的 thread:全部照常挡
   const unknown = split(item({ path: 'src/b.ts' }), { previousBlocking: [], previousUnknown: true });
   assert.equal(unknown.beyond.length, 0);
   assert.match(unknown.notes[0], /上一轮的审查结果读不到/);
+  // 第一轮(没有上一轮)不受影响
+  assert.equal(splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ severity: 'P1' }) }], boundary }).beyond.length, 1);
+});
+
+test('SC4 审查机开过的问题 thread 连当前版本上的也数(上一轮结果读不到时据此从严)', async () => {
+  const { collectMarkerHistory } = await import('./convergence.mjs');
+  const { findingMarker } = await import('./finding.mjs');
+  const head = 'c'.repeat(40);
+  const thread = (h) => ({ comments: [{ author: { login: 'bot' }, body: `[P1] 标题\n\n${findingMarker({ key: 'a'.repeat(12), round: 1, head: h })}` }] });
+  const history = collectMarkerHistory({ threads: [thread(head), thread('d'.repeat(40))], reviewer: 'bot', currentHead: head });
+  assert.deepEqual([history.findingThreads, history.reviewerThreads], [2, 1]);
+  assert.equal(collectMarkerHistory({ threads: [], reviewer: 'bot', currentHead: head }).findingThreads, 0);
 });
 
 test('SC4 上一轮阻断问题的文件、行号、类型、标题随结果链带到本轮', async () => {

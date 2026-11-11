@@ -194,7 +194,7 @@ test('SC4:上一轮挡过的问题换标题重报 → 照常阻断;上一轮结�
     assert.equal(round2.reviewClean, false);
     assert.equal(round2.mivo.findings.length, 1);
     assert.deepEqual(round2.mivo.beyondTask, []);
-    assert.ok(round2.warnings.some((w) => /无法确认不是同一条换了说法,P1 照常阻断/.test(w)), JSON.stringify(round2.warnings));
+    assert.ok(round2.warnings.some((w) => /修复轮按文件从严,照常阻断/.test(w)), JSON.stringify(round2.warnings));
     // 上一轮结果读不到(没有 previousRound),但 state 记着有上一轮
     withTaskIssue(lost.work, MATERIAL());
     const lostPath = join(lost.work, 'state.json');
@@ -203,4 +203,22 @@ test('SC4:上一轮挡过的问题换标题重报 → 照常阻断;上一轮结�
     assert.equal(round3.mivo.findings.length, 1);
     assert.ok(round3.warnings.some((w) => /上一轮的审查结果读不到/.test(w)));
   } finally { for (const s of [first, again, lost]) rmSync(s.work, { recursive: true, force: true }); }
+});
+
+// 第二轮复审(PR #245)确认的绕过:上一轮结果和 state.previous 都没有,但 PR 上有当前版本的审查机 thread(同版本重跑、结果包丢了)。
+test('SC4:上一轮结果读不到、PR 上有当前版本的审查机 thread → 照常阻断;没有任何 thread 的首轮不受影响', () => {
+  const marker = (head) => `<!-- mivo-finding key=${'a'.repeat(12)} round=1 head=${head.slice(0, 12)} class=replay-order -->`;
+  for (const [withThread, expectBeyond] of [[true, 0], [false, 1]]) {
+    const { work, head } = setup({ findings: [notDo()] });
+    try {
+      withTaskIssue(work, MATERIAL());
+      const ctxFile = join(work, 'input', 'context.json');
+      const viewer = { login: 'reviewer' };
+      writeFileSync(ctxFile, JSON.stringify({ pr: 7, meta: {}, approvalPolicy: { viewer: 'reviewer' },
+        history: { reviewThreads: withThread ? [{ id: 'T1', isResolved: false, comments: [{ id: 'C1', author: viewer, body: `[P1] 冷启重放按 id 选快照\n\n${marker(head)}` }] }] : [] } }));
+      const result = publish(work);
+      assert.equal(result.mivo.beyondTask.length, expectBeyond, `withThread=${withThread} warnings=${JSON.stringify(result.warnings)}`);
+      if (withThread) assert.ok(result.warnings.some((w) => /上一轮的审查结果读不到/.test(w)));
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
 });

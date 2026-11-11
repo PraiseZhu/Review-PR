@@ -9,7 +9,7 @@ export const ORIGINS = ['introduced', 'made-reachable', 'pre-existing'];
 // 任务范围外的依据(#244):none=在任务范围内。模型的声明要过 classifyBeyondTask 才生效。
 export const BEYOND_TASK = ['none', 'not-do', 'other-work', 'accepted', 'no-worse'];
 export const BEYOND_TASK_QUOTE_MIN = 6;
-export const BEYOND_TASK_QUOTE_FULL = 12;
+export const BEYOND_TASK_QUOTE_FULL = 10;
 export const LIMITS = { title: 120, text: 800, bugClass: 60, evidence: 8, instances: 20, beyondTaskQuote: 200 };
 export const FINDING_MARKER_RE = /<!--\s*mivo-finding\s+key=([0-9a-f]{12})\s+round=(\d+|null)\s+head=([0-9a-f]{7,40})(?:\s+class=([^\s>]*))?\s*-->/g;
 export const SUPERSEDES_RE = /^(?:[0-9a-f]{12}|legacy-\d{1,3})$/;
@@ -47,7 +47,7 @@ export const FINDING_ITEM_SCHEMA = {
     handoffRiskIds: { type: 'array', items: { type: 'string' }, description: '本问题与作者交接 review.md 里哪几条 R 描述的是同一个风险/根因(写 R 编号如 R1);同文件不算;没有对应的 R 写空数组' },
     deferredTo: { type: ['integer', 'null'], description: '同一问题已转 issue 跟进时填该 issue 号(只限 P1/P2,且必须在任务书核验通过的列表里);其他一律 null' },
     beyondTask: { type: 'string', enum: BEYOND_TASK, description: '任务范围外的依据。任务书里没有「任务范围」规则、或问题在任务范围内,一律写 none;not-do=任务 issue 写明不做;other-work=总 issue 分给别的子 issue;accepted=计划方写明接受;no-worse=最坏结果不比合并前差且任务 issue 没要求(只限 P2)' },
-    beyondTaskQuote: { type: 'string', description: '逐字引用任务 issue 里支持这个依据的一句原文,12–200 字(那一行不到 24 个字时引用整行);beyondTask 为 none 或 no-worse 时写空字符串' },
+    beyondTaskQuote: { type: 'string', description: '逐字引用任务 issue 里支持这个依据的一句原文,至少 10 个字、不超过 200 字(汉字逐个算,英文单词和标识符各算一个,数字和标点不算;那一行不到 20 个字时引用整行);beyondTask 为 none 或 no-worse 时写空字符串' },
   },
 };
 
@@ -196,8 +196,9 @@ export function classifyOrigin(item, { diffFiles }) {
 
 // 比对引用时忽略空白、反引号和各种引号:任务书里的 issue 原文是压成一行、换掉反引号后的样子,模型照抄时这些地方会和原文不同。
 const squash = (text) => String(text ?? '').replace(/[\s`'"“”‘’「」『』]/g, '');
-// 引用的长度只数文字(字母和汉字):日期、编号、标点凑不出一句有内容的话。
-const letterCount = (text) => (String(text ?? '').match(/\p{L}/gu) ?? []).length;
+// 引用的长度按「字」算:汉字一个算一个;英文单词、代码标识符一个算一个;数字和标点不算。
+// 这样日期、编号、标点凑不出一句话,单独一个函数名或文件名也不够。
+const unitCount = (text) => (String(text ?? '').match(/\p{Script=Han}|[^\p{Script=Han}\s\p{P}\p{S}]+/gu) ?? []).filter((token) => /\p{L}/u.test(token)).length;
 
 /**
  * 引用是否落在某一行原文里,而且够长。返回 'ok' / 'short'(对上了但太短)/ 'missing'。
@@ -206,44 +207,27 @@ const letterCount = (text) => (String(text ?? '').match(/\p{L}/gu) ?? []).length
  */
 function matchPlanQuote(quote, lines) {
   const q = squash(quote);
-  const n = letterCount(q);
+  const n = unitCount(quote);
   let short = false;
   for (const line of lines ?? []) {
     if (!squash(line).includes(q)) continue;
-    if (n >= Math.max(BEYOND_TASK_QUOTE_MIN, Math.min(BEYOND_TASK_QUOTE_FULL, Math.ceil(letterCount(line) / 2)))) return 'ok';
+    if (n >= Math.max(BEYOND_TASK_QUOTE_MIN, Math.min(BEYOND_TASK_QUOTE_FULL, Math.ceil(unitCount(line) / 2)))) return 'ok';
     short = true;
   }
   return short ? 'short' : 'missing';
-}
-
-const words = (text) => new Set(String(text ?? '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
-const bigrams = (text) => { const s = squash(text).toLowerCase(); const out = new Set(); for (let i = 0; i + 1 < s.length; i += 1) out.add(s.slice(i, i + 2)); return out; };
-const overlap = (a, b, base) => (a.size && b.size ? [...a].filter((x) => b.has(x)).length / base(a, b) : null);
-
-/**
- * 本轮这条问题会不会是上一轮挡过的那条换了说法(同一文件)。拿不准按「是」:问题类型缺失也算相近。
- * 相近 = 问题类型的词有一半重合,或行号相同,或标题的相邻两字有一半重合。
- */
-export function resemblesPrevious(item, previous) {
-  // 旧结果链里的问题可能没有文件信息:拿不准,不按「不同文件」排除。
-  if (!previous || (previous.path && previous.path !== item.path)) return false;
-  const cls = overlap(words(item.bugClass), words(previous.bugClass), (a, b) => Math.min(a.size, b.size));
-  if (cls === null || cls >= 0.5) return true;
-  if (Number.isInteger(item.line) && item.line === previous.line) return true;
-  const title = overlap(bigrams(item.title), bigrams(previous.title), (a, b) => new Set([...a, ...b]).size);
-  return title === null || title >= 0.5;
 }
 
 /**
  * 模型声称「任务范围外」的问题,由服务器核对后才不阻断(#244)。纯函数。
  * 通过的条件:
  * - P1/P2;不是上一轮已经阻断过的问题(supersedes 为空、不是连续报出)。
- * - 不像是上一轮挡过的问题换了说法(key 靠标题算,换标题就对不上):previousOpen 是上一轮阻断、本轮没有按原 key 再报的问题;
- *   同一文件有这样的问题时,P1 一律照常阻断,P2 在 resemblesPrevious 判相近时照常阻断。previousUnknown(上一轮结果读不到、PR 上却已有审查机的 thread)时全部照常阻断。
- * - not-do / other-work / accepted 三种依据要逐字引用计划方写的 issue 原文:落在对应依据那部分的同一行里,只数文字够长(matchPlanQuote)。
+ * - 修复轮按文件从严:previousOpen 是上一轮阻断、本轮没有按原 key 再报的问题(可能已修好,也可能换了说法重报——key 靠标题算,
+ *   服务器分不出来)。这条问题的位置、任一证据或任一同类位置落在它们所在的文件上时,一律照常阻断;旧记录没有文件信息时也照常阻断。
+ *   previousUnknown(上一轮结果读不到、PR 上却已有审查机的 thread)时全部照常阻断。
+ * - not-do / other-work / accepted 三种依据要逐字引用计划方写的 issue 原文:落在对应依据那部分的同一行里,够长(matchPlanQuote)。
  * - no-worse 只限 P2,不要求引用。
  * 其余一律照常阻断并给出原因。
- * @param {object} item 带 severity / beyondTask / beyondTaskQuote / supersedes / seenRounds / path / line / bugClass / title 的问题
+ * @param {object} item 带 severity / beyondTask / beyondTaskQuote / supersedes / seenRounds / path / evidence / instances 的问题
  * @param {{planText: {notDo:string[], otherWork:string[], accepted:string[]}, previousOpen?: object[], previousUnknown?: boolean}} p
  *   planText 是计划方原文按依据分开的行(task-issue.mjs toTaskIssuePlanText)
  * @returns {{beyond:boolean, basis:string|null, note:string|null}}
@@ -255,11 +239,10 @@ export function classifyBeyondTask(item, { planText, previousOpen = [], previous
   if (!['P1', 'P2'].includes(item.severity)) return keep('声称任务范围外,但 P0 不论范围都阻断');
   if ((item.supersedes ?? null) !== null || (item.seenRounds ?? 1) > 1) return keep('声称任务范围外,但上一轮已经阻断过这条问题,照常阻断');
   if (previousUnknown) return keep('声称任务范围外,但上一轮的审查结果读不到,无法确认不是上一轮挡过的问题,照常阻断');
-  const sameFile = previousOpen.filter((p) => !p?.path || p.path === item.path);
-  if (item.severity === 'P1' && sameFile.length) return keep('声称任务范围外,但上一轮同一文件有阻断问题、本轮没有按原编号再报,无法确认不是同一条换了说法,P1 照常阻断');
-  if (sameFile.some((p) => resemblesPrevious(item, p))) return keep('声称任务范围外,但和上一轮同一文件的阻断问题相近(问题类型、行号或标题),可能是同一条换了说法,照常阻断');
+  const touched = new Set([item.path, ...(item.evidence ?? []).map((e) => e?.path), ...(item.instances ?? []).map((i) => i?.path)].filter(Boolean));
+  if (previousOpen.some((p) => !p?.path || touched.has(p.path))) return keep('声称任务范围外,但上一轮这个文件有阻断问题、本轮没有按原编号再报,修复轮按文件从严,照常阻断');
   if (basis === 'no-worse') return item.severity === 'P2' ? { beyond: true, basis, note: null } : keep('「不比合并前差」只适用于 P2,这条是 P1,照常阻断');
-  if (letterCount(squash(item.beyondTaskQuote)) < BEYOND_TASK_QUOTE_MIN) return keep(`声称任务范围外,但引用的任务 issue 原文不足 ${BEYOND_TASK_QUOTE_MIN} 个字(数字和标点不算),照常阻断`);
+  if (unitCount(item.beyondTaskQuote) < BEYOND_TASK_QUOTE_MIN) return keep(`声称任务范围外,但引用的任务 issue 原文不足 ${BEYOND_TASK_QUOTE_MIN} 个字(汉字逐个算,英文单词和标识符各算一个,数字和标点不算),照常阻断`);
   const lines = { 'not-do': planText?.notDo, 'other-work': planText?.otherWork, accepted: planText?.accepted }[basis];
   const matched = matchPlanQuote(item.beyondTaskQuote, lines);
   if (matched === 'missing') return keep('声称任务范围外,但引用的原文在计划方写的任务 issue 对应部分里找不到,照常阻断');

@@ -292,7 +292,7 @@ export const BEYOND_TASK_LABELS = { 'not-do': '任务 issue 写明不做', 'othe
  * @param {object} p
  * @param {object[]} p.findings 本轮阻断问题(已分配 key)
  * @param {{active:boolean, planText:object}|null} p.boundary 为 null 或 active=false 时原样返回
- * @param {object[]} [p.previousBlocking] 上一轮的阻断问题({key,path,line,bugClass,title},convergence.mjs toPreviousRound)
+ * @param {object[]} [p.previousBlocking] 上一轮的阻断问题({key,path,...},convergence.mjs toPreviousRound)
  * @param {string[]} [p.reportedKeys] 本轮在别的桶里(转 issue、裁定不改、采信裁决等)出现的 key;连同 findings 的 key 一起算「本轮再报了」
  * @param {boolean} [p.previousUnknown] 上一轮结果读不到、PR 上却已有审查机的 thread
  * @returns {{findings: object[], beyond: object[], notes: string[]}} notes 是声明了但没通过核对的原因(进结果包 warnings)
