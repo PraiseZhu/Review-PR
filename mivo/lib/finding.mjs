@@ -172,15 +172,18 @@ const pathIsSafe = (path) => {
  */
 export function checkEvidence(item, { headReader }) {
   const missing = [];
+  // regular:每个证据都是普通文件(headReader 给了 regularFile 才算;#244 任务范围外只认普通文件)。不影响 complete。
+  let regular = true;
   const evidence = item?.evidence ?? [];
   if (!evidence.length) missing.push({ path: null, line: null, reason: 'empty' });
   for (const { path, line } of evidence) {
     if (!pathIsSafe(path)) { missing.push({ path, line, reason: 'path-invalid' }); continue; }
     const read = headReader(path) ?? { exists: false, lineCount: 0 };
+    if (read.regularFile !== true) regular = false;
     if (!read.exists) missing.push({ path, line, reason: 'not-found' });
     else if (line && read.lineCount > 0 && line > read.lineCount) missing.push({ path, line, reason: 'line-out-of-range' });
   }
-  return { complete: missing.length === 0, missing };
+  return { complete: missing.length === 0, regular: regular && evidence.length > 0, missing };
 }
 
 /**
@@ -225,10 +228,10 @@ function matchPlanQuote(quote, lines) {
  * 模型声称「任务范围外」的问题,由服务器核对后才不阻断(#244)。纯函数。
  * 通过的条件:
  * - P1/P2;不是上一轮已经阻断过的问题(supersedes 为空、不是连续报出)。
- * - 证据完整:证据不为空、每个位置在 head 上都找得到(evidenceComplete)、位置条数没有超上限被截断(locationsTruncated)。
+ * - 证据完整:证据不为空、每个位置在 head 上都找得到(evidenceComplete)且是普通文件(evidenceRegular)、位置条数没有超上限被截断(locationsTruncated)。
  * - 修复轮按文件从严:previousOpen 是上一轮阻断、本轮没有按原 key 再报的问题(可能已修好,也可能换了说法重报——key 靠标题算,
  *   服务器分不出来),每条带 files(它的位置、证据、同类位置所在的文件;splitBeyondTask 算好)。这条问题的位置、任一证据或任一同类位置
- *   落在这些文件上时,一律照常阻断;files 为 null(旧记录没有文件信息、或其中有文件在本轮版本上已不存在)时也照常阻断。
+ *   落在这些文件上时,一律照常阻断;files 为 null(旧记录没有完整的文件清单、或其中有文件在本轮版本上已不存在或不是普通文件)时也照常阻断。
  *   previousUnknown(上一轮结果读不到、PR 上却已有审查机的 thread)时全部照常阻断。
  * - not-do / other-work / accepted 三种依据要逐字引用计划方写的 issue 原文:落在对应依据那部分的同一行里,够长(matchPlanQuote)。
  * - no-worse 只限 P2,不要求引用。
@@ -245,9 +248,9 @@ export function classifyBeyondTask(item, { planText, previousOpen = [], previous
   if (!['P1', 'P2'].includes(item.severity)) return keep('声称任务范围外,但 P0 不论范围都阻断');
   if ((item.supersedes ?? null) !== null || (item.seenRounds ?? 1) > 1) return keep('声称任务范围外,但上一轮已经阻断过这条问题,照常阻断');
   if (previousUnknown) return keep('声称任务范围外,但上一轮的审查结果读不到,无法确认不是上一轮挡过的问题,照常阻断');
-  if (item.evidenceComplete !== true || item.locationsTruncated === true) return keep('声称任务范围外,但证据不完整(证据为空、有位置在本轮版本上找不到、或位置条数超上限被截断),照常阻断');
+  if (item.evidenceComplete !== true || item.evidenceRegular !== true || item.locationsTruncated === true) return keep('声称任务范围外,但证据不完整(证据为空、有位置在本轮版本上找不到或不是普通文件、或位置条数超上限被截断),照常阻断');
   const touched = new Set([item.path, ...(item.evidence ?? []).map((e) => e?.path), ...(item.instances ?? []).map((i) => i?.path)].filter(Boolean).map(toPathKey));
-  if (previousOpen.some((p) => !Array.isArray(p?.files) || !p.files.length)) return keep('声称任务范围外,但上一轮有阻断问题本轮没有按原编号再报,而它的文件记录缺失或文件在本轮版本上已不存在(改名或删除),修复轮从严,照常阻断');
+  if (previousOpen.some((p) => !Array.isArray(p?.files) || !p.files.length)) return keep('声称任务范围外,但上一轮有阻断问题本轮没有按原编号再报,而它的文件清单缺失或文件在本轮版本上已不存在、不再是普通文件(改名、删除或替换),修复轮从严,照常阻断');
   if (previousOpen.some((p) => p.files.some((f) => touched.has(toPathKey(f))))) return keep('声称任务范围外,但上一轮这个文件有阻断问题、本轮没有按原编号再报,修复轮按文件从严,照常阻断');
   if (basis === 'no-worse') return item.severity === 'P2' ? { beyond: true, basis, note: null } : keep('「不比合并前差」只适用于 P2,这条是 P1,照常阻断');
   if (unitCount(item.beyondTaskQuote) < BEYOND_TASK_QUOTE_MIN) return keep(`声称任务范围外,但引用的任务 issue 原文不足 ${BEYOND_TASK_QUOTE_MIN} 个字(汉字逐个算,英文单词、标识符和路径各算一个,数字和标点不算),照常阻断`);
@@ -256,4 +259,14 @@ export function classifyBeyondTask(item, { planText, previousOpen = [], previous
   if (matched === 'missing') return keep('声称任务范围外,但引用的原文在计划方写的任务 issue 对应部分里找不到,照常阻断');
   if (matched === 'short') return keep(`声称任务范围外,但引用太短:要引用那一行的一半以上或至少 ${BEYOND_TASK_QUOTE_FULL} 个字,照常阻断`);
   return { beyond: true, basis, note: null };
+}
+
+/**
+ * 问题的位置、证据、同类位置所在的文件(#244 修复轮按文件从严用),写进结果包的 files。
+ * 已经算好的原样保留;没有证据数组(沿用的旧结果、v1 答卷)时算不全,返回 null,不能只拿 path 冒充完整清单。
+ */
+export function toLocationFiles(finding) {
+  if (Array.isArray(finding?.files)) return finding.files;
+  if (!Array.isArray(finding?.evidence)) return null;
+  return [...new Set([finding.path, ...finding.evidence.map((e) => e?.path), ...(finding.instances ?? []).map((i) => i?.path)].filter((p) => typeof p === 'string' && p))];
 }

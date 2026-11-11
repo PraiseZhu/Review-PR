@@ -21,7 +21,7 @@ const material = (over = {}) => ({
   derived: { scopeOutside: [], blackboxSc: [], depsOpen: [] }, truncated: [], ...over });
 const planText = toTaskIssuePlanText(material());
 // 证据默认指向问题所在文件、在 head 上都找得到(evidenceComplete);测 #244 的证据规则时再单独覆盖。
-const item = (over = {}) => ({ severity: 'P2', title: '问题', path: 'src/a.ts', line: 2, evidence: [{ path: over.path ?? 'src/a.ts', line: 2 }], evidenceComplete: true,
+const item = (over = {}) => ({ severity: 'P2', title: '问题', path: 'src/a.ts', line: 2, evidence: [{ path: over.path ?? 'src/a.ts', line: 2 }], evidenceComplete: true, evidenceRegular: true,
   supersedes: null, seenRounds: 1, beyondTask: 'not-do', beyondTaskQuote: '不改面板侧重放与 ACK 逻辑', ...over });
 const check = (over) => classifyBeyondTask(item(over), { planText });
 
@@ -174,7 +174,7 @@ test('SC5 跨轮:上一轮任务范围外的问题本轮再报,沿用同一个 k
   const { applyConvergence, toPreviousRound } = await import('./convergence.mjs');
   const { findingKeyOf } = await import('./finding.mjs');
   const raw = (over = {}) => ({ severity: 'P2', title: '台账被淘汰', bugClass: 'eviction', path: 'src/a.ts', line: 2, side: 'RIGHT', body: '[P2] 台账被淘汰', trigger: 't', behavior: 'b', impact: 'i', fix: 'f', verify: 'v',
-    evidence: [{ path: 'src/a.ts', line: 2 }], evidenceComplete: true, instances: [], origin: 'introduced', supersedes: null, beyondTask: 'no-worse', beyondTaskQuote: '', ...over });
+    evidence: [{ path: 'src/a.ts', line: 2 }], evidenceComplete: true, evidenceRegular: true, instances: [], origin: 'introduced', supersedes: null, beyondTask: 'no-worse', beyondTaskQuote: '', ...over });
   const key = findingKeyOf(raw());
   const boundary = { active: true, planText };
   const again = (mivo) => applyConvergence({ findings: [raw()], scope: { mode: 'full' }, roundIndex: 2, previousRound: toPreviousRound({ mivo: { convergence: { roundIndex: 1 }, ...mivo } }), head: 'h'.repeat(40) }).findings;
@@ -190,7 +190,7 @@ test('SC5 跨轮:上一轮任务范围外的问题本轮再报,沿用同一个 k
 
 // 复审(PR #245)两轮确认的绕过:上一轮挡过的问题换标题、换类型、换行号、改主路径重报,key 对不上。相似度猜不准,改成按文件从严。
 test('SC4 修复轮按文件从严:上一轮某文件有阻断问题、本轮没按原编号再报时,落在这个文件上的 P1/P2 一律照常挡', () => {
-  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照' };
+  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照', files: ['src/a.ts'] };
   const boundary = { active: true, planText };
   const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
   const blocked = (out) => { assert.equal(out.beyond.length, 0); assert.match(out.notes[0], /修复轮(按文件)?从严,照常阻断/); };
@@ -235,7 +235,7 @@ test('SC4 上一轮阻断问题的文件、行号、类型、标题随结果链�
 
 // 第三轮复审(PR #245)确认的绕过:证据为空 / 路径写法不同 / 旧文件被挤到位置上限之后;单个蛇形标识符凑字数;文件改名后换到新文件名下重报。
 test('SC4 证据不完整的问题不能分到范围外:证据为空、有位置找不到、位置条数被截断', () => {
-  for (const over of [{ evidenceComplete: false }, { evidenceComplete: undefined }, { locationsTruncated: true }]) {
+  for (const over of [{ evidenceComplete: false }, { evidenceComplete: undefined }, { locationsTruncated: true }, { evidenceRegular: false }, { evidenceRegular: undefined }]) {
     const out = classifyBeyondTask(item(over), { planText });
     assert.equal(out.beyond, false, JSON.stringify(over));
     assert.match(out.note, /证据不完整/);
@@ -260,7 +260,7 @@ test('SC4 受保护的文件:上一轮问题的全部位置所在文件,路径�
   // 受保护的文件在本轮 head 上已不存在(改名或删除):不猜改到了哪,本轮全部照常挡
   const gone = split(at('src/d.ts'), { fileExists: (path) => path !== 'src/c.ts' });
   assert.equal(gone.beyond.length, 0);
-  assert.match(gone.notes[0], /文件在本轮版本上已不存在\(改名或删除\)/);
+  assert.match(gone.notes[0], /文件在本轮版本上已不存在、不再是普通文件/);
   // 第一轮没有上一轮问题,不查文件
   assert.equal(splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item() }], boundary, fileExists: () => false }).beyond.length, 1);
 });
@@ -273,4 +273,20 @@ test('SC3 字数:下划线、连字符、点、斜杠连着的标识符和路径
   // 纯英文句子按单词数
   const english = { notDo: ['- Do not change panel replay or ACK logic in this child issue'] };
   assert.equal(classifyBeyondTask(item({ beyondTaskQuote: 'Do not change panel replay or ACK logic in this child issue' }), { planText: english }).beyond, true);
+});
+
+// 第四轮复审(PR #245):旧结果没有完整文件清单时只保护了 path;沿用时把 path 写成完整清单。
+test('SC4 旧记录没有完整文件清单(只有 path)时整轮从严;沿用的旧结果不补写清单', async () => {
+  const { toLocationFiles } = await import('./finding.mjs');
+  const boundary = { active: true, planText };
+  const pathOnly = { key: 'a'.repeat(12), path: 'src/a.ts' };
+  const out = splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts' }) }], boundary, previousBlocking: [pathOnly] });
+  assert.equal(out.beyond.length, 0);
+  assert.match(out.notes[0], /文件清单缺失/);
+  assert.equal(splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts' }) }], boundary, previousBlocking: [{ ...pathOnly, files: ['src/a.ts', 'src/b.ts'] }] }).beyond.length, 1);
+  // 结果包的 files:新答卷按位置算;已有的原样保留;没有证据数组(沿用的旧结果、v1 答卷)不写
+  assert.deepEqual(toLocationFiles({ path: 'src/a.ts', evidence: [{ path: 'src/b.ts', line: 1 }, { path: 'src/a.ts', line: 2 }], instances: [{ path: 'src/c.ts', line: null }] }), ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+  assert.deepEqual(toLocationFiles({ path: 'src/a.ts', files: ['src/a.ts', 'src/z.ts'] }), ['src/a.ts', 'src/z.ts']);
+  assert.equal(toLocationFiles({ path: 'src/a.ts' }), null);
+  assert.equal(toLocationFiles({ path: 'src/a.ts', body: '[P1] 旧' }), null);
 });

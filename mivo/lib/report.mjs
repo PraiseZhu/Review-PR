@@ -98,9 +98,11 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
       if (origin.note) notes.push(`第 ${index + 1} 条问题:${origin.note}`);
       meta.origin = origin.origin;
       let evidenceComplete = meta.evidence.length > 0;
+      let evidenceRegular = false;
       if (headReader) {
         const checked = checkEvidence(meta, { headReader });
         evidenceComplete = checked.complete;
+        evidenceRegular = checked.regular === true;
         if (!checked.complete) {
           evidenceIncomplete += 1;
           const where = checked.missing.map((m) => (m.path ? `${m.path}${m.line ? `:${m.line}` : ''}` : '(无证据)')).join('、');
@@ -110,7 +112,7 @@ export function validateAnswer(answer, { diffFiles, deferrals = [], headReader =
       body = renderFindingBody(meta);
       item = { ...item, body, severity, title: meta.title, trigger: meta.trigger, behavior: meta.behavior, impact: meta.impact, fix: meta.fix,
         verify: meta.verify, evidence: meta.evidence, instances: meta.instances, origin: meta.origin, bugClass: meta.bugClass,
-        supersedes: meta.supersedes, evidenceComplete, beyondTask: meta.beyondTask, beyondTaskQuote: meta.beyondTaskQuote, locationsTruncated: meta.locationsTruncated };
+        supersedes: meta.supersedes, evidenceComplete, beyondTask: meta.beyondTask, beyondTaskQuote: meta.beyondTaskQuote, locationsTruncated: meta.locationsTruncated, evidenceRegular };
       if (handoffOn) {
         const linked = readHandoffRiskIds(raw.handoffRiskIds, riskIds);
         if (!linked.complete) notes.push(`第 ${index + 1} 条问题的 handoffRiskIds 缺失或含无效编号,不计入交接关联`);
@@ -293,7 +295,7 @@ export const BEYOND_TASK_LABELS = { 'not-do': '任务 issue 写明不做', 'othe
  * @param {object[]} p.findings 本轮阻断问题(已分配 key)
  * @param {{active:boolean, planText:object}|null} p.boundary 为 null 或 active=false 时原样返回
  * @param {object[]} [p.previousBlocking] 上一轮的阻断问题({key,path,files,...},convergence.mjs toPreviousRound)
- * @param {(path:string)=>boolean} [p.fileExists] 文件在本轮 head 上是否存在;受保护的文件不存在(改名或删除)时这一轮从严
+ * @param {(path:string)=>boolean} [p.fileExists] 文件在本轮 head 上是否是普通文件;受保护的文件不是(改名、删除、换成目录 / 符号链接 / 子模块)时这一轮从严
  * @param {string[]} [p.reportedKeys] 本轮在别的桶里(转 issue、裁定不改、采信裁决等)出现的 key;连同 findings 的 key 一起算「本轮再报了」
  * @param {boolean} [p.previousUnknown] 上一轮结果读不到、PR 上却已有审查机的 thread
  * @returns {{findings: object[], beyond: object[], notes: string[]}} notes 是声明了但没通过核对的原因(进结果包 warnings)
@@ -301,9 +303,10 @@ export const BEYOND_TASK_LABELS = { 'not-do': '任务 issue 写明不做', 'othe
 export function splitBeyondTask({ findings = [], boundary = null, previousBlocking = [], reportedKeys = [], previousUnknown = false, fileExists = () => true }) {
   if (boundary?.active !== true) return { findings: [...findings], beyond: [], notes: [] };
   const reported = new Set([...reportedKeys, ...findings.map((f) => f.key)].filter(Boolean));
-  // 受保护的文件:上一轮问题的位置、证据、同类位置所在文件。旧记录只有 path 时用 path;有文件已不在本轮 head 上时记 null(classifyBeyondTask 从严)。
+  // 受保护的文件:上一轮问题的位置、证据、同类位置所在文件(结果包的 files)。旧记录没有 files 时不拿 path 补位,记 null;
+  // 有文件已不在本轮 head 上或不是普通文件时也记 null。null 由 classifyBeyondTask 整轮从严。
   const previousOpen = previousBlocking.filter((p) => p?.key && !reported.has(p.key)).map((p) => {
-    const files = [...new Set([p.path, ...(Array.isArray(p.files) ? p.files : [])].filter(Boolean))];
+    const files = Array.isArray(p.files) ? [...new Set([p.path, ...p.files].filter(Boolean))] : [];
     return { ...p, files: files.length && files.every((f) => fileExists(f)) ? files : null };
   });
   const blocking = [];

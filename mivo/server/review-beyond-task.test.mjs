@@ -3,7 +3,7 @@
 // gh 用 PATH 上的替身;repo/ 是真 git 仓。发布脚本在没有远端的仓里会失败,这里只断言发布前已经算好、写下的东西。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -189,7 +189,7 @@ test('SC4:上一轮挡过的问题换标题重报 → 照常阻断;上一轮结�
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     const f = round1.mivo.findings[0];
     writeFileSync(statePath, JSON.stringify({ ...state, previous: { head: 'x' }, previousRound: { roundIndex: 1, keys: [f.key],
-      findings: [{ key: f.key, seenRounds: 1, severity: f.severity, path: f.path, line: f.line ?? null, bugClass: f.bugClass, title: f.title }] } }));
+      findings: [{ key: f.key, seenRounds: 1, severity: f.severity, path: f.path, line: f.line ?? null, bugClass: f.bugClass, title: f.title, files: f.files }] } }));
     const round2 = publish(again.work);
     assert.equal(round2.reviewClean, false);
     assert.equal(round2.mivo.findings.length, 1);
@@ -240,6 +240,52 @@ test('SC4:上一轮问题所在文件在本轮版本上已不存在 → 照常�
       assert.equal(result.mivo.findings.length, 1);
       assert.deepEqual(result.mivo.findings[0].files, ['src/a.ts'], '结果包的问题记下它的位置所在文件,下一轮用来从严');
       assert.ok(result.warnings.some((w) => why.test(w)), JSON.stringify(result.warnings));
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+});
+
+// 第四轮复审(PR #245):目录、符号链接、子模块被当成普通文件——能当证据,也能顶替已删除的受保护文件。
+test('SC4:证据指向目录或符号链接 → 证据不完整照常阻断;受保护文件被换成目录、符号链接、子模块 → 整轮照常阻断', () => {
+  const addTree = (repo) => {
+    mkdirSync(join(repo, 'src', 'dir'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'dir', 'x.ts'), 'x\n');
+    symlinkSync('a.ts', join(repo, 'src', 'link.ts'));
+    git(repo, 'add', '.');
+    git(repo, 'update-index', '--add', '--cacheinfo', `160000,${'e'.repeat(40)},src/sub`);
+    git(repo, 'commit', '-q', '-m', 'tree');
+    return git(repo, 'rev-parse', 'HEAD');
+  };
+  const prepare = (work, previous) => {
+    const head = addTree(join(work, 'repo'));
+    withTaskIssue(work, MATERIAL());
+    const statePath = join(work, 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    writeFileSync(statePath, JSON.stringify({ ...state, input: { ...state.input, head }, context: { ...state.context, evidence: { ...state.context.evidence, head } },
+      ...(previous ? { previous: { head: 'x' }, previousRound: { roundIndex: 1, keys: [previous.key], findings: [previous] } } : {}) }));
+  };
+  // 证据指向目录 / 符号链接
+  for (const path of ['src/dir', 'src/link.ts', 'src/sub']) {
+    const { work } = setup({ findings: [notDo({ evidence: [{ path: 'src/a.ts', line: 2 }, { path, line: null }] })] });
+    try {
+      prepare(work, null);
+      const result = publish(work);
+      assert.deepEqual(result.mivo.beyondTask, [], path);
+      assert.ok(result.warnings.some((w) => /证据不完整/.test(w)), `${path}:${JSON.stringify(result.warnings)}`);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+  // 普通文件做证据、上一轮没有问题:照常可以分到范围外(确认读文件类型没有误伤)
+  {
+    const { work } = setup({ findings: [notDo()] });
+    try { prepare(work, null); assert.equal(publish(work).mivo.beyondTask.length, 1); } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+  // 受保护的文件现在是目录 / 符号链接 / 子模块
+  for (const path of ['src/dir', 'src/link.ts', 'src/sub']) {
+    const { work } = setup({ findings: [notDo()] });
+    try {
+      prepare(work, { key: 'f'.repeat(12), seenRounds: 1, severity: 'P1', path, files: [path] });
+      const result = publish(work);
+      assert.deepEqual(result.mivo.beyondTask, [], path);
+      assert.ok(result.warnings.some((w) => /不再是普通文件/.test(w)), `${path}:${JSON.stringify(result.warnings)}`);
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
 });

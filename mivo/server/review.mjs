@@ -27,7 +27,7 @@ import { checkTarget, toMirrorDispatchArgs } from '../lib/checks.mjs';
 import { toDefaultBranchRequest, parseDefaultBranch } from '../lib/default-branch.mjs'; // [MIVO-PATCH reviewer-app]
 import { readHealth, toHealthReason } from '../lib/health.mjs';
 import { loadFeatures, runVerification, buildVerifyPrompt, applyVerification, agentInstructionFiles, toUnavailableModels, VERIFY_SCHEMA } from '../lib/verify.mjs';
-import { checkEvidence } from '../lib/finding.mjs';
+import { checkEvidence, toLocationFiles } from '../lib/finding.mjs';
 import { runCodex, readCodexVersion, removeRunArtifacts } from './codex.mjs';
 import { toKeyRing, toKeySwitch, switchToBackup, noteKeyResult, activeCredentials, keyTexts, toCredentialSummary, toRateLimitRetry } from './keys.mjs';
 import { recordSelfWrite, readSelfWrites } from '../../review-pr/scripts/self-write-receipts.mjs';
@@ -754,16 +754,19 @@ function headReaderFor(head) {
   const git0 = (args) => run('git', args, { cwd: REPO_DIR, allowFail: true, timeoutMs: 30_000 });
   return (path) => {
     if (cache.has(path)) return cache.get(path);
-    let read = { exists: false, lineCount: 0 };
+    // regularFile(#244):git 条目是普通文件(mode 100644 / 100755)。目录、符号链接、子模块 exists 为 true、regularFile 为 false。
+    let read = { exists: false, regularFile: false, lineCount: 0 };
     if (path && !String(path).startsWith('/') && !String(path).includes('\\') && !String(path).split('/').includes('..')) {
-      const tree = git0(['ls-tree', '--name-only', head, '--', path]);
+      const tree = git0(['ls-tree', head, '--', path]);
+      const entry = tree.ok ? tree.stdout.split('\n').map((l) => /^(\d{6}) (\w+) [0-9a-f]+\t(.*)$/.exec(l)).find((m) => m && m[3] === String(path)) : null;
       if (tree.ok && tree.stdout.trim()) {
+        const regularFile = Boolean(entry) && entry[2] === 'blob' && ['100644', '100755'].includes(entry[1]);
         const type = git0(['cat-file', '-t', `${head}:${path}`]);
         if (type.ok && type.stdout.trim() === 'blob') {
           const blob = git0(['cat-file', '-p', `${head}:${path}`]);
           const text = blob.ok ? blob.stdout : '';
-          read = { exists: true, lineCount: text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0 };
-        } else read = { exists: true, lineCount: 0 };
+          read = { exists: true, regularFile, lineCount: text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0 };
+        } else read = { exists: true, regularFile: false, lineCount: 0 };
       }
     }
     cache.set(path, read);
@@ -816,7 +819,7 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
     reportedKeys: [...conv.deferred, ...conv.ruledKept, ...conv.adjudicatedKept].map((f) => f.key),
     // 上一轮问题记录满 100 条(发布时截到 100 条)时可能不全,按读不到处理。
     previousUnknown: (!state.previousRound && ((history.findingThreads ?? 0) > 0 || Boolean(state.previous))) || (state.previousRound?.findings?.length ?? 0) >= 100,
-    fileExists: (path) => headReaderFor(state.input.head)(path)?.exists === true });
+    fileExists: (path) => headReaderFor(state.input.head)(path)?.regularFile === true });
   // 后来发现(#221):第 2 轮起落在没改动文件上的新 P2 移出阻断。codex 阶段(是否进收口、交给核对员的条目)与 publish 共用这一份分类。
   const late = splitLateFindings({ findings: beyond.findings, unchangedFiles: state.lateFindings?.unchangedFiles ?? null, mode: state.lateFindings?.mode ?? 'off' });
   return { ...checked, ...conv, findings: late.findings, lateFindings: late.late, beyondTask: beyond.beyond, notes: [...checked.notes, ...beyond.notes],
@@ -839,11 +842,10 @@ function taskBoundaryOf(state) {
 }
 
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
-// files:问题位置、证据、同类位置所在的文件(#244 修复轮按文件从严用);沿用的旧结果已经算好的原样保留。
-const locationFilesOf = (f) => (Array.isArray(f.files) ? f.files
-  : [...new Set([f.path, ...(f.evidence ?? []).map((e) => e?.path), ...(f.instances ?? []).map((i) => i?.path)].filter((p) => typeof p === 'string' && p))]);
 function toStoredFinding(finding) {
-  finding = { ...finding, files: locationFilesOf(finding) };
+  // files:问题位置、证据、同类位置所在的文件(#244 修复轮按文件从严用)。算不全时不写,下一轮从严。
+  const files = toLocationFiles(finding);
+  finding = files ? { ...finding, files } : finding;
   const keep = ['files', 'path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete', 'beyondTask', 'beyondTaskQuote'];
   const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
   return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
