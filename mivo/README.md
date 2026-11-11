@@ -308,7 +308,12 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - **开关** `config/review-features.json` 的 `taskIssue.mode`：`off` 不读，任务书与 `specDigest` 与不接任务 issue 时逐字一致；`observe` 读、记，并按上一条写进任务书（开着时任务书模板进 `specDigest`，上线后开放 PR 下次送审按「规则改版」处理一次）；`enforce`（当前，#244）在 observe 的基础上让任务范围起作用，见下一条，回退改回 `observe`。上线后有任务 issue 组 ÷ 对照组的轮数或每个 PR 总审查时间之比超过上线前的 1.10 倍时，按 #132 回退条件把开关改 `off`。
 - **任务范围**（#244，#132 D19；`taskIssue.mode=enforce`、子 issue 是计划方级别且已写进任务书时起作用，`lib/task-issue.mjs` `isTaskBoundaryActive`）：本 PR 只对计划方划定的这一步负责，任务范围外的 P1/P2 不挡合并。
   - 任务书里「不能缩小审查范围」那一行换成任务范围规则，并多列子 issue「范围」原文；这一节的上限放宽到 20 KB（`PROMPT_BYTES_BOUNDARY`）。四种范围外依据：`not-do`（任务 issue 写明不做）、`other-work`（总 issue 分给别的子 issue）、`accepted`（计划方写明接受这种行为或残余）、`no-worse`（最坏结果不比合并前差、issue 也没要求，只限 P2）。永远算范围内：P0；让合并前正常的行为变差的回归；子 issue 目标没做到或 PR 声称达成的验收标准没达成；P2 必修三类。建议修复先给子 issue 范围内的最小修法，范围内修不了要写明，不直接建议扩大 PR。
-  - 答卷每条问题多两个字段 `beyondTask`、`beyondTaskQuote`（`lib/finding.mjs`；任务范围不起作用时模型按字段说明写 `none`，服务器也不看）。模型的声明由服务器核对后才生效（`classifyBeyondTask`）：P1/P2；不是上一轮已经挡合并的问题（`supersedes` 为空、不是连续报出）；前三种依据要逐字引用计划方原文，至少 6 个字，并且要在对应部分里找到（`toTaskIssuePlanText`：「不做」只认子 issue 和总 issue 的不做段，「别的子 issue」认总 issue 里别的子 issue 的分工行和不做段，「接受」认子 issue 各段、验收标准、已定决定和总 issue 未被取代的决定；比对时忽略空白、反引号和引号）；`no-worse` 只限 P2、不要求引用。核对不过的照常挡合并，原因记进结果包 `warnings`。总 issue 不是计划方级别时不收它的文字。
+  - 答卷每条问题多两个字段 `beyondTask`、`beyondTaskQuote`（`lib/finding.mjs`；任务范围不起作用时模型按字段说明写 `none`，服务器也不看）。模型的声明由服务器核对后才生效（`classifyBeyondTask`），核对不过的照常挡合并，原因记进结果包 `warnings`：
+    - 只限 P1/P2；不是上一轮已经挡合并的问题（`supersedes` 为空、不是连续报出）。
+    - 防「上一轮的问题换了说法」（问题编号靠标题算，换标题就对不上）：上一轮同一文件有挡合并的问题、本轮没有按原编号再报时，P1 一律照常挡；P2 在问题类型的词有一半重合、行号相同或标题相近时照常挡（`resemblesPrevious`，类型缺失按相近算）。上一轮结果读不到而 PR 上已有审查机的 thread 时全部照常挡。代价：单文件 PR 的修复轮里，新冒出的范围外 P1 仍会挡。
+    - 前三种依据要逐字引用计划方原文（`toTaskIssuePlanText`，一行一项）：「不做」只认子 issue 和总 issue 的不做段；「别的子 issue」只认总 issue 里别的子 issue 的分工行，和不做段里带 issue 号的行；「接受」只认子 issue 的范围、验收标准、已定决定和总 issue 未被取代的决定，目标、原因等段不算。引用要落在同一行里；比对时忽略空白、反引号和引号；长度只数文字，数字和标点不算，至少 12 个字，那一行不到 24 个字时至少一半且不少于 6 个字。
+    - `no-worse` 只限 P2、不要求引用。
+    - 总 issue 不是计划方级别时不收它的文字。
   - 核对通过的（`lib/report.mjs` `splitBeyondTask`，排在核对员和「后来发现」之前）：不开 thread、不进核对员、不算卡住，报告在 Rule coverage 前单列「任务范围外的问题（不阻断本 PR）」，每条写位置、级别、标题、依据和引用的原文，结论行写明条数；结果包 `mivo.beyondTask` 记紧凑形状（含 `beyondTask`、`beyondTaskQuote`）。只有任务范围外问题时结论是 pass。
   - 它们不进下一轮的旧问题清单；下一轮再报时沿用同一个 key，仍按任务范围外处理。本轮任务范围不起作用（开关改回 `observe` / `off`、任务 issue 读不到或降成作者陈述）而上一轮有任务范围外的问题时，同「后来发现」关开关的做法：并回待核对的旧问题清单并全量重审（`lib/scope.mjs` `withBeyondTaskPolicy`）。
   - 依据（#244 的原因段）：2026-11-08 ~ 11-11 被审 3 轮以上的 6 个 Mivo PR 共 21 条挡合并的意见，约 7 条在任务范围外；Mivo #2133 的任务 issue 只让改一个函数并写明「不改面板侧重放与 ACK 逻辑」，实际审了 7 轮、提了 10 条。分类是人工读的，样本小。上线后 7 天按 #244 SC8 核对条数、轮数，并逐条抽查有没有本该挡合并的；有就把开关改回 `observe`。

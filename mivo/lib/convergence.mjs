@@ -42,7 +42,8 @@ export function collectMarkerHistory({ threads = [], reviewer, reviewerIdentity,
 /** 上一轮结果包 → 本轮要用的上一轮 key 清单。旧结果没有这些字段时都是空值,不报错。 */
 export function toPreviousRound(result) {
   const mivo = result?.mivo ?? {};
-  const findings = (mivo.findings ?? []).filter((f) => f?.key).map((f) => ({ key: f.key, seenRounds: Number.isInteger(f.seenRounds) ? f.seenRounds : 1, severity: f.severity ?? null }));
+  const findings = (mivo.findings ?? []).filter((f) => f?.key).map((f) => ({ key: f.key, seenRounds: Number.isInteger(f.seenRounds) ? f.seenRounds : 1, severity: f.severity ?? null,
+    path: f.path ?? null, line: Number.isInteger(f.line) ? f.line : null, bugClass: f.bugClass ?? '', title: f.title ?? '' }));
   const keys = new Set([...(mivo.findings ?? []), ...(mivo.deferred ?? []), ...(mivo.preexisting ?? []), ...(mivo.beyondTask ?? []), ...(mivo.verifierOverruled ?? [])].map((f) => f?.key).filter(Boolean));
   const roundIndex = Number.isInteger(mivo.convergence?.roundIndex) ? mivo.convergence.roundIndex : null;
   return { roundIndex, findings, keys };

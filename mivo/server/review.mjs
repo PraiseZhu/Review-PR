@@ -812,7 +812,9 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
     deferred: checked.deferred.slice(0, 100), scope, roundIndex, previousRound: state.previousRound ?? null,
     history, rulings: state.rulings?.verified ?? [], adjudications: state.adjudications?.verified ?? [], keyDeferrals: keyedDeferrals(state.deferrals?.verified ?? []), head: state.input.head });
   // 任务范围外(#244):计划方任务 issue 划定范围之外、服务器核对通过的 P1/P2 移出阻断;与下面的后来发现一样,codex 阶段与 publish 共用这一份分类。
-  const beyond = splitBeyondTask({ findings: conv.findings, boundary: taskBoundaryOf(state) });
+  const beyond = splitBeyondTask({ findings: conv.findings, boundary: taskBoundaryOf(state), previousBlocking: state.previousRound?.findings ?? [],
+    reportedKeys: [...conv.deferred, ...conv.ruledKept, ...conv.adjudicatedKept].map((f) => f.key),
+    previousUnknown: !state.previousRound && ((history.reviewerThreads ?? 0) > 0 || Boolean(state.previous)) });
   // 后来发现(#221):第 2 轮起落在没改动文件上的新 P2 移出阻断。codex 阶段(是否进收口、交给核对员的条目)与 publish 共用这一份分类。
   const late = splitLateFindings({ findings: beyond.findings, unchangedFiles: state.lateFindings?.unchangedFiles ?? null, mode: state.lateFindings?.mode ?? 'off' });
   return { ...checked, ...conv, findings: late.findings, lateFindings: late.late, beyondTask: beyond.beyond, notes: [...checked.notes, ...beyond.notes],

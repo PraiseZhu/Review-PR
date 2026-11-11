@@ -35,7 +35,7 @@ test('roundIndexOf 四种分支', () => {
 test('上一轮结果包 → previousRound;旧结果(没有 key/convergence)不报错', () => {
   const prev = toPreviousRound({ mivo: { findings: [{ key: KEY, seenRounds: 2, severity: 'P1' }, { body: '[P1] 旧' }], deferred: [{ key: 'cccccccccccc' }], preexisting: [], convergence: { roundIndex: 4 } } });
   assert.equal(prev.roundIndex, 4);
-  assert.deepEqual(prev.findings, [{ key: KEY, seenRounds: 2, severity: 'P1' }]);
+  assert.deepEqual(prev.findings, [{ key: KEY, seenRounds: 2, severity: 'P1', path: null, line: null, bugClass: '', title: '' }]); // #244:文件、行号、类型、标题一起带上,旧结果没有时留空
   assert.deepEqual([...prev.keys].sort(), [KEY, 'cccccccccccc'].sort());
   assert.deepEqual(toPreviousRound({ mivo: { findings: [{ body: '[P1] 旧' }] } }), { roundIndex: null, findings: [], keys: new Set() });
   assert.deepEqual(toPreviousRound({}), { roundIndex: null, findings: [], keys: new Set() });

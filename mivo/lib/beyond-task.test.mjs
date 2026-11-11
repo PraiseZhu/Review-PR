@@ -11,7 +11,7 @@ import { SKILL_ROOT } from './common.mjs';
 const material = (over = {}) => ({
   version: 1, mode: 'enforce', status: 'read', ref: 'o/r#12', warnings: [], gaps: [],
   issue: { ref: 'o/r#12', trust: 'plan', trustLabel: '计划方验收标准', trustNote: null,
-    sections: { 目标: '兜底快照只保留最新一份。', 范围: '- `main.js`:删旧快照;删失败只记诊断,不影响本次回执', 不做: '- 不改面板侧重放与 ACK 逻辑(`persistRetryReplay.ts` 不动)\n- 不改快照内容与分片大小' },
+    sections: { 目标: '兜底快照只保留最新一份,保存连续失败时作品库不再变大。', 原因: '2026-11-08 排查:保存连续失败的两分半里堆了七份快照,直到下次打开才清。', 范围: '- `main.js`:删旧快照;删失败只记诊断,不影响本次回执', 不做: '- 不改面板侧重放与 ACK 逻辑(`persistRetryReplay.ts` 不动)\n- 不改快照内容与分片大小\n- 不处理保存为什么失败(文件超限见 #13)' },
     scList: [{ sc: 'SC3', description: '旧快照删除失败时本次 put 仍回 ok:true 并记一条诊断;下次 put 再删', layer: 'contract' }],
     decided: [{ date: '2026-11-10', text: '清理失败不重试,留给下次' }] },
   parent: { ref: 'o/r#100', title: '[总] 作品库', trust: 'plan', trustLabel: '计划方验收标准', goal: '保存稳定', notDo: '- 不做网页版同步',
@@ -31,7 +31,8 @@ test('SC3 核对:三种引用依据逐字对上计划方原文才通过;忽略�
   assert.equal(check({ beyondTask: 'not-do', beyondTaskQuote: '不做网页版同步' }).beyond, true, '总 issue 的不做也算');
   assert.equal(check({ beyondTask: 'other-work', beyondTaskQuote: '| #13 | 档案文件超限提前判定 | M |' }).beyond, true);
   assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: '删失败只记诊断,不影响本次回执' }).beyond, true);
-  assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: '下次 put 再删' }).beyond, true, '验收标准里写明接受的也算');
+  assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: '并记一条诊断;下次 put 再删' }).beyond, true, '验收标准里写明接受的也算');
+  assert.equal(check({ beyondTask: 'other-work', beyondTaskQuote: '不处理保存为什么失败(文件超限见 #13)' }).beyond, true, '不做段里带 issue 号的行可以当「别的子 issue」的依据');
   assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: '清理失败不重试,留给下次' }).beyond, true, '子 issue 已定的决定');
   assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: '重放只认最新一条' }).beyond, true, '总 issue 的决定');
 });
@@ -48,6 +49,15 @@ test('SC4 核对不过的一律照常阻断并给原因', () => {
   assert.match(check({ beyondTaskQuote: '本 PR 不用管并发重放这件事' }).note, /对应部分里找不到/);
   assert.match(check({ beyondTaskQuote: '不改面板' }).note, /不足 6 个字/);
   assert.match(check({ beyondTaskQuote: '      ' }).note, /不足 6 个字/);
+  // 只有数字、标点的引用不算;对上了但只是一小段的不算;不能把相邻两行拼成一句
+  for (const quote of ['2026-11-08', '!!!!!!', '#13 | | M |', '(`persistRetryReplay.ts`)']) assert.equal(check({ beyondTask: 'accepted', beyondTaskQuote: quote }).beyond, false, quote);
+  assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '删失败只记诊断' }).note, /引用太短/);
+  assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '下次 put 再删' }).note, /引用太短/);
+  assert.match(check({ beyondTaskQuote: '不动)- 不改快照内容与分片大小' }).note, /对应部分里找不到/);
+  // 目标、原因段不算「计划方写明接受」;不做段里不带 issue 号的行不能当「别的子 issue」
+  assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '保存连续失败时作品库不再变大' }).note, /对应部分里找不到/);
+  assert.match(check({ beyondTask: 'accepted', beyondTaskQuote: '保存连续失败的两分半里堆了七份快照' }).note, /对应部分里找不到/);
+  assert.match(check({ beyondTask: 'other-work', beyondTaskQuote: '不改面板侧重放与 ACK 逻辑' }).note, /对应部分里找不到/);
   assert.match(check({ supersedes: 'a'.repeat(12) }).note, /上一轮已经阻断过/);
   assert.match(check({ seenRounds: 2 }).note, /上一轮已经阻断过/);
   // 依据和原文所在的部分要对得上:目标、范围里的话不能拿来当「不做」;已被取代的决定、自己这一行分工不算
@@ -57,7 +67,7 @@ test('SC4 核对不过的一律照常阻断并给原因', () => {
 });
 
 test('SC4 计划方原文只收计划方级别的文字:子 issue 是作者陈述、开关不是 enforce、没读到时三项都是空串;总 issue 不是计划方时不收它的内容', () => {
-  const empty = { notDo: '', otherWork: '', accepted: '' };
+  const empty = { notDo: [], otherWork: [], accepted: [] };
   const author = { ...material().issue, trust: 'author' };
   assert.deepEqual(toTaskIssuePlanText(material({ issue: author })), empty);
   assert.deepEqual(toTaskIssuePlanText(material({ mode: 'observe' })), empty);
@@ -65,12 +75,14 @@ test('SC4 计划方原文只收计划方级别的文字:子 issue 是作者陈�
   assert.deepEqual(toTaskIssuePlanText(null), empty);
   assert.deepEqual([isTaskBoundaryActive(material()), isTaskBoundaryActive(material({ mode: 'observe' })), isTaskBoundaryActive(material({ issue: author })), isTaskBoundaryActive(null)], [true, false, false, false]);
   const weakParent = toTaskIssuePlanText(material({ parent: { ...material().parent, trust: 'author' } }));
-  assert.ok(!weakParent.notDo.includes('网页版') && !weakParent.otherWork.includes('#13') && !weakParent.accepted.includes('重放只认最新一条'));
-  assert.ok(weakParent.notDo.includes('不改面板侧重放'));
+  const all = (list) => list.join('\n');
+  assert.ok(!all(weakParent.notDo).includes('网页版') && !all(weakParent.otherWork).includes('档案文件超限提前判定') && !all(weakParent.accepted).includes('重放只认最新一条'));
+  assert.ok(all(weakParent.notDo).includes('不改面板侧重放'));
+  assert.ok(planText.accepted.every((line) => !line.includes('排查') && !line.includes('作品库不再变大')), '原因、目标不进「接受」的原文');
 });
 
 test('SC1/SC3 分桶:任务范围不起作用时原样返回;起作用时只移走核对通过的,原因进 notes', () => {
-  const list = [item({ title: '甲' }), item({ title: '乙', beyondTaskQuote: '编出来的一句原文引用' }), item({ title: '丙', beyondTask: 'none' })];
+  const list = [item({ title: '甲' }), item({ title: '乙', beyondTaskQuote: '编出来的一句原文引用,够十二个字了' }), item({ title: '丙', beyondTask: 'none' })];
   for (const boundary of [null, { active: false, planText }, undefined]) assert.deepEqual(splitBeyondTask({ findings: list, boundary }), { findings: list, beyond: [], notes: [] });
   const out = splitBeyondTask({ findings: list, boundary: { active: true, planText } });
   assert.deepEqual(out.beyond.map((f) => f.title), ['甲']);
@@ -98,6 +110,8 @@ test('SC2 任务书:enforce 且计划方级别时写入任务范围规则和「�
   for (const basis of ['not-do', 'other-work', 'accepted', 'no-worse']) assert.ok(text.includes(`  - \`${basis}\`:`), basis);
   assert.match(text, /永远算范围内\(`beyondTask` 写 `none`\):P0;让合并前正常的行为变差的问题\(回归[^\n]*子 issue「目标」没做到,或 PR 验收对照里标为已达成的验收标准实际没达成;「分级」P2 必修的三类。拿不准一律算范围内。/);
   assert.ok(text.includes('上一轮已经阻断的问题不能改判成范围外'));
+  assert.ok(text.includes('至少 12 个字(只数文字,数字和标点不算);那一行不到 24 个字时引用整行'));
+  assert.ok(text.includes('目标、原因等其他段里的话不算'));
   assert.ok(text.includes('建议修复(`fix`)先给子 issue「范围」内的最小修法'));
   assert.ok(text.includes('不要直接建议扩大本 PR'));
   assert.ok(text.includes("- 范围:- 'main.js':删旧快照;删失败只记诊断,不影响本次回执"));
@@ -166,4 +180,41 @@ test('SC5 跨轮:上一轮任务范围外的问题本轮再报,沿用同一个 k
   const out = splitBeyondTask({ findings: wasBlocking, boundary });
   assert.deepEqual([out.beyond.length, out.findings.length], [0, 1]);
   assert.match(out.notes[0], /上一轮已经阻断过这条问题/);
+});
+
+// 复审(PR #245)确认的绕过:上一轮挡过的问题换个标题重报,key 对不上,原来会被当成新问题改判成范围外。
+test('SC4 可能是上一轮问题换了说法:同一文件上一轮有阻断问题、本轮没按原编号再报时,P1 一律照常挡,P2 相近才挡', () => {
+  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照' };
+  const boundary = { active: true, planText };
+  const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
+  // P1:只要同一文件有没再报的旧阻断问题就挡,不看像不像
+  const p1 = split(item({ severity: 'P1', title: '完全不同的标题', bugClass: 'other' }));
+  assert.equal(p1.beyond.length, 0);
+  assert.match(p1.notes[0], /无法确认不是同一条换了说法,P1 照常阻断/);
+  // P2:问题类型相近、行号相同、标题相近,任一条成立就挡
+  for (const near of [{ bugClass: 'replay-ordering-bug', title: '另一种写法' }, { bugClass: 'zzz', title: '另一种写法', line: 40 }, { bugClass: 'zzz', title: '冷启重放仍按请求 id 选快照' }, { bugClass: '', title: '另一种写法' }]) {
+    const out = split(item({ line: 2, ...near }));
+    assert.equal(out.beyond.length, 0, JSON.stringify(near));
+    assert.match(out.notes[0], /可能是同一条换了说法/);
+  }
+  // P2:类型、行号、标题都不相近 → 当新问题,可以是范围外
+  assert.equal(split(item({ bugClass: 'orphaned-chunks', title: '读索引失败后分片残留', line: 2 })).beyond.length, 1);
+  // 别的文件上的旧问题不相干;旧问题本轮按原编号再报了(阻断里或别的桶里)也不相干
+  assert.equal(split(item({ severity: 'P1', path: 'src/b.ts' })).beyond.length, 1);
+  assert.equal(split(item({ severity: 'P1' }), { reportedKeys: [prev.key] }).beyond.length, 1);
+  const both = splitBeyondTask({ findings: [{ ...item({ severity: 'P1', beyondTask: 'none' }), key: prev.key }, { ...item({ severity: 'P1', title: '新问题' }), key: 'c'.repeat(12) }], boundary, previousBlocking: [prev] });
+  assert.equal(both.beyond.length, 1);
+  // 旧结果链里的问题没有文件信息:拿不准,P1、P2 都照常挡
+  for (const severity of ['P1', 'P2']) assert.equal(split(item({ severity, path: 'src/b.ts', bugClass: 'zzz', title: '另一种写法' }), { previousBlocking: [{ key: prev.key, seenRounds: 1, severity: 'P1' }] }).beyond.length, 0, severity);
+  // 上一轮结果读不到、PR 上却有审查机的 thread:全部照常挡
+  const unknown = split(item({ path: 'src/b.ts' }), { previousBlocking: [], previousUnknown: true });
+  assert.equal(unknown.beyond.length, 0);
+  assert.match(unknown.notes[0], /上一轮的审查结果读不到/);
+});
+
+test('SC4 上一轮阻断问题的文件、行号、类型、标题随结果链带到本轮', async () => {
+  const { toPreviousRound } = await import('./convergence.mjs');
+  const round = toPreviousRound({ mivo: { findings: [{ key: 'a'.repeat(12), severity: 'P1', seenRounds: 2, path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题' }, { key: 'b'.repeat(12) }] } });
+  assert.deepEqual(round.findings, [{ key: 'a'.repeat(12), seenRounds: 2, severity: 'P1', path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题' },
+    { key: 'b'.repeat(12), seenRounds: 1, severity: null, path: null, line: null, bugClass: '', title: '' }]);
 });

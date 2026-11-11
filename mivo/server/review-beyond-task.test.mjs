@@ -119,6 +119,8 @@ test('SC4:编造的引用、引用太短、不比合并前差标在 P1 上、P0�
     [finding({ severity: 'P1', beyondTask: 'no-worse', beyondTaskQuote: '' }), /只适用于 P2/],
     [notDo({ severity: 'P0' }), /P0 不论范围都阻断/],
     [notDo({ supersedes: 'a'.repeat(12) }), /上一轮已经阻断过这条问题/],
+    [finding({ severity: 'P2', beyondTask: 'accepted', beyondTaskQuote: '2026-11-10' }), /不足 6 个字/],
+    [finding({ severity: 'P2', beyondTask: 'accepted', beyondTaskQuote: '删失败只记诊断' }), /引用太短/],
   ];
   for (const [item, why] of cases) {
     const { result, report } = run([item]);
@@ -170,4 +172,35 @@ test('SC6:只含任务范围外问题的干净结果,同 head 任务范围不再
       assert.deepEqual(scope.previousFindings.map((f) => f.key), [key]);
     }
   } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+// 复审(PR #245)确认的绕过:上一轮挡过的 P1 换个标题重报并标成范围外,原来会放行。
+test('SC4:上一轮挡过的问题换标题重报 → 照常阻断;上一轮结果读不到而 PR 上有审查机 thread → 照常阻断', () => {
+  const first = setup({ findings: [finding({ severity: 'P1', title: '冷启重放按 id 选快照', bugClass: 'replay-order' })] });
+  const again = setup({ findings: [notDo({ title: '重放顺序在乱序队列下会应用旧内容', bugClass: 'snapshot-ordering' })] });
+  const lost = setup({ findings: [notDo()] });
+  try {
+    withTaskIssue(first.work, MATERIAL());
+    const round1 = publish(first.work);
+    assert.equal(round1.mivo.findings.length, 1);
+    // 第二轮:带上一轮的结果链(prepare 写进 state.previousRound 的形状)
+    withTaskIssue(again.work, MATERIAL());
+    const statePath = join(again.work, 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    const f = round1.mivo.findings[0];
+    writeFileSync(statePath, JSON.stringify({ ...state, previous: { head: 'x' }, previousRound: { roundIndex: 1, keys: [f.key],
+      findings: [{ key: f.key, seenRounds: 1, severity: f.severity, path: f.path, line: f.line ?? null, bugClass: f.bugClass, title: f.title }] } }));
+    const round2 = publish(again.work);
+    assert.equal(round2.reviewClean, false);
+    assert.equal(round2.mivo.findings.length, 1);
+    assert.deepEqual(round2.mivo.beyondTask, []);
+    assert.ok(round2.warnings.some((w) => /无法确认不是同一条换了说法,P1 照常阻断/.test(w)), JSON.stringify(round2.warnings));
+    // 上一轮结果读不到(没有 previousRound),但 state 记着有上一轮
+    withTaskIssue(lost.work, MATERIAL());
+    const lostPath = join(lost.work, 'state.json');
+    writeFileSync(lostPath, JSON.stringify({ ...JSON.parse(readFileSync(lostPath, 'utf8')), previous: { head: 'x' } }));
+    const round3 = publish(lost.work);
+    assert.equal(round3.mivo.findings.length, 1);
+    assert.ok(round3.warnings.some((w) => /上一轮的审查结果读不到/.test(w)));
+  } finally { for (const s of [first, again, lost]) rmSync(s.work, { recursive: true, force: true }); }
 });

@@ -709,11 +709,11 @@ const BOUNDARY_RULES = [
   '- **任务范围**:本 PR 只对计划方划定的这一步负责。每条问题先判在不在任务范围内,再照常写进 `findings`(触发条件、影响、证据一样不能少);范围外的填 `beyondTask` 和 `beyondTaskQuote`。服务器核对通过后,范围外的 P1/P2 不阻断、不开 thread,在报告里单列,由维护者决定另开 issue 还是不管。',
   '  - 永远算范围内(`beyondTask` 写 `none`):P0;让合并前正常的行为变差的问题(回归,包括本 PR 新代码带来的数据丢失、崩溃、安全问题);子 issue「目标」没做到,或 PR 验收对照里标为已达成的验收标准实际没达成;「分级」P2 必修的三类。拿不准一律算范围内。',
   '  - `not-do`:要修这条问题,就得做子 issue 或总 issue「不做」里写明不做的事。`beyondTaskQuote` 逐字引用「不做」里的那一句。',
-  '  - `other-work`:问题属于总 issue 分给别的子 issue 的工作。逐字引用总 issue 里那个子 issue 的分工行,或「不做」里指向它的那一句。',
-  '  - `accepted`:计划方在子 issue(目标、范围、验收标准、已定决定)或总 issue 的决定里写明接受这种行为或残余(例如「删失败只记诊断,下次再删」)。逐字引用那一句。',
+  '  - `other-work`:问题属于总 issue 分给别的子 issue 的工作。逐字引用总 issue 里那个子 issue 的分工行,或「不做」里写着那个 issue 号的那一行。',
+  '  - `accepted`:计划方在子 issue 的范围、验收标准、已定决定,或总 issue 的决定里写明接受这种行为或残余(例如「删失败只记诊断,不影响本次回执」)。逐字引用那一句;目标、原因等其他段里的话不算。',
   '  - `no-worse`:只限 P2。问题的最坏结果不比合并前差(同样的输入,合并前结果一样或更糟),子 issue 的目标和验收标准也没要求处理它——属于「还可以做得更好」。`beyondTaskQuote` 写空字符串,在 `impact` 里写明合并前是什么结果。',
-  '  - 引用必须是 issue 原文里连续的一段(6 个字以上),服务器逐字核对,对不上就照常阻断;不要改写原文来凑引用。',
-  '  - 修复轮同样适用:上一轮问题的修复代码也是本 PR 的改动,照同一规则判。上一轮已经阻断的问题不能改判成范围外。',
+  '  - 引用必须是 issue 原文同一行里连续的一段:至少 12 个字(只数文字,数字和标点不算);那一行不到 24 个字时引用整行。服务器逐字核对,对不上或太短就照常阻断;不要改写原文来凑引用。',
+  '  - 修复轮同样适用:上一轮问题的修复代码也是本 PR 的改动,照同一规则判。上一轮已经阻断的问题不能改判成范围外:没修好就照常报并填 `supersedes`,不要换个标题当新问题;服务器对「上一轮同一文件有阻断问题、本轮没再报」的情况会从严,P1 一律照常阻断。',
   '- 建议修复(`fix`)先给子 issue「范围」内的最小修法(例如退回合并前的行为、拿不准的情况跳过不处理)。范围内修不了时写明「需要改范围外的 <文件或模块>,建议计划方先改 issue 或另开子 issue」,不要直接建议扩大本 PR。',
 ];
 
@@ -728,23 +728,25 @@ export function isTaskBoundaryActive(material) {
 }
 
 /**
- * 计划方写的 issue 原文,按「任务范围外」的三种依据分开,给服务器逐字核对引用用(finding.mjs classifyBeyondTask)。
- * 只收计划方级别的文字:子 issue 必须是计划方级别(否则三项都是空串);总 issue 不是计划方级别时不收它的任何内容。
- * @returns {{notDo:string, otherWork:string, accepted:string}}
+ * 计划方写的 issue 原文,按「任务范围外」的三种依据分开、一行一项,给服务器逐字核对引用用(finding.mjs classifyBeyondTask)。
+ * 只收计划方级别的文字:子 issue 必须是计划方级别(否则三项都是空数组);总 issue 不是计划方级别时不收它的任何内容。
+ * 来源按依据收紧:「不做」只认不做段;「别的子 issue」只认总 issue 里别的子 issue 的分工行,和不做段里带 issue 号的行;
+ * 「接受」只认范围、验收标准、已定决定和总 issue 未被取代的决定——目标、原因、参考、依赖等段不算计划方写明接受。
+ * @returns {{notDo:string[], otherWork:string[], accepted:string[]}}
  */
 export function toTaskIssuePlanText(material) {
-  if (!isTaskBoundaryActive(material)) return { notDo: '', otherWork: '', accepted: '' };
+  if (!isTaskBoundaryActive(material)) return { notDo: [], otherWork: [], accepted: [] };
   const i = material.issue;
   const p = material.parent?.trust === 'plan' ? material.parent : null;
   const sec = i.sections ?? {};
-  const join = (parts) => parts.filter(Boolean).map(String).join('\n');
-  const notDo = join([sec.不做, p?.notDo]);
+  const rows = (parts) => parts.filter(Boolean).flatMap((part) => lines(part)).map((line) => line.trim()).filter(Boolean);
+  const notDo = rows([sec.不做, p?.notDo]);
   const otherRows = (p?.childRows ?? []).filter((r) => !r.self).map((r) => r.line);
   const decisions = [...(p?.decisions ?? []).filter((x) => !x.supersededBy).map((x) => x.decision), ...(p?.unstructuredDecisions ?? [])];
   return {
     notDo,
-    otherWork: join([...otherRows, notDo]),
-    accepted: join([...Object.values(sec), ...(i.scList ?? []).map((s) => s.description), ...(i.decided ?? []).map((x) => x.text), ...decisions]),
+    otherWork: [...rows(otherRows), ...notDo.filter((line) => /#\d+/.test(line))],
+    accepted: rows([sec.范围, ...(i.scList ?? []).map((s) => s.description), ...(i.decided ?? []).map((x) => x.text), ...decisions]),
   };
 }
 
