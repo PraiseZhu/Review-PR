@@ -239,7 +239,7 @@ async function prepare() {
       state.rulesBaseDir = dir;
     }
     const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
-      ciCovered: state.focus?.ciCovered ?? [], productRulesMode: state.productRules?.featureMode ?? 'off',
+      ciCovered: state.focus?.ciCovered ?? [], productRulesMode: state.productRules?.featureMode ?? 'off', taskIssueMode: state.taskIssue?.mode ?? 'off',
       readFile: (path) => rules.files[path] ?? null,
       config: readFileSync(RULES_FILE, 'utf8') }));
     const current = {
@@ -537,13 +537,15 @@ async function codex() {
   const promptFor = (scope, scopeFile) => buildReviewPrompt({
     spec: loadReviewSpec(SKILL_ROOT), ctx, scope, workdir: REPO_DIR, tier: state.tier,
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile,
-      securityScanFile: state.securityScan?.file, rulesBaseDir: state.rulesBaseDir ?? null },
+      securityScanFile: state.securityScan?.file, rulesBaseDir: state.rulesBaseDir ?? null, taskIssueFile: state.taskIssue?.file ?? null },
     deferrals: state.deferrals?.verified ?? [],
     rulings: state.rulings?.verified ?? [],
     rebuttals: state.rebuttals ?? [],
     handoff: state.handoff ?? null,
     focus: state.focus ?? null,
     productRules: state.productRules ?? null,
+    // 任务 issue(#242):prepare 写好的材料;读不到文件按没有材料处理(任务书不带这一节)。
+    taskIssue: state.taskIssue?.file ? readJson(state.taskIssue.file, null) : null,
   }) + (state.deps?.installed ? '\n\n依赖已按 lockfile 预装(未执行 install 脚本),可以运行定向测试。' : `\n\n依赖没有预装(${state.deps?.skipped || state.deps?.error || '未知原因'}),不要尝试安装;需要运行才能确认的点在 Verification 写「未执行 + 原因」。`);
   const prompt = promptFor(state.scope, join(INPUT_DIR, 'scope.json'));
   writeText(join(INPUT_DIR, 'prompt.md'), prompt);
