@@ -814,7 +814,9 @@ function classifyAnswer(state, ctx, answer, scope = state.effectiveScope ?? stat
   // 任务范围外(#244):计划方任务 issue 划定范围之外、服务器核对通过的 P1/P2 移出阻断;与下面的后来发现一样,codex 阶段与 publish 共用这一份分类。
   const beyond = splitBeyondTask({ findings: conv.findings, boundary: taskBoundaryOf(state), previousBlocking: state.previousRound?.findings ?? [],
     reportedKeys: [...conv.deferred, ...conv.ruledKept, ...conv.adjudicatedKept].map((f) => f.key),
-    previousUnknown: !state.previousRound && ((history.findingThreads ?? 0) > 0 || Boolean(state.previous)) });
+    // 上一轮问题记录满 100 条(发布时截到 100 条)时可能不全,按读不到处理。
+    previousUnknown: (!state.previousRound && ((history.findingThreads ?? 0) > 0 || Boolean(state.previous))) || (state.previousRound?.findings?.length ?? 0) >= 100,
+    fileExists: (path) => headReaderFor(state.input.head)(path)?.exists === true });
   // 后来发现(#221):第 2 轮起落在没改动文件上的新 P2 移出阻断。codex 阶段(是否进收口、交给核对员的条目)与 publish 共用这一份分类。
   const late = splitLateFindings({ findings: beyond.findings, unchangedFiles: state.lateFindings?.unchangedFiles ?? null, mode: state.lateFindings?.mode ?? 'off' });
   return { ...checked, ...conv, findings: late.findings, lateFindings: late.late, beyondTask: beyond.beyond, notes: [...checked.notes, ...beyond.notes],
@@ -837,8 +839,12 @@ function taskBoundaryOf(state) {
 }
 
 // 结果包里的问题只留判级、定位、正文和收敛需要的字段。
+// files:问题位置、证据、同类位置所在的文件(#244 修复轮按文件从严用);沿用的旧结果已经算好的原样保留。
+const locationFilesOf = (f) => (Array.isArray(f.files) ? f.files
+  : [...new Set([f.path, ...(f.evidence ?? []).map((e) => e?.path), ...(f.instances ?? []).map((i) => i?.path)].filter((p) => typeof p === 'string' && p))]);
 function toStoredFinding(finding) {
-  const keep = ['path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete', 'beyondTask', 'beyondTaskQuote'];
+  finding = { ...finding, files: locationFilesOf(finding) };
+  const keep = ['files', 'path', 'line', 'side', 'subject_type', 'body', 'deferredTo', 'key', 'uid', 'severity', 'title', 'origin', 'bugClass', 'seenRounds', 'late', 'evidenceComplete', 'supersedes', 'handoffRiskIds', 'handoffMappingComplete', 'beyondTask', 'beyondTaskQuote'];
   const stored = Object.fromEntries(keep.filter((k) => finding[k] !== undefined).map((k) => [k, finding[k]]));
   return stored.title ? { ...stored, title: scrubSecrets(stored.title).text } : stored;
 }

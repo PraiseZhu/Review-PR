@@ -20,7 +20,9 @@ const material = (over = {}) => ({
     unstructuredDecisions: ['| 2026-10-28 | 快照目录不设配额 | 用户 |'] },
   derived: { scopeOutside: [], blackboxSc: [], depsOpen: [] }, truncated: [], ...over });
 const planText = toTaskIssuePlanText(material());
-const item = (over = {}) => ({ severity: 'P2', title: '问题', path: 'src/a.ts', line: 2, supersedes: null, seenRounds: 1, beyondTask: 'not-do', beyondTaskQuote: '不改面板侧重放与 ACK 逻辑', ...over });
+// 证据默认指向问题所在文件、在 head 上都找得到(evidenceComplete);测 #244 的证据规则时再单独覆盖。
+const item = (over = {}) => ({ severity: 'P2', title: '问题', path: 'src/a.ts', line: 2, evidence: [{ path: over.path ?? 'src/a.ts', line: 2 }], evidenceComplete: true,
+  supersedes: null, seenRounds: 1, beyondTask: 'not-do', beyondTaskQuote: '不改面板侧重放与 ACK 逻辑', ...over });
 const check = (over) => classifyBeyondTask(item(over), { planText });
 
 test('SC3 核对:三种引用依据逐字对上计划方原文才通过;忽略空白、反引号和引号的差别', () => {
@@ -172,7 +174,7 @@ test('SC5 跨轮:上一轮任务范围外的问题本轮再报,沿用同一个 k
   const { applyConvergence, toPreviousRound } = await import('./convergence.mjs');
   const { findingKeyOf } = await import('./finding.mjs');
   const raw = (over = {}) => ({ severity: 'P2', title: '台账被淘汰', bugClass: 'eviction', path: 'src/a.ts', line: 2, side: 'RIGHT', body: '[P2] 台账被淘汰', trigger: 't', behavior: 'b', impact: 'i', fix: 'f', verify: 'v',
-    evidence: [{ path: 'src/a.ts', line: 2 }], instances: [], origin: 'introduced', supersedes: null, beyondTask: 'no-worse', beyondTaskQuote: '', ...over });
+    evidence: [{ path: 'src/a.ts', line: 2 }], evidenceComplete: true, instances: [], origin: 'introduced', supersedes: null, beyondTask: 'no-worse', beyondTaskQuote: '', ...over });
   const key = findingKeyOf(raw());
   const boundary = { active: true, planText };
   const again = (mivo) => applyConvergence({ findings: [raw()], scope: { mode: 'full' }, roundIndex: 2, previousRound: toPreviousRound({ mivo: { convergence: { roundIndex: 1 }, ...mivo } }), head: 'h'.repeat(40) }).findings;
@@ -191,7 +193,7 @@ test('SC4 修复轮按文件从严:上一轮某文件有阻断问题、本轮没
   const prev = { key: 'a'.repeat(12), path: 'src/a.ts', line: 40, bugClass: 'replay-order', title: '冷启重放按请求 id 选快照' };
   const boundary = { active: true, planText };
   const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
-  const blocked = (out) => { assert.equal(out.beyond.length, 0); assert.match(out.notes[0], /修复轮按文件从严,照常阻断/); };
+  const blocked = (out) => { assert.equal(out.beyond.length, 0); assert.match(out.notes[0], /修复轮(按文件)?从严,照常阻断/); };
   // 同一文件:不看级别,也不看标题、类型、行号像不像
   for (const severity of ['P1', 'P2']) blocked(split(item({ severity, title: '完全不同的标题', bugClass: 'other', line: 2 })));
   // 主路径写成别的文件,但证据或同类位置还指着旧文件
@@ -226,6 +228,49 @@ test('SC4 审查机开过的问题 thread 连当前版本上的也数(上一轮�
 test('SC4 上一轮阻断问题的文件、行号、类型、标题随结果链带到本轮', async () => {
   const { toPreviousRound } = await import('./convergence.mjs');
   const round = toPreviousRound({ mivo: { findings: [{ key: 'a'.repeat(12), severity: 'P1', seenRounds: 2, path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题' }, { key: 'b'.repeat(12) }] } });
-  assert.deepEqual(round.findings, [{ key: 'a'.repeat(12), seenRounds: 2, severity: 'P1', path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题' },
-    { key: 'b'.repeat(12), seenRounds: 1, severity: null, path: null, line: null, bugClass: '', title: '' }]);
+  assert.deepEqual(round.findings, [{ key: 'a'.repeat(12), seenRounds: 2, severity: 'P1', path: 'src/a.ts', line: 40, bugClass: 'race', title: '标题', files: null },
+    { key: 'b'.repeat(12), seenRounds: 1, severity: null, path: null, line: null, bugClass: '', title: '', files: null }]);
+  assert.deepEqual(toPreviousRound({ mivo: { findings: [{ key: 'a'.repeat(12), path: 'src/a.ts', files: ['src/a.ts', 'src/c.ts', 7] }] } }).findings[0].files, ['src/a.ts', 'src/c.ts']);
+});
+
+// 第三轮复审(PR #245)确认的绕过:证据为空 / 路径写法不同 / 旧文件被挤到位置上限之后;单个蛇形标识符凑字数;文件改名后换到新文件名下重报。
+test('SC4 证据不完整的问题不能分到范围外:证据为空、有位置找不到、位置条数被截断', () => {
+  for (const over of [{ evidenceComplete: false }, { evidenceComplete: undefined }, { locationsTruncated: true }]) {
+    const out = classifyBeyondTask(item(over), { planText });
+    assert.equal(out.beyond, false, JSON.stringify(over));
+    assert.match(out.note, /证据不完整/);
+  }
+  const raw = { severity: 'P1', title: 't', trigger: 'a', behavior: 'b', impact: 'c', fix: 'd', verify: 'e', evidence: [{ path: 'x', line: 1 }], instances: [] };
+  assert.equal(normalizeFinding(raw).item.locationsTruncated, false);
+  assert.equal(normalizeFinding({ ...raw, evidence: Array.from({ length: 9 }, () => ({ path: 'x', line: 1 })) }).item.locationsTruncated, true);
+  assert.equal(normalizeFinding({ ...raw, instances: Array.from({ length: 21 }, () => ({ path: 'x', line: 1 })) }).item.locationsTruncated, true);
+});
+
+test('SC4 受保护的文件:上一轮问题的全部位置所在文件,路径写法不同也认;有文件已不在本轮版本上时整轮从严', () => {
+  const prev = { key: 'a'.repeat(12), path: 'src/a.ts', files: ['src/a.ts', 'src/c.ts'] };
+  const boundary = { active: true, planText };
+  const split = (f, over = {}) => splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...f }], boundary, previousBlocking: [prev], ...over });
+  const at = (path, extra = {}) => item({ path: 'src/b.ts', evidence: [{ path: 'src/b.ts', line: 1 }], ...extra, instances: [{ path, line: null }] });
+  // 上一轮问题的证据文件 src/c.ts 也受保护
+  assert.equal(split(item({ path: 'src/c.ts' })).beyond.length, 0);
+  // 同类位置写成 ./src/a.ts、SRC/A.TS、src//a.ts 也认得出
+  for (const path of ['./src/a.ts', 'SRC/A.TS', 'src//a.ts', ' ./././src/a.ts ']) assert.equal(split(at(path)).beyond.length, 0, path);
+  // 与上一轮无关的文件照常可以分到范围外
+  assert.equal(split(at('src/d.ts')).beyond.length, 1);
+  // 受保护的文件在本轮 head 上已不存在(改名或删除):不猜改到了哪,本轮全部照常挡
+  const gone = split(at('src/d.ts'), { fileExists: (path) => path !== 'src/c.ts' });
+  assert.equal(gone.beyond.length, 0);
+  assert.match(gone.notes[0], /文件在本轮版本上已不存在\(改名或删除\)/);
+  // 第一轮没有上一轮问题,不查文件
+  assert.equal(splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item() }], boundary, fileExists: () => false }).beyond.length, 1);
+});
+
+test('SC3 字数:下划线、连字符、点、斜杠连着的标识符和路径只算一个字', () => {
+  const lines = { accepted: ['- `handle_flush_retry_put_queue_state` 与 `flush-retry-put-handler-v2`', '- `cindyplugin/src/persist/__tests__/flushRetryPrune.test.ts`', '- a.b.c.d.e.f.g'] };
+  for (const quote of ['handle_flush_retry_put_queue_state', 'flush-retry-put-handler-v2', 'cindyplugin/src/persist/__tests__/flushRetryPrune.test.ts', 'a.b.c.d.e.f.g']) {
+    assert.match(classifyBeyondTask(item({ beyondTask: 'accepted', beyondTaskQuote: quote }), { planText: lines }).note, /不足 6 个字/, quote);
+  }
+  // 纯英文句子按单词数
+  const english = { notDo: ['- Do not change panel replay or ACK logic in this child issue'] };
+  assert.equal(classifyBeyondTask(item({ beyondTaskQuote: 'Do not change panel replay or ACK logic in this child issue' }), { planText: english }).beyond, true);
 });

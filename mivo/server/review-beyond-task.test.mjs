@@ -222,3 +222,24 @@ test('SC4:上一轮结果读不到、PR 上有当前版本的审查机 thread �
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
 });
+
+// 第三轮复审(PR #245):文件改名后旧问题换到新文件名下重报;上一轮记录满 100 条;结果包记下受保护的文件。
+test('SC4:上一轮问题所在文件在本轮版本上已不存在 → 照常阻断;上一轮记录满 100 条 → 按读不到处理;结果包的问题带 files', () => {
+  const cases = [
+    [[{ key: 'a'.repeat(12), seenRounds: 1, severity: 'P1', path: 'src/old.ts', files: ['src/old.ts'] }], /文件在本轮版本上已不存在/],
+    [Array.from({ length: 100 }, (_, n) => ({ key: n.toString(16).padStart(12, '0'), seenRounds: 1, severity: 'P2', path: 'src/z.ts', files: ['src/z.ts'] })), /上一轮的审查结果读不到/],
+  ];
+  for (const [findings, why] of cases) {
+    const { work } = setup({ findings: [notDo()] });
+    try {
+      withTaskIssue(work, MATERIAL());
+      const statePath = join(work, 'state.json');
+      writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), previous: { head: 'x' }, previousRound: { roundIndex: 1, keys: findings.map((f) => f.key), findings } }));
+      const result = publish(work);
+      assert.deepEqual(result.mivo.beyondTask, []);
+      assert.equal(result.mivo.findings.length, 1);
+      assert.deepEqual(result.mivo.findings[0].files, ['src/a.ts'], '结果包的问题记下它的位置所在文件,下一轮用来从严');
+      assert.ok(result.warnings.some((w) => why.test(w)), JSON.stringify(result.warnings));
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+});
