@@ -289,6 +289,8 @@ test('SC4 旧记录没有完整文件清单(只有 path)时整轮从严;沿用�
   assert.deepEqual(toLocationFiles({ path: 'src/a.ts', locationFiles: ['src/a.ts', 'src/z.ts'] }), ['src/a.ts', 'src/z.ts']);
   // 第五轮复审(PR #245):本 PR 早期版本在沿用时写过只含 path 的 files 数组,不能当完整清单
   assert.equal(toLocationFiles({ path: 'src/a.ts', files: ['src/a.ts'] }), null);
+  // 第六轮复审(PR #245):位置被截断时清单不全,不写
+  assert.equal(toLocationFiles({ path: 'src/a.ts', evidence: [{ path: 'src/a.ts', line: 1 }], locationsTruncated: true }), null);
   const legacy = splitBeyondTask({ findings: [{ key: 'b'.repeat(12), ...item({ path: 'src/c.ts', evidence: [{ path: 'src/b.ts', line: 1 }] }) }], boundary, previousBlocking: [{ ...pathOnly, files: ['src/a.ts'] }] });
   assert.equal(legacy.beyond.length, 0);
   assert.match(legacy.notes[0], /文件清单缺失/);

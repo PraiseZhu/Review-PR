@@ -311,3 +311,17 @@ test('SC4:旧字段 files 下的清单不认;本版本写的 locationFiles 经�
     assert.ok(result.warnings.some((w) => /文件清单缺失/.test(w)), JSON.stringify(result.warnings));
   } finally { rmSync(legacy.work, { recursive: true, force: true }); }
 });
+
+// 第六轮复审(PR #245):证据超过 8 个或同类位置超过 20 个被截断时,结果包不能写出不完整的 locationFiles(下一轮据此会放过被截掉的文件)。
+test('SC4:位置条数超上限被截断 → 结果包不写 locationFiles,下一轮整轮从严', () => {
+  const many = (n) => Array.from({ length: n }, () => ({ path: 'src/a.ts', line: 1 }));
+  for (const over of [{ evidence: many(9) }, { instances: many(21) }]) {
+    const { work } = setup({ findings: [finding(over)] });
+    try {
+      withTaskIssue(work, MATERIAL());
+      const result = publish(work);
+      assert.equal(result.mivo.findings.length, 1);
+      assert.equal(result.mivo.findings[0].locationFiles, undefined, Object.keys(over)[0]);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  }
+});
