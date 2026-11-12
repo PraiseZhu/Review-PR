@@ -972,10 +972,10 @@ async function publish() {
       const stuck = checked.stuck.filter((item) => findings.some((f) => f.key === item.key))
         .map((item) => ({ ...item, severity: severityByKey.get(item.key) ?? item.severity }));
       // 放行前收口全量的记录(SC1/SC4/SC6):head/runId 一律取被审的 input,不用当前 PR head。
-      const overruledAll = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
-      const finalFull = finalFullRecord(state, findings, overruledAll);
+      const finalFull = finalFullRecord(state, findings);
       // 增量判干净的放行必须有本 head 的完整收口记录(或修复轮免收口记录):缺了不 Approve,不管 answer.json 是怎么来的。
-      if (findings.length === 0 && !overruledAll && state.scope.mode === 'incremental' && !['clean', 'skipped-fix-round'].includes(finalFull.record?.outcome)) {
+      // 卡点全部被核对员推翻/降级的也一样放行(PraiseZhu/Review-PR#248),同样要有收口记录。
+      if (findings.length === 0 && state.scope.mode === 'incremental' && !['clean', 'skipped-fix-round'].includes(finalFull.record?.outcome)) {
         return publishFinalFullPending(state, result, { missing: true });
       }
       Object.assign(result.mivo, finalFull.record ? { finalFull: finalFull.record } : {}, finalFull.context ? { finalFullContext: finalFull.context } : {});
@@ -1020,9 +1020,10 @@ async function publish() {
     if (secretHits) result.warnings.push(`报告里有 ${secretHits} 处疑似凭证格式,已脱敏后再发布`);
     const reportFile = join(OUT, 'report.md');
     writeText(reportFile, report);
-    // 原本有 P1/P2 卡点、被核对员全部推翻/降级:不 Approve(reviewClean 记 false,同一 head 再来也不会被沿用成通过),只发评论请人工看一眼。
+    // 原本有 P1/P2 卡点、被核对员全部推翻/降级:没有剩下阻断问题,和「没有 P0/P1/P2」一样放行(用户 2026-11-12 定,PraiseZhu/Review-PR#248;
+    // 取代 2026-10-17「不 Approve、只发评论请人工看一眼」)。verifierOverruledAll 只作记录,报告里照常列出被推翻/降级的问题。
     const allOverruled = hadBlockers && findings.length === 0 && verifierOverruled.length > 0;
-    Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0 && !allOverruled, reportFile: 'report.md' });
+    Object.assign(result, { enteredReview: true, reviewed: true, reviewClean: findings.length === 0, reportFile: 'report.md' });
     // 结果包只带 issue 号和未采用原因,不带 PR 说明原文。
     Object.assign(result.mivo, { reportComplete: true, findings: findings.map(toStoredFinding), deferred: deferred.map(toStoredFinding), preexisting, lateFindings, beyondTask, ruledKept, adjudicatedKept, convergence,
       rulesSource: state.rulesSource ?? null, verification: toStoredVerification(state.verification), verifierOverruled, verifierOverruledAll: allOverruled, deferrals: {
@@ -1033,7 +1034,6 @@ async function publish() {
     let receipt;
     if (findings.length > 0) receipt = await publishFindings(state, result, reportFile, findings, { reusedReview });
     else if (state.pendingGates?.length) receipt = await publishAdvisory(state, result, reportFile);
-    else if (allOverruled) receipt = await publishOverruled(state, result, reportFile);
     else receipt = await publishClean(state, result, reportFile);
     // 本轮结论已经发到 PR 上,才在已修好的旧 thread 里回复说明(盯梢来关);任何失败只记 warning,不改本轮结论。
     resolveFixedFindingThreads(state, result, ctx, { receipt, resolutionKeys });
@@ -1052,7 +1052,7 @@ async function publish() {
 // finalFullContext = { kind, findingFiles }:kind 区分同一次运行收口(same-run)、Mini 补跑(budget-retry)、直接全量(direct-full);
 // findingFiles 是收口仍阻断的问题位置(含 instances),下一轮的修复轮免收口据此判断。
 const safeRel = (p) => typeof p === 'string' && p.length > 0 && !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..');
-function finalFullRecord(state, findings, overruledAll) {
+function finalFullRecord(state, findings) {
   const input = state.input;
   const entry = state.scope;
   const none = { record: null, context: null };
@@ -1062,7 +1062,8 @@ function finalFullRecord(state, findings, overruledAll) {
     if (!state.finalFull) return none; // 增量里已有阻断问题,没进收口
     kind = 'same-run';
   } else kind = entry.purpose === 'final-full' ? 'budget-retry' : 'direct-full';
-  const outcome = findings.length > 0 ? 'findings' : overruledAll ? 'manual-review' : 'clean';
+  // manual-review 只出现在 #248 之前的旧记录里(卡点全部被推翻/降级时不放行);现在这种情况记 clean。
+  const outcome = findings.length > 0 ? 'findings' : 'clean';
   const findingFiles = [...new Set(findings.flatMap((f) => [f.path, ...(f.instances ?? []).map((i) => i?.path)]).filter(safeRel))].sort();
   return { record: { head: input.head, runId: input.runId, outcome }, context: { kind, findingFiles, previousRound: null } };
 }
@@ -1281,29 +1282,6 @@ async function publishAdvisory(state, result, reportFile, { blockers = [], retry
   removeMergeReady(state, result);
   result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: null,
     title: `代码审查没有 P0/P1/P2(${state.tier}),等补齐后放行`, summary: `${why}。${state.scope.reason}` });
-  return commentReceipt(comment);
-}
-
-// 原本有 P1/P2 卡点,被核对员全部推翻/降级:代码审查没有留下阻断问题,但这个结论来自模型核对员而不是人。
-// 只以评论发报告,不 Approve、不挂 merge-ready;check 写成功(用户 2026-10-17 决定),由人看过报告再合。
-async function publishOverruled(state, result, reportFile) {
-  const input = state.input;
-  const why = '核对员推翻/降级了全部卡点，请人工看一眼再合';
-  const count = result.mivo.verifierOverruled.length;
-  Object.assign(result, { outcome: 'merge-blocked', reviewClean: false, reason: `代码审查的 ${count} 条 P1/P2 卡点全部被核对员推翻/降级,不 Approve:${why}` });
-  result.approval = { status: 'blocked', code: 'verifier-overruled', reason: why };
-  if (input.mode === 'dry-run') { result.reason += '(dry-run:没有写入 GitHub)'; return; }
-  const banner = [`> **主审报了 ${count} 条 P1/P2,核对员全部推翻或降级,所以没有阻断问题,但这不是人工结论**：${why}。`, '> 核对员给出的证据和理由列在下面对应的小节里,请核对;服务器不会 Approve。', ''].join('\n');
-  const comment = postReportComment(state, reportFile, { marker: `<!-- mivo-review:verifier-overruled head=${input.head} -->`, prefix: banner });
-  result.mivo.reportComment = comment;
-  if (!comment.ok) {
-    result.errors.push(`报告评论发布失败:${comment.error}`);
-    result.retry = true;
-    return;
-  }
-  removeMergeReady(state, result);
-  result.mivo.checkRun = completeCheckRun(input, state.checkRunId, { conclusion: 'success', title: `核对员推翻/降级了全部卡点(${state.tier}),请人工看一眼`,
-    summary: `主审的 ${count} 条 P1/P2 都被核对员推翻或降级。${why}。${state.scope.reason}` });
   return commentReceipt(comment);
 }
 

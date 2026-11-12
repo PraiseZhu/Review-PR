@@ -256,6 +256,16 @@ test('上一轮「核对员推翻了全部卡点、等人工复核」的状态�
   assert.equal(previousFromResult({ ...result, reviewClean: true, mivo: { ...result.mivo, verifierOverruledAll: undefined, verifierOverruled: [] } }, '').manualReview, false);
 });
 
+test('#248 SC5:卡点全部被核对员推翻/降级、已照常放行的新结果(reviewClean=true)不再算等人工复核;没放行的旧结果仍算', () => {
+  const approved = { pr: 7, head: 'h0', reviewed: true, reviewClean: true, outcome: 'review-only', reviewEvidence: { baseRefName: 'main', diffHash: 'd0' },
+    approval: { status: 'verified' },
+    mivo: { targetRepo: 'o/r', reportComplete: true, findings: [], deferred: [], verifierOverruled: [{ path: 'src/a.ts' }], verifierOverruledAll: true,
+      filePatchHashes: { 'src/a.ts': 'same' }, totalDiffLines: 100, tier: 'standard', triggerKinds: [], specDigest: 'spec-1', lastFullReviewAt: '2026-10-10T12:00:00Z' } };
+  assert.equal(previousFromResult(approved, 'report').manualReview, false, '已放行的新结果不触发「等待人工复核」全量重审');
+  const legacy = { ...approved, reviewClean: false, outcome: 'merge-blocked', approval: { status: 'blocked', code: 'verifier-overruled' } };
+  assert.equal(previousFromResult(legacy, 'report').manualReview, true, '#248 之前没放行的旧结果仍触发全量重审');
+});
+
 test('最终报告:Verification 里逐 key 的核对结论(已修复/仍未修复/仍转 issue)原样保留,结论与阻断问题一致', () => {
   const lines = [
     '- key=aaaaaaaaaaaa · 已修复 · 证据:src/a.ts:12,新分支在异常路径完成回滚',

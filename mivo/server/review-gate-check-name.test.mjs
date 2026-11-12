@@ -62,7 +62,7 @@ if (args.length === 4 && args[0] === 'api' && args[1] === '--method' && args[2] 
   if (process.env.GB_BASE_REF === 'BADJSON') { process.stdout.write('<html>'); process.exit(0); }
   process.stdout.write(JSON.stringify({ base: { ref: process.env.GB_BASE_REF } })); process.exit(0);
 }
-if (args.length === 2 && args[0] === 'api' && args[1] === 'repos/o/r/pulls/7') { process.stdout.write(JSON.stringify({ head: { sha: ${JSON.stringify(SHA)} }, labels: [], updated_at: new Date(Date.now() - 1000).toISOString() })); process.exit(0); }
+if (args.length === 2 && args[0] === 'api' && args[1] === 'repos/o/r/pulls/7') { process.stdout.write(JSON.stringify({ head: { sha: process.env.GB_HEAD || ${JSON.stringify(SHA)} }, labels: [], updated_at: new Date(Date.now() - 1000).toISOString() })); process.exit(0); }
 process.stdout.write(JSON.stringify({ id: 5, updated_at: new Date().toISOString() }));
 `);
   chmodSync(join(bin, 'gh'), 0o755);
@@ -231,8 +231,8 @@ const OLD_REPORT = ['## Findings', '[P1] src/a.ts:2 — 旧问题', '## Rule cov
 const SUBMITTED = { ok: true, submitted: true, reviewId: 77, reviewUrl: 'https://github.com/o/r/pull/7#pullrequestreview-77', action: 'REQUEST_CHANGES', threadUrls: [], alreadySubmitted: false };
 
 // kind: 'submitted'(新发 Request Changes)| 'overruled'(核对员全部推翻)| 'reuse'(沿用上一轮已发的 review)。
-function findingsSetup({ baseRefName, kind, verification = null }) {
-  const env = setup({ baseRefName });
+function findingsSetup({ baseRefName, kind, verification = null, verified = false, scope = null }) {
+  const env = setup({ baseRefName, verified });
   const { root, work } = env;
   const statePath = join(work, 'state.json');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
@@ -256,6 +256,8 @@ function findingsSetup({ baseRefName, kind, verification = null }) {
     state.input.head = head; state.input.base = head;
     state.context.evidence = { ...state.context.evidence, head, base: head };
     if (verification) state.verification = verification;
+    if (scope) state.scope = scope;
+    env.head = head;
     writeFileSync(join(work, 'answer.json'), JSON.stringify({ report: REPORT.replace('无', '见下'), findings: [FINDING] }));
     writeFileSync(join(root, 'review-pr', 'scripts', 'request-changes-reviewed-pr.mjs'), `console.log(JSON.stringify(${JSON.stringify(SUBMITTED)}));\n`);
   }
@@ -298,27 +300,54 @@ test('#231 SC4:同一 head 沿用带问题的上一轮,不新发 review、不新
   } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
 
-test('检查名:publishOverruled(核对员全部推翻)按目标分支取名', () => {
-  // 第一轮不带核对结论,取出真实流水线给这条问题算的 uid;第二轮带上"推翻"的核对结论。
+// 核对员推翻这条 P1 的核对结论:第一轮不带核对结论,取出真实流水线给这条问题算的 uid。
+function overruledVerification() {
   const probe = findingsSetup({ baseRefName: 'main', kind: 'overruled' });
   let uid;
   try { uid = publish(probe, fakeGh(probe.work)).mivo.findings[0].uid; } finally { rmSync(probe.root, { recursive: true, force: true }); }
   assert.ok(uid, '拿到 finding 的 uid');
-  const verification = { mode: 'enforce', skipped: [], items: [{ key: 'k', uid, ok: true, applied: 'refuted', verdict: 'refuted', severity: 'P1',
+  return { mode: 'enforce', skipped: [], items: [{ key: 'k', uid, ok: true, applied: 'refuted', verdict: 'refuted', severity: 'P1',
     evidence: [{ path: 'src/a.ts', line: 1 }], note: '调用方已判空' }] };
+}
+
+// #248(用户 2026-11-12 定):卡点全部被核对员推翻/降级时和「没有 P0/P1/P2」一样放行。撤掉修复(恢复 publishOverruled)这条会红:
+// 旧路径 outcome=merge-blocked、不挂 review:merge-ready、发带 verifier-overruled 标记的评论。
+test('#248 SC1:核对员全部推翻 → 照常放行:已核验 Approve 时 check 写绿、挂 review:merge-ready,检查名按目标分支取', () => {
+  const verification = overruledVerification();
   for (const [base, expected] of BASES) {
-    const env = findingsSetup({ baseRefName: base, kind: 'overruled', verification });
+    const env = findingsSetup({ baseRefName: base, kind: 'overruled', verification, verified: true });
     const gh = fakeGh(env.work);
     try {
-      const result = publish(env, gh);
-      assert.equal(result.mivo.verifierOverruledAll, true, `${base}: 走到 publishOverruled`);
-      assert.equal(result.outcome, 'merge-blocked');
-      const writes = checkWrites(gh.calls());
+      const result = publish(env, gh, { GB_HEAD: env.head });
+      assert.equal(result.mivo.verifierOverruledAll, true, `${base}: 卡点全部被推翻`);
+      assert.equal(result.outcome, 'review-only', `${base}: ${JSON.stringify({ reason: result.reason, errors: result.errors, warnings: result.warnings })}`);
+      assert.equal(result.reviewClean, true);
+      assert.equal(result.approval.status, 'verified');
+      assert.notEqual(result.approval.code, 'verifier-overruled');
+      const calls = gh.calls();
+      assert.ok(calls.some((c) => c.args.includes('repos/o/r/issues/7/labels') && c.args.includes('labels[]=review:merge-ready')), `${base}: 挂了 review:merge-ready`);
+      assert.ok(!calls.some((c) => /mivo-review:verifier-overruled/.test(c.input)), `${base}: 不发「请人工看一眼」的评论标记`);
+      const writes = checkWrites(calls);
       assert.ok(writes.length >= 1, `${base} 应该写了检查`);
-      for (const write of writes) assert.equal(write.name, expected, `publishOverruled @ ${base}`);
+      for (const write of writes) assert.equal(write.name, expected, `放行 @ ${base}`);
       assert.equal(writes.at(-1).conclusion, 'success');
     } finally { rmSync(env.root, { recursive: true, force: true }); }
   }
+});
+
+test('#248 SC3:增量审查卡点全部被推翻、但没有本 head 的收口记录 → 不放行、不挂标签,走收口待补', () => {
+  const verification = overruledVerification();
+  const scope = { mode: 'incremental', reason: '增量审查', files: ['src/a.ts'], previousFindings: [] };
+  const env = findingsSetup({ baseRefName: 'main', kind: 'overruled', verification, verified: true, scope });
+  const gh = fakeGh(env.work);
+  try {
+    const result = publish(env, gh, { GB_HEAD: env.head });
+    assert.equal(result.outcome, 'error');
+    assert.equal(result.reviewClean, false);
+    assert.equal(result.mivo.finalFull.outcome, 'pending-budget');
+    assert.match(result.reason, /缺少本 head 的收口全量记录/);
+    assert.ok(!gh.calls().some((c) => c.args.includes('labels[]=review:merge-ready')), '没挂 review:merge-ready');
+  } finally { rmSync(env.root, { recursive: true, force: true }); }
 });
 
 // ── prepare 的建检查段:review.mjs 里的真实源码在 vm 里执行 ───────────────────────────────────────────────
@@ -401,5 +430,5 @@ test('检查名(变异守卫):把 prepare 的命名赋值改成固定 review-pr,
 test('检查名:所有检查写入都经 createCheckRun/completeCheckRun,源码里没有旧的固定检查名常量', () => {
   assert.equal(REVIEW_SOURCE.match(/\/check-runs/g).length, 3, '只有创建、完成(带 id / 不带 id)的路径拼接');
   assert.doesNotMatch(REVIEW_SOURCE, /CHECK_NAME/);
-  assert.equal(REVIEW_SOURCE.match(/completeCheckRun\(/g).length, 14, '13 个调用点 + 函数定义');
+  assert.equal(REVIEW_SOURCE.match(/completeCheckRun\(/g).length, 13, '12 个调用点 + 函数定义(#248 删掉了 publishOverruled 那一处)');
 });

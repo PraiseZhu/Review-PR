@@ -529,8 +529,9 @@ export function previousFromResult(result, report = '') {
     handoffCoverage: Array.isArray(result.mivo?.handoffCoverage) ? result.mivo.handoffCoverage : [],
     handoffCoverageMeta: isRecord(result.mivo?.handoffCoverageMeta) ? result.mivo.handoffCoverageMeta : {},
     handoffStats: isRecord(result.mivo?.handoffStats) ? result.mivo.handoffStats : null,
-    // 全部卡点被核对员推翻/降级、等人工复核。没有显式标记时按形状认:没有阻断问题、有被推翻/降级的问题、而且上一轮没有放行。
-    manualReview: result.mivo?.verifierOverruledAll === true || (result.reviewClean !== true && (result.mivo?.findings ?? []).length === 0
-      && (result.mivo?.deferred ?? []).length === 0 && (result.mivo?.verifierOverruled ?? []).length > 0),
+    // 全部卡点被核对员推翻/降级、等人工复核:只剩 #248 之前没放行的旧结果。现在这种情况照常放行(reviewClean=true),不再算等人工复核。
+    // 没有显式标记时按形状认:没有阻断问题、有被推翻/降级的问题、而且上一轮没有放行。
+    manualReview: result.reviewClean !== true && (result.mivo?.verifierOverruledAll === true || ((result.mivo?.findings ?? []).length === 0
+      && (result.mivo?.deferred ?? []).length === 0 && (result.mivo?.verifierOverruled ?? []).length > 0)),
   };
 }
