@@ -47,6 +47,8 @@
     "review-pr/scripts/notify-author-resolve.mjs",
     "review-pr/scripts/notify-round-targets.mjs",
     "review-pr/scripts/plan-review-round.mjs",
+    "review-pr/scripts/pr-diff.mjs",
+    "review-pr/scripts/pr-diff.test.mjs",
     "review-pr/scripts/pr-write-guard.mjs",
     "review-pr/scripts/pre-check.mjs",
     "review-pr/scripts/pre-merge-check.mjs",

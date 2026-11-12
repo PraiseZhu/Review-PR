@@ -105,7 +105,7 @@ for (const shallow of [false, true]) {
     });
     const before = snapshot();
     const diff = readPrDiff({ ...request, meta: fixture.meta }, { github: oversizedGithub, localGit: fixture.clientGit });
-    assert.equal(diff, runGit(fixture.source, ['diff', '--no-renames', fixture.ancestor, fixture.meta.headRefOid, '--']).stdout);
+    assert.equal(diff, runGit(fixture.source, ['diff', '--no-renames', '--full-index', fixture.ancestor, fixture.meta.headRefOid, '--']).stdout);
     assert.ok(diff.split('\n').length > 20_000);
     assert.match(diff, /\+last line\n$/);
     assert.doesNotMatch(diff, /base-only|later\.txt|user edit/);

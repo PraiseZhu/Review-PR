@@ -24,8 +24,10 @@ export function readPrDiff({ repo, pr, meta }, { github = gh, localGit = git } =
       }
       const mergeBase = runGit(['merge-base', '--all', baseRefOid, headRefOid]);
       if (!COMMIT_SHA.test(mergeBase)) throw new Error('本地 diff 无法确定唯一 merge-base');
+      // [MIVO-PATCH diff-full-index] `index` 行写完整 blob 哈希:短哈希长度随本地仓库对象数变(Mini 大仓 12 位、
+      // 服务器新建的部分克隆 8 位),同一 head/base 两边 diffHash 会不同,干净审查被收尾核对作废(Review-PR#250)。
       return localGit(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
-        '--no-relative', '--no-renames', '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short',
+        '--no-relative', '--no-renames', '--full-index', '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short',
         '--ignore-submodules=none', '--unified=3', '--output-indicator-new=+', '--output-indicator-old=-',
         '--output-indicator-context= ', mergeBase, headRefOid, '--'], { timeoutMs: 120_000,
         env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' } }).stdout;
