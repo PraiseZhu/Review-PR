@@ -243,15 +243,6 @@ function toOpenFence(text) {
   return open;
 }
 const toLinesBytes = (list) => list.reduce((sum, line) => sum + bytes(line) + 1, 0);
-/** 清单行按合计字节截断,截掉的写一行说明(改动文件极多、路径极长时兜底)。 */
-function toBoundedLines(list, maxBytes) {
-  const out = [];
-  for (const line of list) {
-    if (toLinesBytes([...out, line]) > maxBytes) break;
-    out.push(line);
-  }
-  return out.length < list.length ? [...out, `- …另有 ${list.length - out.length} 行没列出（改动文件太多）`] : out;
-}
 /** 段落里的顶层列表项(不含子项),去掉勾选框,压成一行。 */
 function toListItems(text) {
   const items = [];
@@ -286,11 +277,20 @@ function toScopeFileLines(files, limit) {
   }
   return out;
 }
-/** 改动文件 → 不超过 maxBytes 的范围清单行:超了就把行数上限减半、往上一层目录合并;顶层目录仍超才截掉并写明(只剩极端情况)。 */
+// 改动文件 → 不超过 limit 行、maxBytes 字节的范围清单行:超了就把行数上限减半、往上一层目录合并;
+// 合到顶层目录仍超(顶层目录或根目录文件太多)时,第一行写 `**/*` 兜住全部改动文件(matchesScope 认它为任意层的任意文件;单写 `**` 只匹配一层;
+// 放第一行,审查机截短长段落后也看得到),再照列放得下的。
 function toScopeFileLinesWithin(files, limit, maxBytes) {
   let out = toScopeFileLines(files, limit);
   for (let n = Math.floor(limit / 2); toLinesBytes(out) > maxBytes && n >= 1; n = Math.floor(n / 2)) out = toScopeFileLines(files, n);
-  return toBoundedLines(out, maxBytes);
+  if (out.length <= limit && toLinesBytes(out) <= maxBytes) return out;
+  const all = `- \`**/*\`：本 PR 改动的全部文件（共 ${files.length} 个，清单过长，下面只列出一部分）`;
+  const shown = [all];
+  for (const line of out) {
+    if (shown.length >= limit || toLinesBytes([...shown, line]) > maxBytes) break;
+    shown.push(line);
+  }
+  return shown;
 }
 // PR 作者写进第二行固定句,Mivo 的 Slack 通报(xindong/mivo-canvas-plugin#2205)从这里取作者 @:只收 GitHub 用户名字符,机器人写成 <name>[bot]。
 // gh 的 JSON 把 App 作者写成 app/<name>,REST 写成 <name>[bot];统一成后者(机器人不会被 @ 到别的同名用户)。
@@ -383,7 +383,7 @@ export function toAutoTaskIssue({ repo, pr, title = '', author = '', body = '', 
       '## 范围（可改）',
       '',
       ...(scope && !bare ? [embed(scope, AUTO_LIMITS.scopeChars), ''] : []),
-      `本 PR 改动的文件（前置审查按 diff 列出${fileLines.some((l) => l.includes('/`：本 PR 改动（')) ? `，共 ${fileList.length} 个，按目录合并` : ''}）：`,
+      `本 PR 改动的文件（前置审查按 diff 列出${fileLines.length < fileList.length ? `，共 ${fileList.length} 个，按目录合并` : ''}）：`,
       '',
       ...(fileList.length ? fileLines : ['- （没有读到改动文件）']),
       '',
