@@ -240,6 +240,40 @@ test('locateOnly:找到任务 issue 就停,不读依赖、总 issue 关系和总
   assert.deepEqual(gh.calls.map((c) => c[0]), ['closing', 'issue']);
 });
 
+test('SC2 质检来源 PR 的「任务 issue：」行按严格规则认:指向 PR 就按来源没有任务 issue 算,不改认它的别的写法;只因维护者确认 issue 落空才接着认', () => {
+  const pulls = (body) => ({ 2134: { title: 'fix: 来源', body } });
+  const miss = readWith({ prBody: 'QA: #2134' }, fakeGh({ issues: { 51: node(51) }, prs: [50], pulls: pulls('任务 issue：o/r#50\nRefs #51') }));
+  assert.deepEqual([miss.status, miss.ref], ['unlinked', null], '不选来源 PR 的 Refs #51');
+  assert.ok(miss.excluded.some((e) => e.ref === `${R}#50` && /质检来源 PR #2134 的「任务 issue：」行或 Closes 指向的不是 issue/.test(e.reason)), JSON.stringify(miss.excluded));
+  // 本 PR 自己有关联评论时,来源落空后照常认它
+  const auto = readWith({ prBody: 'QA: #2134', prComments: [botComment(AUTO_LINK_MARKER(50, 900))] }, fakeGh({ issues: { 51: node(51), 900: node(900) }, prs: [50], pulls: pulls('任务 issue：o/r#50\nRefs #51') }));
+  assert.deepEqual([auto.status, auto.ref, auto.via], ['read', `${R}#900`, 'auto']);
+  // 来源的「任务 issue：」行只指向维护者确认 issue → 接着认来源的别的写法
+  const confirmed = readWith({ prBody: 'QA: #2134' }, fakeGh({ issues: { 52: node(52, { title: '维护者确认 · PR #2134 x' }), 51: node(51) }, pulls: pulls('任务 issue：o/r#52\nRefs #51') }));
+  assert.deepEqual([confirmed.status, confirmed.ref, confirmed.via], ['read', `${R}#51`, 'qa-origin']);
+  // 来源的「任务 issue：」行指向 issue → 读它
+  const hit = readWith({ prBody: 'QA: #2134' }, fakeGh({ issues: { 53: node(53), 51: node(51) }, pulls: pulls('任务 issue：o/r#53\nRefs #51') }));
+  assert.deepEqual([hit.status, hit.ref, hit.via], ['read', `${R}#53`, 'qa-origin']);
+});
+
+test('SC4 前置审查只定位(locateOnly)与审查机对同一 PR 的结论一致,包括请求次数接近上限时', () => {
+  const confirm = (n) => node(n, { title: '维护者确认 · PR #50 x' });
+  const scenarios = [
+    // 复审给的场景:两行「任务 issue：」和一个别的写法都是维护者确认 issue、一个别的写法是 PR,再从来源 PR 的两个候选里找
+    { prBody: 'QA: #2134\n任务 issue：o/r#30\n任务 issue：o/r#31\nRefs #32\nRefs #33', gh: { issues: { 30: confirm(30), 31: confirm(31), 32: confirm(32), 60: node(60) }, prs: [33, 59], pulls: { 2134: { title: 'x', body: 'Refs #59\nissue #60' } } } },
+    { prBody: 'QA: #2134\n关联：#21\nRefs #23\nissue #24', gh: { issues: { 2130: node(2130) }, prs: [21, 23, 24], pulls: { 2134: { title: 'x', body: '任务 issue：o/r#2130' } } } },
+    { prBody: 'Refs #21\nRefs #22', gh: { issues: { 22: node(22) }, prs: [21] } },
+    { prBody: '任务 issue：o/r#21', gh: { prs: [21] } },
+    { prBody: '', prComments: [botComment(AUTO_LINK_MARKER(50, 901))], gh: {} },
+  ];
+  for (const { gh, ...over } of scenarios) {
+    const server = readWith(over, fakeGh(gh));
+    const mini = readWith({ ...over, locateOnly: true }, fakeGh(gh));
+    const pick = (m) => [m.status === 'partial' ? 'read' : m.status, m.ref, m.via];
+    assert.deepEqual(pick(mini), pick(server), over.prBody);
+  }
+});
+
 // ── SC3 按模板生成 ──
 const HEADINGS = ['## 目标', '## 范围', '## 不做', '## 依赖', '## 验收标准'];
 // 与 check-pr-issue.sh 同一套检查:五个二级标题都在行首;验收标准有 SC<n> 编号项。
@@ -340,6 +374,29 @@ test('SC3 自检认不出结构:先去掉代码块围栏重排,仍认不出只�
   assert.match(bare.body, /PR 正文的内容没能按模板整理进来，以 PR #9 为准。/);
   assert.match(c.sections.范围, /`src\/a\.ts`：本 PR 改动/);
   assert.deepEqual(c.scList.map((s) => [s.description, s.layer]), [['本 PR 的改动通过 CI', 'static']]);
+});
+
+test('SC3 路径很长、清单超过字节上限:继续往上一层目录合并,每个改动文件仍在范围里(复审回放:50 个约 470 字的路径)', () => {
+  const files = Array.from({ length: 50 }, (_, i) => `pkg${i % 5}/${'x'.repeat(440)}/sub${i % 10}/file-${i}.ts`);
+  const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files });
+  const c = toChildMaterial(out.body);
+  assert.equal(c.structure, 'parsed');
+  assert.match(out.body, /共 50 个，按目录合并/);
+  assert.doesNotMatch(out.body, /没列出（改动文件太多）/);
+  assert.deepEqual(toDerived({ child: c, files, pr: 9 }).scopeOutside, []);
+});
+
+test('SC3 验收描述:1000 字以内原样保留;超过的以「…」结尾并在「原因」写明;超过 40 条的写明没列出几条', () => {
+  const long = `检查 ${'长'.repeat(500)} MUST_KEEP_TAIL`;
+  const kept = toChildMaterial(toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: `### 自动验证\n\n- ${long}`, files: ['a.ts'] }).body);
+  assert.match(kept.scList[0].description, /MUST_KEEP_TAIL$/, '500 字的验收描述不截');
+  const huge = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: `### 自动验证\n\n- 检查 ${'长'.repeat(1200)} TAIL`, files: ['a.ts'] }).body;
+  const c = toChildMaterial(huge);
+  assert.match(c.scList[0].description, /…$/);
+  assert.match(huge, /有 1 条验收描述超过 1000 字，已截短（以「…」结尾），完整内容见 PR #9 正文。/);
+  const many = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: `### 自动验证\n\n${Array.from({ length: 45 }, (_, i) => `- 检查 ${i}`).join('\n')}`, files: ['a.ts'] }).body;
+  assert.equal(toChildMaterial(many).scList.length, 40);
+  assert.match(many, /另有 5 条验收项没列出，完整内容见 PR #9 正文。/);
 });
 
 test('SC3 超长 PR:改动文件超过 50 个时按目录合并,一个都不漏;整份正文不超过 60 KB', () => {
