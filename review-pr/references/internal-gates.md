@@ -81,7 +81,7 @@ review-pr(交互)与 review-pr-auto(批处理)共用本文件。
 
 `context.mjs` 通过 `pr-diff.mjs` 获取完整 diff：优先使用 GitHub 接口，仅在明确的
 diff 超限错误时，按本轮固定 head/base SHA 从 origin 拉取提交；浅克隆先补全历史，再在
-本地比较唯一 merge-base 与 head。不切分支、不改工作区、索引、已有 refs 或 FETCH_HEAD。
+本地比较唯一 merge-base 与 head（`--full-index`：`index` 行写完整 blob 哈希，Mini 与服务器两份克隆对象数不同也得到同一个 diffHash）。不切分支、不改工作区、索引、已有 refs 或 FETCH_HEAD。
 本地结果仍执行完整安全扫描、head/base 变化检查与 evidence 校验，不截断或跳过扫描；
 兜底失败保留 GitHub 与本地错误并停止，权限或网络等非超限错误不触发本地兜底。
 

@@ -461,8 +461,12 @@ export function validateReviewCompletion(result, item) {
     if (!result.reviewed || !result.enteredReview || result.outcome === 'findings') throw new Error(`PR #${item.pr} 的干净审查结论矛盾`);
     validateApprovalDisposition(result.approval, { head: item.head });
     if (!String(result.reportFile ?? '').trim()) throw new Error(`PR #${item.pr} 缺少落盘审查报告`);
-    if (item.evidence && ['head', 'base', 'baseRefName', 'diffHash'].some((k) => !item.evidence[k] || result.reviewEvidence?.[k] !== item.evidence[k])) {
-      throw new Error(`PR #${item.pr} 审查证据与计划的 head/base/diff 不一致`);
+    // [MIVO-PATCH diff-full-index] 失败消息写明哪几个字段不一致及计划/回传两边的值(都是 SHA、分支名或指纹,不含密钥)。
+    const mismatched = item.evidence ? ['head', 'base', 'baseRefName', 'diffHash']
+      .filter((k) => !item.evidence[k] || result.reviewEvidence?.[k] !== item.evidence[k]) : [];
+    if (mismatched.length) {
+      const detail = mismatched.map((k) => `${k}: 计划=${item.evidence[k] ?? '缺失'} 回传=${result.reviewEvidence?.[k] ?? '缺失'}`).join('；');
+      throw new Error(`PR #${item.pr} 审查证据与计划的 head/base/diff 不一致（${detail}）`);
     }
   } else if (result.merged || ['approval', 'approval-pending', 'review-only', 'merge-queued'].includes(result.outcome)) {
     throw new Error(`PR #${item.pr} 未完成干净审查却记录审批或合并结论`);

@@ -3158,3 +3158,86 @@ test('gate-bases: admit-candidates 的 --incomplete-only 不读默认分支;--au
   assert.ok(src.indexOf("args.includes('--authority-only')") < src.indexOf('fetchDefaultBranch({'));
   assert.ok(src.indexOf("args.includes('--incomplete-only')") < src.indexOf('fetchDefaultBranch({'));
 });
+
+// ── diff-full-index(PraiseZhu/Review-PR#250)──
+// 合并型同步 PR(main 同步进 integration/*)超出 GitHub 300 文件上限时两侧都走本地兜底 diff;
+// Mini 大仓与服务器新建的部分克隆短哈希长度不同(12 位 vs 8 位),干净审查被收尾核对误判证据不一致。
+const { readPrDiff } = await import('./pr-diff.mjs');
+const { createContextEvidence } = await import('./context-cache.mjs');
+const { validateReviewCompletion } = await import('./review-round.mjs');
+
+function fullIndexGit(cwd, args, options = {}) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, ...options });
+  assert.equal(r.status, 0, r.stderr || r.error?.message);
+  return r;
+}
+
+function syncMergeFixture(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'mivo-full-index-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const src = join(dir, 'src');
+  const remote = join(dir, 'remote.git');
+  mkdirSync(src);
+  const g = (args) => fullIndexGit(src, args).stdout.trim();
+  g(['init', '-q', '--initial-branch=main']);
+  g(['config', 'user.name', 'Fixture']); g(['config', 'user.email', 'fixture@example.invalid']); g(['config', 'commit.gpgsign', 'false']);
+  writeFileSync(join(src, 'shared.txt'), 'shared\n');
+  g(['add', '.']); g(['commit', '-q', '-m', 'root']);
+  g(['checkout', '-q', '-b', 'integration/3d']);
+  writeFileSync(join(src, 'integration.txt'), 'integration work\n');
+  g(['add', '.']); g(['commit', '-q', '-m', 'integration work']);
+  g(['checkout', '-q', 'main']);
+  for (let i = 0; i < 3; i++) { writeFileSync(join(src, `main-${i}.txt`), `main change ${i}\n`); g(['add', '.']); g(['commit', '-q', '-m', `main ${i}`]); }
+  writeFileSync(join(src, 'shared.txt'), 'shared\nchanged on main\n');
+  g(['add', '.']); g(['commit', '-q', '-m', 'main edits shared']);
+  g(['checkout', '-q', '-b', 'sync/main-into-3d', 'integration/3d']);
+  g(['merge', '-q', '--no-ff', '--no-edit', 'main']);
+  const head = g(['rev-parse', 'HEAD']);
+  const base = g(['rev-parse', 'integration/3d']);
+  assert.equal(g(['rev-list', '--parents', '-n', '1', head]).split(' ').length, 3, '夹具 head 必须是合并提交');
+  fullIndexGit(dir, ['clone', '-q', '--bare', src, remote]);
+  // 两个客户端模拟 Mini(大仓,短哈希 12 位)与服务器(新部分克隆,短哈希 8 位):用 core.abbrev 固定长度代替对象数差异。
+  const client = (name, abbrev) => {
+    const path = join(dir, name);
+    fullIndexGit(dir, ['clone', '-q', pathToFileURL(remote).href, path]);
+    fullIndexGit(path, ['config', 'core.abbrev', String(abbrev)]);
+    return (args, options) => fullIndexGit(path, args, options);
+  };
+  return { head, base, mini: client('mini', 12), server: client('server', 8) };
+}
+
+const tooLargeGithub = () => { throw new Error('HTTP 406: Sorry, the diff exceeded the maximum number of files (300).\nPullRequest.diff too_large'); };
+
+test('diff-full-index: 合并型同步 PR 的本地兜底 diff 与本地短哈希长度无关,index 行写完整哈希', (t) => {
+  const f = syncMergeFixture(t);
+  const req = { repo: 'xindong/mivo-canvas-plugin', pr: 2248, meta: { headRefOid: f.head, baseRefOid: f.base, baseRefName: 'integration/3d' } };
+  const mini = readPrDiff(req, { github: tooLargeGithub, localGit: f.mini });
+  const server = readPrDiff(req, { github: tooLargeGithub, localGit: f.server });
+  assert.match(mini, /^index [0-9a-f]{40}\.\.[0-9a-f]{40}/m);
+  assert.match(mini, /main-0\.txt/);
+  assert.equal(mini, server);
+});
+
+test('diff-full-index: 两侧证据一致时合并型同步 PR 的干净结论通过收尾核对;head/base 真变化仍作废并写明字段与两边值', (t) => {
+  const f = syncMergeFixture(t);
+  const meta = { headRefOid: f.head, baseRefOid: f.base, baseRefName: 'integration/3d' };
+  const req = { repo: 'xindong/mivo-canvas-plugin', pr: 2248, meta };
+  const files = [{ path: 'main-0.txt', additions: 1, deletions: 0 }];
+  const evidenceFrom = (localGit) => createContextEvidence({ repo: req.repo, pr: req.pr, meta, files,
+    diff: readPrDiff(req, { github: tooLargeGithub, localGit }) });
+  const planned = evidenceFrom(f.mini);
+  const returned = evidenceFrom(f.server);
+  const item = { pr: 2248, head: f.head, evidence: planned };
+  const cleanResult = (reviewEvidence) => ({ mode: 'review-only', outcome: 'review-only', reviewed: true, enteredReview: true, reviewClean: true,
+    reportFile: '/fixture/report.md', reviewEvidence,
+    approval: { status: 'verified', reviewId: 1, reviewer: 'fixture-maintainer', head: f.head, verifiedAt: new Date().toISOString() } });
+  const pick = ({ head, base, baseRefName, diffHash }) => ({ head, base, baseRefName, diffHash });
+  assert.doesNotThrow(() => validateReviewCompletion(cleanResult(pick(returned)), item));
+  const movedBase = 'f'.repeat(40);
+  assert.throws(() => validateReviewCompletion(cleanResult({ ...pick(returned), base: movedBase }), item),
+    (e) => e.message.includes('审查证据与计划的 head/base/diff 不一致') && e.message.includes(`base: 计划=${f.base} 回传=${movedBase}`)
+      && !e.message.includes('head: 计划'));
+  assert.throws(() => validateReviewCompletion(cleanResult({ ...pick(returned), head: 'e'.repeat(40), diffHash: 'd'.repeat(64) }), item),
+    (e) => e.message.includes(`head: 计划=${f.head}`) && e.message.includes(`diffHash: 计划=${planned.diffHash} 回传=${'d'.repeat(64)}`));
+  assert.throws(() => validateReviewCompletion(cleanResult(undefined), item), /baseRefName: 计划=integration\/3d 回传=缺失/);
+});
