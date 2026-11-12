@@ -192,7 +192,7 @@ export function isAutoTaskIssue({ title, body, author, authorType, prs = [], aut
 }
 
 // ── 按模板从 PR 生成自动任务 issue(#246 SC3)───────────────────────────────────
-const AUTO_LIMITS = { titleChars: 240, goalChars: 4000, scopeChars: 6000, notDoChars: 4000, files: 50, fileBytes: 20 * 1024, fileHardBytes: 40 * 1024, scItems: 40, scChars: 1000, scRawChars: 4000, bodyBytes: 60 * 1024 };
+const AUTO_LIMITS = { titleChars: 240, goalChars: 4000, scopeChars: 6000, notDoChars: 4000, fileBytes: 40 * 1024, scItems: 40, scChars: 1000, scRawChars: 4000, bodyBytes: 60 * 1024 };
 const EMPTY_ITEMS = new Set(['无', '暂无', '没有', 'n/a', 'na', '-', '—', '不涉及']);
 
 /** PR 正文 → [{level, title, text}](任意级标题;代码块里的标题不算;HTML 注释去掉)。 */
@@ -277,16 +277,18 @@ function toScopeFileLines(files, limit) {
   }
   return out;
 }
-// 改动文件 → 范围清单行。先求不超过 limit 行、maxBytes 字节:超了就把行数上限减半、往上一层目录合并;
-// 合到顶层目录仍超(顶层目录或根目录文件太多)时按顶层目录和根目录文件逐个列全(可以超过 limit 行);
-// 顶层清单仍超过 hardBytes(issue 正文放不下)返回 null,调用方不开自动 issue。不写放宽范围的通配路径:
-// 自动 issue 是开 issue 那一刻的改动快照,之后新加的文件要能被审查机算成超出范围(#246 第 6 轮复审)。
-function toScopeFileLinesWithin(files, limit, maxBytes, hardBytes) {
-  let out = toScopeFileLines(files, limit);
-  for (let n = Math.floor(limit / 2); toLinesBytes(out) > maxBytes && n >= 1; n = Math.floor(n / 2)) out = toScopeFileLines(files, n);
-  if (out.length <= limit && toLinesBytes(out) <= maxBytes) return out;
-  const top = toScopeFileLines(files, 1);
-  return toLinesBytes(top) <= hardBytes ? top : null;
+// 改动文件 → 范围清单行:逐个列出,是开 issue 那一刻的改动快照,之后新加的文件审查机算成超出范围。
+// 逐个列超过 maxBytes(issue 正文放不下)才按所在目录合并:行数上限逐次减半、往上一层目录合并,直到不超过 maxBytes;
+// 合并的目录里之后新加的文件也会算在范围内(调用方在正文写明)。合到顶层目录仍超过 maxBytes 返回 null,调用方不开自动 issue。
+// 不写放宽范围的通配路径(#246 第 6、7 轮复审)。
+function toScopeFileLinesWithin(files, maxBytes) {
+  const each = files.map((p) => `- \`${p}\`：本 PR 改动`);
+  if (toLinesBytes(each) <= maxBytes) return each;
+  for (let n = Math.floor(files.length / 2); n >= 1; n = Math.floor(n / 2)) {
+    const out = toScopeFileLines(files, n);
+    if (toLinesBytes(out) <= maxBytes) return out;
+  }
+  return null;
 }
 // PR 作者写进第二行固定句,Mivo 的 Slack 通报(xindong/mivo-canvas-plugin#2205)从这里取作者 @:只收 GitHub 用户名字符,机器人写成 <name>[bot]。
 // gh 的 JSON 把 App 作者写成 app/<name>,REST 写成 <name>[bot];统一成后者(机器人不会被 @ 到别的同名用户)。
@@ -353,8 +355,9 @@ export function toAutoTaskIssue({ repo, pr, title = '', author = '', body = '', 
   const fileList = [...new Set((files ?? []).map((p) => String(p).replace(/`/g, '').replace(/[\r\n]+/g, ' ')).filter(Boolean))];
   const scAll = [...auto.map((d) => ({ d, layer: 'unit' })), ...real.map((d) => ({ d, layer: 'cindy-mac' }))];
   const issueTitle = clip(`${AUTO_ISSUE_TITLE_PREFIX}${pr} ${String(title ?? '').replace(/\s+/g, ' ').trim()}`, AUTO_LIMITS.titleChars);
-  const fileLines = fileList.length ? toScopeFileLinesWithin(fileList, AUTO_LIMITS.files, AUTO_LIMITS.fileBytes, AUTO_LIMITS.fileHardBytes) : ['- （没有读到改动文件）'];
+  const fileLines = fileList.length ? toScopeFileLinesWithin(fileList, AUTO_LIMITS.fileBytes) : ['- （没有读到改动文件）'];
   if (!fileLines) return null;
+  const filesMerged = fileLines.some((l) => l.includes('/`：本 PR 改动（'));
   // k:各段上限的比例(1 是原样);safe:去掉代码块围栏;bare:只留改动文件清单和一条 CI 验收(前两种都认不出结构时兜底)。
   const render = (k, { safe = false, bare = false } = {}) => {
     const cap = (n) => Math.max(200, Math.floor(n * k));
@@ -381,7 +384,7 @@ export function toAutoTaskIssue({ repo, pr, title = '', author = '', body = '', 
       '## 范围（可改）',
       '',
       ...(scope && !bare ? [embed(scope, AUTO_LIMITS.scopeChars), ''] : []),
-      `本 PR 改动的文件（前置审查按 diff 列出${fileLines.length < fileList.length ? `，共 ${fileList.length} 个，按目录合并` : ''}）：`,
+      `本 PR 改动的文件（前置审查按 diff 列出${filesMerged ? `，共 ${fileList.length} 个，逐个列超过 40 KB，按目录合并；合并的目录里，开 issue 之后新加的文件也算在范围内` : ''}）：`,
       '',
       ...fileLines,
       '',

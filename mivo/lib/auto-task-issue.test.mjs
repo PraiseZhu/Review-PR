@@ -289,7 +289,7 @@ test('SC3 三份真实 PR:标题、首行标记、五段校验、改动文件、
     assert.ok(passesIssueCheck(out.body), `#${n} 通不过五段校验`);
     const c = toChildMaterial(out.body);
     assert.ok(c.sections.目标.startsWith(p.title), `#${n} 目标以 PR 标题开头`);
-    // 每个改动文件都落在范围里:审查机按同一份 issue 算越界文件,应为空(#2146 改了 52 个文件,按目录合并)
+    // 每个改动文件都落在范围里:审查机按同一份 issue 算越界文件,应为空(#2146 改了 52 个文件,逐个列出)
     assert.deepEqual(toDerived({ child: c, files: p.files, pr: n }).scopeOutside, [], `#${n} 有改动文件被算成越界`);
     assert.ok(c.scList.length >= 1 && c.scList.every((s) => ['unit', 'cindy-mac', 'static'].includes(s.layer)), `#${n} 验收标准 ${JSON.stringify(c.scList.map((s) => s.layer))}`);
     assert.ok(Buffer.byteLength(out.body) <= 60 * 1024);
@@ -376,18 +376,22 @@ test('SC3 自检认不出结构:先去掉代码块围栏重排,仍认不出只�
   assert.deepEqual(c.scList.map((s) => [s.description, s.layer]), [['本 PR 的改动通过 CI', 'static']]);
 });
 
-test('SC3 路径很长、清单超过字节上限:继续往上一层目录合并,每个改动文件仍在范围里(复审回放:50 个约 470 字的路径)', () => {
-  const files = Array.from({ length: 50 }, (_, i) => `pkg${i % 5}/${'x'.repeat(440)}/sub${i % 10}/file-${i}.ts`);
-  const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files });
+test('SC3 改动文件逐个列出;逐个列超过 40 KB 才按目录合并(先合较细的目录)并写明合并的目录里之后新加的文件也算在范围内', () => {
+  const few = Array.from({ length: 50 }, (_, i) => `pkg${i % 5}/${'x'.repeat(440)}/sub${i % 10}/file-${i}.ts`);
+  const listed = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files: few });
+  assert.equal(listed.body.split('\n').filter((l) => /^- `.*`：本 PR 改动$/.test(l)).length, 50, '24 KB 放得下:逐个列');
+  assert.doesNotMatch(listed.body, /按目录合并/);
+  const many = Array.from({ length: 100 }, (_, i) => `pkg${i % 5}/${'x'.repeat(440)}/sub${i % 10}/file-${i}.ts`);
+  const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files: many });
   const c = toChildMaterial(out.body);
   assert.equal(c.structure, 'parsed');
-  assert.match(out.body, /共 50 个，按目录合并/);
-  assert.match(out.body, /^- `pkg0\/x+\/sub0\/`：本 PR 改动（5 个文件）$/m, '先按较细的目录合并,不一下合到顶层');
+  assert.match(out.body, /共 100 个，逐个列超过 40 KB，按目录合并；合并的目录里，开 issue 之后新加的文件也算在范围内/);
+  assert.match(out.body, /^- `pkg0\/x+\/sub0\/`：本 PR 改动（10 个文件）$/m, '先按较细的目录合并,不一下合到顶层');
   assert.doesNotMatch(out.body, /`\*\*/, '不写通配路径');
-  assert.deepEqual(toDerived({ child: c, files, pr: 9 }).scopeOutside, []);
+  assert.deepEqual(toDerived({ child: c, files: many, pr: 9 }).scopeOutside, []);
 });
 
-test('SC3 合到顶层目录仍超过 50 行或 20 KB:按顶层目录和根目录文件逐个列全,不写放宽范围的通配;开 issue 后新加的文件仍算超出范围(复审回放)', () => {
+test('SC3 改动文件逐个列出:开 issue 后新加的文件(同目录或别的目录)都算超出范围,不写放宽范围的通配(复审回放:80 个长名顶层目录;60 个根目录文件)', () => {
   for (const files of [Array.from({ length: 80 }, (_, i) => `top${i}-${'y'.repeat(300)}/f.ts`), Array.from({ length: 60 }, (_, i) => `file-${i}.ts`)]) {
     const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files });
     const c = toChildMaterial(out.body);
@@ -396,7 +400,8 @@ test('SC3 合到顶层目录仍超过 50 行或 20 KB:按顶层目录和根目�
     assert.equal(out.body.split('\n').filter((l) => /^- `.*`：本 PR 改动/.test(l)).length, files.length, '逐个列全');
     assert.doesNotMatch(out.body, /`\*\*/, '不写通配路径');
     assert.deepEqual(toDerived({ child: c, files, pr: 9 }).scopeOutside, [], `${files.length} 个文件都在范围里`);
-    assert.deepEqual(toDerived({ child: c, files: [...files, 'unplanned/after-issue.ts'], pr: 9 }).scopeOutside, ['unplanned/after-issue.ts'], '开 issue 后新加的文件算超出范围');
+    const sameDir = files[0].includes('/') ? `${files[0].split('/')[0]}/unplanned-after-issue.ts` : 'unplanned-after-issue.ts';
+    assert.deepEqual(toDerived({ child: c, files: [...files, 'unplanned/after-issue.ts', sameDir], pr: 9 }).scopeOutside, ['unplanned/after-issue.ts', sameDir].sort(), '开 issue 后新加的文件算超出范围');
   }
 });
 
@@ -425,16 +430,17 @@ test('SC3 验收描述:1000 字以内原样保留;超过的以「…」结尾并
   assert.match(many, /另有 5 条验收项没列出，完整内容见 PR #9 正文。/);
 });
 
-test('SC3 超长 PR:改动文件超过 50 个时按目录合并,一个都不漏;整份正文不超过 60 KB', () => {
+test('SC3 超长 PR:120 个改动文件逐个列出,同目录之后新加的文件算超出范围;整份正文不超过 60 KB(复审回放:src/ 下新加文件)', () => {
   const files = Array.from({ length: 120 }, (_, i) => `src/m${i % 70}/file-${i}.ts`);
   const huge = `### 摘要\n\n${'很长的摘要。'.repeat(3000)}\n\n### 自动验证\n\n${Array.from({ length: 80 }, (_, i) => `- 检查 ${i} ${'x'.repeat(400)}`).join('\n')}`;
   const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: huge, files });
   assert.ok(Buffer.byteLength(out.body) <= 60 * 1024);
-  assert.match(out.body, /共 120 个，按目录合并/);
-  assert.ok((out.body.match(/：本 PR 改动/g) ?? []).length <= 50);
+  assert.equal(out.body.split('\n').filter((l) => /^- `src\/.*`：本 PR 改动$/.test(l)).length, 120);
   assert.ok(passesIssueCheck(out.body));
-  assert.deepEqual(toDerived({ child: toChildMaterial(out.body), files, pr: 9 }).scopeOutside, [], '合并后每个文件仍在范围里');
-  assert.ok(toChildMaterial(out.body).scList.length <= 40);
+  const c = toChildMaterial(out.body);
+  assert.deepEqual(toDerived({ child: c, files, pr: 9 }).scopeOutside, [], '每个文件都在范围里');
+  assert.deepEqual(toDerived({ child: c, files: [...files, 'src/unplanned/after-issue.ts'], pr: 9 }).scopeOutside, ['src/unplanned/after-issue.ts']);
+  assert.ok(c.scList.length <= 40);
 });
 
 // ── 开关 ──
