@@ -23,7 +23,8 @@ import { fetchCodeScanFacts, toCodeScanGate, toCodeScanWakeState, toCodeScanWake
 import { inBusinessWindow } from '../lib/health.mjs';
 import { loadHandoffMode, readHandoffFacts } from '../lib/handoff.mjs';
 import { toKeyStatus, toKeyStatusReason } from '../lib/key-status.mjs';
-import { previousFromResult } from '../lib/scope.mjs';
+import { previousFromResult, splitDiffByFile } from '../lib/scope.mjs';
+import { loadTaskIssueMode, toTaskIssueLinks, toAutoTaskIssue, isAutoTaskIssue, AUTO_LINK_MARKER } from '../lib/task-issue.mjs';
 import { toRetryDecision, toFailureRecord, toDispatchAttempt, toCompletedRunsRecord } from '../lib/retry.mjs';
 import { ADMIT_INTERVAL_MS, MAX_EXEC_MINUTES, MAX_QUEUE_MINUTES, toAdmissionDecision, toFreeSlots, toBusyPrs, canReleaseDeferredGate, toHeldWake, toOutcomeWake, toCiWake, toRunTiming, toDispatchFailure, findDispatchRun, toDispatchAutoResolution, toGateSkip, isGateSkipCandidate, RUNNER_READ_EVERY_MS, toOnlineRunners, toParallelLimit, toDraftMergeReadyPrs } from '../lib/admission.mjs';
 import { reconcileOrphanHold } from '../deploy/orphan-hold.mjs';
@@ -1229,7 +1230,99 @@ async function handleTask(ctx, task) {
     if (decision.retry) result.retry = true;
     return finishGate(ctx, task, result, toLiveBlockers(live));
   }
+  // 补任务 issue(#246):送审前给认不出任务 issue 的 PR 按模板开一个;任何失败只记 warning,不挡送审。
+  try { ensureTaskIssue(ctx, task, live, result); } catch (error) { result.warnings = [...(result.warnings ?? []), `自动任务 issue:异常 ${String(error?.message ?? error).slice(0, 200)}`]; }
   return (await holdForFuse(ctx, task, live, result)) ?? dispatchReview(ctx, task, { tier: decision.tier, action: 'review' }, result, toLiveBlockers(live));
+}
+
+// ── 补任务 issue(#246,总 issue PraiseZhu/Review-PR#132 D20)──────────────────────────
+// 判门送审前:PR 的「任务 issue：」行、文字的 Closes #N、前置审查发过的关联评论、别的关联写法(指向确实是 issue 的)、质检来源 PR 的同样线索,
+// 有任何一个就不开;否则按 task-issue/v1 模板从 PR 生成 issue(lib/task-issue.mjs toAutoTaskIssue),开在目标仓,再在 PR 下发一条带标记的关联评论。
+// 开 issue、发评论都走 App(vendor 分类器:issue create / pr comment 为 app-write);不改 PR 正文(App 写白名单外,只能走个人令牌)。
+// 带本 PR 标记的开着的自动 issue 已有时复用、只补评论。任何读取失败这一轮都不开,记 warning,下一次判门再试;dry-run 只记 dryRunActions。
+const AUTO_ISSUE_FEATURES_FILE = () => process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json');
+
+/** 同仓 #N 是 issue / PR / 不存在,读失败为 error(REST issues 端点,走 App)。 */
+function readIssueKind(repo, number) {
+  const r = ghRead(['api', `repos/${repo}/issues/${number}`], { allowFail: true, timeoutMs: 30_000 });
+  if (!r.ok) return /HTTP 404|Not Found/i.test(String(r.stderr ?? '')) ? { kind: 'missing' } : { kind: 'error', error: String(r.stderr ?? '').trim().slice(0, 120) };
+  try {
+    const data = JSON.parse(r.stdout);
+    return { kind: data?.pull_request ? 'pr' : 'issue', data };
+  } catch { return { kind: 'error', error: '返回不是 JSON' }; }
+}
+
+/** 别的关联写法:前 3 个里有一个确实是 issue 就算已关联;PR 号、不存在的跳过;读失败返回 error。 */
+function linkedByRefs(repo, refs) {
+  for (const ref of refs.slice(0, 3)) {
+    const k = readIssueKind(ref.repo ?? repo, ref.number);
+    if (k.kind === 'issue') return { linked: true };
+    if (k.kind === 'error') return { linked: false, error: `读 #${ref.number} 失败(${k.error})` };
+  }
+  return { linked: false };
+}
+
+function readPrComments(repo, number) {
+  const r = ghRead(['api', '--paginate', '--slurp', `repos/${repo}/issues/${number}/comments?per_page=100`], { allowFail: true, timeoutMs: 60_000 });
+  try { return r.ok ? JSON.parse(r.stdout).flat() : null; } catch { return null; }
+}
+
+function ensureTaskIssue(ctx, task, live, result) {
+  const features = loadTaskIssueMode(AUTO_ISSUE_FEATURES_FILE());
+  const cfg = features.autoIssue;
+  if (features.mode === 'off' || cfg.mode !== 'enforce') return;
+  if (cfg.exemptHeadPrefixes.some((prefix) => String(live.meta?.headRefName ?? '').startsWith(prefix))) return;
+  const repo = CONFIG.targetRepo;
+  const warn = (message) => {
+    result.warnings = [...(result.warnings ?? []), `自动任务 issue:${message}`];
+    log('auto-task-issue-skip', { pr: task.pr, head: task.head, reason: message.slice(0, 200) });
+  };
+  const links = toTaskIssueLinks({ body: live.meta?.body, title: live.meta?.title, comments: live.history?.comments ?? [], repo, pr: task.pr, autoAuthor: cfg.author });
+  if (links.lines.length || links.closingText.length || links.autoLink) return;
+  const alt = linkedByRefs(repo, links.alt);
+  if (alt.linked) return;
+  if (alt.error) return warn(`${alt.error},这一轮不开`);
+  if (links.qaOrigin) {
+    const origin = readIssueKind(repo, links.qaOrigin);
+    if (origin.kind === 'error') return warn(`读质检来源 PR #${links.qaOrigin} 失败(${origin.error}),这一轮不开`);
+    if (origin.kind === 'pr') {
+      const comments = readPrComments(repo, links.qaOrigin);
+      if (!Array.isArray(comments)) return warn(`读质检来源 PR #${links.qaOrigin} 的评论失败,这一轮不开`);
+      const o = toTaskIssueLinks({ body: origin.data.body, title: origin.data.title, comments, repo, pr: links.qaOrigin, autoAuthor: cfg.author });
+      if (o.lines.length || o.closingText.length || o.autoLink) return;
+      const oa = linkedByRefs(repo, o.alt);
+      if (oa.linked) return;
+      if (oa.error) return warn(`质检来源 PR #${links.qaOrigin}:${oa.error},这一轮不开`);
+    }
+  }
+  if (CONFIG.mode === 'dry-run') {
+    result.dryRunActions = [...(result.dryRunActions ?? []), 'auto-task-issue:create'];
+    return;
+  }
+  const listed = ghRead(['api', '--method', 'GET', '--paginate', '--slurp', `repos/${repo}/issues`, '-f', 'state=open', '-f', 'per_page=100', '-f', 'sort=created', '-f', 'direction=desc'],
+    { allowFail: true, timeoutMs: 60_000 });
+  let openIssues = null;
+  try { openIssues = listed.ok ? JSON.parse(listed.stdout).flat() : null; } catch { openIssues = null; }
+  if (!Array.isArray(openIssues)) return warn('读不到开着的 issue 列表,这一轮不开');
+  const existing = openIssues.find((i) => !i?.pull_request && isAutoTaskIssue({ title: i?.title, body: i?.body, author: i?.user?.login, authorType: i?.user?.type, prs: [task.pr], autoAuthor: cfg.author }));
+  let number = Number.isSafeInteger(existing?.number) ? existing.number : null;
+  assertNotFenced();
+  if (!number) {
+    let files = [];
+    try { files = Object.keys(splitDiffByFile(readFileSync(join(ctx.roundDir, `pr-${task.pr}-live.diff`), 'utf8'))); } catch { files = []; }
+    const issue = toAutoTaskIssue({ repo, pr: task.pr, title: live.meta?.title ?? '', author: live.meta?.author ?? '', body: live.meta?.body ?? '', files });
+    const bodyFile = join(ctx.roundDir, `auto-task-issue-pr-${task.pr}.md`);
+    writeText(bodyFile, issue.body);
+    const created = run('gh', ['issue', 'create', '-R', repo, '--title', issue.title, '--body-file', bodyFile], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+    number = Number(String(created.stdout ?? '').trim().match(/\/issues\/(\d+)\s*$/)?.[1]);
+    if (!created.ok || !Number.isSafeInteger(number)) return warn(`issue 没开出来(${String(created.stderr || created.stdout || '').trim().slice(0, 160)}),下一次判门再试`);
+  }
+  const commentFile = join(ctx.roundDir, `auto-task-issue-link-pr-${task.pr}.md`);
+  writeText(commentFile, `任务 issue：${repo}#${number}（前置审查按本 PR 自动开，内容取自 PR 正文。审查机按它判断这个 PR 该管什么；范围或「不做」不对请直接改这个 issue，或在 PR 正文写「任务 issue：」指向正确的 issue。）\n\n${AUTO_LINK_MARKER(task.pr, number)}\n`);
+  const commented = run('gh', ['pr', 'comment', String(task.pr), '-R', repo, '--body-file', commentFile], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
+  result.gate = { ...(result.gate ?? {}), taskIssue: { issue: number, created: !existing, linked: commented.ok } };
+  log('auto-task-issue', { pr: task.pr, head: task.head, issue: number, created: !existing, linked: commented.ok });
+  if (!commented.ok) warn(`#${number} 已开,关联评论没发出去(${String(commented.stderr || '').trim().slice(0, 160)}),下一次判门复用这个 issue 再发`);
 }
 
 // ── 审查熔断(#209)────────────────────────────────────────────────────────────

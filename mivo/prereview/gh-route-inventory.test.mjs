@@ -1044,7 +1044,8 @@ test('SC1:#1752 写侧翻转——白名单内的写判 app-write(四类权限�
   // 34 + 审查熔断(PraiseZhu/Review-PR#209)开 / 关「审查熔断」issue 的 2 个 issues 类写 + 飞书通知未送达时在熔断 issue 留言(#210)1 个
   // + 草稿 PR 摘 review:merge-ready(PraiseZhu/Review-PR#215)的 1 个 issues 类写
   // + 同一个熔断 issue 留言调用转给兜底人时留补名册说明(#219)的 1 个样本
-  assert.equal(appWrites.length, 39);
+  // + 自动任务 issue(PraiseZhu/Review-PR#246)开 issue 1 个(issues 类)、在 PR 下发关联评论 1 个(pull_requests 类)
+  assert.equal(appWrites.length, 41);
   // 权限类别只来自分类器:每个 app-write case 当场复算,四类都有覆盖
   const categories = new Set();
   for (const [e, c] of appWrites) {

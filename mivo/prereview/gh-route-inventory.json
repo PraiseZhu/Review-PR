@@ -205,6 +205,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -224,14 +225,15 @@
    ]
   },
   {
-   "id": "task-issue.ghFn.39992aa1c5",
+   "id": "task-issue.ghFn.dbc7fd3880",
    "source": {
     "file": "mivo/lib/task-issue.mjs",
     "callee": "ghFn",
-    "sig": "39992aa1c5",
+    "sig": "dbc7fd3880",
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -243,7 +245,7 @@
       "--input",
       "-"
      ],
-     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url state}}}}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":1696}}",
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login __typename} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url state}}}}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":1696}}",
      "expected": "app",
      "serverRoute": "app",
      "legacyServerRoute": "app"
@@ -259,6 +261,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -286,6 +289,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -310,6 +314,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -5282,6 +5287,191 @@
       "xindong/mivo-canvas-plugin",
       "--body",
       "飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册里，请补 xindong/org 名册。"
+     ],
+     "expected": "app-write"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.6b0e61ed83",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "6b0e61ed83",
+    "count": 1
+   },
+   "flows": [
+    "mini",
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "qa-origin-pr",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/issues/2134"
+     ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.8007492942",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "8007492942",
+    "count": 1
+   },
+   "flows": [
+    "mini",
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "qa-origin-pr-comments",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/issues/2134/comments?per_page=100"
+     ],
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "round.ghRead.ce2bfdfd57",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "ce2bfdfd57",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-ref-kind",
+     "argv": [
+      "api",
+      "repos/xindong/mivo-canvas-plugin/issues/1769"
+     ],
+     "expected": "app"
+    }
+   ]
+  },
+  {
+   "id": "round.ghRead.e3dc6e9485",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "e3dc6e9485",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-origin-comments",
+     "argv": [
+      "api",
+      "--paginate",
+      "--slurp",
+      "repos/xindong/mivo-canvas-plugin/issues/2134/comments?per_page=100"
+     ],
+     "expected": "app"
+    }
+   ]
+  },
+  {
+   "id": "round.ghRead.cc61afb4d1",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "cc61afb4d1",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-open-issues",
+     "argv": [
+      "api",
+      "--method",
+      "GET",
+      "--paginate",
+      "--slurp",
+      "repos/xindong/mivo-canvas-plugin/issues",
+      "-f",
+      "state=open",
+      "-f",
+      "per_page=100",
+      "-f",
+      "sort=created",
+      "-f",
+      "direction=desc"
+     ],
+     "expected": "app"
+    }
+   ]
+  },
+  {
+   "id": "round.run_gh.ce27cd120e",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "ce27cd120e",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-create",
+     "argv": [
+      "issue",
+      "create",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--title",
+      "任务 issue · PR #2146 feat(3d): 多视图预设",
+      "--body-file",
+      "/tmp/auto-task-issue-pr-2146.md"
+     ],
+     "expected": "app-write"
+    }
+   ]
+  },
+  {
+   "id": "round.run_gh.518ea3ce36",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "518ea3ce36",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-link-comment",
+     "argv": [
+      "pr",
+      "comment",
+      "2146",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--body-file",
+      "/tmp/auto-task-issue-link-pr-2146.md"
      ],
      "expected": "app-write"
     }

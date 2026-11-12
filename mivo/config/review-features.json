@@ -24,7 +24,12 @@
     "mode": "enforce",
     "automation": ["praiseautomation", "github-actions"],
     "alwaysInScope": ["docs/pr/<pr>/"],
-    "stageHeadPrefixes": ["integration/", "sync/main-into-"]
+    "stageHeadPrefixes": ["integration/", "sync/main-into-"],
+    "autoIssue": {
+      "mode": "enforce",
+      "author": "praisebuild[bot]",
+      "exemptHeadPrefixes": ["chore/changelog-"]
+    }
   },
   "focus": {
     "ciCovered": [
