@@ -450,9 +450,8 @@ export function finalizeReport({ report, findings, deferred = [], deferralsRejec
   if (late.length) conclusion += `另有 ${late.length} 条后来发现的 P2（所在文件上一轮已审、本轮没改），不阻断本 PR。`;
   if (beyondTask.length) conclusion += `另有 ${beyondTask.length} 条任务范围外的 P1/P2（不在计划方任务 issue 划定的范围内），不阻断本 PR。`;
   if (adjudicatedKept.length) conclusion += `另有 ${adjudicatedKept.length} 条 P1/P2 经盯梢裁决席判定不成立或够不上必修，服务器已核验采信，不阻断。`;
-  // 核对员推翻/降级的 P1/P2:全部卡点都被推翻/降级时明确提示人工再看一眼(服务器不 Approve,只发评论)。
-  if (overruled && !findings.length) conclusion += `核对员推翻/降级了全部卡点（${overruled} 条），请人工看一眼再合。`;
-  else if (overruled) conclusion += `另有 ${overruled} 条 P1/P2 被核对员推翻/降级，不阻断。`;
+  // 核对员推翻/降级的 P1/P2 不阻断;全部卡点都被推翻/降级时也照常放行(PraiseZhu/Review-PR#248),两节明细照常列出。
+  if (overruled) conclusion += `另有 ${overruled} 条 P1/P2 被核对员推翻/降级，不阻断。`;
   let lines = replaceFindingsSection(String(report).trim().split('\n'), findings);
   if (handoff?.review?.status === 'parsed') lines = applyHandoffSection(lines, renderHandoffCoverageSection(handoff));
   const overallIndex = lines.findIndex((line) => /^## Overall\s*$/.test(line));

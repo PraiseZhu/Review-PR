@@ -147,13 +147,14 @@ test('applyVerification:按单条 finding 的 uid 应用;推翻/降级的 P1 移
   assert.deepEqual(applyVerification({ findings, verification: null }).findings, findings);
 });
 
-test('报告:核对员推翻/降级各单列一节(公开标题与证据/理由);全部卡点被推翻/降级时提示人工看一眼', () => {
+test('报告:核对员推翻/降级各单列一节(公开标题与证据/理由);#248 SC2 全部卡点被推翻/降级时照常写不阻断,不再请人工看一眼', () => {
   const REPORT = ['## Findings', '无', '## Rule coverage', 'AGENTS.md', '## Verification', '未执行', '## Overall', 'changes-requested —— 2 条 P0/P1/P2/P2'].join('\n');
   const args = { report: REPORT, pr: 1, url: 'https://github.com/o/r/pull/1', head: 'a'.repeat(40), base: 'b'.repeat(40), tier: 'standard', scope: { mode: 'full', reason: '首次' } };
   const refuted = [{ severity: 'P1', title: '空指针', path: 'src/a.ts', line: 2, evidence: [{ path: 'src/b.ts', line: 9 }], note: '调用方已判空' }];
   const downgraded = [{ severity: 'P1', title: '提示文案', path: 'src/c.ts', line: null, note: '只影响文案' }];
   const all = finalizeReport({ ...args, findings: [], verifierRefuted: refuted, verifierDowngraded: downgraded });
-  assert.match(all, /## Overall\npass —— 没有阻断的 P0\/P1\/P2。核对员推翻\/降级了全部卡点（2 条），请人工看一眼再合。/);
+  assert.match(all, /## Overall\npass —— 没有阻断的 P0\/P1\/P2。另有 2 条 P1\/P2 被核对员推翻\/降级，不阻断。/);
+  assert.ok(!all.includes('请人工看一眼'), '全部被推翻/降级也不再请人工看一眼');
   assert.ok(all.includes(`${VERIFIER_REFUTED_SECTION}\n\n- \`src/a.ts:2\` · [P1] 空指针 · 推翻证据：\`src/b.ts:9\` · 依据：调用方已判空`));
   assert.ok(all.includes(`${VERIFIER_DOWNGRADED_SECTION}\n\n- \`src/c.ts\` · [P1] 提示文案 · 降级理由：只影响文案`));
   assert.ok(all.indexOf(VERIFIER_REFUTED_SECTION) < all.indexOf('## Rule coverage'));
@@ -347,25 +348,20 @@ test('enforce:核对期间磁盘上没有主审答卷和日志;核对完才写 a
   assert.ok(r.answerOnDisk?.includes(SENTINEL), '核对完之后 answer.json 才落盘(也证明哨兵扫描是有效的)');
 });
 
-test('enforce:全部 P1 被推翻/降级 → 不卡、不开 thread、不 Approve;只发 COMMENT,check 为绿,报告写明', () => {
-  const r = runCase({ seq: [REFUTED, DOWNGRADED] });
+// #248(用户 2026-11-12 定):卡点全部被推翻/降级时和「没有 P0/P1/P2」一样放行。这里用 dry-run 看结论走的是放行路径;
+// live 下 Approve、check 写绿、挂 review:merge-ready 由 review-gate-check-name.test.mjs 用 finish 替身验证。
+test('enforce:全部 P1 被推翻/降级 → 不卡、不开 thread,按审查通过放行(#248),报告写明推翻/降级明细', () => {
+  const r = runCase({ seq: [REFUTED, DOWNGRADED], mode: 'dry-run' });
   assert.equal(r.comments, null, '不开讨论串');
-  assert.equal(r.result.outcome, 'merge-blocked');
-  assert.equal(r.result.reviewClean, false, '同一 head 再来不会被沿用成通过');
-  assert.equal(r.result.approval.code, 'verifier-overruled');
-  assert.match(r.result.reason, /全部被核对员推翻\/降级,不 Approve/);
-  assert.equal(r.finishFile, false, '没有走 Approve 的 finish 脚本');
-  const review = r.gh.find((c) => c.args.includes('repos/o/r/pulls/7/reviews') && c.args.includes('POST'));
-  const body = JSON.parse(review.input);
-  assert.equal(body.event, 'COMMENT');
-  assert.match(body.body, /核对员全部推翻或降级/);
-  assert.match(body.body, /<!-- mivo-review:verifier-overruled head=[0-9a-f]{40} -->$/);
-  assert.ok(!r.gh.some((c) => /APPROVE/.test(c.input)), '没有 Approve');
-  assert.ok(!r.gh.some((c) => c.args.includes('labels[]=review:merge-ready')), '不挂 merge-ready');
-  const check = JSON.parse(r.gh.find((c) => c.args.includes('repos/o/r/check-runs/99')).input);
-  assert.equal(check.conclusion, 'success');
+  assert.equal(r.result.outcome, 'approval', '走 publishClean 的放行结论');
+  assert.match(r.result.reason, /^审查通过,没有 P0\/P1\/P2/);
+  assert.equal(r.result.reviewClean, true, '算审查通过');
+  assert.notEqual(r.result.approval.code, 'verifier-overruled');
+  assert.equal(r.result.mivo.verifierOverruledAll, true, '全部被推翻/降级的事实照常记下');
+  assert.ok(!r.gh.some((c) => /mivo-review:verifier-overruled/.test(c.input)), '不再发「请人工看一眼」的评论标记');
   assert.ok(r.report.includes('## 核对员认为不成立（不阻断本 PR）') && r.report.includes('## 核对员降级（不阻断本 PR）'));
-  assert.match(r.report, /核对员推翻\/降级了全部卡点（2 条），请人工看一眼再合/);
+  assert.match(r.report, /另有 2 条 P1\/P2 被核对员推翻\/降级，不阻断。/);
+  assert.ok(!r.report.includes('请人工看一眼'));
   assert.ok(r.report.includes('推翻证据：`src/a.ts:1`') && r.report.includes('降级理由：只影响提示文案'));
   assert.equal(r.result.mivo.verifierOverruled.length, 2);
   assert.deepEqual(r.result.mivo.findings, []);
@@ -509,8 +505,9 @@ test('核对任务书带上全部位置(instances),并要求全部位置都不�
   assert.ok(!buildVerifyPrompt({ finding: { severity: 'P1', title: 't', path: 'a.ts' }, workdir: '/w' }).includes('同类位置：'), '没有 instances 时不写这一行');
 });
 
-test('全部卡点被推翻/降级的状态写进结果包(verifierOverruledAll),供下一轮保留', () => {
-  const r = runCase({ seq: [REFUTED, DOWNGRADED] });
+test('全部卡点被推翻/降级的状态写进结果包(verifierOverruledAll),作记录', () => {
+  // #248 后这种情况走放行;live 会调真实 finish 脚本,这里只看结果包字段,用 dry-run。
+  const r = runCase({ seq: [REFUTED, DOWNGRADED], mode: 'dry-run' });
   assert.equal(r.result.mivo.verifierOverruledAll, true);
   const partial = runCase({ seq: [REFUTED, CONFIRMED], mode: 'dry-run' });
   assert.equal(partial.result.mivo.verifierOverruledAll, false);
