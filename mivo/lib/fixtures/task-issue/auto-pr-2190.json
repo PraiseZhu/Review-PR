@@ -1,0 +1,18 @@
+{
+ "pr": 2190,
+ "title": "perf: PSD 导出库按需加载，首屏减少约28万字节",
+ "author": "zhongxingtian-ai",
+ "body": "贡献流程见 [CONTRIBUTING.md](https://github.com/xindong/mivo-canvas-plugin/blob/main/CONTRIBUTING.md)。\n\n## 这次改了什么\n\n### 摘要\n\nPSD编码器原来被选区/菜单和图片编辑动作静态引用，所有用户打开面板都会加载ag-psd与pako。这次把图族/跳过规则拆成轻量模块，真正PSD编码器仅在用户点导出、保存框已处理后await import。唯一可见差异是第一次PSD导出多等一次模块加载；层序、几何、名称、跳过规则、文件名、编码参数和原保存outcome保持。\n\n同环境CI参数构建，首屏JS从3,010,258降到2,728,318字节，减少281,940字节（约9.37%），文件数37→37。ag-psd/pako都在非首屏writer chunk；未发现其它pako入口。用既有守卫--update-baseline把main基线3,013,247下调到实测2,728,318，slackBytes仍8192，未使用--allow-raise。\n\nrebase 后基线为 main@8634dc55ad8d044e0b8a2fe75f8a9e842ec857d9。main #2186新增保存重试保护，使改前与改后各比原8e061c87候选增加5字节；节省量仍281,940。候选bytes从2,728,313同步到2,728,318用了授权的--allow-raise，但相对main原基线3,013,247仍净下调284,929，slackBytes保持8192。\n\n### 变更类型\n\n- [ ] 新模型或新能力\n- [ ] 功能改进\n- [ ] 缺陷修复\n- [x] 重构或性能优化\n- [x] 文档、测试或工程维护\n- [ ] 其他：\n\n### 范围\n\n- 关联 Issue / 需求：main首屏PSD按需加载；遵循#1364首屏性能约定。\n- 本 PR 包含：轻量选区模块、按需编码器、固定加载失败和可重试路径、真实构建模块图回归、基线下调。\n- 明确不包含：Markdown、PNG/PDF导出、四语文案、manifest/version、依赖升级、ci.yml/守卫脚本/slackBytes。\n- 用户可见变化：打开面板不提前加载PSD库；第一次导出多一次等待，失败仍提示且下次可重试。\n- 是否影响已有调用：无；原exportImageNodesAsPsd、类型/轻量函数re-export和hook接口保持，useImageEditActions调用方不改。\n\n### 效果展示\n\n不涉及界面布局或样式；可见差异仅首次PSD导出的模块等待。没有Cindy实机截图，本地模块图/编码与时序证据不冒充实机。\n\n## 怎么验证的\n\n### 自动验证\n\n```text\nnpx tsc -b：通过\nnpm run lint：通过（只有既有warning）\nPSD相关13文件：通过，包含真实ag-psd编码/解码、选区/跳过/层序、保存框/加载失败/重试及真实Vite生产模块图\n全仓契约：bug-doctor、lifeline、agentToolBaselineCoverage共3文件57项通过\nverify:logging / verify:i18n / check:cycles / structure-guard / loop-policy：通过\nbefore/after CI同款build.sh + first-screen-size：3010258/2728318字节，均37个首屏JS\n撤拆分反证：恢复原静态导入后模块图回归变红；恢复候选后通过\n```\n\n当前 head 9f28c53be7e72cd97420140e4caffa08e2c4d2f5 的 [CI 43049678896](https://github.com/xindong/mivo-canvas-plugin/actions/runs/43049678896) 已全绿；canvas real browser 成功，用时16分13秒；cindyplugin build的首屏实测2,728,318字节、37文件（基线2,728,318+余量8192），与rebase后本地复测一致。\n\n### 实际任务验证\n\n- 验证的模型 / 能力：PSD导出，不涉及生成模型或付费请求。\n- 操作步骤：合成保存接口控制首次模块等待与失败后重试；现有真实ag-psd内存编码/解码；WSL ext4 Node26.13.0按CI参数构建并核对模块图。\n- 实际结果：保存框在等待前调用；失败只记code=PSD_MODULE_LOAD_FAILED、不commit/不写空文件，第二次可成功进入原写入路径；selection/命名/几何/绘制及canvas初始化函数体保持，原导出流程只多picker后的await。\n\n### 未执行的验证\n\n当前head云端CI已全绿；未运行真实Cindy Windows WebView和系统保存框；未启动Cindy、读取用户素材或作品库、安装/发布插件。正式交接已迁入docs/pr/2190/，仅更新已批准的号码/路径/首屏数字和阶段描述；最终head CI已通过，现已Ready，等待自动服务器审查。\n\n## 风险\n\n### Windows 平台证据\n\n```mivo-platform-evidence\n{\n  \"schemaVersion\": 1,\n  \"risks\": [\"gpu\", \"io\"],\n  \"windowsStatus\": \"not-tested\",\n  \"environment\": \"DESKTOP-C16LL23 Windows源码单测；WSL ext4 Node26.13.0 CI参数构建；非Cindy WebView实机\",\n  \"evidence\": [],\n  \"fallback\": \"加载失败沿既有导出失败路径提示、不写空文件；下一次重新调用模块加载。保存框仍在新await之前取得；回归时revert本PR。\",\n  \"reason\": \"未运行真实Cindy Windows WebView和系统保存框，合成接口和构建模块图不作为实机认证。\"\n}\n```\n\n### 需要特别留意\n\n- [ ] 无已知风险\n- [ ] 生成结果或模型行为发生变化\n- [ ] 可能产生额外任务或费用\n- [ ] 影响已有参数、默认值或调用方\n- [ ] 影响任务提交、轮询或失败重试\n- [ ] 影响素材、产物、下载或数据留存\n- [ ] 涉及用户数据、凭证或第三方服务\n- [x] 其他：首次模块等待必须晚于保存框取得；不得静态重新引入PSD库。\n\n### 影响与回滚\n\n- 可能影响：模块加载错误与首次导出延迟。既有文件格式、图层及保存/中转副本协议不变。\n- 回滚 / 降级方式：revert拆分与基线下调，无存档迁移；恢复原较大首屏，不修改已有用户文件。\n\n### 提交前检查\n\n- [x] 已完整核对本次diff、构建模块图和撤拆分反证\n- [x] 已说明首次导出的可见等待及实际验证边界\n- [x] 未提交凭证、用户素材或原始敏感日志\n- [x] 已生成并提交docs/pr/2190正式交接，handoff检查0提醒；云端以最终head检查为准\n- [x] 未新增付费调用或更改生成接口（不涉及）\n\n",
+ "files": [
+  "docs/pr/2190/qa.md",
+  "docs/pr/2190/review.md",
+  "scripts/ci/first-screen-size.baseline.json",
+  "scripts/fixtures/psd-export-lazy.test.mjs",
+  "src/canvas/actions/canvasActionEmitters.ts",
+  "src/lib/imageNodePsd.save.test.ts",
+  "src/lib/imageNodePsd.ts",
+  "src/lib/imageNodePsdSelection.ts",
+  "src/lib/imageNodePsdWriter.ts",
+  "src/lib/imageNodePsdWriterLoader.ts"
+ ]
+}

@@ -205,6 +205,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -224,14 +225,15 @@
    ]
   },
   {
-   "id": "task-issue.ghFn.39992aa1c5",
+   "id": "task-issue.ghFn.ccf83e2b6c",
    "source": {
     "file": "mivo/lib/task-issue.mjs",
     "callee": "ghFn",
-    "sig": "39992aa1c5",
+    "sig": "ccf83e2b6c",
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -243,7 +245,63 @@
       "--input",
       "-"
      ],
-     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url state}}}}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":1696}}",
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login __typename} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url state}}}}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":1696}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.fc5feb6481",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "fc5feb6481",
+    "count": 1
+   },
+   "flows": [
+    "mini",
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "qa-origin-pr-with-comments",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){__typename ... on PullRequest{number title body comments(last:100){nodes{author{login __typename} body}}}}}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"number\":2134}}",
+     "expected": "app",
+     "serverRoute": "app",
+     "legacyServerRoute": "app"
+    }
+   ]
+  },
+  {
+   "id": "task-issue.ghFn.0350cd4281",
+   "source": {
+    "file": "mivo/lib/task-issue.mjs",
+    "callee": "ghFn",
+    "sig": "0350cd4281",
+    "count": 1
+   },
+   "flows": [
+    "mini",
+    "server"
+   ],
+   "cases": [
+    {
+     "name": "candidates-are-issues",
+     "argv": [
+      "api",
+      "graphql",
+      "--input",
+      "-"
+     ],
+     "stdin": "{\"query\":\"query($owner:String!,$name:String!,$n0:Int!,$n1:Int!,$n2:Int!,$n3:Int!){repository(owner:$owner,name:$name){p0:issueOrPullRequest(number:$n0){...P} p1:issueOrPullRequest(number:$n1){...P} p2:issueOrPullRequest(number:$n2){...P} p3:issueOrPullRequest(number:$n3){...P}}} fragment P on IssueOrPullRequest{__typename ... on Issue{number title}}\",\"variables\":{\"owner\":\"xindong\",\"name\":\"mivo-canvas-plugin\",\"n0\":2130,\"n1\":2134,\"n2\":1769,\"n3\":2130}}",
      "expected": "app",
      "serverRoute": "app",
      "legacyServerRoute": "app"
@@ -259,6 +317,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -286,6 +345,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -310,6 +370,7 @@
     "count": 1
    },
    "flows": [
+    "mini",
     "server"
    ],
    "cases": [
@@ -5282,6 +5343,111 @@
       "xindong/mivo-canvas-plugin",
       "--body",
       "飞书通知已转给 @PraiseZhu：作者 @jackiezxt 不在名册里，请补 xindong/org 名册。"
+     ],
+     "expected": "app-write"
+    }
+   ]
+  },
+  {
+   "id": "round.ghRead.cc61afb4d1",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "cc61afb4d1",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-open-issues",
+     "argv": [
+      "api",
+      "--method",
+      "GET",
+      "--paginate",
+      "--slurp",
+      "repos/xindong/mivo-canvas-plugin/issues",
+      "-f",
+      "state=open",
+      "-f",
+      "per_page=100",
+      "-f",
+      "sort=created",
+      "-f",
+      "direction=desc"
+     ],
+     "expected": "app"
+    }
+   ]
+  },
+  {
+   "id": "round.ghRead.aaf1ec2a4d",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "ghRead",
+    "sig": "aaf1ec2a4d",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [],
+   "forwarder": {
+    "note": "参数由调用方传入(补任务 issue 时交给 lib/task-issue.mjs readTaskIssue 的 ghFn),各调用点的具体 argv 在 task-issue.mjs 登记"
+   }
+  },
+  {
+   "id": "round.run_gh.20f02e75a2",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "20f02e75a2",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-create",
+     "argv": [
+      "issue",
+      "create",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--title",
+      "任务 issue · PR #2146 feat(3d): 多视图预设",
+      "--body-file",
+      "/tmp/auto-task-issue-pr-2146.md"
+     ],
+     "expected": "app-write"
+    }
+   ]
+  },
+  {
+   "id": "round.run_gh.518ea3ce36",
+   "source": {
+    "file": "mivo/prereview/round.mjs",
+    "callee": "run:gh",
+    "sig": "518ea3ce36",
+    "count": 1
+   },
+   "flows": [
+    "mini"
+   ],
+   "cases": [
+    {
+     "name": "auto-task-issue-link-comment",
+     "argv": [
+      "pr",
+      "comment",
+      "2146",
+      "-R",
+      "xindong/mivo-canvas-plugin",
+      "--body-file",
+      "/tmp/auto-task-issue-link-pr-2146.md"
      ],
      "expected": "app-write"
     }

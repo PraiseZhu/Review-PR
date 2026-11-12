@@ -218,9 +218,9 @@ async function prepare() {
     }
     // 4b. 任务 issue(#133):只读、只记,不进任务书和结论;GitHub 读取只在这里(有令牌),codex 阶段只有 task-issue.json。
     if (taskIssueMode.mode !== 'off') {
-      const { material, summary } = collectTaskIssue({ repo: input.targetRepo, pr: input.pr, prBody: ctx.meta?.body, prCreatedAt: ctx.meta?.createdAt,
+      const { material, summary } = collectTaskIssue({ repo: input.targetRepo, pr: input.pr, prBody: ctx.meta?.body, prTitle: ctx.meta?.title ?? '', prComments: ctx.history?.comments ?? [], prCreatedAt: ctx.meta?.createdAt,
         baseRefName: ctx.meta?.baseRefName, headRefName: ctx.meta?.headRefName, files: Object.keys(diffFiles), maintainers: ctx.signoff?.maintainers ?? [],
-        automation: taskIssueMode.automation, alwaysInScope: taskIssueMode.alwaysInScope, stageHeadPrefixes: taskIssueMode.stageHeadPrefixes, mode: taskIssueMode.mode, ghFn: gh });
+        automation: taskIssueMode.automation, alwaysInScope: taskIssueMode.alwaysInScope, stageHeadPrefixes: taskIssueMode.stageHeadPrefixes, autoAuthor: taskIssueMode.autoIssue.author, mode: taskIssueMode.mode, ghFn: gh });
       for (const w of [...material.warnings, ...material.gaps].slice(0, 10)) state.warnings.push(`任务 issue:${w}`);
       const file = join(INPUT_DIR, TASK_ISSUE_FILE);
       writeJson(file, material);
