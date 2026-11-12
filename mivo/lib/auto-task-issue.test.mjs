@@ -78,25 +78,46 @@ test('SC5 自动任务 issue:机器人作者 + 首行标记 + 标题前缀三项
 const CHILD = '> 子 issue\n\n## 目标\n\n做 x。\n\n## 范围（可改）\n\n- `src/x.ts`：改\n\n## 不做\n\n- 不改 y。\n\n## 依赖\n\n无\n\n## 验收标准\n\n- [ ] SC1 x 成立。验证：unit\n';
 const node = (number, over = {}) => ({ number, title: `[子] 任务 ${number}`, url: `https://github.com/${R}/issues/${number}`, body: CHILD, createdAt: '2026-11-01T00:00:00Z',
   author: { login: 'PraiseZhu', __typename: 'User' }, userContentEdits: { nodes: [] }, comments: { nodes: [] }, timelineItems: { totalCount: 0, nodes: [] }, ...over });
-function fakeGh({ issues = {}, rest = {}, failIssue = [] } = {}) {
+// issues:GraphQL 形状的 issue 节点;prs:是 PR 的编号;pulls:质检来源 PR {title, body, comments};parents:子 issue 号 → 总 issue 号。
+function fakeGh({ issues = {}, rest = {}, failIssue = [], prs = [], pulls = {}, failPull = [], parents = {}, closing = [] } = {}) {
   const calls = [];
+  const notFound = (n) => ({ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${n}.` });
   const fn = (args, options = {}) => {
     if (args[1] === 'graphql') {
       const q = JSON.parse(options.input ?? '{}');
       const n = q.variables?.number;
-      if (/closingIssuesReferences/.test(q.query)) { calls.push(['closing', n]); return { ok: true, stdout: JSON.stringify({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [] } } } } }) }; }
+      if (/closingIssuesReferences/.test(q.query)) {
+        calls.push(['closing', n]);
+        return { ok: true, stdout: JSON.stringify({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: closing.map((c) => ({ number: c, title: issues[c]?.title ?? null, url: `https://github.com/${R}/issues/${c}` })) } } } } }) };
+      }
+      if (/p0:issueOrPullRequest/.test(q.query)) {
+        const numbers = [0, 1, 2, 3].map((i) => q.variables[`n${i}`]);
+        calls.push(['probe', numbers]);
+        const repository = Object.fromEntries(numbers.map((m, i) => [`p${i}`, issues[m] ? { __typename: 'Issue', number: m, title: issues[m].title } : prs.includes(m) || m in pulls ? { __typename: 'PullRequest' } : null]));
+        const errors = numbers.filter((m) => !issues[m] && !prs.includes(m) && !(m in pulls)).map(notFound);
+        return { ok: !errors.length, stdout: JSON.stringify({ data: { repository }, ...(errors.length ? { errors } : {}) }) };
+      }
+      if (/on PullRequest\{number title body comments/.test(q.query)) {
+        calls.push(['qa', n]);
+        if (failPull.includes(n)) return { ok: false, stdout: '', stderr: 'HTTP 502' };
+        const hit = pulls[n] ? { __typename: 'PullRequest', number: n, title: pulls[n].title ?? '', body: pulls[n].body ?? '', comments: { nodes: pulls[n].comments ?? [] } } : issues[n] ? { __typename: 'Issue' } : null;
+        return { ok: Boolean(hit), stdout: JSON.stringify({ data: { repository: { issueOrPullRequest: hit } }, ...(hit ? {} : { errors: [notFound(n)] }) }) };
+      }
       if (/timelineItems/.test(q.query)) {
         calls.push(['issue', n]);
         if (failIssue.includes(n)) return { ok: false, stdout: '', stderr: 'HTTP 502' };
         return { ok: true, stdout: JSON.stringify({ data: { repository: { issue: issues[n] ?? null } }, ...(issues[n] ? {} : { errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an Issue with the number of ${n}.` }] }) }) };
       }
+      if (/userContentEdits/.test(q.query)) { calls.push(['parent', n]); return { ok: true, stdout: JSON.stringify({ data: { repository: { issue: issues[n] ?? null } } }) }; }
       calls.push(['graphql-other', n]);
       return { ok: true, stdout: JSON.stringify({ data: { repository: { issue: null } } }) };
     }
     const path = args[1];
     calls.push(['rest', path]);
     if (path in rest) return rest[path] === null ? { ok: false, stdout: '', stderr: 'HTTP 502' } : { ok: true, stdout: JSON.stringify(rest[path]) };
-    if (/\/parent$/.test(path)) return { ok: false, stdout: JSON.stringify({ message: 'No parent issue found', status: '404' }), stderr: 'gh: No parent issue found (HTTP 404)' };
+    const parentOf = /issues\/(\d+)\/parent$/.exec(path);
+    if (parentOf && parents[parentOf[1]]) return { ok: true, stdout: JSON.stringify({ number: parents[parentOf[1]], html_url: `https://github.com/${R}/issues/${parents[parentOf[1]]}` }) };
+    if (parentOf) return { ok: false, stdout: JSON.stringify({ message: 'No parent issue found', status: '404' }), stderr: 'gh: No parent issue found (HTTP 404)' };
     return { ok: false, stdout: '', stderr: `unexpected ${path}` };
   };
   return { fn, calls };
@@ -112,6 +133,7 @@ test('SC1 别的写法:指向的是 PR 或不存在时跳过、接着试下一�
   assert.equal(m.via, 'ref');
   assert.deepEqual(m.excluded, [{ ref: `${R}#21`, reason: '不是 issue(PR 或不存在)' }]);
   assert.equal(m.issue.trust, 'plan');
+  assert.deepEqual(gh.calls.filter((c) => c[0] === 'probe' || c[0] === 'issue').map((c) => c[0]), ['probe', 'issue'], '两个候选先批量认一次,只读认出的 #22');
   // 都不是 issue → 没关联(不是读不到)
   const none = readWith({ prBody: 'Refs #21' }, fakeGh());
   assert.deepEqual([none.status, none.via], ['unlinked', null]);
@@ -125,17 +147,17 @@ test('SC1 「任务 issue：」行指向 PR 时仍按读不到算(严格,与改�
 });
 
 test('SC2 质检修复 PR:读被质检 PR 的正文和评论,沿用它的任务 issue,via 记 qa-origin;来源读不到记缺口、按没关联处理', () => {
-  const origin = { number: 2134, title: 'fix: 旧格式档案超限', body: '任务 issue：o/r#2130', pull_request: {} };
-  const gh = fakeGh({ issues: { 2130: node(2130) }, rest: { [`repos/o/r/issues/2134`]: origin, [`repos/o/r/issues/2134/comments?per_page=100`]: [] } });
+  const origin = { title: 'fix: 旧格式档案超限', body: '任务 issue：o/r#2130', comments: [] };
+  const gh = fakeGh({ issues: { 2130: node(2130) }, pulls: { 2134: origin } });
   const m = readWith({ prBody: 'QA: #2134', prTitle: 'fix: 增量保存 TOO_LARGE (QA #2134)' }, gh);
   assert.deepEqual([m.status, m.ref, m.via], ['read', `${R}#2130`, 'qa-origin']);
   // 来源 PR 只有关联评论(自动 issue)
   const auto = node(3000, { title: '任务 issue · PR #2134 fix: 旧格式档案超限', body: `${AUTO_ISSUE_MARKER(2134)}\n${CHILD}`, author: { login: 'praisebuild', __typename: 'Bot' } });
-  const gh2 = fakeGh({ issues: { 3000: auto }, rest: { [`repos/o/r/issues/2134`]: { ...origin, body: '' }, [`repos/o/r/issues/2134/comments?per_page=100`]: [{ user: { login: 'praisebuild[bot]', type: 'Bot' }, body: AUTO_LINK_MARKER(2134, 3000) }] } });
+  const gh2 = fakeGh({ issues: { 3000: auto }, pulls: { 2134: { ...origin, body: '', comments: [{ author: { login: 'praisebuild', __typename: 'Bot' }, body: AUTO_LINK_MARKER(2134, 3000) }] } } });
   const m2 = readWith({ prBody: 'QA: #2134' }, gh2);
   assert.deepEqual([m2.status, m2.ref, m2.via, m2.issue.trust, m2.issue.autoIssue], ['read', `${R}#3000`, 'qa-origin', 'plan', true], '来源 PR 的自动 issue 也按计划方算');
   // 来源读不到
-  const m3 = readWith({ prBody: 'QA: #2134' }, fakeGh({ rest: { [`repos/o/r/issues/2134`]: null } }));
+  const m3 = readWith({ prBody: 'QA: #2134' }, fakeGh({ failPull: [2134] }));
   assert.equal(m3.status, 'unlinked');
   assert.ok(m3.gaps.some((g) => /质检来源 PR #2134:读不到/.test(g)), JSON.stringify(m3.gaps));
 });
@@ -165,6 +187,57 @@ test('SC4a 顺序:「任务 issue：」行、别的写法都优先于关联评�
   assert.equal(readWith({ prBody: '任务 issue：o/r#12', prComments: comments }, gh).ref, `${R}#12`);
   assert.equal(readWith({ prBody: 'Refs #22', prComments: comments }, gh).ref, `${R}#22`);
   assert.equal(readWith({ prBody: '', prComments: comments }, gh).ref, `${R}#900`);
+});
+
+test('SC1 「任务 issue：」行或 Closes 指向的都是维护者确认 issue:按没有这些行接着认别的写法、质检来源和关联评论;都没有才是未关联', () => {
+  const confirm = (n) => node(n, { title: `维护者确认 · PR #50 是否改 x` });
+  const viaRef = readWith({ prBody: '任务 issue：o/r#30\nRefs #22' }, fakeGh({ issues: { 30: confirm(30), 22: node(22) } }));
+  assert.deepEqual([viaRef.status, viaRef.ref, viaRef.via], ['read', `${R}#22`, 'ref']);
+  assert.deepEqual(viaRef.excluded, [{ ref: `${R}#30`, reason: '维护者确认 issue' }]);
+  const viaAuto = readWith({ prBody: '任务 issue：o/r#30', prComments: [botComment(AUTO_LINK_MARKER(50, 900))] }, fakeGh({ issues: { 30: confirm(30), 900: node(900) } }));
+  assert.deepEqual([viaAuto.status, viaAuto.ref, viaAuto.via], ['read', `${R}#900`, 'auto']);
+  const viaClosing = readWith({ prBody: 'Refs #22' }, fakeGh({ issues: { 31: confirm(31), 22: node(22) }, closing: [31] }));
+  assert.deepEqual([viaClosing.status, viaClosing.ref], ['read', `${R}#22`]);
+  const none = readWith({ prBody: '任务 issue：o/r#30' }, fakeGh({ issues: { 30: confirm(30) } }));
+  assert.deepEqual([none.status, none.via], ['unlinked', null]);
+  // 关联评论指向的 issue 不存在(被删)→ 未关联,前置审查会补开
+  assert.equal(readWith({ prComments: [botComment(AUTO_LINK_MARKER(50, 901))] }, fakeGh()).status, 'unlinked');
+});
+
+test('SC2a 3 个指向 PR 的写法 + 质检来源 PR(它的任务 issue 有总 issue):批量认 1 次,任务 issue 和总 issue 都读到,不超过 8 次、没有缺口', () => {
+  const parent = node(2100, { title: '[总] 大任务', body: '## 子 issue\n\n- [ ] o/r#2130 子任务\n' });
+  const gh = fakeGh({ issues: { 2130: node(2130), 2100: parent }, prs: [21, 23, 24], pulls: { 2134: { title: 'fix: 来源', body: '任务 issue：o/r#2130' } }, parents: { 2130: 2100 } });
+  const m = readWith({ prBody: 'QA: #2134\n关联：#21\nRefs #23\nissue #24' }, gh);
+  assert.deepEqual([m.status, m.ref, m.via, m.parent?.ref], ['read', `${R}#2130`, 'qa-origin', `${R}#2100`]);
+  assert.deepEqual(m.gaps, []);
+  assert.ok(m.requests <= 8, `用了 ${m.requests} 次`);
+  assert.deepEqual(gh.calls.map((c) => c[0]), ['closing', 'probe', 'qa', 'issue', 'rest', 'parent']);
+  // 来源 PR 也有多个候选:再批量认一次,仍读到总 issue
+  const gh2 = fakeGh({ issues: { 2130: node(2130), 2100: parent }, prs: [21, 23, 24, 25], pulls: { 2134: { title: 'fix: 来源', body: 'Refs #25\nissue #2130' } }, parents: { 2130: 2100 } });
+  const m2 = readWith({ prBody: 'QA: #2134\n关联：#21\nRefs #23\nissue #24' }, gh2);
+  assert.deepEqual([m2.status, m2.ref, m2.parent?.ref, m2.gaps], ['read', `${R}#2130`, `${R}#2100`, []]);
+  assert.deepEqual(gh2.calls.map((c) => c[0]), ['closing', 'probe', 'qa', 'probe', 'issue', 'rest', 'parent']);
+});
+
+test('SC2a 找候选的请求给任务 issue、依赖、总 issue 关系、总 issue 留出次数:用不了时记缺口、按读不到算,不把后面的读取挤掉', () => {
+  const confirm = (n) => node(n, { title: `维护者确认 · PR #50 x` });
+  // 预算 4:Closes 之后再批量认会占掉留给后面的次数 → 不认,按读不到算,缺口写明原因
+  const gh = fakeGh({ issues: { 22: node(22) }, prs: [21] });
+  const m = readWith({ prBody: 'Refs #21\nRefs #22', budget: { requests: 4, ms: 20_000 } }, gh);
+  assert.equal(m.status, 'unreadable');
+  assert.ok(m.gaps.some((g) => /4 次请求要留 3 次给后面的读取/.test(g)), JSON.stringify(m.gaps));
+  assert.deepEqual(gh.calls.map((c) => c[0]), ['closing']);
+  // 两行「任务 issue：」都是维护者确认 issue(2 次)+ 别的写法批量认(1 次)+ 选中的读(1 次)= 4 次,剩下的 3 次够读依赖之外的总 issue 关系和总 issue
+  const gh2 = fakeGh({ issues: { 30: confirm(30), 31: confirm(31), 22: node(22), 2100: node(2100, { title: '[总] x' }) }, prs: [21], parents: { 22: 2100 } });
+  const m2 = readWith({ prBody: '任务 issue：o/r#30\n任务 issue：o/r#31\nRefs #21\nRefs #22' }, gh2);
+  assert.deepEqual([m2.status, m2.ref, m2.parent?.ref, m2.requests], ['read', `${R}#22`, `${R}#2100`, 6]);
+});
+
+test('locateOnly:找到任务 issue 就停,不读依赖、总 issue 关系和总 issue(前置审查用)', () => {
+  const gh = fakeGh({ issues: { 22: node(22) }, parents: { 22: 2100 } });
+  const m = readWith({ prBody: 'Refs #22', locateOnly: true }, gh);
+  assert.deepEqual([m.status, m.ref, m.via, m.issue.ref, m.parent], ['read', `${R}#22`, 'ref', `${R}#22`, null]);
+  assert.deepEqual(gh.calls.map((c) => c[0]), ['closing', 'issue']);
 });
 
 // ── SC3 按模板生成 ──
@@ -216,6 +289,57 @@ test('SC3 PR 正文里的标题行、没收尾的代码块、「验证：」字�
   assert.equal(empty.sections.不做, '- PR 没写明不做的事。');
   assert.equal(empty.sections.依赖, '无');
   assert.deepEqual(empty.scList.map((s) => [s.description, s.layer]), [['本 PR 的改动通过 CI', 'static']]);
+});
+
+test('SC3 没收尾的 ~~~ 代码块、四个反引号里套三个反引号:补上收尾,审查机认得出五段', () => {
+  const mk = (summary) => toAutoTaskIssue({ repo: R, pr: 7, title: 't', author: 'a', files: ['src/a.ts'],
+    // 没收尾的代码块在 PR 正文里也会吞掉后面的内容,所以放在 PR 正文最后;它被摘进 issue 的「目标」(第一段),后面四段不能被吞。
+    body: `### 自动验证\n\n- 单测通过\n\n### 范围\n\n- \`src/a.ts\`\n\n### 摘要\n\n${summary}` }).body;
+  for (const [summary, open] of [['改了 x。\n\n~~~text\n没收尾', '~~~'], ['````\n```\n内层', '````'], ['~~~~\n~~~\n内层', '~~~~']]) {
+    const body = mk(summary);
+    const c = toChildMaterial(body);
+    assert.equal(c.structure, 'parsed', summary);
+    // 代码块原样保留并补上同样的收尾围栏(不是靠自检兜底去掉围栏)
+    assert.ok(body.split('\n').some((l) => l === open), `${summary}:缺收尾 ${open}`);
+    assert.ok(body.includes(summary.split('\n').find((l) => /^[`~]{3,}/.test(l))), `${summary}:围栏被去掉了`);
+    assert.deepEqual(c.scList.map((s) => s.description), ['单测通过'], summary);
+  }
+});
+
+test('SC3 正文超过 60 KB:各段按比例截短并写明,五段和验收标准都在(复审回放 61 KB 的写法)', () => {
+  const cjk = (n) => '中'.repeat(n);
+  const body = [`### 摘要\n\n${cjk(4000)}`, `### 范围\n\n${cjk(6000)}`, `### 不做\n\n${cjk(4000)}`,
+    `### 自动验证\n\n${Array.from({ length: 40 }, (_, i) => `- 检查 ${i} ${cjk(300)}`).join('\n')}`].join('\n\n');
+  const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body, files: ['src/a.ts'], });
+  assert.ok(Buffer.byteLength(out.body) <= 60 * 1024, `${Buffer.byteLength(out.body)} 字节`);
+  const c = toChildMaterial(out.body);
+  assert.equal(c.structure, 'parsed');
+  assert.ok(c.sections.不做.startsWith('中'), '「不做」段还在');
+  assert.ok(c.scList.length >= 1);
+  assert.match(out.body, /PR 正文较长，各段已按比例截短，完整内容见 PR #9。/);
+});
+
+test('SC3 「范围」下面的「范围外」小节只进「不做」,它列的路径不算可改范围', () => {
+  const body = '### 摘要\n\n改 a。\n\n### 范围\n\n- `src/a.ts`\n\n#### 范围外\n\n- `src/b.ts` 不动\n\n### 自动验证\n\n- 单测通过';
+  const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body, files: ['src/a.ts'] });
+  const c = toChildMaterial(out.body);
+  assert.doesNotMatch(c.sections.范围, /src\/b\.ts/);
+  assert.equal((out.body.match(/src\/b\.ts/g) ?? []).length, 1);
+  assert.match(c.sections.不做, /src\/b\.ts/);
+  assert.deepEqual(toDerived({ child: c, files: ['src/a.ts', 'src/b.ts'], pr: 9 }).scopeOutside, ['src/b.ts']);
+});
+
+test('SC3 自检认不出结构:先去掉代码块围栏重排,仍认不出只留改动文件清单和一条 CI 验收', () => {
+  const body = '### 摘要\n\n改了 x。\n\n```\ncode\n```\n\n### 自动验证\n\n- 单测通过';
+  const safe = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body, files: ['src/a.ts'], parses: (text) => !text.includes('```') });
+  assert.doesNotMatch(safe.body, /```/);
+  assert.match(safe.body, /改了 x。/);
+  const bare = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body, files: ['src/a.ts'], parses: (text) => !text.includes('改了') });
+  const c = toChildMaterial(bare.body);
+  assert.equal(c.structure, 'parsed');
+  assert.match(bare.body, /PR 正文的内容没能按模板整理进来，以 PR #9 为准。/);
+  assert.match(c.sections.范围, /`src\/a\.ts`：本 PR 改动/);
+  assert.deepEqual(c.scList.map((s) => [s.description, s.layer]), [['本 PR 的改动通过 CI', 'static']]);
 });
 
 test('SC3 超长 PR:改动文件超过 50 个时按目录合并,一个都不漏;整份正文不超过 60 KB', () => {

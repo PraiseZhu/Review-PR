@@ -55,6 +55,11 @@ const DECISION_HEAD_RE = new RegExp(`^[\\s>*#_（(]*(?:\\d{4}-\\d{2}-\\d{2}[\\s�
 const CLOSING_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:10){nodes{number title url}}}}}';
 const ISSUE_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login __typename} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}} timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],last:30){totalCount nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{number body url state}}}}}}}}';
 const PARENT_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title url body createdAt author{login} userContentEdits(last:50){totalCount nodes{editedAt editor{login}}} comments(last:30){nodes{author{login} createdAt body}}}}}';
+// 候选是否是 issue(#246):一次认最多 4 个同仓编号,只取类型和标题(PR、不存在的、维护者确认 issue 不读全文)。
+const PROBE_SIZE = 4;
+const PROBE_QUERY = 'query($owner:String!,$name:String!,$n0:Int!,$n1:Int!,$n2:Int!,$n3:Int!){repository(owner:$owner,name:$name){p0:issueOrPullRequest(number:$n0){...P} p1:issueOrPullRequest(number:$n1){...P} p2:issueOrPullRequest(number:$n2){...P} p3:issueOrPullRequest(number:$n3){...P}}} fragment P on IssueOrPullRequest{__typename ... on Issue{number title}}';
+// 质检来源 PR 的标题、正文和最近 100 条评论,一次读完(#246)。
+const QA_ORIGIN_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){__typename ... on PullRequest{number title body comments(last:100){nodes{author{login __typename} body}}}}}}';
 const DEPS_QUERY = 'query($owner:String!,$name:String!,$n0:Int!,$n1:Int!,$n2:Int!,$n3:Int!,$n4:Int!,$n5:Int!,$n6:Int!,$n7:Int!,$n8:Int!,$n9:Int!){repository(owner:$owner,name:$name){d0:issueOrPullRequest(number:$n0){...S} d1:issueOrPullRequest(number:$n1){...S} d2:issueOrPullRequest(number:$n2){...S} d3:issueOrPullRequest(number:$n3){...S} d4:issueOrPullRequest(number:$n4){...S} d5:issueOrPullRequest(number:$n5){...S} d6:issueOrPullRequest(number:$n6){...S} d7:issueOrPullRequest(number:$n7){...S} d8:issueOrPullRequest(number:$n8){...S} d9:issueOrPullRequest(number:$n9){...S}}} fragment S on IssueOrPullRequest{__typename ... on Issue{number state} ... on PullRequest{number state}}';
 
 /** 读开关;读不到、不合法 → off 并给 warning;没有 taskIssue 块 → off、不告警。三个名单字段不合法时用默认值并告警。 */
@@ -187,7 +192,7 @@ export function isAutoTaskIssue({ title, body, author, authorType, prs = [], aut
 }
 
 // ── 按模板从 PR 生成自动任务 issue(#246 SC3)───────────────────────────────────
-const AUTO_LIMITS = { titleChars: 240, goalChars: 4000, scopeChars: 6000, notDoChars: 4000, files: 50, scItems: 40, scChars: 300, bodyBytes: 60 * 1024 };
+const AUTO_LIMITS = { titleChars: 240, goalChars: 4000, scopeChars: 6000, notDoChars: 4000, files: 50, fileBytes: 20 * 1024, scItems: 40, scChars: 300, bodyBytes: 60 * 1024 };
 const EMPTY_ITEMS = new Set(['无', '暂无', '没有', 'n/a', 'na', '-', '—', '不涉及']);
 
 /** PR 正文 → [{level, title, text}](任意级标题;代码块里的标题不算;HTML 注释去掉)。 */
@@ -202,18 +207,51 @@ function toPrHeadingSections(body) {
     if (current) current.lines.push(line);
   }
   // 段落内容包括它下面更低一级的小节(### 范围 下面的 #### 也算),到同级或更高一级的标题为止。
+  // 标题含「不做」「不包含」「范围外」的小节(连同它下面的小节)不算进上级段落,只进「不做」:否则「范围外」列的路径会被审查机当成可改范围。
   return out.map((s, i) => {
     const rest = [];
-    for (let j = i + 1; j < out.length && out[j].level > s.level; j += 1) rest.push(`**${out[j].title}**`, ...out[j].lines);
+    let skipBelow = null;
+    for (let j = i + 1; j < out.length && out[j].level > s.level; j += 1) {
+      if (skipBelow !== null && out[j].level > skipBelow) continue;
+      skipBelow = NOT_DO_TITLE_RE.test(out[j].title) ? out[j].level : null;
+      if (skipBelow === null) rest.push(`**${out[j].title}**`, ...out[j].lines);
+    }
     return { level: s.level, title: s.title, text: [...s.lines, ...rest].join('\n').trim() };
   });
 }
-/** 摘出来的内容放进 issue 正文:标题行降成加粗(不打断五段结构),代码块补齐收尾,截到上限。 */
-function toEmbeddedText(text, max) {
-  let out = String(text ?? '').split('\n').map((l) => l.replace(/^\s{0,3}#{1,6}\s+(.*)$/, '**$1**')).join('\n').trim();
-  out = clip(out, max);
-  if ((out.match(/^\s*```/gm) ?? []).length % 2 === 1) out += '\n```';
-  return out;
+const NOT_DO_TITLE_RE = /不做|不包含|范围外/;
+const FENCE_LINE_RE = /^[\s>]*(`{3,}|~{3,})/;
+/**
+ * 摘出来的内容放进 issue 正文:标题行降成加粗(不打断五段结构),截到上限,还开着的顶层代码块(``` 或 ~~~)补上收尾。
+ * safe 时去掉全部代码块围栏(围栏写法特殊、补收尾后审查机仍认不出结构时用)。
+ */
+function toEmbeddedText(text, max, { safe = false } = {}) {
+  let all = String(text ?? '').split('\n').map((l) => l.replace(/^\s{0,3}#{1,6}\s+(.*)$/, '**$1**'));
+  if (safe) all = all.filter((l) => !FENCE_LINE_RE.test(l));
+  const out = clip(all.join('\n').trim(), max);
+  const open = toOpenFence(out);
+  return open ? `${out}\n${open}` : out;
+}
+/** 文本末尾还开着的顶层代码块 → 收尾用的围栏;没有开着的为 null。同种字符、不短于开头、后面没有别的字才算收尾;反引号围栏的信息串不能带反引号。 */
+function toOpenFence(text) {
+  let open = null;
+  for (const line of lines(text)) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!m) continue;
+    if (!open) { if (!(m[1][0] === '`' && m[2].includes('`'))) open = m[1]; } else if (m[1][0] === open[0] && m[1].length >= open.length && !m[2].trim()) open = null;
+  }
+  return open;
+}
+/** 清单行按合计字节截断,截掉的写一行说明(改动文件极多、路径极长时兜底)。 */
+function toBoundedLines(list, maxBytes) {
+  const out = [];
+  let used = 0;
+  for (const line of list) {
+    used += bytes(line) + 1;
+    if (used > maxBytes) break;
+    out.push(line);
+  }
+  return out.length < list.length ? [...out, `- …另有 ${list.length - out.length} 行没列出（改动文件太多）`] : out;
 }
 /** 段落里的顶层列表项(不含子项),去掉勾选框,压成一行。 */
 function toListItems(text) {
@@ -292,57 +330,75 @@ function toRealVerifyItems(text) {
 
 /**
  * 没写任务 issue 的 PR → 自动任务 issue 的 {title, body}(task-issue/v1 五段)。纯函数,内容全部取自 PR,不用模型。
+ * parses:自检用的解析(默认审查机的 toChildMaterial 认出五段和验收标准);测试可换掉它走到兜底版。
  * @param {{repo:string, pr:number, title:string, author:string, body:string, files:string[]}} p
  */
-export function toAutoTaskIssue({ repo, pr, title = '', author = '', body = '', files = [] }) {
+export function toAutoTaskIssue({ repo, pr, title = '', author = '', body = '', files = [], parses = (text) => toChildMaterial(text).structure === 'parsed' }) {
   const sections = toPrHeadingSections(body);
   const find = (test) => sections.find((s) => test(s.title.replace(/[*_`]/g, '').trim()));
   const summary = find((h) => h.startsWith('摘要'))?.text ?? '';
-  const scopeRaw = find((h) => h.startsWith('范围'))?.text ?? '';
+  const scopeRaw = find((h) => h.startsWith('范围') && !NOT_DO_TITLE_RE.test(h))?.text ?? '';
   const NOT_DO_ITEM_RE = /^\s*[-*+]\s*(?:\*\*)?(?:明确不包含|不包含|不做|不改)(?:\*\*)?\s*[：:]/;
   const scope = scopeRaw.split('\n').filter((l) => !NOT_DO_ITEM_RE.test(l)).join('\n').trim();
   const notDo = [...scopeRaw.split('\n').filter((l) => NOT_DO_ITEM_RE.test(l)),
-    ...sections.filter((s) => /不做|不包含|范围外/.test(s.title)).map((s) => s.text).filter(Boolean)].join('\n').trim();
+    ...sections.filter((s) => NOT_DO_TITLE_RE.test(s.title)).map((s) => s.text).filter(Boolean)].join('\n').trim();
   const auto = toAutoVerifyItems(find((h) => h.startsWith('自动验证'))?.text ?? '');
   const real = toRealVerifyItems(find((h) => h.startsWith('实际任务验证'))?.text ?? '');
   const order = /^\s*合并顺序\s*[：:]\s*(.+?)\s*$/m.exec(toPlainText(body))?.[1] ?? null;
-  const fileList = [...new Set((files ?? []).map((p) => String(p).replace(/`/g, '')).filter(Boolean))];
-  const sc = [...auto.map((d) => ({ d, layer: 'unit' })), ...real.map((d) => ({ d, layer: 'cindy-mac' }))].slice(0, AUTO_LIMITS.scItems);
+  const fileList = [...new Set((files ?? []).map((p) => String(p).replace(/`/g, '').replace(/[\r\n]+/g, ' ')).filter(Boolean))];
+  const scAll = [...auto.map((d) => ({ d, layer: 'unit' })), ...real.map((d) => ({ d, layer: 'cindy-mac' }))];
   const issueTitle = clip(`${AUTO_ISSUE_TITLE_PREFIX}${pr} ${String(title ?? '').replace(/\s+/g, ' ').trim()}`, AUTO_LIMITS.titleChars);
-  const parts = [
-    AUTO_ISSUE_MARKER(pr),
-    `> 子 issue · 前置审查按 PR #${pr}（${toAuthorLabel(author)}）自动整理，内容取自 PR 正文；维护者可以直接修改。审查机按本 issue 判断这个 PR 该管什么（PraiseZhu/Review-PR#132 D20）。对应 1 个 PR：${repo}#${pr}。`,
-    '',
-    '## 目标',
-    '',
-    toEmbeddedText([String(title ?? '').trim(), summary].filter(Boolean).join('\n\n'), AUTO_LIMITS.goalChars) || 'PR 没写摘要。',
-    '',
-    '## 原因',
-    '',
-    '这个 PR 没有关联任务 issue，前置审查按 PR 正文补开，让审查机有任务 issue 可以对照。',
-    '',
-    '## 范围（可改）',
-    '',
-    ...(scope ? [toEmbeddedText(scope, AUTO_LIMITS.scopeChars), ''] : []),
-    `本 PR 改动的文件（前置审查按 diff 列出${fileList.length > AUTO_LIMITS.files ? `，共 ${fileList.length} 个，按目录合并` : ''}）：`,
-    '',
-    ...(fileList.length ? toScopeFileLines(fileList, AUTO_LIMITS.files) : ['- （没有读到改动文件）']),
-    '',
-    '## 不做',
-    '',
-    notDo ? toEmbeddedText(notDo, AUTO_LIMITS.notDoChars) : '- PR 没写明不做的事。',
-    '',
-    '## 依赖',
-    '',
-    order ? `- 合并顺序：${clip(order, 300)}` : '无',
-    '',
-    '## 验收标准',
-    '',
-    ...(sc.length ? sc.map((s, i) => `- [ ] SC${i + 1} ${s.d}。验证：${s.layer}`) : ['- [ ] SC1 本 PR 的改动通过 CI。验证：static']),
-  ];
-  let issueBody = `${parts.join('\n')}\n`;
-  if (bytes(issueBody) > AUTO_LIMITS.bodyBytes) issueBody = `${clipBytes(issueBody, AUTO_LIMITS.bodyBytes - 200)}\n\n- …（正文超过 60 KB，已截断）\n`;
-  return { title: issueTitle, body: issueBody };
+  // k:各段上限的比例(1 是原样);safe:去掉代码块围栏;bare:只留改动文件清单和一条 CI 验收(前两种都认不出结构时兜底)。
+  const render = (k, { safe = false, bare = false } = {}) => {
+    const cap = (n) => Math.max(200, Math.floor(n * k));
+    const embed = (text, n) => toEmbeddedText(text, cap(n), { safe });
+    const sc = bare ? [] : scAll.slice(0, Math.max(1, Math.floor(AUTO_LIMITS.scItems * k)))
+      .map((s) => ({ ...s, d: clip(s.d, Math.max(60, Math.floor(AUTO_LIMITS.scChars * k))) }));
+    const fileLimit = Math.max(5, Math.floor(AUTO_LIMITS.files * k));
+    const fileLines = toBoundedLines(toScopeFileLines(fileList, fileLimit), Math.max(2048, Math.floor(AUTO_LIMITS.fileBytes * k)));
+    const parts = [
+      AUTO_ISSUE_MARKER(pr),
+      `> 子 issue · 前置审查按 PR #${pr}（${toAuthorLabel(author)}）自动整理，内容取自 PR 正文；维护者可以直接修改。审查机按本 issue 判断这个 PR 该管什么（PraiseZhu/Review-PR#132 D20）。对应 1 个 PR：${repo}#${pr}。`,
+      '',
+      '## 目标',
+      '',
+      bare ? `见 PR #${pr}。` : embed([String(title ?? '').trim(), summary].filter(Boolean).join('\n\n'), AUTO_LIMITS.goalChars) || 'PR 没写摘要。',
+      '',
+      '## 原因',
+      '',
+      `这个 PR 没有关联任务 issue，前置审查按 PR 正文补开，让审查机有任务 issue 可以对照。${bare ? `PR 正文的内容没能按模板整理进来，以 PR #${pr} 为准。` : k < 1 ? `PR 正文较长，各段已按比例截短，完整内容见 PR #${pr}。` : ''}`,
+      '',
+      '## 范围（可改）',
+      '',
+      ...(scope && !bare ? [embed(scope, AUTO_LIMITS.scopeChars), ''] : []),
+      `本 PR 改动的文件（前置审查按 diff 列出${fileList.length > fileLimit ? `，共 ${fileList.length} 个，按目录合并` : ''}）：`,
+      '',
+      ...(fileList.length ? fileLines : ['- （没有读到改动文件）']),
+      '',
+      '## 不做',
+      '',
+      notDo && !bare ? embed(notDo, AUTO_LIMITS.notDoChars) : '- PR 没写明不做的事。',
+      '',
+      '## 依赖',
+      '',
+      order && !bare ? `- 合并顺序：${clip(order, 300)}` : '无',
+      '',
+      '## 验收标准',
+      '',
+      ...(sc.length ? sc.map((s, i) => `- [ ] SC${i + 1} ${s.d}。验证：${s.layer}`) : ['- [ ] SC1 本 PR 的改动通过 CI。验证：static']),
+    ];
+    return `${parts.join('\n')}\n`;
+  };
+  // 超过 60 KB 时各段按比例截短(五段和至少一条验收标准始终在);生成后用审查机的解析自检,认不出结构就去掉代码块围栏重排,仍认不出只留兜底版。
+  for (const safe of [false, true]) {
+    for (const k of [1, 0.5, 0.25, 0.125, 0.0625]) {
+      const issueBody = render(k, { safe });
+      if (bytes(issueBody) > AUTO_LIMITS.bodyBytes) continue;
+      if (parses(issueBody)) return { title: issueTitle, body: issueBody };
+      break;
+    }
+  }
+  return { title: issueTitle, body: render(0.0625, { safe: true, bare: true }) };
 }
 
 /** 子 issue 正文开头 2 KB 里写明的「总 issue …#N」→ {repo, number} 或 null。 */
@@ -707,16 +763,22 @@ export function toRestResult(out) {
 
 /**
  * 读任务 issue 和所属总 issue,返回 task-issue.json 的内容。ghFn 是注入的 gh 调用(prepare 阶段的 gh);now 可换假时钟。
- * 典型 4 次请求(任务 issue 连时间线、依赖状态、总 issue 关系、总 issue);没有「任务 issue：」行再加 1 次读 Closes。
+ * 典型 4 次请求(任务 issue 连时间线、依赖状态、总 issue 关系、总 issue);没有「任务 issue：」行再加 1 次读 Closes;别的写法、关联评论有两个以上时加 1 次批量认 issue。
+ * 找任务 issue 的请求给后面的依赖状态、总 issue 关系、总 issue 留出 3 次(#246 SC2a)。
+ * locateOnly:找到任务 issue 为止,不读依赖和总 issue(前置审查判断要不要补开任务 issue 用,与审查机同一套查找)。
  */
 export function readTaskIssue({ repo, pr, prBody, prTitle = '', prComments = [], prCreatedAt, baseRefName, headRefName = null, files = [], maintainers = [], automation = DEFAULT_AUTOMATION,
-  alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES, autoAuthor = DEFAULT_AUTO_ISSUE.author, mode = 'observe', ghFn, now = Date.now, budget = BUDGET }) {
+  alwaysInScope = DEFAULT_ALWAYS_IN_SCOPE, stageHeadPrefixes = DEFAULT_STAGE_HEAD_PREFIXES, autoAuthor = DEFAULT_AUTO_ISSUE.author, mode = 'observe', ghFn, now = Date.now, budget = BUDGET, locateOnly = false }) {
   const started = now();
   const material = { version: 1, mode, status: 'read', ref: null, via: null, note: null, warnings: [], gaps: [], excluded: [], requests: 0, elapsedMs: 0,
     baseRef: baseRefName ?? null, baseNote: BASE_NOTE, issue: null, shared: null, deps: null, parent: null, derived: null, truncated: [] };
+  const AFTER = locateOnly ? 0 : 3; // 读到任务 issue 之后还要读:依赖状态、总 issue 关系、总 issue
   // 单次超时不超过剩余时间(最多 10 秒);剩余不足 1 秒就不再发请求。读失败(404 以外)也记缺口,材料按「部分」处理。
-  const call = (label, send, parse = toGraphqlResult) => {
+  // reserve:这次请求要给后面留出的次数(找任务 issue 时用);预算本来就很小时不挡第一次请求。
+  const call = (label, send, parse = toGraphqlResult, reserve = 0) => {
+    const keep = Math.min(reserve, budget.requests - 1);
     if (material.requests >= budget.requests) { material.gaps.push(`${label}:已用满 ${budget.requests} 次请求,没读`); return null; }
+    if (material.requests >= budget.requests - keep) { material.gaps.push(`${label}:${budget.requests} 次请求要留 ${keep} 次给后面的读取,没读`); return null; }
     const left = budget.ms - (now() - started);
     if (left < LIMITS.minRequestMs) { material.gaps.push(`${label}:${Math.round(budget.ms / 1000)} 秒预算只剩 ${Math.max(0, left)} 毫秒,没读`); return null; }
     material.requests += 1;
@@ -734,7 +796,7 @@ export function readTaskIssue({ repo, pr, prBody, prTitle = '', prComments = [],
   let closing = [];
   if (!parseTaskLines(prBody, repo).length) {
     const prVars = { ...ownerName(repo), number: pr };
-    const data = call('PR 的 Closes 关联', (timeoutMs) => ghFn(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: CLOSING_QUERY, variables: prVars }), timeoutMs, allowFail: true }));
+    const data = call('PR 的 Closes 关联', (timeoutMs) => ghFn(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: CLOSING_QUERY, variables: prVars }), timeoutMs, allowFail: true }), toGraphqlResult, AFTER + 1);
     closing = (data?.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [])
       .map((n) => ({ repo: repoFromUrl(n?.url) ?? repo, number: n?.number, title: n?.title ?? null })).filter((n) => Number.isInteger(n.number));
   }
@@ -744,51 +806,74 @@ export function readTaskIssue({ repo, pr, prBody, prTitle = '', prComments = [],
   const links = toTaskIssueLinks({ body: prBody, title: prTitle, comments: prComments, repo, pr, autoAuthor });
 
   // 候选按组依次试(#246):「任务 issue：」行 / Closes(strict:读到的不是 issue 就按读不到算,行为与改动前一致)→ 别的写法 → 质检来源 PR → 关联评论。
-  // 非 strict 组里指向的不是 issue(PR 或不存在)时跳过、接着往下;真正的读取失败一律停下、按读不到算。
+  // strict 组只因维护者确认 issue 落空时,按没有这些行接着往下找。非 strict 的候选两个以上时先批量认一次是不是 issue,只读选中的那个;
+  // 指向的不是 issue(PR 或不存在)、维护者确认 issue 跳过;真正的读取失败(含预算不够)一律停下、按读不到算。
   let node = null;
   let readFailed = false;
   let allowedPrs = [Number(pr)];
-  const tryGroup = ({ via, refs, strict }) => {
-    for (const candidate of refs.slice(0, strict ? 2 : 3)) {
-      const issueVars = { ...ownerName(candidate.repo), number: candidate.number };
-      const data = call(`任务 issue ${refText(candidate)}`, (timeoutMs) => ghFn(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: ISSUE_QUERY, variables: issueVars }), timeoutMs, allowFail: true }));
-      if (!data) { readFailed = true; return true; }
-      const found = data?.repository?.issue ?? null;
-      if (!found) {
-        if (strict) { readFailed = true; return true; }
-        material.excluded.push({ ref: refText(candidate), reason: '不是 issue(PR 或不存在)' });
-        continue;
-      }
-      if (String(found.title ?? '').startsWith(MAINTAINER_CONFIRM_PREFIX)) { material.excluded.push({ ref: refText(candidate), reason: '维护者确认 issue' }); continue; }
-      node = found;
-      material.ref = refText(candidate);
-      material.via = via;
-      return true;
+  const NOT_ISSUE = '不是 issue(PR 或不存在)';
+  const readCandidate = (candidate, via, strict) => {
+    const issueVars = { ...ownerName(candidate.repo), number: candidate.number };
+    const data = call(`任务 issue ${refText(candidate)}`, (timeoutMs) => ghFn(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: ISSUE_QUERY, variables: issueVars }), timeoutMs, allowFail: true }), toGraphqlResult, AFTER);
+    if (!data) { readFailed = true; return true; }
+    const found = data?.repository?.issue ?? null;
+    if (!found) {
+      if (strict) { readFailed = true; return true; }
+      material.excluded.push({ ref: refText(candidate), reason: NOT_ISSUE });
+      return false;
     }
-    return false;
+    if (String(found.title ?? '').startsWith(MAINTAINER_CONFIRM_PREFIX)) { material.excluded.push({ ref: refText(candidate), reason: '维护者确认 issue' }); return false; }
+    node = found;
+    material.ref = refText(candidate);
+    material.via = via;
+    return true;
   };
-  const groups = picked.candidates.length ? [{ via: picked.via, refs: picked.candidates, strict: true }]
-    : [{ via: 'ref', refs: links.alt, strict: false }];
-  for (const g of groups) if (tryGroup(g)) break;
-  if (!node && !readFailed && !picked.candidates.length && links.qaOrigin) {
-    // 质检修复 PR:读被质检 PR 的正文和评论(REST,走 App),按同一套线索选它的任务 issue。
-    const { owner: o, name: n } = ownerName(repo);
-    const origin = call(`质检来源 PR #${links.qaOrigin}`, (timeoutMs) => ghFn(['api', `repos/${o}/${n}/issues/${links.qaOrigin}`], { timeoutMs, allowFail: true }), toRestResult);
-    const originComments = origin ? call(`质检来源 PR #${links.qaOrigin} 的评论`, (timeoutMs) => ghFn(['api', `repos/${o}/${n}/issues/${links.qaOrigin}/comments?per_page=100`], { timeoutMs, allowFail: true }), toRestResult) : null;
-    if (origin && origin.pull_request) {
-      const o2 = toTaskIssueLinks({ body: origin.body, title: origin.title, comments: Array.isArray(originComments) ? originComments : [], repo, pr: links.qaOrigin, autoAuthor });
-      allowedPrs = [Number(pr), links.qaOrigin];
-      for (const g of [{ refs: [...o2.lines, ...o2.closingText.filter((r) => sameRepo(r.repo, repo))] }, { refs: o2.alt }, { refs: o2.autoLink ? [o2.autoLink] : [] }]) {
-        if (tryGroup({ via: 'qa-origin', refs: g.refs, strict: false })) break;
+  /** 非 strict 候选 → 认出是 issue 的那些;读失败为 null。只有一个、或有跨仓的不批量认(直接读全文,同样跳过非 issue)。 */
+  const probe = (refs) => {
+    if (refs.length < 2 || !refs.every((r) => sameRepo(r.repo, repo))) return refs;
+    const numbers = refs.map((r) => r.number);
+    const vars = { ...ownerName(repo), ...Object.fromEntries(Array.from({ length: PROBE_SIZE }, (_, i) => [`n${i}`, numbers[i] ?? numbers[0]])) };
+    const data = call(`候选 ${numbers.map((n) => `#${n}`).join(' ')} 是否 issue`, (timeoutMs) => ghFn(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: PROBE_QUERY, variables: vars }), timeoutMs, allowFail: true }), toGraphqlResult, AFTER + 1);
+    if (!data) return null;
+    return refs.filter((r, i) => {
+      const hit = data?.repository?.[`p${i}`];
+      if (hit?.__typename !== 'Issue') { material.excluded.push({ ref: refText(r), reason: NOT_ISSUE }); return false; }
+      if (String(hit.title ?? '').startsWith(MAINTAINER_CONFIRM_PREFIX)) { material.excluded.push({ ref: refText(r), reason: '维护者确认 issue' }); return false; }
+      return true;
+    });
+  };
+  const readFirst = (refs, via) => { for (const r of refs) if (readCandidate(r, via, false)) return; };
+  if (picked.candidates.length) for (const c of picked.candidates.slice(0, 2)) if (readCandidate(c, picked.via, true)) break;
+  if (!node && !readFailed) {
+    const alt = links.alt.slice(0, 3);
+    const isAlt = (r) => alt.some((a) => sameRef(a, r));
+    const kept = probe(toUniqueRefs([...alt, ...(links.autoLink ? [links.autoLink] : [])]));
+    if (kept === null) readFailed = true;
+    else readFirst(kept.filter(isAlt), 'ref');
+    if (!node && !readFailed && links.qaOrigin) {
+      // 质检修复 PR:读被质检 PR 的标题、正文和评论,按同一套线索选它的任务 issue。
+      const origin = call(`质检来源 PR #${links.qaOrigin}`, (timeoutMs) => ghFn(['api', 'graphql', '--input', '-'], { input: JSON.stringify({ query: QA_ORIGIN_QUERY, variables: { ...ownerName(repo), number: links.qaOrigin } }), timeoutMs, allowFail: true }), toGraphqlResult, AFTER + 1);
+      const originPr = origin?.repository?.issueOrPullRequest;
+      if (!origin) material.gaps.push(`质检来源 PR #${links.qaOrigin}:读不到,按没关联处理`);
+      else if (originPr?.__typename === 'PullRequest') {
+        const o2 = toTaskIssueLinks({ body: originPr.body, title: originPr.title, comments: originPr.comments?.nodes ?? [], repo, pr: links.qaOrigin, autoAuthor });
+        allowedPrs = [Number(pr), links.qaOrigin];
+        const originKept = probe(toUniqueRefs([...o2.lines, ...o2.closingText.filter((r) => sameRepo(r.repo, repo)), ...o2.alt, ...(o2.autoLink ? [o2.autoLink] : [])]).slice(0, PROBE_SIZE));
+        if (originKept === null) readFailed = true;
+        else readFirst(originKept, 'qa-origin');
       }
-    } else if (!origin) material.gaps.push(`质检来源 PR #${links.qaOrigin}:读不到,按没关联处理`);
+    }
+    if (!node && !readFailed && kept) readFirst(kept.filter((r) => !isAlt(r)), 'auto');
   }
-  if (!node && !readFailed && !picked.candidates.length && links.autoLink) tryGroup({ via: 'auto', refs: [links.autoLink], strict: false });
   if (!node) {
     const tried = picked.candidates.length > 0;
     material.status = readFailed || (tried && material.requests && !material.excluded.some((e) => e.reason === '维护者确认 issue')) ? 'unreadable' : 'unlinked';
     material.note = material.status === 'unlinked' ? '未关联' : '任务 issue 读不到';
     if (material.status === 'unlinked') material.via = null;
+    return finish();
+  }
+  if (locateOnly) {
+    material.issue = { ref: material.ref, url: node.url ?? null, title: clip(node.title, 300) };
     return finish();
   }
 
@@ -1120,6 +1205,7 @@ const loginKey = (login) => String(login ?? '').toLowerCase().replace(/\[bot\]$/
 const isAutomation = (login, automation) => automation.some((a) => loginKey(a) === loginKey(login));
 const sameRepo = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 const sameRef = (a, b) => Boolean(a && b) && sameRepo(a.repo, b.repo) && Number(a.number) === Number(b.number);
+const toUniqueRefs = (refs) => refs.reduce((out, r) => (out.some((x) => sameRef(x, r)) ? out : [...out, r]), []);
 const refText = (ref) => `${ref.repo}#${ref.number}`;
 const refKey = (ref) => `${String(ref.repo).toLowerCase()}#${Number(ref.number)}`;
 const ownerName = (repo) => { const [owner, name] = String(repo).split('/'); return { owner, name }; };
