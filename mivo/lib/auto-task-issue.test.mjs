@@ -382,23 +382,34 @@ test('SC3 路径很长、清单超过字节上限:继续往上一层目录合并
   const c = toChildMaterial(out.body);
   assert.equal(c.structure, 'parsed');
   assert.match(out.body, /共 50 个，按目录合并/);
-  assert.doesNotMatch(out.body, /`\*\*\/\*`：本 PR 改动的全部文件/, '能按目录合并放下时不用 **/* 兜底');
+  assert.match(out.body, /^- `pkg0\/x+\/sub0\/`：本 PR 改动（5 个文件）$/m, '先按较细的目录合并,不一下合到顶层');
+  assert.doesNotMatch(out.body, /`\*\*/, '不写通配路径');
   assert.deepEqual(toDerived({ child: c, files, pr: 9 }).scopeOutside, []);
 });
 
-test('SC3 合到顶层目录仍超过 50 行或字节上限:第一行写 `**/*` 兜住全部改动文件,再照列放得下的(复审回放:80 个长名顶层目录;60 个根目录文件)', () => {
+test('SC3 合到顶层目录仍超过 50 行或 20 KB:按顶层目录和根目录文件逐个列全,不写放宽范围的通配;开 issue 后新加的文件仍算超出范围(复审回放)', () => {
   for (const files of [Array.from({ length: 80 }, (_, i) => `top${i}-${'y'.repeat(300)}/f.ts`), Array.from({ length: 60 }, (_, i) => `file-${i}.ts`)]) {
     const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files });
     const c = toChildMaterial(out.body);
     assert.equal(c.structure, 'parsed');
-    const lines = out.body.split('\n').filter((l) => /^- `.*`：本 PR 改动/.test(l));
-    assert.ok(lines.length <= 50, `${lines.length} 行`);
-    assert.ok(Buffer.byteLength(lines.join('\n')) <= 20 * 1024);
-    assert.equal(lines[0], `- \`**/*\`：本 PR 改动的全部文件（共 ${files.length} 个，清单过长，下面只列出一部分）`);
-    assert.match(c.sections.范围, /^- `\*\*\/\*`：本 PR 改动的全部文件/m, '审查机截短长段落后第一行仍在');
-    assert.ok(c.scopePatterns.includes('**/*'));
+    assert.ok(Buffer.byteLength(out.body) <= 60 * 1024);
+    assert.equal(out.body.split('\n').filter((l) => /^- `.*`：本 PR 改动/.test(l)).length, files.length, '逐个列全');
+    assert.doesNotMatch(out.body, /`\*\*/, '不写通配路径');
     assert.deepEqual(toDerived({ child: c, files, pr: 9 }).scopeOutside, [], `${files.length} 个文件都在范围里`);
+    assert.deepEqual(toDerived({ child: c, files: [...files, 'unplanned/after-issue.ts'], pr: 9 }).scopeOutside, ['unplanned/after-issue.ts'], '开 issue 后新加的文件算超出范围');
   }
+});
+
+test('SC3 顶层清单接近 40 KB 时整份仍不超过 60 KB;超过 40 KB(issue 放不下)返回 null,不开自动 issue', () => {
+  const big = `### 摘要\n\n${'中'.repeat(4000)}\n\n### 范围\n\n${'中'.repeat(6000)}\n\n### 自动验证\n\n${Array.from({ length: 40 }, (_, i) => `- 检查 ${i} ${'中'.repeat(300)}`).join('\n')}`;
+  const near = Array.from({ length: 110 }, (_, i) => `top${i}-${'y'.repeat(300)}/f.ts`);
+  const out = toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: big, files: near });
+  assert.ok(Buffer.byteLength(out.body) <= 60 * 1024, `${Buffer.byteLength(out.body)} 字节`);
+  const c = toChildMaterial(out.body);
+  assert.equal(c.structure, 'parsed');
+  assert.deepEqual(toDerived({ child: c, files: near, pr: 9 }).scopeOutside, []);
+  const over = Array.from({ length: 150 }, (_, i) => `top${i}-${'y'.repeat(300)}/f.ts`);
+  assert.equal(toAutoTaskIssue({ repo: R, pr: 9, title: 't', author: 'a', body: '### 自动验证\n\n- 单测通过', files: over }), null);
 });
 
 test('SC3 验收描述:1000 字以内原样保留;超过的以「…」结尾并在「原因」写明;超过 40 条的写明没列出几条', () => {

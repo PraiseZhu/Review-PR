@@ -30,7 +30,7 @@ const node = (number, over = {}) => ({ number, title: `[子] ${number}`, url: `h
 
 // issues:存在的 issue(GraphQL 节点);prs:是 PR 的编号;pulls:质检来源 PR {title, body, comments};closing:GitHub 记的 Closes 关联;failIssues / failPulls:读失败的编号。
 function makeWorld({ mode = 'live', features = { mode: 'enforce', autoIssue: { ...DEFAULT_AUTO_ISSUE, mode: 'enforce' } }, body = PR_BODY, title = 'fix: 修好 x', head = 'feat/x',
-  comments = [], issues = {}, prs = [], pulls = {}, closing = [], openIssues = [], listOk = true, createOk = true, commentOk = true, failIssues = [], failPulls = [] } = {}) {
+  comments = [], issues = {}, prs = [], pulls = {}, closing = [], openIssues = [], listOk = true, createOk = true, commentOk = true, failIssues = [], failPulls = [], diff = DIFF } = {}) {
   const calls = [];
   const logs = [];
   const written = {};
@@ -75,7 +75,7 @@ function makeWorld({ mode = 'live', features = { mode: 'enforce', autoIssue: { .
     CONFIG: { mode, targetRepo: R, repoRoot: '/repo' }, ENV: {}, SKILL_ROOT: '/skill', join, process: { env: {} },
     loadTaskIssueMode: () => structuredClone(features),
     readTaskIssue, toAutoTaskIssue, isAutoTaskIssue, AUTO_LINK_MARKER, splitDiffByFile,
-    readFileSync: (file) => { if (String(file).endsWith('pr-7-live.diff')) return DIFF; throw new Error(`unexpected read ${file}`); },
+    readFileSync: (file) => { if (String(file).endsWith('pr-7-live.diff')) return diff; throw new Error(`unexpected read ${file}`); },
     ghRead, run,
     log: (event, detail) => logs.push({ event, ...detail }),
     writeText: (file, text) => { written[file] = text; },
@@ -207,6 +207,16 @@ test('SC4 失败不挡送审:列 issue 失败不开;开 issue 失败不发评论
   const r2 = noComment.gate();
   assert.deepEqual(r2.gate.taskIssue, { issue: 801, created: true, linked: false });
   assert.match(r2.warnings[0], /#801 已开,关联评论没发出去\(HTTP 502\),下一次判门复用这个 issue 再发/);
+});
+
+test('SC3/SC4 改动文件太多、合到顶层目录仍超过 40 KB:不开自动 issue、不发评论,记 warning,不挡送审', () => {
+  const diff = Array.from({ length: 150 }, (_, i) => `top${i}-${'y'.repeat(300)}/f.ts`)
+    .map((f) => [`diff --git a/${f} b/${f}`, `--- a/${f}`, `+++ b/${f}`, '@@ -1 +1 @@', '-x', '+y'].join('\n')).join('\n');
+  const world = makeWorld({ diff });
+  const result = world.gate();
+  assert.deepEqual(world.writes(), []);
+  assert.match(result.warnings[0], /^自动任务 issue:改动文件太多\(150 个\),合到顶层目录仍超过 40 KB,issue 放不下,这个 PR 不自动开任务 issue$/);
+  assert.equal(result.outcome, 'review');
 });
 
 test('SC4 不开的情况:豁免分支前缀、autoIssue 关、taskIssue 关;dry-run 只记 dryRunActions、不读不写 GitHub 的写端点', () => {

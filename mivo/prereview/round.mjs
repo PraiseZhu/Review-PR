@@ -1275,6 +1275,7 @@ function ensureTaskIssue(ctx, task, live, result) {
     let files = [];
     try { files = Object.keys(splitDiffByFile(readFileSync(join(ctx.roundDir, `pr-${task.pr}-live.diff`), 'utf8'))); } catch { files = []; }
     const issue = toAutoTaskIssue({ repo, pr: task.pr, title: live.meta?.title ?? '', author: live.meta?.author ?? '', body: live.meta?.body ?? '', files });
+    if (!issue) return warn(`改动文件太多(${files.length} 个),合到顶层目录仍超过 40 KB,issue 放不下,这个 PR 不自动开任务 issue`);
     const bodyFile = join(ctx.roundDir, `auto-task-issue-pr-${task.pr}.md`);
     writeText(bodyFile, issue.body);
     const created = run('gh', ['issue', 'create', '-R', repo, '--title', issue.title, '--body-file', bodyFile], { cwd: CONFIG.repoRoot, env: ENV, allowFail: true, timeoutMs: 60_000 });
