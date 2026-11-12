@@ -241,3 +241,14 @@ test('开关:taskIssue.autoIssue 缺省 off;字段不合法用默认值并告警
   const repo = loadTaskIssueMode(new URL('../config/review-features.json', import.meta.url));
   assert.deepEqual([repo.autoIssue.mode, repo.autoIssue.author, repo.autoIssue.exemptHeadPrefixes], ['enforce', 'praisebuild[bot]', ['chore/changelog-']]);
 });
+
+// Mivo 的 Slack 通报(xindong/mivo-canvas-plugin#2205,PR #2206 的 AUTO_TASK_AUTHOR_RE)从第二行固定句取 PR 作者:
+// 只收 GitHub 用户名字符,机器人带 [bot]。这里用同一条正则核对,对不上通报就写「作者未注明」。
+test('SC3 第二行的作者写法能被 Mivo Slack 通报认出:真人原样;gh 的 app/<name> 写成 <name>[bot];认不出的写 unknown', () => {
+  const MIVO_AUTHOR_RE = /前置审查按 PR #(\d+)（作者 @([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?)）/;
+  const second = (author) => toAutoTaskIssue({ repo: R, pr: 2157, title: 't', author, body: '', files: [] }).body.split('\n')[1];
+  for (const [author, login] of [['aj0928', 'aj0928'], ['app/praise-qa', 'praise-qa[bot]'], ['praise-qa[bot]', 'praise-qa[bot]'], ['', 'unknown'], ['bad name/x', 'unknown']]) {
+    const m = MIVO_AUTHOR_RE.exec(second(author));
+    assert.deepEqual(m && [Number(m[1]), m[2]], [2157, login], author);
+  }
+});

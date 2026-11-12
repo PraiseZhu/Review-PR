@@ -247,6 +247,14 @@ function toScopeFileLines(files, limit) {
   }
   return [];
 }
+// PR 作者写进第二行固定句,Mivo 的 Slack 通报(xindong/mivo-canvas-plugin#2205)从这里取作者 @:只收 GitHub 用户名字符,机器人写成 <name>[bot]。
+// gh 的 JSON 把 App 作者写成 app/<name>,REST 写成 <name>[bot];统一成后者(机器人不会被 @ 到别的同名用户)。认不出的写成 unknown。
+const toAuthorLogin = (author) => {
+  const raw = String(author ?? '').trim();
+  const app = /^app\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)$/.exec(raw);
+  if (app) return `${app[1]}[bot]`;
+  return /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/.test(raw) ? raw : 'unknown';
+};
 const cleanSc = (text) => clip(String(text ?? '').replace(/\s+/g, ' ').replace(/验证\s*[：:]/g, '验证 ').replace(/[。.;；\s]+$/, '').trim(), AUTO_LIMITS.scChars);
 /** 「自动验证」段 → 验收标准描述:代码块或正文里的「命令：… / 结果：…」逐对一条;没有命令行时用顶层列表项。 */
 function toAutoVerifyItems(text) {
@@ -298,7 +306,7 @@ export function toAutoTaskIssue({ repo, pr, title = '', author = '', body = '', 
   const issueTitle = clip(`${AUTO_ISSUE_TITLE_PREFIX}${pr} ${String(title ?? '').replace(/\s+/g, ' ').trim()}`, AUTO_LIMITS.titleChars);
   const parts = [
     AUTO_ISSUE_MARKER(pr),
-    `> 子 issue · 前置审查按 PR #${pr}（作者 @${String(author ?? '').replace(/\[bot\]$/, '')}）自动整理，内容取自 PR 正文；维护者可以直接修改。审查机按本 issue 判断这个 PR 该管什么（PraiseZhu/Review-PR#132 D20）。对应 1 个 PR：${repo}#${pr}。`,
+    `> 子 issue · 前置审查按 PR #${pr}（作者 @${toAuthorLogin(author)}）自动整理，内容取自 PR 正文；维护者可以直接修改。审查机按本 issue 判断这个 PR 该管什么（PraiseZhu/Review-PR#132 D20）。对应 1 个 PR：${repo}#${pr}。`,
     '',
     '## 目标',
     '',
