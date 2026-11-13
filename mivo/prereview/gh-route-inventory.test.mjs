@@ -14,7 +14,7 @@
 //
 // 清单怎么更新:改了 gh 调用后跑 `node --test mivo/prereview/gh-route-inventory.test.mjs`,失败信息会指出缺哪个调用;
 // 在 JSON 里补/改对应条目(sig 取失败信息给出的值),给出可执行的 argv 样本与 expected,再重跑。见 mivo/README.md。
-// 只是依赖变了、参数没变时可以加 GH_ROUTE_INVENTORY_RESIG=1 自动换指纹(#252,规则见 toResignedInventory)。
+// 只是依赖变了、参数没变时可以先 GH_ROUTE_INVENTORY_RESIG=1 预览、确认后 =write 换指纹(#252,规则见 toResignedInventory)。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -821,13 +821,15 @@ export function validateInventory(templates, inventory) {
  * 只换指纹（#252）：同一文件、同一调用名下恰好 1 个陈旧条目对 1 个没登记的调用、次数相同，并且这条陈旧条目在旧源码
  * （oldTemplates，取自 git HEAD）里的调用参数和现在一字不差——只是依赖的函数变了——才把条目的 sig（以及 id 末尾的旧指纹）
  * 换成新值。参数变了、找不到旧调用、不是 1 对 1 或次数不同的都不动，列进 unmatched。纯函数，不改入参。
- * @returns {{ inventory: object, renamed: {from: string, to: string}[], unmatched: string[] }}
+ * 注意：依赖（参数里变量的声明、引用的函数）变了也可能改变实际 argv，扫描器证明不了等价，所以每条 renamed 都带
+ * 依赖差异（removed/added）和清单里登记的 argv 样本，交给人对照确认；不能当成「已证明没变」。
+ * @returns {{ inventory: object, renamed: {from: string, to: string, removed: string[], added: string[], argv: unknown[]}[], unmatched: string[] }}
  */
 export function toResignedInventory(templates, inventory, oldTemplates = []) {
   const scanned = new Map();
   for (const t of templates) {
     const key = keyOf(t);
-    scanned.set(key, { file: t.file, callee: t.callee, sig: t.sig, args: t.args, count: (scanned.get(key)?.count ?? 0) + 1 });
+    scanned.set(key, { file: t.file, callee: t.callee, sig: t.sig, args: t.args, deps: t.deps ?? [], count: (scanned.get(key)?.count ?? 0) + 1 });
   }
   const listedKeys = new Set(inventory.entries.map((e) => `${e.source.file}#${e.source.callee}#${e.source.sig}`));
   const groupOf = (file, callee) => `${file}#${callee}`;
@@ -853,14 +855,16 @@ export function toResignedInventory(templates, inventory, oldTemplates = []) {
     if (olds.length === 1 && news.length === 1 && olds[0].source.count === news[0].count) {
       if (!old) { unmatched.push(`${g}：旧源码里找不到这条调用，没法确认只是指纹变了`); continue; }
       if (old.args !== news[0].args) { unmatched.push(`${g}：调用参数变了，要按新参数补登记`); continue; }
-      next.set(olds[0], news[0].sig);
+      const oldDeps = old.deps ?? [];
+      next.set(olds[0], { sig: news[0].sig, removed: oldDeps.filter((d) => !news[0].deps.includes(d)), added: news[0].deps.filter((d) => !oldDeps.includes(d)) });
     } else unmatched.push(`${g}：陈旧 ${olds.length} 个、没登记 ${news.length} 个${olds.length === 1 && news.length === 1 ? `、次数 ${olds[0].source.count}≠${news[0].count}` : ''}`);
   }
   const entries = inventory.entries.map((e) => {
-    const sig = next.get(e);
-    if (!sig) return e;
+    const hit = next.get(e);
+    if (!hit) return e;
+    const { sig } = hit;
     const id = e.id.endsWith(`.${e.source.sig}`) ? `${e.id.slice(0, -e.source.sig.length)}${sig}` : e.id;
-    renamed.push({ from: `${e.id}#${e.source.sig}`, to: `${id}#${sig}` });
+    renamed.push({ from: `${e.id}#${e.source.sig}`, to: `${id}#${sig}`, removed: hit.removed, added: hit.added, argv: (e.cases ?? []).map((c) => c.argv) });
     return { ...e, id, source: { ...e.source, sig } };
   });
   return { inventory: { ...inventory, entries }, renamed, unmatched };
@@ -949,8 +953,10 @@ const scan = scanGhTemplates(sources);
 const flowSources = new Map([...sources, ...FLOW_ENTRIES.server.map((f) => [f, readFileSync(join(REPO_ROOT, f), 'utf8')])]);
 const flowsByFile = computeFlows(flowSources);
 
-// GH_ROUTE_INVENTORY_RESIG=1：先把「只是指纹变了」的条目换成新指纹并写回清单，再照常校验（#252）。参数真的变了的调用照样报错。
-if (process.env.GH_ROUTE_INVENTORY_RESIG === '1') {
+// GH_ROUTE_INVENTORY_RESIG（#252）：=1 只预览要换的指纹，列出依赖差异和登记的 argv 样本，不写文件、测试照常红；
+// 人对照确认样本仍代表这处调用后，用 =write 写回清单再照常校验。参数文本变了的调用两种模式都不换、照样报错。
+const RESIG = process.env.GH_ROUTE_INVENTORY_RESIG;
+if (RESIG === '1' || RESIG === 'write') {
   // 旧源码取 git HEAD 版本：用来确认陈旧条目对应的那处调用参数没变
   const headSources = new Map();
   for (const f of sources.keys()) {
@@ -958,10 +964,17 @@ if (process.env.GH_ROUTE_INVENTORY_RESIG === '1') {
     if (r.status === 0) headSources.set(f, r.stdout);
   }
   const resigned = toResignedInventory(scan.templates, inventory, scanGhTemplates(headSources).templates);
-  if (resigned.renamed.length) writeFileSync(INVENTORY_PATH, `${JSON.stringify(resigned.inventory, null, 1)}\n`);
-  for (const r of resigned.renamed) console.log(`[resig] ${r.from} → ${r.to}`);
+  for (const r of resigned.renamed) {
+    console.log(`[resig] ${r.from} → ${r.to}`);
+    for (const d of r.removed) console.log(`[resig]   依赖删：${d}`);
+    for (const d of r.added) console.log(`[resig]   依赖增：${d}`);
+    console.log(`[resig]   登记样本：${JSON.stringify(r.argv)}`);
+  }
   for (const u of resigned.unmatched) console.log(`[resig] 没配上，要人看：${u}`);
-  inventory = resigned.inventory;
+  if (RESIG === 'write') {
+    if (resigned.renamed.length) writeFileSync(INVENTORY_PATH, `${JSON.stringify(resigned.inventory, null, 1)}\n`);
+    inventory = resigned.inventory;
+  } else if (resigned.renamed.length) console.log('[resig] 只是预览：确认上面的依赖差异不改变登记样本后，用 GH_ROUTE_INVENTORY_RESIG=write 写回');
 }
 
 if (process.env.GH_ROUTE_INVENTORY_DUMP) writeFileSync(process.env.GH_ROUTE_INVENTORY_DUMP, JSON.stringify({ ...scan, flows: Object.fromEntries(flowsByFile) }, null, 1));
@@ -995,9 +1008,9 @@ test('扫描没有无法解析的 gh 调用(未知写法一律报错,不静默�
   assert.deepEqual(scan.unresolved, []);
 });
 
-test('#252 只换指纹：1 对 1、次数相同且旧调用参数没变才换 sig 和 id 末尾指纹；其余不动', () => {
-  const entry = (id, file, callee, sig, count = 1) => ({ id, source: { file, callee, sig, count }, flows: ['mini'], cases: [] });
-  const t = (file, callee, sig, args = 'x') => ({ file, callee, sig, args });
+test('#252 只换指纹：1 对 1、次数相同且旧调用参数没变才换 sig 和 id 末尾指纹，并列出依赖差异和登记样本；其余不动', () => {
+  const entry = (id, file, callee, sig, count = 1) => ({ id, source: { file, callee, sig, count }, flows: ['mini'], cases: [{ argv: ['api', id] }] });
+  const t = (file, callee, sig, args = 'x', deps = []) => ({ file, callee, sig, args, deps });
   const inv = { schemaVersion: 1, entries: [
     entry('round.run_gh.aaaaaaaaaa', 'mivo/prereview/round.mjs', 'run:gh', 'aaaaaaaaaa'),
     entry('round.run_gh', 'mivo/prereview/round.mjs', 'ghRead', 'cccccccccc'),
@@ -1009,7 +1022,7 @@ test('#252 只换指纹：1 对 1、次数相同且旧调用参数没变才换 s
     entry('e.gh.7777777777', 'mivo/lib/e.mjs', 'gh', '7777777777'),
   ] };
   const templates = [
-    t('mivo/prereview/round.mjs', 'run:gh', 'bbbbbbbbbb'),
+    t('mivo/prereview/round.mjs', 'run:gh', 'bbbbbbbbbb', 'x', ['const keep=1', 'const n=2']),
     t('mivo/prereview/round.mjs', 'ghRead', 'dddddddddd'),
     t('mivo/lib/a.mjs', 'gh', '9999999991'), t('mivo/lib/a.mjs', 'gh', '9999999992'),
     t('mivo/lib/b.mjs', 'gh', '4444444444'),
@@ -1018,15 +1031,15 @@ test('#252 只换指纹：1 对 1、次数相同且旧调用参数没变才换 s
     t('mivo/lib/e.mjs', 'gh', '7777777778'),
   ];
   const oldTemplates = [
-    t('mivo/prereview/round.mjs', 'run:gh', 'aaaaaaaaaa'), t('mivo/prereview/round.mjs', 'ghRead', 'cccccccccc'),
+    t('mivo/prereview/round.mjs', 'run:gh', 'aaaaaaaaaa', 'x', ['const keep=1', 'const n=1']), t('mivo/prereview/round.mjs', 'ghRead', 'cccccccccc'),
     t('mivo/lib/d.mjs', 'gh', '6666666666', "['api','old']"),
   ];
   const before = JSON.stringify(inv);
   const r = toResignedInventory(templates, inv, oldTemplates);
   assert.equal(JSON.stringify(inv), before, '不改入参');
   assert.deepEqual(r.renamed, [
-    { from: 'round.run_gh.aaaaaaaaaa#aaaaaaaaaa', to: 'round.run_gh.bbbbbbbbbb#bbbbbbbbbb' },
-    { from: 'round.run_gh#cccccccccc', to: 'round.run_gh#dddddddddd' },
+    { from: 'round.run_gh.aaaaaaaaaa#aaaaaaaaaa', to: 'round.run_gh.bbbbbbbbbb#bbbbbbbbbb', removed: ['const n=1'], added: ['const n=2'], argv: [['api', 'round.run_gh.aaaaaaaaaa']] },
+    { from: 'round.run_gh#cccccccccc', to: 'round.run_gh#dddddddddd', removed: [], added: [], argv: [['api', 'round.run_gh']] },
   ]);
   assert.deepEqual(r.inventory.entries.map((e) => `${e.id}#${e.source.sig}`), [
     'round.run_gh.bbbbbbbbbb#bbbbbbbbbb', 'round.run_gh#dddddddddd',
