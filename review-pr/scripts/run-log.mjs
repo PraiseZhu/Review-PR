@@ -12,8 +12,8 @@
 // 退出码:0 = 已落盘;1 = stdin 不是合法 JSON 或写盘失败。
 // 跑:node <skill-root>/scripts/run-log.mjs   # JSON 走 stdin(pipe 或 --body-file 风格)
 
-import { existsSync, readFileSync } from 'node:fs';
-import { atomicWriteJson, atomicWriteText, readFdSync } from './runtime-io.mjs';
+import { atomicWriteJson, readFdSync } from './runtime-io.mjs';
+import { appendRunsLogLine, scanRunsLog } from './run-log-store.mjs';
 import { stateFile, print, fail } from './lib.mjs';
 import { applyReviewedEntries, loadReviewState, saveReviewedState } from './review-state.mjs';
 import { buildReviewSummary, formatReviewCard } from './review-summary.mjs';
@@ -48,13 +48,9 @@ try {
   // processed/skipped/failed arrays.
   const summary = buildReviewSummary({ ...data, generatedAt: data.generatedAt || loggedAt });
   const record = { loggedAt, ...data, summary, summaryMarkdown: formatReviewCard(summary) };
-  const rows = existsSync(runsFile) ? readFileSync(runsFile, 'utf8').split(/\r?\n/).filter(Boolean) : [];
-  const matches = [];
-  for (let index = 0; index < rows.length; index += 1) {
-    let previous;
-    try { previous = JSON.parse(rows[index]); } catch { throw new Error(`runs.jsonl 第 ${index + 1} 行损坏`); }
-    if (data.runId && previous.runId === data.runId) matches.push(previous);
-  }
+  // [MIVO-PATCH runs-log-stream-append] 流式查重 + 只追加:runs.jsonl 超过 Node 单串上限
+  // (约 512 MB)时整串读写会抛错,前置审查每轮收尾失败(PraiseZhu/Review-PR#254)。
+  const { matches } = scanRunsLog(runsFile, data.runId);
   if (matches.length > 1) throw new Error(`run ${data.runId} 在 runs.jsonl 中重复`);
   if (matches.length === 1) {
     const previous = matches[0];
@@ -64,9 +60,9 @@ try {
       throw new Error(`run ${data.runId} 的运行日志冲突`);
     }
     record.loggedAt = previous.loggedAt;
-  } else rows.push(JSON.stringify(record));
+  }
   atomicWriteJson(lastRunFile, record);
-  atomicWriteText(runsFile, `${rows.join('\n')}\n`);
+  if (matches.length === 0) appendRunsLogLine(runsFile, JSON.stringify(record));
   if (reviewedEntries.length) saveReviewedState(reviewStateFile, nextReviewState);
 
   print({ ok: true, loggedAt: record.loggedAt, lastRunFile, runsFile, reviewedWatermarks: reviewedEntries.length,
