@@ -178,7 +178,7 @@ test('流式扫描:跨块的行、CRLF、空行、无结尾换行、损坏行号
   const directory = mkdtempSync(join(tmpdir(), 'run-log-store-'));
   try {
     const file = join(directory, 'runs.jsonl');
-    assert.deepEqual(scanRunsLog(file, 'x'), { matches: [], rows: 0, size: 0 });
+    assert.deepEqual(scanRunsLog(file, 'x'), { matches: [], rows: 0, size: 0, tornTail: null });
     const rows = [
       { runId: 'a', pad: 'p'.repeat(37) },
       { runId: 'b', note: '中文跨块' },
@@ -199,5 +199,93 @@ test('流式扫描:跨块的行、CRLF、空行、无结尾换行、损坏行号
     assert.throws(() => scanRunsLog(file, 'a', { chunkBytes: 5 }), /runs\.jsonl 第 2 行损坏/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('撕裂尾行:上次追加被强杀留下半行,扫描不报损坏,下次追加先截掉半行再写', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'run-log-store-'));
+  try {
+    const file = join(directory, 'runs.jsonl');
+    const complete = `${JSON.stringify({ runId: 'a' })}\n${JSON.stringify({ runId: 'b', note: '中文' })}\n`;
+    const torn = JSON.stringify({ runId: 'c', pad: 'z'.repeat(50) }).slice(0, 30);
+    writeFileSync(file, complete + torn);
+    for (const chunkBytes of [1, 4, 9, 1 << 20]) {
+      const scanned = scanRunsLog(file, 'c', { chunkBytes });
+      assert.equal(scanned.rows, 2, `chunkBytes=${chunkBytes}`);
+      assert.deepEqual(scanned.matches, []);
+      assert.deepEqual(scanned.tornTail, { offset: Buffer.byteLength(complete), bytes: Buffer.byteLength(torn) });
+    }
+    for (const chunkBytes of [3, 1 << 20]) {
+      writeFileSync(file, complete + torn);
+      const result = appendRunsLogLine(file, JSON.stringify({ runId: 'c' }), { chunkBytes });
+      assert.deepEqual(result, { repairedTornTailBytes: Buffer.byteLength(torn) });
+      assert.equal(readFileSync(file, 'utf8'), `${complete}${JSON.stringify({ runId: 'c' })}\n`);
+    }
+    // 整份文件只有半行(没有任何换行):截到 0 再写。
+    writeFileSync(file, torn);
+    assert.deepEqual(appendRunsLogLine(file, '{"runId":"only"}', { chunkBytes: 4 }), { repairedTornTailBytes: Buffer.byteLength(torn) });
+    assert.equal(readFileSync(file, 'utf8'), '{"runId":"only"}\n');
+    // 完整的末行(只是缺换行)不算撕裂,原样保留。
+    writeFileSync(file, '{"runId":"x"}');
+    assert.deepEqual(appendRunsLogLine(file, '{"runId":"y"}'), { repairedTornTailBytes: 0 });
+    assert.equal(readFileSync(file, 'utf8'), '{"runId":"x"}\n{"runId":"y"}\n');
+    // 中间行损坏仍报行号,不会被当成撕裂尾行吞掉。
+    writeFileSync(file, `{"runId":"a"}\n{broken\n${torn}`);
+    assert.throws(() => scanRunsLog(file, 'a', { chunkBytes: 5 }), /runs\.jsonl 第 2 行损坏/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('写到一半出错且回滚也失败时留下的半行,下一轮收尾能自愈', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'run-log-store-'));
+  try {
+    const file = join(directory, 'runs.jsonl');
+    const original = '{"runId":"keep"}\n';
+    writeFileSync(file, original);
+    const fsImpl = {
+      ...fs,
+      writeSync(fd, buffer, offset, length) {
+        if (offset === 0) return fs.writeSync(fd, buffer, offset, Math.ceil(length / 2));
+        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      },
+      ftruncateSync() { throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' }); },
+    };
+    assert.throws(() => appendRunsLogLine(file, JSON.stringify({ runId: 'new', pad: 'y'.repeat(64) }), { fsImpl }),
+      /ENOSPC.*回滚到 17 字节失败:EIO/);
+    assert.notEqual(readFileSync(file, 'utf8'), original, '夹具应当留下半行');
+    assert.ok(scanRunsLog(file, 'new').tornTail);
+    appendRunsLogLine(file, JSON.stringify({ runId: 'new' }));
+    assert.equal(readFileSync(file, 'utf8'), `${original}{"runId":"new"}\n`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('run-log 遇到撕裂尾行:照常收尾、报出修掉的字节数,同一轮重试不重复记', () => {
+  const fixture = setupRepo();
+  try {
+    const payload = { runId: 'killed-run', processed: [], generatedAt: '2026-11-14T00:00:00.000Z' };
+    const first = runLogWith(fixture, { runId: 'seed-run', processed: [], generatedAt: '2026-11-14T00:00:00.000Z' });
+    assert.equal(first.status, 0, first.out.error);
+    const { runsFile } = first.out;
+    const seed = readFileSync(runsFile, 'utf8');
+    // 模拟上一次写 killed-run 时进程被强杀:只落了前 40 个字节。
+    writeFileSync(runsFile, seed + JSON.stringify(payload).slice(0, 40));
+
+    const retry = runLogWith(fixture, payload);
+    assert.equal(retry.status, 0, retry.out.error);
+    assert.equal(retry.out.repairedTornTailBytes, 40);
+    const rows = lines(runsFile).map((row) => JSON.parse(row));
+    assert.deepEqual(rows.map((row) => row.runId), ['seed-run', 'killed-run']);
+    assert.ok(readFileSync(runsFile, 'utf8').startsWith(seed));
+
+    const again = runLogWith(fixture, payload);
+    assert.equal(again.status, 0, again.out.error);
+    assert.equal(again.out.loggedAt, retry.out.loggedAt);
+    assert.equal(again.out.repairedTornTailBytes, undefined);
+    assert.equal(lines(runsFile).length, 2);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
   }
 });

@@ -62,10 +62,11 @@ try {
     record.loggedAt = previous.loggedAt;
   }
   atomicWriteJson(lastRunFile, record);
-  if (matches.length === 0) appendRunsLogLine(runsFile, JSON.stringify(record));
+  const appended = matches.length === 0 ? appendRunsLogLine(runsFile, JSON.stringify(record)) : null;
   if (reviewedEntries.length) saveReviewedState(reviewStateFile, nextReviewState);
 
   print({ ok: true, loggedAt: record.loggedAt, lastRunFile, runsFile, reviewedWatermarks: reviewedEntries.length,
+    ...(appended?.repairedTornTailBytes ? { repairedTornTailBytes: appended.repairedTornTailBytes } : {}),
     note: '汇总 JSON 已落盘;会话最终消息只发人类可读摘要,不要再输出这份 JSON' });
 } catch (e) {
   fail(e);
