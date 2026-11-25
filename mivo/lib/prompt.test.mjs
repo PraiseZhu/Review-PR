@@ -8,7 +8,7 @@ import { SKILL_ROOT } from './common.mjs';
 import { loadFocusConfig, toFocusLines } from './focus.mjs';
 
 const prompt = (tier = 'standard', over = {}) => buildReviewPrompt({
-  spec: loadReviewSpec(SKILL_ROOT),
+  spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin',
   ctx: { pr: 7, meta: { title: 't', author: 'a', url: 'u', headRefOid: 'h', baseRefName: 'main', baseRefOid: 'b' } },
   scope: { mode: 'full', reason: '没有上一轮审查记录' }, workdir: '/w',
   inputs: { contextFile: 'c', diffFile: 'd', scopeFile: 's' }, tier, ...over,
@@ -162,7 +162,7 @@ const MATERIAL = { 'AGENTS.md': 'agents v1', 'CLAUDE.md': 'claude v1', 'CONTRIBU
   '.github/pull_request_template.md': 'template v1', 'cindyplugin/DESIGN.md': 'design v1', 'docs/design.md': 'design doc v1',
   'docs/recipes-authoring.md': 'recipes v1' };
 const manifest = ({ files = ['cindyplugin/src/panel.tsx'], material = {}, config = '{"maintainerSource":"allowlist"}', tier = 'standard' } = {}) =>
-  buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier, files, readFile: (path) => ({ ...MATERIAL, ...material })[path] ?? null, config });
+  buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', tier, files, readFile: (path) => ({ ...MATERIAL, ...material })[path] ?? null, config });
 
 test('specDigest:只改实现代码不变;必读或命中的规则变了就变;未命中的规则变了不变', () => {
   const base = specDigestOf(manifest());
@@ -180,6 +180,19 @@ test('specDigest:只改实现代码不变;必读或命中的规则变了就变;�
   assert.equal(m.mustRead['AGENTS.md'], 'agents v1');
   assert.equal(m.pathRules['docs/recipes-authoring.md'], undefined);
   assert.equal(manifest({ material: { 'CONTRIBUTING.md': null } }).mustRead['CONTRIBUTING.md'], null, '文件不存在如实记 null');
+});
+
+test('换仓:任务书首行按被审的仓生成;旧仓的首行与改前逐字一致,换仓后 digest 跟着变一次', () => {
+  // 改前写死的首行原文(main 8dfb22c4 的 prompt.mjs:137)
+  assert.equal(prompt().split('\n')[0], '你是 Mivo 仓(xindong/mivo-canvas-plugin)PR 的独立代码审查 agent。你只审查、不改代码:');
+  assert.equal(prompt('standard', { repo: 'acme/mivo-next' }).split('\n')[0], '你是 Mivo 仓(acme/mivo-next)PR 的独立代码审查 agent。你只审查、不改代码:');
+  const moved = buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'acme/mivo-next', tier: 'standard', files: ['cindyplugin/src/panel.tsx'],
+    readFile: (path) => MATERIAL[path] ?? null, config: '{"maintainerSource":"allowlist"}' });
+  assert.notEqual(specDigestOf(moved), specDigestOf(manifest()));
+  // 没传仓名不猜:直接报错
+  assert.throws(() => prompt('standard', { repo: undefined }), /buildReviewPrompt 的 repo 须是 owner\/name:null/);
+  assert.throws(() => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: [], readFile: () => null, config: '{}' }),
+    /buildReviewPrompt 的 repo 须是 owner\/name/);
 });
 
 // 增量轮专属的固定指令也是任务书:只改它也要让 digest 变,否则同 head 的旧干净报告会被沿用、新指令整轮不执行。
@@ -434,7 +447,7 @@ test('toFocusLines:清单为空或 CI 非全绿时只有顺序与规则两部分
 });
 
 test('specDigest:审查重点一节与 CI 已覆盖清单进 digest,清单变了 digest 就变', () => {
-  const m = (ciCovered) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: ['cindyplugin/src/panel.tsx'],
+  const m = (ciCovered) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: ['cindyplugin/src/panel.tsx'],
     readFile: (path) => MATERIAL[path] ?? null, config: '{}', ciCovered });
   const all = Object.values(m(CI_COVERED).template).join('\n');
   for (const phrase of ['## 审查重点与不重做', 'CI 已覆盖、不要重跑', '- `npx tsc -b`']) assert.ok(all.includes(phrase), `模板缺:${phrase}`);
@@ -474,7 +487,7 @@ test('产品规则 observe:「产品规则」一节在审查重点之后、规�
 });
 
 test('specDigest:产品规则 off 时 manifest 与不传时一致;observe / enforce 带合成规则与「head 无规则」模板,三档 digest 各不相同', () => {
-  const m = (productRulesMode) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: ['cindyplugin/src/panel.tsx'],
+  const m = (productRulesMode) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: ['cindyplugin/src/panel.tsx'],
     readFile: (path) => MATERIAL[path] ?? null, config: '{}', ciCovered: CI_COVERED, ...(productRulesMode ? { productRulesMode } : {}) });
   assert.deepEqual(m('off'), m(undefined));
   assert.equal(m('off').template.productRulesAbsent, undefined);

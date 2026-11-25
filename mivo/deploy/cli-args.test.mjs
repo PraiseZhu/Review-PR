@@ -51,6 +51,9 @@ case "$*" in
   *) echo "gh 替身没准备这个调用: $*" >&2; exit 1 ;;
 esac
 `, { mode: 0o755 });
+  // Mini 生产实例配置:auto-update 从它的 workflowRepo 取目标仓
+  fs.mkdirSync(path.join(home, 'mivo-prereview/config'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'mivo-prereview/config/mivo.json'), JSON.stringify({ instance: 'mivo', workflowRepo: 'xindong/mivo-canvas-plugin' }));
   const env = { ...process.env, HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GH_LOG: ghLog };
   const before = listTree(home);
   return {

@@ -11,6 +11,21 @@ export const SHA_RE = /^[0-9a-f]{40}$/;
 export const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 export const MODES = ['dry-run', 'sandbox', 'live'];
 
+// Mini 生产实例的配置(install-mini.sh 写),相对 $HOME。workflowRepo 是 review-pr.yml、仓库变量和 runner 所在的仓:
+// 换版本(deploy-tuple / auto-update)和换模型(switch)都从这里取目标仓,换仓时只改这一份配置(见 mivo/README.md「换仓」)。
+export const MINI_CONFIG_REL = 'mivo-prereview/config/mivo.json';
+
+/** 从实例配置原文取 workflowRepo;不是 JSON 或值不合法就抛错(写明期望与实际,不带整份配置)。 */
+export function toWorkflowRepo(text, where = MINI_CONFIG_REL) {
+  let config;
+  try { config = JSON.parse(String(text)); } catch { throw new Error(`${where} 不是合法 JSON`); }
+  const repo = config && typeof config === 'object' ? config.workflowRepo : undefined;
+  if (typeof repo !== 'string' || !REPO_RE.test(repo)) {
+    throw new Error(`${where} 的 workflowRepo 不合法:期望 owner/name,实际 ${JSON.stringify(repo ?? null).slice(0, 120)}`);
+  }
+  return repo;
+}
+
 export function run(cmd, args, { cwd, env, input, timeoutMs = 120_000, allowFail = false } = {}) {
   const r = spawnSync(cmd, args, { cwd, env, input, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024 });
   const out = { ok: r.status === 0 && !r.error, status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error?.message ?? null };

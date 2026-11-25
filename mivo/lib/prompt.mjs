@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { SKILL_ROOT } from './common.mjs';
+import { SKILL_ROOT, REPO_RE } from './common.mjs';
 import { ANSWER_SCHEMA } from './report.mjs';
 import { rulingSection, rebuttalSection } from './rulings.mjs';
 import { toHandoffPromptLines } from './handoff.mjs';
@@ -92,6 +92,7 @@ const TIER_HINT = {
 /**
  * @param {object} p
  * @param {object} p.spec loadReviewSpec() 的结果
+ * @param {string} p.repo 被审的仓(owner/name,服务器的 target_repo);进任务书首行,所以也进 specDigest
  * @param {object} p.ctx context.mjs 输出
  * @param {object} p.scope computeReviewScope() 结果
  * @param {string} p.workdir PR head 检出目录(审查 agent 的 cwd)
@@ -101,7 +102,8 @@ const TIER_HINT = {
  * @param {object|null} [p.productRules] 产品规则(lib/product-rules.mjs toProductRulesState 的结果);off 或 null 时任务书不变
  * @param {object|null} [p.taskIssue] 任务 issue 材料(input/task-issue.json,#242);off 或 null 时任务书不变,材料路径取 inputs.taskIssueFile
  */
-export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null, productRules = null, taskIssue = null }) {
+export function buildReviewPrompt({ spec, repo, ctx, scope, workdir, inputs, tier, deferrals = [], rulings = [], rebuttals = [], handoff = null, focus = null, productRules = null, taskIssue = null }) {
+  if (typeof repo !== 'string' || !REPO_RE.test(repo)) throw new Error(`buildReviewPrompt 的 repo 须是 owner/name:${JSON.stringify(repo ?? null)}`);
   const rulesBaseDir = inputs.rulesBaseDir ?? null;
   const meta = ctx.meta ?? {};
   // 维护者 2026-10-14 决定「复审只看新改动」(R14):增量轮的范围写死在这里,并压过规范原文里针对完整 diff 的说法。
@@ -134,7 +136,7 @@ export function buildReviewPrompt({ spec, ctx, scope, workdir, inputs, tier, def
     ].join('\n')
     : '';
   return [
-    '你是 Mivo 仓(xindong/mivo-canvas-plugin)PR 的独立代码审查 agent。你只审查、不改代码:',
+    `你是 Mivo 仓(${repo})PR 的独立代码审查 agent。你只审查、不改代码:`,
     '不修改 PR 文件、不 commit、不 push、不调用 GitHub、不联网。可以在工作目录里读代码、跑只读的定向检查',
     '(依赖已按 lockfile 预装时可跑 `npm run test:unit -- <路径>`、`npx tsc -b` 等);日志写到 /tmp 下,不写进仓库。',
     // 维护者 2026-10-28 决定:codex 在 --ask-for-approval never 下会整条拒绝含 rm -f / rm -rf 的命令
@@ -341,12 +343,13 @@ export function readRuleSources({ paths = [], base, head, git }) {
 /**
  * @param {object} p
  * @param {object} p.spec loadReviewSpec() 的结果
+ * @param {string} p.repo 被审的仓(owner/name):模板按它生成,换仓后 digest 跟着变一次
  * @param {string} p.tier 本轮档位(选档说明随档位变)
  * @param {string[]} p.files 本 PR diff 里的文件
  * @param {(path:string)=>string|null} p.readFile 按审查实际读的版本取文件内容,取不到返回 null
  * @param {string} p.config 生效的 pr-rules 配置原文
  */
-export function buildSpecManifest({ spec, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [], productRulesMode = 'off', taskIssueMode = 'off' }) {
+export function buildSpecManifest({ spec, repo, tier, files = [], readFile, config, handoffMode = 'off', ciCovered = [], productRulesMode = 'off', taskIssueMode = 'off' }) {
   const plan = toRuleMapPlan(spec.ruleMap);
   const hitFiles = [...new Set(plan.rows.filter((row) => row.patterns.some((pattern) => files.some((file) => matchesRulePath(pattern, file))))
     .flatMap((row) => row.files))].sort();
@@ -359,7 +362,7 @@ export function buildSpecManifest({ spec, tier, files = [], readFile, config, ha
   const productRules = productRulesMode === 'off' ? null : TEMPLATE_PRODUCT_RULES(productRulesMode);
   // 任务 issue(#242):off 时不进模板;开着时四个模板都带合成材料,另加「作者陈述级别」与「没关联任务 issue」两份全量模板。
   const taskIssue = taskIssueMode === 'off' ? null : TEMPLATE_TASK_ISSUE(taskIssueMode);
-  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null, rules = productRules, issue = taskIssue) => buildReviewPrompt({ spec, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
+  const toTemplate = (scope, deferrals, rulings = [], rebuttals = [], rulesBaseDir = null, rules = productRules, issue = taskIssue) => buildReviewPrompt({ spec, repo, ctx: TEMPLATE_CTX_CI_PASS, scope, workdir: '<workdir>', tier, deferrals, rulings, rebuttals, handoff,
     focus: { ciCovered }, productRules: rules, taskIssue: issue,
     inputs: { contextFile: '<context>', diffFile: '<diff>', scopeFile: '<scope>', securityScanFile: tier === 'heavy' ? '<security-scan>' : undefined, rulesBaseDir,
       ...(issue ? { taskIssueFile: '<task-issue>' } : {}) } });

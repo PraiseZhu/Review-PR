@@ -19,7 +19,7 @@ const s = JSON.parse(fs.readFileSync(process.env.FAKE_GH_SCENARIO, 'utf8'));
 const a = process.argv.slice(2).join(' ');
 const out = (v) => process.stdout.write(String(v) + '\\n');
 if (s.fail) { process.stderr.write('HTTP 502: Bad Gateway'); process.exit(1); }
-if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin')) out(s.variable);
+if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R ' + s.repo)) out(s.variable);
 else if (a.includes('/check-runs')) out(JSON.stringify(s.checks));
 else if (a.includes('/compare/')) out(s.compare);
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/commits/main ')) out(s.main);
@@ -27,7 +27,9 @@ else { process.stderr.write('gh 替身没准备这个调用: ' + a); process.exi
 `;
 
 // helpers
-function setup(t, toScenario, prepare = () => {}) {
+// 场景的 repo 写进临时 HOME 的 Mini 实例配置(workflowRepo),gh 替身只回答这个仓;noMiniConfig 时不建配置文件。
+function setup(t, toScenarioFor, prepare = () => {}) {
+  const toScenario = (head) => ({ repo: 'xindong/mivo-canvas-plugin', ...toScenarioFor(head) });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-auto-update-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const skill = path.join(root, 'home/mivo-prereview/skill');
@@ -40,7 +42,12 @@ function setup(t, toScenario, prepare = () => {}) {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'gh'), FAKE_GH, { mode: 0o755 });
-  fs.writeFileSync(path.join(root, 'scenario.json'), JSON.stringify(toScenario(head)));
+  const scenario = toScenario(head);
+  fs.writeFileSync(path.join(root, 'scenario.json'), JSON.stringify(scenario));
+  if (!scenario.noMiniConfig) {
+    fs.mkdirSync(path.join(root, 'home/mivo-prereview/config'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'home/mivo-prereview/config/mivo.json'), JSON.stringify({ instance: 'mivo', targetRepo: scenario.repo, workflowRepo: scenario.repo }));
+  }
   prepare(root);
   const env = { ...process.env, HOME: path.join(root, 'home'), PATH: `${bin}${path.delimiter}${process.env.PATH}`,
     FAKE_GH_SCENARIO: path.join(root, 'scenario.json') };
@@ -54,6 +61,19 @@ test('已是最新:前置检查跳过本轮(exit 2),检查完整成功时打印 
   assert.equal(r.status, 2, r.stderr);
   assert.match(r.stdout, /已是最新/);
   assert.match(r.stdout, /^CINDY_PRECHECK_OK$/m);
+});
+
+test('换仓:读的是 Mini 实例配置 workflowRepo 指向的仓;没有配置文件就报「查不了」(exit 1)', (t) => {
+  // gh 替身只回答 acme/mivo-next 的仓库变量:还读旧仓就会失败
+  const moved = setup(t, (head) => ({ repo: 'acme/mivo-next', variable: head, main: head }));
+  const r = moved('--check');
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stdout, /已是最新/);
+  const missing = setup(t, (head) => ({ noMiniConfig: true, variable: head, main: head }));
+  const m = missing('--check');
+  assert.equal(m.status, 1);
+  assert.match(m.stderr, /查不了线上或 main 的状态:没有 ~\/mivo-prereview\/config\/mivo\.json,不知道目标仓/);
+  assert.doesNotMatch(m.stdout, /CINDY_PRECHECK_OK/);
 });
 
 test('有新版本且 CI 全部成功:前置检查放行(exit 0)', (t) => {

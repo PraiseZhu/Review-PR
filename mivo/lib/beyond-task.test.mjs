@@ -147,7 +147,7 @@ test('SC2 上限:带任务范围规则时整节不超过 20 KB,其余情况仍�
 });
 
 test('SC2 任务书版本:开关 observe 与 enforce 的 specDigest 不同(规则文字进了模板)', () => {
-  const manifest = (taskIssueMode) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: [], readFile: () => null, config: '{}', taskIssueMode });
+  const manifest = (taskIssueMode) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: [], readFile: () => null, config: '{}', taskIssueMode });
   assert.notEqual(specDigestOf(manifest('observe')), specDigestOf(manifest('enforce')));
   assert.ok(manifest('enforce').template.full.includes('**任务范围**'));
   assert.ok(!manifest('enforce').template.taskIssueAuthor.includes('**任务范围**'));

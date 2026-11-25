@@ -20,9 +20,9 @@ import { fileURLToPath } from 'node:url';
 import { WF_PATH, toCliArgs, toUpdateDecision, toCheckExit, toCompleteFrame, toDeployArgs, toAutoUpdateFinish } from './tuple-lib.mjs';
 import { reconcileOrphanHold } from './orphan-hold.mjs';
 import { toConsumerStepNote } from './issue-agent-consumers.mjs';
+import { MINI_CONFIG_REL, toWorkflowRepo } from '../lib/common.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = 'xindong/mivo-canvas-plugin';
 const SKILL_REPO = 'PraiseZhu/Review-PR';
 const SKILL_DIR = path.join(os.homedir(), 'mivo-prereview/skill');
 const MAX_WAIT_MIN = 40;
@@ -54,9 +54,19 @@ function finish(code, text) {
   process.exitCode = code;
 }
 
+// 目标仓取自本机(Mini)生产实例配置的 workflowRepo,第一次用到时读一次;读不到时 inspect 的调用方报「查不了」。
+let targetRepo = null;
+function repo() {
+  if (targetRepo) return targetRepo;
+  const file = path.join(os.homedir(), MINI_CONFIG_REL);
+  if (!fs.existsSync(file)) throw new Error(`没有 ~/${MINI_CONFIG_REL},不知道目标仓`);
+  targetRepo = toWorkflowRepo(fs.readFileSync(file, 'utf8'), `~/${MINI_CONFIG_REL}`);
+  return targetRepo;
+}
+
 // 读线上 tuple 与 main,给出要不要换。
 function inspect() {
-  const current = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量 MIVO_REVIEW_SKILL_SHA');
+  const current = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', repo()]), '读仓库变量 MIVO_REVIEW_SKILL_SHA');
   const checkout = must(run('git', ['-C', SKILL_DIR, 'rev-parse', 'HEAD']), `读 ${SKILL_DIR} 的检出`);
   const target = must(run('gh', ['api', `repos/${SKILL_REPO}/commits/main`, '--jq', '.sha']), '读 Review-PR main');
   if (checkout !== current || target === current) {
@@ -68,7 +78,7 @@ function inspect() {
   return { current, target, decision: toUpdateDecision({ current, checkout, target, compare, checks }) };
 }
 function mainWorkflowSha() {
-  const raw = must(run('gh', ['api', `repos/${REPO}/contents/${WF_PATH}?ref=main`, '--jq', '.content']), `读 Mivo main 上的 ${WF_PATH}`);
+  const raw = must(run('gh', ['api', `repos/${repo()}/contents/${WF_PATH}?ref=main`, '--jq', '.content']), `读 ${repo()} main 上的 ${WF_PATH}`);
   return createHash('sha256').update(Buffer.from(raw.replace(/\s/g, ''), 'base64')).digest('hex');
 }
 // 整组换上:deploy-tuple 的输出全写日志,stdout 留给收尾帧。

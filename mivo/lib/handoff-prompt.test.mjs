@@ -14,7 +14,7 @@ const review = {
 };
 const item = (r, over = {}) => ({ id: r.id, contentHash: r.contentHash, files: r.files, action: 'recheck', reason: '涉及文件 src/r.ts 本轮改了', previousCoverage: null, previousCoverageMeta: null, ...over });
 const prompt = (scope, handoff = { featureMode: 'observe', facts: null, review }) => buildReviewPrompt({
-  spec: loadReviewSpec(SKILL_ROOT), ctx: { pr: 77, meta: { title: 't', author: 'a', url: 'u', headRefOid: 'h', baseRefName: 'main', baseRefOid: 'b' } },
+  spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', ctx: { pr: 77, meta: { title: 't', author: 'a', url: 'u', headRefOid: 'h', baseRefName: 'main', baseRefOid: 'b' } },
   scope, workdir: '/w', inputs: { contextFile: 'c', diffFile: 'd', scopeFile: 's' }, tier: 'standard', handoff,
 });
 const incremental = { mode: 'incremental', reason: '增量', files: ['src/a.ts', 'src/r.ts'], previousFindings: [],
@@ -72,7 +72,7 @@ test('review 不可用时沿用原有说明;off 时没有交接一节', () => {
 
 test('specDigest:交接模板文案进 digest;真实 R 数据不进;off 与 observe 不同', () => {
   const spec = loadReviewSpec(SKILL_ROOT);
-  const make = (handoffMode) => buildSpecManifest({ spec, tier: 'standard', files: ['a.ts'], readFile: () => null, config: '{}', handoffMode });
+  const make = (handoffMode) => buildSpecManifest({ spec, repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: ['a.ts'], readFile: () => null, config: '{}', handoffMode });
   const off = make('off');
   const on = make('observe');
   assert.notEqual(specDigestOf(off), specDigestOf(on));
