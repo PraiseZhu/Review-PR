@@ -192,16 +192,57 @@ export const isReviewVariable = (name) => (/^MIVO_REVIEW_/.test(name) || REVIEW_
 
 const unknownItem = (area, item, read) => ({ area, item, status: 'unknown', detail: `查不了:${read.error}` });
 const missingNames = (want, have) => want.filter((name) => !have.includes(name));
+// 值不按旧仓对照的变量:MODE 按命令清单先写 dry-run;RUNNER_LABEL 另按清单核;新建仓的看门狗 issue 要换成新仓的编号。
+const isValueExempt = (name, kind) => name === 'MIVO_REVIEW_MODE' || name === 'MIVO_REVIEW_RUNNER_LABEL'
+  || (kind === 'fresh' && name === 'MIVO_REVIEW_WATCHDOG_ISSUE');
+const toShownValue = (value) => { const text = JSON.stringify(value); return text.length > 60 ? `${text.slice(0, 60)}…` : text; };
+// 数组按元素排序、对象按键排序后的 JSON:规则参数里的数组(必需检查、合并方式)是集合,重建时顺序可能变。
+const toCanonicalJson = (value) => {
+  if (Array.isArray(value)) return `[${value.map(toCanonicalJson).sort().join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${toCanonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value ?? null);
+};
+// a 里有、b 里抵扣不掉的规则类型(同一条规则在两套规则集里各出现一次,两边都要两次)。元素是 { type, key }。
+const toUnmatchedTypes = (a, b) => {
+  const left = b.map((rule) => rule.key);
+  return a.filter((rule) => { const at = left.indexOf(rule.key); if (at < 0) return true; left.splice(at, 1); return false; }).map((rule) => rule.type);
+};
+const toRequiredChecks = (rules) => [...new Set(rules.filter((rule) => rule.type === 'required_status_checks')
+  .flatMap((rule) => (rule.parameters?.required_status_checks ?? []).map((check) => check.context)))].sort();
+
+/**
+ * 默认分支上实际生效的规则(仓库、组织、企业三级合起来),新仓按旧仓逐条对照。只比类型和参数,不比挂在哪个规则集上:
+ * 换仓后规则集 id 必然不同,规则集同名也不代表内容一样。oldRules / newRules 是读数 { ok, value: [{type, parameters}] }。
+ */
+function toBranchRulesItems(area, oldRules, newRules) {
+  if (!oldRules.ok) return [unknownItem(area, '旧仓默认分支生效规则(对照基准)', oldRules)];
+  if (!newRules.ok) return [unknownItem(area, '新仓默认分支生效规则', newRules)];
+  const [oldChecks, newChecks] = [toRequiredChecks(oldRules.value), toRequiredChecks(newRules.value)];
+  const lackingChecks = missingNames(oldChecks, newChecks);
+  const extraChecks = missingNames(newChecks, oldChecks);
+  const differ = (lacking, extra) => [lacking.length ? `新仓缺 ${lacking.join('、')}` : '', extra.length ? `新仓多 ${extra.join('、')}` : ''].filter(Boolean).join(';');
+  const keyed = (rules) => rules.map((rule) => ({ type: rule.type, key: toCanonicalJson({ type: rule.type, parameters: rule.parameters ?? null }) }));
+  const [oldKeyed, newKeyed] = [keyed(oldRules.value), keyed(newRules.value)];
+  const lackingRules = toUnmatchedTypes(oldKeyed, newKeyed);
+  const extraRules = toUnmatchedTypes(newKeyed, oldKeyed);
+  return [
+    { area, item: '默认分支必需检查(按旧仓对照)', status: lackingChecks.length || extraChecks.length ? 'mismatch' : 'ok',
+      detail: differ(lackingChecks, extraChecks) || `${oldChecks.length} 项一致` },
+    { area, item: '默认分支生效规则(含组织、企业级,按旧仓逐条对照)', status: lackingRules.length || extraRules.length ? 'mismatch' : 'ok',
+      detail: lackingRules.length || extraRules.length ? `类型或参数对不上:${differ(lackingRules, extraRules)}` : `${oldKeyed.length} 条一致` },
+  ];
+}
 
 /**
  * 新仓的 GitHub 设置。每个读数是 { ok: true, value } 或 { ok: false, error }:
  * repo {full_name, default_branch, archived};workflow(review-pr.yml 的 state);oldVariables / newVariables {名字: 值};
- * secrets / orgSecrets / environments / labels / oldLabels / rulesets / oldRulesets 名字数组;runners [{status, labels}]。
+ * secrets / orgSecrets / environments / labels / oldLabels / rulesets / oldRulesets 名字数组;runners [{status, labels}];
+ * oldBranchRules / newBranchRules 两边默认分支上实际生效的规则 [{type, parameters}]。
  */
 export function toSettingsReport(manifest, reads) {
   const items = [];
   const area = '新仓 GitHub 设置';
-  const { repo, workflow, oldVariables, newVariables, secrets, orgSecrets, environments, labels, oldLabels, rulesets, oldRulesets, runners } = reads;
+  const { repo, workflow, oldVariables, newVariables, secrets, orgSecrets, environments, labels, oldLabels, rulesets, oldRulesets, oldBranchRules, newBranchRules, runners } = reads;
   if (!repo.ok) items.push({ area, item: `仓 ${manifest.newRepo}`, status: 'missing', detail: `读不到:${repo.error}` });
   else {
     items.push({ area, item: `仓 ${manifest.newRepo}`, status: repo.value.archived ? 'invalid' : 'ok', detail: repo.value.archived ? '仓已归档' : '' });
@@ -220,10 +261,12 @@ export function toSettingsReport(manifest, reads) {
       const want = Object.keys(oldVariables.value).filter(isReviewVariable).sort();
       const lacking = missingNames(want, have);
       items.push({ area, item: '审查机仓库变量(按旧仓对照)', status: lacking.length ? 'missing' : 'ok', detail: lacking.length ? `缺 ${lacking.join('、')}` : `${want.length} 个都在` });
-      const oldSha = oldVariables.value.MIVO_REVIEW_SKILL_SHA;
-      const newSha = newVariables.value.MIVO_REVIEW_SKILL_SHA;
-      if (newSha !== undefined && oldSha !== undefined && newSha !== oldSha) {
-        items.push({ area, item: 'MIVO_REVIEW_SKILL_SHA', status: 'mismatch', detail: `新仓 ${newSha.slice(0, 7)},旧仓 ${oldSha.slice(0, 7)}:两边要钉同一个审查机版本` });
+      for (const name of want) {
+        const [newValue, oldValue] = [newVariables.value[name], oldVariables.value[name]];
+        if (newValue === undefined || newValue === oldValue || isValueExempt(name, manifest.kind)) continue;
+        items.push({ area, item: name, status: 'mismatch', detail: name === 'MIVO_REVIEW_SKILL_SHA'
+          ? `新仓 ${newValue.slice(0, 7)},旧仓 ${oldValue.slice(0, 7)}:两边要钉同一个审查机版本`
+          : `新仓 ${toShownValue(newValue)},旧仓 ${toShownValue(oldValue)}:要和旧仓一样` });
       }
     }
     const label = newVariables.value.MIVO_REVIEW_RUNNER_LABEL;
@@ -243,6 +286,7 @@ export function toSettingsReport(manifest, reads) {
   else names('label(按旧仓对照)', labels, [...oldLabels.value].sort());
   if (!oldRulesets.ok) items.push(unknownItem(area, '旧仓规则集(对照基准)', oldRulesets));
   else names('规则集(含组织级,按旧仓对照)', rulesets, [...oldRulesets.value].sort());
+  items.push(...toBranchRulesItems(area, oldBranchRules, newBranchRules));
   if (!runners.ok) items.push(unknownItem(area, `带 ${manifest.runnerLabel} 标签的在线 runner`, runners));
   else {
     const online = runners.value.filter((r) => r.status === 'online' && r.labels.includes(manifest.runnerLabel)).length;
@@ -368,7 +412,7 @@ export function toCutoverPlan({ manifest, oldVariables = null, skillSha = null, 
     '',
     `5. 环境 ${REQUIRED_ENVIRONMENTS.join('、')}(部署分支只允许 ${defaultBranch})和它的 MIVO_SLACK_BOT_TOKEN。`,
     `6. label:${fresh ? `gh label clone ${oldRepo} -R ${newRepo}` : '转移时随仓过去,预检会核对'}。`,
-    `7. 规则集与分支保护:按旧仓 gh api 'repos/${oldRepo}/rulesets?includes_parents=true' 逐套重建,必需检查含 review-pr、pr-handoff-gate。`,
+    `7. 规则集与分支保护:按旧仓 gh api 'repos/${oldRepo}/rulesets?includes_parents=true' 逐套重建(组织级的确认也管到新仓);重建后跑 --preview,它按旧仓逐条对照默认分支上实际生效的规则和必需检查。`,
     '',
     '## 2. 服务器管理员(Mivo 服务器,生产服务,当次点名授权后做)',
     '',

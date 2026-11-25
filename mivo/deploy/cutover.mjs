@@ -84,6 +84,8 @@ function settingsItems(manifest) {
   const { oldRepo, newRepo } = manifest;
   const variables = (repo) => toRead(gh(['api', `repos/${repo}/actions/variables?per_page=100`, '--paginate', '--jq', '.variables[] | [.name, .value] | @json']),
     (text) => Object.fromEntries(lines(text).map((line) => JSON.parse(line))));
+  const branchRules = (repo, branch) => toRead(gh(['api', `repos/${repo}/rules/branches/${encodeURIComponent(branch)}?per_page=100`, '--paginate',
+    '--jq', '.[] | {type, parameters} | @json']), (text) => lines(text).map((line) => JSON.parse(line)));
   return toSettingsReport(manifest, {
     repo: toRead(gh(['api', `repos/${newRepo}`, '--jq', '{full_name, default_branch, archived}']), JSON.parse),
     workflow: toRead(gh(['api', `repos/${newRepo}/actions/workflows/review-pr.yml`, '--jq', '.state']), (text) => text.trim()),
@@ -96,6 +98,8 @@ function settingsItems(manifest) {
     oldLabels: ghNames(`repos/${oldRepo}/labels?per_page=100`, '.[].name'),
     rulesets: ghNames(`repos/${newRepo}/rulesets?per_page=100&includes_parents=true`, '.[].name'),
     oldRulesets: ghNames(`repos/${oldRepo}/rulesets?per_page=100&includes_parents=true`, '.[].name'),
+    oldBranchRules: branchRules(oldRepo, manifest.oldBranch),
+    newBranchRules: branchRules(newRepo, manifest.defaultBranch),
     runners: toRead(gh(['api', `repos/${newRepo}/actions/runners?per_page=100`, '--paginate', '--jq', '.runners[] | {status, labels: [.labels[].name]} | @json']),
       (text) => lines(text).map((line) => JSON.parse(line))),
   });

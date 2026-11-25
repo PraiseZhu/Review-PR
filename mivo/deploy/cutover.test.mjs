@@ -90,6 +90,19 @@ test('漂移:存储文件搬了目录 → drift;必需文件没了 → missing;�
 
 const ok = (value) => ({ ok: true, value });
 const fail = (error) => ({ ok: false, error });
+const checksRule = (...contexts) => ({ type: 'required_status_checks',
+  parameters: { strict_required_status_checks_policy: false, required_status_checks: contexts.map((context) => ({ context, integration_id: 15368 })) } });
+const OLD_RULES = [
+  { type: 'deletion', parameters: null },
+  { type: 'pull_request', parameters: { allowed_merge_methods: ['squash', 'merge'], require_code_owner_review: true } },
+  checksRule('verify', 'review-pr'),
+];
+// 同一组规则:顺序、参数键顺序、数组顺序都换了(重建规则集后 GitHub 返回的顺序可能不同),不算差异。
+const NEW_RULES = [
+  checksRule('review-pr', 'verify'),
+  { type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['merge', 'squash'] } },
+  { type: 'deletion' },
+];
 const settingsReads = (over = {}) => ({
   repo: ok({ full_name: NEW, default_branch: 'main', archived: false }),
   workflow: ok('active'),
@@ -99,6 +112,7 @@ const settingsReads = (over = {}) => ({
   secrets: ok([...REQUIRED_SECRETS]), orgSecrets: ok(['ANTHROPIC_API_KEY']), environments: ok(['slack-inbound']),
   labels: ok(['review:merge-ready']), oldLabels: ok(['review:merge-ready']),
   rulesets: ok(['main-required-checks']), oldRulesets: ok(['main-required-checks']),
+  oldBranchRules: ok(OLD_RULES), newBranchRules: ok(NEW_RULES),
   runners: ok([{ status: 'online', labels: ['self-hosted', 'mivo-review'] }]),
   ...over,
 });
@@ -128,6 +142,35 @@ test('GitHub 设置:齐了全通过;心跳和自动合并这类非审查机变�
   // 新仓还不存在
   const absent = toSettingsReport(manifest(), settingsReads({ repo: fail('HTTP 404'), workflow: fail('HTTP 404') }));
   assert.equal(absent[0].status, 'missing');
+});
+
+test('GitHub 设置:变量值和默认分支规则按旧仓逐条对照;同名但值或内容不同也报,MODE、RUNNER_LABEL、新建仓的看门狗 issue 不比值', () => {
+  const find = (items, item) => items.find((i) => i.item === item);
+  const all = toSettingsReport(manifest(), settingsReads());
+  assert.equal(find(all, '默认分支必需检查(按旧仓对照)').detail, '2 项一致');
+  assert.equal(find(all, '默认分支生效规则(含组织、企业级,按旧仓逐条对照)').detail, '3 条一致');
+
+  const oldVariables = ok({ MIVO_REVIEW_MODE: 'live', MIVO_REVIEW_ROLE_PRIMARY: '{"model":"m1"}', MIVO_REVIEW_WATCHDOG_ISSUE: '12', MIVO_REVIEW_RUNNER_LABEL: 'mivo-review' });
+  const newVariables = ok({ MIVO_REVIEW_MODE: 'dry-run', MIVO_REVIEW_ROLE_PRIMARY: '{"model":"m2"}', MIVO_REVIEW_WATCHDOG_ISSUE: '3', MIVO_REVIEW_RUNNER_LABEL: 'mivo-review' });
+  const wrong = toSettingsReport(manifest(), settingsReads({
+    oldVariables, newVariables,
+    newBranchRules: ok([checksRule('verify'), { type: 'pull_request', parameters: { allowed_merge_methods: ['squash', 'merge'], require_code_owner_review: false } },
+      { type: 'deletion', parameters: null }]),
+  }));
+  assert.deepEqual([find(wrong, 'MIVO_REVIEW_ROLE_PRIMARY').status, find(wrong, 'MIVO_REVIEW_ROLE_PRIMARY').detail],
+    ['mismatch', '新仓 "{\\"model\\":\\"m2\\"}",旧仓 "{\\"model\\":\\"m1\\"}":要和旧仓一样']);
+  assert.equal(find(wrong, 'MIVO_REVIEW_WATCHDOG_ISSUE').status, 'mismatch'); // 转移:issue 编号保留,值要一样
+  assert.equal(find(wrong, 'MIVO_REVIEW_MODE').status, 'info');
+  assert.equal(wrong.filter((i) => i.item === 'MIVO_REVIEW_RUNNER_LABEL').length, 1); // 只有按清单核的那一条
+  assert.deepEqual([find(wrong, '默认分支必需检查(按旧仓对照)').status, find(wrong, '默认分支必需检查(按旧仓对照)').detail], ['mismatch', '新仓缺 review-pr']);
+  assert.equal(find(wrong, '默认分支生效规则(含组织、企业级,按旧仓逐条对照)').detail,
+    '类型或参数对不上:新仓缺 pull_request、required_status_checks;新仓多 required_status_checks、pull_request');
+  assert.equal(toExitCode(wrong), 1);
+
+  const fresh = toSettingsReport(manifest({ kind: 'fresh' }), settingsReads({ oldVariables, newVariables }));
+  assert.equal(find(fresh, 'MIVO_REVIEW_WATCHDOG_ISSUE'), undefined); // 新建仓:换成新仓的 issue 编号
+  const unread = toSettingsReport(manifest(), settingsReads({ newBranchRules: fail('HTTP 403') }));
+  assert.deepEqual([find(unread, '新仓默认分支生效规则').status, toExitCode(unread)], ['unknown', 2]);
 });
 
 test('Mini 本机:配置还指旧仓记 info;白名单、巡检、issue 评估缺新仓记缺;找不到 issue 评估目录记查不了', () => {

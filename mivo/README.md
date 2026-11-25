@@ -770,7 +770,7 @@ node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --plan      # 切�
 ```
 
 - 路径漂移：`pr-rules.json` 的路径字段（红线、受保护路径、界面、架构、安全、规则文档等）、`review-features.json` 的 `taskIssue.alwaysInScope` 与 `focus.ciCovered`、`rule-map.md` 的必读文件与命中路径、审查机代码写死的 Mivo 仓内文件（`cutover-lib.mjs` 的 `REQUIRED_FILES`），按审查时同样的匹配方式在新旧两棵文件树上各数一遍。旧仓命中、新仓一个都不命中记「漂移」（新仓目录结构变了，这条规则会悄悄失效，例如存储重构把 `shared/persist-contract.ts` 搬走后红线不再触发）；两边都不命中是防将来出现的规则（如 `^secrets/`），不算问题；写死的文件新仓没有记「缺」。`pr-rules.json` 新加的路径字段要先在 `cutover-lib.mjs` 的 `PR_RULES_FIELDS` 登记匹配方式，没登记的会报「查不了」。
-- GitHub 设置：新仓存在且默认分支对、`review-pr.yml` 已登记 active、审查机的仓库变量（`MIVO_REVIEW_*`、两个 App ID、`MIVO_SLACK_CHANNEL_ID`，按旧仓对照，Mini 运行时写的心跳和 key 状态不算）、`MIVO_REVIEW_RUNNER_LABEL` 等于清单的 `runnerLabel`（不设会落到 workflow 缺省 `mivo-review-next`，任务一直排队）、`MIVO_REVIEW_SKILL_SHA` 与旧仓一致、三个仓库 secret 与组织 secret `ANTHROPIC_API_KEY`、环境 `slack-inbound`、label 与规则集（含组织级，按旧仓对照）、带标签的在线 runner。只用 GET；没权限读的记「查不了」。
+- GitHub 设置：新仓存在且默认分支对、`review-pr.yml` 已登记 active、审查机的仓库变量（`MIVO_REVIEW_*`、两个 App ID、`MIVO_SLACK_CHANNEL_ID`，按旧仓对照名字和值，Mini 运行时写的心跳和 key 状态不算；`MIVO_REVIEW_MODE` 按命令清单先是 `dry-run`，只显示不比；新建仓的 `MIVO_REVIEW_WATCHDOG_ISSUE` 换成新仓编号，也不比值）、`MIVO_REVIEW_RUNNER_LABEL` 等于清单的 `runnerLabel`（不设会落到 workflow 缺省 `mivo-review-next`，任务一直排队）、三个仓库 secret 与组织 secret `ANTHROPIC_API_KEY`、环境 `slack-inbound`、label 与规则集名字（含组织级，按旧仓对照）、默认分支上实际生效的规则和必需检查（仓库、组织、企业三级合起来，按旧仓逐条比类型和参数；规则集同名不代表内容一样）、带标签的在线 runner。只用 GET；没权限读的记「查不了」。
 - Mini 本机：实例配置现在指向哪、三个 App 分流白名单（`~/mivo-gh-router/*/config.json` 的 `repos`）、巡检脚本里的旧仓名、issue 评估的 `repoAllowlist`。
 - 退出码：0 全部通过；1 有缺项、漂移或不一致；2 没有缺项但有查不了的项；3 参数或切换清单不合法（什么都没读）。
 - 命令清单只抄审查机自己的变量，`MIVO_REVIEW_MODE` 先写 `dry-run`，旧仓其它变量（自动合并等）只列名字、不迁：照抄会在新仓误开那些自动化。
