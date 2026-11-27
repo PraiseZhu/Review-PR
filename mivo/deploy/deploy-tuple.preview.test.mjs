@@ -36,6 +36,28 @@ test('不带 --pr 时 main 上的 review-pr.yml 必须已是新值:对不上就�
   assert.match(r.stdout + r.stderr, /不合 PR 时 main 上 \.github\/workflows\/review-pr\.yml 必须已经是新值/);
 });
 
+test('换仓:目标仓取自 Mini 实例配置的 workflowRepo,所有 gh 调用都打到新仓', (t) => {
+  // gh 替身只回答 acme/mivo-next:脚本只要还有一处用旧仓名,就会落进「没准备这个调用」而失败
+  const f = setupFixture(t, { repo: 'acme/mivo-next' });
+  const r = f.deploy({ extra: ['--preview'] });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /只读预检通过/);
+});
+
+test('Mini 上没有实例配置、或 workflowRepo 不合法:预检第一步就失败,不拿锁、不写停点', (t) => {
+  const missing = setupFixture(t, { miniConfig: null });
+  const r = missing.deploy();
+  assert.equal(r.status, 1, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout + r.stderr, /Mini 上没有 ~\/mivo-prereview\/config\/mivo\.json,不知道目标仓/);
+  assert.equal(missing.exists('mivo-prereview/state/mivo/mivo/deploy-tuple.lock'), false);
+  assert.equal(missing.exists('mivo-prereview/state/mivo/mivo/deploy-hold.json'), false);
+  assert.deepEqual(missing.ghState().sets, []);
+  const bad = setupFixture(t, { miniConfig: '{"workflowRepo":"no-slash"}' });
+  const b = bad.deploy({ extra: ['--preview'] });
+  assert.equal(b.status, 1);
+  assert.match(b.stdout + b.stderr, /Mini ~\/mivo-prereview\/config\/mivo\.json 的 workflowRepo 不合法:期望 owner\/name,实际 "no-slash"/);
+});
+
 test('源码里不再有 trust 读写、prerequisites 步骤和 prereq-check.mjs', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   for (const gone of ['TRUST_REL', 'readTrust', 'casTrust', 'switchTrust', 'trustTuple', 'toTrustText', 'prerequisites', 'PREREQ_SOURCE']) {

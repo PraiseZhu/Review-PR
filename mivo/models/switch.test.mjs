@@ -24,6 +24,7 @@ const saveVars = (v) => fs.writeFileSync(path.join(dir, 'vars.json'), JSON.strin
 const ctl = JSON.parse(fs.readFileSync(path.join(dir, 'ctl.json'), 'utf8'));
 const flag = (name) => args[args.indexOf(name) + 1];
 const fields = () => Object.fromEntries(args.flatMap((a, i) => (a === '-f' ? [args[i + 1].split('=')] : [])));
+fs.appendFileSync(path.join(dir, 'calls.log'), args.join(' ') + '\\n');
 if (args[0] === 'api' && args[1].includes('/actions/variables')) {
   for (const [k, v] of Object.entries(vars())) console.log(JSON.stringify([k, v]));
 } else if (args[0] === 'api' && args[1].includes('/actions/workflows/')) {
@@ -176,5 +177,30 @@ test('--wait:后台任务的 pid 已被别的进程复用(命令行里没有这�
     const out = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.equal(r.status, 2, out.summary);
     assert.match(out.summary, /意外结束/);
+  } finally { t.done(); }
+});
+
+test('换仓:不给 --repo 时取 ~/mivo-prereview/config/mivo.json 的 workflowRepo;没有配置就报错,--wait 不需要它', () => {
+  const t = setup();
+  try {
+    const home = join(t.dir, 'home');
+    const env = { ...process.env, HOME: home, PATH: `${join(t.dir, 'bin')}${delimiter}${process.env.PATH}`, MIVO_MODEL_SWITCH_STATE: join(t.dir, 'state') };
+    const noRepo = (...args) => spawnSync(process.execPath, [SWITCH, '--json', ...args], { encoding: 'utf8', timeout: 30_000, env });
+    // 没有配置文件:不猜仓名,参数阶段就失败,一次 gh 都不调
+    const missing = noRepo('--status');
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /没给 --repo,也没有 ~\/mivo-prereview\/config\/mivo\.json 可以读出目标仓/);
+    assert.equal(existsSync(join(t.dir, 'calls.log')), false);
+    // --wait 只读本机任务结果,没有配置也能跑
+    const id = 'job-primary-0123456789ab';
+    mkdirSync(join(t.dir, 'state', 'jobs'), { recursive: true });
+    writeFileSync(join(t.dir, 'state', 'jobs', `${id}.json`), JSON.stringify({ exitCode: 0, changed: false, summary: '已切换' }));
+    assert.equal(noRepo('--wait', id).status, 0);
+    // 有配置文件:读的是配置里的新仓
+    mkdirSync(join(home, 'mivo-prereview', 'config'), { recursive: true });
+    writeFileSync(join(home, 'mivo-prereview', 'config', 'mivo.json'), JSON.stringify({ instance: 'mivo', workflowRepo: 'acme/mivo-next' }));
+    const r = noRepo('--status');
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(readFileSync(join(t.dir, 'calls.log'), 'utf8'), /^api repos\/acme\/mivo-next\/actions\/variables\?per_page=100 /m);
   } finally { t.done(); }
 });

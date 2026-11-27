@@ -32,25 +32,26 @@ const args = process.argv.slice(2);
 const a = args.join(' ');
 const out = (v) => process.stdout.write(String(v) + '\\n');
 const save = () => fs.writeFileSync(file, JSON.stringify(s));
-if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin')) {
+// 只回答 s.repo(夹具里 Mini 配置的 workflowRepo)上的调用:脚本打到别的仓会落进最后一支报错。
+if (a.startsWith('variable get MIVO_REVIEW_SKILL_SHA -R ' + s.repo)) {
   if (s.variableSeq) { out(s.variableSeq[Math.min(s.variableReads, s.variableSeq.length - 1)]); s.variableReads += 1; save(); } else out(s.variable);
 }
-else if (a.startsWith('variable set MIVO_REVIEW_SKILL_SHA -R xindong/mivo-canvas-plugin --body ')) { s.variable = args[args.length - 1]; s.sets.push(s.variable); save(); }
-else if (a.startsWith('variable get MIVO_REVIEW_MODE -R xindong/mivo-canvas-plugin')) {
+else if (a.startsWith('variable set MIVO_REVIEW_SKILL_SHA -R ' + s.repo + ' --body ')) { s.variable = args[args.length - 1]; s.sets.push(s.variable); save(); }
+else if (a.startsWith('variable get MIVO_REVIEW_MODE -R ' + s.repo)) {
   out(s.modeSeq[Math.min(s.modeReads, s.modeSeq.length - 1)]); s.modeReads += 1; save();
 }
-else if (a === 'api repos/xindong/mivo-canvas-plugin/actions/workflows/review-pr.yml') {
+else if (a === 'api repos/' + s.repo + '/actions/workflows/review-pr.yml') {
   if (s.workflowApi === null) { process.stderr.write('gh: Not Found (HTTP 404)'); process.exit(1); }
   out(JSON.stringify(s.workflowApi));
 }
-else if (a === 'api repos/xindong/mivo-canvas-plugin/contents/agent-use/docs/pr-rules.json?ref=main') {
+else if (a === 'api repos/' + s.repo + '/contents/agent-use/docs/pr-rules.json?ref=main') {
   if (s.rules === null) { process.stderr.write('gh: Not Found (HTTP 404)'); process.exit(1); }
   out(JSON.stringify(s.rules));
 }
-else if (a.startsWith('pr view ')) out(JSON.stringify(s.pr));
+else if (a.startsWith('pr view ') && a.includes(' -R ' + s.repo + ' ')) out(JSON.stringify(s.pr));
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/commits/') && a.endsWith('--jq .sha')) out(s.newSkill);
 else if (a.startsWith('api repos/PraiseZhu/Review-PR/compare/')) out(JSON.stringify({ status: 'identical', aheadBy: 0, messages: [] }));
-else if (a.includes('contents/.github/workflows/review-pr.yml')) {
+else if (a.startsWith('api repos/' + s.repo + '/contents/.github/workflows/review-pr.yml')) {
   // 按 ?ref= 回答:main 按 workflows 依次回答;PR head 只回答 prHeadWorkflow;别的 ref 一律失败(读错 ref 的回归会变红)。
   const ref = (/[?]ref=([^ ]+)/.exec(a) || [])[1];
   let text;
@@ -74,10 +75,19 @@ exit 1
 const PR_RULES = { type: 'file', encoding: 'base64', content: Buffer.from('{"version":1}').toString('base64') };
 const WORKFLOW_API = { id: 381252611, path: WF_PATH, state: 'active' };
 
-export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_NEW], mode = ['live'], workflowApi = WORKFLOW_API, rules = PR_RULES, prHeadWorkflow } = {}) {
+// repo:Mini 生产实例配置(~/mivo-prereview/config/mivo.json)里的 workflowRepo,gh 替身也只回答这个仓;
+// miniConfig 给字符串就原样写进配置文件,给 null 就不建配置文件。
+export const MIVO_REPO = 'xindong/mivo-canvas-plugin';
+export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_NEW], mode = ['live'], workflowApi = WORKFLOW_API, rules = PR_RULES, prHeadWorkflow,
+  repo = MIVO_REPO, miniConfig } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mivo-deploy-tuple-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home');
+  if (miniConfig !== null) {
+    fs.mkdirSync(path.join(home, 'mivo-prereview/config'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'mivo-prereview/config/mivo.json'),
+      miniConfig ?? `${JSON.stringify({ instance: 'mivo', targetRepo: repo, workflowRepo: repo, workflowRef: 'main', mode: 'live' })}\n`);
+  }
   const skill = path.join(home, 'mivo-prereview/skill');
   fs.mkdirSync(skill, { recursive: true });
   const git = (...args) => spawnSync('git', ['-C', skill, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { encoding: 'utf8' });
@@ -95,7 +105,7 @@ export function setupFixture(t, { variable, variableSeq, workflows = [WORKFLOW_N
     fs.writeFileSync(path.join(bin, name), text, { mode: 0o755 });
   }
   const statePath = path.join(root, 'gh-state.json');
-  fs.writeFileSync(statePath, JSON.stringify({ variable: variable ?? oldSkill, variableSeq: variableSeq?.({ oldSkill, newSkill }), variableReads: 0, newSkill, workflows, contentReads: 0, sets: [],
+  fs.writeFileSync(statePath, JSON.stringify({ repo, variable: variable ?? oldSkill, variableSeq: variableSeq?.({ oldSkill, newSkill }), variableReads: 0, newSkill, workflows, contentReads: 0, sets: [],
     modeSeq: Array.isArray(mode) ? mode : [mode], modeReads: 0, workflowApi, rules,
     pr: { state: 'OPEN', headRefOid: PR_HEAD, statusCheckRollup: [] }, prHead: PR_HEAD, prHeadWorkflow }));
   const sshLog = path.join(root, 'ssh.log');

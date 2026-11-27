@@ -126,7 +126,7 @@ test('handoff 判门:enforce 下照审 + 打回 + 不放行;off / observe 与改
 
 test('handoff 任务书:off 时逐字不变、specDigest 不变;observe 时带交接一节', () => {
   const spec = loadReviewSpec(SKILL_ROOT);
-  const args = { spec, ctx: { pr: 12, meta: {} }, scope: { mode: 'full', reason: 'r' }, workdir: '/w', tier: 'standard',
+  const args = { spec, repo: 'xindong/mivo-canvas-plugin', ctx: { pr: 12, meta: {} }, scope: { mode: 'full', reason: 'r' }, workdir: '/w', tier: 'standard',
     inputs: { contextFile: 'c', diffFile: 'd', scopeFile: 's' } };
   const base = buildReviewPrompt(args);
   assert.equal(buildReviewPrompt({ ...args, handoff: null }), base);
@@ -140,7 +140,7 @@ test('handoff 任务书:off 时逐字不变、specDigest 不变;observe 时带�
   assert.match(withHandoff, /\/w\/docs\/pr\/12\/qa\.md/);
   assert.match(withHandoff, /校验结果:交接检查发现 1 处没填或不合格:\[HANDOFF_MISSING\] 缺少 docs\/pr\/12\/qa\.md/);
   assert.match(withHandoff, /本 PR 无作者交接/);
-  const manifest = (handoffMode) => specDigestOf(buildSpecManifest({ spec, tier: 'standard', files: [], readFile: () => null, config: '{}', ...(handoffMode ? { handoffMode } : {}) }));
+  const manifest = (handoffMode) => specDigestOf(buildSpecManifest({ spec, repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: [], readFile: () => null, config: '{}', ...(handoffMode ? { handoffMode } : {}) }));
   assert.equal(manifest('off'), manifest());
   assert.notEqual(manifest('observe'), manifest());
   assert.deepEqual(toHandoffPromptLines({ handoff: { featureMode: 'off' }, prNumber: 12, workdir: '/w' }), []);
@@ -161,7 +161,7 @@ test('handoff observe:交接过期/出错不挂 handoff 门,首次送审也一�
 
 test('handoff observe 任务书:没有可信检查结果时仍带交接一节,不把无检查当成无文件', () => {
   const spec = loadReviewSpec(SKILL_ROOT);
-  const args = { spec, ctx: { pr: 12, meta: {} }, scope: { mode: 'full', reason: 'r' }, workdir: '/w', tier: 'standard',
+  const args = { spec, repo: 'xindong/mivo-canvas-plugin', ctx: { pr: 12, meta: {} }, scope: { mode: 'full', reason: 'r' }, workdir: '/w', tier: 'standard',
     inputs: { contextFile: 'c', diffFile: 'd', scopeFile: 's' } };
   for (const readError of [null, 'HTTP 403']) {
     const facts = { ...toHandoffFacts({ checkRun: null }), readError };

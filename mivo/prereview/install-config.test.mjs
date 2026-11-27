@@ -36,9 +36,10 @@ test('SC6 已有配置时重跑 install-mini:原有字段的值不变,命令行�
 });
 
 test('SC6 sandbox 已有规则文件时重跑不带 --rules:rulesFile 保留;带了才改(#142 独立审查 P2)', () => {
-  const sandbox = { ...live, instance: 'sandbox', mode: 'sandbox', rulesFile: '/m/skill/mivo/config/sandbox-pr-rules.json' };
-  assert.equal(toInstallConfig(sandbox, { ...args, instance: 'sandbox', mode: 'sandbox' }).rulesFile, sandbox.rulesFile);
-  assert.equal(toInstallConfig(sandbox, { ...args, instance: 'sandbox', mode: 'sandbox', rules: '/other.json' }).rulesFile, '/other.json');
+  const sandbox = { ...live, instance: 'sandbox', mode: 'sandbox', targetRepo: 'xindong/mivo-review-sandbox', rulesFile: '/m/skill/mivo/config/sandbox-pr-rules.json' };
+  const sandboxArgs = { ...args, instance: 'sandbox', mode: 'sandbox', target: 'xindong/mivo-review-sandbox', workflowRepo: 'xindong/mivo-canvas-plugin' };
+  assert.equal(toInstallConfig(sandbox, sandboxArgs).rulesFile, sandbox.rulesFile);
+  assert.equal(toInstallConfig(sandbox, { ...sandboxArgs, rules: '/other.json' }).rulesFile, '/other.json');
   assert.equal(toInstallConfig(null, { ...args, instance: 'sandbox' }).rulesFile, null);
 });
 
@@ -64,4 +65,18 @@ test('新装没有配置文件:maxParallel / dailyCap 用默认 3 / 30;非法值
   assert.throws(() => toInstallConfig({ ...live, dailyCap: null }, { ...args, instance: 'mivo' }), /已有配置的 dailyCap/);
   assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', maxParallel: null }), /--max-parallel/);
   assert.throws(() => toInstallConfig(null, { ...args, instance: 'x', dailyCap: null }), /--daily-cap/);
+});
+
+test('换仓:workflowRepo 不再写死,没给 --workflow-repo 就等于目标仓,重跑时按新目标仓改写', () => {
+  assert.equal(toInstallConfig(null, { ...args, instance: 'mivo', target: 'acme/mivo-next' }).workflowRepo, 'acme/mivo-next');
+  assert.equal(toInstallConfig(null, { ...args, instance: 'mivo', target: 'acme/mivo-next', workflowRepo: 'acme/mivo-ci' }).workflowRepo, 'acme/mivo-ci');
+  // 现网配置原地换仓:旧的 workflowRepo 不能残留(否则派发和心跳还打到旧仓)
+  const moved = toInstallConfig(live, { ...args, instance: 'mivo', target: 'acme/mivo-next' });
+  assert.equal(moved.targetRepo, 'acme/mivo-next');
+  assert.equal(moved.workflowRepo, 'acme/mivo-next');
+  assert.equal(moved.viewerLogin, 'PraiseZhu');
+  // sandbox 审的是另一个仓,必须显式给放 review-pr.yml 的仓;仓名格式不对直接报错
+  assert.throws(() => toInstallConfig(null, { ...args, instance: 'sandbox', mode: 'sandbox', target: 'xindong/mivo-review-sandbox' }),
+    /sandbox 模式要用 --workflow-repo 指向放 review-pr\.yml 的仓,不能等于目标仓 xindong\/mivo-review-sandbox/);
+  assert.throws(() => toInstallConfig(null, { ...args, instance: 'mivo', workflowRepo: 'not a repo' }), /--workflow-repo 须是 owner\/name:"not a repo"/);
 });

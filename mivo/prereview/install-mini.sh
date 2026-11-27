@@ -2,7 +2,9 @@
 # install-mini.sh — 在 Mini 上部署或升级一个前置审查实例(launchd 每 180 秒跑一轮)。
 #
 #   bash install-mini.sh --sha <Review-PR 提交> --instance <名字> --target-repo <owner/repo> \
-#        --mode <dry-run|sandbox|live> --workflow-ref <分支> [--rules <sandbox>] [--max-parallel N] [--daily-cap N] [--no-load]
+#        --mode <dry-run|sandbox|live> --workflow-ref <分支> [--workflow-repo <owner/repo>] [--rules <sandbox>] \
+#        [--max-parallel N] [--daily-cap N] [--no-load]
+#   --workflow-repo:review-pr.yml、仓库变量和 runner 所在的仓,不给就等于 --target-repo;sandbox 模式必须给。
 #
 # 全部落在 ~/mivo-prereview/ 下,不碰任何已有仓库和已有 launchd 任务:
 #   skill/                    PraiseZhu/Review-PR,detached 在 --sha
@@ -15,12 +17,13 @@
 set -euo pipefail
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 
-SHA="" INSTANCE="" TARGET="" MODE="" REF="" RULES="" MAX_PARALLEL="" DAILY_CAP="" LOAD=1
+SHA="" INSTANCE="" TARGET="" WORKFLOW_REPO="" MODE="" REF="" RULES="" MAX_PARALLEL="" DAILY_CAP="" LOAD=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha) SHA="$2"; shift 2 ;;
     --instance) INSTANCE="$2"; shift 2 ;;
     --target-repo) TARGET="$2"; shift 2 ;;
+    --workflow-repo) WORKFLOW_REPO="$2"; shift 2 ;;
     --mode) MODE="$2"; shift 2 ;;
     --workflow-ref) REF="$2"; shift 2 ;;
     --rules) RULES="$2"; shift 2 ;;
@@ -33,6 +36,7 @@ done
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "--sha 必须是完整提交 SHA" >&2; exit 2; }
 [[ "$INSTANCE" =~ ^[a-z0-9-]{1,40}$ ]] || { echo "--instance 只能用小写字母、数字和连字符" >&2; exit 2; }
 [[ "$TARGET" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "--target-repo 不合法" >&2; exit 2; }
+[ -z "$WORKFLOW_REPO" ] || [[ "$WORKFLOW_REPO" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "--workflow-repo 不合法" >&2; exit 2; }
 [[ "$MODE" =~ ^(dry-run|sandbox|live)$ ]] || { echo "--mode 不合法" >&2; exit 2; }
 [ -n "$REF" ] || { echo "缺少 --workflow-ref" >&2; exit 2; }
 
@@ -64,9 +68,9 @@ if [ "$RULES" = "sandbox" ]; then RULES_FILE="$ROOT/skill/mivo/config/sandbox-pr
 # 3. 配置
 CONFIG="$ROOT/config/${INSTANCE}.json"
 node "$ROOT/skill/mivo/prereview/install-config.mjs" "$CONFIG" "$(node -e '
-const [repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap] = process.argv.slice(1);
-console.log(JSON.stringify({ repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap }));
-' "$REPO" "$ROOT/state/$INSTANCE" "$TARGET" "$MODE" "$REF" "$LOGS" "$RULES_FILE" "$MAX_PARALLEL" "$DAILY_CAP")"
+const [repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap, workflowRepo] = process.argv.slice(1);
+console.log(JSON.stringify({ repoRoot, stateDir, target, mode, ref, logDir, rules, maxParallel, dailyCap, workflowRepo }));
+' "$REPO" "$ROOT/state/$INSTANCE" "$TARGET" "$MODE" "$REF" "$LOGS" "$RULES_FILE" "$MAX_PARALLEL" "$DAILY_CAP" "$WORKFLOW_REPO")"
 
 # 4. launchd 任务(StartInterval 180;上一轮没跑完时 launchd 不会再起第二个)。
 NODE_BIN="$(command -v node)"

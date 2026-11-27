@@ -15,7 +15,7 @@
 // 自动化里的 agent 跑终端命令有单次超时,而服务器验证可能要几十分钟,所以自动化用后台方式:
 //   node mivo/models/switch.mjs --role ... --model ... --effort ... --detach   立刻返回 job id,切换在后台跑
 //   node mivo/models/switch.mjs --wait <job id> [--max-wait-sec 240]           最多等这么久;没跑完退出码 3,再运行同一条
-// 通用参数:[--repo xindong/mivo-canvas-plugin] [--json]。
+// 通用参数:[--repo <owner/name>] [--json]。没给 --repo 时取 ~/mivo-prereview/config/mivo.json 的 workflowRepo(Mini 生产实例配置)。
 // 退出码:0 已切换或本来就是;1 没切换(原配置不动);2 写入异常或后台任务意外结束,要人工核对;3 还在进行(只有 --wait)。
 import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync, writeFileSync, mkdtempSync, openSync, closeSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,12 +24,11 @@ import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { run, readJson, nowIso, SKILL_ROOT, REPO_RE } from '../lib/common.mjs';
+import { run, readJson, nowIso, SKILL_ROOT, REPO_RE, MINI_CONFIG_REL, toWorkflowRepo } from '../lib/common.mjs';
 import { ROLE_ENV, parseRoleModel } from '../lib/models.mjs';
 import { loadFeatures } from '../lib/verify.mjs';
 import { ROLE_TEXT, CHECK_WORKFLOW, toServerModel, toEffort, toRole, toRoleValue, toEffectiveRoles, toSwitchBlocker, toSwitchWarnings, toCheckVerdict } from '../lib/model-switch.mjs';
 
-const DEFAULT_REPO = 'xindong/mivo-canvas-plugin';
 const FIND_RUN_MS = 3 * 60_000;
 const WAIT_RUN_MS = 35 * 60_000;
 const LOCK_STALE_MS = 60 * 60_000;
@@ -39,8 +38,15 @@ const POLL_MS = Number(process.env.MIVO_MODEL_SWITCH_POLL_MS) || 10_000;
 const JOB_ID_RE = /^job-[a-z]+-[0-9a-f]{12}$/;
 const DEFAULT_WAIT_SEC = 240;
 
+// 没给 --repo:取 Mini 生产实例配置的 workflowRepo(换仓只改那一份配置);读不到就报错,不猜仓名。
+function readConfiguredRepo() {
+  const file = join(homedir(), MINI_CONFIG_REL);
+  if (!existsSync(file)) throw new Error(`没给 --repo,也没有 ~/${MINI_CONFIG_REL} 可以读出目标仓`);
+  return toWorkflowRepo(readFileSync(file, 'utf8'), `~/${MINI_CONFIG_REL}`);
+}
+
 function parseArgs(argv) {
-  const opts = { repo: DEFAULT_REPO, json: false, rollback: false, status: false, detach: false, maxWaitSec: DEFAULT_WAIT_SEC };
+  const opts = { repo: null, json: false, rollback: false, status: false, detach: false, maxWaitSec: DEFAULT_WAIT_SEC };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => { const v = argv[i + 1]; if (v === undefined) throw new Error(`${arg} 缺少参数值`); i += 1; return v; };
@@ -60,7 +66,9 @@ function parseArgs(argv) {
   }
   for (const id of [opts.wait, opts.job].filter((v) => v !== undefined)) if (!JOB_ID_RE.test(id)) throw new Error(`job id 不合法:${String(id).slice(0, 40)}`);
   if (!Number.isInteger(opts.maxWaitSec) || opts.maxWaitSec < 1 || opts.maxWaitSec > 3600) throw new Error('--max-wait-sec 要在 1–3600 之间');
-  if (!REPO_RE.test(opts.repo)) throw new Error(`--repo 不合法:${opts.repo}`);
+  if (opts.repo !== null && !REPO_RE.test(opts.repo)) throw new Error(`--repo 不合法:${opts.repo}`);
+  // --wait 只读本机后台任务的结果,用不到目标仓。
+  if (opts.repo === null && opts.wait === undefined) opts.repo = readConfiguredRepo();
   return opts;
 }
 

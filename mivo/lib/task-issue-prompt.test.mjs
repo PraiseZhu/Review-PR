@@ -7,7 +7,7 @@ import { toTaskIssuePromptLines, PROMPT_BYTES, TASK_ISSUE_INTENT_NOTE, BASE_NOTE
 import { SKILL_ROOT } from './common.mjs';
 
 const prompt = (over = {}) => buildReviewPrompt({
-  spec: loadReviewSpec(SKILL_ROOT),
+  spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin',
   ctx: { pr: 7, meta: { title: 't', author: 'a', url: 'u', headRefOid: 'h', baseRefName: 'main', baseRefOid: 'b' } },
   scope: { mode: 'full', reason: '没有上一轮审查记录' }, workdir: '/w',
   inputs: { contextFile: 'c', diffFile: 'd', scopeFile: 's', taskIssueFile: '/in/task-issue.json' }, tier: 'standard', ...over,
@@ -43,7 +43,7 @@ test('SC1 开关 off 或没有材料:任务书逐字不变;specDigest 与不传�
   assert.equal(prompt(), base, '只多传材料路径不改任务书');
   assert.equal(prompt({ taskIssue: null }), base);
   assert.equal(prompt({ taskIssue: material({ mode: 'off' }) }), base, 'off 时材料再全也不进任务书');
-  const manifest = (extra = {}) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: ['src/a.ts'], readFile: () => null, config: '{}', ...extra });
+  const manifest = (extra = {}) => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: ['src/a.ts'], readFile: () => null, config: '{}', ...extra });
   assert.deepEqual(manifest({ taskIssueMode: 'off' }), manifest());
   assert.equal(specDigestOf(manifest({ taskIssueMode: 'off' })), specDigestOf(manifest()));
   const on = manifest({ taskIssueMode: 'observe' });

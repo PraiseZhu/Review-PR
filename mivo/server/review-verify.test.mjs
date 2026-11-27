@@ -42,7 +42,7 @@ test('features:默认文件是 enforce;缺失、JSON 非法、字段非法都按
 });
 
 test('features:开关文件不进 specDigest,也不在 prompt.mjs 里出现;loadFeatures 只在 codex 阶段调用', () => {
-  const manifest = () => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), tier: 'standard', files: ['src/a.ts'], readFile: () => null, config: '{}' });
+  const manifest = () => buildSpecManifest({ spec: loadReviewSpec(SKILL_ROOT), repo: 'xindong/mivo-canvas-plugin', tier: 'standard', files: ['src/a.ts'], readFile: () => null, config: '{}' });
   assert.equal(specDigestOf(manifest()), specDigestOf(manifest()));
   assert.ok(!JSON.stringify(manifest()).includes('review-features'));
   assert.ok(!readFileSync(fileURLToPath(new URL('../lib/prompt.mjs', import.meta.url)), 'utf8').includes('review-features'));

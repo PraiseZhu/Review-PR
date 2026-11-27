@@ -46,7 +46,8 @@ flowchart LR
 | `prereview/round.mjs` | Mini 前置审查主流程（一个进程可以同时推进多轮） |
 | `prereview/admit-candidates.mjs` | 滚动接单用的候选名单（去掉未完成轮次里的 PR 及依赖它们的 PR） |
 | `prereview/gh-dryrun/` | dry-run 模式的 gh 垫片：读放行，写一律拦下 |
-| `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒） |
+| `prereview/install-mini.sh` | 在 Mini 上部署/升级一个实例（launchd 每 180 秒）；`--workflow-repo` 指定 review-pr.yml 所在的仓，不给就等于目标仓 |
+| `deploy/cutover.mjs` | 换仓：只读预检、路径漂移检查、切换当天的命令清单（见「换仓」） |
 | `config/sandbox-pr-rules.json` | E1 沙箱仓用的配置 |
 
 ## 借鉴 Claude 官方的审查改造
@@ -752,6 +753,28 @@ node mivo/deploy/deploy-tuple.mjs --on pro|mini --old-skill <旧提交> --new-sk
 - 要马上换，点「立即运行」：白天也用 hold 停点，在途审查收完前新 PR 要排队。
 - 任务跑的是线上那一版的 `auto-update.mjs`（`~/mivo-prereview/skill/mivo/deploy/`）。回滚到没有这个目录的旧版本后，前置检查会失败，要先暂停任务。
 - 审查任务书（`specDigest`）变了的版本，开放 PR 下次送审时：代码（逐文件 patch 指纹）和 base 分支都没变的，沿用上次结论并采用新 `specDigest`（沿用的问题与转 issue 的问题照旧；转 issue 的需本轮仍核验通过，要发新 review 时 head 或 diff 变了的阻断项转文件级评论；同一 head 上一轮已发过 review 的不再重发，直接沿用其 review、thread 链接与原行号（base 前移也不改））；代码也变了的才按新任务书全量重审。维护者想让规则改版一律重审，把 `config/review-features.json` 的 `specChange.forceFull` 设为 true。只改代码不算规则改版，见 `lib/scope.mjs`。
+
+### 换仓
+
+Mivo 迁到新仓时，本仓代码里不再写死仓名，目标仓只有一个来源：Mini 生产实例配置 `~/mivo-prereview/config/mivo.json` 的 `workflowRepo`（`install-mini.sh` 写，`--workflow-repo` 不给就等于 `--target-repo`）。`deploy-tuple.mjs`、`auto-update.mjs` 和不带 `--repo` 的 `models/switch.mjs` 都读它，读不到或格式不对就在加锁、写停点、调 gh 之前报错退出，不猜仓名（所以在 Mini 以外的机器上跑 `switch.mjs` 要显式给 `--repo`）。服务器审查的仓名来自派发入参 `target_repo`，任务书首行按它生成：旧仓下与改前逐字一致（`specDigest` 不变），换仓后变一次，开放 PR 按上节「规则改版，代码未变」处理。
+
+实例名保持 `mivo`：心跳、主备 key 状态（`round.mjs` 只在 `instance=mivo` 且 `mode=live` 时写）、换版本的状态路径 `state/mivo/mivo` 都认这个名字。新建仓（PR 号从 1 开始）时旧状态按 PR 号存，必须先整体归档 `state/mivo` 和 `repos/mivo`，否则新 #5 会读到旧 #5 的记录；GitHub 转移（编号保留）只改镜像的 origin。
+
+`deploy/cutover.mjs` 只读，不写 GitHub、不动 Mini：
+
+```bash
+cp mivo/deploy/cutover.example.json /path/to/cutover.json   # 改 newRepo、kind(transfer|fresh)、defaultBranch
+node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --preview   # 路径漂移 + 新仓 GitHub 设置 + Mini 本机(在 Mini 上跑才核)
+node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --drift     # 只核路径漂移;新仓还没上 GitHub 时用 --new-git <本地 clone> --new-ref <ref>
+node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --plan      # 切换当天按角色排好的命令清单,不执行
+```
+
+- 路径漂移：`pr-rules.json` 的路径字段（红线、受保护路径、界面、架构、安全、规则文档等）、`review-features.json` 的 `taskIssue.alwaysInScope` 与 `focus.ciCovered`、`rule-map.md` 的必读文件与命中路径、审查机代码写死的 Mivo 仓内文件（`cutover-lib.mjs` 的 `REQUIRED_FILES`），按审查时同样的匹配方式在新旧两棵文件树上各数一遍。旧仓命中、新仓一个都不命中记「漂移」（新仓目录结构变了，这条规则会悄悄失效，例如存储重构把 `shared/persist-contract.ts` 搬走后红线不再触发）；两边都不命中是防将来出现的规则（如 `^secrets/`），不算问题；写死的文件新仓没有记「缺」。`pr-rules.json` 新加的路径字段要先在 `cutover-lib.mjs` 的 `PR_RULES_FIELDS` 登记匹配方式，没登记的会报「查不了」。
+- GitHub 设置：新仓存在且默认分支对、`review-pr.yml` 已登记 active、审查机的仓库变量（`MIVO_REVIEW_*`、两个 App ID、`MIVO_SLACK_CHANNEL_ID`，按旧仓对照名字和值，Mini 运行时写的心跳和 key 状态不算；`MIVO_REVIEW_MODE` 按命令清单先是 `dry-run`，只显示不比；新建仓的 `MIVO_REVIEW_WATCHDOG_ISSUE` 换成新仓编号，也不比值）、`MIVO_REVIEW_RUNNER_LABEL` 等于清单的 `runnerLabel`（不设会落到 workflow 缺省 `mivo-review-next`，任务一直排队）、三个仓库 secret 与组织 secret `ANTHROPIC_API_KEY`、环境 `slack-inbound`、label 与规则集名字（含组织级，按旧仓对照）、默认分支上实际生效的规则和必需检查（仓库、组织、企业三级合起来，按旧仓逐条比类型和参数；规则集同名不代表内容一样）、带标签的在线 runner。只用 GET；没权限读的记「查不了」。
+- Mini 本机：实例配置现在指向哪、三个 App 分流白名单（`~/mivo-gh-router/*/config.json` 的 `repos`）、巡检脚本里的旧仓名、issue 评估的 `repoAllowlist`。
+- 退出码：0 全部通过；1 有缺项、漂移或不一致；2 没有缺项但有查不了的项；3 参数或切换清单不合法（什么都没读）。
+- 命令清单只抄审查机自己的变量，`MIVO_REVIEW_MODE` 先写 `dry-run`，旧仓其它变量（自动合并等）只列名字、不迁：照抄会在新仓误开那些自动化。
+- 不在本仓、本脚本不管的：Mivo 仓里服务器 runner 的安装脚本（`scripts/ops/setup-mivo-review-runner.sh` 等写死了仓地址和服务单元名）、服务器上的 `mivo-review-install`、Mini 的 Cindy 定时任务。
 
 ### 审查 App（reviewerApps，PraiseZhu/Review-PR#177）
 

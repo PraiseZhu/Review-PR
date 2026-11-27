@@ -39,8 +39,8 @@ import {
   toLockBlockedText, toReleaseLockScript, RELEASE_LOCK_RETRIES, toReleaseLockResult, shouldTakeDeployLock, shouldResumePrereview, toNewCommitCheck,
   toMergedPrNumbers, toBehindMainNote, toLatestChecks, RULES_PATH, toDispatchProblems,
 } from './tuple-lib.mjs';
+import { MINI_CONFIG_REL, toWorkflowRepo } from '../lib/common.mjs';
 
-const REPO = 'xindong/mivo-canvas-plugin';
 const SKILL_REPO = 'PraiseZhu/Review-PR';
 const LABEL = 'com.mivo.prereview.mivo';
 const HOST_KEYS = Object.keys(HOSTS);
@@ -111,6 +111,15 @@ function readRemote(host, rel) {
   if (!r.ok) throw new Error(`读 ${host}:${rel} 失败:${r.stderr.slice(0, 200)}`);
   return r.stdout.startsWith('Y') ? { exists: true, text: r.stdout.slice(1) } : { exists: false, text: null };
 }
+// 目标仓(review-pr.yml、仓库变量所在的仓)取自 Mini 生产实例配置的 workflowRepo,第一次用到时读一次。
+let targetRepo = null;
+function repo() {
+  if (targetRepo) return targetRepo;
+  const config = readRemote('mini', MINI_CONFIG_REL);
+  if (!config.exists) throw new Error(`Mini 上没有 ~/${MINI_CONFIG_REL},不知道目标仓`);
+  targetRepo = toWorkflowRepo(config.text, `Mini ~/${MINI_CONFIG_REL}`);
+  return targetRepo;
+}
 // 先比对旧值再写:当前内容的 sha256 必须等于 expected('none' 表示必须不存在)。next 为 null 表示删除。
 function casRemote(host, rel, expected, next) {
   const body = next == null
@@ -126,7 +135,7 @@ function casRemote(host, rel, expected, next) {
   if (!r.ok) throw new Error(`改 ${host}:${rel} 失败(${r.status === 3 ? '内容已被别人改过' : `exit ${r.status}`}):${r.stderr.slice(0, 200)}`);
 }
 function readWorkflow(ref = 'main') {
-  const raw = must(run('gh', ['api', `repos/${REPO}/contents/${WF_PATH}?ref=${ref}`, '--jq', '.content']), `读 ${ref} 上的 ${WF_PATH}`);
+  const raw = must(run('gh', ['api', `repos/${repo()}/contents/${WF_PATH}?ref=${ref}`, '--jq', '.content']), `读 ${ref} 上的 ${WF_PATH}`);
   const bytes = Buffer.from(raw.replace(/\s/g, ''), 'base64');
   return { text: bytes.toString('utf8'), sha: sha256(bytes) };
 }
@@ -139,11 +148,11 @@ function assertDispatchReady(workflowText) {
     const r = gh(args);
     try { return r.ok ? JSON.parse(r.stdout) : null; } catch { return null; }
   };
-  const mode = gh(['variable', 'get', 'MIVO_REVIEW_MODE', '-R', REPO]);
+  const mode = gh(['variable', 'get', 'MIVO_REVIEW_MODE', '-R', repo()]);
   const problems = toDispatchProblems({
     workflowText,
-    registration: json(['api', `repos/${REPO}/actions/workflows/review-pr.yml`]),
-    rules: json(['api', `repos/${REPO}/contents/${RULES_PATH}?ref=main`]),
+    registration: json(['api', `repos/${repo()}/actions/workflows/review-pr.yml`]),
+    rules: json(['api', `repos/${repo()}/contents/${RULES_PATH}?ref=main`]),
     mode: mode.ok ? mode.stdout : null,
   });
   if (problems.length) throw new Error(`派发前提不满足:${problems.join(';')}`);
@@ -223,7 +232,7 @@ const phase = (name, extra = {}) => { record.phases.push({ name, at: nowIso(), .
 
 // 1. 只读预检
 function preflight() {
-  const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
+  const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', repo()]), '读仓库变量').trim();
   if (variable !== OLD_SKILL) throw new Error(`仓库变量现在是 ${variable},不是预期的旧值 ${OLD_SKILL}`);
   must(run('gh', ['api', `repos/${SKILL_REPO}/commits/${NEW_SKILL}`, '--jq', '.sha']), `Review-PR 上找 ${NEW_SKILL}`);
   // 一次取回状态、落后个数和每个提交消息的第一行:落后只提示(回滚时落后是常态),不在 main 上才拒绝。
@@ -247,7 +256,7 @@ function preflight() {
   let checkedText = main.text;
   if (PR) {
     if (mainWf !== OLD_WF) throw new Error(`main 上 ${WF_PATH} 的 sha256 是 ${mainWf},不是旧值 ${OLD_WF}`);
-    const pr = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', REPO, '--json', 'state,headRefOid,statusCheckRollup']), `读 PR #${PR}`));
+    const pr = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', repo(), '--json', 'state,headRefOid,statusCheckRollup']), `读 PR #${PR}`));
     if (pr.state !== 'OPEN' || pr.headRefOid !== PR_HEAD) throw new Error(`PR #${PR} 状态 ${pr.state}、head ${pr.headRefOid},不是开着的 ${PR_HEAD}`);
     const checkName = (c) => c.name ?? c.context;
     const checkResult = (c) => c.conclusion || c.state || c.status;
@@ -357,12 +366,12 @@ function mergePr() {
     '- 已做的审查:GPT 单审(gpt-6.1-sol)没有 P0/P1;`review_pr_workflow.node-test.mjs` 12/12 通过,变异测试确认把 160 改回 110 或删掉新环境变量会被拦住。',
     `- 合并的提交:\`${PR_HEAD}\`。`,
   ].join('\n');
-  const draft = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', REPO, '--json', 'isDraft']), `读 #${PR}`)).isDraft;
-  if (draft) must(run('gh', ['pr', 'ready', PR, '-R', REPO]), `#${PR} 转 Ready`);
-  must(run('gh', ['pr', 'comment', PR, '-R', REPO, '--body', reason]), `#${PR} 写绕过原因`);
-  must(run('gh', ['pr', 'merge', PR, '-R', REPO, '--squash', '--admin', '--match-head-commit', PR_HEAD]), `#${PR} 绕过合并`);
+  const draft = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', repo(), '--json', 'isDraft']), `读 #${PR}`)).isDraft;
+  if (draft) must(run('gh', ['pr', 'ready', PR, '-R', repo()]), `#${PR} 转 Ready`);
+  must(run('gh', ['pr', 'comment', PR, '-R', repo(), '--body', reason]), `#${PR} 写绕过原因`);
+  must(run('gh', ['pr', 'merge', PR, '-R', repo(), '--squash', '--admin', '--match-head-commit', PR_HEAD]), `#${PR} 绕过合并`);
   for (let i = 0; i < 30; i += 1) {
-    const pr = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', REPO, '--json', 'state,mergeCommit']), `读 #${PR}`));
+    const pr = JSON.parse(must(run('gh', ['pr', 'view', PR, '-R', repo(), '--json', 'state,mergeCommit']), `读 #${PR}`));
     if (pr.state === 'MERGED') {
       record.merged = pr.mergeCommit?.oid;
       break;
@@ -377,10 +386,10 @@ function mergePr() {
 
 // 4. 切换 tuple(每一项先比对旧值再写,记下已切的部分)
 function switchVariable(from, to) {
-  const cur = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
+  const cur = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', repo()]), '读仓库变量').trim();
   if (cur !== from) throw new Error(`仓库变量现在是 ${cur},不是 ${from}`);
-  must(run('gh', ['variable', 'set', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO, '--body', to]), '写仓库变量');
-  const after = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
+  must(run('gh', ['variable', 'set', 'MIVO_REVIEW_SKILL_SHA', '-R', repo(), '--body', to]), '写仓库变量');
+  const after = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', repo()]), '读仓库变量').trim();
   if (after !== to) throw new Error(`仓库变量写完是 ${after},不是 ${to}`);
 }
 function switchCheckout(from, to) {
@@ -420,7 +429,7 @@ function oldTupleMismatch() {
   try {
     const wf = mainWorkflowSha();
     if (wf !== OLD_WF) problems.push(`main 上 ${WF_PATH} 是 ${wf},不是旧值 ${OLD_WF}`);
-    const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
+    const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', repo()]), '读仓库变量').trim();
     if (variable !== OLD_SKILL) problems.push(`仓库变量是 ${variable}`);
     const head = must(remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`), '读 Mini 检出').trim();
     if (head !== OLD_SKILL) problems.push(`Mini 检出是 ${head}`);
@@ -432,7 +441,7 @@ function oldTupleMismatch() {
 
 // 5. 切换后核对(只读):仓库变量、Mini 检出、main 上的 workflow 都必须是新值,否则按切换失败退回。
 function verifyTuple() {
-  const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', REPO]), '读仓库变量').trim();
+  const variable = must(run('gh', ['variable', 'get', 'MIVO_REVIEW_SKILL_SHA', '-R', repo()]), '读仓库变量').trim();
   if (variable !== NEW_SKILL) throw new Error(`核对失败:仓库变量是 ${variable},不是 ${NEW_SKILL}`);
   const head = must(remote('mini', `git -C ${SKILL_REL} rev-parse HEAD`), '读 Mini 检出').trim();
   if (head !== NEW_SKILL) throw new Error(`核对失败:Mini 检出是 ${head},不是 ${NEW_SKILL}`);

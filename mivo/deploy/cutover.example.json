@@ -1,0 +1,10 @@
+{
+  "_comment": "换仓切换清单示例(cutover.mjs --manifest)。拿到新仓地址后复制一份改 newRepo/kind/defaultBranch;kind:transfer=GitHub 转移(PR、issue 编号保留),fresh=新建仓(编号从 1 开始,Mini 旧状态要归档)。runnerLabel 是新仓 runner 的标签,也是新仓变量 MIVO_REVIEW_RUNNER_LABEL 的期望值。",
+  "version": 1,
+  "oldRepo": "xindong/mivo-canvas-plugin",
+  "oldBranch": "main",
+  "newRepo": "OWNER/NEW-REPO",
+  "kind": "transfer",
+  "defaultBranch": "main",
+  "runnerLabel": "mivo-review"
+}

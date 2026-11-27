@@ -238,7 +238,7 @@ async function prepare() {
       for (const [path, text] of Object.entries(rules.files)) if (typeof text === 'string') writeText(join(dir, path), text);
       state.rulesBaseDir = dir;
     }
-    const specDigest = specDigestOf(buildSpecManifest({ spec, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
+    const specDigest = specDigestOf(buildSpecManifest({ spec, repo: input.targetRepo, tier, files: Object.keys(diffFiles), handoffMode: state.handoff?.featureMode ?? 'off',
       ciCovered: state.focus?.ciCovered ?? [], productRulesMode: state.productRules?.featureMode ?? 'off', taskIssueMode: state.taskIssue?.mode ?? 'off',
       readFile: (path) => rules.files[path] ?? null,
       config: readFileSync(RULES_FILE, 'utf8') }));
@@ -536,7 +536,7 @@ async function codex() {
   const ring = toKeyRing(process.env);
   state.warnings.push(...roleWarnings(process.env), ...ring.warnings);
   const promptFor = (scope, scopeFile) => buildReviewPrompt({
-    spec: loadReviewSpec(SKILL_ROOT), ctx, scope, workdir: REPO_DIR, tier: state.tier,
+    spec: loadReviewSpec(SKILL_ROOT), repo: input.targetRepo, ctx, scope, workdir: REPO_DIR, tier: state.tier,
     inputs: { contextFile: state.context.file, diffFile: state.context.diffFile, scopeFile,
       securityScanFile: state.securityScan?.file, rulesBaseDir: state.rulesBaseDir ?? null, taskIssueFile: state.taskIssue?.file ?? null },
     deferrals: state.deferrals?.verified ?? [],
