@@ -760,7 +760,7 @@ Mivo 迁到新仓时，本仓代码里不再写死仓名，目标仓只有一个
 
 实例名保持 `mivo`：心跳、主备 key 状态（`round.mjs` 只在 `instance=mivo` 且 `mode=live` 时写）、换版本的状态路径 `state/mivo/mivo` 都认这个名字。新建仓（PR 号从 1 开始）时旧状态按 PR 号存，必须先整体归档 `state/mivo` 和 `repos/mivo`，否则新 #5 会读到旧 #5 的记录；GitHub 转移（编号保留）只改镜像的 origin。
 
-`deploy/cutover.mjs` 只读，不写 GitHub、不动 Mini：
+`--preview`、`--drift`、`--plan` 和不加 `--yes` 的 `--apply` 都只读：
 
 ```bash
 cp mivo/deploy/cutover.example.json /path/to/cutover.json   # 改 newRepo、kind(transfer|fresh)、defaultBranch
@@ -768,6 +768,29 @@ node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --preview   # 路�
 node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --drift     # 只核路径漂移;新仓还没上 GitHub 时用 --new-git <本地 clone> --new-ref <ref>
 node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --plan      # 切换当天按角色排好的命令清单,不执行
 ```
+
+**切换当天。** 确认新仓地址和默认分支，先不带 `--yes` 各跑一次。先执行 GitHub 段；管理员完成 App、组织规则、组织 secret、workflow 和 runner 等人工项后，再在 Mini 执行第二条。切 Mini 前先暂停「Mivo 审查机每天换版本」，等在途审查结束并停掉前置审查任务；安装会在 `dry-run` 模式下重启它，而不是切到 `live`。
+
+```bash
+node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --apply github --yes
+node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --apply mini --yes
+```
+
+GitHub 段只改新仓。Secret 只补缺，值由 `agent-secret run` 经 stdin 交给 GitHub；同名 secret 已存在时不覆盖也不声称值一致。Fresh 不抄旧看门狗 issue；transfer 只核对 label。跨组织且含组织身份绕过者的规则集不会自动改写：生产执行在写入前停下，私有测试仓在 `rehearsal: true` 时标为不适用。演练模式只设置占位 secret，不复制旧仓代码，也不验证组织权限、App、workflow 和 runner。
+
+Mini 段从线上 skill 读取当前提交，调用现有安装脚本指向新仓。Fresh 只处理 Mivo 主检出（仅生产）、`_ops/mivo-canvas-plugin` 和产品规则伙伴检出的 `remote.origin.url`；transfer 默认不改这三处，确需改时设置 `transferOrigins: true`。实例镜像由安装脚本管理，本段只核对；transfer 需提前确认镜像指向新仓，回滚前先确认回到旧仓。解析到父级的目录和脏工作树报告并跳过，不碰临时副本。Issue Agent 的本地检出路径保留，更新的是仓白名单和映射键。
+
+三个分流 App 无论同组织还是跨组织，都用各自的 App JWT 读取新仓安装 ID；任一读取失败就在首次写入前停止。隔离演练用 `--home <副本目录> --install-mini <替身脚本>`，可在 `rehearsal: true` 的清单中用 `rehearsalInstallationIds` 给三个 App 各传一个不同的正整数；预检列为「替身，未实测」，真实 HOME 拒绝这组值。
+
+**失败和回滚。** 写入前先核对计划。执行失败即停，报告停在哪一步、备份目录和回滚命令；执行完成自动追加 `--preview`，退出码仍由预检决定，不代表写入已回滚。备份默认在 `~/mivo-prereview/cutover-backup/<时间>/`，包含本机配置或改前值，按私密文件保管。
+
+```bash
+node mivo/deploy/cutover.mjs --rollback /path/to/cutover-backup/<时间>
+```
+
+演练回滚传回原来的 `--home` 和 Mini 替身。GitHub 回滚只移除本段确认新建的 secret；请求结果不确定时先人工核对。Mini 回滚先恢复配置文件、远端和旧归档，再用旧仓参数重跑安装并核对实例指向；该实例配置不承诺逐字节恢复。不删除新归档中的活动数据。
+
+**只列清单，不自动执行。** 验收后恢复「Mivo 审查机每天换版本」；主控在 Cindy 更新「Mivo 新审查机巡检」及产品规则伙伴的「每日检查」「周报」中指向旧仓的句子；按报告处理 `PraiseZhu/project-skills` 中的仓外引用。服务器部署、App 安装、组织或企业规则、组织 secret 都留给相应管理员。
 
 - 路径漂移：`pr-rules.json` 的路径字段（红线、受保护路径、界面、架构、安全、规则文档等）、`review-features.json` 的 `taskIssue.alwaysInScope` 与 `focus.ciCovered`、`rule-map.md` 的必读文件与命中路径、审查机代码写死的 Mivo 仓内文件（`cutover-lib.mjs` 的 `REQUIRED_FILES`），按审查时同样的匹配方式在新旧两棵文件树上各数一遍。旧仓命中、新仓一个都不命中记「漂移」（新仓目录结构变了，这条规则会悄悄失效，例如存储重构把 `shared/persist-contract.ts` 搬走后红线不再触发）；两边都不命中是防将来出现的规则（如 `^secrets/`），不算问题；写死的文件新仓没有记「缺」。`pr-rules.json` 新加的路径字段要先在 `cutover-lib.mjs` 的 `PR_RULES_FIELDS` 登记匹配方式，没登记的会报「查不了」。
 - GitHub 设置：新仓存在且默认分支对、`review-pr.yml` 已登记 active、审查机的仓库变量（`MIVO_REVIEW_*`、两个 App ID、`MIVO_SLACK_CHANNEL_ID`，按旧仓对照名字和值，Mini 运行时写的心跳和 key 状态不算；`MIVO_REVIEW_MODE` 按命令清单先是 `dry-run`，只显示不比；新建仓的 `MIVO_REVIEW_WATCHDOG_ISSUE` 换成新仓编号，也不比值）、`MIVO_REVIEW_RUNNER_LABEL` 等于清单的 `runnerLabel`（不设会落到 workflow 缺省 `mivo-review-next`，任务一直排队）、三个仓库 secret 与组织 secret `ANTHROPIC_API_KEY`、环境 `slack-inbound`、label 与规则集名字（含组织级，按旧仓对照）、默认分支上实际生效的规则和必需检查（仓库、组织、企业三级合起来，按旧仓逐条比类型和参数；规则集同名不代表内容一样）、带标签的在线 runner。只用 GET；没权限读的记「查不了」。
