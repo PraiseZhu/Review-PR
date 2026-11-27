@@ -191,6 +191,10 @@ const REVIEW_VARIABLE_NAMES = ['PRAISEBUILD_APP_ID', 'PRAISEREVIEW_APP_ID', 'MIV
 export const isReviewVariable = (name) => (/^MIVO_REVIEW_/.test(name) || REVIEW_VARIABLE_NAMES.includes(name)) && !RUNTIME_VARIABLES.includes(name);
 
 const unknownItem = (area, item, read) => ({ area, item, status: 'unknown', detail: `查不了:${read.error}` });
+// 只有 GitHub 明确回 404 才算「缺」;401/403、限流、超时、5xx 都是「查不了」,不能当成新仓没建好。
+const toAbsentOrUnknown = (area, item, read) => (/HTTP 404/.test(String(read.error ?? ''))
+  ? { area, item, status: 'missing', detail: `读不到:${read.error}` }
+  : unknownItem(area, item, read));
 const missingNames = (want, have) => want.filter((name) => !have.includes(name));
 // 值不按旧仓对照的变量:MODE 按命令清单先写 dry-run;RUNNER_LABEL 另按清单核;新建仓的看门狗 issue 要换成新仓的编号。
 const isValueExempt = (name, kind) => name === 'MIVO_REVIEW_MODE' || name === 'MIVO_REVIEW_RUNNER_LABEL'
@@ -243,14 +247,14 @@ export function toSettingsReport(manifest, reads) {
   const items = [];
   const area = '新仓 GitHub 设置';
   const { repo, workflow, oldVariables, newVariables, secrets, orgSecrets, environments, labels, oldLabels, rulesets, oldRulesets, oldBranchRules, newBranchRules, runners } = reads;
-  if (!repo.ok) items.push({ area, item: `仓 ${manifest.newRepo}`, status: 'missing', detail: `读不到:${repo.error}` });
+  if (!repo.ok) items.push(toAbsentOrUnknown(area, `仓 ${manifest.newRepo}`, repo));
   else {
     items.push({ area, item: `仓 ${manifest.newRepo}`, status: repo.value.archived ? 'invalid' : 'ok', detail: repo.value.archived ? '仓已归档' : '' });
     if (repo.value.default_branch !== manifest.defaultBranch) {
       items.push({ area, item: '默认分支', status: 'mismatch', detail: `期望 ${manifest.defaultBranch},实际 ${repo.value.default_branch}` });
     }
   }
-  if (!workflow.ok) items.push({ area, item: `${WF_PATH} 登记`, status: 'missing', detail: workflow.error });
+  if (!workflow.ok) items.push(toAbsentOrUnknown(area, `${WF_PATH} 登记`, workflow));
   else items.push({ area, item: `${WF_PATH} 登记`, status: workflow.value === 'active' ? 'ok' : 'invalid', detail: `state=${workflow.value}` });
 
   if (!newVariables.ok) items.push(unknownItem(area, '仓库变量', newVariables));
@@ -298,13 +302,14 @@ export function toSettingsReport(manifest, reads) {
 // ── Mini 本机 ────────────────────────────────────────────────────────────
 
 /**
- * Mini 上还写着旧仓的地方。config:实例配置对象或 null;routers [{name, repos|null}];
+ * Mini 上还写着旧仓的地方。config:实例配置对象、null(文件不存在)或 { unreadable: 原因 }(读不了或 JSON 坏了);routers [{name, repos|null}];
  * monitor [{file, line}] 旧仓名出现的位置;issueAgent [{file, allow|null}] 或 null(找不到目录)。
  */
 export function toMiniReport(manifest, { config, routers, monitor, issueAgent }) {
   const area = 'Mini 本机';
   const items = [];
   if (!config) items.push({ area, item: '实例配置 config/mivo.json', status: 'missing', detail: '没有这个文件' });
+  else if (config.unreadable) items.push({ area, item: '实例配置 config/mivo.json', status: 'unknown', detail: `查不了:${config.unreadable}` });
   else {
     const pointsNew = config.targetRepo === manifest.newRepo && config.workflowRepo === manifest.newRepo;
     items.push({ area, item: '实例配置 config/mivo.json', status: pointsNew ? 'ok' : 'info',

@@ -90,6 +90,7 @@ test('漂移:存储文件搬了目录 → drift;必需文件没了 → missing;�
 
 const ok = (value) => ({ ok: true, value });
 const fail = (error) => ({ ok: false, error });
+const find2 = (items, item) => items.find((i) => i.item === item) ?? assert.fail(`没有这一项:${item}`);
 const checksRule = (...contexts) => ({ type: 'required_status_checks',
   parameters: { strict_required_status_checks_policy: false, required_status_checks: contexts.map((context) => ({ context, integration_id: 15368 })) } });
 const OLD_RULES = [
@@ -141,7 +142,12 @@ test('GitHub 设置:齐了全通过;心跳和自动合并这类非审查机变�
   assert.equal(toExitCode(broken), 1);
   // 新仓还不存在
   const absent = toSettingsReport(manifest(), settingsReads({ repo: fail('HTTP 404'), workflow: fail('HTTP 404') }));
-  assert.equal(absent[0].status, 'missing');
+  assert.deepEqual([find2(absent, `仓 ${NEW}`).status, find2(absent, '.github/workflows/review-pr.yml 登记').status], ['missing', 'missing']);
+  // 没权限、限流不是「新仓不存在」:记查不了,退出 2
+  const denied = toSettingsReport(manifest(), settingsReads({ repo: fail('HTTP 403: Resource not accessible'), workflow: fail('HTTP 401: Bad credentials') }));
+  assert.deepEqual([find2(denied, `仓 ${NEW}`).status, find2(denied, `仓 ${NEW}`).detail], ['unknown', '查不了:HTTP 403: Resource not accessible']);
+  assert.equal(find2(denied, '.github/workflows/review-pr.yml 登记').status, 'unknown');
+  assert.equal(toExitCode(denied), 2);
 });
 
 test('GitHub 设置:变量值和默认分支规则按旧仓逐条对照;同名但值或内容不同也报,MODE、RUNNER_LABEL、新建仓的看门狗 issue 不比值', () => {
@@ -186,6 +192,8 @@ test('Mini 本机:配置还指旧仓记 info;白名单、巡检、issue 评估�
   assert.equal(by('App 分流白名单 praisewatch').status, 'ok');
   assert.equal(by('巡检脚本里的旧仓名').detail, 'mivo.mjs:26、mivo.mjs:172');
   assert.equal(by('issue 评估 repoAllowlist').status, 'unknown');
+  const corrupt = toMiniReport(manifest(), { config: { unreadable: 'Unexpected token' }, routers: [], monitor: [], issueAgent: [{ file: 'runtime-primary.json', allow: [NEW] }] });
+  assert.deepEqual([corrupt[0].status, toExitCode(corrupt)], ['unknown', 2]);
   const done = toMiniReport(manifest(), { config: { targetRepo: NEW, workflowRepo: NEW }, routers: [], monitor: [], issueAgent: [{ file: 'runtime-primary.json', allow: [NEW] }] });
   assert.equal(toExitCode(done), 0);
 });

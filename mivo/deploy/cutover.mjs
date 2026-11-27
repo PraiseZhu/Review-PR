@@ -43,6 +43,11 @@ function toRead(r, parse) {
 const lines = (text) => text.split('\n').filter(Boolean);
 const ghNames = (endpoint, jq) => toRead(gh(['api', endpoint, '--paginate', '--jq', jq]), lines);
 const readJsonFile = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+// 实例配置要分清「没有」和「读不了」:文件不存在返回 null,存在但读不了或 JSON 坏了返回 { unreadable }。
+function readMiniConfig(file) {
+  if (!fs.existsSync(file)) return null;
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { return { unreadable: error.message.slice(0, 200) }; }
+}
 
 // 文件树:本地 clone(git ls-tree)或 GitHub(git/trees 递归)。返回 { files, scripts },读不到抛错。
 function readTree({ repo, branch, gitDir, ref }) {
@@ -124,7 +129,7 @@ function miniItems(manifest) {
     ? RUNTIME_NAMES.filter((file) => fs.existsSync(path.join(DEFAULT_ISSUE_AGENT_DIR, file)))
       .map((file) => ({ file, allow: readJsonFile(path.join(DEFAULT_ISSUE_AGENT_DIR, file))?.repoAllowlist ?? null }))
     : null;
-  return toMiniReport(manifest, { config: readJsonFile(path.join(home, MINI_CONFIG_REL)), routers, monitor, issueAgent });
+  return toMiniReport(manifest, { config: readMiniConfig(path.join(home, MINI_CONFIG_REL)), routers, monitor, issueAgent });
 }
 
 function main() {
