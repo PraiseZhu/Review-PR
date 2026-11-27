@@ -1,5 +1,5 @@
 // 审查机换仓:只读预检、路径漂移检查、切换当天的命令清单(见 mivo/README.md「换仓」)。
-// 全程只读:只用 gh 的 GET 请求和本机 git / 文件读取,不写 GitHub、不改 Mini 的任何文件、不停任何进程。
+// --preview / --drift / --plan 和不带 --yes 的 --apply 保持只读。
 //
 // 用法:
 //   node mivo/deploy/cutover.mjs --manifest <切换清单.json> --preview   全部核对:路径漂移 + 新仓 GitHub 设置 + Mini 本机(在 Mini 上跑才核)
@@ -16,18 +16,25 @@ import { toCliArgs } from './tuple-lib.mjs';
 import { toManifest, toPathRules, toDriftReport, toSettingsReport, toMiniReport, toExitCode, toReportText, toCutoverPlan } from './cutover-lib.mjs';
 import { DEFAULT_ISSUE_AGENT_DIR, RUNTIME_NAMES } from './issue-agent-consumers.mjs';
 import { SKILL_ROOT, MINI_CONFIG_REL } from '../lib/common.mjs';
+import { executeGitHub, readGitHubState, toGitHubPlan, undoGitHub } from './cutover-apply-github.mjs';
+import { readJournal, runApply, runRollback } from './cutover-apply.mjs';
+import { checkMiniRollback, executeMini, prepareMiniStep, readMiniState, undoMini } from './cutover-apply-mini.mjs';
 
-const USAGE = `用法:node mivo/deploy/cutover.mjs --manifest <切换清单.json> (--preview | --drift | --plan)
+const USAGE = `用法:node mivo/deploy/cutover.mjs --manifest <切换清单.json> (--preview | --drift | --plan | --apply <github|mini> [--yes])
+       node mivo/deploy/cutover.mjs --rollback <备份目录> [--home <目录>]
        [--old-git <本地 clone> [--old-ref <ref>]] [--new-git <本地 clone> [--new-ref <ref>]] [--json] [--verbose]
   --preview   只读预检:路径漂移、新仓 GitHub 设置、Mini 本机(在 Mini 上跑才核)
   --drift     只核路径漂移(规则在旧仓命中、新仓一个都不命中就报)
   --plan      打印切换当天的命令清单,不执行
+  --apply     核对并展示 GitHub 或 Mini 执行计划;只有 --yes 才写入
+  --home      Mini 和备份目录的根,缺省 HOME
+  --install-mini <替身脚本>  只用于显式 --home 指向的隔离副本
   切换清单格式见 mivo/deploy/cutover.example.json。
 退出码:0 全部通过,1 有缺项或漂移,2 有查不了的项,3 参数或切换清单不合法。
 `;
 const CLI = toCliArgs(process.argv.slice(2), {
-  flags: ['preview', 'drift', 'plan', 'json', 'verbose'],
-  values: ['manifest', 'old-git', 'old-ref', 'new-git', 'new-ref'],
+  flags: ['preview', 'drift', 'plan', 'json', 'verbose', 'yes'],
+  values: ['manifest', 'old-git', 'old-ref', 'new-git', 'new-ref', 'apply', 'rollback', 'home', 'install-mini'],
 });
 
 // helpers
@@ -114,9 +121,10 @@ function settingsItems(manifest) {
 }
 
 // Mini 本机:只在本机有 ~/mivo-prereview 时核;只读 repos、repoAllowlist 这些字段,不读私钥。
-function miniItems(manifest) {
-  const home = os.homedir();
-  if (!fs.existsSync(path.join(home, 'mivo-prereview'))) {
+function miniItems(manifest, home) {
+  const miniRoot = path.join(home, 'mivo-prereview');
+  if (!fs.existsSync(miniRoot) ||
+      !fs.readdirSync(miniRoot).some((entry) => entry !== 'cutover-backup')) {
     return [{ area: 'Mini 本机', item: '本机核对', status: 'info', detail: '本机没有 ~/mivo-prereview,跳过(在 Mini 上跑才核)' }];
   }
   const routerRoot = path.join(home, 'mivo-gh-router');
@@ -128,22 +136,115 @@ function miniItems(manifest) {
   const monitor = (fs.existsSync(checksDir) ? fs.readdirSync(checksDir).filter((f) => f.endsWith('.mjs')) : []).flatMap((file) =>
     fs.readFileSync(path.join(checksDir, file), 'utf8').split('\n').flatMap((text, i) =>
       (text.includes(manifest.oldRepo) || (text.includes(`"${owner}"`) && text.includes(`"${name}"`)) ? [{ file, line: i + 1 }] : [])));
-  const issueAgent = fs.existsSync(DEFAULT_ISSUE_AGENT_DIR)
-    ? RUNTIME_NAMES.filter((file) => fs.existsSync(path.join(DEFAULT_ISSUE_AGENT_DIR, file)))
-      .map((file) => ({ file, allow: readJsonFile(path.join(DEFAULT_ISSUE_AGENT_DIR, file))?.repoAllowlist ?? null }))
+  const issueAgentDir = path.join(home, path.relative(os.homedir(), DEFAULT_ISSUE_AGENT_DIR));
+  const issueAgent = fs.existsSync(issueAgentDir)
+    ? RUNTIME_NAMES.filter((file) => fs.existsSync(path.join(issueAgentDir, file)))
+      .map((file) => ({ file, allow: readJsonFile(path.join(issueAgentDir, file))?.repoAllowlist ?? null }))
     : null;
-  return toMiniReport(manifest, { config: readMiniConfig(path.join(home, MINI_CONFIG_REL)), routers, monitor, issueAgent });
+  const items = toMiniReport(manifest, { config: readMiniConfig(path.join(home, MINI_CONFIG_REL)), routers, monitor, issueAgent });
+  for (const name of Object.keys(manifest.rehearsalInstallationIds ?? {})) {
+    items.push({ area: 'Mini 本机', item: 'App installationId ' + name, status: 'manual', detail: '替身，未实测' });
+  }
+  return items;
+}
+
+function showPreview(manifest, home, kind = 'preview') {
+  let items;
+  if (kind === 'preview' && manifest.rehearsal) {
+    const manual = (item, detail) => ({ area: '演练不适用/人工', item, status: 'manual', detail });
+    items = [
+      manual('路径漂移与 workflow 文件', '演练仓不复制旧仓代码；真实新仓推送代码后核对'),
+      manual('组织 secrets', '个人仓不会继承旧组织的 ANTHROPIC_API_KEY'),
+      manual('GitHub App 安装', '演练仓不安装生产 App'),
+      manual('runner', '演练仓不注册生产 runner'),
+    ];
+    try {
+      const remaining = toGitHubPlan(manifest, readGitHubState(manifest));
+      items.push(...remaining.map((step) => {
+        if (step.note?.startsWith('不适用')) return manual(step.target, step.note);
+        return { area: '演练 GitHub 设置', item: step.action + ' ' + step.target,
+          status: step.skip && !step.note?.includes('不一致') ? 'ok' : 'mismatch', detail: step.note ?? (step.skip ? '已核对' : '仍有改动待执行') };
+      }));
+    } catch (error) {
+      items.push({ area: '演练 GitHub 设置', item: '读取设置', status: 'unknown', detail: error.message });
+    }
+    items.push(...miniItems(manifest, home));
+  } else {
+    items = [...driftItems(manifest), ...(kind === 'preview' ? [...settingsItems(manifest), ...miniItems(manifest, home)] : [])];
+  }
+  const exitCode = toExitCode(items);
+  const report = toReportText(items, { verbose: CLI.flags.has('verbose') });
+  process.stdout.write(CLI.flags.has('json') ? `${JSON.stringify({ manifest, exitCode, items }, null, 2)}\n`
+    : `# 换仓${kind === 'preview' ? '只读预检' : '路径漂移检查'}:${manifest.oldRepo} → ${manifest.newRepo}\n\n${manifest.rehearsal && kind === 'preview' && exitCode === 0
+      ? report.replace('全部通过', '可演练项通过；不适用和人工项未验证') : report}`);
+  return exitCode;
 }
 
 function main() {
   if (CLI.help) { process.stdout.write(USAGE); return; }
-  const actions = ['preview', 'drift', 'plan'].filter((flag) => CLI.flags.has(flag));
-  const problem = CLI.error ?? (actions.length !== 1 ? '--preview、--drift、--plan 要给且只给一个' : !CLI.values.get('manifest') ? '缺 --manifest' : null);
+  const actions = ['preview', 'drift', 'plan', 'apply', 'rollback'].filter((flag) => CLI.flags.has(flag) || CLI.values.has(flag));
+  const segment = CLI.values.get('apply');
+  const rollback = CLI.values.get('rollback');
+  const problem = CLI.error ?? (actions.length !== 1 ? '--preview、--drift、--plan、--apply、--rollback 要给且只给一个'
+    : !rollback && !CLI.values.get('manifest') ? '缺 --manifest'
+      : rollback && CLI.values.has('manifest') ? '--rollback 从备份读清单，不接受 --manifest'
+        : segment && !['github', 'mini'].includes(segment) ? '--apply 须是 github 或 mini'
+          : CLI.flags.has('yes') && !segment ? '--yes 只用于 --apply' : null);
   if (problem) { process.stderr.write(`${problem}\n${USAGE}`); process.exitCode = 3; return; }
+  let home;
+  const requestedHome = CLI.values.get('home') ?? os.homedir();
+  try { home = fs.realpathSync(requestedHome); } catch (error) {
+    if (error.code === 'ENOENT' && !segment && !rollback && !CLI.values.has('home')) home = path.resolve(requestedHome);
+    else {
+      console.error('--home 读不到：' + error.message);
+      process.exitCode = 3;
+      return;
+    }
+  }
+  const requestedInstaller = CLI.values.get('install-mini');
+  const installer = requestedInstaller ? fs.realpathSync(requestedInstaller) : null;
+  const isolated = CLI.values.has('home') && home !== fs.realpathSync(os.homedir());
+  if (installer && (!isolated || !fs.statSync(installer).isFile())) {
+    throw new Error('--install-mini 只允许用于 --home 指向的隔离副本');
+  }
+  const mini = { home, installer, isolated };
+  if (rollback) {
+    const { directory, record } = readJournal(rollback, home);
+    if (record.segment === 'mini' && CLI.values.has('home') && home !== fs.realpathSync(os.homedir()) && !installer) {
+      throw new Error('隔离回滚必须提供 --install-mini 替身');
+    }
+    if (record.segment === 'mini') checkMiniRollback(record, home);
+    runRollback({ directory, record, undo: (operation, backup) => record.segment === 'mini'
+      ? undoMini(operation, backup, mini) : undoGitHub(operation, record.manifest) });
+    return;
+  }
   let manifest;
   try { manifest = toManifest(fs.readFileSync(CLI.values.get('manifest'), 'utf8')); } catch (error) {
     process.stderr.write(`${error.code === 'ENOENT' ? `切换清单不存在:${CLI.values.get('manifest')}` : error.message}\n`);
     process.exitCode = 3;
+    return;
+  }
+  if (manifest.rehearsalInstallationIds && !isolated) throw new Error('真实 HOME 不允许使用演练 App ID');
+  if (segment) {
+    if (manifest.oldRepo.toLowerCase() === manifest.newRepo.toLowerCase()) {
+      console.error('执行段的新旧仓不能相同');
+      process.exitCode = 3;
+      return;
+    }
+    if (segment === 'mini') {
+      if (CLI.flags.has('yes') && (CLI.values.has('home') || manifest.rehearsal) && !installer) {
+        throw new Error('隔离执行必须提供 --home 与 --install-mini 替身');
+      }
+      process.exitCode = runApply({ manifest, segment, home, installer, steps: readMiniState(manifest, mini),
+        yes: CLI.flags.has('yes'), execute: (operation) => executeMini(operation, mini),
+        prepare: (step, directory, index) => prepareMiniStep(step, home, directory, index),
+        preview: () => showPreview(manifest, home) });
+      return;
+    }
+    process.exitCode = runApply({ manifest, segment, home,
+      steps: toGitHubPlan(manifest, readGitHubState(manifest)), yes: CLI.flags.has('yes'),
+      execute: (operation) => executeGitHub(operation, manifest),
+      preview: () => showPreview(manifest, home) });
     return;
   }
   if (actions[0] === 'plan') {
@@ -155,11 +256,10 @@ function main() {
       skillSha: oldVariables.ok ? oldVariables.value.MIVO_REVIEW_SKILL_SHA ?? null : null, date }));
     return;
   }
-  const items = [...driftItems(manifest), ...(actions[0] === 'preview' ? [...settingsItems(manifest), ...miniItems(manifest)] : [])];
-  const exitCode = toExitCode(items);
-  process.stdout.write(CLI.flags.has('json') ? `${JSON.stringify({ manifest, exitCode, items }, null, 2)}\n`
-    : `# 换仓${actions[0] === 'preview' ? '只读预检' : '路径漂移检查'}:${manifest.oldRepo} → ${manifest.newRepo}\n\n${toReportText(items, { verbose: CLI.flags.has('verbose') })}`);
-  process.exitCode = exitCode;
+  process.exitCode = showPreview(manifest, home, actions[0]);
 }
 
-main();
+try { main(); } catch (error) {
+  console.error('换仓停止：' + error.message);
+  process.exitCode = 1;
+}

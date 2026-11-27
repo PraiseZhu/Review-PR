@@ -31,8 +31,20 @@ export function toManifest(text) {
   };
   const runnerLabel = raw.runnerLabel ?? 'mivo-review';
   if (typeof runnerLabel !== 'string' || !LABEL_RE.test(runnerLabel)) throw bad('runnerLabel', '须是 runner 标签名');
+  if (Object.hasOwn(raw, 'rehearsal') && typeof raw.rehearsal !== 'boolean') throw bad('rehearsal', '须是布尔值');
+  const fixtureIds = raw.rehearsalInstallationIds;
+  const appNames = ['praisebuild', 'praisetriage', 'praisewatch', 'praise-qa'];
+  if (Object.hasOwn(raw, 'rehearsalInstallationIds') && (!raw.rehearsal || !fixtureIds ||
+      typeof fixtureIds !== 'object' || Object.keys(fixtureIds).length !== appNames.length ||
+      !appNames.every((name) => Number.isSafeInteger(fixtureIds[name]) && fixtureIds[name] > 0) ||
+      new Set(Object.values(fixtureIds)).size !== appNames.length)) {
+    throw new Error('rehearsalInstallationIds 仅允许用于 rehearsal，须提供四个 App 各自不同的正整数 ID');
+  }
+  if (Object.hasOwn(raw, 'transferOrigins') && typeof raw.transferOrigins !== 'boolean') throw bad('transferOrigins', '须是布尔值');
   return { version: 1, oldRepo: raw.oldRepo, newRepo: raw.newRepo, kind: raw.kind,
-    oldBranch: branch('oldBranch'), defaultBranch: branch('defaultBranch'), runnerLabel };
+    oldBranch: branch('oldBranch'), defaultBranch: branch('defaultBranch'), runnerLabel,
+    ...(raw.rehearsal ? { rehearsal: true } : {}), ...(fixtureIds ? { rehearsalInstallationIds: fixtureIds } : {}),
+    ...(raw.transferOrigins ? { transferOrigins: true } : {}) };
 }
 
 // ── 路径规则 ─────────────────────────────────────────────────────────────
@@ -201,11 +213,58 @@ const isValueExempt = (name, kind) => name === 'MIVO_REVIEW_MODE' || name === 'M
   || (kind === 'fresh' && name === 'MIVO_REVIEW_WATCHDOG_ISSUE');
 const toShownValue = (value) => { const text = JSON.stringify(value); return text.length > 60 ? `${text.slice(0, 60)}…` : text; };
 // 数组按元素排序、对象按键排序后的 JSON:规则参数里的数组(必需检查、合并方式)是集合,重建时顺序可能变。
-const toCanonicalJson = (value) => {
+export const toCanonicalJson = (value) => {
   if (Array.isArray(value)) return `[${value.map(toCanonicalJson).sort().join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${toCanonicalJson(value[key])}`).join(',')}}`;
   return JSON.stringify(value ?? null);
 };
+
+export const toStep = (action, target, before, after, operation = null, undo = null, note) => ({
+  action, target, before, after, skip: operation === null, operation, undo, note,
+});
+
+const manualPromptLines = [
+  [
+    "Mivo 新审查机巡检",
+    "6f20b2c0-0586-4e7a-bf3e-79910588099c",
+    [
+      "每一轮都说清:A 类开了哪一单或附上已有进度;B 类做了哪个白名单动作、结果如何;C/D 类建议谁做什么(参考 Mivo 仓 docs/loops/review-pr-setup.md 的「紧急强合」与 ~/mivo-prereview/skill/mivo/README.md「审查失败后怎么重试」;插件仓文档用 gh api -H 'Accept: application/vnd.github.raw' 'repos/{repo}/contents/docs/loops/review-pr-setup.md?ref=main' 读)。同一问题还没恢复时只简短更新持续时间和进度。最后调用 schedule_notify_current_run 提醒用户。"
+    ]
+  ],
+  [
+    "产品规则伙伴 / 每日检查",
+    "bd638516-90cd-4051-8036-a31e1342e1a2",
+    [
+      "你是 Mivo 产品规则伙伴。做一次只读的每日检查，规则见 ~/AI-Agent/Codex/plans/2026-11-05-mivo-product-rules-plan.md §1.7、§1.8。仓库 R={repo}。",
+      "第 0 步：上线判断。运行 gh api repos/{repo}/contents/docs/product-rules/README.md --jq .name。",
+      "第 1 步：准备只读检出。在你自己的工作目录下维护一个 product-rules-check/ 目录：不存在就 git clone --depth 1 https://github.com/{repo} product-rules-check；存在就在里面 git fetch --depth 1 origin main 后 git reset --hard origin/main。只在这个目录里这样做，不碰其它目录。"
+    ]
+  ],
+  [
+    "产品规则伙伴 / 周报",
+    "0543eabd-4aea-45af-ba33-f2cf69bf19ec",
+    [
+      "规则目录没上线时（gh api repos/{repo}/contents/docs/product-rules/README.md 读不到），只写 3 行：沉淀计划的总 issue 和各子 issue 的状态（开着/已合入）、谁在推进、下一步卡在哪。找不到总 issue 就写「还没开 issue」。"
+    ]
+  ],
+  ['worktree 与历史会话秒清', '16fa2277-2296-48b5-b200-4cdc7fde9dbb',
+    ['~/.local/share/sweeper-gh/bin/gh pr view <N> --repo {repo} --json state 查'], true],
+  ...['b44bd5d2-0567-4e03-80cf-caac3f39b9f6', '643282e4-d5c9-41b1-883b-1db8950a9a44'].map((id) =>
+    ['每日同步与收口', id, ['用 ~/.local/share/sweeper-gh/bin/gh 查状态（{repo}）'], true]),
+];
+
+export function toManualTasks({ oldRepo, newRepo }) {
+  return [
+    '切换前暂停、验收后恢复：Mivo 审查机每天换版本。',
+    '执行当天先核对原句仍在；扫地僧按 PR 号查状态，三项必须在切换当天更新，避免误清开放分支。',
+    ...manualPromptLines.flatMap(([task, id, lines, required]) => lines.map((line) =>
+      `${task}（${id}）${required ? ' [切换当天必改]' : ''}：原句「${line.replaceAll('{repo}', oldRepo)}」 → 新句「${line.replaceAll('{repo}', newRepo)}」`)),
+    '仓外待改（PraiseZhu/project-skills，不执行）：',
+    '- skills/pr-merge/scripts/build-request.mjs',
+    `- skills/approve-exec/repo-cards/${oldRepo.replace('/', '__')}.json`,
+    '- skills/review-pr/config/pr-rules.json',
+  ];
+}
 // a 里有、b 里抵扣不掉的规则类型(同一条规则在两套规则集里各出现一次,两边都要两次)。元素是 { type, key }。
 const toUnmatchedTypes = (a, b) => {
   const left = b.map((rule) => rule.key);

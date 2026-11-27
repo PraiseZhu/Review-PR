@@ -6,5 +6,7 @@
   "newRepo": "OWNER/NEW-REPO",
   "kind": "transfer",
   "defaultBranch": "main",
-  "runnerLabel": "mivo-review"
+  "runnerLabel": "mivo-review",
+  "rehearsal": false,
+  "transferOrigins": false
 }
