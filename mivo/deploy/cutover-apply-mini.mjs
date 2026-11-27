@@ -16,6 +16,7 @@ const skill = root + '/skill';
 const routers = ['praisebuild', 'praisetriage', 'praisewatch'];
 const productRules = 'Library/Application Support/Cindy/owners/df571e02df2913aaa537/bots/bot_1793900094540_m0fggd/workspace/product-rules-check';
 const independentOps = project + '/_ops/mivo-canvas-plugin';
+const issueAgentCode = project + '/_ops/issue-agent-code/xindong__mivo-canvas-plugin';
 const shaRE = /^[0-9a-f]{40}$/;
 const appIdRE = /^\d+$/;
 const fileDigest = (file) => fs.readFileSync(file, 'utf8');
@@ -48,7 +49,7 @@ function ensureRepo(home, relative) {
 function toInstallationId(home, config, newRepo, label) {
   const { appId, keyPath } = config;
   if (!appIdRE.test(String(appId)) || typeof keyPath !== 'string' || !keyPath) throw new Error(label + ' 缺少 App ID 或私钥路径');
-  const relative = path.isAbsolute(keyPath) ? path.relative(home, keyPath) : keyPath.replace(/^~\//, '');
+  const relative = path.isAbsolute(keyPath) ? path.relative(home, keyPath) : keyPath.replace(/^(?:~|\$HOME)\//, '');
   let jwt;
   try {
     const keyFile = localPath(home, relative);
@@ -88,6 +89,38 @@ function scriptStep(file, previous, next, oldRepo, newRepo) {
   return toStep('文件', file, oldRepo, newRepo, previous === next ? null : { type: 'file', file, previous, next });
 }
 
+function toQaRoutes(script, oldRepo, newRepo, installationId) {
+  const newline = script.includes('\r\n') ? '\r\n' : '\n';
+  const lines = script.split(newline);
+  const start = lines.indexOf('pqa_installation() {');
+  const caseStart = start + 1;
+  const caseEnd = lines.findIndex((line, index) => index > caseStart && line.trim() === 'esac');
+  const body = lines.slice(caseStart + 1, caseEnd);
+  const oldRoutes = body.filter((line) => line.trimStart().startsWith(oldRepo + ')'));
+  const newRoutes = body.filter((line) => line.trimStart().startsWith(newRepo + ')'));
+  const oldMatch = /^([ \t]*)\S+\) echo (\d+) ;;$/.exec(oldRoutes[0] ?? '');
+  const header = lines.findIndex((line) => line.startsWith('# Installations: '));
+  const oldMapping = oldRepo + ' -> ' + oldMatch?.[2];
+  if (start < 0 || lines[caseStart]?.trim() !== 'case "$1" in' || caseEnd < 0 ||
+      oldRoutes.length !== 1 || !oldMatch || newRoutes.length > 1 || header < 0 ||
+      !lines[header].includes(oldMapping)) throw new Error('praise-qa-gh.sh 安装路由或映射说明格式不符，不修改');
+  const newMapping = newRepo + ' -> ' + installationId;
+  if (newRoutes.length) {
+    const route = newRoutes[0];
+    const match = /^([ \t]*)\S+\) echo (\d+) ;;$/.exec(route);
+    if (!match) throw new Error('praise-qa-gh.sh 新仓安装路由格式不符，不修改');
+    const priorMapping = newRepo + ' -> ' + match[2];
+    if (!lines[header].includes(priorMapping)) throw new Error('praise-qa-gh.sh 新仓映射说明和 case 不一致，不修改');
+    lines[header] = lines[header].replace(priorMapping, newMapping);
+    lines[caseStart + 1 + body.indexOf(route)] = match[1] + newRepo + ') echo ' + installationId + ' ;;';
+  } else {
+    if (lines[header].includes(newRepo + ' -> ')) throw new Error('praise-qa-gh.sh 新仓映射说明和 case 不一致，不修改');
+    lines[header] = lines[header].replace(oldMapping, oldMapping + ', ' + newMapping);
+    lines.splice(caseStart + 1, 0, oldMatch[1] + newRepo + ') echo ' + installationId + ' ;;');
+  }
+  return lines.join(newline);
+}
+
 export function readMiniState(manifest, { home, installer, isolated }) {
   const { oldRepo, newRepo, kind, defaultBranch, oldBranch, transferOrigins, rehearsalInstallationIds } = manifest;
   if (rehearsalInstallationIds && !isolated) throw new Error('真实 HOME 不允许使用演练 App ID');
@@ -123,23 +156,13 @@ export function readMiniState(manifest, { home, installer, isolated }) {
 
   const qaFile = root + '/praise-qa-gh.sh';
   const qa = fileDigest(localPath(home, qaFile));
-  if (!qa.includes(oldRepo) && !qa.includes(newRepo)) throw new Error(qaFile + ' 找不到切换目标');
-  let newQa = qa.replaceAll(oldRepo, newRepo);
-  const sameOwner = oldRepo.split('/')[0].toLowerCase() === newRepo.split('/')[0].toLowerCase();
-  let qaNote;
-  if (isolated && rehearsalInstallationIds) {
-    qaNote = 'QA App installationId 未实测；只演练仓名替换，替身不会启动';
-  } else if (!sameOwner && qa.includes(oldRepo)) {
-    const appId = process.env.PRAISE_QA_APP_ID ?? /^PQA_APP_ID="\$\{PRAISE_QA_APP_ID:-(\d+)\}"$/m.exec(qa)?.[1];
-    const keyPath = process.env.PRAISE_QA_KEY ?? /^PQA_KEY="\$\{PRAISE_QA_KEY:-([^}]+)\}"$/m.exec(qa)?.[1];
-    const route = qa.split('\n').find((line) => line.trimStart().startsWith(oldRepo + ')'));
-    const match = route?.trim().match(/^([^ ]+)\) echo (\d+) ;;$/);
-    if (!match || match[1] !== oldRepo) throw new Error(qaFile + ' 的安装路由格式不明，不修改');
-    const newId = toInstallationId(home, { appId, keyPath }, newRepo, 'Praise QA');
-    newQa = newQa.replaceAll(newRepo + ' -> ' + match[2], newRepo + ' -> ' + newId);
-    newQa = newQa.replace(newRepo + ') echo ' + match[2] + ' ;;', newRepo + ') echo ' + newId + ' ;;');
-  }
-  steps.push({ ...scriptStep(qaFile, qa, newQa, oldRepo, newRepo), note: qaNote });
+  const appId = /^PQA_APP_ID="\$\{PRAISE_QA_APP_ID:-(\d+)\}"\r?$/m.exec(qa)?.[1];
+  const keyPath = /^PQA_KEY="\$\{PRAISE_QA_KEY:-([^}]+)\}"\r?$/m.exec(qa)?.[1];
+  const qaId = rehearsalInstallationIds ? rehearsalInstallationIds['praise-qa'] :
+    toInstallationId(home, { appId, keyPath }, newRepo, 'Praise QA');
+  const newQa = toQaRoutes(qa, oldRepo, newRepo, qaId);
+  steps.push({ ...scriptStep(qaFile, qa, newQa, oldRepo, newRepo),
+    note: rehearsalInstallationIds ? 'installationId：替身，未实测' : undefined });
 
   const checks = root + '/monitor/scripts/schedule-checks';
   const [oldOwner, oldName] = oldRepo.split('/');
@@ -172,10 +195,10 @@ export function readMiniState(manifest, { home, installer, isolated }) {
   });
 
   const changeOrigins = kind === 'fresh' || transferOrigins;
-  const repos = changeOrigins ? [independentOps, productRules] : [];
+  const repos = changeOrigins ? [independentOps, productRules, issueAgentCode] : [];
   const nextUrl = 'https://github.com/' + newRepo + '.git';
   const origins = ['mivo-watcher', 'lifeline-v3', 'issue-agent-live'].map((name) =>
-    toStep('origin', project + '/_ops/' + name, null, null, null, null, '无独立 origin，由主检出负责'));
+    toStep('origin', project + '/_ops/' + name, null, null, null, null, '主检出里被 /_ops/ 忽略的子目录，无独立 origin，随主检出生效'));
   origins.push(toStep('origin', project + '/_tmp/mivo-canvas-plugin-ro', null, null, null, null, '临时只读副本，无线上引用'));
   origins.push(toStep('origin', 'Cindy dialogues/*', null, null, null, null, '会话临时副本，不在变更清单'));
   if (isolated) origins.push(toStep('origin', project, null, null, null, null, '主检出仅生产执行，隔离演练跳过'));

@@ -116,6 +116,19 @@ test('GitHub 只演示不写入；演练写入后预检通过，重跑零写入�
   assert.match(preview.stdout, /MIVO_REVIEW_MODE："live" → "dry-run"/);
   assert.match(preview.stdout, /Mivo 新审查机巡检.*owner\/old.*owner\/new/);
   assert.match(preview.stdout, /产品规则伙伴 \/ 每日检查.*owner\/old.*owner\/new/);
+  for (const [id, mandatory] of [
+    ['6f20b2c0-0586-4e7a-bf3e-79910588099c', false],
+    ['bd638516-90cd-4051-8036-a31e1342e1a2', false],
+    ['0543eabd-4aea-45af-ba33-f2cf69bf19ec', false],
+    ['16fa2277-2296-48b5-b200-4cdc7fde9dbb', true],
+    ['b44bd5d2-0567-4e03-80cf-caac3f39b9f6', true],
+    ['643282e4-d5c9-41b1-883b-1db8950a9a44', true],
+  ]) {
+    const line = preview.stdout.split('\n').find((entry) => entry.includes(id));
+    assert.match(line, /原句「.*owner\/old.*」 → 新句「.*owner\/new.*」/);
+    assert.equal(line.includes('[切换当天必改]'), mandatory);
+  }
+  assert.match(preview.stdout, /执行当天先核对原句仍在/);
   assert.match(preview.stdout, /产品规则伙伴 \/ 周报.*owner\/old.*owner\/new/);
   assert.match(preview.stdout, /skills\/pr-merge\/scripts\/build-request.mjs/);
   const result = fixtureData.apply('--yes');

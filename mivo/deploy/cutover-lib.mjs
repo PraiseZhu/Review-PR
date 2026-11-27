@@ -33,11 +33,12 @@ export function toManifest(text) {
   if (typeof runnerLabel !== 'string' || !LABEL_RE.test(runnerLabel)) throw bad('runnerLabel', '须是 runner 标签名');
   if (Object.hasOwn(raw, 'rehearsal') && typeof raw.rehearsal !== 'boolean') throw bad('rehearsal', '须是布尔值');
   const fixtureIds = raw.rehearsalInstallationIds;
+  const appNames = ['praisebuild', 'praisetriage', 'praisewatch', 'praise-qa'];
   if (Object.hasOwn(raw, 'rehearsalInstallationIds') && (!raw.rehearsal || !fixtureIds ||
-      typeof fixtureIds !== 'object' || Object.keys(fixtureIds).length !== 3 ||
-      !['praisebuild', 'praisetriage', 'praisewatch'].every((name) => Number.isSafeInteger(fixtureIds[name]) && fixtureIds[name] > 0) ||
-      new Set(Object.values(fixtureIds)).size !== 3)) {
-    throw new Error('rehearsalInstallationIds 仅允许用于 rehearsal，须提供三个不同的正整数 ID');
+      typeof fixtureIds !== 'object' || Object.keys(fixtureIds).length !== appNames.length ||
+      !appNames.every((name) => Number.isSafeInteger(fixtureIds[name]) && fixtureIds[name] > 0) ||
+      new Set(Object.values(fixtureIds)).size !== appNames.length)) {
+    throw new Error('rehearsalInstallationIds 仅允许用于 rehearsal，须提供四个 App 各自不同的正整数 ID');
   }
   if (Object.hasOwn(raw, 'transferOrigins') && typeof raw.transferOrigins !== 'boolean') throw bad('transferOrigins', '须是布尔值');
   return { version: 1, oldRepo: raw.oldRepo, newRepo: raw.newRepo, kind: raw.kind,
@@ -225,12 +226,14 @@ export const toStep = (action, target, before, after, operation = null, undo = n
 const manualPromptLines = [
   [
     "Mivo 新审查机巡检",
+    "6f20b2c0-0586-4e7a-bf3e-79910588099c",
     [
       "每一轮都说清:A 类开了哪一单或附上已有进度;B 类做了哪个白名单动作、结果如何;C/D 类建议谁做什么(参考 Mivo 仓 docs/loops/review-pr-setup.md 的「紧急强合」与 ~/mivo-prereview/skill/mivo/README.md「审查失败后怎么重试」;插件仓文档用 gh api -H 'Accept: application/vnd.github.raw' 'repos/{repo}/contents/docs/loops/review-pr-setup.md?ref=main' 读)。同一问题还没恢复时只简短更新持续时间和进度。最后调用 schedule_notify_current_run 提醒用户。"
     ]
   ],
   [
     "产品规则伙伴 / 每日检查",
+    "bd638516-90cd-4051-8036-a31e1342e1a2",
     [
       "你是 Mivo 产品规则伙伴。做一次只读的每日检查，规则见 ~/AI-Agent/Codex/plans/2026-11-05-mivo-product-rules-plan.md §1.7、§1.8。仓库 R={repo}。",
       "第 0 步：上线判断。运行 gh api repos/{repo}/contents/docs/product-rules/README.md --jq .name。",
@@ -239,17 +242,23 @@ const manualPromptLines = [
   ],
   [
     "产品规则伙伴 / 周报",
+    "0543eabd-4aea-45af-ba33-f2cf69bf19ec",
     [
       "规则目录没上线时（gh api repos/{repo}/contents/docs/product-rules/README.md 读不到），只写 3 行：沉淀计划的总 issue 和各子 issue 的状态（开着/已合入）、谁在推进、下一步卡在哪。找不到总 issue 就写「还没开 issue」。"
     ]
-  ]
+  ],
+  ['worktree 与历史会话秒清', '16fa2277-2296-48b5-b200-4cdc7fde9dbb',
+    ['gh pr view <N> --repo {repo} --json state 查'], true],
+  ...['b44bd5d2-0567-4e03-80cf-caac3f39b9f6', '643282e4-d5c9-41b1-883b-1db8950a9a44'].map((id) =>
+    ['每日同步与收口', id, ['用 ~/.local/share/sweeper-gh/bin/gh 查状态（{repo}）'], true]),
 ];
 
 export function toManualTasks({ oldRepo, newRepo }) {
   return [
     '切换前暂停、验收后恢复：Mivo 审查机每天换版本。',
-    ...manualPromptLines.flatMap(([task, lines]) => lines.map((line) =>
-      `${task}：原句「${line.replaceAll('{repo}', oldRepo)}」 → 新句「${line.replaceAll('{repo}', newRepo)}」`)),
+    '执行当天先核对原句仍在；扫地僧按 PR 号查状态，三项必须在切换当天更新，避免误清开放分支。',
+    ...manualPromptLines.flatMap(([task, id, lines, required]) => lines.map((line) =>
+      `${task}（${id}）${required ? ' [切换当天必改]' : ''}：原句「${line.replaceAll('{repo}', oldRepo)}」 → 新句「${line.replaceAll('{repo}', newRepo)}」`)),
     '仓外待改（PraiseZhu/project-skills，不执行）：',
     '- skills/pr-merge/scripts/build-request.mjs',
     `- skills/approve-exec/repo-cards/${oldRepo.replace('/', '__')}.json`,

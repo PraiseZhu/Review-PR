@@ -15,8 +15,10 @@ const state = 'mivo-prereview/state/mivo';
 const oldRepo = 'owner/old';
 const newRepo = 'owner/new';
 const standalone = project + '/_ops/mivo-canvas-plugin';
+const issueAgentCode = project + '/_ops/issue-agent-code/xindong__mivo-canvas-plugin';
+const unrelatedCode = project + '/_ops/issue-agent-code/xindong__mivo-canvas';
 const productRulesRepo = 'Library/Application Support/Cindy/owners/df571e02df2913aaa537/bots/bot_1793900094540_m0fggd/workspace/product-rules-check';
-const rehearsalIds = { praisebuild: 701, praisetriage: 702, praisewatch: 703 };
+const rehearsalIds = { praisebuild: 701, praisetriage: 702, praisewatch: 703, 'praise-qa': 704 };
 const untouched = '.config/unrelated.json';
 const appDirs = ['praisebuild', 'praisetriage', 'praisewatch'].map((name) => 'mivo-gh-router/' + name + '/config.json');
 const issueRuntimes = ['runtime-primary', 'runtime-fallback'].map((name) => project + '/history/loops/issue-agent/' + name + '.json');
@@ -26,6 +28,18 @@ const life = project + '/_ops/lifeline-v3/config.json';
 const watch = project + '/_ops/mivo-watcher/config/profile.json';
 const policy = 'praise-merge-runtime/config/policy.json';
 const steward = '.config/pr-steward/profile.json';
+const qaOriginal = [
+  '# Installations: owner/old -> 123, owner/* -> 888; other repos -> the gh login.',
+  'PQA_APP_ID="${PRAISE_QA_APP_ID:-104}"',
+  'PQA_KEY="${PRAISE_QA_KEY:-$HOME/.config/test-apps/104.pem}"',
+  'pqa_installation() {',
+  '  case "$1" in',
+  '    owner/old) echo 123 ;;',
+  '    owner/?*) echo 888 ;;',
+  '  esac',
+  '}',
+  '',
+].join('\n');
 
 function fakeGh() {
   const [command, flag, method, address] = process.argv.slice(2);
@@ -40,7 +54,7 @@ function fakeGh() {
     const keys = JSON.parse(fs.readFileSync(process.env.CUTOVER_TEST_KEYS, 'utf8'));
     if (!keys[iss] || !createVerify('RSA-SHA256').update(header + '.' + payload).verify(keys[iss], signature, 'base64url')) process.exit(8);
     fs.appendFileSync(process.env.CUTOVER_TEST_READS, iss + '\n');
-    if (iss === '102') {
+    if (iss === process.env.CUTOVER_TEST_FAIL_APP) {
       console.error('gh: App not installed (HTTP 404)');
       process.exit(1);
     }
@@ -112,14 +126,14 @@ function fixture(t) {
   const read = (file) => fs.readFileSync(home + '/' + file, 'utf8');
   const git = (directory, ...args) => {
     const result = spawnSync('git', ['-C', home + '/' + directory, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
-      '-c', 'core.hooksPath=/dev/null', ...args], { encoding: 'utf8' });
+      '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.trim();
   };
   write(config, '{"targetRepo":"owner/old","workflowRepo":"owner/old","workflowRef":"main","mode":"live","unrelated":true}\n');
   for (const app of appDirs) write(app, '{\r\n  "repos": [\r\n    "other/repo",\r\n    "owner/old"\r\n  ],\r\n  "installationId": 81,\r\n  "keep": "owner/old"\r\n}\r\n');
   for (const runtime of issueRuntimes) write(runtime, '{"repoAllowlist":["owner/old","other/repo"],"codeRepoMap":{"owner/old":{"path":"/work/owner__old"}},"keep":"owner/old"}\n');
-  write(qa, 'case "$1" in\n  owner/old) echo 123 ;;\nesac\n');
+  write(qa, qaOriginal);
   write(monitor, 'const REPO = "owner/old";\nconst query = \'repository(owner:"owner",name:"old")\';\n');
   write(life, '{ "repo"   : "owner/old", "reason": "owner/old" }\n');
   write(watch, '{ "targetRepo" : "owner/old" }\n');
@@ -127,12 +141,12 @@ function fixture(t) {
   write(steward, '{"repos":["owner/old"],"policies":{"owner/old":1},"notes":"owner/old"}\n');
   write(untouched, '{"untouched":"owner/old"}\n');
   write(state + '/sentinel', 'old state bytes\n');
-  for (const directory of [standalone, mirror, productRulesRepo, 'mivo-prereview/skill', project]) {
+  for (const directory of [standalone, mirror, productRulesRepo, issueAgentCode, unrelatedCode, 'mivo-prereview/skill', project]) {
     write(directory + '/tracked', 'original\n');
     git(directory, 'init', '-q');
     git(directory, 'add', '-A');
     git(directory, 'commit', '-qm', 'fixture');
-    git(directory, 'remote', 'add', 'origin', 'https://github.com/owner/old.git');
+    git(directory, 'remote', 'add', 'origin', directory === unrelatedCode ? 'https://github.com/xindong/mivo-canvas.git' : 'https://github.com/owner/old.git');
   }
   write(productRulesRepo + '/tracked', 'local work\n');
   return { write, read, invoke, home, manifest, run, env, apply: (...args) => invoke('--manifest', manifest, '--apply', 'mini', ...args),
@@ -167,13 +181,26 @@ test('Mini 演示只读；fresh 限定字段、跳过脏树，回滚还原归档
   assert.match(live.stdout, /product-rules-check.*工作树有未提交改动，跳过/);
   assert.match(live.stdout, /主检出仅生产执行/);
   assert.match(live.stdout, /App installationId praisebuild.*替身，未实测/);
+  assert.match(live.stdout, /App installationId praise-qa.*替身，未实测/);
   assert.match(live.stdout, /换仓只读预检/);
   for (const app of appDirs) assert.equal(fixtureData.read(app),
     '{\r\n  "repos": [\r\n    "other/repo",\r\n    "owner/old",\r\n    "owner/new"\r\n  ],\r\n  "installationId": ' +
     rehearsalIds[app.split('/')[1]] + ',\r\n  "keep": "owner/old"\r\n}\r\n');
   for (const runtime of issueRuntimes) assert.equal(fixtureData.read(runtime),
     '{"repoAllowlist":["owner/new","other/repo"],"codeRepoMap":{"owner/new":{"path":"/work/owner__old"}},"keep":"owner/old"}\n');
-  assert.equal(fixtureData.read(qa), 'case "$1" in\n  owner/new) echo 123 ;;\nesac\n');
+  assert.equal(fixtureData.read(qa), [
+    '# Installations: owner/old -> 123, owner/new -> 704, owner/* -> 888; other repos -> the gh login.',
+    'PQA_APP_ID="${PRAISE_QA_APP_ID:-104}"',
+    'PQA_KEY="${PRAISE_QA_KEY:-$HOME/.config/test-apps/104.pem}"',
+    'pqa_installation() {',
+    '  case "$1" in',
+    '    owner/new) echo 704 ;;',
+    '    owner/old) echo 123 ;;',
+    '    owner/?*) echo 888 ;;',
+    '  esac',
+    '}',
+    '',
+  ].join('\n'));
   assert.equal(fixtureData.read(monitor), 'const REPO = "owner/new";\nconst query = \'repository(owner:"owner",name:"new")\';\n');
   assert.equal(fixtureData.read(life), '{ "repo"   : "owner/new", "reason": "owner/old" }\n');
   assert.equal(fixtureData.read(watch), '{ "targetRepo" : "owner/new" }\n');
@@ -182,6 +209,8 @@ test('Mini 演示只读；fresh 限定字段、跳过脏树，回滚还原归档
   assert.equal(fixtureData.read(untouched), '{"untouched":"owner/old"}\n');
   assert.match(fixtureData.read(project + '/.git/config'), /owner\/old\.git/);
   assert.match(fixtureData.read(standalone + '/.git/config'), /owner\/new\.git/);
+  assert.match(fixtureData.read(issueAgentCode + '/.git/config'), /owner\/new\.git/);
+  assert.match(fixtureData.read(unrelatedCode + '/.git/config'), /xindong\/mivo-canvas\.git/);
   assert.match(fixtureData.read(productRulesRepo + '/.git/config'), /owner\/old\.git/);
   assert.match(fixtureData.read(mirror + '/.git/config'), /owner\/new\.git/);
   assert.equal(fs.existsSync(fixtureData.home + '/' + state), false);
@@ -209,31 +238,44 @@ test('生产不接受替身 installationId，即使清单标记 rehearsal', (t) 
   const notRehearsal = fixtureData.apply('--yes');
   assert.equal(notRehearsal.status, 3);
   assert.match(notRehearsal.stderr, /rehearsalInstallationIds 仅允许用于 rehearsal/);
+  config.rehearsal = true;
+  config.rehearsalInstallationIds['praise-qa'] = config.rehearsalInstallationIds.praisebuild;
+  fs.writeFileSync(fixtureData.manifest, JSON.stringify(config));
+  assert.match(fixtureData.apply('--yes').stderr, /须提供四个 App 各自不同/);
 });
 
-test('同组织仍使用每个 router 自己的 App 签名，第二个返回 404 则首次写入前停止', (t) => {
+test('同组织仍使用四个 App 各自的签名，Praise QA 返回 404 则首次写入前停止', (t) => {
   const data = fixture(t);
   const manifestData = JSON.parse(fs.readFileSync(data.manifest, 'utf8'));
   delete manifestData.rehearsalInstallationIds;
   fs.writeFileSync(data.manifest, JSON.stringify(manifestData));
   const keys = {};
-  appDirs.forEach((name, index) => {
+  [...appDirs, qa].forEach((name, index) => {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 1024,
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
     const appId = 101 + index;
     const keyPath = '.config/test-apps/' + appId + '.pem';
     data.write(keyPath, privateKey);
-    data.write(name, JSON.stringify({ ...JSON.parse(data.read(name)), appId, keyPath }));
+    if (name !== qa) data.write(name, JSON.stringify({ ...JSON.parse(data.read(name)), appId, keyPath }));
     keys[appId] = publicKey;
   });
   fs.writeFileSync(data.env.CUTOVER_TEST_KEYS, JSON.stringify(keys));
+  data.env.CUTOVER_TEST_FAIL_APP = '104';
   const before = tree(data.home);
   const result = data.apply('--yes');
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /praisetriage App installationId 查不到.*HTTP 404/);
+  assert.match(result.stderr, /Praise QA App installationId 查不到.*HTTP 404/);
   assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE KEY|eyJ/);
-  assert.equal(fs.readFileSync(data.env.CUTOVER_TEST_READS, 'utf8'), '101\n102\n');
+  assert.equal(fs.readFileSync(data.env.CUTOVER_TEST_READS, 'utf8'), '101\n102\n103\n104\n');
   assert.equal(fs.existsSync(data.env.TEST_INSTALL_LOG), false);
   assert.equal(fs.existsSync(data.home + '/mivo-prereview/cutover-backup'), false);
   assert.deepEqual(tree(data.home), before);
+  delete data.env.CUTOVER_TEST_FAIL_APP;
+  const success = data.apply('--yes');
+  assert.equal(success.status, 0, success.stderr);
+  assert.match(data.read(qa), /# Installations: owner\/old -> 123, owner\/new -> 10104/);
+  assert.match(data.read(qa), /owner\/new\) echo 10104 ;;\n    owner\/old\) echo 123 ;;/);
+  const repeat = data.apply('--yes');
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.match(repeat.stdout, /0 步写入/);
 });
