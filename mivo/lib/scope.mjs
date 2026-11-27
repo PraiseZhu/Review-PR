@@ -82,6 +82,8 @@ export const filePatchHashesV2 = (files) => Object.fromEntries(Object.entries(fi
  * @param {boolean} [p.forceFullOnSpecChange] 维护者开关(review-features.json 的 specChange.forceFull):规则改版时即使代码没变也全量;只认 true
  * @param {string} [p.lateFindingsMode] 后来发现开关(review-features.json 的 lateFindings.mode);缺省按 off,只认 enforce
  * @param {boolean} [p.taskBoundaryActive] 本轮任务范围是否起作用(task-issue.mjs isTaskBoundaryActive);缺省 false
+ * @param {{mode:string, maxIncrementalRounds?:number, maxChangedLines?:number}|null} [p.closing] 收口策略(loadClosingPolicy 的结果);
+ *   缺省或 mode 不是 chain 时按 final-full(放行前一律收口全量,#100 的行为)
  * @returns {{mode:'full'|'incremental'|'reuse', reason:string, files:string[], previousFindings:object[], basedOn:string|null}}
  */
 export function computeReviewScope(args) {
@@ -126,7 +128,9 @@ function withReopenedFindings({ scope, previous, current, reopened, reason }) {
     previousFindings, basedOn: null };
 }
 
-function computeBaseReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false }) {
+function computeBaseReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange = false, closing = null }) {
+  // 链式收口(#262):小改动只审改动处,连续若干轮或累计改动过多再全量。配置不完整一律按旧行为(放行前收口全量)。
+  const chain = closing?.mode === 'chain' && Number.isInteger(closing.maxIncrementalRounds) && Number.isInteger(closing.maxChangedLines) ? closing : null;
   // 上一轮有完整结果时,全量轮也带着它的问题(含转 issue 的),任务书据此逐条核对;顺序原样,legacy-N 编号依赖它。
   const trusted = previous?.reviewed === true && previous?.reportComplete === true && previous?.outcome !== 'error';
   // 条目的文件已不在本轮 PR 改动里的标 outOfDiff:任务书据此要求只在 Verification 写结论、不进 findings
@@ -203,9 +207,13 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
     return reuse(previous, '同一版本代码没变,也没有新的申辩或裁定,沿用上次结论');
   }
   // 上一轮已干净、本轮代码有变化:不先跑增量,直接全量(放行前的收口并入这一轮)。规则改版代码没变的沿用分支已在上面处理。
-  if (previousClean && changed.length > 0) return full('上一轮已干净,本轮代码有变化,直接全量');
+  // 链式收口下不走这条:改动小就只审改动处,要不要全量由下面的链判定决定。
+  if (!chain && previousClean && changed.length > 0) return full('上一轮已干净,本轮代码有变化,直接全量');
   const findingFiles = [...new Set(carried.map((f) => f.path).filter((path) => path in after))];
-  const changedLines = changed.reduce((sum, path) => sum + (current.fileChangedLines?.[path] ?? 0), 0);
+  // 旧口径:把本轮 patch 变了的文件在整个 PR 里的补丁行数相加(大文件里只改几行也按整份补丁算)。
+  const patchLines = changed.reduce((sum, path) => sum + (current.fileChangedLines?.[path] ?? 0), 0);
+  // 链式收口按真实口径:两个版本之间这些文件实际增删的行数;拿不到时退回旧口径(只会偏大,更容易全量)。
+  const changedLines = chain ? (deltaLinesOf({ changed, current }) ?? patchLines) : patchLines;
   if (previous.totalDiffLines > 0 && changedLines > previous.totalDiffLines / 2) {
     return full(`变化行数 ${changedLines} 超过上一版 diff(${previous.totalDiffLines} 行)的一半`);
   }
@@ -215,6 +223,21 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
   }
   const files = [...new Set([...changed.filter((path) => path in after), ...findingFiles])].sort();
   if (files.length === 0) return full('变化只有删除文件,重新全量确认');
+  // 链式收口:上次全量之后只审改动的轮数、累计改动行数都在限额内才继续只审改动;任何一项说不清或超限就全量。
+  let chainClosing = null;
+  if (chain) {
+    const since = previous.sinceFull ?? null;
+    if (!since) return full('没有可用的上次全量记录,本轮全量');
+    if (since.rounds >= chain.maxIncrementalRounds) return full(`已连续 ${since.rounds} 轮只审改动,本轮全量`);
+    const total = since.changedLines + changedLines;
+    if (since.totalDiffLines > 0 && total > since.totalDiffLines / 2) {
+      return full(`自上次全量以来累计改动 ${total} 行,超过当时 diff(${since.totalDiffLines} 行)的一半`);
+    }
+    if (total > chain.maxChangedLines) return full(`自上次全量以来累计改动 ${total} 行,超过 ${chain.maxChangedLines} 行上限`);
+    // 增量判干净即放行,不再接收口全量;本轮结束后的链状态也按这里的数记(nextSinceFull)。
+    chainClosing = { skipFinalFull: true, basedOn: { head: since.head, runId: since.runId }, anchorTotalDiffLines: since.totalDiffLines,
+      rounds: since.rounds + 1, changedLines: total, deltaLines: changedLines };
+  }
   return {
     mode: 'incremental',
     reason: `增量(基于 ${String(previous.head).slice(0, 12)},本轮审 ${files.length} 个文件)`,
@@ -223,10 +246,37 @@ function computeBaseReviewScope({ previous, current, headIsDescendant, forceFull
     basedOn: previous.head,
     // 本轮 patch 变了的文件:收敛模块据此判断「新问题是不是出在没改过的文件里」。
     changedFiles: changed.filter((path) => path in after),
-    // 防拉锯:上一轮是收口全量且有问题,本轮改动全落在那些问题所在文件里 → 增量判干净即放行,不再收口。
-    // 只是候选;本轮最终确实干净才会写进结果包(review.mjs)。
-    ...fixRoundExemption({ previous, changed }),
+    // 旧行为的防拉锯:上一轮是收口全量且有问题,本轮改动全落在那些问题所在文件里 → 增量判干净即放行,不再收口。
+    // 只是候选;本轮最终确实干净才会写进结果包(review.mjs)。链式收口下由 closing 接管,不再用这条豁免。
+    ...(chainClosing ? { closing: chainClosing } : fixRoundExemption({ previous, changed })),
   };
+}
+
+// 本轮 patch 变了的文件在两个版本之间真实增删的行数之和(current.deltaLinesByFile 来自 prepare 的 git diff --numstat)。
+// 整份数据拿不到返回 null;单个文件没有数(二进制,或两版之间内容没变但 PR 补丁变了)按它在 PR 里的补丁行数算。
+function deltaLinesOf({ changed, current }) {
+  const byFile = current.deltaLinesByFile;
+  if (byFile === null || typeof byFile !== 'object' || Array.isArray(byFile)) return null;
+  return changed.reduce((sum, path) => {
+    const lines = byFile[path];
+    return sum + (Number.isFinite(lines) && lines >= 0 ? lines : (current.fileChangedLines?.[path] ?? 0));
+  }, 0);
+}
+
+/** `git diff --numstat --no-renames -z` 的输出 → { path: 增删行数之和 };二进制文件(`-`)记 null。纯函数。 */
+export function parseNumstat(stdout) {
+  const lines = {};
+  for (const entry of String(stdout ?? '').split('\0')) {
+    const m = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(entry);
+    if (m) lines[m[3]] = m[1] === '-' || m[2] === '-' ? null : Number(m[1]) + Number(m[2]);
+  }
+  return lines;
+}
+
+/** prepare 用:numstat 输出里只留本 PR 补丁涉及的文件(合并主干带进来的其它文件不算本 PR 的改动)。纯函数。 */
+export function toDeltaLinesByFile(numstatStdout, relatedPaths) {
+  const related = new Set(relatedPaths);
+  return Object.fromEntries(Object.entries(parseNumstat(numstatStdout)).filter(([path]) => related.has(path)));
 }
 
 /**
@@ -279,18 +329,23 @@ export function buildHandoffPlan({ review, previous = null, changedFiles = [], e
     const base = { id: risk.id, contentHash: risk.contentHash, files: risk.files, previousCoverage: null, previousCoverageMeta: null };
     if (recheckAll) return { ...base, action: 'recheck', reason: '全量/收口:逐条重核' };
     const before = snapshot?.risks?.find((r) => r.id === risk.id) ?? null;
+    // 短文件名解析(#262)上线前的快照没有 resolver 标记:那时按短文件名写的文件被丢弃,本轮才解析出来不算「涉及文件变了」
+    // (否则换版后第一轮,带短文件名的 PR 都会被判成交接实质变化、沿用升全量)。这类 R 本轮照常重核一次,下一轮起按完整清单比。
+    const newlyResolved = snapshot && snapshot.resolver !== 1 ? (risk.resolvedFiles ?? []) : [];
+    const comparable = newlyResolved.length ? risk.files.filter((p) => !newlyResolved.includes(p)) : risk.files;
     let change = null;
     // 歧义只在「相对上一轮快照出现或消失」时才算实质变化;没有快照、或两轮都歧义且其余没变,无法证明 R 变了(只扩不缩:仍点名重核,见下)。
     if (before && Boolean(before.ambiguous) !== Boolean(risk.ambiguous)) change = '编号重复,有歧义';
     else if (snapshot && !before) change = '本轮新增';
     else if (before && before.contentHash !== risk.contentHash) change = '内容变了';
-    else if (before && (!sameList(before.files, risk.files) || risk.files.some((p) => !sameState(snapshot.fileStates?.[p], review.fileStates?.[p])))) change = '涉及文件在 head 上变了';
+    else if (before && (!sameList(before.files, comparable) || comparable.some((p) => !sameState(snapshot.fileStates?.[p], review.fileStates?.[p])))) change = '涉及文件在 head 上变了';
     if (change) substantive.push(risk.id);
     const touched = risk.files.find((p) => changed.has(p));
     const cov = coverage.get(risk.id);
     const meta = previous?.handoffCoverageMeta?.[risk.id];
     const check = evidenceCheck?.[risk.id];
     let reason = change ?? (touched ? `涉及文件 ${touched} 本轮改了` : null);
+    if (!reason && newlyResolved.length) reason = '涉及文件此前按短文件名写、没能定位,本轮按解析出的路径重核';
     if (!reason && (!before)) reason = '上一轮没有这条 R 的记录';
     if (!reason && risk.ambiguous) reason = '编号重复,有歧义,不能沿用上一轮结论';
     if (!reason && (!risk.complete || !risk.files.length)) reason = '涉及文件不完整或没有路径,不能证明未受影响';
@@ -471,8 +526,36 @@ const codeReviewClean = (result) => result.reviewClean === true
   || (((result.mivo?.advisory?.pendingGates?.length ?? 0) + (result.mivo?.advisory?.blockers?.length ?? 0)) > 0
     && (result.mivo?.findings ?? []).length === 0);
 
+/**
+ * review-features.json 的 closing 策略(#262)。readText 由调用方注入(读不到就抛)。
+ * - final-full:增量判干净后,放行前一律接收口全量(#100 的行为);缺块=这个值且不告警(旧配置兼容)。
+ * - chain:小改动只审改动处、判干净即放行;上次全量之后连续只审改动满 maxIncrementalRounds 轮,或累计改动超过 maxChangedLines 行
+ *   (或超过上次全量时 diff 的一半),下一轮全量。
+ * 读不到、解析失败、字段不合法一律按 final-full + 固定 warning(不回显配置原文)。
+ * @returns {{mode:'final-full'|'chain', maxIncrementalRounds?:number, maxChangedLines?:number, warning:string|null}}
+ */
+export function loadClosingPolicy(readText) {
+  const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const legacy = (warning = null) => ({ mode: 'final-full', warning });
+  let raw;
+  try { raw = JSON.parse(readText()); } catch {
+    return legacy('review-features.json 读不到或不合法，closing 按 final-full（放行前一律收口全量）处理');
+  }
+  if (!isObject(raw)) return legacy('review-features.json 读不到或不合法，closing 按 final-full（放行前一律收口全量）处理');
+  if (raw.closing === undefined) return legacy();
+  const bad = legacy('review-features.json 的 closing 配置不合法，按 final-full（放行前一律收口全量）处理');
+  if (!isObject(raw.closing)) return bad;
+  const { mode, maxIncrementalRounds = 2, maxChangedLines = 400 } = raw.closing;
+  if (mode === 'final-full') return legacy();
+  if (mode !== 'chain') return bad;
+  if (!Number.isInteger(maxIncrementalRounds) || maxIncrementalRounds < 1 || maxIncrementalRounds > 10) return bad;
+  if (!Number.isInteger(maxChangedLines) || maxChangedLines < 1 || maxChangedLines > 100_000) return bad;
+  return { mode: 'chain', maxIncrementalRounds, maxChangedLines, warning: null };
+}
+
 // 结果包里的收口记录(result.mivo.finalFull / finalFullContext)只认形状完整的值;缺失或畸形一律当没有,相关豁免/补跑随之失效。
-const FINAL_FULL_OUTCOMES = ['clean', 'findings', 'manual-review', 'pending-budget', 'error', 'skipped-fix-round'];
+// skipped-small-delta(#262):链式收口下增量判干净、改动在限额内,本轮没有再全量。
+const FINAL_FULL_OUTCOMES = ['clean', 'findings', 'manual-review', 'pending-budget', 'error', 'skipped-fix-round', 'skipped-small-delta'];
 const FINAL_FULL_KINDS = ['same-run', 'budget-retry', 'direct-full'];
 const safePath = (p) => typeof p === 'string' && p.length > 0 && !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..');
 const pathList = (v) => (Array.isArray(v) && v.every(safePath) ? [...new Set(v)].sort() : null);
@@ -504,7 +587,43 @@ const isRecord = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 function readHandoffSnapshot(raw) {
   if (!isRecord(raw) || raw.version !== 1 || raw.status !== 'parsed' || !Array.isArray(raw.risks)) return null;
   const risks = raw.risks.filter((r) => isRecord(r) && /^R[1-9]\d*$/.test(r.id) && /^[0-9a-f]{64}$/.test(r.contentHash ?? '') && Array.isArray(r.files));
-  return { version: 1, status: 'parsed', source: raw.source ?? null, risks, fileStates: isRecord(raw.fileStates) ? raw.fileStates : {} };
+  // resolver=1:这份快照是短文件名解析(#262)上线后记的,涉及文件清单已含解析出的路径(buildHandoffPlan 据此决定怎么比)。
+  return { version: 1, status: 'parsed', source: raw.source ?? null, risks, fileStates: isRecord(raw.fileStates) ? raw.fileStates : {},
+    ...(raw.resolver === 1 ? { resolver: 1 } : {}) };
+}
+
+// ── 链状态(#262):上次全量审查在哪、此后只审改动了几轮、累计改了多少行 ───────────────
+// 结果包 mivo.sinceFull = { head, runId, totalDiffLines, rounds, changedLines }:head/runId/totalDiffLines 是上次全量那一轮的,
+// rounds/changedLines 是此后只审改动的轮数与累计真实改动行数。形状不对一律当没有(链式收口下没有就全量)。
+export function readSinceFull(raw) {
+  if (!isRecord(raw) || !isSha(raw.head) || !/^\d{0,15}$/.test(String(raw.runId ?? ''))) return null;
+  const count = (n) => Number.isFinite(n) && n >= 0;
+  if (!count(raw.totalDiffLines) || !count(raw.changedLines) || !Number.isInteger(raw.rounds) || raw.rounds < 0) return null;
+  return { head: raw.head, runId: String(raw.runId ?? ''), totalDiffLines: raw.totalDiffLines, rounds: raw.rounds, changedLines: raw.changedLines };
+}
+
+// 换版前的结果包没有 sinceFull:最近一次收口/全量做完了(clean / findings)就以它为起点。
+// 沿用轮原样带着来源的 finalFull(期间 PR 改动没变),同样适用;增量里有问题没进收口的轮次没有 finalFull,推不出来。
+function sinceFullFromFinalFull(finalFull, result) {
+  if (!finalFull || !['clean', 'findings'].includes(finalFull.outcome)) return null;
+  const total = Number(result.mivo?.totalDiffLines);
+  return { head: finalFull.head, runId: finalFull.runId, totalDiffLines: Number.isFinite(total) && total >= 0 ? total : 0, rounds: 0, changedLines: 0 };
+}
+
+/**
+ * 本轮结束后的链状态。纯函数。
+ * 本轮做完了一次全量(直接全量、补跑,或同一次运行里的收口全量)→ 归零,以本轮为起点;
+ * 链式收口下只审改动的轮次 → 用 scope.closing 里算好的轮数与累计行数;其余情况没有可靠状态,返回 null(不写)。
+ */
+export function nextSinceFull({ scope, effectiveScope = null, head, runId, totalDiffLines }) {
+  if ((effectiveScope ?? scope)?.mode === 'full') {
+    const total = Number(totalDiffLines);
+    return readSinceFull({ head, runId: String(runId ?? ''), totalDiffLines: Number.isFinite(total) && total >= 0 ? total : 0, rounds: 0, changedLines: 0 });
+  }
+  const closing = scope?.mode === 'incremental' ? scope.closing : null;
+  if (!isRecord(closing) || !isRecord(closing.basedOn)) return null;
+  return readSinceFull({ head: closing.basedOn.head, runId: closing.basedOn.runId, totalDiffLines: closing.anchorTotalDiffLines,
+    rounds: closing.rounds, changedLines: closing.changedLines });
 }
 
 /** 上一次服务器审查的结果包(result.json + report.md)→ computeReviewScope 用的上一轮记录。 */
@@ -513,6 +632,7 @@ export function previousFromResult(result, report = '') {
   const finalFullContext = readFinalFullContext(result.mivo?.finalFullContext);
   return {
     finalFull, finalFullContext, pendingFinalFull: pendingFinalFullOf(result, finalFull, finalFullContext),
+    sinceFull: readSinceFull(result.mivo?.sinceFull) ?? sinceFullFromFinalFull(finalFull, result),
     head: result.head, baseRefName: result.reviewEvidence?.baseRefName, diffHash: result.reviewEvidence?.diffHash,
     reviewed: result.reviewed, reviewClean: codeReviewClean(result), outcome: result.outcome,
     pendingGates: result.mivo?.advisory?.pendingGates ?? [],

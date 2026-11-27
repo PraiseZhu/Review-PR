@@ -315,9 +315,10 @@ function canonicalRisk(infos) {
 /**
  * 解析 review.md → ReviewHandoff。纯函数。
  * @param {string} text 文件全文
- * @param {{prNumber:number|string, headFiles:Map<string,{mode:string,type:string,oid:string}>, maxFiles?:number}} p
+ * @param {{prNumber:number|string, headFiles:Map<string,{mode:string,type:string,oid:string}>, diffFiles?:Iterable<string>, maxFiles?:number}} p
+ *   diffFiles:本 PR 改动的文件(完整路径)。作者写的是短文件名或路径后缀时,先在这里找唯一匹配(#262)。
  */
-export function parseReviewHandoff(text, { prNumber, headFiles, maxFiles = REVIEW_MAX_FILES }) {
+export function parseReviewHandoff(text, { prNumber, headFiles, diffFiles = [], maxFiles = REVIEW_MAX_FILES }) {
   const warnings = [];
   const result = { version: 1, status: 'parsed', changeMap: [], risks: [], files: [], fileStates: {}, warnings };
   const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
@@ -401,34 +402,59 @@ export function parseReviewHandoff(text, { prNumber, headFiles, maxFiles = REVIE
   }
   const accepted = new Set();
   const review = [];
-  const accept = (path, owner) => {
-    const entry = headFiles?.get(path);
-    if (!isRegularBlob(entry)) { warn(warnings, 'path-not-in-head', `${owner} 引用的 ${path} 不在 PR head 里(或不是普通文件),已丢弃`, { id: owner, path }); return 'invalid'; }
-    if (accepted.has(path)) return 'ok';
-    if (accepted.size >= maxFiles) return 'budget';
+  // 作者常只写文件名或路径后缀(`bridge.ts#fn`):head 里没有这个精确路径时,只在能唯一确定的情况下采用——
+  // 先在本 PR 改动的文件里找,本 PR 改动里一个都没有再在整个 head 里找;任何一步有多个候选都不猜(#262)。
+  const prFiles = [...new Set(diffFiles)].filter((p) => isRegularBlob(headFiles?.get(p)));
+  let headPaths = null;
+  const locate = (path) => {
+    if (isRegularBlob(headFiles?.get(path))) return { path, resolved: false };
+    const suffix = `/${path}`;
+    const inPr = prFiles.filter((p) => p.endsWith(suffix));
+    if (inPr.length === 1) return { path: inPr[0], resolved: true };
+    if (inPr.length > 1) return { path: null, candidates: inPr.length };
+    headPaths ??= [...(headFiles?.keys() ?? [])].filter((p) => isRegularBlob(headFiles.get(p)));
+    const inHead = headPaths.filter((p) => p.endsWith(suffix));
+    if (inHead.length === 1) return { path: inHead[0], resolved: true };
+    return { path: null, candidates: inHead.length };
+  };
+  // 返回 { status: 'ok'|'invalid'|'budget', path, resolved }:path 是采用的完整路径。
+  const accept = (raw, owner) => {
+    const found = locate(raw);
+    if (!found.path) {
+      if (found.candidates > 1) warn(warnings, 'path-ambiguous', `${owner} 引用的 ${raw} 不是完整路径,PR head 里有 ${found.candidates} 个文件能对上,无法确定是哪个,已丢弃(请写完整路径)`, { id: owner, path: raw });
+      else warn(warnings, 'path-not-in-head', `${owner} 引用的 ${raw} 不在 PR head 里(或不是普通文件),已丢弃`, { id: owner, path: raw });
+      return { status: 'invalid', path: null, resolved: false };
+    }
+    const { path, resolved } = found;
+    if (accepted.has(path)) return { status: 'ok', path, resolved };
+    if (accepted.size >= maxFiles) return { status: 'budget', path, resolved };
+    const entry = headFiles.get(path);
     accepted.add(path);
     result.fileStates[path] = { oid: entry.oid, mode: entry.mode };
     result.files.push(path);
-    return 'ok';
+    return { status: 'ok', path, resolved };
   };
   for (const e of byId.values()) {
     const files = [];
     const locations = [];
+    const resolvedFiles = [];
     let complete = !e.ambiguous;
     for (const t of e.tokens) {
       if (t.optional && !isRegularBlob(headFiles?.get(t.path))) continue;
-      const status = accept(t.path, e.id);
+      const { status, path, resolved } = accept(t.path, e.id);
       if (status === 'ok') {
-        if (!files.includes(t.path)) files.push(t.path);
-        if (!locations.some((l) => l.path === t.path && l.symbol === t.symbol)) locations.push({ path: t.path, symbol: t.symbol });
+        if (!files.includes(path)) files.push(path);
+        if (resolved && !resolvedFiles.includes(path)) resolvedFiles.push(path);
+        if (!locations.some((l) => l.path === path && l.symbol === t.symbol)) locations.push({ path, symbol: t.symbol });
       } else {
         complete = false;
-        if (status === 'budget') warn(warnings, 'file-budget', `${e.id} 的 ${t.path} 超出 ${maxFiles} 个文件上限,未纳入`, { id: e.id, path: t.path });
+        if (status === 'budget') warn(warnings, 'file-budget', `${e.id} 的 ${path} 超出 ${maxFiles} 个文件上限,未纳入`, { id: e.id, path });
       }
     }
     if (!files.length) complete = false;
+    // resolvedFiles:files 里靠短文件名/路径后缀解析出来的那些(buildHandoffPlan 用它兼容解析上线前的快照)。
     const risk = { id: e.id, title: e.title, fields: e.fields, contentHash: sha256(`handoff-risk-v1\n${e.canonicals.join('\n---\n')}`),
-      files, locations, complete, ambiguous: e.ambiguous };
+      files, locations, complete, ambiguous: e.ambiguous, ...(resolvedFiles.length ? { resolvedFiles } : {}) };
     if (!files.length) warn(warnings, 'r-no-path', `${e.id} 没有可验证的涉及文件,不能证明未受影响`, { id: e.id });
     for (const [key] of R_FIELDS) if (!(key in e.fields)) { warn(warnings, 'r-field-missing', `${e.id} 缺字段 ${key}`, { id: e.id }); break; }
     review.push(risk);
@@ -438,9 +464,9 @@ export function parseReviewHandoff(text, { prNumber, headFiles, maxFiles = REVIE
   for (const row of result.changeMap) {
     for (const t of row._tokens) {
       if (t.optional && !isRegularBlob(headFiles?.get(t.path))) continue;
-      const status = accept(t.path, row.id);
-      if (status === 'ok' && !row.files.includes(t.path)) row.files.push(t.path);
-      else if (status === 'budget') { row.complete = false; warn(warnings, 'file-budget', `${row.id} 的 ${t.path} 超出 ${maxFiles} 个文件上限,未纳入`, { id: row.id, path: t.path }); }
+      const { status, path } = accept(t.path, row.id);
+      if (status === 'ok' && !row.files.includes(path)) row.files.push(path);
+      else if (status === 'budget') { row.complete = false; warn(warnings, 'file-budget', `${row.id} 的 ${path} 超出 ${maxFiles} 个文件上限,未纳入`, { id: row.id, path }); }
     }
     delete row._tokens;
   }
@@ -450,16 +476,17 @@ export function parseReviewHandoff(text, { prNumber, headFiles, maxFiles = REVIE
 /** 结果包里跨轮要用的紧凑形状:不带作者正文。 */
 export function toHandoffSnapshot(review) {
   if (!review) return null;
-  return { version: 1, status: review.status, source: review.source ?? null,
+  // resolver: 1 —— 涉及文件清单已含短文件名解析出的路径(#262);没有这个标记的旧快照里这些文件当时被丢弃。
+  return { version: 1, status: review.status, source: review.source ?? null, resolver: 1,
     risks: (review.risks ?? []).map((r) => ({ id: r.id, contentHash: r.contentHash, files: r.files, complete: r.complete === true, ambiguous: r.ambiguous === true })),
     fileStates: review.fileStates ?? {} };
 }
 
 /**
  * 从 PR head 的 git 对象读 review.md 并解析。gitFn(args) → {ok, stdout, stderr}(注入;本模块不碰 shell)。
- * 只读固定 head、精确路径、regular blob;超过 256 KiB 整份不采用。
+ * 只读固定 head、精确路径、regular blob;超过 256 KiB 整份不采用。diffFiles:本 PR 改动的文件,解析短文件名用。
  */
-export function readHandoffReview({ prNumber, head, gitFn }) {
+export function readHandoffReview({ prNumber, head, gitFn, diffFiles = [] }) {
   const source = { path: `docs/pr/${prNumber}/review.md`, head, blob: null };
   const bad = (status, code, message) => ({ version: 1, status, source, changeMap: [], risks: [], files: [], fileStates: {}, warnings: [{ code, id: null, path: null, message }] });
   try {
@@ -475,7 +502,7 @@ export function readHandoffReview({ prNumber, head, gitFn }) {
     if (Number(size.stdout) > REVIEW_MAX_BYTES) return bad('unreadable', 'review-too-large', `${source.path} 超过 ${REVIEW_MAX_BYTES / 1024} KiB,不采用`);
     const body = gitFn(['--no-replace-objects', 'cat-file', '-p', entry.oid]);
     if (!body.ok) return bad('unreadable', 'review-unreadable', `${source.path} 读取失败`);
-    const parsed = parseReviewHandoff(body.stdout, { prNumber, headFiles: tree });
+    const parsed = parseReviewHandoff(body.stdout, { prNumber, headFiles: tree, diffFiles });
     return { ...parsed, source };
   } catch (error) {
     return bad('unreadable', 'review-unreadable', `review.md 解析异常:${String(error?.message ?? error).slice(0, 120)}`);

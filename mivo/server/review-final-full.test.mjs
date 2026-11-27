@@ -311,3 +311,70 @@ test('F1 收口主模型耗时后失败:备用拿到按余额算的正数 timeou
   assert.equal(r.result.outcome, 'approval', JSON.stringify(r.result));
   assert.deepEqual(r.result.mivo.finalFull, { head: r.head, runId: '42', outcome: 'clean' });
 });
+
+// ── 链式收口(#262):范围计算已确认「上次全量之后的轮数与累计改动都在限额内」(scope.closing),增量判干净即放行,不再接全量 ──
+const ANCHOR = 'c'.repeat(40);
+const CHAIN = { ...INCREMENTAL, closing: { skipFinalFull: true, basedOn: { head: ANCHOR, runId: '40' }, anchorTotalDiffLines: 300, rounds: 1, changedLines: 30, deltaLines: 30 } };
+
+// 与上面 SC5「剩余预算不足收口」同样的起始时间(40 分钟前):旧行为会标收口待补,链式下不需要第二段预算,直接放行。
+test('#262 SC1 链式:增量判干净 → 只调一次模型并放行;记 skipped-small-delta 及依据,不伪造全量', { skip }, () => {
+  const r = setup({ scope: CHAIN, answers: [CLEAN_1, CLEAN_2], startedAgoMin: 40 });
+  assert.equal(r.calls.length, 1, '没有第二次模型调用');
+  assert.deepEqual(r.state.codex.passes.map((p) => p.pass), ['initial']);
+  assert.ok(r.answerOnDisk.includes('INITIAL-ANSWER'), '采用增量那份答卷');
+  assert.equal(r.result.outcome, 'approval', JSON.stringify(r.result));
+  assert.equal(r.result.reviewClean, true);
+  assert.deepEqual(r.result.mivo.finalFull, { head: r.head, runId: '42', outcome: 'skipped-small-delta', basedOn: { head: ANCHOR, runId: '40' }, rounds: 1, changedLines: 30 });
+  assert.equal(r.result.mivo.finalFullContext, undefined);
+  assert.equal(r.state.effectiveScope, undefined);
+  assert.match(r.report, /审查范围:增量/);
+  assert.match(r.report, /收口全量:本轮改动小,只审了改动处,未再全量。上次全量审查在 `cccccccccccc`,这是之后第 1 轮,累计改动 30 行,在限额内。/);
+  assert.equal(r.result.mivo.lastFullReviewAt, '2026-10-10T12:00:00Z', '没有全量,上次全量时间原样带过去');
+});
+
+test('#262 SC5 链状态:链式增量轮(无论干净还是有问题)轮数加 1、累计行数照 scope.closing 记', { skip }, () => {
+  const expected = { head: ANCHOR, runId: '40', totalDiffLines: 300, rounds: 1, changedLines: 30 };
+  const clean = setup({ scope: CHAIN, answers: [CLEAN_1] });
+  assert.deepEqual(clean.result.mivo.sinceFull, expected);
+  const dirty = setup({ scope: CHAIN, answers: [withFinding({})] });
+  assert.equal(dirty.calls.length, 1);
+  assert.equal(dirty.result.outcome, 'findings');
+  assert.equal(dirty.result.mivo.finalFull, undefined, '有阻断问题不留「未再全量」的放行记录');
+  assert.deepEqual(dirty.result.mivo.sinceFull, expected);
+});
+
+test('#262 SC5 链状态:直接全量、增量后同一次运行接收口全量,都以本轮为起点归零;旧行为下只审改动且有问题的轮次不记', { skip }, () => {
+  const direct = setup({ scope: FULL, answers: [CLEAN_1] });
+  assert.deepEqual(direct.result.mivo.sinceFull, { head: direct.head, runId: '42', totalDiffLines: 1, rounds: 0, changedLines: 0 });
+  const closed = setup({ scope: INCREMENTAL, answers: [CLEAN_1, CLEAN_2], startedAgoMin: 30 });
+  assert.equal(closed.calls.length, 2);
+  assert.deepEqual(closed.result.mivo.sinceFull, { head: closed.head, runId: '42', totalDiffLines: 1, rounds: 0, changedLines: 0 });
+  const legacyDirty = setup({ scope: INCREMENTAL, answers: [withFinding({})] });
+  assert.equal(legacyDirty.result.mivo.sinceFull, undefined);
+});
+
+test('#262 SC5 沿用(reuse):链状态原样带过去,不算一轮', () => {
+  const work = mkdtempSync(join(tmpdir(), 'mivo-closing-reuse-'));
+  try {
+    for (const dir of ['input', 'out', 'repo', 'prev']) mkdirSync(join(work, dir), { recursive: true });
+    writeFileSync(join(work, 'input', 'context.json'), JSON.stringify({ pr: 7, meta: {} }));
+    writeFileSync(join(work, 'input', 'pr.diff'), DIFF);
+    const sha = 'a'.repeat(40);
+    const input = { targetRepo: 'o/r', workflowRepo: 'o/r', pr: 7, head: sha, base: sha, tier: 'standard', prevRunId: '41', roundId: 'round-12345678',
+      attempt: 1, mode: 'dry-run', action: 'review', skillSha: sha, runId: '42', runUrl: '' };
+    const scope = { mode: 'reuse', reason: '同一版本已审过,沿用上次结论', files: [], previousFindings: [], basedOn: sha };
+    writeFileSync(join(work, 'state.json'), JSON.stringify({ version: 1, input, phase: 'prepared', tier: 'standard', warnings: [], errors: [],
+      context: { file: join(work, 'input', 'context.json'), diffFile: join(work, 'input', 'pr.diff'), url: 'u', evidence: { head: sha, base: sha, baseRefName: 'main', diffHash: 'd1' }, baseRefName: 'main', viewerIsAuthor: false },
+      current: { specDigest: 'spec-xyz', filePatchHashes: {}, totalDiffLines: 1, triggerKinds: [] }, previous: { head: sha, runId: '41' }, scope, deferrals: { verified: [], rejected: [] } }));
+    const sinceFull = { head: ANCHOR, runId: '40', totalDiffLines: 300, rounds: 2, changedLines: 180 };
+    writeFileSync(join(work, 'prev', 'result.json'), JSON.stringify({ mivo: { findings: [], deferred: [], sinceFull,
+      finalFull: { head: sha, runId: '41', outcome: 'skipped-small-delta', basedOn: { head: ANCHOR, runId: '40' }, rounds: 2, changedLines: 180 }, lastFullReviewAt: '2026-10-10T12:00:00Z' } }));
+    writeFileSync(join(work, 'prev', 'report.md'), report('OLD'));
+    const run = spawnSync(process.execPath, [REVIEW, 'publish'], { env: { ...process.env, MIVO_REVIEW_WORK: work, GH_TOKEN: '', CHECKS_TOKEN: '' }, encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    const result = JSON.parse(readFileSync(join(work, 'out', 'result.json'), 'utf8'));
+    assert.equal(result.outcome, 'approval', JSON.stringify(result));
+    assert.deepEqual(result.mivo.sinceFull, sinceFull);
+    assert.equal(result.mivo.finalFull.outcome, 'skipped-small-delta');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

@@ -14,6 +14,11 @@
   "specChange": {
     "forceFull": false
   },
+  "closing": {
+    "mode": "chain",
+    "maxIncrementalRounds": 2,
+    "maxChangedLines": 400
+  },
   "productRules": {
     "mode": "observe"
   },

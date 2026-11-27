@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SKILL_ROOT, SCRIPTS, SHA_RE, REPO_RE, MODES, run, runScript, readJson, writeJson, writeText, requireMatch, nowIso } from '../lib/common.mjs';
 import { decideGate, PENDING_GATE_TEXT, toAuthorSelfApproval, toMergeReadyGateBlockers, toCodeScanWatch } from '../lib/gates.mjs';
-import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, reuseFindings, withHandoffScope, unchangedReviewedFiles, discussionDigestOf, rebuttalRowsOf } from '../lib/scope.mjs';
+import { splitDiffByFile, filePatchHashes, filePatchHashesV2, computeReviewScope, previousFromResult, loadSpecChangePolicy, loadClosingPolicy, toDeltaLinesByFile, nextSinceFull, reuseFindings, withHandoffScope, unchangedReviewedFiles, discussionDigestOf, rebuttalRowsOf } from '../lib/scope.mjs';
 import { ANSWER_SCHEMA, validateAnswer, finalizeReport, reusedReport, adjudicatedReuseReport, scrubSecrets, pendingFinalFullReport, computeHandoffStats, loadLateFindingsMode, splitBeyondTask, splitLateFindings } from '../lib/report.mjs';
 import { collectMarkerHistory, toPreviousRound, roundIndexOf, applyConvergence, renderConvergenceSection, splitAdjudicated } from '../lib/convergence.mjs';
 import { loadReviewSpec, buildReviewPrompt, buildSpecManifest, specDigestOf, ruleFilesFor, readRuleSources, SEVERITY_VERSION } from '../lib/prompt.mjs';
@@ -158,7 +158,9 @@ async function prepare() {
     if (ctx.mivoHandoff.facts?.readError) state.warnings.push(`交接事实读不到:${ctx.mivoHandoff.facts.readError}`);
     // review.md 结构化解析:从 PR head 的 git 对象读,不执行 PR 里的任何脚本;读不到/格式不对只记 warning。
     if (handoffMode.mode !== 'off') {
-      ctx.mivoHandoff.review = readHandoffReview({ prNumber: input.pr, head: input.head, gitFn: (args) => git(args, { allowFail: true, timeoutMs: 120_000 }) });
+      // diffFiles:本 PR 改动的文件,作者写短文件名时先在这里找唯一匹配(lib/handoff.mjs parseReviewHandoff)。
+      ctx.mivoHandoff.review = readHandoffReview({ prNumber: input.pr, head: input.head, gitFn: (args) => git(args, { allowFail: true, timeoutMs: 120_000 }),
+        diffFiles: Object.keys(splitDiffByFile(readFileSync(diffFile, 'utf8'))) });
       for (const w of ctx.mivoHandoff.review.warnings.slice(0, 20)) state.warnings.push(`交接 review.md:${w.message}`);
     }
     state.handoff = ctx.mivoHandoff;
@@ -166,6 +168,10 @@ async function prepare() {
     const specChange = loadSpecChangePolicy(() => readFileSync(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'), 'utf8'));
     if (specChange.warning) state.warnings.push(specChange.warning);
     state.specChange = { forceFull: specChange.forceFull };
+    // 收口策略(lib/scope.mjs loadClosingPolicy,#262):chain=小改动只审改动处、定期全量;缺省、读不到或不合法按 final-full(放行前一律收口全量)并告警。
+    const closing = loadClosingPolicy(() => readFileSync(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'), 'utf8'));
+    if (closing.warning) state.warnings.push(closing.warning);
+    state.closing = { mode: closing.mode };
     // 审查重点(lib/prompt.mjs toFocusLines):CI 已覆盖的全量命令清单;读不到或不合法按空清单处理并告警。
     const focus = loadFocusConfig(process.env.MIVO_REVIEW_FEATURES_FILE || join(SKILL_ROOT, 'mivo', 'config', 'review-features.json'));
     if (focus.warning) state.warnings.push(focus.warning);
@@ -268,10 +274,16 @@ async function prepare() {
     if (previous?.head && previous.head !== input.head) {
       run('git', [...gitAuth, 'fetch', '-q', '--filter=blob:none', '--no-tags', 'origin', previous.head], { cwd: REPO_DIR, allowFail: true });
       headIsDescendant = run('git', ['merge-base', '--is-ancestor', previous.head, input.head], { cwd: REPO_DIR, allowFail: true }).status === 0;
-      if (headIsDescendant) git(['diff', '--numstat', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 }); // 同上:增量复审离线要用
+      if (headIsDescendant) {
+        git(['diff', '--numstat', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 }); // 同上:增量复审离线要用
+        // 两个版本之间每个文件真实增删的行数:链式收口按它判断本轮改动大小(lib/scope.mjs)。只留本 PR 补丁涉及的文件
+        // (合并主干带进来的其它文件不算本 PR 的改动);读不到就不带,范围计算退回按文件补丁行数算。
+        const delta = git(['diff', '--numstat', '--no-renames', '-z', previous.head, input.head], { allowFail: true, timeoutMs: 600_000 });
+        if (delta.ok) current.deltaLinesByFile = toDeltaLinesByFile(delta.stdout, [...Object.keys(current.filePatchHashes), ...Object.keys(previous.filePatchHashes ?? {})]);
+      }
     }
     const scope = computeReviewScope({ previous, current, headIsDescendant, forceFullOnSpecChange: specChange.forceFull, lateFindingsMode: lateMode.mode,
-      taskBoundaryActive: taskBoundaryOf(state)?.active === true });
+      taskBoundaryActive: taskBoundaryOf(state)?.active === true, closing });
     state.scope = scope;
     // 后来发现:上一轮可信结果里审过、本轮补丁指纹没变的文件;没有可信的上一轮时为 null,新 P2 一律照常阻断。
     state.lateFindings = { mode: lateMode.mode, unchangedFiles: lateMode.mode === 'enforce' ? unchangedReviewedFiles({ previous, current }) : null };
@@ -650,9 +662,13 @@ async function codex() {
     if (initial.ok && initial.findings.length === 0) {
       const mark = { head: input.head, runId: input.runId };
       const exemption = state.scope.finalFullExemption;
+      // 链式收口(#262,lib/scope.mjs):范围计算已确认「上次全量之后的轮数与累计改动都在限额内」,增量干净即放行,不再接收口全量。
+      const chain = state.scope.closing?.skipFinalFull === true ? state.scope.closing : null;
       if (exemption) {
         state.finalFull = { ...mark, outcome: 'skipped-fix-round', basedOn: { head: exemption.sourceHead, runId: exemption.sourceRunId },
           files: exemption.changedFiles, issueFiles: exemption.issueFiles };
+      } else if (chain) {
+        state.finalFull = { ...mark, outcome: 'skipped-small-delta', basedOn: chain.basedOn, rounds: chain.rounds, changedLines: chain.changedLines };
       } else {
         const remainingMs = budget.budgetMs - (Date.now() - budgetAt);
         state.finalFullContext = { kind: 'same-run', findingFiles: [], previousRound: state.previousRound ?? null };
@@ -935,8 +951,8 @@ async function publish() {
           deferralsRejected: state.deferrals?.rejected ?? [] })
         : reusedReport({ previousReport, scope: state.scope });
       result.mivo.lastFullReviewAt = previous.mivo?.lastFullReviewAt;
-      // 沿用不重跑收口:来源的收口记录原样带过去(head/runId 还是原来那次的),不改写成本轮。
-      for (const key of ['finalFull', 'finalFullContext']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
+      // 沿用不重跑收口:来源的收口记录原样带过去(head/runId 还是原来那次的),不改写成本轮。链状态(sinceFull)同样原样带过去:沿用不算一轮。
+      for (const key of ['finalFull', 'finalFullContext', 'sinceFull']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
       // 交接记录同样原样带过去:沿用的 coverage/统计保留来源 head/runId,统计标 reused,不当本轮独立发现。
       for (const key of ['handoffReview', 'handoffCoverage', 'handoffCoverageMeta']) if (previous.mivo?.[key] !== undefined) result.mivo[key] = previous.mivo[key];
       if (previous.mivo?.handoffStats) result.mivo.handoffStats = { ...previous.mivo.handoffStats, reused: true };
@@ -973,9 +989,9 @@ async function publish() {
         .map((item) => ({ ...item, severity: severityByKey.get(item.key) ?? item.severity }));
       // 放行前收口全量的记录(SC1/SC4/SC6):head/runId 一律取被审的 input,不用当前 PR head。
       const finalFull = finalFullRecord(state, findings);
-      // 增量判干净的放行必须有本 head 的完整收口记录(或修复轮免收口记录):缺了不 Approve,不管 answer.json 是怎么来的。
+      // 增量判干净的放行必须有本 head 的完整收口记录(或修复轮免收口 / 链式收口「改动小未再全量」的记录):缺了不 Approve,不管 answer.json 是怎么来的。
       // 卡点全部被核对员推翻/降级的也一样放行(PraiseZhu/Review-PR#248),同样要有收口记录。
-      if (findings.length === 0 && state.scope.mode === 'incremental' && !['clean', 'skipped-fix-round'].includes(finalFull.record?.outcome)) {
+      if (findings.length === 0 && state.scope.mode === 'incremental' && !['clean', 'skipped-fix-round', 'skipped-small-delta'].includes(finalFull.record?.outcome)) {
         return publishFinalFullPending(state, result, { missing: true });
       }
       Object.assign(result.mivo, finalFull.record ? { finalFull: finalFull.record } : {}, finalFull.context ? { finalFullContext: finalFull.context } : {});
@@ -1007,6 +1023,9 @@ async function publish() {
         scope: state.effectiveScope ?? state.scope,
         handoff: handoffReview?.status === 'parsed' ? { review: handoffReview, coverage: handoffCoverage, meta: checked.handoffCoverageMeta ?? {}, stats: handoffStats } : null });
       result.mivo.lastFullReviewAt = (state.effectiveScope ?? state.scope).mode === 'full' ? nowIso() : state.previous?.lastFullReviewAt;
+      // 链状态(#262):做完一次全量就以本轮为起点归零;链式收口下只审改动的轮次累加轮数与改动行数;其余情况不写(下一轮按没有记录处理)。
+      const sinceFull = nextSinceFull({ scope: state.scope, effectiveScope: state.effectiveScope ?? null, head: input.head, runId: input.runId, totalDiffLines: state.current?.totalDiffLines });
+      if (sinceFull) result.mivo.sinceFull = sinceFull;
     }
     const scrubbed = scrubSecrets(report);
     let secretHits = scrubbed.hits;
@@ -1056,7 +1075,8 @@ function finalFullRecord(state, findings) {
   const input = state.input;
   const entry = state.scope;
   const none = { record: null, context: null };
-  if (state.finalFull?.outcome === 'skipped-fix-round') return findings.length ? none : { record: state.finalFull, context: null };
+  // 没有再全量的两种记录(修复轮免收口、链式收口改动小)原样进结果包,不伪造成干净全量;本轮最终有阻断问题就不留记录。
+  if (['skipped-fix-round', 'skipped-small-delta'].includes(state.finalFull?.outcome)) return findings.length ? none : { record: state.finalFull, context: null };
   let kind;
   if (entry.mode === 'incremental') {
     if (!state.finalFull) return none; // 增量里已有阻断问题,没进收口
