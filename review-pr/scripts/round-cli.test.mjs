@@ -51,6 +51,9 @@ childProcess.spawnSync=(command,args,options)=>{
       if (fields === 'headRefOid') return response(0,JSON.stringify({headRefOid:fixture.contexts[args[2]].headAtDiff || fixture.contexts[args[2]].meta.headRefOid}));
       const key=args[args.indexOf('--repo')+1]+'#'+args[2];
       if (fields === 'state' && fixture.states[key]) return response(0,JSON.stringify({state:fixture.states[key]}));
+      // GitHub's answer for a number that is an issue, not a PR (xindong/mivo-canvas-plugin #2848, #2865).
+      if (fields === 'state' && fixture.issues?.includes(key)) return response(1,'','GraphQL: Could not resolve to a PullRequest with the number of '+args[2]+'. (repository.pullRequest)');
+      if (fields === 'state' && fixture.stateErrors?.[key]) return response(1,'',fixture.stateErrors[key]);
     }
     throw new Error('unexpected mock gh pr call');
   }
@@ -279,6 +282,12 @@ syncBuiltinESMExports();
     detail[3].meta.headRefOid = 'f'.repeat(40);
     detail[4] = { ok: false, pr: 4, error: 'fixture context failed' };
     detail[5].meta.body = 'Depends on x/y#99';
+    // Issue numbers cited as dependencies: the dependency lines of xindong/mivo-canvas-plugin#2888 and #2895
+    // as they read on 2026-11-26. #2848 and #2865 are closed issues; neither may block review.
+    detail[11].meta.body = '- 关联 Issue / 需求：Refs #2849（依赖 #2848 的读写模块）';
+    detail[12].meta.body = '这是父单 #2859（整组执行）的第 3 步，依赖已合入的 #2865（选区带线也能认出整组）。\n\n- 关联 Issue / 需求：o/r#2866（父单 #2859，依赖 #2865）';
+    detail[13].meta.body = 'Depends on #300'; // A real read failure must still skip the candidate as an error.
+    detail[14].meta.body = 'Depends on #301'; // A real open PR prerequisite still blocks.
     detail[6].meta = { ...detail[6].meta, baseRefName: 'release/1.x', basePrLookup: { verified: true, reason: 'no-associated-pr' } };
     for (const pr of [7, 8, 9, 10]) {
       const merged = pr !== 8;
@@ -293,7 +302,8 @@ syncBuiltinESMExports();
     const contextCalls = join(directory, 'context-calls.jsonl');
     const contextScript = join(directory, 'emit-context.mjs');
     writeFileSync(contextsFile, JSON.stringify({ contexts: detail, states: { 'x/y#99': 'MERGED',
-      'o/r#97': 'MERGED', 'o/r#98': 'OPEN', 'o/r#99': 'MERGED', 'o/r#100': 'MERGED' } }));
+      'o/r#97': 'MERGED', 'o/r#98': 'OPEN', 'o/r#99': 'MERGED', 'o/r#100': 'MERGED', 'o/r#301': 'OPEN' },
+      issues: ['o/r#2848', 'o/r#2865'], stateErrors: { 'o/r#300': 'HTTP 403: Resource not accessible by integration' } }));
     const noticeScript = join(directory, 'emit-notice.mjs');
     const noticeCalls = join(directory, 'notice-calls.jsonl');
     writeFileSync(noticeScript, `import {readFileSync,appendFileSync} from 'node:fs';
@@ -321,9 +331,18 @@ process.stdout.write(JSON.stringify(context));
     assert.equal(planned.status, 0, planned.stdout + planned.stderr);
     const plannedOut = JSON.parse(planned.stdout);
     const frozen = JSON.parse(readFileSync(plannedOut.planFile, 'utf8'));
-    assert.deepEqual(frozen.groups.map((g) => g.prs.length), [10, 2]);
+    assert.deepEqual(frozen.groups.map((g) => g.prs.length), [10]);
     assert.deepEqual(frozen.skipped.map((p) => [p.pr, p.outcome]), [[1, 'state-changed'], [2, 'dependency'], [3, 'state-changed'], [4, 'error'],
-      [7, 'retarget'], [8, 'dependency'], [9, 'retarget'], [10, 'state-changed']]);
+      [7, 'retarget'], [8, 'dependency'], [9, 'retarget'], [10, 'state-changed'], [13, 'error'], [14, 'dependency']]);
+    // Issue refs (#2888 / #2895 bodies) are reviewed normally and carry no dependency.
+    const grouped = frozen.groups.flatMap((g) => g.prs);
+    for (const pr of [11, 12]) {
+      const item = grouped.find((p) => p.pr === pr);
+      assert.ok(item, `PR ${pr} cites only issues and must be reviewed, skipped as ${JSON.stringify(frozen.skipped.find((p) => p.pr === pr))}`);
+      assert.deepEqual(JSON.parse(readFileSync(item.contextFile, 'utf8')).dependencies, []);
+    }
+    assert.match(frozen.skipped.find((p) => p.pr === 13).reason, /HTTP 403/);
+    assert.match(frozen.skipped.find((p) => p.pr === 14).reason, /o\/r#301 \(OPEN\)/);
     assert.equal(frozen.skipped.find((p) => p.pr === 7).targetBranchNotice.status, 'posted');
     assert.equal(frozen.skipped.find((p) => p.pr === 8).targetBranchNotice.status, 'posted');
     assert.equal(frozen.skipped.find((p) => p.pr === 9).targetBranchNotice.status, 'failed');

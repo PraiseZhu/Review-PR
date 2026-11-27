@@ -10,7 +10,7 @@ import { validateCandidateList, makeReviewPlan } from './review-round.mjs';
 import { collectDependencyRefs } from './review-dependencies.mjs';
 import { toGateBases } from './gate-bases.mjs'; // [MIVO-PATCH gate-bases]
 import { loadCachedCode } from './context-cache.mjs';
-import { readPrState } from './gh-read.mjs';
+import { readPrState, NOT_A_PULL_REQUEST } from './gh-read.mjs';
 import { startReviewHeartbeat } from './review-heartbeat.mjs';
 
 const arg = (name) => {
@@ -58,6 +58,7 @@ try {
         const key = `${depRepo.toLowerCase()}#${number}`;
         if (!atStart && !dependencyReads.has(key)) dependencyReads.set(key, readPrState(depRepo, number));
         const state = atStart ? 'OPEN' : await dependencyReads.get(key);
+        if (state === NOT_A_PULL_REQUEST) continue; // An issue cited as "依赖 #N" is not a merge prerequisite.
         dependencies.push({ repo: depRepo.toLowerCase() === slug.toLowerCase() ? slug : depRepo, number, state });
       }
       if (context.meta.headRefOid !== candidate.head || context.meta.state !== 'OPEN') return context;
