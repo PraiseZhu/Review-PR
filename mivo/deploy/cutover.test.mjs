@@ -294,6 +294,27 @@ test('命令行 --preview:新仓还不存在时报缺退出 1;全程只发 GET,�
   for (const call of calls) assert.ok(call.startsWith('api ') && !/ (-X|--method) /.test(call), call);
 });
 
+test('命令行 --preview:Mini 实例配置存在但 JSON 坏了或顶层不是对象,记查不了,不说「没有这个文件」', (t) => {
+  const f = setupCli(t);
+  const dir = gitTree(f.root, 'tree', ['src/a.ts'], {});
+  const configFile = path.join(f.root, 'home', 'mivo-prereview', 'config', 'mivo.json');
+  fs.mkdirSync(path.dirname(configFile), { recursive: true });
+  const configItem = () => {
+    const r = f.run('--preview', '--json', '--old-git', dir, '--old-ref', 'HEAD', '--new-git', dir, '--new-ref', 'HEAD');
+    return JSON.parse(r.stdout).items.find((i) => i.item === '实例配置 config/mivo.json') ?? assert.fail(`没有实例配置这一项:${r.stdout.slice(0, 300)}`);
+  };
+  fs.writeFileSync(configFile, '{oops');
+  const corrupt = configItem();
+  assert.equal(corrupt.status, 'unknown');
+  assert.match(corrupt.detail, /^查不了:/);
+  fs.writeFileSync(configFile, '[]');
+  assert.deepEqual(Object.values((({ status, detail }) => ({ status, detail }))(configItem())), ['unknown', '查不了:顶层应是 JSON 对象,实际 array']);
+  fs.writeFileSync(configFile, JSON.stringify({ targetRepo: OLD, workflowRepo: OLD, mode: 'live' }));
+  assert.equal(configItem().status, 'info');
+  fs.rmSync(configFile);
+  assert.deepEqual([configItem().status, configItem().detail], ['missing', '没有这个文件']);
+});
+
 test('命令行:参数或清单不对退出 3,一次 gh 都不调;--plan 读旧仓变量拼清单', (t) => {
   const f = setupCli(t, { scenario: { [`repos/${OLD}/actions/variables`]: '["MIVO_REVIEW_SKILL_SHA","' + 'd'.repeat(40) + '"]\n' } });
   assert.equal(f.run('--preview', '--plan').status, 3);

@@ -43,10 +43,13 @@ function toRead(r, parse) {
 const lines = (text) => text.split('\n').filter(Boolean);
 const ghNames = (endpoint, jq) => toRead(gh(['api', endpoint, '--paginate', '--jq', jq]), lines);
 const readJsonFile = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
-// 实例配置要分清「没有」和「读不了」:文件不存在返回 null,存在但读不了或 JSON 坏了返回 { unreadable }。
+// 实例配置要分清「没有」和「读不了」:文件不存在返回 null,存在但读不了、JSON 坏了或顶层不是对象返回 { unreadable }。
 function readMiniConfig(file) {
   if (!fs.existsSync(file)) return null;
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { return { unreadable: error.message.slice(0, 200) }; }
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { return { unreadable: error.message.slice(0, 200) }; }
+  const isObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+  return isObject ? value : { unreadable: `顶层应是 JSON 对象,实际 ${Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value}` };
 }
 
 // 文件树:本地 clone(git ls-tree)或 GitHub(git/trees 递归)。返回 { files, scripts },读不到抛错。
