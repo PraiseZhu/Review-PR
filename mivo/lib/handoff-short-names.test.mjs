@@ -106,7 +106,7 @@ const reviewNow = { version: 1, status: 'parsed', source: null, changeMap: [], r
 const legacySnapshot = { version: 1, status: 'parsed', source: null, risks: [{ id: 'R1', contentHash: H64, files: ['src/a.ts'], complete: false, ambiguous: false }], fileStates: { 'src/a.ts': state(1) } };
 const trusted = { reviewed: true, reportComplete: true, outcome: 'approval' };
 
-test('SC6 旧快照 + 本轮新解析出文件:不算实质变化,这条 R 本轮重核一次', () => {
+test('SC6 旧快照 + 本轮新解析出文件:不算实质变化,有模型调用的轮次这条 R 重核一次', () => {
   const plan = buildHandoffPlan({ review: reviewNow, previous: { ...trusted, handoffReview: legacySnapshot }, changedFiles: [] });
   assert.deepEqual(plan.substantive, []);
   assert.equal(plan.items[0].action, 'recheck');
@@ -146,6 +146,9 @@ test('SC6 换版后第一轮代码没变:沿用不被升成全量', () => {
     specDigest: 'spec', now: Date.parse('2026-11-27T12:00:00Z'), handoffReview: reviewNow, handoffEvidenceCheck: {} };
   const scope = computeReviewScope({ previous, current, headIsDescendant: null });
   assert.equal(scope.mode, 'reuse', scope.reason);
+  // 沿用轮不调模型:这条 R 不算已重核,标成未新核实并写明原因,留到下一次有模型调用的轮次重核。
+  assert.equal(scope.handoffPlan[0].action, 'deferred');
+  assert.match(scope.handoffPlan[0].reason, /未新核实.*短文件名/);
   // 对照:同样的输入、快照带 resolver 标记(文件清单确实变了)→ 升全量。证明上面的沿用靠的是旧快照兼容,不是别的分支。
   const marked = computeReviewScope({ previous: { ...previous, handoffReview: { ...legacySnapshot, resolver: 1 } }, current, headIsDescendant: null });
   assert.equal(marked.mode, 'full');

@@ -330,7 +330,7 @@ export function buildHandoffPlan({ review, previous = null, changedFiles = [], e
     if (recheckAll) return { ...base, action: 'recheck', reason: '全量/收口:逐条重核' };
     const before = snapshot?.risks?.find((r) => r.id === risk.id) ?? null;
     // 短文件名解析(#262)上线前的快照没有 resolver 标记:那时按短文件名写的文件被丢弃,本轮才解析出来不算「涉及文件变了」
-    // (否则换版后第一轮,带短文件名的 PR 都会被判成交接实质变化、沿用升全量)。这类 R 本轮照常重核一次,下一轮起按完整清单比。
+    // (否则换版后第一轮,带短文件名的 PR 都会被判成交接实质变化、沿用升全量)。这类 R 在有模型调用的轮次(增量/全量)照常重核一次,之后按完整清单比;纯沿用轮不调模型,只标「未新核实」,快照仍是旧的,留到下一次有模型调用的轮次重核。
     const newlyResolved = snapshot && snapshot.resolver !== 1 ? (risk.resolvedFiles ?? []) : [];
     const comparable = newlyResolved.length ? risk.files.filter((p) => !newlyResolved.includes(p)) : risk.files;
     let change = null;
@@ -345,7 +345,7 @@ export function buildHandoffPlan({ review, previous = null, changedFiles = [], e
     const meta = previous?.handoffCoverageMeta?.[risk.id];
     const check = evidenceCheck?.[risk.id];
     let reason = change ?? (touched ? `涉及文件 ${touched} 本轮改了` : null);
-    if (!reason && newlyResolved.length) reason = '涉及文件此前按短文件名写、没能定位,本轮按解析出的路径重核';
+    if (!reason && newlyResolved.length) reason = '涉及文件此前按短文件名写、没能定位,这次才解析出路径';
     if (!reason && (!before)) reason = '上一轮没有这条 R 的记录';
     if (!reason && risk.ambiguous) reason = '编号重复,有歧义,不能沿用上一轮结论';
     if (!reason && (!risk.complete || !risk.files.length)) reason = '涉及文件不完整或没有路径,不能证明未受影响';
