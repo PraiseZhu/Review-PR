@@ -79,6 +79,7 @@ function fakeGh() {
 function fakeInstaller() {
   const fs = require('node:fs');
   const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
   const args = process.argv.slice(2);
   const get = (flag) => args[args.indexOf(flag) + 1];
   fs.appendFileSync(process.env.TEST_INSTALL_LOG, JSON.stringify(args) + '\n');
@@ -91,16 +92,17 @@ function fakeInstaller() {
   const mirror = path.join(root, 'repos/mivo');
   if (!fs.existsSync(mirror)) {
     fs.mkdirSync(mirror, { recursive: true });
-    const { execFileSync } = require('node:child_process');
     execFileSync('git', ['-C', mirror, 'init', '-q']);
     execFileSync('git', ['-C', mirror, 'remote', 'add', 'origin', 'https://github.com/owner/new.git']);
   }
+  const origin = execFileSync('git', ['-C', mirror, 'config', '--local', '--get', 'remote.origin.url'], { encoding: 'utf8' }).trim();
+  if (origin.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '') !== get('--target-repo')) process.exit(5);
   const next = { ...old, targetRepo: get('--target-repo'), workflowRepo: get('--workflow-repo'),
     mode: get('--mode'), workflowRef: get('--workflow-ref') };
   fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n');
 }
 
-function fixture(t) {
+function fixture(t, { kind = 'fresh' } = {}) {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cutover-mini-'));
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
   const home = fs.realpathSync(rootDir) + '/home';
@@ -115,7 +117,7 @@ function fixture(t) {
   const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, TEST_INSTALL_LOG: rootDir + '/install.log',
     CUTOVER_TEST_KEYS: rootDir + '/keys.json', CUTOVER_TEST_READS: rootDir + '/app-reads' };
   const manifest = rootDir + '/manifest.json';
-  fs.writeFileSync(manifest, JSON.stringify({ version: 1, oldRepo, newRepo, kind: 'fresh', rehearsal: true,
+  fs.writeFileSync(manifest, JSON.stringify({ version: 1, oldRepo, newRepo, kind, rehearsal: true,
     rehearsalInstallationIds: rehearsalIds }));
   const run = (...args) => spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', timeout: 60_000 });
   const invoke = (...args) => run('--home', home, '--install-mini', installer, ...args);
@@ -225,6 +227,53 @@ test('Mini 演示只读；fresh 限定字段、跳过脏树，回滚还原归档
     ['--instance', 'mivo', '--target-repo', newRepo, '--workflow-repo', newRepo, '--mode', 'dry-run', '--workflow-ref', 'main', '--no-load'],
     ['--instance', 'mivo', '--target-repo', oldRepo, '--workflow-repo', oldRepo, '--mode', 'live', '--workflow-ref', 'main', '--no-load'],
   ]);
+});
+
+test('transfer 从旧镜像只读演示，安装前切 origin，回滚重装前逐字节还原', (t) => {
+  const data = fixture(t, { kind: 'transfer' });
+  const before = tree(data.home);
+  const instance = data.read(config);
+  const oldOrigin = 'https://github.com/owner/old.git';
+  const originFile = mirror + '/.git/config';
+  const preview = data.apply();
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /执行 origin mivo-prereview\/repos\/mivo："https:\/\/github.com\/owner\/old.git" → "https:\/\/github.com\/owner\/new.git"/);
+  assert.deepEqual(tree(data.home), before);
+  assert.equal(data.read(config), instance);
+  assert.equal(fs.existsSync(data.env.TEST_INSTALL_LOG), false);
+  assert.equal(fs.existsSync(data.home + '/mivo-prereview/cutover-backup'), false);
+
+  const applied = data.apply('--yes');
+  assert.equal(applied.status, 0, applied.stderr);
+  const backup = /^备份：(.+)$/m.exec(applied.stdout)[1];
+  const journal = JSON.parse(fs.readFileSync(path.join(backup, 'journal.json'), 'utf8'));
+  assert.equal(journal.completed.find(({ undo }) => undo.file === originFile).undo.oldOrigin, oldOrigin);
+  assert.match(data.read(originFile), /https:\/\/github.com\/owner\/new\.git/);
+  assert.match(data.read(standalone + '/.git/config'), /owner\/old\.git/);
+  assert.equal(data.read(state + '/sentinel'), 'old state bytes\n');
+  assert.equal(JSON.parse(data.read(config)).targetRepo, newRepo);
+
+  const rolledBack = data.invoke('--rollback', backup);
+  assert.equal(rolledBack.status, 0, rolledBack.stderr);
+  assert.deepEqual(tree(data.home), before);
+  assert.equal(JSON.parse(data.read(config)).targetRepo, oldRepo);
+  assert.equal(JSON.parse(data.read(config)).workflowRepo, oldRepo);
+  assert.deepEqual(data.installs().map((args) => args.slice(2)), [
+    ['--instance', 'mivo', '--target-repo', newRepo, '--workflow-repo', newRepo, '--mode', 'dry-run', '--workflow-ref', 'main', '--no-load'],
+    ['--instance', 'mivo', '--target-repo', oldRepo, '--workflow-repo', oldRepo, '--mode', 'live', '--workflow-ref', 'main', '--no-load'],
+  ]);
+});
+
+test('transfer 实例镜像有未提交改动时，在创建备份或调用安装器前停止', (t) => {
+  const data = fixture(t, { kind: 'transfer' });
+  data.write(mirror + '/tracked', 'local work\n');
+  const before = tree(data.home);
+  const result = data.apply('--yes');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /repos\/mivo 有未提交改动/);
+  assert.equal(fs.existsSync(data.env.TEST_INSTALL_LOG), false);
+  assert.equal(fs.existsSync(data.home + '/mivo-prereview/cutover-backup'), false);
+  assert.deepEqual(tree(data.home), before);
 });
 
 test('生产不接受替身 installationId，即使清单标记 rehearsal', (t) => {

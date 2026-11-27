@@ -218,10 +218,13 @@ export function readMiniState(manifest, { home, installer, isolated }) {
       null, dirty ? '工作树有未提交改动，跳过' : undefined));
   }
   const mirrorDir = ensureRepo(home, mirror);
-  const expectedMirror = kind === 'fresh' && pendingInstall ? oldRepo : newRepo;
-  verifyOrigin(mirrorDir, expectedMirror);
-  if (pendingInstall && git(mirrorDir, 'status', '--porcelain')) throw new Error(mirror + ' 有未提交改动，不能继续重装或归档实例');
-  origins.push(toStep('origin', mirror, expectedMirror, newRepo, null, null, '镜像由安装脚本管理，执行段只核对'));
+  const expectedMirror = pendingInstall ? oldRepo : newRepo;
+  const mirrorOrigin = verifyOrigin(mirrorDir, expectedMirror);
+  if (pendingInstall) ensureCleanMirror(mirrorDir);
+  const mirrorChange = kind === 'transfer' && pendingInstall
+    ? { type: 'origin', repo: mirror, origin: mirrorOrigin, nextUrl } : null;
+  origins.push(toStep('origin', mirror, mirrorOrigin, nextUrl, mirrorChange, null,
+    kind === 'fresh' ? '镜像由安装脚本管理，执行段只核对' : undefined));
   if (kind === 'fresh' && pendingInstall) {
     const suffix = '.' + oldRepo.replace('/', '__') + '-' + new Date().toISOString().slice(0, 10).replaceAll('-', '');
     for (const from of [state, mirror]) {
@@ -241,16 +244,21 @@ export function readMiniState(manifest, { home, installer, isolated }) {
 }
 
 function verifyOrigin(directory, expected) {
-  const actual = git(directory, 'config', '--local', '--get-all', 'remote.origin.url')
-    .replace(/^(https:\/\/github\.com\/|git@github\.com:)/, '').replace(/\.git$/, '');
-  if (actual !== expected) throw new Error(directory + ' 的 origin 不符；期望 ' + expected + '，不自行修改实例镜像');
+  const origin = git(directory, 'config', '--local', '--get-all', 'remote.origin.url');
+  const actual = origin.replace(/^(https:\/\/github\.com\/|git@github\.com:)/, '').replace(/\.git$/, '');
+  if (actual !== expected) throw new Error(directory + ' 的 origin 不符；期望 ' + expected);
+  return origin;
+}
+
+function ensureCleanMirror(directory) {
+  if (git(directory, 'status', '--porcelain')) throw new Error(mirror + ' 有未提交改动，不能继续切换或重装实例');
 }
 
 export function checkMiniRollback(record, home) {
-  const installationPending = record.pending?.undo?.type === 'installer' ||
-    record.completed.some(({ undo }) => undo.type === 'installer');
-  if (record.manifest.kind === 'transfer' && installationPending) {
-    verifyOrigin(ensureRepo(home, mirror), record.manifest.oldRepo);
+  const affectsMirror = (undo) => undo?.type === 'installer' || undo?.file === mirror + '/.git/config';
+  if (record.manifest.kind === 'transfer' &&
+      (affectsMirror(record.pending?.undo) || record.completed.some(({ undo }) => affectsMirror(undo)))) {
+    ensureCleanMirror(ensureRepo(home, mirror));
   }
 }
 
@@ -309,6 +317,8 @@ export function undoMini(op, directory, options) {
       fs.renameSync(original, retained);
     }
     fs.renameSync(archived, original);
-  } else if (op.type === 'installer') executeMini(op, options);
-  else throw new Error('未知 Mini 回滚步骤');
+  } else if (op.type === 'installer') {
+    verifyOrigin(ensureRepo(home, mirror), op.target);
+    executeMini(op, options);
+  } else throw new Error('未知 Mini 回滚步骤');
 }

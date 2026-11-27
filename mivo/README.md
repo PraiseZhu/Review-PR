@@ -778,7 +778,7 @@ node mivo/deploy/cutover.mjs --manifest /path/to/cutover.json --apply mini --yes
 
 GitHub 段只改新仓。Secret 只补缺，值由 `agent-secret run` 经 stdin 交给 GitHub；同名 secret 已存在时不覆盖也不声称值一致。Fresh 不抄旧看门狗 issue；transfer 只核对 label。跨组织且含组织身份绕过者的规则集不会自动改写：生产执行在写入前停下，私有测试仓在 `rehearsal: true` 时标为不适用。演练模式只设置占位 secret，不复制旧仓代码，也不验证组织权限、App、workflow 和 runner。
 
-Mini 段从线上 skill 读取当前提交，调用现有安装脚本指向新仓。Fresh 只处理 Mivo 主检出（仅生产）、`_ops/mivo-canvas-plugin`、产品规则伙伴检出和 `_ops/issue-agent-code/xindong__mivo-canvas-plugin` 的 `remote.origin.url`；transfer 默认不改这四处，确需改时设置 `transferOrigins: true`。实例镜像由安装脚本管理，本段只核对；transfer 需提前确认镜像指向新仓，回滚前先确认回到旧仓。解析到父级的目录和脏工作树报告并跳过，不碰临时副本。Issue Agent 的本地检出路径保留，更新的是仓白名单和映射键。
+Mini 段从线上 skill 读取当前提交，调用现有安装脚本指向新仓。Fresh 会切换 Mivo 主检出（仅生产）、`_ops/mivo-canvas-plugin`、产品规则伙伴检出和 `_ops/issue-agent-code/xindong__mivo-canvas-plugin` 的 `remote.origin.url`；transfer 默认不改这四处，确需改时设置 `transferOrigins: true`。实例镜像 `mivo-prereview/repos/mivo` 在 fresh 时归档后重建；transfer 时工具先备份并切换镜像远端再安装，回滚先恢复远端再重装，无须手工改地址。解析到父级的目录和其他脏工作树报告并跳过，不碰临时副本；实例镜像有未提交改动则停止。Issue Agent 的本地检出路径保留，更新的是仓白名单和映射键。
 
 三个分流 App 和 Praise QA 无论同组织还是跨组织，都用各自的 App JWT 读取新仓安装 ID；任一读取失败就在首次写入前停止。Praise QA 给新仓加独立路由并保留旧路由。隔离演练用 `--home <副本目录> --install-mini <替身脚本>`，可在 `rehearsal: true` 的清单中用 `rehearsalInstallationIds` 为 `praisebuild`、`praisetriage`、`praisewatch`、`praise-qa` 各传一个不同的正整数；预检列为「替身，未实测」，真实 HOME 拒绝这组值。
 
