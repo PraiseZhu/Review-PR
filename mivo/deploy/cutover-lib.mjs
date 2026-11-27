@@ -248,7 +248,7 @@ const manualPromptLines = [
     ]
   ],
   ['worktree 与历史会话秒清', '16fa2277-2296-48b5-b200-4cdc7fde9dbb',
-    ['gh pr view <N> --repo {repo} --json state 查'], true],
+    ['~/.local/share/sweeper-gh/bin/gh pr view <N> --repo {repo} --json state 查'], true],
   ...['b44bd5d2-0567-4e03-80cf-caac3f39b9f6', '643282e4-d5c9-41b1-883b-1db8950a9a44'].map((id) =>
     ['每日同步与收口', id, ['用 ~/.local/share/sweeper-gh/bin/gh 查状态（{repo}）'], true]),
 ];

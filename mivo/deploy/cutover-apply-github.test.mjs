@@ -129,6 +129,9 @@ test('GitHub 只演示不写入；演练写入后预检通过，重跑零写入�
     assert.equal(line.includes('[切换当天必改]'), mandatory);
   }
   assert.match(preview.stdout, /执行当天先核对原句仍在/);
+  const secondsSweep = preview.stdout.split('\n').find((entry) => entry.includes('16fa2277-2296-48b5-b200-4cdc7fde9dbb'));
+  assert.ok(secondsSweep.includes('原句「~/.local/share/sweeper-gh/bin/gh pr view <N> --repo owner/old --json state 查」'));
+  assert.ok(secondsSweep.includes('新句「~/.local/share/sweeper-gh/bin/gh pr view <N> --repo owner/new --json state 查」'));
   assert.match(preview.stdout, /产品规则伙伴 \/ 周报.*owner\/old.*owner\/new/);
   assert.match(preview.stdout, /skills\/pr-merge\/scripts\/build-request.mjs/);
   const result = fixtureData.apply('--yes');
