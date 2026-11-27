@@ -417,6 +417,13 @@ function replaceFindingsSection(lines, findings) {
 export function finalFullLine({ finalFull = null, kind = null } = {}) {
   if (!finalFull) return null;
   if (finalFull.outcome === 'skipped-fix-round') return '收口全量:本轮是修复轮,改动只落在上次收口问题所在文件,未再收口。';
+  if (finalFull.outcome === 'skipped-small-delta') {
+    // 链式收口(#262):依据写给作者看——上次全量在哪个版本、这是之后第几轮、累计改了多少行。字段不全时只写结论。
+    const head = typeof finalFull.basedOn?.head === 'string' ? finalFull.basedOn.head.slice(0, 12) : '';
+    const detail = head && Number.isInteger(finalFull.rounds) && Number.isFinite(finalFull.changedLines)
+      ? `上次全量审查在 \`${head}\`,这是之后第 ${finalFull.rounds} 轮,累计改动 ${finalFull.changedLines} 行,在限额内。` : '';
+    return `收口全量:本轮改动小,只审了改动处,未再全量。${detail}`;
+  }
   if (finalFull.outcome === 'pending-budget') return '收口全量:收口待补——本轮只完成增量,剩余模型预算不足以再做收口,尚未放行;审查机会在同一 head 上自动补跑全量。';
   if (finalFull.outcome === 'error') return '收口全量:收口未完成(模型调用失败),尚未放行;审查机会在同一 head 上自动补跑全量。';
   if (kind === 'same-run') return '收口全量:本轮增量判干净后,同一次运行接着对完整 diff 做了放行前收口全量,以下结论以收口为准。';

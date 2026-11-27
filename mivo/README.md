@@ -215,6 +215,7 @@ Mivo 的 `PR Handoff` workflow（`pull_request_target`）在 head 上写检查 `
 observe 下，审查机自己解析 PR head 上的 `docs/pr/<PR号>/review.md`（`lib/handoff.mjs`）。它是作者陈述，不是指令，也不执行 PR 里的任何脚本；只从 head 的 git 对象读，工作区被改写不影响。解析失败、字段缺、路径不在 head 里都只记 warning（结果包 `warnings`），不打回、不挡放行，也不开 enforce。
 
 - **解析**：front matter 要 `schema: mivo-pr-handoff/v1`、`kind: review`、`pr` 与本 PR 一致。第 2 节改动地图（四列表格）每行编号 M1…；第 3 节每个 `### R<n>` 取编号、整段内容的 SHA-256（`contentHash`，代码块里的改动也算变）、涉及文件。文件取反引号路径、链接目标和带扩展名的裸路径，必须是 head 里的普通文件（不收符号链接、子模块、目录、`..`、绝对路径、URL）。围栏代码、HTML 注释、引用块里的假标题和假表格不算结构。涉及文件合计最多 20 个（按 R 顺序保留，余量给地图），超出的丢弃并 warning，该 R 标「文件不完整」。文件大于 256 KiB 整份不采用。
+- **短文件名（#262）**：作者常只写文件名或路径后缀（`bridge.ts#send`、`panel/bridge.ts`）。head 里没有这个精确路径时，先在本 PR 改动的文件里按「路径以 `/<写法>` 结尾」找，唯一就采用完整路径；本 PR 改动里一个都没有，再在整个 head 里找，唯一才采用。任何一步有多个候选都不猜：丢弃并告警（`path-ambiguous`，写明候选数），找不到的照旧 `path-not-in-head`。解析出的文件记在 R 的 `resolvedFiles`；快照 `mivo.handoffReview.resolver = 1` 表示清单已含解析结果。上一轮快照没有这个标记（解析上线前记的）时，本轮才解析出来的文件不算「涉及文件变了」，不把沿用升成全量；这条 R 在下一次有模型调用的轮次（增量或全量）重核一次。纯沿用轮不调模型，这条 R 不重核：结果包 `mivo.scope.handoffPlan` 里把它标为未新核实（沿用轮的报告是上一轮的原文，不重建交接核对一节，报告里看不到这条标注），快照保持旧的，留到之后有模型调用的轮次重核。
 - **复审（增量）**：原范围只扩不缩。某条 R 涉及的文件本轮改了、R 内容哈希变了、或它的文件在 head 上的 blob/mode 变了（含不在 PR diff 里的文件）→ 该 R 的全部文件并进「本轮审查文件」，任务书点名这条 R，按作者给的「怎么证明我错了」在当前版本重核。其余 R 写「沿用」：要求上次结论是「成立」、证据位置在当前 head 上仍有效且文件未变、没有路径/不完整/重复编号的 R 一律重核。没有 `review.md` 的旧包不会因此集中重审；整轮沿用（规则改版、代码没变）时，R 内容或文件身份有可证实的变化才升为一次全量，否则标「本轮沿用既有审查结果，交接未新核实」。
 - **收口/全量**：任务书列出改动地图每行的不变量（`### 改动地图核对`，逐 M 编号）和每条 R，要求逐条给结论，不标「沿用」。同一次运行的收口只采用第二份答卷的 coverage。
 - **每条 R 的结论**：答卷 `handoffCoverage=[{id, verdict: 成立|不成立|未核实, evidence:[{path,line}], note}]`。证据必须是 head 上的普通文件、行号 1..行数，工作区里临时造的文件不作数；证据不通过只出 warning，结论记 `evidenceValid=false`、不可沿用。结果包 `mivo.handoffReview`（编号/哈希/文件的紧凑快照，不含作者正文）、`handoffCoverage`、`handoffCoverageMeta`（内容哈希、证据是否有效、是否沿用、来源 head/run、证据文件的 blob 身份）跨轮保存；沿用的条目保留原来源，统计标 `reused`。报告里的 `### 作者交接核对` 小节由服务端生成，模型自己写的同名小节会被替换。
@@ -444,7 +445,33 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 - 结果包 `mivo` 里记 `runnerName`（审查位，来自 `RUNNER_NAME`）和 `codexVersion`（调模型前取一次 `codex --version` 的第一行；没调模型的审查、CLI 不存在或命令超时都是 `null`，取不到不影响审查），排查失败不用再去查 jobs 接口和服务器升级日志。
 - 每次模型调用在结果包的 `mivo.codex.attempts[]` 里按 JSONL 事件留下记录：`firstEventSec`、`lastEventSec`、`eventCount`、`maxGapSec`（含开始到第一个事件、最后一个事件到退出两段空白）、`usage`（取 `turn.completed`，没有记 null）；失败时另记脱敏后最后 50 行、最多 8 KB 的 `stderrTail`。这些只进结果包，不进 PR 评论，也不能单独当作「变慢原因」的证据。
 
+## 复审只审改动处、定期全量（链式收口，#262）
+
+2026-11-27 定（用户授权 lead 判断，依据见本节末尾）：取代 2026-10-21「放行前一律收口全量」。开关是 `config/review-features.json` 的 `closing`：
+
+- `mode: "chain"`（**仓库当前配置**，`maxIncrementalRounds: 2`、`maxChangedLines: 400`）：复审时改动小就只审改动处，判干净即放行，不再接收口全量；定期全量兜底。
+- `mode: "final-full"`，或没有 `closing` 块：下一节（#100）的行为，范围判定、收口流程和放行判定与 #262 之前一致。配置不合法也按它处理并告警。有两处不随这个开关回退：全量轮的结果包照常多记 `mivo.sinceFull`（只记录，`final-full` 下不参与任何判定，切回 `chain` 时可直接接上）；交接里的短文件名照常解析（只会让审查范围多带文件，要撤得回退 `mivo/lib/handoff.mjs` 的改动）。**回退办法**：把 `mode` 改成 `final-full` 后换版，不用改代码。
+
+`chain` 下 `computeReviewScope` 的判定。现有兜底（没有上一轮、没审完、base 变、档位升级、新确认门、7 天、强推、规则改版且代码变、变化只有删除文件、后来发现/任务范围开关回退等）照旧，且先于下表：
+
+| 情况 | 范围 |
+|---|---|
+| 本轮真实改动行数超过上一版 diff 的一半 | 全量 |
+| 结果包里没有可用的上次全量记录（`mivo.sinceFull`；旧包从 `finalFull` 的 `clean` / `findings` 推） | 全量 |
+| 上次全量之后已连续 2 轮只审改动（第 1 轮全量，第 2、3 轮只审改动，第 4 轮全量，之后循环） | 全量 |
+| 上次全量之后累计改动（含本轮）超过 400 行，或超过上次全量时 diff 的一半 | 全量 |
+| 其余（含「上一轮已干净、本轮小改动」） | 增量，带 `scope.closing = { skipFinalFull, basedOn, anchorTotalDiffLines, rounds, changedLines, deltaLines }` |
+
+- **改动行数按真实口径**：prepare 对「上一版 head → 本版 head」跑 `git diff --numstat --no-renames -z`，只留本 PR 补丁涉及的文件（合并主干带进来的其它文件不算），按文件的增删行数相加（`current.deltaLinesByFile`）。二进制文件、两版内容没变但补丁变了的文件，按它在 PR 里的补丁行数算；整份读不到时退回旧口径。旧口径（`final-full` 仍在用）把改过的文件在整个 PR 里的补丁行数相加，大文件里改几行会被算成整份补丁：xindong/mivo-canvas-plugin#2887 真实改 73 行被算成 822 行。
+- **链状态** `mivo.sinceFull = { head, runId, totalDiffLines, rounds, changedLines }`：`head` / `runId` / `totalDiffLines` 是上次全量那一轮的。做完一次全量（直接全量、补跑、同一次运行里的收口全量）归零；`chain` 下只审改动的轮次 `rounds` 加 1、`changedLines` 累加本轮真实改动；沿用上一轮结论时原样带过去，不算一轮。
+- **放行记录**：只审改动并判干净的轮次，结果包 `mivo.finalFull = { head, runId, outcome: 'skipped-small-delta', basedOn: { head, runId }, rounds, changedLines }`，不伪造干净全量；报告 Verification 写「本轮改动小,只审了改动处,未再全量」及上次全量所在版本、第几轮、累计行数。增量里有阻断问题时不留这条记录；阻断问题全部被核对员推翻/降级的仍按「缺收口记录」处理（同 head 补一次全量），与改动前一致。
+- **不变的部分**：首轮永远全量；7 天强制全量；核对员、后来发现分桶、转 issue、裁定照旧；任务书模板与 `specDigest` 不变（换版不会让在审 PR 集体全量）；单次模型调用时长不设上限。
+- **依据**：2026-11-13 至 11-27 审查位产出的 926 份结果包回测。245 个可重新判定的复审轮里 145 轮改为只审改动，模型耗时 114 小时 → 77 小时（−32%）。同期全量复审轮在「本轮没改的文件」上新报的阻断问题共 7 条（1 条 P1、6 条 P2），按上表其中 3 条 P2（0 条 P1）不会在当轮报出，要等到下一次全量。上限取 2 轮 / 400 行：200 行上限少省 5 小时、少漏 1 条；不设上限多省 7 小时、多漏 1 条且没有全量兜底。旧行为为什么慢：只审改动 + 收口全量平均 36 分钟，比直接全量（25 分钟）还慢；修复轮豁免两周生效 0 次（每轮都会改 `docs/pr/<N>/` 和测试，条件满足不了）。
+- **换版后看什么**：只审改动并放行的轮次都有 `skipped-small-delta` 记录且带 `basedOn`；每个 PR 的 `sinceFull.rounds` 不超过 2；一周后数全量复审轮在没改的文件上新报的阻断问题，明显多于回测的 3 条 / 两周就回退。
+
 ## 放行前收口全量（#100，总 issue #96 子4）
+
+**现行配置是 `closing.mode = chain`（见上一节）。本节是 `closing.mode = final-full` 时的行为，保留作回退；`chain` 下只有「同 head 收口待补 → 补跑全量」和「放行门」两条仍会用到。**
 
 用户 2026-10-21 选 A：增量轮判干净后，放行前再做一次完整 diff 的收口全量，全量也干净才 Approve；P0/P1/P2 照样阻断。收口全量的任务书按 `review.md` 逐条核对改动地图和每条 R（见「作者交接文件」的「review.md 的三种用法」）。
 
@@ -457,8 +484,8 @@ CI 误判与唤醒（2026-10-19，#1109：同一 head 上 `pr-format-gate` 5 条
 | 收口开始后失败 | 同样不回退增量答卷；`finalFull.outcome = 'error'` 并保留真实前轮，Mini 下一次对同 head 直接全量 |
 
 - 总预算只有一份：两段主审、备用 key/模型、核对员共用同一个 `budgetAt` 起算的余额，第二段主模型上限按余额收紧，不会重新得到 145 分钟。
-- 结果包 `mivo.finalFull = { head, runId, outcome }`（`head` 是被审 head、`runId` 是 GitHub run id，`outcome` 为 `clean` / `findings` / `manual-review` / `pending-budget` / `error` / `skipped-fix-round`；`manual-review` 只出现在 #248 之前的旧记录里，现在卡点全部被推翻/降级记 `clean`），`mivo.finalFullContext = { kind: 'same-run' | 'budget-retry' | 'direct-full', findingFiles, previousRound }`。`findingFiles` 取收口仍阻断问题的位置（含 `instances`）。沿用上一轮结论时原样带过去。
-- 放行门：增量范围的干净结论没有 `clean` / `skipped-fix-round` 记录就不 Approve（含 advisory 和卡点全部被核对员推翻/降级的放行，以及其他所有放行路径），直接标收口待补。
+- 结果包 `mivo.finalFull = { head, runId, outcome }`（`head` 是被审 head、`runId` 是 GitHub run id，`outcome` 为 `clean` / `findings` / `manual-review` / `pending-budget` / `error` / `skipped-fix-round` / `skipped-small-delta`（#262，见上一节）；`manual-review` 只出现在 #248 之前的旧记录里，现在卡点全部被推翻/降级记 `clean`），`mivo.finalFullContext = { kind: 'same-run' | 'budget-retry' | 'direct-full', findingFiles, previousRound }`。`findingFiles` 取收口仍阻断问题的位置（含 `instances`）。沿用上一轮结论时原样带过去。
+- 放行门：增量范围的干净结论没有 `clean` / `skipped-fix-round` / `skipped-small-delta` 记录就不 Approve（含 advisory 和卡点全部被核对员推翻/降级的放行，以及其他所有放行路径），直接标收口待补。
 - 结论与 head 绑定：模型阶段用 prepare 固定的 `input.head`，check、报告头和证据都写被审 head；收口期间 PR 前进时由 guarded finish / Request Changes 的 expected-head 拒绝，结果 `state-changed`。
 - Mini 侧（`round.mjs`）：待补/收口失败包记 `store.prs[pr].pendingFinalFull = { head, runId }`（同时清该 head 的 `cleanHead`），不更新 `lastCompleteRunId`，按现有失败退避重试；下一次派发 `prev_run_id` 指向待补那次运行，服务器下载后据 `finalFull` 标记直接全量并恢复真实前轮；同 head 的收口/全量做完（clean/findings/manual-review，顶层非 error）才清游标；新 head 不消费旧游标。无新 workflow 输入、无新定时器。
 - 合入顺序：#97-#99 换版并线上验证后才合入本改动；换版后观察一周，增量轮放行的 PR 在同一 head 上都应有 `finalFull`（修复轮记 `skipped-fix-round` 及依据），放行轮耗时 p50 增量不超过 20 分钟。
